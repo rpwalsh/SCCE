@@ -66,6 +66,8 @@ export interface CandidateGenerationInput {
    *  When present, proofAnswer() attempts real generation before falling back to source-exact text. */
   realizationContract?: SemanticRealizationContract;
   attestedAnswerSurface?: string;
+  /** Current-turn owner assertions that the runtime explicitly admitted as promoted session evidence. */
+  ownerSessionEvidenceIds?: ReadonlySet<string>;
   languageMemoryForRealization?: { languageMemory: LanguageMemoryRuntime; state: LanguageMemoryRuntimeState; languageProfile?: LanguageProfile };
 }
 
@@ -632,6 +634,7 @@ function proofAnswer(input: {
    *  temporal extractor narrowing it to just a date) -- the real, attested text a generation attempt should
    *  seed from. `proofAnswer` itself can be that narrower bare value, which carries no continuation history. */
   attestedAnswerSurface?: string;
+  ownerSessionEvidenceIds?: ReadonlySet<string>;
   languageMemoryForRealization?: { languageMemory: LanguageMemoryRuntime; state: LanguageMemoryRuntimeState; languageProfile?: LanguageProfile };
 }): CandidateSurface {
   // The contract, when present, is tried BEFORE the source-exact text this candidate would otherwise carry
@@ -669,25 +672,35 @@ function proofAnswer(input: {
   // whether or not the stricter certifying gate admitted it, matching how
   // local-evidence-runtime.ts already treats its own session evidence.
   const boundEvidence = input.evidence.filter(span =>
-    input.entailment.evidenceIds.includes(span.id) || promotedSessionEvidence(span));
+    input.entailment.evidenceIds.includes(span.id)
+    || (promotedSessionEvidence(span) && input.ownerSessionEvidenceIds?.has(String(span.id)) === true));
+  const surfacedOwnerEvidenceIds = boundEvidence
+    .filter(span => promotedSessionEvidence(span)
+      && input.ownerSessionEvidenceIds?.has(String(span.id)) === true
+      && boundEvidenceSurface([span.id], input.evidence) === answer)
+    .map(span => span.id);
+  const candidateEvidenceIds = [...new Set([
+    ...input.entailment.evidenceIds,
+    ...surfacedOwnerEvidenceIds
+  ])];
   return {
     id: candidateId("proof", input.entailment, answer),
     kind: "proof-answer",
     answer,
     force: evidenceBoundForce(input.entailment.force),
-    evidenceIds: input.entailment.evidenceIds,
+    evidenceIds: candidateEvidenceIds,
     scores: baseScores(input),
     boundaries: input.entailment.boundaries,
     audit: toJsonValue({
       source: "semantic-proof",
       proofId: proof.id,
-      sessionBound: boundEvidence.some(promotedSessionEvidence),
+      sessionBound: surfacedOwnerEvidenceIds.length > 0,
       realizationOrigin,
       ...(realizationAttempt ? { realizationAudit: realizationAttempt.diagnostic } : {}),
       semanticFrame: {
         frameId: "semantic.answer.proof.v1",
         claimId: proof.claimId,
-        evidenceIds: input.entailment.evidenceIds,
+        evidenceIds: candidateEvidenceIds,
         transformIds: proofRoute.transformIds,
         forceId: input.entailment.force,
         surfaceOriginId: answer ? "surface.semantic_proof.input.v1" : null
@@ -705,7 +718,7 @@ function proofAnswer(input: {
   };
 }
 
-function normalizeCandidateAnswer(answer: string, input: { requestText: string; entailment: SemanticEntailmentResult; evidence: EvidenceSpan[] }): string {
+function normalizeCandidateAnswer(answer: string, input: { requestText: string; entailment: SemanticEntailmentResult; evidence: EvidenceSpan[]; ownerSessionEvidenceIds?: ReadonlySet<string> }): string {
   const clean = cleanIncomingSurface(stripSurfaceRealizerArtifacts(answer));
   const request = input.requestText.replace(/\s+/g, " ").trim();
   const onlyEcho = clean && request && (clean === request || clean.toLocaleLowerCase() === request.toLocaleLowerCase());
@@ -714,7 +727,8 @@ function normalizeCandidateAnswer(answer: string, input: { requestText: string; 
     || proofRoute.transformIds.length > 0
     || proofRoute.edgeCount > 0;
   if (!proofHasRoute || !clean || onlyEcho || containsSurfaceRealizerTelemetry(answer) || containsProofDiagnosticSurface(clean)) {
-    return boundEvidenceSurface(input.entailment.evidenceIds, input.evidence);
+    return boundEvidenceSurface(input.entailment.evidenceIds, input.evidence)
+      || boundEvidenceSurface([...input.ownerSessionEvidenceIds ?? []] as EvidenceId[], input.evidence);
   }
   return clean;
 }

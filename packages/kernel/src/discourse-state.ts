@@ -460,6 +460,39 @@ export interface DiscourseBindingV2 {
   alternatives: DiscourseBindingAlternativeV2[];
 }
 
+/**
+ * A typed correction to an interpretation route.  The correction is keyed by
+ * the graph-facing frame/role/slot ids that caused the original decision; it
+ * never asks the resolver to parse or classify the correction surface.
+ */
+export interface DiscourseInterpretationAdjustmentV2 {
+  schema: "scce.discourse_interpretation_adjustment.v2";
+  id: string;
+  semanticRoleIds: string[];
+  requestedSlotIds: string[];
+  learnedFrameIds: string[];
+  scopeIds: string[];
+  rejectedReferentIds: string[];
+  preferredReferentIds: string[];
+  supportMass: number;
+  contradictionMass: number;
+  correctionIds: string[];
+}
+
+/**
+ * The typed identity available immediately before candidate selection.  It is
+ * deliberately narrower than a full discourse referent: every row must still
+ * point at proof-bearing evidence from the current turn.
+ */
+export interface DiscoursePreselectionCandidateV2 {
+  referentId: string;
+  semanticRoleIds: string[];
+  requestedSlotIds: string[];
+  learnedFrameIds: string[];
+  scopeIds: string[];
+  proofEvidenceIds: string[];
+}
+
 export interface DialogueCognitiveStateV2 {
   schema: "scce.dialogue_cognitive_state.v2";
   id: string;
@@ -472,6 +505,7 @@ export interface DialogueCognitiveStateV2 {
   referents: DiscourseReferentV2[];
   topics: DiscourseTopicV2[];
   bindings: DiscourseBindingV2[];
+  interpretationAdjustments?: DiscourseInterpretationAdjustmentV2[];
   unresolvedMentionIds: string[];
   openSlotIds: string[];
   preferenceSnapshotIds: string[];
@@ -542,6 +576,7 @@ export interface ResolveDiscourseStateV2Input {
   topics?: readonly DiscourseTopicV2[];
   routeSignals?: readonly DiscourseRouteSignalV2[];
   provenanceBindings?: readonly DiscourseProvenanceBindingV2[];
+  interpretationAdjustments?: readonly DiscourseInterpretationAdjustmentV2[];
   config?: DiscourseResolverConfigPatchV2;
   hasher?: Hasher;
 }
@@ -582,6 +617,61 @@ export const DEFAULT_DISCOURSE_RESOLVER_CONFIG_V2: Readonly<DiscourseResolverCon
   maxActiveTopics: 8,
   maxHistoryDigests: 64
 };
+
+export function createDiscourseInterpretationAdjustmentV2(
+  input: Omit<DiscourseInterpretationAdjustmentV2, "schema" | "id">
+): DiscourseInterpretationAdjustmentV2 {
+  const content = discourseInterpretationAdjustmentContentV2(input);
+  return {
+    schema: "scce.discourse_interpretation_adjustment.v2",
+    id: `disc2.adjustment.${createHasher().digestHex(canonicalJsonV2(content)).slice(0, 32)}`,
+    ...content
+  };
+}
+
+/**
+ * Adjustment identifiers belong to this schema's canonical identity domain.
+ * They must remain stable when a dialogue state is validated with a caller's
+ * state hasher.
+ */
+export function isDiscourseInterpretationAdjustmentV2(value: unknown): value is DiscourseInterpretationAdjustmentV2 {
+  const item = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+  if (!item
+    || item.schema !== "scce.discourse_interpretation_adjustment.v2"
+    || typeof item.id !== "string"
+    || !Array.isArray(item.semanticRoleIds)
+    || !Array.isArray(item.requestedSlotIds)
+    || !Array.isArray(item.learnedFrameIds)
+    || !Array.isArray(item.scopeIds)
+    || !Array.isArray(item.rejectedReferentIds)
+    || !Array.isArray(item.preferredReferentIds)
+    || !Array.isArray(item.correctionIds)
+    || !item.semanticRoleIds.every(value => typeof value === "string")
+    || !item.requestedSlotIds.every(value => typeof value === "string")
+    || !item.learnedFrameIds.every(value => typeof value === "string")
+    || !item.scopeIds.every(value => typeof value === "string")
+    || !item.rejectedReferentIds.every(value => typeof value === "string")
+    || !item.preferredReferentIds.every(value => typeof value === "string")
+    || !item.correctionIds.every(value => typeof value === "string")
+    || typeof item.supportMass !== "number"
+    || typeof item.contradictionMass !== "number") return false;
+  const canonical = createDiscourseInterpretationAdjustmentV2({
+    semanticRoleIds: item.semanticRoleIds as string[],
+    requestedSlotIds: item.requestedSlotIds as string[],
+    learnedFrameIds: item.learnedFrameIds as string[],
+    scopeIds: item.scopeIds as string[],
+    rejectedReferentIds: item.rejectedReferentIds as string[],
+    preferredReferentIds: item.preferredReferentIds as string[],
+    supportMass: item.supportMass,
+    contradictionMass: item.contradictionMass,
+    correctionIds: item.correctionIds as string[]
+  });
+  return canonical.id === item.id
+    && canonicalStringSetV2(canonical.semanticRoleIds).length === canonical.semanticRoleIds.length
+    && canonicalStringSetV2(canonical.preferredReferentIds).length > 0
+    && canonicalStringSetV2(canonical.rejectedReferentIds).length > 0
+    && canonicalStringSetV2(canonical.correctionIds).length > 0;
+}
 
 const DISCOURSE_V2_REASON_IDS = {
   admitted: "disc2.r.3d09c8a1",
@@ -678,6 +768,10 @@ export function resolveDiscourseStateV2(input: ResolveDiscourseStateV2Input): Di
   const topics = repairedTopology.topics;
   const routeSignals = discourseRouteSignalMap(input.routeSignals ?? []);
   const provenanceBindings = discourseProvenanceBindingMap(input.provenanceBindings ?? [], hasher);
+  const interpretationAdjustments = mergeDiscourseInterpretationAdjustmentsV2(
+    previousState?.interpretationAdjustments ?? [],
+    input.interpretationAdjustments ?? []
+  );
   const priorActiveTopicIds = canonicalStringSetV2(previousState?.activeTopicIds ?? []);
   const mentions = [...observation.mentions]
     .sort(compareDiscourseMentionsV2);
@@ -699,6 +793,7 @@ export function resolveDiscourseStateV2(input: ResolveDiscourseStateV2Input): Di
         priorActiveTopicIds,
         signal: routeSignals.get(discourseRouteSignalKey(mention.id, referent.id)),
         provenanceBindings: provenanceBindings.get(discourseRouteSignalKey(mention.id, referent.id)) ?? [],
+        interpretationAdjustments,
         hasher,
         config
       }))
@@ -774,7 +869,10 @@ export function resolveDiscourseStateV2(input: ResolveDiscourseStateV2Input): Di
   )));
   const openSlotIds = requestedSlotIds.filter(slotId => !filledSlotIds.has(slotId));
   const preferenceSnapshotIds = canonicalStringSetV2(previousState?.preferenceSnapshotIds ?? []);
-  const correctionIds = canonicalStringSetV2(previousState?.correctionIds ?? []);
+  const correctionIds = canonicalStringSetV2([
+    ...(previousState?.correctionIds ?? []),
+    ...interpretationAdjustments.flatMap(adjustment => adjustment.correctionIds)
+  ]);
   const historyDigestIds = uniqueStrings([...(previousState?.historyDigestIds ?? []), observation.id]).slice(-config.maxHistoryDigests);
   // What the state's history window no longer holds, it no longer carries: unretired referents grew one state to 3.6 MB.
   const windowStart = observation.turnIndex - config.maxHistoryDigests + 1;
@@ -800,6 +898,7 @@ export function resolveDiscourseStateV2(input: ResolveDiscourseStateV2Input): Di
     referents: retained.referents,
     topics: retained.topics,
     bindings,
+    ...(interpretationAdjustments.length ? { interpretationAdjustments } : {}),
     unresolvedMentionIds: canonicalUnresolvedMentionIds,
     openSlotIds,
     preferenceSnapshotIds,
@@ -818,6 +917,7 @@ export function resolveDiscourseStateV2(input: ResolveDiscourseStateV2Input): Di
       mentionCount: mentions.length,
       bindingCount: bindings.length,
       admittedBindingCount: admittedBindings.length,
+      interpretationAdjustmentCount: interpretationAdjustments.length,
       queryConcatenationUsed: false
     })
   };
@@ -901,6 +1001,7 @@ function scoreDiscourseCandidateV2(input: {
   priorActiveTopicIds: readonly string[];
   signal?: DiscourseRouteSignalV2;
   provenanceBindings: readonly DiscourseProvenanceBindingV2[];
+  interpretationAdjustments: readonly DiscourseInterpretationAdjustmentV2[];
   hasher: Hasher;
   config: DiscourseResolverConfigV2;
 }): ScoredDiscourseCandidateV2 {
@@ -956,6 +1057,11 @@ function scoreDiscourseCandidateV2(input: {
   const topicSwitchPenaltyBase = observation.explicitAnchorNodeIds.length && explicitAnchorFit === 0 ? 1 : 0;
   const topicSwitchPenalty = clamp01(Math.max(topicSwitchPenaltyBase, signal?.topicSwitchPressure ?? 0));
   const contradictionPenalty = clamp01(Math.max(referent.contradictionMass, signal?.contradictionPressure ?? 0));
+  const interpretationDelta = interpretationAdjustmentDeltaV2({
+    mention,
+    referent,
+    adjustments: input.interpretationAdjustments
+  });
   const components: DiscourseBindingComponentsV2 = {
     recency: clamp01(Math.exp(-config.recencyLambda * Math.max(0, observation.turnIndex - referent.lastMentionTurnIndex))),
     salience: clamp01(referent.salienceMass),
@@ -988,7 +1094,7 @@ function scoreDiscourseCandidateV2(input: {
   ];
   const positiveMass = boundedWeightedMean(positiveRows);
   const penaltyMass = boundedWeightedMean(penaltyRows);
-  const rawScore = clamp01(positiveMass * (1 - penaltyMass));
+  const rawScore = clamp01(positiveMass * (1 - penaltyMass) + interpretationDelta);
   const hardReasonIds: string[] = [];
   if (!signal || graphRouteCoherence < config.minimumGraphRouteCoherence) hardReasonIds.push(DISCOURSE_V2_REASON_IDS.graphRoute);
   if (!validProvenanceBindings.length) hardReasonIds.push(DISCOURSE_V2_REASON_IDS.proof);
@@ -1321,6 +1427,7 @@ function dialogueCognitiveStateContentV2(
     referents: state.referents,
     topics: state.topics,
     bindings: state.bindings,
+    ...(state.interpretationAdjustments?.length ? { interpretationAdjustments: state.interpretationAdjustments } : {}),
     unresolvedMentionIds: state.unresolvedMentionIds,
     openSlotIds: state.openSlotIds,
     preferenceSnapshotIds: state.preferenceSnapshotIds,
@@ -1376,6 +1483,127 @@ function canonicalizeDiscourseTemporalIntervalV2(interval: DiscourseTemporalInte
   return {
     validFrom: finiteNumber(interval.validFrom, 0),
     ...(interval.validTo !== undefined ? { validTo: finiteNumber(interval.validTo, interval.validFrom) } : {})
+  };
+}
+
+function mergeDiscourseInterpretationAdjustmentsV2(
+  previous: readonly DiscourseInterpretationAdjustmentV2[],
+  incoming: readonly DiscourseInterpretationAdjustmentV2[]
+): DiscourseInterpretationAdjustmentV2[] {
+  const byId = new Map<string, DiscourseInterpretationAdjustmentV2>();
+  for (const adjustment of previous) {
+    if (!isDiscourseInterpretationAdjustmentV2(adjustment)) continue;
+    byId.set(adjustment.id, canonicalizeDiscourseInterpretationAdjustmentV2(adjustment));
+  }
+  // Incoming observations are newer than the previous state.  Delete before
+  // setting so a repeated adjustment is refreshed to the newest position.
+  for (const adjustment of incoming) {
+    if (!isDiscourseInterpretationAdjustmentV2(adjustment)) continue;
+    const canonical = canonicalizeDiscourseInterpretationAdjustmentV2(adjustment);
+    byId.delete(canonical.id);
+    byId.set(canonical.id, canonical);
+  }
+  return [...byId.values()].slice(-128);
+}
+
+function canonicalizeDiscourseInterpretationAdjustmentV2(
+  adjustment: DiscourseInterpretationAdjustmentV2
+): DiscourseInterpretationAdjustmentV2 {
+  return {
+    schema: "scce.discourse_interpretation_adjustment.v2",
+    id: adjustment.id.trim(),
+    semanticRoleIds: canonicalStringSetV2(adjustment.semanticRoleIds),
+    requestedSlotIds: canonicalStringSetV2(adjustment.requestedSlotIds),
+    learnedFrameIds: canonicalStringSetV2(adjustment.learnedFrameIds),
+    scopeIds: canonicalStringSetV2(adjustment.scopeIds),
+    rejectedReferentIds: canonicalStringSetV2(adjustment.rejectedReferentIds),
+    preferredReferentIds: canonicalStringSetV2(adjustment.preferredReferentIds),
+    supportMass: clamp01(finiteNumber(adjustment.supportMass, 0)),
+    contradictionMass: clamp01(finiteNumber(adjustment.contradictionMass, 0)),
+    correctionIds: canonicalStringSetV2(adjustment.correctionIds)
+  };
+}
+
+function discourseInterpretationAdjustmentContentV2(
+  adjustment: Omit<DiscourseInterpretationAdjustmentV2, "schema" | "id"> | DiscourseInterpretationAdjustmentV2
+): Omit<DiscourseInterpretationAdjustmentV2, "schema" | "id"> {
+  return {
+    semanticRoleIds: canonicalStringSetV2(adjustment.semanticRoleIds),
+    requestedSlotIds: canonicalStringSetV2(adjustment.requestedSlotIds),
+    learnedFrameIds: canonicalStringSetV2(adjustment.learnedFrameIds),
+    scopeIds: canonicalStringSetV2(adjustment.scopeIds),
+    rejectedReferentIds: canonicalStringSetV2(adjustment.rejectedReferentIds),
+    preferredReferentIds: canonicalStringSetV2(adjustment.preferredReferentIds),
+    supportMass: clamp01(finiteNumber(adjustment.supportMass, 0)),
+    contradictionMass: clamp01(finiteNumber(adjustment.contradictionMass, 0)),
+    correctionIds: canonicalStringSetV2(adjustment.correctionIds)
+  };
+}
+
+function interpretationAdjustmentDeltaV2(input: {
+  mention: DiscourseMentionV2;
+  referent: DiscourseReferentV2;
+  adjustments: readonly DiscourseInterpretationAdjustmentV2[];
+}): number {
+  return interpretationAdjustmentDeltaForTypedCandidateV2({
+    candidate: {
+      referentId: input.referent.id,
+      semanticRoleIds: input.mention.semanticRoleIds,
+      requestedSlotIds: input.mention.requestedSlotIds,
+      learnedFrameIds: input.mention.learnedFrameIds,
+      scopeIds: input.mention.scopeIds,
+      proofEvidenceIds: input.referent.evidenceIds
+    },
+    adjustments: input.adjustments
+  });
+}
+
+/**
+ * Returns the learned route preference that is admissible for one current
+ * typed candidate.  The candidate must retain proof-bearing evidence; the
+ * adjustment can change ordering only after its typed context matches.
+ */
+export function interpretationAdjustmentDeltaForTypedCandidateV2(input: {
+  candidate: DiscoursePreselectionCandidateV2;
+  adjustments: readonly DiscourseInterpretationAdjustmentV2[];
+}): number {
+  return interpretationAdjustmentSelectionForTypedCandidateV2(input).delta;
+}
+
+export function interpretationAdjustmentSelectionForTypedCandidateV2(input: {
+  candidate: DiscoursePreselectionCandidateV2;
+  adjustments: readonly DiscourseInterpretationAdjustmentV2[];
+}): { delta: number; adjustmentIds: string[] } {
+  if (!canonicalStringSetV2(input.candidate.proofEvidenceIds).length) return { delta: 0, adjustmentIds: [] };
+  let delta = 0;
+  const adjustmentIds: string[] = [];
+  for (const adjustment of input.adjustments) {
+    if (!isDiscourseInterpretationAdjustmentV2(adjustment)) continue;
+    const contextRows = [
+      [input.candidate.semanticRoleIds, adjustment.semanticRoleIds],
+      [input.candidate.requestedSlotIds, adjustment.requestedSlotIds],
+      [input.candidate.learnedFrameIds, adjustment.learnedFrameIds],
+      [input.candidate.scopeIds, adjustment.scopeIds]
+    ] as const;
+    const constrainedRows = contextRows.filter(([, expected]) => expected.length);
+    if (!constrainedRows.length) continue;
+    const compatibility = constrainedRows.map(([actual, expected]) => setCompatibilityMass(actual, expected, 0));
+    // A correction is scoped by every typed dimension it records.  One
+    // coincidental role match cannot override a conflicting frame, slot, or
+    // source scope.
+    if (compatibility.some(value => value <= 0)) continue;
+    const contextFit = boundedWeightedMean(compatibility.map(value => [1, value] as const));
+    const preferred = adjustment.preferredReferentIds.includes(input.candidate.referentId);
+    const rejected = adjustment.rejectedReferentIds.includes(input.candidate.referentId);
+    const adjustmentDelta = (preferred ? 0.42 * contextFit * adjustment.supportMass : 0)
+      - (rejected ? 0.42 * contextFit * adjustment.contradictionMass : 0);
+    if (!adjustmentDelta) continue;
+    delta += adjustmentDelta;
+    adjustmentIds.push(adjustment.id);
+  }
+  return {
+    delta: Math.max(-0.42, Math.min(0.42, delta)),
+    adjustmentIds: canonicalStringSetV2(adjustmentIds)
   };
 }
 

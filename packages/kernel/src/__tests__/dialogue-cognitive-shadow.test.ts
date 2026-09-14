@@ -28,7 +28,9 @@ describe("proof-bearing dialogue cognitive shadow projection", () => {
     expect(projection.observation.mentions).toHaveLength(1);
     expect(projection.observation.mentions[0]).toMatchObject({
       candidateNodeIds: ["node.01"],
-      candidateReferentIds: ["node.01"]
+      candidateReferentIds: ["node.01"],
+      semanticRoleIds: ["role.01"],
+      learnedFrameIds: ["frame.01"]
     });
     expect(projection.observation.mentions[0]).not.toHaveProperty("span");
     expect(projection.observation.mentions[0]?.sourceIdentityIds).toEqual(expect.arrayContaining([
@@ -37,7 +39,7 @@ describe("proof-bearing dialogue cognitive shadow projection", () => {
       "evidence.01",
       "node.01"
     ]));
-    expect(projection.referents).toEqual([expect.objectContaining({ id: "node.01", nodeIds: ["node.01"] })]);
+    expect(projection.referents).toEqual([expect.objectContaining({ id: "node.01", nodeIds: ["node.01"], semanticRoleIds: ["role.01"], learnedFrameIds: ["frame.01"] })]);
     expect(projection.routeSignals).toEqual([expect.objectContaining({ mentionId: projection.observation.mentions[0]?.id, referentId: "node.01" })]);
     expect(projection.provenanceBindings).toEqual([expect.objectContaining({
       routeId: "proof.01",
@@ -117,6 +119,10 @@ function proofBearingResult(): TurnResult {
       ppf: [{ nodeId: "node.01", mass: 0.8 }],
       alphaTrace: {} as never,
       causalMass: []
+    },
+    requirementField: {
+      requiredFeatures: [{ origin: { semanticRoleId: "role.01" } }],
+      activatedFrameIds: ["frame.01"]
     },
     selectedCandidate: { id: "candidate.01", evidenceIds: ["evidence.01"] },
     proofCarryingAnswer: { citedSpanIds: ["evidence.01"] },

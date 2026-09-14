@@ -1043,6 +1043,7 @@ export interface DialogueMemoryStore {
   listPolicyDecisions(query?: { conversationId?: string; turnId?: string; limit?: number }): Promise<DialoguePolicyDecisionRecord[]>;
   listResponseCandidates(query?: { conversationId?: string; turnId?: string; policyDecisionId?: string; limit?: number }): Promise<ResponseCandidateRecord[]>;
   listConversationOutcomes(query?: { conversationId?: string; turnId?: string; limit?: number }): Promise<ConversationOutcomeRecord[]>;
+  listUserCorrections?(query?: { conversationId?: string; turnId?: string; limit?: number }): Promise<UserCorrectionRecord[]>;
   listStyleSnapshots(query?: { conversationId?: string; limit?: number }): Promise<StylePreferenceSnapshot[]>;
   listTargetProfilePatterns(query?: { targetProfileId?: string; patternFamilyId?: string; limit?: number }): Promise<TargetProfilePatternRecord[]>;
   listCalibrationObservations(query?: { calibrationId?: string; subsystemId?: string; taskClass?: string; sourceRecordId?: string; limit?: number }): Promise<CalibrationObservationRecord[]>;

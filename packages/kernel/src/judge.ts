@@ -172,7 +172,12 @@ function selectForRequirementField(input: {
     // admissibility gate then blocks its surface and the turn abstains
     // normally) instead of throwing "no admissible candidates".
     const degenerateSurface = candidate.answer.trim().length > 0 && isDegenerateBareSurface(candidate.answer);
-    const rawScore = Number.isFinite(positive - negative) ? positive - negative : -1;
+    const selectionAdjustment = Number.isFinite(candidate.selectionAdjustment)
+      ? Math.max(-0.42, Math.min(0.42, candidate.selectionAdjustment!))
+      : 0;
+    const rawScore = Number.isFinite(positive - negative + selectionAdjustment)
+      ? positive - negative + selectionAdjustment
+      : -1;
     const score = hardFailures.length
       ? -1_000_000 - hardFailures.length
       : degenerateSurface ? rawScore - 1_000 : rawScore;
@@ -180,6 +185,7 @@ function selectForRequirementField(input: {
       `requirement-quality=${rawScore.toFixed(6)}`,
       `coverage=${quality.requirementCoverage.toFixed(3)}`,
       `truth=${quality.truthSupport.toFixed(3)}`,
+      ...(selectionAdjustment ? [`typed-dialogue-adjustment=${selectionAdjustment.toFixed(3)}`] : []),
       `novelty=${quality.novelty.toFixed(3)}`,
       ...(degenerateSurface ? ["degenerate-answer-surface"] : []),
       ...hardFailures.map(failure => `hard-failure:${failure}`)

@@ -60,6 +60,7 @@ export function projectProofBearingDialogueTurnV2(
     return notObserved("proof_evidence_missing", { proofId: String(proof.id), turnId: input.turnId });
   }
   const selectedEvidenceSet = new Set(selectedEvidenceIds);
+  const typedRouteIds = typedDialogueRouteIds(input.result);
   const routedNodeIds = new Set([
     ...input.result.field.seeds.filter(row => row.weight > 0).map(row => String(row.nodeId)),
     ...input.result.field.active.filter(row => row.activation > 0).map(row => String(row.nodeId)),
@@ -100,7 +101,9 @@ export function projectProofBearingDialogueTurnV2(
     previous: previousReferents.find(referent => referent.nodeIds.includes(String(node.id))),
     previousTopics,
     turnId: input.turnId,
-    turnIndex: input.turnIndex
+    turnIndex: input.turnIndex,
+    semanticRoleIds: typedRouteIds.semanticRoleIds,
+    learnedFrameIds: typedRouteIds.learnedFrameIds
   }));
   const referentByNodeId = new Map<string, DiscourseReferentV2>();
   for (const referent of referents) {
@@ -140,9 +143,9 @@ export function projectProofBearingDialogueTurnV2(
       sourceIdentityIds,
       kindId: mapping.id,
       surfaceHash: input.hasher.digestHex(canonicalStringify(sourceIdentityIds)),
-      semanticRoleIds: [],
+      semanticRoleIds: typedRouteIds.semanticRoleIds,
       requestedSlotIds: [mapping.obligationId],
-      learnedFrameIds: [],
+      learnedFrameIds: typedRouteIds.learnedFrameIds,
       candidateNodeIds: canonicalIds(candidateNodeIds),
       candidateReferentIds: canonicalIds(candidateNodeIds.map(nodeId => referentByNodeId.get(nodeId)?.id ?? "")),
       scopeIds: sourceVersionIds
@@ -155,7 +158,7 @@ export function projectProofBearingDialogueTurnV2(
     turnIndex: input.turnIndex,
     roleId: input.roleId,
     surfaceHash: input.surfaceHash,
-    learnedFrameIds: [],
+    learnedFrameIds: typedRouteIds.learnedFrameIds,
     requestedSlotIds: canonicalIds(mentionDrafts.flatMap(mention => mention.requestedSlotIds)),
     explicitAnchorNodeIds: canonicalIds(graphNodes.map(node => String(node.id))),
     scopeIds: canonicalIds(referents.flatMap(referent => referent.sourceVersionIds)),
@@ -240,6 +243,8 @@ function graphNodeReferent(input: {
   previousTopics: ReadonlyMap<string, DiscourseTopicV2>;
   turnId: string;
   turnIndex: number;
+  semanticRoleIds: readonly string[];
+  learnedFrameIds: readonly string[];
 }): DiscourseReferentV2 {
   const nodeId = String(input.node.id);
   const evidenceIds = canonicalIds(input.node.evidenceIds.map(String).filter(id => input.selectedEvidenceSet.has(id)));
@@ -282,8 +287,8 @@ function graphNodeReferent(input: {
     evidenceIds: canonicalIds([...(input.previous?.evidenceIds ?? []), ...evidenceIds]),
     sourceVersionIds: canonicalIds([...(input.previous?.sourceVersionIds ?? []), ...sourceVersionIds]),
     contradictionIds,
-    semanticRoleIds: [...(input.previous?.semanticRoleIds ?? [])],
-    learnedFrameIds: [...(input.previous?.learnedFrameIds ?? [])],
+    semanticRoleIds: canonicalIds([...input.semanticRoleIds, ...(input.previous?.semanticRoleIds ?? [])]),
+    learnedFrameIds: canonicalIds([...input.learnedFrameIds, ...(input.previous?.learnedFrameIds ?? [])]),
     scopeIds: canonicalIds([...(input.previous?.scopeIds ?? []), ...sourceVersionIds]),
     slotBindings: canonicalSlotBindings([...(input.previous?.slotBindings ?? []), ...mappingSlots]),
     salienceMass: Math.max(input.previous?.salienceMass ?? 0, salienceMass),
@@ -362,6 +367,29 @@ function canonicalSlotBindings(bindings: DiscourseReferentV2["slotBindings"]): D
     });
   }
   return [...bySlot.values()].sort((left, right) => compareIds(left.slotId, right.slotId));
+}
+
+/** Read only the kernel's typed requirement activations; never derive route IDs from surface text. */
+function typedDialogueRouteIds(result: TurnResult): { semanticRoleIds: string[]; learnedFrameIds: string[] } {
+  const field = result.requirementField && typeof result.requirementField === "object" && !Array.isArray(result.requirementField)
+    ? result.requirementField as Record<string, unknown>
+    : {};
+  const semanticRoleIds = Array.isArray(field.requiredFeatures)
+    ? field.requiredFeatures.flatMap(feature => {
+      if (!feature || typeof feature !== "object" || Array.isArray(feature)) return [];
+      const origin = (feature as Record<string, unknown>).origin;
+      if (!origin || typeof origin !== "object" || Array.isArray(origin)) return [];
+      const roleId = (origin as Record<string, unknown>).semanticRoleId;
+      return typeof roleId === "string" && roleId.trim() ? [roleId.trim()] : [];
+    })
+    : [];
+  const learnedFrameIds = Array.isArray(field.activatedFrameIds)
+    ? field.activatedFrameIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    : [];
+  return {
+    semanticRoleIds: canonicalIds(semanticRoleIds),
+    learnedFrameIds: canonicalIds(learnedFrameIds)
+  };
 }
 
 function notObserved(

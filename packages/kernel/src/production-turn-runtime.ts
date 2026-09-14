@@ -11,7 +11,7 @@ import {
 import { assistantForceClass, assistantForceDecision, unresolvedObligationCount } from "./assistant-force.js";
 import { assistantForceProposalFromCandidateClaimBasis, attachCognitiveProposal, attachInventionConstruct, cognitiveProposalForCandidate, selectedInventionForCandidate } from "./candidate-construct-binding.js";
 import { candidateIsSafeNonExecutingPlan, candidateUsesNonFactualPlanSemantics, selectedCandidateEntailment } from "./candidate-proof-policy.js";
-import { createCandidateEngine, type CandidateSurface } from "./candidate.js";
+import { createCandidateEngine, type CandidateField, type CandidateSurface } from "./candidate.js";
 import { candidateSurvivesRealizationContract, compileRealizationContract, requestRelationUnits, semanticAnswerConstructFacts, type SemanticAnswerConstructFact } from "./semantic-answer-construct.js";
 import { namedSubjectAnchors } from "./kernel-answer-primitives.js";
 import { createPfaceEstimator } from "./causal-estimation.js";
@@ -26,7 +26,16 @@ import { compileCreativeRequestFrameFromCompatibilityModels, type CreativeReques
 import { createCounterfactualCognition } from "./counterfactual-cognition.js";
 import { traceEvent } from "./debug/trace.js";
 import { updateDialogueState } from "./dialogue-pragmatics.js";
-import { discourseObjectStateFromMetadata } from "./discourse-state.js";
+import {
+  createDiscourseTurnObservationV2,
+  discourseObjectStateFromMetadata,
+  interpretationAdjustmentSelectionForTypedCandidateV2,
+  isDiscourseInterpretationAdjustmentV2,
+  type DiscourseInterpretationAdjustmentV2,
+  type DiscoursePreselectionCandidateV2,
+  type DiscourseTurnObservationV2
+} from "./discourse-state.js";
+import { isDialogueCognitiveStateV2 } from "./dialogue-cognitive-memory.js";
 import { createSemanticEntailmentEngine } from "./entailment.js";
 import { consolidateEpisode } from "./episodic-memory-consolidation.js";
 import { EVALUATION_COMPONENT_IDS, disabledComponentsForCondition, type EvaluationComponentId } from "./evaluation-flags.js";
@@ -945,6 +954,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         }))
         : undefined;
       const previousDialogueState = previousDialogueStateFromMetadata(input.metadata);
+      const previousDialogueCognitiveState = previousDialogueCognitiveStateFromMetadata(input.metadata, hasher);
+      const dialogueInterpretationAdjustments = dialogueInterpretationAdjustmentsFromMetadata(input.metadata, previousDialogueCognitiveState);
       const requestedConversationId = requestedConversationIdFromMetadata(input.metadata);
       const authorityDialogueState = updateDialogueState({
         requestText: input.text,
@@ -1259,7 +1270,12 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const retrievalText = requestedAuthority === "program" && !/[?？؟]\s*$/u.test(baseRetrievalText) ? `${baseRetrievalText}?` : baseRetrievalText;
       // A creative request's learned instruction spans are not its subject: retrieval and admission read the remainder.
       const subjectRetrievalText = requestedAuthority === "creative" ? turnSignals.subjectText : retrievalText;
-      const sessionEvidence = mergeEvidenceSpans([...currentOwnerSessionEvidence(input), ...sessionEvidenceFromMetadata(input.metadata)]);
+      const currentOwnerEvidence = currentOwnerSessionEvidence(input);
+      // Keep this identity explicit: sessionEvidenceFromMetadata also carries prior owner turns, but only the
+      // current turn's already-promoted owner observation may provide a proof-answer surface without an external
+      // factual proof. The candidate lane receives the IDs as an authority boundary, never a broad session flag.
+      const currentOwnerEvidenceIds = new Set(currentOwnerEvidence.map(span => String(span.id)));
+      const sessionEvidence = mergeEvidenceSpans([...currentOwnerEvidence, ...sessionEvidenceFromMetadata(input.metadata)]);
       const metadataEvidence = await evidenceFromTurnMetadata(input.metadata);
       const metadataEvidenceIds = new Set([
         ...metadataEvidence.map(span => String(span.id)),
@@ -2331,6 +2347,33 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           }
         });
       }
+      const dialoguePreselection = typedDialoguePreselectionV2({
+        conversationId: authorityDialogueState.conversationId,
+        turnId: String(episodeId),
+        turnIndex: (previousDialogueCognitiveState?.turnIndex ?? 0) + 1,
+        roleId: "session.role.owner",
+        surfaceHash: hasher.digestHex(input.text),
+        requirementField,
+        entailment: answerEntailmentSeed,
+        graph,
+        selectedEvidence,
+        previousState: previousDialogueCognitiveState,
+        hasher
+      });
+      kernelTrace({
+        stage: "dialogue.preselection",
+        label: "kernel.turn",
+        counts: {
+          mentions: dialoguePreselection.observation.mentions.length,
+          proofCandidates: dialoguePreselection.candidates.length,
+          adjustments: dialogueInterpretationAdjustments.length
+        },
+        support: {
+          observationId: dialoguePreselection.observation.id,
+          candidateReferentIds: dialoguePreselection.candidates.map(candidate => candidate.referentId).slice(0, 16),
+          adjustmentIds: dialogueInterpretationAdjustments.map(adjustment => adjustment.id).slice(0, 16)
+        }
+      });
       const candidateLanguageStarted = Date.now();
       // Unlike the other language-memory reads above, this one was never
       // gated on disableLanguageMemory -- under the no_language_memory
@@ -3181,7 +3224,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         }))) })));
       }
       const candidateFieldStarted = Date.now();
-      const candidateField = candidates.generate({
+      const generatedCandidateField = candidates.generate({
         requestText: input.text,
         realizationContract,
         attestedAnswerSurface: answerSurface.answer,
@@ -3208,11 +3251,17 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         field,
         ccr: ccrResult,
         proofAnswer,
+        ownerSessionEvidenceIds: currentOwnerEvidenceIds,
         learningNeeds: earlyLearningNeeds,
         locale,
         calibrationModels,
         calibrationTaskClass,
         functionalGate
+      });
+      const candidateField = applyDialogueInterpretationAdjustmentsV2({
+        field: generatedCandidateField,
+        candidates: dialoguePreselection.candidates,
+        adjustments: dialogueInterpretationAdjustments
       });
       kernelTrace({
         stage: "candidate.field.generate",
@@ -4460,7 +4509,11 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // of them -- "Write a JavaScript function that computes time dilation..." was answered with exactly itself
       // (live 2026-09-12). Echoing is worse than declining, because a decline is honest and an echo looks like an
       // answer. Every lane that could speak has already had its turn by here, so there is nothing left to prefer.
-      if (answer.trim() && surfaceEchoesPrompt(answer, input.text)) {
+      const currentOwnerAssertionSurface = answer.trim()
+        && judged.selected.evidenceIds.some(id => currentOwnerEvidenceIds.has(String(id)))
+        && currentOwnerEvidence.some(span => currentOwnerEvidenceIds.has(String(span.id))
+          && tidySurfaceText(String(span.text ?? span.textPreview ?? "")) === tidySurfaceText(answer));
+      if (answer.trim() && surfaceEchoesPrompt(answer, input.text) && !currentOwnerAssertionSurface) {
         kernelTrace({
           stage: "turn.output.prompt_echo_refused",
           label: "kernel.turn",
@@ -5544,6 +5597,154 @@ function proseOnlyWhenNotACodeRequest(pool: readonly EvidenceSpan[], requestedAu
   // no evidence, and abstaining is the correct outcome. The fallback was not hypothetical -- "Who was Ada
   // Lovelace?" reached a pool of exactly one span, a comment in `mouth.ts`, and answered from it.
   return pool.filter(span => !isCodeEvidenceSpan(span) || (requestText !== "" && evidenceIdentityBindsRequest(span, requestText)));
+}
+
+function previousDialogueCognitiveStateFromMetadata(
+  metadata: JsonValue | undefined,
+  hasher: ReturnType<typeof createHasher>
+): import("./discourse-state.js").DialogueCognitiveStateV2 | undefined {
+  const dialogue = jsonRecord(jsonRecord(metadata).dialogue);
+  const state = dialogue.cognitiveState;
+  return isDialogueCognitiveStateV2(state, hasher) ? state : undefined;
+}
+
+export function dialogueInterpretationAdjustmentsFromMetadata(
+  metadata: JsonValue | undefined,
+  previousState?: import("./discourse-state.js").DialogueCognitiveStateV2
+): DiscourseInterpretationAdjustmentV2[] {
+  const dialogue = jsonRecord(jsonRecord(metadata).dialogue);
+  const byId = new Map<string, DiscourseInterpretationAdjustmentV2>();
+  for (const value of previousState?.interpretationAdjustments ?? []) {
+    if (isDiscourseInterpretationAdjustmentV2(value)) byId.set(value.id, value);
+  }
+  const incoming = Array.isArray(dialogue.interpretationAdjustments) ? dialogue.interpretationAdjustments : [];
+  for (const value of incoming) {
+    if (!isDiscourseInterpretationAdjustmentV2(value)) continue;
+    byId.delete(value.id);
+    byId.set(value.id, value);
+  }
+  return [...byId.values()].slice(-128);
+}
+
+export function typedDialoguePreselectionV2(input: {
+  conversationId: string;
+  turnId: string;
+  turnIndex: number;
+  roleId: string;
+  surfaceHash: string;
+  requirementField: TurnRequirementField;
+  entailment: TurnResult["entailment"];
+  graph: GraphSnapshot;
+  selectedEvidence: readonly EvidenceSpan[];
+  previousState?: import("./discourse-state.js").DialogueCognitiveStateV2;
+  hasher: ReturnType<typeof createHasher>;
+}): {
+  observation: DiscourseTurnObservationV2;
+  candidates: DiscoursePreselectionCandidateV2[];
+} {
+  const selectedEvidenceIds = new Set(input.selectedEvidence.map(span => String(span.id)));
+  const proofEvidenceIds = new Set(input.entailment.evidenceIds.map(String).filter(id => selectedEvidenceIds.has(id)));
+  const roleIds = uniqueKernelStrings(input.requirementField.requiredFeatures.map(feature => feature.origin.semanticRoleId));
+  const frameIds = uniqueKernelStrings(input.requirementField.activatedFrameIds);
+  const previousByNodeId = new Map(
+    (input.previousState?.referents ?? []).flatMap(referent => referent.nodeIds.map(nodeId => [String(nodeId), referent] as const))
+  );
+  const proofNodes = input.graph.nodes.filter(node => node.evidenceIds.some(id => proofEvidenceIds.has(String(id))));
+  const evidenceById = new Map(input.selectedEvidence.map(span => [String(span.id), span]));
+  const mappings = input.entailment.mappings.filter(mapping => mapping.evidenceIds.some(id => proofEvidenceIds.has(String(id))));
+  const mentions = mappings.flatMap(mapping => {
+    const evidenceIds = uniqueKernelStrings(mapping.evidenceIds.map(String).filter(id => proofEvidenceIds.has(id)));
+    const candidateNodes = proofNodes.filter(node => node.evidenceIds.some(id => evidenceIds.includes(String(id))));
+    if (!candidateNodes.length) return [];
+    const candidateReferentIds = uniqueKernelStrings(candidateNodes.map(node => previousByNodeId.get(String(node.id))?.id ?? String(node.id)));
+    const sourceVersionIds = uniqueKernelStrings([
+      ...mapping.sourceVersionIds.map(String),
+      ...evidenceIds.map(id => String(evidenceById.get(id)?.sourceVersionId ?? ""))
+    ]);
+    return [{
+      schema: "scce.discourse_mention.v2" as const,
+      id: `disc2.preselection.mention.${input.hasher.digestHex(`${mapping.id}:${evidenceIds.join("|")}:${candidateReferentIds.join("|")}`).slice(0, 32)}`,
+      sourceIdentityIds: uniqueKernelStrings([mapping.id, mapping.obligationId, ...evidenceIds, ...candidateReferentIds]),
+      kindId: mapping.kind,
+      surfaceHash: input.hasher.digestHex(mapping.claimText),
+      semanticRoleIds: roleIds,
+      requestedSlotIds: [mapping.obligationId],
+      learnedFrameIds: frameIds,
+      candidateNodeIds: uniqueKernelStrings(candidateNodes.map(node => String(node.id))),
+      candidateReferentIds,
+      scopeIds: sourceVersionIds
+    }];
+  });
+  const observation = createDiscourseTurnObservationV2({
+    conversationId: input.conversationId,
+    turnId: input.turnId,
+    turnIndex: input.turnIndex,
+    roleId: input.roleId,
+    surfaceHash: input.surfaceHash,
+    learnedFrameIds: frameIds,
+    requestedSlotIds: uniqueKernelStrings(mentions.flatMap(mention => mention.requestedSlotIds)),
+    explicitAnchorNodeIds: uniqueKernelStrings(proofNodes.map(node => String(node.id))),
+    scopeIds: uniqueKernelStrings(mentions.flatMap(mention => mention.scopeIds)),
+    mentions
+  }, input.hasher);
+  const candidates: DiscoursePreselectionCandidateV2[] = [];
+  for (const mention of mentions) {
+    for (const referentId of mention.candidateReferentIds) {
+      const nodeIds = mention.candidateNodeIds.filter(nodeId => (previousByNodeId.get(nodeId)?.id ?? nodeId) === referentId);
+      const proofForReferent = uniqueKernelStrings(proofNodes
+        .filter(node => nodeIds.includes(String(node.id)))
+        .flatMap(node => node.evidenceIds.map(String).filter(id => proofEvidenceIds.has(id))));
+      if (!proofForReferent.length) continue;
+      candidates.push({
+        referentId,
+        semanticRoleIds: [...mention.semanticRoleIds],
+        requestedSlotIds: [...mention.requestedSlotIds],
+        learnedFrameIds: [...mention.learnedFrameIds],
+        scopeIds: [...mention.scopeIds],
+        proofEvidenceIds: proofForReferent
+      });
+    }
+  }
+  return { observation, candidates };
+}
+
+export function applyDialogueInterpretationAdjustmentsV2(input: {
+  field: CandidateField;
+  candidates: readonly DiscoursePreselectionCandidateV2[];
+  adjustments: readonly DiscourseInterpretationAdjustmentV2[];
+}): CandidateField {
+  if (!input.adjustments.length || !input.candidates.length) return input.field;
+  let adjustedCount = 0;
+  const candidates = input.field.candidates.map(candidate => {
+    const evidenceIds = new Set(candidate.evidenceIds.map(String));
+    const contexts = input.candidates.filter(context => context.proofEvidenceIds.some(id => evidenceIds.has(id)));
+    const referentIds = uniqueKernelStrings(contexts.map(context => context.referentId));
+    // A candidate carrying evidence for multiple typed referents is ambiguous;
+    // leave it neutral rather than letting feedback choose among unresolved proof.
+    if (referentIds.length !== 1) return candidate;
+    const selections = contexts
+      .filter(context => context.referentId === referentIds[0])
+      .map(context => interpretationAdjustmentSelectionForTypedCandidateV2({ candidate: context, adjustments: input.adjustments }));
+    const selection = selections.sort((left, right) => Math.abs(right.delta) - Math.abs(left.delta))[0];
+    if (!selection?.delta) return candidate;
+    adjustedCount++;
+    return {
+      ...candidate,
+      selectionAdjustment: selection.delta,
+      audit: toJsonValue({
+        ...jsonRecord(candidate.audit),
+        typedDialogueSelection: {
+          referentId: referentIds[0],
+          delta: selection.delta,
+          adjustmentIds: selection.adjustmentIds,
+          proofEvidenceIds: contexts.flatMap(context => context.proofEvidenceIds)
+        }
+      })
+    };
+  });
+  return adjustedCount
+    ? { ...input.field, candidates }
+    : input.field;
 }
 
 /** The longest prefix of `text` ending at a sentence boundary within `limit` characters, or "" when none does. Pure. */

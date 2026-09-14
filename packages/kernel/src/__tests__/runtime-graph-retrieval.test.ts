@@ -267,6 +267,31 @@ describe("runtime hot graph retrieval", () => {
     expect(fixture.searchEvidence).toHaveBeenCalledTimes(8);
   });
 
+  it("spends the quoted-sequence query only for an explicit structural gap", async () => {
+    const ordinaryFixture = runtimeFixture(graphSlice([], [], []));
+    ordinaryFixture.searchEvidence.mockResolvedValue([]);
+
+    await ordinaryFixture.runtime.graphForText("Orion valve pressure remains stable.", {
+      sourceAnchoringRequired: true
+    });
+    const ordinaryCalls = ordinaryFixture.searchEvidence.mock.calls.length;
+
+    // Each runtime owns a slice cache. Keep the controls independent so the
+    // gap's structural retrieval mode is observed rather than served by the
+    // ordinary request's empty cached result.
+    const gapFixture = runtimeFixture(graphSlice([], [], []));
+    gapFixture.searchEvidence.mockResolvedValue([]);
+    await gapFixture.runtime.graphForText("Orion valve pressure remains stable ____.", {
+      sourceAnchoringRequired: true
+    });
+
+    expect(gapFixture.searchEvidence.mock.calls.length).toBeGreaterThan(ordinaryCalls);
+    const anchorSearch = gapFixture.kernelTrace.mock.calls
+      .map(call => call[0])
+      .find(event => event.stage === "graph.resolve.anchor_evidence_search");
+    expect(anchorSearch?.support?.anchorFeatureGroups.length).toBeGreaterThan(5);
+  });
+
   it("rejects cross-title mention evidence before hydrating a factual graph slice", async () => {
     const crossTitle = evidenceSpan(
       "evidence:lumen-engine",

@@ -7,12 +7,12 @@ import { realpath, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 import { assertHydratedRuntimeReady, collectRepoFilesForCognition, createLearnedCodeProposer, createTypeScriptCodeMouthPorts, runCodeMouth, createDockerSandboxPatchValidationProvider, createNodeRuntime, createWorkspaceRuntime, diagnoseDocumentTools, executeWorkspacePatchTransaction, resolveSecret, runStructuredPatchValidation, trustedHostPatchValidationProvider, verifiedCompilerPlansForTurn, WorkspacePatchTransactionError, type readScceRuntimeConfig, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type WorkspaceCodingPatchPlanningInput, type WorkspacePatchPlanningInput, type WorkspaceRuntimeOptions, applySetting, settingsView, listLocalModels, downloadModel, removeLocalModel, formatBytes } from "@scce/adapters-node";
-import type { BenchmarkInput, CausalAnalysisRequest, CausalDiscoveryRequest, CausalAssumptionDag, CausalAssumptionEdge, CausalObservation, ConversationTurnRecord, GraphSlice, IdentificationDesign, IngestInput, InspectionTarget, JsonValue, NodeId, OwnerInput, PatchTransactionPlan, RequestedAuthority, SourceAdmissionContext, SourceTrust, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
+import type { BenchmarkInput, CausalAnalysisRequest, CausalDiscoveryRequest, CausalAssumptionDag, CausalAssumptionEdge, CausalObservation, ConversationTurnRecord, DialogueInterpretationCorrectionInput, GraphSlice, IdentificationDesign, IngestInput, InspectionTarget, JsonValue, NodeId, OwnerInput, PatchTransactionPlan, RequestedAuthority, SourceAdmissionContext, SourceTrust, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
 import {
   curriculumItemFromPlan,
   learningConsentInput,
   listHeldSources,
-  reviewHeldSource, summarizeForTrace, installProdCalibrations, clearProdCalibrations, prodCalibrationIds, CALIBRATION_SEARCH_IDS, createFrontierBroadCapabilityTasks, FRONTIER_BROAD_CAPABILITY_SUITE_ID, CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, CAUSAL_DISCOVERY_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, SUPPORTED_PROGRAM_REPAIR_FAMILIES, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createCapabilityExecutorRegistry, createClock, createDialogueCognitiveMemoryV2, createCorrectionEngine, createEventFactory, createHasher, createIdFactory, dialogueOutcomeMemoryForConversation, previewDialogueLearning, dispatchCapabilityTask, dispatchRollbackAttempt, executiveResumePlan, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan, type CapabilityExecutor, type DurableExecutiveEpisode } from "@scce/kernel";
+  reviewHeldSource, summarizeForTrace, installProdCalibrations, clearProdCalibrations, prodCalibrationIds, CALIBRATION_SEARCH_IDS, createFrontierBroadCapabilityTasks, FRONTIER_BROAD_CAPABILITY_SUITE_ID, CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, CAUSAL_DISCOVERY_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, SUPPORTED_PROGRAM_REPAIR_FAMILIES, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createCapabilityExecutorRegistry, createClock, createDialogueCognitiveMemoryV2, createCorrectionEngine, createEventFactory, createHasher, createIdFactory, dialogueOutcomeMemoryForConversation, dialogueInterpretationAdjustmentsForConversation, previewDialogueLearning, dispatchCapabilityTask, dispatchRollbackAttempt, executiveResumePlan, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan, type CapabilityExecutor, type DurableExecutiveEpisode } from "@scce/kernel";
 import { createDeveloperSurfaceState, hydrateApprovals, hydrateSurfaceFromTurn, renderWorkbench, routeForCommand, workbenchModelModulePath, WORKBENCH_MODEL_ROUTE } from "@scce/ui";
 import type { RuntimeStartupReadiness, RuntimeStartupReadinessSnapshot } from "./startup.js";
 import { turnTaskRegistryFor, type TurnTaskFrame } from "./turn-task-registry.js";
@@ -708,6 +708,8 @@ async function dispatch(
         learnedDialogueProfile,
         dialogueOutcomeMemory,
         previousDialogue,
+        previousDialogueCognitiveState,
+        dialogueInterpretationAdjustments,
         repoCognitionFiles
       ] = await Promise.all([
         assertSurfaceLanguageReady(context, turn.text),
@@ -724,6 +726,14 @@ async function dispatch(
         latestDialogueStyleProfile(context.runtime.storage.dialogueMemory, conversationId),
         dialogueOutcomeMemoryForConversation(context.runtime.storage.dialogueMemory, conversationId),
         latestDialoguePragmaticsFromMemory(context.runtime.storage.dialogueMemory, { conversationId }),
+        createDialogueCognitiveMemoryV2({
+          store: context.runtime.storage.dialogueMemory,
+          hasher: createHasher()
+        }).latest(conversationId).catch(() => undefined),
+        dialogueInterpretationAdjustmentsForConversation(
+          context.runtime.storage.dialogueMemory,
+          conversationId
+        ),
         // Phase 15: real repo cognition (issue localization, affected-test
         // prediction, tree-sitter-backed symbol/call cross-referencing) for
         // the same explicit, bounded requestedPaths the client already
@@ -761,6 +771,7 @@ async function dispatch(
         ...trustedOriginalRuntime
       } = originalRuntime;
       const originalDialogue = isRecord(originalMetadata.dialogue) ? originalMetadata.dialogue as Record<string, JsonValue> : {};
+      const { interpretationAdjustments: _untrustedInterpretationAdjustments, cognitiveState: _untrustedCognitiveState, previousState: _untrustedPreviousState, ...trustedOriginalDialogue } = originalDialogue;
       const discourseEvidenceIds = discourseObject ? uniqueServerStrings(discourseObject.evidenceIds) : [];
       const runtimeEvidenceIds = uniqueServerStrings([
         ...optionalStringArray(originalMetadata.runtimeEvidenceIds),
@@ -783,9 +794,11 @@ async function dispatch(
           },
           runtimeEvidenceIds,
           dialogue: {
-            ...originalDialogue,
+            ...trustedOriginalDialogue,
             conversationId,
-            ...(previousDialogue ? { previousState: toJsonValue(previousDialogue.result.state) } : {})
+            ...(previousDialogue ? { previousState: toJsonValue(previousDialogue.result.state) } : {}),
+            ...(previousDialogueCognitiveState ? { cognitiveState: toJsonValue(previousDialogueCognitiveState) } : {}),
+            ...(dialogueInterpretationAdjustments.length ? { interpretationAdjustments: toJsonValue(dialogueInterpretationAdjustments) } : {})
           },
           ...(sessionId ? { session: { sessionId, recentTurns: recentTurnsForMetadata } } : {}),
           ...(discourseObject ? { discourse: { schema: "scce.discourse_runtime_state.v1", activeObject: toJsonValue(discourseObject), queryConcatenationUsed: false } } : {}),
@@ -935,16 +948,39 @@ async function dispatch(
       : typeof body.episodeId === "string" && body.episodeId.trim()
         ? body.episodeId.trim()
         : undefined;
-    const learned = await persistDialogueOutcomeFromMemory({
-      store: context.runtime.storage.dialogueMemory,
-      conversationId,
-      turnId,
-      promptText: typeof body.promptText === "string" ? body.promptText : typeof body.text === "string" ? body.text : "turn outcome",
-      accepted: status === "accepted",
-      rejected: status === "rejected",
-      corrected: status === "corrected",
-      correctionText: typeof body.correctionText === "string" ? body.correctionText : undefined,
-      now: Date.now()
+    const correctionText = typeof body.correctionText === "string" && body.correctionText.trim()
+      ? body.correctionText
+      : undefined;
+    const typedInterpretationCorrectionRequested = status === "corrected" && body.interpretationCorrection !== undefined;
+    if (typedInterpretationCorrectionRequested && !turnId) {
+      throw new HttpError(422, "typed interpretation correction requires turnId");
+    }
+    // Outcome admission runs behind the same per-conversation persistence
+    // tail as the turn it targets. A fast correction submission can no
+    // longer race the deferred cognitive-state write and fail merely because
+    // the public turn response arrived first.
+    const learned = await enqueueDialoguePersistence(conversationId, async () => {
+      const interpretationCorrection = typedInterpretationCorrectionRequested
+        ? await validatedInterpretationCorrection({
+          store: context.runtime.storage.dialogueMemory,
+          conversationId,
+          turnId: turnId!,
+          value: body.interpretationCorrection
+        })
+        : undefined;
+      if (interpretationCorrection && !correctionText) throw new HttpError(422, "typed interpretation correction requires correctionText");
+      return persistDialogueOutcomeFromMemory({
+        store: context.runtime.storage.dialogueMemory,
+        conversationId,
+        turnId,
+        promptText: typeof body.promptText === "string" ? body.promptText : typeof body.text === "string" ? body.text : "turn outcome",
+        accepted: status === "accepted",
+        rejected: status === "rejected",
+        corrected: status === "corrected",
+        correctionText,
+        interpretationCorrection,
+        now: Date.now()
+      });
     });
     // A corrected translation is a different kind of correction and carries a different signal: which terms the owner
     // changed, and how far the corrected surface moved from the generated one. `createCorrectionEngine` computes that
@@ -1800,6 +1836,11 @@ async function persistDialogueCognitiveShadowV2(input: {
     const phase = (step: string) => { phases[step] = Date.now() - phaseStarted; };
     const previousState = await memory.latest(input.conversationId);
     phase("latestMs");
+    const interpretationAdjustments = await dialogueInterpretationAdjustmentsForConversation(
+      input.context.runtime.storage.dialogueMemory,
+      input.conversationId
+    );
+    phase("interpretationFeedbackMs");
     const proofEvidenceIds = uniqueServerStrings(input.result.entailment.proof.evidenceIds.map(String));
     const graph: GraphSlice = proofEvidenceIds.length
       ? await input.context.runtime.storage.graph.getSlice({
@@ -1842,6 +1883,7 @@ async function persistDialogueCognitiveShadowV2(input: {
       topics: projection.topics,
       routeSignals: projection.routeSignals,
       provenanceBindings: projection.provenanceBindings,
+      interpretationAdjustments,
       hasher
     });
     phase("resolveMs");
@@ -1853,6 +1895,7 @@ async function persistDialogueCognitiveShadowV2(input: {
         graphNodes: graph.nodes.length,
         mentions: projection.observation.mentions.length,
         routeSignals: projection.routeSignals.length,
+        interpretationAdjustments: interpretationAdjustments.length,
         persisted: persistence.result.stored ? 1 : 0,
         ...phases
       },
@@ -3953,6 +3996,47 @@ function isModelId(value: string): boolean {
 
 function jsonRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+async function validatedInterpretationCorrection(input: {
+  store: ApiContext["runtime"]["storage"]["dialogueMemory"];
+  conversationId: string;
+  turnId: string;
+  value: unknown;
+}): Promise<DialogueInterpretationCorrectionInput | undefined> {
+  if (input.value === undefined) return undefined;
+  const value = jsonRecord(input.value);
+  const mentionId = typeof value.mentionId === "string" && value.mentionId.trim() ? value.mentionId.trim() : undefined;
+  const preferredReferentId = typeof value.preferredReferentId === "string" && value.preferredReferentId.trim()
+    ? value.preferredReferentId.trim()
+    : undefined;
+  if (!mentionId || !preferredReferentId) throw new HttpError(422, "interpretationCorrection requires mentionId and preferredReferentId");
+  const memory = createDialogueCognitiveMemoryV2({ store: input.store, hasher: createHasher() });
+  const [state, replay] = await Promise.all([
+    memory.latest(input.conversationId),
+    latestDialoguePragmaticsFromMemory(input.store, { conversationId: input.conversationId, turnId: input.turnId })
+  ]);
+  if (!state || state.turnId !== input.turnId || !replay || replay.turnId !== input.turnId) {
+    throw new HttpError(422, "interpretationCorrection must target the persisted corrected turn");
+  }
+  const binding = state.bindings.find(candidate => candidate.mentionId === mentionId);
+  if (!binding || !binding.admitted) throw new HttpError(422, "interpretationCorrection must target an admitted typed binding");
+  const preferred = binding.alternatives.find(candidate => candidate.referentId === preferredReferentId && candidate.hardAdmissible);
+  if (!preferred) {
+    throw new HttpError(422, "interpretationCorrection preferred referent is not a typed candidate for the corrected mention");
+  }
+  const rejected = state.referents.find(referent => referent.id === binding.referentId);
+  if (!rejected) throw new HttpError(422, "interpretationCorrection selected referent is missing from persisted state");
+  return {
+    semanticRoleIds: rejected.semanticRoleIds,
+    requestedSlotIds: binding.inheritedSlotBindings.map(slot => slot.slotId),
+    learnedFrameIds: rejected.learnedFrameIds,
+    scopeIds: rejected.scopeIds,
+    rejectedReferentIds: [rejected.id],
+    preferredReferentIds: [preferredReferentId],
+    supportMass: preferred.confidence,
+    contradictionMass: binding.confidence
+  };
 }
 
 /** The translation pair a corrected outcome may carry, or nothing when the correction was not a translation. */
