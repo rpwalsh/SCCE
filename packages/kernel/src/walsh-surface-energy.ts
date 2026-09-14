@@ -35,6 +35,8 @@ export interface SurfaceEnergyCandidate {
 }
 
 export interface SurfaceBoundaryDecision {
+  fromUnitId?: string;
+  toUnitId?: string;
   kind?: string;
   text: string;
   source?: string;
@@ -567,7 +569,7 @@ function discourseStructureFit(
     const registerDistance = vectorDistanceOptional(unit.registerVector, previous.registerVector);
     return styleMatch * 0.42 + detailMatch * 0.33 + (1 - registerDistance) * 0.25;
   });
-  const styleContinuity = stylePairs.length ? mean(stylePairs) : 1;
+  const styleContinuity = meanOr(stylePairs, 1);
   const raw = clamp01(transitionCoverage * 0.52 + observedBoundaryCoverage * 0.18 + orderFit * 0.16 + styleContinuity * 0.14);
   return {
     raw,
