@@ -91,6 +91,26 @@ describe("program transformation search", () => {
     ]);
     expect(poisonedHeldOut).toEqual(honest);
   });
+
+  it("learns an element-wise structural projection across changing sequence lengths", () => {
+    const fit = [
+      structuralRequirement("list.fit.1", { rows: [{ profile: { label: "A" } }, { profile: { label: "B" } }] }, [{ name: "A" }, { name: "B" }], "fit"),
+      structuralRequirement("list.fit.2", { rows: [{ profile: { label: "C" } }] }, [{ name: "C" }], "fit")
+    ];
+    const result = searchProgramTransformations([
+      ...fit,
+      structuralRequirement("list.held-out", { rows: [{ profile: { label: "D" } }, { profile: { label: "E" } }, { profile: { label: "F" } }] }, [{ name: "D" }, { name: "E" }, { name: "F" }], "held_out")
+    ]);
+    const selected = result.selected[0]!;
+
+    expect(selected.operator).toBe("map_sequence");
+    expect(selected.predictedFitObligationIds).toEqual(["list.fit.1", "list.fit.2"]);
+    expect(evaluateProgramExpression(selected.producedIr, [{ rows: [{ profile: { label: "D" } }, { profile: { label: "E" } }, { profile: { label: "F" } }] }])).toEqual([
+      { name: "D" },
+      { name: "E" },
+      { name: "F" }
+    ]);
+  });
 });
 
 function hasMultiplyAndAdd(candidate: ProgramTransformationCandidate): boolean {

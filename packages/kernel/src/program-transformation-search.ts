@@ -6,6 +6,7 @@ import type { JsonValue, ProgramBehaviorRequirement } from "./types.js";
 /** A language-neutral, bounded-arity program expression. */
 export type ProgramExpression =
   | { readonly kind: "argument"; readonly index: number }
+  | { readonly kind: "element" }
   | { readonly kind: "literal"; readonly value: number }
   | { readonly kind: "value"; readonly value: JsonValue }
   | { readonly kind: "member"; readonly subject: ProgramExpression; readonly key: string | number }
@@ -13,6 +14,7 @@ export type ProgramExpression =
   | { readonly kind: "mapping"; readonly entries: readonly { readonly key: string; readonly value: ProgramExpression }[] }
   | { readonly kind: "cardinality"; readonly operand: ProgramExpression }
   | { readonly kind: "equivalent"; readonly left: ProgramExpression; readonly right: ProgramExpression }
+  | { readonly kind: "map_sequence"; readonly source: ProgramExpression; readonly projection: ProgramExpression }
   | { readonly kind: "unary"; readonly operator: "negate"; readonly operand: ProgramExpression }
   | {
     readonly kind: "binary";
@@ -23,6 +25,7 @@ export type ProgramExpression =
 
 export type ProgramTransformationOperator =
   | "argument"
+  | "element"
   | "literal"
   | "value"
   | "member"
@@ -30,6 +33,7 @@ export type ProgramTransformationOperator =
   | "mapping"
   | "cardinality"
   | "equivalent"
+  | "map_sequence"
   | "negate"
   | "add"
   | "subtract"
@@ -187,6 +191,7 @@ function expressionOperands(expression: ProgramExpression): ProgramExpression[] 
   if (expression.kind === "mapping") return expression.entries.map(entry => entry.value);
   if (expression.kind === "cardinality") return [expression.operand];
   if (expression.kind === "equivalent") return [expression.left, expression.right];
+  if (expression.kind === "map_sequence") return [expression.source, expression.projection];
   return [];
 }
 
@@ -262,7 +267,67 @@ function boundedStructuralSearch(examples: readonly BehaviorExample[], arity: nu
       }
     }
   }
+  expressions.push(...mappedSequenceExpressions(examples, projections));
   return deduplicateExpressions(expressions).slice(0, 512);
+}
+
+/**
+ * Infers a bounded element-wise sequence transformation. Fit examples may use
+ * different sequence lengths, which prevents a fixed-position construction
+ * from receiving credit for behavior that only worked on the observed rows.
+ */
+function mappedSequenceExpressions(
+  examples: readonly BehaviorExample[],
+  projections: readonly ProgramExpression[]
+): SearchExpression[] {
+  if (!examples.every(example => Array.isArray(example.output))) return [];
+  const out: SearchExpression[] = [];
+  for (const source of projections.slice(0, 64)) {
+    const sourceValues = examples.map(example => evaluateExpression(source, example.arguments));
+    if (!sourceValues.every(Array.isArray)) continue;
+    const sequences = sourceValues as JsonValue[][];
+    const outputs = examples.map(example => example.output as JsonValue[]);
+    if (!sequences.every((sequence, index) => sequence.length === outputs[index]!.length)) continue;
+    const totalElements = sequences.reduce((sum, sequence) => sum + sequence.length, 0);
+    if (totalElements < 2 || totalElements > 128 || sequences.some(sequence => sequence.length > 64)) continue;
+    const elementExamples: BehaviorExample[] = [];
+    for (let exampleIndex = 0; exampleIndex < sequences.length; exampleIndex += 1) {
+      for (let elementIndex = 0; elementIndex < sequences[exampleIndex]!.length; elementIndex += 1) {
+        elementExamples.push({
+          id: `${examples[exampleIndex]!.id}:${elementIndex}`,
+          arguments: [sequences[exampleIndex]![elementIndex]!],
+          output: outputs[exampleIndex]![elementIndex]!
+        });
+      }
+    }
+    const elementProjections = commonProjectionExpressions(elementExamples, 1);
+    const projection = synthesizeStructuralResult(
+      elementExamples.map(example => example.output),
+      elementExamples,
+      elementProjections
+    );
+    if (!projection) continue;
+    const expression: ProgramExpression = {
+      kind: "map_sequence",
+      source,
+      projection: bindElementExpression(projection)
+    };
+    out.push({ expression, depth: expressionDepth(expression) });
+  }
+  return out;
+}
+
+function bindElementExpression(expression: ProgramExpression): ProgramExpression {
+  if (expression.kind === "argument") return expression.index === 0 ? { kind: "element" } : expression;
+  if (expression.kind === "element" || expression.kind === "literal" || expression.kind === "value") return expression;
+  if (expression.kind === "member") return { ...expression, subject: bindElementExpression(expression.subject) };
+  if (expression.kind === "sequence") return { ...expression, items: expression.items.map(bindElementExpression) };
+  if (expression.kind === "mapping") return { ...expression, entries: expression.entries.map(entry => ({ ...entry, value: bindElementExpression(entry.value) })) };
+  if (expression.kind === "cardinality") return { ...expression, operand: bindElementExpression(expression.operand) };
+  if (expression.kind === "equivalent") return { ...expression, left: bindElementExpression(expression.left), right: bindElementExpression(expression.right) };
+  if (expression.kind === "map_sequence") return { ...expression, source: bindElementExpression(expression.source), projection: bindElementExpression(expression.projection) };
+  if (expression.kind === "unary") return { ...expression, operand: bindElementExpression(expression.operand) };
+  return { ...expression, left: bindElementExpression(expression.left), right: bindElementExpression(expression.right) };
 }
 
 function commonProjectionExpressions(examples: readonly BehaviorExample[], arity: number): ProgramExpression[] {
@@ -458,13 +523,14 @@ function behaviorFitStats(expression: ProgramExpression, examples: readonly Beha
   return { meanSquaredError: loss / examples.length, predictedIds };
 }
 
-function evaluateExpression(expression: ProgramExpression, arguments_: readonly JsonValue[]): JsonValue | undefined {
+function evaluateExpression(expression: ProgramExpression, arguments_: readonly JsonValue[], element?: JsonValue): JsonValue | undefined {
   switch (expression.kind) {
     case "argument": return arguments_[expression.index];
+    case "element": return element;
     case "literal": return expression.value;
     case "value": return expression.value;
     case "member": {
-      const subject = evaluateExpression(expression.subject, arguments_);
+      const subject = evaluateExpression(expression.subject, arguments_, element);
       if (subject === null || typeof subject !== "object") return undefined;
       if (typeof expression.key === "number") {
         return Array.isArray(subject) ? subject[expression.key] : undefined;
@@ -476,7 +542,7 @@ function evaluateExpression(expression: ProgramExpression, arguments_: readonly 
     case "sequence": {
       const values: JsonValue[] = [];
       for (const item of expression.items) {
-        const value = evaluateExpression(item, arguments_);
+        const value = evaluateExpression(item, arguments_, element);
         if (value === undefined) return undefined;
         values.push(value);
       }
@@ -485,20 +551,31 @@ function evaluateExpression(expression: ProgramExpression, arguments_: readonly 
     case "mapping": {
       const entries: Array<[string, JsonValue]> = [];
       for (const entry of expression.entries) {
-        const resolved = evaluateExpression(entry.value, arguments_);
+        const resolved = evaluateExpression(entry.value, arguments_, element);
         if (resolved === undefined) return undefined;
         entries.push([entry.key, resolved]);
       }
       return Object.fromEntries(entries) as Record<string, JsonValue>;
     }
     case "cardinality": {
-      const value = evaluateExpression(expression.operand, arguments_);
+      const value = evaluateExpression(expression.operand, arguments_, element);
       return typeof value === "string" || Array.isArray(value) ? value.length : undefined;
     }
     case "equivalent": {
-      const left = evaluateExpression(expression.left, arguments_);
-      const right = evaluateExpression(expression.right, arguments_);
+      const left = evaluateExpression(expression.left, arguments_, element);
+      const right = evaluateExpression(expression.right, arguments_, element);
       return left === undefined || right === undefined ? undefined : jsonEqual(left, right);
+    }
+    case "map_sequence": {
+      const source = evaluateExpression(expression.source, arguments_, element);
+      if (!Array.isArray(source) || source.length > 64) return undefined;
+      const values: JsonValue[] = [];
+      for (const item of source) {
+        const value = evaluateExpression(expression.projection, arguments_, item);
+        if (value === undefined) return undefined;
+        values.push(value);
+      }
+      return values;
     }
     case "unary": {
       const operand = evaluateExpression(expression.operand, arguments_);
@@ -536,6 +613,7 @@ function usesNumericOperators(expression: ProgramExpression): boolean {
   if (expression.kind === "mapping") return expression.entries.some(entry => usesNumericOperators(entry.value));
   if (expression.kind === "cardinality") return usesNumericOperators(expression.operand);
   if (expression.kind === "equivalent") return usesNumericOperators(expression.left) || usesNumericOperators(expression.right);
+  if (expression.kind === "map_sequence") return usesNumericOperators(expression.source) || usesNumericOperators(expression.projection);
   return false;
 }
 
@@ -557,6 +635,9 @@ function collectDenominatorPreconditions(expression: ProgramExpression, output: 
   } else if (expression.kind === "equivalent") {
     collectDenominatorPreconditions(expression.left, output);
     collectDenominatorPreconditions(expression.right, output);
+  } else if (expression.kind === "map_sequence") {
+    collectDenominatorPreconditions(expression.source, output);
+    collectDenominatorPreconditions(expression.projection, output);
   }
 }
 
@@ -581,6 +662,7 @@ function multiplicationCount(expression: ProgramExpression): number {
   if (expression.kind === "mapping") return expression.entries.reduce((sum, entry) => sum + multiplicationCount(entry.value), 0);
   if (expression.kind === "cardinality") return multiplicationCount(expression.operand);
   if (expression.kind === "equivalent") return multiplicationCount(expression.left) + multiplicationCount(expression.right);
+  if (expression.kind === "map_sequence") return multiplicationCount(expression.source) + multiplicationCount(expression.projection);
   return 0;
 }
 
@@ -591,18 +673,20 @@ function deduplicateExpressions(expressions: readonly SearchExpression[]): Searc
 }
 
 function expressionComplexity(expression: ProgramExpression): number {
-  if (expression.kind === "argument" || expression.kind === "literal" || expression.kind === "value") return 1;
+  if (expression.kind === "argument" || expression.kind === "element" || expression.kind === "literal" || expression.kind === "value") return 1;
   if (expression.kind === "unary") return 1 + expressionComplexity(expression.operand);
   if (expression.kind === "member") return 1 + expressionComplexity(expression.subject);
   if (expression.kind === "sequence") return 1 + expression.items.reduce((sum, item) => sum + expressionComplexity(item), 0);
   if (expression.kind === "mapping") return 1 + expression.entries.reduce((sum, entry) => sum + expressionComplexity(entry.value), 0);
   if (expression.kind === "cardinality") return 1 + expressionComplexity(expression.operand);
   if (expression.kind === "equivalent") return 1 + expressionComplexity(expression.left) + expressionComplexity(expression.right);
+  if (expression.kind === "map_sequence") return 1 + expressionComplexity(expression.source) + expressionComplexity(expression.projection);
   return 1 + expressionComplexity(expression.left) + expressionComplexity(expression.right);
 }
 
 function expressionKey(expression: ProgramExpression): string {
   if (expression.kind === "argument") return `a${expression.index}`;
+  if (expression.kind === "element") return "x";
   if (expression.kind === "literal") return `l(${numberKey(expression.value)})`;
   if (expression.kind === "value") return `v(${stableJson(expression.value)})`;
   if (expression.kind === "member") return `m(${expressionKey(expression.subject)},${stableJson(expression.key)})`;
@@ -610,6 +694,7 @@ function expressionKey(expression: ProgramExpression): string {
   if (expression.kind === "mapping") return `o(${expression.entries.map(entry => `${stableJson(entry.key)}:${expressionKey(entry.value)}`).join(",")})`;
   if (expression.kind === "cardinality") return `c(${expressionKey(expression.operand)})`;
   if (expression.kind === "equivalent") return `e(${expressionKey(expression.left)},${expressionKey(expression.right)})`;
+  if (expression.kind === "map_sequence") return `q(${expressionKey(expression.source)},${expressionKey(expression.projection)})`;
   if (expression.kind === "unary") return `u:${expression.operator}(${expressionKey(expression.operand)})`;
   // Keep algebraically useful multiplicative forms ahead of repeated-addition
   // equivalents when fit error and tree size tie. This is only a deterministic
@@ -651,13 +736,14 @@ function compareBehaviorExamples(left: BehaviorExample, right: BehaviorExample):
 }
 
 function expressionDepth(expression: ProgramExpression): number {
-  if (expression.kind === "argument" || expression.kind === "literal" || expression.kind === "value") return 0;
+  if (expression.kind === "argument" || expression.kind === "element" || expression.kind === "literal" || expression.kind === "value") return 0;
   if (expression.kind === "unary" || expression.kind === "member" || expression.kind === "cardinality") {
     const operand = expression.kind === "member" ? expression.subject : expression.operand;
     return expressionDepth(operand) + 1;
   }
   if (expression.kind === "sequence") return 1 + Math.max(0, ...expression.items.map(expressionDepth));
   if (expression.kind === "mapping") return 1 + Math.max(0, ...expression.entries.map(entry => expressionDepth(entry.value)));
+  if (expression.kind === "map_sequence") return 1 + Math.max(expressionDepth(expression.source), expressionDepth(expression.projection));
   return 1 + Math.max(expressionDepth(expression.left), expressionDepth(expression.right));
 }
 
