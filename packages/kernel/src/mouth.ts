@@ -76,7 +76,7 @@ interface LearnedResponseExtentHint {
   sourcePatternId: string;
 }
 import type { CorrectionMemory, CorrectionStyleInfluence, MeterPattern, RegisterVector } from "./correction-memory.js";
-import type { UserStyleProfile } from "./dialogue-pragmatics.js";
+import { INTERACTION_FEATURE_IDS, type UserStyleProfile } from "./dialogue-pragmatics.js";
 import { detectCannedAnswerSpeech } from "./surface-quality.js";
 import {
   boundaryFormsForKind,
@@ -1798,7 +1798,10 @@ function buildSurfacePlan(
   const meterPatternId = input.meterPatternId ?? meterPattern?.id;
   const semanticAnswerConstruct = semanticAnswerConstructState(input.construct);
   const explicitDetailProfileId = input.detailProfileId ?? correctionInfluence.detailProfileId;
-  const requirementDetailProfileId = explicitDetailProfileId ? undefined : detailProfileFromRequirementField(input.requirementField);
+  const requirementDetailProfileId = explicitDetailProfileId
+    ? undefined
+    : detailProfileFromRequirementField(input.requirementField)
+      ?? dialogueDetailProfileFromStyle(input.dialogueUserStyleProfile);
   let detailSelectionSource = explicitDetailProfileId
     ? "explicit"
     : requirementDetailProfileId
@@ -2352,6 +2355,13 @@ function surfaceCandidateFromKernelCandidate(candidate: CandidateSurface, discou
     exactSurface: kernelCandidateCarriesExactBoundSourceSurface(candidate, input)
       || kernelCandidateCarriesVerifiedSourceExcerptSurface(candidate, input)
   };
+}
+
+function dialogueDetailProfileFromStyle(profile: UserStyleProfile | undefined): DetailProfileId | undefined {
+  if (!profile) return undefined;
+  const compactness = profile.weights[INTERACTION_FEATURE_IDS.compactness];
+  if (typeof compactness !== "number" || !Number.isFinite(compactness)) return undefined;
+  return resolveDetailProfileId({ styleDensity: 1 - clamp01(compactness) });
 }
 
 function kernelCandidateCanPreempt(input: SpeakInput, candidate: SurfaceCandidate): boolean {
