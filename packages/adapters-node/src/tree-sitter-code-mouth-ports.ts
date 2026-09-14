@@ -7,7 +7,7 @@ import { codeLanguageForPath, type ProgramDiagnostic, type RepairOperation } fro
 import { languageIdForFilePath, parseRepositorySyntax, type TreeSitterLanguageId } from "./tree-sitter-syntax.js";
 import type { CodeMouthContext, CodeMouthPorts, CodeMouthProposal, CodeMouthVerification } from "./code-mouth.js";
 import type { LearnedCodeProposer } from "./learned-code-proposer.js";
-import { findCodeVerifierForPath } from "./code-verifier-discovery.js";
+import { findCodeVerifierCapabilityForPath } from "./code-verifier-discovery.js";
 import { runProcess } from "./document.js";
 
 /**
@@ -77,8 +77,9 @@ export function createTreeSitterCodeMouthPorts(options: {
       // The strongest verifier this machine has for this language. A checker the language itself ships bounds
       // more than a grammar does -- scopes, arity, imports -- so it is preferred wherever it is installed, and
       // the grammar is what remains when nothing is.
-      const checker = await findCodeVerifierForPath(targetPath);
-      if (checker) {
+      const capability = await findCodeVerifierCapabilityForPath(targetPath);
+      if (capability.status === "available") {
+        const checker = capability.verifier;
         const file = absolute(targetPath);
         const args = checker.check.args.map(argument => argument.split("{artifact}").join(file));
         const result = await runProcess(checker.command, args, { cwd: root, timeoutMs: 120_000 });
@@ -86,6 +87,7 @@ export function createTreeSitterCodeMouthPorts(options: {
         options.log?.(`${checker.languageId} checked by ${checker.command} (${diagnostics.length} diagnostic(s))`);
         return { testsRun: false, buildSucceeded: result.code === 0 && !diagnostics.length, testsSucceeded: true, diagnostics };
       }
+      options.log?.(capability.reason);
       const languageId = languageIdForFilePath(targetPath);
       if (!languageId) {
         // No grammar, no gate: saying a file is valid because nothing could check it is the one answer that
