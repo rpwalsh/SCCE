@@ -3521,6 +3521,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         unresolvedObligations: unresolvedObligationCount(entailmentResult.boundaries)
       });
       events.push(await append(eventFactory.create({ episodeId, typeId: "CandidateSelected", payload: { candidateId: judged.selected.id, kind: judged.selected.kind, force: judged.selected.force, assistantForce: selectedAssistantForce.force, assistantForceTrace: selectedAssistantForce.audit, candidateAudit: judged.selected.audit, judge: judged.audit } })));
+      const selectedDialogueSelection = jsonRecord(jsonRecord(judged.selected.audit).typedDialogueSelection);
       kernelTrace({
         stage: "planner.select",
         label: "kernel.turn",
@@ -3530,6 +3531,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           kind: judged.selected.kind,
           force: judged.selected.force,
           assistantForce: selectedAssistantForce.force,
+          ...(Object.keys(selectedDialogueSelection).length ? { typedDialogueSelection: selectedDialogueSelection } : {}),
           rejected: judged.rejected.slice(0, 6).map(row => ({
             candidateId: row.candidate.id,
             score: row.score,
