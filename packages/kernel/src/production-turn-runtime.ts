@@ -895,21 +895,31 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           ? LANGUAGE_MEMORY_DURABLE_ESCALATION_MS
           : Math.max(0, runtimeDeadline?.computeRemainingMs() ?? LANGUAGE_MEMORY_DURABLE_ESCALATION_MS)
       );
+      const hydrateAuthorityLanguage = () => hydrateSurfaceLanguageMemoryResidentOrDurable(
+        12,
+        selectedSurfaceCluster,
+        unscopedLanguageReason,
+        undefined,
+        "",
+        { residentOnly: fastRuntimeBudget, languageId: requestLanguageId }
+      );
       const baseAuthorityLanguage = await evaluationComponent(
         "language-memory",
         "authority.language-memory.hydrate",
-        () => withStageBudget(
-          () => hydrateSurfaceLanguageMemoryResidentOrDurable(12, selectedSurfaceCluster, unscopedLanguageReason, undefined, "", { residentOnly: fastRuntimeBudget, languageId: requestLanguageId }),
-          languageHydrationBudgetMs,
-          () => hydrateSurfaceLanguageMemoryCached(12, selectedSurfaceCluster, unscopedLanguageReason, undefined, "", { residentOnly: true, languageId: requestLanguageId })
-            .catch(() => emptySurfaceLanguageMemory()),
-          overrun => kernelTrace({
-            stage: "runtime.seed.language.budget_exceeded",
-            label: "kernel.turn",
-            durationMs: overrun,
-            support: { budgetMs: LANGUAGE_MEMORY_DURABLE_ESCALATION_MS, cluster: selectedSurfaceCluster?.id ?? null }
-          })
-        ),
+        () => initialResponseAlreadyVisible
+          ? hydrateAuthorityLanguage()
+          : withStageBudget(
+            hydrateAuthorityLanguage,
+            languageHydrationBudgetMs,
+            () => hydrateSurfaceLanguageMemoryCached(12, selectedSurfaceCluster, unscopedLanguageReason, undefined, "", { residentOnly: true, languageId: requestLanguageId })
+              .catch(() => emptySurfaceLanguageMemory()),
+            overrun => kernelTrace({
+              stage: "runtime.seed.language.budget_exceeded",
+              label: "kernel.turn",
+              durationMs: overrun,
+              support: { budgetMs: LANGUAGE_MEMORY_DURABLE_ESCALATION_MS, cluster: selectedSurfaceCluster?.id ?? null }
+            })
+          ),
         () => Promise.resolve(emptySurfaceLanguageMemory())
       );
       kernelTrace({
