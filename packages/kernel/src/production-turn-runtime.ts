@@ -4773,7 +4773,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // to reinforce whatever scoring produced it. When this turn compiled a realization contract, the outcome
       // requires the actual spoken answer to survive it -- the same contract-survival check Mouth's own
       // candidate gate uses -- not just non-emptiness.
-      if ((requestedAuthority === "factual" || requestedAuthority === "reasoned") && judged.selected) {
+      if (judged.selected) {
         const contractSatisfied = realizationContract
           ? candidateSurvivesRealizationContract(answer, realizationContract, hasher).survives
           : true;
@@ -4781,7 +4781,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         await deps.storage.dialogueMemory?.putCalibrationObservation?.(calibrationObservationRecord({
           calibrationId: CALIBRATION_IDS.candidateMass,
           subsystemId: CALIBRATION_SUBSYSTEM_IDS.candidate,
-          taskClass: CALIBRATION_TASK_CLASS_IDS.sourceBoundQa,
+          taskClass: calibrationTaskClass,
           rawScore: clamp01(judged.selected.scores.support),
           outcome: turnOutcome,
           sourceRecordId: judged.selected.id,
