@@ -1320,6 +1320,32 @@ describe("kernel local evidence source anchoring", () => {
     expect(result.answer).toContain("commanding the starship Enterprise");
   });
 
+  it("does not answer a specifically numbered subject from a sibling source", () => {
+    const apolloEight = evidenceSpan({
+      id: "evidence:apollo-8-sibling",
+      sourceVersionId: "source:apollo-8-sibling:v1" as SourceVersionId,
+      title: "Apollo 8",
+      uri: "fixture://wiki/Apollo_8",
+      text: "Apollo 8 was the first crewed mission to orbit the Moon and landed in December 1968.",
+      alpha: 0.97
+    });
+    const apolloProgram = evidenceSpan({
+      id: "evidence:apollo-program-sibling",
+      sourceVersionId: "source:apollo-program-sibling:v1" as SourceVersionId,
+      title: "Apollo program",
+      uri: "fixture://wiki/Apollo_program",
+      text: "The Apollo program included several missions that landed on the Moon.",
+      alpha: 0.97
+    });
+
+    const admitted = sourceAnchoredEvidenceForRequest(
+      "When did Apollo 11 land on the Moon?",
+      [apolloEight, apolloProgram]
+    );
+    expect(admitted.required).toBe(true);
+    expect(admitted.evidence).toEqual([]);
+  });
+
   it("transfers the title-lead boost to a deeper sentence that strictly better covers the request's non-anchor content terms (sealed-eval q5 shape)", () => {
     // Reproduces the sealed-eval failure verbatim in miniature: the DS9
     // article's opening definition answered every question about the
