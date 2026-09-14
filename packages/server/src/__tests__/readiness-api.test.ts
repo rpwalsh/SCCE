@@ -2,7 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { createServer } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
-import { handleRequest, type ApiContext } from "../routes.js";
+import { handleRequest, primePostgresStatus, type ApiContext } from "../routes.js";
 import { createRuntimeStartupReadiness, type RuntimeStartupReadinessController } from "../startup.js";
 
 const servers: ReturnType<typeof createServer>[] = [];
@@ -43,6 +43,26 @@ describe("server readiness API", () => {
         postgres: { countSemantics: "postgres_exact_table_counts" }
       }
     });
+  });
+
+  it("serves the first ready check from an exact status scan primed before listening", async () => {
+    const readiness = createRuntimeStartupReadiness();
+    readiness.begin();
+    readiness.complete();
+    let statusCalls = 0;
+    const runtime = {
+      storage: {
+        status: async () => {
+          statusCalls += 1;
+          return { ok: true, countSemantics: "postgres_exact_table_counts", tableCounts: { evidence_spans: 1 } };
+        }
+      }
+    } as unknown as ApiContext["runtime"];
+
+    await primePostgresStatus(runtime);
+    const url = await startFixture(readiness, undefined, runtime);
+    expect(await getReady(url)).toMatchObject({ status: 200, body: { ok: true, exactCounts: true } });
+    expect(statusCalls).toBe(1);
   });
 
   it("rejects an estimated Postgres count payload even after warmup", async () => {
@@ -94,10 +114,11 @@ async function startFixture(
     ok: true,
     countSemantics: "postgres_exact_table_counts",
     tableCounts: { evidence_spans: 1 }
-  }
+  },
+  runtime: ApiContext["runtime"] = { storage: { status: async () => status } } as unknown as ApiContext["runtime"]
 ): Promise<string> {
   const context = {
-    runtime: { storage: { status: async () => status } },
+    runtime,
     config: { server: { url: "http://127.0.0.1:0" } },
     startupReadiness
   } as unknown as ApiContext;
