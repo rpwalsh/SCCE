@@ -244,6 +244,7 @@ import {
 } from "./turn-maintenance-policy.js";
 import {
   calibrationTaskClassForRequirements,
+  evidenceAccessPolicyForOperators,
   evaluationQuestionId,
   explicitTurnRequirementsFromInput,
   operatorOutcomeSupport,
@@ -1226,9 +1227,11 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           ...operatorOutcomeSupport(input.metadata)
         }
       });
+      const evidenceAccessPolicy = evidenceAccessPolicyForOperators(activeRequestOperatorIds(operatorActivations));
       let requestedAuthorityDecision = toJsonValue({
         ...jsonRecord(authorityProjection.trace),
-        activeOperatorIds: activeRequestOperatorIds(operatorActivations)
+        activeOperatorIds: activeRequestOperatorIds(operatorActivations),
+        evidenceAccessPolicy
       });
       const calibrationTaskClass = calibrationTaskClassForRequirements(requirementField, requestedAuthority);
       const ownerAsked = await append(eventFactory.create({ episodeId, typeId: "OwnerAsked", payload: { textHash: hasher.digestHex(input.text), metadata: input.metadata ?? null, requestedAuthority, requestedAuthorityDecision } }));
@@ -1463,6 +1466,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             ? graphForEvidenceIds([...metadataEvidenceIds])
             : graphForText(subjectRetrievalText, {
               allowSemanticFrameEvidence,
+              evidenceAccess: evidenceAccessPolicy,
               requestScaffolding: requestClosedClassWords(),
               languageModels: authorityLanguage.state.models ?? [],
               continuationPopulation: authorityLanguage.state.continuationPopulation,
@@ -1582,6 +1586,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         if (allowed) {
           const durableSlice = await graphForText(subjectRetrievalText, {
             allowSemanticFrameEvidence,
+            evidenceAccess: evidenceAccessPolicy,
             requestScaffolding: requestClosedClassWords(),
             languageModels: authorityLanguage.state.models ?? [],
             continuationPopulation: authorityLanguage.state.continuationPopulation,

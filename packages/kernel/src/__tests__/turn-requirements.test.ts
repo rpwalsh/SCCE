@@ -11,7 +11,7 @@ import {
   deriveTurnRequirementField,
   type LearnedRequirementActivation
 } from "../turn-requirements.js";
-import { operatorOutcomeSupportFromCalibrationObservations } from "../turn-request-control.js";
+import { evidenceAccessPolicyForOperators, operatorOutcomeSupportFromCalibrationObservations } from "../turn-request-control.js";
 
 describe("learned turn requirement field", () => {
   it("maps paraphrases with the same learned structural activation to similar fields", () => {
@@ -233,6 +233,13 @@ describe("learned turn requirement field", () => {
       model
     });
     expect(operators.every(row => Number.isFinite(row.activation) && row.activation >= 0 && row.activation <= 1)).toBe(true);
+  });
+
+  it("derives physical evidence access from shared operators", () => {
+    expect(evidenceAccessPolicyForOperators([]).sourceCodeEvidenceAllowed).toBe(false);
+    expect(evidenceAccessPolicyForOperators([COGNITIVE_OPERATOR_IDS.programPlanning]).sourceCodeEvidenceAllowed).toBe(true);
+    expect(evidenceAccessPolicyForOperators([COGNITIVE_OPERATOR_IDS.workspaceRepair]).sourceCodeEvidenceAllowed).toBe(true);
+    expect(evidenceAccessPolicyForOperators([COGNITIVE_OPERATOR_IDS.sourceSynthesis]).sourceCodeEvidenceAllowed).toBe(false);
   });
 
   it("records every term of the multi-operator activation equation in internal trace", () => {
