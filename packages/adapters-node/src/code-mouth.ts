@@ -99,7 +99,7 @@ export async function runCodeMouth(input: {
   const hasher = createHasher();
   const startedAt = Date.now();
   const maxWallClockMs = input.maxWallClockMs ?? 180_000;
-  const context = await input.ports.retrieve(input.targetPath);
+  let context = await input.ports.retrieve(input.targetPath);
   const offered = () => (input.ports.offeredCandidates?.() ?? []);
   const startingDiagnostics = (await input.ports.verify(input.targetPath)).diagnostics;
   let diagnostics: ProgramDiagnostic[] = startingDiagnostics;
@@ -187,6 +187,7 @@ export async function runCodeMouth(input: {
       applied = [...applied, ...proposal.operations];
       log(`attempt ${attempt} kept: ${diagnostics.length} -> ${verification.diagnostics.length} diagnostics`);
       diagnostics = verification.diagnostics;
+      context = await input.ports.retrieve(input.targetPath);
       // A kept step changes the state being worked on, so what failed against the old one is not evidence about
       // this one. Carrying it forward made one poor guess after real progress read as thrashing.
       session = createBoundedDebugSession(
