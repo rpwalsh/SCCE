@@ -239,6 +239,26 @@ export function projectRequestAuthority(input: ProjectRequestAuthorityInput): Re
   };
 }
 
+/**
+ * A projected authority can only initiate a physical lane when its matching
+ * cognitive operator is active. This checks typed state, never request text.
+ */
+export function operationalAuthorityForProjection(input: {
+  projection: RequestAuthorityProjection;
+  activeOperatorIds: readonly CognitiveOperatorId[];
+}): RequestedAuthority {
+  const active = new Set(input.activeOperatorIds);
+  const eligible = (authority: RequestedAuthority): boolean => authority !== "program"
+    ? authority !== "action" || active.has(COGNITIVE_OPERATOR_IDS.actionPlanning)
+    : active.has(COGNITIVE_OPERATOR_IDS.programPlanning);
+  if (eligible(input.projection.requestedAuthority)) return input.projection.requestedAuthority;
+  return REQUESTED_AUTHORITY_IDS
+    .filter(eligible)
+    .map(authority => ({ authority, score: input.projection.scores[authority] }))
+    .sort((left, right) => right.score - left.score || left.authority.localeCompare(right.authority))[0]?.authority
+    ?? "reasoned";
+}
+
 /** Shared dialogue contribution used before graph/outcome support is available. */
 export function requestOperatorDialogueSupport(requirements: TurnRequirementField): OperatorSupportMap {
   return {

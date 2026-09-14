@@ -173,6 +173,7 @@ import {
   activeRequestOperatorIds,
   admitCandidatesForAuthority,
   explicitAuthorityRequirements,
+  operationalAuthorityForProjection,
   projectRequestAuthority,
   requestOperatorDialogueSupport,
   requestOperatorGraphSupport
@@ -1227,11 +1228,20 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           ...operatorOutcomeSupport(input.metadata)
         }
       });
-      const evidenceAccessPolicy = evidenceAccessPolicyForOperators(activeRequestOperatorIds(operatorActivations));
+      const activeOperatorIds = activeRequestOperatorIds(operatorActivations);
+      const operationalAuthority = operationalAuthorityForProjection({ projection: authorityProjection, activeOperatorIds });
+      if (operationalAuthority !== requestedAuthority) {
+        requestedAuthority = operationalAuthority;
+        refreshTurnSignals();
+      }
+      const evidenceAccessPolicy = evidenceAccessPolicyForOperators(activeOperatorIds);
       let requestedAuthorityDecision = toJsonValue({
         ...jsonRecord(authorityProjection.trace),
-        activeOperatorIds: activeRequestOperatorIds(operatorActivations),
-        evidenceAccessPolicy
+        requestedAuthority,
+        selectedAuthority: requestedAuthority,
+        activeOperatorIds,
+        evidenceAccessPolicy,
+        operationalAuthorityRevision: operationalAuthority !== authorityProjection.requestedAuthority
       });
       const calibrationTaskClass = calibrationTaskClassForRequirements(requirementField, requestedAuthority);
       const ownerAsked = await append(eventFactory.create({ episodeId, typeId: "OwnerAsked", payload: { textHash: hasher.digestHex(input.text), metadata: input.metadata ?? null, requestedAuthority, requestedAuthorityDecision } }));
