@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
-import { codeRequestCorroborated, codeRequestRecognized, codeRequestRequirements, codeRequestSignal } from "../code-request.js";
+import { CODE_REQUEST_BOOTSTRAP_DEMAND_MODEL, codeRequestCorroborated, codeRequestDemand, codeRequestRecognized, codeRequestRequirements, codeRequestSignal } from "../code-request.js";
 
 const recognized = (text: string) => codeRequestRecognized(codeRequestSignal(text));
 
@@ -59,7 +59,14 @@ describe("code request structure", () => {
       "formal_language", "call_shape", "code_punctuation"
     ]);
     expect(codeRequestCorroborated(signal)).toBe(true);
-    expect(signal.observations.some(observation => observation.kind === "formal_language" && observation.strength === 0.4)).toBe(true);
+    expect(signal.observations.some(observation => observation.kind === "formal_language")).toBe(true);
+  });
+
+  it("calibrates typed code structure outside the detector path", () => {
+    const signal = codeRequestSignal("Crea una funci\u00f3n doble(x) => 2x en TypeScript.");
+    const model = { ...CODE_REQUEST_BOOTSTRAP_DEMAND_MODEL, formal_language: 0.05, call_shape: 0.05, code_punctuation: 0.05 };
+    expect(codeRequestDemand(signal.observations, model)).toBeCloseTo(0.15, 8);
+    expect(codeRequestSignal("Crea una funci\u00f3n doble(x) => 2x en TypeScript.", { demandModel: model }).demand).toBeCloseTo(0.15, 8);
   });
 
   it("projects an explicit call/result example without reading relation prose", () => {
