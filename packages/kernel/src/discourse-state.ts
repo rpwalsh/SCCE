@@ -462,6 +462,8 @@ export interface DiscourseBindingV2 {
   admitted: boolean;
   reasonIds: string[];
   alternatives: DiscourseBindingAlternativeV2[];
+  /** Durable adjustment identities that changed this binding's score. */
+  interpretationAdjustmentIds?: string[];
 }
 
 /**
@@ -848,7 +850,10 @@ export function resolveDiscourseStateV2(input: ResolveDiscourseStateV2Input): Di
       runnerUpMargin,
       admitted,
       reasonIds: canonicalStringSetV2(reasonIds),
-      alternatives
+      alternatives,
+      ...(interpretationSelection.adjustmentIds.length
+        ? { interpretationAdjustmentIds: interpretationSelection.adjustmentIds }
+        : {})
     };
     bindings.push({
       schema: "scce.discourse_binding.v2",
@@ -1061,11 +1066,12 @@ function scoreDiscourseCandidateV2(input: {
   const topicSwitchPenaltyBase = observation.explicitAnchorNodeIds.length && explicitAnchorFit === 0 ? 1 : 0;
   const topicSwitchPenalty = clamp01(Math.max(topicSwitchPenaltyBase, signal?.topicSwitchPressure ?? 0));
   const contradictionPenalty = clamp01(Math.max(referent.contradictionMass, signal?.contradictionPressure ?? 0));
-  const interpretationDelta = interpretationAdjustmentDeltaV2({
+  const interpretationSelection = interpretationAdjustmentSelectionForTypedCandidateV2({
     mention,
     referent,
     adjustments: input.interpretationAdjustments
   });
+  const interpretationDelta = interpretationSelection.delta;
   const components: DiscourseBindingComponentsV2 = {
     recency: clamp01(Math.exp(-config.recencyLambda * Math.max(0, observation.turnIndex - referent.lastMentionTurnIndex))),
     salience: clamp01(referent.salienceMass),
@@ -1542,24 +1548,6 @@ function discourseInterpretationAdjustmentContentV2(
     contradictionMass: clamp01(finiteNumber(adjustment.contradictionMass, 0)),
     correctionIds: canonicalStringSetV2(adjustment.correctionIds)
   };
-}
-
-function interpretationAdjustmentDeltaV2(input: {
-  mention: DiscourseMentionV2;
-  referent: DiscourseReferentV2;
-  adjustments: readonly DiscourseInterpretationAdjustmentV2[];
-}): number {
-  return interpretationAdjustmentDeltaForTypedCandidateV2({
-    candidate: {
-      referentId: input.referent.id,
-      semanticRoleIds: input.mention.semanticRoleIds,
-      requestedSlotIds: input.mention.requestedSlotIds,
-      learnedFrameIds: input.mention.learnedFrameIds,
-      scopeIds: input.mention.scopeIds,
-      proofEvidenceIds: input.referent.evidenceIds
-    },
-    adjustments: input.adjustments
-  });
 }
 
 /**
