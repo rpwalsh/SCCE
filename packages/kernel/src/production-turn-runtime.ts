@@ -159,6 +159,7 @@ import { checkAntiCopyGuard } from "./voice-profile.js";
 import { buildConstructionAlgebra, searchTargetConditionedDerivation, semanticTargetFromGraph } from "./generative-derivation-runtime.js";
 import { persistTaskGraphForTurn, syncTaskResumptionSnapshotForTurn } from "./task-resumption-turn-request.js";
 import { programIntentForTurn, replanOwnerBehaviorProgramIntent } from "./program-intent.js";
+import { planObservedProgramRepairTransition } from "./observed-program-repair.js";
 import { completeTaskDecompositionNode, schedulableSubtasks, type TaskDecompositionGraph } from "./hierarchical-task-decomposition.js";
 import { solveTaskSchedule } from "./task-schedule-solver.js";
 import { nodeCanExecute, replan } from "./task-replanning.js";
@@ -1513,6 +1514,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             ? graphForEvidenceIds([...metadataEvidenceIds])
             : graphForText(subjectRetrievalText, {
               allowSemanticFrameEvidence,
+              evidenceFirst: true,
               evidenceAccess: evidenceAccessPolicy,
               requestScaffolding: requestClosedClassWords(),
               languageModels: authorityLanguage.state.models ?? [],
@@ -1638,6 +1640,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         if (allowed) {
           const durableSlice = await graphForText(subjectRetrievalText, {
             allowSemanticFrameEvidence,
+            evidenceFirst: true,
             evidenceAccess: evidenceAccessPolicy,
             requestScaffolding: requestClosedClassWords(),
             languageModels: authorityLanguage.state.models ?? [],
@@ -3945,12 +3948,75 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             const priorProgram = construct.program;
             const priorBehaviorIntent = behaviorProgramIntent;
             const ownerRequirementIds = priorProgram?.hydration?.ownerRequirementIds ?? [];
+            const ownerProgramFailedToBuild = priorProgram
+              && priorBehaviorIntent
+              && ownerRequirementIds.length > 0
+              && buildTest.build.code !== 0
+              && buildTest.artifacts.length === priorProgram.files.length;
             const ownerBehaviorFailed = priorProgram
               && priorBehaviorIntent
               && ownerRequirementIds.length > 0
               && buildTest.build.code === 0
               && buildTest.test.code !== 0;
-            if (ownerBehaviorFailed) {
+            if (ownerProgramFailedToBuild) {
+              const priorResult = buildTest;
+              const transition = planObservedProgramRepairTransition({
+                program: priorProgram,
+                build: priorResult,
+                requestText: input.text,
+                activeRequirementIds: ownerRequirementIds,
+                hasher
+              });
+              events.push(await append(eventFactory.create({
+                episodeId,
+                typeId: transition.repairedProgram ? "ProgramRepairSelected" : "ProgramRepairUnselected",
+                payload: toJsonValue({
+                  failureObservationId: transition.failureObservationId,
+                  repairPlanId: transition.repairPlan.id,
+                  selection: transition.selection,
+                  changedPaths: transition.changedPaths
+                })
+              })));
+              if (transition.repairedProgram) {
+                construct = programBuilder.build({
+                  episodeId,
+                  text: input.text,
+                  entailment: answerEntailment,
+                  evidence: selectedEvidence,
+                  createdAt: clock.now(),
+                  programIntent: behaviorProgramIntent,
+                  program: transition.repairedProgram
+                });
+                // The named defect belongs only to the observed first attempt.
+                // Retrying it would manufacture an endless failure after a real
+                // selected repair had already changed the program.
+                const repairedResult = await deps.buildTest.executeProgram({ episodeId, construct });
+                const priorAttempt = { build: priorResult.build, test: priorResult.test, artifacts: priorResult.artifacts };
+                const repairedAttempts = repairedResult.attempts?.length
+                  ? repairedResult.attempts
+                  : [{ build: repairedResult.build, test: repairedResult.test, artifacts: repairedResult.artifacts }];
+                buildTest = {
+                  ...repairedResult,
+                  repairAttempted: true,
+                  repairApplied: true,
+                  attempts: [priorAttempt, ...repairedAttempts]
+                };
+                events.push(await append(eventFactory.create({
+                  episodeId,
+                  typeId: "ProgramRepaired",
+                  payload: toJsonValue({
+                    failureObservationId: transition.failureObservationId,
+                    selectionId: transition.selection.id,
+                    patchSetId: transition.selection.selectedPatchSetId,
+                    initialProgramId: priorProgram.id,
+                    observedProgramId: transition.observedProgram.id,
+                    repairedProgramId: transition.repairedProgram.id,
+                    changedPaths: transition.changedPaths,
+                    passed: repairedResult.passed
+                  })
+                })));
+              }
+            } else if (ownerBehaviorFailed) {
               const priorResult = buildTest;
               const replan = replanOwnerBehaviorProgramIntent({
                 intent: priorBehaviorIntent,
@@ -3976,7 +4042,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
                 createdAt: clock.now(),
                 programIntent: behaviorProgramIntent
               });
-              const repairedResult = await deps.buildTest.executeProgram({ episodeId, construct, faultInjection: buildFaultInjection });
+              const repairedResult = await deps.buildTest.executeProgram({ episodeId, construct });
               const priorAttempt = { build: priorResult.build, test: priorResult.test, artifacts: priorResult.artifacts };
               const repairedAttempts = repairedResult.attempts?.length
                 ? repairedResult.attempts
@@ -3984,7 +4050,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
               buildTest = {
                 ...repairedResult,
                 repairAttempted: true,
-                repairApplied: repairedResult.passed,
+                repairApplied: true,
                 attempts: [priorAttempt, ...repairedAttempts]
               };
               events.push(await append(eventFactory.create({
@@ -4001,8 +4067,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
               })));
             }
             await deps.storage.constructs.putBuildTest(episodeId, construct.id, buildTest);
-            // Every attempt is observed: a failure replans the task graph, a repair becomes the construct's state, and
-            // the attempt that passes completes what it proved. The adapter bounds this to one repair per turn.
+            // Every attempt is observed: a failure replans the task graph, a selected repair becomes the construct's
+            // state, and the attempt that passes completes what it proved. This runtime bounds repair to one retry.
             const buildAttempts = buildTest.attempts?.length ? buildTest.attempts : [{ build: buildTest.build, test: buildTest.test, artifacts: buildTest.artifacts }];
             for (const [attempt, run] of buildAttempts.entries()) {
               const attemptPassed = run.build.code === 0 && run.test.code === 0;

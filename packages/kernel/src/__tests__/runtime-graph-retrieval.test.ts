@@ -369,6 +369,48 @@ describe("runtime hot graph retrieval", () => {
     expect(fixture.getSlice.mock.calls[0]?.[0].limitEdges).toBeLessThanOrEqual(128);
   });
 
+  it("searches evidence IDs before bounded graph materialization and widens only for missing proof coverage", async () => {
+    const firstEvidence = evidenceSpan("evidence:first", "Clock", "The clock has a first mechanism.");
+    const secondEvidence = evidenceSpan("evidence:second", "Clock", "The clock has a second mechanism.");
+    const firstNode = graphNode("node:first", ["sym:clock"], [String(firstEvidence.id)]);
+    const secondNode = graphNode("node:second", ["sym:mechanism"], [String(secondEvidence.id)]);
+    const initialGraph = graphSlice([firstNode], [], []);
+    const widenedGraph = graphSlice(
+      [firstNode, secondNode],
+      [graphEdge("edge:first-second", firstNode, secondNode, 0.9)],
+      []
+    );
+    const fixture = runtimeFixture(initialGraph, [firstEvidence, secondEvidence]);
+    fixture.searchEvidence.mockResolvedValue([
+      { span: firstEvidence, score: 1, reason: "fixture" },
+      { span: secondEvidence, score: 0.9, reason: "fixture" }
+    ]);
+    fixture.getSlice.mockImplementation(async query => query.radius === 0 ? initialGraph : widenedGraph);
+
+    const result = await fixture.runtime.graphForTextUncached(
+      "clock mechanism",
+      ["sym:clock"],
+      ["clock"],
+      true
+    );
+
+    expect(fixture.searchEvidence).toHaveBeenCalledWith({ features: ["sym:clock"], limit: 40 });
+    expect(result.graph.nodes.map(node => String(node.id))).toEqual(["node:first", "node:second"]);
+    expect(result.graph.edges.map(edge => String(edge.id))).toEqual(["edge:first-second"]);
+    expect(result.evidence.map(span => String(span.id))).toEqual([
+      "evidence:first",
+      "evidence:second"
+    ]);
+    expect(fixture.getSlice.mock.calls.map(([query]) => query.radius)).toEqual([0, 1]);
+    expect(fixture.getSlice.mock.calls.every(([query]) =>
+      query.evidenceBoundOnly === true
+      && query.evidenceIds?.map(String).every(id => id === "evidence:first" || id === "evidence:second")
+      && (query.limitNodes ?? 0) <= 64
+      && (query.limitEdges ?? 0) <= 128
+    )).toBe(true);
+    expect(fixture.kernelTrace.mock.calls.map(([event]) => event.stage)).toContain("graph.resolve.evidence_first_widen");
+  });
+
   it("does not reuse a warmed model-only function-unit cache when a continuation population is supplied", async () => {
     const fixture = runtimeFixture(graphSlice([], [], []));
     fixture.searchEvidence.mockResolvedValue([]);

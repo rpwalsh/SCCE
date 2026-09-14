@@ -196,6 +196,7 @@ export * from "./semantic-memory-index.js";
 export * from "./training-orchestrator.js";
 export * from "./connector-governance.js";
 export * from "./program-repair-kernel.js";
+export * from "./observed-program-repair.js";
 export * from "./walsh-spine.js";
 export * from "./counterfactual-cognition.js";
 export * from "./safety-rail-engine.js";

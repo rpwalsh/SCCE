@@ -1,8 +1,11 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type {
+  ArtifactId,
   ArtifactEmissionRecord,
+  ContentHash,
   FileArtifact,
+  Hasher,
   JsonValue,
   ProgramDependencyRecord,
   ProgramFileRecord,
@@ -115,6 +118,123 @@ export function validateProgramGraphHydration(program: ProgramGraph): { valid: b
     }
   }
   return { valid: diagnostics.length === 0, diagnostics: [...new Set(diagnostics)] };
+}
+
+/**
+ * Binds the exact artifact bytes returned by a real build/test execution back
+ * into a hydrated ProgramGraph. Execution may observe bytes that differ from
+ * the proposed graph (for example a named fault used by an acceptance run),
+ * but those bytes cannot enter repair planning under the proposal's stale
+ * hashes. This transition records the observed byte set without selecting or
+ * applying any repair.
+ */
+export function bindExecutedProgramArtifacts(input: {
+  program: ProgramGraph;
+  artifacts: readonly FileArtifact[];
+  hasher: Hasher;
+}): ProgramGraph {
+  const sourceCheck = validateProgramGraphHydration(input.program);
+  if (!sourceCheck.valid || !input.program.hydration) {
+    throw new Error(`executed artifact binding requires a hydrated ProgramGraph: ${sourceCheck.diagnostics.join(", ")}`);
+  }
+  const observedByPath = new Map(input.artifacts.map(artifact => [artifact.path, artifact]));
+  if (observedByPath.size !== input.artifacts.length
+    || observedByPath.size !== input.program.files.length
+    || input.program.files.some(file => !observedByPath.has(file.path))) {
+    throw new Error("executed artifact binding requires the complete owned file set");
+  }
+
+  const changedPaths: string[] = [];
+  const files = input.program.files.map(source => {
+    const observed = observedByPath.get(source.path)!;
+    if (observed.role !== source.role || observed.mediaType !== source.mediaType) {
+      throw new Error(`executed artifact identity changed outside its bytes: ${source.path}`);
+    }
+    const digest = input.hasher.digestHex(observed.content);
+    const contentHash = `sha256_${digest}` as ContentHash;
+    if (String(observed.contentHash) !== String(contentHash)) {
+      throw new Error(`executed artifact content hash is stale: ${source.path}`);
+    }
+    if (observed.content === source.content) return source;
+    changedPaths.push(source.path);
+    return {
+      ...source,
+      content: observed.content,
+      contentHash,
+      artifactId: `execution_artifact_${digest.slice(0, 32)}` as ArtifactId
+    };
+  });
+  if (changedPaths.length === 0) return input.program;
+
+  const priorHydration = input.program.hydration;
+  const priorHydrationNodeIds = new Set(input.program.nodes
+    .filter(node => node.kind === "program_hydration_contract")
+    .map(node => node.id));
+  const observationId = `program_execution_observation_${input.hasher.digestHex(canonicalStringify({
+    sourceProgramId: input.program.id,
+    files: files.map(file => ({ path: file.path, contentHash: file.contentHash }))
+  })).slice(0, 32)}`;
+  const programId = `executed_program_${input.hasher.digestHex(canonicalStringify({
+    sourceProgramId: input.program.id,
+    observationId
+  })).slice(0, 32)}`;
+  const fileByPath = new Map(files.map(file => [file.path, file]));
+  const graphWithoutHydration: Omit<ProgramGraph, "hydration"> = {
+    ...input.program,
+    id: programId,
+    files,
+    nodes: [
+      ...input.program.nodes
+        .filter(node => !priorHydrationNodeIds.has(node.id))
+        .map(node => {
+          if (!node.id.startsWith("artifact:")) return node;
+          const file = fileByPath.get(node.id.slice("artifact:".length));
+          if (!file) return node;
+          const metadata = typeof node.metadata === "object" && node.metadata !== null && !Array.isArray(node.metadata)
+            ? node.metadata
+            : {};
+          return { ...node, metadata: toJsonValue({ ...metadata, contentHash: file.contentHash, mediaType: file.mediaType }) };
+        }),
+      {
+        id: observationId,
+        kind: "program_execution_artifact_observation",
+        label: observationId,
+        metadata: toJsonValue({
+          schema: "scce.program.execution_artifact_observation.v1",
+          sourceProgramId: input.program.id,
+          changedPaths: [...changedPaths].sort(),
+          executionState: "observed"
+        })
+      }
+    ],
+    edges: [
+      ...input.program.edges.filter(edge => edge.relation !== "hydrates_as"
+        && !priorHydrationNodeIds.has(edge.source)
+        && !priorHydrationNodeIds.has(edge.target)),
+      ...changedPaths.map(path => ({ source: observationId, target: `artifact:${path}`, relation: "observed_execution_bytes", weight: 1 }))
+    ]
+  };
+  const risks = [...new Set(priorHydration.validations.flatMap(validation => validation.riskIds))];
+  const hydration = createProgramHydrationContract({
+    program: graphWithoutHydration,
+    sourcePlanId: observationId,
+    evidenceIds: priorHydration.program.provenanceEvidenceIds,
+    ownerRequirementIds: priorHydration.ownerRequirementIds,
+    risks
+  });
+  const hydrationNodeId = `${observationId}:hydration`;
+  return {
+    ...graphWithoutHydration,
+    hydration,
+    nodes: [
+      ...graphWithoutHydration.nodes,
+      { id: hydrationNodeId, kind: "program_hydration_contract", label: hydration.schema, metadata: hydrationSummary(hydration) }
+    ],
+    edges: [
+      ...graphWithoutHydration.edges,
+      { source: observationId, target: hydrationNodeId, relation: "hydrates_as", weight: hydration.valid ? 1 : 0.35 }
+    ]
+  };
 }
 
 function programRecord(program: Omit<ProgramGraph, "hydration">, evidenceIds: readonly string[]): ProgramGraphRecord {
