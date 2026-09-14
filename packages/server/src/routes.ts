@@ -2270,9 +2270,14 @@ export async function planWorkspaceCodingPatchApiRequest(context: ApiContext, re
     if ("constraintGraph" in result && "plan" in result && result.plan) {
       const graph = behaviorRoleExecutionGraphInputFromTaskConstraintGraph(result.constraintGraph);
       if (graph.constructions.length > 0) {
+        const validationPolicy = context.patchValidation?.resolvePolicy(result.validationPlan.validatorId)
+          ?? serverPatchValidationPolicy(context.config, result.validationPlan.validatorId);
+        const validationProvider = context.patchValidation?.provider ?? trustedHostPatchValidationProvider;
         await programBehaviorValidationLedger(context.runtime.storage.events).bindPlan({
           schema: PROGRAM_BEHAVIOR_VALIDATION_PLAN_BINDING_SCHEMA,
           planHash: result.plan.planHash,
+          validationPolicyId: result.validationPlan.validatorId,
+          validationBindingHash: workspacePatchValidationApprovalBinding(validationPolicy, validationProvider),
           graph
         });
       }
@@ -3233,7 +3238,14 @@ export async function executeWorkspacePatchApiRequest(input: {
         runTransaction
       })
       : await runTransaction();
-    const behaviorLearning = await recordProgramBehaviorLearning(input.events, receipt);
+    const behaviorLearning = await recordProgramBehaviorLearning(
+      input.events,
+      input.workspace.id,
+      input.request.validationPolicyId,
+      input.policy,
+      input.provider ?? trustedHostPatchValidationProvider,
+      receipt
+    );
     return {
       schemaVersion: WORKSPACE_PATCH_RESPONSE_SCHEMA,
       workspaceId: input.request.workspaceId,
@@ -4096,16 +4108,23 @@ async function validatedInterpretationCorrection(input: {
 
 async function recordProgramBehaviorLearning(
   events: EventLedger | undefined,
+  workspaceId: string,
+  validationPolicyId: string,
+  validationPolicy: StructuredPatchValidationPolicy,
+  validationProvider: StructuredPatchValidationProvider,
   receipt: Awaited<ReturnType<typeof executeWorkspacePatchTransaction>>
 ): Promise<WorkspacePatchApiResponse["behaviorLearning"]> {
   if (!events) return undefined;
   if (!receipt.validation?.executedChecks?.some(check => check.checkId === "tests")) return { state: "not_applicable" };
   try {
     const ledger = programBehaviorValidationLedger(events);
-    const binding = await ledger.loadPlan(receipt.planHash);
+    const binding = await ledger.loadPlan({ workspaceId, planHash: receipt.planHash });
     if (!binding) return { state: "not_applicable" };
     const supports = await ledger.recordExecution({
+      workspaceId,
       planHash: receipt.planHash,
+      validationPolicyId,
+      validationBindingHash: workspacePatchValidationApprovalBinding(validationPolicy, validationProvider),
       receipt: {
         planHash: receipt.planHash,
         transactionReceiptHash: receipt.receiptHash,

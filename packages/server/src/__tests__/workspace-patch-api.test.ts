@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { trustedHostPatchValidationProvider } from "@scce/adapters-node";
 import {
   createClock,
   createHasher,
@@ -153,12 +154,22 @@ describe("workspace patch API contract", () => {
     await ledger.bindPlan({
       schema: PROGRAM_BEHAVIOR_VALIDATION_PLAN_BINDING_SCHEMA,
       planHash: replacePlan.planHash,
+      validationPolicyId: DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID,
+      validationBindingHash: workspacePatchValidationApprovalBinding({
+        schemaVersion: "scce.patch-validation-policy.v1",
+        id: DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID,
+        commands: [{ executable: process.execPath, argv: ["-e", "process.exit(0)"], checkIds: ["tests"] }],
+        timeoutMs: 5_000,
+        maxOutputBytes: 16 * 1024,
+        maxWorkspaceFiles: 100,
+        maxWorkspaceBytes: 1024 * 1024
+      }, trustedHostPatchValidationProvider),
       graph: {
         schema: "scce.workspace.task_constraint_graph.v1",
         id: "graph.behavior",
         workspaceRevision: { workspaceId: "workspace-1", revisionId: "revision-1", revisionHash: hash("a") },
         analyzerRevision: { analyzerId: "analyzer.typescript", analyzerVersion: "1", semanticRevisionHash: hash("b") },
-        validationCommandBindings: [],
+        validationCommandBindings: [{ commandId: "command.tests", checkId: "tests" }],
         constructions: [{
           id: "construction.behavior",
           kindId: "scce.program.behavior_role_construction.v1",
@@ -194,7 +205,7 @@ describe("workspace patch API contract", () => {
       state: "recorded",
       supportIds: [expect.stringMatching(/^program\.behavior_execution_support\./u)]
     });
-    const episode = await events.readEpisode(programBehaviorValidationEpisodeId(replacePlan.planHash, hasher));
+    const episode = await events.readEpisode(programBehaviorValidationEpisodeId("workspace-1", replacePlan.planHash, hasher));
     expect(episode.map(event => String(event.typeId))).toContain("ProgramBehaviorRoleExecutionSupported");
   });
 
@@ -211,12 +222,22 @@ describe("workspace patch API contract", () => {
     await createProgramBehaviorValidationLedger({ events, clock, hasher }).bindPlan({
       schema: PROGRAM_BEHAVIOR_VALIDATION_PLAN_BINDING_SCHEMA,
       planHash: replacePlan.planHash,
+      validationPolicyId: DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID,
+      validationBindingHash: workspacePatchValidationApprovalBinding({
+        schemaVersion: "scce.patch-validation-policy.v1",
+        id: DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID,
+        commands: [{ executable: process.execPath, argv: ["-e", "process.exit(0)"], checkIds: ["tests"] }],
+        timeoutMs: 5_000,
+        maxOutputBytes: 16 * 1024,
+        maxWorkspaceFiles: 100,
+        maxWorkspaceBytes: 1024 * 1024
+      }, trustedHostPatchValidationProvider),
       graph: {
         schema: "scce.workspace.task_constraint_graph.v1",
         id: "graph.behavior.failure",
         workspaceRevision: { workspaceId: "workspace-1", revisionId: "revision-1", revisionHash: hash("a") },
         analyzerRevision: { analyzerId: "analyzer.typescript", analyzerVersion: "1", semanticRevisionHash: hash("b") },
-        validationCommandBindings: [],
+        validationCommandBindings: [{ commandId: "command.tests", checkId: "tests" }],
         constructions: [{
           id: "construction.behavior",
           kindId: "scce.program.behavior_role_construction.v1",
