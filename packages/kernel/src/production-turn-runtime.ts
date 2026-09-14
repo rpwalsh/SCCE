@@ -2485,14 +2485,19 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         && selectedEvidence.some(span => spanContainsRequestNearDuplicateSentence(span, turnSequences));
       const candidateHydrateResidentOnly = fastRuntimeBudget || nearDuplicateTurn || candidateHydrateDecision?.allowed === false;
       const evidenceOutputLanguage = evidenceSurfaceCluster && evidenceSurfaceCluster.id !== selectedSurfaceCluster?.id
-        ? await hydrateSurfaceLanguageMemoryResidentOrDurable(
+        ? await hydrateSurfaceLanguageMemoryCached(
           12,
           evidenceSurfaceCluster,
           "evidence-source-cluster-selected",
           undefined,
           "",
-          { residentOnly: candidateHydrateResidentOnly }
-        )
+          // This is optional output-language enrichment. It may improve a
+          // later realization but cannot delay the current answer path.
+          { residentOnly: false, deferDurable: candidateHydrateResidentOnly }
+        ).catch(error => {
+          if (candidateHydrateResidentOnly && isResidentRuntimeNotWarmError(error)) return undefined;
+          throw error;
+        })
         : undefined;
       // Deliberately NOT residentOnly even under the fast runtime budget: a
       // creative long-form request cannot meet the fast-first-response

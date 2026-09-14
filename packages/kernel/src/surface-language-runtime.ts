@@ -297,6 +297,8 @@ export function createSurfaceLanguageRuntime(options: {
 
   type ResidentOnlyOptions = {
     residentOnly?: boolean;
+    /** Return a resident fallback immediately and warm durable state in the background. */
+    deferDurable?: boolean;
     /** Scope the hydration to a learned language identity instead of to the cluster's document membership. */
     languageId?: string;
   };
@@ -818,6 +820,23 @@ export function createSurfaceLanguageRuntime(options: {
     if (hydrationOptions.residentOnly) {
       return residentRuntimeNotWarm(`language-memory:${unscopedReason}`);
     }
+    if (hydrationOptions.deferDurable && (cluster || preferredCorpusRoleId || languageId)) {
+      // The caller explicitly placed durable enrichment off the response path.
+      // Schedule it through the same single-flight cache, then serve only a
+      // resident compatible state if one exists. A miss remains a fast,
+      // inspectable not-warmed result for the caller to handle.
+      warmSurfaceLanguageMemory(limit, cluster, unscopedReason, preferredCorpusRoleId, preferredSurface, hydrationOptions);
+      const languageResident = languageId
+        ? surfaceLanguageMemoryCache.get(`${languageId}\u001flanguage\u001f${preferredCorpusRoleId ?? "corpus-role:any"}`)?.value
+        : undefined;
+      const resident = languageResident ?? residentSurfaceLanguageMemory(cluster, preferredCorpusRoleId);
+      if (resident) {
+        return preferredCorpusRoleId && preferredSurface.trim() && resident.rescopeForSurface
+          ? { ...resident, ...resident.rescopeForSurface(preferredSurface) }
+          : resident;
+      }
+      return residentRuntimeNotWarm(`language-memory:${unscopedReason}`);
+    }
     // Cluster/role hydrations use the same single-flight map as language-id
     // hydrations. Without this, two turns selecting the same cluster while the
     // first durable read is in progress each fan out their own database work.
@@ -863,7 +882,7 @@ export function createSurfaceLanguageRuntime(options: {
     preferredSurface = "",
     hydrationOptions: ResidentOnlyOptions = {}
   ): void {
-    const durableOptions = { ...hydrationOptions, residentOnly: false };
+    const durableOptions = { ...hydrationOptions, residentOnly: false, deferDurable: false };
     const timer = setTimeout(() => {
       void hydrateSurfaceLanguageMemoryCached(
         limit,
