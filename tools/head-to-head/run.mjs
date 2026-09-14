@@ -43,6 +43,9 @@ const model = flag("model", "qwen2.5:3b");
 const limit = Number(flag("limit", "0"));
 const requestTimeoutMs = Number(flag("request-timeout-ms", "60000"));
 const checkpointEvery = Math.max(1, Number(flag("checkpoint-every", "1")));
+const modelSeed = Number(flag("model-seed", "20260914"));
+const modelTemperature = Number(flag("model-temperature", "0"));
+const modelDigest = flag("model-digest", "unrecorded");
 const workloadFilter = flag("workload", "");
 const only = flag("only", "both");
 
@@ -115,7 +118,7 @@ async function askModel(prompt) {
       method: "POST",
       headers: { "content-type": "application/json" },
       signal: AbortSignal.timeout(requestTimeoutMs),
-      body: JSON.stringify({ model, prompt, stream: false })
+      body: JSON.stringify({ model, prompt, stream: false, options: { seed: modelSeed, temperature: modelTemperature } })
     });
     const payload = await response.json();
     return { answer: String(payload.response ?? ""), ms: Date.now() - started };
@@ -205,6 +208,9 @@ const summary = {
   schema: "scce.head_to_head.v1",
   generatedAt: new Date().toISOString(),
   model,
+  modelDigest,
+  modelSeed,
+  modelTemperature,
   requestTimeoutMs,
   checkpointEvery,
   items: rows.length,
