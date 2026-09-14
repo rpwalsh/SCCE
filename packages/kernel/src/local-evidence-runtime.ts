@@ -553,6 +553,19 @@ function documentLeadSpan(span: EvidenceSpan): boolean {
   return sourceLeadSpans.get(span) ?? documentOpeningSpan(span);
 }
 
+/** Subject units licensed by the selected source's own identity, rather than by a whole-request fallback anchor. */
+function sourceOwnedSubjectUnitSet(
+  requestText: string,
+  evidence: readonly EvidenceSpan[],
+  functionSymbols?: ReadonlySet<string>
+): Set<string> {
+  const sourceIdentityUnits = uniqueKernelStrings(evidence.flatMap(span =>
+    requestUnitsFromText(`${evidenceTitle(span)} ${evidenceIdentity(span)}`)));
+  return new Set(namedSubjectAnchors(requestText)
+    .flatMap(anchor => splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean))
+    .filter(unit => sourceIdentityUnits.some(sourceUnit => requestUnitMatchesSurface(unit, sourceUnit, functionSymbols))));
+}
+
 export function localEvidenceAnswerSurface(input: {
   requestText: string;
   selectedEvidence: readonly EvidenceSpan[];
@@ -796,7 +809,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
   // as Ada Lovelace" lost the predication check to a Starfield trivia bullet, live 2026-09-10).
   // The named subject's own units, not every derived anchor phrase: derived anchors carry neighbouring request words
   // ("played benjamin sisko"), which would make a relation look like part of the name.
-  const subjectUnitSet = new Set(namedSubjectAnchors(input.requestText).flatMap(anchor => splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean)));
+  const subjectUnitSet = sourceOwnedSubjectUnitSet(input.requestText, evidence, input.functionSymbols);
   const definitional = subjectUnitSet.size > 0 && coverageUnits.every(unit => subjectUnitSet.has(unit));
   const openingRow = definitional
     ? rows.find(row => covers(row) && row.index <= 1 && documentLeadSpan(row.span) && anchored.anchors.length > 0
@@ -4203,7 +4216,7 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
   // it sent "Who is Ada Lovelace?" to a Starfield trivia bullet while her article's lead sat in the pool.
   const leadingScaffoldingUnit = requestLeadingScaffoldingUnit(requestText);
   const coverageUnits = requestContentEvidenceUnits(requestText).filter(unit => unit !== leadingScaffoldingUnit);
-  const subjectUnitSet = new Set(namedSubjectAnchors(requestText).flatMap(anchor => splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean)));
+  const subjectUnitSet = sourceOwnedSubjectUnitSet(requestText, evidence, functionSymbols);
   const definitional = subjectUnitSet.size > 0 && coverageUnits.every(unit => subjectUnitSet.has(unit));
   const openingRow = definitional && !candidates[0]?.nearDuplicate
     ? candidates.find(row => row.index <= 1 && documentLeadSpan(row.span) && anchors.length > 0 && evidenceTitleDistinctAnchorMatches(row.span, anchors) && isProseSentence(row.sentence))
