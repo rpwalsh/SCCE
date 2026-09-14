@@ -323,6 +323,8 @@ export function createRuntimeGraphRetrieval(options: {
 
   async function graphForText(text: string, options: {
     allowSemanticFrameEvidence?: boolean;
+    /** Select evidence spans first, then hydrate only their bounded graph slice. */
+    evidenceFirst?: boolean;
     /** Shared operator-derived access control. When absent, legacy direct callers retain structural fallback behavior. */
     evidenceAccess?: { readonly sourceCodeEvidenceAllowed: boolean };
     sourceAnchoringRequired?: boolean;
@@ -338,6 +340,7 @@ export function createRuntimeGraphRetrieval(options: {
   } = {}) {
     const queryPreparationStarted = Date.now();
     const allowSemanticFrameEvidence = options.allowSemanticFrameEvidence !== false;
+    const evidenceFirst = options.evidenceFirst === true;
     const sourceAnchoringRequired = options.sourceAnchoringRequired ?? requestNeedsSourceAnchoredEvidence(text);
     const sourceCodeEvidenceAllowed = options.evidenceAccess?.sourceCodeEvidenceAllowed
       ?? codeRequestRecognized(codeRequestSignal(text));
@@ -356,7 +359,7 @@ export function createRuntimeGraphRetrieval(options: {
       label: "kernel.graphForText",
       durationMs: Date.now() - queryPreparationStarted,
       counts: { features: features.length, topicTerms: topicTerms.length },
-      support: { sourceAnchoringRequired, residentOnly }
+      support: { sourceAnchoringRequired, residentOnly, evidenceFirst }
     });
     // Namespaced by evaluation condition, which it was not.
     //
@@ -374,6 +377,7 @@ export function createRuntimeGraphRetrieval(options: {
       sourceAnchoringRequired,
       sourceCodeEvidenceAllowed,
       residentOnly,
+      evidenceFirst,
       quotedSequence: sourceAnchoringRequired && hasExplicitQuotationOrGapStructure(text) && requestSentenceSequences(text).length > 0,
       scaffolding: [...(options.requestScaffolding ?? [])].sort()
     })).slice(0, 32);
@@ -486,14 +490,10 @@ export function createRuntimeGraphRetrieval(options: {
         }, "hot-neighborhood");
       }
       const anchoredGraphStarted = Date.now();
-      const graph = await deps.storage.graph.getSlice({
-        evidenceIds: anchoredEvidence.map(span => span.id),
-        evidenceBoundOnly: true,
-        radius: 0,
-        limitNodes: Math.min(sourceAnchorHotNodeLimit, 64),
-        limitEdges: Math.min(sourceAnchorHotEdgeLimit, 128),
-        maxRepresentationBytes: hotNeighborhoodMaxNodeBytes
+      const boundedSlice = await graphForEvidenceIds(anchoredEvidence.map(span => span.id), {
+        adaptiveWidening: evidenceFirst
       });
+      const graph = boundedSlice.graph;
       kernelTrace({
         stage: "graph.resolve.anchor_slice",
         label: "kernel.graphForText",
@@ -503,7 +503,7 @@ export function createRuntimeGraphRetrieval(options: {
       const value: RuntimeGraphSliceValue = {
         graph: {
           ...graph,
-          query: { evidenceIds: anchoredEvidence.map(span => span.id), evidenceBoundOnly: true, radius: 0, limitNodes: Math.min(sourceAnchorHotNodeLimit, 64), limitEdges: Math.min(sourceAnchorHotEdgeLimit, 128), maxRepresentationBytes: hotNeighborhoodMaxNodeBytes }
+          query: { ...graph.query, evidenceIds: anchoredEvidence.map(span => span.id), evidenceBoundOnly: true }
         },
         evidence: mergeEvidenceSpans(anchoredEvidence),
         semanticFrameBoundEvidenceIds: anchoredSelection.semanticFrameBoundEvidenceIds
@@ -527,39 +527,101 @@ export function createRuntimeGraphRetrieval(options: {
         "hot-neighborhood"
       );
     }
-    const value = await graphForTextUncached(text, features, topicTerms);
+    const value = await graphForTextUncached(text, features, topicTerms, evidenceFirst);
     requireDurableGraphLookup = false;
     return cacheGraphSlice(cacheKey, value, "postgres");
   }
 
 
-  async function graphForEvidenceIds(evidenceIds: readonly string[]): Promise<RuntimeGraphSliceValue> {
+  async function graphForEvidenceIds(
+    evidenceIds: readonly string[],
+    options: { radius?: number; adaptiveWidening?: boolean } = {}
+  ): Promise<RuntimeGraphSliceValue> {
     const boundedEvidenceIds = uniqueKernelStrings(evidenceIds).slice(0, 80) as EvidenceSpan["id"][];
     if (!boundedEvidenceIds.length) return {
       graph: { nodes: [], edges: [], hyperedges: [], bounded: true, query: { evidenceIds: [] } },
       evidence: []
     };
-    const cacheKey = hasher.digestHex(JSON.stringify({ evidenceIds: boundedEvidenceIds })).slice(0, 32);
+    const radius = Math.max(0, Math.min(2, Math.floor(options.radius ?? 0)));
+    // Start with the hot source-anchor budget. Each proof-driven widening may
+    // double that bounded budget, but never crosses the graph slice caps.
+    const limitNodes = Math.min(64, Math.max(1, Math.floor(sourceAnchorHotNodeLimit * (options.adaptiveWidening ? 2 ** radius : 1))));
+    const limitEdges = Math.min(128, Math.max(1, Math.floor(sourceAnchorHotEdgeLimit * (options.adaptiveWidening ? 2 ** radius : 1))));
+    const cacheKey = hasher.digestHex(JSON.stringify({
+      evidenceIds: boundedEvidenceIds,
+      radius,
+      adaptiveWidening: options.adaptiveWidening === true
+    })).slice(0, 32);
     const exact = cachedGraphSlice(cacheKey);
-    if (exact) return exact;
+    if (exact) {
+      if (!options.adaptiveWidening || radius >= 2 || !graphCoverageInsufficient(exact.graph, boundedEvidenceIds)) return exact;
+      const widened = await graphForEvidenceIds(boundedEvidenceIds, { radius: radius + 1, adaptiveWidening: true });
+      if (graphCoverageScore(widened.graph, boundedEvidenceIds) > graphCoverageScore(exact.graph, boundedEvidenceIds)) {
+        return cacheGraphSlice(cacheKey, widened, "postgres");
+      }
+      return exact;
+    }
     const graph = await deps.storage.graph.getSlice({
       evidenceIds: boundedEvidenceIds,
       // These IDs already name the prior turn's admitted proof basis. Do not
       // rediscover a neighbourhood before continuing that discourse.
       evidenceBoundOnly: true,
-      radius: 0,
-      limitNodes: sourceAnchorHotNodeLimit,
-      limitEdges: sourceAnchorHotEdgeLimit,
+      radius,
+      limitNodes,
+      limitEdges,
       maxRepresentationBytes: hotNeighborhoodMaxNodeBytes
     });
+    const boundedGraph: GraphSlice = {
+      ...graph,
+      query: {
+        ...graph.query,
+        evidenceIds: boundedEvidenceIds,
+        evidenceBoundOnly: true,
+        radius,
+        limitNodes,
+        limitEdges,
+        maxRepresentationBytes: hotNeighborhoodMaxNodeBytes
+      }
+    };
     const graphEvidenceIds = uniqueKernelStrings([
       ...boundedEvidenceIds.map(String),
+      ...boundedGraph.nodes.flatMap(node => node.evidenceIds.map(String)),
+      ...boundedGraph.edges.flatMap(edge => edge.evidenceIds.map(String)),
+      ...boundedGraph.hyperedges.flatMap(edge => edge.provenanceRefs.map(String))
+    ]).slice(0, 80);
+    const graphEvidence = graphEvidenceIds.length ? await deps.storage.evidence.getEvidenceBatch(graphEvidenceIds as EvidenceSpan["id"][]) : [];
+    const value = { graph: boundedGraph, evidence: graphEvidence };
+    if (options.adaptiveWidening && radius < 2 && graphCoverageInsufficient(boundedGraph, boundedEvidenceIds)) {
+      kernelTrace({
+        stage: "graph.resolve.evidence_first_widen",
+        label: "kernel.graphForEvidenceIds",
+        counts: { evidence: boundedEvidenceIds.length, nodes: boundedGraph.nodes.length, edges: boundedGraph.edges.length, radius },
+        support: { fromRadius: radius, toRadius: radius + 1 }
+      });
+      const widened = await graphForEvidenceIds(boundedEvidenceIds, { radius: radius + 1, adaptiveWidening: true });
+      if (graphCoverageScore(widened.graph, boundedEvidenceIds) > graphCoverageScore(boundedGraph, boundedEvidenceIds)) {
+        return cacheGraphSlice(cacheKey, widened, "postgres");
+      }
+    }
+    return cacheGraphSlice(cacheKey, value, "postgres");
+  }
+
+  function graphCoverageInsufficient(graph: GraphSlice, evidenceIds: readonly string[]): boolean {
+    const coverage = graphCoverageScore(graph, evidenceIds);
+    // A single proof bearing span can stand on its own node. Multiple spans
+    // need either all IDs represented or relation topology to explain their
+    // connection before the bounded slice is sufficient for proof work.
+    return coverage < evidenceIds.length
+      || evidenceIds.length > 1 && graph.edges.length === 0 && graph.hyperedges.length === 0;
+  }
+
+  function graphCoverageScore(graph: GraphSlice, evidenceIds: readonly string[]): number {
+    const represented = new Set<string>([
       ...graph.nodes.flatMap(node => node.evidenceIds.map(String)),
       ...graph.edges.flatMap(edge => edge.evidenceIds.map(String)),
       ...graph.hyperedges.flatMap(edge => edge.provenanceRefs.map(String))
-    ]).slice(0, 80);
-    const graphEvidence = graphEvidenceIds.length ? await deps.storage.evidence.getEvidenceBatch(graphEvidenceIds as EvidenceSpan["id"][]) : [];
-    return cacheGraphSlice(cacheKey, { graph, evidence: graphEvidence }, "postgres");
+    ]);
+    return evidenceIds.filter(id => represented.has(String(id))).length;
   }
 
 
@@ -2115,9 +2177,21 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
   }
 
 
-  async function graphForTextUncached(text: string, features = graphRetrievalFeatures(text), topicTerms = graphTopicTermsForText(text)): Promise<RuntimeGraphSliceValue> {
+  async function graphForTextUncached(
+    text: string,
+    features = graphRetrievalFeatures(text),
+    topicTerms = graphTopicTermsForText(text),
+    evidenceFirst = false
+  ): Promise<RuntimeGraphSliceValue> {
     const evidenceResults = await deps.storage.evidence.searchEvidence({ features, limit: 40 });
     const evidenceIds = evidenceResults.map(item => item.span.id);
+    if (evidenceFirst) {
+      const boundedSlice = await graphForEvidenceIds(evidenceIds, { adaptiveWidening: true });
+      return {
+        ...boundedSlice,
+        evidence: mergeEvidenceSpans([...evidenceResults.map(item => item.span), ...boundedSlice.evidence])
+      };
+    }
     const graph = await deps.storage.graph.getSlice({ evidenceIds, features, topicTerms, radius: 2, limitNodes: 420, limitEdges: 900 });
     const graphEvidenceIds = uniqueKernelStrings([
       ...evidenceIds.map(String),

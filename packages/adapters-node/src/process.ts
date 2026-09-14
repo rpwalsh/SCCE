@@ -6,7 +6,6 @@ import path from "node:path";
 import type { BuildTestPort, BuildTestResult, ConstructGraph, EpisodeId, FileArtifact } from "@scce/kernel";
 import type { ScceRuntimeConfig } from "./config.js";
 import { runProcess } from "./document.js";
-import { repairProgramArtifacts } from "./program-repair.js";
 
 export class NodeBuildTestAdapter implements BuildTestPort {
   constructor(private readonly config: ScceRuntimeConfig) {}
@@ -18,27 +17,23 @@ export class NodeBuildTestAdapter implements BuildTestPort {
     await mkdir(root, { recursive: true });
     const firstArtifacts = input.faultInjection ? injectFault(input.construct.artifacts, input.faultInjection) : input.construct.artifacts;
     await writeArtifacts(root, firstArtifacts);
-    let build = await runExpanded(input.construct.program.build.command, input.construct.program.build.args, root);
-    let test = build.code === 0 ? await runExpanded(input.construct.program.test.command, input.construct.program.test.args, root) : { code: null, stdout: "", stderr: "build failed; tests skipped", durationMs: 0 };
-    let artifacts = firstArtifacts;
-    let repairAttempted = false;
-    let repairApplied = false;
-    const attempts: NonNullable<BuildTestResult["attempts"]> = [{ build, test, artifacts }];
-    if (build.code !== 0 || test.code !== 0) {
-      repairAttempted = true;
-      const repaired = repairProgramArtifacts(firstArtifacts, `${build.stderr}\n${test.stderr}\n${build.stdout}\n${test.stdout}`);
-      if (repaired.changed) {
-        repairApplied = true;
-        artifacts = repaired.artifacts;
-        await rm(root, { recursive: true, force: true });
-        await mkdir(root, { recursive: true });
-        await writeArtifacts(root, artifacts);
-        build = await runExpanded(input.construct.program.build.command, input.construct.program.build.args, root);
-        test = build.code === 0 ? await runExpanded(input.construct.program.test.command, input.construct.program.test.args, root) : { code: null, stdout: "", stderr: "build failed after repair; tests skipped", durationMs: 0 };
-        attempts.push({ build, test, artifacts });
-      }
-    }
-    return { build, test, repairAttempted, repairApplied, passed: build.code === 0 && test.code === 0, artifacts, attempts };
+    const build = await runExpanded(input.construct.program.build.command, input.construct.program.build.args, root);
+    const test = build.code === 0
+      ? await runExpanded(input.construct.program.test.command, input.construct.program.test.args, root)
+      : { code: null, stdout: "", stderr: "build failed; tests skipped", durationMs: 0 };
+    // This port observes execution. It may diagnose a failure, but it must not
+    // select or apply a transformation before the cognitive replan sees it.
+    // The kernel owns failure -> candidate -> selector -> retry authority.
+    const attempts: NonNullable<BuildTestResult["attempts"]> = [{ build, test, artifacts: firstArtifacts }];
+    return {
+      build,
+      test,
+      repairAttempted: false,
+      repairApplied: false,
+      passed: build.code === 0 && test.code === 0,
+      artifacts: firstArtifacts,
+      attempts
+    };
   }
 }
 

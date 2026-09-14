@@ -272,6 +272,99 @@ export interface RepairPlan {
   audit: JsonValue;
 }
 
+export interface ObservedProgramRepairSelection {
+  readonly schema: "scce.program_repair.observed_failure_selection.v1";
+  readonly id: string;
+  readonly repairPlanId: string;
+  readonly programId: string;
+  readonly failureObservationId: string;
+  readonly activeRequirementIds: readonly string[];
+  readonly candidatePatchSetIds: readonly string[];
+  readonly selectedPatchSetId: string | null;
+  readonly rejectionReasonIds: readonly string[];
+  readonly execution: { readonly state: "not_executed" };
+}
+
+/**
+ * Turns an observed failed transition plus the active owner obligations into
+ * an explicit selector. Repair candidates remain inert unless this operator
+ * can bind the failure, the exact program, and one unambiguous low-risk
+ * mutation. It does not inspect request prose and does not mutate artifacts.
+ */
+export function selectObservedProgramRepair(input: {
+  repairPlan: RepairPlan;
+  program: ProgramGraph;
+  build: BuildTestResult;
+  failureObservationId: string;
+  activeRequirementIds: readonly string[];
+  hasher?: Hasher;
+}): ObservedProgramRepairSelection {
+  const hasher = input.hasher ?? createHasher();
+  const rejectionReasonIds = new Set<string>();
+  const activeRequirementIds = [...new Set(input.activeRequirementIds.filter(Boolean))].sort();
+  if (input.repairPlan.programId !== input.program.id) rejectionReasonIds.add("repair.selection.program_mismatch");
+  if (input.build.passed || (input.build.build.code === 0 && input.build.test.code === 0)) {
+    rejectionReasonIds.add("repair.selection.no_observed_failure");
+  }
+  if (!input.failureObservationId) rejectionReasonIds.add("repair.selection.failure_observation_missing");
+  if (activeRequirementIds.length === 0) rejectionReasonIds.add("repair.selection.active_requirement_missing");
+  const boundRequirementIds = new Set(input.program.hydration?.ownerRequirementIds ?? []);
+  if (activeRequirementIds.some(requirementId => !boundRequirementIds.has(requirementId))) {
+    rejectionReasonIds.add("repair.selection.active_requirement_not_bound");
+  }
+
+  const observedHashes = new Map(input.build.artifacts.map(artifact => [artifact.path, String(artifact.contentHash)]));
+  if (observedHashes.size !== input.program.files.length
+    || input.program.files.some(file => observedHashes.get(file.path) !== String(file.contentHash))) {
+    rejectionReasonIds.add("repair.selection.executed_artifacts_mismatch");
+  }
+  const candidates = input.repairPlan.patchSets.filter(patchSet => {
+    if (patchSet.approvalRequired || patchSet.unsupportedFields.length > 0 || patchSet.affectedFiles.length === 0 || patchSet.diagnostics.length === 0) return false;
+    if (patchSet.operations.length === 0) return false;
+    return patchSet.operations.every(operation => operation.kind !== "move"
+      && operation.kind !== "repair.op.diagnostic_note"
+      && patchSet.affectedFiles.includes(operation.path));
+  }).sort((left, right) => right.confidence - left.confidence
+    || left.estimatedRisk - right.estimatedRisk
+    || left.id.localeCompare(right.id));
+  const candidatePatchSetIds = candidates.map(candidate => candidate.id);
+  let selectedPatchSetId: string | null = null;
+  if (rejectionReasonIds.size === 0) {
+    if (candidates.length === 0) {
+      rejectionReasonIds.add("repair.selection.no_admissible_candidate");
+    } else if (candidates.length === 1) {
+      selectedPatchSetId = candidates[0]!.id;
+    } else {
+      const [best, next] = candidates;
+      const bestUtility = best!.confidence - best!.estimatedRisk;
+      const nextUtility = next!.confidence - next!.estimatedRisk;
+      if (bestUtility > nextUtility) selectedPatchSetId = best!.id;
+      else rejectionReasonIds.add("repair.selection.candidate_ambiguity");
+    }
+  }
+  const identity = canonicalStringify({
+    repairPlanId: input.repairPlan.id,
+    programId: input.program.id,
+    failureObservationId: input.failureObservationId,
+    activeRequirementIds,
+    candidatePatchSetIds,
+    selectedPatchSetId,
+    rejectionReasonIds: [...rejectionReasonIds].sort()
+  });
+  return {
+    schema: "scce.program_repair.observed_failure_selection.v1",
+    id: `repair_selection_${hasher.digestHex(identity).slice(0, 32)}`,
+    repairPlanId: input.repairPlan.id,
+    programId: input.program.id,
+    failureObservationId: input.failureObservationId,
+    activeRequirementIds,
+    candidatePatchSetIds,
+    selectedPatchSetId,
+    rejectionReasonIds: [...rejectionReasonIds].sort(),
+    execution: { state: "not_executed" }
+  };
+}
+
 export interface MaterializedProgramRepair {
   program: ProgramGraph;
   changedPaths: string[];
@@ -587,7 +680,10 @@ function materializeSelectedRepairPatchSet(input: {
     };
   });
   const sourceEvidenceIds = sourceHydration.program.provenanceEvidenceIds;
-  if (sourceEvidenceIds.length === 0) throw new Error("program repair materialization requires source-bound program provenance");
+  const ownerRequirementIds = sourceHydration.ownerRequirementIds ?? [];
+  if (sourceEvidenceIds.length === 0 && ownerRequirementIds.length === 0) {
+    throw new Error("program repair materialization requires evidence or owner-requirement provenance");
+  }
   const sourcePlanId = `program-repair:${repairPlan.id}:${patchSet.id}`;
   const materializedHydrationNodeId = `${sourcePlanId}:hydration`;
   const filesByPath = new Map(files.map(file => [file.path, file]));
@@ -675,6 +771,7 @@ function materializeSelectedRepairPatchSet(input: {
     program: graphWithoutHydration,
     sourcePlanId,
     evidenceIds: sourceEvidenceIds,
+    ownerRequirementIds,
     risks: repairPlan.riskList.map(risk => risk.id)
   });
   return {
@@ -811,23 +908,33 @@ function parseDiagnostics(stdout: string, stderr: string, artifacts: readonly Fi
   const lines = text.split(/\r?\n/).filter(Boolean);
   const diagnostics: ProgramDiagnostic[] = [];
   const artifactPaths = artifacts.map(file => file.path);
+  let pendingLocation: { path: string; line?: number; column?: number } | undefined;
   for (const raw of lines) {
     const loc = parseLocation(raw, artifactPaths);
     const matched = matchDiagnosticPattern(raw, patterns);
     const klass = matched?.class ?? diagnosticClassFromText(raw);
-    if (klass === "unknown" && !loc) continue;
+    // Several compilers print the source location on a line before the actual
+    // diagnostic class. Preserve it as context for that diagnostic instead of
+    // manufacturing a second, unsupported "unknown" candidate from the
+    // location header itself.
+    if (klass === "unknown") {
+      if (loc) pendingLocation = loc;
+      continue;
+    }
+    const diagnosticLocation = loc ?? pendingLocation;
+    pendingLocation = undefined;
     const message = raw.length > 500 ? `${raw.slice(0, 497)}...` : raw;
     diagnostics.push({
       id: `diag_${hasher.digestHex(raw).slice(0, 24)}`,
       class: klass,
       patternId: matched?.patternId,
-      path: loc?.path,
-      line: loc?.line,
-      column: loc?.column,
+      path: diagnosticLocation?.path,
+      line: diagnosticLocation?.line,
+      column: diagnosticLocation?.column,
       symbol: matched?.symbol,
       message,
       raw,
-      confidence: diagnosticConfidence(klass, loc, raw, matched?.confidence)
+      confidence: diagnosticConfidence(klass, diagnosticLocation, raw, matched?.confidence)
     });
   }
   return dedupeDiagnostics(diagnostics);
@@ -1824,7 +1931,7 @@ function delimiterRepair(line: string): string {
 }
 
 function closingForFile(file: FileArtifact): string {
-  if (file.path.endsWith(".ts") || file.path.endsWith(".tsx") || file.path.endsWith(".js") || file.path.endsWith(".jsx")) return "}";
+  if (/\.(?:[cm]?[jt]s|[jt]sx)$/u.test(file.path)) return "}";
   if (file.path.endsWith(".rs") || file.path.endsWith(".cs")) return "}";
   if (file.path.endsWith(".py")) return "";
   return "";
