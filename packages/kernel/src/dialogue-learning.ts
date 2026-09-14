@@ -305,6 +305,35 @@ export function targetProfilePatternRecord(input: {
  * opaque profile blobs. `alpha` is the family's own strength: how far its weights have moved from the neutral 0.5 the
  * profile starts at, so a family nothing has taught yet reads as weak instead of as a confident 0.5.
  */
+/**
+ * Reconstructs the active dialogue style from the latest typed profile
+ * patterns. Each family is a durable snapshot, so only its newest record may
+ * influence a turn. The fold is over opaque feature IDs and numeric weights;
+ * no request-language surface is parsed here.
+ */
+export function styleProfileFromTargetProfilePatterns(input: {
+  patterns: readonly TargetProfilePatternRecord[];
+  base?: UserStyleProfile;
+}): UserStyleProfile {
+  const profile = cloneProfile(input.base ?? DEFAULT_USER_STYLE_PROFILE);
+  const newestByFamily = new Map<string, TargetProfilePatternRecord>();
+  for (const record of [...input.patterns].sort((left, right) =>
+    right.updatedAt - left.updatedAt || right.id.localeCompare(left.id)
+  )) {
+    if (!newestByFamily.has(record.patternFamilyId)) newestByFamily.set(record.patternFamilyId, record);
+  }
+  for (const record of newestByFamily.values()) {
+    if (!isRecord(record.patternJson) || !isRecord(record.patternJson.weights)) continue;
+    const alpha = clamp01(record.alpha);
+    for (const [featureId, rawWeight] of Object.entries(record.patternJson.weights)) {
+      if (typeof rawWeight !== "number" || !Number.isFinite(rawWeight)) continue;
+      const prior = profile.weights[featureId] ?? 0.5;
+      profile.weights[featureId] = clamp01(prior + alpha * (clamp01(rawWeight) - prior));
+    }
+  }
+  return profile;
+}
+
 export function targetProfilePatternsFromProfile(input: {
   targetProfileId: string;
   profile: UserStyleProfile;

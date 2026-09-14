@@ -26,6 +26,7 @@ import { compileCreativeRequestFrameFromCompatibilityModels, type CreativeReques
 import { createCounterfactualCognition } from "./counterfactual-cognition.js";
 import { traceEvent } from "./debug/trace.js";
 import { updateDialogueState } from "./dialogue-pragmatics.js";
+import { styleProfileFromTargetProfilePatterns } from "./dialogue-learning.js";
 import {
   createDiscourseTurnObservationV2,
   discourseObjectStateFromMetadata,
@@ -561,7 +562,7 @@ export function createProductionTurnRuntime(options: {
   const {
     evidenceOwnedLanguageClusterCached, hydrateSurfaceLanguageMemoryCached, requestSemanticFrames, warmSurfaceLanguageMemory,
     sourceOwnedLanguageClusterForAlias, sourceOwnedLanguageProfilesCached, surfaceLanguageClusterCached,
-    surfaceLanguageProfilesCached, uniqueRecordsById
+    surfaceLanguageProfilesCached, targetProfilePatternsCached, uniqueRecordsById
   } = surfaceLanguageRuntime;
   // A resident-only hydration miss must never crash the turn: an ordinary
   // question whose language cluster had never been touched before (a
@@ -990,11 +991,29 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const previousDialogueCognitiveState = previousDialogueCognitiveStateFromMetadata(input.metadata, hasher);
       const dialogueInterpretationAdjustments = dialogueInterpretationAdjustmentsFromMetadata(input.metadata, previousDialogueCognitiveState);
       const requestedConversationId = requestedConversationIdFromMetadata(input.metadata);
+      const dialogueTargetProfileId = translationTarget ?? locale;
+      const durableDialoguePatterns = deps.evaluationCondition?.flags.disableLanguageMemory === true
+        ? []
+        : await targetProfilePatternsCached(dialogueTargetProfileId, undefined, fastRuntimeBudget)
+          .catch(() => []);
+      const durableDialogueStyle = durableDialoguePatterns.length
+        ? styleProfileFromTargetProfilePatterns({
+          patterns: durableDialoguePatterns,
+          base: previousDialogueState?.userStyleProfile
+        })
+        : undefined;
+      kernelTrace({
+        stage: "runtime.dialogue_profile.hydrate",
+        label: "kernel.turn",
+        counts: { patternFamilies: durableDialoguePatterns.length },
+        support: { targetProfileId: dialogueTargetProfileId, applied: Boolean(durableDialogueStyle) }
+      });
       const authorityDialogueState = updateDialogueState({
         requestText: input.text,
-        targetLanguage: translationTarget ?? locale,
+        targetLanguage: dialogueTargetProfileId,
         previousState: previousDialogueState,
-        conversationId: requestedConversationId ?? previousDialogueState?.conversationId
+        conversationId: requestedConversationId ?? previousDialogueState?.conversationId,
+        ...(durableDialogueStyle ? { statePatch: { userStyleProfile: durableDialogueStyle } } : {})
       });
       // Plan items 221-228: real, durable, cross-turn document-generation
       // sessions (deps.storage.documentGeneration, a genuine Postgres-

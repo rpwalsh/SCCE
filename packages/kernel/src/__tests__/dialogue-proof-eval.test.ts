@@ -22,6 +22,7 @@ import {
   realizeDialogueResponse,
   replayDialogueOutcomeMemory,
   runBlindPairwiseEval,
+  styleProfileFromTargetProfilePatterns,
   targetProfilePatternRecord,
   userCorrectionFromOutcome,
   verifyProofPreservingParaphrases,
@@ -148,6 +149,28 @@ describe("dialogue proof/eval milestone", () => {
     });
     expect(record.patternFamilyId).toMatch(/^tpf\.[a-f0-9]{8}$/u);
     expect(record.evidenceIds).toEqual(["evidence.ko"]);
+  });
+
+  it("applies only the newest typed profile family to a later dialogue state", () => {
+    const older = targetProfilePatternRecord({
+      targetProfileId: "lang.fixture",
+      patternFamilyId: TARGET_PROFILE_PATTERN_FAMILY_IDS.rhythm,
+      patternJson: { weights: { [INTERACTION_FEATURE_IDS.compactness]: 0.9 } },
+      alpha: 1,
+      now: 1000
+    });
+    const newer = targetProfilePatternRecord({
+      targetProfileId: "lang.fixture",
+      patternFamilyId: TARGET_PROFILE_PATTERN_FAMILY_IDS.rhythm,
+      patternJson: { weights: { [INTERACTION_FEATURE_IDS.compactness]: 0.1 } },
+      alpha: 0.8,
+      now: 2000
+    });
+    const restored = styleProfileFromTargetProfilePatterns({
+      patterns: [older, newer],
+      base: DEFAULT_USER_STYLE_PROFILE
+    });
+    expect(restored.weights[INTERACTION_FEATURE_IDS.compactness]).toBeCloseTo(0.192, 8);
   });
 
   it("rejects proof-preserving paraphrases that drop negation or protected spans", () => {
