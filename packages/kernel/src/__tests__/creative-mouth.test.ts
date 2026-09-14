@@ -13,6 +13,7 @@ import {
   createSemanticEntailmentEngine,
   creativeRequestFrameContentTerms,
   creativeSurfaceSentenceUnits,
+  INTERACTION_FEATURE_IDS,
   detailPolicyForProfile,
   featureSet,
   inventionConstructNode,
@@ -210,11 +211,21 @@ describe("creative Mouth production boundary", () => {
 
     const first = await mouth.speak(input);
     const second = await mouth.speak(input);
+    const compact = await mouth.speak({
+      ...input,
+      dialogueUserStyleProfile: { ...input.dialogueUserStyleProfile, weights: { [INTERACTION_FEATURE_IDS.compactness]: 0.92 } }
+    });
+    const expanded = await mouth.speak({
+      ...input,
+      dialogueUserStyleProfile: { ...input.dialogueUserStyleProfile, weights: { [INTERACTION_FEATURE_IDS.compactness]: 0.08 } }
+    });
     const structuralTrace = record(record(first.realizationTrace.languageMemory).structuralCreative);
 
     expect(first.force).toBe("creative");
     expect(first.text).toBe(second.text);
     expect(generationContexts.some(context => context.includes("river"))).toBe(true);
+    expect(record(compact.realizationTrace.discoursePlan).targetDetailProfileId)
+      .not.toBe(record(expanded.realizationTrace.discoursePlan).targetDetailProfileId);
     // The structural-creative narrative realizer (english-structural-realizer.ts)
     // is fully removed: this lane is permanently absent, not conditionally gated.
     expect(structuralTrace).toMatchObject({
