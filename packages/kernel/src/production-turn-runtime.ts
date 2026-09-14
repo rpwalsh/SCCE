@@ -26,7 +26,7 @@ import { compileCreativeRequestFrameFromCompatibilityModels, type CreativeReques
 import { createCounterfactualCognition } from "./counterfactual-cognition.js";
 import { traceEvent } from "./debug/trace.js";
 import { dialogueTargetProfileId, updateDialogueState } from "./dialogue-pragmatics.js";
-import { styleProfileFromTargetProfilePatterns } from "./dialogue-learning.js";
+import { dialogueInterpretationAdjustmentsForConversation, styleProfileFromTargetProfilePatterns } from "./dialogue-learning.js";
 import {
   createDiscourseTurnObservationV2,
   resolveDiscourseStateV2,
@@ -1067,8 +1067,17 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       warmOperatorOutcomeSupport(dialogueConversationId);
       const durableOperatorOutcomeSupport = residentOperatorOutcomeSupport.get(dialogueConversationId) ?? {};
       const residentCognitiveState = residentDialogueCognitiveState(dialogueConversationId);
-      const restoredCognitiveState = residentCognitiveState
-        ?? await dialogueCognitiveMemory.latest(dialogueConversationId).catch(() => undefined);
+      // Corrections are a separate durable record from the cognitive-state
+      // head. A fresh process therefore must hydrate both before candidate
+      // selection; relying on the previous state's copied adjustments made a
+      // restart forget an owner correction until another turn happened to
+      // persist it into the state projection.
+      const [restoredCognitiveState, durableDialogueInterpretationAdjustments] = await Promise.all([
+        residentCognitiveState
+          ? Promise.resolve(residentCognitiveState)
+          : dialogueCognitiveMemory.latest(dialogueConversationId).catch(() => undefined),
+        dialogueInterpretationAdjustmentsForConversation(deps.storage.dialogueMemory, dialogueConversationId).catch(() => [])
+      ]);
       if (restoredCognitiveState) residentDialogueCognitiveStates.set(dialogueConversationId, restoredCognitiveState);
       const previousDialogueCognitiveState = preferDialogueCognitiveStateV2({
         conversationId: dialogueConversationId,
@@ -1077,7 +1086,11 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         hasher
       });
       if (!previousDialogueCognitiveState) warmDialogueCognitiveState(dialogueConversationId);
-      const dialogueInterpretationAdjustments = dialogueInterpretationAdjustmentsFromMetadata(input.metadata, previousDialogueCognitiveState);
+      const dialogueInterpretationAdjustments = dialogueInterpretationAdjustmentsFromMetadata(
+        input.metadata,
+        previousDialogueCognitiveState,
+        durableDialogueInterpretationAdjustments
+      );
       const durableDialogueProfileId = dialogueTargetProfileId(dialogueConversationId, translationTarget ?? locale);
       const durableDialoguePatterns = deps.evaluationCondition?.flags.disableLanguageMemory === true
         ? []
@@ -6005,11 +6018,15 @@ function previousDialogueCognitiveStateFromMetadata(
 
 export function dialogueInterpretationAdjustmentsFromMetadata(
   metadata: JsonValue | undefined,
-  previousState?: import("./discourse-state.js").DialogueCognitiveStateV2
+  previousState?: import("./discourse-state.js").DialogueCognitiveStateV2,
+  durableAdjustments: readonly DiscourseInterpretationAdjustmentV2[] = []
 ): DiscourseInterpretationAdjustmentV2[] {
   const dialogue = jsonRecord(jsonRecord(metadata).dialogue);
   const byId = new Map<string, DiscourseInterpretationAdjustmentV2>();
   for (const value of previousState?.interpretationAdjustments ?? []) {
+    if (isDiscourseInterpretationAdjustmentV2(value)) byId.set(value.id, value);
+  }
+  for (const value of durableAdjustments) {
     if (isDiscourseInterpretationAdjustmentV2(value)) byId.set(value.id, value);
   }
   const incoming = Array.isArray(dialogue.interpretationAdjustments) ? dialogue.interpretationAdjustments : [];

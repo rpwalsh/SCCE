@@ -223,6 +223,34 @@ describe("dialogue proof/eval milestone", () => {
     expect(replayed?.result.finalText).toContain("token.alpha");
   });
 
+  it("carries typed open work into the next communicative act and stream order", () => {
+    const first = realizeDialogueResponse({
+      requestText: "begin typed continuation",
+      answerGraph: supportedGraph({ actions: [] }),
+      statePatch: {
+        activeTask: "task.typed.continuation",
+        unresolvedSlots: ["slot.typed.owner"]
+      }
+    });
+    const next = buildTurnDialogueBridge({
+      requestText: "continue typed continuation",
+      result: minimalTurnResult({ answer: "token.alpha remains supported.", evidenceText: "token.alpha remains supported." }),
+      conversationId: first.state.conversationId,
+      turnId: "turn.typed.continuation.next",
+      previousState: first.state
+    });
+
+    expect(next.pragmatics.state.activeTask).toBe("task.typed.continuation");
+    expect(next.pragmatics.state.unresolvedSlots).toContain("slot.typed.owner");
+    expect(next.pragmatics.policyDecision.selectedActionIds).toEqual(expect.arrayContaining([
+      DIALOGUE_ACTION_IDS.clarify,
+      DIALOGUE_ACTION_IDS.plan,
+      DIALOGUE_ACTION_IDS.nextStep
+    ]));
+    const nextSegment = next.streamPlan.segments.find(segment => segment.roleId === "stream.c8197f2a");
+    expect(nextSegment?.dependencies).toContain("stream.6f2e9c31");
+  });
+
   it("runs a blinded pairwise eval without training on provider names", async () => {
     const prompts = [{
       id: "prompt.eval.1",
