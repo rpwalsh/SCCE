@@ -512,11 +512,89 @@ function generalDirectness(candidate: SurfaceEnergyCandidate, context: SurfaceEn
 function generalStructure(candidate: SurfaceEnergyCandidate, context: SurfaceEnergyContext, stats: SurfaceStats): TermScore {
   const fragmentFit = clamp01(1 - fragmentCost(candidate, context, stats).raw);
   const boundaryFit = clamp01(1 - boundaryInstability(candidate, context, stats).raw);
+  const discourse = discourseStructureFit(candidate, context.discoursePlan, stats);
   const plannedUnits = context.discoursePlan?.units.length ?? context.surfacePlan.orderedPoints.length;
   const observedUnits = Math.max(1, stats.sentences.length);
   const planFit = clamp01(1 - Math.abs(observedUnits - Math.max(1, plannedUnits)) / Math.max(2, plannedUnits));
-  const raw = clamp01(fragmentFit * 0.42 + boundaryFit * 0.31 + planFit * 0.27);
+  // Sentence count is only a coarse proxy. When the typed discourse plan is
+  // present, reward a surface whose recorded transitions follow the planned
+  // unit order and boundary kinds, while retaining the generic fallback for
+  // callers that do not provide a discourse plan.
+  const structureFit = context.discoursePlan ? discourse.raw : planFit;
+  const raw = clamp01(fragmentFit * 0.34 + boundaryFit * 0.25 + structureFit * 0.41);
   return { raw, reasonIds: [raw >= 0.6 ? "surface.general.structure.stable" : "surface.general.structure.weak"], trace: toJsonValue({ fragmentFit, boundaryFit, planFit, plannedUnits, observedUnits }) };
+}
+
+function discourseStructureFit(
+  candidate: SurfaceEnergyCandidate,
+  plan: DiscoursePlan | undefined,
+  stats: SurfaceStats
+): TermScore {
+  if (!plan?.units.length) return { raw: 1, reasonIds: ["surface.discourse.structure.unplanned"], trace: toJsonValue({ plannedUnits: 0 }) };
+  const units = plan.units;
+  const decisions = candidate.boundaryDecisions ?? [];
+  const transitions = Math.max(0, units.length - 1);
+  const expectedByPair = new Map<string, string>();
+  for (let index = 1; index < units.length; index++) {
+    const previous = units[index - 1]!;
+    const current = units[index]!;
+    expectedByPair.set(`${previous.id}\u0000${current.id}`, current.boundaryBefore);
+  }
+  const matchingTransitions = decisions.filter(decision => {
+    const expected = expectedByPair.get(`${decision.fromUnitId}\u0000${decision.toUnitId}`);
+    return expected !== undefined && expected === decision.kind;
+  }).length;
+  const transitionCoverage = transitions
+    ? clamp01(matchingTransitions / transitions)
+    : 1;
+  const observedBoundaryCoverage = transitions
+    ? clamp01(stats.boundaryTexts.length / transitions)
+    : 1;
+  const roleOrder = units.map(unit => {
+    if (unit.role === "answer") return 0;
+    if (unit.role === "instruction") return 1;
+    if (unit.role === "support" || unit.role === "example" || unit.role === "artifact_summary") return 2;
+    if (unit.role === "caveat") return 3;
+    if (unit.role === "conclusion") return 4;
+    return 2;
+  });
+  const orderViolations = roleOrder.slice(1).filter((rank, index) => rank < (roleOrder[index] ?? rank)).length;
+  const orderFit = clamp01(1 - orderViolations / Math.max(1, roleOrder.length - 1));
+  const stylePairs = units.slice(1).map((unit, index) => {
+    const previous = units[index]!;
+    const styleMatch = unit.targetStyleProfileId === previous.targetStyleProfileId ? 1 : 0;
+    const detailMatch = unit.targetDetailProfileId === previous.targetDetailProfileId ? 1 : 0;
+    const registerDistance = vectorDistanceOptional(unit.registerVector, previous.registerVector);
+    return styleMatch * 0.42 + detailMatch * 0.33 + (1 - registerDistance) * 0.25;
+  });
+  const styleContinuity = stylePairs.length ? mean(stylePairs) : 1;
+  const raw = clamp01(transitionCoverage * 0.52 + observedBoundaryCoverage * 0.18 + orderFit * 0.16 + styleContinuity * 0.14);
+  return {
+    raw,
+    reasonIds: [raw >= 0.6 ? "surface.discourse.structure.aligned" : "surface.discourse.structure.drift"],
+    trace: toJsonValue({
+      plannedUnits: units.length,
+      plannedTransitions: transitions,
+      matchingTransitions,
+      transitionCoverage,
+      observedBoundaryCoverage,
+      orderViolations,
+      orderFit,
+      styleContinuity,
+      unitRoles: units.map(unit => unit.role),
+      boundaryKinds: units.slice(1).map(unit => unit.boundaryBefore),
+      styleProfiles: units.map(unit => [unit.targetStyleProfileId, unit.targetDetailProfileId])
+    })
+  };
+}
+
+function vectorDistanceOptional(left: readonly number[] | undefined, right: readonly number[] | undefined): number {
+  if (!left?.length || !right?.length) return 0;
+  const length = Math.min(left.length, right.length);
+  if (!length) return 0;
+  let total = 0;
+  for (let index = 0; index < length; index++) total += Math.abs(clamp01(left[index] ?? 0) - clamp01(right[index] ?? 0));
+  return clamp01(total / length);
 }
 
 function generalStyleFit(candidate: SurfaceEnergyCandidate, context: SurfaceEnergyContext, stats: SurfaceStats): TermScore {
