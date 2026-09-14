@@ -40,9 +40,28 @@ describe("surface language resident-only cache", () => {
     );
 
     expect(residentLanguage).toBe(language);
+    expect(residentLanguage.state.scope).toMatchObject({ mode: "unscoped", degraded: true, purityProven: false });
+    expect(residentLanguage.state.models).toEqual([]);
+    expect(residentLanguage.state.continuationPopulation).toBeUndefined();
     expect(residentFrames.map(frame => frame.id)).toEqual(frames.map(frame => frame.id));
     expect(residentProfiles.profiles).toBe(profiles.profiles);
     expect(fixture.totalDurableCalls()).toBe(durableCallsAfterWarmup);
+  });
+
+  it("keeps absent data for a selected language retryable after caching an unscoped decision", async () => {
+    const fixture = runtimeFixture();
+    await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "no-language-selected");
+    const hydrate = () => fixture.runtime.hydrateSurfaceLanguageMemoryCached(
+      12, undefined, "language-scoped", undefined, "", { languageId: "language.fixture" }
+    );
+    const first = await hydrate();
+    expect(first.state.models).toEqual([]);
+    const callsBeforeRetry = fixture.totalDurableCalls();
+    await hydrate();
+    expect(fixture.totalDurableCalls()).toBeGreaterThan(callsBeforeRetry);
+    await expect(fixture.runtime.hydrateSurfaceLanguageMemoryCached(
+      12, undefined, "language-scoped", undefined, "", { languageId: "language.fixture", residentOnly: true }
+    )).rejects.toThrow(/was not warmed/u);
   });
 
   it("fails explicitly on an unwarmed resident-only request without durable calls", async () => {
