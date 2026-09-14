@@ -32,6 +32,7 @@ import {
   type FieldState,
   type LanguageProfile,
   type ProgramConstructIntent,
+  type ProgramGraph,
   type ProgramHydrationContract,
   type SemanticEntailmentResult,
   type SourceCodeFileFacts,
@@ -428,6 +429,82 @@ describe("ProgramGraph runtime and artifact emission", () => {
       expect(passing.status, `${passing.stdout}\n${passing.stderr}`).toBe(0);
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("emits selected filter and fold IR through Node and Python runtimes", () => {
+    const cases = [
+      {
+        request: [
+          "Create retainTrue(input).",
+          "retainTrue([false,true]) => [true]",
+          "retainTrue([true,false,true]) => [true,true]",
+          "retainTrue([false,true,false]) => [true]"
+        ].join("\n"),
+        language: "node" as const,
+        operator: "filter_sequence",
+        expectedSource: ".filter((_programElement1)",
+        command: (program: ProgramGraph) => [process.execPath, ...program.test.args]
+      },
+      {
+        request: [
+          "Create a Python function total(input).",
+          "total([1,2,3]) => 6",
+          "total([4]) => 4",
+          "total([2,3]) => 5"
+        ].join("\n"),
+        language: "python" as const,
+        operator: "fold_sequence",
+        expectedSource: "functools",
+        command: (program: ProgramGraph) => [program.test.command, ...program.test.args]
+      }
+    ];
+
+    for (const item of cases) {
+      const signal = codeRequestSignal(item.request);
+      const intent = required(programIntentForTurn({
+        requestedAuthority: "program",
+        activeOperatorIds: [COGNITIVE_OPERATOR_IDS.programPlanning],
+        codeSignal: signal,
+        evidence: []
+      }));
+      const probe = required(buildProgram(item.request, [], intent).program);
+      const retry = replanOwnerBehaviorProgramIntent({
+        intent,
+        program: probe,
+        failure: {
+          observationId: `owner.${item.operator}.validation.failure.kernel`,
+          programId: probe.id,
+          planHash: `owner-${item.operator}-plan`,
+          validatorId: `validator.owner.${item.language}`,
+          checkId: "tests",
+          status: "failed",
+          ownerRequirementIds: intent.behaviorRequirements?.map(requirement => requirement.id) ?? [],
+          command: probe.test
+        },
+        hasher
+      });
+      const selected = required(retry.intent.behaviorTransformationCandidates?.find(candidate =>
+        retry.intent.selectedBehaviorTransformationIds?.includes(candidate.id)
+      ));
+      expect(selected.operator).toBe(item.operator);
+
+      const repaired = required(buildProgram(item.request, [], retry.intent).program);
+      const source = required(repaired.files.find(file => file.path === repaired.entrypoint));
+      expect(source.content).toContain(item.expectedSource);
+      expect(source.content).not.toContain("expectedResult");
+      const root = mkdtempSync(join(tmpdir(), `scce-owner-${item.operator}-`));
+      try {
+        mkdirSync(join(root, "src"));
+        mkdirSync(join(root, "test"));
+        for (const artifact of repaired.files.filter(file => file.path.endsWith(item.language === "python" ? ".py" : ".mjs"))) {
+          writeFileSync(join(root, artifact.path), artifact.content, "utf8");
+        }
+        const executed = spawnSync(item.command(repaired)[0]!, item.command(repaired).slice(1), { cwd: root, encoding: "utf8" });
+        expect(executed.status, `${executed.stdout}\n${executed.stderr}`).toBe(0);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
     }
   });
 

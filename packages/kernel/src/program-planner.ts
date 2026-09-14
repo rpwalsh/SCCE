@@ -2794,27 +2794,38 @@ ${operations}
 `;
 }
 
-function renderPythonProgramExpression(expression: ProgramExpression, elementBinding = "_program_element_0", depth = 0): string {
+function renderPythonProgramExpression(expression: ProgramExpression, elementBinding = "_program_element_0", depth = 0, accumulatorBinding = "_program_accumulator_0"): string {
   if (expression.kind === "argument") return `args[${expression.index}]`;
   if (expression.kind === "element") return elementBinding;
+  if (expression.kind === "accumulator") return accumulatorBinding;
   if (expression.kind === "literal") return String(expression.value);
   if (expression.kind === "value") return pythonJsonLiteral(expression.value);
-  if (expression.kind === "member") return `${renderPythonProgramExpression(expression.subject, elementBinding, depth)}[${JSON.stringify(expression.key)}]`;
-  if (expression.kind === "sequence") return `[${expression.items.map(item => renderPythonProgramExpression(item, elementBinding, depth)).join(", ")}]`;
-  if (expression.kind === "mapping") return `{${expression.entries.map(entry => `${JSON.stringify(entry.key)}: ${renderPythonProgramExpression(entry.value, elementBinding, depth)}`).join(", ")}}`;
-  if (expression.kind === "cardinality") return `len(${renderPythonProgramExpression(expression.operand, elementBinding, depth)})`;
-  if (expression.kind === "equivalent") return `(${renderPythonProgramExpression(expression.left, elementBinding, depth)} == ${renderPythonProgramExpression(expression.right, elementBinding, depth)})`;
+  if (expression.kind === "member") return `${renderPythonProgramExpression(expression.subject, elementBinding, depth, accumulatorBinding)}[${JSON.stringify(expression.key)}]`;
+  if (expression.kind === "sequence") return `[${expression.items.map(item => renderPythonProgramExpression(item, elementBinding, depth, accumulatorBinding)).join(", ")}]`;
+  if (expression.kind === "mapping") return `{${expression.entries.map(entry => `${JSON.stringify(entry.key)}: ${renderPythonProgramExpression(entry.value, elementBinding, depth, accumulatorBinding)}`).join(", ")}}`;
+  if (expression.kind === "cardinality") return `len(${renderPythonProgramExpression(expression.operand, elementBinding, depth, accumulatorBinding)})`;
+  if (expression.kind === "equivalent") return `(${renderPythonProgramExpression(expression.left, elementBinding, depth, accumulatorBinding)} == ${renderPythonProgramExpression(expression.right, elementBinding, depth, accumulatorBinding)})`;
   if (expression.kind === "map_sequence") {
     const nextBinding = `_program_element_${depth + 1}`;
-    return `[${renderPythonProgramExpression(expression.projection, nextBinding, depth + 1)} for ${nextBinding} in ${renderPythonProgramExpression(expression.source, elementBinding, depth)}]`;
+    return `[${renderPythonProgramExpression(expression.projection, nextBinding, depth + 1, accumulatorBinding)} for ${nextBinding} in ${renderPythonProgramExpression(expression.source, elementBinding, depth, accumulatorBinding)}]`;
   }
-  if (expression.kind === "unary") return `(-${renderPythonProgramExpression(expression.operand, elementBinding, depth)})`;
-  if (expression.operator === "minimum") return `min(${renderPythonProgramExpression(expression.left, elementBinding, depth)}, ${renderPythonProgramExpression(expression.right, elementBinding, depth)})`;
-  if (expression.operator === "maximum") return `max(${renderPythonProgramExpression(expression.left, elementBinding, depth)}, ${renderPythonProgramExpression(expression.right, elementBinding, depth)})`;
+  if (expression.kind === "filter_sequence") {
+    const nextBinding = `_program_element_${depth + 1}`;
+    return `[${nextBinding} for ${nextBinding} in ${renderPythonProgramExpression(expression.source, elementBinding, depth, accumulatorBinding)} if ${renderPythonProgramExpression(expression.predicate, nextBinding, depth + 1, accumulatorBinding)}]`;
+  }
+  if (expression.kind === "fold_sequence") {
+    const nextElement = `_program_element_${depth + 1}`;
+    const nextAccumulator = `_program_accumulator_${depth + 1}`;
+    return `__import__("functools").reduce(lambda ${nextAccumulator}, ${nextElement}: ${renderPythonProgramExpression(expression.reducer, nextElement, depth + 1, nextAccumulator)}, ${renderPythonProgramExpression(expression.source, elementBinding, depth, accumulatorBinding)}, ${renderPythonProgramExpression(expression.initial, elementBinding, depth, accumulatorBinding)})`;
+  }
+  if (expression.kind === "conditional") return `(${renderPythonProgramExpression(expression.whenTrue, elementBinding, depth, accumulatorBinding)} if ${renderPythonProgramExpression(expression.condition, elementBinding, depth, accumulatorBinding)} else ${renderPythonProgramExpression(expression.whenFalse, elementBinding, depth, accumulatorBinding)})`;
+  if (expression.kind === "unary") return `(-${renderPythonProgramExpression(expression.operand, elementBinding, depth, accumulatorBinding)})`;
+  if (expression.operator === "minimum") return `min(${renderPythonProgramExpression(expression.left, elementBinding, depth, accumulatorBinding)}, ${renderPythonProgramExpression(expression.right, elementBinding, depth, accumulatorBinding)})`;
+  if (expression.operator === "maximum") return `max(${renderPythonProgramExpression(expression.left, elementBinding, depth, accumulatorBinding)}, ${renderPythonProgramExpression(expression.right, elementBinding, depth, accumulatorBinding)})`;
   const operator = expression.operator === "add" ? "+"
     : expression.operator === "subtract" ? "-"
       : expression.operator === "multiply" ? "*" : "/";
-  return `(${renderPythonProgramExpression(expression.left, elementBinding, depth)} ${operator} ${renderPythonProgramExpression(expression.right, elementBinding, depth)})`;
+  return `(${renderPythonProgramExpression(expression.left, elementBinding, depth, accumulatorBinding)} ${operator} ${renderPythonProgramExpression(expression.right, elementBinding, depth, accumulatorBinding)})`;
 }
 
 function pythonJsonLiteral(value: unknown): string {
@@ -2917,28 +2928,39 @@ function renderStatefulLiteral(value: unknown): string {
   return rendered === undefined ? "undefined" : rendered;
 }
 
-function renderProgramExpression(expression: ProgramExpression, elementBinding = "_programElement0", depth = 0): string {
+function renderProgramExpression(expression: ProgramExpression, elementBinding = "_programElement0", depth = 0, accumulatorBinding = "_programAccumulator0"): string {
   if (expression.kind === "argument") return `args[${expression.index}]`;
   if (expression.kind === "element") return elementBinding;
+  if (expression.kind === "accumulator") return accumulatorBinding;
   if (expression.kind === "literal") return JSON.stringify(expression.value);
   if (expression.kind === "value") return JSON.stringify(expression.value);
-  if (expression.kind === "member") return `${renderProgramExpression(expression.subject, elementBinding, depth)}[${JSON.stringify(expression.key)}]`;
-  if (expression.kind === "sequence") return `[${expression.items.map(item => renderProgramExpression(item, elementBinding, depth)).join(", ")}]`;
-  if (expression.kind === "mapping") return `Object.fromEntries([${expression.entries.map(entry => `[${JSON.stringify(entry.key)}, ${renderProgramExpression(entry.value, elementBinding, depth)}]`).join(", ")}])`;
-  if (expression.kind === "cardinality") return `${renderProgramExpression(expression.operand, elementBinding, depth)}.length`;
-  if (expression.kind === "equivalent") return `JSON.stringify(${renderProgramExpression(expression.left, elementBinding, depth)}) === JSON.stringify(${renderProgramExpression(expression.right, elementBinding, depth)})`;
+  if (expression.kind === "member") return `${renderProgramExpression(expression.subject, elementBinding, depth, accumulatorBinding)}[${JSON.stringify(expression.key)}]`;
+  if (expression.kind === "sequence") return `[${expression.items.map(item => renderProgramExpression(item, elementBinding, depth, accumulatorBinding)).join(", ")}]`;
+  if (expression.kind === "mapping") return `Object.fromEntries([${expression.entries.map(entry => `[${JSON.stringify(entry.key)}, ${renderProgramExpression(entry.value, elementBinding, depth, accumulatorBinding)}]`).join(", ")}])`;
+  if (expression.kind === "cardinality") return `${renderProgramExpression(expression.operand, elementBinding, depth, accumulatorBinding)}.length`;
+  if (expression.kind === "equivalent") return `JSON.stringify(${renderProgramExpression(expression.left, elementBinding, depth, accumulatorBinding)}) === JSON.stringify(${renderProgramExpression(expression.right, elementBinding, depth, accumulatorBinding)})`;
   if (expression.kind === "map_sequence") {
     const nextBinding = `_programElement${depth + 1}`;
-    return `${renderProgramExpression(expression.source, elementBinding, depth)}.map((${nextBinding}) => ${renderProgramExpression(expression.projection, nextBinding, depth + 1)})`;
+    return `${renderProgramExpression(expression.source, elementBinding, depth, accumulatorBinding)}.map((${nextBinding}) => ${renderProgramExpression(expression.projection, nextBinding, depth + 1, accumulatorBinding)})`;
   }
-  if (expression.kind === "unary") return `(-${renderProgramExpression(expression.operand, elementBinding, depth)})`;
+  if (expression.kind === "filter_sequence") {
+    const nextBinding = `_programElement${depth + 1}`;
+    return `${renderProgramExpression(expression.source, elementBinding, depth, accumulatorBinding)}.filter((${nextBinding}) => ${renderProgramExpression(expression.predicate, nextBinding, depth + 1, accumulatorBinding)})`;
+  }
+  if (expression.kind === "fold_sequence") {
+    const nextElement = `_programElement${depth + 1}`;
+    const nextAccumulator = `_programAccumulator${depth + 1}`;
+    return `${renderProgramExpression(expression.source, elementBinding, depth, accumulatorBinding)}.reduce((${nextAccumulator}, ${nextElement}) => ${renderProgramExpression(expression.reducer, nextElement, depth + 1, nextAccumulator)}, ${renderProgramExpression(expression.initial, elementBinding, depth, accumulatorBinding)})`;
+  }
+  if (expression.kind === "conditional") return `(${renderProgramExpression(expression.condition, elementBinding, depth, accumulatorBinding)} ? ${renderProgramExpression(expression.whenTrue, elementBinding, depth, accumulatorBinding)} : ${renderProgramExpression(expression.whenFalse, elementBinding, depth, accumulatorBinding)})`;
+  if (expression.kind === "unary") return `(-${renderProgramExpression(expression.operand, elementBinding, depth, accumulatorBinding)})`;
   const operator = expression.operator === "add" ? "+"
     : expression.operator === "subtract" ? "-"
       : expression.operator === "multiply" ? "*"
         : expression.operator === "divide" ? "/" : undefined;
-  if (expression.operator === "minimum") return `Math.min(${renderProgramExpression(expression.left, elementBinding, depth)}, ${renderProgramExpression(expression.right, elementBinding, depth)})`;
-  if (expression.operator === "maximum") return `Math.max(${renderProgramExpression(expression.left, elementBinding, depth)}, ${renderProgramExpression(expression.right, elementBinding, depth)})`;
-  return `(${renderProgramExpression(expression.left, elementBinding, depth)} ${operator} ${renderProgramExpression(expression.right, elementBinding, depth)})`;
+  if (expression.operator === "minimum") return `Math.min(${renderProgramExpression(expression.left, elementBinding, depth, accumulatorBinding)}, ${renderProgramExpression(expression.right, elementBinding, depth, accumulatorBinding)})`;
+  if (expression.operator === "maximum") return `Math.max(${renderProgramExpression(expression.left, elementBinding, depth, accumulatorBinding)}, ${renderProgramExpression(expression.right, elementBinding, depth, accumulatorBinding)})`;
+  return `(${renderProgramExpression(expression.left, elementBinding, depth, accumulatorBinding)} ${operator} ${renderProgramExpression(expression.right, elementBinding, depth, accumulatorBinding)})`;
 }
 
 /** The emitted test: every property the emitter must keep, exercised against the emitted program by running it. */
