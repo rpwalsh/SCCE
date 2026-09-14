@@ -1064,7 +1064,6 @@ function candidateKindFromProposal(proposal: CognitiveProposal): CandidateSurfac
   if (bases.has("causal_inference")) return "causal-inference";
   if (bases.has("temporal_inference")) return "temporal-inference";
   if (bases.has("translated")) return "translation";
-  if (bases.has("invented")) return "creative-candidate";
   if (operators.has("operator.cognition.workspace_repair.v1")) return "workspace-proposal";
   if (operators.has("operator.cognition.action_planning.v1")) return "action-preview";
   // Incidental artifacts (e.g. a reasoning chain that happens to touch
@@ -1072,6 +1071,12 @@ function candidateKindFromProposal(proposal: CognitiveProposal): CandidateSurfac
   // reasoning proposal as a program-proposal -- only real program-planning
   // activation does.
   if (operators.has("operator.cognition.program_planning.v1")) return "program-proposal";
+  // Program planning is a typed construction authority. Its design claims
+  // are intentionally invented (they describe a proposed implementation),
+  // but that does not turn the proposal into a creative answer. Keep the
+  // operator provenance ahead of the claim basis so program requests cannot
+  // route their own implementation plan through the creative surface.
+  if (bases.has("invented")) return "creative-candidate";
   if (operators.has("operator.cognition.transformation.v1")) return "transformation";
   return "reasoned-synthesis";
 }

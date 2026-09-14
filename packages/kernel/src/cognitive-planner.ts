@@ -796,6 +796,12 @@ function orderedCompositionDrafts(input: CognitivePlannerInput, operators: Activ
 // Program planning alone licenses a program proposal: an implementation request is artifact demand, not novelty
 // demand, and requiring the invention operator as well left every such turn with zero program proposals.
 function programDesignDrafts(input: CognitivePlannerInput, operators: ActivatedOperator[]): ProposalDraft[] {
+  // Algorithm and architecture are novelty-bearing design meanings. A high
+  // executable-artifact demand alone licenses a source-grounded program
+  // proposal, but it must not manufacture a design proposal when the typed
+  // turn state carries only a routine implementation demand. Other typed
+  // program proposal families remain available to those turns.
+  if (input.requirements.noveltyDemand < 0.7) return [];
   if (!operatorRequirementGate(
     input.requirements,
     operators,
