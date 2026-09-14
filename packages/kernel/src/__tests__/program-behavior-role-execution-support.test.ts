@@ -1,11 +1,51 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
 import {
+  behaviorRoleExecutionGraphInputFromTaskConstraintGraph,
   projectProgramBehaviorRoleExecutionSupport,
   type BehaviorRoleExecutionGraphInput,
   type BehaviorRoleExecutionReceiptInput
 } from "../program-behavior-role-execution-support.js";
 
 describe("program behavior role execution support", () => {
+  it("extracts construction and command identities from the exact task graph", () => {
+    const extracted = behaviorRoleExecutionGraphInputFromTaskConstraintGraph({
+      schema: "scce.workspace.task_constraint_graph.v1",
+      id: "graph.exact",
+      workspaceRevision: graph().workspaceRevision,
+      analyzerRevision: { ...graph().analyzerRevision, compilerContext: null },
+      nodes: [{
+        id: "node.construction",
+        kindId: "scce.program.behavior_role_construction.v1",
+        subjectId: "construction.role",
+        evidenceSpanIds: ["span.behavior"],
+        contentHashes: [],
+        metadata: {
+          id: "construction.role",
+          memberObservationIds: ["observation.b", "observation.a"]
+        }
+      }, {
+        id: "node.command",
+        kindId: "scce.task.validation.command.v1",
+        subjectId: "command.tests",
+        evidenceSpanIds: [],
+        contentHashes: [],
+        metadata: { commandId: "command.tests", checkId: "tests" }
+      }],
+      admissibleValidationCommandNodeIds: ["node.command"]
+    } as never);
+
+    expect(extracted).toMatchObject({
+      constructions: [{
+        id: "construction.role",
+        memberObservationIds: ["observation.a", "observation.b"],
+        evidenceSpanIds: ["span.behavior"]
+      }],
+      validationCommandBindings: [{ commandId: "command.tests", checkId: "tests" }]
+    });
+  });
+
   it("projects only passing tests execution onto graph-bound structural constructions", () => {
     const result = projectProgramBehaviorRoleExecutionSupport({
       graph: graph(),
@@ -21,14 +61,14 @@ describe("program behavior role execution support", () => {
       constructionId: "construction.role",
       memberObservationIds: ["observation.a", "observation.b"],
       graphId: "graph.exact",
-      planHash: "sha256:plan",
-      transactionReceiptHash: "sha256:receipt",
-      validationEvidenceHash: "sha256:evidence",
-      testCommandBindings: [{
-        commandId: "command.tests",
+      planHash: hash("a"),
+      transactionReceiptHash: hash("b"),
+      validationEvidenceHash: hash("c"),
+      testExecution: {
         commandIndex: 1,
-        commandEvidenceHash: "sha256:command-tests"
-      }]
+        commandEvidenceHash: hash("3"),
+        graphCommandIds: ["command.tests"]
+      }
     });
   });
 
@@ -42,11 +82,16 @@ describe("program behavior role execution support", () => {
       .toThrow();
   });
 
-  it("rejects tests execution when the exact graph has no tests command binding", () => {
-    expect(() => projectProgramBehaviorRoleExecutionSupport({
+  it("retains server test execution when the graph has no source-observed tests command", () => {
+    const result = projectProgramBehaviorRoleExecutionSupport({
       graph: { ...graph(), validationCommandBindings: [{ commandId: "command.build", checkId: "compiler" }] },
       receipt: receipt([outcome("tests", 0)])
-    })).toThrow(/graph-bound tests/u);
+    });
+    expect(result[0]?.testExecution).toEqual({
+      commandIndex: 0,
+      commandEvidenceHash: hash("3"),
+      graphCommandIds: []
+    });
   });
 });
 
@@ -57,12 +102,12 @@ function graph(): BehaviorRoleExecutionGraphInput {
     workspaceRevision: {
       workspaceId: "workspace.exact",
       revisionId: "revision.exact",
-      revisionHash: "sha256:revision"
+      revisionHash: hash("d")
     },
     analyzerRevision: {
       analyzerId: "analyzer.typescript",
       analyzerVersion: "5.8.3",
-      semanticRevisionHash: "sha256:semantic"
+      semanticRevisionHash: hash("e")
     },
     validationCommandBindings: [
       { commandId: "command.build", checkId: "compiler" },
@@ -72,7 +117,8 @@ function graph(): BehaviorRoleExecutionGraphInput {
     constructions: [{
       id: "construction.role",
       kindId: "scce.program.behavior_role_construction.v1",
-      memberObservationIds: ["observation.b", "observation.a"]
+      memberObservationIds: ["observation.b", "observation.a"],
+      evidenceSpanIds: ["span.behavior"]
     }]
   };
 }
@@ -81,7 +127,7 @@ function outcome(checkId: "compiler" | "typecheck" | "tests", commandIndex: numb
   return {
     checkId,
     commandIndex,
-    commandEvidenceHash: `sha256:command-${checkId}`,
+    commandEvidenceHash: hash(checkId === "tests" ? "3" : checkId === "compiler" ? "4" : "5"),
     executed: true,
     passed: true
   } as const;
@@ -89,9 +135,13 @@ function outcome(checkId: "compiler" | "typecheck" | "tests", commandIndex: numb
 
 function receipt(commandOutcomes: BehaviorRoleExecutionReceiptInput["commandOutcomes"]): BehaviorRoleExecutionReceiptInput {
   return {
-    planHash: "sha256:plan",
-    transactionReceiptHash: "sha256:receipt",
-    validationEvidenceHash: "sha256:evidence",
+    planHash: hash("a"),
+    transactionReceiptHash: hash("b"),
+    validationEvidenceHash: hash("c"),
     commandOutcomes
   };
+}
+
+function hash(character: string): `sha256:${string}` {
+  return `sha256:${character.repeat(64)}`;
 }

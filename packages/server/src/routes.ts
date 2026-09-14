@@ -7,9 +7,9 @@ import { realpath, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 import { assertHydratedRuntimeReady, collectRepoFilesForCognition, createLearnedCodeProposer, createTypeScriptCodeMouthPorts, runCodeMouth, createDockerSandboxPatchValidationProvider, createNodeRuntime, createWorkspaceRuntime, diagnoseDocumentTools, executeWorkspacePatchTransaction, resolveSecret, runStructuredPatchValidation, trustedHostPatchValidationProvider, verifiedCompilerPlansForTurn, WorkspacePatchTransactionError, type readScceRuntimeConfig, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type WorkspaceCodingPatchPlanningInput, type WorkspacePatchPlanningInput, type WorkspaceRuntimeOptions, applySetting, settingsView, listLocalModels, downloadModel, removeLocalModel, formatBytes } from "@scce/adapters-node";
-import type { BenchmarkInput, CausalAnalysisRequest, CausalDiscoveryRequest, CausalAssumptionDag, CausalAssumptionEdge, CausalObservation, ConversationTurnRecord, DialogueInterpretationCorrectionInput, GraphSlice, IdentificationDesign, IngestInput, InspectionTarget, JsonValue, NodeId, OwnerInput, PatchTransactionPlan, ProgramGraph, RequestedAuthority, SourceAdmissionContext, SourceTrust, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
+import type { BenchmarkInput, CausalAnalysisRequest, CausalDiscoveryRequest, CausalAssumptionDag, CausalAssumptionEdge, CausalObservation, ConversationTurnRecord, DialogueInterpretationCorrectionInput, EventLedger, GraphSlice, IdentificationDesign, IngestInput, InspectionTarget, JsonValue, NodeId, OwnerInput, PatchTransactionPlan, ProgramGraph, RequestedAuthority, SourceAdmissionContext, SourceTrust, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
 import {
-  curriculumItemFromPlan,
+  behaviorRoleExecutionGraphInputFromTaskConstraintGraph, createProgramBehaviorValidationLedger, PROGRAM_BEHAVIOR_VALIDATION_PLAN_BINDING_SCHEMA, curriculumItemFromPlan,
   learningConsentInput,
   listHeldSources,
   reviewHeldSource, summarizeForTrace, installProdCalibrations, clearProdCalibrations, prodCalibrationIds, CALIBRATION_SEARCH_IDS, createFrontierBroadCapabilityTasks, FRONTIER_BROAD_CAPABILITY_SUITE_ID, CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, CAUSAL_DISCOVERY_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, SUPPORTED_PROGRAM_REPAIR_FAMILIES, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createCapabilityExecutorRegistry, createClock, createDialogueCognitiveMemoryV2, createCorrectionEngine, createEventFactory, createHasher, createIdFactory, dialogueOutcomeMemoryForConversation, dialogueInterpretationAdjustmentsForConversation, previewDialogueLearning, dispatchCapabilityTask, dispatchRollbackAttempt, executiveResumePlan, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan, type CapabilityExecutor, type DurableExecutiveEpisode } from "@scce/kernel";
@@ -140,7 +140,7 @@ export const ROUTES = [
   { method: "POST", path: "/api/workspace/ask", label: "workspace ask", mutates: true, requiresDb: true },
   { method: "POST", path: "/api/workspace/outcome", label: "workspace answer outcome", mutates: true, requiresDb: true },
   { method: "POST", path: "/api/workspace/patch/plan", label: "workspace patch plan", mutates: false, requiresDb: true },
-  { method: "POST", path: "/api/workspace/patch/plan/request", label: "workspace coding request plan", mutates: false, requiresDb: true },
+  { method: "POST", path: "/api/workspace/patch/plan/request", label: "workspace coding request plan", mutates: true, requiresDb: true },
   { method: "POST", path: "/api/workspace/patch", label: "workspace patch transaction", mutates: true, requiresDb: true },
   { method: "POST", path: "/api/workspace/code", label: "workspace code edit", mutates: true, requiresDb: false },
   // These legacy GET handlers persist workspace/report records. The manifest
@@ -570,7 +570,8 @@ async function dispatch(
       policy,
       provider,
       executive: context.runtime.executive,
-      ownerId: context.config.security?.informationAccess?.principalId
+      ownerId: context.config.security?.informationAccess?.principalId,
+      events: context.runtime.storage.events
     }));
   }
   if (req.method === "GET" && url.pathname.startsWith("/api/project/")) {
@@ -2265,7 +2266,18 @@ export async function planWorkspacePatchApiRequest(context: ApiContext, request:
  * the same unauthorized exact-byte planner as the structured proposal route. */
 export async function planWorkspaceCodingPatchApiRequest(context: ApiContext, request: WorkspaceCodingPatchPlanApiRequest) {
   try {
-    return await createWorkspaceRuntime(context).planCodingPatch(request.input);
+    const result = await createWorkspaceRuntime(context).planCodingPatch(request.input);
+    if ("constraintGraph" in result && "plan" in result && result.plan) {
+      const graph = behaviorRoleExecutionGraphInputFromTaskConstraintGraph(result.constraintGraph);
+      if (graph.constructions.length > 0) {
+        await programBehaviorValidationLedger(context.runtime.storage.events).bindPlan({
+          schema: PROGRAM_BEHAVIOR_VALIDATION_PLAN_BINDING_SCHEMA,
+          planHash: result.plan.planHash,
+          graph
+        });
+      }
+    }
+    return result;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (message.startsWith("coding request is unsupported:")) throw new HttpError(422, message);
@@ -2402,6 +2414,10 @@ export interface WorkspacePatchApiResponse {
   readonly workspaceId: string;
   readonly validationPolicyId: string;
   readonly receipt: Awaited<ReturnType<typeof executeWorkspacePatchTransaction>>;
+  readonly behaviorLearning?:
+    | { readonly state: "recorded"; readonly supportIds: readonly string[] }
+    | { readonly state: "not_applicable" }
+    | { readonly state: "persistence_failed"; readonly reason: string };
 }
 
 export function parseWorkspacePatchRequest(value: unknown): WorkspacePatchApiRequest {
@@ -3182,6 +3198,8 @@ export async function executeWorkspacePatchApiRequest(input: {
   /** When present, routes execution through the durable executive dispatcher (plan item 45); when absent, the pre-existing direct path is unchanged. */
   readonly executive?: DurableExecutiveEpisode;
   readonly ownerId?: string;
+  /** Existing durable event ledger used to join server-authored plan bindings to real receipts. */
+  readonly events?: EventLedger;
 }): Promise<WorkspacePatchApiResponse> {
   if (input.workspace.id !== input.request.workspaceId) throw new HttpError(409, "workspaceId does not identify the selected workspace");
   if (input.policy.id !== input.request.validationPolicyId) throw new HttpError(400, "validationPolicyId is not registered for this request");
@@ -3215,11 +3233,13 @@ export async function executeWorkspacePatchApiRequest(input: {
         runTransaction
       })
       : await runTransaction();
+    const behaviorLearning = await recordProgramBehaviorLearning(input.events, receipt);
     return {
       schemaVersion: WORKSPACE_PATCH_RESPONSE_SCHEMA,
       workspaceId: input.request.workspaceId,
       validationPolicyId: input.request.validationPolicyId,
-      receipt
+      receipt,
+      ...(behaviorLearning ? { behaviorLearning } : {})
     };
   } catch (error) {
     if (!(error instanceof WorkspacePatchTransactionError)) throw error;
@@ -4072,6 +4092,47 @@ async function validatedInterpretationCorrection(input: {
     supportMass: preferred.confidence,
     contradictionMass: binding.confidence
   };
+}
+
+async function recordProgramBehaviorLearning(
+  events: EventLedger | undefined,
+  receipt: Awaited<ReturnType<typeof executeWorkspacePatchTransaction>>
+): Promise<WorkspacePatchApiResponse["behaviorLearning"]> {
+  if (!events) return undefined;
+  if (!receipt.validation?.executedChecks?.some(check => check.checkId === "tests")) return { state: "not_applicable" };
+  try {
+    const ledger = programBehaviorValidationLedger(events);
+    const binding = await ledger.loadPlan(receipt.planHash);
+    if (!binding) return { state: "not_applicable" };
+    const supports = await ledger.recordExecution({
+      planHash: receipt.planHash,
+      receipt: {
+        planHash: receipt.planHash,
+        transactionReceiptHash: receipt.receiptHash,
+        validationEvidenceHash: receipt.validation.evidenceHash,
+        commandOutcomes: receipt.validation.executedChecks.map(check => ({
+          checkId: check.checkId,
+          commandIndex: check.commandIndex,
+          commandEvidenceHash: check.commandEvidenceHash,
+          executed: true,
+          passed: true
+        }))
+      }
+    });
+    return { state: "recorded", supportIds: supports.map(support => support.id) };
+  } catch (error) {
+    return { state: "persistence_failed", reason: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+function programBehaviorValidationLedger(events: EventLedger) {
+  const clock = createClock();
+  const hasher = createHasher();
+  return createProgramBehaviorValidationLedger({
+    events,
+    clock,
+    hasher
+  });
 }
 
 /** The translation pair a corrected outcome may carry, or nothing when the correction was not a translation. */
