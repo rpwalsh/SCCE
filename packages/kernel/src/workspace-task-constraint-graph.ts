@@ -132,6 +132,14 @@ export interface WorkspaceConstraintSemanticProgram {
     readonly targetFileId?: string;
     readonly targetSymbolId?: string;
     readonly evidenceSpan: WorkspaceConstraintEvidenceSpan;
+    readonly observation?: {
+      readonly id: string;
+      readonly kindId: "scce.program.test_call_observation.v1";
+      readonly subjectCallId: string;
+      readonly inputSpans: readonly WorkspaceConstraintEvidenceSpan[];
+      readonly contextCallIds: readonly string[];
+      readonly contextArgumentSpans: readonly WorkspaceConstraintEvidenceSpan[];
+    };
   }[];
 }
 
@@ -644,8 +652,29 @@ export function buildWorkspaceTaskConstraintGraph(
       metadata: toJsonValue({ testFileId: relation.testFileId, targetFileId: relation.targetFileId, targetSymbolId: relation.targetSymbolId })
     });
     dependencyNodeIds.add(dependency.id);
-    addEdge("scce.rel.task.target_has_test_dependency.v1", targetSymbol?.id ?? ensureFileNode(targetFile!.path)!.id, dependency.id, [evidenceSpanId]);
+    const targetNodeId = targetSymbol?.id ?? ensureFileNode(targetFile!.path)!.id;
+    addEdge("scce.rel.task.target_has_test_dependency.v1", targetNodeId, dependency.id, [evidenceSpanId]);
     addEdge("scce.rel.task.dependency_targets_file.v1", dependency.id, testFileNode.id, [evidenceSpanId]);
+    if (relation.observation) {
+      const inputEvidenceSpanIds = uniqueSorted(relation.observation.inputSpans.map(registerSpan));
+      const contextArgumentEvidenceSpanIds = uniqueSorted(relation.observation.contextArgumentSpans.map(registerSpan));
+      const observationEvidenceSpanIds = uniqueSorted([evidenceSpanId, ...inputEvidenceSpanIds, ...contextArgumentEvidenceSpanIds]);
+      const observation = addNode({
+        kindId: relation.observation.kindId,
+        subjectId: requiredId(relation.observation.id, "test observation id"),
+        path: testFile.path,
+        evidenceSpanIds: observationEvidenceSpanIds,
+        contentHashes: observationEvidenceSpanIds.map(id => evidenceById.get(id)!.contentHash),
+        metadata: toJsonValue({
+          subjectCallId: relation.observation.subjectCallId,
+          contextCallIds: uniqueSorted(relation.observation.contextCallIds),
+          inputEvidenceSpanIds,
+          contextArgumentEvidenceSpanIds
+        })
+      });
+      addEdge("scce.rel.task.test_observation_constrains_target.v1", observation.id, targetNodeId, observationEvidenceSpanIds);
+      addEdge("scce.rel.task.test_dependency_carries_observation.v1", dependency.id, observation.id, observationEvidenceSpanIds);
+    }
   }
 
   const explicitlyRequestedPaths = new Set(input.request.requestedPaths.map(validateWorkspacePath));
@@ -800,7 +829,11 @@ function semanticSpans(program: WorkspaceConstraintSemanticProgram): WorkspaceCo
     ...program.diagnostics.flatMap(item => [item.span, ...(item.relatedEvidence ?? []).map(evidence => evidence.span)].filter((span): span is WorkspaceConstraintEvidenceSpan => Boolean(span))),
     ...program.configOwnership.flatMap(item => [item.configSpan, item.fileSpan]),
     ...program.commands.flatMap(item => [item.nameSpan, item.commandSpan]),
-    ...program.testRelations.map(item => item.evidenceSpan)
+    ...program.testRelations.flatMap(item => [
+      item.evidenceSpan,
+      ...(item.observation?.inputSpans ?? []),
+      ...(item.observation?.contextArgumentSpans ?? [])
+    ])
   ];
 }
 

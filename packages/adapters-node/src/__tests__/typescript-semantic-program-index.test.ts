@@ -80,6 +80,14 @@ describe("revision-bound TypeScript semantic program index", () => {
         targetSymbolId: greet!.id,
         targetFileId: fileRecord(index, "src/greet.ts").id
       }));
+      const observedCall = index.testRelations.find(relation => relation.targetSymbolId === greet!.id && relation.callId);
+      expect(observedCall?.observation).toMatchObject({
+        kindId: "scce.program.test_call_observation.v1",
+        subjectCallId: observedCall?.callId
+      });
+      expect(observedCall?.observation?.inputSpans.map(span => spanText(fixture.entries, span))).toEqual(["\"Case\""]);
+      expect(observedCall?.observation?.contextArgumentSpans.map(span => spanText(fixture.entries, span))).toEqual(["\"hello Case\""]);
+      expect(observedCall?.observation?.contextCallIds).toHaveLength(2);
     } finally {
       await rm(fixture.root, { recursive: true, force: true });
     }
@@ -142,7 +150,7 @@ async function createFixture(): Promise<{ root: string; entries: Record<string, 
     }),
     "src/greet.ts": "export function greet(name: string): string { return `hello ${name}`; }\n",
     "src/use.ts": "import { greet } from \"./greet.js\";\nexport const output = greet(\"Ada\");\nexport const broken: string = 42;\n",
-    "checks/greet.case.ts": "import { greet } from \"../src/greet.js\";\nexport const observed = greet(\"Case\");\n"
+    "checks/greet.case.ts": "import { greet } from \"../src/greet.js\";\nfunction observe<T>(value: T) { return { same(expected: T): void { void expected; } }; }\nobserve(greet(\"Case\")).same(\"hello Case\");\n"
   };
   for (const [workspacePath, content] of Object.entries(entries)) {
     const absolutePath = path.join(root, ...workspacePath.split("/"));
