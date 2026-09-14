@@ -919,6 +919,14 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         : await requestSemanticFrames(input.text, { residentOnly: fastRuntimeBudget })
           .catch(async error => {
             if (!fastRuntimeBudget || !isResidentRuntimeNotWarmError(error)) throw error;
+            if (deadlineCheckpoint("kernel.turn.request_frames_escalation", REQUEST_SEMANTIC_FRAME_ESCALATION_MS)?.allowed === false) {
+              kernelTrace({
+                stage: "runtime.seed.request_frames.budget_exceeded",
+                label: "kernel.turn",
+                support: { budgetMs: REQUEST_SEMANTIC_FRAME_ESCALATION_MS }
+              });
+              return [];
+            }
             return requestSemanticFrames(input.text, { residentOnly: false });
           });
       kernelTrace({
@@ -5606,6 +5614,8 @@ const LANGUAGE_CLUSTER_ESCALATION_MS = 900;
  * that case. What it buys is that a hydration this brain can actually finish is not thrown away half-done.
  */
 const LANGUAGE_MEMORY_DURABLE_ESCALATION_MS = 5_000;
+/** What a cold semantic-frame fallback must be able to spend before it is admitted. */
+const REQUEST_SEMANTIC_FRAME_ESCALATION_MS = 900;
 
 /** Calibration steps to accumulate before one write. Learning is per turn; persistence is not. */
 const TURN_REQUIREMENT_FLUSH_STEPS = 16;
