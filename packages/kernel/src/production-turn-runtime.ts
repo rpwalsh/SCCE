@@ -2719,20 +2719,17 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       let productionTranslationPlan: TranslationPlan | undefined;
       if (translationTarget) {
         const canonicalTranslationTarget = canonicalTranslationTargetKey(translationTarget);
-        const priorAlignments = await deps.storage.languageMemory.listTranslationAlignments({ targetLanguage: canonicalTranslationTarget, limit: 500 });
-        // Plan item 121: real bilingual correspondence a prior call already
-        // induced and persisted for this target language, so this request's
-        // own (possibly sparse) admitted evidence is not the only source of
-        // seed substitution.
-        const durableSeeds = deps.storage.translationSeeds
-          ? await deps.storage.translationSeeds.listSeeds(canonicalTranslationTarget)
-          : [];
-        // Plan item 127: durable multi-symbol constructions from prior
-        // requests, reusable against a new sentence binding the same
-        // symbols in a different context.
-        const durableConstructions = deps.storage.translationConstructions
-          ? await deps.storage.translationConstructions.listConstructions(canonicalTranslationTarget)
-          : [];
+        // These are independent read models for the same target. Keep their contents identical while allowing
+        // storage adapters to overlap their durable I/O instead of paying three serial round trips per turn.
+        const [priorAlignments, durableSeeds, durableConstructions] = await Promise.all([
+          deps.storage.languageMemory.listTranslationAlignments({ targetLanguage: canonicalTranslationTarget, limit: 500 }),
+          deps.storage.translationSeeds
+            ? deps.storage.translationSeeds.listSeeds(canonicalTranslationTarget)
+            : Promise.resolve([]),
+          deps.storage.translationConstructions
+            ? deps.storage.translationConstructions.listConstructions(canonicalTranslationTarget)
+            : Promise.resolve([])
+        ]);
         productionTranslationPlan = translationEngine.plan({
           text: input.text,
           targetLanguage: translationTarget,
