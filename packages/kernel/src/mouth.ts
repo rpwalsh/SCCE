@@ -64,6 +64,7 @@ import {
   languageGenerationSurfaceAdequate,
   semanticFrameSurfaces,
   type LanguageGenerationResult,
+  type LanguageDiscourseMove,
   type LanguageMemoryRuntime,
   type LanguageMemoryRuntimeState,
   type LanguageMemoryScore
@@ -3834,7 +3835,7 @@ function creativeCandidatesFromFrames(
       ...generationImportedPriorIds(generation),
       ...priorPieces.filter(piece => containsSurface(text, piece.text) || overlapsClaim(piece.text, text)).map(piece => piece.id)
     ]);
-    const generatedSentenceCandidates = creativeSurfaceSentenceUnits(text, discoursePlan)
+    const generatedSentenceCandidates = creativeSurfaceSentenceUnits(text, discoursePlan, generation.discourse.moves)
       .map((unit, index): SentenceCandidate => ({
         unitId: discoursePlan.units[index]?.id ?? `disc:creative:${variant.id}:${index}`,
         role: unit.role,
@@ -3885,17 +3886,25 @@ function creativeCandidatesFromFrames(
 }
 
 /** Preserve the generated surface while exposing its discourse units to the trace and judge. */
-export function creativeSurfaceSentenceUnits(text: string, discoursePlan?: DiscoursePlan): Array<{ text: string; role: DiscourseUnitRole }> {
+export function creativeSurfaceSentenceUnits(
+  text: string,
+  discoursePlan?: DiscoursePlan,
+  discourseMoves?: readonly LanguageDiscourseMove[]
+): Array<{ text: string; role: DiscourseUnitRole }> {
   return splitSurfaceSentences(text)
     .map(sentence => tidySurface(sentence))
     .filter(Boolean)
-    .map((sentence, index) => ({
-      text: sentence,
-      // Preserve the planner's typed discourse role when the generated
-      // surface can be aligned by sentence position. The fallback retains
-      // the previous answer/support shape for callers without a plan.
-      role: discoursePlan?.units[index]?.role ?? (index === 0 ? "answer" : "support")
-    }));
+    .map((sentence, index) => {
+      const move = discourseMoves?.[index];
+      const moveFrameIds = new Set(move?.frameIds ?? []);
+      const typedUnit = discoursePlan?.units.find(unit => (unit.frameIds ?? []).some(frameId => moveFrameIds.has(frameId)));
+      return {
+        text: sentence,
+        // Learned discourse moves carry the semantic alignment. Position is
+        // only a fallback for older generation results without frame IDs.
+        role: typedUnit?.role ?? discoursePlan?.units[index]?.role ?? (index === 0 ? "answer" : "support")
+      };
+    });
 }
 
 function unitIntervalJsonNumber(value: JsonValue | undefined): number | undefined {
