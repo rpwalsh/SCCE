@@ -316,6 +316,15 @@ export function updateDialogueState(input: DialogueStateUpdateInput): DialogueSt
   };
 }
 
+/**
+ * A learned interaction preference belongs to one dialogue identity and its
+ * target language. The address is opaque so persistence never turns a locale
+ * label into a shared user-style bucket.
+ */
+export function dialogueTargetProfileId(conversationId: string, targetLanguage?: string): string {
+  return `dialogue.profile.${hashText(canonicalStringify({ conversationId, targetLanguage: targetLanguage ?? "und" })).slice(0, 24)}`;
+}
+
 export function planDialoguePolicy(input: { state: DialogueState; answerGraph: DialogueAnswerGraphLike; targetLanguage?: string }): DialoguePolicyDecision {
   const state = input.state;
   const profile = state.userStyleProfile;
@@ -370,7 +379,7 @@ export function planDialoguePolicy(input: { state: DialogueState; answerGraph: D
     id: `dialogue.policy.${hashText(canonicalStringify({ state, graph: input.answerGraph.id, selectedActionIds })).slice(0, 24)}`,
     conversationId: state.conversationId,
     turnId: state.turnId,
-    targetProfileId: input.targetLanguage ?? "und",
+    targetProfileId: dialogueTargetProfileId(state.conversationId, input.targetLanguage),
     rhythmId,
     selectedActionIds,
     rankedActions,
