@@ -3,8 +3,9 @@
 import { createHash } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import type { RepairOperation } from "@scce/kernel";
+import type { ProgramDiagnostic, RepairOperation, WorkspaceTransformationFamilySelection } from "@scce/kernel";
 import { deriveTypeScriptCodeActionRepair, type TypeScriptCodeActionSnapshotFile } from "./typescript-code-actions.js";
+import { planObservedTypeScriptFailure } from "./workspace-runtime.js";
 
 const CONTENT_HASH = (content: string): `sha256:${string}` => `sha256:${createHash("sha256").update(content, "utf8").digest("hex")}`;
 
@@ -13,6 +14,7 @@ export interface CompilerRepairProposal {
   surface: string;
   fixName: string;
   diagnosticCode: number;
+  selection?: WorkspaceTransformationFamilySelection;
 }
 
 export interface CompilerRepairCandidates {
@@ -133,6 +135,7 @@ export async function proposeCompilerOwnedRepair(input: {
   targetText: string;
   requestText: string;
   attempt: number;
+  diagnostics?: readonly ProgramDiagnostic[];
   imports?: readonly string[];
   tsconfigPath?: string;
 }): Promise<CompilerRepairProposal | CompilerRepairCandidates | undefined> {
@@ -156,7 +159,14 @@ export async function proposeCompilerOwnedRepair(input: {
   }
   if (!repair) return undefined;
 
-  const transformation = repair.transformations[0];
+  let transformation = repair.transformations[0];
+  let selection: WorkspaceTransformationFamilySelection | undefined;
+  if (!transformation && repair.selection.mode === "unselected_candidates" && input.diagnostics?.length) {
+    const planned = await planObservedTypeScriptFailure({ root, targetPath: relativeTarget, targetText: input.targetText,
+      requestText: input.requestText, diagnostics: input.diagnostics }).catch(() => undefined);
+    transformation = planned?.transformation;
+    selection = planned?.selection;
+  }
   if (!transformation) {
     const candidates = repair.selection.candidates
       .map(candidate => ({ diagnosticCode: candidate.diagnosticCode, fixName: candidate.fixName, codeFixIdentity: candidate.codeFixIdentity }))
@@ -177,7 +187,8 @@ export async function proposeCompilerOwnedRepair(input: {
     }],
     surface: transformation.afterContent,
     fixName: transformation.codeFix.fixName,
-    diagnosticCode: transformation.diagnostic.code
+    diagnosticCode: transformation.diagnostic.code,
+    ...(selection ? { selection } : {})
   };
 }
 
