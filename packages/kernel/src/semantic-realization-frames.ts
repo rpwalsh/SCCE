@@ -25,7 +25,7 @@ export function languageGenerationFramesFromContract(
   const fact = contract.sourceFact;
   const evidenceIds = contract.evidenceIds;
   const pointId = `semantic-contract:${fact.relationId || "relation"}:${fact.sourceNodeId}:${fact.targetNodeId}`;
-  const requiredTerms: LanguageGenerationTerm[] = [
+  const candidateTerms: (LanguageGenerationTerm | undefined)[] = [
     fact.subject ? { id: `${pointId}:term:subject`, text: fact.subject, weight: 0.96, source: fact.sourceNodeId || "semantic-contract" } : undefined,
     ...contract.requiredRelationUnits.filter(Boolean).map((text, index) => ({
       id: `${pointId}:term:relation:${index}`,
@@ -34,7 +34,8 @@ export function languageGenerationFramesFromContract(
       source: fact.relationId || "semantic-contract"
     })),
     fact.object ? { id: `${pointId}:term:object`, text: fact.object, weight: 1, source: fact.targetNodeId || "semantic-contract" } : undefined
-  ].filter((term): term is LanguageGenerationTerm => Boolean(term?.text));
+  ];
+  const requiredTerms = candidateTerms.filter((term): term is LanguageGenerationTerm => Boolean(term?.text));
 
   const propositionAtoms: NonNullable<LanguageGenerationFrame["propositionAtoms"]>[number][] = [];
   if (fact.subject) propositionAtoms.push({
