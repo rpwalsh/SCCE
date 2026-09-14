@@ -24,7 +24,7 @@ import type {
 } from "./types.js";
 import { clamp01, featureSet, mean, stableVector, toJsonValue, symbolizeData, weightedJaccard } from "./primitives.js";
 import { hoeffdingLcb } from "./causal-math.js";
-import { evidenceProofBoundary } from "./proof-boundary.js";
+import { evidenceProofBoundaries, evidenceProofBoundary } from "./proof-boundary.js";
 import { hasCasedLetter } from "./surface-linguistics.js";
 import { requestSentenceSequences, spanContainsRequestNearDuplicateSentence } from "./local-evidence-runtime.js";
 
@@ -80,7 +80,7 @@ export function evaluateSemanticObligations(input: {
   field: FieldState;
   hasher: Hasher;
 }): SemanticObligationEvaluation {
-  const evidenceBoundaries = input.evidence.map(evidenceProofBoundary);
+  const evidenceBoundaries = evidenceProofBoundaries(input.evidence);
   const certifyingEvidenceIdSet = new Set(evidenceBoundaries.filter(item => item.certifiesFactualProof).map(item => item.evidenceId));
   const certifyingEvidence = input.evidence.filter(span => certifyingEvidenceIdSet.has(String(span.id)));
   const excludedEvidence = evidenceBoundaries.filter(item => !item.certifiesFactualProof);

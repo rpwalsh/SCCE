@@ -11,6 +11,7 @@ import {
   createMouth,
   createNgramMemoryCompiler,
   createSemanticEntailmentEngine,
+  evidenceProofBoundaries,
   evidenceProofBoundary,
   featureSet
 } from "../index.js";
@@ -58,6 +59,38 @@ describe("imported brain influence and proof boundary", () => {
     expect(directBoundary.certifiesFactualProof).toBe(true);
     const directOnly = engine.check({ text: fixture.directEvidence.text, evidence: [direct], nodes: [], field: emptyField(), createdAt: clock.now() });
     expect(directOnly.evidenceIds.map(String)).toContain(String(direct.id));
+  });
+
+  it("stores a newly ingested source assertion without treating it as world proof", () => {
+    const source = sourceVersion("assertion", "fixture://assertion", 0.9);
+    const asserted = sourceAssertion(span(source, fixture.directEvidence.text, "direct_evidence"));
+
+    const boundary = evidenceProofBoundary(asserted);
+    expect(boundary.exactSourceSemantics).toBe(true);
+    expect(boundary.certifiesFactualProof).toBe(false);
+    expect(boundary.reason).toBe("proof-boundary.source-assertion-not-promoted");
+
+    const result = createSemanticEntailmentEngine({ idFactory: ids, hasher }).check({
+      text: fixture.directEvidence.text,
+      evidence: [asserted],
+      nodes: [],
+      field: emptyField(),
+      createdAt: clock.now()
+    });
+    expect(result.evidenceIds).toEqual([]);
+    expect(JSON.stringify(result.proof.scores)).toContain("source-assertion-not-promoted");
+  });
+
+  it("requires independent source families before asserted sources can support one proof", () => {
+    const first = sourceAssertion(span(sourceVersion("assertion-a", "fixture://assertion-a", 0.9), fixture.directEvidence.text, "direct_evidence"));
+    const second = sourceAssertion(span(sourceVersion("assertion-b", "fixture://assertion-b", 0.9), fixture.directEvidence.text, "direct_evidence"));
+
+    const boundaries = evidenceProofBoundaries([first, second]);
+    expect(boundaries.every(boundary => boundary.certifiesFactualProof)).toBe(true);
+    expect(boundaries.every(boundary => boundary.reason === "proof-boundary.independent-source-assertion-corroboration")).toBe(true);
+
+    const repeated = evidenceProofBoundaries([first, { ...first, id: ids.evidenceId({ sourceVersionId: first.sourceVersionId, byteStart: 1, byteEnd: first.byteEnd, spanHash: first.contentHash }) }]);
+    expect(repeated.every(boundary => !boundary.certifiesFactualProof)).toBe(true);
   });
 
   it("reports imported language rows used by Mouth realization", async () => {
@@ -258,6 +291,17 @@ describe("imported brain influence and proof boundary", () => {
       status: "promoted",
       alpha: 0.82,
       observedAt: clock.now()
+    };
+  }
+
+  function sourceAssertion(value: EvidenceSpan): EvidenceSpan {
+    return {
+      ...value,
+      provenance: {
+        ...(value.provenance as Record<string, JsonValue>),
+        epistemicState: "asserted",
+        epistemicProvenance: { schema: "scce.source_assertion.v1" }
+      }
     };
   }
 

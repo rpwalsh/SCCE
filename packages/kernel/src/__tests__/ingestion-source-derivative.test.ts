@@ -109,7 +109,9 @@ describe("ingestion source derivative identity", () => {
         independenceGroup: "fixture:source-derivative",
         accessScope: "owner_private",
         licenseStatus: "owner_authorized"
-      }
+      },
+      // Ingest metadata may describe the source, but may not self-promote it.
+      metadata: { epistemicState: "promoted", ownerLabel: "fixture" }
     });
 
     expect(sourceVersions).toHaveLength(2);
@@ -128,12 +130,15 @@ describe("ingestion source derivative identity", () => {
     expect(Buffer.from(originalBytes).toString("utf8")).toContain(secret);
     expect(Buffer.from(derivativeBytes).toString("utf8")).not.toContain("correct-horse-battery-staple");
     expect(evidence.length).toBeGreaterThan(0);
+    expect((original?.metadata as Record<string, unknown>).epistemicState).toBe("asserted");
+    expect((original?.metadata as Record<string, unknown>).ownerLabel).toBe("fixture");
     for (const span of evidence) {
       expect(span.informationLabel).toEqual(informationLabel);
       expect(span.sourceVersionId).toBe(derivative?.sourceVersionId);
       expect(Buffer.from(derivativeBytes)
         .subarray(span.byteStart, span.byteEnd)
         .toString("utf8")).toBe(span.text);
+      expect(((span.provenance as Record<string, unknown>).metadata as Record<string, unknown>).epistemicState).toBe("asserted");
     }
     expect(quarantined.map(source => source.sourceVersionId)).toEqual([derivative?.sourceVersionId]);
     expect(events.filter(event => event.typeId === "SourceVersionObserved")).toHaveLength(2);
