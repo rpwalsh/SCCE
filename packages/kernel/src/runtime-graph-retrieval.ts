@@ -486,7 +486,8 @@ export function createRuntimeGraphRetrieval(options: {
         evidenceBoundOnly: true,
         radius: 0,
         limitNodes: Math.min(sourceAnchorHotNodeLimit, 64),
-        limitEdges: Math.min(sourceAnchorHotEdgeLimit, 128)
+        limitEdges: Math.min(sourceAnchorHotEdgeLimit, 128),
+        maxRepresentationBytes: hotNeighborhoodMaxNodeBytes
       });
       kernelTrace({
         stage: "graph.resolve.anchor_slice",
@@ -497,7 +498,7 @@ export function createRuntimeGraphRetrieval(options: {
       const value: RuntimeGraphSliceValue = {
         graph: {
           ...graph,
-          query: { evidenceIds: anchoredEvidence.map(span => span.id), evidenceBoundOnly: true, radius: 0, limitNodes: Math.min(sourceAnchorHotNodeLimit, 64), limitEdges: Math.min(sourceAnchorHotEdgeLimit, 128) }
+          query: { evidenceIds: anchoredEvidence.map(span => span.id), evidenceBoundOnly: true, radius: 0, limitNodes: Math.min(sourceAnchorHotNodeLimit, 64), limitEdges: Math.min(sourceAnchorHotEdgeLimit, 128), maxRepresentationBytes: hotNeighborhoodMaxNodeBytes }
         },
         evidence: mergeEvidenceSpans(anchoredEvidence),
         semanticFrameBoundEvidenceIds: anchoredSelection.semanticFrameBoundEvidenceIds
@@ -538,9 +539,13 @@ export function createRuntimeGraphRetrieval(options: {
     if (exact) return exact;
     const graph = await deps.storage.graph.getSlice({
       evidenceIds: boundedEvidenceIds,
-      radius: 2,
+      // These IDs already name the prior turn's admitted proof basis. Do not
+      // rediscover a neighbourhood before continuing that discourse.
+      evidenceBoundOnly: true,
+      radius: 0,
       limitNodes: sourceAnchorHotNodeLimit,
-      limitEdges: sourceAnchorHotEdgeLimit
+      limitEdges: sourceAnchorHotEdgeLimit,
+      maxRepresentationBytes: hotNeighborhoodMaxNodeBytes
     });
     const graphEvidenceIds = uniqueKernelStrings([
       ...boundedEvidenceIds.map(String),
@@ -558,9 +563,11 @@ export function createRuntimeGraphRetrieval(options: {
     if (!boundedEvidenceIds.length) return emptyRuntimeGraphSlice({ evidenceIds: [] }, []);
     const graph = await deps.storage.graph.getSlice({
       evidenceIds: boundedEvidenceIds,
-      radius: 2,
+      evidenceBoundOnly: true,
+      radius: 0,
       limitNodes: sourceAnchorHotNodeLimit,
-      limitEdges: sourceAnchorHotEdgeLimit
+      limitEdges: sourceAnchorHotEdgeLimit,
+      maxRepresentationBytes: hotNeighborhoodMaxNodeBytes
     });
     const graphEvidenceIds = uniqueKernelStrings([
       ...boundedEvidenceIds.map(String),
