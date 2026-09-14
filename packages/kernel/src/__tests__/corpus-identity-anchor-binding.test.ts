@@ -6,7 +6,7 @@ import {
   corpusIdentitySurface,
   primeCorpusIdentitySignals
 } from "../corpus-identity.js";
-import { sourceAnchoredEvidenceForRequest, sourceEvidenceAnchorsForRequest } from "../local-evidence-runtime.js";
+import { evidenceIdentityBindsRequest, sourceAnchoredEvidenceForRequest, sourceEvidenceAnchorsForRequest } from "../local-evidence-runtime.js";
 import { featureSet } from "../primitives.js";
 import type { ContentHash, EvidenceId, EvidenceSpan, SourceId, SourceVersionId } from "../types.js";
 
@@ -19,7 +19,7 @@ function prime(input: { closedClass?: Iterable<string>; identities?: Iterable<st
   });
 }
 
-function span(input: { id: string; title: string; text: string }): EvidenceSpan {
+function span(input: { id: string; title: string; text: string; uri?: string }): EvidenceSpan {
   return {
     id: input.id as EvidenceId,
     sourceId: `source:${input.id}` as SourceId,
@@ -36,7 +36,7 @@ function span(input: { id: string; title: string; text: string }): EvidenceSpan 
     languageHints: { language: "fixture" },
     scriptHints: { script: "Latn" },
     trustVector: { trust: 0.9, sourceTrust: 0.9, structuralConfidence: 0.9, forceClass: "direct_evidence" },
-    provenance: { namespace: "local", source: "corpus-identity-anchor-binding-test", title: input.title, uri: `urn:${input.id}` },
+    provenance: { namespace: "local", source: "corpus-identity-anchor-binding-test", title: input.title, uri: input.uri ?? `urn:${input.id}` },
     features: featureSet(input.text, 256),
     status: "promoted",
     alpha: 0.8,
@@ -92,5 +92,21 @@ describe("what the corpus names reaches the anchors", () => {
     expect(admitted.anchors[0]).toBe("star trek deep space nine");
     // The franchise article stays reachable on its own identity; it no longer leads the pool it used to own.
     expect(String(admitted.evidence[0]?.id)).toBe("evidence_ds9");
+  });
+
+  it("binds a code question to a source file when the requested declaration is in its body", () => {
+    const request = "Which file defines bestEvidenceSentences?";
+    const source = span({
+      id: "evidence_local_runtime",
+      title: "",
+      uri: "packages/kernel/src/local-evidence-runtime.ts",
+      text: "export function bestEvidenceSentences(requestText: string): string[] { return []; }"
+    });
+    expect(evidenceIdentityBindsRequest(source, request)).toBe(true);
+    expect(evidenceIdentityBindsRequest({
+      ...source,
+      text: "// defines several helpers\nexport function unrelated(value: string): string { return value; }",
+      textPreview: "// defines several helpers\nexport function unrelated(value: string): string { return value; }"
+    }, "Which file defines helper?")).toBe(false);
   });
 });
