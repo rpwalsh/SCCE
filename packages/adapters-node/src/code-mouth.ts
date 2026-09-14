@@ -353,16 +353,9 @@ export function createTypeScriptCodeMouthPorts(input: {
       };
     },
     async propose({ request, context, diagnostics, attempt }) {
-      // Composition leads, but only on the first attempt.
-      //
-      // A learned proposal that does not build is rolled back and costs nothing but that attempt, so leading with
-      // the general lane risks only a turn of the loop -- and it is the only order under which this system writes
-      // code rather than relaying someone else's. Handing the rest of the budget back is what keeps that free:
-      // where the compiler does own an exact fix, it still gets its chance to apply it.
-      if (attempt === 1) {
-        const learned = await input.learnedProposer?.propose({ request, context, diagnostics, attempt });
-        if (learned) return { ...learned, source: "learned_construction" };
-      }
+      // Compiler candidates are possibilities until the task graph selects one against the observed failed goal.
+      // Give that typed authority boundary first refusal: letting a learned construction run first allowed a patch
+      // to compile and end the loop without any planner selection, even when the compiler owned an exact repair.
       const compilerRepair = await proposeCompilerOwnedRepair({
         workspaceRoot: root,
         targetPath: context.targetPath,
@@ -381,12 +374,11 @@ export function createTypeScriptCodeMouthPorts(input: {
       if (compilerRepair) {
         input.log?.(`compiler offers ${compilerRepair.candidates.length} fix(es) for this file; name one (for example its TS code) to apply it`);
         offeredCandidates = compilerRepair.candidates;
+        return undefined;
       }
-      // Nothing the compiler owns: the learned lane's remaining compositions are what is left to try.
-      if (attempt > 1) {
-        const learned = await input.learnedProposer?.propose({ request, context, diagnostics, attempt });
-        if (learned) return { ...learned, source: "learned_construction" };
-      }
+      // When the compiler has no candidate at all, source-trained construction is the remaining proposal family.
+      const learned = await input.learnedProposer?.propose({ request, context, diagnostics, attempt });
+      if (learned) return { ...learned, source: "learned_construction" };
       return undefined;
     },
     async apply(operations) {

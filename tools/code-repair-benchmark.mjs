@@ -135,6 +135,10 @@ const TSCONFIG = JSON.stringify({
   },
   include: ["src"]
 }, null, 2);
+const PACKAGE = JSON.stringify({
+  private: true,
+  scripts: { build: "tsc -p tsconfig.json" }
+}, null, 2);
 
 const results = [];
 for (const testCase of CASES.filter(row => !only || row.id === only)) {
@@ -181,6 +185,8 @@ for (const testCase of CASES.filter(row => !only || row.id === only)) {
         ...(system === "scce" ? {
           planningSelections: outcome.planningSelections,
           appliedOperations: outcome.appliedOperations,
+          offeredCandidates: outcome.offeredCandidates,
+          proposalSources: outcome.proposalSources,
           selectedPlanApplied,
           closedLoopRepair
         } : {}),
@@ -207,6 +213,10 @@ if (unprovenScceRepairs.length) {
 if (jsonOut) await writeFile(jsonOut, `${JSON.stringify({ schema: "scce.code_repair_benchmark.v1", model, generatedAt: new Date().toISOString(), results }, null, 1)}\n`, "utf8");
 
 async function writeCase(root, testCase) {
+  // The planner accepts only a compiler command that is bound to exact workspace source. A tsconfig binds compiler
+  // semantics, but it does not contain an invocation; this package script is the observed action authority that lets
+  // the task graph select a compiler-owned transformation rather than treating candidate existence as permission.
+  await writeFile(path.join(root, "package.json"), PACKAGE, "utf8");
   await writeFile(path.join(root, "tsconfig.json"), TSCONFIG, "utf8");
   for (const [relative, content] of Object.entries(testCase.files)) {
     const absolute = path.join(root, relative);
@@ -235,7 +245,9 @@ async function runScce(root, testCase) {
       outcome: result.code === 0 ? "completed_without_report" : "failed",
       reason: firstLine(text),
       planningSelections: [],
-      appliedOperations: []
+      appliedOperations: [],
+      offeredCandidates: [],
+      proposalSources: []
     };
   }
   return {
@@ -244,7 +256,9 @@ async function runScce(root, testCase) {
     planningSelections: Array.isArray(payload.planningSelections)
       ? payload.planningSelections.map(recordSelection).filter(Boolean)
       : [],
-    appliedOperations: Array.isArray(payload.appliedOperations) ? payload.appliedOperations : []
+    appliedOperations: Array.isArray(payload.appliedOperations) ? payload.appliedOperations : [],
+    offeredCandidates: Array.isArray(payload.candidates) ? payload.candidates : [],
+    proposalSources: Array.isArray(payload.proposalSources) ? payload.proposalSources : []
   };
 }
 
