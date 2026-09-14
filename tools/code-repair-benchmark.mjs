@@ -18,10 +18,14 @@
 // So the metrics are not one number. `repaired` is the shared goal; `leftBroken` is the failure mode only an
 // unverified writer has; `declined` is the outcome that is correct when no owned fix exists and wrong when one does.
 // Unrelated bytes are counted because a repair that rewrites a file it was not asked to rewrite is not a repair.
+//
+//   pnpm benchmark:code-repair -- --systems=scce
+//   pnpm benchmark:code-repair -- --systems=both --model=qwen2.5:3b --out=<new-result-path>
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 
 const args = new Map(process.argv.slice(2).filter(a => a.startsWith("--")).map(a => {
   const at = a.indexOf("=");
@@ -31,6 +35,20 @@ const model = args.get("model") ?? "qwen2.5:3b";
 const endpoint = args.get("endpoint") ?? "http://127.0.0.1:11434";
 const only = args.get("only");
 const jsonOut = args.get("out");
+const systemsMode = args.get("systems") ?? "both";
+const systems = systemsMode === "both"
+  ? ["scce", `llm:${model}`]
+  : systemsMode === "scce"
+    ? ["scce"]
+    : systemsMode === "model"
+      ? [`llm:${model}`]
+      : [];
+if (!systems.length) throw new Error("--systems must be one of: both, scce, model");
+if (args.has("selfcheck")) {
+  selfCheck();
+  process.stdout.write("code-repair benchmark self-check passed\n");
+  process.exit(0);
+}
 
 /**
  * Each case is a whole small module plus one seeded defect. The defect kinds are the ones a compiler owns an exact fix
@@ -112,6 +130,7 @@ const TSCONFIG = JSON.stringify({
     moduleResolution: "NodeNext",
     strict: true,
     noEmit: true,
+    noUnusedLocals: true,
     skipLibCheck: true
   },
   include: ["src"]
@@ -119,7 +138,7 @@ const TSCONFIG = JSON.stringify({
 
 const results = [];
 for (const testCase of CASES.filter(row => !only || row.id === only)) {
-  for (const system of ["scce", `llm:${model}`]) {
+  for (const system of systems) {
     const root = await mkdtemp(path.join(tmpdir(), `scce-code-${testCase.id}-`));
     try {
       await writeCase(root, testCase);
@@ -137,6 +156,18 @@ for (const testCase of CASES.filter(row => !only || row.id === only)) {
       // `export const total = add(1);` with `add` -- legal TypeScript, zero diagnostics, and the module's export
       // gone. It scored as a repair here until this check existed.
       const lostDeclarations = declaredNames(before).filter(name => !declaredNames(after).includes(name));
+      const selectedPlanApplied = system === "scce" && selectedPlansApplied({
+        selections: outcome.planningSelections,
+        appliedOperations: outcome.appliedOperations,
+        root,
+        initialFiles: testCase.files
+      });
+      const closedLoopRepair = system === "scce"
+        && beforeDiagnostics.length > 0
+        && outcome.outcome === "resolved"
+        && selectedPlanApplied
+        && afterDiagnostics.length === 0
+        && lostDeclarations.length === 0;
       results.push({
         case: testCase.id,
         ownedFix: testCase.ownedFix,
@@ -147,6 +178,12 @@ for (const testCase of CASES.filter(row => !only || row.id === only)) {
         diagnosticsAfter: afterDiagnostics.length,
         changed: before !== after,
         lostDeclarations,
+        ...(system === "scce" ? {
+          planningSelections: outcome.planningSelections,
+          appliedOperations: outcome.appliedOperations,
+          selectedPlanApplied,
+          closedLoopRepair
+        } : {}),
         // The states that matter, decided by the compiler and by what the file still declares -- never by
         // reading the patch.
         repaired: beforeDiagnostics.length > 0 && afterDiagnostics.length === 0 && lostDeclarations.length === 0,
@@ -162,6 +199,11 @@ for (const testCase of CASES.filter(row => !only || row.id === only)) {
 }
 
 report(results);
+const unprovenScceRepairs = results.filter(row => row.system === "scce" && row.repaired && !row.closedLoopRepair);
+if (unprovenScceRepairs.length) {
+  process.stderr.write(`unproven SCCE repair(s): ${unprovenScceRepairs.map(row => row.case).join(", ")}\n`);
+  process.exitCode = 2;
+}
 if (jsonOut) await writeFile(jsonOut, `${JSON.stringify({ schema: "scce.code_repair_benchmark.v1", model, generatedAt: new Date().toISOString(), results }, null, 1)}\n`, "utf8");
 
 async function writeCase(root, testCase) {
@@ -186,13 +228,118 @@ async function typecheck(root) {
 async function runScce(root, testCase) {
   const cli = path.resolve("packages/cli/dist/index.js");
   const result = await run(process.execPath, [cli, "code", `--path=${testCase.entry}`, `--root=${root}`, "--attempts=3", testCase.request], { cwd: process.cwd(), timeoutMs: 240_000 });
-  const text = `${result.stdout}\n${result.stderr}`;
-  const outcome = /resolved/i.test(text) ? "resolved"
-    : /awaiting_selection/i.test(text) ? "awaiting_selection"
-    : /no_proposal/i.test(text) ? "no_proposal"
-    : /budget_exhausted/i.test(text) ? "budget_exhausted"
-    : result.code === 0 ? "completed" : "failed";
-  return { outcome, reason: firstLine(text) };
+  const payload = parseCliPayload(result.stdout);
+  if (!payload) {
+    const text = `${result.stdout}\n${result.stderr}`;
+    return {
+      outcome: result.code === 0 ? "completed_without_report" : "failed",
+      reason: firstLine(text),
+      planningSelections: [],
+      appliedOperations: []
+    };
+  }
+  return {
+    outcome: String(payload.outcome ?? "failed"),
+    reason: String(payload.reason ?? firstLine(result.stderr)),
+    planningSelections: Array.isArray(payload.planningSelections)
+      ? payload.planningSelections.map(recordSelection).filter(Boolean)
+      : [],
+    appliedOperations: Array.isArray(payload.appliedOperations) ? payload.appliedOperations : []
+  };
+}
+
+/** The CLI is the public boundary; its structured report is evidence that cognition selected the applied fix. */
+function parseCliPayload(stdout) {
+  try {
+    const parsed = JSON.parse(String(stdout).trim());
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function recordSelection(entry) {
+  const selection = entry?.selection;
+  const selected = selection?.selected;
+  if (!selected || typeof selected !== "object") return null;
+  return {
+    attempt: Number(entry.attempt),
+    selectionId: String(selection.id ?? ""),
+    graphId: String(selection.graphId ?? ""),
+    diagnosticIdentity: String(selected.diagnosticIdentity ?? ""),
+    selectedCodeFixIdentity: String(selected.codeFixIdentity ?? ""),
+    plannedOperations: Array.isArray(selected.patchPlan?.operations) ? selected.patchPlan.operations : []
+  };
+}
+
+function sameOperation(planned, applied, context) {
+  if (planned?.kind !== applied?.kind) return false;
+  if (operationPath(planned?.path, context.root) !== operationPath(applied?.path, context.root)) return false;
+  if (planned.kind !== "replace") return false;
+  const exactBefore = contentHash(context.before);
+  const exactAfter = contentHash(String(planned.content ?? ""));
+  return planned.beforeContentHash === exactBefore
+    && planned.afterContentHash === exactAfter
+    && String(planned.content ?? "") === String(applied.content ?? "")
+    && applied.startLine === 1
+    && applied.endLine === context.before.split(/\r?\n/u).length;
+}
+
+function selectedPlansApplied(input) {
+  if (!input.appliedOperations.length) return false;
+  const planned = input.selections.flatMap(selection => {
+    if (!selection.selectionId || !selection.graphId || !selection.diagnosticIdentity || !selection.selectedCodeFixIdentity) return [];
+    return selection.plannedOperations;
+  });
+  const state = new Map(Object.entries(input.initialFiles).map(([relative, content]) => [operationPath(relative, input.root), content]));
+  const unmatched = [...planned];
+  for (const applied of input.appliedOperations) {
+    const absolute = operationPath(applied?.path, input.root);
+    const before = state.get(absolute);
+    if (before === undefined) return false;
+    const index = unmatched.findIndex(candidate => sameOperation(candidate, applied, { root: input.root, before }));
+    if (index < 0) return false;
+    const [matched] = unmatched.splice(index, 1);
+    state.set(absolute, String(matched.content ?? ""));
+  }
+  return true;
+}
+
+function operationPath(value, root) {
+  const candidate = String(value ?? "");
+  return path.resolve(path.isAbsolute(candidate) ? candidate : path.join(root, candidate));
+}
+
+function contentHash(value) {
+  return `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}`;
+}
+
+function selfCheck() {
+  const root = path.resolve("C:/benchmark-contract");
+  const before = "export const value = coutn;\n";
+  const after = "export const value = count;\n";
+  const planned = {
+    kind: "replace",
+    path: "src/main.ts",
+    beforeContentHash: contentHash(before),
+    afterContentHash: contentHash(after),
+    content: after
+  };
+  const applied = { kind: "replace", path: path.join(root, "src/main.ts"), startLine: 1, endLine: 2, content: after };
+  const context = { root, before };
+  if (!sameOperation(planned, applied, context)) throw new Error("exact selected operation was not recognized");
+  if (sameOperation({ ...planned, beforeContentHash: contentHash("stale\n") }, applied, context)) throw new Error("stale base bytes were accepted");
+  if (sameOperation(planned, { ...applied, endLine: 1 }, context)) throw new Error("partial applied range was accepted");
+  if (sameOperation(planned, { ...applied, content: `${after}// unrelated\n` }, context)) throw new Error("different applied bytes were accepted");
+  const selection = { selectionId: "selection", graphId: "graph", diagnosticIdentity: "diagnostic", selectedCodeFixIdentity: "fix", plannedOperations: [planned] };
+  if (!selectedPlansApplied({ selections: [selection], appliedOperations: [applied], root, initialFiles: { "src/main.ts": before } })) {
+    throw new Error("selected plan was not linked to the applied operation");
+  }
+  if (selectedPlansApplied({ selections: [selection], appliedOperations: [applied, applied], root, initialFiles: { "src/main.ts": before } })) {
+    throw new Error("an applied operation without its own selected plan was accepted");
+  }
+  const parsed = parseCliPayload(JSON.stringify({ outcome: "resolved", planningSelections: [] }));
+  if (parsed?.outcome !== "resolved" || parseCliPayload("resolved") !== null) throw new Error("CLI report parsing is not structural");
 }
 
 /** The model writes the whole file back. Nothing verifies it before it lands, which is the condition under test. */
@@ -259,7 +406,12 @@ function report(rows) {
     const cells = systems.map(system => {
       const row = rows.find(candidate => candidate.case === id && candidate.system === system);
       if (!row) return "-".padEnd(26);
-      const verdict = row.destroyed ? "DESTROYED" : row.repaired ? "repaired" : row.leftBroken ? "LEFT BROKEN" : row.declined ? "declined" : "no change, still broken";
+      const verdict = row.destroyed ? "DESTROYED"
+        : row.system === "scce" && row.repaired && !row.closedLoopRepair ? "UNPROVEN REPAIR"
+        : row.repaired ? "repaired"
+        : row.leftBroken ? "LEFT BROKEN"
+        : row.declined ? "declined"
+        : "no change, still broken";
       return `${verdict} (${row.diagnosticsBefore}->${row.diagnosticsAfter})`.padEnd(26);
     });
     const owned = rows.find(row => row.case === id)?.ownedFix ? "yes" : "no";
@@ -268,7 +420,10 @@ function report(rows) {
   process.stdout.write("\n");
   for (const system of systems) {
     const mine = rows.filter(row => row.system === system);
-    process.stdout.write(`${system.padEnd(20)} repaired ${mine.filter(r => r.repaired).length}/${mine.length}  destroyed ${mine.filter(r => r.destroyed).length}  left broken ${mine.filter(r => r.leftBroken).length}  declined ${mine.filter(r => r.declined).length}\n`);
+    const closedLoop = system === "scce"
+      ? `  closed loop ${mine.filter(r => r.closedLoopRepair).length}/${mine.filter(r => r.diagnosticsBefore > 0).length}`
+      : "";
+    process.stdout.write(`${system.padEnd(20)} repaired ${mine.filter(r => r.repaired).length}/${mine.length}${closedLoop}  destroyed ${mine.filter(r => r.destroyed).length}  left broken ${mine.filter(r => r.leftBroken).length}  declined ${mine.filter(r => r.declined).length}\n`);
   }
   process.stdout.write("\n");
 }
