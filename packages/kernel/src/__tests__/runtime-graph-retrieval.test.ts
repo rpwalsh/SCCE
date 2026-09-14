@@ -2,7 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it, vi } from "vitest";
 
-import { createRuntimeGraphRetrieval } from "../runtime-graph-retrieval.js";
+import { createRuntimeGraphRetrieval, learnedMorphologyPrefixIndex } from "../runtime-graph-retrieval.js";
 import { createClock, createHasher } from "../primitives.js";
 import type { KneserNeyModel } from "../kneser-ney.js";
 import type { LanguageContinuationPopulation, ScceKernelDeps } from "../storage.js";
@@ -17,6 +17,24 @@ import type {
 import type { EvidenceSearchResult, SemanticFrameRecord } from "../storage.js";
 
 describe("runtime hot graph retrieval", () => {
+  it("indexes learned morphology prefixes once per model set", () => {
+    let vocabularyReads = 0;
+    const model = { vocabulary: [] as string[], vocabularySize: 4 } as unknown as KneserNeyModel;
+    Object.defineProperty(model, "vocabulary", {
+      get: () => {
+        vocabularyReads += 1;
+        return ["die", "died", "dies", "dying", "unrelated"];
+      }
+    });
+    const models = [model];
+    const first = learnedMorphologyPrefixIndex(models);
+    const second = learnedMorphologyPrefixIndex(models);
+    expect(second).toBe(first);
+    expect(vocabularyReads).toBe(1);
+    expect(first.get("die")).toEqual(["die", "died", "dies"]);
+    expect(first.get("unrel")).toEqual(["unrelated"]);
+  });
+
   it("walks two resident hops and includes routed hyperedge members' already-resident evidence", async () => {
     const seed = graphNode("node:clock", ["sym:clock"], ["evidence:clock"]);
     const mechanism = graphNode("node:mechanism", ["sym:mechanism"]);

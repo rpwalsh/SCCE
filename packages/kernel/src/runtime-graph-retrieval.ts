@@ -114,6 +114,36 @@ interface HotNeighborhoodClosureCandidate {
 /** Learned function material per hydrated model set: the derivation walks every unit the corpus knows. */
 const functionUnitsByModels = new WeakMap<object, ReadonlySet<string>>();
 const functionUnitsByPopulationAndModels = new WeakMap<object, WeakMap<object, ReadonlySet<string>>>();
+
+/** One prefix index per hydrated model-set identity; morphology queries never rescan full vocabularies. */
+export type LearnedMorphologyPrefixIndex = ReadonlyMap<string, readonly string[]>;
+const learnedMorphologyPrefixIndexes = new WeakMap<object, LearnedMorphologyPrefixIndex>();
+
+export function learnedMorphologyPrefixIndex(models: readonly KneserNeyModel[]): LearnedMorphologyPrefixIndex {
+  const key = models as object;
+  const cached = learnedMorphologyPrefixIndexes.get(key);
+  if (cached) return cached;
+  const prefixes = new Map<string, Set<string>>();
+  for (const model of models) {
+    for (const rawCandidate of model.vocabulary) {
+      const candidate = rawCandidate.toLocaleLowerCase();
+      if (candidate.length < 3) continue;
+      for (let length = 3; length <= candidate.length; length += 1) {
+        const prefix = candidate.slice(0, length);
+        let values = prefixes.get(prefix);
+        if (!values) {
+          values = new Set<string>();
+          prefixes.set(prefix, values);
+        }
+        values.add(candidate);
+      }
+    }
+  }
+  const frozen = new Map<string, readonly string[]>([...prefixes.entries()]
+    .map(([prefix, values]) => [prefix, [...values].sort()] as const));
+  learnedMorphologyPrefixIndexes.set(key, frozen);
+  return frozen;
+}
 const HOT_QUERY_RADIUS = 2;
 const HOT_QUERY_SEED_LIMIT = 24;
 const HOT_QUERY_NODE_LIMIT = 96;
@@ -908,9 +938,10 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
   function learnedStemForms(unit: string, models: readonly KneserNeyModel[]): string[] {
     if ([...unit].length < 5 || !models.length) return [];
     const stems = new Set<string>();
-    for (const model of models) {
-      for (const candidate of model.vocabulary) {
-        if (candidate.length >= 4 && candidate.length < unit.length && unit.startsWith(candidate) && unit.length - candidate.length <= 2) stems.add(candidate);
+    const index = learnedMorphologyPrefixIndex(models);
+    for (let length = Math.max(4, unit.length - 2); length < unit.length; length += 1) {
+      for (const candidate of index.get(unit.slice(0, length).toLocaleLowerCase()) ?? []) {
+        if (candidate.length < unit.length && unit.startsWith(candidate) && unit.length - candidate.length <= 2) stems.add(candidate);
       }
     }
     return [...stems].sort((left, right) => left.length - right.length).slice(0, 2);
@@ -919,17 +950,11 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
   function learnedMorphologicalSiblings(unit: string, models: readonly KneserNeyModel[]): string[] {
     if ([...unit].length < 3 || !models.length) return [];
     const siblings = new Set<string>();
-    for (const model of models) {
-      for (const candidate of model.vocabulary) {
-        // Inflection only ever adds length onto the bare form ("die" -> "died"/"dies"/"dying"); a vocabulary
-        // entry shorter than or equal to the query is a different, unrelated word ("d", "di"), not a sibling,
-        // and matching it anyway bloats the anchor query without finding anything real.
-        if (candidate.length > unit.length && candidate.startsWith(unit) && candidate.length - unit.length <= 4) {
-          siblings.add(candidate);
-        }
-      }
+    // Inflection only ever adds length onto the bare form ("die" -> "died"/"dies"/"dying").
+    for (const candidate of learnedMorphologyPrefixIndex(models).get(unit.toLocaleLowerCase()) ?? []) {
+      if (candidate.length > unit.length && candidate.length - unit.length <= 4) siblings.add(candidate);
     }
-    return [...siblings].slice(0, 3);
+    return [...siblings].sort().slice(0, 3);
   }
 
   /** The corpus's own function material, by Kneser-Ney continuation count: the same derivation admission and
