@@ -4221,7 +4221,18 @@ function conversationMemoryCandidate(
   const generation = languageMemory.generate({
     state: input.languageMemory,
     targetLanguageProfile: input.languageProfile,
-    contextSymbols: [mouthSubjectText(input)],
+    // Generic conversation has no realization frames, but it can still have
+    // semantic material selected by the runtime (for example a referent or a
+    // requested discourse object). Keep those surfaces as bounded generation
+    // context so the learned realizer can stay on topic. They are deliberately
+    // not required terms, evidence, or candidate authority.
+    contextSymbols: uniqueStrings([
+      mouthSubjectText(input),
+      ...(input.semanticInput?.slots ?? [])
+        .slice(0, 8)
+        .map(slot => admittedSemanticSlotSurface(input, slot.roleId, slot.value))
+        .filter(Boolean)
+    ]).slice(0, 9),
     requiredTerms: [],
     frames: [],
     generationExtent,
