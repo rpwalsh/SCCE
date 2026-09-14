@@ -42,10 +42,13 @@ describe("workspace task constraint graph", () => {
     expect(first.admissibleValidationCommandNodeIds).toHaveLength(2);
     expect(first.nodes.filter(node => node.kindId === "scce.task.dependency.config.v1")).toHaveLength(2);
     expect(first.nodes.filter(node => node.kindId === "scce.task.dependency.test.v1")).toHaveLength(1);
+    expect(first.nodes.filter(node => node.kindId === "scce.program.test_call_observation.v1")).toHaveLength(1);
     expect(first.edges.map(edge => edge.relationId)).toEqual(expect.arrayContaining([
       "scce.rel.program.file_has_diagnostic.v1",
       "scce.rel.task.file_requires_config.v1",
       "scce.rel.task.target_has_test_dependency.v1",
+      "scce.rel.task.test_observation_constrains_target.v1",
+      "scce.rel.task.test_dependency_carries_observation.v1",
       "scce.rel.task.request_requires_validation.v1"
     ]));
     expect(first.evidenceSpans.every(span => /^sha256:[0-9a-f]{64}$/u.test(span.contentHash)
@@ -177,7 +180,7 @@ function graphFixture(): {
     "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true }, include: ["src/**/*.ts", "test/**/*.ts"] }),
     "src/a.ts": "export function target(value: string): string { return value; }\n",
     "src/b.ts": "import { target } from \"./a.js\";\nexport const result: number = target(\"x\");\n",
-    "test/a.test.ts": "import { target } from \"../src/a.js\";\nexport const observed = target(\"case\");\n"
+    "test/a.test.ts": "import { target } from \"../src/a.js\";\nobserve(target(\"case\"), \"case\");\n"
   } as const;
   const revisionFiles: WorkspaceRevisionFileInput[] = Object.entries(content).map(([path, source]) => ({
     path,
@@ -218,6 +221,8 @@ function graphFixture(): {
   const testTargetSpan = token("test/a.test.ts", "target", 1);
   const bCallSpan = token("src/b.ts", "target(\"x\")");
   const testCallSpan = token("test/a.test.ts", "target(\"case\")");
+  const testInputSpan = token("test/a.test.ts", "\"case\"", 0);
+  const testOutcomeSpan = token("test/a.test.ts", "\"case\"", 1);
   const diagnosticSpan = token("src/b.ts", "result");
   const packageCompileName = token("package.json", JSON.stringify("compile"));
   const packageCompileCommand = token("package.json", JSON.stringify("tsc -p tsconfig.json"));
@@ -265,7 +270,15 @@ function graphFixture(): {
       testFileId: "file.test/a.test.ts",
       targetFileId: "file.src/a.ts",
       targetSymbolId: "symbol.target",
-      evidenceSpan: testCallSpan
+      evidenceSpan: testCallSpan,
+      observation: {
+        id: "test-observation.target",
+        kindId: "scce.program.test_call_observation.v1",
+        subjectCallId: "call.test.target",
+        inputSpans: [testInputSpan],
+        contextCallIds: ["call.test.wrapper"],
+        contextArgumentSpans: [testOutcomeSpan]
+      }
     }]
   };
   const observation: WorkspaceSemanticProgramObservation<WorkspaceConstraintSemanticProgram> = {

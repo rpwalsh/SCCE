@@ -116,8 +116,19 @@ export interface TypeScriptSemanticCall {
   readonly sourceDeclarationId?: string;
   readonly signatureDeclarationId?: string;
   readonly argumentCount: number;
+  readonly argumentSpans: readonly TypeScriptExactSourceSpan[];
   readonly calleeSpan: TypeScriptExactSourceSpan;
   readonly span: TypeScriptExactSourceSpan;
+}
+
+export interface TypeScriptTestCallObservation {
+  readonly id: string;
+  readonly kindId: "scce.program.test_call_observation.v1";
+  readonly subjectCallId: string;
+  readonly inputSpans: readonly TypeScriptExactSourceSpan[];
+  readonly contextCallIds: readonly string[];
+  /** Arguments supplied by enclosing calls that do not contain the subject call. Their semantic role remains source-derived. */
+  readonly contextArgumentSpans: readonly TypeScriptExactSourceSpan[];
 }
 
 export interface TypeScriptSemanticDiagnosticRelatedEvidence {
@@ -182,6 +193,7 @@ export interface TypeScriptTestRelation {
   readonly callId?: string;
   readonly referenceId?: string;
   readonly evidenceSpan: TypeScriptExactSourceSpan;
+  readonly observation?: TypeScriptTestCallObservation;
 }
 
 export interface TypeScriptSemanticProgramIndex {
@@ -393,6 +405,7 @@ export async function buildTypeScriptSemanticProgramIndex(
             sourceDeclarationId: nearestDeclarationId(node.parent, declarationIdByNode),
             signatureDeclarationId: signatureNode ? declarationIdByNode.get(signatureNode) : undefined,
             argumentCount: node.arguments.length,
+            argumentSpans: node.arguments.map(argument => spanForNode(snapshotFile, sourceFile, argument)),
             calleeSpan: spanForNode(snapshotFile, sourceFile, node.expression),
             span
           });
@@ -827,6 +840,7 @@ function buildTestRelations(
   }
   for (const item of calls) {
     if (!testFileIds.has(item.fileId)) continue;
+    const observation = testCallObservation(item, calls);
     out.push({
       id: stableId("typescript_test_call", item.fileId, item.id, item.targetSymbolId),
       kindId: "scce.rel.program.test_call.v1",
@@ -834,7 +848,8 @@ function buildTestRelations(
       targetFileId: targetFileForSymbol(item.targetSymbolId),
       targetSymbolId: item.targetSymbolId,
       callId: item.id,
-      evidenceSpan: item.span
+      evidenceSpan: item.span,
+      observation
     });
   }
   for (const item of references) {
@@ -854,6 +869,36 @@ function buildTestRelations(
   return out.sort((left, right) => compareCanonical(left.testFileId, right.testFileId)
     || left.evidenceSpan.start - right.evidenceSpan.start
     || compareCanonical(left.id, right.id));
+}
+
+function testCallObservation(
+  subject: TypeScriptSemanticCall,
+  calls: readonly TypeScriptSemanticCall[]
+): TypeScriptTestCallObservation {
+  const enclosing = calls
+    .filter(call => call.id !== subject.id && call.fileId === subject.fileId && spanContains(call.span, subject.span))
+    .sort((left, right) => left.span.length - right.span.length || compareCanonical(left.id, right.id));
+  const contextArgumentSpans = enclosing
+    .flatMap(call => call.argumentSpans.filter(span => !spanContains(span, subject.span)))
+    .sort((left, right) => left.start - right.start || left.length - right.length);
+  return {
+    id: stableId(
+      "typescript_test_call_observation",
+      subject.id,
+      ...subject.argumentSpans.map(span => span.textHash),
+      ...enclosing.map(call => call.id),
+      ...contextArgumentSpans.map(span => span.textHash)
+    ),
+    kindId: "scce.program.test_call_observation.v1",
+    subjectCallId: subject.id,
+    inputSpans: subject.argumentSpans,
+    contextCallIds: enclosing.map(call => call.id),
+    contextArgumentSpans
+  };
+}
+
+function spanContains(outer: TypeScriptExactSourceSpan, inner: TypeScriptExactSourceSpan): boolean {
+  return outer.path === inner.path && outer.start <= inner.start && outer.end >= inner.end;
 }
 
 function resolveAlias(checker: ts.TypeChecker, symbol: ts.Symbol | undefined): ts.Symbol | undefined {
