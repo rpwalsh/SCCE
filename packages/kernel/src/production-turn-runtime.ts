@@ -1668,9 +1668,10 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       });
       const unsealedEvidencePool = discourseEvidenceBound
         ? mergeEvidenceSpans([...sessionEvidence, ...metadataEvidence, ...graphSlice.evidence.filter(span => metadataEvidenceIds.has(String(span.id)))]).filter(span => !isControlCorpusSpan(span))
-        : proseOnlyWhenNotACodeRequest(
-          mergeEvidenceSpans([...sessionEvidence, ...metadataEvidence, ...graphSlice.evidence]).filter(span => !isControlCorpusSpan(span) && (requestedAuthority !== "program" || isCodeEvidenceSpan(span))),
-          requestedAuthority,
+        : evidenceAdmissibleUnderAccessPolicy(
+          mergeEvidenceSpans([...sessionEvidence, ...metadataEvidence, ...graphSlice.evidence])
+            .filter(span => !isControlCorpusSpan(span) && (!evidenceAccessPolicy.sourceCodeEvidenceRequired || isCodeEvidenceSpan(span))),
+          evidenceAccessPolicy,
           input.text
         );
       // Sealed-corpus allowlist (trusted in-process runtimeControl, like
@@ -5829,8 +5830,12 @@ const DURABLE_RETRIEVAL_ESCALATION_MS = 1_200;
 /** How long a creative turn may keep realizing sections after the initial-response budget is spent. Bounded. */
 const CREATIVE_GENERATION_ALLOWANCE_MS = 12_000;
 
-function proseOnlyWhenNotACodeRequest(pool: readonly EvidenceSpan[], requestedAuthority: string, requestText = ""): EvidenceSpan[] {
-  if (requestedAuthority === "program") return [...pool];
+function evidenceAdmissibleUnderAccessPolicy(
+  pool: readonly EvidenceSpan[],
+  policy: import("./turn-request-control.js").EvidenceAccessPolicy,
+  requestText = ""
+): EvidenceSpan[] {
+  if (policy.sourceCodeEvidenceAllowed) return [...pool];
   // A source file that declares the identifier the request names is evidence about it: "Which file defines
   // bestEvidenceSentences?" is a factual question whose only source is code (live 2026-09-12, declined).
   // Unconditional, with no keep-what-we-have fallback: a factual request whose only candidate is source code has
