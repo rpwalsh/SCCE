@@ -320,6 +320,64 @@ describe("ProgramGraph runtime and artifact emission", () => {
     }
   });
 
+  it("realizes the same learned transformation through a requested Python runtime", () => {
+    const request = "Create a Python function double(x): double(3) => 6, double(7) => 14, double(-2) => -4, double(11) => 22.";
+    const signal = codeRequestSignal(request);
+    expect(signal.language).toBe("python");
+    const intent = required(programIntentForTurn({
+      requestedAuthority: "program",
+      activeOperatorIds: [COGNITIVE_OPERATOR_IDS.programPlanning],
+      codeSignal: signal,
+      evidence: []
+    }));
+    const probe = required(buildProgram(request, [], intent).program);
+    expect(probe.language).toBe("python");
+    expect(probe.packageManager).toBe("python");
+    expect(probe.entrypoint).toBe("src/program.py");
+    expect(probe.build).toEqual({ command: "python", args: ["-m", "py_compile", "src/program.py"], cwd: "." });
+    expect(probe.test).toEqual({ command: "python", args: ["test/program_test.py"], cwd: "." });
+
+    const root = mkdtempSync(join(tmpdir(), "scce-owner-python-"));
+    try {
+      mkdirSync(join(root, "src"));
+      mkdirSync(join(root, "test"));
+      for (const artifact of probe.files.filter(file => file.path.endsWith(".py"))) {
+        writeFileSync(join(root, artifact.path), artifact.content, "utf8");
+      }
+      expect(spawnSync(probe.build.command, probe.build.args, { cwd: root, encoding: "utf8" }).status).toBe(0);
+      expect(spawnSync(probe.test.command, probe.test.args, { cwd: root, encoding: "utf8" }).status).not.toBe(0);
+
+      const retry = replanOwnerBehaviorProgramIntent({
+        intent,
+        program: probe,
+        failure: {
+          observationId: "owner.python.validation.failure.kernel",
+          programId: probe.id,
+          planHash: "owner-python-plan",
+          validatorId: "validator.owner.python",
+          checkId: "tests",
+          status: "failed",
+          ownerRequirementIds: intent.behaviorRequirements?.map(requirement => requirement.id) ?? [],
+          command: probe.test
+        },
+        hasher
+      });
+      const repaired = required(buildProgram(request, [], retry.intent).program);
+      const source = required(repaired.files.find(file => file.path === "src/program.py"));
+      const test = required(repaired.files.find(file => file.path === "test/program_test.py"));
+      expect(source.content).toContain("return (args[0] + args[0])");
+      expect(source.content).not.toContain("expectedResult");
+      writeFileSync(join(root, source.path), source.content, "utf8");
+      writeFileSync(join(root, test.path), test.content, "utf8");
+      const syntax = spawnSync(repaired.build.command, repaired.build.args, { cwd: root, encoding: "utf8" });
+      expect(syntax.status, `${syntax.stdout}\n${syntax.stderr}`).toBe(0);
+      const passing = spawnSync(repaired.test.command, repaired.test.args, { cwd: root, encoding: "utf8" });
+      expect(passing.status, `${passing.stdout}\n${passing.stderr}`).toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("binds emitted stateful operations to owner invocation contracts", () => {
     // The operation identities are owner-supplied symbols. The planner must
     // derive their arity and runtime shapes from these typed traces, not from

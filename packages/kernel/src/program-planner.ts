@@ -3,7 +3,7 @@
 import type { ContentHash, EpisodeId, EvidenceSpan, FileArtifact, Hasher, JsonValue, ProgramBehaviorRequirement, ProgramConstructIntent, ProgramGraph, ProgramStatefulBehaviorRequirement, SemanticEntailmentResult } from "./types.js";
 import type { IdFactory } from "./ids.js";
 import { canonicalStringify, clamp01, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";
-import { createCodeLearningEngine, EMITTED_PROGRAM_RUNTIME, type CodeImplementationBlueprint, type CodeKnowledgeGraph } from "./code-learning.js";
+import { createCodeLearningEngine, emittedProgramRuntimeForLanguage, EMITTED_PROGRAM_RUNTIME, type CodeImplementationBlueprint, type CodeKnowledgeGraph, type EmittedProgramRuntime } from "./code-learning.js";
 import { createEngineeringCorpusRuntime, packageManagerCommandName, plannerScriptKind } from "./engineering-corpus-runtime.js";
 import { createProgramHydrationContract, hydrationSummary } from "./program-runtime.js";
 import { searchProgramTransformations, type ProgramExpression, type ProgramTransformationCandidate } from "./program-transformation-search.js";
@@ -130,6 +130,7 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
       const code = createCodeLearningEngine({ hasher: options.hasher });
       const codeGraph = code.learn(input);
       const shape = inferProgramShape(input.requestText, input.entailment, input.evidence, options.hasher, codeGraph, input.programIntent);
+      const emittedRuntime = emittedRuntimeForShape(shape);
       const intent = intentFromShape(shape);
       const blueprint = code.blueprint({ target: shape.target.id, requestText: input.requestText, graph: codeGraph, entailment: input.entailment });
       const files = planFiles(shape);
@@ -208,23 +209,23 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
         { source: blueprint.id, target: sourceEmission.id, relation: "emission_plan", weight: 1 - blueprint.unbackedSynthesisRisk },
         { source: sourceEmission.id, target: entrypointFor(shape), relation: "entrypoint", weight: 0.95 },
         ...ownerBehaviorRequirements.flatMap(requirement => files
-          .filter(file => file.path === EMITTED_PROGRAM_RUNTIME.sourcePath || file.path === EMITTED_PROGRAM_RUNTIME.testPath)
+          .filter(file => file.path === emittedRuntime.sourcePath || file.path === emittedRuntime.testPath)
           .map(file => ({ source: requirement.id, target: file.path, relation: file.role === "test" ? "verified_by" : "implemented_by", weight: 1 }))),
         ...ownerStatefulBehaviorRequirements.flatMap(requirement => files
-          .filter(file => file.path === EMITTED_PROGRAM_RUNTIME.sourcePath || file.path === EMITTED_PROGRAM_RUNTIME.testPath)
+          .filter(file => file.path === emittedRuntime.sourcePath || file.path === emittedRuntime.testPath)
           .map(file => ({ source: requirement.id, target: file.path, relation: file.role === "test" ? "verified_by" : "implemented_by", weight: 1 }))),
         ...ownerBehaviorTransformations.candidates.flatMap(candidate => [
           ...candidate.predictedFitObligationIds.map(requirementId => ({ source: requirementId, target: candidate.id, relation: "predicted_satisfied_by", weight: 1 })),
           ...candidate.heldOutObligationIds.map(requirementId => ({ source: requirementId, target: candidate.id, relation: "reserved_for_validation", weight: 0 })),
           ...(ownerBehaviorTransformations.selectedIds.includes(candidate.id)
-            ? [{ source: candidate.id, target: EMITTED_PROGRAM_RUNTIME.sourcePath, relation: "selected_for_emission", weight: 1 }]
+            ? [{ source: candidate.id, target: emittedRuntime.sourcePath, relation: "selected_for_emission", weight: 1 }]
             : [])
         ]),
         ...ownerStatefulBehaviorTransformations.candidates.flatMap(candidate => [
           ...candidate.predictedFitIds.map(requirementId => ({ source: requirementId, target: candidate.id, relation: "predicted_satisfied_by", weight: 1 })),
           ...candidate.heldoutIds.map(requirementId => ({ source: requirementId, target: candidate.id, relation: "reserved_for_validation", weight: 0 })),
           ...(ownerStatefulBehaviorTransformations.selectedIds.includes(candidate.id)
-            ? [{ source: candidate.id, target: EMITTED_PROGRAM_RUNTIME.sourcePath, relation: "selected_for_emission", weight: 1 }]
+            ? [{ source: candidate.id, target: emittedRuntime.sourcePath, relation: "selected_for_emission", weight: 1 }]
             : [])
         ]),
         ...shape.requiredInputs.flatMap(inputNode => files.map(file => ({ source: `input:${inputNode.id}`, target: file.path, relation: "constrains_file", weight: inputNode.required ? 0.82 : 0.42 }))),
@@ -260,10 +261,12 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
     emit(input: ProgramPlannerInput): ProgramGraph {
       const plan = this.plan(input);
       const files = emitFiles(plan, input, options.idFactory, options.hasher);
+      const emittedRuntime = emittedRuntimeForShape(plan.intent.shape);
+      const usesFallbackRuntime = !nodeRuntimeForShape(plan.intent.shape);
       const graphWithoutHydration = {
         id: options.idFactory.semanticId("program_graph", { episodeId: input.episodeId, planId: plan.id, files: files.map(file => file.contentHash) }),
-        language: plan.intent.shape.target.language,
-        packageManager: plan.intent.shape.target.packageManager,
+        language: usesFallbackRuntime ? emittedRuntime.languageId : plan.intent.shape.target.language,
+        packageManager: usesFallbackRuntime ? emittedRuntime.commandName : plan.intent.shape.target.packageManager,
         entrypoint: entrypointFor(plan.intent.shape),
         nodes: [
           ...plan.graph.nodes,
@@ -1320,8 +1323,8 @@ function planFiles(shape: ProgramShape): ProgramFilePlan[] {
   if (!nodeRuntime) return [
     ...common,
     { path: "source.program.json", role: "config", mediaType: "application/json", purpose: "source-derived language target and idiom memory", dependsOn: ["source.memory.json"], invariants: ["language open", "runtime explicit", "source evidence retained"] },
-    { path: EMITTED_PROGRAM_RUNTIME.sourcePath, role: "source", mediaType: EMITTED_PROGRAM_RUNTIME.mediaType, purpose: "request-declared call contracts over the planned operation", dependsOn: ["source.program.json"], invariants: ["standard library only", "declared contracts checked", "no network access"] },
-    { path: EMITTED_PROGRAM_RUNTIME.testPath, role: "test", mediaType: EMITTED_PROGRAM_RUNTIME.mediaType, purpose: "executable check of the emitted program", dependsOn: [EMITTED_PROGRAM_RUNTIME.sourcePath], invariants: ["imports the emitted program", "asserts declared contracts", "exits nonzero on failure"] },
+    { path: emittedRuntimeForShape(shape).sourcePath, role: "source", mediaType: emittedRuntimeForShape(shape).mediaType, purpose: "request-declared call contracts over the planned operation", dependsOn: ["source.program.json"], invariants: ["standard library only", "declared contracts checked", "no network access"] },
+    { path: emittedRuntimeForShape(shape).testPath, role: "test", mediaType: emittedRuntimeForShape(shape).mediaType, purpose: "executable check of the emitted program", dependsOn: [emittedRuntimeForShape(shape).sourcePath], invariants: ["imports the emitted program", "asserts declared contracts", "exits nonzero on failure"] },
     { path: "BUILDING.md", role: "doc", mediaType: "text/markdown", purpose: "runtime-specific build notes", dependsOn: ["source.program.json"], invariants: ["does not claim unrun build", "lists learned commands"] }
   ];
   return [
@@ -1337,6 +1340,7 @@ function planFiles(shape: ProgramShape): ProgramFilePlan[] {
 function emitFiles(plan: ProgramPlan, input: ProgramPlannerInput, idFactory: IdFactory, hasher: Hasher): FileArtifact[] {
   const manifest = programGraphManifest(plan, input);
   const sourceMemory = sourceMemoryFor(input, plan);
+  const emittedRuntime = emittedRuntimeForShape(plan.intent.shape);
   const byPath = new Map<string, string>();
   byPath.set("program.graph.json", `${JSON.stringify(manifest, null, 2)}\n`);
   byPath.set("implementation.plan.json", `${JSON.stringify(implementationPlan(plan, input), null, 2)}\n`);
@@ -1370,8 +1374,13 @@ function emitFiles(plan: ProgramPlan, input: ProgramPlannerInput, idFactory: IdF
       : declaredCallContracts(input.requestText);
     const statefulContracts = declaredStatefulCallContractsFromRequirements(plan.ownerStatefulBehaviorRequirements);
     byPath.set("source.program.json", `${JSON.stringify(sourceProgramContract(plan, input), null, 2)}\n`);
-    byPath.set(EMITTED_PROGRAM_RUNTIME.sourcePath, executableProgramModule(plan, contracts, statefulContracts));
-    byPath.set(EMITTED_PROGRAM_RUNTIME.testPath, executableProgramTest(plan, contracts));
+    if (emittedRuntime.languageId === "python") {
+      byPath.set(emittedRuntime.sourcePath, executablePythonProgramModule(plan, contracts, statefulContracts));
+      byPath.set(emittedRuntime.testPath, executablePythonProgramTest(plan));
+    } else {
+      byPath.set(emittedRuntime.sourcePath, executableProgramModule(plan, contracts, statefulContracts));
+      byPath.set(emittedRuntime.testPath, executableProgramTest(plan, contracts));
+    }
     byPath.set("BUILDING.md", buildNotes(plan));
   }
   return plan.files.map(filePlan => artifact(filePlan.path, filePlan.mediaType, byPath.get(filePlan.path) ?? "", filePlan.role, idFactory, hasher));
@@ -2545,34 +2554,7 @@ function executableProgramModule(
   contracts: readonly DeclaredCallContract[],
   statefulContracts: readonly DeclaredStatefulCallContract[] = []
 ): string {
-  const manifest = {
-    planId: plan.id,
-    entrypoint: EMITTED_PROGRAM_RUNTIME.sourcePath,
-    target: plan.intent.shape.target.label,
-    expectedFiles: plan.sourceEmission.expectedFiles,
-    artifactKinds: plan.sourceEmission.artifactKinds,
-    contracts: contracts.map(contract => ({ name: contract.name, parameters: contract.parameters, returnType: contract.returnType })),
-    probes: contracts.filter(contract => contract.sample).map(contract => ({ name: contract.name, arguments: contract.sample })),
-    statefulContracts: statefulContracts.map(contract => ({
-      name: contract.name,
-      parameters: contract.parameters,
-      samples: contract.samples
-    })),
-    // Owner expected results are validation-only. The source receives only
-    // operation signatures and the selected transition construction, so it
-    // cannot satisfy a held-out trace by inspecting its expected value.
-    ownerBehaviorImplementationPhase: plan.ownerBehaviorImplementationPhase,
-    selectedOwnerBehaviorTransformations: plan.ownerBehaviorTransformationCandidates
-      .filter(candidate => plan.selectedOwnerBehaviorTransformationIds.includes(candidate.id))
-      .map(candidate => ({ id: candidate.id, callableId: candidate.callableId, producedIr: candidate.producedIr })),
-    selectedOwnerStatefulBehaviorTransformations: plan.ownerStatefulBehaviorTransformationCandidates
-      .filter(candidate => plan.selectedOwnerStatefulBehaviorTransformationIds.includes(candidate.id))
-      .map(candidate => ({ id: candidate.id, transitionIr: candidate.transitionIr, operatorAssignments: candidate.operatorAssignments })),
-    requiredInputs: plan.intent.shape.requiredInputs,
-    requiredOutputs: plan.intent.shape.requiredOutputs,
-    requiredFields: requiredFields(plan.intent.shape),
-    operations: plan.blueprint.operations.map(operation => ({ id: operation.id, kind: operation.kind, path: operation.path, intent: operation.intent }))
-  };
+  const manifest = executableProgramManifest(plan, contracts, statefulContracts);
   return `// Emitted for this request: the call contracts its text declares, over the fields the plan requires.
 export const programContract = ${JSON.stringify(manifest, null, 2)};
 
@@ -2661,6 +2643,216 @@ export function run(input) {
     contracts: programContract.contracts.map(contract => contract.name)
   };
 }
+`;
+}
+
+function executableProgramManifest(
+  plan: ProgramPlan,
+  contracts: readonly DeclaredCallContract[],
+  statefulContracts: readonly DeclaredStatefulCallContract[]
+): Record<string, unknown> {
+  return {
+    planId: plan.id,
+    entrypoint: emittedRuntimeForShape(plan.intent.shape).sourcePath,
+    target: plan.intent.shape.target.label,
+    expectedFiles: plan.sourceEmission.expectedFiles,
+    artifactKinds: plan.sourceEmission.artifactKinds,
+    contracts: contracts.map(contract => ({ name: contract.name, parameters: contract.parameters, returnType: contract.returnType })),
+    probes: contracts.filter(contract => contract.sample).map(contract => ({ name: contract.name, arguments: contract.sample })),
+    statefulContracts: statefulContracts.map(contract => ({
+      name: contract.name,
+      parameters: contract.parameters,
+      samples: contract.samples
+    })),
+    // Owner expected results are validation-only. The source receives only
+    // operation signatures and the selected transition construction, so it
+    // cannot satisfy a held-out trace by inspecting its expected value.
+    ownerBehaviorImplementationPhase: plan.ownerBehaviorImplementationPhase,
+    selectedOwnerBehaviorTransformations: plan.ownerBehaviorTransformationCandidates
+      .filter(candidate => plan.selectedOwnerBehaviorTransformationIds.includes(candidate.id))
+      .map(candidate => ({ id: candidate.id, callableId: candidate.callableId, producedIr: candidate.producedIr })),
+    selectedOwnerStatefulBehaviorTransformations: plan.ownerStatefulBehaviorTransformationCandidates
+      .filter(candidate => plan.selectedOwnerStatefulBehaviorTransformationIds.includes(candidate.id))
+      .map(candidate => ({ id: candidate.id, transitionIr: candidate.transitionIr, operatorAssignments: candidate.operatorAssignments })),
+    requiredInputs: plan.intent.shape.requiredInputs,
+    requiredOutputs: plan.intent.shape.requiredOutputs,
+    requiredFields: requiredFields(plan.intent.shape),
+    operations: plan.blueprint.operations.map(operation => ({ id: operation.id, kind: operation.kind, path: operation.path, intent: operation.intent }))
+  };
+}
+
+function executablePythonProgramModule(
+  plan: ProgramPlan,
+  contracts: readonly DeclaredCallContract[],
+  statefulContracts: readonly DeclaredStatefulCallContract[] = []
+): string {
+  const manifest = executableProgramManifest(plan, contracts, statefulContracts);
+  const callables = plan.ownerBehaviorRequirements.length
+    ? [...new Set(plan.ownerBehaviorRequirements.map(requirement => requirement.callableId))]
+      .map((callableId, index) => pythonBehaviorTransformationBinding(
+        callableId,
+        index,
+        plan.ownerBehaviorImplementationPhase,
+        plan.ownerBehaviorTransformationCandidates,
+        plan.selectedOwnerBehaviorTransformationIds
+      ))
+      .join("\n\n")
+    : "";
+  const stateful = plan.ownerStatefulBehaviorRequirements.length
+    ? plan.ownerBehaviorImplementationPhase === "selected"
+      ? executablePythonStatefulBehaviorFactory(plan.ownerStatefulBehaviorTransformationCandidates, plan.selectedOwnerStatefulBehaviorTransformationIds)
+      : "def createStatefulProgram():\n    return {}\n"
+    : "";
+  return `# Generated from the selected source-neutral ProgramGraph transformation.
+import json
+import math
+
+programContract = json.loads(${JSON.stringify(JSON.stringify(manifest))})
+
+${callables}
+
+${stateful}
+
+def run(input_value):
+    records = input_value.get("records", []) if isinstance(input_value, dict) else []
+    coverage = []
+    for field in programContract.get("requiredFields", []):
+        count = sum(1 for record in records if isinstance(record, dict) and record.get(field) not in (None, ""))
+        coverage.append({"field": field, "count": count})
+    diagnostics = [{"code": "program.field.no_observed_values", "field": item["field"]} for item in coverage if item["count"] == 0]
+    return {
+        "ok": bool(records) and not diagnostics,
+        "recordCount": len(records),
+        "fieldCoverage": coverage,
+        "diagnostics": diagnostics,
+        "contracts": [contract["name"] for contract in programContract.get("contracts", [])],
+    }
+`;
+}
+
+function pythonBehaviorTransformationBinding(
+  callableId: string,
+  index: number,
+  phase: "probe" | "selected",
+  candidates: readonly ProgramTransformationCandidate[],
+  selectedIds: readonly string[]
+): string {
+  const safeLocal = `_program_callable_${index}`;
+  if (phase === "probe") {
+    return `def ${safeLocal}(*args):
+    return args[0] if len(args) == 1 else list(args)
+
+globals()[${JSON.stringify(callableId)}] = ${safeLocal}`;
+  }
+  const candidate = candidates.find(item => item.callableId === callableId && selectedIds.includes(item.id));
+  if (!candidate) throw new Error(`selected owner behavior has no transformation for callable: ${callableId}`);
+  const argumentCount = candidate.preconditions.find(precondition => precondition.kind === "argument_count")?.count;
+  if (!argumentCount || argumentCount > 3) throw new Error(`selected owner behavior has invalid arity: ${callableId}`);
+  const numericArgumentIndexes = candidate.preconditions
+    .filter(precondition => precondition.kind === "finite_numeric_argument")
+    .map(precondition => precondition.kind === "finite_numeric_argument" ? precondition.index : -1);
+  const numericGuard = numericArgumentIndexes.length
+    ? ` or not all(isinstance(args[index], (int, float)) and not isinstance(args[index], bool) and math.isfinite(args[index]) for index in ${JSON.stringify(numericArgumentIndexes)})`
+    : "";
+  return `def ${safeLocal}(*args):
+    if len(args) != ${argumentCount}${numericGuard}:
+        raise TypeError(${JSON.stringify(`program.argument_contract:${callableId}:${argumentCount}`)})
+    return ${renderPythonProgramExpression(candidate.producedIr)}
+
+globals()[${JSON.stringify(callableId)}] = ${safeLocal}`;
+}
+
+function executablePythonStatefulBehaviorFactory(
+  candidates: readonly StateTransitionCandidate[],
+  selectedIds: readonly string[]
+): string {
+  const candidate = candidates.find(item => selectedIds.includes(item.id));
+  if (!candidate) throw new Error("selected stateful owner behavior has no transition transformation");
+  const operations = candidate.transitionIr.map((instruction, index) => {
+    const local = `_stateful_operation_${index}`;
+    if (instruction.kind === "associate") return `    def ${local}(*args):
+        if len(args) <= ${instruction.valueArgumentIndex}:
+            raise TypeError(${JSON.stringify(`program.stateful_argument_contract:${instruction.operationId}`)})
+        state[_stateful_key(args[${instruction.keyArgumentIndex}])] = args[${instruction.valueArgumentIndex}]
+        return None`;
+    if (instruction.kind === "lookup") return `    def ${local}(*args):
+        key = _stateful_key(args[${instruction.keyArgumentIndex}])
+        return state[key] if key in state else ${pythonJsonLiteral(candidate.absentValue)}`;
+    if (instruction.kind === "dissociate") return `    def ${local}(*args):
+        return state.pop(_stateful_key(args[${instruction.keyArgumentIndex}]), None)`;
+    return `    def ${local}(*args):
+        return None`;
+  }).join("\n");
+  const bindings = candidate.transitionIr.map((instruction, index) => `${JSON.stringify(instruction.operationId)}: _stateful_operation_${index}`).join(", ");
+  return `def _stateful_key(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+def createStatefulProgram():
+    state = {}
+${operations}
+    return {${bindings}}
+`;
+}
+
+function renderPythonProgramExpression(expression: ProgramExpression): string {
+  if (expression.kind === "argument") return `args[${expression.index}]`;
+  if (expression.kind === "literal") return String(expression.value);
+  if (expression.kind === "value") return pythonJsonLiteral(expression.value);
+  if (expression.kind === "member") return `${renderPythonProgramExpression(expression.subject)}[${JSON.stringify(expression.key)}]`;
+  if (expression.kind === "sequence") return `[${expression.items.map(renderPythonProgramExpression).join(", ")}]`;
+  if (expression.kind === "mapping") return `{${expression.entries.map(entry => `${JSON.stringify(entry.key)}: ${renderPythonProgramExpression(entry.value)}`).join(", ")}}`;
+  if (expression.kind === "cardinality") return `len(${renderPythonProgramExpression(expression.operand)})`;
+  if (expression.kind === "equivalent") return `(${renderPythonProgramExpression(expression.left)} == ${renderPythonProgramExpression(expression.right)})`;
+  if (expression.kind === "unary") return `(-${renderPythonProgramExpression(expression.operand)})`;
+  if (expression.operator === "minimum") return `min(${renderPythonProgramExpression(expression.left)}, ${renderPythonProgramExpression(expression.right)})`;
+  if (expression.operator === "maximum") return `max(${renderPythonProgramExpression(expression.left)}, ${renderPythonProgramExpression(expression.right)})`;
+  const operator = expression.operator === "add" ? "+"
+    : expression.operator === "subtract" ? "-"
+      : expression.operator === "multiply" ? "*" : "/";
+  return `(${renderPythonProgramExpression(expression.left)} ${operator} ${renderPythonProgramExpression(expression.right)})`;
+}
+
+function pythonJsonLiteral(value: unknown): string {
+  const serialized = JSON.stringify(value);
+  return serialized === undefined ? "None" : `json.loads(${JSON.stringify(serialized)})`;
+}
+
+function executablePythonProgramTest(plan: ProgramPlan): string {
+  return `import json
+import pathlib
+import sys
+import unittest
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+import program as owner_program
+
+OWNER_BEHAVIOR_REQUIREMENTS = json.loads(${JSON.stringify(JSON.stringify(plan.ownerBehaviorRequirements))})
+OWNER_STATEFUL_REQUIREMENTS = json.loads(${JSON.stringify(JSON.stringify(plan.ownerStatefulBehaviorRequirements))})
+
+class GeneratedProgramTest(unittest.TestCase):
+    def test_program_contract(self):
+        self.assertEqual(owner_program.programContract["planId"], ${JSON.stringify(plan.id)})
+        self.assertIn(owner_program.programContract["entrypoint"], owner_program.programContract["expectedFiles"])
+        self.assertEqual(owner_program.run(None)["recordCount"], 0)
+
+    def test_owner_behavior(self):
+        for requirement in OWNER_BEHAVIOR_REQUIREMENTS:
+            callable_value = getattr(owner_program, requirement["callableId"], None)
+            self.assertTrue(callable(callable_value), "owner-required callable was not emitted")
+            self.assertEqual(callable_value(*requirement["arguments"]), requirement["expectedResult"], "owner requirement was not satisfied")
+
+    def test_owner_stateful_behavior(self):
+        for requirement in OWNER_STATEFUL_REQUIREMENTS:
+            stateful_program = owner_program.createStatefulProgram()
+            result = None
+            for invocation in requirement["invocations"]:
+                operation = stateful_program.get(invocation["callableId"])
+                self.assertTrue(callable(operation), "stateful owner operation was not emitted")
+                result = operation(*invocation["arguments"])
+            self.assertEqual(result, requirement["expectedResult"], "stateful owner requirement was not satisfied")
+
+if __name__ == "__main__":
+    unittest.main()
 `;
 }
 
@@ -3144,7 +3336,8 @@ function buildCommand(shape: ProgramShape, files: readonly ProgramFilePlan[]): {
   if (observed) return observed;
   const source = emittedRuntimeFile(files, "source");
   if (!source) return { command: "source-derived", args: ["op.build", shape.target.entrypoint], cwd: "." };
-  return { command: EMITTED_PROGRAM_RUNTIME.commandName, args: [EMITTED_PROGRAM_RUNTIME.syntaxCheckFlag, source], cwd: "." };
+  const runtime = emittedRuntimeForShape(shape);
+  return { command: runtime.commandName, args: [...runtime.syntaxCheckArgs, source], cwd: "." };
 }
 
 function testCommand(shape: ProgramShape, files: readonly ProgramFilePlan[]): { command: string; args: string[]; cwd: string } {
@@ -3152,12 +3345,12 @@ function testCommand(shape: ProgramShape, files: readonly ProgramFilePlan[]): { 
   if (observed) return observed;
   const test = emittedRuntimeFile(files, "test");
   if (!test) return { command: "source-derived", args: ["op.validate", shape.target.entrypoint], cwd: "." };
-  return { command: EMITTED_PROGRAM_RUNTIME.commandName, args: [test], cwd: "." };
+  return { command: emittedRuntimeForShape(shape).commandName, args: [test], cwd: "." };
 }
 
 /** The planned artifact the emitted runtime can load, which is what its own command has to name. */
 function emittedRuntimeFile(files: readonly ProgramFilePlan[], role: ProgramFilePlan["role"]): string | undefined {
-  return files.find(file => file.role === role && file.path.endsWith(EMITTED_PROGRAM_RUNTIME.moduleExtension))?.path;
+  return files.find(file => file.role === role && [".mjs", ".py"].some(extension => file.path.endsWith(extension)))?.path;
 }
 
 function commandFromHints(shape: ProgramShape, preferredKinds: readonly string[]): { command: string; args: string[]; cwd: string } | undefined {
@@ -3192,7 +3385,11 @@ function entrypointFor(shape: ProgramShape): string {
     return shape.target.entrypoint || "src/main.txt";
   }
   // No package toolchain was observed, so the entrypoint is the artifact this plan actually emits and runs.
-  return EMITTED_PROGRAM_RUNTIME.sourcePath;
+  return emittedRuntimeForShape(shape).sourcePath;
+}
+
+function emittedRuntimeForShape(shape: ProgramShape): EmittedProgramRuntime {
+  return emittedProgramRuntimeForLanguage(shape.target.language);
 }
 
 function nodeRuntimeForShape(shape: ProgramShape): boolean {
