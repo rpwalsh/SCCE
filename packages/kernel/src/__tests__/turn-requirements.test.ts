@@ -236,10 +236,10 @@ describe("learned turn requirement field", () => {
   });
 
   it("derives physical evidence access from shared operators", () => {
-    expect(evidenceAccessPolicyForOperators([]).sourceCodeEvidenceAllowed).toBe(false);
-    expect(evidenceAccessPolicyForOperators([COGNITIVE_OPERATOR_IDS.programPlanning]).sourceCodeEvidenceAllowed).toBe(true);
-    expect(evidenceAccessPolicyForOperators([COGNITIVE_OPERATOR_IDS.workspaceRepair]).sourceCodeEvidenceAllowed).toBe(true);
-    expect(evidenceAccessPolicyForOperators([COGNITIVE_OPERATOR_IDS.sourceSynthesis]).sourceCodeEvidenceAllowed).toBe(false);
+    expect(evidenceAccessPolicyForOperators([])).toMatchObject({ sourceCodeEvidenceAllowed: false, sourceCodeEvidenceRequired: false });
+    expect(evidenceAccessPolicyForOperators([COGNITIVE_OPERATOR_IDS.programPlanning])).toMatchObject({ sourceCodeEvidenceAllowed: true, sourceCodeEvidenceRequired: true });
+    expect(evidenceAccessPolicyForOperators([COGNITIVE_OPERATOR_IDS.workspaceRepair])).toMatchObject({ sourceCodeEvidenceAllowed: true, sourceCodeEvidenceRequired: true });
+    expect(evidenceAccessPolicyForOperators([COGNITIVE_OPERATOR_IDS.sourceSynthesis])).toMatchObject({ sourceCodeEvidenceAllowed: false, sourceCodeEvidenceRequired: false });
   });
 
   it("records every term of the multi-operator activation equation in internal trace", () => {

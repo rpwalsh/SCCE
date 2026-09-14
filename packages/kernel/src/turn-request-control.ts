@@ -114,6 +114,8 @@ export function requirementContextFromMetadata(
 export interface EvidenceAccessPolicy {
   /** Whether repository and construction evidence may participate in this turn's retrieval routes. */
   readonly sourceCodeEvidenceAllowed: boolean;
+  /** Whether this operator set requires source code as the evidence substrate. */
+  readonly sourceCodeEvidenceRequired: boolean;
 }
 
 /**
@@ -123,9 +125,11 @@ export interface EvidenceAccessPolicy {
  */
 export function evidenceAccessPolicyForOperators(operatorIds: readonly CognitiveOperatorId[]): EvidenceAccessPolicy {
   const active = new Set(operatorIds);
+  const sourceCodeEvidenceRequired = active.has(COGNITIVE_OPERATOR_IDS.programPlanning)
+    || active.has(COGNITIVE_OPERATOR_IDS.workspaceRepair);
   return {
-    sourceCodeEvidenceAllowed: active.has(COGNITIVE_OPERATOR_IDS.programPlanning)
-      || active.has(COGNITIVE_OPERATOR_IDS.workspaceRepair)
+    sourceCodeEvidenceAllowed: sourceCodeEvidenceRequired,
+    sourceCodeEvidenceRequired
   };
 }
 
