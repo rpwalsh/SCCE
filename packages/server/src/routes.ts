@@ -315,7 +315,7 @@ async function dispatch(
     // when a caller most needs a fast answer.
     if (!warmupSatisfied(warmup)) {
       invalidateHydratedRuntimeReadiness(context);
-      if (warmup.phase === "running") primePostgresStatus(context);
+      if (warmup.phase === "running") void primePostgresStatus(context.runtime).catch(() => undefined);
       return json({ ok: false, warmup, postgres: undefined, exactCounts: false, serverUrl: context.config.server.url, manifest: ROUTES.length }, 503);
     }
     const postgres = await cachedPostgresStatus(context);
@@ -3726,41 +3726,41 @@ const postgresStatusCacheByRuntime = new WeakMap<ApiContext["runtime"], { loaded
 // that arrived while the first scan was still running, because the cache was only written after it finished.
 const postgresStatusInFlightByRuntime = new WeakMap<ApiContext["runtime"], Promise<JsonValue>>();
 
-function loadPostgresStatus(context: ApiContext): Promise<JsonValue> {
-  const inFlight = postgresStatusInFlightByRuntime.get(context.runtime);
+function loadPostgresStatus(runtime: ApiContext["runtime"]): Promise<JsonValue> {
+  const inFlight = postgresStatusInFlightByRuntime.get(runtime);
   if (inFlight) return inFlight;
   const startedAt = Date.now();
-  const load = (context.runtime.storage.status
-    ? context.runtime.storage.status()
-    : context.runtime.storage.verify().then(verify => ({ ...verify, countSemantics: "unavailable", tableCounts: {} } as JsonValue)))
+  const load = (runtime.storage.status
+    ? runtime.storage.status()
+    : runtime.storage.verify().then(verify => ({ ...verify, countSemantics: "unavailable", tableCounts: {} } as JsonValue)))
     .then(value => {
-      postgresStatusCacheByRuntime.set(context.runtime, {
+      postgresStatusCacheByRuntime.set(runtime, {
         loadedAt: startedAt,
         ttlMs: healthOk(value) ? POSTGRES_STATUS_CACHE_MS : POSTGRES_STATUS_FAILED_RETRY_MS,
         value
       });
       return value;
     })
-    .finally(() => postgresStatusInFlightByRuntime.delete(context.runtime));
-  postgresStatusInFlightByRuntime.set(context.runtime, load);
+    .finally(() => postgresStatusInFlightByRuntime.delete(runtime));
+  postgresStatusInFlightByRuntime.set(runtime, load);
   return load;
 }
 
 /** Start the exact-count scan while warmup is still running so the first readiness answer after warmup is served
  *  from cache instead of paying the scan on the request path. Single-flight keeps this to one scan per process. */
-function primePostgresStatus(context: ApiContext): void {
-  if (postgresStatusCacheByRuntime.has(context.runtime) || postgresStatusInFlightByRuntime.has(context.runtime)) return;
-  void loadPostgresStatus(context).catch(() => undefined);
+export async function primePostgresStatus(runtime: ApiContext["runtime"]): Promise<void> {
+  if (postgresStatusCacheByRuntime.has(runtime)) return;
+  await loadPostgresStatus(runtime);
 }
 
 async function cachedPostgresStatus(context: ApiContext): Promise<JsonValue> {
   const cached = postgresStatusCacheByRuntime.get(context.runtime);
   if (cached) {
     // Stale-while-revalidate: a poll never waits on a scan once one answer exists; the refresh runs off the request path.
-    if (Date.now() - cached.loadedAt >= cached.ttlMs) void loadPostgresStatus(context).catch(() => undefined);
+    if (Date.now() - cached.loadedAt >= cached.ttlMs) void loadPostgresStatus(context.runtime).catch(() => undefined);
     return cached.value;
   }
-  return loadPostgresStatus(context);
+  return loadPostgresStatus(context.runtime);
 }
 
 function healthOk(value: unknown): boolean {

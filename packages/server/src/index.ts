@@ -3,7 +3,7 @@
 import http from "node:http";
 import { readFile } from "node:fs/promises";
 import { createNodeRuntime, readScceRuntimeConfig } from "@scce/adapters-node";
-import { drainDeferredDialoguePersistence, handleRequest, serverPatchValidationRuntime } from "./routes.js";
+import { drainDeferredDialoguePersistence, handleRequest, primePostgresStatus, serverPatchValidationRuntime } from "./routes.js";
 import { installProdCalibrations, registerMessageBundle, createTrace, traceEvent } from "@scce/kernel";
 import { createRuntimeStartupReadiness, startRuntimeSurface } from "./startup.js";
 import { startDreamCycle } from "./dream-cycle.js";
@@ -94,6 +94,12 @@ async function main(): Promise<void> {
   const strictWarmup = process.env.SCCE_STARTUP_WARMUP_STRICT === "1";
   const performWarmup = async () => {
     const warmup = await runtime.kernel.warmup({ languageLimit: startupWarmupLanguageLimit() });
+    // Exact table counts are part of the readiness contract. Prime them before
+    // strict warmup marks the process ready, so the first /api/ready request
+    // never pays the full corpus COUNT(*) scan on its request path. In the
+    // default background mode this runs alongside the final warmup phase and
+    // remains single-flight with readiness polling.
+    await primePostgresStatus(runtime);
     const memory = process.memoryUsage();
     const warmupLine = [
       `SCCE runtime warmup ${warmup.failures.length ? "completed with warnings" : "complete"}`,
