@@ -718,7 +718,6 @@ async function dispatch(
         dialogueInterpretationAdjustments,
         repoCognitionFiles
       ] = await Promise.all([
-        assertSurfaceLanguageReady(context, turn.text),
         sessionId
           ? context.runtime.storage.conversation.listTurns({ sessionId, limit: conversationContextLimit(body) })
           : Promise.resolve([]),
@@ -1467,57 +1466,6 @@ function unicodeWords(text: string): string[] {
   }
   if (current) out.push(current);
   return out;
-}
-
-async function assertSurfaceLanguageReady(context: ApiContext, text: string): Promise<void> {
-  const languageHint = surfaceLanguageHint(text);
-  if (!languageHint || surfaceLanguageMayUseGeneralMemory(languageHint)) return;
-  const models = await context.runtime.storage.languageMemory.listNgramModels({ languageHint, limit: 1 });
-  if (models.length > 0) return;
-  throw new HttpError(503, "runtime has no trained language memory for requested script");
-}
-
-function surfaceLanguageHint(text: string): string | undefined {
-  const counts = new Map<string, number>();
-  for (const char of text.normalize("NFKC")) {
-    const script = surfaceScriptOfChar(char);
-    if (!script || script === "script:Common" || script === "script:Number") continue;
-    counts.set(script, (counts.get(script) ?? 0) + 1);
-  }
-  let best: string | undefined;
-  let bestCount = 0;
-  for (const [script, count] of counts) {
-    if (count <= bestCount) continue;
-    best = script;
-    bestCount = count;
-  }
-  if (!best) return undefined;
-  return `script:${best};direction:${surfaceDirectionForScript(best)}`;
-}
-
-function surfaceLanguageMayUseGeneralMemory(languageHint: string): boolean {
-  return languageHint.includes("script:Latn");
-}
-
-function surfaceDirectionForScript(script: string): "ltr" | "rtl" {
-  return script === "script:Arab" || script === "script:Hebr" ? "rtl" : "ltr";
-}
-
-function surfaceScriptOfChar(char: string): string | undefined {
-  if (/\p{Script=Latin}/u.test(char)) return "script:Latn";
-  if (/\p{Script=Hangul}/u.test(char)) return "script:Hang";
-  if (/\p{Script=Han}/u.test(char)) return "script:Hani";
-  if (/\p{Script=Hiragana}/u.test(char)) return "script:Hira";
-  if (/\p{Script=Katakana}/u.test(char)) return "script:Kana";
-  if (/\p{Script=Arabic}/u.test(char)) return "script:Arab";
-  if (/\p{Script=Hebrew}/u.test(char)) return "script:Hebr";
-  if (/\p{Script=Cyrillic}/u.test(char)) return "script:Cyrl";
-  if (/\p{Script=Devanagari}/u.test(char)) return "script:Deva";
-  if (/\p{Script=Thai}/u.test(char)) return "script:Thai";
-  if (/\p{Script=Greek}/u.test(char)) return "script:Grek";
-  if (/\p{N}/u.test(char)) return "script:Number";
-  if (/\p{L}/u.test(char)) return "script:Other";
-  return undefined;
 }
 
 function hasUppercaseLetter(text: string): boolean {
