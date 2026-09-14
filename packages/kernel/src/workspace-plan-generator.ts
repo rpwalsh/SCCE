@@ -479,7 +479,9 @@ export function generateWorkspacePatchPlanFromProgramGraph(
   if (unboundOwnerRequirements.length > 0) {
     throw new Error(`coding request owner requirement is not bound to the program graph: ${unboundOwnerRequirements.join(", ")}`);
   }
-  const ownerRequirementNodeIds = new Set(input.program.nodes.filter(node => node.kind === "owner_behavior_requirement").map(node => node.id));
+  const ownerRequirementNodeIds = new Set(input.program.nodes
+    .filter(node => node.kind === "owner_behavior_requirement" || node.kind === "owner_stateful_behavior_requirement")
+    .map(node => node.id));
   const ownerRequirementEdges = input.program.edges.filter(edge => requestOwnerRequirementIds.includes(edge.source));
   for (const ownerRequirementId of requestOwnerRequirementIds) {
     if (!ownerRequirementNodeIds.has(ownerRequirementId)) throw new Error(`program graph owner requirement node is absent: ${ownerRequirementId}`);

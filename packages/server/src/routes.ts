@@ -700,6 +700,11 @@ async function dispatch(
       );
       const sessionId = conversationSessionId(body);
       const conversationId = dialogueConversationId(body, sessionId);
+      // A response's dialogue shadow is queued so the first visible frame stays
+      // fast.  The next turn must nevertheless observe that shadow before it
+      // hydrates prior state; otherwise an immediate follow-up can race the
+      // write and lose the owner's newly learned referent correction.
+      await awaitDialoguePersistence(conversationId);
       const readinessStarted = Date.now();
       const [
         ,
@@ -2138,6 +2143,10 @@ export function parseTurnWorkspaceCodingRequest(
     schemaVersion: WORKSPACE_CODING_PATCH_PLAN_REQUEST_SCHEMA,
     requestText
   }, { allowEmptyRequestedPaths: true }).input;
+}
+
+export async function awaitDialoguePersistence(conversationId: string): Promise<void> {
+  await dialoguePersistenceTails.get(conversationId)?.catch(() => undefined);
 }
 
 /**

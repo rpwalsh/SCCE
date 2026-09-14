@@ -11,6 +11,7 @@ import {
   createLanguageMemoryRuntime,
   createMouth,
   createSemanticEntailmentEngine,
+  creativeSurfaceSentenceUnits,
   detailPolicyForProfile,
   featureSet,
   inventionConstructNode,
@@ -30,6 +31,15 @@ import {
 } from "../index.js";
 
 describe("creative Mouth production boundary", () => {
+  it("keeps a generated multi-sentence surface as ordered discourse units", () => {
+    const units = creativeSurfaceSentenceUnits("The premise stays bounded. The second move explains how updates remain reversible.");
+
+    expect(units).toEqual([
+      { text: "The premise stays bounded.", role: "answer" },
+      { text: "The second move explains how updates remain reversible.", role: "support" }
+    ]);
+  });
+
   it("implements the exact creative surface equation without treating invented content as a fake fact", () => {
     const plan = creativeSurfacePlan("Constraint-safe graph index with bounded updates");
     const construct = creativeConstruct("evidence:premise" as EvidenceId);

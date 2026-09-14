@@ -2,8 +2,9 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { splitPriorUnits, normalizePriorKey } from "./kernel-answer-primitives.js";
 import { canonicalStringify, createHasher, toJsonValue } from "./primitives.js";
+import { parseStatefulBehaviorScenarios } from "./stateful-behavior-scenarios.js";
 import type { ExplicitTurnRequirement } from "./turn-requirements.js";
-import type { JsonValue, ProgramBehaviorRequirement } from "./types.js";
+import type { JsonValue, ProgramBehaviorRequirement, ProgramStatefulBehaviorRequirement } from "./types.js";
 
 /**
  * Formal language identity, not natural-language vocabulary: these are the
@@ -55,6 +56,7 @@ export interface CodeRequestSignal {
   paths: string[];
   signals: string[];
   behaviorRequirements: ProgramBehaviorRequirement[];
+  statefulBehaviorRequirements: ProgramStatefulBehaviorRequirement[];
 }
 
 const FENCE = /```/u;
@@ -109,13 +111,20 @@ export function codeRequestSignal(requestText: string): CodeRequestSignal {
   if (callShape) { signals.push("code.signal.call_shape"); demand += 0.2; }
   if (codePunctuation) { signals.push("code.signal.code_punctuation"); demand += 0.2; }
 
-  const behaviorRequirements = explicitCallResultRequirements(text);
+  const statefulBehaviorRequirements = explicitStatefulBehaviorRequirements(text);
+  // An ordered scenario owns its final observation. Do not additionally turn
+  // that observation into a scalar lookup obligation.
+  const behaviorRequirements = statefulBehaviorRequirements.length ? [] : explicitCallResultRequirements(text);
   if (behaviorRequirements.length) {
     signals.push("code.signal.owner_behavior_example");
     demand += 0.35;
   }
+  if (statefulBehaviorRequirements.length) {
+    signals.push("code.signal.owner_stateful_behavior_example");
+    demand += 0.35;
+  }
 
-  return { ...(language ? { language } : {}), demand: Math.min(1, demand), paths: paths.slice(0, 8), signals, behaviorRequirements };
+  return { ...(language ? { language } : {}), demand: Math.min(1, demand), paths: paths.slice(0, 8), signals, behaviorRequirements, statefulBehaviorRequirements };
 }
 
 /**
@@ -127,6 +136,7 @@ export function codeRequestRecognized(signal: CodeRequestSignal): boolean {
   const has = (id: string) => signal.signals.includes(id);
   if (has("code.signal.code_path")) return true;
   if (has("code.signal.owner_behavior_example")) return true;
+  if (has("code.signal.owner_stateful_behavior_example")) return true;
   if (has("code.signal.fenced_block") && signal.language !== undefined) return true;
   if (has("code.signal.formal_language")) return true;
   return has("code.signal.language_alias") && codeRequestCorroborated(signal);
@@ -134,8 +144,32 @@ export function codeRequestRecognized(signal: CodeRequestSignal): boolean {
 
 /** Code shape around the language name: an artifact is being written, not discussed. Pure. */
 export function codeRequestCorroborated(signal: CodeRequestSignal): boolean {
-  return ["code.signal.identifier_shape", "code.signal.call_shape", "code.signal.code_punctuation", "code.signal.fenced_block", "code.signal.code_path", "code.signal.owner_behavior_example"]
+  return ["code.signal.identifier_shape", "code.signal.call_shape", "code.signal.code_punctuation", "code.signal.fenced_block", "code.signal.code_path", "code.signal.owner_behavior_example", "code.signal.owner_stateful_behavior_example"]
     .some(id => signal.signals.includes(id));
+}
+
+function explicitStatefulBehaviorRequirements(requestText: string): ProgramStatefulBehaviorRequirement[] {
+  const corpus = parseStatefulBehaviorScenarios(requestText);
+  if (!corpus) return [];
+  const hasher = createHasher();
+  return corpus.scenarios.map(scenario => {
+    const identity = {
+      requestHash: corpus.requestHash,
+      invocations: scenario.invocations.map(invocation => ({
+        callableId: invocation.callableId,
+        arguments: invocation.arguments.map(value => toJsonValue(value)),
+        sourceSpan: invocation.sourceSpan
+      })),
+      expectedResult: toJsonValue(scenario.assertion.result),
+      verificationRole: scenario.verificationRole,
+      relationSurface: scenario.assertion.relationSurface,
+      sourceSpan: scenario.sourceSpan
+    };
+    return {
+      id: `owner.program.stateful_requirement.${hasher.digestHex(canonicalStringify(identity)).slice(0, 40)}`,
+      ...identity
+    };
+  });
 }
 
 /**

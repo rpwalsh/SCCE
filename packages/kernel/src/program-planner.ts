@@ -1,12 +1,13 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import type { ContentHash, EpisodeId, EvidenceSpan, FileArtifact, Hasher, JsonValue, ProgramBehaviorRequirement, ProgramConstructIntent, ProgramGraph, SemanticEntailmentResult } from "./types.js";
+import type { ContentHash, EpisodeId, EvidenceSpan, FileArtifact, Hasher, JsonValue, ProgramBehaviorRequirement, ProgramConstructIntent, ProgramGraph, ProgramStatefulBehaviorRequirement, SemanticEntailmentResult } from "./types.js";
 import type { IdFactory } from "./ids.js";
 import { canonicalStringify, clamp01, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";
 import { createCodeLearningEngine, EMITTED_PROGRAM_RUNTIME, type CodeImplementationBlueprint, type CodeKnowledgeGraph } from "./code-learning.js";
 import { createEngineeringCorpusRuntime, packageManagerCommandName, plannerScriptKind } from "./engineering-corpus-runtime.js";
 import { createProgramHydrationContract, hydrationSummary } from "./program-runtime.js";
 import { searchProgramTransformations, type ProgramExpression, type ProgramTransformationCandidate } from "./program-transformation-search.js";
+import { searchStateTransitions, type StateTransitionCandidate } from "./state-transition-search.js";
 
 export interface ProgramTargetProfile {
   id: string;
@@ -100,9 +101,12 @@ export interface ProgramPlan {
   files: ProgramFilePlan[];
   sourceEmission: SourceEmissionPlan;
   ownerBehaviorRequirements: ProgramBehaviorRequirement[];
+  ownerStatefulBehaviorRequirements: ProgramStatefulBehaviorRequirement[];
   ownerBehaviorImplementationPhase: "probe" | "selected";
   ownerBehaviorTransformationCandidates: ProgramTransformationCandidate[];
   selectedOwnerBehaviorTransformationIds: string[];
+  ownerStatefulBehaviorTransformationCandidates: StateTransitionCandidate[];
+  selectedOwnerStatefulBehaviorTransformationIds: string[];
   graph: {
     nodes: Array<{ id: string; kind: string; label: string; metadata: JsonValue }>;
     edges: Array<{ source: string; target: string; relation: string; weight: number }>;
@@ -132,7 +136,11 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
       const build = buildCommand(shape, files);
       const test = testCommand(shape, files);
       const ownerBehaviorRequirements = validatedOwnerBehaviorRequirements(input.programIntent?.behaviorRequirements ?? []);
-      const ownerBehaviorImplementationPhase = ownerBehaviorRequirements.length
+      const ownerStatefulBehaviorRequirements = validatedOwnerStatefulBehaviorRequirements(input.programIntent?.statefulBehaviorRequirements ?? []);
+      if (ownerBehaviorRequirements.length && ownerStatefulBehaviorRequirements.length) {
+        throw new Error("a program intent cannot mix scalar and stateful owner behavior representations");
+      }
+      const ownerBehaviorImplementationPhase = ownerBehaviorRequirements.length || ownerStatefulBehaviorRequirements.length
         ? input.programIntent?.behaviorImplementationPhase ?? "probe"
         : "selected";
       const ownerBehaviorTransformations = validatedOwnerBehaviorTransformations(
@@ -140,6 +148,12 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
         ownerBehaviorImplementationPhase,
         input.programIntent?.behaviorTransformationCandidates ?? [],
         input.programIntent?.selectedBehaviorTransformationIds ?? []
+      );
+      const ownerStatefulBehaviorTransformations = validatedOwnerStatefulBehaviorTransformations(
+        ownerStatefulBehaviorRequirements,
+        ownerBehaviorImplementationPhase,
+        input.programIntent?.statefulBehaviorTransformationCandidates ?? [],
+        input.programIntent?.selectedStatefulBehaviorTransformationIds ?? []
       );
       const planId = options.idFactory.semanticId("program_plan", { episodeId: input.episodeId, shape, files });
       const sourceEmission = sourceEmissionPlan({
@@ -165,11 +179,23 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
           label: requirement.callableId,
           metadata: toJsonValue(requirement)
         })),
+        ...ownerStatefulBehaviorRequirements.map(requirement => ({
+          id: requirement.id,
+          kind: "owner_stateful_behavior_requirement",
+          label: requirement.invocations.at(-1)?.callableId ?? "stateful",
+          metadata: toJsonValue(requirement)
+        })),
         ...ownerBehaviorTransformations.candidates.map(candidate => ({
           id: candidate.id,
           kind: "program_transformation_candidate",
           label: candidate.callableId,
           metadata: toJsonValue({ ...candidate, selected: ownerBehaviorTransformations.selectedIds.includes(candidate.id) })
+        })),
+        ...ownerStatefulBehaviorTransformations.candidates.map(candidate => ({
+          id: candidate.id,
+          kind: "program_state_transition_candidate",
+          label: candidate.transitionIr.map(instruction => instruction.operationId).join(","),
+          metadata: toJsonValue({ ...candidate, selected: ownerStatefulBehaviorTransformations.selectedIds.includes(candidate.id) })
         })),
         ...shape.requiredInputs.map(item => ({ id: `input:${item.id}`, kind: "program_input", label: item.id, metadata: toJsonValue(item) })),
         ...shape.requiredOutputs.map(item => ({ id: `output:${item.id}`, kind: "program_output", label: item.id, metadata: toJsonValue(item) })),
@@ -184,10 +210,20 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
         ...ownerBehaviorRequirements.flatMap(requirement => files
           .filter(file => file.path === EMITTED_PROGRAM_RUNTIME.sourcePath || file.path === EMITTED_PROGRAM_RUNTIME.testPath)
           .map(file => ({ source: requirement.id, target: file.path, relation: file.role === "test" ? "verified_by" : "implemented_by", weight: 1 }))),
+        ...ownerStatefulBehaviorRequirements.flatMap(requirement => files
+          .filter(file => file.path === EMITTED_PROGRAM_RUNTIME.sourcePath || file.path === EMITTED_PROGRAM_RUNTIME.testPath)
+          .map(file => ({ source: requirement.id, target: file.path, relation: file.role === "test" ? "verified_by" : "implemented_by", weight: 1 }))),
         ...ownerBehaviorTransformations.candidates.flatMap(candidate => [
           ...candidate.predictedFitObligationIds.map(requirementId => ({ source: requirementId, target: candidate.id, relation: "predicted_satisfied_by", weight: 1 })),
           ...candidate.heldOutObligationIds.map(requirementId => ({ source: requirementId, target: candidate.id, relation: "reserved_for_validation", weight: 0 })),
           ...(ownerBehaviorTransformations.selectedIds.includes(candidate.id)
+            ? [{ source: candidate.id, target: EMITTED_PROGRAM_RUNTIME.sourcePath, relation: "selected_for_emission", weight: 1 }]
+            : [])
+        ]),
+        ...ownerStatefulBehaviorTransformations.candidates.flatMap(candidate => [
+          ...candidate.predictedFitIds.map(requirementId => ({ source: requirementId, target: candidate.id, relation: "predicted_satisfied_by", weight: 1 })),
+          ...candidate.heldoutIds.map(requirementId => ({ source: requirementId, target: candidate.id, relation: "reserved_for_validation", weight: 0 })),
+          ...(ownerStatefulBehaviorTransformations.selectedIds.includes(candidate.id)
             ? [{ source: candidate.id, target: EMITTED_PROGRAM_RUNTIME.sourcePath, relation: "selected_for_emission", weight: 1 }]
             : [])
         ]),
@@ -204,9 +240,12 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
         files,
         sourceEmission,
         ownerBehaviorRequirements,
+        ownerStatefulBehaviorRequirements,
         ownerBehaviorImplementationPhase,
         ownerBehaviorTransformationCandidates: ownerBehaviorTransformations.candidates,
         selectedOwnerBehaviorTransformationIds: ownerBehaviorTransformations.selectedIds,
+        ownerStatefulBehaviorTransformationCandidates: ownerStatefulBehaviorTransformations.candidates,
+        selectedOwnerStatefulBehaviorTransformationIds: ownerStatefulBehaviorTransformations.selectedIds,
         graph: { nodes, edges },
         build,
         test,
@@ -243,7 +282,7 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
         program: graphWithoutHydration,
         sourcePlanId: plan.sourceEmission.id,
         evidenceIds: input.evidence.map(span => String(span.id)),
-        ownerRequirementIds: plan.ownerBehaviorRequirements.map(requirement => requirement.id),
+        ownerRequirementIds: [...plan.ownerBehaviorRequirements, ...plan.ownerStatefulBehaviorRequirements].map(requirement => requirement.id),
         risks: plan.sourceEmission.risks.map(risk => risk.id)
       });
       return {
@@ -2411,6 +2450,9 @@ function executableProgramModule(plan: ProgramPlan, contracts: readonly Declared
     selectedOwnerBehaviorTransformations: plan.ownerBehaviorTransformationCandidates
       .filter(candidate => plan.selectedOwnerBehaviorTransformationIds.includes(candidate.id))
       .map(candidate => ({ id: candidate.id, callableId: candidate.callableId, producedIr: candidate.producedIr })),
+    selectedOwnerStatefulBehaviorTransformations: plan.ownerStatefulBehaviorTransformationCandidates
+      .filter(candidate => plan.selectedOwnerStatefulBehaviorTransformationIds.includes(candidate.id))
+      .map(candidate => ({ id: candidate.id, transitionIr: candidate.transitionIr, operatorAssignments: candidate.operatorAssignments })),
     requiredInputs: plan.intent.shape.requiredInputs,
     requiredOutputs: plan.intent.shape.requiredOutputs,
     requiredFields: requiredFields(plan.intent.shape),
@@ -2464,6 +2506,12 @@ ${plan.ownerBehaviorRequirements.length
     .join("\n")
   : ""}
 
+${plan.ownerStatefulBehaviorRequirements.length
+  ? plan.ownerBehaviorImplementationPhase === "selected"
+    ? executableStatefulBehaviorFactory(plan.ownerStatefulBehaviorTransformationCandidates, plan.selectedOwnerStatefulBehaviorTransformationIds)
+    : `export function createStatefulProgram() { return Object.freeze({}); }`
+  : ""}
+
 export function run(input) {
   const records = Array.isArray(input && input.records) ? input.records : [];
   const fieldCoverage = programContract.requiredFields.map(field => ({
@@ -2497,6 +2545,41 @@ function executableBehaviorTransformationFunction(
 }`;
 }
 
+function executableStatefulBehaviorFactory(
+  candidates: readonly StateTransitionCandidate[],
+  selectedIds: readonly string[]
+): string {
+  const candidate = candidates.find(item => selectedIds.includes(item.id));
+  if (!candidate) throw new Error("selected stateful owner behavior has no transition transformation");
+  const operations = candidate.transitionIr.map(instruction => {
+    const name = JSON.stringify(instruction.operationId);
+    if (instruction.kind === "associate") return `${name}: (...args) => {
+  if (args.length <= ${instruction.valueArgumentIndex}) throw new TypeError(${JSON.stringify(`${instruction.operationId} requires a key and value`)});
+  state.set(statefulKey(args[${instruction.keyArgumentIndex}]), args[${instruction.valueArgumentIndex}]);
+  return undefined;
+}`;
+    if (instruction.kind === "lookup") return `${name}: (...args) => state.has(statefulKey(args[${instruction.keyArgumentIndex}])) ? state.get(statefulKey(args[${instruction.keyArgumentIndex}])) : ${renderStatefulLiteral(candidate.absentValue)}`;
+    if (instruction.kind === "dissociate") return `${name}: (...args) => {
+  const prior = state.get(statefulKey(args[${instruction.keyArgumentIndex}]));
+  state.delete(statefulKey(args[${instruction.keyArgumentIndex}]));
+  return prior;
+}`;
+    return `${name}: () => undefined`;
+  }).join(",\n");
+  return `function statefulKey(value) { return JSON.stringify(value); }
+export function createStatefulProgram() {
+  const state = new Map();
+  return Object.freeze({
+${operations}
+  });
+}`;
+}
+
+function renderStatefulLiteral(value: unknown): string {
+  const rendered = JSON.stringify(value);
+  return rendered === undefined ? "undefined" : rendered;
+}
+
 function renderProgramExpression(expression: ProgramExpression): string {
   if (expression.kind === "argument") return `args[${expression.index}]`;
   if (expression.kind === "literal") return JSON.stringify(expression.value);
@@ -2517,6 +2600,7 @@ import * as ownerProgram from "../${EMITTED_PROGRAM_RUNTIME.sourcePath}";
 import { checkDeclaredCall, describeShape, programContract, run, shapeSatisfies } from "../${EMITTED_PROGRAM_RUNTIME.sourcePath}";
 
 const ownerBehaviorRequirements = ${JSON.stringify(plan.ownerBehaviorRequirements, null, 2)};
+const ownerStatefulBehaviorRequirements = ${JSON.stringify(plan.ownerStatefulBehaviorRequirements, null, 2)};
 
 test("emitted program satisfies its executable contract", () => {
 assert.equal(programContract.planId, ${JSON.stringify(plan.id)}, "emitted program lost its plan identity");
@@ -2527,6 +2611,18 @@ for (const requirement of ownerBehaviorRequirements) {
   const callable = ownerProgram[requirement.callableId];
   assert.equal(typeof callable, "function", "owner-required callable " + requirement.callableId + " was not emitted");
   assert.deepEqual(ownerProgram[requirement.callableId](...requirement.arguments), requirement.expectedResult, "owner requirement " + requirement.id + " was not satisfied");
+}
+
+for (const requirement of ownerStatefulBehaviorRequirements) {
+  const statefulProgram = ownerProgram.createStatefulProgram();
+  assert.equal(typeof statefulProgram, "object", "stateful owner program was not emitted");
+  let result;
+  for (const invocation of requirement.invocations) {
+    const operation = statefulProgram[invocation.callableId];
+    assert.equal(typeof operation, "function", "stateful owner operation " + invocation.callableId + " was not emitted");
+    result = operation(...invocation.arguments);
+  }
+  assert.deepEqual(result, requirement.expectedResult, "stateful owner requirement " + requirement.id + " was not satisfied");
 }
 
 assert.equal(describeShape([]), "[]");
@@ -2636,6 +2732,70 @@ function validatedOwnerBehaviorTransformations(
   };
 }
 
+function validatedOwnerStatefulBehaviorRequirements(requirements: readonly ProgramStatefulBehaviorRequirement[]): ProgramStatefulBehaviorRequirement[] {
+  const ids = new Set<string>();
+  const out: ProgramStatefulBehaviorRequirement[] = [];
+  for (const requirement of requirements) {
+    if (!requirement.id || !/^sha256:[0-9a-f]{64}$/u.test(requirement.requestHash)) throw new Error("owner stateful behavior requirement identity is invalid");
+    if (!requirement.relationSurface || requirement.sourceSpan.charStart < 0 || requirement.sourceSpan.charEnd <= requirement.sourceSpan.charStart) {
+      throw new Error(`owner stateful behavior requirement source binding is invalid: ${requirement.id}`);
+    }
+    if (requirement.verificationRole !== "fit" && requirement.verificationRole !== "held_out") throw new Error(`owner stateful behavior verification role is invalid: ${requirement.id}`);
+    if (ids.has(requirement.id)) throw new Error(`duplicate owner stateful behavior requirement: ${requirement.id}`);
+    if (!requirement.invocations.length) throw new Error(`owner stateful behavior has no ordered invocations: ${requirement.id}`);
+    for (const invocation of requirement.invocations) {
+      if (!isJavaScriptPropertyIdentifier(invocation.callableId) || invocation.sourceSpan.charStart < 0 || invocation.sourceSpan.charEnd <= invocation.sourceSpan.charStart) {
+        throw new Error(`owner stateful behavior invocation is invalid: ${requirement.id}`);
+      }
+    }
+    ids.add(requirement.id);
+    out.push({
+      ...requirement,
+      invocations: requirement.invocations.map(invocation => ({ ...invocation, arguments: invocation.arguments.map(value => toJsonValue(value)), sourceSpan: { ...invocation.sourceSpan } })),
+      expectedResult: toJsonValue(requirement.expectedResult),
+      sourceSpan: { ...requirement.sourceSpan }
+    });
+  }
+  return out;
+}
+
+function statefulTransitionScenarios(requirements: readonly ProgramStatefulBehaviorRequirement[]) {
+  return requirements.map(requirement => ({
+    id: requirement.id,
+    invocations: requirement.invocations.map(invocation => ({ operationId: invocation.callableId, arguments: invocation.arguments })),
+    expectedResult: requirement.expectedResult,
+    verificationRole: requirement.verificationRole
+  }));
+}
+
+function validatedOwnerStatefulBehaviorTransformations(
+  requirements: readonly ProgramStatefulBehaviorRequirement[],
+  phase: "probe" | "selected",
+  suppliedCandidates: readonly StateTransitionCandidate[],
+  suppliedSelectedIds: readonly string[]
+): { candidates: StateTransitionCandidate[]; selectedIds: string[] } {
+  if (phase === "probe") {
+    if (suppliedCandidates.length || suppliedSelectedIds.length) throw new Error("probe stateful owner behavior cannot carry selected transformations");
+    return { candidates: [], selectedIds: [] };
+  }
+  if (!requirements.length) {
+    if (suppliedCandidates.length || suppliedSelectedIds.length) throw new Error("stateful owner behavior transformations require stateful requirements");
+    return { candidates: [], selectedIds: [] };
+  }
+  const searched = searchStateTransitions(statefulTransitionScenarios(requirements));
+  const expectedSelectedIds = searched.selected.map(candidate => candidate.id);
+  if (canonicalStringify(suppliedCandidates) !== canonicalStringify(searched.candidates)
+    || canonicalStringify(suppliedSelectedIds) !== canonicalStringify(expectedSelectedIds)) {
+    throw new Error("selected stateful owner behavior transformations do not match bounded fit-role search");
+  }
+  const selected = searched.selected[0];
+  const fitIds = requirements.filter(requirement => requirement.verificationRole === "fit").map(requirement => requirement.id).sort(compareText);
+  if (!selected || selected.fitError > 0 || canonicalStringify(selected.predictedFitIds) !== canonicalStringify(fitIds)) {
+    throw new Error("selected stateful owner behavior transformation does not satisfy fit obligations");
+  }
+  return { candidates: searched.candidates.map(candidate => ({ ...candidate })), selectedIds: expectedSelectedIds };
+}
+
 function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
@@ -2648,6 +2808,10 @@ const JAVASCRIPT_BINDING_RESERVED = new Set([
 
 function isJavaScriptBindingIdentifier(value: string): boolean {
   return /^[$_A-Za-z][$_A-Za-z0-9]*$/u.test(value) && !JAVASCRIPT_BINDING_RESERVED.has(value);
+}
+
+function isJavaScriptPropertyIdentifier(value: string): boolean {
+  return /^[$_A-Za-z][$_A-Za-z0-9]*$/u.test(value);
 }
 
 function buildNotes(plan: ProgramPlan): string {
