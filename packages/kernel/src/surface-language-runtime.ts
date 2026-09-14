@@ -803,7 +803,9 @@ export function createSurfaceLanguageRuntime(options: {
       return residentRuntimeNotWarm(`language-memory:${unscopedReason}`);
     }
     const value = await hydrateSurfaceLanguageMemory(limit, cluster, unscopedReason, preferredCorpusRoleId, preferredSurface);
-    if (hydrationWorthCaching(value)) boundedSurfaceLanguageMemoryCacheSet(
+    // An explicit unscoped decision is reusable; missing data for a selected language must remain retryable.
+    const resolvedUnscoped = !cluster && !preferredCorpusRoleId && value.state.scope.mode === "unscoped";
+    if (resolvedUnscoped || hydrationWorthCaching(value)) boundedSurfaceLanguageMemoryCacheSet(
       surfaceLanguageMemoryCache,
       cacheKey,
       { limit, loadedAt: now, value, approxEstimatedBytes: approximateHydrationEstimatedBytes(value) },
