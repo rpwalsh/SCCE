@@ -279,6 +279,10 @@ export function createSurfaceLanguageRuntime(options: {
     profiles: LanguageProfile[];
     clusters: LanguageProfileCluster[];
   }>();
+  // Alias resolution is requested by several runtime stages during the same
+  // turn. Keep the durable read single-flight so a cold alias cannot fan out
+  // one identical profile query per stage.
+  const sourceOwnedAliasProfileInFlight = new Map<string, Promise<{ profiles: LanguageProfile[]; clusters: LanguageProfileCluster[] }>>();
   const surfaceCandidateProfileCache = new Map<string, {
     loadedAt: number;
     profiles: LanguageProfile[];
@@ -1036,14 +1040,23 @@ export function createSurfaceLanguageRuntime(options: {
       });
       return { profiles, clusters };
     }
-    const profiles = (await deps.storage.model.listLanguageProfiles({
-      limit: surfaceLanguageProfileLimit,
-      referencedByLanguageMemory: true,
-      sourceDerivedAliases: aliasKeys
-    })).sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
-    const clusters = buildLanguageProfileClusters(profiles);
-    if (generation === languageMemoryGeneration) sourceOwnedAliasProfileCache.set(cacheKey, { loadedAt: now, profiles, clusters });
-    return { profiles, clusters };
+    const existing = sourceOwnedAliasProfileInFlight.get(cacheKey);
+    if (existing) return existing;
+    const pending = (async () => {
+      const profiles = (await deps.storage.model.listLanguageProfiles({
+        limit: surfaceLanguageProfileLimit,
+        referencedByLanguageMemory: true,
+        sourceDerivedAliases: aliasKeys
+      })).sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
+      const clusters = buildLanguageProfileClusters(profiles);
+      if (generation === languageMemoryGeneration) sourceOwnedAliasProfileCache.set(cacheKey, { loadedAt: clock.now(), profiles, clusters });
+      return { profiles, clusters };
+    })();
+    sourceOwnedAliasProfileInFlight.set(cacheKey, pending);
+    try { return await pending; }
+    finally {
+      if (sourceOwnedAliasProfileInFlight.get(cacheKey) === pending) sourceOwnedAliasProfileInFlight.delete(cacheKey);
+    }
   }
 
 

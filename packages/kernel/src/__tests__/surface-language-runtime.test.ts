@@ -123,6 +123,24 @@ describe("surface language resident-only cache", () => {
     expect(fixture.totalDurableCalls()).toBe(durableCallsAfterWarmup);
   });
 
+  it("shares one durable source-owned profile resolution among concurrent aliases", async () => {
+    const fixture = runtimeFixture();
+
+    const [first, second, reordered] = await Promise.all([
+      fixture.runtime.sourceOwnedLanguageProfilesCached(["fixture", "alias"]),
+      fixture.runtime.sourceOwnedLanguageProfilesCached(["alias", "fixture"]),
+      fixture.runtime.sourceOwnedLanguageProfilesCached(["fixture", "alias"])
+    ]);
+
+    expect(first.profiles).toBe(second.profiles);
+    expect(first.profiles).toBe(reordered.profiles);
+    expect(fixture.profileQueries).toHaveLength(1);
+    expect(fixture.profileQueries[0]).toMatchObject({
+      referencedByLanguageMemory: true,
+      sourceDerivedAliases: ["alias", "fixture"]
+    });
+  });
+
   it("retrieves surface candidates from durable memory-referenced profiles, not the recent-profile window", async () => {
     const fixture = runtimeFixture();
 

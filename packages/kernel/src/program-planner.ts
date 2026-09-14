@@ -1368,8 +1368,9 @@ function emitFiles(plan: ProgramPlan, input: ProgramPlannerInput, idFactory: IdF
     const contracts = plan.ownerBehaviorRequirements.length
       ? declaredCallContractsFromRequirements(plan.ownerBehaviorRequirements)
       : declaredCallContracts(input.requestText);
+    const statefulContracts = declaredStatefulCallContractsFromRequirements(plan.ownerStatefulBehaviorRequirements);
     byPath.set("source.program.json", `${JSON.stringify(sourceProgramContract(plan, input), null, 2)}\n`);
-    byPath.set(EMITTED_PROGRAM_RUNTIME.sourcePath, executableProgramModule(plan, contracts));
+    byPath.set(EMITTED_PROGRAM_RUNTIME.sourcePath, executableProgramModule(plan, contracts, statefulContracts));
     byPath.set(EMITTED_PROGRAM_RUNTIME.testPath, executableProgramTest(plan, contracts));
     byPath.set("BUILDING.md", buildNotes(plan));
   }
@@ -2278,9 +2279,19 @@ function sourceProgramContract(plan: ProgramPlan, input: ProgramPlannerInput): J
       callableId: requirement.callableId,
       verificationRole: requirement.verificationRole
     })),
+    ownerStatefulBehaviorAuthority: plan.ownerStatefulBehaviorRequirements.map(requirement => ({
+      id: requirement.id,
+      invocations: requirement.invocations.map(invocation => ({
+        callableId: invocation.callableId,
+        arguments: invocation.arguments
+      })),
+      expectedResult: requirement.expectedResult,
+      verificationRole: requirement.verificationRole
+    })),
     ownerBehaviorImplementationPhase: plan.ownerBehaviorImplementationPhase,
     ownerBehaviorTransformationCandidates: plan.ownerBehaviorTransformationCandidates,
     selectedOwnerBehaviorTransformationIds: plan.selectedOwnerBehaviorTransformationIds,
+    statefulCallContracts: declaredStatefulCallContractsFromRequirements(plan.ownerStatefulBehaviorRequirements),
     sourceOperations: plan.blueprint.operations,
     build: plan.build,
     test: plan.test,
@@ -2299,6 +2310,13 @@ interface DeclaredCallContract {
   returnType: string;
   /** Arguments matching every declared parameter type, or undefined when some type is not one the runtime can construct. */
   sample?: JsonValue[];
+}
+
+interface DeclaredStatefulCallContract {
+  name: string;
+  parameters: Array<{ name: string; type: string }>;
+  /** Invocation examples are retained so the generated contract can be executed by a verifier. */
+  samples: JsonValue[][];
 }
 
 /**
@@ -2331,6 +2349,39 @@ function declaredCallContractsFromRequirements(requirements: readonly ProgramBeh
       returnType,
       sample: exemplar.arguments
     };
+  });
+}
+
+/**
+ * Derive the stateful API surface from admitted invocation records. Operation
+ * names, arity, and argument shapes come from callable IDs and values already
+ * bound to the requirement graph; no request text or operation vocabulary is
+ * consulted here.
+ */
+function declaredStatefulCallContractsFromRequirements(
+  requirements: readonly ProgramStatefulBehaviorRequirement[]
+): DeclaredStatefulCallContract[] {
+  const byCallable = new Map<string, JsonValue[][]>();
+  for (const requirement of requirements) {
+    for (const invocation of requirement.invocations) {
+      const samples = byCallable.get(invocation.callableId);
+      const args = invocation.arguments.map(value => toJsonValue(value));
+      if (samples) samples.push(args);
+      else byCallable.set(invocation.callableId, [args]);
+    }
+  }
+  return [...byCallable.entries()].map(([name, samples]) => {
+    const arity = samples[0]?.length ?? 0;
+    const parameters = Array.from({ length: arity }, (_, index) => {
+      const shapes = samples
+        .filter(args => args.length === arity)
+        .map(args => runtimeShapeForJson(args[index]!));
+      return {
+        name: `arg${index}`,
+        type: shapes.length && shapes.every(shape => shape === shapes[0]) ? shapes[0]! : ""
+      };
+    });
+    return { name, parameters, samples };
   });
 }
 
@@ -2487,7 +2538,11 @@ function skipSpacesFrom(text: string, start: number): number {
  * The emitted program: the contracts the request declared, the inputs the plan requires, and the operations the
  * blueprint planned, in the module syntax of the runtime that is about to check and run it.
  */
-function executableProgramModule(plan: ProgramPlan, contracts: readonly DeclaredCallContract[]): string {
+function executableProgramModule(
+  plan: ProgramPlan,
+  contracts: readonly DeclaredCallContract[],
+  statefulContracts: readonly DeclaredStatefulCallContract[] = []
+): string {
   const manifest = {
     planId: plan.id,
     entrypoint: EMITTED_PROGRAM_RUNTIME.sourcePath,
@@ -2496,6 +2551,20 @@ function executableProgramModule(plan: ProgramPlan, contracts: readonly Declared
     artifactKinds: plan.sourceEmission.artifactKinds,
     contracts: contracts.map(contract => ({ name: contract.name, parameters: contract.parameters, returnType: contract.returnType })),
     probes: contracts.filter(contract => contract.sample).map(contract => ({ name: contract.name, arguments: contract.sample })),
+    statefulContracts: statefulContracts.map(contract => ({
+      name: contract.name,
+      parameters: contract.parameters,
+      samples: contract.samples
+    })),
+    statefulRequirements: plan.ownerStatefulBehaviorRequirements.map(requirement => ({
+      id: requirement.id,
+      invocations: requirement.invocations.map(invocation => ({
+        callableId: invocation.callableId,
+        arguments: invocation.arguments
+      })),
+      expectedResult: requirement.expectedResult,
+      verificationRole: requirement.verificationRole
+    })),
     ownerBehaviorImplementationPhase: plan.ownerBehaviorImplementationPhase,
     selectedOwnerBehaviorTransformations: plan.ownerBehaviorTransformationCandidates
       .filter(candidate => plan.selectedOwnerBehaviorTransformationIds.includes(candidate.id))
@@ -2531,6 +2600,10 @@ export function declaredContract(name) {
   return programContract.contracts.find(contract => contract.name === name);
 }
 
+export function declaredStatefulContract(name) {
+  return programContract.statefulContracts.find(contract => contract.name === name);
+}
+
 export function checkDeclaredCall(name, args) {
   const contract = declaredContract(name);
   if (!contract) return { ok: false, name, diagnostics: [{ code: "program.contract.undeclared", name }] };
@@ -2540,6 +2613,19 @@ export function checkDeclaredCall(name, args) {
   for (const [index, parameter] of contract.parameters.entries()) {
     const shape = describeShape(received[index]);
     if (index < received.length && !shapeSatisfies(shape, parameter.type)) diagnostics.push({ code: "program.contract.parameter_shape", parameter: parameter.name, declared: parameter.type, received: shape });
+  }
+  return { ok: diagnostics.length === 0, name, declared: contract, diagnostics };
+}
+
+export function checkStatefulCall(name, args) {
+  const contract = declaredStatefulContract(name);
+  if (!contract) return { ok: false, name, diagnostics: [{ code: "program.stateful_contract.undeclared", name }] };
+  const received = Array.isArray(args) ? args : [];
+  const diagnostics = [];
+  if (received.length !== contract.parameters.length) diagnostics.push({ code: "program.stateful_contract.arity", expected: contract.parameters.length, received: received.length });
+  for (const [index, parameter] of contract.parameters.entries()) {
+    const shape = describeShape(received[index]);
+    if (index < received.length && !shapeSatisfies(shape, parameter.type)) diagnostics.push({ code: "program.stateful_contract.parameter_shape", parameter: parameter.name, declared: parameter.type, received: shape });
   }
   return { ok: diagnostics.length === 0, name, declared: contract, diagnostics };
 }
@@ -2652,7 +2738,7 @@ function executableProgramTest(plan: ProgramPlan, contracts: readonly DeclaredCa
   return `import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import * as ownerProgram from "../${EMITTED_PROGRAM_RUNTIME.sourcePath}";
-import { checkDeclaredCall, describeShape, programContract, run, shapeSatisfies } from "../${EMITTED_PROGRAM_RUNTIME.sourcePath}";
+import { checkDeclaredCall, checkStatefulCall, describeShape, programContract, run, shapeSatisfies } from "../${EMITTED_PROGRAM_RUNTIME.sourcePath}";
 
 const ownerBehaviorRequirements = ${JSON.stringify(plan.ownerBehaviorRequirements, null, 2)};
 const ownerStatefulBehaviorRequirements = ${JSON.stringify(plan.ownerStatefulBehaviorRequirements, null, 2)};
@@ -2678,6 +2764,17 @@ for (const requirement of ownerStatefulBehaviorRequirements) {
     result = operation(...invocation.arguments);
   }
   assert.deepEqual(result, requirement.expectedResult, "stateful owner requirement " + requirement.id + " was not satisfied");
+}
+
+for (const contract of programContract.statefulContracts) {
+  const statefulProgram = ownerProgram.createStatefulProgram();
+  assert.equal(typeof statefulProgram[contract.name], "function", "stateful contract operation " + contract.name + " was not emitted");
+  for (const sample of contract.samples) {
+    const accepted = checkStatefulCall(contract.name, sample);
+    assert.ok(accepted.ok, \`stateful call \${contract.name} rejected its own declared shapes: \${JSON.stringify(accepted.diagnostics)}\`);
+    const wrongArity = checkStatefulCall(contract.name, [...sample, null]);
+    assert.equal(wrongArity.ok, false, \`stateful call \${contract.name} accepted the wrong number of arguments\`);
+  }
 }
 
 assert.equal(describeShape([]), "[]");
