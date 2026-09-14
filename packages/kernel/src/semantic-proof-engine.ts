@@ -18,6 +18,8 @@ export interface ProofAtom {
   id?: string;
   surface?: string;
   kindId?: string;
+  roleId?: string;
+  valueKind?: string;
 }
 
 export interface ProofScalar {
@@ -362,6 +364,8 @@ function atomsEquivalent(left: ProofAtom, right: ProofAtom): boolean {
 }
 
 function evaluateAtom(kind: string, claim: ProofAtom, evidence: ProofAtom): { kind: string; passed: boolean; reason: string } {
+  const typed = evaluateAtomTyping(claim, evidence);
+  if (!typed.passed) return { kind, ...typed };
   if (nonEmpty(claim.id) && nonEmpty(evidence.id)) {
     return { kind, passed: claim.id === evidence.id, reason: claim.id === evidence.id ? "atom_id_exact" : "atom_id_mismatch" };
   }
@@ -375,6 +379,18 @@ function evaluateAtom(kind: string, claim: ProofAtom, evidence: ProofAtom): { ki
   const evidenceSurface = normalizedSurface(evidence.surface);
   if (!claimSurface || !evidenceSurface) return { kind, passed: false, reason: "atom_identity_missing" };
   return { kind, passed: claimSurface === evidenceSurface, reason: claimSurface === evidenceSurface ? "atom_surface_exact" : "atom_surface_mismatch" };
+}
+
+function evaluateAtomTyping(claim: ProofAtom, evidence: ProofAtom): { passed: boolean; reason: string } {
+  if (nonEmpty(claim.roleId) && nonEmpty(evidence.roleId) && claim.roleId !== evidence.roleId) {
+    return { passed: false, reason: "role_id_mismatch" };
+  }
+  const claimValueKind = claim.valueKind ?? claim.kindId;
+  const evidenceValueKind = evidence.valueKind ?? evidence.kindId;
+  if (nonEmpty(claimValueKind) && nonEmpty(evidenceValueKind) && claimValueKind !== evidenceValueKind) {
+    return { passed: false, reason: "value_kind_mismatch" };
+  }
+  return { passed: true, reason: "atom_typing_compatible" };
 }
 
 function evaluateRelation(claimRelationId: string, evidenceRelationId: string, policy: ProofPolicy): { passed: boolean; reason: string } {

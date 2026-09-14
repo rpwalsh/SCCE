@@ -9,7 +9,7 @@ import type {
 } from "./ingestion-lanes.js";
 import { evidenceProofBoundary } from "./proof-boundary.js";
 import type { ProofAtom, ProofClaim, ProofEvidenceRecord, ProofForceClass, ProofScalar } from "./semantic-proof-engine.js";
-import type { ConstructGraph, EvidenceSpan, GraphNode, JsonValue } from "./types.js";
+import type { ConstructGraph, EvidenceSpan, GraphNode, Hyperedge, JsonValue } from "./types.js";
 
 export type SupportedProofObservation = MeasurementObservation | LogEventObservation | CodeObservation;
 
@@ -114,6 +114,36 @@ export function typedObservationToProofRecords(input: TypedObservationProofAdapt
   const normalized = normalizeTypedObservationInput(input);
   const evidenceById = normalized.evidenceById;
   return normalized.observations.flatMap(observation => proofRecordsFromObservation(observation, evidenceById));
+}
+
+/** Lift promoted hyperedges into proof records without flattening their typed incidence. */
+export function typedRelationsToProofRecords(input: {
+  hyperedges: readonly Hyperedge[];
+  nodes?: readonly GraphNode[];
+  evidence?: readonly EvidenceSpan[];
+}): ProofEvidenceRecord[] {
+  const nodeById = new Map((input.nodes ?? []).map(node => [String(node.id), node]));
+  const evidenceById = new Map((input.evidence ?? []).map(span => [String(span.id), span]));
+  return input.hyperedges.flatMap(hyperedge => {
+    const observed = hyperedge.participantPorts.filter(port => port.realization === "observed" && port.nodeId !== null);
+    if (observed.length < 2) return [];
+    const subject = observed[0]!;
+    const object = observed[1]!;
+    const sourceSpan = hyperedge.evidenceIds.map(String).map(id => evidenceById.get(id)).find(Boolean);
+    const subjectNode = nodeById.get(String(subject.nodeId));
+    const objectNode = nodeById.get(String(object.nodeId));
+    const boundary = sourceSpan ? evidenceProofBoundary(sourceSpan) : undefined;
+    return [{
+      id: `proof.evidence.hyperedge.${String(hyperedge.id)}`,
+      forceClass: boundary ? proofForceClassFromBoundary(boundary.forceClass) ?? DIRECT_FORCE : UNKNOWN_FORCE,
+      sourceVersionId: sourceSpan ? String(sourceSpan.sourceVersionId) : undefined,
+      evidenceSpanId: boundary?.certifiesFactualProof ? String(sourceSpan!.id) : undefined,
+      subject: { id: String(subject.nodeId), kindId: subject.valueKind, roleId: subject.roleId, surface: graphNodeSurface(subjectNode) },
+      relationId: String(hyperedge.relationId),
+      object: { id: String(object.nodeId), kindId: object.valueKind, roleId: object.roleId, surface: graphNodeSurface(objectNode) },
+      text: sourceSpan?.text
+    } satisfies ProofEvidenceRecord];
+  });
 }
 
 function proofRecordsFromObservation(observation: SupportedProofObservation, evidenceById: ReadonlyMap<string, EvidenceSpan>): ProofEvidenceRecord[] {
@@ -367,6 +397,17 @@ function isObservation(value: unknown): value is SupportedProofObservation {
 
 function objectRecord(value: JsonValue | undefined): Record<string, JsonValue> | undefined {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, JsonValue> : undefined;
+}
+
+function graphNodeSurface(node: GraphNode | undefined): string | undefined {
+  if (!node) return undefined;
+  if (typeof node.representation === "string") return node.representation;
+  if (!node.representation || typeof node.representation !== "object" || Array.isArray(node.representation)) return undefined;
+  for (const key of ["surface", "label", "name", "text", "title"]) {
+    const value = node.representation[key];
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return undefined;
 }
 
 function firstString(...values: readonly unknown[]): string | undefined {

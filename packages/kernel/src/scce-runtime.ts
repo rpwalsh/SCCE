@@ -873,6 +873,7 @@ interface SourceOnlyAuthorityAnswerInput {
   runtimeGraph: {
     nodes: GraphNode[];
     edges: GraphEdge[];
+    hyperedges: Hyperedge[];
   };
   runtimeField: WorkspaceKernelAnswerResult["mouthInput"]["speakInput"]["field"];
   workspaceAnswer: WorkspaceKernelAnswerResult;
@@ -903,7 +904,7 @@ async function sourceOnlyAuthorityAnswer(input: SourceOnlyAuthorityAnswerInput):
   const graph = {
     nodes: input.runtimeGraph.nodes,
     edges: input.runtimeGraph.edges,
-    hyperedges: [],
+    hyperedges: input.runtimeGraph.hyperedges,
     bounded: true as const,
     query: {
       features: featureSet(input.input.text, 256),
@@ -987,6 +988,7 @@ async function sourceOnlyAuthorityAnswer(input: SourceOnlyAuthorityAnswerInput):
     operatorActivations: input.operatorActivations,
     cognitiveProposals: proposals,
     dialogueState: toJsonValue(input.workspaceAnswer.dialogueState),
+    typedRelations: input.runtimeGraph.hyperedges,
     functionalGate
   });
   const admitted = admitCandidatesForAuthority(candidateField, requestedAuthority);
@@ -1054,6 +1056,7 @@ async function sourceOnlyAuthorityAnswer(input: SourceOnlyAuthorityAnswerInput):
       nodes: graph.nodes,
       field,
       construct: routedConstruct,
+      typedRelations: input.runtimeGraph.hyperedges,
       createdAt: input.createdAt,
       calibrationModels: input.calibrationModels
     })

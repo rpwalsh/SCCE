@@ -1,6 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import type { EpistemicForce, EvidenceId, EvidenceSpan, FieldState, JsonValue, LanguageProfile, RequestedAuthority, SemanticEntailmentResult } from "./types.js";
+import type { EpistemicForce, EvidenceId, EvidenceSpan, FieldState, Hyperedge, JsonValue, LanguageProfile, RequestedAuthority, SemanticEntailmentResult } from "./types.js";
 import type { InventionConstruct } from "./prediction.js";
 import type { LanguageMemoryRuntime, LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
 import { attemptConstructRealization } from "./answer-realization.js";
@@ -39,6 +39,7 @@ import {
   functionalCandidateGateFailures,
   type FunctionalSelectionGate
 } from "./functional-cognition.js";
+import { typedRelationTraces } from "./typed-relation-trace.js";
 export type { CandidateField, CandidateQuality, CandidateSurface } from "./candidate-contract.js";
 
 export interface CandidateGenerationInput {
@@ -69,6 +70,8 @@ export interface CandidateGenerationInput {
   /** Current-turn owner assertions that the runtime explicitly admitted as promoted session evidence. */
   ownerSessionEvidenceIds?: ReadonlySet<string>;
   languageMemoryForRealization?: { languageMemory: LanguageMemoryRuntime; state: LanguageMemoryRuntimeState; languageProfile?: LanguageProfile };
+  /** Promoted typed relations remain available beside the flattened activation field. */
+  typedRelations?: readonly Hyperedge[];
 }
 
 export function createCandidateEngine() {
@@ -860,9 +863,21 @@ function graphInferenceCandidate(input: {
   field: FieldState;
   locale?: string;
   requestedAuthority?: RequestedAuthority;
+  typedRelations?: readonly Hyperedge[];
 }): CandidateSurface | undefined {
   if (!input.entailment.evidenceIds.length && input.entailment.support < 0.34) return undefined;
   const top = input.field.causalMass.slice(0, 8);
+  const typedRelations = typedRelationTraces(input.typedRelations ?? []);
+  const entailmentEvidence = new Set(input.entailment.evidenceIds.map(String));
+  const typedRelationSupport = typedRelations.length
+    ? Math.max(...typedRelations.map(relation => {
+      const overlap = relation.evidenceIds.filter(id => entailmentEvidence.has(id)).length;
+      return relation.support * (overlap / Math.max(1, relation.evidenceIds.length));
+    }))
+    : 0;
+  const support = typedRelations.length
+    ? clamp01(mean(top.map(item => item.mass)) * 0.4 + input.entailment.support * 0.4 + typedRelationSupport * 0.2)
+    : clamp01(mean(top.map(item => item.mass)) * 0.5 + input.entailment.support * 0.5);
   const answer = cleanGraphInferenceSurface(input);
   return {
     id: candidateId("graph", input.entailment, answer),
@@ -876,9 +891,10 @@ function graphInferenceCandidate(input: {
     // is -- "unknown" is the honest label, regardless of authority.
     force: input.entailment.force === "invented" ? "unknown" : "inferred",
     evidenceIds: input.entailment.evidenceIds,
+    typedRelations,
     scores: {
       ...baseScores(input),
-      support: clamp01(mean(top.map(item => item.mass)) * 0.5 + input.entailment.support * 0.5),
+      support,
       // Real bug, confirmed live: this used to be a flat literal (novelty: 0.52) applied to every
       // graph-inference candidate regardless of whether its text differs from anything -- pure, unearned
       // score inflation with no relationship to genuine novelty, big enough on its own to flip the planner's
@@ -898,15 +914,17 @@ function graphInferenceCandidate(input: {
         evidenceIds: input.entailment.evidenceIds,
         causalNodeIds: top.map(item => item.nodeId),
         forceId: input.entailment.force,
+        typedRelations,
+        typedRelationSupport,
         surfaceOriginId: answer ? "surface.graph.claim_or_evidence.v1" : null
       }
     }),
     scoreTrace: [
       provisionalHeuristicScore({
-        value: clamp01(mean(top.map(item => item.mass)) * 0.5 + input.entailment.support * 0.5),
+        value: support,
         range: [0, 1],
         meaning: "graph inference support blend",
-        inputs: ["causalMass.mean", "entailment.support"],
+        inputs: ["causalMass.mean", "entailment.support", "typedRelations", "typedRelationSupport", "orderedPortDirection", "participantRoleIds", "participantValueKinds"],
         provenance: ["candidate.ts:graphInferenceCandidate"],
         failureModes: ["noisy_graph_density", "stale_causal_mass"]
       })
