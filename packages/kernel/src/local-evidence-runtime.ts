@@ -2484,7 +2484,30 @@ export function evidenceTitledForRequestSubject(text: string, spans: readonly Ev
 /** Whether the source is about the subject this request names; see evidenceIdentityBindsAnchors. Pure. */
 export function evidenceIdentityBindsRequest(span: EvidenceSpan, requestText: string, closedClassWords?: ReadonlySet<string>): boolean {
   const anchors = sourceEvidenceAnchorsForRequest(requestText);
-  return anchors.length > 0 && evidenceIdentityBindsAnchors(span, anchors, closedClassWords);
+  if (!anchors.length) return false;
+  if (evidenceIdentityBindsAnchors(span, anchors, closedClassWords)) return true;
+  // A code file's identity is its path, while code questions usually name a
+  // declaration rather than the file path ("Which file defines fooBar?").
+  // Requiring an exact identifier from the request in the source body keeps
+  // this fallback source-bound and avoids admitting a code file merely because
+  // it is in the same repository. Prose spans never enter this branch.
+  return codeSpanBindsRequestedIdentifier(span, requestText);
+}
+
+const CODE_SOURCE_EXTENSIONS = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs|py|rs|go|java|kt|swift|c|h|cc|cpp|hpp|cs|rb|php|sh|sql)$/iu;
+
+function codeSpanBindsRequestedIdentifier(span: EvidenceSpan, requestText: string): boolean {
+  const provenance = jsonRecord(span.provenance);
+  const metadata = jsonRecord(provenance.metadata);
+  const uri = String(provenance.uri ?? provenance.canonicalUri ?? metadata.relativePath ?? "");
+  if (!CODE_SOURCE_EXTENSIONS.test(uri)) return false;
+  const source = String(span.text ?? span.textPreview ?? "");
+  if (!source) return false;
+  const requestUnits = splitPriorUnits(requestText)
+    .map(unit => unit.replace(/^[^\p{L}\p{N}_$]+|[^\p{L}\p{N}_$]+$/gu, ""))
+    .filter(unit => unit.length >= 6 && /[A-Z_$]/u.test(unit));
+  const sourceSurface = normalizePriorKey(source);
+  return requestUnits.some(unit => sourceSurface.includes(normalizePriorKey(unit)));
 }
 
  function evidenceIdentityBindsAnchors(span: EvidenceSpan, anchors: readonly string[], closedClassWords?: ReadonlySet<string>): boolean {
