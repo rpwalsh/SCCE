@@ -17,6 +17,19 @@
  * Ids follow calibration-spine.ts's convention: subsystem, then what the value governs.
  */
 export const PUBLIC_CALIBRATIONS = Object.freeze({
+  // --- code request structural demand (code-request.ts)
+  // Bootstrap weights are intentionally small and additive: each typed observation contributes evidence,
+  // while codeRequestRecognized remains the separate corroboration gate.
+  "code_request.demand.fenced_block": 0.45,
+  "code_request.demand.formal_language": 0.4,
+  "code_request.demand.language_alias": 0.15,
+  "code_request.demand.code_path": 0.35,
+  "code_request.demand.identifier_shape": 0.2,
+  "code_request.demand.call_shape": 0.2,
+  "code_request.demand.code_punctuation": 0.2,
+  "code_request.demand.owner_behavior_example": 0.35,
+  "code_request.demand.owner_stateful_behavior_example": 0.35,
+
   // --- request authority projection (request-authority.ts)
   /** Intercept of the bounded authority routing energy. */
   "request_authority.projection_bias": 0.5,

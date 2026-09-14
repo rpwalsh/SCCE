@@ -5,6 +5,8 @@ import { canonicalStringify, createHasher, toJsonValue } from "./primitives.js";
 import { parseStatefulBehaviorScenarios } from "./stateful-behavior-scenarios.js";
 import type { ExplicitTurnRequirement } from "./turn-requirements.js";
 import type { JsonValue, ProgramBehaviorRequirement, ProgramStatefulBehaviorRequirement } from "./types.js";
+import { calibrated } from "./calibrations/prod-calibrations.js";
+import type { CalibrationKey } from "./calibrations/public-calibrations.js";
 
 /**
  * Formal language identity, not natural-language vocabulary: these are the
@@ -85,17 +87,43 @@ export interface CodeStructureObservation {
  */
 export type CodeRequestDemandModel = Readonly<Record<CodeStructureObservationKind, number>>;
 
-export const CODE_REQUEST_BOOTSTRAP_DEMAND_MODEL: CodeRequestDemandModel = Object.freeze({
-  fenced_block: 0.45,
-  formal_language: 0.4,
-  language_alias: 0.15,
-  code_path: 0.35,
-  identifier_shape: 0.2,
-  call_shape: 0.2,
-  code_punctuation: 0.2,
-  owner_behavior_example: 0.35,
-  owner_stateful_behavior_example: 0.35
+const CODE_REQUEST_DEMAND_CALIBRATION_KEYS: Readonly<Record<CodeStructureObservationKind, CalibrationKey>> = Object.freeze({
+  fenced_block: "code_request.demand.fenced_block",
+  formal_language: "code_request.demand.formal_language",
+  language_alias: "code_request.demand.language_alias",
+  code_path: "code_request.demand.code_path",
+  identifier_shape: "code_request.demand.identifier_shape",
+  call_shape: "code_request.demand.call_shape",
+  code_punctuation: "code_request.demand.code_punctuation",
+  owner_behavior_example: "code_request.demand.owner_behavior_example",
+  owner_stateful_behavior_example: "code_request.demand.owner_stateful_behavior_example"
 });
+
+export const CODE_REQUEST_BOOTSTRAP_DEMAND_MODEL: CodeRequestDemandModel = Object.freeze({
+  fenced_block: calibrated(CODE_REQUEST_DEMAND_CALIBRATION_KEYS.fenced_block),
+  formal_language: calibrated(CODE_REQUEST_DEMAND_CALIBRATION_KEYS.formal_language),
+  language_alias: calibrated(CODE_REQUEST_DEMAND_CALIBRATION_KEYS.language_alias),
+  code_path: calibrated(CODE_REQUEST_DEMAND_CALIBRATION_KEYS.code_path),
+  identifier_shape: calibrated(CODE_REQUEST_DEMAND_CALIBRATION_KEYS.identifier_shape),
+  call_shape: calibrated(CODE_REQUEST_DEMAND_CALIBRATION_KEYS.call_shape),
+  code_punctuation: calibrated(CODE_REQUEST_DEMAND_CALIBRATION_KEYS.code_punctuation),
+  owner_behavior_example: calibrated(CODE_REQUEST_DEMAND_CALIBRATION_KEYS.owner_behavior_example),
+  owner_stateful_behavior_example: calibrated(CODE_REQUEST_DEMAND_CALIBRATION_KEYS.owner_stateful_behavior_example)
+});
+
+function activeCodeRequestDemandModel(): CodeRequestDemandModel {
+  return {
+    fenced_block: calibrated(CODE_REQUEST_DEMAND_CALIBRATION_KEYS.fenced_block),
+    formal_language: calibrated(CODE_REQUEST_DEMAND_CALIBRATION_KEYS.formal_language),
+    language_alias: calibrated(CODE_REQUEST_DEMAND_CALIBRATION_KEYS.language_alias),
+    code_path: calibrated(CODE_REQUEST_DEMAND_CALIBRATION_KEYS.code_path),
+    identifier_shape: calibrated(CODE_REQUEST_DEMAND_CALIBRATION_KEYS.identifier_shape),
+    call_shape: calibrated(CODE_REQUEST_DEMAND_CALIBRATION_KEYS.call_shape),
+    code_punctuation: calibrated(CODE_REQUEST_DEMAND_CALIBRATION_KEYS.code_punctuation),
+    owner_behavior_example: calibrated(CODE_REQUEST_DEMAND_CALIBRATION_KEYS.owner_behavior_example),
+    owner_stateful_behavior_example: calibrated(CODE_REQUEST_DEMAND_CALIBRATION_KEYS.owner_stateful_behavior_example)
+  };
+}
 
 export interface CodeRequestSignalOptions {
   demandModel?: CodeRequestDemandModel;
@@ -103,9 +131,10 @@ export interface CodeRequestSignalOptions {
 
 export function codeRequestDemand(
   observations: readonly CodeStructureObservation[],
-  demandModel: CodeRequestDemandModel = CODE_REQUEST_BOOTSTRAP_DEMAND_MODEL
+  demandModel?: CodeRequestDemandModel
 ): number {
-  return Math.min(1, observations.reduce((sum, observation) => sum + demandModel[observation.kind], 0));
+  const activeModel = demandModel ?? activeCodeRequestDemandModel();
+  return Math.min(1, observations.reduce((sum, observation) => sum + activeModel[observation.kind], 0));
 }
 
 const FENCE = /```/u;

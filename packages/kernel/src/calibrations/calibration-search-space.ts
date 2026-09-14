@@ -35,6 +35,17 @@ const count = (min: number, max: number, coarse: readonly number[]): Calibration
   ({ kind: "count", min, max, coarse, resolution: 1 });
 
 export const CALIBRATION_SEARCH_SPACE: Readonly<Record<CalibrationKey, CalibrationSearchEntry>> = Object.freeze({
+  // --- code request structural demand
+  "code_request.demand.fenced_block": weight(0, 1, [0.2, 0.45, 0.7]),
+  "code_request.demand.formal_language": weight(0, 1, [0.2, 0.4, 0.7]),
+  "code_request.demand.language_alias": weight(0, 1, [0.05, 0.15, 0.3]),
+  "code_request.demand.code_path": weight(0, 1, [0.2, 0.35, 0.6]),
+  "code_request.demand.identifier_shape": weight(0, 1, [0.1, 0.2, 0.4]),
+  "code_request.demand.call_shape": weight(0, 1, [0.1, 0.2, 0.4]),
+  "code_request.demand.code_punctuation": weight(0, 1, [0.1, 0.2, 0.4]),
+  "code_request.demand.owner_behavior_example": weight(0, 1, [0.2, 0.35, 0.6]),
+  "code_request.demand.owner_stateful_behavior_example": weight(0, 1, [0.2, 0.35, 0.6]),
+
   // --- request authority projection
   "request_authority.projection_bias": weight(0, 1, [0.5]),
   "request_authority.projection_scale": weight(1, 20, [10]),
