@@ -2539,8 +2539,10 @@ function executableBehaviorTransformationFunction(
 ): string {
   const candidate = candidates.find(item => item.callableId === callableId && selectedIds.includes(item.id));
   if (!candidate) throw new Error(`selected owner behavior has no transformation for callable: ${callableId}`);
+  const argumentCount = candidate.preconditions.find(precondition => precondition.kind === "argument_count")?.count;
+  if (!argumentCount || argumentCount > 3) throw new Error(`selected owner behavior has invalid numeric arity: ${callableId}`);
   return `export function ${callableId}(...args) {
-  if (args.length !== 1 || typeof args[0] !== "number" || !Number.isFinite(args[0])) throw new TypeError(${JSON.stringify(`${callableId} requires one finite numeric argument`)});
+  if (args.length !== ${argumentCount} || !args.every(value => typeof value === "number" && Number.isFinite(value))) throw new TypeError(${JSON.stringify(`${callableId} requires ${argumentCount} finite numeric argument${argumentCount === 1 ? "" : "s"}`)});
   return ${renderProgramExpression(candidate.producedIr)};
 }`;
 }
@@ -2586,7 +2588,10 @@ function renderProgramExpression(expression: ProgramExpression): string {
   if (expression.kind === "unary") return `(-${renderProgramExpression(expression.operand)})`;
   const operator = expression.operator === "add" ? "+"
     : expression.operator === "subtract" ? "-"
-      : expression.operator === "multiply" ? "*" : "/";
+      : expression.operator === "multiply" ? "*"
+        : expression.operator === "divide" ? "/" : undefined;
+  if (expression.operator === "minimum") return `Math.min(${renderProgramExpression(expression.left)}, ${renderProgramExpression(expression.right)})`;
+  if (expression.operator === "maximum") return `Math.max(${renderProgramExpression(expression.left)}, ${renderProgramExpression(expression.right)})`;
   return `(${renderProgramExpression(expression.left)} ${operator} ${renderProgramExpression(expression.right)})`;
 }
 
