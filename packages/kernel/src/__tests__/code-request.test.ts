@@ -10,6 +10,10 @@ describe("code request structure", () => {
     const signal = codeRequestSignal("Write a TypeScript function named longestCommonPrefix that takes an array of strings.");
     expect(codeRequestRecognized(signal)).toBe(true);
     expect(signal.language).toBe("typescript");
+    expect(signal.observations.map(observation => observation.kind)).toEqual([
+      "formal_language", "identifier_shape"
+    ]);
+    expect(signal.observations.every(observation => observation.detectorId.startsWith("code.detector."))).toBe(true);
   });
 
   it("recognizes a request that names a code path, and takes the language from the extension", () => {
@@ -47,6 +51,15 @@ describe("code request structure", () => {
     expect(requirements[0]!.value).toBeGreaterThan(0.6);
     expect(requirements.every(row => row.status === "explicit" && row.polarity === "required")).toBe(true);
     expect(codeRequestRequirements("Who created Star Trek?", codeRequestSignal("Who created Star Trek?"))).toEqual([]);
+  });
+
+  it("keeps structural corroboration typed and independent of relation vocabulary", () => {
+    const signal = codeRequestSignal("Crea una función doble(x) => 2x en TypeScript.");
+    expect(signal.observations.map(observation => observation.kind)).toEqual([
+      "formal_language", "call_shape", "code_punctuation"
+    ]);
+    expect(codeRequestCorroborated(signal)).toBe(true);
+    expect(signal.observations.some(observation => observation.kind === "formal_language" && observation.strength === 0.4)).toBe(true);
   });
 
   it("projects an explicit call/result example without reading relation prose", () => {
