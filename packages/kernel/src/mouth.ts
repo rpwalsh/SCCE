@@ -3821,9 +3821,9 @@ function creativeCandidatesFromFrames(
       ...generationImportedPriorIds(generation),
       ...priorPieces.filter(piece => containsSurface(text, piece.text) || overlapsClaim(piece.text, text)).map(piece => piece.id)
     ]);
-    const generatedSentenceCandidates = creativeSurfaceSentenceUnits(text)
+    const generatedSentenceCandidates = creativeSurfaceSentenceUnits(text, discoursePlan)
       .map((unit, index): SentenceCandidate => ({
-        unitId: `disc:creative:${variant.id}:${index}`,
+        unitId: discoursePlan.units[index]?.id ?? `disc:creative:${variant.id}:${index}`,
         role: unit.role,
         text: unit.text,
         generation,
@@ -3872,11 +3872,17 @@ function creativeCandidatesFromFrames(
 }
 
 /** Preserve the generated surface while exposing its discourse units to the trace and judge. */
-export function creativeSurfaceSentenceUnits(text: string): Array<{ text: string; role: "answer" | "support" }> {
+export function creativeSurfaceSentenceUnits(text: string, discoursePlan?: DiscoursePlan): Array<{ text: string; role: DiscourseUnitRole }> {
   return splitSurfaceSentences(text)
     .map(sentence => tidySurface(sentence))
     .filter(Boolean)
-    .map((sentence, index) => ({ text: sentence, role: index === 0 ? "answer" : "support" }));
+    .map((sentence, index) => ({
+      text: sentence,
+      // Preserve the planner's typed discourse role when the generated
+      // surface can be aligned by sentence position. The fallback retains
+      // the previous answer/support shape for callers without a plan.
+      role: discoursePlan?.units[index]?.role ?? (index === 0 ? "answer" : "support")
+    }));
 }
 
 function unitIntervalJsonNumber(value: JsonValue | undefined): number | undefined {

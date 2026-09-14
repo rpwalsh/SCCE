@@ -19,6 +19,7 @@ import {
   toJsonValue,
   type CandidateSurface,
   type ConstructGraph,
+  type DiscoursePlan,
   type EvidenceId,
   type EvidenceSpan,
   type FieldState,
@@ -37,6 +38,22 @@ describe("creative Mouth production boundary", () => {
     expect(units).toEqual([
       { text: "The premise stays bounded.", role: "answer" },
       { text: "The second move explains how updates remain reversible.", role: "support" }
+    ]);
+  });
+
+  it("keeps the admitted discourse roles when creative sentences align with its plan", () => {
+    const plan = {
+      units: [
+        { id: "disc:creative:instruction", role: "instruction" },
+        { id: "disc:creative:conclusion", role: "conclusion" }
+      ]
+    } as DiscoursePlan;
+
+    const units = creativeSurfaceSentenceUnits("First motion. Second motion.", plan);
+
+    expect(units).toEqual([
+      { text: "First motion.", role: "instruction" },
+      { text: "Second motion.", role: "conclusion" }
     ]);
   });
 

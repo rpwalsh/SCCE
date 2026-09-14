@@ -1340,9 +1340,11 @@ export function createSurfaceLanguageRuntime(options: {
       continuationPopulationCache.clear();
       continuationPopulationInFlight.clear();
       sourceOwnedAliasProfileCache.clear();
+      sourceOwnedAliasProfileInFlight.clear();
       surfaceCandidateProfileCache.clear();
       evidenceOwnedProfileCache.clear();
       surfaceProfileCache = undefined;
+      surfaceProfileInFlight = undefined;
       sourceAnchorSemanticFrameCache = undefined;
     }
   };
