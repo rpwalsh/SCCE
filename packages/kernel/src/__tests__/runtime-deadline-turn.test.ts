@@ -67,9 +67,11 @@ describe("runtime deadline integration with a real turn", () => {
     const budgetMs = 5_000;
     const startedMonotonicMs = now - 6_000;
     const deadlineMonotonicMs = startedMonotonicMs + budgetMs; // already 1s in the past
+    const progress: Array<{ phase: string; cognition?: JsonValue }> = [];
 
     const result = await kernel.turn({
       text: "Zephyr valve pressure stabilizes after calibration.",
+      runtimeControl: { onProgress: frame => progress.push({ phase: frame.phase, cognition: frame.cognition }) },
       metadata: {
         runtime: {
           initialResponseDeadline: {
@@ -87,6 +89,8 @@ describe("runtime deadline integration with a real turn", () => {
 
     expect(typeof result.answer).toBe("string");
     expect(result.answer.trim().length).toBeGreaterThan(0);
+    const plan = progress.find(frame => frame.phase === "cognition.plan");
+    expect(plan?.cognition).toMatchObject({ schema: "scce.turn.cognition_plan.v1" });
   });
 
   it("produces the same kind of real answer when the deadline has not elapsed, as a control", async () => {

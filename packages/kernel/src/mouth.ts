@@ -76,7 +76,7 @@ interface LearnedResponseExtentHint {
   sourcePatternId: string;
 }
 import type { CorrectionMemory, CorrectionStyleInfluence, MeterPattern, RegisterVector } from "./correction-memory.js";
-import { INTERACTION_FEATURE_IDS, type UserStyleProfile } from "./dialogue-pragmatics.js";
+import { INTERACTION_FEATURE_IDS, type DialogueState, type UserStyleProfile } from "./dialogue-pragmatics.js";
 import { detectCannedAnswerSpeech } from "./surface-quality.js";
 import {
   boundaryFormsForKind,
@@ -440,6 +440,10 @@ export interface SpeakInput {
   creativeRequestFrame?: CreativeRequestFrame;
   /** Durable, typed interaction profile used to condition realization. */
   dialogueUserStyleProfile?: UserStyleProfile;
+  /** Prior-turn rejected surfaces constrain realization only; they never alter evidence admissibility. */
+  dialogueRejectedAssumptions?: readonly string[];
+  /** Restored turn-level continuity used as bounded learned-generation context. */
+  dialogueContinuity?: Pick<DialogueState, "activeTask" | "establishedFacts" | "unresolvedSlots">;
   semanticInput?: MouthSemanticInput;
   /** Lets a short bound value (a bare date/time/name the request's own subject+relation demanded, e.g. "20:17"
    *  for "when did X land") satisfy coverage without lexically restating the request -- see coversRequest below. */
@@ -635,7 +639,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       markMouthPhase("base_prior_pieces");
       const rawPlan = buildSurfacePlan(input, correctionInfluence, options.hashText, basePriorPieces);
       markMouthPhase("surface_plan");
-      const plan = applySurfacePlanCorrections(rawPlan, input.correctionRules ?? [], correctionInfluence, options.hashText);
+      const plan = applySurfacePlanCorrections(rawPlan, input.correctionRules ?? [], correctionInfluence, options.hashText, input.dialogueRejectedAssumptions);
       markMouthPhase("surface_plan_corrections");
       const discoursePlan = buildDiscoursePlan(plan, options.hashText);
       markMouthPhase("discourse_plan");
@@ -3506,7 +3510,11 @@ function generatedCandidatesFromFrames(
     if (!frames.length) continue;
     const unitTerms = requiredTermsForDiscourseUnit(unit, frames, plan);
     const unitPlan: SurfacePlan = { ...plan, realizationFrames: frames, requiredTerms: unitTerms };
-    const contextSymbols = [mouthSubjectText(input), ...sentences.map(sentence => sentence.text)].filter(Boolean);
+    const contextSymbols = uniqueStrings([
+      mouthSubjectText(input),
+      ...dialogueContinuityContextSymbols(input),
+      ...sentences.map(sentence => sentence.text)
+    ].filter(Boolean));
     const generationExtent = claimMouthGenerationWork(generationWorkBudget, unit.generationExtent);
     if (generationExtent === undefined) break;
     const generation = languageMemory.generate({
@@ -3821,6 +3829,7 @@ function creativeCandidatesFromFrames(
       contextSymbols: uniqueStrings([
         input.entailment.claim.text,
         ...(input.dialogueUserStyleProfile?.preferredVocabulary ?? []),
+        ...dialogueContinuityContextSymbols(input),
         ...variant.contextSymbols
       ].filter(Boolean)),
       requiredTerms: creativeRequiredTerms,
@@ -3927,6 +3936,14 @@ function safeNonNegativeInteger(value: JsonValue | undefined): number | undefine
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
     ? value
     : undefined;
+}
+
+function dialogueContinuityContextSymbols(input: SpeakInput): string[] {
+  return [
+    ...(input.dialogueContinuity?.activeTask ? [input.dialogueContinuity.activeTask] : []),
+    ...(input.dialogueContinuity?.establishedFacts ?? []),
+    ...(input.dialogueContinuity?.unresolvedSlots ?? [])
+  ].map(value => value.trim()).filter(Boolean).slice(0, 12);
 }
 
 function creativeRequestContentTerms(input: SpeakInput): SurfaceTerm[] {
@@ -4319,6 +4336,7 @@ function conversationMemoryCandidate(
     contextSymbols: uniqueStrings([
       mouthSubjectText(input),
       ...(input.dialogueUserStyleProfile?.preferredVocabulary ?? []),
+      ...dialogueContinuityContextSymbols(input),
       ...(input.semanticInput?.slots ?? [])
         .slice(0, 8)
         .map(slot => admittedSemanticSlotSurface(input, slot.roleId, slot.value))
@@ -4698,6 +4716,7 @@ function rhetoricalLatticeCandidateFromFrames(
   const contextSymbols = uniqueStrings([
     input.entailment.claim.text,
     semanticAnswerConstructState(input.construct)?.selectedSubject ?? "",
+    ...dialogueContinuityContextSymbols(input),
     ...frames.flatMap(frame => frame.propositionAtoms.map(atom => atom.text))
   ].filter(Boolean));
   const generationExtent = claimMouthGenerationWork(
@@ -4983,6 +5002,7 @@ function supportBoundaryCandidate(
       input.entailment.claim.text,
       supportState?.selectedMainSubject ?? "",
       ...(supportState?.requestedFocuses ?? []),
+      ...dialogueContinuityContextSymbols(input),
       text
     ]),
     requiredTerms: [requiredTerm],
@@ -6945,7 +6965,13 @@ function compactWholeWordSurface(text: string, maxLength: number): string {
   return "";
 }
 
-function applySurfacePlanCorrections(plan: SurfacePlan, rules: readonly CorrectionRuleRecord[], influence: CorrectionStyleInfluence, hashText: (text: string) => string): SurfacePlan {
+function applySurfacePlanCorrections(
+  plan: SurfacePlan,
+  rules: readonly CorrectionRuleRecord[],
+  influence: CorrectionStyleInfluence,
+  hashText: (text: string) => string,
+  rejectedAssumptions: readonly string[] = []
+): SurfacePlan {
   // A semantic-error report is feedback about a prior answer, never evidence
   // that its asserted inverse is true.  Letting it forbid a factual surface
   // would allow an owner to suppress a sourced answer merely by repeatedly
@@ -6955,6 +6981,12 @@ function applySurfacePlanCorrections(plan: SurfacePlan, rules: readonly Correcti
     .filter(rule => rule.ruleKind === "surface_note" && rule.pattern.trim())
     .map(rule => ({ id: `surface.form:${hashText(rule.pattern).slice(0, 16)}`, ruleId: rule.id, text: rule.pattern, textHash: hashText(rule.pattern), ruleKind: rule.ruleKind }))
     .slice(0, 64);
+  const rejectedForms = rejectedAssumptions
+    .map(text => text.trim())
+    .filter(Boolean)
+    .slice(0, 32)
+    .map(text => ({ id: `surface.form:${hashText(`dialogue-rejected:${text}`).slice(0, 16)}`, ruleId: "dialogue.rejected_assumption", text, textHash: hashText(text), ruleKind: "surface_note" as const }));
+  const allForbiddenForms = [...forbiddenForms, ...rejectedForms];
   const correctedPoints = plan.orderedPoints.map(point => {
     const preferred = influence.preferredTerms.reduce((text, item) => text.split(item.pattern).join(item.replacement), point.proposition);
     return preferred === point.proposition ? point : { ...point, proposition: preferred, realizationConstraints: toJsonValue({ ...jsonRecord(point.realizationConstraints), correctedBySurfacePlan: true }) };
@@ -6962,7 +6994,7 @@ function applySurfacePlanCorrections(plan: SurfacePlan, rules: readonly Correcti
   const corrected: SurfacePlan = {
     ...plan,
     orderedPoints: correctedPoints,
-    forbiddenSurfaces: [...new Set([...plan.forbiddenSurfaces, ...forbiddenForms.map(form => form.id)])],
+    forbiddenSurfaces: [...new Set([...plan.forbiddenSurfaces, ...allForbiddenForms.map(form => form.id)])],
     targetLanguage: influence.targetLanguage ?? plan.targetLanguage,
     targetScript: influence.scriptId ?? plan.targetScript,
     registerVector: influence.registerVector ?? plan.registerVector,
@@ -6970,7 +7002,7 @@ function applySurfacePlanCorrections(plan: SurfacePlan, rules: readonly Correcti
     audit: toJsonValue({
       ...jsonRecord(plan.audit),
       correctionInfluence: influence.audit,
-      forbiddenSurfaceForms: forbiddenForms.map(form => ({ id: form.id, ruleId: form.ruleId, text: form.text, textHash: form.textHash, ruleKind: form.ruleKind })),
+      forbiddenSurfaceForms: allForbiddenForms.map(form => ({ id: form.id, ruleId: form.ruleId, text: form.text, textHash: form.textHash, ruleKind: form.ruleKind })),
       preferredSurfaceCount: influence.preferredTerms.length
     })
   };

@@ -206,11 +206,17 @@ describe("creative Mouth production boundary", () => {
         preferredVocabulary: ["river"],
         rejectedPhrases: []
       },
+      dialogueContinuity: {
+        activeTask: "river continuity",
+        establishedFacts: ["river fact"],
+        unresolvedSlots: ["river unresolved"]
+      },
       calibrationTaskClass: "task.creative_generation"
     };
 
     const first = await mouth.speak(input);
     const second = await mouth.speak(input);
+    const correctedTurn = await mouth.speak({ ...input, dialogueRejectedAssumptions: ["bounded graph index"] });
     const compact = await mouth.speak({
       ...input,
       dialogueUserStyleProfile: { ...input.dialogueUserStyleProfile, weights: { [INTERACTION_FEATURE_IDS.compactness]: 0.92 } }
@@ -224,6 +230,8 @@ describe("creative Mouth production boundary", () => {
     expect(first.force).toBe("creative");
     expect(first.text).toBe(second.text);
     expect(generationContexts.some(context => context.includes("river"))).toBe(true);
+    expect(generationContexts.some(context => context.includes("river continuity"))).toBe(true);
+    expect(JSON.stringify(correctedTurn.surfacePlan.audit)).toContain("bounded graph index");
     expect(record(compact.realizationTrace.discoursePlan).targetDetailProfileId)
       .not.toBe(record(expanded.realizationTrace.discoursePlan).targetDetailProfileId);
     // The structural-creative narrative realizer (english-structural-realizer.ts)
