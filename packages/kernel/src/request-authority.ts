@@ -23,6 +23,17 @@ export const REQUESTED_AUTHORITY_IDS = [
   "action"
 ] as const satisfies readonly RequestedAuthority[];
 
+/**
+ * Single authority vocabulary shared by live routing and downstream planners.
+ * The values are opaque routing IDs; request surface text is never consulted
+ * by this contract.
+ */
+export const REQUEST_AUTHORITY_ROUTING_CONTRACT = {
+  schema: "scce.requested_authority.routing_contract.v1",
+  authorityIds: REQUESTED_AUTHORITY_IDS,
+  coefficientSource: "turn_requirement_dimensions"
+} as const;
+
 export interface RequestAuthorityProjection {
   schema: "scce.requested_authority.requirement_projection.v2";
   requestedAuthority: RequestedAuthority;
@@ -104,6 +115,20 @@ export function authorityRequirementCoefficients(
     executableArtifactDemand: -2.4,
     actionCommitment: -2.2
   };
+}
+
+/** Scores an authority from the same requirement prototype used by learning. */
+export function scoreRequestAuthority(
+  requirementField: TurnRequirementField,
+  authority: RequestedAuthority
+): number {
+  const coefficients = authorityRequirementCoefficients(authority);
+  const logit = TURN_REQUIREMENT_DIMENSIONS.reduce((sum, dimension) => (
+    sum + (coefficients[dimension] ?? 0) * requirementField[dimension]
+  ), 0);
+  // Keep this as a bounded routing energy. It is deliberately not exposed as
+  // a probability until a caller applies its own calibrated model.
+  return clamp01(0.5 + logit / 10);
 }
 
 /**
@@ -223,14 +248,9 @@ export function candidateCompatibleWithAuthority(
  */
 export function projectRequestAuthority(input: ProjectRequestAuthorityInput): RequestAuthorityProjection {
   const requirements = input.requirementField;
-  const scores: Record<RequestedAuthority, number> = {
-    factual: clamp01(0.42 + 0.34 * requirements.externalTruthAuthority + 0.24 * requirements.sourceDependence),
-    reasoned: clamp01(0.18 + 0.62 * requirements.inferentialDepth + 0.12 * requirements.causalReasoningDemand + 0.08 * requirements.temporalReasoningDemand),
-    creative: clamp01(0.10 + 0.72 * requirements.noveltyDemand + 0.18 * requirements.counterfactualDemand),
-    translation: clamp01(0.08 + 0.47 * requirements.semanticPreservation + 0.45 * requirements.surfaceTransformation),
-    program: clamp01(0.08 + 0.72 * requirements.executableArtifactDemand + 0.20 * requirements.formatConstraintStrength),
-    action: clamp01(0.08 + 0.78 * requirements.actionCommitment + 0.14 * requirements.executableArtifactDemand)
-  };
+  const scores = Object.fromEntries(
+    REQUESTED_AUTHORITY_IDS.map(authority => [authority, scoreRequestAuthority(requirements, authority)])
+  ) as Record<RequestedAuthority, number>;
   const ranked = REQUESTED_AUTHORITY_IDS
     .map(authority => ({ authority, score: scores[authority] }))
     .sort((left, right) => right.score - left.score || (left.authority < right.authority ? -1 : left.authority > right.authority ? 1 : 0));
@@ -250,7 +270,7 @@ export function projectRequestAuthority(input: ProjectRequestAuthorityInput): Re
     scores,
     scoreMargin,
     requirementConfidence: requirements.confidence,
-    equationId: "equation.requested_authority.requirement_projection.v1"
+    equationId: "equation.requested_authority.requirement_prototype_projection.v1"
   });
   return {
     schema: "scce.requested_authority.requirement_projection.v2",

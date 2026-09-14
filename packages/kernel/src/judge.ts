@@ -283,7 +283,6 @@ function requirementTemperature(requirement: TurnRequirementField): number {
 }
 
 function normalizedQuality(candidate: CandidateSurface): Record<PositiveQualityKey | NegativeQualityKey, number> {
-  const structuredTelemetry = looksLikeStructuredTelemetry(candidate.answer) ? 1 : 0;
   const q = candidate.quality;
   const sourceFidelity = q?.sourceFidelity ?? candidate.scores.faithfulness;
   const unsupportedFactRate = q?.unsupportedFactRate ?? candidate.scores.unsupportedFactualAssertion ?? 0;
@@ -326,7 +325,8 @@ function normalizedQuality(candidate: CandidateSurface): Record<PositiveQualityK
     fakeFactualAuthority: q?.fakeFactualAuthority ?? 0,
     staleSourceRisk: q?.staleSourceRisk ?? 0,
     testWeakening: q?.testWeakening ?? 0,
-    telemetryLeak: Math.max(q?.telemetryLeak ?? 0, structuredTelemetry)
+    // Surface quality/provenance owns this observation; answer text is not cognition.
+    telemetryLeak: q?.telemetryLeak ?? 0
   };
   for (const key of [...POSITIVE_QUALITY_KEYS, ...NEGATIVE_QUALITY_KEYS]) result[key] = clamp01(Number.isFinite(result[key]) ? result[key] : 0);
   return result;
@@ -451,12 +451,12 @@ function scoreCandidate(candidate: CandidateSurface, policy: PolicyProfile, reas
   if (candidate.force === "proved" || candidate.force === "observed") reasons.push("high-epistemic-force");
   if (candidate.kind === "ccr-extractive") reasons.push("extractive-grounding");
   if (candidate.kind === "creative-candidate") reasons.push("creative-output-boundary");
-  if (looksLikeStructuredTelemetry(candidate.answer)) reasons.push("structured-telemetry-not-surface");
+  const telemetryPenalty = clamp01(candidate.quality?.telemetryLeak ?? 0) * 0.72;
+  if (telemetryPenalty > 0) reasons.push("structured-telemetry-not-surface");
   if (candidate.boundaries.length) reasons.push(`boundaries=${candidate.boundaries.length}`);
   if (s.contradiction > 0.25) reasons.push("contradiction-penalty");
   if (validation && !validation.passed) reasons.push("validation-not-passed");
   if (mass > 0) reasons.push(`candidate-mass=${mass.toFixed(3)}`);
-  const telemetryPenalty = looksLikeStructuredTelemetry(candidate.answer) ? 0.72 : 0;
   return clamp01(calibrated("judge.total_proof_weight") * proof + calibrated("judge.total_field_weight") * field + calibrated("judge.total_validation_weight") * validationScore + calibrated("judge.total_realizability_weight") * s.realizability + calibrated("judge.total_mass_weight") * mass - calibrated("judge.total_risk_penalty") * risk - telemetryPenalty);
 }
 
@@ -464,7 +464,7 @@ function scoreCreativeCandidate(candidate: CandidateSurface, reasons: string[], 
   const s = candidate.scores;
   const mass = clamp01(surfaceMass ?? 0);
   const validationScore = validation ? mean(validation.checks.map(check => check.score)) * (validation.passed ? 1 : 0.55) : 0.7;
-  const telemetryPenalty = looksLikeStructuredTelemetry(candidate.answer) ? 0.72 : 0;
+  const telemetryPenalty = clamp01(candidate.quality?.telemetryLeak ?? 0) * 0.72;
   if (candidate.kind !== "creative-candidate" || candidate.force !== "invented") {
     reasons.push("requested-authority-mismatch");
     if (telemetryPenalty > 0) reasons.push("structured-telemetry-not-surface");
@@ -491,18 +491,6 @@ function scoreCreativeCandidate(candidate: CandidateSurface, reasons: string[], 
   if (mass > 0) reasons.push(`candidate-mass=${mass.toFixed(3)}`);
   if (telemetryPenalty > 0) reasons.push("structured-telemetry-not-surface");
   return clamp01(calibrated("judge.creative_total_selection_weight") * normalizedSelection + calibrated("judge.creative_total_mass_weight") * mass + calibrated("judge.creative_total_validation_weight") * validationScore - telemetryPenalty);
-}
-
-function looksLikeStructuredTelemetry(answer: string): boolean {
-  const trimmed = answer.trim();
-  return trimmed.startsWith("{") && (
-    trimmed.includes("\"schema\"") ||
-    trimmed.includes("scce.surface.candidate.v1") ||
-    trimmed.includes("candidateKind") ||
-    trimmed.includes("proofId") ||
-    trimmed.includes("\"activeFeatures\"") ||
-    trimmed.includes("\"alphaSurfaces\"")
-  );
 }
 
 function forceScore(force: EpistemicForce): number {

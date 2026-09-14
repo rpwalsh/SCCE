@@ -15,8 +15,10 @@ import { createInventionConstruct, type InventionConstruct } from "./prediction.
 import { canonicalStringify, clamp01, createHasher, featureSet, mean, symbolizeData, toJsonValue, weightedJaccard } from "./primitives.js";
 import { COGNITIVE_OPERATOR_IDS, type ActivatedOperator, type TurnRequirement, type TurnRequirementField } from "./turn-requirements.js";
 import type { ConstructGraph, EvidenceSpan, FieldState, GraphEdge, GraphNode, GraphSlice, JsonValue, RequestedAuthority } from "./types.js";
+import { REQUEST_AUTHORITY_ROUTING_CONTRACT, REQUESTED_AUTHORITY_IDS } from "./request-authority.js";
 
-export const REQUESTED_AUTHORITIES = ["factual", "reasoned", "creative", "translation", "program", "action"] as const satisfies readonly RequestedAuthority[];
+/** Compatibility export; the authority vocabulary is owned by request-authority. */
+export const REQUESTED_AUTHORITIES = REQUESTED_AUTHORITY_IDS;
 
 export const REQUESTED_AUTHORITY_FEATURE_SCHEMA = [
   "authority.feature.bias",
@@ -48,6 +50,8 @@ export interface RequestedAuthorityModel {
     weights: Readonly<Record<RequestedAuthorityFeatureId, number>>;
   }>>;
 }
+
+export const REQUESTED_AUTHORITY_ROUTING_SCHEMA = REQUEST_AUTHORITY_ROUTING_CONTRACT.schema;
 
 export interface AuthorityClassificationInput {
   requestText: string;

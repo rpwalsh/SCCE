@@ -74,9 +74,38 @@ export type CodeStructureObservationKind =
 
 export interface CodeStructureObservation {
   kind: CodeStructureObservationKind;
-  strength: number;
   /** Structural detector that produced this observation; no natural-language label is implied. */
   detectorId: `code.detector.${CodeStructureObservationKind}`;
+}
+
+/**
+ * Demand is calibrated from typed structural observations after detection.
+ * A trained model can replace this bootstrap map without changing detectors
+ * or treating any request language as part of the code ontology.
+ */
+export type CodeRequestDemandModel = Readonly<Record<CodeStructureObservationKind, number>>;
+
+export const CODE_REQUEST_BOOTSTRAP_DEMAND_MODEL: CodeRequestDemandModel = Object.freeze({
+  fenced_block: 0.45,
+  formal_language: 0.4,
+  language_alias: 0.15,
+  code_path: 0.35,
+  identifier_shape: 0.2,
+  call_shape: 0.2,
+  code_punctuation: 0.2,
+  owner_behavior_example: 0.35,
+  owner_stateful_behavior_example: 0.35
+});
+
+export interface CodeRequestSignalOptions {
+  demandModel?: CodeRequestDemandModel;
+}
+
+export function codeRequestDemand(
+  observations: readonly CodeStructureObservation[],
+  demandModel: CodeRequestDemandModel = CODE_REQUEST_BOOTSTRAP_DEMAND_MODEL
+): number {
+  return Math.min(1, observations.reduce((sum, observation) => sum + demandModel[observation.kind], 0));
 }
 
 const FENCE = /```/u;
@@ -91,32 +120,30 @@ const PATH_SHAPE = /(?:[\p{L}\p{N}_$.@-]+\/)+[\p{L}\p{N}_$.-]+\.([\p{L}\p{N}]{1,
  * code extensions. No natural-language vocabulary is consulted, so this holds
  * for a request written in any language. Pure.
  */
-export function codeRequestSignal(requestText: string): CodeRequestSignal {
+export function codeRequestSignal(requestText: string, options: CodeRequestSignalOptions = {}): CodeRequestSignal {
   const text = requestText ?? "";
   const signals: string[] = [];
   const observations: CodeStructureObservation[] = [];
-  let demand = 0;
   let language: string | undefined;
   let distinctiveLanguage = false;
 
-  const observe = (kind: CodeStructureObservationKind, strength: number): void => {
-    observations.push({ kind, strength, detectorId: `code.detector.${kind}` });
+  const observe = (kind: CodeStructureObservationKind): void => {
+    observations.push({ kind, detectorId: `code.detector.${kind}` });
     signals.push(`code.signal.${kind}`);
-    demand += strength;
   };
 
   const fenced = FENCE.test(text);
-  if (fenced) observe("fenced_block", 0.45);
+  if (fenced) observe("fenced_block");
 
   const requestUnits = splitPriorUnits(normalizePriorKey(text)).map(unit => unit.replace(/^[^\p{L}\p{N}+#]+|[^\p{L}\p{N}+#]+$/gu, ""));
   for (const unit of requestUnits) {
     const distinctive = DISTINCTIVE_LANGUAGE_IDS.get(unit);
-    if (distinctive) { language ??= distinctive; distinctiveLanguage = true; observe("formal_language", 0.4); break; }
+    if (distinctive) { language ??= distinctive; distinctiveLanguage = true; observe("formal_language"); break; }
   }
   if (!distinctiveLanguage) {
     for (const unit of requestUnits) {
       const alias = ALIAS_LANGUAGE_IDS.get(unit);
-      if (alias) { language ??= alias; observe("language_alias", 0.15); break; }
+      if (alias) { language ??= alias; observe("language_alias"); break; }
     }
   }
 
@@ -129,27 +156,27 @@ export function codeRequestSignal(requestText: string): CodeRequestSignal {
     if (!paths.includes(path)) paths.push(path);
     language ??= extensionLanguage;
   }
-  if (paths.length) observe("code_path", 0.35);
+  if (paths.length) observe("code_path");
 
   const identifierShape = CAMEL_OR_SNAKE.test(text);
   const callShape = CALL_SHAPE.test(text);
   const codePunctuation = CODE_PUNCTUATION.test(text);
-  if (identifierShape) observe("identifier_shape", 0.2);
-  if (callShape) observe("call_shape", 0.2);
-  if (codePunctuation) observe("code_punctuation", 0.2);
+  if (identifierShape) observe("identifier_shape");
+  if (callShape) observe("call_shape");
+  if (codePunctuation) observe("code_punctuation");
 
   const statefulBehaviorRequirements = explicitStatefulBehaviorRequirements(text);
   // An ordered scenario owns its final observation. Do not additionally turn
   // that observation into a scalar lookup obligation.
   const behaviorRequirements = statefulBehaviorRequirements.length ? [] : explicitCallResultRequirements(text);
   if (behaviorRequirements.length) {
-    observe("owner_behavior_example", 0.35);
+    observe("owner_behavior_example");
   }
   if (statefulBehaviorRequirements.length) {
-    observe("owner_stateful_behavior_example", 0.35);
+    observe("owner_stateful_behavior_example");
   }
 
-  return { ...(language ? { language } : {}), demand: Math.min(1, demand), paths: paths.slice(0, 8), signals, observations, behaviorRequirements, statefulBehaviorRequirements };
+  return { ...(language ? { language } : {}), demand: codeRequestDemand(observations, options.demandModel), paths: paths.slice(0, 8), signals, observations, behaviorRequirements, statefulBehaviorRequirements };
 }
 
 /**

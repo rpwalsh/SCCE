@@ -1,13 +1,19 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
-import { projectRequestAuthority } from "../request-authority.js";
+import { projectRequestAuthority, REQUEST_AUTHORITY_ROUTING_CONTRACT } from "../request-authority.js";
+import { REQUESTED_AUTHORITIES } from "../invention-planner.js";
 import { createSourceOnlyScceRuntime, validateScceRuntimeTurnTrace, type ScceRuntimeFixtureFile } from "../scce-runtime.js";
 import type { RequestedAuthority } from "../types.js";
 import type { TurnRequirementDimension } from "../turn-requirements.js";
 import type { WorkspaceCoreSourceFileInput, WorkspaceCoreSourceRef } from "../workspace-core-fusion.js";
 
 describe("source-only request-authority routing", () => {
+  it("shares one structured authority contract with invention planning", () => {
+    expect([...REQUESTED_AUTHORITIES]).toEqual([...REQUEST_AUTHORITY_ROUTING_CONTRACT.authorityIds]);
+    expect(REQUEST_AUTHORITY_ROUTING_CONTRACT.coefficientSource).toBe("turn_requirement_dimensions");
+  });
+
   async function runAuthorityMatrixTurns() {
     const runtime = createSourceOnlyScceRuntime();
     const files: ScceRuntimeFixtureFile[] = [
