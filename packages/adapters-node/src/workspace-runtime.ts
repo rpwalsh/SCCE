@@ -2,7 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { lstat, open, readdir, stat } from "node:fs/promises";
+import { lstat, open, readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import {
   answerFromWorkspaceCoreContext,
@@ -31,6 +31,7 @@ import {
   type JsonValue,
   type PatchTransactionPlan,
   type ProgramGraph,
+  type ProgramDiagnostic,
   type WorkspaceProgramPatchPlanGenerationResult,
   type RepoSnapshot,
   type WorkspaceCorePromotionResult,
@@ -1793,18 +1794,13 @@ async function planWorkspaceCodingPatchFromDurableRevision(args: {
     diagnosticCodes: args.input.diagnosticCodes,
     maxEdits: 128
   }) : undefined;
-  const graph = buildCompilerTaskConstraintGraph({
+  const { graph, selection } = selectCompilerTaskRepair({
     revision: confirmed.snapshot,
     observation,
     input: { ...args.input, requestedPaths },
     family,
     semanticProgram,
     compilerLane
-  });
-  const selection = selectWorkspaceTransformationFamily({
-    graph,
-    revision: confirmed.snapshot,
-    families: family ? [family] : []
   });
   if (!selection.selected) return selection;
 
@@ -2076,7 +2072,7 @@ function semanticProgramPaths(
 }
 
 function workspaceTypeScriptObservation(
-  revision: Awaited<ReturnType<typeof loadDurableWorkspaceRevision>>,
+  revision: { workspace: WorkspaceRecord; snapshot: WorkspaceRevisionSnapshot },
   program: TypeScriptSemanticProgramIndex
 ): WorkspaceTypeScriptSemanticObservation {
   return {
@@ -2115,6 +2111,80 @@ function workspaceTypeScriptObservation(
       requestTextUsed: false
     })
   };
+}
+
+function selectCompilerTaskRepair(args: Parameters<typeof buildCompilerTaskConstraintGraph>[0]) {
+  const graph = buildCompilerTaskConstraintGraph(args);
+  return { graph, selection: selectWorkspaceTransformationFamily({
+    graph, revision: args.revision, families: args.family ? [args.family] : []
+  }) };
+}
+
+/** Plans against captured local bytes; it neither persists nor authorizes a patch. */
+export async function planObservedTypeScriptFailure(input: {
+  root: string;
+  targetPath: string;
+  targetText: string;
+  requestText: string;
+  diagnostics: readonly ProgramDiagnostic[];
+}) {
+  const root = path.resolve(input.root);
+  const targetPath = normalizePath(path.relative(root, path.resolve(root, input.targetPath)).replace(/\\/gu, "/"));
+  const failed = input.diagnostics.filter(row => row.path && path.resolve(root, row.path) === path.resolve(root, targetPath)
+    && /^TS\d+$/u.test(row.patternId ?? "") && row.line !== undefined && row.column !== undefined);
+  if (!failed.length) return undefined;
+  const workspace = workspaceRecord(root, Date.now(), { observation: "local_filesystem" });
+  // No ignored files or truncated neighbourhood may establish workspace completeness.
+  const capture = async () => {
+    const files: Array<{ path: string; bytes: Uint8Array; mediaType: string; role: FileArtifact["role"] }> = [];
+    let total = 0;
+    const walk = async (directory: string, depth: number): Promise<void> => {
+      if (depth > 24) throw new Error("compiler planning snapshot exceeds depth bound");
+      for (const entry of await readdir(directory, { withFileTypes: true })) {
+        const absolute = path.join(directory, entry.name);
+        if (entry.isSymbolicLink()) throw new Error("compiler planning snapshot contains a symbolic link");
+        if (entry.isDirectory()) { await walk(absolute, depth + 1); continue; }
+        if (!entry.isFile() || files.length >= 400) throw new Error("compiler planning snapshot exceeds file bound");
+        const info = await lstat(absolute);
+        if (!info.isFile() || info.size > 4_000_000 - total) throw new Error("compiler planning snapshot exceeds byte bound");
+        const bytes = await readFile(absolute);
+        total += bytes.byteLength;
+        if (total > 4_000_000) throw new Error("compiler planning snapshot exceeds byte bound");
+        const relative = path.relative(root, absolute).replace(/\\/gu, "/");
+        files.push({ path: relative, bytes, mediaType: "application/octet-stream",
+          role: /(?:^|\/)(?:__tests__|test|tests)\/|\.(?:test|spec)\.[cm]?[jt]sx?$/u.test(relative) ? "test" : relative.endsWith(".json") ? "config" : "source" });
+      }
+    };
+    await walk(root, 0);
+    return createWorkspaceRevisionSnapshot({ workspaceId: workspace.id, revisionId: "local_compiler_observation", files });
+  };
+  const snapshot = await capture();
+  const target = snapshot.files.find(file => file.path === targetPath);
+  if (!target || decodeExactWorkspaceSource(target) !== input.targetText) return undefined;
+  const compilerLane = selectSourceObservedCompilerLane(snapshot, [targetPath]).selected;
+  if (!compilerLane) return undefined;
+  const semanticPaths = semanticProgramPaths(snapshot, compilerLane.configPath, compilerLane.command.sourcePath);
+  const semanticProgram = await buildTypeScriptSemanticProgramIndex({ workspaceRoot: root, tsconfigPath: compilerLane.configPath,
+    bounds: { workspacePaths: semanticPaths, observedTestPaths: snapshot.files.filter(file => file.role === "test").map(file => file.path),
+      maxFiles: 400, maxFileBytes: 4_000_000, maxTotalBytes: 4_000_000 } });
+  assertSemanticProgramRevision(semanticProgram, snapshot, semanticPaths);
+  const bound = failed.filter(row => semanticProgram.diagnostics.some(diagnostic => diagnostic.span?.path === targetPath
+    && diagnostic.compilerCode === Number(row.patternId!.slice(2)) && diagnostic.span.startLine === row.line
+    && diagnostic.span.startColumn === row.column && diagnostic.rawMessageEvidence === row.message));
+  if (bound.length !== failed.length) return undefined;
+  const observation = workspaceTypeScriptObservation({ workspace, snapshot }, semanticProgram);
+  const family = deriveTypeScriptCodeActionCandidates({ rootPath: root, requestedPaths: [targetPath],
+    files: semanticPaths.map(workspacePath => { const file = snapshot.files.find(row => row.path === workspacePath)!;
+      return { path: file.path, content: decodeExactWorkspaceSource(file), contentHash: file.contentHash }; }),
+    workspaceManifest: snapshot.files.map(file => ({ path: file.path, contentHash: file.contentHash })),
+    semanticAnalyzer: { analyzerId: observation.analyzer.id, semanticRevisionHash: observation.semanticRevisionHash },
+    compilerCommand: compilerLane.command, diagnosticCodes: [...new Set(bound.map(row => Number(row.patternId!.slice(2))))], maxEdits: 128 });
+  const planned = selectCompilerTaskRepair({ revision: snapshot, observation, family, semanticProgram, compilerLane,
+    input: { workspaceId: workspace.id, expectedWorkspaceUpdatedAt: workspace.updatedAt,
+      requestId: `compiler_failure_${hashParts(snapshot.revisionHash, bound.map(row => row.id))}`,
+      requestText: input.requestText, requestedPaths: [targetPath], validationPlan: { validatorId: "typescript", checks: ["compiler"] } } });
+  assertSameWorkspaceRevision(snapshot, await capture());
+  return { ...planned, transformation: family?.transformations.find(row => row.codeFixIdentity === planned.selection.selected?.codeFixIdentity) };
 }
 
 function buildCompilerTaskConstraintGraph(args: {

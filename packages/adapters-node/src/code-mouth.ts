@@ -13,7 +13,8 @@ import {
   type BoundedDebugSession,
   type DebugLoopDecision,
   type ProgramDiagnostic,
-  type RepairOperation
+  type RepairOperation,
+  type WorkspaceTransformationFamilySelection
 } from "@scce/kernel";
 import { extractNodeSourceCodeFacts } from "./code-graph.js";
 import type { LearnedCodeProposer } from "./learned-code-proposer.js";
@@ -38,6 +39,7 @@ export interface CodeMouthProposal {
   operations: RepairOperation[];
   surface: string;
   source?: CodeMouthProposalSource;
+  selection?: WorkspaceTransformationFamilySelection;
 }
 
 export interface CodeMouthVerification {
@@ -76,6 +78,8 @@ export interface CodeMouthResult {
   candidates?: Array<{ diagnosticCode: number; fixName: string; codeFixIdentity: string }>;
   /** Where each attempted proposal came from, in attempt order. An empty list means nothing was ever proposed. */
   proposalSources?: CodeMouthProposalSource[];
+  /** Planning evidence per permitted attempt; execution outcomes remain separate from selection. */
+  planningSelections?: Array<{ attempt: number; selection: WorkspaceTransformationFamilySelection }>;
 }
 
 export async function runCodeMouth(input: {
@@ -119,6 +123,7 @@ export async function runCodeMouth(input: {
   let applied: RepairOperation[] = [];
   let decision: DebugLoopDecision | undefined;
   const proposalSources: CodeMouthProposalSource[] = [];
+  const planningSelections: NonNullable<CodeMouthResult["planningSelections"]> = [];
   // The loop's own count. A session is replaced whenever the state advances, so its length is how many
   // hypotheses have been tried against the current state and not how many turns the loop has taken.
   let iterations = 0;
@@ -130,6 +135,7 @@ export async function runCodeMouth(input: {
     appliedOperations: applied,
     decision,
     proposalSources,
+    ...(planningSelections.length ? { planningSelections } : {}),
     reason: applied.length && outcome !== "resolved"
       ? `${reason}; kept ${applied.length} repair(s) taking this file from ${startingDiagnostics.length} to ${diagnostics.length} diagnostics`
       : reason
@@ -156,6 +162,7 @@ export async function runCodeMouth(input: {
     if (proposal.source) proposalSources.push(proposal.source);
     const check = planDebugAttempt(session, diagnostics, proposal.operations, hasher);
     if (!check.permitted) return finish("budget_exhausted", check.reason);
+    if (proposal.selection) planningSelections.push({ attempt, selection: proposal.selection });
     iterations = attempt;
     log(`attempt ${attempt}: ${proposal.operations.map(operation => `${operation.kind} ${path.basename(operation.path)}`).join(", ")}`);
     const rollback = await input.ports.apply(proposal.operations);
@@ -362,12 +369,14 @@ export function createTypeScriptCodeMouthPorts(input: {
         targetText: context.targetText,
         requestText: request,
         attempt,
+        diagnostics,
         imports: context.imports,
         ...(() => { const project = input.tsconfigPath ?? nearestProjectFile(root, context.targetPath); return project ? { tsconfigPath: project } : {}; })()
       });
       if (isCompilerRepairProposal(compilerRepair)) {
+        if (compilerRepair.selection) input.log?.(`attempt ${attempt}: kernel plan ${compilerRepair.selection.id} selected ${compilerRepair.selection.selected!.codeFixIdentity}`);
         input.log?.(`attempt ${attempt}: compiler code action ${compilerRepair.fixName} for TS${compilerRepair.diagnosticCode}`);
-        return { operations: compilerRepair.operations, surface: compilerRepair.surface, source: "compiler_owned" };
+        return { operations: compilerRepair.operations, surface: compilerRepair.surface, source: "compiler_owned", selection: compilerRepair.selection };
       }
       if (compilerRepair) {
         input.log?.(`compiler offers ${compilerRepair.candidates.length} fix(es) for this file; name one (for example its TS code) to apply it`);
