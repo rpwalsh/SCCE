@@ -1361,7 +1361,13 @@ function emitFiles(plan: ProgramPlan, input: ProgramPlannerInput, idFactory: IdF
   byPath.set("src/cli.ts", cliModule(plan, sourceMemory));
   byPath.set("src/command.ts", commandModule(plan, sourceMemory));
   if (plan.files.some(file => file.path === "source.program.json")) {
-    const contracts = declaredCallContracts(input.requestText);
+    // Owner behavior has already passed the requirement boundary by this point.  Its
+    // executable contract must therefore come from that graph-native authority, not
+    // from a second parse of the request surface.  Older callers without behavior
+    // requirements retain the punctuation-bound declaration fallback below.
+    const contracts = plan.ownerBehaviorRequirements.length
+      ? declaredCallContractsFromRequirements(plan.ownerBehaviorRequirements)
+      : declaredCallContracts(input.requestText);
     byPath.set("source.program.json", `${JSON.stringify(sourceProgramContract(plan, input), null, 2)}\n`);
     byPath.set(EMITTED_PROGRAM_RUNTIME.sourcePath, executableProgramModule(plan, contracts));
     byPath.set(EMITTED_PROGRAM_RUNTIME.testPath, executableProgramTest(plan, contracts));
@@ -2293,6 +2299,50 @@ interface DeclaredCallContract {
   returnType: string;
   /** Arguments matching every declared parameter type, or undefined when some type is not one the runtime can construct. */
   sample?: JsonValue[];
+}
+
+/**
+ * Turn admitted owner behavior into the same executable contract consumed by the
+ * emitted program and test.  This is deliberately structural: callable identity,
+ * arity, argument shapes, and result shape are carried by the validated requirement
+ * graph rather than recovered from natural-language punctuation.
+ */
+function declaredCallContractsFromRequirements(requirements: readonly ProgramBehaviorRequirement[]): DeclaredCallContract[] {
+  const byCallable = new Map<string, ProgramBehaviorRequirement[]>();
+  for (const requirement of requirements) {
+    const group = byCallable.get(requirement.callableId);
+    if (group) group.push(requirement);
+    else byCallable.set(requirement.callableId, [requirement]);
+  }
+  return [...byCallable.entries()].map(([name, group]) => {
+    const exemplar = group[0]!;
+    const arity = exemplar.arguments.length;
+    const parameterTypes = Array.from({ length: arity }, (_, index) => {
+      const observed = group
+        .filter(requirement => requirement.arguments.length === arity)
+        .map(requirement => runtimeShapeForJson(requirement.arguments[index]!));
+      return observed.every(shape => shape === observed[0]) ? observed[0] ?? "" : "";
+    });
+    const resultShapes = group.map(requirement => runtimeShapeForJson(requirement.expectedResult));
+    const returnType = resultShapes.every(shape => shape === resultShapes[0]) ? resultShapes[0] ?? "" : "";
+    return {
+      name,
+      parameters: parameterTypes.map((type, index) => ({ name: `arg${index}`, type })),
+      returnType,
+      sample: exemplar.arguments
+    };
+  });
+}
+
+/** Matches the emitted runtime's describeShape() surface for every JSON value. */
+function runtimeShapeForJson(value: JsonValue): string {
+  if (Array.isArray(value)) {
+    if (!value.length) return "[]";
+    const shapes = [...new Set(value.map(runtimeShapeForJson))];
+    return shapes.length === 1 ? `${shapes[0]}[]` : `${shapes.join("|")}[]`;
+  }
+  if (value === null) return "null";
+  return typeof value;
 }
 
 /**
