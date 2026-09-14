@@ -61,18 +61,25 @@ describe("factual candidate proof admission", () => {
     expect(result.candidates.map(row => row.id)).toEqual(["follow-up"]);
   });
 
-  it("rejects a factual answer when unresolved obligations overwhelm its evidence", () => {
+  it("rejects a factual answer when its typed proof reports a missed requirement", () => {
     const good = candidate({ id: "good", obligations: 1 });
-    const bad = candidate({ id: "apollo-like", obligations: 9 });
+    const bad = candidate({ id: "apollo-like", obligations: 9, missedRequirementIds: ["slot.requested_relation"] });
     const result = admitCandidatesForAuthority(field([good, bad]), "factual");
     expect(result.candidates.map(row => row.id)).toEqual(["good"]);
     expect(result.surfaceMass.map(row => row.candidateId)).toEqual(["good"]);
     expect(result.surfaceMass[0]?.mass).toBe(1);
   });
 
+  it("does not turn an uncalibrated obligation count into a factual rejection", () => {
+    const result = admitCandidatesForAuthority(field([
+      candidate({ id: "long-exact-source", obligations: 34, evidenceCount: 2 })
+    ]), "factual");
+    expect(result.candidates.map(row => row.id)).toEqual(["long-exact-source"]);
+  });
+
   it("rejects graph and zero-support synthesis siblings instead of routing around a failed factual proof", () => {
-    const proof = candidate({ id: "apollo-proof", obligations: 9 });
-    const graph = candidate({ id: "apollo-graph", obligations: 9, kind: "graph-inference", support: 0.46, faithfulness: 0.40 });
+    const proof = candidate({ id: "apollo-proof", obligations: 9, missedRequirementIds: ["slot.requested_relation"] });
+    const graph = candidate({ id: "apollo-graph", obligations: 9, missedRequirementIds: ["slot.requested_relation"], kind: "graph-inference", support: 0.46, faithfulness: 0.40 });
     const synthesis = candidate({ id: "apollo-synthesis", obligations: 0, kind: "reasoned-synthesis", support: 0, faithfulness: 0 });
     const result = admitCandidatesForAuthority(field([proof, graph, synthesis]), "factual");
     expect(result.candidates).toEqual([]);
