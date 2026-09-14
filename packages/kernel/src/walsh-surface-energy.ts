@@ -552,16 +552,13 @@ function discourseStructureFit(
   const observedBoundaryCoverage = transitions
     ? clamp01(stats.boundaryTexts.length / transitions)
     : 1;
-  const roleOrder = units.map(unit => {
-    if (unit.role === "answer") return 0;
-    if (unit.role === "instruction") return 1;
-    if (unit.role === "support" || unit.role === "example" || unit.role === "artifact_summary") return 2;
-    if (unit.role === "caveat") return 3;
-    if (unit.role === "conclusion") return 4;
-    return 2;
-  });
-  const orderViolations = roleOrder.slice(1).filter((rank, index) => rank < (roleOrder[index] ?? rank)).length;
-  const orderFit = clamp01(1 - orderViolations / Math.max(1, roleOrder.length - 1));
+  // The discourse planner owns role order. The scorer only checks that the
+  // plan itself supplies a monotone placement; it must not impose a separate
+  // hand-authored order over language-neutral discourse roles.
+  const orderViolations = units.slice(1)
+    .filter((unit, index) => unit.sentenceIndex < units[index]!.sentenceIndex)
+    .length;
+  const orderFit = clamp01(1 - orderViolations / Math.max(1, units.length - 1));
   const stylePairs = units.slice(1).map((unit, index) => {
     const previous = units[index]!;
     const styleMatch = unit.targetStyleProfileId === previous.targetStyleProfileId ? 1 : 0;
