@@ -4110,6 +4110,7 @@ function directCreativeSectionCandidate(
 ): SurfaceCandidate | undefined {
   const generationExtent = claimMouthGenerationWork(budget, 160);
   if (generationExtent === undefined) return undefined;
+  const requestTerms = creativeRequestContentTerms(input);
   const realization = realizeCreativeSection({
     languageMemory,
     state: input.languageMemory,
@@ -4119,12 +4120,18 @@ function directCreativeSectionCandidate(
       ? requestSubjectText(input.entailment.claim.text, input.requirementField)
       : input.entailment.claim.text,
     narrativeConditioning: input.evidence.slice(0, 2).map(span => span.text).filter(Boolean),
+    topicVocabulary: requestTerms.map(term => term.text),
     casingSourceTexts: input.evidence.slice(0, 4).map(span => span.text).filter(Boolean),
     targetLanguage: input.targetLanguage,
     targetScript: input.targetScript,
     generationExtent
   });
   if (!realization.accepted || !admissibleMouthSurface(realization.text)) return undefined;
+  // This lane is invented, so it has no evidence claim to validate. It still
+  // must remain attached to the request-derived section meaning when typed
+  // content terms were available; otherwise a fluent unrelated continuation
+  // can outrank the frame-backed creative candidates.
+  if (requestTerms.length && !requestTerms.some(term => containsSurface(realization.text, term.text))) return undefined;
   return {
     id: "candidate:generated:creative:direct-section",
     style: "surface.path.generated.creative.direct_section",
@@ -4138,6 +4145,7 @@ function directCreativeSectionCandidate(
     boundaryDecisions: [],
     audit: toJsonValue({
       source: "mouth.creative.direct_section",
+      requestTermIds: requestTerms.map(term => term.id),
       realization: realization.generationAudit ?? null
     })
   };

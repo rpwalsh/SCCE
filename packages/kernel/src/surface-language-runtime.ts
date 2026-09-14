@@ -26,7 +26,7 @@ import { createClock, createHasher, sourceTextSurface, toJsonValue } from "./pri
 import {
   isRequestRequirementPattern
 } from "./request-requirement-learning.js";
-import type { LanguageContinuationPopulation, LanguagePatternRecord, ScceKernelDeps, SemanticFrameRecord } from "./storage.js";
+import type { LanguageContinuationPopulation, LanguagePatternRecord, ScceKernelDeps, SemanticFrameRecord, TargetProfilePatternRecord } from "./storage.js";
 import type { SegmentationPopulationModelRecord } from "./segmentation-population-persistence.js";
 import type {
   EvidenceSpan,
@@ -302,6 +302,7 @@ export function createSurfaceLanguageRuntime(options: {
     loadedAt: number;
     value: Array<{ frame: SemanticFrameRecord; surface: string; surfaceUnits: string[] }>;
   } | undefined;
+  const targetProfilePatternCache = new Map<string, { loadedAt: number; value: TargetProfilePatternRecord[] }>();
 
   type ResidentOnlyOptions = {
     residentOnly?: boolean;
@@ -877,6 +878,28 @@ export function createSurfaceLanguageRuntime(options: {
   }
 
   /**
+   * Read durable dialogue-learned target-profile patterns through the same
+   * runtime seam used by surface selection. These records are written by the
+   * dialogue learner but were previously only observable through storage,
+   * making the learned preference write-only for later turns.
+   */
+  async function targetProfilePatternsCached(
+    targetProfileId?: string,
+    patternFamilyId?: string,
+    residentOnly = false
+  ): Promise<TargetProfilePatternRecord[]> {
+    if (!deps.storage.dialogueMemory?.listTargetProfilePatterns) return [];
+    const cacheKey = `${targetProfileId ?? "*"}\u001f${patternFamilyId ?? "*"}`;
+    const now = clock.now();
+    const cached = targetProfilePatternCache.get(cacheKey);
+    if (cached && (residentOnly || now - cached.loadedAt < surfaceLanguageMemoryCacheMs)) return cached.value;
+    if (residentOnly) return [];
+    const value = await deps.storage.dialogueMemory.listTargetProfilePatterns({ targetProfileId, patternFamilyId, limit: 512 });
+    targetProfilePatternCache.set(cacheKey, { loadedAt: now, value });
+    return value;
+  }
+
+  /**
    * Start durable language hydration after the caller has returned its
    * resident/fast-path result. The returned promise is intentionally not
    * exposed: callers must not make a user response wait for durable loading.
@@ -1293,6 +1316,7 @@ export function createSurfaceLanguageRuntime(options: {
 
   return {
     languageMemorySummary,
+    targetProfilePatternsCached,
     hydrateSurfaceLanguageMemoryCached,
     warmSurfaceLanguageMemory,
     residentSurfaceLanguageMemory,
@@ -1346,6 +1370,7 @@ export function createSurfaceLanguageRuntime(options: {
       surfaceProfileCache = undefined;
       surfaceProfileInFlight = undefined;
       sourceAnchorSemanticFrameCache = undefined;
+      targetProfilePatternCache.clear();
     }
   };
 }
