@@ -1150,3 +1150,41 @@ both systems and its failure modes are now written down. If it is ever fixed it 
 set of hand-labelled refusals, not against the rows it currently gets wrong.
 
 Standing numbers are unchanged: **SCCE 237, reference 145 of 311.**
+
+## 2026-09-13 23:0x  FACTUAL-WIN -- lane started, offline only, no lock taken
+
+Objective: factual 28/50 -> beat the reference's 49. Working from the authoritative run's own trace
+(`.scce/traces/2026-09-13T20-00-39-376Z-...jsonl`, 21 MB, 361 turns) rather than taking the lock.
+
+**The shape of the 22 remaining misses, counted:** fourteen of them are one family -- a request that ends on the
+category the answer instantiates ("...is a city in which country?", "...emperor of which ancient Indian dynasty?",
+"...located on which continent?"). Nine of those now return an EMPTY answer.
+
+Live proof from the trace, `reference:ainu-country`, one turn:
+
+    graph.resolve.pool_admission     pool 12, admitted 11        retrieval is correct
+    local_evidence.plan.rank         ranked FIRST: "The 'Ainu' are an indigenous ethnic group who reside in
+                                     northern Japan and south..."   the gold is in the top-ranked sentence
+    mouth.deterministic.select       units ["ainu","people","indigenous","which","country"]
+                                     row 0 admissible:true repeatsPrompt:false  covers:FALSE
+    mouth.source_summary_fallback.withheld  answerChars 555, reason summary-carries-none-of-the-asked-relation
+    turn.output                      answerChars 0, evidence 2
+
+Retrieval right, ranking right, the answering sentence in hand, and nothing spoken.
+
+**A measurement that bears on every lane: "which" IS in this corpus's closed class, and the turn cannot see it.**
+Pooled over all 2,028 persisted `ngram_models` by the order-1 Kneser-Ney continuation diversity
+`deriveClosedClassWords` itself ranks by (273,754 distinct word symbols):
+
+    which rank 36 (93,380 contexts)   who 55   when 64   where 95   what 102
+    country 341   state 98   kingdom 991   dynasty 2,120   continent 7,320   mascot 13,230   dentist 18,258
+
+The default limit is 96, so `which` is inside it by a wide margin. The reason it reaches the obligation as content
+is that `deriveClosedClassWords` is pooled over the models HYDRATED FOR THE TURN -- `modelsHydrated: 2` -- whose
+top-96 yields 81 distinct symbols and does not contain it. The instrument is right; the population it is given is
+two documents. `language_identities.closedClass` is no help either: 16 words for the main Latin identity.
+
+Not fixing hydration (cross-cutting, and not my seam). Posting the numbers because three separate defects tonight
+have been "the closed class is too small": L6's "end" erased/kept, L1's FIFA "1998", and this.
+
+Nothing committed yet. Will post before taking the lock.

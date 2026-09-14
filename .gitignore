@@ -180,3 +180,5 @@ tools/code-generation-calibration/report*.json
 
 # lane coordination, runtime only
 .agent/locks/
+/.l2build/
+/.tmp-server-l1.err
