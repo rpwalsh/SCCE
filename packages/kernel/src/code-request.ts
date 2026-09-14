@@ -55,8 +55,28 @@ export interface CodeRequestSignal {
   /** Paths the request names, in request order. */
   paths: string[];
   signals: string[];
+  /** Typed, request-local structural observations used by routing and later learning. */
+  observations: CodeStructureObservation[];
   behaviorRequirements: ProgramBehaviorRequirement[];
   statefulBehaviorRequirements: ProgramStatefulBehaviorRequirement[];
+}
+
+export type CodeStructureObservationKind =
+  | "fenced_block"
+  | "formal_language"
+  | "language_alias"
+  | "code_path"
+  | "identifier_shape"
+  | "call_shape"
+  | "code_punctuation"
+  | "owner_behavior_example"
+  | "owner_stateful_behavior_example";
+
+export interface CodeStructureObservation {
+  kind: CodeStructureObservationKind;
+  strength: number;
+  /** Structural detector that produced this observation; no natural-language label is implied. */
+  detectorId: `code.detector.${CodeStructureObservationKind}`;
 }
 
 const FENCE = /```/u;
@@ -74,22 +94,29 @@ const PATH_SHAPE = /(?:[\p{L}\p{N}_$.@-]+\/)+[\p{L}\p{N}_$.-]+\.([\p{L}\p{N}]{1,
 export function codeRequestSignal(requestText: string): CodeRequestSignal {
   const text = requestText ?? "";
   const signals: string[] = [];
+  const observations: CodeStructureObservation[] = [];
   let demand = 0;
   let language: string | undefined;
   let distinctiveLanguage = false;
 
+  const observe = (kind: CodeStructureObservationKind, strength: number): void => {
+    observations.push({ kind, strength, detectorId: `code.detector.${kind}` });
+    signals.push(`code.signal.${kind}`);
+    demand += strength;
+  };
+
   const fenced = FENCE.test(text);
-  if (fenced) { signals.push("code.signal.fenced_block"); demand += 0.45; }
+  if (fenced) observe("fenced_block", 0.45);
 
   const requestUnits = splitPriorUnits(normalizePriorKey(text)).map(unit => unit.replace(/^[^\p{L}\p{N}+#]+|[^\p{L}\p{N}+#]+$/gu, ""));
   for (const unit of requestUnits) {
     const distinctive = DISTINCTIVE_LANGUAGE_IDS.get(unit);
-    if (distinctive) { language ??= distinctive; distinctiveLanguage = true; signals.push("code.signal.formal_language"); demand += 0.4; break; }
+    if (distinctive) { language ??= distinctive; distinctiveLanguage = true; observe("formal_language", 0.4); break; }
   }
   if (!distinctiveLanguage) {
     for (const unit of requestUnits) {
       const alias = ALIAS_LANGUAGE_IDS.get(unit);
-      if (alias) { language ??= alias; signals.push("code.signal.language_alias"); demand += 0.15; break; }
+      if (alias) { language ??= alias; observe("language_alias", 0.15); break; }
     }
   }
 
@@ -102,29 +129,27 @@ export function codeRequestSignal(requestText: string): CodeRequestSignal {
     if (!paths.includes(path)) paths.push(path);
     language ??= extensionLanguage;
   }
-  if (paths.length) { signals.push("code.signal.code_path"); demand += 0.35; }
+  if (paths.length) observe("code_path", 0.35);
 
   const identifierShape = CAMEL_OR_SNAKE.test(text);
   const callShape = CALL_SHAPE.test(text);
   const codePunctuation = CODE_PUNCTUATION.test(text);
-  if (identifierShape) { signals.push("code.signal.identifier_shape"); demand += 0.2; }
-  if (callShape) { signals.push("code.signal.call_shape"); demand += 0.2; }
-  if (codePunctuation) { signals.push("code.signal.code_punctuation"); demand += 0.2; }
+  if (identifierShape) observe("identifier_shape", 0.2);
+  if (callShape) observe("call_shape", 0.2);
+  if (codePunctuation) observe("code_punctuation", 0.2);
 
   const statefulBehaviorRequirements = explicitStatefulBehaviorRequirements(text);
   // An ordered scenario owns its final observation. Do not additionally turn
   // that observation into a scalar lookup obligation.
   const behaviorRequirements = statefulBehaviorRequirements.length ? [] : explicitCallResultRequirements(text);
   if (behaviorRequirements.length) {
-    signals.push("code.signal.owner_behavior_example");
-    demand += 0.35;
+    observe("owner_behavior_example", 0.35);
   }
   if (statefulBehaviorRequirements.length) {
-    signals.push("code.signal.owner_stateful_behavior_example");
-    demand += 0.35;
+    observe("owner_stateful_behavior_example", 0.35);
   }
 
-  return { ...(language ? { language } : {}), demand: Math.min(1, demand), paths: paths.slice(0, 8), signals, behaviorRequirements, statefulBehaviorRequirements };
+  return { ...(language ? { language } : {}), demand: Math.min(1, demand), paths: paths.slice(0, 8), signals, observations, behaviorRequirements, statefulBehaviorRequirements };
 }
 
 /**
@@ -144,8 +169,7 @@ export function codeRequestRecognized(signal: CodeRequestSignal): boolean {
 
 /** Code shape around the language name: an artifact is being written, not discussed. Pure. */
 export function codeRequestCorroborated(signal: CodeRequestSignal): boolean {
-  return ["code.signal.identifier_shape", "code.signal.call_shape", "code.signal.code_punctuation", "code.signal.fenced_block", "code.signal.code_path", "code.signal.owner_behavior_example", "code.signal.owner_stateful_behavior_example"]
-    .some(id => signal.signals.includes(id));
+  return signal.observations.some(observation => observation.kind !== "formal_language" && observation.kind !== "language_alias");
 }
 
 function explicitStatefulBehaviorRequirements(requestText: string): ProgramStatefulBehaviorRequirement[] {
@@ -354,6 +378,6 @@ export function codeRequestRequirements(requestText: string, signal: CodeRequest
     semanticRoleId: "role.request.code.v1",
     learnedFrameOrPatternId: "pattern.code_request.structure.v1",
     sourceActivationId: "activation.structure.code_request.v1",
-    trace: toJsonValue({ source: "kernel.code_request.structure", signals: signal.signals, language: signal.language ?? null, paths: signal.paths })
+      trace: toJsonValue({ source: "kernel.code_request.structure", signals: signal.signals, observations: signal.observations, language: signal.language ?? null, paths: signal.paths })
   }));
 }
