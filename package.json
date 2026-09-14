@@ -42,6 +42,7 @@
     "rehearsal:procedural-skill": "node tools/procedural-skill-live-rehearsal.mjs",
     "rehearsal:graph-surface-alignment-batch": "node tools/graph-surface-alignment-batch-manifest.mjs",
     "rehearsal:bounded-debugging": "node tools/bounded-debugging-live-rehearsal.mjs",
+    "benchmark:code-repair": "node tools/code-repair-benchmark.mjs",
     "maintenance:evidence-anchors": "pnpm --dir packages/adapters-node backfill:evidence-anchors",
     "maintenance:rechunk-evidence": "node tools/rechunk-evidence-backfill.mjs",
     "maintenance:demote-runtime-html": "node tools/demote-runtime-acquired-html.mjs",
