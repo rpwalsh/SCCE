@@ -2569,6 +2569,17 @@ export function sourceAnchoredEvidenceForRequest(
   const primaryEvidence = primaryAnchor
     ? primaryEvidenceForSourceAnchor(primaryAnchor, requestText, evidence, closedClassWords)
     : [];
+  // A numeric qualifier is part of the subject identity, not a loose content
+  // term.  When the request names a specific edition/mission/season (for
+  // example Apollo 11), falling through to a sibling source titled only
+  // Apollo or Apollo 8 turns a missing exact source into a confident answer
+  // about the wrong subject.  Keep the source gate conservative: the caller
+  // may still answer once an exact subject span is admitted, otherwise it
+  // must decline instead of borrowing the sibling's relation.
+  const primaryAnchorHasNumericQualifier = primaryAnchorUnits.some(unit => /\p{Number}/u.test(unit));
+  if (primaryAnchorHasNumericQualifier && !primaryEvidence.length) {
+    return { required: true, anchors: uniqueKernelStrings([primaryAnchor!, ...anchors]), evidence: [] };
+  }
   const semanticFrameBoundEvidence = semanticFrameBoundEvidenceIds?.size
     ? evidence.filter(span => semanticFrameBoundEvidenceIds.has(String(span.id)))
     : [];
