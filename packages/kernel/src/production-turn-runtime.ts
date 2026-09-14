@@ -506,6 +506,22 @@ export function createProductionTurnRuntime(options: {
   });
   const residentDialogueCognitiveStates = new Map<string, import("./discourse-state.js").DialogueCognitiveStateV2>();
   const dialogueCognitiveStateLoads = new Map<string, Promise<void>>();
+  // Consolidated lessons are a bounded, process-local read model. Adjacent turns used to issue the same durable
+  // corpus read before candidate generation; single-flight it and expire it briefly, invalidating on local writes.
+  let consolidatedEpisodeCache: { events: ScceEvent[]; expiresAt: number } | undefined;
+  let consolidatedEpisodeLoad: Promise<ScceEvent[]> | undefined;
+  const consolidatedEpisodesCached = async (beforeT: number): Promise<ScceEvent[]> => {
+    if (consolidatedEpisodeCache && consolidatedEpisodeCache.expiresAt > beforeT) return consolidatedEpisodeCache.events;
+    if (consolidatedEpisodeLoad) return consolidatedEpisodeLoad;
+    const load = deps.storage.events.readRange({ typeId: "EpisodeConsolidated", beforeT, limit: 32 })
+      .then(events => {
+        consolidatedEpisodeCache = { events, expiresAt: beforeT + 5_000 };
+        return events;
+      })
+      .finally(() => { consolidatedEpisodeLoad = undefined; });
+    consolidatedEpisodeLoad = load;
+    return load;
+  };
   const residentDialogueCognitiveState = (conversationId: string) => {
     const state = residentDialogueCognitiveStates.get(conversationId);
     return state?.conversationId === conversationId && isDialogueCognitiveStateV2(state, hasher)
@@ -814,6 +830,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const consolidateCurrentEpisode = async (): Promise<JsonValue> => {
         const consolidated = consolidateEpisode(events, { requestText: input.text });
         events.push(await append(eventFactory.create({ episodeId, typeId: "EpisodeConsolidated", payload: toJsonValue(consolidated) })));
+        consolidatedEpisodeCache = undefined;
         return toJsonValue(consolidated);
       };
       // Plan items 213-214: when the winning candidate carries a real
@@ -2200,7 +2217,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           },
           emptySupportBundle
         );
-      const { promoted, entailmentResult, semanticProof, ccrResult, pfaceEstimate } = supportBundle;
+      let { promoted, entailmentResult, semanticProof, ccrResult, pfaceEstimate } = supportBundle;
       {
         // Fire-and-forget: outcome-based FTRL learning must never affect
         // or delay this turn's response. proofCandidateEvidence is the
@@ -2232,20 +2249,6 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             failures.push(`ftrl outcome update failed: ${error instanceof Error ? error.message : String(error)}`);
           });
       }
-      // The class alone, through the accessor that exists for it rather than by reaching into the decision.
-      const entailmentForceInput = {
-        requestedAuthority,
-        epistemicForce: entailmentResult.force,
-        proofVerdict: semanticProof.verdict,
-        evidenceIds: entailmentResult.evidenceIds,
-        directEvidenceIds: promoted.map(span => span.id),
-        support: entailmentResult.support,
-        contradiction: Math.max(entailmentResult.contradiction, semanticProof.contradiction),
-        reportsSourceConflict: semanticProof.mutualSourceContradiction,
-        unresolvedObligations: unresolvedObligationCount(entailmentResult.boundaries)
-      };
-      const entailmentAssistantForce = assistantForceDecision(entailmentForceInput);
-      const entailmentAssistantForceClass = assistantForceClass(entailmentForceInput);
       // The epistemic category of this answer, computed rather than asserted.
       //
       // `assessClaimSupport` carries the ladder this architecture claims to keep distinct -- retrieval support,
@@ -2286,6 +2289,31 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             .map(forceClass => evidenceForceFromProofForceClass(forceClass)))
         }
       });
+      // The semiring is part of proof admission, not telemetry. Carry its contradiction mass into the entailment
+      // consumed by candidate generation and judging so a contradictory evidence path changes the decision.
+      if (proofPaths.contradictionMass > entailmentResult.contradiction) {
+        entailmentResult = {
+          ...entailmentResult,
+          contradiction: proofPaths.contradictionMass,
+          boundaries: [...new Set([...entailmentResult.boundaries, "proof.boundary.path_contradiction.v1"])]
+        };
+      }
+      // Force selection consumes the semiring-adjusted entailment. Computing it
+      // before proof-path aggregation would leave the visible answer authority
+      // unchanged even when the proof graph introduced contradiction mass.
+      const entailmentForceInput = {
+        requestedAuthority,
+        epistemicForce: entailmentResult.force,
+        proofVerdict: semanticProof.verdict,
+        evidenceIds: entailmentResult.evidenceIds,
+        directEvidenceIds: promoted.map(span => span.id),
+        support: entailmentResult.support,
+        contradiction: Math.max(entailmentResult.contradiction, semanticProof.contradiction),
+        reportsSourceConflict: semanticProof.mutualSourceContradiction,
+        unresolvedObligations: unresolvedObligationCount(entailmentResult.boundaries)
+      };
+      const entailmentAssistantForce = assistantForceDecision(entailmentForceInput);
+      const entailmentAssistantForceClass = assistantForceClass(entailmentForceInput);
       kernelTrace({
         stage: "proof.support_assessment",
         label: "kernel.turn",
@@ -2395,7 +2423,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // merged into earlyLearningNeeds, which already feeds both
       // candidates.generate and functionalCognitionEngine.project -- real
       // influence on this turn's candidates, not just a receipt.
-      const pastConsolidatedEpisodeEvents = await deps.storage.events.readRange({ typeId: "EpisodeConsolidated", beforeT: clock.now(), limit: 32 });
+      const pastConsolidatedEpisodeEvents = await consolidatedEpisodesCached(clock.now());
       const pastConsolidatedEpisodes = pastConsolidatedEpisodeEvents.map(event => event.payload as unknown as ConsolidatedEpisode);
       const relevantPastEpisodes = retrieveRelevantEpisodes(pastConsolidatedEpisodes, input.text, { excludeEpisodeId: episodeId, limit: 3 });
       if (relevantPastEpisodes.length) {
