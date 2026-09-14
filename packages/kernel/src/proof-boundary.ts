@@ -239,6 +239,14 @@ function eligibleIndependentAssertion(span: EvidenceSpan): boolean {
   const trust = objectRecord(span.trustVector);
   const sourceTrust = objectRecord(trust?.sourceTrust);
   if (!sourceTrust) return false;
+  // A person's workspace and correction streams are two channels from the
+  // same origin, not two independent witnesses.  Keep those conversational
+  // assertion channels source-qualified even when their labels differ.
+  // Access scope and owner-local admission are deliberately not used here:
+  // private documentary sources supplied by an owner can still be mutually
+  // independent evidence.
+  const independenceGroup = firstString(sourceTrust.independenceGroup);
+  if (independenceGroup?.startsWith("owner:")) return false;
   return unitInterval(sourceTrust.identity) >= 0.5
     && unitInterval(sourceTrust.integrity) >= 0.7
     && unitInterval(sourceTrust.parserReliability) >= 0.5

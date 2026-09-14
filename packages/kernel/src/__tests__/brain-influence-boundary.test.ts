@@ -93,6 +93,53 @@ describe("imported brain influence and proof boundary", () => {
     expect(repeated.every(boundary => !boundary.certifiesFactualProof)).toBe(true);
   });
 
+  it("keeps owner-private assertions source-qualified even when labels claim independent families", () => {
+    const first = sourceAssertion(span(
+      sourceVersion("owner-workspace", "fixture://owner-workspace", 0.9, {
+        accessScope: "owner_private",
+        independenceGroup: "owner:workspace"
+      }),
+      fixture.directEvidence.text,
+      "direct_evidence"
+    ));
+    const second = sourceAssertion(span(
+      sourceVersion("owner-corrections", "fixture://owner-corrections", 0.9, {
+        accessScope: "owner_private",
+        independenceGroup: "owner:corrections"
+      }),
+      fixture.directEvidence.text,
+      "direct_evidence"
+    ));
+
+    const boundaries = evidenceProofBoundaries([first, second]);
+    expect(boundaries.every(boundary => !boundary.certifiesFactualProof)).toBe(true);
+
+    const result = createSemanticEntailmentEngine({ idFactory: ids, hasher }).check({
+      text: fixture.directEvidence.text,
+      evidence: [first, second],
+      nodes: [],
+      field: emptyField(),
+      createdAt: clock.now()
+    });
+    expect(result.evidenceIds).toEqual([]);
+    expect(JSON.stringify(result.proof.scores)).toContain("source-assertion-not-promoted");
+  });
+
+  it("allows independent private documents supplied by the owner to corroborate", () => {
+    const first = sourceAssertion(span(sourceVersion("private-a", "fixture://private-a", 0.9, {
+      accessScope: "owner_private",
+      independenceGroup: "publisher:a"
+    }), fixture.directEvidence.text, "direct_evidence"));
+    const second = sourceAssertion(span(sourceVersion("private-b", "fixture://private-b", 0.9, {
+      accessScope: "owner_private",
+      independenceGroup: "publisher:b"
+    }), fixture.directEvidence.text, "direct_evidence"));
+
+    const boundaries = evidenceProofBoundaries([first, second]);
+    expect(boundaries.every(boundary => boundary.certifiesFactualProof)).toBe(true);
+    expect(boundaries.every(boundary => boundary.reason === "proof-boundary.independent-source-assertion-corroboration")).toBe(true);
+  });
+
   it("reports imported language rows used by Mouth realization", async () => {
     const source = sourceVersion("scce2", "scce2://direct-evidence", 0.9);
     const direct = span(source, fixture.directEvidence.text, "direct_evidence");
@@ -234,7 +281,7 @@ describe("imported brain influence and proof boundary", () => {
     expect(JSON.stringify(trace.topImportedPriorNodesByMass)).toContain("learned_concept_prior");
   });
 
-  function sourceVersion(namespace: string, uri: string, trust: number): SourceVersion {
+  function sourceVersion(namespace: string, uri: string, trust: number, options: { accessScope?: string; independenceGroup?: string } = {}): SourceVersion {
     const bytes = Buffer.from(uri);
     return {
       sourceId: ids.sourceId(namespace, uri),
@@ -245,7 +292,7 @@ describe("imported brain influence and proof boundary", () => {
       mediaType: "text/plain",
       observedAt: clock.now(),
       byteLength: bytes.length,
-      sourceTrust: { identity: trust, integrity: trust, parserReliability: trust, directness: trust, authority: trust, freshness: trust, independenceGroup: `fixture:${namespace}`, accessScope: "fixture", licenseStatus: "fixture" },
+      sourceTrust: { identity: trust, integrity: trust, parserReliability: trust, directness: trust, authority: trust, freshness: trust, independenceGroup: options.independenceGroup ?? `fixture:${namespace}`, accessScope: options.accessScope ?? "fixture", licenseStatus: "fixture" },
       metadata: {}
     };
   }
