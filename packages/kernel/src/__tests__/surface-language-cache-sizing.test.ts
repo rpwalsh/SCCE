@@ -12,6 +12,25 @@ const NOT_WARM = /hydrated runtime unavailable: resident .* was not warmed/u;
 const CACHE_BUDGET_BYTES = 512 * 1024;
 
 describe("surface language cache entry sizing", () => {
+  it.each(["profiles", "aliases", "evidence", "frames"] as const)("does not restore invalidated %s metadata from an older read", async kind => {
+    const fixture = await runtimeFixture({ observations: 40 });
+    fixture.invalidate();
+    fixture.blockMetadata();
+    const read = (residentOnly = false) => {
+      if (kind === "profiles") return fixture.runtime.surfaceLanguageProfilesCached(residentOnly);
+      if (kind === "aliases") return fixture.runtime.sourceOwnedLanguageProfilesCached(["fixture"], { residentOnly });
+      if (kind === "evidence") return fixture.runtime.evidenceOwnedLanguageProfilesCached(["source.fixture" as never], { residentOnly });
+      return fixture.runtime.sourceAnchorSemanticFramesCached({ residentOnly });
+    };
+    const obsolete = read();
+    await fixture.metadataStarted;
+    fixture.invalidate();
+    fixture.releaseHydration();
+    await obsolete;
+    if (kind === "aliases" || kind === "frames") await expect(read(true)).rejects.toThrow(NOT_WARM);
+    else expect(await read(true)).toMatchObject({ profiles: [] });
+  });
+
   it.each(["identity", "cluster"] as const)("does not repopulate an invalidated %s cache from an older hydration", async scope => {
     const fixture = await runtimeFixture({ observations: 40, gateHydration: true });
     const hydrate = () => scope === "identity" ? fixture.hydrate("language.alpha") : fixture.hydrateCluster();
@@ -121,6 +140,14 @@ async function runtimeFixture(options: {
   const gate = new Promise<void>(resolve => { openGate = resolve; });
   let markHydrationStarted = () => {};
   const hydrationStarted = new Promise<void>(resolve => { markHydrationStarted = resolve; });
+  let blockMetadata = false;
+  let markMetadataStarted = () => {};
+  const metadataStarted = new Promise<void>(resolve => { markMetadataStarted = resolve; });
+  const metadataGate = async () => {
+    if (!blockMetadata) return;
+    markMetadataStarted();
+    await gate;
+  };
   const profile: LanguageProfile = {
     id: "profile.fixture",
     sourceVersionId: "source.fixture" as never,
@@ -151,10 +178,13 @@ async function runtimeFixture(options: {
       listNgramObservations: async () => fixtureObservations(options.observations),
       listLanguageUnits: async () => [],
       listLanguagePatterns: async () => [],
-      listSemanticFrames: async () => []
+      listSemanticFrames: async () => {
+        await metadataGate();
+        return blockMetadata ? [{ id: "frame.fixture", frameJson: { preview: "fixture" }, embedding: [], evidenceIds: [], alpha: 1, createdAt: 1 }] : [];
+      }
     },
     segmentationPopulations: { listRecent: async () => [] },
-    model: { listLanguageProfiles: async () => [profile] }
+    model: { listLanguageProfiles: async () => { await metadataGate(); return [profile]; } }
   } as unknown as ScceKernelDeps["storage"];
   const hasher = createHasher();
   const runtime = createSurfaceLanguageRuntime({
@@ -171,6 +201,9 @@ async function runtimeFixture(options: {
   const cluster = await runtime.surfaceLanguageClusterCached("fixture language");
 
   return {
+    runtime,
+    blockMetadata: () => { blockMetadata = true; },
+    metadataStarted,
     get hydrations() { return hydrations; },
     get populationReads() { return populationReads; },
     hydrationStarted,
