@@ -5210,6 +5210,14 @@ function createDialogueMemoryStore(storage: PostgresStorageAdapter): DialogueMem
       params.push(query.limit ?? 100);
       return (await storage.query<ConversationOutcomeRow>(`SELECT * FROM ${storage.table("conversation_outcome_records")} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at DESC LIMIT $${params.length}`, params)).map(rowToConversationOutcome);
     },
+    async listUserCorrections(query = {}) {
+      const params: unknown[] = [];
+      const where: string[] = [];
+      if (query.conversationId) { params.push(query.conversationId); where.push(`conversation_id=$${params.length}`); }
+      if (query.turnId) { params.push(query.turnId); where.push(`turn_id=$${params.length}`); }
+      params.push(query.limit ?? 128);
+      return (await storage.query<UserCorrectionRow>(`SELECT * FROM ${storage.table("user_correction_records")} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at DESC LIMIT $${params.length}`, params)).map(rowToUserCorrection);
+    },
     async listStyleSnapshots(query = {}) {
       const params: unknown[] = [];
       const where: string[] = [];
@@ -5425,6 +5433,33 @@ function rowToConversationOutcome(row: ConversationOutcomeRow): ConversationOutc
     failedConstraintRefs: row.failed_constraint_refs,
     scoreTraceRefs: row.score_trace_refs,
     createdAt: row.created_at.toISOString()
+  };
+}
+
+interface UserCorrectionRow {
+  id: string;
+  conversation_id: string;
+  turn_id: string;
+  prompt_hash: string;
+  response_hash: string;
+  correction_text: string;
+  rejected_surface_hash: string | null;
+  accepted_surface_hash: string | null;
+  preference_delta_json: JsonValue;
+  created_at: Date;
+}
+function rowToUserCorrection(row: UserCorrectionRow): UserCorrectionRecord {
+  return {
+    id: row.id,
+    conversationId: row.conversation_id,
+    turnId: row.turn_id,
+    promptHash: row.prompt_hash,
+    responseHash: row.response_hash,
+    correctionText: row.correction_text,
+    rejectedSurfaceHash: row.rejected_surface_hash ?? undefined,
+    acceptedSurfaceHash: row.accepted_surface_hash ?? undefined,
+    preferenceDeltaJson: row.preference_delta_json,
+    createdAt: row.created_at.getTime()
   };
 }
 

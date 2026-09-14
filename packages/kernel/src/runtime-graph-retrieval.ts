@@ -339,6 +339,7 @@ export function createRuntimeGraphRetrieval(options: {
       allowSemanticFrameEvidence,
       sourceAnchoringRequired,
       residentOnly,
+      quotedSequence: sourceAnchoringRequired && hasExplicitQuotationOrGapStructure(text) && requestSentenceSequences(text).length > 0,
       scaffolding: [...(options.requestScaffolding ?? [])].sort()
     })).slice(0, 32);
     const cacheOwner = deps.evaluationCondition ? currentEvaluationCacheOwner(deps.evaluationCondition) : undefined;
@@ -582,7 +583,7 @@ export function createRuntimeGraphRetrieval(options: {
   /** A request bigram is one word order; the source may use the other ("Who played Sisko?" against "Sisko,
    *  played by Avery Brooks"). When the bigram matches nothing, its own symbols are searched instead, so the
    *  order the asker chose never decides whether the article is found. */
-  async function searchAnchorGroup(group: readonly string[], sourceKinds: { excludeSourceKinds?: string[] }, proseOnly: boolean, text = "", subjectLed = true): Promise<Awaited<ReturnType<typeof deps.storage.evidence.searchEvidence>>> {
+  async function searchAnchorGroup(group: readonly string[], sourceKinds: { excludeSourceKinds?: string[] }, proseOnly: boolean, text = "", subjectLed = true, allowSymbolFallback = true): Promise<Awaited<ReturnType<typeof deps.storage.evidence.searchEvidence>>> {
     // The subject this group is searching for, so a source *titled* with it outranks one that merely contains it.
     // A group carrying a quoted sentence opens on that sentence's first pair, not on a subject, so its leading
     // feature names no title to rank by and reading one out of it ranks whatever source happens to spell it.
@@ -602,13 +603,15 @@ export function createRuntimeGraphRetrieval(options: {
     };
     // A request that quotes one of the corpus's own sentences is answered where that sentence sits, so the
     // opening-block prior in the ranking has nothing to say about it and outranks the span that carries it.
-    const openingBlockPrior = requestSentenceSequences(text).length === 0;
+    const openingBlockPrior = !hasExplicitQuotationOrGapStructure(text) || requestSentenceSequences(text).length === 0;
     const rows = usable(await deps.storage.evidence.searchEvidence({ features: [...group], limit: 64, openingBlockPrior, ...sourceKinds, ...(titleUnits.length ? { titleUnits } : {}) }));
     if (rows.length) return rows;
     const symbols = uniqueKernelStrings(group.flatMap(feature => feature.startsWith("anchor:bi:")
       ? feature.slice("anchor:bi:".length).split("|").filter(Boolean).map(unit => `anchor:sym:${unit}`)
       : []));
-    return symbols.length ? usable(await deps.storage.evidence.searchEvidence({ features: symbols, limit: 64, openingBlockPrior, ...sourceKinds, ...(titleUnits.length ? { titleUnits } : {}) })) : rows;
+    return allowSymbolFallback && symbols.length
+      ? usable(await deps.storage.evidence.searchEvidence({ features: symbols, limit: 64, openingBlockPrior, ...sourceKinds, ...(titleUnits.length ? { titleUnits } : {}) }))
+      : rows;
   }
 
   /** Every unit a group's features are made of. Pure. */
@@ -706,9 +709,24 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
       ? {}
       : { excludeSourceKinds: ["developer_intelligence", "construction_training"], excludeForceClasses: ["profile_excerpt_evidence"] };
     const perGroupCounts: Array<{ group: string[]; rows: number; heads: string[] }> = [];
+    // The five bounded ordinary groups may each issue one phrase query. Keep
+    // at most four symbol-order fallbacks, in group priority order, for the
+    // established nine-query ordinary-turn ceiling. An explicit quotation
+    // or gap owns one additional precise sequence query and never falls back
+    // to its generic symbols.
+    const ordinaryGroups = anchorFeatureGroups.filter(group => group !== quotedSentence);
+    const ordinaryFallbackBudget = Math.max(0, 9 - ordinaryGroups.length);
     const anchoredEvidenceResults = anchorFeatureGroups.length
-      ? await Promise.all(anchorFeatureGroups.map(async group => {
-        const rows = await searchAnchorGroup(group, proseSourceKinds, !codeRequestRecognized(codeRequestSignal(text)), text, group !== quotedSentence);
+      ? await Promise.all(anchorFeatureGroups.map(async (group, index) => {
+        const ordinaryIndex = anchorFeatureGroups.slice(0, index).filter(candidate => candidate !== quotedSentence).length;
+        const rows = await searchAnchorGroup(
+          group,
+          proseSourceKinds,
+          !codeRequestRecognized(codeRequestSignal(text)),
+          text,
+          group !== quotedSentence,
+          group !== quotedSentence && ordinaryIndex < ordinaryFallbackBudget
+        );
         perGroupCounts.push({ group: [...group], rows: rows.length, heads: rows.slice(0, 2).map(item => String(item.span.textPreview ?? "").replace(/s+/gu, " ").slice(0, 50)) });
         return rows;
       })).then(groupResults => groupResults.flat())
@@ -1076,8 +1094,10 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
       const conceptFeatures = forms.map(form => `anchor:sym:${form}`);
       if (!groups.some(group => conceptFeatures.every(feature => group.includes(feature)))) groups.push(conceptFeatures);
     }
-    // One extra group carrying the sentence the request quotes, whole. Question-shaped requests keep their
-    // bounded query budget.
+    // One extra group carrying the sentence the request quotes, whole. The sequence lane is activated by an
+    // explicit structural quotation or gap marker; a plain declarative request still uses the bounded subject
+    // groups above. This keeps ordinary source retrieval from paying for a near-duplicate probe while preserving
+    // the cloze/quotation path whose request shape already carries that structure.
     //
     // A quoted sentence is not a subject to anchor on, it is a sequence: the span that holds it carries every one
     // of its adjacent bigrams and no other span carries more than a couple, so the conjunction identifies the
@@ -1086,7 +1106,7 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
     // the answering span for 31 of 39 and rank it first for 20, the sentence's pairs whole retrieve it for all 39
     // and rank it first for 35. Deliberately not deduplicated against the other groups -- a pair another group
     // already searched alone is still part of what makes this query identify one span.
-    if (!requestSentenceSequences(text).length) return { groups, quotedSentence: undefined };
+    if (!hasExplicitQuotationOrGapStructure(text) || !requestSentenceSequences(text).length) return { groups, quotedSentence: undefined };
     const requestBigrams = anchorFeatureSet(text, 256)
       .filter(feature => feature.startsWith("anchor:bi:"))
       .filter(feature => {
@@ -1112,6 +1132,24 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
     if (quoted.length < 2) return { groups, quotedSentence: undefined };
     groups.push(quoted);
     return { groups, quotedSentence: quoted };
+  }
+
+  /** Structural quotation/gap markers, independent of language or word classes. Pure. */
+  function hasExplicitQuotationOrGapStructure(text: string): boolean {
+    const gap = /(?:^|[\s([{])_{2,}(?=$|[\s)\]},.!?;:])/u.test(text);
+    const pairedDelimiters = [
+      ['"', '"'],
+      ['“', '”'],
+      ['„', '”'],
+      ['«', '»'],
+      ['「', '」'],
+      ['『', '』']
+    ] as const;
+    const quoted = pairedDelimiters.some(([open, close]) => {
+      if (open === close) return (text.match(/"/gu) ?? []).length >= 2;
+      return text.includes(open) && text.includes(close);
+    });
+    return gap || quoted;
   }
 
   async function visualEvidenceResults(text: string): Promise<Array<{ span: EvidenceSpan; score: number; reason: string }>> {

@@ -74,6 +74,39 @@ describe("general-cognition candidate and judge contracts", () => {
     expect(JSON.stringify(candidate.audit)).toContain(String(observed.id));
   });
 
+  it("uses only explicitly admitted current owner evidence for an uncertified proof surface", () => {
+    const owner = evidence("evidence_session_current", "The release codename is Aster");
+    const prior = evidence("evidence_session_prior", "The previous release codename was Nova");
+    const fixture = engineFixture([owner, prior]);
+    const entailment = {
+      ...fixture.entailment,
+      evidenceIds: [],
+      proof: { ...fixture.entailment.proof, evidenceIds: [] }
+    } as SemanticEntailmentResult;
+    const field = createCandidateEngine().generate({
+      ...fixture,
+      entailment,
+      proofAnswer: "",
+      requestedAuthority: "factual",
+      ownerSessionEvidenceIds: new Set([String(owner.id)])
+    });
+    const candidate = field.candidates.find(row => row.kind === "proof-answer");
+
+    expect(candidate?.answer).toBe(owner.text);
+    expect(candidate?.evidenceIds).toEqual([owner.id]);
+
+    const negative = createCandidateEngine().generate({
+      ...fixture,
+      entailment,
+      proofAnswer: "",
+      requestedAuthority: "factual",
+      ownerSessionEvidenceIds: new Set(["evidence_session_missing"])
+    });
+    const negativeCandidate = negative.candidates.find(row => row.kind === "proof-answer");
+    expect(negativeCandidate?.answer).toBe("");
+    expect(JSON.stringify(negativeCandidate?.audit)).toContain('"sessionBound":false');
+  });
+
   it("labels exact selected-source fallback honestly when the proof has no evidence ids", () => {
     const observed = evidence("evidence.reasoned-selected-surface", "42 kPa and 57 kPa are incompatible measurements of one state at one time.");
     const operator = activeOperator(COGNITIVE_OPERATOR_IDS.relationComposition);

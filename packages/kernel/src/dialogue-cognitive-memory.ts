@@ -3,6 +3,7 @@
 import {
   deriveDialogueCognitiveStateIdV2,
   isDiscourseProvenanceBindingForReferentV2,
+  isDiscourseInterpretationAdjustmentV2,
   type DiscourseProvenanceBindingV2,
   type DialogueCognitiveStateV2,
   type DiscourseBindingComponentsV2,
@@ -133,7 +134,10 @@ export function isDialogueCognitiveStateV2(value: unknown, hasher?: Hasher): val
     || !Array.isArray(state.topics)
     || !state.topics.every(isDiscourseTopicV2)
     || !Array.isArray(state.bindings)
-    || !state.bindings.every(isDiscourseBindingV2)) return false;
+    || !state.bindings.every(isDiscourseBindingV2)
+    || state.interpretationAdjustments !== undefined
+      && (!Array.isArray(state.interpretationAdjustments)
+        || !state.interpretationAdjustments.every(adjustment => isDiscourseInterpretationAdjustmentV2(adjustment)))) return false;
 
   const referents = state.referents as unknown as DiscourseReferentV2[];
   const topics = state.topics as unknown as DiscourseTopicV2[];

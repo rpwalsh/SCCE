@@ -14,6 +14,11 @@ import type {
 } from "./storage.js";
 import type { Clock, EvidenceId, JsonValue } from "./types.js";
 import {
+  createDiscourseInterpretationAdjustmentV2,
+  isDiscourseInterpretationAdjustmentV2,
+  type DiscourseInterpretationAdjustmentV2
+} from "./discourse-state.js";
+import {
   DEFAULT_USER_STYLE_PROFILE,
   INTERACTION_FEATURE_IDS,
   type DialoguePolicyDecision,
@@ -92,6 +97,11 @@ export interface DialogueCreativePreferencePair {
     selectedOutputHash?: string;
   };
 }
+
+/** Source-neutral feedback that identifies the typed route the owner meant. */
+export type DialogueInterpretationCorrectionInput = Omit<DiscourseInterpretationAdjustmentV2, "schema" | "id" | "correctionIds"> & {
+  correctionIds?: readonly string[];
+};
 
 export function buildDialoguePersistenceBatch(input: {
   result: DialoguePragmaticsResult;
@@ -180,11 +190,26 @@ export function userCorrectionFromOutcome(input: {
   rejectedSurface?: string;
   acceptedSurface?: string;
   preferenceDelta?: JsonValue;
+  interpretationCorrection?: DialogueInterpretationCorrectionInput;
   now?: number;
   clock?: Clock;
 }): UserCorrectionRecord {
+  const id = `user_correction.${hashText(canonicalStringify({ outcome: input.outcome.id, correction: input.correctionText }))}`;
+  const legacyPreferenceDelta = input.preferenceDelta !== undefined
+    ? input.preferenceDelta
+    : toJsonValue({ sourceOutcomeId: input.outcome.id });
+  let preferenceDeltaJson: JsonValue = legacyPreferenceDelta;
+  if (input.interpretationCorrection) {
+    const adjustment = createDiscourseInterpretationAdjustmentV2({
+      ...input.interpretationCorrection,
+      correctionIds: [id, ...(input.interpretationCorrection.correctionIds ?? [])]
+    });
+    preferenceDeltaJson = isRecord(legacyPreferenceDelta)
+      ? toJsonValue({ ...legacyPreferenceDelta, interpretationAdjustment: toJsonValue(adjustment) })
+      : toJsonValue({ legacyPreferenceDelta, interpretationAdjustment: toJsonValue(adjustment) });
+  }
   return {
-    id: `user_correction.${hashText(canonicalStringify({ outcome: input.outcome.id, correction: input.correctionText }))}`,
+    id,
     conversationId: input.outcome.conversationId,
     turnId: input.outcome.turnId,
     promptHash: input.outcome.promptHash,
@@ -192,7 +217,7 @@ export function userCorrectionFromOutcome(input: {
     correctionText: input.correctionText,
     rejectedSurfaceHash: input.rejectedSurface ? hashText(input.rejectedSurface) : undefined,
     acceptedSurfaceHash: input.acceptedSurface ? hashText(input.acceptedSurface) : undefined,
-    preferenceDeltaJson: input.preferenceDelta ?? toJsonValue({ sourceOutcomeId: input.outcome.id }),
+    preferenceDeltaJson,
     createdAt: resolveNow(input.now, input.clock)
   };
 }
@@ -347,6 +372,42 @@ export async function dialogueOutcomeMemoryForConversation(
   return replayDialogueOutcomeMemory({ conversationId, outcomes, snapshots });
 }
 
+/** Read only typed interpretation feedback; free-form corrections remain behavioral observations. */
+export async function dialogueInterpretationAdjustmentsForConversation(
+  store: DialogueMemoryStore,
+  conversationId: string,
+  limit = 128
+): Promise<DiscourseInterpretationAdjustmentV2[]> {
+  if (!store.listUserCorrections) return [];
+  const corrections = await store.listUserCorrections({ conversationId, limit });
+  // Stores may return newest-first for efficient bounded reads.  The state
+  // merge consumes feedback oldest-first so a later correction remains later.
+  return [...corrections]
+    .sort((left, right) => left.createdAt - right.createdAt || compareCorrectionIds(left.id, right.id))
+    .map(correction => isRecord(correction.preferenceDeltaJson) ? correction.preferenceDeltaJson.interpretationAdjustment : undefined)
+    .filter(value => isDiscourseInterpretationAdjustmentV2(value))
+    .map(value => {
+      const adjustment = value as unknown as DiscourseInterpretationAdjustmentV2;
+      // Re-materialize through the schema constructor so loaded feedback uses
+      // the adjustment schema's identity hasher, independent of state hashing.
+      return createDiscourseInterpretationAdjustmentV2({
+        semanticRoleIds: adjustment.semanticRoleIds,
+        requestedSlotIds: adjustment.requestedSlotIds,
+        learnedFrameIds: adjustment.learnedFrameIds,
+        scopeIds: adjustment.scopeIds,
+        rejectedReferentIds: adjustment.rejectedReferentIds,
+        preferredReferentIds: adjustment.preferredReferentIds,
+        supportMass: adjustment.supportMass,
+        contradictionMass: adjustment.contradictionMass,
+        correctionIds: adjustment.correctionIds
+      });
+    });
+}
+
+function compareCorrectionIds(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 export async function persistDialogueBatch(store: DialogueMemoryStore, batch: DialoguePersistenceBatch): Promise<void> {
   await store.putInteractionState(batch.interactionState);
   await store.putPolicyDecision(batch.policyDecision);
@@ -414,6 +475,7 @@ export async function persistDialogueOutcomeFromMemory(input: {
   rejected?: boolean;
   corrected?: boolean;
   correctionText?: string;
+  interpretationCorrection?: DialogueInterpretationCorrectionInput;
   requestedConstraintRefs?: readonly string[];
   satisfiedConstraintRefs?: readonly string[];
   failedConstraintRefs?: readonly string[];
@@ -434,6 +496,7 @@ export async function persistDialogueOutcomeFromMemory(input: {
     rejected: input.rejected,
     corrected: input.corrected,
     correctionText: input.correctionText,
+    interpretationCorrection: input.interpretationCorrection,
     currentProfile,
     requestedConstraintRefs: input.requestedConstraintRefs,
     satisfiedConstraintRefs: input.satisfiedConstraintRefs,
@@ -467,6 +530,7 @@ export async function persistDialogueOutcomeAndLearn(input: {
   rejected?: boolean;
   corrected?: boolean;
   correctionText?: string;
+  interpretationCorrection?: DialogueInterpretationCorrectionInput;
   currentProfile?: UserStyleProfile;
   requestedConstraintRefs?: readonly string[];
   satisfiedConstraintRefs?: readonly string[];
@@ -491,7 +555,7 @@ export async function persistDialogueOutcomeAndLearn(input: {
     now: new Date(now)
   });
   const correction = input.correctionText
-    ? userCorrectionFromOutcome({ outcome, correctionText: input.correctionText, rejectedSurface: input.result.finalText, now })
+    ? userCorrectionFromOutcome({ outcome, correctionText: input.correctionText, rejectedSurface: input.result.finalText, interpretationCorrection: input.interpretationCorrection, now })
     : undefined;
   const learning = learnDialoguePolicyWeights({ profile: input.currentProfile ?? input.result.state.userStyleProfile, outcome, now });
   const ordinaryCalibrationObservations = calibrationObservationsFromDialogueOutcome({ result: input.result, outcome, taskClass: input.taskClass, createdAt: now });
@@ -549,6 +613,7 @@ export function createInMemoryDialogueMemoryStore(seed?: {
   interactionStates?: readonly InteractionStateRecord[];
   policyDecisions?: readonly DialoguePolicyDecisionRecord[];
   outcomes?: readonly ConversationOutcomeRecord[];
+  corrections?: readonly UserCorrectionRecord[];
   responseCandidates?: readonly ResponseCandidateRecord[];
   snapshots?: readonly StylePreferenceSnapshot[];
   targetProfilePatterns?: readonly TargetProfilePatternRecord[];
@@ -557,7 +622,7 @@ export function createInMemoryDialogueMemoryStore(seed?: {
   const interactionStates = new Map((seed?.interactionStates ?? []).map(record => [record.id, record]));
   const policyDecisions = new Map((seed?.policyDecisions ?? []).map(record => [record.id, record]));
   const outcomes = new Map((seed?.outcomes ?? []).map(record => [record.id, record]));
-  const corrections = new Map<string, UserCorrectionRecord>();
+  const corrections = new Map((seed?.corrections ?? []).map(record => [record.id, record]));
   const snapshots = new Map((seed?.snapshots ?? []).map(record => [record.id, record]));
   const candidates = new Map((seed?.responseCandidates ?? []).map(record => [record.id, record]));
   const targetProfilePatterns = new Map((seed?.targetProfilePatterns ?? []).map(record => [record.id, record]));
@@ -613,6 +678,7 @@ export function createInMemoryDialogueMemoryStore(seed?: {
     listPolicyDecisions: async query => newest([...policyDecisions.values()].filter(record => (!query?.conversationId || record.conversationId === query.conversationId) && (!query?.turnId || record.turnId === query.turnId)), query?.limit ?? 100, record => record.createdAt),
     listResponseCandidates: async query => newest([...candidates.values()].filter(record => (!query?.conversationId || record.conversationId === query.conversationId) && (!query?.turnId || record.turnId === query.turnId) && (!query?.policyDecisionId || record.policyDecisionId === query.policyDecisionId)), query?.limit ?? 100, record => record.createdAt),
     listConversationOutcomes: async query => newest([...outcomes.values()].filter(record => (!query?.conversationId || record.conversationId === query.conversationId) && (!query?.turnId || record.turnId === query.turnId)), query?.limit ?? 100, record => Date.parse(record.createdAt)),
+    listUserCorrections: async query => newest([...corrections.values()].filter(record => (!query?.conversationId || record.conversationId === query.conversationId) && (!query?.turnId || record.turnId === query.turnId)), query?.limit ?? 100, record => record.createdAt),
     listStyleSnapshots: async query => newest([...snapshots.values()].filter(record => !query?.conversationId || record.conversationId === query.conversationId), query?.limit ?? 20, record => record.createdAt),
     listTargetProfilePatterns: async query => newest([...targetProfilePatterns.values()].filter(record => (!query?.targetProfileId || record.targetProfileId === query.targetProfileId) && (!query?.patternFamilyId || record.patternFamilyId === query.patternFamilyId)), query?.limit ?? 200, record => record.updatedAt),
     listCalibrationObservations: async query => newest([...calibrationObservations.values()].filter(record =>
@@ -646,6 +712,10 @@ function featureVectorFromOutcome(outcome: ConversationOutcomeRecord): Record<In
     [INTERACTION_FEATURE_IDS.clarificationCost]: [...failed].some(ref => ref.includes("clarify") || ref.includes("62c9ef30")) ? 1 : 0.15,
     [INTERACTION_FEATURE_IDS.compactness]: outcome.accepted ? 0.45 : 0.25
   };
+}
+
+function isRecord(value: JsonValue | undefined): value is Record<string, JsonValue> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 function dialogueStateFromJson(value: JsonValue | undefined): DialogueState | undefined {

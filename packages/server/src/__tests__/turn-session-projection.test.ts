@@ -14,7 +14,7 @@ vi.mock("@scce/adapters-node", async importOriginal => {
   };
 });
 
-import type { OwnerInput } from "@scce/kernel";
+import { createDiscourseInterpretationAdjustmentV2, createInMemoryDialogueMemoryStore, toJsonValue, type OwnerInput } from "@scce/kernel";
 import { handleRequest, type ApiContext } from "../routes.js";
 
 const servers: ReturnType<typeof createServer>[] = [];
@@ -24,6 +24,106 @@ afterEach(async () => {
 });
 
 describe("turn session metadata projection", () => {
+  it("requires an exact persisted turn target for typed interpretation feedback", async () => {
+    const context = { maxBodyBytes: 1_000_000 } as unknown as ApiContext;
+    const server = createServer((request, response) => { void handleRequest(request, response, context); });
+    servers.push(server);
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("fixture server has no TCP address");
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/turn/outcome`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        conversationId: "conversation.fixture",
+        status: "corrected",
+        correctionText: "the alternate referent",
+        interpretationCorrection: { mentionId: "mention.fixture", preferredReferentId: "referent.fixture" }
+      })
+    });
+
+    expect(response.status).toBe(422);
+    expect(await response.json()).toMatchObject({ error: "typed interpretation correction requires turnId" });
+  });
+
+  it("loads a persisted typed interpretation adjustment before the public turn boundary", async () => {
+    const adjustment = createDiscourseInterpretationAdjustmentV2({
+      semanticRoleIds: ["role.fixture.subject"],
+      requestedSlotIds: ["slot.fixture.subject"],
+      learnedFrameIds: ["frame.fixture.lookup"],
+      scopeIds: ["source-version.fixture"],
+      rejectedReferentIds: ["referent.fixture.rejected"],
+      preferredReferentIds: ["referent.fixture.preferred"],
+      supportMass: 0.95,
+      contradictionMass: 0.95,
+      correctionIds: ["correction.fixture"]
+    });
+    const dialogueMemory = createInMemoryDialogueMemoryStore({
+      corrections: [{
+        id: "correction.fixture",
+        conversationId: "conversation.fixture",
+        turnId: "turn.fixture",
+        promptHash: "prompt.fixture",
+        responseHash: "response.fixture",
+        correctionText: "typed correction",
+        preferenceDeltaJson: toJsonValue({ interpretationAdjustment: adjustment }),
+        createdAt: 1
+      }]
+    });
+    const captured: OwnerInput[] = [];
+    const context = {
+      runtime: {
+        storage: {
+          dialogueMemory,
+          conversation: { listTurns: async () => [] }
+        },
+        kernel: {
+          turn: async (input: OwnerInput) => {
+            captured.push(input);
+            throw new Error("typed-adjustment-captured");
+          }
+        }
+      },
+      config: {},
+      startupReadiness: { snapshot: () => ({ phase: "running", ok: false, complete: false }) }
+    } as unknown as ApiContext;
+    const server = createServer((request, response) => { void handleRequest(request, response, context); });
+    servers.push(server);
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("fixture server has no TCP address");
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/turn`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        conversationId: "conversation.fixture",
+        text: "Which referent?",
+        metadata: {
+          dialogue: {
+            previousState: { schema: "untrusted", id: "client" },
+            cognitiveState: { schema: "untrusted", id: "client" },
+            interpretationAdjustments: [{ schema: "untrusted", id: "client" }]
+          }
+        }
+      })
+    });
+    expect(response.status).toBe(500);
+    expect(captured).toHaveLength(1);
+    const metadata = captured[0]?.metadata as Record<string, unknown>;
+    const dialogue = metadata.dialogue as Record<string, unknown>;
+    expect(dialogue.interpretationAdjustments).toEqual([adjustment]);
+    expect(dialogue).not.toHaveProperty("previousState");
+    expect(dialogue).not.toHaveProperty("cognitiveState");
+    expect(JSON.stringify(dialogue.interpretationAdjustments)).not.toContain("untrusted");
+  });
+
   it("passes typed owner turn acts to the kernel without promoting unrelated nested lookalikes", async () => {
     const assertionAct = {
       schema: "scce.dialogue.turn_act.v1",

@@ -51,6 +51,8 @@ export interface CandidateSurface {
   boundaries: string[];
   audit: JsonValue;
   scoreTrace?: ScoreTrace[];
+  /** Typed discourse preference applied before the requirement-aware judge. */
+  selectionAdjustment?: number;
 }
 
 export interface CandidateQuality {
