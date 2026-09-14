@@ -50,4 +50,39 @@ describe("code mouth loop", () => {
     expect(parsed[0]).toMatchObject({ class: "type", patternId: "TS2304", line: 3, column: 7 });
     expect(parsed[1]).toMatchObject({ class: "syntax", patternId: "TS1005" });
   });
+
+  it("replans against the accepted source after a repair makes partial progress", async () => {
+    const initial = "export const a = missingA;\nexport const b = missingB;\n";
+    let source = initial;
+    const observedSources: string[] = [];
+    const repairPorts: CodeMouthPorts = {
+      retrieve: async targetPath => ({ targetPath, targetText: source, symbols: [], imports: [], language: "typescript" }),
+      propose: async ({ context, attempt }) => {
+        observedSources.push(context.targetText);
+        const surface = context.targetText.replace(attempt === 1 ? "missingA" : "missingB", String(attempt));
+        return {
+          surface,
+          operations: [{ id: `repair:${attempt}`, risk: 0.1, kind: "replace", path: "x.ts", startLine: 1, endLine: 2, content: surface, reason: "resolve current diagnostic" }]
+        };
+      },
+      apply: async operations => {
+        const before = source;
+        source = operations[0]!.content!;
+        return async () => { source = before; };
+      },
+      verify: async () => {
+        const diagnostics = ["missingA", "missingB"].filter(name => source.includes(name)).map(name => ({
+          id: name, raw: name, message: name, path: "x.ts", class: "type" as const, confidence: 1
+        }));
+        return { buildSucceeded: diagnostics.length === 0, testsSucceeded: true, diagnostics };
+      }
+    };
+
+    const result = await runCodeMouth({ request: "resolve the build errors", targetPath: "x.ts", ports: repairPorts, maxAttempts: 2 });
+
+    expect(result.outcome).toBe("resolved");
+    expect(result.appliedOperations).toHaveLength(2);
+    expect(observedSources).toEqual([initial, initial.replace("missingA", "1")]);
+    expect(source).toBe("export const a = 1;\nexport const b = 2;\n");
+  });
 });
