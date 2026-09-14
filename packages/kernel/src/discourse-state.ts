@@ -703,6 +703,7 @@ interface ScoredDiscourseCandidateV2 {
   hardReasonIds: string[];
   provenanceBindings: DiscourseProvenanceBindingV2[];
   inheritedSlotBindings: DiscourseSlotBindingV2[];
+  interpretationAdjustmentIds: string[];
 }
 
 export function createDiscourseTurnObservationV2(
@@ -851,8 +852,8 @@ export function resolveDiscourseStateV2(input: ResolveDiscourseStateV2Input): Di
       admitted,
       reasonIds: canonicalStringSetV2(reasonIds),
       alternatives,
-      ...(interpretationSelection.adjustmentIds.length
-        ? { interpretationAdjustmentIds: interpretationSelection.adjustmentIds }
+      ...(selected.interpretationAdjustmentIds.length
+        ? { interpretationAdjustmentIds: selected.interpretationAdjustmentIds }
         : {})
     };
     bindings.push({
@@ -1067,8 +1068,14 @@ function scoreDiscourseCandidateV2(input: {
   const topicSwitchPenalty = clamp01(Math.max(topicSwitchPenaltyBase, signal?.topicSwitchPressure ?? 0));
   const contradictionPenalty = clamp01(Math.max(referent.contradictionMass, signal?.contradictionPressure ?? 0));
   const interpretationSelection = interpretationAdjustmentSelectionForTypedCandidateV2({
-    mention,
-    referent,
+    candidate: {
+      referentId: referent.id,
+      semanticRoleIds: canonicalStringSetV2(mention.semanticRoleIds),
+      requestedSlotIds: canonicalStringSetV2([...input.requestedSlotIds, ...mention.requestedSlotIds]),
+      learnedFrameIds: canonicalStringSetV2([...observation.learnedFrameIds, ...mention.learnedFrameIds]),
+      scopeIds: canonicalStringSetV2([...observation.scopeIds, ...mention.scopeIds]),
+      proofEvidenceIds: canonicalStringSetV2(validProvenanceBindings.flatMap(binding => binding.evidenceIds))
+    },
     adjustments: input.interpretationAdjustments
   });
   const interpretationDelta = interpretationSelection.delta;
@@ -1121,7 +1128,8 @@ function scoreDiscourseCandidateV2(input: {
     confidence: rawScore,
     hardReasonIds,
     provenanceBindings: validProvenanceBindings,
-    inheritedSlotBindings
+    inheritedSlotBindings,
+    interpretationAdjustmentIds: interpretationSelection.adjustmentIds
   };
 }
 

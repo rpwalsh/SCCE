@@ -381,8 +381,10 @@ describe("Mouth runtime surface planning", () => {
       },
       claimBases: ["reasoned_inference"],
       boundaries: [],
+      selectionAdjustment: 0.21,
       audit: {
         source: "cognitive-proposal",
+        typedDialogueSelection: { adjustmentIds: ["dialogue.adjustment.fixture"] },
         semanticFrame: {
           surfaceOriginId: "surface.cognitive_proposal.bound_proof_evidence.v1",
           surfaceEvidenceIds: [evidence.id]
@@ -425,6 +427,8 @@ describe("Mouth runtime surface planning", () => {
     expect(spoken.text).toBe(evidence.text);
     expect(spoken.evidenceRefs).toEqual([evidence.id]);
     expect(spoken.realizationTrace.selected.id).toBe(selectedCandidate.id);
+    expect(JSON.stringify(spoken.realizationTrace.selected.audit)).toContain("dialogue.adjustment.fixture");
+    expect(JSON.stringify(spoken.realizationTrace.selected.audit)).toContain("0.21");
   });
 
   it("preserves a planner-selected source excerpt when formal proof is unavailable", async () => {

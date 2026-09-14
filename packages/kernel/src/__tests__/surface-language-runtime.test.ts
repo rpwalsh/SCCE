@@ -123,6 +123,21 @@ describe("surface language resident-only cache", () => {
     expect(fixture.totalDurableCalls()).toBe(durableCallsAfterWarmup);
   });
 
+  it("shares a cold global profile load across concurrent conversational surfaces", async () => {
+    const fixture = runtimeFixture();
+
+    const [first, second, third] = await Promise.all([
+      fixture.runtime.surfaceLanguageProfilesCached(),
+      fixture.runtime.surfaceLanguageProfilesCached(),
+      fixture.runtime.surfaceLanguageProfilesCached()
+    ]);
+
+    expect(first.profiles).toBe(second.profiles);
+    expect(first.profiles).toBe(third.profiles);
+    expect(fixture.profileQueries).toHaveLength(1);
+    expect(fixture.profileQueries[0]).toMatchObject({ referencedByLanguageMemory: true });
+  });
+
   it("shares one durable source-owned profile resolution among concurrent aliases", async () => {
     const fixture = runtimeFixture();
 
