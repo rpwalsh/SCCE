@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   canonicalStringify,
+  COGNITIVE_OPERATOR_IDS,
   codeRequestSignal,
   createClock,
   createHasher,
@@ -36,7 +37,7 @@ describe("stateful owner program origination", () => {
     const signal = codeRequestSignal(request);
     expect(signal.statefulBehaviorRequirements).toHaveLength(4);
     expect(signal.statefulBehaviorRequirements.map(requirement => requirement.verificationRole)).toEqual(["fit", "fit", "fit", "held_out"]);
-    const initialIntent = required(programIntentForTurn({ requestedAuthority: "program", codeSignal: signal, evidence: [] }));
+    const initialIntent = required(programIntentForTurn({ requestedAuthority: "program", activeOperatorIds: [COGNITIVE_OPERATOR_IDS.programPlanning], codeSignal: signal, evidence: [] }));
     const builder = createProgramGraphBuilder({ idFactory: ids, hasher });
     const initialProgram = required(builder.build({
       episodeId: ids.episodeId(),

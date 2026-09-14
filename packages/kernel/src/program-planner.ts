@@ -2558,15 +2558,9 @@ function executableProgramModule(
       parameters: contract.parameters,
       samples: contract.samples
     })),
-    statefulRequirements: plan.ownerStatefulBehaviorRequirements.map(requirement => ({
-      id: requirement.id,
-      invocations: requirement.invocations.map(invocation => ({
-        callableId: invocation.callableId,
-        arguments: invocation.arguments
-      })),
-      expectedResult: requirement.expectedResult,
-      verificationRole: requirement.verificationRole
-    })),
+    // Owner expected results are validation-only. The source receives only
+    // operation signatures and the selected transition construction, so it
+    // cannot satisfy a held-out trace by inspecting its expected value.
     ownerBehaviorImplementationPhase: plan.ownerBehaviorImplementationPhase,
     selectedOwnerBehaviorTransformations: plan.ownerBehaviorTransformationCandidates
       .filter(candidate => plan.selectedOwnerBehaviorTransformationIds.includes(candidate.id))

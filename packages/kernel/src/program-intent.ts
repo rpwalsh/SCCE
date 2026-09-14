@@ -1,7 +1,8 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { EvidenceSpan, Hasher, ProgramConstructIntent, ProgramGraph, ProgramStatefulBehaviorRequirement, RequestedAuthority } from "./types.js";
-import { codeRequestRecognized, type CodeRequestSignal } from "./code-request.js";
+import type { CodeRequestSignal } from "./code-request.js";
+import { COGNITIVE_OPERATOR_IDS, type CognitiveOperatorId } from "./turn-requirements.js";
 import { hasEngineeringCorpusMetadata } from "./program.js";
 import { canonicalStringify, createHasher, toJsonValue } from "./primitives.js";
 import { validateProgramGraphHydration } from "./program-runtime.js";
@@ -10,17 +11,17 @@ import { searchStateTransitions } from "./state-transition-search.js";
 
 /**
  * The turn's structured program intent, derived once from what the turn already decided: the projected
- * authority, the structural code signal, and the engineering evidence it admitted. The program builder and the
- * planner both read it, so a request projected as `program` yields a ProgramGraph whether or not the request's
- * vocabulary also trips the builder's own activation. Absent, not fabricated, for a turn that is not about code.
+ * active cognitive operators, the structural code observation, and the engineering evidence it admitted. The program
+ * builder and planner read the same operator decision. The code observation fills artifact details; it does not privately
+ * decide whether a ProgramGraph may exist.
  */
 export function programIntentForTurn(input: {
   requestedAuthority: RequestedAuthority;
+  activeOperatorIds: readonly CognitiveOperatorId[];
   codeSignal: CodeRequestSignal;
   evidence: readonly EvidenceSpan[];
 }): ProgramConstructIntent | undefined {
-  const structural = codeRequestRecognized(input.codeSignal);
-  if (input.requestedAuthority !== "program" && !structural) return undefined;
+  if (!input.activeOperatorIds.includes(COGNITIVE_OPERATOR_IDS.programPlanning)) return undefined;
   const engineering = input.evidence.filter(span => hasEngineeringCorpusMetadata(span));
   // A request naming paths asks for an edit plan over those files; one naming none asks for a callable artifact.
   const artifactKindIds = input.codeSignal.paths.length ? ["program.artifact.patch_plan"] : ["program.artifact.library"];
