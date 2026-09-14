@@ -7,6 +7,7 @@ import {
   kernelString
 } from "./kernel-answer-primitives.js";
 import { toJsonValue } from "./primitives.js";
+import type { CalibrationObservationRecord } from "./calibration-spine.js";
 import { explicitAuthorityRequirements } from "./request-authority.js";
 import {
   COGNITIVE_OPERATOR_IDS,
@@ -123,6 +124,41 @@ export function operatorOutcomeSupport(
     }
   }
   return out;
+}
+
+/**
+ * Replays only operator outcomes that were actually recorded for this
+ * conversation.  Calibration metadata is an audit boundary: malformed rows,
+ * unknown operators, and rows without a finite score are ignored rather than
+ * becoming an inferred signal.  A successful observation contributes its
+ * recorded score; a failed observation contributes the negative score.
+ */
+export function operatorOutcomeSupportFromCalibrationObservations(
+  observations: readonly CalibrationObservationRecord[],
+  conversationId: string
+): Partial<Record<CognitiveOperatorId, number>> {
+  const sums = new Map<CognitiveOperatorId, { weighted: number; weight: number }>();
+  for (const observation of observations) {
+    if (!Number.isFinite(observation.rawScore)) continue;
+    const metadata = jsonRecord(observation.metadata);
+    if (kernelString(metadata.conversationId) !== conversationId) continue;
+    const operatorIds = Array.isArray(metadata.operatorIds)
+      ? metadata.operatorIds.filter((value): value is string => typeof value === "string")
+      : [];
+    const score = Math.max(0, Math.min(1, observation.rawScore));
+    for (const operatorId of operatorIds) {
+      if (!(Object.values(COGNITIVE_OPERATOR_IDS) as string[]).includes(operatorId)) continue;
+      const typedOperatorId = operatorId as CognitiveOperatorId;
+      const previous = sums.get(typedOperatorId) ?? { weighted: 0, weight: 0 };
+      previous.weighted += (observation.outcome ? score : -score);
+      previous.weight += 1;
+      sums.set(typedOperatorId, previous);
+    }
+  }
+  return Object.fromEntries([...sums.entries()].map(([operatorId, value]) => [
+    operatorId,
+    Math.max(-1, Math.min(1, value.weighted / Math.max(1, value.weight)))
+  ])) as Partial<Record<CognitiveOperatorId, number>>;
 }
 
 function isTurnRequirementDimension(value: string): value is (typeof TURN_REQUIREMENT_DIMENSIONS)[number] {

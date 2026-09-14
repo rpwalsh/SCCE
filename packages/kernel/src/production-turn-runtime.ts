@@ -247,6 +247,7 @@ import {
   evaluationQuestionId,
   explicitTurnRequirementsFromInput,
   operatorOutcomeSupport,
+  operatorOutcomeSupportFromCalibrationObservations,
   requestedAuthorityFromTurnInput,
   requirementContextFromMetadata
 } from "./turn-request-control.js";
@@ -518,6 +519,27 @@ export function createProductionTurnRuntime(options: {
       .catch(() => undefined)
       .finally(() => { dialogueCognitiveStateLoads.delete(conversationId); });
     dialogueCognitiveStateLoads.set(conversationId, load);
+  };
+
+  // Operator outcome history is replayed per conversation and kept resident.
+  // A cold durable read is deliberately background work: it can influence the
+  // next turn without delaying the first visible response of this one.
+  const residentOperatorOutcomeSupport = new Map<string, Partial<Record<import("./turn-requirements.js").CognitiveOperatorId, number>>>();
+  const operatorOutcomeLoads = new Map<string, Promise<void>>();
+  const warmOperatorOutcomeSupport = (conversationId: string): void => {
+    if (!conversationId || residentOperatorOutcomeSupport.has(conversationId) || operatorOutcomeLoads.has(conversationId)) return;
+    const dialogueMemory = deps.storage.dialogueMemory as Partial<typeof deps.storage.dialogueMemory> | undefined;
+    if (!dialogueMemory?.listCalibrationObservations) {
+      residentOperatorOutcomeSupport.set(conversationId, {});
+      return;
+    }
+    const load = dialogueMemory.listCalibrationObservations({ limit: 256 })
+      .then(observations => {
+        residentOperatorOutcomeSupport.set(conversationId, operatorOutcomeSupportFromCalibrationObservations(observations, conversationId));
+      })
+      .catch(() => { residentOperatorOutcomeSupport.set(conversationId, {}); })
+      .finally(() => { operatorOutcomeLoads.delete(conversationId); });
+    operatorOutcomeLoads.set(conversationId, load);
   };
 
   // Online requirement calibration lives for the runtime, not the turn: the model is read once, taught in memory,
@@ -1023,6 +1045,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         ?? previousDialogueState?.conversationId
         ?? metadataDialogueCognitiveState?.conversationId
         ?? "conversation.default";
+      warmOperatorOutcomeSupport(dialogueConversationId);
+      const durableOperatorOutcomeSupport = residentOperatorOutcomeSupport.get(dialogueConversationId) ?? {};
       const previousDialogueCognitiveState = metadataDialogueCognitiveState?.conversationId === dialogueConversationId
         ? metadataDialogueCognitiveState
         : residentDialogueCognitiveState(dialogueConversationId);
@@ -1197,7 +1221,10 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       let operatorActivations = activateCognitiveOperators({
         requirementField,
         dialogueSupport: requestOperatorDialogueSupport(requirementField),
-        outcomeSupport: operatorOutcomeSupport(input.metadata)
+        outcomeSupport: {
+          ...durableOperatorOutcomeSupport,
+          ...operatorOutcomeSupport(input.metadata)
+        }
       });
       let requestedAuthorityDecision = toJsonValue({
         ...jsonRecord(authorityProjection.trace),
@@ -1878,7 +1905,10 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         requirementField,
         graphSupport: requestOperatorGraphSupport({ graph, evidence: admissibleEvidence, field }),
         dialogueSupport: requestOperatorDialogueSupport(requirementField),
-        outcomeSupport: operatorOutcomeSupport(input.metadata)
+        outcomeSupport: {
+          ...durableOperatorOutcomeSupport,
+          ...operatorOutcomeSupport(input.metadata)
+        }
       });
       events.push(await append(eventFactory.create({
         episodeId,
@@ -4667,7 +4697,12 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           rawScore: clamp01(judged.selected.scores.support),
           outcome: turnOutcome,
           sourceRecordId: judged.selected.id,
-          metadata: toJsonValue({ candidateKind: judged.selected.kind, force: judged.selected.force }),
+          metadata: toJsonValue({
+            conversationId: authorityDialogueState.conversationId,
+            candidateKind: judged.selected.kind,
+            force: judged.selected.force,
+            operatorIds: operatorActivations.filter(operator => operator.active).map(operator => operator.operatorId)
+          }),
           createdAt: clock.now()
         }));
         // Feeds judge.ts's requirement-weight learning (calibration-spine.ts's buildJudgeRequirementModels) --
