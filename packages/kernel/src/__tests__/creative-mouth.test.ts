@@ -11,6 +11,7 @@ import {
   createLanguageMemoryRuntime,
   createMouth,
   createSemanticEntailmentEngine,
+  creativeRequestFrameContentTerms,
   creativeSurfaceSentenceUnits,
   detailPolicyForProfile,
   featureSet,
@@ -32,6 +33,27 @@ import {
 } from "../index.js";
 
 describe("creative Mouth production boundary", () => {
+  it("carries typed request role spans into creative realization constraints", () => {
+    const requestText = "Compose a fable about river stones";
+    const span = (text: string, charStart: number) => ({
+      text,
+      charStart,
+      charEnd: charStart + text.length,
+      byteStart: charStart,
+      byteEnd: charStart + Buffer.byteLength(text),
+      language: "fixture",
+      script: "fixture"
+    });
+    const frame = {
+      schema: "scce.creative_request_frame.v1" as const,
+      id: "frame:fixture",
+      compilerId: "compiler:fixture",
+      focus: { id: "role:focus", roleId: "role.focus", span: span("fable", 10) },
+      arguments: [{ id: "role:about", roleId: "role.argument", span: span("river stones", 22) }],
+      sourceActivationIds: []
+    };
+    expect(creativeRequestFrameContentTerms(frame, requestText).map(term => term.text)).toEqual(["fable", "river", "stones"]);
+  });
   it("keeps a generated multi-sentence surface as ordered discourse units", () => {
     const units = creativeSurfaceSentenceUnits("The premise stays bounded. The second move explains how updates remain reversible.");
 

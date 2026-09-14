@@ -37,7 +37,7 @@ import {
   type DiscoursePreselectionCandidateV2,
   type DiscourseTurnObservationV2
 } from "./discourse-state.js";
-import { createDialogueCognitiveMemoryV2, isDialogueCognitiveStateV2 } from "./dialogue-cognitive-memory.js";
+import { createDialogueCognitiveMemoryV2, isDialogueCognitiveStateV2, preferDialogueCognitiveStateV2 } from "./dialogue-cognitive-memory.js";
 import { projectProofBearingDialogueTurnV2 } from "./dialogue-cognitive-shadow.js";
 import { createSemanticEntailmentEngine } from "./entailment.js";
 import { consolidateEpisode } from "./episodic-memory-consolidation.js";
@@ -158,7 +158,7 @@ import { extendedGenerationDecision, extendedGenerationSessionForTurn, runExtend
 import { checkAntiCopyGuard } from "./voice-profile.js";
 import { buildConstructionAlgebra, searchTargetConditionedDerivation, semanticTargetFromGraph } from "./generative-derivation-runtime.js";
 import { persistTaskGraphForTurn, syncTaskResumptionSnapshotForTurn } from "./task-resumption-turn-request.js";
-import { programIntentForTurn } from "./program-intent.js";
+import { programIntentForTurn, replanOwnerBehaviorProgramIntent } from "./program-intent.js";
 import { completeTaskDecompositionNode, schedulableSubtasks, type TaskDecompositionGraph } from "./hierarchical-task-decomposition.js";
 import { solveTaskSchedule } from "./task-schedule-solver.js";
 import { nodeCanExecute, replan } from "./task-replanning.js";
@@ -1049,9 +1049,12 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         ?? "conversation.default";
       warmOperatorOutcomeSupport(dialogueConversationId);
       const durableOperatorOutcomeSupport = residentOperatorOutcomeSupport.get(dialogueConversationId) ?? {};
-      const previousDialogueCognitiveState = metadataDialogueCognitiveState?.conversationId === dialogueConversationId
-        ? metadataDialogueCognitiveState
-        : residentDialogueCognitiveState(dialogueConversationId);
+      const previousDialogueCognitiveState = preferDialogueCognitiveStateV2({
+        conversationId: dialogueConversationId,
+        metadataState: metadataDialogueCognitiveState,
+        residentState: residentDialogueCognitiveState(dialogueConversationId),
+        hasher
+      });
       if (!previousDialogueCognitiveState) warmDialogueCognitiveState(dialogueConversationId);
       const dialogueInterpretationAdjustments = dialogueInterpretationAdjustmentsFromMetadata(input.metadata, previousDialogueCognitiveState);
       const durableDialogueProfileId = dialogueTargetProfileId(dialogueConversationId, translationTarget ?? locale);
@@ -3727,7 +3730,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       let answer = "";
       const capabilityPlans: CapabilityPlan[] = [];
       const approvalPolicyPatch = deps.approvals?.policyPatch?.() ?? {};
-      let construct = programBuilder.build({ episodeId, text: input.text, entailment: answerEntailment, evidence: selectedEvidence, createdAt: clock.now(), programIntent, program: candidateConstructSeed.program });
+      let behaviorProgramIntent = programIntent;
+      let construct = programBuilder.build({ episodeId, text: input.text, entailment: answerEntailment, evidence: selectedEvidence, createdAt: clock.now(), programIntent: behaviorProgramIntent, program: candidateConstructSeed.program });
       // Plan items 217-218: a real, durably-persisted long-horizon task-
       // resumption snapshot (deps.storage.taskResumption, real Postgres-
       // backed store), built from this turn's own already-real task
@@ -3860,6 +3864,68 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
               });
             }
             buildTest = buildTest ?? executiveDispatch?.buildTest ?? await deps.buildTest.executeProgram({ episodeId, construct, faultInjection: buildFaultInjection });
+            // An owner behavior test is an observed constraint, not merely a failed
+            // task node. Rebuild from the selected transformation and execute that
+            // new ProgramGraph once; held-out obligations remain in the generated
+            // validator and never enter the transformation search.
+            const priorProgram = construct.program;
+            const priorBehaviorIntent = behaviorProgramIntent;
+            const ownerRequirementIds = priorProgram?.hydration?.ownerRequirementIds ?? [];
+            const ownerBehaviorFailed = priorProgram
+              && priorBehaviorIntent
+              && ownerRequirementIds.length > 0
+              && buildTest.build.code === 0
+              && buildTest.test.code !== 0;
+            if (ownerBehaviorFailed) {
+              const priorResult = buildTest;
+              const replan = replanOwnerBehaviorProgramIntent({
+                intent: priorBehaviorIntent,
+                program: priorProgram,
+                failure: {
+                  observationId: `owner.behavior.failure.${hasher.digestHex(JSON.stringify({ programId: priorProgram.id, build: priorResult.build, test: priorResult.test })).slice(0, 40)}`,
+                  programId: priorProgram.id,
+                  planHash: hasher.digestHex(JSON.stringify(priorProgram.hydration)),
+                  validatorId: "program.owner_behavior_validation.v1",
+                  checkId: "tests",
+                  status: "failed",
+                  ownerRequirementIds,
+                  command: priorProgram.test
+                },
+                hasher
+              });
+              behaviorProgramIntent = replan.intent;
+              construct = programBuilder.build({
+                episodeId,
+                text: input.text,
+                entailment: answerEntailment,
+                evidence: selectedEvidence,
+                createdAt: clock.now(),
+                programIntent: behaviorProgramIntent
+              });
+              const repairedResult = await deps.buildTest.executeProgram({ episodeId, construct, faultInjection: buildFaultInjection });
+              const priorAttempt = { build: priorResult.build, test: priorResult.test, artifacts: priorResult.artifacts };
+              const repairedAttempts = repairedResult.attempts?.length
+                ? repairedResult.attempts
+                : [{ build: repairedResult.build, test: repairedResult.test, artifacts: repairedResult.artifacts }];
+              buildTest = {
+                ...repairedResult,
+                repairAttempted: true,
+                repairApplied: repairedResult.passed,
+                attempts: [priorAttempt, ...repairedAttempts]
+              };
+              events.push(await append(eventFactory.create({
+                episodeId,
+                typeId: "ProgramRepaired",
+                payload: toJsonValue({
+                  selectionId: replan.selection.id,
+                  transformationId: replan.selection.transformationId,
+                  selectedTransformationIds: replan.selection.selectedTransformationIds,
+                  initialProgramId: priorProgram.id,
+                  repairedProgramId: construct.program?.id ?? null,
+                  passed: repairedResult.passed
+                })
+              })));
+            }
             await deps.storage.constructs.putBuildTest(episodeId, construct.id, buildTest);
             // Every attempt is observed: a failure replans the task graph, a repair becomes the construct's state, and
             // the attempt that passes completes what it proved. The adapter bounds this to one repair per turn.
@@ -4049,6 +4115,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         calibrationModels,
         calibrationTaskClass,
         requestedAuthority,
+        creativeRequestFrame,
         semanticInput: judged.selected.kind === "action-preview" && judged.selected.answer.trim()
           ? {
             schema: "scce.mouth.semantic_input.v1" as const,

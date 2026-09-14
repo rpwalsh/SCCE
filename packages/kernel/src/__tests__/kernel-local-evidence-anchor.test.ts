@@ -664,6 +664,45 @@ describe("kernel local evidence source anchoring", () => {
     }
   });
 
+  it("rebuilds and reruns a live owner behavior program after its observed probe fails", async () => {
+    const clock = createClock({ fixedTime: 6_565, stepMs: 1 });
+    const hasher = createHasher();
+    const fixture = storageFixture({ evidence: [] });
+    const attemptedPrograms: string[] = [];
+    const kernel = createScceKernel({
+      storage: fixture.storage,
+      files: { streamPath: async function* () { /* unused */ } },
+      buildTest: {
+        executeProgram: async ({ construct }): Promise<BuildTestResult> => {
+          const source = construct.program?.files.find(file => file.path === "src/program.mjs")?.content ?? "";
+          attemptedPrograms.push(source);
+          const passed = attemptedPrograms.length > 1;
+          return {
+            build: emptyCommandResult(),
+            test: passed ? emptyCommandResult() : { code: 1, stdout: "", stderr: "owner behavior failed", durationMs: 1 },
+            repairAttempted: false,
+            repairApplied: false,
+            passed,
+            artifacts: []
+          };
+        }
+      },
+      approvals: { isApproved: () => true, observePending: () => {}, policyPatch: () => ({ dryRunByDefault: false }) },
+      idFactory: createIdFactory({ clock, hasher, deterministicReplay: true }),
+      clock,
+      deterministicReplay: true
+    });
+
+    const result = await kernel.turn({ text: "Create a function double(x) such that double(3) returns 6, double(7) returns 14, double(-2) returns -4, and double(11) returns 22. Add and run tests proving it." });
+
+    expect(attemptedPrograms).toHaveLength(2);
+    expect(attemptedPrograms[0]).not.toEqual(attemptedPrograms[1]);
+    expect(attemptedPrograms[0]).toContain("return args.length === 1 ? args[0] : args");
+    expect(attemptedPrograms[1]).not.toContain("return args.length === 1 ? args[0] : args");
+    expect((result.buildTest as BuildTestResult | undefined)?.passed).toBe(true);
+    expect(fixture.events.some(event => event.typeId === "ProgramRepaired")).toBe(true);
+  });
+
   it("leaves TurnResult.taskReplanning absent when this turn's build/test passes", async () => {
     const clock = createClock({ fixedTime: 6_570, stepMs: 1 });
     const hasher = createHasher();

@@ -26,6 +26,21 @@ export interface DialogueCognitiveMemoryV2 {
   latest(conversationId: string): Promise<DialogueCognitiveStateV2 | undefined>;
 }
 
+/** Select the newest validated state available to a live turn.  Request metadata is a transport snapshot and can
+ * lag the durable head after reconnects or parallel tabs; it must never overwrite newer cognitive continuity. */
+export function preferDialogueCognitiveStateV2(input: {
+  conversationId: string;
+  metadataState?: DialogueCognitiveStateV2;
+  residentState?: DialogueCognitiveStateV2;
+  hasher: Hasher;
+}): DialogueCognitiveStateV2 | undefined {
+  const candidates = [input.metadataState, input.residentState]
+    .filter((state): state is DialogueCognitiveStateV2 => state !== undefined
+      && state.conversationId === input.conversationId
+      && isDialogueCognitiveStateV2(state, input.hasher));
+  return candidates.sort((left, right) => right.turnIndex - left.turnIndex)[0];
+}
+
 const DIALOGUE_STATE_SCHEMA_V2 = "scce.dialogue_cognitive_state.v2";
 
 export function createDialogueCognitiveMemoryV2(input: {

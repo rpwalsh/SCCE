@@ -9,13 +9,26 @@ import {
 import {
   createDialogueCognitiveMemoryV2,
   dialogueCognitiveStateFromInteractionRecordV2,
-  dialogueCognitiveStateInteractionRecordV2
+  dialogueCognitiveStateInteractionRecordV2,
+  preferDialogueCognitiveStateV2
 } from "../dialogue-cognitive-memory.js";
 import type { DialogueCognitiveStateV2 } from "../discourse-state.js";
 import type { InteractionStateRecord } from "../storage.js";
 import { createInMemoryDialogueMemoryStore } from "../dialogue-learning.js";
 
 describe("durable dialogue cognitive memory v2", () => {
+  it("prefers the newer validated durable state over a stale transport snapshot", () => {
+    const older = cognitiveState({ turnId: "turn.old", turnIndex: 1 });
+    const newer = cognitiveState({ turnId: "turn.new", turnIndex: 2 });
+
+    expect(preferDialogueCognitiveStateV2({
+      conversationId: older.conversationId,
+      metadataState: older,
+      residentState: newer,
+      hasher: createHasher()
+    })).toEqual(newer);
+  });
+
   it("round-trips a content-bound state without query concatenation", () => {
     const state = cognitiveState();
     const record = dialogueCognitiveStateInteractionRecordV2({ state, createdAt: 7, hasher: createHasher() });
