@@ -20,6 +20,18 @@
   ],
   "evaluationReferences": [
     {
+      "file": "tools/head-to-head/run.mjs",
+      "purpose": "Benchmark runner comparing SCCE and the local reference on the same workload suite. Measurement only.",
+      "endpoint": "127.0.0.1:11434",
+      "productReachable": false
+    },
+    {
+      "file": "tools/reference-comparison-large.mjs",
+      "purpose": "Expanded corpus-grounded comparison of SCCE and the local reference. Measurement only.",
+      "endpoint": "127.0.0.1:11434",
+      "productReachable": false
+    },
+    {
       "file": "tools/sealed-eval/harness/adapters/reference-ollama.mjs",
       "purpose": "Local language-model reference system for the sealed head-to-head. Runs as a separate process under the harness, answers the same sealed questions, and is scored against SCCE. Declared assistance: local-language-model.",
       "endpoint": "127.0.0.1:11434",
