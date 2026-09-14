@@ -3,7 +3,9 @@
 import type { KneserNeyModel } from "./kneser-ney.js";
 import { jsonRecord, namedSubjectAnchors } from "./kernel-answer-primitives.js";
 import { isRequestRequirementPattern } from "./request-requirement-learning.js";
-import type { LanguagePatternRecord } from "./storage.js";
+import type { LanguageContinuationPopulation, LanguagePatternRecord } from "./storage.js";
+
+const closedClassByPopulation = new WeakMap<object, Map<number, ReadonlySet<string> | null>>();
 
 /**
  * Closed-class words (function words, connectives) derived from the active
@@ -42,12 +44,13 @@ export function requestScaffoldingConstructions(
 export function requestClosedClassWords(input: {
   requestText: string;
   models?: readonly KneserNeyModel[];
+  continuationPopulation?: LanguageContinuationPopulation;
   patterns?: readonly LanguagePatternRecord[];
   authority?: string;
   limit?: number;
 }): Set<string> {
   const scaffolding = deriveClosedClassWords({ constructions: requestScaffoldingConstructions(input.patterns ?? [], input.authority) });
-  const corpus = deriveClosedClassWords({ models: input.models ?? [], limit: input.limit });
+  const corpus = deriveClosedClassWords({ models: input.models ?? [], continuationPopulation: input.continuationPopulation, limit: input.limit });
   const opening = input.requestText.normalize("NFC").toLocaleLowerCase().split(/[^\p{L}\p{M}\p{N}'’-]+/u).filter(Boolean).slice(0, 2);
   const out = new Set(scaffolding);
   for (const word of opening) if (corpus.has(word)) out.add(word);
@@ -62,10 +65,19 @@ export function requestClosedClassWords(input: {
 
 export function deriveClosedClassWords(input: {
   models?: readonly KneserNeyModel[];
+  continuationPopulation?: LanguageContinuationPopulation;
   constructions?: readonly { parts?: readonly { kind: string; surface?: string; [key: string]: unknown }[] }[];
   limit?: number;
 }): Set<string> {
   const limit = Math.max(1, input.limit ?? 96);
+  const populationWords = input.continuationPopulation
+    ? closedClassFromPopulation(input.continuationPopulation, limit)
+    : undefined;
+  if (populationWords) {
+    const out = new Set(populationWords);
+    addConstructionWords(out, input.constructions ?? []);
+    return out;
+  }
   // Ranked by how many distinct contexts a word follows, not by how often it occurs.
   //
   // Raw frequency was the proxy for closed class, and on a partially trained corpus it ranks the wrong things.
@@ -98,14 +110,41 @@ export function deriveClosedClassWords(input: {
   }
   const ranked = [...totals.entries()].sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]));
   const out = new Set(ranked.slice(0, limit).map(([symbol]) => symbol.toLocaleLowerCase()));
-  for (const construction of input.constructions ?? []) {
+  addConstructionWords(out, input.constructions ?? []);
+  return out;
+}
+
+function closedClassFromPopulation(population: LanguageContinuationPopulation, limit: number): ReadonlySet<string> | undefined {
+  if (population.modelCount <= 0) return undefined;
+  let byLimit = closedClassByPopulation.get(population);
+  if (!byLimit) {
+    byLimit = new Map();
+    closedClassByPopulation.set(population, byLimit);
+  }
+  if (byLimit.has(limit)) return byLimit.get(limit) ?? undefined;
+  const ranked = Object.entries(population.continuationCounts)
+    .filter(([symbol, contexts]) => isWordSymbol(symbol) && Number.isFinite(contexts) && contexts > 0)
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]));
+  if (ranked.length < limit) {
+    byLimit.set(limit, null);
+    return undefined;
+  }
+  const derived = new Set(ranked.slice(0, limit).map(([symbol]) => symbol.toLocaleLowerCase()));
+  byLimit.set(limit, derived);
+  return derived;
+}
+
+function addConstructionWords(
+  out: Set<string>,
+  constructions: readonly { parts?: readonly { kind: string; surface?: string; [key: string]: unknown }[] }[]
+): void {
+  for (const construction of constructions) {
     for (const part of construction.parts ?? []) {
       if (part.kind !== "literal") continue;
       const surface = String(part.surface ?? "").trim().toLocaleLowerCase();
       if (surface && !/\s/u.test(surface) && isWordSymbol(surface)) out.add(surface);
     }
   }
-  return out;
 }
 
 

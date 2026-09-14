@@ -8,7 +8,7 @@ import { createNgramMemoryCompiler, type NgramMemoryCompilation } from "./ngram-
 import { buildLanguageProfileClusters, type LanguageProfileCluster } from "./language.js";
 import { clamp01, featureSet, mean, symbolizeData, toJsonValue, weightedJaccard } from "./primitives.js";
 import type { EvidenceSpan, Hasher, JsonValue, LanguageCompetenceVector, LanguageProfile, SourceVersionId } from "./types.js";
-import type { LanguagePatternRecord, LanguageUnitRecord, NgramModelRecord, NgramObservation, SemanticFrameRecord } from "./storage.js";
+import type { LanguageContinuationPopulation, LanguagePatternRecord, LanguageUnitRecord, NgramModelRecord, NgramObservation, SemanticFrameRecord } from "./storage.js";
 import {
   hydrateLanguageConstructionPatterns,
   isLanguageConstructionPattern,
@@ -61,6 +61,8 @@ const composedJoinProgramCache = new WeakMap<
 
 export interface LanguageMemoryRuntimeState {
   models: KneserNeyModel[];
+  /** Exact identity-scoped continuation aggregate; absent means it was not measured. */
+  continuationPopulation?: LanguageContinuationPopulation;
   records: NgramModelRecord[];
   streamIds: string[];
   languageHints: string[];
@@ -1819,6 +1821,9 @@ function scopeLanguageMemoryStateWith(
   ownership: LanguageMemoryOwnership,
   meta: LanguageMemoryScopeMeta
 ): LanguageMemoryRuntimeState {
+  const continuationPopulation = meta.languageId && state.continuationPopulation?.languageId === meta.languageId
+    ? state.continuationPopulation
+    : undefined;
   const records = state.records.filter(record => ownership.record(modelProfileId(record), recordSourceSystem(record.modelJson)));
   const importedObservations = state.importedObservations.filter(record => ownership.record(observationProfileId(record), recordSourceSystem(record.metadata)));
   const importedUnits = state.importedUnits.filter(record => ownership.profile(record.profileId));
@@ -1878,6 +1883,7 @@ function scopeLanguageMemoryStateWith(
     + optionalNullRealizationModels.length
     + creativeEventCompatibilityModels.length
     + joinPrograms.length
+    + (continuationPopulation ? 1 : 0)
     + records.filter(isImportedLanguagePriorModel).length;
   const competenceVector = competenceFromRuntime({
     models,
@@ -1892,6 +1898,7 @@ function scopeLanguageMemoryStateWith(
   });
   return {
     models,
+    continuationPopulation,
     records,
     streamIds: uniqueStrings([
       ...records.map(record => record.streamId),
@@ -1935,6 +1942,7 @@ function scopeLanguageMemoryStateWith(
       degraded: importedLanguagePriorCount === 0,
       retained: {
         modelRecords: records.length,
+        continuationPopulations: continuationPopulation ? 1 : 0,
         observations: importedObservations.length,
         units: importedUnits.length,
         patterns: importedPatterns.length,
@@ -1950,6 +1958,7 @@ function scopeLanguageMemoryStateWith(
       },
       rejected: {
         modelRecords: state.records.length - records.length,
+        continuationPopulations: state.continuationPopulation && !continuationPopulation ? 1 : 0,
         observations: state.importedObservations.length - importedObservations.length,
         units: state.importedUnits.length - importedUnits.length,
         patterns: state.importedPatterns.length - importedPatterns.length,
@@ -1987,6 +1996,7 @@ export function markLanguageMemoryStateUnscoped(
   });
   return {
     models: [],
+    continuationPopulation: undefined,
     records: [],
     streamIds: [],
     languageHints: [],

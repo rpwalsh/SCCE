@@ -46,15 +46,49 @@ describe("surface language cache entry sizing", () => {
     expect(fixture.hydrations).toBe(1);
     expect(rightValue).toBe(leftValue);
   });
+
+  it("loads an identity continuation population once for a warm language cache entry", async () => {
+    const fixture = await runtimeFixture({ observations: 40, languageId: "language.fixture" });
+
+    await fixture.hydrate("language.fixture");
+    await fixture.hydrate("language.fixture");
+
+    expect(fixture.populationReads).toBe(1);
+  });
+
+  it("shares one population read across concurrent role hydrations of the same language", async () => {
+    const fixture = await runtimeFixture({ observations: 40, languageId: "language.fixture", gatePopulation: true });
+    const left = fixture.hydrateRole("role.left");
+    const right = fixture.hydrateRole("role.right");
+    fixture.releaseHydration();
+    const [leftValue, rightValue] = await Promise.all([left, right]);
+    expect(fixture.populationReads).toBe(1);
+    expect(leftValue.state.continuationPopulation).toBeDefined();
+    expect(rightValue.state.continuationPopulation).toBe(leftValue.state.continuationPopulation);
+    fixture.invalidate();
+    await fixture.hydrateRole("role.right");
+    expect(fixture.populationReads).toBe(2);
+  });
+
+  it("retries a failed population read on a later hydration", async () => {
+    const fixture = await runtimeFixture({ observations: 40, languageId: "language.fixture", failPopulationOnce: true });
+    expect((await fixture.hydrateRole("role.first")).state.continuationPopulation).toBeUndefined();
+    expect((await fixture.hydrateRole("role.second")).state.continuationPopulation).toBeDefined();
+    expect(fixture.populationReads).toBe(2);
+  });
 });
 
 async function runtimeFixture(options: {
   observations: number;
   retainedHeapBytes?: number;
   gateHydration?: boolean;
+  gatePopulation?: boolean;
+  failPopulationOnce?: boolean;
+  languageId?: string;
 }) {
   const retained: string[] = [];
   let hydrations = 0;
+  let populationReads = 0;
   let openGate = () => {};
   const gate = new Promise<void>(resolve => { openGate = resolve; });
   const profile: LanguageProfile = {
@@ -71,6 +105,12 @@ async function runtimeFixture(options: {
     brainImports: { active: async () => ({ activeImportRunIds: [] }) },
     evidence: { getEvidenceBatch: async () => [] },
     languageMemory: {
+      continuationPopulation: async ({ languageId }: { languageId: string }) => {
+        populationReads += 1;
+        if (options.gatePopulation) await gate;
+        if (options.failPopulationOnce && populationReads === 1) throw new Error("transient population read failure");
+        return { languageId, modelCount: 1, continuationCounts: {} };
+      },
       listNgramModels: async () => {
         hydrations += 1;
         if (options.retainedHeapBytes) retained.push("h".repeat(options.retainedHeapBytes));
@@ -94,17 +134,22 @@ async function runtimeFixture(options: {
     cacheMs: 10_000_000,
     profileLimit: 32,
     surfaceLanguageMemoryCacheMaxEntries: 100,
-    surfaceLanguageMemoryCacheMaxEstimatedBytes: CACHE_BUDGET_BYTES
+    surfaceLanguageMemoryCacheMaxEstimatedBytes: CACHE_BUDGET_BYTES,
+    languageResolver: () => ({ profile: () => options.languageId, corpus: () => options.languageId })
   });
   const cluster = await runtime.surfaceLanguageClusterCached("fixture language");
 
   return {
     get hydrations() { return hydrations; },
+    get populationReads() { return populationReads; },
     releaseHydration: () => openGate(),
+    invalidate: () => runtime.invalidate(),
+    hydrateRole: (roleId: string) =>
+      runtime.hydrateSurfaceLanguageMemoryCached(12, cluster, "language-scoped", roleId, "", { languageId: options.languageId }),
     hydrate: (languageId: string) =>
-      runtime.hydrateSurfaceLanguageMemoryCached(12, cluster, "language-scoped", undefined, "", { languageId }),
+      runtime.hydrateSurfaceLanguageMemoryCached(12, cluster, "language-scoped", undefined, "", { languageId: options.languageId ?? languageId }),
     resident: (languageId: string) =>
-      runtime.hydrateSurfaceLanguageMemoryCached(12, cluster, "language-scoped", undefined, "", { languageId, residentOnly: true })
+      runtime.hydrateSurfaceLanguageMemoryCached(12, cluster, "language-scoped", undefined, "", { languageId: options.languageId ?? languageId, residentOnly: true })
   };
 }
 

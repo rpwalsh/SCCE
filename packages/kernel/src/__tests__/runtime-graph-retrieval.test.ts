@@ -4,7 +4,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import { createRuntimeGraphRetrieval } from "../runtime-graph-retrieval.js";
 import { createClock, createHasher } from "../primitives.js";
-import type { ScceKernelDeps } from "../storage.js";
+import type { KneserNeyModel } from "../kneser-ney.js";
+import type { LanguageContinuationPopulation, ScceKernelDeps } from "../storage.js";
 import type {
   EvidenceSpan,
   GraphEdge,
@@ -315,7 +316,66 @@ describe("runtime hot graph retrieval", () => {
     expect(result.graph.nodes.map(row => String(row.id))).toEqual([String(node.id)]);
     expect(fixture.getSlice).toHaveBeenCalledTimes(1);
   });
+
+  it("does not reuse a warmed model-only function-unit cache when a continuation population is supplied", async () => {
+    const fixture = runtimeFixture(graphSlice([], [], []));
+    fixture.searchEvidence.mockResolvedValue([]);
+    const languageModels = [emptyLanguageModel()];
+
+    await fixture.runtime.graphForText("Who was Alpha Beta Gamma?", {
+      sourceAnchoringRequired: true,
+      languageModels
+    });
+    fixture.kernelTrace.mockClear();
+
+    await fixture.runtime.graphForText("What was Alpha Beta Gamma known for?", {
+      sourceAnchoringRequired: true,
+      languageModels,
+      continuationPopulation: continuationPopulation(["alpha", "beta"])
+    });
+
+    const searchedGroups = fixture.kernelTrace.mock.calls
+      .map(call => call[0])
+      .find(event => event.stage === "graph.resolve.anchor_evidence_search")
+      ?.support?.anchorFeatureGroups as string[][] | undefined;
+    const fullSubjectGroup = searchedGroups?.find(group => group.includes("anchor:bi:beta|gamma"));
+    expect(fullSubjectGroup).toBeDefined();
+    expect(fullSubjectGroup).not.toContain("anchor:bi:alpha|beta");
+  });
 });
+
+function emptyLanguageModel(): KneserNeyModel {
+  return {
+    schema: "scce.kneser_ney.v2",
+    order: 1,
+    discount: 0.75,
+    observedSymbolCount: 0,
+    vocabularySize: 0,
+    counts: {},
+    contextCounts: {},
+    continuationCounts: {},
+    contextContinuationTypes: {},
+    totalContinuationTypes: 0,
+    unigramCounts: {},
+    totalUnigramCount: 0,
+    vocabulary: [],
+    successorIndex: {},
+    successorOverflowCounts: {},
+    backoffWeights: {},
+    baseContinuations: []
+  };
+}
+
+function continuationPopulation(leading: readonly string[]): LanguageContinuationPopulation {
+  const continuationCounts: Record<string, number> = {};
+  for (let index = 0; index < 160; index += 1) {
+    const first = String.fromCharCode(97 + Math.floor(index / 26));
+    const second = String.fromCharCode(97 + (index % 26));
+    continuationCounts[`fixture${first}${second}`] = 10_000 - index;
+  }
+  for (let index = 0; index < leading.length; index += 1) continuationCounts[leading[index]!] = 20_000 - index;
+  return { languageId: "language.fixture", modelCount: 2_000, continuationCounts };
+}
 
 function runtimeFixture(
   graph: GraphSlice,

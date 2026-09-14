@@ -2,7 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { EvidenceSpan, RequestedAuthority } from "./types.js";
 import type { KneserNeyModel } from "./kneser-ney.js";
-import type { LanguagePatternRecord } from "./storage.js";
+import type { LanguageContinuationPopulation, LanguagePatternRecord } from "./storage.js";
 import { deriveClosedClassWords, requestClosedClassWords } from "./closed-class-words.js";
 import { namedSubjectAnchors } from "./kernel-answer-primitives.js";
 import {
@@ -52,6 +52,7 @@ export interface TurnSignalsInput {
   authority: RequestedAuthority;
   requirementField: TurnRequirementField;
   models: readonly KneserNeyModel[];
+  continuationPopulation?: LanguageContinuationPopulation;
   patterns: readonly LanguagePatternRecord[];
 }
 
@@ -81,12 +82,13 @@ export function createTurnSignals(input: TurnSignalsInput): TurnSignals {
       return (closedClass ??= requestClosedClassWords({
         requestText: input.requestText,
         models: input.models,
+        continuationPopulation: input.continuationPopulation,
         patterns: input.patterns,
         authority: input.authority
       }));
     },
     get functionSymbols(): ReadonlySet<string> {
-      return (functionSymbols ??= deriveClosedClassWords({ models: input.models }));
+      return (functionSymbols ??= deriveClosedClassWords({ models: input.models, continuationPopulation: input.continuationPopulation }));
     },
     quotesSource(evidence: readonly EvidenceSpan[]): boolean {
       const requestSequences = signals.sentenceSequences;

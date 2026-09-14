@@ -842,6 +842,12 @@ export interface LanguageProfileQuery {
   sourceVersionIds?: readonly SourceVersionId[];
 }
 
+export interface LanguageContinuationPopulation {
+  readonly languageId: string;
+  readonly modelCount: number;
+  readonly continuationCounts: Readonly<Record<string, number>>;
+}
+
 export interface LanguageMemoryStore {
   putNgramObservation(observation: NgramObservation): Promise<void>;
   putNgramObservationsBatch(observations: readonly NgramObservation[]): Promise<void>;
@@ -864,6 +870,8 @@ export interface LanguageMemoryStore {
    * 4GB server heap at warmup (verified live).
    */
   listNgramModels(query?: { streamId?: string; languageHint?: string; profileIds?: readonly string[]; sourceSystem?: string; limit?: number; maxTotalJsonBytes?: number }): Promise<NgramModelRecord[]>;
+  /** Complete continuation statistics of accessible models belonging to one learned language identity. */
+  continuationPopulation?(query: { languageId: string }): Promise<LanguageContinuationPopulation | undefined>;
   listNgramObservations(query?: { streamId?: string; languageHint?: string; profileIds?: readonly string[]; sourceSystem?: string; limit?: number }): Promise<NgramObservation[]>;
   listLanguageUnits(query?: { profileId?: string; profileIds?: readonly string[]; script?: string; sourceSystem?: string; limit?: number; maxTotalJsonBytes?: number }): Promise<LanguageUnitRecord[]>;
   listLanguagePatterns(query?: { profileId?: string; profileIds?: readonly string[]; sourceSystem?: string; languageId?: string; limit?: number; maxTotalJsonBytes?: number }): Promise<LanguagePatternRecord[]>;

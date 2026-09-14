@@ -1059,6 +1059,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         authority: requestedAuthority,
         requirementField,
         models: authorityLanguage.state.models ?? [],
+        continuationPopulation: authorityLanguage.state.continuationPopulation,
         patterns: turnRequestControlPatterns
       });
       const refreshTurnSignals = (): void => {
@@ -1067,6 +1068,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           authority: requestedAuthority,
           requirementField,
           models: authorityLanguage.state.models ?? [],
+          continuationPopulation: authorityLanguage.state.continuationPopulation,
           patterns: turnRequestControlPatterns
         });
       };
@@ -1309,6 +1311,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
               allowSemanticFrameEvidence,
               requestScaffolding: requestClosedClassWords(),
               languageModels: authorityLanguage.state.models ?? [],
+              continuationPopulation: authorityLanguage.state.continuationPopulation,
               // Reverted to conditional (was unconditionally true): this
               // flag doesn't just tighten anchoring, it switches
               // runtime-graph-retrieval.ts's graphForText onto an entirely
@@ -1424,6 +1427,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             allowSemanticFrameEvidence,
             requestScaffolding: requestClosedClassWords(),
             languageModels: authorityLanguage.state.models ?? [],
+            continuationPopulation: authorityLanguage.state.continuationPopulation,
             sourceAnchoringRequired: requestedAuthority !== "creative" || authorityProjection.scoreMargin < 0.12,
             residentOnly: false
           }).catch(() => undefined);

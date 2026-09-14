@@ -7005,6 +7005,7 @@ function mouthClosedClass(input: SpeakInput): Set<string> {
   return requestClosedClassWords({
     requestText: input.requestText ?? "",
     models: input.languageMemory?.models ?? [],
+    continuationPopulation: input.languageMemory?.continuationPopulation,
     patterns: input.languageMemory?.importedPatterns ?? [],
     authority: input.requestedAuthority
   });
@@ -7012,7 +7013,7 @@ function mouthClosedClass(input: SpeakInput): Set<string> {
 
 /** The language's own scaffolding, which is what separates the asked relation from the request's frame. Pure. */
 function mouthLanguageClosedClass(input: SpeakInput): Set<string> {
-  return deriveClosedClassWords({ models: input.languageMemory?.models ?? [] });
+  return deriveClosedClassWords({ models: input.languageMemory?.models ?? [], continuationPopulation: input.languageMemory?.continuationPopulation });
 }
 
 /** Whether the relation asked about can be required of a surface: only a learned closed class can name it. Pure. */
