@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
   codeRequestSignal,
+  COGNITIVE_OPERATOR_IDS,
   createClock,
   createCorrectionMemory,
   createEngineeringCorpusProjection,
@@ -138,10 +139,26 @@ describe("ProgramGraph runtime and artifact emission", () => {
     expect(program.hydration?.validations.every(record => record.command.args.every(arg => program.files.some(file => file.path === arg) || arg.startsWith("--")))).toBe(true);
   });
 
+  it("requires the shared program-planning operator instead of a private request category", () => {
+    const signal = codeRequestSignal("Create double(x) => 2x.");
+    expect(programIntentForTurn({
+      requestedAuthority: "program",
+      activeOperatorIds: [],
+      codeSignal: signal,
+      evidence: []
+    })).toBeUndefined();
+    expect(programIntentForTurn({
+      requestedAuthority: "factual",
+      activeOperatorIds: [COGNITIVE_OPERATOR_IDS.programPlanning],
+      codeSignal: signal,
+      evidence: []
+    })?.artifactKindIds).toEqual(["program.artifact.library"]);
+  });
+
   it("originates and executes a callable and causal test from an owner behavior requirement", () => {
     const request = "Create a function double(x) such that double(3) returns 6, double(7) returns 14, double(-2) returns -4, and double(11) returns 22. Add and run tests proving it.";
     const signal = codeRequestSignal(request);
-    const programIntent = required(programIntentForTurn({ requestedAuthority: "program", codeSignal: signal, evidence: [] }));
+    const programIntent = required(programIntentForTurn({ requestedAuthority: "program", activeOperatorIds: [COGNITIVE_OPERATOR_IDS.programPlanning], codeSignal: signal, evidence: [] }));
     const program = required(buildProgram(request, [], programIntent).program);
     const source = required(program.files.find(file => file.path === "src/program.mjs"));
     const test = required(program.files.find(file => file.path === "test/program.test.mjs"));
@@ -249,7 +266,7 @@ describe("ProgramGraph runtime and artifact emission", () => {
       "bind(\"b\", {\"n\": 2}); read(\"b\") => {\"n\": 2}"
     ].join("\n");
     const signal = codeRequestSignal(request);
-    const intent = required(programIntentForTurn({ requestedAuthority: "program", codeSignal: signal, evidence: [] }));
+    const intent = required(programIntentForTurn({ requestedAuthority: "program", activeOperatorIds: [COGNITIVE_OPERATOR_IDS.programPlanning], codeSignal: signal, evidence: [] }));
     expect(intent.statefulBehaviorRequirements).toHaveLength(4);
     const probedProgram = required(buildProgram(request, [], intent).program);
     const root = mkdtempSync(join(tmpdir(), "scce-owner-stateful-"));

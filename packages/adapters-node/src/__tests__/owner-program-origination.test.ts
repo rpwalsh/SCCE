@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   canonicalStringify,
+  COGNITIVE_OPERATOR_IDS,
   codeRequestSignal,
   createClock,
   createHasher,
@@ -35,7 +36,7 @@ describe("owner program origination", () => {
     const hasher = createHasher();
     const ids = createIdFactory({ clock: createClock({ fixedTime: 91_000, stepMs: 1 }), hasher, deterministicReplay: true });
     const signal = codeRequestSignal(request);
-    const initialIntent = required(programIntentForTurn({ requestedAuthority: "program", codeSignal: signal, evidence: [] }));
+    const initialIntent = required(programIntentForTurn({ requestedAuthority: "program", activeOperatorIds: [COGNITIVE_OPERATOR_IDS.programPlanning], codeSignal: signal, evidence: [] }));
     const builder = createProgramGraphBuilder({ idFactory: ids, hasher });
     const initialProgram = required(builder.build({
       episodeId: ids.episodeId(),

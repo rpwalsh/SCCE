@@ -2902,7 +2902,12 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         : undefined;
       // One structured intent per turn: derived from the projected authority and the structural code signal, read by
       // both builds and the planner, so a program-authority turn cannot end with no ProgramGraph.
-      const programIntent = programIntentForTurn({ requestedAuthority, codeSignal, evidence: selectedEvidence });
+      const programIntent = programIntentForTurn({
+        requestedAuthority,
+        activeOperatorIds: activeRequestOperatorIds(operatorActivations),
+        codeSignal,
+        evidence: selectedEvidence
+      });
       const candidateConstructSeed = programBuilder.build({ episodeId, text: input.text, entailment: answerEntailmentSeed, evidence: selectedEvidence, createdAt: clock.now(), programIntent });
       // Compiled once from whatever proof/graph fact this turn already bound, so proofAnswer() (and, downstream,
       // cognitive-planner.ts's one-hop draft) can attempt real generation, verified against what the request
