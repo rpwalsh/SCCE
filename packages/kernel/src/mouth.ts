@@ -6790,8 +6790,13 @@ function compactWholeWordSurface(text: string, maxLength: number): string {
 }
 
 function applySurfacePlanCorrections(plan: SurfacePlan, rules: readonly CorrectionRuleRecord[], influence: CorrectionStyleInfluence, hashText: (text: string) => string): SurfacePlan {
+  // A semantic-error report is feedback about a prior answer, never evidence
+  // that its asserted inverse is true.  Letting it forbid a factual surface
+  // would allow an owner to suppress a sourced answer merely by repeatedly
+  // denying it.  It remains a durable, inspectable boundary observation for
+  // proof/review; only a presentation note may constrain realization here.
   const forbiddenForms = rules
-    .filter(rule => (rule.ruleKind === "semantic_error" || rule.ruleKind === "surface_note") && rule.pattern.trim())
+    .filter(rule => rule.ruleKind === "surface_note" && rule.pattern.trim())
     .map(rule => ({ id: `surface.form:${hashText(rule.pattern).slice(0, 16)}`, ruleId: rule.id, text: rule.pattern, textHash: hashText(rule.pattern), ruleKind: rule.ruleKind }))
     .slice(0, 64);
   const correctedPoints = plan.orderedPoints.map(point => {
