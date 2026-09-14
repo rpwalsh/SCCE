@@ -31,6 +31,7 @@ describe("corpus identity arbiter", () => {
     prime({ closedClass: ["what", "is"], identities: ["moby dick"] });
 
     expect(corpusNamedIdentities("What is Moby Dick?")).toEqual(["moby dick"]);
+    expect(corpusNamedIdentities("What is Moby-Dick?")).toEqual(["moby dick"]);
     expect(corpusNamedRuns("What is Moby Dick?")).toEqual(["moby dick"]);
   });
 
