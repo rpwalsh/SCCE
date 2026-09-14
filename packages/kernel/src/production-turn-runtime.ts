@@ -559,7 +559,7 @@ export function createProductionTurnRuntime(options: {
     sessionEvidenceFromMetadata, ftrlShadowRankingForFeatures
   } = graphRetrieval;
   const {
-    evidenceOwnedLanguageClusterCached, hydrateSurfaceLanguageMemoryCached, requestSemanticFrames,
+    evidenceOwnedLanguageClusterCached, hydrateSurfaceLanguageMemoryCached, requestSemanticFrames, warmSurfaceLanguageMemory,
     sourceOwnedLanguageClusterForAlias, sourceOwnedLanguageProfilesCached, surfaceLanguageClusterCached,
     surfaceLanguageProfilesCached, uniqueRecordsById
   } = surfaceLanguageRuntime;
@@ -782,6 +782,11 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const documentGenerationRequest = documentGenerationRequestFromMetadata(input.metadata);
       const fastRuntimeBudget = fastRuntimeBudgetRequested(input.metadata);
       const runtimeDeadline = executableRuntimeDeadlineFromMetadata(input.metadata);
+      // The streaming server opens an NDJSON response and emits its accepted
+      // frame before invoking the kernel. Its deadline measures that first
+      // visible frame, not permission to stop thinking. Once that frame is
+      // live, cognition may continue while progress is streamed to the user.
+      const initialResponseAlreadyVisible = Boolean(input.runtimeControl?.onProgress);
       const deadlineCheckpoint = (phase: string, requiredMs: number): RuntimeDeadlineDecision | undefined => {
         input.runtimeControl?.onProgress?.({
           phase,
@@ -793,16 +798,24 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             ? reason
             : new Error(`runtime turn aborted at ${phase}`);
         }
-        const decision = runtimeDeadline?.checkpoint(phase, requiredMs);
+        const measuredDecision = runtimeDeadline?.checkpoint(phase, requiredMs);
+        const decision = measuredDecision && initialResponseAlreadyVisible
+          ? { ...measuredDecision, allowed: true }
+          : measuredDecision;
         const deadlineMetadata = runtimeDeadline?.metadata;
-        if (decision && deadlineMetadata) {
+        if (measuredDecision && deadlineMetadata) {
           kernelTrace({
             stage: "runtime.deadline.check",
             label: phase,
-            durationMs: decision.observedAtMonotonicMs - deadlineMetadata.startedMonotonicMs,
+            durationMs: measuredDecision.observedAtMonotonicMs - deadlineMetadata.startedMonotonicMs,
             // remainingMs is unreadable without the window it counts down from.
-            support: { ...decision, budgetMs: deadlineMetadata.budgetMs },
-            ...(decision.allowed ? {} : { warnings: [`deadline guard did not admit ${phase}`] })
+            support: {
+              ...measuredDecision,
+              budgetMs: deadlineMetadata.budgetMs,
+              initialResponseAlreadyVisible,
+              cognitionContinues: initialResponseAlreadyVisible
+            },
+            ...(measuredDecision.allowed || initialResponseAlreadyVisible ? {} : { warnings: [`deadline guard did not admit ${phase}`] })
           });
         }
         return decision;
@@ -852,7 +865,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         ? selectLanguageProfileForSurface(selectedSurfaceCluster.members, input.text) ?? selectedSurfaceCluster.members[0]
         : undefined;
       const authorityLanguageStarted = Date.now();
-      // The durable hydration is a full scan and must not run past the turn's own budget.
+      // The durable hydration is a full scan. Before a visible response exists it
+      // is budgeted; on the streamed path it may continue behind progress frames.
       //
       // The resident language cache is keyed by surface cluster and startup warms the clusters it saw, so the first
       // request landing on a different cluster misses it and escalates to the durable scan. Measured cold, in three
@@ -872,13 +886,14 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         counts: { identities: languageIdentityRuntime.identities().length, coverage: requestLanguage?.coverage ?? 0 },
         support: { languageId: requestLanguageId ?? null, script: requestLanguage?.identity.script ?? null, closedClass: requestLanguage?.identity.closedClass.slice(0, 6).map(row => row.word) ?? [] }
       });
-      // What the turn can actually afford to wait, not a fixed constant. The hydration continues and caches itself
-      // either way (single-flight, see surface-language-runtime), so time spent waiting past what the turn has left
-      // buys nothing: a coding turn spent 8s here, received zero models, and then had none of the 5s its build
-      // needed. Whatever a reservation holds back is already excluded from this.
+      // Before first visibility, reserve room for realization. Once the stream
+      // has emitted its accepted frame, this is no longer a response cutoff:
+      // the user sees progress while the same turn builds its language state.
       const languageHydrationBudgetMs = Math.min(
         LANGUAGE_MEMORY_DURABLE_ESCALATION_MS,
-        Math.max(0, runtimeDeadline?.computeRemainingMs() ?? LANGUAGE_MEMORY_DURABLE_ESCALATION_MS)
+        initialResponseAlreadyVisible
+          ? LANGUAGE_MEMORY_DURABLE_ESCALATION_MS
+          : Math.max(0, runtimeDeadline?.computeRemainingMs() ?? LANGUAGE_MEMORY_DURABLE_ESCALATION_MS)
       );
       const baseAuthorityLanguage = await evaluationComponent(
         "language-memory",
@@ -2445,9 +2460,10 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           (bundle.creativeEvents?.length ?? 0) > 0
         )
       );
-      // Durable candidate-stage hydration ran 54s on a cold turn AFTER the
-      // deadline had passed -- the checks only ran once it finished. Consult
-      // the deadline first; past-budget turns hydrate resident-only.
+      // Before first visibility, expensive candidate-stage hydration remains
+      // resident-only when it cannot fit the response budget. A streamed turn
+      // has already become visible, so it may finish this work while reporting
+      // progress rather than degrading its reasoning state.
       // requiredMs is the honest worst cost: a cold durable hydrate loads
       // whole ngram model blobs (measured 55s); admitting it on a 1.5s
       // estimate let a 10s turn run 61s.
@@ -2493,14 +2509,14 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           roleHydrationOptions
         ).catch(error => {
           if (roleHydrationOptions.residentOnly !== true || !isResidentRuntimeNotWarmError(error)) throw error;
-          void hydrateSurfaceLanguageMemoryCached(
+          warmSurfaceLanguageMemory(
             12,
             selectedSurfaceCluster,
             "role-output-language-unresolved",
             preferredSurfaceCorpusRole,
             input.text,
             { residentOnly: false, languageId: requestLanguageId }
-          ).catch(() => undefined);
+          );
           kernelTrace({
             stage: "runtime.candidates.language_role.deferred",
             label: "kernel.turn",

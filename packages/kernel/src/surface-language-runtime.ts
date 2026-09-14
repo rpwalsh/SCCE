@@ -818,17 +818,62 @@ export function createSurfaceLanguageRuntime(options: {
     if (hydrationOptions.residentOnly) {
       return residentRuntimeNotWarm(`language-memory:${unscopedReason}`);
     }
-    const value = await hydrateSurfaceLanguageMemory(limit, cluster, unscopedReason, preferredCorpusRoleId, preferredSurface);
-    // An explicit unscoped decision is reusable; missing data for a selected language must remain retryable.
-    const resolvedUnscoped = !cluster && !preferredCorpusRoleId && value.state.scope.mode === "unscoped";
-    if (generation === languageMemoryGeneration && (resolvedUnscoped || hydrationWorthCaching(value))) boundedSurfaceLanguageMemoryCacheSet(
-      surfaceLanguageMemoryCache,
-      cacheKey,
-      { limit, loadedAt: now, value, approxEstimatedBytes: approximateHydrationEstimatedBytes(value) },
-      surfaceLanguageMemoryCacheMaxEntries,
-      surfaceLanguageMemoryCacheMaxEstimatedBytes
-    );
-    return value;
+    // Cluster/role hydrations use the same single-flight map as language-id
+    // hydrations. Without this, two turns selecting the same cluster while the
+    // first durable read is in progress each fan out their own database work.
+    // Hydration content is surface-independent; rescope each waiter after the
+    // shared base finishes so concurrent surfaces do not borrow one another's
+    // selected profile.
+    let pending = surfaceLanguageMemoryInFlight.get(cacheKey);
+    if (!pending) {
+      pending = hydrateSurfaceLanguageMemory(limit, cluster, unscopedReason, preferredCorpusRoleId, "");
+      void pending.then(value => {
+        // An explicit unscoped decision is reusable; missing data for a
+        // selected language must remain retryable.
+        const resolvedUnscoped = !cluster && !preferredCorpusRoleId && value.state.scope.mode === "unscoped";
+        if (generation === languageMemoryGeneration && (resolvedUnscoped || hydrationWorthCaching(value))) boundedSurfaceLanguageMemoryCacheSet(
+          surfaceLanguageMemoryCache,
+          cacheKey,
+          { limit, loadedAt: clock.now(), value, approxEstimatedBytes: approximateHydrationEstimatedBytes(value) },
+          surfaceLanguageMemoryCacheMaxEntries,
+          surfaceLanguageMemoryCacheMaxEstimatedBytes
+        );
+      }, () => undefined).finally(() => {
+        if (surfaceLanguageMemoryInFlight.get(cacheKey) === pending) surfaceLanguageMemoryInFlight.delete(cacheKey);
+      });
+      surfaceLanguageMemoryInFlight.set(cacheKey, pending);
+    }
+    const value = await pending;
+    return preferredCorpusRoleId && preferredSurface.trim() && value.rescopeForSurface
+      ? { ...value, ...value.rescopeForSurface(preferredSurface) }
+      : value;
+  }
+
+  /**
+   * Start durable language hydration after the caller has returned its
+   * resident/fast-path result. The returned promise is intentionally not
+   * exposed: callers must not make a user response wait for durable loading.
+   * The shared in-flight map makes repeated warm requests one database load.
+   */
+  function warmSurfaceLanguageMemory(
+    limit = 36,
+    cluster?: LanguageProfileCluster,
+    unscopedReason = "deferred-language-warm",
+    preferredCorpusRoleId?: CorpusRoleId,
+    preferredSurface = "",
+    hydrationOptions: ResidentOnlyOptions = {}
+  ): void {
+    const durableOptions = { ...hydrationOptions, residentOnly: false };
+    setTimeout(() => {
+      void hydrateSurfaceLanguageMemoryCached(
+        limit,
+        cluster,
+        unscopedReason,
+        preferredCorpusRoleId,
+        preferredSurface,
+        durableOptions
+      ).catch(() => undefined);
+    }, 0);
   }
 
   // Selection aggregates tied same-language clusters per request, so the cluster a turn names is rarely the one
@@ -1203,6 +1248,7 @@ export function createSurfaceLanguageRuntime(options: {
   return {
     languageMemorySummary,
     hydrateSurfaceLanguageMemoryCached,
+    warmSurfaceLanguageMemory,
     residentSurfaceLanguageMemory,
     surfaceLanguageProfilesCached,
     sourceOwnedLanguageProfilesCached,
