@@ -3802,6 +3802,19 @@ function creativeCandidatesFromFrames(
       ...generationImportedPriorIds(generation),
       ...priorPieces.filter(piece => containsSurface(text, piece.text) || overlapsClaim(piece.text, text)).map(piece => piece.id)
     ]);
+    const generatedSentenceCandidates = creativeSurfaceSentenceUnits(text)
+      .map((unit, index): SentenceCandidate => ({
+        unitId: `disc:creative:${variant.id}:${index}`,
+        role: unit.role,
+        text: unit.text,
+        generation,
+        coveredRequiredTerms: stringArrayFromJson(jsonRecord(generation.audit).requiredTermIdsCovered),
+        coveredPropositionAtoms: stringArrayFromJson(jsonRecord(generation.audit).propositionAtomIdsCovered),
+        importedPriorIds: generationImportedPriorIds(generation),
+        orderUsage: generation.orderUsage,
+        preservationScore: semanticPreservation({ text: unit.text, plan, entailment: input.entailment }).score,
+        stopReason: generation.stoppedBy
+      }));
     out.push({
       id: `candidate:generated:creative:${variant.id}`,
       style: variant.style,
@@ -3813,7 +3826,7 @@ function creativeCandidatesFromFrames(
       importedPieceIds,
       generation,
       discoursePlan,
-      sentenceCandidates: [{
+      sentenceCandidates: generatedSentenceCandidates.length > 0 ? generatedSentenceCandidates : [{
         unitId: `disc:creative:${variant.id}`,
         role: "answer",
         text,
@@ -3837,6 +3850,14 @@ function creativeCandidatesFromFrames(
     });
   }
   return out;
+}
+
+/** Preserve the generated surface while exposing its discourse units to the trace and judge. */
+export function creativeSurfaceSentenceUnits(text: string): Array<{ text: string; role: "answer" | "support" }> {
+  return splitSurfaceSentences(text)
+    .map(sentence => tidySurface(sentence))
+    .filter(Boolean)
+    .map((sentence, index) => ({ text: sentence, role: index === 0 ? "answer" : "support" }));
 }
 
 function unitIntervalJsonNumber(value: JsonValue | undefined): number | undefined {

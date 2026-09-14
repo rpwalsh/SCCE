@@ -1071,7 +1071,12 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         requirementField,
         models: authorityLanguage.state.models ?? [],
         continuationPopulation: authorityLanguage.state.continuationPopulation,
-        patterns: turnRequestControlPatterns
+        // The request-language state is the complete learned control surface for
+        // this turn.  Passing only the corrections store here silently discarded
+        // request-frame constructions that were already admitted by the active
+        // language profile, so learned openers (and the resulting closed class)
+        // never reached retrieval or answer realization.
+        patterns: requestRequirementLanguageState.importedPatterns
       });
       const refreshTurnSignals = (): void => {
         turnSignals = createTurnSignals({
@@ -1080,7 +1085,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           requirementField,
           models: authorityLanguage.state.models ?? [],
           continuationPopulation: authorityLanguage.state.continuationPopulation,
-          patterns: turnRequestControlPatterns
+          patterns: requestRequirementLanguageState.importedPatterns
         });
       };
       const corpusFunctionSymbols = () => turnSignals.functionSymbols;

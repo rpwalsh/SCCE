@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
-import { enqueueDialoguePersistence, dialoguePersistenceTailsSizeForTest } from "../routes.js";
+import { awaitDialoguePersistence, enqueueDialoguePersistence, dialoguePersistenceTailsSizeForTest } from "../routes.js";
 
 // CRITICAL fix: dialoguePersistenceTails self-cleans each entry once its
 // chain resolves (bounded by concurrent in-flight conversations, not
@@ -60,5 +60,25 @@ describe("enqueueDialoguePersistence (real bounded map size)", () => {
     await second;
     expect(secondRan).toBe(true);
     for (const d of pending.slice(1)) d.resolve();
+  });
+
+  it("holds an immediate follow-up until the prior dialogue shadow is durable", async () => {
+    const pending = deferred<void>();
+    const started = deferred<void>();
+    let persisted = false;
+    enqueueDialoguePersistence("conversation.causal-followup", async () => {
+      started.resolve();
+      await pending.promise;
+      persisted = true;
+    });
+
+    const followup = awaitDialoguePersistence("conversation.causal-followup");
+    await Promise.resolve();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    await started.promise;
+    expect(persisted).toBe(false);
+    pending.resolve();
+    await followup;
+    expect(persisted).toBe(true);
   });
 });

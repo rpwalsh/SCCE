@@ -619,12 +619,18 @@ export interface ProgramConstructIntent {
   provenanceEvidenceIds?: string[];
   /** Owner-authoritative executable examples projected once from explicit code structure. */
   behaviorRequirements?: ProgramBehaviorRequirement[];
+  /** Ordered owner-authoritative state traces projected from explicit call/result structure. */
+  statefulBehaviorRequirements?: ProgramStatefulBehaviorRequirement[];
   /** Internal hypothesis state; owner requirements do not select their own implementation. */
   behaviorImplementationPhase?: "probe" | "selected";
   /** Bounded hypotheses produced after an observed executable failure. */
   behaviorTransformationCandidates?: import("./program-transformation-search.js").ProgramTransformationCandidate[];
   /** Hypotheses selected for realization after fitting the executable obligations. */
   selectedBehaviorTransformationIds?: string[];
+  /** Bounded state-transition hypotheses produced only after executable failure. */
+  statefulBehaviorTransformationCandidates?: import("./state-transition-search.js").StateTransitionCandidate[];
+  /** The state-transition hypotheses selected for concrete realization. */
+  selectedStatefulBehaviorTransformationIds?: string[];
   metadata?: JsonValue;
 }
 
@@ -637,6 +643,21 @@ export interface ProgramBehaviorRequirement {
   /** Held-out examples may verify a model but may not participate in fitting it. */
   readonly verificationRole: "fit" | "held_out";
   /** Exact source separator retained as an opaque observed relation surface. */
+  readonly relationSurface: string;
+  readonly sourceSpan: { readonly charStart: number; readonly charEnd: number };
+}
+
+/** A source-bound ordered behavior trace. Callable IDs retain source identity; their roles are inferred by search. */
+export interface ProgramStatefulBehaviorRequirement {
+  readonly id: string;
+  readonly requestHash: string;
+  readonly invocations: Array<{
+    readonly callableId: string;
+    readonly arguments: JsonValue[];
+    readonly sourceSpan: { readonly charStart: number; readonly charEnd: number };
+  }>;
+  readonly expectedResult: JsonValue;
+  readonly verificationRole: "fit" | "held_out";
   readonly relationSurface: string;
   readonly sourceSpan: { readonly charStart: number; readonly charEnd: number };
 }

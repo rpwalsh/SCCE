@@ -1,11 +1,12 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import type { EvidenceSpan, Hasher, ProgramConstructIntent, ProgramGraph, RequestedAuthority } from "./types.js";
+import type { EvidenceSpan, Hasher, ProgramConstructIntent, ProgramGraph, ProgramStatefulBehaviorRequirement, RequestedAuthority } from "./types.js";
 import { codeRequestRecognized, type CodeRequestSignal } from "./code-request.js";
 import { hasEngineeringCorpusMetadata } from "./program.js";
 import { canonicalStringify, createHasher, toJsonValue } from "./primitives.js";
 import { validateProgramGraphHydration } from "./program-runtime.js";
 import { searchProgramTransformations } from "./program-transformation-search.js";
+import { searchStateTransitions } from "./state-transition-search.js";
 
 /**
  * The turn's structured program intent, derived once from what the turn already decided: the projected
@@ -31,7 +32,8 @@ export function programIntentForTurn(input: {
     constraints: engineering.length ? ["program.constraint.source_backed"] : [],
     provenanceEvidenceIds: engineering.map(span => String(span.id)),
     behaviorRequirements: input.codeSignal.behaviorRequirements,
-    ...(input.codeSignal.behaviorRequirements.length ? { behaviorImplementationPhase: "probe" as const } : {}),
+    statefulBehaviorRequirements: input.codeSignal.statefulBehaviorRequirements,
+    ...(input.codeSignal.behaviorRequirements.length || input.codeSignal.statefulBehaviorRequirements.length ? { behaviorImplementationPhase: "probe" as const } : {}),
     metadata: toJsonValue({
       requestedAuthority: input.requestedAuthority,
       demand: input.codeSignal.demand,
@@ -54,7 +56,7 @@ export interface OwnerBehaviorValidationFailure {
 
 export interface OwnerBehaviorRepairSelection {
   readonly id: string;
-  readonly transformationId: "program.transformation.expression_search.v1";
+  readonly transformationId: "program.transformation.expression_search.v1" | "program.transformation.state_transition_search.v1";
   readonly failureObservationId: string;
   readonly ownerRequirementIds: readonly string[];
   readonly candidateIds: readonly string[];
@@ -80,7 +82,10 @@ export function replanOwnerBehaviorProgramIntent(input: {
   if (canonicalStringify(input.failure.command) !== canonicalStringify(input.program.test)) {
     throw new Error("owner behavior failure did not execute the ProgramGraph test command");
   }
-  const intentRequirementIds = [...new Set((input.intent.behaviorRequirements ?? []).map(requirement => requirement.id))].sort(compareCanonical);
+  const scalarRequirements = input.intent.behaviorRequirements ?? [];
+  const statefulRequirements = input.intent.statefulBehaviorRequirements ?? [];
+  if (scalarRequirements.length && statefulRequirements.length) throw new Error("owner behavior replan accepts one behavior representation per intent");
+  const intentRequirementIds = [...new Set([...scalarRequirements, ...statefulRequirements].map(requirement => requirement.id))].sort(compareCanonical);
   const hydratedRequirementIds = [...new Set(hydration.ownerRequirementIds ?? [])].sort(compareCanonical);
   const failedRequirementIds = [...new Set(input.failure.ownerRequirementIds)].sort(compareCanonical);
   if (!intentRequirementIds.length
@@ -88,24 +93,13 @@ export function replanOwnerBehaviorProgramIntent(input: {
     || canonicalStringify(intentRequirementIds) !== canonicalStringify(failedRequirementIds)) {
     throw new Error("owner behavior failure requirements are not bound to the program intent and hydration");
   }
-  const transformationSearch = searchProgramTransformations(input.intent.behaviorRequirements ?? []);
-  const requiredCallables = [...new Set((input.intent.behaviorRequirements ?? []).map(requirement => requirement.callableId))].sort(compareCanonical);
-  const selectedCallables = transformationSearch.selected.map(candidate => candidate.callableId).sort(compareCanonical);
-  if (canonicalStringify(requiredCallables) !== canonicalStringify(selectedCallables)) {
-    throw new Error("owner behavior replan found no admissible transformation for every required callable");
-  }
-  for (const candidate of transformationSearch.selected) {
-    const fitIds = (input.intent.behaviorRequirements ?? [])
-      .filter(requirement => requirement.callableId === candidate.callableId && requirement.verificationRole === "fit")
-      .map(requirement => requirement.id)
-      .sort(compareCanonical);
-    if (candidate.fitMeanSquaredError > 1e-12
-      || canonicalStringify(candidate.predictedFitObligationIds) !== canonicalStringify(fitIds)) {
-      throw new Error(`owner behavior replan found no exact transformation for callable: ${candidate.callableId}`);
-    }
-  }
-  const candidateIds = transformationSearch.candidates.map(candidate => candidate.id);
-  const selectedTransformationIds = transformationSearch.selected.map(candidate => candidate.id);
+  const scalarSearch = scalarRequirements.length ? searchProgramTransformations(scalarRequirements) : undefined;
+  const statefulSearch = statefulRequirements.length ? searchStateTransitions(statefulScenarios(statefulRequirements)) : undefined;
+  if (scalarSearch) validateScalarSearch(scalarRequirements, scalarSearch);
+  if (statefulSearch) validateStatefulSearch(statefulRequirements, statefulSearch);
+  const candidateIds = scalarSearch?.candidates.map(candidate => candidate.id) ?? statefulSearch?.candidates.map(candidate => candidate.id) ?? [];
+  const selectedTransformationIds = scalarSearch?.selected.map(candidate => candidate.id) ?? statefulSearch?.selected.map(candidate => candidate.id) ?? [];
+  const transformationId = scalarSearch ? "program.transformation.expression_search.v1" as const : "program.transformation.state_transition_search.v1" as const;
   const hasher = input.hasher ?? createHasher();
   const selection: OwnerBehaviorRepairSelection = {
     id: `owner.behavior.repair_selection.${hasher.digestHex(canonicalStringify({
@@ -115,7 +109,7 @@ export function replanOwnerBehaviorProgramIntent(input: {
       candidateIds,
       selectedTransformationIds
     })).slice(0, 40)}`,
-    transformationId: "program.transformation.expression_search.v1",
+    transformationId,
     failureObservationId: input.failure.observationId,
     ownerRequirementIds: intentRequirementIds,
     candidateIds,
@@ -126,8 +120,13 @@ export function replanOwnerBehaviorProgramIntent(input: {
     intent: {
       ...input.intent,
       behaviorImplementationPhase: "selected",
-      behaviorTransformationCandidates: transformationSearch.candidates.map(candidate => ({ ...candidate })),
-      selectedBehaviorTransformationIds: selectedTransformationIds,
+      ...(scalarSearch ? {
+        behaviorTransformationCandidates: scalarSearch.candidates.map(candidate => ({ ...candidate })),
+        selectedBehaviorTransformationIds: selectedTransformationIds
+      } : {
+        statefulBehaviorTransformationCandidates: statefulSearch!.candidates.map(candidate => ({ ...candidate })),
+        selectedStatefulBehaviorTransformationIds: selectedTransformationIds
+      }),
       constraints: [...new Set([...(input.intent.constraints ?? []), "program.constraint.retry_after_failed_owner_validation"])],
       metadata: toJsonValue({
         prior: input.intent.metadata ?? null,
@@ -144,6 +143,31 @@ export function replanOwnerBehaviorProgramIntent(input: {
       })
     }
   };
+}
+
+function statefulScenarios(requirements: readonly ProgramStatefulBehaviorRequirement[]) {
+  return requirements.map(requirement => ({
+    id: requirement.id,
+    invocations: requirement.invocations.map(invocation => ({ operationId: invocation.callableId, arguments: invocation.arguments })),
+    expectedResult: requirement.expectedResult,
+    verificationRole: requirement.verificationRole
+  }));
+}
+
+function validateScalarSearch(requirements: readonly NonNullable<ProgramConstructIntent["behaviorRequirements"]>[number][], search: ReturnType<typeof searchProgramTransformations>): void {
+  const requiredCallables = [...new Set(requirements.map(requirement => requirement.callableId))].sort(compareCanonical);
+  const selectedCallables = search.selected.map(candidate => candidate.callableId).sort(compareCanonical);
+  if (canonicalStringify(requiredCallables) !== canonicalStringify(selectedCallables)) throw new Error("owner behavior replan found no admissible transformation for every required callable");
+  for (const candidate of search.selected) {
+    const fitIds = requirements.filter(requirement => requirement.callableId === candidate.callableId && requirement.verificationRole === "fit").map(requirement => requirement.id).sort(compareCanonical);
+    if (candidate.fitMeanSquaredError > 1e-12 || canonicalStringify(candidate.predictedFitObligationIds) !== canonicalStringify(fitIds)) throw new Error(`owner behavior replan found no exact transformation for callable: ${candidate.callableId}`);
+  }
+}
+
+function validateStatefulSearch(requirements: readonly ProgramStatefulBehaviorRequirement[], search: ReturnType<typeof searchStateTransitions>): void {
+  const selected = search.selected[0];
+  const fitIds = requirements.filter(requirement => requirement.verificationRole === "fit").map(requirement => requirement.id).sort(compareCanonical);
+  if (!selected || selected.fitError > 0 || canonicalStringify(selected.predictedFitIds) !== canonicalStringify(fitIds)) throw new Error("owner behavior replan found no exact state transition transformation");
 }
 
 function compareCanonical(left: string, right: string): number {
