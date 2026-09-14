@@ -2672,9 +2672,15 @@ function executableBehaviorTransformationFunction(
   const candidate = candidates.find(item => item.callableId === callableId && selectedIds.includes(item.id));
   if (!candidate) throw new Error(`selected owner behavior has no transformation for callable: ${callableId}`);
   const argumentCount = candidate.preconditions.find(precondition => precondition.kind === "argument_count")?.count;
-  if (!argumentCount || argumentCount > 3) throw new Error(`selected owner behavior has invalid numeric arity: ${callableId}`);
+  if (!argumentCount || argumentCount > 3) throw new Error(`selected owner behavior has invalid arity: ${callableId}`);
+  const numericArgumentIndexes = candidate.preconditions
+    .filter((precondition): precondition is Extract<typeof precondition, { kind: "finite_numeric_argument" }> => precondition.kind === "finite_numeric_argument")
+    .map(precondition => precondition.index);
+  const numericGuard = numericArgumentIndexes.length
+    ? ` || ![${numericArgumentIndexes.map(index => `args[${index}]`).join(", ")}].every(value => typeof value === "number" && Number.isFinite(value))`
+    : "";
   return `export function ${callableId}(...args) {
-  if (args.length !== ${argumentCount} || !args.every(value => typeof value === "number" && Number.isFinite(value))) throw new TypeError(${JSON.stringify(`${callableId} requires ${argumentCount} finite numeric argument${argumentCount === 1 ? "" : "s"}`)});
+  if (args.length !== ${argumentCount}${numericGuard}) throw new TypeError(${JSON.stringify(`program.argument_contract:${callableId}:${argumentCount}`)});
   return ${renderProgramExpression(candidate.producedIr)};
 }`;
 }
@@ -2717,6 +2723,12 @@ function renderStatefulLiteral(value: unknown): string {
 function renderProgramExpression(expression: ProgramExpression): string {
   if (expression.kind === "argument") return `args[${expression.index}]`;
   if (expression.kind === "literal") return JSON.stringify(expression.value);
+  if (expression.kind === "value") return JSON.stringify(expression.value);
+  if (expression.kind === "member") return `${renderProgramExpression(expression.subject)}[${JSON.stringify(expression.key)}]`;
+  if (expression.kind === "sequence") return `[${expression.items.map(renderProgramExpression).join(", ")}]`;
+  if (expression.kind === "mapping") return `Object.fromEntries([${expression.entries.map(entry => `[${JSON.stringify(entry.key)}, ${renderProgramExpression(entry.value)}]`).join(", ")}])`;
+  if (expression.kind === "cardinality") return `${renderProgramExpression(expression.operand)}.length`;
+  if (expression.kind === "equivalent") return `JSON.stringify(${renderProgramExpression(expression.left)}) === JSON.stringify(${renderProgramExpression(expression.right)})`;
   if (expression.kind === "unary") return `(-${renderProgramExpression(expression.operand)})`;
   const operator = expression.operator === "add" ? "+"
     : expression.operator === "subtract" ? "-"

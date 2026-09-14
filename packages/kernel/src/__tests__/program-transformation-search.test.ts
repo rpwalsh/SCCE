@@ -65,6 +65,32 @@ describe("program transformation search", () => {
     expect(evaluateProgramExpression(selected.producedIr, 9)).toBe(19);
     expect(hasMultiplyAndAdd(selected)).toBe(true);
   });
+
+  it("constructs a new mapping from source-derived nested projections", () => {
+    const fit = [
+      structuralRequirement("card.fit.1", { identity: { label: "A" }, channels: { primary: "1" } }, { name: "A", contact: "1" }, "fit"),
+      structuralRequirement("card.fit.2", { identity: { label: "B" }, channels: { primary: "2" } }, { name: "B", contact: "2" }, "fit"),
+      structuralRequirement("card.fit.3", { identity: { label: "C" }, channels: { primary: "3" } }, { name: "C", contact: "3" }, "fit")
+    ];
+    const honest = searchProgramTransformations([
+      ...fit,
+      structuralRequirement("card.held-out", { identity: { label: "D" }, channels: { primary: "4" } }, { name: "D", contact: "4" }, "held_out")
+    ]);
+    const selected = honest.selected[0]!;
+
+    expect(selected.operator).toBe("mapping");
+    expect(selected.predictedFitObligationIds).toEqual(["card.fit.1", "card.fit.2", "card.fit.3"]);
+    expect(evaluateProgramExpression(selected.producedIr, [{ identity: { label: "D" }, channels: { primary: "4" } }])).toEqual({
+      contact: "4",
+      name: "D"
+    });
+
+    const poisonedHeldOut = searchProgramTransformations([
+      ...fit,
+      structuralRequirement("card.held-out", { identity: { label: "D" }, channels: { primary: "4" } }, { name: "wrong", contact: "wrong" }, "held_out")
+    ]);
+    expect(poisonedHeldOut).toEqual(honest);
+  });
 });
 
 function hasMultiplyAndAdd(candidate: ProgramTransformationCandidate): boolean {
@@ -91,6 +117,24 @@ function requirement(
     id,
     requestHash: "request.transformation",
     callableId,
+    arguments: [input],
+    expectedResult,
+    verificationRole,
+    relationSurface: "=",
+    sourceSpan: { charStart: 0, charEnd: 1 }
+  };
+}
+
+function structuralRequirement(
+  id: string,
+  input: ProgramBehaviorRequirement["arguments"][number],
+  expectedResult: ProgramBehaviorRequirement["expectedResult"],
+  verificationRole: "fit" | "held_out"
+): ProgramBehaviorRequirement {
+  return {
+    id,
+    requestHash: "request.structural-transformation",
+    callableId: "card",
     arguments: [input],
     expectedResult,
     verificationRole,
