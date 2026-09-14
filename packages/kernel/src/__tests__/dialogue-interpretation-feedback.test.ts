@@ -115,6 +115,11 @@ describe("causal dialogue interpretation feedback", () => {
     });
     const adjustments = (await dialogueInterpretationAdjustmentsForConversation(reloaded, outcome.conversationId)) as DiscourseInterpretationAdjustmentV2[];
     const persistedAdjustmentId = adjustments[0]!.id;
+    // A restarted production runtime has no request metadata or resident
+    // state. Its durable correction read must still feed the same selection
+    // path and preserve the persisted adjustment identity for tracing.
+    const restartedAdjustments = dialogueInterpretationAdjustmentsFromMetadata(undefined, undefined, adjustments);
+    expect(restartedAdjustments.map(adjustment => adjustment.id)).toEqual([persistedAdjustmentId]);
     const unrelatedLoadedAdjustment = createDiscourseInterpretationAdjustmentV2({
       semanticRoleIds: ["role.unrelated"],
       requestedSlotIds: ["slot.unrelated"],
@@ -127,7 +132,7 @@ describe("causal dialogue interpretation feedback", () => {
       correctionIds: ["correction.unrelated"]
     });
 
-    const matching = productionSelection(first.state, [...adjustments, unrelatedLoadedAdjustment]);
+    const matching = productionSelection(first.state, [...restartedAdjustments, unrelatedLoadedAdjustment]);
     const withheld = productionSelection(first.state, []);
     const unrelated = productionSelection(first.state, adjustments, {
       role: "role.unrelated",

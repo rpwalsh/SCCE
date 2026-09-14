@@ -838,6 +838,7 @@ async function dispatch(
         result,
         conversationId,
         turnId: String(result.episodeId),
+        previousState: previousDialogue?.result.state,
         targetLanguage: turnTargetLanguage(body),
         userStyleProfile: learnedDialogueProfile,
         calibrationModels,

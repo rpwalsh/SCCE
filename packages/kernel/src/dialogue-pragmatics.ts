@@ -330,6 +330,7 @@ export function planDialoguePolicy(input: { state: DialogueState; answerGraph: D
   const profile = state.userStyleProfile;
   const enoughInformation = hasEnoughInformation(input.answerGraph);
   const boundaryNeed = input.answerGraph.uncertainty.unsupported || input.answerGraph.uncertainty.missingEvidenceCount > 0;
+  const openDialogueWork = state.unresolvedSlots.length > 0 || Boolean(state.activeTask?.trim());
   const rows: DialogueAction[] = [];
   const add = (id: DialogueActionId, utility: number, cost: number, reasonIds: string[]) => {
     const normalizedUtility = clamp01(utility);
@@ -363,14 +364,14 @@ export function planDialoguePolicy(input: { state: DialogueState; answerGraph: D
     });
   };
   add(DIALOGUE_ACTION_IDS.answer, 0.5 + (enoughInformation ? 0.28 : -0.18) + weight(profile, INTERACTION_FEATURE_IDS.responseLead) * 0.16, 0.04, [ACTION_REASON_IDS.r0]);
-  add(DIALOGUE_ACTION_IDS.clarify, enoughInformation ? 0.08 : 0.5, 0.18 + weight(profile, INTERACTION_FEATURE_IDS.clarificationCost) * 0.28, [ACTION_REASON_IDS.r1]);
+  add(DIALOGUE_ACTION_IDS.clarify, state.unresolvedSlots.length > 0 ? 0.72 : enoughInformation ? 0.08 : 0.5, 0.18 + weight(profile, INTERACTION_FEATURE_IDS.clarificationCost) * 0.28, [ACTION_REASON_IDS.r1]);
   add(DIALOGUE_ACTION_IDS.bestEffort, enoughInformation ? 0.28 : 0.78, 0.08, [ACTION_REASON_IDS.r2]);
   add(DIALOGUE_ACTION_IDS.boundary, boundaryNeed ? 0.72 : 0.18, 0.04 + (1 - weight(profile, INTERACTION_FEATURE_IDS.caveatTolerance)) * 0.1, [ACTION_REASON_IDS.r3]);
   add(DIALOGUE_ACTION_IDS.plan, input.answerGraph.actions.length ? 0.74 : 0.22, 0.08, [ACTION_REASON_IDS.r4]);
   add(DIALOGUE_ACTION_IDS.calculus, weight(profile, INTERACTION_FEATURE_IDS.calculusNeed), 0.08, [ACTION_REASON_IDS.r5]);
   add(DIALOGUE_ACTION_IDS.artifact, weight(profile, INTERACTION_FEATURE_IDS.artifactNeed), 0.08, [ACTION_REASON_IDS.r6]);
   add(DIALOGUE_ACTION_IDS.premiseCheck, input.answerGraph.uncertainty.contradictionCount > 0 ? 0.64 : 0.14, 0.06, [ACTION_REASON_IDS.r7]);
-  add(DIALOGUE_ACTION_IDS.nextStep, input.answerGraph.actions.length || boundaryNeed ? 0.58 : 0.24, 0.06, [ACTION_REASON_IDS.r8]);
+  add(DIALOGUE_ACTION_IDS.nextStep, input.answerGraph.actions.length || boundaryNeed || openDialogueWork ? 0.58 : 0.24, 0.06, [ACTION_REASON_IDS.r8]);
   const rankedActions = rows.sort((left, right) => right.score - left.score || left.id.localeCompare(right.id));
   const selectedActionIds = selectActions(rankedActions, state, input.answerGraph);
   const rhythmId = rhythmFor(state, input.answerGraph, selectedActionIds);
@@ -387,6 +388,9 @@ export function planDialoguePolicy(input: { state: DialogueState; answerGraph: D
       source: "dialogue-pragmatics.policy",
       enoughInformation,
       boundaryNeed,
+      openDialogueWork,
+      activeTaskPresent: Boolean(state.activeTask?.trim()),
+      unresolvedSlotCount: state.unresolvedSlots.length,
       featureIds: state.interactionFeatures.map(feature => feature.id),
       signalIds: state.interactionSignals.map(signal => signal.id)
     })
@@ -799,6 +803,13 @@ function selectActions(rows: readonly DialogueAction[], state: DialogueState, gr
     if (!selected.includes(id)) selected.push(id);
   };
   add(DIALOGUE_ACTION_IDS.answer);
+  // A later turn inherits typed open work from the prior state. Keep that
+  // work in the next communicative act even when this turn's graph happens to
+  // contain a complete answer; otherwise active tasks and unresolved slots
+  // affect only audit context and never affect policy or stream ordering.
+  if (state.unresolvedSlots.length > 0) add(DIALOGUE_ACTION_IDS.clarify);
+  if (state.activeTask?.trim()) add(DIALOGUE_ACTION_IDS.plan);
+  if (state.activeTask?.trim() || state.unresolvedSlots.length > 0) add(DIALOGUE_ACTION_IDS.nextStep);
   if (graph.uncertainty.unsupported || graph.uncertainty.missingEvidenceCount > 0) add(DIALOGUE_ACTION_IDS.boundary);
   if (!hasEnoughInformation(graph)) add(DIALOGUE_ACTION_IDS.bestEffort);
   if (weight(state.userStyleProfile, INTERACTION_FEATURE_IDS.calculusNeed) > 0.72 || hasStrongSignal(state, INTERACTION_FEATURE_IDS.calculusNeed)) add(DIALOGUE_ACTION_IDS.calculus);

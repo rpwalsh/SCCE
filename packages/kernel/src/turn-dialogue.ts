@@ -54,6 +54,8 @@ export function buildTurnDialogueBridge(input: {
   result: TurnResult;
   conversationId: string;
   turnId?: string;
+  /** Typed continuity from the preceding turn; it shapes the next act and stream order. */
+  previousState?: import("./dialogue-pragmatics.js").DialogueState;
   targetLanguage?: string;
   userStyleProfile?: UserStyleProfile;
   calibrationModels?: CalibrationModelSet;
@@ -69,6 +71,7 @@ export function buildTurnDialogueBridge(input: {
     conversationId: input.conversationId,
     turnId,
     targetLanguage: input.targetLanguage,
+    previousState: input.previousState,
     answerGraph,
     candidateTexts: [input.result.answer],
     calibrationModels: input.calibrationModels,
