@@ -897,6 +897,7 @@ export function createSurfaceLanguageRuntime(options: {
     residentOnly = false
   ): Promise<{ profiles: LanguageProfile[]; clusters: LanguageProfileCluster[] }> {
     const now = clock.now();
+    const generation = languageMemoryGeneration;
     if (surfaceProfileCache && (residentOnly || now - surfaceProfileCache.loadedAt < surfaceLanguageMemoryCacheMs)) {
       return { profiles: surfaceProfileCache.value, clusters: surfaceProfileCache.clusters };
     }
@@ -915,7 +916,7 @@ export function createSurfaceLanguageRuntime(options: {
       .filter(profile => !requestControlProfileIds.has(profile.id))
       .sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
     const clusters = buildLanguageProfileClusters(profiles);
-    surfaceProfileCache = { loadedAt: now, value: profiles, clusters };
+    if (generation === languageMemoryGeneration) surfaceProfileCache = { loadedAt: now, value: profiles, clusters };
     return { profiles, clusters };
   }
 
@@ -928,6 +929,7 @@ export function createSurfaceLanguageRuntime(options: {
     if (!aliasKeys.length) return { profiles: [], clusters: [] };
     const cacheKey = aliasKeys.join("\u001f");
     const now = clock.now();
+    const generation = languageMemoryGeneration;
     const cached = sourceOwnedAliasProfileCache.get(cacheKey);
     if (cached && (cacheOptions.residentOnly || now - cached.loadedAt < surfaceLanguageMemoryCacheMs)) {
       return { profiles: cached.profiles, clusters: cached.clusters };
@@ -960,7 +962,7 @@ export function createSurfaceLanguageRuntime(options: {
       sourceDerivedAliases: aliasKeys
     })).sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
     const clusters = buildLanguageProfileClusters(profiles);
-    sourceOwnedAliasProfileCache.set(cacheKey, { loadedAt: now, profiles, clusters });
+    if (generation === languageMemoryGeneration) sourceOwnedAliasProfileCache.set(cacheKey, { loadedAt: now, profiles, clusters });
     return { profiles, clusters };
   }
 
@@ -1015,6 +1017,7 @@ export function createSurfaceLanguageRuntime(options: {
     if (!versionKeys.length) return { profiles: [], clusters: [] };
     const cacheKey = versionKeys.join(UNIT_SEPARATOR);
     const now = clock.now();
+    const generation = languageMemoryGeneration;
     const cached = evidenceOwnedProfileCache.get(cacheKey);
     if (cached && (cacheOptions.residentOnly || now - cached.loadedAt < surfaceLanguageMemoryCacheMs)) {
       return { profiles: cached.profiles, clusters: cached.clusters };
@@ -1036,7 +1039,7 @@ export function createSurfaceLanguageRuntime(options: {
       sourceVersionIds: versionKeys.map(key => byKey.get(key)!)
     })).sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
     const clusters = buildLanguageProfileClusters(profiles);
-    boundedCacheSet(evidenceOwnedProfileCache, cacheKey, { loadedAt: now, profiles, clusters }, surfaceCandidateProfileCacheMaxEntries);
+    if (generation === languageMemoryGeneration) boundedCacheSet(evidenceOwnedProfileCache, cacheKey, { loadedAt: now, profiles, clusters }, surfaceCandidateProfileCacheMaxEntries);
     return { profiles, clusters };
   }
 
@@ -1100,6 +1103,7 @@ export function createSurfaceLanguageRuntime(options: {
     const surfaceKey = hasher.digestHex(surface.normalize("NFC"));
     const cached = surfaceCandidateProfileCache.get(surfaceKey);
     const now = clock.now();
+    const generation = languageMemoryGeneration;
     // Whole-memory cluster set answers most surfaces without a per-request query, and is also what makes the answer
     // stable: the argmax of a per-surface trigram subset is a DIFFERENT cluster for every distinct question, so each
     // would pay its own cold hydration and warmup could not have hydrated it in advance.
@@ -1125,7 +1129,7 @@ export function createSurfaceLanguageRuntime(options: {
       surfaceNgrams: languageSurfaceTrigrams(surface)
     });
     const clusters = buildLanguageProfileClusters(profiles);
-    boundedCacheSet(surfaceCandidateProfileCache, surfaceKey, { loadedAt: now, profiles, clusters }, surfaceCandidateProfileCacheMaxEntries);
+    if (generation === languageMemoryGeneration) boundedCacheSet(surfaceCandidateProfileCache, surfaceKey, { loadedAt: now, profiles, clusters }, surfaceCandidateProfileCacheMaxEntries);
     return selectLanguageProfileClusterForSurface(clusters, surface)?.cluster
       ?? languageForSurface(global.clusters, surface);
   }
@@ -1153,6 +1157,7 @@ export function createSurfaceLanguageRuntime(options: {
     cacheOptions: ResidentOnlyOptions = {}
   ): Promise<Array<{ frame: SemanticFrameRecord; surface: string; surfaceUnits: string[] }>> {
     const now = clock.now();
+    const generation = languageMemoryGeneration;
     if (sourceAnchorSemanticFrameCache
       && (cacheOptions.residentOnly
         || now - sourceAnchorSemanticFrameCache.loadedAt < surfaceLanguageMemoryCacheMs)) {
@@ -1176,7 +1181,7 @@ export function createSurfaceLanguageRuntime(options: {
         }
       };
     });
-    sourceAnchorSemanticFrameCache = { loadedAt: now, value };
+    if (generation === languageMemoryGeneration) sourceAnchorSemanticFrameCache = { loadedAt: now, value };
     return value;
   }
 
