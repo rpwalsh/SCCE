@@ -562,7 +562,7 @@ export function createProductionTurnRuntime(options: {
   const {
     evidenceOwnedLanguageClusterCached, hydrateSurfaceLanguageMemoryCached, requestSemanticFrames, warmSurfaceLanguageMemory,
     sourceOwnedLanguageClusterForAlias, sourceOwnedLanguageProfilesCached, surfaceLanguageClusterCached,
-    surfaceLanguageProfilesCached, targetProfilePatternsCached, uniqueRecordsById
+    surfaceLanguageProfilesCached, targetProfilePatternsCached, warmTargetProfilePatterns, uniqueRecordsById
   } = surfaceLanguageRuntime;
   // A resident-only hydration miss must never crash the turn: an ordinary
   // question whose language cluster had never been touched before (a
@@ -995,8 +995,11 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const durableDialogueProfileId = dialogueTargetProfileId(dialogueConversationId, translationTarget ?? locale);
       const durableDialoguePatterns = deps.evaluationCondition?.flags.disableLanguageMemory === true
         ? []
-        : await targetProfilePatternsCached(durableDialogueProfileId, undefined, fastRuntimeBudget)
+        : await targetProfilePatternsCached(durableDialogueProfileId, undefined, true)
           .catch(() => []);
+      if (!durableDialoguePatterns.length && deps.evaluationCondition?.flags.disableLanguageMemory !== true) {
+        warmTargetProfilePatterns(durableDialogueProfileId);
+      }
       const durableDialogueStyle = durableDialoguePatterns.length
         ? styleProfileFromTargetProfilePatterns({
           patterns: durableDialoguePatterns,

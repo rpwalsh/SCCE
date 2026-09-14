@@ -303,6 +303,7 @@ export function createSurfaceLanguageRuntime(options: {
     value: Array<{ frame: SemanticFrameRecord; surface: string; surfaceUnits: string[] }>;
   } | undefined;
   const targetProfilePatternCache = new Map<string, { loadedAt: number; value: TargetProfilePatternRecord[] }>();
+  const targetProfilePatternInFlight = new Map<string, Promise<TargetProfilePatternRecord[]>>();
 
   type ResidentOnlyOptions = {
     residentOnly?: boolean;
@@ -894,9 +895,27 @@ export function createSurfaceLanguageRuntime(options: {
     const cached = targetProfilePatternCache.get(cacheKey);
     if (cached && (residentOnly || now - cached.loadedAt < surfaceLanguageMemoryCacheMs)) return cached.value;
     if (residentOnly) return [];
-    const value = await deps.storage.dialogueMemory.listTargetProfilePatterns({ targetProfileId, patternFamilyId, limit: 512 });
-    targetProfilePatternCache.set(cacheKey, { loadedAt: now, value });
-    return value;
+    let pending = targetProfilePatternInFlight.get(cacheKey);
+    if (!pending) {
+      pending = deps.storage.dialogueMemory.listTargetProfilePatterns({ targetProfileId, patternFamilyId, limit: 512 })
+        .then(value => {
+          targetProfilePatternCache.set(cacheKey, { loadedAt: clock.now(), value });
+          return value;
+        })
+        .finally(() => {
+          if (targetProfilePatternInFlight.get(cacheKey) === pending) targetProfilePatternInFlight.delete(cacheKey);
+        });
+      targetProfilePatternInFlight.set(cacheKey, pending);
+    }
+    return pending;
+  }
+
+  /** Start a single-flight durable profile-pattern read after a visible response has begun. */
+  function warmTargetProfilePatterns(targetProfileId?: string, patternFamilyId?: string): void {
+    const timer = setTimeout(() => {
+      void targetProfilePatternsCached(targetProfileId, patternFamilyId, false).catch(() => undefined);
+    }, 0);
+    if (typeof timer.unref === "function") timer.unref();
   }
 
   /**
@@ -1317,6 +1336,7 @@ export function createSurfaceLanguageRuntime(options: {
   return {
     languageMemorySummary,
     targetProfilePatternsCached,
+    warmTargetProfilePatterns,
     hydrateSurfaceLanguageMemoryCached,
     warmSurfaceLanguageMemory,
     residentSurfaceLanguageMemory,
@@ -1371,6 +1391,7 @@ export function createSurfaceLanguageRuntime(options: {
       surfaceProfileInFlight = undefined;
       sourceAnchorSemanticFrameCache = undefined;
       targetProfilePatternCache.clear();
+      targetProfilePatternInFlight.clear();
     }
   };
 }
