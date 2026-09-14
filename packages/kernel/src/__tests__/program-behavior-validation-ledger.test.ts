@@ -111,7 +111,7 @@ function binding(workspaceId = "workspace.1", validationPolicyId = "validation.p
       id: "graph.1",
       workspaceRevision: { workspaceId, revisionId: "revision.1", revisionHash: hash("e") },
       analyzerRevision: { analyzerId: "analyzer.1", analyzerVersion: "1", semanticRevisionHash: hash("f") },
-      validationCommandBindings: [{ commandId: "command.tests", checkId: "tests" as const }],
+      validationCommandBindings: [{ commandId: "command.tests", checkId: "tests" as const, commandIndex: 1 }],
       constructions: [{
         id: "construction.1",
         kindId: "scce.program.behavior_role_construction.v1" as const,

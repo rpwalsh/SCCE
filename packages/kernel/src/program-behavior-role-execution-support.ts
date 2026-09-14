@@ -26,6 +26,8 @@ export interface BehaviorRoleExecutionGraphInput {
   readonly validationCommandBindings: readonly {
     readonly commandId: string;
     readonly checkId: "compiler" | "typecheck" | "tests";
+    /** Unique server-policy command that declares coverage of this check. */
+    readonly commandIndex: number;
   }[];
   readonly constructions: readonly BehaviorRoleConstructionInput[];
 }
@@ -89,14 +91,14 @@ export function projectProgramBehaviorRoleExecutionSupport(
   validateReceipt(input.receipt, input.graph);
 
   const testOutcome = input.receipt.commandOutcomes.find(outcome => outcome.checkId === "tests")!;
-  const graphTestCommandIds = input.graph.validationCommandBindings
-    .filter(binding => binding.checkId === "tests")
-    .map(binding => binding.commandId)
-    .sort(compareCanonical);
+  const graphTestBinding = input.graph.validationCommandBindings.find(binding => binding.checkId === "tests")!;
+  if (testOutcome.commandIndex !== graphTestBinding.commandIndex) {
+    throw new Error("behavior execution tests command does not match the graph-bound validation command");
+  }
   const testExecution = {
     commandIndex: testOutcome.commandIndex,
     commandEvidenceHash: testOutcome.commandEvidenceHash,
-    graphCommandIds: graphTestCommandIds
+    graphCommandIds: [graphTestBinding.commandId]
   };
 
   return deepFreeze(input.graph.constructions
@@ -142,11 +144,14 @@ export function verifyBehaviorRoleExecutionGraphInput(graph: BehaviorRoleExecuti
   requiredId(graph.analyzerRevision.analyzerId, "graph.analyzerRevision.analyzerId");
   requiredId(graph.analyzerRevision.analyzerVersion, "graph.analyzerRevision.analyzerVersion");
   requiredHash(graph.analyzerRevision.semanticRevisionHash, "graph.analyzerRevision.semanticRevisionHash");
-  const validationBindingKeys = graph.validationCommandBindings.map(binding => `${binding.checkId}\u0000${binding.commandId}`);
+  const validationBindingKeys = graph.validationCommandBindings.map(binding => `${binding.checkId}\u0000${binding.commandId}\u0000${binding.commandIndex}`);
   uniqueIds(validationBindingKeys, "graph.validationCommandBindings");
   for (const binding of graph.validationCommandBindings) {
     requiredId(binding.commandId, "graph validation command binding commandId");
     validateCheckId(binding.checkId);
+    if (!Number.isSafeInteger(binding.commandIndex) || binding.commandIndex < 0) {
+      throw new Error("graph validation command binding index is invalid");
+    }
   }
   uniqueIds(graph.constructions.map(construction => construction.id), "graph construction ids");
   for (const construction of graph.constructions) {
@@ -179,15 +184,25 @@ function validateReceipt(receipt: BehaviorRoleExecutionReceiptInput, graph: Beha
   if (!receipt.commandOutcomes.some(outcome => outcome.checkId === "tests")) {
     throw new Error("behavior execution support requires a passing tests validation command");
   }
-  if (!graph.validationCommandBindings.some(binding => binding.checkId === "tests")) {
-    throw new Error("behavior execution support requires a graph-bound tests validation command");
-  }
+  const graphTestBindings = graph.validationCommandBindings.filter(binding => binding.checkId === "tests");
+  if (graphTestBindings.length !== 1) throw new Error("behavior execution support requires exactly one graph-bound tests validation command");
 }
 
 /** Extracts only content-addressed behavior and command identities from the exact task graph. */
 export function behaviorRoleExecutionGraphInputFromTaskConstraintGraph(
-  graph: WorkspaceTaskConstraintGraph
+  graph: WorkspaceTaskConstraintGraph,
+  policyCommandBindings: readonly {
+    readonly checkId: "compiler" | "typecheck" | "tests";
+    readonly commandIndex: number;
+  }[]
 ): BehaviorRoleExecutionGraphInput {
+  const policyCommandIndexByCheck = new Map<string, number>();
+  for (const binding of policyCommandBindings) {
+    validateCheckId(binding.checkId);
+    if (!Number.isSafeInteger(binding.commandIndex) || binding.commandIndex < 0) throw new Error("validation policy command index is invalid");
+    if (policyCommandIndexByCheck.has(binding.checkId)) throw new Error(`validation policy command coverage is ambiguous: ${binding.checkId}`);
+    policyCommandIndexByCheck.set(binding.checkId, binding.commandIndex);
+  }
   const constructions = graph.nodes
     .filter(node => node.kindId === "scce.program.behavior_role_construction.v1")
     .map(node => {
@@ -208,6 +223,11 @@ export function behaviorRoleExecutionGraphInputFromTaskConstraintGraph(
         commandId: requiredIdValue(metadata.commandId, `validation command ${node.id} commandId`),
         checkId: validationCheckId(metadata.checkId, `validation command ${node.id} checkId`)
       };
+    })
+    .map(binding => {
+      const commandIndex = policyCommandIndexByCheck.get(binding.checkId);
+      if (commandIndex === undefined) throw new Error(`validation policy command coverage is absent: ${binding.checkId}`);
+      return { ...binding, commandIndex };
     });
   const input: BehaviorRoleExecutionGraphInput = {
     schema: graph.schema,

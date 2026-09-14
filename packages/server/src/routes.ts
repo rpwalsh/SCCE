@@ -2268,10 +2268,14 @@ export async function planWorkspaceCodingPatchApiRequest(context: ApiContext, re
   try {
     const result = await createWorkspaceRuntime(context).planCodingPatch(request.input);
     if ("constraintGraph" in result && "plan" in result && result.plan) {
-      const graph = behaviorRoleExecutionGraphInputFromTaskConstraintGraph(result.constraintGraph);
+      const validationPolicy = context.patchValidation?.resolvePolicy(result.validationPlan.validatorId)
+        ?? serverPatchValidationPolicy(context.config, result.validationPlan.validatorId);
+      const graph = behaviorRoleExecutionGraphInputFromTaskConstraintGraph(
+        result.constraintGraph,
+        validationPolicy.commands.flatMap((command, commandIndex) =>
+          (command.checkIds ?? []).map(checkId => ({ checkId, commandIndex })))
+      );
       if (graph.constructions.length > 0) {
-        const validationPolicy = context.patchValidation?.resolvePolicy(result.validationPlan.validatorId)
-          ?? serverPatchValidationPolicy(context.config, result.validationPlan.validatorId);
         const validationProvider = context.patchValidation?.provider ?? trustedHostPatchValidationProvider;
         await programBehaviorValidationLedger(context.runtime.storage.events).bindPlan({
           schema: PROGRAM_BEHAVIOR_VALIDATION_PLAN_BINDING_SCHEMA,

@@ -10,7 +10,7 @@ import {
 
 describe("program behavior role execution support", () => {
   it("extracts construction and command identities from the exact task graph", () => {
-    const extracted = behaviorRoleExecutionGraphInputFromTaskConstraintGraph({
+    const taskGraph = {
       schema: "scce.workspace.task_constraint_graph.v1",
       id: "graph.exact",
       workspaceRevision: graph().workspaceRevision,
@@ -34,7 +34,8 @@ describe("program behavior role execution support", () => {
         metadata: { commandId: "command.tests", checkId: "tests" }
       }],
       admissibleValidationCommandNodeIds: ["node.command"]
-    } as never);
+    } as never;
+    const extracted = behaviorRoleExecutionGraphInputFromTaskConstraintGraph(taskGraph, [{ checkId: "tests", commandIndex: 1 }]);
 
     expect(extracted).toMatchObject({
       constructions: [{
@@ -42,8 +43,14 @@ describe("program behavior role execution support", () => {
         memberObservationIds: ["observation.a", "observation.b"],
         evidenceSpanIds: ["span.behavior"]
       }],
-      validationCommandBindings: [{ commandId: "command.tests", checkId: "tests" }]
+      validationCommandBindings: [{ commandId: "command.tests", checkId: "tests", commandIndex: 1 }]
     });
+    expect(() => behaviorRoleExecutionGraphInputFromTaskConstraintGraph(taskGraph, []))
+      .toThrow(/coverage is absent/u);
+    expect(() => behaviorRoleExecutionGraphInputFromTaskConstraintGraph(taskGraph, [
+      { checkId: "tests", commandIndex: 0 },
+      { checkId: "tests", commandIndex: 1 }
+    ])).toThrow(/coverage is ambiguous/u);
   });
 
   it("projects only passing tests execution onto graph-bound structural constructions", () => {
@@ -84,9 +91,16 @@ describe("program behavior role execution support", () => {
 
   it("rejects server test execution when the graph has no tests command binding", () => {
     expect(() => projectProgramBehaviorRoleExecutionSupport({
-      graph: { ...graph(), validationCommandBindings: [{ commandId: "command.build", checkId: "compiler" }] },
+      graph: { ...graph(), validationCommandBindings: [{ commandId: "command.build", checkId: "compiler", commandIndex: 0 }] },
       receipt: receipt([outcome("tests", 0)])
     })).toThrow(/graph-bound tests/u);
+  });
+
+  it("rejects a tests receipt from a different policy command", () => {
+    expect(() => projectProgramBehaviorRoleExecutionSupport({
+      graph: graph(),
+      receipt: receipt([outcome("tests", 0)])
+    })).toThrow(/does not match/u);
   });
 });
 
@@ -105,9 +119,9 @@ function graph(): BehaviorRoleExecutionGraphInput {
       semanticRevisionHash: hash("e")
     },
     validationCommandBindings: [
-      { commandId: "command.build", checkId: "compiler" },
-      { commandId: "command.typecheck", checkId: "typecheck" },
-      { commandId: "command.tests", checkId: "tests" }
+      { commandId: "command.build", checkId: "compiler", commandIndex: 1 },
+      { commandId: "command.typecheck", checkId: "typecheck", commandIndex: 1 },
+      { commandId: "command.tests", checkId: "tests", commandIndex: 1 }
     ],
     constructions: [{
       id: "construction.role",
