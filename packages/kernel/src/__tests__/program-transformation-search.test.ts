@@ -111,6 +111,55 @@ describe("program transformation search", () => {
       { name: "F" }
     ]);
   });
+
+  it("infers a fit-only conditional from a source-derived equality predicate", () => {
+    const result = searchProgramTransformations([
+      requirement("branch.fit.zero", "branch", 0, 20, "fit"),
+      requirement("branch.fit.one", "branch", 1, 10, "fit"),
+      requirement("branch.fit.two", "branch", 2, 20, "fit"),
+      requirement("branch.held-out", "branch", 7, 20, "held_out")
+    ]);
+    const selected = result.selected[0]!;
+
+    expect(selected.operator).toBe("conditional");
+    expect(evaluateProgramExpression(selected.producedIr, 1)).toBe(10);
+    expect(evaluateProgramExpression(selected.producedIr, 7)).toBe(20);
+    expect(selected.heldOutObligationIds).toEqual(["branch.held-out"]);
+  });
+
+  it("infers a bounded filter over changing sequence lengths", () => {
+    const fit = [
+      structuralRequirement("filter.fit.1", [false, true], [true], "fit"),
+      structuralRequirement("filter.fit.2", [true, false, true], [true, true], "fit")
+    ];
+    const result = searchProgramTransformations([
+      ...fit,
+      structuralRequirement("filter.held-out", [false, true, false], [true], "held_out")
+    ]);
+    const changed = searchProgramTransformations([
+      ...fit,
+      structuralRequirement("filter.held-out", [false, true, false], [false], "held_out")
+    ]);
+    const selected = result.selected[0]!;
+
+    expect(selected.operator).toBe("filter_sequence");
+    expect(evaluateProgramExpression(selected.producedIr, [[false, true, false]])).toEqual([true]);
+    expect(changed).toEqual(result);
+  });
+
+  it("infers an accumulator fold without using held-out values", () => {
+    const result = searchProgramTransformations([
+      structuralRequirement("fold.fit.1", [1, 2, 3], 6, "fit"),
+      structuralRequirement("fold.fit.2", [4], 4, "fit"),
+      structuralRequirement("fold.fit.3", [2, 3], 5, "fit"),
+      structuralRequirement("fold.held-out", [8, 1], 9, "held_out")
+    ]);
+    const selected = result.selected[0]!;
+
+    expect(selected.operator).toBe("fold_sequence");
+    expect(evaluateProgramExpression(selected.producedIr, [[8, 1]])).toBe(9);
+    expect(selected.heldOutObligationIds).toEqual(["fold.held-out"]);
+  });
 });
 
 function hasMultiplyAndAdd(candidate: ProgramTransformationCandidate): boolean {

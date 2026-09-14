@@ -37,6 +37,30 @@ describe("state transition search", () => {
     expect(first.selected[0]!.predictedFitIds).toEqual(["fit.missing", "fit.put-get"]);
     expect(second).toEqual(first);
   });
+
+  it("composes a causal put/get/delete module and reserves a held-out trace", () => {
+    const fit = [
+      scenario("fit.put-get", [{ operationId: "put", arguments: ["a", 1] }, { operationId: "get", arguments: ["a"] }], 1),
+      scenario("fit.overwrite", [{ operationId: "put", arguments: ["a", 1] }, { operationId: "put", arguments: ["a", 2] }, { operationId: "get", arguments: ["a"] }], 2),
+      scenario("fit.delete", [{ operationId: "put", arguments: ["a", 3] }, { operationId: "delete", arguments: ["a"] }, { operationId: "get", arguments: ["a"] }], null),
+      scenario("fit.missing", [{ operationId: "get", arguments: ["missing"] }], null)
+    ];
+    const heldOutTrace = [{ operationId: "put", arguments: ["held", { value: 7 }] }, { operationId: "get", arguments: ["held"] }] as const;
+    const first = searchStateTransitions([...fit, heldout("held-out", heldOutTrace, { value: 7 })]);
+    const changed = searchStateTransitions([...fit, heldout("held-out", heldOutTrace, null)]);
+    const selected = first.selected[0]!;
+
+    expect(selected.operatorAssignments).toEqual({ put: "associate", get: "lookup", delete: "dissociate" });
+    expect(selected.predictedFitIds).toEqual(["fit.delete", "fit.missing", "fit.overwrite", "fit.put-get"]);
+    expect(selected.heldoutIds).toEqual(["held-out"]);
+    expect(evaluateStateTransitionScenario(selected, {
+      id: "held-out",
+      invocations: heldOutTrace,
+      expectedResult: { value: 7 },
+      verificationRole: "held_out"
+    })).toEqual({ value: 7 });
+    expect(changed).toEqual(first);
+  });
 });
 
 function scenario(id: string, invocations: StateTransitionScenario["invocations"], expectedResult: unknown): StateTransitionScenario {
