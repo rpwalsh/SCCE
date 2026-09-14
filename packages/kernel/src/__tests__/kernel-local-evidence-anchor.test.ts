@@ -2221,7 +2221,13 @@ describe("kernel evaluation conditions use production component boundaries", () 
     }
   });
 
-  async function evaluationTurn(conditionId: EvaluationConditionId, text = "Who was Ada Lovelace?") {
+  it("keeps the fast request path from reading disabled language memory", async () => {
+    const turn = await evaluationTurn("no_language_memory", "Who was Ada Lovelace?", true);
+    expect(turn.fixture.metrics.languageMemoryReads).toBe(0);
+    expect(verifyEvaluationTrace(turn.condition, turn.trace)).toMatchObject({ valid: true, violations: [] });
+  });
+
+  async function evaluationTurn(conditionId: EvaluationConditionId, text = "Who was Ada Lovelace?", fastLocalEvidenceAnswer = false) {
     const clock = createClock({ fixedTime: 9000, stepMs: 1 });
     const hasher = createHasher();
     const ids = createIdFactory({ clock, hasher, deterministicReplay: true });
@@ -2250,7 +2256,7 @@ describe("kernel evaluation conditions use production component boundaries", () 
       evaluationCondition: condition,
       evaluationRunId: "kernel-evaluation-integration"
     });
-    const result = await kernel.turn({ text, metadata: { questionId: `question-${conditionId}` } });
+    const result = await kernel.turn({ text, metadata: { questionId: `question-${conditionId}`, fastLocalEvidenceAnswer } });
     const trace = result.evaluationTrace as unknown as EvaluationTraceEvent[];
     return { condition, fixture, result, trace };
   }
