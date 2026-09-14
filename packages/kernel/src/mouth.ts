@@ -999,8 +999,14 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       const codeRealizerCandidate = input.codeLanguage
         ? scoredCandidates.find(candidate => candidate.id.startsWith("candidate:generated:code:") && !candidate.forbiddenHits.length)
         : undefined;
+      // Expressive grounded surfaces compete on the same energy ordering as every
+      // other generated lane. The old lookup used raw construction order, so a
+      // weaker realizer could win before the language/repair score was considered.
       const groundedRealizerCandidate = !creativeRequested && !sourcePreservationRequested
-        ? scoredCandidates.find(candidate => candidate.id.startsWith("candidate:generated:realizer:") && !candidate.forbiddenHits.length)
+        ? energyRows
+          .filter(row => row.result.valid && row.candidate.id.startsWith("candidate:generated:realizer:"))
+          .map(row => byCandidateId.get(row.candidate.id))
+          .find((candidate): candidate is typeof scoredCandidates[number] => Boolean(candidate && !candidate.forbiddenHits.length))
         : undefined;
       const selected = codeRealizerCandidate ??
         groundedRealizerCandidate ??
