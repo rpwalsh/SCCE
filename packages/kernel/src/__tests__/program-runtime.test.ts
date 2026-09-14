@@ -152,6 +152,12 @@ describe("ProgramGraph runtime and artifact emission", () => {
     expect(validateProgramHydrationContract(required(program.hydration)).valid).toBe(true);
     expect(programIntent.behaviorImplementationPhase).toBe("probe");
     expect(source.content).toContain("return args.length === 1 ? args[0] : args");
+    // The request has no TypeScript declaration.  The executable contract must
+    // still be derived from the admitted behavior requirements, rather than
+    // reparsing the request surface and silently emitting no callable contract.
+    expect(source.content).toContain('"name": "double"');
+    expect(source.content).toContain('"name": "arg0"');
+    expect(source.content).toContain('"returnType": "number"');
     expect(test.content).toContain("assert.deepEqual(ownerProgram[requirement.callableId](...requirement.arguments), requirement.expectedResult");
 
     const snapshot = createWorkspaceRevisionSnapshot({ workspaceId: "workspace.owner.empty", revisionId: "revision.empty", files: [] });

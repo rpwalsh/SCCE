@@ -884,7 +884,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         "language-memory",
         "authority.language-memory.hydrate",
         () => withStageBudget(
-          hydrateSurfaceLanguageMemoryResidentOrDurable(12, selectedSurfaceCluster, unscopedLanguageReason, undefined, "", { residentOnly: fastRuntimeBudget, languageId: requestLanguageId }),
+          () => hydrateSurfaceLanguageMemoryResidentOrDurable(12, selectedSurfaceCluster, unscopedLanguageReason, undefined, "", { residentOnly: fastRuntimeBudget, languageId: requestLanguageId }),
           languageHydrationBudgetMs,
           () => hydrateSurfaceLanguageMemoryCached(12, selectedSurfaceCluster, unscopedLanguageReason, undefined, "", { residentOnly: true, languageId: requestLanguageId })
             .catch(() => emptySurfaceLanguageMemory()),
@@ -5856,12 +5856,16 @@ function turnCapabilityManifest(input: {
   return toJsonValue(buildCognitiveCapabilityManifest(capabilities) as unknown as JsonValue);
 }
 
-function withStageBudget<T>(work: Promise<T>, budgetMs: number, fallback: () => Promise<T>, onOverrun?: (elapsedMs: number) => void): Promise<T> {
+function withStageBudget<T>(work: () => Promise<T>, budgetMs: number, fallback: () => Promise<T>, onOverrun?: (elapsedMs: number) => void): Promise<T> {
+  // A zero remaining budget must be an admission decision, not a race that starts
+  // durable work after the turn has already committed to its resident fallback.
+  if (budgetMs <= 0) return fallback();
   const started = Date.now();
   let settled = false;
-  work.then(() => { settled = true; }, () => { settled = true; });
+  const pending = work();
+  pending.then(() => { settled = true; }, () => { settled = true; });
   return Promise.race([
-    work,
+    pending,
     new Promise<T>(resolve => {
       const timer = setTimeout(() => {
         if (settled) return;
