@@ -1066,10 +1066,14 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         ?? "conversation.default";
       warmOperatorOutcomeSupport(dialogueConversationId);
       const durableOperatorOutcomeSupport = residentOperatorOutcomeSupport.get(dialogueConversationId) ?? {};
+      const residentCognitiveState = residentDialogueCognitiveState(dialogueConversationId);
+      const restoredCognitiveState = residentCognitiveState
+        ?? await dialogueCognitiveMemory.latest(dialogueConversationId).catch(() => undefined);
+      if (restoredCognitiveState) residentDialogueCognitiveStates.set(dialogueConversationId, restoredCognitiveState);
       const previousDialogueCognitiveState = preferDialogueCognitiveStateV2({
         conversationId: dialogueConversationId,
         metadataState: metadataDialogueCognitiveState,
-        residentState: residentDialogueCognitiveState(dialogueConversationId),
+        residentState: restoredCognitiveState,
         hasher
       });
       if (!previousDialogueCognitiveState) warmDialogueCognitiveState(dialogueConversationId);
@@ -1560,7 +1564,12 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             ? await deps.storage.evidence.openingEvidenceForSourceVersions(boundSourceIds.map(id => id as SourceVersionId)).catch(() => [] as EvidenceSpan[])
             : [];
           const boundEvidence = mergeEvidenceSpans([...boundSlice.evidence, ...openingBlocks.filter(span => !isUnparsedMarkupText(String(span.text ?? "")))]);
-          graphSlice = { ...boundSlice, evidence: boundEvidence };
+          // Opening blocks become admitted evidence, so hydrate their bounded graph topology too. Keeping only the
+          // prior boundSlice graph made newly added spans proof-orphaned before semantic proof and relation routing.
+          const expandedBoundSlice = openingBlocks.length
+            ? await graphForEvidenceIds(boundEvidence.map(span => String(span.id))).catch(() => boundSlice)
+            : boundSlice;
+          graphSlice = { ...expandedBoundSlice, evidence: boundEvidence };
           for (const span of boundEvidence) explicitContextEvidenceIds.add(String(span.id));
           discourseEvidenceBound = true;
         }
@@ -1945,6 +1954,19 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           ...durableOperatorOutcomeSupport,
           ...operatorOutcomeSupport(input.metadata)
         }
+      });
+      input.runtimeControl?.onProgress?.({
+        phase: "cognition.plan",
+        observedAtMonotonicMs: performance.now(),
+        cognition: toJsonValue({
+          schema: "scce.turn.cognition_plan.v1",
+          requestedAuthority,
+          responseFormId: requirementField.responseForm?.id ?? null,
+          detailProfileId: surfaceDetailProfileIdFromMetadata(input.metadata) ?? null,
+          brevityDetailBalance: requirementField.brevityDetailBalance,
+          activeOperatorIds: activeRequestOperatorIds(operatorActivations),
+          requirementActivations: (requirementField.activationsUsed ?? []).slice(0, 16)
+        })
       });
       events.push(await append(eventFactory.create({
         episodeId,
@@ -2583,10 +2605,19 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // evaluation condition it still queried listLanguagePatterns (via
       // surfaceLanguageProfilesCached), a real storage read the condition
       // is supposed to eliminate entirely.
-      const evidenceSurfaceClusters = deps.evaluationCondition?.flags.disableLanguageMemory
-        ? []
-        : (await surfaceLanguageProfilesCached(fastRuntimeBudget)).clusters;
       const evidenceSourceVersionIds = selectedEvidence.map(span => span.sourceVersionId);
+      const [evidenceSurfaceClusters, evidenceOwnedCluster] = await Promise.all([
+        deps.evaluationCondition?.flags.disableLanguageMemory
+          ? Promise.resolve([])
+          : surfaceLanguageProfilesCached(fastRuntimeBudget).then(result => result.clusters),
+        deps.evaluationCondition?.flags.disableLanguageMemory || !evidenceSourceVersionIds.length
+          ? Promise.resolve(undefined)
+          : evidenceOwnedLanguageClusterCached(
+            evidenceSourceVersionIds,
+            input.text,
+            { residentOnly: fastRuntimeBudget }
+          ).catch(() => undefined)
+      ]);
       // The global cluster set is built from a bounded profile window, so this asks whether the evidence's profiles
       // happened to land inside it. On the live corpus they usually do not -- 22,502 profiles, a window that admits a
       // fraction -- and no evidence cluster plus no surface cluster is exactly the condition under which hydration
@@ -2595,13 +2626,6 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const windowEvidenceCluster = deps.evaluationCondition?.flags.disableLanguageMemory
         ? undefined
         : selectLanguageProfileClusterForSourceVersions(evidenceSurfaceClusters, evidenceSourceVersionIds);
-      const evidenceOwnedCluster = windowEvidenceCluster || deps.evaluationCondition?.flags.disableLanguageMemory
-        ? undefined
-        : await evidenceOwnedLanguageClusterCached(
-          evidenceSourceVersionIds,
-          input.text,
-          { residentOnly: fastRuntimeBudget }
-        ).catch(() => undefined);
       const evidenceSurfaceCluster = windowEvidenceCluster ?? evidenceOwnedCluster;
       // An evaluation condition without language memory reads none; the creative lane keeps its own contract.
       const preferredSurfaceCorpusRole = deps.evaluationCondition?.flags.disableLanguageMemory && requestedAuthority !== "creative"
@@ -4089,8 +4113,6 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         answerSurface: runtimeSurfaceMotion ? authorityCandidateField.candidates[0]?.answer : undefined,
         hasher
       });
-      await deps.storage.constructs.putConstruct(construct);
-      await deps.storage.constructs.putConstruct(spokenConstructGraph);
       events.push(await append(eventFactory.create({ episodeId, typeId: "ConstructGraphBuilt", payload: construct })));
       events.push(await append(eventFactory.create({ episodeId, typeId: "ConstructGraphBuilt", payload: { substrate: assembly.audit, constructGraphId: spokenConstructGraph.id } })));
       events.push(await append(eventFactory.create({ episodeId, typeId: "CounterfactualSimulated", payload: { counterfactual: counterfactualWorld.audit } })));
@@ -4154,6 +4176,12 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         requestedAuthority,
         creativeRequestFrame,
         dialogueUserStyleProfile: authorityDialogueState.userStyleProfile,
+        dialogueRejectedAssumptions: authorityDialogueState.rejectedAssumptions,
+        dialogueContinuity: {
+          activeTask: authorityDialogueState.activeTask,
+          establishedFacts: authorityDialogueState.establishedFacts,
+          unresolvedSlots: authorityDialogueState.unresolvedSlots
+        },
         semanticInput: judged.selected.kind === "action-preview" && judged.selected.answer.trim()
           ? {
             schema: "scce.mouth.semantic_input.v1" as const,
@@ -5153,6 +5181,13 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         answer: emission.answer,
         assistantForce: emission.assistantForce
       });
+      // Construct graphs are already held in memory by Mouth and no pre-answer decision reads their durable rows.
+      // Persist them after the visible response checkpoint; the exact same graphs remain available to all later
+      // bookkeeping and proof-bearing dialogue projection.
+      await Promise.all([
+        deps.storage.constructs.putConstruct(construct),
+        deps.storage.constructs.putConstruct(spokenConstructGraph)
+      ]);
       // The response is visible before this durable cognitive transition
       // begins. The projection itself only admits proof-selected graph
       // identities, so a fluent surface can never become a dialogue fact.

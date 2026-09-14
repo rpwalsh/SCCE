@@ -36,6 +36,7 @@ export interface TurnTaskFrame {
   /** Present only on the "answer.ready" progress frame -- see production-turn-runtime.ts. */
   answer?: string;
   assistantForce?: string;
+  cognition?: JsonValue;
 }
 
 export interface TurnTaskSnapshot {

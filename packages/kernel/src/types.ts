@@ -1347,6 +1347,8 @@ export interface OwnerInput {
        */
       answer?: string;
       assistantForce?: AssistantForceClass;
+      /** Bounded typed plan snapshot for in-flight clients; never a surface answer. */
+      cognition?: JsonValue;
     }) => void;
   };
 }

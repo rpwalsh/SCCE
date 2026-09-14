@@ -319,6 +319,12 @@ function evaluateCandidate(claim: ProofClaim, evidence: ProofEvidenceRecord, pol
   obligations.push({ kind: "entity_identity", passed: subject.passed, reason: subject.reason });
   obligations.push({ kind: "entity_identity", passed: object.passed, reason: object.reason });
   obligations.push({ kind: "relation", passed: relation.passed, reason: relation.reason });
+  // A different relation between the same participants is not necessarily incompatible with the claim. Treat the
+  // mismatch as counterevidence only when the typed subject/object roles are explicitly reversed.
+  const reversedRoles = atomsEquivalent(claim.subject, evidence.object) && atomsEquivalent(claim.object, evidence.subject);
+  if (!relation.passed && reversedRoles) {
+    contradictions.push({ evidenceId: evidence.id, kind: "relation", reason: relation.reason });
+  }
   if (!subject.passed && relation.passed) contradictions.push({ evidenceId: evidence.id, kind: "entity_identity", reason: subject.reason });
   if (!object.passed && relation.passed) contradictions.push({ evidenceId: evidence.id, kind: "entity_identity", reason: object.reason });
 
@@ -346,6 +352,13 @@ function evaluateCandidate(claim: ProofClaim, evidence: ProofEvidenceRecord, pol
     ambiguousSubjectId: ambiguousAtomId(claim.subject, evidence.subject),
     ambiguousObjectId: ambiguousAtomId(claim.object, evidence.object)
   };
+}
+
+function atomsEquivalent(left: ProofAtom, right: ProofAtom): boolean {
+  if (nonEmpty(left.id) || nonEmpty(right.id)) return nonEmpty(left.id) && left.id === right.id;
+  const leftSurface = normalizedSurface(left.surface);
+  const rightSurface = normalizedSurface(right.surface);
+  return Boolean(leftSurface && rightSurface && leftSurface === rightSurface);
 }
 
 function evaluateAtom(kind: string, claim: ProofAtom, evidence: ProofAtom): { kind: string; passed: boolean; reason: string } {
@@ -380,8 +393,10 @@ function evaluateQuantity(
   if (!claim) return { obligations: [] };
   if (!evidence) return { obligations: [{ kind: "quantity", passed: false, reason: "quantity_missing" }] };
   const obligations: SemanticProofObligation[] = [];
-  const unitPassed = !claim.unitId || !evidence.unitId || claim.unitId === evidence.unitId;
-  obligations.push({ kind: "unit", passed: unitPassed, reason: unitPassed ? "unit_compatible" : "unit_conflict" });
+  const unitMissing = Boolean(claim.unitId) && !evidence.unitId;
+  const unitPassed = !claim.unitId || claim.unitId === evidence.unitId;
+  obligations.push({ kind: "unit", passed: unitPassed, reason: unitMissing ? "unit_missing" : unitPassed ? "unit_compatible" : "unit_conflict" });
+  if (unitMissing) return { obligations };
   if (!unitPassed) return { obligations, contradiction: { kind: "unit", reason: "unit_conflict" } };
   const tolerance = Math.max(0, claim.tolerance ?? evidence.tolerance ?? 0);
   const passed = Math.abs(claim.value - evidence.value) <= tolerance;

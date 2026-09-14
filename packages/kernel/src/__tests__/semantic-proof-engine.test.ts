@@ -81,6 +81,55 @@ describe("semantic proof engine vertical slice", () => {
     expect(result.contradictions).toContainEqual({ evidenceId: "evidence:1", kind: "quantity", reason: "quantity_conflict" });
   });
 
+  it("does not certify a typed quantity when the evidence omits its unit", () => {
+    const result = proveClaim({
+      claim: claim({ quantity: { value: 42, unitId: "unit.count" } }),
+      candidateEvidence: [evidence({ quantity: { value: 42 } })],
+      policy: basePolicy
+    });
+    expect(result.verdict).toBe("insufficient_evidence");
+    expect(result.contradictions).toEqual([]);
+    expect(result.obligations).toContainEqual({ kind: "unit", passed: false, reason: "unit_missing" });
+  });
+
+  it("does not infer contradiction from a different relation over the same participants", () => {
+    const result = proveClaim({
+      claim: claim({ relationId: "relation.test.has_status" }),
+      candidateEvidence: [evidence({ relationId: "relation.test.has_owner" })],
+      policy: basePolicy
+    });
+    expect(result.verdict).toBe("insufficient_evidence");
+    expect(result.contradictions).toEqual([]);
+  });
+
+  it("does not turn unrelated relation evidence into contradiction", () => {
+    const result = proveClaim({
+      claim: claim({ relationId: "relation.test.has_status" }),
+      candidateEvidence: [evidence({
+        subject: { id: "entity:other", surface: "other", kindId: "kind.test.system" },
+        object: { id: "entity:else", surface: "else", kindId: "kind.test.value" },
+        relationId: "relation.test.has_owner"
+      })],
+      policy: basePolicy
+    });
+    expect(result.verdict).toBe("insufficient_evidence");
+    expect(result.contradictions).toEqual([]);
+  });
+
+  it("treats reversed typed roles as contradiction when the relation is incompatible", () => {
+    const result = proveClaim({
+      claim: claim({ relationId: "relation.test.has_status" }),
+      candidateEvidence: [evidence({
+        subject: { id: "status:green", surface: "green", kindId: "kind.test.status" },
+        object: { id: "entity:alpha", surface: "alpha", kindId: "kind.test.system" },
+        relationId: "relation.test.has_owner"
+      })],
+      policy: basePolicy
+    });
+    expect(result.verdict).toBe("contradicted");
+    expect(result.contradictions).toContainEqual({ evidenceId: "evidence:1", kind: "relation", reason: "relation_id_mismatch" });
+  });
+
   it("treats wrong date-time values as contradictions for admissible direct evidence", () => {
     const result = proveClaim({ claim: claim({ dateTime: { value: "2026-06-26", precisionId: "precision.day" } }), candidateEvidence: [evidence({ dateTime: { value: "2026-06-27", precisionId: "precision.day" } })], policy: basePolicy });
     expect(result.verdict).toBe("contradicted");
