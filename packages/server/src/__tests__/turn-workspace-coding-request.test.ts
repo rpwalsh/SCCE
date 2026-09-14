@@ -3,8 +3,11 @@
 import { describe, expect, it } from "vitest";
 import {
   WORKSPACE_CODING_TURN_REQUEST_SCHEMA,
-  parseTurnWorkspaceCodingRequest
+  parseTurnWorkspaceCodingRequest,
+  workspaceCodingInputForProgramGraph
 } from "../routes.js";
+import type { ProgramGraph } from "@scce/kernel";
+import type { WorkspaceCodingPatchPlanningInput } from "@scce/adapters-node";
 
 describe("workspace coding chat request", () => {
   it("uses the server turn text and a structured diagnostic selector", () => {
@@ -45,5 +48,54 @@ describe("workspace coding chat request", () => {
       },
       authorization: { granted: true }
     }, "turn text")).toThrow(/unexpected:/u);
+  });
+
+  it("binds only the completed turn's source-bound ProgramGraph to workspace planning", () => {
+    const input: WorkspaceCodingPatchPlanningInput = {
+      workspaceId: "workspace.1",
+      expectedWorkspaceUpdatedAt: 7,
+      requestId: "request.1",
+      requestText: "build the selected program",
+      requestedPaths: ["src/index.ts"],
+      validationPlan: {
+        validatorId: "trusted-host-pnpm-validate.v1",
+        checks: ["compiler"]
+      }
+    };
+    const program = {
+      id: "program.1",
+      files: [],
+      hydration: {
+        valid: true,
+        program: {
+          provenanceEvidenceIds: ["evidence.2", "evidence.1", "evidence.2"]
+        }
+      }
+    } as unknown as ProgramGraph;
+
+    const bound = workspaceCodingInputForProgramGraph(input, program);
+
+    expect(bound).toMatchObject({
+      program,
+      evidenceIds: ["evidence.2", "evidence.1"]
+    });
+    expect(workspaceCodingInputForProgramGraph(input, undefined)).toBeUndefined();
+    expect(workspaceCodingInputForProgramGraph(input, {
+      ...program,
+      hydration: {
+        ...program.hydration!,
+        valid: false
+      }
+    })).toBeUndefined();
+    expect(workspaceCodingInputForProgramGraph(input, {
+      ...program,
+      hydration: {
+        ...program.hydration!,
+        program: {
+          ...program.hydration!.program,
+          provenanceEvidenceIds: []
+        }
+      }
+    })).toBeUndefined();
   });
 });

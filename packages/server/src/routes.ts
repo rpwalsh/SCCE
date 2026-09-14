@@ -7,7 +7,7 @@ import { realpath, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 import { assertHydratedRuntimeReady, collectRepoFilesForCognition, createLearnedCodeProposer, createTypeScriptCodeMouthPorts, runCodeMouth, createDockerSandboxPatchValidationProvider, createNodeRuntime, createWorkspaceRuntime, diagnoseDocumentTools, executeWorkspacePatchTransaction, resolveSecret, runStructuredPatchValidation, trustedHostPatchValidationProvider, verifiedCompilerPlansForTurn, WorkspacePatchTransactionError, type readScceRuntimeConfig, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type WorkspaceCodingPatchPlanningInput, type WorkspacePatchPlanningInput, type WorkspaceRuntimeOptions, applySetting, settingsView, listLocalModels, downloadModel, removeLocalModel, formatBytes } from "@scce/adapters-node";
-import type { BenchmarkInput, CausalAnalysisRequest, CausalDiscoveryRequest, CausalAssumptionDag, CausalAssumptionEdge, CausalObservation, ConversationTurnRecord, DialogueInterpretationCorrectionInput, GraphSlice, IdentificationDesign, IngestInput, InspectionTarget, JsonValue, NodeId, OwnerInput, PatchTransactionPlan, RequestedAuthority, SourceAdmissionContext, SourceTrust, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
+import type { BenchmarkInput, CausalAnalysisRequest, CausalDiscoveryRequest, CausalAssumptionDag, CausalAssumptionEdge, CausalObservation, ConversationTurnRecord, DialogueInterpretationCorrectionInput, GraphSlice, IdentificationDesign, IngestInput, InspectionTarget, JsonValue, NodeId, OwnerInput, PatchTransactionPlan, ProgramGraph, RequestedAuthority, SourceAdmissionContext, SourceTrust, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
 import {
   curriculumItemFromPlan,
   learningConsentInput,
@@ -816,6 +816,15 @@ async function dispatch(
       });
       traceEvent(trace, { stage: "turn.kernel.returned", label: "api.turn", durationMs: Date.now() - turnStarted, counts: { evidence: result.evidence.length } });
       if (!turnAnswerHasSpeech(result.answer)) throw new HttpError(422, "runtime declined: no admissible answer surface");
+      const turnProgramCodingInput = workspaceCodingInput
+        ? workspaceCodingInputForProgramGraph(workspaceCodingInput, result.constructGraph.program)
+        : undefined;
+      const completedWorkspaceCoding = turnProgramCodingInput
+        ? await planWorkspaceCodingPatchApiRequest(context, {
+          schemaVersion: WORKSPACE_CODING_PATCH_PLAN_REQUEST_SCHEMA,
+          input: turnProgramCodingInput
+        })
+        : workspaceCoding;
       const calibrationStarted = Date.now();
       const calibrationModels = await cachedCalibrationModels(context);
       traceEvent(trace, { stage: "turn.calibration.loaded", label: "api.turn", durationMs: Date.now() - calibrationStarted, counts: { observations: calibrationModels.observationCount } });
@@ -928,7 +937,7 @@ async function dispatch(
             }
           } : {})
         },
-        ...(workspaceCoding ? { workspaceCoding: toJsonValue(workspaceCoding) } : {})
+        ...(completedWorkspaceCoding ? { workspaceCoding: toJsonValue(completedWorkspaceCoding) } : {})
       };
       return json(webLearning ? { ...baseResponse, webLearning } : baseResponse);
     } catch (error) {
@@ -2127,6 +2136,21 @@ export function parseTurnWorkspaceCodingRequest(
     schemaVersion: WORKSPACE_CODING_PATCH_PLAN_REQUEST_SCHEMA,
     requestText
   }).input;
+}
+
+/**
+ * Binds the program selected by the completed cognitive turn to the exact-byte
+ * workspace planner. Only a valid, source-bound hydration contract may cross
+ * this boundary; client request fields cannot supply or override either value.
+ */
+export function workspaceCodingInputForProgramGraph(
+  input: WorkspaceCodingPatchPlanningInput,
+  program: ProgramGraph | undefined
+): WorkspaceCodingPatchPlanningInput | undefined {
+  if (!program?.hydration?.valid) return undefined;
+  const evidenceIds = uniqueServerStrings(program.hydration.program.provenanceEvidenceIds.map(String));
+  if (evidenceIds.length === 0) return undefined;
+  return { ...input, program, evidenceIds };
 }
 
 export function parseWorkspaceCodingPatchPlanRequest(value: unknown): WorkspaceCodingPatchPlanApiRequest {
