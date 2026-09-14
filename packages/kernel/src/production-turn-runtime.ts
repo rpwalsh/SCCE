@@ -4128,6 +4128,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         calibrationTaskClass,
         requestedAuthority,
         creativeRequestFrame,
+        dialogueUserStyleProfile: authorityDialogueState.userStyleProfile,
         semanticInput: judged.selected.kind === "action-preview" && judged.selected.answer.trim()
           ? {
             schema: "scce.mouth.semantic_input.v1" as const,
