@@ -237,6 +237,66 @@ describe("ProgramGraph runtime and artifact emission", () => {
     }
   });
 
+  it("binds emitted stateful operations to owner invocation contracts", () => {
+    // The operation identities are owner-supplied symbols. The planner must
+    // derive their arity and runtime shapes from these typed traces, not from
+    // an operation-name vocabulary.
+    const request = [
+      "bind(key, value); read(key); unbind(key)",
+      "bind(\"a\", 4); read(\"a\") => 4",
+      "bind(\"a\", 9); read(\"a\") => 9",
+      "unbind(\"a\"); read(\"a\") => null",
+      "bind(\"b\", {\"n\": 2}); read(\"b\") => {\"n\": 2}"
+    ].join("\n");
+    const signal = codeRequestSignal(request);
+    const intent = required(programIntentForTurn({ requestedAuthority: "program", codeSignal: signal, evidence: [] }));
+    expect(intent.statefulBehaviorRequirements).toHaveLength(4);
+    const probedProgram = required(buildProgram(request, [], intent).program);
+    const root = mkdtempSync(join(tmpdir(), "scce-owner-stateful-"));
+    try {
+      mkdirSync(join(root, "src"));
+      mkdirSync(join(root, "test"));
+      const probedSource = required(probedProgram.files.find(file => file.path === "src/program.mjs"));
+      const probedTest = required(probedProgram.files.find(file => file.path === "test/program.test.mjs"));
+      writeFileSync(join(root, "src", "program.mjs"), probedSource.content, "utf8");
+      writeFileSync(join(root, "test", "program.test.mjs"), probedTest.content, "utf8");
+      const failed = spawnSync(process.execPath, probedProgram.test.args, { cwd: root, encoding: "utf8" });
+      expect(failed.status).not.toBe(0);
+      expect(`${failed.stdout}\n${failed.stderr}`).toContain("stateful owner operation");
+
+      const retry = replanOwnerBehaviorProgramIntent({
+        intent,
+        program: probedProgram,
+        failure: {
+          observationId: "owner.stateful.validation.failure.kernel",
+          programId: probedProgram.id,
+          planHash: "owner-stateful-plan",
+          validatorId: "validator.owner.node",
+          checkId: "tests",
+          status: "failed",
+          ownerRequirementIds: intent.statefulBehaviorRequirements?.map(requirement => requirement.id) ?? [],
+          command: probedProgram.test
+        },
+        hasher
+      });
+      expect(retry.intent.behaviorImplementationPhase).toBe("selected");
+      expect(retry.selection.transformationId).toBe("program.transformation.state_transition_search.v1");
+      const repairedProgram = required(buildProgram(request, [], retry.intent).program);
+      const repairedSource = required(repairedProgram.files.find(file => file.path === "src/program.mjs"));
+      const repairedTest = required(repairedProgram.files.find(file => file.path === "test/program.test.mjs"));
+      expect(repairedSource.content).toContain('"statefulContracts"');
+      expect(repairedSource.content).toContain('"name": "bind"');
+      expect(repairedSource.content).toContain('"name": "read"');
+      expect(repairedTest.content).toContain("checkStatefulCall");
+      writeFileSync(join(root, "src", "program.mjs"), repairedSource.content, "utf8");
+      writeFileSync(join(root, "test", "program.test.mjs"), repairedTest.content, "utf8");
+      const passed = spawnSync(process.execPath, repairedProgram.test.args, { cwd: root, encoding: "utf8" });
+      expect(passed.status, `${passed.stdout}\n${passed.stderr}`).toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("emits a log parser when line-shaped diagnostic evidence is present", () => {
     const fixture = engineeringFixture();
     const log = logEvidence();
