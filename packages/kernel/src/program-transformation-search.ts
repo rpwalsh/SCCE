@@ -154,6 +154,10 @@ function expressionOperands(expression: ProgramExpression): ProgramExpression[] 
   return [];
 }
 
+function commutativeOperator(operator: ProgramTransformationOperator): boolean {
+  return operator === "add" || operator === "multiply" || operator === "minimum" || operator === "maximum";
+}
+
 function groupRequirements(requirements: readonly ProgramBehaviorRequirement[]): Map<string, { fit: NumericExample[]; heldOut: string[]; arity: number }> {
   const grouped = new Map<string, { fit: NumericExample[]; heldOut: string[]; arity: number }>();
   for (const requirement of requirements) {
@@ -202,6 +206,10 @@ function boundedExpressionSearch(examples: readonly NumericExample[], arity: num
         const actualDepth = Math.max(left.depth, right.depth) + 1;
         if (actualDepth !== depth) continue;
         for (const operator of ["add", "subtract", "multiply", "divide", "minimum", "maximum"] as const) {
+          // These four operators have the same denotation under swapped
+          // operands. One canonical orientation prevents a growing beam from
+          // scoring duplicate behavioral hypotheses.
+          if (commutativeOperator(operator) && expressionKey(left.expression) > expressionKey(right.expression)) continue;
           next.push({ expression: { kind: "binary", operator, left: left.expression, right: right.expression }, depth });
         }
       }
