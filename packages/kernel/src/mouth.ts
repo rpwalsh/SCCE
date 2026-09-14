@@ -12,6 +12,7 @@ import { mostLikelyHypothesis, normalizeHypothesisSet } from "./correlated-uncer
 import { requestSentenceSequences, spanContainsRequestNearDuplicateSentence } from "./local-evidence-runtime.js";
 import { quotedSentenceGap } from "./quoted-gap.js";
 import { realizeCreativeSection, surfaceEchoesPrompt } from "./creative-section-realization.js";
+import type { CreativeRequestFrame } from "./creative-event-compatibility.js";
 import type { CandidateSurface } from "./candidate.js";
 import type { ClaimBasis, CognitiveProposal, PlannedClaim } from "./cognitive-planner.js";
 import type { ConstructGraph, EvidenceId, EvidenceSpan, FieldState, Hasher, JsonValue, LanguageProfile, RequestedAuthority, SemanticEntailmentResult } from "./types.js";
@@ -433,6 +434,8 @@ export interface SpeakInput {
   calibrationModels?: CalibrationModelSet;
   calibrationTaskClass?: string;
   requestedAuthority?: RequestedAuthority;
+  /** Typed request structure compiled by the language layer; Mouth uses its spans as content constraints. */
+  creativeRequestFrame?: CreativeRequestFrame;
   semanticInput?: MouthSemanticInput;
   /** Lets a short bound value (a bare date/time/name the request's own subject+relation demanded, e.g. "20:17"
    *  for "when did X land") satisfy coverage without lexically restating the request -- see coversRequest below. */
@@ -3904,6 +3907,10 @@ function safeNonNegativeInteger(value: JsonValue | undefined): number | undefine
 }
 
 function creativeRequestContentTerms(input: SpeakInput): SurfaceTerm[] {
+  const frameTerms = input.creativeRequestFrame
+    ? creativeRequestFrameContentTerms(input.creativeRequestFrame, input.requestText ?? mouthEchoQuestionText(input))
+    : [];
+  if (frameTerms.length) return frameTerms;
   const controlSpans = (input.requirementField?.requiredFeatures ?? [])
     .filter(requirement => requirement.origin.semanticRoleId === "role.request.requirement.v1")
     .map(requirement => requirement.origin.requestSpan)
@@ -3932,6 +3939,35 @@ function creativeRequestContentTerms(input: SpeakInput): SurfaceTerm[] {
       source: "construct",
       weight: 0.88
     });
+  }
+  return [...bySurface.values()];
+}
+
+/**
+ * Project typed request roles into realization constraints without teaching
+ * Mouth a source-language vocabulary. The compiler owns interpretation; this
+ * function only preserves the compiler's verified spans through realization.
+ */
+export function creativeRequestFrameContentTerms(frame: CreativeRequestFrame, requestText: string): SurfaceTerm[] {
+  const roles = [frame.focus, ...frame.arguments];
+  const bySurface = new Map<string, SurfaceTerm>();
+  for (const role of roles) {
+    const span = role.span;
+    if (span.charStart < 0 || span.charEnd <= span.charStart || span.charEnd > requestText.length) continue;
+    if (requestText.slice(span.charStart, span.charEnd) !== span.text) continue;
+    const text = span.text.trim();
+    if (!text) continue;
+    const units = [...text.matchAll(/[\p{Letter}\p{Mark}\p{Number}_]+/gu)].map(match => match[0]).filter(unit => [...unit].length >= 3 || [...unit].every(char => /\p{Number}/u.test(char)));
+    for (const unit of units) {
+      const key = unit.normalize("NFKC").toLocaleLowerCase();
+      if (!key || bySurface.has(key)) continue;
+      bySurface.set(key, {
+        id: `surface.term:${hash32(`creative:${key}`).toString(16)}`,
+        text: unit,
+        source: "construct",
+        weight: 0.92
+      });
+    }
   }
   return [...bySurface.values()];
 }
