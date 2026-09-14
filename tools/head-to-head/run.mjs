@@ -41,6 +41,8 @@ const serverUrl = process.env.SCCE_SERVER_URL ?? "http://127.0.0.1:3873";
 const ollamaUrl = process.env.OLLAMA_URL ?? "http://127.0.0.1:11434";
 const model = flag("model", "qwen2.5:3b");
 const limit = Number(flag("limit", "0"));
+const requestTimeoutMs = Number(flag("request-timeout-ms", "60000"));
+const checkpointEvery = Math.max(1, Number(flag("checkpoint-every", "1")));
 const workloadFilter = flag("workload", "");
 const only = flag("only", "both");
 
@@ -94,6 +96,7 @@ async function askScce(prompt) {
     const response = await fetch(`${serverUrl}/api/turn`, {
       method: "POST",
       headers: { "content-type": "application/json" },
+      signal: AbortSignal.timeout(requestTimeoutMs),
       body: JSON.stringify({ text: prompt })
     });
     // A non-OK status that is not 422 returns {ok:false,error} with no answer and no evidence key, so reading a
@@ -111,6 +114,7 @@ async function askModel(prompt) {
     const response = await fetch(`${ollamaUrl}/api/generate`, {
       method: "POST",
       headers: { "content-type": "application/json" },
+      signal: AbortSignal.timeout(requestTimeoutMs),
       body: JSON.stringify({ model, prompt, stream: false })
     });
     const payload = await response.json();
@@ -170,7 +174,7 @@ for (const [index, item] of items.entries()) {
     };
   }
   rows.push(row);
-  if ((index + 1) % 10 === 0 || index === items.length - 1) {
+  if ((index + 1) % checkpointEvery === 0 || index === items.length - 1) {
     console.log(`  ${index + 1}/${items.length}`);
     mkdirSync(dirname(outPath), { recursive: true });
     writeFileSync(outPath, JSON.stringify({ schema: "scce.head_to_head.v1", model, rows }, null, 2) + "\n", "utf8");
@@ -201,6 +205,8 @@ const summary = {
   schema: "scce.head_to_head.v1",
   generatedAt: new Date().toISOString(),
   model,
+  requestTimeoutMs,
+  checkpointEvery,
   items: rows.length,
   scce: only === "model" ? null : summarize("scce"),
   reference: only === "scce" ? null : summarize("model"),
