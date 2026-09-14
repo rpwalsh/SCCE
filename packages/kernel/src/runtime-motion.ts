@@ -3,7 +3,7 @@
 import { type CandidateField, type CandidateSurface } from "./candidate.js";
 import { candidateCompatibleWithAuthority } from "./request-authority.js";
 import { type DialogueState } from "./dialogue-pragmatics.js";
-import { jsonRecord, kernelNumber, kernelString, kernelStringArray, namedSubjectAnchors, uniqueKernelStrings } from "./kernel-answer-primitives.js";
+import { jsonRecord, kernelNumber, kernelString, kernelStringArray, namedSubjectAnchors, normalizePriorKey, uniqueKernelStrings } from "./kernel-answer-primitives.js";
 import { formatSurfaceMessage } from "./localization.js";
 import type { LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
 import { cognitiveTopicForRequest } from "./learned-graph-prior-runtime.js";
@@ -394,6 +394,8 @@ export function runtimeMotionCandidateField(input: {
   inventionCandidate?: CandidateSurface;
   unresolvedSlots?: readonly string[];
   learnedLanguageFrameIds?: readonly string[];
+  /** Ranked source anchors already derived by the turn; keeps surface realization from reparsing request text. */
+  focusAnchors?: readonly string[];
   hasher: { digestHex(input: string | Uint8Array): string };
 }): CandidateField {
   if (input.inventionCandidate?.kind === "creative-candidate" && input.inventionCandidate.force === "invented" && input.inventionCandidate.evidenceIds.length === 0) {
@@ -451,7 +453,8 @@ export function runtimeMotionCandidateField(input: {
     input.requestText,
     input.unresolvedSlots,
     input.motion.sourceSurfaces,
-    input.motion.sourceUris
+    input.motion.sourceUris,
+    input.focusAnchors
   );
   const focusId = `focus:${input.hasher.digestHex(answer).slice(0, 20)}`;
   const unresolvedSlotIds = uniqueKernelStrings((input.unresolvedSlots ?? []).filter(Boolean)).slice(0, 12);
@@ -539,15 +542,21 @@ export function runtimeMotionCandidateField(input: {
 }
 
 
- function runtimeMotionFocusSurface(
+function runtimeMotionFocusSurface(
   requestText: string,
   unresolvedSlots: readonly string[] = [],
   sourceSurfaces: readonly string[] = [],
-  sourceUris: readonly string[] = []
+  sourceUris: readonly string[] = [],
+  focusAnchors: readonly string[] = []
 ): string {
   // The subject the request names is what was not found: "No grounded source for: Greek goddess" named the
   // question's phrase, not Apollo (live 2026-09-10).
-  const namedSubject = namedSubjectAnchors(requestText)[0];
+  // The turn has already ranked source anchors. Its final compact anchor is a bounded unresolved focus and is safer
+  // to realize than the no-corpus fallback, which is the request's whole content and therefore only an echo. This
+  // consumes typed turn state; it does not infer question grammar or parse the request again at the Mouth boundary.
+  const requestKey = normalizePriorKey(requestText);
+  const compactFocus = uniqueKernelStrings(focusAnchors.map(normalizePriorKey).filter(anchor => anchor && anchor !== requestKey)).at(-1);
+  const namedSubject = compactFocus ?? namedSubjectAnchors(requestText)[0];
   const normalizedTopic = namedSubject && [...namedSubject].length >= 3 ? namedSubject : cognitiveTopicForRequest(requestText);
   const topic = requestSurfaceCase(normalizedTopic, requestText);
   const slotSurfaces = unresolvedSlots
