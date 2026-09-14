@@ -13,6 +13,8 @@ import {
 import type { CandidateField, CandidateSurface } from "./candidate-contract.js";
 import type { EvidenceSpan, FieldState, GraphSlice, JsonValue, RequestedAuthority } from "./types.js";
 import { isKnownGraphTemporalScope } from "./graph-temporal.js";
+import { calibrated } from "./calibrations/prod-calibrations.js";
+import type { CalibrationKey } from "./calibrations/public-calibrations.js";
 
 export const REQUESTED_AUTHORITY_IDS = [
   "factual",
@@ -50,6 +52,15 @@ export interface ProjectRequestAuthorityInput {
   explicitAuthority?: RequestedAuthority;
 }
 
+const AUTHORITY_COEFFICIENT_KEYS: Record<RequestedAuthority, Partial<Record<TurnRequirementDimension, CalibrationKey>>> = {
+  factual: { externalTruthAuthority: "request_authority.coefficient.factual.externalTruthAuthority", sourceDependence: "request_authority.coefficient.factual.sourceDependence", uncertaintyTolerance: "request_authority.coefficient.factual.uncertaintyTolerance", inferentialDepth: "request_authority.coefficient.factual.inferentialDepth", noveltyDemand: "request_authority.coefficient.factual.noveltyDemand", executableArtifactDemand: "request_authority.coefficient.factual.executableArtifactDemand", actionCommitment: "request_authority.coefficient.factual.actionCommitment" },
+  reasoned: { inferentialDepth: "request_authority.coefficient.reasoned.inferentialDepth", causalReasoningDemand: "request_authority.coefficient.reasoned.causalReasoningDemand", temporalReasoningDemand: "request_authority.coefficient.reasoned.temporalReasoningDemand", externalTruthAuthority: "request_authority.coefficient.reasoned.externalTruthAuthority", sourceDependence: "request_authority.coefficient.reasoned.sourceDependence", noveltyDemand: "request_authority.coefficient.reasoned.noveltyDemand" },
+  creative: { noveltyDemand: "request_authority.coefficient.creative.noveltyDemand", inferentialDepth: "request_authority.coefficient.creative.inferentialDepth", uncertaintyTolerance: "request_authority.coefficient.creative.uncertaintyTolerance", counterfactualDemand: "request_authority.coefficient.creative.counterfactualDemand", externalTruthAuthority: "request_authority.coefficient.creative.externalTruthAuthority", sourceDependence: "request_authority.coefficient.creative.sourceDependence", executableArtifactDemand: "request_authority.coefficient.creative.executableArtifactDemand", actionCommitment: "request_authority.coefficient.creative.actionCommitment" },
+  translation: { semanticPreservation: "request_authority.coefficient.translation.semanticPreservation", surfaceTransformation: "request_authority.coefficient.translation.surfaceTransformation", audienceAdaptation: "request_authority.coefficient.translation.audienceAdaptation", externalTruthAuthority: "request_authority.coefficient.translation.externalTruthAuthority", noveltyDemand: "request_authority.coefficient.translation.noveltyDemand" },
+  program: { executableArtifactDemand: "request_authority.coefficient.program.executableArtifactDemand", formatConstraintStrength: "request_authority.coefficient.program.formatConstraintStrength", inferentialDepth: "request_authority.coefficient.program.inferentialDepth", actionCommitment: "request_authority.coefficient.program.actionCommitment", externalTruthAuthority: "request_authority.coefficient.program.externalTruthAuthority" },
+  action: { actionCommitment: "request_authority.coefficient.action.actionCommitment", executableArtifactDemand: "request_authority.coefficient.action.executableArtifactDemand", externalTruthAuthority: "request_authority.coefficient.action.externalTruthAuthority", sourceDependence: "request_authority.coefficient.action.sourceDependence", noveltyDemand: "request_authority.coefficient.action.noveltyDemand" }
+};
+
 /**
  * Language-neutral requirement prototypes shared by explicit structured
  * authority and source-backed request-language learning.
@@ -57,64 +68,8 @@ export interface ProjectRequestAuthorityInput {
 export function authorityRequirementCoefficients(
   authority: RequestedAuthority
 ): Partial<Record<TurnRequirementDimension, number>> {
-  if (authority === "creative") {
-    return {
-      noveltyDemand: 4.8,
-      inferentialDepth: 1.2,
-      uncertaintyTolerance: 2.0,
-      counterfactualDemand: 0.9,
-      externalTruthAuthority: -4.0,
-      sourceDependence: -3.4,
-      executableArtifactDemand: -1.8,
-      actionCommitment: -1.8
-    };
-  }
-  if (authority === "translation") {
-    return {
-      semanticPreservation: 4.8,
-      surfaceTransformation: 4.6,
-      audienceAdaptation: 1.5,
-      externalTruthAuthority: -2.2,
-      noveltyDemand: -1.8
-    };
-  }
-  if (authority === "program") {
-    return {
-      executableArtifactDemand: 4.8,
-      formatConstraintStrength: 2.8,
-      inferentialDepth: 1.7,
-      actionCommitment: 0.7,
-      externalTruthAuthority: -1.2
-    };
-  }
-  if (authority === "action") {
-    return {
-      actionCommitment: 4.9,
-      executableArtifactDemand: 2.0,
-      externalTruthAuthority: 0.8,
-      sourceDependence: 0.5,
-      noveltyDemand: -2.2
-    };
-  }
-  if (authority === "reasoned") {
-    return {
-      inferentialDepth: 4.4,
-      causalReasoningDemand: 1.6,
-      temporalReasoningDemand: 0.7,
-      externalTruthAuthority: 1.0,
-      sourceDependence: 0.5,
-      noveltyDemand: -1.2
-    };
-  }
-  return {
-    externalTruthAuthority: 4.6,
-    sourceDependence: 3.7,
-    uncertaintyTolerance: -1.2,
-    inferentialDepth: -0.8,
-    noveltyDemand: -3.4,
-    executableArtifactDemand: -2.4,
-    actionCommitment: -2.2
-  };
+  const keys = AUTHORITY_COEFFICIENT_KEYS[authority];
+  return Object.fromEntries(Object.entries(keys).map(([dimension, key]) => [dimension, calibrated(key!)])) as Partial<Record<TurnRequirementDimension, number>>;
 }
 
 /** Scores an authority from the same requirement prototype used by learning. */
@@ -128,7 +83,7 @@ export function scoreRequestAuthority(
   ), 0);
   // Keep this as a bounded routing energy. It is deliberately not exposed as
   // a probability until a caller applies its own calibrated model.
-  return clamp01(0.5 + logit / 10);
+  return clamp01(calibrated("request_authority.projection_bias") + logit / calibrated("request_authority.projection_scale"));
 }
 
 /**
@@ -287,8 +242,8 @@ export function projectRequestAuthority(input: ProjectRequestAuthorityInput): Re
 /** Shared dialogue contribution used before graph/outcome support is available. */
 export function requestOperatorDialogueSupport(requirements: TurnRequirementField): OperatorSupportMap {
   return {
-    [COGNITIVE_OPERATOR_IDS.dialogueContinuation]: Math.max(-1, Math.min(1, requirements.dialogueDependence * 0.5)),
-    [COGNITIVE_OPERATOR_IDS.clarification]: Math.max(-1, Math.min(1, (1 - requirements.confidence) * 0.35))
+    [COGNITIVE_OPERATOR_IDS.dialogueContinuation]: Math.max(-1, Math.min(1, requirements.dialogueDependence * calibrated("request_authority.dialogue_continuation_scale"))),
+    [COGNITIVE_OPERATOR_IDS.clarification]: Math.max(-1, Math.min(1, (1 - requirements.confidence) * calibrated("request_authority.clarification_uncertainty_scale")))
   };
 }
 
@@ -298,17 +253,17 @@ export function requestOperatorGraphSupport(input: {
   field: FieldState;
 }): OperatorSupportMap {
   const sourceCount = new Set(input.evidence.map(span => String(span.sourceVersionId))).size;
-  const graphMass = clamp01(Math.log2(1 + input.graph.edges.length) / 8);
-  const evidenceMass = clamp01(Math.log2(1 + input.evidence.length) / 5);
-  const causalMass = clamp01(mean(input.field.causalMass.slice(0, 12).map(row => row.mass)));
+  const graphMass = clamp01(Math.log2(1 + input.graph.edges.length) / calibrated("request_authority.graph_edge_log_scale"));
+  const evidenceMass = clamp01(Math.log2(1 + input.evidence.length) / calibrated("request_authority.evidence_log_scale"));
+  const causalMass = clamp01(mean(input.field.causalMass.slice(0, calibrated("request_authority.causal_mass_sample_limit")).map(row => row.mass)));
   const hasQualifiedTime = input.graph.edges.some(edge =>
     isKnownGraphTemporalScope(edge.temporalScope)
     && edge.temporalScope.validTo !== undefined);
   return {
     [COGNITIVE_OPERATOR_IDS.evidenceActivation]: evidenceMass,
     [COGNITIVE_OPERATOR_IDS.graphPropagation]: graphMass,
-    [COGNITIVE_OPERATOR_IDS.sourceSynthesis]: sourceCount >= 2 ? Math.min(1, sourceCount / 4) : 0,
-    [COGNITIVE_OPERATOR_IDS.relationComposition]: input.graph.edges.length >= 2 ? graphMass : 0,
+    [COGNITIVE_OPERATOR_IDS.sourceSynthesis]: sourceCount >= calibrated("request_authority.source_synthesis_threshold") ? Math.min(1, sourceCount / calibrated("request_authority.source_synthesis_divisor")) : 0,
+    [COGNITIVE_OPERATOR_IDS.relationComposition]: input.graph.edges.length >= calibrated("request_authority.relation_composition_edge_threshold") ? graphMass : 0,
     [COGNITIVE_OPERATOR_IDS.semanticProof]: evidenceMass,
     [COGNITIVE_OPERATOR_IDS.temporalAnalysis]: hasQualifiedTime ? graphMass : 0,
     [COGNITIVE_OPERATOR_IDS.causalAnalysis]: causalMass
