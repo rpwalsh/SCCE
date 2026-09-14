@@ -33,7 +33,11 @@ export interface CorpusIdentitySignals {
   readonly concentration: number;
 }
 
-const UNIT_SEPARATOR = /[^\p{L}\p{M}\p{N}'’-]+/u;
+// Hyphens are orthographic separators for source identities. Keeping them
+// inside a unit made a corpus identity such as `moby dick` unreachable from
+// the ordinary surface `Moby-Dick`, so named-book requests fell back to
+// unrelated concentrated runs.
+const UNIT_SEPARATOR = /[^\p{L}\p{M}\p{N}'’]+/u;
 
 let signals: CorpusIdentitySignals | undefined;
 let generation = 0;
