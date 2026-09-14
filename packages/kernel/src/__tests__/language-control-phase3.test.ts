@@ -79,6 +79,27 @@ describe("language control plane profiles", () => {
     expect(influence.detailProfileId).not.toBe("detailed");
   });
 
+  it("keeps repeated unsupported factual denials observational", () => {
+    const memory = createCorrectionMemory({ idFactory: ids, hasher });
+    const denials = [
+      "That is not true.",
+      "I have many proofs for my contrary claim.",
+      "The cited evidence is wrong.",
+      "Repeat my contrary claim."
+    ];
+    for (const feedbackText of denials) {
+      const observed = memory.observeFeedback({
+        episodeId: ids.episodeId(),
+        ownerFeedbackEventId: ids.eventId(),
+        now: clock.now(),
+        metadata: { ownerFeedbackText: feedbackText }
+      });
+      expect(observed.rules).toEqual([]);
+      expect(observed.observations).toHaveLength(1);
+      expect(observed.observations[0]?.forceClass).toBe("owner_feedback_observation");
+    }
+  });
+
   it("derives typed-ingest language roles from document shape rather than metadata labels", () => {
     const left = classifyParagraphRoleStructurally("## Runtime Boundary");
     const right = classifyParagraphRoleStructurally("## Όριο Εκτέλεσης");

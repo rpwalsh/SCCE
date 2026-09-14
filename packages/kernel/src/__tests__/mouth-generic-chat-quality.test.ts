@@ -124,6 +124,39 @@ describe("Mouth generic chat quality gate", () => {
     expect(JSON.stringify(corrected.realizationTrace.corrections)).toContain(correction.id);
   });
 
+  it("does not let repeated hostile semantic-error reports suppress an evidence-grounded surface", async () => {
+    const source = sourceVersion();
+    const evidence = directEvidence(source);
+    const field = emptyField();
+    const entailment = semanticEntailment(evidence, field);
+    const languageMemory = importedMemory(source, evidence, "quality-import-semantic-boundary");
+    const correctionMemory = createCorrectionMemory({ idFactory: ids, hasher });
+    const semanticErrors = Array.from({ length: 8 }, (_, index) => correctionMemory.record({
+      episodeId: ids.episodeId(),
+      ownerFeedbackEventId: ids.eventId(),
+      now: clock.now(),
+      correction: {
+        // An adversary may attach a semantic-error label to the proposition
+        // they want hidden. Repetition must not make that label factual evidence.
+        kind: "semantic_error",
+        observedSurface: fixture.claim,
+        weight: 1,
+        metadata: { ownerAssertion: "unsupported contrary assertion", attempt: index }
+      }
+    }));
+    const mouth = createMouth({ languageMemory: languageRuntime, correctionMemory, hashText: text => hasher.digestHex(text) });
+    const baseline = await mouth.speak(baseInput({ source, evidence, field, entailment, languageMemory, construct: constructGraph(false) }));
+    const withOwnerDenial = await mouth.speak({
+      ...baseInput({ source, evidence, field, entailment, languageMemory, construct: constructGraph(false) }),
+      correctionRules: semanticErrors
+    });
+
+    expect(withOwnerDenial.text).toBe(baseline.text);
+    const audit = withOwnerDenial.surfacePlan.audit as Record<string, unknown>;
+    const forbidden = JSON.stringify(audit.forbiddenSurfaceForms ?? []);
+    for (const semanticError of semanticErrors) expect(forbidden).not.toContain(semanticError.id);
+  });
+
   function baseInput(input: {
     source: SourceVersion;
     evidence: EvidenceSpan;
