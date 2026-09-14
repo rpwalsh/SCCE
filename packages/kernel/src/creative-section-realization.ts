@@ -125,7 +125,12 @@ export function realizeCreativeSection(input: CreativeSectionRealizationInput): 
     // A sampling seed must perturb sampling, not prepend text to the history, so distinctness now comes from
     // the entity rotation above, and the context is the subject and what previous sections established.
     contextSymbols: [
-      ...conditioning.flatMap(line => contentUnits(line).slice(0, 4)),
+      // Continuation context is the end of the supplied material, in source
+      // order. Taking the longest units from the beginning made a follow-on
+      // section restart from an arbitrary vocabulary fingerprint and dropped
+      // the actual handoff point. The tail is a structural signal; it does
+      // not assume a source language or a lexical ontology.
+      ...conditioning.flatMap(line => continuationUnits(line)),
       ...goalUnits
     ],
     frames: [{
@@ -216,11 +221,13 @@ function properNounCasingHints(texts: readonly string[]): Record<string, string>
   return hints;
 }
 
-function contentUnits(text: string): string[] {
-  // Longer units carry more information; instruction words are short.
+function continuationUnits(text: string): string[] {
+  // Preserve source order because these units seed the n-gram history. A
+  // length-ranked list is useful for entity discovery, but it is not a valid
+  // continuation boundary: it discards which material came last.
   return [...new Set(surfaceUnits(collapseSurfaceWhitespace(text).toLocaleLowerCase()))]
     .filter(unit => unit.length >= 3)
-    .sort((left, right) => [...right].length - [...left].length);
+    .slice(-4);
 }
 
 /**

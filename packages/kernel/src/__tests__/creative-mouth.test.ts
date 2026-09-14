@@ -167,7 +167,7 @@ describe("creative Mouth production boundary", () => {
     };
     const source = sourceVersion(ids, clock.now());
     const premise = evidenceSpan(ids, source, "The graph uses bounded-degree adjacency lists.", 0, clock.now());
-    const unrelated = evidenceSpan(ids, source, "An unrelated benchmark reports a fixed latency.", 128, clock.now());
+    const unrelated = evidenceSpan(ids, source, "An unrelated benchmark reports a fixed latency after the observatory beacon.", 128, clock.now());
     const field = emptyField("Invent a bounded graph index", 0.68);
     const entailment = createSemanticEntailmentEngine({ idFactory: ids, hasher }).check({
       text: "Invent a bounded graph index",
@@ -231,6 +231,10 @@ describe("creative Mouth production boundary", () => {
     expect(first.text).toBe(second.text);
     expect(generationContexts.some(context => context.includes("river"))).toBe(true);
     expect(generationContexts.some(context => context.includes("river continuity"))).toBe(true);
+    // Supplied material must hand the generator its ordered continuation
+    // point. Length-ranked opening units previously dropped this final
+    // source anchor, so an expansion could restart with a canned prefix.
+    expect(generationContexts.some(context => context.includes("beacon"))).toBe(true);
     expect(JSON.stringify(correctedTurn.surfacePlan.audit)).toContain("bounded graph index");
     expect(record(compact.realizationTrace.discoursePlan).targetDetailProfileId)
       .not.toBe(record(expanded.realizationTrace.discoursePlan).targetDetailProfileId);
