@@ -154,8 +154,20 @@ export function corpusNamedIdentities(text: string): string[] {
     // attaches in any writing system; an identity buried inside a unit with material on both sides is a
     // coincidence, which is what keeps "explain" from being named by "unexplained".
     if (identity.includes(" ")) return false;
-    return units.some(unit => unit !== identity && unit.length > identity.length
-      && (unit.startsWith(identity) || unit.endsWith(identity)));
+    return units.some((unit, index) => {
+      if (unit === identity || unit.length <= identity.length) return false;
+      const identityAtStart = unit.startsWith(identity);
+      const identityAtEnd = unit.endsWith(identity);
+      if (!identityAtStart && !identityAtEnd) return false;
+      const attached = identityAtStart
+        ? unit.slice(identity.length)
+        : unit.slice(0, unit.length - identity.length);
+      // A remainder the corpus has learned as scaffolding is a licensed attachment, even when the request contains
+      // other content units. Otherwise containment is only safe when this is the request's sole content-bearing
+      // unit; a spaced request supplies an explicit boundary and an unknown attached run cannot cross it.
+      return state.closedClass.has(attached)
+        || !units.some((other, otherIndex) => otherIndex !== index && !state.closedClass.has(other));
+    });
   });
   return withoutContainedRuns(present);
 }

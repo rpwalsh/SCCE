@@ -1058,11 +1058,11 @@ export function proposeSourceExactEvidenceAnswer(input: {
     functionSymbols: input.functionSymbols,
     nearDuplicate: planNearDuplicate
   });
-  if (!planNearDuplicate && !answerEvidence.some(span => answerCoversRequest(answerSurfaceSentences, span, planCoverageUnits, input.requestText, { relationRequired: Boolean(input.closedClassWords?.size), languageClosedClassWords: input.functionSymbols }))) return undefined;
+  const explicitContextBound = answerEvidence.some(span => input.explicitContextEvidenceIds?.has(String(span.id)) === true);
+  if (!planNearDuplicate && !explicitContextBound && !answerEvidence.some(span => answerCoversRequest(answerSurfaceSentences, span, planCoverageUnits, input.requestText, { relationRequired: Boolean(input.closedClassWords?.size), languageClosedClassWords: input.functionSymbols }))) return undefined;
   const relevance = localEvidenceAnswerScore(input.requestText, answerEvidence);
   const evidenceBound = (input.entailment?.evidenceIds.length ?? 0) > 0;
   const answerSessionBound = answerEvidence.some(promotedSessionEvidence);
-  const explicitContextBound = answerEvidence.some(span => input.explicitContextEvidenceIds?.has(String(span.id)) === true);
   if (!evidenceBound && !answerSessionBound && relevance < calibrated("plan.relevance_floor")) return undefined;
   return {
     planId: "ans.plan.31a6c2f8",
@@ -2749,13 +2749,13 @@ export function sourceIdentityAdmissibleEvidenceForRequest(
   if (!admitted.length && evidence.length) {
     const titleless = evidence.filter(span => !evidenceTitle(span));
     // Split the way the index split the source: a substring test on "moby-dick" never found "Moby Dick".
-    const contentAnchors = uniqueKernelStrings(anchored.anchors.flatMap(anchor => anchorSymbolUnits(anchor)))
+    const titlelessContentAnchors = uniqueKernelStrings(anchored.anchors.flatMap(anchor => anchorSymbolUnits(anchor)))
       .filter(unit => [...unit].length >= 3 && !closedClassWords?.has(unit));
-    const requiredHits = Math.min(2, contentAnchors.length);
+    const requiredHits = Math.min(2, titlelessContentAnchors.length);
     const scored = titleless
       .map(span => {
         const surface = new Set(anchorSymbolUnits(String(span.text ?? span.textPreview ?? "")));
-        return { span, hits: contentAnchors.filter(anchor => surface.has(anchor)).length };
+        return { span, hits: titlelessContentAnchors.filter(anchor => surface.has(anchor)).length };
       })
       .filter(row => row.hits >= requiredHits)
       .sort((left, right) => right.hits - left.hits);
@@ -2765,16 +2765,18 @@ export function sourceIdentityAdmissibleEvidenceForRequest(
     // admits nothing, so the choice is between this article and answering nothing at all. It is admitted when
     // every content anchor sits inside one of its sentences -- a binding mention, not a passing one -- and
     // only when no title-identified span exists, so cross-title abstention holds whenever a title does match.
-    if (!admitted.length && contentAnchors.length) {
+    const bindingContentAnchors = requestContentEvidenceUnits(requestText)
+      .filter(unit => unit !== requestLeadingScaffoldingUnit(requestText) && !closedClassWords?.has(unit));
+    if (!admitted.length && bindingContentAnchors.length) {
       const titled = evidence.filter(span => evidenceTitle(span));
       const bound = titled
         .map(span => {
           const hits = splitSurfaceSentences(String(span.text ?? span.textPreview ?? ""))
             .map(sentence => new Set(anchorSymbolUnits(sentence)))
-            .reduce((best, sentence) => Math.max(best, contentAnchors.filter(anchor => sentence.has(anchor)).length), 0);
+            .reduce((best, sentence) => Math.max(best, bindingContentAnchors.filter(anchor => sentence.has(anchor)).length), 0);
           return { span, hits };
         })
-        .filter(row => row.hits >= Math.max(1, contentAnchors.length))
+        .filter(row => row.hits >= Math.max(1, bindingContentAnchors.length))
         .sort((left, right) => right.hits - left.hits);
       admitted.push(...bound.slice(0, 12).map(row => row.span));
     }

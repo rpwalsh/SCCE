@@ -75,6 +75,23 @@ export interface RuntimeReplanMotion {
 export const RUNTIME_TERMINAL_INVENTION_POLICY_ID = "policy.runtime_motion.prior_invention_after_exhausted_acquisition.v1";
 
 
+export function isTerminalNonAssertiveRuntimeMotionCandidate(candidate: CandidateSurface): boolean {
+  if (candidate.kind !== "dialogue-continuation" || candidate.force !== "unknown" || candidate.evidenceIds.length > 0) return false;
+  const audit = jsonRecord(candidate.audit);
+  if (audit.schema !== "scce.runtime_motion_candidate.v1"
+    || audit.source !== "kernel.runtime_decision_boundary"
+    || audit.externalFactCertification !== false
+    || audit.fakeEvidenceForbidden !== true) return false;
+  const semanticFrame = jsonRecord(audit.semanticFrame);
+  if (semanticFrame.frameId !== "semantic.runtime.motion.clarification.v1") return false;
+  const boundaries = new Set(candidate.boundaries);
+  return candidate.answer.trim().length > 0
+    && boundaries.has("runtime-motion-non-assertive")
+    && boundaries.has("runtime-motion-acquisition-exhausted")
+    && boundaries.has("runtime-motion-no-fabricated-evidence");
+}
+
+
 export function attachRuntimeDiagnosticConstruct(input: {
   construct: ConstructGraph;
   enabled: boolean;
