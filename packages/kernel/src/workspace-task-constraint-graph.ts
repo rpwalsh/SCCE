@@ -3,6 +3,7 @@
 import { hashPatchContent } from "./patch-transaction.js";
 import { canonicalStringify, createHasher, toJsonValue } from "./primitives.js";
 import { canonicalTypeScriptDiagnosticIdentity } from "./program-repair-kernel.js";
+import { induceProgramBehaviorRoleConstructions, type ProgramBehaviorRoleObservation } from "./program-behavior-role-induction.js";
 import type { Hasher, JsonValue } from "./types.js";
 import type {
   WorkspaceAnswerActionGraph,
@@ -407,6 +408,8 @@ export function buildWorkspaceTaskConstraintGraph(
   const diagnosticNodeIds = new Set<string>();
   const dependencyNodeIds = new Set<string>();
   const validationCommandNodeIds = new Set<string>();
+  const behaviorObservations: ProgramBehaviorRoleObservation[] = [];
+  const behaviorObservationNodeById = new Map<string, WorkspaceTaskConstraintNode>();
 
   const addNode = (spec: Omit<WorkspaceTaskConstraintNode, "id">): WorkspaceTaskConstraintNode => {
     const evidenceSpanIds = uniqueSorted(spec.evidenceSpanIds);
@@ -672,8 +675,40 @@ export function buildWorkspaceTaskConstraintGraph(
           contextArgumentEvidenceSpanIds
         })
       });
+      behaviorObservations.push({
+        id: relation.observation.id,
+        testFileId: relation.testFileId,
+        targetId: relation.targetSymbolId ?? relation.targetFileId ?? targetNodeId,
+        subjectArgumentCount: relation.observation.inputSpans.length,
+        contextDepth: relation.observation.contextCallIds.length,
+        contextArgumentCount: relation.observation.contextArgumentSpans.length,
+        evidenceSpanIds: observationEvidenceSpanIds
+      });
+      behaviorObservationNodeById.set(relation.observation.id, observation);
       addEdge("scce.rel.task.test_observation_constrains_target.v1", observation.id, targetNodeId, observationEvidenceSpanIds);
       addEdge("scce.rel.task.test_dependency_carries_observation.v1", dependency.id, observation.id, observationEvidenceSpanIds);
+    }
+  }
+
+  const behaviorRoleConstructions = induceProgramBehaviorRoleConstructions({ observations: behaviorObservations }, hasher);
+  for (const construction of behaviorRoleConstructions) {
+    const constructionNode = addNode({
+      kindId: construction.kindId,
+      subjectId: construction.id,
+      evidenceSpanIds: construction.evidenceSpanIds,
+      contentHashes: construction.evidenceSpanIds.map(id => evidenceById.get(id)!.contentHash),
+      metadata: toJsonValue(construction)
+    });
+    for (const observationId of construction.memberObservationIds) {
+      const observationNode = behaviorObservationNodeById.get(observationId);
+      if (observationNode) {
+        addEdge(
+          "scce.rel.program.behavior_role_generalizes_observation.v1",
+          constructionNode.id,
+          observationNode.id,
+          observationNode.evidenceSpanIds
+        );
+      }
     }
   }
 
@@ -777,6 +812,8 @@ export function buildWorkspaceTaskConstraintGraph(
       nodeCount: sortedNodes.length,
       edgeCount: sortedEdges.length,
       evidenceSpanCount: sortedEvidence.length,
+      behaviorObservationCount: behaviorObservations.length,
+      behaviorRoleConstructionCount: behaviorRoleConstructions.length,
       compilerDiagnosticSymbolBindingCount: input.diagnosticSymbolBindings?.length ?? 0,
       unresolvedConstraintCount: sortedUnresolved.length
     })

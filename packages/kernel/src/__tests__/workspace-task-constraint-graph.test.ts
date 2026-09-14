@@ -53,6 +53,10 @@ describe("workspace task constraint graph", () => {
     ]));
     expect(first.evidenceSpans.every(span => /^sha256:[0-9a-f]{64}$/u.test(span.contentHash)
       && /^sha256:[0-9a-f]{64}$/u.test(span.textHash))).toBe(true);
+    expect(first.audit).toMatchObject({
+      behaviorObservationCount: 1,
+      behaviorRoleConstructionCount: 0
+    });
     expect((first.audit as { requestTextUsed?: boolean }).requestTextUsed).toBe(false);
   });
 
