@@ -292,6 +292,15 @@ describe("ProgramGraph runtime and artifact emission", () => {
       writeFileSync(join(root, "test", "program.test.mjs"), repairedTest.content, "utf8");
       const passed = spawnSync(process.execPath, repairedProgram.test.args, { cwd: root, encoding: "utf8" });
       expect(passed.status, `${passed.stdout}\n${passed.stderr}`).toBe(0);
+      const brokenStateUpdate = repairedSource.content.replace(
+        "state.set(statefulKey(args[0]), args[1]);",
+        "state.delete(statefulKey(args[0]));"
+      );
+      expect(brokenStateUpdate).not.toBe(repairedSource.content);
+      writeFileSync(join(root, "src", "program.mjs"), brokenStateUpdate, "utf8");
+      const mutant = spawnSync(process.execPath, repairedProgram.test.args, { cwd: root, encoding: "utf8" });
+      expect(mutant.status).not.toBe(0);
+      expect(`${mutant.stdout}\n${mutant.stderr}`).toContain("stateful owner requirement");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
