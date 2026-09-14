@@ -11,7 +11,7 @@ import { isStructuralResidueSurface } from "./structural-residue.js";
 import { mostLikelyHypothesis, normalizeHypothesisSet } from "./correlated-uncertainty.js";
 import { requestSentenceSequences, spanContainsRequestNearDuplicateSentence } from "./local-evidence-runtime.js";
 import { quotedSentenceGap } from "./quoted-gap.js";
-import { surfaceEchoesPrompt } from "./creative-section-realization.js";
+import { realizeCreativeSection, surfaceEchoesPrompt } from "./creative-section-realization.js";
 import type { CandidateSurface } from "./candidate.js";
 import type { ClaimBasis, CognitiveProposal, PlannedClaim } from "./cognitive-planner.js";
 import type { ConstructGraph, EvidenceId, EvidenceSpan, FieldState, Hasher, JsonValue, LanguageProfile, RequestedAuthority, SemanticEntailmentResult } from "./types.js";
@@ -632,6 +632,14 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       markMouthPhase("surface_plan_corrections");
       const discoursePlan = buildDiscoursePlan(plan, options.hashText);
       markMouthPhase("discourse_plan");
+      const creativeRequested = isCreativeRequested(input, plan);
+      // Long-form creative generation already uses this direct, learned
+      // section realizer. Ordinary creative turns used to leave the same
+      // candidate permanently undefined, then rely only on frame assembly.
+      // Keep both paths: this is a candidate, not an authority override.
+      const directCreativeCandidate = creativeRequested
+        ? directCreativeSectionCandidate(input, discoursePlan, options.languageMemory, generationWorkBudget)
+        : undefined;
       const structuralCreativeCandidate = undefined;
       markMouthPhase("structural_creative_realization");
       const structuralCreativeBound = Boolean(structuralCreativeCandidate);
@@ -707,7 +715,6 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
           ? []
           : generatedCandidatesFromFrames(plan, discoursePlan, input, options.languageMemory, priorPieces, generationWorkBudget);
       markMouthPhase("candidate_setup");
-      const creativeRequested = isCreativeRequested(input, plan);
       const supportBoundary = creativeRequested ? undefined : supportBoundaryCandidate(input, discoursePlan, options.languageMemory, generationWorkBudget);
       // An echo of the request is never an answer. For a creative turn
       // that holds unconditionally; elsewhere it holds whenever nothing
@@ -726,6 +733,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       // the turn answers as it did before -- a language never shown to the system is one it declines to write.
       const learnedCodeCandidate = learnedCodeSurfaceCandidate(input);
       const rawCandidates = [
+        ...(directCreativeCandidate ? [directCreativeCandidate] : []),
         ...(learnedCodeCandidate ? [learnedCodeCandidate] : []),
         ...(kernelSelectedCandidate ? [kernelSelectedCandidate] : []),
         ...(governedActionPreview ? [governedActionPreview] : []),
@@ -4070,6 +4078,52 @@ function selectedNonEventCreativeMouthHandoff(input: SpeakInput): boolean {
   if (!invention) return false;
   const realization = jsonRecord(jsonRecord(invention.trace).proposalRealization);
   return realization.path === "mouth_non_event_realization_deferred";
+}
+
+/**
+ * One bounded learned continuation for an ordinary creative turn. This is
+ * deliberately a normal candidate: the surface-energy judge still chooses
+ * among it, learned constructions, and frame assembly.
+ */
+function directCreativeSectionCandidate(
+  input: SpeakInput,
+  discoursePlan: DiscoursePlan,
+  languageMemory: LanguageMemoryRuntime,
+  budget: MouthGenerationWorkBudget
+): SurfaceCandidate | undefined {
+  const generationExtent = claimMouthGenerationWork(budget, 160);
+  if (generationExtent === undefined) return undefined;
+  const realization = realizeCreativeSection({
+    languageMemory,
+    state: input.languageMemory,
+    targetLanguageProfile: input.languageProfile,
+    requestText: mouthEchoQuestionText(input),
+    sectionGoal: input.requirementField
+      ? requestSubjectText(input.entailment.claim.text, input.requirementField)
+      : input.entailment.claim.text,
+    narrativeConditioning: input.evidence.slice(0, 2).map(span => span.text).filter(Boolean),
+    casingSourceTexts: input.evidence.slice(0, 4).map(span => span.text).filter(Boolean),
+    targetLanguage: input.targetLanguage,
+    targetScript: input.targetScript,
+    generationExtent
+  });
+  if (!realization.accepted || !admissibleMouthSurface(realization.text)) return undefined;
+  return {
+    id: "candidate:generated:creative:direct-section",
+    style: "surface.path.generated.creative.direct_section",
+    path: "generated",
+    claimBasis: "invented",
+    text: realization.text,
+    evidenceIds: [],
+    fit: clamp01(0.68 + (realization.generationAudit?.confidence ?? 0) * 0.2),
+    importedPieceIds: [],
+    discoursePlan,
+    boundaryDecisions: [],
+    audit: toJsonValue({
+      source: "mouth.creative.direct_section",
+      realization: realization.generationAudit ?? null
+    })
+  };
 }
 
 function creativeArtifactCandidate(input: SpeakInput, discoursePlan: DiscoursePlan): SurfaceCandidate | undefined {
