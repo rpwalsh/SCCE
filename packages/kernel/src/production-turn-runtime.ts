@@ -817,7 +817,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // `fastLocalEvidenceAnswer` on every API turn, so the durable profile scan was permanently off and the turn saw
       // zero language profiles against 22,482 stored -- which starves requirement activation, and through it every
       // reasoning gate, on every request.
-      if (!selectedSurfaceCluster && fastRuntimeBudget && !sourceLanguageAlias
+      if (!deps.evaluationCondition?.flags.disableLanguageMemory
+        && !selectedSurfaceCluster && fastRuntimeBudget && !sourceLanguageAlias
         && deadlineCheckpoint("kernel.turn.language_cluster_escalation", LANGUAGE_CLUSTER_ESCALATION_MS)?.allowed !== false) {
         selectedSurfaceCluster = await surfaceLanguageClusterCached(input.text, false).catch(() => undefined);
       }
@@ -828,7 +829,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         counts: { profiles: selectedSurfaceCluster?.profileIds.length ?? 0 },
         support: {
           residentOnly: fastRuntimeBudget,
-          durableProfileScanAllowed: true,
+          durableProfileScanAllowed: !deps.evaluationCondition?.flags.disableLanguageMemory,
           sourceLanguageAlias: sourceLanguageAlias ?? null,
           sourceLanguageAliasResolved: sourceLanguageAlias ? Boolean(selectedSurfaceCluster) : null,
           selectedProfileHint: selectedSurfaceCluster
@@ -974,9 +975,11 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const explicitAuthority = requestedAuthorityFromTurnInput(input, translationTarget);
       const workspacePlanContext = runtimeWorkspacePlanContext(input.metadata, input.text);
       // Routing control first, and from its own cache when hydration did not carry it.
-      const turnRequestControlPatterns = authorityLanguage.requestControlPatterns.length
-        ? authorityLanguage.requestControlPatterns
-        : await requestControlPatternsCached();
+      const turnRequestControlPatterns = deps.evaluationCondition?.flags.disableLanguageMemory
+        ? []
+        : authorityLanguage.requestControlPatterns.length
+          ? authorityLanguage.requestControlPatterns
+          : await requestControlPatternsCached();
       const requestRequirementLanguageState: LanguageMemoryRuntimeState = {
         ...authorityLanguage.state,
         importedPatterns: uniqueRecordsById([
