@@ -2137,7 +2137,7 @@ export function parseTurnWorkspaceCodingRequest(
     ...body,
     schemaVersion: WORKSPACE_CODING_PATCH_PLAN_REQUEST_SCHEMA,
     requestText
-  }).input;
+  }, { allowEmptyRequestedPaths: true }).input;
 }
 
 /**
@@ -2151,11 +2151,21 @@ export function workspaceCodingInputForProgramGraph(
 ): WorkspaceCodingPatchPlanningInput | undefined {
   if (!program?.hydration?.valid) return undefined;
   const evidenceIds = uniqueServerStrings(program.hydration.program.provenanceEvidenceIds.map(String));
-  if (evidenceIds.length === 0) return undefined;
-  return { ...input, program, evidenceIds };
+  const ownerRequirementIds = uniqueServerStrings((program.hydration.ownerRequirementIds ?? []).map(String));
+  if (evidenceIds.length === 0 && ownerRequirementIds.length === 0) return undefined;
+  return {
+    ...input,
+    requestedPaths: input.requestedPaths.length ? input.requestedPaths : [program.entrypoint],
+    program,
+    evidenceIds,
+    ownerRequirementIds
+  };
 }
 
-export function parseWorkspaceCodingPatchPlanRequest(value: unknown): WorkspaceCodingPatchPlanApiRequest {
+export function parseWorkspaceCodingPatchPlanRequest(
+  value: unknown,
+  options: { readonly allowEmptyRequestedPaths?: boolean } = {}
+): WorkspaceCodingPatchPlanApiRequest {
   const body = exactRecordWithOptional(value, "workspace coding patch plan request", [
     "schemaVersion",
     "workspaceId",
@@ -2170,7 +2180,7 @@ export function parseWorkspaceCodingPatchPlanRequest(value: unknown): WorkspaceC
   }
   const requestedPaths = boundedArray(body.requestedPaths, "requestedPaths", 256)
     .map((item, index) => boundedWorkspacePath(item, `requestedPaths[${index}]`));
-  if (requestedPaths.length < 1) throw new HttpError(400, "requestedPaths must contain at least one path");
+  if (requestedPaths.length < 1 && !options.allowEmptyRequestedPaths) throw new HttpError(400, "requestedPaths must contain at least one path");
   rejectDuplicateApiPaths(requestedPaths, "requestedPaths");
   const diagnosticCodes = body.diagnosticCodes === undefined
     ? []

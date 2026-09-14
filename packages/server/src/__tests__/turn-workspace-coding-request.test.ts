@@ -50,6 +50,19 @@ describe("workspace coding chat request", () => {
     }, "turn text")).toThrow(/unexpected:/u);
   });
 
+  it("allows a pathless greenfield turn so the completed ProgramGraph can supply its entrypoint", () => {
+    const input = parseTurnWorkspaceCodingRequest({
+      schemaVersion: WORKSPACE_CODING_TURN_REQUEST_SCHEMA,
+      workspaceId: "workspace.blank",
+      expectedWorkspaceUpdatedAt: 1,
+      requestId: "request.greenfield",
+      requestedPaths: [],
+      diagnosticCodes: [],
+      validationPlan: { validatorId: "trusted-host-pnpm-validate.v1", checks: ["compiler", "typecheck", "tests"] }
+    }, "Create a function double(x) such that double(3) returns 6.");
+    expect(input?.requestedPaths).toEqual([]);
+  });
+
   it("binds only the completed turn's source-bound ProgramGraph to workspace planning", () => {
     const input: WorkspaceCodingPatchPlanningInput = {
       workspaceId: "workspace.1",
@@ -78,6 +91,21 @@ describe("workspace coding chat request", () => {
     expect(bound).toMatchObject({
       program,
       evidenceIds: ["evidence.2", "evidence.1"]
+    });
+    const ownerProgram = {
+      ...program,
+      entrypoint: "src/program.mjs",
+      hydration: {
+        ...program.hydration!,
+        ownerRequirementIds: ["owner.requirement.1"],
+        program: { ...program.hydration!.program, provenanceEvidenceIds: [] }
+      }
+    } as ProgramGraph;
+    expect(workspaceCodingInputForProgramGraph({ ...input, requestedPaths: [] }, ownerProgram)).toMatchObject({
+      program: ownerProgram,
+      evidenceIds: [],
+      ownerRequirementIds: ["owner.requirement.1"],
+      requestedPaths: ["src/program.mjs"]
     });
     expect(workspaceCodingInputForProgramGraph(input, undefined)).toBeUndefined();
     expect(workspaceCodingInputForProgramGraph(input, {

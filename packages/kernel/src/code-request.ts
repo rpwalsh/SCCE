@@ -1,8 +1,9 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { splitPriorUnits, normalizePriorKey } from "./kernel-answer-primitives.js";
-import { toJsonValue } from "./primitives.js";
+import { canonicalStringify, createHasher, toJsonValue } from "./primitives.js";
 import type { ExplicitTurnRequirement } from "./turn-requirements.js";
+import type { JsonValue, ProgramBehaviorRequirement } from "./types.js";
 
 /**
  * Formal language identity, not natural-language vocabulary: these are the
@@ -53,6 +54,7 @@ export interface CodeRequestSignal {
   /** Paths the request names, in request order. */
   paths: string[];
   signals: string[];
+  behaviorRequirements: ProgramBehaviorRequirement[];
 }
 
 const FENCE = /```/u;
@@ -107,7 +109,13 @@ export function codeRequestSignal(requestText: string): CodeRequestSignal {
   if (callShape) { signals.push("code.signal.call_shape"); demand += 0.2; }
   if (codePunctuation) { signals.push("code.signal.code_punctuation"); demand += 0.2; }
 
-  return { ...(language ? { language } : {}), demand: Math.min(1, demand), paths: paths.slice(0, 8), signals };
+  const behaviorRequirements = explicitCallResultRequirements(text);
+  if (behaviorRequirements.length) {
+    signals.push("code.signal.owner_behavior_example");
+    demand += 0.35;
+  }
+
+  return { ...(language ? { language } : {}), demand: Math.min(1, demand), paths: paths.slice(0, 8), signals, behaviorRequirements };
 }
 
 /**
@@ -118,6 +126,7 @@ export function codeRequestSignal(requestText: string): CodeRequestSignal {
 export function codeRequestRecognized(signal: CodeRequestSignal): boolean {
   const has = (id: string) => signal.signals.includes(id);
   if (has("code.signal.code_path")) return true;
+  if (has("code.signal.owner_behavior_example")) return true;
   if (has("code.signal.fenced_block") && signal.language !== undefined) return true;
   if (has("code.signal.formal_language")) return true;
   return has("code.signal.language_alias") && codeRequestCorroborated(signal);
@@ -125,8 +134,165 @@ export function codeRequestRecognized(signal: CodeRequestSignal): boolean {
 
 /** Code shape around the language name: an artifact is being written, not discussed. Pure. */
 export function codeRequestCorroborated(signal: CodeRequestSignal): boolean {
-  return ["code.signal.identifier_shape", "code.signal.call_shape", "code.signal.code_punctuation", "code.signal.fenced_block", "code.signal.code_path"]
+  return ["code.signal.identifier_shape", "code.signal.call_shape", "code.signal.code_punctuation", "code.signal.fenced_block", "code.signal.code_path", "code.signal.owner_behavior_example"]
     .some(id => signal.signals.includes(id));
+}
+
+/**
+ * Extracts only explicit code-shaped call/result examples. The separator is
+ * preserved from the owner surface; no natural-language relation word is read.
+ */
+function explicitCallResultRequirements(requestText: string, scanChars = 8192, limit = 16): ProgramBehaviorRequirement[] {
+  const text = requestText.slice(0, scanChars);
+  const hasher = createHasher();
+  const requestHash = `sha256:${hasher.digestHex(requestText)}`;
+  const requirements: ProgramBehaviorRequirement[] = [];
+  const declaredCallables = declaredCallableIds(text);
+  let cursor = 0;
+  while (cursor < text.length && requirements.length < limit) {
+    const identifier = readIdentifier(text, cursor);
+    if (!identifier) {
+      cursor += 1;
+      continue;
+    }
+    const callStart = cursor;
+    cursor = skipWhitespace(text, identifier.end);
+    if (text[cursor] !== "(") continue;
+    const call = readBalancedJson(text, cursor, "(", ")");
+    if (!call) continue;
+    cursor = skipWhitespace(text, call.end);
+    let relationSurface = ["===", "=>", "==", "="].find(operator => text.startsWith(operator, cursor));
+    let relationEnd = relationSurface ? cursor + relationSurface.length : cursor;
+    if (!relationSurface && declaredCallables.has(identifier.value)) {
+      const relation = readIdentifier(text, cursor);
+      if (relation) {
+        const afterRelation = skipWhitespace(text, relation.end);
+        if (afterRelation > relation.end) {
+          relationSurface = relation.value;
+          relationEnd = relation.end;
+        }
+      }
+    }
+    if (!relationSurface) continue;
+    const resultStart = skipWhitespace(text, relationEnd);
+    const result = readJsonValue(text, resultStart);
+    if (!result) continue;
+    let args: JsonValue[];
+    try {
+      const parsed = JSON.parse(`[${call.inner}]`) as unknown;
+      if (!Array.isArray(parsed)) continue;
+      args = parsed as JsonValue[];
+    } catch {
+      continue;
+    }
+    const identity = {
+      requestHash,
+      callableId: identifier.value,
+      arguments: args,
+      expectedResult: result.value,
+      relationSurface,
+      sourceSpan: { charStart: callStart, charEnd: result.end }
+    };
+    requirements.push({
+      id: `owner.program.requirement.${hasher.digestHex(canonicalStringify(identity)).slice(0, 40)}`,
+      verificationRole: "fit",
+      ...identity
+    });
+    cursor = result.end;
+  }
+  const byCallable = new Map<string, number[]>();
+  requirements.forEach((requirement, index) => byCallable.set(requirement.callableId, [...(byCallable.get(requirement.callableId) ?? []), index]));
+  const heldOut = new Set([...byCallable.values()].filter(indices => indices.length >= 4).map(indices => indices.at(-1)!));
+  return requirements.map((requirement, index) => ({
+    ...requirement,
+    verificationRole: heldOut.has(index) ? "held_out" : "fit"
+  }));
+}
+
+/**
+ * A repeated callable declaration licenses one opaque relation unit between a
+ * concrete call and its JSON result. This admits source-language surfaces such
+ * as `f(x); f(1) <relation> 2` without assigning an English meaning to the
+ * relation unit.
+ */
+function declaredCallableIds(text: string): Set<string> {
+  const result = new Set<string>();
+  let cursor = 0;
+  while (cursor < text.length) {
+    const identifier = readIdentifier(text, cursor);
+    if (!identifier) { cursor += 1; continue; }
+    cursor = skipWhitespace(text, identifier.end);
+    if (text[cursor] !== "(") continue;
+    const call = readBalancedJson(text, cursor, "(", ")");
+    if (!call) continue;
+    cursor = call.end;
+    const parameters = call.inner.split(",").map(value => value.trim()).filter(Boolean);
+    if (parameters.length > 0 && parameters.every(value => readIdentifier(value, 0)?.end === value.length)) {
+      result.add(identifier.value);
+    }
+  }
+  return result;
+}
+
+function readIdentifier(text: string, start: number): { value: string; end: number } | undefined {
+  if (!/^[$_\p{L}]$/u.test(text[start] ?? "")) return undefined;
+  let end = start + 1;
+  while (/^[$_\p{L}\p{N}]$/u.test(text[end] ?? "")) end += 1;
+  return { value: text.slice(start, end), end };
+}
+
+function skipWhitespace(text: string, start: number): number {
+  let cursor = start;
+  while (cursor < text.length && /\s/u.test(text[cursor]!)) cursor += 1;
+  return cursor;
+}
+
+function readBalancedJson(text: string, start: number, open: string, close: string): { inner: string; end: number } | undefined {
+  if (text[start] !== open) return undefined;
+  let depth = 0;
+  let quote = "";
+  let escaped = false;
+  for (let cursor = start; cursor < text.length; cursor += 1) {
+    const char = text[cursor]!;
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === quote) quote = "";
+      continue;
+    }
+    if (char === '"') { quote = char; continue; }
+    if (char === open) depth += 1;
+    else if (char === close && --depth === 0) return { inner: text.slice(start + 1, cursor), end: cursor + 1 };
+  }
+  return undefined;
+}
+
+function readJsonValue(text: string, start: number): { value: JsonValue; end: number } | undefined {
+  const first = text[start];
+  if (!first) return undefined;
+  let end = start;
+  if (first === '"') {
+    let escaped = false;
+    for (end = start + 1; end < text.length; end += 1) {
+      const char = text[end]!;
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') { end += 1; break; }
+    }
+  } else if (first === "[" || first === "{") {
+    const balanced = readBalancedJson(text, start, first, first === "[" ? "]" : "}");
+    if (!balanced) return undefined;
+    end = balanced.end;
+  } else {
+    const match = /^(?:-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null)\b/u.exec(text.slice(start));
+    if (!match) return undefined;
+    end = start + match[0].length;
+  }
+  try {
+    return { value: JSON.parse(text.slice(start, end)) as JsonValue, end };
+  } catch {
+    return undefined;
+  }
 }
 
 /**

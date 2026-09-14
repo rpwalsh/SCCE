@@ -48,4 +48,22 @@ describe("code request structure", () => {
     expect(requirements.every(row => row.status === "explicit" && row.polarity === "required")).toBe(true);
     expect(codeRequestRequirements("Who created Star Trek?", codeRequestSignal("Who created Star Trek?"))).toEqual([]);
   });
+
+  it("projects an explicit call/result example without reading relation prose", () => {
+    const request = "Create a function double(x) such that double(3) returns 6, double(7) returns 14, double(-2) returns -4, and double(11) returns 22.";
+    const signal = codeRequestSignal(request);
+    expect(codeRequestRecognized(signal)).toBe(true);
+    expect(signal.behaviorRequirements[0]).toMatchObject({
+      callableId: "double",
+      arguments: [3],
+      expectedResult: 6,
+      verificationRole: "fit",
+      relationSurface: "returns",
+      requestHash: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u)
+    });
+    expect(signal.behaviorRequirements.map(requirement => requirement.verificationRole)).toEqual(["fit", "fit", "fit", "held_out"]);
+    expect(codeRequestSignal("Explain double(3) in prose.").behaviorRequirements).toEqual([]);
+    expect(codeRequestSignal("Compare double(3) against 6.").behaviorRequirements).toEqual([]);
+    expect(codeRequestSignal("double(3) returns 6.").behaviorRequirements).toEqual([]);
+  });
 });

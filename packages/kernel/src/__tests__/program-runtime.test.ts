@@ -1,7 +1,12 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import {
+  codeRequestSignal,
   createClock,
   createCorrectionMemory,
   createEngineeringCorpusProjection,
@@ -10,7 +15,12 @@ import {
   createLanguageMemoryRuntime,
   createMouth,
   createEmissionEngine,
+  evaluateProgramExpression,
   createProgramGraphBuilder,
+  createWorkspaceRevisionSnapshot,
+  generateWorkspacePatchPlanFromProgramGraph,
+  programIntentForTurn,
+  replanOwnerBehaviorProgramIntent,
   createSourceCodeFileFacts,
   createSourceRepositoryFacts,
   featureSet,
@@ -126,6 +136,99 @@ describe("ProgramGraph runtime and artifact emission", () => {
     expect(program.test).toEqual({ command: "node", args: ["test/program.test.mjs"], cwd: "." });
     expect(program.files.map(file => file.path)).toEqual(expect.arrayContaining(["src/program.mjs", "test/program.test.mjs"]));
     expect(program.hydration?.validations.every(record => record.command.args.every(arg => program.files.some(file => file.path === arg) || arg.startsWith("--")))).toBe(true);
+  });
+
+  it("originates and executes a callable and causal test from an owner behavior requirement", () => {
+    const request = "Create a function double(x) such that double(3) returns 6, double(7) returns 14, double(-2) returns -4, and double(11) returns 22. Add and run tests proving it.";
+    const signal = codeRequestSignal(request);
+    const programIntent = required(programIntentForTurn({ requestedAuthority: "program", codeSignal: signal, evidence: [] }));
+    const program = required(buildProgram(request, [], programIntent).program);
+    const source = required(program.files.find(file => file.path === "src/program.mjs"));
+    const test = required(program.files.find(file => file.path === "test/program.test.mjs"));
+
+    expect(programIntent.behaviorRequirements).toHaveLength(4);
+    expect(program.hydration?.program.provenanceEvidenceIds).toEqual([]);
+    expect(program.hydration?.ownerRequirementIds).toEqual(programIntent.behaviorRequirements?.map(requirement => requirement.id));
+    expect(validateProgramHydrationContract(required(program.hydration)).valid).toBe(true);
+    expect(programIntent.behaviorImplementationPhase).toBe("probe");
+    expect(source.content).toContain("return args.length === 1 ? args[0] : args");
+    expect(test.content).toContain("assert.deepEqual(ownerProgram[requirement.callableId](...requirement.arguments), requirement.expectedResult");
+
+    const snapshot = createWorkspaceRevisionSnapshot({ workspaceId: "workspace.owner.empty", revisionId: "revision.empty", files: [] });
+    const patchPlan = generateWorkspacePatchPlanFromProgramGraph({
+      snapshot,
+      expectedRevisionId: snapshot.revisionId,
+      expectedRevisionHash: snapshot.revisionHash,
+      request: {
+        requestId: "request.owner.double",
+        text: request,
+        requestedPaths: ["src/program.mjs"],
+        evidenceIds: [],
+        ownerRequirementIds: programIntent.behaviorRequirements?.map(requirement => requirement.id) ?? []
+      },
+      program,
+      existingDirectoryPaths: ["", "src", "test"],
+      verifiedAbsentPaths: program.files.map(file => file.path),
+      validationPlan: { validatorId: "validator.owner.node", checks: ["compiler", "typecheck", "tests"] }
+    });
+    expect(patchPlan.plan.operations.map(operation => operation.path)).toEqual(["src/program.mjs", "test/program.test.mjs"]);
+    expect(patchPlan.programProposalTrace.ownerRequirementIds).toEqual(programIntent.behaviorRequirements?.map(requirement => requirement.id).sort());
+    expect(patchPlan.programProposalTrace.evidenceIds).toEqual([]);
+
+    const root = mkdtempSync(join(tmpdir(), "scce-owner-program-"));
+    try {
+      mkdirSync(join(root, "src"));
+      mkdirSync(join(root, "test"));
+      writeFileSync(join(root, "src", "program.mjs"), source.content, "utf8");
+      writeFileSync(join(root, "test", "program.test.mjs"), test.content, "utf8");
+      const failing = spawnSync(process.execPath, program.test.args, { cwd: root, encoding: "utf8" });
+      expect(failing.status).not.toBe(0);
+      expect(`${failing.stdout}\n${failing.stderr}`).toContain("owner requirement");
+
+      const retry = replanOwnerBehaviorProgramIntent({
+        intent: programIntent,
+        program,
+        failure: {
+          observationId: "owner.validation.failure.kernel",
+          programId: program.id,
+          planHash: String(patchPlan.plan.planHash),
+          validatorId: "validator.owner.node",
+          checkId: "tests",
+          status: "failed",
+          ownerRequirementIds: programIntent.behaviorRequirements?.map(requirement => requirement.id) ?? [],
+          command: program.test
+        },
+        hasher
+      });
+      const repairedProgram = required(buildProgram(request, [], retry.intent).program);
+      const repairedSource = required(repairedProgram.files.find(file => file.path === "src/program.mjs"));
+      const repairedTest = required(repairedProgram.files.find(file => file.path === "test/program.test.mjs"));
+      expect(retry.intent.behaviorImplementationPhase).toBe("selected");
+      expect(retry.selection.selectedTransformationIds).toEqual(retry.intent.selectedBehaviorTransformationIds);
+      const selected = required(retry.intent.behaviorTransformationCandidates?.find(candidate =>
+        retry.intent.selectedBehaviorTransformationIds?.includes(candidate.id)
+      ));
+      expect(selected).toMatchObject({
+        callableId: "double",
+        fitMeanSquaredError: 0,
+        predictedFitObligationIds: programIntent.behaviorRequirements?.filter(requirement => requirement.verificationRole === "fit").map(requirement => requirement.id).sort(),
+        heldOutObligationIds: programIntent.behaviorRequirements?.filter(requirement => requirement.verificationRole === "held_out").map(requirement => requirement.id).sort()
+      });
+      expect(evaluateProgramExpression(selected.producedIr, 11)).toBe(22);
+      expect(repairedSource.content).toContain("return (args[0] + args[0])");
+      expect(repairedSource.content).not.toContain("expectedResult");
+      expect(repairedTest.content).toContain("expectedResult");
+      writeFileSync(join(root, "src", "program.mjs"), repairedSource.content, "utf8");
+      writeFileSync(join(root, "test", "program.test.mjs"), repairedTest.content, "utf8");
+      const passing = spawnSync(process.execPath, repairedProgram.test.args, { cwd: root, encoding: "utf8" });
+      expect(passing.status, passing.stderr).toBe(0);
+      writeFileSync(join(root, "src", "program.mjs"), repairedSource.content.replace("return (args[0] + args[0])", "return (args[0] - args[0])"), "utf8");
+      const mutant = spawnSync(process.execPath, repairedProgram.test.args, { cwd: root, encoding: "utf8" });
+      expect(mutant.status).not.toBe(0);
+      expect(`${mutant.stdout}\n${mutant.stderr}`).toContain("owner requirement");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("emits a log parser when line-shaped diagnostic evidence is present", () => {

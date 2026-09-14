@@ -170,6 +170,8 @@ export interface WorkspaceCodingRequest {
   readonly requestedPaths: readonly string[];
   /** Evidence already attached to the program planner input; owner text is not evidence. */
   readonly evidenceIds: readonly string[];
+  /** Executable owner requirements authorize origination but never become factual evidence. */
+  readonly ownerRequirementIds?: readonly string[];
 }
 
 export interface WorkspaceProgramProposalTrace {
@@ -180,6 +182,7 @@ export interface WorkspaceProgramProposalTrace {
   readonly programId: string;
   readonly sourcePlanIds: readonly string[];
   readonly evidenceIds: readonly string[];
+  readonly ownerRequirementIds: readonly string[];
   readonly requestedPaths: readonly string[];
   readonly derivedDependencyPaths: readonly string[];
   readonly selectedArtifactPaths: readonly string[];
@@ -448,7 +451,10 @@ export function generateWorkspacePatchPlanFromProgramGraph(
   const requestedPaths = uniqueSorted(input.request.requestedPaths.map(validateWorkspacePath));
   if (requestedPaths.length === 0) throw new Error("coding request requires at least one requested path");
   const requestEvidenceIds = uniqueSorted(input.request.evidenceIds.map(value => requiredId(value, "coding request evidence id")));
-  if (requestEvidenceIds.length === 0) throw new Error("coding request requires source-bound program evidence");
+  const requestOwnerRequirementIds = uniqueSorted((input.request.ownerRequirementIds ?? []).map(value => requiredId(value, "coding request owner requirement id")));
+  if (requestEvidenceIds.length === 0 && requestOwnerRequirementIds.length === 0) {
+    throw new Error("coding request requires source-bound evidence or an executable owner requirement");
+  }
   const existingDirectoryPaths = new Set(input.existingDirectoryPaths.map(value => value === "" ? "" : validateWorkspacePath(value)));
   if (!existingDirectoryPaths.has("")) throw new Error("workspace program proposal requires a verified workspace root directory");
   const verifiedAbsentPaths = new Set(input.verifiedAbsentPaths.map(validateWorkspacePath));
@@ -466,6 +472,23 @@ export function generateWorkspacePatchPlanFromProgramGraph(
   const unboundEvidence = requestEvidenceIds.filter(id => !programEvidence.has(id));
   if (unboundEvidence.length > 0) {
     throw new Error(`coding request evidence is not bound to the program graph: ${unboundEvidence.join(", ")}`);
+  }
+  const programOwnerRequirementIds = uniqueSorted((hydration.ownerRequirementIds ?? []).map(value => requiredId(value, "program owner requirement id")));
+  const programOwnerRequirements = new Set(programOwnerRequirementIds);
+  const unboundOwnerRequirements = requestOwnerRequirementIds.filter(id => !programOwnerRequirements.has(id));
+  if (unboundOwnerRequirements.length > 0) {
+    throw new Error(`coding request owner requirement is not bound to the program graph: ${unboundOwnerRequirements.join(", ")}`);
+  }
+  const ownerRequirementNodeIds = new Set(input.program.nodes.filter(node => node.kind === "owner_behavior_requirement").map(node => node.id));
+  const ownerRequirementEdges = input.program.edges.filter(edge => requestOwnerRequirementIds.includes(edge.source));
+  for (const ownerRequirementId of requestOwnerRequirementIds) {
+    if (!ownerRequirementNodeIds.has(ownerRequirementId)) throw new Error(`program graph owner requirement node is absent: ${ownerRequirementId}`);
+    if (!ownerRequirementEdges.some(edge => edge.source === ownerRequirementId && edge.relation === "implemented_by")) {
+      throw new Error(`program graph owner requirement implementation binding is absent: ${ownerRequirementId}`);
+    }
+    if (!ownerRequirementEdges.some(edge => edge.source === ownerRequirementId && edge.relation === "verified_by")) {
+      throw new Error(`program graph owner requirement test binding is absent: ${ownerRequirementId}`);
+    }
   }
 
   const hydrationFiles = new Map(hydration.files.map(file => [file.path, file]));
@@ -550,8 +573,13 @@ export function generateWorkspacePatchPlanFromProgramGraph(
     expectedBaseContentHash: snapshotByPath.get(artifact.path)?.contentHash ?? null
   }));
   const coverage = requestedPaths.filter(path => selectedPaths.has(path)).length / requestedPaths.length;
-  const evidenceCoverage = requestEvidenceIds.filter(id => programEvidence.has(id)).length / requestEvidenceIds.length;
+  const authorityCount = requestEvidenceIds.length + requestOwnerRequirementIds.length;
+  const authorityCoverage = authorityCount === 0 ? 0 : (
+    requestEvidenceIds.filter(id => programEvidence.has(id)).length
+    + requestOwnerRequirementIds.filter(id => programOwnerRequirements.has(id)).length
+  ) / authorityCount;
   const blueprintMetrics = programBlueprintMetrics(input.program);
+  const authorizedBehaviorRisk = requestOwnerRequirementIds.length > 0 ? 0 : blueprintMetrics.unbackedSynthesisRisk;
   const planningScopePaths = uniqueSorted(selectedArtifacts.filter(artifact => artifact.role !== "test").map(artifact => artifact.path));
   const assessmentId = `workspace-program-assessment:${hasher.digestHex(canonicalStringify({
     requestId,
@@ -559,7 +587,8 @@ export function generateWorkspacePatchPlanFromProgramGraph(
     requestedPaths,
     planningScopePaths,
     artifacts: selectedArtifacts.map(artifact => [artifact.path, artifact.contentHash]),
-    evidenceIds: requestEvidenceIds
+    evidenceIds: requestEvidenceIds,
+    ownerRequirementIds: requestOwnerRequirementIds
   })).slice(0, 32)}`;
   const planResult = generateWorkspacePatchPlanInternal({
     snapshot,
@@ -570,11 +599,11 @@ export function generateWorkspacePatchPlanFromProgramGraph(
     assessment: {
       assessmentId,
       evidenceIds: requestEvidenceIds,
-      requestedBehaviorCoverage: coverage * (1 - blueprintMetrics.unbackedSynthesisRisk),
+      requestedBehaviorCoverage: coverage * (1 - authorizedBehaviorRisk),
       dependencyConsistency: hydration.dependencies.some(dependency => dependency.missing) ? 0 : 1,
-      architecturalFit: blueprintMetrics.sourceCoupling * (1 - blueprintMetrics.unbackedSynthesisRisk),
-      explanationAccuracy: evidenceCoverage * (1 - blueprintMetrics.unbackedSynthesisRisk),
-      fabricatedBehavior: blueprintMetrics.unbackedSynthesisRisk
+      architecturalFit: Math.max(blueprintMetrics.sourceCoupling, requestOwnerRequirementIds.length > 0 ? coverage : 0) * (1 - authorizedBehaviorRisk),
+      explanationAccuracy: authorityCoverage * (1 - authorizedBehaviorRisk),
+      fabricatedBehavior: authorizedBehaviorRisk
     },
     validationPlan: input.validationPlan
   }, hasher, verifiedNonBehavioralPaths, verifiedRepairPaths.compilerDiagnostic);
@@ -591,12 +620,14 @@ export function generateWorkspacePatchPlanFromProgramGraph(
         text: requestText,
         requestedPaths,
         evidenceIds: requestEvidenceIds,
+        ownerRequirementIds: requestOwnerRequirementIds,
         revisionId: snapshot.revisionId,
         revisionHash: snapshot.revisionHash
       }, hasher),
       programId: input.program.id,
       sourcePlanIds,
       evidenceIds: requestEvidenceIds,
+      ownerRequirementIds: requestOwnerRequirementIds,
       requestedPaths,
       derivedDependencyPaths: uniqueSorted([...dependencyPaths].filter(path => !requested.has(path))),
       selectedArtifactPaths: uniqueSorted(selectedArtifacts.map(artifact => artifact.path)),
@@ -675,6 +706,7 @@ function assertRepairLineageForSelectedArtifacts(
   for (const artifact of artifacts) {
     if (artifact.role === "test") continue;
     const current = snapshotByPath.get(artifact.path);
+    if (!current && ownerRequirementImplementsArtifact(program, artifact.path)) continue;
     const baseText = current ? decodeExactUtf8(current.bytes, artifact.path, current.mediaType) : undefined;
     if (baseText === artifact.content) continue;
     const baseArtifactHash = baseText === undefined ? null : `sha256_${hasher.digestHex(baseText)}`;
@@ -706,6 +738,15 @@ function assertRepairLineageForSelectedArtifacts(
       }
     }
   }
+}
+
+function ownerRequirementImplementsArtifact(program: ProgramGraph, artifactPath: string): boolean {
+  const ownerRequirementIds = new Set(program.hydration?.ownerRequirementIds ?? []);
+  return ownerRequirementIds.size > 0 && program.edges.some(edge =>
+    ownerRequirementIds.has(edge.source)
+    && edge.target === artifactPath
+    && edge.relation === "implemented_by"
+  );
 }
 
 function verifiedNonBehavioralProgramRepairPaths(

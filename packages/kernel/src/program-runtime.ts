@@ -18,11 +18,13 @@ export interface ProgramHydrationInput {
   program: Omit<ProgramGraph, "hydration">;
   sourcePlanId: string;
   evidenceIds?: readonly string[];
+  ownerRequirementIds?: readonly string[];
   risks?: readonly string[];
 }
 
 export function createProgramHydrationContract(input: ProgramHydrationInput): ProgramHydrationContract {
   const evidenceIds = [...new Set(input.evidenceIds ?? evidenceIdsFromNodes(input.program.nodes))];
+  const ownerRequirementIds = [...new Set(input.ownerRequirementIds ?? [])];
   const packageDeps = packageDependencies(input.program.files);
   const fileRecords = input.program.files.map(file => fileRecord(input.program, file, evidenceIds));
   const symbolRecords = fileRecords.flatMap(file => file.symbols.map(symbol => symbolRecord(input.program.id, file.path, symbol, file.exports.includes(symbol), evidenceIds)));
@@ -30,9 +32,10 @@ export function createProgramHydrationContract(input: ProgramHydrationInput): Pr
   const missing = dependencies.filter(dep => dep.missing).map(dep => dep.packageName);
   const validations = validationRecords(input.program, evidenceIds, input.risks ?? [], missing);
   const emissions = input.program.files.map(file => emissionRecord(input.program.id, file, input.sourcePlanId, evidenceIds));
-  const diagnostics = diagnosticsFor(input.program, fileRecords, dependencies, validations, emissions, evidenceIds);
+  const diagnostics = diagnosticsFor(input.program, fileRecords, dependencies, validations, emissions, evidenceIds, ownerRequirementIds);
   return {
     schema: "scce.program.hydration.v1",
+    ...(ownerRequirementIds.length ? { ownerRequirementIds } : {}),
     program: programRecord(input.program, evidenceIds),
     files: fileRecords,
     symbols: symbolRecords,
@@ -46,29 +49,31 @@ export function createProgramHydrationContract(input: ProgramHydrationInput): Pr
 
 export function validateProgramHydrationContract(contract: ProgramHydrationContract): { valid: boolean; diagnostics: string[] } {
   const diagnostics: string[] = [];
+  const ownerRequirementIds = contract.ownerRequirementIds ?? [];
   if (contract.schema !== "scce.program.hydration.v1") diagnostics.push("program.hydration.schema");
   if (!contract.program.programId) diagnostics.push("program.hydration.program_id");
   if (!contract.program.entrypointPath) diagnostics.push("program.hydration.entrypoint_path");
-  if (!contract.program.provenanceEvidenceIds.length) diagnostics.push("program.hydration.program_provenance");
+  if (!contract.program.provenanceEvidenceIds.length && !ownerRequirementIds.length) diagnostics.push("program.hydration.program_provenance");
+  if (new Set(ownerRequirementIds).size !== ownerRequirementIds.length || ownerRequirementIds.some(id => !id)) diagnostics.push("program.hydration.owner_requirements");
   if (!contract.files.length) diagnostics.push("program.hydration.files");
   if (!contract.files.some(file => file.entrypoint)) diagnostics.push("program.hydration.entrypoint_file");
   if (new Set(contract.files.map(file => file.path)).size !== contract.files.length) diagnostics.push("program.hydration.duplicate_file_path");
   for (const file of contract.files) {
     if (!file.contentHash) diagnostics.push(`program.hydration.file_hash:${file.path}`);
     if (!file.mediaType) diagnostics.push(`program.hydration.file_media:${file.path}`);
-    if (!file.provenanceEvidenceIds.length) diagnostics.push(`program.hydration.file_provenance:${file.path}`);
+    if (!file.provenanceEvidenceIds.length && !ownerRequirementIds.length) diagnostics.push(`program.hydration.file_provenance:${file.path}`);
   }
   if (!contract.validations.length) diagnostics.push("program.hydration.validations");
   for (const validation of contract.validations) {
     if (!validCommand(validation.command)) diagnostics.push(`program.hydration.validation_command:${validation.validationId}`);
-    if (!validation.evidenceIds.length) diagnostics.push(`program.hydration.validation_provenance:${validation.validationId}`);
+    if (!validation.evidenceIds.length && !ownerRequirementIds.length) diagnostics.push(`program.hydration.validation_provenance:${validation.validationId}`);
     if (!validation.commandSource) diagnostics.push(`program.hydration.validation_command_source:${validation.validationId}`);
   }
   if (!contract.emissions.length) diagnostics.push("program.hydration.emissions");
   if (contract.emissions.length !== contract.files.length) diagnostics.push("program.hydration.emission_file_count");
   for (const emission of contract.emissions) {
     if (!emission.filePath || !emission.contentHash) diagnostics.push(`program.hydration.emission_record:${emission.artifactId}`);
-    if (!emission.provenanceEvidenceIds.length) diagnostics.push(`program.hydration.emission_provenance:${emission.artifactId}`);
+    if (!emission.provenanceEvidenceIds.length && !ownerRequirementIds.length) diagnostics.push(`program.hydration.emission_provenance:${emission.artifactId}`);
   }
   if (!contract.valid && !contract.diagnostics.length) diagnostics.push("program.hydration.invalid_without_diagnostics");
   return { valid: diagnostics.length === 0 && contract.valid, diagnostics: [...contract.diagnostics, ...diagnostics] };
@@ -102,6 +107,7 @@ export function validateProgramGraphHydration(program: ProgramGraph): { valid: b
       program: baseProgram,
       sourcePlanId: sourcePlanIds[0]!,
       evidenceIds: hydration.program.provenanceEvidenceIds,
+      ownerRequirementIds: hydration.ownerRequirementIds,
       risks
     });
     if (canonicalStringify(reconstructed) !== canonicalStringify(hydration)) {
@@ -231,13 +237,14 @@ function diagnosticsFor(
   dependencies: readonly ProgramDependencyRecord[],
   validations: readonly ProgramValidationRecord[],
   emissions: readonly ArtifactEmissionRecord[],
-  evidenceIds: readonly string[]
+  evidenceIds: readonly string[],
+  ownerRequirementIds: readonly string[]
 ): string[] {
   const diagnostics: string[] = [];
   if (!program.entrypoint) diagnostics.push("program.validation.entrypoint_path_missing");
   if (!files.length) diagnostics.push("program.validation.files_missing");
   if (!files.some(file => file.entrypoint)) diagnostics.push("program.validation.entrypoint_missing");
-  if (!evidenceIds.length) diagnostics.push("program.validation.provenance_missing");
+  if (!evidenceIds.length && !ownerRequirementIds.length) diagnostics.push("program.validation.provenance_missing");
   for (const dep of dependencies) if (dep.missing) diagnostics.push(`program.validation.dependency_missing:${dep.packageName}`);
   if (!validCommand(program.build)) diagnostics.push("program.validation.build_command_missing");
   if (!validCommand(program.test)) diagnostics.push("program.validation.test_command_missing");
@@ -471,6 +478,7 @@ export function hydrationSummary(contract: ProgramHydrationContract): JsonValue 
   return toJsonValue({
     schema: contract.schema,
     programId: contract.program.programId,
+    ownerRequirementCount: contract.ownerRequirementIds?.length ?? 0,
     fileCount: contract.files.length,
     symbolCount: contract.symbols.length,
     dependencyCount: contract.dependencies.length,

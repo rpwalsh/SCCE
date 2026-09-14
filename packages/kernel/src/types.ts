@@ -617,7 +617,28 @@ export interface ProgramConstructIntent {
   outputMediaTypes?: string[];
   constraints?: string[];
   provenanceEvidenceIds?: string[];
+  /** Owner-authoritative executable examples projected once from explicit code structure. */
+  behaviorRequirements?: ProgramBehaviorRequirement[];
+  /** Internal hypothesis state; owner requirements do not select their own implementation. */
+  behaviorImplementationPhase?: "probe" | "selected";
+  /** Bounded hypotheses produced after an observed executable failure. */
+  behaviorTransformationCandidates?: import("./program-transformation-search.js").ProgramTransformationCandidate[];
+  /** Hypotheses selected for realization after fitting the executable obligations. */
+  selectedBehaviorTransformationIds?: string[];
   metadata?: JsonValue;
+}
+
+export interface ProgramBehaviorRequirement {
+  readonly id: string;
+  readonly requestHash: string;
+  readonly callableId: string;
+  readonly arguments: JsonValue[];
+  readonly expectedResult: JsonValue;
+  /** Held-out examples may verify a model but may not participate in fitting it. */
+  readonly verificationRole: "fit" | "held_out";
+  /** Exact source separator retained as an opaque observed relation surface. */
+  readonly relationSurface: string;
+  readonly sourceSpan: { readonly charStart: number; readonly charEnd: number };
 }
 
 export interface ProgramGraphRecord {
@@ -691,6 +712,8 @@ export interface ArtifactEmissionRecord {
 
 export interface ProgramHydrationContract {
   schema: "scce.program.hydration.v1";
+  /** Owner-authoritative requirements that license artifact origination without being factual evidence. */
+  ownerRequirementIds?: string[];
   program: ProgramGraphRecord;
   files: ProgramFileRecord[];
   symbols: ProgramSymbolRecord[];
