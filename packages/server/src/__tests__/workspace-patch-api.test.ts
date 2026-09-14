@@ -169,7 +169,7 @@ describe("workspace patch API contract", () => {
         id: "graph.behavior",
         workspaceRevision: { workspaceId: "workspace-1", revisionId: "revision-1", revisionHash: hash("a") },
         analyzerRevision: { analyzerId: "analyzer.typescript", analyzerVersion: "1", semanticRevisionHash: hash("b") },
-        validationCommandBindings: [{ commandId: "command.tests", checkId: "tests" }],
+        validationCommandBindings: [{ commandId: "command.tests", checkId: "tests", commandIndex: 0 }],
         constructions: [{
           id: "construction.behavior",
           kindId: "scce.program.behavior_role_construction.v1",
@@ -237,7 +237,7 @@ describe("workspace patch API contract", () => {
         id: "graph.behavior.failure",
         workspaceRevision: { workspaceId: "workspace-1", revisionId: "revision-1", revisionHash: hash("a") },
         analyzerRevision: { analyzerId: "analyzer.typescript", analyzerVersion: "1", semanticRevisionHash: hash("b") },
-        validationCommandBindings: [{ commandId: "command.tests", checkId: "tests" }],
+        validationCommandBindings: [{ commandId: "command.tests", checkId: "tests", commandIndex: 0 }],
         constructions: [{
           id: "construction.behavior",
           kindId: "scce.program.behavior_role_construction.v1",
