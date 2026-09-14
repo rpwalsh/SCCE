@@ -12,6 +12,34 @@ const NOT_WARM = /hydrated runtime unavailable: resident .* was not warmed/u;
 const CACHE_BUDGET_BYTES = 512 * 1024;
 
 describe("surface language cache entry sizing", () => {
+  it.each(["identity", "cluster"] as const)("does not repopulate an invalidated %s cache from an older hydration", async scope => {
+    const fixture = await runtimeFixture({ observations: 40, gateHydration: true });
+    const hydrate = () => scope === "identity" ? fixture.hydrate("language.alpha") : fixture.hydrateCluster();
+    const resident = () => scope === "identity" ? fixture.resident("language.alpha") : fixture.residentCluster();
+    const obsolete = hydrate();
+    await fixture.hydrationStarted;
+    fixture.invalidate();
+    fixture.releaseHydration();
+    await obsolete;
+    await expect(resident()).rejects.toThrow(NOT_WARM);
+    const fresh = await hydrate();
+    expect(fixture.hydrations).toBe(2);
+    expect(await resident()).toBe(fresh);
+  });
+
+  it("does not join an obsolete in-flight identity hydration after invalidation", async () => {
+    const fixture = await runtimeFixture({ observations: 40, gateHydration: true });
+    const obsolete = fixture.hydrate("language.alpha");
+    await fixture.hydrationStarted;
+    fixture.invalidate();
+    const fresh = fixture.hydrate("language.alpha");
+    fixture.releaseHydration();
+    const [oldValue, newValue] = await Promise.all([obsolete, fresh]);
+    expect(fixture.hydrations).toBe(2);
+    expect(newValue).not.toBe(oldValue);
+    expect(await fixture.resident("language.alpha")).toBe(newValue);
+  });
+
   it("weighs an entry by the records it holds, not by the heap measured while it hydrated", async () => {
     // The heap delta is measured across a hydration that runs for a minute while the process serves other turns,
     // so it charged one entry for everything anything else allocated in that window: four entries claimed 4,669MB
@@ -91,6 +119,8 @@ async function runtimeFixture(options: {
   let populationReads = 0;
   let openGate = () => {};
   const gate = new Promise<void>(resolve => { openGate = resolve; });
+  let markHydrationStarted = () => {};
+  const hydrationStarted = new Promise<void>(resolve => { markHydrationStarted = resolve; });
   const profile: LanguageProfile = {
     id: "profile.fixture",
     sourceVersionId: "source.fixture" as never,
@@ -113,6 +143,7 @@ async function runtimeFixture(options: {
       },
       listNgramModels: async () => {
         hydrations += 1;
+        markHydrationStarted();
         if (options.retainedHeapBytes) retained.push("h".repeat(options.retainedHeapBytes));
         if (options.gateHydration) await gate;
         return [];
@@ -142,8 +173,11 @@ async function runtimeFixture(options: {
   return {
     get hydrations() { return hydrations; },
     get populationReads() { return populationReads; },
+    hydrationStarted,
     releaseHydration: () => openGate(),
     invalidate: () => runtime.invalidate(),
+    hydrateCluster: () => runtime.hydrateSurfaceLanguageMemoryCached(12, cluster, "fixture"),
+    residentCluster: () => runtime.hydrateSurfaceLanguageMemoryCached(12, cluster, "fixture", undefined, "", { residentOnly: true }),
     hydrateRole: (roleId: string) =>
       runtime.hydrateSurfaceLanguageMemoryCached(12, cluster, "language-scoped", roleId, "", { languageId: options.languageId }),
     hydrate: (languageId: string) =>

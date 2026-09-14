@@ -229,7 +229,7 @@ export function createSurfaceLanguageRuntime(options: {
   const surfaceLanguageMemoryInFlight = new Map<string, Promise<Awaited<ReturnType<typeof hydrateSurfaceLanguageMemory>>>>();
   const continuationPopulationCache = new Map<string, { loadedAt: number; value: WeakRef<LanguageContinuationPopulation> }>();
   const continuationPopulationInFlight = new Map<string, Promise<LanguageContinuationPopulation | undefined>>();
-  let continuationPopulationGeneration = 0;
+  let languageMemoryGeneration = 0;
 
   async function continuationPopulationCached(languageId: string): Promise<LanguageContinuationPopulation | undefined> {
     if (!deps.storage.languageMemory.continuationPopulation) return undefined;
@@ -238,13 +238,13 @@ export function createSurfaceLanguageRuntime(options: {
     if (value && clock.now() - cached!.loadedAt < surfaceLanguageMemoryCacheMs) return value;
     const existing = continuationPopulationInFlight.get(languageId);
     if (existing) return existing;
-    const generation = continuationPopulationGeneration;
+    const generation = languageMemoryGeneration;
     const started = Date.now();
     let result = "unmeasured";
     const pending = (async () => {
       try {
         const population = await deps.storage.languageMemory.continuationPopulation!({ languageId });
-        if (generation !== continuationPopulationGeneration) return undefined;
+        if (generation !== languageMemoryGeneration) return undefined;
         if (population && population.languageId === languageId && population.modelCount > 0) {
           // Hydrated states own the memory; this shared prior cache must not keep evicted populations alive.
           boundedCacheSet(continuationPopulationCache, languageId, { loadedAt: clock.now(), value: new WeakRef(population) }, surfaceLanguageMemoryCacheMaxEntries);
@@ -702,6 +702,7 @@ export function createSurfaceLanguageRuntime(options: {
     hydrationOptions: ResidentOnlyOptions = {}
   ) {
     const now = clock.now();
+    const generation = languageMemoryGeneration;
     const languageId = hydrationOptions.languageId;
     const lookup = (result: string, extra: Record<string, number> = {}) => traceEvent(
       (globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace,
@@ -728,7 +729,7 @@ export function createSurfaceLanguageRuntime(options: {
       if (!pending) {
         pending = hydrateSurfaceLanguageMemory(limit, cluster, unscopedReason, preferredCorpusRoleId, preferredSurface, languageId)
           .then(hydrated => {
-            if (hydrationWorthCaching(hydrated)) boundedSurfaceLanguageMemoryCacheSet(
+            if (generation === languageMemoryGeneration && hydrationWorthCaching(hydrated)) boundedSurfaceLanguageMemoryCacheSet(
               surfaceLanguageMemoryCache,
               languageKey,
               { limit, loadedAt: clock.now(), value: hydrated, approxEstimatedBytes: approximateHydrationEstimatedBytes(hydrated) },
@@ -805,7 +806,7 @@ export function createSurfaceLanguageRuntime(options: {
     const value = await hydrateSurfaceLanguageMemory(limit, cluster, unscopedReason, preferredCorpusRoleId, preferredSurface);
     // An explicit unscoped decision is reusable; missing data for a selected language must remain retryable.
     const resolvedUnscoped = !cluster && !preferredCorpusRoleId && value.state.scope.mode === "unscoped";
-    if (resolvedUnscoped || hydrationWorthCaching(value)) boundedSurfaceLanguageMemoryCacheSet(
+    if (generation === languageMemoryGeneration && (resolvedUnscoped || hydrationWorthCaching(value))) boundedSurfaceLanguageMemoryCacheSet(
       surfaceLanguageMemoryCache,
       cacheKey,
       { limit, loadedAt: now, value, approxEstimatedBytes: approximateHydrationEstimatedBytes(value) },
@@ -1221,7 +1222,8 @@ export function createSurfaceLanguageRuntime(options: {
     },
     invalidate() {
       surfaceLanguageMemoryCache.clear();
-      continuationPopulationGeneration += 1;
+      languageMemoryGeneration += 1;
+      surfaceLanguageMemoryInFlight.clear();
       continuationPopulationCache.clear();
       continuationPopulationInFlight.clear();
       sourceOwnedAliasProfileCache.clear();
