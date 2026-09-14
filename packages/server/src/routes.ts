@@ -3842,6 +3842,17 @@ async function streamTurnResponse(input: {
   try {
     const body = await readBody(req, context.maxBodyBytes);
     registry.markRunning(task.taskId);
+    // The accepted frame proves the stream is live; this second frame proves
+    // the request body has arrived and records only typed request facts while
+    // the kernel continues its lazy retrieval and proof work. Clients can
+    // render this as an acknowledgement in their own language surface.
+    registry.append(task.taskId, {
+      type: "progress",
+      requestId,
+      phase: "runtime.request.received",
+      elapsedMs: performance.now() - requestTiming.startedMonotonicMs,
+      cognition: initialVisibleRequestProgress(body)
+    });
     const response = await dispatch(req, url, context, requestTiming, body);
     const value = response.contentType.startsWith("application/json")
       ? JSON.parse(response.body)
@@ -3886,6 +3897,21 @@ async function streamTurnResponse(input: {
       });
     }
   }
+}
+
+function initialVisibleRequestProgress(body: unknown): JsonValue {
+  const record = isRecord(body) ? body : {};
+  const text = typeof record.text === "string" ? record.text : "";
+  return {
+    schema: "scce.turn.progress.v1",
+    stateId: "request.received",
+    sourceId: "request.body",
+    request: {
+      textChars: [...text].length,
+      requestedAuthorityId: isRequestedAuthority(record.requestedAuthority) ? record.requestedAuthority : null,
+      targetLanguageId: turnTargetLanguage(body) ?? null
+    }
+  };
 }
 
 function reconnectingTurnStreamRequested(req: http.IncomingMessage, url: URL): boolean {

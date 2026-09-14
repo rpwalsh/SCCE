@@ -288,6 +288,23 @@ describe("turn session metadata projection", () => {
     expect(frames[0]?.taskId).toEqual(expect.any(String));
     expect(frames[0]?.streamUrl).toContain("/api/turn/task/");
     expect(frames[0]?.cancelUrl).toContain("/api/turn/task/");
+    expect(frames.map(frame => frame.sequence)).toEqual([1, 2, 3]);
+    expect(frames[1]).toMatchObject({
+      schema: "scce.turn_stream.v1",
+      type: "progress",
+      phase: "runtime.request.received",
+      cognition: {
+        schema: "scce.turn.progress.v1",
+        stateId: "request.received",
+        sourceId: "request.body",
+        request: {
+          textChars: "Continue the session".length,
+          requestedAuthorityId: "factual",
+          targetLanguageId: null
+        }
+      }
+    });
+    expect(Number(frames[1]?.elapsedMs)).toBeGreaterThanOrEqual(0);
     expect(frames.at(-1)).toMatchObject({
       schema: "scce.turn_stream.v1",
       type: "error",
