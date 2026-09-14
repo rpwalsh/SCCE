@@ -90,6 +90,7 @@ import {
 import { canonicalStringify, clamp01, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";
 import { sourceRelationConstructionBindingId } from "./graph-surface-alignment.js";
 import { containsUnresolvedSurfaceKey } from "./localization.js";
+import { isTerminalNonAssertiveRuntimeMotionCandidate } from "./runtime-motion.js";
 import { ensureSurfaceSentence as ensureUnicodeSurfaceSentence, hasUncasedNonLatinLetter, hasUppercaseLetter, isDegenerateBareSurface, isSentenceBoundarySymbol, splitSurfaceSentences as splitUnicodeSurfaceSentences, structurallyCompleteSurface, tidySurfaceText } from "./surface-linguistics.js";
 import { CALIBRATION_TASK_CLASS_IDS, type CalibrationModelSet } from "./calibration-spine.js";
 import {
@@ -427,6 +428,8 @@ export interface SpeakInput {
   brainMarker?: JsonValue;
   learningDecision?: ContinueDecision;
   selectedCandidate?: CandidateSurface;
+  /** Evidence explicitly bound by the discourse state for this turn. */
+  explicitContextEvidenceIds?: ReadonlySet<string>;
   calibrationModels?: CalibrationModelSet;
   calibrationTaskClass?: string;
   requestedAuthority?: RequestedAuthority;
@@ -601,7 +604,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
   const constructionHasher: Hasher = options.hasher ?? { digestHex: options.hashText };
   return {
     async speak(input) {
-      if (input.selectedCandidate && kernelCandidateCarriesTerminalRuntimeMotionSurface(input.selectedCandidate)) {
+      if (input.selectedCandidate && isTerminalNonAssertiveRuntimeMotionCandidate(input.selectedCandidate)) {
         return createDeterministicMouth({ hashText: options.hashText }).speak(input);
       }
       const mouthStartedAt = Date.now();
@@ -1412,7 +1415,7 @@ export function createDeterministicMouth(options: { hashText: (text: string) => 
       const plan = buildSurfacePlan({ ...input, correctionRules: [] }, noLearnedInfluence, options.hashText);
       const discoursePlan = buildDiscoursePlan(plan, options.hashText);
       const deterministicVerdict = proofGateVerdict(input.entailment);
-      const terminalRuntimeMotionSelected = Boolean(input.selectedCandidate && kernelCandidateCarriesTerminalRuntimeMotionSurface(input.selectedCandidate));
+      const terminalRuntimeMotionSelected = Boolean(input.selectedCandidate && isTerminalNonAssertiveRuntimeMotionCandidate(input.selectedCandidate));
       // Creative has no deterministic realization: every surface below is
       // claim/request-derived and would echo the prompt. Empty is honest.
       const deterministicSurfaces = input.requestedAuthority === "creative" && !terminalRuntimeMotionSelected
@@ -1479,6 +1482,7 @@ export function createDeterministicMouth(options: { hashText: (text: string) => 
       const deterministicUnits = mouthCoverageUnits(input);
       const deterministicEvidenceIds = new Set((input.selectedCandidate?.evidenceIds ?? []).map(String));
       const deterministicSpans = input.evidence.filter(span => deterministicEvidenceIds.has(String(span.id)));
+      const explicitContextBound = deterministicSpans.some(span => input.explicitContextEvidenceIds?.has(String(span.id)) === true);
       // A bare bound value (a date/time/name a realization contract required, e.g. "20:17" for "when did X
       // land") cannot lexically restate the request's own words -- that is what makes it a bound value rather
       // than a sentence -- so it needs candidateIsVerifiedBoundValue's narrower check instead of the full
@@ -1497,6 +1501,7 @@ export function createDeterministicMouth(options: { hashText: (text: string) => 
         && deterministicSpans.some(span => evidenceTitledForRequestSubject(input.requestText ?? "", [span]));
       const coversRequest = (surface: string) => deterministicQuotation || !deterministicUnits.length || !deterministicSpans.length
         || (contractVerifiedCandidateAnswer && surface === input.selectedCandidate?.answer)
+        || explicitContextBound
         || enumerationAnswer(surface)
         || deterministicSpans.some(span => answerCoversRequest([surface], span, deterministicUnits, input.requestText ?? "", { relationRequired: mouthRelationRequired(input), languageClosedClassWords: mouthLanguageClosedClass(input) }));
       // Apparatus is refused rather than deprioritized. Sorting it last only helps while something else survives,
@@ -3170,7 +3175,7 @@ function compareSurfaceText(left: string, right: string): number {
 }
 
 function kernelCandidateDirectSurfaceAllowed(candidate: CandidateSurface, input: SpeakInput): boolean {
-  if (kernelCandidateCarriesTerminalRuntimeMotionSurface(candidate)) return true;
+  if (isTerminalNonAssertiveRuntimeMotionCandidate(candidate)) return true;
   if (candidate.kind === "translation" || candidate.kind === "transformation") return true;
   if (candidate.kind === "creative-candidate" && candidate.force === "invented" && candidate.claimBases?.includes("invented") === true) return true;
   if (kernelCandidateCarriesExactBoundSourceSurface(candidate, input)) return true;
@@ -3191,22 +3196,6 @@ function kernelCandidateDirectSurfaceAllowed(candidate: CandidateSurface, input:
   // reasoning, not a reason to discard a real, evidence-backed answer.
   if (candidate.kind === "graph-inference" && candidate.evidenceIds.length > 0) return true;
   return false;
-}
-
-function kernelCandidateCarriesTerminalRuntimeMotionSurface(candidate: CandidateSurface): boolean {
-  if (candidate.kind !== "dialogue-continuation" || candidate.force !== "unknown" || candidate.evidenceIds.length > 0) return false;
-  const audit = jsonRecord(candidate.audit);
-  if (audit.schema !== "scce.runtime_motion_candidate.v1"
-    || audit.source !== "kernel.runtime_decision_boundary"
-    || audit.externalFactCertification !== false
-    || audit.fakeEvidenceForbidden !== true) return false;
-  const semanticFrame = jsonRecord(audit.semanticFrame);
-  if (semanticFrame.frameId !== "semantic.runtime.motion.clarification.v1") return false;
-  const boundaries = new Set(candidate.boundaries);
-  return candidate.answer.trim().length > 0
-    && boundaries.has("runtime-motion-non-assertive")
-    && boundaries.has("runtime-motion-acquisition-exhausted")
-    && boundaries.has("runtime-motion-no-fabricated-evidence");
 }
 
 function kernelCandidateSurfaceAdmissible(candidate: CandidateSurface, input: SpeakInput): boolean {

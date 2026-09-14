@@ -203,6 +203,7 @@ import {
   attachRuntimeMotionConstruct,
   explicitRuntimeDiagnosticRequest,
   fastRuntimeBudgetRequested,
+  isTerminalNonAssertiveRuntimeMotionCandidate,
   metadataWithRuntimeReplanMotion,
   previousDialogueStateFromMetadata,
   priorRejectedHypothesesFromCandidates,
@@ -3866,6 +3867,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         correctionRules,
         brainMarker: brain,
         selectedCandidate: judged.selected,
+        explicitContextEvidenceIds,
         requirementField,
         selectedProposal,
         claimBases: selectedProposal?.claims ?? [],
@@ -4504,16 +4506,19 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       };
       answer = spoken.text;
       if (!answer.trim()) answer = "";
-      // A turn never speaks the request back. This is the last gate before the answer leaves the kernel, and it is
-      // unconditional: the lane-level echo guards each cover their own lane, and the program lane went around all
+      // This is the last prompt-echo gate before the answer leaves the kernel. Lane-level guards cover their own
+      // paths, but the program lane previously went around all
       // of them -- "Write a JavaScript function that computes time dilation..." was answered with exactly itself
-      // (live 2026-09-12). Echoing is worse than declining, because a decline is honest and an echo looks like an
-      // answer. Every lane that could speak has already had its turn by here, so there is nothing left to prefer.
+      // (live 2026-09-12). A terminal runtime-motion surface is the one deliberate exception: it is the exact
+      // planner-selected unresolved focus, carries no evidence, and has already proved the typed no-fabrication
+      // boundary. Silencing it here turns an honest exhausted-acquisition result into an empty response.
       const currentOwnerAssertionSurface = answer.trim()
         && judged.selected.evidenceIds.some(id => currentOwnerEvidenceIds.has(String(id)))
         && currentOwnerEvidence.some(span => currentOwnerEvidenceIds.has(String(span.id))
           && tidySurfaceText(String(span.text ?? span.textPreview ?? "")) === tidySurfaceText(answer));
-      if (answer.trim() && surfaceEchoesPrompt(answer, input.text) && !currentOwnerAssertionSurface) {
+      const terminalRuntimeMotionSurface = isTerminalNonAssertiveRuntimeMotionCandidate(judged.selected)
+        && tidySurfaceText(judged.selected.answer) === tidySurfaceText(answer);
+      if (answer.trim() && surfaceEchoesPrompt(answer, input.text) && !currentOwnerAssertionSurface && !terminalRuntimeMotionSurface) {
         kernelTrace({
           stage: "turn.output.prompt_echo_refused",
           label: "kernel.turn",

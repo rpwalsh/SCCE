@@ -67,6 +67,11 @@ describe("corpus identity arbiter", () => {
     prime({ closedClass: ["the"], identities: ["相対性理論"] });
     expect(corpusNamedIdentities("the 相対性理論とは何ですか question"))
       .toEqual([]);
+
+    // A corpus-learned attached scaffold licenses the identity without treating the whole containing unit as a
+    // title. The rule reads the learned remainder rather than naming a language or a fixed particle inventory.
+    prime({ closedClass: ["의"], identities: ["서울"] });
+    expect(corpusNamedIdentities("서울의 날씨")).toEqual(["서울"]);
   });
 
   it("returns maximal content runs and their units, never every sub-run", () => {

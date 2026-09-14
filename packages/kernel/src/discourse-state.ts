@@ -2,7 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { Hasher, JsonValue } from "./types.js";
 import { clamp01, createHasher, toJsonValue } from "./primitives.js";
-import { corpusNamedIdentities } from "./corpus-identity.js";
+import { corpusIdentitySignals, corpusNamedIdentities } from "./corpus-identity.js";
 
 export const DISCOURSE_SIGNAL_IDS = {
   currentSurfaceSparse: "disc.signal.2b6c4a91",
@@ -65,6 +65,10 @@ export function buildDiscourseObjectState(input: BuildDiscourseObjectStateInput)
   const carrier = turns[carrierIndex]!;
   const surface = surfaceSpecificity(input.currentText);
   if (surface.unitCount < 1) return undefined;
+  // A dense surface is not enough to decide whether the user opened a new topic. Until the corpus has supplied
+  // identity/continuation signals, keep the conservative boundary used by the cold-start path rather than
+  // inheriting an evidence carrier on the basis of word shape alone.
+  if (!corpusIdentitySignals() && surface.specificityMass >= 0.72) return undefined;
   const newestIndex = turns.length - 1;
   const turnDistance = Math.max(0, newestIndex - carrierIndex);
   const recencyMass = clamp01(1 - turnDistance / 12);
