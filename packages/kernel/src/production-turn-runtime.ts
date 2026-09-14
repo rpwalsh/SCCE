@@ -25,7 +25,7 @@ import { detectConflictingCorrections } from "./translation-correction-engine.js
 import { compileCreativeRequestFrameFromCompatibilityModels, type CreativeRequestFrame } from "./creative-event-compatibility.js";
 import { createCounterfactualCognition } from "./counterfactual-cognition.js";
 import { traceEvent } from "./debug/trace.js";
-import { updateDialogueState } from "./dialogue-pragmatics.js";
+import { dialogueTargetProfileId, updateDialogueState } from "./dialogue-pragmatics.js";
 import { styleProfileFromTargetProfilePatterns } from "./dialogue-learning.js";
 import {
   createDiscourseTurnObservationV2,
@@ -991,10 +991,11 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const previousDialogueCognitiveState = previousDialogueCognitiveStateFromMetadata(input.metadata, hasher);
       const dialogueInterpretationAdjustments = dialogueInterpretationAdjustmentsFromMetadata(input.metadata, previousDialogueCognitiveState);
       const requestedConversationId = requestedConversationIdFromMetadata(input.metadata);
-      const dialogueTargetProfileId = translationTarget ?? locale;
+      const dialogueConversationId = requestedConversationId ?? previousDialogueState?.conversationId ?? "conversation.default";
+      const durableDialogueProfileId = dialogueTargetProfileId(dialogueConversationId, translationTarget ?? locale);
       const durableDialoguePatterns = deps.evaluationCondition?.flags.disableLanguageMemory === true
         ? []
-        : await targetProfilePatternsCached(dialogueTargetProfileId, undefined, fastRuntimeBudget)
+        : await targetProfilePatternsCached(durableDialogueProfileId, undefined, fastRuntimeBudget)
           .catch(() => []);
       const durableDialogueStyle = durableDialoguePatterns.length
         ? styleProfileFromTargetProfilePatterns({
@@ -1006,13 +1007,13 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         stage: "runtime.dialogue_profile.hydrate",
         label: "kernel.turn",
         counts: { patternFamilies: durableDialoguePatterns.length },
-        support: { targetProfileId: dialogueTargetProfileId, applied: Boolean(durableDialogueStyle) }
+        support: { targetProfileId: durableDialogueProfileId, applied: Boolean(durableDialogueStyle) }
       });
       const authorityDialogueState = updateDialogueState({
         requestText: input.text,
-        targetLanguage: dialogueTargetProfileId,
+        targetLanguage: translationTarget ?? locale,
         previousState: previousDialogueState,
-        conversationId: requestedConversationId ?? previousDialogueState?.conversationId,
+        conversationId: dialogueConversationId,
         ...(durableDialogueStyle ? { statePatch: { userStyleProfile: durableDialogueStyle } } : {})
       });
       // Plan items 221-228: real, durable, cross-turn document-generation

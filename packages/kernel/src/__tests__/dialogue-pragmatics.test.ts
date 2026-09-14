@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_USER_STYLE_PROFILE,
   DIALOGUE_ACTION_IDS,
+  dialogueTargetProfileId,
   INTERACTION_FEATURE_IDS,
   applyDialogueFeedback,
   realizeDialogueResponse,
@@ -115,7 +116,7 @@ describe("dialogue pragmatics", () => {
       previousState: state()
     });
     expect(result.finalText).toContain("압력 파서는");
-    expect(result.policyDecision.targetProfileId).toBe("ko");
+    expect(result.policyDecision.targetProfileId).toBe(dialogueTargetProfileId(result.state.conversationId, "ko"));
     expect(result.policyDecision.selectedActionIds.every(id => /^act\.[a-f0-9]{8}$/u.test(id))).toBe(true);
 
     const sparse = realizeDialogueResponse({
