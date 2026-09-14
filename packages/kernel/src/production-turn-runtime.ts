@@ -29,6 +29,7 @@ import { dialogueTargetProfileId, updateDialogueState } from "./dialogue-pragmat
 import { styleProfileFromTargetProfilePatterns } from "./dialogue-learning.js";
 import {
   createDiscourseTurnObservationV2,
+  resolveDiscourseStateV2,
   discourseObjectStateFromMetadata,
   interpretationAdjustmentSelectionForTypedCandidateV2,
   isDiscourseInterpretationAdjustmentV2,
@@ -36,7 +37,8 @@ import {
   type DiscoursePreselectionCandidateV2,
   type DiscourseTurnObservationV2
 } from "./discourse-state.js";
-import { isDialogueCognitiveStateV2 } from "./dialogue-cognitive-memory.js";
+import { createDialogueCognitiveMemoryV2, isDialogueCognitiveStateV2 } from "./dialogue-cognitive-memory.js";
+import { projectProofBearingDialogueTurnV2 } from "./dialogue-cognitive-shadow.js";
 import { createSemanticEntailmentEngine } from "./entailment.js";
 import { consolidateEpisode } from "./episodic-memory-consolidation.js";
 import { EVALUATION_COMPONENT_IDS, disabledComponentsForCondition, type EvaluationComponentId } from "./evaluation-flags.js";
@@ -490,6 +492,33 @@ export function createProductionTurnRuntime(options: {
     lifecycle, engines
   } = options;
   const { append, withBufferedEventWrites, kernelTrace } = lifecycle;
+
+  // Durable dialogue state is an optional cognitive input, never an authority
+  // to manufacture a referent.  The cache keeps a warm conversation head on
+  // the runtime; a cold read starts in the background so it cannot hold the
+  // response before the user sees it.
+  const dialogueCognitiveMemory = createDialogueCognitiveMemoryV2({
+    store: deps.storage.dialogueMemory,
+    hasher
+  });
+  const residentDialogueCognitiveStates = new Map<string, import("./discourse-state.js").DialogueCognitiveStateV2>();
+  const dialogueCognitiveStateLoads = new Map<string, Promise<void>>();
+  const residentDialogueCognitiveState = (conversationId: string) => {
+    const state = residentDialogueCognitiveStates.get(conversationId);
+    return state?.conversationId === conversationId && isDialogueCognitiveStateV2(state, hasher)
+      ? state
+      : undefined;
+  };
+  const warmDialogueCognitiveState = (conversationId: string): void => {
+    if (!conversationId || residentDialogueCognitiveState(conversationId) || dialogueCognitiveStateLoads.has(conversationId)) return;
+    const load = dialogueCognitiveMemory.latest(conversationId)
+      .then(state => {
+        if (state) residentDialogueCognitiveStates.set(conversationId, state);
+      })
+      .catch(() => undefined)
+      .finally(() => { dialogueCognitiveStateLoads.delete(conversationId); });
+    dialogueCognitiveStateLoads.set(conversationId, load);
+  };
 
   // Online requirement calibration lives for the runtime, not the turn: the model is read once, taught in memory,
   // and written back on a bounded cadence. A turn may not spend a database round trip on training.
@@ -988,10 +1017,17 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         }))
         : undefined;
       const previousDialogueState = previousDialogueStateFromMetadata(input.metadata);
-      const previousDialogueCognitiveState = previousDialogueCognitiveStateFromMetadata(input.metadata, hasher);
-      const dialogueInterpretationAdjustments = dialogueInterpretationAdjustmentsFromMetadata(input.metadata, previousDialogueCognitiveState);
+      const metadataDialogueCognitiveState = previousDialogueCognitiveStateFromMetadata(input.metadata, hasher);
       const requestedConversationId = requestedConversationIdFromMetadata(input.metadata);
-      const dialogueConversationId = requestedConversationId ?? previousDialogueState?.conversationId ?? "conversation.default";
+      const dialogueConversationId = requestedConversationId
+        ?? previousDialogueState?.conversationId
+        ?? metadataDialogueCognitiveState?.conversationId
+        ?? "conversation.default";
+      const previousDialogueCognitiveState = metadataDialogueCognitiveState?.conversationId === dialogueConversationId
+        ? metadataDialogueCognitiveState
+        : residentDialogueCognitiveState(dialogueConversationId);
+      if (!previousDialogueCognitiveState) warmDialogueCognitiveState(dialogueConversationId);
+      const dialogueInterpretationAdjustments = dialogueInterpretationAdjustmentsFromMetadata(input.metadata, previousDialogueCognitiveState);
       const durableDialogueProfileId = dialogueTargetProfileId(dialogueConversationId, translationTarget ?? locale);
       const durableDialoguePatterns = deps.evaluationCondition?.flags.disableLanguageMemory === true
         ? []
@@ -4956,6 +4992,75 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         answer: emission.answer,
         assistantForce: emission.assistantForce
       });
+      // The response is visible before this durable cognitive transition
+      // begins. The projection itself only admits proof-selected graph
+      // identities, so a fluent surface can never become a dialogue fact.
+      const dialogueProjection = projectProofBearingDialogueTurnV2({
+        conversationId: authorityDialogueState.conversationId,
+        turnId: String(episodeId),
+        turnIndex: (previousDialogueCognitiveState?.turnIndex ?? 0) + 1,
+        roleId: "session.role.owner",
+        surfaceHash: hasher.digestHex(input.text),
+        result: {
+          entailment: answerEntailment,
+          field,
+          evidence: selectedEvidence,
+          requirementField: toJsonValue(requirementField),
+          selectedCandidate: toJsonValue(judged.selected),
+          proofCarryingAnswer: pcaReport.audit
+        },
+        graph,
+        previousState: previousDialogueCognitiveState,
+        hasher
+      });
+      if (dialogueProjection.status === "observed") {
+        const dialogueResolution = resolveDiscourseStateV2({
+          observation: dialogueProjection.observation,
+          previousState: previousDialogueCognitiveState,
+          referents: dialogueProjection.referents,
+          topics: dialogueProjection.topics,
+          routeSignals: dialogueProjection.routeSignals,
+          provenanceBindings: dialogueProjection.provenanceBindings,
+          interpretationAdjustments: dialogueInterpretationAdjustments,
+          hasher
+        });
+        const persistedDialogueState = await dialogueCognitiveMemory.persist(
+          dialogueResolution.state,
+          clock.now(),
+          previousDialogueCognitiveState ?? null
+        );
+        if (persistedDialogueState.result.stored) {
+          residentDialogueCognitiveStates.set(dialogueConversationId, dialogueResolution.state);
+        } else {
+          // A concurrent turn advanced the head. Remove this predecessor
+          // before warming; otherwise the resident fast path would keep
+          // returning the rejected state forever.
+          residentDialogueCognitiveStates.delete(dialogueConversationId);
+          warmDialogueCognitiveState(dialogueConversationId);
+        }
+        kernelTrace({
+          stage: "dialogue.cognitive_state",
+          label: "kernel.turn",
+          counts: {
+            bindings: dialogueResolution.state.bindings.length,
+            admittedBindings: dialogueResolution.context.admittedBindings.length,
+            stored: persistedDialogueState.result.stored ? 1 : 0
+          },
+          support: {
+            stateId: dialogueResolution.state.id,
+            previousStateId: previousDialogueCognitiveState?.id ?? null,
+            persistence: persistedDialogueState.result,
+            projection: dialogueProjection.audit
+          }
+        });
+      } else {
+        kernelTrace({
+          stage: "dialogue.cognitive_state",
+          label: "kernel.turn",
+          counts: { stored: 0 },
+          support: { status: dialogueProjection.status, reasonId: dialogueProjection.reasonId, projection: dialogueProjection.audit }
+        });
+      }
       await deps.storage.constructs.putEmission(emission);
       markValidationWindow("putEmission");
       events.push(await append(eventFactory.create({ episodeId, typeId: "RuntimeCoherenceDecided", payload: runtimeCoherenceTrace })));
