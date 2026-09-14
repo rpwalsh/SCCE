@@ -182,8 +182,7 @@ for (const [index, item] of items.entries()) {
   rows.push(row);
   if ((index + 1) % checkpointEvery === 0 || index === items.length - 1) {
     console.log(`  ${index + 1}/${items.length}`);
-    mkdirSync(dirname(outPath), { recursive: true });
-    writeFileSync(outPath, JSON.stringify({ schema: "scce.head_to_head.v1", model, rows }, null, 2) + "\n", "utf8");
+    writeCheckpoint(index + 1);
   }
 }
 const batteryEnd = sampleBattery();
@@ -205,6 +204,30 @@ function summarize(side) {
     gpuSecondsPerItem: 0,
     apiTokensPerItem: 0
   };
+}
+
+// The result file is also the live progress surface. It is rewritten only at
+// explicit row checkpoints, so a reader never has to infer totals from a
+// partial row list and a stopped run remains inspectable and resumable.
+function writeCheckpoint(completed) {
+  mkdirSync(dirname(outPath), { recursive: true });
+  writeFileSync(outPath, JSON.stringify({
+    schema: "scce.head_to_head.v1",
+    model,
+    modelDigest,
+    modelSeed,
+    modelTemperature,
+    scceRevision,
+    suite: { path: suitePath, sha256: suiteSha256 },
+    running: {
+      complete: completed >= items.length,
+      completed,
+      total: items.length,
+      scce: only === "model" ? null : summarize("scce"),
+      reference: only === "scce" ? null : summarize("model")
+    },
+    rows
+  }, null, 2) + "\n", "utf8");
 }
 
 const summary = {
