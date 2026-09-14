@@ -6,7 +6,7 @@ import { featureSet, sourceTextSurface, toJsonValue, symbolizeData } from "./pri
 import { createProofCalculus } from "./proof-calculus.js";
 import { createSemanticGraphEntailment } from "./semantic-graph.js";
 import { evaluateSemanticObligations } from "./semantic-obligations.js";
-import { evidenceProofBoundary } from "./proof-boundary.js";
+import { evidenceProofBoundaries, evidenceProofBoundary } from "./proof-boundary.js";
 import { constructToProofClaims, evidenceToProofRecords, type SupportedProofObservation } from "./semantic-proof-adapter.js";
 import { proveClaim, type ProofClaim, type ProofEvidenceRecord, type ProofForceClass, type SemanticProofResult } from "./semantic-proof-engine.js";
 import { CALIBRATION_IDS, CALIBRATION_TASK_CLASS_IDS, calibrateRuntimeScore, type CalibrationModelSet } from "./calibration-spine.js";
@@ -31,7 +31,7 @@ export function createSemanticEntailmentEngine(options: { idFactory: IdFactory; 
       calibrationModels?: CalibrationModelSet;
     }): SemanticEntailmentResult {
       const claim = claimFrom(input.text, options.idFactory);
-      const proofBoundaries = input.evidence.map(evidenceProofBoundary);
+      const proofBoundaries = evidenceProofBoundaries(input.evidence);
       const certifyingEvidenceIds = new Set(proofBoundaries.filter(item => item.certifiesFactualProof).map(item => item.evidenceId));
       const certifyingEvidence = input.evidence.filter(span => certifyingEvidenceIds.has(String(span.id)));
       const excludedProofEvidence = proofBoundaries.filter(item => !item.certifiesFactualProof);

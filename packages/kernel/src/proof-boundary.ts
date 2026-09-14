@@ -14,6 +14,13 @@ export interface EvidenceProofBoundary {
   reason: string;
 }
 
+/**
+ * An assertion is knowledge *about a source*, not yet knowledge that its
+ * proposition holds in the world.  Ingestion stamps this state itself; it is
+ * deliberately not a caller-controlled trust hint.
+ */
+export type EvidenceEpistemicState = "asserted" | "corroborated" | "promoted" | "legacy_unclassified";
+
 const PRIOR_CLASSES = new Set<string>([
   "learned_language_prior",
   "learned_concept_prior",
@@ -44,6 +51,17 @@ export function evidenceProofBoundary(span: EvidenceSpan): EvidenceProofBoundary
         exactSourceSemantics,
         certifiesFactualProof: false,
         reason: "proof-boundary.direct-evidence-missing-exact-source-span"
+      };
+    }
+    const epistemicState = evidenceEpistemicState(span);
+    if (epistemicState === "asserted") {
+      return {
+        evidenceId: String(span.id),
+        sourceVersionId: String(span.sourceVersionId),
+        forceClass,
+        exactSourceSemantics,
+        certifiesFactualProof: false,
+        reason: "proof-boundary.source-assertion-not-promoted"
       };
     }
     return {
@@ -86,7 +104,33 @@ export function evidenceProofBoundary(span: EvidenceSpan): EvidenceProofBoundary
 }
 
 export function certifyingEvidence(spans: readonly EvidenceSpan[]): EvidenceSpan[] {
-  return spans.filter(span => evidenceProofBoundary(span).certifiesFactualProof);
+  const boundaries = evidenceProofBoundaries(spans);
+  const certified = new Set(boundaries.filter(boundary => boundary.certifiesFactualProof).map(boundary => boundary.evidenceId));
+  return spans.filter(span => certified.has(String(span.id)));
+}
+
+/**
+ * Resolve a proof boundary over the evidence set selected for one claim.
+ * Multiple documents from the same family stay one assertion. Two exact,
+ * admitted assertions from independent families may support this proof, but
+ * they are not written back as a durable world belief here.
+ */
+export function evidenceProofBoundaries(spans: readonly EvidenceSpan[]): EvidenceProofBoundary[] {
+  const boundaries = spans.map(evidenceProofBoundary);
+  const asserted = spans.filter((span, index) =>
+    boundaries[index]?.reason === "proof-boundary.source-assertion-not-promoted"
+      && eligibleIndependentAssertion(span)
+  );
+  const families = new Set(asserted.map(evidenceIndependenceGroup));
+  if (families.size < 2) return boundaries;
+  const eligibleIds = new Set(asserted.map(span => String(span.id)));
+  return boundaries.map(boundary => eligibleIds.has(boundary.evidenceId)
+    ? {
+        ...boundary,
+        certifiesFactualProof: true,
+        reason: "proof-boundary.independent-source-assertion-corroboration"
+      }
+    : boundary);
 }
 
 export function graphNodePriorClass(node: GraphNode): ProofBoundaryClass {
@@ -171,6 +215,47 @@ function hasExactSourceSemantics(span: EvidenceSpan): boolean {
     hasNumberPair(original?.byteRange) ||
     hasNumberPair(original?.charRange);
   return Boolean(locator && version && hasRange);
+}
+
+export function evidenceEpistemicState(span: EvidenceSpan): EvidenceEpistemicState {
+  const tagged = epistemicStateFrom(span.provenance) ?? epistemicStateFrom(span.trustVector);
+  return tagged ?? "legacy_unclassified";
+}
+
+function epistemicStateFrom(value: JsonValue | undefined): EvidenceEpistemicState | undefined {
+  const record = objectRecord(value);
+  if (!record) return undefined;
+  const state = record.epistemicState;
+  if (state === "asserted" || state === "corroborated" || state === "promoted") return state;
+  for (const key of ["metadata", "provenance", "source", "sourceVersion", "original"]) {
+    const nested = epistemicStateFrom(record[key]);
+    if (nested) return nested;
+  }
+  return undefined;
+}
+
+function eligibleIndependentAssertion(span: EvidenceSpan): boolean {
+  if (span.status !== "promoted" || !hasExactSourceSemantics(span)) return false;
+  const trust = objectRecord(span.trustVector);
+  const sourceTrust = objectRecord(trust?.sourceTrust);
+  if (!sourceTrust) return false;
+  return unitInterval(sourceTrust.identity) >= 0.5
+    && unitInterval(sourceTrust.integrity) >= 0.7
+    && unitInterval(sourceTrust.parserReliability) >= 0.5
+    && unitInterval(sourceTrust.directness) >= 0.45
+    && unitInterval(sourceTrust.authority) >= 0.4
+    && Boolean(evidenceIndependenceGroup(span));
+}
+
+function evidenceIndependenceGroup(span: EvidenceSpan): string {
+  const trust = objectRecord(span.trustVector);
+  const sourceTrust = objectRecord(trust?.sourceTrust);
+  const group = sourceTrust?.independenceGroup;
+  return typeof group === "string" && group.trim() ? group.trim() : "";
+}
+
+function unitInterval(value: JsonValue | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1 ? value : 0;
 }
 
 function objectRecord(value: JsonValue | undefined): Record<string, JsonValue> | undefined {

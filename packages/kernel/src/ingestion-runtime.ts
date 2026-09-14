@@ -202,6 +202,11 @@ export function createIngestionRuntime(options: {
         await deps.storage.transaction(async () => {
         await deps.storage.ingestion.put(item.checkpoint);
         const now = clock.now();
+        // A document can always enter the corpus, but its contents begin as
+        // source-qualified assertions.  Do not honor a caller supplied
+        // "promoted" tag here: promotion is a proof outcome, never an ingest
+        // option.
+        const sourceMetadata = assertedSourceMetadata(file.metadata, input.sourceAdmission);
         const sourceId = idFactory.sourceId(file.namespace, file.uri);
         const originalContentHash = await deps.storage.blobs.put(file.bytes, file.mediaType);
         const originalSourceVersionId = idFactory.sourceVersionId(file.bytes);
@@ -216,7 +221,7 @@ export function createIngestionRuntime(options: {
           byteLength: file.bytes.byteLength,
           sourceTrust: input.sourceTrust,
           informationLabel,
-          metadata: file.metadata,
+          metadata: sourceMetadata,
           role: "original"
         };
         await deps.storage.evidence.putSourceVersion(originalSource);
@@ -261,7 +266,7 @@ export function createIngestionRuntime(options: {
             byteLength: sourceBytes.byteLength,
             sourceTrust: input.sourceTrust,
             informationLabel,
-            metadata: file.metadata,
+            metadata: sourceMetadata,
             role: "evidence-derivative",
             derivation: {
               kind: derivative.kind,
@@ -307,7 +312,7 @@ export function createIngestionRuntime(options: {
           })));
         }
         sources += derivative ? 2 : 1;
-        const preview = typedIngest.preview({ uri: file.uri, mediaType: file.mediaType, text: sourceText, metadata: file.metadata });
+        const preview = typedIngest.preview({ uri: file.uri, mediaType: file.mediaType, text: sourceText, metadata: sourceMetadata });
         const languageSurface = requestRequirementCorpus
           ? requestRequirementCorpusLanguageText(requestRequirementCorpus)
           : creativeEventCompatibilityCorpus
@@ -329,14 +334,14 @@ export function createIngestionRuntime(options: {
           sourceTrust: source.sourceTrust,
           observedAt: now,
           maxChunkBytes: deps.maxChunkBytes ?? DEFAULT_EVIDENCE_CHUNK_BYTES,
-          metadata: file.metadata,
+          metadata: sourceMetadata,
           exactSourceText: true
         });
         const decision = admission.decide({
           source,
           evidence: extracted.spans,
           context: input.sourceAdmission,
-          metadata: file.metadata
+          metadata: sourceMetadata
         });
         await deps.storage.quarantine.put({
           id: `${sourceVersionId}:admission`,
@@ -381,7 +386,7 @@ export function createIngestionRuntime(options: {
         if (deps.storage.evidence.putEvidenceSpans) await deps.storage.evidence.putEvidenceSpans(admittedSpans);
         else for (const span of admittedSpans) await deps.storage.evidence.putEvidenceSpan(span);
         // Visual attributes (Phase 3) ride on the first admitted span of the document; provenance stays on the node.
-        const visual = visualAttributesFromMetadata(file.metadata);
+        const visual = visualAttributesFromMetadata(sourceMetadata);
         if (visual && admittedSpans[0] && deps.storage.evidence.putEvidenceVisual) {
           await deps.storage.evidence.putEvidenceVisual({ evidenceId: admittedSpans[0].id, embedding: visual.embedding, regions: visual.regions, model: visual.model });
         }
@@ -419,7 +424,7 @@ export function createIngestionRuntime(options: {
           uri: file.uri,
           mediaType: file.mediaType,
           text: sourceText,
-          metadata: file.metadata,
+          metadata: sourceMetadata,
           evidence: admittedSpans,
           observedAt: now
         });
@@ -1073,6 +1078,23 @@ function labelRecords<T extends { informationLabel?: InformationLabel }>(
   informationLabel: InformationLabel
 ): Array<T & { informationLabel: InformationLabel }> {
   return records.map(record => ({ ...record, informationLabel }));
+}
+
+function assertedSourceMetadata(metadata: JsonValue | undefined, admission: IngestInput["sourceAdmission"]): JsonValue {
+  const existing = jsonRecord(metadata);
+  return toJsonValue({
+    ...existing,
+    // This is intentionally written after caller metadata. A caller may
+    // describe a document, but cannot elevate its assertions by supplying an
+    // epistemic-state field at ingest time.
+    epistemicState: "asserted",
+    epistemicProvenance: {
+      schema: "scce.source_assertion.v1",
+      sourceClass: admission.sourceClass,
+      intendedUse: admission.intendedUse,
+      promotionAuthority: admission.promotionAuthority
+    }
+  });
 }
 
 function visualAttributesFromMetadata(metadata: unknown): { embedding: number[]; regions: number[][]; model: string } | undefined {
