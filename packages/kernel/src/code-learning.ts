@@ -682,22 +682,48 @@ export function taskDecompositionForBlueprintOperations(rootId: string, operatio
  * certain to exist wherever the engine runs, so an emitted artifact is always something that can be spawned.
  */
 export const EMITTED_PROGRAM_RUNTIME = {
+  id: "program.runtime.node-esm.v1",
+  languageId: "javascript",
   commandName: "node",
   syntaxCheckFlag: "--check",
+  syntaxCheckArgs: ["--check"],
   moduleExtension: ".mjs",
   mediaType: "text/javascript",
   sourcePath: "src/program.mjs",
   testPath: "test/program.test.mjs"
 } as const;
 
+export const PYTHON_EMITTED_PROGRAM_RUNTIME = {
+  id: "program.runtime.python-stdlib.v1",
+  languageId: "python",
+  commandName: "python",
+  syntaxCheckArgs: ["-m", "py_compile"],
+  moduleExtension: ".py",
+  mediaType: "text/x-python",
+  sourcePath: "src/program.py",
+  testPath: "test/program_test.py"
+} as const;
+
+export type EmittedProgramRuntime = typeof EMITTED_PROGRAM_RUNTIME | typeof PYTHON_EMITTED_PROGRAM_RUNTIME;
+
+/**
+ * Chooses a concrete emitter SCCE can execute without project dependencies.
+ * The requested language remains in the target profile. When no native
+ * emitter exists, the bytes are honestly identified as JavaScript rather than
+ * being labelled with the requested language.
+ */
+export function emittedProgramRuntimeForLanguage(language: string): EmittedProgramRuntime {
+  return language.toLocaleLowerCase() === "python" ? PYTHON_EMITTED_PROGRAM_RUNTIME : EMITTED_PROGRAM_RUNTIME;
+}
+
 function runtimeForBlueprint(language: CodeLanguage, target: string): CodeImplementationBlueprint["runtime"] {
-  void language;
+  const runtime = emittedProgramRuntimeForLanguage(language);
   void target;
   return {
-    packageManager: EMITTED_PROGRAM_RUNTIME.commandName,
-    entrypoint: EMITTED_PROGRAM_RUNTIME.sourcePath,
-    build: { command: EMITTED_PROGRAM_RUNTIME.commandName, args: [EMITTED_PROGRAM_RUNTIME.syntaxCheckFlag, EMITTED_PROGRAM_RUNTIME.sourcePath], cwd: "." },
-    test: { command: EMITTED_PROGRAM_RUNTIME.commandName, args: [EMITTED_PROGRAM_RUNTIME.testPath], cwd: "." }
+    packageManager: runtime.commandName,
+    entrypoint: runtime.sourcePath,
+    build: { command: runtime.commandName, args: [...runtime.syntaxCheckArgs, runtime.sourcePath], cwd: "." },
+    test: { command: runtime.commandName, args: [runtime.testPath], cwd: "." }
   };
 }
 
