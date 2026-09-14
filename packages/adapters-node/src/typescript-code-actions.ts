@@ -287,17 +287,15 @@ export function deriveTypeScriptCodeActionRepair(input: TypeScriptCodeActionInpu
     || selectors.codeFixIdentities.length > 0;
   const selectionPool = hasSelector && admissible.length > 0 ? admissible : transformations;
   const candidates = selectionPool.slice(0, limit).map(candidateSummary);
-  // With no selector in the request, a single compiler-owned fix is not a guess among alternatives --
-  // there is nothing to disambiguate. Naming it explicitly (TS2304, fixName:..., codeFixIdentity:...)
-  // stays required the moment a second candidate exists, which is the only place ambiguity lives.
+  // A compiler candidate proves an available transformation, not that the request selected it.
   const mode = !hasSelector
-    ? (transformations.length === 1 ? "selected" : "unselected_candidates")
+    ? "unselected_candidates"
     : admissible.length === 0
       ? "selector_not_found"
       : admissible.length === 1
         ? "selected"
         : "ambiguous_candidates";
-  const selected = !hasSelector ? transformations[0] : admissible[0];
+  const selected = admissible[0];
   return {
     familyId: FAMILY_ID,
     snapshotHash: derived.snapshotHash,
