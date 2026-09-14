@@ -707,7 +707,6 @@ async function dispatch(
       await awaitDialoguePersistence(conversationId);
       const readinessStarted = Date.now();
       const [
-        ,
         recentTurns,
         hydratedRuntime,
         workspaceCoding,
