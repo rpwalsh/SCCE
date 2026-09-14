@@ -1313,6 +1313,20 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         && !discourseEvidenceBound
         && metadataEvidenceIds.size === 0
         && explicitContextEvidenceIds.size === 0;
+      // Owner-originated general chat with no source dependence has the same
+      // retrieval contract as source-free creative work. Letting the generic
+      // reasoned authority force source anchoring here turns a conversational
+      // response into a corpus-wide graph query even though no subject or
+      // quoted evidence can make a factual proof obligation. Context-bound
+      // and named requests remain on the normal evidence path.
+      const ownerChatNeedsNoRetrieval = turnSignals.sentenceSequences.length === 0
+        && turnSignals.namedSubjects.length === 0
+        && requestedAuthority === "reasoned"
+        && requirementField.sourceDependence <= requirementField.noveltyDemand / 4
+        && !discourseEvidenceBound
+        && metadataEvidenceIds.size === 0
+        && explicitContextEvidenceIds.size === 0;
+      const authoredRequestNeedsNoRetrieval = creativeRequestNeedsNoRetrieval || ownerChatNeedsNoRetrieval;
       const graphSliceStarted = Date.now();
       let graphSlice = await evaluationComponent(
         "graph",
@@ -1324,7 +1338,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           // query. Measured 2026-09-12: the graph slice took 10.3s of a 20.6s creative turn, the response
           // deadline then elapsed, the learned mouth was refused, and a fallback stitched twelve sections out of
           // the request text. sourceDependence is the learned quantity that says so, so it is what gates this.
-          () => creativeRequestNeedsNoRetrieval
+          () => authoredRequestNeedsNoRetrieval
             ? graphForEvidenceIds([])
             : discourseEvidenceBound
             ? graphForEvidenceIds([...metadataEvidenceIds])
@@ -1352,7 +1366,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
               // on main with this exact conditional before any of this
               // session's changes.
               // A thin creative margin still retrieves anchored, so memory can decide the authority (see memoryDecidesAuthority).
-              sourceAnchoringRequired: requestedAuthority !== "creative" || authorityProjection.scoreMargin < 0.12,
+              sourceAnchoringRequired: !authoredRequestNeedsNoRetrieval
+                && (requestedAuthority !== "creative" || authorityProjection.scoreMargin < 0.12),
               residentOnly: fastRuntimeBudget,
               // So a slice served from cache records which condition owns the entry, which is what the sealed
               // verifier's cache-owner check reads.
@@ -1439,7 +1454,9 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // 5s here and 6.5s in the semantic retrieval it leads to, reached its build step 19.5s into a 10s budget with
       // the deadline long gone, and answered with prose about the request instead of a built program. What the
       // request depends on is projected, not assumed -- a program request measures a source dependence of ~1e-7.
-      const authoredAnswerNeedsNoSources = requestedAuthority === "creative" || requestedAuthority === "program";
+      const authoredAnswerNeedsNoSources = requestedAuthority === "creative"
+        || requestedAuthority === "program"
+        || ownerChatNeedsNoRetrieval;
       if (fastRuntimeBudget && !discourseEvidenceBound && !residentSliceAnswersSubject && !authoredAnswerNeedsNoSources) {
         const escalationStarted = Date.now();
         const allowed = deadlineCheckpoint("kernel.turn.durable_retrieval_escalation", DURABLE_RETRIEVAL_ESCALATION_MS)?.allowed !== false;

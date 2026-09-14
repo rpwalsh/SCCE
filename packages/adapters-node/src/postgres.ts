@@ -1987,38 +1987,32 @@ function createGraphStore(storage: PostgresStorageAdapter): GraphStore {
       return rows.map(rowToGraphEdge);
     },
     async getSlice(query) {
-      const nodes = await queryNodes(storage, query);
-      const ids = nodes.map(node => node.id);
+      const nodesPromise = queryNodes(storage, query);
       const edgeLimit = query.limitEdges ?? 2000;
       if (query.evidenceBoundOnly && query.evidenceIds?.length) {
         const evidenceIds = [...new Set(query.evidenceIds.map(String))];
-        const access = storage.informationAccessPredicate("ranked_candidates", 3);
-        const edgeRows = new Map<string, GraphEdgeRow>();
-        for (let index = 0; index < evidenceIds.length; index += EVIDENCE_LOOKUP_GROUP) {
-          const group = evidenceIds.slice(index, index + EVIDENCE_LOOKUP_GROUP);
-          const rows = await storage.query<GraphEdgeRow>(
-            `SELECT * FROM ${storage.table("graph_edges")}
+        const access = storage.informationAccessPredicate("edge_row", 3);
+        const groups: string[][] = [];
+        for (let index = 0; index < evidenceIds.length; index += EVIDENCE_LOOKUP_GROUP) groups.push(evidenceIds.slice(index, index + EVIDENCE_LOOKUP_GROUP));
+        const edgeRowsByGroup = await Promise.all(groups.map(group => storage.query<GraphEdgeRow>(
+            `SELECT * FROM ${storage.table("graph_edges")} AS edge_row
              WHERE evidence_ids && $1::text[] AND ${access.sql}
              ORDER BY alpha DESC, updated_at DESC, id LIMIT $2`,
             [group, edgeLimit, ...access.params]
-          );
-          for (const row of rows) if (!edgeRows.has(row.id)) edgeRows.set(row.id, row);
-          if (edgeRows.size >= edgeLimit) break;
-        }
+          )));
+        const edgeRows = new Map<string, GraphEdgeRow>();
+        for (const rows of edgeRowsByGroup) for (const row of rows) if (!edgeRows.has(row.id)) edgeRows.set(row.id, row);
         const hyperedgeLimit = Math.max(1, Math.min(edgeLimit, Math.floor(edgeLimit / 2) || 1));
         const hyperedgeAccess = storage.informationAccessPredicate("hyperedge", 3);
-        const hyperedgeRows = new Map<string, HyperedgeRow>();
-        for (let index = 0; index < evidenceIds.length; index += EVIDENCE_LOOKUP_GROUP) {
-          const group = evidenceIds.slice(index, index + EVIDENCE_LOOKUP_GROUP);
-          const rows = await storage.query<HyperedgeRow>(
+        const hyperedgeRowsByGroup = await Promise.all(groups.map(group => storage.query<HyperedgeRow>(
             `SELECT * FROM ${storage.table("graph_hyperedges")}
              WHERE evidence_ids && $1::text[] AND ${hyperedgeAccess.sql}
              ORDER BY updated_at DESC LIMIT $2`,
             [group, hyperedgeLimit, ...hyperedgeAccess.params]
-          );
-          for (const row of rows) if (!hyperedgeRows.has(row.id)) hyperedgeRows.set(row.id, row);
-          if (hyperedgeRows.size >= hyperedgeLimit) break;
-        }
+          )));
+        const hyperedgeRows = new Map<string, HyperedgeRow>();
+        for (const rows of hyperedgeRowsByGroup) for (const row of rows) if (!hyperedgeRows.has(row.id)) hyperedgeRows.set(row.id, row);
+        const nodes = await nodesPromise;
         return {
           nodes,
           edges: [...edgeRows.values()].slice(0, edgeLimit).map(rowToGraphEdge),
@@ -2027,6 +2021,8 @@ function createGraphStore(storage: PostgresStorageAdapter): GraphStore {
           query
         };
       }
+      const nodes = await nodesPromise;
+      const ids = nodes.map(node => node.id);
       const perSeedEdgeLimit = ids.length ? Math.max(4, Math.ceil(edgeLimit / ids.length)) : 0;
       const edgeAccess = storage.informationAccessPredicate("edge_row", 4);
       const edges = ids.length
@@ -2368,6 +2364,12 @@ async function queryNodes(storage: PostgresStorageAdapter, query: GraphSliceQuer
   if (query.evidenceIds?.length) {
     const access = storage.informationAccessPredicate("node", 3);
     const limit = query.limitNodes ?? 800;
+    // Evidence spans carry the answer surface. A giant raw representation
+    // cannot improve an evidence-addressed proof route, and transferring one
+    // makes a small factual turn depend on source-file size.
+    const representationBound = query.maxRepresentationBytes && query.maxRepresentationBytes > 0
+      ? ` AND pg_column_size(node.representation_json) <= ${Math.floor(query.maxRepresentationBytes)}`
+      : "";
     // An overlap test against a long array loses the planner's selectivity estimate: past roughly a hundred ids
     // it stops trusting the GIN index and sequentially scans every node (measured on a 1.39M-node corpus: 19ms
     // at 20 ids, 19.8s at 200, for the same answer). Asking in index-sized groups keeps every lookup on the
@@ -2383,7 +2385,7 @@ async function queryNodes(storage: PostgresStorageAdapter, query: GraphSliceQuer
        SELECT *
        FROM ${storage.table("graph_nodes")} node
        WHERE evidence_ids && $1
-         AND ${access.sql}
+         AND ${access.sql}${representationBound}
      )
      SELECT *
      FROM evidence_candidates
