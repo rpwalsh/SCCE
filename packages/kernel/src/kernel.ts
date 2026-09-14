@@ -168,6 +168,12 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
   let bufferedEvents: ScceEvent[] | undefined;
   const turnProofEvidenceLimit = positiveRuntimeInt("SCCE_TURN_PROOF_EVIDENCE", 2);
   const surfaceLanguageMemoryCacheMs = positiveRuntimeInt("SCCE_SURFACE_LANGUAGE_CACHE_MS", 600_000);
+  // Each full language-cluster hydration can occupy hundreds of MB. Warming
+  // every source-owned cluster makes startup proportional to corpus breadth
+  // and can keep a server unavailable indefinitely. Source-specific evidence
+  // is still hydrated on demand after retrieval; startup only needs the most
+  // useful resident fallback clusters.
+  const sourceOwnedWarmupClusterLimit = Math.min(4, positiveRuntimeInt("SCCE_SOURCE_OWNED_WARMUP_CLUSTERS", 2));
 
   const languageIdentityRuntime = createLanguageIdentityRuntime({ store: deps.storage.languageIdentities, hasher, now: () => clock.now(), informationLabel: deps.sourceInformationLabel });
   const surfaceLanguageRuntime = createSurfaceLanguageRuntime({
@@ -220,6 +226,16 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
   } = graphRetrieval;
   const runtimeMemory = createRuntimeMemoryControl({ deps, clock });
   const { activeBrainMarker, correctionRulesCached } = runtimeMemory;
+  function boundedSourceOwnedWarmupClusters(clusters: readonly LanguageProfileCluster[], excludedId?: string): LanguageProfileCluster[] {
+    return [...clusters]
+      .filter(cluster => cluster.id !== excludedId)
+      .sort((left, right) =>
+        right.artifactSupport - left.artifactSupport
+        || right.profileIds.length - left.profileIds.length
+        || left.id.localeCompare(right.id)
+      )
+      .slice(0, sourceOwnedWarmupClusterLimit);
+  }
   function invalidateRuntimeCaches(): void {
     graphRetrieval.invalidate();
     surfaceLanguageRuntime.invalidate();
@@ -363,8 +379,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
                   undefined,
                   "source-surface-ambiguous-or-no-signal"
                 ),
-                ...sourceOwnedClusters
-                  .filter(cluster => cluster.id !== dominant?.id)
+                ...boundedSourceOwnedWarmupClusters(sourceOwnedClusters, dominant?.id)
                   .map(cluster => hydrateSurfaceLanguageMemoryCached(
                     languageLimit,
                     cluster,
@@ -486,7 +501,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
             .slice(0, sourceAnchorEvidenceCacheMaxEntries)
             .map(id => id as EvidenceSpan["id"]);
           await sourceAnchorEvidenceBatchCached(sourceEvidenceIds);
-          const creativeClusters = await sourceOwnedLanguageClustersForWarmup();
+          const creativeClusters = boundedSourceOwnedWarmupClusters(await sourceOwnedLanguageClustersForWarmup());
           const creativeLanguages = await Promise.all(creativeClusters.map(cluster =>
             hydrateSurfaceLanguageMemoryCached(
               languageLimit,
