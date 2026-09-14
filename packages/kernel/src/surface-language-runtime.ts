@@ -227,6 +227,10 @@ export function createSurfaceLanguageRuntime(options: {
    * pay once and every later turn hit.
    */
   const surfaceLanguageMemoryInFlight = new Map<string, Promise<Awaited<ReturnType<typeof hydrateSurfaceLanguageMemory>>>>();
+  // Language scoping is independent of the request surface. Keep the compiled
+  // result by the durable language/model identity so a cache hit from another
+  // hydration object does not rebuild every model and construction program.
+  const languageScopeCache = new Map<string, LanguageMemoryRuntimeState>();
   const continuationPopulationCache = new Map<string, { loadedAt: number; value: WeakRef<LanguageContinuationPopulation> }>();
   const continuationPopulationInFlight = new Map<string, Promise<LanguageContinuationPopulation | undefined>>();
   let languageMemoryGeneration = 0;
@@ -516,11 +520,22 @@ export function createSurfaceLanguageRuntime(options: {
     // A language scope does not depend on the surface, and scoping recompiles every retained model (13s per turn on a
     // cache hit, measured); it is computed once per hydration and only the surface profile is chosen per request.
     let languageScopedState: LanguageMemoryRuntimeState | undefined;
+    const languageScopeKey = languageId
+      ? `${languageId}${UNIT_SEPARATOR}${preferredCorpusRoleId ?? "corpus-role:any"}${UNIT_SEPARATOR}${hasher.digestHex(JSON.stringify({
+        models: hydrated.records.map(record => record.id),
+        units: hydrated.importedUnits.map(record => record.id),
+        patterns: hydrated.importedPatterns.map(record => record.id),
+        frames: hydrated.importedSemanticFrames.map(record => record.id),
+        bundles: hydrated.importedConstructionBundles.map(bundle => bundle.id)
+      }))}`
+      : undefined;
     const scopeForSurface = (surface: string) => {
       // A language identity scopes by what each artifact is, not by which document it came from.
       const resolver = languageId ? options.languageResolver?.() : undefined;
       if (languageId && resolver) {
-        languageScopedState ??= scopeLanguageMemoryStateToLanguage(hydrated, languageId, resolver);
+        languageScopedState ??= (languageScopeKey ? languageScopeCache.get(languageScopeKey) : undefined)
+          ?? scopeLanguageMemoryStateToLanguage(hydrated, languageId, resolver);
+        if (languageScopeKey) languageScopeCache.set(languageScopeKey, languageScopedState);
         // cluster is the document/evidence-similarity cluster this hydration was originally asked to scope to --
         // unrelated to languageId, and its members can belong to any identity at all (verified live: a factual
         // turn's cluster member ended up a profile trained almost entirely from this repo's own source files and
@@ -1227,6 +1242,7 @@ export function createSurfaceLanguageRuntime(options: {
     },
     invalidate() {
       surfaceLanguageMemoryCache.clear();
+      languageScopeCache.clear();
       languageMemoryGeneration += 1;
       surfaceLanguageMemoryInFlight.clear();
       continuationPopulationCache.clear();
