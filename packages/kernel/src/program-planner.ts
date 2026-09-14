@@ -2291,6 +2291,8 @@ function sourceProgramContract(plan: ProgramPlan, input: ProgramPlannerInput): J
     ownerBehaviorImplementationPhase: plan.ownerBehaviorImplementationPhase,
     ownerBehaviorTransformationCandidates: plan.ownerBehaviorTransformationCandidates,
     selectedOwnerBehaviorTransformationIds: plan.selectedOwnerBehaviorTransformationIds,
+    ownerStatefulBehaviorTransformationCandidates: plan.ownerStatefulBehaviorTransformationCandidates,
+    selectedOwnerStatefulBehaviorTransformationIds: plan.selectedOwnerStatefulBehaviorTransformationIds,
     statefulCallContracts: declaredStatefulCallContractsFromRequirements(plan.ownerStatefulBehaviorRequirements),
     sourceOperations: plan.blueprint.operations,
     build: plan.build,
