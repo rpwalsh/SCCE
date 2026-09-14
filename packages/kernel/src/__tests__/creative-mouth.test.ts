@@ -141,6 +141,12 @@ describe("creative Mouth production boundary", () => {
     const hasher = createHasher();
     const ids = createIdFactory({ clock, hasher, deterministicReplay: true });
     const languageRuntime = createLanguageMemoryRuntime({ idFactory: ids, hasher });
+    const generationContexts: string[][] = [];
+    const generate = languageRuntime.generate.bind(languageRuntime);
+    languageRuntime.generate = input => {
+      generationContexts.push([...(input.contextSymbols ?? [])]);
+      return generate(input);
+    };
     const source = sourceVersion(ids, clock.now());
     const premise = evidenceSpan(ids, source, "The graph uses bounded-degree adjacency lists.", 0, clock.now());
     const unrelated = evidenceSpan(ids, source, "An unrelated benchmark reports a fixed latency.", 128, clock.now());
@@ -176,6 +182,12 @@ describe("creative Mouth production boundary", () => {
       languageMemory,
       selectedCandidate,
       requestedAuthority: "creative" as const,
+      dialogueUserStyleProfile: {
+        schema: "scce.dialogue.policy_profile.v1" as const,
+        weights: {},
+        preferredVocabulary: ["river"],
+        rejectedPhrases: []
+      },
       calibrationTaskClass: "task.creative_generation"
     };
 
@@ -185,6 +197,7 @@ describe("creative Mouth production boundary", () => {
 
     expect(first.force).toBe("creative");
     expect(first.text).toBe(second.text);
+    expect(generationContexts.some(context => context.includes("river"))).toBe(true);
     // The structural-creative narrative realizer (english-structural-realizer.ts)
     // is fully removed: this lane is permanently absent, not conditionally gated.
     expect(structuralTrace).toMatchObject({
