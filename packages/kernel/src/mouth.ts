@@ -75,6 +75,7 @@ interface LearnedResponseExtentHint {
   sourcePatternId: string;
 }
 import type { CorrectionMemory, CorrectionStyleInfluence, MeterPattern, RegisterVector } from "./correction-memory.js";
+import type { UserStyleProfile } from "./dialogue-pragmatics.js";
 import { detectCannedAnswerSpeech } from "./surface-quality.js";
 import {
   boundaryFormsForKind,
@@ -436,6 +437,8 @@ export interface SpeakInput {
   requestedAuthority?: RequestedAuthority;
   /** Typed request structure compiled by the language layer; Mouth uses its spans as content constraints. */
   creativeRequestFrame?: CreativeRequestFrame;
+  /** Durable, typed interaction profile used to condition realization. */
+  dialogueUserStyleProfile?: UserStyleProfile;
   semanticInput?: MouthSemanticInput;
   /** Lets a short bound value (a bare date/time/name the request's own subject+relation demanded, e.g. "20:17"
    *  for "when did X land") satisfy coverage without lexically restating the request -- see coversRequest below. */
@@ -3806,6 +3809,7 @@ function creativeCandidatesFromFrames(
       targetLanguageProfile: input.languageProfile,
       contextSymbols: uniqueStrings([
         input.entailment.claim.text,
+        ...(input.dialogueUserStyleProfile?.preferredVocabulary ?? []),
         ...variant.contextSymbols
       ].filter(Boolean)),
       requiredTerms: creativeRequiredTerms,
@@ -4295,6 +4299,7 @@ function conversationMemoryCandidate(
     // not required terms, evidence, or candidate authority.
     contextSymbols: uniqueStrings([
       mouthSubjectText(input),
+      ...(input.dialogueUserStyleProfile?.preferredVocabulary ?? []),
       ...(input.semanticInput?.slots ?? [])
         .slice(0, 8)
         .map(slot => admittedSemanticSlotSurface(input, slot.roleId, slot.value))
