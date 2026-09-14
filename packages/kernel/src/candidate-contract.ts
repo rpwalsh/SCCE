@@ -3,6 +3,7 @@
 import type { ClaimBasis } from "./cognitive-planner.js";
 import type { ScoreTrace } from "./scoring/score-trace.js";
 import type { EpistemicForce, EvidenceId, JsonValue } from "./types.js";
+import type { TypedRelationTrace } from "./typed-relation-trace.js";
 
 export interface CandidateSurface {
   id: string;
@@ -51,6 +52,8 @@ export interface CandidateSurface {
   boundaries: string[];
   audit: JsonValue;
   scoreTrace?: ScoreTrace[];
+  /** Ordered typed relation incidences that materially contributed to this candidate. */
+  typedRelations?: TypedRelationTrace[];
   /** Typed discourse preference applied before the requirement-aware judge. */
   selectionAdjustment?: number;
 }

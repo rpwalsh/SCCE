@@ -2,6 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 export * from "./types.js";
 export * from "./hyperedge.js";
+export * from "./typed-relation-trace.js";
 export * from "./primitives.js";
 export * from "./ids.js";
 export * from "./storage.js";

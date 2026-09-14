@@ -1,13 +1,14 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import type { Claim, ConstructGraph, EvidenceSpan, FieldState, GraphNode, Hasher, SemanticEntailmentResult, TruthState } from "./types.js";
+import type { Claim, ConstructGraph, EvidenceSpan, FieldState, GraphNode, Hasher, Hyperedge, SemanticEntailmentResult, TruthState } from "./types.js";
 import type { IdFactory } from "./ids.js";
 import { featureSet, sourceTextSurface, toJsonValue, symbolizeData } from "./primitives.js";
 import { createProofCalculus } from "./proof-calculus.js";
 import { createSemanticGraphEntailment } from "./semantic-graph.js";
 import { evaluateSemanticObligations } from "./semantic-obligations.js";
 import { evidenceProofBoundaries, evidenceProofBoundary } from "./proof-boundary.js";
-import { constructToProofClaims, evidenceToProofRecords, type SupportedProofObservation } from "./semantic-proof-adapter.js";
+import { constructToProofClaims, evidenceToProofRecords, typedRelationsToProofRecords, type SupportedProofObservation } from "./semantic-proof-adapter.js";
+import { typedRelationTraces } from "./typed-relation-trace.js";
 import { proveClaim, type ProofClaim, type ProofEvidenceRecord, type ProofForceClass, type SemanticProofResult } from "./semantic-proof-engine.js";
 import { CALIBRATION_IDS, CALIBRATION_TASK_CLASS_IDS, calibrateRuntimeScore, type CalibrationModelSet } from "./calibration-spine.js";
 
@@ -27,6 +28,7 @@ export function createSemanticEntailmentEngine(options: { idFactory: IdFactory; 
       typedObservations?: SupportedProofObservation[];
       proofClaims?: ProofClaim[];
       proofEvidence?: ProofEvidenceRecord[];
+      typedRelations?: readonly Hyperedge[];
       sourceExcerpts?: Array<{ text: string; evidenceId: EvidenceSpan["id"] }>;
       calibrationModels?: CalibrationModelSet;
     }): SemanticEntailmentResult {
@@ -68,6 +70,7 @@ export function createSemanticEntailmentEngine(options: { idFactory: IdFactory; 
         typedObservations: input.typedObservations,
         proofClaims: input.proofClaims,
         proofEvidence: input.proofEvidence,
+        typedRelations: input.typedRelations,
         sourceExcerptsProvided: Boolean(input.sourceExcerpts?.length),
         hasher: options.hasher
       });
@@ -149,7 +152,7 @@ export function createSemanticEntailmentEngine(options: { idFactory: IdFactory; 
           id: proofId,
           claimId: claim.id,
           verdict: force,
-          confidence: toJsonValue({ ...confidence, structuralVerdict: structuralResult.verdict, calculusForce: result.force, structuralSupport, proofBoundary: { certifyingEvidence: certifyingEvidence.length, excludedProofEvidence }, semanticProofEngine: proofGate }),
+          confidence: toJsonValue({ ...confidence, structuralVerdict: structuralResult.verdict, calculusForce: result.force, structuralSupport, proofBoundary: { certifyingEvidence: certifyingEvidence.length, excludedProofEvidence }, typedRelations: typedRelationTraces(input.typedRelations ?? []), semanticProofEngine: proofGate }),
           proofGraph: {
             nodes: [
               ...result.proofGraph.nodes,
@@ -165,7 +168,7 @@ export function createSemanticEntailmentEngine(options: { idFactory: IdFactory; 
           },
           evidenceIds,
           transformIds,
-          scores: { ...result.scores, structuralEntailment: structuralResult.audit, semanticObligations: obligations.audit, semanticScores: toJsonValue(obligations.scores), mappings: toJsonValue(obligations.mappings), transforms: toJsonValue(obligations.transforms), counterexamples: toJsonValue(obligations.counterexamples), missing: toJsonValue(obligations.missing), proofBoundary: toJsonValue({ certifyingEvidence: certifyingEvidence.length, excludedProofEvidence }), semanticProofEngine: proofGate ? toJsonValue(proofGate) : null, calibration: toJsonValue({ support: supportCalibration, contradictionAvoidance: contradictionAvoidanceCalibration }), ...(textIdentityGate?.verdict === "certified" ? { sourceExcerptExact: true, textIdentityProofEngine: toJsonValue(textIdentityGate) } : {}) },
+          scores: { ...result.scores, structuralEntailment: structuralResult.audit, semanticObligations: obligations.audit, semanticScores: toJsonValue(obligations.scores), mappings: toJsonValue(obligations.mappings), transforms: toJsonValue(obligations.transforms), counterexamples: toJsonValue(obligations.counterexamples), missing: toJsonValue(obligations.missing), proofBoundary: toJsonValue({ certifyingEvidence: certifyingEvidence.length, excludedProofEvidence }), typedRelations: toJsonValue(typedRelationTraces(input.typedRelations ?? [])), semanticProofEngine: proofGate ? toJsonValue(proofGate) : null, calibration: toJsonValue({ support: supportCalibration, contradictionAvoidance: contradictionAvoidanceCalibration }), ...(textIdentityGate?.verdict === "certified" ? { sourceExcerptExact: true, textIdentityProofEngine: toJsonValue(textIdentityGate) } : {}) },
           validatorVersion: VALIDATOR_VERSION,
           createdAt: input.createdAt
         },
@@ -345,13 +348,15 @@ function structuredProofGate(input: {
   typedObservations?: SupportedProofObservation[];
   proofClaims?: ProofClaim[];
   proofEvidence?: ProofEvidenceRecord[];
+  typedRelations?: readonly Hyperedge[];
   /** When the caller explicitly supplied sourceExcerpts, they've opted into the separate, deliberately-weaker sourceExcerptProofGate/textIdentityGate path (provenance only, never strengthens force) -- the exact-text fallback below must not also fire and produce a second, stronger certification for the same bare text match. */
   sourceExcerptsProvided?: boolean;
   hasher: Hasher;
 }): SemanticProofResult | undefined {
   const candidateEvidence = dedupeProofEvidence([
     ...(input.proofEvidence ?? []),
-    ...evidenceToProofRecords({ evidence: input.evidence, nodes: input.nodes, observations: input.typedObservations ?? [] })
+    ...evidenceToProofRecords({ evidence: input.evidence, nodes: input.nodes, observations: input.typedObservations ?? [] }),
+    ...typedRelationsToProofRecords({ hyperedges: input.typedRelations ?? [], nodes: input.nodes, evidence: input.evidence })
   ]);
   const claims = dedupeProofClaims([
     ...(input.proofClaims ?? []),
