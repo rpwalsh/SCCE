@@ -31,6 +31,8 @@ export type DialogueCognitiveShadowProjectionV2 =
     audit: JsonValue;
   };
 
+export type ProofBearingDialogueTurnResultV2 = Pick<TurnResult, "entailment" | "field" | "evidence" | "requirementField" | "selectedCandidate" | "proofCarryingAnswer">;
+
 export interface ProjectProofBearingDialogueTurnV2Input {
   conversationId: string;
   sessionId?: string;
@@ -38,7 +40,7 @@ export interface ProjectProofBearingDialogueTurnV2Input {
   turnIndex: number;
   roleId: string;
   surfaceHash: string;
-  result: TurnResult;
+  result: ProofBearingDialogueTurnResultV2;
   graph: GraphSlice;
   previousState?: DialogueCognitiveStateV2;
   hasher: Hasher;
@@ -219,7 +221,7 @@ export function projectProofBearingDialogueTurnV2(
   };
 }
 
-function selectedProofEvidenceIds(result: TurnResult): string[] {
+function selectedProofEvidenceIds(result: ProofBearingDialogueTurnResultV2): string[] {
   const proofIds = result.entailment.proof.evidenceIds.map(String);
   const entailmentIds = result.entailment.evidenceIds.map(String);
   const resultIds = result.evidence.map(span => String(span.id));
@@ -237,8 +239,8 @@ function graphNodeReferent(input: {
   graphEdges: readonly GraphEdge[];
   graphHyperedges: GraphSlice["hyperedges"];
   selectedEvidenceSet: ReadonlySet<string>;
-  evidenceById: ReadonlyMap<string, TurnResult["evidence"][number]>;
-  result: TurnResult;
+  evidenceById: ReadonlyMap<string, ProofBearingDialogueTurnResultV2["evidence"][number]>;
+  result: ProofBearingDialogueTurnResultV2;
   previous?: DiscourseReferentV2;
   previousTopics: ReadonlyMap<string, DiscourseTopicV2>;
   turnId: string;
@@ -343,7 +345,7 @@ function graphRouteCoherence(
   referent: DiscourseReferentV2,
   graphNodes: readonly GraphNode[],
   graphEdges: readonly GraphEdge[],
-  result: TurnResult
+  result: ProofBearingDialogueTurnResultV2
 ): number {
   const nodeIds = new Set(referent.nodeIds);
   return clamp01(Math.max(
@@ -370,7 +372,7 @@ function canonicalSlotBindings(bindings: DiscourseReferentV2["slotBindings"]): D
 }
 
 /** Read only the kernel's typed requirement activations; never derive route IDs from surface text. */
-function typedDialogueRouteIds(result: TurnResult): { semanticRoleIds: string[]; learnedFrameIds: string[] } {
+function typedDialogueRouteIds(result: ProofBearingDialogueTurnResultV2): { semanticRoleIds: string[]; learnedFrameIds: string[] } {
   const field = result.requirementField && typeof result.requirementField === "object" && !Array.isArray(result.requirementField)
     ? result.requirementField as Record<string, unknown>
     : {};

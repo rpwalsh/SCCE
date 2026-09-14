@@ -3,7 +3,8 @@
 import { describe, expect, it } from "vitest";
 import { projectProofBearingDialogueTurnV2 } from "../dialogue-cognitive-shadow.js";
 import { resolveDiscourseStateV2 } from "../discourse-state.js";
-import { dialogueCognitiveStateInteractionRecordV2 } from "../dialogue-cognitive-memory.js";
+import { createDialogueCognitiveMemoryV2, dialogueCognitiveStateInteractionRecordV2 } from "../dialogue-cognitive-memory.js";
+import { createInMemoryDialogueMemoryStore } from "../dialogue-learning.js";
 import { createHasher } from "../primitives.js";
 import type { GraphSlice, TurnResult } from "../types.js";
 
@@ -74,6 +75,64 @@ describe("proof-bearing dialogue cognitive shadow projection", () => {
 
     expect(projection).toMatchObject({ status: "not_observed", reasonId: "proof_graph_node_missing" });
     expect(projection).not.toHaveProperty("observation");
+  });
+
+  it("persists a proof-bearing state and restores it for the next turn", async () => {
+    const hasher = createHasher();
+    const store = createInMemoryDialogueMemoryStore();
+    const memory = createDialogueCognitiveMemoryV2({ store, hasher });
+    const first = projectProofBearingDialogueTurnV2({
+      conversationId: "conversation.persisted",
+      turnId: "turn.01",
+      turnIndex: 1,
+      roleId: "role.owner",
+      surfaceHash: hasher.digestHex("opaque surface one"),
+      result: proofBearingResult(),
+      graph: proofGraphSlice(),
+      hasher
+    });
+    expect(first.status).toBe("observed");
+    if (first.status !== "observed") return;
+    const firstResolution = resolveDiscourseStateV2({
+      observation: first.observation,
+      referents: first.referents,
+      topics: first.topics,
+      routeSignals: first.routeSignals,
+      provenanceBindings: first.provenanceBindings,
+      hasher
+    });
+    expect((await memory.persist(firstResolution.state, 7, null)).result.stored).toBe(true);
+
+    const restored = await createDialogueCognitiveMemoryV2({ store, hasher }).latest("conversation.persisted");
+    expect(restored?.id).toBe(firstResolution.state.id);
+    const second = projectProofBearingDialogueTurnV2({
+      conversationId: "conversation.persisted",
+      turnId: "turn.02",
+      turnIndex: 2,
+      roleId: "role.owner",
+      surfaceHash: hasher.digestHex("opaque surface two"),
+      result: proofBearingResult(),
+      graph: proofGraphSlice(),
+      previousState: restored,
+      hasher
+    });
+    expect(second.status).toBe("observed");
+    if (second.status !== "observed" || !restored) return;
+    const secondResolution = resolveDiscourseStateV2({
+      observation: second.observation,
+      previousState: restored,
+      referents: second.referents,
+      topics: second.topics,
+      routeSignals: second.routeSignals,
+      provenanceBindings: second.provenanceBindings,
+      hasher
+    });
+    expect((await memory.persist(secondResolution.state, 8, restored)).result).toMatchObject({ stored: true, currentTurnIndex: 2 });
+    await expect(memory.latest("conversation.persisted")).resolves.toMatchObject({
+      id: secondResolution.state.id,
+      turnIndex: 2,
+      historyDigestIds: [firstResolution.state.observationId, secondResolution.state.observationId]
+    });
   });
 
   it("returns not_observed when the chosen answer lacks a proof-certificate evidence receipt", () => {
