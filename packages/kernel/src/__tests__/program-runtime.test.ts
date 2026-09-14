@@ -320,6 +320,59 @@ describe("ProgramGraph runtime and artifact emission", () => {
     }
   });
 
+  it("originates and executes an element-wise sequence transformation", () => {
+    const request = [
+      "Create projectRows(input).",
+      "projectRows({\"rows\":[{\"profile\":{\"label\":\"A\"}},{\"profile\":{\"label\":\"B\"}}]}) => [{\"name\":\"A\"},{\"name\":\"B\"}]",
+      "projectRows({\"rows\":[{\"profile\":{\"label\":\"C\"}}]}) => [{\"name\":\"C\"}]",
+      "projectRows({\"rows\":[{\"profile\":{\"label\":\"D\"}},{\"profile\":{\"label\":\"E\"}},{\"profile\":{\"label\":\"F\"}}]}) => [{\"name\":\"D\"},{\"name\":\"E\"},{\"name\":\"F\"}]"
+    ].join("\n");
+    const signal = codeRequestSignal(request);
+    const intent = required(programIntentForTurn({
+      requestedAuthority: "program",
+      activeOperatorIds: [COGNITIVE_OPERATOR_IDS.programPlanning],
+      codeSignal: signal,
+      evidence: []
+    }));
+    const probe = required(buildProgram(request, [], intent).program);
+    const retry = replanOwnerBehaviorProgramIntent({
+      intent,
+      program: probe,
+      failure: {
+        observationId: "owner.sequence.validation.failure.kernel",
+        programId: probe.id,
+        planHash: "owner-sequence-plan",
+        validatorId: "validator.owner.node",
+        checkId: "tests",
+        status: "failed",
+        ownerRequirementIds: intent.behaviorRequirements?.map(requirement => requirement.id) ?? [],
+        command: probe.test
+      },
+      hasher
+    });
+    const selected = required(retry.intent.behaviorTransformationCandidates?.find(candidate =>
+      retry.intent.selectedBehaviorTransformationIds?.includes(candidate.id)
+    ));
+    expect(selected.operator).toBe("map_sequence");
+
+    const repaired = required(buildProgram(request, [], retry.intent).program);
+    const source = required(repaired.files.find(file => file.path === "src/program.mjs"));
+    const test = required(repaired.files.find(file => file.path === "test/program.test.mjs"));
+    expect(source.content).toContain(".map((_programElement1)");
+    expect(source.content).not.toContain("expectedResult");
+    const root = mkdtempSync(join(tmpdir(), "scce-owner-sequence-"));
+    try {
+      mkdirSync(join(root, "src"));
+      mkdirSync(join(root, "test"));
+      writeFileSync(join(root, source.path), source.content, "utf8");
+      writeFileSync(join(root, test.path), test.content, "utf8");
+      const passing = spawnSync(process.execPath, repaired.test.args, { cwd: root, encoding: "utf8" });
+      expect(passing.status, `${passing.stdout}\n${passing.stderr}`).toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("realizes the same learned transformation through a requested Python runtime", () => {
     const request = "Create a Python function double(x): double(3) => 6, double(7) => 14, double(-2) => -4, double(11) => 22.";
     const signal = codeRequestSignal(request);

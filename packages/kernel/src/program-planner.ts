@@ -2794,22 +2794,27 @@ ${operations}
 `;
 }
 
-function renderPythonProgramExpression(expression: ProgramExpression): string {
+function renderPythonProgramExpression(expression: ProgramExpression, elementBinding = "_program_element_0", depth = 0): string {
   if (expression.kind === "argument") return `args[${expression.index}]`;
+  if (expression.kind === "element") return elementBinding;
   if (expression.kind === "literal") return String(expression.value);
   if (expression.kind === "value") return pythonJsonLiteral(expression.value);
-  if (expression.kind === "member") return `${renderPythonProgramExpression(expression.subject)}[${JSON.stringify(expression.key)}]`;
-  if (expression.kind === "sequence") return `[${expression.items.map(renderPythonProgramExpression).join(", ")}]`;
-  if (expression.kind === "mapping") return `{${expression.entries.map(entry => `${JSON.stringify(entry.key)}: ${renderPythonProgramExpression(entry.value)}`).join(", ")}}`;
-  if (expression.kind === "cardinality") return `len(${renderPythonProgramExpression(expression.operand)})`;
-  if (expression.kind === "equivalent") return `(${renderPythonProgramExpression(expression.left)} == ${renderPythonProgramExpression(expression.right)})`;
-  if (expression.kind === "unary") return `(-${renderPythonProgramExpression(expression.operand)})`;
-  if (expression.operator === "minimum") return `min(${renderPythonProgramExpression(expression.left)}, ${renderPythonProgramExpression(expression.right)})`;
-  if (expression.operator === "maximum") return `max(${renderPythonProgramExpression(expression.left)}, ${renderPythonProgramExpression(expression.right)})`;
+  if (expression.kind === "member") return `${renderPythonProgramExpression(expression.subject, elementBinding, depth)}[${JSON.stringify(expression.key)}]`;
+  if (expression.kind === "sequence") return `[${expression.items.map(item => renderPythonProgramExpression(item, elementBinding, depth)).join(", ")}]`;
+  if (expression.kind === "mapping") return `{${expression.entries.map(entry => `${JSON.stringify(entry.key)}: ${renderPythonProgramExpression(entry.value, elementBinding, depth)}`).join(", ")}}`;
+  if (expression.kind === "cardinality") return `len(${renderPythonProgramExpression(expression.operand, elementBinding, depth)})`;
+  if (expression.kind === "equivalent") return `(${renderPythonProgramExpression(expression.left, elementBinding, depth)} == ${renderPythonProgramExpression(expression.right, elementBinding, depth)})`;
+  if (expression.kind === "map_sequence") {
+    const nextBinding = `_program_element_${depth + 1}`;
+    return `[${renderPythonProgramExpression(expression.projection, nextBinding, depth + 1)} for ${nextBinding} in ${renderPythonProgramExpression(expression.source, elementBinding, depth)}]`;
+  }
+  if (expression.kind === "unary") return `(-${renderPythonProgramExpression(expression.operand, elementBinding, depth)})`;
+  if (expression.operator === "minimum") return `min(${renderPythonProgramExpression(expression.left, elementBinding, depth)}, ${renderPythonProgramExpression(expression.right, elementBinding, depth)})`;
+  if (expression.operator === "maximum") return `max(${renderPythonProgramExpression(expression.left, elementBinding, depth)}, ${renderPythonProgramExpression(expression.right, elementBinding, depth)})`;
   const operator = expression.operator === "add" ? "+"
     : expression.operator === "subtract" ? "-"
       : expression.operator === "multiply" ? "*" : "/";
-  return `(${renderPythonProgramExpression(expression.left)} ${operator} ${renderPythonProgramExpression(expression.right)})`;
+  return `(${renderPythonProgramExpression(expression.left, elementBinding, depth)} ${operator} ${renderPythonProgramExpression(expression.right, elementBinding, depth)})`;
 }
 
 function pythonJsonLiteral(value: unknown): string {
@@ -2912,23 +2917,28 @@ function renderStatefulLiteral(value: unknown): string {
   return rendered === undefined ? "undefined" : rendered;
 }
 
-function renderProgramExpression(expression: ProgramExpression): string {
+function renderProgramExpression(expression: ProgramExpression, elementBinding = "_programElement0", depth = 0): string {
   if (expression.kind === "argument") return `args[${expression.index}]`;
+  if (expression.kind === "element") return elementBinding;
   if (expression.kind === "literal") return JSON.stringify(expression.value);
   if (expression.kind === "value") return JSON.stringify(expression.value);
-  if (expression.kind === "member") return `${renderProgramExpression(expression.subject)}[${JSON.stringify(expression.key)}]`;
-  if (expression.kind === "sequence") return `[${expression.items.map(renderProgramExpression).join(", ")}]`;
-  if (expression.kind === "mapping") return `Object.fromEntries([${expression.entries.map(entry => `[${JSON.stringify(entry.key)}, ${renderProgramExpression(entry.value)}]`).join(", ")}])`;
-  if (expression.kind === "cardinality") return `${renderProgramExpression(expression.operand)}.length`;
-  if (expression.kind === "equivalent") return `JSON.stringify(${renderProgramExpression(expression.left)}) === JSON.stringify(${renderProgramExpression(expression.right)})`;
-  if (expression.kind === "unary") return `(-${renderProgramExpression(expression.operand)})`;
+  if (expression.kind === "member") return `${renderProgramExpression(expression.subject, elementBinding, depth)}[${JSON.stringify(expression.key)}]`;
+  if (expression.kind === "sequence") return `[${expression.items.map(item => renderProgramExpression(item, elementBinding, depth)).join(", ")}]`;
+  if (expression.kind === "mapping") return `Object.fromEntries([${expression.entries.map(entry => `[${JSON.stringify(entry.key)}, ${renderProgramExpression(entry.value, elementBinding, depth)}]`).join(", ")}])`;
+  if (expression.kind === "cardinality") return `${renderProgramExpression(expression.operand, elementBinding, depth)}.length`;
+  if (expression.kind === "equivalent") return `JSON.stringify(${renderProgramExpression(expression.left, elementBinding, depth)}) === JSON.stringify(${renderProgramExpression(expression.right, elementBinding, depth)})`;
+  if (expression.kind === "map_sequence") {
+    const nextBinding = `_programElement${depth + 1}`;
+    return `${renderProgramExpression(expression.source, elementBinding, depth)}.map((${nextBinding}) => ${renderProgramExpression(expression.projection, nextBinding, depth + 1)})`;
+  }
+  if (expression.kind === "unary") return `(-${renderProgramExpression(expression.operand, elementBinding, depth)})`;
   const operator = expression.operator === "add" ? "+"
     : expression.operator === "subtract" ? "-"
       : expression.operator === "multiply" ? "*"
         : expression.operator === "divide" ? "/" : undefined;
-  if (expression.operator === "minimum") return `Math.min(${renderProgramExpression(expression.left)}, ${renderProgramExpression(expression.right)})`;
-  if (expression.operator === "maximum") return `Math.max(${renderProgramExpression(expression.left)}, ${renderProgramExpression(expression.right)})`;
-  return `(${renderProgramExpression(expression.left)} ${operator} ${renderProgramExpression(expression.right)})`;
+  if (expression.operator === "minimum") return `Math.min(${renderProgramExpression(expression.left, elementBinding, depth)}, ${renderProgramExpression(expression.right, elementBinding, depth)})`;
+  if (expression.operator === "maximum") return `Math.max(${renderProgramExpression(expression.left, elementBinding, depth)}, ${renderProgramExpression(expression.right, elementBinding, depth)})`;
+  return `(${renderProgramExpression(expression.left, elementBinding, depth)} ${operator} ${renderProgramExpression(expression.right, elementBinding, depth)})`;
 }
 
 /** The emitted test: every property the emitter must keep, exercised against the emitted program by running it. */
