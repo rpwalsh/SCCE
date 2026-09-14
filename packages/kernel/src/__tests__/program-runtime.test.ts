@@ -254,6 +254,72 @@ describe("ProgramGraph runtime and artifact emission", () => {
     }
   });
 
+  it("originates a structural data transformation and verifies an unseen example", () => {
+    const request = [
+      "Create card(person).",
+      "card({\"identity\":{\"label\":\"A\"},\"channels\":{\"primary\":\"1\"}}) => {\"name\":\"A\",\"contact\":\"1\"}",
+      "card({\"identity\":{\"label\":\"B\"},\"channels\":{\"primary\":\"2\"}}) => {\"name\":\"B\",\"contact\":\"2\"}",
+      "card({\"identity\":{\"label\":\"C\"},\"channels\":{\"primary\":\"3\"}}) => {\"name\":\"C\",\"contact\":\"3\"}",
+      "card({\"identity\":{\"label\":\"D\"},\"channels\":{\"primary\":\"4\"}}) => {\"name\":\"D\",\"contact\":\"4\"}"
+    ].join("\n");
+    const signal = codeRequestSignal(request);
+    const intent = required(programIntentForTurn({
+      requestedAuthority: "program",
+      activeOperatorIds: [COGNITIVE_OPERATOR_IDS.programPlanning],
+      codeSignal: signal,
+      evidence: []
+    }));
+    expect(intent.behaviorRequirements).toHaveLength(4);
+    const probe = required(buildProgram(request, [], intent).program);
+    const root = mkdtempSync(join(tmpdir(), "scce-owner-structural-"));
+    try {
+      mkdirSync(join(root, "src"));
+      mkdirSync(join(root, "test"));
+      const probeSource = required(probe.files.find(file => file.path === "src/program.mjs"));
+      const probeTest = required(probe.files.find(file => file.path === "test/program.test.mjs"));
+      writeFileSync(join(root, "src", "program.mjs"), probeSource.content, "utf8");
+      writeFileSync(join(root, "test", "program.test.mjs"), probeTest.content, "utf8");
+      expect(spawnSync(process.execPath, probe.test.args, { cwd: root, encoding: "utf8" }).status).not.toBe(0);
+
+      const retry = replanOwnerBehaviorProgramIntent({
+        intent,
+        program: probe,
+        failure: {
+          observationId: "owner.structural.validation.failure.kernel",
+          programId: probe.id,
+          planHash: "owner-structural-plan",
+          validatorId: "validator.owner.node",
+          checkId: "tests",
+          status: "failed",
+          ownerRequirementIds: intent.behaviorRequirements?.map(requirement => requirement.id) ?? [],
+          command: probe.test
+        },
+        hasher
+      });
+      const selected = required(retry.intent.behaviorTransformationCandidates?.find(candidate =>
+        retry.intent.selectedBehaviorTransformationIds?.includes(candidate.id)
+      ));
+      expect(selected.operator).toBe("mapping");
+      expect(evaluateProgramExpression(selected.producedIr, [{ identity: { label: "D" }, channels: { primary: "4" } }])).toEqual({
+        contact: "4",
+        name: "D"
+      });
+
+      const repaired = required(buildProgram(request, [], retry.intent).program);
+      const repairedSource = required(repaired.files.find(file => file.path === "src/program.mjs"));
+      const repairedTest = required(repaired.files.find(file => file.path === "test/program.test.mjs"));
+      expect(repairedSource.content).toContain('["contact", args[0]["channels"]["primary"]]');
+      expect(repairedSource.content).toContain('["name", args[0]["identity"]["label"]]');
+      expect(repairedSource.content).not.toContain("expectedResult");
+      writeFileSync(join(root, "src", "program.mjs"), repairedSource.content, "utf8");
+      writeFileSync(join(root, "test", "program.test.mjs"), repairedTest.content, "utf8");
+      const passing = spawnSync(process.execPath, repaired.test.args, { cwd: root, encoding: "utf8" });
+      expect(passing.status, `${passing.stdout}\n${passing.stderr}`).toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("binds emitted stateful operations to owner invocation contracts", () => {
     // The operation identities are owner-supplied symbols. The planner must
     // derive their arity and runtime shapes from these typed traces, not from
