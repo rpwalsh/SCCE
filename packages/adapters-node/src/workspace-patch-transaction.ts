@@ -24,6 +24,7 @@ import {
   type PatchMutationReceipt,
   type PatchTransactionPlan,
   type PatchTransactionReceipt,
+  type PatchValidationCheckReceipt,
   type PatchValidationReceipt,
   type StructuredPatchOperation
 } from "@scce/kernel";
@@ -49,6 +50,7 @@ export interface WorkspacePatchValidationResult {
   readonly ok: boolean;
   readonly validatorId: string;
   readonly evidence: unknown;
+  readonly executedChecks?: readonly PatchValidationCheckReceipt[];
 }
 
 export interface WorkspacePatchRollbackReport {
@@ -148,7 +150,11 @@ export async function executeWorkspacePatchTransaction(options: WorkspacePatchTr
     if (options.validate) {
       const result = await options.validate(createValidationView(root, options.plan, prepared));
       if (!result.ok) fail("VALIDATION_FAILED", `targeted validation failed: ${result.validatorId}`, options.plan.planHash);
-      validationReceipt = createPatchValidationReceipt({ validatorId: result.validatorId, evidence: result.evidence });
+      validationReceipt = createPatchValidationReceipt({
+        validatorId: result.validatorId,
+        evidence: result.evidence,
+        ...(result.executedChecks === undefined ? {} : { executedChecks: result.executedChecks })
+      });
     }
 
     // Recheck the whole compare-and-set immediately before the first mutation.

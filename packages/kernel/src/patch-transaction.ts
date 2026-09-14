@@ -46,6 +46,14 @@ export interface PatchTransactionPlan {
 export interface PatchValidationReceipt {
   readonly validatorId: string;
   readonly evidenceHash: PatchContentHash;
+  /** Server-owned checks that were actually executed and passed. */
+  readonly executedChecks?: readonly PatchValidationCheckReceipt[];
+}
+
+export interface PatchValidationCheckReceipt {
+  readonly checkId: "compiler" | "typecheck" | "tests";
+  readonly commandIndex: number;
+  readonly commandEvidenceHash: PatchContentHash;
 }
 
 export interface PatchMutationReceipt {
@@ -103,12 +111,33 @@ export function verifyPatchTransactionPlan(plan: PatchTransactionPlan, hasher: H
 }
 
 export function createPatchValidationReceipt(
-  input: { readonly validatorId: string; readonly evidence: unknown },
+  input: {
+    readonly validatorId: string;
+    readonly evidence: unknown;
+    readonly executedChecks?: readonly PatchValidationCheckReceipt[];
+  },
   hasher: Hasher = createHasher()
 ): PatchValidationReceipt {
   const validatorId = input.validatorId.trim();
   if (!validatorId) throw new Error("patch validation receipt requires a validator id");
-  return deepFreeze({ validatorId, evidenceHash: hashCanonical(input.evidence, hasher) });
+  const executedChecks = input.executedChecks?.map(check => {
+    if (check.checkId !== "compiler" && check.checkId !== "typecheck" && check.checkId !== "tests") {
+      throw new Error(`patch validation check id is invalid: ${String(check.checkId)}`);
+    }
+    if (!Number.isSafeInteger(check.commandIndex) || check.commandIndex < 0) {
+      throw new Error("patch validation command index is invalid");
+    }
+    validateContentHash(check.commandEvidenceHash);
+    return { ...check };
+  }).sort((left, right) => left.commandIndex - right.commandIndex || compareCanonical(left.checkId, right.checkId));
+  if (executedChecks && new Set(executedChecks.map(check => check.checkId)).size !== executedChecks.length) {
+    throw new Error("patch validation executed checks must be unique");
+  }
+  return deepFreeze({
+    validatorId,
+    evidenceHash: hashCanonical(input.evidence, hasher),
+    ...(executedChecks === undefined ? {} : { executedChecks })
+  });
 }
 
 export function createPatchMutationReceipt(

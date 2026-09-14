@@ -30,7 +30,8 @@ describe("structured patch validation", () => {
         policy: policy([
           {
             executable: process.execPath,
-            argv: ["-e", "const fs=require('node:fs');if(fs.readFileSync('value.txt','utf8')!=='after')process.exit(7);process.stdout.write('saw-staged-patch')"]
+            argv: ["-e", "const fs=require('node:fs');if(fs.readFileSync('value.txt','utf8')!=='after')process.exit(7);process.stdout.write('saw-staged-patch')"],
+            checkIds: ["tests"]
           }
         ])
       })
@@ -39,6 +40,11 @@ describe("structured patch validation", () => {
     expect(await readFile(join(root, "value.txt"), "utf8")).toBe("after");
     expect(receipt.validation?.validatorId).toBe("fixture-policy.v1");
     expect(receipt.validation?.evidenceHash).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(receipt.validation?.executedChecks).toEqual([{
+      checkId: "tests",
+      commandIndex: 0,
+      commandEvidenceHash: expect.stringMatching(/^sha256:[0-9a-f]{64}$/)
+    }]);
     await expect(readFile(join(root, ".scce-validation"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 

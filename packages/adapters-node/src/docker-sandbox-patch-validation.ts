@@ -319,6 +319,7 @@ async function execInContainer(input: {
     executable: input.command.executable,
     argv: [...input.command.argv],
     cwd: input.command.cwd ?? ".",
+    checkIds: [...(input.command.checkIds ?? [])],
     code: result.code,
     signal: result.signal,
     timedOut: result.timedOut,

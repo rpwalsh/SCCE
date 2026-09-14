@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
 import { chmod, copyFile, lstat, mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import type { PatchTransactionPlan } from "@scce/kernel";
+import { canonicalStringify, hashPatchContent, type PatchTransactionPlan, type PatchValidationCheckReceipt } from "@scce/kernel";
 import type { WorkspacePatchValidationResult, WorkspacePatchValidationView } from "./workspace-patch-transaction.js";
 
 export const STRUCTURED_PATCH_VALIDATION_POLICY_SCHEMA = "scce.patch-validation-policy.v1" as const;
@@ -17,6 +17,8 @@ export interface StructuredPatchValidationCommand {
   readonly executable: string;
   readonly argv: readonly string[];
   readonly cwd?: string;
+  /** Server-owned cognitive checks this command actually exercises. */
+  readonly checkIds?: readonly PatchValidationCheckReceipt["checkId"][];
 }
 
 export interface StructuredPatchValidationPolicy {
@@ -37,6 +39,7 @@ export interface StructuredPatchValidationCommandResult {
   readonly executable: string;
   readonly argv: readonly string[];
   readonly cwd: string;
+  readonly checkIds: readonly PatchValidationCheckReceipt["checkId"][];
   readonly code: number | null;
   readonly signal: NodeJS.Signals | null;
   readonly timedOut: boolean;
@@ -131,7 +134,7 @@ export async function runStructuredPatchValidation(options: RunStructuredPatchVa
 
     const provider = options.provider ?? trustedHostPatchValidationProvider;
     const execution = await provider.execute({ stageRoot, policy: options.policy });
-    validateProviderResult(provider, execution);
+    validateProviderResult(provider, options.policy, execution);
 
     const evidence: StructuredPatchValidationEvidence = {
       schemaVersion: STRUCTURED_PATCH_VALIDATION_EVIDENCE_SCHEMA,
@@ -143,12 +146,14 @@ export async function runStructuredPatchValidation(options: RunStructuredPatchVa
       ...(execution.dependencyMaterialization === undefined ? {} : { dependencyMaterialization: execution.dependencyMaterialization }),
       commands: execution.commands
     };
-    return deepFreeze({
-      ok: execution.ok
+    const ok = execution.ok
         && execution.commands.length === options.policy.commands.length
-        && execution.commands.every(command => command.code === 0 && !command.timedOut && !command.outputLimitExceeded),
+        && execution.commands.every(command => command.code === 0 && !command.timedOut && !command.outputLimitExceeded);
+    return deepFreeze({
+      ok,
       validatorId: options.policy.id,
-      evidence
+      evidence,
+      executedChecks: ok ? executedCheckReceipts(execution.commands) : []
     });
   } finally {
     await rm(stageRoot, { recursive: true, force: true });
@@ -298,6 +303,7 @@ async function runStructuredCommand(input: {
         executable: input.command.executable,
         argv: [...input.command.argv],
         cwd: normalizeRelative(relative(input.stageRoot, canonicalCwd)) || ".",
+        checkIds: [...(input.command.checkIds ?? [])],
         code,
         signal,
         timedOut,
@@ -326,10 +332,20 @@ function validatePolicy(policy: StructuredPatchValidationPolicy): void {
       throw new Error(`validation command ${index} argv is invalid`);
     }
     resolveContained("C:\\validation-root", command.cwd ?? ".", `validation command ${index} cwd`);
+    const commandCheckIds: readonly PatchValidationCheckReceipt["checkId"][] = command.checkIds ?? [];
+    if (!Array.isArray(commandCheckIds) || commandCheckIds.some(checkId => checkId !== "compiler" && checkId !== "typecheck" && checkId !== "tests")) {
+      throw new Error(`validation command ${index} check ids are invalid`);
+    }
   }
+  const checkIds = policy.commands.flatMap(command => command.checkIds ?? []);
+  if (new Set(checkIds).size !== checkIds.length) throw new Error("validation policy check ids must be unique");
 }
 
-function validateProviderResult(provider: StructuredPatchValidationProvider, result: StructuredPatchValidationProviderResult): void {
+function validateProviderResult(
+  provider: StructuredPatchValidationProvider,
+  policy: StructuredPatchValidationPolicy,
+  result: StructuredPatchValidationProviderResult
+): void {
   if (result.execution.providerId !== provider.id) throw new Error("patch validation provider evidence id does not match provider");
   if (result.execution.boundary !== provider.boundary) throw new Error("patch validation provider evidence boundary does not match provider");
   if (provider.boundary === "trusted-host" && result.execution.verificationLevel === "os-sandbox-executed") {
@@ -339,6 +355,28 @@ function validateProviderResult(provider: StructuredPatchValidationProvider, res
     throw new Error("OS-sandbox patch validation cannot report trusted-host execution");
   }
   if (!Array.isArray(result.commands) || result.commands.length > 16) throw new Error("patch validation provider returned an invalid command result set");
+  for (const [index, command] of result.commands.entries()) {
+    const policyCommand = policy.commands[index];
+    if (!policyCommand || command.index !== index
+      || command.executable !== policyCommand.executable
+      || canonicalStringify(command.argv) !== canonicalStringify(policyCommand.argv)
+      || command.cwd !== (policyCommand.cwd ?? ".")
+      || canonicalStringify(command.checkIds) !== canonicalStringify(policyCommand.checkIds ?? [])) {
+      throw new Error("patch validation provider command evidence does not match policy");
+    }
+    const commandCheckIds: readonly PatchValidationCheckReceipt["checkId"][] = command.checkIds;
+    if (!Array.isArray(commandCheckIds) || commandCheckIds.some(checkId => checkId !== "compiler" && checkId !== "typecheck" && checkId !== "tests")) {
+      throw new Error("patch validation provider returned invalid command check ids");
+    }
+  }
+}
+
+function executedCheckReceipts(commands: readonly StructuredPatchValidationCommandResult[]): PatchValidationCheckReceipt[] {
+  return commands.flatMap(command => command.checkIds.map(checkId => ({
+    checkId,
+    commandIndex: command.index,
+    commandEvidenceHash: hashPatchContent(canonicalStringify(command))
+  })));
 }
 
 function validationEnvironment(extra: Readonly<Record<string, string>> | undefined): NodeJS.ProcessEnv {
