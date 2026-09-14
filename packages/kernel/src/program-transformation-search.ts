@@ -3,23 +3,23 @@
 
 import type { ProgramBehaviorRequirement } from "./types.js";
 
-/** A language-neutral, one-argument arithmetic expression. */
+/** A language-neutral, bounded-arity arithmetic expression. */
 export type ProgramExpression =
-  | { readonly kind: "argument"; readonly index: 0 }
+  | { readonly kind: "argument"; readonly index: number }
   | { readonly kind: "literal"; readonly value: number }
   | { readonly kind: "unary"; readonly operator: "negate"; readonly operand: ProgramExpression }
   | {
     readonly kind: "binary";
-    readonly operator: "add" | "subtract" | "multiply" | "divide";
+    readonly operator: "add" | "subtract" | "multiply" | "divide" | "minimum" | "maximum";
     readonly left: ProgramExpression;
     readonly right: ProgramExpression;
   };
 
-export type ProgramTransformationOperator = "argument" | "literal" | "negate" | "add" | "subtract" | "multiply" | "divide";
+export type ProgramTransformationOperator = "argument" | "literal" | "negate" | "add" | "subtract" | "multiply" | "divide" | "minimum" | "maximum";
 
 export type ProgramTransformationPrecondition =
-  | { readonly kind: "argument_count"; readonly count: 1 }
-  | { readonly kind: "finite_numeric_argument"; readonly index: 0 }
+  | { readonly kind: "argument_count"; readonly count: number }
+  | { readonly kind: "finite_numeric_argument"; readonly index: number }
   | { readonly kind: "finite_numeric_result" }
   | { readonly kind: "nonzero_denominator"; readonly expression: ProgramExpression };
 
@@ -56,7 +56,7 @@ export interface ProgramTransformationSearchResult {
 
 interface NumericExample {
   readonly id: string;
-  readonly input: number;
+  readonly arguments: readonly number[];
   readonly output: number;
 }
 
@@ -75,7 +75,7 @@ const DEFAULT_BEAM_WIDTH = 96;
 const DEFAULT_MAX_CANDIDATES = 128;
 const DEFAULT_FIT_TOLERANCE = 1e-9;
 const EPSILON = 1e-12;
-const ARGUMENT: ProgramExpression = { kind: "argument", index: 0 };
+const MAX_ARGUMENTS = 3;
 
 /**
  * Searches a small, inspectable arithmetic transformation space independently
@@ -101,7 +101,7 @@ export function searchProgramTransformations(
   for (const callableId of [...grouped.keys()].sort(compareStrings)) {
     const group = grouped.get(callableId)!;
     if (!group.fit.length) continue;
-    const expressions = boundedExpressionSearch(group.fit, maxDepth, beamWidth);
+    const expressions = boundedExpressionSearch(group.fit, group.arity, maxDepth, beamWidth);
     const byIdentity = new Map<string, ProgramTransformationCandidate>();
     for (const expression of expressions) {
       const stats = fitStats(expression.expression, group.fit, fitTolerance);
@@ -113,7 +113,7 @@ export function searchProgramTransformations(
         operator: topLevelOperator(expression.expression),
         operands: expressionOperands(expression.expression),
         producedIr: expression.expression,
-        preconditions: preconditionsFor(expression.expression),
+        preconditions: preconditionsFor(expression.expression, group.arity),
         predictedFitObligationIds: stats.predictedIds,
         heldOutObligationIds: group.heldOut.slice().sort(compareStrings),
         score: cleanNumber(stats.meanSquaredError + complexity * 1e-9),
@@ -135,10 +135,11 @@ export function searchProgramTransformations(
   return { candidates, selected };
 }
 
-/** Evaluates the selected source-neutral IR for a numeric argument. */
-export function evaluateProgramExpression(expression: ProgramExpression, input: number): number | undefined {
-  if (!Number.isFinite(input)) return undefined;
-  return evaluateExpression(expression, input);
+/** Evaluates the selected source-neutral IR for bounded numeric arguments. */
+export function evaluateProgramExpression(expression: ProgramExpression, input: number | readonly number[]): number | undefined {
+  const arguments_ = typeof input === "number" ? [input] : [...input];
+  if (!arguments_.length || arguments_.length > MAX_ARGUMENTS || !arguments_.every(Number.isFinite)) return undefined;
+  return evaluateExpression(expression, arguments_);
 }
 
 function topLevelOperator(expression: ProgramExpression): ProgramTransformationOperator {
@@ -153,28 +154,37 @@ function expressionOperands(expression: ProgramExpression): ProgramExpression[] 
   return [];
 }
 
-function groupRequirements(requirements: readonly ProgramBehaviorRequirement[]): Map<string, { fit: NumericExample[]; heldOut: string[] }> {
-  const grouped = new Map<string, { fit: NumericExample[]; heldOut: string[] }>();
+function groupRequirements(requirements: readonly ProgramBehaviorRequirement[]): Map<string, { fit: NumericExample[]; heldOut: string[]; arity: number }> {
+  const grouped = new Map<string, { fit: NumericExample[]; heldOut: string[]; arity: number }>();
   for (const requirement of requirements) {
-    const group = grouped.get(requirement.callableId) ?? { fit: [], heldOut: [] };
-    grouped.set(requirement.callableId, group);
+    const existing = grouped.get(requirement.callableId);
     if (requirement.verificationRole === "held_out") {
-      // No held-out values enter search, ranking, or candidate identity.
+      // Held-out expected values and their input shapes never influence
+      // search. Their opaque ids are attached after a fit-derived candidate
+      // exists and are verified only by the emitted executable test.
+      const group = existing ?? { fit: [], heldOut: [], arity: 0 };
       group.heldOut.push(requirement.id);
+      grouped.set(requirement.callableId, group);
       continue;
     }
-    const input = requirement.arguments.length === 1 ? numericValue(requirement.arguments[0]) : undefined;
+    const arguments_ = requirement.arguments.map(numericValue);
     const output = numericValue(requirement.expectedResult);
-    if (input !== undefined && output !== undefined) group.fit.push({ id: requirement.id, input, output });
+    if (!arguments_.length || arguments_.length > MAX_ARGUMENTS || arguments_.some(value => value === undefined) || output === undefined) continue;
+    const arity = arguments_.length;
+    const group = existing ?? { fit: [], heldOut: [], arity };
+    if (group.arity !== 0 && group.arity !== arity) continue;
+    if (group.arity === 0) group.arity = arity;
+    grouped.set(requirement.callableId, group);
+    group.fit.push({ id: requirement.id, arguments: arguments_ as number[], output });
   }
   for (const group of grouped.values()) group.fit.sort(compareExamples);
   return grouped;
 }
 
-function boundedExpressionSearch(examples: readonly NumericExample[], maxDepth: number, beamWidth: number): SearchExpression[] {
+function boundedExpressionSearch(examples: readonly NumericExample[], arity: number, maxDepth: number, beamWidth: number): SearchExpression[] {
   const constants = derivedFitConstants(examples);
   const leaves: SearchExpression[] = [
-    { expression: ARGUMENT, depth: 0 },
+    ...Array.from({ length: arity }, (_, index) => ({ expression: { kind: "argument", index } as ProgramExpression, depth: 0 })),
     ...constants.map(value => ({ expression: { kind: "literal", value } as ProgramExpression, depth: 0 }))
   ];
   const all: SearchExpression[] = deduplicateExpressions(leaves);
@@ -191,7 +201,7 @@ function boundedExpressionSearch(examples: readonly NumericExample[], maxDepth: 
       for (const right of operands) {
         const actualDepth = Math.max(left.depth, right.depth) + 1;
         if (actualDepth !== depth) continue;
-        for (const operator of ["add", "subtract", "multiply", "divide"] as const) {
+        for (const operator of ["add", "subtract", "multiply", "divide", "minimum", "maximum"] as const) {
           next.push({ expression: { kind: "binary", operator, left: left.expression, right: right.expression }, depth });
         }
       }
@@ -209,12 +219,14 @@ function boundedExpressionSearch(examples: readonly NumericExample[], maxDepth: 
 function derivedFitConstants(examples: readonly NumericExample[]): number[] {
   const values = new Set<number>();
   for (const example of examples) {
-    values.add(cleanNumber(example.input));
+    for (const argument of example.arguments) values.add(cleanNumber(argument));
     values.add(cleanNumber(example.output));
   }
   for (let left = 0; left < examples.length; left += 1) {
     for (let right = left + 1; right < examples.length; right += 1) {
-      values.add(cleanNumber(examples[right]!.input - examples[left]!.input));
+      for (let argumentIndex = 0; argumentIndex < examples[left]!.arguments.length; argumentIndex += 1) {
+        values.add(cleanNumber(examples[right]!.arguments[argumentIndex]! - examples[left]!.arguments[argumentIndex]!));
+      }
       values.add(cleanNumber(examples[right]!.output - examples[left]!.output));
     }
   }
@@ -236,7 +248,7 @@ function fitStats(expression: ProgramExpression, examples: readonly NumericExamp
   let squaredError = 0;
   const predictedIds: string[] = [];
   for (const example of examples) {
-    const prediction = evaluateExpression(expression, example.input);
+    const prediction = evaluateExpression(expression, example.arguments);
     if (prediction === undefined) return { meanSquaredError: Number.POSITIVE_INFINITY, predictedIds: [] };
     const error = prediction - example.output;
     squaredError += error * error;
@@ -246,30 +258,31 @@ function fitStats(expression: ProgramExpression, examples: readonly NumericExamp
   return { meanSquaredError: squaredError / examples.length, predictedIds };
 }
 
-function evaluateExpression(expression: ProgramExpression, input: number): number | undefined {
+function evaluateExpression(expression: ProgramExpression, arguments_: readonly number[]): number | undefined {
   switch (expression.kind) {
-    case "argument": return input;
+    case "argument": return arguments_[expression.index];
     case "literal": return expression.value;
     case "unary": {
-      const operand = evaluateExpression(expression.operand, input);
+      const operand = evaluateExpression(expression.operand, arguments_);
       return operand === undefined ? undefined : finiteOrUndefined(-operand);
     }
     case "binary": {
-      const left = evaluateExpression(expression.left, input);
-      const right = evaluateExpression(expression.right, input);
+      const left = evaluateExpression(expression.left, arguments_);
+      const right = evaluateExpression(expression.right, arguments_);
       if (left === undefined || right === undefined) return undefined;
       if (expression.operator === "add") return finiteOrUndefined(left + right);
       if (expression.operator === "subtract") return finiteOrUndefined(left - right);
       if (expression.operator === "multiply") return finiteOrUndefined(left * right);
-      return Math.abs(right) <= EPSILON ? undefined : finiteOrUndefined(left / right);
+      if (expression.operator === "divide") return Math.abs(right) <= EPSILON ? undefined : finiteOrUndefined(left / right);
+      return expression.operator === "minimum" ? Math.min(left, right) : Math.max(left, right);
     }
   }
 }
 
-function preconditionsFor(expression: ProgramExpression): readonly ProgramTransformationPrecondition[] {
+function preconditionsFor(expression: ProgramExpression, arity: number): readonly ProgramTransformationPrecondition[] {
   const preconditions: ProgramTransformationPrecondition[] = [
-    { kind: "argument_count", count: 1 },
-    { kind: "finite_numeric_argument", index: 0 },
+    { kind: "argument_count", count: arity },
+    ...Array.from({ length: arity }, (_, index) => ({ kind: "finite_numeric_argument" as const, index })),
     { kind: "finite_numeric_result" }
   ];
   collectDenominatorPreconditions(expression, preconditions);
@@ -318,13 +331,17 @@ function expressionComplexity(expression: ProgramExpression): number {
 }
 
 function expressionKey(expression: ProgramExpression): string {
-  if (expression.kind === "argument") return "a0";
+  if (expression.kind === "argument") return `a${expression.index}`;
   if (expression.kind === "literal") return `l(${numberKey(expression.value)})`;
   if (expression.kind === "unary") return `u:${expression.operator}(${expressionKey(expression.operand)})`;
   // Keep algebraically useful multiplicative forms ahead of repeated-addition
   // equivalents when fit error and tree size tie. This is only a deterministic
   // search-order preference; it never reads held-out outcomes.
-  const operatorRank = expression.operator === "multiply" ? "0" : expression.operator === "add" ? "1" : expression.operator === "subtract" ? "2" : "3";
+  const operatorRank = expression.operator === "multiply" ? "0"
+    : expression.operator === "add" ? "1"
+      : expression.operator === "subtract" ? "2"
+        : expression.operator === "divide" ? "3"
+          : expression.operator === "minimum" ? "4" : "5";
   return `b${operatorRank}:${expression.operator}(${expressionKey(expression.left)},${expressionKey(expression.right)})`;
 }
 
@@ -339,7 +356,15 @@ function candidateId(callableId: string, expression: ProgramExpression): string 
 }
 
 function compareExamples(left: NumericExample, right: NumericExample): number {
-  return compareStrings(left.id, right.id) || left.input - right.input || left.output - right.output;
+  const id = compareStrings(left.id, right.id);
+  if (id) return id;
+  const arity = left.arguments.length - right.arguments.length;
+  if (arity) return arity;
+  for (let index = 0; index < left.arguments.length; index += 1) {
+    const delta = left.arguments[index]! - right.arguments[index]!;
+    if (delta) return delta;
+  }
+  return left.output - right.output;
 }
 
 function numericValue(value: unknown): number | undefined {
