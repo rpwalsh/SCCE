@@ -48,10 +48,23 @@ export interface DiscoveredCodeVerifier {
   check: LanguageCheckCommand;
 }
 
-const discovered = new Map<string, Promise<DiscoveredCodeVerifier | undefined>>();
+export type CodeVerifierCapability =
+  | { readonly languageId: string; readonly status: "available"; readonly verifier: DiscoveredCodeVerifier }
+  | { readonly languageId: string; readonly status: "unavailable"; readonly reason: string };
+
+const discovered = new Map<string, Promise<CodeVerifierCapability>>();
 
 /** The checker for a language, resolved to where it lives, or nothing when this machine has none. */
 export function findCodeVerifier(languageId: string): Promise<DiscoveredCodeVerifier | undefined> {
+  return findCodeVerifierCapability(languageId).then(capability => capability.status === "available" ? capability.verifier : undefined);
+}
+
+/**
+ * Resolve the strongest checker capability as data. The unavailable branch is
+ * useful to callers that must explain why a grammar fallback was selected;
+ * absence is not an exception and must never be mistaken for verification.
+ */
+export function findCodeVerifierCapability(languageId: string): Promise<CodeVerifierCapability> {
   const cached = discovered.get(languageId);
   if (cached) return cached;
   const lookup = probe(languageId);
@@ -65,23 +78,45 @@ export function findCodeVerifierForPath(filePath: string): Promise<DiscoveredCod
   return languageId ? findCodeVerifier(languageId) : Promise.resolve(undefined);
 }
 
+/** Resolve the checker capability for a path, retaining an actionable absence reason. */
+export function findCodeVerifierCapabilityForPath(filePath: string): Promise<CodeVerifierCapability> {
+  const languageId = codeLanguageForPath(filePath);
+  return languageId
+    ? findCodeVerifierCapability(languageId)
+    : Promise.resolve({ languageId: "unknown", status: "unavailable", reason: "no language checker is configured for this path" });
+}
 
-async function probe(languageId: string): Promise<DiscoveredCodeVerifier | undefined> {
+
+async function probe(languageId: string): Promise<CodeVerifierCapability> {
   const check = DEFAULT_LANGUAGE_CHECKS[languageId];
   // TypeScript and JavaScript carry no command: the verifier resolves the compiler it ships with.
-  if (!check?.command) return undefined;
+  if (!check?.command) {
+    return {
+      languageId,
+      status: "unavailable",
+      reason: check ? `${languageId} uses the workspace compiler path rather than a discovered checker` : `no checker specification exists for ${languageId}`
+    };
+  }
   const versionArgs = VERSION_ARGS[languageId] ?? ["--version"];
   for (const command of [check.command, ...installedElsewhere(languageId, check.command)]) {
     const result = await runProcess(command, [...versionArgs], { timeoutMs: 10_000 }).catch(() => undefined);
     if (!result || result.code !== 0) continue;
     return {
+      status: "available",
       languageId,
-      command,
-      version: `${result.stdout}${result.stderr}`.split(/\r?\n/u)[0]?.trim() ?? "",
-      check: { ...check, command }
+      verifier: {
+        languageId,
+        command,
+        version: `${result.stdout}${result.stderr}`.split(/\r?\n/u)[0]?.trim() ?? "",
+        check: { ...check, command }
+      }
     };
   }
-  return undefined;
+  return {
+    languageId,
+    status: "unavailable",
+    reason: `${languageId} checker was not found; tried ${[check.command, ...installedElsewhere(languageId, check.command)].join(", ")}`
+  };
 }
 
 /** The same executable under each search path that exists, so a toolchain outside PATH is still found. */
