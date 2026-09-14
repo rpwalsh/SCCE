@@ -864,7 +864,7 @@ export function createSurfaceLanguageRuntime(options: {
     hydrationOptions: ResidentOnlyOptions = {}
   ): void {
     const durableOptions = { ...hydrationOptions, residentOnly: false };
-    setTimeout(() => {
+    const timer = setTimeout(() => {
       void hydrateSurfaceLanguageMemoryCached(
         limit,
         cluster,
@@ -874,6 +874,7 @@ export function createSurfaceLanguageRuntime(options: {
         durableOptions
       ).catch(() => undefined);
     }, 0);
+    if (typeof timer.unref === "function") timer.unref();
   }
 
   // Selection aggregates tied same-language clusters per request, so the cluster a turn names is rarely the one
