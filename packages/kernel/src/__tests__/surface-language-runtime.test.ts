@@ -64,6 +64,26 @@ describe("surface language resident-only cache", () => {
     )).rejects.toThrow(/was not warmed/u);
   });
 
+  it("reuses a compiled language scope after the hydration entry is evicted", async () => {
+    const fixture = runtimeFixture({
+      surfaceLanguageMemoryCacheMaxEntries: 1,
+      languageResolver: () => ({
+        profile: () => "language.fixture",
+        corpus: () => "language.fixture"
+      })
+    });
+    const first = await fixture.runtime.hydrateSurfaceLanguageMemoryCached(
+      12, undefined, "language-scoped", undefined, "first", { languageId: "language.fixture" }
+    );
+    await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "evicting-entry");
+    const second = await fixture.runtime.hydrateSurfaceLanguageMemoryCached(
+      12, undefined, "language-scoped", undefined, "second", { languageId: "language.fixture" }
+    );
+
+    expect(second.state).toBe(first.state);
+    expect(second.state.scope).toMatchObject({ mode: "language", languageId: "language.fixture" });
+  });
+
   it("fails explicitly on an unwarmed resident-only request without durable calls", async () => {
     const fixture = runtimeFixture();
     const notWarm = /hydrated runtime unavailable: resident .* was not warmed/u;
@@ -213,7 +233,7 @@ describe("surface language resident-only cache", () => {
   });
 });
 
-function runtimeFixture(cacheOverrides: { cacheMs?: number; surfaceLanguageMemoryCacheMaxEntries?: number; surfaceCandidateProfileCacheMaxEntries?: number; surfaceLanguageMemoryCacheMaxEstimatedBytes?: number } = {}) {
+function runtimeFixture(cacheOverrides: { cacheMs?: number; surfaceLanguageMemoryCacheMaxEntries?: number; surfaceCandidateProfileCacheMaxEntries?: number; surfaceLanguageMemoryCacheMaxEstimatedBytes?: number; languageResolver?: () => { profile: (profileId: string) => string | undefined; corpus: (sourceSystem: string | undefined) => string | undefined } } = {}) {
   const calls = {
     active: 0,
     evidence: 0,
@@ -349,6 +369,7 @@ function runtimeFixture(cacheOverrides: { cacheMs?: number; surfaceLanguageMemor
     hasher,
     cacheMs: 10,
     profileLimit: 32,
+    languageResolver: cacheOverrides.languageResolver,
     ...cacheOverrides
   });
 
