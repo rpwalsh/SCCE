@@ -66,6 +66,11 @@ describe("structured patch validation", () => {
 
     expect(failure).toBeInstanceOf(WorkspacePatchTransactionError);
     expect((failure as WorkspacePatchTransactionError).code).toBe("VALIDATION_FAILED");
+    expect((failure as WorkspacePatchTransactionError).validation).toMatchObject({
+      ok: false,
+      validatorId: "fixture-policy.v1",
+      evidence: { schemaVersion: "scce.patch-validation-evidence.v2" }
+    });
     expect(await readFile(join(root, "value.txt"), "utf8")).toBe("before");
     await expect(readFile(join(root, ".scce-validation"))).rejects.toMatchObject({ code: "ENOENT" });
   });

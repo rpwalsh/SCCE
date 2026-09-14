@@ -168,6 +168,7 @@ export * from "./program.js";
 export * from "./program-behavior-role-execution-support.js";
 export * from "./program-behavior-validation-ledger.js";
 export * from "./program-intent.js";
+export * from "./program-transformation-search.js";
 export * from "./program-planner.js";
 export * from "./program-runtime.js";
 export * from "./code-learning.js";

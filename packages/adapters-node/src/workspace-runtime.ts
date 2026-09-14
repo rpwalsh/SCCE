@@ -261,6 +261,7 @@ export interface WorkspaceCodingPatchPlanningInput {
   /** The hydrated program graph the turn already planned; without it only the compiler-diagnostic lane can run. */
   program?: ProgramGraph;
   evidenceIds?: readonly string[];
+  ownerRequirementIds?: readonly string[];
   validationPlan: WorkspacePatchValidationPlan;
 }
 
@@ -1709,7 +1710,7 @@ async function planWorkspaceCodingPatchFromDurableRevision(args: {
   if (args.input.program) {
     const program = args.input.program;
     const artifactPaths = program.files.map(file => normalizePath(file.path));
-    const existingDirectoryPaths = ["", ...new Set(initial.snapshot.files.map(file => path.posix.dirname(normalizePath(file.path))).filter(value => value && value !== "."))];
+    const existingDirectoryPaths = await existingProgramDirectoryPaths(args.root, initial.snapshot, artifactPaths);
     return generateWorkspacePatchPlanFromProgramGraph({
       snapshot: initial.snapshot,
       expectedRevisionId: initial.snapshot.revisionId,
@@ -1718,7 +1719,8 @@ async function planWorkspaceCodingPatchFromDurableRevision(args: {
         requestId: args.input.requestId,
         text: args.input.requestText,
         requestedPaths,
-        evidenceIds: [...new Set(args.input.evidenceIds ?? [])]
+        evidenceIds: [...new Set(args.input.evidenceIds ?? [])],
+        ownerRequirementIds: [...new Set(args.input.ownerRequirementIds ?? [])]
       },
       program,
       existingDirectoryPaths,
@@ -2389,7 +2391,7 @@ async function loadDurableWorkspaceRevision(args: {
     workspaceId: workspace.id,
     limit: args.options.maxFiles + 1
   });
-  if (records.length === 0) throw new Error("workspace patch planning requires an ingested durable revision");
+  if (records.length === 0) await assertWorkspaceHasNoUndurableFiles(args.root);
   if (records.length > args.options.maxFiles) throw new Error("workspace patch planning exceeded the configured file bound");
   const unusable = records.filter(record => record.ingestionStatus === "pending" || record.ingestionStatus === "changed" || record.ingestionStatus === "missing" || record.ingestionStatus === "failed");
   if (unusable.length) throw new Error(`workspace revision is not fully committed: ${unusable.map(record => record.path).sort().join(", ")}`);
@@ -2429,6 +2431,45 @@ async function loadDurableWorkspaceRevision(args: {
     files: revisionFiles
   });
   return { workspace, snapshot, durableHashByPath };
+}
+
+async function existingProgramDirectoryPaths(
+  root: string,
+  snapshot: WorkspaceRevisionSnapshot,
+  artifactPaths: readonly string[]
+): Promise<string[]> {
+  const candidates = new Set<string>([
+    "",
+    ...snapshot.files.map(file => path.posix.dirname(normalizePath(file.path))).filter(value => value && value !== "."),
+    ...artifactPaths.map(artifactPath => path.posix.dirname(normalizePath(artifactPath))).filter(value => value && value !== ".")
+  ]);
+  const observed = [""];
+  for (const candidate of [...candidates].filter(Boolean).sort(compareCanonicalText)) {
+    const absolute = path.resolve(root, candidate);
+    if (!isWithin(absolute, root)) throw new Error(`workspace program directory escapes root: ${candidate}`);
+    try {
+      const info = await lstat(absolute);
+      if (info.isDirectory() && !info.isSymbolicLink()) observed.push(candidate);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+  return observed;
+}
+
+async function assertWorkspaceHasNoUndurableFiles(root: string): Promise<void> {
+  const ignoredRootNames = new Set([".git", ".scce", ".scce-validation", "node_modules"]);
+  const visit = async (directory: string, depth: number): Promise<void> => {
+    if (depth > 24) throw new Error("blank workspace verification exceeded depth bound");
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      if (depth === 0 && ignoredRootNames.has(entry.name)) continue;
+      const absolute = path.join(directory, entry.name);
+      if (entry.isSymbolicLink()) throw new Error("blank workspace verification found a symbolic link");
+      if (entry.isDirectory()) { await visit(absolute, depth + 1); continue; }
+      throw new Error("workspace patch planning requires an ingested durable revision when workspace files exist");
+    }
+  };
+  await visit(root, 0);
 }
 
 function workspaceFileRole(workspacePath: string): FileArtifact["role"] {

@@ -63,6 +63,8 @@ export class WorkspacePatchTransactionError extends Error {
   readonly code: WorkspacePatchErrorCode;
   readonly planHash?: PatchContentHash;
   readonly rollback: WorkspacePatchRollbackReport;
+  /** Exact failed validation result, retained so cognition can replan from an observed outcome. */
+  readonly validation?: WorkspacePatchValidationResult;
 
   constructor(input: {
     code: WorkspacePatchErrorCode;
@@ -70,12 +72,14 @@ export class WorkspacePatchTransactionError extends Error {
     planHash?: PatchContentHash;
     cause?: unknown;
     rollback?: WorkspacePatchRollbackReport;
+    validation?: WorkspacePatchValidationResult;
   }) {
     super(input.message, input.cause === undefined ? undefined : { cause: input.cause });
     this.name = "WorkspacePatchTransactionError";
     this.code = input.code;
     this.planHash = input.planHash;
     this.rollback = deepFreeze(input.rollback ?? { attemptedPaths: [], restoredPaths: [], failures: [] });
+    this.validation = input.validation;
   }
 }
 
@@ -149,7 +153,14 @@ export async function executeWorkspacePatchTransaction(options: WorkspacePatchTr
 
     if (options.validate) {
       const result = await options.validate(createValidationView(root, options.plan, prepared));
-      if (!result.ok) fail("VALIDATION_FAILED", `targeted validation failed: ${result.validatorId}`, options.plan.planHash);
+      if (!result.ok) {
+        throw new WorkspacePatchTransactionError({
+          code: "VALIDATION_FAILED",
+          message: `targeted validation failed: ${result.validatorId}`,
+          planHash: options.plan.planHash,
+          validation: result
+        });
+      }
       validationReceipt = createPatchValidationReceipt({
         validatorId: result.validatorId,
         evidence: result.evidence,
@@ -200,7 +211,8 @@ export async function executeWorkspacePatchTransaction(options: WorkspacePatchTr
         : errorMessage(cause),
       planHash: options.plan.planHash,
       cause,
-      rollback
+      rollback,
+      ...(cause instanceof WorkspacePatchTransactionError && cause.validation ? { validation: cause.validation } : {})
     });
   }
 }

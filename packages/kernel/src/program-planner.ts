@@ -1,11 +1,12 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import type { ContentHash, EpisodeId, EvidenceSpan, FileArtifact, Hasher, JsonValue, ProgramConstructIntent, ProgramGraph, SemanticEntailmentResult } from "./types.js";
+import type { ContentHash, EpisodeId, EvidenceSpan, FileArtifact, Hasher, JsonValue, ProgramBehaviorRequirement, ProgramConstructIntent, ProgramGraph, SemanticEntailmentResult } from "./types.js";
 import type { IdFactory } from "./ids.js";
 import { canonicalStringify, clamp01, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";
 import { createCodeLearningEngine, EMITTED_PROGRAM_RUNTIME, type CodeImplementationBlueprint, type CodeKnowledgeGraph } from "./code-learning.js";
 import { createEngineeringCorpusRuntime, packageManagerCommandName, plannerScriptKind } from "./engineering-corpus-runtime.js";
 import { createProgramHydrationContract, hydrationSummary } from "./program-runtime.js";
+import { searchProgramTransformations, type ProgramExpression, type ProgramTransformationCandidate } from "./program-transformation-search.js";
 
 export interface ProgramTargetProfile {
   id: string;
@@ -98,6 +99,10 @@ export interface ProgramPlan {
   blueprint: CodeImplementationBlueprint;
   files: ProgramFilePlan[];
   sourceEmission: SourceEmissionPlan;
+  ownerBehaviorRequirements: ProgramBehaviorRequirement[];
+  ownerBehaviorImplementationPhase: "probe" | "selected";
+  ownerBehaviorTransformationCandidates: ProgramTransformationCandidate[];
+  selectedOwnerBehaviorTransformationIds: string[];
   graph: {
     nodes: Array<{ id: string; kind: string; label: string; metadata: JsonValue }>;
     edges: Array<{ source: string; target: string; relation: string; weight: number }>;
@@ -126,6 +131,16 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
       const files = planFiles(shape);
       const build = buildCommand(shape, files);
       const test = testCommand(shape, files);
+      const ownerBehaviorRequirements = validatedOwnerBehaviorRequirements(input.programIntent?.behaviorRequirements ?? []);
+      const ownerBehaviorImplementationPhase = ownerBehaviorRequirements.length
+        ? input.programIntent?.behaviorImplementationPhase ?? "probe"
+        : "selected";
+      const ownerBehaviorTransformations = validatedOwnerBehaviorTransformations(
+        ownerBehaviorRequirements,
+        ownerBehaviorImplementationPhase,
+        input.programIntent?.behaviorTransformationCandidates ?? [],
+        input.programIntent?.selectedBehaviorTransformationIds ?? []
+      );
       const planId = options.idFactory.semanticId("program_plan", { episodeId: input.episodeId, shape, files });
       const sourceEmission = sourceEmissionPlan({
         planId,
@@ -144,6 +159,18 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
         { id: codeGraph.id, kind: "learned_code_graph", label: "code knowledge graph", metadata: codeGraph.audit },
         { id: blueprint.id, kind: "implementation_blueprint", label: blueprint.target, metadata: blueprint.audit },
         { id: sourceEmission.id, kind: "source_emission_plan", label: entrypointFor(shape), metadata: toJsonValue(sourceEmission) },
+        ...ownerBehaviorRequirements.map(requirement => ({
+          id: requirement.id,
+          kind: "owner_behavior_requirement",
+          label: requirement.callableId,
+          metadata: toJsonValue(requirement)
+        })),
+        ...ownerBehaviorTransformations.candidates.map(candidate => ({
+          id: candidate.id,
+          kind: "program_transformation_candidate",
+          label: candidate.callableId,
+          metadata: toJsonValue({ ...candidate, selected: ownerBehaviorTransformations.selectedIds.includes(candidate.id) })
+        })),
         ...shape.requiredInputs.map(item => ({ id: `input:${item.id}`, kind: "program_input", label: item.id, metadata: toJsonValue(item) })),
         ...shape.requiredOutputs.map(item => ({ id: `output:${item.id}`, kind: "program_output", label: item.id, metadata: toJsonValue(item) })),
         ...files.map(file => ({ id: file.path, kind: `file:${file.role}`, label: file.path, metadata: toJsonValue({ purpose: file.purpose, invariants: file.invariants }) }))
@@ -154,6 +181,16 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
         { source: "program-energy", target: "program-shape", relation: "selects_family", weight: 1 - shape.energy.total },
         { source: blueprint.id, target: sourceEmission.id, relation: "emission_plan", weight: 1 - blueprint.unbackedSynthesisRisk },
         { source: sourceEmission.id, target: entrypointFor(shape), relation: "entrypoint", weight: 0.95 },
+        ...ownerBehaviorRequirements.flatMap(requirement => files
+          .filter(file => file.path === EMITTED_PROGRAM_RUNTIME.sourcePath || file.path === EMITTED_PROGRAM_RUNTIME.testPath)
+          .map(file => ({ source: requirement.id, target: file.path, relation: file.role === "test" ? "verified_by" : "implemented_by", weight: 1 }))),
+        ...ownerBehaviorTransformations.candidates.flatMap(candidate => [
+          ...candidate.predictedFitObligationIds.map(requirementId => ({ source: requirementId, target: candidate.id, relation: "predicted_satisfied_by", weight: 1 })),
+          ...candidate.heldOutObligationIds.map(requirementId => ({ source: requirementId, target: candidate.id, relation: "reserved_for_validation", weight: 0 })),
+          ...(ownerBehaviorTransformations.selectedIds.includes(candidate.id)
+            ? [{ source: candidate.id, target: EMITTED_PROGRAM_RUNTIME.sourcePath, relation: "selected_for_emission", weight: 1 }]
+            : [])
+        ]),
         ...shape.requiredInputs.flatMap(inputNode => files.map(file => ({ source: `input:${inputNode.id}`, target: file.path, relation: "constrains_file", weight: inputNode.required ? 0.82 : 0.42 }))),
         ...shape.requiredOutputs.flatMap(outputNode => files.map(file => ({ source: file.path, target: `output:${outputNode.id}`, relation: "emits_output", weight: outputNode.required ? 0.82 : 0.42 }))),
         ...files.flatMap(file => file.dependsOn.map(dep => ({ source: dep, target: file.path, relation: "required_by", weight: 0.85 }))),
@@ -166,6 +203,10 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
         blueprint,
         files,
         sourceEmission,
+        ownerBehaviorRequirements,
+        ownerBehaviorImplementationPhase,
+        ownerBehaviorTransformationCandidates: ownerBehaviorTransformations.candidates,
+        selectedOwnerBehaviorTransformationIds: ownerBehaviorTransformations.selectedIds,
         graph: { nodes, edges },
         build,
         test,
@@ -202,6 +243,7 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
         program: graphWithoutHydration,
         sourcePlanId: plan.sourceEmission.id,
         evidenceIds: input.evidence.map(span => String(span.id)),
+        ownerRequirementIds: plan.ownerBehaviorRequirements.map(requirement => requirement.id),
         risks: plan.sourceEmission.risks.map(risk => risk.id)
       });
       return {
@@ -2186,6 +2228,14 @@ function sourceProgramContract(plan: ProgramPlan, input: ProgramPlannerInput): J
     learnedIdioms: plan.codeGraph.idioms.slice(0, 32),
     learnedDependencies: plan.codeGraph.dependencies.slice(0, 32),
     repositoryShape: plan.codeGraph.repositoryShape,
+    ownerBehaviorAuthority: plan.ownerBehaviorRequirements.map(requirement => ({
+      id: requirement.id,
+      callableId: requirement.callableId,
+      verificationRole: requirement.verificationRole
+    })),
+    ownerBehaviorImplementationPhase: plan.ownerBehaviorImplementationPhase,
+    ownerBehaviorTransformationCandidates: plan.ownerBehaviorTransformationCandidates,
+    selectedOwnerBehaviorTransformationIds: plan.selectedOwnerBehaviorTransformationIds,
     sourceOperations: plan.blueprint.operations,
     build: plan.build,
     test: plan.test,
@@ -2357,6 +2407,10 @@ function executableProgramModule(plan: ProgramPlan, contracts: readonly Declared
     artifactKinds: plan.sourceEmission.artifactKinds,
     contracts: contracts.map(contract => ({ name: contract.name, parameters: contract.parameters, returnType: contract.returnType })),
     probes: contracts.filter(contract => contract.sample).map(contract => ({ name: contract.name, arguments: contract.sample })),
+    ownerBehaviorImplementationPhase: plan.ownerBehaviorImplementationPhase,
+    selectedOwnerBehaviorTransformations: plan.ownerBehaviorTransformationCandidates
+      .filter(candidate => plan.selectedOwnerBehaviorTransformationIds.includes(candidate.id))
+      .map(candidate => ({ id: candidate.id, callableId: candidate.callableId, producedIr: candidate.producedIr })),
     requiredInputs: plan.intent.shape.requiredInputs,
     requiredOutputs: plan.intent.shape.requiredOutputs,
     requiredFields: requiredFields(plan.intent.shape),
@@ -2398,6 +2452,18 @@ export function checkDeclaredCall(name, args) {
   return { ok: diagnostics.length === 0, name, declared: contract, diagnostics };
 }
 
+${plan.ownerBehaviorRequirements.length
+  ? [...new Set(plan.ownerBehaviorRequirements.map(requirement => requirement.callableId))]
+    .map(callableId => plan.ownerBehaviorImplementationPhase === "selected"
+      ? executableBehaviorTransformationFunction(
+        callableId,
+        plan.ownerBehaviorTransformationCandidates,
+        plan.selectedOwnerBehaviorTransformationIds
+      )
+      : `export function ${callableId}(...args) { return args.length === 1 ? args[0] : args; }`)
+    .join("\n")
+  : ""}
+
 export function run(input) {
   const records = Array.isArray(input && input.records) ? input.records : [];
   const fieldCoverage = programContract.requiredFields.map(field => ({
@@ -2418,16 +2484,50 @@ export function run(input) {
 `;
 }
 
+function executableBehaviorTransformationFunction(
+  callableId: string,
+  candidates: readonly ProgramTransformationCandidate[],
+  selectedIds: readonly string[]
+): string {
+  const candidate = candidates.find(item => item.callableId === callableId && selectedIds.includes(item.id));
+  if (!candidate) throw new Error(`selected owner behavior has no transformation for callable: ${callableId}`);
+  return `export function ${callableId}(...args) {
+  if (args.length !== 1 || typeof args[0] !== "number" || !Number.isFinite(args[0])) throw new TypeError(${JSON.stringify(`${callableId} requires one finite numeric argument`)});
+  return ${renderProgramExpression(candidate.producedIr)};
+}`;
+}
+
+function renderProgramExpression(expression: ProgramExpression): string {
+  if (expression.kind === "argument") return `args[${expression.index}]`;
+  if (expression.kind === "literal") return JSON.stringify(expression.value);
+  if (expression.kind === "unary") return `(-${renderProgramExpression(expression.operand)})`;
+  const operator = expression.operator === "add" ? "+"
+    : expression.operator === "subtract" ? "-"
+      : expression.operator === "multiply" ? "*" : "/";
+  return `(${renderProgramExpression(expression.left)} ${operator} ${renderProgramExpression(expression.right)})`;
+}
+
 /** The emitted test: every property the emitter must keep, exercised against the emitted program by running it. */
 function executableProgramTest(plan: ProgramPlan, contracts: readonly DeclaredCallContract[]): string {
   const fields = requiredFields(plan.intent.shape);
   const populated = Object.fromEntries(fields.map(field => [field, "observed"]));
   return `import { strict as assert } from "node:assert";
+import { test } from "node:test";
+import * as ownerProgram from "../${EMITTED_PROGRAM_RUNTIME.sourcePath}";
 import { checkDeclaredCall, describeShape, programContract, run, shapeSatisfies } from "../${EMITTED_PROGRAM_RUNTIME.sourcePath}";
 
+const ownerBehaviorRequirements = ${JSON.stringify(plan.ownerBehaviorRequirements, null, 2)};
+
+test("emitted program satisfies its executable contract", () => {
 assert.equal(programContract.planId, ${JSON.stringify(plan.id)}, "emitted program lost its plan identity");
 assert.ok(programContract.expectedFiles.includes(programContract.entrypoint), "entrypoint is not one of the emitted files");
 assert.equal(programContract.contracts.length, ${contracts.length}, "emitted program lost a declared call contract");
+
+for (const requirement of ownerBehaviorRequirements) {
+  const callable = ownerProgram[requirement.callableId];
+  assert.equal(typeof callable, "function", "owner-required callable " + requirement.callableId + " was not emitted");
+  assert.deepEqual(ownerProgram[requirement.callableId](...requirement.arguments), requirement.expectedResult, "owner requirement " + requirement.id + " was not satisfied");
+}
 
 assert.equal(describeShape([]), "[]");
 assert.equal(describeShape(["a"]), "string[]");
@@ -2453,7 +2553,101 @@ assert.ok(populated.fieldCoverage.every(item => typeof item.count === "number"),
 assert.equal(populated.diagnostics.length, 0, \`observed fields still reported missing: \${JSON.stringify(populated.diagnostics)}\`);
 
 console.log(JSON.stringify({ ok: true, planId: programContract.planId, contracts: programContract.contracts.length, probes: programContract.probes.length, fields: programContract.requiredFields.length }));
+});
 `;
+}
+
+function validatedOwnerBehaviorRequirements(requirements: readonly ProgramBehaviorRequirement[]): ProgramBehaviorRequirement[] {
+  const out: ProgramBehaviorRequirement[] = [];
+  const ids = new Set<string>();
+  const calls = new Map<string, string>();
+  for (const requirement of requirements) {
+    if (!requirement.id || !/^sha256:[0-9a-f]{64}$/u.test(requirement.requestHash)) {
+      throw new Error("owner behavior requirement identity is invalid");
+    }
+    if (!isJavaScriptBindingIdentifier(requirement.callableId)) {
+      throw new Error(`owner behavior callable is not an executable module binding: ${requirement.callableId}`);
+    }
+    if (!requirement.relationSurface || requirement.sourceSpan.charStart < 0 || requirement.sourceSpan.charEnd <= requirement.sourceSpan.charStart) {
+      throw new Error(`owner behavior requirement source binding is invalid: ${requirement.id}`);
+    }
+    if (requirement.verificationRole !== "fit" && requirement.verificationRole !== "held_out") {
+      throw new Error(`owner behavior requirement verification role is invalid: ${requirement.id}`);
+    }
+    if (ids.has(requirement.id)) throw new Error(`duplicate owner behavior requirement: ${requirement.id}`);
+    ids.add(requirement.id);
+    const callKey = canonicalStringify({ callableId: requirement.callableId, arguments: requirement.arguments });
+    const expected = canonicalStringify(requirement.expectedResult);
+    const prior = calls.get(callKey);
+    if (prior !== undefined && prior !== expected) throw new Error(`contradictory owner behavior requirement: ${requirement.callableId}`);
+    calls.set(callKey, expected);
+    out.push({
+      ...requirement,
+      arguments: requirement.arguments.map(value => toJsonValue(value)),
+      expectedResult: toJsonValue(requirement.expectedResult),
+      sourceSpan: { ...requirement.sourceSpan }
+    });
+  }
+  return out;
+}
+
+function validatedOwnerBehaviorTransformations(
+  requirements: readonly ProgramBehaviorRequirement[],
+  phase: "probe" | "selected",
+  suppliedCandidates: readonly ProgramTransformationCandidate[],
+  suppliedSelectedIds: readonly string[]
+): { candidates: ProgramTransformationCandidate[]; selectedIds: string[] } {
+  if (phase === "probe") {
+    if (suppliedCandidates.length || suppliedSelectedIds.length) {
+      throw new Error("probe owner behavior cannot carry selected transformations");
+    }
+    return { candidates: [], selectedIds: [] };
+  }
+  if (!requirements.length) {
+    if (suppliedCandidates.length || suppliedSelectedIds.length) {
+      throw new Error("owner behavior transformations require owner behavior requirements");
+    }
+    return { candidates: [], selectedIds: [] };
+  }
+  const searched = searchProgramTransformations(requirements);
+  const expectedSelectedIds = searched.selected.map(candidate => candidate.id);
+  if (canonicalStringify(suppliedCandidates) !== canonicalStringify(searched.candidates)
+    || canonicalStringify(suppliedSelectedIds) !== canonicalStringify(expectedSelectedIds)) {
+    throw new Error("selected owner behavior transformations do not match bounded fit-role search");
+  }
+  const requiredCallables = [...new Set(requirements.map(requirement => requirement.callableId))].sort(compareText);
+  const selectedCallables = searched.selected.map(candidate => candidate.callableId).sort(compareText);
+  if (canonicalStringify(requiredCallables) !== canonicalStringify(selectedCallables)) {
+    throw new Error("selected owner behavior has no admissible transformation for every callable");
+  }
+  for (const selected of searched.selected) {
+    const fitIds = requirements
+      .filter(requirement => requirement.callableId === selected.callableId && requirement.verificationRole === "fit")
+      .map(requirement => requirement.id)
+      .sort(compareText);
+    if (selected.fitMeanSquaredError > 1e-12
+      || canonicalStringify(selected.predictedFitObligationIds) !== canonicalStringify(fitIds)) {
+      throw new Error(`selected owner behavior transformation does not satisfy its fit obligations: ${selected.callableId}`);
+    }
+  }
+  return {
+    candidates: searched.candidates.map(candidate => ({ ...candidate })),
+    selectedIds: expectedSelectedIds
+  };
+}
+
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+const JAVASCRIPT_BINDING_RESERVED = new Set([
+  "await", "break", "case", "catch", "class", "const", "continue", "debugger", "default", "delete", "do", "else", "enum",
+  "export", "extends", "false", "finally", "for", "function", "if", "import", "in", "instanceof", "let", "new", "null",
+  "return", "super", "switch", "this", "throw", "true", "try", "typeof", "var", "void", "while", "with", "yield"
+]);
+
+function isJavaScriptBindingIdentifier(value: string): boolean {
+  return /^[$_A-Za-z][$_A-Za-z0-9]*$/u.test(value) && !JAVASCRIPT_BINDING_RESERVED.has(value);
 }
 
 function buildNotes(plan: ProgramPlan): string {
