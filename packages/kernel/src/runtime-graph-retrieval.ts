@@ -613,7 +613,7 @@ export function createRuntimeGraphRetrieval(options: {
   /** A request bigram is one word order; the source may use the other ("Who played Sisko?" against "Sisko,
    *  played by Avery Brooks"). When the bigram matches nothing, its own symbols are searched instead, so the
    *  order the asker chose never decides whether the article is found. */
-  async function searchAnchorGroup(group: readonly string[], sourceKinds: { excludeSourceKinds?: string[] }, proseOnly: boolean, text = "", subjectLed = true, allowSymbolFallback = true): Promise<Awaited<ReturnType<typeof deps.storage.evidence.searchEvidence>>> {
+  async function searchAnchorGroup(group: readonly string[], sourceKinds: { excludeSourceKinds?: string[] }, proseOnly: boolean, text = "", subjectLed = true, allowSymbolFallback = true, searchCache?: Map<string, Promise<Awaited<ReturnType<typeof deps.storage.evidence.searchEvidence>>>>): Promise<Awaited<ReturnType<typeof deps.storage.evidence.searchEvidence>>> {
     // The subject this group is searching for, so a source *titled* with it outranks one that merely contains it.
     // A group carrying a quoted sentence opens on that sentence's first pair, not on a subject, so its leading
     // feature names no title to rank by and reading one out of it ranks whatever source happens to spell it.
@@ -634,13 +634,25 @@ export function createRuntimeGraphRetrieval(options: {
     // A request that quotes one of the corpus's own sentences is answered where that sentence sits, so the
     // opening-block prior in the ranking has nothing to say about it and outranks the span that carries it.
     const openingBlockPrior = !hasExplicitQuotationOrGapStructure(text) || requestSentenceSequences(text).length === 0;
-    const rows = usable(await deps.storage.evidence.searchEvidence({ features: [...group], limit: 64, openingBlockPrior, ...sourceKinds, ...(titleUnits.length ? { titleUnits } : {}) }));
+    const search = (query: Parameters<typeof deps.storage.evidence.searchEvidence>[0]) => {
+      // Several generated groups can be equivalent after feature normalization (and a symbol fallback can
+      // duplicate another group's primary query). Cache only within this source-anchored invocation: this removes
+      // duplicate in-flight database work while keeping evidence fresh across turns and preserving every query's
+      // exact options, limit, and ranking semantics.
+      const key = JSON.stringify(query);
+      const cached = searchCache?.get(key);
+      if (cached) return cached;
+      const pending = deps.storage.evidence.searchEvidence(query);
+      searchCache?.set(key, pending);
+      return pending;
+    };
+    const rows = usable(await search({ features: [...group], limit: 64, openingBlockPrior, ...sourceKinds, ...(titleUnits.length ? { titleUnits } : {}) }));
     if (rows.length) return rows;
     const symbols = uniqueKernelStrings(group.flatMap(feature => feature.startsWith("anchor:bi:")
       ? feature.slice("anchor:bi:".length).split("|").filter(Boolean).map(unit => `anchor:sym:${unit}`)
       : []));
     return allowSymbolFallback && symbols.length
-      ? usable(await deps.storage.evidence.searchEvidence({ features: symbols, limit: 64, openingBlockPrior, ...sourceKinds, ...(titleUnits.length ? { titleUnits } : {}) }))
+      ? usable(await search({ features: symbols, limit: 64, openingBlockPrior, ...sourceKinds, ...(titleUnits.length ? { titleUnits } : {}) }))
       : rows;
   }
 
@@ -739,6 +751,7 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
       ? {}
       : { excludeSourceKinds: ["developer_intelligence", "construction_training"], excludeForceClasses: ["profile_excerpt_evidence"] };
     const perGroupCounts: Array<{ group: string[]; rows: number; heads: string[] }> = [];
+    const searchCache = new Map<string, Promise<Awaited<ReturnType<typeof deps.storage.evidence.searchEvidence>>>>();
     // The five bounded ordinary groups may each issue one phrase query. Keep
     // at most four symbol-order fallbacks, in group priority order, for the
     // established nine-query ordinary-turn ceiling. An explicit quotation
@@ -755,12 +768,21 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
           !codeRequestRecognized(codeRequestSignal(text)),
           text,
           group !== quotedSentence,
-          group !== quotedSentence && ordinaryIndex < ordinaryFallbackBudget
+          group !== quotedSentence && ordinaryIndex < ordinaryFallbackBudget,
+          searchCache
         );
         perGroupCounts.push({ group: [...group], rows: rows.length, heads: rows.slice(0, 2).map(item => String(item.span.textPreview ?? "").replace(/s+/gu, " ").slice(0, 50)) });
         return rows;
       })).then(groupResults => groupResults.flat())
-      : await deps.storage.evidence.searchEvidence({ features: uniqueKernelStrings(features).slice(0, 128), limit: 48, ...proseSourceKinds });
+      : await (async () => {
+        const query = { features: uniqueKernelStrings(features).slice(0, 128), limit: 48, ...proseSourceKinds };
+        const key = JSON.stringify(query);
+        const cached = searchCache.get(key);
+        if (cached) return cached;
+        const pending = deps.storage.evidence.searchEvidence(query);
+        searchCache.set(key, pending);
+        return pending;
+      })();
     // Late-interaction visual prefilter (Phase 3): one more candidate group upstream of
     // admission and graph activation; it narrows, it never decides.
     const gatheredResults = [...anchoredEvidenceResults, ...(await visualEvidenceResults(text))];
