@@ -14,6 +14,15 @@ export interface EvidenceProofBoundary {
   reason: string;
 }
 
+export interface EvidenceLineage {
+  /** The source-version identity used when counting independent witnesses. */
+  identity: string;
+  /** Source versions traversed while resolving this span, including its own. */
+  sourceVersionIds: string[];
+  /** True when the declared parent links contain a cycle. */
+  cyclic: boolean;
+}
+
 /**
  * An assertion is knowledge *about a source*, not yet knowledge that its
  * proposition holds in the world.  Ingestion stamps this state itself; it is
@@ -111,9 +120,10 @@ export function certifyingEvidence(spans: readonly EvidenceSpan[]): EvidenceSpan
 
 /**
  * Resolve a proof boundary over the evidence set selected for one claim.
- * Multiple documents from the same family stay one assertion. Two exact,
- * admitted assertions from independent families may support this proof, but
- * they are not written back as a durable world belief here.
+ * Multiple documents from the same family or source lineage stay one
+ * assertion. Two exact, admitted assertions from independent families may
+ * support this proof, but they are not written back as a durable world belief
+ * here.
  */
 export function evidenceProofBoundaries(spans: readonly EvidenceSpan[]): EvidenceProofBoundary[] {
   const boundaries = spans.map(evidenceProofBoundary);
@@ -121,21 +131,115 @@ export function evidenceProofBoundaries(spans: readonly EvidenceSpan[]): Evidenc
     boundaries[index]?.reason === "proof-boundary.source-assertion-not-promoted"
       && eligibleIndependentAssertion(span)
   );
-  const families = new Set(asserted.map(evidenceIndependenceGroup));
   // Independence labels cannot turn two copies of the same immutable source
-  // bytes into two witnesses. Source-version identity is content-derived at
-  // ingest, so requiring both distinct families and distinct versions blocks
-  // a repackaged/relabeled copy without making any language or topic special.
-  const sourceVersions = new Set(asserted.map(span => String(span.sourceVersionId)));
-  if (families.size < 2 || sourceVersions.size < 2) return boundaries;
+  // lineage into two witnesses. Source-version identity is content-derived at
+  // ingest, and explicit parent links collapse repackaged descendants and
+  // cycles without making any language or topic special.
+  // Corroboration requires a one-to-one pairing of independence groups and
+  // lineages. Counting each set separately is insufficient: a derived copy
+  // may carry a new family label, while an unrelated document may reuse the
+  // original family. A bipartite matching chooses only witnesses that are
+  // independent on both dimensions.
+  const representativeIds = independentLineageRepresentatives(asserted, spans);
+  if (representativeIds.size < 2) return boundaries;
   const eligibleIds = new Set(asserted.map(span => String(span.id)));
-  return boundaries.map(boundary => eligibleIds.has(boundary.evidenceId)
-    ? {
+  return boundaries.map(boundary => {
+    if (!eligibleIds.has(boundary.evidenceId)) return boundary;
+    if (!representativeIds.has(boundary.evidenceId)) {
+      return {
         ...boundary,
-        certifiesFactualProof: true,
-        reason: "proof-boundary.independent-source-assertion-corroboration"
-      }
-    : boundary);
+        certifiesFactualProof: false,
+        reason: "proof-boundary.dependent-source-assertion"
+      };
+    }
+    return {
+      ...boundary,
+      certifiesFactualProof: true,
+      reason: "proof-boundary.independent-source-assertion-corroboration"
+    };
+  });
+}
+
+function independentLineageRepresentatives(
+  asserted: readonly EvidenceSpan[],
+  siblings: readonly EvidenceSpan[]
+): Set<string> {
+  const candidates = asserted
+    .map(span => ({
+      span,
+      family: evidenceIndependenceGroup(span),
+      lineage: evidenceLineage(span, siblings)
+    }))
+    .filter(candidate => Boolean(candidate.family && candidate.lineage.identity))
+    .sort((left, right) => {
+      const lineageOrder = left.lineage.identity.localeCompare(right.lineage.identity);
+      if (lineageOrder) return lineageOrder;
+      // Prefer the declared root when it is present; otherwise the closest
+      // available ancestor represents the lineage. A downstream republisher's
+      // label cannot replace the family's identity merely because its span was
+      // presented first.
+      const leftRoot = String(left.span.sourceVersionId) === left.lineage.identity ? 0 : 1;
+      const rightRoot = String(right.span.sourceVersionId) === right.lineage.identity ? 0 : 1;
+      return leftRoot - rightRoot
+        || left.lineage.sourceVersionIds.length - right.lineage.sourceVersionIds.length
+        || String(left.span.id).localeCompare(String(right.span.id));
+    });
+  const byLineage = new Map<string, (typeof candidates)[number]>();
+  for (const candidate of candidates) {
+    if (!byLineage.has(candidate.lineage.identity)) byLineage.set(candidate.lineage.identity, candidate);
+  }
+  const byFamily = new Map<string, (typeof candidates)[number]>();
+  for (const candidate of [...byLineage.values()].sort((left, right) =>
+    left.family.localeCompare(right.family) || String(left.span.id).localeCompare(String(right.span.id)))) {
+    if (!byFamily.has(candidate.family)) byFamily.set(candidate.family, candidate);
+  }
+  return new Set([...byFamily.values()].map(candidate => String(candidate.span.id)));
+}
+
+/**
+ * Resolve the immutable source lineage carried by evidence provenance.
+ *
+ * A derivative is one witness for its ultimate source, however many times it
+ * was repackaged. Parent links are deliberately read only from the explicit
+ * source-version derivation envelope written by ingestion; ordinary metadata
+ * and labels cannot create ancestry. If a source declares a cycle, every
+ * member of that cycle receives one deterministic identity, so a cycle cannot
+ * manufacture independent corroboration.
+ */
+export function evidenceLineage(span: EvidenceSpan, siblings: readonly EvidenceSpan[] = [span]): EvidenceLineage {
+  const parentByVersion = new Map<string, Set<string>>();
+  for (const candidate of siblings) {
+    const version = String(candidate.sourceVersionId ?? "").trim();
+    if (!version) continue;
+    const parent = sourceVersionParent(candidate);
+    if (!parent) continue;
+    const parents = parentByVersion.get(version) ?? new Set<string>();
+    parents.add(parent);
+    parentByVersion.set(version, parents);
+  }
+
+  const ownVersion = String(span.sourceVersionId ?? span.sourceId ?? "").trim();
+  if (!ownVersion) return { identity: "", sourceVersionIds: [], cyclic: false };
+  const path: string[] = [];
+  const pathIndex = new Map<string, number>();
+  let current = ownVersion;
+  while (true) {
+    const seenAt = pathIndex.get(current);
+    if (seenAt !== undefined) {
+      const cycleMembers = path.slice(seenAt);
+      const identity = `lineage-cycle:${[...new Set(cycleMembers)].sort().join("|")}`;
+      return { identity, sourceVersionIds: path, cyclic: true };
+    }
+    pathIndex.set(current, path.length);
+    path.push(current);
+    const parents = parentByVersion.get(current);
+    // Conflicting ancestry claims for one immutable version are not enough to
+    // select a parent. Keep that version isolated rather than guessing and
+    // accidentally merging independent documentary records.
+    if (!parents || parents.size === 0) return { identity: current, sourceVersionIds: path, cyclic: false };
+    if (parents.size > 1) return { identity: `lineage-ambiguous:${current}`, sourceVersionIds: path, cyclic: false };
+    current = [...parents][0]!;
+  }
 }
 
 export function graphNodePriorClass(node: GraphNode): ProofBoundaryClass {
@@ -265,6 +369,23 @@ function evidenceIndependenceGroup(span: EvidenceSpan): string {
   const sourceTrust = objectRecord(trust?.sourceTrust);
   const group = sourceTrust?.independenceGroup;
   return typeof group === "string" && group.trim() ? group.trim() : "";
+}
+
+function sourceVersionParent(span: EvidenceSpan): string | undefined {
+  const provenance = objectRecord(span.provenance);
+  if (!provenance) return undefined;
+  const candidates = [
+    provenance.sourceVersionDerivation,
+    provenance.derivation,
+    objectRecord(provenance.sourceVersion)?.derivation,
+    objectRecord(provenance.sourceVersion)?.sourceVersionDerivation
+  ];
+  for (const candidate of candidates) {
+    const record = objectRecord(candidate);
+    const parent = firstString(record?.derivedFromSourceVersionId);
+    if (parent) return parent;
+  }
+  return undefined;
 }
 
 function unitInterval(value: JsonValue | undefined): number {

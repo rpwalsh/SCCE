@@ -335,6 +335,7 @@ export function createIngestionRuntime(options: {
           observedAt: now,
           maxChunkBytes: deps.maxChunkBytes ?? DEFAULT_EVIDENCE_CHUNK_BYTES,
           metadata: sourceMetadata,
+          sourceVersionDerivation: source.derivation,
           exactSourceText: true
         });
         const decision = admission.decide({
