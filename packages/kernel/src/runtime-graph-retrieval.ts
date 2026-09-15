@@ -2587,20 +2587,99 @@ export function maxSimScore(query: readonly number[], regions: readonly (readonl
 
 /** Control corpora (request-requirement / creative-event bootstraps) are routing and language evidence, never answer evidence. Stamped at ingest; older spans are recognized by uri or record shape. */
 /** A whole-article span whose sentence-aligned children are also in the pool is the same memory at the wrong granularity; the children speak for it. Pure. */
-export function dropContainerSpans<T extends { id: unknown; sourceVersionId: unknown; charStart: number; charEnd: number }>(spans: readonly T[]): T[] {
+export type DropContainerSpansDiagnostics = {
+  sourceGroups?: number;
+  indexedSpans?: number;
+  prefixQueries?: number;
+};
+
+/**
+ * Drop a whole-source container only when at least two shorter spans from the
+ * same source are inside it. The old implementation rebuilt a sibling list
+ * and scanned it for every span (O(n²) per source). A valid contained span is
+ * necessarily shorter unless it has the exact same boundaries, so a sweep by
+ * start position plus a Fenwick prefix count over end positions gives the
+ * same result in O(n log n), including duplicate-boundary spans.
+ */
+export function dropContainerSpans<T extends { id: unknown; sourceVersionId: unknown; charStart: number; charEnd: number }>(
+  spans: readonly T[],
+  diagnostics?: DropContainerSpansDiagnostics
+): T[] {
   const bySource = new Map<string, T[]>();
   for (const span of spans) {
     const key = String(span.sourceVersionId);
-    bySource.set(key, [...(bySource.get(key) ?? []), span]);
+    const group = bySource.get(key);
+    if (group) group.push(span);
+    else bySource.set(key, [span]);
   }
-  return spans.filter(span => {
-    const siblings = bySource.get(String(span.sourceVersionId)) ?? [];
-    const covered = siblings.filter(other => other !== span
-      && other.charStart >= span.charStart
-      && other.charEnd <= span.charEnd
-      && other.charEnd - other.charStart < span.charEnd - span.charStart);
-    return covered.length < 2;
-  });
+  if (diagnostics) diagnostics.sourceGroups = bySource.size;
+  const keep = new Set<T>();
+  for (const group of bySource.values()) {
+    if (diagnostics) diagnostics.indexedSpans = (diagnostics.indexedSpans ?? 0) + group.length;
+    const endCoordinates = [...new Set(group.map(span => span.charEnd))].sort((left, right) => left - right);
+    const tree = new Int32Array(endCoordinates.length + 1);
+    const boundaryCounts = new Map<string, number>();
+    const sorted = [...group].sort((left, right) => right.charStart - left.charStart || right.charEnd - left.charEnd);
+    const add = (end: number): void => {
+      let index = lowerBoundNumber(endCoordinates, end) + 1;
+      while (index < tree.length) {
+        tree[index] = Math.min(2_147_483_647, (tree[index] ?? 0) + 1);
+        index += index & -index;
+      }
+    };
+    const prefix = (end: number): number => {
+      let index = upperBoundNumber(endCoordinates, end);
+      let total = 0;
+      while (index > 0) {
+        total += tree[index]!;
+        index -= index & -index;
+      }
+      return total;
+    };
+    let index = 0;
+    while (index < sorted.length) {
+      const start = sorted[index]!.charStart;
+      let end = index;
+      while (end < sorted.length && sorted[end]!.charStart === start) end += 1;
+      for (let cursor = index; cursor < end; cursor += 1) {
+        const span = sorted[cursor]!;
+        add(span.charEnd);
+        const boundary = `${span.charStart}\u0000${span.charEnd}`;
+        boundaryCounts.set(boundary, (boundaryCounts.get(boundary) ?? 0) + 1);
+      }
+      for (let cursor = index; cursor < end; cursor += 1) {
+        const span = sorted[cursor]!;
+        const boundary = `${span.charStart}\u0000${span.charEnd}`;
+        const contained = prefix(span.charEnd) - (boundaryCounts.get(boundary) ?? 0);
+        if (diagnostics) diagnostics.prefixQueries = (diagnostics.prefixQueries ?? 0) + 1;
+        if (contained < 2) keep.add(span);
+      }
+      index = end;
+    }
+  }
+  return spans.filter(span => keep.has(span));
+}
+
+function lowerBoundNumber(values: readonly number[], target: number): number {
+  let low = 0;
+  let high = values.length;
+  while (low < high) {
+    const middle = low + Math.floor((high - low) / 2);
+    if (values[middle]! < target) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
+function upperBoundNumber(values: readonly number[], target: number): number {
+  let low = 0;
+  let high = values.length;
+  while (low < high) {
+    const middle = low + Math.floor((high - low) / 2);
+    if (values[middle]! <= target) low = middle + 1;
+    else high = middle;
+  }
+  return low;
 }
 
 /** A quoted sentence cut by a chunk boundary lives in two contiguous spans of one source version; joined, the span is still that source's own bytes over one range, so every identity field is recomputed. Pure. */
