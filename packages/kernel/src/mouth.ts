@@ -130,6 +130,7 @@ import {
   optionalConstructionContextId,
   optionalPopulationContextId
 } from "./optional-null-realization.js";
+import { planTypedDiscourse } from "./typed-discourse-plan.js";
 
 const LOCAL_ANSWER_RELATION_IDS = {
   sourceQuote: "rel.1f7c4a92",
@@ -214,6 +215,7 @@ interface SemanticAnswerFact {
   activation: number;
   overlap: number;
   support: number;
+  contradiction?: number;
   sourceVersionId?: string;
   evidenceIds?: string[];
   roleId?: string;
@@ -2169,24 +2171,51 @@ function semanticAnswerSurfacePoints(input: {
   hashText: (text: string) => string;
   detailPolicy: DetailPolicy;
 }): SurfacePoint[] {
-  const facts = uniquePriorBoundFacts(input.semanticAnswer.selectedFacts).slice(0, Math.max(4, input.detailPolicy.maxSupportPoints + 2));
+  const sourceFacts = uniquePriorBoundFacts(input.semanticAnswer.selectedFacts);
+  const discourse = planTypedDiscourse({
+    claims: sourceFacts.map(fact => ({
+      id: semanticFactKey(fact),
+      relationId: fact.relationId,
+      forceClass: fact.forceClass,
+      support: fact.support,
+      activation: fact.activation,
+      score: fact.score,
+      contradiction: fact.contradiction,
+      answerGrade: fact.answerGrade,
+      finalQuestionFit: fact.finalQuestionFit,
+      questionSlotScore: fact.questionSlotScore,
+      pathScore: fact.pathScore,
+      bridgeValue: fact.bridgeValue,
+      roleScore: fact.roleScore
+    })),
+    relationOrder: input.semanticAnswer.selectedRelations,
+    maxSupportPoints: input.detailPolicy.maxSupportPoints,
+    maxCaveats: input.detailPolicy.maxCaveats
+  });
+  const factsByKey = new Map(sourceFacts.map(fact => [semanticFactKey(fact), fact]));
   const constructNodeId = constructNodeForForce(input.construct, input.constructForce);
-  return facts.map((fact, index) => {
+  return discourse.units.flatMap(unit => {
+    const fact = factsByKey.get(unit.claimId);
+    if (!fact) return [];
+    const index = unit.index;
     const support = Math.max(0.22, Math.min(0.76, Math.max(fact.support, fact.activation, fact.overlap)));
+    const force = unit.epistemicState === "contradicted" ? "contradicted" as const : "bounded" as const;
     return {
       id: `surface:${input.hashText(`semantic-answer:${fact.relationId}:${semanticFactKey(fact)}`).slice(0, 16)}`,
       constructNodeId,
       proposition: semanticQuestionMeaningSlot(fact, index),
-      force: "bounded" as const,
-      role: index === 0 ? "answer" as const : "support" as const,
+      force,
+      role: unit.role,
       support,
-      contradiction: 0,
+      contradiction: Math.max(fact.contradiction ?? 0, unit.epistemicState === "contradicted" ? 1 : 0),
       evidenceIds: input.semanticAnswer.certificationBoundary.externalFactCertification
         ? (fact.evidenceIds ?? []).map(id => id as EvidenceId)
         : [],
       realizationConstraints: toJsonValue({
         constructForce: input.constructForce,
         preserve: "semantic-answer-slots",
+        typedDiscourseEpistemicState: unit.epistemicState,
+        typedDiscourseUnitRole: unit.role,
         detailProfileId: input.detailPolicy.id,
         semanticAnswerFact: {
           subject: fact.subject,
@@ -2200,6 +2229,7 @@ function semanticAnswerSurfacePoints(input: {
           activation: fact.activation,
           overlap: fact.overlap,
           score: fact.score,
+          contradiction: Math.max(fact.contradiction ?? 0, unit.epistemicState === "contradicted" ? 1 : 0),
           sourceVersionId: fact.sourceVersionId ?? null,
           roleId: fact.roleId ?? null,
           alphaRhetoricalCentrality: fact.alphaRhetoricalCentrality ?? null,
@@ -6262,6 +6292,7 @@ function semanticAnswerFactFromJson(value: Record<string, JsonValue>): SemanticA
     activation: numberFromJson(value.activation),
     overlap: numberFromJson(value.overlap),
     support: numberFromJson(value.support),
+    contradiction: optionalNumberFromJson(value.contradiction),
     sourceVersionId: stringFromJson(value.sourceVersionId) || undefined,
     evidenceIds: stringArrayFromJson(value.evidenceIds),
     roleId: stringFromJson(value.roleId) || undefined,
