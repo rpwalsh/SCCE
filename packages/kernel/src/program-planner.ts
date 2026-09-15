@@ -6,6 +6,7 @@ import { canonicalStringify, clamp01, featureSet, mean, toJsonValue, weightedJac
 import { createCodeLearningEngine, emittedProgramRuntimeForLanguage, EMITTED_PROGRAM_RUNTIME, type CodeImplementationBlueprint, type CodeKnowledgeGraph, type EmittedProgramRuntime } from "./code-learning.js";
 import { createEngineeringCorpusRuntime, packageManagerCommandName, plannerScriptKind } from "./engineering-corpus-runtime.js";
 import { createProgramHydrationContract, hydrationSummary } from "./program-runtime.js";
+import { composeProgramGraphFromBehavior, jsonValueTypeId, type ProgramModulePort, type ProgramModuleSpec } from "./program-composition.js";
 import { searchProgramTransformations, type ProgramExpression, type ProgramTransformationCandidate } from "./program-transformation-search.js";
 import { searchStateTransitions, type StateTransitionCandidate } from "./state-transition-search.js";
 
@@ -133,9 +134,6 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
       const emittedRuntime = emittedRuntimeForShape(shape);
       const intent = intentFromShape(shape);
       const blueprint = code.blueprint({ target: shape.target.id, requestText: input.requestText, graph: codeGraph, entailment: input.entailment });
-      const files = planFiles(shape);
-      const build = buildCommand(shape, files);
-      const test = testCommand(shape, files);
       const ownerBehaviorRequirements = validatedOwnerBehaviorRequirements(input.programIntent?.behaviorRequirements ?? []);
       const ownerStatefulBehaviorRequirements = validatedOwnerStatefulBehaviorRequirements(input.programIntent?.statefulBehaviorRequirements ?? []);
       if (ownerBehaviorRequirements.length && ownerStatefulBehaviorRequirements.length) {
@@ -156,6 +154,9 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
         input.programIntent?.statefulBehaviorTransformationCandidates ?? [],
         input.programIntent?.selectedStatefulBehaviorTransformationIds ?? []
       );
+      const files = withOwnerBehaviorCompositionFiles(planFiles(shape), shape, ownerBehaviorRequirements, options.hasher);
+      const build = buildCommand(shape, files);
+      const test = testCommand(shape, files);
       const planId = options.idFactory.semanticId("program_plan", { episodeId: input.episodeId, shape, files });
       const sourceEmission = sourceEmissionPlan({
         planId,
@@ -263,24 +264,32 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
       const files = emitFiles(plan, input, options.idFactory, options.hasher);
       const emittedRuntime = emittedRuntimeForShape(plan.intent.shape);
       const usesFallbackRuntime = !nodeRuntimeForShape(plan.intent.shape);
-      const graphWithoutHydration = {
+      const composition = ownerBehaviorComposition(plan, files, options.hasher);
+      const compositionPaths = new Set(composition?.modules.map(module => module.artifact.path) ?? []);
+      const baseFiles = files.filter(file => !compositionPaths.has(file.path));
+      const baseNodes = plan.graph.nodes.filter(node => !compositionPaths.has(node.id));
+      const baseEdges = plan.graph.edges.filter(edge => !compositionPaths.has(edge.source) && !compositionPaths.has(edge.target));
+      const graphWithoutHydrationBase = {
         id: options.idFactory.semanticId("program_graph", { episodeId: input.episodeId, planId: plan.id, files: files.map(file => file.contentHash) }),
         language: usesFallbackRuntime ? emittedRuntime.languageId : plan.intent.shape.target.language,
         packageManager: usesFallbackRuntime ? emittedRuntime.commandName : plan.intent.shape.target.packageManager,
         entrypoint: entrypointFor(plan.intent.shape),
         nodes: [
-          ...plan.graph.nodes,
-          ...files.map(file => ({ id: `artifact:${file.path}`, kind: `artifact:${file.role}`, label: file.path, metadata: toJsonValue({ contentHash: file.contentHash, mediaType: file.mediaType }) }))
+          ...baseNodes,
+          ...baseFiles.map(file => ({ id: `artifact:${file.path}`, kind: `artifact:${file.role}`, label: file.path, metadata: toJsonValue({ contentHash: file.contentHash, mediaType: file.mediaType }) }))
         ],
         edges: [
-          ...plan.graph.edges,
-          ...files.map(file => ({ source: file.path, target: `artifact:${file.path}`, relation: "emits", weight: 1 }))
+          ...baseEdges,
+          ...baseFiles.map(file => ({ source: file.path, target: `artifact:${file.path}`, relation: "emits", weight: 1 }))
         ],
-        files,
+        files: baseFiles,
         build: plan.build,
         test: plan.test,
         taskDecomposition: toJsonValue(plan.blueprint.taskDecomposition)
       };
+      const graphWithoutHydration = composition
+        ? composeProgramGraphFromBehavior({ base: graphWithoutHydrationBase, modules: composition.modules, obligations: plan.ownerBehaviorRequirements }).graph
+        : graphWithoutHydrationBase;
       const hydration = createProgramHydrationContract({
         program: graphWithoutHydration,
         sourcePlanId: plan.sourceEmission.id,
@@ -1337,6 +1346,67 @@ function planFiles(shape: ProgramShape): ProgramFilePlan[] {
   ];
 }
 
+/** Adds source-derived implementation units only when multiple scalar callables form a composable surface. */
+function withOwnerBehaviorCompositionFiles(
+  files: ProgramFilePlan[],
+  shape: ProgramShape,
+  requirements: readonly ProgramBehaviorRequirement[],
+  hasher: Hasher
+): ProgramFilePlan[] {
+  const composition = ownerBehaviorCompositionPaths(shape, requirements, hasher);
+  if (!composition) return files;
+  return [
+    ...files,
+    ...composition.callables.map(item => ({
+      path: item.path,
+      role: "source" as const,
+      mediaType: composition.runtime.mediaType,
+      purpose: "typed behavior provider module",
+      dependsOn: ["source.program.json"],
+      invariants: ["callable contract preserved", "owner expected values excluded from source"]
+    })),
+    {
+      path: composition.applicationPath,
+      role: "source" as const,
+      mediaType: composition.runtime.mediaType,
+      purpose: "typed behavior application composition",
+      dependsOn: composition.callables.map(item => item.path),
+      invariants: ["provider dependencies explicit", "callable exports preserved"]
+    }
+  ];
+}
+
+interface OwnerBehaviorCompositionPaths {
+  readonly runtime: EmittedProgramRuntime;
+  readonly callables: readonly { readonly callableId: string; readonly path: string }[];
+  readonly applicationPath: string;
+  readonly applicationModuleId: string;
+}
+
+function ownerBehaviorCompositionPaths(
+  shape: ProgramShape,
+  requirements: readonly ProgramBehaviorRequirement[],
+  hasher: Hasher
+): OwnerBehaviorCompositionPaths | undefined {
+  if (nodeRuntimeForShape(shape)) return undefined;
+  const fitCallables = [...new Set(requirements.filter(requirement => requirement.verificationRole === "fit").map(requirement => requirement.callableId))].sort(compareCanonical);
+  if (fitCallables.length < 2) return undefined;
+  const runtime = emittedProgramRuntimeForLanguage(shape.target.language);
+  const modulePrefix = runtime.languageId === "python" ? "_module_" : "module-";
+  const applicationPrefix = runtime.languageId === "python" ? "_application_" : "application-";
+  const callables = fitCallables.map(callableId => ({
+    callableId,
+    path: `src/${modulePrefix}${hasher.digestHex(callableId).slice(0, 16)}${runtime.moduleExtension}`
+  }));
+  const compositionHash = hasher.digestHex(canonicalStringify(fitCallables)).slice(0, 16);
+  return {
+    runtime,
+    callables,
+    applicationPath: `src/${applicationPrefix}${compositionHash}${runtime.moduleExtension}`,
+    applicationModuleId: `module:application:${compositionHash}`
+  };
+}
+
 function emitFiles(plan: ProgramPlan, input: ProgramPlannerInput, idFactory: IdFactory, hasher: Hasher): FileArtifact[] {
   const manifest = programGraphManifest(plan, input);
   const sourceMemory = sourceMemoryFor(input, plan);
@@ -1381,9 +1451,80 @@ function emitFiles(plan: ProgramPlan, input: ProgramPlannerInput, idFactory: IdF
       byPath.set(emittedRuntime.sourcePath, executableProgramModule(plan, contracts, statefulContracts));
       byPath.set(emittedRuntime.testPath, executableProgramTest(plan, contracts));
     }
+    const composition = ownerBehaviorCompositionPaths(plan.intent.shape, plan.ownerBehaviorRequirements, hasher);
+    if (composition) {
+      const contractsByCallable = new Map<string, DeclaredCallContract>();
+      for (const contract of contracts) contractsByCallable.set(contract.name, contract);
+      for (const item of composition.callables) {
+        const contract = contractsByCallable.get(item.callableId);
+        if (!contract) throw new Error(`owner behavior composition has no contract: ${item.callableId}`);
+        const content = emittedRuntime.languageId === "python"
+          ? plan.ownerBehaviorImplementationPhase === "probe"
+            ? `def ${item.callableId}(*args):\n    return args[0] if len(args) == 1 else list(args)\n`
+            : pythonBehaviorTransformationBinding(item.callableId, 0, plan.ownerBehaviorImplementationPhase, plan.ownerBehaviorTransformationCandidates, plan.selectedOwnerBehaviorTransformationIds)
+          : plan.ownerBehaviorImplementationPhase === "probe"
+            ? `export function ${item.callableId}(...args) { return args.length === 1 ? args[0] : args; }\n`
+            : executableBehaviorTransformationFunction(item.callableId, plan.ownerBehaviorTransformationCandidates, plan.selectedOwnerBehaviorTransformationIds);
+        byPath.set(item.path, content);
+      }
+      const applicationImports = composition.callables.map(item => {
+        const basename = item.path.slice(item.path.lastIndexOf("/") + 1);
+        const stem = basename.slice(0, -composition.runtime.moduleExtension.length);
+        return emittedRuntime.languageId === "python"
+          ? `from ${stem} import ${item.callableId}`
+          : `export { ${item.callableId} } from ${JSON.stringify(`./${stem}${composition.runtime.moduleExtension}`)}`;
+      }).join("\n");
+      byPath.set(composition.applicationPath, emittedRuntime.languageId === "python"
+        ? `${applicationImports}\n`
+        : `${applicationImports}\n`);
+    }
     byPath.set("BUILDING.md", buildNotes(plan));
   }
   return plan.files.map(filePlan => artifact(filePlan.path, filePlan.mediaType, byPath.get(filePlan.path) ?? "", filePlan.role, idFactory, hasher));
+}
+
+function ownerBehaviorComposition(plan: ProgramPlan, files: readonly FileArtifact[], hasher: Hasher): { readonly modules: readonly ProgramModuleSpec[] } | undefined {
+  const paths = ownerBehaviorCompositionPaths(plan.intent.shape, plan.ownerBehaviorRequirements, hasher);
+  if (!paths) return undefined;
+  const fitRequirements = plan.ownerBehaviorRequirements.filter(requirement => requirement.verificationRole === "fit");
+  const ports = uniqueBehaviorPorts(fitRequirements);
+  const byPath = new Map(files.map(file => [file.path, file]));
+  const primitiveModules = paths.callables.map(item => {
+    const artifact = byPath.get(item.path);
+    if (!artifact) throw new Error(`owner behavior composition artifact is absent: ${item.path}`);
+    return {
+      moduleId: `module:provider:${hasher.digestHex(item.callableId).slice(0, 20)}`,
+      artifact,
+      provides: ports.filter(port => port.callableId === item.callableId)
+    } satisfies ProgramModuleSpec;
+  });
+  const applicationArtifact = byPath.get(paths.applicationPath);
+  if (!applicationArtifact) throw new Error(`owner behavior composition application artifact is absent: ${paths.applicationPath}`);
+  const application: ProgramModuleSpec = {
+    moduleId: paths.applicationModuleId,
+    artifact: applicationArtifact,
+    provides: ports,
+    requires: ports
+  };
+  return { modules: [application, ...primitiveModules] };
+}
+
+function uniqueBehaviorPorts(requirements: readonly ProgramBehaviorRequirement[]): ProgramModulePort[] {
+  const seen = new Set<string>();
+  const ports: ProgramModulePort[] = [];
+  for (const requirement of requirements) {
+    const port: ProgramModulePort = {
+      callableId: requirement.callableId,
+      argumentTypes: requirement.arguments.map(jsonValueTypeId),
+      resultType: jsonValueTypeId(requirement.expectedResult)
+    };
+    const key = canonicalStringify(port);
+    if (!seen.has(key)) {
+      seen.add(key);
+      ports.push(port);
+    }
+  }
+  return ports;
 }
 
 function programGraphManifest(plan: ProgramPlan, input: ProgramPlannerInput): JsonValue {
@@ -3515,6 +3656,10 @@ function safeIdentifier(value: string): string {
   }
   const joined = out.join("");
   return joined || "source";
+}
+
+function compareCanonical(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function extensionFromPath(path: string): string | undefined {
