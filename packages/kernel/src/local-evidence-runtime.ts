@@ -3274,7 +3274,7 @@ function subjectLikeAnchor(row: { exactTitleMatches: number }): boolean {
 }
 
 
- function requestContentAnchorUnits(requestText: string): string[] {
+export function requestContentAnchorUnits(requestText: string): string[] {
   return requestContentPriorUnits(requestText)
     .map(stripOuterPriorSeparators)
     .map(normalizePriorKey)

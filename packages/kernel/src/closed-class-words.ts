@@ -3,6 +3,7 @@
 import { calibrated } from "./calibrations/prod-calibrations.js";
 import type { KneserNeyModel } from "./kneser-ney.js";
 import { jsonRecord, namedSubjectAnchors } from "./kernel-answer-primitives.js";
+import { requestContentAnchorUnits } from "./local-evidence-runtime.js";
 import { isRequestRequirementPattern } from "./request-requirement-learning.js";
 import type { LanguageContinuationPopulation, LanguagePatternRecord } from "./storage.js";
 
@@ -37,10 +38,12 @@ export function requestScaffoldingConstructions(
  *
  * Two learned sources, applied where each is valid. The interaction corpus's request patterns say which words open or
  * frame a request ("who", "what is", "list the") and apply anywhere. The role language's continuation counts say which
- * words the corpus uses in the most contexts, and that is a property of the corpus, not of the request: "born" continues
- * more contexts than "when" in encyclopedic prose because biographies say it, yet it is the whole relation in "When was
- * Albert Einstein born?". So the corpus signal applies only to the request's opening words, where a question word
- * stands; the request patterns already record openers with anchor "start", and this follows that shape. Pure.
+ * words the corpus uses in the most contexts.
+ *
+ * The corpus signal was read off the request's first two words, so that a relation ranked into the closed class could
+ * not be discounted mid-request; position is the wrong bound, and "...indigenous to which country?" then required the
+ * answer to say "which". It ranges instead over the population this set exists to discount -- the request's own
+ * anchor units -- and over nothing else, so a unit no caller judges is never discounted whatever the corpus ranks it.
  */
 export function requestClosedClassWords(input: {
   requestText: string;
@@ -52,9 +55,8 @@ export function requestClosedClassWords(input: {
 }): Set<string> {
   const scaffolding = deriveClosedClassWords({ constructions: requestScaffoldingConstructions(input.patterns ?? [], input.authority) });
   const corpus = deriveClosedClassWords({ models: input.models ?? [], continuationPopulation: input.continuationPopulation, limit: input.limit });
-  const opening = input.requestText.normalize("NFC").toLocaleLowerCase().split(/[^\p{L}\p{M}\p{N}'’-]+/u).filter(Boolean).slice(0, 2);
   const out = new Set(scaffolding);
-  for (const word of opening) if (corpus.has(word)) out.add(word);
+  for (const unit of requestContentAnchorUnits(input.requestText)) if (corpus.has(unit)) out.add(unit);
   // The request corpus teaches its frames with real subjects in them ("Who was Ada Lovelace?"), so the subjects'
   // words arrive here as scaffolding literals; the moment that corpus was ingested, "Who is Ada Lovelace?" dropped
   // its only anchor group as scaffolding and retrieved nothing. What this request names is never its scaffolding.
