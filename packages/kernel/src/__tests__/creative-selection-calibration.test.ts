@@ -24,6 +24,12 @@ import { realizeDialogueResponse, type DialogueAnswerGraphLike } from "../dialog
 import { createJudge } from "../judge.js";
 import { createInventionConstruct, type InventionConstruct } from "../prediction.js";
 import { toJsonValue } from "../primitives.js";
+import {
+  loadCreativeContinuationPolicy,
+  persistCreativeContinuationPreference,
+  type CreativeContinuationCandidate,
+  type CreativeContinuationState
+} from "../creative-continuation-learning.js";
 import type {
   AlphaTrace,
   ClaimId,
@@ -184,6 +190,87 @@ describe("creative candidate selection and preference calibration", () => {
     });
     expect(learnedPreferred.source).toBe("pairwise_preference");
     expect(learnedPreferred.score).toBeGreaterThan(learnedRejected.score);
+  });
+
+  it("routes a durable typed continuation preference through the canonical candidate engine", async () => {
+    const state: CreativeContinuationState = {
+      schema: "scce.creative_continuation_state.v1",
+      conversationId: "conversation.canonical-creative",
+      turnId: "turn.2",
+      discourseStateId: "discourse.2",
+      semanticFrameId: "semantic.frame.1",
+      languageId: "language.owner",
+      goalId: "goal.continuation"
+    };
+    const preferredFeatures: CreativePreferenceFeatureVector = {
+      constraintCoverage: 0.2,
+      graphCoherence: 0.2,
+      novelty: 0.1,
+      languageRealizability: 1,
+      usefulness: 1,
+      risk: 0,
+      repetition: 0,
+      unsupportedFactualAssertion: 0
+    };
+    const rejectedFeatures: CreativePreferenceFeatureVector = {
+      constraintCoverage: 1,
+      graphCoherence: 1,
+      novelty: 1,
+      languageRealizability: 0,
+      usefulness: 0,
+      risk: 0,
+      repetition: 0,
+      unsupportedFactualAssertion: 0
+    };
+    const preferredConstruct = invention("invention.canonical.preferred", [], [], preferredFeatures);
+    const rejectedConstruct = invention("invention.canonical.rejected", [], [], rejectedFeatures);
+    const preferredId = `creative:${preferredConstruct.id}:0`;
+    const rejectedId = `creative:${rejectedConstruct.id}:1`;
+    const continuation = (candidateId: string, structureId: string, features: CreativePreferenceFeatureVector): CreativeContinuationCandidate => ({
+      candidateId,
+      structureId,
+      continuationModeId: structureId,
+      semanticOperatorId: structureId,
+      features
+    });
+    const continuationCandidates = new Map([
+      [preferredId, continuation(preferredId, "structure.preferred", preferredFeatures)],
+      [rejectedId, continuation(rejectedId, "structure.rejected", rejectedFeatures)]
+    ]);
+    const engine = createCandidateEngine();
+    const fixture = candidateFixture([]);
+    const cold = engine.generate({
+      ...fixture,
+      requestedAuthority: "creative",
+      inventionCandidates: [preferredConstruct, rejectedConstruct],
+      creativeContinuationState: state,
+      creativeContinuationCandidates: continuationCandidates
+    });
+    const store = createInMemoryDialogueMemoryStore();
+    await persistCreativeContinuationPreference({
+      store,
+      preference: {
+        state: { ...state, turnId: "turn.1", discourseStateId: "discourse.1" },
+        preferred: continuation("feedback.preferred", "structure.preferred", preferredFeatures),
+        rejected: continuation("feedback.rejected", "structure.rejected", rejectedFeatures),
+        sourceRecordId: "outcome.canonical-creative",
+        createdAt: 1
+      }
+    });
+    const policy = await loadCreativeContinuationPolicy({ store, state, createdAt: 2 });
+    const warm = engine.generate({
+      ...fixture,
+      requestedAuthority: "creative",
+      inventionCandidates: [preferredConstruct, rejectedConstruct],
+      creativeContinuationState: state,
+      creativeContinuationPolicy: policy,
+      creativeContinuationCandidates: continuationCandidates
+    });
+    const mass = (field: CandidateField, id: string) => field.surfaceMass.find(row => row.candidateId === id)?.mass ?? 0;
+    expect(mass(cold, preferredId)).toBeLessThan(mass(cold, rejectedId));
+    expect(mass(warm, preferredId)).toBeGreaterThan(mass(warm, rejectedId));
+    const creativeRows = (warm.audit as Record<string, unknown>)?.candidateOperators as Array<Record<string, unknown>> | undefined;
+    expect(creativeRows?.find(row => row.candidateId === preferredId)?.selectionSource).toBe("pairwise_preference");
   });
 
   it("does not borrow a scalar calibration model from another task for creative generation", () => {
