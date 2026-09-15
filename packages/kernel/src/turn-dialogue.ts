@@ -64,6 +64,10 @@ export function buildTurnDialogueBridge(input: {
   outcomeMemory?: DialogueOutcomeMemoryReplay;
 }): TurnDialogueBridge {
   const turnId = input.turnId ?? String(input.result.episodeId);
+  // The production kernel is the authority for task routing. Carry its typed
+  // receipt through the bridge so callers cannot silently collapse program,
+  // creative, or translation outcomes into dialogue calibration.
+  const calibrationTaskClass = input.result.calibrationTaskClass ?? input.calibrationTaskClass;
   const answerGraph = answerGraphFromTurnResult(input.result);
   const answerGraphHash = hashText(canonicalStringify(answerGraph));
   const pragmatics = realizeDialogueResponse({
@@ -75,10 +79,10 @@ export function buildTurnDialogueBridge(input: {
     answerGraph,
     candidateTexts: [input.result.answer],
     calibrationModels: input.calibrationModels,
-    calibrationTaskClass: input.calibrationTaskClass,
+    calibrationTaskClass,
     statePatch: {
       ...(input.userStyleProfile ? { userStyleProfile: input.userStyleProfile } : {}),
-      ...(input.calibrationTaskClass ? { taskClassId: input.calibrationTaskClass } : {})
+      ...(calibrationTaskClass ? { taskClassId: calibrationTaskClass } : {})
     }
   });
   const streamPlan = planStreamRhythm({ policyDecision: pragmatics.policyDecision, answerGraph, finalText: pragmatics.finalText });
