@@ -2013,7 +2013,7 @@ function createGraphStore(storage: PostgresStorageAdapter): GraphStore {
         const hyperedgeLimit = Math.max(1, Math.min(edgeLimit, Math.floor(edgeLimit / 2) || 1));
         const hyperedgeAccess = storage.informationAccessPredicate("hyperedge", 3);
         const hyperedgeRowsByGroup = await queryEvidenceGroups(groups, group => storage.query<HyperedgeRow>(
-            `SELECT * FROM ${storage.table("graph_hyperedges")}
+            `SELECT * FROM ${storage.table("graph_hyperedges")} AS hyperedge
              WHERE evidence_ids && $1::text[] AND ${hyperedgeAccess.sql}
              ORDER BY updated_at DESC LIMIT $2`,
             [group, hyperedgeLimit, ...hyperedgeAccess.params]
