@@ -989,8 +989,11 @@ function generateFromLanguageMemory(input: LanguageGenerationInput): LanguageGen
     joinProgram: taskJoinProgram
   });
   const firstDiscourse = latticeGeneration?.discourse ?? weaveDiscourse({ state: input.state, pieces: candidatePieces, requiredTerms, frameAtoms, frames: input.frames ?? [], contextSymbols, generationExtent });
+  const discourseCoverage = (trace: LanguageDiscourseTrace) => latticeGeneration && trace === latticeGeneration.discourse
+    ? latticeDiscourseHasCoverage(latticeGeneration, input.frames ?? [], requiredTerms, frameAtoms)
+    : discourseTraceHasCoverage(trace, requiredTerms, frameAtoms);
   const firstDiscourseAdequate = discourseSurfaceAdequate(firstDiscourse, generationExtent)
-    && discourseTraceHasCoverage(firstDiscourse, requiredTerms, frameAtoms);
+    && discourseCoverage(firstDiscourse);
   const continuationDiscourse = firstDiscourseAdequate
     ? undefined
     : learnedContinuationDiscourse({
@@ -1111,7 +1114,7 @@ function generateFromLanguageMemory(input: LanguageGenerationInput): LanguageGen
     text,
     symbols,
     phrasesUsed: selected.map(piece => piece.text),
-    coverageComplete: discourseTraceHasCoverage(discourse, requiredTerms, frameAtoms),
+    coverageComplete: discourseCoverage(discourse),
     discourse,
     importedNgramModelIdsUsed,
     importedObservationIdsUsed,
@@ -2745,6 +2748,21 @@ export function discourseTraceHasCoverage(
   atoms: readonly LanguageGenerationAtom[]
 ): boolean {
   return coverageMeetsThreshold(discourse.requiredTermIdsCovered.length, discourse.propositionAtomIdsCovered.length, requiredTerms, atoms);
+}
+
+// A lattice realizes fact frames as planned claims judged by its critic; only atoms outside those frames are matched as text.
+function latticeDiscourseHasCoverage(
+  generation: RhetoricalLatticeGeneration,
+  frames: readonly LanguageGenerationFrame[],
+  requiredTerms: readonly LanguageGenerationTerm[],
+  atoms: readonly LanguageGenerationAtom[]
+): boolean {
+  if (!generation.critic.accepted) return false;
+  const materialFrameIds = new Set(semanticFactMaterialsFromFrames(frames).map(material => material.frameId));
+  const materialAtomIds = new Set(frames.filter(frame => materialFrameIds.has(frame.id)).flatMap(frame => (frame.propositionAtoms ?? []).map(atom => atom.id)));
+  const residualAtoms = atoms.filter(atom => !materialAtomIds.has(atom.id));
+  const residualCovered = generation.discourse.propositionAtomIdsCovered.filter(id => !materialAtomIds.has(id)).length;
+  return coverageMeetsThreshold(generation.discourse.requiredTermIdsCovered.length, residualCovered, requiredTerms, residualAtoms);
 }
 
 function requiredCoverageDenominator(requiredTerms: readonly LanguageGenerationTerm[]): number {
