@@ -150,6 +150,11 @@ export function freeFormLexiconGeneration(): number {
   return generation;
 }
 
+/** The language models the current turn installed, for other corpus measurements keyed to the same generation. */
+export function residentLanguageModels(): readonly KneserNeyModel[] {
+  return resident;
+}
+
 export function freeFormLexicon(): FreeFormLexicon | undefined {
   if (!lexicon && resident.length) lexicon = deriveFreeFormLexicon(resident);
   return lexicon;

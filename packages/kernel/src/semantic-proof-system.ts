@@ -12,6 +12,9 @@ import type {
   SemanticTemporalScope
 } from "./semantic-proof-types.js";
 import { clamp01, cosineSimilarity, createHasher, featureSet, stableVector, symbolizeData, toJsonValue, weightedJaccard } from "./primitives.js";
+import { corpusTreatsUnitsAsOneForm } from "./free-form-lexicon.js";
+import { isNumericSeparatorSymbol, isNumericSymbol, numericRunShape, residentNumericTokenStatistics, selfEvidentSeparatorRoles, type NumericTokenStatistics } from "./numeric-token-statistics.js";
+import { unicodeSymbolSegments } from "./unicode-segmentation.js";
 import { evaluateSemanticTransforms, semanticTransformRules } from "./semantic-transform-registry.js";
 import { evidenceDependencyComponents, evidenceLineageSummary, evidenceProofBoundary, graphNodePriorClass, isLearnedPriorClass } from "./proof-boundary.js";
 import {
@@ -295,8 +298,9 @@ export function atomizeText(input: {
     });
     const predicateSymbol = predicateHypotheses[0];
     if (!predicateSymbol) continue;
-    const roles = deriveRoles(symbols, predicateSymbol.index, input.evidenceIds);
-    const constraints = deriveConstraints(sentence, symbols, hasher, input.evidenceIds ?? []);
+    const quantityTokens = compileQuantityTokens(sentence, symbols);
+    const roles = deriveRoles(symbols, predicateSymbol.index, input.evidenceIds, quantityTokens);
+    const constraints = deriveConstraints(sentence, symbols, hasher, input.evidenceIds ?? [], quantityTokens);
     const predicateFeatures = buildPredicateFeatures(predicateSymbol.surface, symbols, predicateSymbol.index);
     const polarity = polarityFromSurface(sentence, symbols);
     const grounded = sentenceGroundedInSurfaces(sentence, input.groundingSurfaces);
@@ -775,7 +779,7 @@ function compareQuantityConstraint(left: SemanticConstraint, right: SemanticCons
   const l = quantityFromJson(left.value);
   const r = quantityFromJson(right.value);
   if (!l || !r) return 0.35;
-  if (l.unit && r.unit && normalizeUnit(l.unit) !== normalizeUnit(r.unit)) return 0.05;
+  if (l.unit && r.unit && !sameUnit(l.unit, r.unit)) return 0.05;
   const lLower = l.lower ?? l.value;
   const lUpper = l.upper ?? l.value;
   const rLower = r.lower ?? r.value;
@@ -842,7 +846,7 @@ function quantityContradiction(left: readonly SemanticConstraint[], right: reado
       const ql = quantityFromJson(l.value);
       const qr = quantityFromJson(r.value);
       if (!ql || !qr) continue;
-      if (ql.unit && qr.unit && normalizeUnit(ql.unit) !== normalizeUnit(qr.unit)) continue;
+      if (ql.unit && qr.unit && !sameUnit(ql.unit, qr.unit)) continue;
       const lLow = ql.lower ?? ql.value;
       const lHigh = ql.upper ?? ql.value;
       const rLow = qr.lower ?? qr.value;
@@ -1134,10 +1138,10 @@ function splitSemanticSentences(text: string): string[] {
   return out;
 }
 
-function deriveRoles(symbols: readonly string[], predicateIndex: number, evidenceIds: EvidenceId[] | undefined): SemanticRoleBinding[] {
+function deriveRoles(symbols: readonly string[], predicateIndex: number, evidenceIds: EvidenceId[] | undefined, quantityTokens: ReadonlyMap<number, QuantityToken>): SemanticRoleBinding[] {
   const left = symbols.slice(Math.max(0, predicateIndex - 10), predicateIndex).filter(semanticSymbol);
   const right = symbols.slice(predicateIndex + 1, Math.min(symbols.length, predicateIndex + 11)).filter(semanticSymbol);
-  const quantities = symbols.map((symbol, index) => ({ symbol, index, quantity: parseQuantitySymbol(symbol, symbols[index + 1]) })).filter(item => item.quantity);
+  const quantities = [...quantityTokens.values()].filter(item => item.quantity);
   const roles: SemanticRoleBinding[] = [];
   if (left.length > 0) roles.push(roleBinding("arg0", compactRoleValue(left), SEMANTIC_ROLE.ENTITY, evidenceIds, 0.38));
   if (right.length > 0) roles.push(roleBinding("arg1", compactRoleValue(right), SEMANTIC_ROLE.ENTITY, evidenceIds, 0.38));
@@ -1172,10 +1176,11 @@ function compactRoleValue(symbols: readonly string[]): string {
   return scored.map(item => item.symbol).join(" ");
 }
 
-function deriveConstraints(sentence: string, symbols: readonly string[], hasher: Hasher, evidenceIds: EvidenceId[]): SemanticConstraint[] {
+function deriveConstraints(sentence: string, symbols: readonly string[], hasher: Hasher, evidenceIds: EvidenceId[], quantityTokens: ReadonlyMap<number, QuantityToken>): SemanticConstraint[] {
   const constraints: SemanticConstraint[] = [];
   for (let i = 0; i < symbols.length; i++) {
-    const quantity = parseQuantitySymbol(symbols[i]!, symbols[i + 1]);
+    if (quantityTokens.get(i)?.interior) continue;
+    const quantity = quantityTokens.get(i)?.quantity;
     if (quantity) {
       constraints.push({
         id: `constraint_${hasher.digestHex(`q:${sentence}:${i}:${symbols[i]}`).slice(0, 20)}`,
@@ -1297,13 +1302,115 @@ function semanticSymbol(symbol: string): boolean {
   return symbol.length > 0 && !/^\s+$/.test(symbol) && !/^[.,;:!?()[\]{}"']+$/.test(symbol);
 }
 
-function parseQuantitySymbol(symbol: string, next: string | undefined): SemanticQuantity | undefined {
+interface QuantityToken {
+  symbol: string;
+  quantity?: SemanticQuantity;
+  /** A symbol inside a numeric run that an earlier index already compiled. */
+  interior?: boolean;
+}
+
+/** Quantities by symbol index, with digit groups joined across the marks the text and the corpus place inside numbers. */
+function compileQuantityTokens(sentence: string, symbols: readonly string[]): Map<number, QuantityToken> {
+  const statistics = residentNumericTokenStatistics();
+  // Cost bound: re-segment for adjacency only when a mark sits between two numeric symbols.
+  const candidateRun = symbols.some((symbol, index) => index + 2 < symbols.length && isNumericSymbol(symbol) && isNumericSeparatorSymbol(symbols[index + 1]!) && isNumericSymbol(symbols[index + 2]!));
+  const segments = candidateRun ? unicodeSymbolSegments(sentence) : [];
+  const aligned = candidateRun && segments.length === symbols.length && segments.every((segment, index) => segment.normalized === symbols[index]);
+  const tokens = new Map<number, QuantityToken>();
+  for (let i = 0; i < symbols.length; i++) {
+    let end = i;
+    let value: number | undefined;
+    if (isNumericSymbol(symbols[i]!)) {
+      // A mark joins two digit groups only when nothing separates it from either.
+      while (aligned && end + 2 < symbols.length
+        && isNumericSeparatorSymbol(symbols[end + 1]!)
+        && isNumericSymbol(symbols[end + 2]!)
+        && segments[end + 1]!.utf16Start === segments[end]!.utf16End
+        && segments[end + 2]!.utf16Start === segments[end + 1]!.utf16End) end += 2;
+      value = end > i ? numericRunValue(symbols.slice(i, end + 1).join(""), statistics) : undefined;
+      if (value === undefined) {
+        end = i;
+        value = numericRunValue(symbols[i]!, statistics);
+      }
+    }
+    const next = symbols[end + 1];
+    const quantity = value !== undefined
+      ? measuredQuantity(value, next, statistics)
+      : parseQuantitySymbol(symbols[i]!, next, statistics);
+    tokens.set(i, { symbol: symbols.slice(i, end + 1).join(""), quantity });
+    for (let interior = i + 1; interior <= end; interior++) tokens.set(interior, { symbol: symbols[interior]!, interior: true });
+    i = end;
+  }
+  return tokens;
+}
+
+/** The value of digit groups joined by marks whose roles the run or the corpus fixes; undefined when neither does. Pure. */
+function numericRunValue(surface: string, statistics: NumericTokenStatistics): number | undefined {
+  const shape = numericRunShape(surface);
+  if (!shape || shape.marks.length === 0) return undefined;
+  const distinct = [...new Set(shape.marks)];
+  let groupingMark: string | undefined;
+  let decimalMark: string | undefined;
+  const evident = selfEvidentSeparatorRoles(shape);
+  if (evident) {
+    groupingMark = evident.grouping;
+    decimalMark = evident.decimal;
+  } else if (distinct.length === 1) {
+    const role = statistics.separator(distinct[0]!);
+    if (role === "silent") return undefined;
+    // A lone mark after a group wider than the one it precedes, or after zeros, cannot be grouping.
+    const lead = shape.groups[0]!;
+    const forcedDecimal = shape.marks.length === 1 && ([...lead].length > [...shape.groups[1]!].length || digitValues(lead).every(digit => digit === 0));
+    if (role === "decimal" || forcedDecimal) {
+      if (shape.marks.length !== 1) return undefined;
+      decimalMark = distinct[0];
+    } else {
+      groupingMark = distinct[0];
+    }
+  } else {
+    return undefined;
+  }
+  const fractionIndex = decimalMark !== undefined ? shape.marks.lastIndexOf(decimalMark) : -1;
+  const integerGroups = fractionIndex >= 0 ? shape.groups.slice(0, fractionIndex + 1) : shape.groups;
+  if (groupingMark !== undefined && integerGroups.length > 1) {
+    const width = [...integerGroups[1]!].length;
+    if (integerGroups.slice(1).some(group => [...group].length !== width) || [...integerGroups[0]!].length > width) return undefined;
+  }
+  const integer = digitValues(integerGroups.join("")).join("");
+  const fraction = fractionIndex >= 0 ? digitValues(shape.groups[fractionIndex + 1]!).join("") : "";
+  const value = Number(fraction ? `${integer}.${fraction}` : integer);
+  return Number.isFinite(value) ? value : undefined;
+}
+
+/** Decimal digit values in any script: Unicode lays every Nd block out as ten consecutive code points from zero. Pure. */
+function digitValues(group: string): number[] {
+  return [...group].map(char => {
+    const code = char.codePointAt(0)!;
+    let start = code;
+    while (start > 0 && /\p{Nd}/u.test(String.fromCodePoint(start - 1))) start--;
+    return (code - start) % 10;
+  });
+}
+
+function measuredQuantity(value: number, next: string | undefined, statistics: NumericTokenStatistics): SemanticQuantity {
+  return { value, unit: followingUnit(next, statistics), lower: value, upper: value, inclusiveLower: true, inclusiveUpper: true };
+}
+
+/** A following symbol is a unit when the corpus attaches it to numbers; an unhydrated corpus keeps the prior shape test. */
+function followingUnit(next: string | undefined, statistics: NumericTokenStatistics): string | undefined {
+  if (!next) return undefined;
+  const verdict = statistics.unit(next);
+  if (verdict !== "silent") return verdict === "attached" ? next : undefined;
+  return /^[A-Za-z][A-Za-z0-9/_-]{0,12}$/.test(next) ? next : undefined;
+}
+
+function parseQuantitySymbol(symbol: string, next: string | undefined, statistics: NumericTokenStatistics): SemanticQuantity | undefined {
   const cleaned = symbol.replace(/,/g, "");
   if (!/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?%?$/i.test(cleaned)) return undefined;
   const percent = cleaned.endsWith("%");
   const value = Number.parseFloat(percent ? cleaned.slice(0, -1) : cleaned);
   if (!Number.isFinite(value)) return undefined;
-  const unit = percent ? "%" : next && /^[A-Za-z][A-Za-z0-9/_-]{0,12}$/.test(next) ? next : undefined;
+  const unit = percent ? "%" : followingUnit(next, statistics);
   return { value, unit, lower: value, upper: value, inclusiveLower: true, inclusiveUpper: true };
 }
 
@@ -1360,8 +1467,11 @@ function temporalFromJson(value: JsonValue): SemanticTemporalScope | undefined {
   };
 }
 
-function normalizeUnit(unit: string): string {
-  return unit.trim().toLowerCase().replace(/s$/u, "");
+/** Two unit surfaces name one unit when they are identical or the corpus reads them as one form. */
+function sameUnit(left: string, right: string): boolean {
+  const a = left.trim().toLowerCase();
+  const b = right.trim().toLowerCase();
+  return a === b || corpusTreatsUnitsAsOneForm(a, b);
 }
 
 function normalizedEditSimilarity(left: string, right: string): number {
