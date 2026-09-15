@@ -1996,8 +1996,27 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         ])
       );
       const calibrationModels = await calibrationModelsCached();
+      // A binding suspends admission for a follow-up that names nothing of its own; a turn bringing content the carrier
+      // nowhere carries is not that follow-up and keeps its own admission. Inert without a learned closed class.
+      const carriedRequestUnits = discourseEvidenceBound && requestClosedClassWords().size
+        ? requestContentEvidenceUnits(turnSignals.subjectText).filter(unit => !requestClosedClassWords().has(unit))
+        : [];
+      const carriedPoolCarriesRequest = !carriedRequestUnits.length || evidence.some(span => {
+        const spanUnits = surfaceUnits(String(span.text ?? span.textPreview ?? "").toLocaleLowerCase());
+        return carriedRequestUnits.some(unit => spanUnits.some(spanUnit => requestUnitSharesStem(unit, spanUnit)));
+      });
+      if (discourseEvidenceBound && !carriedPoolCarriesRequest) {
+        kernelTrace({
+          stage: "graph.resolve.discourse_carry_unshared",
+          label: "kernel.turn",
+          counts: { carriedEvidence: evidence.length, requestUnits: carriedRequestUnits.length },
+          support: { requestUnits: carriedRequestUnits.slice(0, 8) }
+        });
+      }
       const sourceAnchorAudit = discourseEvidenceBound
-        ? { required: false, anchors: [] as string[], evidence }
+        ? carriedPoolCarriesRequest
+          ? { required: false, anchors: [] as string[], evidence }
+          : { required: true, anchors: carriedRequestUnits, evidence: [] as EvidenceSpan[] }
         // The single admission authority the answer proposers already use, so the pool the turn keeps is the pool
         // the answer may draw from. The stricter title-only audit kept the Deep Space Nine article out of
         // "Who played Sisko?" while the proposers would have admitted it on its binding sentence.
