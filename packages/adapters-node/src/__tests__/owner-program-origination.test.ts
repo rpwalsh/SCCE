@@ -1,6 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -54,8 +54,6 @@ describe("owner program origination", () => {
 
     const root = await mkdtemp(join(tmpdir(), "scce-owner-origin-"));
     roots.push(root);
-    await mkdir(join(root, "src"));
-    await mkdir(join(root, "test"));
     const workspace = {
       id: "workspace.owner.blank",
       rootPath: root,

@@ -534,13 +534,6 @@ export function generateWorkspacePatchPlanFromProgramGraph(
   if (selectedArtifacts.length === 0) throw new Error("program graph produced no applicable full-file artifacts");
 
   const snapshotByPath = new Map(snapshot.files.map(file => [file.path, file]));
-  const missingParentPaths = selectedArtifacts
-    .filter(artifact => !snapshotByPath.has(artifact.path))
-    .map(artifact => parentWorkspacePath(artifact.path))
-    .filter(parent => !existingDirectoryPaths.has(parent));
-  if (missingParentPaths.length > 0) {
-    throw new Error(`program graph create parent directory is not present: ${uniqueSorted(missingParentPaths).join(", ")}`);
-  }
   const unverifiedAbsentPaths = selectedArtifacts
     .filter(artifact => !snapshotByPath.has(artifact.path) && !verifiedAbsentPaths.has(artifact.path))
     .map(artifact => artifact.path);
@@ -634,7 +627,10 @@ export function generateWorkspacePatchPlanFromProgramGraph(
       derivedDependencyPaths: uniqueSorted([...dependencyPaths].filter(path => !requested.has(path))),
       selectedArtifactPaths: uniqueSorted(selectedArtifacts.map(artifact => artifact.path)),
       regressionTestPaths,
-      verifiedParentDirectoryPaths: uniqueSorted(selectedArtifacts.filter(artifact => !snapshotByPath.has(artifact.path)).map(artifact => parentWorkspacePath(artifact.path))),
+      verifiedParentDirectoryPaths: uniqueSorted(selectedArtifacts
+        .filter(artifact => !snapshotByPath.has(artifact.path))
+        .map(artifact => parentWorkspacePath(artifact.path))
+        .filter(parent => existingDirectoryPaths.has(parent))),
       hydrationValidated: true,
       fullFileMaterialized: true
     }
