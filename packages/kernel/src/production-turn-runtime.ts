@@ -140,6 +140,7 @@ import {
   evidenceSpanProvenanceTitle,
   evidenceTitledForRequestSubject,
   isUnparsedMarkupText,
+  requestLeadingScaffoldingUnit,
   spanContainsRequestNearDuplicateSentence,
   temporalCounterexampleExpected,
   temporalConceptTitledEvidence,
@@ -2674,7 +2675,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // that repeat the name most ("What is acupuncture?" selected the injection and licensing chunks over the
       // definition), so the titled opening block, when the pool holds one, leads the selection.
       const rankedForRequest = evidenceForRequest(input.text, evidenceSelectionPool, metadataEvidenceIds, explicitContextEvidenceIds, semanticFrameBoundEvidenceIds, requestClosedClassWords());
-      const subjectOnlyRequest = requestContentEvidenceUnits(input.text).filter(unit => !requestClosedClassWords().has(unit)).every(unit =>
+      const subjectOnlyRequest = requestContentEvidenceUnits(input.text).filter(unit => unit !== requestLeadingScaffoldingUnit(input.text)).every(unit =>
         namedSubjectAnchors(input.text).some(anchor => anchor.toLocaleLowerCase().split(/\s+/u).includes(unit)));
       // Any request that names a titled subject keeps that source's opening block in the selection, not only a
       // subject-only one: the lead states the standing fact and relevance ranking dropped it for "Athens is the

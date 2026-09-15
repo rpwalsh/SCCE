@@ -181,8 +181,9 @@ export function evidenceForRequest(
   // The same units the mouth judges coverage with, so ranking and speaking ask one question. Only a learned closed
   // class can tell the relation from the request's scaffolding; without one there is nothing to rank on and the
   // order below is exactly what it was.
+  const leadingScaffolding = requestLeadingScaffoldingUnit(text);
   const coverageUnits = closedClassWords.size
-    ? contentUnits.filter(unit => !closedClassWords.has(unit))
+    ? contentUnits.filter(unit => !closedClassWords.has(unit) && unit !== leadingScaffolding)
     : [];
   const promoted = evidence.filter(span => span.status === "promoted");
   const pool = promoted.length ? promoted : evidence.filter(span => span.status !== "quarantined");
@@ -689,11 +690,13 @@ export function proposeSourceExactEvidenceAnswer(input: {
     const titleMatches = anchored.anchors.length > 0
       && evidenceTitleDistinctAnchorMatches(span, anchored.anchors);
     const titleUnits = new Set(requestUnitsFromText(evidenceTitle(span)));
-    // Net of the title and the corpus's closed class: "What is acupuncture?" transferred the lead boost to
-    // whichever deep sentence happened to contain "what".
+    // Net of the title, the learned closed class, and the short word the request opens with: "What is
+    // acupuncture?" transferred the lead boost to whichever deep sentence happened to contain "what".
+    const leadingScaffolding = requestLeadingScaffoldingUnit(input.requestText);
     const contentRequestUnits = new Set([...requestUnits].filter(unit =>
       ![...titleUnits].some(titleUnit => requestUnitMatchesSurface(unit, titleUnit))
-      && !input.closedClassWords?.has(unit)));
+      && !input.closedClassWords?.has(unit)
+      && unit !== leadingScaffolding));
     // Cross-span source affinity: content-net overlap is asymmetric across
     // sources (request words inside THIS span's title are excluded here
     // but count as "content" for a sibling source whose title lacks them
@@ -794,8 +797,9 @@ export function proposeSourceExactEvidenceAnswer(input: {
     // The duplicated sentence outranks everything: a unit-rich table blob
     // can beat the boost on raw overlap count.
     .sort((left, right) => Number(right.nearDuplicate) - Number(left.nearDuplicate) || right.score - left.score || left.index - right.index || String(left.span.id).localeCompare(String(right.span.id)));
+  const leadingScaffoldingUnit = requestLeadingScaffoldingUnit(input.requestText);
   const coverageUnits = requestContentEvidenceUnits(input.requestText)
-    .filter(unit => !input.closedClassWords?.has(unit));
+    .filter(unit => !input.closedClassWords?.has(unit) && unit !== leadingScaffoldingUnit);
   const relationRequired = Boolean(input.closedClassWords?.size);
   const covers = (row: { sentence: string; span: EvidenceSpan; nearDuplicate: boolean }) =>
     row.nearDuplicate || answerCoversRequest([row.sentence], row.span, coverageUnits, input.requestText, { relationRequired, languageClosedClassWords: input.functionSymbols });
@@ -1111,6 +1115,14 @@ export function cliticOpeningFragment(sentence: string): boolean {
     && leadChar !== leadChar.toLocaleUpperCase();
 }
 
+/** The short word a request opens with, normalized: "who", "what", "does", "tell" -- scaffolding by position and
+ *  length, the same rule the subject-anchor primitive applies, so no word list and no language assumption. */
+export function requestLeadingScaffoldingUnit(requestText: string): string | undefined {
+  const first = requestText.trim().split(/\s+/u)[0] ?? "";
+  const unit = normalizePriorKey(stripOuterPriorSeparators(first));
+  return unit && [...unit].length <= 5 ? unit : undefined;
+}
+
 /** A sentence that ends on a comma, a bare conjunction-length word after a comma, or no terminal mark at all:
  *  the splitter stopped at a line break or a stripped citation, not at the end of a claim. Structural only. */
  function danglingTailFragment(sentence: string): boolean {
@@ -1264,6 +1276,7 @@ export function answerCoversRequest(
   // {what, year, american, revolutionary} and would otherwise have demanded that the answer restate "what".
   const beyondSourceSubject = sourceSubjectUnits.length
     ? answerContentUnits.filter(unit => !sourceSubjectUnits.includes(unit)
+      && unit !== requestLeadingScaffoldingUnit(requestText)
       && !options.languageClosedClassWords?.has(unit))
     : [];
   const relationUnits = subtractedRelationUnits.length
@@ -1393,8 +1406,10 @@ export function requestRelationBeyondSourceIdentity(
   const identityUnits = memoizedSurfaceUnits(`${evidenceIdentity(span)} ${evidenceTitle(span)}`)
     .map(stripOuterPriorSeparators)
     .filter(Boolean);
+  const leadingScaffolding = requestLeadingScaffoldingUnit(requestText);
   return requestContentEvidenceUnits(requestText).filter(unit =>
-    !closedClassWords?.has(unit)
+    unit !== leadingScaffolding
+    && !closedClassWords?.has(unit)
     && !identityUnits.some(identityUnit => requestUnitSharesStem(unit, identityUnit)));
 }
 
@@ -2805,7 +2820,7 @@ export function sourceIdentityAdmissibleEvidenceForRequest(
     // every content anchor sits inside one of its sentences -- a binding mention, not a passing one -- and
     // only when no title-identified span exists, so cross-title abstention holds whenever a title does match.
     const bindingContentAnchors = requestContentEvidenceUnits(requestText)
-      .filter(unit => !closedClassWords?.has(unit));
+      .filter(unit => unit !== requestLeadingScaffoldingUnit(requestText) && !closedClassWords?.has(unit));
     if (!admitted.length && bindingContentAnchors.length) {
       const titled = evidence.filter(span => evidenceTitle(span));
       const bound = titled
@@ -4142,8 +4157,9 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
       // the request's actual content terms (verified live in run-f: "Who
       // played Captain James T. Kirk / Benjamin Sisko" both returned the
       // article opener without the actor's name).
+      const leadingScaffolding = requestLeadingScaffoldingUnit(requestText);
       const contentRequestUnits = new Set([...requestUnits].filter(unit =>
-        !titleUnitList.some(titleUnit => requestUnitMatchesSurface(unit, titleUnit)) && !closedClassWords?.has(unit)));
+        !titleUnitList.some(titleUnit => requestUnitMatchesSurface(unit, titleUnit)) && unit !== leadingScaffolding));
       let contentBoostIndex = -1;
       // Only the document's opening block has a lead to transfer from: in a mid-article chunk the first two
     // "sentences" are whatever the cut left, their coverage is zero, and the boost went to any sentence with a
@@ -4268,7 +4284,8 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
   // source's opening sentence, which predicates about its subject by construction even when it names it in a
   // longer form the anchor test cannot see. This ranker is the one the fast local-evidence plan actually uses, and
   // it sent "Who is Ada Lovelace?" to a Starfield trivia bullet while her article's lead sat in the pool.
-  const coverageUnits = requestContentEvidenceUnits(requestText).filter(unit => !closedClassWords?.has(unit));
+  const leadingScaffoldingUnit = requestLeadingScaffoldingUnit(requestText);
+  const coverageUnits = requestContentEvidenceUnits(requestText).filter(unit => unit !== leadingScaffoldingUnit);
   const subjectUnitSet = sourceOwnedSubjectUnitSet(requestText, evidence, functionSymbols);
   const definitional = subjectUnitSet.size > 0 && coverageUnits.every(unit => subjectUnitSet.has(unit));
   const openingRow = definitional && !candidates[0]?.nearDuplicate
