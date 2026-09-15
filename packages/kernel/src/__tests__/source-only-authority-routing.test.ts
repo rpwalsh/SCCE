@@ -220,6 +220,42 @@ describe("source-only request-authority routing", () => {
     expect(translation.answer).not.toContain("REPORT_TEMPLATE_BODY_SHOULD_NOT_BE_SPOKEN");
   });
 
+  it("keeps the requested certified finding and its exact proof together", async () => {
+    const runtime = createSourceOnlyScceRuntime({ now: () => 1000 });
+    const statements = [
+      "Rotor delta records 13 units; its archived reading is 9 units.",
+      "Valve sigma records 71 units; its archived reading is 68 units."
+    ];
+    const ingested = runtime.ingest({ files: statements.map((text, index) => ({
+      path: `readings/${index}.txt`, mediaType: "text/plain", text
+    })) });
+    const promotion = runtime.promote({ analysis: {
+      ...ingested.analysis,
+      contradictions: ingested.analysis.sources.map((source, index) => ({
+        id: `finding.${index}`, kind: `fixture.measurement_difference.${index}`, severity: "warning",
+        statement: statements[index]!, sourceRefs: [{
+          path: source.path, contentHash: source.contentHash, evidenceSpanId: source.evidenceIds![0]
+        }], affectedFiles: [source.path], suggestedFix: "", confidence: 0.8, metadata: {}
+      }))
+    } });
+    for (const [index, statement] of statements.entries()) {
+      const turn = await runtime.simulateTurn({ promotionId: promotion.replayTraceId, text: statement, requestedAuthority: "factual" });
+      const entailment = turn.workspace.entailment;
+      const certifiedClaim = turn.workspace.answerGraph.claims.find(claim => claim.certified && claim.surface === statement)!;
+      expect(certifiedClaim).toBeDefined();
+      expect(turn.selectedCandidate?.kind).toBe("proof-answer");
+      expect(entailment.claim.text).toBe(statement);
+      expect(entailment.proof.claimId).toBe(entailment.claim.id);
+      expect(entailment.evidenceIds).toEqual([ingested.evidence[index]!.id]);
+      expect(entailment.proof.evidenceIds).toEqual(entailment.evidenceIds);
+      expect(turn.workspace.mouthInput.speakInput.selectedCandidate?.audit).toMatchObject({ proofId: entailment.proof.id });
+      expect(entailment.proof.scores).toMatchObject({ semanticProofEngine: {
+        verdict: "certified",
+        trace: { proofPath: "structured_runtime", structuredClaimId: certifiedClaim.proofClaimId }
+      } });
+    }
+  });
+
   // The invented-narrative property cannot run in this file by its own
   // premise (a source-only runtime has no trained material, so both of
   // invention-planner's genuine-prose paths bail). It is tested against

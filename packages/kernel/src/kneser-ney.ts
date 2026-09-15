@@ -136,10 +136,17 @@ export function kneserNeyProbability(model: KneserNeyModel, context: readonly st
 export function predictKneserNey(model: KneserNeyModel, context: readonly string[], limit = 16): KneserNeyPrediction[] {
   assertCompiledKneserNey(model);
   const boundedLimit = Math.max(1, Math.floor(limit));
-  const candidates = activeSuccessors(model, context, Math.max(64, boundedLimit * 8));
+  const index = runtimeIndex(model);
+  const normalizedContext = context.slice(-(model.order - 1));
+  const candidates = activeSuccessors(model, normalizedContext, Math.max(64, boundedLimit * 8));
   const best: KneserNeyPrediction[] = [];
   for (const symbol of candidates) {
-      const probability = kneserNeyProbability(model, context, symbol);
+      // Candidate generation scores many symbols per context. Keep the public
+      // probability wrapper for callers, but do its invariant validation and
+      // context normalization once per prediction call instead of once per
+      // candidate in this hot loop.
+      const normalizedSymbol = index.vocabulary.has(symbol) || symbol === "</s>" ? symbol : "<unk>";
+      const probability = recursiveProbability(model, normalizedContext, normalizedSymbol, model.order);
       insertPrediction(best, {
         symbol,
         probability,

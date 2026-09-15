@@ -64,6 +64,8 @@ export interface CandidateGenerationInput {
   inventionCandidates?: readonly InventionConstruct[];
   /** Optional typed continuation identities selected by the runtime for live owner-preference scoring. */
   creativeContinuationState?: CreativeContinuationState;
+  /** Runtime-scoped identity used to join regenerated continuation candidates to this turn. */
+  candidateRunId?: string;
   creativeContinuationPolicy?: CreativeContinuationPolicy;
   creativeContinuationCandidates?: ReadonlyMap<string, CreativeContinuationCandidate>;
   requirementField?: TurnRequirementField;
@@ -119,7 +121,7 @@ export function createCandidateEngine() {
           COGNITIVE_OPERATOR_IDS.counterfactualConstruction,
           COGNITIVE_OPERATOR_IDS.analogy
         ]) ? [graphInferenceCandidate(input)] : []),
-        ...(!hasCompatibleCognitiveProposal
+        ...((!hasCompatibleCognitiveProposal || input.requestedAuthority === "creative")
           && operatorSupported(input, [COGNITIVE_OPERATOR_IDS.invention])
           && (input.requirementField === undefined
             || input.requestedAuthority === "creative"
@@ -164,16 +166,29 @@ export function createCandidateEngine() {
           || candidate.kind !== "creative-candidate"
           || typeof selectionScore !== "number"
           || !Number.isFinite(selectionScore)) return candidate;
+        const baseSelectionScore = typeof candidate.scores.creativeSelectionScore === "number"
+          && Number.isFinite(candidate.scores.creativeSelectionScore)
+          ? candidate.scores.creativeSelectionScore
+          : candidate.kind === "creative-candidate"
+            ? creativeAuthorityScore(candidate, input.calibrationModels).score
+            : undefined;
+        const ownerAdjustment = operator?.selectionAdjustment
+          ?? (typeof baseSelectionScore === "number" && Number.isFinite(baseSelectionScore)
+            ? selectionScore - baseSelectionScore
+            : 0);
         return {
           ...candidate,
           scores: {
             ...candidate.scores,
             creativeSelectionScore: selectionScore
           },
+          selectionAdjustment: (candidate.selectionAdjustment ?? 0) + ownerAdjustment,
           audit: toJsonValue({
             ...jsonRecord(candidate.audit),
             selectionScore,
             selectionSource: operator?.selectionSource ?? null,
+            selectionAdjustment: operator?.selectionAdjustment ?? null,
+            ownerAdjustment,
             continuationPolicyApplied: true
           })
         };
@@ -1271,6 +1286,7 @@ function creativeCandidate(input: {
   field: FieldState;
   calibrationModels?: CalibrationModelSet;
   calibrationTaskClass?: string;
+  candidateRunId?: string;
 }, construct: InventionConstruct, candidateIndex: number): CandidateSurface | undefined {
   const answer = construct.proposalSurface.replace(/\s+/gu, " ").trim();
   if (!answer) return undefined;
@@ -1308,7 +1324,7 @@ function creativeCandidate(input: {
         failureModes: ["bootstrap_coefficients_not_learned", "unobserved_creative_preferences"]
       });
   return {
-    id: `creative:${construct.id}:${candidateIndex}`,
+    id: `creative:${construct.id}:${candidateIndex}${input.candidateRunId ? `:${input.candidateRunId}` : ""}`,
     kind: "creative-candidate",
     answer,
     force: "invented",
@@ -1452,6 +1468,7 @@ function candidateOperatorRows(
   leastActionReachable: boolean;
   selectionScore?: number;
   selectionSource?: string;
+  selectionAdjustment?: number;
 }> {
   const energies = candidates.map(candidate => {
     const complexity = Math.log2(2 + surfaceUnitCount(candidate.answer)) / 8;
@@ -1463,13 +1480,16 @@ function candidateOperatorRows(
     && creativeContinuationState
     && creativeContinuationPolicy
     && creativeContinuationCandidates
-    ? new Map(rankCreativeContinuations({
-      state: creativeContinuationState,
-      candidates: candidates
-        .map(candidate => creativeContinuationCandidates.get(candidate.id))
-        .filter((candidate): candidate is CreativeContinuationCandidate => Boolean(candidate)),
-      policy: creativeContinuationPolicy
-    }).map(row => [row.candidate.candidateId, row] as const))
+    ? new Map(candidates.flatMap(candidate => {
+      const continuation = creativeContinuationCandidates.get(candidate.id);
+      if (!continuation) return [];
+      const ranked = rankCreativeContinuations({
+        state: creativeContinuationState,
+        candidates: [continuation],
+        policy: creativeContinuationPolicy
+      })[0];
+      return ranked ? [[candidate.id, ranked] as const] : [];
+    }))
     : undefined;
   const creativeSelections = requestedAuthority === "creative"
     ? candidates.map(candidate => creativeAuthorityScore(candidate, calibrationModels, continuationScores?.get(candidate.id)?.score, continuationScores?.get(candidate.id)?.source))
@@ -1491,7 +1511,8 @@ function candidateOperatorRows(
       leastActionCost: Number.isFinite(path.cost) ? path.cost : 1,
       leastActionReachable: path.reachable,
       selectionScore: creativeSelections?.[index]?.score,
-      selectionSource: creativeSelections?.[index]?.source
+      selectionSource: creativeSelections?.[index]?.source,
+      selectionAdjustment: continuationScores?.get(candidate.id)?.ownerAdjustment
     };
   });
 }

@@ -136,7 +136,15 @@ export function evidenceToProofRecords(input: EvidenceProofAdapterInput): ProofE
 export function typedObservationToProofRecords(input: TypedObservationProofAdapterInput | SupportedProofObservation | readonly SupportedProofObservation[]): ProofEvidenceRecord[] {
   const normalized = normalizeTypedObservationInput(input);
   const evidenceById = normalized.evidenceById;
-  return normalized.observations.flatMap(observation => proofRecordsFromObservation(observation, evidenceById, normalized.claim));
+  const records = normalized.observations.flatMap(observation => proofRecordsFromObservation(observation, evidenceById, normalized.claim));
+  if (!normalized.claim) return records;
+  const evidence = [...new Map([...evidenceById.values()].map(span => [String(span.id), span] as const)).values()];
+  const scopedBoundaries = evidenceProofBoundariesForClaim({ claim: normalized.claim, evidence, proofEvidence: records });
+  const scopedIds = new Set(scopedBoundaries.filter(boundary => boundary.certifiesFactualProof).map(boundary => boundary.evidenceId));
+  const assertedIds = new Set(boundariesForSourceAssertions(evidence).map(boundary => boundary.evidenceId));
+  return records.map(record => record.evidenceSpanId && assertedIds.has(String(record.evidenceSpanId)) && !scopedIds.has(String(record.evidenceSpanId))
+    ? { ...record, evidenceSpanId: undefined }
+    : record);
 }
 
 /** Lift promoted hyperedges into proof records without flattening their typed incidence. */
@@ -203,15 +211,22 @@ function fieldsFromObservation(observation: SupportedProofObservation, evidenceB
   // only usable after resolving the actual span and its current proof
   // boundary. This prevents a normalized owner assertion from restoring a
   // binding merely by carrying an evidenceSpanId field forward.
+  const observationSourceVersionId = String(observation.sourceVersionId ?? "");
   const metadataEvidenceSpan = metadataFields.evidenceSpanId
     ? evidenceById.get(metadataFields.evidenceSpanId)
     : undefined;
-  const evidenceSpanId = metadataEvidenceSpan && (evidenceProofBoundary(metadataEvidenceSpan).certifiesFactualProof || (claim !== undefined && evidenceProofBoundary(metadataEvidenceSpan).forceClass === "direct_evidence"))
+  const metadataSpanMatchesObservation = metadataEvidenceSpan !== undefined
+    && String(metadataEvidenceSpan.sourceVersionId) === observationSourceVersionId;
+  const evidenceSpanId = metadataSpanMatchesObservation && metadataEvidenceSpan && (evidenceProofBoundary(metadataEvidenceSpan).certifiesFactualProof || (claim !== undefined && evidenceProofBoundary(metadataEvidenceSpan).forceClass === "direct_evidence"))
     ? String(metadataEvidenceSpan.id)
     : claim !== undefined
-      ? provisionalDirectEvidenceSpanId(observation.evidenceIds.map(String), evidenceById)
-      : certifyingEvidenceSpanId(observation.evidenceIds.map(String), evidenceById);
-  const sourceVersionId = metadataFields.sourceVersionId ?? String(observation.sourceVersionId);
+      ? provisionalDirectEvidenceSpanId(observation.evidenceIds.map(String), evidenceById, observationSourceVersionId)
+      : certifyingEvidenceSpanId(observation.evidenceIds.map(String), evidenceById, observationSourceVersionId);
+  const evidenceSpan = evidenceSpanId ? evidenceById.get(evidenceSpanId) : undefined;
+  // Source-version identity is carried by the observation/span envelope. A
+  // metadata carrier may describe typed roles, but it cannot replace the
+  // source version or authority used for admission.
+  const sourceVersionId = evidenceSpan ? String(evidenceSpan.sourceVersionId) : observationSourceVersionId;
   if (observation.kind === "measurement") {
     return {
       id: metadataFields.id ?? `proof.evidence.measurement.${observation.id}`,
@@ -224,7 +239,7 @@ function fieldsFromObservation(observation: SupportedProofObservation, evidenceB
       dateTime: metadataFields.dateTime ?? (observation.timestamp ? { value: observation.timestamp } : undefined),
       polarityId: metadataFields.polarityId,
       modalityId: metadataFields.modalityId,
-      forceClass: metadataFields.forceClass,
+      forceClass: undefined,
       sourceVersionId,
       evidenceSpanId
     };
@@ -240,7 +255,7 @@ function fieldsFromObservation(observation: SupportedProofObservation, evidenceB
       dateTime: metadataFields.dateTime ?? (observation.timestamp ? { value: observation.timestamp } : undefined),
       polarityId: metadataFields.polarityId,
       modalityId: metadataFields.modalityId,
-      forceClass: metadataFields.forceClass,
+      forceClass: undefined,
       sourceVersionId,
       evidenceSpanId
     };
@@ -254,7 +269,7 @@ function fieldsFromObservation(observation: SupportedProofObservation, evidenceB
     objectKindId: metadataFields.objectKindId ?? ATOM_CODE_OBJECT,
     polarityId: metadataFields.polarityId,
     modalityId: metadataFields.modalityId,
-    forceClass: metadataFields.forceClass,
+    forceClass: undefined,
     sourceVersionId,
     evidenceSpanId
   };
@@ -272,10 +287,10 @@ function normalizeTypedObservationInput(input: TypedObservationProofAdapterInput
   };
 }
 
-function provisionalDirectEvidenceSpanId(ids: readonly string[], evidenceById: ReadonlyMap<string, EvidenceSpan>): string | undefined {
+function provisionalDirectEvidenceSpanId(ids: readonly string[], evidenceById: ReadonlyMap<string, EvidenceSpan>, sourceVersionId: string): string | undefined {
   for (const id of ids) {
     const span = evidenceById.get(id);
-    if (span && evidenceProofBoundary(span).forceClass === "direct_evidence") return id;
+    if (span && String(span.sourceVersionId) === sourceVersionId && evidenceProofBoundary(span).forceClass === "direct_evidence") return id;
   }
   return undefined;
 }
@@ -336,9 +351,10 @@ function proofRecordFromCarrier(value: ProofCarrierFields, span?: EvidenceSpan, 
   const forceClass = span
     ? proofForceClassFromBoundary(boundaryForceClass) ?? value.forceClass
     : value.forceClass ?? proofForceClassFromBoundary(boundaryForceClass);
-  const sourceVersionId = value.sourceVersionId ?? (span ? String(span.sourceVersionId) : undefined);
+  const sourceVersionMatches = !span || !value.sourceVersionId || String(value.sourceVersionId) === String(span.sourceVersionId);
+  const sourceVersionId = span ? String(span.sourceVersionId) : value.sourceVersionId;
   const evidenceSpanId = span
-    ? certifyingSpan ? String(span.id) : undefined
+    ? certifyingSpan && sourceVersionMatches ? String(span.id) : undefined
     : value.evidenceSpanId;
   return proofRecordFromFields({ ...value, forceClass, sourceVersionId, evidenceSpanId, id: value.id ?? (span ? String(span.id) : undefined) });
 }
@@ -425,10 +441,10 @@ function atom(id: string, kindId?: string, surface?: string, roleId?: string): P
   return { id, kindId, roleId, surface };
 }
 
-function certifyingEvidenceSpanId(ids: readonly string[], evidenceById: ReadonlyMap<string, EvidenceSpan>): string | undefined {
+function certifyingEvidenceSpanId(ids: readonly string[], evidenceById: ReadonlyMap<string, EvidenceSpan>, sourceVersionId: string): string | undefined {
   for (const id of ids) {
     const span = evidenceById.get(id);
-    if (span && evidenceProofBoundary(span).certifiesFactualProof) return String(span.id);
+    if (span && String(span.sourceVersionId) === sourceVersionId && evidenceProofBoundary(span).certifiesFactualProof) return String(span.id);
   }
   return undefined;
 }

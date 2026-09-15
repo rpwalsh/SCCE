@@ -61,6 +61,10 @@ const AUTHORITY_COEFFICIENT_KEYS: Record<RequestedAuthority, Partial<Record<Turn
   action: { actionCommitment: "request_authority.coefficient.action.actionCommitment", executableArtifactDemand: "request_authority.coefficient.action.executableArtifactDemand", externalTruthAuthority: "request_authority.coefficient.action.externalTruthAuthority", sourceDependence: "request_authority.coefficient.action.sourceDependence", noveltyDemand: "request_authority.coefficient.action.noveltyDemand" }
 };
 
+const AUTHORITY_SIGNAL_DIMENSIONS = new Set<TurnRequirementDimension>(
+  REQUESTED_AUTHORITY_IDS.flatMap(authority => Object.keys(AUTHORITY_COEFFICIENT_KEYS[authority]) as TurnRequirementDimension[])
+);
+
 /**
  * Language-neutral requirement prototypes shared by explicit structured
  * authority and source-backed request-language learning.
@@ -209,9 +213,18 @@ export function projectRequestAuthority(input: ProjectRequestAuthorityInput): Re
   const ranked = REQUESTED_AUTHORITY_IDS
     .map(authority => ({ authority, score: scores[authority] }))
     .sort((left, right) => right.score - left.score || (left.authority < right.authority ? -1 : left.authority > right.authority ? 1 : 0));
-  const projectedAuthority = ranked[0]?.authority ?? "factual";
+  // Intercept-only fields contain no evidence that can distinguish answer
+  // authority. Keep that cold-start state on the conservative factual floor;
+  // learned, explicit, and structural contributions still use the calibrated
+  // projection below. Dialogue-only continuity does not invent authority.
+  const authoritySignalPresent = requirements.contributedDimensions === undefined
+    ? true
+    : requirements.contributedDimensions.some(dimension => AUTHORITY_SIGNAL_DIMENSIONS.has(dimension));
+  const projectedAuthority = authoritySignalPresent ? (ranked[0]?.authority ?? "factual") : "factual";
   const requestedAuthority = input.explicitAuthority ?? projectedAuthority;
-  const scoreMargin = clamp01((ranked[0]?.score ?? 0) - (ranked[1]?.score ?? 0));
+  const scoreMargin = authoritySignalPresent
+    ? clamp01((ranked[0]?.score ?? 0) - (ranked[1]?.score ?? 0))
+    : 0;
   const trace = toJsonValue({
     schema: "scce.requested_authority.requirement_projection.v2",
     requestedAuthority,
@@ -222,6 +235,8 @@ export function projectRequestAuthority(input: ProjectRequestAuthorityInput): Re
     lexicalRouterUsed: false,
     scoreReliability: "uncalibrated_bootstrap",
     scoreSemantics: "bounded_routing_energy_not_probability",
+    authoritySignalPresent,
+    neutralFloorApplied: !authoritySignalPresent,
     scores,
     scoreMargin,
     requirementConfidence: requirements.confidence,

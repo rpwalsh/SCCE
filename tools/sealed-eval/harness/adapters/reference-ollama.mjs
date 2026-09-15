@@ -21,6 +21,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline";
+import { availableParallelism } from "node:os";
 import { argsMap, readJson, sha256Bytes } from "../lib/util.mjs";
 
 const args = argsMap();
@@ -30,14 +31,37 @@ const mode = args.get("mode") ?? "rag";
 if (mode !== "rag" && mode !== "closed_book") throw new Error(`unsupported mode: ${mode}`);
 const model = args.get("model") ?? process.env.SCCE_EVAL_OLLAMA_MODEL ?? "qwen2.5:3b";
 const endpoint = args.get("endpoint") ?? process.env.SCCE_EVAL_OLLAMA_URL ?? "http://127.0.0.1:11434";
+if (!["127.0.0.1", "localhost", "[::1]"].includes(new URL(endpoint).hostname)) throw new Error("The local baseline requires a loopback Ollama endpoint");
+const device = args.get("device") ?? "auto";
+if (!["cpu", "gpu", "auto"].includes(device)) throw new Error(`unsupported device: ${device}`);
+const integerOption = (name, fallback, minimum = 1) => {
+  const value = Number(args.get(name) ?? fallback);
+  if (!Number.isSafeInteger(value) || value < minimum) throw new Error(`invalid --${name}`);
+  return value;
+};
+const options = {
+  temperature: 0, top_p: 1, seed: integerOption("seed", 20260906, 0),
+  num_predict: integerOption("num-predict", 96), num_ctx: integerOption("num-ctx", 4096),
+  num_thread: integerOption("threads", availableParallelism()),
+  ...(device === "cpu" ? { num_gpu: 0 } : device === "gpu" ? { num_gpu: 999 } : {})
+};
+const keepAlive = args.get("keep-alive") ?? "30m";
 const passages = Math.max(1, Math.min(8, Number(args.get("passages") ?? 3)));
 const timeoutMs = Math.max(1_000, Number(args.get("request-timeout-ms") ?? 120_000));
+const [version, tags] = await Promise.all([ollamaJson("/api/version"), ollamaJson("/api/tags")]);
+const modelIdentity = tags.models?.find(row => row.name === model || row.model === model);
+if (!modelIdentity?.digest) throw new Error(`Requested model is not installed locally: ${model}`);
+const runtimeMetadata = {
+  baseline: `ollama-${mode}`, model, digest: modelIdentity.digest, details: modelIdentity.details,
+  ollamaVersion: version.version, requestedDevice: device, options, keepAlive, endpoint
+};
 
 const manifest = await readJson(manifestPath);
 const base = path.dirname(path.resolve(manifestPath));
 const docs = [];
 for (const document of manifest.documents) {
   const bytes = await readFile(path.resolve(base, document.path));
+  if (document.sha256 && sha256Bytes(bytes) !== document.sha256) throw new Error(`Corpus digest mismatch: ${document.documentId}`);
   const text = bytes.toString("utf8");
   docs.push({ ...document, bytes, text, tokens: tokenize(text) });
 }
@@ -63,7 +87,8 @@ for await (const line of rl) {
   const question = JSON.parse(line);
   try {
     const retrieved = mode === "rag" ? retrieve(question.prompt) : [];
-    const answer = await ask(question.prompt, retrieved);
+    const generated = await ask(question.prompt, retrieved);
+    const answer = generated.answer;
     // The model's own refusal, recognised structurally: a reply whose entire content is a declination. Nothing else
     // in the reply is interpreted, and a declination buried inside an answer is still an answer.
     const declined = isDeclination(answer);
@@ -71,14 +96,14 @@ for await (const line of rl) {
       status: declined ? "abstained" : "ok",
       answer: declined ? "" : answer,
       citations: declined ? [] : retrieved.map(row => row.citation),
-      metadata: { baseline: `ollama-${mode}`, model, passages: retrieved.length, rawReply: answer.slice(0, 400) }
+      metadata: { ...runtimeMetadata, passages: retrieved.length, rawReply: answer.slice(0, 400), inference: generated.inference, residency: generated.residency }
     })}\n`);
   } catch (error) {
     process.stdout.write(`${JSON.stringify({
       status: "error",
       answer: "",
       citations: [],
-      metadata: { baseline: `ollama-${mode}`, model, error: String(error && error.message ? error.message : error).slice(0, 300) }
+      metadata: { ...runtimeMetadata, error: String(error && error.message ? error.message : error).slice(0, 300) }
     })}\n`);
   }
 }
@@ -154,17 +179,34 @@ async function ask(prompt, retrieved) {
         model,
         prompt: `${INSTRUCTIONS}\n\n${material}Question: ${prompt}\nAnswer:`,
         stream: false,
+        keep_alive: keepAlive,
         // Deterministic decoding: a reference system that answers differently on a re-run cannot be re-measured.
-        options: { temperature: 0, top_p: 1, seed: 20260906, num_predict: 96 }
+        options
       }),
       signal: controller.signal
     });
     if (!response.ok) throw new Error(`ollama ${response.status}`);
     const body = await response.json();
-    return String(body.response ?? "").trim();
+    const running = await ollamaJson("/api/ps");
+    const residency = running.models?.find(row => row.name === model || row.model === model);
+    if (!residency || residency.digest !== modelIdentity.digest) throw new Error("Running model identity does not match the pinned local model");
+    if (!Number.isFinite(residency.size_vram)) throw new Error("Ollama did not report device residency");
+    if (device === "cpu" && residency.size_vram !== 0) throw new Error("CPU condition used GPU memory");
+    if (device === "gpu" && residency.size_vram <= 0) throw new Error("GPU condition fell back to CPU");
+    return {
+      answer: String(body.response ?? "").trim(),
+      inference: Object.fromEntries(["total_duration", "load_duration", "prompt_eval_count", "prompt_eval_duration", "eval_count", "eval_duration", "done_reason"].map(key => [key, body[key] ?? null])),
+      residency: { digest: residency.digest, size: residency.size, size_vram: residency.size_vram, context_length: residency.context_length, observedDevice: residency.size_vram > 0 ? "gpu-or-mixed" : "cpu" }
+    };
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function ollamaJson(route) {
+  const response = await fetch(`${endpoint}${route}`, { signal: AbortSignal.timeout(timeoutMs) });
+  if (!response.ok) throw new Error(`ollama ${route} ${response.status}`);
+  return response.json();
 }
 
 /** Whether the whole reply is a declination. Matched on the shape the instructions asked for, not on sentiment. */

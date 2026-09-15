@@ -1,6 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { corpusIdentityGeneration, corpusIdentitySurface, corpusNamedIdentities } from "./corpus-identity.js";
+import { corpusIdentityGeneration, corpusIdentitySurface, corpusIdentityUnits, corpusNamedIdentities } from "./corpus-identity.js";
 import { corpusUnitFormVerdict, freeFormLexiconGeneration } from "./free-form-lexicon.js";
 import { SEMANTIC_VERDICT, SEMANTIC_SOURCE } from "./semantic-codes.js";
 import { atomizeText } from "./semantic-proof-system.js";
@@ -1185,6 +1185,9 @@ export function answerCoversRequest(
   requestText = "",
   options: { relationRequired?: boolean; languageClosedClassWords?: ReadonlySet<string> } = {}
 ): boolean {
+  // Answerhood compares request material with source/title material using the same unitization as corpus identity
+  // and anchor indexing. In particular, `Moby-Dick` is two identity units (`moby`, `dick`), not one relation token.
+  const answerContentUnits = uniqueKernelStrings(contentUnits.flatMap(unit => corpusIdentityUnits(unit)));
   // The request's subject: its named anchors when it has any, else its longer content units. A request with none (a pronoun follow-up) is covered by whatever it was bound to.
   // A lone short cased run (a sentence-initial question word) is not a name.
   // A digit qualifier stays: it is the whole difference between Apollo and Apollo 11, and between Project Apollo
@@ -1200,10 +1203,10 @@ export function answerCoversRequest(
   const namedGroups = corpusIdentityGroups.length ? corpusIdentityGroups : namedSubjectAnchors(requestText)
     .map(anchor => splitPriorUnits(normalizePriorKey(anchor)).filter(unit => [...unit].length >= 3 || /^\p{Number}+$/u.test(unit)))
     .filter(units => units.length >= 2 || [...(units[0] ?? "")].length >= 5);
-  const subjectUnits = namedGroups.length ? namedGroups.flat() : contentUnits.filter(unit => [...unit].length >= 6);
+  const subjectUnits = namedGroups.length ? namedGroups.flat() : answerContentUnits.filter(unit => [...unit].length >= 6);
   if (!subjectUnits.length) return true;
   // Short units match exactly (the fuzzy matcher confuses "what" with "that"); longer ones tolerate inflection.
-  const surfaceUnits = memoizedSurfaceUnits(sentences.join(" ") + " " + evidenceTitle(span)).map(stripOuterPriorSeparators);
+  const surfaceUnits = corpusIdentityUnits(sentences.join(" ") + " " + evidenceTitle(span)).map(stripOuterPriorSeparators);
   const matches = (unit: string) => surfaceUnits.some(surfaceUnit => [...unit].length < 5 ? surfaceUnit === unit : requestUnitMatchesSurface(unit, surfaceUnit));
   // A subject matches by identity or inflection only: similarity let "Majorian" stand in for "Bajoran".
   const subjectMatches = (unit: string) => surfaceUnits.some(surfaceUnit => surfaceUnit === unit
@@ -1220,8 +1223,8 @@ export function answerCoversRequest(
   // language (a hydrated model or the interaction corpus's request patterns). Without one, "what" and "known" are
   // indistinguishable from "commanded", and the one-third quota is the honest gate.
   if (!options.relationRequired) {
-    const covered = contentUnits.filter(matches).length;
-    return subjectUnits.some(subjectMatches) && covered >= Math.max(1, Math.ceil(contentUnits.length / 3));
+    const covered = answerContentUnits.filter(matches).length;
+    return subjectUnits.some(subjectMatches) && covered >= Math.max(1, Math.ceil(answerContentUnits.length / 3));
   }
   // The sentence itself must name the subject it predicates about: with the title standing in, "Their son Eduard was
   // born in Zurich in July 1910" answered when Einstein was born, because the article is about Einstein and the
@@ -1255,16 +1258,16 @@ export function answerCoversRequest(
   // obligation, the lead sentence satisfied it by saying "Einstein", and a two-unit obligation with one unit
   // missing is exactly the shape the category-member escape below lets through. The subject cannot be the thing
   // that proves the relation was answered.
-  const subtractedRelationUnits = contentUnits.filter(unit => !subjectUnits.some(subjectUnit => requestUnitSharesStem(unit, subjectUnit)));
+  const subtractedRelationUnits = answerContentUnits.filter(unit => !subjectUnits.some(subjectUnit => requestUnitSharesStem(unit, subjectUnit)));
   const sourceIdentityUnits = subtractedRelationUnits.length
     ? []
-    : memoizedSurfaceUnits(`${evidenceIdentity(span)} ${evidenceTitle(span)}`).map(stripOuterPriorSeparators).filter(Boolean);
-  const sourceSubjectUnits = contentUnits.filter(unit => sourceIdentityUnits.some(identityUnit => requestUnitSharesStem(unit, identityUnit)));
+    : corpusIdentityUnits(`${evidenceIdentity(span)} ${evidenceTitle(span)}`).map(stripOuterPriorSeparators).filter(Boolean);
+  const sourceSubjectUnits = answerContentUnits.filter(unit => sourceIdentityUnits.some(identityUnit => requestUnitSharesStem(unit, identityUnit)));
   // An obligation names what the ANSWER must carry, so the request's own opening scaffolding and the language's
   // closed class come off it here too: "When did the American Revolutionary War end?" reached the gate as
   // {what, year, american, revolutionary} and would otherwise have demanded that the answer restate "what".
   const beyondSourceSubject = sourceSubjectUnits.length
-    ? contentUnits.filter(unit => !sourceSubjectUnits.includes(unit)
+    ? answerContentUnits.filter(unit => !sourceSubjectUnits.includes(unit)
       && unit !== requestLeadingScaffoldingUnit(requestText)
       && !options.languageClosedClassWords?.has(unit))
     : [];
@@ -1276,7 +1279,7 @@ export function answerCoversRequest(
         ? requestRelationBeyondSourceIdentity(requestText, span, options.languageClosedClassWords)
         : [];
   const answeringText = sentences.join(" ");
-  const sentenceUnits = memoizedSurfaceUnits(answeringText).map(stripOuterPriorSeparators);
+  const sentenceUnits = corpusIdentityUnits(answeringText).map(stripOuterPriorSeparators);
   const missingRelationUnits = relationUnits.filter(unit => !sentenceUnits.some(surfaceUnit => requestUnitSharesStem(unit, surfaceUnit)));
   // A request that ends on a category ("...the capital of which country?", "...indigenous to which country?") is
   // answered by a member of that category, and the member's sentence does not repeat the category: "'Athens' is the
@@ -1286,7 +1289,7 @@ export function answerCoversRequest(
   // with the request does not pass (the fabrication case this gate exists for).
   // The re-derived obligation is read off the request, so its own last unit is the request's last content unit there.
   const lastContentUnit = subtractedRelationUnits.length
-    ? contentUnits[contentUnits.length - 1]
+    ? answerContentUnits[answerContentUnits.length - 1]
     : relationUnits[relationUnits.length - 1];
   // The escape excuses the category the answer replaces, never the relation itself: it requires a second relation
   // unit, which the sentence must therefore be carrying. That is what the subject leaking into the obligation
@@ -1315,7 +1318,15 @@ export function answerCoversRequest(
   // and "born" was inside the anchor, so the sentence counted as naming Einstein.
   const answerSubjectUnits = sourceSubjectUnits.length ? sourceSubjectUnits : subjectUnits;
   const subjectInAnsweringText = answerSubjectUnits.some(unitPresentIn(sentenceUnits));
-  const contextUnits = memoizedSurfaceUnits(`${precedingSentenceContext(span, answeringText)} ${answeringText}`).map(stripOuterPriorSeparators);
+  // A self-identifying source can bind an anaphoric relation through one of its learned identity units beyond the
+  // title (for example, Ahab in a Moby-Dick passage). The title itself is not appended to context: doing so makes a
+  // generic sentence such as "The captain was below" look subject-bound merely because the source is titled Pequod.
+  const titleUnits = new Set(corpusIdentityUnits(evidenceTitle(span)));
+  const sourceIdentitySupportUnits = evidenceIdentityBeyondTitle(span)
+    ? corpusIdentityUnits(evidenceIdentity(span)).filter(unit => !titleUnits.has(unit))
+    : [];
+  const sourceIdentityBound = sourceIdentitySupportUnits.some(unitPresentIn(sentenceUnits));
+  const contextUnits = corpusIdentityUnits(`${precedingSentenceContext(span, answeringText)} ${answeringText}`).map(stripOuterPriorSeparators);
   const subjectGroups = sourceSubjectUnits.length ? [sourceSubjectUnits] : namedGroups.length ? namedGroups : [subjectUnits];
   // A titled source's opening block is about its title by construction, and states the standing fact anaphorically:
   // "Baku is the capital and largest city", "Tirana is the capital ... in the country", "Alabama's capital is
@@ -1325,6 +1336,7 @@ export function answerCoversRequest(
   const titledOpeningBlock = documentOpeningSpan(span) && evidenceTitledForRequestSubject(requestText, [span]);
   const subjectSatisfied = subjectInAnsweringText
     || titledOpeningBlock
+    || sourceIdentityBound
     || subjectGroups.some(group => group.every(unitPresentIn(contextUnits)));
   // A name's parts are redundant (Einstein names Albert Einstein); a numeric qualifier is not (Apollo does not name
   // Apollo 11), so every numeric unit of the subject must be in the answering text or the one sentence before it --

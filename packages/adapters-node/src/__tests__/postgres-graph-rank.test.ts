@@ -2,6 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { afterEach, describe, expect, it } from "vitest";
 import { POSTGRES_REQUIRED_TABLES } from "@scce/kernel";
+import type { EvidenceId } from "@scce/kernel";
 import { createPostgresStorageAdapter, type PostgresStorageAdapter } from "../postgres.js";
 
 const adapters: PostgresStorageAdapter[] = [];
@@ -20,6 +21,34 @@ describe("Postgres graph-node rank contract", () => {
     expect(calls[0]?.sql).toContain("FROM \"fixture\".\"graph_nodes\"");
     expect(calls[0]?.sql).toContain("ORDER BY alpha DESC, updated_at DESC, id LIMIT $1");
     expect(calls[0]?.params).toEqual([3000, "fixture-tenant", ["public"], "fixture-principal", "[]"]);
+  });
+
+  it("runs evidence-bound node groups concurrently as the evidence set grows", async () => {
+    const { adapter } = fixture();
+    let activeNodeQueries = 0;
+    let maximumActiveNodeQueries = 0;
+    const nodeGroupSizes: number[] = [];
+    adapter.query = async <T>(sql: string, params: unknown[] = []): Promise<T[]> => {
+      if (sql.includes('FROM "fixture"."graph_nodes"') && sql.includes("evidence_candidates")) {
+        nodeGroupSizes.push((params[0] as string[]).length);
+        activeNodeQueries += 1;
+        maximumActiveNodeQueries = Math.max(maximumActiveNodeQueries, activeNodeQueries);
+        await new Promise<void>(resolve => setTimeout(resolve, 0));
+        activeNodeQueries -= 1;
+      }
+      return [];
+    };
+
+    await adapter.graph.getSlice({
+      evidenceBoundOnly: true,
+      evidenceIds: Array.from({ length: 129 }, (_, index) => `evidence:${index}` as EvidenceId),
+      limitNodes: 64,
+      limitEdges: 64
+    });
+
+    expect(nodeGroupSizes).toHaveLength(5);
+    expect(nodeGroupSizes.sort((left, right) => left - right)).toEqual([1, 32, 32, 32, 32]);
+    expect(maximumActiveNodeQueries).toBe(3);
   });
 
   it("migrates one idempotent index matching the exact fallback rank", async () => {

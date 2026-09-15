@@ -1334,18 +1334,21 @@ function languageProfileFor(source: WorkspaceCoreContextSource, createdAt: numbe
 }
 
 function sourceVersionIdFromRef(ref: WorkspaceCoreSourceRef): string | undefined {
+  if (ref.sourceVersionId) return ref.sourceVersionId;
   if (!ref.contentHash) return undefined;
   return `workspace.source_version.${createHasher().digestHex(`${ref.path}\u001f${ref.contentHash}`).slice(0, 32)}`;
 }
 
 function sourceRefFromNode(node: GraphNode): WorkspaceCoreSourceRef | undefined {
   const metadata = objectRecord(node.metadata);
-  const sourcePath = firstString(metadata.sourcePath, metadata.path);
+  const representation = objectRecord(node.representation);
+  const sourcePath = firstString(metadata.sourcePath, metadata.path, representation.sourcePath, representation.path);
   if (!sourcePath) return undefined;
   return {
     path: sourcePath,
-    evidenceSpanId: firstString(metadata.evidenceSpanId),
-    contentHash: firstString(metadata.contentHash, metadata.sourceHash)
+    evidenceSpanId: firstString(metadata.evidenceSpanId, representation.evidenceSpanId, node.evidenceIds[0]),
+    contentHash: firstString(metadata.contentHash, metadata.sourceHash, representation.contentHash, representation.sourceHash),
+    sourceVersionId: firstString(metadata.sourceVersionId, representation.sourceVersionId)
   };
 }
 

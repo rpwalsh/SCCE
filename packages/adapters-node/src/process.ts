@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { createHash } from "node:crypto";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, rmdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { BuildTestPort, BuildTestResult, ConstructGraph, EpisodeId, FileArtifact } from "@scce/kernel";
 import type { ScceRuntimeConfig } from "./config.js";
@@ -12,43 +12,89 @@ export class NodeBuildTestAdapter implements BuildTestPort {
 
   async executeProgram(input: { episodeId: EpisodeId; construct: ConstructGraph; faultInjection?: string }): Promise<BuildTestResult> {
     if (!input.construct.program) throw new Error("construct has no ProgramGraph to build");
-    const root = path.join(this.config.runtime.tempRoot, String(input.episodeId), String(input.construct.id));
-    await rm(root, { recursive: true, force: true });
-    await mkdir(root, { recursive: true });
-    const firstArtifacts = input.faultInjection ? injectFault(input.construct.artifacts, input.faultInjection) : input.construct.artifacts;
-    await writeArtifacts(root, firstArtifacts);
-    const build = await runExpanded(
-      input.construct.program.build.command,
-      input.construct.program.build.args,
-      executionCwd(root, input.construct.program.build.cwd)
-    );
-    const test = build.code === 0
-      ? await runExpanded(
-        input.construct.program.test.command,
-        input.construct.program.test.args,
-        executionCwd(root, input.construct.program.test.cwd)
-      )
-      : { code: null, stdout: "", stderr: "build failed; tests skipped", durationMs: 0 };
-    const testExecutionReceipt = {
-      command: input.construct.program.test.command,
-      args: [...input.construct.program.test.args],
-      cwd: input.construct.program.test.cwd,
-      status: build.code === 0 ? "executed" as const : "skipped" as const
-    };
-    // This port observes execution. It may diagnose a failure, but it must not
-    // select or apply a transformation before the cognitive replan sees it.
-    // The kernel owns failure -> candidate -> selector -> retry authority.
-    const attempts: NonNullable<BuildTestResult["attempts"]> = [{ build, test, artifacts: firstArtifacts }];
-    return {
-      build,
-      test,
-      testExecutionReceipt,
-      repairAttempted: false,
-      repairApplied: false,
-      passed: build.code === 0 && test.code === 0,
-      artifacts: firstArtifacts,
-      attempts
-    };
+    const executionBase = path.join(this.config.runtime.tempRoot, String(input.episodeId), String(input.construct.id));
+    let root: string | undefined;
+    try {
+      root = await withExecutionBaseLock(executionBase, async () => {
+        await mkdir(executionBase, { recursive: true });
+        return mkdtemp(path.join(executionBase, "run-"));
+      });
+      const workspace = root;
+      const firstArtifacts = input.faultInjection ? injectFault(input.construct.artifacts, input.faultInjection) : input.construct.artifacts;
+      await writeArtifacts(workspace, firstArtifacts);
+      const build = await runExpanded(
+        input.construct.program.build.command,
+        input.construct.program.build.args,
+        executionCwd(workspace, input.construct.program.build.cwd)
+      );
+      const test = build.code === 0
+        ? await runExpanded(
+          input.construct.program.test.command,
+          input.construct.program.test.args,
+          executionCwd(workspace, input.construct.program.test.cwd)
+        )
+        : { code: null, stdout: "", stderr: "build failed; tests skipped", durationMs: 0 };
+      const testExecutionReceipt = {
+        command: input.construct.program.test.command,
+        args: [...input.construct.program.test.args],
+        cwd: input.construct.program.test.cwd,
+        status: build.code === 0 ? "executed" as const : "skipped" as const
+      };
+      // This port observes execution. It may diagnose a failure, but it must not
+      // select or apply a transformation before the cognitive replan sees it.
+      // The kernel owns failure -> candidate -> selector -> retry authority.
+      const attempts: NonNullable<BuildTestResult["attempts"]> = [{ build, test, artifacts: firstArtifacts }];
+      return {
+        build,
+        test,
+        testExecutionReceipt,
+        repairAttempted: false,
+        repairApplied: false,
+        passed: build.code === 0 && test.code === 0,
+        artifacts: firstArtifacts,
+        attempts
+      };
+    } finally {
+      await withExecutionBaseLock(executionBase, async () => {
+        if (root) await rm(root, { recursive: true, force: true }).catch(() => undefined);
+        await removeEmptyDirectory(executionBase);
+        await removeEmptyDirectory(path.dirname(executionBase));
+      });
+    }
+  }
+}
+
+const executionBaseLocks = new Map<string, Promise<void>>();
+
+async function withExecutionBaseLock<T>(directory: string, operation: () => Promise<T>): Promise<T> {
+  const previous = executionBaseLocks.get(directory) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>(resolve => { release = resolve; });
+  const queued = previous.then(() => current);
+  executionBaseLocks.set(directory, queued);
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (executionBaseLocks.get(directory) === queued) executionBaseLocks.delete(directory);
+  }
+}
+
+async function removeEmptyDirectory(directory: string): Promise<void> {
+  try {
+    await rmdir(directory);
+  } catch (error) {
+    const code = error && typeof error === "object" && "code" in error
+      ? (error as { code?: unknown }).code
+      : undefined;
+    // A sibling run or construct still owns this parent, or another cleanup
+    // won the race. Both are normal for concurrent executions.
+    // Windows can report EPERM, rather than ENOTEMPTY/ENOENT, when two
+    // nonrecursive removals overlap. This cleanup is best-effort; the unique
+    // run directory above is the isolation boundary and is already gone.
+    if (code === "ENOENT" || code === "ENOTEMPTY" || code === "EEXIST" || code === "EPERM") return;
+    throw error;
   }
 }
 

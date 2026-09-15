@@ -41,6 +41,7 @@ export interface WorkspaceCoreSourceRef {
   lineEnd?: number;
   evidenceSpanId?: string;
   contentHash?: string;
+  sourceVersionId?: string;
 }
 
 export interface WorkspaceCoreWorkspaceRef {
@@ -57,6 +58,7 @@ export interface WorkspaceCoreSourceFileInput {
   absolutePath?: string;
   mediaType: string;
   contentHash?: string;
+  sourceVersionId?: string;
   modifiedTime?: number;
   byteLength?: number;
   evidenceIds?: string[];
@@ -420,7 +422,10 @@ export function promoteWorkspaceAnalysisToCoreRecords(
       ...capabilities.map(item => item.graphNode),
       ...commands.map(item => item.graphNode),
       ...gaps.map(item => findingGraphNode(item)),
-      ...contradictions.map(item => findingGraphNode(item)),
+      ...contradictions.map(item => findingGraphNode(item, docClaims.find(claim =>
+        claim.workspaceFindingId === item.workspaceFindingId
+        && claim.sourceRef?.evidenceSpanId === item.sourceRef?.evidenceSpanId
+      )?.proofEvidence)),
       ...tasks.map(item => findingGraphNode(item))
     ]),
     edges: dedupeById([
@@ -477,7 +482,7 @@ export function promoteWorkspaceAnalysisToCoreRecords(
 }
 
 export function workspaceFindingToEvidenceSpan(finding: WorkspaceCoreFindingInput, ctx: WorkspaceCorePromotionContext): RecordBuild<WorkspaceEvidenceRecord> {
-  const sourceRef = primaryRef(finding);
+  const sourceRef = primaryRef(finding, ctx);
   const missing = requiredFields({ workspaceId: ctx.workspace.id, corpusId: ctx.workspace.corpusId, sourcePath: sourceRef?.path, sourceRef: sourceRef ? "present" : undefined });
   const idempotencyKey = idempotency("WorkspaceEvidenceRecord", ctx.workspace.id, finding.id, sourceRef);
   if (!sourceRef || missing.length) return { rejected: rejectedRecord("WorkspaceEvidenceRecord", "workspace.reject.source_ref_required", missing, idempotencyKey, sourceRef, finding) };
@@ -496,7 +501,7 @@ export function workspaceFindingToEvidenceSpan(finding: WorkspaceCoreFindingInpu
 }
 
 export function workspaceSymbolToGraphNode(symbol: WorkspaceCoreSymbolInput, ctx: WorkspaceCorePromotionContext): RecordBuild<WorkspaceSymbolGraphRecord> {
-  const sourceRef = symbol.sourceRef ?? refFromSource(ctx, symbol.path);
+  const sourceRef = sourceRefWithVersion(symbol.sourceRef ?? refFromSource(ctx, symbol.path), ctx);
   const missing = requiredFields({ workspaceId: ctx.workspace.id, corpusId: ctx.workspace.corpusId, sourcePath: sourceRef?.path, sourceRef: sourceRef ? "present" : undefined });
   const idempotencyKey = idempotency("WorkspaceSymbolGraphRecord", ctx.workspace.id, symbol.id, sourceRef);
   if (!sourceRef || missing.length) return { rejected: rejectedRecord("WorkspaceSymbolGraphRecord", "workspace.reject.symbol_source_ref_required", missing, idempotencyKey, sourceRef, symbol) };
@@ -516,6 +521,10 @@ export function workspaceSymbolToGraphNode(symbol: WorkspaceCoreSymbolInput, ctx
     features: ["workspace", "symbol", symbol.kind, symbol.name, sourceRef.path],
     createdAt: ctx.createdAt,
     metadata: {
+      sourcePath: sourceRef.path,
+      contentHash: sourceRef.contentHash ?? null,
+      evidenceSpanId: sourceRef.evidenceSpanId ?? null,
+      sourceVersionId: sourceRef.sourceVersionId ?? null,
       importedBy: symbol.importedBy ?? [],
       mentionedByDocs: symbol.mentionedByDocs ?? [],
       calledBy: symbol.calledBy ?? []
@@ -534,7 +543,7 @@ export function workspaceSymbolToGraphNode(symbol: WorkspaceCoreSymbolInput, ctx
 
 export function workspaceImportToGraphEdge(input: { symbol: WorkspaceCoreSymbolInput; importingPath: string; relationshipKind?: WorkspaceImportGraphRecord["relationshipKind"] }, ctx: WorkspaceCorePromotionContext): RecordBuild<WorkspaceImportGraphRecord> {
   const relationshipKind = input.relationshipKind ?? "workspace.relation.imports_symbol";
-  const sourceRef = input.symbol.sourceRef ?? refFromSource(ctx, input.symbol.path);
+  const sourceRef = sourceRefWithVersion(input.symbol.sourceRef ?? refFromSource(ctx, input.symbol.path), ctx);
   const importingRef = refFromSource(ctx, input.importingPath) ?? sourceRef;
   const missing = requiredFields({ workspaceId: ctx.workspace.id, corpusId: ctx.workspace.corpusId, sourcePath: importingRef?.path, sourceRef: importingRef ? "present" : undefined });
   const idempotencyKey = idempotency("WorkspaceImportGraphRecord", ctx.workspace.id, input.symbol.id, input.importingPath, relationshipKind);
@@ -564,7 +573,7 @@ export function workspaceImportToGraphEdge(input: { symbol: WorkspaceCoreSymbolI
 }
 
 export function workspaceRouteToCapabilityRecord(route: WorkspaceCoreRouteInput, ctx: WorkspaceCorePromotionContext): RecordBuild<WorkspaceCapabilityRecord> {
-  const sourceRef = route.sourceRef ?? refFromSource(ctx, route.filePath);
+  const sourceRef = sourceRefWithVersion(route.sourceRef ?? refFromSource(ctx, route.filePath), ctx);
   const idempotencyKey = idempotency("WorkspaceCapabilityRecord", ctx.workspace.id, route.id, route.path);
   const missing = requiredFields({ workspaceId: ctx.workspace.id, corpusId: ctx.workspace.corpusId, sourcePath: sourceRef?.path, sourceRef: sourceRef ? "present" : undefined });
   if (!sourceRef || missing.length) return { rejected: rejectedRecord("WorkspaceCapabilityRecord", "workspace.reject.route_source_ref_required", missing, idempotencyKey, sourceRef, route) };
@@ -577,7 +586,13 @@ export function workspaceRouteToCapabilityRecord(route: WorkspaceCoreRouteInput,
     evidenceIds: evidenceIdsFromRef(sourceRef),
     features: ["workspace", "route", route.method, route.path, route.filePath],
     createdAt: ctx.createdAt,
-    metadata: { routeId: route.id }
+    metadata: {
+      routeId: route.id,
+      sourcePath: sourceRef.path,
+      contentHash: sourceRef.contentHash ?? null,
+      evidenceSpanId: sourceRef.evidenceSpanId ?? null,
+      sourceVersionId: sourceRef.sourceVersionId ?? null
+    }
   });
   return {
     record: {
@@ -600,7 +615,7 @@ export function workspaceRouteToCapabilityRecord(route: WorkspaceCoreRouteInput,
 }
 
 export function workspaceCommandToActionRecord(command: WorkspaceCoreCommandInput, ctx: WorkspaceCorePromotionContext): RecordBuild<WorkspaceCommandRecord> {
-  const sourceRef = command.sourceRef ?? refFromSource(ctx, command.sourcePath);
+  const sourceRef = sourceRefWithVersion(command.sourceRef ?? refFromSource(ctx, command.sourcePath), ctx);
   const idempotencyKey = idempotency("WorkspaceCommandRecord", ctx.workspace.id, command.id, command.name, command.command);
   const missing = requiredFields({ workspaceId: ctx.workspace.id, corpusId: ctx.workspace.corpusId, sourcePath: sourceRef?.path, sourceRef: sourceRef ? "present" : undefined });
   if (!sourceRef || missing.length) return { rejected: rejectedRecord("WorkspaceCommandRecord", "workspace.reject.command_source_ref_required", missing, idempotencyKey, sourceRef, command) };
@@ -613,7 +628,13 @@ export function workspaceCommandToActionRecord(command: WorkspaceCoreCommandInpu
     evidenceIds: evidenceIdsFromRef(sourceRef),
     features: ["workspace", "command", command.name, command.sourcePath],
     createdAt: ctx.createdAt,
-    metadata: { commandId: command.id }
+    metadata: {
+      commandId: command.id,
+      sourcePath: sourceRef.path,
+      contentHash: sourceRef.contentHash ?? null,
+      evidenceSpanId: sourceRef.evidenceSpanId ?? null,
+      sourceVersionId: sourceRef.sourceVersionId ?? null
+    }
   });
   return {
     record: {
@@ -648,7 +669,7 @@ export function workspaceDocClaimToProofClaim(input: { workspaceFindingId: strin
 }
 
 export function workspaceContradictionToContradictionRecord(finding: WorkspaceCoreFindingInput, ctx: WorkspaceCorePromotionContext): RecordBuild<WorkspaceContradictionRecord> {
-  const sourceRef = primaryRef(finding);
+  const sourceRef = primaryRef(finding, ctx);
   const idempotencyKey = idempotency("WorkspaceContradictionRecord", ctx.workspace.id, finding.id, sourceRef);
   const missing = requiredFields({ workspaceId: ctx.workspace.id, corpusId: ctx.workspace.corpusId, sourcePath: sourceRef?.path, sourceRef: sourceRef ? "present" : undefined });
   if (!sourceRef || missing.length) return { rejected: rejectedRecord("WorkspaceContradictionRecord", "workspace.reject.contradiction_source_ref_required", missing, idempotencyKey, sourceRef, finding) };
@@ -668,7 +689,7 @@ export function workspaceContradictionToContradictionRecord(finding: WorkspaceCo
 }
 
 export function workspaceGapToLearningNeed(finding: WorkspaceCoreFindingInput, ctx: WorkspaceCorePromotionContext): LearningNeed {
-  const sourceRef = primaryRef(finding);
+  const sourceRef = primaryRef(finding, ctx);
   const evidenceIds = sourceRef ? evidenceIdsFromRef(sourceRef).map(String) : [];
   return {
     id: coreId("workspace.learning_need", ctx.workspace.id, finding.id),
@@ -687,7 +708,7 @@ export function workspaceGapToLearningNeed(finding: WorkspaceCoreFindingInput, c
 }
 
 export function workspaceGapRecord(finding: WorkspaceCoreFindingInput, ctx: WorkspaceCorePromotionContext): RecordBuild<WorkspaceGapRecord> {
-  const sourceRef = primaryRef(finding);
+  const sourceRef = primaryRef(finding, ctx);
   const idempotencyKey = idempotency("WorkspaceGapRecord", ctx.workspace.id, finding.id, sourceRef);
   const missing = requiredFields({ workspaceId: ctx.workspace.id, corpusId: ctx.workspace.corpusId, sourcePath: sourceRef?.path, sourceRef: sourceRef ? "present" : undefined });
   if (!sourceRef || missing.length) return { rejected: rejectedRecord("WorkspaceGapRecord", "workspace.reject.gap_source_ref_required", missing, idempotencyKey, sourceRef, finding) };
@@ -703,7 +724,7 @@ export function workspaceGapRecord(finding: WorkspaceCoreFindingInput, ctx: Work
 }
 
 export function workspaceTaskToProgramPlannerInput(task: WorkspaceCoreFindingInput, ctx: WorkspaceCorePromotionContext): WorkspaceProgramPlannerInput {
-  const sourceRefs = uniqueRefs(task.sourceRefs);
+  const sourceRefs = uniqueRefs(task.sourceRefs).map(ref => sourceRefWithVersion(ref, ctx)!);
   const evidenceSpanIds = sourceRefs.flatMap(ref => evidenceIdsFromRef(ref).map(String));
   const id = coreId("workspace.program_input", ctx.workspace.id, task.id);
   return {
@@ -724,13 +745,13 @@ export function workspaceTaskToProgramPlannerInput(task: WorkspaceCoreFindingInp
         affectedFiles: task.affectedFiles
       })
     },
-    provenance: provenanceFor(ctx, primaryRef(task)),
-    idempotencyKey: idempotency("WorkspaceTaskRecord", ctx.workspace.id, task.id, primaryRef(task))
+    provenance: provenanceFor(ctx, primaryRef(task, ctx)),
+    idempotencyKey: idempotency("WorkspaceTaskRecord", ctx.workspace.id, task.id, primaryRef(task, ctx))
   };
 }
 
 export function workspaceTaskRecord(task: WorkspaceCoreFindingInput, ctx: WorkspaceCorePromotionContext): RecordBuild<WorkspaceTaskRecord> {
-  const sourceRef = primaryRef(task);
+  const sourceRef = primaryRef(task, ctx);
   const idempotencyKey = idempotency("WorkspaceTaskRecord", ctx.workspace.id, task.id, sourceRef);
   const missing = requiredFields({ workspaceId: ctx.workspace.id, corpusId: ctx.workspace.corpusId, sourcePath: sourceRef?.path, sourceRef: sourceRef ? "present" : undefined });
   if (!sourceRef || missing.length) return { rejected: rejectedRecord("WorkspaceTaskRecord", "workspace.reject.task_source_ref_required", missing, idempotencyKey, sourceRef, task) };
@@ -798,7 +819,7 @@ export function workspaceCoreFusionToMouthContext(input: {
 }
 
 function workspaceDocClaimRecord(finding: WorkspaceCoreFindingInput, ctx: WorkspaceCorePromotionContext): RecordBuild<WorkspaceDocClaimRecord> {
-  const sourceRef = primaryRef(finding);
+  const sourceRef = primaryRef(finding, ctx);
   const idempotencyKey = idempotency("WorkspaceDocClaimRecord", ctx.workspace.id, finding.id, sourceRef);
   const missing = requiredFields({ workspaceId: ctx.workspace.id, corpusId: ctx.workspace.corpusId, sourcePath: sourceRef?.path, sourceRef: sourceRef ? "present" : undefined });
   if (!sourceRef || missing.length) return { rejected: rejectedRecord("WorkspaceDocClaimRecord", "workspace.reject.claim_source_ref_required", missing, idempotencyKey, sourceRef, finding) };
@@ -814,8 +835,10 @@ function workspaceDocClaimRecord(finding: WorkspaceCoreFindingInput, ctx: Worksp
         forceClass: DIRECT_EVIDENCE,
         sourceRef,
         subjectId: proofClaim.subject.id ?? proofClaim.id,
+        subjectKindId: proofClaim.subject.kindId,
         relationId: proofClaim.relationId,
         objectId: proofClaim.object.id ?? coreId("workspace.claim.object", finding.statement),
+        objectKindId: proofClaim.object.kindId,
         text: finding.statement
       })
     }
@@ -848,11 +871,18 @@ function sourceFileNode(source: WorkspaceCoreSourceFileInput, ctx: WorkspaceCore
     evidenceIds: (source.evidenceIds ?? []).map(item => item as EvidenceId),
     features: ["workspace", "file", path, source.mediaType],
     createdAt: ctx.createdAt,
-    metadata: { absolutePath: source.absolutePath ?? null, modifiedTime: source.modifiedTime ?? null }
+    metadata: {
+      sourcePath: path,
+      contentHash: source.contentHash ?? null,
+      evidenceSpanId: source.evidenceIds?.[0] ?? null,
+      sourceVersionId: source.sourceVersionId ?? null,
+      absolutePath: source.absolutePath ?? null,
+      modifiedTime: source.modifiedTime ?? null
+    }
   });
 }
 
-function findingGraphNode(record: WorkspaceContradictionRecord | WorkspaceGapRecord | WorkspaceTaskRecord): GraphNode {
+function findingGraphNode(record: WorkspaceContradictionRecord | WorkspaceGapRecord | WorkspaceTaskRecord, proofEvidence?: ProofEvidenceRecord): GraphNode {
   return graphNodeFor({
     id: nodeId("workspace.finding", record.workspaceId, record.id),
     typeId: record.recordType === "WorkspaceContradictionRecord" ? "workspace.node.contradiction" : record.recordType === "WorkspaceGapRecord" ? "workspace.node.gap" : "workspace.node.task",
@@ -866,7 +896,17 @@ function findingGraphNode(record: WorkspaceContradictionRecord | WorkspaceGapRec
     evidenceIds: record.sourceRef ? evidenceIdsFromRef(record.sourceRef) : [],
     features: ["workspace", record.kind, record.recordType, ...record.affectedFiles],
     createdAt: record.createdAt,
-    metadata: { recordType: record.recordType, confidence: record.confidence }
+    metadata: {
+      recordType: record.recordType,
+      confidence: record.confidence,
+      sourcePath: record.sourceRef?.path ?? null,
+      contentHash: record.sourceRef?.contentHash ?? null,
+      evidenceSpanId: record.sourceRef?.evidenceSpanId ?? null,
+      sourceVersionId: record.sourceRef?.sourceVersionId ?? null,
+      // Carry the finding's original typed projection through the graph so
+      // entailment can revalidate its source binding before certification.
+      ...(proofEvidence ? { proofEvidence } : {})
+    }
   });
 }
 
@@ -982,15 +1022,25 @@ function evidenceSpanForFinding(finding: WorkspaceCoreFindingInput, sourceRef: W
   };
 }
 
-function proofEvidenceFromStructured(input: { id: string; forceClass: ProofForceClass; sourceRef: WorkspaceCoreSourceRef; subjectId: string; relationId: string; objectId: string; text?: string }): ProofEvidenceRecord {
+function proofEvidenceFromStructured(input: {
+  id: string;
+  forceClass: ProofForceClass;
+  sourceRef: WorkspaceCoreSourceRef;
+  subjectId: string;
+  subjectKindId?: string;
+  relationId: string;
+  objectId: string;
+  objectKindId?: string;
+  text?: string;
+}): ProofEvidenceRecord {
   return {
     id: input.id,
     forceClass: input.forceClass,
     sourceVersionId: sourceVersionIdFromRef(input.sourceRef),
     evidenceSpanId: input.sourceRef.evidenceSpanId,
-    subject: { id: input.subjectId, kindId: "workspace.proof.subject" },
+    subject: { id: input.subjectId, kindId: input.subjectKindId ?? "workspace.proof.subject" },
     relationId: input.relationId,
-    object: { id: input.objectId, surface: input.objectId, kindId: "workspace.proof.object" },
+    object: { id: input.objectId, surface: input.objectId, kindId: input.objectKindId ?? "workspace.proof.object" },
     polarityId: "polarity.positive",
     modalityId: "modality.reported",
     text: input.text
@@ -1080,14 +1130,38 @@ function requiredFields(fields: Record<string, unknown>): string[] {
   return missing;
 }
 
-function primaryRef(finding: WorkspaceCoreFindingInput): WorkspaceCoreSourceRef | undefined {
-  return uniqueRefs(finding.sourceRefs)[0];
+function primaryRef(finding: WorkspaceCoreFindingInput, ctx: WorkspaceCorePromotionContext): WorkspaceCoreSourceRef | undefined {
+  return sourceRefWithVersion(uniqueRefs(finding.sourceRefs)[0], ctx);
+}
+
+function sourceRefWithVersion(ref: WorkspaceCoreSourceRef | undefined, ctx: WorkspaceCorePromotionContext): WorkspaceCoreSourceRef | undefined {
+  if (!ref) return undefined;
+  const normalized = { ...ref, path: normalizePath(ref.path) };
+  const source = ctx.sourceByPath.get(normalized.path);
+  const matchesSource = Boolean(source
+    && normalized.contentHash
+    && source.contentHash
+    && normalized.contentHash === source.contentHash
+    && normalized.evidenceSpanId
+    && source.evidenceIds?.some(id => String(id) === String(normalized.evidenceSpanId)));
+  const sourceVersionId = matchesSource && typeof source?.sourceVersionId === "string" && source.sourceVersionId
+    ? source.sourceVersionId
+    : undefined;
+  // A caller supplied version is admissible only when the rest of the ref
+  // identifies the same current source revision. Clear unvalidated values so
+  // downstream proof construction cannot mistake them for source authority.
+  return {
+    ...normalized,
+    sourceVersionId: sourceVersionId && (!normalized.sourceVersionId || normalized.sourceVersionId === sourceVersionId)
+      ? sourceVersionId
+      : undefined
+  };
 }
 
 function refFromSource(ctx: WorkspaceCorePromotionContext, filePath: string): WorkspaceCoreSourceRef | undefined {
   const source = ctx.sourceByPath.get(normalizePath(filePath));
   if (!source) return undefined;
-  return { path: source.path, contentHash: source.contentHash, evidenceSpanId: source.evidenceIds?.[0] };
+  return sourceRefWithVersion({ path: source.path, contentHash: source.contentHash, evidenceSpanId: source.evidenceIds?.[0] }, ctx);
 }
 
 function evidenceIdsFromRef(ref: WorkspaceCoreSourceRef): EvidenceId[] {
@@ -1099,6 +1173,7 @@ function sourceVersionIdFor(ctx: WorkspaceCorePromotionContext, ref: WorkspaceCo
 }
 
 function sourceVersionIdFromRef(ref: WorkspaceCoreSourceRef): string | undefined {
+  if (ref.sourceVersionId) return ref.sourceVersionId;
   if (!ref.contentHash) return undefined;
   return coreId("workspace.source_version", ref.path, ref.contentHash);
 }
@@ -1196,7 +1271,7 @@ function unique<T>(values: readonly T[]): T[] {
 function uniqueRefs(refs: readonly WorkspaceCoreSourceRef[]): WorkspaceCoreSourceRef[] {
   const seen = new Map<string, WorkspaceCoreSourceRef>();
   for (const ref of refs) {
-    const key = `${normalizePath(ref.path)}:${ref.lineStart ?? ""}:${ref.lineEnd ?? ""}:${ref.evidenceSpanId ?? ""}:${ref.contentHash ?? ""}`;
+    const key = `${normalizePath(ref.path)}:${ref.lineStart ?? ""}:${ref.lineEnd ?? ""}:${ref.evidenceSpanId ?? ""}:${ref.contentHash ?? ""}:${ref.sourceVersionId ?? ""}`;
     if (!seen.has(key)) seen.set(key, { ...ref, path: normalizePath(ref.path) });
   }
   return [...seen.values()];

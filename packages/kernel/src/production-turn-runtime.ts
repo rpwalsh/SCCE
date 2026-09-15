@@ -236,7 +236,7 @@ import { consolidateSemanticClaims, type SemanticClaimObservation } from "./sema
 import { createSemanticMemoryIndex } from "./semantic-memory-index.js";
 import { createSemanticProofSystem } from "./semantic-proof-system.js";
 import { isRequestRequirementPattern } from "./request-requirement-learning.js";
-import type { LanguagePatternRecord, ScceKernelDeps } from "./storage.js";
+import type { DialogueMemoryStore, LanguagePatternRecord, ScceKernelDeps } from "./storage.js";
 import { createSurfaceLanguageRuntime } from "./surface-language-runtime.js";
 import { surfaceEchoesPrompt } from "./creative-section-realization.js";
 import { buildCognitiveCapabilityManifest, type CognitiveCapability } from "./cognitive-capability-manifest.js";
@@ -519,10 +519,15 @@ export function createProductionTurnRuntime(options: {
   // to manufacture a referent.  The cache keeps a warm conversation head on
   // the runtime; a cold read starts in the background so it cannot hold the
   // response before the user sees it.
-  const dialogueCognitiveMemory = createDialogueCognitiveMemoryV2({
-    store: deps.storage.dialogueMemory,
-    hasher
-  });
+  const dialogueMemoryStore = deps.storage.dialogueMemory as Partial<DialogueMemoryStore> | undefined;
+  const dialogueCognitiveMemory = dialogueMemoryStore
+    && typeof dialogueMemoryStore.compareAndPutInteractionState === "function"
+    && typeof dialogueMemoryStore.listInteractionStates === "function"
+    ? createDialogueCognitiveMemoryV2({
+      store: dialogueMemoryStore as Pick<DialogueMemoryStore, "compareAndPutInteractionState" | "listInteractionStates">,
+      hasher
+    })
+    : undefined;
   const residentDialogueCognitiveStates = new Map<string, import("./discourse-state.js").DialogueCognitiveStateV2>();
   const dialogueCognitiveStateLoads = new Map<string, Promise<void>>();
   // Consolidated lessons are a bounded, process-local read model. Adjacent turns used to issue the same durable
@@ -548,7 +553,7 @@ export function createProductionTurnRuntime(options: {
       : undefined;
   };
   const warmDialogueCognitiveState = (conversationId: string): void => {
-    if (!conversationId || residentDialogueCognitiveState(conversationId) || dialogueCognitiveStateLoads.has(conversationId)) return;
+    if (!dialogueCognitiveMemory || !conversationId || residentDialogueCognitiveState(conversationId) || dialogueCognitiveStateLoads.has(conversationId)) return;
     const load = dialogueCognitiveMemory.latest(conversationId)
       .then(state => {
         if (state) residentDialogueCognitiveStates.set(conversationId, state);
@@ -1177,11 +1182,9 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         }))
         : undefined;
       const previousDialogueState = previousDialogueStateFromMetadata(input.metadata);
-      const metadataDialogueCognitiveState = previousDialogueCognitiveStateFromMetadata(input.metadata, hasher);
       const requestedConversationId = requestedConversationIdFromMetadata(input.metadata);
       const dialogueConversationId = requestedConversationId
         ?? previousDialogueState?.conversationId
-        ?? metadataDialogueCognitiveState?.conversationId
         ?? "conversation.default";
       warmOperatorOutcomeSupport(dialogueConversationId);
       const durableOperatorOutcomeSupport = residentOperatorOutcomeSupport.get(dialogueConversationId) ?? {};
@@ -1192,16 +1195,20 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // restart forget an owner correction until another turn happened to
       // persist it into the state projection.
       const [durableCognitiveState, durableDialogueInterpretationAdjustments] = await Promise.all([
-        residentCognitiveState
+        residentCognitiveState || !dialogueCognitiveMemory
           ? Promise.resolve(undefined)
           : dialogueCognitiveMemory.latest(dialogueConversationId).catch(() => undefined),
-        dialogueInterpretationAdjustmentsForConversation(deps.storage.dialogueMemory, dialogueConversationId).catch(() => [])
+        dialogueMemoryStore
+          ? dialogueInterpretationAdjustmentsForConversation(dialogueMemoryStore as DialogueMemoryStore, dialogueConversationId).catch(() => [])
+          : Promise.resolve([])
       ]);
       const restoredCognitiveState = residentCognitiveState ?? durableCognitiveState;
       if (restoredCognitiveState) residentDialogueCognitiveStates.set(dialogueConversationId, restoredCognitiveState);
       const previousDialogueCognitiveState = preferDialogueCognitiveStateV2({
         conversationId: dialogueConversationId,
-        metadataState: metadataDialogueCognitiveState,
+        // Resolver continuity is owned by the durable interaction-state head
+        // (or the admitted resident copy). Caller metadata carries only the
+        // conversation identity; it cannot supply a cognitive predecessor.
         durableState: durableCognitiveState,
         residentState: residentCognitiveState,
         hasher
@@ -3526,7 +3533,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         : undefined;
       const creativeContinuationCandidates: Map<string, CreativeContinuationCandidate> | undefined = creativeContinuationState
         ? new Map(inventionCandidates.map((construct, index) => {
-          const candidate = creativeContinuationCandidateFromConstruct({ construct, candidateIndex: index, hasher });
+          const candidate = creativeContinuationCandidateFromConstruct({ construct, candidateIndex: index, candidateRunId: String(episodeId), hasher });
           return [candidate.candidateId, candidate] as const;
         }))
         : undefined;
@@ -3633,7 +3640,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // candidate that can be selected and later offered through the API.
       if (creativeContinuationCandidates) {
         const continuationByConstructId = new Map(
-          inventionCandidates.map((construct, index) => [construct.id, creativeContinuationCandidates.get(`creative:${construct.id}:${index}`)] as const)
+          inventionCandidates.map((construct, index) => [construct.id, creativeContinuationCandidates.get(`creative:${construct.id}:${index}:${String(episodeId)}`)] as const)
         );
         for (const [proposalIndex, proposal] of cognitiveProposals.entries()) {
           if (!proposal.claims.some(claim => claim.basis === "invented" || claim.basis === "counterfactual")) continue;
@@ -3702,6 +3709,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         calibrationTaskClass,
         functionalGate,
         creativeContinuationState,
+        candidateRunId: String(episodeId),
         creativeContinuationPolicy,
         creativeContinuationCandidates
       });
@@ -5586,12 +5594,14 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           interpretationAdjustments: dialogueInterpretationAdjustments,
           hasher
         });
-        const persistedDialogueState = await dialogueCognitiveMemory.persist(
-          dialogueResolution.state,
-          clock.now(),
-          previousDialogueCognitiveState ?? null
-        );
-        if (persistedDialogueState.result.stored) {
+        const persistedDialogueState = dialogueCognitiveMemory
+          ? await dialogueCognitiveMemory.persist(
+            dialogueResolution.state,
+            clock.now(),
+            previousDialogueCognitiveState ?? null
+          )
+          : undefined;
+        if (!persistedDialogueState || persistedDialogueState.result.stored) {
           residentDialogueCognitiveStates.set(dialogueConversationId, dialogueResolution.state);
         } else {
           // A concurrent turn advanced the head. Remove this predecessor
@@ -5606,12 +5616,12 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           counts: {
             bindings: dialogueResolution.state.bindings.length,
             admittedBindings: dialogueResolution.context.admittedBindings.length,
-            stored: persistedDialogueState.result.stored ? 1 : 0
+            stored: persistedDialogueState?.result.stored ? 1 : 0
           },
           support: {
             stateId: dialogueResolution.state.id,
             previousStateId: previousDialogueCognitiveState?.id ?? null,
-            persistence: persistedDialogueState.result,
+            persistence: persistedDialogueState?.result ?? null,
             projection: dialogueProjection.audit
           }
         });
@@ -6399,15 +6409,6 @@ function evidenceAdmissibleUnderAccessPolicy(
   // no evidence, and abstaining is the correct outcome. The fallback was not hypothetical -- "Who was Ada
   // Lovelace?" reached a pool of exactly one span, a comment in `mouth.ts`, and answered from it.
   return pool.filter(span => !isCodeEvidenceSpan(span) || (requestText !== "" && evidenceIdentityBindsRequest(span, requestText)));
-}
-
-function previousDialogueCognitiveStateFromMetadata(
-  metadata: JsonValue | undefined,
-  hasher: ReturnType<typeof createHasher>
-): import("./discourse-state.js").DialogueCognitiveStateV2 | undefined {
-  const dialogue = jsonRecord(jsonRecord(metadata).dialogue);
-  const state = dialogue.cognitiveState;
-  return isDialogueCognitiveStateV2(state, hasher) ? state : undefined;
 }
 
 export function dialogueInterpretationAdjustmentsFromMetadata(
