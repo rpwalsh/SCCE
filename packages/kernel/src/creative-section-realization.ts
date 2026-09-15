@@ -4,7 +4,7 @@ import { traceEvent } from "./debug/trace.js";
 import type { LanguageMemoryRuntime, LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
 import { languageGenerationSentenceEndingsAdequate, languageGenerationSurfaceAdequate } from "./language-memory-runtime.js";
 import { namedSubjectAnchors } from "./kernel-answer-primitives.js";
-import { collapseSurfaceWhitespace, sourceDerivedCasingHints, splitSurfaceSentences, surfaceContainsTerm, surfaceUnits } from "./surface-linguistics.js";
+import { collapseSurfaceWhitespace, sourceDerivedCasingHints, surfaceContainsTerm, surfaceUnits } from "./surface-linguistics.js";
 import type { LanguageProfile } from "./types.js";
 import type { NarrativeConditioning } from "./document-generation-session.js";
 import { requestSubjectSegments, type TurnRequirementField } from "./turn-requirements.js";
@@ -62,8 +62,7 @@ export interface CreativeSectionRealization {
  */
 export function realizeCreativeSection(input: CreativeSectionRealizationInput): CreativeSectionRealization {
   const conditioning = (input.priorSurfaceTexts ?? []).filter(Boolean).slice(-6);
-  // Proper-noun anchors only (casing shape, sentence-position corrected):
-  // a purely structural signal, not a ranking over every word by length.
+  // Corpus-named anchors only, not a ranking over every word by length.
   // contentUnits' length ranking had no way to tell a request's own
   // instruction words ("write", "paragraph", "three") from its actual
   // subject -- live-verified: "write a three paragraph short story about
@@ -222,26 +221,9 @@ export function creativeRequestContentSurface(requestText: string, field?: Pick<
   return segments.join(" ") || requestText;
 }
 
-/**
- * Proper-noun anchors from casing shape (namedSubjectAnchors), corrected
- * for the one false positive that check cannot see on its own: a word
- * capitalized only because it opens a sentence ("Write a five page
- * story...") is not a proper noun. A word is kept only if it is
- * capitalized somewhere that is NOT the first word of its sentence, or if
- * it is a multi-word run (["ada", "lovelace"] -- true names rarely double
- * as ordinary sentence openers).
- */
+/** Cast anchors as the corpus names them (identity, then concentration, then content runs); position decides nothing. */
 export function properNounEntityAnchors(text: string): string[] {
-  const sentenceInitialWords = new Set(
-    splitSurfaceSentences(text)
-      .map(sentence => collapseSurfaceWhitespace(sentence).split(/\s+/u)[0])
-      .filter((word): word is string => Boolean(word))
-      .map(word => word.toLocaleLowerCase())
-  );
-  return namedSubjectAnchors(text).filter(anchor => {
-    if (anchor.includes(" ")) return true;
-    return !sentenceInitialWords.has(anchor.toLocaleLowerCase());
-  });
+  return namedSubjectAnchors(text);
 }
 
 /** Echo = normalized containment at comparable length, or >=0.8 unit overlap. */
