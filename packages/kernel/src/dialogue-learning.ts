@@ -21,8 +21,10 @@ import {
 } from "./discourse-state.js";
 import {
   DEFAULT_USER_STYLE_PROFILE,
+  DIALOGUE_ACT_IDS,
   INTERACTION_FEATURE_IDS,
   type DialoguePolicyDecision,
+  type DialogueActId,
   type DialoguePragmaticsResult,
   type DialoguePragmaticsCandidate,
   type DialogueState,
@@ -48,7 +50,8 @@ export const TARGET_PROFILE_PATTERN_FAMILY_IDS = {
   caveat: "tpf.c82d770a",
   turnShape: "tpf.1dcb90f7",
   codeSwitch: "tpf.e89a7c2b",
-  correctionPreference: "tpf.a11be046"
+  correctionPreference: "tpf.a11be046",
+  communicativeAct: "tpf.6f03c2b9"
 } as const;
 
 export interface DialoguePersistenceBatch {
@@ -233,6 +236,7 @@ export function learnDialoguePolicyWeights(input: {
   profile?: UserStyleProfile;
   outcome: ConversationOutcomeRecord;
   learningRate?: number;
+  communicativeActId?: DialogueActId;
   now?: number;
   clock?: Clock;
 }): DialoguePolicyLearningUpdate {
@@ -251,6 +255,18 @@ export function learnDialoguePolicyWeights(input: {
   }
   if (input.outcome.accepted) {
     next.weights[INTERACTION_FEATURE_IDS.responseLead] = clamp01((next.weights[INTERACTION_FEATURE_IDS.responseLead] ?? 0.5) + learningRate * 0.12);
+  }
+  if (input.communicativeActId) {
+    const actWeights = { ...(next.communicativeActWeights ?? DEFAULT_USER_STYLE_PROFILE.communicativeActWeights) };
+    const current = actWeights[input.communicativeActId] ?? 0.5;
+    const delta = input.outcome.accepted ? learningRate * 0.45 : input.outcome.rejected || input.outcome.corrected ? learningRate : 0;
+    actWeights[input.communicativeActId] = clamp01(current + delta);
+    // A correction is itself a typed repair signal. Keeping that pressure
+    // separate prevents an owner preference from becoming a world assertion.
+    if (input.outcome.rejected || input.outcome.corrected) {
+      actWeights[DIALOGUE_ACT_IDS.repair] = clamp01((actWeights[DIALOGUE_ACT_IDS.repair] ?? 0.5) + learningRate);
+    }
+    next.communicativeActWeights = actWeights;
   }
   const nextHash = hashText(canonicalStringify(next));
   const now = resolveNow(input.now, input.clock);
@@ -337,6 +353,15 @@ export function styleProfileFromTargetProfilePatterns(input: {
       const prior = profile.weights[featureId] ?? 0.5;
       profile.weights[featureId] = clamp01(prior + alpha * (clamp01(rawWeight) - prior));
     }
+    if (isRecord(record.patternJson.actWeights)) {
+      const actWeights = profile.communicativeActWeights ?? {};
+      for (const [actId, rawWeight] of Object.entries(record.patternJson.actWeights)) {
+        if (typeof rawWeight !== "number" || !Number.isFinite(rawWeight)) continue;
+        const prior = actWeights[actId] ?? 0.5;
+        actWeights[actId] = clamp01(prior + alpha * (clamp01(rawWeight) - prior));
+      }
+      profile.communicativeActWeights = actWeights;
+    }
   }
   return profile;
 }
@@ -357,17 +382,28 @@ export function targetProfilePatternsFromProfile(input: {
     { familyId: TARGET_PROFILE_PATTERN_FAMILY_IDS.caveat, featureIds: [INTERACTION_FEATURE_IDS.caveatTolerance] },
     { familyId: TARGET_PROFILE_PATTERN_FAMILY_IDS.turnShape, featureIds: [INTERACTION_FEATURE_IDS.artifactNeed, INTERACTION_FEATURE_IDS.calculusNeed] },
     { familyId: TARGET_PROFILE_PATTERN_FAMILY_IDS.codeSwitch, featureIds: [INTERACTION_FEATURE_IDS.artifactNeed, INTERACTION_FEATURE_IDS.compactness] },
-    { familyId: TARGET_PROFILE_PATTERN_FAMILY_IDS.correctionPreference, featureIds: [INTERACTION_FEATURE_IDS.clarificationCost, INTERACTION_FEATURE_IDS.reviewPressure] }
+    { familyId: TARGET_PROFILE_PATTERN_FAMILY_IDS.correctionPreference, featureIds: [INTERACTION_FEATURE_IDS.clarificationCost, INTERACTION_FEATURE_IDS.reviewPressure] },
+    { familyId: TARGET_PROFILE_PATTERN_FAMILY_IDS.communicativeAct, featureIds: [] }
   ];
   return families.map(family => {
     const weights = Object.fromEntries(family.featureIds.map(featureId => [featureId, weight(featureId)]));
-    const displacement = family.featureIds.reduce((max, featureId) => Math.max(max, Math.abs(weight(featureId) - 0.5)), 0);
+    const actWeights = family.familyId === TARGET_PROFILE_PATTERN_FAMILY_IDS.communicativeAct
+      ? Object.fromEntries(Object.entries(input.profile.communicativeActWeights ?? {}).map(([actId, value]) => [actId, clamp01(value)]))
+      : undefined;
+    const displacement = family.familyId === TARGET_PROFILE_PATTERN_FAMILY_IDS.communicativeAct
+      ? Object.values(actWeights ?? {}).reduce((max, value) => Math.max(max, Math.abs(value - 0.5)), 0)
+      : family.featureIds.reduce((max, featureId) => Math.max(max, Math.abs(weight(featureId) - 0.5)), 0);
     return targetProfilePatternRecord({
       targetProfileId: input.targetProfileId,
       patternFamilyId: family.familyId,
-      patternJson: toJsonValue({ schema: "scce.dialogue.target_profile_pattern.v1", featureIds: family.featureIds, weights }),
+      patternJson: toJsonValue({ schema: "scce.dialogue.target_profile_pattern.v1", featureIds: family.featureIds, weights, ...(actWeights ? { actWeights } : {}) }),
       ...(input.evidenceIds ? { evidenceIds: input.evidenceIds } : {}),
-      alpha: clamp01(displacement * 2),
+      // Act routing is already a bounded learned decision, so one durable
+      // correction must survive the pattern round trip without being damped
+      // twice by displacement-based style smoothing.
+      alpha: family.familyId === TARGET_PROFILE_PATTERN_FAMILY_IDS.communicativeAct
+        ? displacement > 0 ? 1 : 0
+        : clamp01(displacement * 2),
       now
     });
   });
@@ -608,7 +644,12 @@ export async function persistDialogueOutcomeAndLearn(input: {
   const correction = input.correctionText
     ? userCorrectionFromOutcome({ outcome, correctionText: input.correctionText, rejectedSurface: input.result.finalText, interpretationCorrection: input.interpretationCorrection, correctionObservation, now })
     : undefined;
-  const learning = learnDialoguePolicyWeights({ profile: input.currentProfile ?? input.result.state.userStyleProfile, outcome, now });
+  const learning = learnDialoguePolicyWeights({
+    profile: input.currentProfile ?? input.result.state.userStyleProfile,
+    outcome,
+    communicativeActId: input.result.state.communicativeActId,
+    now
+  });
   const ordinaryCalibrationObservations = calibrationObservationsFromDialogueOutcome({ result: input.result, outcome, taskClass: input.taskClass, createdAt: now });
   const creativePreferenceObservations = input.creativePreferencePair
     ? creativePreferenceObservationPair({
@@ -779,6 +820,7 @@ function dialogueStateFromJson(value: JsonValue | undefined): DialogueState | un
     conversationId: record.conversationId,
     turnId: record.turnId,
     currentIntentId: typeof record.currentIntentId === "string" ? record.currentIntentId : "",
+    communicativeActId: typeof record.communicativeActId === "string" ? record.communicativeActId : undefined,
     activeTask: typeof record.activeTask === "string" ? record.activeTask : undefined,
     unresolvedSlots: stringArray(record.unresolvedSlots),
     establishedFacts: stringArray(record.establishedFacts),
@@ -866,9 +908,14 @@ function styleProfileFromJson(value: JsonValue | undefined): UserStyleProfile | 
   if (record.schema !== "scce.dialogue.policy_profile.v1" || !record.weights || typeof record.weights !== "object" || Array.isArray(record.weights)) return undefined;
   const weights: Record<string, number> = {};
   for (const [key, raw] of Object.entries(record.weights)) if (typeof raw === "number") weights[key] = clamp01(raw);
+  const communicativeActWeights: Record<string, number> = {};
+  if (record.communicativeActWeights && typeof record.communicativeActWeights === "object" && !Array.isArray(record.communicativeActWeights)) {
+    for (const [key, raw] of Object.entries(record.communicativeActWeights)) if (typeof raw === "number") communicativeActWeights[key] = clamp01(raw);
+  }
   return {
     schema: "scce.dialogue.policy_profile.v1",
     weights,
+    communicativeActWeights,
     preferredVocabulary: stringArray(record.preferredVocabulary),
     rejectedPhrases: stringArray(record.rejectedPhrases)
   };
