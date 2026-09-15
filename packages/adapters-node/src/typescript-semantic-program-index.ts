@@ -245,6 +245,13 @@ interface DiagnosticAccumulator {
   readonly originIds: Set<string>;
 }
 
+interface SemanticProgramIndexCacheEntry {
+  readonly promise: Promise<TypeScriptSemanticProgramIndex>;
+}
+
+const TYPE_SCRIPT_SEMANTIC_PROGRAM_INDEX_CACHE_LIMIT = 8;
+const typeScriptSemanticProgramIndexCache = new Map<string, SemanticProgramIndexCacheEntry>();
+
 /**
  * Builds one compiler-backed semantic index from an exact, explicitly bounded
  * workspace snapshot. It never executes a command and never reads an implicit
@@ -255,6 +262,32 @@ export async function buildTypeScriptSemanticProgramIndex(
   input: TypeScriptSemanticProgramIndexInput
 ): Promise<TypeScriptSemanticProgramIndex> {
   const snapshot = await readExactSnapshot(input);
+  const cacheKey = semanticProgramIndexCacheKey(input, snapshot);
+  const cached = typeScriptSemanticProgramIndexCache.get(cacheKey);
+  if (cached) {
+    typeScriptSemanticProgramIndexCache.delete(cacheKey);
+    typeScriptSemanticProgramIndexCache.set(cacheKey, cached);
+    return cached.promise;
+  }
+
+  const promise = buildTypeScriptSemanticProgramIndexFromSnapshot(input, snapshot);
+  typeScriptSemanticProgramIndexCache.set(cacheKey, { promise });
+  while (typeScriptSemanticProgramIndexCache.size > TYPE_SCRIPT_SEMANTIC_PROGRAM_INDEX_CACHE_LIMIT) {
+    const oldestKey = typeScriptSemanticProgramIndexCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    typeScriptSemanticProgramIndexCache.delete(oldestKey);
+  }
+  void promise.catch(() => {
+    const current = typeScriptSemanticProgramIndexCache.get(cacheKey);
+    if (current?.promise === promise) typeScriptSemanticProgramIndexCache.delete(cacheKey);
+  });
+  return promise;
+}
+
+async function buildTypeScriptSemanticProgramIndexFromSnapshot(
+  input: TypeScriptSemanticProgramIndexInput,
+  snapshot: ExactSnapshot
+): Promise<TypeScriptSemanticProgramIndex> {
   const configFile = snapshot.byPath.get(normalizeWorkspacePath(input.tsconfigPath));
   if (!configFile) throw new Error("typescript semantic index config is absent from the bounded snapshot");
 
@@ -488,6 +521,17 @@ export async function buildTypeScriptSemanticProgramIndex(
   };
 }
 
+function semanticProgramIndexCacheKey(input: TypeScriptSemanticProgramIndexInput, snapshot: ExactSnapshot): string {
+  const observedTestPaths = [...snapshot.observedTestPaths].sort(compareCanonical);
+  return stableSerialize([
+    snapshot.rootPath,
+    normalizeWorkspacePath(input.tsconfigPath),
+    ts.version,
+    snapshot.revisionHash,
+    observedTestPaths
+  ]);
+}
+
 async function readExactSnapshot(input: TypeScriptSemanticProgramIndexInput): Promise<ExactSnapshot> {
   assertPositiveBound(input.bounds.maxFiles, "maxFiles");
   assertPositiveBound(input.bounds.maxFileBytes, "maxFileBytes");
@@ -522,6 +566,7 @@ async function readExactSnapshot(input: TypeScriptSemanticProgramIndexInput): Pr
     const bytes = new Uint8Array(await readFile(canonicalPath));
     if (bytes.byteLength !== stat.size) throw new Error(`bounded workspace file changed while being read: ${workspacePath}`);
     const content = Buffer.from(bytes).toString("utf8");
+    let sourceFile: ts.SourceFile | undefined;
     files.push({
       path: workspacePath,
       absolutePath: canonicalPath,
@@ -530,7 +575,12 @@ async function readExactSnapshot(input: TypeScriptSemanticProgramIndexInput): Pr
       bytes,
       contentHash: sha256Bytes(bytes),
       byteLength: bytes.byteLength,
-      sourceFile: ts.createSourceFile(canonicalPath, content, ts.ScriptTarget.Latest, true, scriptKind(canonicalPath))
+      // A cache hit still rechecks every bounded byte, but it should not parse
+      // every file before discovering that this exact revision is resident.
+      get sourceFile() {
+        sourceFile ??= ts.createSourceFile(canonicalPath, content, ts.ScriptTarget.Latest, true, scriptKind(canonicalPath));
+        return sourceFile;
+      }
     });
   }
   const byPath = new Map(files.map(file => [file.path, file]));

@@ -97,14 +97,27 @@ describe("revision-bound TypeScript semantic program index", () => {
     const fixture = await createFixture();
     try {
       const input = indexInput(fixture.root, fixture.paths);
-      const first = await buildTypeScriptSemanticProgramIndex(input);
+      const [first, coalesced] = await Promise.all([
+        buildTypeScriptSemanticProgramIndex(input),
+        buildTypeScriptSemanticProgramIndex(input)
+      ]);
+      expect(coalesced).toBe(first);
       const second = await buildTypeScriptSemanticProgramIndex(input);
+      expect(second).toBe(first);
       expect(second.revisionHash).toBe(first.revisionHash);
       expect(second.files.map(file => [file.path, file.contentHash])).toEqual(first.files.map(file => [file.path, file.contentHash]));
+
+      const changedMembership = await buildTypeScriptSemanticProgramIndex({
+        ...input,
+        bounds: { ...input.bounds, observedTestPaths: [] }
+      });
+      expect(changedMembership).not.toBe(first);
+      expect(fileRecord(changedMembership, "checks/greet.case.ts").observedTest).toBe(false);
 
       const changed = fixture.entries["src/greet.ts"]!.replace("hello", "salute");
       await writeFile(path.join(fixture.root, "src", "greet.ts"), changed, "utf8");
       const third = await buildTypeScriptSemanticProgramIndex(input);
+      expect(third).not.toBe(first);
       expect(third.revisionHash).not.toBe(first.revisionHash);
       expect(fileRecord(third, "src/greet.ts").contentHash).not.toBe(fileRecord(first, "src/greet.ts").contentHash);
     } finally {
