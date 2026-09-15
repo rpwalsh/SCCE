@@ -154,7 +154,13 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
         input.programIntent?.statefulBehaviorTransformationCandidates ?? [],
         input.programIntent?.selectedStatefulBehaviorTransformationIds ?? []
       );
-      const files = withOwnerBehaviorCompositionFiles(planFiles(shape), shape, ownerBehaviorRequirements, options.hasher);
+      const files = withOwnerBehaviorCompositionFiles(
+        planFiles(shape),
+        shape,
+        ownerBehaviorRequirements,
+        ownerStatefulBehaviorRequirements,
+        options.hasher
+      );
       const build = buildCommand(shape, files);
       const test = testCommand(shape, files);
       const planId = options.idFactory.semanticId("program_plan", { episodeId: input.episodeId, shape, files });
@@ -288,7 +294,14 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
         taskDecomposition: toJsonValue(plan.blueprint.taskDecomposition)
       };
       const graphWithoutHydration = composition
-        ? composeProgramGraphFromBehavior({ base: graphWithoutHydrationBase, modules: composition.modules, obligations: plan.ownerBehaviorRequirements }).graph
+        ? composeProgramGraphFromBehavior({
+          base: graphWithoutHydrationBase,
+          modules: composition.modules,
+          obligations: [
+            ...plan.ownerBehaviorRequirements,
+            ...statefulCompositionRequirements(plan.ownerStatefulBehaviorRequirements)
+          ]
+        }).graph
         : graphWithoutHydrationBase;
       const hydration = createProgramHydrationContract({
         program: graphWithoutHydration,
@@ -1351,29 +1364,79 @@ function withOwnerBehaviorCompositionFiles(
   files: ProgramFilePlan[],
   shape: ProgramShape,
   requirements: readonly ProgramBehaviorRequirement[],
+  statefulRequirements: readonly ProgramStatefulBehaviorRequirement[],
   hasher: Hasher
 ): ProgramFilePlan[] {
   const composition = ownerBehaviorCompositionPaths(shape, requirements, hasher);
-  if (!composition) return files;
-  return [
-    ...files,
-    ...composition.callables.map(item => ({
-      path: item.path,
-      role: "source" as const,
-      mediaType: composition.runtime.mediaType,
-      purpose: "typed behavior provider module",
-      dependsOn: ["source.program.json"],
-      invariants: ["callable contract preserved", "owner expected values excluded from source"]
-    })),
-    {
-      path: composition.applicationPath,
-      role: "source" as const,
-      mediaType: composition.runtime.mediaType,
-      purpose: "typed behavior application composition",
-      dependsOn: composition.callables.map(item => item.path),
-      invariants: ["provider dependencies explicit", "callable exports preserved"]
-    }
-  ];
+  const statefulComposition = ownerStatefulBehaviorCompositionPaths(shape, statefulRequirements, hasher);
+  if (!composition && !statefulComposition) return files;
+  const scalarFiles: ProgramFilePlan[] = composition
+    ? [
+      ...composition.callables.map(item => ({
+        path: item.path,
+        role: "source" as const,
+        mediaType: composition.runtime.mediaType,
+        purpose: "typed behavior provider module",
+        dependsOn: ["source.program.json"],
+        invariants: ["callable contract preserved", "owner expected values excluded from source"]
+      })),
+      {
+        path: composition.applicationPath,
+        role: "source" as const,
+        mediaType: composition.runtime.mediaType,
+        purpose: "typed behavior application composition",
+        dependsOn: composition.callables.map(item => item.path),
+        invariants: ["provider dependencies explicit", "callable exports preserved"]
+      }
+    ]
+    : [];
+  const statefulFiles: ProgramFilePlan[] = statefulComposition
+    ? [{
+        path: statefulComposition.providerPath,
+        role: "source" as const,
+        mediaType: statefulComposition.runtime.mediaType,
+        purpose: "typed stateful behavior provider module",
+        dependsOn: ["source.program.json"],
+        invariants: ["ordered transition contract preserved", "owner expected values excluded from source"]
+      },
+      {
+        path: statefulComposition.applicationPath,
+        role: "source" as const,
+        mediaType: statefulComposition.runtime.mediaType,
+        purpose: "typed stateful behavior application composition",
+        dependsOn: [statefulComposition.providerPath],
+        invariants: ["shared state provider explicit", "operation exports preserved"]
+      }
+    ]
+    : [];
+  return [...files, ...scalarFiles, ...statefulFiles];
+}
+
+interface OwnerStatefulBehaviorCompositionPaths {
+  readonly runtime: EmittedProgramRuntime;
+  readonly providerPath: string;
+  readonly applicationPath: string;
+  readonly providerModuleId: string;
+  readonly applicationModuleId: string;
+}
+
+function ownerStatefulBehaviorCompositionPaths(
+  shape: ProgramShape,
+  requirements: readonly ProgramStatefulBehaviorRequirement[],
+  hasher: Hasher
+): OwnerStatefulBehaviorCompositionPaths | undefined {
+  if (nodeRuntimeForShape(shape) || !requirements.some(requirement => requirement.verificationRole === "fit")) return undefined;
+  const runtime = emittedProgramRuntimeForLanguage(shape.target.language);
+  const suffix = hasher.digestHex(canonicalStringify(requirements.map(requirement => requirement.id))).slice(0, 16);
+  const modulePrefix = runtime.languageId === "python" ? "_stateful_provider_" : "stateful-provider-";
+  const applicationPrefix = runtime.languageId === "python" ? "_stateful_application_" : "stateful-application-";
+  return {
+    runtime,
+    providerPath: `src/${modulePrefix}${suffix}${runtime.moduleExtension}`,
+    applicationPath: `src/${applicationPrefix}${suffix}${runtime.moduleExtension}`,
+    providerModuleId: `module:stateful-provider:${suffix}`,
+    applicationModuleId: `module:stateful-application:${suffix}`
+  };
 }
 
 interface OwnerBehaviorCompositionPaths {
@@ -1444,6 +1507,7 @@ function emitFiles(plan: ProgramPlan, input: ProgramPlannerInput, idFactory: IdF
       : declaredCallContracts(input.requestText);
     const statefulContracts = declaredStatefulCallContractsFromRequirements(plan.ownerStatefulBehaviorRequirements);
     byPath.set("source.program.json", `${JSON.stringify(sourceProgramContract(plan, input), null, 2)}\n`);
+    const statefulComposition = ownerStatefulBehaviorCompositionPaths(plan.intent.shape, plan.ownerStatefulBehaviorRequirements, hasher);
     if (emittedRuntime.languageId === "python") {
       byPath.set(emittedRuntime.sourcePath, executablePythonProgramModule(plan, contracts, statefulContracts));
       byPath.set(emittedRuntime.testPath, executablePythonProgramTest(plan));
@@ -1478,6 +1542,21 @@ function emitFiles(plan: ProgramPlan, input: ProgramPlannerInput, idFactory: IdF
         ? `${applicationImports}\n`
         : `${applicationImports}\n`);
     }
+    if (statefulComposition) {
+      const provider = plan.ownerBehaviorImplementationPhase === "selected"
+        ? emittedRuntime.languageId === "python"
+          ? `import json\n\n${executablePythonStatefulBehaviorFactory(plan.ownerStatefulBehaviorTransformationCandidates, plan.selectedOwnerStatefulBehaviorTransformationIds)}`
+          : executableStatefulBehaviorFactory(plan.ownerStatefulBehaviorTransformationCandidates, plan.selectedOwnerStatefulBehaviorTransformationIds)
+        : emittedRuntime.languageId === "python"
+          ? "def createStatefulProgram():\n    return {}\n"
+          : "export function createStatefulProgram() { return Object.freeze({}); }\n";
+      const providerStem = statefulComposition.providerPath.slice(statefulComposition.providerPath.lastIndexOf("/") + 1);
+      const providerModule = providerStem.slice(0, -statefulComposition.runtime.moduleExtension.length);
+      byPath.set(statefulComposition.providerPath, provider);
+      byPath.set(statefulComposition.applicationPath, emittedRuntime.languageId === "python"
+        ? `from ${providerModule} import createStatefulProgram\n\n__all__ = ["createStatefulProgram"]\n`
+        : `export { createStatefulProgram } from ${JSON.stringify(`./${providerModule}${statefulComposition.runtime.moduleExtension}`)};\n`);
+    }
     byPath.set("BUILDING.md", buildNotes(plan));
   }
   return plan.files.map(filePlan => artifact(filePlan.path, filePlan.mediaType, byPath.get(filePlan.path) ?? "", filePlan.role, idFactory, hasher));
@@ -1485,28 +1564,88 @@ function emitFiles(plan: ProgramPlan, input: ProgramPlannerInput, idFactory: IdF
 
 function ownerBehaviorComposition(plan: ProgramPlan, files: readonly FileArtifact[], hasher: Hasher): { readonly modules: readonly ProgramModuleSpec[] } | undefined {
   const paths = ownerBehaviorCompositionPaths(plan.intent.shape, plan.ownerBehaviorRequirements, hasher);
-  if (!paths) return undefined;
-  const fitRequirements = plan.ownerBehaviorRequirements.filter(requirement => requirement.verificationRole === "fit");
-  const ports = uniqueBehaviorPorts(fitRequirements);
+  const statefulPaths = ownerStatefulBehaviorCompositionPaths(plan.intent.shape, plan.ownerStatefulBehaviorRequirements, hasher);
+  if (!paths && !statefulPaths) return undefined;
   const byPath = new Map(files.map(file => [file.path, file]));
-  const primitiveModules = paths.callables.map(item => {
-    const artifact = byPath.get(item.path);
-    if (!artifact) throw new Error(`owner behavior composition artifact is absent: ${item.path}`);
-    return {
-      moduleId: `module:provider:${hasher.digestHex(item.callableId).slice(0, 20)}`,
-      artifact,
-      provides: ports.filter(port => port.callableId === item.callableId)
-    } satisfies ProgramModuleSpec;
-  });
-  const applicationArtifact = byPath.get(paths.applicationPath);
-  if (!applicationArtifact) throw new Error(`owner behavior composition application artifact is absent: ${paths.applicationPath}`);
-  const application: ProgramModuleSpec = {
-    moduleId: paths.applicationModuleId,
-    artifact: applicationArtifact,
-    provides: ports,
-    requires: ports
-  };
-  return { modules: [application, ...primitiveModules] };
+  const modules: ProgramModuleSpec[] = [];
+  if (statefulPaths) {
+    const fitRequirements = plan.ownerStatefulBehaviorRequirements.filter(requirement => requirement.verificationRole === "fit");
+    const ports = uniqueStatefulBehaviorPorts(fitRequirements);
+    const providerArtifact = byPath.get(statefulPaths.providerPath);
+    const applicationArtifact = byPath.get(statefulPaths.applicationPath);
+    if (!providerArtifact || !applicationArtifact) throw new Error("stateful behavior composition artifacts are absent");
+    modules.push({
+      moduleId: statefulPaths.applicationModuleId,
+      artifact: applicationArtifact,
+      provides: ports,
+      requires: ports
+    }, {
+      moduleId: statefulPaths.providerModuleId,
+      artifact: providerArtifact,
+      provides: ports
+    });
+  }
+  if (paths) {
+    const fitRequirements = plan.ownerBehaviorRequirements.filter(requirement => requirement.verificationRole === "fit");
+    const ports = uniqueBehaviorPorts(fitRequirements);
+    const primitiveModules = paths.callables.map(item => {
+      const artifact = byPath.get(item.path);
+      if (!artifact) throw new Error(`owner behavior composition artifact is absent: ${item.path}`);
+      return {
+        moduleId: `module:provider:${hasher.digestHex(item.callableId).slice(0, 20)}`,
+        artifact,
+        provides: ports.filter(port => port.callableId === item.callableId)
+      } satisfies ProgramModuleSpec;
+    });
+    const applicationArtifact = byPath.get(paths.applicationPath);
+    if (!applicationArtifact) throw new Error(`owner behavior composition application artifact is absent: ${paths.applicationPath}`);
+    modules.push({
+      moduleId: paths.applicationModuleId,
+      artifact: applicationArtifact,
+      provides: ports,
+      requires: ports
+    }, ...primitiveModules);
+  }
+  return { modules };
+}
+
+function uniqueStatefulBehaviorPorts(requirements: readonly ProgramStatefulBehaviorRequirement[]): ProgramModulePort[] {
+  const seen = new Set<string>();
+  const ports: ProgramModulePort[] = [];
+  for (const requirement of requirements) {
+    for (const invocation of requirement.invocations) {
+      const port: ProgramModulePort = {
+        callableId: invocation.callableId,
+        argumentTypes: invocation.arguments.map(jsonValueTypeId),
+        resultType: "json.any"
+      };
+      const key = canonicalStringify(port);
+      if (!seen.has(key)) {
+        seen.add(key);
+        ports.push(port);
+      }
+    }
+  }
+  return ports;
+}
+
+/**
+ * Stateful composition uses the same typed port selector as scalar behavior.
+ * Each ordered trace contributes operation ports, while its expected final
+ * value remains validation data and never enters module selection.
+ */
+function statefulCompositionRequirements(requirements: readonly ProgramStatefulBehaviorRequirement[]): ProgramBehaviorRequirement[] {
+  return requirements
+    .flatMap(requirement => requirement.invocations.map((invocation, index) => ({
+      id: `${requirement.id}:invocation:${index}`,
+      requestHash: requirement.requestHash,
+      callableId: invocation.callableId,
+      arguments: invocation.arguments,
+      expectedResult: null,
+      verificationRole: requirement.verificationRole,
+      relationSurface: requirement.relationSurface,
+      sourceSpan: invocation.sourceSpan
+    })));
 }
 
 function uniqueBehaviorPorts(requirements: readonly ProgramBehaviorRequirement[]): ProgramModulePort[] {
