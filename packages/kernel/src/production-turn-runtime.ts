@@ -30,7 +30,14 @@ import { compileCreativeRequestFrameFromCompatibilityModels, type CreativeReques
 import { createCounterfactualCognition } from "./counterfactual-cognition.js";
 import { compileCounterclaimSearchIntent, realizeCounterclaimSearchIntent } from "./counterclaim-search.js";
 import { traceEvent } from "./debug/trace.js";
-import { dialogueTargetProfileId, updateDialogueState } from "./dialogue-pragmatics.js";
+import { DEFAULT_USER_STYLE_PROFILE, dialogueTargetProfileId, updateDialogueState } from "./dialogue-pragmatics.js";
+import {
+  REQUEST_COMMUNICATIVE_ACT_SOURCE_SYSTEM,
+  classifyRequestCommunicativeAct,
+  requestCommunicativeActModelFromPatterns,
+  requestCommunicativeActStatePatch,
+  type RequestCommunicativeActModel
+} from "./request-communicative-act.js";
 import { dialogueInterpretationAdjustmentsForConversation, styleProfileFromTargetProfilePatterns } from "./dialogue-learning.js";
 import {
   createDiscourseTurnObservationV2,
@@ -713,6 +720,19 @@ export function createProductionTurnRuntime(options: {
     return requestControlPatterns;
   }
 
+  let requestCommunicativeActHydration: { model: RequestCommunicativeActModel | undefined } | undefined;
+  /** The request act classifier, hydrated once per process; a failed read is reported and retried, never cached as absent. */
+  async function requestCommunicativeActModelCached(): Promise<{ model: RequestCommunicativeActModel | undefined; failed: boolean }> {
+    if (requestCommunicativeActHydration) return { ...requestCommunicativeActHydration, failed: false };
+    try {
+      const patterns = await deps.storage.languageMemory.listLanguagePatterns({ sourceSystem: REQUEST_COMMUNICATIVE_ACT_SOURCE_SYSTEM, limit: 2048 });
+      requestCommunicativeActHydration = { model: requestCommunicativeActModelFromPatterns(patterns) };
+      return { ...requestCommunicativeActHydration, failed: false };
+    } catch {
+      return { model: undefined, failed: true };
+    }
+  }
+
   async function turnRequirementModelCached(): Promise<TurnRequirementCoefficientModel> {
     if (turnRequirementModel) return turnRequirementModel;
     const state = await deps.storage.model.readModel().catch(() => undefined);
@@ -1254,12 +1274,26 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         counts: { patternFamilies: durableDialoguePatterns.length },
         support: { targetProfileId: durableDialogueProfileId, applied: Boolean(durableDialogueStyle) }
       });
+      const requestActDisabled = deps.evaluationCondition?.flags.disableLanguageMemory === true;
+      const requestActHydration = requestActDisabled ? { model: undefined, failed: false } : await requestCommunicativeActModelCached();
+      const requestAct = classifyRequestCommunicativeAct(input.text, requestActHydration.model, {
+        ...(requestActDisabled ? { status: "disabled_explicitly" as const } : requestActHydration.failed ? { status: "failed" as const } : {})
+      });
+      const requestActPatch = requestCommunicativeActStatePatch(requestAct, durableDialogueStyle ?? previousDialogueState?.userStyleProfile ?? DEFAULT_USER_STYLE_PROFILE);
+      const dialogueStylePatch = requestActPatch
+        ? { ...(durableDialogueStyle ?? {}), communicativeActWeights: requestActPatch.communicativeActWeights }
+        : durableDialogueStyle;
       const authorityDialogueState = updateDialogueState({
         requestText: input.text,
         targetLanguage: translationTarget ?? locale,
         previousState: previousDialogueState,
         conversationId: dialogueConversationId,
-        ...(durableDialogueStyle ? { statePatch: { userStyleProfile: durableDialogueStyle } } : {})
+        ...(dialogueStylePatch || requestActPatch ? {
+          statePatch: {
+            ...(dialogueStylePatch ? { userStyleProfile: dialogueStylePatch } : {}),
+            ...(requestActPatch ? { communicativeActId: requestActPatch.communicativeActId } : {})
+          }
+        } : {})
       });
       // Plan items 221-228: real, durable, cross-turn document-generation
       // sessions (deps.storage.documentGeneration, a genuine Postgres-
@@ -1311,6 +1345,21 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         languageMemoryState: requestRequirementLanguageState,
         contextContribution: requirementContextFromMetadata(input.metadata),
         model: await turnRequirementModelCached()
+      });
+      kernelTrace({
+        stage: "runtime.dialogue_act.classify",
+        label: "kernel.turn",
+        counts: { matchedPatterns: requestAct.matchedPatternIds.length, actClasses: requestAct.classIds.length },
+        support: {
+          status: requestAct.status,
+          actId: authorityDialogueState.communicativeActId ?? null,
+          classifiedActId: requestAct.actId,
+          patched: Boolean(requestActPatch),
+          matchedPatternIds: requestAct.matchedPatternIds,
+          logOddsOverNeutral: requestAct.logOddsOverNeutral,
+          dialogueDependence: requirementField.dialogueDependence,
+          requirementValues: Object.fromEntries(TURN_REQUIREMENT_DIMENSIONS.map(dimension => [dimension, requirementField[dimension]]))
+        }
       });
       const authorityProjection = projectRequestAuthority({ requirementField, explicitAuthority });
       // Why the turn is routed where it is. The requirement field decides the authority, the authority decides

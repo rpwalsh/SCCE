@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { calibrated } from "./calibrations/prod-calibrations.js";
 import { DIALOGUE_ACT_IDS, type DialogueState } from "./dialogue-pragmatics.js";
 import type { LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
 import { clamp01, mean, toJsonValue } from "./primitives.js";
@@ -686,13 +687,13 @@ function collectDialogueActivations(requestText: string, state: DialogueState | 
     out.push(normalizeActivation(requestText, {
       id: state.currentIntentId,
       kind: "dialogue_move",
-      activation: state.continuityLinks.length > 0 ? 0.82 : 0.58,
+      activation: state.continuityLinks.length > 0 ? calibrated("requirement.dialogue_intent.activation_with_continuity") : calibrated("requirement.dialogue_intent.activation_without_continuity"),
       confidence: state.continuityLinks.length > 0 ? 0.78 : 0.52,
       span: fullSpan,
       semanticRoleId: "role.dialogue.current.v1",
       learnedFrameOrPatternId: state.currentIntentId,
       dialogueReferenceId: state.turnId,
-      requirementCoefficients: { dialogueDependence: state.continuityLinks.length > 0 ? 0.9 : 0.3 },
+      requirementCoefficients: { dialogueDependence: state.continuityLinks.length > 0 ? calibrated("requirement.dialogue_intent.coefficient_with_continuity") : calibrated("requirement.dialogue_intent.coefficient_without_continuity") },
       trace: toJsonValue({ source: "dialogue_state", conversationId: state.conversationId, continuityLinkCount: state.continuityLinks.length })
     }));
   }
@@ -1021,7 +1022,7 @@ function derivedContextContribution(dimension: TurnRequirementDimension, input: 
   if (dimension !== "dialogueDependence" || !input.dialogueState) return 0;
   const continuity = clamp01(input.dialogueState.continuityLinks.length / 4);
   const unresolved = clamp01(input.dialogueState.unresolvedSlots.length / 4);
-  return finiteOr(0.45 * continuity + 0.25 * unresolved, 0);
+  return finiteOr(calibrated("requirement.dialogue_context.continuity_weight") * continuity + calibrated("requirement.dialogue_context.unresolved_weight") * unresolved, 0);
 }
 
 function modelActivationWeight(model: TurnRequirementCoefficientModel, dimension: TurnRequirementDimension, activation: LearnedRequirementActivation): number {

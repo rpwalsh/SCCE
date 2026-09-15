@@ -497,7 +497,18 @@ export const CALIBRATION_SEARCH_SPACE: Readonly<Record<CalibrationKey, Calibrati
 
   // --- structural residue
   "evidence.structural_residue_cut": threshold(0.02, 0.6, [0.06, 0.1296, 0.25, 0.4]),
-  "turn_requirements.source_preservation_floor": threshold(0.3, 0.95, [0.45, 0.6, 0.75, 0.9])
+  "turn_requirements.source_preservation_floor": threshold(0.3, 0.95, [0.45, 0.6, 0.75, 0.9]),
+
+  // --- dialogue requirement field
+  "requirement.dialogue_intent.activation_without_continuity": weight(0, 1, [0.3, 0.58, 0.8]),
+  "requirement.dialogue_intent.activation_with_continuity": weight(0, 1, [0.5, 0.82, 1]),
+  "requirement.dialogue_intent.coefficient_without_continuity": weight(-1, 2, [0, 0.3, 0.9]),
+  "requirement.dialogue_intent.coefficient_with_continuity": weight(-1, 2, [0.3, 0.9, 1.5]),
+  "requirement.dialogue_context.continuity_weight": weight(0, 1, [0.2, 0.45, 0.7]),
+  "requirement.dialogue_context.unresolved_weight": weight(0, 1, [0.1, 0.25, 0.5]),
+
+  // --- request communicative act
+  "request_act.feature_pseudo_count": weight(0.05, 4, [0.5, 1, 2])
 });
 
 /** Ids a calibrator may search, in a stable order so a run is reproducible. */
