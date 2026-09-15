@@ -15,6 +15,35 @@ describe("dropContainerSpans", () => {
     const pool = [span("p", "sv1", 0, 38000), span("c1", "sv1", 0, 4000), span("tail", "sv1", 37000, 39000)];
     expect(dropContainerSpans(pool).map(item => item.id)).toEqual(["p", "c1", "tail"]);
   });
+
+  it("keeps the naive result while reducing containment work to one query per span", () => {
+    const pool = [span("parent", "sv1", 0, 1_000_000), ...Array.from({ length: 10_000 }, (_, index) =>
+      span(`child:${index}`, "sv1", index * 10, index * 10 + 5))];
+    const diagnostics: { indexedSpans?: number; prefixQueries?: number } = {};
+    const result = dropContainerSpans(pool, diagnostics);
+
+    expect(result).toHaveLength(10_000);
+    expect(result[0]!.id).toBe("child:0");
+    expect(diagnostics.indexedSpans).toBe(pool.length);
+    expect(diagnostics.prefixQueries).toBe(pool.length);
+  });
+
+  it("matches the previous containment rule on nested, overlapping, and duplicate spans", () => {
+    const pool = Array.from({ length: 240 }, (_, index) => {
+      const start = (index * 17) % 90;
+      const width = 4 + ((index * 29) % 120);
+      return span(`s:${index}`, index % 3 === 0 ? "a" : "b", start, start + width);
+    });
+    const expected = pool.filter(current => {
+      const siblings = pool.filter(other => other.sourceVersionId === current.sourceVersionId);
+      const contained = siblings.filter(other => other !== current
+        && other.charStart >= current.charStart
+        && other.charEnd <= current.charEnd
+        && other.charEnd - other.charStart < current.charEnd - current.charStart);
+      return contained.length < 2;
+    }).map(item => item.id);
+    expect(dropContainerSpans(pool).map(item => item.id)).toEqual(expected);
+  });
 });
 
 import { joinContiguousQuotationSpans } from "../runtime-graph-retrieval.js";
