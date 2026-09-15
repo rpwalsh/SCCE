@@ -1,14 +1,14 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { createHash } from "node:crypto";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import * as XLSX from "xlsx";
 import { createClock, createHasher, createIdFactory, createTypedIngestProjector, type JsonValue } from "@scce/kernel";
 import type { ScceRuntimeConfig } from "../config.js";
-import { runProcess } from "../document.js";
+import { extractDocument, runProcess } from "../document.js";
 import { normalizeFetchedSource, publicDocumentExport, type FetchedSource } from "../fetched-source.js";
 import { inspectOfficeArchive } from "../spreadsheet-parser.js";
 
@@ -136,6 +136,20 @@ describe("bounded fetched document derivatives", () => {
       typedExtraction: { scannedPdfOcr: { profile: "eng", renderer: "pdfjs-napi-canvas", engine: "tesseract.js-wasm" } }
     });
   }, 30000);
+
+  it("records the stage and message of a scanned PDF render failure beside the OCR-unavailable boundary", async () => {
+    const filePath = path.join(tempRoot, "unencodable-scan.pdf");
+    await writeFile(filePath, emptyTextPdf(1, 6_000_000, 1));
+    const extracted = await extractDocument(filePath, config, { includeVisualAttributes: false });
+    expect(extracted.attempts[0]?.warnings).toEqual(["embedded_text_absent/ocr_unavailable", expect.stringMatching(/^render: \S/u)]);
+  }, 60000);
+
+  it("records pixel budget exhaustion as the cause of the OCR-unavailable boundary", async () => {
+    const filePath = path.join(tempRoot, "oversized-scan.pdf");
+    await writeFile(filePath, emptyTextPdf(12, 2450, 2450));
+    const extracted = await extractDocument(filePath, config, { includeVisualAttributes: false });
+    expect(extracted.attempts[0]?.warnings).toEqual(["embedded_text_absent/ocr_unavailable", expect.stringMatching(/^pixel_budget: \S/u)]);
+  }, 60000);
 
   it("OCRs every page of a nine-page scanned PDF instead of refusing it for page count", async () => {
     const result = await normalizeFetchedSource(source(scannedTextPdf("TEST", 9), "application/pdf", "https://publisher.example/scanned.pdf"), config);

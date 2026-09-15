@@ -217,7 +217,10 @@ async function extractPdfText(bytes: Uint8Array, options: DocumentExtractionOpti
     kind: "pdf-text", bytes, maxOutputBytes: options.maxOutputBytes ?? Number.MAX_SAFE_INTEGER,
     ...(options.ocrProfile ? { ocrProfile: options.ocrProfile } : {})
   }, { timeoutMs: options.timeoutMs ?? 120000, signal: options.signal });
-  if (result.boundary) throw new Error(result.boundary);
+  if (result.boundary) {
+    const cause = result.boundaryCause ? [`${result.boundaryCause.stage}: ${result.boundaryCause.message}`] : [];
+    return { text: "", structural: {}, warnings: [result.boundary, ...cause] };
+  }
   return {
     text: result.text, structural: inferPagedStructure(result.text), warnings: [],
     ...(result.scannedPdfOcr ? { parser: "pdfjs-rendered-tesseract-wasm-worker", typedExtraction: toJsonValue({ scannedPdfOcr: { profile: result.ocrProfile, renderer: "pdfjs-napi-canvas", engine: "tesseract.js-wasm" } }) } : {})

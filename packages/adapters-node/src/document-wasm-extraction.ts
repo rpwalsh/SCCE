@@ -21,7 +21,10 @@ export interface DocumentWasmExtractionResult {
   ocrProfile?: BundledOcrProfile;
   scannedPdfOcr?: true;
   boundary?: "embedded_text_absent/ocr_unavailable";
+  boundaryCause?: { stage: ScannedPdfOcrStage; message: string };
 }
+
+export type ScannedPdfOcrStage = "load" | "render" | "recognize" | "pixel_budget";
 
 const require = createRequire(import.meta.url);
 const standardFontDataUrl = `${path.dirname(require.resolve("pdfjs-dist/standard_fonts/FoxitSerif.pfb")).replace(/\\/gu, "/")}/`;
@@ -206,17 +209,21 @@ async function extractScannedPdfText(bytes: Uint8Array, maxOutputBytes: number, 
 async function renderScannedPdfText(pdf: PDFDocumentProxy, maxOutputBytes: number, ocrProfile?: BundledOcrProfile): Promise<DocumentWasmExtractionResult> {
   const profile = bundledOcrProfile(ocrProfile ?? DEFAULT_OCR_PROFILE);
   let worker: Tesseract.Worker | undefined;
+  let stage: ScannedPdfOcrStage = "load";
   try {
     worker = await createOcrWorker(profile);
     const output = new BoundedUtf8Text(maxOutputBytes);
     let pixelsUsed = 0;
     for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
+      stage = "render";
       const page = await pdf.getPage(pageNumber);
       try {
         const base = page.getViewport({ scale: SCANNED_PDF_RENDER_SCALE });
         const requestedPixels = Math.ceil(base.width) * Math.ceil(base.height);
         const pageBudget = Math.min(MAX_SCANNED_PDF_PAGE_PIXELS, MAX_SCANNED_PDF_TOTAL_PIXELS - pixelsUsed);
-        if (!Number.isFinite(requestedPixels) || requestedPixels <= 0 || pageBudget <= 0) return { text: "", boundary: "embedded_text_absent/ocr_unavailable" };
+        if (!Number.isFinite(requestedPixels) || requestedPixels <= 0)
+          return ocrUnavailable("render", `page ${pageNumber} has no renderable viewport`);
+        if (pageBudget <= 0) return ocrUnavailable("pixel_budget", `total pixel budget exhausted before page ${pageNumber} of ${pdf.numPages}`);
         const scale = requestedPixels > pageBudget ? SCANNED_PDF_RENDER_SCALE * Math.sqrt(pageBudget / requestedPixels) : SCANNED_PDF_RENDER_SCALE;
         const viewport = page.getViewport({ scale });
         const width = Math.max(1, Math.floor(viewport.width));
@@ -229,7 +236,9 @@ async function renderScannedPdfText(pdf: PDFDocumentProxy, maxOutputBytes: numbe
             canvasContext: canvas.getContext("2d") as unknown as CanvasRenderingContext2D,
             viewport
           }).promise;
-          const recognized = await worker.recognize(canvas.toBuffer("image/png"));
+          const image = canvas.toBuffer("image/png");
+          stage = "recognize";
+          const recognized = await worker.recognize(image);
           if (pageNumber > 1 && recognized.data.text) output.append("\f");
           output.append(recognized.data.text);
         } finally {
@@ -243,10 +252,14 @@ async function renderScannedPdfText(pdf: PDFDocumentProxy, maxOutputBytes: numbe
     return { text: output.text(), ocrProfile: profile.id, scannedPdfOcr: true };
   } catch (error) {
     if (error instanceof Error && error.message === "document extraction exceeded output byte limit") throw error;
-    return { text: "", boundary: "embedded_text_absent/ocr_unavailable" };
+    return ocrUnavailable(stage, error instanceof Error ? error.message : String(error));
   } finally {
     await worker?.terminate();
   }
+}
+
+function ocrUnavailable(stage: ScannedPdfOcrStage, message: string): DocumentWasmExtractionResult {
+  return { text: "", boundary: "embedded_text_absent/ocr_unavailable", boundaryCause: { stage, message } };
 }
 
 async function createOcrWorker(profile: ReturnType<typeof bundledOcrProfile>): Promise<Tesseract.Worker> {
