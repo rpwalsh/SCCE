@@ -21,6 +21,7 @@ export interface SemanticAnswerConstructFact {
   activation: number;
   overlap: number;
   support: number;
+  contradiction?: number;
   sourceVersionId?: string;
   evidenceIds?: string[];
   roleId?: string;
@@ -244,6 +245,7 @@ function factFromJson(value: JsonValue): SemanticAnswerConstructFact | undefined
     activation: numberField(record.activation),
     overlap: numberField(record.overlap),
     support: numberField(record.support),
+    contradiction: record.contradiction ? numberField(record.contradiction) : undefined,
     sourceVersionId: record.sourceVersionId ? stringField(record.sourceVersionId) : undefined,
     evidenceIds: record.evidenceIds ? stringArrayField(record.evidenceIds) : undefined,
     requestedSlotId: record.requestedSlotId ? stringField(record.requestedSlotId) : undefined,

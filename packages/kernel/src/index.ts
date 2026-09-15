@@ -173,6 +173,7 @@ export * from "./program-transformation-search.js";
 export * from "./stateful-behavior-scenarios.js";
 export * from "./state-transition-search.js";
 export * from "./program-planner.js";
+export * from "./typed-discourse-plan.js";
 export * from "./program-runtime.js";
 export * from "./code-learning.js";
 export * from "./source-code-graph.js";
