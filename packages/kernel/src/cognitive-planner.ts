@@ -25,6 +25,13 @@ import {
   type TurnRequirementDimension,
   type TurnRequirementField
 } from "./turn-requirements.js";
+import {
+  runCognitiveOperatorMpcSync,
+  type CognitiveMpcObservation,
+  type CognitiveMpcState,
+  type CognitiveMpcStep,
+  type CognitiveMpcRunResult
+} from "./operator-mpc-scheduler.js";
 import type {
   ConstructGraph,
   EvidenceId,
@@ -251,26 +258,29 @@ export function planCognitiveProposals(input: CognitivePlannerInput): CognitiveP
     .sort((left, right) => right.activation - left.activation || left.id.localeCompare(right.id));
   const relationDraftsResult = relationDrafts(input, activeOperators, evidenceById, nodeById);
   const sourceSynthesisDraftsResult = sourceSynthesisDrafts(input, activeOperators, evidenceById, nodeById);
-  const drafts = uniqueDrafts([
-    ...translationDrafts(input, activeOperators),
-    ...workspacePlanDrafts(input, activeOperators),
-    ...actionPlanDrafts(input, activeOperators),
-    ...inventionDrafts(input, activeOperators, evidenceById),
-    ...counterfactualWorldDrafts(input, activeOperators, nodeById),
-    ...topologyFamilyDrafts(input, activeOperators, evidenceById, nodeById),
-    ...orderedCompositionDrafts(input, activeOperators),
-    ...programDesignDrafts(input, activeOperators),
-    ...hypothesisDrafts(input, activeOperators, nodeById),
-    ...relationDraftsResult,
-    ...sourceSynthesisDraftsResult,
-    ...oneHopConstructDraft(input, relationDraftsResult.length > 0 || sourceSynthesisDraftsResult.length > 0),
-    ...constructPriorDrafts(input, activeOperators),
-    ...clarificationDrafts(input, activeOperators)
-  ]).slice(0, Math.max(maxProposals * 3, 3));
+  const draftBatches = [
+    translationDrafts(input, activeOperators),
+    workspacePlanDrafts(input, activeOperators),
+    actionPlanDrafts(input, activeOperators),
+    inventionDrafts(input, activeOperators, evidenceById),
+    counterfactualWorldDrafts(input, activeOperators, nodeById),
+    topologyFamilyDrafts(input, activeOperators, evidenceById, nodeById),
+    orderedCompositionDrafts(input, activeOperators),
+    programDesignDrafts(input, activeOperators),
+    hypothesisDrafts(input, activeOperators, nodeById),
+    relationDraftsResult,
+    sourceSynthesisDraftsResult,
+    oneHopConstructDraft(input, relationDraftsResult.length > 0 || sourceSynthesisDraftsResult.length > 0),
+    constructPriorDrafts(input, activeOperators),
+    clarificationDrafts(input, activeOperators)
+  ];
+  const drafts = uniqueDrafts(draftBatches.flat()).slice(0, Math.max(maxProposals * 3, 3));
 
   const scored = drafts.map(draft => scoreDraft(input, draft));
-  const selected = selectWithMmr(scored, input.proposalMemory ?? [], maxProposals);
-  return selected.map(({ draft, diversity, mmr }, rank) => finalizeProposal(draft, diversity, mmr, rank));
+  const operatorMpc = runProposalOperatorMpc(input, activeOperators, scored);
+  const selected = selectWithMmr(scored, input.proposalMemory ?? [], maxProposals, operatorMpc);
+  const mpcTrace = operatorMpc ? operatorMpc.trace : undefined;
+  return selected.map(({ draft, diversity, mmr }, rank) => finalizeProposal(draft, diversity, mmr, rank, mpcTrace));
 }
 
 /**
@@ -1544,8 +1554,10 @@ function scoreInventionProposal(input: CognitivePlannerInput, draft: ProposalDra
 function selectWithMmr(
   candidates: ScoredDraft[],
   memory: readonly CognitiveProposal[],
-  limit: number
+  limit: number,
+  operatorMpc?: CognitiveMpcRunResult
 ): Array<{ draft: ScoredDraft; diversity: number; mmr: number }> {
+  const routeRanks = operatorMpcRouteRanks(operatorMpc);
   const remaining = [...candidates].sort((left, right) => right.baseQuality - left.baseQuality || left.id.localeCompare(right.id));
   const selected: Array<{ draft: ScoredDraft; diversity: number; mmr: number }> = [];
   while (remaining.length > 0 && selected.length < limit) {
@@ -1556,7 +1568,10 @@ function selectWithMmr(
       const mmr = COGNITIVE_PROPOSAL_BOOTSTRAP.mmr.quality * draft.baseQuality
         + COGNITIVE_PROPOSAL_BOOTSTRAP.mmr.diversity * diversity;
       return { draft, diversity, mmr, similarity };
-    }).sort((left, right) => right.mmr - left.mmr || right.diversity - left.diversity || left.draft.id.localeCompare(right.draft.id));
+    }).sort((left, right) => {
+      const routeDelta = draftOperatorRank(left.draft, routeRanks) - draftOperatorRank(right.draft, routeRanks);
+      return routeDelta || right.mmr - left.mmr || right.diversity - left.diversity || left.draft.id.localeCompare(right.draft.id);
+    });
     const next = scored.find(item => item.similarity < 0.86) ?? (selected.length === 0 ? scored[0] : undefined);
     if (!next) break;
     selected.push({ draft: next.draft, diversity: next.diversity, mmr: next.mmr });
@@ -1565,7 +1580,13 @@ function selectWithMmr(
   return selected;
 }
 
-function finalizeProposal(draft: ScoredDraft, diversity: number, mmr: number, rank: number): CognitiveProposal {
+function finalizeProposal(
+  draft: ScoredDraft,
+  diversity: number,
+  mmr: number,
+  rank: number,
+  operatorMpcTrace?: JsonValue
+): CognitiveProposal {
   return {
     id: draft.id,
     operatorActivations: draft.operatorActivations,
@@ -1611,9 +1632,121 @@ function finalizeProposal(draft: ScoredDraft, diversity: number, mmr: number, ra
         diversity,
         mmr
       },
-      hardFailures: draft.hardFailures
+      hardFailures: draft.hardFailures,
+      operatorMpc: operatorMpcTrace ?? null
     })
   };
+}
+
+/**
+ * Runs the bounded controller over the proposals this planner actually built.
+ * Predictions come from typed operator support; observations come from the
+ * generated, scored drafts, so a failed family changes the next route without
+ * inventing a content-blind improvement.
+ */
+function runProposalOperatorMpc(
+  input: CognitivePlannerInput,
+  operators: readonly ActivatedOperator[],
+  scored: readonly ScoredDraft[]
+): CognitiveMpcRunResult | undefined {
+  if (operators.length < 2 || scored.length === 0) return undefined;
+  const requiredCount = input.requirements.requiredFeatures.length;
+  const initialState: CognitiveMpcState = {
+    signature: stableId("cognitive_mpc_state", {
+      requirementIds: input.requirements.requiredFeatures.map(requirement => requirement.id),
+      operatorIds: operators.map(operator => operator.operatorId),
+      evidenceCount: input.evidence.length,
+      graphNodeCount: input.graph.nodes.length,
+      graphEdgeCount: input.graph.edges.length
+    }),
+    progress: 0,
+    unresolved: requiredCount > 0 ? 1 : scored.length > 0 ? 0.7 : 1,
+    uncertainty: clamp01(1 - input.requirements.confidence),
+    contradiction: clamp01(input.field.alphaTrace.contradictionMass),
+    budget: 1
+  };
+  const result = runCognitiveOperatorMpcSync({
+    requirements: input.requirements,
+    operators,
+    state: initialState,
+    horizon: Math.min(3, Math.max(2, operators.length)),
+    beamWidth: Math.min(4, Math.max(2, operators.length)),
+    maxSteps: Math.min(3, Math.max(2, operators.length)),
+    maxEnergyWorseningSteps: 2,
+    allowOperatorReentry: false,
+    goalReached: state => state.progress >= 0.99 || (state.unresolved <= 0.01 && state.uncertainty <= 0.12),
+    execute: step => observeGeneratedDrafts(input, scored, step)
+  });
+  return result.observations.length > 0 ? result : undefined;
+}
+
+function observeGeneratedDrafts(
+  input: CognitivePlannerInput,
+  scored: readonly ScoredDraft[],
+  step: CognitiveMpcStep
+): CognitiveMpcObservation {
+  const operatorId = step.operator.operatorId;
+  const candidates = scored.filter(draft => draft.operatorActivations.some(operator => operator.operatorId === operatorId));
+  const viable = candidates.filter(draft => draft.hardFailures.length === 0 && draft.baseQuality > 0);
+  const best = [...viable].sort((left, right) => {
+    const leftCoverage = requirementCoverage(input.requirements.requiredFeatures.length, left.satisfiedRequirementIds.length);
+    const rightCoverage = requirementCoverage(input.requirements.requiredFeatures.length, right.satisfiedRequirementIds.length);
+    return rightCoverage - leftCoverage || right.baseQuality - left.baseQuality || left.id.localeCompare(right.id);
+  })[0];
+  const coverage = best
+    ? requirementCoverage(input.requirements.requiredFeatures.length, best.satisfiedRequirementIds.length)
+    : 0;
+  const quality = best?.baseQuality ?? 0;
+  const failureRate = candidates.length === 0 ? 1 : 1 - viable.length / candidates.length;
+  const contradictionPressure = candidates.length === 0
+    ? 0.08
+    : clamp01(mean(candidates.map(draft => proposalInternalContradiction(draft.claims, draft.relations, input.graph))));
+  const outcome = viable.length > 0 && (coverage > 0 || best!.claims.length > 0 || best!.steps.length > 0 || best!.artifacts.length > 0);
+  const delta = {
+    progressDelta: outcome ? clamp01(Math.max(0.02, 0.62 * coverage + 0.18 * quality)) : -0.06,
+    unresolvedReduction: outcome ? clamp01(0.72 * coverage + 0.12 * quality) : 0,
+    uncertaintyDelta: outcome ? -clamp01(0.05 + 0.15 * quality) : Math.max(0, Math.min(0.16, 0.07 + 0.08 * failureRate)),
+    contradictionDelta: outcome ? -clamp01(0.04 * (1 - contradictionPressure)) : Math.max(0, Math.min(0.14, 0.03 + 0.08 * contradictionPressure)),
+    cost: clamp01(0.08 + 0.02 * Math.min(4, candidates.length))
+  };
+  return {
+    outcome,
+    delta,
+    actualDelta: toJsonValue({
+      schema: "scce.cognitive_mpc.proposal_observation.v1",
+      operatorId,
+      generatedDraftCount: candidates.length,
+      viableDraftCount: viable.length,
+      bestDraftId: best?.id ?? null,
+      requirementCoverage: coverage,
+      quality,
+      failureRate,
+      contradictionPressure,
+      delta
+    }),
+    trace: toJsonValue({ source: "cognitive-planner.generated-proposals", operatorId, generatedDraftCount: candidates.length })
+  };
+}
+
+function operatorMpcRouteRanks(result: CognitiveMpcRunResult | undefined): ReadonlyMap<string, number> {
+  if (!result) return new Map();
+  const successful = result.observations
+    .filter(row => row.outcome)
+    .sort((left, right) => left.energyAfter - right.energyAfter || left.operatorId.localeCompare(right.operatorId));
+  const ranks = new Map<string, number>();
+  for (const row of successful) if (!ranks.has(row.operatorId)) ranks.set(row.operatorId, ranks.size);
+  return ranks;
+}
+
+function draftOperatorRank(draft: ScoredDraft, operatorOrder: ReadonlyMap<string, number>): number {
+  const ranks = draft.operatorActivations
+    .map(operator => operatorOrder.get(operator.operatorId))
+    .filter((rank): rank is number => rank !== undefined);
+  return ranks.length > 0 ? Math.min(...ranks) : Number.MAX_SAFE_INTEGER;
+}
+
+function requirementCoverage(requiredCount: number, satisfiedCount: number): number {
+  return requiredCount === 0 ? (satisfiedCount > 0 ? 1 : 0) : clamp01(satisfiedCount / requiredCount);
 }
 
 function activeReasoningBases(requirements: TurnRequirementField, operators: readonly ActivatedOperator[]): ClaimBasis[] {

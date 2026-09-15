@@ -206,6 +206,7 @@ export * from "./walsh-spine.js";
 export * from "./counterfactual-cognition.js";
 export * from "./safety-rail-engine.js";
 export * from "./runtime-orchestrator.js";
+export * from "./operator-mpc-scheduler.js";
 export * from "./runtime-coherence.js";
 export * from "./runtime-deadline.js";
 export * from "./runtime-cost-estimate.js";
