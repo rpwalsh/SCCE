@@ -9,9 +9,9 @@ import mammoth from "mammoth";
 import { createHasher, normalizePath, openingIdentityUnits, sourceTitleFromUri, toJsonValue, type JsonValue } from "@scce/kernel";
 import type { ScceRuntimeConfig } from "./config.js";
 import { extractNodeSourceCodeFacts } from "./code-graph.js";
-import { runDocumentExtractionWorker } from "./document-extraction-worker-client.js";
+import { documentExtractionWorkerUrl, runDocumentExtractionWorker } from "./document-extraction-worker-client.js";
 import type { BundledOcrProfile } from "./document-wasm-extraction.js";
-import { DEFAULT_OCR_PROFILE } from "./ocr-profile.js";
+import { DEFAULT_OCR_PROFILE, resolveOcrProfile } from "./ocr-profile.js";
 import { extractWorkbookBytes } from "./spreadsheet.js";
 
 export interface ParserAttempt {
@@ -62,7 +62,6 @@ export interface DocumentExtractionOptions {
   maxOutputBytes?: number;
   timeoutMs?: number;
   signal?: AbortSignal;
-  requireComplete?: boolean;
   /** Selected by the source adapter; this names a packaged OCR profile only. */
   ocrProfile?: BundledOcrProfile;
 }
@@ -193,13 +192,20 @@ function requiresBinaryParser(extension: string): boolean {
 }
 
 export async function diagnoseExtractionTools(config: ScceRuntimeConfig): Promise<Array<{ name: string; ok: boolean; detail: string; requiredFor: string[] }>> {
-  void config;
+  const worker = probe(() => documentExtractionWorkerUrl().href);
+  const profileId = config.runtime.ocr?.profile ?? DEFAULT_OCR_PROFILE;
+  const profile = probe(() => resolveOcrProfile(profileId).data.langPath);
   return [
-    { name: "pdfjs-dist", ok: true, detail: "packaged JavaScript PDF parser in a bounded Node worker", requiredFor: ["pdf"] },
-    { name: "tesseract.js", ok: true, detail: "packaged WASM OCR and configured local traineddata in a bounded Node worker", requiredFor: ["image-ocr"] },
+    { name: "pdfjs-dist", ok: worker.ok, detail: worker.ok ? `bounded Node worker ${worker.detail}` : worker.detail, requiredFor: ["pdf"] },
+    { name: "tesseract.js", ok: worker.ok && profile.ok, detail: !worker.ok ? worker.detail : profile.ok ? `OCR profile ${profileId} at ${profile.detail}` : profile.detail, requiredFor: ["image-ocr"] },
     { name: "mammoth", ok: true, detail: "npm package", requiredFor: ["docx"] },
     { name: "sheetjs-ce", ok: true, detail: "vendored 0.20.3; bounded child process; formulas are not evaluated", requiredFor: ["xlsx", "xlsm", "xls"] }
   ];
+}
+
+function probe(check: () => string): { ok: boolean; detail: string } {
+  try { return { ok: true, detail: check() }; }
+  catch (error) { return { ok: false, detail: error instanceof Error ? error.message : String(error) }; }
 }
 
 function boundedOutputBytes(requested: number | undefined, sourceLimit: number): number {

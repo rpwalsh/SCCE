@@ -7,7 +7,7 @@ import { createCanvas } from "@napi-rs/canvas";
 import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 import type { PDFDocumentProxy } from "pdfjs-dist/legacy/build/pdf.mjs";
 import Tesseract from "tesseract.js";
-import { assertOcrProfileId, DEFAULT_OCR_PROFILE } from "./ocr-profile.js";
+import { DEFAULT_OCR_PROFILE, resolveOcrProfile, type ResolvedOcrProfile } from "./ocr-profile.js";
 
 export type BundledOcrProfile = string;
 
@@ -262,19 +262,8 @@ async function createOcrWorker(profile: ReturnType<typeof bundledOcrProfile>): P
   return worker;
 }
 
-function bundledOcrProfile(id: BundledOcrProfile): { id: BundledOcrProfile; data: { code: string; gzip: boolean; langPath: string } } {
-  assertOcrProfileId(id);
-  let data: { code?: unknown; gzip?: unknown; langPath?: unknown };
-  try {
-    data = require(`@tesseract.js-data/${id}`) as { code?: unknown; gzip?: unknown; langPath?: unknown };
-  } catch {
-    throw new Error(`OCR profile is not locally packaged: ${id}`);
-  }
-  if (typeof data.code !== "string" || typeof data.gzip !== "boolean" || typeof data.langPath !== "string" || !path.isAbsolute(data.langPath))
-    throw new Error(`OCR profile has invalid local package data: ${id}`);
-  const dataPath = path.join(data.langPath, `${data.code}.traineddata${data.gzip ? ".gz" : ""}`);
-  if (!existsSync(dataPath)) throw new Error(`OCR profile data is not locally installed: ${id}`);
-  return { id, data: { code: data.code, gzip: data.gzip, langPath: data.langPath } };
+function bundledOcrProfile(id: BundledOcrProfile): ResolvedOcrProfile {
+  return resolveOcrProfile(id);
 }
 
 class BoundedUtf8Text {
