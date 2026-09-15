@@ -33,6 +33,8 @@ describe("Mouth learned-construction candidate", () => {
     expect(result.spoken.text).toBe("Aster  powers pump!");
     expect(result.spoken.evidenceRefs).toEqual([result.evidence.id]);
     expect(result.spoken.realizationTrace.selected.id).toMatch(/^candidate:generated:learned-construction:/u);
+    expect(result.spoken.constructionCycleOutcome?.outcome).toBe(true);
+    expect(result.spoken.constructionCycleOutcome?.constructionId).toBeTypeOf("string");
     const candidate = learnedCandidate(result.spoken);
     expect(JSON.stringify(candidate?.audit)).toContain("scce.mouth.learned_construction_candidate.v2");
     expect(JSON.stringify(candidate?.audit)).toContain("provenance");

@@ -240,6 +240,7 @@ import { createAutonomousToolCognition } from "./tool-cognition.js";
 import { createTrainingOrchestrator } from "./training-orchestrator.js";
 import { canonicalTranslationTargetKey, createTranslationEngine, type TranslationPlan } from "./translation.js";
 import { CALIBRATION_IDS, CALIBRATION_SUBSYSTEM_IDS, CALIBRATION_TASK_CLASS_IDS, calibrationObservationRecord, judgeRequirementObservation } from "./calibration-spine.js";
+import { constructionCycleScoresFromMemory, persistConstructionCycleConsistency } from "./construction-cycle-consistency.js";
 import {
   afterTurnMaintenanceDecision,
   previewTraceText
@@ -562,6 +563,26 @@ export function createProductionTurnRuntime(options: {
       .finally(() => { operatorOutcomeLoads.delete(conversationId); });
     operatorOutcomeLoads.set(conversationId, load);
   };
+
+  // Construction-cycle scores are global language memory, so hydrate them
+  // once per runtime rather than once per turn.  The first turn after a
+  // restart starts this read in flight; a later turn sees the durable prior
+  // without paying a database round trip on the response path.
+  let residentConstructionCycleScores: ReadonlyMap<string, number> | undefined;
+  let constructionCycleScoresLoad: Promise<void> | undefined;
+  const warmConstructionCycleScores = (): void => {
+    if (residentConstructionCycleScores || constructionCycleScoresLoad) return;
+    const dialogueMemory = deps.storage.dialogueMemory as Partial<typeof deps.storage.dialogueMemory> | undefined;
+    if (!dialogueMemory?.listCalibrationObservations) {
+      residentConstructionCycleScores = new Map();
+      return;
+    }
+    constructionCycleScoresLoad = constructionCycleScoresFromMemory({ listCalibrationObservations: dialogueMemory.listCalibrationObservations })
+      .then(scores => { residentConstructionCycleScores = scores; })
+      .catch(() => { residentConstructionCycleScores = new Map(); })
+      .finally(() => { constructionCycleScoresLoad = undefined; });
+  };
+  warmConstructionCycleScores();
 
   // Online requirement calibration lives for the runtime, not the turn: the model is read once, taught in memory,
   // and written back on a bounded cadence. A turn may not spend a database round trip on training.
@@ -4262,6 +4283,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         prohibitedOutputFeatures: requirementField.prohibitedFeatures,
         calibrationModels,
         calibrationTaskClass,
+        ...(residentConstructionCycleScores ? { cycleConsistencyByConstructionId: residentConstructionCycleScores } : {}),
+        constructionCycleSourceTraceId: String(episodeId),
         requestedAuthority,
         creativeRequestFrame,
         dialogueUserStyleProfile: authorityDialogueState.userStyleProfile,
@@ -5270,6 +5293,42 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         answer: emission.answer,
         assistantForce: emission.assistantForce
       });
+      // Mouth emits a cycle outcome only for the learned construction that
+      // won final surface selection.  Persist after the visible checkpoint so
+      // durable learning cannot add latency to the user's first answer.
+      if (spoken.constructionCycleOutcome) {
+        try {
+          const cycleObservation = await persistConstructionCycleConsistency(
+            deps.storage.dialogueMemory,
+            spoken.constructionCycleOutcome
+          );
+          // Make the just-observed result available to the next turn in this
+          // process as well; a restart will reconstruct the same map from the
+          // durable calibration rows.
+          const nextCycleScores = new Map(residentConstructionCycleScores ?? []);
+          nextCycleScores.set(
+            spoken.constructionCycleOutcome.constructionId,
+            spoken.constructionCycleOutcome.score
+          );
+          residentConstructionCycleScores = nextCycleScores;
+          kernelTrace({
+            stage: "mouth.construction_cycle",
+            label: "kernel.turn",
+            counts: { semanticDelta: spoken.constructionCycleOutcome.semanticDelta.total },
+            support: {
+              observationId: cycleObservation.id,
+              constructionId: spoken.constructionCycleOutcome.constructionId,
+              planId: spoken.constructionCycleOutcome.planId,
+              outcome: spoken.constructionCycleOutcome.outcome,
+              score: spoken.constructionCycleOutcome.score,
+              sourceTraceId: spoken.constructionCycleOutcome.sourceTraceId ?? null
+            }
+          });
+        } catch {
+          // Cycle calibration is a durable improvement to later turns, never
+          // a reason to retract an already visible answer.
+        }
+      }
       // Construct graphs are already held in memory by Mouth and no pre-answer decision reads their durable rows.
       // Persist them after the visible response checkpoint; the exact same graphs remain available to all later
       // bookkeeping and proof-bearing dialogue projection.
