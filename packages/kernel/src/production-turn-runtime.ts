@@ -252,6 +252,7 @@ import { createSurfaceLanguageRuntime } from "./surface-language-runtime.js";
 import { surfaceEchoesPrompt } from "./creative-section-realization.js";
 import { buildCognitiveCapabilityManifest, type CognitiveCapability } from "./cognitive-capability-manifest.js";
 import { primeCorpusIdentityForTurn } from "./corpus-identity-runtime.js";
+import { corpusNamedIdentities } from "./corpus-identity.js";
 import { createTurnSignals } from "./turn-signals.js";
 import { createAutonomousToolCognition } from "./tool-cognition.js";
 import { createTrainingOrchestrator } from "./training-orchestrator.js";
@@ -1628,7 +1629,18 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           events
         };
       }
-      const discourseObject = discourseObjectStateFromMetadata(input.metadata);
+      const routedDiscourseObject = discourseObjectStateFromMetadata(input.metadata);
+      // The server builds the object before this turn measures what the request names, so it read the previous request's identities.
+      const requestNamedIdentities = routedDiscourseObject ? corpusNamedIdentities(input.text) : [];
+      const discourseObject = requestNamedIdentities.length ? undefined : routedDiscourseObject;
+      if (routedDiscourseObject && !discourseObject) {
+        kernelTrace({
+          stage: "graph.resolve.discourse_unbound",
+          label: "kernel.turn",
+          counts: { carriedEvidence: routedDiscourseObject.evidenceIds.length },
+          support: { objectId: routedDiscourseObject.objectId, requestIdentities: requestNamedIdentities.slice(0, 4) }
+        });
+      }
       const discourseObjectTrace = discourseObject ? toJsonValue(discourseObject) : undefined;
       if (discourseObjectTrace) events.push(await append(eventFactory.create({ episodeId, typeId: "DiscourseObjectBound", payload: discourseObjectTrace })));
       // A program-authority request (imperative: write/fix/add code) is never a near-duplicate of
