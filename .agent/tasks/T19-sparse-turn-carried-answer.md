@@ -19,3 +19,12 @@ einstein" true, "no thats wrong" true, "fuck off" false, "thanks" false. Turns 4
 kernel init through it, but removing it does not change the outcome: offline without `sessionContextEvidence` the same
 turns carry through `discourse_bound`. Replace both with a measured test (closed class, corpus identity) and keep the
 2026-09-12 pronoun follow-ups ("where and when was he born?") answering.
+
+## 2026-09-15 falsified: the leading-word rule is not the cause
+
+The scaffolding lane removed `requestLeadingScaffoldingUnit` and re-ran the sparse-turn repro offline (kernel turn,
+Einstein carrier, then "fuck off" / "thanks" / "no thats wrong"): the Einstein lead is re-served identically with
+the rule present and with it removed. In that fixture the carry path never consults these units -- with no learned
+closed class in the session, coverage units are `[]` by design (local-evidence-runtime:185). The stated cause was
+wrong; the carry comes from elsewhere. Next: trace which stage re-serves the prior answer when the request has no
+admitted evidence of its own, with a session that HAS a learned closed class.
