@@ -60,10 +60,10 @@ describe("compact turn result", () => {
       events: Array.from({ length: 100 }, (_, index) => ({
         id: `event.${index}`,
         episodeId: "episode.compact.fixture",
-        typeId: "FixtureEvent",
+        typeId: index === 64 ? "TestExecuted" : "FixtureEvent",
         t: index,
         parents: [],
-        payload: { oversized }
+        payload: { oversized, passed: true, attempt: index, nested: { deep: { oversized } } }
       })),
       field: { oversized },
       cognitiveProposals: { oversized },
@@ -92,8 +92,58 @@ describe("compact turn result", () => {
     expect(projected).not.toHaveProperty("cognitiveProposals");
     expect(projected).not.toHaveProperty("workingMemory");
     expect(projected).not.toHaveProperty("constructGraph");
-    expect(projected.events).toHaveLength(64);
-    expect(serialized.length).toBeLessThan(50_000);
+    expect(JSON.stringify({ ...projected, events: [] }).length).toBeLessThan(50_000);
     expect(serialized).not.toContain(oversized);
   });
+
+  it("keeps every event with its scalar payload fields and never truncates the answer", () => {
+    const oversized = "x".repeat(250_000);
+    const answer = "y".repeat(40_000);
+    const result = {
+      ...baseResult(),
+      answer,
+      events: Array.from({ length: 100 }, (_, index) => ({
+        id: `event.${index}`,
+        episodeId: "episode.compact.fixture",
+        typeId: index === 64 ? "TestExecuted" : "FixtureEvent",
+        t: index,
+        parents: [],
+        payload: { oversized, passed: index !== 3, attempt: index, nested: { deep: { oversized } } }
+      }))
+    } as unknown as TurnResult;
+
+    const projected = compactTurnResult(result);
+    const events = projected.events as Array<{ typeId: string; payload: Record<string, unknown> }>;
+
+    expect(projected.answer).toBe(answer);
+    expect(events).toHaveLength(100);
+    expect(events[64]).toMatchObject({ typeId: "TestExecuted", payload: { passed: true, attempt: 64 } });
+    expect(events[3]?.payload).toMatchObject({ passed: false, attempt: 3 });
+    expect(events.filter(event => event.typeId === "TestExecuted" && event.payload.passed === true)).toHaveLength(1);
+    for (const event of events) expect(JSON.stringify(event).length).toBeLessThan(2_000);
+    expect(JSON.stringify(projected)).not.toContain(oversized);
+  });
 });
+
+function baseResult(): Record<string, unknown> {
+  return {
+    episodeId: "episode.compact.fixture",
+    answer: "",
+    epistemicForce: "invented",
+    evidence: [],
+    entailment: {
+      claim: {}, verdict: "entailed", semanticVerdict: "entailed", force: "invented", support: 0, contradiction: 0,
+      faithfulnessLcb: 1, confidence: {}, scores: {}, obligations: [], mappings: [], transforms: [], counterexamples: [],
+      missing: [], evidenceIds: [], boundaries: [],
+      proof: { id: "p", claimId: "c", verdict: "invented", confidence: {}, proofGraph: { nodes: [], edges: [] }, evidenceIds: [], transformIds: [], scores: {}, validatorVersion: "fixture", createdAt: 1 }
+    },
+    learningNeeds: [],
+    truthState: {},
+    evidenceForce: "creative",
+    guardFlags: {},
+    calibrationStatus: "uncalibrated",
+    proofCarryingAnswer: {},
+    events: [],
+    scoreTraces: []
+  };
+}

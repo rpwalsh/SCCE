@@ -3703,7 +3703,7 @@ export function compactTurnResult(result: TurnResult): Record<string, unknown> {
   const evidence = result.evidence.slice(0, 24).map(compactEvidenceSpan);
   return {
     episodeId: result.episodeId,
-    answer: previewText(result.answer, 16_000),
+    answer: result.answer,
     epistemicForce: result.epistemicForce,
     ...(result.assistantForce === undefined ? {} : { assistantForce: result.assistantForce }),
     ...(result.requestedAuthority === undefined ? {} : { requestedAuthority: result.requestedAuthority }),
@@ -3734,7 +3734,7 @@ export function compactTurnResult(result: TurnResult): Record<string, unknown> {
       answerRevision: compactJson(result.answerRevision, 1),
       runtimeCoherence: compactJson(result.runtimeCoherence, 1)
     },
-    events: result.events.slice(-64).map(compactEvent)
+    events: result.events.map(compactEvent)
   };
 }
 
@@ -3840,7 +3840,8 @@ function compactEvent(event: TurnResult["events"][number]): Record<string, unkno
     typeId: event.typeId,
     t: event.t,
     parents: event.parents.slice(0, 32),
-    payload: compactJson(event.payload, 0)
+    // Depth 1 keeps every scalar payload field; nesting is the cost bound, not the event count.
+    payload: compactJson(event.payload, 1)
   };
 }
 
