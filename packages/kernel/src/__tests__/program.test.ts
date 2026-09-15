@@ -67,7 +67,10 @@ describe("ProgramGraph source synthesis", () => {
         }
       }
     });
-    expect(construct.program?.language).toBe("media-type:text/plain");
+    // ProgramGraph reports the executable artifact language. The source MIME
+    // type remains attached to its evidence and must not masquerade as the
+    // runtime needed to load the emitted module.
+    expect(construct.program?.language).toBe("javascript");
     expect(construct.program?.entrypoint).toBe("src/program.mjs");
     expect(construct.program?.files.map(f => f.path)).toContain("src/program.mjs");
     expect(construct.program?.files.map(f => f.path)).toContain("test/program.test.mjs");
