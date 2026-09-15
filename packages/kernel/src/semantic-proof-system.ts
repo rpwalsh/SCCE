@@ -168,8 +168,9 @@ export function createSemanticProofSystem(options: { hasher?: Hasher; dimensions
       return atoms;
     },
 
-    atomizeGraph(nodes: readonly GraphNode[] = []): SemanticAtom[] {
-      return atomizeGraphNodes(nodes, hasher, dimensions);
+    atomizeGraph(nodes: readonly GraphNode[] = [], evidence: readonly EvidenceSpan[] = []): SemanticAtom[] {
+      const certifyingEvidenceIds = certifyingEvidenceIdSet(evidence);
+      return atomizeGraphNodes(nodes, hasher, dimensions, certifyingEvidenceIds);
     },
 
     unify(left: SemanticAtom, right: SemanticAtom): SemanticUnification {
@@ -187,7 +188,12 @@ export function createSemanticProofSystem(options: { hasher?: Hasher; dimensions
         groundingSurfaces: input.evidence.map(span => span.text)
       });
       const evidenceAtoms = this.atomizeEvidence(input.evidence).slice(0, maxEvidenceAtoms);
-      const graphAtoms = atomizeGraphNodes(input.nodes ?? [], hasher, dimensions).slice(0, 2048);
+      // A graph node's evidenceIds are references, not proof. Rehydration may
+      // recover a source assertion node whose old representation claimed
+      // certification; only the current proof boundary over the exact spans
+      // may restore factual eligibility.
+      const certifyingEvidenceIds = certifyingEvidenceIdSet(input.evidence);
+      const graphAtoms = atomizeGraphNodes(input.nodes ?? [], hasher, dimensions, certifyingEvidenceIds).slice(0, 2048);
       const activeAtoms = applyFieldMass([...evidenceAtoms, ...graphAtoms], input.field);
       const allSupportAtoms = activeAtoms.length ? activeAtoms : [...evidenceAtoms, ...graphAtoms];
       // What counts as one source, for the purpose of two of them disagreeing.
@@ -332,13 +338,18 @@ export function atomizeText(input: {
   return atoms;
 }
 
-function atomizeGraphNodes(nodes: readonly GraphNode[], hasher: Hasher, dimensions: number): SemanticAtom[] {
+function atomizeGraphNodes(
+  nodes: readonly GraphNode[],
+  hasher: Hasher,
+  dimensions: number,
+  certifyingEvidenceIds: ReadonlySet<string>
+): SemanticAtom[] {
   const atoms: SemanticAtom[] = [];
   for (const node of nodes) {
     // A node that already carries a proposition is read back as that proposition. Re-deriving one from the node's
     // text would make the stored predicate, roles and constraints advisory, and the answer would then depend on
     // whichever relation model happened to be in hand at read time rather than on what was established at write.
-    const stored = propositionAtomFromNode(node, hasher, dimensions);
+    const stored = propositionAtomFromNode(node, hasher, dimensions, certifyingEvidenceIds);
     if (stored) {
       atoms.push(stored);
       continue;
@@ -346,6 +357,7 @@ function atomizeGraphNodes(nodes: readonly GraphNode[], hasher: Hasher, dimensio
     const text = graphNodeText(node);
     if (!text) continue;
     const proofClass = graphNodePriorClass(node);
+    const certifiesFactualProof = graphEvidenceIsCurrentlyCertifying(node, certifyingEvidenceIds, proofClass);
     const derived = atomizeText({
       text,
       source: SEMANTIC_SOURCE.GRAPH,
@@ -355,8 +367,12 @@ function atomizeGraphNodes(nodes: readonly GraphNode[], hasher: Hasher, dimensio
       evidenceIds: node.evidenceIds,
       alpha: node.alpha,
       proofClass,
-      certifiesFactualProof: node.evidenceIds.length > 0 && !isLearnedPriorClass(proofClass),
-      proofBoundaryReason: isLearnedPriorClass(proofClass) ? `proof-boundary.graph-prior-not-evidence:${proofClass}` : "proof-boundary.graph-exact-evidence-refs"
+      certifiesFactualProof,
+      proofBoundaryReason: isLearnedPriorClass(proofClass)
+        ? `proof-boundary.graph-prior-not-evidence:${proofClass}`
+        : certifiesFactualProof
+          ? "proof-boundary.graph-exact-evidence-refs"
+          : "proof-boundary.graph-evidence-not-currently-certifying"
     });
     for (const atom of derived) {
       atoms.push({
@@ -367,6 +383,23 @@ function atomizeGraphNodes(nodes: readonly GraphNode[], hasher: Hasher, dimensio
     }
   }
   return atoms;
+}
+
+function certifyingEvidenceIdSet(evidence: readonly EvidenceSpan[]): Set<string> {
+  // This graph slice may contain evidence for several different claims. Do
+  // not let two unrelated source assertions corroborate one another merely
+  // because they coexist in the active slice. Set-level corroboration is only
+  // valid after a typed claim-specific selector has formed its evidence set.
+  return new Set(evidence
+    .map(evidenceProofBoundary)
+    .filter(boundary => boundary.certifiesFactualProof)
+    .map(boundary => boundary.evidenceId));
+}
+
+function graphEvidenceIsCurrentlyCertifying(node: GraphNode, certifyingEvidenceIds: ReadonlySet<string>, proofClass?: string): boolean {
+  return !isLearnedPriorClass(proofClass)
+    && node.evidenceIds.length > 0
+    && node.evidenceIds.every(evidenceId => certifyingEvidenceIds.has(String(evidenceId)));
 }
 
 function graphNodeText(node: GraphNode): string {
@@ -1411,7 +1444,12 @@ export function propositionNodeRepresentation(atom: SemanticAtom): JsonValue {
 }
 
 /** The proposition a node carries, rehydrated, or undefined when the node carries a surface instead. Pure. */
-function propositionAtomFromNode(node: GraphNode, hasher: Hasher, dimensions: number): SemanticAtom | undefined {
+function propositionAtomFromNode(
+  node: GraphNode,
+  hasher: Hasher,
+  dimensions: number,
+  certifyingEvidenceIds: ReadonlySet<string>
+): SemanticAtom | undefined {
   const representation = node.representation;
   if (!representation || typeof representation !== "object" || Array.isArray(representation)) return undefined;
   const record = representation as Record<string, JsonValue>;
@@ -1434,6 +1472,7 @@ function propositionAtomFromNode(node: GraphNode, hasher: Hasher, dimensions: nu
       `${constraint.kind}:${constraint.subject}:${constraint.operator}:${JSON.stringify(constraint.value)}`)
   ], hasher, dimensions);
   const proofClass = typeof record.proofClass === "string" ? record.proofClass : "none";
+  const certifiesFactualProof = graphEvidenceIsCurrentlyCertifying(node, certifyingEvidenceIds, proofClass);
   return {
     id: semanticAtomId(hasher, {
       graphNode: node.id,
@@ -1457,7 +1496,9 @@ function propositionAtomFromNode(node: GraphNode, hasher: Hasher, dimensions: nu
     nodeIds: [node.id],
     vector,
     proofClass,
-    certifiesFactualProof: record.certifiesFactualProof === true,
-    ...(typeof record.proofBoundaryReason === "string" ? { proofBoundaryReason: record.proofBoundaryReason } : {})
+    certifiesFactualProof,
+    proofBoundaryReason: certifiesFactualProof
+      ? "proof-boundary.graph-exact-evidence-refs"
+      : "proof-boundary.graph-evidence-not-currently-certifying"
   };
 }

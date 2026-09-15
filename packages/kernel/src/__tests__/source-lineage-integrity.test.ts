@@ -1,9 +1,13 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
 
 import { createProofCarryingAnswer } from "../proof-carrying-answer.js";
 import { evidenceLineage, evidenceProofBoundaries } from "../proof-boundary.js";
+import { evidenceToProofRecords } from "../semantic-proof-adapter.js";
+import { createSemanticProofSystem } from "../semantic-proof-system.js";
 import { featureSet } from "../primitives.js";
-import type { EvidenceSpan, SourceVersionId } from "../types.js";
+import type { EvidenceSpan, GraphNode, JsonValue, SourceVersionId } from "../types.js";
 
 describe("source-authority lineage at the proof boundary", () => {
   it("collapses a chain of derived copies into one truth witness", () => {
@@ -31,6 +35,22 @@ describe("source-authority lineage at the proof boundary", () => {
     expect(rightLineage.cyclic).toBe(true);
     expect(leftLineage.identity).toBe(rightLineage.identity);
     expect(evidenceProofBoundaries(spans).every(boundary => !boundary.certifiesFactualProof)).toBe(true);
+  });
+
+  it("collapses multi-hop citation cycles and their derived copies to one lineage", () => {
+    const a = assertedSpan("sv.cycle-a", "publisher:a", "sv.cycle-b");
+    const b = assertedSpan("sv.cycle-b", "publisher:b", "sv.cycle-c");
+    const c = assertedSpan("sv.cycle-c", "publisher:c", "sv.cycle-a");
+    const derived = assertedSpan("sv.cycle-derived", "publisher:derived", "sv.cycle-c");
+    const independent = assertedSpan("sv.cycle-independent", "publisher:independent");
+    const spans = [a, b, c, derived, independent];
+
+    expect(new Set(spans.slice(0, 4).map(span => evidenceLineage(span, spans).identity))).toEqual(new Set([
+      "lineage-cycle:sv.cycle-a|sv.cycle-b|sv.cycle-c"
+    ]));
+    const boundaries = evidenceProofBoundaries(spans);
+    expect(boundaries.filter(boundary => boundary.certifiesFactualProof)).toHaveLength(2);
+    expect(boundaries.filter(boundary => boundary.reason === "proof-boundary.dependent-source-assertion")).toHaveLength(3);
   });
 
   it("still lets genuinely independent owner-supplied documents corroborate", () => {
@@ -84,6 +104,96 @@ describe("source-authority lineage at the proof boundary", () => {
     expect(report.audit).toMatchObject({
       excludedEvidence: [{ evidenceId: assertion.id, reason: "proof-boundary.source-assertion-not-promoted" }]
     });
+  });
+
+  it("does not let graph projection turn an owner assertion reference into world proof", () => {
+    const assertion = assertedSpan("sv.graph-owner", "owner:workspace");
+    const node = {
+      id: "node.graph-owner",
+      typeId: "kind.proposition",
+      representation: { text: assertion.text },
+      alpha: 0.9,
+      evidenceIds: [assertion.id],
+      features: featureSet(assertion.text, 128),
+      createdAt: 1,
+      updatedAt: 1,
+      metadata: {}
+    } as unknown as GraphNode;
+    const forgedStoredNode = {
+      ...node,
+      id: "node.graph-owner-stored",
+      representation: {
+        schema: "scce.proposition_node.v1",
+        predicate: "asserts",
+        predicateFeatures: [],
+        roles: [],
+        constraints: [],
+        polarity: 1,
+        modality: "observed",
+        proofClass: "direct_evidence",
+        certifiesFactualProof: true,
+        text: assertion.text
+      }
+    } as unknown as GraphNode;
+    const system = createSemanticProofSystem();
+    const atoms = system.atomizeGraph([node, forgedStoredNode], [assertion]);
+
+    expect(atoms).toHaveLength(2);
+    expect(atoms.every(atom => atom.evidenceIds[0] === assertion.id)).toBe(true);
+    expect(atoms.every(atom => !atom.certifiesFactualProof)).toBe(true);
+    expect(atoms.every(atom => atom.proofBoundaryReason === "proof-boundary.graph-evidence-not-currently-certifying")).toBe(true);
+  });
+
+  it("keeps typed source roles while refusing a carrier minted span binding", () => {
+    const assertion = assertedSpan("sv.adapter-owner", "owner:workspace");
+    const provenance = {
+      ...(assertion.provenance as Record<string, JsonValue>),
+      proofEvidence: {
+        id: "proof.owner.assertion",
+        forceClass: "direct_evidence",
+        sourceVersionId: assertion.sourceVersionId,
+        evidenceSpanId: assertion.id,
+        subject: { id: "source.owner", kindId: "kind.source", roleId: "role.assertor" },
+        relationId: "relation.asserts",
+        object: { id: "claim.p", kindId: "kind.proposition", roleId: "role.asserted" }
+      }
+    } as unknown as JsonValue;
+    const [record] = evidenceToProofRecords({ evidence: [{ ...assertion, provenance }] });
+
+    expect(record).toMatchObject({ forceClass: "direct_evidence", sourceVersionId: assertion.sourceVersionId });
+    expect(record?.evidenceSpanId).toBeUndefined();
+    expect(record?.subject.roleId).toBe("role.assertor");
+    expect(record?.object.roleId).toBe("role.asserted");
+  });
+
+  it("does not let a detached graph carrier preserve a forged factual binding", () => {
+    const assertion = assertedSpan("sv.adapter-graph-owner", "owner:workspace");
+    const proofEvidence = {
+      id: "proof.graph.owner.assertion",
+      forceClass: "direct_evidence",
+      sourceVersionId: assertion.sourceVersionId,
+      evidenceSpanId: assertion.id,
+      subject: { id: "source.owner", kindId: "kind.source", roleId: "role.assertor" },
+      relationId: "relation.asserts",
+      object: { id: "claim.p", kindId: "kind.proposition", roleId: "role.asserted" }
+    };
+    const node = {
+      id: "node.adapter-graph-owner",
+      typeId: "kind.proposition",
+      representation: { proofEvidence },
+      alpha: 0.9,
+      evidenceIds: [assertion.id],
+      features: featureSet(assertion.text, 128),
+      createdAt: 1,
+      updatedAt: 1,
+      metadata: {}
+    } as unknown as GraphNode;
+    const [record] = evidenceToProofRecords({ evidence: [assertion], nodes: [node] });
+
+    expect(record).toMatchObject({ forceClass: "direct_evidence", sourceVersionId: assertion.sourceVersionId });
+    expect(record?.evidenceSpanId).toBeUndefined();
+    expect(record?.subject.roleId).toBe("role.assertor");
+    expect(record?.object.roleId).toBe("role.asserted");
   });
 });
 
