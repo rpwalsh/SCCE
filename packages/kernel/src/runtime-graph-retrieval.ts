@@ -176,6 +176,7 @@ export function createRuntimeGraphRetrieval(options: {
   const graphSliceCacheMaxEntries = positiveRuntimeInt("SCCE_GRAPH_SLICE_CACHE_ENTRIES", 128);
 
   const graphSliceCacheMaxBytes = positiveRuntimeInt("SCCE_GRAPH_SLICE_CACHE_MB", 256) * 1024 * 1024;
+  const evidenceSearchInFlightMaxEntries = positiveRuntimeInt("SCCE_EVIDENCE_SEARCH_INFLIGHT", 128);
 
   /**
    * Real, measured fix: a single turn's hot-neighborhood retrieval was
@@ -228,6 +229,14 @@ export function createRuntimeGraphRetrieval(options: {
   const graphSliceCache = new Map<string, GraphSliceCacheEntry>();
   const graphSliceInFlight = new Map<string, { epoch: number; promise: Promise<RuntimeGraphSliceValue> }>();
   const evidenceBatchInFlight = new Map<string, { epoch: number; promise: Promise<EvidenceSpan[]> }>();
+  // Source anchored turns already deduplicate equivalent queries within one
+  // invocation. Keep the same bounded single-flight boundary across concurrent
+  // invocations too: the result is shared only while storage is in flight, so
+  // admission and per-request filtering still run independently for every turn.
+  const evidenceSearchInFlight = new Map<string, {
+    epoch: number;
+    promise: Promise<Awaited<ReturnType<typeof deps.storage.evidence.searchEvidence>>>;
+  }>();
 
   let graphSliceCacheBytes = 0;
 
@@ -271,6 +280,25 @@ export function createRuntimeGraphRetrieval(options: {
       trimSourceAnchorEvidenceCache();
     }
     return loaded;
+  }
+
+  function evidenceSearchSingleFlight(
+    query: Parameters<typeof deps.storage.evidence.searchEvidence>[0]
+  ): Promise<Awaited<ReturnType<typeof deps.storage.evidence.searchEvidence>>> {
+    const epoch = runtimeCacheEpoch;
+    const key = hasher.digestHex(JSON.stringify({ ...cacheIdentity, epoch, query }));
+    const resident = evidenceSearchInFlight.get(key);
+    if (resident && resident.epoch === epoch) return resident.promise;
+    const promise = deps.storage.evidence.searchEvidence(query);
+    // Do not let a burst of unrelated turns turn single-flight into an
+    // unbounded promise registry. Once full, this query still proceeds, it
+    // simply does not become reusable by another concurrent turn.
+    if (evidenceSearchInFlight.size >= evidenceSearchInFlightMaxEntries) return promise;
+    evidenceSearchInFlight.set(key, { epoch, promise });
+    void promise.then(() => undefined, () => undefined).finally(() => {
+      if (evidenceSearchInFlight.get(key)?.promise === promise) evidenceSearchInFlight.delete(key);
+    });
+    return promise;
   }
 
 
@@ -761,7 +789,7 @@ export function createRuntimeGraphRetrieval(options: {
       const key = JSON.stringify(query);
       const cached = searchCache?.get(key);
       if (cached) return cached;
-      const pending = deps.storage.evidence.searchEvidence(query);
+      const pending = evidenceSearchSingleFlight(query);
       searchCache?.set(key, pending);
       return pending;
     };
@@ -898,7 +926,7 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
         const key = JSON.stringify(query);
         const cached = searchCache.get(key);
         if (cached) return cached;
-        const pending = deps.storage.evidence.searchEvidence(query);
+        const pending = evidenceSearchSingleFlight(query);
         searchCache.set(key, pending);
         return pending;
       })();
@@ -2536,6 +2564,7 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
       graphSliceCacheBytes = 0;
       graphSliceInFlight.clear();
       evidenceBatchInFlight.clear();
+      evidenceSearchInFlight.clear();
       hotNeighborhood = undefined;
       hotNeighborhoodLoad = undefined;
       sourceAnchorEvidenceCache.clear();
