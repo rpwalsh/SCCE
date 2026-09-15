@@ -25,3 +25,18 @@ turn pooling only its own two documents ranks everything differently, which is w
 Also unverified live: three sites that consulted position alone now consult the closed class for the first time --
 the title-lead transfer and the definitional opening-block rescue in `bestEvidenceSentences`, and `subjectOnlyRequest`
 in production-turn-runtime. On a turn whose language memory hydrates empty they now filter nothing at all.
+
+## 2026-09-15 the removal was REVERTED, with offline evidence that the live risk is real
+
+Removing `requestLeadingScaffoldingUnit` broke `dialogue-correction-restart.test.ts` (both tests, referent set
+empty). That fixture supplies NO learned closed class, which is the same condition as the live corpus for "what"
+(rank 102, limit 96): with the position crutch gone, "What is Mercury?" keeps "what" as content, the subject
+becomes the whole request, and nothing is admitted. The four answerhood fixtures were made realistic and passed;
+this one was not in that lane's test set and it failed. Reverted on main.
+
+So the order is: make the corpus-scale population reach the turn and fit `closed_class.rank_limit` so that the
+interrogatives a request actually uses fall inside the class, MEASURED live, and only then remove the position
+rule. Removing it first trades a rule violation for wrong answers.
+
+Prerequisite to check live first: `language.hydrate.continuation_population` status `measured` on a real turn, and
+where "what"/"who"/"when" rank in that population vs the limit.
