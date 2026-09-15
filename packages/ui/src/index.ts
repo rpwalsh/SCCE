@@ -242,6 +242,7 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
     const sessionId = localStorage.getItem('scce.sessionId') || ('session.' + Math.random().toString(36).slice(2) + Date.now().toString(36));
     localStorage.setItem('scce.sessionId', sessionId);
     let typingRow = null;
+    let streamingAnswerRow = null;
     let sending = false;
 
     function toggleDevPanel(open) {
@@ -277,15 +278,15 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
       return html;
     }
 
-    function add(role, text, detail) {
+    function add(role, text, detail, existingRow) {
       emptyState.style.display = 'none';
-      const row = document.createElement('div');
+      const row = existingRow || document.createElement('div');
       row.className = 'row ' + role;
-      const bubble = document.createElement('div');
+      const bubble = existingRow && existingRow.querySelector('.bubble') || document.createElement('div');
       bubble.className = 'bubble';
       if (role === 'owner') bubble.textContent = String(text || '');
       else bubble.innerHTML = renderMarkdownLite(text);
-      row.appendChild(bubble);
+      if (!bubble.isConnected) row.appendChild(bubble);
       if (detail) {
         const details = document.createElement('details');
         details.className = 'details';
@@ -297,11 +298,12 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
         details.appendChild(pre);
         bubble.appendChild(details);
       }
-      messagesInner.appendChild(row);
+      if (!row.isConnected) messagesInner.appendChild(row);
       messages.scrollTop = messages.scrollHeight;
       return row;
     }
     function showTyping(phase) {
+      if (streamingAnswerRow) return;
       if (!typingRow) {
         typingRow = document.createElement('div');
         typingRow.className = 'row scce';
@@ -318,9 +320,8 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
     function hideTyping() { if (typingRow) { typingRow.remove(); typingRow = null; } }
     let runningTaskId = '';
     function showAnswerPreview(answer) {
-      showTyping('');
-      const node = typingRow && typingRow.querySelector('#typing-phase');
-      if (node) node.textContent = String(answer).replace(/\\s+/g, ' ').slice(0, 160);
+      hideTyping();
+      streamingAnswerRow = add('scce', answer, undefined, streamingAnswerRow);
     }
     function setSending(next) {
       sending = next;
@@ -487,13 +488,18 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
       showTyping('');
       try {
         const stream = await fetch(state.reconnectUrl + '?after=' + Number(state.latestSequence || 0), { headers: { accept: 'application/x-ndjson' } });
-        const result = await continueTurnStream(stream, state, frame => { if (frame.type === 'progress') showTyping(frame.phase); });
+        const result = await continueTurnStream(stream, state, frame => {
+          if (frame.type === 'progress') showTyping(frame.phase);
+          if (typeof frame.answer === 'string' && answerHasSpeech(frame.answer)) showAnswerPreview(frame.answer);
+        });
         hideTyping(); setSending(false);
-        add('scce', turnSurface(result), turnDetail(result));
+        add('scce', turnSurface(result), turnDetail(result), streamingAnswerRow);
+        streamingAnswerRow = null;
         addFeedbackControls(result.dialogue, String(state.promptText || ''));
         setInspector({ dialogue: result.dialogue, proof: result.entailment?.proof, actionGraph: result.actionGraph });
       } catch (error) {
         hideTyping(); setSending(false);
+        if (streamingAnswerRow) { streamingAnswerRow.remove(); streamingAnswerRow = null; }
         if (String(error.message).includes('runtime declined')) add('notice', error.message);
         else add('error', t('error.prefix') + ' ' + error.message);
       }
@@ -713,7 +719,8 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
         });
         hideTyping(); setSending(false); runningTaskId = '';
         // The runtime's own force decides how the surface reads: a non-assertive continuation is a notice, not an answer.
-        add(r.assistantForce === 'insufficient_support' && !(r.evidence || []).length ? 'notice' : 'scce', turnSurface(r), turnDetail(r));
+        add(r.assistantForce === 'insufficient_support' && !(r.evidence || []).length ? 'notice' : 'scce', turnSurface(r), turnDetail(r), streamingAnswerRow);
+        streamingAnswerRow = null;
         renderEvidence(r);
         addLearningControls(r, text);
         addFeedbackControls(r.dialogue, text);
@@ -723,6 +730,7 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
         await refreshApprovals();
       } catch (e) {
         hideTyping(); setSending(false); runningTaskId = '';
+        if (streamingAnswerRow) { streamingAnswerRow.remove(); streamingAnswerRow = null; }
         if (String(e.message).includes('runtime declined')) add('notice', e.message);
         else add('error', t('error.prefix') + ' ' + e.message);
       }
