@@ -199,6 +199,11 @@ function cachedNumericTokenCounts(model: KneserNeyModel): NumericTokenCounts {
   return counts;
 }
 
+/** Cache the counts of models being admitted, so a turn that primes the lexicon only sums them. Already-cached models cost a lookup. */
+export function primeNumericTokenCounts(models: readonly KneserNeyModel[]): void {
+  for (const model of models) cachedNumericTokenCounts(model);
+}
+
 /** Test seam: how many per-model gram passes have run, and a reset of every cache. */
 export function numericTokenDerivationCount(): number {
   return derivations;
