@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { createServer } from "node:http";
+import { performance } from "node:perf_hooks";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@scce/adapters-node", async importOriginal => {
@@ -200,6 +201,10 @@ describe("turn session metadata projection", () => {
         kernel: {
           turn: async (input: OwnerInput) => {
             captured.push(input);
+            input.runtimeControl?.onProgress?.({
+              phase: "runtime.graph_slice.complete",
+              observedAtMonotonicMs: performance.now()
+            });
             throw new Error("turn-session-projection-captured");
           }
         }
@@ -288,7 +293,7 @@ describe("turn session metadata projection", () => {
     expect(frames[0]?.taskId).toEqual(expect.any(String));
     expect(frames[0]?.streamUrl).toContain("/api/turn/task/");
     expect(frames[0]?.cancelUrl).toContain("/api/turn/task/");
-    expect(frames.map(frame => frame.sequence)).toEqual([1, 2, 3]);
+    expect(frames.map(frame => frame.sequence)).toEqual([1, 2, 3, 4]);
     expect(frames[1]).toMatchObject({
       schema: "scce.turn_stream.v1",
       type: "progress",
@@ -305,6 +310,17 @@ describe("turn session metadata projection", () => {
       }
     });
     expect(Number(frames[1]?.elapsedMs)).toBeGreaterThanOrEqual(0);
+    expect(frames[2]).toMatchObject({
+      schema: "scce.turn_stream.v1",
+      type: "progress",
+      phase: "runtime.graph_slice.complete",
+      cognition: {
+        schema: "scce.turn.progress.v1",
+        stateId: "stage.boundary",
+        phaseId: "runtime.graph_slice.complete",
+        settled: false
+      }
+    });
     expect(frames.at(-1)).toMatchObject({
       schema: "scce.turn_stream.v1",
       type: "error",
