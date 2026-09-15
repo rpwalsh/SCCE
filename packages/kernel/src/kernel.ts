@@ -98,6 +98,7 @@ import type {
   TurnResult
 } from "./types.js";
 import { createWalshSpineReport, walshSpineReportToJson } from "./walsh-spine.js";
+import { withheldSurfaceForTurn } from "./withheld-surface.js";
 
 
 
@@ -629,7 +630,10 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
       return forgetUserModelClaim(deps.storage.userModelClaims, query.conversationId, query.claimId);
     },
     async turn(input: OwnerInput): Promise<TurnResult> {
-      return productionTurnRuntime.turn(input);
+      // A turn with nothing to say reports why. Silence with no record is indistinguishable from a broken turn.
+      const result = await productionTurnRuntime.turn(input);
+      const withheld = withheldSurfaceForTurn(result);
+      return withheld ? { ...result, withheld } : result;
     },
 
     async replay(episodeId: EpisodeId) {
