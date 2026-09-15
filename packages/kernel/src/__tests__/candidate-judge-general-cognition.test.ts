@@ -107,6 +107,24 @@ describe("general-cognition candidate and judge contracts", () => {
     expect(JSON.stringify(negativeCandidate?.audit)).toContain('"sessionBound":false');
   });
 
+  it("keeps a single referent's candidate set unchanged and offers one proof-answer per referent otherwise", () => {
+    const planet = evidence("evidence.referent-planet", "Mercury is the smallest planet in the Solar System.");
+    const element = evidence("evidence.referent-element", "Mercury is a chemical element with the symbol Hg.");
+    const fixture = { ...engineFixture([element, planet]), requestedAuthority: "factual" as const };
+    const baseline = createCandidateEngine().generate(fixture);
+    const single = createCandidateEngine().generate({ ...fixture, referentProofEvidenceIds: [[String(element.id), String(planet.id)]] });
+    expect(single).toEqual(baseline);
+
+    const split = createCandidateEngine().generate({ ...fixture, referentProofEvidenceIds: [[String(element.id)], [String(planet.id)]] });
+    const baselineIds = baseline.candidates.map(candidate => candidate.id);
+    expect(split.candidates.filter(candidate => baselineIds.includes(candidate.id))).toEqual(baseline.candidates.map(candidate => expect.objectContaining({ id: candidate.id, evidenceIds: candidate.evidenceIds, answer: candidate.answer })));
+    const perReferent = split.candidates.filter(candidate => !baselineIds.includes(candidate.id));
+    expect(perReferent.map(candidate => [candidate.kind, candidate.evidenceIds, candidate.answer])).toEqual([
+      ["proof-answer", [element.id], element.text],
+      ["proof-answer", [planet.id], planet.text]
+    ]);
+  });
+
   it("labels exact selected-source fallback honestly when the proof has no evidence ids", () => {
     const observed = evidence("evidence.reasoned-selected-surface", "42 kPa and 57 kPa are incompatible measurements of one state at one time.");
     const operator = activeOperator(COGNITIVE_OPERATOR_IDS.relationComposition);

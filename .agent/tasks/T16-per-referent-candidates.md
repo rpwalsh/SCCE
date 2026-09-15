@@ -31,4 +31,16 @@ Consequences to fix, in order:
 When 1 lands, flip the pinned case from `it.fails` to `it`; it asserts the answer contains the planet span and
 `selectedCandidate.audit.typedDialogueSelection.adjustmentIds` equals the persisted adjustment id.
 
+Progress (steps 1 and 3 landed, pinned case flipped):
+- 1: `candidate.ts` emits one proof-answer per referent beside the union candidates, only on turns that carry a typed
+  adjustment (`referentProofEvidenceIds`); uncorrected turns keep their field byte-identical.
+- 3: the field adjustment and the resolver match a correction against the turn's preselection context (union of
+  roles, slots, frames, scopes), since the post-selection entailment maps the request's obligations only to the
+  cited source. Server derivation in routes.ts is unchanged.
+- 2 is OPEN and needs an owner decision. An uncited cross-source referent added to the cited mention is hard
+  inadmissible by design: `scope` (required scope is the cited source; fit 0 < minimumScopeFit) and `topicSwitch`
+  (anchors are cited nodes; penalty 1 > maximumTopicSwitchPressure). Making it `hardAdmissible` means widening the
+  observation scope/anchors on every multi-source turn (cited bindings drop to scope fit 1/2) or changing resolver
+  semantics. Until then `/api/turn/outcome` still returns 422 for this correction.
+
 Offline only. Do NOT start or restart the server; one server and one database are shared.
