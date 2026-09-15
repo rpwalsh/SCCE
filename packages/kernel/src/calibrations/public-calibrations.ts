@@ -973,7 +973,11 @@ export const PUBLIC_CALIBRATIONS = Object.freeze({
   // 6.06% of them above the cut. `node tools/derive-structural-residue-cut.mjs` recomputes it on any corpus; a
   // 900k-sentence prefix of the same corpus gives 0.1289, inside this id's 0.005 resolution.
   /** Score at or above which a surface is serialized apparatus rather than a statement. Otsu, 2026-09-13. */
-  "evidence.structural_residue_cut": 0.1296
+  "evidence.structural_residue_cut": 0.1296,
+
+  // --- source preservation demand (mouth.ts sourcePreservationRequested, production-turn-runtime.ts reasonedRealizationPreservesContract)
+  /** Requirement-field preservation or source demand at or above which a turn keeps source-exact wording. */
+  "turn_requirements.source_preservation_floor": 0.6
 });
 
 export type CalibrationKey = keyof typeof PUBLIC_CALIBRATIONS;

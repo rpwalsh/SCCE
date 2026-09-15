@@ -135,6 +135,7 @@ import {
   optionalPopulationContextId
 } from "./optional-null-realization.js";
 import { planTypedDiscourse } from "./typed-discourse-plan.js";
+import { calibrated } from "./calibrations/prod-calibrations.js";
 
 const LOCAL_ANSWER_RELATION_IDS = {
   sourceQuote: "rel.1f7c4a92",
@@ -721,7 +722,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       const mouthRequestSequences = requestSentenceSequences(mouthEchoQuestionText(input));
       const nearDuplicatePreservation = mouthRequestSequences.length > 0
         && input.evidence.some(span => spanContainsRequestNearDuplicateSentence(span, mouthRequestSequences));
-      const sourcePreservationRequested = (input.requirementField?.semanticPreservation ?? 0) >= 0.6
+      const sourcePreservationRequested = (input.requirementField?.semanticPreservation ?? 0) >= calibrated("turn_requirements.source_preservation_floor")
         || nearDuplicatePreservation;
       const preserveEvidenceBackedKernelCandidate = Boolean(
         sourcePreservationRequested &&
@@ -1126,7 +1127,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
           transformationBaseline: finalTransformationBaseline(selected?.text ?? "", input),
           minimumSemanticPreservation: selectedBoundSourceSurface
             ? 0
-            : input.selectedProposal || input.requirementField.semanticPreservation >= 0.6
+            : input.selectedProposal || input.requirementField.semanticPreservation >= calibrated("turn_requirements.source_preservation_floor")
             ? preservationFloor(plan)
             : 0
         }

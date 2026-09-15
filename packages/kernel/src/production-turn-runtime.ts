@@ -88,6 +88,7 @@ import { createIdFactory } from "./ids.js";
 import { planInventions } from "./invention-planner.js";
 import { createJudge } from "./judge.js";
 import { jsonRecord, kernelNumber, kernelString, kernelStringArray, uniqueKernelStrings } from "./kernel-answer-primitives.js";
+import { calibrated } from "./calibrations/prod-calibrations.js";
 import {
   mergeCorrectionRules,
   pcaForceForMouthSurface,
@@ -4892,23 +4893,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       }
       let spoken = extendedGenerationRun?.answer ? { ...primarySpoken, text: extendedGenerationRun.answer } : primarySpoken;
       deadlineCheckpoint("runtime.mouth.primary.complete", 0);
-      // CRITICAL fix: the empty-mouth recovery path below is real and
-      // works (confirmed live: a genuinely empty realization reliably
-      // recovers a full, real, evidence-grounded answer on retry) -- but
-      // it only ever fired on a literally empty `spoken.text`. Measured
-      // live against the real corpus, a broken (non-empty) 1-2 word stub
-      // ("It", "The", "story", "In January") happens too, for a factual/
-      // reasoned request, and slipped past this exact check untouched,
-      // becoming the final answer instead of triggering the same real
-      // recovery. Arithmetic and other genuinely short-but-complete
-      // answers never reach this point at all (arithmeticAnswerForText
-      // returns earlier in this same function), so anything landing here
-      // is real prose realization output -- a healthy prose answer is
-      // never one or two bare words, so a low word-count floor is a safe,
-      // low-false-positive signal of the same broken-realization failure
-      // mode as literal emptiness, not a new invented threshold.
-      const spokenWordCount = spoken.text.trim().length ? spoken.text.trim().split(/\s+/).length : 0;
-      const emptyAuthoritySurface = (spokenWordCount === 0 || spokenWordCount < 4)
+      // A stub ("It", "The", an echoed request unit) recovers like an empty surface; brevity alone does not.
+      const emptyAuthoritySurface = learnedSurfaceRealizesNothing({ learnedSurface: spoken.text, requestText: input.text, closedClassWords: corpusFunctionSymbols() })
         && (requestedAuthority === "factual" || requestedAuthority === "reasoned")
         && !runtimeDiagnosticRequested;
       if (emptyAuthoritySurface && !inheritedRuntimeMotion && !performedRuntimeMotion) {
@@ -4967,12 +4953,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         closedClassWords: corpusFunctionSymbols(),
         hasher
       });
-      // A source-independent dialogue turn has no source contract to
-      // preserve. Treating it as a failed source realization made a valid,
-      // short conversational answer fall through to the deterministic
-      // source-oriented mouth merely because it was under the excerpt
-      // recovery length. The learned requirement field authorizes this
-      // distinct surface contract: a valid response with no evidence refs.
+      // A source-independent dialogue turn has no source contract to preserve.
       const preserveSourceIndependentDialogue = sourceIndependentDialogueSurfaceAcceptable({
         requestedAuthority,
         requirementField,
@@ -4992,11 +4973,20 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       };
       const learnedSurface = spoken.text.trim();
       const learnedNotAnExcerpt = excerptGoverned && learnedSurface.length > 0 && !isContiguousExcerpt(learnedSurface);
-      if (!learnedSurface || (!(preserveReasonedRealization || preserveSourceIndependentDialogue)
-        && (learnedSurface.length <= 96 || learnedNotAnExcerpt))) {
+      const learnedRecovery = {
+        learnedSurface,
+        requestText: input.text,
+        closedClassWords: corpusFunctionSymbols(),
+        realizationContract
+      };
+      if (learnedSurfaceConsultsSourceBound({
+        ...learnedRecovery,
+        preserved: preserveReasonedRealization || preserveSourceIndependentDialogue,
+        learnedNotAnExcerpt
+      })) {
         const deterministic = await deterministicMouth.speak(speakInput);
         const sourceBound = deterministic.text.trim();
-        const truncated = Boolean(learnedSurface) && sourceBound.length > learnedSurface.length * 1.5 && sourceBound.includes(learnedSurface);
+        const truncated = learnedSurfaceTruncatesSourceBound({ ...learnedRecovery, sourceBound });
         const stitched = learnedNotAnExcerpt && isContiguousExcerpt(sourceBound);
         if (sourceBound && (!learnedSurface || truncated || stitched)) {
           kernelTrace({
@@ -6828,7 +6818,8 @@ export function reasonedRealizationPreservesContract(input: {
   const { requirementField: field, realizationContract: contract, spoken } = input;
   if (input.requestedAuthority !== "reasoned" || !spoken.surfaceValid || !spoken.text.trim()) return false;
   // Explicit source-preserving tasks retain their exact-excerpt contract.
-  if (field.semanticPreservation >= 0.6 || field.sourceDependence >= 0.6
+  const preservationFloor = calibrated("turn_requirements.source_preservation_floor");
+  if (field.semanticPreservation >= preservationFloor || field.sourceDependence >= preservationFloor
     || field.sourceDependence >= Math.max(field.inferentialDepth, field.dialogueDependence)) return false;
   if (!contract?.evidenceIds.length
     || !contract.evidenceIds.every(id => spoken.evidenceRefs.some(ref => String(ref) === id))) return false;
@@ -6842,13 +6833,59 @@ export function reasonedRealizationPreservesContract(input: {
   return candidateSurvivesRealizationContract(spoken.text, contract, input.hasher).survives;
 }
 
+/** A surface that realizes nothing the request did not already say. */
+export function learnedSurfaceRealizesNothing(input: Pick<LearnedSurfaceRecoveryInput, "learnedSurface" | "requestText" | "closedClassWords">): boolean {
+  const requestUnits = surfaceUnits(input.requestText);
+  return !surfaceUnits(input.learnedSurface).some(unit => !input.closedClassWords?.has(unit)
+    && !requestUnits.some(requestUnit => requestUnitSharesStem(requestUnit, unit)));
+}
+
+/** Request obligations a surface carries: each request content unit, plus each value the realization contract binds. */
+export function surfaceRequestAdequacy(surface: string, input: Omit<LearnedSurfaceRecoveryInput, "learnedSurface">): { carried: number; owed: number } {
+  const owedUnits = uniqueKernelStrings(surfaceUnits(input.requestText).filter(unit => !input.closedClassWords?.has(unit)));
+  const units = surfaceUnits(surface);
+  const boundValues = Object.values(input.realizationContract?.boundValues ?? {}).filter(Boolean);
+  const normalized = surface.toLocaleLowerCase();
+  return {
+    carried: owedUnits.filter(unit => units.some(surfaceUnit => requestUnitSharesStem(unit, surfaceUnit))).length
+      + boundValues.filter(value => normalized.includes(value.toLocaleLowerCase())).length,
+    owed: owedUnits.length + boundValues.length
+  };
+}
+
+export interface LearnedSurfaceRecoveryInput {
+  learnedSurface: string;
+  requestText: string;
+  closedClassWords?: ReadonlySet<string>;
+  realizationContract?: SemanticRealizationContract;
+}
+
+/** Whether the learned surface must consult the source-bound realization before it is kept. */
+export function learnedSurfaceConsultsSourceBound(input: LearnedSurfaceRecoveryInput & {
+  preserved: boolean;
+  learnedNotAnExcerpt: boolean;
+}): boolean {
+  const learned = input.learnedSurface.trim();
+  if (!learned) return true;
+  if (input.preserved) return false;
+  if (input.learnedNotAnExcerpt) return true;
+  const adequacy = surfaceRequestAdequacy(learned, input);
+  return adequacy.carried < adequacy.owed;
+}
+
+/** A learned surface yields to a source-bound realization that contains it and carries more of the request. */
+export function learnedSurfaceTruncatesSourceBound(input: LearnedSurfaceRecoveryInput & { sourceBound: string }): boolean {
+  const learned = input.learnedSurface.trim();
+  const sourceBound = input.sourceBound.trim();
+  if (!learned || sourceBound.length <= learned.length || !sourceBound.includes(learned)) return false;
+  return surfaceRequestAdequacy(sourceBound, input).carried > surfaceRequestAdequacy(learned, input).carried;
+}
+
 /** Learned dialogue intent can be source-independent without requesting novelty. */
 export function sourceIndependentDialogueRequirements(field: Pick<TurnRequirementField,
   "sourceDependence" | "dialogueDependence" | "externalTruthAuthority" | "semanticPreservation"
 >): boolean {
-  return field.dialogueDependence > field.externalTruthAuthority
-    && field.sourceDependence <= field.dialogueDependence / 4
-    && field.semanticPreservation < 0.6;
+  return field.dialogueDependence > Math.max(field.externalTruthAuthority, field.sourceDependence, field.semanticPreservation);
 }
 
 /** A source-free dialogue surface belongs to its own authority lane. */
