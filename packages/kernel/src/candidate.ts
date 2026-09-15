@@ -149,11 +149,40 @@ export function createCandidateEngine() {
         input.creativeContinuationPolicy,
         input.creativeContinuationCandidates
       );
-      const rawTotal = candidates.reduce((sum, candidate) => sum + candidateMass(candidate), 0);
-      const scoreTrace = candidates.flatMap(candidate => candidate.scoreTrace ?? []);
-      const unnormalizedRawMass = candidates.map(candidate => {
+      const candidateOperatorById = new Map(candidateOperators.map(row => [row.candidateId, row] as const));
+      // The continuation policy is part of canonical creative authority, not
+      // merely a probability hint. `candidateOperators` already computes the
+      // policy-adjusted score from the exact offered structural identity, but
+      // the judge reads `candidate.scores.creativeSelectionScore`. Keep those
+      // two paths aligned before the field is handed to the judge; otherwise
+      // durable owner feedback can move surface mass while the winner still
+      // comes from the cold-start score.
+      const policyScoredCandidates = candidates.map(candidate => {
+        const operator = candidateOperatorById.get(candidate.id);
+        const selectionScore = operator?.selectionScore;
+        if (input.requestedAuthority !== "creative"
+          || candidate.kind !== "creative-candidate"
+          || typeof selectionScore !== "number"
+          || !Number.isFinite(selectionScore)) return candidate;
+        return {
+          ...candidate,
+          scores: {
+            ...candidate.scores,
+            creativeSelectionScore: selectionScore
+          },
+          audit: toJsonValue({
+            ...jsonRecord(candidate.audit),
+            selectionScore,
+            selectionSource: operator?.selectionSource ?? null,
+            continuationPolicyApplied: true
+          })
+        };
+      });
+      const rawTotal = policyScoredCandidates.reduce((sum, candidate) => sum + candidateMass(candidate), 0);
+      const scoreTrace = policyScoredCandidates.flatMap(candidate => candidate.scoreTrace ?? []);
+      const unnormalizedRawMass = policyScoredCandidates.map(candidate => {
         const base = rawTotal > 0 ? candidateMass(candidate) / rawTotal : 1 / Math.max(1, candidates.length);
-        const operator = candidateOperators.find(row => row.candidateId === candidate.id);
+        const operator = candidateOperatorById.get(candidate.id);
         if (input.requestedAuthority === "creative") {
           return {
             candidateId: candidate.id,
@@ -205,7 +234,7 @@ export function createCandidateEngine() {
         : calibratedMass.map(item => item.calibrated.scoreTrace).filter((trace): trace is ScoreTrace => Boolean(trace));
       const allTraces = [...scoreTrace, ...calibratedTraces];
       return {
-        candidates,
+        candidates: policyScoredCandidates,
         surfaceMass,
         scoreTrace: allTraces,
         audit: toJsonValue({
