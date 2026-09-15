@@ -91,6 +91,7 @@ import {
   type DetailProfilePolicy
 } from "./control-plane-profiles.js";
 import { canonicalStringify, clamp01, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";
+import { evaluateConstructionCycleConsistency, type ConstructionCycleConsistencyOutcome } from "./construction-cycle-consistency.js";
 import { sourceRelationConstructionBindingId } from "./graph-surface-alignment.js";
 import { containsUnresolvedSurfaceKey } from "./localization.js";
 import { isTerminalNonAssertiveRuntimeMotionCandidate } from "./runtime-motion.js";
@@ -306,6 +307,8 @@ interface SurfaceCandidate {
   boundaryDecisions?: DiscourseAssembly["boundaryDecisions"];
   exactSurface?: boolean;
   audit?: JsonValue;
+  /** Produced only for a learned construction candidate that was actually realized. */
+  constructionCycleOutcome?: ConstructionCycleConsistencyOutcome;
 }
 
 interface SentenceCandidate {
@@ -450,6 +453,10 @@ export interface SpeakInput {
   /** Lets a short bound value (a bare date/time/name the request's own subject+relation demanded, e.g. "20:17"
    *  for "when did X land") satisfy coverage without lexically restating the request -- see coversRequest below. */
   realizationContract?: SemanticRealizationContract;
+  /** Warm durable construction scores; loading them never blocks the first response. */
+  cycleConsistencyByConstructionId?: ReadonlyMap<string, number>;
+  /** Stable turn trace identity attached to a cycle observation. */
+  constructionCycleSourceTraceId?: string;
 }
 
 export interface SpokenOutput {
@@ -473,6 +480,8 @@ export interface SpokenOutput {
    */
   surfaceValid: boolean;
   hardSurfaceViolationIds: string[];
+  /** The selected learned construction's typed meaning/surface cycle, if one won. */
+  constructionCycleOutcome?: ConstructionCycleConsistencyOutcome;
 }
 
 export interface Mouth {
@@ -1268,6 +1277,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         evidenceRefs,
         surfaceValid: selectedSurfaceEnergy.valid,
         hardSurfaceViolationIds: selectedSurfaceEnergy.hardViolations.map(violation => violation.id),
+        constructionCycleOutcome: selected?.constructionCycleOutcome,
         uncertainty: uncertaintyMarkers(plan, outputSurfacePreservation, input.construct),
         inspectRefs: [
           { kind: "proof", id: String(input.entailment.proof.id) },
@@ -1602,6 +1612,7 @@ export function createDeterministicMouth(options: { hashText: (text: string) => 
         // surface/canned-speech/phrase-salad risk class for it to fail.
         surfaceValid: true,
         hardSurfaceViolationIds: [],
+        constructionCycleOutcome: undefined,
         uncertainty: uncertaintyMarkers(plan, preservation, input.construct),
         inspectRefs: [
           { kind: "proof", id: String(input.entailment.proof.id) },
@@ -2990,7 +3001,8 @@ function learnedConstructionCandidateFromBundle(input: {
     plan,
     constructions: [input.construction],
     formClasses,
-    hasher: input.hasher
+    hasher: input.hasher,
+    cycleConsistencyByConstructionId: input.input.cycleConsistencyByConstructionId
   });
   if (realized.status !== "realized") return undefined;
   if (!realized.realization.trace
@@ -2998,12 +3010,48 @@ function learnedConstructionCandidateFromBundle(input: {
     .every(part => [...part.surface].every(isUnboundStructuralPoint))) return undefined;
   if (!exactSurfaceSatisfiesPlan(realized.realization.text, input.input, input.plan)
     || !learnedProfileAcceptsSurface(input.input.languageProfile, realized.realization.text)) return undefined;
+  const constructionCycleOutcome = evaluateConstructionCycleConsistency({
+    construction: input.construction,
+    realization: realized.realization,
+    intendedSurface: intendedSurfaceFromTypedMeaning(plan, input.input.evidence, input.proofEvidenceIds),
+    sourceTraceId: input.input.constructionCycleSourceTraceId,
+    sourceRecordId: input.input.constructionCycleSourceTraceId,
+    evidenceIds: input.proofEvidenceIds,
+    createdAt: Date.now()
+  });
   return persistedLearnedSurfaceCandidate({
     input,
     realization: realized.realization,
     proofEvidenceIds: input.proofEvidenceIds,
-    normalizedSupport: input.routeAdmissibility
+    normalizedSupport: input.routeAdmissibility,
+    constructionCycleOutcome
   });
+}
+
+/**
+ * The cycle's intended surface is assembled from the typed meaning plan's
+ * role signature.  It carries source-derived slot labels and follows the
+ * already selected semantic role order; it does not assume a language or a
+ * universal clause order.
+ */
+function intendedSurfaceFromTypedMeaning(
+  plan: SurfaceMeaningPlan,
+  evidence: readonly EvidenceSpan[],
+  evidenceIds: readonly string[]
+): string {
+  const slotsByRole = new Map(plan.slots.map(slot => [slot.roleId, slot]));
+  const slotSurfaces = plan.roleSignature
+    .map(roleId => slotsByRole.get(roleId)?.variants[0]?.surface ?? "")
+    .filter(surface => surface.trim().length > 0);
+  const sourceSurface = evidence
+    .filter(span => evidenceIds.includes(String(span.id)))
+    .flatMap(span => splitSurfaceSentences(span.text).map(sentence => sentence.trim()).filter(Boolean))
+    .filter(text => slotSurfaces.every(surface => text.includes(surface)))
+    .sort((left, right) => left.length - right.length || left.localeCompare(right))[0];
+  // A source span is the strongest intended surface because it preserves the
+  // corpus language's own punctuation and discourse force.  The typed plan
+  // remains a bounded fallback when the evidence span is larger or partial.
+  return sourceSurface ?? slotSurfaces.join(" ").trim();
 }
 
 function persistedLearnedSurfaceCandidate(input: {
@@ -3021,6 +3069,7 @@ function persistedLearnedSurfaceCandidate(input: {
   realization: LearnedRealization;
   proofEvidenceIds: readonly string[];
   normalizedSupport: number;
+  constructionCycleOutcome: ConstructionCycleConsistencyOutcome;
 }): SurfaceCandidate {
   const { fact, bundle, construction, discoursePlan, hasher } = input.input;
   return {
@@ -3034,6 +3083,7 @@ function persistedLearnedSurfaceCandidate(input: {
     discoursePlan,
     boundaryDecisions: [],
     exactSurface: true,
+    constructionCycleOutcome: input.constructionCycleOutcome,
     audit: toJsonValue({
       schema: "scce.mouth.learned_construction_candidate.v2",
       profile: {
@@ -3082,7 +3132,8 @@ function persistedLearnedSurfaceCandidate(input: {
         })),
         coordinateSystemId: "unicode.code_point.v1",
         score: input.realization.score
-      }
+      },
+      constructionCycleOutcome: input.constructionCycleOutcome
     })
   };
 }
