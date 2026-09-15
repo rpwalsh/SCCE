@@ -80,6 +80,10 @@ export const PUBLIC_CALIBRATIONS = Object.freeze({
   "request_authority.evidence_log_scale": 5,
   "request_authority.causal_mass_sample_limit": 12,
 
+  // --- closed class (closed-class-words.ts deriveClosedClassWords)
+  /** Head of the continuation-diversity ranking taken as the language's closed class. */
+  "closed_class.rank_limit": 96,
+
   // --- request unit matching (local-evidence-runtime.ts requestUnitMatchesSurface / requestUnitSimilarity / requestUnitSharesStem)
   /** Shared prefix as a fraction of the longer unit, above which two surface forms are the same unit. */
   "units.prefix_ratio_floor": 0.72,

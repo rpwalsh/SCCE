@@ -94,6 +94,9 @@ export const CALIBRATION_SEARCH_SPACE: Readonly<Record<CalibrationKey, Calibrati
   "request_authority.evidence_log_scale": weight(1, 16, [5]),
   "request_authority.causal_mass_sample_limit": count(1, 64, [12]),
 
+  // --- closed class
+  "closed_class.rank_limit": count(16, 512, [48, 96, 160, 256]),
+
   // --- request unit matching
   "units.prefix_ratio_floor": threshold(0.5, 0.95, [0.6, 0.66, 0.72, 0.78, 0.85]),
   "units.similarity_floor": threshold(0.5, 0.95, [0.6, 0.66, 0.72, 0.78, 0.85]),
