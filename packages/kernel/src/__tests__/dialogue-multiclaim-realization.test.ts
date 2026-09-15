@@ -56,7 +56,18 @@ describe("multi-claim dialogue realization", () => {
 
   it("carries the same certified claim set into typed formal and plan surfaces", () => {
     const formal = realizeDialogueResponse({
-      requestText: "derive x = y from the verified material",
+      requestText: "opaque::formal::δ",
+      statePatch: {
+        interactionSignals: [{
+          id: "signal.formal.typed",
+          featureId: INTERACTION_FEATURE_IDS.calculusNeed,
+          intentId: "intent.formal.typed",
+          value: 1,
+          confidence: 1,
+          sourceIds: ["typed.interpreter"],
+          trace: { source: "typed.interpreter" }
+        }]
+      },
       answerGraph: graph()
     });
     const formalCandidate = formal.candidates.find(candidate => candidate.id === "cand.95d18c3f");

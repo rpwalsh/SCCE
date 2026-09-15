@@ -242,8 +242,6 @@ const TARGET_PROFILE_MARKERS = {
 } as const;
 
 const SIGNAL_EVIDENCE_IDS = {
-  symbolicShape: "evt.0b7a2e11",
-  artifactShape: "evt.74c1a02f",
   lowDelayShape: "evt.b4051a7e",
   lowLengthShape: "evt.5ad2e0c9",
   pressurePunctuation: "evt.93e1d8b6",
@@ -313,14 +311,9 @@ export function updateDialogueState(input: DialogueStateUpdateInput): DialogueSt
   const previous = input.previousState;
   const feedbackProfile = applyDialogueFeedback(previous?.userStyleProfile ?? DEFAULT_USER_STYLE_PROFILE, input.feedback);
   const patchedProfile = mergeUserStyleProfile(feedbackProfile, input.statePatch?.userStyleProfile);
-  const hasTypedIntent = suppliedTypedIntent(input);
-  // Surface shape may still tune pacing and compactness. Once the upstream
-  // typed path supplied an intent receipt, only the two task-routing guesses
-  // are suppressed; punctuation and length remain useful interaction signals.
-  const requestSignals = requestInteractionSignals(input.requestText).filter(signal =>
-    !hasTypedIntent
-      || (signal.featureId !== INTERACTION_FEATURE_IDS.artifactNeed
-        && signal.featureId !== INTERACTION_FEATURE_IDS.calculusNeed));
+  // Surface shape may tune pacing and compactness. Task-specific needs enter
+  // through typed upstream signals or graph action state below.
+  const requestSignals = requestInteractionSignals(input.requestText);
   const graphSignals = graphInteractionSignals(input.answerGraph);
   const features = mergeInteractionFeatures([
     ...(previous?.interactionFeatures ?? []),
@@ -667,8 +660,6 @@ function preservedProvidedDraftCritic(candidates: readonly DialoguePragmaticsCan
 function requestInteractionSignals(text: string): InteractionSignal[] {
   const urgentPunctuation = (text.match(/[!?]/gu) ?? []).length;
   const wordCount = surfaceWordCount(text);
-  const hasCodeFenceOrPath = /```|(?:^|\s)[\w./-]+\.(?:ts|tsx|js|py|rs|go|java|json|md)\b/u.test(text);
-  const hasSymbolicNotation = /[=≠≈≤≥<>∑∫√∆λ→←↔±×÷]/u.test(text);
   const shortDirectiveShape = wordCount > 0 && wordCount <= 8 && !/[?？]/u.test(text);
   const signals: InteractionSignal[] = [];
   const add = (featureId: InteractionFeatureId, value: number, sourceIds: string[], evidence: string[]) => {
@@ -682,8 +673,6 @@ function requestInteractionSignals(text: string): InteractionSignal[] {
       trace: toJsonValue({ source: "dialogue-pragmatics.request-signal", evidence })
     });
   };
-  add(INTERACTION_FEATURE_IDS.calculusNeed, hasSymbolicNotation ? 1 : 0, ["turn.input"], [SIGNAL_EVIDENCE_IDS.symbolicShape]);
-  add(INTERACTION_FEATURE_IDS.artifactNeed, hasCodeFenceOrPath ? 1 : 0, ["turn.input"], [SIGNAL_EVIDENCE_IDS.artifactShape]);
   add(INTERACTION_FEATURE_IDS.responseLead, shortDirectiveShape || urgentPunctuation > 1 ? 1 : 0, ["turn.input"], [SIGNAL_EVIDENCE_IDS.lowDelayShape]);
   add(INTERACTION_FEATURE_IDS.compactness, shortDirectiveShape || wordCount <= 6 ? 1 : 0, ["turn.input"], [SIGNAL_EVIDENCE_IDS.lowLengthShape]);
   add(INTERACTION_FEATURE_IDS.reviewPressure, urgentPunctuation > 2 || /[?!؟？！]{2,}/u.test(text) ? 1 : 0, ["turn.input"], [SIGNAL_EVIDENCE_IDS.pressurePunctuation]);
@@ -909,8 +898,13 @@ function selectActions(rows: readonly DialogueAction[], state: DialogueState, gr
   if (state.activeTask?.trim() || state.unresolvedSlots.length > 0) add(DIALOGUE_ACTION_IDS.nextStep);
   if (graph.uncertainty.unsupported || graph.uncertainty.missingEvidenceCount > 0) add(DIALOGUE_ACTION_IDS.boundary);
   if (!hasEnoughInformation(graph)) add(DIALOGUE_ACTION_IDS.bestEffort);
-  if (weight(state.userStyleProfile, INTERACTION_FEATURE_IDS.calculusNeed) > 0.72 || hasStrongSignal(state, INTERACTION_FEATURE_IDS.calculusNeed)) add(DIALOGUE_ACTION_IDS.calculus);
-  if (weight(state.userStyleProfile, INTERACTION_FEATURE_IDS.artifactNeed) > 0.72 || hasStrongSignal(state, INTERACTION_FEATURE_IDS.artifactNeed)) add(DIALOGUE_ACTION_IDS.artifact);
+  // A learned feature weight can tune an admitted route, but cannot create a
+  // task-specific action without typed upstream demand. Surface shape is
+  // intentionally absent from this gate.
+  const calculusAuthorized = hasPositiveTypedSignal(state, INTERACTION_FEATURE_IDS.calculusNeed);
+  const artifactAuthorized = graph.actions.length > 0 || hasPositiveTypedSignal(state, INTERACTION_FEATURE_IDS.artifactNeed);
+  if (calculusAuthorized) add(DIALOGUE_ACTION_IDS.calculus);
+  if (artifactAuthorized) add(DIALOGUE_ACTION_IDS.artifact);
   if (graph.actions.length) add(DIALOGUE_ACTION_IDS.plan);
   if (graph.uncertainty.contradictionCount > 0) add(DIALOGUE_ACTION_IDS.premiseCheck);
   if (graph.actions.length || graph.uncertainty.missingEvidenceCount > 0) add(DIALOGUE_ACTION_IDS.nextStep);
@@ -920,6 +914,8 @@ function selectActions(rows: readonly DialogueAction[], state: DialogueState, gr
   if (state.communicativeActId === DIALOGUE_ACT_IDS.repair && actWeight >= 0.66) add(DIALOGUE_ACTION_IDS.boundary);
   for (const row of rows) {
     if (selected.length >= 5) break;
+    if (row.id === DIALOGUE_ACTION_IDS.calculus && !calculusAuthorized) continue;
+    if (row.id === DIALOGUE_ACTION_IDS.artifact && !artifactAuthorized) continue;
     if (row.score >= 0.58) add(row.id);
   }
   return selected.slice(0, 6);
@@ -947,15 +943,6 @@ function typedIntentId(input: {
     "intent.09f1dc42"
   ];
   return candidates.find((candidate): candidate is string => typeof candidate === "string" && candidate.trim().length > 0)!.trim();
-}
-
-function suppliedTypedIntent(input: DialogueStateUpdateInput): boolean {
-  return [
-    input.statePatch?.currentIntentId,
-    input.statePatch?.taskClassId,
-    input.answerGraph && "intentId" in input.answerGraph ? input.answerGraph.intentId : undefined,
-    ...(input.statePatch?.interactionSignals ?? []).map(signal => signal.intentId)
-  ].some(candidate => typeof candidate === "string" && candidate.trim().length > 0);
 }
 
 function classifyCommunicativeActId(
@@ -1068,8 +1055,13 @@ function weight(profile: UserStyleProfile, featureId: InteractionFeatureId): num
   return clamp01(profile.weights[featureId] ?? DEFAULT_USER_STYLE_PROFILE.weights[featureId] ?? 0.5);
 }
 
-function hasStrongSignal(state: DialogueState, featureId: InteractionFeatureId): boolean {
-  return state.interactionSignals.some(signal => signal.featureId === featureId && signal.value >= 0.85);
+function hasPositiveTypedSignal(state: DialogueState, featureId: InteractionFeatureId): boolean {
+  return state.interactionSignals.some(signal =>
+    signal.featureId === featureId &&
+    signal.value > 0 &&
+    signal.confidence > 0 &&
+    Boolean(signal.intentId?.trim())
+  );
 }
 
 function acceptedLeadDelta(accepted: string | undefined, rejected: string | undefined): number {
