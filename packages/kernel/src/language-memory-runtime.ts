@@ -1,6 +1,8 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { IdFactory } from "./ids.js";
+import type { NarrativeConditioning } from "./document-generation-session.js";
+import { deriveClosedClassWords } from "./closed-class-words.js";
 import { calibrated } from "./calibrations/prod-calibrations.js";
 import type { BeamSentenceContinuation, KneserNeyModel } from "./kneser-ney.js";
 import { KNESER_NEY_SCHEMA, beamContinueSentence, compileKneserNeyRuntimeIndexes, continueBoundedProse, kneserNeyProbability, predictKneserNey } from "./kneser-ney.js";
@@ -21,7 +23,7 @@ import {
   normalizeCreativeEventCompatibilityModels,
   type CreativeEventCompatibilityModel
 } from "./creative-event-compatibility.js";
-import { ensureSurfaceSentence as ensureUnicodeSurfaceSentence, isSentenceBoundarySymbol as isUnicodeSentenceBoundarySymbol, stripTerminalSentenceBoundary } from "./surface-linguistics.js";
+import { SENTENCE_BOUNDARY_SYMBOLS, ensureSurfaceSentence as ensureUnicodeSurfaceSentence, isSentenceBoundarySymbol as isUnicodeSentenceBoundarySymbol, sourceDerivedCasingHints, splitSurfaceSentences, stripTerminalSentenceBoundary, surfaceWords } from "./surface-linguistics.js";
 import {
   ANSWER_ROLE_IDS,
   ANSWER_SLOT_IDS,
@@ -187,6 +189,8 @@ export interface LanguageGenerationFrame {
   requiredTerms?: readonly LanguageGenerationTerm[];
   semanticFrameIds?: readonly string[];
   realizationConstraints?: JsonValue;
+  /** Committed story state; opaque identifiers are not surface terms or n-gram seeds. */
+  narrativeConditioning?: NarrativeConditioning;
   targetLanguage?: string;
   targetScript?: string;
   styleProfileId?: string;
@@ -246,6 +250,27 @@ export function languageGenerationSurfaceAdequate(
 ): boolean {
   const extent = Math.max(1, generation.symbols.length);
   return discourseSurfaceAdequate(generation.discourse, extent);
+}
+
+/** Reject a dangling learned function-word pair with no attested sentence ending. */
+export function languageGenerationSentenceEndingsAdequate(text: string, state: LanguageMemoryRuntimeState): boolean {
+  const models = state.models.filter(model => model.order >= 3 && modelSpeaksInWords(model));
+  if (!models.length) return true;
+  const closedClass = deriveClosedClassWords({ models, continuationPopulation: state.continuationPopulation });
+  for (const sentence of splitSurfaceSentences(text)) {
+    const words = surfaceWords(sentence).map(word => word.toLocaleLowerCase());
+    const final = words.at(-1);
+    const penultimate = words.at(-2);
+    if (!final || !penultimate || !closedClass.has(final) || !closedClass.has(penultimate)) continue;
+    const observed = models.filter(model => (model.contextCounts[final] ?? 0) > 0 && (model.contextCounts[penultimate] ?? 0) > 0);
+    if (!observed.length) continue;
+    // A model that learned the ending licenses it; no smoothed-probability
+    // cutoff and no list of forbidden words can replace that observation.
+    const licensed = observed.some(model => ["</s>", ...SENTENCE_BOUNDARY_SYMBOLS]
+      .some(symbol => (model.counts[`${penultimate}\u0001${final}\u0001${symbol}`] ?? 0) > 0));
+    if (!licensed) return false;
+  }
+  return true;
 }
 
 export const RHETORICAL_MOVE_IDS = {
@@ -917,7 +942,12 @@ function generateFromLanguageMemory(input: LanguageGenerationInput): LanguageGen
   const generationExtent = Math.max(1, Math.min(256, Math.floor(input.generationExtent ?? 64)));
   const requiredTerms = generationRequiredTerms(input);
   const frameAtoms = generationFrameAtoms(input);
-  const contextSymbols = [...(input.contextSymbols ?? []), ...requiredTerms.map(term => term.text), ...frameAtoms.map(atom => atom.text)]
+  // Narrative state affects which learned surfaces are eligible and how they
+  // score.  It is guidance, not a prompt: opaque graph/setup ids never enter
+  // the lexical context, and a condition with no source surface remains
+  // available to the consistency layer but cannot manufacture prose here.
+  const narrativeConstraints = narrativeConditioningSurfaceConstraints(input.frames ?? []);
+  const contextSymbols = [...(input.contextSymbols ?? []), ...requiredTerms.map(term => term.text), ...frameAtoms.map(atom => atom.text), ...narrativeConstraints.map(constraint => constraint.surface)]
     .map(symbol => tidyInline(symbol))
     .filter(Boolean)
     .slice(-128);
@@ -927,7 +957,7 @@ function generateFromLanguageMemory(input: LanguageGenerationInput): LanguageGen
     input.segmentationPopulationPosterior
   );
   const discoursePrior = runtimeDiscoursePriorProfile(input.state, generationExtent);
-  const pieces = generationPieces(input, requiredTerms, frameAtoms, contextSymbols, contextText);
+  const pieces = generationPieces(input, requiredTerms, frameAtoms, narrativeConstraints, contextSymbols, contextText);
   const candidatePieces = selectGenerationPieces(pieces, requiredTerms, generationExtent);
   const latticeGeneration = generateRhetoricalSentenceLattice({
     state: input.state,
@@ -954,8 +984,8 @@ function generateFromLanguageMemory(input: LanguageGenerationInput): LanguageGen
       frameAtoms,
       generationExtent,
       pieces: candidatePieces,
-      topicVocabulary: uniqueStrings((input.frames ?? []).flatMap(frame => frame.topicVocabulary ?? [])),
-      properNounCasing: Object.assign({}, ...(input.frames ?? []).map(frame => frame.properNounCasing ?? {}))
+      topicVocabulary: uniqueStrings([...(input.frames ?? []).flatMap(frame => frame.topicVocabulary ?? []), ...narrativeConstraints.map(constraint => constraint.surface)]),
+      properNounCasing: generationCasingHints(input)
     });
   // Plan items 140-141: fluency alone (discourseSurfaceAdequate) is never
   // enough to accept the Kneser-Ney-driven fallback continuation in place
@@ -1199,9 +1229,64 @@ function generateFromLanguageMemory(input: LanguageGenerationInput): LanguageGen
         semanticFrameIds: frame.semanticFrameIds ?? [],
         atomCount: frame.propositionAtoms?.length ?? 0,
         requiredTermCount: frame.requiredTerms?.length ?? 0
-      }))
+      })),
+      narrativeConditioning: {
+        constraintCount: narrativeConstraints.length,
+        surfaceHashes: narrativeConstraints.map(constraint => hashText(constraint.surface)),
+        establishedFactCount: (input.frames ?? []).reduce((count, frame) => count + (frame.narrativeConditioning?.establishedFacts.length ?? 0), 0),
+        openSetupCount: (input.frames ?? []).reduce((count, frame) => count + (frame.narrativeConditioning?.openSetupIds.length ?? 0), 0)
+      }
     })
   };
+}
+
+interface NarrativeSurfaceConstraint {
+  surface: string;
+  source: "established_fact_value" | "open_setup_surface";
+}
+
+/**
+ * Project only source-bearing narrative values into realization guidance.
+ * Subject, fact, and setup identifiers stay typed bookkeeping keys; lexical
+ * recovery from their punctuation would be an invented ontology.  Strings in
+ * values and the event's own description are the only admissible surfaces.
+ */
+function narrativeConditioningSurfaceConstraints(frames: readonly LanguageGenerationFrame[]): NarrativeSurfaceConstraint[] {
+  const bySurface = new Map<string, NarrativeSurfaceConstraint>();
+  const add = (value: string, source: NarrativeSurfaceConstraint["source"]) => {
+    const surface = tidyInline(value);
+    if (!surface || looksLikeInternalIdentifierSurface(surface) || looksLikeNarrativeOpaqueIdentifier(surface) || !speechBearingSurface(surface)) return;
+    const key = surface.normalize("NFKC").toLocaleLowerCase();
+    if (!bySurface.has(key)) bySurface.set(key, { surface, source });
+  };
+  const visitValue = (value: JsonValue, depth: number) => {
+    if (depth > 4) return;
+    if (typeof value === "string") {
+      add(value, "established_fact_value");
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const child of value) visitValue(child, depth + 1);
+      return;
+    }
+    if (!isRecord(value)) return;
+    for (const child of Object.values(value)) visitValue(child, depth + 1);
+  };
+  for (const frame of frames) {
+    const conditioning = frame.narrativeConditioning;
+    if (!conditioning) continue;
+    for (const fact of conditioning.establishedFacts) visitValue(fact.value, 0);
+    for (const setup of conditioning.openSetupSurfaces ?? []) add(setup.surface, "open_setup_surface");
+  }
+  return [...bySurface.values()]
+    .sort((left, right) => left.surface.localeCompare(right.surface))
+    .slice(0, 24);
+}
+
+/** A dotted/colonized single token is a typed key, not a recovered phrase. */
+function looksLikeNarrativeOpaqueIdentifier(value: string): boolean {
+  return !/\s/u.test(value)
+    && /^(?:[\p{L}\p{N}_-]+[._:])+[\p{L}\p{N}_-]+$/u.test(value);
 }
 
 function generationRequiredTerms(input: LanguageGenerationInput): LanguageGenerationTerm[] {
@@ -1243,12 +1328,17 @@ function generationPieces(
   input: LanguageGenerationInput,
   requiredTerms: readonly LanguageGenerationTerm[],
   frameAtoms: readonly LanguageGenerationAtom[],
+  narrativeConstraints: readonly NarrativeSurfaceConstraint[],
   contextSymbols: readonly string[],
   contextText: string
 ): GenerationPiece[] {
   const semanticFrameIds = new Set([...(input.semanticFrameIds ?? []), ...(input.frames ?? []).flatMap(frame => frame.semanticFrameIds ?? [])]);
   const rows: GenerationPiece[] = [];
-  const allowRawNgramSurfacePieces = requiredTerms.length === 0 && frameAtoms.length === 0;
+  // Typed narrative constraints are guidance for selecting learned surfaces,
+  // just like explicit semantic terms.  Without this, an unconstrained
+  // full-corpus phrase pool could drown out a condition before scoring ever
+  // had a chance to discriminate it.
+  const allowRawNgramSurfacePieces = requiredTerms.length === 0 && frameAtoms.length === 0 && narrativeConstraints.length === 0;
   const contextFeatures = contextText ? featureSet(contextText, 256) : [];
   const contextAnchors = new Set(symbolizeData(contextText).map(symbol => symbol.toLocaleLowerCase()).filter(isAnchorSymbol));
   // Plan item L11: the cheap categorical/anchor rejection gates run BEFORE
@@ -1271,8 +1361,8 @@ function generationPieces(
       requiredTerms,
       contextText,
       generationExtent: Math.max(1, Math.min(256, Math.floor(input.generationExtent ?? 64))),
-      topicVocabulary: uniqueStrings((input.frames ?? []).flatMap(frame => frame.topicVocabulary ?? [])),
-      properNounCasing: Object.assign({}, ...(input.frames ?? []).map(frame => frame.properNounCasing ?? {}))
+      topicVocabulary: uniqueStrings([...(input.frames ?? []).flatMap(frame => frame.topicVocabulary ?? []), ...narrativeConstraints.map(constraint => constraint.surface)]),
+      properNounCasing: generationCasingHints(input)
     })
     : [];
   const synthesizedTexts = new Set(synthesized.map(sentence => tidyInline(sentence.text)));
@@ -1287,7 +1377,11 @@ function generationPieces(
     const ngram = ngramPieceSupport(input.state, clean, contextSymbols);
     const structuralDelta = bestStructuralDeltaForSurface(input.state, contextText, clean);
     const learnedFit = Math.max(fit, structuralDelta.fit);
-    const score = clamp01(calibrated("language_memory.unit_support_weight") * clamp01(support) + calibrated("language_memory.unit_fit_weight") * learnedFit + calibrated("language_memory.unit_ngram_probability_weight") * ngram.probability + calibrated("language_memory.unit_source_preference_weight") * sourcePreference(source));
+    const narrativeFit = narrativeConditioningCoverage(clean, narrativeConstraints);
+    // Narrative support is an observed semantic-context feature beside the
+    // normal learned fit. It can rank learned candidates but cannot create a
+    // new surface or force a typed id into text.
+    const score = clamp01(calibrated("language_memory.unit_support_weight") * clamp01(support) + calibrated("language_memory.unit_fit_weight") * Math.max(learnedFit, narrativeFit) + calibrated("language_memory.unit_ngram_probability_weight") * ngram.probability + calibrated("language_memory.unit_source_preference_weight") * sourcePreference(source));
     rows.push({ ...metadata, text: clean, source, id, support: clamp01(support), fit, order: ngram.order, probability: ngram.probability, score, structuralDeltaFit: structuralDelta.fit, structuralDeltaIds: structuralDelta.ids });
   };
   for (const term of requiredTerms) add(term.text, "required_term", term.id, Math.max(0.1, term.weight ?? 0.5));
@@ -3440,21 +3534,32 @@ function nonSpeechGlyphSymbols(model: KneserNeyModel): Set<string> {
   return out;
 }
 
+function generationCasingHints(input: LanguageGenerationInput): Readonly<Record<string, string>> {
+  return Object.assign(
+    Object.create(null),
+    sourceDerivedCasingHints(input.state.importedUnits.slice(0, 512).map(unit => unit.text)),
+    ...(input.frames ?? []).map(frame => frame.properNounCasing ?? {})
+  );
+}
+
+function narrativeConditioningCoverage(surface: string, constraints: readonly NarrativeSurfaceConstraint[]): number {
+  if (!constraints.length) return 0;
+  const covered = constraints.filter(constraint => containsLoose(surface, constraint.surface)).length;
+  return clamp01(covered / constraints.length);
+}
+
 /** Render beam sentences: attach left-binding punctuation, capitalize each cased sentence opener. */
-function renderContinuationSentences(
+export function renderContinuationSentences(
   sentences: readonly (readonly string[])[],
   properNounCasing?: Readonly<Record<string, string>>
 ): string {
   const rendered = sentences.map(symbols => {
-    // Training symbolization lowercases every symbol (unicode-segmentation.ts
-    // normalizedSymbol), so word casing is not recoverable from the model --
-    // only the pronoun "I" and known proper nouns can be restored here.
+    // Training lowercases symbols. Restore only casing carried by this
+    // turn's source-derived hints; no language-specific token exceptions.
     // Own-property read: the casing table is a plain object, so a symbol that names one of Object.prototype's
     // members (`constructor`, `toString`) otherwise renders that function's source into the sentence.
     const cased = symbols.map(symbol =>
-      symbol === "i"
-        ? "I"
-        : properNounCasing && Object.hasOwn(properNounCasing, symbol) && typeof properNounCasing[symbol] === "string"
+      properNounCasing && Object.hasOwn(properNounCasing, symbol) && typeof properNounCasing[symbol] === "string"
           ? properNounCasing[symbol]!
           : symbol
     );

@@ -4,16 +4,21 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { CORPUS_SOURCE_SYSTEM_IDS, codeCommentProse, codeLanguageForPath, codeTrainingSurface, type InformationLabel, type ScceStorage } from "@scce/kernel";
+import { CORPUS_SOURCE_SYSTEM_IDS, codeCommentProse, codeLanguageForPath, codeTrainingSurface, toJsonValue, type InformationLabel, type ScceStorage } from "@scce/kernel";
 import { inspectEngineeringCorpusFolder, type EngineeringCorpusFolderOptions } from "./engineering-corpus-folder.js";
 import { trainLanguageCorpusText, type LanguageCorpusTrainingReport } from "./language-corpus-trainer.js";
 
 export interface OssCorpusTrainOptions extends EngineeringCorpusFolderOptions {
   storage: ScceStorage;
   rootPath: string;
+  /** Provenance of a fetched repository snapshot, retained on every trained projection. */
+  repositoryProvenance?: OssRepositoryProvenance;
+  /** Stable source URI prefix for a fetched snapshot; defaults to the local file URI. */
+  sourceUriBase?: string;
   maxFilesPerRepo?: number;
   includeDocs?: boolean;
   includeSource?: boolean;
+  languageAliases?: readonly string[];
   ngramMaxOrder?: number;
   ngramMaxCountersPerOrder?: number;
   ngramVocabularyLimit?: number;
@@ -26,6 +31,13 @@ export interface OssCorpusTrainOptions extends EngineeringCorpusFolderOptions {
    * loses the whole in-process run.
    */
   heapCheckpointMb?: number;
+}
+
+export interface OssRepositoryProvenance {
+  remoteUrl: string;
+  commitSha: string;
+  snapshotHash: string;
+  fileHashes: Record<string, string>;
 }
 
 export interface OssCorpusTrainReport {
@@ -120,7 +132,9 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
           storage: input.storage,
           sourceSystem: projected.sourceSystem,
           streamUri: `${projected.sourceSystem}:${normalizeRelative(file.path)}`,
-          sourceUri: pathToFileURL(file.absolutePath).href,
+          sourceUri: input.sourceUriBase
+            ? `${input.sourceUriBase.replace(/#.*$/u, "")}#path=${encodeURIComponent(normalizeRelative(file.path))}`
+            : pathToFileURL(file.absolutePath).href,
           text: projected.text,
           mediaType: file.mediaType,
           namespace: `corpus:${projected.sourceSystem}`,
@@ -128,15 +142,17 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
           ngramMaxOrder: input.ngramMaxOrder,
           ngramMaxCountersPerOrder: input.ngramMaxCountersPerOrder,
           ngramVocabularyLimit: input.ngramVocabularyLimit,
+          languageAliases: input.languageAliases,
           informationLabel: OSS_CORPUS_INFORMATION_LABEL,
-          corpusMetadata: {
+          corpusMetadata: toJsonValue({
             relativePath: normalizeRelative(file.path),
             sourceHash: file.contentHash ?? sha256(raw),
             extractor: file.extractor,
             supportedSections: file.supportedSections,
             projection: projected.projection,
-            formalLanguage: codeLanguageForPath(file.path) ?? null
-          }
+            formalLanguage: codeLanguageForPath(file.path) ?? null,
+            ...(input.repositoryProvenance ? { repository: input.repositoryProvenance } : {})
+          })
         }));
       } catch (error) {
         skipped.push({

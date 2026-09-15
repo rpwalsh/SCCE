@@ -2,6 +2,8 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { LanguageGenerationFrame, LanguageGenerationTerm } from "./language-memory-runtime.js";
 import type { SemanticRealizationContract } from "./semantic-answer-construct.js";
+import type { CounterclaimSearchIntent } from "./counterclaim-search.js";
+import { toJsonValue } from "./primitives.js";
 
 /**
  * Project a cognition-owned SemanticRealizationContract into the lower-level language-generation frame schema.
@@ -84,6 +86,43 @@ export function languageGenerationFramesFromContract(
     ...(options.styleProfileId ? { styleProfileId: options.styleProfileId } : {}),
     ...(options.registerVector ? { registerVector: options.registerVector } : {}),
     ...(options.detailProfileId ? { detailProfileId: options.detailProfileId } : {}),
+    ordering: { index: 0, relation: "linear", weight: 1 }
+  }];
+}
+
+/** Preserve arbitrary typed roles and polarity without mapping them to an English subject/object template. */
+export function languageGenerationFramesFromCounterclaimIntent(
+  intent: CounterclaimSearchIntent,
+  options: { targetLanguage?: string; targetScript?: string } = {}
+): LanguageGenerationFrame[] {
+  const terms = intent.roles.map((role, index) => ({
+    id: `${intent.id}:role:${index}`,
+    text: role.value,
+    weight: 1,
+    source: intent.claimAtomId
+  }));
+  if (intent.predicateSurface) terms.push({
+    id: `${intent.id}:predicate`, text: intent.predicateSurface, weight: 1, source: intent.claimAtomId
+  });
+  return [{
+    id: `${intent.id}:frame`,
+    pointId: intent.id,
+    role: "answer",
+    force: "conjectured",
+    targetLanguage: options.targetLanguage,
+    targetScript: options.targetScript,
+    requiredTerms: terms,
+    propositionAtoms: terms.map(term => ({ ...term, kind: term.id === `${intent.id}:predicate` ? "claim" : "entity", evidenceIds: [] })),
+    realizationConstraints: toJsonValue({
+      schema: "scce.counterclaim_realization_frame.v1",
+      intentId: intent.id,
+      claimAtomId: intent.claimAtomId,
+      predicate: intent.predicate,
+      roles: intent.roles,
+      constraints: intent.constraints,
+      requiredPolarity: intent.targetPolarity,
+      originalPolarity: intent.originalPolarity
+    }),
     ordering: { index: 0, relation: "linear", weight: 1 }
   }];
 }

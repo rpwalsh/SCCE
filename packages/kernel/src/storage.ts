@@ -10,6 +10,7 @@ import type {
   ContentHash,
   EmissionGraph,
   EpisodeId,
+  EvidenceDerivative,
   EventId,
   EvidenceId,
   EvidenceSpan,
@@ -30,7 +31,6 @@ import type {
   ScceEvent,
   SemanticProof,
   SourceId,
-  SourceRedactionInterval,
   SourceVersion,
   SourceVersionId,
   TemporalGraph,
@@ -519,14 +519,7 @@ export interface IngestedSourceFile {
   bytes: Uint8Array;
   text: string;
   metadata: JsonValue;
-  evidenceDerivative?: {
-    bytes: Uint8Array;
-    text: string;
-    kind: "redacted-text" | "extracted-text";
-    transformId: string;
-    originalCoordinateSpace: "source-bytes" | "extracted-text-utf8";
-    redactionMap: SourceRedactionInterval[];
-  };
+  evidenceDerivative?: EvidenceDerivative;
 }
 
 export interface IngestionCheckpoint {
@@ -1210,7 +1203,7 @@ export interface BuildTestPort {
 }
 
 export interface ConnectorPort {
-  fetch(uri: string): Promise<{ uri: string; mediaType: string; bytes: Uint8Array; metadata: JsonValue }>;
+  fetch(uri: string): Promise<{ uri: string; mediaType: string; bytes: Uint8Array; metadata: JsonValue; evidenceDerivative?: EvidenceDerivative }>;
   search(query: string, limit: number): Promise<Array<{ uri: string; title: string; snippet: string; metadata: JsonValue }>>;
   outlookSearch?(query: string, limit?: number): Promise<JsonValue>;
   outlookReadMessage?(messageId: string): Promise<JsonValue>;
@@ -1327,6 +1320,14 @@ export interface ScceKernelDeps {
   governance?: import("./governance-observation.js").GovernanceProbe;
   connectors?: ConnectorPort;
   approvals?: ApprovalPort;
+  /**
+   * Composition-root decision for public runtime acquisition. The adapter may
+   * set this only when public-internet access scope and standing, read-only
+   * network.search consent are both configured. It changes source admission
+   * from review quarantine to automatic source-qualified assertion; it never
+   * changes trust, independence, contradiction, or language-training rules.
+   */
+  runtimeWebAutomaticAdmission?: boolean;
   clock?: import("./types.js").Clock;
   idFactory?: import("./ids.js").IdFactory;
   namespace?: string;

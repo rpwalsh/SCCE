@@ -138,8 +138,15 @@ export interface ScceRuntimeConfig {
   connectors: {
     web?: {
       enabled: boolean;
+      /** Explicit public-source acquisition; omission preserves host allowlisting. */
+      accessScope?: "allowlist" | "public-internet";
+      /** Standing consent for read-only runtime search only; omission requires turn consent. */
+      runtimeAcquisition?: "consent-required" | "automatic";
       allowedHosts: string[];
       maxBytes: number;
+      /** Rate and turn budgets are distinct from the session request ceiling. */
+      requestsPerMinute?: number;
+      maxRequestsPerTurn?: number;
       search?: {
         provider: "duckduckgo" | "bing" | "brave" | "serpapi" | "tavily";
         apiKey?: string;
@@ -271,6 +278,13 @@ export function validateConfig(config: ScceRuntimeConfig, source = "config"): vo
     if (item.weight !== undefined && (!Number.isFinite(item.weight) || item.weight < 0)) throw new Error(`${source}: runtime.corpora.registry.${sourceSystem}.weight must be a non-negative number`);
   }
   if (config.connectors.web?.search && !["duckduckgo", "bing", "brave", "serpapi", "tavily"].includes(config.connectors.web.search.provider)) throw new Error(`${source}: connectors.web.search.provider is not supported`);
+  if (config.connectors.web?.accessScope !== undefined && !["allowlist", "public-internet"].includes(config.connectors.web.accessScope)) throw new Error(`${source}: connectors.web.accessScope must be allowlist or public-internet`);
+  if (config.connectors.web?.runtimeAcquisition !== undefined && !["consent-required", "automatic"].includes(config.connectors.web.runtimeAcquisition)) throw new Error(`${source}: connectors.web.runtimeAcquisition must be consent-required or automatic`);
+  for (const field of ["requestsPerMinute", "maxRequestsPerTurn"] as const) {
+    const value = config.connectors.web?.[field];
+    const maximum = field === "requestsPerMinute" ? 120 : 64;
+    if (value !== undefined && (!Number.isSafeInteger(value) || value < 1 || value > maximum)) throw new Error(`${source}: connectors.web.${field} must be an integer from 1 through ${maximum}`);
+  }
   if (config.connectors.web?.enabled && config.connectors.web.allowedHosts.includes("*") && process.env.SCCE_ALLOW_WILDCARD_WEB !== "1") throw new Error(`${source}: connectors.web.allowedHosts must not contain "*" unless SCCE_ALLOW_WILDCARD_WEB=1`);
   if (publiclyBound(config) && !configuredApiBearer(config)) throw new Error(`${source}: non-loopback server binds require security.apiBearerToken or SCCE_API_BEARER_TOKEN`);
   validateSecretPolicy(config, source);

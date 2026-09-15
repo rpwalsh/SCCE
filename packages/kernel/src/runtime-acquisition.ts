@@ -7,7 +7,14 @@ import { assertSearchLeadIsNotEvidence, searchLeadToFetchPlan, type SearchResult
 import { canonicalStringify, createHasher, redactSecrets, sourceTextSurface, toJsonValue } from "./primitives.js";
 import { POLICY_OBJECTIVE_SCHEMA_ID, policyFingerprint, policyObjectiveVector, type PolicyEvaluation } from "./policy-evolution.js";
 import { type RuntimeDeadlineDecision } from "./runtime-deadline.js";
-import type { PriorRejectedHypothesis, RuntimeReplanMotion, RuntimeReplanTrigger } from "./runtime-motion.js";
+import type {
+  PriorRejectedHypothesis,
+  RuntimeAcquisitionProgress,
+  RuntimeAdversarialSearchRequest,
+  RuntimeAdversarialSearchResult,
+  RuntimeReplanMotion,
+  RuntimeReplanTrigger
+} from "./runtime-motion.js";
 import {
   runtimeMotionFailure
 } from "./runtime-motion.js";
@@ -24,6 +31,48 @@ import type {
 } from "./types.js";
 
 const WEB_SEARCH_CAPABILITY_ID = "connector.web_search";
+const RUNTIME_ACQUISITION_SEARCH_LIMIT = 12;
+const RUNTIME_ACQUISITION_MAX_LINEAGES = 4;
+
+function canonicalAcquisitionUri(uri: string): string {
+  const trimmed = uri.trim();
+  if (!trimmed) return trimmed;
+  try {
+    const parsed = new URL(trimmed);
+    parsed.hash = "";
+    parsed.hostname = parsed.hostname.toLocaleLowerCase();
+    if ((parsed.protocol === "https:" && parsed.port === "443") || (parsed.protocol === "http:" && parsed.port === "80")) {
+      parsed.port = "";
+    }
+    return parsed.toString();
+  } catch {
+    return trimmed;
+  }
+}
+
+function jsonObjectValue(value: JsonValue | undefined, key: string): string | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const candidate = value[key];
+  return typeof candidate === "string" && candidate.trim() ? candidate.trim() : undefined;
+}
+
+/**
+ * The adapter's bounded document extractors return typed structure alongside
+ * the text derivative. Keep that structure at the metadata level consumed by
+ * typed-ingest while retaining the complete connector response under the
+ * acquisition audit record. Do not promote arbitrary fetched metadata into
+ * cognition: only extractor-owned fields cross this boundary.
+ */
+function fetchedExtractorMetadata(value: JsonValue | undefined): Record<string, JsonValue> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const record = value as Record<string, JsonValue>;
+  const keys = ["title", "identity", "extractor", "structure", "typedExtraction", "sourceCode", "visual", "diagnostics"] as const;
+  const out: Record<string, JsonValue> = {};
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(record, key)) out[key] = record[key]!;
+  }
+  return out;
+}
 
 /**
  * Routes the read-only web-search connector call through the executive
@@ -226,6 +275,11 @@ export function createRuntimeAcquisition(options: {
 }) {
   const { deps, eventFactory, hasher, failures, append, ingest: ingestSource } = options;
   const now = options.now ?? (() => Date.now());
+  // The composition root is responsible for requiring both public-internet
+  // scope and standing read-only search consent before setting this flag.
+  // Keeping the decision here as a source-admission mode preserves the
+  // distinction between a fetched source saying P and SCCE believing P.
+  const runtimeWebPromotionAuthority = deps.runtimeWebAutomaticAdmission ? "automatic" as const : "review" as const;
 
 
   // Runtime-acquired pages are bounded at the fetch, before any parser sees them.
@@ -237,6 +291,10 @@ export function createRuntimeAcquisition(options: {
     trigger: RuntimeReplanTrigger;
     events: ScceEvent[];
     priorRejectedHypotheses?: PriorRejectedHypothesis[];
+    /** Optional stream hook; production wiring may adapt this to OwnerInput.runtimeControl. */
+    onProgress?: (progress: RuntimeAcquisitionProgress) => void;
+    /** Optional caller-derived competing-claim search surface. */
+    adversarialSearch?: RuntimeAdversarialSearchRequest;
   }): Promise<RuntimeReplanMotion> {
     const queryHash = hasher.digestHex(input.ownerInput.text);
     const guardId = `runtime-motion:${hasher.digestHex(`${String(input.episodeId)}\u001f${queryHash}\u001f${input.trigger}`).slice(0, 32)}`;
@@ -246,9 +304,29 @@ export function createRuntimeAcquisition(options: {
     let fetchedSourceCount = 0;
     let ingestedSourceCount = 0;
     let ingestedEvidenceCount = 0;
+    const ingestedEvidenceGroups: string[][] = [];
     const sourceUris: string[] = [];
     const sourceSurfaces: string[] = [];
     const heldCandidates = new Map<string, { title: string; snippet: string }>();
+    const sourceLineageIds: string[] = [];
+    const acceptedLineageGroups = new Set<string>();
+    const seenCanonicalUris = new Set<string>();
+    const seenContentHashes = new Set<string>();
+    let duplicateSourceCount = 0;
+    let duplicateContentCount = 0;
+    let searchLeadsExamined = 0;
+    let adversarialSearchResult: RuntimeAdversarialSearchResult | undefined;
+    const emitProgress = (phase: string, cognition?: JsonValue): void => {
+      try {
+        input.onProgress?.({
+          phase,
+          observedAtMonotonicMs: performance.now(),
+          ...(cognition === undefined ? {} : { cognition })
+        });
+      } catch {
+        // A UI/stream observer cannot make acquisition fail or alter its proof path.
+      }
+    };
     const consentInput = learningConsentInput(input.ownerInput.text, hasher);
     const consentGranted = deps.approvals?.isApproved({ capabilityId: "network.search", input: consentInput }) === true;
     let consent: RuntimeReplanMotion["consent"];
@@ -283,6 +361,9 @@ export function createRuntimeAcquisition(options: {
         queryHash,
         connectorConfigured: Boolean(deps.connectors),
         consentGranted,
+        searchLimit: RUNTIME_ACQUISITION_SEARCH_LIMIT,
+        requestedSourceLineages: RUNTIME_ACQUISITION_MAX_LINEAGES,
+        adversarialSearchRequested: Boolean(input.adversarialSearch),
         readOnlyOperations: ["search", "fetch"]
       })
     })));
@@ -291,9 +372,9 @@ export function createRuntimeAcquisition(options: {
       let searchRows: Awaited<ReturnType<typeof deps.connectors.search>> = [];
       try {
         const dispatched = deps.executive
-          ? await dispatchWebSearchThroughExecutive({ deps, episodeId: input.episodeId, queryHash, query: input.ownerInput.text, limit: 3, hasher })
+          ? await dispatchWebSearchThroughExecutive({ deps, episodeId: input.episodeId, queryHash, query: input.ownerInput.text, limit: RUNTIME_ACQUISITION_SEARCH_LIMIT, hasher })
           : undefined;
-        searchRows = dispatched ?? await deps.connectors.search(input.ownerInput.text, 3);
+        searchRows = dispatched ?? await deps.connectors.search(input.ownerInput.text, RUNTIME_ACQUISITION_SEARCH_LIMIT);
         searchResultCount = searchRows.length;
         sourceSurfaces.push(...searchRows.flatMap(row => [row.title, row.snippet])
           .map(surface => sourceTextSurface(surface, 320))
@@ -301,24 +382,35 @@ export function createRuntimeAcquisition(options: {
       } catch (error) {
         motionFailures.push(runtimeMotionFailure("search", error));
       }
-      const seenUris = new Set<string>();
-      const fetchPlans: JsonValue[] = [];
-      for (const searchRow of searchRows.slice(0, 3)) {
+      emitProgress("runtime.acquisition.primary.search", toJsonValue({ searchResultCount: searchRows.length, requestedSourceLineages: RUNTIME_ACQUISITION_MAX_LINEAGES }));
+      for (const searchRow of searchRows.slice(0, RUNTIME_ACQUISITION_SEARCH_LIMIT)) {
+        if (acceptedLineageGroups.size >= RUNTIME_ACQUISITION_MAX_LINEAGES) break;
+        searchLeadsExamined++;
         const searchUri = searchRow.uri.trim();
-        if (!searchUri || seenUris.has(searchUri)) continue;
-        seenUris.add(searchUri);
-        // A result row is a lead, never evidence: it is asserted unfetched here and carries an explicit plan whose
-        // next step is the source snapshot, quarantined before use. A snippet can never shortcut into the corpus.
+        const canonicalSearchUri = canonicalAcquisitionUri(searchUri);
+        if (!searchUri || seenCanonicalUris.has(canonicalSearchUri)) {
+          duplicateSourceCount++;
+          continue;
+        }
+        const candidateLineageGroup = acquisitionLineageGroup(canonicalSearchUri, searchRow.metadata);
+        if (acceptedLineageGroups.has(candidateLineageGroup)) {
+          duplicateSourceCount++;
+          continue;
+        }
+        seenCanonicalUris.add(canonicalSearchUri);
+        // A result row is a lead, never evidence. Its explicit plan requires a
+        // source snapshot and canonical admission before use. A snippet can
+        // never shortcut into the corpus.
         const lead: SearchResultLead = {
-          id: `search_lead.${hasher.digestHex(searchUri).slice(0, 32)}`,
+          id: `search_lead.${hasher.digestHex(canonicalSearchUri).slice(0, 32)}`,
           provider: "local_index",
           title: searchRow.title,
           uri: searchUri,
           snippet: searchRow.snippet,
-          rank: seenUris.size,
+          rank: searchLeadsExamined,
           evidenceStatus: "lead_only",
           fetched: false,
-          metadata: toJsonValue({ queryHash })
+          metadata: toJsonValue({ queryHash, phase: "primary" })
         };
         try {
           assertSearchLeadIsNotEvidence(lead);
@@ -330,9 +422,10 @@ export function createRuntimeAcquisition(options: {
           id: `learning_need.${queryHash}`,
           gapKind: "source_discovery",
           objective: input.ownerInput.text.slice(0, 200),
-          constraints: toJsonValue({ readOnly: true, quarantineBeforeUse: true }),
+          constraints: toJsonValue({ readOnly: true, admissionBeforeUse: runtimeWebPromotionAuthority === "automatic" ? "canonical-source-qualified" : "quarantine-before-use" }),
           createdAt: Date.now()
         }));
+        emitProgress("runtime.acquisition.primary.fetch", toJsonValue({ uriHash: hasher.digestHex(canonicalSearchUri).slice(0, 24), leadRank: searchLeadsExamined }));
         try {
           const fetched = await deps.connectors.fetch(searchUri);
           if (fetched.bytes.byteLength === 0) {
@@ -344,14 +437,30 @@ export function createRuntimeAcquisition(options: {
             continue;
           }
           fetchedSourceCount++;
-          const canonicalUri = fetched.uri.trim() || searchUri;
+          const canonicalUri = canonicalAcquisitionUri(fetched.uri.trim() || searchUri);
+          if (seenCanonicalUris.has(canonicalUri) && canonicalUri !== canonicalSearchUri) {
+            duplicateSourceCount++;
+            continue;
+          }
+          seenCanonicalUris.add(canonicalUri);
+          const contentHash = hasher.digestHex(fetched.bytes);
+          if (seenContentHashes.has(contentHash)) {
+            duplicateContentCount++;
+            continue;
+          }
+          seenContentHashes.add(contentHash);
+          const lineageGroup = acquisitionLineageGroup(canonicalUri, searchRow.metadata, fetched.metadata);
+          if (acceptedLineageGroups.has(lineageGroup)) {
+            duplicateSourceCount++;
+            continue;
+          }
           const ingest = await ingestSource({
             uri: canonicalUri,
             namespace: "runtime-acquisition",
             sourceAdmission: {
               sourceClass: "runtime_web",
               intendedUse: "direct_evidence",
-              promotionAuthority: "review"
+              promotionAuthority: runtimeWebPromotionAuthority
             },
             sourceTrust: {
               identity: 0.68,
@@ -360,13 +469,15 @@ export function createRuntimeAcquisition(options: {
               directness: 0.72,
               authority: 0.52,
               freshness: 0.9,
-              independenceGroup: runtimeWebIndependenceGroup(canonicalUri),
+              independenceGroup: lineageGroup,
               accessScope: "public",
               licenseStatus: "unknown"
             },
             content: fetched.bytes,
+            ...(fetched.evidenceDerivative ? { evidenceDerivative: fetched.evidenceDerivative } : {}),
             mediaType: fetched.mediaType || "application/octet-stream",
             metadata: toJsonValue({
+              ...fetchedExtractorMetadata(fetched.metadata),
               schema: "scce.runtime_acquired_source.v1",
               canonicalUri,
               sourceUri: canonicalUri,
@@ -379,6 +490,9 @@ export function createRuntimeAcquisition(options: {
                 trigger: input.trigger,
                 requestedAuthority: input.requestedAuthority,
                 parentEpisodeId: String(input.episodeId),
+                phase: "primary",
+                lineageGroup,
+                contentHash,
                 search: {
                   uri: searchUri,
                   title: searchRow.title,
@@ -394,20 +508,155 @@ export function createRuntimeAcquisition(options: {
             })
           });
           ingestedSourceCount += ingest.sources;
-          if (ingest.events.some(event => event.typeId === "SourcePromoted")) ingestedEvidenceCount += ingest.evidence;
-          if (ingest.sources > 0) {
+          if (ingest.events.some(event => event.typeId === "SourcePromoted")) {
+            ingestedEvidenceCount += ingest.evidence;
+            ingestedEvidenceGroups.push((ingest.promotedEvidenceIds ?? []).map(String).slice(0, 80));
+          }
+          // A downloaded document is only a useful lineage when the canonical
+          // ingestor extracted addressable evidence from it. Counting an empty
+          // or unsupported payload would let four URLs masquerade as four
+          // sources capable of informing the replan.
+          if (ingest.sources > 0 && ingest.evidence > 0) {
+            acceptedLineageGroups.add(lineageGroup);
+            sourceLineageIds.push(lineageGroup);
             sourceUris.push(canonicalUri);
             heldCandidates.set(canonicalUri, { title: searchRow.title, snippet: searchRow.snippet });
-            // One source is enough to answer from, and the connector's rate limit is one fetch per second while a
-            // turn has ten in total. This loop fetched every lead back to back, so each request after the first
-            // landed inside the cooldown and was denied -- measured, three leads and zero fetches, all refused as
-            // "rate limit cooldown active". Stopping on the first source that ingests respects the limit instead of
-            // spending the turn being refused by it; the remaining leads stay recorded as leads.
-            break;
+            emitProgress("runtime.acquisition.primary.ingest", toJsonValue({ uriHash: hasher.digestHex(canonicalUri).slice(0, 24), lineageHash: hasher.digestHex(lineageGroup).slice(0, 24), acceptedLineageCount: acceptedLineageGroups.size }));
+          } else {
+            motionFailures.push(`canonical ingest extracted no evidence: ${redactSecrets(canonicalUri)}`);
           }
         } catch (error) {
           motionFailures.push(runtimeMotionFailure(`fetch_ingest:${searchUri}`, error));
         }
+      }
+      if (input.adversarialSearch?.querySurface.trim()) {
+        const adversarialQuery = input.adversarialSearch.querySurface.trim();
+        const adversarialQueryHash = hasher.digestHex(adversarialQuery);
+        const adversarialFailures: string[] = [];
+        let adversarialRows: Awaited<ReturnType<typeof deps.connectors.search>> = [];
+        const normalizedQuery = (query: string) => query.normalize("NFKC").replace(/\s+/gu, " ").trim().toLocaleLowerCase();
+        const distinctQuery = normalizedQuery(adversarialQuery) !== normalizedQuery(input.ownerInput.text);
+        if (!distinctQuery) adversarialFailures.push("counterclaim.query_echo");
+        if (distinctQuery) {
+          emitProgress("runtime.acquisition.adversarial.search", toJsonValue({ querySurfaceHash: adversarialQueryHash.slice(0, 24), originalQueryHash: queryHash.slice(0, 24), intentId: input.adversarialSearch.intentId ?? null }));
+          try {
+            const dispatched = deps.executive
+              ? await dispatchWebSearchThroughExecutive({ deps, episodeId: input.episodeId, queryHash: adversarialQueryHash, query: adversarialQuery, limit: RUNTIME_ACQUISITION_SEARCH_LIMIT, hasher })
+              : undefined;
+            adversarialRows = dispatched ?? await deps.connectors.search(adversarialQuery, RUNTIME_ACQUISITION_SEARCH_LIMIT);
+          } catch (error) {
+            adversarialFailures.push(runtimeMotionFailure("adversarial_search", error));
+          }
+        }
+        const adversarialUris: string[] = [];
+        const adversarialLineages: string[] = [];
+        let adversarialFetched = 0;
+        let adversarialSources = 0;
+        let adversarialEvidence = 0;
+        for (const searchRow of adversarialRows.slice(0, RUNTIME_ACQUISITION_SEARCH_LIMIT)) {
+          if (adversarialLineages.length >= 1) break;
+          searchLeadsExamined++;
+          const searchUri = searchRow.uri.trim();
+          const canonicalSearchUri = canonicalAcquisitionUri(searchUri);
+          if (!searchUri || seenCanonicalUris.has(canonicalSearchUri)) {
+            duplicateSourceCount++;
+            continue;
+          }
+          const candidateLineageGroup = acquisitionLineageGroup(canonicalSearchUri, searchRow.metadata);
+          if (acceptedLineageGroups.has(candidateLineageGroup)) {
+            duplicateSourceCount++;
+            continue;
+          }
+          seenCanonicalUris.add(canonicalSearchUri);
+          emitProgress("runtime.acquisition.adversarial.fetch", toJsonValue({ uriHash: hasher.digestHex(canonicalSearchUri).slice(0, 24), leadRank: searchLeadsExamined }));
+          try {
+            const fetched = await deps.connectors.fetch(searchUri);
+            if (fetched.bytes.byteLength === 0) {
+              adversarialFailures.push(`adversarial fetch returned zero bytes: ${redactSecrets(searchUri)}`);
+              continue;
+            }
+            if (fetched.bytes.byteLength > MAX_ACQUIRED_SOURCE_BYTES) {
+              adversarialFailures.push(`adversarial fetch exceeded acquisition byte cap (${fetched.bytes.byteLength} > ${MAX_ACQUIRED_SOURCE_BYTES}): ${redactSecrets(searchUri)}`);
+              continue;
+            }
+            fetchedSourceCount++;
+            adversarialFetched++;
+            const canonicalUri = canonicalAcquisitionUri(fetched.uri.trim() || searchUri);
+            if (seenCanonicalUris.has(canonicalUri) && canonicalUri !== canonicalSearchUri) {
+              duplicateSourceCount++;
+              continue;
+            }
+            seenCanonicalUris.add(canonicalUri);
+            const contentHash = hasher.digestHex(fetched.bytes);
+            if (seenContentHashes.has(contentHash)) {
+              duplicateContentCount++;
+              continue;
+            }
+            seenContentHashes.add(contentHash);
+            const lineageGroup = acquisitionLineageGroup(canonicalUri, searchRow.metadata, fetched.metadata);
+            if (acceptedLineageGroups.has(lineageGroup)) {
+              duplicateSourceCount++;
+              continue;
+            }
+            const ingest = await ingestSource({
+              uri: canonicalUri,
+              namespace: "runtime-acquisition",
+              sourceAdmission: { sourceClass: "runtime_web", intendedUse: "direct_evidence", promotionAuthority: runtimeWebPromotionAuthority },
+              sourceTrust: { identity: 0.68, integrity: 1, parserReliability: 0.78, directness: 0.72, authority: 0.52, freshness: 0.9, independenceGroup: lineageGroup, accessScope: "public", licenseStatus: "unknown" },
+              content: fetched.bytes,
+              ...(fetched.evidenceDerivative ? { evidenceDerivative: fetched.evidenceDerivative } : {}),
+              mediaType: fetched.mediaType || "application/octet-stream",
+              metadata: toJsonValue({
+                ...fetchedExtractorMetadata(fetched.metadata),
+                schema: "scce.runtime_acquired_source.v1",
+                canonicalUri,
+                sourceUri: canonicalUri,
+                uri: canonicalUri,
+                title: sourceSubjectTitle(canonicalUri, searchRow.title),
+                snippet: searchRow.snippet,
+                acquisition: { motionId: "motion.learn_hydrate_replan", guardId, trigger: input.trigger, requestedAuthority: input.requestedAuthority, parentEpisodeId: String(input.episodeId), phase: "adversarial", lineageGroup, contentHash, search: { uri: searchUri, title: searchRow.title, snippet: searchRow.snippet, metadata: searchRow.metadata }, fetch: { uri: canonicalUri, mediaType: fetched.mediaType, metadata: fetched.metadata } }
+              })
+            });
+            ingestedSourceCount += ingest.sources;
+            adversarialSources += ingest.sources;
+            if (ingest.events.some(event => event.typeId === "SourcePromoted")) {
+              ingestedEvidenceCount += ingest.evidence;
+              adversarialEvidence += ingest.evidence;
+              ingestedEvidenceGroups.push((ingest.promotedEvidenceIds ?? []).map(String).slice(0, 80));
+            }
+            if (ingest.sources > 0 && ingest.evidence > 0) {
+              acceptedLineageGroups.add(lineageGroup);
+              sourceLineageIds.push(lineageGroup);
+              adversarialLineages.push(lineageGroup);
+              sourceUris.push(canonicalUri);
+              adversarialUris.push(canonicalUri);
+              heldCandidates.set(canonicalUri, { title: searchRow.title, snippet: searchRow.snippet });
+              emitProgress("runtime.acquisition.adversarial.ingest", toJsonValue({ uriHash: hasher.digestHex(canonicalUri).slice(0, 24), lineageHash: hasher.digestHex(lineageGroup).slice(0, 24) }));
+            } else {
+              adversarialFailures.push(`canonical adversarial ingest extracted no evidence: ${redactSecrets(canonicalUri)}`);
+            }
+          } catch (error) {
+            adversarialFailures.push(runtimeMotionFailure(`adversarial_fetch_ingest:${searchUri}`, error));
+          }
+        }
+        adversarialSearchResult = {
+          searchKind: "counterclaim",
+          attempted: distinctQuery,
+          querySurfaceHash: adversarialQueryHash,
+          ...(input.adversarialSearch.targetLanguageId ? { targetLanguageId: input.adversarialSearch.targetLanguageId } : {}),
+          ...(input.adversarialSearch.intentId ? { intentId: input.adversarialSearch.intentId } : {}),
+          ...(input.adversarialSearch.claimHash ? { claimHash: input.adversarialSearch.claimHash } : {}),
+          ...(input.adversarialSearch.originalQueryHash ? { originalQueryHash: input.adversarialSearch.originalQueryHash } : {}),
+          ...(input.adversarialSearch.realizationAudit ? { realizationAudit: input.adversarialSearch.realizationAudit } : {}),
+          searchResultCount: adversarialRows.length,
+          fetchedSourceCount: adversarialFetched,
+          ingestedSourceCount: adversarialSources,
+          ingestedEvidenceCount: adversarialEvidence,
+          sourceUris: uniqueKernelStrings(adversarialUris),
+          sourceLineageIds: uniqueKernelStrings(adversarialLineages),
+          failures: adversarialFailures.slice(0, 6)
+        };
+        motionFailures.push(...adversarialFailures);
       }
     }
 
@@ -448,16 +697,29 @@ export function createRuntimeAcquisition(options: {
       ...(consent ? { consent } : {}),
       ...(heldSources.length ? { heldSources } : {}),
       searchResultCount,
-      // Each lead's explicit plan: the snippet is not evidence, the next step is a source snapshot, quarantined first.
-      ...(fetchPlans.length ? { searchLeadFetchPlans: fetchPlans.slice(0, 3) } : {}),
+      // Each lead's explicit plan retains whether canonical source-qualified
+      // admission or review quarantine governs the fetched snapshot.
+      ...(fetchPlans.length ? { searchLeadFetchPlans: fetchPlans.slice(0, RUNTIME_ACQUISITION_SEARCH_LIMIT) } : {}),
       fetchedSourceCount,
       ingestedSourceCount,
       ingestedEvidenceCount,
-      sourceUris: uniqueKernelStrings(sourceUris).slice(0, 3),
+      // Interleave sources so a long primary document cannot occupy the
+      // entire bounded frontier before the counterclaim source is visited.
+      ingestedEvidenceIds: uniqueKernelStrings(Array.from({ length: 80 }, (_, index) =>
+        ingestedEvidenceGroups.flatMap(group => group[index] ? [group[index]!] : [])
+      ).flat()).slice(0, 80),
+      sourceUris: uniqueKernelStrings(sourceUris).slice(0, RUNTIME_ACQUISITION_SEARCH_LIMIT),
       sourceSurfaces: uniqueKernelStrings(sourceSurfaces).slice(0, 6),
       failures: motionFailures.slice(0, 6),
-      priorRejectedHypotheses: input.priorRejectedHypotheses ?? []
+      priorRejectedHypotheses: input.priorRejectedHypotheses ?? [],
+      sourceLineageIds: uniqueKernelStrings(sourceLineageIds).slice(0, RUNTIME_ACQUISITION_SEARCH_LIMIT),
+      acceptedSourceLineageCount: acceptedLineageGroups.size,
+      duplicateSourceCount,
+      duplicateContentCount,
+      sourceCoverage: { requestedLineages: RUNTIME_ACQUISITION_MAX_LINEAGES, acceptedLineages: acceptedLineageGroups.size, searchLeadsExamined },
+      ...(adversarialSearchResult ? { adversarialSearch: adversarialSearchResult } : {})
     };
+    emitProgress("runtime.acquisition.complete", toJsonValue({ status, acceptedLineageCount: acceptedLineageGroups.size, fetchedSourceCount, ingestedEvidenceCount }));
     input.events.push(await append(eventFactory.create({
       episodeId: input.episodeId,
       typeId: "RuntimeMotionCompleted",
@@ -472,6 +734,17 @@ export function createRuntimeAcquisition(options: {
     } catch {
       return `runtime-web:${hasher.digestHex(uri).slice(0, 24)}`;
     }
+  }
+
+  /** Prefer source-declared dependency/family lineage; host grouping is only the fallback. */
+  function acquisitionLineageGroup(uri: string, ...metadata: JsonValue[]): string {
+    for (const value of metadata) {
+      for (const key of ["sourceFamilyId", "dependencyFamilyId", "independenceGroup", "lineageId", "dependencyGroupId"]) {
+        const declared = jsonObjectValue(value, key);
+        if (declared) return `declared:${declared}`;
+      }
+    }
+    return runtimeWebIndependenceGroup(uri);
   }
 
 

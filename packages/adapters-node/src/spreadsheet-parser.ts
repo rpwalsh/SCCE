@@ -25,6 +25,73 @@ interface ZipPreflight {
   vbaProjectPresent: boolean;
   externalLinkParts: number;
   embeddedObjectParts: number;
+  officeFormat?: "docx" | "xlsx" | "xlsm" | "pptx";
+}
+
+export interface PresentationTextExtraction {
+  text: string;
+  slides: Array<{ index: number; text: string; charStart: number; charEnd: number }>;
+}
+
+/** Reuse the same bounded inflation, CRC and path checks for fetched OOXML. */
+export function inspectOfficeArchive(bytes: Uint8Array, limitOverrides: SpreadsheetExtractionLimitOverrides = {}): ZipPreflight {
+  const limits = normalizeSpreadsheetExtractionLimits(limitOverrides);
+  if (bytes.byteLength > limits.maxSourceBytes) throw new Error("Office archive exceeds source byte limit");
+  return preflightZip(bytes, limits, "detect");
+}
+
+/** Extract ordered slide text after the same bounded ZIP/XML validation used for Office detection. */
+export function extractPresentationText(bytes: Uint8Array, limitOverrides: SpreadsheetExtractionLimitOverrides = {}): PresentationTextExtraction {
+  const parts = new Map<string, string>();
+  const archive = preflightZip(bytes, normalizeSpreadsheetExtractionLimits(limitOverrides), "detect", (name, payload) => {
+    const lower = name.toLocaleLowerCase();
+    if (lower === "ppt/presentation.xml" || lower === "ppt/_rels/presentation.xml.rels" || /^ppt\/slides\/slide\d+\.xml$/u.test(lower)) {
+      parts.set(lower, decodeXmlPayload(payload, name));
+    }
+  });
+  if (archive.officeFormat !== "pptx") throw new Error("Office archive is not a PowerPoint presentation");
+  const presentation = parts.get("ppt/presentation.xml");
+  const relationships = parts.get("ppt/_rels/presentation.xml.rels");
+  if (!presentation || !relationships) throw new Error("PowerPoint presentation is missing its presentation relationships");
+
+  const relationshipTargets = new Map<string, string>();
+  for (const tag of xmlStartTags(relationships, "ppt/presentation.xml.rels")) {
+    if (tag.localName !== "Relationship") continue;
+    const id = xmlAttribute(tag.raw, "Id");
+    const targetMode = xmlAttribute(tag.raw, "TargetMode");
+    const target = xmlAttribute(tag.raw, "Target");
+    if (!id || !target) throw new Error("PowerPoint presentation relationship is incomplete");
+    if (targetMode?.toLocaleLowerCase() === "external") continue;
+    const archivePath = path.posix.normalize(path.posix.join("ppt", decodeXmlEntities(target).replace(/\\/gu, "/")));
+    if (!archivePath.startsWith("ppt/slides/") || !/^ppt\/slides\/slide\d+\.xml$/u.test(archivePath)) continue;
+    relationshipTargets.set(id, archivePath);
+  }
+
+  const orderedSlidePaths: string[] = [];
+  for (const tag of xmlStartTags(presentation, "ppt/presentation.xml")) {
+    if (tag.localName !== "sldId") continue;
+    const relationshipId = xmlAttribute(tag.raw, "r:id") ?? xmlAttribute(tag.raw, "id");
+    if (!relationshipId) throw new Error("PowerPoint slide entry is missing its relationship id");
+    const slidePath = relationshipTargets.get(relationshipId);
+    if (!slidePath) throw new Error(`PowerPoint slide relationship is missing or external: ${relationshipId}`);
+    if (orderedSlidePaths.includes(slidePath)) throw new Error(`PowerPoint slide is referenced more than once: ${slidePath}`);
+    orderedSlidePaths.push(slidePath);
+  }
+
+  let text = "";
+  const slides: PresentationTextExtraction["slides"] = [];
+  for (const [index, slidePath] of orderedSlidePaths.entries()) {
+    const xml = parts.get(slidePath);
+    if (!xml) throw new Error(`PowerPoint slide part is missing: ${slidePath}`);
+    const slideText = [...xml.matchAll(/<(?:[A-Za-z_][\w.-]*:)?t\b[^>]*>([\s\S]*?)<\/(?:[A-Za-z_][\w.-]*:)?t>/gu)]
+      .map(match => decodeXmlEntities(match[1] ?? "")).join(" ").replace(/\s+/gu, " ").trim();
+    if (index > 0 && text) text += "\n\n";
+    const charStart = [...text].length;
+    text += slideText;
+    const charEnd = [...text].length;
+    slides.push({ index, text: slideText, charStart, charEnd });
+  }
+  return { text, slides };
 }
 
 export function parseWorkbookBytes(
@@ -276,7 +343,12 @@ function workbookFormat(extension: string): "xlsx" | "xlsm" | "xls" {
   throw new Error(`unsupported spreadsheet extension: ${extension || "(none)"}`);
 }
 
-function preflightZip(bytes: Uint8Array, limits: SpreadsheetExtractionLimits, sourceFormat: "xlsx" | "xlsm"): ZipPreflight {
+function preflightZip(
+  bytes: Uint8Array,
+  limits: SpreadsheetExtractionLimits,
+  sourceFormat: "xlsx" | "xlsm" | "detect",
+  observeEntry?: (name: string, payload: Uint8Array) => void
+): ZipPreflight {
   const buffer = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (buffer.length < 22 || buffer.readUInt32LE(0) !== 0x04034b50) throw new Error("OOXML workbook is not a ZIP container");
   const eocdOffset = findEndOfCentralDirectory(buffer);
@@ -360,6 +432,11 @@ function preflightZip(bytes: Uint8Array, limits: SpreadsheetExtractionLimits, so
       rawName
     });
     const payload = validateZipPayload(buffer.subarray(dataStart, dataStart + compressed), { method, crc32, uncompressed }, limits);
+    observeEntry?.(name, payload);
+    if (sourceFormat === "detect" && (lower.endsWith(".xml") || lower.endsWith(".rels"))) {
+      const xml = decodeXmlPayload(payload, name);
+      if (/<!\s*(?:DOCTYPE|ENTITY)/iu.test(xml)) throw new Error("Office archive entity declarations are not supported");
+    }
     if (lower === "[content_types].xml") contentTypesXml = decodeXmlPayload(payload, "[Content_Types].xml");
     if (lower === "xl/workbook.xml") workbookXml = decodeXmlPayload(payload, "xl/workbook.xml");
     if (lower === "_rels/.rels") rootRelationshipsXml = decodeXmlPayload(payload, "_rels/.rels");
@@ -382,6 +459,24 @@ function preflightZip(bytes: Uint8Array, limits: SpreadsheetExtractionLimits, so
     compressedBytes = nextCompressedBytes;
     uncompressedBytes = nextUncompressedBytes;
     cursor = nextCursor;
+  }
+  if (sourceFormat === "detect") {
+    if (!contentTypesXml || !rootRelationshipsXml) throw new Error("Office archive lacks content types or root relationships");
+    const formats = [
+      { format: "docx" as const, part: "/word/document.xml", type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml" },
+      { format: "xlsx" as const, part: "/xl/workbook.xml", type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml" },
+      { format: "xlsm" as const, part: "/xl/workbook.xml", type: "application/vnd.ms-excel.sheet.macroenabled.main+xml" },
+      { format: "pptx" as const, part: "/ppt/presentation.xml", type: "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml" }
+    ];
+    const declared = contentTypeOverrides(contentTypesXml).flatMap(override => formats.filter(format => override.partName === format.part && override.contentType.toLowerCase() === format.type));
+    if (declared.length !== 1) throw new Error("Office archive must declare one supported main document part");
+    const main = declared[0]!;
+    if (!names.has(main.part.slice(1))) throw new Error("Office archive main document part is missing");
+    const roots = [...xmlStartTags(rootRelationshipsXml, "_rels/.rels")]
+      .filter(tag => tag.localName === "Relationship" && xmlAttribute(tag.raw, "Type")?.toLowerCase().endsWith("/officedocument"));
+    if (roots.length !== 1 || xmlAttribute(roots[0]!.raw, "Target")?.replace(/^\//u, "") !== main.part.slice(1)
+      || xmlAttribute(roots[0]!.raw, "TargetMode")?.toLowerCase() === "external") throw new Error("Office archive main relationship does not match its document part");
+    return { entries, compressedBytes, uncompressedBytes, compressionRatio: uncompressedBytes / Math.max(1, compressedBytes), vbaProjectPresent, externalLinkParts, embeddedObjectParts, officeFormat: main.format };
   }
   if (!names.has("[content_types].xml") || !names.has("xl/workbook.xml")) throw new Error("ZIP container is not an OOXML workbook");
   assertWorkbookContentType(contentTypesXml, sourceFormat);
@@ -502,6 +597,13 @@ function decodeXmlPayload(payload: Uint8Array, name: string): string {
   } catch (error) {
     throw new Error(`${name} is not valid supported XML text: ${messageOf(error)}`);
   }
+}
+
+function decodeXmlEntities(value: string): string {
+  return value
+    .replace(/&#(\d+);/gu, (_match, code: string) => String.fromCodePoint(Number.parseInt(code, 10)))
+    .replace(/&#x([0-9a-f]+);/giu, (_match, code: string) => String.fromCodePoint(Number.parseInt(code, 16)))
+    .replace(/&(?:amp|lt|gt|quot|apos);/gu, entity => ({ "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": "\"", "&apos;": "'" }[entity]!));
 }
 
 interface XmlStartTag {

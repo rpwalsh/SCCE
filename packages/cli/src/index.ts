@@ -11,7 +11,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { assertHydratedRuntimeReady, buildScce2BrainShardIndex, createHydrationPlan, createNodeRuntime, inspectHydrationRecords, fitRelationPotentialFromGraph, runEvaluationReleaseGate, proposeSelfRewrite, createScce2ToV3Importer, createWikipediaV3Ingestor, createWorkspaceRuntime, dryRunDeveloperRepoPlan, dryRunEngineeringCorpusIngest, fullyVerifyEventLedger, graphDeveloperRepo, importHydrationPlan, inspectDeveloperRepo, inspectEngineeringCorpusFolder, inspectHydrationStatus, inspectV2Artifacts, inspectV2GraphShard, inspectV2Ngram, inspectV2Profile, inspectV2Stream, inspectV2StreamTopic, inspectV2Topic, parseRepoDiagnosticsFixture, readScceRuntimeConfig, routeEngineeringCorpusFixture, scanLanguageControlHygiene, trainGutenbergCorpus, trainOssCorpus, trainStoredCorpusConstructions, verifiedCompilerPlansForTurn, type WikipediaV3IngestStatus, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
+import { acquireAndTrainGithubOssRepository, assertHydratedRuntimeReady, buildScce2BrainShardIndex, createHydrationPlan, createNodeRuntime, inspectHydrationRecords, fitRelationPotentialFromGraph, runEvaluationReleaseGate, proposeSelfRewrite, createScce2ToV3Importer, createWikipediaV3Ingestor, createWorkspaceRuntime, dryRunDeveloperRepoPlan, dryRunEngineeringCorpusIngest, fullyVerifyEventLedger, graphDeveloperRepo, importHydrationPlan, inspectDeveloperRepo, inspectEngineeringCorpusFolder, inspectHydrationStatus, inspectV2Artifacts, inspectV2GraphShard, inspectV2Ngram, inspectV2Profile, inspectV2Stream, inspectV2StreamTopic, inspectV2Topic, parseRepoDiagnosticsFixture, readScceRuntimeConfig, routeEngineeringCorpusFixture, scanLanguageControlHygiene, trainGutenbergCorpus, trainOssCorpus, trainStoredCorpusConstructions, verifiedCompilerPlansForTurn, type WikipediaV3IngestStatus, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
 import type { BenchmarkInput, InspectionTarget, WorkspaceReportRecord } from "@scce/kernel";
 import { parseScce2ImportOptions, parseScce2InspectOptions } from "./scce2-options.js";
 import { defaultWorkspaceCodingRequestId, parseWorkspaceCodingRequest, splitWorkspaceCodingTurnArgs, WORKSPACE_CODE_USAGE } from "./workspace-code-options.js";
@@ -618,7 +618,7 @@ async function corpus(runtime: ReturnType<typeof createNodeRuntime> | undefined,
     return;
   }
   if (sub === "train") {
-    if (!runtime) return usage("scce corpus train <gutenberg|oss|wikipedia-stored> <path> [limits]");
+    if (!runtime) return usage("scce corpus train <gutenberg|oss|oss-github|wikipedia-stored> <path-or-url> [limits]");
     const kind = args[1];
     if (kind === "wikipedia-stored") {
       // Production lane for building the generation construction
@@ -641,8 +641,34 @@ async function corpus(runtime: ReturnType<typeof createNodeRuntime> | undefined,
       return;
     }
     const target = args[2];
-    if (!target || (kind !== "gutenberg" && kind !== "oss")) return usage("scce corpus train <gutenberg|oss|wikipedia-stored> <path> [--language=<source-alias>] [--start-file=<n>] [--max-files=<n>] [--max-file-bytes=<n>] [--max-depth=<n>] [--ngram-max-order=<n>] [--ngram-max-counters=<n>] [--ngram-vocabulary-limit=<n>]");
-    const options = parseCorpusTrainOptions(args.slice(3));
+    if (!target || (kind !== "gutenberg" && kind !== "oss" && kind !== "oss-github")) return usage("scce corpus train <gutenberg|oss|oss-github|wikipedia-stored> <path-or-url> [--commit=<sha>] [--language=<source-alias>] [--max-files=<n>] [--max-file-bytes=<n>] [--max-total-bytes=<n>] [--max-depth=<n>] [--ngram-max-order=<n>] [--ngram-max-counters=<n>] [--ngram-vocabulary-limit=<n>]");
+    const options = parseCorpusTrainOptions(args.slice(3).filter(arg => !arg.startsWith("--commit=")));
+    if (kind === "oss-github") {
+      const commitArg = args.slice(3).find(arg => arg.startsWith("--commit="));
+      const commitSha = commitArg?.slice("--commit=".length).trim();
+      if (!commitSha) return usage("scce corpus train oss-github <https://github.com/owner/repo> --commit=<40-hex-sha> [limits]");
+      printJson(await acquireAndTrainGithubOssRepository({
+        storage: runtime.storage,
+        remoteUrl: target,
+        commitSha,
+        bounds: {
+          ...(options.maxFiles !== undefined ? { maxFiles: options.maxFiles } : {}),
+          ...(options.maxFileBytes !== undefined ? { maxFileBytes: options.maxFileBytes } : {}),
+          ...(options.maxTotalBytes !== undefined ? { maxTotalBytes: options.maxTotalBytes } : {}),
+          ...(options.maxDepth !== undefined ? { maxDepth: options.maxDepth } : {})
+        },
+        training: {
+          includeDocs: options.includeDocs,
+          includeSource: options.includeSource,
+          ngramMaxOrder: options.ngramMaxOrder,
+          ngramMaxCountersPerOrder: options.ngramMaxCountersPerOrder,
+          ngramVocabularyLimit: options.ngramVocabularyLimit,
+          languageAliases: options.languageAliases,
+          heapCheckpointMb: options.heapCheckpointMb
+        }
+      }));
+      return;
+    }
     if (kind === "gutenberg") {
       printJson(await trainGutenbergCorpus({
         storage: runtime.storage,
@@ -1687,6 +1713,7 @@ function parseTurnArgs(args: string[]): { text: string; webRequested: boolean; s
 function parseCorpusTrainOptions(args: string[]): {
   maxFiles?: number;
   maxFileBytes?: number;
+  maxTotalBytes?: number;
   maxDepth?: number;
   startFileIndex?: number;
   includeDocs?: boolean;
@@ -1704,6 +1731,7 @@ function parseCorpusTrainOptions(args: string[]): {
   const out: {
     maxFiles?: number;
     maxFileBytes?: number;
+    maxTotalBytes?: number;
     maxDepth?: number;
     startFileIndex?: number;
     includeDocs?: boolean;
@@ -1724,6 +1752,7 @@ function parseCorpusTrainOptions(args: string[]): {
     if ((flag === "--max-files" || flag === "--max-files-per-run" || flag === "--max-files-per-repo") && Number.isFinite(num)) out.maxFiles = Math.max(1, Math.floor(num));
     else if ((flag === "--start-file" || flag === "--start-file-index") && Number.isFinite(num)) out.startFileIndex = Math.max(0, Math.floor(num));
     else if (flag === "--max-file-bytes" && Number.isFinite(num)) out.maxFileBytes = Math.max(1024, Math.floor(num));
+    else if (flag === "--max-total-bytes" && Number.isFinite(num)) out.maxTotalBytes = Math.max(1024, Math.floor(num));
     else if (flag === "--max-depth" && Number.isFinite(num)) out.maxDepth = Math.max(0, Math.floor(num));
     else if (flag === "--ngram-max-order" && Number.isFinite(num)) out.ngramMaxOrder = Math.max(1, Math.min(6, Math.floor(num)));
     else if (flag === "--ngram-max-counters" && Number.isFinite(num)) out.ngramMaxCountersPerOrder = Math.max(32, Math.floor(num));
@@ -1821,6 +1850,7 @@ function usage(error?: string): void {
     "  pnpm scce relation-potential fit [--promote] [--max-edges=N] | status | promote --model-id=<id>",
     "  pnpm scce self-rewrite propose --target=<goal> [--capability=<id>] [--path=<root>]",
     "  pnpm scce corpus train oss <path>",
+    "  pnpm scce corpus train oss-github <https://github.com/owner/repo> --commit=<40-hex-sha> [limits]",
     "  pnpm scce repo inspect <path>",
     "  pnpm scce repo graph <path>",
     "  pnpm scce repo diagnostics --fixture <path>",

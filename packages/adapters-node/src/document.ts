@@ -54,7 +54,15 @@ export interface DocumentDiagnostics {
   warnings: string[];
 }
 
-export async function extractDocument(filePath: string, config: ScceRuntimeConfig): Promise<ExtractedDocument> {
+export interface DocumentExtractionOptions {
+  includeVisualAttributes?: boolean;
+  maxOutputBytes?: number;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  requireComplete?: boolean;
+}
+
+export async function extractDocument(filePath: string, config: ScceRuntimeConfig, options: DocumentExtractionOptions = {}): Promise<ExtractedDocument> {
   const absolutePath = path.resolve(filePath);
   const info = await stat(absolutePath);
   const bytes = await readBounded(absolutePath, config.runtime.maxFileBytes);
@@ -80,7 +88,7 @@ export async function extractDocument(filePath: string, config: ScceRuntimeConfi
   let typedExtraction: JsonValue = {};
   const ext = path.extname(absolutePath).toLowerCase();
   if (ext === ".pdf") {
-    const result = await run("poppler-pdftotext-layout", () => extractPdfText(absolutePath, config));
+    const result = await run("poppler-pdftotext-layout", () => extractPdfText(absolutePath, config, options));
     text = result.text;
     structural = result.structural ?? {};
     parser = "poppler-pdftotext-layout";
@@ -96,7 +104,7 @@ export async function extractDocument(filePath: string, config: ScceRuntimeConfi
     typedExtraction = result.typedExtraction ?? {};
     parser = result.text.trim() ? "sheetjs-ce-0.20.3" : "none";
   } else if (isImageMedia(mediaType)) {
-    const result = await run("tesseract-ocr", () => extractImageText(absolutePath, config));
+    const result = await run("tesseract-ocr", () => extractImageText(absolutePath, config, options));
     text = result.text;
     structural = result.structural ?? {};
     parser = "tesseract-ocr";
@@ -120,7 +128,7 @@ export async function extractDocument(filePath: string, config: ScceRuntimeConfi
   const completeStructure = finalizeStructure(normalized, structural);
   const diagnostics = documentDiagnostics({ bytes, text: normalized, attempts, sizeBytes: info.size });
   const relativeUri = normalizePath(path.relative(config.runtime.workspaceRoot, absolutePath));
-  const visualAttributes = await visualAttributesForDocument(absolutePath, ext, mediaType, config);
+  const visualAttributes = options.includeVisualAttributes === false ? undefined : await visualAttributesForDocument(absolutePath, ext, mediaType, config);
   const sourceCodeFacts = extractNodeSourceCodeFacts({
     absolutePath,
     uri: relativeUri,
@@ -181,9 +189,10 @@ export async function diagnoseExtractionTools(config: ScceRuntimeConfig): Promis
   ];
 }
 
-async function extractPdfText(filePath: string, config: ScceRuntimeConfig): Promise<{ text: string; structural: Partial<DocumentStructure>; warnings: string[]; stderr?: string }> {
+async function extractPdfText(filePath: string, config: ScceRuntimeConfig, options: DocumentExtractionOptions): Promise<{ text: string; structural: Partial<DocumentStructure>; warnings: string[]; stderr?: string }> {
   const tool = config.runtime.tools.pdftotext ?? "pdftotext";
-  const result = await runProcess(tool, ["-layout", "-enc", "UTF-8", "-eol", "unix", filePath, "-"], { timeoutMs: 120000 });
+  const result = await runProcess(tool, ["-layout", "-enc", "UTF-8", "-eol", "unix", filePath, "-"], { timeoutMs: options.timeoutMs ?? 120000, maxOutputBytes: options.maxOutputBytes, signal: options.signal });
+  if (options.requireComplete && result.code !== 0) throw new Error(`pdftotext failed: ${result.stderr.slice(0, 300) || `exit ${result.code}`}`);
   const warnings = result.code === 0 ? [] : [`pdftotext exit ${result.code}`];
   const text = result.stdout;
   return { text, structural: inferPagedStructure(text), warnings, stderr: result.stderr };
@@ -205,29 +214,44 @@ async function extractWorkbookText(bytes: Uint8Array, filePath: string, config: 
   };
 }
 
-async function extractImageText(filePath: string, config: ScceRuntimeConfig): Promise<{ text: string; structural: Partial<DocumentStructure>; warnings: string[]; stderr?: string }> {
+async function extractImageText(filePath: string, config: ScceRuntimeConfig, options: DocumentExtractionOptions): Promise<{ text: string; structural: Partial<DocumentStructure>; warnings: string[]; stderr?: string }> {
   const tool = config.runtime.tools.tesseract ?? "tesseract";
-  const result = await runProcess(tool, [filePath, "stdout", "--psm", "3"], { timeoutMs: 180000 });
+  const result = await runProcess(tool, [filePath, "stdout", "--psm", "3"], { timeoutMs: options.timeoutMs ?? 180000, maxOutputBytes: options.maxOutputBytes, signal: options.signal });
+  if (options.requireComplete && result.code !== 0) throw new Error(`tesseract failed: ${result.stderr.slice(0, 300) || `exit ${result.code}`}`);
   const warnings = result.code === 0 ? [] : [`tesseract exit ${result.code}`];
   return { text: result.stdout, structural: inferTextStructure(result.stdout), warnings, stderr: result.stderr };
 }
 
-export async function runProcess(command: string, args: string[], options: { cwd?: string; timeoutMs?: number } = {}): Promise<{ code: number | null; stdout: string; stderr: string; durationMs: number }> {
+export async function runProcess(command: string, args: string[], options: { cwd?: string; timeoutMs?: number; maxOutputBytes?: number; signal?: AbortSignal } = {}): Promise<{ code: number | null; stdout: string; stderr: string; durationMs: number }> {
   const started = Date.now();
   return new Promise(resolve => {
     const child = spawn(command, args, { cwd: options.cwd, shell: false, windowsHide: true });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
-    const timer = setTimeout(() => child.kill(), options.timeoutMs ?? 60000);
-    child.stdout.on("data", chunk => stdout.push(Buffer.from(chunk)));
-    child.stderr.on("data", chunk => stderr.push(Buffer.from(chunk)));
+    let failure: string | undefined;
+    let outputBytes = 0;
+    const stop = (reason: string): void => { failure ??= reason; child.kill(); };
+    const timer = setTimeout(() => stop("document extraction timed out"), options.timeoutMs ?? 60000);
+    const aborted = () => stop("document extraction cancelled");
+    options.signal?.addEventListener("abort", aborted, { once: true });
+    if (options.signal?.aborted) aborted();
+    const collect = (target: Buffer[], chunk: Buffer): void => {
+      if (failure) return;
+      outputBytes += chunk.byteLength;
+      if (outputBytes > (options.maxOutputBytes ?? Infinity)) { stop("document extraction exceeded output byte limit"); return; }
+      target.push(Buffer.from(chunk));
+    };
+    child.stdout.on("data", chunk => collect(stdout, chunk));
+    child.stderr.on("data", chunk => collect(stderr, chunk));
     child.on("error", error => {
       clearTimeout(timer);
+      options.signal?.removeEventListener("abort", aborted);
       resolve({ code: null, stdout: "", stderr: error.message, durationMs: Date.now() - started });
     });
     child.on("close", code => {
       clearTimeout(timer);
-      resolve({ code, stdout: Buffer.concat(stdout).toString("utf8"), stderr: Buffer.concat(stderr).toString("utf8"), durationMs: Date.now() - started });
+      options.signal?.removeEventListener("abort", aborted);
+      resolve({ code: failure ? null : code, stdout: failure ? "" : Buffer.concat(stdout).toString("utf8"), stderr: failure ?? Buffer.concat(stderr).toString("utf8"), durationMs: Date.now() - started });
     });
   });
 }

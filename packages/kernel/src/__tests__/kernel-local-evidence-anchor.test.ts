@@ -1,6 +1,5 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { reviewHeldSource } from "../learning-review.js";
 import type { QuarantineSource } from "../storage.js";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -1676,11 +1675,19 @@ describe("kernel local evidence source anchoring", () => {
     expect(selectedAudit).not.toContain("composition_fallback");
   });
 
-  it("searches, fetches, ingests, and replans once through the configured read-only connector", async () => {
+  it.each([true, false])("searches, ingests and answers in the same turn with discovery index ready=%s", async (initialIndexReady) => {
     const clock = createClock({ fixedTime: 7_500, stepMs: 1 });
     const hasher = createHasher();
     const acquiredEvidence: EvidenceSpan[] = [];
     const fixture = storageFixture({ evidence: acquiredEvidence });
+    // A persisted span need not be discoverable in a bounded retrieval index
+    // yet. Exact-ID reads remain available from canonical durable storage.
+    const indexedSearch = fixture.storage.evidence.searchEvidence;
+    const indexedGraph = fixture.storage.graph.getSlice;
+    fixture.storage.evidence.searchEvidence = query => initialIndexReady ? indexedSearch(query) : Promise.resolve([]);
+    fixture.storage.graph.getSlice = query => initialIndexReady || query.evidenceIds?.length
+      ? indexedGraph(query)
+      : Promise.resolve(graphSlice([]));
     const calls: string[] = [];
     const approved = new Set<string>();
     const pendingPlans: Array<{ id: unknown; capabilityId: string; input: unknown }> = [];
@@ -1729,6 +1736,10 @@ describe("kernel local evidence source anchoring", () => {
         isApproved: ({ capabilityId, input }) => approved.has(`${capabilityId}:${JSON.stringify(input)}`),
         observePending: plan => { pendingPlans.push(plan); }
       },
+      // Mirrors the live adapter's explicit public-internet + standing
+      // network.search consent configuration. Automatic admission remains
+      // source-qualified and direct-evidence-only; it does not train language.
+      runtimeWebAutomaticAdmission: true,
       idFactory: createIdFactory({ clock, hasher, deterministicReplay: true }),
       clock,
       deterministicReplay: true
@@ -1742,23 +1753,32 @@ describe("kernel local evidence source anchoring", () => {
     const pendingPlan = pendingPlans.find(plan => String(plan.id) === consent.planId);
     expect(pendingPlan?.capabilityId).toBe("network.search");
 
-    // 2) Owner consents: search and fetch run, the material is held for review, nothing is promoted.
+    // 2) Standing read-only search consent: search and fetch run, then the
+    // canonically ingested source is admitted as source-qualified evidence.
     approved.add(`${pendingPlan!.capabilityId}:${JSON.stringify(pendingPlan!.input)}`);
     const held = await kernel.turn({ text: "What controls Pump Alpha?", requestedAuthority: "factual" });
     expect(calls).toEqual([
-      "search:What controls Pump Alpha?:3",
+      "search:What controls Pump Alpha?:12",
       `fetch:${sourceUri}`
     ]);
-    expect(held.runtimeMotion).toMatchObject({ status: "held_for_review", fetchedSourceCount: 1, ingestedEvidenceCount: 0 });
-    const heldSources = (held.runtimeMotion as { heldSources: Array<{ id: string; uri: string }> }).heldSources;
-    expect(heldSources.map(source => source.uri)).toEqual([sourceUri]);
+    expect(held.runtimeMotion).toMatchObject({ status: "hydrated", fetchedSourceCount: 1, ingestedEvidenceCount: 1 });
     expect(acquiredEvidence).toHaveLength(1);
-    expect(acquiredEvidence[0]?.status).toBe("quarantined");
-    expect(held.assistantForce).not.toBe("source_grounded_answer");
+    expect(acquiredEvidence[0]?.status).toBe("promoted");
+    expect(held.answer).toContain("POST /api/pumps/alpha/control");
+    expect(held.assistantForce).toBe("source_grounded_answer");
+    expect(held.evidence.map(span => span.id)).toEqual(acquiredEvidence.map(span => span.id));
+    expect(held.runtimeMotion).toMatchObject({
+      ingestedEvidenceIds: acquiredEvidence.map(span => span.id),
+      sourceCoverage: { acceptedLineages: 1 }
+    });
 
-    // 3) Owner confirms the material is truthful: it promotes, and the next turn answers from it.
-    const review = await reviewHeldSource(fixture.storage, { id: heldSources[0]!.id, decision: "promoted", now: clock.now() });
-    expect(review.promotedEvidence).toBe(1);
+    expect(fixture.events.filter(event => event.typeId === "RuntimeMotionPlanned")).toHaveLength(2);
+    expect(fixture.events.filter(event => event.typeId === "RuntimeMotionCompleted")).toHaveLength(2);
+    // The unindexed variant proves the immediate internal handoff. A later
+    // independent turn is a corpus-index concern, covered by the ready variant.
+    if (!initialIndexReady) return;
+
+    // The next turn must be able to use the durable source-qualified evidence.
     const result = await kernel.turn({ text: "What controls Pump Alpha?", requestedAuthority: "factual" });
     expect(result.answer.toLocaleLowerCase()).toContain("pump alpha");
     expect(result.answer).toContain("POST /api/pumps/alpha/control");
@@ -1766,7 +1786,6 @@ describe("kernel local evidence source anchoring", () => {
     expect(result.answer).not.toContain("Insufficient support");
     expect(result.answer).not.toContain("enough source-backed evidence");
     expect(acquiredEvidence).toHaveLength(1);
-    expect(acquiredEvidence[0]?.status).toBe("promoted");
     expect(JSON.stringify(acquiredEvidence.map(span => span.provenance))).toContain(sourceUri);
     expect(result.evidence.map(span => String(span.id))).toEqual([String(acquiredEvidence[0]?.id)]);
     expect(result.assistantForce).toBe("source_grounded_answer");

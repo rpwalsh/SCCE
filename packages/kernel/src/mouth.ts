@@ -13,6 +13,7 @@ import { requestSentenceSequences, spanContainsRequestNearDuplicateSentence } fr
 import { quotedSentenceGap } from "./quoted-gap.js";
 import { realizeCreativeSection, surfaceEchoesPrompt } from "./creative-section-realization.js";
 import type { CreativeRequestFrame } from "./creative-event-compatibility.js";
+import type { NarrativeConditioning } from "./document-generation-session.js";
 import type { CandidateSurface } from "./candidate.js";
 import type { DiscoursePlanningHandoffV2 } from "./discourse-state.js";
 import type { ClaimBasis, CognitiveProposal, PlannedClaim } from "./cognitive-planner.js";
@@ -63,6 +64,7 @@ import {
 import {
   activeJoinProgram,
   languageGenerationSurfaceAdequate,
+  languageGenerationSentenceEndingsAdequate,
   semanticFrameSurfaces,
   type LanguageGenerationResult,
   type LanguageDiscourseMove,
@@ -444,6 +446,7 @@ export interface SpeakInput {
   requestedAuthority?: RequestedAuthority;
   /** Typed request structure compiled by the language layer; Mouth uses its spans as content constraints. */
   creativeRequestFrame?: CreativeRequestFrame;
+  narrativeConditioning?: NarrativeConditioning;
   /** Durable, typed interaction profile used to condition realization. */
   dialogueUserStyleProfile?: UserStyleProfile;
   /** Prior-turn rejected surfaces constrain realization only; they never alter evidence admissibility. */
@@ -832,6 +835,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         const forbiddenHits = creativeSurfaceCandidate
           ? uniqueStrings([
             ...forbiddenSurfaceHits(bounded, plan),
+            ...(languageGenerationSentenceEndingsAdequate(bounded, input.languageMemory) ? [] : ["surface.reject.unattested_sentence_ending"]),
             ...(structuralCreativeCandidateBound ? [] : creativeSemanticDriftHits(bounded, input))
           ])
           : workspaceAnchoredCandidate || governedActionCandidate
@@ -1226,7 +1230,8 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         languageFit: realization.score.fit,
         semanticPreservation: outputSurfacePreservation.score,
         correctionAppliedCount: selected?.correction.applied.filter(item => item.changed).length ?? 0,
-        forbiddenSurfaceHits: [],
+        forbiddenSurfaceHits: creativeRequested && !languageGenerationSentenceEndingsAdequate(outputSurfaceText, input.languageMemory)
+          ? ["surface.reject.unattested_sentence_ending"] : [],
         boundaryDecisions: selected?.boundaryDecisions ?? [],
         metadata: toJsonValue({ path: selected?.path ?? "generated", style: selected?.style ?? "surface.path.generated.emitted", emittedSurface: true, selectedCandidateId: selected?.id ?? null })
       }, finalEnergyContext);
@@ -1247,7 +1252,8 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
           languageFit: realization.score.fit,
           semanticPreservation: conservativePreservation.score,
           correctionAppliedCount: selected.correction.applied.filter(item => item.changed).length,
-          forbiddenSurfaceHits: [],
+          forbiddenSurfaceHits: creativeRequested && !languageGenerationSentenceEndingsAdequate(conservativeText, input.languageMemory)
+            ? ["surface.reject.unattested_sentence_ending"] : [],
           boundaryDecisions: selected.boundaryDecisions,
           metadata: toJsonValue({ path: selected.path, style: selected.style, emittedSurface: true, conservativeFinalRenderer: true, selectedCandidateId: selected.id })
         }, finalEnergyContext);
@@ -1269,7 +1275,9 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       // leaking/structurally-invalid surface is not the same class of
       // problem as thin evidence, and must not be tolerated the same way.
       markMouthPhase("final_surface");
-      const selectedSurfaceEnergy = selectedEnergy?.valid ? selectedEnergy : emittedSurfaceEnergy;
+      // Selection precedes repair and formatting. The actual emitted text
+      // must pass its own gates; a valid earlier candidate cannot certify it.
+      const selectedSurfaceEnergy = emittedSurfaceEnergy;
       const selectedStructuralBinding = selected
         ? structuralCreativeSelectionBindingFromSurface(selected)
         : undefined;
@@ -4344,7 +4352,8 @@ function directCreativeSectionCandidate(
     sectionGoal: input.requirementField
       ? requestSubjectText(input.entailment.claim.text, input.requirementField)
       : input.entailment.claim.text,
-    narrativeConditioning: input.evidence.slice(0, 2).map(span => span.text).filter(Boolean),
+    priorSurfaceTexts: input.evidence.slice(0, 2).map(span => span.text).filter(Boolean),
+    narrativeConditioning: input.narrativeConditioning,
     topicVocabulary: requestTerms.map(term => term.text),
     casingSourceTexts: input.evidence.slice(0, 4).map(span => span.text).filter(Boolean),
     targetLanguage: input.targetLanguage,

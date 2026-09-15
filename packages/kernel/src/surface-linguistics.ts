@@ -290,6 +290,30 @@ export function surfaceWords(text: string): string[] {
   return words.filter(Boolean);
 }
 
+/** Recover casing from attested sentence interiors, without a language vocabulary. */
+export function sourceDerivedCasingHints(texts: readonly string[]): Record<string, string> {
+  const counts = new Map<string, Map<string, number>>();
+  for (const text of texts) {
+    for (const sentence of splitSurfaceSentences(text)) {
+      // Sentence-initial capitalization does not establish lexical casing.
+      for (const word of surfaceWords(sentence).slice(1)) {
+        if (!hasCasedLetter(word)) continue;
+        const key = word.toLocaleLowerCase();
+        const variants = counts.get(key) ?? new Map<string, number>();
+        variants.set(word, (variants.get(word) ?? 0) + 1);
+        counts.set(key, variants);
+      }
+    }
+  }
+  const hints: Record<string, string> = Object.create(null);
+  for (const [key, variants] of counts) {
+    const ranked = [...variants].sort((a, b) => b[1] - a[1]);
+    const top = ranked[0]!;
+    if (top[0] !== key && (!ranked[1] || top[1] > ranked[1][1])) hints[key] = top[0];
+  }
+  return hints;
+}
+
 export function hasCasedLetter(value: string): boolean {
   for (const char of value) {
     if (!isSurfaceLetter(char)) continue;

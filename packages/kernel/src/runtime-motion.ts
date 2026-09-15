@@ -8,7 +8,7 @@ import { formatSurfaceMessage } from "./localization.js";
 import type { LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
 import { cognitiveTopicForRequest } from "./learned-graph-prior-runtime.js";
 import { type InventionConstruct } from "./prediction.js";
-import { redactSecrets, sourceTextSurface, toJsonValue } from "./primitives.js";
+import { redactSecrets, toJsonValue } from "./primitives.js";
 import { graphNodePriorClass, isLearnedPriorClass } from "./proof-boundary.js";
 import { collapseSurfaceWhitespace, ensureSurfaceSentence as ensureUnicodeSurfaceSentence, surfaceWords } from "./surface-linguistics.js";
 import {
@@ -45,6 +45,46 @@ export interface PriorRejectedHypothesis {
   rejectionReasons: string[];
 }
 
+/**
+ * A caller-supplied competing-claim search surface. The runtime deliberately
+ * does not manufacture a language-specific negation/query template here;
+ * interpretation and realization provide this surface upstream.
+ */
+export interface RuntimeAdversarialSearchRequest {
+  searchKind: "counterclaim";
+  querySurface: string;
+  claimHash?: string;
+  targetLanguageId?: string;
+  intentId?: string;
+  originalQueryHash?: string;
+  realizationAudit?: JsonValue;
+}
+
+export interface RuntimeAdversarialSearchResult {
+  searchKind: "counterclaim";
+  attempted: boolean;
+  querySurfaceHash?: string;
+  targetLanguageId?: string;
+  intentId?: string;
+  claimHash?: string;
+  originalQueryHash?: string;
+  realizationAudit?: JsonValue;
+  searchResultCount: number;
+  fetchedSourceCount: number;
+  ingestedSourceCount: number;
+  ingestedEvidenceCount: number;
+  sourceUris: string[];
+  sourceLineageIds: string[];
+  failures: string[];
+}
+
+export interface RuntimeAcquisitionProgress {
+  phase: string;
+  observedAtMonotonicMs: number;
+  /** Bounded typed acquisition snapshot; this is the same field used by runtimeControl.onProgress. */
+  cognition?: JsonValue;
+}
+
 export interface RuntimeReplanMotion {
   schema: "scce.runtime_motion.learn_hydrate_replan.v1";
   motionId: "motion.learn_hydrate_replan";
@@ -58,7 +98,7 @@ export interface RuntimeReplanMotion {
   status: "hydrated" | "empty" | "unavailable" | "failed" | "awaiting_consent" | "held_for_review";
   /** Owner consent for network.search is pending on this approval plan. */
   consent?: { capabilityId: "network.search"; planId: string; granted: boolean };
-  /** Fetched sources held in quarantine until the owner confirms their truthfulness. */
+  /** Fetched sources held for review when automatic source-qualified admission is disabled. */
   heldSources?: Array<{ id: string; uri: string; title: string; snippet: string }>;
   searchResultCount: number;
   fetchedSourceCount: number;
@@ -66,9 +106,20 @@ export interface RuntimeReplanMotion {
   ingestedEvidenceCount: number;
   sourceUris: string[];
   sourceSurfaces: string[];
+  /** Bounded canonical-ingest receipt; used as retrieval seeds, never as proof or admission. */
+  ingestedEvidenceIds?: string[];
   failures: string[];
   /** Bounded (top 8) rejected-candidate fingerprints from the attempt that triggered this replan. */
   priorRejectedHypotheses: PriorRejectedHypothesis[];
+  /** Accepted source lineages after URI/content/dependency deduplication. */
+  sourceLineageIds?: string[];
+  acceptedSourceLineageCount?: number;
+  duplicateSourceCount?: number;
+  duplicateContentCount?: number;
+  /** Coverage audit: source discovery can be incomplete without becoming fabricated evidence. */
+  sourceCoverage?: { requestedLineages: number; acceptedLineages: number; searchLeadsExamined: number };
+  /** Optional fifth, caller-derived competing-claim search. */
+  adversarialSearch?: RuntimeAdversarialSearchResult;
 }
 
 
@@ -452,8 +503,6 @@ export function runtimeMotionCandidateField(input: {
   const answer = runtimeMotionFocusSurface(
     input.requestText,
     input.unresolvedSlots,
-    input.motion.sourceSurfaces,
-    input.motion.sourceUris,
     input.focusAnchors
   );
   const focusId = `focus:${input.hasher.digestHex(answer).slice(0, 20)}`;
@@ -545,8 +594,6 @@ export function runtimeMotionCandidateField(input: {
 function runtimeMotionFocusSurface(
   requestText: string,
   unresolvedSlots: readonly string[] = [],
-  sourceSurfaces: readonly string[] = [],
-  sourceUris: readonly string[] = [],
   focusAnchors: readonly string[] = []
 ): string {
   // The subject the request names is what was not found: "No grounded source for: Greek goddess" named the
@@ -564,9 +611,7 @@ function runtimeMotionFocusSurface(
     .filter(Boolean)
     .slice(0, 3);
   const detail = uniqueKernelStrings([
-    ...sourceSurfaces.map(surface => sourceTextSurface(surface, 320)),
-    ...slotSurfaces,
-    ...sourceUris.slice(0, 2)
+    ...slotSurfaces
   ])
     .slice(0, 3);
   const boundedLead = [...topic].slice(0, 120).join("").trim();
