@@ -14,6 +14,7 @@ import { quotedSentenceGap } from "./quoted-gap.js";
 import { realizeCreativeSection, surfaceEchoesPrompt } from "./creative-section-realization.js";
 import type { CreativeRequestFrame } from "./creative-event-compatibility.js";
 import type { CandidateSurface } from "./candidate.js";
+import type { DiscoursePlanningHandoffV2 } from "./discourse-state.js";
 import type { ClaimBasis, CognitiveProposal, PlannedClaim } from "./cognitive-planner.js";
 import type { ConstructGraph, EvidenceId, EvidenceSpan, FieldState, Hasher, JsonValue, LanguageProfile, RequestedAuthority, SemanticEntailmentResult } from "./types.js";
 import type { TurnRequirementField } from "./turn-requirements.js";
@@ -449,6 +450,8 @@ export interface SpeakInput {
   dialogueRejectedAssumptions?: readonly string[];
   /** Restored turn-level continuity used as bounded learned-generation context. */
   dialogueContinuity?: Pick<DialogueState, "activeTask" | "establishedFacts" | "unresolvedSlots">;
+  /** Proof-bearing V2 continuity from the canonical production turn. */
+  dialoguePlanningHandoff?: DiscoursePlanningHandoffV2;
   semanticInput?: MouthSemanticInput;
   /** Lets a short bound value (a bare date/time/name the request's own subject+relation demanded, e.g. "20:17"
    *  for "when did X land") satisfy coverage without lexically restating the request -- see coversRequest below. */
@@ -1817,15 +1820,24 @@ function buildSurfacePlan(
   const explicitDetailProfileId = input.detailProfileId ?? correctionInfluence.detailProfileId;
   const requirementDetailProfileId = explicitDetailProfileId
     ? undefined
-    : detailProfileFromRequirementField(input.requirementField)
-      ?? dialogueDetailProfileFromStyle(input.dialogueUserStyleProfile);
+    : detailProfileFromRequirementField(input.requirementField);
+  const typedContinuationDetailProfileId = explicitDetailProfileId || requirementDetailProfileId
+    ? undefined
+    : input.dialoguePlanningHandoff
+      && input.dialoguePlanningHandoff.referentIds.length > 0
+      && input.dialoguePlanningHandoff.expansionMass >= 0.72
+      ? DETAIL_PROFILE_IDS[2]
+      : undefined;
+  const styleDetailProfileId = dialogueDetailProfileFromStyle(input.dialogueUserStyleProfile);
   let detailSelectionSource = explicitDetailProfileId
     ? "explicit"
     : requirementDetailProfileId
       ? "turn_requirement_field"
+      : typedContinuationDetailProfileId
+        ? "typed_discourse_continuation"
       : "style_register";
   let detailProfileId = resolveDetailProfileId({
-    explicitProfileId: explicitDetailProfileId ?? requirementDetailProfileId,
+    explicitProfileId: explicitDetailProfileId ?? requirementDetailProfileId ?? typedContinuationDetailProfileId ?? styleDetailProfileId,
     styleDensity: style.density,
     registerVector
   });
@@ -1889,6 +1901,17 @@ function buildSurfacePlan(
         formatConstraintStrength: input.requirementField.formatConstraintStrength,
         inferentialDepth: input.requirementField.inferentialDepth,
         confidence: input.requirementField.confidence
+      } : null,
+      dialoguePlanningHandoff: input.dialoguePlanningHandoff ? {
+        stateId: input.dialoguePlanningHandoff.stateId,
+        activeTopicIds: input.dialoguePlanningHandoff.activeTopicIds,
+        referentIds: input.dialoguePlanningHandoff.referentIds,
+        claimIds: input.dialoguePlanningHandoff.claimIds,
+        evidenceIds: input.dialoguePlanningHandoff.evidenceIds,
+        openSlotIds: input.dialoguePlanningHandoff.openSlotIds,
+        unresolvedMentionIds: input.dialoguePlanningHandoff.unresolvedMentionIds,
+        continuityMass: input.dialoguePlanningHandoff.continuityMass,
+        expansionMass: input.dialoguePlanningHandoff.expansionMass
       } : null,
       boundaryProfile: { id: boundaryProfile.id, scriptId: boundaryProfile.scriptId ?? null, boundarySource: boundaryProfile.boundarySource },
       meterPatternId: meterPatternId ?? null,
