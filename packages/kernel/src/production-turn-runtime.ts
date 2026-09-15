@@ -33,6 +33,7 @@ import { dialogueTargetProfileId, updateDialogueState } from "./dialogue-pragmat
 import { dialogueInterpretationAdjustmentsForConversation, styleProfileFromTargetProfilePatterns } from "./dialogue-learning.js";
 import {
   createDiscourseTurnObservationV2,
+  createDiscoursePlanningHandoffV2,
   resolveDiscourseStateV2,
   discourseObjectStateFromMetadata,
   interpretationAdjustmentSelectionForTypedCandidateV2,
@@ -4446,6 +4447,12 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           establishedFacts: authorityDialogueState.establishedFacts,
           unresolvedSlots: authorityDialogueState.unresolvedSlots
         },
+        dialoguePlanningHandoff: createDiscoursePlanningHandoffV2({
+          state: previousDialogueCognitiveState,
+          dialogueDependence: requirementField.dialogueDependence,
+          inferentialDepth: requirementField.inferentialDepth,
+          detailDemand: requirementField.brevityDetailBalance
+        }),
         semanticInput: judged.selected.kind === "action-preview" && judged.selected.answer.trim()
           ? {
             schema: "scce.mouth.semantic_input.v1" as const,
@@ -6388,6 +6395,16 @@ export function typedDialoguePreselectionV2(input: {
   const previousByNodeId = new Map(
     (input.previousState?.referents ?? []).flatMap(referent => referent.nodeIds.map(nodeId => [String(nodeId), referent] as const))
   );
+  const graphNodeById = new Map(input.graph.nodes.map(node => [String(node.id), node] as const));
+  const previousByEvidenceId = new Map<string, import("./discourse-state.js").DialogueCognitiveStateV2["referents"][number] | undefined>();
+  for (const referent of input.previousState?.referents ?? []) {
+    for (const evidenceId of referent.evidenceIds) {
+      const key = String(evidenceId);
+      const prior = previousByEvidenceId.get(key);
+      if (prior && prior.id !== referent.id) previousByEvidenceId.set(key, undefined);
+      else if (!previousByEvidenceId.has(key)) previousByEvidenceId.set(key, referent);
+    }
+  }
   const proofNodes = input.graph.nodes.filter(node => node.evidenceIds.some(id => proofEvidenceIds.has(String(id))));
   const evidenceById = new Map(input.selectedEvidence.map(span => [String(span.id), span]));
   const mappings = input.entailment.mappings.filter(mapping => mapping.evidenceIds.some(id => proofEvidenceIds.has(String(id))));
@@ -6395,7 +6412,11 @@ export function typedDialoguePreselectionV2(input: {
     const evidenceIds = uniqueKernelStrings(mapping.evidenceIds.map(String).filter(id => proofEvidenceIds.has(id)));
     const candidateNodes = proofNodes.filter(node => node.evidenceIds.some(id => evidenceIds.includes(String(id))));
     if (!candidateNodes.length) return [];
-    const candidateReferentIds = uniqueKernelStrings(candidateNodes.map(node => previousByNodeId.get(String(node.id))?.id ?? String(node.id)));
+    const candidateReferentIds = uniqueKernelStrings(candidateNodes.map(node => {
+      const referent = previousByNodeId.get(String(node.id))
+        ?? node.evidenceIds.map(id => previousByEvidenceId.get(String(id))).find((value): value is NonNullable<typeof value> => Boolean(value));
+      return referent?.id ?? String(node.id);
+    }));
     const sourceVersionIds = uniqueKernelStrings([
       ...mapping.sourceVersionIds.map(String),
       ...evidenceIds.map(id => String(evidenceById.get(id)?.sourceVersionId ?? ""))
@@ -6429,7 +6450,12 @@ export function typedDialoguePreselectionV2(input: {
   const candidates: DiscoursePreselectionCandidateV2[] = [];
   for (const mention of mentions) {
     for (const referentId of mention.candidateReferentIds) {
-      const nodeIds = mention.candidateNodeIds.filter(nodeId => (previousByNodeId.get(nodeId)?.id ?? nodeId) === referentId);
+      const nodeIds = mention.candidateNodeIds.filter(nodeId => {
+        const referent = previousByNodeId.get(nodeId)
+          ?? graphNodeById.get(nodeId)?.evidenceIds
+            .map(id => previousByEvidenceId.get(String(id))).find((value): value is NonNullable<typeof value> => Boolean(value));
+        return (referent?.id ?? nodeId) === referentId;
+      });
       const proofForReferent = uniqueKernelStrings(proofNodes
         .filter(node => nodeIds.includes(String(node.id)))
         .flatMap(node => node.evidenceIds.map(String).filter(id => proofEvidenceIds.has(id))));

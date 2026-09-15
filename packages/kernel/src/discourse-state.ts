@@ -499,6 +499,25 @@ export interface DiscoursePreselectionCandidateV2 {
   proofEvidenceIds: string[];
 }
 
+/**
+ * Proof-bearing continuity handed from the durable discourse state to the
+ * surface planner.  This is a routing receipt, not a surface instruction:
+ * ids remain opaque and the Mouth may only use the evidence already admitted
+ * for the current turn.
+ */
+export interface DiscoursePlanningHandoffV2 {
+  schema: "scce.discourse_planning_handoff.v2";
+  stateId: string;
+  activeTopicIds: string[];
+  referentIds: string[];
+  claimIds: string[];
+  evidenceIds: string[];
+  openSlotIds: string[];
+  unresolvedMentionIds: string[];
+  continuityMass: number;
+  expansionMass: number;
+}
+
 export interface DialogueCognitiveStateV2 {
   schema: "scce.dialogue_cognitive_state.v2";
   id: string;
@@ -623,6 +642,59 @@ export const DEFAULT_DISCOURSE_RESOLVER_CONFIG_V2: Readonly<DiscourseResolverCon
   maxActiveTopics: 8,
   maxHistoryDigests: 64
 };
+
+/** Build the typed continuity receipt consumed by the production Mouth. */
+export function createDiscoursePlanningHandoffV2(input: {
+  state?: DialogueCognitiveStateV2;
+  dialogueDependence?: number;
+  inferentialDepth?: number;
+  detailDemand?: number;
+}): DiscoursePlanningHandoffV2 | undefined {
+  const state = input.state;
+  if (!state) return undefined;
+  const activeTopicSet = new Set(state.activeTopicIds);
+  const admittedBindings = state.bindings.filter(binding => binding.admitted);
+  const admittedReferentIds = new Set(admittedBindings.map(binding => binding.referentId));
+  const referents = state.referents.filter(referent => activeTopicSet.has(referent.topicId) || admittedReferentIds.has(referent.id));
+  const referentIds = canonicalStringSetV2(referents.map(referent => referent.id));
+  const claimIds = canonicalStringSetV2([
+    ...referents.flatMap(referent => referent.claimIds),
+    ...admittedBindings.flatMap(binding => binding.provenanceBindings.flatMap(provenance => provenance.claimIds))
+  ]);
+  const evidenceIds = canonicalStringSetV2([
+    ...referents.flatMap(referent => referent.evidenceIds),
+    ...admittedBindings.flatMap(binding => binding.provenanceBindings.flatMap(provenance => provenance.evidenceIds))
+  ]);
+  const continuityMass = clamp01(
+    0.35 * Math.min(1, activeTopicSet.size / 2)
+    + 0.35 * Math.min(1, referentIds.length / 2)
+    + 0.3 * Math.min(1, evidenceIds.length / 2)
+  );
+  const typedDemand = Math.max(
+    clamp01(finiteNumber(input.dialogueDependence, 0)),
+    clamp01(finiteNumber(input.inferentialDepth, 0)),
+    clamp01(finiteNumber(input.detailDemand, 0))
+  );
+  // An unresolved typed slot is a continuation obligation.  It supplies
+  // expansion pressure without inspecting or classifying the request text.
+  const expansionMass = clamp01(Math.max(
+    typedDemand,
+    state.openSlotIds.length > 0 ? 0.72 : 0,
+    0.45 * continuityMass
+  ));
+  return {
+    schema: "scce.discourse_planning_handoff.v2",
+    stateId: state.id,
+    activeTopicIds: canonicalStringSetV2(state.activeTopicIds),
+    referentIds,
+    claimIds,
+    evidenceIds,
+    openSlotIds: canonicalStringSetV2(state.openSlotIds),
+    unresolvedMentionIds: canonicalStringSetV2(state.unresolvedMentionIds),
+    continuityMass,
+    expansionMass
+  };
+}
 
 export function createDiscourseInterpretationAdjustmentV2(
   input: Omit<DiscourseInterpretationAdjustmentV2, "schema" | "id">
