@@ -967,6 +967,13 @@ export interface TranslationConstructionStore {
   listConstructions(targetLanguage: string, limit?: number): Promise<TranslationConstruction[]>;
 }
 
+/** Durable owner feedback for translation selection. Records are evidence for
+ * reranking admitted target surfaces; they are never answer text by themselves. */
+export interface TranslationCorrectionStore {
+  putCorrection(record: UserCorrectionAlignmentRecord): Promise<void>;
+  listCorrections(query?: { sourceLanguage?: string; targetLanguage?: string; limit?: number }): Promise<UserCorrectionAlignmentRecord[]>;
+}
+
 /** Plan items 221-228. Storage-schema shape for a real, durable document-generation session -- `sessionJson` carries the full real `DocumentGenerationSession` (already fully JSON-safe), keyed by a real, caller-chosen, stable `id` so a multi-turn document-writing project never requires the caller to resend the whole plan on every turn. */
 export interface DocumentGenerationSessionRecord {
   id: string;
@@ -1131,6 +1138,8 @@ export interface ScceStorage extends StorageAdmin {
    * extraction, never a silent fabricated construction.
    */
   translationConstructions?: TranslationConstructionStore;
+  /** Optional so fixture stores can opt in without a second runtime lane. */
+  translationCorrections?: TranslationCorrectionStore;
   /**
    * Optional: durable per-language-cluster segmentation v2 boundary-signal
    * aggregate store (Part B step 2). Optional for the same reason as the
@@ -1233,7 +1242,7 @@ export interface KernelRuntimePorts {
 // independently bumped to 23 for its own new tables. Both are real,
 // distinct structural additions from the same base, so the merged
 // schema is one past the higher of the two, not either original value.
-export const POSTGRES_SCHEMA_VERSION = 25;
+export const POSTGRES_SCHEMA_VERSION = 26;
 
 export const POSTGRES_REQUIRED_TABLES = [
   "storage_meta",
@@ -1306,6 +1315,7 @@ export const POSTGRES_REQUIRED_TABLES = [
   "document_generation_sessions",
   "translation_seeds",
   "translation_constructions",
+  "translation_corrections",
   "relation_potential_models",
   "relation_potential_active_model"
 ] as const;

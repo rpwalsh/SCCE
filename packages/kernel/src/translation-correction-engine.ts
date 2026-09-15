@@ -4,8 +4,106 @@ import type { Clock, EpisodeId, EvidenceId, SourceVersionId } from "./types.js";
 import type { UserCorrectionAlignmentRecord, TranslationAlignmentRecord } from "./storage.js";
 import type { IdFactory } from "./ids.js";
 import { createIdFactory } from "./ids.js";
-import { clamp01, createClock, createHasher } from "./primitives.js";
+import { clamp01, createClock, createHasher, toJsonValue } from "./primitives.js";
 import type { JsonValue } from "./types.js";
+import { unicodeSymbolSegments } from "./unicode-segmentation.js";
+
+/**
+ * A correction is training evidence for a later alignment decision.  It is
+ * deliberately a pair of typed surfaces rather than a replacement answer:
+ * callers may use it to score admitted target evidence, but it cannot create
+ * an answer or bypass the translation proof gates.
+ */
+export interface TranslationCorrectionPrior {
+  schema: "scce.translation.correction_prior.v1";
+  id: string;
+  sourceLanguage: string;
+  targetLanguage: string;
+  sourceSymbols: string[];
+  previousTargetSymbols: string[];
+  correctedTargetSymbols: string[];
+  changedTerms: Array<{ original: string; corrected: string; reason: string }>;
+  alpha: number;
+  evidenceIds: EvidenceId[];
+  observedAt: number;
+}
+
+/** Project a durable owner correction into source-neutral alignment evidence. */
+export function translationCorrectionPriorFromRecord(record: UserCorrectionAlignmentRecord): TranslationCorrectionPrior {
+  return {
+    schema: "scce.translation.correction_prior.v1",
+    id: record.id,
+    sourceLanguage: record.sourceLanguage,
+    targetLanguage: record.targetLanguage,
+    sourceSymbols: surfaceSymbols(record.sourceText),
+    previousTargetSymbols: surfaceSymbols(record.previousOutput),
+    correctedTargetSymbols: surfaceSymbols(record.correctedOutput),
+    changedTerms: record.changedTerms.map(term => ({ ...term })),
+    alpha: clamp01(record.alpha),
+    evidenceIds: [...record.evidenceIds],
+    observedAt: record.createdAt
+  };
+}
+
+/** Deterministic projection used when a durable store returns several corrections. */
+export function translationCorrectionPriorsFromRecords(records: readonly UserCorrectionAlignmentRecord[]): TranslationCorrectionPrior[] {
+  const byId = new Map<string, TranslationCorrectionPrior>();
+  for (const record of records) {
+    const prior = translationCorrectionPriorFromRecord(record);
+    const existing = byId.get(prior.id);
+    if (!existing || prior.observedAt > existing.observedAt) byId.set(prior.id, prior);
+  }
+  return [...byId.values()].sort((left, right) => right.observedAt - left.observedAt || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
+}
+
+/** JSON boundary used by durable dialogue records and restart hydration. */
+export function translationCorrectionPriorToJson(prior: TranslationCorrectionPrior): JsonValue {
+  return toJsonValue(prior);
+}
+
+/** Parse only the versioned, complete prior shape; malformed durable data is ignored. */
+export function translationCorrectionPriorFromJson(value: JsonValue): TranslationCorrectionPrior | undefined {
+  if (!isRecord(value) || value.schema !== "scce.translation.correction_prior.v1") return undefined;
+  const stringArray = (candidate: unknown): string[] | undefined =>
+    Array.isArray(candidate) && candidate.every(item => typeof item === "string") ? [...candidate] : undefined;
+  const sourceSymbols = stringArray(value.sourceSymbols);
+  const previousTargetSymbols = stringArray(value.previousTargetSymbols);
+  const correctedTargetSymbols = stringArray(value.correctedTargetSymbols);
+  const evidenceIds = stringArray(value.evidenceIds);
+  const changedTerms = Array.isArray(value.changedTerms)
+    ? value.changedTerms.flatMap(term => {
+      if (!isRecord(term) || typeof term.original !== "string" || typeof term.corrected !== "string" || typeof term.reason !== "string") return [];
+      return [{ original: term.original, corrected: term.corrected, reason: term.reason }];
+    })
+    : undefined;
+  if (typeof value.id !== "string" || typeof value.sourceLanguage !== "string" || typeof value.targetLanguage !== "string"
+    || !sourceSymbols || !previousTargetSymbols || !correctedTargetSymbols || !evidenceIds || !changedTerms
+    || typeof value.alpha !== "number" || !Number.isFinite(value.alpha) || typeof value.observedAt !== "number" || !Number.isFinite(value.observedAt)) return undefined;
+  return {
+    schema: value.schema,
+    id: value.id,
+    sourceLanguage: value.sourceLanguage,
+    targetLanguage: value.targetLanguage,
+    sourceSymbols,
+    previousTargetSymbols,
+    correctedTargetSymbols,
+    changedTerms,
+    alpha: clamp01(value.alpha),
+    evidenceIds: evidenceIds as EvidenceId[],
+    observedAt: value.observedAt
+  };
+}
+
+function isRecord(value: JsonValue | unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function surfaceSymbols(surface: string): string[] {
+  return unicodeSymbolSegments(surface)
+    .map(segment => segment.normalized.toLowerCase())
+    .filter(Boolean)
+    .slice(0, 4096);
+}
 
 export interface TranslationFeedback {
   episodeId: EpisodeId;
