@@ -6,7 +6,6 @@ import { deriveClosedClassWords } from "./closed-class-words.js";
 import { calibrated } from "./calibrations/prod-calibrations.js";
 import type { BeamSentenceContinuation, KneserNeyModel } from "./kneser-ney.js";
 import { KNESER_NEY_SCHEMA, beamContinueSentence, compileKneserNeyRuntimeIndexes, continueBoundedProse, kneserNeyProbability, predictKneserNey } from "./kneser-ney.js";
-import { primeNumericTokenCounts } from "./numeric-token-statistics.js";
 import { createNgramMemoryCompiler, type NgramMemoryCompilation } from "./ngram-memory.js";
 import { buildLanguageProfileClusters, type LanguageProfileCluster } from "./language.js";
 import { clamp01, featureSet, mean, symbolizeData, toJsonValue, weightedJaccard } from "./primitives.js";
@@ -4724,15 +4723,12 @@ function selectRuntimeModels(records: readonly NgramModelRecord[], reconstructed
     if (model) candidates.push({ key: `record:${record.id}`, model });
   }
   for (const model of reconstructed) candidates.push({ key: `reconstructed:${model.order}`, model });
-  const selected = candidates
+  return candidates
     .sort((left, right) => right.model.order - left.model.order
       || right.model.observedSymbolCount - left.model.observedSymbolCount
       || compareCodePoint(left.key, right.key))
     .slice(0, 36)
     .map(candidate => candidate.model);
-  // Numeric token counts are derived where a model is admitted, not on the first turn that reads it.
-  primeNumericTokenCounts(selected);
-  return selected;
 }
 
 function recordSourceSystem(json: JsonValue | undefined): string | undefined {
