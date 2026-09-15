@@ -22,6 +22,7 @@ import {
   selectLanguageProfileClusterForSurface,
   type LanguageProfileCluster
 } from "./language.js";
+import { primeNumericTokenCounts } from "./numeric-token-statistics.js";
 import { createClock, createHasher, sourceTextSurface, toJsonValue } from "./primitives.js";
 import {
   isRequestRequirementPattern
@@ -725,7 +726,7 @@ export function createSurfaceLanguageRuntime(options: {
     return (value?.state?.models?.length ?? 0) > 0 || (value?.state?.continuationPopulation?.modelCount ?? 0) > 0;
   }
 
-  async function hydrateSurfaceLanguageMemoryCached(
+  async function hydrateSurfaceLanguageMemoryScoped(
     limit = 36,
     cluster?: LanguageProfileCluster,
     unscopedReason = "no-language-cluster-selected",
@@ -882,6 +883,20 @@ export function createSurfaceLanguageRuntime(options: {
       ? { ...value, ...value.rescopeForSurface(preferredSurface) }
       : value;
   }
+
+  // Numeric token counts of the models that survived scoping, derived here rather than by the first turn to read them.
+  const hydrateSurfaceLanguageMemoryCached = async (
+    limit = 36,
+    cluster?: LanguageProfileCluster,
+    unscopedReason = "no-language-cluster-selected",
+    preferredCorpusRoleId?: CorpusRoleId,
+    preferredSurface = "",
+    hydrationOptions: ResidentOnlyOptions = {}
+  ) => {
+    const value = await hydrateSurfaceLanguageMemoryScoped(limit, cluster, unscopedReason, preferredCorpusRoleId, preferredSurface, hydrationOptions);
+    primeNumericTokenCounts(value.state.models);
+    return value;
+  };
 
   /**
    * Read durable dialogue-learned target-profile patterns through the same

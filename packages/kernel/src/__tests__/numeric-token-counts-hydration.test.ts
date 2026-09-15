@@ -4,9 +4,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import { clearFreeFormLexicon, primeFreeFormLexicon } from "../free-form-lexicon.js";
 import { createIdFactory } from "../ids.js";
 import { createLanguageMemoryRuntime } from "../language-memory-runtime.js";
+import { languageSurfaceTrigrams } from "../language.js";
 import { createNgramMemoryCompiler } from "../ngram-memory.js";
 import { clearNumericTokenStatisticsCache, deriveNumericTokenStatistics, numericTokenDerivationCount, residentNumericTokenStatistics } from "../numeric-token-statistics.js";
 import { createClock, createHasher, featureSet } from "../primitives.js";
+import type { ScceKernelDeps } from "../storage.js";
+import { createSurfaceLanguageRuntime } from "../surface-language-runtime.js";
 import type { EvidenceSpan, LanguageProfile } from "../types.js";
 
 const probes = ["metres", "tonnes", "survey", "the", ",", "."];
@@ -15,32 +18,13 @@ function decisions(statistics: ReturnType<typeof residentNumericTokenStatistics>
   return probes.map(symbol => `${symbol}:${statistics.unit(symbol)}:${statistics.separator(symbol)}`);
 }
 
-function corpus(seed: number, unit: string): string {
+function corpus(seed: number, unit: string, noun: string): string {
   const lines: string[] = [];
   for (let i = 0; i < 30; i++) {
-    lines.push(`The survey measured ${(i * 37 + seed) % 900 + 12} ${unit} across the valley in the north.`);
-    lines.push(`Records list 1,${String(100 + i * 7 + seed)}.${i % 9} ${unit} for the river.`);
+    lines.push(`The ${noun} survey measured ${(i * 37 + seed) % 900 + 12} ${unit} across the valley.`);
+    lines.push(`Records list 1,${String(100 + i * 7 + seed)}.${i % 9} ${unit} for the ${noun}.`);
   }
   return lines.join(" ");
-}
-
-function hydratedState(streamId: string, text: string) {
-  const hasher = createHasher();
-  const compiler = createNgramMemoryCompiler({
-    hasher,
-    idFactory: createIdFactory({ clock: createClock({ fixedTime: 1 }), hasher, deterministicReplay: true })
-  });
-  const learned = profile(`profile.${streamId}`, `source.${streamId}`);
-  const evidence = span(`evidence.${streamId}`, text);
-  const compiled = compiler.compile({
-    streamId,
-    profile: learned,
-    sourceVersionId: learned.sourceVersionId,
-    text,
-    evidence: [evidence],
-    createdAt: 1
-  });
-  return createLanguageMemoryRuntime({ hasher }).hydrate({ models: compiled.models });
 }
 
 afterEach(() => {
@@ -48,46 +32,101 @@ afterEach(() => {
   clearNumericTokenStatisticsCache();
 });
 
-describe("numeric token counts are derived where models are hydrated", () => {
-  it("leaves a turn that primes the lexicon with nothing left to derive", () => {
+describe("numeric token counts are derived where models are admitted", () => {
+  it("derives the scoped models at hydration and none of the records scoping drops", async () => {
     clearNumericTokenStatisticsCache();
-    const state = hydratedState("stream.numeric", corpus(1, "metres"));
-    expect(state.models.length).toBeGreaterThan(0);
+    const fixture = runtimeFixture();
+    expect(fixture.records).toHaveLength(2);
 
-    const afterHydration = numericTokenDerivationCount();
-    expect(afterHydration).toBe(state.models.length);
+    const cluster = await fixture.runtime.surfaceLanguageClusterCached("fixture language survey");
+    const hydrated = await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, cluster, "source-cluster-selected");
 
-    primeFreeFormLexicon(state.models);
+    expect(hydrated.state.models.length).toBeGreaterThan(0);
+    // Only what survived scoping: the second profile's record was loaded and dropped, and was never derived.
+    expect(hydrated.state.models.length).toBeLessThan(fixture.records.length);
+    expect(numericTokenDerivationCount()).toBe(hydrated.state.models.length);
+
+    const derivedAtHydration = numericTokenDerivationCount();
+    primeFreeFormLexicon(hydrated.state.models);
     const turn = decisions(residentNumericTokenStatistics());
-    expect(numericTokenDerivationCount()).toBe(afterHydration);
+    expect(numericTokenDerivationCount()).toBe(derivedAtHydration);
 
-    expect(turn).toEqual(decisions(deriveNumericTokenStatistics(state.models)));
+    expect(turn).toEqual(decisions(deriveNumericTokenStatistics(hydrated.state.models)));
   });
 
-  it("re-hydrating the same persisted records derives nothing a second time", () => {
+  it("derives nothing on a warm second hydration of the same scope", async () => {
     clearNumericTokenStatisticsCache();
-    const first = hydratedState("stream.repeat", corpus(2, "tonnes"));
-    const afterFirst = numericTokenDerivationCount();
-    expect(afterFirst).toBe(first.models.length);
+    const fixture = runtimeFixture();
+    const cluster = await fixture.runtime.surfaceLanguageClusterCached("fixture language survey");
+    await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, cluster, "source-cluster-selected");
+    const derivedAtHydration = numericTokenDerivationCount();
+    expect(derivedAtHydration).toBeGreaterThan(0);
 
-    const second = hydratedState("stream.repeat", corpus(2, "tonnes"));
-    expect(numericTokenDerivationCount()).toBe(afterFirst);
-
-    primeFreeFormLexicon(second.models);
+    const warm = await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, cluster, "source-cluster-selected");
+    primeFreeFormLexicon(warm.state.models);
     residentNumericTokenStatistics();
-    expect(numericTokenDerivationCount()).toBe(afterFirst);
+
+    expect(numericTokenDerivationCount()).toBe(derivedAtHydration);
   });
 });
 
-function profile(id: string, sourceVersionId: string): LanguageProfile {
+function runtimeFixture() {
+  const hasher = createHasher();
+  const compiler = createNgramMemoryCompiler({
+    hasher,
+    idFactory: createIdFactory({ clock: createClock({ fixedTime: 1 }), hasher, deterministicReplay: true })
+  });
+  const members = [
+    { id: "profile.fixture", surface: "fixture language survey", text: corpus(1, "metres", "valley") },
+    { id: "profile.other", surface: "qelari venatu morrow", text: corpus(2, "tonnes", "qelari") }
+  ];
+  const profiles = members.map(member => profile(member.id, member.surface));
+  const records = members.flatMap((member, index) => compiler.compile({
+    streamId: `stream.${member.id}`,
+    profile: profiles[index]!,
+    sourceVersionId: profiles[index]!.sourceVersionId,
+    text: member.text,
+    evidence: [span(`evidence.${member.id}`, member.text)],
+    createdAt: 1
+  }).models);
+
+  const storage = {
+    brainImports: { active: async () => ({ activeImportRunIds: [] }) },
+    evidence: { getEvidenceBatch: async () => [] },
+    languageMemory: {
+      listNgramModels: async () => records,
+      listNgramObservations: async () => [],
+      listLanguageUnits: async () => [],
+      listLanguagePatterns: async () => [],
+      listSemanticFrames: async () => []
+    },
+    segmentationPopulations: { listRecent: async () => [] },
+    model: { listLanguageProfiles: async () => profiles }
+  } as unknown as ScceKernelDeps["storage"];
+
+  return {
+    records,
+    runtime: createSurfaceLanguageRuntime({
+      deps: { storage, corpusRegistry: [] },
+      languageMemoryRuntime: createLanguageMemoryRuntime({ hasher }),
+      clock: createClock({ fixedTime: 0, stepMs: 100 }),
+      hasher,
+      cacheMs: 10_000_000,
+      profileLimit: 32
+    })
+  };
+}
+
+function profile(id: string, surface: string): LanguageProfile {
   return {
     id,
-    sourceVersionId: sourceVersionId as LanguageProfile["sourceVersionId"],
+    sourceVersionId: `source.${id}` as LanguageProfile["sourceVersionId"],
+    discoveredNames: [{ surface, evidenceRefs: [], sourceVersionRefs: [`source.${id}` as never], confidence: 1 }],
     scripts: [{ script: "script:Latn", mass: 1 }],
     symbolShapes: [],
-    charNgrams: [{ ngram: "the", count: 1 }],
+    charNgrams: languageSurfaceTrigrams(`${surface} ${surface}`).map(ngram => ({ ngram, count: 2 })),
     direction: "ltr",
-    entropy: 0.2,
+    entropy: 1,
     createdAt: 1
   };
 }
@@ -105,7 +144,7 @@ function span(id: string, text: string): EvidenceSpan {
     charStart: 0,
     charEnd: text.length,
     text,
-    textPreview: text,
+    textPreview: text.slice(0, 64),
     languageHints: {},
     scriptHints: {},
     trustVector: { trust: 0.9, forceClass: "direct_evidence" },
