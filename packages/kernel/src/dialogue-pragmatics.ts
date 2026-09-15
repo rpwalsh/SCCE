@@ -178,10 +178,19 @@ interface DialogueSurfaceMessageSlot {
   sourceIds: string[];
 }
 
+interface DialogueClaimMaterial {
+  id: string;
+  surface: string;
+  evidenceLabels: string[];
+  evidenceIds: string[];
+}
+
 interface DialogueMaterial {
   primaryClaim: string;
   certifiedClaims: string[];
+  claims: DialogueClaimMaterial[];
   evidenceLabels: string[];
+  unassignedEvidenceLabels: string[];
   evidenceIds: string[];
   caveats: string[];
   actionFiles: string[];
@@ -755,19 +764,41 @@ function applyReplicatorFeedback(profile: UserStyleProfile, feedback: DialogueFe
 }
 
 function dialogueMaterial(answerGraph: DialogueAnswerGraphLike): DialogueMaterial {
-  const certifiedClaims = answerGraph.claims.filter(claim => claim.certified).map(claim => claim.surface).filter(Boolean);
-  const claims = certifiedClaims.length ? certifiedClaims : answerGraph.claims.map(claim => claim.surface).filter(Boolean);
+  const certifiedClaims = answerGraph.claims.filter(claim => claim.certified && claim.surface.trim());
+  const selectedClaims = certifiedClaims.length
+    ? certifiedClaims
+    : answerGraph.claims.filter(claim => claim.surface.trim());
+  const linksByClaimId = new Map<string, typeof answerGraph.supportLinks>();
+  for (const link of answerGraph.supportLinks) {
+    if (!link.claimId) continue;
+    const links = linksByClaimId.get(link.claimId) ?? [];
+    links.push(link);
+    linksByClaimId.set(link.claimId, links);
+  }
+  const claims = selectedClaims.map(claim => {
+    const links = linksByClaimId.get(claim.id) ?? [];
+    return {
+      id: claim.id,
+      surface: claim.surface,
+      evidenceLabels: uniqueStrings(links.map(link => sourceLabel(link.sourceRef) || link.evidenceId)),
+      evidenceIds: uniqueStrings(links.map(link => link.evidenceId))
+    };
+  });
+  const claimSurfaces = claims.map(claim => claim.surface);
   const evidenceLabels = uniqueStrings(answerGraph.supportLinks.map(link => sourceLabel(link.sourceRef) || link.evidenceId)).slice(0, 6);
+  const unassignedEvidenceLabels = uniqueStrings(answerGraph.supportLinks
+    .filter(link => !link.claimId)
+    .map(link => sourceLabel(link.sourceRef) || link.evidenceId)).slice(0, 6);
   const evidenceIds = uniqueStrings(answerGraph.supportLinks.map(link => link.evidenceId));
   const caveats = uniqueStrings(answerGraph.caveats.map(caveat => caveat.text).filter(Boolean)).slice(0, 4);
   const actionFiles = uniqueStrings(answerGraph.actions.flatMap(action => action.affectedFiles)).slice(0, 8);
-  const primaryClaim = claims[0] ?? "";
+  const primaryClaim = claimSurfaces[0] ?? "";
   const nextStep = actionFiles.length
     ? surfaceSlot(actionFiles, actionFiles)
     : caveats.length
       ? surfaceSlot(caveats.slice(0, 1), answerGraph.caveats.map(caveat => caveat.id))
       : undefined;
-  return { primaryClaim, certifiedClaims: claims, evidenceLabels, evidenceIds, caveats, actionFiles, nextStep };
+  return { primaryClaim, certifiedClaims: claimSurfaces, claims, evidenceLabels, unassignedEvidenceLabels, evidenceIds, caveats, actionFiles, nextStep };
 }
 
 function neutralTargetSurface(material: ReturnType<typeof dialogueMaterial>, answerGraph: DialogueAnswerGraphLike, targetLanguage: string): string {
@@ -789,7 +820,7 @@ function compactSurface(material: ReturnType<typeof dialogueMaterial>, answerGra
 
 function expandedSurface(material: ReturnType<typeof dialogueMaterial>, answerGraph: DialogueAnswerGraphLike): string {
   if (answerGraph.uncertainty.unsupported || !material.primaryClaim) return insufficientSurface(material);
-  return compactSentences([material.primaryClaim, evidenceRefSurface(material), material.caveats[0], renderSurfaceSlot(material.nextStep)]);
+  return compactSentences([claimsEvidenceSurface(material), material.caveats[0], renderSurfaceSlot(material.nextStep)]);
 }
 
 function boundarySurface(material: ReturnType<typeof dialogueMaterial>, answerGraph: DialogueAnswerGraphLike): string {
@@ -804,8 +835,7 @@ function boundarySurface(material: ReturnType<typeof dialogueMaterial>, answerGr
 function formalSurface(material: ReturnType<typeof dialogueMaterial>): string {
   return compactSentences([
     "y* = argmax_y(u(y) - c(y)).",
-    material.primaryClaim,
-    evidenceRefSurface(material),
+    claimsEvidenceSurface(material),
     renderSurfaceSlot(material.nextStep)
   ]);
 }
@@ -821,9 +851,8 @@ function artifactSurface(material: ReturnType<typeof dialogueMaterial>): string 
 
 function planSurface(material: ReturnType<typeof dialogueMaterial>): string {
   return compactSentences([
-    material.primaryClaim,
-    renderSurfaceSlot(material.nextStep),
-    evidenceRefSurface(material)
+    claimsEvidenceSurface(material),
+    renderSurfaceSlot(material.nextStep)
   ]);
 }
 
@@ -844,6 +873,18 @@ function renderSurfaceSlot(slot: DialogueSurfaceMessageSlot | undefined): string
 
 function evidenceRefSurface(material: ReturnType<typeof dialogueMaterial>): string {
   return material.evidenceLabels.length ? material.evidenceLabels.map(label => `[${label}]`).join(" ") : "";
+}
+
+function claimsEvidenceSurface(material: ReturnType<typeof dialogueMaterial>): string {
+  if (!material.claims.length) return evidenceRefSurface(material);
+  const linkedLabels = new Set<string>();
+  const claimSurfaces = material.claims.map(claim => {
+    for (const label of claim.evidenceLabels) linkedLabels.add(label);
+    const evidence = claim.evidenceLabels.map(label => `[${label}]`).join(" ");
+    return evidence ? `${claim.surface} ${evidence}` : claim.surface;
+  });
+  const unlinked = material.unassignedEvidenceLabels.filter(label => !linkedLabels.has(label));
+  return compactSentences([...claimSurfaces, unlinked.length ? unlinked.map(label => `[${label}]`).join(" ") : ""]);
 }
 
 function uncertaintyMarker(graph: DialogueAnswerGraphLike): string {
