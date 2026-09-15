@@ -2175,8 +2175,10 @@ export async function planObservedTypeScriptFailure(input: {
     && diagnostic.span.startColumn === row.column && diagnostic.rawMessageEvidence === row.message));
   if (bound.length !== failed.length) return undefined;
   const observation = workspaceTypeScriptObservation({ workspace, snapshot }, semanticProgram);
+  const snapshotFileByPath = new Map(snapshot.files.map(file => [file.path, file] as const));
   const family = deriveTypeScriptCodeActionCandidates({ rootPath: root, requestedPaths: [targetPath],
-    files: semanticPaths.map(workspacePath => { const file = snapshot.files.find(row => row.path === workspacePath)!;
+    files: semanticPaths.map(workspacePath => { const file = snapshotFileByPath.get(workspacePath);
+      if (!file) throw new Error(`semantic program path is absent from captured workspace revision: ${workspacePath}`);
       return { path: file.path, content: decodeExactWorkspaceSource(file), contentHash: file.contentHash }; }),
     workspaceManifest: snapshot.files.map(file => ({ path: file.path, contentHash: file.contentHash })),
     semanticAnalyzer: { analyzerId: observation.analyzer.id, semanticRevisionHash: observation.semanticRevisionHash },
