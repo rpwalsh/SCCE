@@ -25,8 +25,9 @@ export interface DocumentWasmExtractionResult {
 
 const require = createRequire(import.meta.url);
 const standardFontDataUrl = `${path.dirname(require.resolve("pdfjs-dist/standard_fonts/FoxitSerif.pfb")).replace(/\\/gu, "/")}/`;
-const MAX_SCANNED_PDF_PAGES = 8;
+// Cost bound: peak canvas size for one rendered scanned page.
 const MAX_SCANNED_PDF_PAGE_PIXELS = 12_000_000;
+// Cost bound: cumulative render and OCR work across one scanned PDF.
 const MAX_SCANNED_PDF_TOTAL_PIXELS = 48_000_000;
 const MAX_IMAGE_PIXELS = 12_000_000;
 const SCANNED_PDF_RENDER_SCALE = 2;
@@ -203,7 +204,6 @@ async function extractScannedPdfText(bytes: Uint8Array, maxOutputBytes: number, 
 }
 
 async function renderScannedPdfText(pdf: PDFDocumentProxy, maxOutputBytes: number, ocrProfile?: BundledOcrProfile): Promise<DocumentWasmExtractionResult> {
-  if (pdf.numPages > MAX_SCANNED_PDF_PAGES) return { text: "", boundary: "embedded_text_absent/ocr_unavailable" };
   const profile = bundledOcrProfile(ocrProfile ?? DEFAULT_OCR_PROFILE);
   let worker: Tesseract.Worker | undefined;
   try {
