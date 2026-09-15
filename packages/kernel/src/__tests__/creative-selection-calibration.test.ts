@@ -89,7 +89,7 @@ describe("creative candidate selection and preference calibration", () => {
     expect(field.candidates.find(candidate => candidate.kind === "proof-answer")?.answer).toBe("");
     const decision = createJudge().select({
       field,
-      policy: policy(),
+      policy: judgePolicy(),
       requestedAuthority: "creative"
     });
     expect(decision.selected.kind).toBe("creative-candidate");
@@ -258,19 +258,45 @@ describe("creative candidate selection and preference calibration", () => {
       }
     });
     const policy = await loadCreativeContinuationPolicy({ store, state, createdAt: 2 });
+    // Rebuild the same structural alternatives after a process restart. The
+    // generated candidate ids are new; only the typed structural identities
+    // are stable across the reload.
+    const restartedPreferredConstruct = invention("invention.canonical.preferred.restarted", [], [], preferredFeatures);
+    const restartedRejectedConstruct = invention("invention.canonical.rejected.restarted", [], [], rejectedFeatures);
+    const restartedPreferredId = `creative:${restartedPreferredConstruct.id}:0`;
+    const restartedRejectedId = `creative:${restartedRejectedConstruct.id}:1`;
+    const restartedContinuationCandidates = new Map([
+      [restartedPreferredId, continuation(restartedPreferredId, "structure.preferred", preferredFeatures)],
+      [restartedRejectedId, continuation(restartedRejectedId, "structure.rejected", rejectedFeatures)]
+    ]);
     const warm = engine.generate({
       ...fixture,
       requestedAuthority: "creative",
-      inventionCandidates: [preferredConstruct, rejectedConstruct],
+      inventionCandidates: [restartedPreferredConstruct, restartedRejectedConstruct],
       creativeContinuationState: state,
       creativeContinuationPolicy: policy,
-      creativeContinuationCandidates: continuationCandidates
+      creativeContinuationCandidates: restartedContinuationCandidates
     });
     const mass = (field: CandidateField, id: string) => field.surfaceMass.find(row => row.candidateId === id)?.mass ?? 0;
     expect(mass(cold, preferredId)).toBeLessThan(mass(cold, rejectedId));
-    expect(mass(warm, preferredId)).toBeGreaterThan(mass(warm, rejectedId));
+    expect(mass(warm, restartedPreferredId)).toBeGreaterThan(mass(warm, restartedRejectedId));
+    const coldDecision = createJudge().select({
+      field: cold,
+      policy: judgePolicy(),
+      requestedAuthority: "creative"
+    });
+    const warmDecision = createJudge().select({
+      field: warm,
+      policy: judgePolicy(),
+      requestedAuthority: "creative"
+    });
+    // A fresh candidate set keeps new candidate ids but preserves the typed
+    // structural ids. The durable preference must therefore change the
+    // canonical judge winner, not only the surface probability audit.
+    expect(coldDecision.selected.id).toBe(rejectedId);
+    expect(warmDecision.selected.id).toBe(restartedPreferredId);
     const creativeRows = (warm.audit as Record<string, unknown>)?.candidateOperators as Array<Record<string, unknown>> | undefined;
-    expect(creativeRows?.find(row => row.candidateId === preferredId)?.selectionSource).toBe("pairwise_preference");
+    expect(creativeRows?.find(row => row.candidateId === restartedPreferredId)?.selectionSource).toBe("pairwise_preference");
   });
 
   it("does not borrow a scalar calibration model from another task for creative generation", () => {
@@ -620,7 +646,7 @@ function ccr(): CcrResult {
   };
 }
 
-function policy(): PolicyProfile {
+function judgePolicy(): PolicyProfile {
   return {
     allowMutation: false,
     requireTwoPhaseCommit: true,
