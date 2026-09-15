@@ -11,6 +11,19 @@ const LOCAL_OCR_PROFILE = /^[a-z0-9][a-z0-9_-]{0,63}$/u;
 
 export const DEFAULT_OCR_PROFILE = "eng";
 
+export interface OcrProfileSelection { profile: string; origin: "source" | "configured" | "fallback_packaged_profile" }
+
+export function selectOcrProfile(source: string | undefined, configured: string | undefined): OcrProfileSelection {
+  if (source !== undefined) return { profile: source, origin: "source" };
+  if (configured !== undefined) return { profile: configured, origin: "configured" };
+  // The packaged default is the only installed profile, so an unnamed profile is labeled rather than refused.
+  return { profile: DEFAULT_OCR_PROFILE, origin: "fallback_packaged_profile" };
+}
+
+export function ocrProfileSelectionWarnings(selection: OcrProfileSelection): string[] {
+  return selection.origin === "fallback_packaged_profile" ? [`ocr_profile:fallback_packaged_profile:${selection.profile}`] : [];
+}
+
 export function assertOcrProfileId(value: string): string {
   if (!LOCAL_OCR_PROFILE.test(value)) throw new Error("OCR profile must be an opaque local package identifier");
   return value;
