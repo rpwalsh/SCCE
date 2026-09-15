@@ -4,6 +4,7 @@ cd "$(dirname "$0")/.."
 powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Where-Object { \$_.CommandLine -like '*server/dist/index.js*' } | ForEach-Object { Stop-Process -Id \$_.ProcessId -Force }" 2>/dev/null
 sleep 3
 # 7GB heap: warmup holds ~3.3GB of language cache and a creative turn hydrates one more role; the 4GB default OOMed.
+# SCCE_ALLOW_AUTOMATIC_WEB=1 gates public web/GitHub acquisition; leave unset to keep the server offline.
 SCCE_TRACE=1 nohup node --max-old-space-size=7168 packages/server/dist/index.js > .tmp-server.log 2>&1 &
 sleep 8
 for i in $(seq 1 30); do

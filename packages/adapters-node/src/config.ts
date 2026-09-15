@@ -31,8 +31,12 @@ export const MAX_WEB_REQUESTS_PER_MINUTE = 60;
 
 /** Public-network acquisition is an explicit deployment opt-in. */
 export function publicNetworkAcquisitionEnabled(): boolean {
-  return process.env.SCCE_ALLOW_AUTOMATIC_WEB === "1";
+  return process.env[PUBLIC_NETWORK_ACQUISITION_GATE] === "1";
 }
+
+/** Deployment variable gating public web/GitHub acquisition; reported by name so its absence never reads as an owner refusal. */
+export const PUBLIC_NETWORK_ACQUISITION_GATE = "SCCE_ALLOW_AUTOMATIC_WEB";
+export const PUBLIC_NETWORK_ACQUISITION_DISABLED_REASON = "public-network-acquisition-disabled";
 
 /** Public web access stays offline unless the deployment opt-in is exact. */
 export function publicWebNetworkEnabled(config: Pick<ScceRuntimeConfig, "connectors">): boolean {

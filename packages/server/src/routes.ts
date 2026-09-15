@@ -3684,7 +3684,11 @@ function connectorPublicConfig(config: LoadedConfig): JsonValue {
       enabled: config.connectors.web?.enabled ?? false,
       searchProvider: config.connectors.web?.search?.provider ?? null,
       accessScope: config.connectors.web?.accessScope ?? "allowlist",
-      runtimeAcquisition: automaticWebAcquisitionEnabled(config) ? "automatic" : "refused",
+      runtimeAcquisition: automaticWebAcquisitionEnabled(config)
+        ? "automatic"
+        : config.connectors.web?.enabled === true && config.connectors.web.accessScope === "public-internet" && !publicNetworkAcquisitionEnabled()
+          ? "disabled_explicitly"
+          : "refused",
       maxRequestsPerTurn: Math.min(config.policy.maxNetworkRequests, config.connectors.web?.maxRequestsPerTurn ?? config.policy.maxNetworkRequests),
       requestsPerMinute: config.connectors.web?.requestsPerMinute ?? DEFAULT_WEB_REQUESTS_PER_MINUTE
     },

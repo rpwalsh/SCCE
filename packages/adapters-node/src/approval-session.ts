@@ -3,12 +3,20 @@
 import { createHash } from "node:crypto";
 import type { ApprovalPort, CapabilityPlan, JsonValue, PolicyProfile } from "@scce/kernel";
 import { canonicalStringify, toJsonValue } from "@scce/kernel";
-import { automaticWebAcquisitionEnabled, publicWebNetworkEnabled, type ScceRuntimeConfig } from "./config.js";
+import {
+  automaticWebAcquisitionEnabled,
+  PUBLIC_NETWORK_ACQUISITION_DISABLED_REASON,
+  PUBLIC_NETWORK_ACQUISITION_GATE,
+  publicWebNetworkEnabled,
+  type ScceRuntimeConfig
+} from "./config.js";
 
 export interface ApprovalSnapshot {
   operatorGrant: boolean;
   runtimeSearchConsent?: boolean;
   runtimeSearchRefused?: boolean;
+  /** Present when the refusal came from the deployment gate rather than the owner. */
+  runtimeSearchDisabled?: { reason: string; gate: string };
   pending: Array<ApprovalRecord>;
   approved: Array<ApprovalRecord>;
   rejected?: Array<ApprovalRecord>;
@@ -31,7 +39,15 @@ export class ApprovalSession implements ApprovalPort {
   private readonly approved = new Map<string, ApprovalRecord>();
   private readonly rejected = new Map<string, ApprovalRecord>();
 
-  constructor(private readonly runtimeSearchConsent = false, private readonly runtimeSearchRefused = false) {}
+  constructor(private readonly runtimeSearchConsent = false, private readonly runtimeSearchDisabled?: { reason: string; gate: string }) {}
+
+  private get runtimeSearchRefused(): boolean {
+    return this.runtimeSearchDisabled !== undefined;
+  }
+
+  disabledReason(input: { capabilityId: string; input: JsonValue }): { reason: string; gate: string } | undefined {
+    return input.capabilityId === "network.search" ? this.runtimeSearchDisabled : undefined;
+  }
 
   isApproved(input: { capabilityId: string; input: JsonValue }): boolean {
     if (this.operatorGrant) return true;
@@ -98,6 +114,7 @@ export class ApprovalSession implements ApprovalPort {
       operatorGrant: this.operatorGrant,
       runtimeSearchConsent: this.runtimeSearchConsent,
       runtimeSearchRefused: this.runtimeSearchRefused,
+      ...(this.runtimeSearchDisabled ? { runtimeSearchDisabled: this.runtimeSearchDisabled } : {}),
       pending: [...this.pending.values()].sort((a, b) => b.createdAt - a.createdAt),
       approved: [...this.approved.values()].sort((a, b) => (b.approvedAt ?? 0) - (a.approvedAt ?? 0)).slice(0, 100),
       rejected: [...this.rejected.values()].sort((a, b) => (b.rejectedAt ?? 0) - (a.rejectedAt ?? 0)).slice(0, 100)
@@ -113,6 +130,8 @@ export function createApprovalSession(config?: Pick<ScceRuntimeConfig, "connecto
   return new ApprovalSession(
     automaticWebAcquisitionEnabled(runtimeConfig),
     publicWebConfigured && !networkEnabled
+      ? { reason: PUBLIC_NETWORK_ACQUISITION_DISABLED_REASON, gate: PUBLIC_NETWORK_ACQUISITION_GATE }
+      : undefined
   );
 }
 

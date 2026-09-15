@@ -196,11 +196,17 @@ describe("scoped standing runtime search consent", () => {
       expect(approvals.isApproved(search)).toBe(false);
       expect(approvals.isRejected(search)).toBe(true);
       expect(approvals.snapshot()).toMatchObject({ runtimeSearchConsent: false, runtimeSearchRefused: true });
+      // The gate, not the owner, refused: the reason names the variable so a trace can never read as an owner decision.
+      expect(approvals.disabledReason(search)).toEqual({ reason: "public-network-acquisition-disabled", gate: "SCCE_ALLOW_AUTOMATIC_WEB" });
+      expect(approvals.snapshot()).toMatchObject({ runtimeSearchDisabled: { reason: "public-network-acquisition-disabled", gate: "SCCE_ALLOW_AUTOMATIC_WEB" } });
+      expect(approvals.disabledReason({ capabilityId: "workspace.write", input: {} })).toBeUndefined();
     }
     vi.stubEnv("SCCE_ALLOW_AUTOMATIC_WEB", "1");
     expect(automaticWebAcquisitionEnabled(cfg)).toBe(true);
     expect(createApprovalSession(cfg).isApproved(search)).toBe(true);
+    expect(createApprovalSession(cfg).disabledReason(search)).toBeUndefined();
     expect(createApprovalSession(cfg).snapshot()).toMatchObject({ runtimeSearchConsent: true, runtimeSearchRefused: false });
+    expect(createApprovalSession(cfg).snapshot()).not.toHaveProperty("runtimeSearchDisabled");
   });
 
   it("preserves per-plan approval without widening the policy", () => {
@@ -220,6 +226,7 @@ describe("scoped standing runtime search consent", () => {
     approvals.reject(pending.planId);
     expect(approvals.isApproved(search)).toBe(false);
     expect(approvals.isRejected(search)).toBe(true);
+    expect(approvals.disabledReason(search)).toBeUndefined();
     expect(approvals.snapshot()).toMatchObject({ pending: [], rejected: [expect.objectContaining({ planId: pending.planId })] });
   });
 

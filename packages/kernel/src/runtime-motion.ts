@@ -95,7 +95,9 @@ export interface RuntimeReplanMotion {
   parentEpisodeId: string;
   queryHash: string;
   connectorConfigured: boolean;
-  status: "hydrated" | "empty" | "unavailable" | "failed" | "awaiting_consent" | "refused" | "held_for_review";
+  status: "hydrated" | "empty" | "unavailable" | "failed" | "awaiting_consent" | "refused" | "disabled_explicitly" | "held_for_review";
+  /** A deployment gate (not the owner) refused network.search; `gate` names the variable. */
+  disabled?: { reason: string; gate: string };
   /** Owner consent for network.search is pending on this approval plan. */
   consent?: { capabilityId: "network.search"; planId: string; granted: boolean };
   /** Fetched sources held for review when automatic source-qualified admission is disabled. */

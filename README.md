@@ -342,7 +342,7 @@ pnpm scce db verify
 pnpm server
 ```
 
-`SCCE_DATABASE_URL` overrides the file when set. Full setup, configuration, rehearsal commands, and VS Code packaging are documented in [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md).
+`SCCE_DATABASE_URL` overrides the file when set. `SCCE_ALLOW_AUTOMATIC_WEB=1` is the deployment gate for public web search/fetch and GitHub ingest; without it a `public-internet` connector reports `disabled_explicitly`, never an owner refusal. Full setup, configuration, rehearsal commands, and VS Code packaging are documented in [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md).
 
 ## Repository map
 
