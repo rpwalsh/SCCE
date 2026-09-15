@@ -442,6 +442,28 @@ describe("runtime hot graph retrieval", () => {
     expect(fixture.getEvidenceBatch).toHaveBeenCalledTimes(1);
   });
 
+  it("single-flights repeated source searches across concurrent factual turns", async () => {
+    const fixture = runtimeFixture(graphSlice([], [], []));
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    fixture.searchEvidence.mockImplementation(async () => {
+      await gate;
+      return [];
+    });
+
+    const request = "What was Charles Babbage known for?";
+    const first = fixture.runtime.graphForText(request, { sourceAnchoringRequired: true });
+    await Promise.resolve();
+    const second = fixture.runtime.graphForText(request, { sourceAnchoringRequired: true });
+    await Promise.resolve();
+
+    // The two turns keep their own admission/proof work, while equivalent
+    // storage reads share the unresolved promise at the runtime boundary.
+    expect(fixture.searchEvidence).toHaveBeenCalledTimes(4);
+    release();
+    await Promise.all([first, second]);
+  });
+
   it("does not reuse a graph slice across cache identities", async () => {
     const source = evidenceSpan("evidence:identity", "Clock", "The clock has an identity-bound mechanism.");
     const node = graphNode("node:identity", ["sym:clock"], [String(source.id)]);
