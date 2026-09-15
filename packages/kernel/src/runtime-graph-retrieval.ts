@@ -1,7 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { calibrated } from "./calibrations/prod-calibrations.js";
-import { codeRequestRecognized, codeRequestSignal } from "./code-request.js";
 import { currentEvaluationCacheOwner, type EvaluationTraceRecorder } from "./evaluation-trace.js";
 import { createCandidateEngine } from "./candidate.js";
 import { traceEvent } from "./debug/trace.js";
@@ -342,8 +341,7 @@ export function createRuntimeGraphRetrieval(options: {
     const allowSemanticFrameEvidence = options.allowSemanticFrameEvidence !== false;
     const evidenceFirst = options.evidenceFirst === true;
     const sourceAnchoringRequired = options.sourceAnchoringRequired ?? requestNeedsSourceAnchoredEvidence(text);
-    const sourceCodeEvidenceAllowed = options.evidenceAccess?.sourceCodeEvidenceAllowed
-      ?? codeRequestRecognized(codeRequestSignal(text));
+    const sourceCodeEvidenceAllowed = options.evidenceAccess?.sourceCodeEvidenceAllowed ?? false;
     const residentOnly = options.residentOnly === true;
     const languageModels = options.languageModels ?? [];
     const continuationPopulation = options.continuationPopulation;
@@ -512,7 +510,7 @@ export function createRuntimeGraphRetrieval(options: {
     }
     // An unanchored (creative-projected) request that quotes a remembered sentence is recall; the quoted sentence's span is the answer source.
     if (!sourceAnchoringRequired && !residentOnly) {
-      const quoted = await quotationGraphSlice(text, features, topicTerms);
+      const quoted = await quotationGraphSlice(text, features, topicTerms, options.evidenceAccess?.sourceCodeEvidenceAllowed);
       if (quoted) return cacheGraphSlice(cacheKey, quoted, "postgres");
     }
     if (!requireDurableGraphLookup && !sourceAnchoringRequired) {
@@ -527,7 +525,7 @@ export function createRuntimeGraphRetrieval(options: {
         "hot-neighborhood"
       );
     }
-    const value = await graphForTextUncached(text, features, topicTerms, evidenceFirst);
+    const value = await graphForTextUncached(text, features, topicTerms, evidenceFirst, sourceCodeEvidenceAllowed);
     requireDurableGraphLookup = false;
     return cacheGraphSlice(cacheKey, value, "postgres");
   }
@@ -647,18 +645,20 @@ export function createRuntimeGraphRetrieval(options: {
   }
 
 
-  async function evidenceOnlyForText(text: string, allowSemanticFrameEvidence = true): Promise<RuntimeGraphSliceValue> {
+  async function evidenceOnlyForText(text: string, allowSemanticFrameEvidence = true, sourceCodeEvidenceAllowed = false): Promise<RuntimeGraphSliceValue> {
     const features = graphRetrievalFeatures(text);
     const topicTerms = graphTopicTermsForText(text);
     if (requestNeedsSourceAnchoredEvidence(text)) {
-      const selection = await sourceAnchoredEvidenceForText(text, features, allowSemanticFrameEvidence);
+      const selection = await sourceAnchoredEvidenceForText(text, features, allowSemanticFrameEvidence, undefined, [], undefined, sourceCodeEvidenceAllowed);
       return emptyRuntimeGraphSlice(
         { evidenceIds: selection.evidence.map(span => span.id), features, topicTerms, radius: 0, limitNodes: 0, limitEdges: 0 },
         selection.evidence,
         selection.semanticFrameBoundEvidenceIds
       );
     }
-    const evidence = (await deps.storage.evidence.searchEvidence({ features, limit: 40 })).map(item => item.span);
+    const evidence = (await deps.storage.evidence.searchEvidence({ features, limit: 40 }))
+      .map(item => item.span)
+      .filter(span => sourceCodeEvidenceAllowed === undefined || sourceCodeEvidenceAllowed || !isCodeEvidenceSpan(span));
     return emptyRuntimeGraphSlice({ evidenceIds: evidence.map(span => span.id), features, topicTerms, radius: 0, limitNodes: 0, limitEdges: 0 }, evidence);
   }
 
@@ -761,11 +761,11 @@ export function createRuntimeGraphRetrieval(options: {
   }
 
 
-  async function quotationGraphSlice(text: string, features: readonly string[], topicTerms: readonly string[]): Promise<RuntimeGraphSliceValue | undefined> {
+  async function quotationGraphSlice(text: string, features: readonly string[], topicTerms: readonly string[], sourceCodeEvidenceAllowed = false): Promise<RuntimeGraphSliceValue | undefined> {
     const sequences = requestSentenceSequences(text);
     if (!sequences.length || !sourceEvidenceAnchorsForRequest(text).length) return undefined;
     const anchorFeatures = sourceAnchorRetrievalFeatures(text).map(feature => feature.slice("anchor:".length));
-    const selection = await sourceAnchoredEvidenceForText(text, anchorFeatures, false);
+    const selection = await sourceAnchoredEvidenceForText(text, anchorFeatures, false, undefined, [], undefined, sourceCodeEvidenceAllowed);
     const quoted = selection.evidence.filter(span => spanContainsRequestNearDuplicateSentence(span, sequences));
     if (!quoted.length) return undefined;
     kernelTrace({
@@ -792,7 +792,7 @@ function spanIsSourceCode(span: EvidenceSpan): boolean {
   return isCodeEvidenceSpan(span);
 }
 
-async function sourceAnchoredEvidenceForText(text: string, features: readonly string[], allowSemanticFrameEvidence = true, requestScaffolding?: ReadonlySet<string>, languageModels: readonly KneserNeyModel[] = [], continuationPopulation?: LanguageContinuationPopulation, sourceCodeEvidenceAllowed = codeRequestRecognized(codeRequestSignal(text))): Promise<SourceAnchoredEvidenceSelection> {
+async function sourceAnchoredEvidenceForText(text: string, features: readonly string[], allowSemanticFrameEvidence = true, requestScaffolding?: ReadonlySet<string>, languageModels: readonly KneserNeyModel[] = [], continuationPopulation?: LanguageContinuationPopulation, sourceCodeEvidenceAllowed = false): Promise<SourceAnchoredEvidenceSelection> {
     // A group whose every unit is request scaffolding names no subject: "[which]" alone seeded the whole corpus's
     // postings of a question word (26s of one turn, measured) for nothing the article could answer with.
     const { groups: allGroups, quotedSentence } = sourceAnchorRetrievalFeatureGroups(text, languageModels, continuationPopulation);
@@ -2181,15 +2181,20 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
     text: string,
     features = graphRetrievalFeatures(text),
     topicTerms = graphTopicTermsForText(text),
-    evidenceFirst = false
+    evidenceFirst = false,
+    sourceCodeEvidenceAllowed = false
   ): Promise<RuntimeGraphSliceValue> {
-    const evidenceResults = await deps.storage.evidence.searchEvidence({ features, limit: 40 });
+    const evidenceResults = (await deps.storage.evidence.searchEvidence({ features, limit: 40 }))
+      .filter(item => sourceCodeEvidenceAllowed || !isCodeEvidenceSpan(item.span));
     const evidenceIds = evidenceResults.map(item => item.span.id);
     if (evidenceFirst) {
       const boundedSlice = await graphForEvidenceIds(evidenceIds, { adaptiveWidening: true });
       return {
         ...boundedSlice,
-        evidence: mergeEvidenceSpans([...evidenceResults.map(item => item.span), ...boundedSlice.evidence])
+        evidence: mergeEvidenceSpans([
+          ...evidenceResults.map(item => item.span),
+          ...boundedSlice.evidence.filter(span => sourceCodeEvidenceAllowed || !isCodeEvidenceSpan(span))
+        ])
       };
     }
     const graph = await deps.storage.graph.getSlice({ evidenceIds, features, topicTerms, radius: 2, limitNodes: 420, limitEdges: 900 });
@@ -2200,7 +2205,13 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
       ...graph.hyperedges.flatMap(edge => edge.provenanceRefs.map(String))
     ]).slice(0, 80);
     const graphEvidence = graphEvidenceIds.length ? await deps.storage.evidence.getEvidenceBatch(graphEvidenceIds as EvidenceSpan["id"][]) : [];
-    return { graph, evidence: mergeEvidenceSpans([...evidenceResults.map(item => item.span), ...graphEvidence]) };
+    return {
+      graph,
+      evidence: mergeEvidenceSpans([
+        ...evidenceResults.map(item => item.span),
+        ...graphEvidence.filter(span => sourceCodeEvidenceAllowed || !isCodeEvidenceSpan(span))
+      ])
+    };
   }
 
 
