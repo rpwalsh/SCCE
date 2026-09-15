@@ -91,6 +91,20 @@ describe("imported brain influence and proof boundary", () => {
 
     const repeated = evidenceProofBoundaries([first, { ...first, id: ids.evidenceId({ sourceVersionId: first.sourceVersionId, byteStart: 1, byteEnd: first.byteEnd, spanHash: first.contentHash }) }]);
     expect(repeated.every(boundary => !boundary.certifiesFactualProof)).toBe(true);
+
+    const relabeledCopy = {
+      ...first,
+      id: `${String(first.id)}.relabeled` as EvidenceSpan["id"],
+      trustVector: {
+        ...(first.trustVector as Record<string, JsonValue>),
+        sourceTrust: {
+          ...((first.trustVector as Record<string, JsonValue>).sourceTrust as Record<string, JsonValue>),
+          independenceGroup: "fixture:claimed-other-family"
+        }
+      }
+    };
+    const copied = evidenceProofBoundaries([first, relabeledCopy]);
+    expect(copied.every(boundary => !boundary.certifiesFactualProof)).toBe(true);
   });
 
   it("keeps owner-private assertions source-qualified even when labels claim independent families", () => {
