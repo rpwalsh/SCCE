@@ -27,6 +27,8 @@ export interface InteractionFeature {
 export interface InteractionSignal {
   id: InteractionSignalId;
   featureId: InteractionFeatureId;
+  /** Optional typed intent receipt supplied by the upstream interpreter. */
+  intentId?: string;
   value: number;
   confidence: number;
   sourceIds: string[];
@@ -139,6 +141,8 @@ export interface DialogueFeedback {
 
 export interface DialogueAnswerGraphLike {
   id: string;
+  /** Optional typed intent selected while constructing this answer graph. */
+  intentId?: string;
   statusId?: string;
   claims: Array<{ id: string; roleId?: string; surface: string; certified?: boolean }>;
   supportLinks: Array<{ claimId?: string; evidenceId: string; sourceRef?: { path?: string; lineStart?: number; lineEnd?: number }; forceClass?: string }>;
@@ -300,7 +304,14 @@ export function updateDialogueState(input: DialogueStateUpdateInput): DialogueSt
   const previous = input.previousState;
   const feedbackProfile = applyDialogueFeedback(previous?.userStyleProfile ?? DEFAULT_USER_STYLE_PROFILE, input.feedback);
   const patchedProfile = mergeUserStyleProfile(feedbackProfile, input.statePatch?.userStyleProfile);
-  const requestSignals = requestInteractionSignals(input.requestText);
+  const hasTypedIntent = suppliedTypedIntent(input);
+  // Surface shape may still tune pacing and compactness. Once the upstream
+  // typed path supplied an intent receipt, only the two task-routing guesses
+  // are suppressed; punctuation and length remain useful interaction signals.
+  const requestSignals = requestInteractionSignals(input.requestText).filter(signal =>
+    !hasTypedIntent
+      || (signal.featureId !== INTERACTION_FEATURE_IDS.artifactNeed
+        && signal.featureId !== INTERACTION_FEATURE_IDS.calculusNeed));
   const graphSignals = graphInteractionSignals(input.answerGraph);
   const features = mergeInteractionFeatures([
     ...(previous?.interactionFeatures ?? []),
@@ -322,7 +333,12 @@ export function updateDialogueState(input: DialogueStateUpdateInput): DialogueSt
   return {
     conversationId: input.statePatch?.conversationId ?? previous?.conversationId ?? input.conversationId ?? "conversation.default",
     turnId: input.statePatch?.turnId ?? input.turnId ?? `turn.${hashText(input.requestText).slice(0, 16)}`,
-    currentIntentId: input.statePatch?.currentIntentId ?? classifyIntentId(input.requestText, input.answerGraph, previous),
+    currentIntentId: typedIntentId({
+      statePatch: input.statePatch,
+      answerGraph: input.answerGraph,
+      previousState: previous,
+      interactionSignals: input.statePatch?.interactionSignals
+    }),
     taskClassId: input.statePatch?.taskClassId ?? previous?.taskClassId,
     communicativeActId,
     activeTask: input.statePatch?.activeTask ?? graphTask,
@@ -613,7 +629,7 @@ function buildDialogueCandidates(input: {
   if (input.policy.selectedActionIds.includes(DIALOGUE_ACTION_IDS.plan)) {
     add(DIALOGUE_CANDIDATE_IDS.plan, planSurface(material), [DIALOGUE_ACTION_IDS.plan, DIALOGUE_ACTION_IDS.answer, DIALOGUE_ACTION_IDS.nextStep], material.evidenceIds);
   }
-  if (input.policy.selectedActionIds.includes(DIALOGUE_ACTION_IDS.boundary) || input.state.currentIntentId === "intent.83f0c4ba") {
+  if (input.policy.selectedActionIds.includes(DIALOGUE_ACTION_IDS.boundary)) {
     add(DIALOGUE_CANDIDATE_IDS.boundary, boundarySurface(material, input.answerGraph), [DIALOGUE_ACTION_IDS.answer, DIALOGUE_ACTION_IDS.boundary], material.evidenceIds);
   }
   const compact = weight(input.state.userStyleProfile, INTERACTION_FEATURE_IDS.compactness);
@@ -875,11 +891,30 @@ function rhythmFor(state: DialogueState, graph: DialogueAnswerGraphLike, actionI
   return weight(state.userStyleProfile, INTERACTION_FEATURE_IDS.compactness) > 0.62 ? RHYTHM_IDS.compact : RHYTHM_IDS.general;
 }
 
-function classifyIntentId(text: string, graph: DialogueAnswerGraphLike | undefined, previous: DialogueState | undefined): string {
-  if (/[=]/u.test(text)) return "intent.7291af0c";
-  if (/```|(?:^|\s)[\w./-]+\.(?:ts|tsx|js|py|rs|go|java|json|md)\b/u.test(text)) return "intent.4bd129aa";
-  if (graph?.supportLinks.length) return "intent.83f0c4ba";
-  return previous?.currentIntentId ?? "intent.09f1dc42";
+function typedIntentId(input: {
+  statePatch: DialogueStateUpdateInput["statePatch"];
+  answerGraph: DialogueAnswerGraphLike | undefined;
+  previousState: DialogueState | undefined;
+  interactionSignals: readonly InteractionSignal[] | undefined;
+}): string {
+  const candidates = [
+    input.statePatch?.currentIntentId,
+    input.answerGraph?.intentId,
+    input.interactionSignals?.find(signal => signal.intentId?.trim())?.intentId,
+    input.statePatch?.taskClassId,
+    input.previousState?.currentIntentId,
+    "intent.09f1dc42"
+  ];
+  return candidates.find((candidate): candidate is string => typeof candidate === "string" && candidate.trim().length > 0)!.trim();
+}
+
+function suppliedTypedIntent(input: DialogueStateUpdateInput): boolean {
+  return [
+    input.statePatch?.currentIntentId,
+    input.statePatch?.taskClassId,
+    input.answerGraph && "intentId" in input.answerGraph ? input.answerGraph.intentId : undefined,
+    ...(input.statePatch?.interactionSignals ?? []).map(signal => signal.intentId)
+  ].some(candidate => typeof candidate === "string" && candidate.trim().length > 0);
 }
 
 function classifyCommunicativeActId(
