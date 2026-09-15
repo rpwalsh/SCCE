@@ -9,6 +9,14 @@ import type { HybridRetrievalResult } from "./semantic-memory-index.js";
 import type { SafetyRailDecision } from "./safety-rail-engine.js";
 import type { ToolCognitionPlan } from "./tool-cognition.js";
 import type { TrainingPlan } from "./training-orchestrator.js";
+import {
+  planCognitiveOperatorSteps,
+  runCognitiveOperatorMpc,
+  type CognitiveMpcInput,
+  type CognitiveMpcPlan,
+  type CognitiveMpcRunInput,
+  type CognitiveMpcRunResult
+} from "./operator-mpc-scheduler.js";
 
 export type RuntimeStageKind =
   | "receive"
@@ -76,6 +84,8 @@ export interface RuntimeOrchestrationState {
   ingest?: IngestResult;
   train?: TrainResult;
   turn?: TurnResult;
+  /** Latest bounded operator plan, when the runtime has entered the cognitive action lane. */
+  operatorMpc?: CognitiveMpcPlan;
 }
 
 export interface RuntimeReadiness {
@@ -103,6 +113,16 @@ export function createRuntimeOrchestrator(options: { hasher?: Hasher } = {}) {
 
     summarize(state: RuntimeOrchestrationState): JsonValue {
       return summarizeState(state);
+    },
+
+    /** Select a short horizon from already activated typed operators. */
+    planOperatorSteps(input: CognitiveMpcInput): CognitiveMpcPlan {
+      return planCognitiveOperatorSteps(input);
+    },
+
+    /** Execute one selected operator, observe its typed delta, and replan through the same lane. */
+    runOperatorSteps(input: CognitiveMpcRunInput): Promise<CognitiveMpcRunResult> {
+      return runCognitiveOperatorMpc(input);
     }
   };
 }
@@ -282,7 +302,8 @@ function summarizeState(state: RuntimeOrchestrationState): JsonValue {
     toolPlan: state.toolPlan ? { plans: state.toolPlan.capabilityPlans.length, approvals: state.toolPlan.approvals.length } : null,
     validation: state.validation ? { passed: state.validation.passed, checks: state.validation.checks.length } : null,
     emission: state.emission ? { id: state.emission.id, artifacts: state.emission.artifacts.length } : null,
-    training: state.training ? { id: state.training.id, curriculum: state.training.curriculum.length, distillation: state.training.distillation.length } : null
+    training: state.training ? { id: state.training.id, curriculum: state.training.curriculum.length, distillation: state.training.distillation.length } : null,
+    operatorMpc: state.operatorMpc ? { horizon: state.operatorMpc.horizon, sequence: state.operatorMpc.sequence.map(step => step.operator.operatorId), selectedFirst: state.operatorMpc.selectedFirst?.operator.operatorId ?? null, energyBefore: state.operatorMpc.energyBefore, predictedEnergyAfter: state.operatorMpc.predictedEnergyAfter } : null
   });
 }
 

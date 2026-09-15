@@ -429,6 +429,45 @@ describe("cognitive meaning planner", () => {
 
     expect(proposals.some(proposal => proposal.claims.some(claim => claim.text === "unrelated bound value"))).toBe(false);
   });
+
+  it("replans proposal-family execution after an empty first operator outcome", () => {
+    const premiseId = "evidence.premise" as EvidenceSpan["id"];
+    const source = node("node.source", "premise", [premiseId]);
+    const target = node("node.target", "conclusion", []);
+    const graph = graphSlice(
+      [source, target],
+      [edge("edge.relation", source, target, [premiseId])]
+    );
+    const proposals = planCognitiveProposals(plannerInput({
+      graph,
+      evidence: [evidence("evidence.premise", "source.premise", "premise")],
+      requirements: requirements({ inferentialDepth: 0.95 }, [requirement("req.infer", "inferentialDepth")]),
+      operators: [
+        // No dialogue state or plan is supplied, so this admitted operator has
+        // no generated family to execute and produces a real failed observation.
+        operator("dialogue", COGNITIVE_OPERATOR_IDS.dialogueContinuation, ["dialogueDependence"]),
+        operator("relation", COGNITIVE_OPERATOR_IDS.relationComposition, ["inferentialDepth"])
+      ],
+      maxProposals: 8
+    }));
+    const trace = proposals[0]?.trace && typeof proposals[0].trace === "object" && !Array.isArray(proposals[0].trace)
+      ? proposals[0].trace as Record<string, unknown>
+      : {};
+    const mpc = trace.operatorMpc && typeof trace.operatorMpc === "object" && !Array.isArray(trace.operatorMpc)
+      ? trace.operatorMpc as Record<string, unknown>
+      : {};
+    const transitions = Array.isArray(mpc.transitions) ? mpc.transitions as Array<Record<string, unknown>> : [];
+    expect(transitions.length).toBeGreaterThanOrEqual(2);
+    expect(transitions[0]?.operatorId).toBe(COGNITIVE_OPERATOR_IDS.dialogueContinuation);
+    expect(transitions[0]?.actualDelta && typeof transitions[0].actualDelta === "object"
+      ? (transitions[0].actualDelta as Record<string, unknown>).generatedDraftCount
+      : undefined).toBe(0);
+    expect(transitions.some(row => row.operatorId === COGNITIVE_OPERATOR_IDS.relationComposition
+      && row.actualDelta && typeof row.actualDelta === "object"
+      && (row.actualDelta as Record<string, unknown>).generatedDraftCount as number > 0)).toBe(true);
+    expect(proposals[0]?.operatorActivations.some(row => row.operatorId === COGNITIVE_OPERATOR_IDS.relationComposition)).toBe(true);
+    expect(proposals.some(proposal => proposal.claims.some(claim => claim.text === "conclusion"))).toBe(true);
+  });
 });
 
 function minimalProposal(id: string, quality: { baseQuality: number; diversity: number }): CognitiveProposal {
