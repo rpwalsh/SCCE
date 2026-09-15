@@ -138,6 +138,7 @@ export function createNodeRuntime(config: ScceRuntimeConfig, options: NodeScceRu
     runSeed: options.runSeed,
     deterministicReplay: options.deterministicReplay,
     relationPotentialModel: () => resolvedRelationPotentialModel,
+    fieldOperatorRouting: config.runtime.fieldOperatorRouting,
     executive,
     sparseRankingModels: storage.sparseRanking,
     sparseRankingComparisons: storage.sparseRankingComparisons

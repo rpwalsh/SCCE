@@ -33,6 +33,13 @@ export interface FieldEvaluationContext {
   trace: EvaluationTraceRecorder;
 }
 
+/** Explicit rollout weights for the otherwise diagnostic field operators. */
+export interface FieldOperatorRoutingConfig {
+  heatWeight: number;
+  waveWeight: number;
+  spectralWeight: number;
+}
+
 export interface AlphaFieldEngineOptions {
   alpha?: number;
   clock?: Clock;
@@ -42,6 +49,8 @@ export interface AlphaFieldEngineOptions {
    * construction; it is read once per activation, so an unhydrated runtime reports inert rather than pretending.
    */
   relationPotentialModel?: RelationPotentialModel | (() => RelationPotentialModel | undefined);
+  /** Absent by default: field operators remain diagnostic until a caller supplies admissible weights. */
+  fieldOperatorRouting?: FieldOperatorRoutingConfig;
 }
 
 export function createAlphaFieldEngine(options: AlphaFieldEngineOptions = {}) {
@@ -127,16 +136,29 @@ export function createAlphaFieldEngine(options: AlphaFieldEngineOptions = {}) {
         : seedlessQueryDiffusion(input.evaluation);
       // `ppf` is retained in FieldState as a durable compatibility field. Its
       // value is query-conditioned personalized random-walk activation mass.
-      const ppf = diffusion.rank;
+      const rawPpf = diffusion.rank;
+      const rawActiveNodeIds = rawPpf.slice(0, 64).map(item => String(item.nodeId));
+      const rawAlphaTrace = createAlphaLayer(options).buildTrace({ nodes, edges: diffusionEdges, activeNodeIds: rawActiveNodeIds, previous: input.previous?.alphaTrace });
+      const fieldOperators = input.fieldOperatorDiagnostics || input.evaluation || options.fieldOperatorRouting
+        ? fieldOperatorTrace(rawAlphaTrace, rawPpf, input.previous)
+        : undefined;
+      const routed = options.fieldOperatorRouting && fieldOperators
+        ? routePpfWithFieldOperators(rawPpf, fieldOperators, options.fieldOperatorRouting)
+        : { ppf: rawPpf, audit: { status: "disabled_unconfigured" as const } };
+      const fieldOperatorDiagnostics = fieldOperators
+        ? {
+          ...fieldOperators,
+          cost: {
+            ...fieldOperators.cost,
+            status: routed.audit.status === "admissible" ? "active" : "diagnostic_only"
+          },
+          routing: routed.audit
+        }
+        : undefined;
+      const ppf = routed.ppf;
       const active = ppf.slice(0, 64).map(item => ({ nodeId: item.nodeId, activation: item.mass }));
       const activeNodeIds = active.map(item => String(item.nodeId));
       const alphaTrace = createAlphaLayer(options).buildTrace({ nodes, edges: diffusionEdges, activeNodeIds, previous: input.previous?.alphaTrace });
-      // Heat, wave and spectral write ONLY to the diagnostics blob below; nothing in the turn reads them, so they
-      // cannot change an answer. Ten iterative operations per activation for a value no decision consumes, so they
-      // are opt-in now rather than unconditional. Promote one into a real operator if it can buy proof.
-      const fieldOperators = input.fieldOperatorDiagnostics || input.evaluation
-        ? fieldOperatorTrace(alphaTrace, ppf, input.previous)
-        : undefined;
       const causalMass = causal.discover({ nodes, edges: diffusionEdges, activeNodeIds: active.map(item => item.nodeId) });
       const greenPotential = solveGreenPotentialField({ nodes, edges: diffusionEdges, requestFeatures, seeds, activeNodeIds, ppf, alphaTrace });
       const importedPriorTrace = importedGraphPriorTrace(nodes, diffusionEdges, active, ppf);
@@ -158,7 +180,7 @@ export function createAlphaFieldEngine(options: AlphaFieldEngineOptions = {}) {
           .filter(row => row.contradictionMass > 0)
           .map(row => ({ nodeId: row.nodeId as GraphNode["id"], mass: row.contradictionMass, reserved: row.reserved }))
         : [];
-      return { requestFeatures, seeds, active, ppf, ...(contradictionMass.length ? { contradictionMass } : {}), ppfDiagnostics: toJsonValue({ ...diffusion.diagnostics, omittedOutOfSliceEdges: edges.length - diffusionEdges.length, relationPotential: relationPotential.diagnostics, typedIncidence: incidenceProjection.incidenceGraph.audit, importedPriorTrace, ...(fieldOperators ? { fieldOperators } : {}) }), alphaTrace, greenPotential: toJsonValue(greenPotential), causalMass };
+      return { requestFeatures, seeds, active, ppf, ...(contradictionMass.length ? { contradictionMass } : {}), ppfDiagnostics: toJsonValue({ ...diffusion.diagnostics, omittedOutOfSliceEdges: edges.length - diffusionEdges.length, relationPotential: relationPotential.diagnostics, typedIncidence: incidenceProjection.incidenceGraph.audit, importedPriorTrace, ...(fieldOperatorDiagnostics ? { fieldOperators: fieldOperatorDiagnostics } : {}) }), alphaTrace, greenPotential: toJsonValue(greenPotential), causalMass };
     }
   };
 }
@@ -300,6 +322,7 @@ function fieldOperatorTrace(alphaTrace: FieldState["alphaTrace"], ppf: FieldStat
   const heat = heatDiffuse({ laplacian: bounded.laplacian, current, steps: calibrated("field.heat_diffusion_steps") });
   const wave = wavePropagate({ laplacian: bounded.laplacian, current: heat.values, previous: prior, damping: calibrated("field.wave_damping"), steps: calibrated("field.wave_propagation_steps") });
   const spectral = spectralPartition({ nodes, laplacian: bounded.normalizedLaplacian, iterations: calibrated("field.spectral_partition_iterations") });
+  const routingSignals = fieldOperatorRoutingSignals(nodes, heat.values, wave.values, spectral.clusters);
   return {
     schema: "scce.field_operators.v2",
     // Its own cost, so query diffusion can be scheduled on evidence rather than argued about.
@@ -324,8 +347,74 @@ function fieldOperatorTrace(alphaTrace: FieldState["alphaTrace"], ppf: FieldStat
       converged: spectral.converged,
       residual: spectral.residual,
       clusters: spectral.clusters.map(cluster => ({ id: cluster.id, mass: cluster.mass, nodeCount: cluster.nodeIds.length }))
+    },
+    routingSignals
+  };
+}
+
+function routePpfWithFieldOperators(
+  ppf: FieldState["ppf"],
+  operators: ReturnType<typeof fieldOperatorTrace>,
+  config: FieldOperatorRoutingConfig
+): { ppf: FieldState["ppf"]; audit: Record<string, unknown> } {
+  const weights = [config.heatWeight, config.waveWeight, config.spectralWeight];
+  if (!weights.every(value => Number.isFinite(value) && value >= 0)) {
+    return { ppf, audit: { status: "identity_invalid_configuration" } };
+  }
+  const weightTotal = weights.reduce((sum, value) => sum + value, 0);
+  if (!(weightTotal > 0)) return { ppf, audit: { status: "identity_invalid_configuration" } };
+  const signalByNode = new Map(operators.routingSignals.map(signal => [signal.nodeId, signal]));
+  const routed = ppf.map(row => {
+    const signal = signalByNode.get(String(row.nodeId));
+    const operatorScore = signal
+      ? (config.heatWeight * signal.heat + config.waveWeight * signal.wave + config.spectralWeight * signal.spectral) / weightTotal
+      : 0;
+    return { ...row, mass: row.mass * (1 + clamp01(operatorScore)) };
+  });
+  const massTotal = routed.reduce((sum, row) => sum + (Number.isFinite(row.mass) ? Math.max(0, row.mass) : 0), 0);
+  if (!(massTotal > 0)) return { ppf, audit: { status: "identity_invalid_signal" } };
+  return {
+    ppf: routed
+      .map(row => ({ ...row, mass: Math.max(0, row.mass) / massTotal }))
+      .sort((left, right) => right.mass - left.mass || String(left.nodeId).localeCompare(String(right.nodeId))),
+    audit: {
+      status: "admissible",
+      weights: {
+        heat: config.heatWeight / weightTotal,
+        wave: config.waveWeight / weightTotal,
+        spectral: config.spectralWeight / weightTotal
+      },
+      signalCount: operators.routingSignals.length
     }
   };
+}
+
+function fieldOperatorRoutingSignals(
+  nodes: readonly string[],
+  heatValues: readonly number[],
+  waveValues: readonly number[],
+  clusters: readonly { nodeIds: readonly string[]; mass: number }[]
+): Array<{ nodeId: string; heat: number; wave: number; spectral: number }> {
+  const heat = normalizePositiveOperatorValues(heatValues);
+  const wave = normalizePositiveOperatorValues(waveValues);
+  const spectralByNode = new Map<string, number>();
+  for (const cluster of clusters) {
+    const mass = Number.isFinite(cluster.mass) && cluster.mass > 0 ? cluster.mass / Math.max(1, cluster.nodeIds.length) : 0;
+    for (const nodeId of cluster.nodeIds) spectralByNode.set(String(nodeId), mass);
+  }
+  const spectral = normalizePositiveOperatorValues(nodes.map(nodeId => spectralByNode.get(String(nodeId)) ?? 0));
+  return nodes.map((nodeId, index) => ({
+    nodeId: String(nodeId),
+    heat: heat[index] ?? 0,
+    wave: wave[index] ?? 0,
+    spectral: spectral[index] ?? 0
+  }));
+}
+
+function normalizePositiveOperatorValues(values: readonly number[]): number[] {
+  const positive = values.map(value => Number.isFinite(value) ? Math.max(0, value) : 0);
+  const total = positive.reduce((sum, value) => sum + value, 0);
+  return total > 0 ? positive.map(value => value / total) : positive;
 }
 
 function boundedFieldMatrices(alphaTrace: FieldState["alphaTrace"], mass: Map<string, number>, previousMass: Map<string, number>, limit = 48) {

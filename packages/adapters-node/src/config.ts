@@ -7,6 +7,7 @@ import {
   createCorpusRegistry,
   type CorpusRegistryEntry,
   type CorpusRegistryOverride,
+  type FieldOperatorRoutingConfig,
   type RelationPotentialModel
 } from "@scce/kernel";
 
@@ -108,6 +109,8 @@ export interface ScceRuntimeConfig {
     excludedPaths: string[];
     /** Serialized offline-trained model. Runtime only performs frozen inference. */
     relationPotentialModel?: RelationPotentialModel;
+    /** Explicit normalized weights that allow field operators to influence activation routing. */
+    fieldOperatorRouting?: FieldOperatorRoutingConfig;
     tools: { pdftotext?: string; pdftoppm?: string; tesseract?: string; node?: string; pnpm?: string };
     patchValidation?: PatchValidationRuntimeConfig;
     corpora?: {
@@ -235,6 +238,16 @@ export function validateConfig(config: ScceRuntimeConfig, source = "config"): vo
       assertValidRelationPotentialModel(config.runtime.relationPotentialModel);
     } catch (error) {
       throw new Error(`${source}: invalid runtime.relationPotentialModel: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  if (config.runtime.fieldOperatorRouting !== undefined) {
+    const weights = [
+      config.runtime.fieldOperatorRouting.heatWeight,
+      config.runtime.fieldOperatorRouting.waveWeight,
+      config.runtime.fieldOperatorRouting.spectralWeight
+    ];
+    if (!weights.every(value => Number.isFinite(value) && value >= 0) || !(weights.reduce((sum, value) => sum + value, 0) > 0)) {
+      throw new Error(source + ": runtime.fieldOperatorRouting weights must be finite, non-negative, and not all zero");
     }
   }
   validatePatchValidationConfig(config.runtime.patchValidation, source);
