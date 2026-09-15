@@ -227,6 +227,11 @@ export function createSurfaceLanguageRuntime(options: {
    * pay once and every later turn hit.
    */
   const surfaceLanguageMemoryInFlight = new Map<string, Promise<Awaited<ReturnType<typeof hydrateSurfaceLanguageMemory>>>>();
+  // Calls that arrive after a visible response may schedule the same lazy
+  // enrichment before its timer gets a chance to install the in-flight load.
+  // Keep that scheduling edge single-flight too; the durable map below still
+  // owns the actual hydration identity and cache population.
+  const deferredLanguageWarmups = new Set<string>();
   // Language scoping is independent of the request surface. Keep the compiled
   // result by the durable language/model identity so a cache hit from another
   // hydration object does not rebuild every model and construction program.
@@ -932,6 +937,11 @@ export function createSurfaceLanguageRuntime(options: {
     preferredSurface = "",
     hydrationOptions: ResidentOnlyOptions = {}
   ): void {
+    const warmKey = hydrationOptions.languageId
+      ? `language:${hydrationOptions.languageId}\u001f${preferredCorpusRoleId ?? "corpus-role:any"}`
+      : `cluster:${languageProfileClusterCacheKey(cluster)}\u001f${preferredCorpusRoleId ?? "corpus-role:any"}\u001f${cluster ? "" : unscopedReason}`;
+    if (deferredLanguageWarmups.has(warmKey)) return;
+    deferredLanguageWarmups.add(warmKey);
     const durableOptions = { ...hydrationOptions, residentOnly: false, deferDurable: false };
     const timer = setTimeout(() => {
       void hydrateSurfaceLanguageMemoryCached(
@@ -941,7 +951,9 @@ export function createSurfaceLanguageRuntime(options: {
         preferredCorpusRoleId,
         preferredSurface,
         durableOptions
-      ).catch(() => undefined);
+      ).catch(() => undefined).finally(() => {
+        deferredLanguageWarmups.delete(warmKey);
+      });
     }, 0);
     if (typeof timer.unref === "function") timer.unref();
   }
@@ -1392,6 +1404,7 @@ export function createSurfaceLanguageRuntime(options: {
       sourceAnchorSemanticFrameCache = undefined;
       targetProfilePatternCache.clear();
       targetProfilePatternInFlight.clear();
+      deferredLanguageWarmups.clear();
     }
   };
 }

@@ -92,6 +92,30 @@ describe("documentGenerationRequestFromMetadata (real per-turn parsing, absent v
 });
 
 describe("syncDocumentGenerationRequestForTurn (real, durable, cross-turn persistence)", () => {
+  it("restores typed coverage obligations and refuses a caller's false completion credit", async () => {
+    const store = new MemoryDocumentGenerationSessionStore();
+    const metadata = startMetadata("coverage.session") as { documentGeneration: { sessionId: string; action: { type: string; session: { plan: { nodes: Record<string, Record<string, JsonValue>> }; narrative: JsonValue } } } };
+    metadata.documentGeneration.action.session.plan = JSON.parse(JSON.stringify(REAL_PLAN));
+    const node = metadata.documentGeneration.action.session.plan.nodes.intro!;
+    node.requiredCoverageIds = ["requirement.focus"];
+    node.coverageTerms = [{ id: "requirement.focus", text: "κάλυ" }];
+    await syncDocumentGenerationRequestForTurn(store, parseOk(metadata as unknown as JsonValue), 1000, CONVERSATION_A);
+    const complete = (content: string) => parseOk({ documentGeneration: { sessionId: "coverage.session", action: { type: "complete_section", input: { nodeId: "intro", content, satisfiedCoverageIds: ["requirement.focus"] } } } });
+    const wrong = await syncDocumentGenerationRequestForTurn(store, complete("Μήρα φέλα ρόκα ζάνου."), 2000, CONVERSATION_A);
+    expect(wrong).toMatchObject({ accepted: false, reason: "required content not realized" });
+    const corrected = await syncDocumentGenerationRequestForTurn(store, complete("Μήρα κάλυ ρόκα ζάνου."), 3000, CONVERSATION_A);
+    expect(corrected).toMatchObject({ accepted: true });
+  });
+  it("rejects a legacy required coverage id when its surface term was not persisted", async () => {
+    const store = new MemoryDocumentGenerationSessionStore();
+    const metadata = startMetadata("legacy-coverage.session") as { documentGeneration: { sessionId: string; action: { type: string; session: { plan: { nodes: Record<string, Record<string, JsonValue>> }; narrative: JsonValue } } } };
+    metadata.documentGeneration.action.session.plan = JSON.parse(JSON.stringify(REAL_PLAN));
+    metadata.documentGeneration.action.session.plan.nodes.intro!.requiredCoverageIds = ["legacy.requirement"];
+    await syncDocumentGenerationRequestForTurn(store, parseOk(metadata as unknown as JsonValue), 1000, CONVERSATION_A);
+    const complete = parseOk({ documentGeneration: { sessionId: "legacy-coverage.session", action: { type: "complete_section", input: { nodeId: "intro", content: "legacy.requirement", satisfiedCoverageIds: ["legacy.requirement"] } } } });
+    const result = await syncDocumentGenerationRequestForTurn(store, complete, 2000, CONVERSATION_A);
+    expect(result).toMatchObject({ accepted: false, reason: "required coverage lacks surface term" });
+  });
   it("start persists a genuinely new real session and returns its real pending work", async () => {
     const store = new MemoryDocumentGenerationSessionStore();
     const result = await syncDocumentGenerationRequestForTurn(store, parseOk(startMetadata()), 1000, CONVERSATION_A);

@@ -31,7 +31,9 @@ import {
 import {
   compileRequestRequirementCorpus,
   parseRequestRequirementCorpus,
-  requestRequirementCorpusLanguageText
+  requestRequirementCorpusLanguageText,
+  REQUEST_REQUIREMENT_PATTERN_COMPILER_FINGERPRINT,
+  REQUEST_REQUIREMENT_PATTERN_SCHEMA
 } from "./request-requirement-learning.js";
 import type { ScceKernelDeps } from "./storage.js";
 import {
@@ -466,13 +468,14 @@ export function createIngestionRuntime(options: {
           : typedProjection.languageText;
         if (decision.activeInfluence.language) {
         if (languageTrainingText.trim()) {
+        const requestRequirementSourceSystem = kernelString(jsonRecord(file.metadata).sourceSystem) ?? "corrections";
         const requestRequirementLearning = requestRequirementCorpus
           ? compileRequestRequirementCorpus({
             corpus: requestRequirementCorpus,
             profileId: profile.id,
             sourceVersionId,
             evidenceIds: admittedSpans.map(span => span.id),
-            sourceSystem: kernelString(jsonRecord(file.metadata).sourceSystem) ?? "corrections",
+            sourceSystem: requestRequirementSourceSystem,
             updatedAt: now,
             makeId: representation => String(idFactory.semanticId("request_requirement_pattern", representation))
           })
@@ -566,14 +569,32 @@ export function createIngestionRuntime(options: {
         const models = labelRecords(compiledBatch.models, informationLabel);
         const units = labelRecords(compiledBatch.units, informationLabel);
         const learnedPatterns = labelRecords(compiledBatch.patterns, informationLabel);
+        const requestRequirementPatternIds = new Set(
+          (requestRequirementLearning?.patterns ?? []).map(pattern => pattern.id)
+        );
+        const labeledRequestRequirementPatterns = learnedPatterns.filter(pattern => requestRequirementPatternIds.has(pattern.id));
+        const otherLearnedPatterns = learnedPatterns.filter(pattern => !requestRequirementPatternIds.has(pattern.id));
         const semanticFrames = labelRecords(compiledBatch.semanticFrames, informationLabel);
         await deps.storage.languageMemory.putNgramObservationsBatch(observations);
         if (deps.storage.languageMemory.putNgramModels) await deps.storage.languageMemory.putNgramModels(models);
         else for (const model of models) await deps.storage.languageMemory.putNgramModel(model);
         if (deps.storage.languageMemory.putLanguageUnits) await deps.storage.languageMemory.putLanguageUnits(units);
         else for (const unit of units) await deps.storage.languageMemory.putLanguageUnit(unit);
-        if (deps.storage.languageMemory.putLanguagePatterns) await deps.storage.languageMemory.putLanguagePatterns(learnedPatterns);
-        else for (const pattern of learnedPatterns) await deps.storage.languageMemory.putLanguagePattern(pattern);
+        if (requestRequirementLearning && deps.storage.languageMemory.replaceRequestRequirementPatterns) {
+          await deps.storage.languageMemory.replaceRequestRequirementPatterns({
+            profileId: profile.id,
+            sourceVersionId,
+            sourceSystem: requestRequirementSourceSystem,
+            schema: REQUEST_REQUIREMENT_PATTERN_SCHEMA,
+            compilerFingerprint: REQUEST_REQUIREMENT_PATTERN_COMPILER_FINGERPRINT,
+            patterns: labeledRequestRequirementPatterns
+          });
+        }
+        const patternsToPersist = requestRequirementLearning && deps.storage.languageMemory.replaceRequestRequirementPatterns
+          ? otherLearnedPatterns
+          : learnedPatterns;
+        if (deps.storage.languageMemory.putLanguagePatterns) await deps.storage.languageMemory.putLanguagePatterns(patternsToPersist);
+        else for (const pattern of patternsToPersist) await deps.storage.languageMemory.putLanguagePattern(pattern);
         if (deps.storage.languageMemory.putSemanticFrames) await deps.storage.languageMemory.putSemanticFrames(semanticFrames);
         else for (const frame of semanticFrames) await deps.storage.languageMemory.putSemanticFrame(frame);
         events.push(await append(eventFactory.create({

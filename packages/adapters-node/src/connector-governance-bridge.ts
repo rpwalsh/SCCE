@@ -8,7 +8,7 @@ import {
   type ConnectorQuotaState,
   type PolicyProfile
 } from "@scce/kernel";
-import type { ScceRuntimeConfig } from "./config.js";
+import { DEFAULT_WEB_REQUESTS_PER_MINUTE, type ScceRuntimeConfig } from "./config.js";
 
 /**
  * One governance model, one enforcement point.
@@ -57,7 +57,7 @@ export function connectorConfigForRuntime(
     enabled: Boolean(declared?.enabled),
     ...(web?.search?.provider ? { provider: web.search.provider } : {}),
     limits: {
-      requestsPerMinute: Math.max(1, web?.requestsPerMinute ?? policy.maxNetworkRequests),
+      requestsPerMinute: Math.max(1, web?.requestsPerMinute ?? DEFAULT_WEB_REQUESTS_PER_MINUTE),
       requestsPerSession: Math.max(1, policy.maxNetworkRequests),
       maxBytesPerResponse: Math.max(1, web?.maxBytes ?? 1_000_000),
       maxSpendCents: Math.max(0, policy.maxSpendCents)

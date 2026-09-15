@@ -5,6 +5,7 @@ import type { LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
 import { clamp01, mean, toJsonValue } from "./primitives.js";
 import type { QuestionCognitiveFabric } from "./question-cognitive-edge.js";
 import type { ConstructGraph, JsonValue } from "./types.js";
+import { unicodeLexicalSegments, type UnicodeSurfaceSegment } from "./unicode-segmentation.js";
 
 export const TURN_REQUIREMENT_DIMENSIONS = [
   "externalTruthAuthority",
@@ -80,6 +81,8 @@ export interface TurnRequirementField {
 
   /** Dimensions changed by admitted evidence rather than the coefficient-model intercept alone. */
   contributedDimensions?: TurnRequirementDimension[];
+  /** Propagated observed target ranges; these are not calibrated confidence intervals. */
+  learnedRequirementBounds?: Partial<Record<TurnRequirementDimension, { lower: number; upper: number }>>;
 
   responseForm?: ActivatedResponseForm;
   confidence: number;
@@ -112,6 +115,11 @@ export interface LearnedRequirementActivation {
   status?: "explicit" | "inferred";
   polarity?: "required" | "prohibited";
   requirementCoefficients?: Partial<Record<TurnRequirementDimension, number>>;
+  /** Source-annotated values on the field's bounded scale, not additive weights. */
+  requirementTargets?: Partial<Record<TurnRequirementDimension, number>>;
+  requirementTargetBounds?: Partial<Record<TurnRequirementDimension, { lower: number; upper: number }>>;
+  /** Correlated request patterns induced from the same source population. */
+  requirementSourceId?: string;
   responseForm?: LearnedResponseFormActivation;
   trace?: JsonValue;
 }
@@ -322,25 +330,49 @@ export function deriveTurnRequirementField(input: DeriveTurnRequirementFieldInpu
   const prohibitedFeatures: TurnRequirement[] = [];
   const contributedDimensions: TurnRequirementDimension[] = [];
   const dimensionTrace: Record<string, JsonValue> = {};
+  const learnedRequirementBounds: NonNullable<TurnRequirementField["learnedRequirementBounds"]> = {};
   const values = emptyDimensionRecord();
   const minimumContribution = finiteOr(model.minimumFeatureContribution, 0.08);
 
   for (const dimension of TURN_REQUIREMENT_DIMENSIONS) {
     const intercept = finiteOr(model.intercepts[dimension], finiteOr(DEFAULT_TURN_REQUIREMENT_MODEL.intercepts[dimension], 0));
-    const terms: Array<{ activationId: string; kind: RequirementActivationKind; activation: number; coefficient: number; occurrenceNormalization: number; contribution: number }> = [];
+    const sourcePatternIds = new Map<string, Set<string>>();
+    for (const activation of activations) {
+      if (!activation.requirementSourceId || activation.requirementTargets?.[dimension] === undefined && activation.requirementCoefficients?.[dimension] === undefined) continue;
+      const ids = sourcePatternIds.get(activation.requirementSourceId) ?? new Set<string>();
+      ids.add(activation.id);
+      sourcePatternIds.set(activation.requirementSourceId, ids);
+    }
+    const terms: Array<{ activationId: string; kind: RequirementActivationKind; activation: number; coefficient: number; occurrenceNormalization: number; sourceNormalization: number; contribution: number }> = [];
     let activationContribution = 0;
     let activationSignalPresent = false;
+    let targetBoundsPresent = false;
+    let lowerAdjustment = 0;
+    let upperAdjustment = 0;
     for (const activation of activations) {
-      const coefficient = finiteOr(activation.requirementCoefficients?.[dimension], 0)
-        + modelActivationWeight(model, dimension, activation);
+      const target = activation.requirementTargets?.[dimension];
+      const sourceNormalization = 1 / Math.max(1, sourcePatternIds.get(activation.requirementSourceId ?? "")?.size ?? 1);
+      const priorCoefficient = target === undefined
+        ? finiteOr(activation.requirementCoefficients?.[dimension], 0)
+        : boundedLogit(target) - intercept;
+      // N-grams from one population are correlated estimates. Online fitted
+      // residuals retain their own coefficient contract.
+      const coefficient = priorCoefficient * sourceNormalization + modelActivationWeight(model, dimension, activation);
       const rawContribution = finiteOr(coefficient * activation.activation, 0);
       const occurrenceCount = activationOccurrenceCounts.get(`${activation.kind}|${activation.id}`) ?? 1;
       const occurrenceNormalization = occurrenceCount > 0 ? 1 / occurrenceCount : 1;
       const contribution = finiteOr(rawContribution * occurrenceNormalization, 0);
+      const targetBounds = activation.requirementTargetBounds?.[dimension];
+      if (target !== undefined && targetBounds && targetBounds.lower <= target && targetBounds.upper >= target && activation.activation > 0) {
+        targetBoundsPresent = true;
+        const scale = sourceNormalization * activation.activation * occurrenceNormalization;
+        lowerAdjustment += (boundedLogit(targetBounds.lower) - boundedLogit(target)) * scale;
+        upperAdjustment += (boundedLogit(targetBounds.upper) - boundedLogit(target)) * scale;
+      }
       if (coefficient === 0 && contribution === 0) continue;
       if (rawContribution !== 0) activationSignalPresent = true;
       activationContribution += contribution;
-      terms.push({ activationId: activation.id, kind: activation.kind, activation: activation.activation, coefficient, occurrenceNormalization, contribution });
+      terms.push({ activationId: activation.id, kind: activation.kind, activation: activation.activation, coefficient, occurrenceNormalization, sourceNormalization, contribution });
       if (Math.abs(rawContribution) >= minimumContribution) {
         const requirement = requirementFromActivation({ requestText, activation, dimension, contribution: rawContribution, intercept });
         if (activation.polarity === "prohibited" || rawContribution < 0) prohibitedFeatures.push(requirement);
@@ -364,6 +396,7 @@ export function deriveTurnRequirementField(input: DeriveTurnRequirementFieldInpu
     const logit = finiteOr(intercept + activationContribution + explicitContribution + contextContribution, 0);
     const value = clamp01(sigmoid(logit));
     values[dimension] = value;
+    if (targetBoundsPresent) learnedRequirementBounds[dimension] = { lower: sigmoid(logit + lowerAdjustment), upper: sigmoid(logit + upperAdjustment) };
     const contributionByActivationKind = {
       frame: finiteOr(terms.filter(row => row.kind === "frame").reduce((sum, row) => sum + row.contribution, 0), 0),
       pattern: finiteOr(terms.filter(row => row.kind === "pattern").reduce((sum, row) => sum + row.contribution, 0), 0),
@@ -379,6 +412,7 @@ export function deriveTurnRequirementField(input: DeriveTurnRequirementFieldInpu
       contextContribution,
       logit,
       value,
+      ...(targetBoundsPresent ? { observedTargetBounds: learnedRequirementBounds[dimension]! } : {}),
       terms
     });
   }
@@ -399,12 +433,14 @@ export function deriveTurnRequirementField(input: DeriveTurnRequirementFieldInpu
     activatedDialogueMoveIds: activatedIds(activations, "dialogue_move"),
     activatedConstructIds: activatedIds(activations, "construct"),
     contributedDimensions,
+    ...(Object.keys(learnedRequirementBounds).length ? { learnedRequirementBounds } : {}),
     ...(responseForm ? { responseForm } : {}),
     confidence,
     activationsUsed: activations,
     trace: toJsonValue({
       schema: "scce.turn_requirement.field_trace.v1",
       equation: "sigmoid(intercept + frame + pattern + phrase + dialogue + construct + context)",
+      requestPatternSelection: "maximal_source_context_then_anchor_then_support",
       coefficientModel: { id: model.id, version: model.version, reliability: model.reliability },
       request: { characters: codePoints(requestText).length, bytes: byteLength(requestText) },
       activations: activations.map(activation => ({
@@ -425,7 +461,7 @@ export function deriveTurnRequirementField(input: DeriveTurnRequirementFieldInpu
 }
 
 /** The request minus the spans its learned patterns and frames matched: what remains is the subject, in any language the corpus covers. Pure. */
-export function requestSubjectText(requestText: string, field: Pick<TurnRequirementField, "trace">): string {
+export function requestSubjectSegments(requestText: string, field: Pick<TurnRequirementField, "trace">): string[] {
   const chars = [...requestText];
   const activations = jsonRecord(field.trace).activations;
   const spans = (Array.isArray(activations) ? activations : [])
@@ -434,7 +470,7 @@ export function requestSubjectText(requestText: string, field: Pick<TurnRequirem
     .map(row => jsonRecord(row.span))
     .map(span => [Number(span.charStart), Number(span.charEnd)] as const)
     .filter(([start, end]) => Number.isInteger(start) && Number.isInteger(end) && end > start && end - start < chars.length);
-  if (!spans.length) return requestText;
+  if (!spans.length) return [requestText];
   const keep = chars.map(() => true);
   for (const [start, end] of spans) for (let index = Math.max(0, start); index < Math.min(chars.length, end); index++) keep[index] = false;
   // Whole words only. A pattern span need not land on a word boundary, and masking by character cut letters out of
@@ -442,18 +478,29 @@ export function requestSubjectText(requestText: string, field: Pick<TurnRequirem
   // story's cast (live 2026-09-12). A word is dropped when the span covers any of it, and kept otherwise, so the
   // remainder is always a sequence of the request's own words.
   let cursor = 0;
-  const remainder = requestText
+  const segments: string[] = [];
+  let pending = "";
+  const flush = () => {
+    const clean = pending.replace(/\s+/gu, " ").trim();
+    if (clean) segments.push(clean);
+    pending = "";
+  };
+  requestText
     .split(/(\s+)/u)
     .map(token => {
       const start = cursor;
       cursor += [...token].length;
-      if (!token.trim()) return token;
+      if (!token.trim()) { pending += token; return; }
       const covered = [...token].some((_, offset) => keep[start + offset] === false);
-      return covered ? "" : token;
-    })
-    .join("")
-    .replace(/\s+/gu, " ")
-    .trim();
+      if (covered) flush();
+      else pending += token;
+    });
+  flush();
+  return segments;
+}
+
+export function requestSubjectText(requestText: string, field: Pick<TurnRequirementField, "trace">): string {
+  const remainder = requestSubjectSegments(requestText, field).join(" ");
   return remainder.split(" ").filter(Boolean).length >= 2 ? remainder : requestText;
 }
 
@@ -516,7 +563,21 @@ function collectActivations(input: DeriveTurnRequirementFieldInput & { requestTe
     const previous = byKey.get(key);
     if (!previous || row.activation > previous.activation) byKey.set(key, row);
   }
-  return [...byKey.values()].sort((left, right) => right.activation - left.activation || left.kind.localeCompare(right.kind) || left.id.localeCompare(right.id));
+  const ranked = [...byKey.values()].sort((left, right) => right.activation - left.activation || left.kind.localeCompare(right.kind) || left.id.localeCompare(right.id));
+  // A matched conditional context supersedes its contained marginal from the
+  // same training source, including an explicitly learned absence of a form.
+  return ranked.filter((row, index) => !row.requirementSourceId || !ranked.some((other, otherIndex) => {
+    if (otherIndex === index || other.requirementSourceId !== row.requirementSourceId || other.activation <= 0) return false;
+    const span = row.span!;
+    const context = other.span!;
+    const anchor = jsonString(jsonRecord(row.trace).patternAnchor);
+    const contextAnchor = jsonString(jsonRecord(other.trace).patternAnchor);
+    const anchored = anchor === "start" || anchor === "end" ? 1 : 0;
+    const contextAnchored = contextAnchor === "start" || contextAnchor === "end" ? 1 : 0;
+    return context.charStart <= span.charStart && context.charEnd >= span.charEnd
+      && (context.charEnd - context.charStart > span.charEnd - span.charStart
+        || contextAnchored > anchored || contextAnchored === anchored && otherIndex < index);
+  }));
 }
 
 /**
@@ -558,16 +619,19 @@ function collectLanguageActivations(requestText: string, state: LanguageMemoryRu
       }));
     }
   }
+  let requestSegments: UnicodeSurfaceSegment[] | undefined;
   for (const pattern of state.importedPatterns) {
     const record = jsonRecord(pattern.patternJson);
     const surface = jsonString(record.surface);
     const coefficients = requirementCoefficients(record.requirementCoefficients);
+    const targets = requirementCoefficients(record.requirementTargets);
     const responseForm = learnedResponseForm(record.responseForm);
-    if (!hasRequirementCoefficients(coefficients) && !responseForm) {
+    if (!hasRequirementCoefficients(coefficients) && !hasRequirementCoefficients(targets) && !responseForm) {
       if (candidatesAdmitted >= UNCALIBRATED_ACTIVATION_CANDIDATE_LIMIT) continue;
       candidatesAdmitted++;
     }
-    for (const matchedSpan of surface ? learnedPatternSpans(requestText, surface, jsonString(record.anchor)) : []) {
+    const tokenSegments = record.matchMode === "unicode_token_ngram" ? requestSegments ??= unicodeLexicalSegments(requestText) : undefined;
+    for (const matchedSpan of surface ? learnedPatternSpans(requestText, surface, jsonString(record.anchor), tokenSegments) : []) {
       out.push(normalizeActivation(requestText, {
         id: pattern.id,
         kind: "pattern",
@@ -577,11 +641,17 @@ function collectLanguageActivations(requestText: string, state: LanguageMemoryRu
         semanticRoleId: jsonString(record.semanticRoleId),
         learnedFrameOrPatternId: pattern.id,
         requirementCoefficients: coefficients,
+        requirementTargets: targets,
+        requirementTargetBounds: learnedTargetBounds(record.requirementTargetBounds),
+        ...(record.schema === "scce.request_requirement_pattern.v1" && jsonString(record.sourceVersionId)
+          ? { requirementSourceId: jsonString(record.sourceVersionId) } : {}),
         ...(responseForm ? { responseForm } : {}),
         trace: toJsonValue({
           source: "language_pattern",
           profileId: pattern.profileId,
           patternKind: pattern.patternKind,
+          patternAnchor: record.anchor ?? null,
+          sourceVersionId: record.sourceVersionId ?? null,
           evidenceIds: pattern.evidenceIds,
           responseExtent: record.responseExtent ?? null
         })
@@ -703,6 +773,8 @@ function normalizeActivation(requestText: string, input: LearnedRequirementActiv
     status: input.status ?? "inferred",
     polarity: input.polarity ?? "required",
     requirementCoefficients: finiteCoefficientVector(input.requirementCoefficients),
+    requirementTargets: Object.fromEntries(Object.entries(finiteCoefficientVector(input.requirementTargets)).map(([dimension, value]) => [dimension, clamp01(value)])),
+    requirementTargetBounds: learnedTargetBounds(input.requirementTargetBounds as JsonValue | undefined),
     ...(normalizeLearnedResponseForm(input.responseForm)
       ? { responseForm: normalizeLearnedResponseForm(input.responseForm) }
       : {}),
@@ -794,6 +866,18 @@ function learnedResponseForm(value: JsonValue | undefined): LearnedResponseFormA
       ? { surfaceLayout: responseFormSurfaceLayoutFromJson(record.surfaceLayout) }
       : {})
   });
+}
+
+function learnedTargetBounds(value: JsonValue | undefined): LearnedRequirementActivation["requirementTargetBounds"] {
+  const out: NonNullable<LearnedRequirementActivation["requirementTargetBounds"]> = {};
+  const record = jsonRecord(value);
+  for (const dimension of TURN_REQUIREMENT_DIMENSIONS) {
+    const bounds = jsonRecord(record[dimension]);
+    const lower = jsonNumber(bounds.lower);
+    const upper = jsonNumber(bounds.upper);
+    if (lower !== undefined && upper !== undefined && lower >= 0 && upper <= 1 && lower <= upper) out[dimension] = { lower, upper };
+  }
+  return out;
 }
 
 function normalizeLearnedResponseForm(
@@ -1028,9 +1112,19 @@ function learnedSurfaceSpans(text: string, surface: string): RequirementActivati
 function learnedPatternSpans(
   text: string,
   surface: string,
-  anchor: string | undefined
+  anchor: string | undefined,
+  requestSegments?: readonly UnicodeSurfaceSegment[]
 ): RequirementActivationSpan[] {
-  const spans = learnedSurfaceSpans(text, surface);
+  let spans: RequirementActivationSpan[];
+  if (requestSegments) {
+    const units = unicodeLexicalSegments(surface).map(segment => segment.normalized);
+    spans = [];
+    for (let index = 0; units.length && index + units.length <= requestSegments.length && spans.length < 32; index++) {
+      if (units.every((unit, offset) => unit === requestSegments[index + offset]!.normalized)) {
+        spans.push({ charStart: requestSegments[index]!.codePointStart, charEnd: requestSegments[index + units.length - 1]!.codePointEnd });
+      }
+    }
+  } else spans = learnedSurfaceSpans(text, surface);
   const leading = codePoints(text).length - codePoints(text.trimStart()).length;
   const trimmedLength = codePoints(text.trim()).length;
   if (anchor === "start") return spans.filter(span => span.charStart === leading);

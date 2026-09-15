@@ -95,7 +95,7 @@ export interface RuntimeReplanMotion {
   parentEpisodeId: string;
   queryHash: string;
   connectorConfigured: boolean;
-  status: "hydrated" | "empty" | "unavailable" | "failed" | "awaiting_consent" | "held_for_review";
+  status: "hydrated" | "empty" | "unavailable" | "failed" | "awaiting_consent" | "refused" | "held_for_review";
   /** Owner consent for network.search is pending on this approval plan. */
   consent?: { capabilityId: "network.search"; planId: string; granted: boolean };
   /** Fetched sources held for review when automatic source-qualified admission is disabled. */

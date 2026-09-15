@@ -6,6 +6,7 @@ import type { InitialFact, NarrativeConsistencyReport, NarrativeEvent, Narrative
 import { establishedNarrativeFacts, evaluateNarrativeConsistency, openNarrativeSetupIds } from "./narrative-state.js";
 import type { AntiCopyGuardResult, VoiceProfile, VoiceSample } from "./voice-profile.js";
 import { checkAntiCopyGuard } from "./voice-profile.js";
+import { surfaceContainsTerm } from "./surface-linguistics.js";
 import {
   deleteDocumentPlanNode,
   insertDocumentPlanNode,
@@ -153,6 +154,26 @@ export function completeDocumentSection(
   session: DocumentGenerationSession,
   input: CompleteDocumentSectionInput
 ): CompleteDocumentSectionResult {
+  const node = session.plan.nodes[input.nodeId];
+  if (node && node.requiredCoverageIds.length) {
+    const coverageTerms = new Map((node.coverageTerms ?? []).map(term => [term.id, term.text]));
+    if (node.requiredCoverageIds.some(id => !coverageTerms.has(id))) {
+      return { accepted: false, reason: "required coverage lacks surface term" };
+    }
+    if (node.requiredCoverageIds.some(id => !surfaceContainsTerm(input.content, coverageTerms.get(id)!))) {
+      return { accepted: false, reason: "required content not realized" };
+    }
+  }
+  // This applies to every realizer, including a full-Mouth fallback and a
+  // resumed document. Previously only the direct section caller checked its
+  // own history, so fallback paragraphs could repeat committed blocks.
+  const priorSections = Object.values(session.plan.nodes)
+    .filter(node => node.completed && node.id !== input.nodeId && node.content)
+    .map(node => ({ sourceId: node.id, text: node.content! }));
+  const repeated = checkAntiCopyGuard(input.content, priorSections, session.maxAllowedNgramWords);
+  if (repeated.violatesProtectedSpan) {
+    return { accepted: false, reason: "section repeats committed document content", antiCopyResult: repeated };
+  }
   if (session.voiceProfile) {
     const antiCopyResult = checkAntiCopyGuard(input.content, session.protectedPassages, session.maxAllowedNgramWords);
     if (antiCopyResult.violatesProtectedSpan) {

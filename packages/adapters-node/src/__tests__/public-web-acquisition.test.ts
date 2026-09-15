@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConfiguredConnectorAdapter } from "../connectors.js";
 import { ConnectorPolicyGate } from "../connector-policy.js";
 import { connectorConfigForRuntime } from "../connector-governance-bridge.js";
-import { validateConfig, type ScceRuntimeConfig } from "../config.js";
+import { automaticWebAcquisitionEnabled, publicWebNetworkEnabled, validateConfig, type ScceRuntimeConfig } from "../config.js";
 import { createApprovalSession } from "../approval-session.js";
 
 vi.mock("node:dns/promises", () => ({ lookup: vi.fn() }));
@@ -18,18 +18,29 @@ function config(accessScope?: "allowlist" | "public-internet"): ScceRuntimeConfi
       informationAccess: { tenantId: "fixture", principalId: "owner", compartments: ["test"], maximumExportClass: "restricted" },
       defaultSourceInformationLabel: { tenantId: "fixture", principals: ["owner"], compartments: ["test"], exportClass: "restricted", mergePolicy: "isolated" }
     },
-    connectors: { web: { enabled: true, accessScope, allowedHosts: ["html.duckduckgo.com", "en.wikipedia.org"], maxBytes: 10000, requestsPerMinute: 120, maxRequestsPerTurn: 12, search: { provider: "duckduckgo" } } },
+    connectors: { web: { enabled: true, accessScope, allowedHosts: ["html.duckduckgo.com", "en.wikipedia.org"], maxBytes: 10000, requestsPerMinute: 30, maxRequestsPerTurn: 12, search: { provider: "duckduckgo" } } },
     policy: { allowMutation: false, requireTwoPhaseCommit: true, dryRunByDefault: true, maxNetworkRequests: 12, maxToolCalls: 24, maxSpendCents: 0, alphaRiskCeiling: 0.55, encryptSecretsAtRest: false }
   };
 }
 
 beforeEach(() => {
+  vi.stubEnv("SCCE_ALLOW_AUTOMATIC_WEB", "1");
   vi.mocked(lookup).mockResolvedValue([{ address: "93.184.216.34", family: 4 }] as never);
   vi.stubGlobal("fetch", vi.fn(async () => new Response("source bytes", { headers: { "content-type": "text/plain" } })));
 });
-afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.restoreAllMocks(); });
 
 describe("configured public internet acquisition", () => {
+  it("refuses public web access before DNS or fetch when the deployment opt-in is absent", async () => {
+    vi.unstubAllEnvs();
+    const cfg = config("public-internet");
+    expect(publicWebNetworkEnabled(cfg)).toBe(false);
+    await expect(new ConfiguredConnectorAdapter(cfg).fetch("https://source.example/article")).rejects.toThrow(/public web access refused/iu);
+    await expect(new ConfiguredConnectorAdapter(cfg).search("source observation", 4)).rejects.toThrow(/public web access refused/iu);
+    expect(lookup).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("keeps the allowlist default and requires an explicit public-internet opt-in", async () => {
     await expect(new ConfiguredConnectorAdapter(config()).fetch("https://source.example/article")).rejects.toThrow(/not allowlisted/);
     expect(fetch).not.toHaveBeenCalled();
@@ -60,6 +71,15 @@ describe("configured public internet acquisition", () => {
     expect(lookup).toHaveBeenCalledTimes(2);
   });
 
+  it("charges redirect hops against the same turn request budget before following them", async () => {
+    const cfg = config("public-internet");
+    cfg.connectors.web!.maxRequestsPerTurn = 1;
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: "https://publisher.example/paper" } }));
+    const adapter = new ConfiguredConnectorAdapter(cfg);
+    await expect(adapter.withRequestBudget(() => adapter.fetch("https://index.example/record"))).rejects.toThrow(/quota exhausted/);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects private DNS addresses and private redirect targets before a request reaches them", async () => {
     vi.mocked(lookup).mockResolvedValueOnce([{ address: "192.168.1.8", family: 4 }] as never);
     await expect(new ConfiguredConnectorAdapter(config("public-internet")).fetch("https://source.example/a")).rejects.toThrow(/private\/reserved/);
@@ -71,14 +91,14 @@ describe("configured public internet acquisition", () => {
 
   it("validates access scope and resource bounds without requiring a paid search key", () => {
     expect(() => validateConfig(config("public-internet"))).not.toThrow();
-    for (const [field, value] of [["accessScope", "everything"], ["runtimeAcquisition", true], ["requestsPerMinute", 0], ["requestsPerMinute", 121], ["maxRequestsPerTurn", 0], ["maxRequestsPerTurn", 65]] as const) {
+    for (const [field, value] of [["accessScope", "everything"], ["runtimeAcquisition", true], ["requestsPerMinute", 0], ["requestsPerMinute", 61], ["requestsPerMinute", 121], ["maxRequestsPerTurn", 0], ["maxRequestsPerTurn", 65]] as const) {
       const invalid = config("public-internet");
       Object.assign(invalid.connectors.web!, { [field]: value });
       expect(() => validateConfig(invalid)).toThrow(field);
     }
     const mapped = connectorConfigForRuntime(config("public-internet"), "web", config().policy);
     expect(mapped.limits.requestsPerSession).toBe(12);
-    expect(mapped.limits.requestsPerMinute).toBe(120);
+    expect(mapped.limits.requestsPerMinute).toBe(30);
   });
 
   it("does not forward search-provider credentials to a different redirect origin", async () => {
@@ -128,6 +148,18 @@ describe("configured public internet acquisition", () => {
     vi.mocked(fetch).mockResolvedValueOnce(new Response(new Uint8Array([0, 255, 0, 99]), { headers: { "content-type": "application/octet-stream" } }));
     await expect(new ConfiguredConnectorAdapter(config("public-internet")).fetch("https://source.example/binary")).rejects.toThrow(/unsupported fetched source/);
   });
+
+  it("shares one request gate across adapters in the same process and config", async () => {
+    const cfg = config("public-internet");
+    cfg.policy.maxNetworkRequests = 1;
+    cfg.connectors.web!.maxRequestsPerTurn = 1;
+    const first = new ConfiguredConnectorAdapter(cfg);
+    const second = new ConfiguredConnectorAdapter(cfg);
+    await first.fetch("https://source.example/first");
+    expect(second.quota.usedNetworkRequests).toBe(1);
+    await expect(second.fetch("https://source.example/second")).rejects.toThrow(/quota exhausted/);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("scoped standing runtime search consent", () => {
@@ -136,6 +168,7 @@ describe("scoped standing runtime search consent", () => {
     const search = { capabilityId: "network.search", input: { query: "source observation" } };
     expect(createApprovalSession(cfg).isApproved(search)).toBe(false);
     cfg.connectors.web!.runtimeAcquisition = "automatic";
+    vi.stubEnv("SCCE_ALLOW_AUTOMATIC_WEB", "1");
     expect(() => validateConfig(cfg)).not.toThrow();
     const approvals = createApprovalSession(cfg);
     expect(approvals.isApproved(search)).toBe(true);
@@ -151,6 +184,25 @@ describe("scoped standing runtime search consent", () => {
     expect(createApprovalSession(cfg).isApproved(search)).toBe(false);
   });
 
+  it("fails closed unless automatic public acquisition has the exact environment opt-in", () => {
+    const cfg = config("public-internet");
+    cfg.connectors.web!.runtimeAcquisition = "automatic";
+    const search = { capabilityId: "network.search", input: { query: "source observation" } };
+    for (const value of [undefined, "", "0", "true", "yes", " 1 "]) {
+      if (value === undefined) vi.unstubAllEnvs();
+      else vi.stubEnv("SCCE_ALLOW_AUTOMATIC_WEB", value);
+      expect(automaticWebAcquisitionEnabled(cfg)).toBe(false);
+      const approvals = createApprovalSession(cfg);
+      expect(approvals.isApproved(search)).toBe(false);
+      expect(approvals.isRejected(search)).toBe(true);
+      expect(approvals.snapshot()).toMatchObject({ runtimeSearchConsent: false, runtimeSearchRefused: true });
+    }
+    vi.stubEnv("SCCE_ALLOW_AUTOMATIC_WEB", "1");
+    expect(automaticWebAcquisitionEnabled(cfg)).toBe(true);
+    expect(createApprovalSession(cfg).isApproved(search)).toBe(true);
+    expect(createApprovalSession(cfg).snapshot()).toMatchObject({ runtimeSearchConsent: true, runtimeSearchRefused: false });
+  });
+
   it("preserves per-plan approval without widening the policy", () => {
     const approvals = createApprovalSession(config());
     const action = { capabilityId: "workspace.write", input: { path: "fixture.txt" } };
@@ -159,6 +211,27 @@ describe("scoped standing runtime search consent", () => {
     expect(approvals.isApproved(action)).toBe(true);
     expect(approvals.isApproved({ ...action, input: { path: "other.txt" } })).toBe(false);
     expect(approvals.policyPatch()).toEqual({});
+  });
+
+  it("records a declined search and keeps that exact request offline", () => {
+    const approvals = createApprovalSession(config());
+    const search = { capabilityId: "network.search", input: { query: "source observation" } };
+    const pending = approvals.requestApproval(search);
+    approvals.reject(pending.planId);
+    expect(approvals.isApproved(search)).toBe(false);
+    expect(approvals.isRejected(search)).toBe(true);
+    expect(approvals.snapshot()).toMatchObject({ pending: [], rejected: [expect.objectContaining({ planId: pending.planId })] });
+  });
+
+  it("allows an explicit later approval to override a prior decline for the same plan", () => {
+    const approvals = createApprovalSession(config());
+    const search = { capabilityId: "network.search", input: { query: "source observation" } };
+    const pending = approvals.requestApproval(search);
+    approvals.reject(pending.planId);
+    approvals.approve(pending.planId);
+    expect(approvals.isApproved(search)).toBe(true);
+    expect(approvals.isRejected(search)).toBe(false);
+    expect(approvals.snapshot()).toMatchObject({ pending: [], rejected: [] });
   });
 });
 
@@ -195,7 +268,43 @@ describe("bounded turn-scoped connector requests", () => {
     });
     await vi.runAllTimersAsync();
     await work;
-    expect(completed).toEqual([1000, 1500]);
+    expect(completed).toEqual([1000, 3000]);
+  });
+
+  it("uses one conservative shared web bucket when the optional rate is omitted", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1000);
+    const cfg = config("public-internet");
+    delete cfg.connectors.web!.requestsPerMinute;
+    const gate = new ConnectorPolicyGate(cfg);
+    const completed: number[] = [];
+    const work = gate.withRequestBudget(async () => {
+      await gate.beginWhenAvailable({ connector: "web", operation: "search:duckduckgo", uri: "https://source.example/search" });
+      completed.push(Date.now());
+      await gate.beginWhenAvailable({ connector: "web", operation: "fetch", uri: "https://source.example/article" });
+      completed.push(Date.now());
+    });
+    await vi.runAllTimersAsync();
+    await work;
+    expect(completed).toEqual([1000, 3000]);
+  });
+
+  it("serializes concurrent turn budgets through the shared web bucket", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1000);
+    const gate = new ConnectorPolicyGate(config("public-internet"));
+    const completed: Array<[string, number]> = [];
+    const first = gate.withRequestBudget(async () => {
+      await gate.beginWhenAvailable({ connector: "web", operation: "search:duckduckgo", uri: "https://source.example/first" });
+      completed.push(["first", Date.now()]);
+    });
+    const second = gate.withRequestBudget(async () => {
+      await gate.beginWhenAvailable({ connector: "web", operation: "fetch", uri: "https://source.example/second" });
+      completed.push(["second", Date.now()]);
+    });
+    await vi.runAllTimersAsync();
+    await Promise.all([first, second]);
+    expect(completed).toEqual([["first", 1000], ["second", 3000]]);
   });
 
   it("can cancel a queued fetch before any additional network request", async () => {

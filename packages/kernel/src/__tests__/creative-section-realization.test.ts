@@ -1,11 +1,44 @@
 import { describe, expect, it } from "vitest";
-import { realizeCreativeSection } from "../creative-section-realization.js";
+import { creativeRequestContentSurface, realizeCreativeSection } from "../creative-section-realization.js";
 import { createLanguageMemoryRuntime, renderContinuationSentences, type LanguageGenerationInput } from "../language-memory-runtime.js";
 import type { LanguageUnitRecord } from "../storage.js";
 import { sourceDerivedCasingHints } from "../surface-linguistics.js";
 import type { NarrativeConditioning } from "../document-generation-session.js";
 
 describe("creative section realization handoff", () => {
+  it("preserves all contiguous content spans around learned control material", () => {
+    const content = "κάλυ ρονά ζίμα τέλου";
+    for (const [request, controlSpans] of [
+      [`μήσα τάλι ${content}`, [[0, 4], [5, 9]]],
+      [`${content} τάλι μήσα`, [[content.length + 1, content.length + 5], [content.length + 6, content.length + 10]]]
+    ] as const) {
+      const field = { trace: { activations: controlSpans.map(([charStart, charEnd]) => ({ kind: "pattern", span: { charStart, charEnd } })) } };
+      expect(creativeRequestContentSurface(request, field)).toBe(content);
+    }
+    const left = "κάλυ ρονά";
+    const right = "ζίμα τέλου";
+    const request = `μήσα ${left} τάλι ${right}`;
+    const field = {
+      trace: {
+        activations: [
+          { kind: "pattern", span: { charStart: 0, charEnd: [..."μήσα"].length } },
+          { kind: "pattern", span: { charStart: [...`μήσα ${left} `].length, charEnd: [...`μήσα ${left} τάλι`].length } }
+        ]
+      }
+    };
+    expect(creativeRequestContentSurface(request, field)).toBe(`${left} ${right}`);
+  });
+
+  it("varies a retry through the sampler without turning its nonce into language context", () => {
+    const runtime = createLanguageMemoryRuntime();
+    const state = runtime.hydrateFromImportedBrain({ importRunId: "retry", models: [], observations: [], units: [], patterns: [], semanticFrames: [] });
+    const inputs: LanguageGenerationInput[] = [];
+    const generate = runtime.generate.bind(runtime);
+    runtime.generate = input => { inputs.push(input); return generate(input); };
+    for (const attempt of [1, 2]) realizeCreativeSection({ languageMemory: runtime, state, requestText: "κάλα τόνι", sectionGoal: "κάλα τόνι", attempt });
+    expect(inputs[0]?.choiceSeed).not.toBe(inputs[1]?.choiceSeed);
+    expect(inputs[0]?.contextSymbols).toEqual(inputs[1]?.contextSymbols);
+  });
   it("carries committed typed state separately from the prior surface and never speaks its opaque IDs", () => {
     const runtime = createLanguageMemoryRuntime();
     const state = runtime.hydrateFromImportedBrain({ importRunId: "run.opaque", models: [], observations: [], units: [], patterns: [], semanticFrames: [] });

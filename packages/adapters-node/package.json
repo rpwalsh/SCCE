@@ -8,9 +8,13 @@
   "types": "dist/index.d.ts",
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",
+    "@napi-rs/canvas": "1.0.9",
     "@scce/kernel": "workspace:*",
+    "@tesseract.js-data/eng": "1.0.0",
     "mammoth": "^1.8.0",
+    "pdfjs-dist": "6.3.289",
     "pg": "^8.13.1",
+    "tesseract.js": "7.0.0",
     "tree-sitter-wasms": "^0.1.13",
     "typescript": "^5.8.3",
     "web-tree-sitter": "^0.24.7",

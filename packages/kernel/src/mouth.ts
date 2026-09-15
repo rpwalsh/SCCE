@@ -11,7 +11,7 @@ import { isStructuralResidueSurface } from "./structural-residue.js";
 import { mostLikelyHypothesis, normalizeHypothesisSet } from "./correlated-uncertainty.js";
 import { requestSentenceSequences, spanContainsRequestNearDuplicateSentence } from "./local-evidence-runtime.js";
 import { quotedSentenceGap } from "./quoted-gap.js";
-import { realizeCreativeSection, surfaceEchoesPrompt } from "./creative-section-realization.js";
+import { creativeRequestContentSurface, realizeCreativeSection, surfaceEchoesPrompt } from "./creative-section-realization.js";
 import type { CreativeRequestFrame } from "./creative-event-compatibility.js";
 import type { NarrativeConditioning } from "./document-generation-session.js";
 import type { CandidateSurface } from "./candidate.js";
@@ -4108,7 +4108,7 @@ function creativeRequestContentTerms(input: SpeakInput): SurfaceTerm[] {
     .filter(span => span.charEnd > span.charStart);
   // The request, not the entailment claim (on a creative turn that is the retrieved passage), minus its learned instruction spans: the subject the invention must keep.
   const claimText = mouthEchoQuestionText(input);
-  const requestText = input.requirementField ? requestSubjectText(claimText, input.requirementField) : claimText;
+  const requestText = creativeRequestContentSurface(claimText, input.requirementField);
   const controlBoundary = requestText === claimText ? controlSpans.reduce((end, span) => Math.max(end, span.charEnd), 0) : 0;
   const tokens = [...requestText.matchAll(/[\p{Letter}\p{Mark}\p{Number}_]+/gu)].map(match => {
     const utf16Start = match.index ?? 0;
@@ -4350,11 +4350,12 @@ function directCreativeSectionCandidate(
     targetLanguageProfile: input.languageProfile,
     requestText: mouthEchoQuestionText(input),
     sectionGoal: input.requirementField
-      ? requestSubjectText(input.entailment.claim.text, input.requirementField)
+      ? creativeRequestContentSurface(mouthEchoQuestionText(input), input.requirementField)
       : input.entailment.claim.text,
     priorSurfaceTexts: input.evidence.slice(0, 2).map(span => span.text).filter(Boolean),
     narrativeConditioning: input.narrativeConditioning,
     topicVocabulary: requestTerms.map(term => term.text),
+    requiredContentTerms: requestTerms.map(term => term.text),
     casingSourceTexts: input.evidence.slice(0, 4).map(span => span.text).filter(Boolean),
     targetLanguage: input.targetLanguage,
     targetScript: input.targetScript,

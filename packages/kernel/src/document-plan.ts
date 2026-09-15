@@ -22,6 +22,8 @@ export interface DocumentPlanNode {
   order: number;
   goal: string;
   requiredCoverageIds: string[];
+  /** Surface-bearing obligations supplied by the request interpreter, not labels parsed from IDs. */
+  coverageTerms?: Array<{ id: string; text: string }>;
   referenceIds: string[];
   rhetoricalDependsOnIds: string[];
   satisfiedCoverageIds: string[];
@@ -42,6 +44,7 @@ export interface AddDocumentPlanNodeInput {
   order: number;
   goal: string;
   requiredCoverageIds?: readonly string[];
+  coverageTerms?: readonly { id: string; text: string }[];
   referenceIds?: readonly string[];
   rhetoricalDependsOnIds?: readonly string[];
 }
@@ -61,6 +64,7 @@ export function addDocumentPlanNode(plan: DocumentPlan, input: AddDocumentPlanNo
     order: input.order,
     goal: input.goal,
     requiredCoverageIds: [...(input.requiredCoverageIds ?? [])],
+    ...(input.coverageTerms ? { coverageTerms: input.coverageTerms.map(term => ({ ...term })) } : {}),
     referenceIds: [...(input.referenceIds ?? [])],
     rhetoricalDependsOnIds: [...(input.rhetoricalDependsOnIds ?? [])],
     satisfiedCoverageIds: [],
@@ -124,6 +128,12 @@ export function completeDocumentPlanNode(plan: DocumentPlan, input: CompleteDocu
   const unmetDependencies = node.rhetoricalDependsOnIds.filter(dependencyId => !plan.nodes[dependencyId]?.completed);
   if (unmetDependencies.length) {
     throw new Error(`cannot complete ${input.nodeId}: rhetorical dependencies not yet satisfied: ${unmetDependencies.join(", ")}`);
+  }
+  if (node.requiredCoverageIds.length) {
+    const coverageTermIds = new Set((node.coverageTerms ?? []).map(term => term.id));
+    if (node.requiredCoverageIds.some(id => !coverageTermIds.has(id))) {
+      throw new Error(`cannot complete ${input.nodeId}: required coverage lacks surface term`);
+    }
   }
   const satisfied = new Set([...node.satisfiedCoverageIds, ...input.satisfiedCoverageIds]);
   const unmetCoverage = node.requiredCoverageIds.filter(coverageId => !satisfied.has(coverageId));

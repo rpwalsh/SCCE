@@ -3899,6 +3899,9 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
     async putLanguagePatterns(patterns) {
       await putLanguagePatternsBatch(storage, patterns);
     },
+    async replaceRequestRequirementPatterns(input) {
+      await replaceRequestRequirementPatterns(storage, input);
+    },
     async putSemanticFrame(frame) {
       await putSemanticFramesBatch(storage, [frame]);
     },
@@ -4878,6 +4881,38 @@ function createTranslationConstructionStore(storage: PostgresStorageAdapter): Tr
       return rows.map(rowToTranslationConstruction);
     }
   };
+}
+
+async function replaceRequestRequirementPatterns(
+  storage: PostgresStorageAdapter,
+  input: {
+    profileId: string;
+    sourceVersionId: string;
+    sourceSystem: string;
+    schema: string;
+    compilerFingerprint: string;
+    patterns: readonly LanguagePatternRecord[];
+  }
+): Promise<void> {
+  await storage.transaction(async () => {
+    const params: unknown[] = [input.profileId, input.schema, input.sourceVersionId, input.sourceSystem];
+    const where = [
+      "pattern.profile_id=$1",
+      "pattern.pattern_json->>'schema'=$2",
+      "pattern.pattern_json->>'sourceVersionId'=$3",
+      "pattern.pattern_json->>'sourceSystem'=$4"
+    ];
+    appendInformationAccess(storage, "pattern", params, where);
+    // Delete the entire compiler scope before reinserting the freshly compiled
+    // set. That removes old rows without a fingerprint and obsolete features
+    // that are absent from a later compile, while an empty compile remains a
+    // valid replacement.
+    await storage.query(
+      `DELETE FROM ${storage.table("language_patterns")} AS pattern WHERE ${where.join(" AND ")}`,
+      params
+    );
+    await putLanguagePatternsBatch(storage, input.patterns);
+  });
 }
 
 interface TranslationCorrectionRow {

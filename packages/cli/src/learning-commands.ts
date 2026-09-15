@@ -25,13 +25,17 @@ export async function negotiateLearning<T extends TurnLike>(runtime: Runtime, tu
   if (!motion) return result;
   if (motion.status === "awaiting_consent" && motion.consent?.planId) {
     if (!stdin.isTTY) {
-      process.stdout.write(`\nNo evidence on this yet. To let SCCE search the web and learn it, approve plan ${motion.consent.planId} (scce learn consent <planId>) and ask again.\n`);
+      process.stdout.write(`\nNo evidence on this yet. To let SCCE search the web and learn it, approve plan ${motion.consent.planId} (scce learn consent <planId>) and ask again. To stay offline, reject it (scce learn reject-consent ${motion.consent.planId}).\n`);
       return result;
     }
     const rl = createInterface({ input: stdin, output: stdout });
     try {
       const answer = (await rl.question("\nNo evidence on this yet. Search the web and learn it? [y/N] ")).trim().toLowerCase();
-      if (answer !== "y" && answer !== "yes") return result;
+      if (answer !== "y" && answer !== "yes") {
+        runtime.approvals.reject(motion.consent.planId);
+        process.stdout.write(`I will stay offline. To explicitly allow this request later: scce learn consent ${motion.consent.planId}\n`);
+        return result;
+      }
     } finally { rl.close(); }
     runtime.approvals.approve(motion.consent.planId);
     return negotiateLearning(runtime, turn, await turn());
@@ -93,5 +97,10 @@ export async function runLearnCommand(runtime: Runtime, args: string[]): Promise
     process.stdout.write(`consent recorded for ${args[1]} in this process; ask again in the same session to search\n`);
     return;
   }
-  throw new Error("usage: scce learn pending | confirm <id> | reject <id> | curriculum | pursue <planId>");
+  if (sub === "reject-consent" && args[1]) {
+    runtime.approvals.reject(args[1]);
+    process.stdout.write(`offline consent refusal recorded for ${args[1]} in this process\n`);
+    return;
+  }
+  throw new Error("usage: scce learn pending | confirm <id> | reject <id> | curriculum | pursue <planId> | consent <planId> | reject-consent <planId>");
 }

@@ -13,6 +13,7 @@ import type { NarrativeEvent } from "./narrative-state.js";
 import type { VoiceSample } from "./voice-profile.js";
 import { requestContentPriorUnits, uniqueKernelStrings } from "./kernel-answer-primitives.js";
 import { surfaceEchoesPrompt } from "./creative-section-realization.js";
+import { surfaceContainsTerm } from "./surface-linguistics.js";
 import { toJsonValue } from "./primitives.js";
 import type { JsonValue, RequestedAuthority } from "./types.js";
 import type { TurnRequirementField } from "./turn-requirements.js";
@@ -63,6 +64,9 @@ export function extendedGenerationDecision(input: {
   noveltyThreshold?: number;
 }): ExtendedGenerationDecision {
   const detailDemand = clamp01Number(input.requirementField.brevityDetailBalance);
+  // An average can hide conflicting source annotations about output extent.
+  // Expand only when the observed target range supports the same decision.
+  const supportedDetailDemand = clamp01Number(input.requirementField.learnedRequirementBounds?.brevityDetailBalance?.lower ?? detailDemand);
   const noveltyDemand = clamp01Number(input.requirementField.noveltyDemand);
   const detailThreshold = input.detailThreshold ?? 0.6;
   const noveltyThreshold = input.noveltyThreshold ?? 0.5;
@@ -81,6 +85,7 @@ export function extendedGenerationDecision(input: {
   const required = authorityEligible
     && fieldConfidence > 0
     && detailDemand >= detailThreshold
+    && supportedDetailDemand >= detailThreshold
     && noveltyDemand >= noveltyThreshold;
   // Section count scales with the request's own detail demand rather than a
   // fixed constant, so a modest request does not get a twelve-part document.
@@ -97,12 +102,13 @@ export function extendedGenerationDecision(input: {
       required,
       sectionTarget,
       detailDemand,
+      supportedDetailDemand,
       noveltyDemand,
       detailThreshold,
       noveltyThreshold,
       authorityEligible,
       fieldConfidence,
-      basis: ["requirementField.brevityDetailBalance", "requirementField.noveltyDemand", "requirementField.confidence", "requestedAuthority"]
+      basis: ["requirementField.brevityDetailBalance", "requirementField.learnedRequirementBounds.brevityDetailBalance", "requirementField.noveltyDemand", "requirementField.confidence", "requestedAuthority"]
     })
   };
 }
@@ -121,16 +127,25 @@ export function buildExtendedGenerationPlan(input: {
   requestText: string;
   sectionTarget: number;
   documentId?: string;
+  contentTerms?: readonly string[];
 }): DocumentPlan {
   const documentId = input.documentId ?? "document.root";
-  const units = uniqueKernelStrings(requestContentPriorUnits(input.requestText)).slice(0, input.sectionTarget);
+  // An explicitly empty content list is not permission to remove grounding.
+  // Reconstruct the request's source-neutral units so a caller cannot obtain
+  // completion credit by omitting the obligations it failed to derive.
+  const suppliedUnits = (input.contentTerms ?? [])
+    .map(unit => unit.trim())
+    .filter(Boolean);
+  const contentUnits = suppliedUnits.length ? suppliedUnits : requestContentPriorUnits(input.requestText);
+  const units = uniqueKernelStrings(contentUnits).slice(0, input.sectionTarget);
   const coverageIds = units.map(unit => `coverage.${unit}`);
   let plan = addDocumentPlanNode(EMPTY_DOCUMENT_PLAN, {
     id: documentId,
     kind: "document",
     order: 0,
     goal: input.requestText,
-    requiredCoverageIds: coverageIds
+    requiredCoverageIds: coverageIds,
+    coverageTerms: units.map((text, index) => ({ id: coverageIds[index]!, text }))
   });
   let previousId: string | undefined;
   for (let index = 0; index < input.sectionTarget; index++) {
@@ -142,6 +157,7 @@ export function buildExtendedGenerationPlan(input: {
       order: index + 1,
       goal: sectionGoal(input.requestText),
       requiredCoverageIds: coverageIds[index] ? [coverageIds[index]!] : [],
+      coverageTerms: coverageIds[index] ? [{ id: coverageIds[index]!, text: units[index]! }] : [],
       ...(previousId ? { rhetoricalDependsOnIds: [previousId] } : {})
     });
     previousId = id;
@@ -224,10 +240,17 @@ export async function runExtendedGeneration(input: {
       sections.push({ nodeId: section.id, goal: section.goal, text: "", accepted: false, reason: "prompt echo" });
       break;
     }
+    const satisfiedCoverageIds = (section.coverageTerms ?? [])
+      .filter(term => surfaceContainsTerm(text, term.text))
+      .map(term => term.id);
+    if (section.requiredCoverageIds.some(id => !satisfiedCoverageIds.includes(id))) {
+      sections.push({ nodeId: section.id, goal: section.goal, text, accepted: false, reason: "required content not realized" });
+      break;
+    }
     const completion = completeDocumentSection(session, {
       nodeId: section.id,
       content: text,
-      satisfiedCoverageIds: section.requiredCoverageIds,
+      satisfiedCoverageIds,
       ...(realized.narrativeEvent ? { narrativeEvent: realized.narrativeEvent } : {})
     });
     if (completion.accepted) {
@@ -262,9 +285,10 @@ export function extendedGenerationSessionForTurn(input: {
   protectedPassages?: readonly VoiceSample[];
   /** The document's persistent cast -- each starts "not yet introduced" so establishedNarrativeFacts can tell later sections whether this is the first mention or a continuation. */
   castSubjectIds?: readonly string[];
+  contentTerms?: readonly string[];
 }): DocumentGenerationSession {
   return createDocumentGenerationSession({
-    plan: buildExtendedGenerationPlan({ requestText: input.requestText, sectionTarget: input.sectionTarget }),
+    plan: buildExtendedGenerationPlan({ requestText: input.requestText, sectionTarget: input.sectionTarget, contentTerms: input.contentTerms }),
     protectedPassages: input.protectedPassages ?? [],
     initialFacts: (input.castSubjectIds ?? []).map(subjectId => ({ subjectId, factId: "introduced", value: false }))
   });

@@ -6,9 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import * as XLSX from "xlsx";
-import { createClock, createHasher, createIdFactory, createTypedIngestProjector } from "@scce/kernel";
+import { createClock, createHasher, createIdFactory, createTypedIngestProjector, type JsonValue } from "@scce/kernel";
 import type { ScceRuntimeConfig } from "../config.js";
-import { runProcess } from "../document.js";
 import { normalizeFetchedSource, publicDocumentExport, type FetchedSource } from "../fetched-source.js";
 import { inspectOfficeArchive } from "../spreadsheet-parser.js";
 
@@ -18,7 +17,7 @@ beforeEach(async () => {
   tempRoot = await mkdtemp(path.join(os.tmpdir(), "scce-fetched-test-"));
   config = {
     server: { url: "http://127.0.0.1:3873" }, database: { url: "postgresql://localhost/scce", schema: "scce" },
-    runtime: { workspaceRoot: tempRoot, tempRoot, allowedRoots: [tempRoot], excludedPaths: [], maxFileBytes: 2 * 1024 * 1024, maxChunkBytes: 1000, tools: { pdftotext: "scce-missing-pdftotext-fixture", tesseract: "scce-missing-tesseract-fixture" } },
+    runtime: { workspaceRoot: tempRoot, tempRoot, allowedRoots: [tempRoot], excludedPaths: [], maxFileBytes: 2 * 1024 * 1024, maxChunkBytes: 1000, tools: {} },
     connectors: { web: { enabled: true, allowedHosts: [], maxBytes: 2 * 1024 * 1024 } },
     policy: { allowMutation: false, requireTwoPhaseCommit: true, dryRunByDefault: true, maxNetworkRequests: 12, maxToolCalls: 24, maxSpendCents: 0, alphaRiskCeiling: 0.55, encryptSecretsAtRest: false }
   };
@@ -80,17 +79,68 @@ describe("bounded fetched document derivatives", () => {
     expect(unchanged.evidenceDerivative).toBeUndefined();
   });
 
-  it.each([
-    ["PDF", Buffer.from("%PDF-1.7\nfixture"), "pdftotext"],
-    ["PNG", Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]), "tesseract"],
-    ["JPEG", Buffer.from([255, 216, 255, 0]), "tesseract"],
-    ["TIFF", Buffer.from("49492a0000000000", "hex"), "tesseract"],
-    ["BMP", Buffer.from("BM\u0000\u0000"), "tesseract"],
-    ["WEBP", Buffer.from("RIFFxxxxWEBPxxxx"), "tesseract"]
-  ])("routes %s to its configured extractor and rejects missing tools without binary fallback", async (_label, raw, tool) => {
-    await expect(normalizeFetchedSource(source(raw as Buffer), config)).rejects.toThrow(new RegExp(String(tool)));
+  it("extracts embedded PDF text in the packaged worker while retaining raw source bytes and derivative lineage", async () => {
+    const raw = embeddedTextPdf("Measured 42");
+    const result = await normalizeFetchedSource(source(raw, "application/pdf", "https://publisher.example/source.pdf"), config);
+    expect(result.bytes).toEqual(raw);
+    expect(result.evidenceDerivative?.text).toContain("Measured 42");
+    expect(result.metadata).toMatchObject({ normalization: { extractor: "pdfjs-embedded-text-worker", originalSha256: hash(raw) } });
     expect(await readdir(tempRoot)).toEqual([]);
   });
+
+  it("runs standalone image OCR with the locally packaged profile and preserves image lineage", async () => {
+    const raw = textBitmap("TEST");
+    const result = await normalizeFetchedSource(source(raw, "image/bmp", "https://publisher.example/source.bmp"), config);
+    expect(result.bytes).toEqual(raw);
+    expect(result.evidenceDerivative?.text).toMatch(/test/i);
+    expect(result.metadata).toMatchObject({
+      normalization: { extractor: "tesseract-wasm-ocr-worker", originalSha256: hash(raw) },
+      typedExtraction: { imageOcr: { profile: "eng", engine: "tesseract.js-wasm" } }
+    });
+    expect(await readdir(tempRoot)).toEqual([]);
+  }, 30000);
+
+  it("rejects an image whose decoded pixel dimensions exceed the worker bound", async () => {
+    const raw = Buffer.alloc(54);
+    raw.write("BM", 0, "ascii");
+    raw.writeUInt32LE(54, 2);
+    raw.writeUInt32LE(54, 10);
+    raw.writeUInt32LE(40, 14);
+    raw.writeInt32LE(100_000, 18);
+    raw.writeInt32LE(100_000, 22);
+    raw.writeUInt16LE(1, 26);
+    raw.writeUInt16LE(24, 28);
+    await expect(normalizeFetchedSource(source(raw, "image/bmp", "https://publisher.example/huge.bmp"), config)).rejects.toThrow("document extraction exceeded image pixel limit");
+  });
+
+  it("accepts an opaque non-English OCR profile identifier but refuses absent local package data", async () => {
+    const input = source(textBitmap("TEST"), "image/bmp", "https://publisher.example/source.bmp");
+    input.metadata = { ...input.metadata as Record<string, JsonValue>, ocrProfile: "kor" };
+    await expect(normalizeFetchedSource(input, config)).rejects.toThrow("OCR profile is not locally packaged: kor");
+    expect(await readdir(tempRoot)).toEqual([]);
+  });
+
+  it("surfaces a PDF exceeding the bounded scanned-page limit as the explicit OCR-unavailable boundary", async () => {
+    await expect(normalizeFetchedSource(source(emptyTextPdf(), "application/pdf", "https://publisher.example/scan.pdf"), config)).rejects.toThrow("embedded_text_absent/ocr_unavailable");
+    expect(await readdir(tempRoot)).toEqual([]);
+  });
+
+  it("renders a scanned PDF page inside the bounded worker before locally packaged OCR", async () => {
+    const raw = scannedTextPdf("TEST");
+    const result = await normalizeFetchedSource(source(raw, "application/pdf", "https://publisher.example/scanned.pdf"), config);
+    expect(result.bytes).toEqual(raw);
+    expect(result.evidenceDerivative?.text).toMatch(/test/i);
+    expect(result.metadata).toMatchObject({
+      normalization: { extractor: "pdfjs-rendered-tesseract-wasm-worker", originalSha256: hash(raw) },
+      typedExtraction: { scannedPdfOcr: { profile: "eng", renderer: "pdfjs-napi-canvas", engine: "tesseract.js-wasm" } }
+    });
+  }, 30000);
+
+  it("passes a requested local OCR profile through scanned PDF fallback", async () => {
+    const input = source(scannedTextPdf("TEST"), "application/pdf", "https://publisher.example/scanned.pdf");
+    input.metadata = { ...input.metadata as Record<string, JsonValue>, ocrProfile: "kor" };
+    await expect(normalizeFetchedSource(input, config)).rejects.toThrow("OCR profile is not locally packaged: kor");
+  }, 30000);
 
   it("rejects unsupported binary and false media declarations while extracting ordered PPTX slide text", async () => {
     await expect(normalizeFetchedSource(source(Buffer.from([0, 255, 0])), config)).rejects.toThrow(/unsupported fetched source/);
@@ -115,17 +165,6 @@ describe("bounded fetched document derivatives", () => {
     const controller = new AbortController();
     controller.abort(new Error("fixture cancellation"));
     await expect(normalizeFetchedSource(source(Buffer.from("text"), "text/plain"), config, { signal: controller.signal })).rejects.toThrow("fixture cancellation");
-  });
-});
-
-describe("document extraction process bounds", () => {
-  it("discards partial stdout when its output limit is exceeded", async () => {
-    const result = await runProcess(process.execPath, ["-e", "process.stdout.write('x'.repeat(65536))"], { maxOutputBytes: 128, timeoutMs: 5000 });
-    expect(result).toMatchObject({ code: null, stdout: "", stderr: "document extraction exceeded output byte limit" });
-  });
-  it("discards partial stdout on timeout", async () => {
-    const result = await runProcess(process.execPath, ["-e", "process.stdout.write('partial'); setTimeout(()=>{}, 10000)"], { maxOutputBytes: 128, timeoutMs: 250 });
-    expect(result).toMatchObject({ code: null, stdout: "", stderr: "document extraction timed out" });
   });
 });
 
@@ -159,4 +198,125 @@ function officeFixture(kind: "docx" | "pptx", entity = false): Buffer {
   }
   for (const [name, text] of Object.entries(entries)) XLSX.CFB.utils.cfb_add(archive, name, Buffer.from(text, "utf8"));
   return Buffer.from(XLSX.CFB.write(archive, { fileType: "zip", type: "buffer", compression: true }));
+}
+
+function embeddedTextPdf(text: string): Buffer {
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 144] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    `<< /Length ${Buffer.byteLength(`BT /F1 18 Tf 72 72 Td (${text}) Tj ET`, "ascii")} >>\nstream\nBT /F1 18 Tf 72 72 Td (${text}) Tj ET\nendstream`
+  ];
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+  for (const [index, object] of objects.entries()) {
+    offsets.push(Buffer.byteLength(pdf, "ascii"));
+    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  }
+  const xref = Buffer.byteLength(pdf, "ascii");
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (const offset of offsets.slice(1)) pdf += `${String(offset).padStart(10, "0")} 00000 n \n`;
+  return Buffer.from(`${pdf}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`, "ascii");
+}
+
+function textBitmap(text: string): Buffer {
+  const glyphs: Record<string, readonly string[]> = {
+    T: ["11111", "00100", "00100", "00100", "00100", "00100", "00100"],
+    E: ["11111", "10000", "11110", "10000", "10000", "10000", "11111"],
+    S: ["01111", "10000", "01110", "00001", "00001", "10001", "01110"]
+  };
+  const scale = 16, margin = 24, gap = 12;
+  const width = margin * 2 + text.length * 5 * scale + (text.length - 1) * gap;
+  const height = margin * 2 + 7 * scale;
+  const stride = Math.ceil(width * 3 / 4) * 4;
+  const bytes = Buffer.alloc(54 + stride * height, 255);
+  bytes.write("BM", 0, "ascii");
+  bytes.writeUInt32LE(bytes.length, 2);
+  bytes.writeUInt32LE(54, 10);
+  bytes.writeUInt32LE(40, 14);
+  bytes.writeInt32LE(width, 18);
+  bytes.writeInt32LE(height, 22);
+  bytes.writeUInt16LE(1, 26);
+  bytes.writeUInt16LE(24, 28);
+  bytes.writeUInt32LE(stride * height, 34);
+  for (let index = 0; index < text.length; index++) {
+    const glyph = glyphs[text[index]!]!;
+    for (let gy = 0; gy < glyph.length; gy++) for (let gx = 0; gx < glyph[gy]!.length; gx++) {
+      if (glyph[gy]![gx] !== "1") continue;
+      for (let dy = 0; dy < scale; dy++) for (let dx = 0; dx < scale; dx++) {
+        const x = margin + index * (5 * scale + gap) + gx * scale + dx;
+        const y = margin + gy * scale + dy;
+        const offset = 54 + (height - 1 - y) * stride + x * 3;
+        bytes[offset] = bytes[offset + 1] = bytes[offset + 2] = 0;
+      }
+    }
+  }
+  return bytes;
+}
+
+function emptyTextPdf(): Buffer {
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R 6 0 R 7 0 R 8 0 R 9 0 R 10 0 R 11 0 R] /Count 9 >>",
+    ...Array.from({ length: 9 }, () => "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 144] >>")
+  ];
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+  for (const [index, object] of objects.entries()) {
+    offsets.push(Buffer.byteLength(pdf, "ascii"));
+    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  }
+  const xref = Buffer.byteLength(pdf, "ascii");
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (const offset of offsets.slice(1)) pdf += `${String(offset).padStart(10, "0")} 00000 n \n`;
+  return Buffer.from(`${pdf}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`, "ascii");
+}
+
+function scannedTextPdf(text: string): Buffer {
+  const image = textRaster(text);
+  const content = Buffer.from(`q\n${image.width} 0 0 ${image.height} 0 0 cm\n/Im0 Do\nQ`, "ascii");
+  const objects = [
+    Buffer.from("<< /Type /Catalog /Pages 2 0 R >>", "ascii"),
+    Buffer.from("<< /Type /Pages /Kids [3 0 R] /Count 1 >>", "ascii"),
+    Buffer.from(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${image.width} ${image.height}] /Resources << /XObject << /Im0 5 0 R >> >> /Contents 4 0 R >>`, "ascii"),
+    Buffer.concat([Buffer.from(`<< /Length ${content.length} >>\nstream\n`, "ascii"), content, Buffer.from("\nendstream", "ascii")]),
+    Buffer.concat([Buffer.from(`<< /Type /XObject /Subtype /Image /Width ${image.width} /Height ${image.height} /ColorSpace /DeviceGray /BitsPerComponent 8 /Length ${image.pixels.length} >>\nstream\n`, "ascii"), image.pixels, Buffer.from("\nendstream", "ascii")])
+  ];
+  const chunks: Buffer[] = [Buffer.from("%PDF-1.4\n", "ascii")];
+  const offsets = [0];
+  let length = chunks[0]!.length;
+  for (const [index, object] of objects.entries()) {
+    offsets.push(length);
+    const entry = Buffer.concat([Buffer.from(`${index + 1} 0 obj\n`, "ascii"), object, Buffer.from("\nendobj\n", "ascii")]);
+    chunks.push(entry);
+    length += entry.length;
+  }
+  const xref = length;
+  chunks.push(Buffer.from(`xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.slice(1).map(offset => `${String(offset).padStart(10, "0")} 00000 n \n`).join("")}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`, "ascii"));
+  return Buffer.concat(chunks);
+}
+
+function textRaster(text: string): { width: number; height: number; pixels: Buffer } {
+  const glyphs: Record<string, readonly string[]> = {
+    T: ["11111", "00100", "00100", "00100", "00100", "00100", "00100"],
+    E: ["11111", "10000", "11110", "10000", "10000", "10000", "11111"],
+    S: ["01111", "10000", "01110", "00001", "00001", "10001", "01110"]
+  };
+  const scale = 16, margin = 24, gap = 12;
+  const width = margin * 2 + text.length * 5 * scale + (text.length - 1) * gap;
+  const height = margin * 2 + 7 * scale;
+  const pixels = Buffer.alloc(width * height, 255);
+  for (let index = 0; index < text.length; index++) {
+    const glyph = glyphs[text[index]!]!;
+    for (let gy = 0; gy < glyph.length; gy++) for (let gx = 0; gx < glyph[gy]!.length; gx++) {
+      if (glyph[gy]![gx] !== "1") continue;
+      for (let dy = 0; dy < scale; dy++) for (let dx = 0; dx < scale; dx++) {
+        const x = margin + index * (5 * scale + gap) + gx * scale + dx;
+        const y = margin + gy * scale + dy;
+        pixels[y * width + x] = 0;
+      }
+    }
+  }
+  return { width, height, pixels };
 }

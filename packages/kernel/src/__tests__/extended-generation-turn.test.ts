@@ -57,7 +57,8 @@ describe("extended generation routing (plan items 221-228 live routing)", () => 
   it("builds a real ordered plan whose sections cannot be written out of order", () => {
     const plan = buildExtendedGenerationPlan({
       requestText: "Write a five page story about Einstein fighting a dragon.",
-      sectionTarget: 4
+      sectionTarget: 4,
+      contentTerms: ["α", "β", "γ", "δ"]
     });
     const sections = Object.values(plan.nodes).filter(node => node.kind === "section");
     expect(sections).toHaveLength(4);
@@ -66,6 +67,15 @@ describe("extended generation routing (plan items 221-228 live routing)", () => 
     for (let index = 1; index < ordered.length; index++) {
       expect(ordered[index]!.rhetoricalDependsOnIds).toContain(ordered[index - 1]!.id);
     }
+  });
+
+  it("does not let an explicit empty content list remove request grounding", () => {
+    const plan = buildExtendedGenerationPlan({
+      requestText: "Write a story about a lantern keeper.",
+      sectionTarget: 3,
+      contentTerms: []
+    });
+    expect(Object.values(plan.nodes).some(node => node.kind === "section" && (node.coverageTerms?.length ?? 0) > 0)).toBe(true);
   });
 
   it("realizes every section iteratively through the injected realizer and assembles them", async () => {
@@ -78,7 +88,7 @@ describe("extended generation routing (plan items 221-228 live routing)", () => 
       session,
       realizeSection: async (section: DocumentPlanNode, index: number) => {
         seen.push(section.id);
-        return { text: `Section ${index + 1} body text about the confrontation.` };
+        return { text: `Section ${index + 1} body text about ${section.coverageTerms?.[0]?.text} and the confrontation.` };
       }
     });
 
@@ -114,7 +124,8 @@ describe("extended generation routing (plan items 221-228 live routing)", () => 
   it("stops rather than emitting a document with an empty section", async () => {
     const session = extendedGenerationSessionForTurn({
       requestText: "Write a five page story about Einstein fighting a dragon.",
-      sectionTarget: 4
+      sectionTarget: 4,
+      contentTerms: ["Real"]
     });
     const run = await runExtendedGeneration({
       session,
@@ -122,5 +133,22 @@ describe("extended generation routing (plan items 221-228 live routing)", () => 
     });
     expect(run.sections.filter(row => row.accepted)).toHaveLength(1);
     expect(run.sections.some(row => row.reason === "empty realization")).toBe(true);
+  });
+
+  it("does not credit a requested content obligation when the emitted section omits it", async () => {
+    const session = extendedGenerationSessionForTurn({ requestText: "κάλα τόνι", sectionTarget: 1, contentTerms: ["τόνι"] });
+    const run = await runExtendedGeneration({ session, realizeSection: async () => ({ text: "Μήρα φέλα ρόκα ζάνου." }) });
+    expect(run.answer).toBe("");
+    expect(run.sections[0]?.reason).toBe("required content not realized");
+    expect(run.session.plan.nodes["document.root.section.1"]?.satisfiedCoverageIds).toEqual([]);
+  });
+
+  it("blocks repeated fallback paragraphs without requiring a voice profile", async () => {
+    const session = extendedGenerationSessionForTurn({ requestText: "κάλα τόνι", sectionTarget: 3, contentTerms: ["άλφα"] });
+    const paragraph = "άλφα βήτα γάμμα δέλτα έψιλον ζήτα ήτα θήτα ιώτα κάππα λάμδα.";
+    const run = await runExtendedGeneration({ session, realizeSection: async () => ({ text: paragraph }) });
+    expect(run.answer).toBe(paragraph);
+    expect(run.sections.map(section => section.accepted)).toEqual([true, false]);
+    expect(run.sections[1]?.reason).toBe("section repeats committed document content");
   });
 });

@@ -403,6 +403,28 @@ export function parseSessionApproval(value: unknown): { approved: { planId: stri
   };
 }
 
+export function parseSessionConsentApproval(value: unknown): { approved: { planId: string; capabilityId: "network.search" } } {
+  const input = exactRecord(value, "session consent approval response", ["approved", "session"]);
+  const approved = record(input.approved, "approved consent plan");
+  return {
+    approved: {
+      planId: nonEmptyString(approved.planId, "approved planId"),
+      capabilityId: literal(approved.capabilityId, "network.search", "approved capabilityId")
+    }
+  };
+}
+
+export function parseSessionConsentRejection(value: unknown): { rejected: { planId: string; capabilityId: "network.search" } } {
+  const input = exactRecord(value, "session consent rejection response", ["rejected", "session"]);
+  const rejected = record(input.rejected, "rejected consent plan");
+  return {
+    rejected: {
+      planId: nonEmptyString(rejected.planId, "rejected planId"),
+      capabilityId: literal(rejected.capabilityId, "network.search", "rejected capabilityId")
+    }
+  };
+}
+
 function parseValidationReceipt(value: unknown): { validatorId: string; evidenceHash: PatchHash } {
   if (value === null) throw new Error("workspace patch response is missing its validation receipt");
   const input = exactRecord(value, "patch validation receipt", ["validatorId", "evidenceHash"]);

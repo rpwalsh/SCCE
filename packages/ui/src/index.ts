@@ -587,7 +587,9 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
         const bubble = document.createElement('div'); bubble.className = 'bubble'; bubble.textContent = uiMsg('learn.offer');
         const button = document.createElement('button'); button.textContent = uiMsg('learn.offer.yes');
         button.onclick = async () => { log('POST /api/session/approve ' + motion.consent.planId); try { await post('/api/session/approve', { planId: motion.consent.planId }); button.disabled = true; await refreshApprovals(); await resend(); } catch (e) { bubble.textContent = uiMsg('error.prefix') + ' ' + e.message; } };
-        bubble.appendChild(document.createElement('br')); bubble.appendChild(button); row.appendChild(bubble); messages.appendChild(row); messages.scrollTop = messages.scrollHeight;
+        const reject = document.createElement('button'); reject.textContent = uiMsg('learn.offer.no');
+        reject.onclick = async () => { log('POST /api/session/reject ' + motion.consent.planId); try { await post('/api/session/reject', { planId: motion.consent.planId }); button.disabled = true; reject.disabled = true; bubble.textContent = uiMsg('learn.offer.declined'); await refreshApprovals(); } catch (e) { bubble.textContent = uiMsg('error.prefix') + ' ' + e.message; } };
+        bubble.appendChild(document.createElement('br')); bubble.appendChild(button); bubble.appendChild(reject); row.appendChild(bubble); messages.appendChild(row); messages.scrollTop = messages.scrollHeight;
       }
       if (motion.status === 'held_for_review' && Array.isArray(motion.heldSources) && motion.heldSources.length) {
         const row = document.createElement('div'); row.className = 'row scce';
@@ -619,7 +621,8 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
         const code = document.createElement('code'); code.textContent = item.planId; box.appendChild(code);
         const reason = document.createElement('code'); reason.textContent = item.reason || t('approval.required'); box.appendChild(reason);
         const button = document.createElement('button'); button.textContent = t('side.approvals.approve'); button.onclick = async () => { log('POST /api/session/approve ' + item.planId); const r = await post('/api/session/approve', { planId: item.planId }); setInspector(r); renderApprovals(r.session); };
-        box.appendChild(button); list.appendChild(box);
+        const reject = document.createElement('button'); reject.textContent = t('side.approvals.reject'); reject.onclick = async () => { log('POST /api/session/reject ' + item.planId); const r = await post('/api/session/reject', { planId: item.planId }); setInspector(r); renderApprovals(r.session); };
+        box.appendChild(button); box.appendChild(reject); list.appendChild(box);
       });
     }
     function openPalette() { apply({ type: 'palette.toggle', open: true }); palette.classList.add('open'); paletteInput.value = ''; renderPalette(''); paletteInput.focus(); }

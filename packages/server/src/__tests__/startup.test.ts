@@ -20,6 +20,9 @@ describe("server runtime startup sequencing", () => {
       readiness
     });
 
+    expect(calls).toEqual(["initialize", "listen"]);
+    expect(readiness.snapshot()).toMatchObject({ phase: "pending", ok: false, complete: false });
+    await new Promise<void>(resolve => setImmediate(resolve));
     expect(calls).toEqual(["initialize", "listen", "warmup"]);
     expect(readiness.snapshot()).toMatchObject({ phase: "running", ok: false, complete: false });
     finishWarmup?.();
@@ -62,6 +65,7 @@ describe("server runtime startup sequencing", () => {
     });
     await vi.waitFor(() => expect(onBackgroundWarmupError).toHaveBeenCalledWith(error));
 
+    await new Promise<void>(resolve => setImmediate(resolve));
     expect(calls).toEqual(["listen", "warmup"]);
     expect(readiness.snapshot()).toMatchObject({ phase: "failed", ok: false, complete: false, error: "warmup fixture" });
   });

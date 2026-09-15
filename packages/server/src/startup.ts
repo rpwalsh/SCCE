@@ -71,7 +71,11 @@ export async function startRuntimeSurface(input: RuntimeSurfaceStartupInput): Pr
   if (input.warmupEnabled && input.strictWarmup) await runWarmup(input);
   await input.listen();
   if (input.warmupEnabled && !input.strictWarmup) {
-    void runWarmup(input).catch(input.onBackgroundWarmupError);
+    // Give the listening socket one event-loop turn before background work
+    // starts so the first health/stream request can be accepted immediately.
+    setImmediate(() => {
+      void runWarmup(input).catch(input.onBackgroundWarmupError);
+    });
   }
 }
 

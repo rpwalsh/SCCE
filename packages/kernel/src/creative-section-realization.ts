@@ -4,9 +4,10 @@ import { traceEvent } from "./debug/trace.js";
 import type { LanguageMemoryRuntime, LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
 import { languageGenerationSentenceEndingsAdequate, languageGenerationSurfaceAdequate } from "./language-memory-runtime.js";
 import { namedSubjectAnchors } from "./kernel-answer-primitives.js";
-import { collapseSurfaceWhitespace, sourceDerivedCasingHints, splitSurfaceSentences, surfaceUnits } from "./surface-linguistics.js";
+import { collapseSurfaceWhitespace, sourceDerivedCasingHints, splitSurfaceSentences, surfaceContainsTerm, surfaceUnits } from "./surface-linguistics.js";
 import type { LanguageProfile } from "./types.js";
 import type { NarrativeConditioning } from "./document-generation-session.js";
+import { requestSubjectSegments, type TurnRequirementField } from "./turn-requirements.js";
 
 
 export interface CreativeSectionRealizationInput {
@@ -21,6 +22,8 @@ export interface CreativeSectionRealizationInput {
   narrativeConditioning?: NarrativeConditioning;
   /** Words this section's prose should favor -- typically the request's own retrieved-evidence vocabulary, so word choice stays on-topic instead of drifting into an unrelated source's fingerprint. */
   topicVocabulary?: readonly string[];
+  /** Typed section obligations, separate from names and soft vocabulary. */
+  requiredContentTerms?: readonly string[];
   /**
    * The document's cast, already resolved by the caller when the request
    * text itself has none (a bare-pronoun follow-up like "write a story
@@ -41,7 +44,7 @@ export interface CreativeSectionRealizationInput {
 export interface CreativeSectionRealization {
   text: string;
   accepted: boolean;
-  reason: "ok" | "empty-generation" | "inadequate-surface" | "prompt-echo";
+  reason: "ok" | "empty-generation" | "inadequate-surface" | "prompt-echo" | "uncovered-content";
   generationAudit?: {
     stoppedBy: string;
     symbolCount: number;
@@ -91,6 +94,7 @@ export function realizeCreativeSection(input: CreativeSectionRealizationInput): 
     ? resolvedCast
     : properNounEntityAnchors(input.sectionGoal).slice(0, 3);
   const castTerms = [...new Set([...persistentEntities, ...sectionUnit])];
+  const requiredTerms = [...new Set([...castTerms, ...(input.requiredContentTerms ?? [])])];
   // Evidence text is a casing source too, not just the request: a
   // pronoun follow-up ("...a story about her") contains none of the
   // subject's own words, so every name reaching the surface comes from
@@ -121,6 +125,7 @@ export function realizeCreativeSection(input: CreativeSectionRealizationInput): 
   const generation = input.languageMemory.generate({
     state: input.state,
     targetLanguageProfile: input.targetLanguageProfile,
+    choiceSeed: `${input.sectionGoal}\u0001${Math.max(1, Math.floor(input.attempt ?? 1))}`,
     // Unit symbols, not whole sentences: KN context matching is n-gram-sized.
     //
     // The raw goal used to lead this list, to make each attempt distinct. But contextSymbols IS the n-gram
@@ -156,7 +161,7 @@ export function realizeCreativeSection(input: CreativeSectionRealizationInput): 
       // The document's whole cast is a hard requirement of every section,
       // not just the section's own rotated emphasis -- a story keeps its
       // characters, it does not lose them section to section.
-      requiredTerms: castTerms.map((unit, index) => ({
+      requiredTerms: requiredTerms.map((unit, index) => ({
         id: `term:creative-section:goal:${index}`,
         text: unit,
         weight: 0.9,
@@ -181,6 +186,9 @@ export function realizeCreativeSection(input: CreativeSectionRealizationInput): 
   if (!text) return { text: "", accepted: false, reason: "empty-generation", generationAudit };
   if (!languageGenerationSurfaceAdequate(generation)
     || !languageGenerationSentenceEndingsAdequate(text, input.state)) return { text: "", accepted: false, reason: "inadequate-surface", generationAudit };
+  if (requiredTerms.some(term => !surfaceContainsTerm(text, term))) {
+    return { text: "", accepted: false, reason: "uncovered-content", generationAudit };
+  }
   if (surfaceEchoesPrompt(text, input.sectionGoal) || surfaceEchoesPrompt(text, input.requestText)) {
     return { text: "", accepted: false, reason: "prompt-echo", generationAudit };
   }
@@ -203,6 +211,15 @@ function continuationUnits(text: string): string[] {
   return [...new Set(surfaceUnits(collapseSurfaceWhitespace(text).toLocaleLowerCase()))]
     .filter(unit => unit.length >= 3)
     .slice(-4);
+}
+
+/** Preserve a contiguous content segment instead of stitching residual control words into prose. */
+export function creativeRequestContentSurface(requestText: string, field?: Pick<TurnRequirementField, "trace">): string {
+  if (!field) return requestText;
+  const segments = requestSubjectSegments(requestText, field)
+    .map(text => text.trim())
+    .filter(text => surfaceUnits(text).length > 0);
+  return segments.join(" ") || requestText;
 }
 
 /**

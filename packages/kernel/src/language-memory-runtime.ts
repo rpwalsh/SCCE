@@ -23,7 +23,7 @@ import {
   normalizeCreativeEventCompatibilityModels,
   type CreativeEventCompatibilityModel
 } from "./creative-event-compatibility.js";
-import { SENTENCE_BOUNDARY_SYMBOLS, ensureSurfaceSentence as ensureUnicodeSurfaceSentence, isSentenceBoundarySymbol as isUnicodeSentenceBoundarySymbol, sourceDerivedCasingHints, splitSurfaceSentences, stripTerminalSentenceBoundary, surfaceWords } from "./surface-linguistics.js";
+import { SENTENCE_BOUNDARY_SYMBOLS, ensureSurfaceSentence as ensureUnicodeSurfaceSentence, isSentenceBoundarySymbol as isUnicodeSentenceBoundarySymbol, sourceDerivedCasingHints, splitSurfaceSentences, stripTerminalSentenceBoundary, surfaceContainsTerm, surfaceWords } from "./surface-linguistics.js";
 import {
   ANSWER_ROLE_IDS,
   ANSWER_SLOT_IDS,
@@ -32,6 +32,10 @@ import {
   isBackgroundAnswerRoleId,
   isBridgeAnswerRoleId
 } from "./question-routing-ids.js";
+import {
+  REQUEST_REQUIREMENT_PATTERN_COMPILER_FINGERPRINT,
+  REQUEST_REQUIREMENT_PATTERN_SCHEMA
+} from "./request-requirement-learning.js";
 import {
   composeJoinProgramMixtures,
   isJoinProgramMixture,
@@ -212,6 +216,8 @@ export interface LanguageGenerationInput {
   semanticFrameIds?: readonly string[];
   frames?: readonly LanguageGenerationFrame[];
   generationExtent?: number;
+  /** Deterministic exploration nonce; never included in lexical context. */
+  choiceSeed?: string;
   styleProfileId?: string;
   registerVector?: readonly number[];
   detailProfileId?: string;
@@ -223,6 +229,8 @@ export interface LanguageGenerationInput {
 
 export interface LanguageGenerationResult {
   text: string;
+  /** Actual final discourse coverage; absent only on older imported generation traces. */
+  coverageComplete?: boolean;
   symbols: string[];
   phrasesUsed: string[];
   discourse: LanguageDiscourseTrace;
@@ -246,10 +254,10 @@ export interface LanguageGenerationResult {
  * generated discourse is complete enough to speak.
  */
 export function languageGenerationSurfaceAdequate(
-  generation: Pick<LanguageGenerationResult, "discourse" | "symbols">
+  generation: Pick<LanguageGenerationResult, "discourse" | "symbols" | "coverageComplete">
 ): boolean {
   const extent = Math.max(1, generation.symbols.length);
-  return discourseSurfaceAdequate(generation.discourse, extent);
+  return generation.coverageComplete !== false && discourseSurfaceAdequate(generation.discourse, extent);
 }
 
 /** Reject a dangling learned function-word pair with no attested sentence ending. */
@@ -503,7 +511,14 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
       const languageHints = uniqueStrings([...records.map(record => record.languageHint), ...importedObservations.map(item => item.languageHint)]).sort(compareCodePoint);
       const observedSymbolCount = models.reduce((sum, model) => sum + model.observedSymbolCount, 0);
       const importedUnits = [...(input.units ?? [])].sort((a, b) => b.alpha - a.alpha || compareCodePoint(a.text, b.text) || compareCodePoint(a.id, b.id)).slice(0, 4096);
-      const persistedPatterns = [...(input.patterns ?? [])].sort((a, b) => b.support - a.support || compareCodePoint(a.patternKind, b.patternKind) || compareCodePoint(a.id, b.id)).slice(0, 1024);
+      const persistedPatterns = [...(input.patterns ?? [])]
+        .filter(pattern => {
+          const record = jsonRecord(pattern.patternJson);
+          return record.schema !== REQUEST_REQUIREMENT_PATTERN_SCHEMA
+            || record.compilerFingerprint === REQUEST_REQUIREMENT_PATTERN_COMPILER_FINGERPRINT;
+        })
+        .sort((a, b) => b.support - a.support || compareCodePoint(a.patternKind, b.patternKind) || compareCodePoint(a.id, b.id))
+        .slice(0, 1024);
       const importedPatterns = persistedPatterns.filter(pattern => (
         !isLanguageConstructionPattern(pattern)
         && !isReversibleConstructionPattern(pattern)
@@ -973,7 +988,8 @@ function generateFromLanguageMemory(input: LanguageGenerationInput): LanguageGen
     joinProgram: taskJoinProgram
   });
   const firstDiscourse = latticeGeneration?.discourse ?? weaveDiscourse({ state: input.state, pieces: candidatePieces, requiredTerms, frameAtoms, frames: input.frames ?? [], contextSymbols, generationExtent });
-  const firstDiscourseAdequate = discourseSurfaceAdequate(firstDiscourse, generationExtent);
+  const firstDiscourseAdequate = discourseSurfaceAdequate(firstDiscourse, generationExtent)
+    && discourseTraceHasCoverage(firstDiscourse, requiredTerms, frameAtoms);
   const continuationDiscourse = firstDiscourseAdequate
     ? undefined
     : learnedContinuationDiscourse({
@@ -985,7 +1001,8 @@ function generateFromLanguageMemory(input: LanguageGenerationInput): LanguageGen
       generationExtent,
       pieces: candidatePieces,
       topicVocabulary: uniqueStrings([...(input.frames ?? []).flatMap(frame => frame.topicVocabulary ?? []), ...narrativeConstraints.map(constraint => constraint.surface)]),
-      properNounCasing: generationCasingHints(input)
+      properNounCasing: generationCasingHints(input),
+      choiceSeed: input.choiceSeed
     });
   // Plan items 140-141: fluency alone (discourseSurfaceAdequate) is never
   // enough to accept the Kneser-Ney-driven fallback continuation in place
@@ -1093,6 +1110,7 @@ function generateFromLanguageMemory(input: LanguageGenerationInput): LanguageGen
     text,
     symbols,
     phrasesUsed: selected.map(piece => piece.text),
+    coverageComplete: discourseTraceHasCoverage(discourse, requiredTerms, frameAtoms),
     discourse,
     importedNgramModelIdsUsed,
     importedObservationIdsUsed,
@@ -1362,7 +1380,8 @@ function generationPieces(
       contextText,
       generationExtent: Math.max(1, Math.min(256, Math.floor(input.generationExtent ?? 64))),
       topicVocabulary: uniqueStrings([...(input.frames ?? []).flatMap(frame => frame.topicVocabulary ?? []), ...narrativeConstraints.map(constraint => constraint.surface)]),
-      properNounCasing: generationCasingHints(input)
+      properNounCasing: generationCasingHints(input),
+      choiceSeed: input.choiceSeed
     })
     : [];
   const synthesizedTexts = new Set(synthesized.map(sentence => tidyInline(sentence.text)));
@@ -1384,7 +1403,8 @@ function generationPieces(
     const score = clamp01(calibrated("language_memory.unit_support_weight") * clamp01(support) + calibrated("language_memory.unit_fit_weight") * Math.max(learnedFit, narrativeFit) + calibrated("language_memory.unit_ngram_probability_weight") * ngram.probability + calibrated("language_memory.unit_source_preference_weight") * sourcePreference(source));
     rows.push({ ...metadata, text: clean, source, id, support: clamp01(support), fit, order: ngram.order, probability: ngram.probability, score, structuralDeltaFit: structuralDelta.fit, structuralDeltaIds: structuralDelta.ids });
   };
-  for (const term of requiredTerms) add(term.text, "required_term", term.id, Math.max(0.1, term.weight ?? 0.5));
+  // Required terms constrain generated/prior-bearing material. They are not
+  // standalone sentence candidates whose existence could satisfy the request.
   for (const atom of frameAtoms) add(atom.text, "proposition_atom", atom.id, Math.max(0.1, atom.weight ?? 0.5));
   for (const piece of semanticRhetoricalPiecesFromMaterials(semanticFactMaterialsFromFrames(input.frames ?? []), input.state, contextText)) {
     add(piece.text, piece.source, piece.id, piece.support, piece);
@@ -1448,11 +1468,6 @@ function selectGenerationPieces(pieces: readonly GenerationPiece[], requiredTerm
     // fragment fillers when the corpus offered no grounded pieces.
     for (const piece of pieces.filter(row => row.source === "suggestion").slice(0, 8)) add(piece);
     for (const piece of pieces.filter(row => row.source === "proposition_atom").slice(0, 8)) add(piece);
-    for (const term of requiredTerms) {
-      const text = tidyInline(term.text);
-      if (!text || selected.some(piece => containsLoose(piece.text, text)) || containsLoose(joinTextForAudit(selected.map(piece => piece.text)), text)) continue;
-      add({ text, source: "required_term", id: term.id, support: clamp01(term.weight ?? 0.5), fit: 1, order: 0, probability: 1, score: 1 });
-    }
     for (const piece of pieces.filter(row => row.source === "semantic_frame").slice(0, 4)) add(piece);
     for (const source of ["language_unit", "phrase_pattern"] as const) for (const piece of pieces.filter(row => row.source === source).slice(0, 4)) add(piece);
     if (!selected.length) for (const piece of pieces.slice(0, 4)) add(piece);
@@ -1469,11 +1484,6 @@ function selectGenerationPieces(pieces: readonly GenerationPiece[], requiredTerm
   }
   for (const piece of pieces.filter(row => row.source === "proposition_atom").slice(0, 4)) add(piece);
   for (const piece of pieces.filter(row => row.source === "semantic_frame").slice(0, 4)) add(piece);
-  for (const term of requiredTerms) {
-    const text = tidyInline(term.text);
-    if (!text || selected.some(piece => containsLoose(piece.text, text)) || containsLoose(joinTextForAudit(selected.map(piece => piece.text)), text)) continue;
-    add({ text, source: "required_term", id: term.id, support: clamp01(term.weight ?? 0.5), fit: 1, order: 0, probability: 1, score: 1 });
-  }
   if (!selected.length) for (const piece of pieces.slice(0, 4)) add(piece);
   return selected.slice(0, 12);
 }
@@ -2454,7 +2464,9 @@ function weaveDiscourse(input: {
     ? chooseSentenceDiscourseBoundary(input.state)
     : chooseDiscourseBoundary(input.state, input.contextSymbols);
   const decoded = decodeDiscourseMoves({ state: input.state, moves: availableMoves, boundary, requiredTerms: input.requiredTerms, frameAtoms: input.frameAtoms, generationExtent: input.generationExtent });
-  const repairedText = repairRequiredTermCoverage(decoded.text, input.requiredTerms, input.generationExtent);
+  // Missing meaning is a search failure. Appending the missing terms to a
+  // sentence only manufactured coverage and produced the live word salad.
+  const repairedText = decoded.text;
   const text = availableMoves.some(move => move.role === "semantic_rhetoric")
     ? terminateDiscourseSurface(repairedText, boundary.text)
     : repairedText;
@@ -3413,6 +3425,7 @@ function learnedContinuationDiscourse(input: {
   pieces: readonly GenerationPiece[];
   topicVocabulary?: readonly string[];
   properNounCasing?: Readonly<Record<string, string>>;
+  choiceSeed?: string;
 }): LanguageDiscourseTrace | undefined {
   // No pieces means the KN models are the only prose source -- exactly the
   // case this fallback exists for. Coverage still gates acceptance.
@@ -3440,7 +3453,7 @@ function learnedContinuationDiscourse(input: {
       minSymbols: 6,
       blockedSymbols: nonSpeechGlyphSymbols(model),
       boostSymbols: beamGuidanceSymbols(input.state, [...seedSymbols, ...(input.topicVocabulary ?? [])]),
-      choiceSeed: `${input.contextText}${requiredSeed}`
+      choiceSeed: `${input.choiceSeed ?? ""}\u0001${input.contextText}\u0001${requiredSeed}`
     });
     const text = beam?.endedAtBoundary ? renderContinuationSentences([[...seedSymbols, ...beam.symbols]], input.properNounCasing) : "";
     if (beam && text && speechBearingSurface(text) && isDiscourseBearingPriorSurface(text)) {
@@ -3632,6 +3645,7 @@ function synthesizeBeamSentencePieces(input: {
   generationExtent: number;
   topicVocabulary?: readonly string[];
   properNounCasing?: Readonly<Record<string, string>>;
+  choiceSeed?: string;
 }): Array<{ text: string; id: string; support: number }> {
   const model = bestProseContinuationModel(input.state);
   if (!model) return [];
@@ -3692,7 +3706,7 @@ function synthesizeBeamSentencePieces(input: {
       minSymbols: 6,
       blockedSymbols: blocked,
       boostSymbols: iterationBoost,
-      choiceSeed: input.contextText + String(index)
+      choiceSeed: `${input.choiceSeed ?? ""}\u0001${input.contextText}\u0001${index}`
     });
     if (!beam || !beam.endedAtBoundary) break;
     for (const symbol of beam.symbols) {
@@ -4268,21 +4282,10 @@ function isAnchorSymbol(value: string): boolean {
   return value.length > 0 && [...value].every(isDigitLike);
 }
 
-function repairRequiredTermCoverage(text: string, requiredTerms: readonly LanguageGenerationTerm[], generationExtent: number): string {
-  let out = tidyInline(text);
-  for (const term of requiredTerms.filter(item => (item.weight ?? 0) >= 0.8)) {
-    const clean = tidyInline(term.text);
-    if (!clean || containsLoose(out, clean)) continue;
-    const projected = tidyInline(`${out} ${clean}`);
-    if (symbolizeData(projected).length <= generationExtent) out = projected;
-  }
-  return out;
-}
-
 function requiredTermCoverage(text: string, requiredTerms: readonly LanguageGenerationTerm[]): number {
   const required = requiredTerms.filter(term => (term.weight ?? 0) >= 0.45).map(term => tidyInline(term.text)).filter(Boolean);
   if (!required.length) return 1;
-  const covered = required.filter(term => containsLoose(text, term)).length;
+  const covered = required.filter(term => surfaceContainsTerm(text, term)).length;
   return covered / required.length;
 }
 
@@ -4291,7 +4294,7 @@ function coveredRequiredTermIds(text: string, requiredTerms: readonly LanguageGe
     .filter(term => (term.weight ?? 0) >= 0.45)
     .filter(term => {
       const clean = tidyInline(term.text);
-      return clean && containsLoose(text, clean);
+      return clean && surfaceContainsTerm(text, clean);
     })
     .map(term => term.id ?? hashText(tidyInline(term.text)))
     .slice(0, 64);

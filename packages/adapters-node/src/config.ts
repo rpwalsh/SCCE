@@ -18,6 +18,34 @@ import type {
   JsonValue
 } from "@scce/kernel";
 import { normalizeSpreadsheetExtractionLimits, type SpreadsheetExtractionLimitOverrides } from "./spreadsheet-contract.js";
+import { assertOcrProfileId } from "./ocr-profile.js";
+
+/**
+ * Public-web acquisition is deliberately paced as a shared provider budget.
+ * Four source fetches plus an optional counterclaim search still fit inside
+ * the twelve-request turn ceiling, while the default cannot burst a public
+ * provider at the old 120 RPM setting.
+ */
+export const DEFAULT_WEB_REQUESTS_PER_MINUTE = 30;
+export const MAX_WEB_REQUESTS_PER_MINUTE = 60;
+
+/** Public-network acquisition is an explicit deployment opt-in. */
+export function publicNetworkAcquisitionEnabled(): boolean {
+  return process.env.SCCE_ALLOW_AUTOMATIC_WEB === "1";
+}
+
+/** Public web access stays offline unless the deployment opt-in is exact. */
+export function publicWebNetworkEnabled(config: Pick<ScceRuntimeConfig, "connectors">): boolean {
+  return config.connectors.web?.enabled === true
+    && config.connectors.web.accessScope === "public-internet"
+    && publicNetworkAcquisitionEnabled();
+}
+
+/** Standing automatic admission additionally requires the configured automatic mode. */
+export function automaticWebAcquisitionEnabled(config: Pick<ScceRuntimeConfig, "connectors">): boolean {
+  return publicWebNetworkEnabled(config)
+    && config.connectors.web?.runtimeAcquisition === "automatic";
+}
 
 export interface CorpusNgramRuntimeConfig {
   ngramMaxOrder?: number;
@@ -105,13 +133,15 @@ export interface ScceRuntimeConfig {
     maxFileBytes: number;
     maxChunkBytes: number;
     spreadsheet?: SpreadsheetExtractionLimitOverrides;
+    /** OCR profile names a locally packaged recognition model; it never controls cognition. */
+    ocr?: { profile?: string };
     allowedRoots: string[];
     excludedPaths: string[];
     /** Serialized offline-trained model. Runtime only performs frozen inference. */
     relationPotentialModel?: RelationPotentialModel;
     /** Explicit normalized weights that allow field operators to influence activation routing. */
     fieldOperatorRouting?: FieldOperatorRoutingConfig;
-    tools: { pdftotext?: string; pdftoppm?: string; tesseract?: string; node?: string; pnpm?: string };
+    tools: { pdftoppm?: string; node?: string; pnpm?: string };
     patchValidation?: PatchValidationRuntimeConfig;
     corpora?: {
       wikipedia?: WikipediaCorpusConfig;
@@ -225,6 +255,10 @@ export function validateConfig(config: ScceRuntimeConfig, source = "config"): vo
   if (!config.runtime?.workspaceRoot) throw new Error(`${source}: missing runtime.workspaceRoot`);
   if (!config.runtime?.tempRoot) throw new Error(`${source}: missing runtime.tempRoot`);
   if (!Array.isArray(config.runtime.allowedRoots) || config.runtime.allowedRoots.length === 0) throw new Error(`${source}: runtime.allowedRoots must be non-empty`);
+  if (config.runtime.ocr?.profile !== undefined) {
+    try { assertOcrProfileId(config.runtime.ocr.profile); }
+    catch (error) { throw new Error(`${source}: invalid runtime.ocr.profile: ${error instanceof Error ? error.message : String(error)}`); }
+  }
   if (!config.security?.informationAccess) throw new Error(`${source}: security.informationAccess is required`);
   if (!config.security.defaultSourceInformationLabel) throw new Error(`${source}: security.defaultSourceInformationLabel is required`);
   const visual = config.ingestion?.visual?.embeddings;
@@ -282,7 +316,7 @@ export function validateConfig(config: ScceRuntimeConfig, source = "config"): vo
   if (config.connectors.web?.runtimeAcquisition !== undefined && !["consent-required", "automatic"].includes(config.connectors.web.runtimeAcquisition)) throw new Error(`${source}: connectors.web.runtimeAcquisition must be consent-required or automatic`);
   for (const field of ["requestsPerMinute", "maxRequestsPerTurn"] as const) {
     const value = config.connectors.web?.[field];
-    const maximum = field === "requestsPerMinute" ? 120 : 64;
+    const maximum = field === "requestsPerMinute" ? MAX_WEB_REQUESTS_PER_MINUTE : 64;
     if (value !== undefined && (!Number.isSafeInteger(value) || value < 1 || value > maximum)) throw new Error(`${source}: connectors.web.${field} must be an integer from 1 through ${maximum}`);
   }
   if (config.connectors.web?.enabled && config.connectors.web.allowedHosts.includes("*") && process.env.SCCE_ALLOW_WILDCARD_WEB !== "1") throw new Error(`${source}: connectors.web.allowedHosts must not contain "*" unless SCCE_ALLOW_WILDCARD_WEB=1`);
