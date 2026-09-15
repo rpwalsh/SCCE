@@ -554,6 +554,79 @@ describe("ProgramGraph runtime and artifact emission", () => {
     }
   });
 
+  it("induces a filter-then-fold module from examples and passes its own emitted test in Node and Python", () => {
+    const rows = [
+      'sumTagged([{"tag":"x","n":2},{"tag":"y","n":9},{"tag":"x","n":3}]) => 5',
+      'sumTagged([{"tag":"y","n":6},{"tag":"x","n":4}]) => 4',
+      'sumTagged([{"tag":"x","n":7},{"tag":"y","n":8}]) => 7',
+      'sumTagged([{"tag":"x","n":1},{"tag":"x","n":2},{"tag":"y","n":5},{"tag":"x","n":3}]) => 6',
+      'sumTagged([{"tag":"y","n":9},{"tag":"x","n":1},{"tag":"x","n":1}]) => 2'
+    ];
+    const cases = [
+      {
+        request: ["Create sumTagged(input).", ...rows].join("\n"),
+        language: "node" as const,
+        expectedSource: [".filter((_programElement1)", ".reduce((_programAccumulator1, _programElement1)"],
+        command: (program: ProgramGraph) => [process.execPath, ...program.test.args]
+      },
+      {
+        request: ["Create a Python function sumTagged(input).", ...rows].join("\n"),
+        language: "python" as const,
+        expectedSource: ["for _program_element_1 in args[0] if", "functools"],
+        command: (program: ProgramGraph) => [program.test.command, ...program.test.args]
+      }
+    ];
+
+    for (const item of cases) {
+      const signal = codeRequestSignal(item.request);
+      const intent = required(programIntentForTurn({
+        requestedAuthority: "program",
+        activeOperatorIds: [COGNITIVE_OPERATOR_IDS.programPlanning],
+        codeSignal: signal,
+        evidence: []
+      }));
+      expect(intent.behaviorRequirements?.filter(requirement => requirement.verificationRole === "held_out")).toHaveLength(1);
+      const probe = required(buildProgram(item.request, [], intent).program);
+      const retry = replanOwnerBehaviorProgramIntent({
+        intent,
+        program: probe,
+        failure: {
+          observationId: `owner.compose.${item.language}.validation.failure.kernel`,
+          programId: probe.id,
+          planHash: `owner-compose-${item.language}-plan`,
+          validatorId: `validator.owner.${item.language}`,
+          checkId: "tests",
+          status: "failed",
+          ownerRequirementIds: intent.behaviorRequirements?.map(requirement => requirement.id) ?? [],
+          command: probe.test
+        },
+        hasher
+      });
+      const selected = required(retry.intent.behaviorTransformationCandidates?.find(candidate =>
+        retry.intent.selectedBehaviorTransformationIds?.includes(candidate.id)
+      ));
+      expect(selected.operator).toBe("fold_sequence");
+      expect(selected.operands[0]!.kind).toBe("filter_sequence");
+
+      const repaired = required(buildProgram(item.request, [], retry.intent).program);
+      const source = required(repaired.files.find(file => file.path === repaired.entrypoint));
+      for (const fragment of item.expectedSource) expect(source.content).toContain(fragment);
+      expect(source.content).not.toContain("expectedResult");
+      const root = mkdtempSync(join(tmpdir(), `scce-owner-compose-${item.language}-`));
+      try {
+        mkdirSync(join(root, "src"));
+        mkdirSync(join(root, "test"));
+        for (const artifact of repaired.files.filter(file => file.path.endsWith(item.language === "python" ? ".py" : ".mjs"))) {
+          writeFileSync(join(root, artifact.path), artifact.content, "utf8");
+        }
+        const executed = spawnSync(item.command(repaired)[0]!, item.command(repaired).slice(1), { cwd: root, encoding: "utf8" });
+        expect(executed.status, `${executed.stdout}\n${executed.stderr}`).toBe(0);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  });
+
   it("binds emitted stateful operations to owner invocation contracts", () => {
     // The operation identities are owner-supplied symbols. The planner must
     // derive their arity and runtime shapes from these typed traces, not from
