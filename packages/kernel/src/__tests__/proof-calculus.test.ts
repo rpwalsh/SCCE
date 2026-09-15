@@ -112,6 +112,53 @@ describe("proof calculus semiring aggregation", () => {
     expect(mass.contradictionRatio).toBeCloseTo(mass.contradictionMass / normalizer, 12);
   });
 
+  it("does not let many relabeled derivatives outweigh one independent contrary source", () => {
+    const root = witness("evidence:lineage-root", {
+      sourceVersionId: "source-version:lineage-root",
+      independenceGroup: "dep.owner"
+    });
+    const derivatives = Array.from({ length: 12 }, (_, index) => witness(`evidence:lineage-copy-${index}`, {
+      sourceVersionId: `source-version:lineage-copy-${index}`,
+      sourceVersionParent: "source-version:lineage-root",
+      independenceGroup: `dep.republisher-${index}`
+    }));
+    const contrary = witness("evidence:independent-contrary", {
+      sourceVersionId: "source-version:independent-contrary",
+      independenceGroup: "dep.independent-contrary",
+      contradiction: 0.8
+    });
+
+    const oneLineage = aggregateSourceDependentEvidence({
+      supporting: [root],
+      contradictions: [contrary]
+    });
+    const repeatedLineage = aggregateSourceDependentEvidence({
+      supporting: [root, ...derivatives],
+      contradictions: [contrary]
+    });
+
+    expect(repeatedLineage.supportMass).toBeCloseTo(oneLineage.supportMass, 12);
+    expect(repeatedLineage.contradictionMass).toBeCloseTo(oneLineage.contradictionMass, 12);
+    expect(repeatedLineage.independentGroupCount).toBe(1);
+    expect(repeatedLineage.groups).toHaveLength(2);
+    expect(repeatedLineage.groups.find(group => group.lineageIdentities.includes("source-version:lineage-root"))?.evidenceIds).toHaveLength(13);
+
+    const oneSemiring = aggregateProofSemiring({ supporting: [root], contradictions: [contrary] });
+    const repeatedSemiring = aggregateProofSemiring({ supporting: [root, ...derivatives], contradictions: [contrary] });
+    expect(repeatedSemiring.pathCount).toBe(oneSemiring.pathCount);
+    expect(repeatedSemiring.sumProductSupport).toBeCloseTo(oneSemiring.sumProductSupport, 12);
+
+    const malformedDerivative = witness("evidence:lineage-malformed", {
+      sourceVersionId: "source-version:lineage-malformed",
+      sourceVersionParent: "source-version:lineage-root",
+      trustVector: {}
+    });
+    const withMalformed = aggregateProofSemiring({ supporting: [root, malformedDerivative], contradictions: [contrary] });
+    expect(withMalformed.pathCount).toBe(oneSemiring.pathCount);
+    expect(withMalformed.sumProductSupport).toBeCloseTo(oneSemiring.sumProductSupport, 12);
+    expect(withMalformed.evidenceMass.unresolvedEvidenceCount).toBe(1);
+  });
+
   it("turns scalar-only trust and exact-source fidelity into uncertainty rather than external-truth support", () => {
     const scalarOnly = witness("evidence:scalar", {
       trustVector: {
@@ -147,11 +194,14 @@ function witness(id: string, overrides: Partial<{
   validFrom: number;
   validTo: number;
   independenceGroup: string;
+  sourceVersionId: string;
+  sourceVersionParent: string;
   trustVector: EvidenceSpan["trustVector"];
 }>): EvidenceWitness {
+  const sourceVersionId = overrides.sourceVersionId ?? `source-version:${id}`;
   const span = {
     id,
-    sourceVersionId: `source-version:${id}`,
+    sourceVersionId,
     trustVector: overrides.trustVector ?? {
       sourceTrust: {
         identity: 0.92,
@@ -167,6 +217,15 @@ function witness(id: string, overrides: Partial<{
       structuralConfidence: 0.9
     },
     provenance: {
+      ...(overrides.sourceVersionParent ? {
+        sourceVersionDerivation: {
+          kind: "extracted-text",
+          transformId: "fixture.derivation",
+          derivedFromSourceVersionId: overrides.sourceVersionParent,
+          originalCoordinateSpace: "extracted-text-utf8",
+          redactionMap: []
+        }
+      } : {}),
       ...(overrides.validFrom === undefined ? {} : { validFrom: overrides.validFrom }),
       ...(overrides.validTo === undefined ? {} : { validTo: overrides.validTo })
     }

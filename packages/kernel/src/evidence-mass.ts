@@ -2,6 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { EvidenceId, EvidenceSpan, JsonValue } from "./types.js";
 import { clamp01, mean } from "./primitives.js";
+import { evidenceLineage } from "./proof-boundary.js";
 
 export interface EvidenceMassWitness {
   span: EvidenceSpan;
@@ -16,6 +17,9 @@ export interface EvidenceMassWitness {
 export interface SourceEvidenceMassContribution {
   evidenceId: EvidenceId;
   sourceVersionId: EvidenceSpan["sourceVersionId"];
+  /** Immutable source lineage used for dependence resolution. */
+  lineageIdentity: string | null;
+  lineageSourceVersionIds: string[];
   independenceGroup: string | null;
   sourceVectorAvailable: boolean;
   sourceReliability: number;
@@ -35,6 +39,7 @@ export interface SourceDependenceGroupMass {
   resolved: boolean;
   evidenceIds: EvidenceId[];
   sourceVersionIds: EvidenceSpan["sourceVersionId"][];
+  lineageIdentities: string[];
   supportMass: number;
   contradictionMass: number;
   uncertaintyMass: number;
@@ -91,23 +96,19 @@ export function aggregateSourceDependentEvidence(input: {
       : { witness: item, supports: false, contradicts: true });
   }
 
-  const contributions = [...records.values()].map(record => evidenceMassContribution(record));
-  const grouped = new Map<string, SourceEvidenceMassContribution[]>();
-  for (const contribution of contributions) {
-    const key = contribution.independenceGroup ?? "dep.unresolved";
-    const group = grouped.get(key) ?? [];
-    group.push(contribution);
-    grouped.set(key, group);
-  }
+  const allSpans = [...records.values()].map(record => record.witness.span);
+  const contributions = [...records.values()].map(record => evidenceMassContribution(record, allSpans));
+  const grouped = dependenceGroups(contributions);
   const groups: SourceDependenceGroupMass[] = [...grouped.entries()]
     .map(([groupId, items]) => {
       const supportMass = maximum(items.map(item => item.supportMass));
       const contradictionMass = maximum(items.map(item => item.contradictionMass));
       return {
         groupId,
-        resolved: groupId !== "dep.unresolved",
+        resolved: groupId !== "dep.unresolved" && items.some(item => item.sourceVectorAvailable),
         evidenceIds: items.map(item => item.evidenceId),
         sourceVersionIds: [...new Map(items.map(item => [String(item.sourceVersionId), item.sourceVersionId])).values()],
+        lineageIdentities: [...new Set(items.flatMap(item => item.lineageIdentity ? [item.lineageIdentity] : []))],
         supportMass,
         contradictionMass,
         uncertaintyMass: clamp01(1 - Math.min(1, supportMass + contradictionMass))
@@ -180,8 +181,9 @@ function evidenceMassContribution(input: {
   witness: EvidenceMassWitness;
   supports: boolean;
   contradicts: boolean;
-}): SourceEvidenceMassContribution {
+}, siblings: readonly EvidenceSpan[]): SourceEvidenceMassContribution {
   const source = assessEvidenceSourceVector(input.witness.span);
+  const lineage = evidenceLineage(input.witness.span, siblings);
   const supportSignal = input.supports ? semanticEvidenceSignal(input.witness) : 0;
   const contradictionSignal = input.contradicts ? clamp01(input.witness.contradiction) : 0;
   const supportMass = source.sourceWeight * supportSignal;
@@ -189,6 +191,8 @@ function evidenceMassContribution(input: {
   return {
     evidenceId: input.witness.span.id,
     sourceVersionId: input.witness.span.sourceVersionId,
+    lineageIdentity: lineage.identity || null,
+    lineageSourceVersionIds: lineage.sourceVersionIds,
     independenceGroup: source.independenceGroup,
     sourceVectorAvailable: source.available,
     sourceReliability: source.sourceReliability,
@@ -202,6 +206,69 @@ function evidenceMassContribution(input: {
     contradictionMass,
     uncertaintyMass: clamp01(1 - Math.min(1, supportMass + contradictionMass))
   };
+}
+
+/**
+ * Build dependence components from both declared source groups and explicit
+ * source-version lineage. A republisher may change its group label; connected
+ * components preserve the conservative dependence declared by either signal
+ * without allowing relabeling to create independence.
+ */
+function dependenceGroups(contributions: readonly SourceEvidenceMassContribution[]): Map<string, SourceEvidenceMassContribution[]> {
+  const parent = contributions.map((_, index) => index);
+  const find = (index: number): number => {
+    let root = index;
+    while (parent[root] !== root) root = parent[root]!;
+    while (parent[index] !== index) {
+      const next = parent[index]!;
+      parent[index] = root;
+      index = next;
+    }
+    return root;
+  };
+  const union = (left: number, right: number): void => {
+    const leftRoot = find(left);
+    const rightRoot = find(right);
+    if (leftRoot !== rightRoot) parent[rightRoot] = leftRoot;
+  };
+  const priorByDependencyKey = new Map<string, number>();
+  for (let index = 0; index < contributions.length; index += 1) {
+    const contribution = contributions[index]!;
+    const keys = [
+      contribution.lineageIdentity ? `lineage:${contribution.lineageIdentity}` : undefined,
+      contribution.independenceGroup ? `group:${contribution.independenceGroup}` : undefined
+    ].filter((key): key is string => Boolean(key));
+    for (const key of keys) {
+      const prior = priorByDependencyKey.get(key);
+      if (prior !== undefined) union(prior, index);
+      else priorByDependencyKey.set(key, index);
+    }
+  }
+  const components = new Map<number, SourceEvidenceMassContribution[]>();
+  for (let index = 0; index < contributions.length; index += 1) {
+    const root = find(index);
+    const component = components.get(root) ?? [];
+    component.push(contributions[index]!);
+    components.set(root, component);
+  }
+  const grouped = new Map<string, SourceEvidenceMassContribution[]>();
+  for (const items of components.values()) {
+    // A malformed descendant has zero source weight and must not erase a
+    // valid ancestor's path. The component is unresolved only when none of
+    // its members carries an admissible source vector.
+    const resolved = items.some(item => item.sourceVectorAvailable);
+    const lineageIds = [...new Set(items.flatMap(item => item.lineageIdentity ? [item.lineageIdentity] : []))].sort();
+    const groups = [...new Set(items.flatMap(item => item.independenceGroup ? [item.independenceGroup] : []))].sort();
+    const groupId = !resolved
+      ? "dep.unresolved"
+      : `dep.component:${lineageIds.join("|") || "none"}:${groups.join("|") || "none"}`;
+    // Fully unresolved components intentionally share one bucket: they have
+    // no admissible source vector and therefore contribute uncertainty only.
+    const existing = grouped.get(groupId) ?? [];
+    existing.push(...items);
+    grouped.set(groupId, existing);
+  }
+  return grouped;
 }
 
 function semanticEvidenceSignal(witness: EvidenceMassWitness): number {
