@@ -11,6 +11,7 @@ export async function runDocumentExtractionWorker(
 ): Promise<DocumentWasmExtractionResult> {
   options.signal?.throwIfAborted();
   const worker = new Worker(workerUrl(), {
+    // Cost bound: V8 heap and stack ceiling for one extraction worker.
     resourceLimits: { maxOldGenerationSizeMb: 384, stackSizeMb: 8 }
   });
   return new Promise((resolve, reject) => {
