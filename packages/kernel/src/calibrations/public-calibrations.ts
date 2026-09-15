@@ -994,7 +994,13 @@ export const PUBLIC_CALIBRATIONS = Object.freeze({
 
   // --- request communicative act (request-communicative-act.ts)
   /** Laplace pseudo-count smoothing each act class's n-gram presence estimate. */
-  "request_act.feature_pseudo_count": 1
+  "request_act.feature_pseudo_count": 1,
+
+  // --- generic unit signal (kernel-answer-primitives.ts genericQuestionSignal)
+  /** UTF-16 length at or below which a request unit is too short to name anything. */
+  "units.generic_length_ceiling": 2,
+  /** Share of adjacent repeated characters above which a request unit is degenerate rather than a name. */
+  "units.generic_repeated_character_ratio": 0.72
 });
 
 export type CalibrationKey = keyof typeof PUBLIC_CALIBRATIONS;

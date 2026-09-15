@@ -508,7 +508,11 @@ export const CALIBRATION_SEARCH_SPACE: Readonly<Record<CalibrationKey, Calibrati
   "requirement.dialogue_context.unresolved_weight": weight(0, 1, [0.1, 0.25, 0.5]),
 
   // --- request communicative act
-  "request_act.feature_pseudo_count": weight(0.05, 4, [0.5, 1, 2])
+  "request_act.feature_pseudo_count": weight(0.05, 4, [0.5, 1, 2]),
+
+  // --- generic unit signal
+  "units.generic_length_ceiling": count(0, 4, [1, 2, 3]),
+  "units.generic_repeated_character_ratio": threshold(0.4, 0.99, [0.6, 0.72, 0.85])
 });
 
 /** Ids a calibrator may search, in a stable order so a run is reproducible. */
