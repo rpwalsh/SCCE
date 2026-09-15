@@ -9,6 +9,7 @@ import { kalmanUpdate, replicatorDynamicsStep } from "./equation-operators.js";
 export type InteractionFeatureId = string;
 export type InteractionSignalId = string;
 export type DialogueActionId = string;
+export type DialogueActId = string;
 
 export interface DialogueDisplayLabel {
   sourceId: "source.derived";
@@ -46,6 +47,8 @@ export interface DialogueAction {
 export interface UserStyleProfile {
   schema: "scce.dialogue.policy_profile.v1";
   weights: Record<InteractionFeatureId, number>;
+  /** Learned routing pressure for typed communicative acts. Keys are opaque IDs, never surface labels. */
+  communicativeActWeights?: Record<DialogueActId, number>;
   preferredVocabulary: string[];
   rejectedPhrases: string[];
   displayLabels?: DialogueDisplayLabel[];
@@ -55,6 +58,8 @@ export interface DialogueState {
   conversationId: string;
   turnId: string;
   currentIntentId: string;
+  /** The typed interaction shape currently being resolved. */
+  communicativeActId?: DialogueActId;
   activeTask?: string;
   unresolvedSlots: string[];
   establishedFacts: string[];
@@ -126,6 +131,8 @@ export interface DialogueFeedback {
   feedbackText?: string;
   rejectedPhrases?: string[];
   styleDelta?: Record<InteractionFeatureId, number>;
+  /** Typed route feedback supplied by the outcome layer; no prose parsing is required. */
+  communicativeActId?: DialogueActId;
 }
 
 export interface DialogueAnswerGraphLike {
@@ -199,6 +206,14 @@ export const DIALOGUE_ACTION_IDS = {
   premiseCheck: "act.3ac081de"
 } as const;
 
+/** Communicative acts are opaque semantic IDs. Their display labels belong to the source language layer. */
+export const DIALOGUE_ACT_IDS = {
+  ambiguous: "actshape.4c8d2a11",
+  challenge: "actshape.71b0e4c3",
+  repair: "actshape.9a6f13d8",
+  neutral: "actshape.2e5b7f40"
+} as const;
+
 const RHYTHM_IDS = {
   calculus: "rhythm.3bc1a0f7",
   artifact: "rhythm.8ed491c2",
@@ -269,6 +284,12 @@ export const DEFAULT_USER_STYLE_PROFILE: UserStyleProfile = {
     [INTERACTION_FEATURE_IDS.clarificationCost]: 0.38,
     [INTERACTION_FEATURE_IDS.boundaryNeed]: 0.5
   },
+  communicativeActWeights: {
+    [DIALOGUE_ACT_IDS.ambiguous]: 0.5,
+    [DIALOGUE_ACT_IDS.challenge]: 0.5,
+    [DIALOGUE_ACT_IDS.repair]: 0.5,
+    [DIALOGUE_ACT_IDS.neutral]: 0.5
+  },
   preferredVocabulary: [],
   rejectedPhrases: []
 };
@@ -293,10 +314,14 @@ export function updateDialogueState(input: DialogueStateUpdateInput): DialogueSt
     ...patchedProfile,
     weights: applyFeatureSignals(patchedProfile.weights, signals)
   };
+  const communicativeActId = input.statePatch?.communicativeActId
+    ?? input.feedback?.communicativeActId
+    ?? classifyCommunicativeActId(input.answerGraph, previous, input.feedback);
   return {
     conversationId: input.statePatch?.conversationId ?? previous?.conversationId ?? input.conversationId ?? "conversation.default",
     turnId: input.statePatch?.turnId ?? input.turnId ?? `turn.${hashText(input.requestText).slice(0, 16)}`,
     currentIntentId: input.statePatch?.currentIntentId ?? classifyIntentId(input.requestText, input.answerGraph, previous),
+    communicativeActId,
     activeTask: input.statePatch?.activeTask ?? graphTask,
     unresolvedSlots: uniqueStrings([...(previous?.unresolvedSlots ?? []), ...graphSlots, ...(input.statePatch?.unresolvedSlots ?? [])]).slice(0, 24),
     establishedFacts: uniqueStrings([...(previous?.establishedFacts ?? []), ...graphFacts, ...(input.statePatch?.establishedFacts ?? [])]).slice(-48),
@@ -331,6 +356,10 @@ export function planDialoguePolicy(input: { state: DialogueState; answerGraph: D
   const enoughInformation = hasEnoughInformation(input.answerGraph);
   const boundaryNeed = input.answerGraph.uncertainty.unsupported || input.answerGraph.uncertainty.missingEvidenceCount > 0;
   const openDialogueWork = state.unresolvedSlots.length > 0 || Boolean(state.activeTask?.trim());
+  const actPressure = (actId: DialogueActId): number => clamp01(state.userStyleProfile.communicativeActWeights?.[actId] ?? 0.5);
+  const ambiguityPressure = state.communicativeActId === DIALOGUE_ACT_IDS.ambiguous ? actPressure(DIALOGUE_ACT_IDS.ambiguous) : 0;
+  const challengePressure = state.communicativeActId === DIALOGUE_ACT_IDS.challenge ? actPressure(DIALOGUE_ACT_IDS.challenge) : 0;
+  const repairPressure = state.communicativeActId === DIALOGUE_ACT_IDS.repair ? actPressure(DIALOGUE_ACT_IDS.repair) : 0;
   const rows: DialogueAction[] = [];
   const add = (id: DialogueActionId, utility: number, cost: number, reasonIds: string[]) => {
     const normalizedUtility = clamp01(utility);
@@ -364,13 +393,13 @@ export function planDialoguePolicy(input: { state: DialogueState; answerGraph: D
     });
   };
   add(DIALOGUE_ACTION_IDS.answer, 0.5 + (enoughInformation ? 0.28 : -0.18) + weight(profile, INTERACTION_FEATURE_IDS.responseLead) * 0.16, 0.04, [ACTION_REASON_IDS.r0]);
-  add(DIALOGUE_ACTION_IDS.clarify, state.unresolvedSlots.length > 0 ? 0.72 : enoughInformation ? 0.08 : 0.5, 0.18 + weight(profile, INTERACTION_FEATURE_IDS.clarificationCost) * 0.28, [ACTION_REASON_IDS.r1]);
+  add(DIALOGUE_ACTION_IDS.clarify, state.unresolvedSlots.length > 0 ? 0.72 : enoughInformation ? 0.08 + ambiguityPressure * 0.5 : 0.5, 0.18 + weight(profile, INTERACTION_FEATURE_IDS.clarificationCost) * 0.28, [ACTION_REASON_IDS.r1]);
   add(DIALOGUE_ACTION_IDS.bestEffort, enoughInformation ? 0.28 : 0.78, 0.08, [ACTION_REASON_IDS.r2]);
-  add(DIALOGUE_ACTION_IDS.boundary, boundaryNeed ? 0.72 : 0.18, 0.04 + (1 - weight(profile, INTERACTION_FEATURE_IDS.caveatTolerance)) * 0.1, [ACTION_REASON_IDS.r3]);
+  add(DIALOGUE_ACTION_IDS.boundary, boundaryNeed ? 0.72 : 0.18 + repairPressure * 0.54, 0.04 + (1 - weight(profile, INTERACTION_FEATURE_IDS.caveatTolerance)) * 0.1, [ACTION_REASON_IDS.r3]);
   add(DIALOGUE_ACTION_IDS.plan, input.answerGraph.actions.length ? 0.74 : 0.22, 0.08, [ACTION_REASON_IDS.r4]);
   add(DIALOGUE_ACTION_IDS.calculus, weight(profile, INTERACTION_FEATURE_IDS.calculusNeed), 0.08, [ACTION_REASON_IDS.r5]);
   add(DIALOGUE_ACTION_IDS.artifact, weight(profile, INTERACTION_FEATURE_IDS.artifactNeed), 0.08, [ACTION_REASON_IDS.r6]);
-  add(DIALOGUE_ACTION_IDS.premiseCheck, input.answerGraph.uncertainty.contradictionCount > 0 ? 0.64 : 0.14, 0.06, [ACTION_REASON_IDS.r7]);
+  add(DIALOGUE_ACTION_IDS.premiseCheck, input.answerGraph.uncertainty.contradictionCount > 0 ? 0.64 : 0.14 + challengePressure * 0.56, 0.06, [ACTION_REASON_IDS.r7]);
   add(DIALOGUE_ACTION_IDS.nextStep, input.answerGraph.actions.length || boundaryNeed || openDialogueWork ? 0.58 : 0.24, 0.06, [ACTION_REASON_IDS.r8]);
   const rankedActions = rows.sort((left, right) => right.score - left.score || left.id.localeCompare(right.id));
   const selectedActionIds = selectActions(rankedActions, state, input.answerGraph);
@@ -465,6 +494,14 @@ export function applyDialogueFeedback(profile: UserStyleProfile, feedback: Dialo
       ...(feedback.rejectedPhrases ?? []),
       ...rejectedFragments(feedback.rejectedText)
     ]).slice(-48);
+  }
+  if (feedback.communicativeActId) {
+    const current = next.communicativeActWeights?.[feedback.communicativeActId] ?? 0.5;
+    const delta = feedback.status === "accepted" ? 0.08 : feedback.status === "rejected" || feedback.status === "corrected" ? 0.2 : 0;
+    next.communicativeActWeights = {
+      ...(next.communicativeActWeights ?? {}),
+      [feedback.communicativeActId]: clamp01(current + delta)
+    };
   }
   if (feedback.preferredText) next.preferredVocabulary = uniqueStrings([...next.preferredVocabulary, ...salientSurfaceUnits(feedback.preferredText)]).slice(-48);
   return applyReplicatorFeedback(next, feedback);
@@ -817,6 +854,10 @@ function selectActions(rows: readonly DialogueAction[], state: DialogueState, gr
   if (graph.actions.length) add(DIALOGUE_ACTION_IDS.plan);
   if (graph.uncertainty.contradictionCount > 0) add(DIALOGUE_ACTION_IDS.premiseCheck);
   if (graph.actions.length || graph.uncertainty.missingEvidenceCount > 0) add(DIALOGUE_ACTION_IDS.nextStep);
+  const actWeight = clamp01(state.userStyleProfile.communicativeActWeights?.[state.communicativeActId ?? DIALOGUE_ACT_IDS.neutral] ?? 0.5);
+  if (state.communicativeActId === DIALOGUE_ACT_IDS.ambiguous && actWeight >= 0.66) add(DIALOGUE_ACTION_IDS.clarify);
+  if (state.communicativeActId === DIALOGUE_ACT_IDS.challenge && actWeight >= 0.66) add(DIALOGUE_ACTION_IDS.premiseCheck);
+  if (state.communicativeActId === DIALOGUE_ACT_IDS.repair && actWeight >= 0.66) add(DIALOGUE_ACTION_IDS.boundary);
   for (const row of rows) {
     if (selected.length >= 5) break;
     if (row.score >= 0.58) add(row.id);
@@ -836,6 +877,19 @@ function classifyIntentId(text: string, graph: DialogueAnswerGraphLike | undefin
   if (/```|(?:^|\s)[\w./-]+\.(?:ts|tsx|js|py|rs|go|java|json|md)\b/u.test(text)) return "intent.4bd129aa";
   if (graph?.supportLinks.length) return "intent.83f0c4ba";
   return previous?.currentIntentId ?? "intent.09f1dc42";
+}
+
+function classifyCommunicativeActId(
+  graph: DialogueAnswerGraphLike | undefined,
+  previous: DialogueState | undefined,
+  feedback: DialogueFeedback | undefined
+): DialogueActId {
+  if (feedback?.status === "corrected" || feedback?.status === "rejected") return DIALOGUE_ACT_IDS.repair;
+  if ((graph?.uncertainty.contradictionCount ?? 0) > 0) return DIALOGUE_ACT_IDS.challenge;
+  if ((graph?.uncertainty.missingEvidenceCount ?? 0) > 0 || (graph?.uncertainty.unsupported ?? false) || (previous?.unresolvedSlots.length ?? 0) > 0) {
+    return DIALOGUE_ACT_IDS.ambiguous;
+  }
+  return previous?.communicativeActId ?? DIALOGUE_ACT_IDS.neutral;
 }
 
 function truthPreservationScore(text: string, graph: DialogueAnswerGraphLike): number {
@@ -895,9 +949,14 @@ function unresolvedSlotsFromGraph(graph: DialogueAnswerGraphLike): string[] {
 
 function mergeUserStyleProfile(base: UserStyleProfile, patch: Partial<UserStyleProfile> | undefined): UserStyleProfile {
   const patchWeights = patch?.weights ?? {};
+  const patchActWeights = patch?.communicativeActWeights ?? {};
   return {
     schema: "scce.dialogue.policy_profile.v1",
     weights: { ...base.weights, ...Object.fromEntries(Object.entries(patchWeights).map(([key, value]) => [key, clamp01(value)])) },
+    communicativeActWeights: {
+      ...(base.communicativeActWeights ?? DEFAULT_USER_STYLE_PROFILE.communicativeActWeights),
+      ...Object.fromEntries(Object.entries(patchActWeights).map(([key, value]) => [key, clamp01(value)]))
+    },
     preferredVocabulary: uniqueStrings([...(base.preferredVocabulary ?? []), ...(patch?.preferredVocabulary ?? [])]).slice(-48),
     rejectedPhrases: uniqueStrings([...(base.rejectedPhrases ?? []), ...(patch?.rejectedPhrases ?? [])]).slice(-48),
     displayLabels: patch?.displayLabels ?? base.displayLabels
@@ -908,6 +967,7 @@ function cloneStyleProfile(profile: UserStyleProfile): UserStyleProfile {
   return {
     schema: "scce.dialogue.policy_profile.v1",
     weights: { ...profile.weights },
+    communicativeActWeights: profile.communicativeActWeights ? { ...profile.communicativeActWeights } : undefined,
     preferredVocabulary: [...profile.preferredVocabulary],
     rejectedPhrases: [...profile.rejectedPhrases],
     displayLabels: profile.displayLabels ? [...profile.displayLabels] : undefined
