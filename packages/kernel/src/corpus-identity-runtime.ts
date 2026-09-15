@@ -1,6 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { concentrationThreshold, contentRuns, primeCorpusIdentitySignals } from "./corpus-identity.js";
+import { concentrationThreshold, contentRuns, corpusIdentitySignals, corpusNamedIdentities, primeCorpusIdentitySignals } from "./corpus-identity.js";
 import type { EvidenceStore } from "./storage.js";
 
 /**
@@ -64,6 +64,51 @@ export async function primeCorpusIdentityForTurn(input: {
     concentration: measurements.threshold ?? 0
   });
   input.onTrace?.({ runs: runs.length, measured: unmeasured.length, identities: [...(identities ?? [])], concentration: measurements.threshold ?? 0 });
+}
+
+export interface RequestCorpusSubject {
+  /** Runs the corpus carries as a whole source identity, measured against this request. */
+  readonly identities: readonly string[];
+  /** False when the corpus cannot be asked, which leaves the closed class as the only measure. */
+  readonly measured: boolean;
+  /** Maximal runs of units the language does not use as scaffolding. */
+  readonly contentRuns: readonly string[];
+}
+
+/**
+ * What one request names, measured now instead of read from the primed signal.
+ *
+ * A caller that runs before the turn -- the server deciding whether this request inherits the conversation's
+ * evidence -- would otherwise read the PREVIOUS request's identity set, which is how a request naming its own
+ * subject inherited the last one's. The answer is cached where the turn's own priming looks for it, and the
+ * identity question is answered from the corpus's in-memory title list, so asking it here adds no query.
+ */
+export async function measureRequestCorpusSubject(input: {
+  requestText: string;
+  evidence?: Pick<EvidenceStore, "sourceIdentityArbitration">;
+}): Promise<RequestCorpusSubject> {
+  const primed = corpusIdentitySignals();
+  const closedClass = primed?.closedClass ?? new Set<string>();
+  const runs = contentRuns(input.requestText, closedClass);
+  const arbitrate = input.evidence?.sourceIdentityArbitration;
+  if (!input.evidence || !arbitrate) return { identities: [], measured: false, contentRuns: runs };
+  const generation = measurementGeneration;
+  const measurements = measurementsFor(input.evidence);
+  let identities = measurements.identitiesByText.get(input.requestText);
+  if (identities === undefined) {
+    const arbitration = await arbitrate({ text: input.requestText, runs: [] });
+    if (generation !== measurementGeneration) return { identities: [], measured: false, contentRuns: runs };
+    identities = new Set(arbitration.identities);
+    if (measurements.identitiesByText.size >= 512) measurements.identitiesByText.clear();
+    measurements.identitiesByText.set(input.requestText, identities);
+  }
+  const named = corpusNamedIdentities(input.requestText, {
+    closedClass,
+    identities,
+    spread: primed?.spread ?? new Map<string, number>(),
+    concentration: primed?.concentration ?? 0
+  });
+  return { identities: named, measured: true, contentRuns: runs };
 }
 
 function measurementsFor(evidence: object): CorpusIdentityMeasurements {
