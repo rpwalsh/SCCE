@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { calibrated } from "./calibrations/prod-calibrations.js";
 import type { KneserNeyModel } from "./kneser-ney.js";
 import { jsonRecord, namedSubjectAnchors } from "./kernel-answer-primitives.js";
 import { isRequestRequirementPattern } from "./request-requirement-learning.js";
@@ -69,7 +70,7 @@ export function deriveClosedClassWords(input: {
   constructions?: readonly { parts?: readonly { kind: string; surface?: string; [key: string]: unknown }[] }[];
   limit?: number;
 }): Set<string> {
-  const limit = Math.max(1, input.limit ?? 96);
+  const limit = closedClassLimit(input.limit);
   const populationWords = input.continuationPopulation
     ? closedClassFromPopulation(input.continuationPopulation, limit)
     : undefined;
@@ -147,6 +148,10 @@ function addConstructionWords(
   }
 }
 
+
+function closedClassLimit(limit?: number): number {
+  return Math.max(1, limit ?? calibrated("closed_class.rank_limit"));
+}
 
 function isWordSymbol(symbol: string): boolean {
   if (!symbol || symbol.startsWith("<") || symbol.length > 24) return false;

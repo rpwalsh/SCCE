@@ -1258,7 +1258,9 @@ export function answerCoversRequest(
   // obligation, the lead sentence satisfied it by saying "Einstein", and a two-unit obligation with one unit
   // missing is exactly the shape the category-member escape below lets through. The subject cannot be the thing
   // that proves the relation was answered.
-  const subtractedRelationUnits = answerContentUnits.filter(unit => !subjectUnits.some(subjectUnit => requestUnitSharesStem(unit, subjectUnit)));
+  // The language's closed class comes off this branch too: "which" mid-request is scaffolding, not a relation the answer restates.
+  const subtractedRelationUnits = answerContentUnits.filter(unit => !subjectUnits.some(subjectUnit => requestUnitSharesStem(unit, subjectUnit))
+    && !options.languageClosedClassWords?.has(unit));
   const sourceIdentityUnits = subtractedRelationUnits.length
     ? []
     : corpusIdentityUnits(`${evidenceIdentity(span)} ${evidenceTitle(span)}`).map(stripOuterPriorSeparators).filter(Boolean);
