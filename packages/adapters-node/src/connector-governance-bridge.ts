@@ -57,7 +57,7 @@ export function connectorConfigForRuntime(
     enabled: Boolean(declared?.enabled),
     ...(web?.search?.provider ? { provider: web.search.provider } : {}),
     limits: {
-      requestsPerMinute: Math.max(1, policy.maxNetworkRequests),
+      requestsPerMinute: Math.max(1, web?.requestsPerMinute ?? policy.maxNetworkRequests),
       requestsPerSession: Math.max(1, policy.maxNetworkRequests),
       maxBytesPerResponse: Math.max(1, web?.maxBytes ?? 1_000_000),
       maxSpendCents: Math.max(0, policy.maxSpendCents)

@@ -4,11 +4,33 @@ import { describe, expect, it } from "vitest";
 
 import {
   languageGenerationSurfaceAdequate,
+  languageGenerationSentenceEndingsAdequate,
+  createLanguageMemoryRuntime,
   type LanguageGenerationResult
 } from "../language-memory-runtime.js";
 import { resolveLearnedCreativeGenerationExtent } from "../mouth.js";
+import { trainKneserNey } from "../kneser-ney.js";
 
 describe("learned language generation surface quality", () => {
+  it("rejects the dangling ending from the live creative collage using learned boundary observations", () => {
+    const runtime = createLanguageMemoryRuntime();
+    const state = runtime.hydrateFromImportedBrain({ importRunId: "fixture.endings", models: [], observations: [], units: [], patterns: [], semanticFrames: [] });
+    state.models = [trainKneserNey("The wheels were repaired by the mechanic. The lamp was tuned by a careful worker. The lights shone as the bicycle moved.", { order: 3 })];
+    expect(languageGenerationSentenceEndingsAdequate("Headlights to have been tuned and broken as by.", state)).toBe(false);
+    expect(languageGenerationSentenceEndingsAdequate("The lamp was tuned by a careful worker.", state)).toBe(true);
+    // New boundary evidence changes admission; this is not an English ending blacklist.
+    state.models.push(trainKneserNey("The hour went by.", { order: 3 }));
+    expect(languageGenerationSentenceEndingsAdequate("The hour went by.", state)).toBe(true);
+    expect(languageGenerationSentenceEndingsAdequate("Headlights to have been tuned and broken as by.", state)).toBe(false);
+  });
+
+  it("uses the same learned ending rule for an opaque non-Latin language", () => {
+    const runtime = createLanguageMemoryRuntime();
+    const state = runtime.hydrateFromImportedBrain({ importRunId: "fixture.opaque", models: [], observations: [], units: [], patterns: [], semanticFrames: [] });
+    state.models = [trainKneserNey(["каве", "муно", "тали", "зире", ".", "роно", "муно", "тали", "фане", ".", "фане", "тали", "зире", "."], { order: 3 })];
+    expect(languageGenerationSentenceEndingsAdequate("каве муно тали.", state)).toBe(false);
+    expect(languageGenerationSentenceEndingsAdequate("каве муно тали зире.", state)).toBe(true);
+  });
   it("rejects a diverse but fragment-heavy learned continuation", () => {
     const text = "albert einstein fighting dragons and the. her, of not - “ to in,. was a. ’ with the you by me her as it to in i.";
 

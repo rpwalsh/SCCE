@@ -89,7 +89,7 @@ describe("ingestion source derivative identity", () => {
     });
     const secret = "password = correct-horse-battery-staple";
 
-    await runtime.ingest({
+    const result = await runtime.ingest({
       uri: "inline://redaction-fixture",
       namespace: "fixture",
       mediaType: "text/plain",
@@ -115,6 +115,7 @@ describe("ingestion source derivative identity", () => {
     });
 
     expect(sourceVersions).toHaveLength(2);
+    expect(result.promotedEvidenceIds).toEqual([]);
     const original = sourceVersions.find(source => source.role === "original");
     const derivative = sourceVersions.find(source => source.role === "evidence-derivative");
     expect(original).toBeDefined();
@@ -147,6 +148,36 @@ describe("ingestion source derivative identity", () => {
     expect(quarantined.map(source => source.sourceVersionId)).toEqual([derivative?.sourceVersionId]);
     expect(events.filter(event => event.typeId === "SourceVersionObserved")).toHaveLength(2);
     expect(transactions).toBe(1);
+
+    const htmlStart = sourceVersions.length;
+    await runtime.ingest({
+      uri: "inline://html-redaction-fixture",
+      namespace: "fixture",
+      mediaType: "text/html",
+      content: `<article>Header\n${secret}\nTail marker</article><script>do_not_learn()</script>`,
+      sourceAdmission: {
+        sourceClass: "owner_local",
+        intendedUse: "quarantine_only",
+        promotionAuthority: "owner"
+      },
+      sourceTrust: {
+        identity: 1,
+        integrity: 1,
+        parserReliability: 1,
+        directness: 1,
+        authority: 1,
+        freshness: 1,
+        independenceGroup: "fixture:html-source-derivative",
+        accessScope: "owner_private",
+        licenseStatus: "owner_authorized"
+      }
+    });
+    const htmlDerivative = sourceVersions.slice(htmlStart).find(source => source.role === "evidence-derivative");
+    expect(htmlDerivative?.derivation?.transformId).toBe("scce.source-text-derivative.v1+scce.secret-redaction.v1+scce.html-text-surface.v1");
+    const htmlBlob = bytesFor(blobs, htmlDerivative?.contentHash);
+    expect(Buffer.from(htmlBlob).toString("utf8")).not.toContain("do_not_learn");
+    expect(Buffer.from(htmlBlob).toString("utf8")).not.toContain("correct-horse-battery-staple");
+    expect(htmlDerivative?.derivation?.redactionMap).toEqual([]);
   });
 });
 

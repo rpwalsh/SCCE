@@ -379,7 +379,26 @@ async function dispatch(
   if (req.method === "POST" && url.pathname === "/api/connectors/fetch") {
     const body = requireFields(await readBody(req, context.maxBodyBytes), ["uri"]);
     const fetched = await context.runtime.connectors.fetch(String(body.uri));
-    return json({ ...fetched, bytes: { byteLength: fetched.bytes.byteLength, previewUtf8: new TextDecoder().decode(fetched.bytes.slice(0, 4096)) } });
+    const derivative = fetched.evidenceDerivative;
+    return json({
+      uri: fetched.uri,
+      mediaType: fetched.mediaType,
+      metadata: summarizeForTrace(fetched.metadata, 8192),
+      bytes: {
+        byteLength: fetched.bytes.byteLength,
+        sha256: createHash("sha256").update(fetched.bytes).digest("hex"),
+        previewUtf8: new TextDecoder().decode(fetched.bytes.slice(0, 4096))
+      },
+      evidenceDerivative: derivative ? {
+        kind: derivative.kind,
+        transformId: derivative.transformId.slice(0, 256),
+        originalCoordinateSpace: derivative.originalCoordinateSpace,
+        byteLength: derivative.bytes.byteLength,
+        sha256: createHash("sha256").update(derivative.bytes).digest("hex"),
+        previewUtf8: new TextDecoder().decode(derivative.bytes.slice(0, 4096)),
+        redactionIntervalCount: derivative.redactionMap.length
+      } : undefined
+    });
   }
   if (req.method === "POST" && url.pathname === "/api/connectors/outlook/search") {
     const body = requireFields(await readBody(req, context.maxBodyBytes), ["query"]);
@@ -3583,7 +3602,11 @@ function connectorPublicConfig(config: LoadedConfig): JsonValue {
   return toJsonValue({
     web: {
       enabled: config.connectors.web?.enabled ?? false,
-      searchProvider: config.connectors.web?.search?.provider ?? null
+      searchProvider: config.connectors.web?.search?.provider ?? null,
+      accessScope: config.connectors.web?.accessScope ?? "allowlist",
+      runtimeAcquisition: config.connectors.web?.runtimeAcquisition ?? "consent-required",
+      maxRequestsPerTurn: Math.min(config.policy.maxNetworkRequests, config.connectors.web?.maxRequestsPerTurn ?? config.policy.maxNetworkRequests),
+      requestsPerMinute: config.connectors.web?.requestsPerMinute ?? config.policy.maxNetworkRequests
     },
     outlook: { enabled: config.connectors.outlook?.enabled ?? false },
     youtube: { enabled: config.connectors.youtube?.enabled ?? false },

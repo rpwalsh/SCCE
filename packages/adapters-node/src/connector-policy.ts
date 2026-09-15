@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { JsonValue, PolicyProfile } from "@scce/kernel";
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { ScceRuntimeConfig } from "./config.js";
 import { admitConnectorCall } from "./connector-governance-bridge.js";
 
@@ -55,6 +56,9 @@ export interface ConnectorQuotaSnapshot {
 
 export class ConnectorPolicyGate {
   private sequence = 0;
+  private admittedRequests = 0;
+  private readonly requestBudget = new AsyncLocalStorage<{ used: number; signal?: AbortSignal }>();
+  private readonly waitingOperations = new Map<string, Promise<unknown>>();
   /**
    * When each connector last ran, keyed by connector -- the rate limit it feeds is defined per connector.
    *
@@ -68,6 +72,54 @@ export class ConnectorPolicyGate {
   private readonly records: ConnectorRequestRecord[] = [];
 
   constructor(private readonly config: ScceRuntimeConfig, private readonly policyPatch: () => Partial<PolicyProfile> = () => ({})) {}
+
+  /** Resource accounting around the existing kernel turn; no new execution lane. */
+  withRequestBudget<T>(operation: () => T, signal?: AbortSignal): T {
+    if (this.requestBudget.getStore()) return operation();
+    return this.requestBudget.run({ used: 0, signal }, operation);
+  }
+
+  private effectivePolicy(): PolicyProfile {
+    const policy = { ...this.config.policy, ...this.policyPatch() };
+    if (this.requestBudget.getStore()) policy.maxNetworkRequests = Math.min(policy.maxNetworkRequests, this.config.connectors.web?.maxRequestsPerTurn ?? policy.maxNetworkRequests);
+    return policy;
+  }
+
+  private requestsUsed(): number { return this.requestBudget.getStore()?.used ?? this.admittedRequests; }
+
+  requestSignal(): AbortSignal | undefined { return this.requestBudget.getStore()?.signal; }
+
+  private rateKey(connector: ConnectorRequestRecord["connector"], operation: string): string {
+    // An explicitly configured web rate covers search and fetch together.
+    // Existing deployments without it retain their historical operation rates.
+    return connector === "web" && this.config.connectors.web?.requestsPerMinute !== undefined ? "web" : `${connector}:${operation}`;
+  }
+
+  /** Wait for the declared read rate rather than discard a valid next page. */
+  async beginWhenAvailable(input: Parameters<ConnectorPolicyGate["begin"]>[0]): Promise<ConnectorRequestRecord> {
+    const key = this.rateKey(input.connector, input.operation);
+    const previous = this.waitingOperations.get(key) ?? Promise.resolve();
+    const pending = previous.catch(() => {}).then(async () => {
+      const signal = this.requestBudget.getStore()?.signal;
+      signal?.throwIfAborted();
+      const policy = this.effectivePolicy();
+      const rate = input.connector === "web" ? this.config.connectors.web?.requestsPerMinute ?? policy.maxNetworkRequests : policy.maxNetworkRequests;
+      const last = this.lastAllowedAt.get(key);
+      const waitMs = last === undefined ? 0 : Math.max(0, Math.ceil(60000 / Math.max(1, rate) - (Date.now() - last)));
+      if (waitMs > 0 && this.requestsUsed() < policy.maxNetworkRequests) {
+        await new Promise<void>((resolve, reject) => {
+          const aborted = () => { clearTimeout(timer); reject(signal?.reason ?? new Error("connector request cancelled")); };
+          const timer = setTimeout(() => { signal?.removeEventListener("abort", aborted); resolve(); }, waitMs);
+          signal?.addEventListener("abort", aborted, { once: true });
+        });
+      }
+      signal?.throwIfAborted();
+      return this.begin(input);
+    });
+    this.waitingOperations.set(key, pending);
+    try { return await pending; }
+    finally { if (this.waitingOperations.get(key) === pending) this.waitingOperations.delete(key); }
+  }
 
   begin(input: { connector: ConnectorRequestRecord["connector"]; operation: string; uri: string; mutates?: boolean; approved?: boolean }): ConnectorRequestRecord {
     const uri = normalizeUri(input.uri);
@@ -85,7 +137,11 @@ export class ConnectorPolicyGate {
       ...(allowed.governance ? { governance: allowed.governance } : {})
     };
     this.records.push(record);
+    if (this.records.length > 200) this.records.shift();
     if (!allowed.ok) throw new Error(`connector policy denied ${input.connector}:${input.operation}: ${allowed.reason}`);
+    this.admittedRequests++;
+    const budget = this.requestBudget.getStore();
+    if (budget) budget.used++;
     return record;
   }
 
@@ -102,8 +158,8 @@ export class ConnectorPolicyGate {
   }
 
   snapshot(): ConnectorQuotaSnapshot {
-    const max = { ...this.config.policy, ...this.policyPatch() }.maxNetworkRequests;
-    const used = this.records.filter(record => record.allowed).length;
+    const max = this.effectivePolicy().maxNetworkRequests;
+    const used = this.requestsUsed();
     return {
       maxNetworkRequests: max,
       usedNetworkRequests: used,
@@ -119,7 +175,7 @@ export class ConnectorPolicyGate {
     mutates: boolean,
     approved: boolean
   ): { ok: boolean; reason: string; governance?: ConnectorGovernanceDecision } {
-    const policy = { ...this.config.policy, ...this.policyPatch() };
+    const policy = this.effectivePolicy();
     const local = this.locallyAllowed(connector, uri, mutates, approved, policy);
     // The kernel's admission model runs on every call, including one the local rules already denied, so the audit
     // record always says what both models decided rather than only the first one to object.
@@ -130,8 +186,8 @@ export class ConnectorPolicyGate {
       mutates,
       approved,
       sessionId: this.sessionId,
-      requestsUsed: this.records.filter(record => record.allowed).length,
-      ...(this.lastAllowedAt.has(`${connector}:${operation}`) ? { lastRequestAt: this.lastAllowedAt.get(`${connector}:${operation}`)! } : {})
+      requestsUsed: this.requestsUsed(),
+      ...(this.lastAllowedAt.has(this.rateKey(connector, operation)) ? { lastRequestAt: this.lastAllowedAt.get(this.rateKey(connector, operation))! } : {})
     });
     const governance: ConnectorGovernanceDecision = {
       allowed: admission.allowed,
@@ -144,7 +200,7 @@ export class ConnectorPolicyGate {
     if (!admission.allowed) {
       return { ok: false, reason: `connector governance ${admission.mode}: ${admission.reasons[0] ?? "not admitted"}`, governance };
     }
-    this.lastAllowedAt.set(`${connector}:${operation}`, Date.now());
+    this.lastAllowedAt.set(this.rateKey(connector, operation), Date.now());
     return { ...local, governance };
   }
 
@@ -155,7 +211,7 @@ export class ConnectorPolicyGate {
     approved: boolean,
     policy: PolicyProfile
   ): { ok: boolean; reason: string } {
-    if (this.records.filter(record => record.allowed).length >= policy.maxNetworkRequests) return { ok: false, reason: "network request quota exhausted" };
+    if (this.requestsUsed() >= policy.maxNetworkRequests) return { ok: false, reason: "network request quota exhausted" };
     const connectorAllowed = this.connectorAllowed(connector, uri);
     if (!connectorAllowed.ok) return connectorAllowed;
     if (mutates && approved) return { ok: true, reason: "operator-approved" };
@@ -177,8 +233,8 @@ export class ConnectorPolicyGate {
     const url = new URL(uri);
     if (url.protocol !== "http:" && url.protocol !== "https:") return { ok: false, reason: `unsupported protocol ${url.protocol}` };
     if (unsafeLocalHostname(url.hostname)) return { ok: false, reason: `blocked local/private host: ${url.hostname}` };
-    if (!hostAllowlisted(url.hostname, web.allowedHosts)) return { ok: false, reason: `host not allowlisted: ${url.hostname}` };
-    return { ok: true, reason: "web allowlist matched" };
+    if (web.accessScope !== "public-internet" && !hostAllowlisted(url.hostname, web.allowedHosts)) return { ok: false, reason: `host not allowlisted: ${url.hostname}` };
+    return { ok: true, reason: web.accessScope === "public-internet" ? "public internet enabled; address guard required" : "web allowlist matched" };
   }
 }
 

@@ -205,6 +205,16 @@ describe("turn session metadata projection", () => {
               phase: "runtime.graph_slice.complete",
               observedAtMonotonicMs: performance.now()
             });
+            input.runtimeControl?.onProgress?.({
+              phase: "runtime.acquisition.primary.search",
+              observedAtMonotonicMs: performance.now(),
+              cognition: { searchResultCount: 12, requestedSourceLineages: 4 }
+            });
+            input.runtimeControl?.onProgress?.({
+              phase: "runtime.acquisition.primary.ingest",
+              observedAtMonotonicMs: performance.now(),
+              cognition: { uriHash: "uri.fixture", lineageHash: "lineage.fixture", acceptedLineageCount: 1 }
+            });
             throw new Error("turn-session-projection-captured");
           }
         }
@@ -293,7 +303,7 @@ describe("turn session metadata projection", () => {
     expect(frames[0]?.taskId).toEqual(expect.any(String));
     expect(frames[0]?.streamUrl).toContain("/api/turn/task/");
     expect(frames[0]?.cancelUrl).toContain("/api/turn/task/");
-    expect(frames.map(frame => frame.sequence)).toEqual([1, 2, 3, 4]);
+    expect(frames.map(frame => frame.sequence)).toEqual([1, 2, 3, 4, 5, 6]);
     expect(frames[1]).toMatchObject({
       schema: "scce.turn_stream.v1",
       type: "progress",
@@ -326,6 +336,16 @@ describe("turn session metadata projection", () => {
       type: "error",
       status: 500
     });
+    expect(frames[3]).toMatchObject({
+      type: "progress", phase: "runtime.acquisition.primary.search",
+      cognition: { searchResultCount: 12, requestedSourceLineages: 4 }
+    });
+    expect(frames[4]).toMatchObject({
+      type: "progress", phase: "runtime.acquisition.primary.ingest",
+      cognition: { uriHash: "uri.fixture", lineageHash: "lineage.fixture", acceptedLineageCount: 1 }
+    });
+    expect(frames[4]).not.toHaveProperty("answer");
+    expect(Number(frames[4]?.elapsedMs)).toBeGreaterThanOrEqual(Number(frames[3]?.elapsedMs));
 
     const taskId = String(frames[0]?.taskId);
     const taskStatus = await fetch(`http://127.0.0.1:${address.port}/api/turn/task/${encodeURIComponent(taskId)}`);
@@ -341,6 +361,7 @@ describe("turn session metadata projection", () => {
     });
     const replayFrames = (await replay.text()).trim().split("\n").map(line => JSON.parse(line));
     expect(replayFrames.every(frame => Number(frame.sequence) > 1)).toBe(true);
+    expect(replayFrames.find(frame => frame.phase === "runtime.acquisition.primary.ingest")?.cognition).toEqual(frames[4]?.cognition);
     expect(replayFrames.at(-1)).toMatchObject({ type: "error", taskId });
   });
 });

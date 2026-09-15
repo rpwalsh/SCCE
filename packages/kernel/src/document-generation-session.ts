@@ -80,6 +80,15 @@ export interface NarrativeConditioning {
   establishedFacts: InitialFact[];
   /** Setups planted but not yet paid off -- the pending narrative obligations the next sections carry. */
   openSetupIds: string[];
+  /**
+   * Attested setup descriptions for pending obligations.  The identifier is
+   * retained for consistency bookkeeping only; realization may use `surface`
+   * and must never turn the identifier into prose.
+   *
+   * Older persisted sessions have only `openSetupIds` and remain valid.  An
+   * opaque setup id alone deliberately provides no lexical guidance.
+   */
+  openSetupSurfaces?: Array<{ setupId: string; surface: string }>;
 }
 
 /**
@@ -92,9 +101,24 @@ export interface NarrativeConditioning {
  * the established world-state and open setups as an input.
  */
 export function narrativeConditioningForSession(session: DocumentGenerationSession): NarrativeConditioning {
+  const openSetupIds = openNarrativeSetupIds(session.narrative);
+  const open = new Set(openSetupIds);
+  const setupSurfaces = new Map<string, string>();
+  for (const event of session.narrative.events) {
+    for (const setupId of event.setupIds) {
+      if (!open.has(setupId) || setupSurfaces.has(setupId)) continue;
+      const surface = event.description.trim();
+      if (surface) setupSurfaces.set(setupId, surface);
+    }
+  }
   return {
     establishedFacts: establishedNarrativeFacts(session.narrative, session.initialFacts),
-    openSetupIds: openNarrativeSetupIds(session.narrative)
+    openSetupIds,
+    ...(setupSurfaces.size ? {
+      openSetupSurfaces: [...setupSurfaces]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([setupId, surface]) => ({ setupId, surface }))
+    } : {})
   };
 }
 

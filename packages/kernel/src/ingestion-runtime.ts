@@ -175,6 +175,7 @@ export function createIngestionRuntime(options: {
       let sources = 0;
       let fileCount = 0;
       let evidenceCount = 0;
+      const promotedEvidenceIds: EvidenceSpan["id"][] = [];
       let graphNodes = 0;
       let graphEdges = 0;
       let graphHyperedges = 0;
@@ -238,10 +239,16 @@ export function createIngestionRuntime(options: {
           : {
             bytes: Buffer.from(sourceText, "utf8"),
             text: sourceText,
-            kind: "extracted-text" as const,
-            transformId: fileDerivative?.transformId ?? "scce.html-text-surface.v1",
+            // HTML surfacing is a second coordinate-changing transform.  The
+            // upstream map cannot be carried through it: tags/comments and
+            // chrome are removed, so its byte/character offsets no longer
+            // identify the same intervals in this derivative.
+            kind: fileDerivative?.kind ?? "extracted-text" as const,
+            transformId: fileDerivative?.transformId
+              ? `${fileDerivative.transformId}+scce.html-text-surface.v1`
+              : "scce.html-text-surface.v1",
             originalCoordinateSpace: "extracted-text-utf8" as const,
-            redactionMap: fileDerivative?.redactionMap ?? []
+            redactionMap: []
           };
         const sourceBytes = derivative?.bytes ?? file.bytes;
         if (!Buffer.from(sourceText, "utf8").equals(Buffer.from(sourceBytes))) {
@@ -392,6 +399,9 @@ export function createIngestionRuntime(options: {
           await deps.storage.evidence.putEvidenceVisual({ evidenceId: admittedSpans[0].id, embedding: visual.embedding, regions: visual.regions, model: visual.model });
         }
         evidenceCount += admittedSpans.length;
+        if (decision.disposition === "promote") {
+          promotedEvidenceIds.push(...admittedSpans.slice(0, Math.max(0, 80 - promotedEvidenceIds.length)).map(span => span.id));
+        }
         if (decision.disposition !== "promote") {
           await deps.storage.ingestion.put({
             ...item.checkpoint,
@@ -1055,6 +1065,7 @@ export function createIngestionRuntime(options: {
         files: fileCount,
         sources,
         evidence: evidenceCount,
+        promotedEvidenceIds,
         graphNodes,
         graphEdges,
         graphHyperedges,

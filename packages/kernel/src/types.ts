@@ -1189,11 +1189,26 @@ export interface SourceAdmissionContext {
   promotionAuthority: "automatic" | "training" | "owner" | "review";
 }
 
+/**
+ * A source-preserving text projection produced by a bounded media adapter.
+ * `bytes` must encode `text` exactly; the original source bytes remain the
+ * `IngestInput.content` and receive their own durable source-version hash.
+ */
+export interface EvidenceDerivative {
+  bytes: Uint8Array;
+  text: string;
+  kind: "redacted-text" | "extracted-text";
+  transformId: string;
+  originalCoordinateSpace: "source-bytes" | "extracted-text-utf8";
+  redactionMap: SourceRedactionInterval[];
+}
+
 export interface IngestInput {
   path?: string;
   uri?: string;
   namespace?: string;
   content?: string | Uint8Array;
+  evidenceDerivative?: EvidenceDerivative;
   mediaType?: string;
   metadata?: JsonValue;
   sourceAdmission: SourceAdmissionContext;
@@ -1206,6 +1221,8 @@ export interface IngestResult {
   files: number;
   sources: number;
   evidence: number;
+  /** Bounded receipt of evidence admitted for live use by this ingest (at most 80 IDs). */
+  promotedEvidenceIds?: EvidenceId[];
   graphNodes: number;
   graphEdges: number;
   graphHyperedges: number;

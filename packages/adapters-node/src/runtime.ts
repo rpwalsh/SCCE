@@ -69,7 +69,7 @@ export function createNodeRuntime(config: ScceRuntimeConfig, options: NodeScceRu
   });
   const files = new NodeFileIngestAdapter(config);
   const buildTest = new NodeBuildTestAdapter(config);
-  const approvals = createApprovalSession();
+  const approvals = createApprovalSession(config);
   const connectors = new ConfiguredConnectorAdapter(config, () => approvals.policyPatch());
   const governance = createNodePostgresGovernanceProbe({
     storage,
@@ -113,6 +113,9 @@ export function createNodeRuntime(config: ScceRuntimeConfig, options: NodeScceRu
     connectors,
     approvals,
     ...(visualEmbedder ? { visualQueryEmbedder: (text: string) => visualEmbedder.embedText(text) } : {}),
+    runtimeWebAutomaticAdmission: config.connectors.web?.enabled === true
+      && config.connectors.web.accessScope === "public-internet"
+      && config.connectors.web.runtimeAcquisition === "automatic",
     policy: config.policy,
     maxChunkBytes: config.runtime.maxChunkBytes,
     informationAccess,
@@ -156,5 +159,7 @@ export function createNodeRuntime(config: ScceRuntimeConfig, options: NodeScceRu
     }),
     promotedModelId: () => relationPotentialArtifact?.modelId
   };
+  const productionTurn = kernel.turn.bind(kernel);
+  kernel.turn = input => connectors.withRequestBudget(() => productionTurn(input), input.runtimeControl?.signal);
   return { storage, kernel, connectors, approvals, executive, relationPotential, close: () => storage.close() };
 }

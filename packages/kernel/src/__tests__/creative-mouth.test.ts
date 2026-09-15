@@ -226,6 +226,13 @@ describe("creative Mouth production boundary", () => {
       dialogueUserStyleProfile: { ...input.dialogueUserStyleProfile, weights: { [INTERACTION_FEATURE_IDS.compactness]: 0.08 } }
     });
     const structuralTrace = record(record(first.realizationTrace.languageMemory).structuralCreative);
+    for (const result of [first, second, correctedTurn, compact, expanded]) {
+      const emitted = record(record(result.realizationTrace.walshSurfaceEnergy).emitted);
+      expect(result.surfaceValid).toBe(emitted.valid);
+      expect(result.hardSurfaceViolationIds).toEqual(
+        (emitted.hardViolations as Array<{ id: string }>).map(violation => violation.id)
+      );
+    }
 
     expect(first.force).toBe("creative");
     expect(first.text).toBe(second.text);

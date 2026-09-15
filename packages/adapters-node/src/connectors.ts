@@ -1,12 +1,13 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { lookup } from "node:dns/promises";
-import { isIP } from "node:net";
+import { BlockList, isIP } from "node:net";
 import { toJsonValue, type ConnectorPort, type JsonValue } from "@scce/kernel";
 import type { PolicyProfile } from "@scce/kernel";
 import type { ScceRuntimeConfig } from "./config.js";
 import { ConnectorPolicyGate, hostAllowlisted, redactHeaders, unsafeLocalHostname } from "./connector-policy.js";
 import { resolveSecret } from "./secrets.js";
+import { normalizeFetchedSource, publicDocumentExport, type FetchedSource } from "./fetched-source.js";
 
 /** How this client names itself to search hosts: identified, in the form automated clients are expected to use. */
 const WEB_SEARCH_USER_AGENT = "Mozilla/5.0 (compatible; SCCE/3.0; +local-research)";
@@ -51,7 +52,11 @@ export class ConfiguredConnectorAdapter implements ConnectorPort {
     return this.gate;
   }
 
-  async fetch(uri: string): Promise<{ uri: string; mediaType: string; bytes: Uint8Array; metadata: JsonValue }> {
+  withRequestBudget<T>(operation: () => T, signal?: AbortSignal): T {
+    return this.gate.withRequestBudget(operation, signal);
+  }
+
+  async fetch(uri: string): Promise<FetchedSource> {
     const url = new URL(uri);
     if (url.protocol === "https:" || url.protocol === "http:") return this.fetchWeb(url);
     throw new Error(`unsupported connector URI: ${uri}`);
@@ -61,9 +66,10 @@ export class ConfiguredConnectorAdapter implements ConnectorPort {
     const web = this.config.connectors.web;
     if (!web?.enabled) throw new Error("web connector is disabled in scce.config.json");
     const provider = web.search?.provider ?? "duckduckgo";
-    const results = await this.searchProvider(provider, query, Math.max(1, Math.min(50, limit)));
+    const boundedLimit = Number.isFinite(limit) ? Math.max(1, Math.min(50, Math.floor(limit))) : 10;
+    const results = await this.searchProvider(provider, query, boundedLimit);
     if (results.length === 0) throw new Error(`web search provider ${provider} returned no results`);
-    return results.slice(0, limit);
+    return results.slice(0, boundedLimit);
   }
 
   async outlookSearch(query: string, limit = 25): Promise<JsonValue> {
@@ -214,13 +220,21 @@ export class ConfiguredConnectorAdapter implements ConnectorPort {
   private async fetchWeb(url: URL) {
     const web = this.config.connectors.web;
     if (!web?.enabled) throw new Error("web connector is disabled in scce.config.json");
-    const record = this.policy().begin({ connector: "web", operation: "fetch", uri: url.toString() });
+    const record = await this.policy().beginWhenAvailable({ connector: "web", operation: "fetch", uri: url.toString() });
     try {
-      const response = await guardedWebFetch(url, web);
+      const exported = publicDocumentExport(url.toString());
+      const fetchUrl = exported ? new URL(exported.uri) : url;
+      const signal = this.policy().requestSignal();
+      const { response, finalUri, redirectChain } = await guardedWebFetch(fetchUrl, web, { signal });
       if (!response.ok) throw new Error(`fetch failed ${response.status} ${response.statusText}: ${url}`);
       const bytes = await responseBytesCapped(response, web.maxBytes, url.toString());
-      this.policy().finish(record, { status: response.status, bytes: bytes.byteLength, metadata: { mediaType: response.headers.get("content-type") ?? "application/octet-stream" } });
-      return { uri: url.toString(), mediaType: response.headers.get("content-type") ?? "application/octet-stream", bytes, metadata: toJsonValue({ status: response.status, headers: redactHeaders(response.headers), connectorQuota: this.policy().snapshot() }) };
+      const mediaType = response.headers.get("content-type") ?? "application/octet-stream";
+      const normalized = await normalizeFetchedSource({
+        uri: finalUri, mediaType, bytes,
+        metadata: toJsonValue({ status: response.status, requestedUri: url.toString(), finalUri, redirectChain, publicExport: exported ?? null, headers: redactHeaders(response.headers) })
+      }, this.config, { signal, expectedFormat: exported?.format });
+      this.policy().finish(record, { status: response.status, bytes: bytes.byteLength, metadata: { mediaType, finalUri, extracted: Boolean(normalized.evidenceDerivative) } });
+      return { ...normalized, metadata: toJsonValue({ ...(normalized.metadata as object), connectorQuota: this.policy().snapshot() }) };
     } catch (error) {
       this.policy().fail(record, error);
       throw error;
@@ -252,7 +266,9 @@ export class ConfiguredConnectorAdapter implements ConnectorPort {
     // three results returned and zero fetched, every one rejected as "host not allowlisted". Scoping asks the search
     // for pages the policy already allows. The allowlist is the operator's, so widening what can be retrieved stays
     // their decision and is made in configuration, not here.
-    url.searchParams.set("q", scopeQueryToAllowedHosts(query, this.config.connectors.web?.allowedHosts ?? [], url.hostname));
+    url.searchParams.set("q", this.config.connectors.web?.accessScope === "public-internet"
+      ? query
+      : scopeQueryToAllowedHosts(query, this.config.connectors.web?.allowedHosts ?? [], url.hostname));
     const html = await this.searchText(url, "duckduckgo", {
       headers: {
         Accept: "text/html,application/xhtml+xml",
@@ -317,9 +333,9 @@ export class ConfiguredConnectorAdapter implements ConnectorPort {
   private async searchJson(url: URL, provider: WebSearchProvider, init: RequestInit = {}): Promise<JsonValue> {
     const web = this.config.connectors.web;
     if (!web?.enabled) throw new Error("web connector is disabled in scce.config.json");
-    const record = this.policy().begin({ connector: "web", operation: `search:${provider}`, uri: url.toString() });
+    const record = await this.policy().beginWhenAvailable({ connector: "web", operation: `search:${provider}`, uri: url.toString() });
     try {
-      const response = await guardedWebFetch(url, web, init);
+      const { response } = await guardedWebFetch(url, web, { ...init, signal: this.policy().requestSignal() });
       const text = await responseTextCapped(response, web.maxBytes, url.toString());
       if (!response.ok) throw new Error(`search provider ${provider} HTTP ${response.status}: ${text.slice(0, 500)}`);
       this.policy().finish(record, { status: response.status, bytes: text.length, metadata: { provider, mediaType: response.headers.get("content-type") ?? "application/json" } });
@@ -333,9 +349,9 @@ export class ConfiguredConnectorAdapter implements ConnectorPort {
   private async searchText(url: URL, provider: WebSearchProvider, init: RequestInit = {}): Promise<string> {
     const web = this.config.connectors.web;
     if (!web?.enabled) throw new Error("web connector is disabled in scce.config.json");
-    const record = this.policy().begin({ connector: "web", operation: `search:${provider}`, uri: url.toString() });
+    const record = await this.policy().beginWhenAvailable({ connector: "web", operation: `search:${provider}`, uri: url.toString() });
     try {
-      const response = await guardedWebFetch(url, web, init);
+      const { response } = await guardedWebFetch(url, web, { ...init, signal: this.policy().requestSignal() });
       const text = await responseTextCapped(response, web.maxBytes, url.toString());
       if (!response.ok) throw new Error(`search provider ${provider} HTTP ${response.status}: ${text.slice(0, 500)}`);
       this.policy().finish(record, { status: response.status, bytes: text.length, metadata: { provider, mediaType: response.headers.get("content-type") ?? "text/html" } });
@@ -452,24 +468,36 @@ async function responseJson(response: Response): Promise<JsonValue> {
   return value as JsonValue;
 }
 
-async function guardedWebFetch(url: URL, web: NonNullable<ScceRuntimeConfig["connectors"]["web"]>, init: RequestInit = {}): Promise<Response> {
+async function guardedWebFetch(url: URL, web: NonNullable<ScceRuntimeConfig["connectors"]["web"]>, init: RequestInit = {}): Promise<{ response: Response; finalUri: string; redirectChain: string[] }> {
   let current = new URL(url.toString());
+  const redirectChain = [current.toString()];
   for (let redirect = 0; redirect <= 3; redirect++) {
-    await assertSafeWebUrl(current, web.allowedHosts);
-    const response = await fetch(current, { ...init, redirect: "manual", signal: AbortSignal.timeout(15_000) });
-    if (response.status < 300 || response.status >= 400) return response;
+    await assertSafeWebUrl(current, web);
+    const timeout = AbortSignal.timeout(15_000);
+    const response = await fetch(current, { ...init, redirect: "manual", signal: init.signal ? AbortSignal.any([init.signal, timeout]) : timeout });
+    if (response.status < 300 || response.status >= 400) return { response, finalUri: current.toString(), redirectChain };
     const location = response.headers.get("location");
-    if (!location) return response;
-    current = new URL(location, current);
+    if (!location) return { response, finalUri: current.toString(), redirectChain };
+    await response.body?.cancel();
+    const next = new URL(location, current);
+    // Search API credentials are scoped to their endpoint. A provider may
+    // redirect a public GET, but it may not forward keys or request bodies.
+    let sensitiveHeaders = false;
+    new Headers(init.headers).forEach((_value, name) => { if (/authorization|token|api.key|subscription.key/iu.test(name)) sensitiveHeaders = true; });
+    if (next.origin !== current.origin && (init.body || sensitiveHeaders))
+      throw new Error("cross-origin redirect cannot forward connector credentials or request body");
+    current = next;
+    redirectChain.push(current.toString());
   }
   throw new Error(`fetch redirect limit exceeded: ${url.origin}`);
 }
 
-async function assertSafeWebUrl(url: URL, allowedHosts: readonly string[]): Promise<void> {
+async function assertSafeWebUrl(url: URL, web: NonNullable<ScceRuntimeConfig["connectors"]["web"]>): Promise<void> {
   if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error(`unsupported web protocol: ${url.protocol}`);
+  if (url.username || url.password) throw new Error("web source URLs cannot contain credentials");
   const hostname = normalizedHostname(url.hostname);
   if (unsafeLocalHostname(hostname)) throw new Error(`blocked local/private web host: ${hostname}`);
-  if (!hostAllowlisted(hostname, allowedHosts)) throw new Error(`web host not allowlisted: ${hostname}`);
+  if (web.accessScope !== "public-internet" && !hostAllowlisted(hostname, web.allowedHosts)) throw new Error(`web host not allowlisted: ${hostname}`);
   if (isIP(hostname)) {
     if (privateOrReservedIp(hostname)) throw new Error(`blocked private/reserved web address: ${hostname}`);
     return;
@@ -500,7 +528,10 @@ async function responseBytesCapped(response: Response, maxBytes: number, label: 
       if (done) break;
       if (!value) continue;
       total += value.byteLength;
-      if (total > maxBytes) throw new Error(`response exceeded configured maxBytes: ${label}`);
+      if (total > maxBytes) {
+        await reader.cancel();
+        throw new Error(`response exceeded configured maxBytes: ${label}`);
+      }
       chunks.push(value);
     }
   } finally {
@@ -515,25 +546,20 @@ async function responseBytesCapped(response: Response, maxBytes: number, label: 
   return out;
 }
 
+const nonPublicAddresses = new BlockList();
+for (const [network, prefix] of [
+  ["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8],
+  ["169.254.0.0", 16], ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.0.2.0", 24],
+  ["192.168.0.0", 16], ["198.18.0.0", 15], ["198.51.100.0", 24], ["203.0.113.0", 24], ["224.0.0.0", 3]
+] as const) nonPublicAddresses.addSubnet(network, prefix, "ipv4");
+for (const [network, prefix] of [
+  ["::", 128], ["::1", 128], ["fc00::", 7], ["fe80::", 10], ["fec0::", 10],
+  ["ff00::", 8], ["2001:db8::", 32]
+] as const) nonPublicAddresses.addSubnet(network, prefix, "ipv6");
+
 function privateOrReservedIp(address: string): boolean {
-  const ip = address.toLocaleLowerCase();
-  if (ip.startsWith("::ffff:")) return privateOrReservedIp(ip.slice("::ffff:".length));
-  if (ip.includes(":")) return ip === "::"
-    || ip === "::1"
-    || ip.startsWith("fc")
-    || ip.startsWith("fd")
-    || ip.startsWith("fe80:")
-    || ip.startsWith("ff");
-  const octets = ip.split(".").map(part => Number(part));
-  if (octets.length !== 4 || octets.some(part => !Number.isInteger(part) || part < 0 || part > 255)) return true;
-  const [a, b] = octets as [number, number, number, number];
-  return a === 0
-    || a === 10
-    || a === 127
-    || (a === 100 && b >= 64 && b <= 127)
-    || (a === 169 && b === 254)
-    || (a === 172 && b >= 16 && b <= 31)
-    || (a === 192 && b === 168)
-    || (a === 198 && (b === 18 || b === 19))
-    || a >= 224;
+  const family = isIP(address);
+  // Native BlockList also recognizes IPv4-mapped IPv6 addresses, including
+  // hexadecimal forms such as ::ffff:7f00:1 which string-prefix tests missed.
+  return family === 0 || nonPublicAddresses.check(address, family === 6 ? "ipv6" : "ipv4");
 }

@@ -339,7 +339,8 @@ describe("syncDocumentGenerationRequestForTurn (real, durable, cross-turn persis
       pendingSections: [{ id: "middle", goal: "develop the journey" }],
       narrativeConditioning: {
         establishedFacts: [{ subjectId: "hero", factId: "location", value: "mountain" }],
-        openSetupIds: ["setup.gun-on-wall"]
+        openSetupIds: ["setup.gun-on-wall"],
+        openSetupSurfaces: [{ setupId: "setup.gun-on-wall", surface: "The hero departs for the mountain." }]
       }
     });
   });

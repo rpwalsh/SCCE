@@ -81,6 +81,10 @@
   "connectors": {
     "web": {
       "enabled": true,
+      "accessScope": "public-internet",
+      "runtimeAcquisition": "automatic",
+      "requestsPerMinute": 120,
+      "maxRequestsPerTurn": 12,
       "allowedHosts": [
         "html.duckduckgo.com",
         "duckduckgo.com",

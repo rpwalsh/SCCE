@@ -2,10 +2,11 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { traceEvent } from "./debug/trace.js";
 import type { LanguageMemoryRuntime, LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
-import { languageGenerationSurfaceAdequate } from "./language-memory-runtime.js";
+import { languageGenerationSentenceEndingsAdequate, languageGenerationSurfaceAdequate } from "./language-memory-runtime.js";
 import { namedSubjectAnchors } from "./kernel-answer-primitives.js";
-import { collapseSurfaceWhitespace, splitSurfaceSentences, surfaceUnits } from "./surface-linguistics.js";
+import { collapseSurfaceWhitespace, sourceDerivedCasingHints, splitSurfaceSentences, surfaceUnits } from "./surface-linguistics.js";
 import type { LanguageProfile } from "./types.js";
+import type { NarrativeConditioning } from "./document-generation-session.js";
 
 
 export interface CreativeSectionRealizationInput {
@@ -14,7 +15,10 @@ export interface CreativeSectionRealizationInput {
   targetLanguageProfile?: LanguageProfile;
   requestText: string;
   sectionGoal: string;
-  narrativeConditioning?: readonly string[];
+  /** Prior realized prose supplies continuation context, never typed state IDs. */
+  priorSurfaceTexts?: readonly string[];
+  /** The committed narrative's exact typed state, kept separate from lexical context. */
+  narrativeConditioning?: NarrativeConditioning;
   /** Words this section's prose should favor -- typically the request's own retrieved-evidence vocabulary, so word choice stays on-topic instead of drifting into an unrelated source's fingerprint. */
   topicVocabulary?: readonly string[];
   /**
@@ -54,7 +58,7 @@ export interface CreativeSectionRealization {
  * reason; prompts are never content.
  */
 export function realizeCreativeSection(input: CreativeSectionRealizationInput): CreativeSectionRealization {
-  const conditioning = (input.narrativeConditioning ?? []).filter(Boolean).slice(0, 6);
+  const conditioning = (input.priorSurfaceTexts ?? []).filter(Boolean).slice(-6);
   // Proper-noun anchors only (casing shape, sentence-position corrected):
   // a purely structural signal, not a ranking over every word by length.
   // contentUnits' length ranking had no way to tell a request's own
@@ -92,7 +96,7 @@ export function realizeCreativeSection(input: CreativeSectionRealizationInput): 
   // subject's own words, so every name reaching the surface comes from
   // evidence and was rendered lowercase -- "Augusta ada king countess"
   // instead of "Augusta Ada King, Countess" (verified live).
-  const properNounCasing = properNounCasingHints([
+  const properNounCasing = sourceDerivedCasingHints([
     input.requestText,
     input.sectionGoal,
     ...conditioning,
@@ -137,6 +141,7 @@ export function realizeCreativeSection(input: CreativeSectionRealizationInput): 
       id: "frame:creative-section",
       role: "answer",
       force: "creative",
+      narrativeConditioning: input.narrativeConditioning,
       // Whole-sentence atoms would force the output to embed the prompt --
       // which the echo gate forbids. Unit atoms and terms make coverage
       // mean "on topic", and the required-term seed steers the
@@ -174,7 +179,8 @@ export function realizeCreativeSection(input: CreativeSectionRealizationInput): 
   };
   const text = generation.text.trim();
   if (!text) return { text: "", accepted: false, reason: "empty-generation", generationAudit };
-  if (!languageGenerationSurfaceAdequate(generation)) return { text: "", accepted: false, reason: "inadequate-surface", generationAudit };
+  if (!languageGenerationSurfaceAdequate(generation)
+    || !languageGenerationSentenceEndingsAdequate(text, input.state)) return { text: "", accepted: false, reason: "inadequate-surface", generationAudit };
   if (surfaceEchoesPrompt(text, input.sectionGoal) || surfaceEchoesPrompt(text, input.requestText)) {
     return { text: "", accepted: false, reason: "prompt-echo", generationAudit };
   }
@@ -188,37 +194,6 @@ function stableRotation(value: string): number {
     hash = Math.imul(hash, 16777619);
   }
   return hash >>> 0;
-}
-
-/**
- * Training symbolization lowercases every symbol, so word casing is not
- * recoverable from the generation model -- only from the request text
- * itself. A Title-Case token that is not the sentence's first word is,
- * structurally, a proper noun (script-agnostic casing-shape check, no
- * word list); its lowercase form maps back to its original casing.
- */
-function properNounCasingHints(texts: readonly string[]): Record<string, string> {
-  const hints: Record<string, string> = {};
-  for (const text of texts) {
-    // Skip the first word of every SENTENCE, not just the first word of
-    // the whole string -- conditioning is prior generated prose (often
-    // several sentences), and treating only string-index-0 as sentence-
-    // initial mislabeled every other sentence's ordinary opener ("The",
-    // "They") as a proper noun, then applied that casing mid-sentence
-    // everywhere the word recurred (verified live).
-    for (const sentence of splitSurfaceSentences(text)) {
-      const words = collapseSurfaceWhitespace(sentence).split(/\s+/u).filter(Boolean);
-      for (let index = 1; index < words.length; index++) {
-        const word = words[index]!.replace(/^[^\p{L}]+|[^\p{L}]+$/gu, "");
-        if (word.length < 3) continue;
-        const [first, ...rest] = [...word];
-        if (!first || first !== first.toLocaleUpperCase() || first === first.toLocaleLowerCase()) continue;
-        if (rest.some(char => char !== char.toLocaleLowerCase())) continue;
-        hints[word.toLocaleLowerCase()] = word;
-      }
-    }
-  }
-  return hints;
 }
 
 function continuationUnits(text: string): string[] {

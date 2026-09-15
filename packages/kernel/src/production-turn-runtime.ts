@@ -12,7 +12,7 @@ import { assistantForceClass, assistantForceDecision, unresolvedObligationCount 
 import { assistantForceProposalFromCandidateClaimBasis, attachCognitiveProposal, attachInventionConstruct, cognitiveProposalForCandidate, selectedInventionForCandidate } from "./candidate-construct-binding.js";
 import { candidateIsSafeNonExecutingPlan, candidateUsesNonFactualPlanSemantics, selectedCandidateEntailment } from "./candidate-proof-policy.js";
 import { createCandidateEngine, type CandidateField, type CandidateSurface } from "./candidate.js";
-import { candidateSurvivesRealizationContract, compileRealizationContract, requestRelationUnits, semanticAnswerConstructFacts, type SemanticAnswerConstructFact } from "./semantic-answer-construct.js";
+import { candidateSurvivesRealizationContract, compileRealizationContract, requestRelationUnits, semanticAnswerConstructFacts, type SemanticAnswerConstructFact, type SemanticRealizationContract } from "./semantic-answer-construct.js";
 import { namedSubjectAnchors } from "./kernel-answer-primitives.js";
 import { createPfaceEstimator } from "./causal-estimation.js";
 import { createCcrEngine } from "./ccr.js";
@@ -28,6 +28,7 @@ import {
 } from "./translation-correction-engine.js";
 import { compileCreativeRequestFrameFromCompatibilityModels, type CreativeRequestFrame } from "./creative-event-compatibility.js";
 import { createCounterfactualCognition } from "./counterfactual-cognition.js";
+import { compileCounterclaimSearchIntent, realizeCounterclaimSearchIntent } from "./counterclaim-search.js";
 import { traceEvent } from "./debug/trace.js";
 import { dialogueTargetProfileId, updateDialogueState } from "./dialogue-pragmatics.js";
 import { dialogueInterpretationAdjustmentsForConversation, styleProfileFromTargetProfilePatterns } from "./dialogue-learning.js";
@@ -143,6 +144,7 @@ import {
   createMouth,
   surfaceCarriesInternalFeatureKeys,
   type MouthSemanticInput,
+  type SpeakInput,
   type SpokenOutput
 } from "./mouth.js";
 import { createMultilingualAcquisitionEngine } from "./multilingual-acquisition.js";
@@ -188,7 +190,7 @@ import {
 import { hybridRecall } from "./retrieval.js";
 import { captureResourceUsageSnapshot, measureResourceUsageDelta } from "./resource-usage-accounting.js";
 import { createRuntimeAcquisition } from "./runtime-acquisition.js";
-import { admissionTierDiagnostics, evidenceDiscriminatesAskedRelation, localEvidenceAnswerIsQuotationRecall, preferredLocalEvidenceAnswer, requestContentEvidenceUnits, requestRelationBeyondSourceIdentity, sourceEvidenceAnchorsForRequest } from "./local-evidence-runtime.js";
+import { admissionTierDiagnostics, evidenceDiscriminatesAskedRelation, localEvidenceAnswerIsQuotationRecall, preferredLocalEvidenceAnswer, requestContentEvidenceUnits, requestRelationBeyondSourceIdentity, requestUnitSharesStem, sourceEvidenceAnchorsForRequest } from "./local-evidence-runtime.js";
 import { normalizePriorKey, splitPriorUnits } from "./kernel-answer-primitives.js";
 import { codeLanguageForRequirementState, codeRequestObservedRequirements, codeRequestSignal, typedProgramBehaviorFromMetadata } from "./code-request.js";
 import { attachLearnedGraphPriorConstruct } from "./learned-graph-prior-runtime.js";
@@ -854,7 +856,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
   return motion?.status === "hydrated" && motion.ingestedEvidenceCount > 0;
 }
 
-  async function turn(input: OwnerInput): Promise<TurnResult> {
+  async function turn(input: OwnerInput, acquisitionContinuation?: RuntimeReplanMotion): Promise<TurnResult> {
 
       return withBufferedEventWrites(async () => {
       const turnStarted = Date.now();
@@ -1265,7 +1267,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           : undefined;
       const documentGeneration = documentGenerationResult ? toJsonValue(documentGenerationResult) : undefined;
       const runtimeDiagnosticRequested = explicitRuntimeDiagnosticRequest(input.metadata);
-      const inheritedRuntimeMotion = runtimeReplanMotionFromMetadata(input.metadata, hasher.digestHex(input.text));
+      const inheritedRuntimeMotion = acquisitionContinuation
+        ?? runtimeReplanMotionFromMetadata(input.metadata, hasher.digestHex(input.text));
       const explicitAuthority = requestedAuthorityFromTurnInput(input, translationTarget);
       const workspacePlanContext = runtimeWorkspacePlanContext(input.metadata, input.text);
       // Routing control first, and from its own cache when hydration did not carry it.
@@ -1620,7 +1623,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const ownerChatNeedsNoRetrieval = turnSignals.sentenceSequences.length === 0
         && turnSignals.namedSubjects.length === 0
         && requestedAuthority === "reasoned"
-        && requirementField.sourceDependence <= requirementField.noveltyDemand / 4
+        && (requirementField.sourceDependence <= requirementField.noveltyDemand / 4
+          || sourceIndependentDialogueRequirements(requirementField))
         && !discourseEvidenceBound
         && metadataEvidenceIds.size === 0
         && explicitContextEvidenceIds.size === 0;
@@ -1794,6 +1798,44 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             support: { escalated: false, deadlineAllowed: false }
           });
         }
+      }
+      // Ingestion already knows which spans it admitted. A bounded retrieval
+      // index can legitimately miss those spans immediately after a fetch;
+      // rediscovering them by prose made the recovery turn lose its own work.
+      // Only the internal continuation supplies these IDs. They seed the same
+      // graph resolver and still pass source admission, proof and contradiction
+      // checks below; an ID is neither an answer nor a semantic-frame binding.
+      const acquiredEvidenceIds = acquisitionContinuation?.ingestedEvidenceIds ?? [];
+      if (acquiredEvidenceIds.length) {
+        const acquiredSlice = await evaluationComponent(
+          "graph",
+          "graph.resolve.acquired_evidence",
+          () => evaluationComponent(
+            "shard-router",
+            "graph.resolve.acquired_evidence.shard-router",
+            () => graphForEvidenceIds(acquiredEvidenceIds, { adaptiveWidening: true }),
+            () => graphForEvidenceIdsUnrouted(acquiredEvidenceIds)
+          ),
+          () => evidenceOnlyForIds(acquiredEvidenceIds)
+        );
+        const promotedEvidence = acquiredSlice.evidence.filter(span => span.status === "promoted");
+        const acquiredGraph = graphFilteredToEvidence(acquiredSlice.graph, promotedEvidence);
+        graphSlice = {
+          ...graphSlice,
+          evidence: mergeEvidenceSpans([...graphSlice.evidence, ...promotedEvidence]),
+          graph: {
+            ...graphSlice.graph,
+            nodes: uniqueRecordsById([...graphSlice.graph.nodes, ...acquiredGraph.nodes], graphSlice.graph.nodes.length + acquiredGraph.nodes.length),
+            edges: uniqueRecordsById([...graphSlice.graph.edges, ...acquiredGraph.edges], graphSlice.graph.edges.length + acquiredGraph.edges.length),
+            hyperedges: uniqueRecordsById([...graphSlice.graph.hyperedges, ...acquiredGraph.hyperedges], graphSlice.graph.hyperedges.length + acquiredGraph.hyperedges.length)
+          }
+        };
+        kernelTrace({
+          stage: "graph.resolve.acquired_evidence",
+          label: "kernel.turn.graph_slice",
+          counts: { requested: acquiredEvidenceIds.length, evidence: promotedEvidence.length, nodes: acquiredGraph.nodes.length, edges: acquiredGraph.edges.length },
+          support: { guardId: acquisitionContinuation!.guardId }
+        });
       }
       // Kicked off here (not awaited) so it can resolve concurrently with
       // the rest of turn processing; only awaited later, right where this
@@ -3733,6 +3775,27 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         }
       });
       let authorityCandidateField = admitCandidatesForAuthority(candidateField, requestedAuthority);
+      let counterclaimSearchAttempt: ReturnType<typeof realizeCounterclaimSearchIntent> | undefined;
+      const counterclaimSearchForAcquisition = () => {
+        if (!counterclaimSearchAttempt) {
+          counterclaimSearchAttempt = realizeCounterclaimSearchIntent({
+            intent: compileCounterclaimSearchIntent({ proof: semanticProof, hasher }),
+            originalQuerySurface: input.text,
+            languageMemory: languageMemoryRuntime,
+            state: surfaceLanguageMemory,
+            targetLanguageProfile: surfaceLanguage.surfaceProfile ?? selectedSurfaceProfile,
+            targetLanguageId: surfaceLanguageMemory.scope.languageId ?? locale,
+            interpretSurface: surface => semanticProofSystem.atomizeClaim(surface),
+            hasher
+          });
+          kernelTrace({
+            stage: "runtime.acquisition.counterclaim.prepare",
+            label: "kernel.turn",
+            support: { counterclaimSearch: counterclaimSearchAttempt.audit }
+          });
+        }
+        return counterclaimSearchAttempt.request;
+      };
       let runtimeSurfaceMotion: RuntimeReplanMotion | undefined;
       const candidateMotionTrigger = requestedAuthority === "creative" || runtimeDiagnosticRequested
         ? undefined
@@ -3754,6 +3817,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           if (recoveryDecision?.allowed !== false || consentStanding) {
             motion = await learnHydrateReplan({
               ownerInput: input,
+              onProgress: input.runtimeControl?.onProgress,
+              adversarialSearch: counterclaimSearchForAcquisition(),
               episodeId,
               requestedAuthority,
               trigger,
@@ -3765,7 +3830,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
               return turn({
                 ...input,
                 metadata: metadataWithRuntimeReplanMotion(input.metadata, motion)
-              });
+              }, motion);
             }
           }
           // Only when the acquisition never ran. This overwrote the real motion unconditionally, so an attempt that
@@ -4562,7 +4627,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           hasSemanticConstruct: Boolean(semanticAnswerConstructFacts(spokenConstructGraph))
         }
       });
-      const realizeOnce = (realizationInput: typeof speakInput) => evaluationComponent(
+      const realizeOnce = (realizationInput: SpeakInput) => evaluationComponent(
         "learned-mouth",
         "mouth.realize",
         () => learnedMouthDecision?.allowed === false
@@ -4722,7 +4787,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             // cast appears at least once, not just whichever the rotation
             // happens to favor this section.
             const notYetIntroduced = conditioning.establishedFacts
-              .filter(fact => fact.factId === "introduced" && fact.value !== true)
+              .filter(fact => fact.factId === "introduced" && fact.value !== true
+                && creativeCastSubjectIds.includes(fact.subjectId))
               .map(fact => fact.subjectId);
             const sectionTopicVocabulary = [...creativeTopicVocabulary, ...notYetIntroduced.flatMap(id => [id, id, id])];
             // A short local-context model can converge on the same
@@ -4745,7 +4811,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
                 targetLanguageProfile: speakInput.languageProfile,
                 requestText: input.text,
                 sectionGoal: section.goal,
-                narrativeConditioning: priorSectionTexts.slice(-2),
+                priorSurfaceTexts: priorSectionTexts.slice(-2),
+                narrativeConditioning: conditioning,
                 topicVocabulary: sectionTopicVocabulary,
                 resolvedCastSubjectIds: creativeCastSubjectIds,
                 casingSourceTexts: creativeSourceEvidence.slice(0, 4).map(span => span.text),
@@ -4790,7 +4857,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
                   : {})
               };
             }
-            const sectionSpoken = await realizeOnce({ ...speakInput, requestText: section.goal });
+            const sectionSpoken = await realizeOnce({ ...speakInput, requestText: section.goal, narrativeConditioning: conditioning });
             return { text: String(sectionSpoken.text ?? "") };
           }
         });
@@ -4831,6 +4898,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         if (recoveryDecision?.allowed !== false) {
           const motion = await learnHydrateReplan({
             ownerInput: input,
+            onProgress: input.runtimeControl?.onProgress,
+            adversarialSearch: counterclaimSearchForAcquisition(),
             episodeId,
             requestedAuthority,
             trigger: "coherence_support_failure",
@@ -4843,7 +4912,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             return turn({
               ...input,
               metadata: metadataWithRuntimeReplanMotion(input.metadata, motion)
-            });
+            }, motion);
           }
         }
         events.push(await append(eventFactory.create({
@@ -4866,30 +4935,35 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       if (!spoken.text.trim() && candidateIsSafeNonExecutingPlan(judged.selected)) {
         spoken = await deterministicMouth.speak(speakInput);
       }
-      // The learned lane realizing nothing is not the same as having nothing to say.
-      //
-      // Learned language memory is the primary realization lane, and when it produces no surface the selected
-      // candidate is still the selected candidate: the deterministic Mouth realizes that same candidate from its own
-      // bound evidence, adding no fact. Without this the turn fell straight through to the rejected-candidate
-      // fallback, which cannot help when the answer belongs to the winner. Measured on the sealed set: the
-      // no_language_memory condition scored six questions the full condition did not, and three of those six were
-      // turns where the full condition emitted an empty surface while holding the exact source sentence -- "The
-      // fourth added Worf (Michael Dorn)..." among them.
-      // A source-grounded answer is a contiguous excerpt of one admitted span, or it is a stitching failure.
-      //
-      // Two more ways the learned lane loses an answer, both measured on the sealed set under its own source
-      // allowlist. It stops inside one: "It was described by ____" realized as "TrekMovie" where the source reads
-      // "TrekMovie.com", because the learned units end at a boundary the source does not have. And it joins across
-      // one: "...Babbage's work on the analytical engine Lovelace translated an article by the military..." is two
-      // disjoint sentences run together, which reads as prose, passes every structural check, and is not something
-      // any source says. The second is the more serious: this system's entire claim is that a factual answer is the
-      // source's own words, and a surface welded from two places is not.
-      //
-      // So on a factual or reasoned turn bound to direct evidence, the learned surface must be a contiguous excerpt
-      // of an admitted span. When it is not, and the source-bound realization of the same candidate is, the
-      // source-bound one is taken. The second realization only runs for a surface that is empty, short enough to be
-      // a truncation, or already failing the excerpt test, so a well-formed learned answer costs nothing.
-      const excerptGoverned = (requestedAuthority === "factual" || requestedAuthority === "reasoned") && selectedEvidence.length > 0;
+      // Empty or truncated realization can recover the same selected
+      // candidate from its bound evidence. Exact-source tasks also retain
+      // their contiguous-excerpt check. A reasoned/dialogue surface that
+      // independently satisfies its meaning contract and final quality
+      // gates must survive this fallback; substring inequality alone does
+      // not invalidate a supported realization.
+      const preserveReasonedRealization = reasonedRealizationPreservesContract({
+        requestedAuthority,
+        requirementField,
+        spoken,
+        realizationContract,
+        closedClassWords: corpusFunctionSymbols(),
+        hasher
+      });
+      // A source-independent dialogue turn has no source contract to
+      // preserve. Treating it as a failed source realization made a valid,
+      // short conversational answer fall through to the deterministic
+      // source-oriented mouth merely because it was under the excerpt
+      // recovery length. The learned requirement field authorizes this
+      // distinct surface contract: a valid response with no evidence refs.
+      const preserveSourceIndependentDialogue = sourceIndependentDialogueSurfaceAcceptable({
+        requestedAuthority,
+        requirementField,
+        spoken,
+        selectedEvidenceCount: selectedEvidence.length
+      });
+      const excerptGoverned = !preserveReasonedRealization && !preserveSourceIndependentDialogue
+        && (requestedAuthority === "factual" || requestedAuthority === "reasoned")
+        && selectedEvidence.length > 0;
       const admittedSpanText = excerptGoverned
         ? selectedEvidence.map(span => tidySurfaceText(String(span.text ?? span.textPreview ?? "")))
         : [];
@@ -4900,7 +4974,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       };
       const learnedSurface = spoken.text.trim();
       const learnedNotAnExcerpt = excerptGoverned && learnedSurface.length > 0 && !isContiguousExcerpt(learnedSurface);
-      if (!learnedSurface || learnedSurface.length <= 96 || learnedNotAnExcerpt) {
+      if (!learnedSurface || (!(preserveReasonedRealization || preserveSourceIndependentDialogue)
+        && (learnedSurface.length <= 96 || learnedNotAnExcerpt))) {
         const deterministic = await deterministicMouth.speak(speakInput);
         const sourceBound = deterministic.text.trim();
         const truncated = Boolean(learnedSurface) && sourceBound.length > learnedSurface.length * 1.5 && sourceBound.includes(learnedSurface);
@@ -5436,6 +5511,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         if (recoveryDecision?.allowed !== false) {
           const motion = await learnHydrateReplan({
             ownerInput: input,
+            onProgress: input.runtimeControl?.onProgress,
+            adversarialSearch: counterclaimSearchForAcquisition(),
             episodeId,
             requestedAuthority,
             trigger: "coherence_support_failure",
@@ -5448,7 +5525,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             return turn({
               ...input,
               metadata: metadataWithRuntimeReplanMotion(input.metadata, motion)
-            });
+            }, motion);
           }
           events.push(await append(eventFactory.create({
             episodeId,
@@ -6717,4 +6794,56 @@ function projectSessionEvidenceWith(
     // A projection that cannot be built must not fail the turn: the evidence path is unchanged and still answers.
     return undefined;
   }
+}
+
+/** A verified reasoned realization need not be a contiguous source quotation. */
+export function reasonedRealizationPreservesContract(input: {
+  requestedAuthority: RequestedAuthority;
+  requirementField: Pick<TurnRequirementField, "sourceDependence" | "semanticPreservation" | "inferentialDepth" | "dialogueDependence">;
+  spoken: Pick<SpokenOutput, "text" | "surfaceValid" | "evidenceRefs">;
+  realizationContract?: SemanticRealizationContract;
+  closedClassWords?: ReadonlySet<string>;
+  hasher?: ReturnType<typeof createHasher>;
+}): boolean {
+  const { requirementField: field, realizationContract: contract, spoken } = input;
+  if (input.requestedAuthority !== "reasoned" || !spoken.surfaceValid || !spoken.text.trim()) return false;
+  // Explicit source-preserving tasks retain their exact-excerpt contract.
+  if (field.semanticPreservation >= 0.6 || field.sourceDependence >= 0.6
+    || field.sourceDependence >= Math.max(field.inferentialDepth, field.dialogueDependence)) return false;
+  if (!contract?.evidenceIds.length
+    || !contract.evidenceIds.every(id => spoken.evidenceRefs.some(ref => String(ref) === id))) return false;
+  // The atomizer can miss an added clause when its vocabulary has no
+  // learned relation for it. Do not let that blind spot widen this exception.
+  const fact = contract.sourceFact;
+  const licensedUnits = surfaceUnits([fact.subject, fact.predicate, fact.object].join(" ").toLocaleLowerCase());
+  if (surfaceUnits(spoken.text.toLocaleLowerCase()).some(unit =>
+    !input.closedClassWords?.has(unit)
+    && !licensedUnits.some(licensed => requestUnitSharesStem(unit, licensed)))) return false;
+  return candidateSurvivesRealizationContract(spoken.text, contract, input.hasher).survives;
+}
+
+/** Learned dialogue intent can be source-independent without requesting novelty. */
+export function sourceIndependentDialogueRequirements(field: Pick<TurnRequirementField,
+  "sourceDependence" | "dialogueDependence" | "externalTruthAuthority" | "semanticPreservation"
+>): boolean {
+  return field.dialogueDependence > field.externalTruthAuthority
+    && field.sourceDependence <= field.dialogueDependence / 4
+    && field.semanticPreservation < 0.6;
+}
+
+/** A source-free dialogue surface belongs to its own authority lane. */
+export function sourceIndependentDialogueSurfaceAcceptable(input: {
+  requestedAuthority: RequestedAuthority;
+  requirementField: Pick<TurnRequirementField,
+    "sourceDependence" | "dialogueDependence" | "externalTruthAuthority" | "semanticPreservation"
+  >;
+  spoken: Pick<SpokenOutput, "text" | "surfaceValid" | "evidenceRefs">;
+  selectedEvidenceCount: number;
+}): boolean {
+  return input.requestedAuthority === "reasoned"
+    && input.selectedEvidenceCount === 0
+    && input.spoken.surfaceValid
+    && input.spoken.text.trim().length > 0
+    && input.spoken.evidenceRefs.length === 0
+    && sourceIndependentDialogueRequirements(input.requirementField);
 }

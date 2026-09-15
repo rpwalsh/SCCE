@@ -70,4 +70,40 @@ describe("runtimeMotionCandidateField (plan item: kernel-training sessionBound i
     expect(result.candidates.some(candidate => candidate.kind === "dialogue-continuation")).toBe(true);
     expect(result.surfaceMass.map(row => row.candidateId)).toContain(realAnswer.id);
   });
+
+  it("never turns search lead titles, snippets, or URIs into the terminal motion surface", () => {
+    const hasher = createHasher();
+    const motion: RuntimeReplanMotion = {
+      schema: "scce.runtime_motion.learn_hydrate_replan.v1",
+      motionId: "motion.learn_hydrate_replan",
+      guardId: "guard:no-parrot",
+      attempt: 1,
+      trigger: "coherence_support_failure",
+      requestedAuthority: "factual",
+      parentEpisodeId: "episode:no-parrot",
+      queryHash: "hash:no-parrot",
+      connectorConfigured: true,
+      status: "held_for_review",
+      searchResultCount: 12,
+      fetchedSourceCount: 4,
+      ingestedSourceCount: 4,
+      ingestedEvidenceCount: 0,
+      sourceUris: ["https://example.invalid/lead"],
+      sourceSurfaces: ["A copied search snippet must never be spoken as an answer."],
+      failures: [],
+      priorRejectedHypotheses: []
+    };
+    const result = runtimeMotionCandidateField({
+      base: { candidates: [], surfaceMass: [], audit: {}, scoreTrace: [] },
+      requestText: "What controls Pump Alpha?",
+      authority: "factual",
+      motion,
+      unresolvedSlots: ["controller"],
+      hasher
+    });
+    const continuation = result.candidates.find(candidate => candidate.kind === "dialogue-continuation");
+    expect(continuation?.answer).toBeTruthy();
+    expect(continuation?.answer).not.toContain("copied search snippet");
+    expect(continuation?.answer).not.toContain("example.invalid");
+  });
 });

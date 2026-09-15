@@ -3,9 +3,11 @@
 import { createHash } from "node:crypto";
 import type { ApprovalPort, CapabilityPlan, JsonValue, PolicyProfile } from "@scce/kernel";
 import { canonicalStringify, toJsonValue } from "@scce/kernel";
+import type { ScceRuntimeConfig } from "./config.js";
 
 export interface ApprovalSnapshot {
   operatorGrant: boolean;
+  runtimeSearchConsent?: boolean;
   pending: Array<ApprovalRecord>;
   approved: Array<ApprovalRecord>;
 }
@@ -25,8 +27,11 @@ export class ApprovalSession implements ApprovalPort {
   private readonly pending = new Map<string, ApprovalRecord>();
   private readonly approved = new Map<string, ApprovalRecord>();
 
+  constructor(private readonly runtimeSearchConsent = false) {}
+
   isApproved(input: { capabilityId: string; input: JsonValue }): boolean {
     if (this.operatorGrant) return true;
+    if (this.runtimeSearchConsent && input.capabilityId === "network.search") return true;
     return this.approved.has(fingerprint(input.capabilityId, input.input));
   }
 
@@ -73,14 +78,15 @@ export class ApprovalSession implements ApprovalPort {
   snapshot(): ApprovalSnapshot {
     return {
       operatorGrant: this.operatorGrant,
+      runtimeSearchConsent: this.runtimeSearchConsent,
       pending: [...this.pending.values()].sort((a, b) => b.createdAt - a.createdAt),
       approved: [...this.approved.values()].sort((a, b) => (b.approvedAt ?? 0) - (a.approvedAt ?? 0)).slice(0, 100)
     };
   }
 }
 
-export function createApprovalSession(): ApprovalSession {
-  return new ApprovalSession();
+export function createApprovalSession(config?: Pick<ScceRuntimeConfig, "connectors">): ApprovalSession {
+  return new ApprovalSession(config?.connectors.web?.enabled === true && config.connectors.web.runtimeAcquisition === "automatic");
 }
 
 function recordFromPlan(plan: CapabilityPlan, reason: string): ApprovalRecord {
