@@ -121,8 +121,8 @@ describe("bounded fetched document derivatives", () => {
     expect(await readdir(tempRoot)).toEqual([]);
   });
 
-  it("surfaces a PDF exceeding the bounded scanned-page limit as the explicit OCR-unavailable boundary", async () => {
-    await expect(normalizeFetchedSource(source(emptyTextPdf(), "application/pdf", "https://publisher.example/scan.pdf"), config)).rejects.toThrow("embedded_text_absent/ocr_unavailable");
+  it("surfaces a scanned PDF exceeding the bounded total pixel budget as the explicit OCR-unavailable boundary", async () => {
+    await expect(normalizeFetchedSource(source(emptyTextPdf(12, 2450, 2450), "application/pdf", "https://publisher.example/scan.pdf"), config)).rejects.toThrow("embedded_text_absent/ocr_unavailable");
     expect(await readdir(tempRoot)).toEqual([]);
   });
 
@@ -136,6 +136,14 @@ describe("bounded fetched document derivatives", () => {
       typedExtraction: { scannedPdfOcr: { profile: "eng", renderer: "pdfjs-napi-canvas", engine: "tesseract.js-wasm" } }
     });
   }, 30000);
+
+  it("OCRs every page of a nine-page scanned PDF instead of refusing it for page count", async () => {
+    const result = await normalizeFetchedSource(source(scannedTextPdf("TEST", 9), "application/pdf", "https://publisher.example/scanned.pdf"), config);
+    const pages = result.evidenceDerivative?.text.split("\f") ?? [];
+    expect(pages).toHaveLength(9);
+    for (const page of pages) expect(page).toMatch(/test/i);
+    expect(result.metadata).toMatchObject({ normalization: { extractor: "pdfjs-rendered-tesseract-wasm-worker" } });
+  }, 60000);
 
   it("passes a requested local OCR profile through scanned PDF fallback", async () => {
     const input = source(scannedTextPdf("TEST"), "application/pdf", "https://publisher.example/scanned.pdf");
@@ -267,11 +275,11 @@ function textBitmap(text: string): Buffer {
   return bytes;
 }
 
-function emptyTextPdf(): Buffer {
+function emptyTextPdf(pageCount: number, width: number, height: number): Buffer {
   const objects = [
     "<< /Type /Catalog /Pages 2 0 R >>",
-    "<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R 6 0 R 7 0 R 8 0 R 9 0 R 10 0 R 11 0 R] /Count 9 >>",
-    ...Array.from({ length: 9 }, () => "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 144] >>")
+    `<< /Type /Pages /Kids [${Array.from({ length: pageCount }, (_, index) => `${3 + index} 0 R`).join(" ")}] /Count ${pageCount} >>`,
+    ...Array.from({ length: pageCount }, () => `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${width} ${height}] >>`)
   ];
   let pdf = "%PDF-1.4\n";
   const offsets = [0];
@@ -285,15 +293,16 @@ function emptyTextPdf(): Buffer {
   return Buffer.from(`${pdf}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`, "ascii");
 }
 
-function scannedTextPdf(text: string): Buffer {
+function scannedTextPdf(text: string, pageCount = 1): Buffer {
   const image = textRaster(text);
   const content = Buffer.from(`q\n${image.width} 0 0 ${image.height} 0 0 cm\n/Im0 Do\nQ`, "ascii");
+  const pageIds = Array.from({ length: pageCount }, (_, index) => 5 + index);
   const objects = [
     Buffer.from("<< /Type /Catalog /Pages 2 0 R >>", "ascii"),
-    Buffer.from("<< /Type /Pages /Kids [3 0 R] /Count 1 >>", "ascii"),
-    Buffer.from(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${image.width} ${image.height}] /Resources << /XObject << /Im0 5 0 R >> >> /Contents 4 0 R >>`, "ascii"),
+    Buffer.from(`<< /Type /Pages /Kids [${pageIds.map(id => `${id} 0 R`).join(" ")}] /Count ${pageCount} >>`, "ascii"),
     Buffer.concat([Buffer.from(`<< /Length ${content.length} >>\nstream\n`, "ascii"), content, Buffer.from("\nendstream", "ascii")]),
-    Buffer.concat([Buffer.from(`<< /Type /XObject /Subtype /Image /Width ${image.width} /Height ${image.height} /ColorSpace /DeviceGray /BitsPerComponent 8 /Length ${image.pixels.length} >>\nstream\n`, "ascii"), image.pixels, Buffer.from("\nendstream", "ascii")])
+    Buffer.concat([Buffer.from(`<< /Type /XObject /Subtype /Image /Width ${image.width} /Height ${image.height} /ColorSpace /DeviceGray /BitsPerComponent 8 /Length ${image.pixels.length} >>\nstream\n`, "ascii"), image.pixels, Buffer.from("\nendstream", "ascii")]),
+    ...pageIds.map(() => Buffer.from(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${image.width} ${image.height}] /Resources << /XObject << /Im0 4 0 R >> >> /Contents 3 0 R >>`, "ascii"))
   ];
   const chunks: Buffer[] = [Buffer.from("%PDF-1.4\n", "ascii")];
   const offsets = [0];
