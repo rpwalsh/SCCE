@@ -44,6 +44,7 @@ type TurnPersistence = {
   readonly sessionAudit?: JsonValue;
   readonly timing: Record<string, number>;
 };
+type TurnProgress = Parameters<NonNullable<NonNullable<OwnerInput["runtimeControl"]>["onProgress"]>>[0];
 type ScceTraceHandle = Parameters<typeof traceEvent>[0];
 
 const HYDRATED_RUNTIME_READY_TTL_MS = 5 * 60 * 1000;
@@ -3892,18 +3893,26 @@ async function streamTurnResponse(input: {
     writeTurnStreamFrame(res, turnTaskWireFrame(frame));
   });
   res.once("close", () => unsubscribe?.());
+  let latestProgressPhase = "runtime.request.accepted";
+  let latestProgressAtMonotonicMs = requestTiming.startedMonotonicMs;
+  const appendProgress = (progress: TurnProgress): void => {
+    latestProgressPhase = progress.phase;
+    latestProgressAtMonotonicMs = progress.observedAtMonotonicMs;
+    registry.append(task.taskId, {
+      type: "progress",
+      requestId,
+      phase: progress.phase,
+      elapsedMs: progress.observedAtMonotonicMs - requestTiming.startedMonotonicMs,
+      ...(progress.answer !== undefined ? { answer: progress.answer, assistantForce: progress.assistantForce } : {}),
+      cognition: progress.cognition ?? typedTurnProgress(
+        progress.phase,
+        progress.answer !== undefined ? "answer.settled" : "stage.boundary"
+      )
+    });
+  };
   requestTiming.turnExecution = {
     signal: controller.signal,
-    onProgress(progress) {
-      registry.append(task.taskId, {
-        type: "progress",
-        requestId,
-        phase: progress.phase,
-        elapsedMs: progress.observedAtMonotonicMs - requestTiming.startedMonotonicMs,
-        ...(progress.answer !== undefined ? { answer: progress.answer, assistantForce: progress.assistantForce } : {}),
-        ...(progress.cognition !== undefined ? { cognition: progress.cognition } : {})
-      });
-    }
+    onProgress: appendProgress
   };
   const heartbeat = setInterval(() => {
     if (res.writableEnded || res.destroyed) return;
@@ -3912,8 +3921,11 @@ async function streamTurnResponse(input: {
       type: "progress",
       taskId: task.taskId,
       requestId,
-      phase: "runtime.working",
-      elapsedMs: performance.now() - requestTiming.startedMonotonicMs
+      phase: latestProgressPhase,
+      elapsedMs: performance.now() - requestTiming.startedMonotonicMs,
+      cognition: typedTurnProgress(latestProgressPhase, "runtime.heartbeat", {
+        lastStageElapsedMs: performance.now() - latestProgressAtMonotonicMs
+      })
     });
   }, 3_000);
   heartbeat.unref();
@@ -3924,11 +3936,9 @@ async function streamTurnResponse(input: {
     // the request body has arrived and records only typed request facts while
     // the kernel continues its lazy retrieval and proof work. Clients can
     // render this as an acknowledgement in their own language surface.
-    registry.append(task.taskId, {
-      type: "progress",
-      requestId,
+    appendProgress({
       phase: "runtime.request.received",
-      elapsedMs: performance.now() - requestTiming.startedMonotonicMs,
+      observedAtMonotonicMs: performance.now(),
       cognition: initialVisibleRequestProgress(body)
     });
     const response = await dispatch(req, url, context, requestTiming, body);
@@ -3989,6 +3999,25 @@ function initialVisibleRequestProgress(body: unknown): JsonValue {
       requestedAuthorityId: isRequestedAuthority(record.requestedAuthority) ? record.requestedAuthority : null,
       targetLanguageId: turnTargetLanguage(body) ?? null
     }
+  };
+}
+
+/**
+ * A stage callback without a settled answer still has useful, typed state for
+ * an in-flight client. The phase is an opaque runtime stage id; the server
+ * deliberately adds no natural-language interpretation or answer content.
+ */
+function typedTurnProgress(
+  phaseId: string,
+  stateId: "stage.boundary" | "runtime.heartbeat" | "answer.settled",
+  extra: Record<string, JsonValue> = {}
+): JsonValue {
+  return {
+    schema: "scce.turn.progress.v1",
+    stateId,
+    phaseId,
+    settled: stateId === "answer.settled",
+    ...extra
   };
 }
 
