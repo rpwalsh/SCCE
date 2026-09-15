@@ -158,11 +158,20 @@ export function createRuntimeGraphRetrieval(options: {
   candidates: ReturnType<typeof createCandidateEngine>;
   failures: string[];
   cacheMs: number;
+  /** Stable inputs that scope process-local graph/evidence caches. A caller that
+   * changes corpus, brain, or serving configuration must supply the new identity
+   * (or call invalidate) so an in-flight read cannot cross that boundary. */
+  cacheIdentity?: { readonly corpusId?: string; readonly brainId?: string; readonly configHash?: string };
   kernelTrace(event: Parameters<typeof traceEvent>[1]): void;
   sourceAnchorSemanticFramesCached(options?: { residentOnly?: boolean }): Promise<Array<{ frame: SemanticFrameRecord; surface?: string; surfaceUnits: string[] }>>;
 }) {
   const { deps, clock, hasher, candidates, failures, kernelTrace, sourceAnchorSemanticFramesCached } = options;
   const surfaceLanguageMemoryCacheMs = options.cacheMs;
+  const cacheIdentity = {
+    corpusId: options.cacheIdentity?.corpusId ?? "corpus:unspecified",
+    brainId: options.cacheIdentity?.brainId ?? "brain:unspecified",
+    configHash: options.cacheIdentity?.configHash ?? deps.evaluationCondition?.configHash ?? "config:unspecified"
+  };
 
   const graphSliceCacheMaxEntries = positiveRuntimeInt("SCCE_GRAPH_SLICE_CACHE_ENTRIES", 128);
 
@@ -217,6 +226,8 @@ export function createRuntimeGraphRetrieval(options: {
   const sourceAnchorEvidenceCacheMaxEntries = positiveRuntimeInt("SCCE_SOURCE_ANCHOR_EVIDENCE_CACHE_ENTRIES", 4096);
 
   const graphSliceCache = new Map<string, GraphSliceCacheEntry>();
+  const graphSliceInFlight = new Map<string, { epoch: number; promise: Promise<RuntimeGraphSliceValue> }>();
+  const evidenceBatchInFlight = new Map<string, { epoch: number; promise: Promise<EvidenceSpan[]> }>();
 
   let graphSliceCacheBytes = 0;
 
@@ -229,6 +240,38 @@ export function createRuntimeGraphRetrieval(options: {
   let hotNeighborhoodLoad: Promise<HotGraphNeighborhood | undefined> | undefined;
 
   const sourceAnchorEvidenceCache = new Map<string, { loadedAt: number; value: EvidenceSpan }>();
+
+  function trimSourceAnchorEvidenceCache(): void {
+    const overflow = sourceAnchorEvidenceCache.size - sourceAnchorEvidenceCacheMaxEntries;
+    if (overflow <= 0) return;
+    const eviction = [...sourceAnchorEvidenceCache.entries()]
+      .sort((left, right) => left[1].loadedAt - right[1].loadedAt || left[0].localeCompare(right[0]))
+      .slice(0, overflow);
+    for (const [key] of eviction) sourceAnchorEvidenceCache.delete(key);
+  }
+
+  async function evidenceBatchSingleFlight(ids: readonly EvidenceSpan["id"][]): Promise<EvidenceSpan[]> {
+    const boundedIds = uniqueKernelStrings(ids.map(String)).slice(0, sourceAnchorEvidenceCacheMaxEntries);
+    if (!boundedIds.length) return [];
+    const epoch = runtimeCacheEpoch;
+    const batchKey = hasher.digestHex(JSON.stringify({ ...cacheIdentity, epoch, ids: boundedIds }));
+    let pending = evidenceBatchInFlight.get(batchKey);
+    if (!pending || pending.epoch !== epoch) {
+      const promise = deps.storage.evidence.getEvidenceBatch(boundedIds as EvidenceSpan["id"][]);
+      pending = { epoch, promise };
+      evidenceBatchInFlight.set(batchKey, pending);
+      void promise.then(() => undefined, () => undefined).finally(() => {
+        if (evidenceBatchInFlight.get(batchKey)?.promise === promise) evidenceBatchInFlight.delete(batchKey);
+      });
+    }
+    const loaded = await pending.promise;
+    if (epoch === runtimeCacheEpoch) {
+      const now = clock.now();
+      for (const span of loaded) sourceAnchorEvidenceCache.set(String(span.id), { loadedAt: now, value: span });
+      trimSourceAnchorEvidenceCache();
+    }
+    return loaded;
+  }
 
 
   async function sourceAnchorEvidenceBatchCached(
@@ -257,22 +300,13 @@ export function createRuntimeGraphRetrieval(options: {
       .filter(id => !selected.has(id))
       .map(id => id as EvidenceSpan["id"]);
     if (missing.length && !residentOnly) {
-      const loaded = await deps.storage.evidence.getEvidenceBatch(missing);
+      const loaded = await evidenceBatchSingleFlight(missing);
       for (const span of loaded) {
         const id = String(span.id);
         selected.set(id, span);
-        sourceAnchorEvidenceCache.set(id, { loadedAt: now, value: span });
       }
     }
-    while (sourceAnchorEvidenceCache.size > sourceAnchorEvidenceCacheMaxEntries) {
-      let oldestKey: string | undefined;
-      let oldestAt = Number.POSITIVE_INFINITY;
-      for (const [key, entry] of sourceAnchorEvidenceCache) {
-        if (entry.loadedAt < oldestAt) { oldestAt = entry.loadedAt; oldestKey = key; }
-      }
-      if (oldestKey === undefined) break;
-      sourceAnchorEvidenceCache.delete(oldestKey);
-    }
+    trimSourceAnchorEvidenceCache();
     return boundedIds
       .map(id => selected.get(id))
       .filter((span): span is EvidenceSpan => Boolean(span));
@@ -369,6 +403,7 @@ export function createRuntimeGraphRetrieval(options: {
     // cache they had. Deliberately not `createEvaluationCacheKey`: that key also binds brain, corpus, source and
     // build hashes, none of which this layer holds, and supplying blanks would weaken a stronger contract.
     const logicalCacheKey = hasher.digestHex(JSON.stringify({
+      cacheIdentity,
       features,
       topicTerms,
       allowSemanticFrameEvidence,
@@ -546,6 +581,7 @@ export function createRuntimeGraphRetrieval(options: {
     const limitNodes = Math.min(64, Math.max(1, Math.floor(sourceAnchorHotNodeLimit * (options.adaptiveWidening ? 2 ** radius : 1))));
     const limitEdges = Math.min(128, Math.max(1, Math.floor(sourceAnchorHotEdgeLimit * (options.adaptiveWidening ? 2 ** radius : 1))));
     const cacheKey = hasher.digestHex(JSON.stringify({
+      cacheIdentity,
       evidenceIds: boundedEvidenceIds,
       radius,
       adaptiveWidening: options.adaptiveWidening === true
@@ -559,49 +595,59 @@ export function createRuntimeGraphRetrieval(options: {
       }
       return exact;
     }
-    const graph = await deps.storage.graph.getSlice({
-      evidenceIds: boundedEvidenceIds,
-      // These IDs already name the prior turn's admitted proof basis. Do not
-      // rediscover a neighbourhood before continuing that discourse.
-      evidenceBoundOnly: true,
-      radius,
-      limitNodes,
-      limitEdges,
-      maxRepresentationBytes: hotNeighborhoodMaxNodeBytes
-    });
-    const boundedGraph: GraphSlice = {
-      ...graph,
-      query: {
-        ...graph.query,
+    const resident = graphSliceInFlight.get(cacheKey);
+    if (resident && resident.epoch === runtimeCacheEpoch) return resident.promise;
+    const epoch = runtimeCacheEpoch;
+    const promise = (async (): Promise<RuntimeGraphSliceValue> => {
+      const graph = await deps.storage.graph.getSlice({
         evidenceIds: boundedEvidenceIds,
+        // These IDs already name the prior turn's admitted proof basis. Do not
+        // rediscover a neighbourhood before continuing that discourse.
         evidenceBoundOnly: true,
         radius,
         limitNodes,
         limitEdges,
         maxRepresentationBytes: hotNeighborhoodMaxNodeBytes
-      }
-    };
-    const graphEvidenceIds = uniqueKernelStrings([
-      ...boundedEvidenceIds.map(String),
-      ...boundedGraph.nodes.flatMap(node => node.evidenceIds.map(String)),
-      ...boundedGraph.edges.flatMap(edge => edge.evidenceIds.map(String)),
-      ...boundedGraph.hyperedges.flatMap(edge => edge.provenanceRefs.map(String))
-    ]).slice(0, 80);
-    const graphEvidence = graphEvidenceIds.length ? await deps.storage.evidence.getEvidenceBatch(graphEvidenceIds as EvidenceSpan["id"][]) : [];
-    const value = { graph: boundedGraph, evidence: graphEvidence };
-    if (options.adaptiveWidening && radius < 2 && graphCoverageInsufficient(boundedGraph, boundedEvidenceIds)) {
-      kernelTrace({
-        stage: "graph.resolve.evidence_first_widen",
-        label: "kernel.graphForEvidenceIds",
-        counts: { evidence: boundedEvidenceIds.length, nodes: boundedGraph.nodes.length, edges: boundedGraph.edges.length, radius },
-        support: { fromRadius: radius, toRadius: radius + 1 }
       });
-      const widened = await graphForEvidenceIds(boundedEvidenceIds, { radius: radius + 1, adaptiveWidening: true });
-      if (graphCoverageScore(widened.graph, boundedEvidenceIds) > graphCoverageScore(boundedGraph, boundedEvidenceIds)) {
-        return cacheGraphSlice(cacheKey, widened, "postgres");
+      const boundedGraph: GraphSlice = {
+        ...graph,
+        query: {
+          ...graph.query,
+          evidenceIds: boundedEvidenceIds,
+          evidenceBoundOnly: true,
+          radius,
+          limitNodes,
+          limitEdges,
+          maxRepresentationBytes: hotNeighborhoodMaxNodeBytes
+        }
+      };
+      const graphEvidenceIds = uniqueKernelStrings([
+        ...boundedEvidenceIds.map(String),
+        ...boundedGraph.nodes.flatMap(node => node.evidenceIds.map(String)),
+        ...boundedGraph.edges.flatMap(edge => edge.evidenceIds.map(String)),
+        ...boundedGraph.hyperedges.flatMap(edge => edge.provenanceRefs.map(String))
+      ]).slice(0, 80);
+      const graphEvidence = graphEvidenceIds.length ? await evidenceBatchSingleFlight(graphEvidenceIds as EvidenceSpan["id"][]) : [];
+      const value = { graph: boundedGraph, evidence: graphEvidence };
+      if (options.adaptiveWidening && radius < 2 && graphCoverageInsufficient(boundedGraph, boundedEvidenceIds)) {
+        kernelTrace({
+          stage: "graph.resolve.evidence_first_widen",
+          label: "kernel.graphForEvidenceIds",
+          counts: { evidence: boundedEvidenceIds.length, nodes: boundedGraph.nodes.length, edges: boundedGraph.edges.length, radius },
+          support: { fromRadius: radius, toRadius: radius + 1 }
+        });
+        const widened = await graphForEvidenceIds(boundedEvidenceIds, { radius: radius + 1, adaptiveWidening: true });
+        if (graphCoverageScore(widened.graph, boundedEvidenceIds) > graphCoverageScore(boundedGraph, boundedEvidenceIds)) {
+          return epoch === runtimeCacheEpoch ? cacheGraphSlice(cacheKey, widened, "postgres") : widened;
+        }
       }
-    }
-    return cacheGraphSlice(cacheKey, value, "postgres");
+      return epoch === runtimeCacheEpoch ? cacheGraphSlice(cacheKey, value, "postgres") : value;
+    })();
+    graphSliceInFlight.set(cacheKey, { epoch, promise });
+    void promise.then(() => undefined, () => undefined).finally(() => {
+      if (graphSliceInFlight.get(cacheKey)?.promise === promise) graphSliceInFlight.delete(cacheKey);
+    });
+    return promise;
   }
 
   function graphCoverageInsufficient(graph: GraphSlice, evidenceIds: readonly string[]): boolean {
@@ -2488,6 +2534,8 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
       requireDurableGraphLookup = true;
       graphSliceCache.clear();
       graphSliceCacheBytes = 0;
+      graphSliceInFlight.clear();
+      evidenceBatchInFlight.clear();
       hotNeighborhood = undefined;
       hotNeighborhoodLoad = undefined;
       sourceAnchorEvidenceCache.clear();

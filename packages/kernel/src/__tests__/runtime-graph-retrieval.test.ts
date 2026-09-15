@@ -411,6 +411,50 @@ describe("runtime hot graph retrieval", () => {
     expect(fixture.kernelTrace.mock.calls.map(([event]) => event.stage)).toContain("graph.resolve.evidence_first_widen");
   });
 
+  it("single-flights repeated graph hydration and evidence loading across concurrent turns", async () => {
+    const source = evidenceSpan("evidence:shared", "Clock", "The clock has a shared mechanism.");
+    const node = graphNode("node:shared", ["sym:clock"], [String(source.id)]);
+    const fixture = runtimeFixture(graphSlice([node], [], []), [source]);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    fixture.getSlice.mockImplementation(async query => {
+      await gate;
+      return {
+        ...graphSlice([node], [], []),
+        query,
+        nodes: [node].slice(0, query.limitNodes ?? 1)
+      };
+    });
+
+    const first = fixture.runtime.graphForEvidenceIds([String(source.id)]);
+    await Promise.resolve();
+    const second = fixture.runtime.graphForEvidenceIds([String(source.id)]);
+    await Promise.resolve();
+
+    expect(fixture.getSlice).toHaveBeenCalledTimes(1);
+    release();
+    const [firstValue, secondValue] = await Promise.all([first, second]);
+
+    expect(secondValue).toBe(firstValue);
+    expect(fixture.getEvidenceBatch).toHaveBeenCalledTimes(1);
+    expect((await fixture.runtime.graphForEvidenceIds([String(source.id)])).graph.nodes).toEqual(firstValue.graph.nodes);
+    expect(fixture.getSlice).toHaveBeenCalledTimes(1);
+    expect(fixture.getEvidenceBatch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not reuse a graph slice across cache identities", async () => {
+    const source = evidenceSpan("evidence:identity", "Clock", "The clock has an identity-bound mechanism.");
+    const node = graphNode("node:identity", ["sym:clock"], [String(source.id)]);
+    const fixture = runtimeFixture(graphSlice([node], [], []), [source]);
+    const first = await fixture.runtime.graphForEvidenceIds([String(source.id)]);
+    fixture.runtime.invalidate();
+    const second = await fixture.runtime.graphForEvidenceIds([String(source.id)]);
+
+    expect(second).not.toBe(first);
+    expect(fixture.getSlice).toHaveBeenCalledTimes(2);
+    expect(fixture.getEvidenceBatch).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps retrieval policy on the typed caller boundary instead of recognizing code from request text", async () => {
     const prose = evidenceSpan("evidence:prose", "Rust", "Rust was created by Graydon Hoare.");
     const code = { ...evidenceSpan("evidence:code", "runtime.ts", "export function rustFact() { return 1; }"), mediaType: "text/typescript" };
