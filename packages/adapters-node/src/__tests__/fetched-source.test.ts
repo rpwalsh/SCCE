@@ -137,6 +137,24 @@ describe("bounded fetched document derivatives", () => {
     });
   }, 30000);
 
+  it("labels OCR that used the packaged fallback profile instead of a source or configured one", async () => {
+    const imagePath = path.join(tempRoot, "fallback.bmp");
+    const pdfPath = path.join(tempRoot, "fallback.pdf");
+    await writeFile(imagePath, textBitmap("TEST"));
+    await writeFile(pdfPath, scannedTextPdf("TEST"));
+    const image = await extractDocument(imagePath, config, { includeVisualAttributes: false });
+    expect(image.attempts[0]?.warnings).toContain("ocr_profile:fallback_packaged_profile:eng");
+    expect(image.metadata).toMatchObject({ typedExtraction: { imageOcr: { profile: "eng", profileSelection: "fallback_packaged_profile" } } });
+    const scanned = await extractDocument(pdfPath, config, { includeVisualAttributes: false });
+    expect(scanned.attempts[0]?.warnings).toContain("ocr_profile:fallback_packaged_profile:eng");
+    expect(scanned.metadata).toMatchObject({ typedExtraction: { scannedPdfOcr: { profile: "eng", profileSelection: "fallback_packaged_profile" } } });
+    const configured = await extractDocument(imagePath, { ...config, runtime: { ...config.runtime, ocr: { profile: "eng" } } }, { includeVisualAttributes: false });
+    expect(configured.attempts[0]?.warnings).toEqual([]);
+    expect(configured.metadata).toMatchObject({ typedExtraction: { imageOcr: { profile: "eng", profileSelection: "configured" } } });
+    const sourced = await extractDocument(imagePath, config, { includeVisualAttributes: false, ocrProfile: "eng" });
+    expect(sourced.metadata).toMatchObject({ typedExtraction: { imageOcr: { profile: "eng", profileSelection: "source" } } });
+  }, 60000);
+
   it("records the stage and message of a scanned PDF render failure beside the OCR-unavailable boundary", async () => {
     const filePath = path.join(tempRoot, "unencodable-scan.pdf");
     await writeFile(filePath, emptyTextPdf(1, 6_000_000, 1));

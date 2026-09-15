@@ -18,4 +18,9 @@ describe("document extraction tool diagnostics", () => {
     const tools = await diagnoseExtractionTools(withProfile());
     expect(tools.find(tool => tool.name === "tesseract.js")).toMatchObject({ ok: true });
   });
+
+  it("names whether the OCR profile is configured or the packaged fallback", async () => {
+    expect((await diagnoseExtractionTools(withProfile())).find(tool => tool.name === "tesseract.js")?.detail).toContain("(fallback_packaged_profile)");
+    expect((await diagnoseExtractionTools(withProfile("eng"))).find(tool => tool.name === "tesseract.js")?.detail).toContain("(configured)");
+  });
 });
