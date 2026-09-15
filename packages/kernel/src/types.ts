@@ -610,6 +610,14 @@ export interface ProgramGraph {
   taskDecomposition?: JsonValue;
 }
 
+/** Typed observation of the graph-bound test invocation. */
+export interface ProgramTestExecutionReceipt {
+  command: string;
+  args: string[];
+  cwd: string;
+  status: "executed" | "skipped";
+}
+
 export interface ProgramConstructIntent {
   artifactKindIds: string[];
   capabilityIds: string[];
@@ -807,6 +815,8 @@ export interface CapabilityPlan {
 export interface BuildTestResult {
   build: { code: number | null; stdout: string; stderr: string; durationMs: number };
   test: { code: number | null; stdout: string; stderr: string; durationMs: number };
+  /** The graph-bound test command that was actually attempted, or recorded as skipped after a build failure. */
+  testExecutionReceipt?: ProgramTestExecutionReceipt;
   repairAttempted: boolean;
   repairApplied: boolean;
   passed: boolean;

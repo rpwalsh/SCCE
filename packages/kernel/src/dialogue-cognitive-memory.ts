@@ -26,19 +26,26 @@ export interface DialogueCognitiveMemoryV2 {
   latest(conversationId: string): Promise<DialogueCognitiveStateV2 | undefined>;
 }
 
-/** Select the newest validated state available to a live turn.  Request metadata is a transport snapshot and can
- * lag the durable head after reconnects or parallel tabs; it must never overwrite newer cognitive continuity. */
+/** Select the strongest validated state available to a live turn. Request metadata is a transport snapshot and
+ * can be stale or caller-authored; it is only a cold-start fallback when neither durable nor resident state exists. */
 export function preferDialogueCognitiveStateV2(input: {
   conversationId: string;
   metadataState?: DialogueCognitiveStateV2;
+  /** The state read from the durable interaction-state head for this turn. */
+  durableState?: DialogueCognitiveStateV2;
   residentState?: DialogueCognitiveStateV2;
   hasher: Hasher;
 }): DialogueCognitiveStateV2 | undefined {
-  const candidates = [input.metadataState, input.residentState]
-    .filter((state): state is DialogueCognitiveStateV2 => state !== undefined
-      && state.conversationId === input.conversationId
-      && isDialogueCognitiveStateV2(state, input.hasher));
-  return candidates.sort((left, right) => right.turnIndex - left.turnIndex)[0];
+  const valid = (state: DialogueCognitiveStateV2 | undefined): state is DialogueCognitiveStateV2 => state !== undefined
+    && state.conversationId === input.conversationId
+    && isDialogueCognitiveStateV2(state, input.hasher);
+  // Durable state is the authority for cognitive continuity. The resident
+  // copy was itself admitted from that store or by a successful compare-and-
+  // set in this process. A transport snapshot has no authority to outrank
+  // either merely by claiming a larger turn index.
+  if (valid(input.durableState)) return input.durableState;
+  if (valid(input.residentState)) return input.residentState;
+  return valid(input.metadataState) ? input.metadataState : undefined;
 }
 
 const DIALOGUE_STATE_SCHEMA_V2 = "scce.dialogue_cognitive_state.v2";

@@ -3,6 +3,7 @@
 import { atomizeText } from "./semantic-proof-system.js";
 import { SEMANTIC_SOURCE } from "./semantic-codes.js";
 import { computeSemanticRoundTripDistance } from "./semantic-round-trip.js";
+import { languageRoundTripDeltaFromMismatch, type LanguageRoundTripDelta } from "./language-round-trip-learning.js";
 import { calibrationObservationRecord, type CalibrationObservationRecord } from "./calibration-spine.js";
 import { createHasher, clamp01, toJsonValue } from "./primitives.js";
 import {
@@ -43,6 +44,8 @@ export interface ConstructionCycleConsistencyOutcome {
   intendedSurfaceHash: string;
   realizedSurfaceHash: string;
   semanticDelta: ConstructionCycleSemanticDelta;
+  /** Typed source-derived correction emitted when the measured cycle drifts. */
+  languageDelta?: LanguageRoundTripDelta;
   score: number;
   outcome: boolean;
   sourceTraceId?: string;
@@ -59,6 +62,8 @@ export function evaluateConstructionCycleConsistency(input: {
   intendedSurface: string;
   sourceTraceId?: string;
   sourceRecordId?: string;
+  /** Optional typed realization context below the construction/profile pair. */
+  contextKey?: string;
   evidenceIds?: readonly string[];
   createdAt: number;
 }): ConstructionCycleConsistencyOutcome {
@@ -81,6 +86,20 @@ export function evaluateConstructionCycleConsistency(input: {
     .reduce((sum, [, value]) => sum + Number(value), 0);
   const denominator = Math.max(1, intendedAtoms.length + realizedAtoms.length);
   const score = clamp01(1 - semanticDelta.total / denominator);
+  const languageDelta = semanticDelta.total > 0
+    ? languageRoundTripDeltaFromMismatch({
+      profileId: input.construction.profileKey,
+      intendedText: input.intendedSurface,
+      realizedText: input.realization.text,
+      distance,
+      constructionId: input.construction.id,
+      ...(input.contextKey ? { contextKey: input.contextKey } : {}),
+      evidenceIds: input.evidenceIds ?? input.realization.evidenceIds,
+      ...(input.sourceTraceId ? { sourceTraceId: input.sourceTraceId } : {}),
+      updatedAt: input.createdAt,
+      hasher
+    })
+    : undefined;
   return {
     schema: CONSTRUCTION_CYCLE_CONSISTENCY_SCHEMA,
     constructionId: input.construction.id,
@@ -91,6 +110,7 @@ export function evaluateConstructionCycleConsistency(input: {
     intendedSurfaceHash: `surface.${hasher.digestHex(input.intendedSurface).slice(0, 32)}`,
     realizedSurfaceHash: `surface.${hasher.digestHex(input.realization.text).slice(0, 32)}`,
     semanticDelta,
+    ...(languageDelta ? { languageDelta } : {}),
     score,
     outcome: semanticDelta.total === 0,
     ...(input.sourceTraceId ? { sourceTraceId: input.sourceTraceId } : {}),

@@ -117,6 +117,9 @@ export function creativeContinuationCandidateFromConstruct(input: {
     : [];
   const selectedGraphEdgeIds = stringArray(trace.selectedGraphEdgeIds);
   const selectedLanguagePriorIds = stringArray(trace.selectedLanguagePriorIds);
+  const proposalPath = typeof realization.path === "string" ? realization.path : null;
+  const requestFrameId = typeof realization.requestFrameId === "string" ? realization.requestFrameId : null;
+  const requestConstraintIds = stringArray(realization.requestConstraintIds);
   const hasStructuralSignals = Boolean(
     structuralPlan.id
     || programGraphId
@@ -125,6 +128,21 @@ export function creativeContinuationCandidateFromConstruct(input: {
     || selectedGraphEdgeIds.length
     || selectedLanguagePriorIds.length
   );
+  // Some production invention handoffs intentionally have no structural
+  // plan yet. Their runtime construct id is an episode-local identity, so it
+  // cannot carry an owner preference across a restart. Use the typed handoff
+  // shape plus a normalized proposal fingerprint as the last resort. The
+  // surface is hashed into the opaque id and never persisted as preference
+  // content; this keeps two genuinely different unstructured proposals apart
+  // without treating a transient construct id as semantics.
+  const fallbackSemanticSignature = {
+    artifactKindIds: [...input.construct.artifactKindIds].sort(),
+    basisPriorIds: [...input.construct.basisPriorIds].sort(),
+    proposalPath,
+    requestFrameId,
+    requestConstraintIds,
+    proposalFingerprint: input.construct.proposalSurface.normalize("NFKC").replace(/\s+/gu, " ").trim()
+  };
   const structuralSignature = {
     artifactKindIds: [...input.construct.artifactKindIds].sort(),
     basisPriorIds: [...input.construct.basisPriorIds].sort(),
@@ -135,9 +153,10 @@ export function creativeContinuationCandidateFromConstruct(input: {
     selectedGraphEdgeIds,
     selectedLanguagePriorIds,
     // A planner that supplied no typed structural handle still gets a stable
-    // opaque identity for this construct; otherwise every such candidate
-    // would collapse into one preference bucket.
-    fallbackConstructId: hasStructuralSignals ? null : input.construct.id
+    // opaque identity for this semantic handoff; otherwise a restart would
+    // lose the preference or every unstructured candidate would collapse into
+    // one bucket.
+    fallbackSemanticSignature: hasStructuralSignals ? null : fallbackSemanticSignature
   };
   const structureId = `creative.structure.${hashValue(canonicalStringify(toJsonValue(structuralSignature))).slice(0, 32)}`;
   const continuationModeId = `creative.mode.${hashValue(String(realization.path ?? structuralPlan.id ?? "")).slice(0, 24)}`;

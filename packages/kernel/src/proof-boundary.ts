@@ -2,6 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { BrainShardProvenanceClass } from "./brain-shards.js";
 import type { EvidenceSpan, GraphEdge, GraphNode, JsonValue } from "./types.js";
+import type { ProofClaim, ProofEvidenceRecord } from "./semantic-proof-engine.js";
 
 export type ProofBoundaryClass = BrainShardProvenanceClass | "unclassified_exact_evidence" | "none";
 
@@ -126,9 +127,36 @@ export function certifyingEvidence(spans: readonly EvidenceSpan[]): EvidenceSpan
  * here.
  */
 export function evidenceProofBoundaries(spans: readonly EvidenceSpan[]): EvidenceProofBoundary[] {
-  const boundaries = spans.map(evidenceProofBoundary);
-  const asserted = spans.filter((span, index) =>
+  // EvidenceSpan has source identity and provenance, but no typed proposition
+  // identity. It is therefore unsafe to let a raw set of spans promote source
+  // assertions: independent documents may assert unrelated propositions. The
+  // claim-scoped API below performs the same lineage/family matching after an
+  // explicit typed claim binding has been supplied.
+  return spans.map(evidenceProofBoundary);
+}
+
+/**
+ * Resolve source-assertion corroboration for one explicitly typed claim.
+ *
+ * A span is eligible only when a proof record binds that exact span and its
+ * typed subject/relation/object proposition to `claim`. No surface text or
+ * topic feature is consulted. Promoted direct evidence keeps the ordinary
+ * per-span boundary result; only asserted source records need corroboration.
+ */
+export function evidenceProofBoundariesForClaim(input: {
+  claim: ProofClaim;
+  evidence: readonly EvidenceSpan[];
+  proofEvidence: readonly ProofEvidenceRecord[];
+}): EvidenceProofBoundary[] {
+  const boundaries = input.evidence.map(evidenceProofBoundary);
+  const boundEvidenceIds = new Set(
+    input.proofEvidence
+      .filter(record => nonEmpty(record.evidenceSpanId) && proofRecordMatchesClaim(record, input.claim))
+      .map(record => String(record.evidenceSpanId))
+  );
+  const asserted = input.evidence.filter((span, index) =>
     boundaries[index]?.reason === "proof-boundary.source-assertion-not-promoted"
+      && boundEvidenceIds.has(String(span.id))
       && eligibleIndependentAssertion(span)
   );
   // Independence labels cannot turn two copies of the same immutable source
@@ -140,7 +168,7 @@ export function evidenceProofBoundaries(spans: readonly EvidenceSpan[]): Evidenc
   // may carry a new family label, while an unrelated document may reuse the
   // original family. A bipartite matching chooses only witnesses that are
   // independent on both dimensions.
-  const representativeIds = independentLineageRepresentatives(asserted, spans);
+  const representativeIds = independentLineageRepresentatives(asserted, input.evidence);
   if (representativeIds.size < 2) return boundaries;
   const eligibleIds = new Set(asserted.map(span => String(span.id)));
   return boundaries.map(boundary => {
@@ -160,14 +188,49 @@ export function evidenceProofBoundaries(spans: readonly EvidenceSpan[]): Evidenc
   });
 }
 
+/** Alias spelling for callers that describe the operation as claim scoping. */
+export const claimScopedEvidenceProofBoundaries = evidenceProofBoundariesForClaim;
+
+function proofRecordMatchesClaim(record: ProofEvidenceRecord, claim: ProofClaim): boolean {
+  return proofAtomMatchesClaim(record.subject, claim.subject)
+    && record.relationId === claim.relationId
+    && proofAtomMatchesClaim(record.object, claim.object)
+    && scalarMatches(record.quantity, claim.quantity)
+    && dateTimeMatches(record.dateTime, claim.dateTime)
+    && (record.polarityId ?? "polarity.positive") === (claim.polarityId ?? "polarity.positive")
+    && (record.modalityId ?? "modality.asserted") === (claim.modalityId ?? "modality.asserted");
+}
+
+function proofAtomMatchesClaim(record: ProofClaim["subject"], claim: ProofClaim["subject"]): boolean {
+  // Typed corroboration requires stable IDs. Surfaces are intentionally not a
+  // fallback: lexical equality cannot establish proposition identity.
+  if (!nonEmpty(record.id) || !nonEmpty(claim.id) || record.id !== claim.id) return false;
+  if (!nonEmpty(record.kindId) || !nonEmpty(claim.kindId) || record.kindId !== claim.kindId) return false;
+  if ((record.roleId ?? "") !== (claim.roleId ?? "")) return false;
+  return true;
+}
+
+function scalarMatches(record: ProofClaim["quantity"], claim: ProofClaim["quantity"]): boolean {
+  if (!record || !claim) return !record && !claim;
+  return record.value === claim.value
+    && (record.unitId ?? "") === (claim.unitId ?? "")
+    && (record.tolerance ?? 0) === (claim.tolerance ?? 0);
+}
+
+function dateTimeMatches(record: ProofClaim["dateTime"], claim: ProofClaim["dateTime"]): boolean {
+  if (!record || !claim) return !record && !claim;
+  return record.value === claim.value && (record.precisionId ?? "") === (claim.precisionId ?? "");
+}
+
 function independentLineageRepresentatives(
   asserted: readonly EvidenceSpan[],
   siblings: readonly EvidenceSpan[]
 ): Set<string> {
+  const dependencyComponents = evidenceDependencyComponents(siblings);
   const candidates = asserted
     .map(span => ({
       span,
-      family: evidenceIndependenceGroup(span),
+      family: dependencyComponents.get(String(span.id)) ?? "",
       lineage: evidenceLineage(span, siblings)
     }))
     .filter(candidate => Boolean(candidate.family && candidate.lineage.identity))
@@ -184,16 +247,50 @@ function independentLineageRepresentatives(
         || left.lineage.sourceVersionIds.length - right.lineage.sourceVersionIds.length
         || String(left.span.id).localeCompare(String(right.span.id));
     });
-  const byLineage = new Map<string, (typeof candidates)[number]>();
+  // A source lineage and an independence family are two separate caps. A
+  // deterministic maximum matching is required when their labels cross (for
+  // example L1/F1, L1/F2, L2/F1); greedy set collapse can undercount valid
+  // independent witnesses.
+  const edgeByLineageFamily = new Map<string, Map<string, (typeof candidates)[number]>>();
   for (const candidate of candidates) {
-    if (!byLineage.has(candidate.lineage.identity)) byLineage.set(candidate.lineage.identity, candidate);
+    const byFamily = edgeByLineageFamily.get(candidate.lineage.identity) ?? new Map<string, (typeof candidates)[number]>();
+    const prior = byFamily.get(candidate.family);
+    if (!prior || representativeOrder(candidate, prior) < 0) byFamily.set(candidate.family, candidate);
+    edgeByLineageFamily.set(candidate.lineage.identity, byFamily);
   }
-  const byFamily = new Map<string, (typeof candidates)[number]>();
-  for (const candidate of [...byLineage.values()].sort((left, right) =>
-    left.family.localeCompare(right.family) || String(left.span.id).localeCompare(String(right.span.id)))) {
-    if (!byFamily.has(candidate.family)) byFamily.set(candidate.family, candidate);
+  const lineages = [...edgeByLineageFamily.keys()].sort();
+  const familyToLineage = new Map<string, string>();
+  const augment = (lineage: string, visitedFamilies: Set<string>): boolean => {
+    const familyEdges = edgeByLineageFamily.get(lineage) ?? new Map<string, (typeof candidates)[number]>();
+    const families = [...familyEdges.keys()].sort((left, right) =>
+      representativeOrder(familyEdges.get(left)!, familyEdges.get(right)!) || left.localeCompare(right));
+    for (const family of families) {
+      if (visitedFamilies.has(family)) continue;
+      visitedFamilies.add(family);
+      const priorLineage = familyToLineage.get(family);
+      if (!priorLineage || augment(priorLineage, visitedFamilies)) {
+        familyToLineage.set(family, lineage);
+        return true;
+      }
+    }
+    return false;
+  };
+  for (const lineage of lineages) augment(lineage, new Set<string>());
+
+  const representatives = new Set<string>();
+  for (const [family, lineage] of familyToLineage) {
+    const candidate = edgeByLineageFamily.get(lineage)?.get(family);
+    if (candidate) representatives.add(String(candidate.span.id));
   }
-  return new Set([...byFamily.values()].map(candidate => String(candidate.span.id)));
+  return representatives;
+}
+
+function representativeOrder(left: { span: EvidenceSpan; lineage: EvidenceLineage }, right: { span: EvidenceSpan; lineage: EvidenceLineage }): number {
+  const leftRoot = String(left.span.sourceVersionId) === left.lineage.identity ? 0 : 1;
+  const rightRoot = String(right.span.sourceVersionId) === right.lineage.identity ? 0 : 1;
+  return leftRoot - rightRoot
+    || left.lineage.sourceVersionIds.length - right.lineage.sourceVersionIds.length
+    || String(left.span.id).localeCompare(String(right.span.id));
 }
 
 /**
@@ -361,14 +458,73 @@ function eligibleIndependentAssertion(span: EvidenceSpan): boolean {
     && unitInterval(sourceTrust.parserReliability) >= 0.5
     && unitInterval(sourceTrust.directness) >= 0.45
     && unitInterval(sourceTrust.authority) >= 0.4
-    && Boolean(evidenceIndependenceGroup(span));
+    && evidenceDependencyGroups(span).length > 0;
 }
 
-function evidenceIndependenceGroup(span: EvidenceSpan): string {
+/**
+ * Every declared dependence label is retained. A fresh publisher/family label
+ * cannot hide a shared citation chain or source-trust group by appearing first.
+ */
+export function evidenceDependencyGroups(span: EvidenceSpan): string[] {
+  const provenance = objectRecord(span.provenance);
   const trust = objectRecord(span.trustVector);
   const sourceTrust = objectRecord(trust?.sourceTrust);
-  const group = sourceTrust?.independenceGroup;
-  return typeof group === "string" && group.trim() ? group.trim() : "";
+  const sourceIndependence = objectRecord(provenance?.sourceIndependence);
+  const nestedGroups = Array.isArray(sourceIndependence?.dependencyGroupIds)
+    ? sourceIndependence.dependencyGroupIds.filter((value): value is string => typeof value === "string")
+    : [];
+  return [...new Set([
+    provenance?.sourceFamilyId,
+    provenance?.dependencyFamilyId,
+    sourceTrust?.independenceGroup,
+    ...nestedGroups
+  ].filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .map(value => value.trim()))].sort();
+}
+
+/**
+ * Resolve transitive source-dependence components. Sharing any declared group
+ * joins two spans; connected citation/republisher chains therefore remain one
+ * witness even when each copy also declares a unique label.
+ */
+export function evidenceDependencyComponents(spans: readonly EvidenceSpan[]): Map<string, string> {
+  const parent = spans.map((_, index) => index);
+  const find = (index: number): number => {
+    let root = index;
+    while (parent[root] !== root) root = parent[root]!;
+    while (parent[index] !== index) {
+      const next = parent[index]!;
+      parent[index] = root;
+      index = next;
+    }
+    return root;
+  };
+  const union = (left: number, right: number): void => {
+    const leftRoot = find(left);
+    const rightRoot = find(right);
+    if (leftRoot !== rightRoot) parent[rightRoot] = leftRoot;
+  };
+  const firstByGroup = new Map<string, number>();
+  spans.forEach((span, index) => {
+    for (const group of evidenceDependencyGroups(span)) {
+      const prior = firstByGroup.get(group);
+      if (prior === undefined) firstByGroup.set(group, index);
+      else union(prior, index);
+    }
+  });
+  const groupsByRoot = new Map<number, Set<string>>();
+  spans.forEach((span, index) => {
+    const root = find(index);
+    const groups = groupsByRoot.get(root) ?? new Set<string>();
+    for (const group of evidenceDependencyGroups(span)) groups.add(group);
+    groupsByRoot.set(root, groups);
+  });
+  const result = new Map<string, string>();
+  spans.forEach((span, index) => {
+    const groups = [...(groupsByRoot.get(find(index)) ?? [])].sort();
+    if (groups.length) result.set(String(span.id), `dependency-component:${groups.join("|")}`);
+  });
+  return result;
 }
 
 function sourceVersionParent(span: EvidenceSpan): string | undefined {
@@ -410,4 +566,8 @@ function hasNumberPair(value: JsonValue | undefined): boolean {
 
 function orderedNumbers(start: unknown, end: unknown): boolean {
   return typeof start === "number" && typeof end === "number" && Number.isFinite(start) && Number.isFinite(end) && end >= start;
+}
+
+function nonEmpty(value: string | undefined): value is string {
+  return typeof value === "string" && value.trim().length > 0;
 }

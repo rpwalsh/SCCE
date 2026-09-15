@@ -31,4 +31,16 @@ describe("code verifier capability discovery", () => {
       expect(capability.reason).toContain("python");
     }
   }, 30_000);
+
+  it("coalesces language ids that differ only at an ingress boundary", async () => {
+    const first = findCodeVerifierCapability("  LANGUAGE-WITHOUT-A-CHECKER ");
+    const second = findCodeVerifierCapability("language-without-a-checker");
+
+    expect(first).toBe(second);
+    expect(await first).toEqual({
+      languageId: "language-without-a-checker",
+      status: "unavailable",
+      reason: "no checker specification exists for language-without-a-checker"
+    });
+  });
 });

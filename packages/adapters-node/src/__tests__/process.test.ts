@@ -56,6 +56,12 @@ describe("NodeBuildTestAdapter execution authority", () => {
     expect(result.passed).toBe(false);
     expect(result.build.code).not.toBe(0);
     expect(result.test.code).toBeNull();
+    expect(result.testExecutionReceipt).toEqual({
+      command: process.execPath,
+      args: [test.path],
+      cwd: ".",
+      status: "skipped"
+    });
     expect(result.repairAttempted).toBe(false);
     expect(result.repairApplied).toBe(false);
     expect(result.attempts).toHaveLength(1);
@@ -92,6 +98,12 @@ describe("NodeBuildTestAdapter execution authority", () => {
     expect(result.passed).toBe(true);
     expect(result.build.code).toBe(0);
     expect(result.test.code).toBe(0);
+    expect(result.testExecutionReceipt).toEqual({
+      command: process.execPath,
+      args: ["test/program.test.mjs"],
+      cwd: "app",
+      status: "executed"
+    });
   });
 
   it("retries only after the kernel binds, selects, and materializes the observed failure", async () => {

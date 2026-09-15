@@ -1,6 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { splitPriorUnits, normalizePriorKey } from "./kernel-answer-primitives.js";
+import { jsonRecord, kernelString, splitPriorUnits, normalizePriorKey } from "./kernel-answer-primitives.js";
 import { canonicalStringify, createHasher, toJsonValue } from "./primitives.js";
 import { parseStatefulBehaviorScenarios } from "./stateful-behavior-scenarios.js";
 import type { ExplicitTurnRequirement } from "./turn-requirements.js";
@@ -128,6 +128,10 @@ function activeCodeRequestDemandModel(): CodeRequestDemandModel {
 
 export interface CodeRequestSignalOptions {
   demandModel?: CodeRequestDemandModel;
+  typedBehavior?: {
+    behaviorRequirements?: readonly ProgramBehaviorRequirement[];
+    statefulBehaviorRequirements?: readonly ProgramStatefulBehaviorRequirement[];
+  };
 }
 
 export function codeRequestDemand(
@@ -195,10 +199,16 @@ export function codeRequestSignal(requestText: string, options: CodeRequestSigna
   if (callShape) observe("call_shape");
   if (codePunctuation) observe("code_punctuation");
 
-  const statefulBehaviorRequirements = explicitStatefulBehaviorRequirements(text);
+  const statefulBehaviorRequirements = options.typedBehavior?.statefulBehaviorRequirements?.length
+    ? [...options.typedBehavior.statefulBehaviorRequirements]
+    : explicitStatefulBehaviorRequirements(text);
   // An ordered scenario owns its final observation. Do not additionally turn
   // that observation into a scalar lookup obligation.
-  const behaviorRequirements = statefulBehaviorRequirements.length ? [] : explicitCallResultRequirements(text);
+  const behaviorRequirements = statefulBehaviorRequirements.length
+    ? []
+    : options.typedBehavior?.behaviorRequirements?.length
+      ? [...options.typedBehavior.behaviorRequirements]
+      : explicitCallResultRequirements(text);
   if (behaviorRequirements.length) {
     observe("owner_behavior_example");
   }
@@ -437,6 +447,128 @@ export function codeRequestRequirements(requestText: string, signal: CodeRequest
     sourceActivationId: "activation.structure.code_request.v1",
       trace: toJsonValue({ source: "kernel.code_request.structure", signals: signal.signals, observations: signal.observations, language: signal.language ?? null, paths: signal.paths })
   }));
+}
+
+/**
+ * Reads the owner-authoritative executable contract at the API/runtime boundary.
+ * The contract contains no natural-language command or implementation bytes;
+ * those remain the planner's responsibility after an observed validation result.
+ */
+export function typedProgramBehaviorFromMetadata(metadata: JsonValue | undefined): {
+  behaviorRequirements: ProgramBehaviorRequirement[];
+  statefulBehaviorRequirements: ProgramStatefulBehaviorRequirement[];
+} {
+  const root = jsonRecord(metadata);
+  const value = root.programBehavior;
+  if (value === undefined) return { behaviorRequirements: [], statefulBehaviorRequirements: [] };
+  const record = jsonRecord(value);
+  if (record.schema !== "scce.program.owner_behavior.v1") throw new Error("programBehavior metadata schema is unsupported");
+  const behaviorPayloads = Array.isArray(record.behaviorRequirements)
+    ? record.behaviorRequirements.map((item, index) => parseTypedBehaviorPayload(item, `programBehavior.behaviorRequirements[${index}]`))
+    : [];
+  const statefulPayloads = Array.isArray(record.statefulBehaviorRequirements)
+    ? record.statefulBehaviorRequirements.map((item, index) => parseTypedStatefulBehaviorPayload(item, `programBehavior.statefulBehaviorRequirements[${index}]`))
+    : [];
+  if (!behaviorPayloads.length && !statefulPayloads.length) throw new Error("programBehavior metadata requires behavior requirements");
+  if (behaviorPayloads.length && statefulPayloads.length) throw new Error("programBehavior metadata cannot mix scalar and stateful requirements");
+  // The parsed owner contract is itself the source artifact. Identity, hash,
+  // and coordinates are derived here from its canonical bytes; caller-supplied
+  // provenance fields cannot manufacture a requirement binding.
+  const sourceContract = toJsonValue({
+    schema: "scce.program.owner_behavior.v1",
+    behaviorRequirements: behaviorPayloads,
+    statefulBehaviorRequirements: statefulPayloads
+  });
+  const sourceText = canonicalStringify(sourceContract);
+  const hasher = createHasher();
+  const requestHash = `sha256:${hasher.digestHex(sourceText)}`;
+  const cursor = { utf16: 0 };
+  const behaviorRequirements = behaviorPayloads.map(payload => {
+    const sourceSpan = canonicalContractSpan(sourceText, toJsonValue(payload), cursor);
+    const identity = { requestHash, ...payload, sourceSpan };
+    return {
+      id: `owner.program.requirement.${hasher.digestHex(canonicalStringify(identity)).slice(0, 40)}`,
+      ...identity
+    };
+  });
+  const statefulBehaviorRequirements = statefulPayloads.map(payload => {
+    const sourceSpan = canonicalContractSpan(sourceText, toJsonValue(payload), cursor);
+    const invocationCursor = { utf16: utf16OffsetForCodePoint(sourceText, sourceSpan.charStart) };
+    const invocations = payload.invocations.map(invocation => ({
+      ...invocation,
+      sourceSpan: canonicalContractSpan(sourceText, toJsonValue(invocation), invocationCursor)
+    }));
+    const identity = { requestHash, ...payload, invocations, sourceSpan };
+    return {
+      id: `owner.program.stateful_requirement.${hasher.digestHex(canonicalStringify(identity)).slice(0, 40)}`,
+      ...identity
+    };
+  });
+  return { behaviorRequirements, statefulBehaviorRequirements };
+}
+
+type TypedBehaviorPayload = Omit<ProgramBehaviorRequirement, "id" | "requestHash" | "sourceSpan">;
+type TypedStatefulBehaviorPayload = Omit<ProgramStatefulBehaviorRequirement, "id" | "requestHash" | "sourceSpan" | "invocations"> & {
+  invocations: Array<Omit<ProgramStatefulBehaviorRequirement["invocations"][number], "sourceSpan">>;
+};
+
+function parseTypedBehaviorPayload(value: JsonValue, label: string): TypedBehaviorPayload {
+  const row = jsonRecord(value);
+  const callableId = requiredMetadataString(row.callableId, `${label}.callableId`);
+  const relationSurface = requiredMetadataString(row.relationSurface, `${label}.relationSurface`);
+  const args = row.arguments;
+  if (!Array.isArray(args)) throw new Error(`${label}.arguments must be an array`);
+  const expectedResult = row.expectedResult;
+  if (expectedResult === undefined) throw new Error(`${label}.expectedResult is required`);
+  const verificationRole = row.verificationRole;
+  if (verificationRole !== "fit" && verificationRole !== "held_out") throw new Error(`${label}.verificationRole is invalid`);
+  return {
+    callableId, relationSurface,
+    arguments: args,
+    expectedResult,
+    verificationRole
+  };
+}
+
+function parseTypedStatefulBehaviorPayload(value: JsonValue, label: string): TypedStatefulBehaviorPayload {
+  const row = jsonRecord(value);
+  const relationSurface = requiredMetadataString(row.relationSurface, `${label}.relationSurface`);
+  const invocations = row.invocations;
+  if (!Array.isArray(invocations)) throw new Error(`${label}.invocations must be an array`);
+  const parsedInvocations = invocations.map((value, index) => {
+    const invocation = jsonRecord(value);
+    const callableId = requiredMetadataString(invocation.callableId, `${label}.invocations[${index}].callableId`);
+    const args = invocation.arguments;
+    if (!Array.isArray(args)) throw new Error(`${label}.invocations[${index}].arguments must be an array`);
+    return { callableId, arguments: args };
+  });
+  const expectedResult = row.expectedResult;
+  if (expectedResult === undefined) throw new Error(`${label}.expectedResult is required`);
+  const verificationRole = row.verificationRole;
+  if (verificationRole !== "fit" && verificationRole !== "held_out") throw new Error(`${label}.verificationRole is invalid`);
+  return { relationSurface, invocations: parsedInvocations, expectedResult, verificationRole };
+}
+
+function requiredMetadataString(value: JsonValue | undefined, label: string): string {
+  const result = kernelString(value);
+  if (!result) throw new Error(`${label} must be a non-empty string`);
+  return result;
+}
+
+function canonicalContractSpan(sourceText: string, value: JsonValue, cursor: { utf16: number }): { charStart: number; charEnd: number } {
+  const encoded = canonicalStringify(value);
+  const utf16Start = sourceText.indexOf(encoded, cursor.utf16);
+  if (utf16Start < 0) throw new Error("programBehavior canonical source binding failed");
+  const utf16End = utf16Start + encoded.length;
+  cursor.utf16 = utf16End;
+  return {
+    charStart: [...sourceText.slice(0, utf16Start)].length,
+    charEnd: [...sourceText.slice(0, utf16End)].length
+  };
+}
+
+function utf16OffsetForCodePoint(text: string, codePointOffset: number): number {
+  return [...text].slice(0, Math.max(0, codePointOffset)).join("").length;
 }
 
 /**

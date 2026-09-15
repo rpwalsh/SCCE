@@ -14,6 +14,7 @@ import {
   dialogueInterpretationAdjustmentsFromMetadata,
   typedDialoguePreselectionV2
 } from "../production-turn-runtime.js";
+import { createDialogueCognitiveMemoryV2 } from "../dialogue-cognitive-memory.js";
 import { createJudge } from "../judge.js";
 import { DEFAULT_POLICY } from "../safety.js";
 import { createHasher } from "../primitives.js";
@@ -115,6 +116,22 @@ describe("causal dialogue interpretation feedback", () => {
     });
     const adjustments = (await dialogueInterpretationAdjustmentsForConversation(reloaded, outcome.conversationId)) as DiscourseInterpretationAdjustmentV2[];
     const persistedAdjustmentId = adjustments[0]!.id;
+    // Persist the original ambiguous resolver state through the same durable
+    // interaction-state contract used by production turns. A fresh memory
+    // instance models a process restart; it must restore the typed referent
+    // context before the equivalent later mention is resolved.
+    const cognitiveMemory = createDialogueCognitiveMemoryV2({
+      store: durable,
+      hasher: createHasher()
+    });
+    await cognitiveMemory.persist(first.state, 12, null);
+    const coldState = await createDialogueCognitiveMemoryV2({
+      store: durable,
+      hasher: createHasher()
+    }).latest(outcome.conversationId);
+    expect(coldState?.id).toBe(first.state.id);
+    const laterColdResolution = resolveTurn("mention.after.restart", 2, coldState, adjustments);
+    expect(laterColdResolution.state.bindings[0]?.referentId).toBe("referent.b");
     // A restarted production runtime has no request metadata or resident
     // state. Its durable correction read must still feed the same selection
     // path and preserve the persisted adjustment identity for tracing.
@@ -132,7 +149,7 @@ describe("causal dialogue interpretation feedback", () => {
       correctionIds: ["correction.unrelated"]
     });
 
-    const matching = productionSelection(first.state, [...restartedAdjustments, unrelatedLoadedAdjustment]);
+    const matching = productionSelection(coldState ?? first.state, [...restartedAdjustments, unrelatedLoadedAdjustment]);
     const withheld = productionSelection(first.state, []);
     const unrelated = productionSelection(first.state, adjustments, {
       role: "role.unrelated",

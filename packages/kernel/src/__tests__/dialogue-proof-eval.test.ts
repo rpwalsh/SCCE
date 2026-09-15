@@ -28,6 +28,7 @@ import {
   verifyProofPreservingParaphrases,
   type DialogueAnswerGraphLike
 } from "../index.js";
+import type { JsonValue } from "../types.js";
 
 describe("dialogue proof/eval milestone", () => {
   it("persists outcome memory and replays learned style after restart", async () => {
@@ -223,6 +224,63 @@ describe("dialogue proof/eval milestone", () => {
     expect(replayed?.result.finalText).toContain("token.alpha");
   });
 
+  it("keeps the selected typed-dialogue adjustment audit on the production bridge", () => {
+    const result = minimalTurnResult({
+      answer: "token.alpha remains supported.",
+      evidenceText: "token.alpha remains supported.",
+      selectionAudit: {
+        typedDialogueSelection: {
+          referentId: "referent.preferred",
+          adjustmentIds: ["adjustment.persisted"]
+        }
+      }
+    });
+    const bridge = buildTurnDialogueBridge({
+      requestText: "which referent remains supported?",
+      result,
+      conversationId: "conversation.live",
+      turnId: "turn.live.selection"
+    });
+
+    expect(bridge.selectionAudit).toMatchObject({
+      typedDialogueSelection: { adjustmentIds: ["adjustment.persisted"] }
+    });
+  });
+
+  it("replays the candidate that was actually spoken when critique order differs", async () => {
+    const live = realizeDialogueResponse({
+      requestText: "answer with the certified result",
+      answerGraph: supportedGraph({ actions: [] }),
+      candidateTexts: ["The certified result is preserved for the owner."]
+    });
+    const spokenId = live.selected.candidateId;
+    const alternative = live.candidates.find(candidate => candidate.id !== spokenId);
+    expect(alternative).toBeDefined();
+    if (!alternative) return;
+    // Model the production case where the bridge kept a valid supplied draft
+    // but a later critic ranking would otherwise make another candidate look
+    // better during outcome replay.
+    const result = {
+      ...live,
+      criticResults: live.criticResults.map(critic => critic.candidateId === spokenId
+        ? { ...critic, score: 0.21 }
+        : { ...critic, score: 0.99 }),
+      selected: { ...live.selected, candidateId: spokenId }
+    };
+    const store = createInMemoryDialogueMemoryStore();
+    const batch = buildDialoguePersistenceBatch({ result, answerGraphHash: "graph.spoken", now: 3000 });
+    await store.putInteractionState(batch.interactionState);
+    await store.putPolicyDecision(batch.policyDecision);
+    for (const candidate of batch.responseCandidates) await store.putResponseCandidate(candidate);
+
+    const replayed = await latestDialoguePragmaticsFromMemory(store, {
+      conversationId: result.state.conversationId,
+      turnId: result.state.turnId
+    });
+    expect(replayed?.result.selected.candidateId).toBe(spokenId);
+    expect(replayed?.result.finalText).toBe(live.candidates.find(candidate => candidate.id === spokenId)?.text);
+  });
+
   it("carries typed open work into the next communicative act and stream order", () => {
     const first = realizeDialogueResponse({
       requestText: "begin typed continuation",
@@ -294,7 +352,7 @@ function supportedGraph(input: { claim?: string; actions?: DialogueAnswerGraphLi
   };
 }
 
-function minimalTurnResult(input: { answer: string; evidenceText: string }) {
+function minimalTurnResult(input: { answer: string; evidenceText: string; selectionAudit?: JsonValue }) {
   const evidence = [{
     id: "evidence.live" as never,
     sourceId: "source.live" as never,
@@ -335,7 +393,15 @@ function minimalTurnResult(input: { answer: string; evidenceText: string }) {
     truthState: "truth.source_bound_only" as const,
     evidenceForce: "direct_evidence" as const,
     guardFlags: [],
-    events: []
+    events: input.selectionAudit === undefined ? [] : [{
+      id: "event.selected" as never,
+      episodeId: "episode.live" as never,
+      typeId: "CandidateSelected",
+      t: 1,
+      payload: { candidateAudit: input.selectionAudit },
+      parents: [],
+      hash: "hash.selected"
+    }]
   } as never;
 }
 

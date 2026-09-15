@@ -56,7 +56,8 @@ import {
 import {
   languageStructuralDeltasFromPatterns,
   structuralDeltaRealizationFit,
-  type LanguageStructuralDelta
+  type LanguageStructuralDelta,
+  type LanguageStructuralDeltaMatchContext
 } from "./language-state-delta.js";
 
 const composedJoinProgramCache = new WeakMap<
@@ -450,7 +451,15 @@ export interface LanguageMemoryRuntime {
   realize(input: {
     state: LanguageMemoryRuntimeState;
     requestText: string;
-    candidates: Array<{ text: string; evidenceIds?: string[]; fit?: number }>;
+    candidates: Array<{
+      text: string;
+      evidenceIds?: string[];
+      fit?: number;
+      /** Typed realization identity used to scope construction corrections. */
+      constructionId?: string;
+      profileId?: string;
+      contextKey?: string;
+    }>;
     continuationPrompt?: string;
   }): LanguageMemoryRealization;
   correct(input: { state: LanguageMemoryRuntimeState; acceptedText: string; replacementText: string; contextText?: string }): LanguageMemoryCorrection;
@@ -687,10 +696,15 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
         .map(candidate => {
           const score = scoreText(input.state, candidate.text, input.requestText);
           const requestFit = weightedJaccard(featureSet(input.requestText, 256), featureSet(candidate.text, 256));
-          const structuralDelta = bestStructuralDeltaForSurface(input.state, input.requestText, candidate.text);
+          const structuralDelta = bestStructuralDeltaForSurface(input.state, input.requestText, candidate.text, candidate);
           const structuralDeltaFit = structuralDelta.fit;
+          // A complete learned transition binds both the observed request
+          // surface and the candidate surface. Let that typed route carry its
+          // measured fit into request scoring; lexical overlap alone can
+          // otherwise keep the mismatching surface ahead after reload.
+          const learnedRequestFit = Math.max(requestFit, structuralDeltaFit);
           const learnedCandidateFit = Math.max(candidate.fit ?? score.fit, structuralDeltaFit);
-          const total = clamp01(calibrated("language_memory.total_activation_weight") * score.activation + calibrated("language_memory.total_request_fit_weight") * requestFit + calibrated("language_memory.total_candidate_fit_weight") * learnedCandidateFit);
+          const total = clamp01(calibrated("language_memory.total_activation_weight") * score.activation + calibrated("language_memory.total_request_fit_weight") * learnedRequestFit + calibrated("language_memory.total_candidate_fit_weight") * learnedCandidateFit);
           return { candidate, score, total, structuralDeltaFit, structuralDeltaIds: structuralDelta.ids };
         })
         .sort((a, b) => b.total - a.total || a.candidate.text.localeCompare(b.candidate.text));
@@ -4806,11 +4820,12 @@ function hashText(text: string): string {
 function bestStructuralDeltaForSurface(
   state: LanguageMemoryRuntimeState,
   requestText: string,
-  candidateText: string
+  candidateText: string,
+  context: LanguageStructuralDeltaMatchContext = {}
 ): { fit: number; ids: string[] } {
   const rows = (state.structuralDeltas ?? [])
     .slice(0, 256)
-    .map(delta => ({ delta, fit: structuralDeltaRealizationFit(delta, requestText, candidateText) }))
+    .map(delta => ({ delta, fit: structuralDeltaRealizationFit(delta, requestText, candidateText, context) }))
     .filter(row => row.fit > 0)
     .sort((left, right) => right.fit - left.fit || left.delta.id.localeCompare(right.delta.id));
   return {

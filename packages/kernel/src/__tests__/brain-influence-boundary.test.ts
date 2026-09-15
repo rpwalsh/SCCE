@@ -86,8 +86,10 @@ describe("imported brain influence and proof boundary", () => {
     const second = sourceAssertion(span(sourceVersion("assertion-b", "fixture://assertion-b", 0.9), fixture.directEvidence.text, "direct_evidence"));
 
     const boundaries = evidenceProofBoundaries([first, second]);
-    expect(boundaries.every(boundary => boundary.certifiesFactualProof)).toBe(true);
-    expect(boundaries.every(boundary => boundary.reason === "proof-boundary.independent-source-assertion-corroboration")).toBe(true);
+    // A raw EvidenceSpan set carries no typed proposition identity, so it
+    // remains conservative. Claim-scoped corroboration is exercised in the
+    // source-lineage integrity tests.
+    expect(boundaries.every(boundary => !boundary.certifiesFactualProof)).toBe(true);
 
     const repeated = evidenceProofBoundaries([first, { ...first, id: ids.evidenceId({ sourceVersionId: first.sourceVersionId, byteStart: 1, byteEnd: first.byteEnd, spanHash: first.contentHash }) }]);
     expect(repeated.every(boundary => !boundary.certifiesFactualProof)).toBe(true);
@@ -150,8 +152,7 @@ describe("imported brain influence and proof boundary", () => {
     }), fixture.directEvidence.text, "direct_evidence"));
 
     const boundaries = evidenceProofBoundaries([first, second]);
-    expect(boundaries.every(boundary => boundary.certifiesFactualProof)).toBe(true);
-    expect(boundaries.every(boundary => boundary.reason === "proof-boundary.independent-source-assertion-corroboration")).toBe(true);
+    expect(boundaries.every(boundary => !boundary.certifiesFactualProof)).toBe(true);
   });
 
   it("reports imported language rows used by Mouth realization", async () => {

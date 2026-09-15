@@ -698,24 +698,14 @@ export function createRuntimeGraphRetrieval(options: {
 
 
   async function graphForEvidenceIdsUnrouted(evidenceIds: readonly string[]): Promise<RuntimeGraphSliceValue> {
-    const boundedEvidenceIds = uniqueKernelStrings(evidenceIds).slice(0, 80) as EvidenceSpan["id"][];
-    if (!boundedEvidenceIds.length) return emptyRuntimeGraphSlice({ evidenceIds: [] }, []);
-    const graph = await deps.storage.graph.getSlice({
-      evidenceIds: boundedEvidenceIds,
-      evidenceBoundOnly: true,
-      radius: 0,
-      limitNodes: sourceAnchorHotNodeLimit,
-      limitEdges: sourceAnchorHotEdgeLimit,
-      maxRepresentationBytes: hotNeighborhoodMaxNodeBytes
-    });
-    const graphEvidenceIds = uniqueKernelStrings([
-      ...boundedEvidenceIds.map(String),
-      ...graph.nodes.flatMap(node => node.evidenceIds.map(String)),
-      ...graph.edges.flatMap(edge => edge.evidenceIds.map(String)),
-      ...graph.hyperedges.flatMap(edge => edge.provenanceRefs.map(String))
-    ]).slice(0, 80) as EvidenceSpan["id"][];
-    const evidence = graphEvidenceIds.length ? await deps.storage.evidence.getEvidenceBatch(graphEvidenceIds) : [];
-    return { graph, evidence };
+    // “Unrouted” means do not widen beyond the supplied proof basis. It does
+    // not mean bypass the bounded resolver: this path is used by discourse
+    // turns that already have evidence IDs, so repeating the graph/evidence
+    // reads for concurrent turns was pure duplicate database work. The
+    // bounded resolver preserves the exact evidence boundary while sharing
+    // the same cache and in-flight reads as every other evidence-addressed
+    // turn.
+    return graphForEvidenceIds(evidenceIds);
   }
 
 

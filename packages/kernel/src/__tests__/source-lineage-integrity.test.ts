@@ -3,11 +3,12 @@
 import { describe, expect, it } from "vitest";
 
 import { createProofCarryingAnswer } from "../proof-carrying-answer.js";
-import { evidenceLineage, evidenceProofBoundaries } from "../proof-boundary.js";
+import { evidenceLineage, evidenceProofBoundaries, evidenceProofBoundariesForClaim } from "../proof-boundary.js";
 import { evidenceToProofRecords } from "../semantic-proof-adapter.js";
 import { createSemanticProofSystem } from "../semantic-proof-system.js";
 import { featureSet } from "../primitives.js";
 import type { EvidenceSpan, GraphNode, JsonValue, SourceVersionId } from "../types.js";
+import type { ProofClaim, ProofEvidenceRecord } from "../semantic-proof-engine.js";
 
 describe("source-authority lineage at the proof boundary", () => {
   it("collapses a chain of derived copies into one truth witness", () => {
@@ -49,17 +50,18 @@ describe("source-authority lineage at the proof boundary", () => {
       "lineage-cycle:sv.cycle-a|sv.cycle-b|sv.cycle-c"
     ]));
     const boundaries = evidenceProofBoundaries(spans);
-    expect(boundaries.filter(boundary => boundary.certifiesFactualProof)).toHaveLength(2);
-    expect(boundaries.filter(boundary => boundary.reason === "proof-boundary.dependent-source-assertion")).toHaveLength(3);
+    expect(boundaries.every(boundary => !boundary.certifiesFactualProof)).toBe(true);
   });
 
   it("still lets genuinely independent owner-supplied documents corroborate", () => {
     const first = assertedSpan("sv.document-a", "publisher:a");
     const second = assertedSpan("sv.document-b", "publisher:b");
     const boundaries = evidenceProofBoundaries([first, second]);
+    expect(boundaries.every(boundary => !boundary.certifiesFactualProof)).toBe(true);
+    const scoped = evidenceProofBoundariesForClaim({ claim: typedClaim("claim.same"), evidence: [first, second], proofEvidence: [typedRecord(first), typedRecord(second)] });
 
-    expect(boundaries.every(boundary => boundary.certifiesFactualProof)).toBe(true);
-    expect(boundaries.every(boundary => boundary.reason === "proof-boundary.independent-source-assertion-corroboration")).toBe(true);
+    expect(scoped.every(boundary => boundary.certifiesFactualProof)).toBe(true);
+    expect(scoped.every(boundary => boundary.reason === "proof-boundary.independent-source-assertion-corroboration")).toBe(true);
   });
 
   it("keeps a corroborated derivative lineage to one citable witness", () => {
@@ -68,8 +70,9 @@ describe("source-authority lineage at the proof boundary", () => {
     const independent = assertedSpan("sv.mixed-independent", "publisher:independent");
     const boundaries = evidenceProofBoundaries([original, derivative, independent]);
 
-    expect(boundaries.filter(boundary => boundary.certifiesFactualProof)).toHaveLength(2);
-    expect(boundaries.find(boundary => boundary.evidenceId === derivative.id)).toMatchObject({
+    const scoped = evidenceProofBoundariesForClaim({ claim: typedClaim("claim.mixed"), evidence: [original, derivative, independent], proofEvidence: [typedRecord(original), typedRecord(derivative), typedRecord(independent)] });
+    expect(scoped.filter(boundary => boundary.certifiesFactualProof)).toHaveLength(2);
+    expect(scoped.find(boundary => boundary.evidenceId === derivative.id)).toMatchObject({
       certifiesFactualProof: false,
       reason: "proof-boundary.dependent-source-assertion"
     });
@@ -81,6 +84,58 @@ describe("source-authority lineage at the proof boundary", () => {
     const independent = assertedSpan("sv.match-independent", "publisher:shared");
     const boundaries = evidenceProofBoundaries([original, relabeled, independent]);
     expect(boundaries.every(boundary => !boundary.certifiesFactualProof)).toBe(true);
+  });
+
+  it("does not let a unique front label hide a shared citation dependency", () => {
+    const first = dependencyLabeledSpan(assertedSpan("sv.citation-a", "publisher:a"), "front:a", "chain:shared");
+    const republished = dependencyLabeledSpan(assertedSpan("sv.citation-b", "publisher:b"), "front:b", "chain:shared");
+    const claim = typedClaim("claim.citation-chain");
+    const boundaries = evidenceProofBoundariesForClaim({
+      claim,
+      evidence: [first, republished],
+      proofEvidence: [typedRecord(first), typedRecord(republished)]
+    });
+
+    expect(boundaries.every(boundary => !boundary.certifiesFactualProof)).toBe(true);
+  });
+
+  it("never lets independent documents asserting unrelated typed P and Q corroborate", () => {
+    const first = assertedSpan("sv.unrelated-p", "publisher:p");
+    const second = assertedSpan("sv.unrelated-q", "publisher:q");
+    const claim = typedClaim("claim.p");
+    const unrelated = { ...typedRecord(second), relationId: "relation.fixture.other", object: { id: "value.other", kindId: "kind.value", roleId: "role.object" } };
+    const boundaries = evidenceProofBoundariesForClaim({ claim, evidence: [first, second], proofEvidence: [typedRecord(first), unrelated] });
+
+    expect(boundaries.every(boundary => !boundary.certifiesFactualProof)).toBe(true);
+  });
+
+  it("requires two independent typed witnesses for the same claim, including polarity", () => {
+    const first = assertedSpan("sv.same-polarity", "publisher:p");
+    const second = assertedSpan("sv.contrary-polarity", "publisher:q");
+    const positive = typedClaim("claim.positive");
+    const contrary = { ...typedRecord(second), id: "record:contrary", polarityId: "polarity.negative" };
+    const boundaries = evidenceProofBoundariesForClaim({ claim: positive, evidence: [first, second], proofEvidence: [typedRecord(first), contrary] });
+
+    expect(boundaries.every(boundary => !boundary.certifiesFactualProof)).toBe(true);
+  });
+
+  it("does not count duplicate spans from one lineage as same-claim corroboration", () => {
+    const root = assertedSpan("sv.duplicate-root", "publisher:root");
+    const copy = assertedSpan("sv.duplicate-copy", "publisher:copy", "sv.duplicate-root");
+    const boundaries = evidenceProofBoundariesForClaim({ claim: typedClaim("claim.duplicate"), evidence: [root, copy], proofEvidence: [typedRecord(root), typedRecord(copy)] });
+
+    expect(boundaries.every(boundary => !boundary.certifiesFactualProof)).toBe(true);
+  });
+
+  it("uses a maximum lineage/family matching when independence labels cross", () => {
+    const l1f1 = assertedSpan("sv.cross-l1-f1", "family:f1");
+    const l1f2 = assertedSpan("sv.cross-l1-f2", "family:f2", "sv.cross-l1-f1");
+    const l2f1 = assertedSpan("sv.cross-l2-f1", "family:f1");
+    const l2f2 = assertedSpan("sv.cross-l2-f2", "family:f2", "sv.cross-l2-f1");
+    const evidence = [l1f1, l1f2, l2f1, l2f2];
+    const boundaries = evidenceProofBoundariesForClaim({ claim: typedClaim("claim.cross"), evidence, proofEvidence: evidence.map(typedRecord) });
+
+    expect(boundaries.filter(boundary => boundary.certifiesFactualProof)).toHaveLength(2);
   });
 
   it("keeps one source assertion qualified rather than turning it into unqualified P", () => {
@@ -250,5 +305,41 @@ function assertedSpan(version: string, independenceGroup: string, parent?: strin
     status: "promoted",
     alpha: 0.9,
     observedAt: 1
+  };
+}
+
+function typedClaim(id: string): ProofClaim {
+  return {
+    id,
+    subject: { id: "entity.fixture", kindId: "kind.entity", roleId: "role.subject" },
+    relationId: "relation.fixture.same",
+    object: { id: "value.fixture", kindId: "kind.value", roleId: "role.object" },
+    polarityId: "polarity.positive",
+    modalityId: "modality.asserted"
+  };
+}
+
+function typedRecord(span: EvidenceSpan): ProofEvidenceRecord {
+  return {
+    id: `record:${String(span.id)}`,
+    forceClass: "direct_evidence",
+    sourceVersionId: String(span.sourceVersionId),
+    evidenceSpanId: String(span.id),
+    subject: { id: "entity.fixture", kindId: "kind.entity", roleId: "role.subject" },
+    relationId: "relation.fixture.same",
+    object: { id: "value.fixture", kindId: "kind.value", roleId: "role.object" },
+    polarityId: "polarity.positive",
+    modalityId: "modality.asserted"
+  };
+}
+
+function dependencyLabeledSpan(span: EvidenceSpan, sourceFamilyId: string, dependencyFamilyId: string): EvidenceSpan {
+  return {
+    ...span,
+    provenance: {
+      ...(span.provenance as Record<string, JsonValue>),
+      sourceFamilyId,
+      dependencyFamilyId
+    }
   };
 }

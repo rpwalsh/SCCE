@@ -65,10 +65,22 @@ export function findCodeVerifier(languageId: string): Promise<DiscoveredCodeVeri
  * absence is not an exception and must never be mistaken for verification.
  */
 export function findCodeVerifierCapability(languageId: string): Promise<CodeVerifierCapability> {
-  const cached = discovered.get(languageId);
+  // Callers receive language ids from different boundaries (file extension maps,
+  // corpus metadata, and learned code proposals). Keep those boundaries on the
+  // same warm entry so a casing/whitespace difference cannot start another
+  // process probe for the same language.
+  const key = canonicalLanguageId(languageId);
+  const cached = discovered.get(key);
   if (cached) return cached;
-  const lookup = probe(languageId);
-  discovered.set(languageId, lookup);
+  let lookup: Promise<CodeVerifierCapability>;
+  lookup = probe(key).catch(error => {
+    // A failed initialization is different from a stable unavailable result.
+    // Drop only our own entry so concurrent callers still share this attempt,
+    // while a later turn can retry after a transient process/filesystem fault.
+    if (discovered.get(key) === lookup) discovered.delete(key);
+    throw error;
+  });
+  discovered.set(key, lookup);
   return lookup;
 }
 
@@ -84,6 +96,10 @@ export function findCodeVerifierCapabilityForPath(filePath: string): Promise<Cod
   return languageId
     ? findCodeVerifierCapability(languageId)
     : Promise.resolve({ languageId: "unknown", status: "unavailable", reason: "no language checker is configured for this path" });
+}
+
+function canonicalLanguageId(languageId: string): string {
+  return languageId.trim().toLowerCase();
 }
 
 

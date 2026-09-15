@@ -164,6 +164,7 @@ import { checkAntiCopyGuard } from "./voice-profile.js";
 import { buildConstructionAlgebra, searchTargetConditionedDerivation, semanticTargetFromGraph } from "./generative-derivation-runtime.js";
 import { persistTaskGraphForTurn, syncTaskResumptionSnapshotForTurn } from "./task-resumption-turn-request.js";
 import { programIntentForTurn, replanOwnerBehaviorProgramIntent } from "./program-intent.js";
+import { learningEpisodesFromEvents, learningEpisodesFromVerifiedProgram } from "./program-transformation-learning.js";
 import { planObservedProgramRepairTransition } from "./observed-program-repair.js";
 import { completeTaskDecompositionNode, schedulableSubtasks, type TaskDecompositionGraph } from "./hierarchical-task-decomposition.js";
 import { solveTaskSchedule } from "./task-schedule-solver.js";
@@ -189,7 +190,7 @@ import { captureResourceUsageSnapshot, measureResourceUsageDelta } from "./resou
 import { createRuntimeAcquisition } from "./runtime-acquisition.js";
 import { admissionTierDiagnostics, evidenceDiscriminatesAskedRelation, localEvidenceAnswerIsQuotationRecall, preferredLocalEvidenceAnswer, requestContentEvidenceUnits, requestRelationBeyondSourceIdentity, sourceEvidenceAnchorsForRequest } from "./local-evidence-runtime.js";
 import { normalizePriorKey, splitPriorUnits } from "./kernel-answer-primitives.js";
-import { codeLanguageForRequirementState, codeRequestObservedRequirements, codeRequestSignal } from "./code-request.js";
+import { codeLanguageForRequirementState, codeRequestObservedRequirements, codeRequestSignal, typedProgramBehaviorFromMetadata } from "./code-request.js";
 import { attachLearnedGraphPriorConstruct } from "./learned-graph-prior-runtime.js";
 import { decideRuntimeCoherence } from "./runtime-coherence.js";
 import { executableRuntimeDeadlineFromMetadata, type RuntimeDeadlineDecision } from "./runtime-deadline.js";
@@ -246,6 +247,7 @@ import { createTrainingOrchestrator } from "./training-orchestrator.js";
 import { canonicalTranslationTargetKey, createTranslationEngine, type TranslationPlan } from "./translation.js";
 import { CALIBRATION_IDS, CALIBRATION_SUBSYSTEM_IDS, CALIBRATION_TASK_CLASS_IDS, calibrationObservationRecord, judgeRequirementObservation } from "./calibration-spine.js";
 import { constructionCycleScoresFromMemory, persistConstructionCycleConsistency } from "./construction-cycle-consistency.js";
+import { persistLanguageRoundTripDelta } from "./language-round-trip-learning.js";
 import {
   creativeContinuationCandidateFromConstruct,
   creativeContinuationDecision,
@@ -1189,17 +1191,19 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // selection; relying on the previous state's copied adjustments made a
       // restart forget an owner correction until another turn happened to
       // persist it into the state projection.
-      const [restoredCognitiveState, durableDialogueInterpretationAdjustments] = await Promise.all([
+      const [durableCognitiveState, durableDialogueInterpretationAdjustments] = await Promise.all([
         residentCognitiveState
-          ? Promise.resolve(residentCognitiveState)
+          ? Promise.resolve(undefined)
           : dialogueCognitiveMemory.latest(dialogueConversationId).catch(() => undefined),
         dialogueInterpretationAdjustmentsForConversation(deps.storage.dialogueMemory, dialogueConversationId).catch(() => [])
       ]);
+      const restoredCognitiveState = residentCognitiveState ?? durableCognitiveState;
       if (restoredCognitiveState) residentDialogueCognitiveStates.set(dialogueConversationId, restoredCognitiveState);
       const previousDialogueCognitiveState = preferDialogueCognitiveStateV2({
         conversationId: dialogueConversationId,
         metadataState: metadataDialogueCognitiveState,
-        residentState: restoredCognitiveState,
+        durableState: durableCognitiveState,
+        residentState: residentCognitiveState,
         hasher
       });
       if (!previousDialogueCognitiveState) warmDialogueCognitiveState(dialogueConversationId);
@@ -1271,7 +1275,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         ], 2048)
       };
       // Structure, not vocabulary: a request that names a formal language or a code path is asking for an artifact.
-      const codeSignal = codeRequestSignal(input.text);
+      const typedProgramBehavior = typedProgramBehaviorFromMetadata(input.metadata);
+      const codeSignal = codeRequestSignal(input.text, { typedBehavior: typedProgramBehavior });
       let requirementField = deriveTurnRequirementField({
         requestText: input.text,
         explicitRequirements: [
@@ -3494,7 +3499,19 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // selected. A missing semantic frame means there is no admissible
       // continuation state to train, so leave the lane unscored rather than
       // inventing a context key from request prose.
-      const creativeSemanticFrameId = creativeRequestFrame?.id ?? requirementField.activatedFrameIds[0];
+      const creativeSemanticFrameId = creativeRequestFrame?.id
+        ?? requirementField.activatedFrameIds[0]
+        ?? requirementField.activatedConstructIds[0]
+        ?? requirementField.activatedPatternIds[0]
+        ?? `creative.semantic.requirement.${hasher.digestHex(JSON.stringify({
+          activatedDialogueMoveIds: requirementField.activatedDialogueMoveIds,
+          activatedPhraseUnitIds: requirementField.activatedPhraseUnitIds,
+          activatedPatternIds: requirementField.activatedPatternIds,
+          activatedConstructIds: requirementField.activatedConstructIds,
+          noveltyDemand: requirementField.noveltyDemand,
+          inferentialDepth: requirementField.inferentialDepth,
+          formatConstraintStrength: requirementField.formatConstraintStrength
+        })).slice(0, 32)}`;
       const creativeContinuationState: CreativeContinuationState | undefined = requestedAuthority === "creative"
         && creativeSemanticFrameId
         ? {
@@ -3507,7 +3524,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           goalId: authorityDialogueState.currentIntentId
         }
         : undefined;
-      const creativeContinuationCandidates: ReadonlyMap<string, CreativeContinuationCandidate> | undefined = creativeContinuationState
+      const creativeContinuationCandidates: Map<string, CreativeContinuationCandidate> | undefined = creativeContinuationState
         ? new Map(inventionCandidates.map((construct, index) => {
           const candidate = creativeContinuationCandidateFromConstruct({ construct, candidateIndex: index, hasher });
           return [candidate.candidateId, candidate] as const;
@@ -3609,6 +3626,23 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           }))
         })
       })));
+      // Cognitive proposals are the canonical creative candidates in the
+      // live planner. Their ids are proposal-local, while owner feedback is
+      // keyed to the stable structural invention identity. Bridge the two
+      // before candidate scoring so the learned policy affects the actual
+      // candidate that can be selected and later offered through the API.
+      if (creativeContinuationCandidates) {
+        const continuationByConstructId = new Map(
+          inventionCandidates.map((construct, index) => [construct.id, creativeContinuationCandidates.get(`creative:${construct.id}:${index}`)] as const)
+        );
+        for (const [proposalIndex, proposal] of cognitiveProposals.entries()) {
+          if (!proposal.claims.some(claim => claim.basis === "invented" || claim.basis === "counterfactual")) continue;
+          const continuation = proposal.constructIds
+            .map(constructId => continuationByConstructId.get(constructId))
+            .find((candidate): candidate is CreativeContinuationCandidate => Boolean(candidate));
+          if (continuation) creativeContinuationCandidates.set(`proposal:${proposal.id}:${proposalIndex}`, continuation);
+        }
+      }
       // Plan items 160/162: a real, checked reasoning-operators.ts
       // comparisonOperator receipt proving the final selected cognitive
       // proposals' relative order really does follow MMR's declared
@@ -3934,13 +3968,19 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           .map(candidate => creativeContinuationCandidates.get(candidate.id))
           .filter((candidate): candidate is CreativeContinuationCandidate => Boolean(candidate))
         : [];
+      const selectedCreativeContinuation = creativeContinuationState && creativeContinuationCandidates
+        ? creativeContinuationCandidates.get(judged.selected.id)
+        : undefined;
       const creativeDecisionForTurn = creativeContinuationState && creativeContinuationCandidates
         && creativeOfferedForTurn.length > 0
-        && creativeContinuationCandidates.has(judged.selected.id)
+        && selectedCreativeContinuation
         ? creativeContinuationDecision({
           state: creativeContinuationState,
           offered: creativeOfferedForTurn,
-          selectedCandidateId: judged.selected.id
+          // The judge may select a proposal-local alias. Persist the
+          // canonical structural candidate id so the API outcome can recover
+          // the exact offered alternative across regeneration/restart.
+          selectedCandidateId: selectedCreativeContinuation.candidateId
         })
         : undefined;
       const selectedDialogueSelection = jsonRecord(jsonRecord(judged.selected.audit).typedDialogueSelection);
@@ -4204,6 +4244,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
               }
             } else if (ownerBehaviorFailed) {
               const priorResult = buildTest;
+              const learnedProgramEpisodes = learningEpisodesFromEvents(await deps.storage.events.readRange({ typeId: "ProgramTransformationLearned", limit: 512 }));
               const replan = replanOwnerBehaviorProgramIntent({
                 intent: priorBehaviorIntent,
                 program: priorProgram,
@@ -4217,7 +4258,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
                   ownerRequirementIds,
                   command: priorProgram.test
                 },
-                hasher
+                hasher,
+                learnedEpisodes: learnedProgramEpisodes
               });
               behaviorProgramIntent = replan.intent;
               construct = programBuilder.build({
@@ -4253,6 +4295,16 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
               })));
             }
             await deps.storage.constructs.putBuildTest(episodeId, construct.id, buildTest);
+            // A selected typed construction becomes learnable only after the
+            // exact ProgramGraph test command passes. This event is the durable
+            // causal bridge used by later replans; it never supplies an answer
+            // or bypasses current fit validation.
+            const learnedProgramEpisodes = construct.program && behaviorProgramIntent
+              ? learningEpisodesFromVerifiedProgram({ episodeId, program: construct.program, intent: behaviorProgramIntent, buildTest, now: clock.now(), hasher })
+              : [];
+            for (const learnedEpisode of learnedProgramEpisodes) {
+              events.push(await append(eventFactory.create({ episodeId, typeId: "ProgramTransformationLearned", payload: learnedEpisode })));
+            }
             // Every attempt is observed: a failure replans the task graph, a selected repair becomes the construct's
             // state, and the attempt that passes completes what it proved. This runtime bounds repair to one retry.
             const buildAttempts = buildTest.attempts?.length ? buildTest.attempts : [{ build: buildTest.build, test: buildTest.test, artifacts: buildTest.artifacts }];
@@ -5462,6 +5514,11 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             deps.storage.dialogueMemory,
             spoken.constructionCycleOutcome
           );
+          const languageDelta = spoken.constructionCycleOutcome.languageDelta
+            ? await persistLanguageRoundTripDelta(deps.storage.languageMemory, {
+              delta: spoken.constructionCycleOutcome.languageDelta
+            })
+            : undefined;
           // Make the just-observed result available to the next turn in this
           // process as well; a restart will reconstruct the same map from the
           // durable calibration rows.
@@ -5481,6 +5538,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
               planId: spoken.constructionCycleOutcome.planId,
               outcome: spoken.constructionCycleOutcome.outcome,
               score: spoken.constructionCycleOutcome.score,
+              languageDeltaId: languageDelta?.structuralDelta.id ?? null,
               sourceTraceId: spoken.constructionCycleOutcome.sourceTraceId ?? null
             }
           });

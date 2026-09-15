@@ -1089,12 +1089,46 @@ function evidenceSourceDependencyGroups(
       && !Array.isArray(span.provenance)
       ? span.provenance as Record<string, JsonValue>
       : {};
-    const family = typeof provenance.sourceFamilyId === "string"
-      ? provenance.sourceFamilyId
-      : typeof provenance.dependencyFamilyId === "string"
-        ? provenance.dependencyFamilyId
+    const trust = span.trustVector && typeof span.trustVector === "object"
+      && !Array.isArray(span.trustVector)
+      ? span.trustVector as Record<string, JsonValue>
+      : {};
+    const sourceTrust = trust.sourceTrust && typeof trust.sourceTrust === "object"
+      && !Array.isArray(trust.sourceTrust)
+      ? trust.sourceTrust as Record<string, JsonValue>
+      : {};
+    const sourceVersion = provenance.sourceVersion && typeof provenance.sourceVersion === "object"
+      && !Array.isArray(provenance.sourceVersion)
+      ? provenance.sourceVersion as Record<string, JsonValue>
+      : {};
+    const derivation = provenance.sourceVersionDerivation && typeof provenance.sourceVersionDerivation === "object"
+      && !Array.isArray(provenance.sourceVersionDerivation)
+      ? provenance.sourceVersionDerivation as Record<string, JsonValue>
+      : provenance.derivation && typeof provenance.derivation === "object"
+        && !Array.isArray(provenance.derivation)
+        ? provenance.derivation as Record<string, JsonValue>
+        : sourceVersion.sourceVersionDerivation && typeof sourceVersion.sourceVersionDerivation === "object"
+          && !Array.isArray(sourceVersion.sourceVersionDerivation)
+          ? sourceVersion.sourceVersionDerivation as Record<string, JsonValue>
+          : sourceVersion.derivation && typeof sourceVersion.derivation === "object"
+            && !Array.isArray(sourceVersion.derivation)
+            ? sourceVersion.derivation as Record<string, JsonValue>
         : undefined;
-    return family?.trim() ? [family.trim()] : [];
+    const parent = typeof derivation?.derivedFromSourceVersionId === "string"
+      ? derivation.derivedFromSourceVersionId.trim()
+      : "";
+    return [
+      // Keep every independently supplied dependency label. Choosing only
+      // the first lets a republisher launder a known family by adding a new
+      // sourceFamilyId ahead of the original independence group.
+      ...(typeof provenance.sourceFamilyId === "string" && provenance.sourceFamilyId.trim() ? [provenance.sourceFamilyId.trim()] : []),
+      ...(typeof provenance.dependencyFamilyId === "string" && provenance.dependencyFamilyId.trim() ? [provenance.dependencyFamilyId.trim()] : []),
+      ...(typeof sourceTrust.independenceGroup === "string" && sourceTrust.independenceGroup.trim() ? [sourceTrust.independenceGroup.trim()] : []),
+      // This is the ingestion lane's explicit ancestry envelope. Keep it as
+      // dependency identity even when a republisher supplies a new source ID
+      // or relabels its independence group.
+      ...(parent ? [`source-version:${parent}`] : [])
+    ];
   });
   return [...new Set(groups.length ? groups : [String(fallbackSourceId)])].sort();
 }

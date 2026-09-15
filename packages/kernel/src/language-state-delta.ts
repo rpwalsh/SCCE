@@ -19,6 +19,8 @@ export interface LanguageStructuralDelta {
     ruleId?: string;
     lexicalClassId?: string;
   };
+  /** Optional typed context inside the profile/construction scope. */
+  contextKey?: string;
   semantic: {
     fromRoleId?: string;
     toRoleId?: string;
@@ -69,12 +71,19 @@ function explicitStructuralDelta(
   const lexicalClassId = stringValue(grammatical?.lexicalClassId);
   const fromSemanticRoleId = stringValue(semantic?.fromRoleId ?? semantic?.from);
   const toSemanticRoleId = stringValue(semantic?.toRoleId ?? semantic?.to);
+  const contextKey = stringValue(raw.contextKey);
   if (!from && !to && !fromRoleId && !toRoleId && !ruleId && !lexicalClassId && !fromSemanticRoleId && !toSemanticRoleId) return undefined;
+  const kind = kindForPattern(pattern, raw);
+  // Construction deltas require the typed construction scope that produced
+  // them. A durable record with only a sentence pair is not a grammar rule;
+  // accepting it here would turn sentence memorization into global language
+  // behavior after a cold restart.
+  if (kind === "construction" && !ruleId) return undefined;
   return {
     id: `${pattern.id}:structural-delta`,
     patternId: pattern.id,
     profileId: pattern.profileId,
-    kind: kindForPattern(pattern, raw),
+    kind,
     surface: { ...(from ? { from } : {}), ...(to ? { to } : {}) },
     grammatical: {
       ...(fromRoleId ? { fromRoleId } : {}),
@@ -82,6 +91,7 @@ function explicitStructuralDelta(
       ...(ruleId ? { ruleId } : {}),
       ...(lexicalClassId ? { lexicalClassId } : {})
     },
+    ...(contextKey ? { contextKey } : {}),
     semantic: {
       ...(fromSemanticRoleId ? { fromRoleId: fromSemanticRoleId } : {}),
       ...(toSemanticRoleId ? { toRoleId: toSemanticRoleId } : {})
@@ -155,10 +165,30 @@ function inducedMorphologyDeltas(
 export function structuralDeltaRealizationFit(
   delta: LanguageStructuralDelta,
   requestText: string,
-  candidateText: string
+  candidateText: string,
+  context: LanguageStructuralDeltaMatchContext = {}
 ): number {
   const request = normalizeSurface(requestText);
   const candidate = normalizeSurface(candidateText);
+  // A round-trip correction is scoped to the exact typed construction and
+  // profile that produced it. Surface equality alone is not authority: the
+  // same target can be a valid realization for another construction.
+  if (delta.kind === "construction" && delta.grammatical.ruleId) {
+    const scopeMatches = context.constructionId === delta.grammatical.ruleId
+      && context.profileId === delta.profileId
+      && (!delta.contextKey || context.contextKey === delta.contextKey);
+    if (!scopeMatches) return 0;
+    // A complete sentence pair is an observed correction, not yet a general
+    // construction law. Without an explicit typed context key, require the
+    // same failed source surface to be active. This prevents one remembered
+    // sentence from winning every later use of an otherwise shared grammar.
+    const sourceMatches = Boolean(delta.surface.from
+      && containsSurface(request, normalizeSurface(delta.surface.from)));
+    if (!delta.contextKey && !sourceMatches) return 0;
+    return delta.surface.to && containsSurface(candidate, normalizeSurface(delta.surface.to))
+      ? delta.support
+      : 0;
+  }
   let signals = 0;
   let matched = 0;
   if (delta.surface.from) {
@@ -171,8 +201,17 @@ export function structuralDeltaRealizationFit(
   }
   // A typed role transition without a surface is still durable evidence of a
   // change, but it cannot decide between untyped strings on its own. The
-  // candidate API intentionally carries no invented role labels.
+  // candidate API intentionally carries no invented role labels. A surfaced
+  // transition is atomic: a candidate that only matches one endpoint has not
+  // realized the learned change and must not receive half credit.
+  if (signals > 1 && matched !== signals) return 0;
   return signals > 0 ? clamp01(matched / signals) * delta.support : 0;
+}
+
+export interface LanguageStructuralDeltaMatchContext {
+  constructionId?: string;
+  profileId?: string;
+  contextKey?: string;
 }
 
 function kindForPattern(pattern: LanguagePatternRecord, delta: Record<string, JsonValue>): LanguageStructuralDelta["kind"] {

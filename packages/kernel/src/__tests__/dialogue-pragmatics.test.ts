@@ -35,6 +35,42 @@ describe("dialogue pragmatics", () => {
     expect(result.policyDecision.rankedActions.every(action => action.scoreTrace.every(trace => trace.kind === "provisional_heuristic" && trace.calibrated === false))).toBe(true);
   });
 
+  it("takes pacing pressure from typed state, not arbitrary request surface", () => {
+    const compactSurface = realizeDialogueResponse({
+      requestText: "!!!",
+      answerGraph: supportedGraph(),
+      previousState: state()
+    });
+    const longSurface = realizeDialogueResponse({
+      requestText: "A long arbitrary surface with punctuation should not become a hidden dialogue task router.",
+      answerGraph: supportedGraph(),
+      previousState: state()
+    });
+    expect(compactSurface.state.interactionSignals).toEqual(longSurface.state.interactionSignals);
+    expect(compactSurface.state.userStyleProfile.weights[INTERACTION_FEATURE_IDS.responseLead])
+      .toBe(longSurface.state.userStyleProfile.weights[INTERACTION_FEATURE_IDS.responseLead]);
+
+    const typed = realizeDialogueResponse({
+      requestText: "an unrelated arbitrary surface",
+      answerGraph: supportedGraph(),
+      previousState: state(),
+      statePatch: {
+        interactionSignals: [{
+          id: "sig.typed.response-lead",
+          featureId: INTERACTION_FEATURE_IDS.responseLead,
+          value: 1,
+          confidence: 1,
+          sourceIds: ["typed.interpreter.receipt"],
+          trace: {}
+        }]
+      }
+    });
+    expect(typed.state.userStyleProfile.weights[INTERACTION_FEATURE_IDS.responseLead])
+      .toBeGreaterThan(compactSurface.state.userStyleProfile.weights[INTERACTION_FEATURE_IDS.responseLead] ?? 0);
+    expect(typed.state.interactionSignals.map(signal => signal.sourceIds[0]))
+      .toContain("typed.interpreter.receipt");
+  });
+
   it("does not generate display labels as model truth", () => {
     const result = realizeDialogueResponse({
       requestText: "what does this mean?",
