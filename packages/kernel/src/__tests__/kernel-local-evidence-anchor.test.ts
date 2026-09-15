@@ -41,7 +41,10 @@ import {
   sourceAnchoredEvidenceForRequest
 } from "../local-evidence-runtime.js";
 import type { EventRangeQuery } from "../storage.js";
-import type { EpisodeId } from "../types.js";
+import type { EpisodeId, GraphNode, Hyperedge } from "../types.js";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { filterEpisodeEvents, filterEventRange } from "./event-range-fixture.js";
 import { verifyConsolidatedEpisodeRecoverable, type ConsolidatedEpisode } from "../episodic-memory-consolidation.js";
 import type { SemanticConsolidationResult } from "../semantic-memory-consolidation.js";
@@ -58,6 +61,11 @@ const proofEngineCalls = vi.hoisted(() => ({
   pface: 0
 }));
 
+const entailmentRecorder = vi.hoisted(() => ({
+  enabled: false,
+  calls: [] as Array<{ typed: boolean; result: string; untypedResult: string }>
+}));
+
 vi.mock("../entailment.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../entailment.js")>();
   return {
@@ -68,7 +76,12 @@ vi.mock("../entailment.js", async importOriginal => {
         ...engine,
         check: (...checkArgs: Parameters<typeof engine.check>) => {
           proofEngineCalls.entailment += 1;
-          return engine.check(...checkArgs);
+          const result = engine.check(...checkArgs);
+          if (entailmentRecorder.enabled) {
+            const { typedRelations, proofClaims, ...untyped } = checkArgs[0];
+            entailmentRecorder.calls.push({ typed: Boolean(typedRelations || proofClaims), result: JSON.stringify(result), untypedResult: JSON.stringify(engine.check(untyped)) });
+          }
+          return result;
         }
       };
     }
@@ -1186,6 +1199,33 @@ describe("kernel local evidence source anchoring", () => {
     expect(result.answer).toContain("POST /api/pumps/alpha/control");
     expect(result.evidence.map(span => span.id)).toContain(route.id);
     expect(result.assistantForce).toBe("source_grounded_answer");
+  });
+
+  it("evaluates the answer's typed hyperedge against independent admitted evidence and reports a role mismatch in the proof trace", async () => {
+    const run = await typedRelationTurn({ hyperedges: "role_mismatch" });
+    const stage = run.stages.find(event => event.support?.typedProof);
+    expect(stage?.support?.typedProof).toMatchObject({ status: "active", verdict: "contradicted" });
+    const typed = stage!.support!.typedProof as { obligations: Array<{ kind: string; reason: string }>; reasons: string[]; claims: number; records: number };
+    expect(typed.claims).toBeGreaterThan(0);
+    expect(typed.records).toBeGreaterThan(0);
+    expect(typed.obligations).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "entity_identity", reason: "role_id_mismatch" })]));
+    expect(typed.reasons).toContain("role_id_mismatch");
+  });
+
+  it("leaves the proof byte-identical and reports bypassed_not_applicable when no typed hyperedge bears on independent admitted evidence", async () => {
+    const untyped = await typedRelationTurn({ hyperedges: "none" });
+    const answerOnly = await typedRelationTurn({ hyperedges: "answer_span_only" });
+    const unrelated = await typedRelationTurn({ hyperedges: "unadmitted_evidence" });
+    for (const run of [untyped, answerOnly, unrelated]) {
+      expect(run.stages.length).toBeGreaterThan(0);
+      for (const event of run.stages) expect(event.support?.typedProof).toMatchObject({ status: "bypassed_not_applicable" });
+      expect(run.entailmentCalls.length).toBeGreaterThan(0);
+      for (const call of run.entailmentCalls) expect(call.result).toBe(call.untypedResult);
+      expect(run.result.answer).toBe(untyped.result.answer);
+      expect(run.result.assistantForce).toBe(untyped.result.assistantForce);
+    }
+    const typed = await typedRelationTurn({ hyperedges: "role_mismatch" });
+    expect(typed.entailmentCalls.some(call => call.typed && call.result !== call.untypedResult)).toBe(true);
   });
 
   it("pairs an early temporal counterexample with distinct source-derived development context", async () => {
@@ -2392,6 +2432,65 @@ describe("kernel evaluation conditions use production component boundaries", () 
     return { result, fixture };
   }
 });
+
+async function typedRelationTurn(input: { hyperedges: "role_mismatch" | "none" | "answer_span_only" | "unadmitted_evidence" }) {
+  const clock = createClock({ fixedTime: 6_800, stepMs: 1 });
+  const hasher = createHasher();
+  const answer = evidenceSpan({ id: "evidence:pump-route-typed", sourceVersionId: "source:pump-route-typed:v1" as SourceVersionId, title: "Fixture record", uri: "fixture://pump/route-typed", text: "Pump alpha is controlled by API route POST /api/pumps/alpha/control.", alpha: 0.94 });
+  const independent = evidenceSpan({ id: "evidence:pump-route-typed-log", sourceVersionId: "source:pump-route-typed-log:v1" as SourceVersionId, title: "Fixture record", uri: "fixture://pump/route-typed-log", text: "Pump alpha maintenance log lists API route POST /api/pumps/alpha/control.", alpha: 0.9 });
+  const unadmitted = evidenceSpan({ id: "evidence:pump-route-typed-unadmitted", sourceVersionId: "source:pump-route-typed-unadmitted:v1" as SourceVersionId, title: "Other record", uri: "fixture://other/typed", text: "Valve gamma is controlled by API route POST /api/valves/gamma.", alpha: 0.2 });
+  const base = graphSlice([answer, independent]);
+  const typedNode = (id: string, label: string, evidenceIds: EvidenceId[]): GraphNode => ({ id: id as GraphNode["id"], typeId: "type:entity" as GraphNode["typeId"], representation: { label }, alpha: 0.9, evidenceIds, features: featureSet(label, 256), createdAt: 1_000, updatedAt: 1_000, metadata: {} });
+  const nodes = [typedNode("node:pump-alpha", "pump alpha", [answer.id, independent.id]), typedNode("node:control-route", "POST /api/pumps/alpha/control", [answer.id, independent.id])];
+  const hyperedge = (id: string, evidenceId: EvidenceId, roles: [string, string]): Hyperedge => ({
+    schema: "scce.hyperedge.v2",
+    id: id as Hyperedge["id"],
+    relationId: "relation:controlled-by" as Hyperedge["relationId"],
+    participantPorts: [
+      { portId: "port:device", roleId: roles[0], nodeId: nodes[0]!.id, valueKind: "kind:device", realization: "observed", evidenceIds: [evidenceId] },
+      { portId: "port:route", roleId: roles[1], nodeId: nodes[1]!.id, valueKind: "kind:route", realization: "observed", evidenceIds: [evidenceId] }
+    ],
+    memberNodeIds: nodes.map(node => node.id),
+    qualifiers: {},
+    modality: {},
+    evidenceIds: [evidenceId],
+    weightVector: { alpha: 0.9 },
+    temporalScope: {},
+    provenanceRefs: [String(evidenceId)],
+    createdAt: 1_000,
+    updatedAt: 1_000
+  });
+  const hyperedges = input.hyperedges === "role_mismatch"
+    ? [hyperedge("hyperedge:answer", answer.id, ["role:controlled", "role:controller"]), hyperedge("hyperedge:independent", independent.id, ["role:controller", "role:controlled"])]
+    : input.hyperedges === "answer_span_only"
+      ? [hyperedge("hyperedge:answer", answer.id, ["role:controlled", "role:controller"])]
+      : input.hyperedges === "unadmitted_evidence"
+        ? [hyperedge("hyperedge:unadmitted", unadmitted.id, ["role:controlled", "role:controller"])]
+        : [];
+  const graph: GraphSlice = { ...base, nodes: [...base.nodes, ...nodes], hyperedges };
+  const fixture = storageFixture({ evidence: [answer, independent, unadmitted], graph });
+  const kernel = createScceKernel({
+    storage: fixture.storage,
+    files: { streamPath: async function* () { /* unused */ } },
+    buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+    idFactory: createIdFactory({ clock, hasher, deterministicReplay: true }),
+    clock,
+    deterministicReplay: true
+  });
+  const file = join(mkdtempSync(join(tmpdir(), "scce-typed-proof-")), "trace.jsonl");
+  const previous = (globalThis as { __sccTrace?: unknown }).__sccTrace;
+  (globalThis as { __sccTrace?: unknown }).__sccTrace = { traceId: "typed-proof", file };
+  entailmentRecorder.calls = [];
+  entailmentRecorder.enabled = true;
+  try {
+    const result = await kernel.turn({ text: "What API route controls pump alpha?", metadata: { sessionContextEvidence: true, runtimeEvidenceIds: [String(answer.id), String(independent.id)] } });
+    const stages = readFileSync(file, "utf8").split(/\r?\n/u).filter(Boolean).map(line => JSON.parse(line) as { stage: string; support?: Record<string, JsonValue> }).filter(event => event.stage === "proof.entailment");
+    return { result, stages, entailmentCalls: [...entailmentRecorder.calls] };
+  } finally {
+    entailmentRecorder.enabled = false;
+    (globalThis as { __sccTrace?: unknown }).__sccTrace = previous;
+  }
+}
 
 function evidenceSpan(input: { id: string; sourceVersionId: SourceVersionId; title: string; uri: string; text: string; alpha: number }): EvidenceSpan {
   const contentHash = `hash:${input.id}` as ContentHash;

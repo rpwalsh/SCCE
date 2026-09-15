@@ -245,6 +245,7 @@ import { createFunctionalSelfModel } from "./self.js";
 import { consolidateSemanticClaims, type SemanticClaimObservation } from "./semantic-memory-consolidation.js";
 import { createSemanticMemoryIndex } from "./semantic-memory-index.js";
 import { createSemanticProofSystem } from "./semantic-proof-system.js";
+import { typedProofScope, typedProofTrace } from "./typed-proof-scope.js";
 import { isRequestRequirementPattern } from "./request-requirement-learning.js";
 import type { DialogueMemoryStore, LanguagePatternRecord, ScceKernelDeps } from "./storage.js";
 import { createSurfaceLanguageRuntime } from "./surface-language-runtime.js";
@@ -2439,6 +2440,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           "proof.support-engine",
           () => {
             const entailmentStarted = Date.now();
+            const typedScope = typedProofScope({ hyperedges: graph.hyperedges, admittedEvidence: proofCandidateEvidence, claimEvidenceIds: answerProposal?.evidence.map(span => span.id) ?? [] });
             const entailmentResult = entailment.check({
               text: proofClaimText,
               evidence: proofCandidateEvidence,
@@ -2446,6 +2448,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
               field,
               createdAt: clock.now(),
               sourceExcerpts: proofSourceExcerpts,
+              ...(typedScope.status === "active" ? { typedRelations: typedScope.typedRelations, proofClaims: typedScope.proofClaims } : {}),
               calibrationModels
             });
             kernelTrace({
@@ -2457,7 +2460,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
                 evidence: proofCandidateEvidence.length,
                 sourceExcerpts: proofSourceExcerpts.length,
                 certifiedEvidence: entailmentResult.evidenceIds.length
-              }
+              },
+              support: { typedProof: typedProofTrace(typedScope, jsonRecord(entailmentResult.proof.scores).semanticProofEngine) }
             });
             const semanticProofStarted = Date.now();
             const semanticProof = semanticProofSystem.prove({ claimText: proofClaimText, evidence: proofCandidateEvidence, nodes: proofNodes, field });
