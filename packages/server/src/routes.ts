@@ -10,7 +10,7 @@ import { assertHydratedRuntimeReady, collectRepoFilesForCognition, createLearned
 import type { BenchmarkInput, CausalAnalysisRequest, CausalDiscoveryRequest, CausalAssumptionDag, CausalAssumptionEdge, CausalObservation, ConversationTurnRecord, DialogueInterpretationCorrectionInput, EventLedger, GraphSlice, IdentificationDesign, IngestInput, InspectionTarget, JsonValue, NodeId, OwnerInput, PatchTransactionPlan, ProgramGraph, RequestedAuthority, SourceAdmissionContext, SourceTrust, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
 import {
   behaviorRoleExecutionGraphInputFromTaskConstraintGraph, createProgramBehaviorValidationLedger, PROGRAM_BEHAVIOR_VALIDATION_PLAN_BINDING_SCHEMA, curriculumItemFromPlan,
-  learningConsentInput,
+  learningConsentInput, persistCreativeContinuationOffer, creativeContinuationDecisionFromJson, creativeContinuationDecisionFromObservation, persistCreativeContinuationPreference, CREATIVE_CONTINUATION_OFFER_CALIBRATION_ID,
   listHeldSources,
   reviewHeldSource, summarizeForTrace, installProdCalibrations, clearProdCalibrations, prodCalibrationIds, CALIBRATION_SEARCH_IDS, createFrontierBroadCapabilityTasks, FRONTIER_BROAD_CAPABILITY_SUITE_ID, CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, CAUSAL_DISCOVERY_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, SUPPORTED_PROGRAM_REPAIR_FAMILIES, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createCapabilityExecutorRegistry, createClock, createDialogueCognitiveMemoryV2, createCorrectionEngine, createCorrectionObservation, createEventFactory, createHasher, createIdFactory, dialogueOutcomeMemoryForConversation, dialogueInterpretationAdjustmentsForConversation, previewDialogueLearning, dispatchCapabilityTask, dispatchRollbackAttempt, executiveResumePlan, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan, type CapabilityExecutor, type DurableExecutiveEpisode } from "@scce/kernel";
 import { createDeveloperSurfaceState, hydrateApprovals, hydrateSurfaceFromTurn, renderWorkbench, routeForCommand, workbenchModelModulePath, WORKBENCH_MODEL_ROUTE } from "@scce/ui";
@@ -846,12 +846,17 @@ async function dispatch(
         outcomeMemory: dialogueOutcomeMemory
       });
       traceEvent(trace, { stage: "turn.dialogue.bridged", label: "api.turn", durationMs: Date.now() - bridgeStarted });
+      // Keep the real creative offer available for a later owner outcome.
+      // This is an offer ledger row, never a preference: it carries only
+      // typed structural ids/features and is written on the deferred dialogue
+      // tail so an immediate outcome cannot race it.
+      const creativeDecision = creativeContinuationDecisionFromJson(result.creativeContinuation);
       const dialoguePersistence = enqueueDialoguePersistence(conversationId, async () => {
         // Elapsed ms until each write settles, from the moment this turn's persistence starts.
         const persistenceStarted = Date.now();
         const timing: Record<string, number> = {};
         const timed = <T>(step: string, work: Promise<T>): Promise<T> => work.then(value => { timing[step] = Date.now() - persistenceStarted; return value; });
-        const [, cognitiveShadow, storedSession] = await Promise.all([
+        const [, cognitiveShadow, storedSession, creativeOffer] = await Promise.all([
           timed("dialogueTurnMs", persistDialogueTurn({
             store: context.runtime.storage.dialogueMemory,
             result: dialogue.pragmatics,
@@ -868,11 +873,21 @@ async function dispatch(
           })),
           timed("sessionPairMs", sessionId
             ? persistConversationTurnPair(context, sessionId, turn, result)
+            : Promise.resolve(undefined)),
+          timed("creativeOfferMs", creativeDecision
+            ? persistCreativeContinuationOffer({
+              store: context.runtime.storage.dialogueMemory,
+              decision: creativeDecision,
+              sourceRecordId: String(result.episodeId),
+              sourceTraceId: String(result.episodeId),
+              createdAt: Date.now()
+            })
             : Promise.resolve(undefined))
         ]);
         return {
           cognitiveShadow,
           timing,
+          ...(creativeOffer ? { creativeOfferId: creativeOffer.id } : {}),
           ...(storedSession === undefined ? {} : { sessionAudit: storedSession })
         };
       });
@@ -1022,7 +1037,7 @@ async function dispatch(
       // the translation planner still requires independently admitted target
       // evidence before it can affect a surface.
       if (alignment) await context.runtime.storage.translationCorrections?.putCorrection(alignment);
-      return persistDialogueOutcomeFromMemory({
+      const dialogueLearned = await persistDialogueOutcomeFromMemory({
         store: context.runtime.storage.dialogueMemory,
         conversationId,
         turnId,
@@ -1035,6 +1050,42 @@ async function dispatch(
         correctionObservation,
         now: Date.now()
       });
+      // A creative preference is learned only from candidate identities that
+      // this exact turn offered. Acceptance makes the selected candidate the
+      // preferred member and supplies a real alternative. Rejection or
+      // correction alone does not reveal which alternative the owner wanted;
+      // those cases require an explicit preferredCandidateId.
+      const offerRows = await context.runtime.storage.dialogueMemory.listCalibrationObservations({
+        calibrationId: CREATIVE_CONTINUATION_OFFER_CALIBRATION_ID,
+        sourceRecordId: dialogueLearned.replay.turnId,
+        limit: 1
+      });
+      const offer = offerRows.map(creativeContinuationDecisionFromObservation).find((value): value is NonNullable<typeof value> => Boolean(value));
+      const explicitPreferredCandidateId = typeof body.preferredCandidateId === "string" && body.preferredCandidateId.trim()
+        ? body.preferredCandidateId.trim()
+        : undefined;
+      const selectedContinuationCandidateId = offer?.selectedContinuationCandidateId;
+      const preferredCandidateId = status === "accepted" ? selectedContinuationCandidateId : explicitPreferredCandidateId;
+      const preferred = preferredCandidateId ? offer?.offered.find(candidate => candidate.candidateId === preferredCandidateId) : undefined;
+      const rejectedCandidateId = preferred && selectedContinuationCandidateId !== preferred.candidateId
+        ? selectedContinuationCandidateId
+        : offer?.offered.find(candidate => candidate.candidateId !== preferred?.candidateId)?.candidateId;
+      const rejected = rejectedCandidateId ? offer?.offered.find(candidate => candidate.candidateId === rejectedCandidateId) : undefined;
+      const creativePreferenceObservations = preferred && rejected && preferred.candidateId !== rejected.candidateId
+        ? await persistCreativeContinuationPreference({
+          store: context.runtime.storage.dialogueMemory,
+          preference: {
+            state: offer!.state,
+            preferred,
+            rejected,
+            preferenceKind: status === "corrected" ? "corrected_original" : "accepted_rejected",
+            sourceTraceId: dialogueLearned.replay.result.id,
+            sourceRecordId: dialogueLearned.outcome.id,
+            createdAt: Date.now()
+          }
+        })
+        : [];
+      return { ...dialogueLearned, creativePreferenceObservations };
     });
     return json({
       schema: "scce.turn.dialogue_outcome.v1",
@@ -1042,7 +1093,7 @@ async function dispatch(
       turnId: learned.replay.turnId,
       outcomeId: learned.outcome.id,
       styleSnapshotId: learned.learning.snapshot.id,
-      calibrationObservationIds: learned.calibrationObservations.map(observation => observation.id),
+      calibrationObservationIds: [...learned.calibrationObservations, ...learned.creativePreferenceObservations].map(observation => observation.id),
       correctionId: learned.correction?.id,
       ...(alignment ? { translationAlignment: { id: alignment.id, alpha: alignment.alpha, changedTerms: alignment.changedTerms } } : {}),
       reversible: true

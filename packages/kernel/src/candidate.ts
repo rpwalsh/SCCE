@@ -40,6 +40,12 @@ import {
   type FunctionalSelectionGate
 } from "./functional-cognition.js";
 import { typedRelationTraces } from "./typed-relation-trace.js";
+import {
+  rankCreativeContinuations,
+  type CreativeContinuationCandidate,
+  type CreativeContinuationPolicy,
+  type CreativeContinuationState
+} from "./creative-continuation-learning.js";
 export type { CandidateField, CandidateQuality, CandidateSurface } from "./candidate-contract.js";
 
 export interface CandidateGenerationInput {
@@ -56,6 +62,10 @@ export interface CandidateGenerationInput {
   calibrationTaskClass?: string;
   requestedAuthority?: RequestedAuthority;
   inventionCandidates?: readonly InventionConstruct[];
+  /** Optional typed continuation identities selected by the runtime for live owner-preference scoring. */
+  creativeContinuationState?: CreativeContinuationState;
+  creativeContinuationPolicy?: CreativeContinuationPolicy;
+  creativeContinuationCandidates?: ReadonlyMap<string, CreativeContinuationCandidate>;
   requirementField?: TurnRequirementField;
   operatorActivations?: readonly ActivatedOperator[];
   cognitiveProposals?: readonly CognitiveProposal[];
@@ -130,7 +140,15 @@ export function createCandidateEngine() {
         ? [proofAnswer(input)]
         : [];
       const candidates = supportedCandidates.length > 0 ? supportedCandidates : recoveryCandidates;
-      const candidateOperators = candidateOperatorRows(candidates, input.requestedAuthority, input.calibrationModels, input.requirementField);
+      const candidateOperators = candidateOperatorRows(
+        candidates,
+        input.requestedAuthority,
+        input.calibrationModels,
+        input.requirementField,
+        input.creativeContinuationState,
+        input.creativeContinuationPolicy,
+        input.creativeContinuationCandidates
+      );
       const rawTotal = candidates.reduce((sum, candidate) => sum + candidateMass(candidate), 0);
       const scoreTrace = candidates.flatMap(candidate => candidate.scoreTrace ?? []);
       const unnormalizedRawMass = candidates.map(candidate => {
@@ -1393,7 +1411,10 @@ function candidateOperatorRows(
   candidates: readonly CandidateSurface[],
   requestedAuthority?: RequestedAuthority,
   calibrationModels?: CalibrationModelSet,
-  requirementField?: TurnRequirementField
+  requirementField?: TurnRequirementField,
+  creativeContinuationState?: CreativeContinuationState,
+  creativeContinuationPolicy?: CreativeContinuationPolicy,
+  creativeContinuationCandidates?: ReadonlyMap<string, CreativeContinuationCandidate>
 ): Array<{
   candidateId: string;
   freeEnergy: number;
@@ -1409,8 +1430,20 @@ function candidateOperatorRows(
     const utility = clamp01(candidate.scores.actionability * 0.44 + candidate.scores.support * 0.36 + candidate.scores.evidenceCoverage * 0.2);
     return freeEnergyObjective({ error, complexity, utility, lambda: 0.26, gamma: 0.34 });
   });
+  const continuationScores = requestedAuthority === "creative"
+    && creativeContinuationState
+    && creativeContinuationPolicy
+    && creativeContinuationCandidates
+    ? new Map(rankCreativeContinuations({
+      state: creativeContinuationState,
+      candidates: candidates
+        .map(candidate => creativeContinuationCandidates.get(candidate.id))
+        .filter((candidate): candidate is CreativeContinuationCandidate => Boolean(candidate)),
+      policy: creativeContinuationPolicy
+    }).map(row => [row.candidate.candidateId, row] as const))
+    : undefined;
   const creativeSelections = requestedAuthority === "creative"
-    ? candidates.map(candidate => creativeAuthorityScore(candidate, calibrationModels))
+    ? candidates.map(candidate => creativeAuthorityScore(candidate, calibrationModels, continuationScores?.get(candidate.id)?.score, continuationScores?.get(candidate.id)?.source))
     : undefined;
   const temperature = requirementField
     ? Math.max(0.08, Math.min(0.45, 0.24 + 0.14 * requirementField.noveltyDemand + 0.08 * requirementField.uncertaintyTolerance - 0.10 * requirementField.externalTruthAuthority - 0.10 * requirementField.actionCommitment))
@@ -1434,7 +1467,7 @@ function candidateOperatorRows(
   });
 }
 
-function creativeAuthorityScore(candidate: CandidateSurface, calibrationModels?: CalibrationModelSet): { score: number; source: string } {
+function creativeAuthorityScore(candidate: CandidateSurface, calibrationModels?: CalibrationModelSet, continuationScore?: number, continuationSource?: string): { score: number; source: string } {
   const features = creativeFeaturesFromCandidate(candidate);
   if (features) {
     const selection = creativePreferenceScore({
@@ -1442,7 +1475,10 @@ function creativeAuthorityScore(candidate: CandidateSurface, calibrationModels?:
       modelSet: calibrationModels,
       taskClass: CALIBRATION_TASK_CLASS_IDS.creativeGeneration
     });
-    return { score: selection.score, source: selection.source };
+    return {
+      score: continuationScore ?? selection.score,
+      source: continuationSource ?? selection.source
+    };
   }
   const telemetryPenalty = looksStructuredTelemetry(candidate.answer) ? 0.48 : 0;
   return {

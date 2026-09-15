@@ -246,6 +246,14 @@ import { canonicalTranslationTargetKey, createTranslationEngine, type Translatio
 import { CALIBRATION_IDS, CALIBRATION_SUBSYSTEM_IDS, CALIBRATION_TASK_CLASS_IDS, calibrationObservationRecord, judgeRequirementObservation } from "./calibration-spine.js";
 import { constructionCycleScoresFromMemory, persistConstructionCycleConsistency } from "./construction-cycle-consistency.js";
 import {
+  creativeContinuationCandidateFromConstruct,
+  creativeContinuationDecision,
+  loadCreativeContinuationPolicy,
+  type CreativeContinuationCandidate,
+  type CreativeContinuationPolicy,
+  type CreativeContinuationState
+} from "./creative-continuation-learning.js";
+import {
   afterTurnMaintenanceDecision,
   previewTraceText
 } from "./turn-maintenance-policy.js";
@@ -587,6 +595,40 @@ export function createProductionTurnRuntime(options: {
       .finally(() => { constructionCycleScoresLoad = undefined; });
   };
   warmConstructionCycleScores();
+
+  // Creative continuation policy is owner-scoped typed feedback. Hydrate it
+  // as a bounded single-flight read model after the turn has already emitted
+  // its accepted/progress frame. Refresh once per creative turn so feedback
+  // submitted immediately before the turn cannot remain hidden behind a
+  // stale resident value.
+  const residentCreativeContinuationPolicies = new Map<string, CreativeContinuationPolicy>();
+  const creativeContinuationPolicyLoads = new Map<string, Promise<void>>();
+  const creativeContinuationPolicyKey = (state: CreativeContinuationState): string => [
+    state.conversationId,
+    state.semanticFrameId,
+    state.languageId,
+    state.goalId ?? ""
+  ].join("\u001f");
+  const creativeContinuationPolicyForTurn = async (state: CreativeContinuationState): Promise<CreativeContinuationPolicy | undefined> => {
+    const key = creativeContinuationPolicyKey(state);
+    const dialogueMemory = deps.storage.dialogueMemory as Partial<typeof deps.storage.dialogueMemory> | undefined;
+    const listCalibrationObservations = dialogueMemory?.listCalibrationObservations;
+    if (!listCalibrationObservations) return residentCreativeContinuationPolicies.get(key);
+    if (!creativeContinuationPolicyLoads.has(key)) {
+      const load = loadCreativeContinuationPolicy({
+        store: { listCalibrationObservations },
+        state,
+        limit: 5_000,
+        createdAt: clock.now()
+      })
+        .then(policyValue => { residentCreativeContinuationPolicies.set(key, policyValue); })
+        .catch(() => undefined)
+        .finally(() => { creativeContinuationPolicyLoads.delete(key); });
+      creativeContinuationPolicyLoads.set(key, load);
+    }
+    await creativeContinuationPolicyLoads.get(key);
+    return residentCreativeContinuationPolicies.get(key);
+  };
 
   // Translation corrections are durable training evidence, not turn
   // authority. Keep a small target-scoped read model, refresh it once per
@@ -3445,6 +3487,48 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         ...runtimeTerminalInventions,
         ...plannedInventionCandidates
       ]);
+      // Creative continuation learning is fed by the same typed request,
+      // discourse, language and invention records that this turn already
+      // selected. A missing semantic frame means there is no admissible
+      // continuation state to train, so leave the lane unscored rather than
+      // inventing a context key from request prose.
+      const creativeSemanticFrameId = creativeRequestFrame?.id ?? requirementField.activatedFrameIds[0];
+      const creativeContinuationState: CreativeContinuationState | undefined = requestedAuthority === "creative"
+        && creativeSemanticFrameId
+        ? {
+          schema: "scce.creative_continuation_state.v1",
+          conversationId: authorityDialogueState.conversationId,
+          turnId: String(episodeId),
+          discourseStateId: dialoguePreselection.observation.id,
+          semanticFrameId: creativeSemanticFrameId,
+          languageId: surfaceLanguageMemory.scope.languageId ?? locale,
+          goalId: authorityDialogueState.currentIntentId
+        }
+        : undefined;
+      const creativeContinuationCandidates: ReadonlyMap<string, CreativeContinuationCandidate> | undefined = creativeContinuationState
+        ? new Map(inventionCandidates.map((construct, index) => {
+          const candidate = creativeContinuationCandidateFromConstruct({ construct, candidateIndex: index, hasher });
+          return [candidate.candidateId, candidate] as const;
+        }))
+        : undefined;
+      const creativeContinuationPolicy = creativeContinuationState
+        ? await creativeContinuationPolicyForTurn(creativeContinuationState)
+        : undefined;
+      if (creativeContinuationState) {
+        kernelTrace({
+          stage: "candidate.creative_continuation.policy",
+          label: "kernel.turn",
+          counts: {
+            offered: creativeContinuationCandidates?.size ?? 0,
+            policyLoaded: creativeContinuationPolicy ? 1 : 0
+          },
+          support: {
+            conversationId: creativeContinuationState.conversationId,
+            semanticFrameId: creativeContinuationState.semanticFrameId,
+            policySource: creativeContinuationPolicy ? "durable-refreshed" : "bootstrap"
+          }
+        });
+      }
       if (inventionCandidates.length) {
         events.push(await append(eventFactory.create({
           episodeId,
@@ -3580,7 +3664,10 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         locale,
         calibrationModels,
         calibrationTaskClass,
-        functionalGate
+        functionalGate,
+        creativeContinuationState,
+        creativeContinuationPolicy,
+        creativeContinuationCandidates
       });
       const candidateField = applyDialogueInterpretationAdjustmentsV2({
         field: generatedCandidateField,
@@ -3840,6 +3927,20 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         unresolvedObligations: unresolvedObligationCount(entailmentResult.boundaries)
       });
       events.push(await append(eventFactory.create({ episodeId, typeId: "CandidateSelected", payload: { candidateId: judged.selected.id, kind: judged.selected.kind, force: judged.selected.force, assistantForce: selectedAssistantForce.force, assistantForceTrace: selectedAssistantForce.audit, candidateAudit: judged.selected.audit, judge: judged.audit } })));
+      const creativeOfferedForTurn = creativeContinuationState && creativeContinuationCandidates
+        ? authorityCandidateField.candidates
+          .map(candidate => creativeContinuationCandidates.get(candidate.id))
+          .filter((candidate): candidate is CreativeContinuationCandidate => Boolean(candidate))
+        : [];
+      const creativeDecisionForTurn = creativeContinuationState && creativeContinuationCandidates
+        && creativeOfferedForTurn.length > 0
+        && creativeContinuationCandidates.has(judged.selected.id)
+        ? creativeContinuationDecision({
+          state: creativeContinuationState,
+          offered: creativeOfferedForTurn,
+          selectedCandidateId: judged.selected.id
+        })
+        : undefined;
       const selectedDialogueSelection = jsonRecord(jsonRecord(judged.selected.audit).typedDialogueSelection);
       kernelTrace({
         stage: "planner.select",
@@ -5522,6 +5623,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           learningNeeds: earlyLearningNeeds,
           candidateField: authorityCandidateField.audit,
           selectedCandidate: toJsonValue(judged.selected),
+          creativeContinuation: creativeDecisionForTurn ? toJsonValue(creativeDecisionForTurn) : undefined,
           judge: judged.audit,
           workingMemory: toJsonValue(candidateWorkingMemory),
           taskResumptionSnapshot: taskResumptionSnapshot ? toJsonValue(taskResumptionSnapshot) : undefined,
@@ -5678,6 +5780,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         ...(performedRuntimeMotion ? { runtimeMotion: toJsonValue(performedRuntimeMotion) } : {}),
         candidateField: authorityCandidateField.audit,
         selectedCandidate: toJsonValue(judged.selected),
+        creativeContinuation: creativeDecisionForTurn ? toJsonValue(creativeDecisionForTurn) : undefined,
         judge: judged.audit,
         workingMemory: toJsonValue(candidateWorkingMemory),
         taskResumptionSnapshot: taskResumptionSnapshot ? toJsonValue(taskResumptionSnapshot) : undefined,
