@@ -51,6 +51,21 @@ describe("Postgres graph-node rank contract", () => {
     expect(maximumActiveNodeQueries).toBe(3);
   });
 
+  it("aliases evidence-bound hyperedges before applying the information-access predicate", async () => {
+    const { adapter, calls } = fixture();
+
+    await adapter.graph.getSlice({
+      evidenceBoundOnly: true,
+      evidenceIds: ["evidence:one" as EvidenceId],
+      limitNodes: 64,
+      limitEdges: 64
+    });
+
+    const hyperedgeQuery = calls.find(call => call.sql.includes('FROM "fixture"."graph_hyperedges"'));
+    expect(hyperedgeQuery?.sql).toContain('FROM "fixture"."graph_hyperedges" AS hyperedge');
+    expect(hyperedgeQuery?.sql).toContain("hyperedge.information_label");
+  });
+
   it("migrates one idempotent index matching the exact fallback rank", async () => {
     const { adapter } = fixture();
     const statements: string[] = [];
