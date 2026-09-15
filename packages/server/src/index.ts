@@ -93,7 +93,13 @@ async function main(): Promise<void> {
   });
   const strictWarmup = process.env.SCCE_STARTUP_WARMUP_STRICT === "1";
   const performWarmup = async () => {
-    const warmup = await runtime.kernel.warmup({ languageLimit: startupWarmupLanguageLimit() });
+    // Large language hydrations are demand-loaded by the kernel's single-flight
+    // cache. Keeping them out of process warmup makes one resident server cheap
+    // to start and leaves accepted/progress turn paths responsive.
+    const warmup = await runtime.kernel.warmup({
+      language: startupLanguageWarmupEnabled(),
+      languageLimit: startupWarmupLanguageLimit()
+    });
     // Exact table counts are part of the readiness contract. Prime them before
     // strict warmup marks the process ready, so the first /api/ready request
     // never pays the full corpus COUNT(*) scan on its request path. In the
@@ -183,6 +189,10 @@ function startupWarmupLanguageLimit(): number {
   const parsed = Number(process.env.SCCE_STARTUP_LANGUAGE_LIMIT ?? 16);
   if (!Number.isFinite(parsed)) return 16;
   return Math.max(1, Math.min(64, Math.floor(parsed)));
+}
+
+function startupLanguageWarmupEnabled(): boolean {
+  return process.env.SCCE_STARTUP_LANGUAGE_WARMUP === "1";
 }
 
 function parseConfigPath(argv: string[]): string | undefined {

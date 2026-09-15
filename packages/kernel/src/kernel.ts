@@ -336,15 +336,17 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
           }));
       }
 
-      // Language identities first: everything below hydrates and scopes by them once they exist.
-      const identityWarmup = await languageIdentityRuntime.ensure().catch(error => {
-        failures.push(`language identity warmup failed: ${error instanceof Error ? error.message : String(error)}`);
-        return undefined;
-      });
-      if (identityWarmup) {
-        kernelTrace({ stage: "runtime.start.language_identities", label: "kernel.warmup", durationMs: identityWarmup.elapsedMs, counts: { identities: identityWarmup.identities.length, assigned: identityWarmup.assigned }, support: { discovered: identityWarmup.discovered, identities: identityWarmup.identities.map(identity => ({ id: identity.id, script: identity.script, profiles: identity.profileCount, closedClass: identity.closedClass.slice(0, 8).map(row => row.word), families: identity.families.slice(0, 4) })) } });
-      }
       if (input.language ?? true) {
+        // Language identities are part of the language capability. Avoid
+        // discovering and assigning the whole corpus for a lightweight
+        // startup warmup that explicitly disables language loading.
+        const identityWarmup = await languageIdentityRuntime.ensure().catch(error => {
+          failures.push(`language identity warmup failed: ${error instanceof Error ? error.message : String(error)}`);
+          return undefined;
+        });
+        if (identityWarmup) {
+          kernelTrace({ stage: "runtime.start.language_identities", label: "kernel.warmup", durationMs: identityWarmup.elapsedMs, counts: { identities: identityWarmup.identities.length, assigned: identityWarmup.assigned }, support: { discovered: identityWarmup.discovered, identities: identityWarmup.identities.map(identity => ({ id: identity.id, script: identity.script, profiles: identity.profileCount, closedClass: identity.closedClass.slice(0, 8).map(row => row.word), families: identity.families.slice(0, 4) })) } });
+        }
         tasks.push(Promise.all([
           surfaceLanguageProfilesCached()
             // The cluster an unmatched request surface falls back to is the one turns most often realize from, and it

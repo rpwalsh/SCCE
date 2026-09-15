@@ -189,6 +189,23 @@ describe("ScceClient HTTP boundary", () => {
     await expect(clientWithResponse(response(fixtureReceipt(plan, { omitValidation: true }))).workspacePatch("workspace-1", plan)).rejects.toThrow(/missing.*validation receipt/u);
   });
 
+  it("approves and rejects network search consent through the session endpoints", async () => {
+    const requests: RecordedRequest[] = [];
+    const transport: HttpTransport = async (input, init) => {
+      requests.push({ input, init });
+      if (input.endsWith("/api/session/approve")) return jsonResponse({ approved: { planId: "search-1", capabilityId: "network.search" }, session: {} });
+      if (input.endsWith("/api/session/reject")) return jsonResponse({ rejected: { planId: "search-1", capabilityId: "network.search" }, session: {} });
+      throw new Error(`unexpected request ${input}`);
+    };
+    const client = new ScceClient({ serverUrl: "http://127.0.0.1:3873", timeoutMs: 1_000 }, transport);
+    await client.approveLearningConsent("search-1");
+    await client.rejectLearningConsent("search-1");
+    expect(requests.map(request => request.input)).toEqual([
+      "http://127.0.0.1:3873/api/session/approve",
+      "http://127.0.0.1:3873/api/session/reject"
+    ]);
+  });
+
   it("submits a bounded coding request and verifies the returned content-addressed plan trace", async () => {
     const requests: RecordedRequest[] = [];
     const plan = parseReviewedPatchPlan(fixturePlan("src/new.ts", "export const value = 2;\n"));

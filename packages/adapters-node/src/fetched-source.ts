@@ -9,6 +9,8 @@ import { fileURLToPath } from "node:url";
 import { toJsonValue, type EvidenceDerivative, type JsonValue } from "@scce/kernel";
 import type { ScceRuntimeConfig } from "./config.js";
 import { extractDocument, type ExtractedDocument } from "./document.js";
+import type { BundledOcrProfile } from "./document-wasm-extraction.js";
+import { assertOcrProfileId } from "./ocr-profile.js";
 import { extractPresentationText, inspectOfficeArchive } from "./spreadsheet-parser.js";
 
 export interface FetchedSource {
@@ -93,7 +95,10 @@ export async function normalizeFetchedSource(
       };
       const extracted = detected.format === "docx"
         ? await extractDocxInBoundedProcess(stagedPath, maxBytes, options.signal)
-        : await extractDocument(stagedPath, extractionConfig, { includeVisualAttributes: false, maxOutputBytes: maxBytes, timeoutMs: 30000, signal: options.signal, requireComplete: true });
+        : await extractDocument(stagedPath, extractionConfig, {
+          includeVisualAttributes: false, maxOutputBytes: maxBytes, timeoutMs: 30000,
+          signal: options.signal, requireComplete: true, ocrProfile: sourceOcrProfile(source.metadata)
+        });
       text = extracted.text;
       extractor = extracted.parser;
       documentMetadata = toJsonValue({ structure: extracted.structural, typedExtraction: object(extracted.metadata).typedExtraction ?? null });
@@ -166,6 +171,13 @@ function detectFetchedMedia(source: FetchedSource, maxBytes: number): DetectedSo
 }
 
 function object(value: JsonValue): Record<string, JsonValue> { return value && typeof value === "object" && !Array.isArray(value) ? value : {}; }
+
+function sourceOcrProfile(metadata: JsonValue): BundledOcrProfile | undefined {
+  const profile = object(metadata).ocrProfile;
+  if (profile === undefined) return undefined;
+  if (typeof profile !== "string") throw new Error("fetched source OCR profile must be an opaque local package identifier");
+  return assertOcrProfileId(profile);
+}
 
 async function extractDocxInBoundedProcess(filePath: string, maxBytes: number, signal?: AbortSignal): Promise<ExtractedDocument> {
   const local = new URL("./fetched-document-process.js", import.meta.url);

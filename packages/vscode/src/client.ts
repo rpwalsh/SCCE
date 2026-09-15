@@ -18,6 +18,8 @@ import {
   WORKSPACE_CODING_PATCH_PLAN_REQUEST_SCHEMA,
   WORKSPACE_PATCH_REQUEST_SCHEMA,
   parseSessionApproval,
+  parseSessionConsentApproval,
+  parseSessionConsentRejection,
   parseWorkspaceCodingPatchPlanResult,
   parseWorkspacePatchAttempt,
   parseWorkspaceStatus,
@@ -205,6 +207,14 @@ export class ScceClient {
 
   approveWorkspacePatch(planId: string): Promise<{ approved: { planId: string; capabilityId: string } }> {
     return this.request("POST", "/api/session/approve", { planId: requireNonEmpty(planId, "approval plan id") }, parseSessionApproval);
+  }
+
+  approveLearningConsent(planId: string): Promise<{ approved: { planId: string; capabilityId: "network.search" } }> {
+    return this.request("POST", "/api/session/approve", { planId: requireNonEmpty(planId, "consent plan id") }, parseSessionConsentApproval);
+  }
+
+  rejectLearningConsent(planId: string): Promise<{ rejected: { planId: string; capabilityId: "network.search" } }> {
+    return this.request("POST", "/api/session/reject", { planId: requireNonEmpty(planId, "consent plan id") }, parseSessionConsentRejection);
   }
 
   /**

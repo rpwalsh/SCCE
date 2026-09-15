@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { afterEach, describe, expect, it } from "vitest";
-import { POSTGRES_REQUIRED_TABLES } from "@scce/kernel";
+import { POSTGRES_REQUIRED_TABLES, type SourceVersionId } from "@scce/kernel";
 import { createPostgresStorageAdapter, type PostgresStorageAdapter } from "../postgres.js";
 
 const adapters: PostgresStorageAdapter[] = [];
@@ -22,6 +22,62 @@ describe("Postgres language-memory ownership queries", () => {
     expect(calls[0]?.params[0]).toEqual(["profile.a", "profile.b"]);
     expect(calls[1]?.sql).toContain("profile_id=ANY($1::text[])");
     expect(calls[1]?.sql.indexOf("profile_id=ANY")).toBeLessThan(calls[1]!.sql.indexOf("LIMIT"));
+  });
+
+  it("supersedes stale request-requirement rows in one source scope before storing fresh target/range patterns", async () => {
+    const { adapter, calls } = fixture();
+    adapter.transaction = async operation => operation();
+    const pattern = {
+      id: "request_requirement_pattern.fixture.nava-sula",
+      profileId: "profile.fixture",
+      patternKind: "semantic_role" as const,
+      support: 0.9,
+      entropy: 0.1,
+      patternJson: {
+        schema: "scce.request_requirement_pattern.v1",
+        compilerFingerprint: "scce.request_requirement_pattern.targets_and_ranges.v1",
+        sourceVersionId: "source-version.fixture",
+        sourceSystem: "corrections",
+        surface: "nava sula",
+        requirementTargets: { brevityDetailBalance: 0.92 },
+        requirementTargetBounds: { brevityDetailBalance: { lower: 0.92, upper: 0.92 } }
+      },
+      evidenceIds: [],
+      updatedAt: 1,
+      informationLabel: {
+        tenantId: "tenant.fixture",
+        principals: ["principal.fixture"],
+        compartments: [],
+        exportClass: "restricted" as const,
+        mergePolicy: "isolated" as const
+      }
+    };
+
+    await adapter.languageMemory.replaceRequestRequirementPatterns?.({
+      profileId: pattern.profileId,
+      sourceVersionId: "source-version.fixture" as SourceVersionId,
+      sourceSystem: "corrections",
+      schema: "scce.request_requirement_pattern.v1",
+      compilerFingerprint: "scce.request_requirement_pattern.targets_and_ranges.v1",
+      patterns: [pattern]
+    });
+
+    const deletion = calls.find(call => call.sql.includes("DELETE FROM \"fixture\".\"language_patterns\""));
+    const insertion = calls.find(call => call.sql.includes("INSERT INTO \"fixture\".\"language_patterns\""));
+    expect(deletion).toBeDefined();
+    expect(deletion?.sql).toContain("pattern.pattern_json->>'schema'=$2");
+    expect(deletion?.sql).toContain("pattern.pattern_json->>'sourceVersionId'=$3");
+    expect(deletion?.sql).toContain("pattern.pattern_json->>'sourceSystem'=$4");
+    expect(deletion?.params.slice(0, 4)).toEqual([
+      "profile.fixture",
+      "scce.request_requirement_pattern.v1",
+      "source-version.fixture",
+      "corrections"
+    ]);
+    expect(insertion).toBeDefined();
+    expect(calls.indexOf(deletion!)).toBeLessThan(calls.indexOf(insertion!));
+    expect(JSON.stringify(insertion?.params)).toContain("requirementTargets");
+    expect(JSON.stringify(insertion?.params)).toContain("0.92");
   });
 
   it("requires exact profile ownership for model and observation reads", async () => {

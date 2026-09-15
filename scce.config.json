@@ -41,8 +41,6 @@
       ".tmp"
     ],
     "tools": {
-      "pdftotext": "pdftotext",
-      "tesseract": "tesseract",
       "node": "node",
       "pnpm": "pnpm"
     },
@@ -83,7 +81,7 @@
       "enabled": true,
       "accessScope": "public-internet",
       "runtimeAcquisition": "automatic",
-      "requestsPerMinute": 120,
+      "requestsPerMinute": 30,
       "maxRequestsPerTurn": 12,
       "allowedHosts": [
         "html.duckduckgo.com",

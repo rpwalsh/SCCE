@@ -2,6 +2,13 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { createStringMemo } from "./pure-memo.js";
 
+/** Exact normalized surface-unit coverage, independent of script or word casing. */
+export function surfaceContainsTerm(surface: string, term: string): boolean {
+  const units = surfaceUnits(surface.normalize("NFKC").toLocaleLowerCase());
+  const target = surfaceUnits(term.normalize("NFKC").toLocaleLowerCase());
+  return target.length > 0 && units.some((_, start) => target.every((unit, offset) => units[start + offset] === unit));
+}
+
 export const SENTENCE_BOUNDARY_SYMBOLS = [
   ".",
   "!",

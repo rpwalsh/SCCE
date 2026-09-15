@@ -3,13 +3,15 @@
 import { createHash } from "node:crypto";
 import type { ApprovalPort, CapabilityPlan, JsonValue, PolicyProfile } from "@scce/kernel";
 import { canonicalStringify, toJsonValue } from "@scce/kernel";
-import type { ScceRuntimeConfig } from "./config.js";
+import { automaticWebAcquisitionEnabled, publicWebNetworkEnabled, type ScceRuntimeConfig } from "./config.js";
 
 export interface ApprovalSnapshot {
   operatorGrant: boolean;
   runtimeSearchConsent?: boolean;
+  runtimeSearchRefused?: boolean;
   pending: Array<ApprovalRecord>;
   approved: Array<ApprovalRecord>;
+  rejected?: Array<ApprovalRecord>;
 }
 
 export interface ApprovalRecord {
@@ -20,19 +22,25 @@ export interface ApprovalRecord {
   reason: string;
   createdAt: number;
   approvedAt?: number;
+  rejectedAt?: number;
 }
 
 export class ApprovalSession implements ApprovalPort {
   private operatorGrant = false;
   private readonly pending = new Map<string, ApprovalRecord>();
   private readonly approved = new Map<string, ApprovalRecord>();
+  private readonly rejected = new Map<string, ApprovalRecord>();
 
-  constructor(private readonly runtimeSearchConsent = false) {}
+  constructor(private readonly runtimeSearchConsent = false, private readonly runtimeSearchRefused = false) {}
 
   isApproved(input: { capabilityId: string; input: JsonValue }): boolean {
     if (this.operatorGrant) return true;
     if (this.runtimeSearchConsent && input.capabilityId === "network.search") return true;
     return this.approved.has(fingerprint(input.capabilityId, input.input));
+  }
+
+  isRejected(input: { capabilityId: string; input: JsonValue }): boolean {
+    return (this.runtimeSearchRefused && input.capabilityId === "network.search") || this.rejected.has(fingerprint(input.capabilityId, input.input));
   }
 
   observePending(plan: CapabilityPlan): void {
@@ -56,12 +64,22 @@ export class ApprovalSession implements ApprovalPort {
   }
 
   approve(planId: string): ApprovalRecord {
-    const record = this.pending.get(planId);
+    const record = this.pending.get(planId) ?? [...this.rejected.values()].find(item => item.planId === planId);
     if (!record) throw new Error(`approval plan not found: ${planId}`);
     const approved = { ...record, approvedAt: Date.now() };
     this.pending.delete(planId);
+    this.rejected.delete(approved.fingerprint);
     this.approved.set(approved.fingerprint, approved);
     return approved;
+  }
+
+  reject(planId: string): ApprovalRecord {
+    const record = this.pending.get(planId) ?? [...this.rejected.values()].find(item => item.planId === planId);
+    if (!record) throw new Error(`approval plan not found: ${planId}`);
+    const rejected = { ...record, rejectedAt: Date.now() };
+    this.pending.delete(planId);
+    this.rejected.set(rejected.fingerprint, rejected);
+    return rejected;
   }
 
   setTemporaryOperatorGrant(enabled: boolean): ApprovalSnapshot {
@@ -79,14 +97,23 @@ export class ApprovalSession implements ApprovalPort {
     return {
       operatorGrant: this.operatorGrant,
       runtimeSearchConsent: this.runtimeSearchConsent,
+      runtimeSearchRefused: this.runtimeSearchRefused,
       pending: [...this.pending.values()].sort((a, b) => b.createdAt - a.createdAt),
-      approved: [...this.approved.values()].sort((a, b) => (b.approvedAt ?? 0) - (a.approvedAt ?? 0)).slice(0, 100)
+      approved: [...this.approved.values()].sort((a, b) => (b.approvedAt ?? 0) - (a.approvedAt ?? 0)).slice(0, 100),
+      rejected: [...this.rejected.values()].sort((a, b) => (b.rejectedAt ?? 0) - (a.rejectedAt ?? 0)).slice(0, 100)
     };
   }
 }
 
 export function createApprovalSession(config?: Pick<ScceRuntimeConfig, "connectors">): ApprovalSession {
-  return new ApprovalSession(config?.connectors.web?.enabled === true && config.connectors.web.runtimeAcquisition === "automatic");
+  const runtimeConfig = config ?? { connectors: {} };
+  const publicWebConfigured = runtimeConfig.connectors.web?.enabled === true
+    && runtimeConfig.connectors.web.accessScope === "public-internet";
+  const networkEnabled = publicWebNetworkEnabled(runtimeConfig);
+  return new ApprovalSession(
+    automaticWebAcquisitionEnabled(runtimeConfig),
+    publicWebConfigured && !networkEnabled
+  );
 }
 
 function recordFromPlan(plan: CapabilityPlan, reason: string): ApprovalRecord {

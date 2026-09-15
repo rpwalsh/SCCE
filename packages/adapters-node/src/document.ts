@@ -9,6 +9,9 @@ import mammoth from "mammoth";
 import { createHasher, normalizePath, openingIdentityUnits, sourceTitleFromUri, toJsonValue, type JsonValue } from "@scce/kernel";
 import type { ScceRuntimeConfig } from "./config.js";
 import { extractNodeSourceCodeFacts } from "./code-graph.js";
+import { runDocumentExtractionWorker } from "./document-extraction-worker-client.js";
+import type { BundledOcrProfile } from "./document-wasm-extraction.js";
+import { DEFAULT_OCR_PROFILE } from "./ocr-profile.js";
 import { extractWorkbookBytes } from "./spreadsheet.js";
 
 export interface ParserAttempt {
@@ -60,6 +63,8 @@ export interface DocumentExtractionOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
   requireComplete?: boolean;
+  /** Selected by the source adapter; this names a packaged OCR profile only. */
+  ocrProfile?: BundledOcrProfile;
 }
 
 export async function extractDocument(filePath: string, config: ScceRuntimeConfig, options: DocumentExtractionOptions = {}): Promise<ExtractedDocument> {
@@ -70,7 +75,7 @@ export async function extractDocument(filePath: string, config: ScceRuntimeConfi
   const mediaType = guessMediaType(absolutePath, bytes);
   const attempts: ParserAttempt[] = [];
   const start = Date.now();
-  const run = async (name: string, fn: () => Promise<{ text: string; structural?: Partial<DocumentStructure>; warnings?: string[]; stderr?: string; typedExtraction?: JsonValue }>) => {
+  const run = async (name: string, fn: () => Promise<{ text: string; structural?: Partial<DocumentStructure>; warnings?: string[]; stderr?: string; typedExtraction?: JsonValue; parser?: string }>) => {
     const before = Date.now();
     try {
       const result = await fn();
@@ -88,10 +93,15 @@ export async function extractDocument(filePath: string, config: ScceRuntimeConfi
   let typedExtraction: JsonValue = {};
   const ext = path.extname(absolutePath).toLowerCase();
   if (ext === ".pdf") {
-    const result = await run("poppler-pdftotext-layout", () => extractPdfText(absolutePath, config, options));
+    const result = await run("pdfjs-embedded-text-worker", () => extractPdfText(bytes, {
+      ...options,
+      maxOutputBytes: boundedOutputBytes(options.maxOutputBytes, config.runtime.maxFileBytes),
+      ocrProfile: options.ocrProfile ?? config.runtime.ocr?.profile
+    }));
     text = result.text;
     structural = result.structural ?? {};
-    parser = "poppler-pdftotext-layout";
+    typedExtraction = result.typedExtraction ?? {};
+    parser = result.parser ?? "pdfjs-embedded-text-worker";
   } else if (ext === ".docx") {
     const result = await run("mammoth-docx-raw", () => extractDocxText(absolutePath));
     text = result.text;
@@ -104,10 +114,14 @@ export async function extractDocument(filePath: string, config: ScceRuntimeConfi
     typedExtraction = result.typedExtraction ?? {};
     parser = result.text.trim() ? "sheetjs-ce-0.20.3" : "none";
   } else if (isImageMedia(mediaType)) {
-    const result = await run("tesseract-ocr", () => extractImageText(absolutePath, config, options));
+    const result = await run("tesseract-wasm-ocr-worker", () => extractImageText(bytes, {
+      ...options,
+      maxOutputBytes: boundedOutputBytes(options.maxOutputBytes, config.runtime.maxFileBytes)
+    }, options.ocrProfile ?? config.runtime.ocr?.profile ?? DEFAULT_OCR_PROFILE));
     text = result.text;
     structural = result.structural ?? {};
-    parser = "tesseract-ocr";
+    typedExtraction = result.typedExtraction ?? {};
+    parser = "tesseract-wasm-ocr-worker";
   } else {
     const result = await run("bounded-unicode-text", async () => ({ text: decodeText(bytes), structural: inferTextStructure(decodeText(bytes)) }));
     text = result.text;
@@ -179,23 +193,29 @@ function requiresBinaryParser(extension: string): boolean {
 }
 
 export async function diagnoseExtractionTools(config: ScceRuntimeConfig): Promise<Array<{ name: string; ok: boolean; detail: string; requiredFor: string[] }>> {
-  const pdftotext = await runProcess(config.runtime.tools.pdftotext ?? "pdftotext", ["-v"], { timeoutMs: 5000 });
-  const tesseract = await runProcess(config.runtime.tools.tesseract ?? "tesseract", ["--version"], { timeoutMs: 5000 });
+  void config;
   return [
-    { name: "pdftotext", ok: pdftotext.code !== null && (pdftotext.code === 0 || Boolean(pdftotext.stderr || pdftotext.stdout)), detail: firstLine(pdftotext.stdout || pdftotext.stderr), requiredFor: ["pdf"] },
-    { name: "tesseract", ok: tesseract.code !== null && tesseract.code === 0, detail: firstLine(tesseract.stdout || tesseract.stderr), requiredFor: ["image-ocr"] },
+    { name: "pdfjs-dist", ok: true, detail: "packaged JavaScript PDF parser in a bounded Node worker", requiredFor: ["pdf"] },
+    { name: "tesseract.js", ok: true, detail: "packaged WASM OCR and configured local traineddata in a bounded Node worker", requiredFor: ["image-ocr"] },
     { name: "mammoth", ok: true, detail: "npm package", requiredFor: ["docx"] },
     { name: "sheetjs-ce", ok: true, detail: "vendored 0.20.3; bounded child process; formulas are not evaluated", requiredFor: ["xlsx", "xlsm", "xls"] }
   ];
 }
 
-async function extractPdfText(filePath: string, config: ScceRuntimeConfig, options: DocumentExtractionOptions): Promise<{ text: string; structural: Partial<DocumentStructure>; warnings: string[]; stderr?: string }> {
-  const tool = config.runtime.tools.pdftotext ?? "pdftotext";
-  const result = await runProcess(tool, ["-layout", "-enc", "UTF-8", "-eol", "unix", filePath, "-"], { timeoutMs: options.timeoutMs ?? 120000, maxOutputBytes: options.maxOutputBytes, signal: options.signal });
-  if (options.requireComplete && result.code !== 0) throw new Error(`pdftotext failed: ${result.stderr.slice(0, 300) || `exit ${result.code}`}`);
-  const warnings = result.code === 0 ? [] : [`pdftotext exit ${result.code}`];
-  const text = result.stdout;
-  return { text, structural: inferPagedStructure(text), warnings, stderr: result.stderr };
+function boundedOutputBytes(requested: number | undefined, sourceLimit: number): number {
+  return Math.min(requested ?? sourceLimit, sourceLimit);
+}
+
+async function extractPdfText(bytes: Uint8Array, options: DocumentExtractionOptions): Promise<{ text: string; structural: Partial<DocumentStructure>; warnings: string[]; parser?: string; typedExtraction?: JsonValue }> {
+  const result = await runDocumentExtractionWorker({
+    kind: "pdf-text", bytes, maxOutputBytes: options.maxOutputBytes ?? Number.MAX_SAFE_INTEGER,
+    ...(options.ocrProfile ? { ocrProfile: options.ocrProfile } : {})
+  }, { timeoutMs: options.timeoutMs ?? 120000, signal: options.signal });
+  if (result.boundary) throw new Error(result.boundary);
+  return {
+    text: result.text, structural: inferPagedStructure(result.text), warnings: [],
+    ...(result.scannedPdfOcr ? { parser: "pdfjs-rendered-tesseract-wasm-worker", typedExtraction: toJsonValue({ scannedPdfOcr: { profile: result.ocrProfile, renderer: "pdfjs-napi-canvas", engine: "tesseract.js-wasm" } }) } : {})
+  };
 }
 
 async function extractDocxText(filePath: string): Promise<{ text: string; structural: Partial<DocumentStructure>; warnings: string[] }> {
@@ -214,14 +234,12 @@ async function extractWorkbookText(bytes: Uint8Array, filePath: string, config: 
   };
 }
 
-async function extractImageText(filePath: string, config: ScceRuntimeConfig, options: DocumentExtractionOptions): Promise<{ text: string; structural: Partial<DocumentStructure>; warnings: string[]; stderr?: string }> {
-  const tool = config.runtime.tools.tesseract ?? "tesseract";
-  const result = await runProcess(tool, [filePath, "stdout", "--psm", "3"], { timeoutMs: options.timeoutMs ?? 180000, maxOutputBytes: options.maxOutputBytes, signal: options.signal });
-  if (options.requireComplete && result.code !== 0) throw new Error(`tesseract failed: ${result.stderr.slice(0, 300) || `exit ${result.code}`}`);
-  const warnings = result.code === 0 ? [] : [`tesseract exit ${result.code}`];
-  return { text: result.stdout, structural: inferTextStructure(result.stdout), warnings, stderr: result.stderr };
+async function extractImageText(bytes: Uint8Array, options: DocumentExtractionOptions, ocrProfile: BundledOcrProfile): Promise<{ text: string; structural: Partial<DocumentStructure>; warnings: string[]; typedExtraction: JsonValue }> {
+  const result = await runDocumentExtractionWorker({ kind: "image-ocr", bytes, maxOutputBytes: options.maxOutputBytes ?? Number.MAX_SAFE_INTEGER, ocrProfile }, { timeoutMs: options.timeoutMs ?? 180000, signal: options.signal });
+  return { text: result.text, structural: inferTextStructure(result.text), warnings: [], typedExtraction: toJsonValue({ imageOcr: { profile: result.ocrProfile, engine: "tesseract.js-wasm" } }) };
 }
 
+/** Generic bounded process runner for the separate code, sensor, and visual lanes. */
 export async function runProcess(command: string, args: string[], options: { cwd?: string; timeoutMs?: number; maxOutputBytes?: number; signal?: AbortSignal } = {}): Promise<{ code: number | null; stdout: string; stderr: string; durationMs: number }> {
   const started = Date.now();
   return new Promise(resolve => {
@@ -411,10 +429,6 @@ function documentDiagnostics(input: { bytes: Uint8Array; text: string; attempts:
       ...input.attempts.flatMap(attempt => attempt.warnings.map(warning => `${attempt.parser}:${warning}`))
     ].slice(0, 24)
   };
-}
-
-function firstLine(text: string): string {
-  return text.split(/\r?\n/)[0] ?? "";
 }
 
 // Visual attributes (Phase 3) for images and rendered PDF pages. Late import keeps

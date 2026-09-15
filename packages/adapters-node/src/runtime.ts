@@ -15,7 +15,7 @@ import {
   type RelationPotentialArtifactRecord,
   type CognitiveCapability
 } from "@scce/kernel";
-import type { ScceRuntimeConfig } from "./config.js";
+import { automaticWebAcquisitionEnabled, type ScceRuntimeConfig } from "./config.js";
 import { createExecutiveEventJournal, createPostgresStorageAdapter } from "./postgres.js";
 import { NodeFileIngestAdapter } from "./files.js";
 import { NodeBuildTestAdapter } from "./process.js";
@@ -113,9 +113,7 @@ export function createNodeRuntime(config: ScceRuntimeConfig, options: NodeScceRu
     connectors,
     approvals,
     ...(visualEmbedder ? { visualQueryEmbedder: (text: string) => visualEmbedder.embedText(text) } : {}),
-    runtimeWebAutomaticAdmission: config.connectors.web?.enabled === true
-      && config.connectors.web.accessScope === "public-internet"
-      && config.connectors.web.runtimeAcquisition === "automatic",
+    runtimeWebAutomaticAdmission: automaticWebAcquisitionEnabled(config),
     policy: config.policy,
     maxChunkBytes: config.runtime.maxChunkBytes,
     informationAccess,

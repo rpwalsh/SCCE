@@ -850,6 +850,19 @@ export interface LanguageMemoryStore {
   putLanguageUnits?(units: readonly LanguageUnitRecord[]): Promise<void>;
   putLanguagePattern(pattern: LanguagePatternRecord): Promise<void>;
   putLanguagePatterns?(patterns: readonly LanguagePatternRecord[]): Promise<void>;
+  /**
+   * Atomically replaces all request-requirement patterns for one compiled
+   * source scope. This lets a trainer supersede stale compiler semantics,
+   * including the valid empty result of a recompile.
+   */
+  replaceRequestRequirementPatterns?(input: {
+    profileId: string;
+    sourceVersionId: SourceVersionId;
+    sourceSystem: string;
+    schema: string;
+    compilerFingerprint: string;
+    patterns: readonly LanguagePatternRecord[];
+  }): Promise<void>;
   putSemanticFrame(frame: SemanticFrameRecord): Promise<void>;
   putSemanticFrames?(frames: readonly SemanticFrameRecord[]): Promise<void>;
   putTranslationAlignment(alignment: TranslationAlignmentRecord): Promise<void>;
@@ -1435,6 +1448,8 @@ export interface ScceKernelDeps {
 
 export interface ApprovalPort {
   isApproved(input: { capabilityId: string; input: JsonValue }): boolean;
+  /** Optional session-local refusal; older/test approval ports may omit it. */
+  isRejected?(input: { capabilityId: string; input: JsonValue }): boolean;
   observePending(plan: CapabilityPlan): Promise<void> | void;
   policyPatch?(): Partial<import("./types.js").PolicyProfile>;
 }

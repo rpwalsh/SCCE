@@ -4,7 +4,7 @@ import { lookup } from "node:dns/promises";
 import { BlockList, isIP } from "node:net";
 import { toJsonValue, type ConnectorPort, type JsonValue } from "@scce/kernel";
 import type { PolicyProfile } from "@scce/kernel";
-import type { ScceRuntimeConfig } from "./config.js";
+import { publicWebNetworkEnabled, type ScceRuntimeConfig } from "./config.js";
 import { ConnectorPolicyGate, hostAllowlisted, redactHeaders, unsafeLocalHostname } from "./connector-policy.js";
 import { resolveSecret } from "./secrets.js";
 import { normalizeFetchedSource, publicDocumentExport, type FetchedSource } from "./fetched-source.js";
@@ -33,6 +33,10 @@ export class ConfiguredConnectorAdapter implements ConnectorPort {
   private readonly gate: ConnectorPolicyGate;
 
   constructor(private readonly config: ScceRuntimeConfig, policyPatch: () => Partial<PolicyProfile> = () => ({})) {
+    // A Node runtime owns one long-lived adapter, so all of its concurrent
+    // turns already share this gate. Keep the complete gate runtime-local:
+    // sharing it across separately constructed runtimes would also retain
+    // the first runtime's approval-policy closure and session quota.
     this.gate = new ConnectorPolicyGate(config, policyPatch);
   }
 
@@ -65,6 +69,7 @@ export class ConfiguredConnectorAdapter implements ConnectorPort {
   async search(query: string, limit: number): Promise<Array<{ uri: string; title: string; snippet: string; metadata: JsonValue }>> {
     const web = this.config.connectors.web;
     if (!web?.enabled) throw new Error("web connector is disabled in scce.config.json");
+    this.assertPublicWebNetworkEnabled();
     const provider = web.search?.provider ?? "duckduckgo";
     const boundedLimit = Number.isFinite(limit) ? Math.max(1, Math.min(50, Math.floor(limit))) : 10;
     const results = await this.searchProvider(provider, query, boundedLimit);
@@ -220,12 +225,16 @@ export class ConfiguredConnectorAdapter implements ConnectorPort {
   private async fetchWeb(url: URL) {
     const web = this.config.connectors.web;
     if (!web?.enabled) throw new Error("web connector is disabled in scce.config.json");
+    this.assertPublicWebNetworkEnabled();
     const record = await this.policy().beginWhenAvailable({ connector: "web", operation: "fetch", uri: url.toString() });
     try {
       const exported = publicDocumentExport(url.toString());
       const fetchUrl = exported ? new URL(exported.uri) : url;
       const signal = this.policy().requestSignal();
-      const { response, finalUri, redirectChain } = await guardedWebFetch(fetchUrl, web, { signal });
+      const { response, finalUri, redirectChain } = await guardedWebFetch(fetchUrl, web, {
+        signal,
+        reserveRedirect: redirectUri => this.reserveWebRedirect(redirectUri, "fetch")
+      });
       if (!response.ok) throw new Error(`fetch failed ${response.status} ${response.statusText}: ${url}`);
       const bytes = await responseBytesCapped(response, web.maxBytes, url.toString());
       const mediaType = response.headers.get("content-type") ?? "application/octet-stream";
@@ -335,7 +344,11 @@ export class ConfiguredConnectorAdapter implements ConnectorPort {
     if (!web?.enabled) throw new Error("web connector is disabled in scce.config.json");
     const record = await this.policy().beginWhenAvailable({ connector: "web", operation: `search:${provider}`, uri: url.toString() });
     try {
-      const { response } = await guardedWebFetch(url, web, { ...init, signal: this.policy().requestSignal() });
+      const { response } = await guardedWebFetch(url, web, {
+        ...init,
+        signal: this.policy().requestSignal(),
+        reserveRedirect: redirectUri => this.reserveWebRedirect(redirectUri, `search:${provider}`)
+      });
       const text = await responseTextCapped(response, web.maxBytes, url.toString());
       if (!response.ok) throw new Error(`search provider ${provider} HTTP ${response.status}: ${text.slice(0, 500)}`);
       this.policy().finish(record, { status: response.status, bytes: text.length, metadata: { provider, mediaType: response.headers.get("content-type") ?? "application/json" } });
@@ -351,7 +364,11 @@ export class ConfiguredConnectorAdapter implements ConnectorPort {
     if (!web?.enabled) throw new Error("web connector is disabled in scce.config.json");
     const record = await this.policy().beginWhenAvailable({ connector: "web", operation: `search:${provider}`, uri: url.toString() });
     try {
-      const { response } = await guardedWebFetch(url, web, { ...init, signal: this.policy().requestSignal() });
+      const { response } = await guardedWebFetch(url, web, {
+        ...init,
+        signal: this.policy().requestSignal(),
+        reserveRedirect: redirectUri => this.reserveWebRedirect(redirectUri, `search:${provider}`)
+      });
       const text = await responseTextCapped(response, web.maxBytes, url.toString());
       if (!response.ok) throw new Error(`search provider ${provider} HTTP ${response.status}: ${text.slice(0, 500)}`);
       this.policy().finish(record, { status: response.status, bytes: text.length, metadata: { provider, mediaType: response.headers.get("content-type") ?? "text/html" } });
@@ -359,6 +376,19 @@ export class ConfiguredConnectorAdapter implements ConnectorPort {
     } catch (error) {
       this.policy().fail(record, error);
       throw error;
+    }
+  }
+
+  /** Redirect hops are real provider requests and consume the same shared web budget. */
+  private async reserveWebRedirect(uri: URL, operation: string): Promise<void> {
+    const record = await this.policy().beginWhenAvailable({ connector: "web", operation, uri: uri.toString() });
+    this.policy().finish(record, { metadata: { redirectReservation: true } });
+  }
+
+  private assertPublicWebNetworkEnabled(): void {
+    const web = this.config.connectors.web;
+    if (web?.accessScope === "public-internet" && !publicWebNetworkEnabled(this.config)) {
+      throw new Error("public web access refused: set SCCE_ALLOW_AUTOMATIC_WEB=1 to enable network acquisition");
     }
   }
 
@@ -468,13 +498,15 @@ async function responseJson(response: Response): Promise<JsonValue> {
   return value as JsonValue;
 }
 
-async function guardedWebFetch(url: URL, web: NonNullable<ScceRuntimeConfig["connectors"]["web"]>, init: RequestInit = {}): Promise<{ response: Response; finalUri: string; redirectChain: string[] }> {
+async function guardedWebFetch(url: URL, web: NonNullable<ScceRuntimeConfig["connectors"]["web"]>, init: RequestInit & { reserveRedirect?: (uri: URL) => Promise<void> } = {}): Promise<{ response: Response; finalUri: string; redirectChain: string[] }> {
+  const { reserveRedirect, ...requestInit } = init;
   let current = new URL(url.toString());
   const redirectChain = [current.toString()];
   for (let redirect = 0; redirect <= 3; redirect++) {
     await assertSafeWebUrl(current, web);
+    if (redirect > 0) await reserveRedirect?.(current);
     const timeout = AbortSignal.timeout(15_000);
-    const response = await fetch(current, { ...init, redirect: "manual", signal: init.signal ? AbortSignal.any([init.signal, timeout]) : timeout });
+    const response = await fetch(current, { ...requestInit, redirect: "manual", signal: requestInit.signal ? AbortSignal.any([requestInit.signal, timeout]) : timeout });
     if (response.status < 300 || response.status >= 400) return { response, finalUri: current.toString(), redirectChain };
     const location = response.headers.get("location");
     if (!location) return { response, finalUri: current.toString(), redirectChain };
@@ -483,8 +515,8 @@ async function guardedWebFetch(url: URL, web: NonNullable<ScceRuntimeConfig["con
     // Search API credentials are scoped to their endpoint. A provider may
     // redirect a public GET, but it may not forward keys or request bodies.
     let sensitiveHeaders = false;
-    new Headers(init.headers).forEach((_value, name) => { if (/authorization|token|api.key|subscription.key/iu.test(name)) sensitiveHeaders = true; });
-    if (next.origin !== current.origin && (init.body || sensitiveHeaders))
+    new Headers(requestInit.headers).forEach((_value, name) => { if (/authorization|token|api.key|subscription.key/iu.test(name)) sensitiveHeaders = true; });
+    if (next.origin !== current.origin && (requestInit.body || sensitiveHeaders))
       throw new Error("cross-origin redirect cannot forward connector credentials or request body");
     current = next;
     redirectChain.push(current.toString());

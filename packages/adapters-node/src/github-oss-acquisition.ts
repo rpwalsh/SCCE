@@ -8,6 +8,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { ScceStorage } from "@scce/kernel";
 import { trainOssCorpus, type OssCorpusTrainOptions, type OssCorpusTrainReport, type OssRepositoryProvenance } from "./oss-corpus.js";
+import { publicNetworkAcquisitionEnabled } from "./config.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -84,6 +85,9 @@ export function validateGithubCommitSha(value: string): string {
 }
 
 export async function acquireAndTrainGithubOssRepository(input: GithubOssAcquisitionOptions): Promise<GithubOssAcquisitionReport> {
+  if (!publicNetworkAcquisitionEnabled()) {
+    throw new Error("public GitHub acquisition refused: set SCCE_ALLOW_AUTOMATIC_WEB=1 to enable network acquisition");
+  }
   const remoteUrl = validateGithubPublicRepositoryUrl(input.remoteUrl);
   const commitSha = validateGithubCommitSha(input.commitSha);
   const bounds = normalizeBounds(input.bounds);

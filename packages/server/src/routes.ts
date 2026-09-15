@@ -6,7 +6,7 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { realpath, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { performance } from "node:perf_hooks";
-import { assertHydratedRuntimeReady, collectRepoFilesForCognition, createLearnedCodeProposer, createTypeScriptCodeMouthPorts, runCodeMouth, createDockerSandboxPatchValidationProvider, createNodeRuntime, createWorkspaceRuntime, diagnoseDocumentTools, executeWorkspacePatchTransaction, resolveSecret, runStructuredPatchValidation, trustedHostPatchValidationProvider, verifiedCompilerPlansForTurn, WorkspacePatchTransactionError, type readScceRuntimeConfig, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type WorkspaceCodingPatchPlanningInput, type WorkspacePatchPlanningInput, type WorkspaceRuntimeOptions, applySetting, settingsView, listLocalModels, downloadModel, removeLocalModel, formatBytes } from "@scce/adapters-node";
+import { acquireAndTrainGithubOssRepository, assertHydratedRuntimeReady, automaticWebAcquisitionEnabled, publicNetworkAcquisitionEnabled, collectRepoFilesForCognition, createLearnedCodeProposer, createTypeScriptCodeMouthPorts, runCodeMouth, createDockerSandboxPatchValidationProvider, createNodeRuntime, createWorkspaceRuntime, diagnoseDocumentTools, executeWorkspacePatchTransaction, resolveSecret, runStructuredPatchValidation, trustedHostPatchValidationProvider, verifiedCompilerPlansForTurn, WorkspacePatchTransactionError, DEFAULT_WEB_REQUESTS_PER_MINUTE, type GithubOssAcquisitionOptions, type GithubOssAcquisitionReport, type readScceRuntimeConfig, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type WorkspaceCodingPatchPlanningInput, type WorkspacePatchPlanningInput, type WorkspaceRuntimeOptions, applySetting, settingsView, listLocalModels, downloadModel, removeLocalModel, formatBytes, validateGithubCommitSha, validateGithubPublicRepositoryUrl } from "@scce/adapters-node";
 import type { BenchmarkInput, CausalAnalysisRequest, CausalDiscoveryRequest, CausalAssumptionDag, CausalAssumptionEdge, CausalObservation, ConversationTurnRecord, DialogueInterpretationCorrectionInput, EventLedger, GraphSlice, IdentificationDesign, IngestInput, InspectionTarget, JsonValue, NodeId, OwnerInput, PatchTransactionPlan, ProgramGraph, RequestedAuthority, SourceAdmissionContext, SourceTrust, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
 import {
   behaviorRoleExecutionGraphInputFromTaskConstraintGraph, createProgramBehaviorValidationLedger, PROGRAM_BEHAVIOR_VALIDATION_PLAN_BINDING_SCHEMA, curriculumItemFromPlan,
@@ -29,6 +29,8 @@ export interface ApiContext {
     readonly provider: StructuredPatchValidationProvider;
     readonly resolvePolicy: (policyId: string) => StructuredPatchValidationPolicy;
   };
+  /** Test/infrastructure seam; production always uses the canonical bounded adapter path. */
+  githubOssAcquisition?: (input: GithubOssAcquisitionOptions) => Promise<GithubOssAcquisitionReport>;
 }
 
 type LoadedConfig = Awaited<ReturnType<typeof readScceRuntimeConfig>>;
@@ -115,6 +117,7 @@ export const ROUTES = [
   { method: "GET", path: "/api/tools", label: "tool diagnostics", mutates: false, requiresDb: false },
   { method: "GET", path: "/api/session/approvals", label: "session approvals", mutates: false, requiresDb: false },
   { method: "POST", path: "/api/session/approve", label: "approve pending capability", mutates: true, requiresDb: false },
+  { method: "POST", path: "/api/session/reject", label: "reject pending capability", mutates: true, requiresDb: false },
   { method: "POST", path: "/api/session/operator-grant", label: "toggle temporary operator grant", mutates: true, requiresDb: false },
   { method: "GET", path: "/api/connectors/quota", label: "connector quota", mutates: false, requiresDb: false },
   { method: "POST", path: "/api/connectors/search", label: "web search", mutates: false, requiresDb: false },
@@ -134,6 +137,7 @@ export const ROUTES = [
   { method: "POST", path: "/api/connectors/telephone/call", label: "telephone call", mutates: true, requiresDb: false },
   { method: "GET", path: "/api/config/public", label: "public config", mutates: false, requiresDb: false },
   { method: "POST", path: "/api/ingest", label: "ingest", mutates: true, requiresDb: true },
+  { method: "POST", path: "/api/ingest/github", label: "public GitHub OSS ingest", mutates: true, requiresDb: true },
   { method: "POST", path: "/api/codebase/ingest", label: "codebase ingest", mutates: true, requiresDb: true },
   { method: "POST", path: "/api/workspace/init", label: "workspace initialize", mutates: true, requiresDb: true },
   { method: "POST", path: "/api/workspace/ingest", label: "workspace ingest", mutates: true, requiresDb: true },
@@ -200,6 +204,10 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
         requestId,
         started
       });
+      return;
+    }
+    if (streamingGithubOssIngestRequested(req, url)) {
+      await streamGithubOssIngestResponse({ req, res, context, requestId, started });
       return;
     }
     const response = await dispatch(req, url, context, requestTiming);
@@ -373,10 +381,12 @@ async function dispatch(
   }
   if (req.method === "GET" && url.pathname === "/api/connectors/quota") return json(context.runtime.connectors.audit());
   if (req.method === "POST" && url.pathname === "/api/connectors/search") {
+    requirePublicNetworkAcquisition();
     const body = requireFields(await readBody(req, context.maxBodyBytes), ["query"]);
     return json(await context.runtime.connectors.search(String(body.query), Number(body.limit ?? 10)));
   }
   if (req.method === "POST" && url.pathname === "/api/connectors/fetch") {
+    requirePublicNetworkAcquisition();
     const body = requireFields(await readBody(req, context.maxBodyBytes), ["uri"]);
     const fetched = await context.runtime.connectors.fetch(String(body.uri));
     const derivative = fetched.evidenceDerivative;
@@ -484,6 +494,18 @@ async function dispatch(
   }
   if (req.method === "GET" && url.pathname === "/api/config/public") return json(publicConfig(context.config));
   if (req.method === "POST" && url.pathname === "/api/ingest") return json(await context.runtime.kernel.ingest(validateIngest(await readBody(req, context.maxBodyBytes))));
+  if (req.method === "POST" && url.pathname === "/api/ingest/github") {
+    requirePublicNetworkAcquisition();
+    const request = parseGithubOssIngestRequest(preloadedBody ?? await readBody(req, context.maxBodyBytes));
+    const acquire = context.githubOssAcquisition ?? acquireAndTrainGithubOssRepository;
+    const report = await acquire({ storage: context.runtime.storage, remoteUrl: request.remoteUrl, commitSha: request.commitSha });
+    return json(boundedGithubOssIngestReceipt(report));
+  }
+  if (req.method === "POST" && url.pathname === "/api/session/reject") {
+    const body = await readBody(req, context.maxBodyBytes);
+    if (!isRecord(body) || typeof body.planId !== "string" || !body.planId.trim()) throw new HttpError(400, "session rejection requires planId");
+    return json({ rejected: context.runtime.approvals.reject(body.planId), session: context.runtime.approvals.snapshot() });
+  }
   if (req.method === "POST" && url.pathname === "/api/codebase/ingest") return json(await context.runtime.kernel.ingest(validateCodebaseIngest(await readBody(req, context.maxBodyBytes))));
   if (req.method === "POST" && url.pathname === "/api/workspace/init") {
     const body = requireFields(await readBody(req, context.maxBodyBytes), ["path"]);
@@ -1674,6 +1696,7 @@ function invalidatesHydratedRuntimeReadiness(method: string | undefined, pathnam
   return pathname === "/api/db/init"
     || pathname === "/api/db/migrate"
     || pathname === "/api/ingest"
+    || pathname === "/api/ingest/github"
     || pathname === "/api/codebase/ingest"
     || pathname === "/api/workspace/init"
     || pathname === "/api/workspace/ingest"
@@ -2214,6 +2237,63 @@ export function parseTurnWorkspaceCodingRequest(
 
 export async function awaitDialoguePersistence(conversationId: string): Promise<void> {
   await dialoguePersistenceTails.get(conversationId)?.catch(() => undefined);
+}
+
+export interface GithubOssIngestRequest {
+  remoteUrl: string;
+  commitSha: string;
+}
+
+/** The API accepts only the two source identity fields; bounds and executables stay server-owned. */
+export function parseGithubOssIngestRequest(value: unknown): GithubOssIngestRequest {
+  if (!isRecord(value)) throw new HttpError(400, "github OSS ingest body must be an object");
+  const unexpected = Object.keys(value).filter(key => key !== "remoteUrl" && key !== "commitSha");
+  if (unexpected.length) throw new HttpError(400, `github OSS ingest body has unexpected fields: ${unexpected.join(", ")}`);
+  if (typeof value.remoteUrl !== "string" || !value.remoteUrl || value.remoteUrl !== value.remoteUrl.trim()) {
+    throw new HttpError(400, "github OSS ingest requires an exact public GitHub repository URL");
+  }
+  if (typeof value.commitSha !== "string" || !/^[0-9a-f]{40}$/iu.test(value.commitSha)) {
+    throw new HttpError(400, "github OSS ingest requires an exact 40-character commit SHA");
+  }
+  try {
+    return {
+      remoteUrl: validateGithubPublicRepositoryUrl(value.remoteUrl),
+      commitSha: validateGithubCommitSha(value.commitSha)
+    };
+  } catch (error) {
+    throw new HttpError(400, error instanceof Error ? error.message : String(error));
+  }
+}
+
+const MAX_GITHUB_OSS_RECEIPT_SKIPPED = 128;
+
+export function boundedGithubOssIngestReceipt(report: GithubOssAcquisitionReport): JsonValue {
+  const skipped = report.training.filesSkipped.slice(0, MAX_GITHUB_OSS_RECEIPT_SKIPPED).map(file => ({
+    path: file.path,
+    reason: file.reason,
+    ...(file.byteLength === undefined ? {} : { byteLength: file.byteLength })
+  }));
+  return {
+    schema: "scce.githubOssIngestReceipt.v1",
+    remoteUrl: report.remoteUrl,
+    commitSha: report.commitSha,
+    bounds: report.bounds,
+    snapshot: {
+      fileCount: report.files.length,
+      totalBytes: report.totalBytes,
+      snapshotHash: report.provenance.snapshotHash
+    },
+    training: {
+      docsTrained: report.training.docsTrained,
+      codeTrained: report.training.codeTrained,
+      skippedCount: report.training.filesSkipped.length,
+      skipped: skipped,
+      skippedTruncated: report.training.filesSkipped.length > skipped.length,
+      totals: report.training.totals,
+      stoppedByHeapSafetyBound: report.training.stoppedByHeapSafetyBound,
+      heapMiBAtExit: report.training.heapMiBAtExit
+    }
+  } as unknown as JsonValue;
 }
 
 /**
@@ -3604,9 +3684,9 @@ function connectorPublicConfig(config: LoadedConfig): JsonValue {
       enabled: config.connectors.web?.enabled ?? false,
       searchProvider: config.connectors.web?.search?.provider ?? null,
       accessScope: config.connectors.web?.accessScope ?? "allowlist",
-      runtimeAcquisition: config.connectors.web?.runtimeAcquisition ?? "consent-required",
+      runtimeAcquisition: automaticWebAcquisitionEnabled(config) ? "automatic" : "refused",
       maxRequestsPerTurn: Math.min(config.policy.maxNetworkRequests, config.connectors.web?.maxRequestsPerTurn ?? config.policy.maxNetworkRequests),
-      requestsPerMinute: config.connectors.web?.requestsPerMinute ?? config.policy.maxNetworkRequests
+      requestsPerMinute: config.connectors.web?.requestsPerMinute ?? DEFAULT_WEB_REQUESTS_PER_MINUTE
     },
     outlook: { enabled: config.connectors.outlook?.enabled ?? false },
     youtube: { enabled: config.connectors.youtube?.enabled ?? false },
@@ -3614,15 +3694,47 @@ function connectorPublicConfig(config: LoadedConfig): JsonValue {
   });
 }
 
-function compactTurnResult(result: TurnResult): Record<string, unknown> {
+/**
+ * Default chat projection. The complete cognitive record remains available
+ * through `?full=1`; sending it on every ordinary turn made a short answer
+ * carry megabytes of working memory, candidate traces, and planner state.
+ */
+export function compactTurnResult(result: TurnResult): Record<string, unknown> {
+  const evidence = result.evidence.slice(0, 24).map(compactEvidenceSpan);
   return {
-    ...result,
-    evidence: result.evidence.map(compactEvidenceSpan),
+    episodeId: result.episodeId,
+    answer: previewText(result.answer, 16_000),
+    epistemicForce: result.epistemicForce,
+    ...(result.assistantForce === undefined ? {} : { assistantForce: result.assistantForce }),
+    ...(result.requestedAuthority === undefined ? {} : { requestedAuthority: result.requestedAuthority }),
+    ...(result.calibrationTaskClass === undefined ? {} : { calibrationTaskClass: result.calibrationTaskClass }),
+    evidence,
+    ...(result.evidence.length > evidence.length ? { evidenceTruncated: result.evidence.length - evidence.length } : {}),
     entailment: compactEntailment(result.entailment),
-    validationGraph: { ...result.validationGraph, pca: compactPca(result.validationGraph.pca) },
-    emissionGraph: { ...result.emissionGraph, pca: compactPca(result.emissionGraph.pca) },
     proofCarryingAnswer: compactPca(result.proofCarryingAnswer),
-    events: result.events.map(compactEvent)
+    learningNeeds: result.learningNeeds.slice(0, 24).map(value => previewText(value, 240)),
+    truthState: compactJson(result.truthState, 1),
+    answerBasis: compactJson(result.answerBasis, 2),
+    evidenceForce: result.evidenceForce,
+    guardFlags: compactJson(result.guardFlags, 1),
+    calibrationStatus: result.calibrationStatus,
+    calibration: compactJson(result.calibration, 2),
+    timing: compactJson(result.timing, 2),
+    buildTest: compactJson(result.buildTest, 3),
+    runtimeMotion: compactJson(result.runtimeMotion, 3),
+    languageAcquisition: compactJson(result.languageAcquisition, 2),
+    translation: compactJson(result.translation, 2),
+    corrections: compactJson(result.corrections, 2),
+    pface: compactJson(result.pface, 2),
+    actionGraph: compactJson(result.actionGraph, 1),
+    functionalCognition: compactJson(result.functionalCognition, 1),
+    diagnostics: {
+      selectedCandidate: compactJson(result.selectedCandidate, 1),
+      judge: compactJson(result.judge, 1),
+      answerRevision: compactJson(result.answerRevision, 1),
+      runtimeCoherence: compactJson(result.runtimeCoherence, 1)
+    },
+    events: result.events.slice(-64).map(compactEvent)
   };
 }
 
@@ -3665,7 +3777,7 @@ function compactEvidenceSpan(span: TurnResult["evidence"][number]): Record<strin
     scriptHints: compactJson(span.scriptHints, 1),
     trustVector: compactJson(span.trustVector, 1),
     provenance: compactJson(span.provenance, 1),
-    features: span.features.slice(0, 32),
+    features: span.features.slice(0, 16).map(feature => previewText(feature, 120)),
     status: span.status,
     alpha: span.alpha,
     observedAt: span.observedAt
@@ -3674,21 +3786,50 @@ function compactEvidenceSpan(span: TurnResult["evidence"][number]): Record<strin
 
 function compactEntailment(entailment: TurnResult["entailment"]): Record<string, unknown> {
   return {
-    ...entailment,
+    claim: compactJson(entailment.claim, 1),
+    verdict: entailment.verdict,
+    semanticVerdict: entailment.semanticVerdict,
+    truthState: compactJson(entailment.truthState, 1),
+    force: entailment.force,
+    support: entailment.support,
+    contradiction: entailment.contradiction,
+    faithfulnessLcb: entailment.faithfulnessLcb,
+    confidence: compactJson(entailment.confidence, 1),
+    sourceAssessment: compactJson(entailment.sourceAssessment, 1),
+    scores: compactJson(entailment.scores, 1),
     proof: {
-      ...entailment.proof,
+      id: entailment.proof.id,
+      claimId: entailment.proof.claimId,
+      verdict: entailment.proof.verdict,
       confidence: compactJson(entailment.proof.confidence, 3),
       proofGraph: {
-        nodes: entailment.proof.proofGraph.nodes.slice(0, 64).map(node => ({ ...node, metadata: compactJson(node.metadata, 2) })),
-        edges: entailment.proof.proofGraph.edges.slice(0, 96)
+        nodes: entailment.proof.proofGraph.nodes.slice(0, 32).map(node => ({
+          id: node.id,
+          kind: node.kind,
+          label: previewText(node.label, 240),
+          metadata: compactJson(node.metadata, 1)
+        })),
+        edges: entailment.proof.proofGraph.edges.slice(0, 48).map(edge => ({
+          source: edge.source,
+          target: edge.target,
+          relation: edge.relation,
+          weight: edge.weight,
+          evidenceIds: edge.evidenceIds.slice(0, 16)
+        }))
       },
-      scores: compactJson(entailment.proof.scores, 3)
+      evidenceIds: entailment.proof.evidenceIds.slice(0, 32),
+      transformIds: entailment.proof.transformIds.slice(0, 32),
+      scores: compactJson(entailment.proof.scores, 2),
+      validatorVersion: entailment.proof.validatorVersion,
+      createdAt: entailment.proof.createdAt
     },
-    obligations: entailment.obligations.slice(0, 32).map(row => ({ ...row, metadata: compactJson(row.metadata, 2) })),
-    mappings: entailment.mappings.slice(0, 32).map(row => ({ ...row, audit: compactJson(row.audit, 2) })),
-    transforms: entailment.transforms.slice(0, 32).map(row => ({ ...row, audit: compactJson(row.audit, 2) })),
-    counterexamples: entailment.counterexamples.slice(0, 16).map(row => ({ ...row, audit: compactJson(row.audit, 2) })),
-    missing: entailment.missing.slice(0, 16).map(row => ({ ...row, audit: compactJson(row.audit, 2) }))
+    evidenceIds: entailment.evidenceIds.slice(0, 32),
+    boundaries: entailment.boundaries.slice(0, 32).map(value => previewText(value, 240)),
+    obligations: entailment.obligations.slice(0, 16).map(row => compactJson(row, 1)),
+    mappings: entailment.mappings.slice(0, 16).map(row => compactJson(row, 1)),
+    transforms: entailment.transforms.slice(0, 16).map(row => compactJson(row, 1)),
+    counterexamples: entailment.counterexamples.slice(0, 8).map(row => compactJson(row, 1)),
+    missing: entailment.missing.slice(0, 8).map(row => compactJson(row, 1))
   };
 }
 
@@ -3698,8 +3839,8 @@ function compactEvent(event: TurnResult["events"][number]): Record<string, unkno
     episodeId: event.episodeId,
     typeId: event.typeId,
     t: event.t,
-    parents: event.parents,
-    payload: compactJson(event.payload, 3)
+    parents: event.parents.slice(0, 32),
+    payload: compactJson(event.payload, 0)
   };
 }
 
@@ -3900,6 +4041,73 @@ function streamingTurnRequested(req: http.IncomingMessage, url: URL): boolean {
     ? req.headers.accept.join(",")
     : req.headers.accept ?? "";
   return accept.toLocaleLowerCase().includes("application/x-ndjson");
+}
+
+function streamingGithubOssIngestRequested(req: http.IncomingMessage, url: URL): boolean {
+  if (req.method !== "POST" || url.pathname !== "/api/ingest/github") return false;
+  if (url.searchParams.get("stream") === "1") return true;
+  const accept = Array.isArray(req.headers.accept)
+    ? req.headers.accept.join(",")
+    : req.headers.accept ?? "";
+  return accept.toLocaleLowerCase().includes("application/x-ndjson");
+}
+
+async function streamGithubOssIngestResponse(input: {
+  req: http.IncomingMessage;
+  res: http.ServerResponse;
+  context: ApiContext;
+  requestId: string;
+  started: number;
+}): Promise<void> {
+  requirePublicNetworkAcquisition();
+  const body = await readBody(input.req, input.context.maxBodyBytes);
+  const request = parseGithubOssIngestRequest(body);
+  input.res.writeHead(200, {
+    "content-type": "application/x-ndjson; charset=utf-8",
+    "cache-control": "no-store",
+    "x-accel-buffering": "no",
+    "x-request-id": input.requestId,
+    "transfer-encoding": "chunked"
+  });
+  input.res.flushHeaders();
+  writeGithubOssIngestStreamFrame(input.res, {
+    schema: "scce.githubOssIngestStream.v1",
+    type: "accepted",
+    requestId: input.requestId,
+    remoteUrl: request.remoteUrl,
+    commitSha: request.commitSha
+  });
+  try {
+    const acquire = input.context.githubOssAcquisition ?? acquireAndTrainGithubOssRepository;
+    const report = await acquire({ storage: input.context.runtime.storage, remoteUrl: request.remoteUrl, commitSha: request.commitSha });
+    writeGithubOssIngestStreamFrame(input.res, {
+      schema: "scce.githubOssIngestStream.v1",
+      type: "result",
+      requestId: input.requestId,
+      elapsedMs: Date.now() - input.started,
+      receipt: boundedGithubOssIngestReceipt(report)
+    });
+  } catch (error) {
+    writeGithubOssIngestStreamFrame(input.res, {
+      schema: "scce.githubOssIngestStream.v1",
+      type: "error",
+      requestId: input.requestId,
+      status: error instanceof HttpError ? error.status : 500,
+      error: error instanceof Error ? error.message : String(error)
+    });
+  } finally {
+    input.res.end();
+  }
+}
+
+function requirePublicNetworkAcquisition(): void {
+  if (!publicNetworkAcquisitionEnabled()) {
+    throw new HttpError(403, "public network acquisition refused: set SCCE_ALLOW_AUTOMATIC_WEB=1 to enable it");
+  }
+}
+
+function writeGithubOssIngestStreamFrame(res: http.ServerResponse, frame: Record<string, unknown>): void {
+  if (!res.writableEnded && !res.destroyed) res.write(`${JSON.stringify(frame)}\n`);
 }
 
 async function streamTurnResponse(input: {

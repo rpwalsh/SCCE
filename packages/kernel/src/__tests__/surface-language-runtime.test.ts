@@ -138,6 +138,28 @@ describe("surface language resident-only cache", () => {
     expect(fixture.profileQueries[0]).toMatchObject({ referencedByLanguageMemory: true });
   });
 
+  it("single-flights repeated lazy language warm requests scheduled after visibility", async () => {
+    const fixture = runtimeFixture();
+    const { clusters } = await fixture.runtime.surfaceLanguageProfilesCached();
+    const cluster = clusters[0];
+    expect(cluster).toBeDefined();
+    const before = fixture.totalDurableCalls();
+
+    fixture.runtime.warmSurfaceLanguageMemory(12, cluster, "visible-response-language");
+    fixture.runtime.warmSurfaceLanguageMemory(12, cluster, "visible-response-language");
+    await new Promise<void>(resolve => setTimeout(resolve, 5));
+    await new Promise<void>(resolve => setImmediate(resolve));
+
+    const after = fixture.totalDurableCalls();
+    expect(after - before).toBeGreaterThan(0);
+    // The scheduling guard is released after the shared load settles, so a
+    // later explicit retry remains possible when the source had no models.
+    fixture.runtime.warmSurfaceLanguageMemory(12, cluster, "visible-response-language");
+    await new Promise<void>(resolve => setTimeout(resolve, 5));
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(fixture.totalDurableCalls()).toBeGreaterThan(after);
+  });
+
   it("shares one durable source-owned profile resolution among concurrent aliases", async () => {
     const fixture = runtimeFixture();
 

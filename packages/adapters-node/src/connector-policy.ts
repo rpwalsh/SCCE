@@ -2,7 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { JsonValue, PolicyProfile } from "@scce/kernel";
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { ScceRuntimeConfig } from "./config.js";
+import { DEFAULT_WEB_REQUESTS_PER_MINUTE, type ScceRuntimeConfig } from "./config.js";
 import { admitConnectorCall } from "./connector-governance-bridge.js";
 
 /**
@@ -54,11 +54,38 @@ export interface ConnectorQuotaSnapshot {
   records: ConnectorRequestRecord[];
 }
 
+interface SharedConnectorPolicyState {
+  sequence: number;
+  admittedRequests: number;
+  waitingOperations: Map<string, Promise<unknown>>;
+  lastAllowedAt: Map<string, number>;
+  records: ConnectorRequestRecord[];
+  sessionId: string;
+}
+
+// Adapters built from the same validated runtime config share provider pacing
+// and the process-level request ledger. The policy/approval closure remains on
+// each gate, so constructing another runtime cannot inherit another session's
+// permissions.
+const sharedStateByConfig = new WeakMap<ScceRuntimeConfig, SharedConnectorPolicyState>();
+
+function sharedStateFor(config: ScceRuntimeConfig): SharedConnectorPolicyState {
+  const existing = sharedStateByConfig.get(config);
+  if (existing) return existing;
+  const created: SharedConnectorPolicyState = {
+    sequence: 0,
+    admittedRequests: 0,
+    waitingOperations: new Map(),
+    lastAllowedAt: new Map(),
+    records: [],
+    sessionId: `connector_session_${Date.now().toString(36)}`
+  };
+  sharedStateByConfig.set(config, created);
+  return created;
+}
+
 export class ConnectorPolicyGate {
-  private sequence = 0;
-  private admittedRequests = 0;
   private readonly requestBudget = new AsyncLocalStorage<{ used: number; signal?: AbortSignal }>();
-  private readonly waitingOperations = new Map<string, Promise<unknown>>();
   /**
    * When each connector last ran, keyed by connector -- the rate limit it feeds is defined per connector.
    *
@@ -67,11 +94,11 @@ export class ConnectorPolicyGate {
    * exactly that, search then fetch, so it was refused on every attempt: measured, three leads found and zero
    * fetched, on a connector allowing sixty requests a minute.
    */
-  private readonly lastAllowedAt = new Map<string, number>();
-  private readonly sessionId = `connector_session_${Date.now().toString(36)}`;
-  private readonly records: ConnectorRequestRecord[] = [];
+  private readonly shared: SharedConnectorPolicyState;
 
-  constructor(private readonly config: ScceRuntimeConfig, private readonly policyPatch: () => Partial<PolicyProfile> = () => ({})) {}
+  constructor(private readonly config: ScceRuntimeConfig, private readonly policyPatch: () => Partial<PolicyProfile> = () => ({})) {
+    this.shared = sharedStateFor(config);
+  }
 
   /** Resource accounting around the existing kernel turn; no new execution lane. */
   withRequestBudget<T>(operation: () => T, signal?: AbortSignal): T {
@@ -85,26 +112,27 @@ export class ConnectorPolicyGate {
     return policy;
   }
 
-  private requestsUsed(): number { return this.requestBudget.getStore()?.used ?? this.admittedRequests; }
+  private requestsUsed(): number { return this.requestBudget.getStore()?.used ?? this.shared.admittedRequests; }
 
   requestSignal(): AbortSignal | undefined { return this.requestBudget.getStore()?.signal; }
 
   private rateKey(connector: ConnectorRequestRecord["connector"], operation: string): string {
-    // An explicitly configured web rate covers search and fetch together.
-    // Existing deployments without it retain their historical operation rates.
-    return connector === "web" && this.config.connectors.web?.requestsPerMinute !== undefined ? "web" : `${connector}:${operation}`;
+    // Search and fetch share one provider budget even when the operator leaves
+    // the optional rate unset. Separate operation buckets accidentally let a
+    // concurrent acquisition turn multiply the provider request rate.
+    return connector === "web" ? "web" : `${connector}:${operation}`;
   }
 
   /** Wait for the declared read rate rather than discard a valid next page. */
   async beginWhenAvailable(input: Parameters<ConnectorPolicyGate["begin"]>[0]): Promise<ConnectorRequestRecord> {
     const key = this.rateKey(input.connector, input.operation);
-    const previous = this.waitingOperations.get(key) ?? Promise.resolve();
+    const previous = this.shared.waitingOperations.get(key) ?? Promise.resolve();
     const pending = previous.catch(() => {}).then(async () => {
       const signal = this.requestBudget.getStore()?.signal;
       signal?.throwIfAborted();
       const policy = this.effectivePolicy();
-      const rate = input.connector === "web" ? this.config.connectors.web?.requestsPerMinute ?? policy.maxNetworkRequests : policy.maxNetworkRequests;
-      const last = this.lastAllowedAt.get(key);
+      const rate = input.connector === "web" ? this.config.connectors.web?.requestsPerMinute ?? DEFAULT_WEB_REQUESTS_PER_MINUTE : policy.maxNetworkRequests;
+      const last = this.shared.lastAllowedAt.get(key);
       const waitMs = last === undefined ? 0 : Math.max(0, Math.ceil(60000 / Math.max(1, rate) - (Date.now() - last)));
       if (waitMs > 0 && this.requestsUsed() < policy.maxNetworkRequests) {
         await new Promise<void>((resolve, reject) => {
@@ -116,9 +144,9 @@ export class ConnectorPolicyGate {
       signal?.throwIfAborted();
       return this.begin(input);
     });
-    this.waitingOperations.set(key, pending);
+    this.shared.waitingOperations.set(key, pending);
     try { return await pending; }
-    finally { if (this.waitingOperations.get(key) === pending) this.waitingOperations.delete(key); }
+    finally { if (this.shared.waitingOperations.get(key) === pending) this.shared.waitingOperations.delete(key); }
   }
 
   begin(input: { connector: ConnectorRequestRecord["connector"]; operation: string; uri: string; mutates?: boolean; approved?: boolean }): ConnectorRequestRecord {
@@ -126,7 +154,7 @@ export class ConnectorPolicyGate {
     const mutates = Boolean(input.mutates);
     const allowed = this.allowed(input.connector, input.operation, uri, mutates, Boolean(input.approved));
     const record: ConnectorRequestRecord = {
-      id: `connector_${Date.now().toString(36)}_${(this.sequence++).toString(36).padStart(4, "0")}`,
+      id: `connector_${Date.now().toString(36)}_${(this.shared.sequence++).toString(36).padStart(4, "0")}`,
       connector: input.connector,
       operation: input.operation,
       uri: redactUri(uri),
@@ -136,10 +164,10 @@ export class ConnectorPolicyGate {
       startedAt: Date.now(),
       ...(allowed.governance ? { governance: allowed.governance } : {})
     };
-    this.records.push(record);
-    if (this.records.length > 200) this.records.shift();
+    this.shared.records.push(record);
+    if (this.shared.records.length > 200) this.shared.records.shift();
     if (!allowed.ok) throw new Error(`connector policy denied ${input.connector}:${input.operation}: ${allowed.reason}`);
-    this.admittedRequests++;
+    this.shared.admittedRequests++;
     const budget = this.requestBudget.getStore();
     if (budget) budget.used++;
     return record;
@@ -164,7 +192,7 @@ export class ConnectorPolicyGate {
       maxNetworkRequests: max,
       usedNetworkRequests: used,
       remainingNetworkRequests: Math.max(0, max - used),
-      records: this.records.slice(-200)
+      records: this.shared.records.slice(-200)
     };
   }
 
@@ -185,9 +213,9 @@ export class ConnectorPolicyGate {
       connector,
       mutates,
       approved,
-      sessionId: this.sessionId,
+      sessionId: this.shared.sessionId,
       requestsUsed: this.requestsUsed(),
-      ...(this.lastAllowedAt.has(this.rateKey(connector, operation)) ? { lastRequestAt: this.lastAllowedAt.get(this.rateKey(connector, operation))! } : {})
+      ...(this.shared.lastAllowedAt.has(this.rateKey(connector, operation)) ? { lastRequestAt: this.shared.lastAllowedAt.get(this.rateKey(connector, operation))! } : {})
     });
     const governance: ConnectorGovernanceDecision = {
       allowed: admission.allowed,
@@ -200,7 +228,7 @@ export class ConnectorPolicyGate {
     if (!admission.allowed) {
       return { ok: false, reason: `connector governance ${admission.mode}: ${admission.reasons[0] ?? "not admitted"}`, governance };
     }
-    this.lastAllowedAt.set(this.rateKey(connector, operation), Date.now());
+    this.shared.lastAllowedAt.set(this.rateKey(connector, operation), Date.now());
     return { ...local, governance };
   }
 

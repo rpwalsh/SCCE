@@ -65,7 +65,7 @@ import { evidenceCitations, formatCitationSuffix } from "./evidence-citation.js"
 import { extractTemporalAnswerFromEvidence } from "./semantic-obligations.js";
 import { induceOperatorFromLedger } from "./induced-reasoning-operator-runtime.js";
 import { createAlphaFieldEngine } from "./field.js";
-import { properNounEntityAnchors, realizeCreativeSection } from "./creative-section-realization.js";
+import { creativeRequestContentSurface, properNounEntityAnchors, realizeCreativeSection } from "./creative-section-realization.js";
 import {
   counterfactualTraceFromRejectedCandidate,
   createFunctionalCognitionEngine,
@@ -612,6 +612,7 @@ export function createProductionTurnRuntime(options: {
   // submitted immediately before the turn cannot remain hidden behind a
   // stale resident value.
   const residentCreativeContinuationPolicies = new Map<string, CreativeContinuationPolicy>();
+  let lazyLanguageIdentityLoad: Promise<void> | undefined;
   const creativeContinuationPolicyLoads = new Map<string, Promise<void>>();
   const creativeContinuationPolicyKey = (state: CreativeContinuationState): string => [
     state.conversationId,
@@ -1075,6 +1076,17 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const unscopedLanguageReason = selectedSurfaceCluster ? "source-cluster-selected" : "source-surface-ambiguous-or-no-signal";
       // The request's language identity, when the brain has learned identities: hydration and scoping follow it,
       // and the cluster only names a surface profile for realization.
+      if (!deps.evaluationCondition?.flags.disableLanguageMemory && !languageIdentityRuntime.identities().length) {
+        deadlineCheckpoint("runtime.seed.language_identity.load", 0);
+        lazyLanguageIdentityLoad ??= languageIdentityRuntime.ensure()
+          .then(() => undefined)
+          .catch(error => {
+            const message = error instanceof Error ? error.message : String(error);
+            failures.push(`language identity hydration failed: ${message}`);
+            kernelTrace({ stage: "runtime.seed.language_identity.error", label: "kernel.turn", support: { message } });
+          });
+        await lazyLanguageIdentityLoad;
+      }
       const requestLanguage = deps.evaluationCondition?.flags.disableLanguageMemory ? undefined : languageIdentityRuntime.selectForSurface(input.text);
       const requestLanguageId = requestLanguage?.identity.id;
       kernelTrace({
@@ -4718,7 +4730,9 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         // discourse object was bound. This falls back to that, not to a
         // heuristic: no cast at all is the honest result when neither
         // signal resolves.
-        const creativeSubjectText = turnSignals.subjectText;
+        const creativeSubjectText = creativeRequestFrame
+          ? [creativeRequestFrame.focus, ...creativeRequestFrame.arguments].map(binding => binding.span.text).join(" ")
+          : creativeRequestContentSurface(input.text, requirementField);
         // The cast comes from the SUBJECT, never the raw request. Measured 2026-09-12: the cast of
         // "Write a short story about a blacksmith who forgets his own name" was
         // ["blacksmith who forgets his own name", "short story about", "blacksmith who forgets his own"], and the
@@ -4738,6 +4752,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         const castClosedClass = surfaceLanguageMemory.models.length
           ? deriveClosedClassWords({ models: surfaceLanguageMemory.models })
           : corpusFunctionSymbols();
+        const creativeContentTerms = uniqueKernelStrings(surfaceUnits(creativeSubjectText)
+          .filter(unit => /[\p{Letter}\p{Number}]/u.test(unit) && !castClosedClass.has(unit.toLocaleLowerCase()))).slice(0, 24);
         // An anchor containing function material anywhere after its first unit is a phrase, not a name: its head
         // is the first unit ("sailor leaving harbour at dawn" -> "sailor"). One that contains none is a name and
         // survives whole ("Jane Eyre"). The closed class is the corpus own, by continuation count.
@@ -4769,7 +4785,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           protectedPassages: creativeSourceEvidence
             .slice(0, 8)
             .map(span => ({ sourceId: String(span.id), text: span.text })),
-          castSubjectIds: creativeCastSubjectIds
+          castSubjectIds: creativeCastSubjectIds,
+          contentTerms: creativeContentTerms
         });
         // A creative turn reaches generation only after retrieval and a cold role hydration, by which time the
         // initial-response budget is spent and every section was refused ("empty realization", live 2026-09-10).
@@ -4814,6 +4831,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
                 priorSurfaceTexts: priorSectionTexts.slice(-2),
                 narrativeConditioning: conditioning,
                 topicVocabulary: sectionTopicVocabulary,
+                requiredContentTerms: section.coverageTerms?.map(term => term.text),
                 resolvedCastSubjectIds: creativeCastSubjectIds,
                 casingSourceTexts: creativeSourceEvidence.slice(0, 4).map(span => span.text),
                 attempt,
@@ -5250,7 +5268,9 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         const contractSatisfied = realizationContract
           ? candidateSurvivesRealizationContract(answer, realizationContract, hasher).survives
           : true;
-        const turnOutcome = Boolean(answer.trim()) && judged.selected.scores.contradiction < 0.5 && contractSatisfied;
+        const documentCompleted = !extendedGenerationRun || extendedGenerationRun.sections.every(section => section.accepted)
+          && Object.values(extendedGenerationRun.session.plan.nodes).filter(node => node.kind === "section").every(node => node.completed);
+        const turnOutcome = Boolean(answer.trim()) && judged.selected.scores.contradiction < 0.5 && contractSatisfied && documentCompleted;
         await deps.storage.dialogueMemory?.putCalibrationObservation?.(calibrationObservationRecord({
           calibrationId: CALIBRATION_IDS.candidateMass,
           subsystemId: CALIBRATION_SUBSYSTEM_IDS.candidate,

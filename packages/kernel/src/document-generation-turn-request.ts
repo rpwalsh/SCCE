@@ -55,6 +55,16 @@ function documentPlanNodeFromJson(value: JsonValue | undefined): DocumentPlanNod
   const rhetoricalDependsOnIds = stringArray(node.rhetoricalDependsOnIds);
   const satisfiedCoverageIds = stringArray(node.satisfiedCoverageIds);
   if (!requiredCoverageIds || !referenceIds || !rhetoricalDependsOnIds || !satisfiedCoverageIds) return undefined;
+  let coverageTerms: DocumentPlanNode["coverageTerms"];
+  if (node.coverageTerms !== undefined) {
+    if (!Array.isArray(node.coverageTerms) || node.coverageTerms.length > 256) return undefined;
+    coverageTerms = [];
+    for (const value of node.coverageTerms) {
+      const term = record(value);
+      if (!term || typeof term.id !== "string" || typeof term.text !== "string" || !term.id || !term.text.trim()) return undefined;
+      coverageTerms.push({ id: term.id, text: term.text });
+    }
+  }
   if (typeof node.completed !== "boolean") return undefined;
   return {
     id: node.id,
@@ -63,6 +73,7 @@ function documentPlanNodeFromJson(value: JsonValue | undefined): DocumentPlanNod
     order: node.order,
     goal: node.goal,
     requiredCoverageIds,
+    ...(coverageTerms ? { coverageTerms } : {}),
     referenceIds,
     rhetoricalDependsOnIds,
     satisfiedCoverageIds,

@@ -329,8 +329,9 @@ export function createRuntimeAcquisition(options: {
     };
     const consentInput = learningConsentInput(input.ownerInput.text, hasher);
     const consentGranted = deps.approvals?.isApproved({ capabilityId: "network.search", input: consentInput }) === true;
+    const consentRefused = deps.approvals?.isRejected?.({ capabilityId: "network.search", input: consentInput }) === true;
     let consent: RuntimeReplanMotion["consent"];
-    if (deps.connectors && !consentGranted) {
+    if (deps.connectors && !consentGranted && !consentRefused) {
       // Unknown topics ask before touching the network: the plan waits in the approval session until the owner says yes.
       const planId = `capability_network.search_${hasher.digestHex(`${queryHash}\u001fconsent`).slice(0, 32)}`;
       const plan: CapabilityPlan = {
@@ -674,7 +675,9 @@ export function createRuntimeAcquisition(options: {
     }
     const status: RuntimeReplanMotion["status"] = !deps.connectors
       ? "unavailable"
-      : !consentGranted
+      : consentRefused
+        ? "refused"
+        : !consentGranted
         ? "awaiting_consent"
         : ingestedEvidenceCount > 0
           ? "hydrated"
@@ -710,7 +713,7 @@ export function createRuntimeAcquisition(options: {
       ).flat()).slice(0, 80),
       sourceUris: uniqueKernelStrings(sourceUris).slice(0, RUNTIME_ACQUISITION_SEARCH_LIMIT),
       sourceSurfaces: uniqueKernelStrings(sourceSurfaces).slice(0, 6),
-      failures: motionFailures.slice(0, 6),
+      failures: [...(consentRefused ? ["owner-consent-refused"] : []), ...motionFailures].slice(0, 6),
       priorRejectedHypotheses: input.priorRejectedHypotheses ?? [],
       sourceLineageIds: uniqueKernelStrings(sourceLineageIds).slice(0, RUNTIME_ACQUISITION_SEARCH_LIMIT),
       acceptedSourceLineageCount: acceptedLineageGroups.size,
@@ -759,6 +762,7 @@ export function createRuntimeAcquisition(options: {
     if (!deps.connectors) return undefined;
     const consentInput = learningConsentInput(requestText, hasher);
     if (deps.approvals?.isApproved({ capabilityId: "network.search", input: consentInput }) === true) return undefined;
+    if (deps.approvals?.isRejected?.({ capabilityId: "network.search", input: consentInput }) === true) return undefined;
     const queryHash = hasher.digestHex(requestText);
     const planId = `capability_network.search_${hasher.digestHex(`${queryHash}consent`).slice(0, 32)}`;
     const plan: CapabilityPlan = {
@@ -794,7 +798,9 @@ export function createRuntimeAcquisition(options: {
     connectorConfigured: boolean;
     decision?: RuntimeDeadlineDecision;
   }): Promise<RuntimeReplanMotion> {
-    const consent = await proposeSearchConsent(input.episodeId, input.requestText).catch(() => undefined);
+    const consentInput = learningConsentInput(input.requestText, hasher);
+    const consentRefused = deps.approvals?.isRejected?.({ capabilityId: "network.search", input: consentInput }) === true;
+    const consent = consentRefused ? undefined : await proposeSearchConsent(input.episodeId, input.requestText).catch(() => undefined);
     const queryHash = hasher.digestHex(input.requestText);
     const guardId = `runtime-motion:${hasher.digestHex(`${String(input.episodeId)}\u001f${queryHash}\u001f${input.trigger}\u001fdeadline`).slice(0, 32)}`;
     const reason = input.decision
@@ -810,7 +816,7 @@ export function createRuntimeAcquisition(options: {
       parentEpisodeId: String(input.episodeId),
       queryHash,
       connectorConfigured: input.connectorConfigured,
-      status: consent ? "awaiting_consent" : "unavailable",
+      status: consentRefused ? "refused" : consent ? "awaiting_consent" : "unavailable",
       ...(consent ? { consent } : {}),
       searchResultCount: 0,
       fetchedSourceCount: 0,
@@ -818,7 +824,7 @@ export function createRuntimeAcquisition(options: {
       ingestedEvidenceCount: 0,
       sourceUris: [],
       sourceSurfaces: [],
-      failures: [reason],
+      failures: [reason, ...(consentRefused ? ["owner-consent-refused"] : [])],
       priorRejectedHypotheses: []
     };
   }

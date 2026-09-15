@@ -1,16 +1,210 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
-import type { LanguageMemoryRuntimeState } from "../language-memory-runtime.js";
+import { createLanguageMemoryRuntime, type LanguageMemoryRuntimeState } from "../language-memory-runtime.js";
 import {
   REQUEST_REQUIREMENT_CORPUS_SCHEMA,
+  REQUEST_REQUIREMENT_PATTERN_COMPILER_FINGERPRINT,
   compileRequestRequirementCorpus,
   parseRequestRequirementCorpus
 } from "../request-requirement-learning.js";
 import { deriveTurnRequirementField } from "../turn-requirements.js";
+import { extendedGenerationDecision } from "../extended-generation-turn.js";
+import { createHasher } from "../primitives.js";
 import type { EvidenceId, SourceVersionId } from "../types.js";
 
 describe("source-backed response-form learning", () => {
+  it("does not hydrate request patterns compiled with stale semantics", () => {
+    const compiled = compileRequestRequirementCorpus({
+      corpus: {
+        schema: REQUEST_REQUIREMENT_CORPUS_SCHEMA,
+        language: "fixture",
+        examples: ["toma", "ravi", "paku"].map(subject => ({
+          text: `nava sula ${subject}`,
+          authority: "creative" as const,
+          requirements: { brevityDetailBalance: 0.92 }
+        }))
+      },
+      profileId: "profile.fixture",
+      sourceVersionId: "source-version.fixture.stale" as SourceVersionId,
+      evidenceIds: ["evidence.fixture.stale" as EvidenceId],
+      sourceSystem: "fixture",
+      updatedAt: 1,
+      makeId: value => `pattern.${createHasher().digestHex(JSON.stringify(value))}`
+    });
+    const current = compiled.patterns[0]!;
+    const stale = {
+      ...current,
+      id: `${current.id}.stale`,
+      patternJson: { ...(current.patternJson as Record<string, unknown>), compilerFingerprint: "obsolete.compiler" }
+    };
+    const state = createLanguageMemoryRuntime().hydrate({ models: [], patterns: [stale, current] });
+    expect(state.importedPatterns.map(pattern => pattern.id)).toContain(current.id);
+    expect(state.importedPatterns.map(pattern => pattern.id)).not.toContain(stale.id);
+  });
+
+  it("gives target/range recompiles a stable source-scoped identity and a current compiler fingerprint", () => {
+    const compile = (detail: number) => compileRequestRequirementCorpus({
+      corpus: {
+        schema: REQUEST_REQUIREMENT_CORPUS_SCHEMA,
+        language: "fixture",
+        examples: ["toma", "ravi", "paku"].map(subject => ({
+          text: `nava sula ${subject}`,
+          authority: "creative" as const,
+          requirements: { brevityDetailBalance: detail }
+        }))
+      },
+      profileId: "profile.fixture",
+      sourceVersionId: "source-version.fixture.recompile" as SourceVersionId,
+      evidenceIds: ["evidence.fixture.recompile" as EvidenceId],
+      sourceSystem: "fixture",
+      updatedAt: 1,
+      makeId: value => `pattern.${createHasher().digestHex(JSON.stringify(value))}`
+    });
+    const stale = compile(0.05);
+    const fresh = compile(0.92);
+    const freshPattern = fresh.patterns.find(pattern =>
+      (pattern.patternJson as Record<string, unknown>).surface === "nava sula"
+    )!;
+
+    expect(freshPattern.id).toBe(stale.patterns.find(pattern =>
+      (pattern.patternJson as Record<string, unknown>).surface === "nava sula"
+    )?.id);
+    expect((freshPattern.patternJson as Record<string, unknown>).compilerFingerprint)
+      .toBe(REQUEST_REQUIREMENT_PATTERN_COMPILER_FINGERPRINT);
+
+    const field = deriveTurnRequirementField({
+      requestText: "nava sula yaro",
+      languageMemoryState: runtimeState(fresh.patterns)
+    });
+    expect(field.brevityDetailBalance).toBeGreaterThan(0.85);
+    expect(field.learnedRequirementBounds?.brevityDetailBalance?.lower).toBeGreaterThan(0.9);
+    expect(field.learnedRequirementBounds?.brevityDetailBalance?.upper).toBeLessThanOrEqual(0.92);
+  });
+
+  it.each(["nava sula", "가나 다라"])("preserves bounded requirement targets and extent for learned surface %s", surface => {
+    const compile = (detail: number) => compileRequestRequirementCorpus({
+      corpus: {
+        schema: REQUEST_REQUIREMENT_CORPUS_SCHEMA,
+        language: "fixture",
+        examples: ["toma", "ravi", "paku"].map(subject => ({
+          text: `${surface} ${subject}`,
+          authority: "creative" as const,
+          requirements: { noveltyDemand: 0.96, brevityDetailBalance: detail }
+        }))
+      },
+      profileId: "profile.fixture",
+      sourceVersionId: "source-version.fixture.targets" as SourceVersionId,
+      evidenceIds: ["evidence.fixture.targets" as EvidenceId],
+      sourceSystem: "fixture",
+      updatedAt: 1,
+      makeId: value => `pattern.${createHasher().digestHex(JSON.stringify(value))}`
+    });
+    const field = (detail: number, text = `${surface} yaro`) => deriveTurnRequirementField({
+      requestText: text,
+      languageMemoryState: runtimeState(compile(detail).patterns)
+    });
+    const brief = field(0.05);
+    const extensive = field(0.92);
+    expect(brief.brevityDetailBalance).toBeLessThan(0.1);
+    expect(brief.noveltyDemand).toBeGreaterThan(0.9);
+    expect(brief.learnedRequirementBounds?.brevityDetailBalance?.lower).toBeCloseTo(brief.brevityDetailBalance, 10);
+    expect(extensive.brevityDetailBalance).toBeGreaterThan(0.85);
+    expect(extensive.brevityDetailBalance).toBeLessThanOrEqual(0.92);
+    expect(extendedGenerationDecision({ requirementField: brief, requestedAuthority: "creative" }).required).toBe(false);
+    expect(extendedGenerationDecision({ requirementField: extensive, requestedAuthority: "creative" }).required).toBe(true);
+    expect(field(0.05, `${surface} yaro ${surface} zema`).brevityDetailBalance).toBeCloseTo(brief.brevityDetailBalance, 10);
+    for (const requirement of brief.requiredFeatures) {
+      const span = requirement.origin.requestSpan;
+      expect(span.text).toBe([...`${surface} yaro`].slice(span.charStart, span.charEnd).join(""));
+      expect(span.byteEnd - span.byteStart).toBe(Buffer.byteLength(span.text));
+    }
+  });
+
+  it("uses the specific matched context before a contained marginal form, independently of stored order", () => {
+    const compiled = compileRequestRequirementCorpus({
+      corpus: {
+        schema: REQUEST_REQUIREMENT_CORPUS_SCHEMA,
+        language: "fixture",
+        examples: [
+          ...["paku", "ravi", "sula", "toma", "vani", "yaro", "zema", "danu"].map(subject => ({
+            ...annotated(`nava ${subject}`, "response.form.0017.v1"),
+            requirements: { noveltyDemand: 0.96, brevityDetailBalance: 0.92 }
+          })),
+          ...["gemi", "hira"].map(subject => ({
+            ...unannotated(`nava keta ${subject}`),
+            requirements: { noveltyDemand: 0.96, brevityDetailBalance: 0.05 }
+          }))
+        ]
+      },
+      profileId: "profile.fixture",
+      sourceVersionId: "source-version.fixture.context" as SourceVersionId,
+      evidenceIds: ["evidence.fixture.context" as EvidenceId],
+      sourceSystem: "fixture",
+      updatedAt: 1,
+      makeId: value => `pattern.${createHasher().digestHex(JSON.stringify(value))}`
+    });
+    expect(compiled.patterns.some(pattern => (pattern.patternJson as Record<string, unknown>).responseForm)).toBe(true);
+    for (const patterns of [compiled.patterns, [...compiled.patterns].reverse()]) {
+      const field = deriveTurnRequirementField({ requestText: "nava keta zori", languageMemoryState: runtimeState(patterns) });
+      expect(field.responseForm).toBeUndefined();
+      expect(field.brevityDetailBalance).toBeLessThan(0.1);
+      expect(extendedGenerationDecision({ requirementField: field, requestedAuthority: "creative" }).required).toBe(false);
+    }
+  });
+
+  it("does not amplify separate estimates from the same source or favor an unanchored marginal over its matched anchor", () => {
+    const compiled = compileRequestRequirementCorpus({
+      corpus: {
+        schema: REQUEST_REQUIREMENT_CORPUS_SCHEMA,
+        language: "fixture",
+        examples: [
+          ...["paku", "ravi", "sula", "toma", "vani", "yaro", "zema", "danu"].map(subject => ({
+            ...annotated(`${subject} nava`, "response.form.0017.v1"),
+            requirements: { noveltyDemand: 0.96, brevityDetailBalance: 0.92 }
+          })),
+          ...["gemi", "hira"].map(subject => ({
+            ...unannotated(`nava ${subject}`),
+            requirements: { noveltyDemand: 0.96, brevityDetailBalance: 0.05 }
+          }))
+        ]
+      },
+      profileId: "profile.fixture",
+      sourceVersionId: "source-version.fixture.anchors" as SourceVersionId,
+      evidenceIds: ["evidence.fixture.anchors" as EvidenceId],
+      sourceSystem: "fixture",
+      updatedAt: 1,
+      makeId: value => `pattern.${createHasher().digestHex(JSON.stringify(value))}`
+    });
+    const anchored = deriveTurnRequirementField({ requestText: "nava zori", languageMemoryState: runtimeState(compiled.patterns) });
+    expect(anchored.responseForm).toBeUndefined();
+    expect(anchored.brevityDetailBalance).toBeLessThan(0.1);
+
+    const ambiguous = deriveTurnRequirementField({ requestText: "zori nava yiri", languageMemoryState: runtimeState(compiled.patterns) });
+    expect(ambiguous.brevityDetailBalance).toBeGreaterThan(0.6);
+    expect(ambiguous.learnedRequirementBounds?.brevityDetailBalance?.lower).toBeLessThan(0.1);
+    expect(extendedGenerationDecision({ requirementField: ambiguous, requestedAuthority: "creative" }).required).toBe(false);
+
+    const legacyPatterns = ["nava", "keta", "sula"].map((surface, index) => ({
+      ...compiled.patterns[0]!,
+      id: `pattern.fixture.legacy.${index}`,
+      support: 1,
+      entropy: 0,
+      patternJson: {
+        schema: "scce.request_requirement_pattern.v1",
+        surface,
+        anchor: "any",
+        sourceVersionId: "source-version.fixture.legacy",
+        requirementCoefficients: { noveltyDemand: 4, brevityDetailBalance: 0.3 }
+      }
+    }));
+    const derive = (requestText: string) => deriveTurnRequirementField({ requestText, languageMemoryState: runtimeState(legacyPatterns) });
+    const one = derive("nava");
+    const several = derive("nava zori keta yiri sula");
+    expect(several.brevityDetailBalance).toBeCloseTo(one.brevityDetailBalance, 10);
+    expect(extendedGenerationDecision({ requirementField: several, requestedAuthority: "creative" }).required).toBe(false);
+  });
+
   it("compiles and activates an opaque form only with adequate annotation support and margin", () => {
     const compiled = compileRequestRequirementCorpus({
       corpus: {

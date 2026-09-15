@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   acquireAndTrainGithubOssRepository,
   validateGithubCommitSha,
@@ -13,7 +13,22 @@ import type { ScceStorage } from "@scce/kernel";
 
 const COMMIT = "0123456789abcdef0123456789abcdef01234567";
 
+beforeEach(() => vi.stubEnv("SCCE_ALLOW_AUTOMATIC_WEB", "1"));
+afterEach(() => vi.unstubAllEnvs());
+
 describe("public GitHub OSS acquisition", () => {
+  it("refuses before materialization when the public-network opt-in is absent", async () => {
+    vi.unstubAllEnvs();
+    const materializeSnapshot = vi.fn(async () => undefined);
+    await expect(acquireAndTrainGithubOssRepository({
+      storage: {} as ScceStorage,
+      remoteUrl: "https://github.com/example/project",
+      commitSha: COMMIT,
+      materializeSnapshot
+    })).rejects.toThrow(/public GitHub acquisition refused/iu);
+    expect(materializeSnapshot).not.toHaveBeenCalled();
+  });
+
   it("accepts only a public repository URL and a pinned commit", () => {
     expect(validateGithubPublicRepositoryUrl("https://github.com/example/project")).toBe("https://github.com/example/project.git");
     expect(validateGithubPublicRepositoryUrl("https://github.com/example/project.git/")).toBe("https://github.com/example/project.git");

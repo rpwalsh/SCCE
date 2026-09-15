@@ -81,9 +81,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (record.type === "consent" && typeof record.planId === "string" && typeof record.text === "string") {
       try {
         const client = await this.clientFactory();
-        await client.approveWorkspacePatch(record.planId);
+        await client.approveLearningConsent(record.planId);
         this.output.appendLine(`[chat] consent granted for ${record.planId}; asking again`);
         await this.handleMessage({ type: "send", text: record.text });
+      } catch (error) {
+        void this.view?.webview.postMessage({ type: "error", text: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+    if (record.type === "consentReject" && typeof record.planId === "string") {
+      try {
+        const client = await this.clientFactory();
+        await client.rejectLearningConsent(record.planId);
+        this.output.appendLine(`[chat] consent declined for ${record.planId}; staying offline`);
       } catch (error) {
         void this.view?.webview.postMessage({ type: "error", text: error instanceof Error ? error.message : String(error) });
       }
@@ -455,6 +465,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         yes.textContent = 'Yes, search and learn';
         yes.onclick = () => { yes.disabled = true; showTyping('learning'); vscodeApi.postMessage({ type: 'consent', planId: learning.planId, text: detail.requestText || '' }); };
         box.appendChild(yes);
+        const no = document.createElement('button');
+        no.textContent = 'No, stay offline';
+        no.onclick = () => { yes.disabled = true; no.disabled = true; vscodeApi.postMessage({ type: 'consentReject', planId: learning.planId }); };
+        box.appendChild(no);
       } else if (learning.status === 'held_for_review') {
         ask.textContent = 'I found material but have not learned it. Is it true?';
         box.appendChild(ask);

@@ -61,6 +61,21 @@ describe("corpus registry", () => {
     expect(queried.some(query => query.sourceSystem === "corrections")).toBe(true);
   });
 
+  it("skips the language capability entirely when startup asks for a lightweight warmup", async () => {
+    const queried: Array<{ sourceSystem?: string; profileIds: string[] }> = [];
+    const kernel = createScceKernel({
+      storage: corpusQueryStorage(queried),
+      files: { streamPath: async function* () { /* unused */ } },
+      buildTest: { executeProgram: async () => ({ build: commandResult(), test: commandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+      corpusRegistry: createCorpusRegistry([{ sourceSystem: "gutenberg", enabled: true }])
+    });
+
+    const result = await kernel.warmup({ language: false, graph: false, brain: false, profile: false, corrections: false });
+
+    expect(result.language).toBeUndefined();
+    expect(queried).toEqual([]);
+  });
+
   it("defers source-owned language hydration until a source is selected", async () => {
     const queried: Array<{ sourceSystem?: string; profileIds: string[] }> = [];
     const kernel = createScceKernel({

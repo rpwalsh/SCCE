@@ -16,10 +16,19 @@ import type { EvidenceId, JsonValue, RequestedAuthority, SourceVersionId } from 
 import { unicodeLexicalSegments } from "./unicode-segmentation.js";
 
 export const REQUEST_REQUIREMENT_CORPUS_SCHEMA = "scce.request_requirement_corpus.v1";
+export const REQUEST_REQUIREMENT_PATTERN_SCHEMA = "scce.request_requirement_pattern.v1";
+/**
+ * Bump when compilation changes how bounded targets or their admissible
+ * ranges are derived. Durable replacement uses this alongside source scope
+ * so a recompile cannot leave an earlier semantic shape active.
+ */
+export const REQUEST_REQUIREMENT_PATTERN_COMPILER_FINGERPRINT =
+  "scce.request_requirement_pattern.targets_and_ranges.v1";
 
 export interface RequestRequirementCorpusExample {
   text: string;
   authority: RequestedAuthority;
+  /** Bounded dimension targets, distinct from signed authority coefficients. */
   requirements?: Partial<Record<TurnRequirementDimension, number>>;
   /**
    * Corpus-owned, language-neutral response-form identity. The runtime treats
@@ -74,6 +83,9 @@ interface FeatureCounts {
   examples: number;
   byAuthority: Record<RequestedAuthority, number>;
   requirementTotals: Partial<Record<TurnRequirementDimension, number>>;
+  requirementTargetTotals: Partial<Record<TurnRequirementDimension, number>>;
+  requirementTargetCounts: Partial<Record<TurnRequirementDimension, number>>;
+  requirementTargetBounds: Partial<Record<TurnRequirementDimension, { lower: number; upper: number }>>;
   responseFormExamples: number;
   responseFormCounts: Record<string, number>;
   responseFormSourceLabels: Record<string, Record<string, number>>;
@@ -137,7 +149,7 @@ export function isRequestRequirementPattern(pattern: LanguagePatternRecord): boo
     value
     && typeof value === "object"
     && !Array.isArray(value)
-    && value.schema === "scce.request_requirement_pattern.v1"
+    && value.schema === REQUEST_REQUIREMENT_PATTERN_SCHEMA
   );
 }
 
@@ -158,17 +170,24 @@ export function compileRequestRequirementCorpus(
         examples: 0,
         byAuthority: authorityRecord(0),
         requirementTotals: {},
+        requirementTargetTotals: {},
+        requirementTargetCounts: {},
+        requirementTargetBounds: {},
         responseFormExamples: 0,
         responseFormCounts: {},
         responseFormSourceLabels: {}
       };
       counts.examples += 1;
       counts.byAuthority[example.authority] += 1;
-      const prototype = {
-        ...authorityRequirementCoefficients(example.authority),
-        ...(example.requirements ?? {})
-      };
+      const prototype = authorityRequirementCoefficients(example.authority);
       for (const dimension of TURN_REQUIREMENT_DIMENSIONS) {
+        const target = example.requirements?.[dimension];
+        if (target !== undefined && Number.isFinite(target)) {
+          counts.requirementTargetTotals[dimension] = (counts.requirementTargetTotals[dimension] ?? 0) + clamp01(target);
+          counts.requirementTargetCounts[dimension] = (counts.requirementTargetCounts[dimension] ?? 0) + 1;
+          const previous = counts.requirementTargetBounds[dimension];
+          counts.requirementTargetBounds[dimension] = { lower: Math.min(previous?.lower ?? 1, clamp01(target)), upper: Math.max(previous?.upper ?? 0, clamp01(target)) };
+        }
         const value = prototype[dimension];
         if (value === undefined || !Number.isFinite(value)) continue;
         counts.requirementTotals[dimension] = (counts.requirementTotals[dimension] ?? 0) + value;
@@ -214,19 +233,29 @@ export function compileRequestRequirementCorpus(
     const reliability = clamp01(0.45 * posterior + 0.35 * margin + 0.20 * Math.min(1, winner.count / 8));
     const activationScale = 0.72 + 0.58 * reliability;
     const requirementCoefficients: Partial<Record<TurnRequirementDimension, number>> = {};
+    const requirementTargets: Partial<Record<TurnRequirementDimension, number>> = {};
     for (const dimension of TURN_REQUIREMENT_DIMENSIONS) {
+      const targetCount = counts.requirementTargetCounts[dimension] ?? 0;
+      if (targetCount > 0) {
+        const bounds = counts.requirementTargetBounds[dimension]!;
+        requirementTargets[dimension] = Math.max(bounds.lower, Math.min(bounds.upper, counts.requirementTargetTotals[dimension]! / targetCount));
+        continue;
+      }
       const total = counts.requirementTotals[dimension];
       if (total !== undefined) requirementCoefficients[dimension] = (total / counts.examples) * activationScale;
     }
     const responseForm = compiledResponseForm(counts, input.corpus.responseFormProfiles);
     const patternJson = toJsonValue({
-      schema: "scce.request_requirement_pattern.v1",
+      schema: REQUEST_REQUIREMENT_PATTERN_SCHEMA,
+      compilerFingerprint: REQUEST_REQUIREMENT_PATTERN_COMPILER_FINGERPRINT,
       surface: counts.observation.surface,
       anchor: counts.observation.anchor,
       matchMode: "unicode_token_ngram",
       semanticRoleId: "role.request.requirement.v1",
       learnedFrameOrPatternId: counts.observation.key,
       requirementCoefficients,
+      requirementTargets,
+      requirementTargetBounds: counts.requirementTargetBounds,
       authorityMass: counts.byAuthority,
       selectedAuthority: winner.authority,
       posterior,
@@ -246,7 +275,17 @@ export function compileRequestRequirementCorpus(
       provenanceClass: "learned_language_prior"
     });
     return [{
-      id: input.makeId(patternJson),
+      // The durable identity names the observed feature and its source scope,
+      // not its compiled coefficients. A source recompile can therefore
+      // replace a prior target/range estimate instead of accumulating it.
+      id: input.makeId(toJsonValue({
+        schema: "scce.request_requirement_pattern.identity.v1",
+        compilerFingerprint: REQUEST_REQUIREMENT_PATTERN_COMPILER_FINGERPRINT,
+        profileId: input.profileId,
+        sourceVersionId: input.sourceVersionId,
+        sourceSystem: input.sourceSystem,
+        learnedFrameOrPatternId: counts.observation.key
+      })),
       profileId: input.profileId,
       patternKind: "semantic_role" as const,
       support: clamp01(0.58 + 0.28 * reliability + 0.14 * Math.min(1, classCoverage * 4)),
@@ -278,6 +317,8 @@ export function compileRequestRequirementCorpus(
       sourceVersionId: input.sourceVersionId,
       evidenceIds,
       sourceSystem: input.sourceSystem,
+      patternSchema: REQUEST_REQUIREMENT_PATTERN_SCHEMA,
+      compilerFingerprint: REQUEST_REQUIREMENT_PATTERN_COMPILER_FINGERPRINT,
       transparentSparsePatterns: true,
       hiddenWeights: false
     })

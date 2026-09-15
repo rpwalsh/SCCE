@@ -10,8 +10,20 @@ import {
 } from "../language-memory-runtime.js";
 import { resolveLearnedCreativeGenerationExtent } from "../mouth.js";
 import { trainKneserNey } from "../kneser-ney.js";
+import { surfaceContainsTerm } from "../surface-linguistics.js";
 
 describe("learned language generation surface quality", () => {
+  it("does not append an unrealized requested term as fabricated coverage", () => {
+    const runtime = createLanguageMemoryRuntime();
+    const state = runtime.hydrateFromImportedBrain({ importRunId: "missing.coverage", models: [], observations: [], units: [], patterns: [], semanticFrames: [] });
+    const result = runtime.generate({ state, requiredTerms: [{ id: "obligation.1", text: "κάλα", weight: 0.9 }], generationExtent: 48 });
+    expect(result.text).toBe("");
+    expect(result.discourse.requiredTermIdsCovered).toEqual([]);
+  });
+  it("uses Unicode surface units for required coverage rather than substring matches", () => {
+    expect(surfaceContainsTerm("cart", "art")).toBe(false);
+    expect(surfaceContainsTerm("cart art", "art")).toBe(true);
+  });
   it("rejects the dangling ending from the live creative collage using learned boundary observations", () => {
     const runtime = createLanguageMemoryRuntime();
     const state = runtime.hydrateFromImportedBrain({ importRunId: "fixture.endings", models: [], observations: [], units: [], patterns: [], semanticFrames: [] });
