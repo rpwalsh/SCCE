@@ -4,6 +4,7 @@ import type { EpistemicForce, EvidenceId, EvidenceSpan, JsonValue, TruthState } 
 import { truthStateFromProofVerdict } from "./truth-contract.js";
 import type { SemanticProofEngineVerdict } from "./semantic-proof-engine.js";
 import { featureSet, toJsonValue, symbolizeData, weightedJaccard } from "./primitives.js";
+import { evidenceProofBoundaries } from "./proof-boundary.js";
 
 export type PcaCertificateKind = "direct_quote" | "paraphrase" | "inference" | "rejected";
 export type PcaRule = "quote" | "levenshtein" | "R1_conjunction" | "R2_specialization" | "R3_transitivity" | "R4_contrapositive" | "boundary";
@@ -66,7 +67,16 @@ export function createProofCarryingAnswer(config: Partial<ProofCarryingAnswerCon
   return {
     certify(input: { answer: string; evidence: EvidenceSpan[]; force: EpistemicForce }): PcaReport {
       const sentences = splitSentences(input.answer);
-      const atoms = evidenceAtoms(input.evidence, cfg);
+      // The mouth can cite only evidence that survived the same authority
+      // boundary as semantic proof. Otherwise a source assertion could be
+      // laundered into a direct quote merely by passing through PCA, and
+      // derived copies could multiply the atoms available to inference.
+      const proofBoundaries = evidenceProofBoundaries(input.evidence);
+      const certifyingEvidenceIds = new Set(proofBoundaries
+        .filter(boundary => boundary.certifiesFactualProof)
+        .map(boundary => boundary.evidenceId));
+      const certifyingEvidence = input.evidence.filter(span => certifyingEvidenceIds.has(String(span.id)));
+      const atoms = evidenceAtoms(certifyingEvidence, cfg);
       const certificates = sentences.map(sentence => certifySentence(sentence, atoms, input.force, cfg));
       const admitted = certificates.filter(cert => cert.kind !== "rejected");
       const rejected = certificates.filter(cert => cert.kind === "rejected");
@@ -103,7 +113,10 @@ export function createProofCarryingAnswer(config: Partial<ProofCarryingAnswerCon
           grounding,
           unsupportedSymbolRatio,
           rejected: rejected.map(cert => ({ sentence: cert.sentence.slice(0, 160), reason: cert.rejectReason, unsupportedSymbolRatio: cert.unsupportedSymbolRatio })),
-          citedSpanIds: [...new Set(admitted.flatMap(cert => cert.citedSpanIds.map(String)))]
+          citedSpanIds: [...new Set(admitted.flatMap(cert => cert.citedSpanIds.map(String)))],
+          excludedEvidence: proofBoundaries
+            .filter(boundary => !boundary.certifiesFactualProof)
+            .map(boundary => ({ evidenceId: boundary.evidenceId, sourceVersionId: boundary.sourceVersionId, reason: boundary.reason }))
         })
       };
     }

@@ -1,6 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import type { EvidenceSpan, JsonValue, LanguageProfile, SourceId, SourceTrust, SourceVersionId } from "./types.js";
+import type { EvidenceSpan, JsonValue, LanguageProfile, SourceId, SourceTrust, SourceVersionDerivation, SourceVersionId } from "./types.js";
 import type { IdFactory } from "./ids.js";
 import type { Hasher } from "./types.js";
 import { anchorFeatureSet, clamp01, entropy, featureSet, symbolizeData, toJsonValue } from "./primitives.js";
@@ -17,6 +17,8 @@ export interface EvidenceExtractionInput {
   observedAt: number;
   maxChunkBytes: number;
   metadata?: JsonValue;
+  /** Internal source-version lineage written by the ingestion lane. */
+  sourceVersionDerivation?: SourceVersionDerivation;
   exactSourceText?: boolean;
 }
 
@@ -112,6 +114,7 @@ export function createEvidenceExtractor(deps: { idFactory: IdFactory; hasher: Ha
             charRange: [chunk.charStart, chunk.charEnd],
             byteRange: [chunk.byteStart, chunk.byteEnd],
             section: structural ? structural.title : null,
+            sourceVersionDerivation: toJsonValue(input.sourceVersionDerivation ?? null),
             metadata: input.metadata ?? null
           },
           features,

@@ -135,6 +135,10 @@ describe("ingestion source derivative identity", () => {
     for (const span of evidence) {
       expect(span.informationLabel).toEqual(informationLabel);
       expect(span.sourceVersionId).toBe(derivative?.sourceVersionId);
+      expect((span.provenance as Record<string, unknown>).sourceVersionDerivation).toMatchObject({
+        kind: "redacted-text",
+        derivedFromSourceVersionId: original?.sourceVersionId
+      });
       expect(Buffer.from(derivativeBytes)
         .subarray(span.byteStart, span.byteEnd)
         .toString("utf8")).toBe(span.text);
