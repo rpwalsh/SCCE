@@ -2,7 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { corpusIdentityGeneration, corpusIdentitySurface, corpusIdentityUnits, corpusNamedIdentities } from "./corpus-identity.js";
 import { corpusUnitFormVerdict, freeFormLexiconGeneration } from "./free-form-lexicon.js";
-import { SEMANTIC_VERDICT, SEMANTIC_SOURCE } from "./semantic-codes.js";
+import { SEMANTIC_CONSTRAINT, SEMANTIC_VERDICT, SEMANTIC_SOURCE } from "./semantic-codes.js";
 import { atomizeText } from "./semantic-proof-system.js";
 import { type IdFactory } from "./ids.js";
 import { boundedEditDistance, collapsePriorWhitespace, genericQuestionSignal, jsonRecord, kernelClamp01, kernelNumber, kernelString, kernelStringArray, namedSubjectAnchors, normalizePriorKey, requestContentPriorUnits, splitPriorUnits, stripOuterPriorSeparators, surfaceEntityRuns, uniqueKernelStrings } from "./kernel-answer-primitives.js";
@@ -836,8 +836,14 @@ export function proposeSourceExactEvidenceAnswer(input: {
     return relationRankUnits.filter(unit => units.some(surfaceUnit => requestUnitSharesStem(unit, surfaceUnit))).length;
   };
   const covering = !openingRow ? rows.slice(0, ANCHOR_PREDICATION_RERANK_LIMIT).filter(covers) : [];
-  const fullestCoverage = Math.max(0, ...covering.map(relationCoverage));
-  const fullest = covering.filter(row => relationCoverage(row) === fullestCoverage);
+  // A unitless sentence cannot certify a request's typed quantity at proof time, so it is not generated ahead of one that can.
+  const requestQuantityUnits = compiledQuantityUnits(input.requestText).filter(unit => coverageUnits.some(content => requestUnitMatchesSurface(content, unit)));
+  const valueTyped = requestQuantityUnits.length
+    ? covering.filter(row => compiledQuantityUnits(row.sentence).some(unit => requestQuantityUnits.some(requestUnit => requestUnitMatchesSurface(requestUnit, unit))))
+    : [];
+  const typedCovering = valueTyped.length ? valueTyped : covering;
+  const fullestCoverage = Math.max(0, ...typedCovering.map(relationCoverage));
+  const fullest = typedCovering.filter(row => relationCoverage(row) === fullestCoverage);
   const predicating = anchored.anchors.length
     ? fullest.filter(row => sentencePredicatesAboutAnchors(row.sentence, anchored.anchors))
     : [];
@@ -3145,6 +3151,20 @@ function sentencePredicatesAboutAnchors(sentence: string, anchors: readonly stri
   }
   return false;
 }
+/** Units of the quantity constraints the proposition compiler reads out of a surface, in request-unit space. */
+function compiledQuantityUnits(surface: string): string[] {
+  const units: string[] = [];
+  // Cost bound: one surface is one or two propositions; the same bound as the predication check above.
+  for (const atom of atomizeText({ text: surface, source: SEMANTIC_SOURCE.CLAIM, maxAtoms: 2 })) {
+    for (const constraint of atom.constraints) {
+      if (constraint.kind !== SEMANTIC_CONSTRAINT.QUANTITY) continue;
+      const unit = jsonRecord(constraint.value).unit;
+      if (typeof unit === "string" && unit) units.push(normalizePriorKey(unit));
+    }
+  }
+  return uniqueKernelStrings(units.filter(Boolean));
+}
+
 /**
  * Every request anchor built on a named subject, in the request's own anchor order; the full anchor list
  * when the request names none. This is what keeps an instruction phrase ("short story") from owning a
