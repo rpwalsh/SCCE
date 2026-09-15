@@ -1499,6 +1499,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         return {
           episodeId,
           requestedAuthority,
+          calibrationTaskClass,
           requestedAuthorityDecision: toJsonValue(requestedAuthorityDecision),
           requirementField: toJsonValue(requirementField),
           operatorActivations: toJsonValue(operatorActivations),
@@ -5764,6 +5765,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       return {
         episodeId,
         requestedAuthority,
+        calibrationTaskClass,
         requestedAuthorityDecision: toJsonValue(requestedAuthorityDecision),
         requirementField: toJsonValue(requirementField),
         operatorActivations: toJsonValue(operatorActivations),

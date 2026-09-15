@@ -4,8 +4,10 @@ import { describe, expect, it } from "vitest";
 import {
   CALIBRATION_TASK_CLASS_IDS,
   calibrationObservationsFromDialogueOutcome,
+  buildTurnDialogueBridge,
   realizeDialogueResponse,
-  type DialogueAnswerGraphLike
+  type DialogueAnswerGraphLike,
+  type TurnResult
 } from "../index.js";
 
 describe("typed dialogue task routing", () => {
@@ -39,7 +41,44 @@ describe("typed dialogue task routing", () => {
     expect(observations[0]?.taskClass).toBe(CALIBRATION_TASK_CLASS_IDS.workspaceAnswer);
     expect(observations.some(item => item.calibrationId === "workspace.answer_confidence")).toBe(true);
   });
+
+  it.each([
+    CALIBRATION_TASK_CLASS_IDS.codeAnswer,
+    CALIBRATION_TASK_CLASS_IDS.creativeGeneration,
+    CALIBRATION_TASK_CLASS_IDS.translation
+  ])("carries an opaque kernel task receipt into bridge outcome routing (%s)", taskClass => {
+    const bridge = buildTurnDialogueBridge({
+      requestText: "Ø§Ø´Ø±Ø­ Ð´Ð°Ð½Ð½Ñ‹Ðµ.",
+      conversationId: "conversation.typed-routing",
+      result: minimalTurnResult(taskClass),
+      calibrationTaskClass: CALIBRATION_TASK_CLASS_IDS.dialogueOutcome
+    });
+    const observations = calibrationObservationsFromDialogueOutcome({
+      result: bridge.pragmatics,
+      outcome: { id: `outcome.${taskClass}`, responseHash: "hash", accepted: true, failedConstraintRefs: [], scoreTraceRefs: [], createdAt: new Date(0).toISOString() }
+    });
+
+    expect(bridge.pragmatics.state.taskClassId).toBe(taskClass);
+    expect(observations[0]?.taskClass).toBe(taskClass);
+  });
 });
+
+function minimalTurnResult(calibrationTaskClass: string): TurnResult {
+  return {
+    episodeId: "episode.typed-routing",
+    answer: "ÐžÑ‚Ð²ÐµÑ‚.",
+    epistemicForce: "observed",
+    calibrationTaskClass,
+    evidence: [],
+    field: {} as TurnResult["field"],
+    entailment: { contradiction: 0 } as TurnResult["entailment"],
+    constructGraph: { artifacts: [] } as TurnResult["constructGraph"],
+    validationGraph: {} as TurnResult["validationGraph"],
+    emissionGraph: {} as TurnResult["emissionGraph"],
+    forecast: {} as TurnResult["forecast"],
+    learningNeeds: []
+  };
+}
 
 function graph(): DialogueAnswerGraphLike {
   return {

@@ -1048,6 +1048,8 @@ export interface TurnResult {
   epistemicForce: EpistemicForce;
   assistantForce?: AssistantForceClass;
   requestedAuthority?: RequestedAuthority;
+  /** Opaque calibration class selected by the typed requirement/authority lane for this turn. */
+  calibrationTaskClass?: string;
   requestedAuthorityDecision?: JsonValue;
   requirementField?: JsonValue;
   operatorActivations?: JsonValue;

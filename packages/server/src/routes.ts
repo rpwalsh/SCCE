@@ -843,7 +843,7 @@ async function dispatch(
         targetLanguage: turnTargetLanguage(body),
         userStyleProfile: learnedDialogueProfile,
         calibrationModels,
-        calibrationTaskClass: CALIBRATION_TASK_CLASS_IDS.dialogueOutcome,
+        calibrationTaskClass: result.calibrationTaskClass ?? CALIBRATION_TASK_CLASS_IDS.dialogueOutcome,
         outcomeMemory: dialogueOutcomeMemory
       });
       traceEvent(trace, { stage: "turn.dialogue.bridged", label: "api.turn", durationMs: Date.now() - bridgeStarted });

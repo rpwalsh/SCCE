@@ -266,7 +266,7 @@ async function main(): Promise<void> {
             targetLanguage: turnArgs.targetLanguage,
             userStyleProfile: learnedDialogueProfile,
             calibrationModels,
-            calibrationTaskClass: CALIBRATION_TASK_CLASS_IDS.dialogueOutcome,
+            calibrationTaskClass: result.calibrationTaskClass ?? CALIBRATION_TASK_CLASS_IDS.dialogueOutcome,
             outcomeMemory: dialogueOutcomeMemory
           });
           await persistDialogueTurn({
