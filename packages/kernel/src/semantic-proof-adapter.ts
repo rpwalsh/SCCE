@@ -36,10 +36,12 @@ interface ProofCarrierFields {
   id?: string;
   subjectId?: string;
   subjectKindId?: string;
+  subjectRoleId?: string;
   subjectSurface?: string;
   relationId?: string;
   objectId?: string;
   objectKindId?: string;
+  objectRoleId?: string;
   objectSurface?: string;
   quantity?: ProofScalar;
   dateTime?: { value: string; precisionId?: string };
@@ -93,7 +95,9 @@ export function evidenceToProofRecords(input: EvidenceProofAdapterInput): ProofE
     records.push(record);
   };
 
-  for (const span of input.evidence ?? input.spans ?? []) {
+  const evidence = input.evidence ?? input.spans ?? [];
+  const evidenceById = new Map(evidence.map(span => [String(span.id), span] as const));
+  for (const span of evidence) {
     const boundary = evidenceProofBoundary(span);
     for (const carrier of proofEvidenceCarriers(span.provenance)) add(proofRecordFromCarrier(carrier, span, boundary.forceClass, boundary.certifiesFactualProof));
     for (const carrier of proofEvidenceCarriers(span.trustVector)) add(proofRecordFromCarrier(carrier, span, boundary.forceClass, boundary.certifiesFactualProof));
@@ -102,11 +106,11 @@ export function evidenceToProofRecords(input: EvidenceProofAdapterInput): ProofE
   }
 
   for (const node of input.nodes ?? []) {
-    for (const carrier of proofEvidenceCarriers(node.metadata)) add(proofRecordFromCarrier(carrier));
-    for (const carrier of proofEvidenceCarriers(node.representation)) add(proofRecordFromCarrier(carrier));
+    for (const carrier of proofEvidenceCarriers(node.metadata)) add(proofRecordFromDetachedCarrier(carrier, evidenceById));
+    for (const carrier of proofEvidenceCarriers(node.representation)) add(proofRecordFromDetachedCarrier(carrier, evidenceById));
   }
 
-  for (const record of typedObservationToProofRecords({ observations: input.observations ?? [], evidence: input.evidence ?? input.spans ?? [] })) add(record);
+  for (const record of typedObservationToProofRecords({ observations: input.observations ?? [], evidence })) add(record);
   return records;
 }
 
@@ -161,7 +165,16 @@ function proofRecordsFromObservation(observation: SupportedProofObservation, evi
 
 function fieldsFromObservation(observation: SupportedProofObservation, evidenceById: ReadonlyMap<string, EvidenceSpan>): ProofCarrierFields {
   const metadataFields = fieldsFromJson(observation.metadata);
-  const evidenceSpanId = metadataFields.evidenceSpanId ?? certifyingEvidenceSpanId(observation.evidenceIds.map(String), evidenceById);
+  // An observation's metadata is source derived, so an explicit span id is
+  // only usable after resolving the actual span and its current proof
+  // boundary. This prevents a normalized owner assertion from restoring a
+  // binding merely by carrying an evidenceSpanId field forward.
+  const metadataEvidenceSpan = metadataFields.evidenceSpanId
+    ? evidenceById.get(metadataFields.evidenceSpanId)
+    : undefined;
+  const evidenceSpanId = metadataEvidenceSpan && evidenceProofBoundary(metadataEvidenceSpan).certifiesFactualProof
+    ? String(metadataEvidenceSpan.id)
+    : certifyingEvidenceSpanId(observation.evidenceIds.map(String), evidenceById);
   const sourceVersionId = metadataFields.sourceVersionId ?? String(observation.sourceVersionId);
   if (observation.kind === "measurement") {
     return {
@@ -260,9 +273,9 @@ function proofClaimFromCarrier(value: JsonValue): ProofClaim | undefined {
   if (!fields.id || !fields.relationId || !fields.subjectId || !fields.objectId) return undefined;
   return {
     id: fields.id,
-    subject: atom(fields.subjectId, fields.subjectKindId, fields.subjectSurface),
+    subject: atom(fields.subjectId, fields.subjectKindId, fields.subjectSurface, fields.subjectRoleId),
     relationId: fields.relationId,
-    object: atom(fields.objectId, fields.objectKindId, fields.objectSurface),
+    object: atom(fields.objectId, fields.objectKindId, fields.objectSurface, fields.objectRoleId),
     quantity: fields.quantity,
     dateTime: fields.dateTime,
     polarityId: fields.polarityId,
@@ -272,10 +285,27 @@ function proofClaimFromCarrier(value: JsonValue): ProofClaim | undefined {
 }
 
 function proofRecordFromCarrier(value: ProofCarrierFields, span?: EvidenceSpan, boundaryForceClass?: string, certifyingSpan?: boolean): ProofEvidenceRecord | undefined {
-  const forceClass = value.forceClass ?? proofForceClassFromBoundary(boundaryForceClass);
+  // A carrier is a typed projection of the enclosing source record. It may
+  // preserve the relation and roles, but it cannot upgrade that source's
+  // proof authority or mint a span binding of its own.
+  const forceClass = span
+    ? proofForceClassFromBoundary(boundaryForceClass) ?? value.forceClass
+    : value.forceClass ?? proofForceClassFromBoundary(boundaryForceClass);
   const sourceVersionId = value.sourceVersionId ?? (span ? String(span.sourceVersionId) : undefined);
-  const evidenceSpanId = value.evidenceSpanId ?? (span && certifyingSpan ? String(span.id) : undefined);
+  const evidenceSpanId = span
+    ? certifyingSpan ? String(span.id) : undefined
+    : value.evidenceSpanId;
   return proofRecordFromFields({ ...value, forceClass, sourceVersionId, evidenceSpanId, id: value.id ?? (span ? String(span.id) : undefined) });
+}
+
+function proofRecordFromDetachedCarrier(
+  value: ProofCarrierFields,
+  evidenceById: ReadonlyMap<string, EvidenceSpan>
+): ProofEvidenceRecord | undefined {
+  const span = value.evidenceSpanId ? evidenceById.get(value.evidenceSpanId) : undefined;
+  if (!span) return proofRecordFromCarrier({ ...value, evidenceSpanId: undefined });
+  const boundary = evidenceProofBoundary(span);
+  return proofRecordFromCarrier(value, span, boundary.forceClass, boundary.certifiesFactualProof);
 }
 
 function proofRecordFromFields(fields: ProofCarrierFields): ProofEvidenceRecord | undefined {
@@ -285,9 +315,9 @@ function proofRecordFromFields(fields: ProofCarrierFields): ProofEvidenceRecord 
     forceClass: fields.forceClass,
     sourceVersionId: fields.sourceVersionId,
     evidenceSpanId: fields.evidenceSpanId,
-    subject: atom(fields.subjectId, fields.subjectKindId, fields.subjectSurface),
+    subject: atom(fields.subjectId, fields.subjectKindId, fields.subjectSurface, fields.subjectRoleId),
     relationId: fields.relationId,
-    object: atom(fields.objectId, fields.objectKindId, fields.objectSurface),
+    object: atom(fields.objectId, fields.objectKindId, fields.objectSurface, fields.objectRoleId),
     quantity: fields.quantity,
     dateTime: fields.dateTime,
     polarityId: fields.polarityId,
@@ -307,10 +337,12 @@ function fieldsFromJson(value: JsonValue | undefined): ProofCarrierFields {
     id: firstString(record.id, record.claimId, record.recordId),
     subjectId: firstString(record.subjectId, subject?.id),
     subjectKindId: firstString(record.subjectKindId, subject?.kindId),
+    subjectRoleId: firstString(record.subjectRoleId, subject?.roleId),
     subjectSurface: firstString(record.subjectSurface, subject?.surface),
     relationId: firstString(record.relationId),
     objectId: firstString(record.objectId, object?.id),
     objectKindId: firstString(record.objectKindId, object?.kindId),
+    objectRoleId: firstString(record.objectRoleId, object?.roleId),
     objectSurface: firstString(record.objectSurface, object?.surface),
     quantity,
     dateTime,
@@ -344,8 +376,8 @@ function dateTimeFrom(value: JsonValue | undefined): { value: string; precisionI
   return text ? { value: text, precisionId: firstString(record.precisionId) } : undefined;
 }
 
-function atom(id: string, kindId?: string, surface?: string): ProofAtom {
-  return { id, kindId, surface };
+function atom(id: string, kindId?: string, surface?: string, roleId?: string): ProofAtom {
+  return { id, kindId, roleId, surface };
 }
 
 function certifyingEvidenceSpanId(ids: readonly string[], evidenceById: ReadonlyMap<string, EvidenceSpan>): string | undefined {
