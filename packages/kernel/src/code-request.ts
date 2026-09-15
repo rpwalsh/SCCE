@@ -4,6 +4,7 @@ import { splitPriorUnits, normalizePriorKey } from "./kernel-answer-primitives.j
 import { canonicalStringify, createHasher, toJsonValue } from "./primitives.js";
 import { parseStatefulBehaviorScenarios } from "./stateful-behavior-scenarios.js";
 import type { ExplicitTurnRequirement } from "./turn-requirements.js";
+import { COGNITIVE_OPERATOR_IDS, type ActivatedOperator, type TurnRequirementField } from "./turn-requirements.js";
 import type { JsonValue, ProgramBehaviorRequirement, ProgramStatefulBehaviorRequirement } from "./types.js";
 import { calibrated } from "./calibrations/prod-calibrations.js";
 import type { CalibrationKey } from "./calibrations/public-calibrations.js";
@@ -436,4 +437,61 @@ export function codeRequestRequirements(requestText: string, signal: CodeRequest
     sourceActivationId: "activation.structure.code_request.v1",
       trace: toJsonValue({ source: "kernel.code_request.structure", signals: signal.signals, observations: signal.observations, language: signal.language ?? null, paths: signal.paths })
   }));
+}
+
+/**
+ * Project structural code observations into the shared requirement field.
+ *
+ * This is the live path. It intentionally does not call `codeRequestRecognized`:
+ * that predicate remains a compatibility helper for callers that need the old
+ * detector result, while serving decisions are made only after the observation
+ * has crossed the requirement and operator projections.
+ */
+export function codeRequestObservedRequirements(requestText: string, signal: CodeRequestSignal): ExplicitTurnRequirement[] {
+  const hasBehavior = signal.behaviorRequirements.length > 0 || signal.statefulBehaviorRequirements.length > 0;
+  const hasPath = signal.paths.length > 0;
+  const hasFencedArtifact = signal.observations.some(observation => observation.kind === "fenced_block");
+  const hasCorroboratedShape = codeRequestCorroborated(signal);
+  // A formal-language observation alone is ambiguous prose. A path, fenced
+  // artifact, explicit behavior, or corroborated structure is enough to enter
+  // the learned requirement projection.
+  if (!hasPath && !hasFencedArtifact && !hasBehavior && !hasCorroboratedShape) return [];
+  const charEnd = [...requestText].length;
+  const values: Array<[ExplicitTurnRequirement["dimension"], number]> = [
+    // Structural corroboration admits the projection; its strength still
+    // comes from the calibrated observation demand rather than this detector.
+    ["executableArtifactDemand", Math.min(1, 0.5 + signal.demand * 0.85)],
+    ["formatConstraintStrength", 0.72],
+    ["externalTruthAuthority", 0.2]
+  ];
+  return values.map(([dimension, value]) => ({
+    id: `requirement.code_observation.${dimension}.v1`,
+    dimension,
+    value,
+    confidence: Math.min(1, 0.6 + signal.demand * 0.4),
+    polarity: "required" as const,
+    status: "inferred" as const,
+    span: { charStart: 0, charEnd },
+    semanticRoleId: "role.request.code_observation.v1",
+    learnedFrameOrPatternId: "code.observation.requirement.v1",
+    sourceActivationId: signal.observations.map(observation => observation.detectorId).join("|") || "code.observation.none.v1",
+    trace: toJsonValue({
+      source: "code_structure_observation",
+      demand: signal.demand,
+      observations: signal.observations
+    })
+  }));
+}
+
+/** Resolve a language for the mouth only after the shared typed route admits it. */
+export function codeLanguageForRequirementState(input: {
+  signal: CodeRequestSignal;
+  requirementField: Pick<TurnRequirementField, "executableArtifactDemand">;
+  operators: readonly Pick<ActivatedOperator, "operatorId" | "active">[];
+}): string | undefined {
+  if (!input.signal.language || input.requirementField.executableArtifactDemand < 0.5) return undefined;
+  if (!input.operators.some(operator => operator.operatorId === COGNITIVE_OPERATOR_IDS.programPlanning && operator.active)) return undefined;
+  const corroborated = input.signal.observations.some(observation =>
+    observation.kind !== "formal_language" && observation.kind !== "language_alias");
+  return corroborated ? input.signal.language : undefined;
 }

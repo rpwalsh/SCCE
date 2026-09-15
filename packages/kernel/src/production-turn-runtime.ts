@@ -184,7 +184,7 @@ import { captureResourceUsageSnapshot, measureResourceUsageDelta } from "./resou
 import { createRuntimeAcquisition } from "./runtime-acquisition.js";
 import { admissionTierDiagnostics, evidenceDiscriminatesAskedRelation, localEvidenceAnswerIsQuotationRecall, preferredLocalEvidenceAnswer, requestContentEvidenceUnits, requestRelationBeyondSourceIdentity, sourceEvidenceAnchorsForRequest } from "./local-evidence-runtime.js";
 import { normalizePriorKey, splitPriorUnits } from "./kernel-answer-primitives.js";
-import { codeRequestCorroborated, codeRequestRecognized, codeRequestRequirements, codeRequestSignal } from "./code-request.js";
+import { codeLanguageForRequirementState, codeRequestObservedRequirements, codeRequestSignal } from "./code-request.js";
 import { attachLearnedGraphPriorConstruct } from "./learned-graph-prior-runtime.js";
 import { decideRuntimeCoherence } from "./runtime-coherence.js";
 import { executableRuntimeDeadlineFromMetadata, type RuntimeDeadlineDecision } from "./runtime-deadline.js";
@@ -1158,13 +1158,12 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       };
       // Structure, not vocabulary: a request that names a formal language or a code path is asking for an artifact.
       const codeSignal = codeRequestSignal(input.text);
-      const codeRequest = codeRequestRecognized(codeSignal);
       let requirementField = deriveTurnRequirementField({
         requestText: input.text,
         explicitRequirements: [
           ...explicitTurnRequirementsFromInput(input, explicitAuthority),
           ...workspacePlanContext.explicitRequirements,
-          ...codeRequestRequirements(input.text, codeSignal)
+          ...codeRequestObservedRequirements(input.text, codeSignal)
         ],
         dialogueState: authorityDialogueState,
         languageMemoryState: requestRequirementLanguageState,
@@ -1547,9 +1546,9 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
               // verifier's cache-owner check reads.
               ...(fieldEvaluation ? { evaluation: fieldEvaluation } : {})
             }),
-          () => discourseEvidenceBound ? graphForEvidenceIdsUnrouted([...metadataEvidenceIds]) : graphForTextUncached(retrievalText)
+          () => discourseEvidenceBound ? graphForEvidenceIdsUnrouted([...metadataEvidenceIds]) : graphForTextUncached(retrievalText, undefined, undefined, false, evidenceAccessPolicy.sourceCodeEvidenceAllowed)
         ),
-        () => discourseEvidenceBound ? evidenceOnlyForIds([...metadataEvidenceIds]) : evidenceOnlyForText(retrievalText, allowSemanticFrameEvidence)
+        () => discourseEvidenceBound ? evidenceOnlyForIds([...metadataEvidenceIds]) : evidenceOnlyForText(retrievalText, allowSemanticFrameEvidence, evidenceAccessPolicy.sourceCodeEvidenceAllowed)
       );
       kernelTrace({
         stage: "graph.resolve",
@@ -4231,14 +4230,13 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           return { support: 0, contradiction: 1 };
         }
       };
+      const codeLanguage = codeLanguageForRequirementState({ signal: codeSignal, requirementField, operators: operatorActivations });
       const speakInput = {
         requestText: input.text,
         // Corroborated code shape, not a bare language name. "Java", "Ruby", "Swift" and "Python" are ordinary
         // words in encyclopedic prose, and a turn about the island should not reach a code lane at all -- which
         // was harmless only while that lane had no producer to reach.
-        ...(codeRequest && codeSignal.language && codeRequestCorroborated(codeSignal)
-          ? { codeLanguage: codeSignal.language }
-          : {}),
+        ...(codeLanguage ? { codeLanguage } : {}),
         meaningVerifier,
         realizationContract,
         construct: spokenConstructGraph,

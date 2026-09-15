@@ -411,6 +411,22 @@ describe("runtime hot graph retrieval", () => {
     expect(fixture.kernelTrace.mock.calls.map(([event]) => event.stage)).toContain("graph.resolve.evidence_first_widen");
   });
 
+  it("keeps retrieval policy on the typed caller boundary instead of recognizing code from request text", async () => {
+    const prose = evidenceSpan("evidence:prose", "Rust", "Rust was created by Graydon Hoare.");
+    const code = { ...evidenceSpan("evidence:code", "runtime.ts", "export function rustFact() { return 1; }"), mediaType: "text/typescript" };
+    const fixture = runtimeFixture(graphSlice([], [], []), [prose, code]);
+    fixture.searchEvidence.mockResolvedValue([
+      { span: prose, score: 1, reason: "fixture" },
+      { span: code, score: 0.9, reason: "fixture" }
+    ]);
+
+    const factual = await fixture.runtime.graphForTextUncached("What is Rust?", ["sym:rust"], ["rust"], true, false);
+    expect(factual.evidence.map(span => String(span.id))).toEqual(["evidence:prose"]);
+
+    const program = await fixture.runtime.graphForTextUncached("Inspect runtime.ts", ["sym:runtime"], ["runtime"], true, true);
+    expect(program.evidence.map(span => String(span.id))).toEqual(["evidence:prose", "evidence:code"]);
+  });
+
   it("does not reuse a warmed model-only function-unit cache when a continuation population is supplied", async () => {
     const fixture = runtimeFixture(graphSlice([], [], []));
     fixture.searchEvidence.mockResolvedValue([]);

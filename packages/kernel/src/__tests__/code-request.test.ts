@@ -1,8 +1,9 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
-import { CODE_REQUEST_BOOTSTRAP_DEMAND_MODEL, codeRequestCorroborated, codeRequestDemand, codeRequestRecognized, codeRequestRequirements, codeRequestSignal } from "../code-request.js";
+import { CODE_REQUEST_BOOTSTRAP_DEMAND_MODEL, codeLanguageForRequirementState, codeRequestCorroborated, codeRequestDemand, codeRequestObservedRequirements, codeRequestRecognized, codeRequestRequirements, codeRequestSignal } from "../code-request.js";
 import { clearProdCalibrations, installProdCalibrations } from "../calibrations/prod-calibrations.js";
+import { COGNITIVE_OPERATOR_IDS, activateCognitiveOperators, deriveTurnRequirementField } from "../turn-requirements.js";
 
 const recognized = (text: string) => codeRequestRecognized(codeRequestSignal(text));
 
@@ -83,6 +84,33 @@ describe("code request structure", () => {
     } finally {
       clearProdCalibrations();
     }
+  });
+
+  it("routes structural observations through requirements and operators before selecting a code language", () => {
+    const factualSignal = codeRequestSignal("Who created Rust?");
+    const factualField = deriveTurnRequirementField({ requestText: "Who created Rust?", explicitRequirements: codeRequestObservedRequirements("Who created Rust?", factualSignal) });
+    const factualOperators = activateCognitiveOperators({ requirementField: factualField });
+    expect(factualField.executableArtifactDemand).toBeLessThan(0.5);
+    expect(codeLanguageForRequirementState({ signal: factualSignal, requirementField: factualField, operators: factualOperators })).toBeUndefined();
+
+    const programRequest = "Write a TypeScript function named chunk() that splits an array.";
+    const programSignal = codeRequestSignal(programRequest);
+    const programField = deriveTurnRequirementField({ requestText: programRequest, explicitRequirements: codeRequestObservedRequirements(programRequest, programSignal) });
+    const programOperators = activateCognitiveOperators({ requirementField: programField });
+    expect(programField.executableArtifactDemand).toBeGreaterThan(0.8);
+    expect(programOperators.some(operator => operator.operatorId === COGNITIVE_OPERATOR_IDS.programPlanning && operator.active)).toBe(true);
+    expect(codeLanguageForRequirementState({ signal: programSignal, requirementField: programField, operators: programOperators })).toBe("typescript");
+  });
+
+  it("does not turn a factual language mention into code evidence, while path structure does", () => {
+    const factualSignal = codeRequestSignal("What is Rust used for?");
+    expect(codeRequestObservedRequirements("What is Rust used for?", factualSignal)).toEqual([]);
+
+    const pathRequest = "Inspect packages/kernel/src/mouth.ts for the selected candidate route.";
+    const pathSignal = codeRequestSignal(pathRequest);
+    const pathRequirements = codeRequestObservedRequirements(pathRequest, pathSignal);
+    expect(pathSignal.paths).toEqual(["packages/kernel/src/mouth.ts"]);
+    expect(pathRequirements.some(requirement => requirement.dimension === "executableArtifactDemand")).toBe(true);
   });
 
   it("projects an explicit call/result example without reading relation prose", () => {
