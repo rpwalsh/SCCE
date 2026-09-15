@@ -29,6 +29,7 @@ export * from "./admission.js";
 export * from "./language.js";
 export * from "./multilingual-acquisition.js";
 export * from "./language-memory-runtime.js";
+export * from "./language-state-delta.js";
 export * from "./creative-section-realization.js";
 export * from "./corpus-registry.js";
 export * from "./correction-memory.js";
