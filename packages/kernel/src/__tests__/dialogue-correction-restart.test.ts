@@ -81,9 +81,7 @@ describe("dialogue correction across a process restart", () => {
     expect((await latestState(controlMemory))?.bindings.every(binding => !binding.interpretationAdjustmentIds?.length)).toBe(true);
   });
 
-  // Known defect, pinned: every candidate in the field carries the union of both referents' proof evidence, so
-  // applyDialogueInterpretationAdjustmentsV2 leaves each one neutral and the judge has no planet-only candidate.
-  it.fails("selects the corrected referent for the same request form", async () => {
+  it("selects the corrected referent for the same request form", async () => {
     const conversation = await correctedConversation(15_000);
     const corrected = await tracedTurn(conversation.kernel, REQUEST);
     const selected = corrected.result.selectedCandidate as { audit?: { typedDialogueSelection?: { adjustmentIds?: string[] } } };

@@ -84,6 +84,8 @@ export interface CandidateGenerationInput {
   languageMemoryForRealization?: { languageMemory: LanguageMemoryRuntime; state: LanguageMemoryRuntimeState; languageProfile?: LanguageProfile };
   /** Promoted typed relations remain available beside the flattened activation field. */
   typedRelations?: readonly Hyperedge[];
+  /** Proof evidence ids per typed dialogue referent; two or more emit one proof-answer per referent. */
+  referentProofEvidenceIds?: readonly (readonly string[])[];
 }
 
 export function createCandidateEngine() {
@@ -98,7 +100,7 @@ export function createCandidateEngine() {
       const candidatesBeforeFunctionalGate = [
         ...(input.requestedAuthority === "factual" && input.evidence.length > 0
           || operatorSupported(input, [COGNITIVE_OPERATOR_IDS.semanticProof, COGNITIVE_OPERATOR_IDS.evidenceActivation, COGNITIVE_OPERATOR_IDS.clarification])
-          ? [proofAnswer(input)]
+          ? [proofAnswer(input), ...referentProofAnswers(input)]
           : []),
         ...(operatorSupported(input, [COGNITIVE_OPERATOR_IDS.sourceSynthesis, COGNITIVE_OPERATOR_IDS.evidenceActivation, COGNITIVE_OPERATOR_IDS.semanticProof])
           ? [ccrCandidate(input)]
@@ -781,6 +783,31 @@ function proofAnswer(input: {
       })
     ]
   };
+}
+
+function referentProofAnswers(input: CandidateGenerationInput): CandidateSurface[] {
+  const proofEvidenceIds = new Set(input.entailment.evidenceIds.map(String));
+  const partitions = uniqueReferentPartitions((input.referentProofEvidenceIds ?? [])
+    .map(ids => [...new Set(ids.map(String))].filter(id => proofEvidenceIds.has(id)).sort())
+    .filter(ids => ids.length > 0));
+  if (partitions.length < 2) return [];
+  return partitions.flatMap(ids => {
+    const scoped = new Set(ids);
+    const entailment = {
+      ...input.entailment,
+      evidenceIds: input.entailment.evidenceIds.filter(id => scoped.has(String(id))),
+      mappings: input.entailment.mappings.filter(mapping => mapping.evidenceIds.some(id => scoped.has(String(id))))
+    };
+    const surface = boundEvidenceSurface(entailment.evidenceIds, input.evidence);
+    if (!surface) return [];
+    const candidate = proofAnswer({ ...input, entailment, proofAnswer: surface, attestedAnswerSurface: surface, ownerSessionEvidenceIds: undefined });
+    return [{ ...candidate, id: `${candidate.id}:referent:${hash32(ids.join("\u001f")).toString(16)}` }];
+  });
+}
+
+function uniqueReferentPartitions(partitions: readonly string[][]): string[][] {
+  const byKey = new Map(partitions.map(ids => [ids.join("\u001f"), ids] as const));
+  return [...byKey.entries()].sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0).map(([, ids]) => ids);
 }
 
 function normalizeCandidateAnswer(answer: string, input: { requestText: string; entailment: SemanticEntailmentResult; evidence: EvidenceSpan[]; ownerSessionEvidenceIds?: ReadonlySet<string> }): string {

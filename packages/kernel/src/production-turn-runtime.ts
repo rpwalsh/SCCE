@@ -3766,7 +3766,11 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         creativeContinuationState,
         candidateRunId: String(episodeId),
         creativeContinuationPolicy,
-        creativeContinuationCandidates
+        creativeContinuationCandidates,
+        // Per-referent candidates only matter to a typed adjustment, so uncorrected turns keep their field.
+        ...(dialogueInterpretationAdjustments.length
+          ? { referentProofEvidenceIds: preselectionReferentProofEvidenceIdsV2(dialoguePreselection.candidates) }
+          : {})
       });
       const candidateField = applyDialogueInterpretationAdjustmentsV2({
         field: generatedCandidateField,
@@ -5679,6 +5683,9 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           routeSignals: dialogueProjection.routeSignals,
           provenanceBindings: dialogueProjection.provenanceBindings,
           interpretationAdjustments: dialogueInterpretationAdjustments,
+          ...(dialogueInterpretationAdjustments.length
+            ? { interpretationContext: typedDialogueTurnContextV2(dialoguePreselection.candidates) }
+            : {}),
           hasher
         });
         const persistedDialogueState = dialogueCognitiveMemory
@@ -6621,12 +6628,33 @@ export function typedDialoguePreselectionV2(input: {
   return { observation, candidates };
 }
 
+export function typedDialogueTurnContextV2(candidates: readonly DiscoursePreselectionCandidateV2[]): Pick<DiscoursePreselectionCandidateV2, "semanticRoleIds" | "requestedSlotIds" | "learnedFrameIds" | "scopeIds"> {
+  return {
+    semanticRoleIds: uniqueKernelStrings(candidates.flatMap(context => context.semanticRoleIds)),
+    requestedSlotIds: uniqueKernelStrings(candidates.flatMap(context => context.requestedSlotIds)),
+    learnedFrameIds: uniqueKernelStrings(candidates.flatMap(context => context.learnedFrameIds)),
+    scopeIds: uniqueKernelStrings(candidates.flatMap(context => context.scopeIds))
+  };
+}
+
+export function preselectionReferentProofEvidenceIdsV2(candidates: readonly DiscoursePreselectionCandidateV2[]): string[][] {
+  const byReferent = new Map<string, Set<string>>();
+  for (const candidate of candidates) {
+    const ids = byReferent.get(candidate.referentId) ?? new Set<string>();
+    for (const id of candidate.proofEvidenceIds) ids.add(id);
+    byReferent.set(candidate.referentId, ids);
+  }
+  return [...byReferent.values()].map(ids => [...ids].sort());
+}
+
 export function applyDialogueInterpretationAdjustmentsV2(input: {
   field: CandidateField;
   candidates: readonly DiscoursePreselectionCandidateV2[];
   adjustments: readonly DiscourseInterpretationAdjustmentV2[];
 }): CandidateField {
   if (!input.adjustments.length || !input.candidates.length) return input.field;
+  // A field candidate answers the whole request, so its typed context is the turn's, not one mention's source.
+  const turnContext = typedDialogueTurnContextV2(input.candidates);
   let adjustedCount = 0;
   const candidates = input.field.candidates.map(candidate => {
     const evidenceIds = new Set(candidate.evidenceIds.map(String));
@@ -6635,11 +6663,11 @@ export function applyDialogueInterpretationAdjustmentsV2(input: {
     // A candidate carrying evidence for multiple typed referents is ambiguous;
     // leave it neutral rather than letting feedback choose among unresolved proof.
     if (referentIds.length !== 1) return candidate;
-    const selections = contexts
-      .filter(context => context.referentId === referentIds[0])
-      .map(context => interpretationAdjustmentSelectionForTypedCandidateV2({ candidate: context, adjustments: input.adjustments }));
-    const selection = selections.sort((left, right) => Math.abs(right.delta) - Math.abs(left.delta))[0];
-    if (!selection?.delta) return candidate;
+    const selection = interpretationAdjustmentSelectionForTypedCandidateV2({
+      candidate: { referentId: referentIds[0]!, ...turnContext, proofEvidenceIds: uniqueKernelStrings(contexts.flatMap(context => context.proofEvidenceIds)) },
+      adjustments: input.adjustments
+    });
+    if (!selection.delta) return candidate;
     adjustedCount++;
     return {
       ...candidate,

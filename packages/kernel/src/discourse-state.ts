@@ -602,6 +602,8 @@ export interface ResolveDiscourseStateV2Input {
   routeSignals?: readonly DiscourseRouteSignalV2[];
   provenanceBindings?: readonly DiscourseProvenanceBindingV2[];
   interpretationAdjustments?: readonly DiscourseInterpretationAdjustmentV2[];
+  /** The request's typed context before selection; widens adjustment matching only, never the observation. */
+  interpretationContext?: Pick<DiscoursePreselectionCandidateV2, "semanticRoleIds" | "requestedSlotIds" | "learnedFrameIds" | "scopeIds">;
   config?: DiscourseResolverConfigPatchV2;
   hasher?: Hasher;
 }
@@ -873,6 +875,7 @@ export function resolveDiscourseStateV2(input: ResolveDiscourseStateV2Input): Di
         signal: routeSignals.get(discourseRouteSignalKey(mention.id, referent.id)),
         provenanceBindings: provenanceBindings.get(discourseRouteSignalKey(mention.id, referent.id)) ?? [],
         interpretationAdjustments,
+        interpretationContext: input.interpretationContext,
         hasher,
         config
       }))
@@ -1084,6 +1087,7 @@ function scoreDiscourseCandidateV2(input: {
   signal?: DiscourseRouteSignalV2;
   provenanceBindings: readonly DiscourseProvenanceBindingV2[];
   interpretationAdjustments: readonly DiscourseInterpretationAdjustmentV2[];
+  interpretationContext?: ResolveDiscourseStateV2Input["interpretationContext"];
   hasher: Hasher;
   config: DiscourseResolverConfigV2;
 }): ScoredDiscourseCandidateV2 {
@@ -1142,10 +1146,10 @@ function scoreDiscourseCandidateV2(input: {
   const interpretationSelection = interpretationAdjustmentSelectionForTypedCandidateV2({
     candidate: {
       referentId: referent.id,
-      semanticRoleIds: canonicalStringSetV2(mention.semanticRoleIds),
-      requestedSlotIds: canonicalStringSetV2([...input.requestedSlotIds, ...mention.requestedSlotIds]),
-      learnedFrameIds: canonicalStringSetV2([...observation.learnedFrameIds, ...mention.learnedFrameIds]),
-      scopeIds: canonicalStringSetV2([...observation.scopeIds, ...mention.scopeIds]),
+      semanticRoleIds: canonicalStringSetV2([...mention.semanticRoleIds, ...input.interpretationContext?.semanticRoleIds ?? []]),
+      requestedSlotIds: canonicalStringSetV2([...input.requestedSlotIds, ...mention.requestedSlotIds, ...input.interpretationContext?.requestedSlotIds ?? []]),
+      learnedFrameIds: canonicalStringSetV2([...observation.learnedFrameIds, ...mention.learnedFrameIds, ...input.interpretationContext?.learnedFrameIds ?? []]),
+      scopeIds: canonicalStringSetV2([...observation.scopeIds, ...mention.scopeIds, ...input.interpretationContext?.scopeIds ?? []]),
       proofEvidenceIds: canonicalStringSetV2(validProvenanceBindings.flatMap(binding => binding.evidenceIds))
     },
     adjustments: input.interpretationAdjustments
