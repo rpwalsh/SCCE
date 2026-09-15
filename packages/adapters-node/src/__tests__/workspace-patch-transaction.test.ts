@@ -173,6 +173,31 @@ describe("workspace patch transaction", () => {
     expect((await readdir(root)).filter(name => name.includes(".scce-"))).toEqual([]);
   });
 
+  it("rolls back parent directories created for a multi-file greenfield commit", async () => {
+    const root = await workspace();
+    const plan = createPatchTransactionPlan({ operations: [
+      { kind: "create", path: "one/a.ts", content: "export const a = 1;\n" },
+      { kind: "create", path: "two/b.ts", content: "export const b = 2;\n" }
+    ] });
+
+    const error = await captureError(executeWorkspacePatchTransaction({
+      workspaceRoot: root,
+      plan,
+      testFailpoint(event) {
+        if (event.phase === "beforeApply" && event.operationIndex === 1) throw new Error("fixture greenfield commit failure");
+      }
+    }));
+
+    expect(error).toBeInstanceOf(WorkspacePatchTransactionError);
+    expect((error as WorkspacePatchTransactionError).code).toBe("COMMIT_FAILED");
+    expect((error as WorkspacePatchTransactionError).rollback).toEqual({
+      attemptedPaths: ["one/a.ts"],
+      restoredPaths: ["one/a.ts"],
+      failures: []
+    });
+    expect(await readdir(root)).toEqual([]);
+  });
+
   it("preserves existing assertion files byte-for-byte and commits nothing when one is targeted", async () => {
     const root = await workspace();
     await mkdir(join(root, "src"));

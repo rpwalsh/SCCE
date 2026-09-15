@@ -282,7 +282,7 @@ describe("workspace exact-byte plan generation", () => {
     })).toThrow(/did not materially change requested full-file artifacts/u);
   });
 
-  it("fails closed when a generated create has no verified parent directory", () => {
+  it("materializes a generated create whose parent directory will be created at commit", () => {
     const snapshot = revision([current("README.md", "# Existing\n", "doc")]);
     const doc = proposed("notes/plan.md", "# Plan\n", "doc", null).artifact;
     const graphWithoutHydration: Omit<ProgramGraph, "hydration"> = {
@@ -290,26 +290,31 @@ describe("workspace exact-byte plan generation", () => {
       language: "markdown",
       packageManager: "source-derived",
       entrypoint: doc.path,
-      nodes: [],
-      edges: [],
+      nodes: [{ id: "owner.requirement.notes", kind: "owner_behavior_requirement", label: "owner requirement", metadata: {} }],
+      edges: [
+        { source: "owner.requirement.notes", target: doc.path, relation: "implemented_by", weight: 1 },
+        { source: "owner.requirement.notes", target: "validation.tests", relation: "verified_by", weight: 1 }
+      ],
       files: [doc],
       build: { command: "source-derived", args: ["build"], cwd: "." },
       test: { command: "source-derived", args: ["test"], cwd: "." }
     };
     const program: ProgramGraph = {
       ...graphWithoutHydration,
-      hydration: createProgramHydrationContract({ program: graphWithoutHydration, sourcePlanId: "plan.missing-parent", evidenceIds: ["evidence.bound"] })
+      hydration: createProgramHydrationContract({ program: graphWithoutHydration, sourcePlanId: "plan.missing-parent", evidenceIds: ["evidence.bound"], ownerRequirementIds: ["owner.requirement.notes"] })
     };
-    expect(() => generateWorkspacePatchPlanFromProgramGraph({
+    const result = generateWorkspacePatchPlanFromProgramGraph({
       snapshot,
       expectedRevisionId: snapshot.revisionId,
       expectedRevisionHash: snapshot.revisionHash,
-      request: { requestId: "request.missing-parent", text: "Create notes.", requestedPaths: [doc.path], evidenceIds: ["evidence.bound"] },
+      request: { requestId: "request.missing-parent", text: "Create notes.", requestedPaths: [doc.path], evidenceIds: ["evidence.bound"], ownerRequirementIds: ["owner.requirement.notes"] },
       program,
       existingDirectoryPaths: [""],
       verifiedAbsentPaths: [doc.path],
       validationPlan: { validatorId: "trusted-host-pnpm-validate.v1", checks: ["tests"] }
-    })).toThrow(/create parent directory is not present/u);
+    });
+    expect(result.plan.operations).toEqual([{ kind: "create", path: doc.path, content: doc.content, beforeContentHash: null, afterContentHash: hashPatchContent(doc.content) }]);
+    expect(result.programProposalTrace.verifiedParentDirectoryPaths).toEqual([]);
   });
 
   it("builds a valid replacement/create PatchTransactionPlan from exact revision bytes", () => {

@@ -62,6 +62,38 @@ describe("NodeBuildTestAdapter execution authority", () => {
     expect(result.artifacts.find(item => item.path === source.path)?.content).not.toBe(source.content);
   });
 
+  it("executes each graph-bound command from its declared workspace cwd", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "scce-build-cwd-"));
+    roots.push(tempRoot);
+    const source = artifact("app/src/program.mjs", "export function value() { return 7; }\n", "source");
+    const test = artifact("app/test/program.test.mjs", "import { value } from '../src/program.mjs';\nif (value() !== 7) process.exit(9);\n", "test");
+    const construct = {
+      id: "construct.build-cwd",
+      artifacts: [source, test],
+      program: {
+        id: "program.build-cwd",
+        language: "javascript",
+        packageManager: "node",
+        entrypoint: source.path,
+        nodes: [],
+        edges: [],
+        files: [source, test],
+        build: { command: process.execPath, args: ["--check", "app/src/program.mjs"], cwd: "" },
+        test: { command: process.execPath, args: ["test/program.test.mjs"], cwd: "app" }
+      }
+    } as unknown as ConstructGraph;
+    const adapter = new NodeBuildTestAdapter({ runtime: { tempRoot } } as ScceRuntimeConfig);
+
+    const result = await adapter.executeProgram({
+      episodeId: "episode.build-cwd" as EpisodeId,
+      construct
+    });
+
+    expect(result.passed).toBe(true);
+    expect(result.build.code).toBe(0);
+    expect(result.test.code).toBe(0);
+  });
+
   it("retries only after the kernel binds, selects, and materializes the observed failure", async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), "scce-build-replan-"));
     roots.push(tempRoot);

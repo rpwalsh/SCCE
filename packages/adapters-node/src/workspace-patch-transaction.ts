@@ -5,14 +5,18 @@ import {
   copyFile,
   link,
   lstat,
+  mkdir,
+  mkdtemp,
   open,
   readFile,
   realpath,
   rename,
+  rmdir,
   rm,
   unlink
 } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
+import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import {
   createPatchMutationReceipt,
@@ -122,9 +126,12 @@ export async function executeWorkspacePatchTransaction(options: WorkspacePatchTr
   const root = await canonicalWorkspaceRoot(options.workspaceRoot, options.plan.planHash);
   const prepared: PreparedOperation[] = [];
   const applied: AppliedOperation[] = [];
+  const createdDirectories: string[] = [];
+  let stageRoot: string | undefined;
   let validationReceipt: PatchValidationReceipt | undefined;
 
   try {
+    stageRoot = await mkdtemp(join(tmpdir(), "scce-patch-stage-"));
     for (let index = 0; index < options.plan.operations.length; index += 1) {
       const operation = options.plan.operations[index];
       if (!operation) throw new Error(`missing operation at index ${index}`);
@@ -140,7 +147,12 @@ export async function executeWorkspacePatchTransaction(options: WorkspacePatchTr
         backupPath: temporarySibling(targetPath, options.plan.planHash, index, "backup")
       };
       if (operation.kind !== "delete") {
-        entry.stagePath = temporarySibling(targetPath, options.plan.planHash, index, "stage");
+        // A create target may have a new parent directory. Keep its staged
+        // bytes outside the workspace until commit so validation remains
+        // observational and a failed validation leaves the workspace alone.
+        entry.stagePath = operation.kind === "create"
+          ? join(stageRoot, `${index}.stage`)
+          : temporarySibling(targetPath, options.plan.planHash, index, "stage");
         const originalMode = operation.kind === "replace" ? (await lstat(targetPath)).mode & 0o777 : 0o600;
         await writeExclusiveSynced(entry.stagePath, operation.content, originalMode);
         const stagedHash = hashPatchContent(await readFile(entry.stagePath));
@@ -179,7 +191,7 @@ export async function executeWorkspacePatchTransaction(options: WorkspacePatchTr
       await resolveSecureTarget(root, entry.operation.path, entry.operation.kind === "create", options.plan.planHash);
       await assertBaseState(entry.targetPath, entry.operation, options.plan.planHash);
       await options.testFailpoint?.({ phase: "beforeApply", operationIndex: entry.index, path: entry.operation.path });
-      await applyPrepared(entry, options.plan.planHash);
+      await applyPrepared(entry, options.plan.planHash, root, createdDirectories);
       const receipt = createPatchMutationReceipt({
         planHash: options.plan.planHash,
         operationIndex: entry.index,
@@ -197,11 +209,12 @@ export async function executeWorkspacePatchTransaction(options: WorkspacePatchTr
       validation: validationReceipt,
       mutations: applied.map(item => item.receipt)
     });
-    await cleanupPrepared(prepared);
+    await cleanupPrepared(prepared, stageRoot);
     return receipt;
   } catch (cause) {
     const rollback = await rollbackApplied(applied, options.plan.planHash);
-    await cleanupPrepared(prepared);
+    await cleanupCreatedDirectories(createdDirectories);
+    await cleanupPrepared(prepared, stageRoot);
     const originalCode = cause instanceof WorkspacePatchTransactionError ? cause.code : "COMMIT_FAILED";
     const code = rollback.failures.length > 0 ? "ROLLBACK_FAILED" : originalCode;
     throw new WorkspacePatchTransactionError({
@@ -217,18 +230,32 @@ export async function executeWorkspacePatchTransaction(options: WorkspacePatchTr
   }
 }
 
-async function applyPrepared(entry: PreparedOperation, planHash: PatchContentHash): Promise<void> {
+async function applyPrepared(
+  entry: PreparedOperation,
+  planHash: PatchContentHash,
+  root: string,
+  createdDirectories: string[]
+): Promise<void> {
   const { operation, targetPath, backupPath } = entry;
   if (operation.kind === "create") {
     const stagePath = requiredStage(entry);
+    await ensureParentDirectories(root, targetPath, planHash, createdDirectories);
     try {
       await link(stagePath, targetPath); // exclusive: refuses a concurrent create
     } catch (cause) {
-      fail("DRIFT_DETECTED", `create target appeared before commit: ${operation.path}`, planHash, cause);
+      if (isCrossDevice(cause)) {
+        try {
+          await copyFile(stagePath, targetPath, constants.COPYFILE_EXCL);
+        } catch (fallbackCause) {
+          fail("DRIFT_DETECTED", `create target could not be materialized: ${operation.path}`, planHash, fallbackCause);
+        }
+      } else {
+        fail("DRIFT_DETECTED", `create target appeared before commit: ${operation.path}`, planHash, cause);
+      }
     }
-    // Keep the staged hard-link until the transaction either commits or rolls
-    // back. That leaves no fallible async step between the target mutation and
-    // recording it in the applied set.
+    // Keep staged bytes until the transaction either commits or rolls back.
+    // That leaves no fallible async step between the target mutation and
+    // recording it in the applied set, including the cross-device copy path.
     return;
   }
 
@@ -338,13 +365,19 @@ async function resolveSecureTarget(root: string, workspacePath: string, allowMis
       if (stat.isSymbolicLink()) fail("SYMLINK_REFUSED", `symbolic-link path segment refused: ${workspacePath}`, planHash);
       if (!targetSegment && !stat.isDirectory()) fail("INVALID_TARGET", `patch parent is not a directory: ${workspacePath}`, planHash);
     } catch (cause) {
-      if (isMissing(cause) && targetSegment && allowMissingTarget) break;
+      if (isMissing(cause) && allowMissingTarget) break;
       if (cause instanceof WorkspacePatchTransactionError) throw cause;
       fail("INVALID_TARGET", `patch path cannot be resolved: ${workspacePath}`, planHash, cause);
     }
   }
 
-  const canonicalParent = await realpath(dirname(target));
+  let canonicalParent: string;
+  try {
+    canonicalParent = await realpath(dirname(target));
+  } catch (cause) {
+    if (allowMissingTarget && isMissing(cause)) return target;
+    throw cause;
+  }
   const parentRelative = relative(root, canonicalParent);
   if (parentRelative === ".." || parentRelative.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) || isAbsolute(parentRelative)) {
     fail("WORKSPACE_ESCAPE", `resolved patch parent escapes the workspace: ${workspacePath}`, planHash);
@@ -383,10 +416,48 @@ async function writeExclusiveSynced(filePath: string, content: string, mode: num
   }
 }
 
-async function cleanupPrepared(prepared: readonly PreparedOperation[]): Promise<void> {
+async function cleanupPrepared(prepared: readonly PreparedOperation[], stageRoot?: string): Promise<void> {
   await Promise.all(prepared.flatMap(item => [item.stagePath, item.backupPath]
     .filter((value): value is string => Boolean(value))
     .map(value => rm(value, { force: true }).catch(() => undefined))));
+  if (stageRoot) await rm(stageRoot, { recursive: true, force: true }).catch(() => undefined);
+}
+
+/** Creates only lexical, workspace-contained parents and records them for a
+ * reverse-order rollback if a later file operation fails. Existing segments
+ * are rechecked so a symlink can never become an authority boundary. */
+async function ensureParentDirectories(
+  root: string,
+  targetPath: string,
+  planHash: PatchContentHash,
+  createdDirectories: string[]
+): Promise<void> {
+  const parent = dirname(targetPath);
+  const relativeParent = relative(root, parent);
+  if (!relativeParent || relativeParent === ".") return;
+  if (relativeParent.startsWith("..") || isAbsolute(relativeParent)) {
+    fail("WORKSPACE_ESCAPE", `patch parent escapes the workspace: ${relativeParent}`, planHash);
+  }
+  let cursor = root;
+  for (const part of relativeParent.split(/[\\/]/u)) {
+    if (!part) continue;
+    cursor = join(cursor, part);
+    try {
+      const info = await lstat(cursor);
+      if (info.isSymbolicLink()) fail("SYMLINK_REFUSED", `symbolic-link patch parent refused: ${relative(root, cursor)}`, planHash);
+      if (!info.isDirectory()) fail("INVALID_TARGET", `patch parent is not a directory: ${relative(root, cursor)}`, planHash);
+    } catch (cause) {
+      if (!isMissing(cause)) throw cause;
+      await mkdir(cursor);
+      createdDirectories.push(cursor);
+    }
+  }
+}
+
+async function cleanupCreatedDirectories(createdDirectories: readonly string[]): Promise<void> {
+  for (const directory of [...createdDirectories].reverse()) {
+    await rmdir(directory).catch(() => undefined);
+  }
 }
 
 function temporarySibling(targetPath: string, planHash: PatchContentHash, index: number, suffix: "stage" | "backup"): string {
@@ -415,6 +486,10 @@ async function pathExists(path: string): Promise<boolean> {
 
 function isMissing(cause: unknown): boolean {
   return typeof cause === "object" && cause !== null && "code" in cause && (cause as { code?: string }).code === "ENOENT";
+}
+
+function isCrossDevice(cause: unknown): boolean {
+  return typeof cause === "object" && cause !== null && "code" in cause && (cause as { code?: string }).code === "EXDEV";
 }
 
 function fail(code: WorkspacePatchErrorCode, message: string, planHash?: PatchContentHash, cause?: unknown): never {
