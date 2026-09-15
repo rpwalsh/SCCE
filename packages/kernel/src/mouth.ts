@@ -3609,8 +3609,12 @@ function generatedCandidatesFromFrames(
     return uniqueSurfaceCandidates([...creativeVariants, ...(conversationMemory ? [conversationMemory] : [])]);
   }
   const sentences: SentenceCandidate[] = [];
+  const realizationFrameById = new Map<string, RealizationFrame>();
+  for (const frame of plan.realizationFrames) {
+    if (!realizationFrameById.has(frame.id)) realizationFrameById.set(frame.id, frame);
+  }
   for (const unit of discoursePlan.units) {
-    const frames = framesForDiscourseUnit(unit, plan);
+    const frames = framesForDiscourseUnit(unit, realizationFrameById);
     if (!frames.length) continue;
     const unitTerms = requiredTermsForDiscourseUnit(unit, frames, plan);
     const unitPlan: SurfacePlan = { ...plan, realizationFrames: frames, requiredTerms: unitTerms };
@@ -3671,7 +3675,11 @@ function generatedCandidatesFromFrames(
     style: "surface.path.generated",
     path: "generated",
     text: assembly.text,
-    evidenceIds: [...new Set(discoursePlan.units.flatMap(unit => unit.frameIds).map(id => plan.realizationFrames.find(frame => frame.id === id)).filter((frame): frame is RealizationFrame => Boolean(frame)).flatMap(frame => frame.evidenceBinding?.evidenceId ? [frame.evidenceBinding.evidenceId] : []))],
+    evidenceIds: [...new Set(discoursePlan.units
+      .flatMap(unit => unit.frameIds)
+      .map(id => realizationFrameById.get(id))
+      .filter((frame): frame is RealizationFrame => Boolean(frame))
+      .flatMap(frame => frame.evidenceBinding?.evidenceId ? [frame.evidenceBinding.evidenceId] : []))],
     fit: clamp01(0.58 + mean(sentences.map(sentence => sentence.generation.confidence)) * 0.42),
     importedPieceIds: pieceIds,
     generation: aggregateGeneration,
@@ -4014,18 +4022,27 @@ export function creativeSurfaceSentenceUnits(
   discoursePlan?: DiscoursePlan,
   discourseMoves?: readonly LanguageDiscourseMove[]
 ): Array<{ text: string; role: DiscourseUnitRole }> {
+  const discourseUnitByFrameId = new Map<string, { unit: DiscourseUnit; index: number }>();
+  for (const [index, unit] of (discoursePlan?.units ?? []).entries()) {
+    for (const frameId of unit.frameIds ?? []) {
+      if (!discourseUnitByFrameId.has(frameId)) discourseUnitByFrameId.set(frameId, { unit, index });
+    }
+  }
   return splitSurfaceSentences(text)
     .map(sentence => tidySurface(sentence))
     .filter(Boolean)
     .map((sentence, index) => {
       const move = discourseMoves?.[index];
-      const moveFrameIds = new Set(move?.frameIds ?? []);
-      const typedUnit = discoursePlan?.units.find(unit => (unit.frameIds ?? []).some(frameId => moveFrameIds.has(frameId)));
+      let typedUnitRow: { unit: DiscourseUnit; index: number } | undefined;
+      for (const frameId of move?.frameIds ?? []) {
+        const row = discourseUnitByFrameId.get(frameId);
+        if (row && (!typedUnitRow || row.index < typedUnitRow.index)) typedUnitRow = row;
+      }
       return {
         text: sentence,
         // Learned discourse moves carry the semantic alignment. Position is
         // only a fallback for older generation results without frame IDs.
-        role: typedUnit?.role ?? discoursePlan?.units[index]?.role ?? (index === 0 ? "answer" : "support")
+        role: typedUnitRow?.unit.role ?? discoursePlan?.units[index]?.role ?? (index === 0 ? "answer" : "support")
       };
     });
 }
@@ -4365,8 +4382,14 @@ function creativeAnchoredAssembly(
   discoursePlan: DiscoursePlan,
   languageMemory: LanguageMemoryRuntimeState
 ): DiscourseAssembly {
+  const discourseUnitByFrameId = new Map<string, DiscourseUnit>();
+  for (const unit of discoursePlan.units) {
+    for (const frameId of unit.frameIds) {
+      if (!discourseUnitByFrameId.has(frameId)) discourseUnitByFrameId.set(frameId, unit);
+    }
+  }
   const units = frames.map((frame, index): DiscourseUnit => {
-    const existing = discoursePlan.units.find(unit => unit.frameIds.includes(frame.id));
+    const existing = discourseUnitByFrameId.get(frame.id);
     return {
       ...(existing ?? {
         role: frame.role,
@@ -5255,8 +5278,12 @@ function anchoredTextForFrames(
 }
 
 function assembleAnchoredSurfaces(input: { discoursePlan: DiscoursePlan; surfaces: readonly { unit: DiscourseUnit; text: string }[]; languageMemory: LanguageMemoryRuntimeState }): DiscourseAssembly {
+  const surfaceByUnitId = new Map<string, { unit: DiscourseUnit; text: string }>();
+  for (const surface of input.surfaces) {
+    if (!surfaceByUnitId.has(surface.unit.id)) surfaceByUnitId.set(surface.unit.id, surface);
+  }
   const ordered = input.discoursePlan.units
-    .map(unit => ({ unit, surface: input.surfaces.find(surface => surface.unit.id === unit.id) }))
+    .map(unit => ({ unit, surface: surfaceByUnitId.get(unit.id) }))
     .filter((row): row is { unit: DiscourseUnit; surface: { unit: DiscourseUnit; text: string } } => Boolean(row.surface));
   if (!ordered.length) return { text: "", boundaryDecisions: [] };
   let text = tidySurface(ordered[0]!.surface.text);
@@ -5300,8 +5327,8 @@ function assembleAnchoredSurfaces(input: { discoursePlan: DiscoursePlan; surface
   return { text: tidySurface(text), boundaryDecisions: decisions };
 }
 
-function framesForDiscourseUnit(unit: DiscourseUnit, plan: SurfacePlan): RealizationFrame[] {
-  const frames = unit.frameIds.map(id => plan.realizationFrames.find(frame => frame.id === id)).filter((frame): frame is RealizationFrame => Boolean(frame));
+function framesForDiscourseUnit(unit: DiscourseUnit, realizationFrameById: ReadonlyMap<string, RealizationFrame>): RealizationFrame[] {
+  const frames = unit.frameIds.map(id => realizationFrameById.get(id)).filter((frame): frame is RealizationFrame => Boolean(frame));
   if (unit.role !== "caveat") return frames;
   return frames.map(frame => {
     const caveatText = frame.caveat?.reason;
