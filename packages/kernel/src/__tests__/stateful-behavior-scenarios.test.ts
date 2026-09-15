@@ -29,4 +29,16 @@ describe("stateful behavior scenario parser", () => {
     expect(parseStatefulBehaviorScenarios("foo(\"a\") => 4")).toBeUndefined();
     expect(parseStatefulBehaviorScenarios("get(key); get(\"a\") returns 4")).toBeUndefined();
   });
+
+  it("preserves an opaque Unicode source relation for stateful owner behavior", () => {
+    const parsed = parseStatefulBehaviorScenarios([
+      "κ(key); μ(key)",
+      "κ(\"a\", -4); μ(\"a\")↦-4",
+      "κ(\"a\", 9); μ(\"a\") ↦ 9",
+      "κ(\"b\", 2); μ(\"b\") ↦ 2",
+      "κ(\"c\", 3); μ(\"c\") ↦ 3"
+    ].join("\n"));
+    expect(parsed?.scenarios.map(scenario => scenario.assertion.relationSurface)).toEqual(["↦", "↦", "↦", "↦"]);
+    expect(parsed?.scenarios.map(scenario => scenario.verificationRole)).toEqual(["fit", "fit", "fit", "held_out"]);
+  });
 });

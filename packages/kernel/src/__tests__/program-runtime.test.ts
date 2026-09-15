@@ -288,6 +288,19 @@ describe("ProgramGraph runtime and artifact emission", () => {
     }
   });
 
+  it("carries an opaque Unicode source relation from plain owner text into typed program intent", () => {
+    const request = "κ(x); κ(1) ↦ 2, κ(3) ↦ 6, κ(-2) ↦ -4, κ(11) ↦ 22";
+    const signal = codeRequestSignal(request);
+    const intent = required(programIntentForTurn({
+      requestedAuthority: "program",
+      activeOperatorIds: [COGNITIVE_OPERATOR_IDS.programPlanning],
+      codeSignal: signal,
+      evidence: []
+    }));
+    expect(intent.behaviorRequirements?.map(requirement => requirement.relationSurface)).toEqual(["↦", "↦", "↦", "↦"]);
+    expect(intent.behaviorRequirements?.map(requirement => requirement.verificationRole)).toEqual(["fit", "fit", "fit", "held_out"]);
+  });
+
   it("originates a structural data transformation and verifies an unseen example", () => {
     const request = [
       "Create card(person).",

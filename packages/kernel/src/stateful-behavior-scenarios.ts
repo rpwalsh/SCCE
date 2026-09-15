@@ -1,4 +1,5 @@
 import { canonicalStringify, createHasher } from "./primitives.js";
+import { readSymbolicProgramRelation } from "./program-behavior-syntax.js";
 import type { JsonValue } from "./types.js";
 
 export interface StatefulBehaviorSourceSpan {
@@ -147,14 +148,17 @@ function parseAssertion(call: ParsedCall, declarations: ReadonlySet<string>, sta
   if (!declarations.has(call.callableId)) return undefined;
   const localCallEnd = call.callEnd - statementStart;
   const remainder = statement.slice(localCallEnd);
-  const match = /^\s*(===|==|=>|->|=)\s*(.+?)\s*[,.。]?\s*$/us.exec(remainder);
-  if (!match) return undefined;
-  const valueText = match[2]!.trim();
+  const relationStart = remainder.search(/\S/u);
+  if (relationStart < 0) return undefined;
+  const relation = readSymbolicProgramRelation(remainder, relationStart);
+  if (!relation) return undefined;
+  const valueText = remainder.slice(relation.end).replace(/^\s+/u, "").replace(/[,.。]?\s*$/u, "").trim();
+  if (!valueText) return undefined;
   let result: JsonValue;
   try { result = JSON.parse(valueText) as JsonValue; } catch { return undefined; }
   const invocation: StatefulBehaviorInvocation = { callableId: call.callableId, arguments: call.arguments, sourceSpan: call.sourceSpan };
   const valueOffset = remainder.indexOf(valueText);
-  return { invocation, result, relationSurface: match[1]!, resultEnd: statementStart + localCallEnd + valueOffset + valueText.length };
+  return { invocation, result, relationSurface: relation.surface, resultEnd: statementStart + localCallEnd + valueOffset + valueText.length };
 }
 
 function isDeclarationArguments(inner: string): boolean {

@@ -13,7 +13,7 @@ import type {
 } from "./semantic-proof-types.js";
 import { clamp01, cosineSimilarity, createHasher, featureSet, stableVector, symbolizeData, toJsonValue, weightedJaccard } from "./primitives.js";
 import { evaluateSemanticTransforms, semanticTransformRules } from "./semantic-transform-registry.js";
-import { evidenceDependencyComponents, evidenceLineage, evidenceProofBoundary, graphNodePriorClass, isLearnedPriorClass } from "./proof-boundary.js";
+import { evidenceDependencyComponents, evidenceLineageSummary, evidenceProofBoundary, graphNodePriorClass, isLearnedPriorClass } from "./proof-boundary.js";
 import {
   compileRelationHypothesisModel,
   inferRelationHypotheses
@@ -1551,16 +1551,11 @@ function sourceDependenceIdentityByEvidence(spans: readonly import("./types.js")
   // Resolve ancestry once per immutable source version. A source commonly
   // contributes many chunks; resolving the same lineage for every chunk
   // would turn this guard into an avoidable evidence-count square.
-  const representativeByVersion = new Map<string, EvidenceSpan>();
-  for (const span of spans) {
+  const lineageSummary = evidenceLineageSummary(spans);
+  const lineages = spans.map(span => {
     const version = String(span.sourceVersionId);
-    if (!representativeByVersion.has(version)) representativeByVersion.set(version, span);
-  }
-  const lineageByVersion = new Map<string, string>();
-  for (const [version, representative] of representativeByVersion) {
-    lineageByVersion.set(version, evidenceLineage(representative, spans).identity || version);
-  }
-  const lineages = spans.map(span => lineageByVersion.get(String(span.sourceVersionId)) || String(span.sourceVersionId));
+    return lineageSummary.identityByVersion.get(version) || version;
+  });
   const dependencyComponents = evidenceDependencyComponents(spans);
   const families = spans.map(span => dependencyComponents.get(String(span.id)) ?? "");
   const firstByKey = new Map<string, number>();

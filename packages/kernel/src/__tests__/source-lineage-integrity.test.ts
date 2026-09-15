@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createProofCarryingAnswer } from "../proof-carrying-answer.js";
-import { evidenceLineage, evidenceProofBoundaries, evidenceProofBoundariesForClaim } from "../proof-boundary.js";
+import { evidenceLineage, evidenceLineageSummary, evidenceProofBoundaries, evidenceProofBoundariesForClaim } from "../proof-boundary.js";
 import { evidenceToProofRecords } from "../semantic-proof-adapter.js";
 import { createSemanticProofSystem } from "../semantic-proof-system.js";
 import { featureSet } from "../primitives.js";
@@ -51,6 +51,43 @@ describe("source-authority lineage at the proof boundary", () => {
     ]));
     const boundaries = evidenceProofBoundaries(spans);
     expect(boundaries.every(boundary => !boundary.certifiesFactualProof)).toBe(true);
+  });
+
+  it("resolves chunked chains, cycles, and ambiguous parents from one lineage summary", () => {
+    const chain = Array.from({ length: 160 }, (_, index) => {
+      const version = `sv.batch-${index}`;
+      const parent = index === 0 ? undefined : `sv.batch-${index - 1}`;
+      const primary = assertedSpan(version, `publisher:batch-${index}`, parent);
+      return [primary, {
+        ...primary,
+        id: `evidence:${version}:chunk` as EvidenceSpan["id"],
+        chunkId: `chunk:${version}:chunk` as EvidenceSpan["chunkId"]
+      }];
+    }).flat();
+    const cycle = [
+      assertedSpan("sv.batch-cycle-a", "publisher:cycle-a", "sv.batch-cycle-b"),
+      assertedSpan("sv.batch-cycle-b", "publisher:cycle-b", "sv.batch-cycle-a")
+    ];
+    const ambiguous = [
+      assertedSpan("sv.batch-ambiguous", "publisher:ambiguous-a", "sv.batch-parent-a"),
+      assertedSpan("sv.batch-ambiguous", "publisher:ambiguous-b", "sv.batch-parent-b")
+    ];
+    const spans = [...chain, ...cycle, ...ambiguous];
+    const summary = evidenceLineageSummary(spans);
+
+    expect(summary.identityByVersion.get("sv.batch-159")).toBe("sv.batch-0");
+    expect(summary.pathLengthByVersion.get("sv.batch-159")).toBe(160);
+    expect(summary.cyclicByVersion.get("sv.batch-159")).toBe(false);
+    expect(summary.identityByVersion.get("sv.batch-cycle-a")).toBe("lineage-cycle:sv.batch-cycle-a|sv.batch-cycle-b");
+    expect(summary.identityByVersion.get("sv.batch-cycle-b")).toBe("lineage-cycle:sv.batch-cycle-a|sv.batch-cycle-b");
+    expect(summary.cyclicByVersion.get("sv.batch-cycle-a")).toBe(true);
+    expect(summary.pathLengthByVersion.get("sv.batch-cycle-a")).toBe(2);
+    expect(summary.pathLengthByVersion.get("sv.batch-cycle-b")).toBe(2);
+    expect(summary.identityByVersion.get("sv.batch-ambiguous")).toBe("lineage-ambiguous:sv.batch-ambiguous");
+    expect(summary.pathLengthByVersion.get("sv.batch-ambiguous")).toBe(1);
+
+    const last = chain[chain.length - 1]!;
+    expect(evidenceLineage(last, spans).sourceVersionIds).toHaveLength(160);
   });
 
   it("still lets genuinely independent owner-supplied documents corroborate", () => {

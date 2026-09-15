@@ -25,6 +25,23 @@ export interface EvidenceLineage {
 }
 
 /**
+ * Batch lineage facts shared by all evidence spans from one source set.
+ * Consumers that only need source identity can use these maps without
+ * materializing every full ancestor path in a long derivation chain.
+ */
+export interface EvidenceLineageSummary {
+  readonly identityByVersion: ReadonlyMap<string, string>;
+  readonly cyclicByVersion: ReadonlyMap<string, boolean>;
+  readonly pathLengthByVersion: ReadonlyMap<string, number>;
+}
+
+interface EvidenceLineageSummaryState extends EvidenceLineageSummary {
+  readonly parentByVersion: ReadonlyMap<string, ReadonlySet<string>>;
+}
+
+const lineageSummaryCache = new WeakMap<object, EvidenceLineageSummaryState>();
+
+/**
  * An assertion is knowledge *about a source*, not yet knowledge that its
  * proposition holds in the world.  Ingestion stamps this state itself; it is
  * deliberately not a caller-controlled trust hint.
@@ -227,24 +244,29 @@ function independentLineageRepresentatives(
   siblings: readonly EvidenceSpan[]
 ): Set<string> {
   const dependencyComponents = evidenceDependencyComponents(siblings);
+  const lineageSummary = evidenceLineageSummary(siblings);
   const candidates = asserted
-    .map(span => ({
-      span,
-      family: dependencyComponents.get(String(span.id)) ?? "",
-      lineage: evidenceLineage(span, siblings)
-    }))
-    .filter(candidate => Boolean(candidate.family && candidate.lineage.identity))
+    .map(span => {
+      const version = String(span.sourceVersionId ?? span.sourceId ?? "").trim();
+      return {
+        span,
+        family: dependencyComponents.get(String(span.id)) ?? "",
+        lineageIdentity: lineageSummary.identityByVersion.get(version) ?? version,
+        lineagePathLength: lineageSummary.pathLengthByVersion.get(version) ?? 1
+      };
+    })
+    .filter(candidate => Boolean(candidate.family && candidate.lineageIdentity))
     .sort((left, right) => {
-      const lineageOrder = left.lineage.identity.localeCompare(right.lineage.identity);
+      const lineageOrder = left.lineageIdentity.localeCompare(right.lineageIdentity);
       if (lineageOrder) return lineageOrder;
       // Prefer the declared root when it is present; otherwise the closest
       // available ancestor represents the lineage. A downstream republisher's
       // label cannot replace the family's identity merely because its span was
       // presented first.
-      const leftRoot = String(left.span.sourceVersionId) === left.lineage.identity ? 0 : 1;
-      const rightRoot = String(right.span.sourceVersionId) === right.lineage.identity ? 0 : 1;
+      const leftRoot = String(left.span.sourceVersionId) === left.lineageIdentity ? 0 : 1;
+      const rightRoot = String(right.span.sourceVersionId) === right.lineageIdentity ? 0 : 1;
       return leftRoot - rightRoot
-        || left.lineage.sourceVersionIds.length - right.lineage.sourceVersionIds.length
+        || left.lineagePathLength - right.lineagePathLength
         || String(left.span.id).localeCompare(String(right.span.id));
     });
   // A source lineage and an independence family are two separate caps. A
@@ -253,10 +275,10 @@ function independentLineageRepresentatives(
   // independent witnesses.
   const edgeByLineageFamily = new Map<string, Map<string, (typeof candidates)[number]>>();
   for (const candidate of candidates) {
-    const byFamily = edgeByLineageFamily.get(candidate.lineage.identity) ?? new Map<string, (typeof candidates)[number]>();
+    const byFamily = edgeByLineageFamily.get(candidate.lineageIdentity) ?? new Map<string, (typeof candidates)[number]>();
     const prior = byFamily.get(candidate.family);
     if (!prior || representativeOrder(candidate, prior) < 0) byFamily.set(candidate.family, candidate);
-    edgeByLineageFamily.set(candidate.lineage.identity, byFamily);
+    edgeByLineageFamily.set(candidate.lineageIdentity, byFamily);
   }
   const lineages = [...edgeByLineageFamily.keys()].sort();
   const familyToLineage = new Map<string, string>();
@@ -285,12 +307,22 @@ function independentLineageRepresentatives(
   return representatives;
 }
 
-function representativeOrder(left: { span: EvidenceSpan; lineage: EvidenceLineage }, right: { span: EvidenceSpan; lineage: EvidenceLineage }): number {
-  const leftRoot = String(left.span.sourceVersionId) === left.lineage.identity ? 0 : 1;
-  const rightRoot = String(right.span.sourceVersionId) === right.lineage.identity ? 0 : 1;
+function representativeOrder(left: { span: EvidenceSpan; lineageIdentity: string; lineagePathLength: number }, right: { span: EvidenceSpan; lineageIdentity: string; lineagePathLength: number }): number {
+  const leftRoot = String(left.span.sourceVersionId) === left.lineageIdentity ? 0 : 1;
+  const rightRoot = String(right.span.sourceVersionId) === right.lineageIdentity ? 0 : 1;
   return leftRoot - rightRoot
-    || left.lineage.sourceVersionIds.length - right.lineage.sourceVersionIds.length
+    || left.lineagePathLength - right.lineagePathLength
     || String(left.span.id).localeCompare(String(right.span.id));
+}
+
+/**
+ * Resolve all source-version identities for one evidence set in one indexed
+ * pass. Parent links form a functional graph unless a version is ambiguous;
+ * iterative path walking memoizes each suffix, while cycle members receive the
+ * same deterministic identity as the original per-span resolver.
+ */
+export function evidenceLineageSummary(siblings: readonly EvidenceSpan[]): EvidenceLineageSummary {
+  return lineageSummaryState(siblings);
 }
 
 /**
@@ -304,10 +336,27 @@ function representativeOrder(left: { span: EvidenceSpan; lineage: EvidenceLineag
  * manufacture independent corroboration.
  */
 export function evidenceLineage(span: EvidenceSpan, siblings: readonly EvidenceSpan[] = [span]): EvidenceLineage {
+  const state = lineageSummaryState(siblings);
+  const ownVersion = String(span.sourceVersionId ?? span.sourceId ?? "").trim();
+  if (!ownVersion) return { identity: "", sourceVersionIds: [], cyclic: false };
+  return {
+    identity: state.identityByVersion.get(ownVersion) ?? ownVersion,
+    sourceVersionIds: lineagePath(ownVersion, state.parentByVersion),
+    cyclic: state.cyclicByVersion.get(ownVersion) ?? false
+  };
+}
+
+function lineageSummaryState(siblings: readonly EvidenceSpan[]): EvidenceLineageSummaryState {
+  const cacheKey = siblings as unknown as object;
+  const cached = lineageSummaryCache.get(cacheKey);
+  if (cached) return cached;
+
   const parentByVersion = new Map<string, Set<string>>();
+  const versions = new Set<string>();
   for (const candidate of siblings) {
     const version = String(candidate.sourceVersionId ?? "").trim();
     if (!version) continue;
+    versions.add(version);
     const parent = sourceVersionParent(candidate);
     if (!parent) continue;
     const parents = parentByVersion.get(version) ?? new Set<string>();
@@ -315,28 +364,93 @@ export function evidenceLineage(span: EvidenceSpan, siblings: readonly EvidenceS
     parentByVersion.set(version, parents);
   }
 
-  const ownVersion = String(span.sourceVersionId ?? span.sourceId ?? "").trim();
-  if (!ownVersion) return { identity: "", sourceVersionIds: [], cyclic: false };
-  const path: string[] = [];
-  const pathIndex = new Map<string, number>();
-  let current = ownVersion;
-  while (true) {
-    const seenAt = pathIndex.get(current);
-    if (seenAt !== undefined) {
-      const cycleMembers = path.slice(seenAt);
-      const identity = `lineage-cycle:${[...new Set(cycleMembers)].sort().join("|")}`;
-      return { identity, sourceVersionIds: path, cyclic: true };
+  const identityByVersion = new Map<string, string>();
+  const cyclicByVersion = new Map<string, boolean>();
+  const pathLengthByVersion = new Map<string, number>();
+  const assign = (version: string, identity: string, cyclic: boolean, pathLength: number): void => {
+    identityByVersion.set(version, identity);
+    cyclicByVersion.set(version, cyclic);
+    pathLengthByVersion.set(version, pathLength);
+  };
+
+  for (const start of versions) {
+    if (identityByVersion.has(start)) continue;
+    const path: string[] = [];
+    const pathIndex = new Map<string, number>();
+    let current = start;
+    while (!identityByVersion.has(current) && !pathIndex.has(current)) {
+      pathIndex.set(current, path.length);
+      path.push(current);
+      const parents = parentByVersion.get(current);
+      // Conflicting ancestry claims cannot select a parent without guessing.
+      if (!parents || parents.size === 0) {
+        assign(current, current, false, 1);
+        break;
+      }
+      if (parents.size > 1) {
+        assign(current, `lineage-ambiguous:${current}`, false, 1);
+        break;
+      }
+      current = [...parents][0]!;
     }
-    pathIndex.set(current, path.length);
+
+    const cycleStart = pathIndex.get(current);
+    if (cycleStart !== undefined && !identityByVersion.has(current)) {
+      const cycleMembers = path.slice(cycleStart);
+      const identity = `lineage-cycle:${[...new Set(cycleMembers)].sort().join("|")}`;
+      // `path` excludes the repeated node, exactly as evidenceLineage did.
+      for (let index = cycleStart; index < path.length; index += 1) {
+        // Every cycle member's own traversal visits the complete cycle before
+        // repeating its start, regardless of where this walk entered it.
+        assign(path[index]!, identity, true, cycleMembers.length);
+      }
+      for (let index = cycleStart - 1; index >= 0; index -= 1) {
+        const next = path[index + 1]!;
+        assign(path[index]!, identityByVersion.get(next)!, cyclicByVersion.get(next)!, pathLengthByVersion.get(next)! + 1);
+      }
+    } else {
+      // The terminal or previously memoized suffix is known; unwind the
+      // unique-parent prefix once so every source version is resolved once.
+      for (let index = path.length - 1; index >= 0; index -= 1) {
+        const version = path[index]!;
+        if (identityByVersion.has(version)) continue;
+        const next = path[index + 1];
+        if (next === undefined) {
+          const suffixIdentity = identityByVersion.get(current);
+          if (suffixIdentity && current !== version) {
+            assign(version, suffixIdentity, cyclicByVersion.get(current)!, pathLengthByVersion.get(current)! + 1);
+          } else {
+            assign(version, version, false, 1);
+          }
+        } else {
+          assign(version, identityByVersion.get(next)!, cyclicByVersion.get(next)!, pathLengthByVersion.get(next)! + 1);
+        }
+      }
+    }
+  }
+
+  const state: EvidenceLineageSummaryState = {
+    identityByVersion,
+    cyclicByVersion,
+    pathLengthByVersion,
+    parentByVersion
+  };
+  lineageSummaryCache.set(cacheKey, state);
+  return state;
+}
+
+function lineagePath(ownVersion: string, parentByVersion: ReadonlyMap<string, ReadonlySet<string>>): string[] {
+  const path: string[] = [];
+  const pathIndex = new Set<string>();
+  let current = ownVersion;
+  while (!pathIndex.has(current)) {
+    pathIndex.add(current);
     path.push(current);
     const parents = parentByVersion.get(current);
-    // Conflicting ancestry claims for one immutable version are not enough to
-    // select a parent. Keep that version isolated rather than guessing and
-    // accidentally merging independent documentary records.
-    if (!parents || parents.size === 0) return { identity: current, sourceVersionIds: path, cyclic: false };
-    if (parents.size > 1) return { identity: `lineage-ambiguous:${current}`, sourceVersionIds: path, cyclic: false };
+    if (!parents || parents.size === 0 || parents.size > 1) return path;
     current = [...parents][0]!;
   }
+  return path;
 }
 
 export function graphNodePriorClass(node: GraphNode): ProofBoundaryClass {
