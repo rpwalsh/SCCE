@@ -21,7 +21,11 @@ import { createConnectorGovernance, defaultConnectorConfigs } from "./connector-
 import { createConstructSubstratePlanner } from "./construct-substrate.js";
 import { CORPUS_ROLE_IDS, type CorpusRoleId } from "./corpus-registry.js";
 import { createCorrectionMemory } from "./correction-memory.js";
-import { detectConflictingCorrections } from "./translation-correction-engine.js";
+import {
+  detectConflictingCorrections,
+  translationCorrectionPriorsFromRecords,
+  type TranslationCorrectionPrior
+} from "./translation-correction-engine.js";
 import { compileCreativeRequestFrameFromCompatibilityModels, type CreativeRequestFrame } from "./creative-event-compatibility.js";
 import { createCounterfactualCognition } from "./counterfactual-cognition.js";
 import { traceEvent } from "./debug/trace.js";
@@ -584,6 +588,51 @@ export function createProductionTurnRuntime(options: {
   };
   warmConstructionCycleScores();
 
+  // Translation corrections are durable training evidence, not turn
+  // authority. Keep a small target-scoped read model, refresh it once per
+  // translation turn, and collapse concurrent reads onto one in-flight load.
+  // The translation engine still requires both source and corrected target
+  // symbols to overlap independently admitted evidence.
+  const residentTranslationCorrectionPriors = new Map<string, readonly TranslationCorrectionPrior[]>();
+  const translationCorrectionLoads = new Map<string, Promise<void>>();
+  const warmTranslationCorrectionPriors = (targetLanguage: string, sourceLanguage?: string): void => {
+    const targetKey = canonicalTranslationTargetKey(targetLanguage);
+    if (translationCorrectionLoads.has(targetKey)) return;
+    const store = deps.storage.translationCorrections;
+    if (!store) {
+      residentTranslationCorrectionPriors.set(targetKey, []);
+      return;
+    }
+    // Cache the bounded target slice rather than a source-filtered slice:
+    // one process can serve several source languages, while the engine's
+    // source/target pair check remains the final admissibility boundary.
+    const load = store.listCorrections({ targetLanguage: targetKey, limit: 200 }).then(records => {
+      const priors = translationCorrectionPriorsFromRecords(records);
+      residentTranslationCorrectionPriors.set(targetKey, priors);
+      kernelTrace({
+        stage: "runtime.translation.correction_priors.loaded",
+        label: "kernel.turn",
+        durationMs: 0,
+        counts: { records: records.length, priors: priors.length },
+        support: { targetLanguage: targetKey, sourceLanguage: sourceLanguage ?? null }
+      });
+    }).catch(() => {
+      // A correction read is an improvement to a later turn, never a reason
+      // to fail the current translation path.
+      if (!residentTranslationCorrectionPriors.has(targetKey)) residentTranslationCorrectionPriors.set(targetKey, []);
+    }).finally(() => { translationCorrectionLoads.delete(targetKey); });
+    translationCorrectionLoads.set(targetKey, load);
+  };
+  const translationCorrectionPriorsForTurn = async (targetLanguage: string): Promise<readonly TranslationCorrectionPrior[]> => {
+    const targetKey = canonicalTranslationTargetKey(targetLanguage);
+    // Hydration began immediately after the accepted/progress frame. Waiting
+    // here does not delay first visual feedback, and guarantees that a
+    // correction submitted immediately before this turn is available to this
+    // plan rather than an arbitrary later one.
+    await translationCorrectionLoads.get(targetKey);
+    return residentTranslationCorrectionPriors.get(targetKey) ?? [];
+  };
+
   // Online requirement calibration lives for the runtime, not the turn: the model is read once, taught in memory,
   // and written back on a bounded cadence. A turn may not spend a database round trip on training.
   let turnRequirementModel: TurnRequirementCoefficientModel | undefined;
@@ -919,6 +968,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const locale = localeFromMetadata(input.metadata, input.text);
       const translationTarget = translationTargetFromMetadata(input.metadata);
       const sourceLanguageAlias = sourceLanguageAliasFromMetadata(input.metadata);
+      if (translationTarget) warmTranslationCorrectionPriors(translationTarget, sourceLanguageAlias);
       const surfaceClusterStarted = Date.now();
       let selectedSurfaceCluster = deps.evaluationCondition?.flags.disableLanguageMemory
         ? undefined
@@ -2800,6 +2850,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           priorAlignments,
           durableSeeds,
           durableConstructions,
+          correctionPriors: await translationCorrectionPriorsForTurn(canonicalTranslationTarget),
           calibrationModels,
           createdAt: clock.now()
         });

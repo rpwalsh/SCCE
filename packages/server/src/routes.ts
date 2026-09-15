@@ -1015,6 +1015,13 @@ async function dispatch(
         })
         : undefined;
       if (interpretationCorrection && !correctionText) throw new HttpError(422, "typed interpretation correction requires correctionText");
+      // Translation correction evidence has its own typed, queryable store.
+      // Keep the write on the same per-conversation persistence tail as the
+      // dialogue outcome so a following turn cannot observe the outcome while
+      // missing the alignment that caused it. The record is training evidence;
+      // the translation planner still requires independently admitted target
+      // evidence before it can affect a surface.
+      if (alignment) await context.runtime.storage.translationCorrections?.putCorrection(alignment);
       return persistDialogueOutcomeFromMemory({
         store: context.runtime.storage.dialogueMemory,
         conversationId,

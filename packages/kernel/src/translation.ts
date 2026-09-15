@@ -19,6 +19,7 @@ import { boundedInductionDocuments } from "./training-orchestrator.js";
 import { unicodeSymbolSegments } from "./unicode-segmentation.js";
 import { surfaceEntityRuns } from "./kernel-answer-primitives.js";
 import { CALIBRATION_IDS, CALIBRATION_TASK_CLASS_IDS, calibrateRuntimeScore, type CalibratedRuntimeScore, type CalibrationModelSet } from "./calibration-spine.js";
+import type { TranslationCorrectionPrior } from "./translation-correction-engine.js";
 
 /**
  * Bounds how much real bilingual evidence text feeds the per-request seed
@@ -216,6 +217,8 @@ export function createTranslationEngine(options: { idFactory: IdFactory; hasher:
       durableSeeds?: readonly TranslationSeed[];
       /** Plan item 127: real multi-symbol correspondences a prior call already extracted and the caller persisted, for this same target language. Boosts alignment confidence when a *new* source frame binds the same two symbols in a different context, without needing this request's own target evidence to re-derive the correspondence. */
       durableConstructions?: readonly TranslationConstruction[];
+      /** Owner corrections loaded from durable memory. They only rerank admitted target evidence. */
+      correctionPriors?: readonly TranslationCorrectionPrior[];
       /** Plan item 129: the shared, subsystem-agnostic fitted calibration model set (see calibration-spine.ts), already loaded once per turn by the caller. Absent (cold start / no fit yet) falls back honestly to the raw score. */
       calibrationModels?: CalibrationModelSet;
       createdAt: number;
@@ -271,7 +274,7 @@ export function createTranslationEngine(options: { idFactory: IdFactory; hasher:
         : [];
       const seedLookup = buildSeedLookup([...(input.durableSeeds ?? []), ...inducedSeeds]);
       const constructionLookup = buildConstructionLookup(input.durableConstructions ?? []);
-      const alignments = sourceFrames.map(frame => alignFrame(frame, targetFrames, input.priorAlignments ?? [], targetProfile, seedLookup, constructionLookup));
+      const alignments = sourceFrames.map(frame => alignFrame(frame, targetFrames, input.priorAlignments ?? [], sourceLanguage, targetLanguage, targetProfile, seedLookup, constructionLookup, input.correctionPriors ?? []));
       const inducedConstructions = extractTranslationConstructions(sourceFrames, targetFrames, alignments, seedLookup);
       const force = aggregateForce(alignments);
       const lossVector = aggregateLoss(alignments);
@@ -503,14 +506,19 @@ function sourceSurfaceSlice(text: string, surfaceSymbols: readonly SourceSurface
   return safe.slice(start ?? 0, end ?? safe.length).trim();
 }
 
-function alignFrame(source: TranslationSemanticFrame, targets: TranslationSemanticFrame[], priors: TranslationAlignmentRecord[], targetProfile: LanguageProfile | undefined, seedLookup: ReadonlyMap<string, TranslationSeed>, constructionLookup: ReadonlyMap<string, TranslationConstruction>): TranslationFrameAlignment {
+function alignFrame(source: TranslationSemanticFrame, targets: TranslationSemanticFrame[], priors: TranslationAlignmentRecord[], sourceLanguage: string, targetLanguage: string, targetProfile: LanguageProfile | undefined, seedLookup: ReadonlyMap<string, TranslationSeed>, constructionLookup: ReadonlyMap<string, TranslationConstruction>, correctionPriors: readonly TranslationCorrectionPrior[]): TranslationFrameAlignment {
   let best: TranslationFrameAlignment | undefined;
   for (const target of targets) {
     const semantic = clamp01((cosine01(source.embedding, target.embedding) + weightedJaccard(source.features, target.features)) / 2);
     const topology = roleTopologyFit(source.roles, target.roles);
     const scriptFit = targetProfile ? profileFit(target, targetProfile) : 0.35;
     const evidenceMass = target.alpha;
-    const priorBoost = priorAlignmentBoost(source.id, target.id, priors);
+    const alignmentPriorBoost = priorAlignmentBoost(source.id, target.id, priors);
+    // A correction can influence selection only when both the source context
+    // and the corrected surface are present in this request's admitted
+    // evidence. It never injects a target frame or bypasses proof gates.
+    const correctionBoost = translationCorrectionBoost(source, target, sourceLanguage, targetLanguage, correctionPriors);
+    const priorBoost = Math.max(alignmentPriorBoost, correctionBoost);
     // Real cross-lingual corroboration: does this specific target frame's own
     // symbol content actually contain the seed-mapped counterpart of source
     // symbols the seed induction found real correspondence for? This is what
@@ -547,7 +555,7 @@ function alignFrame(source: TranslationSemanticFrame, targets: TranslationSemant
       preservation,
       loss,
       evidenceIds: [...new Set([...source.evidenceIds, ...target.evidenceIds])],
-      audit: toJsonValue({ semantic, topology, scriptFit, evidenceMass, priorBoost, seedOverlap, preservation, loss })
+      audit: toJsonValue({ semantic, topology, scriptFit, evidenceMass, priorBoost, alignmentPriorBoost, correctionBoost, seedOverlap, preservation, loss })
     };
     if (!best || candidate.preservation > best.preservation) best = candidate;
   }
@@ -862,6 +870,42 @@ function priorAlignmentBoost(sourceFrameId: string, targetFrameId: string, prior
   const loss = exact.lossVector as Partial<TranslationLossVector>;
   const meanLoss = mean(Object.values(loss).filter((value): value is number => typeof value === "number"));
   return clamp01(1 - meanLoss);
+}
+
+/**
+ * Score a correction only against evidence admitted for this request. The
+ * source and corrected target must each overlap the candidate frame, and the
+ * language pair must match. This makes feedback a causal ranking signal while
+ * preventing a private correction from manufacturing target-language content.
+ */
+function translationCorrectionBoost(
+  source: TranslationSemanticFrame,
+  target: TranslationSemanticFrame,
+  sourceLanguage: string,
+  targetLanguage: string,
+  priors: readonly TranslationCorrectionPrior[]
+): number {
+  let best = 0;
+  for (const prior of priors) {
+    if (canonicalTranslationTargetKey(prior.sourceLanguage) !== canonicalTranslationTargetKey(sourceLanguage)
+      || canonicalTranslationTargetKey(prior.targetLanguage) !== canonicalTranslationTargetKey(targetLanguage)) continue;
+    const sourceFit = symbolOverlap(source.symbols, prior.sourceSymbols);
+    const targetFit = symbolOverlap(target.symbols, prior.correctedTargetSymbols);
+    // Requiring both sides keeps a correction from becoming a global target
+    // prior when only one unrelated word happens to overlap.
+    if (sourceFit < 0.35 || targetFit < 0.35) continue;
+    best = Math.max(best, clamp01(sourceFit * targetFit * prior.alpha));
+  }
+  return best;
+}
+
+function symbolOverlap(left: readonly string[], right: readonly string[]): number {
+  const leftSet = new Set(left.map(normalizeSeedSymbol));
+  const rightSet = new Set(right.map(normalizeSeedSymbol));
+  if (!leftSet.size || !rightSet.size) return 0;
+  let intersection = 0;
+  for (const symbol of leftSet) if (rightSet.has(symbol)) intersection++;
+  return intersection / Math.min(leftSet.size, rightSet.size);
 }
 
 function forceFromPreservation(preservation: number, evidenceCount: number, priorBoost: number): TranslationForce {

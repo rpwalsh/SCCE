@@ -139,7 +139,10 @@ import {
   type TranslationSeed,
   type TranslationSeedStore,
   type TranslationConstruction,
-  type TranslationConstructionStore
+  type TranslationConstructionStore,
+  type TranslationCorrectionStore,
+  type UserCorrectionAlignmentRecord,
+  canonicalTranslationTargetKey
 } from "@scce/kernel";
 import { createHash } from "node:crypto";
 
@@ -178,6 +181,7 @@ export class PostgresStorageAdapter implements ScceStorage {
   readonly documentGeneration: DocumentGenerationSessionStore;
   readonly translationSeeds: TranslationSeedStore;
   readonly translationConstructions: TranslationConstructionStore;
+  readonly translationCorrections: TranslationCorrectionStore;
   readonly localization: LocalizationStore;
   readonly flowCache: FlowCacheStore;
   readonly selfRewrite: SelfRewriteStore;
@@ -223,6 +227,7 @@ export class PostgresStorageAdapter implements ScceStorage {
     this.documentGeneration = createDocumentGenerationSessionStore(this);
     this.translationSeeds = createTranslationSeedStore(this);
     this.translationConstructions = createTranslationConstructionStore(this);
+    this.translationCorrections = createTranslationCorrectionStore(this);
     this.localization = createLocalizationStore(this);
     this.flowCache = createFlowCacheStore(this);
     this.selfRewrite = createSelfRewriteStore(this);
@@ -969,6 +974,7 @@ function schemaStatements(q: string, informationAccess?: InformationAccessContex
     `CREATE TABLE IF NOT EXISTS ${q}.document_generation_sessions (id TEXT NOT NULL, conversation_id TEXT NOT NULL, session_json JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (conversation_id, id))`,
     `CREATE TABLE IF NOT EXISTS ${q}.translation_seeds (target_language TEXT NOT NULL, source_symbol TEXT NOT NULL, source_language TEXT NOT NULL, target_symbol TEXT NOT NULL, score DOUBLE PRECISION NOT NULL, basis TEXT NOT NULL, evidence_ids TEXT[] NOT NULL, observed_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (target_language, source_symbol))`,
     `CREATE TABLE IF NOT EXISTS ${q}.translation_constructions (target_language TEXT NOT NULL, source_symbol_a TEXT NOT NULL, source_symbol_b TEXT NOT NULL, target_symbol_a TEXT NOT NULL, target_symbol_b TEXT NOT NULL, score DOUBLE PRECISION NOT NULL, evidence_ids TEXT[] NOT NULL, observed_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (target_language, source_symbol_a, source_symbol_b))`,
+    `CREATE TABLE IF NOT EXISTS ${q}.translation_corrections (id TEXT PRIMARY KEY, source_language TEXT NOT NULL, target_language TEXT NOT NULL, correction_json JSONB NOT NULL, observed_at TIMESTAMPTZ NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.locale_bundles (id TEXT PRIMARY KEY, source_locale TEXT NOT NULL, target_language_id TEXT NOT NULL, target_script_id TEXT, status TEXT NOT NULL, force TEXT NOT NULL, messages_json JSONB NOT NULL, missing_terms_json JSONB NOT NULL, evidence_ids TEXT[] NOT NULL, translation_alignment_ids TEXT[] NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.ppf_cache (id TEXT PRIMARY KEY, graph_hash TEXT NOT NULL, beta DOUBLE PRECISION NOT NULL, personalization_json JSONB NOT NULL, mass_json JSONB NOT NULL, diagnostics_json JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.alpha_traces (id TEXT PRIMARY KEY, graph_hash TEXT NOT NULL, alpha DOUBLE PRECISION NOT NULL, trace_json JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
@@ -1123,6 +1129,7 @@ function schemaStatements(q: string, informationAccess?: InformationAccessContex
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_document_generation_updated ON ${q}.document_generation_sessions(updated_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_translation_seeds_target_score ON ${q}.translation_seeds(target_language,score DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_translation_constructions_target_score ON ${q}.translation_constructions(target_language,score DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_translation_corrections_pair ON ${q}.translation_corrections(source_language,target_language,observed_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_locale_bundles_target ON ${q}.locale_bundles(target_language_id,status,updated_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ppf_graph_hash ON ${q}.ppf_cache(graph_hash,created_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_alpha_graph_hash ON ${q}.alpha_traces(graph_hash,created_at DESC)`,
@@ -1183,6 +1190,7 @@ function requiredHydrationColumns(): Record<string, string[]> {
     document_generation_sessions: ["id", "conversation_id", "session_json", "updated_at"],
     translation_seeds: ["target_language", "source_symbol", "source_language", "target_symbol", "score", "basis", "evidence_ids", "observed_at"],
     translation_constructions: ["target_language", "source_symbol_a", "source_symbol_b", "target_symbol_a", "target_symbol_b", "score", "evidence_ids", "observed_at"],
+    translation_corrections: ["id", "source_language", "target_language", "correction_json", "observed_at"],
     model_state: ["id", "model_json", "updated_at"],
     ppf_cache: ["id", "graph_hash", "personalization_json", "mass_json", "diagnostics_json"],
     alpha_traces: ["id", "graph_hash", "alpha", "trace_json"],
@@ -4850,6 +4858,45 @@ function createTranslationConstructionStore(storage: PostgresStorageAdapter): Tr
         [targetLanguage, limit]
       );
       return rows.map(rowToTranslationConstruction);
+    }
+  };
+}
+
+interface TranslationCorrectionRow {
+  id: string;
+  source_language: string;
+  target_language: string;
+  correction_json: JsonValue;
+  observed_at: Date;
+}
+
+function createTranslationCorrectionStore(storage: PostgresStorageAdapter): TranslationCorrectionStore {
+  return {
+    async putCorrection(record) {
+      await storage.query(
+        `INSERT INTO ${storage.table("translation_corrections")}(id,source_language,target_language,correction_json,observed_at)
+         VALUES($1,$2,$3,$4::jsonb,TO_TIMESTAMP($5/1000.0))
+         ON CONFLICT(id) DO UPDATE SET correction_json=EXCLUDED.correction_json, observed_at=EXCLUDED.observed_at`,
+        [
+          record.id,
+          canonicalTranslationTargetKey(record.sourceLanguage),
+          canonicalTranslationTargetKey(record.targetLanguage),
+          JSON.stringify(toJsonValue(record)),
+          record.createdAt
+        ]
+      );
+    },
+    async listCorrections(query = {}) {
+      const params: unknown[] = [];
+      const where: string[] = [];
+      if (query.sourceLanguage) { params.push(canonicalTranslationTargetKey(query.sourceLanguage)); where.push(`source_language=$${params.length}`); }
+      if (query.targetLanguage) { params.push(canonicalTranslationTargetKey(query.targetLanguage)); where.push(`target_language=$${params.length}`); }
+      params.push(query.limit ?? 200);
+      const rows = await storage.query<TranslationCorrectionRow>(
+        `SELECT * FROM ${storage.table("translation_corrections")} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY observed_at DESC, id ASC LIMIT $${params.length}`,
+        params
+      );
+      return rows.map(row => row.correction_json as unknown as UserCorrectionAlignmentRecord);
     }
   };
 }
