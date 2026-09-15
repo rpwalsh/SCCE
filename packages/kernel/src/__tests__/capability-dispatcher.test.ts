@@ -25,6 +25,8 @@ import {
   type ExecutiveJournalSnapshot
 } from "../executive-journal.js";
 import { createHasher } from "../primitives.js";
+import { createInMemoryDialogueMemoryStore } from "../dialogue-learning.js";
+import { COGNITIVE_OPERATOR_IDS } from "../turn-requirements.js";
 
 class MemoryExecutiveJournal implements ExecutiveEventJournal {
   private readonly events = new Map<ExecutiveEpisodeId, ExecutiveEvent[]>();
@@ -171,6 +173,43 @@ describe("capability dispatcher", () => {
     expect(result.receipt).toMatchObject({ status: "succeeded", outputRefs: ["artifact.build.alpha"] });
     expect(result.outcome).toMatchObject({ disposition: "accepted", evidenceRefs: ["build.log.alpha"] });
     expect(result.state.tasks["task.build"]?.status).toBe("succeeded");
+  });
+
+  it("carries typed action deltas into the durable calibration outcome record", async () => {
+    const dialogueMemory = createInMemoryDialogueMemoryStore();
+    const executor = fakeExecutor("process.build_test", () => ({
+      status: "succeeded",
+      outputRefs: ["artifact.build.alpha"],
+      evidenceRefs: ["execution.log.build"],
+      attestationRef: "executor.signature.build",
+      actualDelta: { state: "applied", revision: 2 }
+    }));
+    const deps = { ...dispatcherFixture([executor]), dialogueMemory };
+    const result = await dispatchCapabilityTask(deps, {
+      ...baseInput({ controls: ungovernedControls() }),
+      operatorOutcome: {
+        conversationId: "conversation.action",
+        operatorIds: [COGNITIVE_OPERATOR_IDS.actionPlanning],
+        typedInputState: { state: "ready", revision: 1 },
+        predictedDelta: { state: "applied", revision: 2 }
+      }
+    });
+
+    expect(result.outcome?.operatorObservation).toEqual({
+      schema: "scce.operator.outcome_observation.v1",
+      conversationId: "conversation.action",
+      operatorIds: [COGNITIVE_OPERATOR_IDS.actionPlanning],
+      typedInputState: { state: "ready", revision: 1 },
+      predictedDelta: { state: "applied", revision: 2 },
+      actualDelta: { state: "applied", revision: 2 }
+    });
+    const observations = await dialogueMemory.listCalibrationObservations({ sourceRecordId: result.outcome!.id });
+    expect(observations).toHaveLength(1);
+    expect(observations[0]?.metadata).toMatchObject({
+      typedInputState: { state: "ready", revision: 1 },
+      predictedDelta: { state: "applied", revision: 2 },
+      actualDelta: { state: "applied", revision: 2 }
+    });
   });
 
   it("records a failed receipt as a rejected outcome, not a thrown error", async () => {

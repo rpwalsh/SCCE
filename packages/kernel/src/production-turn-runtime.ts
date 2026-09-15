@@ -255,10 +255,12 @@ import {
   requirementContextFromMetadata
 } from "./turn-request-control.js";
 import {
+  COGNITIVE_OPERATOR_IDS,
   TURN_REQUIREMENT_DIMENSIONS,
   activateCognitiveOperators,
   deriveTurnRequirementField,
   requestSubjectText,
+  type CognitiveOperatorId,
   type TurnRequirementCoefficientModel,
   type TurnRequirementField
 } from "./turn-requirements.js";
@@ -3907,7 +3909,17 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           if (permission.allowed && !permission.dryRun) {
             events.push(await append(eventFactory.create({ episodeId, typeId: "CapabilityInvoked", payload: { capabilityId: capability.id, planId: plan.id } })));
             const executiveDispatch = deps.executive
-              ? await dispatchBuildTestThroughExecutive({ deps, episodeId, construct, capabilityId: capability.id, planId: String(plan.id), hasher, clock })
+              ? await dispatchBuildTestThroughExecutive({
+                deps,
+                episodeId,
+                construct,
+                capabilityId: capability.id,
+                planId: String(plan.id),
+                conversationId: dialogueConversationId,
+                operatorIds: activeOperatorIds,
+                hasher,
+                clock
+              })
               : undefined;
             // Plan items 215-216: mine the real, durable event ledger for a
             // proven build/test skill (the exact same real dispatch,
@@ -5635,6 +5647,8 @@ async function dispatchBuildTestThroughExecutive(input: {
   construct: ConstructGraph;
   capabilityId: string;
   planId: string;
+  conversationId: string;
+  operatorIds: readonly CognitiveOperatorId[];
   hasher: ReturnType<typeof createHasher>;
   clock: ReturnType<typeof createClock>;
 }): Promise<{ disposition: string; attemptId?: string; receipt?: { status: string }; buildTest?: BuildTestResult } | undefined> {
@@ -5655,7 +5669,14 @@ async function dispatchBuildTestThroughExecutive(input: {
           `build_test.build.code.${result.build.code ?? "null"}`,
           `build_test.test.code.${result.test.code ?? "null"}`
         ],
-        attestationRef: `build_test.${request.invocation.idempotencyKey}`
+        attestationRef: `build_test.${request.invocation.idempotencyKey}`,
+        actualDelta: toJsonValue({
+          programId: payload.construct.program?.id ?? null,
+          buildCode: result.build.code,
+          testCode: result.test.code,
+          passed: result.passed,
+          artifacts: result.artifacts.map(artifact => ({ path: artifact.path, contentHash: artifact.contentHash }))
+        })
       };
     }
   };
@@ -5664,9 +5685,20 @@ async function dispatchBuildTestThroughExecutive(input: {
   const policyVersionId = `policy_${input.hasher.digestHex(JSON.stringify(input.deps.policy ?? {})).slice(0, 32)}`;
   const goalId = `goal_build_test_${input.planId}`;
   const taskId = `task_build_test_${input.planId}`;
+  const causalOperatorIds = input.operatorIds.filter(operatorId =>
+    operatorId === COGNITIVE_OPERATOR_IDS.programPlanning
+      || operatorId === COGNITIVE_OPERATOR_IDS.workspaceRepair
+      || operatorId === COGNITIVE_OPERATOR_IDS.actionPlanning
+  );
 
   const result = await dispatchCapabilityTask(
-    { executive, executors: createCapabilityExecutorRegistry([executor]), hasher: input.hasher, now: () => input.clock.now() },
+    {
+      executive,
+      executors: createCapabilityExecutorRegistry([executor]),
+      hasher: input.hasher,
+      now: () => input.clock.now(),
+      dialogueMemory: input.deps.storage.dialogueMemory
+    },
     {
       episodeId: input.episodeId,
       ownerId,
@@ -5709,7 +5741,25 @@ async function dispatchBuildTestThroughExecutive(input: {
         evidenceRefs: [input.planId]
       },
       payload: { episodeId: input.episodeId, construct: input.construct } as unknown as JsonValue,
-      outcomeEvidenceRefs: []
+      outcomeEvidenceRefs: [],
+      ...(causalOperatorIds.length ? {
+        operatorOutcome: {
+          conversationId: input.conversationId,
+          operatorIds: causalOperatorIds,
+          typedInputState: toJsonValue({
+            constructId: input.construct.id,
+            programId: input.construct.program?.id ?? null,
+            artifacts: input.construct.artifacts.map(artifact => ({ path: artifact.path, contentHash: artifact.contentHash }))
+          }),
+          predictedDelta: toJsonValue({
+            capabilityId: input.capabilityId,
+            programId: input.construct.program?.id ?? null,
+            buildCode: 0,
+            testCode: 0,
+            passed: true
+          })
+        }
+      } : {})
     }
   );
 
@@ -6272,6 +6322,8 @@ function turnCapabilityManifest(input: {
   const relationPotential = jsonRecord(diagnostics.relationPotential);
   const mode = kernelString(relationPotential.mode);
   const fieldOperators = jsonRecord(diagnostics.fieldOperators);
+  const fieldOperatorRouting = jsonRecord(fieldOperators.routing);
+  const fieldOperatorRoutingAdmissible = kernelString(fieldOperatorRouting.status) === "admissible";
   const capabilities: CognitiveCapability[] = [
     {
       id: "relation-potential",
@@ -6292,10 +6344,15 @@ function turnCapabilityManifest(input: {
     },
     {
       id: "field-operators",
-      // Heat, wave and spectral. Nothing in the turn reads their output, so they cannot change an answer.
-      status: Object.keys(fieldOperators).length ? "diagnostic_only" : "disabled_explicitly",
+      // Heat, wave and spectral remain diagnostic unless their normalized,
+      // explicitly configured routing signal is admissible.
+      status: fieldOperatorRoutingAdmissible
+        ? "active"
+        : Object.keys(fieldOperators).length ? "diagnostic_only" : "disabled_explicitly",
       traced: Object.keys(fieldOperators).length > 0,
-      note: "writes only to diagnostics; opt-in"
+      ...(fieldOperatorRoutingAdmissible
+        ? {}
+        : { note: "writes only to diagnostics; opt-in" })
     },
     {
       id: "language-hydration",

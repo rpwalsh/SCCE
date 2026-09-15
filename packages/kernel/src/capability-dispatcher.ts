@@ -3,6 +3,9 @@
 import { canonicalStringify } from "./primitives.js";
 import type { Hasher, JsonValue } from "./types.js";
 import type { DurableExecutiveEpisode } from "./executive-journal.js";
+import type { DialogueMemoryStore } from "./storage.js";
+import { persistOperatorOutcome } from "./operator-outcome-loop.js";
+import type { CognitiveOperatorId } from "./turn-requirements.js";
 import { verifyExecutionAuthorized, type PlanSimulationRecord } from "./plan-simulation.js";
 import type {
   CapabilityInvocationEnvelope,
@@ -14,6 +17,7 @@ import type {
   ExecutiveGoal,
   ExecutiveGoalId,
   ExecutiveOutcome,
+  ExecutiveOperatorOutcomeObservation,
   ExecutiveTask,
   ExecutiveTaskId
 } from "./executive-episode.js";
@@ -45,6 +49,8 @@ export interface CapabilityExecutionResult {
   outputRefs: string[];
   evidenceRefs: string[];
   attestationRef: string;
+  /** Actual typed state delta observed by the executor, when the action is operator-routed. */
+  actualDelta?: JsonValue;
 }
 
 /**
@@ -118,6 +124,13 @@ export interface CapabilityDispatchInput {
   payload: JsonValue;
   /** Evidence refs backing the eventual outcome record (e.g. build/test artifact refs). */
   outcomeEvidenceRefs: string[];
+  /** Optional operator context to carry through the durable action outcome and calibration store. */
+  operatorOutcome?: {
+    conversationId: string;
+    operatorIds: readonly CognitiveOperatorId[];
+    typedInputState: JsonValue;
+    predictedDelta: JsonValue;
+  };
   /**
    * Plan items 177-179: a real gate requiring a stored, approved
    * `plan-simulation.ts` record before an irreversible or high-risk task
@@ -161,6 +174,8 @@ export interface CapabilityDispatcherDeps {
   executors: CapabilityExecutorRegistry;
   hasher: Hasher;
   now(): number;
+  /** Existing durable calibration store; omitted by legacy callers that do not need operator feedback. */
+  dialogueMemory?: Pick<DialogueMemoryStore, "putCalibrationObservation">;
 }
 
 /**
@@ -355,7 +370,17 @@ export async function dispatchCapabilityTask(
     evidenceRefs: input.outcomeEvidenceRefs.length > 0 ? input.outcomeEvidenceRefs : receipt.evidenceRefs,
     testEvidenceRefs: [],
     correctionRefs: [],
-    scoreTraceRefs: []
+    scoreTraceRefs: [],
+    ...(input.operatorOutcome ? {
+      operatorObservation: {
+        schema: "scce.operator.outcome_observation.v1" as const,
+        conversationId: input.operatorOutcome.conversationId,
+        operatorIds: [...input.operatorOutcome.operatorIds],
+        typedInputState: input.operatorOutcome.typedInputState,
+        predictedDelta: input.operatorOutcome.predictedDelta,
+        actualDelta: result.actualDelta ?? null
+      }
+    } : {})
   };
   state = await deps.executive.dispatch({
     type: "record_outcome",
@@ -364,6 +389,7 @@ export async function dispatchCapabilityTask(
     occurredAt: deps.now(),
     outcome
   });
+  await persistDispatchedOperatorOutcome({ deps, input, outcomeId, receipt, result });
 
   return {
     disposition: result.status === "succeeded" ? "succeeded" : "failed",
@@ -372,6 +398,30 @@ export async function dispatchCapabilityTask(
     receipt,
     outcome: state.outcomes[outcomeId]
   };
+}
+
+async function persistDispatchedOperatorOutcome(input: {
+  deps: CapabilityDispatcherDeps;
+  input: CapabilityDispatchInput;
+  outcomeId: string;
+  receipt: ExecutiveCapabilityReceipt;
+  result: CapabilityExecutionResult;
+}): Promise<void> {
+  const observation = input.input.operatorOutcome;
+  if (!observation) return;
+  await persistOperatorOutcome(input.deps.dialogueMemory, {
+    conversationId: observation.conversationId,
+    actionId: input.outcomeId,
+    capabilityId: input.input.task.capabilityId,
+    operatorIds: observation.operatorIds,
+    typedInputState: observation.typedInputState,
+    predictedDelta: observation.predictedDelta,
+    actualDelta: input.result.actualDelta ?? null,
+    outcome: input.result.status === "succeeded",
+    rawScore: input.result.status === "succeeded" ? 1 : 0,
+    sourceTraceId: input.receipt.id,
+    createdAt: input.deps.now()
+  });
 }
 
 export type CapabilityReconciliationDisposition =
