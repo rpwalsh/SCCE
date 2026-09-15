@@ -450,6 +450,8 @@ export function realizeLearnedSurface(input: {
   formClasses: readonly LearnedFormClass[];
   hasher: Hasher;
   verifySealedProvenance?: SurfaceProvenanceVerifier;
+  /** Prior observed semantic cycle scores. When supplied, they are the first selection signal. */
+  cycleConsistencyByConstructionId?: ReadonlyMap<string, number>;
 }): LearnedSurfaceResult {
   const planResult = prepareMeaningPlan(input.plan);
   if ("issue" in planResult) return rejectedResult(input.plan, planResult.issue, []);
@@ -461,7 +463,7 @@ export function realizeLearnedSurface(input: {
   ));
   const profileLocal = matchingSignature
     .filter(construction => construction.profileKey === input.plan.profileKey)
-    .sort(compareConstructions);
+    .sort((left, right) => compareConstructionSelection(left, right, input.cycleConsistencyByConstructionId));
   if (profileLocal.length === 0) {
     const code = matchingSignature.length > 0
       ? LANGUAGE_CONSTRUCTION_REJECTION_IDS.profile
@@ -512,7 +514,7 @@ export function realizeLearnedSurface(input: {
     candidates.push(candidate.candidate);
   }
 
-  candidates.sort(compareCandidateRealizations);
+  candidates.sort((left, right) => compareCandidateSelection(left, right, input.cycleConsistencyByConstructionId));
   const selected = candidates[0];
   if (!selected) {
     const orderedIssues = issues.sort(compareIssues);
@@ -1389,6 +1391,39 @@ function compareCandidateRealizations(left: CandidateRealization, right: Candida
     || compareText(left.construction.id, right.construction.id)
     || compareText(canonicalStringify(left.variantIds), canonicalStringify(right.variantIds))
     || compareText(left.text, right.text);
+}
+
+function compareConstructionSelection(
+  left: LearnedConstruction,
+  right: LearnedConstruction,
+  cycleScores: ReadonlyMap<string, number> | undefined
+): number {
+  if (cycleScores) {
+    const cycleOrder = constructionCycleScore(right.id, cycleScores) - constructionCycleScore(left.id, cycleScores);
+    if (cycleOrder !== 0) return cycleOrder;
+  }
+  return compareConstructions(left, right);
+}
+
+function compareCandidateSelection(
+  left: CandidateRealization,
+  right: CandidateRealization,
+  cycleScores: ReadonlyMap<string, number> | undefined
+): number {
+  if (cycleScores) {
+    const cycleOrder = constructionCycleScore(right.construction.id, cycleScores)
+      - constructionCycleScore(left.construction.id, cycleScores);
+    if (cycleOrder !== 0) return cycleOrder;
+  }
+  return compareCandidateRealizations(left, right);
+}
+
+function constructionCycleScore(
+  constructionId: string,
+  cycleScores: ReadonlyMap<string, number>
+): number {
+  const score = cycleScores.get(constructionId);
+  return score === undefined || !Number.isFinite(score) ? 0.5 : Math.max(0, Math.min(1, score));
 }
 
 function compareIssues(left: LanguageConstructionIssue, right: LanguageConstructionIssue): number {
