@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { canonicalStringify, clamp01, createClock, toJsonValue } from "./primitives.js";
+import { createCorrectionObservation, type CorrectionObservation } from "./correction-observation.js";
 import { provisionalHeuristicScore, type ScoreTrace } from "./scoring/score-trace.js";
 import type {
   ConversationOutcomeRecord,
@@ -191,6 +192,7 @@ export function userCorrectionFromOutcome(input: {
   acceptedSurface?: string;
   preferenceDelta?: JsonValue;
   interpretationCorrection?: DialogueInterpretationCorrectionInput;
+  correctionObservation?: CorrectionObservation;
   now?: number;
   clock?: Clock;
 }): UserCorrectionRecord {
@@ -207,6 +209,11 @@ export function userCorrectionFromOutcome(input: {
     preferenceDeltaJson = isRecord(legacyPreferenceDelta)
       ? toJsonValue({ ...legacyPreferenceDelta, interpretationAdjustment: toJsonValue(adjustment) })
       : toJsonValue({ legacyPreferenceDelta, interpretationAdjustment: toJsonValue(adjustment) });
+  }
+  if (input.correctionObservation) {
+    preferenceDeltaJson = isRecord(preferenceDeltaJson)
+      ? toJsonValue({ ...preferenceDeltaJson, correctionObservation: toJsonValue(input.correctionObservation) })
+      : toJsonValue({ legacyPreferenceDelta: preferenceDeltaJson, correctionObservation: toJsonValue(input.correctionObservation) });
   }
   return {
     id,
@@ -505,6 +512,7 @@ export async function persistDialogueOutcomeFromMemory(input: {
   corrected?: boolean;
   correctionText?: string;
   interpretationCorrection?: DialogueInterpretationCorrectionInput;
+  correctionObservation?: CorrectionObservation;
   requestedConstraintRefs?: readonly string[];
   satisfiedConstraintRefs?: readonly string[];
   failedConstraintRefs?: readonly string[];
@@ -526,6 +534,7 @@ export async function persistDialogueOutcomeFromMemory(input: {
     corrected: input.corrected,
     correctionText: input.correctionText,
     interpretationCorrection: input.interpretationCorrection,
+    correctionObservation: input.correctionObservation,
     currentProfile,
     requestedConstraintRefs: input.requestedConstraintRefs,
     satisfiedConstraintRefs: input.satisfiedConstraintRefs,
@@ -560,6 +569,7 @@ export async function persistDialogueOutcomeAndLearn(input: {
   corrected?: boolean;
   correctionText?: string;
   interpretationCorrection?: DialogueInterpretationCorrectionInput;
+  correctionObservation?: CorrectionObservation;
   currentProfile?: UserStyleProfile;
   requestedConstraintRefs?: readonly string[];
   satisfiedConstraintRefs?: readonly string[];
@@ -583,8 +593,20 @@ export async function persistDialogueOutcomeAndLearn(input: {
     failedConstraintRefs: input.failedConstraintRefs,
     now: new Date(now)
   });
+  const correctionObservation = input.correctionObservation ?? (input.correctionText
+    ? createCorrectionObservation({
+      target: { kind: "dialogue", id: outcome.id },
+      prior: { stateId: input.result.state.turnId, surface: input.result.finalText },
+      corrected: { stateId: input.result.state.turnId, surface: input.correctionText },
+      scope: { conversationId: outcome.conversationId, turnId: outcome.turnId },
+      confidence: input.result.selected.score,
+      cause: { id: "cause.owner_feedback.v1", kind: "owner_feedback", provenance: toJsonValue({ interpretationCorrection: input.interpretationCorrection ?? null }) },
+      provenance: { sourceRecordId: outcome.id, sourceTraceId: input.result.id, evidenceIds: input.result.evidenceIds as unknown as string[] },
+      affectedModelIds: [input.result.policyDecision.targetProfileId]
+    })
+    : undefined);
   const correction = input.correctionText
-    ? userCorrectionFromOutcome({ outcome, correctionText: input.correctionText, rejectedSurface: input.result.finalText, interpretationCorrection: input.interpretationCorrection, now })
+    ? userCorrectionFromOutcome({ outcome, correctionText: input.correctionText, rejectedSurface: input.result.finalText, interpretationCorrection: input.interpretationCorrection, correctionObservation, now })
     : undefined;
   const learning = learnDialoguePolicyWeights({ profile: input.currentProfile ?? input.result.state.userStyleProfile, outcome, now });
   const ordinaryCalibrationObservations = calibrationObservationsFromDialogueOutcome({ result: input.result, outcome, taskClass: input.taskClass, createdAt: now });
