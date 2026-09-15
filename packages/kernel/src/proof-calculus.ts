@@ -230,14 +230,20 @@ export function aggregateProofSemiring(input: {
 }): ProofSemiringSummary {
   const evidenceMass = aggregateSourceDependentEvidence(input);
   const sourcePathByGroup = new Map<string, number>();
+  const evidenceGroupById = new Map(
+    evidenceMass.groups.flatMap(group => group.evidenceIds.map(id => [String(id), group.groupId] as const))
+  );
   for (const item of input.supporting) {
-    const source = assessEvidenceSourceVector(item.span);
-    if (!source.independenceGroup) continue;
     const path = pathProductSupport(item);
     if (path <= 0) continue;
+    // Use the same dependence components as the mass ledger. Grouping only
+    // by the declared independence label lets relabeled republishers create
+    // extra semiring paths even after source-dependent mass was collapsed.
+    const groupId = evidenceGroupById.get(String(item.span.id));
+    if (!groupId || groupId === "dep.unresolved") continue;
     sourcePathByGroup.set(
-      source.independenceGroup,
-      Math.max(sourcePathByGroup.get(source.independenceGroup) ?? 0, path)
+      groupId,
+      Math.max(sourcePathByGroup.get(groupId) ?? 0, path)
     );
   }
   const paths = [...sourcePathByGroup.values()];
