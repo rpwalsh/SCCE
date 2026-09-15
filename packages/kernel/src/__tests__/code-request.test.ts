@@ -131,6 +131,15 @@ describe("code request structure", () => {
     expect(codeRequestSignal("double(3) returns 6.").behaviorRequirements).toEqual([]);
   });
 
+  it("keeps an opaque Unicode source relation and held-out split without an English template", () => {
+    const request = "κ(x); κ(1) ↦ 2, κ(2)↦-4, κ(3) ↦ 6, κ(11) ↦ 22";
+    const signal = codeRequestSignal(request);
+    expect(signal.behaviorRequirements.map(requirement => requirement.relationSurface)).toEqual(["↦", "↦", "↦", "↦"]);
+    expect(signal.behaviorRequirements[1]?.expectedResult).toBe(-4);
+    expect(signal.behaviorRequirements.map(requirement => requirement.verificationRole)).toEqual(["fit", "fit", "fit", "held_out"]);
+    expect(signal.behaviorRequirements.map(requirement => requirement.callableId)).toEqual(["κ", "κ", "κ", "κ"]);
+  });
+
   it("derives typed owner requirement provenance from the canonical contract", () => {
     const metadata = (id: string, requestHash: string, charStart: number) => ({
       programBehavior: {

@@ -3,6 +3,7 @@
 import { jsonRecord, kernelString, splitPriorUnits, normalizePriorKey } from "./kernel-answer-primitives.js";
 import { canonicalStringify, createHasher, toJsonValue } from "./primitives.js";
 import { parseStatefulBehaviorScenarios } from "./stateful-behavior-scenarios.js";
+import { readSymbolicProgramRelation } from "./program-behavior-syntax.js";
 import type { ExplicitTurnRequirement } from "./turn-requirements.js";
 import { COGNITIVE_OPERATOR_IDS, type ActivatedOperator, type TurnRequirementField } from "./turn-requirements.js";
 import type { JsonValue, ProgramBehaviorRequirement, ProgramStatefulBehaviorRequirement } from "./types.js";
@@ -288,6 +289,13 @@ function explicitCallResultRequirements(requestText: string, scanChars = 8192, l
     cursor = skipWhitespace(text, call.end);
     let relationSurface = ["===", "=>", "==", "="].find(operator => text.startsWith(operator, cursor));
     let relationEnd = relationSurface ? cursor + relationSurface.length : cursor;
+    if (!relationSurface) {
+      const symbolicRelation = readSymbolicProgramRelation(text, cursor);
+      if (symbolicRelation) {
+        relationSurface = symbolicRelation.surface;
+        relationEnd = symbolicRelation.end;
+      }
+    }
     if (!relationSurface && declaredCallables.has(identifier.value)) {
       const relation = readIdentifier(text, cursor);
       if (relation) {
