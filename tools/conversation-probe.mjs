@@ -12,8 +12,10 @@
 //
 //   node tools/conversation-probe.mjs                       # the default conversation
 //   node tools/conversation-probe.mjs "first" "second" ...  # your own
+//   node tools/conversation-probe.mjs --preset=chat           # ordinary chat: greeting, opinion, correction, meta, thanks
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { declinePrefix, judgeTurns } from "./conversation-judge.mjs";
 
 const flag = (name, fallback) => (process.argv.find(a => a.startsWith(`--${name}=`)) ?? `--${name}=${fallback}`).split("=").slice(1).join("=");
 const outPath = flag("out", "artifacts/conversation-probe.json");
@@ -26,7 +28,15 @@ const DEFAULT_TURNS = [
   "Explain relativity.",
   "Write a JavaScript function that computes time dilation for a given velocity, and test it."
 ];
-const turns = spoken.length ? spoken : DEFAULT_TURNS;
+const CHAT_TURNS = [
+  "hey, how's it going?",
+  "Who is Albert Einstein?",
+  "what do you think about him?",
+  "no, that's not what I meant",
+  "what are you, exactly?",
+  "thanks, that helped"
+];
+const turns = spoken.length ? spoken : flag("preset", "default") === "chat" ? CHAT_TURNS : DEFAULT_TURNS;
 
 // One session for the whole conversation: that is what a chat window is.
 const sessionId = `conversation-probe-${Date.now()}`;
@@ -78,12 +88,19 @@ for (const [index, text] of turns.entries()) {
 const subjectUnits = (turns[0] ?? "").toLocaleLowerCase().split(/\s+/u).filter(unit => unit.length > 3);
 const followUps = rows.slice(1).filter(row => !subjectUnits.some(unit => row.text.toLocaleLowerCase().includes(unit)));
 const carried = followUps.filter(row => subjectUnits.some(unit => row.answer.toLocaleLowerCase().includes(unit)));
+const verdicts = judgeTurns(rows, { declinePrefix: declinePrefix() });
+rows.forEach((row, index) => { row.judge = verdicts[index]; });
 const summary = {
   schema: "scce.conversation_probe.v1",
   generatedAt: new Date().toISOString(),
   sessionId,
   turns: rows.length,
   answered: rows.filter(row => row.status === 200 && row.answer).length,
+  // Non-empty is not an answer: a repeated, declined or markup-carrying reply is not healthy.
+  healthy: verdicts.filter(verdict => verdict.healthy).length,
+  declined: verdicts.filter(verdict => verdict.declined).length,
+  repeated: verdicts.filter(verdict => verdict.repeatsEarlierAnswer).length,
+  referenceMarkup: verdicts.filter(verdict => verdict.carriesReferenceMarkup).length,
   followUps: followUps.length,
   followUpsKeepingSubject: carried.length,
   builtAndTested: rows.filter(row => row.built && row.tested).length,
@@ -92,5 +109,5 @@ const summary = {
 };
 mkdirSync(dirname(outPath), { recursive: true });
 writeFileSync(outPath, JSON.stringify(summary, null, 2) + "\n", "utf8");
-console.log(`\n${summary.answered}/${summary.turns} answered; ${summary.followUpsKeepingSubject}/${summary.followUps} follow-ups kept the subject; ${summary.builtAndTested} built+tested; slowest ${(summary.slowestMs / 1000).toFixed(1)}s`);
+console.log(`\n${summary.healthy}/${summary.turns} healthy (${summary.declined} declined, ${summary.repeated} repeated, ${summary.referenceMarkup} markup); ${summary.answered}/${summary.turns} non-empty; ${summary.followUpsKeepingSubject}/${summary.followUps} follow-ups kept the subject; ${summary.builtAndTested} built+tested; slowest ${(summary.slowestMs / 1000).toFixed(1)}s`);
 console.log(`wrote ${outPath}`);
