@@ -82,7 +82,6 @@ interface FeatureCounts {
   observation: FeatureObservation;
   examples: number;
   byAuthority: Record<RequestedAuthority, number>;
-  requirementTotals: Partial<Record<TurnRequirementDimension, number>>;
   requirementTargetTotals: Partial<Record<TurnRequirementDimension, number>>;
   requirementTargetCounts: Partial<Record<TurnRequirementDimension, number>>;
   requirementTargetBounds: Partial<Record<TurnRequirementDimension, { lower: number; upper: number }>>;
@@ -169,7 +168,6 @@ export function compileRequestRequirementCorpus(
         observation,
         examples: 0,
         byAuthority: authorityRecord(0),
-        requirementTotals: {},
         requirementTargetTotals: {},
         requirementTargetCounts: {},
         requirementTargetBounds: {},
@@ -179,18 +177,13 @@ export function compileRequestRequirementCorpus(
       };
       counts.examples += 1;
       counts.byAuthority[example.authority] += 1;
-      const prototype = authorityRequirementCoefficients(example.authority);
       for (const dimension of TURN_REQUIREMENT_DIMENSIONS) {
         const target = example.requirements?.[dimension];
-        if (target !== undefined && Number.isFinite(target)) {
-          counts.requirementTargetTotals[dimension] = (counts.requirementTargetTotals[dimension] ?? 0) + clamp01(target);
-          counts.requirementTargetCounts[dimension] = (counts.requirementTargetCounts[dimension] ?? 0) + 1;
-          const previous = counts.requirementTargetBounds[dimension];
-          counts.requirementTargetBounds[dimension] = { lower: Math.min(previous?.lower ?? 1, clamp01(target)), upper: Math.max(previous?.upper ?? 0, clamp01(target)) };
-        }
-        const value = prototype[dimension];
-        if (value === undefined || !Number.isFinite(value)) continue;
-        counts.requirementTotals[dimension] = (counts.requirementTotals[dimension] ?? 0) + value;
+        if (target === undefined || !Number.isFinite(target)) continue;
+        counts.requirementTargetTotals[dimension] = (counts.requirementTargetTotals[dimension] ?? 0) + clamp01(target);
+        counts.requirementTargetCounts[dimension] = (counts.requirementTargetCounts[dimension] ?? 0) + 1;
+        const previous = counts.requirementTargetBounds[dimension];
+        counts.requirementTargetBounds[dimension] = { lower: Math.min(previous?.lower ?? 1, clamp01(target)), upper: Math.max(previous?.upper ?? 0, clamp01(target)) };
       }
       if (example.responseFormId) {
         counts.responseFormExamples += 1;
@@ -230,20 +223,15 @@ export function compileRequestRequirementCorpus(
     const margin = (winner.count - (runnerUp?.count ?? 0)) / Math.max(1, counts.examples);
     if (posterior < 0.68 || margin < 0.34) return [];
     const classCoverage = winner.count / Math.max(1, classTotals[winner.authority]);
-    const reliability = clamp01(0.45 * posterior + 0.35 * margin + 0.20 * Math.min(1, winner.count / 8));
-    const activationScale = 0.72 + 0.58 * reliability;
-    const requirementCoefficients: Partial<Record<TurnRequirementDimension, number>> = {};
+    const reliability = patternReliability(posterior, margin, winner.count);
     const requirementTargets: Partial<Record<TurnRequirementDimension, number>> = {};
     for (const dimension of TURN_REQUIREMENT_DIMENSIONS) {
       const targetCount = counts.requirementTargetCounts[dimension] ?? 0;
-      if (targetCount > 0) {
-        const bounds = counts.requirementTargetBounds[dimension]!;
-        requirementTargets[dimension] = Math.max(bounds.lower, Math.min(bounds.upper, counts.requirementTargetTotals[dimension]! / targetCount));
-        continue;
-      }
-      const total = counts.requirementTotals[dimension];
-      if (total !== undefined) requirementCoefficients[dimension] = (total / counts.examples) * activationScale;
+      if (targetCount === 0) continue;
+      const bounds = counts.requirementTargetBounds[dimension]!;
+      requirementTargets[dimension] = Math.max(bounds.lower, Math.min(bounds.upper, counts.requirementTargetTotals[dimension]! / targetCount));
     }
+    const requirementCoefficients = requirementCoefficientsFromAuthorityMass(counts.byAuthority, counts.examples, reliability, requirementTargets);
     const responseForm = compiledResponseForm(counts, input.corpus.responseFormProfiles);
     const patternJson = toJsonValue({
       schema: REQUEST_REQUIREMENT_PATTERN_SCHEMA,
@@ -323,6 +311,173 @@ export function compileRequestRequirementCorpus(
       hiddenWeights: false
     })
   };
+}
+
+export interface RequestRequirementHydrationReport {
+  /** `inert_stale_compiler` whenever any persisted request pattern was dropped for an uncompilable stale shape. */
+  status: "active" | "inert_unconfigured" | "inert_stale_compiler";
+  compilerFingerprint: string;
+  current: number;
+  recompiled: number;
+  superseded: number;
+  droppedStaleCompiler: number;
+  droppedIds: string[];
+}
+
+/**
+ * Persisted request patterns from an earlier compiler are recompiled in place
+ * from their carried aggregates; a current-fingerprint row with the same
+ * durable identity supersedes them, and rows that cannot be recompiled are
+ * dropped and counted so hydration never looks healthy while losing them.
+ */
+export function reconcileRequestRequirementPatterns(
+  patterns: readonly LanguagePatternRecord[]
+): { patterns: LanguagePatternRecord[]; report: RequestRequirementHydrationReport } {
+  const currentIdentities = new Set<string>();
+  for (const pattern of patterns) {
+    if (isRequestRequirementPattern(pattern) && jsonRecord(pattern.patternJson).compilerFingerprint === REQUEST_REQUIREMENT_PATTERN_COMPILER_FINGERPRINT) {
+      currentIdentities.add(requestRequirementPatternIdentity(pattern));
+    }
+  }
+  const report: RequestRequirementHydrationReport = {
+    status: "inert_unconfigured",
+    compilerFingerprint: REQUEST_REQUIREMENT_PATTERN_COMPILER_FINGERPRINT,
+    current: 0,
+    recompiled: 0,
+    superseded: 0,
+    droppedStaleCompiler: 0,
+    droppedIds: []
+  };
+  const out: LanguagePatternRecord[] = [];
+  for (const pattern of patterns) {
+    if (!isRequestRequirementPattern(pattern)) {
+      out.push(pattern);
+      continue;
+    }
+    if (jsonRecord(pattern.patternJson).compilerFingerprint === REQUEST_REQUIREMENT_PATTERN_COMPILER_FINGERPRINT) {
+      report.current += 1;
+      out.push(pattern);
+      continue;
+    }
+    if (currentIdentities.has(requestRequirementPatternIdentity(pattern))) {
+      report.superseded += 1;
+      continue;
+    }
+    const recompiled = recompileRequestRequirementPattern(pattern);
+    if (recompiled) {
+      report.recompiled += 1;
+      out.push(recompiled);
+      continue;
+    }
+    report.droppedStaleCompiler += 1;
+    // Cost bound on the reported id list; the count is exact.
+    if (report.droppedIds.length < 64) report.droppedIds.push(pattern.id);
+  }
+  report.status = report.droppedStaleCompiler > 0
+    ? "inert_stale_compiler"
+    : report.current + report.recompiled > 0 ? "active" : "inert_unconfigured";
+  return { patterns: out, report };
+}
+
+export function recompileRequestRequirementPattern(pattern: LanguagePatternRecord): LanguagePatternRecord | undefined {
+  const record = jsonRecord(pattern.patternJson);
+  const surface = typeof record.surface === "string" ? record.surface.trim() : "";
+  const anchor = record.anchor;
+  const sourceVersionId = typeof record.sourceVersionId === "string" ? record.sourceVersionId : "";
+  const selectedAuthority = record.selectedAuthority;
+  const exampleSupport = typeof record.exampleSupport === "number" ? record.exampleSupport : Number.NaN;
+  const posterior = typeof record.posterior === "number" ? record.posterior : Number.NaN;
+  const margin = typeof record.margin === "number" ? record.margin : Number.NaN;
+  if (!surface || (anchor !== "start" && anchor !== "any" && anchor !== "end") || !sourceVersionId) return undefined;
+  if (!isRequestedAuthority(selectedAuthority) || !Number.isFinite(exampleSupport) || exampleSupport < 2) return undefined;
+  if (!Number.isFinite(posterior) || !Number.isFinite(margin)) return undefined;
+  const mass = authorityRecord(0);
+  if (isRecord(record.authorityMass)) {
+    for (const authority of REQUESTED_AUTHORITY_IDS) {
+      const count = record.authorityMass[authority];
+      if (typeof count === "number" && Number.isFinite(count) && count >= 0) mass[authority] = count;
+    }
+  }
+  const massTotal = Object.values(mass).reduce((sum, count) => sum + count, 0);
+  if (massTotal <= 0) mass[selectedAuthority] = exampleSupport;
+  const carriedTargets = isRecord(record.requirementTargets) ? requirementVector(record.requirementTargets) : {};
+  const carriedBounds = isRecord(record.requirementTargetBounds) ? record.requirementTargetBounds : {};
+  const requirementTargets: Partial<Record<TurnRequirementDimension, number>> = {};
+  const requirementTargetBounds: Partial<Record<TurnRequirementDimension, { lower: number; upper: number }>> = {};
+  for (const dimension of TURN_REQUIREMENT_DIMENSIONS) {
+    const target = carriedTargets[dimension];
+    if (target === undefined) continue;
+    const bounds = isRecord(carriedBounds[dimension]) ? carriedBounds[dimension] as Record<string, unknown> : undefined;
+    const lower = typeof bounds?.lower === "number" && Number.isFinite(bounds.lower) ? clamp01(bounds.lower) : clamp01(target);
+    const upper = typeof bounds?.upper === "number" && Number.isFinite(bounds.upper) ? clamp01(bounds.upper) : clamp01(target);
+    requirementTargetBounds[dimension] = { lower: Math.min(lower, upper), upper: Math.max(lower, upper) };
+    requirementTargets[dimension] = Math.max(Math.min(lower, upper), Math.min(Math.max(lower, upper), clamp01(target)));
+  }
+  const carriedCoefficients = isRecord(record.requirementCoefficients) ? requirementVector(record.requirementCoefficients) : {};
+  if (!Object.keys(carriedCoefficients).length && !Object.keys(requirementTargets).length) return undefined;
+  const reliability = patternReliability(clamp01(posterior), clamp01(margin), mass[selectedAuthority]);
+  const requirementCoefficients = requirementCoefficientsFromAuthorityMass(mass, Math.max(exampleSupport, massTotal), reliability, requirementTargets);
+  const patternJson = toJsonValue({
+    ...record,
+    schema: REQUEST_REQUIREMENT_PATTERN_SCHEMA,
+    compilerFingerprint: REQUEST_REQUIREMENT_PATTERN_COMPILER_FINGERPRINT,
+    surface,
+    anchor,
+    matchMode: "unicode_token_ngram",
+    semanticRoleId: "role.request.requirement.v1",
+    learnedFrameOrPatternId: typeof record.learnedFrameOrPatternId === "string" ? record.learnedFrameOrPatternId : `${anchor}:${surface}`,
+    requirementCoefficients,
+    requirementTargets,
+    requirementTargetBounds,
+    authorityMass: mass,
+    selectedAuthority,
+    posterior: clamp01(posterior),
+    margin: clamp01(margin),
+    exampleSupport,
+    sourceVersionId,
+    provenanceClass: "learned_language_prior",
+    recompiledFrom: typeof record.compilerFingerprint === "string" ? record.compilerFingerprint : null
+  });
+  return { ...pattern, patternJson };
+}
+
+function requestRequirementPatternIdentity(pattern: LanguagePatternRecord): string {
+  const record = jsonRecord(pattern.patternJson);
+  const key = typeof record.learnedFrameOrPatternId === "string"
+    ? record.learnedFrameOrPatternId
+    : `${String(record.anchor ?? "")}:${typeof record.surface === "string" ? record.surface.trim() : ""}`;
+  return JSON.stringify([pattern.profileId, record.sourceSystem ?? null, record.sourceVersionId ?? null, key]);
+}
+
+function patternReliability(posterior: number, margin: number, winnerCount: number): number {
+  return clamp01(0.45 * posterior + 0.35 * margin + 0.20 * Math.min(1, winnerCount / 8));
+}
+
+function requirementCoefficientsFromAuthorityMass(
+  mass: Record<RequestedAuthority, number>,
+  examples: number,
+  reliability: number,
+  requirementTargets: Partial<Record<TurnRequirementDimension, number>>
+): Partial<Record<TurnRequirementDimension, number>> {
+  const activationScale = 0.72 + 0.58 * reliability;
+  const out: Partial<Record<TurnRequirementDimension, number>> = {};
+  for (const dimension of TURN_REQUIREMENT_DIMENSIONS) {
+    if (requirementTargets[dimension] !== undefined) continue;
+    let total: number | undefined;
+    for (const authority of REQUESTED_AUTHORITY_IDS) {
+      const count = mass[authority];
+      if (count <= 0) continue;
+      const value = authorityRequirementCoefficients(authority)[dimension];
+      if (value === undefined || !Number.isFinite(value)) continue;
+      total = (total ?? 0) + count * value;
+    }
+    if (total !== undefined) out[dimension] = (total / Math.max(1, examples)) * activationScale;
+  }
+  return out;
+}
+
+function jsonRecord(value: JsonValue): Record<string, unknown> {
+  return isRecord(value) ? value : {};
 }
 
 function compiledResponseForm(

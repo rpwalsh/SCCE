@@ -11,7 +11,7 @@ import {
 import { deriveTurnRequirementField } from "../turn-requirements.js";
 import { extendedGenerationDecision } from "../extended-generation-turn.js";
 import { createHasher } from "../primitives.js";
-import type { EvidenceId, SourceVersionId } from "../types.js";
+import type { EvidenceId, JsonValue, SourceVersionId } from "../types.js";
 
 describe("source-backed response-form learning", () => {
   it("does not hydrate request patterns compiled with stale semantics", () => {
@@ -41,6 +41,51 @@ describe("source-backed response-form learning", () => {
     const state = createLanguageMemoryRuntime().hydrate({ models: [], patterns: [stale, current] });
     expect(state.importedPatterns.map(pattern => pattern.id)).toContain(current.id);
     expect(state.importedPatterns.map(pattern => pattern.id)).not.toContain(stale.id);
+    expect(state.requestRequirementHydration).toMatchObject({ status: "active", current: 1, superseded: 1, droppedStaleCompiler: 0 });
+  });
+
+  it("recompiles fingerprint-less request patterns in place and reports the ones it cannot", () => {
+    const compiled = compileRequestRequirementCorpus({
+      corpus: {
+        schema: REQUEST_REQUIREMENT_CORPUS_SCHEMA,
+        language: "fixture",
+        examples: ["toma", "ravi", "paku"].map(subject => ({ text: `nava sula ${subject}`, authority: "creative" as const }))
+      },
+      profileId: "profile.fixture",
+      sourceVersionId: "source-version.fixture.legacy" as SourceVersionId,
+      evidenceIds: ["evidence.fixture.legacy" as EvidenceId],
+      sourceSystem: "fixture",
+      updatedAt: 1,
+      makeId: value => `pattern.${createHasher().digestHex(JSON.stringify(value))}`
+    });
+    const current = compiled.patterns.find(pattern => (pattern.patternJson as Record<string, unknown>).surface === "nava sula")!;
+    const currentJson = current.patternJson as Record<string, unknown>;
+    // A row persisted before the fingerprint existed: same surface and aggregates, no fingerprint, no targets.
+    const { compilerFingerprint: _fingerprint, requirementTargets: _targets, requirementTargetBounds: _bounds, ...legacyJson } = currentJson;
+    const legacy = { ...current, id: `${current.id}.legacy`, patternJson: { ...legacyJson, requirementCoefficients: { brevityDetailBalance: 0.4 } } as JsonValue };
+    const { surface: _surface, ...surfacelessJson } = legacyJson;
+    const surfaceless = { ...current, id: `${current.id}.surfaceless`, patternJson: surfacelessJson as JsonValue };
+
+    const state = createLanguageMemoryRuntime().hydrate({ models: [], patterns: [legacy, surfaceless] });
+    const hydratedLegacy = state.importedPatterns.find(pattern => pattern.id === legacy.id);
+    expect(hydratedLegacy).toBeDefined();
+    const hydratedJson = hydratedLegacy!.patternJson as Record<string, unknown>;
+    expect(hydratedJson.compilerFingerprint).toBe(REQUEST_REQUIREMENT_PATTERN_COMPILER_FINGERPRINT);
+    expect(hydratedJson.requirementCoefficients).toEqual(currentJson.requirementCoefficients);
+    expect(state.importedPatterns.map(pattern => pattern.id)).not.toContain(surfaceless.id);
+    expect(state.requestRequirementHydration).toMatchObject({
+      status: "inert_stale_compiler",
+      compilerFingerprint: REQUEST_REQUIREMENT_PATTERN_COMPILER_FINGERPRINT,
+      current: 0,
+      recompiled: 1,
+      superseded: 0,
+      droppedStaleCompiler: 1,
+      droppedIds: [surfaceless.id]
+    });
+    expect(JSON.stringify(state.audit)).toContain("inert_stale_compiler");
+
+    const field = deriveTurnRequirementField({ requestText: "nava sula yaro", languageMemoryState: runtimeState([hydratedLegacy!]) });
+    expect((field.activationsUsed ?? []).some(activation => activation.id === legacy.id)).toBe(true);
   });
 
   it("gives target/range recompiles a stable source-scoped identity and a current compiler fingerprint", () => {

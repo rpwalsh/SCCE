@@ -33,8 +33,8 @@ import {
   isBridgeAnswerRoleId
 } from "./question-routing-ids.js";
 import {
-  REQUEST_REQUIREMENT_PATTERN_COMPILER_FINGERPRINT,
-  REQUEST_REQUIREMENT_PATTERN_SCHEMA
+  reconcileRequestRequirementPatterns,
+  type RequestRequirementHydrationReport
 } from "./request-requirement-learning.js";
 import {
   composeJoinProgramMixtures,
@@ -94,6 +94,8 @@ export interface LanguageMemoryRuntimeState {
   joinPrograms: JoinProgramMixture[];
   creativeEventCompatibilityModels: CreativeEventCompatibilityModel[];
   rejectedConstructionPatterns: LanguageConstructionMemoryIssue[];
+  /** Set by hydrate(); absent only on states built without hydration. */
+  requestRequirementHydration?: RequestRequirementHydrationReport;
   importedLanguagePriorCount: number;
   competenceVector: LanguageCompetenceVector;
   scope: LanguageMemoryRuntimeScope;
@@ -511,12 +513,8 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
       const languageHints = uniqueStrings([...records.map(record => record.languageHint), ...importedObservations.map(item => item.languageHint)]).sort(compareCodePoint);
       const observedSymbolCount = models.reduce((sum, model) => sum + model.observedSymbolCount, 0);
       const importedUnits = [...(input.units ?? [])].sort((a, b) => b.alpha - a.alpha || compareCodePoint(a.text, b.text) || compareCodePoint(a.id, b.id)).slice(0, 4096);
-      const persistedPatterns = [...(input.patterns ?? [])]
-        .filter(pattern => {
-          const record = jsonRecord(pattern.patternJson);
-          return record.schema !== REQUEST_REQUIREMENT_PATTERN_SCHEMA
-            || record.compilerFingerprint === REQUEST_REQUIREMENT_PATTERN_COMPILER_FINGERPRINT;
-        })
+      const requestRequirements = reconcileRequestRequirementPatterns(input.patterns ?? []);
+      const persistedPatterns = requestRequirements.patterns
         .sort((a, b) => b.support - a.support || compareCodePoint(a.patternKind, b.patternKind) || compareCodePoint(a.id, b.id))
         .slice(0, 1024);
       const importedPatterns = persistedPatterns.filter(pattern => (
@@ -569,6 +567,7 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
         joinPrograms,
         creativeEventCompatibilityModels,
         rejectedConstructionPatterns: constructionMemory.rejected,
+        requestRequirementHydration: requestRequirements.report,
         importedLanguagePriorCount,
         competenceVector,
         scope: {
@@ -600,6 +599,7 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
           joinPrograms: joinPrograms.map(program => program.id),
           creativeEventCompatibilityModels: creativeEventCompatibilityModels.length,
           rejectedConstructionPatterns: constructionMemory.rejected,
+          requestRequirementHydration: requestRequirements.report,
           importedLanguagePriorCount,
           orders: models.map(model => model.order),
           streamIds: streamIds.slice(0, 24),
@@ -686,6 +686,7 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
           reliability: model.reliability
         })),
         rejectedConstructionPatterns: input.state.rejectedConstructionPatterns.slice(0, 24),
+        requestRequirementHydration: input.state.requestRequirementHydration ?? null,
         competenceVector: input.state.competenceVector,
         audit: input.state.audit
       });
