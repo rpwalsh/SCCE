@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { calibrated } from "./calibrations/prod-calibrations.js";
 import { corpusIdentityGeneration, corpusNamedRuns } from "./corpus-identity.js";
 import { hasUncasedNonLatinLetter, hasUppercaseLetter, surfaceWords } from "./surface-linguistics.js";
 import type { JsonValue } from "./types.js";
@@ -60,18 +61,21 @@ export function requestContentSurface(text: string): string {
 
 
 
+const ALPHABETIC = /\p{Alphabetic}/u;
+
 export function genericQuestionSignal(unit: string): boolean {
   if (!unit) return true;
-  if (unit.length <= 2) return true;
+  if (unit.length <= calibrated("units.generic_length_ceiling")) return true;
   let letters = 0;
   let repeated = 0;
   let previous = "";
   for (const char of unit) {
-    if (char.toLocaleLowerCase() !== char.toLocaleUpperCase()) letters++;
+    // Alphabetic contains every cased code point, so only uncased scripts gain letters here.
+    if (ALPHABETIC.test(char)) letters++;
     if (char === previous) repeated++;
     previous = char;
   }
-  return letters <= 1 || repeated / Math.max(1, unit.length - 1) > 0.72;
+  return letters <= 1 || repeated / Math.max(1, unit.length - 1) > calibrated("units.generic_repeated_character_ratio");
 }
 
 
