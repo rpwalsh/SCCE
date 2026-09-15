@@ -53,6 +53,11 @@ import {
   optionalNullRealizationModelsFromPatterns,
   type OptionalNullRealizationModel
 } from "./optional-null-realization.js";
+import {
+  languageStructuralDeltasFromPatterns,
+  structuralDeltaRealizationFit,
+  type LanguageStructuralDelta
+} from "./language-state-delta.js";
 
 const composedJoinProgramCache = new WeakMap<
   LanguageMemoryRuntimeState,
@@ -73,6 +78,8 @@ export interface LanguageMemoryRuntimeState {
   importedPatterns: LanguagePatternRecord[];
   importedObservations: NgramObservation[];
   importedSemanticFrames: SemanticFrameRecord[];
+  /** Typed morphology/construction/interpretation transitions read from durable learner output. */
+  structuralDeltas?: LanguageStructuralDelta[];
   importedConstructionBundles: DurableLanguageConstructionBundle[];
   importedReversibleConstructions?: ReversibleConstruction[];
   importedPairedAntiUnifiedConstructions?: PairedAntiUnifiedConstruction[];
@@ -477,6 +484,7 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
       const optionalNullRealizationModels =
         optionalNullRealizationModelsFromPatterns(persistedPatterns);
       const importedSemanticFrames = [...(input.semanticFrames ?? [])].sort((a, b) => b.alpha - a.alpha || compareCodePoint(a.id, b.id)).slice(0, 2048);
+      const structuralDeltas = languageStructuralDeltasFromPatterns(persistedPatterns);
       const constructionMemory = hydrateLanguageConstructionPatterns({
         patterns: persistedPatterns,
         evidence: input.constructionEvidence ?? [],
@@ -504,6 +512,7 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
         importedPatterns,
         importedObservations,
         importedSemanticFrames,
+        structuralDeltas,
         importedConstructionBundles: constructionMemory.bundles,
         importedReversibleConstructions,
         importedPairedAntiUnifiedConstructions,
@@ -569,6 +578,17 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
         importedUnits: input.state.importedUnits.slice(0, 24).map(unit => ({ profileId: unit.profileId, kind: unit.unitKind, text: unit.text, alpha: unit.alpha })),
         importedPatterns: input.state.importedPatterns.slice(0, 24).map(pattern => ({ profileId: pattern.profileId, kind: pattern.patternKind, support: pattern.support, entropy: pattern.entropy })),
         importedSemanticFrames: input.state.importedSemanticFrames.slice(0, 24).map(frame => ({ id: frame.id, alpha: frame.alpha, evidenceIds: frame.evidenceIds })),
+        structuralDeltas: (input.state.structuralDeltas ?? []).slice(0, 24).map(delta => ({
+          id: delta.id,
+          patternId: delta.patternId,
+          profileId: delta.profileId,
+          kind: delta.kind,
+          surface: delta.surface,
+          grammatical: delta.grammatical,
+          semantic: delta.semantic,
+          support: delta.support,
+          evidenceIds: delta.evidenceIds
+        })),
         importedConstructionBundles: input.state.importedConstructionBundles.slice(0, 24).map(bundle => ({
           id: bundle.id,
           bindingId: bundle.bindingId,
@@ -667,8 +687,11 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
         .map(candidate => {
           const score = scoreText(input.state, candidate.text, input.requestText);
           const requestFit = weightedJaccard(featureSet(input.requestText, 256), featureSet(candidate.text, 256));
-          const total = clamp01(calibrated("language_memory.total_activation_weight") * score.activation + calibrated("language_memory.total_request_fit_weight") * requestFit + calibrated("language_memory.total_candidate_fit_weight") * (candidate.fit ?? score.fit));
-          return { candidate, score, total };
+          const structuralDelta = bestStructuralDeltaForSurface(input.state, input.requestText, candidate.text);
+          const structuralDeltaFit = structuralDelta.fit;
+          const learnedCandidateFit = Math.max(candidate.fit ?? score.fit, structuralDeltaFit);
+          const total = clamp01(calibrated("language_memory.total_activation_weight") * score.activation + calibrated("language_memory.total_request_fit_weight") * requestFit + calibrated("language_memory.total_candidate_fit_weight") * learnedCandidateFit);
+          return { candidate, score, total, structuralDeltaFit, structuralDeltaIds: structuralDelta.ids };
         })
         .sort((a, b) => b.total - a.total || a.candidate.text.localeCompare(b.candidate.text));
       const best = ranked[0];
@@ -705,6 +728,8 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
           importedLanguageUnitIdsUsed: importedIdsFromScore(best?.score.audit, "importedLanguageUnitIdsUsed"),
           importedPhrasePatternIdsUsed: importedIdsFromScore(best?.score.audit, "importedPhrasePatternIdsUsed"),
           importedSemanticFrameIdsUsed: importedIdsFromScore(best?.score.audit, "importedSemanticFrameIdsUsed"),
+          structuralDeltaIdsUsed: best?.structuralDeltaIds ?? [],
+          structuralDeltaFit: best?.structuralDeltaFit ?? 0,
           continuation: continuation ? {
             stoppedBy: continuation.stoppedBy,
             symbols: continuation.symbols.length,
@@ -763,6 +788,8 @@ interface GenerationPiece {
   rhetoricalStageIds?: string[];
   backgroundMaterialIds?: string[];
   significanceBridgeMaterialIds?: string[];
+  structuralDeltaFit?: number;
+  structuralDeltaIds?: string[];
   planRank?: number;
 }
 
@@ -1101,7 +1128,9 @@ function generateFromLanguageMemory(input: LanguageGenerationInput): LanguageGen
         roleAssignmentIds: piece.roleAssignmentIds ?? [],
         rhetoricalStageIds: piece.rhetoricalStageIds ?? [],
         backgroundMaterialIds: piece.backgroundMaterialIds ?? [],
-        significanceBridgeMaterialIds: piece.significanceBridgeMaterialIds ?? []
+        significanceBridgeMaterialIds: piece.significanceBridgeMaterialIds ?? [],
+        structuralDeltaFit: piece.structuralDeltaFit ?? 0,
+        structuralDeltaIds: piece.structuralDeltaIds ?? []
       })),
       semanticFactMaterialsUsed,
       answerSlotsFilled,
@@ -1242,8 +1271,10 @@ function generationPieces(
     if ((source === "language_unit" || source === "phrase_pattern" || source === "semantic_frame") && !allowRawNgramSurfacePieces && (!isDiscourseBearingPriorSurface(clean) || !hasContextAnchor(clean, contextAnchors))) return;
     const fit = contextText ? weightedJaccard(featureSet(clean, 256), contextFeatures) : 0.5;
     const ngram = ngramPieceSupport(input.state, clean, contextSymbols);
-    const score = clamp01(calibrated("language_memory.unit_support_weight") * clamp01(support) + calibrated("language_memory.unit_fit_weight") * fit + calibrated("language_memory.unit_ngram_probability_weight") * ngram.probability + calibrated("language_memory.unit_source_preference_weight") * sourcePreference(source));
-    rows.push({ ...metadata, text: clean, source, id, support: clamp01(support), fit, order: ngram.order, probability: ngram.probability, score });
+    const structuralDelta = bestStructuralDeltaForSurface(input.state, contextText, clean);
+    const learnedFit = Math.max(fit, structuralDelta.fit);
+    const score = clamp01(calibrated("language_memory.unit_support_weight") * clamp01(support) + calibrated("language_memory.unit_fit_weight") * learnedFit + calibrated("language_memory.unit_ngram_probability_weight") * ngram.probability + calibrated("language_memory.unit_source_preference_weight") * sourcePreference(source));
+    rows.push({ ...metadata, text: clean, source, id, support: clamp01(support), fit, order: ngram.order, probability: ngram.probability, score, structuralDeltaFit: structuralDelta.fit, structuralDeltaIds: structuralDelta.ids });
   };
   for (const term of requiredTerms) add(term.text, "required_term", term.id, Math.max(0.1, term.weight ?? 0.5));
   for (const atom of frameAtoms) add(atom.text, "proposition_atom", atom.id, Math.max(0.1, atom.weight ?? 0.5));
@@ -4770,4 +4801,20 @@ function hashText(text: string): string {
   let hash = 2166136261;
   for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 16777619);
   return (hash >>> 0).toString(16);
+}
+
+function bestStructuralDeltaForSurface(
+  state: LanguageMemoryRuntimeState,
+  requestText: string,
+  candidateText: string
+): { fit: number; ids: string[] } {
+  const rows = (state.structuralDeltas ?? [])
+    .slice(0, 256)
+    .map(delta => ({ delta, fit: structuralDeltaRealizationFit(delta, requestText, candidateText) }))
+    .filter(row => row.fit > 0)
+    .sort((left, right) => right.fit - left.fit || left.delta.id.localeCompare(right.delta.id));
+  return {
+    fit: rows[0]?.fit ?? 0,
+    ids: rows.slice(0, 4).map(row => row.delta.id)
+  };
 }
