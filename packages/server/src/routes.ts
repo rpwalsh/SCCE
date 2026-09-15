@@ -12,7 +12,7 @@ import {
   behaviorRoleExecutionGraphInputFromTaskConstraintGraph, createProgramBehaviorValidationLedger, PROGRAM_BEHAVIOR_VALIDATION_PLAN_BINDING_SCHEMA, curriculumItemFromPlan,
   learningConsentInput, persistCreativeContinuationOffer, creativeContinuationDecisionFromJson, creativeContinuationDecisionFromObservation, persistCreativeContinuationPreference, CREATIVE_CONTINUATION_OFFER_CALIBRATION_ID,
   listHeldSources,
-  reviewHeldSource, summarizeForTrace, installProdCalibrations, clearProdCalibrations, prodCalibrationIds, CALIBRATION_SEARCH_IDS, createFrontierBroadCapabilityTasks, FRONTIER_BROAD_CAPABILITY_SUITE_ID, CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, CAUSAL_DISCOVERY_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, SUPPORTED_PROGRAM_REPAIR_FAMILIES, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createCapabilityExecutorRegistry, createClock, createDialogueCognitiveMemoryV2, createCorrectionEngine, createCorrectionObservation, createEventFactory, createHasher, createIdFactory, dialogueOutcomeMemoryForConversation, dialogueInterpretationAdjustmentsForConversation, previewDialogueLearning, dispatchCapabilityTask, dispatchRollbackAttempt, executiveResumePlan, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan, type CapabilityExecutor, type DurableExecutiveEpisode } from "@scce/kernel";
+  reviewHeldSource, summarizeForTrace, installProdCalibrations, clearProdCalibrations, prodCalibrationIds, CALIBRATION_SEARCH_IDS, createFrontierBroadCapabilityTasks, FRONTIER_BROAD_CAPABILITY_SUITE_ID, CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, CAUSAL_DISCOVERY_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, SUPPORTED_PROGRAM_REPAIR_FAMILIES, buildDiscourseObjectState, buildTurnDialogueBridge, measureRequestCorpusSubject, canonicalStringify, createAuditEngine, createCapabilityExecutorRegistry, createClock, createDialogueCognitiveMemoryV2, createCorrectionEngine, createCorrectionObservation, createEventFactory, createHasher, createIdFactory, dialogueOutcomeMemoryForConversation, dialogueInterpretationAdjustmentsForConversation, previewDialogueLearning, dispatchCapabilityTask, dispatchRollbackAttempt, executiveResumePlan, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan, type CapabilityExecutor, type DurableExecutiveEpisode } from "@scce/kernel";
 import { createDeveloperSurfaceState, hydrateApprovals, hydrateSurfaceFromTurn, renderWorkbench, routeForCommand, workbenchModelModulePath, WORKBENCH_MODEL_ROUTE } from "@scce/ui";
 import type { RuntimeStartupReadiness, RuntimeStartupReadinessSnapshot } from "./startup.js";
 import { turnTaskRegistryFor, type TurnTaskFrame } from "./turn-task-registry.js";
@@ -801,10 +801,23 @@ async function dispatch(
       });
       const recentTurnsForMetadata = recentTurns.map(conversationTurnForMetadata);
       const recentEvidenceIds = uniqueServerStrings(recentTurns.flatMap(record => record.evidenceIds.map(String)));
-      const discourseObject = sessionId
+      // Whether this request names a subject of its own, measured against the corpus rather than read off its
+      // orthography. Asked here because the primed signal a discourse object would otherwise read is the previous
+      // request's, which is how a lowercase request naming its own subject inherited the last turn's evidence.
+      const requestSubject = await measureRequestCorpusSubject({ requestText: turn.text, evidence: context.runtime.storage.evidence });
+      const requestNamesOwnSubject = requestSubject.measured
+        ? requestSubject.identities.length > 0
+        : requestSubject.contentRuns.length > 0;
+      traceEvent(trace, {
+        stage: "turn.request.corpus_subject",
+        label: "api.turn",
+        counts: { identities: requestSubject.identities.length, contentRuns: requestSubject.contentRuns.length },
+        support: { measured: requestSubject.measured, identities: requestSubject.identities.slice(0, 4) }
+      });
+      const discourseObject = sessionId && !requestNamesOwnSubject
         ? buildDiscourseObjectState({ sessionId, currentText: turn.text, recentTurns: recentTurnsForMetadata, now: Date.now() })
         : undefined;
-      const sparseSessionFollowup = Boolean(discourseObject) && recentEvidenceIds.length > 0 && !sourceSurfaceStrongEnough(turn.text);
+      const sparseSessionFollowup = Boolean(discourseObject) && recentEvidenceIds.length > 0;
       const active = hydratedRuntime.marker;
       const workspacePlans = workspaceCoding ? verifiedCompilerPlansForTurn(workspaceCoding) : [];
       const webRequested = webLearningRequested(body);
@@ -1550,66 +1563,6 @@ function conversationContextLimit(value: unknown): number {
   const parsed = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : NaN;
   if (!Number.isFinite(parsed)) return 24;
   return Math.max(0, Math.min(64, Math.floor(parsed)));
-}
-
-function sourceSurfaceStrongEnough(text: string): boolean {
-  const words = unicodeWords(text);
-  let casedRun = 0;
-  let longUnits = 0;
-  let adjacentLongUnits = 0;
-  let previousUnitLength = 0;
-  for (const word of words) {
-    const length = [...word].length;
-    if (hasUncasedLetter(word)) return true;
-    if (length >= 8) return true;
-    if (previousUnitLength >= 3 && length >= 3 && previousUnitLength + length >= 11) return true;
-    previousUnitLength = length;
-    if (length >= 4) {
-      longUnits++;
-      adjacentLongUnits++;
-    } else {
-      adjacentLongUnits = 0;
-    }
-    if (hasUppercaseLetter(word)) casedRun++;
-    else casedRun = 0;
-    if (casedRun >= 2 || adjacentLongUnits >= 2 || longUnits >= 3) return true;
-  }
-  return false;
-}
-
-function unicodeWords(text: string): string[] {
-  const out: string[] = [];
-  let current = "";
-  for (const char of text.normalize("NFKC")) {
-    if (/\p{L}|\p{N}/u.test(char)) {
-      current += char;
-      continue;
-    }
-    if (current) out.push(current);
-    current = "";
-  }
-  if (current) out.push(current);
-  return out;
-}
-
-function hasUppercaseLetter(text: string): boolean {
-  for (const char of text) {
-    if (char.toLocaleLowerCase() !== char.toLocaleUpperCase() && char === char.toLocaleUpperCase() && char !== char.toLocaleLowerCase()) return true;
-  }
-  return false;
-}
-
-function hasUncasedLetter(text: string): boolean {
-  let letters = 0;
-  let cased = 0;
-  for (const char of text) {
-    const lower = char.toLocaleLowerCase();
-    const upper = char.toLocaleUpperCase();
-    if (lower === upper) continue;
-    letters++;
-    if (char === lower || char === upper) cased++;
-  }
-  return letters > 0 && cased === 0;
 }
 
 function conversationTurnForMetadata(record: ConversationTurnRecord): JsonValue {
@@ -3901,7 +3854,7 @@ function uniqueServerStrings(values: readonly string[]): string[] {
 /**
  * Warmup is satisfied for readiness purposes when it actually finished
  * ("ready") or was deliberately turned off ("disabled" via
- * SCCE_STARTUP_WARMUP=0) — a disabled warmup is an operator choice, not an
+ * SCCE_STARTUP_WARMUP=0) â€” a disabled warmup is an operator choice, not an
  * outstanding failure, and must not permanently block /api/ready. "pending",
  * "running", and "failed" still block: warmup is enabled but not yet done.
  */

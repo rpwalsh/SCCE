@@ -215,6 +215,8 @@ export * from "./runtime-coherence.js";
 export * from "./runtime-deadline.js";
 export * from "./runtime-cost-estimate.js";
 export * from "./discourse-state.js";
+export { clearCorpusIdentitySignals, corpusIdentitySignals, primeCorpusIdentitySignals, type CorpusIdentitySignals } from "./corpus-identity.js";
+export { measureRequestCorpusSubject, type RequestCorpusSubject } from "./corpus-identity-runtime.js";
 export * from "./dialogue-cognitive-memory.js";
 export * from "./dialogue-cognitive-shadow.js";
 export * from "./prediction.js";

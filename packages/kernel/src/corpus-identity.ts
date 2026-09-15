@@ -149,8 +149,8 @@ export function corpusNamedRuns(text: string): string[] {
  * Deliberately stricter than {@link corpusNamedRuns}: naming the wrong new subject loses the thread, while
  * anchoring on an extra content run only widens retrieval.
  */
-export function corpusNamedIdentities(text: string): string[] {
-  const state = signals;
+export function corpusNamedIdentities(text: string, measured?: CorpusIdentitySignals): string[] {
+  const state = measured ?? signals;
   if (!state) return [];
   // The identities are titles the corpus found inside this request, so they need not line up with a content run:
   // "the lord of the rings" is one title and its scaffolding words sit in the middle of it.
