@@ -1,6 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import type { DialogueState } from "./dialogue-pragmatics.js";
+import { DIALOGUE_ACT_IDS, type DialogueState } from "./dialogue-pragmatics.js";
 import type { LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
 import { clamp01, mean, toJsonValue } from "./primitives.js";
 import type { QuestionCognitiveFabric } from "./question-cognitive-edge.js";
@@ -694,6 +694,26 @@ function collectDialogueActivations(requestText: string, state: DialogueState | 
       dialogueReferenceId: state.turnId,
       requirementCoefficients: { dialogueDependence: state.continuityLinks.length > 0 ? 0.9 : 0.3 },
       trace: toJsonValue({ source: "dialogue_state", conversationId: state.conversationId, continuityLinkCount: state.continuityLinks.length })
+    }));
+  }
+  const actId = state.communicativeActId;
+  const actWeights = state.userStyleProfile?.communicativeActWeights;
+  const actWeight = actId === undefined ? undefined : actWeights?.[actId];
+  const neutralWeight = actWeights?.[DIALOGUE_ACT_IDS.neutral];
+  if (actId && actWeight !== undefined && neutralWeight !== undefined) {
+    // Learned log-odds of this act's pressure over the non-dialogic act's, so a neutral request is never shifted.
+    const displacement = boundedLogit(actWeight) - boundedLogit(neutralWeight);
+    out.push(normalizeActivation(requestText, {
+      id: actId,
+      kind: "dialogue_move",
+      activation: 1,
+      confidence: clamp01(actWeight),
+      span: fullSpan,
+      semanticRoleId: "role.dialogue.communicative_act.v1",
+      learnedFrameOrPatternId: actId,
+      dialogueReferenceId: state.turnId,
+      requirementCoefficients: { dialogueDependence: displacement },
+      trace: toJsonValue({ source: "dialogue_communicative_act", actWeight, neutralWeight, displacement })
     }));
   }
   for (const signal of state.interactionSignals) {
