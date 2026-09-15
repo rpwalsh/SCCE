@@ -160,6 +160,26 @@ describe("program transformation search", () => {
     expect(evaluateProgramExpression(selected.producedIr, [[8, 1]])).toBe(9);
     expect(selected.heldOutObligationIds).toEqual(["fold.held-out"]);
   });
+
+  it("composes a fold over a searched filter without reading held-out rows", () => {
+    const fit = [
+      structuralRequirement("compose.fit.1", [{ tag: "x", n: 2 }, { tag: "y", n: 9 }, { tag: "x", n: 3 }], 5, "fit"),
+      structuralRequirement("compose.fit.2", [{ tag: "y", n: 6 }, { tag: "x", n: 4 }], 4, "fit"),
+      structuralRequirement("compose.fit.3", [{ tag: "x", n: 7 }, { tag: "y", n: 8 }], 7, "fit"),
+      structuralRequirement("compose.fit.4", [{ tag: "x", n: 1 }, { tag: "x", n: 2 }, { tag: "y", n: 5 }, { tag: "x", n: 3 }], 6, "fit")
+    ];
+    const heldOutInput = [{ tag: "y", n: 9 }, { tag: "x", n: 1 }, { tag: "x", n: 1 }];
+    const result = searchProgramTransformations([...fit, structuralRequirement("compose.held-out", heldOutInput, 2, "held_out")]);
+    const changed = searchProgramTransformations([...fit, structuralRequirement("compose.held-out", heldOutInput, 11, "held_out")]);
+    const selected = result.selected[0]!;
+
+    expect(selected.fitMeanSquaredError).toBe(0);
+    expect(selected.operator).toBe("fold_sequence");
+    expect(selected.operands[0]!.kind).toBe("filter_sequence");
+    expect(evaluateProgramExpression(selected.producedIr, [heldOutInput])).toBe(2);
+    expect(evaluateProgramExpression(selected.producedIr, [[{ tag: "y", n: 3 }]])).toBe(0);
+    expect(changed).toEqual(result);
+  });
 });
 
 function hasMultiplyAndAdd(candidate: ProgramTransformationCandidate): boolean {

@@ -278,21 +278,58 @@ function boundedStructuralSearch(examples: readonly BehaviorExample[], arity: nu
       }
     }
   }
-  expressions.push(...mappedSequenceExpressions(examples, projections));
-  expressions.push(...filteredSequenceExpressions(examples, projections));
-  expressions.push(...foldedSequenceExpressions(examples, projections));
+  const derived = derivedSequenceSources(examples, projections.slice(0, 64));
+  for (const operand of derived) {
+    const expression: ProgramExpression = { kind: "cardinality", operand };
+    if (examples.every(example => jsonEqual(evaluateExpression(expression, example.arguments), example.output))) {
+      expressions.push({ expression, depth: expressionDepth(expression) });
+    }
+  }
+  const sources = [...projections.slice(0, 64), ...derived];
+  expressions.push(...mappedSequenceExpressions(examples, sources));
+  expressions.push(...filteredSequenceExpressions(examples, sources));
+  expressions.push(...foldedSequenceExpressions(examples, sources));
   expressions.push(...conditionalExpressions(examples, projections));
   return deduplicateExpressions(expressions).slice(0, 512);
+}
+
+/** One composition layer: filters and element projections over fit sequences become sources for the sequence operators. */
+function derivedSequenceSources(examples: readonly BehaviorExample[], projections: readonly ProgramExpression[]): ProgramExpression[] {
+  const out: ProgramExpression[] = [];
+  for (const source of projections) {
+    const sourceValues = examples.map(example => evaluateExpression(source, example.arguments));
+    if (!sourceValues.every(value => Array.isArray(value) && value.length <= 64)) continue;
+    const elements = (sourceValues as JsonValue[][]).flat();
+    // Cost bound on the elements scanned per source.
+    if (!elements.length || elements.length > 128) continue;
+    const elementExamples: BehaviorExample[] = elements.map((element, index) => ({ id: String(index), arguments: [element], output: element }));
+    for (const projection of commonProjectionExpressions(elementExamples, 1).map(bindElementExpression)) {
+      if (projection.kind !== "element") out.push({ kind: "map_sequence", source, projection });
+      const observed = new Map<string, JsonValue>();
+      for (const element of elements) {
+        const value = evaluateExpression(projection, [], element);
+        if (value !== undefined) observed.set(stableJson(value), value);
+      }
+      // A predicate that keeps every fit element is identity on the fit rows, so it is not a hypothesis.
+      if (observed.size < 2) continue;
+      for (const value of observed.values()) {
+        out.push({ kind: "filter_sequence", source, predicate: { kind: "equivalent", left: projection, right: { kind: "value", value } } });
+      }
+      // Cost bound on the composition layer.
+      if (out.length >= 128) return out.slice(0, 128);
+    }
+  }
+  return out;
 }
 
 /** Infers a predicate only when the fit outputs are an order-preserving subset of the source. */
 function filteredSequenceExpressions(
   examples: readonly BehaviorExample[],
-  projections: readonly ProgramExpression[]
+  sources: readonly ProgramExpression[]
 ): SearchExpression[] {
   if (!examples.every(example => Array.isArray(example.output))) return [];
   const out: SearchExpression[] = [];
-  for (const source of projections.slice(0, 64)) {
+  for (const source of sources) {
     const sourceValues = examples.map(example => evaluateExpression(source, example.arguments));
     if (!sourceValues.every(Array.isArray)) continue;
     const sequences = sourceValues as JsonValue[][];
@@ -330,34 +367,46 @@ function filteredSequenceExpressions(
 /** Infers bounded numeric folds from fit sequence data using accumulator/element arithmetic. */
 function foldedSequenceExpressions(
   examples: readonly BehaviorExample[],
-  projections: readonly ProgramExpression[]
+  sources: readonly ProgramExpression[]
 ): SearchExpression[] {
   if (!examples.every(example => typeof example.output === "number" && Number.isFinite(example.output))) return [];
   const out: SearchExpression[] = [];
   const initialValues = new Set<number>([0, 1]);
   for (const example of examples) if (typeof example.output === "number") initialValues.add(cleanNumber(example.output));
-  for (const source of projections.slice(0, 64)) {
+  for (const source of sources) {
     const sourceValues = examples.map(example => evaluateExpression(source, example.arguments));
     if (!sourceValues.every(value => Array.isArray(value) && value.length <= 64)) continue;
-    const sequences = sourceValues as JsonValue[][];
-    if (!sequences.every(sequence => sequence.every(value => typeof value === "number" && Number.isFinite(value)))) continue;
-    const reducerOperands: readonly [ProgramExpression, ProgramExpression][] = [
-      [{ kind: "accumulator" }, { kind: "element" }],
-      [{ kind: "element" }, { kind: "accumulator" }]
-    ];
+    const elements = (sourceValues as JsonValue[][]).flat();
+    // Cost bound on the elements scanned per source.
+    if (elements.length > 128) continue;
+    const operands = numericElementOperands(elements);
     for (const initial of initialValues) {
-      for (const [left, right] of reducerOperands) {
-        for (const operator of ["add", "subtract", "multiply", "divide", "minimum", "maximum"] as const) {
-          const reducer: ProgramExpression = { kind: "binary", operator, left, right };
-          const expression: ProgramExpression = { kind: "fold_sequence", source, initial: { kind: "literal", value: initial }, reducer };
-          if (examples.every((example, index) => jsonEqual(evaluateExpression(expression, example.arguments), example.output))) {
-            out.push({ expression, depth: expressionDepth(expression) });
+      for (const operand of operands) {
+        for (const [left, right] of [[{ kind: "accumulator" }, operand], [operand, { kind: "accumulator" }]] as const) {
+          for (const operator of ["add", "subtract", "multiply", "divide", "minimum", "maximum"] as const) {
+            const reducer: ProgramExpression = { kind: "binary", operator, left, right };
+            const expression: ProgramExpression = { kind: "fold_sequence", source, initial: { kind: "literal", value: initial }, reducer };
+            if (examples.every((example, index) => jsonEqual(evaluateExpression(expression, example.arguments), example.output))) {
+              out.push({ expression, depth: expressionDepth(expression) });
+            }
           }
         }
       }
     }
   }
   return out;
+}
+
+/** Reducer element operands: the element or any of its member paths that is a finite number on every fit element. */
+function numericElementOperands(elements: readonly JsonValue[]): ProgramExpression[] {
+  if (!elements.length) return [{ kind: "element" }];
+  const elementExamples: BehaviorExample[] = elements.map((element, index) => ({ id: String(index), arguments: [element], output: element }));
+  return commonProjectionExpressions(elementExamples, 1)
+    .map(bindElementExpression)
+    .filter(operand => elements.every(element => {
+      const value = evaluateExpression(operand, [], element);
+      return typeof value === "number" && Number.isFinite(value);
+    }));
 }
 
 /** Infers branch selection from fit-only equality predicates and source-derived branch expressions. */
@@ -415,11 +464,11 @@ function isOrderedSubset(source: readonly JsonValue[], output: readonly JsonValu
  */
 function mappedSequenceExpressions(
   examples: readonly BehaviorExample[],
-  projections: readonly ProgramExpression[]
+  sources: readonly ProgramExpression[]
 ): SearchExpression[] {
   if (!examples.every(example => Array.isArray(example.output))) return [];
   const out: SearchExpression[] = [];
-  for (const source of projections.slice(0, 64)) {
+  for (const source of sources) {
     const sourceValues = examples.map(example => evaluateExpression(source, example.arguments));
     if (!sourceValues.every(Array.isArray)) continue;
     const sequences = sourceValues as JsonValue[][];
@@ -901,7 +950,8 @@ function deduplicateExpressions(expressions: readonly SearchExpression[]): Searc
 }
 
 function expressionComplexity(expression: ProgramExpression): number {
-  if (expression.kind === "argument" || expression.kind === "element" || expression.kind === "accumulator" || expression.kind === "literal" || expression.kind === "value") return 1;
+  if (expression.kind === "argument" || expression.kind === "element" || expression.kind === "accumulator" || expression.kind === "literal") return 1;
+  if (expression.kind === "value") return jsonNodeCount(expression.value);
   if (expression.kind === "unary") return 1 + expressionComplexity(expression.operand);
   if (expression.kind === "member") return 1 + expressionComplexity(expression.subject);
   if (expression.kind === "sequence") return 1 + expression.items.reduce((sum, item) => sum + expressionComplexity(item), 0);
@@ -983,6 +1033,12 @@ function expressionDepth(expression: ProgramExpression): number {
   if (expression.kind === "fold_sequence") return 1 + Math.max(expressionDepth(expression.source), expressionDepth(expression.initial), expressionDepth(expression.reducer));
   if (expression.kind === "conditional") return 1 + Math.max(expressionDepth(expression.condition), expressionDepth(expression.whenTrue), expressionDepth(expression.whenFalse));
   return 1 + Math.max(expressionDepth(expression.left), expressionDepth(expression.right));
+}
+
+function jsonNodeCount(value: JsonValue): number {
+  if (value === null || typeof value !== "object") return 1;
+  const children = Array.isArray(value) ? value : Object.values(value);
+  return 1 + children.reduce<number>((sum, child) => sum + jsonNodeCount(child), 0);
 }
 
 function isJsonMapping(value: JsonValue | undefined): value is Record<string, JsonValue> {
