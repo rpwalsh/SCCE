@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
-import { CODE_REQUEST_BOOTSTRAP_DEMAND_MODEL, codeLanguageForRequirementState, codeRequestCorroborated, codeRequestDemand, codeRequestObservedRequirements, codeRequestRecognized, codeRequestRequirements, codeRequestSignal } from "../code-request.js";
+import { CODE_REQUEST_BOOTSTRAP_DEMAND_MODEL, codeLanguageForRequirementState, codeRequestCorroborated, codeRequestDemand, codeRequestObservedRequirements, codeRequestRecognized, codeRequestRequirements, codeRequestSignal, typedProgramBehaviorFromMetadata } from "../code-request.js";
 import { clearProdCalibrations, installProdCalibrations } from "../calibrations/prod-calibrations.js";
 import { COGNITIVE_OPERATOR_IDS, activateCognitiveOperators, deriveTurnRequirementField } from "../turn-requirements.js";
 
@@ -129,5 +129,37 @@ describe("code request structure", () => {
     expect(codeRequestSignal("Explain double(3) in prose.").behaviorRequirements).toEqual([]);
     expect(codeRequestSignal("Compare double(3) against 6.").behaviorRequirements).toEqual([]);
     expect(codeRequestSignal("double(3) returns 6.").behaviorRequirements).toEqual([]);
+  });
+
+  it("derives typed owner requirement provenance from the canonical contract", () => {
+    const metadata = (id: string, requestHash: string, charStart: number) => ({
+      programBehavior: {
+        schema: "scce.program.owner_behavior.v1",
+        behaviorRequirements: [{
+          id,
+          requestHash,
+          callableId: "fn_7",
+          arguments: [3],
+          expectedResult: 9,
+          verificationRole: "fit",
+          relationSurface: "::",
+          sourceSpan: { charStart, charEnd: charStart + 1 }
+        }]
+      }
+    });
+    const first = typedProgramBehaviorFromMetadata(metadata("forged-a", "sha256:fake-a", 900));
+    const second = typedProgramBehaviorFromMetadata(metadata("forged-b", "sha256:fake-b", 2));
+
+    expect(first).toEqual(second);
+    expect(first.behaviorRequirements[0]).toMatchObject({
+      id: expect.stringMatching(/^owner\.program\.requirement\.[0-9a-f]{40}$/u),
+      requestHash: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+      sourceSpan: {
+        charStart: expect.any(Number),
+        charEnd: expect.any(Number)
+      }
+    });
+    expect(first.behaviorRequirements[0]!.requestHash).not.toBe("sha256:fake-a");
+    expect(first.behaviorRequirements[0]!.sourceSpan.charEnd).toBeGreaterThan(first.behaviorRequirements[0]!.sourceSpan.charStart);
   });
 });

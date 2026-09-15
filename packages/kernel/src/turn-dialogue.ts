@@ -46,6 +46,8 @@ export interface TurnDialogueBridge {
     acceptedSurfaceCount: number;
     openOutcomeIds: string[];
   };
+  /** Audit emitted by the kernel's selected-candidate event, when present. */
+  selectionAudit?: JsonValue;
   trace: JsonValue;
 }
 
@@ -102,6 +104,7 @@ export function buildTurnDialogueBridge(input: {
       && paraphrasePreservation.checks[index]?.valid === true)
     : undefined;
   const spoken = alternative ?? pragmatics.finalText;
+  const selectionAudit = selectedCandidateAuditFromTurnResult(input.result);
   return {
     schema: "scce.turn_dialogue_bridge.v1",
     paraphrasePreservation,
@@ -122,6 +125,7 @@ export function buildTurnDialogueBridge(input: {
         }
       }
       : {}),
+    ...(selectionAudit !== undefined ? { selectionAudit } : {}),
     trace: toJsonValue({
       source: "turn-dialogue.bridge",
       episodeId: String(input.result.episodeId),
@@ -130,6 +134,13 @@ export function buildTurnDialogueBridge(input: {
       selectedActionIds: pragmatics.policyDecision.selectedActionIds
     })
   };
+}
+
+function selectedCandidateAuditFromTurnResult(result: TurnResult): JsonValue | undefined {
+  const selected = [...result.events].reverse().find(event => event.typeId === "CandidateSelected");
+  if (!selected || selected.payload === null || typeof selected.payload !== "object" || Array.isArray(selected.payload)) return undefined;
+  const payload = selected.payload as Record<string, JsonValue>;
+  return payload.candidateAudit;
 }
 
 function answerGraphFromTurnResult(result: TurnResult): DialogueAnswerGraphLike {

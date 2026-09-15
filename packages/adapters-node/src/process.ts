@@ -29,6 +29,12 @@ export class NodeBuildTestAdapter implements BuildTestPort {
         executionCwd(root, input.construct.program.test.cwd)
       )
       : { code: null, stdout: "", stderr: "build failed; tests skipped", durationMs: 0 };
+    const testExecutionReceipt = {
+      command: input.construct.program.test.command,
+      args: [...input.construct.program.test.args],
+      cwd: input.construct.program.test.cwd,
+      status: build.code === 0 ? "executed" as const : "skipped" as const
+    };
     // This port observes execution. It may diagnose a failure, but it must not
     // select or apply a transformation before the cognitive replan sees it.
     // The kernel owns failure -> candidate -> selector -> retry authority.
@@ -36,6 +42,7 @@ export class NodeBuildTestAdapter implements BuildTestPort {
     return {
       build,
       test,
+      testExecutionReceipt,
       repairAttempted: false,
       repairApplied: false,
       passed: build.code === 0 && test.code === 0,

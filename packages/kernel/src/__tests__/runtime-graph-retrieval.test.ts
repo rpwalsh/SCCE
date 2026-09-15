@@ -442,6 +442,33 @@ describe("runtime hot graph retrieval", () => {
     expect(fixture.getEvidenceBatch).toHaveBeenCalledTimes(1);
   });
 
+  it("shares the unrouted discourse proof lookup with the bounded resolver", async () => {
+    const source = evidenceSpan("evidence:discourse-shared", "Clock", "The clock has a shared discourse proof.");
+    const node = graphNode("node:discourse-shared", ["sym:clock"], [String(source.id)]);
+    const fixture = runtimeFixture(graphSlice([node], [], []), [source]);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    fixture.getSlice.mockImplementation(async query => {
+      await gate;
+      return {
+        ...graphSlice([node], [], []),
+        query,
+        nodes: [node].slice(0, query.limitNodes ?? 1)
+      };
+    });
+
+    const first = fixture.runtime.graphForEvidenceIdsUnrouted([String(source.id)]);
+    await Promise.resolve();
+    const second = fixture.runtime.graphForEvidenceIdsUnrouted([String(source.id)]);
+    await Promise.resolve();
+
+    expect(fixture.getSlice).toHaveBeenCalledTimes(1);
+    release();
+    const [firstValue, secondValue] = await Promise.all([first, second]);
+    expect(secondValue).toBe(firstValue);
+    expect(fixture.getEvidenceBatch).toHaveBeenCalledTimes(1);
+  });
+
   it("single-flights repeated source searches across concurrent factual turns", async () => {
     const fixture = runtimeFixture(graphSlice([], [], []));
     let release!: () => void;

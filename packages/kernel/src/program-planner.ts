@@ -80,6 +80,23 @@ export interface ProgramFilePlan {
   purpose: string;
   dependsOn: string[];
   invariants: string[];
+  /** Construction selected from typed/code evidence; absent only on legacy callers. */
+  constructionId?: string;
+  constructionEvidenceIds?: string[];
+}
+
+export interface ProgramConstructionSelection {
+  id: string;
+  mode: "owner_declared" | "source_observed" | "corpus_learned" | "structural_fallback";
+  pattern: string;
+  paths: {
+    entrypoint: string;
+    primarySource?: string;
+    supportingSource?: string;
+    test?: string;
+  };
+  evidenceIds: string[];
+  rationale: string;
 }
 
 export interface SourceEmissionPlan {
@@ -92,6 +109,9 @@ export interface SourceEmissionPlan {
   risks: Array<{ id: string; severity: "info" | "warning" | "error"; reason: string }>;
   missingDependencies: string[];
   provenanceEvidenceIds: string[];
+  constructionId: string;
+  constructionMode: ProgramConstructionSelection["mode"];
+  constructionEvidenceIds: string[];
 }
 
 export interface ProgramPlan {
@@ -99,6 +119,7 @@ export interface ProgramPlan {
   intent: ProgramIntent;
   codeGraph: CodeKnowledgeGraph;
   blueprint: CodeImplementationBlueprint;
+  artifactConstruction: ProgramConstructionSelection;
   files: ProgramFilePlan[];
   sourceEmission: SourceEmissionPlan;
   ownerBehaviorRequirements: ProgramBehaviorRequirement[];
@@ -134,6 +155,13 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
       const emittedRuntime = emittedRuntimeForShape(shape);
       const intent = intentFromShape(shape);
       const blueprint = code.blueprint({ target: shape.target.id, requestText: input.requestText, graph: codeGraph, entailment: input.entailment });
+      const artifactConstruction = selectArtifactConstruction({
+        shape,
+        codeGraph,
+        explicitEntrypoint: input.programIntent?.entrypointPath,
+        explicitEvidenceIds: input.programIntent?.provenanceEvidenceIds ?? [],
+        hasher: options.hasher
+      });
       const ownerBehaviorRequirements = validatedOwnerBehaviorRequirements(input.programIntent?.behaviorRequirements ?? []);
       const ownerStatefulBehaviorRequirements = validatedOwnerStatefulBehaviorRequirements(input.programIntent?.statefulBehaviorRequirements ?? []);
       if (ownerBehaviorRequirements.length && ownerStatefulBehaviorRequirements.length) {
@@ -155,7 +183,7 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
         input.programIntent?.selectedStatefulBehaviorTransformationIds ?? []
       );
       const files = withOwnerBehaviorCompositionFiles(
-        planFiles(shape),
+        planFiles(shape, artifactConstruction),
         shape,
         ownerBehaviorRequirements,
         ownerStatefulBehaviorRequirements,
@@ -169,6 +197,7 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
         shape,
         codeGraph,
         blueprint,
+        artifactConstruction,
         files,
         build,
         test,
@@ -180,7 +209,7 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
         { id: "program-energy", kind: "program_energy", label: "E_program", metadata: toJsonValue(shape.energy) },
         { id: codeGraph.id, kind: "learned_code_graph", label: "code knowledge graph", metadata: codeGraph.audit },
         { id: blueprint.id, kind: "implementation_blueprint", label: blueprint.target, metadata: blueprint.audit },
-        { id: sourceEmission.id, kind: "source_emission_plan", label: entrypointFor(shape), metadata: toJsonValue(sourceEmission) },
+        { id: sourceEmission.id, kind: "source_emission_plan", label: sourceEmission.entrypoint, metadata: toJsonValue(sourceEmission) },
         ...ownerBehaviorRequirements.map(requirement => ({
           id: requirement.id,
           kind: "owner_behavior_requirement",
@@ -214,7 +243,7 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
         { source: codeGraph.id, target: blueprint.id, relation: "constrains_blueprint", weight: 1 - blueprint.unbackedSynthesisRisk },
         { source: "program-energy", target: "program-shape", relation: "selects_family", weight: 1 - shape.energy.total },
         { source: blueprint.id, target: sourceEmission.id, relation: "emission_plan", weight: 1 - blueprint.unbackedSynthesisRisk },
-        { source: sourceEmission.id, target: entrypointFor(shape), relation: "entrypoint", weight: 0.95 },
+        { source: sourceEmission.id, target: sourceEmission.entrypoint, relation: "entrypoint", weight: 0.95 },
         ...ownerBehaviorRequirements.flatMap(requirement => files
           .filter(file => file.path === emittedRuntime.sourcePath || file.path === emittedRuntime.testPath)
           .map(file => ({ source: requirement.id, target: file.path, relation: file.role === "test" ? "verified_by" : "implemented_by", weight: 1 }))),
@@ -245,6 +274,7 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
         intent,
         codeGraph,
         blueprint,
+        artifactConstruction,
         files,
         sourceEmission,
         ownerBehaviorRequirements,
@@ -279,7 +309,7 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
         id: options.idFactory.semanticId("program_graph", { episodeId: input.episodeId, planId: plan.id, files: files.map(file => file.contentHash) }),
         language: usesFallbackRuntime ? emittedRuntime.languageId : plan.intent.shape.target.language,
         packageManager: usesFallbackRuntime ? emittedRuntime.commandName : plan.intent.shape.target.packageManager,
-        entrypoint: entrypointFor(plan.intent.shape),
+        entrypoint: plan.sourceEmission.entrypoint,
         nodes: [
           ...baseNodes,
           ...baseFiles.map(file => ({ id: `artifact:${file.path}`, kind: `artifact:${file.role}`, label: file.path, metadata: toJsonValue({ contentHash: file.contentHash, mediaType: file.mediaType }) }))
@@ -1187,6 +1217,7 @@ function sourceEmissionPlan(input: {
   shape: ProgramShape;
   codeGraph: CodeKnowledgeGraph;
   blueprint: CodeImplementationBlueprint;
+  artifactConstruction: ProgramConstructionSelection;
   files: ProgramFilePlan[];
   build: { command: string; args: string[]; cwd: string };
   test: { command: string; args: string[]; cwd: string };
@@ -1220,15 +1251,18 @@ function sourceEmissionPlan(input: {
     id,
     artifactKinds,
     expectedFiles: input.files.map(file => file.path),
-    entrypoint: entrypointFor(input.shape),
+    entrypoint: input.artifactConstruction.paths.entrypoint,
     validation: [
-      { id: "validation.build", command: input.build.command, args: input.build.args, cwd: input.build.cwd, expects: ["program.graph.json", entrypointFor(input.shape)], commandSource: commandSourceId(input.build) },
+      { id: "validation.build", command: input.build.command, args: input.build.args, cwd: input.build.cwd, expects: ["program.graph.json", input.artifactConstruction.paths.entrypoint], commandSource: commandSourceId(input.build) },
       { id: "validation.test", command: input.test.command, args: input.test.args, cwd: input.test.cwd, expects: input.files.filter(file => file.role === "test").map(file => file.path), commandSource: commandSourceId(input.test) }
     ],
     staticChecks,
     risks,
     missingDependencies,
-    provenanceEvidenceIds: input.evidenceIds.slice(0, 64)
+    provenanceEvidenceIds: input.evidenceIds.slice(0, 64),
+    constructionId: input.artifactConstruction.id,
+    constructionMode: input.artifactConstruction.mode,
+    constructionEvidenceIds: input.artifactConstruction.evidenceIds
   };
 }
 
@@ -1263,7 +1297,77 @@ function missingDependenciesForPlan(shape: ProgramShape, files: readonly Program
   return [...required].filter(dep => !observed.has(dep)).sort();
 }
 
-function planFiles(shape: ProgramShape): ProgramFilePlan[] {
+function selectArtifactConstruction(input: {
+  shape: ProgramShape;
+  codeGraph: CodeKnowledgeGraph;
+  explicitEntrypoint?: string;
+  explicitEvidenceIds: string[];
+  hasher: Hasher;
+}): ProgramConstructionSelection {
+  const canonicalEntrypoint = entrypointFor(input.shape);
+  const occupiedCanonicalPaths = new Set(canonicalPlanFiles(input.shape).map(file => file.path));
+  const canReplaceEntrypoint = (path: string): boolean => path === canonicalEntrypoint || !occupiedCanonicalPaths.has(path);
+  const explicitEntry = input.explicitEntrypoint && isRelativeConstructionPath(input.explicitEntrypoint) && isSourceConstructionPath(input.explicitEntrypoint)
+    ? { path: input.explicitEntrypoint, confidence: 1, evidenceIds: [...new Set(input.explicitEvidenceIds)].slice(0, 64) }
+    : undefined;
+  if (explicitEntry && !canReplaceEntrypoint(explicitEntry.path)) {
+    throw new Error(`owner-declared entrypoint collides with planned supporting artifact: ${explicitEntry.path}`);
+  }
+  // A path scored as a likely entrypoint by repository filename heuristics is
+  // not itself an authority to replace the artifact selected for this typed
+  // program shape. Until an observed/corpus construction carries an explicit
+  // artifact-role binding, only the owner-declared typed path may replace it.
+  const entry = explicitEntry;
+  const mode: ProgramConstructionSelection["mode"] = explicitEntry ? "owner_declared" : "structural_fallback";
+  const paths = {
+    entrypoint: entry?.path ?? entrypointFor(input.shape)
+  };
+  const evidenceIds = [...new Set(entry?.evidenceIds ?? [])].slice(0, 64);
+  const pattern = [...input.shape.target.capabilities].sort().join("|") || input.shape.target.id;
+  return {
+    id: `program_construction_${input.hasher.digestHex(canonicalStringify({ pattern, mode, paths, evidenceIds })).slice(0, 40)}`,
+    mode,
+    pattern,
+    paths,
+    evidenceIds,
+    rationale: mode === "structural_fallback"
+      ? "no source-observed or corpus entrypoint matched the typed target; canonical runtime construction retained and marked as fallback"
+      : "entrypoint path was authorized by the typed owner requirement"
+  };
+}
+
+function isRelativeConstructionPath(path: string): boolean {
+  return Boolean(path) && !path.includes("://") && !path.startsWith("/") && !path.split("/").includes("..");
+}
+
+function isSourceConstructionPath(path: string): boolean {
+  return [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".css"].some(extension => path.endsWith(extension));
+}
+
+function planFiles(shape: ProgramShape, construction: ProgramConstructionSelection): ProgramFilePlan[] {
+  const canonical = canonicalPlanFiles(shape);
+  const selectedPaths = new Map<string, string>([
+    [entrypointFor(shape), construction.paths.entrypoint]
+  ]);
+  if (hasCapability(shape.target, "capability:browser-render")) {
+    selectedPaths.set("src/App.tsx", construction.paths.primarySource ?? "src/App.tsx");
+    selectedPaths.set("src/styles.css", construction.paths.supportingSource ?? "src/styles.css");
+  } else if (hasCapability(shape.target, "capability:pure-call")) {
+    selectedPaths.set("src/domain.ts", construction.paths.primarySource ?? "src/domain.ts");
+  } else if (hasCapability(shape.target, "capability:command-runtime")) {
+    selectedPaths.set("src/command.ts", construction.paths.primarySource ?? "src/command.ts");
+  }
+  const pathFor = (path: string): string => construction.mode !== "structural_fallback" ? selectedPaths.get(path) ?? path : path;
+  return canonical.map(file => ({
+    ...file,
+    path: pathFor(file.path),
+    dependsOn: file.dependsOn.map(pathFor),
+    constructionId: construction.id,
+    constructionEvidenceIds: construction.evidenceIds
+  }));
+}
+
+function canonicalPlanFiles(shape: ProgramShape): ProgramFilePlan[] {
   const common: ProgramFilePlan[] = [
     { path: "program.graph.json", role: "config", mediaType: "application/json", purpose: "program graph manifest", dependsOn: [], invariants: ["json parseable", "program shape present", "evidence refs explicit"] },
     { path: "implementation.plan.json", role: "config", mediaType: "application/json", purpose: "implementation plan with energy terms", dependsOn: ["program.graph.json"], invariants: ["operator constraints explicit", "validation path explicit", "relative paths only"] },
@@ -1475,28 +1579,29 @@ function emitFiles(plan: ProgramPlan, input: ProgramPlannerInput, idFactory: IdF
   const sourceMemory = sourceMemoryFor(input, plan);
   const emittedRuntime = emittedRuntimeForShape(plan.intent.shape);
   const byPath = new Map<string, string>();
-  byPath.set("program.graph.json", `${JSON.stringify(manifest, null, 2)}\n`);
-  byPath.set("implementation.plan.json", `${JSON.stringify(implementationPlan(plan, input), null, 2)}\n`);
-  byPath.set("source.memory.json", `${JSON.stringify(sourceMemory, null, 2)}\n`);
-  byPath.set("package.json", packageJson(plan));
-  byPath.set("tsconfig.json", tsconfigJson(plan));
-  byPath.set("README.md", readme(plan, input));
-  byPath.set("index.html", webIndexHtml(plan));
-  byPath.set("vite.config.ts", viteConfig(plan));
-  byPath.set("src/main.tsx", webMainTsx());
-  byPath.set("src/App.tsx", webAppTsx(plan, input, sourceMemory));
-  byPath.set("src/styles.css", webStylesCss());
-  byPath.set("src/index.ts", libraryIndex(sourceMemory));
-  byPath.set("src/domain.ts", libraryDomain(plan, sourceMemory));
-  byPath.set("src/transform.ts", transformerModule(plan, sourceMemory));
-  byPath.set("src/log-parser.ts", logParserModule(plan, sourceMemory));
-  byPath.set("src/api-handler.ts", apiHandlerModule(plan, sourceMemory));
-  byPath.set("test/generated-artifact.test.ts", generatedArtifactTest(plan));
-  byPath.set("schema.mapping.json", `${JSON.stringify(schemaMapping(plan), null, 2)}\n`);
-  byPath.set("src/report.ts", reportModule(plan, sourceMemory));
-  byPath.set("report.template.md", reportTemplate(plan));
-  byPath.set("src/cli.ts", cliModule(plan, sourceMemory));
-  byPath.set("src/command.ts", commandModule(plan, sourceMemory));
+  const set = (canonicalPath: string, content: string): void => { byPath.set(plannedArtifactPath(plan, canonicalPath), content); };
+  set("program.graph.json", `${JSON.stringify(manifest, null, 2)}\n`);
+  set("implementation.plan.json", `${JSON.stringify(implementationPlan(plan, input), null, 2)}\n`);
+  set("source.memory.json", `${JSON.stringify(sourceMemory, null, 2)}\n`);
+  set("package.json", packageJson(plan));
+  set("tsconfig.json", tsconfigJson(plan));
+  set("README.md", readme(plan, input));
+  set("index.html", webIndexHtml(plan));
+  set("vite.config.ts", viteConfig(plan));
+  set("src/main.tsx", webMainTsx(plan));
+  set("src/App.tsx", webAppTsx(plan, input, sourceMemory));
+  set("src/styles.css", webStylesCss());
+  set("src/index.ts", libraryIndex(sourceMemory, plan));
+  set("src/domain.ts", libraryDomain(plan, sourceMemory));
+  set("src/transform.ts", transformerModule(plan, sourceMemory));
+  set("src/log-parser.ts", logParserModule(plan, sourceMemory));
+  set("src/api-handler.ts", apiHandlerModule(plan, sourceMemory));
+  set("test/generated-artifact.test.ts", generatedArtifactTest(plan));
+  set("schema.mapping.json", `${JSON.stringify(schemaMapping(plan), null, 2)}\n`);
+  set("src/report.ts", reportModule(plan, sourceMemory));
+  set("report.template.md", reportTemplate(plan));
+  set("src/cli.ts", cliModule(plan, sourceMemory));
+  set("src/command.ts", commandModule(plan, sourceMemory));
   if (plan.files.some(file => file.path === "source.program.json")) {
     // Owner behavior has already passed the requirement boundary by this point.  Its
     // executable contract must therefore come from that graph-native authority, not
@@ -1560,6 +1665,30 @@ function emitFiles(plan: ProgramPlan, input: ProgramPlannerInput, idFactory: IdF
     byPath.set("BUILDING.md", buildNotes(plan));
   }
   return plan.files.map(filePlan => artifact(filePlan.path, filePlan.mediaType, byPath.get(filePlan.path) ?? "", filePlan.role, idFactory, hasher));
+}
+
+function plannedArtifactPath(plan: ProgramPlan, canonicalPath: string): string {
+  if (plan.artifactConstruction.mode === "structural_fallback") return canonicalPath;
+  if (canonicalPath === entrypointFor(plan.intent.shape)) return plan.artifactConstruction.paths.entrypoint;
+  if (hasCapability(plan.intent.shape.target, "capability:browser-render") && canonicalPath === "src/App.tsx") return plan.artifactConstruction.paths.primarySource ?? canonicalPath;
+  if (hasCapability(plan.intent.shape.target, "capability:pure-call") && canonicalPath === "src/domain.ts") return plan.artifactConstruction.paths.primarySource ?? canonicalPath;
+  if (hasCapability(plan.intent.shape.target, "capability:command-runtime") && canonicalPath === "src/command.ts") return plan.artifactConstruction.paths.primarySource ?? canonicalPath;
+  if (hasCapability(plan.intent.shape.target, "capability:browser-render") && canonicalPath === "src/styles.css") return plan.artifactConstruction.paths.supportingSource ?? canonicalPath;
+  return canonicalPath;
+}
+
+function moduleSpecifier(fromPath: string, toPath: string): string {
+  const fromParts = fromPath.split("/");
+  fromParts.pop();
+  const toParts = toPath.split("/");
+  while (fromParts.length && toParts.length && fromParts[0] === toParts[0]) {
+    fromParts.shift();
+    toParts.shift();
+  }
+  const relative = `${"../".repeat(fromParts.length)}${toParts.join("/")}`;
+  if (toPath.endsWith(".css")) return relative.startsWith(".") ? relative : `./${relative}`;
+  const withoutExtension = relative.replace(/\.(tsx?|jsx?|mjs|cjs|py)$/u, "");
+  return `${withoutExtension.startsWith(".") ? withoutExtension : `./${withoutExtension}`}.js`;
 }
 
 function ownerBehaviorComposition(plan: ProgramPlan, files: readonly FileArtifact[], hasher: Hasher): { readonly modules: readonly ProgramModuleSpec[] } | undefined {
@@ -1694,7 +1823,7 @@ function implementationPlan(plan: ProgramPlan, input: ProgramPlannerInput): Json
     models: domainModels(plan.intent.shape),
     operations: operationsFor(plan.intent.shape),
     operationContracts: operationContracts(plan, input),
-    interfaces: interfacesFor(plan.intent.shape),
+    interfaces: interfacesFor(plan.intent.shape, plan.sourceEmission.entrypoint),
     dependencies: dependenciesFor(plan.intent.shape, plan.codeGraph),
     sourceEmission: plan.sourceEmission,
     validation: { build: plan.build, test: plan.test },
@@ -1779,7 +1908,7 @@ function sourceMemoryFor(input: ProgramPlannerInput, plan: ProgramPlan): JsonVal
 }
 
 function packageJson(plan: ProgramPlan): string {
-  const entry = entrypointFor(plan.intent.shape);
+  const entry = plan.sourceEmission.entrypoint;
   const name = slugFromParts(["generated", plan.intent.shape.target.label, plan.intent.shape.target.id.slice(0, 10)]);
   const dependencyRecord = Object.fromEntries(plan.intent.shape.target.packageHints.map(dep => [dep.name, "*"]));
   const validationFramework = observedValidationFramework(plan.intent.shape.target);
@@ -1807,7 +1936,7 @@ function packageJson(plan: ProgramPlan): string {
     version: "1.0.0",
     type: "module",
     private: true,
-    exports: hasCapability(plan.intent.shape.target, "capability:pure-call") ? { ".": "./src/index.ts" } : undefined,
+    exports: hasCapability(plan.intent.shape.target, "capability:pure-call") ? { ".": `./${plan.sourceEmission.entrypoint}` } : undefined,
     bin: hasCapability(plan.intent.shape.target, "capability:command-runtime") ? { [name]: entry } : undefined,
     scripts: {
       build: `${plan.build.command} ${plan.build.args.join(" ")}`,
@@ -1866,7 +1995,7 @@ function webIndexHtml(plan: ProgramPlan): string {
   </head>
   <body>
     <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
+    <script type="module" src="/${plan.sourceEmission.entrypoint}"></script>
   </body>
 </html>
 `;
@@ -1884,11 +2013,13 @@ export default defineConfig({
 `;
 }
 
-function webMainTsx(): string {
+function webMainTsx(plan: ProgramPlan): string {
+  const appImport = moduleSpecifier(plan.sourceEmission.entrypoint, plannedArtifactPath(plan, "src/App.tsx"));
+  const stylesImport = moduleSpecifier(plan.sourceEmission.entrypoint, plannedArtifactPath(plan, "src/styles.css"));
   return `import React from "react";
 import ReactDOM from "react-dom/client";
-import App from "./App";
-import "./styles.css";
+import App from ${JSON.stringify(appImport)};
+import ${JSON.stringify(stylesImport)};
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
@@ -2021,8 +2152,9 @@ button, input { font: inherit; }
 `;
 }
 
-function libraryIndex(memory: JsonValue): string {
-  return `export { evaluate, explainEvidence, type EvaluationInput, type EvaluationResult } from "./domain.js";
+function libraryIndex(memory: JsonValue, plan: ProgramPlan): string {
+  const domainImport = moduleSpecifier(plannedArtifactPath(plan, "src/index.ts"), plannedArtifactPath(plan, "src/domain.ts"));
+  return `export { evaluate, explainEvidence, type EvaluationInput, type EvaluationResult } from ${JSON.stringify(domainImport)};
 
 export const sourceEvidence = ${JSON.stringify(memory, null, 2)} as const;
 `;
@@ -2145,7 +2277,7 @@ function normalizePathText(value) {
 
 function logParserModule(plan: ProgramPlan, memory: JsonValue): string {
   return `const evidenceMemory = ${JSON.stringify(memory, null, 2)} as const;
-const logPlan = ${JSON.stringify({ target: plan.intent.shape.target.id, fields: requiredFields(plan.intent.shape), entrypoint: entrypointFor(plan.intent.shape) }, null, 2)} as const;
+const logPlan = ${JSON.stringify({ target: plan.intent.shape.target.id, fields: requiredFields(plan.intent.shape), entrypoint: plan.sourceEmission.entrypoint }, null, 2)} as const;
 
 export interface ParsedLogRecord {
   index: number;
@@ -2299,7 +2431,7 @@ function apiHandlerModule(plan: ProgramPlan, memory: JsonValue): string {
   return `const evidenceMemory = ${JSON.stringify(memory, null, 2)} as const;
 const programDescriptor = ${JSON.stringify({
     id: plan.id,
-    entrypoint: entrypointFor(plan.intent.shape),
+    entrypoint: plan.sourceEmission.entrypoint,
     files: plan.files.map(file => ({ path: file.path, role: file.role, mediaType: file.mediaType })),
     build: plan.build,
     test: plan.test
@@ -2351,7 +2483,7 @@ export function validateRequest(request: SourceRequest): Array<{ severity: "info
 function generatedArtifactTest(plan: ProgramPlan): string {
   const descriptor = `const programDescriptor = ${JSON.stringify({
     planId: plan.id,
-    entrypoint: entrypointFor(plan.intent.shape),
+    entrypoint: plan.sourceEmission.entrypoint,
     expectedFiles: plan.sourceEmission.expectedFiles,
     artifactKinds: plan.sourceEmission.artifactKinds,
     validation: plan.sourceEmission.validation
@@ -2372,8 +2504,9 @@ export function generatedArtifactSelfCheck() {
 `;
   if (!hasCapability(plan.intent.shape.target, "capability:pure-call")) return descriptor;
   const framework = observedValidationFramework(plan.intent.shape.target);
+  const domainImport = moduleSpecifier("test/generated-artifact.test.ts", plannedArtifactPath(plan, "src/domain.ts"));
   if (framework === "vitest") return `import { expect, test } from "vitest";
-import { evaluate } from "../src/domain.js";
+import { evaluate } from ${JSON.stringify(domainImport)};
 
 test("evaluate returns a structured result for source-backed records", () => {
   const result = evaluate({ records: [{ value: "observed" }] });
@@ -2386,7 +2519,7 @@ test("evaluate returns a structured result for source-backed records", () => {
 
 ${descriptor}`;
   if (framework === "jest") return `import { expect, test } from "@jest/globals";
-import { evaluate } from "../src/domain.js";
+import { evaluate } from ${JSON.stringify(domainImport)};
 
 test("evaluate returns a structured result for source-backed records", () => {
   const result = evaluate({ records: [{ value: "observed" }] });
@@ -2400,7 +2533,7 @@ test("evaluate returns a structured result for source-backed records", () => {
 ${descriptor}`;
   if (framework === "node-test") return `import { strict as assert } from "node:assert";
 import test from "node:test";
-import { evaluate } from "../src/domain.js";
+import { evaluate } from ${JSON.stringify(domainImport)};
 
 test("evaluate returns a structured result for source-backed records", () => {
   const result = evaluate({ records: [{ value: "observed" }] });
@@ -3370,29 +3503,32 @@ function validatedOwnerBehaviorTransformations(
     return { candidates: [], selectedIds: [] };
   }
   const searched = searchProgramTransformations(requirements);
-  const expectedSelectedIds = searched.selected.map(candidate => candidate.id);
-  if (canonicalStringify(suppliedCandidates) !== canonicalStringify(searched.candidates)
-    || canonicalStringify(suppliedSelectedIds) !== canonicalStringify(expectedSelectedIds)) {
+  if (canonicalStringify(suppliedCandidates) !== canonicalStringify(searched.candidates)) {
     throw new Error("selected owner behavior transformations do not match bounded fit-role search");
   }
+  const candidatesById = new Map(searched.candidates.map(candidate => [candidate.id, candidate]));
+  const selected = suppliedSelectedIds.map(id => candidatesById.get(id)).filter((candidate): candidate is ProgramTransformationCandidate => Boolean(candidate));
   const requiredCallables = [...new Set(requirements.map(requirement => requirement.callableId))].sort(compareText);
-  const selectedCallables = searched.selected.map(candidate => candidate.callableId).sort(compareText);
+  const selectedCallables = selected.map(candidate => candidate.callableId).sort(compareText);
   if (canonicalStringify(requiredCallables) !== canonicalStringify(selectedCallables)) {
     throw new Error("selected owner behavior has no admissible transformation for every callable");
   }
-  for (const selected of searched.selected) {
+  if (selected.length !== suppliedSelectedIds.length || new Set(suppliedSelectedIds).size !== suppliedSelectedIds.length) {
+    throw new Error("selected owner behavior references an unavailable transformation");
+  }
+  for (const candidate of selected) {
     const fitIds = requirements
-      .filter(requirement => requirement.callableId === selected.callableId && requirement.verificationRole === "fit")
+      .filter(requirement => requirement.callableId === candidate.callableId && requirement.verificationRole === "fit")
       .map(requirement => requirement.id)
       .sort(compareText);
-    if (selected.fitMeanSquaredError > 1e-12
-      || canonicalStringify(selected.predictedFitObligationIds) !== canonicalStringify(fitIds)) {
-      throw new Error(`selected owner behavior transformation does not satisfy its fit obligations: ${selected.callableId}`);
+    if (candidate.fitMeanSquaredError > 1e-12
+      || canonicalStringify(candidate.predictedFitObligationIds) !== canonicalStringify(fitIds)) {
+      throw new Error(`selected owner behavior transformation does not satisfy its fit obligations: ${candidate.callableId}`);
     }
   }
   return {
     candidates: searched.candidates.map(candidate => ({ ...candidate })),
-    selectedIds: expectedSelectedIds
+    selectedIds: [...suppliedSelectedIds]
   };
 }
 
@@ -3447,17 +3583,16 @@ function validatedOwnerStatefulBehaviorTransformations(
     return { candidates: [], selectedIds: [] };
   }
   const searched = searchStateTransitions(statefulTransitionScenarios(requirements));
-  const expectedSelectedIds = searched.selected.map(candidate => candidate.id);
-  if (canonicalStringify(suppliedCandidates) !== canonicalStringify(searched.candidates)
-    || canonicalStringify(suppliedSelectedIds) !== canonicalStringify(expectedSelectedIds)) {
+  if (canonicalStringify(suppliedCandidates) !== canonicalStringify(searched.candidates)) {
     throw new Error("selected stateful owner behavior transformations do not match bounded fit-role search");
   }
-  const selected = searched.selected[0];
+  const selected = searched.candidates.find(candidate => candidate.id === suppliedSelectedIds[0]);
+  if (suppliedSelectedIds.length !== 1 || !selected) throw new Error("selected stateful owner behavior references an unavailable transformation");
   const fitIds = requirements.filter(requirement => requirement.verificationRole === "fit").map(requirement => requirement.id).sort(compareText);
   if (!selected || selected.fitError > 0 || canonicalStringify(selected.predictedFitIds) !== canonicalStringify(fitIds)) {
     throw new Error("selected stateful owner behavior transformation does not satisfy fit obligations");
   }
-  return { candidates: searched.candidates.map(candidate => ({ ...candidate })), selectedIds: expectedSelectedIds };
+  return { candidates: searched.candidates.map(candidate => ({ ...candidate })), selectedIds: [...suppliedSelectedIds] };
 }
 
 function compareText(left: string, right: string): number {
@@ -3559,10 +3694,10 @@ function operationsFor(shape: ProgramShape): JsonValue {
   return toJsonValue(base);
 }
 
-function interfacesFor(shape: ProgramShape): JsonValue {
+function interfacesFor(shape: ProgramShape, selectedEntrypoint = entrypointFor(shape)): JsonValue {
   return toJsonValue([
     { id: "runtime", target: shape.runtimeTarget },
-    { id: "entrypoint", path: entrypointFor(shape) },
+    { id: "entrypoint", path: selectedEntrypoint },
     ...shape.requiredInputs.map(input => ({ id: `input:${input.id}`, source: input.source, mediaType: input.mediaType })),
     ...shape.requiredOutputs.map(output => ({ id: `output:${output.id}`, target: output.target, mediaType: output.mediaType }))
   ]);

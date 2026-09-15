@@ -8,6 +8,7 @@ import { canonicalStringify, createHasher, toJsonValue } from "./primitives.js";
 import { validateProgramGraphHydration } from "./program-runtime.js";
 import { searchProgramTransformations } from "./program-transformation-search.js";
 import { searchStateTransitions } from "./state-transition-search.js";
+import { rankLearnedProgramTransformations, type ProgramTransformationLearningEpisode } from "./program-transformation-learning.js";
 
 /**
  * The turn's structured program intent, derived once from what the turn already decided: the projected
@@ -74,6 +75,8 @@ export function replanOwnerBehaviorProgramIntent(input: {
   readonly program: ProgramGraph;
   readonly failure: OwnerBehaviorValidationFailure;
   readonly hasher?: Hasher;
+  /** Successful episodes from the durable event ledger. They only rerank hypotheses that still fit now. */
+  readonly learnedEpisodes?: readonly ProgramTransformationLearningEpisode[];
 }): { readonly selection: OwnerBehaviorRepairSelection; readonly intent: ProgramConstructIntent } {
   const hydration = input.program.hydration;
   if (!hydration || !validateProgramGraphHydration(input.program).valid) throw new Error("owner behavior replan requires a valid hydrated program");
@@ -96,11 +99,34 @@ export function replanOwnerBehaviorProgramIntent(input: {
   }
   const scalarSearch = scalarRequirements.length ? searchProgramTransformations(scalarRequirements) : undefined;
   const statefulSearch = statefulRequirements.length ? searchStateTransitions(statefulScenarios(statefulRequirements)) : undefined;
-  if (scalarSearch) validateScalarSearch(scalarRequirements, scalarSearch);
-  if (statefulSearch) validateStatefulSearch(statefulRequirements, statefulSearch);
-  const candidateIds = scalarSearch?.candidates.map(candidate => candidate.id) ?? statefulSearch?.candidates.map(candidate => candidate.id) ?? [];
-  const selectedTransformationIds = scalarSearch?.selected.map(candidate => candidate.id) ?? statefulSearch?.selected.map(candidate => candidate.id) ?? [];
-  const transformationId = scalarSearch ? "program.transformation.expression_search.v1" as const : "program.transformation.state_transition_search.v1" as const;
+  const rankedScalarSearch = scalarSearch ? {
+    ...scalarSearch,
+    // Keep the bounded search's canonical candidate order in the intent so
+    // planner rehydration can verify every hypothesis. Durable successes only
+    // influence which admissible candidate is selected.
+    candidates: scalarSearch.candidates,
+    selected: selectOnePerCallable(rankLearnedProgramTransformations(
+      admissibleScalarCandidates(scalarSearch.candidates, scalarRequirements),
+      input.learnedEpisodes ?? [],
+      "expression"
+    ))
+  } : undefined;
+  const rankedStatefulSearch = statefulSearch ? {
+    ...statefulSearch,
+    candidates: statefulSearch.candidates,
+    selected: statefulSearch.selected.length
+      ? rankLearnedProgramTransformations(
+        admissibleStatefulCandidates(statefulSearch.candidates, statefulRequirements),
+        input.learnedEpisodes ?? [],
+        "state_transition"
+      ).slice(0, 1)
+      : []
+  } : undefined;
+  if (rankedScalarSearch) validateScalarSearch(scalarRequirements, rankedScalarSearch);
+  if (rankedStatefulSearch) validateStatefulSearch(statefulRequirements, rankedStatefulSearch);
+  const candidateIds = rankedScalarSearch?.candidates.map(candidate => candidate.id) ?? rankedStatefulSearch?.candidates.map(candidate => candidate.id) ?? [];
+  const selectedTransformationIds = rankedScalarSearch?.selected.map(candidate => candidate.id) ?? rankedStatefulSearch?.selected.map(candidate => candidate.id) ?? [];
+  const transformationId = rankedScalarSearch ? "program.transformation.expression_search.v1" as const : "program.transformation.state_transition_search.v1" as const;
   const hasher = input.hasher ?? createHasher();
   const selection: OwnerBehaviorRepairSelection = {
     id: `owner.behavior.repair_selection.${hasher.digestHex(canonicalStringify({
@@ -121,11 +147,11 @@ export function replanOwnerBehaviorProgramIntent(input: {
     intent: {
       ...input.intent,
       behaviorImplementationPhase: "selected",
-      ...(scalarSearch ? {
-        behaviorTransformationCandidates: scalarSearch.candidates.map(candidate => ({ ...candidate })),
+      ...(rankedScalarSearch ? {
+        behaviorTransformationCandidates: rankedScalarSearch.candidates.map(candidate => ({ ...candidate })),
         selectedBehaviorTransformationIds: selectedTransformationIds
       } : {
-        statefulBehaviorTransformationCandidates: statefulSearch!.candidates.map(candidate => ({ ...candidate })),
+        statefulBehaviorTransformationCandidates: rankedStatefulSearch!.candidates.map(candidate => ({ ...candidate })),
         selectedStatefulBehaviorTransformationIds: selectedTransformationIds
       }),
       constraints: [...new Set([...(input.intent.constraints ?? []), "program.constraint.retry_after_failed_owner_validation"])],
@@ -144,6 +170,38 @@ export function replanOwnerBehaviorProgramIntent(input: {
       })
     }
   };
+}
+
+function selectOnePerCallable(candidates: readonly import("./program-transformation-search.js").ProgramTransformationCandidate[]): import("./program-transformation-search.js").ProgramTransformationCandidate[] {
+  const selected = new Map<string, import("./program-transformation-search.js").ProgramTransformationCandidate>();
+  for (const candidate of candidates) if (!selected.has(candidate.callableId)) selected.set(candidate.callableId, candidate);
+  return [...selected.values()].sort((left, right) => left.callableId < right.callableId ? -1 : left.callableId > right.callableId ? 1 : 0);
+}
+
+function admissibleScalarCandidates(
+  candidates: readonly import("./program-transformation-search.js").ProgramTransformationCandidate[],
+  requirements: readonly NonNullable<ProgramConstructIntent["behaviorRequirements"]>[number][]
+): import("./program-transformation-search.js").ProgramTransformationCandidate[] {
+  return candidates.filter(candidate => {
+    const fitIds = requirements
+      .filter(requirement => requirement.callableId === candidate.callableId && requirement.verificationRole === "fit")
+      .map(requirement => requirement.id)
+      .sort(compareCanonical);
+    return candidate.fitMeanSquaredError <= 1e-12
+      && canonicalStringify(candidate.predictedFitObligationIds) === canonicalStringify(fitIds);
+  });
+}
+
+function admissibleStatefulCandidates(
+  candidates: readonly import("./state-transition-search.js").StateTransitionCandidate[],
+  requirements: readonly ProgramStatefulBehaviorRequirement[]
+): import("./state-transition-search.js").StateTransitionCandidate[] {
+  const fitIds = requirements
+    .filter(requirement => requirement.verificationRole === "fit")
+    .map(requirement => requirement.id)
+    .sort(compareCanonical);
+  return candidates.filter(candidate => candidate.fitError <= 0
+    && canonicalStringify(candidate.predictedFitIds) === canonicalStringify(fitIds));
 }
 
 function statefulScenarios(requirements: readonly ProgramStatefulBehaviorRequirement[]) {

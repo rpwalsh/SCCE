@@ -129,7 +129,14 @@ export function buildDialoguePersistenceBatch(input: {
       id: input.result.policyDecision.id,
       conversationId: input.result.policyDecision.conversationId,
       turnId: input.result.policyDecision.turnId,
-      decisionJson: toJsonValue(input.result.policyDecision),
+      // Candidate critique happens after policy construction. Persist the
+      // canonical post-critique selection so outcome replay cannot attach
+      // feedback to a different, higher-scoring generated alternative when
+      // the live bridge preserved the supplied draft.
+      decisionJson: toJsonValue({
+        ...input.result.policyDecision,
+        selectedCandidateId: input.result.selected.candidateId
+      }),
       selectedActionIds: [...input.result.policyDecision.selectedActionIds],
       scoreTraceRefs,
       createdAt: now
@@ -508,7 +515,10 @@ export async function latestDialoguePragmaticsFromMemory(store: DialogueMemorySt
   const candidateRecords = await store.listResponseCandidates({ conversationId: input.conversationId, turnId, policyDecisionId: policyDecision.id, limit: 32 });
   const candidates = candidateRecords.map(recordToDialogueCandidate(policyDecision));
   const criticResults = candidateRecords.map(recordToCriticResult);
-  const selectedRecord = [...candidateRecords].sort((left, right) => right.criticScore - left.criticScore || left.candidateId.localeCompare(right.candidateId))[0];
+  const selectedRecord = (policyDecision.selectedCandidateId
+    ? candidateRecords.find(record => record.candidateId === policyDecision.selectedCandidateId)
+    : undefined)
+    ?? [...candidateRecords].sort((left, right) => right.criticScore - left.criticScore || left.candidateId.localeCompare(right.candidateId))[0];
   const selectedCandidate = candidates.find(candidate => candidate.id === selectedRecord?.candidateId) ?? candidates[0];
   if (!selectedCandidate) return undefined;
   const selectedCritic = criticResults.find(critic => critic.candidateId === selectedCandidate.id);
@@ -844,6 +854,9 @@ function dialoguePolicyDecisionFromJson(value: JsonValue | undefined): DialogueP
     targetProfileId: typeof record.targetProfileId === "string" ? record.targetProfileId : "und",
     rhythmId: typeof record.rhythmId === "string" ? record.rhythmId : "",
     selectedActionIds: stringArray(record.selectedActionIds),
+    ...(typeof record.selectedCandidateId === "string" && record.selectedCandidateId.trim()
+      ? { selectedCandidateId: record.selectedCandidateId }
+      : {}),
     rankedActions: Array.isArray(record.rankedActions) ? record.rankedActions.filter(item => item && typeof item === "object" && !Array.isArray(item)) as never[] : [],
     trace: record.trace ?? null
   };

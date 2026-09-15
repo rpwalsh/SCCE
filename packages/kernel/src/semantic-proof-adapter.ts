@@ -7,7 +7,7 @@ import type {
   Observation,
   ObservationForceClass
 } from "./ingestion-lanes.js";
-import { evidenceProofBoundary } from "./proof-boundary.js";
+import { evidenceProofBoundariesForClaim, evidenceProofBoundary, type EvidenceProofBoundary } from "./proof-boundary.js";
 import type { ProofAtom, ProofClaim, ProofEvidenceRecord, ProofForceClass, ProofScalar } from "./semantic-proof-engine.js";
 import type { ConstructGraph, EvidenceSpan, GraphNode, Hyperedge, JsonValue } from "./types.js";
 
@@ -22,6 +22,8 @@ export interface EvidenceProofAdapterInput {
   spans?: readonly EvidenceSpan[];
   nodes?: readonly GraphNode[];
   observations?: readonly SupportedProofObservation[];
+  /** Optional typed claim used to scope asserted-source corroboration. */
+  claim?: ProofClaim;
 }
 
 export interface TypedObservationProofAdapterInput {
@@ -30,6 +32,8 @@ export interface TypedObservationProofAdapterInput {
   evidence?: readonly EvidenceSpan[];
   spans?: readonly EvidenceSpan[];
   evidenceById?: ReadonlyMap<string, EvidenceSpan> | Record<string, EvidenceSpan>;
+  /** Optional typed claim used to scope asserted-source corroboration. */
+  claim?: ProofClaim;
 }
 
 interface ProofCarrierFields {
@@ -90,8 +94,13 @@ export function evidenceToProofRecords(input: EvidenceProofAdapterInput): ProofE
   const records: ProofEvidenceRecord[] = [];
   const seen = new Set<string>();
   const add = (record: ProofEvidenceRecord | undefined) => {
-    if (!record || seen.has(record.id)) return;
-    seen.add(record.id);
+    if (!record) return;
+    // A shared proposition record id may occur once per independent source.
+    // Keep those witnesses distinct by their explicit span binding while
+    // still collapsing exact duplicate projections of one span.
+    const key = record.evidenceSpanId ? `${record.id}:${record.evidenceSpanId}` : record.id;
+    if (seen.has(key)) return;
+    seen.add(key);
     records.push(record);
   };
 
@@ -99,10 +108,14 @@ export function evidenceToProofRecords(input: EvidenceProofAdapterInput): ProofE
   const evidenceById = new Map(evidence.map(span => [String(span.id), span] as const));
   for (const span of evidence) {
     const boundary = evidenceProofBoundary(span);
-    for (const carrier of proofEvidenceCarriers(span.provenance)) add(proofRecordFromCarrier(carrier, span, boundary.forceClass, boundary.certifiesFactualProof));
-    for (const carrier of proofEvidenceCarriers(span.trustVector)) add(proofRecordFromCarrier(carrier, span, boundary.forceClass, boundary.certifiesFactualProof));
-    for (const carrier of proofEvidenceCarriers(span.languageHints)) add(proofRecordFromCarrier(carrier, span, boundary.forceClass, boundary.certifiesFactualProof));
-    for (const carrier of proofEvidenceCarriers(span.scriptHints)) add(proofRecordFromCarrier(carrier, span, boundary.forceClass, boundary.certifiesFactualProof));
+    // A claim-scoped pass needs the exact span binding as an input to its
+    // typed identity check. It is provisional here and is removed below if
+    // the record does not match the requested claim.
+    const provisionalBinding = boundary.certifiesFactualProof || (input.claim !== undefined && boundary.forceClass === "direct_evidence");
+    for (const carrier of proofEvidenceCarriers(span.provenance)) add(proofRecordFromCarrier(carrier, span, boundary.forceClass, provisionalBinding));
+    for (const carrier of proofEvidenceCarriers(span.trustVector)) add(proofRecordFromCarrier(carrier, span, boundary.forceClass, provisionalBinding));
+    for (const carrier of proofEvidenceCarriers(span.languageHints)) add(proofRecordFromCarrier(carrier, span, boundary.forceClass, provisionalBinding));
+    for (const carrier of proofEvidenceCarriers(span.scriptHints)) add(proofRecordFromCarrier(carrier, span, boundary.forceClass, provisionalBinding));
   }
 
   for (const node of input.nodes ?? []) {
@@ -110,14 +123,20 @@ export function evidenceToProofRecords(input: EvidenceProofAdapterInput): ProofE
     for (const carrier of proofEvidenceCarriers(node.representation)) add(proofRecordFromDetachedCarrier(carrier, evidenceById));
   }
 
-  for (const record of typedObservationToProofRecords({ observations: input.observations ?? [], evidence })) add(record);
-  return records;
+  for (const record of typedObservationToProofRecords({ observations: input.observations ?? [], evidence, claim: input.claim })) add(record);
+  if (!input.claim) return records;
+  const scopedBoundaries = evidenceProofBoundariesForClaim({ claim: input.claim, evidence, proofEvidence: records });
+  const scopedIds = new Set(scopedBoundaries.filter(boundary => boundary.certifiesFactualProof).map(boundary => boundary.evidenceId));
+  const assertedIds = new Set(boundariesForSourceAssertions(evidence).map(boundary => boundary.evidenceId));
+  return records.map(record => record.evidenceSpanId && assertedIds.has(String(record.evidenceSpanId)) && !scopedIds.has(String(record.evidenceSpanId))
+    ? { ...record, evidenceSpanId: undefined }
+    : record);
 }
 
 export function typedObservationToProofRecords(input: TypedObservationProofAdapterInput | SupportedProofObservation | readonly SupportedProofObservation[]): ProofEvidenceRecord[] {
   const normalized = normalizeTypedObservationInput(input);
   const evidenceById = normalized.evidenceById;
-  return normalized.observations.flatMap(observation => proofRecordsFromObservation(observation, evidenceById));
+  return normalized.observations.flatMap(observation => proofRecordsFromObservation(observation, evidenceById, normalized.claim));
 }
 
 /** Lift promoted hyperedges into proof records without flattening their typed incidence. */
@@ -125,33 +144,48 @@ export function typedRelationsToProofRecords(input: {
   hyperedges: readonly Hyperedge[];
   nodes?: readonly GraphNode[];
   evidence?: readonly EvidenceSpan[];
+  /** Optional typed claim used to scope asserted-source corroboration. */
+  claim?: ProofClaim;
 }): ProofEvidenceRecord[] {
   const nodeById = new Map((input.nodes ?? []).map(node => [String(node.id), node]));
   const evidenceById = new Map((input.evidence ?? []).map(span => [String(span.id), span]));
-  return input.hyperedges.flatMap(hyperedge => {
+  const provisional = input.hyperedges.flatMap(hyperedge => {
     const observed = hyperedge.participantPorts.filter(port => port.realization === "observed" && port.nodeId !== null);
     if (observed.length < 2) return [];
     const subject = observed[0]!;
     const object = observed[1]!;
-    const sourceSpan = hyperedge.evidenceIds.map(String).map(id => evidenceById.get(id)).find(Boolean);
     const subjectNode = nodeById.get(String(subject.nodeId));
     const objectNode = nodeById.get(String(object.nodeId));
-    const boundary = sourceSpan ? evidenceProofBoundary(sourceSpan) : undefined;
-    return [{
-      id: `proof.evidence.hyperedge.${String(hyperedge.id)}`,
-      forceClass: boundary ? proofForceClassFromBoundary(boundary.forceClass) ?? DIRECT_FORCE : UNKNOWN_FORCE,
+    const sourceSpans = hyperedge.evidenceIds.map(String).map(id => evidenceById.get(id)).filter((span): span is EvidenceSpan => Boolean(span));
+    const spans = sourceSpans.length ? sourceSpans : [undefined];
+    return spans.map((sourceSpan, index) => ({
+      id: `proof.evidence.hyperedge.${String(hyperedge.id)}${sourceSpan ? `.${String(sourceSpan.id)}` : `.${index}`}`,
+      forceClass: sourceSpan ? proofForceClassFromBoundary(evidenceProofBoundary(sourceSpan).forceClass) ?? UNKNOWN_FORCE : UNKNOWN_FORCE,
       sourceVersionId: sourceSpan ? String(sourceSpan.sourceVersionId) : undefined,
-      evidenceSpanId: boundary?.certifiesFactualProof ? String(sourceSpan!.id) : undefined,
+      // Provisional for the claim-scoped pass below; raw callers stay
+      // conservative and do not receive source-assertion corroboration.
+      evidenceSpanId: sourceSpan && input.claim && evidenceProofBoundary(sourceSpan).forceClass === "direct_evidence" ? String(sourceSpan.id) : sourceSpan && evidenceProofBoundary(sourceSpan).certifiesFactualProof ? String(sourceSpan.id) : undefined,
       subject: { id: String(subject.nodeId), kindId: subject.valueKind, roleId: subject.roleId, surface: graphNodeSurface(subjectNode) },
       relationId: String(hyperedge.relationId),
       object: { id: String(object.nodeId), kindId: object.valueKind, roleId: object.roleId, surface: graphNodeSurface(objectNode) },
       text: sourceSpan?.text
-    } satisfies ProofEvidenceRecord];
+    } satisfies ProofEvidenceRecord));
   });
+  if (!input.claim) return provisional;
+  const boundaries = evidenceProofBoundariesForClaim({ claim: input.claim, evidence: input.evidence ?? [], proofEvidence: provisional });
+  const scopedIds = new Set(boundaries.filter(boundary => boundary.certifiesFactualProof).map(boundary => boundary.evidenceId));
+  const assertedIds = new Set(boundariesForSourceAssertions(input.evidence ?? []).map(boundary => boundary.evidenceId));
+  return provisional.map(record => record.evidenceSpanId && assertedIds.has(String(record.evidenceSpanId)) && !scopedIds.has(String(record.evidenceSpanId))
+    ? { ...record, evidenceSpanId: undefined }
+    : record);
 }
 
-function proofRecordsFromObservation(observation: SupportedProofObservation, evidenceById: ReadonlyMap<string, EvidenceSpan>): ProofEvidenceRecord[] {
-  const fields = fieldsFromObservation(observation, evidenceById);
+function boundariesForSourceAssertions(evidence: readonly EvidenceSpan[]): EvidenceProofBoundary[] {
+  return evidence.map(evidenceProofBoundary).filter(boundary => boundary.reason === "proof-boundary.source-assertion-not-promoted");
+}
+
+function proofRecordsFromObservation(observation: SupportedProofObservation, evidenceById: ReadonlyMap<string, EvidenceSpan>, claim?: ProofClaim): ProofEvidenceRecord[] {
+  const fields = fieldsFromObservation(observation, evidenceById, claim);
   const forceClass = fields.forceClass ?? proofForceClassFromObservation(observation.forceClass, fields.evidenceSpanId);
   const record = proofRecordFromFields({
     ...fields,
@@ -163,7 +197,7 @@ function proofRecordsFromObservation(observation: SupportedProofObservation, evi
   return record ? [record] : [];
 }
 
-function fieldsFromObservation(observation: SupportedProofObservation, evidenceById: ReadonlyMap<string, EvidenceSpan>): ProofCarrierFields {
+function fieldsFromObservation(observation: SupportedProofObservation, evidenceById: ReadonlyMap<string, EvidenceSpan>, claim?: ProofClaim): ProofCarrierFields {
   const metadataFields = fieldsFromJson(observation.metadata);
   // An observation's metadata is source derived, so an explicit span id is
   // only usable after resolving the actual span and its current proof
@@ -172,9 +206,11 @@ function fieldsFromObservation(observation: SupportedProofObservation, evidenceB
   const metadataEvidenceSpan = metadataFields.evidenceSpanId
     ? evidenceById.get(metadataFields.evidenceSpanId)
     : undefined;
-  const evidenceSpanId = metadataEvidenceSpan && evidenceProofBoundary(metadataEvidenceSpan).certifiesFactualProof
+  const evidenceSpanId = metadataEvidenceSpan && (evidenceProofBoundary(metadataEvidenceSpan).certifiesFactualProof || (claim !== undefined && evidenceProofBoundary(metadataEvidenceSpan).forceClass === "direct_evidence"))
     ? String(metadataEvidenceSpan.id)
-    : certifyingEvidenceSpanId(observation.evidenceIds.map(String), evidenceById);
+    : claim !== undefined
+      ? provisionalDirectEvidenceSpanId(observation.evidenceIds.map(String), evidenceById)
+      : certifyingEvidenceSpanId(observation.evidenceIds.map(String), evidenceById);
   const sourceVersionId = metadataFields.sourceVersionId ?? String(observation.sourceVersionId);
   if (observation.kind === "measurement") {
     return {
@@ -224,15 +260,24 @@ function fieldsFromObservation(observation: SupportedProofObservation, evidenceB
   };
 }
 
-function normalizeTypedObservationInput(input: TypedObservationProofAdapterInput | SupportedProofObservation | readonly SupportedProofObservation[]): { observations: readonly SupportedProofObservation[]; evidenceById: ReadonlyMap<string, EvidenceSpan> } {
+function normalizeTypedObservationInput(input: TypedObservationProofAdapterInput | SupportedProofObservation | readonly SupportedProofObservation[]): { observations: readonly SupportedProofObservation[]; evidenceById: ReadonlyMap<string, EvidenceSpan>; claim?: ProofClaim } {
   if (Array.isArray(input)) return { observations: input, evidenceById: new Map() };
   if (isObservation(input)) return { observations: [input], evidenceById: new Map() };
   const options = input as TypedObservationProofAdapterInput;
   const observations = options.observations ?? (options.observation ? [options.observation] : []);
   return {
     observations,
-    evidenceById: mergeEvidenceIndexes(options.evidenceById, options.evidence ?? options.spans ?? [])
+    evidenceById: mergeEvidenceIndexes(options.evidenceById, options.evidence ?? options.spans ?? []),
+    claim: options.claim
   };
+}
+
+function provisionalDirectEvidenceSpanId(ids: readonly string[], evidenceById: ReadonlyMap<string, EvidenceSpan>): string | undefined {
+  for (const id of ids) {
+    const span = evidenceById.get(id);
+    if (span && evidenceProofBoundary(span).forceClass === "direct_evidence") return id;
+  }
+  return undefined;
 }
 
 function proofClaimCarriers(value: JsonValue | undefined): ProofClaim[] {

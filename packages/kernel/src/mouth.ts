@@ -3042,13 +3042,33 @@ function learnedConstructionCandidateFromBundle(input: {
     evidenceIds: input.proofEvidenceIds,
     createdAt: Date.now()
   });
+  // The construction grammar chooses within one bundle, but Mouth may have
+  // several profile-local bundles that produce equally admissible surfaces.
+  // Keep the measured cycle result in that outer selection too.  Previously
+  // `realizeLearnedSurface` received the prior map while every candidate's
+  // fit remained `routeAdmissibility`, so the map could not affect which
+  // learned construction Mouth finally selected.
+  const cycleScore = learnedConstructionCycleScore(input.input, input.construction);
   return persistedLearnedSurfaceCandidate({
     input,
     realization: realized.realization,
     proofEvidenceIds: input.proofEvidenceIds,
-    normalizedSupport: input.routeAdmissibility,
-    constructionCycleOutcome
+    normalizedSupport: input.routeAdmissibility * cycleScore,
+    constructionCycleOutcome,
+    constructionCycleScore: cycleScore
   });
+}
+
+/**
+ * Construction IDs are content-derived and include their profile scope.  A
+ * score is applied only to the exact construction identity; an unobserved
+ * construction keeps its evidence-derived route score unchanged.
+ */
+function learnedConstructionCycleScore(input: SpeakInput, construction: LearnedConstruction): number {
+  const scores = input.cycleConsistencyByConstructionId;
+  if (!scores) return 1;
+  const score = scores.get(construction.id);
+  return score === undefined || !Number.isFinite(score) ? 1 : clamp01(score);
 }
 
 /**
@@ -3093,6 +3113,7 @@ function persistedLearnedSurfaceCandidate(input: {
   proofEvidenceIds: readonly string[];
   normalizedSupport: number;
   constructionCycleOutcome: ConstructionCycleConsistencyOutcome;
+  constructionCycleScore: number;
 }): SurfaceCandidate {
   const { fact, bundle, construction, discoursePlan, hasher } = input.input;
   return {
@@ -3144,6 +3165,7 @@ function persistedLearnedSurfaceCandidate(input: {
         provenance: construction.provenance,
         support: construction.support
       },
+      constructionCycleScore: input.constructionCycleScore,
       realization: {
         id: input.realization.id,
         evidenceIds: input.realization.evidenceIds,

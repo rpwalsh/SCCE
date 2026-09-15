@@ -41,6 +41,36 @@ describe("Mouth learned-construction candidate", () => {
     expect(JSON.stringify(candidate?.audit)).toContain("trace");
   });
 
+  it("lets a durable exact-construction cycle score change the Mouth winner", async () => {
+    const baseline = await speakFixture({
+      sentence: "Aster powers pump.",
+      alternativeSentence: "Aster powers pump!",
+      profileCorpus: "Aster powers pump. Aster powers pump!",
+      subject: "Aster",
+      predicate: "powers",
+      object: "pump",
+      question: "What powers the pump?"
+    });
+    expect(baseline.constructionIds).toHaveLength(2);
+    const baselineWinner = baseline.spoken.constructionCycleOutcome?.constructionId;
+    const alternativeId = baseline.constructionIds.find(id => id !== baselineWinner);
+    expect(baselineWinner).toBeTypeOf("string");
+    expect(alternativeId).toBeTypeOf("string");
+    expect(baselineWinner).not.toBe(alternativeId);
+
+    const scored = await speakFixture({
+      sentence: "Aster powers pump.",
+      alternativeSentence: "Aster powers pump!",
+      profileCorpus: "Aster powers pump. Aster powers pump!",
+      cycleScores: new Map([[baselineWinner!, 0], [alternativeId!, 1]]),
+      subject: "Aster",
+      predicate: "powers",
+      object: "pump",
+      question: "What powers the pump?"
+    });
+    expect(scored.spoken.constructionCycleOutcome?.constructionId).toBe(alternativeId);
+  });
+
   it("accepts the profile-local source-relation binding emitted by corpus training", async () => {
     const result = await speakFixture({
       sentence: "Aster powers pump.",
@@ -273,7 +303,16 @@ async function speakFixture(input: {
   requirementField?: boolean;
   persistConstruction?: boolean;
   sourceDerivedBinding?: boolean;
-}): Promise<{ spoken: SpokenOutput; evidence: EvidenceSpan; profile: LanguageProfile }> {
+  alternativeSentence?: string;
+  cycleScores?: ReadonlyMap<string, number>;
+}): Promise<{
+  spoken: SpokenOutput;
+  evidence: EvidenceSpan;
+  profile: LanguageProfile;
+  constructionIds: string[];
+  primaryConstructionIds: string[];
+  alternativeConstructionIds: string[];
+}> {
   const evidenceText = input.evidenceText ?? input.sentence;
   const source = sourceVersion(evidenceText);
   const evidence = evidenceSpan(source, evidenceText, input.evidenceCharStart ?? 0);
@@ -331,23 +370,49 @@ async function speakFixture(input: {
       predicate: input.predicate,
       object: input.object
     });
+  const alternativeEvidence = input.alternativeSentence
+    ? evidenceSpan(sourceVersion(input.alternativeSentence), input.alternativeSentence, 0)
+    : undefined;
+  const alternativePattern = alternativeEvidence && constructionPattern
+    ? persistedConstructionPattern({
+      evidence: alternativeEvidence,
+      surface: input.alternativeSentence!,
+      profileId: profile.id,
+      relationId: input.sourceDerivedBinding
+        ? sourceRelationConstructionBindingId(hasher, profile.id, input.predicate)
+        : relationId,
+      subject: input.subject,
+      predicate: input.predicate,
+      object: input.object
+    })
+    : undefined;
+  const languageMemory = languageMemoryRuntime.hydrateFromImportedBrain({
+    importRunId: `memory.${hasher.digestHex(input.sentence).slice(0, 12)}`,
+    models: [],
+    observations: [],
+    units: [],
+    patterns: [constructionPattern, alternativePattern].filter((pattern): pattern is LanguagePatternRecord => Boolean(pattern)),
+    semanticFrames: [],
+    constructionEvidence: [evidence, alternativeEvidence].filter((value): value is EvidenceSpan => Boolean(value))
+  });
+  const primaryConstructionIds = languageMemory.importedConstructionBundles
+    .filter(bundle => bundle.evidenceIds.includes(String(evidence.id)))
+    .flatMap(bundle => bundle.constructions.map(construction => construction.id));
+  const alternativeConstructionIds = alternativeEvidence
+    ? languageMemory.importedConstructionBundles
+      .filter(bundle => bundle.evidenceIds.includes(String(alternativeEvidence.id)))
+      .flatMap(bundle => bundle.constructions.map(construction => construction.id))
+    : [];
   const spoken = await mouth.speak({
     construct: semanticAnswerConstruct(fact, evidence, input.completeCoverage ?? true),
     field,
     languageProfile: profile,
     evidence: [evidence],
     entailment,
-    languageMemory: languageMemoryRuntime.hydrateFromImportedBrain({
-      importRunId: `memory.${hasher.digestHex(input.sentence).slice(0, 12)}`,
-      models: [],
-      observations: [],
-      units: [],
-      patterns: constructionPattern ? [constructionPattern] : [],
-      semanticFrames: [],
-      constructionEvidence: constructionPattern ? [evidence] : []
-    }),
+    languageMemory,
     targetLanguage: input.targetLanguage ?? profile.id,
     requestedAuthority: "factual",
+    cycleConsistencyByConstructionId: input.cycleScores,
     maxLength: input.maxLength,
     style: input.exposeProofTerms ? { exposeProofTerms: true } : undefined,
     requirementField: input.requirementField ? deriveTurnRequirementField({ requestText: input.question }) : undefined,
@@ -365,7 +430,14 @@ async function speakFixture(input: {
       trace: { fixture: true }
     } : undefined
   });
-  return { spoken, evidence, profile };
+  return {
+    spoken,
+    evidence,
+    profile,
+    constructionIds: [...new Set([...primaryConstructionIds, ...alternativeConstructionIds])],
+    primaryConstructionIds,
+    alternativeConstructionIds
+  };
 }
 
 function persistedConstructionPattern(input: {

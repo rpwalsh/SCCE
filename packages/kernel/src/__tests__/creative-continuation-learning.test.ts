@@ -130,6 +130,19 @@ describe("creative continuation learning", () => {
     expect(loaded?.selectedContinuationCandidateId).toBe(first.candidateId);
     expect(loaded?.offered.map(candidate => candidate.candidateId)).toEqual([first.candidateId, second.candidateId]);
   });
+
+  it("keeps an unstructured production handoff preference stable across regenerated construct ids", () => {
+    const first = creativeContinuationCandidateFromConstruct({
+      construct: unstructuredInvention("episode.construct.first", "a bounded continuation"),
+      candidateIndex: 0
+    });
+    const afterRestart = creativeContinuationCandidateFromConstruct({
+      construct: unstructuredInvention("episode.construct.regenerated", "a bounded continuation"),
+      candidateIndex: 0
+    });
+    expect(afterRestart.candidateId).not.toBe(first.candidateId);
+    expect(afterRestart.structureId).toBe(first.structureId);
+  });
 });
 
 function continuationState(conversationId: string, turnId: string): CreativeContinuationState {
@@ -187,6 +200,22 @@ function invention(id: string, proposalSurface: string) {
       structuralSemanticPlan: { id: "semantic.plan.algorithm", sourceBundleIds: ["bundle.algorithm"], events: [{ kind: "event.compose" }] },
       selectedGraphEdgeIds: ["edge.algorithm"],
       selectedLanguagePriorIds: ["prior.graph-transform"]
+    }
+  };
+}
+
+function unstructuredInvention(id: string, proposalSurface: string) {
+  return {
+    id,
+    artifactKindIds: ["artifact.algorithm"],
+    basisEvidenceIds: [],
+    basisPriorIds: ["prior.graph-transform"],
+    supportScore: 0.7,
+    noveltyScore: 0.6,
+    riskScore: 0.1,
+    proposalSurface,
+    trace: {
+      proposalRealization: { path: "mouth_non_event_realization_deferred" }
     }
   };
 }

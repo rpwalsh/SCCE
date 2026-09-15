@@ -148,4 +148,33 @@ describe("two admitted sources that refute each other", () => {
 
     expect(result.mutualSourceContradiction).toBe(false);
   });
+
+  it("counts a relabeled derivative lineage once against an independent contrary source", () => {
+    const derivatives = Array.from({ length: 8 }, (_, index) => ({
+      ...filedIn2021,
+      id: `evidence.derivative.${index}` as EvidenceSpan["id"],
+      sourceVersionId: `version.filing-derived-${index}` as SourceVersionId,
+      provenance: toJsonValue({
+        uri: `session://filing-derived-${index}`,
+        sourceVersionDerivation: {
+          kind: "extracted-text",
+          transformId: "fixture.republish",
+          derivedFromSourceVersionId: filedIn2019.sourceVersionId,
+          originalCoordinateSpace: "extracted-text-utf8",
+          redactionMap: []
+        }
+      })
+    }));
+    const result = proof.prove({
+      claimText: answerExcerpt,
+      evidence: [filedIn2019, ...derivatives, filedIn2021],
+      nodes: []
+    });
+    const baseline = proof.prove({ claimText: answerExcerpt, evidence: [filedIn2019, filedIn2021], nodes: [] });
+
+    expect(result.mutualSourceContradiction).toBe(true);
+    // The eight copies share the typed source lineage with the 2019 source;
+    // they cannot manufacture eight independent disagreement witnesses.
+    expect(result.counterexamples.length).toBe(baseline.counterexamples.length);
+  });
 });

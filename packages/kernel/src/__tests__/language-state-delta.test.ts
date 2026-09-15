@@ -141,4 +141,20 @@ describe("durable language structural deltas", () => {
     const state = runtime.hydrate({ models: [], patterns: [pattern] });
     expect(state.structuralDeltas?.map(delta => delta.id)).toEqual(deltas.map(delta => delta.id));
   });
+
+  it("rejects a sentence-shaped construction delta without its typed construction scope", () => {
+    const [delta] = languageStructuralDeltasFromPatterns([{
+      ...learnedInterpretationPattern(),
+      id: "pattern.unscoped.construction",
+      patternKind: "syntax",
+      patternJson: {
+        schema: "scce.language_state_delta.v1",
+        structuralDelta: {
+          kind: "construction",
+          surface: { from: "q8 rel 99 z8.", to: "q8 rel 4 z8." }
+        }
+      }
+    }]);
+    expect(delta).toBeUndefined();
+  });
 });

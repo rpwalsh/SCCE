@@ -6,7 +6,7 @@ import { featureSet, sourceTextSurface, toJsonValue, symbolizeData } from "./pri
 import { createProofCalculus } from "./proof-calculus.js";
 import { createSemanticGraphEntailment } from "./semantic-graph.js";
 import { evaluateSemanticObligations } from "./semantic-obligations.js";
-import { evidenceProofBoundaries, evidenceProofBoundary } from "./proof-boundary.js";
+import { evidenceProofBoundaries, evidenceProofBoundariesForClaim, evidenceProofBoundary } from "./proof-boundary.js";
 import { constructToProofClaims, evidenceToProofRecords, typedRelationsToProofRecords, type SupportedProofObservation } from "./semantic-proof-adapter.js";
 import { typedRelationTraces } from "./typed-relation-trace.js";
 import { proveClaim, type ProofClaim, type ProofEvidenceRecord, type ProofForceClass, type SemanticProofResult } from "./semantic-proof-engine.js";
@@ -236,16 +236,27 @@ function exactTextProofGate(input: { claim: Claim; evidence: EvidenceSpan[]; has
   const claimTextId = textIdentity(input.claim.normalized, input.hasher);
   const exactEvidence = input.evidence.filter(span => textIdentity(normalizedText(span.text || span.textPreview), input.hasher) === claimTextId);
   if (!exactEvidence.length) return undefined;
+  const typedClaim: ProofClaim = {
+    id: String(input.claim.id),
+    subject: { id: "proof.atom.claim_text", kindId: "proof.atom.text" },
+    relationId: "relation.test.has_value",
+    object: { id: claimTextId, kindId: "proof.atom.text" },
+    polarityId: input.claim.polarity < 0 ? "polarity.negative" : "polarity.positive",
+    modalityId: "modality.asserted",
+    requiredSourceBinding: true
+  };
   const candidateEvidence: ProofEvidenceRecord[] = exactEvidence.map(span => {
     const boundary = evidenceProofBoundary(span);
     const forceClass = proofForceClassFromBoundary(boundary.forceClass);
     const textId = textIdentity(normalizedText(span.text || span.textPreview), input.hasher);
-    const certifyingDirectSpan = forceClass === "direct_evidence" && boundary.certifiesFactualProof;
     return {
       id: String(span.id),
       forceClass,
       sourceVersionId: String(span.sourceVersionId),
-      evidenceSpanId: certifyingDirectSpan ? String(span.id) : undefined,
+      // This is a provisional binding for the claim-scoped boundary pass;
+      // that pass removes it unless the typed proposition and independent
+      // lineage requirements all hold.
+      evidenceSpanId: forceClass === "direct_evidence" ? String(span.id) : undefined,
       subject: { id: "proof.atom.claim_text", kindId: "proof.atom.text" },
       relationId: "relation.test.has_value",
       object: { id: textId, kindId: "proof.atom.text" },
@@ -253,17 +264,15 @@ function exactTextProofGate(input: { claim: Claim; evidence: EvidenceSpan[]; has
       modalityId: "modality.asserted"
     };
   });
+  const scopedBoundaries = evidenceProofBoundariesForClaim({ claim: typedClaim, evidence: exactEvidence, proofEvidence: candidateEvidence });
+  const scopedIds = new Set(scopedBoundaries.filter(boundary => boundary.certifiesFactualProof).map(boundary => boundary.evidenceId));
+  const assertedIds = new Set(exactEvidence.map(evidenceProofBoundary).filter(boundary => boundary.reason === "proof-boundary.source-assertion-not-promoted").map(boundary => boundary.evidenceId));
+  const scopedEvidence = candidateEvidence.map(record => record.evidenceSpanId && assertedIds.has(String(record.evidenceSpanId)) && !scopedIds.has(String(record.evidenceSpanId))
+    ? { ...record, evidenceSpanId: undefined }
+    : record);
   return proveClaim({
-    claim: {
-      id: String(input.claim.id),
-      subject: { id: "proof.atom.claim_text", kindId: "proof.atom.text" },
-      relationId: "relation.test.has_value",
-      object: { id: claimTextId, kindId: "proof.atom.text" },
-      polarityId: input.claim.polarity < 0 ? "polarity.negative" : "polarity.positive",
-      modalityId: "modality.asserted",
-      requiredSourceBinding: true
-    },
-    candidateEvidence
+    claim: typedClaim,
+    candidateEvidence: scopedEvidence
   });
 }
 
@@ -353,11 +362,6 @@ function structuredProofGate(input: {
   sourceExcerptsProvided?: boolean;
   hasher: Hasher;
 }): SemanticProofResult | undefined {
-  const candidateEvidence = dedupeProofEvidence([
-    ...(input.proofEvidence ?? []),
-    ...evidenceToProofRecords({ evidence: input.evidence, nodes: input.nodes, observations: input.typedObservations ?? [] }),
-    ...typedRelationsToProofRecords({ hyperedges: input.typedRelations ?? [], nodes: input.nodes, evidence: input.evidence })
-  ]);
   const claims = dedupeProofClaims([
     ...(input.proofClaims ?? []),
     ...(input.construct ? constructToProofClaims({ construct: input.construct }) : [])
@@ -370,20 +374,38 @@ function structuredProofGate(input: {
   // is itself a legitimate, narrow certification (identical text really is
   // identical text) -- just one that must stay clearly distinguishable
   // (via trace.proofPath) from an actual structured semantic proof.
-  if ((!candidateEvidence.length || !claims.length) && !input.sourceExcerptsProvided) {
+  if (!claims.length && !input.sourceExcerptsProvided) {
     return exactTextStructuredFallback({ requestClaim: input.requestClaim, evidence: input.evidence, hasher: input.hasher });
   }
-  if (!candidateEvidence.length || !claims.length) return undefined;
-  const results = claims.map(proofClaim => ({
-    claim: proofClaim,
-    result: proveClaim({ claim: proofClaim, candidateEvidence }),
-    proposalScore: structuredClaimProposalScore(input.requestClaim, proofClaim, candidateEvidence, input.hasher)
-  }));
+  if (!claims.length) return undefined;
+  const results = claims.map(proofClaim => {
+    // Asserted source spans are promoted only after this exact typed claim is
+    // bound to them. Building records per claim prevents unrelated P and Q
+    // records from sharing a set-level corroboration result.
+    const sourceDerivedEvidence = [
+      ...evidenceToProofRecords({ evidence: input.evidence, nodes: input.nodes, observations: input.typedObservations ?? [], claim: proofClaim }),
+      ...typedRelationsToProofRecords({ hyperedges: input.typedRelations ?? [], nodes: input.nodes, evidence: input.evidence, claim: proofClaim })
+    ];
+    const candidateEvidence = dedupeProofEvidence([
+      ...sourceDerivedEvidence,
+      // Caller-carried records are advisory projections. Their force class,
+      // source version, and span binding are re-derived from the actual
+      // evidence set before they can reach proof admission. A forged direct
+      // record must not turn an unrelated span into typed world evidence.
+      ...revalidateCallerProofEvidence(input.proofEvidence ?? [], input.evidence, proofClaim, sourceDerivedEvidence)
+    ]);
+    return {
+      claim: proofClaim,
+      result: proveClaim({ claim: proofClaim, candidateEvidence }),
+      proposalScore: structuredClaimProposalScore(input.requestClaim, proofClaim, candidateEvidence, input.hasher),
+      candidateEvidence
+    };
+  });
   const selected = rankProofResults(results)[0];
-  return selected ? withStructuredEvidenceBindings(selected.result, candidateEvidence, selected.claim, selected.proposalScore) : undefined;
+  return selected ? withStructuredEvidenceBindings(selected.result, selected.candidateEvidence, selected.claim, selected.proposalScore) : undefined;
 }
 
-function rankProofResults(results: ReadonlyArray<{ claim: ProofClaim; result: SemanticProofResult; proposalScore: number }>): Array<{ claim: ProofClaim; result: SemanticProofResult; proposalScore: number }> {
+function rankProofResults(results: ReadonlyArray<{ claim: ProofClaim; result: SemanticProofResult; proposalScore: number; candidateEvidence: ProofEvidenceRecord[] }>): Array<{ claim: ProofClaim; result: SemanticProofResult; proposalScore: number; candidateEvidence: ProofEvidenceRecord[] }> {
   return [...results].sort((left, right) =>
     proofRank(right.result) - proofRank(left.result) ||
     right.proposalScore - left.proposalScore ||
@@ -457,6 +479,70 @@ function dedupeProofEvidence(records: readonly ProofEvidenceRecord[]): ProofEvid
   const seen = new Map<string, ProofEvidenceRecord>();
   for (const record of records) if (!seen.has(record.id)) seen.set(record.id, record);
   return [...seen.values()];
+}
+
+function revalidateCallerProofEvidence(
+  records: readonly ProofEvidenceRecord[],
+  evidence: readonly EvidenceSpan[],
+  claim: ProofClaim,
+  sourceDerivedEvidence: readonly ProofEvidenceRecord[]
+): ProofEvidenceRecord[] {
+  const evidenceById = new Map(evidence.map(span => [String(span.id), span]));
+  return records.map(record => {
+    const span = record.evidenceSpanId ? evidenceById.get(String(record.evidenceSpanId)) : undefined;
+    const boundary = span ? evidenceProofBoundary(span) : undefined;
+    const claimMatches = proofRecordMatchesClaim(record, claim);
+    const sourceRecord = span && sourceDerivedEvidence.find(candidate =>
+      candidate.evidenceSpanId === String(span.id)
+      && candidate.forceClass === "direct_evidence"
+      && proofRecordMatchesClaim(candidate, claim));
+    // The caller cannot mint a binding or upgrade a source assertion. The
+    // adapter's source-derived records are the only path that can restore a
+    // claim-scoped assertion after lineage corroboration.
+    if (!span || !boundary?.certifiesFactualProof || !claimMatches || !sourceRecord) {
+      return {
+        ...record,
+        forceClass: "unknown_prior" as const,
+        sourceVersionId: undefined,
+        evidenceSpanId: undefined
+      };
+    }
+    return {
+      ...sourceRecord,
+      // Keep the adapter identity; a caller-controlled record id is another
+      // provenance field and must not create a second witness for one span.
+      id: sourceRecord.id,
+      text: record.text ?? sourceRecord.text
+    };
+  });
+}
+
+function proofRecordMatchesClaim(record: ProofEvidenceRecord, claim: ProofClaim): boolean {
+  return proofAtomMatchesClaim(record.subject, claim.subject)
+    && record.relationId === claim.relationId
+    && proofAtomMatchesClaim(record.object, claim.object)
+    && proofScalarMatches(record.quantity, claim.quantity)
+    && proofDateTimeMatches(record.dateTime, claim.dateTime)
+    && (record.polarityId ?? "polarity.positive") === (claim.polarityId ?? "polarity.positive")
+    && (record.modalityId ?? "modality.asserted") === (claim.modalityId ?? "modality.asserted");
+}
+
+function proofAtomMatchesClaim(record: ProofClaim["subject"], claim: ProofClaim["subject"]): boolean {
+  return Boolean(record.id && claim.id && record.id === claim.id)
+    && Boolean(record.kindId && claim.kindId && record.kindId === claim.kindId)
+    && (record.roleId ?? "") === (claim.roleId ?? "");
+}
+
+function proofScalarMatches(record: ProofClaim["quantity"], claim: ProofClaim["quantity"]): boolean {
+  if (!record || !claim) return !record && !claim;
+  return record.value === claim.value
+    && (record.unitId ?? "") === (claim.unitId ?? "")
+    && (record.tolerance ?? 0) === (claim.tolerance ?? 0);
+}
+
+function proofDateTimeMatches(record: ProofClaim["dateTime"], claim: ProofClaim["dateTime"]): boolean {
+  if (!record || !claim) return !record && !claim;
+  return record.value === claim.value && (record.precisionId ?? "") === (claim.precisionId ?? "");
 }
 
 function jaccard(left: readonly string[], right: readonly string[]): number {

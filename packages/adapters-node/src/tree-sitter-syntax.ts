@@ -42,10 +42,19 @@ const GRAMMAR_WASM_MODULE_SPECIFIER: Record<TreeSitterLanguageId, string> = {
 
 let parserInitPromise: Promise<void> | undefined;
 const loadedLanguages = new Map<TreeSitterLanguageId, Promise<Parser.Language>>();
+const warmParsers = new Map<TreeSitterLanguageId, Promise<Parser>>();
 
 async function ensureParserInitialized(): Promise<void> {
-  if (!parserInitPromise) parserInitPromise = Parser.init();
-  await parserInitPromise;
+  parserInitPromise ??= Parser.init();
+  try {
+    await parserInitPromise;
+  } catch (cause) {
+    // A failed WASM boot must not poison the process for every later parse.
+    // Keep the successful initialization warm, but let a transient load
+    // failure retry on the next request.
+    parserInitPromise = undefined;
+    throw cause;
+  }
 }
 
 async function languageFor(languageId: TreeSitterLanguageId): Promise<Parser.Language> {
@@ -55,14 +64,60 @@ async function languageFor(languageId: TreeSitterLanguageId): Promise<Parser.Lan
     pending = Parser.Language.load(require.resolve(GRAMMAR_WASM_MODULE_SPECIFIER[languageId]));
     loadedLanguages.set(languageId, pending);
   }
-  return pending;
+  try {
+    return await pending;
+  } catch (cause) {
+    // Like the runtime boot above, rejected grammar promises are not useful
+    // cache entries. Delete only the promise this call observed so a newer
+    // concurrent retry cannot be removed by an older failure.
+    if (loadedLanguages.get(languageId) === pending) loadedLanguages.delete(languageId);
+    throw cause;
+  }
+}
+
+async function parserFor(languageId: TreeSitterLanguageId): Promise<Parser> {
+  const existing = warmParsers.get(languageId);
+  if (existing) return existing;
+  const pending = languageFor(languageId).then(language => {
+    const parser = new Parser();
+    parser.setLanguage(language);
+    return parser;
+  });
+  warmParsers.set(languageId, pending);
+  try {
+    return await pending;
+  } catch (cause) {
+    if (warmParsers.get(languageId) === pending) warmParsers.delete(languageId);
+    throw cause;
+  }
 }
 
 function contentHash(text: string): string {
   return `sha256:${createHash("sha256").update(text, "utf8").digest("hex")}`;
 }
 
+// Results retain every emitted syntax node, so an unbounded revision cache
+// grows with the lifetime of the server. Map insertion order gives us a small
+// process-local LRU without putting cache policy into cognition.
+const MAX_PARSE_RESULT_CACHE_ENTRIES = 256;
 const parseResultCache = new Map<string, RepositorySyntaxParseResult>();
+
+function cachedParseResult(key: string): RepositorySyntaxParseResult | undefined {
+  const cached = parseResultCache.get(key);
+  if (!cached) return undefined;
+  parseResultCache.delete(key);
+  parseResultCache.set(key, cached);
+  return cached;
+}
+
+function cacheParseResult(key: string, result: RepositorySyntaxParseResult): void {
+  parseResultCache.set(key, result);
+  while (parseResultCache.size > MAX_PARSE_RESULT_CACHE_ENTRIES) {
+    const oldest = parseResultCache.keys().next().value as string | undefined;
+    if (oldest === undefined) break;
+    parseResultCache.delete(oldest);
+  }
+}
 
 function cacheKey(fileId: string, languageId: TreeSitterLanguageId, hash: string, grammarVersion: string): string {
   return `${fileId}${languageId}${hash}${grammarVersion}`;
@@ -99,11 +154,9 @@ const PARAMETER_NODE_TYPES = new Set([
 const NAME_FIELD_KIND_NODE_TYPES = new Set(["variable_declarator"]);
 const ASSIGNMENT_NODE_TYPES = new Set(["assignment"]);
 
-let nodeSequence = 0;
-
-function nextNodeId(fileId: string): string {
-  nodeSequence += 1;
-  return `${fileId}#syn${nodeSequence}`;
+function nextNodeId(fileId: string, sequence: { value: number }): string {
+  sequence.value += 1;
+  return `${fileId}#syn${sequence.value}`;
 }
 
 function declarationName(node: Parser.SyntaxNode): string | undefined {
@@ -163,6 +216,8 @@ function walk(
   languageId: string,
   parentId: string | undefined,
   nodes: RepositorySyntaxNode[],
+  nodeById: Map<string, RepositorySyntaxNode>,
+  sequence: { value: number },
   errors: RepositorySyntaxErrorSpan[]
 ): void {
   if (node.isError) {
@@ -174,7 +229,7 @@ function walk(
   const kind = node.isError ? undefined : classifyNode(node);
   let ownId = parentId;
   if (kind) {
-    const id = nextNodeId(fileId);
+    const id = nextNodeId(fileId, sequence);
     const repositoryNode: RepositorySyntaxNode = {
       id,
       languageId,
@@ -189,8 +244,11 @@ function walk(
       source: "tree-sitter"
     };
     nodes.push(repositoryNode);
+    nodeById.set(id, repositoryNode);
     if (parentId) {
-      const parent = nodes.find(candidate => candidate.id === parentId);
+      // The recursive walk used to scan every node emitted so far for every
+      // child, making a large source file quadratic before any reasoning ran.
+      const parent = nodeById.get(parentId);
       parent?.childIds.push(id);
     }
     ownId = id;
@@ -202,7 +260,7 @@ function walk(
   // "treat syntax errors as data" depends on.
   for (const child of node.children) {
     if (!child) continue;
-    walk(child, fileId, languageId, ownId, nodes, errors);
+    walk(child, fileId, languageId, ownId, nodes, nodeById, sequence, errors);
   }
 }
 
@@ -215,11 +273,12 @@ export async function parseRepositorySyntax(input: {
   const language = await languageFor(input.languageId);
   const grammarVersion = String(language.version);
   const key = cacheKey(input.fileId, input.languageId, hash, grammarVersion);
-  const cached = parseResultCache.get(key);
+  const cached = cachedParseResult(key);
   if (cached) return cached;
 
-  const parser = new Parser();
-  parser.setLanguage(language);
+  // The grammar and parser are process-warm. Parsing itself is synchronous,
+  // so calls cannot interleave while one parser is inside WASM.
+  const parser = await parserFor(input.languageId);
   const tree = parser.parse(input.text);
   if (!tree) {
     const empty: RepositorySyntaxParseResult = {
@@ -235,8 +294,16 @@ export async function parseRepositorySyntax(input: {
   }
 
   const nodes: RepositorySyntaxNode[] = [];
+  const nodeById = new Map<string, RepositorySyntaxNode>();
+  const sequence = { value: 0 };
   const errors: RepositorySyntaxErrorSpan[] = [];
-  walk(tree.rootNode, input.fileId, input.languageId, undefined, nodes, errors);
+  try {
+    walk(tree.rootNode, input.fileId, input.languageId, undefined, nodes, nodeById, sequence, errors);
+  } finally {
+    // Cache the source-neutral result, not a live WASM tree. Keeping each tree
+    // alive leaked linear WASM memory across file revisions in a warm server.
+    tree.delete();
+  }
 
   // Structural problems a grammar integration can produce and nothing downstream would notice: a node ending before
   // it starts, or naming a parent that is not in the set. `validateRepositorySyntaxNodes` checks exactly those and
@@ -259,7 +326,7 @@ export async function parseRepositorySyntax(input: {
     nodes,
       errors
   };
-  parseResultCache.set(key, result);
+  cacheParseResult(key, result);
   return result;
 }
 

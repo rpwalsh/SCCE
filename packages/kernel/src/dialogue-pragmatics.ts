@@ -83,6 +83,8 @@ export interface DialoguePolicyDecision {
   rhythmId: string;
   selectedActionIds: DialogueActionId[];
   rankedActions: DialogueAction[];
+  /** Added at persistence time so replay identifies the surface actually spoken. */
+  selectedCandidateId?: string;
   trace: JsonValue;
 }
 
@@ -242,9 +244,6 @@ const TARGET_PROFILE_MARKERS = {
 } as const;
 
 const SIGNAL_EVIDENCE_IDS = {
-  lowDelayShape: "evt.b4051a7e",
-  lowLengthShape: "evt.5ad2e0c9",
-  pressurePunctuation: "evt.93e1d8b6",
   graphUncertainty: "evt.6f7c1b90",
   graphAction: "evt.d3b5a84f",
   graphContradiction: "evt.80f4a2c6"
@@ -311,9 +310,11 @@ export function updateDialogueState(input: DialogueStateUpdateInput): DialogueSt
   const previous = input.previousState;
   const feedbackProfile = applyDialogueFeedback(previous?.userStyleProfile ?? DEFAULT_USER_STYLE_PROFILE, input.feedback);
   const patchedProfile = mergeUserStyleProfile(feedbackProfile, input.statePatch?.userStyleProfile);
-  // Surface shape may tune pacing and compactness. Task-specific needs enter
-  // through typed upstream signals or graph action state below.
-  const requestSignals = requestInteractionSignals(input.requestText);
+  // Request surface is not a task or pacing authority. Response-shape
+  // pressure must arrive as a typed interaction signal from the interpreter,
+  // prior state, or the answer graph; otherwise punctuation/length becomes a
+  // second hidden dialogue router.
+  const requestSignals = input.statePatch?.interactionSignals ?? [];
   const graphSignals = graphInteractionSignals(input.answerGraph);
   const features = mergeInteractionFeatures([
     ...(previous?.interactionFeatures ?? []),
@@ -321,7 +322,7 @@ export function updateDialogueState(input: DialogueStateUpdateInput): DialogueSt
     ...graphSignals.map(signalToFeature),
     ...(input.statePatch?.interactionFeatures ?? [])
   ]);
-  const signals = [...requestSignals, ...graphSignals, ...(input.statePatch?.interactionSignals ?? [])].slice(-64);
+  const signals = [...requestSignals, ...graphSignals].slice(-64);
   const graphFacts = input.answerGraph?.claims.filter(claim => claim.certified).map(claim => claim.surface).filter(Boolean) ?? [];
   const graphSlots = input.answerGraph ? unresolvedSlotsFromGraph(input.answerGraph) : [];
   const graphTask = input.answerGraph?.actions[0]?.taskRecordId ?? previous?.activeTask;
@@ -655,28 +656,6 @@ function preservedProvidedDraftCritic(candidates: readonly DialoguePragmaticsCan
     item.id === DIALOGUE_PENALTY_IDS.unsupported
   );
   return hardPenalty ? undefined : critic;
-}
-
-function requestInteractionSignals(text: string): InteractionSignal[] {
-  const urgentPunctuation = (text.match(/[!?]/gu) ?? []).length;
-  const wordCount = surfaceWordCount(text);
-  const shortDirectiveShape = wordCount > 0 && wordCount <= 8 && !/[?？]/u.test(text);
-  const signals: InteractionSignal[] = [];
-  const add = (featureId: InteractionFeatureId, value: number, sourceIds: string[], evidence: string[]) => {
-    if (value <= 0) return;
-    signals.push({
-      id: `sig.${hashText(canonicalStringify({ featureId, value, evidence })).slice(0, 16)}`,
-      featureId,
-      value: clamp01(value),
-      confidence: 0.72,
-      sourceIds,
-      trace: toJsonValue({ source: "dialogue-pragmatics.request-signal", evidence })
-    });
-  };
-  add(INTERACTION_FEATURE_IDS.responseLead, shortDirectiveShape || urgentPunctuation > 1 ? 1 : 0, ["turn.input"], [SIGNAL_EVIDENCE_IDS.lowDelayShape]);
-  add(INTERACTION_FEATURE_IDS.compactness, shortDirectiveShape || wordCount <= 6 ? 1 : 0, ["turn.input"], [SIGNAL_EVIDENCE_IDS.lowLengthShape]);
-  add(INTERACTION_FEATURE_IDS.reviewPressure, urgentPunctuation > 2 || /[?!؟？！]{2,}/u.test(text) ? 1 : 0, ["turn.input"], [SIGNAL_EVIDENCE_IDS.pressurePunctuation]);
-  return signals;
 }
 
 function graphInteractionSignals(graph: DialogueAnswerGraphLike | undefined): InteractionSignal[] {

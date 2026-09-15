@@ -104,6 +104,39 @@ describe("ProgramGraph runtime and artifact emission", () => {
     expect(targetEvidence).toContain(String(fixture.evidence.id));
   });
 
+  it("honors an owner-declared module entrypoint and carries its provenance into emission", () => {
+    const fixture = engineeringFixture();
+    const construct = buildProgram("create a pure library module", [fixture.evidence], {
+      artifactKindIds: ["artifact.library"],
+      capabilityIds: ["capability:pure-call"],
+      inputMediaTypes: ["application/json"],
+      outputMediaTypes: ["application/json"],
+      entrypointPath: "src/library.ts",
+      provenanceEvidenceIds: [String(fixture.evidence.id)]
+    });
+    const program = required(construct.program);
+    const emission = required(program.nodes.find(node => node.kind === "source_emission_plan"));
+    const metadata = objectRecord(emission.metadata);
+
+    expect(metadata.constructionMode).toBe("owner_declared");
+    expect(metadata.constructionEvidenceIds).toContain(String(fixture.evidence.id));
+    expect(metadata.entrypoint).toBe("src/library.ts");
+    expect(program.files.map(file => file.path)).toContain("src/domain.ts");
+    expect(required(program.files.find(file => file.path === "src/domain.ts")).content).toContain("export function evaluate");
+  });
+
+  it("rejects an owner entrypoint that would collapse two planned artifact roles", () => {
+    const fixture = engineeringFixture();
+    expect(() => buildProgram("create a pure library module", [fixture.evidence], {
+      artifactKindIds: ["artifact.library"],
+      capabilityIds: ["capability:pure-call"],
+      inputMediaTypes: ["application/json"],
+      outputMediaTypes: ["application/json"],
+      entrypointPath: "src/domain.ts",
+      provenanceEvidenceIds: [String(fixture.evidence.id)]
+    })).toThrow("owner-declared entrypoint collides with planned supporting artifact");
+  });
+
   it("emits a CSV transformer with source metadata and a validation contract", () => {
     const fixture = engineeringFixture();
     const csv = csvEvidence();

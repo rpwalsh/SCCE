@@ -820,7 +820,11 @@ async function dispatch(
         } : {})
       });
       traceEvent(trace, { stage: "turn.kernel.returned", label: "api.turn", durationMs: Date.now() - turnStarted, counts: { evidence: result.evidence.length } });
-      if (!turnAnswerHasSpeech(result.answer)) throw new HttpError(422, "runtime declined: no admissible answer surface");
+      // Program turns carry a proof-bearing executable proposal as their answer surface. The
+      // proposal is valid even when Mouth has no prose realization for an empty source workspace.
+      const programProposalTurn = Boolean(result.constructGraph.program
+        && (turn.requestedAuthority === "program" || workspaceCodingInput));
+      if (!turnAnswerHasSpeech(result.answer) && !programProposalTurn) throw new HttpError(422, "runtime declined: no admissible answer surface");
       const turnProgramCodingInput = workspaceCodingInput
         ? workspaceCodingInputForProgramGraph(workspaceCodingInput, result.constructGraph.program)
         : undefined;
@@ -1878,6 +1882,23 @@ async function persistDialogueCognitiveShadowV2(input: {
     const phase = (step: string) => { phases[step] = Date.now() - phaseStarted; };
     const previousState = await memory.latest(input.conversationId);
     phase("latestMs");
+    // The production kernel persists this exact proof-bearing resolver state
+    // before returning the turn. The API shadow is retained for adapters and
+    // test kernels that do not own the production runtime, but must not write
+    // a second state for the same turn (which would advance the durable head
+    // without a new observation and make a restart restore the wrong index).
+    if (previousState?.turnId === String(input.result.episodeId)) {
+      return {
+        counts: { persisted: 0, alreadyPersisted: 1, ...phases },
+        support: {
+          schema: "scce.dialogue_cognitive_shadow_projection.v2",
+          status: "already_persisted",
+          stateId: previousState.id,
+          turnIndex: previousState.turnIndex,
+          queryConcatenationUsed: false
+        }
+      };
+    }
     const interpretationAdjustments = await dialogueInterpretationAdjustmentsForConversation(
       input.context.runtime.storage.dialogueMemory,
       input.conversationId
@@ -3598,6 +3619,7 @@ function compactTurnDialogue(dialogue: TurnDialogueBridge): JsonValue {
     selectedActionIds: dialogue.pragmatics.policyDecision.selectedActionIds,
     selectedCandidateId: dialogue.pragmatics.selected.candidateId,
     selectedScore: dialogue.pragmatics.selected.score,
+    ...(dialogue.selectionAudit !== undefined ? { selectionAudit: compactJson(dialogue.selectionAudit, 3) } : {}),
     streamPlan: dialogue.streamPlan,
     trace: compactJson(dialogue.trace, 2)
   });

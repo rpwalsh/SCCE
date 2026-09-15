@@ -13,7 +13,7 @@ import type {
 } from "./semantic-proof-types.js";
 import { clamp01, cosineSimilarity, createHasher, featureSet, stableVector, symbolizeData, toJsonValue, weightedJaccard } from "./primitives.js";
 import { evaluateSemanticTransforms, semanticTransformRules } from "./semantic-transform-registry.js";
-import { evidenceProofBoundary, graphNodePriorClass, isLearnedPriorClass } from "./proof-boundary.js";
+import { evidenceDependencyComponents, evidenceLineage, evidenceProofBoundary, graphNodePriorClass, isLearnedPriorClass } from "./proof-boundary.js";
 import {
   compileRelationHypothesisModel,
   inferRelationHypotheses
@@ -203,11 +203,7 @@ export function createSemanticProofSystem(options: { hasher?: Hasher; dimensions
       // asserted this session it is the span, because each turn is its own assertion -- the whole session shares
       // one source version by construction, and keying on that made two separate statements look like one source
       // and hid exactly the disagreement worth reporting.
-      const independenceByEvidence = new Map<string, string>();
-      for (const span of input.evidence) {
-        const id = String(span.id);
-        independenceByEvidence.set(id, id.startsWith(SESSION_EVIDENCE_ID_PREFIX) ? id : String(span.sourceVersionId));
-      }
+      const independenceByEvidence = sourceDependenceIdentityByEvidence(input.evidence);
       const search = searchProof({ claimAtoms, supportAtoms: allSupportAtoms, hasher, independenceByEvidence });
       const graph = proofGraphFrom(search, claimAtoms, evidenceAtoms, graphAtoms);
       const replay = toJsonValue({
@@ -986,6 +982,7 @@ function collectMutuallyContradictorySupport(
   independenceByEvidence?: ReadonlyMap<string, string>
 ): boolean {
   let found = false;
+  const seenSourcePairs = new Set<string>();
   const byPredicate = new Map<string, SemanticAtom[]>();
   for (const atom of supportAtoms) {
     if (!atom.predicate) continue;
@@ -1008,6 +1005,13 @@ function collectMutuallyContradictorySupport(
         const first = group[left]!;
         const second = group[right]!;
         if (!fromDifferentSources(first, second, independenceByEvidence)) continue;
+        // A republisher can expose the same proposition through many spans
+        // and source-version ids. Once typed lineage/family identity has
+        // collapsed those spans, compare each source-component pair once so
+        // dependent copies cannot multiply contradiction mass or witnesses.
+        const sourcePair = sourceComponentPairKey(first, second, independenceByEvidence);
+        if (!sourcePair || seenSourcePairs.has(`${first.predicate}:${sourcePair}`)) continue;
+        seenSourcePairs.add(`${first.predicate}:${sourcePair}`);
         // Sources, not priors. A learned prior disagreeing with a source is not two sources disagreeing, and must
         // not stop the turn asserting what its evidence says. Certification is deliberately not the test: session
         // evidence the owner stated this turn is uncertified by construction, and two owner statements that
@@ -1501,4 +1505,96 @@ function propositionAtomFromNode(
       ? "proof-boundary.graph-exact-evidence-refs"
       : "proof-boundary.graph-evidence-not-currently-certifying"
   };
+}
+
+function sourceComponentPairKey(
+  left: SemanticAtom,
+  right: SemanticAtom,
+  independenceByEvidence?: ReadonlyMap<string, string>
+): string | undefined {
+  const leftKeys = new Set(left.evidenceIds.map(id => independenceByEvidence?.get(String(id)) ?? String(id)));
+  const rightKeys = new Set(right.evidenceIds.map(id => independenceByEvidence?.get(String(id)) ?? String(id)));
+  const pairs: string[] = [];
+  for (const leftKey of leftKeys) {
+    for (const rightKey of rightKeys) {
+      if (leftKey === rightKey) continue;
+      pairs.push([leftKey, rightKey].sort().join("<>"));
+    }
+  }
+  return pairs.sort()[0];
+}
+
+/**
+ * Resolve the source component used by mutual-source checks. Source-version
+ * ids alone are insufficient: a derived copy may receive a fresh version and
+ * family label while remaining the same evidentiary lineage. Explicit
+ * lineage and independence-group links are unioned conservatively; session
+ * assertions remain turn-local components by construction.
+ */
+function sourceDependenceIdentityByEvidence(spans: readonly import("./types.js").EvidenceSpan[]): Map<string, string> {
+  const parent = spans.map((_, index) => index);
+  const find = (index: number): number => {
+    let root = index;
+    while (parent[root] !== root) root = parent[root]!;
+    while (parent[index] !== index) {
+      const next = parent[index]!;
+      parent[index] = root;
+      index = next;
+    }
+    return root;
+  };
+  const union = (left: number, right: number): void => {
+    const leftRoot = find(left);
+    const rightRoot = find(right);
+    if (leftRoot !== rightRoot) parent[rightRoot] = leftRoot;
+  };
+  // Resolve ancestry once per immutable source version. A source commonly
+  // contributes many chunks; resolving the same lineage for every chunk
+  // would turn this guard into an avoidable evidence-count square.
+  const representativeByVersion = new Map<string, EvidenceSpan>();
+  for (const span of spans) {
+    const version = String(span.sourceVersionId);
+    if (!representativeByVersion.has(version)) representativeByVersion.set(version, span);
+  }
+  const lineageByVersion = new Map<string, string>();
+  for (const [version, representative] of representativeByVersion) {
+    lineageByVersion.set(version, evidenceLineage(representative, spans).identity || version);
+  }
+  const lineages = spans.map(span => lineageByVersion.get(String(span.sourceVersionId)) || String(span.sourceVersionId));
+  const dependencyComponents = evidenceDependencyComponents(spans);
+  const families = spans.map(span => dependencyComponents.get(String(span.id)) ?? "");
+  const firstByKey = new Map<string, number>();
+  for (let index = 0; index < spans.length; index += 1) {
+    const keys = [lineages[index] ? `lineage:${lineages[index]}` : "", families[index] ? `family:${families[index]}` : ""]
+      .filter(Boolean);
+    for (const key of keys) {
+      const prior = firstByKey.get(key);
+      if (prior === undefined) firstByKey.set(key, index);
+      else union(prior, index);
+    }
+  }
+  const components = new Map<number, number[]>();
+  for (let index = 0; index < spans.length; index += 1) {
+    const root = find(index);
+    const members = components.get(root) ?? [];
+    members.push(index);
+    components.set(root, members);
+  }
+  const out = new Map<string, string>();
+  for (const members of components.values()) {
+    const lineageIds = [...new Set(members.map(index => lineages[index]).filter(Boolean))].sort();
+    const familyIds = [...new Set(members.map(index => families[index]).filter(Boolean))].sort();
+    const identity = `source-component:${lineageIds.join("|") || "none"}:${familyIds.join("|") || "none"}`;
+    for (const index of members) {
+      const id = String(spans[index]!.id);
+      out.set(id, id.startsWith(SESSION_EVIDENCE_ID_PREFIX) ? id : identity);
+    }
+  }
+  return out;
+}
+
+function objectRecord(value: import("./types.js").JsonValue | undefined): Record<string, import("./types.js").JsonValue> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, import("./types.js").JsonValue>
+    : undefined;
 }

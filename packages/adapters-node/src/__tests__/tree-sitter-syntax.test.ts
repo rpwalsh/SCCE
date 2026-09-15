@@ -81,6 +81,27 @@ describe("tree-sitter syntax substrate (Phase 15, 183-184)", () => {
     expect(second).toBe(first);
   });
 
+  it("keeps syntax identities stable across revisions and unrelated parse order", async () => {
+    const first = await parseRepositorySyntax({
+      fileId: "src/stable.ts",
+      languageId: "typescript",
+      text: "export function stable(): number { return 1; }"
+    });
+    await parseRepositorySyntax({
+      fileId: "src/unrelated.ts",
+      languageId: "typescript",
+      text: "export const unrelated = () => 0;"
+    });
+    const revised = await parseRepositorySyntax({
+      fileId: "src/stable.ts",
+      languageId: "typescript",
+      text: "export function stable(): number { return 2; }"
+    });
+
+    expect(revised.nodes.map(node => node.id)).toEqual(first.nodes.map(node => node.id));
+    expect(revised.nodes.map(node => node.parentId)).toEqual(first.nodes.map(node => node.parentId));
+  });
+
   it("maps file extensions to the real grammar that should parse them", () => {
     expect(languageIdForFilePath("src/foo.ts")).toBe("typescript");
     expect(languageIdForFilePath("src/foo.tsx")).toBe("tsx");
