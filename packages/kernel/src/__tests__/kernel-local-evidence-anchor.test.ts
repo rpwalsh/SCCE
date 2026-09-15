@@ -1228,6 +1228,20 @@ describe("kernel local evidence source anchoring", () => {
     expect(typed.entailmentCalls.some(call => call.typed && call.result !== call.untypedResult)).toBe(true);
   });
 
+  it("does not withhold an answer over a contradicted hyperedge on its span whose participants the answer does not state", async () => {
+    const answerText = "Pump alpha is controlled by API route POST /api/pumps/alpha/control. Valve gamma feeds reservoir nine.";
+    const baseline = await typedRelationTurn({ hyperedges: "none", answerText });
+    const run = await typedRelationTurn({ hyperedges: "other_fact_contradicted", answerText });
+    expect(run.stages.length).toBeGreaterThan(0);
+    for (const event of run.stages) expect(["active", "bypassed_not_applicable"]).toContain((event.support?.typedProof as { status?: string } | undefined)?.status);
+    expect(run.stages.some(event => (event.support?.typedProof as { verdict?: string } | undefined)?.verdict === "contradicted")).toBe(false);
+    for (const call of run.entailmentCalls) expect(call.result).toBe(call.untypedResult);
+    expect(run.result.answer).toContain("Pump alpha is controlled by API route POST /api/pumps/alpha/control.");
+    expect(run.result.answer).not.toContain("reservoir nine");
+    expect(run.result.answer).toContain("Source: Fixture record");
+    expect(run.result.assistantForce).toBe(baseline.result.assistantForce);
+  });
+
   it("pairs an early temporal counterexample with distinct source-derived development context", async () => {
     const clock = createClock({ fixedTime: 6_900, stepMs: 1 });
     const hasher = createHasher();
@@ -2433,24 +2447,25 @@ describe("kernel evaluation conditions use production component boundaries", () 
   }
 });
 
-async function typedRelationTurn(input: { hyperedges: "role_mismatch" | "none" | "answer_span_only" | "unadmitted_evidence" }) {
+async function typedRelationTurn(input: { hyperedges: "role_mismatch" | "none" | "answer_span_only" | "unadmitted_evidence" | "other_fact_contradicted"; answerText?: string }) {
   const clock = createClock({ fixedTime: 6_800, stepMs: 1 });
   const hasher = createHasher();
-  const answer = evidenceSpan({ id: "evidence:pump-route-typed", sourceVersionId: "source:pump-route-typed:v1" as SourceVersionId, title: "Fixture record", uri: "fixture://pump/route-typed", text: "Pump alpha is controlled by API route POST /api/pumps/alpha/control.", alpha: 0.94 });
+  const answer = evidenceSpan({ id: "evidence:pump-route-typed", sourceVersionId: "source:pump-route-typed:v1" as SourceVersionId, title: "Fixture record", uri: "fixture://pump/route-typed", text: input.answerText ?? "Pump alpha is controlled by API route POST /api/pumps/alpha/control.", alpha: 0.94 });
   const independent = evidenceSpan({ id: "evidence:pump-route-typed-log", sourceVersionId: "source:pump-route-typed-log:v1" as SourceVersionId, title: "Fixture record", uri: "fixture://pump/route-typed-log", text: "Pump alpha maintenance log lists API route POST /api/pumps/alpha/control.", alpha: 0.9 });
   const unadmitted = evidenceSpan({ id: "evidence:pump-route-typed-unadmitted", sourceVersionId: "source:pump-route-typed-unadmitted:v1" as SourceVersionId, title: "Other record", uri: "fixture://other/typed", text: "Valve gamma is controlled by API route POST /api/valves/gamma.", alpha: 0.2 });
   const base = graphSlice([answer, independent]);
   const typedNode = (id: string, label: string, evidenceIds: EvidenceId[]): GraphNode => ({ id: id as GraphNode["id"], typeId: "type:entity" as GraphNode["typeId"], representation: { label }, alpha: 0.9, evidenceIds, features: featureSet(label, 256), createdAt: 1_000, updatedAt: 1_000, metadata: {} });
   const nodes = [typedNode("node:pump-alpha", "pump alpha", [answer.id, independent.id]), typedNode("node:control-route", "POST /api/pumps/alpha/control", [answer.id, independent.id])];
-  const hyperedge = (id: string, evidenceId: EvidenceId, roles: [string, string]): Hyperedge => ({
+  const otherNodes = [typedNode("node:valve-gamma", "valve gamma", [answer.id, independent.id]), typedNode("node:reservoir-nine", "reservoir nine", [answer.id, independent.id])];
+  const hyperedge = (id: string, evidenceId: EvidenceId, roles: [string, string], pair: GraphNode[] = nodes): Hyperedge => ({
     schema: "scce.hyperedge.v2",
     id: id as Hyperedge["id"],
     relationId: "relation:controlled-by" as Hyperedge["relationId"],
     participantPorts: [
-      { portId: "port:device", roleId: roles[0], nodeId: nodes[0]!.id, valueKind: "kind:device", realization: "observed", evidenceIds: [evidenceId] },
-      { portId: "port:route", roleId: roles[1], nodeId: nodes[1]!.id, valueKind: "kind:route", realization: "observed", evidenceIds: [evidenceId] }
+      { portId: "port:device", roleId: roles[0], nodeId: pair[0]!.id, valueKind: "kind:device", realization: "observed", evidenceIds: [evidenceId] },
+      { portId: "port:route", roleId: roles[1], nodeId: pair[1]!.id, valueKind: "kind:route", realization: "observed", evidenceIds: [evidenceId] }
     ],
-    memberNodeIds: nodes.map(node => node.id),
+    memberNodeIds: pair.map(node => node.id),
     qualifiers: {},
     modality: {},
     evidenceIds: [evidenceId],
@@ -2466,8 +2481,10 @@ async function typedRelationTurn(input: { hyperedges: "role_mismatch" | "none" |
       ? [hyperedge("hyperedge:answer", answer.id, ["role:controlled", "role:controller"])]
       : input.hyperedges === "unadmitted_evidence"
         ? [hyperedge("hyperedge:unadmitted", unadmitted.id, ["role:controlled", "role:controller"])]
-        : [];
-  const graph: GraphSlice = { ...base, nodes: [...base.nodes, ...nodes], hyperedges };
+        : input.hyperedges === "other_fact_contradicted"
+          ? [hyperedge("hyperedge:answer", answer.id, ["role:controlled", "role:controller"]), hyperedge("hyperedge:answer-other", answer.id, ["role:controlled", "role:controller"], otherNodes), hyperedge("hyperedge:independent-other", independent.id, ["role:controller", "role:controlled"], otherNodes)]
+          : [];
+  const graph: GraphSlice = { ...base, nodes: [...base.nodes, ...nodes, ...otherNodes], hyperedges };
   const fixture = storageFixture({ evidence: [answer, independent, unadmitted], graph });
   const kernel = createScceKernel({
     storage: fixture.storage,

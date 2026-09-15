@@ -2440,7 +2440,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           "proof.support-engine",
           () => {
             const entailmentStarted = Date.now();
-            const typedScope = typedProofScope({ hyperedges: graph.hyperedges, admittedEvidence: proofCandidateEvidence, claimEvidenceIds: answerProposal?.evidence.map(span => span.id) ?? [] });
+            const typedScope = typedProofScope({ hyperedges: graph.hyperedges, admittedEvidence: proofCandidateEvidence, claimEvidenceIds: answerProposal?.evidence.map(span => span.id) ?? [], claimText: proofClaimText, nodes: proofNodes });
             const entailmentResult = entailment.check({
               text: proofClaimText,
               evidence: proofCandidateEvidence,

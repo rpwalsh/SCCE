@@ -492,7 +492,7 @@ function objectRecord(value: JsonValue | undefined): Record<string, JsonValue> |
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, JsonValue> : undefined;
 }
 
-function graphNodeSurface(node: GraphNode | undefined): string | undefined {
+export function graphNodeSurface(node: GraphNode | undefined): string | undefined {
   if (!node) return undefined;
   if (typeof node.representation === "string") return node.representation;
   if (!node.representation || typeof node.representation !== "object" || Array.isArray(node.representation)) return undefined;

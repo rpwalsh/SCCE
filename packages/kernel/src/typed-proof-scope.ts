@@ -1,7 +1,11 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { ProofClaim, SemanticProofResult } from "./semantic-proof-engine.js";
-import type { EvidenceSpan, Hyperedge, JsonValue } from "./types.js";
+import type { EvidenceSpan, GraphNode, Hyperedge, JsonValue } from "./types.js";
+import { corpusIdentityUnits } from "./corpus-identity.js";
+import { stripOuterPriorSeparators } from "./kernel-answer-primitives.js";
+import { requestUnitSharesStem } from "./local-evidence-runtime.js";
+import { graphNodeSurface } from "./semantic-proof-adapter.js";
 
 export type TypedProofScopeStatus = "active" | "bypassed_not_applicable";
 
@@ -15,17 +19,26 @@ export interface TypedProofScope {
 
 type ObservedPair = { subject: Hyperedge["participantPorts"][number]; object: Hyperedge["participantPorts"][number] };
 
-/** Claims from the answer's own hyperedges, records from other admitted spans that bear on them (same relation, or reversed participants). */
+/** Claims from the answer's own hyperedges whose participants the answer text states, records from other admitted spans that bear on them. */
 export function typedProofScope(input: {
   hyperedges: readonly Hyperedge[];
   admittedEvidence: readonly EvidenceSpan[];
   claimEvidenceIds: readonly EvidenceSpan["id"][];
+  claimText: string;
+  nodes: readonly GraphNode[];
 }): TypedProofScope {
   const admittedIds = new Set(input.admittedEvidence.map(span => String(span.id)));
   const claimIds = new Set(input.claimEvidenceIds.map(String).filter(id => admittedIds.has(id)));
   const scoped = input.hyperedges.filter(edge => observedPair(edge) && edge.evidenceIds.some(id => admittedIds.has(String(id))));
   if (!scoped.length) return bypassed("no_typed_hyperedge_for_admitted_evidence", 0);
-  const claimEdges = scoped.filter(edge => edge.evidenceIds.some(id => claimIds.has(String(id))));
+  const nodeById = new Map(input.nodes.map(node => [String(node.id), node]));
+  const answerUnits = identityUnits(input.claimText);
+  const stated = (port: Hyperedge["participantPorts"][number]) => {
+    const units = identityUnits(graphNodeSurface(nodeById.get(String(port.nodeId))) ?? "");
+    return units.length > 0 && units.every(unit => answerUnits.some(answerUnit => requestUnitSharesStem(unit, answerUnit)));
+  };
+  const claimEdges = scoped.filter(edge => edge.evidenceIds.some(id => claimIds.has(String(id)))
+    && edge.participantPorts.filter(port => port.realization === "observed" && port.nodeId !== null).every(stated));
   if (!claimEdges.length) return bypassed("no_typed_hyperedge_for_claim_evidence", scoped.length);
   const proofClaims = claimEdges.map(claimFromHyperedge);
   const typedRelations = scoped.flatMap(edge => {
@@ -62,6 +75,10 @@ export function typedProofTrace(scope: TypedProofScope, gate: JsonValue | undefi
     contradictions: (result?.contradictions ?? []).map(item => ({ kind: item.kind, reason: item.reason })),
     reasons
   };
+}
+
+function identityUnits(text: string): string[] {
+  return corpusIdentityUnits(text).map(stripOuterPriorSeparators).filter(Boolean);
 }
 
 function bypassed(reason: string, scopedHyperedges: number): TypedProofScope {
