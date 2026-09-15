@@ -7,7 +7,8 @@ import {
   buildTurnDialogueBridge,
   realizeDialogueResponse,
   type DialogueAnswerGraphLike,
-  type TurnResult
+  type TurnResult,
+  type EpisodeId
 } from "../index.js";
 
 describe("typed dialogue task routing", () => {
@@ -65,18 +66,53 @@ describe("typed dialogue task routing", () => {
 
 function minimalTurnResult(calibrationTaskClass: string): TurnResult {
   return {
-    episodeId: "episode.typed-routing",
+    episodeId: "episode.typed-routing" as EpisodeId,
     answer: "ÐžÑ‚Ð²ÐµÑ‚.",
     epistemicForce: "observed",
     calibrationTaskClass,
     evidence: [],
     field: {} as TurnResult["field"],
     entailment: { contradiction: 0 } as TurnResult["entailment"],
-    constructGraph: { artifacts: [] } as TurnResult["constructGraph"],
+    constructGraph: {
+      id: "construct.typed-routing" as TurnResult["constructGraph"]["id"],
+      episodeId: "episode.typed-routing" as EpisodeId,
+      forceVector: {},
+      nodes: [],
+      edges: [],
+      artifacts: []
+    },
     validationGraph: {} as TurnResult["validationGraph"],
     emissionGraph: {} as TurnResult["emissionGraph"],
     forecast: {} as TurnResult["forecast"],
-    learningNeeds: []
+    learningNeeds: [],
+    scoreTraces: [],
+    calibrationStatus: "uncalibrated",
+    truthState: {
+      symbolicState: "truth.insufficient_evidence",
+      beliefLower: 0,
+      plausibilityUpper: 0,
+      supportMass: 0,
+      contradictionMass: 0,
+      uncertaintyMass: 1,
+      validityInterval: null,
+      evidenceForce: "unknown",
+      freshness: 0,
+      sourceDiversity: 0
+    },
+    evidenceForce: "unknown",
+    guardFlags: {
+      requireEvidence: true,
+      blockCertifiedFact: true,
+      allowInference: false,
+      allowCreative: false,
+      exposeContradiction: false,
+      sourceBacked: false,
+      missingEvidence: true,
+      contradictionPresent: false,
+      preservationChecked: true,
+      unsupportedContentBlocked: true
+    },
+    events: []
   };
 }
 
