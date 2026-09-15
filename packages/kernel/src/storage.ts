@@ -1330,6 +1330,8 @@ export interface ScceKernelDeps {
    * artifact once the adapter has hydrated it. Absent means the field engine runs its identity branch.
    */
   relationPotentialModel?: RelationPotentialModel | (() => RelationPotentialModel | undefined);
+  /** Explicit opt-in weights that allow bounded field-operator output to rerank activation mass. */
+  fieldOperatorRouting?: import("./field.js").FieldOperatorRoutingConfig;
   /** Durable fit/validate/promote store for the relation-potential artifact. */
   relationPotentialModels?: import("./relation-potential-lifecycle.js").RelationPotentialModelStore;
   /**

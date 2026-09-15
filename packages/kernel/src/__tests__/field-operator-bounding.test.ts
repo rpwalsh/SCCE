@@ -36,6 +36,40 @@ describe("bounded field operator matrices", () => {
     expect(Number.isFinite(diagnostics.fieldOperators?.wave?.momentum)).toBe(true);
     expect(Number.isFinite(diagnostics.fieldOperators?.spectral?.residual)).toBe(true);
   });
+
+  it("uses admissible configured operator output for routing and keeps the unconfigured path identical", () => {
+    const nodes = [node(0), node(1), node(2)];
+    const edges = [edge(0, 1), edge(1, 2)];
+    const unconfigured = createAlphaFieldEngine().activate({
+      text: "anchor",
+      nodes,
+      edges,
+      fieldOperatorDiagnostics: true
+    });
+    const configured = createAlphaFieldEngine({
+      fieldOperatorRouting: { heatWeight: 1, waveWeight: 0, spectralWeight: 0 }
+    }).activate({
+      text: "anchor",
+      nodes,
+      edges
+    });
+
+    expect(configured.ppf).not.toEqual(unconfigured.ppf);
+    expect(configured.ppf.reduce((sum, row) => sum + row.mass, 0)).toBeCloseTo(1, 12);
+    const configuredDiagnostics = configured.ppfDiagnostics as {
+      fieldOperators?: { cost?: { status?: string }; routing?: { status?: string; weights?: { heat?: number } } };
+    };
+    const unconfiguredDiagnostics = unconfigured.ppfDiagnostics as {
+      fieldOperators?: { cost?: { status?: string }; routing?: { status?: string } };
+    };
+    expect(configuredDiagnostics.fieldOperators?.routing).toMatchObject({
+      status: "admissible",
+      weights: { heat: 1 }
+    });
+    expect(configuredDiagnostics.fieldOperators?.cost?.status).toBe("active");
+    expect(unconfiguredDiagnostics.fieldOperators?.routing?.status).toBe("disabled_unconfigured");
+    expect(unconfiguredDiagnostics.fieldOperators?.cost?.status).toBe("diagnostic_only");
+  });
 });
 
 function node(index: number): GraphNode {

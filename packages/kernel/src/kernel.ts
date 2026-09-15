@@ -123,7 +123,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
   const powerWalk = createTypedTemporalWalkEngine({ hasher });
   const featureSketchLearner = createWeightedFeatureSketchLearner({ hasher });
   const learning = createLearningController();
-  const fieldEngine = createAlphaFieldEngine({ clock, relationPotentialModel: deps.relationPotentialModel });
+  const fieldEngine = createAlphaFieldEngine({ clock, relationPotentialModel: deps.relationPotentialModel, fieldOperatorRouting: deps.fieldOperatorRouting });
   const entailment = createSemanticEntailmentEngine({ idFactory, hasher });
   const ccr = createCcrEngine();
   const pca = createProofCarryingAnswer();
