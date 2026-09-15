@@ -122,7 +122,12 @@ export function evidenceProofBoundaries(spans: readonly EvidenceSpan[]): Evidenc
       && eligibleIndependentAssertion(span)
   );
   const families = new Set(asserted.map(evidenceIndependenceGroup));
-  if (families.size < 2) return boundaries;
+  // Independence labels cannot turn two copies of the same immutable source
+  // bytes into two witnesses. Source-version identity is content-derived at
+  // ingest, so requiring both distinct families and distinct versions blocks
+  // a repackaged/relabeled copy without making any language or topic special.
+  const sourceVersions = new Set(asserted.map(span => String(span.sourceVersionId)));
+  if (families.size < 2 || sourceVersions.size < 2) return boundaries;
   const eligibleIds = new Set(asserted.map(span => String(span.id)));
   return boundaries.map(boundary => eligibleIds.has(boundary.evidenceId)
     ? {
