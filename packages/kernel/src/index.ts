@@ -101,6 +101,7 @@ export * from "./calibrations/prod-calibrations.js";
 export * from "./calibration-evaluation.js";
 export * from "./dialogue-pragmatics.js";
 export * from "./dialogue-learning.js";
+export * from "./correction-observation.js";
 export * from "./construction-cycle-consistency.js";
 export * from "./stream-rhythm.js";
 export * from "./turn-dialogue.js";

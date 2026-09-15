@@ -12,7 +12,7 @@ import {
   behaviorRoleExecutionGraphInputFromTaskConstraintGraph, createProgramBehaviorValidationLedger, PROGRAM_BEHAVIOR_VALIDATION_PLAN_BINDING_SCHEMA, curriculumItemFromPlan,
   learningConsentInput,
   listHeldSources,
-  reviewHeldSource, summarizeForTrace, installProdCalibrations, clearProdCalibrations, prodCalibrationIds, CALIBRATION_SEARCH_IDS, createFrontierBroadCapabilityTasks, FRONTIER_BROAD_CAPABILITY_SUITE_ID, CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, CAUSAL_DISCOVERY_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, SUPPORTED_PROGRAM_REPAIR_FAMILIES, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createCapabilityExecutorRegistry, createClock, createDialogueCognitiveMemoryV2, createCorrectionEngine, createEventFactory, createHasher, createIdFactory, dialogueOutcomeMemoryForConversation, dialogueInterpretationAdjustmentsForConversation, previewDialogueLearning, dispatchCapabilityTask, dispatchRollbackAttempt, executiveResumePlan, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan, type CapabilityExecutor, type DurableExecutiveEpisode } from "@scce/kernel";
+  reviewHeldSource, summarizeForTrace, installProdCalibrations, clearProdCalibrations, prodCalibrationIds, CALIBRATION_SEARCH_IDS, createFrontierBroadCapabilityTasks, FRONTIER_BROAD_CAPABILITY_SUITE_ID, CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, CAUSAL_DISCOVERY_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, SUPPORTED_PROGRAM_REPAIR_FAMILIES, buildDiscourseObjectState, buildTurnDialogueBridge, canonicalStringify, createAuditEngine, createCapabilityExecutorRegistry, createClock, createDialogueCognitiveMemoryV2, createCorrectionEngine, createCorrectionObservation, createEventFactory, createHasher, createIdFactory, dialogueOutcomeMemoryForConversation, dialogueInterpretationAdjustmentsForConversation, previewDialogueLearning, dispatchCapabilityTask, dispatchRollbackAttempt, executiveResumePlan, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan, type CapabilityExecutor, type DurableExecutiveEpisode } from "@scce/kernel";
 import { createDeveloperSurfaceState, hydrateApprovals, hydrateSurfaceFromTurn, renderWorkbench, routeForCommand, workbenchModelModulePath, WORKBENCH_MODEL_ROUTE } from "@scce/ui";
 import type { RuntimeStartupReadiness, RuntimeStartupReadinessSnapshot } from "./startup.js";
 import { turnTaskRegistryFor, type TurnTaskFrame } from "./turn-task-registry.js";
@@ -969,6 +969,38 @@ async function dispatch(
     if (typedInterpretationCorrectionRequested && !turnId) {
       throw new HttpError(422, "typed interpretation correction requires turnId");
     }
+    const translation = translationCorrectionInput(body);
+    const alignment = translation
+      ? createCorrectionEngine({ clock: createClock() }).recordFeedback({
+        episodeId: (turnId ?? conversationId) as never,
+        ...translation,
+        evidenceIds: [] as never[]
+      })
+      : undefined;
+    const persistedCorrectionText = correctionText ?? alignment?.correctedOutput;
+    const correctionObservation = alignment && translation
+      ? createCorrectionObservation({
+        target: { kind: "translation", id: alignment.id },
+        prior: { stateId: turnId, surface: alignment.previousOutput },
+        corrected: { stateId: turnId, surface: alignment.correctedOutput },
+        scope: {
+          conversationId,
+          turnId,
+          sourceLanguage: translation.sourceLanguage,
+          targetLanguage: translation.targetLanguage,
+          sourceProfileId: translation.sourceProfileId,
+          targetProfileId: translation.targetProfileId
+        },
+        confidence: alignment.alpha,
+        cause: {
+          id: "cause.translation_surface_correction.v1",
+          kind: "translation_surface_correction",
+          provenance: toJsonValue({ changedTerms: alignment.changedTerms, protectedTerms: alignment.protectedTerms })
+        },
+        provenance: { sourceRecordId: turnId, evidenceIds: [] },
+        affectedModelIds: [translation.sourceProfileId, translation.targetProfileId]
+      })
+      : undefined;
     // Outcome admission runs behind the same per-conversation persistence
     // tail as the turn it targets. A fast correction submission can no
     // longer race the deferred cognitive-state write and fail merely because
@@ -991,24 +1023,12 @@ async function dispatch(
         accepted: status === "accepted",
         rejected: status === "rejected",
         corrected: status === "corrected",
-        correctionText,
+        correctionText: persistedCorrectionText,
         interpretationCorrection,
+        correctionObservation,
         now: Date.now()
       });
     });
-    // A corrected translation is a different kind of correction and carries a different signal: which terms the owner
-    // changed, and how far the corrected surface moved from the generated one. `createCorrectionEngine` computes that
-    // alignment delta and had no caller, so a corrected translation was recorded only as generic outcome text and the
-    // term-level evidence was discarded. Recorded only when the caller supplies the translation pair; a correction
-    // without one is unchanged.
-    const translation = translationCorrectionInput(body);
-    const alignment = translation
-      ? createCorrectionEngine({ clock: createClock() }).recordFeedback({
-        episodeId: (learned.replay.turnId ?? "") as never,
-        ...translation,
-        evidenceIds: [] as never[]
-      })
-      : undefined;
     return json({
       schema: "scce.turn.dialogue_outcome.v1",
       conversationId: learned.replay.conversationId,
