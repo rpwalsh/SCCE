@@ -5,6 +5,8 @@ powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='no
 sleep 3
 # 7GB heap: warmup holds ~3.3GB of language cache and a creative turn hydrates one more role; the 4GB default OOMed.
 # SCCE_ALLOW_AUTOMATIC_WEB=1 gates public web/GitHub acquisition; leave unset to keep the server offline.
+# SCCE_STARTUP_LANGUAGE_WARMUP=1 hydrates language at startup (SCCE_STARTUP_LANGUAGE_LIMIT models, default 16);
+# unset means every turn demand-loads its own roles, so the first turn on a cold role pays the hydration.
 SCCE_TRACE=1 nohup node --max-old-space-size=7168 packages/server/dist/index.js > .tmp-server.log 2>&1 &
 sleep 8
 for i in $(seq 1 30); do
