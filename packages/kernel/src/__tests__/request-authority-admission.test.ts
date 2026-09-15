@@ -25,6 +25,73 @@ describe("requested-authority candidate admission", () => {
     })).toBe("program");
   });
 
+  it("uses the factual floor when a derived field contains only coefficient intercepts", () => {
+    const projection = projectRequestAuthority({
+      requirementField: deriveTurnRequirementField({ requestText: "opaque fixture" })
+    });
+
+    expect(projection.projectedAuthority).toBe("factual");
+    expect(projection.scoreMargin).toBe(0);
+    expect(projection.trace).toMatchObject({
+      authoritySignalPresent: false,
+      neutralFloorApplied: true
+    });
+  });
+
+  it("retains real learned authority signals when opposing contributions cancel in the field", () => {
+    const field = deriveTurnRequirementField({
+      requestText: "opaque fixture",
+      activations: [
+        {
+          id: "frame.fixture.novelty.positive",
+          kind: "frame",
+          activation: 1,
+          requirementCoefficients: { noveltyDemand: 2 },
+          semanticRoleId: "role.fixture.novelty",
+          learnedFrameOrPatternId: "frame.fixture.novelty.positive"
+        },
+        {
+          id: "frame.fixture.novelty.negative",
+          kind: "frame",
+          activation: 1,
+          requirementCoefficients: { noveltyDemand: -2 },
+          semanticRoleId: "role.fixture.novelty",
+          learnedFrameOrPatternId: "frame.fixture.novelty.negative"
+        }
+      ]
+    });
+
+    expect(field.noveltyDemand).toBeCloseTo(0.1978, 3);
+    expect(field.contributedDimensions).toContain("noveltyDemand");
+    expect(projectRequestAuthority({ requirementField: field }).trace).toMatchObject({
+      authoritySignalPresent: true,
+      neutralFloorApplied: false
+    });
+  });
+
+  it("retains explicit and structural authority contributions", () => {
+    const explicitField = deriveTurnRequirementField({
+      requestText: "opaque fixture",
+      explicitRequirements: explicitAuthorityRequirements({
+        requestText: "opaque fixture",
+        authority: "creative",
+        sourceId: "request-authority-admission.test"
+      })
+    });
+    const structuralField = deriveTurnRequirementField({
+      requestText: "opaque fixture",
+      contextContribution: { noveltyDemand: 4 }
+    });
+
+    for (const field of [explicitField, structuralField]) {
+      expect(field.contributedDimensions?.length).toBeGreaterThan(0);
+      expect(projectRequestAuthority({ requirementField: field }).trace).toMatchObject({
+        authoritySignalPresent: true,
+        neutralFloorApplied: false
+      });
+    }
+  });
+
   it("keeps every candidate kind eligible for translation, recording compatibility only in the audit", () => {
     // There is no such thing as a "translation turn" that other candidate
     // kinds are barred from -- admitCandidatesForAuthority no longer drops

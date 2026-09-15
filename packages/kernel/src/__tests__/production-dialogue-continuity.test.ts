@@ -5,6 +5,7 @@ import {
   type DialogueCognitiveStateV2
 } from "../discourse-state.js";
 import { createHasher } from "../primitives.js";
+import { preferDialogueCognitiveStateV2 } from "../dialogue-cognitive-memory.js";
 import { typedDialoguePreselectionV2 } from "../production-turn-runtime.js";
 import { createDialogueCognitiveMemoryV2 } from "../dialogue-cognitive-memory.js";
 import { createInMemoryDialogueMemoryStore } from "../dialogue-learning.js";
@@ -24,13 +25,19 @@ describe("production dialogue continuity", () => {
     // interaction-state record is available to rebuild the handoff.
     const coldMemory = createDialogueCognitiveMemoryV2({ store, hasher: createHasher() });
     const coldState = await coldMemory.latest(state.conversationId);
+    const resolved = preferDialogueCognitiveStateV2({
+      conversationId: state.conversationId,
+      durableState: coldState,
+      hasher: createHasher()
+    });
     const cold = createDiscoursePlanningHandoffV2({
-      state: coldState,
+      state: resolved,
       dialogueDependence: 0.86,
       inferentialDepth: 0.8
     });
 
     expect(cold).toEqual(warm);
+    expect(resolved).toEqual(state);
     expect(cold?.expansionMass).toBeGreaterThanOrEqual(0.72);
     expect(createDiscoursePlanningHandoffV2({ state: undefined })).toBeUndefined();
   });

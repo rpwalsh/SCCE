@@ -183,6 +183,11 @@ export interface CodeFact extends DeveloperRecordBase {
   forceClass: ProofForceClass;
 }
 
+// Claim/evidence provenance must not change the typed identity of a code atom.
+// The proof engine compares these IDs before it compares atom IDs.
+const CODE_PROOF_SUBJECT_KIND_ID = "code.proof.subject";
+const CODE_PROOF_OBJECT_KIND_ID = "code.proof.object";
+
 export interface CodeIntelligenceTrace extends DeveloperRecordBase {
   kind: "trace";
   nodeCount: number;
@@ -569,9 +574,9 @@ export function proveRepoCodeFacts(facts: readonly CodeFact[]): {
 export function codeClaimToProofClaim(claim: CodeClaim): ProofClaim {
   return {
     id: claim.id,
-    subject: { id: claim.subjectId, kindId: "code.claim.subject" },
+    subject: { id: claim.subjectId, kindId: CODE_PROOF_SUBJECT_KIND_ID },
     relationId: claim.relationId,
-    object: { id: claim.objectId, kindId: "code.claim.object" },
+    object: { id: claim.objectId, kindId: CODE_PROOF_OBJECT_KIND_ID },
     requiredSourceBinding: claim.requiredSourceBinding
   };
 }
@@ -582,9 +587,9 @@ export function codeFactToProofEvidence(fact: CodeFact): ProofEvidenceRecord {
     forceClass: fact.forceClass,
     sourceVersionId: fact.forceClass === "direct_evidence" ? fact.evidenceSpan?.provenance.sourceHash ?? fact.sourceHash : fact.sourceHash,
     evidenceSpanId: fact.forceClass === "direct_evidence" ? fact.evidenceSpan?.id : undefined,
-    subject: { id: fact.subjectId, kindId: "code.fact.subject" },
+    subject: { id: fact.subjectId, kindId: CODE_PROOF_SUBJECT_KIND_ID },
     relationId: fact.relationId,
-    object: { id: fact.objectId, kindId: "code.fact.object" }
+    object: { id: fact.objectId, kindId: CODE_PROOF_OBJECT_KIND_ID }
   };
 }
 

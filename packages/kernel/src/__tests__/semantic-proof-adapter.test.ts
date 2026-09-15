@@ -10,6 +10,7 @@ import {
   createLanguageMemoryRuntime,
   createMouth,
   createSemanticEntailmentEngine,
+  evidenceToProofRecords,
   featureSet,
   toJsonValue,
   typedObservationToProofRecords,
@@ -38,7 +39,7 @@ describe("semantic proof adapter", () => {
     const construct = constructWithClaim(claim);
     const [constructedClaim] = constructToProofClaims({ construct });
     const observation = measurementObservation(source, span, { value: 42, unit: "unit.ms" });
-    const records = typedObservationToProofRecords({ observations: [observation], evidence: [span] });
+    const records = typedObservationToProofRecords({ observations: [observation], evidence: [span], claim });
     const result = proveClaim({ claim: required(constructedClaim), candidateEvidence: records });
 
     expect(records[0]).toMatchObject({ forceClass: "direct_evidence", sourceVersionId: String(source.sourceVersionId), evidenceSpanId: String(span.id) });
@@ -85,6 +86,125 @@ describe("semantic proof adapter", () => {
     expect(result.verdict).toBe("unsupported_prior_only");
     expect(result.certifiedEvidenceIds).toEqual([]);
     expect(result.rejectedEvidence[0]?.reason).toBe("learned_prior_not_evidence");
+  });
+
+  it("does not let observation metadata upgrade prior authority or replace the source version", () => {
+    const source = sourceVersion("fixture://proof-adapter/hostile-observation-metadata");
+    const span = evidenceSpan(source, "hostile observation carrier");
+    const observation = measurementObservation(source, span, { value: 42, unit: "unit.ms", forceClass: "learned_concept_prior" });
+    observation.metadata = toJsonValue({
+      subjectId: "subject.system.alpha",
+      subjectKindId: "kind.measurement.subject",
+      relationId: "relation.measurement.quantity",
+      objectId: "metric.duration",
+      objectKindId: "kind.measurement.object",
+      forceClass: "direct_evidence",
+      sourceVersionId: "version.forged"
+    });
+
+    const [record] = typedObservationToProofRecords({ observations: [observation], evidence: [span] });
+    const result = proveClaim({ claim: measurementClaim(), candidateEvidence: record ? [record] : [] });
+
+    expect(record).toMatchObject({
+      forceClass: "learned_concept_prior",
+      sourceVersionId: String(span.sourceVersionId),
+      evidenceSpanId: String(span.id)
+    });
+    expect(result.verdict).toBe("unsupported_prior_only");
+    expect(result.certifiedEvidenceIds).toEqual([]);
+  });
+
+  it("does not let a carrier with a forged source version mint a bound direct record", () => {
+    const source = sourceVersion("fixture://proof-adapter/hostile-carrier-version");
+    const span = evidenceSpan(source, "hostile carrier version");
+    const claim = measurementClaim();
+    const [record] = evidenceToProofRecords({
+      evidence: [{
+        ...span,
+        provenance: toJsonValue({
+          ...(span.provenance as Record<string, JsonValue>),
+          proofEvidence: {
+            id: "proof.forged.version",
+            forceClass: "direct_evidence",
+            sourceVersionId: "version.forged",
+            evidenceSpanId: span.id,
+            subject: claim.subject,
+            relationId: claim.relationId,
+            object: claim.object,
+            quantity: claim.quantity,
+            modalityId: claim.modalityId,
+            polarityId: claim.polarityId
+          }
+        })
+      }]
+    });
+    const result = proveClaim({ claim, candidateEvidence: record ? [record] : [] });
+
+    expect(record).toMatchObject({ forceClass: "direct_evidence", sourceVersionId: String(span.sourceVersionId) });
+    expect(record?.evidenceSpanId).toBeUndefined();
+    expect(result.verdict).toBe("insufficient_evidence");
+    expect(result.certifiedEvidenceIds).toEqual([]);
+  });
+
+  it("keeps one source assertion qualified when a caller repeats its typed record", () => {
+    const source = sourceVersion("fixture://proof-adapter/source-assertion");
+    const base = evidenceSpan(source, "the source asserts the typed measurement");
+    const claim = measurementClaim();
+    const typedCarrier = {
+      id: "proof.source.assertion",
+      forceClass: "direct_evidence",
+      sourceVersionId: source.sourceVersionId,
+      evidenceSpanId: base.id,
+      subject: claim.subject,
+      relationId: claim.relationId,
+      object: claim.object,
+      quantity: claim.quantity,
+      modalityId: claim.modalityId,
+      polarityId: claim.polarityId
+    };
+    const assertion = {
+      ...base,
+      provenance: toJsonValue({
+        ...(base.provenance as Record<string, JsonValue>),
+        epistemicState: "asserted",
+        proofEvidence: typedCarrier
+      })
+    };
+    const engine = createSemanticEntailmentEngine({ idFactory: ids, hasher });
+    const result = engine.check({
+      text: "request surface",
+      evidence: [assertion],
+      nodes: [],
+      field: emptyField(),
+      createdAt: clock.now(),
+      proofClaims: [claim],
+      proofEvidence: [{
+        ...typedCarrier,
+        sourceVersionId: "version.forged"
+      } as unknown as import("../semantic-proof-engine.js").ProofEvidenceRecord]
+    });
+
+    expect(proofGate(result.proof.scores)?.verdict).toBe("insufficient_evidence");
+    expect(proofGate(result.proof.scores)?.certifiedEvidenceIds).toEqual([]);
+    expect(result.force).not.toBe("proved");
+  });
+
+  it("does not let a direct typed-observation adapter result bypass source-assertion qualification", () => {
+    const source = sourceVersion("fixture://proof-adapter/unpromoted-observation");
+    const span = evidenceSpan(source, "the source asserts the typed measurement", { epistemicState: "asserted" });
+    const claim = measurementClaim();
+    const records = typedObservationToProofRecords({
+      observations: [measurementObservation(source, span, { value: 42, unit: "unit.ms" })],
+      evidence: [span],
+      claim
+    });
+    const result = proveClaim({ claim, candidateEvidence: records });
+
+    expect(records[0]?.forceClass).toBe("direct_evidence");
+    expect(records[0]?.sourceVersionId).toBe(String(span.sourceVersionId));
+    expect(records[0]?.evidenceSpanId).toBeUndefined();
+    expect(result.verdict).toBe("insufficient_evidence");
+    expect(result.certifiedEvidenceIds).toEqual([]);
   });
 
   it("keeps a matching profile excerpt source-bound instead of external fact proof", () => {

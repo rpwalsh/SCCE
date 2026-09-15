@@ -38,6 +38,12 @@
       "productReachable": false
     },
     {
+      "file": "tools/sealed-eval/harness/lib/host-configuration.mjs",
+      "purpose": "Captures version, model inventory, and pre-run residency for the declared local reference system. Measurement only; it does not generate answers.",
+      "endpoint": "127.0.0.1:11434",
+      "productReachable": false
+    },
+    {
       "file": "tools/cognitive-state-benchmark/run.mjs",
       "purpose": "Harness for the invented-entity benchmark: drives SCCE over HTTP and the same local reference model over its own endpoint, and scores both. Measurement only.",
       "endpoint": "127.0.0.1:11434",

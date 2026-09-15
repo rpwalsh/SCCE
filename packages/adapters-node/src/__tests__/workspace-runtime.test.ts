@@ -7,7 +7,9 @@ import {
   createInMemoryDialogueMemoryStore,
   INTERACTION_FEATURE_IDS,
   type DialogueMemoryStore,
+  type EvidenceSpan,
   type JsonValue,
+  type SourceVersion,
   type WorkspaceRecord,
   type WorkspaceReportRecord,
   type WorkspaceSourceFileRecord,
@@ -143,6 +145,89 @@ describe("workspace runtime project intelligence", () => {
     expect(second.gaps.map(item => item.id)).toEqual(first.gaps.map(item => item.id));
   });
 
+  it("propagates only the exact durable source version into production workspace promotion", async () => {
+    const baseline = await analyzeWorkspaceProject(fixtureRoot);
+    const target = baseline.sources.find(source => source.path === "src/widget.ts");
+    expect(target?.contentHash).toBeTruthy();
+    const workspace = new MemoryWorkspaceStore();
+    const dialogueMemory = createInMemoryDialogueMemoryStore();
+    const sourceVersionId = "source-version.persisted.widget";
+    const evidenceId = "ev_persisted_widget";
+    const runtime = fakeRuntime(workspace, dialogueMemory, {
+      spans: [{
+        id: evidenceId,
+        sourceVersionId,
+        contentHash: "sha256_chunk.widget",
+        provenance: { uri: "src/widget.ts" }
+      } as unknown as EvidenceSpan],
+      versions: [{
+        sourceVersionId,
+        contentHash: target!.contentHash!,
+        canonicalUri: "src/widget.ts"
+      } as unknown as SourceVersion]
+    });
+    await workspace.putWorkspace({ ...baseline.workspace });
+    await workspace.putSourceFile({
+      ...target!,
+      workspaceId: baseline.workspace.id,
+      corpusId: baseline.workspace.corpusId,
+      sourceVersionId: sourceVersionId as never,
+      evidenceIds: [evidenceId as never],
+      ingestionStatus: "ingested"
+    });
+
+    const project = await createWorkspaceRuntime({ runtime, config: fixtureConfig() }).project(fixtureRoot);
+    const promotedSource = project.sources.find(source => source.path === target!.path);
+    expect(promotedSource?.sourceVersionId).toBe(sourceVersionId);
+    expect(promotedSource?.evidenceIds).toEqual([evidenceId]);
+    const promotedFileNode = project.coreFusion.graph.nodes.find(node => node.typeId === "workspace.node.file" && objectRecord(node.metadata).sourcePath === target!.path);
+    expect(objectRecord(promotedFileNode?.metadata).sourceVersionId).toBe(sourceVersionId);
+    const promotedSymbol = project.coreFusion.records.symbols.find(record => record.sourcePath === target!.path);
+    expect(promotedSymbol).toBeDefined();
+    expect(promotedSymbol?.sourceRef?.sourceVersionId).toBeUndefined();
+  });
+
+  it("resolves all newly ingested files through bounded evidence batches", async () => {
+    const workspace = new MemoryWorkspaceStore();
+    const dialogueMemory = createInMemoryDialogueMemoryStore();
+    const spans: EvidenceSpan[] = [];
+    const versions: SourceVersion[] = [];
+    const batchSizes: number[] = [];
+    let nextEvidence = 0;
+    const runtime = createWorkspaceRuntime({
+      runtime: fakeRuntime(workspace, dialogueMemory, {
+        spans,
+        versions,
+        onEvidenceBatch: ids => batchSizes.push(ids.length),
+        ingest: async input => {
+          const metadata = objectRecord(input.metadata);
+          const workspaceFile = objectRecord(metadata.workspaceFile);
+          const sourcePath = String(workspaceFile.path);
+          const contentHash = String(workspaceFile.contentHash);
+          const evidenceId = `ev_batch_${nextEvidence++}`;
+          const sourceVersionId = `source-version.batch.${nextEvidence}`;
+          spans.push({ id: evidenceId, sourceVersionId, contentHash, provenance: { uri: sourcePath } } as unknown as EvidenceSpan);
+          versions.push({ sourceVersionId, contentHash, canonicalUri: sourcePath } as unknown as SourceVersion);
+          return { events: [{ payload: { evidenceIds: [evidenceId] } }] };
+        }
+      }),
+      config: fixtureConfig()
+    });
+
+    const result = await runtime.ingest(fixtureRoot);
+
+    expect(result.ingested).toBeGreaterThan(1);
+    // One batch resolves the incremental suffix and one batch rehydrates the
+    // persisted project. A changed-file loop must not issue one pair per file.
+    expect(batchSizes).toHaveLength(2);
+    expect(batchSizes[0]).toBe(result.ingested);
+    expect(batchSizes[1]).toBe(result.ingested);
+    const persisted = workspace.files.filter(file => file.ingestionStatus === "ingested");
+    expect(persisted.length).toBe(result.ingested);
+    expect(persisted.every(file => file.sourceVersionId?.startsWith("source-version.batch."))).toBe(true);
+    expect(persisted.every(file => file.evidenceIds.length === 1)).toBe(true);
+  });
+
   it("uses the live kernel workspace answer path and records dialogue outcome learning", async () => {
     const workspace = new MemoryWorkspaceStore();
     const dialogueMemory = createInMemoryDialogueMemoryStore();
@@ -236,10 +321,24 @@ class MemoryWorkspaceStore implements WorkspaceStore {
   }
 }
 
-function fakeRuntime(workspace: WorkspaceStore, dialogueMemory: DialogueMemoryStore): NodeScceRuntime {
+function fakeRuntime(workspace: WorkspaceStore, dialogueMemory: DialogueMemoryStore, evidence?: {
+  spans: EvidenceSpan[];
+  versions: SourceVersion[];
+  onEvidenceBatch?: (ids: string[]) => void;
+  ingest?: (input: { metadata?: JsonValue }) => Promise<unknown>;
+}): NodeScceRuntime {
+  const evidenceStore = evidence ? {
+    getEvidenceBatch: async (ids: string[]) => {
+      evidence.onEvidenceBatch?.(ids);
+      return evidence.spans.filter(span => ids.includes(String(span.id)));
+    },
+    sourceVersionsForEvidence: async (ids: string[]) => evidence.spans
+      .filter(span => ids.includes(String(span.id)))
+      .flatMap(span => evidence.versions.filter(version => String(version.sourceVersionId) === String(span.sourceVersionId)))
+  } : undefined;
   return {
-    storage: { workspace, dialogueMemory } as NodeScceRuntime["storage"],
-    kernel: {} as NodeScceRuntime["kernel"],
+    storage: { workspace, dialogueMemory, ...(evidenceStore ? { evidence: evidenceStore } : {}) } as unknown as NodeScceRuntime["storage"],
+    kernel: (evidence?.ingest ? { ingest: evidence.ingest } : {}) as unknown as NodeScceRuntime["kernel"],
     connectors: {} as NodeScceRuntime["connectors"],
     approvals: {} as NodeScceRuntime["approvals"],
     executive: {} as NodeScceRuntime["executive"],

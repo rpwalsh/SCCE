@@ -35,6 +35,12 @@ describe("corpus identity arbiter", () => {
     expect(corpusNamedRuns("What is Moby Dick?")).toEqual(["moby dick"]);
   });
 
+  it("matches learned identities across dash and space binding", () => {
+    prime({ closedClass: ["what", "is"], identities: ["anglo-saxon england"] });
+
+    expect(corpusNamedIdentities("What is Anglo Saxon England?")).toEqual(["anglo-saxon england"]);
+  });
+
   it("does not name a run that is merely contained in a longer identity", () => {
     // The corpus is titled with "explain" and holds an article whose title contains it. Matched by containment,
     // every request about the Marcos family named the verb, which then anchored retrieval and discourse binding.

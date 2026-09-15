@@ -2,7 +2,11 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
 import { proveClaim } from "../semantic-proof-engine.js";
-import { createClock } from "../primitives.js";
+import { createClock, createHasher } from "../primitives.js";
+import { createIdFactory } from "../ids.js";
+import { createAlphaFieldEngine } from "../field.js";
+import { createSemanticEntailmentEngine } from "../entailment.js";
+import { createSourceOnlyScceRuntime } from "../scce-runtime.js";
 import {
   promoteWorkspaceAnalysisToCoreRecords,
   workspaceCommandToActionRecord,
@@ -99,6 +103,67 @@ describe("workspace core fusion", () => {
     expect(second.graph.nodes.map(node => node.id)).toEqual(first.graph.nodes.map(node => node.id));
     expect(second.graph.edges.map(edge => edge.id)).toEqual(first.graph.edges.map(edge => edge.id));
   });
+
+  it.each(["bound", "caller_version", "stale_version", "metadata_only", "wrong_hash", "wrong_span"] as const)(
+    "revalidates a promoted finding against its original source: %s",
+    variant => {
+      const runtime = createSourceOnlyScceRuntime({ now: () => 1000 });
+      const statement = "Rotor delta records 13 units; its archived reading is 9 units.";
+      const ingested = runtime.ingest({ files: [{ path: "readings.txt", mediaType: "text/plain", text: statement }] });
+      const source = ingested.analysis.sources[0]!;
+      const span = ingested.evidence[0]!;
+      expect(source.sourceVersionId).toBe(span.sourceVersionId);
+      const ref = {
+        path: source.path,
+        contentHash: variant === "wrong_hash" ? "different_hash" : source.contentHash,
+        evidenceSpanId: variant === "wrong_span" ? "different_span" : String(span.id),
+        ...(variant === "caller_version"
+          ? { sourceVersionId: String(span.sourceVersionId) }
+          : variant === "stale_version" ? { sourceVersionId: "source.version.stale" } : {})
+      };
+      const promoted = promoteWorkspaceAnalysisToCoreRecords({
+        ...ingested.analysis,
+        sources: variant === "metadata_only" ? [{
+          ...source,
+          sourceVersionId: undefined,
+          metadata: { sourceVersionId: span.sourceVersionId }
+        }] : ingested.analysis.sources,
+        contradictions: [{
+          id: "finding.delta", kind: "fixture.measurement_difference", severity: "warning", statement,
+          sourceRefs: [ref], affectedFiles: [source.path], suggestedFix: "", confidence: 0.8, metadata: {}
+        }]
+      });
+      const claim = promoted.proof.claims[0]!;
+      const record = promoted.proof.evidence[0]!;
+      const hasher = createHasher();
+      const result = createSemanticEntailmentEngine({ hasher, idFactory: createIdFactory({ hasher, clock: createClock({ fixedTime: 1000 }) }) }).check({
+        text: statement,
+        evidence: ingested.evidence,
+        nodes: promoted.graph.nodes,
+        field: createAlphaFieldEngine().activate({ text: statement, nodes: promoted.graph.nodes, edges: promoted.graph.edges }),
+        proofClaims: [claim],
+        proofEvidence: [record],
+        createdAt: 1000
+      });
+      expect(result.proof.claimId).toBe(result.claim.id);
+      expect(result.proof.scores).toMatchObject({ semanticProofEngine: {
+        verdict: variant === "bound" || variant === "caller_version" ? "certified" : "insufficient_evidence",
+        trace: { proofPath: "structured_runtime", structuredClaimId: claim.id }
+      } });
+      if (variant === "bound" || variant === "caller_version") {
+        expect(record.sourceVersionId).toBe(span.sourceVersionId);
+        expect(record.evidenceSpanId).toBe(span.id);
+        expect(result.evidenceIds).toEqual([span.id]);
+        expect(promoted.graph.nodes.some(node =>
+          JSON.stringify(node.metadata).includes(record.id)
+        )).toBe(true);
+      } else {
+        expect(record.sourceVersionId).not.toBe(span.sourceVersionId);
+        expect(record.sourceVersionId).not.toBe("source.version.stale");
+        expect(["observed", "proved"]).not.toContain(result.force);
+      }
+    }
+  );
 });
 
 function fixtureAnalysis(): WorkspaceCoreAnalysisInput {

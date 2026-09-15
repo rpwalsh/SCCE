@@ -234,6 +234,17 @@ describe("SCCE source-completion runtime", () => {
       expect(turn.trace.selectedCandidate?.kind).toBe("proof-answer");
       expect(turn.trace.selectedCandidate?.force).toBe("observed");
       expect(turn.workspace.entailment.force).toBe("observed");
+      const entailment = turn.workspace.entailment;
+      const certifiedClaim = turn.workspace.answerGraph.claims.find(claim => claim.certified && claim.surface === entailment.claim.text)!;
+      expect(certifiedClaim).toBeDefined();
+      expect(entailment.claim.text).toBe(certifiedClaim.surface);
+      expect(entailment.proof.claimId).toBe(entailment.claim.id);
+      expect(entailment.proof.evidenceIds).toEqual(entailment.evidenceIds);
+      expect(turn.workspace.mouthInput.speakInput.selectedCandidate?.audit).toMatchObject({ proofId: entailment.proof.id });
+      expect(entailment.proof.scores).toMatchObject({ semanticProofEngine: {
+        verdict: "certified",
+        trace: { proofPath: "structured_runtime", structuredClaimId: certifiedClaim.proofClaimId }
+      } });
       expect(turn.trace.guardFlags.requireEvidence).toBe(true);
 
       const priorOnlyLearning = runtime.runLearningStep({

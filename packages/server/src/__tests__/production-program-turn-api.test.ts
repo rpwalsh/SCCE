@@ -17,15 +17,23 @@ vi.mock("@scce/adapters-node", async importOriginal => {
 
 import {
   createClock,
+  createCorpusRegistry,
   createHasher,
   createIdFactory,
   createInMemoryDialogueMemoryStore,
+  createLanguageAcquisitionEngine,
+  createLanguageMemoryRuntime,
   createScceKernel,
+  createUniversalCreativeEventConstructionCompiler,
+  compileCreativeEventCompatibilityCorpus,
+  hydrateLanguageConstructionPatterns,
   type PatchTransactionPlan,
   type ScceEvent,
   type ScceStorage,
+  type EvidenceSpan,
   type LanguagePatternRecord,
   type LanguageProfile,
+  type NgramModelRecord,
   type WorkspaceRecord,
   type WorkspaceSourceFileRecord
 } from "@scce/kernel";
@@ -182,6 +190,62 @@ describe("production owner program turn through the API", () => {
     expect(events.some(event => event.typeId === "ProgramRepaired")).toBe(true);
   }, 60_000);
 
+  it("carries creative preference through the API and reloads it after a cold kernel restart", async () => {
+    const root = await mkdtemp(join(tmpdir(), "scce-production-creative-api-"));
+    roots.push(root);
+    const executionRoot = await mkdtemp(join(tmpdir(), "scce-production-creative-exec-"));
+    roots.push(executionRoot);
+    const workspace: WorkspaceRecord = { id: "workspace.production.creative", rootPath: root, rootUri: `file://${root.replaceAll("\\", "/")}`, corpusId: "corpus.production.creative", status: "active", createdAt: 102_000, updatedAt: 102_000, metadata: {} };
+    const events: ScceEvent[] = [];
+    const dialogueMemory = createInMemoryDialogueMemoryStore();
+    const source = creativeLanguageSource();
+    const fixtureIds = createIdFactory({ clock: createClock({ fixedTime: 102_000, stepMs: 1 }), hasher: createHasher(), deterministicReplay: true });
+    const profile = createLanguageAcquisitionEngine({ idFactory: fixtureIds }).acquire({ sourceVersionId: source.sourceVersionId, text: source.text, createdAt: 102_000 });
+    const trainedLanguage = createLanguageMemoryRuntime({ idFactory: fixtureIds, hasher: createHasher() }).train({ streamId: "source:production-creative-language", sourceSystem: "gutenberg", profile, sourceVersionId: source.sourceVersionId, text: source.text, evidence: [source], createdAt: 102_000, maxOrder: 4, maxCountersPerOrder: 256 });
+    const compiled = createUniversalCreativeEventConstructionCompiler().compile({ profileId: profile.id, evidence: [source], hasher: createHasher(), updatedAt: 102_000 });
+    if (compiled.status !== "compiled") throw new Error("creative API fixture did not compile");
+    const bundle = hydrateLanguageConstructionPatterns({ patterns: [compiled.pattern], evidence: [source], hasher: createHasher() }).bundles[0];
+    if (!bundle?.creativeEvents?.length) throw new Error("creative API fixture has no events");
+    const requestText = "Invent two alternative indexing algorithms for this graph, each with a distinct structural approach.";
+    const examples = bundle.creativeEvents.flatMap(event => ["train", "calibration", "calibration"].map(partition => ({ requestText, requestFrameId: "request.frame.indexing", requestCompilerId: "compiler.request.learned", eventCompilerId: event.compilerId, eventRelationId: event.relationId, partition: partition as "train" | "calibration", accepted: true, roleBindings: [{ requestRoleId: "scce.request.role.argument", eventRoleId: "scce.role.patient" as const, accepted: true }] })));
+    const compatibility = compileCreativeEventCompatibilityCorpus({ corpus: { schema: "scce.creative_event_compatibility_corpus.v1", calibrationId: "calibration.creative.fixture", minimumAdmissiblePosterior: 0.72, minimumRolePosterior: 0.72, minimumTrainingSupport: 1, minimumCalibrationSupport: 1, examples }, profileId: profile.id, evidenceIds: [source.id], updatedAt: 102_000, makeId: value => `fixture:${createHasher().digestHex(JSON.stringify(value))}` });
+    const storage = integrationStorage({ events, workspace, sources: [], constructionEvidence: [source], dialogueMemory, languageProfiles: [profile], languageModels: trainedLanguage.models, languagePatterns: [compiled.pattern, ...compatibility.patterns] });
+    const createContext = () => {
+      const clock = createClock({ fixedTime: 102_000, stepMs: 1 });
+      const kernel = createScceKernel({ storage, files: { streamPath: async function* () {} }, buildTest: { executeProgram: async () => { throw new Error("creative turn must not execute a program"); } }, approvals: { isApproved: () => true, observePending: () => undefined, policyPatch: () => ({ dryRunByDefault: false }) }, idFactory: createIdFactory({ clock, hasher: createHasher(), deterministicReplay: false }), clock, deterministicReplay: false, corpusRegistry: createCorpusRegistry([{ sourceSystem: "gutenberg" }]) });
+      return { runtime: { storage: { ...storage, dialogueMemory }, kernel, approvals: { isApproved: () => true, requestApproval: () => undefined, snapshot: () => ({ operatorGrant: true, pending: [] }) } }, config: { server: { url: "http://127.0.0.1" }, runtime: { workspaceRoot: root, allowedRoots: [root], tempRoot: executionRoot, tools: { pnpm: "pnpm" } }, policy: { allowMutation: true } }, startupReadiness: { snapshot: () => ({ phase: "running", ok: true, complete: true }) } } as unknown as ApiContext;
+    };
+    let context = createContext();
+    const server = createServer((request, response) => { void handleRequest(request, response, context); });
+    servers.push(server);
+    await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("creative integration server has no TCP address");
+    const request = { text: requestText, requestedAuthority: "creative", conversationId: "conversation.production.creative" };
+    const firstResponse = await fetch(`http://127.0.0.1:${address.port}/api/turn?full=1`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(request) });
+    const first = await firstResponse.json() as Record<string, any>;
+    expect(firstResponse.status, JSON.stringify(first)).toBe(200);
+    expect((first.answer as string).trim().length).toBeGreaterThan(0);
+    const firstContinuation = first.creativeContinuation as { offered: Array<{ candidateId: string; structureId: string }>; selectedCandidateId: string } | undefined;
+    expect(firstContinuation?.offered.length ?? 0).toBeGreaterThanOrEqual(2);
+    const selectedFirst = firstContinuation?.offered.find(candidate => candidate.candidateId === firstContinuation.selectedCandidateId);
+    const preferredAfterCorrection = firstContinuation?.offered.find(candidate => candidate.candidateId !== firstContinuation.selectedCandidateId);
+    expect(selectedFirst).toBeDefined();
+    expect(preferredAfterCorrection).toBeDefined();
+    const outcomeResponse = await fetch(`http://127.0.0.1:${address.port}/api/turn/outcome`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ conversationId: request.conversationId, turnId: first.episodeId, status: "corrected", correctionText: "Prefer the other structural continuation.", preferredCandidateId: preferredAfterCorrection!.candidateId }) });
+    const outcome = await outcomeResponse.json() as Record<string, any>;
+    expect(outcomeResponse.status, JSON.stringify(outcome)).toBe(200);
+    expect((outcome.calibrationObservationIds as string[]).length).toBeGreaterThanOrEqual(2);
+    context = createContext();
+    const secondResponse = await fetch(`http://127.0.0.1:${address.port}/api/turn?full=1`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(request) });
+    const second = await secondResponse.json() as Record<string, any>;
+    expect(secondResponse.status, JSON.stringify(second)).toBe(200);
+    expect((second.answer as string).trim().length).toBeGreaterThan(0);
+    const secondContinuation = second.creativeContinuation as { offered: Array<{ candidateId: string; structureId: string }>; selectedCandidateId: string } | undefined;
+    const selectedSecond = secondContinuation?.offered.find(candidate => candidate.candidateId === secondContinuation.selectedCandidateId);
+    expect(selectedSecond?.candidateId).not.toBe(selectedFirst?.candidateId);
+    expect(selectedSecond?.structureId).toBe(preferredAfterCorrection?.structureId);
+  }, 60_000);
 });
 
 function ownerValidationPolicy(): StructuredPatchValidationPolicy {
@@ -199,13 +263,20 @@ function ownerValidationPolicy(): StructuredPatchValidationPolicy {
   };
 }
 
+function creativeLanguageSource(): EvidenceSpan {
+  const text = "cat chased mouse. dog chased mouse. cat found ball. dog found ball. cat chased mouse. dog chased ball. cat found ball. dog found mouse.";
+  return { id: "evidence:production-creative-language", sourceId: "source:production-creative-language", sourceVersionId: "source:production-creative-language:v1", chunkId: "chunk:production-creative-language", contentHash: "hash:production-creative-language", mediaType: "text/plain", byteStart: 0, byteEnd: Buffer.byteLength(text), charStart: 0, charEnd: text.length, text, textPreview: text, languageHints: {}, scriptHints: {}, trustVector: {}, provenance: {}, features: [], status: "promoted", alpha: 0.9, observedAt: 102_000 } as unknown as EvidenceSpan;
+}
+
 function integrationStorage(input: {
   events: ScceEvent[];
   workspace: WorkspaceRecord;
   sources: WorkspaceSourceFileRecord[];
   dialogueMemory?: ReturnType<typeof createInMemoryDialogueMemoryStore>;
   languageProfiles?: LanguageProfile[];
+  languageModels?: NgramModelRecord[];
   languagePatterns?: LanguagePatternRecord[];
+  constructionEvidence?: EvidenceSpan[];
 }): ScceStorage {
   const dialogueMemory = input.dialogueMemory ?? createInMemoryDialogueMemoryStore();
   const graph = { bounded: true, query: {}, nodes: [], edges: [], hyperedges: [] } as any;
@@ -215,7 +286,7 @@ function integrationStorage(input: {
       append: async (event: ScceEvent) => { input.events.push(event); },
       appendBatch: async (events: ScceEvent[]) => { input.events.push(...events); },
       readEpisode: async (episodeId: string) => input.events.filter(event => String(event.episodeId) === episodeId),
-      readRange: async () => input.events,
+      readRange: async (query?: { typeId?: string }) => input.events.filter(event => !query?.typeId || event.typeId === query.typeId),
       latestLedgerHash: async () => input.events.at(-1)?.hash ?? ""
     },
     conversation: { putTurn: async () => undefined, listTurns: async () => [] },
@@ -226,13 +297,13 @@ function integrationStorage(input: {
     },
     evidence: {
       putSourceVersion: async () => undefined, putEvidenceSpan: async () => undefined, promoteEvidence: async () => 0,
-      getEvidence: async () => null,
-      getEvidenceBatch: async () => [],
+      getEvidence: async (id: string) => input.constructionEvidence?.find(evidence => String(evidence.id) === id) ?? null,
+      getEvidenceBatch: async (ids: string[]) => (input.constructionEvidence ?? []).filter(evidence => ids.includes(String(evidence.id))),
       searchEvidence: async () => [], sourceVersionsForEvidence: async () => []
     },
     quarantine: { put: async () => undefined, get: async () => null, listPending: async () => [], markDecision: async () => undefined },
     model: { readModel: async () => ({ languageProfiles: input.languageProfiles ?? [], latentConcepts: [], learnedProgramPatterns: [], learningGoals: [], trainingSteps: 0 }), writeModel: async () => undefined, putLanguageProfile: async () => undefined, listLanguageProfiles: async () => input.languageProfiles ?? [] },
-    languageMemory: { putNgramObservation: async () => undefined, putNgramObservationsBatch: async () => undefined, putNgramModel: async () => undefined, putLanguageUnit: async () => undefined, putLanguagePattern: async () => undefined, putSemanticFrame: async () => undefined, putTranslationAlignment: async () => undefined, listNgramModels: async () => [], listNgramObservations: async () => [], listLanguageUnits: async () => [], listLanguagePatterns: async () => input.languagePatterns ?? [], listSemanticFrames: async () => [], listTranslationAlignments: async () => [] },
+    languageMemory: { putNgramObservation: async () => undefined, putNgramObservationsBatch: async () => undefined, putNgramModel: async () => undefined, putLanguageUnit: async () => undefined, putLanguagePattern: async () => undefined, putSemanticFrame: async () => undefined, putTranslationAlignment: async () => undefined, listNgramModels: async () => input.languageModels ?? [], listNgramObservations: async () => [], listLanguageUnits: async () => [], listLanguagePatterns: async () => input.languagePatterns ?? [], listSemanticFrames: async () => [], listTranslationAlignments: async () => [] },
     stats: async () => ({ tables: [] }), init: async () => undefined, migrate: async () => undefined, verify: async () => ({ ok: true, tables: [], errors: [] }), close: async () => undefined,
     blobs: emptyStore, ingestion: emptyStore, proofs: emptyStore, constructs: emptyStore, capabilities: emptyStore, forecasts: { putState: async () => undefined, putForecast: async () => undefined, getSeries: async () => [] }, benchmarks: emptyStore, brainImports: { active: async () => ({ activeImportRunIds: [] }), summarize: async () => ({ activeImportRunIds: [], importedLanguagePriorCount: 0, importedGraphPriorCount: 0, importedDirectEvidenceCount: 0, profileExcerptEvidenceCount: 0, importedLearnedPriorCount: 0, importedProgramPriorCount: 0, unknownPriorCount: 0, runs: [] }) }, corrections: { putRule: async () => undefined, listRules: async () => [] }, dialogueMemory,
     userModelClaims: { putClaim: async () => undefined, listClaims: async () => [] }, taskResumption: { putSnapshot: async () => undefined, getLatestSnapshot: async () => null }, documentGeneration: { putSession: async () => undefined, getSession: async () => null, compareAndPutSession: async () => ({ stored: true, currentUpdatedAt: 0 }) }, localization: emptyStore, flowCache: emptyStore, selfRewrite: emptyStore,

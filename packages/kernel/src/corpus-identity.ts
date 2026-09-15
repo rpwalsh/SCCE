@@ -33,11 +33,12 @@ export interface CorpusIdentitySignals {
   readonly concentration: number;
 }
 
-// Hyphens are orthographic separators for source identities. Keeping them
-// inside a unit made a corpus identity such as `moby dick` unreachable from
-// the ordinary surface `Moby-Dick`, so named-book requests fell back to
-// unrelated concentrated runs.
-const UNIT_SEPARATOR = /[^\p{L}\p{M}\p{N}'’]+/u;
+// Unicode dash punctuation binds the units of a source identity (for example,
+// `Anglo-Saxon`). Keep it in the surface the corpus reads. Matching learned
+// identities also uses a dash-folded key below, so a spaced identity such as
+// `moby dick` remains reachable from `Moby-Dick`.
+const UNIT_SEPARATOR = /[^\p{L}\p{M}\p{N}'’\p{Pd}]+/u;
+const DASH_PUNCTUATION = /\p{Pd}/gu;
 
 let signals: CorpusIdentitySignals | undefined;
 let generation = 0;
@@ -75,6 +76,15 @@ export function corpusIdentityUnits(text: string): string[] {
  */
 export function corpusIdentitySurface(text: string): string {
   return corpusIdentityUnits(text).join(" ");
+}
+
+/**
+ * Comparison key for learned identities whose source and request use
+ * different orthographic binding marks. This keeps the displayed surface
+ * lossless while making dash/space identity matching language-neutral.
+ */
+function corpusIdentityMatchSurface(text: string): string {
+  return corpusIdentitySurface(text).replace(DASH_PUNCTUATION, " ").replace(/\s+/gu, " ").trim();
 }
 
 /**
@@ -145,27 +155,31 @@ export function corpusNamedIdentities(text: string): string[] {
   // The identities are titles the corpus found inside this request, so they need not line up with a content run:
   // "the lord of the rings" is one title and its scaffolding words sit in the middle of it.
   const units = corpusIdentityUnits(text);
-  const surface = " " + units.join(" ") + " ";
+  const surface = ` ${corpusIdentitySurface(text)} `;
+  const matchSurface = ` ${corpusIdentityMatchSurface(text)} `;
   const present = [...state.identities].filter(identity => {
     if (!identity) return false;
     // A title the language uses as scaffolding names nothing in a request. The corpus holds a document titled "a",
     // so every request containing that word reported it as its subject.
-    if (identity.split(" ").every(unit => state.closedClass.has(unit))) return false;
-    if (surface.includes(" " + identity + " ")) return true;
+    const identityUnits = corpusIdentityUnits(identity);
+    if (identityUnits.length > 0 && identityUnits.every(unit => state.closedClass.has(unit))) return false;
+    const identitySurface = corpusIdentitySurface(identity);
+    const identityMatchSurface = corpusIdentityMatchSurface(identity);
+    if (surface.includes(` ${identitySurface} `) || matchSurface.includes(` ${identityMatchSurface} `)) return true;
     // Where a language binds its grammar onto the word rather than beside it, the name is inside the unit:
     // Korean spaces between eojeol but agglutinates its particles, so "서울의" carries the name "서울" and a
     // whole-request space test found nothing. Anchored to a unit edge, because that is where a bound morpheme
     // attaches in any writing system; an identity buried inside a unit with material on both sides is a
     // coincidence, which is what keeps "explain" from being named by "unexplained".
-    if (identity.includes(" ")) return false;
+    if (identitySurface.includes(" ")) return false;
     return units.some((unit, index) => {
-      if (unit === identity || unit.length <= identity.length) return false;
-      const identityAtStart = unit.startsWith(identity);
-      const identityAtEnd = unit.endsWith(identity);
+      if (unit === identitySurface || unit.length <= identitySurface.length) return false;
+      const identityAtStart = unit.startsWith(identitySurface);
+      const identityAtEnd = unit.endsWith(identitySurface);
       if (!identityAtStart && !identityAtEnd) return false;
       const attached = identityAtStart
-        ? unit.slice(identity.length)
-        : unit.slice(0, unit.length - identity.length);
+        ? unit.slice(identitySurface.length)
+        : unit.slice(0, unit.length - identitySurface.length);
       // A remainder the corpus has learned as scaffolding is a licensed attachment, even when the request contains
       // other content units. Otherwise containment is only safe when this is the request's sole content-bearing
       // unit; a spaced request supplies an explicit boundary and an unknown attached run cannot cross it.

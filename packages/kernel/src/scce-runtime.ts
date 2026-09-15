@@ -91,6 +91,7 @@ import {
 import { createLanguageMemoryRuntime, type LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
 import { createCcrEngine } from "./ccr.js";
 import { createSemanticEntailmentEngine } from "./entailment.js";
+import type { ProofClaim, ProofEvidenceRecord } from "./semantic-proof-engine.js";
 import { planCognitiveProposals, type CognitiveActionPlan, type CognitiveProposal } from "./cognitive-planner.js";
 import { planInventions } from "./invention-planner.js";
 import { createTranslationEngine, type TranslationPlan } from "./translation.js";
@@ -440,6 +441,7 @@ export function createInMemoryScceRuntime(options: { idFactory?: IdFactory; hash
         absolutePath: file.path,
         mediaType: file.mediaType,
         contentHash: String(sourceVersion.contentHash),
+        sourceVersionId: String(sourceVersion.sourceVersionId),
         byteLength: sourceVersion.byteLength,
         evidenceIds: [String(span.id)],
         metadata: toJsonValue({ ...(jsonRecord(file.metadata)), sourceVersionId: sourceVersion.sourceVersionId, evidenceSpanId: span.id })
@@ -915,13 +917,29 @@ async function sourceOnlyAuthorityAnswer(input: SourceOnlyAuthorityAnswerInput):
   const languageMemory = createLanguageMemoryRuntime({ idFactory: input.idFactory, hasher: input.hasher });
   const languageMemoryState = input.input.languageMemoryState ?? speakInput.languageMemory;
   const planningConstruct = sourceOnlyPlanningConstruct(speakInput.construct, input.input.text);
+  const sourceProof = requestedAuthority === "factual" || requestedAuthority === "reasoned"
+    ? sourceOnlyCertifiedProof(input.workspaceAnswer, evidence, input.input.text)
+    : undefined;
+  const candidateEntailment = sourceProof
+    // A workspace-wide construct would add unrelated claims back into the proof gate.
+    ? createSemanticEntailmentEngine({ idFactory: input.idFactory, hasher: input.hasher }).check({
+      text: sourceProof.surface,
+      evidence: sourceProof.evidence,
+      nodes: graph.nodes,
+      field,
+      proofClaims: [sourceProof.claim],
+      proofEvidence: sourceProof.records,
+      createdAt: input.createdAt,
+      calibrationModels: input.calibrationModels
+    })
+    : input.workspaceAnswer.entailment;
   const ccr = createCcrEngine().run({
     text: input.input.text,
     evidence,
     nodes: graph.nodes,
     edges: graph.edges,
     field,
-    entailment: input.workspaceAnswer.entailment
+    entailment: candidateEntailment
   });
   const inventions = requestedAuthority === "creative"
     ? planInventions({
@@ -974,11 +992,11 @@ async function sourceOnlyAuthorityAnswer(input: SourceOnlyAuthorityAnswerInput):
   const functionalGate: FunctionalSelectionGate = { fc: true, efc: true, gov: true, selectedGoalId: "source-only.functional-goal" };
   const candidateField = createCandidateEngine().generate({
     requestText: input.input.text,
-    entailment: input.workspaceAnswer.entailment,
+    entailment: candidateEntailment,
     evidence,
     field,
     ccr,
-    proofAnswer: sourceOnlyProofSurface(input.workspaceAnswer, evidence),
+    proofAnswer: sourceProof?.surface ?? sourceOnlyProofSurface(input.workspaceAnswer, evidence, input.input.text),
     learningNeeds: input.workspaceAnswer.learning.needs.map(need => need.needKindId),
     locale: input.input.targetLanguage,
     calibrationModels: input.calibrationModels,
@@ -1003,6 +1021,10 @@ async function sourceOnlyAuthorityAnswer(input: SourceOnlyAuthorityAnswerInput):
       })
     : undefined;
   const selectedCandidate = decision?.selected;
+  const selectedSourceProof = sourceProof && selectedCandidate?.kind === "proof-answer"
+    && jsonRecord(selectedCandidate.audit).proofId === candidateEntailment.proof.id
+    ? sourceProof
+    : undefined;
   const selectedProposal = proposals.find(proposal => proposal.id === selectedCandidate?.proposalId);
   const selectedEvidenceIds = new Set((selectedCandidate?.evidenceIds ?? []).map(id => String(id)));
   const selectedEvidence = evidence.filter(span => selectedEvidenceIds.has(String(span.id)));
@@ -1015,7 +1037,8 @@ async function sourceOnlyAuthorityAnswer(input: SourceOnlyAuthorityAnswerInput):
     : undefined;
   const routedEvidence = requestedAuthority === "action"
     ? actionContextEvidence.length > 0 ? actionContextEvidence : workspaceEvidence
-    : queryAnswerMaterial ? [queryAnswerMaterial.evidence]
+    : selectedSourceProof ? selectedSourceProof.evidence
+      : queryAnswerMaterial ? [queryAnswerMaterial.evidence]
       : selectedEvidence.length > 0 ? selectedEvidence : workspaceEvidence;
   const routedConstruct = sourceOnlyConstructForCandidate({
     construct: speakInput.construct,
@@ -1049,10 +1072,13 @@ async function sourceOnlyAuthorityAnswer(input: SourceOnlyAuthorityAnswerInput):
     : requestedAuthority === "translation"
       ? input.input.text
       : queryAnswerMaterial?.surface ?? "";
-  const computedRoutedEntailment = routedEntailmentMaterial
+  const computedRoutedEntailment = selectedSourceProof
+    ? candidateEntailment
+    : routedEntailmentMaterial
     ? createSemanticEntailmentEngine({ idFactory: input.idFactory, hasher: input.hasher }).check({
       text: routedEntailmentMaterial,
-      evidence: routedEvidence,
+      // A prepared command has source context, but no execution evidence yet.
+      evidence: selectedActionPlan?.phase === "prepare" ? [] : routedEvidence,
       nodes: graph.nodes,
       field,
       construct: routedConstruct,
@@ -1065,7 +1091,7 @@ async function sourceOnlyAuthorityAnswer(input: SourceOnlyAuthorityAnswerInput):
   const boundSelectedEvidenceIds = routedEvidence
     .filter(span => selectedCandidateEvidenceIds.has(String(span.id)))
     .map(span => span.id);
-  const routedEntailment = selectedCandidate && selectedCandidate.force !== "invented" && boundSelectedEvidenceIds.length > 0
+  const routedEntailment = !selectedSourceProof && selectedCandidate && selectedCandidate.force !== "invented" && boundSelectedEvidenceIds.length > 0
     ? {
         ...computedRoutedEntailment,
         force: selectedCandidate.force,
@@ -1241,9 +1267,46 @@ function sourceOnlyActionEvidence(input: {
   return input.evidence.filter(span => evidenceIds.has(String(span.id)));
 }
 
-function sourceOnlyProofSurface(answer: WorkspaceKernelAnswerResult, evidence: readonly EvidenceSpan[]): string {
-  const certified = answer.answerGraph.claims.find(claim => claim.certified && claim.surface.trim());
-  if (certified) return certified.surface.trim();
+function sourceOnlyCertifiedProof(answer: WorkspaceKernelAnswerResult, evidence: readonly EvidenceSpan[], requestText: string): {
+  surface: string;
+  claim: ProofClaim;
+  records: ProofEvidenceRecord[];
+  evidence: EvidenceSpan[];
+} | undefined {
+  const evidenceById = new Map(evidence.map(span => [String(span.id), span]));
+  const proofEvidenceById = new Map(answer.proof.evidence.map(record => [record.id, record]));
+  const queryFeatures = featureSet(requestText, 256);
+  const certified = answer.answerGraph.claims.filter(claim => claim.certified && claim.surface.trim()).sort((left, right) =>
+    weightedJaccard(queryFeatures, featureSet(right.surface, 256))
+      - weightedJaccard(queryFeatures, featureSet(left.surface, 256))
+    || left.id.localeCompare(right.id)
+  )[0];
+  if (!certified || !certified.proofClaimId) return undefined;
+  const proofResult = answer.proof.results.find(result =>
+    result.claim.id === certified.proofClaimId && result.result.verdict === "certified"
+  );
+  if (!proofResult) return undefined;
+  const records: ProofEvidenceRecord[] = [];
+  const boundEvidence = new Map<string, EvidenceSpan>();
+  for (const id of proofResult.result.certifiedEvidenceIds) {
+    const record = proofEvidenceById.get(id);
+    const span = record?.evidenceSpanId ? evidenceById.get(record.evidenceSpanId) : undefined;
+    if (!record || !span || record.sourceVersionId !== String(span.sourceVersionId)) return undefined;
+    records.push(record);
+    boundEvidence.set(String(span.id), span);
+  }
+  if (!records.length) return undefined;
+  return {
+    surface: certified.surface.trim(),
+    claim: proofResult.claim,
+    records,
+    evidence: [...boundEvidence.values()]
+  };
+}
+
+function sourceOnlyProofSurface(answer: WorkspaceKernelAnswerResult, evidence: readonly EvidenceSpan[], requestText: string): string {
+  const certified = sourceOnlyCertifiedProof(answer, evidence, requestText);
+  if (certified) return certified.surface;
   const boundIds = new Set(answer.entailment.evidenceIds.map(String));
   return evidence.find(span => boundIds.has(String(span.id)))?.text?.trim() ?? "";
 }
@@ -1677,7 +1740,14 @@ function evidenceSpanFor(input: { file: ScceRuntimeFixtureFile; sourceVersion: S
     languageHints: jsonRecord(input.file.metadata).languageHints ?? {},
     scriptHints: jsonRecord(input.file.metadata).scriptHints ?? {},
     trustVector: toJsonValue({ sourceTrust: input.sourceVersion.sourceTrust, forceClass: "direct_evidence" }),
-    provenance: toJsonValue({ uri: input.file.path, metadata: input.file.metadata ?? null }),
+    provenance: toJsonValue({
+      uri: input.file.path,
+      sourceVersionId: input.sourceVersion.sourceVersionId,
+      contentHash,
+      byteRange: [0, bytes.byteLength],
+      charRange: [0, input.file.text.length],
+      metadata: input.file.metadata ?? null
+    }),
     features: featureSet(input.file.text, 512),
     status: "promoted",
     alpha: 0.9,
@@ -2142,7 +2212,7 @@ function patchOutcomeSignal(patch: ScceRuntimePatchPlanResult, successScore: num
 
 function sourceRefFromSource(source: WorkspaceCoreSourceFileInput): WorkspaceCoreSourceRef[] {
   const evidenceSpanId = source.evidenceIds?.[0];
-  return evidenceSpanId ? [{ path: source.path, lineStart: 1, evidenceSpanId, contentHash: source.contentHash }] : [];
+  return evidenceSpanId ? [{ path: source.path, lineStart: 1, evidenceSpanId, contentHash: source.contentHash, sourceVersionId: source.sourceVersionId }] : [];
 }
 
 function knownIds(state: RuntimeState): string[] {

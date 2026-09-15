@@ -76,6 +76,7 @@ export interface WorkspaceSourceRef {
   lineEnd?: number;
   evidenceSpanId?: string;
   contentHash?: string;
+  sourceVersionId?: string;
 }
 
 export interface WorkspaceFinding {
@@ -394,6 +395,11 @@ interface CallSite {
   line: number;
 }
 
+interface WorkspaceSourceVersionBinding {
+  sourceVersionId: string;
+  evidenceIds: string[];
+}
+
 const DEFAULT_OPTIONS: Required<WorkspaceRuntimeOptions> = {
   maxFiles: 4000,
   maxFileBytes: 2 * 1024 * 1024,
@@ -428,8 +434,9 @@ export function createWorkspaceRuntime(input: { runtime: NodeScceRuntime; config
       const workspace = workspaceRecord(root, now, normalizedOptions);
       await input.runtime.storage.workspace.putWorkspace(workspace);
       const importBatchId = `workspace_batch_${hashParts(workspace.id, String(now)).slice(0, 24)}`;
-      const project = await analyzeWorkspaceProject(root, normalizedOptions);
       const previous = await input.runtime.storage.workspace.listSourceFiles({ workspaceId: workspace.id, limit: normalizedOptions.maxFiles * 2 });
+      const previousBindings = await exactWorkspaceSourceVersionBindings(input.runtime, previous);
+      const project = await analyzeWorkspaceProject(root, normalizedOptions, previousBindings);
       const previousByPath = new Map(previous.map(file => [file.path, file]));
       const currentPaths = new Set(project.sources.map(source => source.path));
       const kernelResults: IngestResult[] = [];
@@ -438,6 +445,7 @@ export function createWorkspaceRuntime(input: { runtime: NodeScceRuntime; config
       let changed = 0;
       let failed = 0;
       let unsupported = project.inspection.totals.filesUnsupported;
+      const pendingIngested: Array<{ source: WorkspaceSourceFileRecord; evidenceIds: string[] }> = [];
 
       for (const source of project.sources) {
         const before = previousByPath.get(source.path);
@@ -486,17 +494,33 @@ export function createWorkspaceRuntime(input: { runtime: NodeScceRuntime; config
           kernelResults.push(result);
           ingested++;
           if (before) changed++;
-          await input.runtime.storage.workspace.putSourceFile({
-            ...source,
-            ingestionStatus: "ingested",
-            importBatchId,
-            evidenceIds: [...new Set(result.events.flatMap(event => evidenceIdsFromPayload(event.payload)))] as never[],
-            updatedAt: Date.now()
-          });
+          const evidenceIds = [...new Set(result.events.flatMap(event => evidenceIdsFromPayload(event.payload)))];
+          // Resolve all newly ingested files together after the kernel work has
+          // completed.  The durable evidence adapter can answer one batch for
+          // the whole incremental suffix; resolving here per file turns a
+          // multi-file ingest into an avoidable 2N query pattern.
+          pendingIngested.push({ source, evidenceIds });
         } catch (error) {
           failed++;
           await input.runtime.storage.workspace.putSourceFile({ ...source, ingestionStatus: "failed", importBatchId, errors: [messageOf(error)], updatedAt: Date.now() });
         }
+      }
+
+      const ingestedBindings = await exactWorkspaceSourceVersionBindings(input.runtime, pendingIngested.map(item => ({
+        ...item.source,
+        sourceVersionId: undefined,
+        evidenceIds: item.evidenceIds as never[]
+      })));
+      for (const item of pendingIngested) {
+        const binding = ingestedBindings.get(normalizePath(item.source.path));
+        await input.runtime.storage.workspace.putSourceFile({
+          ...item.source,
+          ingestionStatus: "ingested",
+          importBatchId,
+          ...(binding ? { sourceVersionId: binding.sourceVersionId as WorkspaceSourceFileRecord["sourceVersionId"] } : {}),
+          evidenceIds: (binding?.evidenceIds ?? item.evidenceIds) as never[],
+          updatedAt: Date.now()
+        });
       }
 
       let missing = 0;
@@ -506,13 +530,16 @@ export function createWorkspaceRuntime(input: { runtime: NodeScceRuntime; config
         await input.runtime.storage.workspace.putSourceFile({ ...old, ingestionStatus: "missing", importBatchId, errors: [], warnings: [...old.warnings, "file missing during incremental ingest"], updatedAt: Date.now() });
       }
 
-      const refreshed = await analyzeWorkspaceProject(root, normalizedOptions);
+      const persisted = await input.runtime.storage.workspace.listSourceFiles({ workspaceId: workspace.id, limit: normalizedOptions.maxFiles * 2 });
+      const refreshed = await analyzeWorkspaceProject(root, normalizedOptions, await exactWorkspaceSourceVersionBindings(input.runtime, persisted));
       await persistProjectReports(input.runtime, refreshed);
       return { schema: "scce.workspace.ingest.v1", workspace, importBatchId, ingested, unchanged, changed, missing, failed, unsupported, kernelResults, sources: refreshed.sources, project: refreshed };
     },
     async project(rootPath, options = {}) {
       const root = rootPath ? resolveAllowedRoot(rootPath, input.config) : await latestWorkspaceRoot(input.runtime, input.config);
-      const project = await analyzeWorkspaceProject(root, options);
+      const workspace = workspaceRecord(root, Date.now(), options);
+      const persisted = await input.runtime.storage.workspace.listSourceFiles({ workspaceId: workspace.id, limit: normalizeOptions(options).maxFiles * 2 });
+      const project = await analyzeWorkspaceProject(root, options, await exactWorkspaceSourceVersionBindings(input.runtime, persisted));
       await input.runtime.storage.workspace.putWorkspace(project.workspace);
       await persistProjectReports(input.runtime, project);
       return project;
@@ -529,7 +556,9 @@ export function createWorkspaceRuntime(input: { runtime: NodeScceRuntime; config
     async answer(question, rootPath, options = {}) {
       const root = rootPath ? resolveAllowedRoot(rootPath, input.config) : await latestWorkspaceRoot(input.runtime, input.config);
       const normalizedOptions = normalizeOptions(options);
-      const project = await analyzeWorkspaceProject(root, normalizedOptions);
+      const workspace = workspaceRecord(root, Date.now(), normalizedOptions);
+      const persisted = await input.runtime.storage.workspace.listSourceFiles({ workspaceId: workspace.id, limit: normalizedOptions.maxFiles * 2 });
+      const project = await analyzeWorkspaceProject(root, normalizedOptions, await exactWorkspaceSourceVersionBindings(input.runtime, persisted));
       await input.runtime.storage.workspace.putWorkspace(project.workspace);
       const adapterBaseline = answerWorkspaceQuestion(project, question);
       if (!normalizedOptions.useKernelAnswer) {
@@ -682,7 +711,9 @@ export function createWorkspaceRuntime(input: { runtime: NodeScceRuntime; config
     },
     async report(kind, rootPath, options = {}) {
       const root = rootPath ? resolveAllowedRoot(rootPath, input.config) : await latestWorkspaceRoot(input.runtime, input.config);
-      const project = await analyzeWorkspaceProject(root, options);
+      const workspace = workspaceRecord(root, Date.now(), options);
+      const persisted = await input.runtime.storage.workspace.listSourceFiles({ workspaceId: workspace.id, limit: normalizeOptions(options).maxFiles * 2 });
+      const project = await analyzeWorkspaceProject(root, options, await exactWorkspaceSourceVersionBindings(input.runtime, persisted));
       await input.runtime.storage.workspace.putWorkspace(project.workspace);
       const body = reportBody(project, kind);
       const record = workspaceReportRecord(project.workspace, kind, reportTitle(kind), body, project as unknown as JsonValue, reportRefs(project, kind));
@@ -692,7 +723,7 @@ export function createWorkspaceRuntime(input: { runtime: NodeScceRuntime; config
   };
 }
 
-export async function analyzeWorkspaceProject(rootPath: string, options: WorkspaceRuntimeOptions = {}): Promise<WorkspaceProjectReport> {
+export async function analyzeWorkspaceProject(rootPath: string, options: WorkspaceRuntimeOptions = {}, sourceBindings?: ReadonlyMap<string, WorkspaceSourceVersionBinding>): Promise<WorkspaceProjectReport> {
   const normalizedOptions = normalizeOptions(options);
   const root = path.resolve(rootPath);
   const now = Date.now();
@@ -701,7 +732,7 @@ export async function analyzeWorkspaceProject(rootPath: string, options: Workspa
   const repo = await analyzeDeveloperRepo(root, normalizedOptions);
   const docs = await loadDocumentLines(root, inspection, normalizedOptions);
   const calls = await collectCallSites(root, repo, normalizedOptions);
-  const sources = await workspaceSources(workspace, inspection, repo);
+  const sources = await workspaceSources(workspace, inspection, repo, sourceBindings);
   const symbols = symbolSummaries(repo, docs, calls);
   const commands = commandSummaries(repo);
   const routes = await routeSummaries(root, repo, sources, normalizedOptions);
@@ -928,7 +959,12 @@ function workspaceRecord(root: string, now: number, metadata: unknown): Workspac
   return { id, rootPath, rootUri, corpusId, status: "active", createdAt: now, updatedAt: now, metadata: toJsonValue({ options: metadata }) };
 }
 
-async function workspaceSources(workspace: WorkspaceRecord, inspection: EngineeringCorpusFolderInspection, repo: RepoIntelligenceAnalysis): Promise<WorkspaceSourceFileRecord[]> {
+async function workspaceSources(
+  workspace: WorkspaceRecord,
+  inspection: EngineeringCorpusFolderInspection,
+  repo: RepoIntelligenceAnalysis,
+  sourceBindings?: ReadonlyMap<string, WorkspaceSourceVersionBinding>
+): Promise<WorkspaceSourceFileRecord[]> {
   const symbolsByPath = new Map<string, string[]>();
   for (const symbol of repo.snapshot.symbolGraph.nodes) {
     const list = symbolsByPath.get(symbol.sourcePath) ?? [];
@@ -939,18 +975,21 @@ async function workspaceSources(workspace: WorkspaceRecord, inspection: Engineer
   const records: WorkspaceSourceFileRecord[] = [];
   for (const file of importable) {
     const info = await stat(file.absolutePath);
+    const normalizedPath = normalizePath(file.path);
+    const binding = sourceBindings?.get(normalizedPath);
     records.push({
       workspaceId: workspace.id,
       corpusId: workspace.corpusId,
-      path: normalizePath(file.path),
+      path: normalizedPath,
       absolutePath: file.absolutePath,
       mediaType: file.mediaType,
       contentHash: file.contentHash as never,
       modifiedTime: info.mtimeMs,
       byteLength: file.byteLength,
       ingestionStatus: "pending",
-      evidenceIds: repo.snapshot.evidenceSpans.filter(span => span.sourcePath === normalizePath(file.path)).map(span => span.id as never),
-      symbolIds: symbolsByPath.get(normalizePath(file.path)) ?? [],
+      ...(binding ? { sourceVersionId: binding.sourceVersionId as never } : {}),
+      evidenceIds: (binding?.evidenceIds ?? repo.snapshot.evidenceSpans.filter(span => span.sourcePath === normalizedPath).map(span => span.id)).map(id => id as never),
+      symbolIds: symbolsByPath.get(normalizedPath) ?? [],
       conceptIds: [],
       warnings: file.warnings,
       errors: [],
@@ -1072,7 +1111,10 @@ async function routeSourceRef(
     lineStart: line?.line,
     lineEnd: line?.line,
     evidenceSpanId,
-    contentHash: source?.contentHash
+    contentHash: source?.contentHash,
+    ...(source?.sourceVersionId && observedEvidenceId && source.evidenceIds.some(id => String(id) === observedEvidenceId)
+      ? { sourceVersionId: String(source.sourceVersionId) }
+      : {})
   };
 }
 
@@ -1496,7 +1538,7 @@ function uniqueFindings(findings: WorkspaceFinding[]): WorkspaceFinding[] {
 function uniqueRefs(refs: WorkspaceSourceRef[]): WorkspaceSourceRef[] {
   const seen = new Map<string, WorkspaceSourceRef>();
   for (const ref of refs) {
-    const key = `${ref.path}:${ref.lineStart ?? ""}:${ref.lineEnd ?? ""}:${ref.evidenceSpanId ?? ""}:${ref.contentHash ?? ""}`;
+    const key = `${ref.path}:${ref.lineStart ?? ""}:${ref.lineEnd ?? ""}:${ref.evidenceSpanId ?? ""}:${ref.contentHash ?? ""}:${ref.sourceVersionId ?? ""}`;
     if (!seen.has(key)) seen.set(key, ref);
   }
   return [...seen.values()].slice(0, 256);
@@ -1531,7 +1573,7 @@ function evidenceIdsFromPayload(payload: JsonValue): string[] {
   const out: string[] = [];
   const visit = (value: JsonValue, depth: number) => {
     if (depth > 4 || value === null) return;
-    if (typeof value === "string" && value.startsWith("ev_")) out.push(value);
+    if (typeof value === "string" && (value.startsWith("ev_") || value.startsWith("evidence_span_"))) out.push(value);
     else if (Array.isArray(value)) for (const child of value) visit(child, depth + 1);
     else if (typeof value === "object") for (const [key, child] of Object.entries(value)) {
       if (key.toLocaleLowerCase().includes("evidence") && typeof child === "string") out.push(child);
@@ -1540,6 +1582,53 @@ function evidenceIdsFromPayload(payload: JsonValue): string[] {
   };
   visit(payload, 0);
   return out;
+}
+
+/**
+ * Resolves source versions only through the exact evidence ids persisted on a
+ * workspace file.  The repository analyzer emits CodeEvidenceSpan ids for
+ * its structural view; those ids are intentionally never treated as durable
+ * evidence ids here.
+ */
+async function exactWorkspaceSourceVersionBindings(
+  runtime: NodeScceRuntime,
+  records: readonly WorkspaceSourceFileRecord[]
+): Promise<ReadonlyMap<string, WorkspaceSourceVersionBinding>> {
+  const evidence = runtime.storage.evidence;
+  if (!evidence || typeof evidence.getEvidenceBatch !== "function" || typeof evidence.sourceVersionsForEvidence !== "function") return new Map();
+  const evidenceIds = [...new Set(records.flatMap(record => record.evidenceIds.map(String)))];
+  if (!evidenceIds.length) return new Map();
+  const spans = await evidence.getEvidenceBatch(evidenceIds as never[]);
+  const versions = await evidence.sourceVersionsForEvidence(evidenceIds as never[]);
+  const versionById = new Map(versions.map(version => [String(version.sourceVersionId), version]));
+  const spanById = new Map(spans.map(span => [String(span.id), span]));
+  const bindings = new Map<string, WorkspaceSourceVersionBinding>();
+  for (const record of records) {
+    if (!record.contentHash || !record.evidenceIds.length) continue;
+    const matches = record.evidenceIds
+      .map(id => spanById.get(String(id)))
+      .filter((span): span is NonNullable<typeof span> => Boolean(span))
+      .filter(span => {
+        const version = versionById.get(String(span.sourceVersionId));
+        if (!version || String(version.contentHash) !== String(record.contentHash)) return false;
+        if (record.sourceVersionId && String(version.sourceVersionId) !== String(record.sourceVersionId)) return false;
+        return workspaceSourceVersionPathMatches(record, version.canonicalUri);
+      });
+    const sourceVersionIds = [...new Set(matches.map(span => String(span.sourceVersionId)))];
+    // A record with competing durable versions is ambiguous.  Do not choose a
+    // derivative or whichever version happens to be returned first.
+    if (sourceVersionIds.length !== 1) continue;
+    bindings.set(normalizePath(record.path), {
+      sourceVersionId: sourceVersionIds[0]!,
+      evidenceIds: matches.map(span => String(span.id))
+    });
+  }
+  return bindings;
+}
+
+function workspaceSourceVersionPathMatches(record: WorkspaceSourceFileRecord, canonicalUri: string): boolean {
+  const canonical = normalizePath(canonicalUri.replace(/^file:\/\//u, ""));
+  return canonical === normalizePath(record.path) || canonical === normalizePath(record.absolutePath);
 }
 
 async function latestWorkspaceRoot(runtime: NodeScceRuntime, config: ScceRuntimeConfig): Promise<string> {

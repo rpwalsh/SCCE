@@ -2002,22 +2002,22 @@ function createGraphStore(storage: PostgresStorageAdapter): GraphStore {
         const access = storage.informationAccessPredicate("edge_row", 3);
         const groups: string[][] = [];
         for (let index = 0; index < evidenceIds.length; index += EVIDENCE_LOOKUP_GROUP) groups.push(evidenceIds.slice(index, index + EVIDENCE_LOOKUP_GROUP));
-        const edgeRowsByGroup = await Promise.all(groups.map(group => storage.query<GraphEdgeRow>(
+        const edgeRowsByGroup = await queryEvidenceGroups(groups, group => storage.query<GraphEdgeRow>(
             `SELECT * FROM ${storage.table("graph_edges")} AS edge_row
              WHERE evidence_ids && $1::text[] AND ${access.sql}
              ORDER BY alpha DESC, updated_at DESC, id LIMIT $2`,
             [group, edgeLimit, ...access.params]
-          )));
+          ));
         const edgeRows = new Map<string, GraphEdgeRow>();
         for (const rows of edgeRowsByGroup) for (const row of rows) if (!edgeRows.has(row.id)) edgeRows.set(row.id, row);
         const hyperedgeLimit = Math.max(1, Math.min(edgeLimit, Math.floor(edgeLimit / 2) || 1));
         const hyperedgeAccess = storage.informationAccessPredicate("hyperedge", 3);
-        const hyperedgeRowsByGroup = await Promise.all(groups.map(group => storage.query<HyperedgeRow>(
+        const hyperedgeRowsByGroup = await queryEvidenceGroups(groups, group => storage.query<HyperedgeRow>(
             `SELECT * FROM ${storage.table("graph_hyperedges")}
              WHERE evidence_ids && $1::text[] AND ${hyperedgeAccess.sql}
              ORDER BY updated_at DESC LIMIT $2`,
             [group, hyperedgeLimit, ...hyperedgeAccess.params]
-          )));
+          ));
         const hyperedgeRows = new Map<string, HyperedgeRow>();
         for (const rows of hyperedgeRowsByGroup) for (const row of rows) if (!hyperedgeRows.has(row.id)) hyperedgeRows.set(row.id, row);
         const nodes = await nodesPromise;
@@ -2360,6 +2360,26 @@ async function loadSourceTitles(
   return [...normalized];
 }
 const EVIDENCE_LOOKUP_GROUP = 32;
+const EVIDENCE_LOOKUP_CONCURRENCY = 3;
+
+async function queryEvidenceGroups<T>(
+  groups: readonly string[][],
+  query: (group: string[]) => Promise<T[]>
+): Promise<T[][]> {
+  const results: T[][] = Array.from({ length: groups.length }, () => []);
+  let nextGroup = 0;
+  const worker = async (): Promise<void> => {
+    while (nextGroup < groups.length) {
+      const groupIndex = nextGroup++;
+      results[groupIndex] = await query(groups[groupIndex]!);
+    }
+  };
+  await Promise.all(Array.from(
+    { length: Math.min(EVIDENCE_LOOKUP_CONCURRENCY, groups.length) },
+    () => worker()
+  ));
+  return results;
+}
 
 async function queryNodes(storage: PostgresStorageAdapter, query: GraphSliceQuery): Promise<GraphNode[]> {
   if (query.seedNodeIds?.length) {
@@ -2386,9 +2406,7 @@ async function queryNodes(storage: PostgresStorageAdapter, query: GraphSliceQuer
     for (let index = 0; index < query.evidenceIds.length; index += EVIDENCE_LOOKUP_GROUP) {
       groups.push([...query.evidenceIds.slice(index, index + EVIDENCE_LOOKUP_GROUP)] as string[]);
     }
-    const seen = new Map<string, GraphNodeRow>();
-    for (const group of groups) {
-      const rows = await storage.query<GraphNodeRow>(
+    const rowsByGroup = await queryEvidenceGroups(groups, group => storage.query<GraphNodeRow>(
         `WITH evidence_candidates AS MATERIALIZED (
        SELECT *
        FROM ${storage.table("graph_nodes")} node
@@ -2400,9 +2418,9 @@ async function queryNodes(storage: PostgresStorageAdapter, query: GraphSliceQuer
      ORDER BY alpha DESC, updated_at DESC
      LIMIT $2`,
         [group, limit, ...access.params]
-      );
-      for (const row of rows) if (!seen.has(row.id)) seen.set(row.id, row);
-    }
+      ));
+    const seen = new Map<string, GraphNodeRow>();
+    for (const rows of rowsByGroup) for (const row of rows) if (!seen.has(row.id)) seen.set(row.id, row);
     return [...seen.values()]
       .sort((left, right) =>
         Number(right.alpha ?? 0) - Number(left.alpha ?? 0)

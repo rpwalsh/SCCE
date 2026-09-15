@@ -102,6 +102,8 @@ export function creativeContinuationCandidateFromConstruct(input: {
     trace: JsonValue;
   };
   candidateIndex: number;
+  /** Optional turn-local identity. Structural identity remains stable while the offer id is ephemeral. */
+  candidateRunId?: string;
   hasher?: { digestHex(value: string): string };
 }): CreativeContinuationCandidate {
   const trace = record(input.construct.trace);
@@ -167,7 +169,7 @@ export function creativeContinuationCandidateFromConstruct(input: {
   }))).slice(0, 24)}`;
   const features = creativeFeaturesFromConstruct(input.construct);
   return {
-    candidateId: `creative:${input.construct.id}:${input.candidateIndex}`,
+    candidateId: `creative:${input.construct.id}:${input.candidateIndex}${input.candidateRunId ? `:${input.candidateRunId}` : ""}`,
     structureId,
     continuationModeId,
     semanticOperatorId,
@@ -444,8 +446,7 @@ function continuationSemanticContextKey(state: CreativeContinuationState): strin
   return canonicalStringify({
     conversationId: state.conversationId,
     semanticFrameId: state.semanticFrameId,
-    languageId: state.languageId,
-    goalId: state.goalId ?? null
+    languageId: state.languageId
   });
 }
 

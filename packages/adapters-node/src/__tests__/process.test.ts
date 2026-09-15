@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -174,7 +174,65 @@ describe("NodeBuildTestAdapter execution authority", () => {
     expect(unselected.repairedProgram).toBeUndefined();
     expect(unselected.selection.rejectionReasonIds).toContain("repair.selection.active_requirement_missing");
   });
+
+  it("isolates concurrent runs that reuse an episode and construct id", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "scce-build-concurrent-"));
+    roots.push(tempRoot);
+    const firstStarted = join(tempRoot, "first-run-started");
+    const secondStarted = join(tempRoot, "second-run-started");
+    const release = join(tempRoot, "release");
+    const source = (value: string) => artifact("src/program.mjs", `export const marker = ${JSON.stringify(value)};\n`, "source");
+    const buildScript = (value: string, ready: string) => [
+      "const fs = require('node:fs');",
+      `fs.writeFileSync(${JSON.stringify(ready)}, 'started');`,
+      `const wait = setInterval(() => { if (!fs.existsSync(${JSON.stringify(release)})) return; clearInterval(wait); const source = fs.readFileSync('src/program.mjs', 'utf8'); process.exit(source.includes(${JSON.stringify(value)}) ? 0 : 17); }, 5);`
+    ].join("\n");
+    const makeConstruct = (value: string, ready: string): ConstructGraph => {
+      const file = source(value);
+      return {
+        id: "construct.concurrent" as ConstructGraph["id"],
+        artifacts: [file],
+        program: {
+          id: "program.concurrent",
+          language: "javascript",
+          packageManager: "node",
+          entrypoint: file.path,
+          nodes: [],
+          edges: [],
+          files: [file],
+          build: { command: process.execPath, args: ["-e", buildScript(value, ready)], cwd: "." },
+          test: { command: process.execPath, args: ["-e", "process.exit(0)"], cwd: "." }
+        }
+      } as unknown as ConstructGraph;
+    };
+    const adapter = new NodeBuildTestAdapter({ runtime: { tempRoot } } as ScceRuntimeConfig);
+    const first = adapter.executeProgram({
+      episodeId: "episode.concurrent" as EpisodeId,
+      construct: makeConstruct("first", firstStarted)
+    });
+    await waitForFile(firstStarted);
+    const second = adapter.executeProgram({
+      episodeId: "episode.concurrent" as EpisodeId,
+      construct: makeConstruct("second", secondStarted)
+    });
+    await waitForFile(secondStarted);
+    await writeFile(release, "release", "utf8");
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+
+    expect(firstResult.passed).toBe(true);
+    expect(secondResult.passed).toBe(true);
+    expect(await readdir(join(tempRoot, "episode.concurrent", "construct.concurrent")).then(() => true).catch(() => false)).toBe(false);
+    expect(await readdir(join(tempRoot, "episode.concurrent")).then(() => true).catch(() => false)).toBe(false);
+  });
 });
+
+async function waitForFile(file: string): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (await access(file).then(() => true).catch(() => false)) return;
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  throw new Error(`controlled executable did not reach its ready marker: ${file}`);
+}
 
 function artifact(path: string, content: string, role: FileArtifact["role"]): FileArtifact {
   const digest = createHash("sha256").update(content, "utf8").digest("hex");

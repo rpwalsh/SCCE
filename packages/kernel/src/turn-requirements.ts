@@ -78,6 +78,9 @@ export interface TurnRequirementField {
   activatedDialogueMoveIds: string[];
   activatedConstructIds: string[];
 
+  /** Dimensions changed by admitted evidence rather than the coefficient-model intercept alone. */
+  contributedDimensions?: TurnRequirementDimension[];
+
   responseForm?: ActivatedResponseForm;
   confidence: number;
   trace: JsonValue;
@@ -317,6 +320,7 @@ export function deriveTurnRequirementField(input: DeriveTurnRequirementFieldInpu
   }
   const requiredFeatures: TurnRequirement[] = [];
   const prohibitedFeatures: TurnRequirement[] = [];
+  const contributedDimensions: TurnRequirementDimension[] = [];
   const dimensionTrace: Record<string, JsonValue> = {};
   const values = emptyDimensionRecord();
   const minimumContribution = finiteOr(model.minimumFeatureContribution, 0.08);
@@ -325,6 +329,7 @@ export function deriveTurnRequirementField(input: DeriveTurnRequirementFieldInpu
     const intercept = finiteOr(model.intercepts[dimension], finiteOr(DEFAULT_TURN_REQUIREMENT_MODEL.intercepts[dimension], 0));
     const terms: Array<{ activationId: string; kind: RequirementActivationKind; activation: number; coefficient: number; occurrenceNormalization: number; contribution: number }> = [];
     let activationContribution = 0;
+    let activationSignalPresent = false;
     for (const activation of activations) {
       const coefficient = finiteOr(activation.requirementCoefficients?.[dimension], 0)
         + modelActivationWeight(model, dimension, activation);
@@ -333,6 +338,7 @@ export function deriveTurnRequirementField(input: DeriveTurnRequirementFieldInpu
       const occurrenceNormalization = occurrenceCount > 0 ? 1 / occurrenceCount : 1;
       const contribution = finiteOr(rawContribution * occurrenceNormalization, 0);
       if (coefficient === 0 && contribution === 0) continue;
+      if (rawContribution !== 0) activationSignalPresent = true;
       activationContribution += contribution;
       terms.push({ activationId: activation.id, kind: activation.kind, activation: activation.activation, coefficient, occurrenceNormalization, contribution });
       if (Math.abs(rawContribution) >= minimumContribution) {
@@ -344,12 +350,17 @@ export function deriveTurnRequirementField(input: DeriveTurnRequirementFieldInpu
 
     const matchingExplicit = explicitRequirements.filter(row => row.requirement.dimension === dimension);
     let explicitContribution = 0;
+    let explicitSignalPresent = false;
     for (const row of matchingExplicit) {
       explicitContribution += row.logitContribution;
+      if (row.logitContribution !== 0) explicitSignalPresent = true;
       if (row.polarity === "prohibited") prohibitedFeatures.push(row.requirement);
       else requiredFeatures.push(row.requirement);
     }
     const contextContribution = finiteOr(input.contextContribution?.[dimension], 0) + derivedContextContribution(dimension, input);
+    if (activationSignalPresent || explicitSignalPresent || contextContribution !== 0) {
+      contributedDimensions.push(dimension);
+    }
     const logit = finiteOr(intercept + activationContribution + explicitContribution + contextContribution, 0);
     const value = clamp01(sigmoid(logit));
     values[dimension] = value;
@@ -387,6 +398,7 @@ export function deriveTurnRequirementField(input: DeriveTurnRequirementFieldInpu
     activatedPhraseUnitIds: activatedIds(activations, "phrase_unit"),
     activatedDialogueMoveIds: activatedIds(activations, "dialogue_move"),
     activatedConstructIds: activatedIds(activations, "construct"),
+    contributedDimensions,
     ...(responseForm ? { responseForm } : {}),
     confidence,
     activationsUsed: activations,
