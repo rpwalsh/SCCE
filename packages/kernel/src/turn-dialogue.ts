@@ -76,7 +76,10 @@ export function buildTurnDialogueBridge(input: {
     candidateTexts: [input.result.answer],
     calibrationModels: input.calibrationModels,
     calibrationTaskClass: input.calibrationTaskClass,
-    statePatch: input.userStyleProfile ? { userStyleProfile: input.userStyleProfile } : undefined
+    statePatch: {
+      ...(input.userStyleProfile ? { userStyleProfile: input.userStyleProfile } : {}),
+      ...(input.calibrationTaskClass ? { taskClassId: input.calibrationTaskClass } : {})
+    }
   });
   const streamPlan = planStreamRhythm({ policyDecision: pragmatics.policyDecision, answerGraph, finalText: pragmatics.finalText });
   // Pragmatics may reword the answer; the reworded text still has to carry the protected spans, the negation, the

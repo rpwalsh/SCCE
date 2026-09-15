@@ -58,6 +58,8 @@ export interface DialogueState {
   conversationId: string;
   turnId: string;
   currentIntentId: string;
+  /** Opaque task class selected by the typed request/requirement path. */
+  taskClassId?: string;
   /** The typed interaction shape currently being resolved. */
   communicativeActId?: DialogueActId;
   activeTask?: string;
@@ -321,6 +323,7 @@ export function updateDialogueState(input: DialogueStateUpdateInput): DialogueSt
     conversationId: input.statePatch?.conversationId ?? previous?.conversationId ?? input.conversationId ?? "conversation.default",
     turnId: input.statePatch?.turnId ?? input.turnId ?? `turn.${hashText(input.requestText).slice(0, 16)}`,
     currentIntentId: input.statePatch?.currentIntentId ?? classifyIntentId(input.requestText, input.answerGraph, previous),
+    taskClassId: input.statePatch?.taskClassId ?? previous?.taskClassId,
     communicativeActId,
     activeTask: input.statePatch?.activeTask ?? graphTask,
     unresolvedSlots: uniqueStrings([...(previous?.unresolvedSlots ?? []), ...graphSlots, ...(input.statePatch?.unresolvedSlots ?? [])]).slice(0, 24),

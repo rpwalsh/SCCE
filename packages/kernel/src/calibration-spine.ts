@@ -171,7 +171,7 @@ export interface DialogueCalibrationOutcome {
 export interface DialogueCalibrationResult {
   id: string;
   finalText: string;
-  state: { turnId: string; activeTask?: string };
+  state: { turnId: string; activeTask?: string; taskClassId?: string };
   policyDecision: { selectedActionIds: readonly string[] };
   selected: { candidateId: string; criticId?: string; score: number };
   criticResults: readonly PragmaticsCalibrationCritic[];
@@ -1015,11 +1015,11 @@ function selectedCritic(result: DialogueCalibrationResult): PragmaticsCalibratio
 }
 
 function taskClassFromDialogue(result: DialogueCalibrationResult): string {
-  const activeTask = `${result.state.activeTask ?? ""} ${result.policyDecision.selectedActionIds.join(" ")}`.toLocaleLowerCase();
-  if (/code|src\/|patch|file|symbol/u.test(activeTask)) return CALIBRATION_TASK_CLASS_IDS.codeAnswer;
-  if (/workspace|repo|project/u.test(activeTask)) return CALIBRATION_TASK_CLASS_IDS.workspaceAnswer;
-  if (/creative|invent/u.test(activeTask)) return CALIBRATION_TASK_CLASS_IDS.creativeGeneration;
-  return CALIBRATION_TASK_CLASS_IDS.dialogueOutcome;
+  // Task class is a semantic routing result, not something inferred by
+  // reparsing a surface string. The request/requirement lane writes this
+  // opaque ID into dialogue state; absent that typed signal, keep the
+  // conservative dialogue calibration bucket.
+  return result.state.taskClassId?.trim() || CALIBRATION_TASK_CLASS_IDS.dialogueOutcome;
 }
 
 function outcomeBoolean(outcome: DialogueCalibrationOutcome): boolean {
