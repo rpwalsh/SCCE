@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import * as XLSX from "xlsx";
 import { createClock, createHasher, createIdFactory, createTypedIngestProjector, type JsonValue } from "@scce/kernel";
 import type { ScceRuntimeConfig } from "../config.js";
+import { runProcess } from "../document.js";
 import { normalizeFetchedSource, publicDocumentExport, type FetchedSource } from "../fetched-source.js";
 import { inspectOfficeArchive } from "../spreadsheet-parser.js";
 
@@ -165,6 +166,17 @@ describe("bounded fetched document derivatives", () => {
     const controller = new AbortController();
     controller.abort(new Error("fixture cancellation"));
     await expect(normalizeFetchedSource(source(Buffer.from("text"), "text/plain"), config, { signal: controller.signal })).rejects.toThrow("fixture cancellation");
+  });
+});
+
+describe("document extraction process bounds", () => {
+  it("discards partial stdout when its output limit is exceeded", async () => {
+    const result = await runProcess(process.execPath, ["-e", "process.stdout.write('x'.repeat(65536))"], { maxOutputBytes: 128, timeoutMs: 5000 });
+    expect(result).toMatchObject({ code: null, stdout: "", stderr: "document extraction exceeded output byte limit" });
+  });
+  it("discards partial stdout on timeout", async () => {
+    const result = await runProcess(process.execPath, ["-e", "process.stdout.write('partial'); setTimeout(()=>{}, 10000)"], { maxOutputBytes: 128, timeoutMs: 250 });
+    expect(result).toMatchObject({ code: null, stdout: "", stderr: "document extraction timed out" });
   });
 });
 
