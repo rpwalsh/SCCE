@@ -38,6 +38,10 @@ export async function runDocumentExtractionWorker(
   });
 }
 
+export function documentExtractionWorkerUrl(): URL {
+  return workerUrl();
+}
+
 function workerUrl(): URL {
   const local = new URL("./document-extraction-worker.js", import.meta.url);
   if (existsSync(fileURLToPath(local))) return local;

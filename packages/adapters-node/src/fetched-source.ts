@@ -97,7 +97,7 @@ export async function normalizeFetchedSource(
         ? await extractDocxInBoundedProcess(stagedPath, maxBytes, options.signal)
         : await extractDocument(stagedPath, extractionConfig, {
           includeVisualAttributes: false, maxOutputBytes: maxBytes, timeoutMs: 30000,
-          signal: options.signal, requireComplete: true, ocrProfile: sourceOcrProfile(source.metadata)
+          signal: options.signal, ocrProfile: sourceOcrProfile(source.metadata)
         });
       text = extracted.text;
       extractor = extracted.parser;
