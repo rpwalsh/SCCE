@@ -38,20 +38,6 @@ const STATUS_TOKEN_PATTERN = /\[scce:[^\]\s]+(?:\s+[^\]]*)?\]/gu;
 const LOCALIZATION_KEY_PATTERN = /\bi18n:[a-z0-9_.:-]+\b/gu;
 const PROOF_MARKER_PATTERN = /^\s*\[(?:proof|no_proof)\]\s*/giu;
 const SYMBOLIC_CONSTRUCT_PATTERN = /(?:[^\s]+\s*[\u{2192}\u{21d2}\u{21e2}]\s*){2,}|(?:\s\u{00b7}\s[^\s]+){2,}/gu;
-const TELEMETRY_TERMS = [
-  "active import run",
-  "import run",
-  "graph node",
-  "graph edge",
-  "hyperedge",
-  "shard count",
-  "prior count",
-  "direct evidence count",
-  "language prior count",
-  "program prior count",
-  "profile excerpt evidence count"
-] as const;
-
 export interface CannedSpeechMarkers {
   surfaceOriginId?: string;
   proofStatusId?: string;
@@ -61,13 +47,19 @@ export interface CannedSpeechMarkers {
 // Canned certification/boundary speech is detected from trace markers, never from
 // the rendered language: the surface's origin or proof status says it is a runtime
 // boundary template, regardless of what language it was rendered in.
-const CANNED_CERTIFICATION_ORIGIN_PREFIXES = ["surface.boundary.", "surface.import_summary", "pca.boundary"];
+const CANNED_CERTIFICATION_ORIGIN_PREFIXES = ["surface.boundary.", "pca.boundary"];
+const TELEMETRY_ORIGIN_PREFIXES = ["surface.import_summary", "surface.runtime_inventory"];
 const NON_CERTIFYING_PROOF_STATUS_PREFIX = "proof.status.non_certifying";
 
 export function cannedCertificationMarker(markers: CannedSpeechMarkers): boolean {
   const origin = markers.surfaceOriginId ?? "";
   if (CANNED_CERTIFICATION_ORIGIN_PREFIXES.some(prefix => origin.startsWith(prefix))) return true;
   return (markers.answerPolicyId ?? "").includes("boundary") && (markers.proofStatusId ?? "").startsWith(NON_CERTIFYING_PROOF_STATUS_PREFIX);
+}
+
+function cannedTelemetryMarker(markers: CannedSpeechMarkers): boolean {
+  const origin = markers.surfaceOriginId ?? "";
+  return TELEMETRY_ORIGIN_PREFIXES.some(prefix => origin.startsWith(prefix));
 }
 
 export function detectCannedAnswerSpeech(text: string, markers: CannedSpeechMarkers = {}): SurfaceQualityIssue[] {
@@ -96,10 +88,13 @@ export function detectCannedAnswerSpeech(text: string, markers: CannedSpeechMark
       toJsonValue({ localizationKeys: localizationKeys.slice(0, 16), proofMarkers: proofMarkers.slice(0, 16), symbolicConstructs: symbolicConstructs.slice(0, 16) })
     );
   }
-  const telemetryHits = TELEMETRY_TERMS.filter(term => normalized.includes(term));
-  const numericInventory = /\b\d+\b/u.test(normalized);
-  if (telemetryHits.length >= 3 && numericInventory) {
-    add(SURFACE_QUALITY_ISSUE_IDS.telemetry, SURFACE_QUALITY_KIND_IDS.telemetry, telemetryHits.slice(0, 4).join("; "), toJsonValue({ telemetryHits, numericInventory }));
+  if (cannedTelemetryMarker(markers)) {
+    add(
+      SURFACE_QUALITY_ISSUE_IDS.telemetry,
+      SURFACE_QUALITY_KIND_IDS.telemetry,
+      boundedMatchedText(normalized),
+      toJsonValue({ detector: "sq.det.telemetry_origin.v1", surfaceOriginId: markers.surfaceOriginId ?? null })
+    );
   }
   const certificationBoilerplate = cannedCertificationMarker(markers);
   if (certificationBoilerplate) {

@@ -50,9 +50,20 @@ describe("surface quality guard", () => {
   it("rejects import inventory telemetry instead of surfacing it", () => {
     const text = "scce2:wiki / run:1; import run count 1; active import run ids 1. imported graph prior count 6400; shard count 1; graph node count 3937; graph edge count 2461; hyperedge count 2. learned prior count 6400; language prior count 0; program prior count 0; direct evidence count 0; profile excerpt evidence count 0. usable for activation; association; alpha field pressure; ppf ranking; exploration. missing direct source spans; missing language priors.";
 
-    const issues = detectCannedAnswerSpeech(text);
+    const issues = detectCannedAnswerSpeech(text, { surfaceOriginId: "surface.import_summary.scce2.v1" });
 
     expect(issues.map(issue => issue.kind)).toContain(SURFACE_QUALITY_KIND_IDS.telemetry);
+  });
+
+  it("rejects the same inventory shape when its labels are not English", () => {
+    const opaqueInventory = "κλειδί:1; 记录 6400; 𐐷 1; ᚠ 3937; Д 2461; 数 2; ⟐ 6400; ◇ 0; □ 0; △ 0; ○ 0; ☆ 0";
+    expect(detectCannedAnswerSpeech(opaqueInventory, { surfaceOriginId: "surface.import_summary.scce2.v1" }).map(issue => issue.kind)).toContain(SURFACE_QUALITY_KIND_IDS.telemetry);
+  });
+
+  it("keeps ordinary multilingual numeric prose out of the inventory detector", () => {
+    const prose = "第 3 章には 2 つの例があり、読者は 1 つを選ぶ。";
+    expect(detectCannedAnswerSpeech(prose)).toEqual([]);
+    expect(detectCannedAnswerSpeech("2020: 5; 2021: 8; 2022: 13; 2023: 21; 2024: 34; 2025: 55")).toEqual([]);
   });
 
   it("rejects concentrated degenerate n-gram speech without matching prompt vocabulary", () => {
