@@ -329,9 +329,10 @@ export function createRuntimeAcquisition(options: {
     };
     const consentInput = learningConsentInput(input.ownerInput.text, hasher);
     const consentGranted = deps.approvals?.isApproved({ capabilityId: "network.search", input: consentInput }) === true;
-    const consentRefused = deps.approvals?.isRejected?.({ capabilityId: "network.search", input: consentInput }) === true;
+    const gateDisabled = deps.approvals?.disabledReason?.({ capabilityId: "network.search", input: consentInput });
+    const consentRefused = !gateDisabled && deps.approvals?.isRejected?.({ capabilityId: "network.search", input: consentInput }) === true;
     let consent: RuntimeReplanMotion["consent"];
-    if (deps.connectors && !consentGranted && !consentRefused) {
+    if (deps.connectors && !consentGranted && !consentRefused && !gateDisabled) {
       // Unknown topics ask before touching the network: the plan waits in the approval session until the owner says yes.
       const planId = `capability_network.search_${hasher.digestHex(`${queryHash}\u001fconsent`).slice(0, 32)}`;
       const plan: CapabilityPlan = {
@@ -362,6 +363,7 @@ export function createRuntimeAcquisition(options: {
         queryHash,
         connectorConfigured: Boolean(deps.connectors),
         consentGranted,
+        ...(gateDisabled ? { disabled: gateDisabled } : {}),
         searchLimit: RUNTIME_ACQUISITION_SEARCH_LIMIT,
         requestedSourceLineages: RUNTIME_ACQUISITION_MAX_LINEAGES,
         adversarialSearchRequested: Boolean(input.adversarialSearch),
@@ -675,6 +677,8 @@ export function createRuntimeAcquisition(options: {
     }
     const status: RuntimeReplanMotion["status"] = !deps.connectors
       ? "unavailable"
+      : gateDisabled
+        ? "disabled_explicitly"
       : consentRefused
         ? "refused"
         : !consentGranted
@@ -697,6 +701,7 @@ export function createRuntimeAcquisition(options: {
       queryHash,
       connectorConfigured: Boolean(deps.connectors),
       status,
+      ...(gateDisabled ? { disabled: gateDisabled } : {}),
       ...(consent ? { consent } : {}),
       ...(heldSources.length ? { heldSources } : {}),
       searchResultCount,
@@ -713,7 +718,7 @@ export function createRuntimeAcquisition(options: {
       ).flat()).slice(0, 80),
       sourceUris: uniqueKernelStrings(sourceUris).slice(0, RUNTIME_ACQUISITION_SEARCH_LIMIT),
       sourceSurfaces: uniqueKernelStrings(sourceSurfaces).slice(0, 6),
-      failures: [...(consentRefused ? ["owner-consent-refused"] : []), ...motionFailures].slice(0, 6),
+      failures: [...(gateDisabled ? [gateDisabled.reason] : consentRefused ? ["owner-consent-refused"] : []), ...motionFailures].slice(0, 6),
       priorRejectedHypotheses: input.priorRejectedHypotheses ?? [],
       sourceLineageIds: uniqueKernelStrings(sourceLineageIds).slice(0, RUNTIME_ACQUISITION_SEARCH_LIMIT),
       acceptedSourceLineageCount: acceptedLineageGroups.size,
@@ -799,8 +804,9 @@ export function createRuntimeAcquisition(options: {
     decision?: RuntimeDeadlineDecision;
   }): Promise<RuntimeReplanMotion> {
     const consentInput = learningConsentInput(input.requestText, hasher);
-    const consentRefused = deps.approvals?.isRejected?.({ capabilityId: "network.search", input: consentInput }) === true;
-    const consent = consentRefused ? undefined : await proposeSearchConsent(input.episodeId, input.requestText).catch(() => undefined);
+    const gateDisabled = deps.approvals?.disabledReason?.({ capabilityId: "network.search", input: consentInput });
+    const consentRefused = !gateDisabled && deps.approvals?.isRejected?.({ capabilityId: "network.search", input: consentInput }) === true;
+    const consent = gateDisabled || consentRefused ? undefined : await proposeSearchConsent(input.episodeId, input.requestText).catch(() => undefined);
     const queryHash = hasher.digestHex(input.requestText);
     const guardId = `runtime-motion:${hasher.digestHex(`${String(input.episodeId)}\u001f${queryHash}\u001f${input.trigger}\u001fdeadline`).slice(0, 32)}`;
     const reason = input.decision
@@ -816,7 +822,8 @@ export function createRuntimeAcquisition(options: {
       parentEpisodeId: String(input.episodeId),
       queryHash,
       connectorConfigured: input.connectorConfigured,
-      status: consentRefused ? "refused" : consent ? "awaiting_consent" : "unavailable",
+      status: gateDisabled ? "disabled_explicitly" : consentRefused ? "refused" : consent ? "awaiting_consent" : "unavailable",
+      ...(gateDisabled ? { disabled: gateDisabled } : {}),
       ...(consent ? { consent } : {}),
       searchResultCount: 0,
       fetchedSourceCount: 0,
@@ -824,7 +831,7 @@ export function createRuntimeAcquisition(options: {
       ingestedEvidenceCount: 0,
       sourceUris: [],
       sourceSurfaces: [],
-      failures: [reason, ...(consentRefused ? ["owner-consent-refused"] : [])],
+      failures: [reason, ...(gateDisabled ? [gateDisabled.reason] : consentRefused ? ["owner-consent-refused"] : [])],
       priorRejectedHypotheses: []
     };
   }

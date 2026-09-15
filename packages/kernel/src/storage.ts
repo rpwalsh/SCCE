@@ -1450,6 +1450,8 @@ export interface ApprovalPort {
   isApproved(input: { capabilityId: string; input: JsonValue }): boolean;
   /** Optional session-local refusal; older/test approval ports may omit it. */
   isRejected?(input: { capabilityId: string; input: JsonValue }): boolean;
+  /** A deployment gate refusing this capability, named so it is never reported as the owner's decision. */
+  disabledReason?(input: { capabilityId: string; input: JsonValue }): { reason: string; gate: string } | undefined;
   observePending(plan: CapabilityPlan): Promise<void> | void;
   policyPatch?(): Partial<import("./types.js").PolicyProfile>;
 }
