@@ -977,7 +977,24 @@ export const PUBLIC_CALIBRATIONS = Object.freeze({
 
   // --- source preservation demand (mouth.ts sourcePreservationRequested, production-turn-runtime.ts reasonedRealizationPreservesContract)
   /** Requirement-field preservation or source demand at or above which a turn keeps source-exact wording. */
-  "turn_requirements.source_preservation_floor": 0.6
+  "turn_requirements.source_preservation_floor": 0.6,
+  // --- dialogue requirement field (turn-requirements.ts collectDialogueActivations, derivedContextContribution)
+  /** Activation of the current-intent dialogue move with no continuity link. */
+  "requirement.dialogue_intent.activation_without_continuity": 0.58,
+  /** Activation of the current-intent dialogue move once the conversation has a continuity link. */
+  "requirement.dialogue_intent.activation_with_continuity": 0.82,
+  /** dialogueDependence coefficient of the current-intent move with no continuity link. */
+  "requirement.dialogue_intent.coefficient_without_continuity": 0.3,
+  /** dialogueDependence coefficient of the current-intent move once the conversation has a continuity link. */
+  "requirement.dialogue_intent.coefficient_with_continuity": 0.9,
+  /** Weight of saturated continuity links in the derived dialogueDependence context contribution. */
+  "requirement.dialogue_context.continuity_weight": 0.45,
+  /** Weight of saturated unresolved slots in the derived dialogueDependence context contribution. */
+  "requirement.dialogue_context.unresolved_weight": 0.25,
+
+  // --- request communicative act (request-communicative-act.ts)
+  /** Laplace pseudo-count smoothing each act class's n-gram presence estimate. */
+  "request_act.feature_pseudo_count": 1
 });
 
 export type CalibrationKey = keyof typeof PUBLIC_CALIBRATIONS;

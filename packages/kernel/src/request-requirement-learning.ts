@@ -72,7 +72,7 @@ export interface CompiledRequestRequirementCorpus {
   audit: JsonValue;
 }
 
-interface FeatureObservation {
+export interface FeatureObservation {
   key: string;
   surface: string;
   anchor: "start" | "any" | "end";
@@ -547,7 +547,7 @@ function responseFormSurfaceLayoutAnnotation(value: unknown): ResponseFormSurfac
   });
 }
 
-function requestFeatures(text: string): FeatureObservation[] {
+export function requestFeatures(text: string): FeatureObservation[] {
   const tokens = unicodeTokens(text);
   if (!tokens.length) return [];
   const rows: FeatureObservation[] = [];
