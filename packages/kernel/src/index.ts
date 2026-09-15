@@ -112,6 +112,7 @@ export * from "./cognitive-substrate.js";
 export * from "./judge.js";
 export * from "./action-graph.js";
 export * from "./capability-dispatcher.js";
+export * from "./operator-outcome-loop.js";
 export * from "./causal-analysis-runtime.js";
 export * from "./retrieval-rank-features.js";
 export * from "./sparse-ranking-lifecycle.js";
