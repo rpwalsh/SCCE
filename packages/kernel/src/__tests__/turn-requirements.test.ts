@@ -12,6 +12,7 @@ import {
   type LearnedRequirementActivation
 } from "../turn-requirements.js";
 import { evidenceAccessPolicyForOperators, operatorOutcomeSupportFromCalibrationObservations } from "../turn-request-control.js";
+import { CALIBRATION_IDS } from "../calibration-spine.js";
 
 describe("learned turn requirement field", () => {
   it("maps paraphrases with the same learned structural activation to similar fields", () => {
@@ -270,18 +271,19 @@ describe("learned turn requirement field", () => {
   it("replays only real, conversation-scoped operator outcomes", () => {
     const base = {
       schema: "scce.calibration.observation.v1" as const,
-      calibrationId: "candidate.mass",
-      subsystemId: "subsystem.candidate",
+      calibrationId: CALIBRATION_IDS.operatorOutcome,
+      subsystemId: "subsystem.operator",
       taskClass: "task.source_bound_qa",
       selectedOutputHash: "output.1",
       finalOutcome: "outcome.accepted",
       createdAt: 1
     };
     const support = operatorOutcomeSupportFromCalibrationObservations([
-      { ...base, id: "observation.good", rawScore: 0.8, outcome: true, metadata: { conversationId: "conversation.a", operatorIds: [COGNITIVE_OPERATOR_IDS.causalAnalysis] } },
-      { ...base, id: "observation.bad", rawScore: 0.4, outcome: false, metadata: { conversationId: "conversation.a", operatorIds: [COGNITIVE_OPERATOR_IDS.causalAnalysis] } },
-      { ...base, id: "observation.other", rawScore: 1, outcome: false, metadata: { conversationId: "conversation.b", operatorIds: [COGNITIVE_OPERATOR_IDS.causalAnalysis] } },
-      { ...base, id: "observation.unknown", rawScore: 1, outcome: true, metadata: { conversationId: "conversation.a", operatorIds: ["operator.unknown"] } }
+      { ...base, id: "observation.good", rawScore: 0.8, outcome: true, metadata: { schema: "scce.operator.outcome_observation.v1", conversationId: "conversation.a", operatorIds: [COGNITIVE_OPERATOR_IDS.causalAnalysis] } },
+      { ...base, id: "observation.bad", rawScore: 0.4, outcome: false, metadata: { schema: "scce.operator.outcome_observation.v1", conversationId: "conversation.a", operatorIds: [COGNITIVE_OPERATOR_IDS.causalAnalysis] } },
+      { ...base, id: "observation.other", rawScore: 1, outcome: false, metadata: { schema: "scce.operator.outcome_observation.v1", conversationId: "conversation.b", operatorIds: [COGNITIVE_OPERATOR_IDS.causalAnalysis] } },
+      { ...base, id: "observation.unknown", rawScore: 1, outcome: true, metadata: { schema: "scce.operator.outcome_observation.v1", conversationId: "conversation.a", operatorIds: ["operator.unknown"] } },
+      { ...base, id: "observation.unrelated", calibrationId: "candidate.mass", rawScore: 1, outcome: true, metadata: { schema: "scce.operator.outcome_observation.v1", conversationId: "conversation.a", operatorIds: [COGNITIVE_OPERATOR_IDS.causalAnalysis] } }
     ], "conversation.a");
     expect(support[COGNITIVE_OPERATOR_IDS.causalAnalysis]).toBeCloseTo(0.2);
     expect(Object.keys(support)).toEqual([COGNITIVE_OPERATOR_IDS.causalAnalysis]);

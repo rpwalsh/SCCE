@@ -1,6 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { CALIBRATION_TASK_CLASS_IDS } from "./calibration-spine.js";
+import { CALIBRATION_IDS, CALIBRATION_TASK_CLASS_IDS } from "./calibration-spine.js";
 import {
   jsonRecord,
   kernelNumber,
@@ -161,8 +161,10 @@ export function operatorOutcomeSupportFromCalibrationObservations(
 ): Partial<Record<CognitiveOperatorId, number>> {
   const sums = new Map<CognitiveOperatorId, { weighted: number; weight: number }>();
   for (const observation of observations) {
+    if (observation.calibrationId !== CALIBRATION_IDS.operatorOutcome) continue;
     if (!Number.isFinite(observation.rawScore)) continue;
     const metadata = jsonRecord(observation.metadata);
+    if (kernelString(metadata.schema) !== "scce.operator.outcome_observation.v1") continue;
     if (kernelString(metadata.conversationId) !== conversationId) continue;
     const operatorIds = Array.isArray(metadata.operatorIds)
       ? metadata.operatorIds.filter((value): value is string => typeof value === "string")

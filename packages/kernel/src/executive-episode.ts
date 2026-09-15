@@ -1,7 +1,8 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { canonicalStringify } from "./primitives.js";
-import type { Hasher } from "./types.js";
+import type { Hasher, JsonValue } from "./types.js";
+import type { CognitiveOperatorId } from "./turn-requirements.js";
 
 export type ExecutiveEpisodeId = string;
 export type ExecutiveGoalId = string;
@@ -173,6 +174,16 @@ export interface ExecutiveCapabilityReceipt {
   attestationRef: string;
 }
 
+/** Typed state transition observed around an operator-backed capability action. */
+export interface ExecutiveOperatorOutcomeObservation {
+  schema: "scce.operator.outcome_observation.v1";
+  conversationId: string;
+  operatorIds: CognitiveOperatorId[];
+  typedInputState: JsonValue;
+  predictedDelta: JsonValue;
+  actualDelta: JsonValue;
+}
+
 export interface ExecutiveOutcome {
   id: ExecutiveOutcomeId;
   attemptId: ExecutiveAttemptId;
@@ -185,6 +196,7 @@ export interface ExecutiveOutcome {
     value: number;
     basisRef: string;
   };
+  operatorObservation?: ExecutiveOperatorOutcomeObservation;
   recordedAt: number;
 }
 
@@ -1016,6 +1028,11 @@ function validateOutcome(outcome: Omit<ExecutiveOutcome, "recordedAt">): void {
   if (outcome.reward) {
     if (!Number.isFinite(outcome.reward.value)) throw new Error("outcome reward must be finite");
     assertIdentifier(outcome.reward.basisRef, "outcome.reward.basisRef");
+  }
+  if (outcome.operatorObservation) {
+    if (outcome.operatorObservation.schema !== "scce.operator.outcome_observation.v1") throw new Error("operator outcome observation schema is unsupported");
+    assertIdentifier(outcome.operatorObservation.conversationId, "operatorObservation.conversationId");
+    assertIdentifierList(outcome.operatorObservation.operatorIds, "operatorObservation.operatorIds");
   }
 }
 

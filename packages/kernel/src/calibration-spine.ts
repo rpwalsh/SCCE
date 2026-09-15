@@ -21,6 +21,7 @@ export const CALIBRATION_IDS = {
   dialoguePragmaticsScore: "dialogue.pragmatics_score",
   workspaceAnswerConfidence: "workspace.answer_confidence",
   codeRoleConfidence: "code.role_confidence",
+  operatorOutcome: "operator.outcome",
   alphaVisibleBondedStructural: "alpha.visible_bonded_structural",
   alphaCacheInvalidation: "alpha.cache_invalidation",
   /** Plan item 129: translation.ts's own preservation/confidence score, calibrated against the real preservation-gate pass/fail outcome (item 125) instead of shipped as a bespoke ad hoc weighted sum. */
@@ -41,6 +42,7 @@ export const CALIBRATION_SUBSYSTEM_IDS = {
   dialogue: "subsystem.dialogue",
   workspace: "subsystem.workspace",
   code: "subsystem.code",
+  operator: "subsystem.operator",
   alpha: "subsystem.alpha",
   translation: "subsystem.translation"
 } as const;
