@@ -1,9 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
-import { deriveClosedClassWords } from "../closed-class-words.js";
 import { answerCoversRequest, evidenceDiscriminatesAskedRelation, requestRelationBeyondSourceIdentity } from "../local-evidence-runtime.js";
-import type { LanguageContinuationPopulation } from "../storage.js";
 import type { EvidenceId, EvidenceSpan, SourceVersionId } from "../types.js";
 
 /**
@@ -16,14 +14,8 @@ import type { EvidenceId, EvidenceSpan, SourceVersionId } from "../types.js";
  * require, and the article's own lead passed as the answer to who his dentist was.
  */
 describe("answerhood discrimination", () => {
-  // The language's own scaffolding, derived from continuation counts the way the hydrated runtime derives it. The
-  // interrogatives are in it because the corpus ranks them there, which is what the live brain measures; the words
-  // these requests ask about continue one context each and stay out.
-  const closedClass = deriveClosedClassWords({
-    continuationPopulation: fixturePopulation("language.discrimination", [
-      "the", "of", "and", "in", "to", "a", "was", "is", "for", "as", "on", "that", "his", "with", "by", "who", "what", "when"
-    ])
-  });
+  // The language's own scaffolding, the shape deriveClosedClassWords returns from a hydrated model.
+  const closedClass = new Set(["the", "of", "and", "in", "to", "a", "was", "is", "for", "as", "on", "that", "his", "with", "by"]);
 
   it("refuses a subject-only sentence when the request asks past what the source is about", () => {
     const einstein = openingBlock(
@@ -129,21 +121,6 @@ describe("answerhood discrimination", () => {
     expect(evidenceDiscriminatesAskedRelation(born, einstein, "When was Albert Einstein born?", closedClass)).toBe(true);
   });
 });
-
-/** A corpus-scale continuation population: the ranked symbols a closed class is read off, counts only. */
-function fixturePopulation(languageId: string, leading: readonly string[]): LanguageContinuationPopulation {
-  const continuationCounts: Record<string, number> = {};
-  for (let index = 0; index < 192; index += 1) {
-    const first = String.fromCharCode(97 + Math.floor(index / 26));
-    const second = String.fromCharCode(97 + (index % 26));
-    continuationCounts[`fixture${first}${second}`] = 10_000 - index;
-  }
-  for (let index = 0; index < leading.length; index += 1) continuationCounts[leading[index]!] = 20_000 - index;
-  for (const content of ["dentist", "shoe", "size", "capital", "city", "alchemy", "born", "world", "fifa", "won", "albert", "einstein"]) {
-    continuationCounts[content] = 1;
-  }
-  return { languageId, modelCount: 2_000, continuationCounts };
-}
 
 /** A source's opening block: the offset that says it opens the document, which is what a titled lead is. */
 function openingBlock(id: string, title: string, text: string): EvidenceSpan {
