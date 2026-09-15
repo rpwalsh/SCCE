@@ -220,7 +220,8 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
       ok: false,
       requestId,
       error: error instanceof Error ? error.message : String(error),
-      status
+      status,
+      ...(error instanceof HttpError && error.detail !== undefined ? { detail: error.detail } : {})
     };
     send(res, status, JSON.stringify(body, null, 2), "application/json; charset=utf-8", { requestId, started });
     if (trace) traceEvent(trace, { stage: 'runtime.error', label: `${status} ${req.method} ${req.url}`, durationMs: Date.now() - started, warnings: [String(error)] });
@@ -878,7 +879,10 @@ async function dispatch(
       // proposal is valid even when Mouth has no prose realization for an empty source workspace.
       const programProposalTurn = Boolean(result.constructGraph.program
         && (turn.requestedAuthority === "program" || workspaceCodingInput));
-      if (!turnAnswerHasSpeech(result.answer) && !programProposalTurn) throw new HttpError(422, "runtime declined: no admissible answer surface");
+      // The decline carries the turn's own typed withholding record, so a surface renders a reason instead of "".
+      if (!turnAnswerHasSpeech(result.answer) && !programProposalTurn) {
+        throw new HttpError(422, "runtime declined: no admissible answer surface", toJsonValue(result.withheld ?? null));
+      }
       const turnProgramCodingInput = workspaceCodingInput
         ? workspaceCodingInputForProgramGraph(workspaceCodingInput, result.constructGraph.program)
         : undefined;
@@ -4363,7 +4367,8 @@ function send(res: http.ServerResponse, status: number, body: string, type: stri
 }
 
 class HttpError extends Error {
-  constructor(readonly status: number, message: string) {
+  // `detail` carries typed runtime data (never an assistant surface) so a client can render its own message.
+  constructor(readonly status: number, message: string, readonly detail?: JsonValue) {
     super(message);
   }
 }

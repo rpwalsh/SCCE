@@ -1012,6 +1012,21 @@ export interface RuntimeAnswerBasis {
   reasonIds: string[];
 }
 
+/** A turn that emitted no speech, as typed data a surface can render. Never a reply string. */
+export interface RuntimeWithheldSurface {
+  schema: "scce.runtime.withheld_surface.v1";
+  reasonId: string;
+  basisReasonIds: string[];
+  truthStateId?: string;
+  evidenceCount: number;
+  entailmentVerdict: string;
+  epistemicForce: string;
+  requestedAuthority?: string;
+  unresolvedRequirementIds: string[];
+  learningNeeds: string[];
+  components: Array<{ id: string; status: string }>;
+}
+
 export interface RuntimeGuardFlags {
   requireEvidence: boolean;
   blockCertifiedFact: boolean;
@@ -1136,6 +1151,10 @@ export interface TurnResult {
   calibration?: RuntimeCalibrationSummary;
   truthState: RuntimeTruthState;
   answerBasis?: RuntimeAnswerBasis;
+  /** This turn's request-level communicative act classification, with the classifier's own status. */
+  requestCommunicativeAct?: JsonValue;
+  /** Present exactly when the turn emitted no speech: why, and what it could not resolve. */
+  withheld?: RuntimeWithheldSurface;
   evidenceForce: RuntimeEvidenceForce;
   guardFlags: RuntimeGuardFlags;
   retrievalRoles?: RuntimeRetrievalRoleTrace[];

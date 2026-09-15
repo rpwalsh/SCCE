@@ -34,6 +34,7 @@ import { DEFAULT_USER_STYLE_PROFILE, dialogueTargetProfileId, updateDialogueStat
 import {
   REQUEST_COMMUNICATIVE_ACT_SOURCE_SYSTEM,
   classifyRequestCommunicativeAct,
+  type RequestCommunicativeActClassification,
   requestCommunicativeActModelFromPatterns,
   requestCommunicativeActStatePatch,
   type RequestCommunicativeActModel
@@ -1580,6 +1581,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           requestedAuthority,
           calibrationTaskClass,
           requestedAuthorityDecision: toJsonValue(requestedAuthorityDecision),
+          requestCommunicativeAct: requestCommunicativeActTrace(requestAct),
           requirementField: toJsonValue(requirementField),
           operatorActivations: toJsonValue(operatorActivations),
           answer: emission.answer,
@@ -5877,6 +5879,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           episodeId,
           requestedAuthority,
           requestedAuthorityDecision: toJsonValue(requestedAuthorityDecision),
+          requestCommunicativeAct: requestCommunicativeActTrace(requestAct),
           requirementField: toJsonValue(requirementField),
           operatorActivations: toJsonValue(operatorActivations),
           cognitiveProposals: toJsonValue(cognitiveProposals),
@@ -6030,6 +6033,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         requestedAuthority,
         calibrationTaskClass,
         requestedAuthorityDecision: toJsonValue(requestedAuthorityDecision),
+        requestCommunicativeAct: requestCommunicativeActTrace(requestAct),
         requirementField: toJsonValue(requirementField),
         operatorActivations: toJsonValue(operatorActivations),
         cognitiveProposals: toJsonValue(cognitiveProposals),
@@ -6787,6 +6791,18 @@ export function applyDialogueInterpretationAdjustmentsV2(input: {
   return adjustedCount
     ? { ...input.field, candidates }
     : input.field;
+}
+
+/** The act classification as the result carries it: the classifier's status travels with its verdict. */
+function requestCommunicativeActTrace(classification: RequestCommunicativeActClassification): JsonValue {
+  return toJsonValue({
+    schema: classification.schema,
+    status: classification.status,
+    actId: classification.actId,
+    logOddsOverNeutral: classification.logOddsOverNeutral,
+    matchedPatternCount: classification.matchedPatternIds.length,
+    classIds: classification.classIds
+  });
 }
 
 /** The longest prefix of `text` ending at a sentence boundary within `limit` characters, or "" when none does. Pure. */

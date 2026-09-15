@@ -207,6 +207,7 @@ export * from "./connector-governance.js";
 export * from "./program-repair-kernel.js";
 export * from "./observed-program-repair.js";
 export * from "./walsh-spine.js";
+export * from "./withheld-surface.js";
 export * from "./counterfactual-cognition.js";
 export * from "./safety-rail-engine.js";
 export * from "./runtime-orchestrator.js";

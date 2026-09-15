@@ -1,6 +1,6 @@
 # T21-withheld-turn-has-no-surface
 
-status: open
+status: closed -- the withhold is typed; speaking instead is T22
 claimed_by:
 
 With T19's carry closed, a sparse chat turn withholds correctly and then has nothing to say: offline at the T19 fix,
