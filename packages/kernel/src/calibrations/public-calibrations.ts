@@ -1000,7 +1000,11 @@ export const PUBLIC_CALIBRATIONS = Object.freeze({
   /** UTF-16 length at or below which a request unit is too short to name anything. */
   "units.generic_length_ceiling": 2,
   /** Share of adjacent repeated characters above which a request unit is degenerate rather than a name. */
-  "units.generic_repeated_character_ratio": 0.72
+  "units.generic_repeated_character_ratio": 0.72,
+
+  // --- contradiction pressure (proof-calculus.ts boundaries, production-turn-runtime.ts contradiction fallback)
+  /** Claim-versus-evidence contradiction above which the turn holds a real contradiction, not an absent fact. */
+  "calculus.contradiction_pressure_floor": 0.2
 });
 
 export type CalibrationKey = keyof typeof PUBLIC_CALIBRATIONS;
