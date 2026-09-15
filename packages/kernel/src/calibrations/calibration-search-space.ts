@@ -512,7 +512,10 @@ export const CALIBRATION_SEARCH_SPACE: Readonly<Record<CalibrationKey, Calibrati
 
   // --- generic unit signal
   "units.generic_length_ceiling": count(0, 4, [1, 2, 3]),
-  "units.generic_repeated_character_ratio": threshold(0.4, 0.99, [0.6, 0.72, 0.85])
+  "units.generic_repeated_character_ratio": threshold(0.4, 0.99, [0.6, 0.72, 0.85]),
+
+  // --- contradiction pressure
+  "calculus.contradiction_pressure_floor": threshold(0.05, 0.7, [0.1, 0.2, 0.35, 0.5])
 });
 
 /** Ids a calibrator may search, in a stable order so a run is reproducible. */

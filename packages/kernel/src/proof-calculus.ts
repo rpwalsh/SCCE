@@ -443,7 +443,7 @@ function boundaryReasons(input: {
   if (input.faithfulnessLcb < 0.2) out.push("low-hoeffding-faithfulness-lcb");
   if (!input.supportAssessmentAccepted) out.push("stability-adjusted-support-rejected");
   if (input.cover < 0.5) out.push("causal-minimum-cover-incomplete");
-  if (input.contradiction > 0.2) out.push("contradiction-pressure");
+  if (input.contradiction > calibrated("calculus.contradiction_pressure_floor")) out.push("contradiction-pressure");
   if (input.force === "invented") out.push("creative-or-structural-invention-not-proof");
   if (input.support < 0.12) out.push("low-causal-mass");
   if (input.leakage > 0.5) out.push("bonded-leakage");

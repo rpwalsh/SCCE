@@ -198,7 +198,8 @@ import {
 import { hybridRecall } from "./retrieval.js";
 import { captureResourceUsageSnapshot, measureResourceUsageDelta } from "./resource-usage-accounting.js";
 import { createRuntimeAcquisition } from "./runtime-acquisition.js";
-import { admissionTierDiagnostics, evidenceDiscriminatesAskedRelation, localEvidenceAnswerIsQuotationRecall, preferredLocalEvidenceAnswer, requestContentEvidenceUnits, requestRelationBeyondSourceIdentity, requestUnitSharesStem, sourceEvidenceAnchorsForRequest } from "./local-evidence-runtime.js";
+import { admissionTierDiagnostics, answerCoversRequest, evidenceDiscriminatesAskedRelation, localEvidenceAnswerIsQuotationRecall, preferredLocalEvidenceAnswer, requestContentEvidenceUnits, requestRelationBeyondSourceIdentity, requestUnitSharesStem, sourceEvidenceAnchorsForRequest } from "./local-evidence-runtime.js";
+import { isStructuralResidueSurface, structuralResidueScore } from "./structural-residue.js";
 import { normalizePriorKey, splitPriorUnits } from "./kernel-answer-primitives.js";
 import { codeLanguageForRequirementState, codeRequestObservedRequirements, codeRequestSignal, typedProgramBehaviorFromMetadata } from "./code-request.js";
 import { attachLearnedGraphPriorConstruct } from "./learned-graph-prior-runtime.js";
@@ -5122,7 +5123,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // asked attribute (shoe size, blood type, favorite tea), and once the wrong entity's evidence entirely (a
       // ship named "Alexander" answering a question about Alexander the Great). A candidate with no genuinely
       // cited, selected span has no contradicted span to speak and must fall through to abstention, not guess.
-      if (!spoken.text.trim() && judged.selected.scores.contradiction > 0.2 && selectedEvidence.length > 0) {
+      if (!spoken.text.trim() && judged.selected.scores.contradiction > calibrated("calculus.contradiction_pressure_floor") && selectedEvidence.length > 0) {
         const citedIds = new Set((judged.selected.evidenceIds ?? []).map(String));
         // A book's opening block is its apparatus, not a claim it can be contradicted on.
         const contradictedSpan = selectedEvidence.find(span => citedIds.has(String(span.id)) && !spanIsSourceFrontMatter(span));
@@ -5166,12 +5167,20 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           : requestRelationBeyondSourceIdentity(input.text, contradictedSpan, corpusFunctionSymbols());
         const boundedTextLower = boundedText.toLocaleLowerCase();
         const relatesBeyondSubject = relationUnits.length === 0 || relationUnits.some(unit => boundedTextLower.includes(unit.toLocaleLowerCase()));
-        if (boundedText && isUnparsedMarkupText(boundedText)) {
+        // Reciting a span verbatim is admission: the same gates primary selection applies (measured 2026-09-13, five turns recited a bibliography entry whose only tie to "whats up" was a URL slug).
+        const admissibility = contradictedSpan && boundedText
+          ? recitedEvidenceAdmissibility({ surface: boundedText, span: contradictedSpan, requestText: input.text })
+          : "admissible";
+        if (boundedText && admissibility !== "admissible") {
           kernelTrace({
-            stage: "mouth.contradiction_fallback.rejected_markup",
+            stage: `mouth.contradiction_fallback.rejected_${admissibility}`,
             label: "kernel.turn",
-            counts: { answerChars: boundedText.length },
-            support: { selectedCandidateId: judged.selected.id, evidenceId: contradictedSpan ? String(contradictedSpan.id) : null }
+            counts: { answerChars: boundedText.length, contentUnits: requestContentEvidenceUnits(input.text).length },
+            support: {
+              selectedCandidateId: judged.selected.id,
+              evidenceId: contradictedSpan ? String(contradictedSpan.id) : null,
+              residue: structuralResidueScore(boundedText)
+            }
           });
         } else if (boundedText && !relatesBeyondSubject) {
           kernelTrace({
@@ -5244,7 +5253,15 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         const discriminates = excerpt
           ? identityBound.some(span => evidenceDiscriminatesAskedRelation(excerpt.text, span, input.text, corpusFunctionSymbols()))
           : false;
-        if (excerpt && !discriminates) {
+        // The same apparatus gate primary selection applies: a summary of a source's reference list is not an answer.
+        if (excerpt && isStructuralResidueSurface(excerpt.text)) {
+          kernelTrace({
+            stage: "mouth.source_summary_fallback.withheld",
+            label: "kernel.turn",
+            counts: { identityBound: identityBound.length, answerChars: excerpt.text.length },
+            support: { selectedCandidateId: judged.selected.id, reason: "summary-is-structural-apparatus", residue: structuralResidueScore(excerpt.text) }
+          });
+        } else if (excerpt && !discriminates) {
           kernelTrace({
             stage: "mouth.source_summary_fallback.withheld",
             label: "kernel.turn",
@@ -6932,6 +6949,21 @@ export function learnedSurfaceRealizesNothing(input: Pick<LearnedSurfaceRecovery
   const requestUnits = surfaceUnits(input.requestText);
   return !surfaceUnits(input.learnedSurface).some(unit => !input.closedClassWords?.has(unit)
     && !requestUnits.some(requestUnit => requestUnitSharesStem(requestUnit, unit)));
+}
+
+/**
+ * Whether a fallback may recite an admitted span verbatim, under the same admission primary selection applies:
+ * mouth.ts refuses a surface that is unparsed markup, that the structural residue measure calls apparatus, or that
+ * covers none of the request. A recitation is admission, so it answers to all three. The relation is deliberately
+ * NOT required here: the contradiction lane exists for evidence that contradicts the request's premise, and that
+ * premise is by construction absent from the evidence. Pure.
+ */
+export function recitedEvidenceAdmissibility(input: { surface: string; span: EvidenceSpan; requestText: string }):
+  "admissible" | "markup" | "apparatus" | "uncovered" {
+  if (isUnparsedMarkupText(input.surface)) return "markup";
+  if (isStructuralResidueSurface(input.surface)) return "apparatus";
+  if (!answerCoversRequest([input.surface], input.span, requestContentEvidenceUnits(input.requestText), input.requestText)) return "uncovered";
+  return "admissible";
 }
 
 /** Request obligations a surface carries: each request content unit, plus each value the realization contract binds. */
