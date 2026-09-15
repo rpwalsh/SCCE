@@ -1140,6 +1140,7 @@ function learnedPatternSpans(
   if (requestSegments) {
     const units = unicodeLexicalSegments(surface).map(segment => segment.normalized);
     spans = [];
+    // Cost bound: occurrences of one learned surface collected from a single request.
     for (let index = 0; units.length && index + units.length <= requestSegments.length && spans.length < 32; index++) {
       if (units.every((unit, offset) => unit === requestSegments[index + offset]!.normalized)) {
         spans.push({ charStart: requestSegments[index]!.codePointStart, charEnd: requestSegments[index + units.length - 1]!.codePointEnd });

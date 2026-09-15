@@ -4806,6 +4806,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         const castClosedClass = surfaceLanguageMemory.models.length
           ? deriveClosedClassWords({ models: surfaceLanguageMemory.models })
           : corpusFunctionSymbols();
+        // Cost bound: the plan keeps at most MAX_SECTIONS (12) of these, so 24 never changes coverage.
         const creativeContentTerms = uniqueKernelStrings(surfaceUnits(creativeSubjectText)
           .filter(unit => /[\p{Letter}\p{Number}]/u.test(unit) && !castClosedClass.has(unit.toLocaleLowerCase()))).slice(0, 24);
         // An anchor containing function material anywhere after its first unit is a phrase, not a name: its head

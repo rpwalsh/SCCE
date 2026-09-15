@@ -3704,6 +3704,7 @@ function connectorPublicConfig(config: LoadedConfig): JsonValue {
  * carry megabytes of working memory, candidate traces, and planner state.
  */
 export function compactTurnResult(result: TurnResult): Record<string, unknown> {
+  // Cost bound: chat payload size; the full evidence list remains available through ?full=1.
   const evidence = result.evidence.slice(0, 24).map(compactEvidenceSpan);
   return {
     episodeId: result.episodeId,
