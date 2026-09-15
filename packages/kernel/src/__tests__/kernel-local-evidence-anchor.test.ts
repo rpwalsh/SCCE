@@ -40,6 +40,8 @@ import {
   proposeSourceExactEvidenceAnswer,
   sourceAnchoredEvidenceForRequest
 } from "../local-evidence-runtime.js";
+import { deriveClosedClassWords } from "../closed-class-words.js";
+import type { LanguageContinuationPopulation, LanguageProfileSignatureRow } from "../storage.js";
 import type { EventRangeQuery } from "../storage.js";
 import type { EpisodeId, GraphNode, Hyperedge } from "../types.js";
 import { mkdtempSync, readFileSync } from "node:fs";
@@ -1391,10 +1393,21 @@ describe("kernel local evidence source anchoring", () => {
       text: "Captain James T. Kirk was known for commanding the starship Enterprise in Star Trek.",
       alpha: 0.99
     });
-    const fixture = storageFixture({ evidence: [kirkMention], semanticFrames: [] });
+    // The corpus's own closed class, read off continuation counts as the hydrated runtime reads it: the
+    // interrogative is scaffolding because the corpus ranks it there, and "known" continues one context.
+    const corpusFunctionWords = ["the", "was", "for", "of", "in", "to", "a", "is", "and", "what"];
+    const continuationPopulation = continuationPopulationFixture("language.anchor", corpusFunctionWords);
+    const fixture = storageFixture({
+      evidence: [kirkMention],
+      semanticFrames: [],
+      languageProfileSignatures: profileSignatureFixture(corpusFunctionWords),
+      continuationPopulation
+    });
+    const closedClassWords = deriveClosedClassWords({ continuationPopulation });
     const proposal = proposeSourceExactEvidenceAnswer({
       requestText: "What was Captain Kirk known for?",
-      selectedEvidence: [kirkMention]
+      selectedEvidence: [kirkMention],
+      closedClassWords
     });
     expect(proposal?.plan.proofExcerpts?.[0]?.text).toContain("commanding the starship Enterprise");
     const kernel = createScceKernel({
@@ -2539,12 +2552,41 @@ function evidenceSpan(input: { id: string; sourceVersionId: SourceVersionId; tit
   };
 }
 
+/** The profile signatures a language identity is discovered from: one family of documents sharing its function words. */
+function profileSignatureFixture(leading: readonly string[]): LanguageProfileSignatureRow[] {
+  return Array.from({ length: 8 }, (_, index) => ({
+    id: `profile.anchor.${index}`,
+    sourceVersionId: `source:anchor-${index}:v1` as SourceVersionId,
+    sourceUri: "fixture://wiki/Star_Trek",
+    scripts: [{ script: "script:Latn", mass: 1 }],
+    direction: "ltr",
+    topContinuation: leading.map((word, rank) => [word, 20_000 - rank] as [string, number])
+  }));
+}
+
+/** A corpus-scale continuation population: the ranked symbols a closed class is read off, counts only. */
+function continuationPopulationFixture(languageId: string, leading: readonly string[]): LanguageContinuationPopulation {
+  const continuationCounts: Record<string, number> = {};
+  for (let index = 0; index < 192; index += 1) {
+    const first = String.fromCharCode(97 + Math.floor(index / 26));
+    const second = String.fromCharCode(97 + (index % 26));
+    continuationCounts[`fixture${first}${second}`] = 10_000 - index;
+  }
+  for (let index = 0; index < leading.length; index += 1) continuationCounts[leading[index]!] = 20_000 - index;
+  for (const content of ["captain", "kirk", "known", "starship", "enterprise"]) continuationCounts[content] = 1;
+  return { languageId, modelCount: 2_000, continuationCounts };
+}
+
 function storageFixture(input: {
   evidence: EvidenceSpan[];
   graph?: GraphSlice;
   semanticFrames?: SemanticFrameRecord[];
   languageProfiles?: LanguageProfile[];
   languagePatterns?: LanguagePatternRecord[];
+  /** Profile signatures the language identities are discovered from, exactly as the durable store pages them. */
+  languageProfileSignatures?: LanguageProfileSignatureRow[];
+  /** The corpus-scale continuation population the request's language identity owns. */
+  continuationPopulation?: LanguageContinuationPopulation;
 }): { storage: ScceStorage; events: ScceEvent[]; metrics: { graphReads: number; languageMemoryReads: number } } {
   const events: ScceEvent[] = [];
   const quarantined = new Map<string, QuarantineSource>();
@@ -2613,6 +2655,9 @@ function storageFixture(input: {
       putSemanticFrame: async () => undefined,
       putTranslationAlignment: async () => undefined,
       listNgramModels: async () => { metrics.languageMemoryReads++; return []; },
+      continuationPopulation: input.continuationPopulation
+        ? async ({ languageId }: { languageId: string }) => ({ ...input.continuationPopulation!, languageId })
+        : undefined,
       listNgramObservations: async () => { metrics.languageMemoryReads++; return []; },
       listLanguageUnits: async () => { metrics.languageMemoryReads++; return []; },
       listLanguagePatterns: async () => { metrics.languageMemoryReads++; return input.languagePatterns ?? []; },
@@ -2626,6 +2671,16 @@ function storageFixture(input: {
       { table: "source_versions", rows: input.evidence.length },
       { table: "semantic_proofs", rows: 0 }
     ] }),
+    languageIdentities: input.languageProfileSignatures
+      ? {
+        putIdentities: async () => undefined,
+        listIdentities: async () => [],
+        assignProfileLanguages: async () => undefined,
+        listProfileLanguages: async () => [],
+        listProfileSignatures: async (query: { afterId?: string; limit: number }) =>
+          (query.afterId ? [] : input.languageProfileSignatures!)
+      }
+      : undefined,
     init: async () => undefined,
     migrate: async () => undefined,
     verify: async () => ({ ok: true, tables: [], errors: [] }),
