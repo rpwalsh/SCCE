@@ -4832,7 +4832,56 @@ function semanticFrameBelongsToCluster(
     && profileIds.has(row.profileId);
 }
 
+// Compiling a record is pure in the record, and scoping re-derives every retained model on each turn; the result is
+// held weakly so a live hydration's model is reused rather than rebuilt, and adds no retention of its own.
+const compiledModelsByIdentity = new Map<string, WeakRef<KneserNeyModel>>();
+const compiledModelFinalizers = new FinalizationRegistry<string>(identity => {
+  if (compiledModelsByIdentity.get(identity)?.deref() === undefined) compiledModelsByIdentity.delete(identity);
+});
+
+// A write replaces model_json and updated_at together, so those plus the counts this record reports fix its content.
+function compiledModelIdentity(record: NgramModelRecord, row: Record<string, JsonValue>): string {
+  return [
+    record.id,
+    record.updatedAt,
+    numberOf(row.order),
+    numberOf(row.totalUnigramCount),
+    numberOf(row.observedSymbolCount),
+    numberOf(row.vocabularySize),
+    numberOf(row.totalContinuationTypes)
+  ].join("");
+}
+
 function ngramModelFromRecord(record: NgramModelRecord): KneserNeyModel | undefined {
+  const json = record.modelJson;
+  if (!json || typeof json !== "object" || Array.isArray(json)) return undefined;
+  const container = (json as Record<string, JsonValue>).model;
+  if (!container || typeof container !== "object" || Array.isArray(container)) return undefined;
+  const identity = compiledModelIdentity(record, container as Record<string, JsonValue>);
+  const cached = compiledModelsByIdentity.get(identity)?.deref();
+  if (cached) return cached;
+  compilations += 1;
+  const compiled = compileNgramModelFromRecord(record);
+  if (compiled) {
+    compiledModelsByIdentity.set(identity, new WeakRef(compiled));
+    compiledModelFinalizers.register(compiled, identity);
+  }
+  return compiled;
+}
+
+let compilations = 0;
+
+/** Test seam: how many records have been compiled into runtime models, and a reset of the memo. */
+export function ngramModelCompilationCount(): number {
+  return compilations;
+}
+
+export function clearNgramModelCompilationMemo(): void {
+  compiledModelsByIdentity.clear();
+  compilations = 0;
+}
+
+function compileNgramModelFromRecord(record: NgramModelRecord): KneserNeyModel | undefined {
   const json = record.modelJson;
   if (!json || typeof json !== "object" || Array.isArray(json)) return undefined;
   const model = (json as Record<string, JsonValue>).model;
