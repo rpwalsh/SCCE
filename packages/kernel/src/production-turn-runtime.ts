@@ -20,6 +20,14 @@ import { cognitiveProposalComparisonReceipt, planCognitiveProposals, type Cognit
 import { createConnectorGovernance, defaultConnectorConfigs } from "./connector-governance.js";
 import { createConstructSubstratePlanner } from "./construct-substrate.js";
 import { CORPUS_ROLE_IDS, type CorpusRoleId } from "./corpus-registry.js";
+import {
+  languagePopulationSelectionTrace,
+  measureLanguagePopulationSupport,
+  selectLanguagePopulation,
+  type LanguagePopulationSupport
+} from "./language-population-selection.js";
+import type { KneserNeyModel } from "./kneser-ney.js";
+import type { LanguageModelPopulation } from "./language-memory-runtime.js";
 import { createCorrectionMemory } from "./correction-memory.js";
 import {
   detectConflictingCorrections,
@@ -2914,9 +2922,25 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         : selectLanguageProfileClusterForSourceVersions(evidenceSurfaceClusters, evidenceSourceVersionIds);
       const evidenceSurfaceCluster = windowEvidenceCluster ?? evidenceOwnedCluster;
       // An evaluation condition without language memory reads none; the creative lane keeps its own contract.
-      const preferredSurfaceCorpusRole = deps.evaluationCondition?.flags.disableLanguageMemory && requestedAuthority !== "creative"
+      const authorityPriorSurfaceCorpusRole = deps.evaluationCondition?.flags.disableLanguageMemory && requestedAuthority !== "creative"
         ? undefined
         : surfaceCorpusRoleForAuthority(requestedAuthority);
+      // The realizer population, chosen from turn state. It is not authority and never feeds back into it.
+      const languagePopulation = selectLanguagePopulation({
+        requirementField,
+        authorityPriorRoleId: authorityPriorSurfaceCorpusRole,
+        registry: surfaceLanguageRuntime.corpusRegistry,
+        support: residentLanguagePopulationSupport(authorityLanguage.state, input.text)
+      });
+      const preferredSurfaceCorpusRole = deps.evaluationCondition?.flags.disableLanguageMemory && requestedAuthority !== "creative"
+        ? undefined
+        : languagePopulation.selectedCorpusRoleId;
+      kernelTrace({
+        stage: "language.population.selection",
+        label: "kernel.turn",
+        counts: { considered: languagePopulation.consideredRoleIds.length, hydratedModels: languagePopulation.hydratedModelIds.length },
+        support: languagePopulationSelectionTrace(languagePopulation) as Record<string, unknown>
+      });
       const exactCreativeAuthorityReady = Boolean(
         preferredSurfaceCorpusRole === CORPUS_ROLE_IDS.publicDomainProse
         && selectedSurfaceCluster
@@ -6270,6 +6294,25 @@ function surfaceCorpusRoleForAuthority(authority: RequestedAuthority): CorpusRol
     default:
       return undefined;
   }
+}
+
+// Support is measured only over models already resident: the selection may not pay for a durable hydrate.
+function residentLanguagePopulationSupport(
+  state: { models: readonly KneserNeyModel[]; modelPopulations: readonly LanguageModelPopulation[] },
+  text: string
+): LanguagePopulationSupport[] {
+  const scored: Array<{ corpusRoleId: CorpusRoleId; sourceSystem: string; modelId: string; model: KneserNeyModel }> = [];
+  for (const [index, model] of state.models.entries()) {
+    const population = state.modelPopulations[index];
+    if (!population?.corpusRoleId) continue;
+    scored.push({
+      corpusRoleId: population.corpusRoleId as CorpusRoleId,
+      sourceSystem: population.sourceSystem ?? "",
+      modelId: population.modelId,
+      model
+    });
+  }
+  return measureLanguagePopulationSupport(scored, text);
 }
 
 function requireHydratedSurfaceLanguage<T>(value: T | undefined, context: string): T {

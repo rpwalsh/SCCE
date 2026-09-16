@@ -104,6 +104,8 @@ export interface CorpusRegistryEntry {
   corpusKindId: CorpusRoleId;
   corpusRoleId: CorpusRoleId;
   languageMemoryEligible: boolean;
+  /** Joins the unscoped hydration fan-out, where every registered corpus is queried at once. */
+  unscopedHydrationEligible: boolean;
   graphEvidenceEligible: boolean;
   hydration: {
     priority: number;
@@ -193,10 +195,9 @@ const DEFAULT_REGISTRY: CorpusRegistryEntry[] = [
     languagePatterns: 512,
     semanticFrames: 512
   }),
-  // Disabled until an operator enables it: an empty dialogue population must never join an unscoped hydration,
-  // where every registered corpus is queried and a factual turn would silently draw on it. Priority is fan-out
-  // order, not a modeling weight.
-  { ...entry(CORPUS_SOURCE_SYSTEM_IDS.dialogue, "dialogue", CORPUS_ROLE_IDS.dialogue, 92, 1, false), enabled: false },
+  // Reachable only when a turn's own state selects the dialogue role. It stays out of the unscoped fan-out, where
+  // every registered corpus is queried and a factual turn would silently draw on it.
+  { ...entry(CORPUS_SOURCE_SYSTEM_IDS.dialogue, "dialogue", CORPUS_ROLE_IDS.dialogue, 92, 1, false), unscopedHydrationEligible: false },
   entry(CORPUS_SOURCE_SYSTEM_IDS.workspace, "workspace", CORPUS_ROLE_IDS.workspace, 90, 0.92, true),
   entry(CORPUS_SOURCE_SYSTEM_IDS.wikipedia, "wikipedia", CORPUS_ROLE_IDS.encyclopedic, 80, 0.9, true),
   entry(CORPUS_SOURCE_SYSTEM_IDS.gutenberg, "gutenberg", CORPUS_ROLE_IDS.publicDomainProse, 70, 0.78, true),
@@ -224,17 +225,24 @@ export function createCorpusRegistry(overrides: readonly CorpusRegistryOverride[
     .sort((a, b) => b.hydration.priority - a.hydration.priority || a.sourceSystem.localeCompare(b.sourceSystem));
 }
 
-export function languageMemoryEligibleCorpora(registry: readonly CorpusRegistryEntry[]): CorpusRegistryEntry[] {
+export type CorpusHydrationScope = "unscoped" | "role-scoped";
+
+export function languageMemoryEligibleCorpora(
+  registry: readonly CorpusRegistryEntry[],
+  scope: CorpusHydrationScope = "unscoped"
+): CorpusRegistryEntry[] {
   return registry
     .filter(item => item.enabled && item.languageMemoryEligible)
+    .filter(item => scope === "role-scoped" || item.unscopedHydrationEligible)
     .sort((a, b) => b.hydration.priority - a.hydration.priority || b.hydration.weight - a.hydration.weight || a.sourceSystem.localeCompare(b.sourceSystem));
 }
 
 export function languageMemoryHydrationPlan(
   registry: readonly CorpusRegistryEntry[],
-  totals: Partial<CorpusHydrationLimits> = {}
+  totals: Partial<CorpusHydrationLimits> = {},
+  scope: CorpusHydrationScope = "unscoped"
 ): CorpusHydrationPlanEntry[] {
-  const eligible = languageMemoryEligibleCorpora(registry);
+  const eligible = languageMemoryEligibleCorpora(registry, scope);
   const totalLimits = {
     ngramModels: totals.ngramModels ?? 144,
     ngramObservations: totals.ngramObservations ?? 24000,
@@ -303,6 +311,7 @@ function entry(
     corpusKindId: corpusRoleId,
     corpusRoleId,
     languageMemoryEligible: true,
+    unscopedHydrationEligible: true,
     graphEvidenceEligible,
     hydration: { priority, weight, limits: { ...limits } },
     ngram: { ...ngram }

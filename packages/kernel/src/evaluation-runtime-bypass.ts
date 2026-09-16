@@ -71,6 +71,7 @@ export function emptySurfaceLanguageMemory(): {
     surfaceProfile: undefined,
     state: {
       models: [],
+      modelPopulations: [],
       records: [],
       streamIds: [],
       languageHints: [],

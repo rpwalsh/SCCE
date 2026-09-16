@@ -389,7 +389,8 @@ export function createSurfaceLanguageRuntime(options: {
       languagePatterns: Math.min(Math.max(96, exactProfileOwnerCount * 96), hydrationLimits.languagePatterns),
       semanticFrames: Math.min(Math.max(128, exactProfileOwnerCount * 128), hydrationLimits.semanticFrames)
     };
-    const corpusPlan = languageMemoryHydrationPlan(corpusRegistry, hydrationLimits);
+    // A role-scoped hydration may reach a population the unscoped fan-out must never sweep in.
+    const corpusPlan = languageMemoryHydrationPlan(corpusRegistry, hydrationLimits, preferredCorpusRoleId ? "role-scoped" : "unscoped");
     const [active, requestControlPatterns, continuationPopulation] = await Promise.all([
       deps.storage.brainImports.active(),
       deps.storage.languageMemory.listLanguagePatterns({ sourceSystem: "corrections", limit: 2048 }),
@@ -1361,6 +1362,7 @@ export function createSurfaceLanguageRuntime(options: {
   }
 
   return {
+    corpusRegistry,
     languageMemorySummary,
     targetProfilePatternsCached,
     warmTargetProfilePatterns,

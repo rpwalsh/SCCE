@@ -33,6 +33,7 @@ export * from "./language-state-delta.js";
 export * from "./language-round-trip-learning.js";
 export * from "./creative-section-realization.js";
 export * from "./corpus-registry.js";
+export * from "./language-population-selection.js";
 export * from "./correction-memory.js";
 export * from "./control-plane-profiles.js";
 export * from "./detail-signal-adapter.js";

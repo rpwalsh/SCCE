@@ -71,8 +71,16 @@ const composedJoinProgramCache = new WeakMap<
   JoinProgramMixture | null
 >();
 
+/** Which corpus population a resident model came from. Index-aligned with `models`; the record already carried it. */
+export interface LanguageModelPopulation {
+  modelId: string;
+  sourceSystem?: string;
+  corpusRoleId?: string;
+}
+
 export interface LanguageMemoryRuntimeState {
   models: KneserNeyModel[];
+  modelPopulations: LanguageModelPopulation[];
   /** Exact identity-scoped continuation aggregate; absent means it was not measured. */
   continuationPopulation?: LanguageContinuationPopulation;
   records: NgramModelRecord[];
@@ -508,7 +516,7 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
         .sort((a, b) => b.count - a.count || compareCodePoint(a.symbol, b.symbol) || compareCodePoint(a.id, b.id))
         .slice(0, 20000);
       const reconstructed = modelsFromObservations(importedObservations);
-      const models = selectRuntimeModels(records, reconstructed);
+      const { models, populations: modelPopulations } = selectRuntimeModels(records, reconstructed);
       const streamIds = uniqueStrings([...records.map(record => record.streamId), ...importedObservations.map(item => item.streamId)]).sort(compareCodePoint);
       const languageHints = uniqueStrings([...records.map(record => record.languageHint), ...importedObservations.map(item => item.languageHint)]).sort(compareCodePoint);
       const observedSymbolCount = models.reduce((sum, model) => sum + model.observedSymbolCount, 0);
@@ -549,6 +557,7 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
       const competenceVector = competenceFromRuntime({ models, observedSymbolCount, vocabularySize, languageHints, importedUnits, importedPatterns, importedObservations, importedSemanticFrames, importedConstructionBundles: constructionMemory.bundles });
       return {
         models,
+        modelPopulations,
         records,
         streamIds,
         languageHints,
@@ -2017,7 +2026,7 @@ function scopeLanguageMemoryStateWith(
     ? [...meta.sourceVersionIds]
     : uniqueStrings(importedConstructionBundles.flatMap(bundle => bundle.sourceVersionIds.map(String))).sort(compareCodePoint);
   const reconstructed = modelsFromObservations(importedObservations);
-  const models = selectRuntimeModels(records, reconstructed);
+  const { models, populations: modelPopulations } = selectRuntimeModels(records, reconstructed);
   const observedSymbolCount = models.reduce((sum, model) => sum + model.observedSymbolCount, 0);
   const vocabularySize = uniqueVocabularySize(models) + uniqueUnitVocabularySize(importedUnits);
   const languageHints = uniqueStrings([
@@ -2051,6 +2060,7 @@ function scopeLanguageMemoryStateWith(
   });
   return {
     models,
+    modelPopulations,
     continuationPopulation,
     records,
     streamIds: uniqueStrings([
@@ -2149,6 +2159,7 @@ export function markLanguageMemoryStateUnscoped(
   });
   return {
     models: [],
+    modelPopulations: [],
     continuationPopulation: undefined,
     records: [],
     streamIds: [],
@@ -4716,19 +4727,34 @@ function modelsFromObservations(observations: readonly NgramObservation[]): Knes
   return models;
 }
 
-function selectRuntimeModels(records: readonly NgramModelRecord[], reconstructed: readonly KneserNeyModel[]): KneserNeyModel[] {
-  const candidates: Array<{ key: string; model: KneserNeyModel }> = [];
+function selectRuntimeModels(records: readonly NgramModelRecord[], reconstructed: readonly KneserNeyModel[]): {
+  models: KneserNeyModel[];
+  populations: LanguageModelPopulation[];
+} {
+  const candidates: Array<{ key: string; model: KneserNeyModel; population: LanguageModelPopulation }> = [];
   for (const record of [...records].sort((left, right) => compareCodePoint(left.id, right.id))) {
     const model = ngramModelFromRecord(record);
-    if (model) candidates.push({ key: `record:${record.id}`, model });
+    if (!model) continue;
+    const row = jsonRecord(record.modelJson);
+    candidates.push({
+      key: `record:${record.id}`,
+      model,
+      population: {
+        modelId: record.id,
+        ...(typeof row.sourceSystem === "string" && row.sourceSystem ? { sourceSystem: row.sourceSystem } : {}),
+        ...(typeof row.corpusRole === "string" && row.corpusRole ? { corpusRoleId: row.corpusRole } : {})
+      }
+    });
   }
-  for (const model of reconstructed) candidates.push({ key: `reconstructed:${model.order}`, model });
-  return candidates
+  for (const model of reconstructed) {
+    candidates.push({ key: `reconstructed:${model.order}`, model, population: { modelId: `reconstructed:${model.order}` } });
+  }
+  const selected = candidates
     .sort((left, right) => right.model.order - left.model.order
       || right.model.observedSymbolCount - left.model.observedSymbolCount
       || compareCodePoint(left.key, right.key))
-    .slice(0, 36)
-    .map(candidate => candidate.model);
+    .slice(0, 36);
+  return { models: selected.map(item => item.model), populations: selected.map(item => item.population) };
 }
 
 function recordSourceSystem(json: JsonValue | undefined): string | undefined {
