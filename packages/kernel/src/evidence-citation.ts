@@ -20,7 +20,9 @@ export interface EvidenceCitation {
  */
 export function evidenceCitation(span: EvidenceSpan): EvidenceCitation | undefined {
   const provenance = jsonRecord(span.provenance);
-  const title = kernelString(provenance.title);
+  // The same two places evidenceTitle reads: an ingestor that records the title under metadata leaves a span the
+  // kernel treats as titled and this cited as untitled, so the source it answered from never reached the reader.
+  const title = kernelString(provenance.title) ?? kernelString(jsonRecord(provenance.metadata).title);
   if (!title) return undefined;
   const sourceKind = kernelString(provenance.sourceKind);
   const corpus = kernelString(provenance.corpus);
