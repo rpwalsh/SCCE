@@ -3998,33 +3998,55 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         // candidates cheaply (a 24MB model detoasted 64 times was 50s of a warmup); the exact JSON-text window then
         // runs over the admitted rows only, which are read anyway. Stored size never exceeds text size, so the
         // second window's result is exactly the single-window result.
-        return (await storage.query<NgramModelRow>(
-          `SELECT ranked.* FROM (
-             SELECT model.*, octet_length(model.model_json::text) AS json_bytes,
-               SUM(octet_length(model.model_json::text)) OVER (ORDER BY model.trained_mass DESC, model.updated_at DESC, model.id ASC ROWS UNBOUNDED PRECEDING) AS running_json_bytes,
-               ROW_NUMBER() OVER (ORDER BY model.trained_mass DESC, model.updated_at DESC, model.id ASC) AS relevance_rank
-             FROM (
-               SELECT sized.id AS sized_id, sized.trained_mass, model.*
-               FROM (
-                 SELECT candidate.id, candidate.trained_mass,
-                   SUM(candidate.stored_bytes) OVER (ORDER BY candidate.trained_mass DESC, candidate.updated_at DESC, candidate.id ASC ROWS UNBOUNDED PRECEDING) AS running_stored_bytes,
-                   ROW_NUMBER() OVER (ORDER BY candidate.trained_mass DESC, candidate.updated_at DESC, candidate.id ASC) AS stored_rank
-                 FROM (
-                   SELECT model.id, model.updated_at, ${trainedMass} AS trained_mass, pg_column_size(model.model_json) AS stored_bytes
-                   FROM ${storage.table("ngram_models")} model
-                   WHERE ${where.join(" AND ")}
-                   ORDER BY ${trainedMass} DESC, model.updated_at DESC, model.id ASC
-                   LIMIT $${limitParam}
-                 ) candidate
-               ) sized
-               JOIN ${storage.table("ngram_models")} model ON model.id = sized.id
-               WHERE sized.running_stored_bytes <= $${params.length} OR sized.stored_rank = 1
-             ) model
-           ) ranked
-           WHERE ranked.running_json_bytes <= $${params.length} OR ranked.relevance_rank = 1
-           ORDER BY ranked.trained_mass DESC, ranked.updated_at DESC, ranked.id ASC LIMIT $${limitParam}`,
-          params
-        )).map(rowToNgramModel);
+        //
+        // Both windows now run here rather than in SQL, over exactly the same ordering and the same byte counts, so
+        // that the second one does not have to read a blob this process already holds: octet_length(model_json::text)
+        // detoasts and re-serialises every admitted row server-side, measured at 4.5-7.3s for 12 rows against the
+        // 0.6-1.5s the candidate ranking costs on its own.
+        const budgetBytes = Math.floor(query.maxTotalJsonBytes);
+        const candidates = await storage.query<NgramCandidateRow>(
+          `SELECT model.id, model.stream_id, model.language_hint, model.max_order, model.discount, model.updated_at, model.information_label,
+             pg_column_size(model.model_json) AS stored_bytes
+           FROM ${storage.table("ngram_models")} model
+           WHERE ${where.join(" AND ")}
+           ORDER BY ${trainedMass} DESC, model.updated_at DESC, model.id ASC
+           LIMIT $${limitParam}`,
+          params.slice(0, limitParam)
+        );
+        let runningStoredBytes = 0;
+        const sized = candidates.filter((row, index) => {
+          runningStoredBytes += Number(row.stored_bytes);
+          return runningStoredBytes <= budgetBytes || index === 0;
+        });
+        const jsonById = new Map<string, { json: JsonValue; jsonBytes: number }>();
+        const uncached: string[] = [];
+        for (const row of sized) {
+          const held = residentNgramModelJson(row.id, row.updated_at.getTime());
+          if (held) jsonById.set(row.id, held); else uncached.push(row.id);
+        }
+        if (uncached.length) {
+          const blobParams: unknown[] = [uncached];
+          const blobWhere = [`model.id=ANY($1::text[])`];
+          appendInformationAccess(storage, "model", blobParams, blobWhere);
+          const blobs = await storage.query<{ id: string; updated_at: Date; model_json: JsonValue; json_bytes: string }>(
+            `SELECT model.id, model.updated_at, model.model_json, octet_length(model.model_json::text) AS json_bytes
+             FROM ${storage.table("ngram_models")} model WHERE ${blobWhere.join(" AND ")}`,
+            blobParams
+          );
+          for (const blob of blobs) {
+            const entry = { json: blob.model_json, jsonBytes: Number(blob.json_bytes) };
+            jsonById.set(blob.id, entry);
+            rememberNgramModelJson(blob.id, blob.updated_at.getTime(), entry);
+          }
+        }
+        let runningJsonBytes = 0;
+        return sized.flatMap((row, index) => {
+          const held = jsonById.get(row.id);
+          if (!held) return [];
+          runningJsonBytes += held.jsonBytes;
+          if (runningJsonBytes > budgetBytes && index !== 0) return [];
+          return [candidateToNgramModel(row, held.json)];
+        }).slice(0, Number(params[limitParam - 1]));
       }
       return (await storage.query<NgramModelRow>(`SELECT * FROM ${storage.table("ngram_models")} model WHERE ${where.join(" AND ")} ORDER BY ${trainedMass} DESC, model.updated_at DESC, model.id ASC LIMIT $${limitParam}`, params)).map(rowToNgramModel);
     },
@@ -5913,6 +5935,40 @@ function rowToForecast(row: ForecastRow): ForecastState { return { id: row.id as
 
 interface NgramModelRow { id: string; stream_id: string; language_hint: string; max_order: number; discount: string; model_json: JsonValue; updated_at: Date; information_label: InformationLabel }
 function rowToNgramModel(row: NgramModelRow): NgramModelRecord { return { id: row.id, streamId: row.stream_id, languageHint: row.language_hint, maxOrder: Number(row.max_order), discount: Number(row.discount), modelJson: row.model_json, updatedAt: row.updated_at.getTime(), informationLabel: normalizeInformationLabel(row.information_label) }; }
+
+interface NgramCandidateRow { id: string; stream_id: string; language_hint: string; max_order: number; discount: string; updated_at: Date; information_label: InformationLabel; stored_bytes: string }
+function candidateToNgramModel(row: NgramCandidateRow, modelJson: JsonValue): NgramModelRecord { return { id: row.id, streamId: row.stream_id, languageHint: row.language_hint, maxOrder: Number(row.max_order), discount: Number(row.discount), modelJson, updatedAt: row.updated_at.getTime(), informationLabel: normalizeInformationLabel(row.information_label) }; }
+
+// A read-through cache of model_json, not a shadow store: PostgreSQL still decides which rows a listing returns, the
+// key carries the row version a write always bumps alongside the blob, and the value is held weakly so an entry only
+// survives while a hydration already holds that blob anyway.
+const residentNgramModelJsonByVersion = new Map<string, { json: WeakRef<object>; jsonBytes: number }>();
+const residentNgramModelJsonFinalizers = new FinalizationRegistry<string>(key => {
+  if (residentNgramModelJsonByVersion.get(key)?.json.deref() === undefined) residentNgramModelJsonByVersion.delete(key);
+});
+function ngramModelVersionKey(id: string, updatedAtMs: number): string { return `${id}${updatedAtMs}`; }
+function residentNgramModelJson(id: string, updatedAtMs: number): { json: JsonValue; jsonBytes: number } | undefined {
+  const entry = residentNgramModelJsonByVersion.get(ngramModelVersionKey(id, updatedAtMs));
+  const json = entry?.json.deref();
+  return json ? { json: json as JsonValue, jsonBytes: entry!.jsonBytes } : undefined;
+}
+function rememberNgramModelJson(id: string, updatedAtMs: number, entry: { json: JsonValue; jsonBytes: number }): void {
+  if (!entry.json || typeof entry.json !== "object" || !Number.isFinite(entry.jsonBytes)) return;
+  const key = ngramModelVersionKey(id, updatedAtMs);
+  residentNgramModelJsonByVersion.set(key, { json: new WeakRef(entry.json as object), jsonBytes: entry.jsonBytes });
+  residentNgramModelJsonFinalizers.register(entry.json as object, key);
+}
+
+/** Test seam: how many model_json blobs this process would not re-read, and a reset of the cache. */
+export function residentNgramModelJsonCount(): number {
+  let held = 0;
+  for (const entry of residentNgramModelJsonByVersion.values()) if (entry.json.deref()) held += 1;
+  return held;
+}
+
+export function clearResidentNgramModelJson(): void {
+  residentNgramModelJsonByVersion.clear();
+}
 
 interface NgramObservationRow { id: string; stream_id: string; language_hint: string; order_n: number; history: string[]; symbol: string; count: string; field_weight: string; source_version_id: string | null; evidence_id: string | null; observed_at: Date; metadata_json: JsonValue; information_label: InformationLabel }
 function rowToNgramObservation(row: NgramObservationRow): NgramObservation { return { id: row.id, streamId: row.stream_id, languageHint: row.language_hint, order: Number(row.order_n), history: row.history, symbol: row.symbol, count: Number(row.count), fieldWeight: Number(row.field_weight), sourceVersionId: row.source_version_id ? row.source_version_id as SourceVersionId : undefined, evidenceId: row.evidence_id ? row.evidence_id as EvidenceId : undefined, observedAt: row.observed_at.getTime(), metadata: row.metadata_json, informationLabel: normalizeInformationLabel(row.information_label) }; }
