@@ -3680,9 +3680,8 @@ function generatedCandidatesFromFrames(
   const conversationMemory = preflightCreative
     ? undefined
     : conversationMemoryCandidate(input, discoursePlan, languageMemory, generationWorkBudget);
-  const actBound = preflightCreative
-    ? undefined
-    : conversationalActBindingCandidate(input, discoursePlan, hasher);
+  // Chit-chat projects to the creative authority; the lane's own gate already skips a real invention construct.
+  const actBound = conversationalActBindingCandidate(input, discoursePlan, hasher);
   const conversational = [...(actBound ? [actBound] : []), ...(conversationMemory ? [conversationMemory] : [])];
   if (!discoursePlan.units.length) return uniqueSurfaceCandidates(conversational);
   const creativeRequested = isCreativeRequested(input, plan);

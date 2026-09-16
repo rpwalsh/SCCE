@@ -164,7 +164,7 @@ function retrievedSpan(id: string, text: string): EvidenceSpan {
 
 async function speakWith(
   act: RequestCommunicativeActClassification | undefined,
-  options: { evidence?: readonly EvidenceSpan[]; requestText?: string } = {}
+  options: { evidence?: readonly EvidenceSpan[]; requestText?: string; requestedAuthority?: "creative" } = {}
 ): Promise<{ text: string; trace: TraceRow[] }> {
   const dir = mkdtempSync(join(tmpdir(), "scce-act-binding-"));
   const traceFile = join(dir, "trace.jsonl");
@@ -204,6 +204,7 @@ async function speakWith(
       entailment,
       requestText,
       conversationTurns: turns,
+      ...(options.requestedAuthority ? { requestedAuthority: options.requestedAuthority } : {}),
       ...(act ? { requestCommunicativeAct: act } : {}),
       languageMemory: { ...state, models: [TRAINED], importedConstructionBundles: scopedBundles() }
     });
@@ -311,6 +312,29 @@ describe("the conversation-bound lane is reachable from a production speak", () 
     }
     expect(factual.text).not.toContain("voice synthesizer");
   }, 180_000);
+
+  // Live 2026-09-16: chit-chat projects to the creative authority, and the call site skipped the lane on exactly
+  // that authority -- so the one lane built for conversation never ran on a conversational turn, and traced nothing.
+  it("still runs when the turn's authority projected creative, the authority conversation itself projects to", async () => {
+    const creative = await speakWith(classification(), { requestedAuthority: "creative" });
+    const skipped = creative.trace.filter(row => row.stage === "mouth.conversational_act_binding.skipped");
+    const row = bindingRow(creative.trace);
+    // A lane that neither produced a candidate nor named a gate was never entered at all.
+    expect({ candidate: Boolean(row), skipped: skipped.map(item => item.support?.reason ?? null) })
+      .toEqual({ candidate: true, skipped: [] });
+    const surface = row?.support?.surface as string | null | undefined;
+    expect(typeof surface).toBe("string");
+    expect(surface).toBeTruthy();
+    const inventory = candidateCommitmentInventory({
+      text: surface as string,
+      evidenceTexts: [],
+      conversationTurns: TURNS,
+      claimBases: [],
+      models: [TRAINED]
+    });
+    expect(inventory.unlicensedUnits.map(unit => unit.surface)).toEqual([]);
+    expect(inventory.authorityClassId).not.toBe("authority.grounded_factual");
+  }, 120_000);
 
   it("produces nothing when the request's act was never classified, and nothing when it is the neutral lookup act", async () => {
     expect(bindingRow((await speakWith(undefined)).trace)).toBeUndefined();
