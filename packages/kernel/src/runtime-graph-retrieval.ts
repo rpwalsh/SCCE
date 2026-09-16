@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { calibrated } from "./calibrations/prod-calibrations.js";
+import { corpusIdentitySignals } from "./corpus-identity.js";
 import { currentEvaluationCacheOwner, type EvaluationTraceRecorder } from "./evaluation-trace.js";
 import { createCandidateEngine } from "./candidate.js";
 import { traceEvent } from "./debug/trace.js";
@@ -1203,6 +1204,40 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
     const candidateAnchors = uniqueKernelStrings([...namedSubjectSingles, ...subsumedSubjectAnchors, ...specificAnchors].length
       ? [...namedSubjectSingles, ...subsumedSubjectAnchors, ...specificAnchors]
       : anchors).slice(0, 5);
+    // The concept a premise attributes to its subject is a source of its own. "did martha washington invent the
+    // concept of using flags to represent nations?" searched five phrase groups (using|flags, flags|to, ...) and
+    // never the word "flags", so the Flag article that dates the practice before her birth was not in the pool and
+    // the temporal counterexample could not form. One group of the request's content symbols outside its leading
+    // anchor, widened by the corpus's own morphology (flags -> flag); a group can only add candidates.
+    // Ranked by the corpus's own unigram counts, rarest first: the rare term is what the premise is about ("flags",
+    // not "using"). Each of the two rarest gets its own group, led by its shortest learned stem ("flag") so the
+    // title seeding finds the article titled with it rather than only the sentences that inflect it.
+    const leadingAnchorUnits = new Set(splitPriorUnits(normalizePriorKey(anchors[0] ?? "")).filter(Boolean));
+    const corpusCount = (unit: string) => languageModels.reduce((sum, model) => sum + (model.unigramCounts[unit] ?? 0), 0);
+    const conceptUnits = uniqueKernelStrings(splitPriorUnits(normalizePriorKey(text))
+      .map(unit => unit.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ""))
+      .filter(Boolean))
+      .filter(unit => !leadingAnchorUnits.has(unit) && !genericQuestionSignal(unit) && [...unit].length >= 4)
+      .sort((left, right) => corpusCount(left) - corpusCount(right) || [...right].length - [...left].length)
+      .slice(0, 2);
+    // A concentrated run swallows its own units by containment and the phrase branch below then searches only
+    // pairs, so the request's rarest unit is restored to the group its phrases already form.
+    const identitySignals = corpusIdentitySignals();
+    const searchedAloneUnits = new Set([
+      ...candidateAnchors
+        .map(anchor => normalizePriorKey(anchor))
+        .filter(anchor => splitPriorUnits(anchor).filter(Boolean).length === 1),
+      ...conceptUnits
+    ]);
+    // Only the rarest, and only once: a commoner unit is already bounded by the pairs and its postings are the
+    // corpus's opening blocks, which the ranking puts ahead of the score.
+    const containedUnit = identitySignals
+      ? uniqueKernelStrings(candidateAnchors.flatMap(anchor => splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean)))
+        .filter(unit => !searchedAloneUnits.has(unit) && !genericQuestionSignal(unit))
+        .map(unit => ({ unit, spread: identitySignals.spread.get(unit) ?? Number.POSITIVE_INFINITY }))
+        .filter(entry => entry.spread > 0 && entry.spread <= identitySignals.concentration)
+        .sort((left, right) => left.spread - right.spread)[0]?.unit
+      : undefined;
     const groups: string[][] = [];
     for (const anchor of candidateAnchors) {
       // A short token trailing this exact anchor phrase (e.g. "tos" after
@@ -1237,7 +1272,10 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
           return units.length >= 2 && units.reduce((sum, unit) => sum + [...normalizePriorKey(unit)].length, 0) >= 6;
         });
       if (phraseFeatures.length) {
-        groups.push(contentBearingFeatures(uniqueKernelStrings([...phraseFeatures.slice(0, 4), ...trailingFeatures]), functionUnits));
+        const containedUnitFeatures = containedUnit && splitPriorUnits(normalizePriorKey(anchor)).includes(containedUnit)
+          ? [`anchor:sym:${containedUnit}`]
+          : [];
+        groups.push(contentBearingFeatures(uniqueKernelStrings([...phraseFeatures.slice(0, 4), ...trailingFeatures, ...containedUnitFeatures]), functionUnits));
         continue;
       }
       const symFeatures = ordered
@@ -1267,22 +1305,6 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
       const mergedSymFeatures = contentBearingFeatures(uniqueKernelStrings([...symFeatures, ...boundPairFeatures, ...learnedSymFeatures, ...trailingFeatures]), functionUnits);
       if (mergedSymFeatures.length) groups.push(mergedSymFeatures);
     }
-    // The concept a premise attributes to its subject is a source of its own. "did martha washington invent the
-    // concept of using flags to represent nations?" searched five phrase groups (using|flags, flags|to, ...) and
-    // never the word "flags", so the Flag article that dates the practice before her birth was not in the pool and
-    // the temporal counterexample could not form. One group of the request's content symbols outside its leading
-    // anchor, widened by the corpus's own morphology (flags -> flag); a group can only add candidates.
-    // Ranked by the corpus's own unigram counts, rarest first: the rare term is what the premise is about ("flags",
-    // not "using"). Each of the two rarest gets its own group, led by its shortest learned stem ("flag") so the
-    // title seeding finds the article titled with it rather than only the sentences that inflect it.
-    const leadingAnchorUnits = new Set(splitPriorUnits(normalizePriorKey(anchors[0] ?? "")).filter(Boolean));
-    const corpusCount = (unit: string) => languageModels.reduce((sum, model) => sum + (model.unigramCounts[unit] ?? 0), 0);
-    const conceptUnits = uniqueKernelStrings(splitPriorUnits(normalizePriorKey(text))
-      .map(unit => unit.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ""))
-      .filter(Boolean))
-      .filter(unit => !leadingAnchorUnits.has(unit) && !genericQuestionSignal(unit) && [...unit].length >= 4)
-      .sort((left, right) => corpusCount(left) - corpusCount(right) || [...right].length - [...left].length)
-      .slice(0, 2);
     for (const unit of conceptUnits) {
       const forms = uniqueKernelStrings([
         ...learnedStemForms(unit, languageModels),
