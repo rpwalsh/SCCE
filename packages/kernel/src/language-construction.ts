@@ -1145,10 +1145,11 @@ function instantiateConstruction(input: {
   }
   const evidenceIds = uniqueSorted(trace.flatMap(part => part.evidenceIds));
   // Every emitted part carries its own licence: document evidence, or a verified conversation span for a filler.
-  if (process.env.SCCE_DBG) console.log("DBG", JSON.stringify({ licensed: [...conversationLicensedVariantIds], trace: trace.map(p => ({ k: p.kind, v: p.variantId, e: p.evidenceIds.length, s: p.surface })), text, covers: traceCoversText(text, trace) }));
-  const unlicensedPart = trace.some(part => !hasEvidenceReferences(part.evidenceIds)
-    && !(part.kind === "slot" && part.variantId !== undefined && conversationLicensedVariantIds.has(part.variantId)));
-  if (unlicensedPart || !traceCoversText(text, trace)) {
+  // A part is licensed by document evidence or, for a slot, by a verified span of this conversation.
+  const partLicensed = (part: LearnedRealizationTracePart): boolean => hasEvidenceReferences(part.evidenceIds)
+    || (part.kind === "slot" && part.variantId !== undefined && conversationLicensedVariantIds.has(part.variantId));
+  const unlicensedPart = trace.some(part => !partLicensed(part));
+  if (unlicensedPart || !traceCoversText(text, trace, partLicensed)) {
     return {
       issue: {
         code: LANGUAGE_CONSTRUCTION_REJECTION_IDS.trace,
@@ -1276,7 +1277,7 @@ function traceableOrigins(origins: readonly LearnedSurfaceOrigin[], expected: st
   ));
 }
 
-function traceCoversText(text: string, trace: readonly LearnedRealizationTracePart[]): boolean {
+function traceCoversText(text: string, trace: readonly LearnedRealizationTracePart[], licensed: (part: LearnedRealizationTracePart) => boolean): boolean {
   if (trace.length === 0) return false;
   const boundaries = graphemeBoundaries(text);
   let cursor = 0;
@@ -1286,7 +1287,7 @@ function traceCoversText(text: string, trace: readonly LearnedRealizationTracePa
       || !boundaries.has(part.outputStart)
       || !boundaries.has(part.outputEnd)
       || text.slice(part.outputStart, part.outputEnd) !== part.surface
-      || !hasEvidenceReferences(part.evidenceIds)) return false;
+      || !licensed(part)) return false;
     cursor = part.outputEnd;
   }
   return cursor === text.length;
