@@ -98,7 +98,7 @@ import { canonicalStringify, clamp01, featureSet, mean, toJsonValue, weightedJac
 import { evaluateConstructionCycleConsistency, type ConstructionCycleConsistencyOutcome } from "./construction-cycle-consistency.js";
 import { sourceRelationConstructionBindingId } from "./graph-surface-alignment.js";
 import { containsUnresolvedSurfaceKey } from "./localization.js";
-import { isTerminalNonAssertiveRuntimeMotionCandidate } from "./runtime-motion.js";
+import { isNonAssertiveRuntimeMotionConstruct, isTerminalNonAssertiveRuntimeMotionCandidate } from "./runtime-motion.js";
 import { ensureSurfaceSentence as ensureUnicodeSurfaceSentence, hasUncasedNonLatinLetter, hasUppercaseLetter, isDegenerateBareSurface, isSentenceBoundarySymbol, splitSurfaceSentences as splitUnicodeSurfaceSentences, structurallyCompleteSurface, tidySurfaceText } from "./surface-linguistics.js";
 import { CALIBRATION_TASK_CLASS_IDS, type CalibrationModelSet } from "./calibration-spine.js";
 import {
@@ -640,11 +640,8 @@ function claimMouthGenerationWork(budget: MouthGenerationWorkBudget, requestedEx
 
 export function createMouth(options: { languageMemory: LanguageMemoryRuntime; correctionMemory: CorrectionMemory; hashText: (text: string) => string; hasher?: Hasher }): Mouth {
   const constructionHasher: Hasher = options.hasher ?? { digestHex: options.hashText };
-  return {
+  const learned: Mouth = {
     async speak(input) {
-      if (input.selectedCandidate && isTerminalNonAssertiveRuntimeMotionCandidate(input.selectedCandidate)) {
-        return createDeterministicMouth({ hashText: options.hashText }).speak(input);
-      }
       const mouthStartedAt = Date.now();
       const generationWorkBudget = createMouthGenerationWorkBudget(mouthStartedAt, input);
       let mouthPhaseStartedAt = mouthStartedAt;
@@ -1437,6 +1434,19 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         },
         surfacePlan: plan
       };
+    }
+  };
+  return {
+    async speak(input) {
+      // The motion boundary is the fallback for an unresolved turn, not a reason to skip the learned lane: it used
+      // to return here, so nothing ever produced a conversational candidate on a zero-evidence turn.
+      if (!input.selectedCandidate || !isTerminalNonAssertiveRuntimeMotionCandidate(input.selectedCandidate)) {
+        return learned.speak(input);
+      }
+      const spoken = await learned.speak(input);
+      // The motion surface stays the deterministic realizer's; only a surface the learned lane produced itself speaks.
+      const spokeItsOwn = spoken.text.trim().length > 0 && spoken.realizationTrace.selected.id !== input.selectedCandidate.id;
+      return spokeItsOwn ? spoken : createDeterministicMouth({ hashText: options.hashText }).speak(input);
     }
   };
 }
@@ -3754,7 +3764,9 @@ function generatedCandidatesFromFrames(
     sentenceCandidates: spokenSentences,
     boundaryDecisions: assembly.boundaryDecisions
     },
-    ...creativeVariants
+    ...creativeVariants,
+    // A frame assembly does not retire the conversational candidate; both compete on the same energy ranking.
+    ...(conversationMemory ? [conversationMemory] : [])
   ]);
 }
 
@@ -4511,46 +4523,68 @@ function conversationMemoryCandidate(
   generationWorkBudget: MouthGenerationWorkBudget
 ): SurfaceCandidate | undefined {
   if (semanticAnswerConstructState(input.construct)) return undefined;
-  if (generatedConstructSurface(input.construct)) return undefined;
+  // The runtime-motion boundary is not a selected meaning; treating it as one left this producer unreachable.
+  if (generatedConstructSurface(input.construct) && !isNonAssertiveRuntimeMotionConstruct(input.construct)) return undefined;
   if (input.construct.program || isWorkspaceKernelSpeakInput(input)) return undefined;
   if (input.evidence.length || input.entailment.evidenceIds.length) return undefined;
   if (importSummaryRequested(input.entailment.claim.text)) return undefined;
+  // The conversation's own turns are what can license this surface, so they are also what it is conditioned on.
+  const conversationContext = uniqueStrings(speakConversationTurns(input).flatMap(turn => splitWhitespace(turn.surface)));
+  let generation: LanguageGenerationResult | undefined;
+  let text: string | undefined;
+  const refusals: string[] = [];
   const generationExtent = claimMouthGenerationWork(
     generationWorkBudget,
     Math.max(18, Math.min(72, discoursePlan.units[0]?.generationExtent ?? 36))
   );
   if (generationExtent === undefined) return undefined;
-  const generation = languageMemory.generate({
-    state: input.languageMemory,
-    targetLanguageProfile: input.languageProfile,
-    // Generic conversation has no realization frames, but it can still have
-    // semantic material selected by the runtime (for example a referent or a
-    // requested discourse object). Keep those surfaces as bounded generation
-    // context so the learned realizer can stay on topic. They are deliberately
-    // not required terms, evidence, or candidate authority.
-    contextSymbols: uniqueStrings([
-      mouthSubjectText(input),
-      ...(input.dialogueUserStyleProfile?.preferredVocabulary ?? []),
-      ...dialogueContinuityContextSymbols(input),
-      ...(input.semanticInput?.slots ?? [])
-        .slice(0, 8)
-        .map(slot => admittedSemanticSlotSurface(input, slot.roleId, slot.value))
-        .filter(Boolean)
-    ]).slice(0, 9),
-    requiredTerms: [],
-    frames: [],
-    generationExtent,
-    styleProfileId: discoursePlan.targetStyleProfileId,
-    registerVector: discoursePlan.registerVector,
-    detailProfileId: discoursePlan.targetDetailProfileId
+  // Re-samples of the same discourse unit, not extra units: the call budget counts units, its deadline bounds this.
+  // Cost bound: 12 deterministic draws, stopped early by the budget's own latency deadline.
+  for (let attempt = 0; attempt < 12 && !text && Date.now() < generationWorkBudget.deadlineAtMs; attempt++) {
+    const sampled = languageMemory.generate({
+      state: input.languageMemory,
+      targetLanguageProfile: input.languageProfile,
+      // Generic conversation has no realization frames, but it can still have
+      // semantic material selected by the runtime (for example a referent or a
+      // requested discourse object). Keep those surfaces as bounded generation
+      // context so the learned realizer can stay on topic. They are deliberately
+      // not required terms, evidence, or candidate authority.
+      contextSymbols: uniqueStrings([
+        mouthSubjectText(input),
+        ...(input.dialogueUserStyleProfile?.preferredVocabulary ?? []),
+        ...dialogueContinuityContextSymbols(input),
+        ...(input.semanticInput?.slots ?? [])
+          .slice(0, 8)
+          .map(slot => admittedSemanticSlotSurface(input, slot.roleId, slot.value))
+          .filter(Boolean),
+        ...conversationContext
+      ]).slice(-9),
+      requiredTerms: [],
+      frames: [],
+      generationExtent,
+      ...(attempt > 0 ? { choiceSeed: `conversation-memory:${attempt}` } : {}),
+      styleProfileId: discoursePlan.targetStyleProfileId,
+      registerVector: discoursePlan.registerVector,
+      detailProfileId: discoursePlan.targetDetailProfileId
+    });
+    const generatedText = usableConversationMemoryText(sampled.text, mouthEchoQuestionText(input));
+    const admissible = generatedText && admissibleLearnedSurface(generatedText, sampled) ? generatedText : undefined;
+    if (!admissible) { refusals.push(`inadmissible:${sampled.text.slice(0, 48)}`); continue; }
+    if (isBoundaryGlyph(admissible) || ![...admissible].some(char => isLetterChar(char) || isDigitChar(char)) || looksLikeOrphanLanguageFragment(admissible)) { refusals.push(`fragment:${admissible.slice(0, 48)}`); continue; }
+    if (questionEchoHits(admissible, mouthEchoQuestionText(input)).length) { refusals.push(`echo:${admissible.slice(0, 48)}`); continue; }
+    // Replaces the turn-verdict gate: what licenses this surface is its own units' provenance, not what the turn proved.
+    const inventory = speakCommitmentInventory(admissible, input);
+    if (!candidateCommitmentsLicensed(inventory)) { refusals.push(`unlicensed:${inventory.unlicensedUnits.map(unit => unit.surface).join(",")}`); continue; }
+    generation = sampled;
+    text = admissible;
+  }
+  traceEvent((globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace, {
+    stage: "mouth.conversation_memory.candidate",
+    label: "mouth.speak",
+    counts: { attempts: refusals.length + (text ? 1 : 0), produced: text ? 1 : 0 },
+    support: { surface: text ?? null, refusals: refusals.slice(0, 8), conversationContext: conversationContext.slice(-9) }
   });
-  const generatedText = usableConversationMemoryText(generation.text, mouthEchoQuestionText(input));
-  const text = generatedText && admissibleLearnedSurface(generatedText, generation) ? generatedText : undefined;
-  if (!text) return undefined;
-  if (isBoundaryGlyph(text) || ![...text].some(char => isLetterChar(char) || isDigitChar(char)) || looksLikeOrphanLanguageFragment(text)) return undefined;
-  if (generatedText && questionEchoHits(text, mouthEchoQuestionText(input)).length) return undefined;
-  // Replaces the turn-verdict gate: what licenses this surface is its own units' provenance, not what the turn proved.
-  if (!candidateCommitmentsLicensed(speakCommitmentInventory(text, input))) return undefined;
+  if (!generation || !text) return undefined;
   return {
     id: "candidate:generated:conversation-memory",
     style: "surface.path.generated.conversation_memory",

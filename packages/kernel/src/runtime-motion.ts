@@ -148,6 +148,12 @@ export function isTerminalNonAssertiveRuntimeMotionCandidate(candidate: Candidat
 }
 
 
+/** The non-assertive motion boundary: it marks a turn nothing resolved, never a selected meaning to realize. */
+export function isNonAssertiveRuntimeMotionConstruct(construct: ConstructGraph): boolean {
+  return construct.nodes.some(node => jsonRecord(node.metadata).schema === "scce.runtime_motion_construct.v1");
+}
+
+
 export function attachRuntimeDiagnosticConstruct(input: {
   construct: ConstructGraph;
   enabled: boolean;

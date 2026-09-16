@@ -94,6 +94,8 @@ export function conversationalSession(options?: { corpus?: string }) {
   const trained = trainKneserNey(options?.corpus ?? DIALOGUE_POPULATION, { order: 3 });
   // The live record shape, measured 2026-09-15: all 11 persisted dialogue models carry a profileId and a corpusRole,
   // and all 7 profiles they name are the only rows in language_profiles with no language identity assigned.
+  // provenanceClass added 2026-09-15 from the live rows (sourceSystem='dialogue' -> 'learned_language_prior'); without
+  // it the fixture's model is invisible to the generation provenance report and no learned surface can be admitted.
   const modelRecord = {
     id: "ngram:dialogue:3",
     streamId: "stream.dialogue",
@@ -103,6 +105,7 @@ export function conversationalSession(options?: { corpus?: string }) {
     modelJson: {
       model: trained as unknown as JsonValue,
       sourceSystem: "dialogue",
+      provenanceClass: "learned_language_prior",
       profileId: "language_profile.dialogue",
       corpusRole: CORPUS_ROLE_IDS.dialogue
     } as unknown as JsonValue,
