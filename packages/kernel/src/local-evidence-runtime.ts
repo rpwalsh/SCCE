@@ -1,6 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { corpusIdentityGeneration, corpusIdentitySurface, corpusIdentityUnits, corpusNamedIdentities } from "./corpus-identity.js";
+import { contentRuns, corpusIdentityGeneration, corpusIdentitySignals, corpusIdentitySurface, corpusIdentityUnits, corpusNamedIdentities } from "./corpus-identity.js";
 import { corpusUnitFormVerdict, freeFormLexiconGeneration } from "./free-form-lexicon.js";
 import { SEMANTIC_CONSTRAINT, SEMANTIC_VERDICT, SEMANTIC_SOURCE } from "./semantic-codes.js";
 import { atomizeText } from "./semantic-proof-system.js";
@@ -2562,6 +2562,46 @@ function codeSpanBindsRequestedIdentifier(span: EvidenceSpan, requestText: strin
 }
 
 
+/**
+ * Whether the corpus documents what an anchor names, as opposed to merely using its words.
+ *
+ * Containment admission -- a title that CONTAINS a request unit, a span whose text mentions one -- has no notion of
+ * what the request is about, so a single shared unit carried a whole turn: "the pump feed reads high" was answered
+ * with the insulin pump article, and "hey, how is it going?" with whatever spans said "going". The corpus already
+ * measures the difference and this file already states it: a run whose units appear together in few sources is a
+ * subject it documents, and where "few" begins is the Otsu split of the corpus's own spread distribution, never a
+ * declared number. A run above that split is a word the corpus uses, and it names nothing.
+ *
+ * Two measurements, both primed on the turn:
+ *   - a run the corpus carries as a whole source identity documents itself, whatever its spread;
+ *   - otherwise the run's spread must be measured, positive and at or below the concentration split, AND the run
+ *     must not sit inside a longer run of the same request that the corpus measured at zero sources. No source
+ *     carrying "pump feed reads high" together means the corpus has nothing about what the request names, and its
+ *     parts are then the request's words rather than its subject -- the same reason `corpusNamedRuns` drops a run
+ *     contained in a longer accepted one.
+ *
+ * Unmeasured is not zero: with no primed signal, or none for this run, admission is left exactly as it was.
+ */
+function corpusDocumentsAnchor(anchor: string, requestText: string): boolean {
+  const state = corpusIdentitySignals();
+  if (!state || !state.concentration) return true;
+  const units = splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean);
+  if (!units.length) return true;
+  const run = units.join(" ");
+  if (state.identities.has(run)) return true;
+  const insideMeasuredZeroRun = contentRuns(requestText, state.closedClass).some(longer => {
+    if (longer === run) return false;
+    const longerUnits = splitPriorUnits(normalizePriorKey(longer)).filter(Boolean);
+    if (longerUnits.length <= units.length || !sourceAnchorPhraseContains(longerUnits, units)) return false;
+    return state.spread.get(longer) === 0;
+  });
+  if (insideMeasuredZeroRun) return false;
+  const measured = state.spread.get(run);
+  if (measured === undefined) return true;
+  return measured > 0 && measured <= state.concentration;
+}
+
+
 /** The tier that admitted on the last call, for tracing. Diagnostic only; nothing reads it to make a decision. */
 export let admissionTierDiagnostics: Record<string, unknown> = {};
 
@@ -2644,11 +2684,14 @@ export function sourceAnchoredEvidenceForRequest(
   // plainly not Babbage, and counting says so.
   // The source's own identity: what a book, a paper or a file calls itself, for corpora that carry no title
   // naming their subject. Kept as a peer of the title tiers rather than a filter over them.
-  const identityBoundEvidence = evidence.filter(span => evidenceIdentityBindsAnchors(span, anchors, closedClassWords));
+  // Containment tiers bind on a run the corpus documents; a word it merely uses names no subject.
+  const documentedAnchors = anchors.filter(anchor => corpusDocumentsAnchor(anchor, requestText));
+  const documentedContentAnchors = contentAnchors.filter(anchor => corpusDocumentsAnchor(anchor, requestText));
+  const identityBoundEvidence = evidence.filter(span => evidenceIdentityBindsAnchors(span, documentedAnchors, closedClassWords));
   const subjectOnlyRequest = requestContentEvidenceUnits(requestText).length <= 3;
   const contentMentionEvidence = contentBoundEvidence.length
     ? []
-    : evidence.filter(span => contentAnchors.some(anchor =>
+    : evidence.filter(span => documentedContentAnchors.some(anchor =>
       evidenceContentMentionsAnchor(span, anchor)
       && (!subjectOnlyRequest || spanIsAboutAnchor(span, anchor))));
   if (primaryAnchor
@@ -2671,7 +2714,7 @@ export function sourceAnchoredEvidenceForRequest(
     evidenceAnchorFitForRequest(span, requestText, closedClassWords)
   ));
   const selected = evidence.filter(span => (
-    (evidenceSourceMatchesAnchors(span, contentAnchors) || evidenceTitleDistinctAnchorMatches(span, contentAnchors)) &&
+    (evidenceSourceMatchesAnchors(span, documentedContentAnchors) || evidenceTitleDistinctAnchorMatches(span, documentedContentAnchors)) &&
     evidenceAnchorFitForRequest(span, requestText, closedClassWords)
   ));
   // Which tier admitted, not just how many: "the wrong span was admitted" and "the right span was never retrieved"
@@ -2685,6 +2728,13 @@ export function sourceAnchoredEvidenceForRequest(
     contentMention: contentMentionEvidence.length,
     semanticFrameBound: semanticFrameBoundEvidence.length,
     identityBound: identityBoundEvidence.length,
+    tierIds: {
+      exact: exact.map(span => String(span.id).slice(-12)),
+      selected: selected.map(span => String(span.id).slice(-12)),
+      contentBound: contentBoundEvidence.map(span => String(span.id).slice(-12)),
+      contentMention: contentMentionEvidence.map(span => String(span.id).slice(-12)),
+      identityBound: identityBoundEvidence.map(span => String(span.id).slice(-12))
+    },
     subjectOnlyRequest,
     contentAnchors: contentAnchors.slice(0, 6)
   };
@@ -2804,9 +2854,11 @@ export function sourceIdentityAdmissibleEvidenceForRequest(
     const titleless = evidence.filter(span => !evidenceTitle(span));
     // Split the way the index split the source: a substring test on "moby-dick" never found "Moby Dick".
     const titlelessContentAnchors = uniqueKernelStrings(anchored.anchors.flatMap(anchor => anchorSymbolUnits(anchor)))
-      .filter(unit => [...unit].length >= 3 && !closedClassWords?.has(unit));
+      .filter(unit => [...unit].length >= 3 && !closedClassWords?.has(unit))
+      .filter(unit => corpusDocumentsAnchor(unit, requestText));
     const requiredHits = Math.min(2, titlelessContentAnchors.length);
-    const scored = titleless
+    // No documented anchor leaves a zero floor, which every span clears: nothing to hit is not a hit.
+    const scored = requiredHits < 1 ? [] : titleless
       .map(span => {
         const surface = new Set(anchorSymbolUnits(String(span.text ?? span.textPreview ?? "")));
         return { span, hits: titlelessContentAnchors.filter(anchor => surface.has(anchor)).length };
@@ -2820,7 +2872,8 @@ export function sourceIdentityAdmissibleEvidenceForRequest(
     // every content anchor sits inside one of its sentences -- a binding mention, not a passing one -- and
     // only when no title-identified span exists, so cross-title abstention holds whenever a title does match.
     const bindingContentAnchors = requestContentEvidenceUnits(requestText)
-      .filter(unit => unit !== requestLeadingScaffoldingUnit(requestText) && !closedClassWords?.has(unit));
+      .filter(unit => unit !== requestLeadingScaffoldingUnit(requestText) && !closedClassWords?.has(unit))
+      .filter(unit => corpusDocumentsAnchor(unit, requestText));
     if (!admitted.length && bindingContentAnchors.length) {
       const titled = evidence.filter(span => evidenceTitle(span));
       const bound = titled
