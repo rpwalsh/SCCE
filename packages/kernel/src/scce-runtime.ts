@@ -34,6 +34,7 @@ import {
   CALIBRATION_TASK_CLASS_IDS,
   buildCalibrationModelSet,
   calibrationObservationRecord,
+  operatorRoutingActivationModel,
   type CalibrationModelSet
 } from "./calibration-spine.js";
 import {
@@ -623,6 +624,7 @@ export function createInMemoryScceRuntime(options: { idFactory?: IdFactory; hash
       hyperedges: runtimeGraph.hyperedges
     });
     const operatorActivations = activateCognitiveOperators({
+      model: operatorRoutingActivationModel({ modelSet: calibrationModels }),
       requirementField,
       dialogueSupport: requestOperatorDialogueSupport(requirementField),
       graphSupport: requestOperatorGraphSupport({

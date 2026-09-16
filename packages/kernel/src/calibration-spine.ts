@@ -3,7 +3,15 @@
 import { canonicalStringify, clamp01, createClock, featureSet, toJsonValue } from "./primitives.js";
 import { buildCalibrationModel, calibratedScoreTrace, calibrateProbability, type CalibrationModel } from "./scoring/calibration.js";
 import type { ScoreTrace } from "./scoring/score-trace.js";
-import { TURN_REQUIREMENT_DIMENSIONS, type TurnRequirementField } from "./turn-requirements.js";
+import {
+  COGNITIVE_OPERATOR_IDS,
+  DEFAULT_COGNITIVE_OPERATOR_MODEL,
+  TURN_REQUIREMENT_DIMENSIONS,
+  type CognitiveOperatorActivationModel,
+  type CognitiveOperatorId,
+  type TurnRequirementField
+} from "./turn-requirements.js";
+import { otsuThreshold } from "./language-identity.js";
 import type { Clock, JsonValue } from "./types.js";
 
 export const CALIBRATION_IDS = {
@@ -155,6 +163,7 @@ export interface CalibrationModelSet {
   models: Record<string, CalibrationModel>;
   creativePreferenceModels?: Record<string, CreativePreferenceModel>;
   judgeRequirementModels?: Record<string, JudgeRequirementModel>;
+  operatorRoutingModels?: Record<string, OperatorRoutingModel>;
   observationCount: number;
   createdAt: number;
 }
@@ -694,6 +703,257 @@ export function judgeRequirementObservation(input: {
   });
 }
 
+export interface OperatorRoutingModel {
+  schema: "scce.operator_routing_model.v1";
+  id: string;
+  taskClass: string;
+  intercepts: Record<string, number>;
+  requirementWeights: Record<string, Record<string, number>>;
+  activationThreshold: number;
+  sampleCount: number;
+  positiveCount: number;
+  trainingLoss: number;
+  modelHash: string;
+  createdAt: number;
+}
+
+interface OperatorRoutingSample {
+  requirement: Record<string, number>;
+  activeOperatorIds: ReadonlySet<string>;
+  outcome: boolean;
+}
+
+/**
+ * Joins the two credit-ledger stage rows a turn already writes, on the episode id they share: the requirement
+ * stage carries the inferred requirement field, the operator stage carries which operators actually ran, and
+ * both carry the turn's outcome label.
+ */
+function operatorRoutingSamplesFromObservations(observations: readonly CalibrationObservationRecord[]): OperatorRoutingSample[] {
+  const requirementByEpisode = new Map<string, Record<string, number>>();
+  const operatorsByEpisode = new Map<string, { ids: Set<string>; outcome: boolean }>();
+  for (const observation of observations) {
+    const metadata = jsonRecord(observation.metadata);
+    if (metadata.schema !== "scce.cognitive_credit.stage_observation.v1") continue;
+    const episodeId = typeof metadata.episodeId === "string" ? metadata.episodeId : "";
+    if (!episodeId || metadata.reached !== true) continue;
+    if (observation.calibrationId === CALIBRATION_IDS.requirementFieldInference) {
+      const quantities = jsonRecord(metadata.decidingQuantities);
+      const row: Record<string, number> = {};
+      for (const dimension of TURN_REQUIREMENT_DIMENSIONS) {
+        const value = quantities[dimension];
+        if (typeof value === "number" && Number.isFinite(value)) row[dimension] = clamp01(value);
+      }
+      if (Object.keys(row).length === TURN_REQUIREMENT_DIMENSIONS.length) requirementByEpisode.set(episodeId, row);
+      continue;
+    }
+    if (observation.calibrationId === CALIBRATION_IDS.operatorOutcome) {
+      const ids = Array.isArray(metadata.ids) ? metadata.ids.filter((value): value is string => typeof value === "string") : [];
+      operatorsByEpisode.set(episodeId, { ids: new Set(ids), outcome: observation.outcome });
+    }
+  }
+  const samples: OperatorRoutingSample[] = [];
+  for (const [episodeId, operators] of operatorsByEpisode) {
+    const requirement = requirementByEpisode.get(episodeId);
+    if (!requirement) continue;
+    samples.push({ requirement, activeOperatorIds: operators.ids, outcome: operators.outcome });
+  }
+  return samples.sort((left, right) => Number(left.outcome) - Number(right.outcome));
+}
+
+function operatorRoutingLogit(input: {
+  operatorId: string;
+  requirement: Record<string, number>;
+  intercepts: Record<string, number>;
+  requirementWeights: Record<string, Record<string, number>>;
+}): number {
+  const weights = input.requirementWeights[input.operatorId] ?? {};
+  let logit = input.intercepts[input.operatorId] ?? 0;
+  for (const dimension of TURN_REQUIREMENT_DIMENSIONS) logit += (weights[dimension] ?? 0) * (input.requirement[dimension] ?? 0);
+  return finiteCoefficient(logit);
+}
+
+/**
+ * The reward-labeled target, which is what keeps this a policy fit rather than the model imitating itself:
+ * a turn that worked teaches "run what you ran", a turn that did not teaches the opposite. With a constant
+ * label the two collapse, which is exactly why the class guard below refuses to produce a model.
+ */
+const operatorRoutingTarget = (wasActive: boolean, outcome: boolean): number => (wasActive === outcome ? 1 : 0);
+
+/**
+ * Fits the operator routing policy the directive names: every operator intercept -1.35 and every requirement
+ * weight in DEFAULT_COGNITIVE_OPERATOR_MODEL was a bootstrap no caller could replace, so a human-written
+ * executive function decided which cognitive operators ran on every turn for the life of the system.
+ *
+ * Regularized toward the bootstrap rather than toward zero, as buildJudgeRequirementModels is: zero is not a
+ * meaningful intercept for an operator that should be off by default. Re-run on every calibration model
+ * reload, so it refits itself from live calibration_observations on the existing 120s cache cycle with no
+ * training job to run by hand and no database work on the response path.
+ *
+ * Returns no model, leaving the bootstrap in force as the cold-start prior, unless the episodes carry BOTH
+ * outcome classes and at least one sample per free parameter. Neither is a tuned threshold: a logistic fit on
+ * a constant label is not a fit, and fewer samples than parameters is not identifiable. Measured 2026-09-16,
+ * every credit row in this instance is outcome=false, so this correctly declines to produce a model today.
+ */
+export function buildOperatorRoutingModels(input: {
+  observations: readonly CalibrationObservationRecord[];
+  l2?: number;
+  iterations?: number;
+  learningRate?: number;
+  createdAt?: number;
+  clock?: Clock;
+}): Record<string, OperatorRoutingModel> {
+  const samples = operatorRoutingSamplesFromObservations(input.observations);
+  const operatorIds = Object.values(COGNITIVE_OPERATOR_IDS) as string[];
+  const freeParameters = 1 + TURN_REQUIREMENT_DIMENSIONS.length;
+  const positiveCount = samples.filter(sample => sample.outcome).length;
+  if (samples.length < freeParameters) return {};
+  if (positiveCount === 0 || positiveCount === samples.length) return {};
+  const l2 = Math.max(0, input.l2 ?? 0.01);
+  const iterations = Math.max(1, Math.min(2_000, Math.floor(input.iterations ?? 320)));
+  const learningRate = Math.max(1e-4, Math.min(1, input.learningRate ?? 0.15));
+  const bootstrapIntercepts: Record<string, number> = {};
+  const bootstrapWeights: Record<string, Record<string, number>> = {};
+  for (const operatorId of operatorIds) {
+    bootstrapIntercepts[operatorId] = DEFAULT_COGNITIVE_OPERATOR_MODEL.intercepts[operatorId as CognitiveOperatorId] ?? 0;
+    const shipped = DEFAULT_COGNITIVE_OPERATOR_MODEL.requirementWeights[operatorId as CognitiveOperatorId] ?? {};
+    bootstrapWeights[operatorId] = Object.fromEntries(TURN_REQUIREMENT_DIMENSIONS.map(dimension => [dimension, shipped[dimension] ?? 0]));
+  }
+  // Flat arrays, not records, through the descent: the record form allocated per operator per iteration and
+  // cost 1667ms against the judge refit's 16ms on the same 5000-row window, which a cold turn would have paid.
+  const operatorCount = operatorIds.length;
+  const dimensionCount = TURN_REQUIREMENT_DIMENSIONS.length;
+  const priorIntercept = Float64Array.from(operatorIds.map(operatorId => bootstrapIntercepts[operatorId] ?? 0));
+  const priorWeight = new Float64Array(operatorCount * dimensionCount);
+  const features = new Float64Array(samples.length * dimensionCount);
+  const targets = new Float64Array(samples.length * operatorCount);
+  for (let o = 0; o < operatorCount; o++) {
+    for (let d = 0; d < dimensionCount; d++) priorWeight[o * dimensionCount + d] = bootstrapWeights[operatorIds[o]!]?.[TURN_REQUIREMENT_DIMENSIONS[d]!] ?? 0;
+  }
+  for (let s = 0; s < samples.length; s++) {
+    const sample = samples[s]!;
+    for (let d = 0; d < dimensionCount; d++) features[s * dimensionCount + d] = sample.requirement[TURN_REQUIREMENT_DIMENSIONS[d]!] ?? 0;
+    for (let o = 0; o < operatorCount; o++) targets[s * operatorCount + o] = operatorRoutingTarget(sample.activeOperatorIds.has(operatorIds[o]!), sample.outcome);
+  }
+  const intercept = Float64Array.from(priorIntercept);
+  const weight = Float64Array.from(priorWeight);
+  const interceptGradient = new Float64Array(operatorCount);
+  const weightGradient = new Float64Array(operatorCount * dimensionCount);
+  for (let iteration = 0; iteration < iterations; iteration++) {
+    for (let o = 0; o < operatorCount; o++) {
+      interceptGradient[o] = 2 * l2 * (intercept[o]! - priorIntercept[o]!);
+      for (let d = 0; d < dimensionCount; d++) {
+        const index = o * dimensionCount + d;
+        weightGradient[index] = 2 * l2 * (weight[index]! - priorWeight[index]!);
+      }
+    }
+    for (let s = 0; s < samples.length; s++) {
+      const featureBase = s * dimensionCount;
+      for (let o = 0; o < operatorCount; o++) {
+        const weightBase = o * dimensionCount;
+        let logit = intercept[o]!;
+        for (let d = 0; d < dimensionCount; d++) logit += weight[weightBase + d]! * features[featureBase + d]!;
+        const error = sigmoid(logit) - targets[s * operatorCount + o]!;
+        interceptGradient[o] = interceptGradient[o]! + error;
+        for (let d = 0; d < dimensionCount; d++) weightGradient[weightBase + d] = weightGradient[weightBase + d]! + error * features[featureBase + d]!;
+      }
+    }
+    const decayedRate = learningRate / samples.length / Math.sqrt(1 + iteration / 40);
+    for (let o = 0; o < operatorCount; o++) {
+      intercept[o] = finiteCoefficient(intercept[o]! - decayedRate * interceptGradient[o]!);
+      for (let d = 0; d < dimensionCount; d++) {
+        const index = o * dimensionCount + d;
+        weight[index] = finiteCoefficient(weight[index]! - decayedRate * weightGradient[index]!);
+      }
+    }
+  }
+  const intercepts: Record<string, number> = {};
+  const requirementWeights: Record<string, Record<string, number>> = {};
+  for (let o = 0; o < operatorCount; o++) {
+    intercepts[operatorIds[o]!] = intercept[o]!;
+    requirementWeights[operatorIds[o]!] = Object.fromEntries(
+      TURN_REQUIREMENT_DIMENSIONS.map((dimension, d) => [dimension, weight[o * dimensionCount + d]!])
+    );
+  }
+  let trainingLoss = 0;
+  const fittedActivations: number[] = [];
+  for (const sample of samples) {
+    for (const operatorId of operatorIds) {
+      const p = sigmoid(operatorRoutingLogit({ operatorId, requirement: sample.requirement, intercepts, requirementWeights }));
+      fittedActivations.push(p);
+      const y = operatorRoutingTarget(sample.activeOperatorIds.has(operatorId), sample.outcome);
+      trainingLoss -= y * Math.log(Math.max(1e-6, p)) + (1 - y) * Math.log(Math.max(1e-6, 1 - p));
+    }
+  }
+  trainingLoss /= Math.max(1, samples.length * operatorIds.length);
+  // The cut between "this operator runs" and "it does not" is where the fitted activations actually separate.
+  const split = otsuThreshold(fittedActivations);
+  const activationThreshold = typeof split === "number" && Number.isFinite(split)
+    ? clamp01(split)
+    : DEFAULT_COGNITIVE_OPERATOR_MODEL.activationThreshold;
+  const createdAt = resolveCreatedAt(input.createdAt, input.clock, latestCreatedAt(input.observations));
+  const modelBody = { taskClass: CALIBRATION_TASK_CLASS_IDS.generalCognition, intercepts, requirementWeights, activationThreshold, sampleCount: samples.length, trainingLoss };
+  const modelHash = hashText(canonicalStringify(toJsonValue(modelBody as unknown as JsonValue)));
+  const model: OperatorRoutingModel = {
+    schema: "scce.operator_routing_model.v1",
+    id: `operator.routing.model.${modelHash}`,
+    taskClass: CALIBRATION_TASK_CLASS_IDS.generalCognition,
+    intercepts,
+    requirementWeights,
+    activationThreshold,
+    sampleCount: samples.length,
+    positiveCount,
+    trainingLoss,
+    modelHash,
+    createdAt
+  };
+  return { [CALIBRATION_TASK_CLASS_IDS.generalCognition]: model };
+}
+
+export function operatorRoutingModelFor(input: { modelSet?: CalibrationModelSet; taskClass?: string }): OperatorRoutingModel | undefined {
+  if (!input.modelSet) return undefined;
+  return input.modelSet.operatorRoutingModels?.[input.taskClass ?? CALIBRATION_TASK_CLASS_IDS.generalCognition];
+}
+
+/**
+ * What the turn runtime passes to activateCognitiveOperators: the shipped bootstrap shrunk toward the fitted
+ * policy as real episodes accumulate, with no cliff at a threshold. With no model at all this returns
+ * DEFAULT_COGNITIVE_OPERATOR_MODEL unchanged, including its `uncalibrated_bootstrap` reliability, so nothing
+ * reports itself calibrated on the strength of a fit that does not exist.
+ */
+export function operatorRoutingActivationModel(input: {
+  modelSet?: CalibrationModelSet;
+  taskClass?: string;
+  blendTargetSamples?: number;
+}): CognitiveOperatorActivationModel {
+  const model = operatorRoutingModelFor({ modelSet: input.modelSet, taskClass: input.taskClass });
+  if (!model) return DEFAULT_COGNITIVE_OPERATOR_MODEL;
+  const blend = clamp01(model.sampleCount / Math.max(1, input.blendTargetSamples ?? 200));
+  if (blend <= 0) return DEFAULT_COGNITIVE_OPERATOR_MODEL;
+  const operatorIds = Object.values(COGNITIVE_OPERATOR_IDS) as CognitiveOperatorId[];
+  const toward = (bootstrap: number, learned: number | undefined): number =>
+    (typeof learned === "number" && Number.isFinite(learned) ? bootstrap + blend * (learned - bootstrap) : bootstrap);
+  const intercepts = Object.fromEntries(operatorIds.map(operatorId => [
+    operatorId,
+    toward(DEFAULT_COGNITIVE_OPERATOR_MODEL.intercepts[operatorId] ?? 0, model.intercepts[operatorId])
+  ])) as Record<CognitiveOperatorId, number>;
+  const requirementWeights = Object.fromEntries(operatorIds.map(operatorId => {
+    const shipped = DEFAULT_COGNITIVE_OPERATOR_MODEL.requirementWeights[operatorId] ?? {};
+    const learned = model.requirementWeights[operatorId] ?? {};
+    return [operatorId, Object.fromEntries(TURN_REQUIREMENT_DIMENSIONS
+      .map(dimension => [dimension, toward(shipped[dimension] ?? 0, learned[dimension])] as const)
+      .filter(([, value]) => value !== 0))];
+  })) as Record<CognitiveOperatorId, Partial<Record<typeof TURN_REQUIREMENT_DIMENSIONS[number], number>>>;
+  return {
+    schema: "scce.cognitive_operator.activation.v1",
+    id: model.id,
+    version: DEFAULT_COGNITIVE_OPERATOR_MODEL.version + 1,
+    reliability: "calibrated",
+    intercepts,
+    requirementWeights,
+    activationThreshold: clamp01(toward(DEFAULT_COGNITIVE_OPERATOR_MODEL.activationThreshold, model.activationThreshold))
+  };
+}
+
 export function calibrationObservationsFromDialogueOutcome(input: {
   result: DialogueCalibrationResult;
   outcome: DialogueCalibrationOutcome;
@@ -926,17 +1186,23 @@ export function buildCalibrationModelSet(input: {
     observations: input.observations,
     createdAt
   });
+  const operatorRoutingModels = buildOperatorRoutingModels({
+    observations: input.observations,
+    createdAt
+  });
   return {
     schema: "scce.calibration.model_set.v1",
     id: `calibration.model_set.${hashText(canonicalStringify({
       models: Object.keys(models).sort(),
       creativePreferenceModels: Object.values(creativePreferenceModels).map(model => model.modelHash).sort(),
       judgeRequirementModels: Object.values(judgeRequirementModels).map(model => model.modelHash).sort(),
+      operatorRoutingModels: Object.values(operatorRoutingModels).map(model => model.modelHash).sort(),
       createdAt
     }))}`,
     models,
     creativePreferenceModels,
     judgeRequirementModels,
+    operatorRoutingModels,
     observationCount: input.observations.length,
     createdAt
   };

@@ -272,7 +272,7 @@ import { createTurnSignals } from "./turn-signals.js";
 import { createAutonomousToolCognition } from "./tool-cognition.js";
 import { createTrainingOrchestrator } from "./training-orchestrator.js";
 import { canonicalTranslationTargetKey, createTranslationEngine, type TranslationPlan } from "./translation.js";
-import { CALIBRATION_IDS, CALIBRATION_SUBSYSTEM_IDS, CALIBRATION_TASK_CLASS_IDS, calibrationObservationRecord, judgeRequirementObservation } from "./calibration-spine.js";
+import { CALIBRATION_IDS, CALIBRATION_SUBSYSTEM_IDS, CALIBRATION_TASK_CLASS_IDS, calibrationObservationRecord, judgeRequirementObservation, operatorRoutingActivationModel } from "./calibration-spine.js";
 import { constructionCycleScoresFromMemory, persistConstructionCycleConsistency } from "./construction-cycle-consistency.js";
 import { persistLanguageRoundTripDelta } from "./language-round-trip-learning.js";
 import {
@@ -1469,7 +1469,10 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         onTrace: record => kernelTrace({ stage: "turn.corpus_identity", ...record })
       });
       let creativeRequestFrame: CreativeRequestFrame | undefined = undefined;
+      // Routing fitted from this instance's own episodes, off the same 120s model cache the judge weights use.
+      const operatorModel = operatorRoutingActivationModel({ modelSet: await calibrationModelsCached() });
       let operatorActivations = activateCognitiveOperators({
+        model: operatorModel,
         requirementField,
         dialogueSupport: requestOperatorDialogueSupport(requirementField),
         outcomeSupport: {
@@ -2245,6 +2248,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       });
       runtimeState.lastField = field;
       operatorActivations = activateCognitiveOperators({
+        model: operatorModel,
         requirementField,
         graphSupport: requestOperatorGraphSupport({ graph, evidence: admissibleEvidence, field }),
         dialogueSupport: requestOperatorDialogueSupport(requirementField),
@@ -2407,6 +2411,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         // that boundary as well: otherwise candidate generation receives factual requirements paired with the
         // operators selected for the superseded projected authority.
         operatorActivations = activateCognitiveOperators({
+          model: operatorModel,
           requirementField,
           graphSupport: requestOperatorGraphSupport({ graph, evidence: admissibleEvidence, field }),
           dialogueSupport: requestOperatorDialogueSupport(requirementField),
