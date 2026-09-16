@@ -5393,6 +5393,11 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         });
         answer = "";
       }
+      // A citation names where the answer came from; it asserts nothing of its own, so it is attached to the
+      // release text and never to the text proof-carrying certification reads. Attached before, it became one more
+      // sentence for releaseText to certify against evidence, was rejected, and took the whole citation out of the
+      // answer -- measured live 2026-09-16 on every code row that held evidence.
+      const certifiedClaimAnswer = answer;
       answer = withCitation(answer, spoken);
       // calibration_observations had zero rows for every non-translation dimension; record one for real turns.
       // Real bug, confirmed live (Apollo-11 landing-date turn): "non-empty answer + low self-contradiction" is
@@ -5481,14 +5486,15 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const validationWindow: Record<string, number> = {};
       const markValidationWindow = (step: string) => { validationWindow[step] = Date.now() - validationWindowStarted; };
       if (correctionRules.length) events.push(await append(eventFactory.create({ episodeId, typeId: "CorrectionApplied", payload: { summary: correctionMemory.summarize(correctionRules), trace: spoken.realizationTrace.corrections } })));
-      const certifiedPcaReport = pca.certify({ answer, evidence: selectedEvidence, force: pcaForceForMouthSurface(spoken, judged.selected.force) });
+      const certifiedPcaReport = pca.certify({ answer: certifiedClaimAnswer, evidence: selectedEvidence, force: pcaForceForMouthSurface(spoken, judged.selected.force) });
       let pcaReport = longPathBasisAnswer
         ? {
           ...certifiedPcaReport,
           releaseAnswer: answer,
           basisAwareRelease: longPathBasisAnswer.audit
         }
-        : certifiedPcaReport;
+        // The release is what certification left of the claim, named by the source it was drawn from.
+        : { ...certifiedPcaReport, releaseAnswer: withCitation(certifiedPcaReport.releaseAnswer, spoken) };
       let validation = validationBuilder.build({ construct: spokenConstructGraph, entailment: answerEntailment, buildTest, pca: pcaReport as unknown as JsonValue });
       let rawEmission = emissionEngine.emit({ construct: spokenConstructGraph, validation, entailment: answerEntailment, answer, pca: pcaReport as unknown as JsonValue });
       markValidationWindow("certified");
