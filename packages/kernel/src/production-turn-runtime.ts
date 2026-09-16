@@ -1079,6 +1079,10 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         && deadlineCheckpoint("kernel.turn.language_cluster_escalation", LANGUAGE_CLUSTER_ESCALATION_MS)?.allowed !== false) {
         selectedSurfaceCluster = await surfaceLanguageClusterCached(input.text, false).catch(() => undefined);
       }
+      // The cluster's member that actually matches this request's surface, chosen deterministically rather than by array order.
+      const selectedSurfaceProfile = selectedSurfaceCluster
+        ? selectLanguageProfileForSurface(selectedSurfaceCluster.members, input.text) ?? selectedSurfaceCluster.members[0]
+        : undefined;
       kernelTrace({
         stage: "runtime.seed.surface_cluster",
         label: "kernel.turn",
@@ -1089,16 +1093,11 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           durableProfileScanAllowed: !deps.evaluationCondition?.flags.disableLanguageMemory,
           sourceLanguageAlias: sourceLanguageAlias ?? null,
           sourceLanguageAliasResolved: sourceLanguageAlias ? Boolean(selectedSurfaceCluster) : null,
-          selectedProfileHint: selectedSurfaceCluster
-            ? languageHintFromProfile(selectLanguageProfileForSurface(selectedSurfaceCluster.members, input.text) ?? selectedSurfaceCluster.members[0]!)
-            : null
+          // Same selection the turn uses; recomputing it here cost a second full clustering pass.
+          selectedProfileHint: selectedSurfaceProfile ? languageHintFromProfile(selectedSurfaceProfile) : null
         }
       });
       deadlineCheckpoint("runtime.seed.surface_cluster.complete", 0);
-      // The cluster's member that actually matches this request's surface, chosen deterministically rather than by array order.
-      const selectedSurfaceProfile = selectedSurfaceCluster
-        ? selectLanguageProfileForSurface(selectedSurfaceCluster.members, input.text) ?? selectedSurfaceCluster.members[0]
-        : undefined;
       const authorityLanguageStarted = Date.now();
       // The durable hydration is a full scan. Before a visible response exists it
       // is budgeted; on the streamed path it may continue behind progress frames.

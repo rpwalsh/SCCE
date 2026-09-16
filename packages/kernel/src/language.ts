@@ -80,14 +80,15 @@ export function rankLanguageProfilesForSurface(
  * normalized n-gram, repertoire, shape, script, and direction statistics.
  */
 export function buildLanguageProfileClusters(profiles: readonly LanguageProfile[]): LanguageProfileCluster[] {
-  const ordered = [...profiles]
+  // Sort keys serialize up to 256 trigrams each; computed per comparison they cost O(n log n) serializations.
+  const ordered = profiles
     .filter(profile => Boolean(profile.id) && Boolean(profile.sourceVersionId))
-    .sort((left, right) => compareCodePoint(profileIndexBucket(left), profileIndexBucket(right))
-      || compareCodePoint(profileDistributionKey(left), profileDistributionKey(right))
-      || compareCodePoint(left.id, right.id));
+    .map(profile => ({ profile, bucket: profileIndexBucket(profile), distribution: profileDistributionKey(profile) }))
+    .sort((left, right) => compareCodePoint(left.bucket, right.bucket)
+      || compareCodePoint(left.distribution, right.distribution)
+      || compareCodePoint(left.profile.id, right.profile.id));
   const buckets = new Map<string, Array<{ representative: LanguageProfile; members: LanguageProfile[] }>>();
-  for (const profile of ordered) {
-    const key = profileIndexBucket(profile);
+  for (const { profile, bucket: key } of ordered) {
     const groups = buckets.get(key) ?? [];
     const candidates = groups.slice(-MAX_CLUSTER_CANDIDATES_PER_BUCKET)
       .map((group, index) => ({
@@ -576,20 +577,46 @@ function scoreSurfaceDistribution(input: SurfaceStatistics, distribution: Surfac
 
 type LanguageDistribution = Pick<LanguageProfile, "charNgrams" | "scripts" | "symbolShapes" | "direction">;
 
+interface DistributionFeatures {
+  trigrams: ReadonlyMap<string, number>;
+  repertoire: ReadonlySet<string>;
+  characters: ReadonlyMap<string, number>;
+  scripts: ReadonlyMap<string, number>;
+  shapes: ReadonlyMap<string, number>;
+}
+
+// Each side's derived maps depend only on that profile, but clustering compares one profile against many.
+const distributionFeatureCache = new WeakMap<LanguageDistribution, DistributionFeatures>();
+
+function distributionFeatures(distribution: LanguageDistribution): DistributionFeatures {
+  const cached = distributionFeatureCache.get(distribution);
+  if (cached) return cached;
+  const trigrams = new Map<string, number>();
+  const repertoire = new Set<string>();
+  for (const row of distribution.charNgrams) {
+    const ngram = row.ngram.normalize("NFC").toLowerCase();
+    trigrams.set(ngram, row.count);
+    for (const char of ngram) repertoire.add(char);
+  }
+  const features: DistributionFeatures = {
+    trigrams,
+    repertoire,
+    characters: characterDistributionFromTrigrams(distribution.charNgrams),
+    scripts: new Map(distribution.scripts.map(row => [row.script, row.mass])),
+    shapes: new Map(distribution.symbolShapes.map(row => [row.shape, row.count]))
+  };
+  distributionFeatureCache.set(distribution, features);
+  return features;
+}
+
 function profileDistributionFit(left: LanguageDistribution, right: LanguageDistribution): { score: number; lexical: number } {
-  const trigram = weightedDistributionOverlap(
-    new Map(left.charNgrams.map(row => [row.ngram.normalize("NFC").toLowerCase(), row.count])),
-    new Map(right.charNgrams.map(row => [row.ngram.normalize("NFC").toLowerCase(), row.count]))
-  );
-  const leftRepertoire = new Set(left.charNgrams.flatMap(row => [...row.ngram.normalize("NFC").toLowerCase()]));
-  const rightRepertoire = new Set(right.charNgrams.flatMap(row => [...row.ngram.normalize("NFC").toLowerCase()]));
-  const repertoire = symmetricSetOverlap(leftRepertoire, rightRepertoire);
-  const characterDistribution = weightedDistributionOverlap(
-    characterDistributionFromTrigrams(left.charNgrams),
-    characterDistributionFromTrigrams(right.charNgrams)
-  );
-  const scripts = weightedDistributionOverlap(new Map(left.scripts.map(row => [row.script, row.mass])), new Map(right.scripts.map(row => [row.script, row.mass])));
-  const shapes = weightedDistributionOverlap(new Map(left.symbolShapes.map(row => [row.shape, row.count])), new Map(right.symbolShapes.map(row => [row.shape, row.count])));
+  const leftFeatures = distributionFeatures(left);
+  const rightFeatures = distributionFeatures(right);
+  const trigram = weightedDistributionOverlap(leftFeatures.trigrams, rightFeatures.trigrams);
+  const repertoire = symmetricSetOverlap(leftFeatures.repertoire, rightFeatures.repertoire);
+  const characterDistribution = weightedDistributionOverlap(leftFeatures.characters, rightFeatures.characters);
+  const scripts = weightedDistributionOverlap(leftFeatures.scripts, rightFeatures.scripts);
+  const shapes = weightedDistributionOverlap(leftFeatures.shapes, rightFeatures.shapes);
   const direction = left.direction === right.direction ? 1 : left.direction === "unknown" || right.direction === "unknown" ? 0.5 : 0;
   return {
     lexical: clamp01(0.48 * characterDistribution + 0.32 * repertoire + 0.2 * trigram),
