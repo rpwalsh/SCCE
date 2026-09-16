@@ -497,6 +497,7 @@ export const CALIBRATION_SEARCH_SPACE: Readonly<Record<CalibrationKey, Calibrati
 
   // --- structural residue
   "evidence.structural_residue_cut": threshold(0.02, 0.6, [0.06, 0.1296, 0.25, 0.4]),
+  "ingest.apparatus_run_residue_cut": threshold(0.02, 0.8, [0.1, 0.2151, 0.4, 0.6]),
   "turn_requirements.source_preservation_floor": threshold(0.3, 0.95, [0.45, 0.6, 0.75, 0.9]),
 
   // --- dialogue requirement field

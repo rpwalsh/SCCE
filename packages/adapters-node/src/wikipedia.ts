@@ -6,7 +6,7 @@ import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import path from "node:path";
-import { redactSecrets, type ContentHash, type IngestedSourceFile, type IngestionCheckpoint, type JsonValue } from "@scce/kernel";
+import { redactSecrets, stripApparatusLines, type ContentHash, type IngestedSourceFile, type IngestionCheckpoint, type JsonValue } from "@scce/kernel";
 import type { ScceRuntimeConfig } from "./config.js";
 
 type IngestStreamItem =
@@ -473,14 +473,19 @@ function decodeXml(value: string): string {
 }
 
 export function normalizeWikiText(value: string): string {
+  return collapseWhitespace(stripApparatusLines(wikiSurfaceLines(value))).trim();
+}
+
+/** The page's surface with wiki constructs resolved and its line structure still intact: that population is what
+ *  `stripApparatusLines` measures, and collapsing whitespace first destroys the only evidence the lines carry. */
+export function wikiSurfaceLines(value: string): string {
   let text = removeDelimited(value, "<!--", "-->");
   text = removeRefTags(text);
   text = removeTemplates(text);
   text = renderWikiLinks(text);
   text = removeXmlTags(text);
   text = stripRepeatedApostrophes(text);
-  text = dropCitationListSections(text);
-  return collapseWhitespace(text).trim();
+  return dropCitationListSections(text);
 }
 
 /** A section whose lines are citation bullets is a reference list, whatever its heading is called in whatever

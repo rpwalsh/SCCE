@@ -974,6 +974,8 @@ export const PUBLIC_CALIBRATIONS = Object.freeze({
   // 900k-sentence prefix of the same corpus gives 0.1289, inside this id's 0.005 resolution.
   /** Score at or above which a surface is serialized apparatus rather than a statement. Otsu, 2026-09-13. */
   "evidence.structural_residue_cut": 0.1296,
+  /** Residue score of a line run at or above which the run is ingest apparatus. Otsu, 2026-09-16. */
+  "ingest.apparatus_run_residue_cut": 0.2151,
 
   // --- source preservation demand (mouth.ts sourcePreservationRequested, production-turn-runtime.ts reasonedRealizationPreservesContract)
   /** Requirement-field preservation or source demand at or above which a turn keeps source-exact wording. */

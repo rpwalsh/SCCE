@@ -34,7 +34,7 @@ import { calibrated } from "./calibrations/prod-calibrations.js";
  */
 
 /** Word runs lowercased, digit runs collapsed to one token, every other non-space character its own token. Pure. */
-function residueTokens(text: string): string[] {
+export function residueTokens(text: string): string[] {
   const out: string[] = [];
   let index = 0;
   while (index < text.length) {
