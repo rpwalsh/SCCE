@@ -10,6 +10,7 @@ import {
   featureSet,
   informationLabelAllowsRead,
   joinInformationLabels,
+  corpusIdentityMatchSurface,
   normalizeSourceLanguageAlias,
   normalizeInformationLabel,
   toJsonValue,
@@ -1526,9 +1527,15 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
       // when something is ingested.
       // Its own predicate: the title query carries no leading parameters, so the access placeholders start at $1.
       const titles = normalized ? await sourceTitlesCached(storage, storage.informationAccessPredicate("evidence", 1)) : [];
+      // Binding marks are orthography, not identity: the corpus writes "moby dick" and a request writes "Moby-Dick".
+      const foldedSurface = " " + corpusIdentityMatchSurface(normalized) + " ";
       const named = new Set(
         titles
-          .filter(title => surface.includes(" " + title + " ") || (unspaced && surface.includes(title)))
+          .filter(title => {
+            if (surface.includes(" " + title + " ") || (unspaced && surface.includes(title))) return true;
+            const folded = corpusIdentityMatchSurface(title);
+            return Boolean(folded) && (foldedSurface.includes(" " + folded + " ") || (unspaced && foldedSurface.includes(folded)));
+          })
           .sort((left, right) => right.length - left.length)
           .slice(0, IDENTITY_MATCH_LIMIT)
       );
@@ -2358,6 +2365,12 @@ const IDENTITY_MATCH_LIMIT = 24;
 const SOURCE_TITLE_REFRESH_MS = 10 * 60 * 1000;
 let sourceTitleCache: { titles: string[]; loadedAt: number } | undefined;
 let sourceTitleInFlight: Promise<string[]> | undefined;
+
+/** Test seam: forget the loaded title list, so a test starts from a corpus this process has not read. */
+export function clearSourceTitleCache(): void {
+  sourceTitleCache = undefined;
+  sourceTitleInFlight = undefined;
+}
 
 async function sourceTitlesCached(
   storage: { query: <T>(sql: string, params?: unknown[]) => Promise<T[]>; table: (name: string) => string },

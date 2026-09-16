@@ -83,7 +83,7 @@ export function corpusIdentitySurface(text: string): string {
  * different orthographic binding marks. This keeps the displayed surface
  * lossless while making dash/space identity matching language-neutral.
  */
-function corpusIdentityMatchSurface(text: string): string {
+export function corpusIdentityMatchSurface(text: string): string {
   return corpusIdentitySurface(text).replace(DASH_PUNCTUATION, " ").replace(/\s+/gu, " ").trim();
 }
 
