@@ -227,7 +227,8 @@ import { evidenceForceFromProofForceClass, type EvidenceForceClass } from "./tru
 import { evidenceProofBoundary } from "./proof-boundary.js";
 import { subjectTemporalComparison } from "./temporal-subject-comparison.js";
 import type { EvidenceId, GraphEdge, GraphNode, NodeId, RequestedAuthority } from "./types.js";
-import { createRuntimeGraphRetrieval, isCodeEvidenceSpan, isControlCorpusSpan } from "./runtime-graph-retrieval.js";
+import { createRuntimeGraphRetrieval, isControlCorpusSpan } from "./runtime-graph-retrieval.js";
+import { isCodeEvidenceSpan } from "./retrieval-binding.js";
 import { updateFtrlFromTurnOutcome } from "./sparse-ranking-outcome.js";
 import { summarizeAdmittedSource } from "./source-summary.js";
 import { createRuntimeMemoryControl } from "./runtime-memory-control.js";

@@ -206,7 +206,7 @@ export function evidenceForRequest(
         evidenceExactSourceAnchorMatches(span, anchors) ||
         evidenceTitleDistinctAnchorMatches(span, anchors) ||
         evidenceSourceMatchesAnchors(span, anchors) ||
-        evidenceIdentityBindsAnchors(span, anchors) ||
+        evidenceIdentityBoundAnchor(span, anchors) !== undefined ||
         contentAnchorAligned ||
         bindingSentenceAligned
       );
@@ -2519,10 +2519,47 @@ export function evidenceIdentityBinding(
   /** Anchors a caller has already narrowed; the request's own are derived when absent. */
   anchors?: readonly string[]
 ): EvidenceIdentityBinding {
+  return evidenceIdentityBindingDetail(span, requestText, closedClassWords, anchors).binding;
+}
+
+/** Which constituents carried a binding, not only that one exists; the retrieval binding reports them. */
+export interface EvidenceIdentityBindingDetail {
+  readonly binding: EvidenceIdentityBinding;
+  /** The anchors considered; empty means the request named nothing to bind against, which is not a refusal. */
+  readonly requestConstituents: readonly string[];
+  /** The request constituent that bound, empty when none did. */
+  readonly boundRequestConstituents: readonly string[];
+  /** The source's own units that carried it: identity/title units, or the declared identifier in its body. */
+  readonly sourceConstituents: readonly string[];
+}
+
+/** The same rule as evidenceIdentityBinding, reporting what bound. One implementation, two views. */
+export function evidenceIdentityBindingDetail(
+  span: EvidenceSpan,
+  requestText: string,
+  closedClassWords?: ReadonlySet<string>,
+  anchors?: readonly string[]
+): EvidenceIdentityBindingDetail {
   const bindingAnchors = anchors ?? sourceEvidenceAnchorsForRequest(requestText);
-  if (!bindingAnchors.length) return "none";
-  if (evidenceIdentityBindsAnchors(span, bindingAnchors, closedClassWords)) return "title";
-  return codeSpanBindsRequestedIdentifier(span, requestText) ? "declaration" : "none";
+  if (!bindingAnchors.length) {
+    return { binding: "none", requestConstituents: [], boundRequestConstituents: [], sourceConstituents: [] };
+  }
+  const titleMatch = evidenceIdentityBoundAnchor(span, bindingAnchors, closedClassWords);
+  if (titleMatch) {
+    return {
+      binding: "title",
+      requestConstituents: bindingAnchors,
+      boundRequestConstituents: [titleMatch.anchor],
+      sourceConstituents: titleMatch.units
+    };
+  }
+  const declared = codeSpanDeclaredRequestIdentifiers(span, requestText);
+  return {
+    binding: declared.length ? "declaration" : "none",
+    requestConstituents: bindingAnchors,
+    boundRequestConstituents: declared,
+    sourceConstituents: declared
+  };
 }
 
 /** Whether the source is about the subject this request names; see evidenceIdentityBinding. Pure. */
@@ -2532,30 +2569,35 @@ export function evidenceIdentityBindsRequest(span: EvidenceSpan, requestText: st
 
 const CODE_SOURCE_EXTENSIONS = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs|py|rs|go|java|kt|swift|c|h|cc|cpp|hpp|cs|rb|php|sh|sql)$/iu;
 
-function codeSpanBindsRequestedIdentifier(span: EvidenceSpan, requestText: string): boolean {
+function codeSpanDeclaredRequestIdentifiers(span: EvidenceSpan, requestText: string): string[] {
   const provenance = jsonRecord(span.provenance);
   const metadata = jsonRecord(provenance.metadata);
   const uri = String(provenance.uri ?? provenance.canonicalUri ?? metadata.relativePath ?? "");
-  if (!CODE_SOURCE_EXTENSIONS.test(uri)) return false;
+  if (!CODE_SOURCE_EXTENSIONS.test(uri)) return [];
   const source = String(span.text ?? span.textPreview ?? "");
-  if (!source) return false;
+  if (!source) return [];
   const requestUnits = splitPriorUnits(requestText)
     .map(unit => unit.replace(/^[^\p{L}\p{N}_$]+|[^\p{L}\p{N}_$]+$/gu, ""))
     .filter(unit => unit.length >= 6 && /[A-Z_$]/u.test(unit));
   const sourceSurface = normalizePriorKey(source);
-  return requestUnits.some(unit => sourceSurface.includes(normalizePriorKey(unit)));
+  return requestUnits.filter(unit => sourceSurface.includes(normalizePriorKey(unit)));
 }
 
- function evidenceIdentityBindsAnchors(span: EvidenceSpan, anchors: readonly string[], closedClassWords?: ReadonlySet<string>): boolean {
+ function evidenceIdentityBoundAnchor(
+  span: EvidenceSpan,
+  anchors: readonly string[],
+  closedClassWords?: ReadonlySet<string>
+): { anchor: string; units: string[] } | undefined {
   const identity = evidenceIdentity(span);
   const title = evidenceTitle(span);
-  if (!identity && !title) return false;
+  if (!identity && !title) return undefined;
   const carried = new Set(anchorSymbolUnits(`${identity} ${title}`));
-  if (!carried.size) return false;
-  return anchors.some(anchor => {
+  if (!carried.size) return undefined;
+  for (const anchor of anchors) {
     const units = anchorSymbolUnits(anchor).filter(unit => [...unit].length >= 3 && !closedClassWords?.has(unit));
-    return units.length > 0 && units.every(unit => carried.has(unit));
-  });
+    if (units.length > 0 && units.every(unit => carried.has(unit))) return { anchor, units };
+  }
+  return undefined;
 }
 
 
