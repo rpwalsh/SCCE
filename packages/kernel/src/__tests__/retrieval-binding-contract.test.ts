@@ -110,6 +110,28 @@ describe("every retrieval path decides admissibility from the same binding", () 
     expect(slice.evidence?.map(row => String(row.id))).toContain("evidence_span.program_planner_declaration");
   });
 
+  it("does not let a source comment naming the subject displace the article on the unanchored path", async () => {
+    // Carrying a code span forward is not the same as ranking it first: a comment that merely names the subject
+    // outranking the article about it is the defect the prose filter was added for.
+    primeCorpusIdentitySignals({
+      closedClass: CLOSED,
+      identities: new Set(["ada lovelace"]),
+      spread: new Map(),
+      concentration: 1
+    });
+    const lovelace = corpusSpan("ada_lovelace_article", "https://en.wikipedia.org/wiki/Ada_Lovelace", "ada lovelace", "text/x-wiki",
+      "Ada Lovelace was an English mathematician born on 10 December 1815 in London.");
+    const comment = corpusSpan("source_comment", "packages/kernel/src/fixture.ts", "fixture", "text/plain; charset=utf-8", [
+      "// Ada Lovelace was born on 10 December 1815; this comment names her.",
+      "export function loveLaceBirthFixture(options) {",
+      "  return options;",
+      "}"
+    ].join(NL));
+    const slice = await retrieval([comment, lovelace]).graphForText("When was Ada Lovelace born?", { sourceAnchoringRequired: false });
+
+    expect(String(slice.evidence?.[0]?.id)).toBe("evidence_span.ada_lovelace_article");
+  });
+
   it("keeps the declaring source on the evidence-only path too", async () => {
     // evidenceOnlyForText's unanchored branch is the last fallback of the same chain.
     prime();

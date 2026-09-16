@@ -105,16 +105,30 @@ describe("retrievalBinding is the one answer to why evidence is relevant", () =>
     expect(binding.specificity.concentrated).toBeUndefined();
   });
 
-  it("ranks a bound candidate ahead of prose, and an unmeasured code span last", () => {
+  it("ranks the titled source first, prose ahead of a declaration match, and an unmeasured code span last", () => {
+    // A source file whose comment names the subject must not unseat the article about it (33e4c64); the rank
+    // states that order where no admission tier runs.
     primeCorpusIdentitySignals({ closedClass: CLOSED, identities: new Set(["albania"]), spread: new Map(), concentration: 289 });
-    const bound = retrievalBinding(article, { requestText: "what is the capital of Albania?", closedClassWords: CLOSED });
+    const request = { requestText: "what is the capital of Albania?", closedClassWords: CLOSED };
+    const titled = retrievalBinding(article, request);
     const prose = retrievalBinding(
       corpusSpan("tirana", "https://en.wikipedia.org/wiki/Tirana", "tirana", "text/x-wiki", "Tirana is the capital of Albania."),
-      { requestText: "what is the capital of Albania?", closedClassWords: CLOSED }
+      request
+    );
+    const declaring = retrievalBinding(
+      corpusSpan("names_albania", "packages/kernel/src/fixture.ts", "fixture", "text/plain; charset=utf-8", [
+        "// Albania is named in this comment only as an example.",
+        "export function fixture(options) {",
+        "  return options;",
+        "}"
+      ].join(NL)),
+      request
     );
     const unmeasured = retrievalBinding(unrelatedCode, { requestText: "", closedClassWords: CLOSED });
 
-    expect([retrievalBindingRank(bound), retrievalBindingRank(prose), retrievalBindingRank(unmeasured)]).toEqual([0, 1, 2]);
+    expect(declaring.mechanism).toBe("source_declaration");
+    expect([retrievalBindingRank(titled), retrievalBindingRank(prose), retrievalBindingRank(declaring), retrievalBindingRank(unmeasured)])
+      .toEqual([0, 1, 2, 3]);
   });
 
   it("grants an operator-allowed source kind admissibility without erasing the measurement", () => {

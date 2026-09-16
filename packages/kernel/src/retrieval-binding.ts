@@ -139,13 +139,17 @@ export function retrievalBindingCarries(binding: RetrievalBinding): boolean {
 }
 
 /**
- * Rank order for the source-kind prior: a bound candidate, then one whose kind costs nothing, then one whose
- * binding was never measurable. A cost on the frontier, not an erasure before ranking.
+ * The source-kind prior as a rank: a cost on the frontier, never an erasure before ranking.
+ *
+ * A source the request is titled with leads. Prose follows, ahead of a declaration match, because a source file
+ * whose comment happens to name the subject must not unseat the article about it -- the admission tier states the
+ * same order, and this is that order where no admission tier runs. An unmeasured binding is carried last.
  */
 export function retrievalBindingRank(binding: RetrievalBinding): number {
-  if (binding.mechanism === "source_identity" || binding.mechanism === "source_declaration") return 0;
+  if (binding.mechanism === "source_identity") return 0;
   if (!binding.sourceKind.sourceCode) return 1;
-  return binding.admissibility === "undetermined" ? 2 : 3;
+  if (binding.mechanism === "source_declaration") return 2;
+  return 3;
 }
 
 /** Code evidence: a span whose source is code (media type, code-graph facts, or a code file extension). */
