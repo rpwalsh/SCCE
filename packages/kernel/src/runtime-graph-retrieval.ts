@@ -10,7 +10,7 @@ import { deriveClosedClassWords } from "./closed-class-words.js";
 import { evidenceProofBoundary } from "./proof-boundary.js";
 import { genericQuestionSignal, jsonRecord, kernelNumber, kernelString, kernelStringArray, namedSubjectAnchors, normalizePriorKey, requestContentSurface, splitPriorUnits, uniqueKernelStrings } from "./kernel-answer-primitives.js";
 import { relevanceRequestFocuses } from "./learned-graph-prior-runtime.js";
-import { isCodeEvidenceSpan } from "./retrieval-binding.js";
+import { retrievalBinding, retrievalBindingCarries, retrievalBindingRank } from "./retrieval-binding.js";
 import {
   admissionTierDiagnostics,
   evidenceForRequest,
@@ -25,7 +25,6 @@ import {
   sourceAnchoredEvidenceForRequest,
   sourceEvidenceAnchorsForRequest,
   sourceIdentityAdmissibleEvidenceForRequest,
-  evidenceIdentityBindsRequest,
   spanContainsRequestNearDuplicateSentence,
   temporalCounterexampleExpected,
   temporalConceptTitledEvidence,
@@ -722,9 +721,11 @@ export function createRuntimeGraphRetrieval(options: {
         selection.semanticFrameBoundEvidenceIds
       );
     }
-    const evidence = (await deps.storage.evidence.searchEvidence({ features, limit: 40 }))
-      .map(item => item.span)
-      .filter(span => sourceCodeEvidenceAllowed === undefined || sourceCodeEvidenceAllowed || !isCodeEvidenceSpan(span));
+    const evidence = candidatesByBinding(
+      (await deps.storage.evidence.searchEvidence({ features, limit: 40 })).map(item => item.span),
+      text,
+      sourceCodeEvidenceAllowed
+    );
     return emptyRuntimeGraphSlice({ evidenceIds: evidence.map(span => span.id), features, topicTerms, radius: 0, limitNodes: 0, limitEdges: 0 }, evidence);
   }
 
@@ -765,7 +766,7 @@ export function createRuntimeGraphRetrieval(options: {
     // Over-fetch, drop control spans before ranking, and let titled sources precede titleless ones.
     const usable = (rows: Awaited<ReturnType<typeof deps.storage.evidence.searchEvidence>>) => {
       // A source file that declares the identifier the request names is about that request, code lane or not.
-      const kept = (proseOnly ? rows.filter(item => !spanIsSourceCode(item.span) || evidenceIdentityBindsRequest(item.span, text)) : rows).filter(item => !isControlCorpusSpan(item.span));
+      const kept = (proseOnly ? rows.filter(item => retrievalBindingCarries(retrievalBinding(item.span, { requestText: text }))) : rows).filter(item => !isControlCorpusSpan(item.span));
       const titled = kept.filter(item => evidenceSpanProvenanceTitle(item.span));
       const titleless = kept.filter(item => !evidenceSpanProvenanceTitle(item.span));
       return [...titled, ...titleless].slice(0, 32);
@@ -853,10 +854,26 @@ function sourceContentHash(text: string): string {
     return `sha256_${hasher.digestHex(text)}`;
   }
 
-  /** A span whose media type or origin is source code; structural, no language rules. Pure. */
-function spanIsSourceCode(span: EvidenceSpan): boolean {
-  return isCodeEvidenceSpan(span);
-}
+  /**
+   * The candidates a lane carries forward, ordered by the source-kind prior.
+   *
+   * One reading of the retrieval binding replaces the filter each lane used to write out for itself. A measured
+   * refusal drops; an unmeasured binding is carried and ranked last, because absence of measurement is not
+   * negative evidence and the turn's own admission is the first place the request can actually be measured.
+   */
+  function candidatesByBinding(
+    spans: readonly EvidenceSpan[],
+    requestText: string,
+    sourceCodeEvidenceAllowed: boolean
+  ): EvidenceSpan[] {
+    const bound = spans
+      .map(span => ({ span, binding: retrievalBinding(span, { requestText, sourceCodeEvidenceAllowed }) }))
+      .filter(entry => retrievalBindingCarries(entry.binding));
+    return bound
+      .map((entry, index) => ({ ...entry, index }))
+      .sort((left, right) => retrievalBindingRank(left.binding) - retrievalBindingRank(right.binding) || left.index - right.index)
+      .map(entry => entry.span);
+  }
 
 async function sourceAnchoredEvidenceForText(text: string, features: readonly string[], allowSemanticFrameEvidence = true, requestScaffolding?: ReadonlySet<string>, languageModels: readonly KneserNeyModel[] = [], continuationPopulation?: LanguageContinuationPopulation, sourceCodeEvidenceAllowed = false): Promise<SourceAnchoredEvidenceSelection> {
     // A group whose every unit is request scaffolding names no subject: "[which]" alone seeded the whole corpus's
@@ -930,7 +947,7 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
     // that is not about code is answered from prose while any prose remains; a code request keeps everything.
     const evidenceResults = sourceCodeEvidenceAllowed
       ? gatheredResults
-      : gatheredResults.filter(item => !spanIsSourceCode(item.span) || evidenceIdentityBindsRequest(item.span, text));
+      : gatheredResults.filter(item => retrievalBindingCarries(retrievalBinding(item.span, { requestText: text })));
     kernelTrace({
       stage: "graph.resolve.anchor_evidence_search",
       label: "kernel.sourceAnchoredEvidenceForText",
@@ -965,7 +982,7 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
     // Same rule as the two filters above, not a stricter one: a source that declares the identifier the request names binds it.
     const proseCandidates = sourceCodeEvidenceAllowed
       ? mergedCandidates
-      : mergedCandidates.filter(span => !spanIsSourceCode(span) || evidenceIdentityBindsRequest(span, text));
+      : mergedCandidates.filter(span => retrievalBindingCarries(retrievalBinding(span, { requestText: text })));
     const promoted = dropContainerSpans(proseCandidates
       .filter(span => (span.status === "promoted" || promotedSessionEvidence(span))
         && evidenceProofBoundary(span).certifiesFactualProof
@@ -2285,16 +2302,19 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
     evidenceFirst = false,
     sourceCodeEvidenceAllowed = false
   ): Promise<RuntimeGraphSliceValue> {
-    const evidenceResults = (await deps.storage.evidence.searchEvidence({ features, limit: 40 }))
-      .filter(item => sourceCodeEvidenceAllowed || !isCodeEvidenceSpan(item.span));
-    const evidenceIds = evidenceResults.map(item => item.span.id);
+    const searched = candidatesByBinding(
+      (await deps.storage.evidence.searchEvidence({ features, limit: 40 })).map(item => item.span),
+      text,
+      sourceCodeEvidenceAllowed
+    );
+    const evidenceIds = searched.map(span => span.id);
     if (evidenceFirst) {
       const boundedSlice = await graphForEvidenceIds(evidenceIds, { adaptiveWidening: true });
       return {
         ...boundedSlice,
         evidence: mergeEvidenceSpans([
-          ...evidenceResults.map(item => item.span),
-          ...boundedSlice.evidence.filter(span => sourceCodeEvidenceAllowed || !isCodeEvidenceSpan(span))
+          ...searched,
+          ...candidatesByBinding(boundedSlice.evidence, text, sourceCodeEvidenceAllowed)
         ])
       };
     }
@@ -2309,8 +2329,8 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
     return {
       graph,
       evidence: mergeEvidenceSpans([
-        ...evidenceResults.map(item => item.span),
-        ...graphEvidence.filter(span => sourceCodeEvidenceAllowed || !isCodeEvidenceSpan(span))
+        ...searched,
+        ...candidatesByBinding(graphEvidence, text, sourceCodeEvidenceAllowed)
       ])
     };
   }
