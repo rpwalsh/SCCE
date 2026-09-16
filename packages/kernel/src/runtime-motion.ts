@@ -642,6 +642,61 @@ export interface RuntimeMotionSurfaceLicenceAudit extends Record<string, JsonVal
   refusedComponents: string[];
   refusedUnits: string[];
   authorityIds: string[];
+  focusBasis: RuntimeMotionFocusBasis;
+  focusAnchor: string;
+  focusDroppedContentUnits: string[];
+}
+
+/**
+ * How the focus anchor was chosen. `closed_class_unmeasured` is not a decision: with no measured scaffolding class
+ * there is no discriminativeness to rank by, and the anchor enumeration's own order is all the turn knows.
+ */
+export type RuntimeMotionFocusBasis = "discriminative_residue" | "closed_class_unmeasured";
+
+export interface RuntimeMotionFocusSelection {
+  anchor: string | undefined;
+  basis: RuntimeMotionFocusBasis;
+  /** Request content units this focus drops that another available anchor kept. Empty is the contract holding. */
+  droppedContentUnits: string[];
+}
+
+/**
+ * Collapse the turn's ranked source anchors to the one unresolved focus the motion may name.
+ *
+ * The anchor list is an enumeration of overlapping windows, not a discriminativeness ranking, so taking its last
+ * element abstracted "What did Einstein discover?" to `did einstein`: it kept the scaffolding unit and destroyed
+ * `discover`, the request's other content unit, which `einstein discover` -- present in the same list -- retained.
+ * Composition may summarize common structure and may not eliminate a salient identity-bearing residue, so the focus
+ * is the anchor that keeps the most of the request's measured content and carries the least scaffolding with it.
+ */
+export function runtimeMotionFocusAnchor(
+  requestText: string,
+  focusAnchors: readonly string[],
+  closedClass: readonly string[] = []
+): RuntimeMotionFocusSelection {
+  const requestKey = normalizePriorKey(requestText);
+  const candidates = uniqueKernelStrings(focusAnchors.map(normalizePriorKey).filter(anchor => anchor && anchor !== requestKey));
+  const scaffolding = new Set(closedClass);
+  if (!scaffolding.size || !candidates.length) {
+    return { anchor: candidates.at(-1), basis: "closed_class_unmeasured", droppedContentUnits: [] };
+  }
+  const contentUnits = new Set(anchorSymbolUnits(requestText).filter(unit => !scaffolding.has(unit)));
+  const keptUnits = (anchor: string) => anchorSymbolUnits(anchor).filter(unit => contentUnits.has(unit));
+  const ranked = candidates
+    .map((anchor, index) => {
+      const kept = keptUnits(anchor);
+      return { anchor, index, kept: kept.length, scaffolding: anchorSymbolUnits(anchor).length - kept.length };
+    })
+    // Equal residue leaves the enumeration's own preference for the most compact trailing window intact.
+    .sort((left, right) => right.kept - left.kept || left.scaffolding - right.scaffolding || right.index - left.index);
+  const chosen = ranked[0]!;
+  const recoverable = new Set(candidates.flatMap(keptUnits));
+  const keptByChosen = new Set(keptUnits(chosen.anchor));
+  return {
+    anchor: chosen.anchor,
+    basis: "discriminative_residue",
+    droppedContentUnits: [...recoverable].filter(unit => !keptByChosen.has(unit)).sort()
+  };
 }
 
 function runtimeMotionFocusSurface(
@@ -652,11 +707,11 @@ function runtimeMotionFocusSurface(
 ): { surface: string; audit: RuntimeMotionSurfaceLicenceAudit } {
   // The subject the request names is what was not found: "No grounded source for: Greek goddess" named the
   // question's phrase, not Apollo (live 2026-09-10).
-  // The turn has already ranked source anchors. Its final compact anchor is a bounded unresolved focus and is safer
-  // to realize than the no-corpus fallback, which is the request's whole content and therefore only an echo. This
-  // consumes typed turn state; it does not infer question grammar or parse the request again at the Mouth boundary.
-  const requestKey = normalizePriorKey(requestText);
-  const compactFocus = uniqueKernelStrings(focusAnchors.map(normalizePriorKey).filter(anchor => anchor && anchor !== requestKey)).at(-1);
+  // The turn has already ranked source anchors. A bounded anchor is a safer unresolved focus than the no-corpus
+  // fallback, which is the request's whole content and therefore only an echo. This consumes typed turn state; it
+  // does not infer question grammar or parse the request again at the Mouth boundary.
+  const focusSelection = runtimeMotionFocusAnchor(requestText, focusAnchors, licensing.closedClass ?? []);
+  const compactFocus = focusSelection.anchor;
   const namedSubject = compactFocus ?? namedSubjectAnchors(requestText)[0];
   const normalizedTopic = namedSubject && [...namedSubject].length >= 3 ? namedSubject : cognitiveTopicForRequest(requestText);
   const topic = requestSurfaceCase(normalizedTopic, requestText);
@@ -690,7 +745,10 @@ function runtimeMotionFocusSurface(
       admittedComponentCount: speaks ? licensed.admitted.length : 0,
       refusedComponents: speaks ? licensed.refusedComponents : [...licensed.refusedComponents, ...licensed.admitted],
       refusedUnits: licensed.refusedUnits,
-      authorityIds: licensed.authorityIds
+      authorityIds: licensed.authorityIds,
+      focusBasis: focusSelection.basis,
+      focusAnchor: focusSelection.anchor ?? "",
+      focusDroppedContentUnits: focusSelection.droppedContentUnits
     }
   };
 }
