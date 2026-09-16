@@ -26,6 +26,12 @@
       "productReachable": false
     },
     {
+      "file": "tools/head-to-head/measured-run.mjs",
+      "purpose": "Counterbalanced head-to-head with energy, temperature, wall time and process CPU recorded per row. Asks the local reference the same prompts as SCCE and scores both with the same grader. Measurement only.",
+      "endpoint": "127.0.0.1:11434",
+      "productReachable": false
+    },
+    {
       "file": "tools/reference-comparison-large.mjs",
       "purpose": "Expanded corpus-grounded comparison of SCCE and the local reference. Measurement only.",
       "endpoint": "127.0.0.1:11434",

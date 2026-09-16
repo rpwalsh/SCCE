@@ -59,6 +59,8 @@
     "repo:exports": "ts-prune",
     "repo:docs": "typedoc --out docs/api packages",
     "scce:audit": "pnpm repo:shape && pnpm repo:deps && pnpm repo:dead && pnpm test",
+    "headtohead:measured": "node tools/head-to-head/measured-run.mjs",
+    "headtohead:selfcheck": "node tools/head-to-head/measure-selfcheck.mjs",
     "release:gate": "node tools/release-gate.mjs",
     "proprietary:check": "node tools/proprietary-boundary-check.mjs",
     "load:gate": "node tools/runtime-load-gate.mjs",
