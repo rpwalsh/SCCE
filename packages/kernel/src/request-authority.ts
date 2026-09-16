@@ -7,6 +7,7 @@ import {
   type CognitiveOperatorId,
   type ExplicitTurnRequirement,
   type OperatorSupportMap,
+  turnRequirementNeutralValue,
   type TurnRequirementDimension,
   type TurnRequirementField
 } from "./turn-requirements.js";
@@ -82,8 +83,10 @@ export function scoreRequestAuthority(
   authority: RequestedAuthority
 ): number {
   const coefficients = authorityRequirementCoefficients(authority);
+  // Score the requirement evidence, not the absolute level: at its intercept a dimension says nothing,
+  // so scoring levels ranked a no-information field by each authority's coefficient mass.
   const logit = TURN_REQUIREMENT_DIMENSIONS.reduce((sum, dimension) => (
-    sum + (coefficients[dimension] ?? 0) * requirementField[dimension]
+    sum + (coefficients[dimension] ?? 0) * (requirementField[dimension] - turnRequirementNeutralValue(dimension, requirementField))
   ), 0);
   // Keep this as a bounded routing energy. It is deliberately not exposed as
   // a probability until a caller applies its own calibrated model.

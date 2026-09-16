@@ -461,6 +461,18 @@ export function deriveTurnRequirementField(input: DeriveTurnRequirementFieldInpu
   return clampRequirementField(field);
 }
 
+/** sigmoid(intercept_d): what a dimension reads when no activation, explicit requirement or context contributed to it. */
+export function turnRequirementNeutralValue(
+  dimension: TurnRequirementDimension,
+  field?: Pick<TurnRequirementField, "trace">
+): number {
+  const traced = field === undefined ? undefined : jsonRecord(jsonRecord(jsonRecord(field.trace).dimensions)[dimension]).intercept;
+  const intercept = typeof traced === "number" && Number.isFinite(traced)
+    ? traced
+    : finiteOr(DEFAULT_TURN_REQUIREMENT_MODEL.intercepts[dimension], 0);
+  return clamp01(sigmoid(intercept));
+}
+
 /** The request minus the spans its learned patterns and frames matched: what remains is the subject, in any language the corpus covers. Pure. */
 export function requestSubjectSegments(requestText: string, field: Pick<TurnRequirementField, "trace">): string[] {
   const chars = [...requestText];

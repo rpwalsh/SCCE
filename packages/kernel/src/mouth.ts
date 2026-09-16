@@ -4743,14 +4743,17 @@ function conversationalActBindingCandidate(
   const currentTurn = turns.reduce((latest, turn) => (turn.turnIndex > latest.turnIndex ? turn : latest), turns[0]!);
   const conversationId = `conversation.${hasher.digestHex(canonicalStringify(turns.map(turn => turn.turnId)))}`;
 
-  // The frame must be one this act induced: a predicate-keyed bundle is the factual lane's form, not a move.
-  const scoped = input.languageMemory.importedConstructionBundles
-    .filter(bundle => bundle.bindingId === conversationalActBindingId(hasher, bundle.targetProfileId, classification.actId))
+  const hydrated = input.languageMemory.importedConstructionBundles
     .filter(bundle => profileInHydratedScope(bundle.sourceProfileId, input.languageProfile, input.languageMemory)
-      && profileInHydratedScope(bundle.targetProfileId, input.languageProfile, input.languageMemory))
+      && profileInHydratedScope(bundle.targetProfileId, input.languageProfile, input.languageMemory));
+  // The frame must be one this act induced: a predicate-keyed bundle is the factual lane's form, not a move.
+  const scoped = hydrated
+    .filter(bundle => bundle.bindingId === conversationalActBindingId(hasher, bundle.targetProfileId, classification.actId))
     .sort((left, right) => compareSurfaceText(left.id, right.id));
   const sourceFamiliesByBundleId = new Map(scoped.map(bundle => [bundle.id, uniqueStrings(bundle.sourceVersionIds).length] as const));
-  const observedDistribution = [...sourceFamiliesByBundleId.values()];
+  // Form-versus-content is a corpus property of a construction, so the split is measured over every hydrated
+  // construction; over only the handful an act keys it fell under Otsu's minimum and refused every candidate.
+  const observedDistribution = hydrated.map(bundle => uniqueStrings(bundle.sourceVersionIds).length);
 
   const rows: Array<{ candidate: SurfaceCandidate; bundleId: string; constructionId: string; cost: number }> = [];
   const refusals: string[] = [];
@@ -4794,7 +4797,7 @@ function conversationalActBindingCandidate(
   traceEvent((globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace, {
     stage: "mouth.conversational_act_binding.candidate",
     label: "mouth.speak",
-    counts: { bundles: scoped.length, rows: rows.length, contentSpans: contentSpans.length },
+    counts: { bundles: scoped.length, invariancePopulation: observedDistribution.length, rows: rows.length, contentSpans: contentSpans.length },
     support: {
       actId: classification.actId,
       logOddsOverNeutral: classification.logOddsOverNeutral,

@@ -87,6 +87,17 @@ function scopedBundles(): DurableLanguageConstructionBundle[] {
   return [frameBundle(), ...singleFamily];
 }
 
+/**
+ * What production actually hydrates: the other constructions carry their own binding ids, so only one bundle
+ * keys this act. Measured live 2026-09-16: 76 of 120 traced turns scoped exactly 3, under Otsu's minimum.
+ */
+function corpusShapedBundles(): DurableLanguageConstructionBundle[] {
+  return scopedBundles().map((bundle, index) => (index === 0 ? bundle : {
+    ...bundle,
+    bindingId: conversationalActBindingId(hasher, PROFILE_ID, `${ACT_ID}.other.${index}`)
+  }));
+}
+
 function classification(overrides: Partial<RequestCommunicativeActClassification> = {}): RequestCommunicativeActClassification {
   return {
     schema: "scce.request_communicative_act_classification.v1",
@@ -166,7 +177,12 @@ function retrievedSpan(id: string, text: string): EvidenceSpan {
 
 async function speakWith(
   act: RequestCommunicativeActClassification | undefined,
-  options: { evidence?: readonly EvidenceSpan[]; requestText?: string; requestedAuthority?: "creative" } = {}
+  options: {
+    evidence?: readonly EvidenceSpan[];
+    requestText?: string;
+    requestedAuthority?: "creative";
+    bundles?: readonly DurableLanguageConstructionBundle[];
+  } = {}
 ): Promise<{ text: string; trace: TraceRow[] }> {
   const dir = mkdtempSync(join(tmpdir(), "scce-act-binding-"));
   const traceFile = join(dir, "trace.jsonl");
@@ -208,7 +224,12 @@ async function speakWith(
       conversationTurns: turns,
       ...(options.requestedAuthority ? { requestedAuthority: options.requestedAuthority } : {}),
       ...(act ? { requestCommunicativeAct: act } : {}),
-      languageMemory: { ...state, models: [TRAINED], closedClass: DIALOGUE_CLOSED_CLASS, importedConstructionBundles: scopedBundles() }
+      languageMemory: {
+        ...state,
+        models: [TRAINED],
+        closedClass: DIALOGUE_CLOSED_CLASS,
+        importedConstructionBundles: [...(options.bundles ?? scopedBundles())]
+      }
     });
     const trace = readFileSync(traceFile, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line) as TraceRow);
     return { text: spoken.text, trace };
@@ -335,6 +356,32 @@ describe("the conversation-bound lane is reachable from a production speak", () 
       closedClass: DIALOGUE_CLOSED_CLASS
     });
     expect(inventory.unlicensedUnits.map(unit => unit.surface)).toEqual([]);
+    expect(inventory.authorityClassId).not.toBe("authority.grounded_factual");
+  }, 120_000);
+
+  // Live 2026-09-16: "Hello, how are you today?" scoped 3 act-keyed bundles, so the literal-invariance floor was
+  // an Otsu split of a 3-sample distribution -- unmeasurable -- and all 45 candidates refused unmeasured.
+  it("measures the literal-invariance floor over the hydrated corpus, not over the bundles one act happens to key", async () => {
+    const spoken = await speakWith(classification(), { bundles: corpusShapedBundles() });
+    const row = bindingRow(spoken.trace);
+    expect(row).toBeDefined();
+    const surface = row?.support?.surface as string | null | undefined;
+    expect(typeof surface).toBe("string");
+    expect(surface).toBeTruthy();
+    expect(Object.keys((row?.support?.refusals ?? {}) as Record<string, number>))
+      .not.toContain("conversational_binding.refuse.literal_invariance_unmeasured");
+    expect(row?.support?.literalInvarianceFloor).not.toBeNull();
+    expect(row?.counts?.bundles).toBe(1);
+    expect(row?.counts?.invariancePopulation).toBe(corpusShapedBundles().length);
+    const inventory = candidateCommitmentInventory({
+      text: surface as string,
+      evidenceTexts: [],
+      conversationTurns: TURNS,
+      claimBases: [],
+      closedClass: DIALOGUE_CLOSED_CLASS
+    });
+    expect(inventory.unlicensedUnits.map(unit => unit.surface)).toEqual([]);
+    expect(candidateCommitmentsLicensed(inventory)).toBe(true);
     expect(inventory.authorityClassId).not.toBe("authority.grounded_factual");
   }, 120_000);
 
