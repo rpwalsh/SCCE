@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { surfaceContainsTerm } from "./surface-linguistics.js";
 import { solveTaskSchedule, verifyTaskScheduleOrder } from "./task-schedule-solver.js";
 
 /**
@@ -129,16 +130,17 @@ export function completeDocumentPlanNode(plan: DocumentPlan, input: CompleteDocu
   if (unmetDependencies.length) {
     throw new Error(`cannot complete ${input.nodeId}: rhetorical dependencies not yet satisfied: ${unmetDependencies.join(", ")}`);
   }
-  if (node.requiredCoverageIds.length) {
-    const coverageTermIds = new Set((node.coverageTerms ?? []).map(term => term.id));
-    if (node.requiredCoverageIds.some(id => !coverageTermIds.has(id))) {
-      throw new Error(`cannot complete ${input.nodeId}: required coverage lacks surface term`);
-    }
-  }
   const satisfied = new Set([...node.satisfiedCoverageIds, ...input.satisfiedCoverageIds]);
   const unmetCoverage = node.requiredCoverageIds.filter(coverageId => !satisfied.has(coverageId));
   if (unmetCoverage.length) {
     throw new Error(`cannot complete ${input.nodeId}: required coverage not satisfied: ${unmetCoverage.join(", ")}`);
+  }
+  // A coverage obligation carrying a surface term is credited only where the content actually realizes it.
+  const coverageTerms = new Map((node.coverageTerms ?? []).map(term => [term.id, term.text]));
+  const unrealizedCoverage = node.requiredCoverageIds
+    .filter(coverageId => coverageTerms.has(coverageId) && !surfaceContainsTerm(input.content, coverageTerms.get(coverageId)!));
+  if (unrealizedCoverage.length) {
+    throw new Error(`cannot complete ${input.nodeId}: required coverage not realized in content: ${unrealizedCoverage.join(", ")}`);
   }
   return {
     nodes: {

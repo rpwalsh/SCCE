@@ -127,3 +127,40 @@ describe("resuming/revising a document plan never rebuilds a completed section (
       .toThrow(/already completed/);
   });
 });
+
+describe("a coverage obligation carrying a surface term is credited only on real realization", () => {
+  function planWithCoverageTerm(): DocumentPlan {
+    const plan = addDocumentPlanNode(EMPTY_DOCUMENT_PLAN, { id: "doc", kind: "document", order: 0, goal: "report" });
+    return addDocumentPlanNode(plan, {
+      id: "doc.section",
+      kind: "section",
+      parentId: "doc",
+      order: 0,
+      goal: "state the root cause",
+      requiredCoverageIds: ["finding"],
+      coverageTerms: [{ id: "finding", text: "stale cache entry" }]
+    });
+  }
+
+  it("rejects completion credit claimed for a term the content never realizes", () => {
+    expect(() => completeDocumentPlanNode(planWithCoverageTerm(), {
+      nodeId: "doc.section",
+      content: "The investigation is described elsewhere.",
+      satisfiedCoverageIds: ["finding"]
+    })).toThrow(/required coverage not realized in content: finding/);
+  });
+
+  it("accepts it when the content genuinely realizes the term", () => {
+    const plan = completeDocumentPlanNode(planWithCoverageTerm(), {
+      nodeId: "doc.section",
+      content: "The root cause was a STALE  Cache   Entry left behind by the deploy.",
+      satisfiedCoverageIds: ["finding"]
+    });
+    expect(plan.nodes["doc.section"]!.completed).toBe(true);
+  });
+
+  it("a node declaring required coverage with no surface term is still completable on its ids alone", () => {
+    const plan = addDocumentPlanNode(EMPTY_DOCUMENT_PLAN, { id: "n", kind: "section", order: 0, goal: "g", requiredCoverageIds: ["c"] });
+    expect(completeDocumentPlanNode(plan, { nodeId: "n", content: "x", satisfiedCoverageIds: ["c"] }).nodes["n"]!.completed).toBe(true);
+  });
+});
