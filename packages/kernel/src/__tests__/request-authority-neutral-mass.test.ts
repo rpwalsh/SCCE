@@ -111,4 +111,47 @@ describe("request authority is scored on requirement evidence, not on coefficien
     expect(projection.projectedAuthority).not.toBe("translation");
     expect(operationalAuthorityForProjection({ projection, activeOperatorIds: [] })).not.toBe("translation");
   });
+
+  // Live 2026-09-16: nine fields deviated only on dialogueDependence, which no authority weighs. Every score
+  // tied at 0.5 and the id ordering handed them "action". Contribution presence is provenance, not separation.
+  it("reports contribution and separation as two facts, and takes the neutral authority when evidence does not separate", () => {
+    const dialogueOnly = { ...neutralField(), dialogueDependence: 0.431 };
+    const projection = projectRequestAuthority({
+      // Provenance says evidence reached derivation; no authority-weighed dimension left its neutral.
+      requirementField: fieldFrom(dialogueOnly, ["dialogueDependence", "noveltyDemand"])
+    });
+
+    expect(projection.contributionPresent).toBe(true);
+    expect(projection.authorityEvidenceMagnitude).toBe(0);
+    expect(projection.authorityScoreSpread).toBe(0);
+    expect(projection.authorityDistinguishable).toBe(false);
+    expect(projection.projectedAuthority).toBe("factual");
+    expect(projection.scoreMargin).toBe(0);
+    expect(projection.trace).toMatchObject({
+      contributionPresent: true,
+      authorityDistinguishable: false,
+      neutralAuthorityApplied: true,
+      neutralAuthorityReasonId: "authority.neutral.indistinguishable",
+      // The contribution floor is a different fact and did not fire: provenance is preserved exactly.
+      authoritySignalPresent: true,
+      neutralFloorApplied: false
+    });
+    // Nor may the operational substitute fall back on the id ordering when nothing separates the scores.
+    expect(operationalAuthorityForProjection({
+      projection: { ...projection, requestedAuthority: "program" },
+      activeOperatorIds: []
+    })).toBe("factual");
+  });
+
+  it("still separates authorities whenever an authority-weighed dimension leaves its neutral", () => {
+    const projection = projectRequestAuthority({
+      requirementField: fieldFrom({ ...neutralField(), sourceDependence: 0.62 }, ["sourceDependence"])
+    });
+
+    expect(projection.authorityEvidenceMagnitude).toBeGreaterThan(0);
+    expect(projection.authorityScoreSpread).toBeGreaterThan(0);
+    expect(projection.authorityDistinguishable).toBe(true);
+    expect(projection.trace).toMatchObject({ neutralAuthorityApplied: false, neutralAuthorityReasonId: null });
+    expect(projection.projectedAuthority).toBe("factual");
+  });
 });

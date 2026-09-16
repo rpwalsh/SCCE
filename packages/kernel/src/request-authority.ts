@@ -45,8 +45,22 @@ export interface RequestAuthorityProjection {
   explicitOverride: boolean;
   scores: Record<RequestedAuthority, number>;
   scoreMargin: number;
+  /** Provenance: evidence affected requirement derivation. Never an answer to whether it discriminates. */
+  contributionPresent: boolean;
+  /** Total authority-relevant deviation from the intercept-only neutral. */
+  authorityEvidenceMagnitude: number;
+  authorityScoreSpread: number;
+  authorityDistinguishable: boolean;
   trace: JsonValue;
 }
+
+export const NEUTRAL_AUTHORITY_REASON_IDS = {
+  noContribution: "authority.neutral.no_contribution",
+  indistinguishable: "authority.neutral.indistinguishable"
+} as const;
+
+export type NeutralAuthorityReasonId =
+  typeof NEUTRAL_AUTHORITY_REASON_IDS[keyof typeof NEUTRAL_AUTHORITY_REASON_IDS];
 
 export interface ProjectRequestAuthorityInput {
   requirementField: TurnRequirementField;
@@ -216,18 +230,28 @@ export function projectRequestAuthority(input: ProjectRequestAuthorityInput): Re
   const ranked = REQUESTED_AUTHORITY_IDS
     .map(authority => ({ authority, score: scores[authority] }))
     .sort((left, right) => right.score - left.score || (left.authority < right.authority ? -1 : left.authority > right.authority ? 1 : 0));
-  // Intercept-only fields contain no evidence that can distinguish answer
-  // authority. Keep that cold-start state on the conservative factual floor;
-  // learned, explicit, and structural contributions still use the calibrated
-  // projection below. Dialogue-only continuity does not invent authority.
-  const authoritySignalPresent = requirements.contributedDimensions === undefined
+  // Provenance only: that evidence reached requirement derivation, including where contributions cancelled.
+  const contributionPresent = requirements.contributedDimensions === undefined
     ? true
     : requirements.contributedDimensions.some(dimension => AUTHORITY_SIGNAL_DIMENSIONS.has(dimension));
-  const projectedAuthority = authoritySignalPresent ? (ranked[0]?.authority ?? "factual") : "factual";
+  const authoritySignalPresent = contributionPresent;
+  // Separation is a second fact, derived from the deviation-scored outputs rather than from provenance.
+  const authorityEvidenceMagnitude = [...AUTHORITY_SIGNAL_DIMENSIONS].reduce((sum, dimension) => (
+    sum + Math.abs(requirements[dimension] - turnRequirementNeutralValue(dimension, requirements))
+  ), 0);
+  const authorityScoreSpread = REQUESTED_AUTHORITY_IDS.reduce((high, authority) => Math.max(high, scores[authority]), 0)
+    - REQUESTED_AUTHORITY_IDS.reduce((low, authority) => Math.min(low, scores[authority]), Infinity);
+  // Numerical-zero separation is the test until a corpus-derived distinguishability criterion exists.
+  const authorityDistinguishable = authorityScoreSpread > 0;
+  const neutralAuthorityReasonId: NeutralAuthorityReasonId | null = !contributionPresent
+    ? NEUTRAL_AUTHORITY_REASON_IDS.noContribution
+    : !authorityDistinguishable ? NEUTRAL_AUTHORITY_REASON_IDS.indistinguishable : null;
+  const neutralAuthorityApplied = neutralAuthorityReasonId !== null;
+  const projectedAuthority = neutralAuthorityApplied ? "factual" : (ranked[0]?.authority ?? "factual");
   const requestedAuthority = input.explicitAuthority ?? projectedAuthority;
-  const scoreMargin = authoritySignalPresent
-    ? clamp01((ranked[0]?.score ?? 0) - (ranked[1]?.score ?? 0))
-    : 0;
+  const scoreMargin = neutralAuthorityApplied
+    ? 0
+    : clamp01((ranked[0]?.score ?? 0) - (ranked[1]?.score ?? 0));
   const trace = toJsonValue({
     schema: "scce.requested_authority.requirement_projection.v2",
     requestedAuthority,
@@ -239,7 +263,13 @@ export function projectRequestAuthority(input: ProjectRequestAuthorityInput): Re
     scoreReliability: "uncalibrated_bootstrap",
     scoreSemantics: "bounded_routing_energy_not_probability",
     authoritySignalPresent,
-    neutralFloorApplied: !authoritySignalPresent,
+    contributionPresent,
+    neutralFloorApplied: !contributionPresent,
+    authorityEvidenceMagnitude,
+    authorityScoreSpread,
+    authorityDistinguishable,
+    neutralAuthorityApplied,
+    neutralAuthorityReasonId,
     scores,
     scoreMargin,
     requirementConfidence: requirements.confidence,
@@ -253,6 +283,10 @@ export function projectRequestAuthority(input: ProjectRequestAuthorityInput): Re
     explicitOverride: Boolean(input.explicitAuthority),
     scores,
     scoreMargin,
+    contributionPresent,
+    authorityEvidenceMagnitude,
+    authorityScoreSpread,
+    authorityDistinguishable,
     trace
   };
 }
@@ -270,6 +304,8 @@ export function operationalAuthorityForProjection(input: {
     ? authority !== "action" || active.has(COGNITIVE_OPERATOR_IDS.actionPlanning)
     : active.has(COGNITIVE_OPERATOR_IDS.programPlanning);
   if (eligible(input.projection.requestedAuthority)) return input.projection.requestedAuthority;
+  // Scores that separate nothing may not pick the substitute by id ordering either.
+  if (!input.projection.authorityDistinguishable) return "factual";
   return REQUESTED_AUTHORITY_IDS
     .filter(eligible)
     .map(authority => ({ authority, score: input.projection.scores[authority] }))
