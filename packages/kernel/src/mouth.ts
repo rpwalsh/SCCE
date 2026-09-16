@@ -4651,18 +4651,28 @@ function conversationalActBindingCandidate(
   hasher: Hasher
 ): SurfaceCandidate | undefined {
   const classification = input.requestCommunicativeAct;
-  if (!classification || classification.status !== "active" || classification.actId === DIALOGUE_ACT_IDS.neutral) return undefined;
+  // A lane that returns before it traces cannot be told apart from one that traced nothing; name the gate instead.
+  const skip = (reason: string): undefined => {
+    traceEvent((globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace, {
+      stage: "mouth.conversational_act_binding.skipped",
+      label: "mouth.speak",
+      support: { reason, actId: classification?.actId ?? null, status: classification?.status ?? null }
+    });
+    return undefined;
+  };
+  if (!classification || classification.status !== "active") return skip("act_not_active");
+  if (classification.actId === DIALOGUE_ACT_IDS.neutral) return skip("act_is_neutral");
   // Evidence presence never suppresses this lane; it only bounds what the candidate is licensed to assert.
-  if (semanticAnswerConstructState(input.construct)) return undefined;
-  if (generatedConstructSurface(input.construct) && !isNonAssertiveRuntimeMotionConstruct(input.construct)) return undefined;
-  if (input.construct.program || isWorkspaceKernelSpeakInput(input)) return undefined;
+  if (semanticAnswerConstructState(input.construct)) return skip("semantic_answer_construct");
+  if (generatedConstructSurface(input.construct) && !isNonAssertiveRuntimeMotionConstruct(input.construct)) return skip("generated_construct_surface");
+  if (input.construct.program || isWorkspaceKernelSpeakInput(input)) return skip("program_or_workspace");
 
   const turns = speakConversationTurns(input);
   const contentSpans = turns
     .map(turn => ({ turn, span: conversationTurnContentSpan(turn, input) }))
     .flatMap(row => (row.span ? [{ turn: row.turn, span: row.span }] : []))
     .sort((left, right) => right.turn.turnIndex - left.turn.turnIndex);
-  if (!contentSpans.length) return undefined;
+  if (!contentSpans.length) return skip("no_conversation_content_span");
   const currentTurn = turns.reduce((latest, turn) => (turn.turnIndex > latest.turnIndex ? turn : latest), turns[0]!);
   const conversationId = `conversation.${hasher.digestHex(canonicalStringify(turns.map(turn => turn.turnId)))}`;
 
