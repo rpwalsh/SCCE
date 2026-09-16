@@ -23,7 +23,7 @@ import {
   normalizeCreativeEventCompatibilityModels,
   type CreativeEventCompatibilityModel
 } from "./creative-event-compatibility.js";
-import { SENTENCE_BOUNDARY_SYMBOLS, ensureSurfaceSentence as ensureUnicodeSurfaceSentence, isSentenceBoundarySymbol as isUnicodeSentenceBoundarySymbol, sourceDerivedCasingHints, splitSurfaceSentences, stripTerminalSentenceBoundary, surfaceContainsTerm, surfaceWords } from "./surface-linguistics.js";
+import { SENTENCE_BOUNDARY_SYMBOLS, collapseSurfaceWhitespace, ensureSurfaceSentence as ensureUnicodeSurfaceSentence, isSentenceBoundarySymbol as isUnicodeSentenceBoundarySymbol, sourceDerivedCasingHints, splitSurfaceSentences, stripTerminalSentenceBoundary, surfaceContainsTerm, surfaceWords } from "./surface-linguistics.js";
 import {
   ANSWER_ROLE_IDS,
   ANSWER_SLOT_IDS,
@@ -266,8 +266,14 @@ export interface LanguageGenerationResult {
 export function languageGenerationSurfaceAdequate(
   generation: Pick<LanguageGenerationResult, "discourse" | "symbols" | "coverageComplete">
 ): boolean {
-  const extent = Math.max(1, generation.symbols.length);
-  return generation.coverageComplete !== false && discourseSurfaceAdequate(generation.discourse, extent);
+  return generation.coverageComplete !== false && languageGenerationSurfaceFluent(generation);
+}
+
+/** Structurally speakable, whatever share of the request it reached: coverage ranks a surface, it does not silence one. */
+export function languageGenerationSurfaceFluent(
+  generation: Pick<LanguageGenerationResult, "discourse" | "symbols">
+): boolean {
+  return discourseSurfaceAdequate(generation.discourse, Math.max(1, generation.symbols.length));
 }
 
 /** Reject a dangling learned function-word pair with no attested sentence ending. */
@@ -1028,7 +1034,9 @@ function generateFromLanguageMemory(input: LanguageGenerationInput): LanguageGen
   // requiredTerms/frameAtoms for.
   const continuationAcceptable = continuationDiscourse
     && discourseSurfaceAdequate(continuationDiscourse, generationExtent)
-    && discourseTraceHasCoverage(continuationDiscourse, requiredTerms, frameAtoms);
+    && discourseTraceHasCoverage(continuationDiscourse, requiredTerms, frameAtoms)
+    // Unit-level coverage drops a term's own punctuation, so "40 % 9: 00" reads as covering "40%" and "9:00".
+    && discourseSpellsRequiredTerms(continuationDiscourse, requiredTerms);
   const discourse = firstDiscourseAdequate
     ? firstDiscourse
     : continuationAcceptable
@@ -2767,6 +2775,20 @@ function coverageMeetsThreshold(
  * which let a fluent but factually empty continuation replace a real one
  * whenever the real one merely fell short on fluency.
  */
+/**
+ * Whether a discourse writes each required term the way the term is written, not merely its units in order.
+ *
+ * `surfaceContainsTerm` compares surface units and drops everything between them, so a continuation that shatters
+ * a value -- "40 % 9: 00" for "40%" and "9:00" -- is credited with covering both and replaces the grounded
+ * realization that spelled them. A fallback may not claim a value it does not write.
+ */
+function discourseSpellsRequiredTerms(discourse: LanguageDiscourseTrace, requiredTerms: readonly LanguageGenerationTerm[]): boolean {
+  const haystack = collapseSurfaceWhitespace(discourse.text).normalize("NFKC").toLocaleLowerCase();
+  return requiredTerms
+    .filter(term => (term.weight ?? 0) >= calibrated("language_memory.required_term_weight_floor") && tidyInline(term.text))
+    .every(term => haystack.includes(collapseSurfaceWhitespace(tidyInline(term.text)).normalize("NFKC").toLocaleLowerCase()));
+}
+
 export function discourseTraceHasCoverage(
   discourse: LanguageDiscourseTrace,
   requiredTerms: readonly LanguageGenerationTerm[],

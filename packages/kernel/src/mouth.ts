@@ -64,6 +64,7 @@ import {
 import {
   activeJoinProgram,
   languageGenerationSurfaceAdequate,
+  languageGenerationSurfaceFluent,
   languageGenerationSentenceEndingsAdequate,
   semanticFrameSurfaces,
   type LanguageGenerationResult,
@@ -945,7 +946,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       const proofBoundarySelectedCandidate = plan.constructForces.some(force => force.id === "CreativeConstruct")
         ? undefined
         : scoredCandidates.find(candidate => candidate.id === "candidate:generated:proof-boundary" && !candidate.forbiddenHits.length);
-      const workspaceDraftCandidate = isWorkspaceKernelSpeakInput(input) || input.requestedAuthority === "program"
+      const workspaceDraftCandidate = isWorkspaceKernelSpeakInput(input) || input.requestedAuthority === "program" || programPlanSurfaceAvailable(plan)
         ? scoredCandidates.find(candidate => candidate.id === "candidate:generated:construct-anchored" && !candidate.forbiddenHits.some(hit => hit.includes("echo")))
         : undefined;
       const governedActionDraftCandidate = input.requestedAuthority === "action"
@@ -3665,6 +3666,7 @@ function generatedCandidatesFromFrames(
     return uniqueSurfaceCandidates([...creativeVariants, ...(conversationMemory ? [conversationMemory] : [])]);
   }
   const sentences: SentenceCandidate[] = [];
+  const partialSentences: SentenceCandidate[] = [];
   const realizationFrameById = new Map<string, RealizationFrame>();
   for (const frame of plan.realizationFrames) {
     if (!realizationFrameById.has(frame.id)) realizationFrameById.set(frame.id, frame);
@@ -3698,9 +3700,9 @@ function generatedCandidatesFromFrames(
       : isImportSummary
         ? preserveImportSummaryCoverage(generation.text, unitPlan, unit.role, activeJoinProgram(input.languageMemory))
         : generation.text;
-    if (!admissibleLearnedSurface(generatedText, generation)) continue;
+    if (!admissibleLearnedSurface(generatedText, generation) && !partiallyCoveringLearnedSurface(generatedText, generation)) continue;
     const preservation = semanticPreservation({ text: generatedText, plan: unitPlan, entailment: input.entailment });
-    sentences.push({
+    const sentence: SentenceCandidate = {
       unitId: unit.id,
       role: unit.role,
       text: generatedText,
@@ -3711,20 +3713,24 @@ function generatedCandidatesFromFrames(
       orderUsage: generation.orderUsage,
       preservationScore: preservation.score,
       stopReason: generation.stoppedBy
-    });
+    };
+    if (admissibleLearnedSurface(generatedText, generation)) sentences.push(sentence);
+    else partialSentences.push(sentence);
   }
-  if (!sentences.length) return uniqueSurfaceCandidates([
+  // Reaching part of the request is a reason to rank a surface below a complete one, never a reason to say nothing.
+  const spokenSentences = sentences.length ? sentences : partialSentences;
+  if (!spokenSentences.length) return uniqueSurfaceCandidates([
     ...creativeVariants,
     ...(conversationMemory ? [conversationMemory] : [])
   ]);
-  const assembly = assembleDiscourseSentences({ discoursePlan, sentences, languageMemory: input.languageMemory });
+  const assembly = assembleDiscourseSentences({ discoursePlan, sentences: spokenSentences, languageMemory: input.languageMemory });
   if (!assembly.text.trim()) return uniqueSurfaceCandidates([
     ...creativeVariants,
     ...(conversationMemory ? [conversationMemory] : [])
   ]);
-  const generatedIds = uniqueStrings(sentences.flatMap(sentence => sentence.importedPriorIds));
+  const generatedIds = uniqueStrings(spokenSentences.flatMap(sentence => sentence.importedPriorIds));
   const pieceIds = uniqueStrings([...generatedIds, ...priorPieces.filter(piece => assembly.text.includes(piece.text)).map(piece => piece.id)]);
-  const aggregateGeneration = aggregateLanguageGeneration(sentences);
+  const aggregateGeneration = aggregateLanguageGeneration(spokenSentences);
   return uniqueSurfaceCandidates([
     {
     id: "candidate:generated:0",
@@ -3736,11 +3742,11 @@ function generatedCandidatesFromFrames(
       .map(id => realizationFrameById.get(id))
       .filter((frame): frame is RealizationFrame => Boolean(frame))
       .flatMap(frame => frame.evidenceBinding?.evidenceId ? [frame.evidenceBinding.evidenceId] : []))],
-    fit: clamp01(0.58 + mean(sentences.map(sentence => sentence.generation.confidence)) * 0.42),
+    fit: clamp01(0.58 + mean(spokenSentences.map(sentence => sentence.generation.confidence)) * 0.42),
     importedPieceIds: pieceIds,
     generation: aggregateGeneration,
     discoursePlan,
-    sentenceCandidates: sentences,
+    sentenceCandidates: spokenSentences,
     boundaryDecisions: assembly.boundaryDecisions
     },
     ...creativeVariants
@@ -5066,7 +5072,7 @@ function constructAnchoredCandidate(plan: SurfacePlan, discoursePlan: DiscourseP
   const selectedKind = input.selectedCandidate?.kind;
   const programAuthorityCandidate = input.requestedAuthority === "program"
     && (selectedKind === "program-proposal" || selectedKind === "workspace-proposal");
-  if (!programAuthorityCandidate && !isWorkspaceKernelSpeakInput(input)) return undefined;
+  if (!programAuthorityCandidate && !programPlanSurfaceAvailable(plan) && !isWorkspaceKernelSpeakInput(input)) return undefined;
   const workspacePlanSurface = selectedWorkspacePlanSurface(input.selectedCandidate);
   if (workspacePlanSurface) {
     return {
@@ -5128,6 +5134,12 @@ function selectedWorkspacePlanSurface(candidate: CandidateSurface | undefined): 
     || typeof audit.planHash !== "string"
     || !Array.isArray(audit.operations)) return undefined;
   return admissibleMouthSurface(candidate.answer) ? candidate.answer : undefined;
+}
+
+/** A plan whose dominant force is a program and which holds program/artifact points can speak them; upstream routing does not decide that. */
+function programPlanSurfaceAvailable(plan: SurfacePlan): boolean {
+  return dominantConstructForce(plan.constructForces) === "ProgramConstruct"
+    && plan.orderedPoints.some(point => point.proposition.trim() && programOrArtifactSurfacePoint(point));
 }
 
 function programOrArtifactSurfacePoint(point: SurfacePoint): boolean {
@@ -6847,6 +6859,13 @@ function admissibleMouthSurface(text: string): boolean {
 function admissibleLearnedSurface(text: string, generation: LanguageGenerationResult): boolean {
   return admissibleMouthSurface(text)
     && languageGenerationSurfaceAdequate(generation)
+    && generationImportedPriorIds(generation).length > 0;
+}
+
+/** Speakable and prior-bound, but short of full request coverage: a ranked fallback, never a reason for silence. */
+function partiallyCoveringLearnedSurface(text: string, generation: LanguageGenerationResult): boolean {
+  return admissibleMouthSurface(text)
+    && languageGenerationSurfaceFluent(generation)
     && generationImportedPriorIds(generation).length > 0;
 }
 
