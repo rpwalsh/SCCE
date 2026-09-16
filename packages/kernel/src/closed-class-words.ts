@@ -60,8 +60,19 @@ export function requestClosedClassWords(input: {
   // The request corpus teaches its frames with real subjects in them ("Who was Ada Lovelace?"), so the subjects'
   // words arrive here as scaffolding literals; the moment that corpus was ingested, "Who is Ada Lovelace?" dropped
   // its only anchor group as scaffolding and retrieved nothing. What this request names is never its scaffolding.
+  //
+  // Except what the corpus-scale population itself ranks closed: a named run can span the whole request, and
+  // deleting its words unconditionally deleted the ranking's own verdict. Measured on the live brain,
+  // "What is Mercury?" is one named run before any corpus identity is primed, so "what" -- continuation rank 71 of
+  // 92,989 word types, inside the limit -- was dropped with "mercury" and the request kept every word as content.
+  // Naming something cannot make a function word of this language stop being one.
+  //
+  // The population, not the models a turn happens to hold: the byte-budgeted slice is 138 word types on the live
+  // brain and contains none of the language's function words, and deriveClosedClassWords already refuses to name a
+  // class from a population smaller than the limit, which is what the empty set here means.
+  const ranked = deriveClosedClassWords({ continuationPopulation: input.continuationPopulation, limit: input.limit });
   for (const anchor of namedSubjectAnchors(input.requestText)) {
-    for (const unit of anchor.toLocaleLowerCase().split(/\s+/u)) out.delete(unit);
+    for (const unit of anchor.toLocaleLowerCase().split(/\s+/u)) if (!ranked.has(unit)) out.delete(unit);
   }
   return out;
 }
