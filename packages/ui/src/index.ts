@@ -218,7 +218,7 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
   </div>
   <div class="palette" id="palette"><input id="palette-input" aria-label="${escapeHtml(uiText("palette.aria"))}" /><div class="palette-list" id="palette-list"></div></div>
   <script type="module">
-    import { createInitialWorkbenchState, reduceWorkbench, treeFromSnapshot, traceFromEvents, evidenceTreeFromTurn } from '${WORKBENCH_MODEL_ROUTE}';
+    import { createInitialWorkbenchState, reduceWorkbench, treeFromSnapshot, traceFromEvents, evidenceTreeFromTurn, withheldSurfaceView } from '${WORKBENCH_MODEL_ROUTE}';
     const I18N = ${uiMessageScript()};
     const t = key => I18N[key] || key;
     let workbench = createInitialWorkbenchState(${scriptLiteral(serverUrl)});
@@ -336,6 +336,18 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
       return err ? 'Runtime failure: ' + String(err) : 'Runtime failure: /api/turn returned no answer.';
     }
     function answerHasSpeech(text) { return /[\\p{L}\\p{N}]/u.test(String(text || '')); }
+    // A withheld turn travels as typed data on the terminal frame; the error text is only a fallback surface.
+    function terminalFrameError(frame) {
+      const error = new Error(frame.error || JSON.stringify(frame.value) || 'streaming turn failed');
+      if (frame.detail !== undefined) error.detail = frame.detail;
+      return error;
+    }
+    function withheldRow(error) {
+      const view = withheldSurfaceView(error && error.detail, I18N);
+      if (!view) return false;
+      add('notice', view.text, view.detail);
+      return true;
+    }
     function turnDetail(r) {
       return { dialogue: r.dialogue || null, proof: r.entailment?.proof || null, actionGraph: r.actionGraph || null, evidence: evidenceRows(r) };
     }
@@ -457,7 +469,7 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
               if (frame.taskId) state.taskId = String(frame.taskId);
               if (state.reconnectUrl) localStorage.setItem('scce.activeTurnTask', JSON.stringify(state));
               if (frame.type === 'result') result = frame.value;
-              if (frame.type === 'error' || frame.type === 'cancelled') { terminalFailure = true; throw new Error(frame.error || JSON.stringify(frame.value) || 'streaming turn failed'); }
+              if (frame.type === 'error' || frame.type === 'cancelled') { terminalFailure = true; throw terminalFrameError(frame); }
             }
             if (next.done) break;
           }
@@ -467,7 +479,7 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
             if (Number.isFinite(Number(frame.sequence))) state.latestSequence = Math.max(state.latestSequence, Number(frame.sequence));
             if (frame.taskId) state.taskId = String(frame.taskId);
             if (frame.type === 'result') result = frame.value;
-            if (frame.type === 'error' || frame.type === 'cancelled') { terminalFailure = true; throw new Error(frame.error || JSON.stringify(frame.value) || 'streaming turn failed'); }
+            if (frame.type === 'error' || frame.type === 'cancelled') { terminalFailure = true; throw terminalFrameError(frame); }
           }
         } catch (error) {
           if (terminalFailure || !state.reconnectUrl) throw error;
@@ -500,11 +512,11 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
       } catch (error) {
         hideTyping(); setSending(false);
         if (streamingAnswerRow) { streamingAnswerRow.remove(); streamingAnswerRow = null; }
-        if (String(error.message).includes('runtime declined')) add('notice', error.message);
-        else add('error', t('error.prefix') + ' ' + error.message);
+        if (!withheldRow(error)) add('error', t('error.prefix') + ' ' + error.message);
       }
     }
-    async function post(url, body) { const r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); const t = await r.text(); const j = t ? JSON.parse(t) : null; if (!r.ok) throw new Error(JSON.stringify(j)); return j; }
+    async function post(url, body) { const r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); const t = await r.text(); const j = t ? JSON.parse(t) : null; if (!r.ok) throw httpFailure(r.status, j); return j; }
+    function httpFailure(status, payload) { const error = new Error((payload && payload.error) || JSON.stringify(payload) || ('HTTP ' + status)); error.status = status; if (payload && payload.detail !== undefined) error.detail = payload.detail; return error; }
     // Settings and local models (Phase 6/8): labels come from the locale table (settings.<key>).
     function settingLabel(field) { return (typeof I18N !== 'undefined' && I18N['settings.' + field.key]) || field.label; }
     async function loadSettings() {
@@ -734,8 +746,7 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
       } catch (e) {
         hideTyping(); setSending(false); runningTaskId = '';
         if (streamingAnswerRow) { streamingAnswerRow.remove(); streamingAnswerRow = null; }
-        if (String(e.message).includes('runtime declined')) add('notice', e.message);
-        else add('error', t('error.prefix') + ' ' + e.message);
+        if (!withheldRow(e)) add('error', t('error.prefix') + ' ' + e.message);
       }
     };
     document.getElementById('inspect').onclick = async () => { log('GET /api/inspect?target=snapshot'); try { const r = await get('/api/inspect?target=snapshot'); setInspector(r); } catch (e) { inspector.textContent = t('error.prefix') + ' ' + e.message; } };

@@ -30,6 +30,7 @@ import {
   type WorkspaceStatusResponse
 } from "./patch-protocol.js";
 import { verifyAppliedPatchMatchesPlan } from "./patch-integrity.js";
+import { parseWithheldSurface } from "./withheld-surface.js";
 
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const MAX_STREAM_BYTES = 32 * 1024 * 1024;
@@ -45,6 +46,8 @@ export interface TurnStreamFrame {
   streamUrl?: string;
   status?: number;
   error?: string;
+  /** Typed runtime data behind a non-2xx terminal frame -- a withheld-surface record, never wording. */
+  detail?: unknown;
   value?: unknown;
   /** Present only on the "answer.ready" progress frame -- the turn's final answer, streamed early. */
   answer?: string;
@@ -126,6 +129,32 @@ export class ScceHttpError extends Error {
     super(message);
     this.name = "ScceHttpError";
   }
+}
+
+/** A turn that decided not to assert anything. Not a failure: it carries the kernel's own typed reason. */
+export class ScceWithheldTurnError extends ScceHttpError {
+  readonly reasonId: string;
+
+  constructor(status: number, message: string, readonly withheld: Record<string, unknown>) {
+    super(status, message);
+    this.name = "ScceWithheldTurnError";
+    this.reasonId = String(withheld.reasonId);
+  }
+}
+
+function httpFailure(status: number, payload: unknown): ScceHttpError {
+  const message = errorMessage(payload, status);
+  const detail = payload && typeof payload === "object" && !Array.isArray(payload)
+    ? (payload as Record<string, unknown>).detail
+    : undefined;
+  const withheld = parseWithheldSurface(detail);
+  return withheld ? new ScceWithheldTurnError(status, message, withheld) : new ScceHttpError(status, message);
+}
+
+function turnStreamFailure(frame: TurnStreamFrame): Error {
+  const withheld = parseWithheldSurface(frame.detail);
+  const message = frame.error ?? "SCCE turn stream failed";
+  return withheld ? new ScceWithheldTurnError(frame.status ?? 422, message, withheld) : new Error(message);
 }
 
 export class ScceClient {
@@ -270,7 +299,7 @@ export class ScceClient {
             if (frame.type === "result") result = frame.value as TurnAnswer;
             if (frame.type === "error" || frame.type === "cancelled") {
               terminalFailure = true;
-              throw new Error(frame.error ?? "SCCE turn stream failed");
+              throw turnStreamFailure(frame);
             }
           }
           if (next.done) break;
@@ -282,7 +311,7 @@ export class ScceClient {
           if (frame.type === "result") result = frame.value as TurnAnswer;
           if (frame.type === "error" || frame.type === "cancelled") {
             terminalFailure = true;
-            throw new Error(frame.error ?? "SCCE turn stream failed");
+            throw turnStreamFailure(frame);
           }
         }
       } catch (error) {
@@ -343,7 +372,7 @@ export class ScceClient {
       const text = await response.text();
       if (Buffer.byteLength(text, "utf8") > MAX_RESPONSE_BYTES) throw new Error("SCCE response exceeded the extension size limit");
       const payload = parseJson(text);
-      if (!response.ok) throw new ScceHttpError(response.status, errorMessage(payload, response.status));
+      if (!response.ok) throw httpFailure(response.status, payload);
       return parse(payload);
     } finally {
       clearTimeout(timer);

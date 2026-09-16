@@ -143,6 +143,8 @@ export const UI_MESSAGES_EN_US = {
   "chat.empty.title": "Ask SCCE anything about this workspace.",
   "chat.empty.hint": "It can explain code, plan and apply changes, and answer questions grounded in what it has actually ingested.",
   "chat.working": "SCCE is working…",
+  "withheld.no_admitted_evidence": "Nothing in the corpus was admitted for this request, so nothing is being stated as known.",
+  "withheld.surface_refused": "Evidence was admitted, but every answer built from it was refused, so nothing is being stated as known.",
   "chat.details": "Details",
   "app.developer_panel": "Developer",
   "app.developer_panel.close": "Close developer panel",

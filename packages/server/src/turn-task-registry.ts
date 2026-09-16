@@ -32,6 +32,8 @@ export interface TurnTaskFrame {
   elapsedMs?: number;
   value?: JsonValue;
   error?: string;
+  /** Typed runtime data behind a non-2xx frame -- a withheld-surface record, never an assistant surface. */
+  detail?: JsonValue;
   persistence?: "pending" | "durable";
   /** Present only on the "answer.ready" progress frame -- see production-turn-runtime.ts. */
   answer?: string;

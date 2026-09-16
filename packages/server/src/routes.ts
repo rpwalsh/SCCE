@@ -4177,7 +4177,9 @@ async function streamTurnResponse(input: {
         requestId,
         status,
         elapsedMs: performance.now() - requestTiming.startedMonotonicMs,
-        error: error instanceof Error ? error.message : String(error)
+        error: error instanceof Error ? error.message : String(error),
+        // A withheld turn is typed data, not a message: the stream must hand it on as the JSON path does.
+        ...(error instanceof HttpError && error.detail !== undefined ? { detail: error.detail } : {})
       });
     }
   } finally {

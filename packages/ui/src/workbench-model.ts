@@ -197,6 +197,25 @@ export function traceFromEvents(events: unknown[]): WorkbenchTraceEvent[] {
   });
 }
 
+export const WITHHELD_SURFACE_SCHEMA = "scce.runtime.withheld_surface.v1";
+
+export interface WithheldSurfaceViewModel {
+  reasonId: string;
+  text: string;
+  detail: Record<string, unknown>;
+}
+
+/** Presentation for a withheld turn: the kernel supplies the typed reason id, the locale table supplies the words. */
+export function withheldSurfaceView(payload: unknown, messages: Record<string, string>): WithheldSurfaceViewModel | undefined {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+  const record = payload as Record<string, unknown>;
+  if (record.schema !== WITHHELD_SURFACE_SCHEMA) return undefined;
+  const reasonId = typeof record.reasonId === "string" ? record.reasonId : "";
+  const text = reasonId ? messages[reasonId] ?? "" : "";
+  if (!text) return undefined;
+  return { reasonId, text, detail: record };
+}
+
 export function evidenceTreeFromTurn(turn: unknown): WorkbenchTreeItem[] {
   const evidence = (turn as { evidence?: unknown[] }).evidence ?? [];
   const pca = (turn as { proofCarryingAnswer?: { supportedSentences?: number; totalSentences?: number; grounding?: string } }).proofCarryingAnswer;

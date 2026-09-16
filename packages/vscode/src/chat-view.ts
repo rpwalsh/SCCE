@@ -1,13 +1,14 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import * as vscode from "vscode";
-import { ScceClient, ScceHttpError, type TurnAnswer, type TurnStreamFrame } from "./client.js";
+import { ScceClient, ScceHttpError, ScceWithheldTurnError, type TurnAnswer, type TurnStreamFrame } from "./client.js";
 import { turnDetail } from "./turn-detail.js";
 import { speakableAnswerText } from "./speech.js";
+import { withheldSurfaceView } from "./withheld-surface.js";
 
 export interface ChatSessionRecord {
   id: string;
-  role: "owner" | "assistant" | "error";
+  role: "owner" | "assistant" | "notice" | "error";
   text: string;
   detail?: unknown;
   createdAt: number;
@@ -155,6 +156,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.appendHistory({ id: cryptoRandomId(), role: "assistant", text: spoken, detail, createdAt: Date.now() });
       void webview.postMessage({ type: "answer", text: spoken, detail, speech: speakableAnswerText(spoken) });
     } catch (error) {
+      // A withheld turn is a cognitive outcome, not a failure: it gets its own surface from its reason id.
+      const withheld = error instanceof ScceWithheldTurnError ? withheldSurfaceView(error.withheld) : undefined;
+      if (withheld) {
+        this.output.appendLine(`[chat] withheld ${withheld.reasonId}`);
+        this.appendHistory({ id: cryptoRandomId(), role: "notice", text: withheld.text, detail: withheld.detail, createdAt: Date.now() });
+        void webview.postMessage({ type: "withheld", text: withheld.text, detail: withheld.detail });
+        return;
+      }
       const messageText = error instanceof ScceHttpError
         ? `SCCE request failed (${error.status}): ${error.message}`
         : error instanceof Error ? error.message : String(error);
@@ -201,7 +210,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   .empty .hint { font-size: 0.9em; margin-top: 6px; }
   .row { display: flex; }
   .row.owner { justify-content: flex-end; }
-  .row.assistant, .row.error { justify-content: flex-start; }
+  .row.assistant, .row.notice, .row.error { justify-content: flex-start; }
   .bubble {
     max-width: 88%;
     padding: 8px 11px;
@@ -219,6 +228,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     background: var(--vscode-editorWidget-background, var(--vscode-input-background));
     border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, transparent));
     border-bottom-left-radius: 2px;
+  }
+  .row.notice .bubble {
+    background: transparent;
+    border: 1px dashed var(--vscode-widget-border, var(--vscode-panel-border, #555));
+    color: var(--vscode-descriptionForeground, var(--vscode-foreground));
   }
   .row.error .bubble {
     background: var(--vscode-inputValidation-errorBackground, #5a1d1d);
@@ -600,6 +614,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       addMessage('assistant', message.text, message.detail, streamingRow);
       streamingRow = null;
       speak(message.speech || '');
+      return;
+    }
+    if (message.type === 'withheld') {
+      hideTyping();
+      setSending(false);
+      if (streamingRow) { streamingRow.remove(); streamingRow = null; }
+      addMessage('notice', message.text, message.detail);
       return;
     }
     if (message.type === 'error') {
