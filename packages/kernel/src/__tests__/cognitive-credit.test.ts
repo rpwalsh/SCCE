@@ -142,16 +142,20 @@ describe("cognitive credit record", () => {
     expect(record.outcome.source).toBe(CREDIT_OUTCOME_SOURCE_IDS.runtimeSignal);
     expect(record.outcome.supervised).toBe(false);
     expect(record.outcome.graded).toBeNull();
-    expect(record.outcome.label).toBe("outcome.positive");
+    // Watching itself yields a measured quality, never a class: one turn has no population to split against.
+    expect(record.outcome.label).toBe("outcome.unknown");
+    // One obligation, satisfied, against the candidate's 0.02 contradiction: mean(1, 0.98).
+    expect(record.outcome.reward).toBeCloseTo(0.99, 6);
 
     const withheld = buildCognitiveCreditRecord(turnView({ answer: "", withheld: { reason: "no_admissible_surface" } }));
-    expect(withheld.outcome.label).toBe("outcome.negative");
+    expect(withheld.outcome.reward).toBe(0);
     expect(withheld.outcome.signals.spoke).toBe(false);
     expect(withheld.outcome.signals.withheld).toBe(true);
 
-    const replanned = buildCognitiveCreditRecord(turnView({ runtimeMotion: { status: "awaiting_consent" } }));
-    expect(replanned.outcome.label).toBe("outcome.negative");
-    expect(replanned.outcome.signals.replanned).toBe(true);
+    // An acquisition motion a gate refused is not a replan, and the turn's reward must not move for it.
+    const refused = buildCognitiveCreditRecord(turnView({ runtimeMotion: { status: "awaiting_consent" } }));
+    expect(refused.outcome.signals.replanned).toBe(false);
+    expect(refused.outcome.reward).toBe(record.outcome.reward);
   });
 
   it("takes a grader's verdict as a separate, supervised label without overwriting the unsupervised rows", () => {

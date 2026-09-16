@@ -57,7 +57,9 @@ function creditRecord(input: {
       label: input.positive ? CREDIT_OUTCOME_LABEL_IDS.positive : CREDIT_OUTCOME_LABEL_IDS.negative,
       source: CREDIT_OUTCOME_SOURCE_IDS.runtimeSignal,
       supervised: false,
-      signals: { spoke: true, withheld: false, replanned: false, revised: false, corrected: false, contradictionMass: 0, unresolvedObligationCount: 0, budgetExceededCount: 0, evidenceCount: 1 },
+      reward: input.positive ? 0.9 : 0.3,
+      rewardTerms: { obligationDischarge: input.positive ? 0.9 : 0.3, nonContradiction: input.positive ? 0.9 : 0.3 },
+      signals: { spoke: true, withheld: false, replanned: false, revised: false, corrected: false, contradictionMass: 0, obligationCount: 10, unresolvedObligationCount: input.positive ? 1 : 7, budgetExceededCount: 0, evidenceCount: 1 },
       graded: null
     },
     stages: [
@@ -95,10 +97,25 @@ const activationOf = (operatorId: string, model: Parameters<typeof activateCogni
   activateCognitiveOperators({ model, requirementField: field(row) }).find(item => item.operatorId === operatorId)!;
 
 describe("operator routing is fitted from the credit ledger's own episodes", () => {
-  it("refuses to produce a model when every episode carries the same outcome label", () => {
-    // What the live table actually holds today: 36 credit rows, every one outcome=false.
-    const constant = episodes(40).map(row => ({ ...row, outcome: false }));
+  it("refuses to produce a model when every episode measured the same reward", () => {
+    // The reward is the label now, so a degenerate one must still refuse, boolean column or not.
+    const constant = episodes(40).map(row => ({
+      ...row,
+      outcome: false,
+      metadata: { ...(row.metadata as Record<string, unknown>), reward: 0.5, supervised: false }
+    }));
     expect(buildOperatorRoutingModels({ observations: constant, createdAt: 2_000 })).toEqual({});
+  });
+
+  /**
+   * What the live table held before this lane: every credit row outcome=false, because the label demanded
+   * zero unresolved obligations. The rewards underneath carry two classes, and the fit must find them.
+   */
+  it("fits from the reward distribution even where every stored outcome column reads false", () => {
+    const columnFalse = episodes(40).map(row => ({ ...row, outcome: false }));
+    const models = buildOperatorRoutingModels({ observations: columnFalse, createdAt: 2_000 });
+    expect(Object.keys(models)).toHaveLength(1);
+    expect(models["task.general_cognition"]!.sampleCount).toBe(40);
   });
 
   it("refuses to produce a model with fewer episodes than the model has free parameters", () => {

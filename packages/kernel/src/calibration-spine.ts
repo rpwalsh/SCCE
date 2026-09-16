@@ -724,13 +724,29 @@ interface OperatorRoutingSample {
 }
 
 /**
+ * Splits credit episodes into outcome classes on the reward distribution itself. The writer records a measured
+ * reward per turn and no class, because one turn has no population; the boundary is Otsu's on the population a
+ * reader holds, never a declared cut. Undefined when the rewards carry no two-class structure at all.
+ */
+export function creditRewardClasses(rewards: ReadonlyMap<string, number>): { threshold: number; positive: ReadonlySet<string> } | undefined {
+  const values = [...rewards.values()];
+  const threshold = otsuThreshold(values);
+  if (threshold === undefined) return undefined;
+  const positive = new Set([...rewards].filter(([, reward]) => reward >= threshold).map(([episodeId]) => episodeId));
+  if (!positive.size || positive.size === rewards.size) return undefined;
+  return { threshold, positive };
+}
+
+/**
  * Joins the two credit-ledger stage rows a turn already writes, on the episode id they share: the requirement
  * stage carries the inferred requirement field, the operator stage carries which operators actually ran, and
- * both carry the turn's outcome label.
+ * both carry the turn's measured reward. A grader's supervised label wins over the reward split where one exists.
  */
 function operatorRoutingSamplesFromObservations(observations: readonly CalibrationObservationRecord[]): OperatorRoutingSample[] {
   const requirementByEpisode = new Map<string, Record<string, number>>();
   const operatorsByEpisode = new Map<string, { ids: Set<string>; outcome: boolean }>();
+  const rewardByEpisode = new Map<string, number>();
+  const supervisedByEpisode = new Map<string, boolean>();
   for (const observation of observations) {
     const metadata = jsonRecord(observation.metadata);
     if (metadata.schema !== "scce.cognitive_credit.stage_observation.v1") continue;
@@ -746,16 +762,21 @@ function operatorRoutingSamplesFromObservations(observations: readonly Calibrati
       if (Object.keys(row).length === TURN_REQUIREMENT_DIMENSIONS.length) requirementByEpisode.set(episodeId, row);
       continue;
     }
+    if (typeof metadata.reward === "number" && Number.isFinite(metadata.reward)) rewardByEpisode.set(episodeId, clamp01(metadata.reward));
+    if (metadata.supervised === true) supervisedByEpisode.set(episodeId, observation.outcome);
     if (observation.calibrationId === CALIBRATION_IDS.operatorOutcome) {
       const ids = Array.isArray(metadata.ids) ? metadata.ids.filter((value): value is string => typeof value === "string") : [];
       operatorsByEpisode.set(episodeId, { ids: new Set(ids), outcome: observation.outcome });
     }
   }
+  const classes = creditRewardClasses(rewardByEpisode);
   const samples: OperatorRoutingSample[] = [];
   for (const [episodeId, operators] of operatorsByEpisode) {
     const requirement = requirementByEpisode.get(episodeId);
     if (!requirement) continue;
-    samples.push({ requirement, activeOperatorIds: operators.ids, outcome: operators.outcome });
+    const supervised = supervisedByEpisode.get(episodeId);
+    const outcome = supervised ?? (classes ? classes.positive.has(episodeId) : operators.outcome);
+    samples.push({ requirement, activeOperatorIds: operators.ids, outcome });
   }
   return samples.sort((left, right) => Number(left.outcome) - Number(right.outcome));
 }

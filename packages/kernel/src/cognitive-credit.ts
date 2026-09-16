@@ -93,6 +93,8 @@ export interface CreditRuntimeSignals {
   revised: boolean;
   corrected: boolean;
   contradictionMass: number;
+  /** Denominator for the discharge ratio; without it `unresolvedObligationCount` cannot be read as a quality. */
+  obligationCount: number;
   unresolvedObligationCount: number;
   budgetExceededCount: number;
   evidenceCount: number;
@@ -110,6 +112,10 @@ export interface CognitiveCreditOutcome {
   source: CreditOutcomeSourceId;
   /** False whenever the label came from the runtime watching itself rather than from an external judgement. */
   supervised: boolean;
+  /** Unit-interval quality the turn measured about itself; null when it measured none. Never a class. */
+  reward: number | null;
+  /** Every measured term that entered the reward, named, so a fit can weigh them instead of the mean. */
+  rewardTerms: Record<string, number>;
   signals: CreditRuntimeSignals;
   graded: CreditGradedVerdict | null;
 }
@@ -170,31 +176,54 @@ function runtimeSignals(view: CognitiveCreditTurnView): CreditRuntimeSignals {
   const entailment = rec(view.entailment);
   const candidate = rec(view.selectedCandidate);
   const scores = rec(candidate.scores);
-  const obligations = arr(entailment.obligations).filter(row => str(rec(row).status) !== "satisfied");
+  const obligations = arr(entailment.obligations);
+  const motion = rec(view.runtimeMotion);
   return {
     spoke: view.answer.trim().length > 0,
     withheld: Boolean(view.withheld),
-    replanned: Boolean(view.runtimeMotion),
+    // A motion that ran and was refused, disabled or came back empty is not a replan; only added evidence is.
+    replanned: str(motion.status) === "hydrated" && num(motion.ingestedEvidenceCount) > 0,
     revised: Boolean(view.answerRevision),
     corrected: arr(rec(view.corrections).applied).length > 0,
     contradictionMass: clamp01(num(scores.contradiction) || num(entailment.contradiction)),
-    unresolvedObligationCount: obligations.length,
+    obligationCount: obligations.length,
+    unresolvedObligationCount: obligations.filter(row => str(rec(row).status) !== "satisfied").length,
     budgetExceededCount: arr(rec(view.timing).budgetExceeded).length,
     evidenceCount: (view.evidenceIds ?? []).length
   };
 }
 
 /**
- * The only label the runtime can honestly produce by watching itself: it spoke, it did not withhold, it did
- * not have to replan, and nothing it said contradicted its own evidence. It is NOT a correctness judgement,
- * which is why `supervised` is false and the source id says so.
+ * Unit-interval qualities the turn already measured about itself. Unweighted on purpose: each measured term
+ * counts once, because any weighting here would be a hand-set coefficient. Only terms with a real denominator
+ * qualify -- `budgetExceededCount` and `evidenceCount` have none and would need an invented scale.
+ */
+export function runtimeRewardTerms(signals: CreditRuntimeSignals): Record<string, number> {
+  if (signals.obligationCount <= 0) return {};
+  return {
+    // The proof engine scores its own obligations as satisfied/required; `underdetermined` lowers that ratio
+    // rather than voiding the turn, so the reward reads them the same way instead of demanding perfection.
+    obligationDischarge: clamp01((signals.obligationCount - signals.unresolvedObligationCount) / signals.obligationCount),
+    nonContradiction: clamp01(1 - signals.contradictionMass)
+  };
+}
+
+/**
+ * What the runtime can honestly say by watching itself is a measured quality, never a class: one turn has no
+ * population to split against, and splitting it here would be a hand-picked cut. The label therefore stays
+ * `unknown` until a reader with the episodes in hand classifies them (`creditRewardClasses`), or a grader
+ * speaks (`withGradedOutcome`).
  */
 function runtimeOutcome(signals: CreditRuntimeSignals): CognitiveCreditOutcome {
-  const positive = signals.spoke && !signals.withheld && !signals.replanned && signals.contradictionMass < 0.5 && signals.unresolvedObligationCount === 0;
+  const rewardTerms = signals.spoke && !signals.withheld ? runtimeRewardTerms(signals) : {};
+  const values = Object.values(rewardTerms);
+  const measured = signals.spoke && !signals.withheld ? (values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null) : 0;
   return {
-    label: positive ? CREDIT_OUTCOME_LABEL_IDS.positive : CREDIT_OUTCOME_LABEL_IDS.negative,
-    source: CREDIT_OUTCOME_SOURCE_IDS.runtimeSignal,
+    label: CREDIT_OUTCOME_LABEL_IDS.unknown,
+    source: measured === null ? CREDIT_OUTCOME_SOURCE_IDS.absent : CREDIT_OUTCOME_SOURCE_IDS.runtimeSignal,
     supervised: false,
+    reward: measured === null ? null : clamp01(measured),
+    rewardTerms,
     signals,
     graded: null
   };
@@ -337,6 +366,8 @@ export function withGradedOutcome(record: CognitiveCreditRecord, graded: CreditG
       label: graded.verdict === "correct" || graded.verdict === "declined" ? CREDIT_OUTCOME_LABEL_IDS.positive : CREDIT_OUTCOME_LABEL_IDS.negative,
       source: CREDIT_OUTCOME_SOURCE_IDS.graded,
       supervised: true,
+      reward: record.outcome.reward,
+      rewardTerms: record.outcome.rewardTerms,
       signals: record.outcome.signals,
       graded
     }
@@ -382,6 +413,8 @@ export function cognitiveCreditStageObservations(record: CognitiveCreditRecord):
       reached: stage.reached,
       outcomeSource: record.outcome.source,
       supervised: record.outcome.supervised,
+      reward: record.outcome.reward,
+      rewardTerms: record.outcome.rewardTerms,
       gradedVerdict: record.outcome.graded?.verdict ?? null,
       ids: stage.ids,
       upstreamIds: stage.upstreamIds,

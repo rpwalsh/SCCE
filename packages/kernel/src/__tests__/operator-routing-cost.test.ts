@@ -25,7 +25,9 @@ function rows(count: number): CalibrationObservationRecord[] {
         label: positive ? CREDIT_OUTCOME_LABEL_IDS.positive : CREDIT_OUTCOME_LABEL_IDS.negative,
         source: CREDIT_OUTCOME_SOURCE_IDS.runtimeSignal,
         supervised: false,
-        signals: { spoke: true, withheld: false, replanned: false, revised: false, corrected: false, contradictionMass: 0, unresolvedObligationCount: 0, budgetExceededCount: 0, evidenceCount: 1 },
+        reward: positive ? 0.9 : 0.3,
+        rewardTerms: { obligationDischarge: positive ? 0.9 : 0.3, nonContradiction: positive ? 0.9 : 0.3 },
+        signals: { spoke: true, withheld: false, replanned: false, revised: false, corrected: false, contradictionMass: 0, obligationCount: 10, unresolvedObligationCount: positive ? 1 : 7, budgetExceededCount: 0, evidenceCount: 1 },
         graded: null
       },
       stages: [CREDIT_STAGE_IDS.requirement, CREDIT_STAGE_IDS.operator].map(stageId => {
