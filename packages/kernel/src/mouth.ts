@@ -3724,19 +3724,24 @@ function generatedCandidatesFromFrames(
     ...(conversationMemory ? [conversationMemory] : [])
   ]);
   const assembly = assembleDiscourseSentences({ discoursePlan, sentences: spokenSentences, languageMemory: input.languageMemory });
-  if (!assembly.text.trim()) return uniqueSurfaceCandidates([
+  // Selection and emission must score the same string, so the candidate carries the delimiter repair the emitted surface gets.
+  const tidiedAssembly = tidySurface(assembly.text);
+  const assembledText = dominantConstructForce(plan.constructForces) === "ProgramConstruct" || hasStructuredSurfaceShape(tidiedAssembly)
+    ? tidiedAssembly
+    : repairSurfaceDelimiterBalance(tidiedAssembly);
+  if (!assembledText.trim()) return uniqueSurfaceCandidates([
     ...creativeVariants,
     ...(conversationMemory ? [conversationMemory] : [])
   ]);
   const generatedIds = uniqueStrings(spokenSentences.flatMap(sentence => sentence.importedPriorIds));
-  const pieceIds = uniqueStrings([...generatedIds, ...priorPieces.filter(piece => assembly.text.includes(piece.text)).map(piece => piece.id)]);
+  const pieceIds = uniqueStrings([...generatedIds, ...priorPieces.filter(piece => assembledText.includes(piece.text)).map(piece => piece.id)]);
   const aggregateGeneration = aggregateLanguageGeneration(spokenSentences);
   return uniqueSurfaceCandidates([
     {
     id: "candidate:generated:0",
     style: "surface.path.generated",
     path: "generated",
-    text: assembly.text,
+    text: assembledText,
     evidenceIds: [...new Set(discoursePlan.units
       .flatMap(unit => unit.frameIds)
       .map(id => realizationFrameById.get(id))
@@ -6556,6 +6561,14 @@ function brainImportSummary(markerValue: JsonValue | undefined): {
   };
 }
 
+/** A claim no source spells is a re-spelling of one, not a quotation: "at 2026-06-27t10 : 00" is not the logged time. */
+function obligationClaimSpelled(claimText: string, evidence: readonly EvidenceSpan[], claim: string): boolean {
+  const needle = collapseWhitespace(claimText).trim().toLocaleLowerCase();
+  if (!needle) return false;
+  return [claim, ...evidence.map(span => span.text || span.textPreview || "")]
+    .some(source => collapseWhitespace(source).toLocaleLowerCase().includes(needle));
+}
+
 function answerFromObligations(entailment: SemanticEntailmentResult, evidence: readonly EvidenceSpan[], requestText: string, options: { allowClaimBoundary?: boolean } = {}): string {
   const proofVerdict = proofGateVerdict(entailment);
   if (proofVerdict === "contradicted") {
@@ -6597,7 +6610,7 @@ function answerFromObligations(entailment: SemanticEntailmentResult, evidence: r
   // a real regression, worse than a short wrong fragment. Still prefer an
   // informative satisfied obligation when one exists.
   const informative = satisfiedObligations.find(item =>
-    item.kind !== "source_version" && !containsSurface(requestText, item.claimText)
+    item.kind !== "source_version" && !containsSurface(requestText, item.claimText) && obligationClaimSpelled(item.claimText, evidence, entailment.claim.text)
   );
   if (informative?.claimText) return informative.claimText;
   // Real answer, not a fallback fragment: the obligation machinery above
@@ -6624,7 +6637,7 @@ function answerFromObligations(entailment: SemanticEntailmentResult, evidence: r
   // ("never falling back to a merely-satisfied-but-uninformative fragment"); it just was not applied here, so the
   // honest boundary surface below was unreachable whenever any fragment happened to be satisfied.
   const satisfied = [satisfiedObligations.find(item => item.kind !== "source_version"), satisfiedObligations[0]]
-    .find(item => item?.claimText && !containsSurface(requestText, item.claimText));
+    .find(item => item?.claimText && !containsSurface(requestText, item.claimText) && obligationClaimSpelled(item.claimText, evidence, entailment.claim.text));
   if (satisfied?.claimText) return satisfied.claimText;
   // Real bug, confirmed live: this fallback used to hand back an entire
   // evidence span's full text/textPreview unbounded -- normalizeEvidenceSentence
