@@ -57,6 +57,8 @@ export interface CandidateCommitmentInventory {
   unlicensedUnits: readonly CandidateCommitmentUnit[];
   authorityIds: readonly CommitmentAuthorityId[];
   authorityClassId: SurfaceAuthorityClassId;
+  /** False when the resident language was too small to name a closed class, so form could not be told from content. */
+  closedClassMeasured: boolean;
 }
 
 export interface CandidateCommitmentInventoryInput {
@@ -121,7 +123,13 @@ export function candidateCommitmentInventory(
 
   const unlicensedUnits = units.filter(unit => unit.authorityId === COMMITMENT_AUTHORITY_IDS.none);
   const authorityIds = [...new Set(units.map(unit => unit.authorityId))].sort();
-  return { units, unlicensedUnits, authorityIds, authorityClassId: inventoryAuthorityClass(units, unlicensedUnits) };
+  return {
+    units,
+    unlicensedUnits,
+    authorityIds,
+    authorityClassId: inventoryAuthorityClass(units, unlicensedUnits),
+    closedClassMeasured: closedClass.size > 0
+  };
 }
 
 /**

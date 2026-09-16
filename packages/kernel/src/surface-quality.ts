@@ -42,6 +42,8 @@ export interface CannedSpeechMarkers {
   surfaceOriginId?: string;
   proofStatusId?: string;
   answerPolicyId?: string;
+  /** Admitted evidence. A token the corpus itself contains is that source's own text, not a leaked control id. */
+  evidenceTexts?: readonly string[];
 }
 
 // Canned certification/boundary speech is detected from trace markers, never from
@@ -68,8 +70,11 @@ export function detectCannedAnswerSpeech(text: string, markers: CannedSpeechMark
   const add = (id: string, kind: SurfaceQualityIssueKind, matched: string, trace: JsonValue = {}) => {
     if (!issues.some(issue => issue.id === id)) issues.push({ id, kind, severity: "reject", matched, trace });
   };
-  const controlIds = [...normalized.matchAll(CONTROL_ID_PATTERN)].map(match => match[0]);
-  const snakeIds = [...normalized.matchAll(SNAKE_CONTROL_PATTERN)].map(match => match[0]);
+  // The corpus can be the runtime's own repository, where `program-planner.ts` is a source file's own text and not
+  // a control id this process leaked. Admitted evidence decides which it is.
+  const documented = (token: string) => (markers.evidenceTexts ?? []).some(text => text.includes(token));
+  const controlIds = [...normalized.matchAll(CONTROL_ID_PATTERN)].map(match => match[0]).filter(token => !documented(token));
+  const snakeIds = [...normalized.matchAll(SNAKE_CONTROL_PATTERN)].map(match => match[0]).filter(token => !documented(token));
   if (controlIds.length || snakeIds.length) {
     add(SURFACE_QUALITY_ISSUE_IDS.controlId, SURFACE_QUALITY_KIND_IDS.controlId, [...controlIds, ...snakeIds].slice(0, 4).join(" "), toJsonValue({ controlIds: controlIds.slice(0, 16), snakeIds: snakeIds.slice(0, 16) }));
   }

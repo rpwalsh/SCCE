@@ -116,6 +116,9 @@ export function evaluateSurfaceContract(input: {
     meaning: { intendedSemanticsPresent: Boolean(intendedText) },
     commitments: {
       decides: input.commitmentsDecide,
+      // Measured live as false on every turn: without it the inventory calls every word content, so `licensed`
+      // below is a verdict about a language the turn could not tell form from content in.
+      closedClassMeasured: inventory.closedClassMeasured,
       licensed,
       unlicensedUnits: inventory.unlicensedUnits.map(unit => unit.surface).slice(0, 24),
       authorityIds: [...inventory.authorityIds]

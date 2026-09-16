@@ -78,6 +78,14 @@ describe("one contract, one exit: every strategy that reaches a user carries the
     expect(roundTrip.reason).toBe("no-intended-semantics-for-this-strategy");
   });
 
+  // Measured on .scce/traces/2026-09-16T20-27-04-901Z-trace_mu4jxlc5_awarbk.jsonl: across 76 contract audits from
+  // 21 live turns no unit ever carried commitment.authority.form, so every `licensed` verdict there was reached
+  // without being able to tell this language's form from its content. The audit now says which it was.
+  it("reports whether the resident language could name a closed class at all", async () => {
+    const spoken = await speakDeterministic({ requestText: TUNGSTEN_REQUEST, selectedCandidate: terminalRuntimeMotionCandidate(TUNGSTEN_LEAK) });
+    expect(jsonRecord(contractAudit(spoken).commitments)).toHaveProperty("closedClassMeasured");
+  });
+
   it("still speaks a motion surface every unit of which the turn itself holds", async () => {
     const requestText = "What controls Pump Alpha?";
     const spoken = await speakDeterministic({ requestText, selectedCandidate: terminalRuntimeMotionCandidate("Pump Alpha") });

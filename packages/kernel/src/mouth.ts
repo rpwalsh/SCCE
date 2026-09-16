@@ -1672,7 +1672,8 @@ export function createDeterministicMouth(options: { hashText: (text: string) => 
       // and a source whose only admitted span is its citation table then speaks the table: "the boiling point of
       // tungsten" was answered with `["CITEREFMasten2003"] = 1,` repeated. A turn holding nothing but apparatus
       // has nothing to say, and declining is the answer.
-      const selectedText = clippedDeterministicSurfaces.find(surface => admissibleMouthSurface(surface)
+      const deterministicEvidenceTexts = admittedEvidenceTexts(input);
+      const selectedText = clippedDeterministicSurfaces.find(surface => admissibleMouthSurface(surface, deterministicEvidenceTexts)
         && !isStructuralResidueSurface(surface)
         && (terminalRuntimeMotionSelected
           || (!(!deterministicQuotation && !sessionAssertionTurn(input) && surfaceRepeatsPrompt(surface, input.requestText ?? "")) && coversRequest(surface)))) ?? "";
@@ -1693,7 +1694,7 @@ export function createDeterministicMouth(options: { hashText: (text: string) => 
           terminalRuntimeMotion: terminalRuntimeMotionSelected,
           rows: clippedDeterministicSurfaces.slice(0, 5).map(surface => ({
             head: surface.slice(0, 60),
-            admissible: admissibleMouthSurface(surface),
+            admissible: admissibleMouthSurface(surface, deterministicEvidenceTexts),
             structuralResidue: isStructuralResidueSurface(surface),
             repeatsPrompt: surfaceRepeatsPrompt(surface, input.requestText ?? ""),
             covers: coversRequest(surface)
@@ -1712,7 +1713,7 @@ export function createDeterministicMouth(options: { hashText: (text: string) => 
       // A recovered run still has to be a surface this mouth would speak: a two-character cased run is degenerate
       // whatever recovered it, and the sentence it came from is the honest fallback.
       const quotedGap = deterministicQuotation ? quotedSentenceGap(selectedText, mouthEchoQuestionText(input)) : "";
-      const spokenSurface = quotedGap && admissibleMouthSurface(quotedGap) ? quotedGap : selectedText;
+      const spokenSurface = quotedGap && admissibleMouthSurface(quotedGap, deterministicEvidenceTexts) ? quotedGap : selectedText;
       // The deterministic path skipped repairSurfaceReadability, so "(; 10 December 1815" reached the answer.
       const normalizedSelectedText = collapseEmptyBracketLead(tidySurface(spokenSurface));
       const readableSelectedText = dominantConstructForce(plan.constructForces) === "ProgramConstruct"
@@ -7334,13 +7335,18 @@ function containsStructuredCandidateTelemetry(text: string): boolean {
   );
 }
 
-function admissibleMouthSurface(text: string): boolean {
+function admissibleMouthSurface(text: string, evidenceTexts?: readonly string[]): boolean {
   const clean = tidySurface(text);
   if (!clean) return false;
   if (isDegenerateBareSurface(clean)) return false;
   if (containsUnresolvedSurfaceKey(clean)) return false;
   if (containsSurfaceRealizerTelemetry(clean) || containsInternalSurfaceArtifact(clean) || containsStructuredCandidateTelemetry(clean)) return false;
-  return detectCannedAnswerSpeech(clean).length === 0;
+  return detectCannedAnswerSpeech(clean, evidenceTexts?.length ? { evidenceTexts } : {}).length === 0;
+}
+
+/** The text of every span this turn admitted, so a control-id shape the corpus itself contains is not a leak. */
+function admittedEvidenceTexts(input: SpeakInput): string[] {
+  return input.evidence.map(span => String(span.text ?? span.textPreview ?? "")).filter(Boolean);
 }
 
 function admissibleLearnedSurface(text: string, generation: LanguageGenerationResult): boolean {

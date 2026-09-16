@@ -24,6 +24,18 @@ describe("surface quality guard", () => {
     expect(issues.map(issue => issue.id)).not.toContain(SURFACE_QUALITY_ISSUE_IDS.certification);
   });
 
+  // Verbatim from the admitted span of ".scce/traces/...turn 'What is the program planner?'": the corpus is this
+  // repository, so its own documentation names `program-planner.ts` and was refused as a leaked control id.
+  it("does not call a control-id shape a leak when the admitted evidence is the text containing it", () => {
+    const documented = "already invoked live via `program-planner.ts`'s `emit()` / `production-turn-runtime.ts` calls it";
+
+    expect(detectCannedAnswerSpeech(documented).map(issue => issue.id)).toContain(SURFACE_QUALITY_ISSUE_IDS.controlId);
+    expect(detectCannedAnswerSpeech(documented, { evidenceTexts: [documented] })).toEqual([]);
+    // A control id the corpus does not contain is still a leak, whatever else the turn admitted.
+    expect(detectCannedAnswerSpeech("mouth.realize.learned planner.select", { evidenceTexts: [documented] }).map(issue => issue.id))
+      .toContain(SURFACE_QUALITY_ISSUE_IDS.controlId);
+  });
+
   it("rejects raw control IDs and proof boundary keys", () => {
     const issues = detectCannedAnswerSpeech("surface.boundary.unsupported_prior_only force.policy.learned_prior_summary");
 
