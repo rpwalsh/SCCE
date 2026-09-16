@@ -7,7 +7,7 @@ import { createCanvas } from "@napi-rs/canvas";
 import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 import type { PDFDocumentProxy } from "pdfjs-dist/legacy/build/pdf.mjs";
 import Tesseract from "tesseract.js";
-import { DEFAULT_OCR_PROFILE, resolveOcrProfile, type ResolvedOcrProfile } from "./ocr-profile.js";
+import { resolveOcrProfile, type ResolvedOcrProfile } from "./ocr-profile.js";
 
 export type BundledOcrProfile = string;
 
@@ -207,7 +207,8 @@ async function extractScannedPdfText(bytes: Uint8Array, maxOutputBytes: number, 
 }
 
 async function renderScannedPdfText(pdf: PDFDocumentProxy, maxOutputBytes: number, ocrProfile?: BundledOcrProfile): Promise<DocumentWasmExtractionResult> {
-  const profile = bundledOcrProfile(ocrProfile ?? DEFAULT_OCR_PROFILE);
+  if (!ocrProfile) return { text: "", boundary: "embedded_text_absent/ocr_unavailable", boundaryCause: { stage: "load", message: "no OCR profile is configured and the installation carries no single packaged profile" } };
+  const profile = bundledOcrProfile(ocrProfile);
   let worker: Tesseract.Worker | undefined;
   let stage: ScannedPdfOcrStage = "load";
   try {

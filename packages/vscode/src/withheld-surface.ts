@@ -2,15 +2,8 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 export const WITHHELD_SURFACE_SCHEMA = "scce.runtime.withheld_surface.v1";
 
-// Presentation only. The kernel emits the reason id; none of this wording exists anywhere in cognition.
-const WITHHELD_MESSAGES: Record<string, string> = {
-  "withheld.no_admitted_evidence": "Nothing in the corpus was admitted for this request, so nothing is being stated as known.",
-  "withheld.surface_refused": "Evidence was admitted, but every answer built from it was refused, so nothing is being stated as known."
-};
-
 export interface WithheldSurfaceView {
   reasonId: string;
-  text: string;
   detail: Record<string, unknown>;
 }
 
@@ -26,6 +19,5 @@ export function withheldSurfaceView(payload: unknown): WithheldSurfaceView | und
   const record = parseWithheldSurface(payload);
   if (!record) return undefined;
   const reasonId = String(record.reasonId);
-  const text = WITHHELD_MESSAGES[reasonId] ?? "";
-  return text ? { reasonId, text, detail: record } : undefined;
+  return { reasonId, detail: record };
 }

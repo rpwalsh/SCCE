@@ -194,11 +194,10 @@ function requiresBinaryParser(extension: string): boolean {
 export async function diagnoseExtractionTools(config: ScceRuntimeConfig): Promise<Array<{ name: string; ok: boolean; detail: string; requiredFor: string[] }>> {
   const worker = probe(() => documentExtractionWorkerUrl().href);
   const selection = selectOcrProfile(undefined, config.runtime.ocr?.profile);
-  const profileId = selection.profile;
-  const profile = probe(() => resolveOcrProfile(profileId).data.langPath);
+  const profile = probe(() => resolveOcrProfile(selection.profile ?? "").data.langPath);
   return [
     { name: "pdfjs-dist", ok: worker.ok, detail: worker.ok ? `bounded Node worker ${worker.detail}` : worker.detail, requiredFor: ["pdf"] },
-    { name: "tesseract.js", ok: worker.ok && profile.ok, detail: !worker.ok ? worker.detail : profile.ok ? `OCR profile ${profileId} (${selection.origin}) at ${profile.detail}` : profile.detail, requiredFor: ["image-ocr"] },
+    { name: "tesseract.js", ok: worker.ok && profile.ok, detail: !worker.ok ? worker.detail : profile.ok ? `OCR profile ${selection.profile} (${selection.origin}) at ${profile.detail}` : profile.detail, requiredFor: ["image-ocr"] },
     { name: "mammoth", ok: true, detail: "npm package", requiredFor: ["docx"] },
     { name: "sheetjs-ce", ok: true, detail: "vendored 0.20.3; bounded child process; formulas are not evaluated", requiredFor: ["xlsx", "xlsm", "xls"] }
   ];
@@ -244,6 +243,7 @@ async function extractWorkbookText(bytes: Uint8Array, filePath: string, config: 
 }
 
 async function extractImageText(bytes: Uint8Array, options: DocumentExtractionOptions, ocr: OcrProfileSelection): Promise<{ text: string; structural: Partial<DocumentStructure>; warnings: string[]; typedExtraction: JsonValue }> {
+  if (!ocr.profile) return { text: "", structural: {}, warnings: ocrProfileSelectionWarnings(ocr), typedExtraction: toJsonValue({ imageOcr: { profileSelection: ocr.origin } }) };
   const result = await runDocumentExtractionWorker({ kind: "image-ocr", bytes, maxOutputBytes: options.maxOutputBytes ?? Number.MAX_SAFE_INTEGER, ocrProfile: ocr.profile }, { timeoutMs: options.timeoutMs ?? 180000, signal: options.signal });
   return { text: result.text, structural: inferTextStructure(result.text), warnings: ocrProfileSelectionWarnings(ocr), typedExtraction: toJsonValue({ imageOcr: { profile: result.ocrProfile, profileSelection: ocr.origin, engine: "tesseract.js-wasm" } }) };
 }

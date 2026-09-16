@@ -343,9 +343,9 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
       return error;
     }
     function withheldRow(error) {
-      const view = withheldSurfaceView(error && error.detail, I18N);
+      const view = withheldSurfaceView(error && error.detail);
       if (!view) return false;
-      add('notice', view.text, view.detail);
+      add('notice', view.reasonId, view.detail);
       return true;
     }
     function turnDetail(r) {

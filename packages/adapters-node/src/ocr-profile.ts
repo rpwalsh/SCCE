@@ -1,27 +1,49 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { createRequire } from "node:module";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
 
 /** A package segment, not a language taxonomy. Resolution remains local-only. */
 const LOCAL_OCR_PROFILE = /^[a-z0-9][a-z0-9_-]{0,63}$/u;
 
-export const DEFAULT_OCR_PROFILE = "eng";
 
-export interface OcrProfileSelection { profile: string; origin: "source" | "configured" | "fallback_packaged_profile" }
+export interface OcrProfileSelection { profile?: string; origin: "source" | "configured" | "fallback_packaged_profile" | "unconfigured"; installed?: string[] }
 
 export function selectOcrProfile(source: string | undefined, configured: string | undefined): OcrProfileSelection {
   if (source !== undefined) return { profile: source, origin: "source" };
   if (configured !== undefined) return { profile: configured, origin: "configured" };
-  // The packaged default is the only installed profile, so an unnamed profile is labeled rather than refused.
-  return { profile: DEFAULT_OCR_PROFILE, origin: "fallback_packaged_profile" };
+  // No profile is named in code: an unnamed profile resolves only when the installation leaves no choice.
+  const installed = installedOcrProfiles();
+  if (installed.length === 1) return { profile: installed[0]!, origin: "fallback_packaged_profile" };
+  return { origin: "unconfigured", ...(installed.length ? { installed } : {}) };
+}
+
+/** The profiles this installation actually carries, discovered from the packaged data scope. */
+export function installedOcrProfiles(): string[] {
+  const found = new Set<string>();
+  let directory = path.dirname(fileURLToPath(import.meta.url));
+  for (let depth = 0; depth < 16; depth++) { // cost bound: stop walking after 16 parent directories
+    const scope = path.join(directory, "node_modules", "@tesseract.js-data");
+    if (existsSync(scope)) {
+      for (const entry of readdirSync(scope)) {
+        if (!LOCAL_OCR_PROFILE.test(entry)) continue;
+        try { resolveOcrProfile(entry); found.add(entry); } catch { /* the scope lists it, this installation does not carry its data */ }
+      }
+    }
+    const parent = path.dirname(directory);
+    if (parent === directory) break;
+    directory = parent;
+  }
+  return [...found].sort();
 }
 
 export function ocrProfileSelectionWarnings(selection: OcrProfileSelection): string[] {
-  return selection.origin === "fallback_packaged_profile" ? [`ocr_profile:fallback_packaged_profile:${selection.profile}`] : [];
+  if (selection.origin === "fallback_packaged_profile") return [`ocr_profile:fallback_packaged_profile:${selection.profile}`];
+  return selection.origin === "unconfigured" ? ["ocr_profile:unconfigured"] : [];
 }
 
 export function assertOcrProfileId(value: string): string {

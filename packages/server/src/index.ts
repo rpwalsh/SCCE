@@ -22,8 +22,6 @@ const OPERATOR_SURFACE_MESSAGES = {
   "learning.need.language": "Needs language material for {script} before this surface can be produced: {reason}",
   "runtime.motion.no_grounded_source": "No grounded source in the ingested corpus for: {topic}.",
   // Reason ids from scce.runtime.withheld_surface.v1. The kernel emits the id; the wording is only ever here.
-  "withheld.no_admitted_evidence": "Nothing in the corpus was admitted for this request, so nothing is being stated as known.",
-  "withheld.surface_refused": "Evidence was admitted, but every answer built from it was refused, so nothing is being stated as known."
 } as const;
 
 

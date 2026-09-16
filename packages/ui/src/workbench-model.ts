@@ -201,19 +201,17 @@ export const WITHHELD_SURFACE_SCHEMA = "scce.runtime.withheld_surface.v1";
 
 export interface WithheldSurfaceViewModel {
   reasonId: string;
-  text: string;
   detail: Record<string, unknown>;
 }
 
-/** Presentation for a withheld turn: the kernel supplies the typed reason id, the locale table supplies the words. */
-export function withheldSurfaceView(payload: unknown, messages: Record<string, string>): WithheldSurfaceViewModel | undefined {
+/** Presentation for a withheld turn: the typed reason id and its data, rendered without authored wording. */
+export function withheldSurfaceView(payload: unknown): WithheldSurfaceViewModel | undefined {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
   const record = payload as Record<string, unknown>;
   if (record.schema !== WITHHELD_SURFACE_SCHEMA) return undefined;
   const reasonId = typeof record.reasonId === "string" ? record.reasonId : "";
-  const text = reasonId ? messages[reasonId] ?? "" : "";
-  if (!text) return undefined;
-  return { reasonId, text, detail: record };
+  if (!reasonId) return undefined;
+  return { reasonId, detail: record };
 }
 
 export function evidenceTreeFromTurn(turn: unknown): WorkbenchTreeItem[] {

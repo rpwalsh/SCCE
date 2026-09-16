@@ -12,7 +12,6 @@
 //
 //   node tools/conversation-probe.mjs                       # the default conversation
 //   node tools/conversation-probe.mjs "first" "second" ...  # your own
-//   node tools/conversation-probe.mjs --preset=chat           # ordinary chat: greeting, opinion, correction, meta, thanks
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { declinePrefix, judgeTurns } from "./conversation-judge.mjs";
@@ -28,15 +27,7 @@ const DEFAULT_TURNS = [
   "Explain relativity.",
   "Write a JavaScript function that computes time dilation for a given velocity, and test it."
 ];
-const CHAT_TURNS = [
-  "hey, how's it going?",
-  "Who is Albert Einstein?",
-  "what do you think about him?",
-  "no, that's not what I meant",
-  "what are you, exactly?",
-  "thanks, that helped"
-];
-const turns = spoken.length ? spoken : flag("preset", "default") === "chat" ? CHAT_TURNS : DEFAULT_TURNS;
+const turns = spoken.length ? spoken : DEFAULT_TURNS;
 
 // One session for the whole conversation: that is what a chat window is.
 const sessionId = `conversation-probe-${Date.now()}`;

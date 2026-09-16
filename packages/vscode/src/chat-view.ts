@@ -160,8 +160,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const withheld = error instanceof ScceWithheldTurnError ? withheldSurfaceView(error.withheld) : undefined;
       if (withheld) {
         this.output.appendLine(`[chat] withheld ${withheld.reasonId}`);
-        this.appendHistory({ id: cryptoRandomId(), role: "notice", text: withheld.text, detail: withheld.detail, createdAt: Date.now() });
-        void webview.postMessage({ type: "withheld", text: withheld.text, detail: withheld.detail });
+        this.appendHistory({ id: cryptoRandomId(), role: "notice", text: withheld.reasonId, detail: withheld.detail, createdAt: Date.now() });
+        void webview.postMessage({ type: "withheld", text: withheld.reasonId, detail: withheld.detail });
         return;
       }
       const messageText = error instanceof ScceHttpError
