@@ -143,7 +143,8 @@ import {
   type TranslationConstructionStore,
   type TranslationCorrectionStore,
   type UserCorrectionAlignmentRecord,
-  canonicalTranslationTargetKey
+  canonicalTranslationTargetKey,
+  resolveEvidenceSourceIdentity
 } from "@scce/kernel";
 import { createHash } from "node:crypto";
 
@@ -5843,6 +5844,8 @@ function rowToEvidence(row: EvidenceRow): EvidenceSpan { return { id: row.id as 
   // any consumer that (correctly) refuses unlabeled evidence -- the
   // training path's own guard, for one -- failed on data that was in fact
   // fully labeled in the database.
+  // Title, identity and source kind resolved once, here, so no consumer re-derives them from raw provenance_json.
+  sourceIdentity: resolveEvidenceSourceIdentity(row.provenance_json as never),
   informationLabel: normalizeInformationLabel(row.information_label as never) }; }
 
 interface SourceVersionRow { id: string; source_id: string; content_hash: string; media_type: string; observed_at: Date; byte_length: string; trust_vector: JsonValue; metadata_json: JsonValue; namespace: string; canonical_uri: string; information_label: JsonValue }
@@ -6019,7 +6022,9 @@ function sourceKindExclusion(alias: string, query: EvidenceQuery, parameter: num
   // Whether a span is source code is isCodeEvidenceSpan's decision -- media type, then extension, then code
   // shape -- and it already runs over the merged pool. A second, cheaper predicate answering the same question
   // from provenance can only disagree with it, and did.
-  return `(cardinality($${parameter}::text[]) = 0 OR COALESCE(${alias}.provenance_json->>'sourceKind', '') <> ALL($${parameter}::text[]))`;
+  // The same two places resolveEvidenceSourceIdentity reads, and the same COALESCE the source_title generated
+  // column already uses: an ingestor that records its kind under metadata was read as unlabelled here.
+  return `(cardinality($${parameter}::text[]) = 0 OR COALESCE(${alias}.provenance_json->>'sourceKind', ${alias}.provenance_json->'metadata'->>'sourceKind', '') <> ALL($${parameter}::text[]))`;
 }
 function evidenceStatusCondition(
   alias: string,

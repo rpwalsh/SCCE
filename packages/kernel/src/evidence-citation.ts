@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { jsonRecord, kernelString } from "./kernel-answer-primitives.js";
+import { evidenceSourceIdentity } from "./evidence-source-identity.js";
 import type { EvidenceSpan } from "./types.js";
 
 export interface EvidenceCitation {
@@ -20,11 +21,8 @@ export interface EvidenceCitation {
  */
 export function evidenceCitation(span: EvidenceSpan): EvidenceCitation | undefined {
   const provenance = jsonRecord(span.provenance);
-  // The same two places evidenceTitle reads: an ingestor that records the title under metadata leaves a span the
-  // kernel treats as titled and this cited as untitled, so the source it answered from never reached the reader.
-  const title = kernelString(provenance.title) ?? kernelString(jsonRecord(provenance.metadata).title);
+  const { title, sourceKind } = evidenceSourceIdentity(span);
   if (!title) return undefined;
-  const sourceKind = kernelString(provenance.sourceKind);
   const corpus = kernelString(provenance.corpus);
   const uri = kernelString(provenance.uri);
   if (sourceKind === "wikimedia_dump" && corpus) {

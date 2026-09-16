@@ -2,6 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { contentRuns, corpusIdentityGeneration, corpusIdentitySignals, corpusIdentitySurface, corpusIdentityUnits, corpusNamedIdentities } from "./corpus-identity.js";
 import { corpusUnitFormVerdict, freeFormLexiconGeneration } from "./free-form-lexicon.js";
+import { evidenceSourceIdentity } from "./evidence-source-identity.js";
 import { SEMANTIC_CONSTRAINT, SEMANTIC_VERDICT, SEMANTIC_SOURCE } from "./semantic-codes.js";
 import { atomizeText } from "./semantic-proof-system.js";
 import { type IdFactory } from "./ids.js";
@@ -2483,16 +2484,12 @@ export function evidenceTitledForRequestSubject(text: string, spans: readonly Ev
 }
 
  function evidenceTitle(span: EvidenceSpan): string {
-  const provenance = jsonRecord(span.provenance);
-  const metadata = jsonRecord(provenance.metadata);
-  return kernelString(provenance.title) ?? kernelString(metadata.title) ?? "";
+  return evidenceSourceIdentity(span).title;
 }
 
 /** What the source is about, derived from its content at ingest (source-identity.ts); empty for sources that never got one. */
  function evidenceIdentity(span: EvidenceSpan): string {
-  const provenance = jsonRecord(span.provenance);
-  const metadata = jsonRecord(provenance.metadata);
-  return kernelString(provenance.identity) ?? kernelString(metadata.identity) ?? "";
+  return evidenceSourceIdentity(span).identity;
 }
 
 /**
@@ -2501,17 +2498,36 @@ export function evidenceTitledForRequestSubject(text: string, spans: readonly Ev
  * an article that merely mentions him does; the identity is what tells the two apart. Units the request's
  * learned scaffolding supplies are not required, and an anchor with nothing left binds nothing.
  */
-/** Whether the source is about the subject this request names; see evidenceIdentityBindsAnchors. Pure. */
+/** How a source's own identity binds a request, or that it does not. The two halves, stated once. */
+export type EvidenceIdentityBinding = "none" | "title" | "declaration";
+
+/**
+ * The one place the identity rule lives: a source binds a request through its title/identity, or -- for a code
+ * file, whose identity is its path while the question names a declaration ("Which file defines fooBar?") --
+ * through an exact identifier of the request appearing in its body. Requiring the exact identifier keeps that
+ * half source-bound rather than admitting a file for being in the same repository; prose never reaches it.
+ *
+ * Callers that need to tell the halves apart read the returned binding rather than re-deriving either one: the
+ * retrieval filters and the admission tier each wrote this rule out longhand, and three of the four copies
+ * carried only the title half (measured live 2026-09-16: the file that declares createProgramPlanner could not
+ * be evidence for a question naming it).
+ */
+export function evidenceIdentityBinding(
+  span: EvidenceSpan,
+  requestText: string,
+  closedClassWords?: ReadonlySet<string>,
+  /** Anchors a caller has already narrowed; the request's own are derived when absent. */
+  anchors?: readonly string[]
+): EvidenceIdentityBinding {
+  const bindingAnchors = anchors ?? sourceEvidenceAnchorsForRequest(requestText);
+  if (!bindingAnchors.length) return "none";
+  if (evidenceIdentityBindsAnchors(span, bindingAnchors, closedClassWords)) return "title";
+  return codeSpanBindsRequestedIdentifier(span, requestText) ? "declaration" : "none";
+}
+
+/** Whether the source is about the subject this request names; see evidenceIdentityBinding. Pure. */
 export function evidenceIdentityBindsRequest(span: EvidenceSpan, requestText: string, closedClassWords?: ReadonlySet<string>): boolean {
-  const anchors = sourceEvidenceAnchorsForRequest(requestText);
-  if (!anchors.length) return false;
-  if (evidenceIdentityBindsAnchors(span, anchors, closedClassWords)) return true;
-  // A code file's identity is its path, while code questions usually name a
-  // declaration rather than the file path ("Which file defines fooBar?").
-  // Requiring an exact identifier from the request in the source body keeps
-  // this fallback source-bound and avoids admitting a code file merely because
-  // it is in the same repository. Prose spans never enter this branch.
-  return codeSpanBindsRequestedIdentifier(span, requestText);
+  return evidenceIdentityBinding(span, requestText, closedClassWords) !== "none";
 }
 
 const CODE_SOURCE_EXTENSIONS = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs|py|rs|go|java|kt|swift|c|h|cc|cpp|hpp|cs|rb|php|sh|sql)$/iu;
@@ -2687,12 +2703,11 @@ export function sourceAnchoredEvidenceForRequest(
   // Containment tiers bind on a run the corpus documents; a word it merely uses names no subject.
   const documentedAnchors = anchors.filter(anchor => corpusDocumentsAnchor(anchor, requestText));
   const documentedContentAnchors = contentAnchors.filter(anchor => corpusDocumentsAnchor(anchor, requestText));
-  const titleIdentityBoundEvidence = evidence.filter(span => evidenceIdentityBindsAnchors(span, documentedAnchors, closedClassWords));
-  // A source that declares the identifier the request names carries that identity in its body, not its title. The
-  // retrieval filters already read it that way; the tier named for source identity read only the title half.
-  const declarationBoundEvidence = evidence.filter(span =>
-    !titleIdentityBoundEvidence.includes(span) && codeSpanBindsRequestedIdentifier(span, requestText));
-  const identityBoundEvidence = [...titleIdentityBoundEvidence, ...declarationBoundEvidence];
+  // The tier named for source identity reads the one identity predicate, and keeps its two halves apart only
+  // because an exactly titled source outranks a declaration below.
+  const identityBindings = evidence.map(span => ({ span, binding: evidenceIdentityBinding(span, requestText, closedClassWords, documentedAnchors) }));
+  const titleIdentityBoundEvidence = identityBindings.filter(row => row.binding === "title").map(row => row.span);
+  const identityBoundEvidence = identityBindings.filter(row => row.binding !== "none").map(row => row.span);
   const subjectOnlyRequest = requestContentEvidenceUnits(requestText).length <= 3;
   const contentMentionEvidence = contentBoundEvidence.length
     ? []
@@ -2849,8 +2864,7 @@ export function sourceIdentityAdmissibleEvidenceForRequest(
   const admitted = anchored.evidence.filter(span => (
     evidenceExactSourceAnchorMatches(span, admissionAnchors)
     || evidenceTitleDistinctAnchorMatches(span, admissionAnchors)
-    || evidenceIdentityBindsAnchors(span, admissionAnchors, closedClassWords)
-    || codeSpanBindsRequestedIdentifier(span, requestText)
+    || evidenceIdentityBinding(span, requestText, closedClassWords, admissionAnchors) !== "none"
     || semanticFrameBoundEvidenceIds.has(String(span.id))
     || spanContainsRequestNearDuplicateSentence(span, admissionSequences)
   ));

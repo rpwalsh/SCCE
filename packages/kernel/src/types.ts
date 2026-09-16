@@ -252,7 +252,15 @@ export interface EvidenceSpan {
   status: "quarantined" | "promoted";
   alpha: number;
   observedAt: number;
+  /** Title, identity and source kind resolved once at the read boundary; absent only for spans built in memory. */
+  sourceIdentity?: EvidenceSourceIdentity;
   informationLabel?: InformationLabel;
+}
+
+export interface EvidenceSourceIdentity {
+  readonly title: string;
+  readonly identity: string;
+  readonly sourceKind: string;
 }
 
 export interface GraphNode {
