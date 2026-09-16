@@ -237,7 +237,9 @@ export function codeRequestRecognized(signal: CodeRequestSignal): boolean {
 
 /** Code shape around the language name: an artifact is being written, not discussed. Pure. */
 export function codeRequestCorroborated(signal: CodeRequestSignal): boolean {
-  return signal.observations.some(observation => observation.kind !== "formal_language" && observation.kind !== "language_alias");
+  // A bare identifier is a name in prose like a language name is: it corroborates only alongside other code shape.
+  return signal.observations.some(observation =>
+    observation.kind !== "formal_language" && observation.kind !== "language_alias" && observation.kind !== "identifier_shape");
 }
 
 function explicitStatefulBehaviorRequirements(requestText: string): ProgramStatefulBehaviorRequirement[] {
