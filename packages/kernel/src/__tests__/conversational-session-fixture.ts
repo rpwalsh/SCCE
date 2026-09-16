@@ -14,6 +14,7 @@ import {
   type ScceStorage,
   type TurnResult
 } from "../index.js";
+import { CORPUS_ROLE_IDS } from "../corpus-registry.js";
 import { deriveClosedClassWords } from "../closed-class-words.js";
 import { trainKneserNey } from "../kneser-ney.js";
 import { storageFixtureForEvaluation } from "./evidence-promotion-evaluation-fixture.js";
@@ -91,13 +92,20 @@ export type TraceRow = { stage: string; counts?: Record<string, number>; support
 export function conversationalSession(options?: { corpus?: string }) {
   const base = storageFixtureForEvaluation({ evidence: [], clockNow: () => 0 }).storage;
   const trained = trainKneserNey(options?.corpus ?? DIALOGUE_POPULATION, { order: 3 });
+  // The live record shape, measured 2026-09-15: all 11 persisted dialogue models carry a profileId and a corpusRole,
+  // and all 7 profiles they name are the only rows in language_profiles with no language identity assigned.
   const modelRecord = {
     id: "ngram:dialogue:3",
     streamId: "stream.dialogue",
     languageHint: "dialogue",
     maxOrder: trained.order,
     discount: trained.discount,
-    modelJson: { model: trained as unknown as JsonValue, sourceSystem: "fixture" } as unknown as JsonValue,
+    modelJson: {
+      model: trained as unknown as JsonValue,
+      sourceSystem: "dialogue",
+      profileId: "language_profile.dialogue",
+      corpusRole: CORPUS_ROLE_IDS.dialogue
+    } as unknown as JsonValue,
     updatedAt: 1
   };
   const identityRecord = {
@@ -106,7 +114,8 @@ export function conversationalSession(options?: { corpus?: string }) {
     script: "Latn",
     directions: [{ direction: "ltr", count: 1 }],
     closedClass: [...deriveClosedClassWords({ models: [trained] })].map(word => ({ word, documentShare: 1 })),
-    families: [{ family: "dialogue", count: 1 }],
+    // As live: the identity was discovered from documentary profiles, so it claims no dialogue family.
+    families: [{ family: "wikipedia", count: 1 }],
     profileCount: 1,
     membershipCut: 0.1,
     createdAt: 1

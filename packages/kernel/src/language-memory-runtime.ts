@@ -1903,6 +1903,8 @@ interface LanguageMemoryScopeMeta {
   purityProven: boolean;
   source: string;
   emptyReason: string;
+  /** Retained although no identity resolves it. Counted so an unmeasured admission never reads as a measured one. */
+  unmeasured?: (profileId: string | undefined, sourceSystem: string | undefined) => boolean;
 }
 
 /**
@@ -1943,10 +1945,13 @@ export function scopeLanguageMemoryStateToCluster(
 
 /**
  * Scope a hydrated language memory to a learned language identity. An artifact is admitted when its own profile
- * resolves to that language, or, for a model or observation trained without a profile, when its corpus does. A
- * construction bundle is admitted by the language of the profiles it was induced for; where it came from stays
- * provenance. This is what lets a construction learned from a training batch be spoken in an answer about an article
- * the batch never contained: same language, different document.
+ * resolves to that language, or, when neither its profile nor its corpus resolves to any identity at all, because no
+ * identity has ever measured it -- discovery assigns profiles once, so everything written afterwards is unassigned,
+ * and an absent measurement is not a measurement that the artifact is foreign. Which population such an artifact then
+ * realizes is decided downstream by its corpus role on measured support. A construction bundle is admitted by the
+ * language of the profiles it was induced for; where it came from stays provenance. This is what lets a construction
+ * learned from a training batch be spoken in an answer about an article the batch never contained: same language,
+ * different document.
  */
 export function scopeLanguageMemoryStateToLanguage(
   state: LanguageMemoryRuntimeState,
@@ -1956,9 +1961,14 @@ export function scopeLanguageMemoryStateToLanguage(
     corpus(sourceSystem: string | undefined): string | undefined;
   }
 ): LanguageMemoryRuntimeState {
-  const profileSpeaks = (profileId: string | undefined) => Boolean(profileId) && resolve.profile(profileId!) === languageId;
-  const speaks = (profileId: string | undefined, sourceSystem: string | undefined) =>
-    profileId ? resolve.profile(profileId) === languageId : resolve.corpus(sourceSystem) === languageId;
+  // Unmeasured, not foreign: no identity has an opinion about this artifact, so the identity gate declines to have one.
+  const resolved = (profileId: string | undefined, sourceSystem: string | undefined) =>
+    (profileId ? resolve.profile(profileId) : undefined) ?? resolve.corpus(sourceSystem);
+  const speaks = (profileId: string | undefined, sourceSystem: string | undefined) => {
+    const identity = resolved(profileId, sourceSystem);
+    return identity === undefined || identity === languageId;
+  };
+  const profileSpeaks = (profileId: string | undefined) => Boolean(profileId) && speaks(profileId, undefined);
   return scopeLanguageMemoryStateWith(state, {
     record: speaks,
     profile: profileId => profileSpeaks(profileId),
@@ -1974,7 +1984,8 @@ export function scopeLanguageMemoryStateToLanguage(
     languageId,
     purityProven: true,
     source: "language-memory-runtime.language-scope",
-    emptyReason: "language-has-no-retained-language-memory"
+    emptyReason: "language-has-no-retained-language-memory",
+    unmeasured: (profileId, sourceSystem) => resolved(profileId, sourceSystem) === undefined
   });
 }
 
@@ -2105,6 +2116,9 @@ function scopeLanguageMemoryStateWith(
       degraded: importedLanguagePriorCount === 0,
       retained: {
         modelRecords: records.length,
+        unmeasuredIdentityModelRecords: meta.unmeasured
+          ? records.filter(record => meta.unmeasured!(modelProfileId(record), recordSourceSystem(record.modelJson))).length
+          : 0,
         continuationPopulations: continuationPopulation ? 1 : 0,
         observations: importedObservations.length,
         units: importedUnits.length,

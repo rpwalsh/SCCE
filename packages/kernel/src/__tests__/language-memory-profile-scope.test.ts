@@ -177,6 +177,38 @@ describe("language-memory profile scope", () => {
     expect(scoped.scope.profileIds).toEqual([article.id, batch.id]);
   });
 
+  it("treats a profile no identity has ever assigned as unmeasured, not as foreign, and counts it", () => {
+    // Live 2026-09-15: identity discovery runs once, so the 7 profiles the dialogue corpus was trained on are the
+    // only rows in language_profiles with no language_id, and no identity claims a "dialogue" family either. The
+    // language scope read that missing assignment as a negative one and discarded all 11 dialogue models, 361
+    // patterns and 1,584 units -- the whole population a conversational turn has to realize from.
+    const article = profile("profile.article", "source.article");
+    const unmeasured = profile("profile.dialogue", "source.dialogue");
+    const foreign = profile("profile.code", "source.code");
+    const runtime = createLanguageMemoryRuntime();
+    const state = runtime.hydrate({
+      models: [model(article, "model.article"), model(unmeasured, "model.dialogue"), model(foreign, "model.code")],
+      observations: [],
+      units: [unit(article, "unit.article"), unit(unmeasured, "unit.dialogue"), unit(foreign, "unit.code")],
+      patterns: [pattern(unmeasured, "pattern.dialogue"), pattern(foreign, "pattern.code")]
+    });
+    // The dialogue profile is absent from both maps: no identity resolves it, and no identity claims its corpus.
+    const language = new Map([[article.id, "lang.english"], [foreign.id, "lang.code"]]);
+    const corpora = new Map([["wikipedia", "lang.english"], ["oss_code", "lang.code"]]);
+    const scoped = scopeLanguageMemoryStateToLanguage(state, "lang.english", {
+      profile: id => language.get(id),
+      corpus: sourceSystem => (sourceSystem ? corpora.get(sourceSystem) : undefined)
+    });
+
+    expect(scoped.records.map(row => row.id).sort()).toEqual(["model.article", "model.dialogue"]);
+    expect(scoped.importedUnits.map(row => row.id).sort()).toEqual(["unit.article", "unit.dialogue"]);
+    expect(scoped.importedPatterns.map(row => row.id)).toEqual(["pattern.dialogue"]);
+    // An artifact a different identity DID claim stays out: the fix removes an absent measurement, not a real one.
+    expect(scoped.records.map(row => row.id)).not.toContain("model.code");
+    // And the admission is never reported as a measured one.
+    expect(scoped.audit).toMatchObject({ retained: { modelRecords: 2, unmeasuredIdentityModelRecords: 1 } });
+  });
+
   it("keeps a corpus role's profile-less records in scope when the role already proved provenance", () => {
     const selected = profile("profile.selected", "source.selected");
     const other = profile("profile.other", "source.other");
