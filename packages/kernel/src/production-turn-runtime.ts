@@ -739,7 +739,10 @@ export function createProductionTurnRuntime(options: {
     if (requestCommunicativeActHydration) return { ...requestCommunicativeActHydration, failed: false };
     try {
       const patterns = await deps.storage.languageMemory.listLanguagePatterns({ sourceSystem: REQUEST_COMMUNICATIVE_ACT_SOURCE_SYSTEM, limit: 2048 });
-      requestCommunicativeActHydration = { model: requestCommunicativeActModelFromPatterns(patterns) };
+      const model = requestCommunicativeActModelFromPatterns(patterns);
+      // An absent model is a not-yet-trained artifact, not a hydrated one: caching it would outlive the training.
+      if (!model) return { model: undefined, failed: false };
+      requestCommunicativeActHydration = { model };
       return { ...requestCommunicativeActHydration, failed: false };
     } catch {
       return { model: undefined, failed: true };
@@ -4707,6 +4710,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           unresolvedSlots: authorityDialogueState.unresolvedSlots
         },
         conversationTurns: conversationTurnSurfacesFromMetadata(input.metadata),
+        requestCommunicativeAct: requestAct,
         dialoguePlanningHandoff: createDiscoursePlanningHandoffV2({
           state: previousDialogueCognitiveState,
           dialogueDependence: requirementField.dialogueDependence,

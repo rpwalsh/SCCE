@@ -80,7 +80,7 @@ interface LearnedResponseExtentHint {
   sourcePatternId: string;
 }
 import type { CorrectionMemory, CorrectionStyleInfluence, MeterPattern, RegisterVector } from "./correction-memory.js";
-import { INTERACTION_FEATURE_IDS, type DialogueState, type UserStyleProfile } from "./dialogue-pragmatics.js";
+import { DIALOGUE_ACT_IDS, INTERACTION_FEATURE_IDS, type DialogueState, type UserStyleProfile } from "./dialogue-pragmatics.js";
 import { detectCannedAnswerSpeech } from "./surface-quality.js";
 import {
   boundaryFormsForKind,
@@ -111,8 +111,20 @@ import {
 import {
   candidateCommitmentInventory,
   candidateCommitmentsLicensed,
+  candidateMayAssertAsKnown,
   type CandidateCommitmentInventory
 } from "./candidate-commitment-inventory.js";
+import {
+  CONVERSATIONAL_ACT_BINDING_SCHEMA,
+  admitConversationalActBinding,
+  conversationalActBindingId,
+  conversationalActBindingRecordId,
+  conversationalSurfaceMeaningPlan,
+  type ConversationalActBinding,
+  type ConversationalSlotFiller,
+  type LiteralInvarianceEvidence
+} from "./conversational-act-binding.js";
+import type { RequestCommunicativeActClassification } from "./request-communicative-act.js";
 import {
   languageConstructionOccurrenceId,
   languageConstructionRoleId,
@@ -463,6 +475,8 @@ export interface SpeakInput {
   dialogueContinuity?: Pick<DialogueState, "activeTask" | "establishedFacts" | "unresolvedSlots">;
   /** Turns of this conversation, as the caller observed them. The only material a conversation-bound unit may cite. */
   conversationTurns?: readonly ConversationTurnSurface[];
+  /** The induced act this request classified as. An active, non-neutral act is what licenses the conversation-bound lane. */
+  requestCommunicativeAct?: RequestCommunicativeActClassification;
   /** Proof-bearing V2 continuity from the canonical production turn. */
   dialoguePlanningHandoff?: DiscoursePlanningHandoffV2;
   semanticInput?: MouthSemanticInput;
@@ -748,7 +762,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         ? [structuralCreativeCandidate]
         : structuralCreativeFailClosed || preserveEvidenceBackedKernelCandidate
           ? []
-          : generatedCandidatesFromFrames(plan, discoursePlan, input, options.languageMemory, priorPieces, generationWorkBudget);
+          : generatedCandidatesFromFrames(plan, discoursePlan, input, options.languageMemory, priorPieces, generationWorkBudget, constructionHasher);
       markMouthPhase("candidate_setup");
       const supportBoundary = creativeRequested ? undefined : supportBoundaryCandidate(input, discoursePlan, options.languageMemory, generationWorkBudget);
       // An echo of the request is never an answer. For a creative turn
@@ -3634,7 +3648,8 @@ function generatedCandidatesFromFrames(
   input: SpeakInput,
   languageMemory: LanguageMemoryRuntime,
   priorPieces: readonly ImportedSurfacePiece[],
-  generationWorkBudget: MouthGenerationWorkBudget
+  generationWorkBudget: MouthGenerationWorkBudget,
+  hasher: Hasher
 ): SurfaceCandidate[] {
   const preflightCreative = isCreativeRequested(input, plan);
   const preflightSemanticState = preflightCreative ? undefined : semanticAnswerConstructState(input.construct);
@@ -3651,7 +3666,11 @@ function generatedCandidatesFromFrames(
   const conversationMemory = preflightCreative
     ? undefined
     : conversationMemoryCandidate(input, discoursePlan, languageMemory, generationWorkBudget);
-  if (!discoursePlan.units.length) return conversationMemory ? [conversationMemory] : [];
+  const actBound = preflightCreative
+    ? undefined
+    : conversationalActBindingCandidate(input, discoursePlan, hasher);
+  const conversational = [...(actBound ? [actBound] : []), ...(conversationMemory ? [conversationMemory] : [])];
+  if (!discoursePlan.units.length) return uniqueSurfaceCandidates(conversational);
   const creativeRequested = isCreativeRequested(input, plan);
   const semanticAnswerState = creativeRequested ? undefined : semanticAnswerConstructState(input.construct);
   const isSemanticAnswer = Boolean(semanticAnswerState);
@@ -3673,7 +3692,7 @@ function generatedCandidatesFromFrames(
     ? creativeCandidatesFromFrames(plan, discoursePlan, input, languageMemory, priorPieces, generationWorkBudget)
     : [];
   if (!shouldAttemptGenerated(plan, input.languageMemory)) {
-    return uniqueSurfaceCandidates([...creativeVariants, ...(conversationMemory ? [conversationMemory] : [])]);
+    return uniqueSurfaceCandidates([...creativeVariants, ...conversational]);
   }
   const sentences: SentenceCandidate[] = [];
   const partialSentences: SentenceCandidate[] = [];
@@ -3731,7 +3750,7 @@ function generatedCandidatesFromFrames(
   const spokenSentences = sentences.length ? sentences : partialSentences;
   if (!spokenSentences.length) return uniqueSurfaceCandidates([
     ...creativeVariants,
-    ...(conversationMemory ? [conversationMemory] : [])
+    ...conversational
   ]);
   const assembly = assembleDiscourseSentences({ discoursePlan, sentences: spokenSentences, languageMemory: input.languageMemory });
   // Selection and emission must score the same string, so the candidate carries the delimiter repair the emitted surface gets.
@@ -3741,7 +3760,7 @@ function generatedCandidatesFromFrames(
     : repairSurfaceDelimiterBalance(tidiedAssembly);
   if (!assembledText.trim()) return uniqueSurfaceCandidates([
     ...creativeVariants,
-    ...(conversationMemory ? [conversationMemory] : [])
+    ...conversational
   ]);
   const generatedIds = uniqueStrings(spokenSentences.flatMap(sentence => sentence.importedPriorIds));
   const pieceIds = uniqueStrings([...generatedIds, ...priorPieces.filter(piece => assembledText.includes(piece.text)).map(piece => piece.id)]);
@@ -3766,7 +3785,7 @@ function generatedCandidatesFromFrames(
     },
     ...creativeVariants,
     // A frame assembly does not retire the conversational candidate; both compete on the same energy ranking.
-    ...(conversationMemory ? [conversationMemory] : [])
+    ...conversational
   ]);
 }
 
@@ -4605,6 +4624,211 @@ function conversationMemoryCandidate(
       repeatedBoundaryPenalty: 0
     }))
   };
+}
+
+/**
+ * The conversation-bound lane: a learned construction supplies the form, this conversation's own turns supply
+ * every filler, and `admitConversationalActBinding` decides whether the pair is licensed at all. The candidate
+ * competes in the same field on the same quantities; nothing here can carry an evidence id or a relation id.
+ */
+function conversationalActBindingCandidate(
+  input: SpeakInput,
+  discoursePlan: DiscoursePlan,
+  hasher: Hasher
+): SurfaceCandidate | undefined {
+  const classification = input.requestCommunicativeAct;
+  if (!classification || classification.status !== "active" || classification.actId === DIALOGUE_ACT_IDS.neutral) return undefined;
+  // The same realization gates the conversational generator runs under: this lane speaks only where nothing is proved.
+  if (semanticAnswerConstructState(input.construct)) return undefined;
+  if (generatedConstructSurface(input.construct) && !isNonAssertiveRuntimeMotionConstruct(input.construct)) return undefined;
+  if (input.construct.program || isWorkspaceKernelSpeakInput(input)) return undefined;
+  if (input.evidence.length || input.entailment.evidenceIds.length) return undefined;
+
+  const turns = speakConversationTurns(input);
+  const contentSpans = turns
+    .map(turn => ({ turn, span: conversationTurnContentSpan(turn, input) }))
+    .flatMap(row => (row.span ? [{ turn: row.turn, span: row.span }] : []))
+    .sort((left, right) => right.turn.turnIndex - left.turn.turnIndex);
+  if (!contentSpans.length) return undefined;
+  const currentTurn = turns.reduce((latest, turn) => (turn.turnIndex > latest.turnIndex ? turn : latest), turns[0]!);
+  const conversationId = `conversation.${hasher.digestHex(canonicalStringify(turns.map(turn => turn.turnId)))}`;
+
+  const scoped = input.languageMemory.importedConstructionBundles
+    .filter(bundle => profileInHydratedScope(bundle.sourceProfileId, input.languageProfile, input.languageMemory)
+      && profileInHydratedScope(bundle.targetProfileId, input.languageProfile, input.languageMemory))
+    .sort((left, right) => compareSurfaceText(left.id, right.id));
+  const sourceFamiliesByBundleId = new Map(scoped.map(bundle => [bundle.id, uniqueStrings(bundle.sourceVersionIds).length] as const));
+  const observedDistribution = [...sourceFamiliesByBundleId.values()];
+
+  const rows: Array<{ candidate: SurfaceCandidate; bundleId: string; constructionId: string }> = [];
+  const refusals: string[] = [];
+  for (const bundle of scoped) {
+    for (const construction of bundle.constructions) {
+      const produced = conversationalActBindingRow({
+        input,
+        discoursePlan,
+        bundle,
+        construction,
+        classification,
+        turns,
+        contentSpans,
+        currentTurn,
+        conversationId,
+        literalInvariance: {
+          independentSourceFamilies: sourceFamiliesByBundleId.get(bundle.id) ?? 0,
+          observedDistribution
+        },
+        hasher
+      });
+      if (typeof produced === "string") refusals.push(produced);
+      else if (produced) rows.push({ candidate: produced, bundleId: bundle.id, constructionId: construction.id });
+    }
+  }
+  const winner = rows.sort((left, right) => (
+    right.candidate.fit - left.candidate.fit
+    || compareSurfaceText(left.bundleId, right.bundleId)
+    || compareSurfaceText(left.constructionId, right.constructionId)
+  ))[0];
+  traceEvent((globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace, {
+    stage: "mouth.conversational_act_binding.candidate",
+    label: "mouth.speak",
+    counts: { bundles: scoped.length, rows: rows.length, contentSpans: contentSpans.length },
+    support: {
+      actId: classification.actId,
+      logOddsOverNeutral: classification.logOddsOverNeutral,
+      surface: winner?.candidate.text ?? null,
+      bundleId: winner?.bundleId ?? null,
+      constructionId: winner?.constructionId ?? null,
+      refusals: uniqueStrings(refusals).slice(0, 12)
+    }
+  });
+  return winner?.candidate;
+}
+
+/** One (bundle, construction) attempt. Returns the candidate, or the refusal id that stopped it. */
+function conversationalActBindingRow(input: {
+  input: SpeakInput;
+  discoursePlan: DiscoursePlan;
+  bundle: DurableLanguageConstructionBundle;
+  construction: LearnedConstruction;
+  classification: RequestCommunicativeActClassification;
+  turns: readonly ConversationTurnSurface[];
+  contentSpans: readonly { turn: ConversationTurnSurface; span: { surface: string; startCodePoint: number; endCodePoint: number } }[];
+  currentTurn: ConversationTurnSurface;
+  conversationId: string;
+  literalInvariance: LiteralInvarianceEvidence;
+  hasher: Hasher;
+}): SurfaceCandidate | string | undefined {
+  const { construction, hasher } = input;
+  if (construction.profileKey !== input.bundle.targetProfileId) return "construction_not_bundle_local";
+  const occurrences = construction.roleOccurrences;
+  if (!occurrences.length || occurrences.some(occurrence => occurrence.realization !== "spoken")) return "unspoken_occurrence";
+  if (occurrences.length > input.contentSpans.length) return "not_enough_conversation_spans";
+
+  // Slot order follows the construction's own occurrence order; the conversation's own recency orders the fillers.
+  const chosen = [...input.contentSpans].slice(0, occurrences.length).reverse();
+  const fillers: ConversationalSlotFiller[] = occurrences.map((_, slotIndex) => ({
+    slotIndex,
+    surface: chosen[slotIndex]!.span.surface,
+    sourceTurnId: chosen[slotIndex]!.turn.turnId,
+    startCodePoint: chosen[slotIndex]!.span.startCodePoint,
+    endCodePoint: chosen[slotIndex]!.span.endCodePoint
+  }));
+  const binding: ConversationalActBinding = {
+    schema: CONVERSATIONAL_ACT_BINDING_SCHEMA,
+    id: conversationalActBindingRecordId(hasher, {
+      actId: input.classification.actId,
+      bindingId: conversationalActBindingId(hasher, construction.profileKey, input.classification.actId),
+      profileKey: construction.profileKey,
+      conversationId: input.conversationId,
+      turnId: input.currentTurn.turnId,
+      turnIndex: input.currentTurn.turnIndex,
+      fillers
+    }),
+    actId: input.classification.actId,
+    bindingId: conversationalActBindingId(hasher, construction.profileKey, input.classification.actId),
+    profileKey: construction.profileKey,
+    conversationId: input.conversationId,
+    turnId: input.currentTurn.turnId,
+    turnIndex: input.currentTurn.turnIndex,
+    fillers
+  };
+  const admission = admitConversationalActBinding({
+    binding,
+    classification: input.classification,
+    conversationTurns: input.turns,
+    literalInvariance: input.literalInvariance,
+    hasher
+  });
+  if (admission.status !== "admissible") return admission.reasonIds.join("|");
+
+  const { plan } = conversationalSurfaceMeaningPlan({
+    binding: admission.binding,
+    roleIdForSlot: slotIndex => occurrences[slotIndex]!.roleId,
+    occurrenceIdForSlot: slotIndex => occurrences[slotIndex]!.occurrenceId,
+    formClassIdForSlot: slotIndex => input.bundle.formClasses
+      .find(formClass => formClass.constructionId === construction.id && formClass.occurrenceId === occurrences[slotIndex]!.occurrenceId)?.id,
+    hasher
+  });
+  const realized = realizeLearnedSurface({
+    plan,
+    constructions: [construction],
+    formClasses: input.bundle.formClasses.filter(formClass => formClass.constructionId === construction.id),
+    hasher,
+    conversationTurns: input.turns,
+    ...(input.input.cycleConsistencyByConstructionId ? { cycleConsistencyByConstructionId: input.input.cycleConsistencyByConstructionId } : {})
+  });
+  if (realized.status !== "realized") return `realization:${realized.rejection.code}`;
+  // The literal frame keeps the corpus evidence it was induced from as form provenance; a filler may carry none.
+  if (realized.realization.trace.some(part => part.kind === "slot" && part.evidenceIds.length)) return "filler_carried_evidence";
+
+  const text = usableConversationMemoryText(realized.realization.text, mouthEchoQuestionText(input.input));
+  if (!text) return "unusable_surface";
+  const inventory = speakCommitmentInventory(text, input.input);
+  if (!candidateCommitmentsLicensed(inventory)) return `unlicensed:${inventory.unlicensedUnits.map(unit => unit.surface).join(",")}`;
+  if (candidateMayAssertAsKnown(inventory)) return "asserts_as_known";
+
+  return {
+    id: `candidate:generated:conversational-act-binding:${hasher.digestHex(realized.realization.id).slice(0, 20)}`,
+    style: "surface.path.generated.conversational_act_binding",
+    path: "generated",
+    text,
+    evidenceIds: [],
+    fit: clamp01(construction.support) * learnedConstructionCycleScore(input.input, construction),
+    importedPieceIds: [],
+    discoursePlan: input.discoursePlan,
+    audit: toJsonValue({
+      bindingId: admission.binding.bindingId,
+      actId: admission.move.actId,
+      authorityClassId: admission.move.authorityClassId,
+      constructionId: construction.id,
+      realizationId: realized.realization.id
+    })
+  };
+}
+
+/**
+ * The span of a turn its own units make externally meaningful, from the first such unit to the last. The
+ * measured closed class decides which units those are, so no word list or position rule picks the filler.
+ */
+function conversationTurnContentSpan(
+  turn: ConversationTurnSurface,
+  input: SpeakInput
+): { surface: string; startCodePoint: number; endCodePoint: number } | undefined {
+  const inventory = candidateCommitmentInventory({
+    text: turn.surface,
+    evidenceTexts: [],
+    conversationTurns: [turn],
+    claimBases: [],
+    models: input.languageMemory.models,
+    ...(input.languageMemory.continuationPopulation ? { continuationPopulation: input.languageMemory.continuationPopulation } : {})
+  });
+  const meaningful = inventory.units.filter(unit => unit.externallyMeaningful);
+  const first = meaningful[0];
+  const last = meaningful[meaningful.length - 1];
+  if (!first || !last) return undefined;
+  const surface = [...turn.surface].slice(first.startCodePoint, last.endCodePoint).join("");
+  return surface ? { surface, startCodePoint: first.startCodePoint, endCodePoint: last.endCodePoint } : undefined;
 }
 
 function usableConversationMemoryText(text: string, question: string): string | undefined {
