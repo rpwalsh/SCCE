@@ -1179,7 +1179,9 @@ export interface ScceStorage extends StorageAdmin {
 export interface LanguageProfileSignatureRow {
   id: string;
   sourceVersionId: SourceVersionId;
-  /** The source's canonical URI, from which the corpus family is read; empty when the source is unknown. */
+  /** The corpus source system the document was ingested under; empty when the source registers none. */
+  sourceSystem: string;
+  /** The source's canonical URI, the weakest of the corpus-family signals; empty when the source is unknown. */
   sourceUri: string;
   scripts: Array<{ script: string; mass: number }>;
   direction: string;

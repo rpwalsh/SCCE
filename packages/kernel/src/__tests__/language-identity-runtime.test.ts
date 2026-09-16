@@ -13,6 +13,8 @@ function row(id: string, uri: string, words: readonly string[]): LanguageProfile
   return {
     id,
     sourceVersionId: `${id}:v1` as SourceVersionId,
+    // No registered source system: this case is the URI fallback, which is what these rows exist to cover.
+    sourceSystem: "",
     sourceUri: uri,
     scripts: [{ script: "script:Latn", mass: 1 }],
     direction: "ltr",

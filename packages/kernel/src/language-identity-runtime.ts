@@ -7,6 +7,7 @@ import {
   type LanguageProfileSignature
 } from "./language-identity.js";
 import { isLanguageWordSymbol } from "./language-identity.js";
+import { createCorpusRegistry, type CorpusRegistryEntry } from "./corpus-registry.js";
 import type { LanguageIdentityStore, LanguageProfileSignatureRow } from "./storage.js";
 import type { Hasher, InformationLabel } from "./types.js";
 
@@ -64,10 +65,26 @@ export function corpusFamiliesForRole(
     .map(entry => corpusFamilyForSourceSystem(entry.sourceSystem)))];
 }
 
-function signatureFromRow(row: LanguageProfileSignatureRow): LanguageProfileSignature {
+/**
+ * The corpus family a document belongs to. Its registered source system decides, because that is what the corpus
+ * role is read from; the URI scheme answers only when no registered system does, since a scheme is transport and
+ * says nothing about what a document is. `file:///…/corpus/dialogue/pg1005.txt` is dialogue, not source code.
+ */
+export function corpusFamilyForSource(
+  source: { sourceSystem: string; sourceUri: string },
+  registry: readonly { sourceSystem: string; sourceSystemId: string }[]
+): string {
+  const system = source.sourceSystem.trim();
+  const registered = system
+    ? registry.find(entry => entry.sourceSystemId === system || entry.sourceSystem === system)
+    : undefined;
+  return registered ? corpusFamilyForSourceSystem(registered.sourceSystem) : corpusFamilyForSourceUri(source.sourceUri);
+}
+
+function signatureFromRow(row: LanguageProfileSignatureRow, registry: readonly CorpusRegistryEntry[]): LanguageProfileSignature {
   return {
     id: row.id,
-    family: corpusFamilyForSourceUri(row.sourceUri),
+    family: corpusFamilyForSource(row, registry),
     scripts: row.scripts,
     direction: row.direction,
     topContinuation: row.topContinuation.filter(([symbol]) => isLanguageWordSymbol(symbol))
@@ -80,7 +97,10 @@ export function createLanguageIdentityRuntime(options: {
   now: () => number;
   /** The durable information label every kernel-written record carries. */
   informationLabel?: InformationLabel;
+  /** The configured corpus registry, which is what a document's source system is resolved against. */
+  corpusRegistry?: readonly CorpusRegistryEntry[];
 }): LanguageIdentityRuntime {
+  const corpusRegistry = options.corpusRegistry ?? createCorpusRegistry();
   let loaded: LanguageIdentityRecord[] = [];
   let profileLanguage = new Map<string, string>();
   let familyLanguage = new Map<string, string>();
@@ -104,7 +124,7 @@ export function createLanguageIdentityRuntime(options: {
     for (;;) {
       const page = await store.listProfileSignatures({ afterId, limit: 4000 });
       if (!page.length) break;
-      for (const row of page) signatures.push(signatureFromRow(row));
+      for (const row of page) signatures.push(signatureFromRow(row, corpusRegistry));
       afterId = page[page.length - 1]!.id;
     }
     const discovery = discoverLanguageIdentities({ signatures, hasher: options.hasher, now: options.now(), informationLabel: options.informationLabel });

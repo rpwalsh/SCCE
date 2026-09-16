@@ -16,7 +16,7 @@ import { createPfaceEstimator } from "./causal-estimation.js";
 import { createCcrEngine } from "./ccr.js";
 import { createConnectorGovernance } from "./connector-governance.js";
 import { createConstructSubstratePlanner } from "./construct-substrate.js";
-import { CORPUS_ROLE_IDS } from "./corpus-registry.js";
+import { CORPUS_ROLE_IDS, createCorpusRegistry } from "./corpus-registry.js";
 import { createCorrectionMemory } from "./correction-memory.js";
 import { createCounterfactualCognition } from "./counterfactual-cognition.js";
 import { traceEvent } from "./debug/trace.js";
@@ -170,7 +170,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
   const turnProofEvidenceLimit = positiveRuntimeInt("SCCE_TURN_PROOF_EVIDENCE", 2);
   const surfaceLanguageMemoryCacheMs = positiveRuntimeInt("SCCE_SURFACE_LANGUAGE_CACHE_MS", 600_000);
 
-  const languageIdentityRuntime = createLanguageIdentityRuntime({ store: deps.storage.languageIdentities, hasher, now: () => clock.now(), informationLabel: deps.sourceInformationLabel });
+  const languageIdentityRuntime = createLanguageIdentityRuntime({ store: deps.storage.languageIdentities, hasher, now: () => clock.now(), informationLabel: deps.sourceInformationLabel, corpusRegistry: createCorpusRegistry(deps.corpusRegistry ?? []) });
   const surfaceLanguageRuntime = createSurfaceLanguageRuntime({
     deps,
     languageMemoryRuntime,

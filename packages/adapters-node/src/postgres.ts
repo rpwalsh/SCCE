@@ -3256,6 +3256,12 @@ function createSegmentationPopulationModelStore(
   };
 }
 
+// Every corpus ingester records its source system as the source's `corpus:<sourceSystemId>` namespace; this reads it back.
+const CORPUS_NAMESPACE_PREFIX = "corpus:";
+function sourceSystemFromCorpusNamespace(namespace: string | null): string {
+  return namespace?.startsWith(CORPUS_NAMESPACE_PREFIX) ? namespace.slice(CORPUS_NAMESPACE_PREFIX.length) : "";
+}
+
 function createLanguageIdentityStore(storage: PostgresStorageAdapter): LanguageIdentityStore {
   return {
     async putIdentities(records) {
@@ -3288,8 +3294,8 @@ function createLanguageIdentityStore(storage: PostgresStorageAdapter): LanguageI
       return rows.map(row => ({ profileId: row.id, languageId: row.language_id }));
     },
     async listProfileSignatures(query) {
-      const rows = await storage.query<{ id: string; source_version_id: string; source_uri: string | null; scripts: JsonValue; direction: string | null; top: JsonValue }>(
-        `SELECT lp.id, lp.source_version_id, s.canonical_uri AS source_uri,
+      const rows = await storage.query<{ id: string; source_version_id: string; source_uri: string | null; namespace: string | null; scripts: JsonValue; direction: string | null; top: JsonValue }>(
+        `SELECT lp.id, lp.source_version_id, s.canonical_uri AS source_uri, s.namespace AS namespace,
                 lp.profile_json->'scripts' AS scripts, lp.profile_json->>'direction' AS direction,
                 lp.profile_json->'kneserNey'->'topContinuation' AS top
          FROM ${storage.table("language_profiles")} lp
@@ -3301,6 +3307,7 @@ function createLanguageIdentityStore(storage: PostgresStorageAdapter): LanguageI
       return rows.map(row => ({
         id: row.id,
         sourceVersionId: row.source_version_id as SourceVersionId,
+        sourceSystem: sourceSystemFromCorpusNamespace(row.namespace),
         sourceUri: row.source_uri ?? "",
         scripts: Array.isArray(row.scripts) ? (row.scripts as Array<{ script: string; mass: number }>) : [],
         direction: row.direction ?? "unknown",
