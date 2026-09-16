@@ -841,7 +841,7 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
 
 interface GenerationPiece {
   text: string;
-  source: "required_term" | "proposition_atom" | "semantic_rhetoric" | "language_unit" | "phrase_pattern" | "semantic_frame" | "observation" | "suggestion";
+  source: "required_term" | "proposition_atom" | "semantic_rhetoric" | "language_unit" | "phrase_pattern" | "semantic_frame" | "observation" | "suggestion" | "structural_delta";
   id?: string;
   support: number;
   fit: number;
@@ -1429,6 +1429,12 @@ function generationPieces(
   for (const atom of frameAtoms) add(atom.text, "proposition_atom", atom.id, Math.max(0.1, atom.weight ?? 0.5));
   for (const piece of semanticRhetoricalPiecesFromMaterials(semanticFactMaterialsFromFrames(input.frames ?? []), input.state, contextText)) {
     add(piece.text, piece.source, piece.id, piece.support, piece);
+  }
+  // A hydrated delta offers the surface it was learned to produce; its own fit refuses one whose source half this request never matched.
+  for (const delta of (input.state.structuralDeltas ?? []).slice(0, 256)) {
+    if (!delta.surface.to) continue;
+    if (structuralDeltaRealizationFit(delta, contextText, delta.surface.to) <= 0) continue;
+    add(delta.surface.to, "structural_delta", delta.id, delta.support);
   }
   for (const unit of input.state.importedUnits.slice(0, 1024)) {
     if (unit.unitKind !== "phrase" && unit.unitKind !== "symbol") continue;
@@ -4478,7 +4484,8 @@ function semanticFrameIdsOverlappingSelectedText(state: LanguageMemoryRuntimeSta
 function sourcePreference(source: GenerationPiece["source"]): number {
   if (source === "required_term") return 1;
   if (source === "semantic_rhetoric") return 0.98;
-  if (source === "language_unit") return 0.96;
+  // A structural delta is a learned, evidence-bound surface: the same tier as an imported unit, not a new constant.
+  if (source === "language_unit" || source === "structural_delta") return 0.96;
   if (source === "phrase_pattern") return 0.88;
   if (source === "observation") return 0.78;
   if (source === "semantic_frame") return 0.74;
