@@ -4018,14 +4018,9 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
           runningStoredBytes += Number(row.stored_bytes);
           return runningStoredBytes <= budgetBytes || index === 0;
         });
-        const jsonById = new Map<string, { json: JsonValue; jsonBytes: number }>();
-        const uncached: string[] = [];
-        for (const row of sized) {
-          const held = residentNgramModelJson(row.id, row.updated_at.getTime());
-          if (held) jsonById.set(row.id, held); else uncached.push(row.id);
-        }
-        if (uncached.length) {
-          const blobParams: unknown[] = [uncached];
+        const jsonById = new Map<string, { json: JsonValue; jsonBytes: number; updatedAtMs: number }>();
+        const readBlobs = async (ids: readonly string[]): Promise<void> => {
+          const blobParams: unknown[] = [[...ids]];
           const blobWhere = [`model.id=ANY($1::text[])`];
           appendInformationAccess(storage, "model", blobParams, blobWhere);
           const blobs = await storage.query<{ id: string; updated_at: Date; model_json: JsonValue; json_bytes: string }>(
@@ -4034,18 +4029,34 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
             blobParams
           );
           for (const blob of blobs) {
-            const entry = { json: blob.model_json, jsonBytes: Number(blob.json_bytes) };
+            // The ranking and the blobs are two snapshots; a row rewritten between them reports the version it was read at.
+            const entry = { json: blob.model_json, jsonBytes: Number(blob.json_bytes), updatedAtMs: blob.updated_at.getTime() };
             jsonById.set(blob.id, entry);
-            rememberNgramModelJson(blob.id, blob.updated_at.getTime(), entry);
+            rememberNgramModelJson(blob.id, entry.updatedAtMs, entry);
           }
-        }
+        };
+        // The budget needs every candidate's JSON size but only the admitted candidates' JSON. Sizes outlive the blobs
+        // for that reason, so a row the budget rejects is measured once and never read again.
+        const unmeasured = sized.filter(row => ngramModelJsonBytes(row.id, row.updated_at.getTime()) === undefined).map(row => row.id);
+        if (unmeasured.length) await readBlobs(unmeasured);
         let runningJsonBytes = 0;
-        return sized.flatMap((row, index) => {
+        const admitted = sized.filter((row, index) => {
+          const jsonBytes = ngramModelJsonBytes(row.id, row.updated_at.getTime());
+          if (jsonBytes === undefined) return false;
+          runningJsonBytes += jsonBytes;
+          return runningJsonBytes <= budgetBytes || index === 0;
+        });
+        const unread = admitted.filter(row => {
+          if (jsonById.has(row.id)) return false;
+          const held = residentNgramModelJson(row.id, row.updated_at.getTime());
+          if (held) { jsonById.set(row.id, { ...held, updatedAtMs: row.updated_at.getTime() }); return false; }
+          return true;
+        }).map(row => row.id);
+        if (unread.length) await readBlobs(unread);
+        return admitted.flatMap(row => {
           const held = jsonById.get(row.id);
           if (!held) return [];
-          runningJsonBytes += held.jsonBytes;
-          if (runningJsonBytes > budgetBytes && index !== 0) return [];
-          return [candidateToNgramModel(row, held.json)];
+          return [candidateToNgramModel({ ...row, updated_at: new Date(held.updatedAtMs) }, held.json)];
         }).slice(0, Number(params[limitParam - 1]));
       }
       return (await storage.query<NgramModelRow>(`SELECT * FROM ${storage.table("ngram_models")} model WHERE ${where.join(" AND ")} ORDER BY ${trainedMass} DESC, model.updated_at DESC, model.id ASC LIMIT $${limitParam}`, params)).map(rowToNgramModel);
@@ -5939,35 +5950,43 @@ function rowToNgramModel(row: NgramModelRow): NgramModelRecord { return { id: ro
 interface NgramCandidateRow { id: string; stream_id: string; language_hint: string; max_order: number; discount: string; updated_at: Date; information_label: InformationLabel; stored_bytes: string }
 function candidateToNgramModel(row: NgramCandidateRow, modelJson: JsonValue): NgramModelRecord { return { id: row.id, streamId: row.stream_id, languageHint: row.language_hint, maxOrder: Number(row.max_order), discount: Number(row.discount), modelJson, updatedAt: row.updated_at.getTime(), informationLabel: normalizeInformationLabel(row.information_label) }; }
 
-// A read-through cache of model_json, not a shadow store: PostgreSQL still decides which rows a listing returns, the
-// key carries the row version a write always bumps alongside the blob, and the value is held weakly so an entry only
-// survives while a hydration already holds that blob anyway.
-const residentNgramModelJsonByVersion = new Map<string, { json: WeakRef<object>; jsonBytes: number }>();
+// A read-through cache of model_json, not a shadow store: PostgreSQL still decides which rows a listing returns, and
+// the key carries the row version a write always bumps alongside the blob. Blobs are held weakly, so an entry only
+// survives while a hydration already holds that blob anyway; the measured size is kept as a number, because the byte
+// budget has to weigh candidates it will then reject and nothing would retain those.
+const residentNgramModelJsonByVersion = new Map<string, WeakRef<object>>();
+const ngramModelJsonBytesByVersion = new Map<string, number>();
 const residentNgramModelJsonFinalizers = new FinalizationRegistry<string>(key => {
-  if (residentNgramModelJsonByVersion.get(key)?.json.deref() === undefined) residentNgramModelJsonByVersion.delete(key);
+  if (residentNgramModelJsonByVersion.get(key)?.deref() === undefined) residentNgramModelJsonByVersion.delete(key);
 });
 function ngramModelVersionKey(id: string, updatedAtMs: number): string { return `${id}${updatedAtMs}`; }
+function ngramModelJsonBytes(id: string, updatedAtMs: number): number | undefined {
+  return ngramModelJsonBytesByVersion.get(ngramModelVersionKey(id, updatedAtMs));
+}
 function residentNgramModelJson(id: string, updatedAtMs: number): { json: JsonValue; jsonBytes: number } | undefined {
-  const entry = residentNgramModelJsonByVersion.get(ngramModelVersionKey(id, updatedAtMs));
-  const json = entry?.json.deref();
-  return json ? { json: json as JsonValue, jsonBytes: entry!.jsonBytes } : undefined;
+  const key = ngramModelVersionKey(id, updatedAtMs);
+  const json = residentNgramModelJsonByVersion.get(key)?.deref();
+  const jsonBytes = ngramModelJsonBytesByVersion.get(key);
+  return json && jsonBytes !== undefined ? { json: json as JsonValue, jsonBytes } : undefined;
 }
 function rememberNgramModelJson(id: string, updatedAtMs: number, entry: { json: JsonValue; jsonBytes: number }): void {
   if (!entry.json || typeof entry.json !== "object" || !Number.isFinite(entry.jsonBytes)) return;
   const key = ngramModelVersionKey(id, updatedAtMs);
-  residentNgramModelJsonByVersion.set(key, { json: new WeakRef(entry.json as object), jsonBytes: entry.jsonBytes });
+  ngramModelJsonBytesByVersion.set(key, entry.jsonBytes);
+  residentNgramModelJsonByVersion.set(key, new WeakRef(entry.json as object));
   residentNgramModelJsonFinalizers.register(entry.json as object, key);
 }
 
 /** Test seam: how many model_json blobs this process would not re-read, and a reset of the cache. */
 export function residentNgramModelJsonCount(): number {
   let held = 0;
-  for (const entry of residentNgramModelJsonByVersion.values()) if (entry.json.deref()) held += 1;
+  for (const entry of residentNgramModelJsonByVersion.values()) if (entry.deref()) held += 1;
   return held;
 }
 
 export function clearResidentNgramModelJson(): void {
   residentNgramModelJsonByVersion.clear();
+  ngramModelJsonBytesByVersion.clear();
 }
 
 interface NgramObservationRow { id: string; stream_id: string; language_hint: string; order_n: number; history: string[]; symbol: string; count: string; field_weight: string; source_version_id: string | null; evidence_id: string | null; observed_at: Date; metadata_json: JsonValue; information_label: InformationLabel }
