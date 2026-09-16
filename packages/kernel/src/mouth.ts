@@ -102,10 +102,16 @@ import { ensureSurfaceSentence as ensureUnicodeSurfaceSentence, hasUncasedNonLat
 import { CALIBRATION_TASK_CLASS_IDS, type CalibrationModelSet } from "./calibration-spine.js";
 import {
   realizeLearnedSurface,
+  type ConversationTurnSurface,
   type LearnedConstruction,
   type LearnedRealization,
   type SurfaceMeaningPlan
 } from "./language-construction.js";
+import {
+  candidateCommitmentInventory,
+  candidateCommitmentsLicensed,
+  type CandidateCommitmentInventory
+} from "./candidate-commitment-inventory.js";
 import {
   languageConstructionOccurrenceId,
   languageConstructionRoleId,
@@ -454,6 +460,8 @@ export interface SpeakInput {
   dialogueRejectedAssumptions?: readonly string[];
   /** Restored turn-level continuity used as bounded learned-generation context. */
   dialogueContinuity?: Pick<DialogueState, "activeTask" | "establishedFacts" | "unresolvedSlots">;
+  /** Turns of this conversation, as the caller observed them. The only material a conversation-bound unit may cite. */
+  conversationTurns?: readonly ConversationTurnSurface[];
   /** Proof-bearing V2 continuity from the canonical production turn. */
   dialoguePlanningHandoff?: DiscoursePlanningHandoffV2;
   semanticInput?: MouthSemanticInput;
@@ -790,7 +798,8 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
           || candidate.id === supportBoundary?.id
           || candidate.id.startsWith("candidate:generated:code:")
           || candidate.id.startsWith("candidate:generated:clarification")
-          || candidate.id === "candidate:generated:conversation-memory"
+          // Not "which producer made it": whether every unit it would commit the system to is licensed by some authority.
+          || candidateCommitmentsLicensed(speakCommitmentInventory(candidate.text, input))
           || candidate.claimBasis === "invented"
           || creativeRequested));
       const scoredCandidates = rawCandidates.map(candidate => {
@@ -857,7 +866,9 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
           : conversationMemoryCandidate
             ? uniqueStrings([
               ...forbiddenSurfaceHits(bounded, plan),
-              ...(conversationContextCandidate ? [] : questionEchoHits(bounded, mouthEchoQuestionText(input)))
+              ...(conversationContextCandidate ? [] : questionEchoHits(bounded, mouthEchoQuestionText(input))),
+              ...unlicensedCommitmentHits(bounded, input),
+              ...unanchoredImportedPriorHits(candidate, input, bounded)
             ])
           : uniqueStrings([
             ...forbiddenSurfaceHits(bounded, plan),
@@ -4493,7 +4504,6 @@ function conversationMemoryCandidate(
   if (input.construct.program || isWorkspaceKernelSpeakInput(input)) return undefined;
   if (input.evidence.length || input.entailment.evidenceIds.length) return undefined;
   if (importSummaryRequested(input.entailment.claim.text)) return undefined;
-  if (input.entailment.force !== "invented" && (input.entailment.verdict === "unknown" || input.entailment.verdict === "underdetermined")) return undefined;
   const generationExtent = claimMouthGenerationWork(
     generationWorkBudget,
     Math.max(18, Math.min(72, discoursePlan.units[0]?.generationExtent ?? 36))
@@ -4528,6 +4538,8 @@ function conversationMemoryCandidate(
   if (!text) return undefined;
   if (isBoundaryGlyph(text) || ![...text].some(char => isLetterChar(char) || isDigitChar(char)) || looksLikeOrphanLanguageFragment(text)) return undefined;
   if (generatedText && questionEchoHits(text, mouthEchoQuestionText(input)).length) return undefined;
+  // Replaces the turn-verdict gate: what licenses this surface is its own units' provenance, not what the turn proved.
+  if (!candidateCommitmentsLicensed(speakCommitmentInventory(text, input))) return undefined;
   return {
     id: "candidate:generated:conversation-memory",
     style: "surface.path.generated.conversation_memory",
@@ -7272,13 +7284,45 @@ function languagePriorLeakageHits(text: string, input: SpeakInput, priorPieces: 
   return hits;
 }
 
-function unanchoredImportedPriorHits(candidate: SurfaceCandidate, input: SpeakInput): string[] {
+function unanchoredImportedPriorHits(candidate: SurfaceCandidate, input: SpeakInput, text?: string): string[] {
   if (!candidate.importedPieceIds.length) return [];
-  if (candidate.style === "surface.path.generated.conversation_memory") return [];
+  // The language model chose the wording; whether it may say this is decided unit by unit, not by which lane spoke.
+  if (candidate.style === "surface.path.generated.conversation_memory") {
+    return candidateCommitmentsLicensed(speakCommitmentInventory(text ?? candidate.text, input))
+      ? []
+      : ["surface.reject.language_prior_unanchored"];
+  }
   if (input.evidence.length > 0) return [];
   if (semanticAnswerConstructState(input.construct) || input.construct.program || isWorkspaceKernelSpeakInput(input)) return [];
   if (candidate.style === "surface.path.generated.construct_anchored") return [];
   return ["surface.reject.language_prior_unanchored"];
+}
+
+/** Every turn of this conversation that could license a unit, including the request now being answered. */
+function speakConversationTurns(input: SpeakInput): ConversationTurnSurface[] {
+  const supplied = [...(input.conversationTurns ?? [])];
+  const requestText = input.requestText ?? mouthEchoQuestionText(input);
+  const highest = supplied.reduce((index, turn) => Math.max(index, turn.turnIndex), -1);
+  if (requestText.trim() && !supplied.some(turn => turn.surface === requestText)) {
+    supplied.push({ turnId: "conversation.turn.request", turnIndex: highest + 1, surface: requestText });
+  }
+  return supplied;
+}
+
+function speakCommitmentInventory(text: string, input: SpeakInput): CandidateCommitmentInventory {
+  return candidateCommitmentInventory({
+    text,
+    evidenceTexts: input.evidence.map(span => ({ id: String(span.id), text: `${span.text} ${span.textPreview}` })),
+    conversationTurns: speakConversationTurns(input),
+    claimBases: input.claimBases ?? [],
+    models: input.languageMemory.models,
+    ...(input.languageMemory.continuationPopulation ? { continuationPopulation: input.languageMemory.continuationPopulation } : {})
+  });
+}
+
+/** A unit that names something in the world and cites nothing: the assertion-on-air this admission exists to refuse. */
+function unlicensedCommitmentHits(text: string, input: SpeakInput): string[] {
+  return candidateCommitmentsLicensed(speakCommitmentInventory(text, input)) ? [] : ["surface.reject.unlicensed_commitment"];
 }
 
 function normalizeSurfaceEcho(text: string): string {

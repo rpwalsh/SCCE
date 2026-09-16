@@ -227,6 +227,7 @@ import { createRuntimeGraphRetrieval, isCodeEvidenceSpan, isControlCorpusSpan } 
 import { updateFtrlFromTurnOutcome } from "./sparse-ranking-outcome.js";
 import { summarizeAdmittedSource } from "./source-summary.js";
 import { createRuntimeMemoryControl } from "./runtime-memory-control.js";
+import type { ConversationTurnSurface } from "./language-construction.js";
 import type { RuntimeReplanMotion } from "./runtime-motion.js";
 import {
   RUNTIME_TERMINAL_INVENTION_POLICY_ID,
@@ -4701,6 +4702,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           establishedFacts: authorityDialogueState.establishedFacts,
           unresolvedSlots: authorityDialogueState.unresolvedSlots
         },
+        conversationTurns: conversationTurnSurfacesFromMetadata(input.metadata),
         dialoguePlanningHandoff: createDiscoursePlanningHandoffV2({
           state: previousDialogueCognitiveState,
           dialogueDependence: requirementField.dialogueDependence,
@@ -6282,6 +6284,28 @@ async function dispatchBuildTestThroughExecutive(input: {
 }
 
 // Wikipedia teaches the language of facts, Gutenberg the language of prose, code corpora the language of code.
+/** The conversation's own turns, as surfaces. Kept in their own namespace: never projected into evidence ids. */
+export function conversationTurnSurfacesFromMetadata(metadata: JsonValue | undefined): ConversationTurnSurface[] {
+  const session = jsonRecord(jsonRecord(metadata).session);
+  const sessionId = kernelString(session.sessionId);
+  const rows = Array.isArray(session.recentTurns) ? session.recentTurns : [];
+  if (!sessionId) return [];
+  return rows
+    .map((value, index): ConversationTurnSurface | undefined => {
+      const record = jsonRecord(value as JsonValue);
+      const surface = (kernelString(record.text) ?? "").trim();
+      if (!surface) return undefined;
+      const turnIndex = Number(record.turnIndex);
+      return {
+        turnId: kernelString(record.id) || `${sessionId}:${index}`,
+        turnIndex: Number.isFinite(turnIndex) ? turnIndex : index,
+        surface
+      };
+    })
+    .filter((turn): turn is ConversationTurnSurface => turn !== undefined)
+    .sort((left, right) => left.turnIndex - right.turnIndex);
+}
+
 function surfaceCorpusRoleForAuthority(authority: RequestedAuthority): CorpusRoleId | undefined {
   switch (authority) {
     case "factual":
