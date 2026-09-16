@@ -230,6 +230,7 @@ export * from "./extended-generation-turn.js";
 export * from "./generative-derivation-runtime.js";
 export * from "./request-requirement-learning.js";
 export * from "./request-communicative-act.js";
+export * from "./conversational-act-binding.js";
 export * from "./code-request.js";
 export * from "./code-surface.js";
 export * from "./graph-target-geometry.js";
