@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { clearCorpusIdentitySignals, primeCorpusIdentitySignals } from "../corpus-identity.js";
-import { retrievalBinding, retrievalBindingCarries, retrievalBindingRank } from "../retrieval-binding.js";
+import { retrievalBinding, retrievalBindingCarries, retrievalBindingRank, retrievalBindingSupports } from "../retrieval-binding.js";
 import type { EvidenceSpan } from "../types.js";
 
 const NL = String.fromCharCode(10);
@@ -129,6 +129,17 @@ describe("retrievalBinding is the one answer to why evidence is relevant", () =>
     expect(declaring.mechanism).toBe("source_declaration");
     expect([retrievalBindingRank(titled), retrievalBindingRank(prose), retrievalBindingRank(declaring), retrievalBindingRank(unmeasured)])
       .toEqual([0, 1, 2, 3]);
+  });
+
+  it("supports a claim only on a measured binding, while retrieval still carries the unmeasured one", () => {
+    // The turn's access policy and the retrieval lanes now read one contract; they differ only in how they
+    // resolve `undetermined`, and that difference is stated here rather than in two hand-written filters.
+    primeCorpusIdentitySignals({ closedClass: CLOSED, identities: new Set(["createprogramplanner"]), spread: new Map(), concentration: 289 });
+    const declaring = retrievalBinding(planner, { requestText: "Which file defines createProgramPlanner?", closedClassWords: CLOSED });
+    const unmeasured = retrievalBinding(planner, { requestText: "", closedClassWords: CLOSED });
+
+    expect([retrievalBindingSupports(declaring), retrievalBindingCarries(declaring)]).toEqual([true, true]);
+    expect([retrievalBindingSupports(unmeasured), retrievalBindingCarries(unmeasured)]).toEqual([false, true]);
   });
 
   it("grants an operator-allowed source kind admissibility without erasing the measurement", () => {

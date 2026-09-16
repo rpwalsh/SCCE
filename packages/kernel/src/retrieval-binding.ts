@@ -139,6 +139,17 @@ export function retrievalBindingCarries(binding: RetrievalBinding): boolean {
 }
 
 /**
+ * What a turn may treat as support for a factual claim, which is a narrower question than what retrieval carries.
+ *
+ * `undetermined` resolves conservatively HERE and nowhere upstream: this is the boundary that commits the system
+ * to an assertion, and it is the first one holding the request text, so refusing here is a decision that was
+ * actually made rather than a measurement that was never taken.
+ */
+export function retrievalBindingSupports(binding: RetrievalBinding): boolean {
+  return binding.admissibility === "admissible";
+}
+
+/**
  * The source-kind prior as a rank: a cost on the frontier, never an erasure before ranking.
  *
  * A source the request is titled with leads. Prose follows, ahead of a declaration match, because a source file

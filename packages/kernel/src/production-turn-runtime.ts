@@ -228,7 +228,7 @@ import { evidenceProofBoundary } from "./proof-boundary.js";
 import { subjectTemporalComparison } from "./temporal-subject-comparison.js";
 import type { EvidenceId, GraphEdge, GraphNode, NodeId, RequestedAuthority } from "./types.js";
 import { createRuntimeGraphRetrieval, isControlCorpusSpan } from "./runtime-graph-retrieval.js";
-import { isCodeEvidenceSpan } from "./retrieval-binding.js";
+import { isCodeEvidenceSpan, retrievalBinding, retrievalBindingSupports } from "./retrieval-binding.js";
 import { updateFtrlFromTurnOutcome } from "./sparse-ranking-outcome.js";
 import { summarizeAdmittedSource } from "./source-summary.js";
 import { createRuntimeMemoryControl } from "./runtime-memory-control.js";
@@ -6708,15 +6708,18 @@ const CREATIVE_GENERATION_ALLOWANCE_MS = 12_000;
 function evidenceAdmissibleUnderAccessPolicy(
   pool: readonly EvidenceSpan[],
   policy: import("./turn-request-control.js").EvidenceAccessPolicy,
-  requestText = ""
+  requestText: string
 ): EvidenceSpan[] {
-  if (policy.sourceCodeEvidenceAllowed) return [...pool];
-  // A source file that declares the identifier the request names is evidence about it: "Which file defines
-  // bestEvidenceSentences?" is a factual question whose only source is code (live 2026-09-12, declined).
-  // Unconditional, with no keep-what-we-have fallback: a factual request whose only candidate is source code has
-  // no evidence, and abstaining is the correct outcome. The fallback was not hypothetical -- "Who was Ada
-  // Lovelace?" reached a pool of exactly one span, a comment in `mouth.ts`, and answered from it.
-  return pool.filter(span => !isCodeEvidenceSpan(span) || (requestText !== "" && evidenceIdentityBindsRequest(span, requestText)));
+  // The same binding retrieval reads, resolved at the boundary that commits the turn to an assertion: a source
+  // file that declares the identifier the request names is evidence about it ("Which file defines
+  // bestEvidenceSentences?" is a factual question whose only source is code), and a factual request whose only
+  // candidate is unbound source code has no evidence, so abstaining is the outcome. The fallback that kept
+  // whatever was there was not hypothetical -- "Who was Ada Lovelace?" reached a pool of exactly one span, a
+  // comment in `mouth.ts`, and answered from it.
+  return pool.filter(span => retrievalBindingSupports(retrievalBinding(span, {
+    requestText,
+    sourceCodeEvidenceAllowed: policy.sourceCodeEvidenceAllowed
+  })));
 }
 
 export function dialogueInterpretationAdjustmentsFromMetadata(
