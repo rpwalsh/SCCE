@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { ConversationalConstructionDocument } from "../conversational-construction-induction.js";
+import type { SourceBoundConstructionObservation } from "../language-construction-memory.js";
 import type { EvidenceSpan, Hasher } from "../types.js";
 
 /** Training material, not engine input. Two speakers a transcript, each speech one line, in a play's layout. */
@@ -120,3 +121,54 @@ export const RUN_TRANSCRIPT_CORPUS: readonly string[] = SPEAKERS.map(([first, se
   }
   return lines.join("\n");
 });
+
+/**
+ * Training material, not engine input. The live corpus's boilerplate shape: a non-dialogue line whose only
+ * invariant residue after anti-unification is bracket punctuation, with three one-unit fields varying inside it.
+ */
+export function bracketBoilerplateTrainingSet(hasher: Hasher): {
+  profileId: string;
+  evidence: EvidenceSpan[];
+  observations: SourceBoundConstructionObservation[];
+} {
+  const evidence: EvidenceSpan[] = [];
+  const observations: SourceBoundConstructionObservation[] = [];
+  const profileId = "language_profile.transcript.0";
+  for (let index = 0; index < FILLERS.length; index++) {
+    const pool = FILLERS[index]!;
+    const [left, middle, right] = [pool[0]!, pool[1]!, pool[2]!];
+    const text = `${left} (${middle}) ${right}`.normalize("NFC");
+    const id = `evidence.boilerplate.${index}`;
+    const sourceVersionId = `source_version.boilerplate.${index}`;
+    evidence.push({
+      id,
+      sourceId: `source.boilerplate.${index}`,
+      sourceVersionId,
+      chunkId: `chunk.boilerplate.${index}`,
+      contentHash: hasher.digestHex(text),
+      mediaType: "text/plain",
+      byteStart: 0,
+      byteEnd: Buffer.byteLength(text, "utf8"),
+      charStart: 0,
+      charEnd: [...text].length,
+      text,
+      status: "promoted",
+      alpha: 1,
+      observedAt: 0
+    } as unknown as EvidenceSpan);
+    const middleStart = left.length + 2;
+    const rightStart = middleStart + middle.length + 2;
+    observations.push({
+      sourceVersionId,
+      evidenceId: id,
+      surfaceStartCodePoint: 0,
+      surfaceEndCodePoint: [...text].length,
+      roles: [
+        { slotIndex: 0, occurrenceIndex: 0, startCodePoint: 0, endCodePoint: left.length },
+        { slotIndex: 1, occurrenceIndex: 0, startCodePoint: middleStart, endCodePoint: middleStart + middle.length },
+        { slotIndex: 2, occurrenceIndex: 0, startCodePoint: rightStart, endCodePoint: rightStart + right.length }
+      ]
+    });
+  }
+  return { profileId, evidence, observations };
+}

@@ -4675,7 +4675,9 @@ function conversationalActBindingCandidate(
   const currentTurn = turns.reduce((latest, turn) => (turn.turnIndex > latest.turnIndex ? turn : latest), turns[0]!);
   const conversationId = `conversation.${hasher.digestHex(canonicalStringify(turns.map(turn => turn.turnId)))}`;
 
+  // The frame must be one this act induced: a predicate-keyed bundle is the factual lane's form, not a move.
   const scoped = input.languageMemory.importedConstructionBundles
+    .filter(bundle => bundle.bindingId === conversationalActBindingId(hasher, bundle.targetProfileId, classification.actId))
     .filter(bundle => profileInHydratedScope(bundle.sourceProfileId, input.languageProfile, input.languageMemory)
       && profileInHydratedScope(bundle.targetProfileId, input.languageProfile, input.languageMemory))
     .sort((left, right) => compareSurfaceText(left.id, right.id));
@@ -4926,7 +4928,8 @@ function slotSizedFiller(
     .map(start => {
       const startCodePoint = span.units[start]!.startCodePoint;
       const endCodePoint = span.units[start + size - 1]!.endCodePoint;
-      return { surface: points.slice(startCodePoint, endCodePoint).join(""), startCodePoint, endCodePoint };
+      const content = span.units.slice(start, start + size).filter(unit => unit.externallyMeaningful).length;
+      return { surface: points.slice(startCodePoint, endCodePoint).join(""), startCodePoint, endCodePoint, content };
     }))
     .filter(window => window.surface.trim().length > 0);
   if (!windows.length) return undefined;
@@ -4934,8 +4937,10 @@ function slotSizedFiller(
     window,
     cost: residentSurfaceCost(`${frameContext.before}${window.surface}${frameContext.after}`, models)
   }));
+  // What the slot is for is what the turn is about; cost decides only among the runs that carry as much of it.
   return scored.sort((left, right) => (
-    left.cost - right.cost
+    right.window.content - left.window.content
+    || left.cost - right.cost
     || compareSurfaceText(left.window.surface, right.window.surface)
   ))[0]?.window;
 }

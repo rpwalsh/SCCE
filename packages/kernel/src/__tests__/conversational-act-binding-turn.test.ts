@@ -14,6 +14,7 @@ import {
   createSemanticEntailmentEngine,
   featureSet
 } from "../index.js";
+import { conversationalActBindingId } from "../conversational-act-binding.js";
 import { induceLearnedConstructions, type AlignedSurfaceExample } from "../language-construction.js";
 import { candidateCommitmentInventory, candidateCommitmentsLicensed } from "../candidate-commitment-inventory.js";
 import type { DurableLanguageConstructionBundle } from "../language-construction-memory.js";
@@ -31,6 +32,7 @@ const languageRuntime = createLanguageMemoryRuntime({ idFactory: ids, hasher });
 const TRAINED = trainKneserNey(DIALOGUE_POPULATION, { order: 3 });
 
 const PROFILE_ID = "language_profile.conversational.turn.fixture";
+const ACT_ID = "actshape.fixture.conversational";
 const ROLE = "role.conversational.frame";
 const OCCURRENCE = "occurrence.conversational.frame";
 // One real line of the trained dialogue population, aligned on a span of it. The frame is corpus form.
@@ -61,7 +63,7 @@ function frameBundle(): DurableLanguageConstructionBundle {
     id: "bundle.conversational.frame.01",
     contentDigest: hasher.digestHex("bundle.conversational.frame.01"),
     schema: "scce.language_construction_pattern.v1",
-    bindingId: "language.source_relation.fixture",
+    bindingId: conversationalActBindingId(hasher, PROFILE_ID, ACT_ID),
     sourceProfileId: PROFILE_ID,
     targetProfileId: PROFILE_ID,
     sourceVersionIds: ["source_version.dialogue.pg844", "source_version.dialogue.pg1750", "source_version.dialogue.pg1008"],
@@ -89,10 +91,10 @@ function classification(overrides: Partial<RequestCommunicativeActClassification
   return {
     schema: "scce.request_communicative_act_classification.v1",
     status: "active",
-    actId: "actshape.fixture.conversational",
+    actId: ACT_ID,
     matchedPatternIds: ["feature.01"],
     logOddsOverNeutral: 1.4,
-    classIds: ["actshape.fixture.conversational", DIALOGUE_ACT_IDS.neutral],
+    classIds: [ACT_ID, DIALOGUE_ACT_IDS.neutral],
     ...overrides
   };
 }
