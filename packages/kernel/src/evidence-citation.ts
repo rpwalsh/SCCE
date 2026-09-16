@@ -53,6 +53,32 @@ export function evidenceCitations(spans: readonly EvidenceSpan[]): EvidenceCitat
   return out;
 }
 
+/**
+ * The spans an answer must name: the ones the realizer referenced, or failing that the one whose own text carries
+ * the answer verbatim.
+ *
+ * A surface realized off the dialogue plan arrives with no evidence refs even when it is an admitted span's own
+ * text, and shipped uncited (live 2026-09-16: "* The real per-turn sync (items 217-218)." spoken from
+ * task-resumption-turn-request.ts with evidenceRefs 0). Containment stands in for the ref the realizer dropped,
+ * never for its absence: a surface no admitted span carries stays uncited, and a surface too short to identify a
+ * source is not attributed to one.
+ */
+export function citedSpansForSurface(
+  selectedEvidence: readonly EvidenceSpan[],
+  evidenceRefs: readonly string[],
+  answer: string,
+  tidy: (value: string) => string
+): EvidenceSpan[] {
+  const referenced = selectedEvidence.filter(span => evidenceRefs.includes(String(span.id)));
+  if (referenced.length) return referenced;
+  const surface = tidy(answer);
+  if ([...surface].length < CITATION_CONTAINMENT_FLOOR) return [];
+  return selectedEvidence.filter(span => tidy(String(span.text ?? span.textPreview ?? "")).includes(surface)).slice(0, 1);
+}
+
+/** A surface shorter than one clause identifies no source by containment; the same floor answer-sentence selection uses. */
+const CITATION_CONTAINMENT_FLOOR = 24;
+
 export function formatCitationSuffix(citations: readonly EvidenceCitation[]): string {
   if (!citations.length) return "";
   const rendered = citations.map(citation => citation.url ? `${citation.title} (${citation.url})` : citation.title);

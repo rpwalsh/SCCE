@@ -77,7 +77,7 @@ import {
 import { createEvaluationTrace, executeEvaluationComponent, verifyEvaluationTrace } from "./evaluation-trace.js";
 import { createEventFactory } from "./events.js";
 import { type ConsolidatedEpisode, retrieveRelevantEpisodes } from "./episodic-memory-consolidation.js";
-import { evidenceCitations, formatCitationSuffix } from "./evidence-citation.js";
+import { citedSpansForSurface, evidenceCitations, formatCitationSuffix } from "./evidence-citation.js";
 import { extractTemporalAnswerFromEvidence } from "./semantic-obligations.js";
 import { induceOperatorFromLedger } from "./induced-reasoning-operator-runtime.js";
 import { createAlphaFieldEngine } from "./field.js";
@@ -5359,8 +5359,9 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // which needs the exact same treatment, not a citation left over
       // from the pre-revision text.
       const withCitation = (rawAnswer: string, spokenSurface: typeof spoken): string => {
-        if (!rawAnswer || !spokenSurface.evidenceRefs.length || (requestedAuthority !== "factual" && requestedAuthority !== "reasoned")) return rawAnswer;
-        const citedSpans = selectedEvidence.filter(span => spokenSurface.evidenceRefs.includes(span.id));
+        if (!rawAnswer || (requestedAuthority !== "factual" && requestedAuthority !== "reasoned")) return rawAnswer;
+        const citedSpans = citedSpansForSurface(selectedEvidence, spokenSurface.evidenceRefs, rawAnswer, tidySurfaceText);
+        if (!citedSpans.length) return rawAnswer;
         const citationSuffix = formatCitationSuffix(evidenceCitations(citedSpans));
         if (!citationSuffix) return rawAnswer;
         // The surface budget bounds the answer; the citation is appended after it and was not counted, so an answer
