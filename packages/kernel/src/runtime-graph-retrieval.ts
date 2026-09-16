@@ -1250,7 +1250,22 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
         .slice(0, 4);
       const learnedSymFeatures = symFeatures.flatMap(feature =>
         learnedMorphologicalSiblings(normalizePriorKey(feature.slice("anchor:sym:".length)), languageModels).map(variant => `anchor:sym:${variant}`));
-      const mergedSymFeatures = contentBearingFeatures(uniqueKernelStrings([...symFeatures, ...learnedSymFeatures, ...trailingFeatures]), functionUnits);
+      // An anchor whose every pair carries a qualifier reaches here seeding on a bare symbol: "apollo 11" seeded
+      // anchor:sym:apollo, thousands of the Greek god's postings, and the qualifier that separates them was
+      // searched nowhere. A pair is bounded by its rarer unit, so it is bound to the symbols, not put in place of
+      // them -- the group still seeds as it did, with one feature that can only narrow it.
+      const anchorSymbolUnitSet = new Set(symFeatures.map(feature => normalizePriorKey(feature.slice("anchor:sym:".length))));
+      const boundPairFeatures = anchorSymbolUnitSet.size
+        ? ordered.filter(feature => feature.startsWith("anchor:bi:")).filter(feature => {
+          // Every unit must be a unit, not a fragment: below the generic-length ceiling a run names nothing, and
+          // "aristotle's" splits to aristotle|s, whose "s" narrows no posting list.
+          const units = retrievalFeatureUnits(feature.slice("anchor:".length)).map(unit => normalizePriorKey(unit));
+          return units.length >= 2 && units.some(unit => anchorSymbolUnitSet.has(unit)) &&
+            units.every(unit => [...unit].length >= calibrated("units.generic_length_ceiling")) &&
+            units.reduce((sum, unit) => sum + [...unit].length, 0) >= 6;
+        })
+        : [];
+      const mergedSymFeatures = contentBearingFeatures(uniqueKernelStrings([...symFeatures, ...boundPairFeatures, ...learnedSymFeatures, ...trailingFeatures]), functionUnits);
       if (mergedSymFeatures.length) groups.push(mergedSymFeatures);
     }
     // The concept a premise attributes to its subject is a source of its own. "did martha washington invent the
