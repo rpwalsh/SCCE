@@ -1721,7 +1721,8 @@ export function createDeterministicMouth(options: { hashText: (text: string) => 
         ? normalizedSelectedText
         : repairSurfaceDelimiterBalance(normalizedSelectedText);
       const candidateText = preserveSurfaceExtent(readableSelectedText, input.maxLength, plan);
-      const text = admissibleMouthSurface(candidateText) ? candidateText : "";
+      // Same licensing material as the selection above: the re-check must not refuse what the admitted span contains.
+      const text = admissibleMouthSurface(candidateText, deterministicEvidenceTexts) ? candidateText : "";
       const preservation = semanticPreservation({ text, plan, entailment: input.entailment });
       const evidenceRefs = outputEvidenceRefs(input, plan, input.selectedCandidate?.evidenceIds);
       const selectedId = text
