@@ -120,6 +120,7 @@ import {
 import {
   CONVERSATIONAL_ACT_BINDING_SCHEMA,
   admitConversationalActBinding,
+  literalResidueIsCorpusInvariant,
   conversationalActBindingId,
   conversationalActBindingRecordId,
   conversationalSurfaceMeaningPlan,
@@ -4721,10 +4722,25 @@ function conversationalActBindingCandidate(
       surface: winner?.candidate.text ?? null,
       bundleId: winner?.bundleId ?? null,
       constructionId: winner?.constructionId ?? null,
-      refusals: uniqueStrings(refusals).slice(0, 12)
+      literalInvarianceFloor: measuredLiteralInvarianceFloor(observedDistribution),
+      sourceFamilies: [...sourceFamiliesByBundleId.values()].sort((left, right) => right - left).slice(0, 8),
+      refusals: refusalCountsByReason(refusals)
     }
   });
   return winner?.candidate;
+}
+
+/** The floor the admission measured, reported so a trace shows what the population decided, not just the verdict. */
+function measuredLiteralInvarianceFloor(observedDistribution: readonly number[]): number | null {
+  const measured = literalResidueIsCorpusInvariant({ independentSourceFamilies: 0, observedDistribution });
+  return measured.measured ? measured.floor : null;
+}
+
+/** Refusal reasons with how many rows each stopped, most first: one unique example never showed the shape. */
+function refusalCountsByReason(refusals: readonly string[]): Record<string, number> {
+  const counts = new Map<string, number>();
+  for (const reason of refusals) counts.set(reason, (counts.get(reason) ?? 0) + 1);
+  return Object.fromEntries([...counts].sort((left, right) => right[1] - left[1] || compareSurfaceText(left[0], right[0])).slice(0, 16));
 }
 
 /** One (bundle, construction) attempt. Returns the candidate, or the refusal id that stopped it. */
@@ -4858,7 +4874,12 @@ function conversationTurnContentSpan(
   if (!surface) return undefined;
   const units = inventory.units
     .filter(unit => unit.startCodePoint >= first.startCodePoint && unit.endCodePoint <= last.endCodePoint)
-    .map(unit => ({ surface: unit.surface, startCodePoint: unit.startCodePoint, endCodePoint: unit.endCodePoint }));
+    .map(unit => ({
+      surface: unit.surface,
+      startCodePoint: unit.startCodePoint,
+      endCodePoint: unit.endCodePoint,
+      externallyMeaningful: unit.externallyMeaningful
+    }));
   return { surface, startCodePoint: first.startCodePoint, endCodePoint: last.endCodePoint, units };
 }
 
@@ -4867,7 +4888,7 @@ interface ConversationTurnContentSpan {
   startCodePoint: number;
   endCodePoint: number;
   /** The span's own units, so a slot can be filled at the size its corpus occurrences show it holds. */
-  units: readonly { surface: string; startCodePoint: number; endCodePoint: number }[];
+  units: readonly { surface: string; startCodePoint: number; endCodePoint: number; externallyMeaningful: boolean }[];
 }
 
 /**
@@ -4891,6 +4912,8 @@ function slotSizedFiller(
   const windows = sizes.flatMap(size => span.units
     .map((_, start) => start)
     .filter(start => start + size <= span.units.length)
+    // A window of pure form names nothing: the slot is where the corpus varied with what was being talked about.
+    .filter(start => span.units.slice(start, start + size).some(unit => unit.externallyMeaningful))
     .map(start => {
       const startCodePoint = span.units[start]!.startCodePoint;
       const endCodePoint = span.units[start + size - 1]!.endCodePoint;
