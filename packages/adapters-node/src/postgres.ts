@@ -271,8 +271,12 @@ export class PostgresStorageAdapter implements ScceStorage {
   async migrate(): Promise<void> {
     const client = await this.pool.connect();
     try {
+      // Asked before anything is created: an absent ngram_models is what makes this schema new rather than migrated.
+      const existing = await client.query<{ present: string | null }>(`SELECT to_regclass($1) AS present`, [`${this.schema}.ngram_models`]);
+      const freshSchema = existing.rows[0]?.present === null;
       await client.query("BEGIN");
       for (const statement of schemaStatements(this.q, this.informationAccess)) await client.query(statement);
+      if (freshSchema) for (const statement of freshSchemaIndexStatements(this.q)) await client.query(statement);
       const schemaErrors = await requiredSchemaErrors(client, this.schema);
       if (schemaErrors.length) throw new Error(`schema migration incomplete: ${schemaErrors.slice(0, 12).join("; ")}`);
       await client.query(
@@ -771,6 +775,27 @@ function informationLabelMigrationStatements(
   ];
 }
 
+/**
+ * listNgramModels ranks by `trainedMass DESC, updated_at DESC, id ASC` under
+ * either a sourceSystem or a profileIds filter; these two indexes carry that
+ * whole ordering so neither scoping has to sort the table.
+ *
+ * They are created ONLY on a schema this migration just created. Both index
+ * expressions read inside `model_json`, which forces a detoast of every row
+ * (ngram_models is 784kB of heap against 1680MB of TOAST on the live
+ * schema), and `migrate()` runs its statements inside one transaction, so
+ * CREATE INDEX CONCURRENTLY is not available to it. Building these against a
+ * populated ngram_models would therefore hold a write lock on a running
+ * server for as long as it takes to read 1.6GB. On an existing schema they
+ * are an operator action, run CONCURRENTLY out of band.
+ */
+function freshSchemaIndexStatements(q: string): string[] {
+  return [
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ngram_model_source_system_ranked ON ${q}.ngram_models((model_json->>'sourceSystem'), (COALESCE((model_json->'model'->>'totalUnigramCount')::numeric, 0)) DESC, updated_at DESC, id)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ngram_model_profile_ranked ON ${q}.ngram_models((model_json->>'profileId'), (COALESCE((model_json->'model'->>'totalUnigramCount')::numeric, 0)) DESC, updated_at DESC, id)`
+  ];
+}
+
 function schemaStatements(q: string, informationAccess?: InformationAccessContext): string[] {
   return [
     `CREATE EXTENSION IF NOT EXISTS vector`,
@@ -1258,22 +1283,38 @@ function isLocalDatabaseUrl(value: string): boolean {
   }
 }
 
+const EVENT_INSERT_COLUMN_TYPES = ["text", "text", "text", "bigint", "jsonb", "text[]", "text", "text"] as const;
+// The extended query protocol counts bind parameters in an unsigned 16-bit field, so the wire format -- not a
+// tuning choice -- is what splits one batch into more than one statement.
+const POSTGRES_BIND_PARAMETER_LIMIT = 65535;
+const EVENT_INSERT_MAX_ROWS_PER_STATEMENT = Math.floor(POSTGRES_BIND_PARAMETER_LIMIT / EVENT_INSERT_COLUMN_TYPES.length);
+
 function createEventLedger(storage: PostgresStorageAdapter): EventLedger {
   return {
     append: event => storage.events.appendBatch([event]),
     async appendBatch(events) {
       if (events.length === 0) return;
       await storage.tx(async client => {
-        let prev = await latestLedgerHash(client, storage.table("events"));
-        for (const event of events) {
+        const table = storage.table("events");
+        let prev = await latestLedgerHash(client, table);
+        // The chain is pure JS over the previous hash, so every row's ledger_hash is known before any statement runs.
+        const rows = events.map(event => {
           const ledgerHash = sha256(`${prev}\u001f${event.hash}`);
-          await client.query(
-            `INSERT INTO ${storage.table("events")}(id, episode_id, type_id, t, payload_json, parents, hash, ledger_hash)
-             VALUES($1,$2,$3,$4,$5::jsonb,$6,$7,$8)
-             ON CONFLICT(id) DO NOTHING`,
-            [event.id, event.episodeId, event.typeId, event.t, JSON.stringify(event.payload), event.parents, event.hash, ledgerHash]
-          );
           prev = ledgerHash;
+          return [event.id, event.episodeId, event.typeId, event.t, JSON.stringify(event.payload), event.parents, event.hash, ledgerHash];
+        });
+        for (let start = 0; start < rows.length; start += EVENT_INSERT_MAX_ROWS_PER_STATEMENT) {
+          const params: unknown[] = [];
+          const tuples = rows.slice(start, start + EVENT_INSERT_MAX_ROWS_PER_STATEMENT).map(row => `(${row.map((value, column) => {
+            params.push(value);
+            return `$${params.length}::${EVENT_INSERT_COLUMN_TYPES[column]}`;
+          }).join(",")})`);
+          await client.query(
+            `INSERT INTO ${table}(id, episode_id, type_id, t, payload_json, parents, hash, ledger_hash)
+             VALUES${tuples.join(",")}
+             ON CONFLICT(id) DO NOTHING`,
+            params
+          );
         }
       });
     },
@@ -1304,7 +1345,7 @@ function createEventLedger(storage: PostgresStorageAdapter): EventLedger {
       return rows.map(rowToEvent);
     },
     async latestLedgerHash() {
-      const rows = await storage.query<{ ledger_hash: string }>(`SELECT ledger_hash FROM ${storage.table("events")} ORDER BY t DESC,id DESC LIMIT 1`);
+      const rows = await storage.query<{ ledger_hash: string }>(latestLedgerHashSql(storage.table("events")));
       return rows[0]?.ledger_hash ?? "";
     }
   };
@@ -5427,8 +5468,40 @@ function vectorLiteral(values: number[], dimensions: number): string {
   return `[${bounded.map(value => Number(value).toPrecision(12)).join(",")}]`;
 }
 
+/**
+ * The ledger tail by plain `ORDER BY t DESC, id DESC LIMIT 1` has no index to
+ * serve it and plans as a parallel sequential scan plus sort of the whole
+ * events table (measured live on 841,671 rows / 697MB heap: 840-1250ms, paid
+ * once per appendBatch, i.e. once per turn). The existing
+ * `(type_id, t DESC)` index already answers it exactly: the maximum by
+ * (t, id) over the table is the maximum of the per-type maxima, so a
+ * recursive loose index scan walks the 64 distinct type ids by index descent
+ * and takes one indexed tail per type. Measured live: p50 2.48ms for an
+ * identical ledger_hash, and it needs no new index on a table this size.
+ */
+function latestLedgerHashSql(eventsTable: string): string {
+  return `WITH RECURSIVE ledger_type_ids AS (
+      (SELECT type_id FROM ${eventsTable} ORDER BY type_id LIMIT 1)
+      UNION ALL
+      SELECT (SELECT next.type_id FROM ${eventsTable} next WHERE next.type_id > ledger_type_ids.type_id ORDER BY next.type_id LIMIT 1)
+      FROM ledger_type_ids WHERE ledger_type_ids.type_id IS NOT NULL
+    )
+    SELECT tail.ledger_hash
+    FROM ledger_type_ids
+    CROSS JOIN LATERAL (
+      SELECT tail.ledger_hash, tail.t, tail.id
+      FROM ${eventsTable} tail
+      WHERE tail.type_id = ledger_type_ids.type_id
+      ORDER BY tail.t DESC, tail.id DESC
+      LIMIT 1
+    ) tail
+    WHERE ledger_type_ids.type_id IS NOT NULL
+    ORDER BY tail.t DESC, tail.id DESC
+    LIMIT 1`;
+}
+
 async function latestLedgerHash(client: PoolClient, eventsTable: string): Promise<string> {
-  const result = await client.query<{ ledger_hash: string }>(`SELECT ledger_hash FROM ${eventsTable} ORDER BY t DESC,id DESC LIMIT 1`);
+  const result = await client.query<{ ledger_hash: string }>(latestLedgerHashSql(eventsTable));
   return result.rows[0]?.ledger_hash ?? "";
 }
 
