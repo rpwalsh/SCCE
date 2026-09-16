@@ -29,10 +29,12 @@ describe("dialogue corpus role", () => {
     expect(dialogue?.sourceSystem).toBe("dialogue");
   });
 
-  it("does not hydrate into any turn until it is explicitly enabled", () => {
+  it("hydrates like any other population, and carries no source authority when it does", () => {
     const plan = languageMemoryHydrationPlan(createCorpusRegistry([]));
-    expect(plan.map(item => item.sourceSystem)).not.toContain("dialogue");
+    expect(plan.map(item => item.sourceSystem)).toContain("dialogue");
     expect(plan.map(item => item.sourceSystem)).toContain("wikipedia");
+    const dialogue = createCorpusRegistry([]).find(entry => entry.sourceSystemId === CORPUS_SOURCE_SYSTEM_IDS.dialogue);
+    expect(dialogue?.graphEvidenceEligible).toBe(false);
   });
 
   it("joins the hydration plan under its own role once enabled, leaving the encyclopedic plan unchanged", () => {

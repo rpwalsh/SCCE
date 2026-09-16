@@ -36,10 +36,12 @@ describe("one database, two populations", () => {
     expect(roleScoped).toContain("dialogue");
   });
 
-  it("keeps the conversational population out of the unscoped fan-out", () => {
+  it("lets a turn of any kind hydrate the conversational population, which grants wording and never authority", () => {
     const unscoped = languageMemoryHydrationPlan(registry, {}, "unscoped").map(entry => entry.sourceSystem);
     expect(unscoped).toContain("wikipedia");
-    expect(unscoped).not.toContain("dialogue");
+    expect(unscoped).toContain("dialogue");
+    const dialogue = registry.find(entry => entry.corpusRoleId === CORPUS_ROLE_IDS.dialogue);
+    expect(dialogue?.graphEvidenceEligible).toBe(false);
   });
 
   it("never lets the dialogue population into the evidence graph", () => {

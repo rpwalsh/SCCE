@@ -105,7 +105,6 @@ export interface CorpusRegistryEntry {
   corpusRoleId: CorpusRoleId;
   languageMemoryEligible: boolean;
   /** Joins the unscoped hydration fan-out, where every registered corpus is queried at once. */
-  unscopedHydrationEligible: boolean;
   graphEvidenceEligible: boolean;
   hydration: {
     priority: number;
@@ -195,9 +194,9 @@ const DEFAULT_REGISTRY: CorpusRegistryEntry[] = [
     languagePatterns: 512,
     semanticFrames: 512
   }),
-  // Reachable only when a turn's own state selects the dialogue role. It stays out of the unscoped fan-out, where
-  // every registered corpus is queried and a factual turn would silently draw on it.
-  { ...entry(CORPUS_SOURCE_SYSTEM_IDS.dialogue, "dialogue", CORPUS_ROLE_IDS.dialogue, 92, 1, false), unscopedHydrationEligible: false },
+  // A turn may realize from dialogue whatever it is asking: the population grants wording, never factual authority
+  // (graphEvidenceEligible false), so admission decides what may be asserted.
+  entry(CORPUS_SOURCE_SYSTEM_IDS.dialogue, "dialogue", CORPUS_ROLE_IDS.dialogue, 92, 1, false),
   entry(CORPUS_SOURCE_SYSTEM_IDS.workspace, "workspace", CORPUS_ROLE_IDS.workspace, 90, 0.92, true),
   entry(CORPUS_SOURCE_SYSTEM_IDS.wikipedia, "wikipedia", CORPUS_ROLE_IDS.encyclopedic, 80, 0.9, true),
   entry(CORPUS_SOURCE_SYSTEM_IDS.gutenberg, "gutenberg", CORPUS_ROLE_IDS.publicDomainProse, 70, 0.78, true),
@@ -233,7 +232,6 @@ export function languageMemoryEligibleCorpora(
 ): CorpusRegistryEntry[] {
   return registry
     .filter(item => item.enabled && item.languageMemoryEligible)
-    .filter(item => scope === "role-scoped" || item.unscopedHydrationEligible)
     .sort((a, b) => b.hydration.priority - a.hydration.priority || b.hydration.weight - a.hydration.weight || a.sourceSystem.localeCompare(b.sourceSystem));
 }
 
@@ -311,7 +309,6 @@ function entry(
     corpusKindId: corpusRoleId,
     corpusRoleId,
     languageMemoryEligible: true,
-    unscopedHydrationEligible: true,
     graphEvidenceEligible,
     hydration: { priority, weight, limits: { ...limits } },
     ngram: { ...ngram }
