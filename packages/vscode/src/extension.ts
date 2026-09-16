@@ -91,7 +91,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const output = vscode.window.createOutputChannel("SCCE");
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 10);
   status.command = "scce.checkReadiness";
-  status.text = "$(pulse) SCCE: checking";
+  status.text = "$(pulse) scce.checking";
   status.show();
 
   const publish = (message: ExtensionMessage): void => {
@@ -104,7 +104,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const provider = new TaskTimelineProvider(timeline);
   const patchPreview = new PatchPreviewContentProvider();
   const recovered = await timeline.recoverInterrupted();
-  if (recovered) output.appendLine(`[extension] restored ${recovered} interrupted task record(s); requests were not replayed.`);
+  if (recovered) output.appendLine(`[extension] task.timeline.recovered interrupted=${recovered}`);
   context.subscriptions.push(
     output,
     status,
@@ -138,12 +138,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     provider.refresh();
     if (mutates) {
       const approved = await vscode.window.showWarningMessage(
-        approvalNotice?.message ?? `${label} writes to SCCE's durable local store. No workspace files will be changed by this extension command.`,
-        { modal: true, detail: approvalNotice?.detail ?? "Approve this single request? The approval is not retained for later commands." },
-        "Approve once"
+        approvalNotice?.message ?? `scce.request.mutates_durable_store ${label}`,
+        { modal: true, detail: approvalNotice?.detail ?? "scce.approval.single_request" },
+        "approve.once"
       );
-      if (approved !== "Approve once") {
-        await timeline.transition(task.id, "cancelled", "User did not approve the mutation.");
+      if (approved !== "approve.once") {
+        await timeline.transition(task.id, "cancelled", "scce.approval.declined");
         announce("cancelled");
         provider.refresh();
         return undefined;
@@ -167,52 +167,52 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await timeline.transition(task.id, "failed", message);
       announce("failed");
       provider.refresh();
-      output.appendLine(`[${new Date().toISOString()}] ${label} failed: ${message}`);
-      void vscode.window.showErrorMessage(`SCCE: ${message}`);
+      output.appendLine(`[${new Date().toISOString()}] ${label} failed ${message}`);
+      void vscode.window.showErrorMessage(`${message}`);
       return undefined;
     }
   };
 
   context.subscriptions.push(
     vscode.commands.registerCommand("scce.checkReadiness", async () => {
-      status.text = "$(pulse) SCCE: checking";
-      const result = await run("ready", "Check readiness", false, activeClient => activeClient.ready());
+      status.text = "$(pulse) scce.checking";
+      const result = await run("ready", "runtime.ready", false, activeClient => activeClient.ready());
       const ready = Boolean(result && typeof result === "object" && "ok" in result && result.ok === true);
       if (ready) {
-        status.text = "$(check) SCCE: ready";
-        status.tooltip = `Ready at ${configuredServerUrl()}`;
+        status.text = "$(check) scce.ready";
+        status.tooltip = `scce.ready ${configuredServerUrl()}`;
       } else {
-        status.text = "$(error) SCCE: unavailable";
+        status.text = "$(error) scce.unavailable";
       }
       publish({ schema: EXTENSION_PROTOCOL_SCHEMA, kind: "readiness", ready, serverUrl: configuredServerUrl(), observedAt: Date.now() });
     }),
     vscode.commands.registerCommand("scce.setServerToken", async () => {
-      const token = await vscode.window.showInputBox({ title: "SCCE local server token", password: true, prompt: "Leave empty to remove the stored token", ignoreFocusOut: true });
+      const token = await vscode.window.showInputBox({ title: "scce.server.token", password: true, prompt: "scce.server.token.empty_removes", ignoreFocusOut: true });
       if (token === undefined) return;
       const normalized = normalizeToken(token);
       if (normalized) await context.secrets.store(TOKEN_SECRET_KEY, normalized);
       else await context.secrets.delete(TOKEN_SECRET_KEY);
-      void vscode.window.showInformationMessage(normalized ? "SCCE token stored in VS Code SecretStorage." : "SCCE token removed.");
+      void vscode.window.showInformationMessage(normalized ? "scce.server.token.stored" : "scce.server.token.removed");
     }),
     vscode.commands.registerCommand("scce.workspace.initialize", async () => {
       const workspacePath = await chooseLocalWorkspacePathForInitialization();
       if (!workspacePath) return;
-      return run("workspace.initialize", "Initialize workspace", true, activeClient => activeClient.workspaceInitialize(workspacePath));
+      return run("workspace.initialize", "workspace.initialize", true, activeClient => activeClient.workspaceInitialize(workspacePath));
     }),
-    vscode.commands.registerCommand("scce.workspace.ingest", () => run("workspace.ingest", "Ingest workspace", true, async activeClient => {
+    vscode.commands.registerCommand("scce.workspace.ingest", () => run("workspace.ingest", "workspace.ingest", true, async activeClient => {
       const { binding } = await serverBoundWorkspace(activeClient);
       return activeClient.workspaceIngest(binding.resolvedRoot);
     })),
-    vscode.commands.registerCommand("scce.project.summary", () => run("project.summary", "Generate project summary", true, async activeClient => {
+    vscode.commands.registerCommand("scce.project.summary", () => run("project.summary", "project.summary", true, async activeClient => {
       const { binding } = await serverBoundWorkspace(activeClient);
       return activeClient.projectSummary(binding.resolvedRoot);
     })),
     vscode.commands.registerCommand("scce.workspace.code", async () => {
       const editor = vscode.window.activeTextEditor;
       const relative = editor ? vscode.workspace.asRelativePath(editor.document.uri, false) : "";
-      const targetPath = await vscode.window.showInputBox({ prompt: "File to edit", value: relative });
+      const targetPath = await vscode.window.showInputBox({ prompt: "workspace.code.path", value: relative });
       if (!targetPath) return;
-      const request = await vscode.window.showInputBox({ prompt: "What should change in this file?" });
+      const request = await vscode.window.showInputBox({ prompt: "workspace.code.request" });
       if (!request) return;
       await run("workspace.code", "Edit " + targetPath, true, async activeClient => {
         let result = await activeClient.editCode(targetPath, request);
@@ -225,23 +225,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               detail: candidate.codeFixIdentity,
               identity: candidate.codeFixIdentity
             })),
-            { title: "Fixes TypeScript offers for " + targetPath, placeHolder: "Choose the fix to apply" }
+            { title: "workspace.code.fix_candidates " + targetPath, placeHolder: "workspace.code.fix_choice" }
           );
           if (!picked) return result as unknown as Record<string, unknown>;
           result = await activeClient.editCode(targetPath, request + " codeFixIdentity:" + picked.identity);
         }
         const summary = result.outcome === "resolved"
-          ? "SCCE edited " + targetPath + ": the compiler accepted the change after " + result.attempts + " attempt(s)."
-          : "SCCE did not change " + targetPath + ": " + result.outcome + ". Every attempt was rolled back.";
+          ? "SCCE edited " + targetPath + " workspace.code.resolved attempts=" + result.attempts + " attempt(s)."
+          : "workspace.code.unchanged " + targetPath + ": " + result.outcome + " rolled_back";
         if (result.outcome === "resolved") void vscode.window.showInformationMessage(summary);
         else void vscode.window.showWarningMessage(summary);
         return result as unknown as Record<string, unknown>;
       });
     }),
     vscode.commands.registerCommand("scce.workspace.ask", async () => {
-      const question = await vscode.window.showInputBox({ title: "Ask SCCE about this workspace", prompt: "The question and answer will be persisted by the local SCCE runtime.", ignoreFocusOut: true });
+      const question = await vscode.window.showInputBox({ title: "workspace.ask", prompt: "workspace.ask.persisted", ignoreFocusOut: true });
       if (!question?.trim()) return;
-      const answer = await run("workspace.ask", "Ask workspace question", true, async activeClient => {
+      const answer = await run("workspace.ask", "workspace.ask", true, async activeClient => {
         const { binding } = await serverBoundWorkspace(activeClient);
         return activeClient.workspaceAsk(binding.resolvedRoot, question);
       });
@@ -250,41 +250,41 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
     }),
     vscode.commands.registerCommand("scce.learning.review", async () => {
-      const listed = await run("learning.review", "List material held for review", false, async activeClient => activeClient.listHeldSources());
+      const listed = await run("learning.review", "learning.held.list", false, async activeClient => activeClient.listHeldSources());
       const held = listed && typeof listed === "object" && "held" in listed ? (listed as { held: Array<{ id: string; uri: string; title: string; preview: string }> }).held : [];
-      if (!held.length) { void vscode.window.showInformationMessage("SCCE: nothing is waiting for your review."); return; }
-      const picked = await vscode.window.showQuickPick(held.map(item => ({ label: item.title || item.uri, description: item.uri, detail: item.preview.slice(0, 200), item })), { title: "Material SCCE fetched with your consent — is it true?", ignoreFocusOut: true });
+      if (!held.length) { void vscode.window.showInformationMessage("learning.held.none"); return; }
+      const picked = await vscode.window.showQuickPick(held.map(item => ({ label: item.title || item.uri, description: item.uri, detail: item.preview.slice(0, 200), item })), { title: "learning.review.held", ignoreFocusOut: true });
       if (!picked) return;
-      const decision = await vscode.window.showQuickPick([{ label: "True, keep it", value: "promoted" as const }, { label: "Not true, discard", value: "rejected" as const }], { title: picked.description, ignoreFocusOut: true });
+      const decision = await vscode.window.showQuickPick([{ label: "learning.review.promoted", value: "promoted" as const }, { label: "learning.review.rejected", value: "rejected" as const }], { title: picked.description, ignoreFocusOut: true });
       if (!decision) return;
-      await run("learning.review.decide", decision.value === "promoted" ? "Promote held material" : "Reject held material", true, async activeClient => activeClient.reviewHeldSource(picked.item.id, decision.value));
+      await run("learning.review.decide", decision.value === "promoted" ? "learning.review.promoted" : "learning.review.rejected", true, async activeClient => activeClient.reviewHeldSource(picked.item.id, decision.value));
     }),
     vscode.commands.registerCommand("scce.learning.curriculum", async () => {
-      const listed = await run("learning.curriculum", "List what SCCE wants to learn", false, async activeClient => activeClient.listCurriculum());
+      const listed = await run("learning.curriculum", "learning.curriculum.list", false, async activeClient => activeClient.listCurriculum());
       const items = listed && typeof listed === "object" && "items" in listed ? (listed as { items: Array<{ planId: string; query: string; rationale: string }> }).items : [];
-      if (!items.length) { void vscode.window.showInformationMessage("SCCE: no self-proposed learning is waiting for consent."); return; }
-      const picked = await vscode.window.showQuickPick(items.map(item => ({ label: item.query, detail: item.rationale, item })), { title: "SCCE wants to learn — let it search the web for this?", ignoreFocusOut: true });
+      if (!items.length) { void vscode.window.showInformationMessage("learning.curriculum.none"); return; }
+      const picked = await vscode.window.showQuickPick(items.map(item => ({ label: item.query, detail: item.rationale, item })), { title: "learning.curriculum.consent", ignoreFocusOut: true });
       if (!picked) return;
-      const result = await run("learning.pursue", "Consent and learn", true, async activeClient => activeClient.pursueCurriculum(picked.item.planId));
+      const result = await run("learning.pursue", "learning.curriculum.pursue", true, async activeClient => activeClient.pursueCurriculum(picked.item.planId));
       const heldCount = result && typeof result === "object" && "held" in result ? (result as { held: unknown[] }).held.length : 0;
-      if (heldCount) void vscode.window.showInformationMessage(`SCCE fetched ${heldCount} source(s); run "SCCE: Review Learned Material" to confirm what is true.`);
+      if (heldCount) void vscode.window.showInformationMessage(`learning.held.fetched sources=${heldCount}`);
     }),
-    vscode.commands.registerCommand("scce.workspace.status", () => run("workspace.status", "Load read-only workspace status", false, async activeClient => {
+    vscode.commands.registerCommand("scce.workspace.status", () => run("workspace.status", "workspace.status", false, async activeClient => {
       const { status: workspaceStatus } = await serverBoundWorkspace(activeClient);
       return workspaceStatus;
     })),
     vscode.commands.registerCommand("scce.workspace.codingRequest", async (prefill?: string) => {
       const requestText = await vscode.window.showInputBox({
-        title: "Plan a bounded coding request with SCCE",
-        prompt: "Describe the requested change. You will select the durable source files that bound its scope next.",
-        placeHolder: "Example: Remove unused type import ExampleType from src/example.ts.",
+        title: "workspace.coding_request",
+        prompt: "workspace.coding_request.text",
+        placeHolder: "",
         value: typeof prefill === "string" ? prefill : undefined,
         ignoreFocusOut: true,
         validateInput: value => {
           const normalized = value.trim();
           if (!normalized) return "Enter a coding request.";
-          if (normalized.includes("\0")) return "The request cannot contain NUL bytes.";
-          if (Buffer.byteLength(normalized, "utf8") > 20_000) return "The request cannot exceed 20000 UTF-8 bytes.";
+          if (normalized.includes("\0")) return "workspace.coding_request.nul_byte";
+          if (Buffer.byteLength(normalized, "utf8") > 20_000) return "workspace.coding_request.too_large";
           return undefined;
         }
       });
@@ -295,23 +295,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       let codingWorkspace = scopedStatus.binding;
       const refreshChoice = await vscode.window.showQuickPick([
         {
-          label: "$(refresh) Refresh durable workspace first",
-          description: "Runs the existing ingest command after its separate mutation approval.",
+          label: "$(refresh) workspace.preflight.refresh",
+          description: "workspace.ingest",
           refresh: true
         },
         {
-          label: "$(database) Use current durable revision",
-          description: "Plans against the server's current ingested bytes without changing them.",
+          label: "$(database) workspace.preflight.current",
+          description: "workspace.status",
           refresh: false
         }
       ], {
-        title: "Choose the durable-state preflight",
-        placeHolder: "Local edits require refresh before exact-byte planning",
+        title: "workspace.preflight",
+        placeHolder: "workspace.preflight.refresh",
         ignoreFocusOut: true
       });
       if (!refreshChoice) return;
       if (refreshChoice.refresh) {
-        const refreshed = await run("workspace.ingest", "Refresh durable workspace for coding request", true, activeClient => activeClient.workspaceIngest(codingWorkspace.resolvedRoot));
+        const refreshed = await run("workspace.ingest", "workspace.ingest", true, activeClient => activeClient.workspaceIngest(codingWorkspace.resolvedRoot));
         if (!refreshed) return;
         scopedStatus = await run("workspace.status", "Reload coding-request scope", false, activeClient => serverBoundWorkspace(activeClient));
         if (!scopedStatus) return;
@@ -319,14 +319,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         codingWorkspace = scopedStatus.binding;
       }
       if (statusResult.sources.length === 0) {
-        void vscode.window.showInformationMessage("SCCE has no durable source files to scope. Initialize and ingest the workspace first.");
+        void vscode.window.showInformationMessage("workspace.sources.none");
         return;
       }
       const selected = await vscode.window.showQuickPick(
         statusResult.sources.map(source => ({ label: source.path, path: source.path })),
         {
-          title: "Select the durable files this request may target",
-          placeHolder: "Choose 1 through 256 workspace-relative source paths",
+          title: "workspace.coding_request.sources",
+          placeHolder: "workspace.coding_request.sources.1_to_256",
           canPickMany: true,
           ignoreFocusOut: true,
           matchOnDescription: false,
@@ -335,18 +335,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       );
       if (!selected) return;
       if (selected.length < 1) {
-        void vscode.window.showInformationMessage("Select at least one durable source file for the coding request.");
+        void vscode.window.showInformationMessage("workspace.coding_request.sources.empty");
         return;
       }
       if (selected.length > 256) {
-        void vscode.window.showErrorMessage("SCCE coding requests are limited to 256 selected source paths.");
+        void vscode.window.showErrorMessage("workspace.coding_request.sources.over_256");
         return;
       }
       const diagnosticCodes = await chooseTypeScriptDiagnosticCodes(codingWorkspace, selected.map(item => item.path));
       if (!diagnosticCodes) return;
       const generation = await run(
         "workspace.patch.plan.request",
-        "Plan coding request",
+        "workspace.coding_request.plan",
         false,
         activeClient => activeClient.workspaceCodingPatchPlan({
           workspaceId: statusResult.workspace.id,
@@ -360,8 +360,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (!generation) return;
       if (generation.kind === "unresolved") {
         const reasons = generation.reasonIds.join(", ");
-        output.appendLine(`[${new Date().toISOString()}] Coding request was not resolved: ${reasons}`);
-        void vscode.window.showInformationMessage(`SCCE found no unique admissible compiler action. Reason IDs: ${reasons}`);
+        output.appendLine(`[${new Date().toISOString()}] workspace.coding_request.unresolved ${reasons}`);
+        void vscode.window.showInformationMessage(`workspace.coding_request.unresolved ${reasons}`);
         return;
       }
       let reviewedWorkspace: BoundOpenWorkspace;
@@ -369,31 +369,31 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         reviewedWorkspace = await openPatchPlanPreview(patchPreview, statusResult.workspace.rootPath, generation.plan);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        output.appendLine(`[${new Date().toISOString()}] Coding-request preview failed: ${message}`);
-        void vscode.window.showErrorMessage(`SCCE: ${message}`);
+        output.appendLine(`[${new Date().toISOString()}] workspace.coding_request.preview_failed ${message}`);
+        void vscode.window.showErrorMessage(`${message}`);
         return;
       }
       const reviewed = await vscode.window.showWarningMessage(
-        "Review the opened before/after diff, then confirm whether to continue.",
-        { detail: `No files were changed during preview. Plan ${generation.plan.planHash}` },
-        "Continue to approval",
+        "patch.preview.review",
+        { detail: `patch.preview.no_files_changed ${generation.plan.planHash}` },
+        "continue.to_approval",
         "Cancel"
       );
-      if (reviewed !== "Continue to approval") return;
+      if (reviewed !== "continue.to_approval") return;
       const applied = await run(
         "workspace.patch",
-        "Apply coding-request patch transaction",
+        "workspace.coding_request.apply",
         true,
         async activeClient => {
           const currentStatus = await activeClient.workspaceStatus();
-          if (currentStatus.workspace.id !== generation.workspaceId) throw new Error("the server's active workspace changed after coding-plan review");
+          if (currentStatus.workspace.id !== generation.workspaceId) throw new Error("workspace.changed_after_review");
           const currentWorkspace = await assertServerWorkspaceMatchesOpenFolder(currentStatus.workspace.rootPath);
           assertSameWorkspacePhysicalBinding(reviewedWorkspace, currentWorkspace);
           return applyReviewedWorkspacePatch(activeClient, generation.workspaceId, currentStatus.workspace.rootPath, reviewedWorkspace, generation.plan);
         },
         {
-          message: `Apply ${generation.plan.operations.length} verified coding-request file operation(s) to this workspace?`,
-          detail: `${codingPlanReviewSummary(generation)}\n\nThe server will verify all content hashes, stage the workspace, run ${DEFAULT_PATCH_VALIDATION_POLICY_ID}, require a separate capability authorization, and commit only after validation passes. This trusted-host policy is not an OS sandbox; use it only for repository code you trust to run with the server process's authority.`
+          message: `workspace.coding_request.apply operations=${generation.plan.operations.length}`,
+          detail: `${codingPlanReviewSummary(generation)}\n\nvalidation=${DEFAULT_PATCH_VALIDATION_POLICY_ID}\ncapability_authorization=required\ncommit=after_validation\nhost=trusted_not_sandboxed`
         }
       );
       if (applied) showAppliedReceipt(applied);
@@ -411,12 +411,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const statusResult = scopedStatus.status;
       const relativePath = workspaceRelativePath(scopedStatus.binding.folder, uri);
       if (!relativePath) {
-        void vscode.window.showErrorMessage("SCCE: this file is outside the bound workspace.");
+        void vscode.window.showErrorMessage("workspace.file.out_of_bounds");
         return;
       }
       const generation = await run(
         "workspace.patch.plan.request",
-        "Plan SCCE quick fix",
+        "workspace.quick_fix.plan",
         false,
         activeClient => activeClient.workspaceCodingPatchPlan({
           workspaceId: statusResult.workspace.id,
@@ -430,8 +430,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (!generation) return;
       if (generation.kind === "unresolved") {
         const reasons = generation.reasonIds.join(", ");
-        output.appendLine(`[${new Date().toISOString()}] Quick fix was not resolved: ${reasons}`);
-        void vscode.window.showInformationMessage(`SCCE found no unique admissible compiler action for this diagnostic. Reason IDs: ${reasons}`);
+        output.appendLine(`[${new Date().toISOString()}] workspace.quick_fix.unresolved ${reasons}`);
+        void vscode.window.showInformationMessage(`workspace.quick_fix.unresolved ${reasons}`);
         return;
       }
       let reviewedWorkspace: BoundOpenWorkspace;
@@ -439,37 +439,37 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         reviewedWorkspace = await openPatchPlanPreview(patchPreview, statusResult.workspace.rootPath, generation.plan);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        output.appendLine(`[${new Date().toISOString()}] Quick-fix preview failed: ${message}`);
-        void vscode.window.showErrorMessage(`SCCE: ${message}`);
+        output.appendLine(`[${new Date().toISOString()}] workspace.quick_fix.preview_failed ${message}`);
+        void vscode.window.showErrorMessage(`${message}`);
         return;
       }
       const reviewed = await vscode.window.showWarningMessage(
-        "Review the opened before/after diff, then confirm whether to continue.",
-        { detail: `No files were changed during preview. Plan ${generation.plan.planHash}` },
-        "Continue to approval",
+        "patch.preview.review",
+        { detail: `patch.preview.no_files_changed ${generation.plan.planHash}` },
+        "continue.to_approval",
         "Cancel"
       );
-      if (reviewed !== "Continue to approval") return;
+      if (reviewed !== "continue.to_approval") return;
       const applied = await run(
         "workspace.patch",
-        "Apply SCCE quick fix",
+        "workspace.quick_fix.apply",
         true,
         async activeClient => {
           const currentStatus = await activeClient.workspaceStatus();
-          if (currentStatus.workspace.id !== generation.workspaceId) throw new Error("the server's active workspace changed after coding-plan review");
+          if (currentStatus.workspace.id !== generation.workspaceId) throw new Error("workspace.changed_after_review");
           const currentWorkspace = await assertServerWorkspaceMatchesOpenFolder(currentStatus.workspace.rootPath);
           assertSameWorkspacePhysicalBinding(reviewedWorkspace, currentWorkspace);
           return applyReviewedWorkspacePatch(activeClient, generation.workspaceId, currentStatus.workspace.rootPath, reviewedWorkspace, generation.plan);
         },
         {
-          message: `Apply ${generation.plan.operations.length} verified fix operation(s) to this file?`,
-          detail: `${codingPlanReviewSummary(generation)}\n\nThe server will verify all content hashes, stage the workspace, run ${DEFAULT_PATCH_VALIDATION_POLICY_ID}, require a separate capability authorization, and commit only after validation passes.`
+          message: `workspace.quick_fix.apply operations=${generation.plan.operations.length}`,
+          detail: `${codingPlanReviewSummary(generation)}\n\nvalidation=${DEFAULT_PATCH_VALIDATION_POLICY_ID}\ncapability_authorization=required\ncommit=after_validation`
         }
       );
       if (applied) showAppliedReceipt(applied);
     }),
     vscode.commands.registerCommand("scce.workspace.applyPatchPlan", async () => {
-      const boundStatus = await run("workspace.status", "Bind reviewed patch workspace", false, async activeClient => {
+      const boundStatus = await run("workspace.status", "patch.transaction.bind", false, async activeClient => {
         const workspaceStatus = await activeClient.workspaceStatus();
         await assertServerWorkspaceMatchesOpenFolder(workspaceStatus.workspace.rootPath);
         return workspaceStatus;
@@ -482,26 +482,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         reviewedWorkspace = await openPatchPlanPreview(patchPreview, boundStatus.workspace.rootPath, plan);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        output.appendLine(`[${new Date().toISOString()}] Reviewed patch preview failed: ${message}`);
-        void vscode.window.showErrorMessage(`SCCE: ${message}`);
+        output.appendLine(`[${new Date().toISOString()}] patch.transaction.preview_failed ${message}`);
+        void vscode.window.showErrorMessage(`${message}`);
         return;
       }
       const reviewed = await vscode.window.showWarningMessage(
-        "Review the opened before/after diff, then confirm whether to continue.",
-        { detail: `No files were changed during preview. Plan ${plan.planHash}` },
-        "Continue to approval",
+        "patch.preview.review",
+        { detail: `patch.preview.no_files_changed ${plan.planHash}` },
+        "continue.to_approval",
         "Cancel"
       );
-      if (reviewed !== "Continue to approval") return;
-      const applied = await run("workspace.patch", "Apply reviewed patch transaction", true, async activeClient => {
+      if (reviewed !== "continue.to_approval") return;
+      const applied = await run("workspace.patch", "patch.transaction.apply", true, async activeClient => {
         const currentStatus = await activeClient.workspaceStatus();
-        if (currentStatus.workspace.id !== boundStatus.workspace.id) throw new Error("the server's active workspace changed after patch-plan review");
+        if (currentStatus.workspace.id !== boundStatus.workspace.id) throw new Error("workspace.changed_after_review");
         const currentWorkspace = await assertServerWorkspaceMatchesOpenFolder(currentStatus.workspace.rootPath);
         assertSameWorkspacePhysicalBinding(reviewedWorkspace, currentWorkspace);
         return applyReviewedWorkspacePatch(activeClient, boundStatus.workspace.id, currentStatus.workspace.rootPath, reviewedWorkspace, plan);
       }, {
-        message: `Apply ${plan.operations.length} reviewed file operation(s) to this workspace?`,
-        detail: `${patchPlanSummary(plan)}\n\nThe server will verify all content hashes, stage the workspace, run ${DEFAULT_PATCH_VALIDATION_POLICY_ID}, require a second capability authorization, and commit only after validation passes. This trusted-host policy is not an OS sandbox; use it only for repository code you trust to run with the server process's authority.`
+        message: `patch.transaction.apply operations=${plan.operations.length}`,
+        detail: `${patchPlanSummary(plan)}\n\nvalidation=${DEFAULT_PATCH_VALIDATION_POLICY_ID}\ncapability_authorization=required\ncommit=after_validation\nhost=trusted_not_sandboxed`
       });
       if (applied && typeof applied === "object" && "receipt" in applied) {
         showAppliedReceipt(applied);
@@ -512,14 +512,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("scce.settings.open", () => vscode.commands.executeCommand("workbench.action.openSettings", "scce")),
     vscode.commands.registerCommand("scce.settings.push", async () => {
       const surface = readSurfaceSettings();
-      if (surface.problems.length) { void vscode.window.showErrorMessage(`SCCE settings not pushed: ${surface.problems.join("; ")}`); return; }
+      if (surface.problems.length) { void vscode.window.showErrorMessage(`scce.settings.rejected ${surface.problems.join("; ")}`); return; }
       try {
         const activeClient = await client();
         for (const [key, value] of Object.entries(surface.values)) await activeClient.putSetting(key, value);
-        output.appendLine(`[settings] pushed ${Object.keys(surface.values).length} settings to the server config (restart the server to apply)`);
-        void vscode.window.showInformationMessage("SCCE: settings pushed to the server config. Restart the SCCE server to apply.");
+        output.appendLine(`[settings] scce.settings.pushed count=${Object.keys(surface.values).length}`);
+        void vscode.window.showInformationMessage("scce.settings.pushed");
       } catch (error) {
-        void vscode.window.showErrorMessage(`SCCE settings push failed: ${error instanceof Error ? error.message : String(error)}`);
+        void vscode.window.showErrorMessage(`scce.settings.push_failed ${error instanceof Error ? error.message : String(error)}`);
       }
     }),
     vscode.commands.registerCommand("scce.models.manage", async () => {
@@ -528,23 +528,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         const view = await activeClient.listModels();
         const items: vscode.QuickPickItem[] = [
           ...view.models.map(model => ({ label: `${model.active ? "$(check) " : ""}${model.id}`, description: `${model.size}, ${model.files} files`, detail: model.path })),
-          { label: "$(cloud-download) Download a model…", description: "explicit network access, into the local model directory" }
+          { label: "$(cloud-download) Download a model…", description: "scce.models.download" }
         ];
-        const picked = await vscode.window.showQuickPick(items, { title: `SCCE local models (${view.modelDir})` });
+        const picked = await vscode.window.showQuickPick(items, { title: `scce.models ${view.modelDir}` });
         if (!picked) return;
         if (picked.label.startsWith("$(cloud-download)")) {
-          const modelId = await vscode.window.showInputBox({ prompt: "Model id (org/name), e.g. Xenova/clip-vit-base-patch32" });
+          const modelId = await vscode.window.showInputBox({ prompt: "scce.models.id" });
           if (!modelId) return;
           await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `SCCE: downloading ${modelId}` }, () => activeClient.downloadModel(modelId));
           void vscode.window.showInformationMessage(`SCCE: downloaded ${modelId}`);
           return;
         }
         const modelId = picked.label.replace(/^\$\(check\) /u, "");
-        const action = await vscode.window.showQuickPick(["Use for visual embeddings", "Remove"], { title: modelId });
+        const action = await vscode.window.showQuickPick(["scce.models.use_visual", "Remove"], { title: modelId });
         if (action === "Remove") { await activeClient.removeModel(modelId); void vscode.window.showInformationMessage(`SCCE: removed ${modelId}`); }
-        else if (action === "Use for visual embeddings") { await activeClient.putSetting("ingestion.visual.embeddings.modelId", modelId); await activeClient.putSetting("ingestion.visual.embeddings.modelDir", view.modelDir); }
+        else if (action === "scce.models.use_visual") { await activeClient.putSetting("ingestion.visual.embeddings.modelId", modelId); await activeClient.putSetting("ingestion.visual.embeddings.modelDir", view.modelDir); }
       } catch (error) {
-        void vscode.window.showErrorMessage(`SCCE models: ${error instanceof Error ? error.message : String(error)}`);
+        void vscode.window.showErrorMessage(`scce.models.failed ${error instanceof Error ? error.message : String(error)}`);
       }
     }),
     vscode.commands.registerCommand("scce.tasks.clear", async () => {
@@ -574,7 +574,7 @@ function readSurfaceSettings(): { values: Record<string, string | boolean>; prob
 async function autoIngestOpenWorkspace(client: () => Promise<ScceClient>, output: vscode.OutputChannel): Promise<void> {
   const settings = vscode.workspace.getConfiguration("scce");
   for (const key of ["observation.screen", "observation.otherApplications"]) {
-    if (settings.get<boolean>(key, false)) output.appendLine(`[observation] opt-in source active: scce.${key} (no observer is installed yet; this toggle is the consent record)`);
+    if (settings.get<boolean>(key, false)) output.appendLine(`[observation] scce.observation.consent_recorded scce.${key}`);
   }
   if (!settings.get<boolean>("workspace.autoIngest", true)) return;
   const folder = vscode.workspace.workspaceFolders?.[0];
@@ -583,7 +583,7 @@ async function autoIngestOpenWorkspace(client: () => Promise<ScceClient>, output
     const result = await (await client()).workspaceIngest(folder.uri.fsPath);
     output.appendLine(`[workspace] auto-ingested ${folder.uri.fsPath}: ${JSON.stringify(result).slice(0, 200)}`);
   } catch (error) {
-    output.appendLine(`[workspace] auto-ingest skipped: ${error instanceof Error ? error.message : String(error)}`);
+    output.appendLine(`[workspace] workspace.auto_ingest.skipped ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
@@ -604,15 +604,15 @@ function configuredTimeout(): number {
 async function chooseLocalWorkspacePathForInitialization(): Promise<string | undefined> {
   const folders = (vscode.workspace.workspaceFolders ?? []).filter(folder => folder.uri.scheme === "file");
   if (folders.length === 0) {
-    void vscode.window.showErrorMessage("SCCE initialization requires an open local file-system workspace folder.");
+    void vscode.window.showErrorMessage("workspace.initialize.needs_local_folder");
     return undefined;
   }
   if (folders.length === 1) return folders[0]!.uri.fsPath;
   const selected = await vscode.window.showQuickPick(
     folders.map(folder => ({ label: folder.name, description: folder.uri.fsPath, folder })),
     {
-      title: "Select the local workspace folder to initialize",
-      placeHolder: "SCCE will initialize only the explicitly selected folder",
+      title: "workspace.initialize.folder",
+      placeHolder: "workspace.initialize.folder",
       ignoreFocusOut: true
     }
   );
@@ -633,7 +633,7 @@ class ScceQuickFixProvider implements vscode.CodeActionProvider {
       if (code === undefined) continue;
       const action = new vscode.CodeAction(`SCCE: Fix "${diagnostic.message}"`, vscode.CodeActionKind.QuickFix);
       action.diagnostics = [diagnostic];
-      action.command = { command: "scce.quickFix", title: "Fix with SCCE", arguments: [document.uri, diagnostic] };
+      action.command = { command: "scce.quickFix", title: "workspace.quick_fix", arguments: [document.uri, diagnostic] };
       actions.push(action);
     }
     return actions;
@@ -685,22 +685,22 @@ function formatOutput(value: unknown): string {
 
 async function chooseReviewedPatchPlan(): Promise<ReviewedPatchPlan | undefined> {
   const selected = await vscode.window.showOpenDialog({
-    title: "Select a reviewed SCCE patch transaction plan",
+    title: "patch.transaction.select",
     canSelectFiles: true,
     canSelectFolders: false,
     canSelectMany: false,
-    filters: { "SCCE patch plan": ["json"] },
+    filters: { "patch.transaction.plan": ["json"] },
     openLabel: "Review plan"
   });
   const uri = selected?.[0];
   if (!uri) return undefined;
   const bytes = await vscode.workspace.fs.readFile(uri);
-  if (bytes.byteLength > MAX_PATCH_PLAN_BYTES) throw new Error("patch plan exceeds the 8 MiB extension limit");
+  if (bytes.byteLength > MAX_PATCH_PLAN_BYTES) throw new Error("patch.transaction.plan.over_8mib");
   let value: unknown;
   try {
     value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
   } catch (error) {
-    throw new Error(`patch plan is not valid UTF-8 JSON: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`patch.transaction.plan.not_utf8_json ${error instanceof Error ? error.message : String(error)}`);
   }
   return parseReviewedPatchPlan(value);
 }
@@ -711,8 +711,8 @@ function patchPlanSummary(plan: ReviewedPatchPlan): string {
     const after = operation.afterContentHash?.slice(7, 19) ?? "deleted";
     return `${operation.kind} ${operation.path} ${before} -> ${after}`;
   });
-  if (plan.operations.length > rows.length) rows.push(`...and ${plan.operations.length - rows.length} more operation(s)`);
-  return [`Plan ${plan.planHash}`, reviewedPatchIntegritySummary(plan), ...rows].join("\n");
+  if (plan.operations.length > rows.length) rows.push(`more_operations=${plan.operations.length - rows.length}`);
+  return [`plan=${plan.planHash}`, reviewedPatchIntegritySummary(plan), ...rows].join("\n");
 }
 
 interface BoundOpenWorkspace extends WorkspacePhysicalBinding {
@@ -739,7 +739,7 @@ async function assertServerWorkspaceMatchesOpenFolder(serverRootPath: string): P
   const selected = selectServerBoundWorkspaceFolder(resolvedServerRoot, serverPhysical.realRoot, candidates);
   const physical = await captureWorkspacePhysicalBinding(selected.resolvedRoot);
   if (!sameFileSystemPath(physical.realRoot, selected.realRoot)) {
-    throw new Error("the selected workspace folder changed while its physical identity was captured");
+    throw new Error("workspace.folder.changed_during_capture");
   }
   await assertWorkspacePhysicalBinding(serverPhysical);
   assertSameWorkspacePhysicalBinding(serverPhysical, physical);
@@ -760,23 +760,23 @@ async function openPatchPlanPreview(
       await assertWorkspacePathAbsent(workspace, operation.path, "preview");
     } else {
       const bytes = await readVerifiedWorkspaceFile(workspace, operation.path, operation.beforeContentHash, "preview");
-      if (bytes.includes(0)) throw new Error(`patch preview supports UTF-8 text only: ${operation.path}`);
+      if (bytes.includes(0)) throw new Error(`patch.preview.not_utf8 ${operation.path}`);
       try {
         beforeContent = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
       } catch {
-        throw new Error(`patch preview could not decode ${operation.path} as exact UTF-8 text`);
+        throw new Error(`patch.preview.not_exact_utf8 ${operation.path}`);
       }
       contentBytes += bytes.byteLength;
     }
     const afterContent = operation.kind === "delete" ? null : operation.content;
     if (afterContent !== null) contentBytes += Buffer.byteLength(afterContent, "utf8");
-    if (contentBytes > MAX_PATCH_PREVIEW_BYTES) throw new Error("combined patch preview exceeds the 16 MiB extension limit");
+    if (contentBytes > MAX_PATCH_PREVIEW_BYTES) throw new Error("patch.preview.over_16mib");
     entries.push({ operation, beforeContent, afterContent });
   }
   const before = combinedPatchPreview(entries, "before");
   const after = combinedPatchPreview(entries, "after");
   if (Buffer.byteLength(before, "utf8") + Buffer.byteLength(after, "utf8") > MAX_PATCH_PREVIEW_BYTES) {
-    throw new Error("combined patch preview exceeds the 16 MiB extension limit after review metadata");
+    throw new Error("patch.preview.over_16mib_with_metadata");
   }
   const planId = plan.planHash.slice(7, 23);
   const beforeUri = vscode.Uri.from({ scheme: PATCH_PREVIEW_SCHEME, authority: "review", path: `/${planId}/before.txt` });
@@ -787,7 +787,7 @@ async function openPatchPlanPreview(
     "vscode.diff",
     beforeUri,
     afterUri,
-    `SCCE patch preview (${plan.operations.length} operation${plan.operations.length === 1 ? "" : "s"})`,
+    `patch.preview operations=${plan.operations.length}`,
     { preview: false }
   );
   await assertWorkspacePhysicalBinding(workspace);
@@ -798,7 +798,7 @@ function combinedPatchPreview(entries: readonly PatchPreviewEntry[], side: "befo
   return entries.map((entry, index) => {
     const content = side === "before" ? entry.beforeContent : entry.afterContent;
     const hash = side === "before" ? entry.operation.beforeContentHash : entry.operation.afterContentHash;
-    const absentState = side === "before" ? "[file absent before create]" : "[file deleted by plan]";
+    const absentState = side === "before" ? "[patch.file.absent_before_create]" : "[patch.file.deleted_by_plan]";
     return [
       `===== operation ${index + 1}/${entries.length}: ${entry.operation.kind} ${entry.operation.path} =====`,
       `${side} content hash: ${hash ?? "null"}`,
@@ -822,30 +822,30 @@ async function applyReviewedWorkspacePatch(
   if ("pendingApproval" in attempt) {
     const pending = attempt.pendingApproval;
     const confirmed = await vscode.window.showWarningMessage(
-      `Authorize server plan ${pending.planId}?`,
+      `capability.authorize ${pending.planId}`,
       {
         modal: true,
-        detail: `Capability: ${pending.capabilityId}\nPatch: ${plan.planHash}\nValidation: ${DEFAULT_PATCH_VALIDATION_POLICY_ID}\nThe exact request will be retried once after authorization.`
+        detail: `capability=${pending.capabilityId}\npatch=${plan.planHash}\nvalidation=${DEFAULT_PATCH_VALIDATION_POLICY_ID}\nretry=once_after_authorization`
       },
-      "Authorize and apply"
+      "authorize.and_apply"
     );
-    if (confirmed !== "Authorize and apply") throw new Error("server patch authorization was cancelled");
+    if (confirmed !== "authorize.and_apply") throw new Error("capability.authorize.cancelled");
     await assertReviewedWorkspaceStillBound(workspaceRootPath, reviewedWorkspace);
     await verifyReviewedWorkspaceState(reviewedWorkspace, plan);
     const approval = await activeClient.approveWorkspacePatch(pending.planId);
-    if (approval.approved.planId !== pending.planId) throw new Error("server approved a different patch plan");
+    if (approval.approved.planId !== pending.planId) throw new Error("capability.authorize.plan_mismatch");
     await assertReviewedWorkspaceStillBound(workspaceRootPath, reviewedWorkspace);
     await verifyReviewedWorkspaceState(reviewedWorkspace, plan);
     attempt = await activeClient.workspacePatch(workspaceId, plan);
   }
-  if ("pendingApproval" in attempt) throw new Error("server still requires approval after the exact approved request was retried");
+  if ("pendingApproval" in attempt) throw new Error("capability.authorize.still_required");
   if (
     attempt.workspaceId !== workspaceId
     || attempt.validationPolicyId !== DEFAULT_PATCH_VALIDATION_POLICY_ID
     || attempt.receipt.validation.validatorId !== DEFAULT_PATCH_VALIDATION_POLICY_ID
     || attempt.receipt.planHash !== plan.planHash
   ) {
-    throw new Error("patch receipt does not match the reviewed request");
+    throw new Error("patch.receipt.mismatch");
   }
   const applied = verifyAppliedPatchMatchesPlan(attempt, plan);
   await assertReviewedWorkspaceStillBound(workspaceRootPath, reviewedWorkspace);
@@ -862,11 +862,11 @@ async function assertReviewedWorkspaceStillBound(serverRootPath: string, reviewe
 function codingPlanReviewSummary(generation: WorkspaceCodingPatchPlanSelected): string {
   return [
     patchPlanSummary(generation.plan),
-    `Request: ${generation.requestId}`,
-    `Requested paths: ${generation.requestedPaths.join(", ")}`,
-    `Compiler diagnostic selector: TS${generation.diagnosticCode}`,
-    `Compiler candidate: ${generation.selection.candidateId}`,
-    "Execution state: not_executed"
+    `request=${generation.requestId}`,
+    `requested_paths=${generation.requestedPaths.join(",")}`,
+    `workspace.diagnostic TS${generation.diagnosticCode}`,
+    `compiler_candidate=${generation.selection.candidateId}`,
+    "execution_state=not_executed"
   ].join("\n");
 }
 
@@ -890,7 +890,7 @@ async function chooseTypeScriptDiagnosticCodes(
     }
   }
   if (observed.size === 0) {
-    void vscode.window.showInformationMessage("No current positive-integer TypeScript diagnostics were found in the selected files.");
+    void vscode.window.showInformationMessage("workspace.diagnostics.none");
     return undefined;
   }
   const items: TypeScriptDiagnosticPick[] = [...observed].sort((left, right) => left[0] - right[0]).map(([code, entries]) => ({
@@ -904,8 +904,8 @@ async function chooseTypeScriptDiagnosticCodes(
     }).join(" | ")
   }));
   const selected = await vscode.window.showQuickPick(items, {
-    title: "Select TypeScript compiler diagnostics",
-    placeHolder: "Only the selected numeric codes may choose a server-observed compiler action",
+    title: "workspace.diagnostics.select",
+    placeHolder: "workspace.diagnostics.select",
     canPickMany: true,
     ignoreFocusOut: true,
     matchOnDescription: true,
@@ -914,11 +914,11 @@ async function chooseTypeScriptDiagnosticCodes(
   if (!selected) return undefined;
   const codes = selected.map(item => item.code).sort((left, right) => left - right);
   if (codes.length === 0) {
-    void vscode.window.showInformationMessage("Select at least one TypeScript diagnostic code.");
+    void vscode.window.showInformationMessage("workspace.diagnostics.empty");
     return undefined;
   }
   if (codes.length > 128) {
-    void vscode.window.showErrorMessage("SCCE coding requests are limited to 128 diagnostic codes.");
+    void vscode.window.showErrorMessage("workspace.diagnostics.over_128");
     return undefined;
   }
   return codes;
@@ -935,5 +935,5 @@ function numericTypeScriptDiagnosticCode(diagnostic: vscode.Diagnostic): number 
 }
 
 function showAppliedReceipt(applied: AppliedWorkspacePatch): void {
-  void vscode.window.showInformationMessage(`SCCE applied ${applied.receipt.mutations.length} operation(s). Receipt ${applied.receipt.receiptHash.slice(0, 23)}...`);
+  void vscode.window.showInformationMessage(`patch.transaction.applied operations=${applied.receipt.mutations.length} receipt=${applied.receipt.receiptHash.slice(0, 23)}`);
 }

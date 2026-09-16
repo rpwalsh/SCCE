@@ -31,7 +31,8 @@ function proseLiteralsIn(source: string): string[] {
     const trimmed = line.trim();
     if (trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith("/*")) return;
     for (const match of line.matchAll(/(["'`])((?:\\.|(?!\1)[^\\])*)\1/g)) {
-      const value = match[2] ?? "";
+      // A ${...} span is an expression, not text a person reads; its own literals are matched separately.
+      const value = (match[2] ?? "").replace(/\$\{[^}]*\}/g, " ");
       if ((value.match(/[A-Za-z]{2,}/g) ?? []).length < 3) continue;
       if (!/[A-Za-z]{2,}\s+[A-Za-z]{2,}\s+[A-Za-z]{2,}/.test(value)) continue;
       hits.push(`${index + 1}: ${value.slice(0, 120)}`);
