@@ -51,6 +51,19 @@ export function corpusFamilyForSourceSystem(sourceSystem: string): string {
   return sourceSystem;
 }
 
+/**
+ * The corpus families a corpus role's registered source systems belong to, so a turn speaking in one role can read
+ * the closed class that role's own documents taught rather than the identity's seed family's.
+ */
+export function corpusFamiliesForRole(
+  registry: readonly { sourceSystem: string; corpusRoleId: string }[],
+  roleId: string
+): string[] {
+  return [...new Set(registry
+    .filter(entry => String(entry.corpusRoleId) === String(roleId))
+    .map(entry => corpusFamilyForSourceSystem(entry.sourceSystem)))];
+}
+
 function signatureFromRow(row: LanguageProfileSignatureRow): LanguageProfileSignature {
   return {
     id: row.id,

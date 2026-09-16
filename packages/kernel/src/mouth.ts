@@ -680,8 +680,7 @@ function surfaceContractMaterial(input: SpeakInput): SurfaceContractMaterial {
     evidenceTexts: input.evidence.map(span => ({ id: String(span.id), text: String(span.text ?? span.textPreview ?? "") })),
     claimBases: input.claimBases ?? input.selectedProposal?.claims ?? [],
     slotValues: slots.map(slot => ({ id: String(slot), text: String(slot) })),
-    models: input.languageMemory?.models ?? [],
-    ...(input.languageMemory?.continuationPopulation ? { continuationPopulation: input.languageMemory.continuationPopulation } : {}),
+    ...(input.languageMemory?.closedClass ? { closedClass: input.languageMemory.closedClass } : {}),
     ...(intendedText ? { intendedText } : {})
   };
 }
@@ -4943,8 +4942,7 @@ function conversationTurnContentSpan(
     evidenceTexts: [],
     conversationTurns: [turn],
     claimBases: [],
-    models: input.languageMemory.models,
-    ...(input.languageMemory.continuationPopulation ? { continuationPopulation: input.languageMemory.continuationPopulation } : {})
+    ...(input.languageMemory.closedClass ? { closedClass: input.languageMemory.closedClass } : {})
   });
   const meaningful = inventory.units.filter(unit => unit.externallyMeaningful);
   const first = meaningful[0];
@@ -7832,9 +7830,8 @@ function speakCommitmentInventory(
     evidenceTexts: input.evidence.map(span => ({ id: String(span.id), text: `${span.text} ${span.textPreview}` })),
     conversationTurns: speakConversationTurns(input),
     claimBases: input.claimBases ?? [],
-    models: input.languageMemory.models,
     ...(constructionFormLiterals?.length ? { constructionFormLiterals } : {}),
-    ...(input.languageMemory.continuationPopulation ? { continuationPopulation: input.languageMemory.continuationPopulation } : {})
+    ...(input.languageMemory.closedClass ? { closedClass: input.languageMemory.closedClass } : {})
   });
 }
 

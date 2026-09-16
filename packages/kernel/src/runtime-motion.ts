@@ -5,10 +5,8 @@ import { candidateCommitmentInventory, candidateCommitmentsLicensed } from "./ca
 import { candidateCompatibleWithAuthority } from "./request-authority.js";
 import { type DialogueState } from "./dialogue-pragmatics.js";
 import { jsonRecord, kernelNumber, kernelString, kernelStringArray, namedSubjectAnchors, normalizePriorKey, uniqueKernelStrings } from "./kernel-answer-primitives.js";
-import type { KneserNeyModel } from "./kneser-ney.js";
 import type { ConversationTurnSurface } from "./language-construction.js";
 import type { LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
-import type { LanguageContinuationPopulation } from "./storage.js";
 import { cognitiveTopicForRequest } from "./learned-graph-prior-runtime.js";
 import { type InventionConstruct } from "./prediction.js";
 import { anchorSymbolUnits, redactSecrets, toJsonValue } from "./primitives.js";
@@ -462,8 +460,7 @@ export function runtimeMotionCandidateField(input: {
   /** Prior turns of this conversation, admitted evidence and the resident language: the surface's licence sources. */
   conversationTurns?: readonly ConversationTurnSurface[];
   evidenceTexts?: readonly { id: string; text: string }[];
-  models?: readonly KneserNeyModel[];
-  continuationPopulation?: LanguageContinuationPopulation;
+  closedClass?: readonly string[];
   hasher: { digestHex(input: string | Uint8Array): string };
 }): CandidateField {
   if (input.inventionCandidate?.kind === "creative-candidate" && input.inventionCandidate.force === "invented" && input.inventionCandidate.evidenceIds.length === 0) {
@@ -525,8 +522,7 @@ export function runtimeMotionCandidateField(input: {
       requestTurnId: `turn.request:${input.motion.queryHash}`,
       ...(input.conversationTurns ? { conversationTurns: input.conversationTurns } : {}),
       ...(input.evidenceTexts ? { evidenceTexts: input.evidenceTexts } : {}),
-      ...(input.models ? { models: input.models } : {}),
-      ...(input.continuationPopulation ? { continuationPopulation: input.continuationPopulation } : {})
+      ...(input.closedClass ? { closedClass: input.closedClass } : {})
     }
   );
   const answer = focus.surface;
@@ -635,8 +631,8 @@ export interface RuntimeMotionLicensingMaterial {
   requestTurnId: string;
   conversationTurns?: readonly ConversationTurnSurface[];
   evidenceTexts?: readonly { id: string; text: string }[];
-  models?: readonly KneserNeyModel[];
-  continuationPopulation?: LanguageContinuationPopulation;
+  /** The learned closed class of the language and corpus role this turn speaks in. */
+  closedClass?: readonly string[];
 }
 
 export interface RuntimeMotionSurfaceLicenceAudit extends Record<string, JsonValue> {
@@ -722,8 +718,7 @@ function licensedComponents(
       conversationTurns,
       claimBases: [],
       slotValues,
-      ...(licensing.models ? { models: licensing.models } : {}),
-      ...(licensing.continuationPopulation ? { continuationPopulation: licensing.continuationPopulation } : {})
+      ...(licensing.closedClass ? { closedClass: licensing.closedClass } : {})
     });
     for (const id of inventory.authorityIds) authorityIds.add(id);
     if (candidateCommitmentsLicensed(inventory)) {

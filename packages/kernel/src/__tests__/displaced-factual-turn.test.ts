@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { candidateCommitmentInventory, candidateCommitmentsLicensed } from "../candidate-commitment-inventory.js";
 import { trainKneserNey } from "../kneser-ney.js";
-import { DIALOGUE_POPULATION, conversationalSession } from "./conversational-session-fixture.js";
+import { DIALOGUE_CLOSED_CLASS, DIALOGUE_POPULATION, conversationalSession } from "./conversational-session-fixture.js";
 
 const TRAINED = trainKneserNey(DIALOGUE_POPULATION, { order: 3 });
 
@@ -52,7 +52,7 @@ describe("an evidence-less factual question deep in a conversation asserts nothi
       evidenceTexts: [],
       conversationTurns,
       claimBases: [],
-      models: [TRAINED]
+      closedClass: DIALOGUE_CLOSED_CLASS
     });
     expect(inventory.unlicensedUnits.map(unit => unit.surface)).toEqual([]);
     expect(candidateCommitmentsLicensed(inventory)).toBe(true);

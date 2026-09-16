@@ -6,10 +6,8 @@ import {
   candidateMayAssertAsKnown
 } from "./candidate-commitment-inventory.js";
 import type { PlannedClaim } from "./cognitive-planner.js";
-import type { KneserNeyModel } from "./kneser-ney.js";
 import type { ConversationTurnSurface } from "./language-construction.js";
 import { factualRoundTripGate } from "./semantic-round-trip.js";
-import type { LanguageContinuationPopulation } from "./storage.js";
 import { toJsonValue } from "./primitives.js";
 import type { JsonValue } from "./types.js";
 
@@ -49,8 +47,8 @@ export interface SurfaceContractMaterial {
   claimBases?: readonly PlannedClaim[];
   slotValues?: readonly { id: string; text: string }[];
   constructionFormLiterals?: readonly { id: string; text: string }[];
-  models?: readonly KneserNeyModel[];
-  continuationPopulation?: LanguageContinuationPopulation;
+  /** The learned closed class of the language and corpus role this turn speaks in. */
+  closedClass?: readonly string[];
   /** The meaning this turn selected, as text. Absent means the strategy constructed no intended semantics. */
   intendedText?: string;
 }
@@ -92,8 +90,7 @@ export function evaluateSurfaceContract(input: {
     claimBases: material.claimBases ?? [],
     ...(material.slotValues ? { slotValues: material.slotValues } : {}),
     ...(material.constructionFormLiterals ? { constructionFormLiterals: material.constructionFormLiterals } : {}),
-    ...(material.models ? { models: material.models } : {}),
-    ...(material.continuationPopulation ? { continuationPopulation: material.continuationPopulation } : {})
+    ...(material.closedClass ? { closedClass: material.closedClass } : {})
   });
   const licensed = candidateCommitmentsLicensed(inventory);
   const intendedText = (material.intendedText ?? "").trim();
@@ -116,8 +113,8 @@ export function evaluateSurfaceContract(input: {
     meaning: { intendedSemanticsPresent: Boolean(intendedText) },
     commitments: {
       decides: input.commitmentsDecide,
-      // Measured live as false on every turn: without it the inventory calls every word content, so `licensed`
-      // below is a verdict about a language the turn could not tell form from content in.
+      // False means the turn held no learned closed class, so `licensed` below is a verdict about a language it
+      // could not tell form from content in.
       closedClassMeasured: inventory.closedClassMeasured,
       licensed,
       unlicensedUnits: inventory.unlicensedUnits.map(unit => unit.surface).slice(0, 24),

@@ -21,7 +21,7 @@ import type { DurableLanguageConstructionBundle } from "../language-construction
 import type { RequestCommunicativeActClassification } from "../request-communicative-act.js";
 import { DIALOGUE_ACT_IDS } from "../dialogue-pragmatics.js";
 import { trainKneserNey } from "../kneser-ney.js";
-import { DIALOGUE_POPULATION } from "./conversational-session-fixture.js";
+import { DIALOGUE_CLOSED_CLASS, DIALOGUE_POPULATION } from "./conversational-session-fixture.js";
 import type { ConstructGraph, EvidenceSpan, FieldState, LanguageProfile } from "../types.js";
 
 const clock = createClock({ fixedTime: 5000, stepMs: 1 });
@@ -208,7 +208,7 @@ async function speakWith(
       conversationTurns: turns,
       ...(options.requestedAuthority ? { requestedAuthority: options.requestedAuthority } : {}),
       ...(act ? { requestCommunicativeAct: act } : {}),
-      languageMemory: { ...state, models: [TRAINED], importedConstructionBundles: scopedBundles() }
+      languageMemory: { ...state, models: [TRAINED], closedClass: DIALOGUE_CLOSED_CLASS, importedConstructionBundles: scopedBundles() }
     });
     const trace = readFileSync(traceFile, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line) as TraceRow);
     return { text: spoken.text, trace };
@@ -245,7 +245,7 @@ describe("the conversation-bound lane is reachable from a production speak", () 
       evidenceTexts: [],
       conversationTurns: TURNS,
       claimBases: [],
-      models: [TRAINED]
+      closedClass: DIALOGUE_CLOSED_CLASS
     });
     expect(inventory.unlicensedUnits.map(unit => unit.surface)).toEqual([]);
     expect(candidateCommitmentsLicensed(inventory)).toBe(true);
@@ -271,7 +271,7 @@ describe("the conversation-bound lane is reachable from a production speak", () 
       evidenceTexts: [{ id: irrelevant.id, text: irrelevant.text }],
       conversationTurns: [{ turnId: "turn.01", turnIndex: 0, surface: REQUEST }],
       claimBases: [],
-      models: [TRAINED]
+      closedClass: DIALOGUE_CLOSED_CLASS
     });
     expect(chattyInventory.unlicensedUnits.map(unit => unit.surface)).toEqual([]);
     expect(candidateCommitmentsLicensed(chattyInventory)).toBe(true);
@@ -288,7 +288,7 @@ describe("the conversation-bound lane is reachable from a production speak", () 
         evidenceTexts: [{ id: relevant.id, text: relevant.text }],
         conversationTurns: [{ turnId: "turn.01", turnIndex: 0, surface: REQUEST }],
         claimBases: [],
-        models: [TRAINED]
+        closedClass: DIALOGUE_CLOSED_CLASS
       });
       expect(groundedInventory.unlicensedUnits.map(unit => unit.surface)).toEqual([]);
       expect(groundedInventory.authorityClassId).not.toBe("authority.grounded_factual");
@@ -307,7 +307,7 @@ describe("the conversation-bound lane is reachable from a production speak", () 
         evidenceTexts: [{ id: irrelevant.id, text: irrelevant.text }],
         conversationTurns: factualTurns,
         claimBases: [],
-        models: [TRAINED]
+        closedClass: DIALOGUE_CLOSED_CLASS
       });
       expect(factualInventory.unlicensedUnits.map(unit => unit.surface)).toEqual([]);
       expect(factualInventory.authorityClassId).not.toBe("authority.grounded_factual");
@@ -332,7 +332,7 @@ describe("the conversation-bound lane is reachable from a production speak", () 
       evidenceTexts: [],
       conversationTurns: TURNS,
       claimBases: [],
-      models: [TRAINED]
+      closedClass: DIALOGUE_CLOSED_CLASS
     });
     expect(inventory.unlicensedUnits.map(unit => unit.surface)).toEqual([]);
     expect(inventory.authorityClassId).not.toBe("authority.grounded_factual");

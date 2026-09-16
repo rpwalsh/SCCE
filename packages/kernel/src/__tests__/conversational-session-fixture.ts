@@ -86,6 +86,10 @@ export const DIALOGUE_POPULATION = [
   "the currency of Denmark is the krone"
 ].join(" . ");
 
+/** The dialogue population's own closed class, exactly as the identity record this fixture persists names it. */
+export const DIALOGUE_CLOSED_CLASS: readonly string[] =
+  [...deriveClosedClassWords({ models: [trainKneserNey(DIALOGUE_POPULATION, { order: 3 })] })];
+
 export type TraceRow = { stage: string; counts?: Record<string, number>; support?: Record<string, unknown> };
 
 /** A live session with no admitted documentary evidence at all. Every turn goes through the production runtime. */

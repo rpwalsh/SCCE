@@ -107,6 +107,8 @@ export interface LanguageMemoryRuntimeState {
   importedLanguagePriorCount: number;
   competenceVector: LanguageCompetenceVector;
   scope: LanguageMemoryRuntimeScope;
+  /** The learned closed class of the identity and corpus family this memory speaks, set by the turn that scoped it. */
+  closedClass?: readonly string[];
   audit: JsonValue;
 }
 

@@ -21,7 +21,7 @@ import { DIALOGUE_ACT_IDS } from "../dialogue-pragmatics.js";
 import { trainKneserNey } from "../kneser-ney.js";
 import { candidateCommitmentInventory } from "../candidate-commitment-inventory.js";
 import { surfaceWords } from "../surface-linguistics.js";
-import { DIALOGUE_POPULATION } from "./conversational-session-fixture.js";
+import { DIALOGUE_CLOSED_CLASS, DIALOGUE_POPULATION } from "./conversational-session-fixture.js";
 import { TRANSCRIPT_CORPUS, transcriptEvidence } from "./dialogue-transcript-corpus-fixture.js";
 import type { ConstructGraph, FieldState, LanguageProfile } from "../types.js";
 
@@ -138,7 +138,7 @@ async function speak(requestText: string): Promise<{ text: string; row: TraceRow
       requestText,
       conversationTurns: turns,
       requestCommunicativeAct: classification,
-      languageMemory: { ...state, models: [TRAINED], importedConstructionBundles: induced.bundles }
+      languageMemory: { ...state, models: [TRAINED], closedClass: DIALOGUE_CLOSED_CLASS, importedConstructionBundles: induced.bundles }
     });
     const trace = readFileSync(traceFile, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line) as TraceRow);
     return { text: spoken.text, row: [...trace].reverse().find(item => item.stage === "mouth.conversational_act_binding.candidate") };
@@ -161,7 +161,7 @@ describe("a one-slot conversational frame fills its slot with something its own 
         evidenceTexts: [],
         conversationTurns: [{ turnId: "turn.01", turnIndex: 0, surface: requestText }],
         claimBases: [],
-        models: [TRAINED]
+        closedClass: DIALOGUE_CLOSED_CLASS
       });
       const meaningful = requested.units.filter(unit => unit.externallyMeaningful).map(unit => unit.surface);
       const form = requested.units.filter(unit => !unit.externallyMeaningful).map(unit => unit.surface);

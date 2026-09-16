@@ -1,17 +1,13 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { calibrated } from "./calibrations/prod-calibrations.js";
 import { claimBasisIsAdmissible, type PlannedClaim } from "./cognitive-planner.js";
-import { deriveClosedClassWords } from "./closed-class-words.js";
 import {
   SURFACE_AUTHORITY_CLASS_IDS,
   authorityClassMayAssertAsKnown,
   surfaceAuthorityClass,
   type SurfaceAuthorityClassId
 } from "./conversational-act-binding.js";
-import type { KneserNeyModel } from "./kneser-ney.js";
 import type { ConversationTurnSurface } from "./language-construction.js";
-import type { LanguageContinuationPopulation } from "./storage.js";
 import { surfaceWords } from "./surface-linguistics.js";
 
 /**
@@ -73,9 +69,11 @@ export interface CandidateCommitmentInventoryInput {
   slotValues?: readonly { id: string; text: string }[];
   /** Frame literals of the construction being spoken, keyed by its corpus source-version ids. Form, not evidence. */
   constructionFormLiterals?: readonly { id: string; text: string }[];
-  /** The resident language the closed class is measured from. No word list. */
-  models?: readonly KneserNeyModel[];
-  continuationPopulation?: LanguageContinuationPopulation;
+  /**
+   * The learned closed class of the language and corpus role this turn speaks in, as words. Learned by document
+   * frequency in `language-identity`; no word list and no rank cut. Absent means no unit of this surface is form.
+   */
+  closedClass?: readonly string[];
 }
 
 /**
@@ -167,17 +165,16 @@ export function candidateMayAssertAsKnown(inventory: CandidateCommitmentInventor
 }
 
 /**
- * The resident language's closed class, or nothing when the language is too small to name one. A ranked cut of
- * a vocabulary shorter than the rank limit calls every content word a function word, which would excuse every
- * unit as form and admit anything: below that population the safe answer is that no unit is form.
+ * The closed class this surface is judged against: the one the corpus learned for the language and role being
+ * spoken. With no learned class the set is empty, which correctly says no unit is form -- the safe direction.
  */
 function measuredClosedClass(input: CandidateCommitmentInventoryInput): ReadonlySet<string> {
-  const limit = calibrated("closed_class.rank_limit");
-  const derived = deriveClosedClassWords({
-    models: input.models ?? [],
-    ...(input.continuationPopulation ? { continuationPopulation: input.continuationPopulation } : {})
-  });
-  return derived.size >= limit ? derived : new Set<string>();
+  const out = new Set<string>();
+  for (const word of input.closedClass ?? []) {
+    const key = word.trim().toLocaleLowerCase();
+    if (key) out.add(key);
+  }
+  return out;
 }
 
 function commitmentUnits(text: string): Array<Omit<CandidateCommitmentUnit, "externallyMeaningful" | "authorityId" | "licenceIds">> {

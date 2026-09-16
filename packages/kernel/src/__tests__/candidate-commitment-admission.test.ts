@@ -22,7 +22,7 @@ import { trainKneserNey } from "../kneser-ney.js";
 import type { ConstructGraph, FieldState, LanguageProfile, SemanticEntailmentResult } from "../types.js";
 import type { CandidateSurface } from "../candidate-contract.js";
 import type { NgramModelRecord } from "../storage.js";
-import { DIALOGUE_POPULATION } from "./conversational-session-fixture.js";
+import { DIALOGUE_CLOSED_CLASS, DIALOGUE_POPULATION } from "./conversational-session-fixture.js";
 
 const clock = createClock({ fixedTime: 7000, stepMs: 1 });
 const hasher = createHasher();
@@ -76,7 +76,7 @@ describe("a candidate is admitted by its own commitments, not by which producer 
       evidenceTexts: [],
       conversationTurns: CONVERSATION_TURNS,
       claimBases: [],
-      models: [TRAINED],
+      closedClass: DIALOGUE_CLOSED_CLASS,
       constructionFormLiterals: formLiterals
     });
     // Without the licence the same content-bearing frame word is an assertion on air: this is what refused the lane.
@@ -85,7 +85,7 @@ describe("a candidate is admitted by its own commitments, not by which producer 
       evidenceTexts: [],
       conversationTurns: CONVERSATION_TURNS,
       claimBases: [],
-      models: [TRAINED]
+      closedClass: DIALOGUE_CLOSED_CLASS
     });
     expect(candidateCommitmentsLicensed(unlicensed)).toBe(false);
     const framedWords = framed.units
@@ -110,7 +110,7 @@ describe("a candidate is admitted by its own commitments, not by which producer 
       evidenceTexts: [],
       conversationTurns: CONVERSATION_TURNS,
       claimBases: [],
-      models: [TRAINED],
+      closedClass: DIALOGUE_CLOSED_CLASS,
       constructionFormLiterals: formLiterals
     });
     expect(fabricated.unlicensedUnits.map(unit => unit.surface.toLocaleLowerCase())).toEqual(["tungsten", "denmark"]);
@@ -123,7 +123,7 @@ describe("a candidate is admitted by its own commitments, not by which producer 
       evidenceTexts: [{ id: "evidence.manual.1", text: "the pump feed reads high during startup" }],
       conversationTurns: CONVERSATION_TURNS,
       claimBases: [],
-      models: [TRAINED]
+      closedClass: DIALOGUE_CLOSED_CLASS
     });
     const pump = documented.units.find(unit => unit.surface.toLocaleLowerCase() === "pump");
     expect(pump?.authorityId).toBe(COMMITMENT_AUTHORITY_IDS.documentary);
@@ -166,7 +166,7 @@ describe("adversarial leakage: probable dialogue continuations never acquire fac
         evidenceTexts: [],
         conversationTurns: [{ turnId: "turn.request", turnIndex: 0, surface: observed.requestText }],
         claimBases: [],
-        models: [TRAINED]
+        closedClass: DIALOGUE_CLOSED_CLASS
       });
       expect(probed.unlicensedUnits.length).toBeGreaterThan(0);
       expect(candidateCommitmentsLicensed(probed)).toBe(false);
@@ -239,7 +239,7 @@ function inventory(text: string, options?: { requestText?: string }) {
     evidenceTexts: [],
     conversationTurns: turns,
     claimBases: [],
-    models: [TRAINED]
+    closedClass: DIALOGUE_CLOSED_CLASS
   });
 }
 

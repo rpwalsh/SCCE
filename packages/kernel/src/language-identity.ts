@@ -33,8 +33,8 @@ export interface LanguageIdentityRecord {
   directions: Array<{ direction: string; count: number }>;
   /** The learned function words of this language, by the share of member documents that carry them. */
   closedClass: Array<{ word: string; documentShare: number }>;
-  /** Corpus families whose documents belong to this identity, with counts. */
-  families: Array<{ family: string; count: number }>;
+  /** Corpus families whose documents belong to this identity, with counts and each family's own learned class. */
+  families: Array<{ family: string; count: number; closedClass?: Array<{ word: string; documentShare: number }> }>;
   profileCount: number;
   /** The document-level presence cut below which a document of this script is not this language. */
   membershipCut: number;
@@ -211,9 +211,12 @@ export function discoverLanguageIdentities(input: {
       const members = assigned.get(draft)!;
       if (!members.length) return;
       const familyCounts = new Map<string, number>();
+      const familyMembers = new Map<string, LanguageProfileSignature[]>();
       const directions = new Map<string, number>();
       for (const member of members) {
         familyCounts.set(member.family, (familyCounts.get(member.family) ?? 0) + 1);
+        const bucket = familyMembers.get(member.family);
+        if (bucket) bucket.push(member); else familyMembers.set(member.family, [member]);
         directions.set(member.direction, (directions.get(member.direction) ?? 0) + 1);
       }
       const signature = `${script}${draft.closedClass.slice(0, 16).map(row => row.word).join("")}`;
@@ -224,7 +227,12 @@ export function discoverLanguageIdentities(input: {
         script,
         directions: [...directions].map(([direction, count]) => ({ direction, count })).sort((a, b) => b.count - a.count),
         closedClass: draft.closedClass,
-        families: [...familyCounts].map(([family, count]) => ({ family, count })).sort((a, b) => b.count - a.count),
+        // A family that joined another family's identity keeps the class its own documents carry; it is what that corpus role speaks.
+        families: [...familyCounts].map(([family, count]) => {
+          const own = familyMembers.get(family) ?? [];
+          const closedClass = own.length >= MIN_FAMILY_DOCUMENTS ? majorityClosedClass(own) : [];
+          return closedClass.length ? { family, count, closedClass } : { family, count };
+        }).sort((a, b) => b.count - a.count),
         profileCount: members.length,
         membershipCut: membershipCuts[index] ?? 0,
         createdAt: input.now,
@@ -235,6 +243,21 @@ export function discoverLanguageIdentities(input: {
     auditBuckets.push({ script, documents: pool.length, families: families.length, identities: drafts.length, smallFamilies: smallFamilies.map(([family, documents]) => `${family}:${documents.length}`) });
   }
   return { identities, assignments, audit: { schema: LANGUAGE_IDENTITY_SCHEMA, buckets: auditBuckets } };
+}
+
+/**
+ * The closed class of the corpus family a turn is speaking in, falling back to the identity's own.
+ *
+ * One family's class, never a union of several: the owner's source files make "walsh" and "copyright" function words
+ * of the code identity, and unioning that into the prose class would excuse a real content word as form. When several
+ * families answer to the same corpus role, the one holding the most documents of this identity speaks. Pure.
+ */
+export function closedClassForFamilies(identity: LanguageIdentityRecord, families: readonly string[]): string[] {
+  const wanted = new Set(families);
+  const spoken = identity.families
+    .filter(row => wanted.has(row.family) && (row.closedClass?.length ?? 0) > 0)
+    .sort((left, right) => right.count - left.count || (left.family < right.family ? -1 : 1))[0];
+  return (spoken?.closedClass ?? identity.closedClass).map(row => row.word);
 }
 
 /**

@@ -20,6 +20,8 @@ import { cognitiveProposalComparisonReceipt, planCognitiveProposals, type Cognit
 import { createConnectorGovernance, defaultConnectorConfigs } from "./connector-governance.js";
 import { createConstructSubstratePlanner } from "./construct-substrate.js";
 import { CORPUS_ROLE_IDS, type CorpusRoleId } from "./corpus-registry.js";
+import { closedClassForFamilies } from "./language-identity.js";
+import { corpusFamiliesForRole } from "./language-identity-runtime.js";
 import {
   languagePopulationSelectionTrace,
   measureLanguagePopulationSupport,
@@ -3145,12 +3147,23 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // answered "story about a - - a page story about - - a", which is four routing surfaces ("story",
       // "story about", "page story about", "page") spoken as prose. The closed-class derivation that wanted them
       // receives them directly instead, so a control pattern stays out of the material a sentence is built from.
-      const surfaceLanguageMemory = translationTarget && productionTranslationPlan?.targetProfile
+      const scopedSurfaceLanguageMemory = translationTarget && productionTranslationPlan?.targetProfile
         ? scopeLanguageMemoryStateToProfile(surfaceLanguage.state, productionTranslationPlan.targetProfile)
         : {
           ...surfaceLanguage.state,
           importedPatterns: surfaceLanguage.state.importedPatterns.filter(pattern => !isRequestRequirementPattern(pattern))
         };
+      // What this turn may treat as form: the learned closed class of its language, read for the corpus role it
+      // speaks in. The role's own families first, the identity's own class otherwise; never a union of families.
+      const surfaceClosedClass = requestLanguage
+        ? closedClassForFamilies(
+          requestLanguage.identity,
+          preferredSurfaceCorpusRole ? corpusFamiliesForRole(surfaceLanguageRuntime.corpusRegistry, preferredSurfaceCorpusRole) : []
+        )
+        : [];
+      const surfaceLanguageMemory = surfaceClosedClass.length
+        ? { ...scopedSurfaceLanguageMemory, closedClass: surfaceClosedClass }
+        : scopedSurfaceLanguageMemory;
       if (requestedAuthority === "creative") {
         creativeRequestFrame = compileCreativeRequestFrameFromCompatibilityModels({
           requestText: input.text,
@@ -4005,8 +4018,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           focusAnchors: sourceAnchorAudit.anchors,
           conversationTurns: conversationTurnSurfacesFromMetadata(input.metadata),
           evidenceTexts: selectedEvidence.map(span => ({ id: String(span.id), text: span.text })),
-          models: surfaceLanguageMemory.models,
-          ...(surfaceLanguageMemory.continuationPopulation ? { continuationPopulation: surfaceLanguageMemory.continuationPopulation } : {}),
+          ...(surfaceClosedClass.length ? { closedClass: surfaceClosedClass } : {}),
           hasher
         });
       }
