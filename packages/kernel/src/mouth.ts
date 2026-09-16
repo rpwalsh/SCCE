@@ -99,12 +99,15 @@ import { evaluateConstructionCycleConsistency, type ConstructionCycleConsistency
 import { sourceRelationConstructionBindingId } from "./graph-surface-alignment.js";
 import { containsUnresolvedSurfaceKey } from "./localization.js";
 import { isNonAssertiveRuntimeMotionConstruct, isTerminalNonAssertiveRuntimeMotionCandidate } from "./runtime-motion.js";
-import { ensureSurfaceSentence as ensureUnicodeSurfaceSentence, hasUncasedNonLatinLetter, hasUppercaseLetter, isDegenerateBareSurface, isSentenceBoundarySymbol, splitSurfaceSentences as splitUnicodeSurfaceSentences, structurallyCompleteSurface, tidySurfaceText } from "./surface-linguistics.js";
+import { ensureSurfaceSentence as ensureUnicodeSurfaceSentence, hasUncasedNonLatinLetter, hasUppercaseLetter, isDegenerateBareSurface, isSentenceBoundarySymbol, splitSurfaceSentences as splitUnicodeSurfaceSentences, structurallyCompleteSurface, surfaceWords, tidySurfaceText } from "./surface-linguistics.js";
+import { kneserNeyPerplexity, type KneserNeyModel } from "./kneser-ney.js";
 import { CALIBRATION_TASK_CLASS_IDS, type CalibrationModelSet } from "./calibration-spine.js";
 import {
   realizeLearnedSurface,
   type ConversationTurnSurface,
   type LearnedConstruction,
+  type LearnedConstructionPart,
+  type LearnedConstructionSlot,
   type LearnedRealization,
   type SurfaceMeaningPlan
 } from "./language-construction.js";
@@ -330,6 +333,8 @@ interface SurfaceCandidate {
   boundaryDecisions?: DiscourseAssembly["boundaryDecisions"];
   exactSurface?: boolean;
   audit?: JsonValue;
+  /** Frame literals this candidate speaks as form, keyed by the construction's corpus source versions. */
+  constructionFormLiterals?: readonly { id: string; text: string }[];
   /** Produced only for a learned construction candidate that was actually realized. */
   constructionCycleOutcome?: ConstructionCycleConsistencyOutcome;
 }
@@ -811,7 +816,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
           || candidate.id.startsWith("candidate:generated:code:")
           || candidate.id.startsWith("candidate:generated:clarification")
           // Not "which producer made it": whether every unit it would commit the system to is licensed by some authority.
-          || candidateCommitmentsLicensed(speakCommitmentInventory(candidate.text, input))
+          || candidateCommitmentsLicensed(speakCommitmentInventory(candidate.text, input, candidate.constructionFormLiterals))
           || candidate.claimBasis === "invented"
           || creativeRequested));
       const scoredCandidates = rawCandidates.map(candidate => {
@@ -850,6 +855,8 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
           : [];
         const conversationMemoryCandidate = candidate.id === "candidate:generated:conversation-memory";
         const conversationContextCandidate = conversationMemoryCandidate && !candidate.generation;
+        // Conversation-bound speech answers the turn, not a source: what licenses it is its own units' authority.
+        const conversationBoundCandidate = candidate.style === "surface.path.generated.conversational_act_binding";
         const creativeSurfaceCandidate = creativeRequested || candidate.claimBasis === "invented";
         const structuralCreativeCandidateBound = Boolean(
           structuralCreativeSelectionBindingFromSurface(candidate)
@@ -874,6 +881,12 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
               ...forbiddenSurfaceHits(bounded, plan),
               ...semanticAnswerDriftHits(bounded, input, priorPieces),
               ...exactConstraintHits
+            ])
+          : conversationBoundCandidate
+            ? uniqueStrings([
+              ...forbiddenSurfaceHits(bounded, plan),
+              ...questionEchoHits(bounded, mouthEchoQuestionText(input)),
+              ...unlicensedCommitmentHits(bounded, input, candidate.constructionFormLiterals)
             ])
           : conversationMemoryCandidate
             ? uniqueStrings([
@@ -4660,7 +4673,7 @@ function conversationalActBindingCandidate(
   const sourceFamiliesByBundleId = new Map(scoped.map(bundle => [bundle.id, uniqueStrings(bundle.sourceVersionIds).length] as const));
   const observedDistribution = [...sourceFamiliesByBundleId.values()];
 
-  const rows: Array<{ candidate: SurfaceCandidate; bundleId: string; constructionId: string }> = [];
+  const rows: Array<{ candidate: SurfaceCandidate; bundleId: string; constructionId: string; cost: number }> = [];
   const refusals: string[] = [];
   for (const bundle of scoped) {
     for (const construction of bundle.constructions) {
@@ -4681,11 +4694,21 @@ function conversationalActBindingCandidate(
         hasher
       });
       if (typeof produced === "string") refusals.push(produced);
-      else if (produced) rows.push({ candidate: produced, bundleId: bundle.id, constructionId: construction.id });
+      else if (produced) {
+        rows.push({
+          candidate: produced,
+          bundleId: bundle.id,
+          constructionId: construction.id,
+          cost: residentSurfaceCost(produced.text, input.languageMemory.models)
+        });
+      }
     }
   }
+  // Support separates the constructions; where it does not (14 of this corpus's share one value), the resident
+  // language's own cost for the realized surface does, instead of the bundle id ordering that decided it before.
   const winner = rows.sort((left, right) => (
     right.candidate.fit - left.candidate.fit
+    || left.cost - right.cost
     || compareSurfaceText(left.bundleId, right.bundleId)
     || compareSurfaceText(left.constructionId, right.constructionId)
   ))[0];
@@ -4713,7 +4736,7 @@ function conversationalActBindingRow(input: {
   construction: LearnedConstruction;
   classification: RequestCommunicativeActClassification;
   turns: readonly ConversationTurnSurface[];
-  contentSpans: readonly { turn: ConversationTurnSurface; span: { surface: string; startCodePoint: number; endCodePoint: number } }[];
+  contentSpans: readonly { turn: ConversationTurnSurface; span: ConversationTurnContentSpan }[];
   currentTurn: ConversationTurnSurface;
   conversationId: string;
   literalInvariance: LiteralInvarianceEvidence;
@@ -4727,13 +4750,16 @@ function conversationalActBindingRow(input: {
 
   // Slot order follows the construction's own occurrence order; the conversation's own recency orders the fillers.
   const chosen = [...input.contentSpans].slice(0, occurrences.length).reverse();
-  const fillers: ConversationalSlotFiller[] = occurrences.map((_, slotIndex) => ({
-    slotIndex,
-    surface: chosen[slotIndex]!.span.surface,
-    sourceTurnId: chosen[slotIndex]!.turn.turnId,
-    startCodePoint: chosen[slotIndex]!.span.startCodePoint,
-    endCodePoint: chosen[slotIndex]!.span.endCodePoint
-  }));
+  const slotParts = construction.sequence.filter((part): part is LearnedConstructionSlot => part.kind === "slot");
+  const fillers: ConversationalSlotFiller[] = [];
+  for (const [slotIndex, occurrence] of occurrences.entries()) {
+    const row = chosen[slotIndex]!;
+    const slot = slotParts.find(part => part.occurrenceId === occurrence.occurrenceId && part.roleId === occurrence.roleId)
+      ?? slotParts[slotIndex];
+    const filler = slotSizedFiller(row.span, row.turn, slot, constructionSlotFrameContext(construction, slot), input.input.languageMemory.models);
+    if (!filler) return "no_slot_sized_filler";
+    fillers.push({ slotIndex, surface: filler.surface, sourceTurnId: row.turn.turnId, startCodePoint: filler.startCodePoint, endCodePoint: filler.endCodePoint });
+  }
   const binding: ConversationalActBinding = {
     schema: CONVERSATIONAL_ACT_BINDING_SCHEMA,
     id: conversationalActBindingRecordId(hasher, {
@@ -4783,12 +4809,14 @@ function conversationalActBindingRow(input: {
   if (realized.realization.trace.some(part => part.kind === "slot" && part.evidenceIds.length)) return "filler_carried_evidence";
 
   const text = usableConversationMemoryText(realized.realization.text, mouthEchoQuestionText(input.input));
-  if (!text) return "unusable_surface";
-  const inventory = speakCommitmentInventory(text, input.input);
+  if (!text) return `unusable_surface:${realized.realization.text.slice(0, 64)}`;
+  const formLiterals = constructionFormLiterals(construction, input.bundle.sourceVersionIds);
+  const inventory = speakCommitmentInventory(text, input.input, formLiterals);
   if (!candidateCommitmentsLicensed(inventory)) return `unlicensed:${inventory.unlicensedUnits.map(unit => unit.surface).join(",")}`;
   if (candidateMayAssertAsKnown(inventory)) return "asserts_as_known";
 
   return {
+    ...(formLiterals.length ? { constructionFormLiterals: formLiterals } : {}),
     id: `candidate:generated:conversational-act-binding:${hasher.digestHex(realized.realization.id).slice(0, 20)}`,
     style: "surface.path.generated.conversational_act_binding",
     path: "generated",
@@ -4814,7 +4842,7 @@ function conversationalActBindingRow(input: {
 function conversationTurnContentSpan(
   turn: ConversationTurnSurface,
   input: SpeakInput
-): { surface: string; startCodePoint: number; endCodePoint: number } | undefined {
+): ConversationTurnContentSpan | undefined {
   const inventory = candidateCommitmentInventory({
     text: turn.surface,
     evidenceTexts: [],
@@ -4828,7 +4856,92 @@ function conversationTurnContentSpan(
   const last = meaningful[meaningful.length - 1];
   if (!first || !last) return undefined;
   const surface = [...turn.surface].slice(first.startCodePoint, last.endCodePoint).join("");
-  return surface ? { surface, startCodePoint: first.startCodePoint, endCodePoint: last.endCodePoint } : undefined;
+  if (!surface) return undefined;
+  const units = inventory.units
+    .filter(unit => unit.startCodePoint >= first.startCodePoint && unit.endCodePoint <= last.endCodePoint)
+    .map(unit => ({ surface: unit.surface, startCodePoint: unit.startCodePoint, endCodePoint: unit.endCodePoint }));
+  return { surface, startCodePoint: first.startCodePoint, endCodePoint: last.endCodePoint, units };
+}
+
+interface ConversationTurnContentSpan {
+  surface: string;
+  startCodePoint: number;
+  endCodePoint: number;
+  /** The span's own units, so a slot can be filled at the size its corpus occurrences show it holds. */
+  units: readonly { surface: string; startCodePoint: number; endCodePoint: number }[];
+}
+
+/**
+ * The filler one slot takes from one turn: a window of the turn's content span whose unit count is one the
+ * slot's own corpus occurrences were observed to hold, chosen by the resident language's own measure of the
+ * frame with that window in it. No length constant and no position rule: both quantities are measured.
+ */
+function slotSizedFiller(
+  span: ConversationTurnContentSpan,
+  turn: ConversationTurnSurface,
+  slot: LearnedConstructionSlot | undefined,
+  frameContext: { before: string; after: string },
+  models: readonly KneserNeyModel[]
+): { surface: string; startCodePoint: number; endCodePoint: number } | undefined {
+  const observed = uniqueStrings((slot?.origins ?? []).map(origin => origin.observedSurface))
+    .map(surface => surfaceWords(surface).length)
+    .filter(count => count > 0);
+  if (!observed.length || !span.units.length) return undefined;
+  const points = [...turn.surface];
+  const sizes = [...new Set(observed)].filter(size => size <= span.units.length).sort((left, right) => left - right);
+  const windows = sizes.flatMap(size => span.units
+    .map((_, start) => start)
+    .filter(start => start + size <= span.units.length)
+    .map(start => {
+      const startCodePoint = span.units[start]!.startCodePoint;
+      const endCodePoint = span.units[start + size - 1]!.endCodePoint;
+      return { surface: points.slice(startCodePoint, endCodePoint).join(""), startCodePoint, endCodePoint };
+    }))
+    .filter(window => window.surface.trim().length > 0);
+  if (!windows.length) return undefined;
+  const scored = windows.map(window => ({
+    window,
+    cost: residentSurfaceCost(`${frameContext.before}${window.surface}${frameContext.after}`, models)
+  }));
+  return scored.sort((left, right) => (
+    left.cost - right.cost
+    || compareSurfaceText(left.window.surface, right.window.surface)
+  ))[0]?.window;
+}
+
+/**
+ * The construction's frame literals as form, keyed by the source versions it was induced over. Corpus provenance
+ * of a form, not documentary evidence: these ids license the literal being spoken and can never cite a claim.
+ */
+function constructionFormLiterals(
+  construction: LearnedConstruction,
+  sourceVersionIds: readonly string[]
+): readonly { id: string; text: string }[] {
+  if (!sourceVersionIds.length) return [];
+  const text = construction.sequence
+    .flatMap(part => (part.kind === "literal" ? [part.surface] : []))
+    .join(" ")
+    .trim();
+  return text ? uniqueStrings([...sourceVersionIds]).map(id => ({ id: `construction_form.${construction.id}.${id}`, text })) : [];
+}
+
+/** The construction's own literals either side of one slot: the frame context a filler is measured inside. */
+function constructionSlotFrameContext(
+  construction: LearnedConstruction,
+  slot: LearnedConstructionSlot | undefined
+): { before: string; after: string } {
+  const index = slot ? construction.sequence.indexOf(slot) : -1;
+  if (index < 0) return { before: "", after: "" };
+  const literal = (part: LearnedConstructionPart | undefined) => (part?.kind === "literal" ? part.surface : "");
+  return { before: literal(construction.sequence[index - 1]), after: literal(construction.sequence[index + 1]) };
+}
+
+/** How costly a surface is under the best resident model. The best realizer this population offers, never a mixture. */
+function residentSurfaceCost(text: string, models: readonly KneserNeyModel[]): number {
+  const measured = models
+    .map(model => kneserNeyPerplexity(model, text))
+    .filter(value => Number.isFinite(value));
+  return measured.length ? Math.min(...measured) : 0;
 }
 
 function usableConversationMemoryText(text: string, question: string): string | undefined {
@@ -7599,20 +7712,31 @@ function speakConversationTurns(input: SpeakInput): ConversationTurnSurface[] {
   return supplied;
 }
 
-function speakCommitmentInventory(text: string, input: SpeakInput): CandidateCommitmentInventory {
+function speakCommitmentInventory(
+  text: string,
+  input: SpeakInput,
+  constructionFormLiterals?: readonly { id: string; text: string }[]
+): CandidateCommitmentInventory {
   return candidateCommitmentInventory({
     text,
     evidenceTexts: input.evidence.map(span => ({ id: String(span.id), text: `${span.text} ${span.textPreview}` })),
     conversationTurns: speakConversationTurns(input),
     claimBases: input.claimBases ?? [],
     models: input.languageMemory.models,
+    ...(constructionFormLiterals?.length ? { constructionFormLiterals } : {}),
     ...(input.languageMemory.continuationPopulation ? { continuationPopulation: input.languageMemory.continuationPopulation } : {})
   });
 }
 
 /** A unit that names something in the world and cites nothing: the assertion-on-air this admission exists to refuse. */
-function unlicensedCommitmentHits(text: string, input: SpeakInput): string[] {
-  return candidateCommitmentsLicensed(speakCommitmentInventory(text, input)) ? [] : ["surface.reject.unlicensed_commitment"];
+function unlicensedCommitmentHits(
+  text: string,
+  input: SpeakInput,
+  constructionFormLiterals?: readonly { id: string; text: string }[]
+): string[] {
+  return candidateCommitmentsLicensed(speakCommitmentInventory(text, input, constructionFormLiterals))
+    ? []
+    : ["surface.reject.unlicensed_commitment"];
 }
 
 function normalizeSurfaceEcho(text: string): string {

@@ -203,8 +203,16 @@ describe("the conversation-bound lane is reachable from a production speak", () 
     const surface = row?.support?.surface as string | null | undefined;
     expect(typeof surface).toBe("string");
     expect(surface).toBeTruthy();
-    // The user's own words, carried verbatim into the corpus frame's slot.
-    expect(surface).toContain("pump feed reads high");
+    // The slot takes a filler the size its own corpus occurrences hold -- two units here, not the whole turn.
+    const slotSize = "something else".split(" ").length;
+    const spanUnits = "pump feed reads high".split(" ");
+    const windows = spanUnits.flatMap((_, start) => (start + slotSize <= spanUnits.length
+      ? [spanUnits.slice(start, start + slotSize).join(" ")]
+      : []));
+    expect(windows.filter(window => (surface as string).includes(window))).toHaveLength(1);
+    expect(surface).not.toContain(spanUnits.join(" "));
+    // And the candidate wins the field it competes in: a lane that realizes but never speaks answers nobody.
+    expect(produced.text).toBe(surface);
     // And nothing it says commits the system to a world fact it cannot license from this conversation.
     const inventory = candidateCommitmentInventory({
       text: surface as string,

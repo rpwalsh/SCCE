@@ -25,6 +25,8 @@ export const COMMITMENT_AUTHORITY_IDS = {
   conversationSpan: "commitment.authority.conversation_span",
   /** A typed slot value the turn itself holds carries it. Turn state, never documentary and never a conversation span. */
   typedSlot: "commitment.authority.typed_slot",
+  /** A frame literal of the construction being spoken, licensed by that construction's corpus provenance. Form, never claim support. */
+  constructionForm: "commitment.authority.construction_form",
   /** A planned claim derived from licensed premises carries it. */
   derivedPremise: "commitment.authority.derived_premise",
   /** An explicitly hypothetical, non-assertive construction carries it. */
@@ -67,6 +69,8 @@ export interface CandidateCommitmentInventoryInput {
   claimBases: readonly PlannedClaim[];
   /** Typed slot values the turn holds, in the slot's own id namespace. */
   slotValues?: readonly { id: string; text: string }[];
+  /** Frame literals of the construction being spoken, keyed by its corpus source-version ids. Form, not evidence. */
+  constructionFormLiterals?: readonly { id: string; text: string }[];
   /** The resident language the closed class is measured from. No word list. */
   models?: readonly KneserNeyModel[];
   continuationPopulation?: LanguageContinuationPopulation;
@@ -84,6 +88,7 @@ export function candidateCommitmentInventory(
   const documentary = wordIndex(input.evidenceTexts.map(row => [row.id, row.text] as const));
   const conversation = wordIndex(input.conversationTurns.map(turn => [turn.turnId, turn.surface] as const));
   const slot = wordIndex((input.slotValues ?? []).map(row => [row.id, row.text] as const));
+  const frameForm = wordIndex((input.constructionFormLiterals ?? []).map(row => [row.id, row.text] as const));
   const premise = wordIndex(input.claimBases
     .filter(claim => claimBasisIsAdmissible(claim) && claim.externallyFactual && !claim.hypothetical
       && (claim.graphEdgeIds.length > 0 || claim.priorIds.length > 0 || claim.evidenceIds.length > 0))
@@ -102,6 +107,9 @@ export function candidateCommitmentInventory(
     if (documented) return { ...unit, externallyMeaningful: true, authorityId: COMMITMENT_AUTHORITY_IDS.documentary, licenceIds: documented };
     const said = conversation.get(key);
     if (said) return { ...unit, externallyMeaningful: true, authorityId: COMMITMENT_AUTHORITY_IDS.conversationSpan, licenceIds: said };
+    // A corpus frame literal is form the construction's own provenance licenses; it names nothing and cites nothing.
+    const framed = frameForm.get(key);
+    if (framed) return { ...unit, externallyMeaningful: true, authorityId: COMMITMENT_AUTHORITY_IDS.constructionForm, licenceIds: framed };
     const held = slot.get(key);
     if (held) return { ...unit, externallyMeaningful: true, authorityId: COMMITMENT_AUTHORITY_IDS.typedSlot, licenceIds: held };
     const derived = premise.get(key);

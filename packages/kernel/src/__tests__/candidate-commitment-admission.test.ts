@@ -68,6 +68,55 @@ describe("a candidate is admitted by its own commitments, not by which producer 
     expect(candidateCommitmentsLicensed(fabricated)).toBe(false);
   });
 
+  it("licenses a corpus frame literal as form and still refuses an unsupported world fact beside it", () => {
+    // The frame is a construction's own literal, licensed by the source versions it was induced over. Form, not evidence.
+    const formLiterals = [{ id: "construction_form.surface.construction.01.source_version.dialogue.pg844", text: "sir, there was something you wanted to ask" }];
+    const framed = candidateCommitmentInventory({
+      text: "sir, the pump feed",
+      evidenceTexts: [],
+      conversationTurns: CONVERSATION_TURNS,
+      claimBases: [],
+      models: [TRAINED],
+      constructionFormLiterals: formLiterals
+    });
+    // Without the licence the same content-bearing frame word is an assertion on air: this is what refused the lane.
+    const unlicensed = candidateCommitmentInventory({
+      text: "sir, the pump feed",
+      evidenceTexts: [],
+      conversationTurns: CONVERSATION_TURNS,
+      claimBases: [],
+      models: [TRAINED]
+    });
+    expect(candidateCommitmentsLicensed(unlicensed)).toBe(false);
+    const framedWords = framed.units
+      .filter(unit => unit.authorityId === COMMITMENT_AUTHORITY_IDS.constructionForm)
+      .map(unit => unit.surface.toLocaleLowerCase());
+    expect(framedWords).toEqual(unlicensed.unlicensedUnits.map(unit => unit.surface.toLocaleLowerCase()));
+    expect(framedWords.length).toBeGreaterThan(0);
+    for (const unit of framed.units) {
+      if (unit.authorityId === COMMITMENT_AUTHORITY_IDS.constructionForm) {
+        expect(unit.licenceIds).toEqual(formLiterals.map(row => row.id));
+      }
+    }
+    expect(candidateCommitmentsLicensed(framed)).toBe(true);
+    // Corpus provenance of a form is not documentary evidence: it can never certify, and no evidence id is minted.
+    expect(framed.authorityClassId).toBe(SURFACE_AUTHORITY_CLASS_IDS.conversationBound);
+    expect(candidateMayAssertAsKnown(framed)).toBe(false);
+    expect(framed.authorityIds).not.toContain(COMMITMENT_AUTHORITY_IDS.documentary);
+    for (const unit of framed.units) expect(unit.licenceIds.every(id => !id.startsWith("evidence"))).toBe(true);
+    // The licence covers the frame only: a world fact the frame never held stays unlicensed.
+    const fabricated = candidateCommitmentInventory({
+      text: "sir, tungsten in Denmark",
+      evidenceTexts: [],
+      conversationTurns: CONVERSATION_TURNS,
+      claimBases: [],
+      models: [TRAINED],
+      constructionFormLiterals: formLiterals
+    });
+    expect(fabricated.unlicensedUnits.map(unit => unit.surface.toLocaleLowerCase())).toEqual(["tungsten", "denmark"]);
+    expect(candidateCommitmentsLicensed(fabricated)).toBe(false);
+  });
+
   it("licenses a documentary unit as documentary even when the conversation also used the word", () => {
     const documented = candidateCommitmentInventory({
       text: "the pump feed reads high",

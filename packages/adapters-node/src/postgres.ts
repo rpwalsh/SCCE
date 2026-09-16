@@ -4166,8 +4166,10 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         // wikipedia-attributed profiles). Filtering by identity before the row budget is spent, rather than after
         // scopeLanguageMemoryStateToLanguage discards off-identity rows post-hoc, means the budget itself only
         // ever competes among patterns that actually belong to the language being hydrated.
+        // Unmeasured is not foreign: discovery assigns identities once, so a profile written afterwards carries
+        // none and this filter silently dropped its patterns -- the same admission the in-memory language scope makes.
         params.push(query.languageId);
-        where.push(`EXISTS (SELECT 1 FROM ${storage.table("language_profiles")} lp WHERE lp.id=pattern.profile_id AND lp.language_id=$${params.length})`);
+        where.push(`EXISTS (SELECT 1 FROM ${storage.table("language_profiles")} lp WHERE lp.id=pattern.profile_id AND (lp.language_id=$${params.length} OR lp.language_id IS NULL))`);
       }
       appendInformationAccess(storage, "pattern", params, where);
       params.push(query.limit ?? 1000);
