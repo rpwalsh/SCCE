@@ -9,6 +9,9 @@ export interface TranscriptTurn {
   index: number;
   speakerId: string;
   surface: string;
+  /** Code-point range of this speech in the document it was segmented from, annotation excluded. */
+  startCodePoint: number;
+  endCodePoint: number;
 }
 
 export interface TranscriptTurnInduction {
@@ -28,7 +31,8 @@ export interface TranscriptTurnInduction {
  * and the same measurement finds them in any script.
  */
 export function induceTranscriptTurns(text: string): TranscriptTurnInduction {
-  const lines = text.split(/\r?\n/);
+  const points = [...text];
+  const { lines, lineStarts } = documentLines(points);
   const lineOpening = new Map<string, number>();
   const anywhere = new Map<string, number>();
   const openers: Array<string | undefined> = [];
@@ -51,7 +55,7 @@ export function induceTranscriptTurns(text: string): TranscriptTurnInduction {
       .filter(([type, count]) => count >= countFloor && count / (anywhere.get(type) ?? count) >= exclusivityFloor)
       .map(([type]) => type)
   );
-  const turns = segmentTurns(lines, openers, markers);
+  const turns = segmentTurns(points, lines, lineStarts, openers, markers);
   let changes = 0;
   for (let index = 1; index < turns.length; index++) {
     if (turns[index]!.speakerId !== turns[index - 1]!.speakerId) changes += 1;
@@ -89,12 +93,33 @@ export interface DialogueActObservationReport {
 }
 
 interface PairMeasurement {
+  documentIndex: number;
   requestText: string;
+  reply: TranscriptTurn;
   /** Observed share of the reply's unit types the turn already supplied, over the share chance alone predicts. */
   reuseLift: number;
   rareUnits: number;
   surprisal: number;
   floorReturned: boolean;
+}
+
+/** One measured adjacency pair, labelled with the signature the act id is derived from. */
+export interface DialogueTurnPair {
+  documentIndex: number;
+  requestText: string;
+  reply: TranscriptTurn;
+  responseEvidenceCount: number;
+  continuation: TurnContinuationSignature;
+}
+
+export interface DialogueTurnPairReport {
+  pairs: readonly DialogueTurnPair[];
+  documentsSegmented: number;
+  documentsRejectedForNoAlternation: number;
+  turns: number;
+  speakerChangeFloor: number;
+  turnReuseLiftFloor: number;
+  continuationSurprisalFloor: number;
 }
 
 /**
@@ -104,17 +129,49 @@ interface PairMeasurement {
  * Otsu of its own observed distribution, so nothing here is a declared number or a list of words.
  */
 export function dialogueRequestActObservations(documents: readonly string[]): DialogueActObservationReport {
-  const segmented: TranscriptTurnInduction[] = [];
-  for (const document of documents) {
-    const induction = induceTranscriptTurns(document);
-    if (induction.turns.length > 1) segmented.push(induction);
+  const measured = dialogueTurnPairs(documents);
+  const signatureCells: Record<string, number> = {};
+  const observations = measured.pairs.map(pair => {
+    const cell = `${pair.responseEvidenceCount > 0 ? "e1" : "e0"}.${pair.continuation.floorReturned ? "f1" : "f0"}.${pair.continuation.replyDrawsOnTurn ? "d1" : "d0"}`;
+    signatureCells[cell] = (signatureCells[cell] ?? 0) + 1;
+    return {
+      requestText: pair.requestText,
+      responseEvidenceCount: pair.responseEvidenceCount,
+      accepted: true as const,
+      continuation: pair.continuation
+    };
+  });
+  return {
+    schema: "scce.dialogue_act_observation_report.v1",
+    documentsRead: documents.length,
+    documentsSegmented: measured.documentsSegmented,
+    documentsRejectedForNoAlternation: measured.documentsRejectedForNoAlternation,
+    turns: measured.turns,
+    adjacentPairs: measured.pairs.length,
+    observations,
+    speakerChangeFloor: measured.speakerChangeFloor,
+    turnReuseLiftFloor: measured.turnReuseLiftFloor,
+    continuationSurprisalFloor: measured.continuationSurprisalFloor,
+    signatureCells
+  };
+}
+
+/**
+ * The same measurement, keeping each pair's reply and the document it was read from, so a caller that needs
+ * the corpus's own replies -- not just what the requests before them looked like -- reads one measurement.
+ */
+export function dialogueTurnPairs(documents: readonly string[]): DialogueTurnPairReport {
+  const segmented: Array<{ documentIndex: number; induction: TranscriptTurnInduction }> = [];
+  for (let documentIndex = 0; documentIndex < documents.length; documentIndex++) {
+    const induction = induceTranscriptTurns(documents[documentIndex]!);
+    if (induction.turns.length > 1) segmented.push({ documentIndex, induction });
   }
-  const changeFloor = otsuThreshold(segmented.map(induction => induction.speakerChangeRate)) ?? 0;
-  const alternating = segmented.filter(induction => induction.speakerChangeRate >= changeFloor);
+  const changeFloor = otsuThreshold(segmented.map(row => row.induction.speakerChangeRate)) ?? 0;
+  const alternating = segmented.filter(row => row.induction.speakerChangeRate >= changeFloor).map(row => ({ ...row }));
 
   const corpusUnitCounts = new Map<string, number>();
   let corpusUnitTotal = 0;
-  for (const induction of alternating) {
+  for (const { induction } of alternating) {
     for (const turn of induction.turns) {
       for (const unit of unitTypes(turn.surface)) {
         corpusUnitCounts.set(unit, (corpusUnitCounts.get(unit) ?? 0) + 1);
@@ -130,7 +187,7 @@ export function dialogueRequestActObservations(documents: readonly string[]): Di
 
   const measurements: PairMeasurement[] = [];
   let turnCount = 0;
-  for (const induction of alternating) {
+  for (const { documentIndex, induction } of alternating) {
     turnCount += induction.turns.length;
     for (let index = 0; index + 1 < induction.turns.length; index++) {
       const turn = induction.turns[index]!;
@@ -155,7 +212,9 @@ export function dialogueRequestActObservations(documents: readonly string[]): Di
       }
       if (chanceShare <= 0) continue;
       measurements.push({
+        documentIndex,
         requestText: turn.surface,
+        reply,
         reuseLift: (shared / replyUnits.size) / chanceShare,
         rareUnits: rare,
         surprisal: surprisal / replyUnits.size,
@@ -166,68 +225,89 @@ export function dialogueRequestActObservations(documents: readonly string[]): Di
 
   const reuseFloor = otsuThreshold(measurements.map(row => row.reuseLift)) ?? 0;
   const surprisalFloor = otsuThreshold(measurements.map(row => row.surprisal)) ?? 0;
-  const signatureCells: Record<string, number> = {};
-  const observations = measurements.map(row => {
-    const continuation: TurnContinuationSignature = {
-      floorReturned: row.floorReturned,
-      replyDrawsOnTurn: row.reuseLift >= reuseFloor
-    };
+  const pairs = measurements.map(row => ({
+    documentIndex: row.documentIndex,
+    requestText: row.requestText,
+    reply: row.reply,
     // A reply the corpus routine does not supply committed to material from outside it: the count of the reply's
     // units above the corpus rarity split, credited only when the reply's mean surprisal clears its own split.
-    const responseEvidenceCount = row.surprisal >= surprisalFloor ? row.rareUnits : 0;
-    const cell = `${responseEvidenceCount > 0 ? "e1" : "e0"}.${continuation.floorReturned ? "f1" : "f0"}.${continuation.replyDrawsOnTurn ? "d1" : "d0"}`;
-    signatureCells[cell] = (signatureCells[cell] ?? 0) + 1;
-    return { requestText: row.requestText, responseEvidenceCount, accepted: true, continuation };
-  });
+    responseEvidenceCount: row.surprisal >= surprisalFloor ? row.rareUnits : 0,
+    continuation: { floorReturned: row.floorReturned, replyDrawsOnTurn: row.reuseLift >= reuseFloor }
+  }));
 
   return {
-    schema: "scce.dialogue_act_observation_report.v1",
-    documentsRead: documents.length,
+    pairs,
     documentsSegmented: alternating.length,
     documentsRejectedForNoAlternation: segmented.length - alternating.length,
     turns: turnCount,
-    adjacentPairs: measurements.length,
-    observations,
     speakerChangeFloor: changeFloor,
     turnReuseLiftFloor: reuseFloor,
-    continuationSurprisalFloor: surprisalFloor,
-    signatureCells
+    continuationSurprisalFloor: surprisalFloor
   };
 }
 
+/** The document's own lines with each one's code-point start, matching a `\r?\n` split exactly. */
+function documentLines(points: readonly string[]): { lines: string[]; lineStarts: number[] } {
+  const lines: string[] = [];
+  const lineStarts: number[] = [];
+  let start = 0;
+  for (let index = 0; index <= points.length; index++) {
+    if (index !== points.length && points[index] !== "\n") continue;
+    let end = index;
+    if (end > start && points[end - 1] === "\r") end -= 1;
+    lines.push(points.slice(start, end).join(""));
+    lineStarts.push(start);
+    start = index + 1;
+  }
+  return { lines, lineStarts };
+}
+
 function segmentTurns(
+  points: readonly string[],
   lines: readonly string[],
+  lineStarts: readonly number[],
   openers: ReadonlyArray<string | undefined>,
   markers: ReadonlySet<string>
 ): TranscriptTurn[] {
   const turns: TranscriptTurn[] = [];
   let speakerId: string | undefined;
   let held: string[] = [];
+  let spanStart = 0;
+  let spanEnd = 0;
   const flush = () => {
     if (speakerId === undefined) return;
     const surface = held.join("\n").trim();
-    if (surface) turns.push({ index: turns.length, speakerId, surface });
+    let start = spanStart;
+    let end = spanEnd;
+    while (start < end && /\s/u.test(points[start] ?? "")) start += 1;
+    while (end > start && /\s/u.test(points[end - 1] ?? "")) end -= 1;
+    if (surface) turns.push({ index: turns.length, speakerId, surface, startCodePoint: start, endCodePoint: end });
   };
   for (let index = 0; index < lines.length; index++) {
     const opener = openers[index];
     if (opener !== undefined && markers.has(opener)) {
       flush();
       speakerId = opener;
-      held = [speechAfterMarker(lines[index]!)];
+      const resume = speechAfterMarker(lines[index]!);
+      held = [resume.surface];
+      spanStart = lineStarts[index]! + resume.codePointStart;
+      spanEnd = lineStarts[index]! + [...lines[index]!].length;
       continue;
     }
-    if (speakerId !== undefined) held.push(lines[index]!);
+    if (speakerId === undefined) continue;
+    held.push(lines[index]!);
+    spanEnd = lineStarts[index]! + [...lines[index]!].length;
   }
   flush();
   return turns;
 }
 
 /** The speaker annotation is the transcript's own markup, not speech: the line resumes at its next lexical unit. */
-function speechAfterMarker(line: string): string {
+function speechAfterMarker(line: string): { surface: string; codePointStart: number } {
   const segments = unicodeLexicalSegments(line);
   const resume = segments[1];
-  if (!resume) return "";
-  return [...line].slice(resume.codePointStart).join("");
+  if (!resume) return { surface: "", codePointStart: [...line].length };
+  return { surface: [...line].slice(resume.codePointStart).join(""), codePointStart: resume.codePointStart };
 }
 
 function unitTypes(text: string): Set<string> {

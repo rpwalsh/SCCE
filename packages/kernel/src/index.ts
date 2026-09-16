@@ -233,6 +233,7 @@ export * from "./request-requirement-learning.js";
 export * from "./request-communicative-act.js";
 export * from "./dialogue-communicative-act-learning.js";
 export * from "./conversational-act-binding.js";
+export * from "./conversational-construction-induction.js";
 export * from "./code-request.js";
 export * from "./code-surface.js";
 export * from "./graph-target-geometry.js";

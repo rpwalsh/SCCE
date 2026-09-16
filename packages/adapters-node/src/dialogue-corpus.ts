@@ -8,18 +8,25 @@ import {
   CORPUS_SOURCE_SYSTEM_IDS,
   REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA,
   canonicalStringify,
+  compileLanguageConstructionPattern,
   compileRequestCommunicativeActModel,
   corpusRoleIdForSourceSystem,
   createHasher,
   dialogueRequestActObservations,
+  induceConversationalActConstructionTrainingSets,
   requestCommunicativeActPatterns,
   toJsonValue,
+  type ConversationalConstructionDocument,
+  type ConversationalConstructionInductionReport,
   type DialogueActObservationReport,
+  type EvidenceSpan,
   type InformationLabel,
   type JsonValue,
-  type ScceStorage
+  type LanguagePatternRecord,
+  type ScceStorage,
+  type SourceVersionId
 } from "@scce/kernel";
-import { trainLanguageCorpusText, type LanguageCorpusTrainingReport } from "./language-corpus-trainer.js";
+import { corpusSourceVersionIdFor, stampPattern, trainLanguageCorpusText, type LanguageCorpusTrainingReport } from "./language-corpus-trainer.js";
 
 /**
  * Who wrote the text. Training on SCCE's own generations is self-training: the model would be fitted to its
@@ -59,8 +66,29 @@ export interface DialogueCorpusTrainReport {
   totals: DialogueCorpusTrainingTotals;
   reports: LanguageCorpusTrainingReport[];
   communicativeActs: DialogueCommunicativeActTrainingReport;
+  conversationalConstructions: DialogueConversationalConstructionTrainingReport;
   stoppedByHeapSafetyBound: boolean;
   heapMiBAtExit: number;
+}
+
+/** What the run's own replies taught the conversation-bound lane, and what of it reached the pattern store. */
+export interface DialogueConversationalConstructionTrainingReport {
+  schema: "scce.dialogueConversationalConstructionTrainingReport.v1";
+  updatedAt: number;
+  documentsWithEvidence: number;
+  induction: Omit<ConversationalConstructionInductionReport, "sets">;
+  bundles: Array<{
+    bindingId: string;
+    actId: string;
+    profileId: string;
+    patternId: string;
+    constructions: number;
+    oneSlotConstructions: number;
+    observations: number;
+    sourceVersionIds: number;
+  }>;
+  rejected: Array<{ bindingId: string; issues: string[] }>;
+  patternsPersisted: number;
 }
 
 /** What the run's own transcripts taught the request-act classifier, and what of it reached the pattern store. */
@@ -115,6 +143,7 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
   ).slice(startFileIndex, startFileIndex + maxFiles);
   const reports: LanguageCorpusTrainingReport[] = [];
   const transcripts: string[] = [];
+  const read: Array<{ sourceUri: string; text: string }> = [];
   const skipped: DialogueCorpusTrainReport["filesSkipped"] = [];
   const heapCheckpointMb = input.heapCheckpointMb !== undefined && input.heapCheckpointMb > 0
     ? Math.floor(input.heapCheckpointMb)
@@ -136,6 +165,7 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
       continue;
     }
     transcripts.push(text);
+    read.push({ sourceUri: pathToFileURL(file.absolutePath).href, text });
     if (input.actsOnly) continue;
     // One pathological file costs that file, never the whole run.
     try {
@@ -182,6 +212,7 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
     totals: sumReports(reports),
     reports,
     communicativeActs: await persistDialogueCommunicativeActs(input, transcripts),
+    conversationalConstructions: await persistConversationalConstructions(input, read),
     stoppedByHeapSafetyBound,
     heapMiBAtExit: heapMiB()
   };
@@ -223,6 +254,95 @@ async function persistDialogueCommunicativeActs(
     featuresCompiled: model.features.size,
     patternsPersisted: patterns.length,
     hydrationContrast: classIds.length >= 2 && patterns.length > 0
+  };
+}
+
+/**
+ * Compiles the conversation-bound lane's own construction bundles from the transcripts this run read, and writes
+ * them to the same pattern store the relation-keyed bundles live in. The bundle key is act-derived rather than
+ * predicate-derived, so nothing here can be mistaken for -- or relabelled as -- a relation-filling frame, and the
+ * compiler, anti-unification and durability checks are the ones the relation lane already passes through.
+ *
+ * Reads the run's evidence back from storage rather than re-chunking the files, so `--acts-only` compiles these
+ * against the corpus already ingested, and so one bundle can span every transcript a frame recurred in.
+ */
+async function persistConversationalConstructions(
+  input: DialogueCorpusTrainOptions,
+  read: ReadonlyArray<{ sourceUri: string; text: string }>
+): Promise<DialogueConversationalConstructionTrainingReport> {
+  const hasher = createHasher();
+  const updatedAt = Date.now();
+  const sourceVersionIds = read.map(file => corpusSourceVersionIdFor(file));
+  const profiles = sourceVersionIds.length
+    ? await input.storage.model.listLanguageProfiles({ limit: Math.max(64, sourceVersionIds.length * 4), sourceVersionIds })
+    : [];
+  const profileBySourceVersion = new Map(profiles.map(profile => [String(profile.sourceVersionId), profile.id] as const));
+  const documents: ConversationalConstructionDocument[] = [];
+  const evidence: EvidenceSpan[] = [];
+  for (const sourceVersionId of sourceVersionIds) {
+    const profileId = profileBySourceVersion.get(String(sourceVersionId));
+    if (!profileId) continue;
+    const found = await input.storage.evidence.searchEvidence({
+      sourceVersionId: sourceVersionId as SourceVersionId,
+      status: "promoted",
+      limit: 4096
+    });
+    const spans = found.map(row => row.span);
+    if (!spans.length) continue;
+    evidence.push(...spans);
+    documents.push({ sourceVersionId: String(sourceVersionId), profileId, spans });
+  }
+
+  const { sets, ...induction } = induceConversationalActConstructionTrainingSets({ documents, hasher });
+  const sourceSystemId = CORPUS_SOURCE_SYSTEM_IDS.dialogue;
+  const metadata = toJsonValue({
+    corpusRole: corpusRoleIdForSourceSystem(sourceSystemId),
+    authorship: input.authorship,
+    provenanceClass: "learned_language_prior"
+  });
+  const patterns: LanguagePatternRecord[] = [];
+  const bundles: DialogueConversationalConstructionTrainingReport["bundles"] = [];
+  const rejected: DialogueConversationalConstructionTrainingReport["rejected"] = [];
+  for (const set of sets) {
+    const compiled = compileLanguageConstructionPattern({
+      bindingId: set.bindingId,
+      profileId: set.profileId,
+      observations: set.observations,
+      evidence,
+      hasher,
+      updatedAt
+    });
+    if (compiled.status !== "compiled") {
+      rejected.push({ bindingId: set.bindingId, issues: [...new Set(compiled.issues.map(issue => issue.code))].sort() });
+      continue;
+    }
+    patterns.push({
+      ...stampPattern(compiled.pattern, "dialogue", sourceSystemId, metadata),
+      informationLabel: input.informationLabel
+    });
+    bundles.push({
+      bindingId: set.bindingId,
+      actId: set.actId,
+      profileId: set.profileId,
+      patternId: compiled.pattern.id,
+      constructions: compiled.bundle.constructions.length,
+      oneSlotConstructions: compiled.bundle.constructions.filter(item => item.roleOccurrences.length === 1).length,
+      observations: set.observations.length,
+      sourceVersionIds: compiled.bundle.sourceVersionIds.length
+    });
+  }
+  if (patterns.length) {
+    if (input.storage.languageMemory.putLanguagePatterns) await input.storage.languageMemory.putLanguagePatterns(patterns);
+    else for (const pattern of patterns) await input.storage.languageMemory.putLanguagePattern(pattern);
+  }
+  return {
+    schema: "scce.dialogueConversationalConstructionTrainingReport.v1",
+    updatedAt,
+    documentsWithEvidence: documents.length,
+    induction,
+    bundles,
+    rejected,
+    patternsPersisted: patterns.length
   };
 }
 
