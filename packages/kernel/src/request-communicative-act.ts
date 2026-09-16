@@ -10,6 +10,12 @@ import type { JsonValue } from "./types.js";
 export const REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA = "scce.request_communicative_act_pattern.v1";
 export const REQUEST_COMMUNICATIVE_ACT_SOURCE_SYSTEM = "request_communicative_act";
 
+/** Continuation axes a recorded conversation measures for a turn; a live outcome observation carries none. */
+export interface RequestCommunicativeActContinuation {
+  floorReturned: boolean;
+  replyDrawsOnTurn: boolean;
+}
+
 /** One owner request joined to the response it received and the owner's outcome on that response. */
 export interface RequestCommunicativeActObservation {
   requestText: string;
@@ -17,12 +23,14 @@ export interface RequestCommunicativeActObservation {
   accepted?: boolean;
   rejected?: boolean;
   corrected?: boolean;
+  continuation?: RequestCommunicativeActContinuation;
 }
 
 /** The outcome signature an act class is induced from; new axes extend the inventory without an enum. */
 export interface RequestCommunicativeActSignature {
   accepted: true;
   evidenceBearing: boolean;
+  continuation?: RequestCommunicativeActContinuation;
 }
 
 export interface RequestCommunicativeActModel {
@@ -55,7 +63,11 @@ export function compileRequestCommunicativeActModel(observations: readonly Reque
   const features: RequestCommunicativeActModel["features"] = new Map();
   for (const observation of observations) {
     if (observation.accepted !== true || observation.rejected === true || observation.corrected === true) continue;
-    const actId = requestCommunicativeActIdForSignature({ accepted: true, evidenceBearing: observation.responseEvidenceCount > 0 });
+    const actId = requestCommunicativeActIdForSignature({
+      accepted: true,
+      evidenceBearing: observation.responseEvidenceCount > 0,
+      ...(observation.continuation ? { continuation: observation.continuation } : {})
+    });
     classCounts[actId] = (classCounts[actId] ?? 0) + 1;
     const seen = new Set<string>();
     for (const feature of requestFeatures(observation.requestText)) {

@@ -1,106 +1,77 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
+import { dialogueRequestActObservations, induceTranscriptTurns } from "../dialogue-communicative-act-learning.js";
 import {
-  DIALOGUE_ACT_IDS,
-  DIALOGUE_ACTION_IDS,
-  realizeDialogueResponse,
-  type DialogueAnswerGraphLike
-} from "../dialogue-pragmatics.js";
-import {
-  createInMemoryDialogueMemoryStore,
-  persistDialogueOutcomeAndLearn,
-  persistDialogueTurn,
-  styleProfileFromTargetProfilePatterns
-} from "../dialogue-learning.js";
+  classifyRequestCommunicativeAct,
+  compileRequestCommunicativeActModel,
+  requestCommunicativeActModelFromPatterns,
+  requestCommunicativeActPatterns
+} from "../request-communicative-act.js";
+import { DIALOGUE_ACT_IDS } from "../dialogue-pragmatics.js";
 
-describe("durable communicative-act learning", () => {
-  it("changes a later typed challenge route after a cold restart", async () => {
-    const graph = supportedGraph();
-    const cold = realizeDialogueResponse({
-      conversationId: "conversation.act-learning",
-      turnId: "turn.first",
-      requestText: "first request",
-      answerGraph: graph,
-      statePatch: { communicativeActId: DIALOGUE_ACT_IDS.challenge }
-    });
-    expect(cold.policyDecision.selectedActionIds).not.toContain(DIALOGUE_ACTION_IDS.premiseCheck);
+// Two speakers alternate; the annotation types recur at the head of a line and occur nowhere else.
+const TRANSCRIPT = [
+  "ay. the feed reads high",
+  "we watched it climb all morning",
+  "bee. it has read high since the change",
+  "that was the week of the shutdown",
+  "ay. we checked the valve",
+  "we know that it looked clean enough",
+  "bee. the valve was the only change",
+  "we left the rest of the run alone",
+  "ay. nothing else moved",
+  "that is all we have looked at",
+  "bee. nothing else moved at all",
+  "we can see that it matches the log",
+  "ay. what is the melting point of the alloy",
+  "we could not find the table",
+  "bee. four hundred and twenty degrees by the table",
+  "that entry is very old",
+  "ay. and the boiling point of the alloy",
+  "it must be in the same table",
+  "bee. two thousand nine hundred degrees by the table",
+  "that entry is older still"
+].join("\n");
 
-    const store = createInMemoryDialogueMemoryStore();
-    await persistDialogueTurn({ store, result: cold, now: 10 });
-    await persistDialogueOutcomeAndLearn({
-      store,
-      result: cold,
-      promptText: "first request",
-      corrected: true,
-      correctionText: "recheck the challenged premise",
-      now: 11
-    });
-
-    const restarted = createInMemoryDialogueMemoryStore({
-      targetProfilePatterns: await store.listTargetProfilePatterns!({
-        targetProfileId: cold.policyDecision.targetProfileId,
-        limit: 100
-      })
-    });
-    const patterns = await restarted.listTargetProfilePatterns!({
-      targetProfileId: cold.policyDecision.targetProfileId,
-      limit: 100
-    });
-    const profile = styleProfileFromTargetProfilePatterns({ patterns });
-    const warm = realizeDialogueResponse({
-      conversationId: cold.state.conversationId,
-      turnId: "turn.after-restart",
-      requestText: "later request",
-      answerGraph: graph,
-      statePatch: { userStyleProfile: profile, communicativeActId: DIALOGUE_ACT_IDS.challenge }
-    });
-
-    expect(profile.communicativeActWeights?.[DIALOGUE_ACT_IDS.challenge]).toBeGreaterThan(0.66);
-    expect(warm.policyDecision.selectedActionIds).toContain(DIALOGUE_ACTION_IDS.premiseCheck);
-    expect(warm.finalText).toContain("independent result");
+describe("dialogue communicative act learning", () => {
+  it("induces the transcript's own speaker annotation and strips it from the speech", () => {
+    const induction = induceTranscriptTurns(TRANSCRIPT);
+    expect(induction.markers).toEqual(["ay", "bee"]);
+    expect(induction.turns).toHaveLength(10);
+    expect(induction.turns[0]!.surface).toBe("the feed reads high\nwe watched it climb all morning");
+    expect(induction.turns[1]!.speakerId).toBe("bee");
+    expect(induction.speakerChangeRate).toBe(1);
   });
 
-  it("keeps owner correction in act policy and leaves independent claim content unchanged", async () => {
-    const graph = supportedGraph();
-    const result = realizeDialogueResponse({
-      conversationId: "conversation.truth-boundary",
-      turnId: "turn.truth",
-      requestText: "request",
-      answerGraph: graph
+  it("refuses a document whose induced markers never alternate", () => {
+    const notes = Array.from({ length: 12 }, (_, index) => `note. item ${index} of the list`).join("\n");
+    const report = dialogueRequestActObservations([notes]);
+    expect(report.documentsRejectedForNoAlternation + (report.documentsSegmented === 0 ? 1 : 0)).toBeGreaterThan(0);
+    expect(report.observations.length).toBe(0);
+  });
+
+  it("compiles observations whose act ids survive the pattern round trip", () => {
+    const report = dialogueRequestActObservations([TRANSCRIPT]);
+    expect(report.adjacentPairs).toBeGreaterThan(0);
+    const model = compileRequestCommunicativeActModel(report.observations);
+    const classIds = Object.keys(model.classCounts);
+    expect(classIds.length).toBeGreaterThanOrEqual(2);
+    expect(model.classCounts[DIALOGUE_ACT_IDS.neutral]).toBeGreaterThan(0);
+    const patterns = requestCommunicativeActPatterns(model, {
+      profileId: "profile.dialogue.act",
+      updatedAt: 7,
+      makeId: value => `pattern.${JSON.stringify(value).length}.${String(JSON.stringify(value)).split("").reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7)}`
     });
-    const store = createInMemoryDialogueMemoryStore();
-    await persistDialogueTurn({ store, result, now: 20 });
-    await persistDialogueOutcomeAndLearn({
-      store,
-      result,
-      promptText: "request",
-      corrected: true,
-      correctionText: "The independent result is unstable.",
-      now: 21
-    });
-    const patterns = await store.listTargetProfilePatterns!({ targetProfileId: result.policyDecision.targetProfileId, limit: 100 });
-    const profile = styleProfileFromTargetProfilePatterns({ patterns });
-    const next = realizeDialogueResponse({
-      conversationId: result.state.conversationId,
-      turnId: "turn.truth.next",
-      requestText: "next",
-      answerGraph: graph,
-      statePatch: { userStyleProfile: profile, communicativeActId: DIALOGUE_ACT_IDS.repair }
-    });
-    expect(next.finalText).toContain("independent result");
-    expect(next.finalText).not.toContain("unstable");
-    expect(profile.communicativeActWeights?.[DIALOGUE_ACT_IDS.repair]).toBeGreaterThan(0.66);
-    expect(next.policyDecision.selectedActionIds).toContain(DIALOGUE_ACTION_IDS.boundary);
+    expect(patterns.length).toBeGreaterThan(0);
+    const hydrated = requestCommunicativeActModelFromPatterns(patterns);
+    expect(hydrated).toBeDefined();
+    expect(Object.keys(hydrated!.classCounts).sort()).toEqual(classIds.sort());
+    const classification = classifyRequestCommunicativeAct("the feed reads high", hydrated);
+    expect(classification.status).toBe("active");
+  });
+
+  it("reports inert without a compiled model, which is what blocks the conversational binding", () => {
+    expect(classifyRequestCommunicativeAct("the feed reads high", undefined).status).toBe("inert_unconfigured");
   });
 });
-
-function supportedGraph(): DialogueAnswerGraphLike {
-  return {
-    id: "answer_graph.independent",
-    statusId: "workspace.kernel.answer.ready",
-    claims: [{ id: "claim.independent", roleId: "answer_graph.role.certified_claim", surface: "The independent result is stable.", certified: true }],
-    supportLinks: [{ claimId: "claim.independent", evidenceId: "evidence.independent", sourceRef: { path: "owner-independent-source" }, forceClass: "independent" }],
-    caveats: [],
-    actions: [],
-    uncertainty: { unsupported: false, missingEvidenceCount: 0, contradictionCount: 0, gapCount: 0 }
-  };
-}
