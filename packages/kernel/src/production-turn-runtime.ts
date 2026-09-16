@@ -160,10 +160,12 @@ import {
   createDeterministicMouth,
   createMouth,
   surfaceCarriesInternalFeatureKeys,
+  withSurfaceContract,
   type MouthSemanticInput,
   type SpeakInput,
   type SpokenOutput
 } from "./mouth.js";
+import { SURFACE_REALIZATION_STRATEGY_IDS } from "./surface-contract.js";
 import { createMultilingualAcquisitionEngine } from "./multilingual-acquisition.js";
 import {
   createTypedTemporalWalkEngine,
@@ -5016,7 +5018,11 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           support: { decision: extendedGeneration.audit, run: extendedGenerationRun.audit }
         });
       }
-      let spoken = extendedGenerationRun?.answer ? { ...primarySpoken, text: extendedGenerationRun.answer } : primarySpoken;
+      // Substituting the text substitutes the surface: it re-enters the contract rather than inheriting the audit
+      // of a surface it replaced.
+      let spoken = extendedGenerationRun?.answer
+        ? withSurfaceContract(speakInput, { ...primarySpoken, text: extendedGenerationRun.answer }, SURFACE_REALIZATION_STRATEGY_IDS.extendedGeneration)
+        : primarySpoken;
       deadlineCheckpoint("runtime.mouth.primary.complete", 0);
       // A stub ("It", "The", an echoed request unit) recovers like an empty surface; brevity alone does not.
       const emptyAuthoritySurface = learnedSurfaceRealizesNothing({ learnedSurface: spoken.text, requestText: input.text, closedClassWords: corpusFunctionSymbols() })
@@ -5250,7 +5256,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             counts: { answerChars: boundedText.length },
             support: { selectedCandidateId: judged.selected.id, contradiction: judged.selected.scores.contradiction, evidenceId: String(contradictedSpan.id) }
           });
-          spoken = { ...spoken, text: boundedText, evidenceRefs: [contradictedSpan.id] };
+          spoken = withSurfaceContract(speakInput, { ...spoken, text: boundedText, evidenceRefs: [contradictedSpan.id] }, SURFACE_REALIZATION_STRATEGY_IDS.recitedEvidence);
         }
       }
       // A source the request names, with nothing narrower to say about it.
@@ -5330,7 +5336,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             counts: { answerChars: excerpt.text.length, identityBound: identityBound.length, cited: cited.length },
             support: { selectedCandidateId: judged.selected.id, sourceVersionId: String(cited[0]?.sourceVersionId ?? ""), evidenceIds: cited.slice(0, 4).map(span => String(span.id)) }
           });
-          spoken = { ...spoken, text: excerpt.text, evidenceRefs: cited.map(span => span.id) };
+          spoken = withSurfaceContract(speakInput, { ...spoken, text: excerpt.text, evidenceRefs: cited.map(span => span.id) }, SURFACE_REALIZATION_STRATEGY_IDS.recitedEvidence);
         } else if (identityBound.length) {
           kernelTrace({
             stage: "mouth.source_summary_fallback.withheld",

@@ -221,6 +221,8 @@ describe("Mouth runtime surface planning", () => {
       correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }),
       hashText: text => hasher.digestHex(text)
     }).speak({
+      // A motion surface is composed from the request's own anchors, so the request is what licenses it.
+      requestText: "What is the fixture focus?",
       construct: semanticAnswerConstructGraph(),
       field,
       languageProfile: languageProfile(source),
@@ -253,6 +255,7 @@ describe("Mouth runtime surface planning", () => {
       correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }),
       hashText: text => hasher.digestHex(text)
     }).speak({
+      requestText: "What about Aster (Beta)?",
       construct: semanticAnswerConstructGraph(),
       field,
       languageProfile: languageProfile(source),
@@ -288,6 +291,7 @@ describe("Mouth runtime surface planning", () => {
       correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }),
       hashText: text => hasher.digestHex(text)
     }).speak({
+      requestText: `${completed} ${unfinished}`,
       construct: semanticAnswerConstructGraph(),
       field,
       languageProfile: languageProfile(source),

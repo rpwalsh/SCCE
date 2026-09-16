@@ -189,9 +189,9 @@ describe("adversarial leakage: probable dialogue continuations never acquire fac
     expect(candidateCommitmentsLicensed(probed)).toBe(false);
   });
 
-  it("pins the one lane the inventory does not yet reach: the terminal runtime-motion shortcut", async () => {
-    // createMouth.speak hands this candidate straight to the deterministic mouth before any candidate field
-    // exists, so nothing audits its commitments. This is where the recorded leak got out, and it is still open.
+  it("closes the lane the inventory did not reach: the terminal runtime-motion shortcut", async () => {
+    // createMouth.speak used to hand this candidate straight to the deterministic mouth before any candidate
+    // field existed, so nothing audited its commitments. That shortcut is now one strategy under one contract.
     const requestText = "What is the boiling point of tungsten?";
     const recorded = "No grounded source in the ingested corpus for: boiling point.";
     const spoken = await speakWithoutEvidence({
@@ -199,11 +199,10 @@ describe("adversarial leakage: probable dialogue continuations never acquire fac
       conversationTurns: [],
       selectedCandidate: terminalRuntimeMotionCandidate(recorded)
     });
-    // Current, unfixed behaviour: the surface is spoken verbatim with zero evidence refs.
-    expect(spoken.text).toBe(recorded);
+    expect(spoken.text).toBe("");
     expect(spoken.evidenceRefs).toEqual([]);
-    // And the inventory, given the same surface, already refuses it. Only the wiring at that shortcut is missing.
-    expect(candidateCommitmentsLicensed(inventory(spoken.text, { requestText }))).toBe(false);
+    // The inventory refuses this surface, and the boundary now asks it before anything is spoken.
+    expect(candidateCommitmentsLicensed(inventory(recorded, { requestText }))).toBe(false);
   });
 
   it("through the real Mouth: the conversation lane speaks nothing the conversation did not supply", async () => {

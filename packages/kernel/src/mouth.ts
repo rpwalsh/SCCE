@@ -99,6 +99,12 @@ import { evaluateConstructionCycleConsistency, type ConstructionCycleConsistency
 import { sourceRelationConstructionBindingId } from "./graph-surface-alignment.js";
 import { containsUnresolvedSurfaceKey } from "./localization.js";
 import { isNonAssertiveRuntimeMotionConstruct, isTerminalNonAssertiveRuntimeMotionCandidate } from "./runtime-motion.js";
+import {
+  SURFACE_REALIZATION_STRATEGY_IDS,
+  evaluateSurfaceContract,
+  type SurfaceContractMaterial,
+  type SurfaceRealizationStrategyId
+} from "./surface-contract.js";
 import { ensureSurfaceSentence as ensureUnicodeSurfaceSentence, hasUncasedNonLatinLetter, hasUppercaseLetter, isDegenerateBareSurface, isSentenceBoundarySymbol, splitSurfaceSentences as splitUnicodeSurfaceSentences, structurallyCompleteSurface, surfaceWords, tidySurfaceText } from "./surface-linguistics.js";
 import { kneserNeyPerplexity, type KneserNeyModel } from "./kneser-ney.js";
 import { CALIBRATION_TASK_CLASS_IDS, type CalibrationModelSet } from "./calibration-spine.js";
@@ -391,6 +397,8 @@ export interface RealizationTrace {
   preservation: JsonValue;
   surfaceRepair: JsonValue;
   walshSurfaceEnergy: JsonValue;
+  /** The one contract this surface passed, stage by stage. Absent means a path reached a user without it. */
+  surfaceContract?: JsonValue;
 }
 
 export interface MouthSemanticSlot {
@@ -656,6 +664,56 @@ function claimMouthGenerationWork(budget: MouthGenerationWorkBudget, requestedEx
   budget.remainingCalls -= 1;
   budget.admittedCalls += 1;
   return Math.max(1, Math.min(budget.maxExtent, Math.floor(requestedExtent)));
+}
+
+/** The turn's own licensing material, read off the speak input every strategy already receives. */
+function surfaceContractMaterial(input: SpeakInput): SurfaceContractMaterial {
+  const construct = semanticAnswerConstructState(input.construct);
+  const intendedText = (construct?.selectedFacts ?? [])
+    .map(fact => String(fact.object ?? "").trim())
+    .filter(Boolean)
+    .join(" ");
+  const slots = input.dialogueContinuity?.unresolvedSlots ?? [];
+  return {
+    requestText: input.requestText ?? String(input.entailment?.claim?.text ?? ""),
+    conversationTurns: input.conversationTurns ?? [],
+    evidenceTexts: input.evidence.map(span => ({ id: String(span.id), text: String(span.text ?? span.textPreview ?? "") })),
+    claimBases: input.claimBases ?? input.selectedProposal?.claims ?? [],
+    slotValues: slots.map(slot => ({ id: String(slot), text: String(slot) })),
+    models: input.languageMemory?.models ?? [],
+    ...(input.languageMemory?.continuationPopulation ? { continuationPopulation: input.languageMemory.continuationPopulation } : {}),
+    ...(intendedText ? { intendedText } : {})
+  };
+}
+
+/**
+ * The single exit. Whichever strategy realized the surface, it leaves through here carrying the contract's
+ * stages, and the commitment stage decides emission for the turns whose sibling producer already gated on it.
+ */
+export function withSurfaceContract(input: SpeakInput, spoken: SpokenOutput, strategyId: SurfaceRealizationStrategyId): SpokenOutput {
+  const recorded = jsonRecord(spoken.realizationTrace.surfaceContract);
+  const textHash = hash32(spoken.text).toString(16);
+  if (recorded.schema === "scce.mouth.surface_contract.v1" && recorded.surfaceTextHash === textHash) return spoken;
+  const result = evaluateSurfaceContract({
+    surface: spoken.text,
+    strategyId,
+    material: surfaceContractMaterial(input),
+    // The runtime-motion composer already refuses an unlicensed component; a turn that reaches the boundary
+    // holding nothing but that motion keeps the stricter of the two gates rather than the looser one.
+    commitmentsDecide: Boolean(input.selectedCandidate && isTerminalNonAssertiveRuntimeMotionCandidate(input.selectedCandidate)),
+    discoursePlanId: String(jsonRecord(spoken.realizationTrace.discoursePlan).id ?? "") || null
+  });
+  const audit = toJsonValue({ ...jsonRecord(result.audit), surfaceTextHash: hash32(result.surface).toString(16) });
+  traceEvent((globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace, {
+    stage: "mouth.surface_contract",
+    label: "mouth.speak",
+    counts: { inputChars: spoken.text.length, emittedChars: result.surface.length },
+    support: { contract: audit }
+  });
+  const trace = { ...spoken.realizationTrace, surfaceContract: audit };
+  return result.withheld
+    ? { ...spoken, text: "", evidenceRefs: [], realizationTrace: trace }
+    : { ...spoken, realizationTrace: trace };
 }
 
 export function createMouth(options: { languageMemory: LanguageMemoryRuntime; correctionMemory: CorrectionMemory; hashText: (text: string) => string; hasher?: Hasher }): Mouth {
@@ -1466,15 +1524,21 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
   };
   return {
     async speak(input) {
-      // The motion boundary is the fallback for an unresolved turn, not a reason to skip the learned lane: it used
-      // to return here, so nothing ever produced a conversational candidate on a zero-evidence turn.
+      // One entry, one exit. Strategy selection happens inside: the learned strategy runs first, and the
+      // deterministic strategy realizes an unresolved motion when the learned one produced nothing of its own.
+      // Neither is a terminal -- both leave through withSurfaceContract.
       if (!input.selectedCandidate || !isTerminalNonAssertiveRuntimeMotionCandidate(input.selectedCandidate)) {
-        return learned.speak(input);
+        return withSurfaceContract(input, await learned.speak(input), SURFACE_REALIZATION_STRATEGY_IDS.learned);
       }
       const spoken = await learned.speak(input);
-      // The motion surface stays the deterministic realizer's; only a surface the learned lane produced itself speaks.
       const spokeItsOwn = spoken.text.trim().length > 0 && spoken.realizationTrace.selected.id !== input.selectedCandidate.id;
-      return spokeItsOwn ? spoken : createDeterministicMouth({ hashText: options.hashText }).speak(input);
+      return spokeItsOwn
+        ? withSurfaceContract(input, spoken, SURFACE_REALIZATION_STRATEGY_IDS.learned)
+        : withSurfaceContract(
+          input,
+          await createDeterministicMouth({ hashText: options.hashText }).speak(input),
+          SURFACE_REALIZATION_STRATEGY_IDS.deterministic
+        );
     }
   };
 }
@@ -1664,7 +1728,7 @@ export function createDeterministicMouth(options: { hashText: (text: string) => 
         : "candidate:deterministic:continuation-required";
       const textHash = options.hashText(text);
       const planId = planHash(plan, options.hashText);
-      return {
+      const realized: SpokenOutput = {
         text,
         language: plan.targetLanguage,
         force: dominantForce(plan),
@@ -1713,6 +1777,9 @@ export function createDeterministicMouth(options: { hashText: (text: string) => 
         },
         surfacePlan: plan
       };
+      // Deterministic is a realization strategy under the contract, never a second way out: callers that reach
+      // it directly (the deadline refusal, the recovery fallbacks) get the same stages the learned entry gets.
+      return withSurfaceContract(input, realized, SURFACE_REALIZATION_STRATEGY_IDS.deterministic);
     }
   };
 }
