@@ -4849,7 +4849,7 @@ function compiledModelIdentity(record: NgramModelRecord, row: Record<string, Jso
     numberOf(row.observedSymbolCount),
     numberOf(row.vocabularySize),
     numberOf(row.totalContinuationTypes)
-  ].join("");
+  ].join("\u001f");
 }
 
 function ngramModelFromRecord(record: NgramModelRecord): KneserNeyModel | undefined {
