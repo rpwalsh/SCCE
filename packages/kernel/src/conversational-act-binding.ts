@@ -2,15 +2,21 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { DIALOGUE_ACT_IDS, type DialogueActId } from "./dialogue-pragmatics.js";
 import { otsuThreshold } from "./language-identity.js";
-import type { SurfaceMeaningPlan } from "./language-construction.js";
+import {
+  CONVERSATION_INTERNAL_PROVENANCE_METHOD_ID,
+  type ConversationInternalSpanLicence,
+  type ConversationTurnSurface,
+  type SurfaceMeaningPlan
+} from "./language-construction.js";
 import { canonicalStringify } from "./primitives.js";
 import type { RequestCommunicativeActClassification } from "./request-communicative-act.js";
 import type { Hasher } from "./types.js";
 
 export const CONVERSATIONAL_ACT_BINDING_SCHEMA = "scce.conversational_act_binding.v1" as const;
 
-/** The provenance method a conversation-internal slot filler carries in place of a document evidence id. */
-export const CONVERSATION_INTERNAL_PROVENANCE_METHOD_ID = "surface.provenance.conversation_internal.v1" as const;
+// The licence kind and its method id live with the realizer that must verify them; re-exported for this lane.
+export { CONVERSATION_INTERNAL_PROVENANCE_METHOD_ID };
+export type { ConversationInternalSpanLicence, ConversationTurnSurface };
 
 /**
  * The four authority classes a surface can hold, derived from discriminators `PlannedClaim` already
@@ -50,13 +56,6 @@ export function surfaceAuthorityClass(claim: AuthorityClassifiable): SurfaceAuth
 /** Only a grounded factual surface may be asserted as known. Evidence gates the claim, never the speech. */
 export function authorityClassMayAssertAsKnown(classId: SurfaceAuthorityClassId): boolean {
   return classId === SURFACE_AUTHORITY_CLASS_IDS.groundedFactual;
-}
-
-/** One turn of this conversation, as the caller observed it. The only material a conversational filler may carry. */
-export interface ConversationTurnSurface {
-  turnId: string;
-  turnIndex: number;
-  surface: string;
 }
 
 /** A filler taken from a code-point span of one turn of this conversation. It carries no evidence or relation id. */
@@ -223,32 +222,15 @@ export function conversationBoundMoveMayAssertAsKnown(move: ConversationBoundMov
   return authorityClassMayAssertAsKnown(surfaceAuthorityClass(move));
 }
 
-/**
- * A filler's licence: the conversation span it was cut from. It is deliberately NOT a
- * `SurfaceRecordProvenance` -- that union's `methodId` admits only induction and caller provenance and its
- * validator requires a non-empty evidence id list, so representing a conversation span as one would mean
- * inventing a document reference. The licence stays a separate record until that union is widened.
- */
-export interface ConversationInternalSpanLicence {
-  schema: typeof CONVERSATION_INTERNAL_PROVENANCE_METHOD_ID;
-  variantId: string;
-  slotIndex: number;
-  conversationId: string;
-  sourceTurnId: string;
-  startCodePoint: number;
-  endCodePoint: number;
-}
-
 export interface ConversationalSurfacePlanResult {
   plan: SurfaceMeaningPlan;
   licences: readonly ConversationInternalSpanLicence[];
 }
 
 /**
- * The surface plan an admitted binding would realize from, with each filler's conversation-internal licence
- * alongside it. Every variant carries an empty evidence id list, so today `realizeLearnedSurface` rejects this
- * plan with `surface.construction.reject.trace`; that refusal is pinned by a test and is the one gate a later
- * lane must open deliberately, with the paired factual regression still passing.
+ * The surface plan an admitted binding would realize from. Every variant carries an empty evidence id list and
+ * its conversation-internal licence, so `realizeLearnedSurface` realizes it only when the caller also supplies
+ * the conversation turns the licence is re-cut from; without them the plan is still rejected for want of a licence.
  */
 export function conversationalSurfaceMeaningPlan(input: {
   binding: ConversationalActBinding;
@@ -260,6 +242,15 @@ export function conversationalSurfaceMeaningPlan(input: {
   const fillers = [...input.binding.fillers].sort((left, right) => left.slotIndex - right.slotIndex);
   const variantId = (filler: ConversationalSlotFiller): string =>
     `surface.conversational_variant.${input.hasher.digestHex(canonicalStringify([input.binding.id, filler.slotIndex, filler.surface]))}`;
+  const licenceFor = (filler: ConversationalSlotFiller): ConversationInternalSpanLicence => ({
+    schema: CONVERSATION_INTERNAL_PROVENANCE_METHOD_ID,
+    variantId: variantId(filler),
+    slotIndex: filler.slotIndex,
+    conversationId: input.binding.conversationId,
+    sourceTurnId: filler.sourceTurnId,
+    startCodePoint: filler.startCodePoint,
+    endCodePoint: filler.endCodePoint
+  });
   return {
     plan: {
       id: `surface.conversational_plan.${input.hasher.digestHex(canonicalStringify(["surface.conversational_plan", input.binding.id]))}`,
@@ -275,20 +266,13 @@ export function conversationalSurfaceMeaningPlan(input: {
             profileKey: input.binding.profileKey,
             surface: filler.surface,
             evidenceIds: [],
+            conversationInternalLicence: licenceFor(filler),
             ...(formClassId ? { formClassId } : {})
           }]
         };
       })
     },
-    licences: fillers.map(filler => ({
-      schema: CONVERSATION_INTERNAL_PROVENANCE_METHOD_ID,
-      variantId: variantId(filler),
-      slotIndex: filler.slotIndex,
-      conversationId: input.binding.conversationId,
-      sourceTurnId: filler.sourceTurnId,
-      startCodePoint: filler.startCodePoint,
-      endCodePoint: filler.endCodePoint
-    }))
+    licences: fillers.map(licenceFor)
   };
 }
 

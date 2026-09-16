@@ -44,9 +44,37 @@ export interface LearnedSurfaceOrigin {
   evidenceIds: readonly string[];
 }
 
+/** The provenance method a slot filler cut from this conversation carries in place of a document evidence id. */
+export const CONVERSATION_INTERNAL_PROVENANCE_METHOD_ID = "surface.provenance.conversation_internal.v1" as const;
+
+/** One turn of this conversation, as the caller observed it. The only material a conversational filler may carry. */
+export interface ConversationTurnSurface {
+  turnId: string;
+  turnIndex: number;
+  surface: string;
+}
+
+/**
+ * A slot filler's licence when its material is a code-point span of a turn of this conversation rather than a
+ * document. It is the second disjunct of the realizer's licence check, never a way past it: the realizer re-cuts
+ * the span from the turn the caller supplies and refuses the variant unless the surface matches exactly.
+ */
+export interface ConversationInternalSpanLicence {
+  schema: typeof CONVERSATION_INTERNAL_PROVENANCE_METHOD_ID;
+  variantId: string;
+  slotIndex: number;
+  conversationId: string;
+  sourceTurnId: string;
+  startCodePoint: number;
+  endCodePoint: number;
+}
+
 export interface UnverifiedSurfaceRecordProvenance {
   verification: "unverified";
-  methodId: "surface.provenance.induction.v1" | "surface.provenance.caller.v1";
+  methodId:
+    | "surface.provenance.induction.v1"
+    | "surface.provenance.caller.v1"
+    | typeof CONVERSATION_INTERNAL_PROVENANCE_METHOD_ID;
   sourceExampleIds: readonly string[];
   evidenceIds: readonly string[];
 }
@@ -136,7 +164,9 @@ export interface SurfaceMeaningSlotVariant {
   id: string;
   profileKey: string;
   surface: string;
+  /** Licensed by a non-empty evidence id list OR by `conversationInternalLicence`; never by neither. */
   evidenceIds: readonly string[];
+  conversationInternalLicence?: ConversationInternalSpanLicence;
   support?: number;
   formClassId?: string;
   provenance?: SurfaceRecordProvenance;
@@ -452,8 +482,11 @@ export function realizeLearnedSurface(input: {
   verifySealedProvenance?: SurfaceProvenanceVerifier;
   /** Prior observed semantic cycle scores. When supplied, they are the first selection signal. */
   cycleConsistencyByConstructionId?: ReadonlyMap<string, number>;
+  /** The turns a conversation-internal filler licence may be re-cut from. Absent means no such licence holds. */
+  conversationTurns?: readonly ConversationTurnSurface[];
 }): LearnedSurfaceResult {
-  const planResult = prepareMeaningPlan(input.plan);
+  const conversationTurns = conversationTurnIndex(input.conversationTurns);
+  const planResult = prepareMeaningPlan(input.plan, conversationTurns);
   if ("issue" in planResult) return rejectedResult(input.plan, planResult.issue, []);
   const preparedPlan = planResult.prepared;
 
@@ -491,7 +524,8 @@ export function realizeLearnedSurface(input: {
       slots,
       formClasses,
       hasher: input.hasher,
-      verifySealedProvenance: input.verifySealedProvenance
+      verifySealedProvenance: input.verifySealedProvenance,
+      conversationTurns
     });
     if ("issue" in candidate) {
       issues.push(candidate.issue);
@@ -736,7 +770,10 @@ function prepareExample(example: AlignedSurfaceExample):
   return { prepared: { source: example, roleSignature, roleOccurrences, sequence, structuralKey } };
 }
 
-function prepareMeaningPlan(plan: SurfaceMeaningPlan):
+function prepareMeaningPlan(
+  plan: SurfaceMeaningPlan,
+  conversationTurns?: ReadonlyMap<string, ConversationTurnSurface>
+):
   | { prepared: PreparedMeaningPlan }
   | { issue: LanguageConstructionIssue } {
   if (!nonempty(plan.id) || !nonempty(plan.profileKey)) {
@@ -822,7 +859,9 @@ function prepareMeaningPlan(plan: SurfaceMeaningPlan):
             }
           };
         }
-        if (!hasEvidenceReferences(variant.evidenceIds)) {
+        // A filler is licensed by document evidence OR by a verified conversation span. Neither is not licensed.
+        if (!hasEvidenceReferences(variant.evidenceIds)
+          && !conversationInternalLicenceCovers(variant, conversationTurns)) {
           return {
             issue: {
               code: LANGUAGE_CONSTRUCTION_REJECTION_IDS.trace,
@@ -890,6 +929,7 @@ function instantiateConstruction(input: {
   formClasses: ReadonlyMap<string, LearnedFormClass>;
   hasher: Hasher;
   verifySealedProvenance?: SurfaceProvenanceVerifier;
+  conversationTurns?: ReadonlyMap<string, ConversationTurnSurface>;
 }): { candidate: CandidateRealization } | { issue: LanguageConstructionIssue } {
   if (!isNormalizedSupport(input.construction.support)
     || !hasEvidenceReferences(input.construction.patternEvidenceIds)
@@ -911,6 +951,7 @@ function instantiateConstruction(input: {
   const observedSupports: number[] = [];
   const trace: LearnedRealizationTracePart[] = [];
   const variantIds: string[] = [];
+  const conversationLicensedVariantIds = new Set<string>();
   const provenanceRecords: SurfaceProvenanceRecord[] = [{
     recordKind: "construction",
     recordId: input.construction.id,
@@ -1022,12 +1063,17 @@ function instantiateConstruction(input: {
         };
       }
       const observed = observedMatches[0];
+      const conversationLicensed = conversationInternalLicenceCovers(variant, input.conversationTurns);
+      // A caller-declared conversation-internal provenance without a verified span licenses nothing.
+      if (variant.provenance?.methodId === CONVERSATION_INTERNAL_PROVENANCE_METHOD_ID && !conversationLicensed) continue;
       const variantRecord: SurfaceProvenanceRecord = {
         recordKind: "meaning_variant",
         recordId: variant.id,
-        provenance: variant.provenance ?? callerProvenance(variant.evidenceIds)
+        provenance: variant.provenance
+          ?? (conversationLicensed ? conversationInternalProvenance() : callerProvenance(variant.evidenceIds))
       };
       if (!validProvenanceRecord(variantRecord, variant.evidenceIds, [], input.verifySealedProvenance)) continue;
+      if (conversationLicensed) conversationLicensedVariantIds.add(variant.id);
       let observedRecord: SurfaceProvenanceRecord | undefined;
       if (observed) {
         observedRecord = {
@@ -1098,7 +1144,11 @@ function instantiateConstruction(input: {
     };
   }
   const evidenceIds = uniqueSorted(trace.flatMap(part => part.evidenceIds));
-  if (!hasEvidenceReferences(evidenceIds) || !traceCoversText(text, trace)) {
+  // Every emitted part carries its own licence: document evidence, or a verified conversation span for a filler.
+  if (process.env.SCCE_DBG) console.log("DBG", JSON.stringify({ licensed: [...conversationLicensedVariantIds], trace: trace.map(p => ({ k: p.kind, v: p.variantId, e: p.evidenceIds.length, s: p.surface })), text, covers: traceCoversText(text, trace) }));
+  const unlicensedPart = trace.some(part => !hasEvidenceReferences(part.evidenceIds)
+    && !(part.kind === "slot" && part.variantId !== undefined && conversationLicensedVariantIds.has(part.variantId)));
+  if (unlicensedPart || !traceCoversText(text, trace)) {
     return {
       issue: {
         code: LANGUAGE_CONSTRUCTION_REJECTION_IDS.trace,
@@ -1298,10 +1348,17 @@ function validProvenanceRecord(
   const provenance = record.provenance;
   if (!nonempty(record.recordId)
     || !nonempty(provenance.methodId)
-    || !hasEvidenceReferences(provenance.evidenceIds)
     || requiredEvidenceIds.some(id => !provenance.evidenceIds.includes(id))
     || requiredSourceExampleIds.some(id => !provenance.sourceExampleIds.includes(id))
     || provenance.sourceExampleIds.some(id => !nonempty(id))) return false;
+  // The second licence kind: only a slot filler, only with no document reference at all, never for a construction.
+  if (provenance.verification === "unverified"
+    && provenance.methodId === CONVERSATION_INTERNAL_PROVENANCE_METHOD_ID) {
+    return record.recordKind === "meaning_variant"
+      && provenance.evidenceIds.length === 0
+      && provenance.sourceExampleIds.length === 0;
+  }
+  if (!hasEvidenceReferences(provenance.evidenceIds)) return false;
   if (provenance.verification === "unverified") {
     return provenance.methodId === "surface.provenance.induction.v1"
       || provenance.methodId === "surface.provenance.caller.v1";
@@ -1455,6 +1512,42 @@ function firstDuplicate(values: readonly string[]): string | undefined {
 
 function hasEvidenceReferences(evidenceIds: readonly string[]): boolean {
   return evidenceIds.length > 0 && evidenceIds.every(nonempty);
+}
+
+/**
+ * The second licence disjunct, proved rather than trusted: the licence names a turn the caller supplied, and
+ * that turn's own code points must still yield exactly this variant's surface. A caller who supplies no turns
+ * licenses nothing, so the factual lane -- which has no conversation to cut from -- is unchanged.
+ */
+function conversationInternalLicenceCovers(
+  variant: SurfaceMeaningSlotVariant,
+  turnsById: ReadonlyMap<string, ConversationTurnSurface> | undefined
+): boolean {
+  const licence = variant.conversationInternalLicence;
+  if (!licence || !turnsById) return false;
+  if (licence.schema !== CONVERSATION_INTERNAL_PROVENANCE_METHOD_ID || licence.variantId !== variant.id) return false;
+  if (hasEvidenceReferences(variant.evidenceIds) || variant.evidenceIds.length !== 0) return false;
+  const turn = turnsById.get(licence.sourceTurnId);
+  if (!turn) return false;
+  if (!Number.isInteger(licence.startCodePoint) || !Number.isInteger(licence.endCodePoint)) return false;
+  const points = [...turn.surface];
+  if (licence.startCodePoint < 0 || licence.endCodePoint > points.length || licence.startCodePoint >= licence.endCodePoint) return false;
+  return points.slice(licence.startCodePoint, licence.endCodePoint).join("") === variant.surface;
+}
+
+function conversationInternalProvenance(): UnverifiedSurfaceRecordProvenance {
+  return {
+    verification: "unverified",
+    methodId: CONVERSATION_INTERNAL_PROVENANCE_METHOD_ID,
+    sourceExampleIds: [],
+    evidenceIds: []
+  };
+}
+
+function conversationTurnIndex(
+  turns: readonly ConversationTurnSurface[] | undefined
+): ReadonlyMap<string, ConversationTurnSurface> | undefined {
+  return turns?.length ? new Map(turns.map(turn => [turn.turnId, turn] as const)) : undefined;
 }
 
 function nonempty(value: string): boolean {
