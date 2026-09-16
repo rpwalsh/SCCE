@@ -11,7 +11,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { acquireAndTrainGithubOssRepository, assertHydratedRuntimeReady, buildScce2BrainShardIndex, createHydrationPlan, createNodeRuntime, inspectHydrationRecords, fitRelationPotentialFromGraph, runEvaluationReleaseGate, proposeSelfRewrite, createScce2ToV3Importer, createWikipediaV3Ingestor, createWorkspaceRuntime, dryRunDeveloperRepoPlan, dryRunEngineeringCorpusIngest, fullyVerifyEventLedger, graphDeveloperRepo, importHydrationPlan, inspectDeveloperRepo, inspectEngineeringCorpusFolder, inspectHydrationStatus, inspectV2Artifacts, inspectV2GraphShard, inspectV2Ngram, inspectV2Profile, inspectV2Stream, inspectV2StreamTopic, inspectV2Topic, parseRepoDiagnosticsFixture, readScceRuntimeConfig, routeEngineeringCorpusFixture, scanLanguageControlHygiene, trainGutenbergCorpus, trainOssCorpus, trainStoredCorpusConstructions, verifiedCompilerPlansForTurn, type WikipediaV3IngestStatus, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
+import { acquireAndTrainGithubOssRepository, assertHydratedRuntimeReady, buildScce2BrainShardIndex, createHydrationPlan, createNodeRuntime, inspectHydrationRecords, fitRelationPotentialFromGraph, runEvaluationReleaseGate, proposeSelfRewrite, createScce2ToV3Importer, createWikipediaV3Ingestor, createWorkspaceRuntime, dryRunDeveloperRepoPlan, dryRunEngineeringCorpusIngest, fullyVerifyEventLedger, graphDeveloperRepo, importHydrationPlan, inspectDeveloperRepo, inspectEngineeringCorpusFolder, inspectHydrationStatus, inspectV2Artifacts, inspectV2GraphShard, inspectV2Ngram, inspectV2Profile, inspectV2Stream, inspectV2StreamTopic, inspectV2Topic, parseRepoDiagnosticsFixture, readScceRuntimeConfig, routeEngineeringCorpusFixture, scanLanguageControlHygiene, trainDialogueCorpus, trainGutenbergCorpus, trainOssCorpus, trainStoredCorpusConstructions, verifiedCompilerPlansForTurn, type WikipediaV3IngestStatus, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
 import type { BenchmarkInput, InspectionTarget, WorkspaceReportRecord } from "@scce/kernel";
 import { parseScce2ImportOptions, parseScce2InspectOptions } from "./scce2-options.js";
 import { defaultWorkspaceCodingRequestId, parseWorkspaceCodingRequest, splitWorkspaceCodingTurnArgs, WORKSPACE_CODE_USAGE } from "./workspace-code-options.js";
@@ -70,7 +70,7 @@ async function main(): Promise<void> {
         await db(runtime, parsed.args, config);
         return;
       case "corpus":
-        await corpus(runtime, parsed.args);
+        await corpus(runtime, parsed.args, config);
         return;
       case "relation-potential":
         await relationPotential(parsed.configPath, runtime, parsed.args);
@@ -594,7 +594,11 @@ async function relationPotential(configPath: string, runtime: ReturnType<typeof 
   });
 }
 
-async function corpus(runtime: ReturnType<typeof createNodeRuntime> | undefined, args: string[]): Promise<void> {
+async function corpus(
+  runtime: ReturnType<typeof createNodeRuntime> | undefined,
+  args: string[],
+  config?: Awaited<ReturnType<typeof readScceRuntimeConfig>>
+): Promise<void> {
   const sub = args[0];
   if (sub === "inspect") {
     const target = args[1];
@@ -641,8 +645,35 @@ async function corpus(runtime: ReturnType<typeof createNodeRuntime> | undefined,
       return;
     }
     const target = args[2];
-    if (!target || (kind !== "gutenberg" && kind !== "oss" && kind !== "oss-github")) return usage("scce corpus train <gutenberg|oss|oss-github|wikipedia-stored> <path-or-url> [--commit=<sha>] [--language=<source-alias>] [--max-files=<n>] [--max-file-bytes=<n>] [--max-total-bytes=<n>] [--max-depth=<n>] [--ngram-max-order=<n>] [--ngram-max-counters=<n>] [--ngram-vocabulary-limit=<n>]");
+    if (!target || (kind !== "gutenberg" && kind !== "oss" && kind !== "oss-github" && kind !== "dialogue")) return usage("scce corpus train <gutenberg|oss|oss-github|dialogue|wikipedia-stored> <path-or-url> [--commit=<sha>] [--language=<source-alias>] [--max-files=<n>] [--max-file-bytes=<n>] [--max-total-bytes=<n>] [--max-depth=<n>] [--ngram-max-order=<n>] [--ngram-max-counters=<n>] [--ngram-vocabulary-limit=<n>]");
     const options = parseCorpusTrainOptions(args.slice(3).filter(arg => !arg.startsWith("--commit=")));
+    if (kind === "dialogue") {
+      const access = config?.security?.informationAccess;
+      if (!access) return usage("scce corpus train dialogue requires security.informationAccess in the runtime config");
+      // The transcript is labelled with the operator's own access context, never the public corpus label.
+      printJson(await trainDialogueCorpus({
+        storage: runtime.storage,
+        rootPath: path.resolve(target),
+        authorship: "human_authored",
+        informationLabel: {
+          tenantId: access.tenantId,
+          principals: [access.principalId],
+          compartments: [...access.compartments],
+          exportClass: "restricted",
+          mergePolicy: "isolated"
+        },
+        startFileIndex: options.startFileIndex,
+        maxFilesPerRun: options.maxFiles,
+        maxFileBytes: options.maxFileBytes,
+        maxDepth: options.maxDepth,
+        ngramMaxOrder: options.ngramMaxOrder,
+        ngramMaxCountersPerOrder: options.ngramMaxCountersPerOrder,
+        ngramVocabularyLimit: options.ngramVocabularyLimit,
+        languageAliases: options.languageAliases,
+        heapCheckpointMb: options.heapCheckpointMb
+      }));
+      return;
+    }
     if (kind === "oss-github") {
       const commitArg = args.slice(3).find(arg => arg.startsWith("--commit="));
       const commitSha = commitArg?.slice("--commit=".length).trim();
@@ -1847,6 +1878,7 @@ function usage(error?: string): void {
     "  pnpm scce corpus ingest --dry-run <path>",
     "  pnpm scce corpus route --fixture <path>",
     "  pnpm scce corpus train gutenberg <path>",
+    "  pnpm scce corpus train dialogue <path>   (human-authored dialogue transcripts; owner-private, enable runtime.corpora.registry.dialogue to hydrate it)",
     "  pnpm scce relation-potential fit [--promote] [--max-edges=N] | status | promote --model-id=<id>",
     "  pnpm scce self-rewrite propose --target=<goal> [--capability=<id>] [--path=<root>]",
     "  pnpm scce corpus train oss <path>",

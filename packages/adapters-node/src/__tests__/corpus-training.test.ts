@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   corpusRegistryEntriesFromConfig,
+  trainDialogueCorpus,
   trainGutenbergCorpus,
   trainLanguageCorpusText,
   trainOssCorpus,
@@ -13,7 +14,7 @@ import {
   validateConfig,
   type ScceRuntimeConfig
 } from "../index.js";
-import { canonicalCorpusSourceSystemId, createClock, createHasher, createIdFactory } from "@scce/kernel";
+import { canonicalCorpusSourceSystemId, createClock, createHasher, createIdFactory, CORPUS_ROLE_IDS } from "@scce/kernel";
 import type {
   EvidenceSpan,
   InformationLabel,
@@ -365,6 +366,77 @@ describe("multi-corpus training", () => {
     expect(result.filesSkipped.some(row => row.reason.startsWith("training_failed: synthetic language-memory write failure"))).toBe(true);
   });
 });
+
+describe("dialogue corpus training", () => {
+  const ownerLabel: InformationLabel = {
+    tenantId: "owner.tenant",
+    principals: ["owner.principal"],
+    compartments: [],
+    exportClass: "restricted",
+    mergePolicy: "isolated"
+  };
+
+  it("trains human-authored dialogue as its own source system, never as corrections or gutenberg", async () => {
+    const root = await tempDir("dialogue-fixture-");
+    await writeFile(path.join(root, "session.txt"), [
+      "so what do you think of that?",
+      "honestly not much. it reads fine but it does not answer me.",
+      "fair enough. want me to try again?",
+      "yeah go on then."
+    ].join("\n"), "utf8");
+    const fixture = memoryStorage();
+
+    const result = await trainDialogueCorpus({
+      storage: fixture.storage,
+      rootPath: root,
+      authorship: "human_authored",
+      informationLabel: ownerLabel,
+      maxFilesPerRun: 1,
+      maxFileBytes: 100_000,
+      ngramMaxOrder: 3,
+      ngramMaxCountersPerOrder: 64
+    });
+
+    expect(result.filesTrained).toBe(1);
+    expect(result.totals.ngramModels).toBeGreaterThan(0);
+    expect(allSourceSystems(fixture.state)).toEqual(new Set(["dialogue"]));
+    expect(result.corpusRoleId).toBe(CORPUS_ROLE_IDS.dialogue);
+    expect(result.corpusRoleId).not.toBe(CORPUS_ROLE_IDS.interactionCorrection);
+    expect(fixture.state.models.every(row => informationLabelOf(row.informationLabel).exportClass !== "public")).toBe(true);
+  });
+
+  it("refuses to train on SCCE's own generations", async () => {
+    const root = await tempDir("dialogue-selftrain-");
+    await writeFile(path.join(root, "generated.txt"), "a surface this system produced", "utf8");
+    const fixture = memoryStorage();
+
+    await expect(trainDialogueCorpus({
+      storage: fixture.storage,
+      rootPath: root,
+      authorship: "system_generated",
+      informationLabel: ownerLabel
+    })).rejects.toThrow(/self-training/);
+    expect(fixture.state.models.length).toBe(0);
+  });
+
+  it("refuses a public export class for a transcript", async () => {
+    const root = await tempDir("dialogue-public-");
+    await writeFile(path.join(root, "session.txt"), "so what do you think of that?", "utf8");
+    const fixture = memoryStorage();
+
+    await expect(trainDialogueCorpus({
+      storage: fixture.storage,
+      rootPath: root,
+      authorship: "human_authored",
+      informationLabel: { ...ownerLabel, exportClass: "public" }
+    })).rejects.toThrow(/owner-private/);
+    expect(fixture.state.models.length).toBe(0);
+  });
+});
+
+function informationLabelOf(value: InformationLabel | undefined): { exportClass?: string } {
+  return value ?? {};
+}
 
 function configFixture(corpora: ScceRuntimeConfig["runtime"]["corpora"]): ScceRuntimeConfig {
   return {

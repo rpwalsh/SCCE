@@ -30,7 +30,8 @@ export const CORPUS_SOURCE_SYSTEM_IDS = {
   ossDocs: corpusSourceId("corpus", "repo://software-documentation"),
   ossCode: corpusSourceId("corpus", "repo://software-symbols"),
   workspace: corpusSourceId("corpus", "workspace://local"),
-  corrections: corpusSourceId("corpus", "conversation://corrections")
+  corrections: corpusSourceId("corpus", "conversation://corrections"),
+  dialogue: corpusSourceId("corpus", "conversation://dialogue-turns")
 } as const;
 
 export const DEFAULT_CORPUS_SOURCE_SYSTEMS = [
@@ -52,7 +53,8 @@ export const CORPUS_SOURCE_ALIASES: Record<string, CorpusSourceSystemId> = {
   oss_docs: CORPUS_SOURCE_SYSTEM_IDS.ossDocs,
   oss_code: CORPUS_SOURCE_SYSTEM_IDS.ossCode,
   workspace: CORPUS_SOURCE_SYSTEM_IDS.workspace,
-  corrections: CORPUS_SOURCE_SYSTEM_IDS.corrections
+  corrections: CORPUS_SOURCE_SYSTEM_IDS.corrections,
+  dialogue: CORPUS_SOURCE_SYSTEM_IDS.dialogue
 };
 
 const CORPUS_SOURCE_LABELS = new Map<CorpusSourceSystemId, CorpusSourceSystemLabel>([
@@ -62,12 +64,14 @@ const CORPUS_SOURCE_LABELS = new Map<CorpusSourceSystemId, CorpusSourceSystemLab
   [CORPUS_SOURCE_SYSTEM_IDS.ossDocs, "oss_docs"],
   [CORPUS_SOURCE_SYSTEM_IDS.ossCode, "oss_code"],
   [CORPUS_SOURCE_SYSTEM_IDS.workspace, "workspace"],
-  [CORPUS_SOURCE_SYSTEM_IDS.corrections, "corrections"]
+  [CORPUS_SOURCE_SYSTEM_IDS.corrections, "corrections"],
+  [CORPUS_SOURCE_SYSTEM_IDS.dialogue, "dialogue"]
 ]);
 
 export const CORPUS_ROLE_IDS = {
   importedPrior: corpusRoleId("scce://role/imported-prior"),
   interactionCorrection: corpusRoleId("scce://role/interaction-correction"),
+  dialogue: corpusRoleId("scce://role/dialogue"),
   workspace: corpusRoleId("scce://role/workspace"),
   encyclopedic: corpusRoleId("scce://role/encyclopedic"),
   publicDomainProse: corpusRoleId("scce://role/public-domain-prose"),
@@ -189,6 +193,10 @@ const DEFAULT_REGISTRY: CorpusRegistryEntry[] = [
     languagePatterns: 512,
     semanticFrames: 512
   }),
+  // Disabled until an operator enables it: an empty dialogue population must never join an unscoped hydration,
+  // where every registered corpus is queried and a factual turn would silently draw on it. Priority is fan-out
+  // order, not a modeling weight.
+  { ...entry(CORPUS_SOURCE_SYSTEM_IDS.dialogue, "dialogue", CORPUS_ROLE_IDS.dialogue, 92, 1, false), enabled: false },
   entry(CORPUS_SOURCE_SYSTEM_IDS.workspace, "workspace", CORPUS_ROLE_IDS.workspace, 90, 0.92, true),
   entry(CORPUS_SOURCE_SYSTEM_IDS.wikipedia, "wikipedia", CORPUS_ROLE_IDS.encyclopedic, 80, 0.9, true),
   entry(CORPUS_SOURCE_SYSTEM_IDS.gutenberg, "gutenberg", CORPUS_ROLE_IDS.publicDomainProse, 70, 0.78, true),
@@ -304,6 +312,7 @@ function entry(
 function roleIdForSource(sourceSystem: CorpusSourceSystemId): CorpusRoleId {
   if (sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.legacyScce2) return CORPUS_ROLE_IDS.importedPrior;
   if (sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.corrections) return CORPUS_ROLE_IDS.interactionCorrection;
+  if (sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.dialogue) return CORPUS_ROLE_IDS.dialogue;
   if (sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.workspace) return CORPUS_ROLE_IDS.workspace;
   if (sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.wikipedia) return CORPUS_ROLE_IDS.encyclopedic;
   if (sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.gutenberg) return CORPUS_ROLE_IDS.publicDomainProse;

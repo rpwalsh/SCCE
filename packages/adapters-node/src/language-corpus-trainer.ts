@@ -470,6 +470,12 @@ function corpusSourceTrust(sourceSystem: string): SourceTrust {
     authority: 1, freshness: 1, independenceGroup: "owner:corrections",
     accessScope: "owner_private", licenseStatus: "owner_authorized"
   };
+  // Human-authored dialogue: direct and owner-authorized like corrections, but never a factual authority.
+  if (sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.dialogue) return {
+    identity: 1, integrity: 1, parserReliability: 1, directness: 1,
+    authority: 0, freshness: 1, independenceGroup: "owner:dialogue",
+    accessScope: "owner_private", licenseStatus: "owner_authorized"
+  };
   if (sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.ossDocs) return {
     identity: 0.9, integrity: 1, parserReliability: 0.9, directness: 0.82,
     authority: 0.76, freshness: 0.72, independenceGroup: "corpus:oss-docs",
