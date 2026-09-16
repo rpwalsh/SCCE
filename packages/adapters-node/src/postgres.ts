@@ -5403,6 +5403,27 @@ function createDialogueMemoryStore(storage: PostgresStorageAdapter): DialogueMem
         ]
       );
     },
+    async putCalibrationObservations(records) {
+      if (!records.length) return;
+      const params: unknown[] = [];
+      const tuples = records.map(record => {
+        const base = params.length;
+        params.push(
+          record.id, record.calibrationId, record.subsystemId, record.taskClass, record.rawScore, record.outcome,
+          record.selectedOutputHash ?? null, record.accepted ?? null, record.rejected ?? null, record.corrected ?? null,
+          record.unsupportedFactHit ?? null, record.citationFailure ?? null, record.userCorrectionDistance ?? null,
+          record.finalOutcome, record.sourceTraceId ?? null, record.sourceRecordId ?? null,
+          JSON.stringify(record.metadata), record.createdAt
+        );
+        return `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9},$${base + 10},$${base + 11},$${base + 12},$${base + 13},$${base + 14},$${base + 15},$${base + 16},$${base + 17}::jsonb,TO_TIMESTAMP($${base + 18}/1000.0))`;
+      });
+      await storage.query(
+        `INSERT INTO ${storage.table("calibration_observations")}(id,calibration_id,subsystem_id,task_class,raw_score,outcome,selected_output_hash,accepted,rejected,corrected,unsupported_fact_hit,citation_failure,user_correction_distance,final_outcome,source_trace_id,source_record_id,metadata_json,created_at)
+         VALUES${tuples.join(",")}
+         ON CONFLICT(id) DO UPDATE SET raw_score=EXCLUDED.raw_score, outcome=EXCLUDED.outcome, final_outcome=EXCLUDED.final_outcome, metadata_json=EXCLUDED.metadata_json`,
+        params
+      );
+    },
     async listInteractionStates(query = {}) {
       const params: unknown[] = [];
       const where: string[] = [];

@@ -1051,6 +1051,8 @@ export interface DialogueMemoryStore {
   putResponseCandidate(record: ResponseCandidateRecord): Promise<void>;
   putTargetProfilePattern(record: TargetProfilePatternRecord): Promise<void>;
   putCalibrationObservation(record: CalibrationObservationRecord): Promise<void>;
+  /** One multi-row insert; a per-turn credit chain writes a dozen rows and must not cost a dozen round trips. */
+  putCalibrationObservations?(records: readonly CalibrationObservationRecord[]): Promise<void>;
   /** `headSchema` returns only that state schema, in the compare-and-set head order: turn index, then time, then id. */
   listInteractionStates(query?: { conversationId?: string; turnId?: string; limit?: number; headSchema?: string }): Promise<InteractionStateRecord[]>;
   listPolicyDecisions(query?: { conversationId?: string; turnId?: string; limit?: number }): Promise<DialoguePolicyDecisionRecord[]>;

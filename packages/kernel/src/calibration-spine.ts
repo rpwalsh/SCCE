@@ -27,7 +27,15 @@ export const CALIBRATION_IDS = {
   /** Plan item 129: translation.ts's own preservation/confidence score, calibrated against the real preservation-gate pass/fail outcome (item 125) instead of shipped as a bespoke ad hoc weighted sum. */
   translationPreservation: "translation.preservation",
   /** judge.ts's requirement-conditioned positive-quality softmax weights (its "logits"), previously a fixed 2026-07-12 hand-tuned bootstrap, now fit from real selected-candidate outcomes. */
-  judgeRequirementWeights: "judge.requirement_weights"
+  judgeRequirementWeights: "judge.requirement_weights",
+  /** Stages of the two credit chains that had no declared id at all, so their deciding quantity was unobservable. */
+  requirementFieldInference: "requirement.field_inference",
+  requirementActivationSupport: "requirement.activation_support",
+  proposalSelection: "proposal.selection",
+  relationComposition: "relation.composition",
+  answerFactBinding: "answer.fact_binding",
+  /** The whole-turn credit record itself, carrying both chains. */
+  turnCognitiveCredit: "turn.cognitive_credit"
 } as const;
 
 export type CalibrationId = typeof CALIBRATION_IDS[keyof typeof CALIBRATION_IDS];
@@ -44,7 +52,12 @@ export const CALIBRATION_SUBSYSTEM_IDS = {
   code: "subsystem.code",
   operator: "subsystem.operator",
   alpha: "subsystem.alpha",
-  translation: "subsystem.translation"
+  translation: "subsystem.translation",
+  requirement: "subsystem.requirement",
+  planner: "subsystem.planner",
+  relation: "subsystem.relation",
+  answer: "subsystem.answer",
+  turn: "subsystem.turn"
 } as const;
 
 export const CALIBRATION_TASK_CLASS_IDS = {

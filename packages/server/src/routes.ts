@@ -10,6 +10,8 @@ import { acquireAndTrainGithubOssRepository, assertHydratedRuntimeReady, automat
 import type { BenchmarkInput, CausalAnalysisRequest, CausalDiscoveryRequest, CausalAssumptionDag, CausalAssumptionEdge, CausalObservation, ConversationTurnRecord, DialogueInterpretationCorrectionInput, EventLedger, GraphSlice, IdentificationDesign, IngestInput, InspectionTarget, JsonValue, NodeId, OwnerInput, PatchTransactionPlan, ProgramGraph, RequestedAuthority, SourceAdmissionContext, SourceTrust, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
 import {
   behaviorRoleExecutionGraphInputFromTaskConstraintGraph, createProgramBehaviorValidationLedger, PROGRAM_BEHAVIOR_VALIDATION_PLAN_BINDING_SCHEMA, curriculumItemFromPlan,
+  buildCognitiveCreditRecord, cognitiveCreditObservations, withGradedOutcome, type CognitiveCreditRecord, type CreditGradedVerdict,
+  CALIBRATION_IDS, COGNITIVE_CREDIT_SCHEMA,
   learningConsentInput, persistCreativeContinuationOffer, creativeContinuationDecisionFromJson, creativeContinuationDecisionFromObservation, persistCreativeContinuationPreference, CREATIVE_CONTINUATION_OFFER_CALIBRATION_ID,
   listHeldSources,
   reviewHeldSource, summarizeForTrace, installProdCalibrations, clearProdCalibrations, prodCalibrationIds, CALIBRATION_SEARCH_IDS, createFrontierBroadCapabilityTasks, FRONTIER_BROAD_CAPABILITY_SUITE_ID, CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, CAUSAL_DISCOVERY_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, SUPPORTED_PROGRAM_REPAIR_FAMILIES, buildDiscourseObjectState, buildTurnDialogueBridge, measureRequestCorpusSubject, canonicalStringify, createAuditEngine, createCapabilityExecutorRegistry, createClock, createDialogueCognitiveMemoryV2, createCorrectionEngine, createCorrectionObservation, createEventFactory, createHasher, createIdFactory, dialogueOutcomeMemoryForConversation, dialogueInterpretationAdjustmentsForConversation, previewDialogueLearning, dispatchCapabilityTask, dispatchRollbackAttempt, executiveResumePlan, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan, withheldSurfaceForTurn, type CapabilityExecutor, type DurableExecutiveEpisode } from "@scce/kernel";
@@ -165,6 +167,7 @@ export const ROUTES = [
   { method: "POST", path: "/api/causal/discover", label: "temporal causal discovery", mutates: true, requiresDb: true },
   { method: "POST", path: "/api/turn", label: "turn", mutates: true, requiresDb: true },
   { method: "POST", path: "/api/turn/outcome", label: "turn dialogue outcome", mutates: true, requiresDb: true },
+  { method: "POST", path: "/api/turn/graded", label: "turn graded outcome", mutates: true, requiresDb: true },
   { method: "GET", path: "/api/turn/task/:id", label: "long-running turn status", mutates: false, requiresDb: true },
   { method: "GET", path: "/api/turn/task/:id/stream", label: "long-running turn stream", mutates: false, requiresDb: true },
   { method: "GET", path: "/api/turn/task/:id/surface", label: "turn surface projection", mutates: false, requiresDb: true },
@@ -937,6 +940,29 @@ async function dispatch(
       // typed structural ids/features and is written on the deferred dialogue
       // tail so an immediate outcome cannot race it.
       const creativeDecision = creativeContinuationDecisionFromJson(result.creativeContinuation);
+      const creditRecord = buildCognitiveCreditRecord({
+        episodeId: String(result.episodeId),
+        conversationId,
+        taskClass: result.calibrationTaskClass ?? CALIBRATION_TASK_CLASS_IDS.dialogueOutcome,
+        requestedAuthority: result.requestedAuthority,
+        answer: result.answer,
+        requirementField: result.requirementField,
+        operatorActivations: result.operatorActivations,
+        cognitiveProposals: result.cognitiveProposals,
+        selectedCandidate: result.selectedCandidate,
+        judge: result.judge,
+        mouth: result.mouth,
+        entailment: toJsonValue(result.entailment as unknown as JsonValue),
+        field: toJsonValue(result.field as unknown as JsonValue),
+        retrievalRoles: toJsonValue((result.retrievalRoles ?? []) as unknown as JsonValue),
+        evidenceIds: result.evidence.map(span => String(span.id)),
+        withheld: result.withheld ? toJsonValue(result.withheld as unknown as JsonValue) : undefined,
+        runtimeMotion: result.runtimeMotion,
+        answerRevision: result.answerRevision,
+        corrections: result.corrections,
+        timing: result.timing ? toJsonValue(result.timing as unknown as JsonValue) : undefined,
+        createdAt: Date.now()
+      });
       const dialoguePersistence = enqueueDialoguePersistence(conversationId, async () => {
         // Elapsed ms until each write settles, from the moment this turn's persistence starts.
         const persistenceStarted = Date.now();
@@ -968,7 +994,9 @@ async function dispatch(
               sourceTraceId: String(result.episodeId),
               createdAt: Date.now()
             })
-            : Promise.resolve(undefined))
+            : Promise.resolve(undefined)),
+          // The credit chain: one record plus one row per stage, keyed by the episode id, in one insert.
+          timed("cognitiveCreditMs", persistCognitiveCredit(context, creditRecord))
         ]);
         return {
           cognitiveShadow,
@@ -1050,6 +1078,31 @@ async function dispatch(
       traceEvent(trace, { stage: "turn.error", label: "api.turn", durationMs: Date.now() - turnStarted, warnings: [String(error)] });
       throw error;
     }
+  }
+  // A graded run's verdict is an EXTERNAL judgement, kept separate from accepted/rejected/corrected, which mean
+  // a person said so. Re-stamps the persisted credit record and its per-stage rows with source outcome.source.graded.
+  if (req.method === "POST" && url.pathname === "/api/turn/graded") {
+    const body = await readBody(req, context.maxBodyBytes);
+    if (!isRecord(body)) throw new HttpError(400, "graded outcome body must be an object");
+    const episodeId = typeof body.episodeId === "string" && body.episodeId.trim() ? body.episodeId.trim() : undefined;
+    const verdict = typeof body.verdict === "string" && body.verdict.trim() ? body.verdict.trim() : undefined;
+    if (!episodeId) throw new HttpError(400, "graded outcome requires episodeId");
+    if (!verdict) throw new HttpError(400, "graded outcome requires verdict");
+    const conversationId = typeof body.conversationId === "string" && body.conversationId.trim() ? body.conversationId.trim() : "conversation.default";
+    const graded: CreditGradedVerdict = {
+      suiteId: typeof body.suiteId === "string" ? body.suiteId : "",
+      itemId: typeof body.itemId === "string" ? body.itemId : "",
+      verdict,
+      declined: body.declined === true
+    };
+    const stamped = await enqueueDialoguePersistence(conversationId, async () => {
+      const record = await loadCognitiveCreditRecord(context, episodeId);
+      if (!record) throw new HttpError(404, "no cognitive credit record for that episode");
+      const next = withGradedOutcome(record, graded);
+      await persistCognitiveCredit(context, next);
+      return next;
+    });
+    return json({ ok: true, creditRecordId: stamped.id, episodeId, outcome: toJsonValue(stamped.outcome as unknown as JsonValue) });
   }
   if (req.method === "POST" && url.pathname === "/api/turn/outcome") {
     const body = await readBody(req, context.maxBodyBytes);
@@ -1813,6 +1866,31 @@ function productionTurnDeadlineStatus(
  * bookkeeping for a brand-new key is skipped, and the map itself can
  * never grow past this size.
  */
+/** One multi-row insert where the store offers it; otherwise the same rows one at a time. */
+export async function persistCognitiveCredit(context: ApiContext, record: CognitiveCreditRecord): Promise<void> {
+  const store = context.runtime.storage.dialogueMemory;
+  const rows = cognitiveCreditObservations(record);
+  if (store.putCalibrationObservations) {
+    await store.putCalibrationObservations(rows);
+    return;
+  }
+  for (const row of rows) await store.putCalibrationObservation(row);
+}
+
+/** Reads back the persisted credit record for an episode, so a grader can stamp it after a restart. */
+export async function loadCognitiveCreditRecord(context: ApiContext, episodeId: string): Promise<CognitiveCreditRecord | undefined> {
+  const rows = await context.runtime.storage.dialogueMemory.listCalibrationObservations({
+    calibrationId: CALIBRATION_IDS.turnCognitiveCredit,
+    sourceRecordId: episodeId,
+    limit: 8
+  });
+  for (const row of rows) {
+    const value = row.metadata;
+    if (isRecord(value) && value.schema === COGNITIVE_CREDIT_SCHEMA) return value as unknown as CognitiveCreditRecord;
+  }
+  return undefined;
+}
+
 const DIALOGUE_PERSISTENCE_TAILS_MAX_ENTRIES = 5000;
 
 export function enqueueDialoguePersistence<T>(

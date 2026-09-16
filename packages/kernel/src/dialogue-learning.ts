@@ -768,6 +768,7 @@ export function createInMemoryDialogueMemoryStore(seed?: {
     putResponseCandidate: async record => { candidates.set(record.id, record); },
     putTargetProfilePattern: async record => { targetProfilePatterns.set(record.id, record); },
     putCalibrationObservation: async record => { calibrationObservations.set(record.id, record); },
+    putCalibrationObservations: async records => { for (const record of records) calibrationObservations.set(record.id, record); },
     listInteractionStates: async query => {
       const matching = [...interactionStates.values()].filter(record => (!query?.conversationId || record.conversationId === query.conversationId) && (!query?.turnId || record.turnId === query.turnId));
       if (!query?.headSchema) return newest(matching, query?.limit ?? 100, record => record.createdAt);

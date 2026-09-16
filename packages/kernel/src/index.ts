@@ -96,6 +96,7 @@ export * from "./transport-evidence-allocation.js";
 export * from "./language-training-batch.js";
 export * from "./creative-event-compatibility.js";
 export * from "./calibration-spine.js";
+export * from "./cognitive-credit.js";
 export * from "./closed-class-words.js";
 export * from "./free-form-lexicon.js";
 export * from "./source-identity.js";
