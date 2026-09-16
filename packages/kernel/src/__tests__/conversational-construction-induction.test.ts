@@ -11,7 +11,8 @@ import {
 import { induceConversationalActConstructionTrainingSets } from "../conversational-construction-induction.js";
 import { compileLanguageConstructionPattern, type DurableLanguageConstructionBundle } from "../language-construction-memory.js";
 import { induceSourceBoundConstructionTrainingSets } from "../graph-surface-alignment.js";
-import { TRANSCRIPT_CORPUS, transcriptEvidence } from "./dialogue-transcript-corpus-fixture.js";
+import { RUN_TRANSCRIPT_CORPUS, TRANSCRIPT_CORPUS, transcriptEvidence } from "./dialogue-transcript-corpus-fixture.js";
+import { unicodeLexicalSegments } from "../unicode-segmentation.js";
 import type { RequestCommunicativeActClassification } from "../request-communicative-act.js";
 
 const hasher = createHasher();
@@ -122,5 +123,36 @@ describe("a dialogue corpus induces conversational constructions of its own", ()
       }
     }
     expect(admitted).toBeGreaterThan(0);
+  });
+});
+
+describe("a frame is what recurred, however many units the corpus exchanged inside it", () => {
+  it("induces moves whose form outlives a one-unit slot, from a corpus that only ever varies a run", () => {
+    const { documents, evidence } = transcriptEvidence(RUN_TRANSCRIPT_CORPUS, hasher);
+    const report = induceConversationalActConstructionTrainingSets({ documents, hasher });
+    // Every reply differs from its neighbours in two units at once, so a one-unit slot aligns nothing here.
+    expect(report.sets.length).toBeGreaterThan(0);
+    expect(report.literalFormFloor).toBeGreaterThanOrEqual(2);
+    expect(report.bodiedFrames).toBeGreaterThan(0);
+
+    let oneSlot = 0;
+    for (const set of report.sets) {
+      const compiled = compileLanguageConstructionPattern({
+        bindingId: set.bindingId, profileId: set.profileId, observations: set.observations, evidence, hasher, updatedAt: 1
+      });
+      expect(compiled.status).toBe("compiled");
+      if (compiled.status !== "compiled") continue;
+      for (const construction of compiled.bundle.constructions) {
+        if (construction.roleOccurrences.length !== 1) continue;
+        const literalUnits = construction.sequence
+          .filter(part => part.kind === "literal")
+          .reduce((total, part) => total + unicodeLexicalSegments(part.kind === "literal" ? part.surface : "").length, 0);
+        // The starvation this replaces: two-symbol frames the orphan-fragment gate correctly refuses.
+        expect(literalUnits).toBeGreaterThanOrEqual(report.literalFormFloor);
+        expect(literalUnits).toBeGreaterThanOrEqual(3);
+        oneSlot += 1;
+      }
+    }
+    expect(oneSlot).toBeGreaterThan(0);
   });
 });

@@ -90,3 +90,33 @@ export function transcriptEvidence(
   }
   return { documents: out, evidence };
 }
+
+/** Training material. Each shape recurs with a two-unit run exchanged, which no single-unit slot can align. */
+const RUN_SHAPES: ReadonlyArray<(left: string, right: string) => string> = [
+  (left, right) => `what do you ${left} ${right}?`,
+  (left, right) => `i do not ${left} ${right}.`,
+  (left, right) => `that is the ${left} ${right}.`,
+  (left, right) => `let us not ${left} ${right} here.`
+];
+
+/** Two-unit runs a transcript exchanges into each shape; no two transcripts share one. */
+const RUN_FILLERS: ReadonlyArray<ReadonlyArray<readonly [string, string]>> = [
+  [["mean", "now"], ["say", "then"], ["hold", "here"], ["want", "there"]],
+  [["know", "yet"], ["think", "so"], ["call", "back"], ["keep", "still"]],
+  [["read", "aloud"], ["write", "down"], ["carry", "along"], ["leave", "behind"]],
+  [["come", "near"], ["stand", "apart"], ["walk", "ahead"], ["wait", "outside"]],
+  [["look", "away"], ["turn", "aside"], ["sit", "beside"], ["move", "along"]],
+  [["ask", "again"], ["answer", "first"], ["speak", "plainly"], ["listen", "once"]]
+];
+
+/** The same transcript layout as TRANSCRIPT_CORPUS, but every reply varies a run of two units, never one. */
+export const RUN_TRANSCRIPT_CORPUS: readonly string[] = SPEAKERS.map(([first, second], document) => {
+  const lines = [...PREAMBLE];
+  const pool = RUN_FILLERS[document]!;
+  for (let index = 0; index < RUN_SHAPES.length * pool.length; index++) {
+    const shape = RUN_SHAPES[index % RUN_SHAPES.length]!;
+    const [left, right] = pool[Math.floor(index / RUN_SHAPES.length) % pool.length]!;
+    lines.push(`${index % 2 === 0 ? first : second}. ${shape(left, right)}`);
+  }
+  return lines.join("\n");
+});

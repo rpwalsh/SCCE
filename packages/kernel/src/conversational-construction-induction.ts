@@ -33,6 +33,9 @@ export interface ConversationalConstructionInductionReport {
   neutralPairs: number;
   recurringFrames: number;
   varyingFrames: number;
+  /** Otsu split of how many lexical units a varying frame keeps outside its slot: a scrap of a turn, or a move. */
+  literalFormFloor: number;
+  bodiedFrames: number;
   fillerDiversityFloor: number;
   sourceFamilyFloor: number;
   keptFrames: number;
@@ -58,15 +61,19 @@ interface FrameOccurrence {
   lineEnd: number;
   slotStartInLine: number;
   slotEndInLine: number;
+  /** Lexical units the line keeps outside the slot. The frame's own size, measured, not its character count. */
+  literalUnits: number;
   filler: string;
 }
 
 /**
  * Induces conversational constructions from a dialogue corpus's own replies, keyed by the act the turn before
  * them was measured to be. The frame is anti-unification over what actually recurred: a line the corpus repeats
- * with one lexical unit exchanged is form with a variable in it, and the exchanged unit is the variable. Both
- * gates -- how many distinct fillers a frame was observed with, and across how many independent source versions --
- * are Otsu splits of the corpus's own observed distributions, never declared numbers, and a frame that keeps no
+ * with one contiguous run of lexical units exchanged is form with a variable in it, and the exchanged run is the
+ * variable. Requiring that run to be exactly one unit is what kept the frames to two symbols, because a whole
+ * reply line only recurs verbatim when it is short. All three gates -- how much form the frame keeps outside its
+ * slot, how many distinct fillers it was observed with, and how many independent source versions it spans -- are
+ * Otsu splits of the corpus's own observed distributions, never declared numbers; and a frame that keeps no
  * lexical unit outside its slot is not retained: with nothing left over it is the identity, not a construction.
  *
  * The output is the `SourceBoundLanguageConstructionTrainingSet` shape `compileLanguageConstructionPattern`
@@ -109,6 +116,8 @@ export function induceConversationalActConstructionTrainingSets(input: {
   let varyingFrames = 0;
   let keptFrames = 0;
   let observationCount = 0;
+  let literalFormFloor = 0;
+  let bodiedFrames = 0;
   let fillerDiversityFloor = 0;
   let sourceFamilyFloor = 0;
 
@@ -117,11 +126,11 @@ export function induceConversationalActConstructionTrainingSets(input: {
     walkFrames(units, pairs, input.hasher, occurrence => {
       counts.set(occurrence.frameKey, (counts.get(occurrence.frameKey) ?? 0) + 1);
     });
-    const frames = new Map<string, { fillers: Set<string>; families: Set<string>; occurrences: FrameOccurrence[] }>();
+    const frames = new Map<string, { fillers: Set<string>; families: Set<string>; literalUnits: number; occurrences: FrameOccurrence[] }>();
     walkFrames(units, pairs, input.hasher, occurrence => {
       if ((counts.get(occurrence.frameKey) ?? 0) < 2) return;
       const frame = frames.get(occurrence.frameKey)
-        ?? { fillers: new Set<string>(), families: new Set<string>(), occurrences: [] };
+        ?? { fillers: new Set<string>(), families: new Set<string>(), literalUnits: occurrence.literalUnits, occurrences: [] };
       frame.fillers.add(occurrence.filler);
       frame.families.add(occurrence.sourceVersionId);
       frame.occurrences.push(occurrence);
@@ -133,12 +142,19 @@ export function induceConversationalActConstructionTrainingSets(input: {
     // A position the corpus never exchanged is literal, not a low-support slot: it is not a variable at all.
     const varying = [...frames.entries()].filter(([, frame]) => frame.fillers.size > 1);
     varyingFrames += varying.length;
-    const fillerFloor = otsuThreshold(varying.map(([, frame]) => frame.fillers.size));
-    const familyFloor = otsuThreshold(varying.map(([, frame]) => frame.families.size));
+    // How much form a frame keeps outside its slot is what separates a scrap of a turn from a whole move.
+    const literalFloor = otsuThreshold(varying.map(([, frame]) => frame.literalUnits));
+    if (literalFloor === undefined) continue;
+    literalFormFloor = literalFloor;
+    // Diversity is measured over the moves, not over the scraps: a one-unit residue recurs on mass, not on form.
+    const bodied = varying.filter(([, frame]) => frame.literalUnits >= literalFloor);
+    bodiedFrames += bodied.length;
+    const fillerFloor = otsuThreshold(bodied.map(([, frame]) => frame.fillers.size));
+    const familyFloor = otsuThreshold(bodied.map(([, frame]) => frame.families.size));
     if (fillerFloor === undefined || familyFloor === undefined) continue;
     fillerDiversityFloor = fillerFloor;
     sourceFamilyFloor = familyFloor;
-    const kept = varying
+    const kept = bodied
       .filter(([, frame]) => frame.fillers.size >= fillerFloor && frame.families.size >= familyFloor)
       .sort(([leftKey, left], [rightKey, right]) => (
         right.families.size - left.families.size
@@ -179,6 +195,8 @@ export function induceConversationalActConstructionTrainingSets(input: {
     neutralPairs,
     recurringFrames,
     varyingFrames,
+    literalFormFloor,
+    bodiedFrames,
     fillerDiversityFloor,
     sourceFamilyFloor,
     keptFrames,
@@ -230,7 +248,8 @@ function dominantProfileId(observations: readonly FrameOccurrence[], units: read
 }
 
 /**
- * Visits every one-slot frame the corpus's own replies present. The line is the transcript's own layout unit, so
+ * Visits every one-slot frame the corpus's own replies present, the slot being any contiguous run of the line's
+ * lexical units. The line is the transcript's own layout unit, so
  * the frame's literals are an exact contiguous region of one evidence span and need no re-normalization.
  */
 function walkFrames(
@@ -249,23 +268,31 @@ function walkFrames(
     const line = lines[0]!;
     const surface = unit.points.slice(line.start, line.end).join("");
     const segments = unicodeLexicalSegments(surface);
-    // With one unit taken as the slot, a line of one lexical unit leaves no literal behind.
+    // A line of one lexical unit leaves no literal behind whatever the slot takes.
     if (segments.length < 2) continue;
     const linePoints = [...surface];
-    for (const segment of segments) {
-      const prefix = linePoints.slice(0, segment.codePointStart).join("");
-      const suffix = linePoints.slice(segment.codePointEnd).join("");
-      visit({
-        frameKey: hasher.digestHex(`${prefix} ${suffix}`).slice(0, 24),
-        spanIndex: pair.documentIndex,
-        evidenceId: String(unit.span.id),
-        sourceVersionId: unit.sourceVersionId,
-        lineStart: line.start,
-        lineEnd: line.end,
-        slotStartInLine: segment.codePointStart,
-        slotEndInLine: segment.codePointEnd,
-        filler: segment.surface
-      });
+    for (let first = 0; first < segments.length; first++) {
+      for (let last = first; last < segments.length; last++) {
+        const literalUnits = first + (segments.length - 1 - last);
+        // Nothing outside the slot leaves the identity, not a construction.
+        if (literalUnits < 1) continue;
+        const slotStart = segments[first]!.codePointStart;
+        const slotEnd = segments[last]!.codePointEnd;
+        const prefix = linePoints.slice(0, slotStart).join("");
+        const suffix = linePoints.slice(slotEnd).join("");
+        visit({
+          frameKey: hasher.digestHex(`${prefix} ${suffix}`).slice(0, 24),
+          spanIndex: pair.documentIndex,
+          evidenceId: String(unit.span.id),
+          sourceVersionId: unit.sourceVersionId,
+          lineStart: line.start,
+          lineEnd: line.end,
+          slotStartInLine: slotStart,
+          slotEndInLine: slotEnd,
+          literalUnits,
+          filler: linePoints.slice(slotStart, slotEnd).join("")
+        });
+      }
     }
   }
 }
