@@ -20,6 +20,7 @@ import {
 import { SURFACE_AUTHORITY_CLASS_IDS } from "../conversational-act-binding.js";
 import { trainKneserNey } from "../kneser-ney.js";
 import type { ConstructGraph, FieldState, LanguageProfile, SemanticEntailmentResult } from "../types.js";
+import type { CandidateSurface } from "../candidate-contract.js";
 import type { NgramModelRecord } from "../storage.js";
 import { DIALOGUE_POPULATION } from "./conversational-session-fixture.js";
 
@@ -124,6 +125,38 @@ describe("adversarial leakage: probable dialogue continuations never acquire fac
     }
   });
 
+  it("refuses the surface a recorded live turn actually emitted past an empty admission set", () => {
+    // Verbatim from .scce/traces/2026-09-13T11-19-57-208Z-trace_mtzq2fbs_bnnwxb.jsonl turn 0004:
+    // admitted=0, evRefs=0, and 61 characters spoken anyway by the terminal runtime-motion lane.
+    const recorded = "No grounded source in the ingested corpus for: boiling point.";
+    const probed = inventory(recorded, { requestText: "What is the boiling point of tungsten?" });
+    const unlicensed = probed.unlicensedUnits.map(unit => unit.surface.toLocaleLowerCase());
+    // The request licenses its own words; nothing licenses the claim made about the corpus.
+    expect(unlicensed).toContain("grounded");
+    expect(unlicensed).toContain("ingested");
+    expect(unlicensed).toContain("corpus");
+    expect(probed.units.find(unit => unit.surface.toLocaleLowerCase() === "boiling")?.authorityId)
+      .toBe(COMMITMENT_AUTHORITY_IDS.conversationSpan);
+    expect(candidateCommitmentsLicensed(probed)).toBe(false);
+  });
+
+  it("pins the one lane the inventory does not yet reach: the terminal runtime-motion shortcut", async () => {
+    // createMouth.speak hands this candidate straight to the deterministic mouth before any candidate field
+    // exists, so nothing audits its commitments. This is where the recorded leak got out, and it is still open.
+    const requestText = "What is the boiling point of tungsten?";
+    const recorded = "No grounded source in the ingested corpus for: boiling point.";
+    const spoken = await speakWithoutEvidence({
+      requestText,
+      conversationTurns: [],
+      selectedCandidate: terminalRuntimeMotionCandidate(recorded)
+    });
+    // Current, unfixed behaviour: the surface is spoken verbatim with zero evidence refs.
+    expect(spoken.text).toBe(recorded);
+    expect(spoken.evidenceRefs).toEqual([]);
+    // And the inventory, given the same surface, already refuses it. Only the wiring at that shortcut is missing.
+    expect(candidateCommitmentsLicensed(inventory(spoken.text, { requestText }))).toBe(false);
+  });
+
   it("through the real Mouth: the conversation lane speaks nothing the conversation did not supply", async () => {
     const spoken = await speakWithoutEvidence({ requestText: USER_TURN, conversationTurns: CONVERSATION_TURNS });
     expect(spoken.evidenceRefs).toEqual([]);
@@ -162,7 +195,7 @@ function inventory(text: string, options?: { requestText?: string }) {
   });
 }
 
-async function speakWithoutEvidence(input: { requestText: string; conversationTurns: readonly { turnId: string; turnIndex: number; surface: string }[] }) {
+async function speakWithoutEvidence(input: { requestText: string; conversationTurns: readonly { turnId: string; turnIndex: number; surface: string }[]; selectedCandidate?: CandidateSurface }) {
   const field: FieldState = emptyField(input.requestText);
   const entailment: SemanticEntailmentResult = createSemanticEntailmentEngine({ idFactory: ids, hasher }).check({
     text: input.requestText,
@@ -211,6 +244,7 @@ async function speakWithoutEvidence(input: { requestText: string; conversationTu
     entailment,
     languageMemory,
     conversationTurns: input.conversationTurns,
+    ...(input.selectedCandidate ? { selectedCandidate: input.selectedCandidate } : {}),
     targetLanguage: "language.dialogue"
   });
 }
@@ -226,6 +260,26 @@ function dialogueProfile(): LanguageProfile {
     direction: "ltr",
     entropy: 0.2,
     createdAt: clock.now()
+  };
+}
+
+/** The exact shape isTerminalNonAssertiveRuntimeMotionCandidate accepts, so the real shortcut is the path taken. */
+function terminalRuntimeMotionCandidate(answer: string): CandidateSurface {
+  return {
+    id: "runtime-motion:runtime-motion:58166c0d169",
+    kind: "dialogue-continuation",
+    answer,
+    force: "unknown",
+    evidenceIds: [],
+    scores: { support: 0, contradiction: 0, faithfulness: 1, alphaPressure: 0, actionability: 0.48, evidenceCoverage: 0, novelty: 0, realizability: 1 },
+    boundaries: ["runtime-motion-non-assertive", "runtime-motion-acquisition-exhausted", "runtime-motion-no-fabricated-evidence"],
+    audit: {
+      schema: "scce.runtime_motion_candidate.v1",
+      source: "kernel.runtime_decision_boundary",
+      externalFactCertification: false,
+      fakeEvidenceForbidden: true,
+      semanticFrame: { frameId: "semantic.runtime.motion.clarification.v1" }
+    }
   };
 }
 
