@@ -10,6 +10,10 @@ export function createCanonicalJson() {
 }
 
 export function canonicalStringify(value: unknown): string {
+  return JSON.stringify(canonicalJsonValue(value));
+}
+
+export function canonicalJsonValue(value: unknown): JsonValue {
   const seen = new WeakSet<object>();
   const normalize = (input: unknown): JsonValue => {
     if (input === undefined || input === null) return null;
@@ -30,11 +34,12 @@ export function canonicalStringify(value: unknown): string {
     }
     return String(input);
   };
-  return JSON.stringify(normalize(value));
+  return normalize(value);
 }
 
+// normalize already yields a fresh, JSON-safe, key-sorted tree; stringifying and reparsing it walked the turn's graphs twice more.
 export function toJsonValue(value: unknown): JsonValue {
-  return JSON.parse(canonicalStringify(value)) as JsonValue;
+  return canonicalJsonValue(value);
 }
 
 export function createHasher(): Hasher {

@@ -184,7 +184,9 @@ function boundedSurfaceLanguageMemoryCacheSet<K, V extends { approxEstimatedByte
 const DEFAULT_SURFACE_LANGUAGE_MEMORY_CACHE_MAX_ENTRIES = 500;
 const DEFAULT_SURFACE_CANDIDATE_PROFILE_CACHE_MAX_ENTRIES = 2_000;
 
+// Opt-in like SCCE_TRACE_GC below: sizing the payload restringifies every hydrated row, seconds of event loop for a trace number.
 const approxJsonMb = (rows: readonly unknown[]): number => {
+  if (process.env.SCCE_TRACE_HYDRATION_BYTES !== "1") return -1;
   if (!(globalThis as { __sccTrace?: unknown }).__sccTrace) return 0;
   let bytes = 0;
   for (const row of rows) { try { bytes += JSON.stringify(row).length; } catch { bytes += 512 * 1024 * 1024; } }
