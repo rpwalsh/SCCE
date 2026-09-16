@@ -231,6 +231,7 @@ export * from "./extended-generation-turn.js";
 export * from "./generative-derivation-runtime.js";
 export * from "./request-requirement-learning.js";
 export * from "./request-communicative-act.js";
+export * from "./dialogue-communicative-act-learning.js";
 export * from "./conversational-act-binding.js";
 export * from "./code-request.js";
 export * from "./code-surface.js";

@@ -6,8 +6,17 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   CORPUS_SOURCE_SYSTEM_IDS,
+  REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA,
+  canonicalStringify,
+  compileRequestCommunicativeActModel,
   corpusRoleIdForSourceSystem,
+  createHasher,
+  dialogueRequestActObservations,
+  requestCommunicativeActPatterns,
+  toJsonValue,
+  type DialogueActObservationReport,
   type InformationLabel,
+  type JsonValue,
   type ScceStorage
 } from "@scce/kernel";
 import { trainLanguageCorpusText, type LanguageCorpusTrainingReport } from "./language-corpus-trainer.js";
@@ -34,6 +43,8 @@ export interface DialogueCorpusTrainOptions {
   languageAliases?: readonly string[];
   /** Heap-safety checkpoint in MiB, same contract as gutenberg-corpus.ts. Cost bound, not a modeling choice. */
   heapCheckpointMb?: number;
+  /** Compile the request-act classifier from this run's transcripts without re-training their n-gram memory. */
+  actsOnly?: boolean;
 }
 
 export interface DialogueCorpusTrainReport {
@@ -47,8 +58,22 @@ export interface DialogueCorpusTrainReport {
   filesSkipped: Array<{ path: string; reason: string; byteLength?: number }>;
   totals: DialogueCorpusTrainingTotals;
   reports: LanguageCorpusTrainingReport[];
+  communicativeActs: DialogueCommunicativeActTrainingReport;
   stoppedByHeapSafetyBound: boolean;
   heapMiBAtExit: number;
+}
+
+/** What the run's own transcripts taught the request-act classifier, and what of it reached the pattern store. */
+export interface DialogueCommunicativeActTrainingReport {
+  schema: "scce.dialogueCommunicativeActTrainingReport.v1";
+  profileId: string;
+  updatedAt: number;
+  induction: Omit<DialogueActObservationReport, "observations">;
+  classCounts: Record<string, number>;
+  featuresCompiled: number;
+  patternsPersisted: number;
+  /** Absent contrast is a fact about the corpus, not an error: hydration refuses a model without it. */
+  hydrationContrast: boolean;
 }
 
 export interface DialogueCorpusTrainingTotals {
@@ -89,6 +114,7 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
     await walkTextFiles(root, Math.max(0, Math.floor(input.maxDepth ?? DEFAULT_MAX_DEPTH)), startFileIndex + maxFiles)
   ).slice(startFileIndex, startFileIndex + maxFiles);
   const reports: LanguageCorpusTrainingReport[] = [];
+  const transcripts: string[] = [];
   const skipped: DialogueCorpusTrainReport["filesSkipped"] = [];
   const heapCheckpointMb = input.heapCheckpointMb !== undefined && input.heapCheckpointMb > 0
     ? Math.floor(input.heapCheckpointMb)
@@ -109,6 +135,8 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
       skipped.push({ path: file.relativePath, reason: "empty_file", byteLength: file.byteLength });
       continue;
     }
+    transcripts.push(text);
+    if (input.actsOnly) continue;
     // One pathological file costs that file, never the whole run.
     try {
       reports.push(await trainLanguageCorpusText({
@@ -153,8 +181,48 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
     filesSkipped: skipped,
     totals: sumReports(reports),
     reports,
+    communicativeActs: await persistDialogueCommunicativeActs(input, transcripts),
     stoppedByHeapSafetyBound,
     heapMiBAtExit: heapMiB()
+  };
+}
+
+/**
+ * Compiles the request-act classifier from the transcripts this run read and writes it to the pattern store the
+ * turn hydrates from. The acts are the corpus's own recorded adjacency -- what followed a turn -- so the run
+ * that reads the transcripts is the run that can measure them; nothing here names an act.
+ */
+async function persistDialogueCommunicativeActs(
+  input: DialogueCorpusTrainOptions,
+  transcripts: readonly string[]
+): Promise<DialogueCommunicativeActTrainingReport> {
+  const hasher = createHasher();
+  const profileId = `language_profile_act_${hasher.digestHex(canonicalStringify([
+    REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA,
+    corpusRoleIdForSourceSystem(CORPUS_SOURCE_SYSTEM_IDS.dialogue)
+  ]))}`;
+  const updatedAt = Date.now();
+  const { observations, ...induction } = dialogueRequestActObservations(transcripts);
+  const model = compileRequestCommunicativeActModel(observations);
+  const patterns = requestCommunicativeActPatterns(model, {
+    profileId,
+    updatedAt,
+    makeId: (representation: JsonValue) => `request_communicative_act_pattern_${hasher.digestHex(canonicalStringify(representation))}`
+  }).map(pattern => ({ ...pattern, informationLabel: input.informationLabel }));
+  if (patterns.length) {
+    if (input.storage.languageMemory.putLanguagePatterns) await input.storage.languageMemory.putLanguagePatterns(patterns);
+    else for (const pattern of patterns) await input.storage.languageMemory.putLanguagePattern(pattern);
+  }
+  const classIds = Object.keys(model.classCounts);
+  return {
+    schema: "scce.dialogueCommunicativeActTrainingReport.v1",
+    profileId,
+    updatedAt,
+    induction: toJsonValue(induction) as unknown as Omit<DialogueActObservationReport, "observations">,
+    classCounts: model.classCounts,
+    featuresCompiled: model.features.size,
+    patternsPersisted: patterns.length,
+    hydrationContrast: classIds.length >= 2 && patterns.length > 0
   };
 }
 

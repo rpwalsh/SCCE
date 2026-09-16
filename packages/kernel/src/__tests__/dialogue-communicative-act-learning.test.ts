@@ -74,4 +74,29 @@ describe("dialogue communicative act learning", () => {
   it("reports inert without a compiled model, which is what blocks the conversational binding", () => {
     expect(classifyRequestCommunicativeAct("the feed reads high", undefined).status).toBe("inert_unconfigured");
   });
+
+  // The turn-reuse axis must measure reuse, not turn length: a long turn covers more of the corpus's unit mass.
+  it("does not call a long generic turn reused, and does call a short quoted one reused", () => {
+    const common = Array.from({ length: 120 }, (_, i) => `com${i}`);
+    const lines: string[] = [];
+    const longGeneric = new Set<string>();
+    const shortQuoted = new Set<string>();
+    for (let round = 0; round < 24; round++) {
+      // A long turn made only of the corpus's own commonest units, answered out of the same common pool.
+      const longHead = Array.from({ length: 20 }, (_, i) => common[(round * 7 + i) % common.length]!).join(" ");
+      const longTail = Array.from({ length: 20 }, (_, i) => common[(round * 7 + 20 + i) % common.length]!).join(" ");
+      lines.push(`ay. ${longHead}`, longTail);
+      lines.push(`bee. ${common[(round * 11) % common.length]} ${common[(round * 13 + 3) % common.length]}`, common[(round * 17 + 5) % common.length]!);
+      longGeneric.add(`${longHead}\n${longTail}`);
+      // A short turn carrying units the corpus barely uses, answered by quoting them back.
+      const rare = Array.from({ length: 2 + (round % 3) }, (_, i) => `zeta${round}x${i}`).join(" ");
+      lines.push(`ay. ${rare}`, `kappa${round}`);
+      lines.push(`bee. ${rare}`, `kappa${round} lambda${round}`);
+      shortQuoted.add(`${rare}\nkappa${round}`);
+    }
+    const report = dialogueRequestActObservations([lines.join("\n")]);
+    const reused = new Set(report.observations.filter(row => row.continuation!.replyDrawsOnTurn).map(row => row.requestText));
+    expect([...shortQuoted].filter(text => reused.has(text)).length).toBe(shortQuoted.size);
+    expect([...longGeneric].filter(text => reused.has(text)).length).toBe(0);
+  });
 });

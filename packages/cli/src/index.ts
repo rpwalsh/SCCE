@@ -645,7 +645,7 @@ async function corpus(
       return;
     }
     const target = args[2];
-    if (!target || (kind !== "gutenberg" && kind !== "oss" && kind !== "oss-github" && kind !== "dialogue")) return usage("scce corpus train <gutenberg|oss|oss-github|dialogue|wikipedia-stored> <path-or-url> [--commit=<sha>] [--language=<source-alias>] [--max-files=<n>] [--max-file-bytes=<n>] [--max-total-bytes=<n>] [--max-depth=<n>] [--ngram-max-order=<n>] [--ngram-max-counters=<n>] [--ngram-vocabulary-limit=<n>]");
+    if (!target || (kind !== "gutenberg" && kind !== "oss" && kind !== "oss-github" && kind !== "dialogue")) return usage("scce corpus train <gutenberg|oss|oss-github|dialogue|wikipedia-stored> <path-or-url> [--commit=<sha>] [--language=<source-alias>] [--max-files=<n>] [--max-file-bytes=<n>] [--max-total-bytes=<n>] [--max-depth=<n>] [--ngram-max-order=<n>] [--ngram-max-counters=<n>] [--ngram-vocabulary-limit=<n>] [--acts-only]");
     const options = parseCorpusTrainOptions(args.slice(3).filter(arg => !arg.startsWith("--commit=")));
     if (kind === "dialogue") {
       const access = config?.security?.informationAccess;
@@ -670,7 +670,8 @@ async function corpus(
         ngramMaxCountersPerOrder: options.ngramMaxCountersPerOrder,
         ngramVocabularyLimit: options.ngramVocabularyLimit,
         languageAliases: options.languageAliases,
-        heapCheckpointMb: options.heapCheckpointMb
+        heapCheckpointMb: options.heapCheckpointMb,
+        ...(options.actsOnly ? { actsOnly: true } : {})
       }));
       return;
     }
@@ -1758,6 +1759,7 @@ function parseCorpusTrainOptions(args: string[]): {
   languageOnly?: boolean;
   includeUriPrefixes?: string[];
   batchBytes?: number;
+  actsOnly?: boolean;
 } {
   const out: {
     maxFiles?: number;
@@ -1776,6 +1778,7 @@ function parseCorpusTrainOptions(args: string[]): {
     languageOnly?: boolean;
     includeUriPrefixes?: string[];
     batchBytes?: number;
+    actsOnly?: boolean;
   } = {};
   for (const arg of args) {
     const [flag, raw] = arg.split("=", 2);
@@ -1800,6 +1803,8 @@ function parseCorpusTrainOptions(args: string[]): {
       out.includeSource = false;
     } else if (arg === "--language-only") {
       out.languageOnly = true;
+    } else if (arg === "--acts-only") {
+      out.actsOnly = true;
     } else if (flag === "--uri-prefix" && raw?.trim()) {
       out.includeUriPrefixes = [...new Set(raw.split(",").map(value => value.trim()).filter(Boolean))];
     } else if (flag === "--batch-bytes" && Number.isFinite(num)) {

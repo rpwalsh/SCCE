@@ -69,7 +69,7 @@ export function induceTranscriptTurns(text: string): TranscriptTurnInduction {
 export interface TurnContinuationSignature {
   /** The turn's own speaker takes the floor back on the turn after the reply. */
   floorReturned: boolean;
-  /** The reply is built from units the turn itself supplied, below the corpus split of that share. */
+  /** The reply reuses the turn's own units above what the turn's corpus mass predicts by chance. */
   replyDrawsOnTurn: boolean;
 }
 
@@ -82,7 +82,7 @@ export interface DialogueActObservationReport {
   adjacentPairs: number;
   observations: readonly RequestCommunicativeActObservation[];
   speakerChangeFloor: number;
-  externalUnitFloor: number;
+  turnReuseLiftFloor: number;
   continuationSurprisalFloor: number;
   /** How many observations landed in each measured signature cell, before any act id is derived. */
   signatureCells: Record<string, number>;
@@ -90,8 +90,8 @@ export interface DialogueActObservationReport {
 
 interface PairMeasurement {
   requestText: string;
-  externalUnits: number;
-  externalRate: number;
+  /** Observed share of the reply's unit types the turn already supplied, over the share chance alone predicts. */
+  reuseLift: number;
   rareUnits: number;
   surprisal: number;
   floorReturned: boolean;
@@ -140,20 +140,23 @@ export function dialogueRequestActObservations(documents: readonly string[]): Di
       const replyUnits = unitTypes(reply.surface);
       const supplied = unitTypes(turn.surface);
       if (!replyUnits.size || !supplied.size) continue;
-      let external = 0;
+      // The turn's own mass under the corpus unit distribution: what a reply would share with it by chance.
+      let chanceShare = 0;
+      for (const unit of supplied) chanceShare += (corpusUnitCounts.get(unit) ?? 0) / Math.max(1, corpusUnitTotal);
+      let shared = 0;
       let rare = 0;
       let surprisal = 0;
       for (const unit of replyUnits) {
-        if (!supplied.has(unit)) external += 1;
+        if (supplied.has(unit)) shared += 1;
         const probability = (corpusUnitCounts.get(unit) ?? 0) / Math.max(1, corpusUnitTotal);
         const unitSurprisal = probability > 0 ? -Math.log(probability) : -Math.log(1 / Math.max(1, corpusUnitTotal));
         if (unitSurprisal >= unitSurprisalFloor) rare += 1;
         surprisal += unitSurprisal;
       }
+      if (chanceShare <= 0) continue;
       measurements.push({
         requestText: turn.surface,
-        externalUnits: external,
-        externalRate: external / replyUnits.size,
+        reuseLift: (shared / replyUnits.size) / chanceShare,
         rareUnits: rare,
         surprisal: surprisal / replyUnits.size,
         floorReturned: induction.turns[index + 2]?.speakerId === turn.speakerId
@@ -161,13 +164,13 @@ export function dialogueRequestActObservations(documents: readonly string[]): Di
     }
   }
 
-  const externalFloor = otsuThreshold(measurements.map(row => row.externalRate)) ?? 0;
+  const reuseFloor = otsuThreshold(measurements.map(row => row.reuseLift)) ?? 0;
   const surprisalFloor = otsuThreshold(measurements.map(row => row.surprisal)) ?? 0;
   const signatureCells: Record<string, number> = {};
   const observations = measurements.map(row => {
     const continuation: TurnContinuationSignature = {
       floorReturned: row.floorReturned,
-      replyDrawsOnTurn: row.externalRate < externalFloor
+      replyDrawsOnTurn: row.reuseLift >= reuseFloor
     };
     // A reply the corpus routine does not supply committed to material from outside it: the count of the reply's
     // units above the corpus rarity split, credited only when the reply's mean surprisal clears its own split.
@@ -186,7 +189,7 @@ export function dialogueRequestActObservations(documents: readonly string[]): Di
     adjacentPairs: measurements.length,
     observations,
     speakerChangeFloor: changeFloor,
-    externalUnitFloor: externalFloor,
+    turnReuseLiftFloor: reuseFloor,
     continuationSurprisalFloor: surprisalFloor,
     signatureCells
   };
