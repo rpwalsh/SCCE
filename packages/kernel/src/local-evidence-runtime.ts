@@ -2687,7 +2687,12 @@ export function sourceAnchoredEvidenceForRequest(
   // Containment tiers bind on a run the corpus documents; a word it merely uses names no subject.
   const documentedAnchors = anchors.filter(anchor => corpusDocumentsAnchor(anchor, requestText));
   const documentedContentAnchors = contentAnchors.filter(anchor => corpusDocumentsAnchor(anchor, requestText));
-  const identityBoundEvidence = evidence.filter(span => evidenceIdentityBindsAnchors(span, documentedAnchors, closedClassWords));
+  const titleIdentityBoundEvidence = evidence.filter(span => evidenceIdentityBindsAnchors(span, documentedAnchors, closedClassWords));
+  // A source that declares the identifier the request names carries that identity in its body, not its title. The
+  // retrieval filters already read it that way; the tier named for source identity read only the title half.
+  const declarationBoundEvidence = evidence.filter(span =>
+    !titleIdentityBoundEvidence.includes(span) && codeSpanBindsRequestedIdentifier(span, requestText));
+  const identityBoundEvidence = [...titleIdentityBoundEvidence, ...declarationBoundEvidence];
   const subjectOnlyRequest = requestContentEvidenceUnits(requestText).length <= 3;
   const contentMentionEvidence = contentBoundEvidence.length
     ? []
@@ -2747,7 +2752,8 @@ export function sourceAnchoredEvidenceForRequest(
         : uniqueEvidenceById([...primaryEvidence, ...contentBoundEvidence, ...contentMentionEvidence, ...identityBoundEvidence, ...selected, ...semanticFrameBoundEvidence]),
       uniqueKernelStrings([...(primaryAnchor ? [primaryAnchor] : []), ...anchors]),
       semanticFrameBoundEvidenceIds,
-      new Set(identityBoundEvidence.map(span => String(span.id)))
+      // Only title identity outranks an exact title; a declaration binds no source identity a title match must yield to.
+      new Set(titleIdentityBoundEvidence.map(span => String(span.id)))
     )
   };
 }
@@ -2844,6 +2850,7 @@ export function sourceIdentityAdmissibleEvidenceForRequest(
     evidenceExactSourceAnchorMatches(span, admissionAnchors)
     || evidenceTitleDistinctAnchorMatches(span, admissionAnchors)
     || evidenceIdentityBindsAnchors(span, admissionAnchors, closedClassWords)
+    || codeSpanBindsRequestedIdentifier(span, requestText)
     || semanticFrameBoundEvidenceIds.has(String(span.id))
     || spanContainsRequestNearDuplicateSentence(span, admissionSequences)
   ));

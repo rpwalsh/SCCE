@@ -960,11 +960,10 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
     // saw them: a semantic frame built over the repository re-admitted the code those two guards had just removed.
     // The rule is the request's, not the lane's, so it is applied once to the merged pool.
     const mergedCandidates = mergeEvidenceSpans([...evidenceResults.map(item => item.span), ...semanticFrameEvidence.evidence]);
+    // Same rule as the two filters above, not a stricter one: a source that declares the identifier the request names binds it.
     const proseCandidates = sourceCodeEvidenceAllowed
       ? mergedCandidates
-      : (() => {
-        return mergedCandidates.filter(span => !spanIsSourceCode(span));
-      })();
+      : mergedCandidates.filter(span => !spanIsSourceCode(span) || evidenceIdentityBindsRequest(span, text));
     const promoted = dropContainerSpans(proseCandidates
       .filter(span => (span.status === "promoted" || promotedSessionEvidence(span))
         && evidenceProofBoundary(span).certifiesFactualProof
