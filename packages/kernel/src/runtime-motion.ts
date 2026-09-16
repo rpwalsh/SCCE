@@ -1,10 +1,14 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { type CandidateField, type CandidateSurface } from "./candidate.js";
+import { candidateCommitmentInventory, candidateCommitmentsLicensed } from "./candidate-commitment-inventory.js";
 import { candidateCompatibleWithAuthority } from "./request-authority.js";
 import { type DialogueState } from "./dialogue-pragmatics.js";
 import { jsonRecord, kernelNumber, kernelString, kernelStringArray, namedSubjectAnchors, normalizePriorKey, uniqueKernelStrings } from "./kernel-answer-primitives.js";
+import type { KneserNeyModel } from "./kneser-ney.js";
+import type { ConversationTurnSurface } from "./language-construction.js";
 import type { LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
+import type { LanguageContinuationPopulation } from "./storage.js";
 import { cognitiveTopicForRequest } from "./learned-graph-prior-runtime.js";
 import { type InventionConstruct } from "./prediction.js";
 import { redactSecrets, toJsonValue } from "./primitives.js";
@@ -197,7 +201,8 @@ export function attachRuntimeMotionConstruct(input: {
   hasher: { digestHex(input: string | Uint8Array): string };
 }): ConstructGraph {
   if (!input.motion) return input.construct;
-  const answerSurface = input.answerSurface?.trim() || runtimeMotionFocusSurface(input.requestText);
+  const answerSurface = input.answerSurface?.trim()
+    || runtimeMotionFocusSurface(input.requestText, [], [], { requestTurnId: `turn.request:${input.motion.queryHash}` }).surface;
   const nodeId = `construct:runtime-motion:${input.hasher.digestHex(`${input.motion.guardId}\u001f${answerSurface}`).slice(0, 20)}`;
   const removedNodeIds = new Set(input.construct.nodes.filter(node => node.kind === "construct:runtime_diagnostic").map(node => node.id));
   const semanticFacts = [
@@ -448,6 +453,11 @@ export function runtimeMotionCandidateField(input: {
   learnedLanguageFrameIds?: readonly string[];
   /** Ranked source anchors already derived by the turn; keeps surface realization from reparsing request text. */
   focusAnchors?: readonly string[];
+  /** Prior turns of this conversation, admitted evidence and the resident language: the surface's licence sources. */
+  conversationTurns?: readonly ConversationTurnSurface[];
+  evidenceTexts?: readonly { id: string; text: string }[];
+  models?: readonly KneserNeyModel[];
+  continuationPopulation?: LanguageContinuationPopulation;
   hasher: { digestHex(input: string | Uint8Array): string };
 }): CandidateField {
   if (input.inventionCandidate?.kind === "creative-candidate" && input.inventionCandidate.force === "invented" && input.inventionCandidate.evidenceIds.length === 0) {
@@ -501,11 +511,31 @@ export function runtimeMotionCandidateField(input: {
       })
     };
   }
-  const answer = runtimeMotionFocusSurface(
+  const focus = runtimeMotionFocusSurface(
     input.requestText,
     input.unresolvedSlots,
-    input.focusAnchors
+    input.focusAnchors,
+    {
+      requestTurnId: `turn.request:${input.motion.queryHash}`,
+      ...(input.conversationTurns ? { conversationTurns: input.conversationTurns } : {}),
+      ...(input.evidenceTexts ? { evidenceTexts: input.evidenceTexts } : {}),
+      ...(input.models ? { models: input.models } : {}),
+      ...(input.continuationPopulation ? { continuationPopulation: input.continuationPopulation } : {})
+    }
   );
+  const answer = focus.surface;
+  if (!answer.trim()) {
+    // Nothing the turn holds licensed any component; there is no surface to offer, and none is invented.
+    const refusedAudit = jsonRecord(input.base.audit);
+    return {
+      ...input.base,
+      audit: toJsonValue({
+        ...refusedAudit,
+        runtimeMotion: input.motion,
+        runtimeMotionSurfaceRefused: focus.audit
+      })
+    };
+  }
   const focusId = `focus:${input.hasher.digestHex(answer).slice(0, 20)}`;
   const unresolvedSlotIds = uniqueKernelStrings((input.unresolvedSlots ?? []).filter(Boolean)).slice(0, 12);
   const learnedLanguageFrameIds = uniqueKernelStrings((input.learnedLanguageFrameIds ?? []).filter(Boolean)).slice(0, 24);
@@ -555,7 +585,8 @@ export function runtimeMotionCandidateField(input: {
         source: "request_and_dialogue_slots",
         requestHash: input.motion.queryHash,
         unresolvedSlotIds,
-        learnedLanguageFrameIds
+        learnedLanguageFrameIds,
+        licenceAudit: focus.audit
       },
       externalFactCertification: false,
       fakeEvidenceForbidden: true
@@ -592,11 +623,31 @@ export function runtimeMotionCandidateField(input: {
 }
 
 
+/** What the turn holds that may license a unit of this surface. Nothing else may reach the user through it. */
+export interface RuntimeMotionLicensingMaterial {
+  /** Turn id for the request now being answered; its own span licenses its own words. */
+  requestTurnId: string;
+  conversationTurns?: readonly ConversationTurnSurface[];
+  evidenceTexts?: readonly { id: string; text: string }[];
+  models?: readonly KneserNeyModel[];
+  continuationPopulation?: LanguageContinuationPopulation;
+}
+
+export interface RuntimeMotionSurfaceLicenceAudit extends Record<string, JsonValue> {
+  schema: "scce.runtime_motion.surface_licence_audit.v1";
+  componentCount: number;
+  admittedComponentCount: number;
+  refusedComponents: string[];
+  refusedUnits: string[];
+  authorityIds: string[];
+}
+
 function runtimeMotionFocusSurface(
   requestText: string,
   unresolvedSlots: readonly string[] = [],
-  focusAnchors: readonly string[] = []
-): string {
+  focusAnchors: readonly string[] = [],
+  licensing: RuntimeMotionLicensingMaterial = { requestTurnId: "turn.request" }
+): { surface: string; audit: RuntimeMotionSurfaceLicenceAudit } {
   // The subject the request names is what was not found: "No grounded source for: Greek goddess" named the
   // question's phrase, not Apollo (live 2026-09-10).
   // The turn has already ranked source anchors. Its final compact anchor is a bounded unresolved focus and is safer
@@ -617,8 +668,59 @@ function runtimeMotionFocusSurface(
     .slice(0, 3);
   const boundedLead = [...topic].slice(0, 120).join("").trim();
   const boundedDetail = detail.map(value => [...value].slice(0, 80).join("").trim()).filter(Boolean);
-  const semanticSurface = uniqueKernelStrings([boundedLead, ...boundedDetail]).filter(Boolean).join(": ");
-  return ensureUnicodeSurfaceSentence(semanticSurface);
+  const components = uniqueKernelStrings([boundedLead, ...boundedDetail]).filter(Boolean);
+  // The composer is where the licensing material is in hand, so the audit is here: a component is emitted only
+  // when every externally meaningful unit of it is carried by the request, a conversation turn, admitted
+  // evidence, or a typed slot value the turn holds. Refusal is by component, so a surviving unit stays contiguous.
+  const licensed = licensedComponents(components, requestText, unresolvedSlots, licensing);
+  return {
+    surface: ensureUnicodeSurfaceSentence(licensed.admitted.join(": ")),
+    audit: {
+      schema: "scce.runtime_motion.surface_licence_audit.v1",
+      componentCount: components.length,
+      admittedComponentCount: licensed.admitted.length,
+      refusedComponents: licensed.refusedComponents,
+      refusedUnits: licensed.refusedUnits,
+      authorityIds: licensed.authorityIds
+    }
+  };
+}
+
+
+function licensedComponents(
+  components: readonly string[],
+  requestText: string,
+  unresolvedSlots: readonly string[],
+  licensing: RuntimeMotionLicensingMaterial
+): { admitted: string[]; refusedComponents: string[]; refusedUnits: string[]; authorityIds: string[] } {
+  const conversationTurns: ConversationTurnSurface[] = [
+    ...(licensing.conversationTurns ?? []),
+    { turnId: licensing.requestTurnId, turnIndex: (licensing.conversationTurns ?? []).length, surface: requestText }
+  ];
+  const slotValues = unresolvedSlots.filter(Boolean).map(value => ({ id: value, text: value }));
+  const admitted: string[] = [];
+  const refusedComponents: string[] = [];
+  const refusedUnits: string[] = [];
+  const authorityIds = new Set<string>();
+  for (const component of components) {
+    const inventory = candidateCommitmentInventory({
+      text: component,
+      evidenceTexts: licensing.evidenceTexts ?? [],
+      conversationTurns,
+      claimBases: [],
+      slotValues,
+      ...(licensing.models ? { models: licensing.models } : {}),
+      ...(licensing.continuationPopulation ? { continuationPopulation: licensing.continuationPopulation } : {})
+    });
+    for (const id of inventory.authorityIds) authorityIds.add(id);
+    if (candidateCommitmentsLicensed(inventory)) {
+      admitted.push(component);
+      continue;
+    }
+    refusedComponents.push(component);
+    for (const unit of inventory.unlicensedUnits) refusedUnits.push(unit.surface);
+  }
+  return { admitted, refusedComponents, refusedUnits: uniqueKernelStrings(refusedUnits), authorityIds: [...authorityIds].sort() };
 }
 
 

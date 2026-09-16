@@ -3999,6 +3999,10 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           unresolvedSlots: authorityDialogueState.unresolvedSlots,
           learnedLanguageFrameIds: surfaceLanguageMemory.importedSemanticFrames.map(frame => frame.id),
           focusAnchors: sourceAnchorAudit.anchors,
+          conversationTurns: conversationTurnSurfacesFromMetadata(input.metadata),
+          evidenceTexts: selectedEvidence.map(span => ({ id: String(span.id), text: span.text })),
+          models: surfaceLanguageMemory.models,
+          ...(surfaceLanguageMemory.continuationPopulation ? { continuationPopulation: surfaceLanguageMemory.continuationPopulation } : {}),
           hasher
         });
       }

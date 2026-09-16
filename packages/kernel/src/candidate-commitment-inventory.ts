@@ -23,6 +23,8 @@ export const COMMITMENT_AUTHORITY_IDS = {
   documentary: "commitment.authority.documentary",
   /** A verified span of a turn of this conversation carries it. */
   conversationSpan: "commitment.authority.conversation_span",
+  /** A typed slot value the turn itself holds carries it. Turn state, never documentary and never a conversation span. */
+  typedSlot: "commitment.authority.typed_slot",
   /** A planned claim derived from licensed premises carries it. */
   derivedPremise: "commitment.authority.derived_premise",
   /** An explicitly hypothetical, non-assertive construction carries it. */
@@ -63,6 +65,8 @@ export interface CandidateCommitmentInventoryInput {
   conversationTurns: readonly ConversationTurnSurface[];
   /** The turn's planned commitments. Read for provenance only; a producer's own label is never consulted. */
   claimBases: readonly PlannedClaim[];
+  /** Typed slot values the turn holds, in the slot's own id namespace. */
+  slotValues?: readonly { id: string; text: string }[];
   /** The resident language the closed class is measured from. No word list. */
   models?: readonly KneserNeyModel[];
   continuationPopulation?: LanguageContinuationPopulation;
@@ -79,6 +83,7 @@ export function candidateCommitmentInventory(
   const closedClass = measuredClosedClass(input);
   const documentary = wordIndex(input.evidenceTexts.map(row => [row.id, row.text] as const));
   const conversation = wordIndex(input.conversationTurns.map(turn => [turn.turnId, turn.surface] as const));
+  const slot = wordIndex((input.slotValues ?? []).map(row => [row.id, row.text] as const));
   const premise = wordIndex(input.claimBases
     .filter(claim => claimBasisIsAdmissible(claim) && claim.externallyFactual && !claim.hypothetical
       && (claim.graphEdgeIds.length > 0 || claim.priorIds.length > 0 || claim.evidenceIds.length > 0))
@@ -97,6 +102,8 @@ export function candidateCommitmentInventory(
     if (documented) return { ...unit, externallyMeaningful: true, authorityId: COMMITMENT_AUTHORITY_IDS.documentary, licenceIds: documented };
     const said = conversation.get(key);
     if (said) return { ...unit, externallyMeaningful: true, authorityId: COMMITMENT_AUTHORITY_IDS.conversationSpan, licenceIds: said };
+    const held = slot.get(key);
+    if (held) return { ...unit, externallyMeaningful: true, authorityId: COMMITMENT_AUTHORITY_IDS.typedSlot, licenceIds: held };
     const derived = premise.get(key);
     if (derived) return { ...unit, externallyMeaningful: true, authorityId: COMMITMENT_AUTHORITY_IDS.derivedPremise, licenceIds: derived };
     const proposed = hypothetical.get(key);
