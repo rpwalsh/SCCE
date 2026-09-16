@@ -881,7 +881,30 @@ async function dispatch(
         && (turn.requestedAuthority === "program" || workspaceCodingInput));
       // The decline carries the turn's own typed withholding record, so a surface renders a reason instead of "".
       if (!turnAnswerHasSpeech(result.answer) && !programProposalTurn) {
-        throw new HttpError(422, "runtime.declined.no_admissible_surface", toJsonValue(result.withheld ?? withheldSurfaceForTurn(result) ?? null));
+        const withheld = result.withheld ?? withheldSurfaceForTurn(result);
+        // The decline's typed reason, in the trace: a warning string cannot say which stage withheld.
+        traceEvent(trace, {
+          stage: "turn.withheld",
+          label: "api.turn",
+          counts: {
+            evidence: result.evidence.length,
+            unresolvedRequirements: withheld?.unresolvedRequirementIds.length ?? 0,
+            learningNeeds: withheld?.learningNeeds.length ?? 0
+          },
+          support: {
+            episodeId: String(result.episodeId),
+            reasonId: withheld?.reasonId ?? null,
+            basisReasonIds: withheld?.basisReasonIds ?? [],
+            truthStateId: withheld?.truthStateId ?? null,
+            entailmentVerdict: withheld?.entailmentVerdict ?? null,
+            epistemicForce: withheld?.epistemicForce ?? null,
+            requestedAuthority: withheld?.requestedAuthority ?? null,
+            unresolvedRequirementIds: withheld?.unresolvedRequirementIds ?? [],
+            learningNeedIds: (withheld?.learningNeeds ?? []).map(need => need.needId),
+            components: withheld?.components ?? []
+          }
+        });
+        throw new HttpError(422, "runtime.declined.no_admissible_surface", toJsonValue(withheld ?? null));
       }
       const turnProgramCodingInput = workspaceCodingInput
         ? workspaceCodingInputForProgramGraph(workspaceCodingInput, result.constructGraph.program)

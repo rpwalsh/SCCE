@@ -2954,13 +2954,27 @@ function semanticLearnedConstructionCandidate(
     }
   }
 
-  const winner = rows.sort((left, right) => (
+  const winningRow = rows.sort((left, right) => (
     right.candidate.fit - left.candidate.fit
     || compareSurfaceText(left.bundleId, right.bundleId)
     || compareSurfaceText(left.constructionId, right.constructionId)
     || compareSurfaceText(left.candidate.id, right.candidate.id)
-  ))[0]?.candidate;
+  ))[0];
+  const winner = winningRow?.candidate;
   if (!winner) return done("bundles_matched_but_no_construction_bound", { bundleCount: bundles.length, constructionCount: bundles.reduce((sum, bundle) => sum + bundle.constructions.length, 0) });
+  // Only rejections were traced, so a construction that did win left no id behind.
+  traceEvent((globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace, {
+    stage: "mouth.learned_construction.admit",
+    label: "mouth.speak",
+    counts: { rows: rows.length, bundles: bundles.length },
+    support: {
+      candidateId: winner.id,
+      bundleId: winningRow.bundleId,
+      constructionId: winningRow.constructionId,
+      fit: winner.fit,
+      factRelationId: fact.relationId
+    }
+  });
   return winner;
 }
 

@@ -5871,6 +5871,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           output: previewTraceText(emission.answer),
           counts: { answerChars: emission.answer.length, evidence: selectedEvidence.length, events: events.length },
           support: {
+            episodeId: String(episodeId),
             timing,
             budgetExceeded: timing.budgetExceeded,
             capabilities: turnCapabilityManifest({ field: runtimeState.lastField, hydratedModels: surfaceLanguageMemory.models?.length ?? 0 })
@@ -6025,6 +6026,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         output: previewTraceText(emission.answer),
         counts: { answerChars: emission.answer.length, evidence: selectedEvidence.length, events: events.length },
         support: {
+            episodeId: String(episodeId),
             timing,
             budgetExceeded: timing.budgetExceeded,
             capabilities: turnCapabilityManifest({ field: runtimeState.lastField, hydratedModels: surfaceLanguageMemory.models?.length ?? 0 })
