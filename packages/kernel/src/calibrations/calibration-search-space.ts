@@ -133,6 +133,16 @@ export const CALIBRATION_SEARCH_SPACE: Readonly<Record<CalibrationKey, Calibrati
   "plan.contradiction_unanchored_block": threshold(0.2, 0.9, [0.3, 0.45, 0.6, 0.75]),
   "plan.relevance_floor": threshold(0, 0.2, [0, 0.02, 0.035, 0.07]),
 
+  "launch_contract.contradiction_reason_floor": threshold(0, 0.6, [0.05, 0.15, 0.3, 0.45]),
+  "launch_contract.contradicted_truth_state_floor": threshold(0.1, 0.95, [0.4, 0.55, 0.7, 0.85]),
+  "launch_contract.certified_support_floor": threshold(0.3, 0.98, [0.55, 0.7, 0.78, 0.9]),
+  "launch_contract.certified_faithfulness_floor": threshold(0.2, 0.95, [0.4, 0.55, 0.65, 0.8]),
+  "launch_contract.reliability_support_weight": weight(0, 1, [0.4, 0.62, 0.8]),
+  "launch_contract.reliability_faithfulness_weight": weight(0, 1, [0.1, 0.25, 0.45]),
+  "launch_contract.reliability_noncontradiction_weight": weight(0, 1, [0.05, 0.13, 0.3]),
+  "launch_contract.reliability_high_floor": threshold(0.5, 0.98, [0.7, 0.8, 0.9]),
+  "launch_contract.reliability_medium_floor": threshold(0.2, 0.9, [0.4, 0.55, 0.7]),
+
   // --- temporal development context scoring
   "temporal_context.concept_coverage_weight": weight(0, 0.6, [0.09, 0.18, 0.3]),
   "temporal_context.breadth_weight": weight(0, 0.6, [0.08, 0.16, 0.28]),

@@ -20,6 +20,7 @@ import type {
   TurnResult
 } from "./types.js";
 import { clamp01, createClock } from "./primitives.js";
+import { calibrated } from "./calibrations/prod-calibrations.js";
 import type { HybridRecallResult } from "./retrieval.js";
 import type { ScoreTrace } from "./scoring/score-trace.js";
 
@@ -121,7 +122,7 @@ function runtimeAnswerBasis(input: {
   let basisClassId: string = ANSWER_BASIS_IDS.unsupported;
   let certificationId: string = ANSWER_CERTIFICATION_IDS.nonCertifying;
   let certifiesSourceClaim = false;
-  if (input.entailment.contradiction > 0.05 || symbolicState === "truth.contradicted") reasonIds.push(ANSWER_BASIS_REASON_IDS.contradiction);
+  if (input.entailment.contradiction > calibrated("launch_contract.contradiction_reason_floor") || symbolicState === "truth.contradicted") reasonIds.push(ANSWER_BASIS_REASON_IDS.contradiction);
   if (input.assistantForce === "creative_answer" || input.evidenceForce === "creative" || input.entailment.force === "invented") {
     basisClassId = ANSWER_BASIS_IDS.creative;
     reasonIds.push(ANSWER_BASIS_REASON_IDS.creative);
@@ -222,7 +223,7 @@ function runtimeGuardFlags(input: {
   unsupportedContentBlocked?: boolean;
 }): RuntimeGuardFlags {
   const missingEvidence = input.evidence.length === 0;
-  const contradictionPresent = input.entailment.contradiction > 0.05 || input.entailment.verdict === "contradicted";
+  const contradictionPresent = input.entailment.contradiction > calibrated("launch_contract.contradiction_reason_floor") || input.entailment.verdict === "contradicted";
   const allowCreative = input.assistantForce === "creative_answer" || input.entailment.force === "invented";
   const sourceBacked = input.evidenceForce === "direct" || input.evidenceForce === "inferred";
   const priorOnly = input.evidenceForce === "prior" || input.entailment.truthState === "truth.unsupported_prior_only";
@@ -275,20 +276,28 @@ function runtimeCalibrationSummary(input: {
   scoreTraces: readonly RuntimeScoreTrace[];
   entailment: SemanticEntailmentResult;
 }): RuntimeCalibrationSummary {
-  const rawScore = clamp01(input.entailment.support * 0.62 + input.entailment.faithfulnessLcb * 0.25 + (1 - input.entailment.contradiction) * 0.13);
+  const rawScore = clamp01(
+    input.entailment.support * calibrated("launch_contract.reliability_support_weight")
+    + input.entailment.faithfulnessLcb * calibrated("launch_contract.reliability_faithfulness_weight")
+    + (1 - input.entailment.contradiction) * calibrated("launch_contract.reliability_noncontradiction_weight")
+  );
   const calibrationId = input.scoreTraces.find(trace => trace.calibrationId)?.calibrationId;
   return {
     taskClass: "runtime.turn.answer",
     rawScore,
     calibrationStatus: input.status,
     calibrationId,
-    reliabilityBucket: rawScore >= 0.8 ? "high" : rawScore >= 0.55 ? "medium" : "low"
+    reliabilityBucket: rawScore >= calibrated("launch_contract.reliability_high_floor")
+      ? "high"
+      : rawScore >= calibrated("launch_contract.reliability_medium_floor") ? "medium" : "low"
   };
 }
 
 function symbolicTruthState(entailment: SemanticEntailmentResult): TruthState {
-  if (entailment.verdict === "contradicted" || entailment.contradiction > 0.4) return "truth.contradicted";
-  if (entailment.support >= 0.78 && entailment.faithfulnessLcb >= 0.65 && entailment.evidenceIds.length > 0) return "truth.certified";
+  if (entailment.verdict === "contradicted" || entailment.contradiction > calibrated("launch_contract.contradicted_truth_state_floor")) return "truth.contradicted";
+  if (entailment.support >= calibrated("launch_contract.certified_support_floor")
+    && entailment.faithfulnessLcb >= calibrated("launch_contract.certified_faithfulness_floor")
+    && entailment.evidenceIds.length > 0) return "truth.certified";
   if (entailment.evidenceIds.length === 0) return "truth.insufficient_evidence";
   if (entailment.force === "conjectured") return "truth.ambiguous";
   return "truth.source_bound_only";

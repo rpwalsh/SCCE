@@ -162,6 +162,26 @@ export const PUBLIC_CALIBRATIONS = Object.freeze({
   /** Relevance below which an unbound, non-session answer is not worth producing. */
   "plan.relevance_floor": 0.035,
 
+  // --- turn truth state, answer basis and certification (launch-contract.ts)
+  // Moved verbatim from the inline literals these ids replace. Sibling concepts to plan.contradiction_block
+  // above: the spine already carried an id for "how much contradiction blocks an answer" while these decided
+  // what a contradiction IS, from a literal no search space or observation could reach.
+  /** Contradiction above which the turn carries a contradiction answer-basis reason and blocks certified fact. */
+  "launch_contract.contradiction_reason_floor": 0.05,
+  /** Contradiction above which the symbolic truth state is `truth.contradicted`. */
+  "launch_contract.contradicted_truth_state_floor": 0.4,
+  /** Support at or above which, with faithfulness, the truth state is `truth.certified`. */
+  "launch_contract.certified_support_floor": 0.78,
+  /** Faithfulness lower bound at or above which, with support, the truth state is `truth.certified`. */
+  "launch_contract.certified_faithfulness_floor": 0.65,
+  "launch_contract.reliability_support_weight": 0.62,
+  "launch_contract.reliability_faithfulness_weight": 0.25,
+  "launch_contract.reliability_noncontradiction_weight": 0.13,
+  /** Raw reliability at or above which the reported bucket is `high`. */
+  "launch_contract.reliability_high_floor": 0.8,
+  /** Raw reliability at or above which the reported bucket is `medium`. */
+  "launch_contract.reliability_medium_floor": 0.55,
+
   // --- temporal development context scoring (local-evidence-runtime.ts temporalDevelopmentContextSentence)
   "temporal_context.concept_coverage_weight": 0.18,
   "temporal_context.breadth_weight": 0.16,
