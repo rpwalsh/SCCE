@@ -77,6 +77,30 @@ describe("a runtime-motion surface emits only units the turn holds", () => {
     expect(result.candidates.find(candidate => candidate.kind === "dialogue-continuation")).toBeUndefined();
   });
 
+  // Live 2026-09-16, book workload: "Who is the gentleman of Pemberley in Pride and Prejudice?" was answered
+  // "and Prejudice", "Where does Jane Eyre work as a governess?" with "Eyre work", and "Which doctor does Dr.
+  // Seward call in to help with Lucy's illness in Dracula?" with "call help". Each surface is licensed -- the
+  // request carries every one of its units -- and each one says nothing, while reading as an answer.
+  it.each([
+    ["Who is the gentleman of Pemberley in Pride and Prejudice?", "and Prejudice"],
+    ["Where does Jane Eyre work as a governess?", "Eyre work"],
+    ["Which doctor does Dr. Seward call in to help with Lucy's illness in Dracula?", "call help"]
+  ])("refuses a focus surface that is only the request's own words (%s)", (requestText, focus) => {
+    const result = field({
+      requestText,
+      focusAnchors: [focus],
+      // Each of those turns had admitted evidence; the fragment stood in for what that evidence held.
+      evidenceTexts: [{ id: "evidence.novel.1", text: "A passage of the novel the request names." }]
+    });
+    expect(result.candidates.find(candidate => candidate.kind === "dialogue-continuation")).toBeUndefined();
+  });
+
+  it("still names the subject back when the turn retrieved nothing at all", () => {
+    // The empty-memory acquisition floor: with no evidence, an honest notice can only repeat what was asked.
+    const result = field({ requestText: "What is the boiling point of tungsten?", focusAnchors: ["boiling point"] });
+    expect(result.candidates.find(candidate => candidate.kind === "dialogue-continuation")?.answer).toBeTruthy();
+  });
+
   it("licenses a unit admitted evidence carries", () => {
     const result = field({
       requestText: "What about its boiling point?",

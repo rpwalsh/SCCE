@@ -11,7 +11,7 @@ import type { LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
 import type { LanguageContinuationPopulation } from "./storage.js";
 import { cognitiveTopicForRequest } from "./learned-graph-prior-runtime.js";
 import { type InventionConstruct } from "./prediction.js";
-import { redactSecrets, toJsonValue } from "./primitives.js";
+import { anchorSymbolUnits, redactSecrets, toJsonValue } from "./primitives.js";
 import { graphNodePriorClass, isLearnedPriorClass } from "./proof-boundary.js";
 import { collapseSurfaceWhitespace, ensureSurfaceSentence as ensureUnicodeSurfaceSentence, surfaceWords } from "./surface-linguistics.js";
 import {
@@ -679,13 +679,20 @@ function runtimeMotionFocusSurface(
   // when every externally meaningful unit of it is carried by the request, a conversation turn, admitted
   // evidence, or a typed slot value the turn holds. Refusal is by component, so a surviving unit stays contiguous.
   const licensed = licensedComponents(components, requestText, unresolvedSlots, licensing);
+  // Licensing asks whether the turn CARRIES every unit, and the request carries all of its own, so a surface
+  // built only from the request's words passes it and ships as an answer: "and Prejudice", "Eyre work", "call
+  // help" (live 2026-09-16, book workload). With nothing retrieved, naming the subject back IS the honest
+  // acquisition floor; with evidence in hand it is a fragment standing in for the answer that evidence holds.
+  const requestUnits = new Set(anchorSymbolUnits(requestText));
+  const speaks = (licensing.evidenceTexts?.length ?? 0) === 0
+    || licensed.admitted.some(component => anchorSymbolUnits(component).some(unit => !requestUnits.has(unit)));
   return {
-    surface: ensureUnicodeSurfaceSentence(licensed.admitted.join(": ")),
+    surface: speaks ? ensureUnicodeSurfaceSentence(licensed.admitted.join(": ")) : "",
     audit: {
       schema: "scce.runtime_motion.surface_licence_audit.v1",
       componentCount: components.length,
-      admittedComponentCount: licensed.admitted.length,
-      refusedComponents: licensed.refusedComponents,
+      admittedComponentCount: speaks ? licensed.admitted.length : 0,
+      refusedComponents: speaks ? licensed.refusedComponents : [...licensed.refusedComponents, ...licensed.admitted],
       refusedUnits: licensed.refusedUnits,
       authorityIds: licensed.authorityIds
     }
