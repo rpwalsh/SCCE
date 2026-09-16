@@ -144,17 +144,40 @@ function constructGraph(): ConstructGraph {
   } as unknown as ConstructGraph;
 }
 
-async function speakWith(act: RequestCommunicativeActClassification | undefined): Promise<{ text: string; trace: TraceRow[] }> {
+function retrievedSpan(id: string, text: string): EvidenceSpan {
+  return {
+    id,
+    sourceId: `source.${id}`,
+    sourceVersionId: `source_version.${id}`,
+    chunkId: `chunk.${id}`,
+    contentHash: hasher.digestHex(text),
+    mediaType: "text/plain",
+    byteStart: 0,
+    byteEnd: Buffer.byteLength(text, "utf8"),
+    charStart: 0,
+    charEnd: text.length,
+    text,
+    textPreview: text,
+    status: "promoted"
+  } as unknown as EvidenceSpan;
+}
+
+async function speakWith(
+  act: RequestCommunicativeActClassification | undefined,
+  options: { evidence?: readonly EvidenceSpan[]; requestText?: string } = {}
+): Promise<{ text: string; trace: TraceRow[] }> {
   const dir = mkdtempSync(join(tmpdir(), "scce-act-binding-"));
   const traceFile = join(dir, "trace.jsonl");
   const globals = globalThis as { __sccTrace?: unknown };
   const previous = globals.__sccTrace;
   globals.__sccTrace = { traceId: "conversational-act-binding-turn", file: traceFile };
   try {
-    const evidence: EvidenceSpan[] = [];
+    const evidence: EvidenceSpan[] = [...(options.evidence ?? [])];
+    const requestText = options.requestText ?? REQUEST;
+    const turns = [{ turnId: "turn.01", turnIndex: 0, surface: requestText }];
     const field = emptyField();
     const entailment = createSemanticEntailmentEngine({ idFactory: ids, hasher }).check({
-      text: REQUEST,
+      text: requestText,
       evidence,
       nodes: [],
       field,
@@ -179,8 +202,8 @@ async function speakWith(act: RequestCommunicativeActClassification | undefined)
       languageProfile: languageProfile(),
       evidence,
       entailment,
-      requestText: REQUEST,
-      conversationTurns: TURNS,
+      requestText,
+      conversationTurns: turns,
       ...(act ? { requestCommunicativeAct: act } : {}),
       languageMemory: { ...state, models: [TRAINED], importedConstructionBundles: scopedBundles() }
     });
@@ -225,6 +248,69 @@ describe("the conversation-bound lane is reachable from a production speak", () 
     expect(candidateCommitmentsLicensed(inventory)).toBe(true);
     expect(inventory.authorityClassId).not.toBe("authority.grounded_factual");
   }, 120_000);
+
+  // Retrieval admitting something irrelevant is not a reason to fall silent: evidence bounds what may be
+  // asserted, never whether this lane may speak. The gate deleted here returned before the lane ever traced.
+  it("still runs when the turn retrieved evidence, and never asserts what that evidence does not license", async () => {
+    const irrelevant = retrievedSpan(
+      "evidence.retrieved.irrelevant",
+      "Hatsune Miku is a singing voice synthesizer application software product."
+    );
+    const chatty = await speakWith(classification(), { evidence: [irrelevant] });
+    const chattyRow = bindingRow(chatty.trace);
+    expect(chattyRow).toBeDefined();
+    const chattySurface = chattyRow?.support?.surface as string | null | undefined;
+    expect(typeof chattySurface).toBe("string");
+    expect(chattySurface).toBeTruthy();
+    // Nothing of the irrelevant passage may reach the surface, and the lane may not claim documentary authority.
+    const chattyInventory = candidateCommitmentInventory({
+      text: chattySurface as string,
+      evidenceTexts: [{ id: irrelevant.id, text: irrelevant.text }],
+      conversationTurns: [{ turnId: "turn.01", turnIndex: 0, surface: REQUEST }],
+      claimBases: [],
+      models: [TRAINED]
+    });
+    expect(chattyInventory.unlicensedUnits.map(unit => unit.surface)).toEqual([]);
+    expect(candidateCommitmentsLicensed(chattyInventory)).toBe(true);
+    expect(chattyInventory.authorityClassId).not.toBe("authority.grounded_factual");
+    expect(chatty.text).not.toContain("voice synthesizer");
+
+    // Relevant evidence: the lane may still run, but construction form alone never promotes it to a world claim.
+    const relevant = retrievedSpan("evidence.retrieved.relevant", "The pump feed pressure rose above its rated limit.");
+    const grounded = await speakWith(classification(), { evidence: [relevant] });
+    const groundedSurface = bindingRow(grounded.trace)?.support?.surface as string | null | undefined;
+    if (typeof groundedSurface === "string" && groundedSurface) {
+      const groundedInventory = candidateCommitmentInventory({
+        text: groundedSurface,
+        evidenceTexts: [{ id: relevant.id, text: relevant.text }],
+        conversationTurns: [{ turnId: "turn.01", turnIndex: 0, surface: REQUEST }],
+        claimBases: [],
+        models: [TRAINED]
+      });
+      expect(groundedInventory.unlicensedUnits.map(unit => unit.surface)).toEqual([]);
+      expect(groundedInventory.authorityClassId).not.toBe("authority.grounded_factual");
+    }
+
+    // A factual question whose retrieval is unrelated: the lane may exist, but it smuggles no answer.
+    const factual = await speakWith(classification(), {
+      evidence: [irrelevant],
+      requestText: "what is the melting point of tungsten carbide alloy 7"
+    });
+    const factualTurns = [{ turnId: "turn.01", turnIndex: 0, surface: "what is the melting point of tungsten carbide alloy 7" }];
+    const factualSurface = bindingRow(factual.trace)?.support?.surface as string | null | undefined;
+    if (typeof factualSurface === "string" && factualSurface) {
+      const factualInventory = candidateCommitmentInventory({
+        text: factualSurface,
+        evidenceTexts: [{ id: irrelevant.id, text: irrelevant.text }],
+        conversationTurns: factualTurns,
+        claimBases: [],
+        models: [TRAINED]
+      });
+      expect(factualInventory.unlicensedUnits.map(unit => unit.surface)).toEqual([]);
+      expect(factualInventory.authorityClassId).not.toBe("authority.grounded_factual");
+    }
+    expect(factual.text).not.toContain("voice synthesizer");
+  }, 180_000);
 
   it("produces nothing when the request's act was never classified, and nothing when it is the neutral lookup act", async () => {
     expect(bindingRow((await speakWith(undefined)).trace)).toBeUndefined();

@@ -4651,11 +4651,10 @@ function conversationalActBindingCandidate(
 ): SurfaceCandidate | undefined {
   const classification = input.requestCommunicativeAct;
   if (!classification || classification.status !== "active" || classification.actId === DIALOGUE_ACT_IDS.neutral) return undefined;
-  // The same realization gates the conversational generator runs under: this lane speaks only where nothing is proved.
+  // Evidence presence never suppresses this lane; it only bounds what the candidate is licensed to assert.
   if (semanticAnswerConstructState(input.construct)) return undefined;
   if (generatedConstructSurface(input.construct) && !isNonAssertiveRuntimeMotionConstruct(input.construct)) return undefined;
   if (input.construct.program || isWorkspaceKernelSpeakInput(input)) return undefined;
-  if (input.evidence.length || input.entailment.evidenceIds.length) return undefined;
 
   const turns = speakConversationTurns(input);
   const contentSpans = turns
