@@ -23,7 +23,8 @@ import type {
   MatrixSnapshot,
   PolicyProfile,
   ProofId,
-  SemanticEntailmentResult
+  SemanticEntailmentResult,
+  TurnLearningNeed
 } from "../types.js";
 import type { ChernoffResult, DavisKahanEnvelope, MinimumCoverResult, SubspaceDriftEntropy } from "../causal-math.js";
 
@@ -849,7 +850,7 @@ function engineFixture(evidenceRows: EvidenceSpan[]) {
     field: fieldState(),
     ccr: ccr(),
     proofAnswer: evidenceIds.length ? "The observed source supports the claim." : "No certified answer is available.",
-    learningNeeds: [] as string[],
+    learningNeeds: [] as TurnLearningNeed[],
     functionalGate: {
       fc: true,
       efc: true,

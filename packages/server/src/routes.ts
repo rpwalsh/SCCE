@@ -12,7 +12,7 @@ import {
   behaviorRoleExecutionGraphInputFromTaskConstraintGraph, createProgramBehaviorValidationLedger, PROGRAM_BEHAVIOR_VALIDATION_PLAN_BINDING_SCHEMA, curriculumItemFromPlan,
   learningConsentInput, persistCreativeContinuationOffer, creativeContinuationDecisionFromJson, creativeContinuationDecisionFromObservation, persistCreativeContinuationPreference, CREATIVE_CONTINUATION_OFFER_CALIBRATION_ID,
   listHeldSources,
-  reviewHeldSource, summarizeForTrace, installProdCalibrations, clearProdCalibrations, prodCalibrationIds, CALIBRATION_SEARCH_IDS, createFrontierBroadCapabilityTasks, FRONTIER_BROAD_CAPABILITY_SUITE_ID, CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, CAUSAL_DISCOVERY_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, SUPPORTED_PROGRAM_REPAIR_FAMILIES, buildDiscourseObjectState, buildTurnDialogueBridge, measureRequestCorpusSubject, canonicalStringify, createAuditEngine, createCapabilityExecutorRegistry, createClock, createDialogueCognitiveMemoryV2, createCorrectionEngine, createCorrectionObservation, createEventFactory, createHasher, createIdFactory, dialogueOutcomeMemoryForConversation, dialogueInterpretationAdjustmentsForConversation, previewDialogueLearning, dispatchCapabilityTask, dispatchRollbackAttempt, executiveResumePlan, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan, type CapabilityExecutor, type DurableExecutiveEpisode } from "@scce/kernel";
+  reviewHeldSource, summarizeForTrace, installProdCalibrations, clearProdCalibrations, prodCalibrationIds, CALIBRATION_SEARCH_IDS, createFrontierBroadCapabilityTasks, FRONTIER_BROAD_CAPABILITY_SUITE_ID, CALIBRATION_TASK_CLASS_IDS, CAUSAL_ANALYSIS_REQUEST_SCHEMA, CAUSAL_DISCOVERY_REQUEST_SCHEMA, PATCH_TRANSACTION_PLAN_SCHEMA, SUPPORTED_PROGRAM_REPAIR_FAMILIES, buildDiscourseObjectState, buildTurnDialogueBridge, measureRequestCorpusSubject, canonicalStringify, createAuditEngine, createCapabilityExecutorRegistry, createClock, createDialogueCognitiveMemoryV2, createCorrectionEngine, createCorrectionObservation, createEventFactory, createHasher, createIdFactory, dialogueOutcomeMemoryForConversation, dialogueInterpretationAdjustmentsForConversation, previewDialogueLearning, dispatchCapabilityTask, dispatchRollbackAttempt, executiveResumePlan, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueOutcomeFromMemory, persistDialogueTurn, projectProofBearingDialogueTurnV2, resolveDiscourseStateV2, toJsonValue, traceEvent, verifyPatchTransactionPlan, withheldSurfaceForTurn, type CapabilityExecutor, type DurableExecutiveEpisode } from "@scce/kernel";
 import { createDeveloperSurfaceState, hydrateApprovals, hydrateSurfaceFromTurn, renderWorkbench, routeForCommand, workbenchModelModulePath, WORKBENCH_MODEL_ROUTE } from "@scce/ui";
 import type { RuntimeStartupReadiness, RuntimeStartupReadinessSnapshot } from "./startup.js";
 import { turnTaskRegistryFor, type TurnTaskFrame } from "./turn-task-registry.js";
@@ -881,7 +881,7 @@ async function dispatch(
         && (turn.requestedAuthority === "program" || workspaceCodingInput));
       // The decline carries the turn's own typed withholding record, so a surface renders a reason instead of "".
       if (!turnAnswerHasSpeech(result.answer) && !programProposalTurn) {
-        throw new HttpError(422, "runtime declined: no admissible answer surface", toJsonValue(result.withheld ?? null));
+        throw new HttpError(422, "runtime.declined.no_admissible_surface", toJsonValue(result.withheld ?? withheldSurfaceForTurn(result) ?? null));
       }
       const turnProgramCodingInput = workspaceCodingInput
         ? workspaceCodingInputForProgramGraph(workspaceCodingInput, result.constructGraph.program)
@@ -3674,7 +3674,7 @@ export function compactTurnResult(result: TurnResult): Record<string, unknown> {
     ...(result.evidence.length > evidence.length ? { evidenceTruncated: result.evidence.length - evidence.length } : {}),
     entailment: compactEntailment(result.entailment),
     proofCarryingAnswer: compactPca(result.proofCarryingAnswer),
-    learningNeeds: result.learningNeeds.slice(0, 24).map(value => previewText(value, 240)),
+    learningNeeds: result.learningNeeds.slice(0, 24).map(need => ({ needId: need.needId, subject: previewText(need.subject, 240), ...(need.detail ? { detail: previewText(need.detail, 240) } : {}) })),
     truthState: compactJson(result.truthState, 1),
     answerBasis: compactJson(result.answerBasis, 2),
     evidenceForce: result.evidenceForce,

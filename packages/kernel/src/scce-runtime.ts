@@ -997,7 +997,7 @@ async function sourceOnlyAuthorityAnswer(input: SourceOnlyAuthorityAnswerInput):
     field,
     ccr,
     proofAnswer: sourceProof?.surface ?? sourceOnlyProofSurface(input.workspaceAnswer, evidence, input.input.text),
-    learningNeeds: input.workspaceAnswer.learning.needs.map(need => need.needKindId),
+    learningNeeds: input.workspaceAnswer.learning.needs.map(need => ({ needId: need.needKindId, subject: need.gapId })),
     locale: input.input.targetLanguage,
     calibrationModels: input.calibrationModels,
     requestedAuthority,

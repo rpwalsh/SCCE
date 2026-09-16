@@ -7,9 +7,9 @@ import {
   createHasher,
   createIdFactory,
   createProgramGraphBuilder,
-  createProofCarryingAnswer,
-  formatSurfaceMessage
+  createProofCarryingAnswer
 } from "../index.js";
+import { learningNeedsFor } from "../learning-acquisition-runtime.js";
 import type { ContentHash, EvidenceSpan, JsonValue, SemanticEntailmentResult, SourceId, SourceVersionId } from "../types.js";
 
 describe("hydrated runtime surface hardening", () => {
@@ -17,11 +17,17 @@ describe("hydrated runtime surface hardening", () => {
   const hasher = createHasher();
   const ids = createIdFactory({ clock, hasher, deterministicReplay: true, namespace: "hydrated-hardening" });
 
-  it("keeps missing surface messages out of user text", () => {
-    const missing = formatSurfaceMessage("surface.unregistered.runtime_key", { force: "inferred" });
-    expect(missing).toBe("");
-    expect(containsUnresolvedSurfaceKey(missing)).toBe(false);
+  it("reports a learning need as a typed id and its subject, never as authored text", () => {
+    const needs = learningNeedsFor("azurite operator stabilizes cyan surface", entailment("azurite", []), []);
+    expect(needs.map(need => need.needId)).toContain("learning.need.evidence");
+    // The record carries only what the turn measured: no sentence was composed around it.
+    for (const need of needs) {
+      expect(Object.keys(need).sort()).toEqual(["needId", "subject"]);
+      expect(need.subject).toBe("azurite operator stabilizes cyan surface");
+    }
+  });
 
+  it("keeps unresolved surface keys out of user text", () => {
     const pca = createProofCarryingAnswer().certify({
       answer: "This answer is intentionally not certified by evidence.",
       evidence: [],

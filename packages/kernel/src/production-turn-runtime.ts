@@ -117,7 +117,7 @@ import {
   selectLanguageProfileForSurface
 } from "./language.js";
 import { launchContractForTurn, retrievalRoleTracesFromHybridRecall } from "./launch-contract.js";
-import { learningAcquisitionCapabilityPlans, learningNeedsFor } from "./learning-acquisition-runtime.js";
+import { learningAcquisitionCapabilityPlans, learningNeedGoal, learningNeedsFor, TURN_LEARNING_NEED_IDS } from "./learning-acquisition-runtime.js";
 import { createLearningLoop } from "./learning-loop.js";
 import {
   arithmeticAnswerForText,
@@ -146,7 +146,7 @@ import {
   temporalConceptTitledEvidence,
   cliticOpeningFragment
 } from "./local-evidence-runtime.js";
-import { formatSurfaceMessage, localeFromMetadata } from "./localization.js";
+import { localeFromMetadata } from "./localization.js";
 import {
   DEFAULT_FACTUAL_SURFACE_EXTENT,
   createDeterministicMouth,
@@ -2721,7 +2721,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         : [];
       const selectedTemporalEvidence = evidenceBatchFromSlice(durableTemporalEvidence, temporalCandidateIds)
         ?? selectedTemporalCandidateEvidence;
-      let earlyLearningNeeds = learningNeedsFor(input.text, entailmentResult, selectedEvidence, locale);
+      let earlyLearningNeeds = learningNeedsFor(input.text, entailmentResult, selectedEvidence);
       // Plan item 212 (read-back): consolidation (211) was write-only until
       // now -- nothing retrieved a past consolidated episode to influence a
       // *new* turn's proposal generation. This closes that gap using the
@@ -2735,7 +2735,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const pastConsolidatedEpisodes = pastConsolidatedEpisodeEvents.map(event => event.payload as unknown as ConsolidatedEpisode);
       const relevantPastEpisodes = retrieveRelevantEpisodes(pastConsolidatedEpisodes, input.text, { excludeEpisodeId: episodeId, limit: 3 });
       if (relevantPastEpisodes.length) {
-        earlyLearningNeeds = uniqueKernelStrings([...earlyLearningNeeds, ...relevantPastEpisodes.flatMap(row => row.episode.lessons)]);
+        earlyLearningNeeds = [...earlyLearningNeeds, ...uniqueKernelStrings(relevantPastEpisodes.flatMap(row => row.episode.lessons)).map(lesson => ({ needId: TURN_LEARNING_NEED_IDS.priorLesson, subject: lesson }))];
       }
       markTiming("proofMs");
       deadlineCheckpoint("runtime.proof.complete", 0);
@@ -2845,7 +2845,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         : entailmentResult;
       if (longPathBasisAnswer) {
         selectedEvidence = runtimeEvidenceWindowsForRequest(input.text, longPathBasisAnswer.evidence);
-        earlyLearningNeeds = learningNeedsFor(input.text, answerEntailmentSeed, selectedEvidence, locale);
+        earlyLearningNeeds = learningNeedsFor(input.text, answerEntailmentSeed, selectedEvidence);
         events.push(await append(eventFactory.create({ episodeId, typeId: "CandidateGenerated", payload: { kind: "basis-aware-answer", basis: longPathBasisAnswer.audit } })));
         kernelTrace({
           stage: "candidate.score",
@@ -5969,9 +5969,10 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       }
       const learningNeeds = [
         ...earlyLearningNeeds,
-        ...languageAcquisition.acquisitionNeeds.map(need => formatSurfaceMessage("learning.need.language", { script: need.script, reason: need.reason }, locale))
+        ...languageAcquisition.acquisitionNeeds.map(need => ({ needId: TURN_LEARNING_NEED_IDS.language, subject: need.script, detail: need.reason }))
       ];
-      const learningLoopPlan = learningLoop.plan({ goals: learningNeeds.length ? learningNeeds : runtimeModel.learningGoals, model: runtimeModel, graph, evidence: selectedEvidence, languageProfiles: profiles });
+      const learningGoals = learningNeeds.map(learningNeedGoal).filter(Boolean);
+      const learningLoopPlan = learningLoop.plan({ goals: learningGoals.length ? learningGoals : runtimeModel.learningGoals, model: runtimeModel, graph, evidence: selectedEvidence, languageProfiles: profiles });
       const learningCapabilityPlans = learningAcquisitionCapabilityPlans({
         episodeId,
         learningLoopPlan,
@@ -5991,7 +5992,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         events.push(await append(eventFactory.create({ episodeId, typeId: "CapabilityPlanned", payload: plan })));
       }
       const mvpTrainingPlan = trainingOrchestrator.plan({
-        train: { config: { learningGoals: learningNeeds.length ? learningNeeds : runtimeModel.learningGoals, policy } },
+        train: { config: { learningGoals: learningGoals.length ? learningGoals : runtimeModel.learningGoals, policy } },
         evidence: selectedEvidence,
         modelState: runtimeModel,
         recentProofs: [semanticProof],

@@ -1012,6 +1012,13 @@ export interface RuntimeAnswerBasis {
   reasonIds: string[];
 }
 
+/** What a turn could not answer from: a typed id and the corpus-derived data it was measured over. */
+export interface TurnLearningNeed {
+  needId: string;
+  subject: string;
+  detail?: string;
+}
+
 /** A turn that emitted no speech, as typed data a surface can render. Never a reply string. */
 export interface RuntimeWithheldSurface {
   schema: "scce.runtime.withheld_surface.v1";
@@ -1023,7 +1030,7 @@ export interface RuntimeWithheldSurface {
   epistemicForce: string;
   requestedAuthority?: string;
   unresolvedRequirementIds: string[];
-  learningNeeds: string[];
+  learningNeeds: TurnLearningNeed[];
   components: Array<{ id: string; status: string }>;
 }
 
@@ -1087,7 +1094,7 @@ export interface TurnResult {
   validationGraph: ValidationGraph;
   emissionGraph: EmissionGraph;
   forecast: ForecastEnvelope;
-  learningNeeds: string[];
+  learningNeeds: TurnLearningNeed[];
   candidateField?: JsonValue;
   /** Candidate admitted by the judge before Mouth realization. */
   selectedCandidate?: JsonValue;

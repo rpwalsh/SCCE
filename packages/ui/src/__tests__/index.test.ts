@@ -3,7 +3,6 @@
 import { describe, expect, it } from "vitest";
 import { renderWorkbench, WORKBENCH_MODEL_ROUTE } from "../index.js";
 import { DEFAULT_COMMANDS } from "../workbench-model.js";
-import { UI_MESSAGES_EN_US } from "../locales.js";
 
 describe("renderWorkbench", () => {
   it("produces a single well-formed HTML document", () => {
@@ -68,19 +67,19 @@ describe("renderWorkbench", () => {
     expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
   });
 
-  it("resolves every uiText() key used in the template to a real message, not a raw key fallback", () => {
+  it("renders each surface as its own identifier, with no message table on the page", () => {
     const html = renderWorkbench("http://127.0.0.1:3873");
-    // uiText() falls back to returning the key itself when a message is
-    // missing (see locales.ts) -- a leaked raw key like "app.developer_panel"
-    // showing up as literal visible text would mean a typo'd lookup.
-    for (const key of Object.keys(UI_MESSAGES_EN_US)) {
-      if (key === "app.lang") continue;
-      const looksLikeRawKeyLeak = new RegExp(`>${escapeRegExp(key)}<`).test(html);
-      expect(looksLikeRawKeyLeak, `raw i18n key "${key}" leaked into rendered HTML`).toBe(false);
+    for (const id of ["side.explorer", "side.evidence", "side.approvals", "side.settings", "chat.empty.title"]) {
+      expect(html, `surface id ${id} is not rendered`).toContain(`>${id}<`);
     }
+    // Nothing on the page maps an id to wording, and the document declares no authored language.
+    expect(html).not.toContain("I18N");
+    expect(html).toContain('<html lang="und">');
+  });
+
+  it("drives the command palette from the command's own id, not a translated label", () => {
+    const html = renderWorkbench("http://127.0.0.1:3873");
+    expect(html).not.toContain("i18n:");
+    for (const command of DEFAULT_COMMANDS) expect(command.label.startsWith("cmd.")).toBe(true);
   });
 });
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-}

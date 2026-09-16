@@ -4,17 +4,8 @@ import type { JsonValue } from "./types.js";
 
 export type LocaleId = string;
 export type MessageKey = string;
-export type MessageVars = Record<string, string | number | boolean | null | undefined>;
-export type MessageBundle = Record<string, string>;
 
 const DEFAULT_LOCALE: LocaleId = "und";
-const BUNDLES: Record<string, MessageBundle> = {
-  [DEFAULT_LOCALE]: {}
-};
-
-export function registerMessageBundle(locale: LocaleId, bundle: MessageBundle): void {
-  BUNDLES[normalizeLocale(locale)] = { ...(BUNDLES[normalizeLocale(locale)] ?? {}), ...bundle };
-}
 
 export function localeFromMetadata(metadata: JsonValue | undefined, text = ""): LocaleId {
   void text;
@@ -25,15 +16,6 @@ export function localeFromMetadata(metadata: JsonValue | undefined, text = ""): 
     if (typeof value === "string" && value.trim()) return normalizeLocale(value);
   }
   return DEFAULT_LOCALE;
-}
-
-export function formatSurfaceMessage(key: MessageKey, vars: MessageVars = {}, locale: LocaleId = DEFAULT_LOCALE): string {
-  const template = BUNDLES[normalizeLocale(locale)]?.[String(key)] ?? BUNDLES[DEFAULT_LOCALE]?.[String(key)];
-  if (template) return template.replace(/\{([A-Za-z0-9_.:-]+)\}/g, (_match, rawKey: string) => {
-    const value = vars[rawKey];
-    return value === undefined || value === null ? "" : String(value);
-  });
-  return "";
 }
 
 function normalizeLocale(locale: LocaleId): LocaleId {

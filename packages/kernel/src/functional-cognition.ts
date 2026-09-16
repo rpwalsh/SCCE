@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import type { FunctionalSelfState, GraphSlice, JsonValue, ModelState, PolicyProfile, ScceEvent } from "./types.js";
+import type { FunctionalSelfState, GraphSlice, JsonValue, ModelState, PolicyProfile, ScceEvent, TurnLearningNeed } from "./types.js";
+import { learningNeedGoal } from "./learning-acquisition-runtime.js";
 import type { GovernanceObservation } from "./governance-observation.js";
 import { unavailableGovernanceObservation } from "./governance-observation.js";
 import { clamp01, cosineSimilarity, mean, normalizeVector, toJsonValue, variance } from "./primitives.js";
@@ -141,7 +142,7 @@ export function createFunctionalCognitionEngine(config: Partial<FunctionalCognit
       graph: GraphSlice;
       policy: PolicyProfile;
       ssdAudit?: JsonValue;
-      learningNeeds?: string[];
+      learningNeeds?: TurnLearningNeed[];
       candidates?: JsonValue;
       traces?: CounterfactualTrace[];
       personaHistory?: PersonaSnapshot[];
@@ -216,10 +217,10 @@ function collectGoalSignals(input: {
   model: ModelState;
   graph: GraphSlice;
   ssdAudit?: JsonValue;
-  learningNeeds?: string[];
+  learningNeeds?: TurnLearningNeed[];
 }, cfg: FunctionalCognitionConfig): EndogenousGoalSignal[] {
   const goals: EndogenousGoalSignal[] = [];
-  for (const goal of [...new Set([...input.self.learningGoals, ...input.model.learningGoals, ...(input.learningNeeds ?? [])])].slice(0, 64)) {
+  for (const goal of [...new Set([...input.self.learningGoals, ...input.model.learningGoals, ...(input.learningNeeds ?? []).map(learningNeedGoal)])].slice(0, 64)) {
     goals.push({
       id: `goal:${hash32(goal).toString(16)}`,
       goal,
@@ -421,13 +422,13 @@ function governancePredicate(input: {
  * reported is under genuine, evidence-derived pressure. Token-level,
  * data-driven, no word lists.
  */
-function learningNeedPressureFor(goal: string, learningNeeds: readonly string[]): number {
+function learningNeedPressureFor(goal: string, learningNeeds: readonly TurnLearningNeed[]): number {
   if (!learningNeeds.length) return 0;
   const goalTokens = goal.toLocaleLowerCase().split(/\s+/u).filter(token => token.length >= 3);
   if (!goalTokens.length) return 0;
   let best = 0;
   for (const need of learningNeeds) {
-    const needText = need.toLocaleLowerCase();
+    const needText = learningNeedGoal(need).toLocaleLowerCase();
     const hits = goalTokens.filter(token => needText.includes(token)).length;
     best = Math.max(best, hits / goalTokens.length);
   }

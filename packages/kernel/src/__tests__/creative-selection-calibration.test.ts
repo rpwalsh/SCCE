@@ -39,7 +39,8 @@ import type {
   MatrixSnapshot,
   PolicyProfile,
   ProofId,
-  SemanticEntailmentResult
+  SemanticEntailmentResult,
+  TurnLearningNeed
 } from "../types.js";
 import type { CcrResult } from "../ccr.js";
 import type { ChernoffResult, DavisKahanEnvelope, MinimumCoverResult, SubspaceDriftEntropy } from "../causal-math.js";
@@ -82,7 +83,7 @@ describe("creative candidate selection and preference calibration", () => {
       ...fixture,
       requestedAuthority: "creative",
       inventionCandidates: [invention("invention.selectable", [])],
-      learningNeeds: ["constraint.unresolved"]
+      learningNeeds: [{ needId: "constraint.unresolved", subject: "" }]
     });
     expect(field.candidates.some(candidate => candidate.kind === "proof-answer")).toBe(true);
     expect(field.candidates.map(candidate => candidate.kind)).toEqual(["proof-answer", "creative-candidate"]);
@@ -612,7 +613,7 @@ function candidateFixture(evidenceRows: EvidenceSpan[]) {
     field: field(),
     ccr: ccr(),
     proofAnswer: evidenceIds.length ? "The premise is observed." : "No certified answer is available.",
-    learningNeeds: [] as string[]
+    learningNeeds: [] as TurnLearningNeed[]
   };
 }
 

@@ -79,39 +79,39 @@ export type WorkbenchAction =
   | { type: "status.patch"; status: Partial<WorkbenchState["status"]> };
 
 export const DEFAULT_COMMANDS: CommandPaletteEntry[] = [
-  { id: "runtime.ready", label: "i18n:cmd.runtime.ready", detail: "GET /api/ready", group: "runtime", accelerator: "Ctrl+R" },
-  { id: "db.verify", label: "i18n:cmd.db.verify", detail: "GET /api/db/verify", group: "database" },
-  { id: "db.stats", label: "i18n:cmd.db.stats", detail: "GET /api/db/stats", group: "database" },
-  { id: "tools.inspect", label: "i18n:cmd.tools.inspect", detail: "GET /api/tools", group: "tools" },
-  { id: "session.approvals", label: "i18n:cmd.session.approvals", detail: "GET /api/session/approvals", group: "tools" },
-  { id: "session.operator_grant", label: "i18n:cmd.session.operator_grant", detail: "POST /api/session/operator-grant", group: "tools" },
-  { id: "connectors.quota", label: "i18n:cmd.connectors.quota", detail: "GET /api/connectors/quota", group: "tools" },
-  { id: "kernel.ingest", label: "i18n:cmd.ingest.source", detail: "POST /api/ingest", group: "runtime" },
-  { id: "kernel.codebase_ingest", label: "i18n:cmd.ingest.codebase", detail: "POST /api/codebase/ingest", group: "runtime" },
-  { id: "workspace.code", label: "i18n:cmd.workspace.code", detail: "POST /api/workspace/code", group: "program" },
-  { id: "workspace.init", label: "i18n:cmd.workspace.init", detail: "POST /api/workspace/init", group: "runtime" },
-  { id: "workspace.ingest", label: "i18n:cmd.workspace.ingest", detail: "POST /api/workspace/ingest", group: "runtime" },
-  { id: "workspace.ask", label: "i18n:cmd.workspace.ask", detail: "POST /api/workspace/ask", group: "runtime" },
-  { id: "project.summary", label: "i18n:cmd.project.summary", detail: "GET /api/project/summary", group: "view" },
-  { id: "project.map", label: "i18n:cmd.project.map", detail: "GET /api/project/map", group: "view" },
-  { id: "project.symbols", label: "i18n:cmd.project.symbols", detail: "GET /api/project/symbols", group: "view" },
-  { id: "project.gaps", label: "i18n:cmd.project.gaps", detail: "GET /api/project/gaps", group: "view" },
-  { id: "project.contradictions", label: "i18n:cmd.project.contradictions", detail: "GET /api/project/contradictions", group: "proof" },
-  { id: "project.tasks", label: "i18n:cmd.project.tasks", detail: "GET /api/project/tasks", group: "program" },
-  { id: "report.brief", label: "i18n:cmd.report.brief", detail: "GET /api/reports/brief", group: "view" },
-  { id: "report.patch_plan", label: "i18n:cmd.report.patch_plan", detail: "GET /api/reports/patch-plan", group: "program" },
-  { id: "report.handoff", label: "i18n:cmd.report.handoff", detail: "GET /api/reports/handoff", group: "view" },
-  { id: "report.review", label: "i18n:cmd.report.review", detail: "GET /api/reports/review", group: "proof" },
-  { id: "kernel.train", label: "i18n:cmd.train.promote", detail: "POST /api/train", group: "runtime" },
-  { id: "kernel.turn", label: "i18n:cmd.kernel.turn", detail: "POST /api/turn", group: "runtime", accelerator: "Ctrl+Enter" },
-  { id: "inspect.snapshot", label: "i18n:cmd.inspect.snapshot", detail: "GET /api/inspect?target=snapshot", group: "view" },
-  { id: "inspect.math_spine", label: "i18n:cmd.inspect.math_spine", detail: "GET /api/inspect?target=math-spine", group: "view" },
-  { id: "inspect.graph", label: "i18n:cmd.inspect.graph", detail: "GET /api/inspect?target=graph", group: "graph" },
-  { id: "inspect.ingestion", label: "i18n:cmd.inspect.ingestion", detail: "GET /api/inspect?target=ingestion", group: "view" },
-  { id: "inspect.codebase", label: "i18n:cmd.inspect.codebase", detail: "GET /api/inspect?target=codebase", group: "view" },
-  { id: "inspect.self", label: "i18n:cmd.inspect.self", detail: "GET /api/inspect?target=self", group: "view" },
-  { id: "inspect.proofs", label: "i18n:cmd.inspect.proofs", detail: "GET /api/inspect?target=proofs", group: "proof" },
-  { id: "benchmark.run", label: "Benchmark: Run Suite", detail: "POST /api/benchmark", group: "runtime" }
+  { id: "runtime.ready", label: "cmd.runtime.ready", detail: "GET /api/ready", group: "runtime", accelerator: "Ctrl+R" },
+  { id: "db.verify", label: "cmd.db.verify", detail: "GET /api/db/verify", group: "database" },
+  { id: "db.stats", label: "cmd.db.stats", detail: "GET /api/db/stats", group: "database" },
+  { id: "tools.inspect", label: "cmd.tools.inspect", detail: "GET /api/tools", group: "tools" },
+  { id: "session.approvals", label: "cmd.session.approvals", detail: "GET /api/session/approvals", group: "tools" },
+  { id: "session.operator_grant", label: "cmd.session.operator_grant", detail: "POST /api/session/operator-grant", group: "tools" },
+  { id: "connectors.quota", label: "cmd.connectors.quota", detail: "GET /api/connectors/quota", group: "tools" },
+  { id: "kernel.ingest", label: "cmd.ingest.source", detail: "POST /api/ingest", group: "runtime" },
+  { id: "kernel.codebase_ingest", label: "cmd.ingest.codebase", detail: "POST /api/codebase/ingest", group: "runtime" },
+  { id: "workspace.code", label: "cmd.workspace.code", detail: "POST /api/workspace/code", group: "program" },
+  { id: "workspace.init", label: "cmd.workspace.init", detail: "POST /api/workspace/init", group: "runtime" },
+  { id: "workspace.ingest", label: "cmd.workspace.ingest", detail: "POST /api/workspace/ingest", group: "runtime" },
+  { id: "workspace.ask", label: "cmd.workspace.ask", detail: "POST /api/workspace/ask", group: "runtime" },
+  { id: "project.summary", label: "cmd.project.summary", detail: "GET /api/project/summary", group: "view" },
+  { id: "project.map", label: "cmd.project.map", detail: "GET /api/project/map", group: "view" },
+  { id: "project.symbols", label: "cmd.project.symbols", detail: "GET /api/project/symbols", group: "view" },
+  { id: "project.gaps", label: "cmd.project.gaps", detail: "GET /api/project/gaps", group: "view" },
+  { id: "project.contradictions", label: "cmd.project.contradictions", detail: "GET /api/project/contradictions", group: "proof" },
+  { id: "project.tasks", label: "cmd.project.tasks", detail: "GET /api/project/tasks", group: "program" },
+  { id: "report.brief", label: "cmd.report.brief", detail: "GET /api/reports/brief", group: "view" },
+  { id: "report.patch_plan", label: "cmd.report.patch_plan", detail: "GET /api/reports/patch-plan", group: "program" },
+  { id: "report.handoff", label: "cmd.report.handoff", detail: "GET /api/reports/handoff", group: "view" },
+  { id: "report.review", label: "cmd.report.review", detail: "GET /api/reports/review", group: "proof" },
+  { id: "kernel.train", label: "cmd.train.promote", detail: "POST /api/train", group: "runtime" },
+  { id: "kernel.turn", label: "cmd.kernel.turn", detail: "POST /api/turn", group: "runtime", accelerator: "Ctrl+Enter" },
+  { id: "inspect.snapshot", label: "cmd.inspect.snapshot", detail: "GET /api/inspect?target=snapshot", group: "view" },
+  { id: "inspect.math_spine", label: "cmd.inspect.math_spine", detail: "GET /api/inspect?target=math-spine", group: "view" },
+  { id: "inspect.graph", label: "cmd.inspect.graph", detail: "GET /api/inspect?target=graph", group: "graph" },
+  { id: "inspect.ingestion", label: "cmd.inspect.ingestion", detail: "GET /api/inspect?target=ingestion", group: "view" },
+  { id: "inspect.codebase", label: "cmd.inspect.codebase", detail: "GET /api/inspect?target=codebase", group: "view" },
+  { id: "inspect.self", label: "cmd.inspect.self", detail: "GET /api/inspect?target=self", group: "view" },
+  { id: "inspect.proofs", label: "cmd.inspect.proofs", detail: "GET /api/inspect?target=proofs", group: "proof" },
+  { id: "benchmark.run", label: "cmd.benchmark.run", detail: "POST /api/benchmark", group: "runtime" }
 ];
 
 export function createInitialWorkbenchState(serverUrl: string): WorkbenchState {
@@ -129,8 +129,8 @@ export function createInitialWorkbenchState(serverUrl: string): WorkbenchState {
       { id: "tab.self", kind: "self", title: "self.state", dirty: false, pinned: true, payload: null }
     ],
     tree: defaultTree(),
-    evidence: [{ id: "evidence.empty", label: "Run inspect to load graph/evidence.", icon: "E", kind: "evidence" }],
-    terminal: [{ id: "term.init", t: 0, stream: "system", text: "$ SCCE workbench ready" }],
+    evidence: [{ id: "evidence.empty", label: "evidence.empty", icon: "E", kind: "evidence" }],
+    terminal: [{ id: "term.init", t: 0, stream: "system", text: "terminal.ready" }],
     trace: [],
     inspector: {},
     commandPaletteOpen: false,
@@ -179,8 +179,8 @@ export function treeFromSnapshot(snapshot: unknown): WorkbenchTreeItem[] {
   const nodes = Array.isArray((graph as { nodes?: unknown[] }).nodes) ? (graph as { nodes: unknown[] }).nodes : [];
   const edges = Array.isArray((graph as { edges?: unknown[] }).edges) ? (graph as { edges: unknown[] }).edges : [];
   return [
-    { id: "snapshot.graph", label: `graph (${nodes.length} nodes, ${edges.length} edges)`, icon: "G", kind: "folder", children: nodes.slice(0, 80).map((node, index) => nodeItem(node, index)) },
-    { id: "snapshot.meta", label: "runtime snapshot", icon: "S", kind: "config", meta: value.memoryState ?? {} }
+    { id: "snapshot.graph", label: `snapshot.graph nodes=${nodes.length} edges=${edges.length}`, icon: "G", kind: "folder", children: nodes.slice(0, 80).map((node, index) => nodeItem(node, index)) },
+    { id: "snapshot.meta", label: "snapshot.runtime", icon: "S", kind: "config", meta: value.memoryState ?? {} }
   ];
 }
 

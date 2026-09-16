@@ -48,7 +48,7 @@ export function withheldSurfaceForTurn(result: TurnResult): RuntimeWithheldSurfa
     ...(result.requestedAuthority ? { requestedAuthority: String(result.requestedAuthority) } : {}),
     // What the turn looked for and did not resolve: the judge-selected candidate's own missed requirements.
     unresolvedRequirementIds: uniqueKernelStrings(kernelStringArray(selected.missedRequirementIds)).slice(0, 12),
-    learningNeeds: uniqueKernelStrings(result.learningNeeds).slice(0, 12),
+    learningNeeds: result.learningNeeds.slice(0, 12),
     components
   };
 }

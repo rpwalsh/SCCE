@@ -2,7 +2,6 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { createIdFactory } from "./ids.js";
 import { type LearningLoopPlan, type LearningSourcePlan } from "./learning-loop.js";
-import { formatSurfaceMessage } from "./localization.js";
 import { toJsonValue } from "./primitives.js";
 import { createActionPlanner, createCapabilityRegistry } from "./safety.js";
 import type {
@@ -11,6 +10,7 @@ import type {
   EvidenceSpan,
   JsonValue,
   PolicyProfile,
+  TurnLearningNeed,
   TurnResult
 } from "./types.js";
 
@@ -96,28 +96,32 @@ function learningAcquisitionPayload(plan: LearningSourcePlan): JsonValue {
   });
 }
 
+export const TURN_LEARNING_NEED_IDS = {
+  evidence: "learning.need.evidence",
+  contradiction: "learning.need.contradiction",
+  language: "learning.need.language",
+  priorLesson: "learning.need.prior_lesson"
+} as const;
+
 export function learningNeedsFor(
   text: string,
   entailment: TurnResult["entailment"],
-  evidence: EvidenceSpan[],
-  locale?: string
-): string[] {
-  // An unresolved message key yields an empty string, and pushing that produced needs with no text: a caller
-  // counting them saw work to do and had nothing to show for it. Only messages that actually resolved are needs.
-  const needs: string[] = [];
+  evidence: EvidenceSpan[]
+): TurnLearningNeed[] {
+  // The condition id plus the subject it was measured over. No wording: a surface renders the id and the data.
+  const needs: TurnLearningNeed[] = [];
   if (evidence.length < 2 || entailment.faithfulnessLcb < 0.2) {
-    const need = formatSurfaceMessage("learning.need.evidence", { text: text.slice(0, 180) }, locale);
-    if (need) needs.push(need);
+    needs.push({ needId: TURN_LEARNING_NEED_IDS.evidence, subject: text.slice(0, 180) });
   }
   if (entailment.contradiction > 0.2) {
-    const need = formatSurfaceMessage(
-      "learning.need.contradiction",
-      { claim: entailment.claim.normalized.slice(0, 180) },
-      locale
-    );
-    if (need) needs.push(need);
+    needs.push({ needId: TURN_LEARNING_NEED_IDS.contradiction, subject: entailment.claim.normalized.slice(0, 180) });
   }
   return needs;
+}
+
+/** The goal string a learning need contributes: its own subject, never a sentence built around it. */
+export function learningNeedGoal(need: TurnLearningNeed): string {
+  return [need.subject, need.detail].filter(Boolean).join(" ").trim();
 }
 
 export function languageScore(evidence: EvidenceSpan[]): number {

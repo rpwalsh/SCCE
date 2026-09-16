@@ -1,6 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import type { EpistemicForce, EvidenceId, EvidenceSpan, FieldState, Hyperedge, JsonValue, LanguageProfile, RequestedAuthority, SemanticEntailmentResult } from "./types.js";
+import type { EpistemicForce, EvidenceId, EvidenceSpan, FieldState, Hyperedge, JsonValue, LanguageProfile, RequestedAuthority, SemanticEntailmentResult, TurnLearningNeed } from "./types.js";
 import type { InventionConstruct } from "./prediction.js";
 import type { LanguageMemoryRuntime, LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
 import { attemptConstructRealization } from "./answer-realization.js";
@@ -55,7 +55,7 @@ export interface CandidateGenerationInput {
   field: FieldState;
   ccr: CcrResult;
   proofAnswer: string;
-  learningNeeds: string[];
+  learningNeeds: TurnLearningNeed[];
   locale?: string;
   calibrationModel?: CalibrationModel;
   calibrationModels?: CalibrationModelSet;

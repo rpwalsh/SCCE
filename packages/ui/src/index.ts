@@ -2,15 +2,25 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 export * from "./workbench-model.js";
 export * from "./developer-surface.js";
-export * from "./locales.js";
 
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { scriptLiteral, uiMessageScript, uiText } from "./locales.js";
 import { DEFAULT_COMMANDS } from "./workbench-model.js";
 
 /** The page loads the workbench model as a module, so the browser runs the same reducer the tests cover. */
 export const WORKBENCH_MODEL_ROUTE = "/ui/workbench-model.js";
+
+/** Embeds a value in a <script> body: JSON, with every character that could close the element neutralised. */
+function scriptLiteral(value: unknown): string {
+  let out = "";
+  for (const char of JSON.stringify(value ?? null)) {
+    if (char === "<") out += "\\u003c";
+    else if (char === ">") out += "\\u003e";
+    else if (char === "&") out += "\\u0026";
+    else out += char;
+  }
+  return out;
+}
 
 export function workbenchModelModulePath(): string {
   return path.join(path.dirname(fileURLToPath(import.meta.url)), "workbench-model.js");
@@ -23,11 +33,11 @@ export interface WorkbenchRenderOptions {
 
 export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptions = {}): string {
   return `<!doctype html>
-<html lang="${escapeHtml(uiText("app.lang"))}">
+<html lang="und">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>${escapeHtml(uiText("app.title"))}</title>
+  <title>SCCE</title>
   <style>
     :root {
       color-scheme: dark;
@@ -144,87 +154,84 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
 <body>
   <div class="app">
     <div class="topbar">
-      <div class="brand"><span class="dot" id="status-dot"></span><span>${escapeHtml(uiText("app.title"))}</span></div>
+      <div class="brand"><span class="dot" id="status-dot"></span><span>SCCE</span></div>
       <div class="origin" id="status-runtime" title="${escapeHtml(serverUrl)}"></div>
       <div class="spacer"></div>
       <div class="badge" id="approvals-badge"></div>
-      <button class="iconbtn" id="dev-toggle" title="${escapeHtml(uiText("app.developer_panel"))}" aria-label="${escapeHtml(uiText("app.developer_panel"))}">&#9881;</button>
+      <button class="iconbtn" id="dev-toggle" title="app.developer_panel" aria-label="app.developer_panel">&#9881;</button>
     </div>
     <div class="body">
       <div class="chat-column">
         <div class="messages" id="messages">
           <div class="messages-inner" id="messages-inner">
             <div class="empty-state" id="empty-state">
-              <h2>${escapeHtml(uiText("chat.empty.title"))}</h2>
-              <p>${escapeHtml(uiText("chat.empty.hint"))}</p>
+              <h2>chat.empty.title</h2>
+              <p>chat.empty.hint</p>
             </div>
           </div>
         </div>
         <div class="composer-wrap">
           <div class="composer">
-            <textarea id="prompt" rows="1" placeholder="${escapeHtml(uiText("composer.placeholder"))}"></textarea>
-            <button id="send">${escapeHtml(uiText("button.send"))}</button>
+            <textarea id="prompt" rows="1" placeholder="composer.placeholder"></textarea>
+            <button id="send">button.send</button>
           </div>
         </div>
       </div>
       <aside class="devpanel" id="devpanel">
         <div class="devpanel-header">
-          <strong>${escapeHtml(uiText("app.developer_panel"))}</strong>
-          <button class="iconbtn" id="dev-close" aria-label="${escapeHtml(uiText("app.developer_panel.close"))}">&times;</button>
+          <strong>app.developer_panel</strong>
+          <button class="iconbtn" id="dev-close" aria-label="app.developer_panel.close">&times;</button>
         </div>
         <div class="devpanel-body">
           <div class="dev-section">
-            <h3>${escapeHtml(uiText("side.explorer"))}</h3>
+            <h3>side.explorer</h3>
             <div class="tree" id="explorer-tree"></div>
           </div>
           <div class="dev-section">
-            <h3>${escapeHtml(uiText("side.evidence"))}</h3>
-            <div class="tree" id="evidence-tree"><div>${escapeHtml(uiText("side.evidence.empty"))}</div></div>
+            <h3>side.evidence</h3>
+            <div class="tree" id="evidence-tree"><div>side.evidence.empty</div></div>
           </div>
           <div class="dev-section">
-            <h3>${escapeHtml(uiText("side.approvals"))}<button id="refresh-approvals">${escapeHtml(uiText("side.approvals.refresh"))}</button></h3>
-            <div class="approval-head"><label class="toggle"><input type="checkbox" id="operator-grant-toggle" /> ${escapeHtml(uiText("side.approvals.operator_grant"))}</label></div>
-            <div id="approval-list" class="tree"><div>${escapeHtml(uiText("side.approvals.none"))}</div></div>
+            <h3>side.approvals<button id="refresh-approvals">side.approvals.refresh</button></h3>
+            <div class="approval-head"><label class="toggle"><input type="checkbox" id="operator-grant-toggle" /> side.approvals.operator_grant</label></div>
+            <div id="approval-list" class="tree"><div>side.approvals.none</div></div>
           </div>
           <div class="dev-section">
-            <h3>${escapeHtml(uiText("side.settings"))}</h3>
-            <div class="hint">${escapeHtml(uiText("side.settings.hint"))}</div>
+            <h3>side.settings</h3>
+            <div class="hint">side.settings.hint</div>
             <div id="settings-form" class="tree"></div>
           </div>
           <div class="dev-section">
-            <h3>${escapeHtml(uiText("side.models"))}<button class="small-btn" id="model-download">${escapeHtml(uiText("side.models.download"))}</button></h3>
-            <div id="models-list" class="tree"><div>${escapeHtml(uiText("side.models.empty"))}</div></div>
+            <h3>side.models<button class="small-btn" id="model-download">side.models.download</button></h3>
+            <div id="models-list" class="tree"><div>side.models.empty</div></div>
           </div>
           <div class="dev-section">
-            <h3>${escapeHtml(uiText("side.learning"))}<button class="small-btn" id="refresh-learning">${escapeHtml(uiText("side.learning.refresh"))}</button></h3>
-            <div class="hint">${escapeHtml(uiText("side.learning.hint"))}</div>
-            <div id="learning-list" class="tree"><div>${escapeHtml(uiText("side.learning.none"))}</div></div>
+            <h3>side.learning<button class="small-btn" id="refresh-learning">side.learning.refresh</button></h3>
+            <div class="hint">side.learning.hint</div>
+            <div id="learning-list" class="tree"><div>side.learning.none</div></div>
           </div>
           <div class="dev-section">
-            <h3>${escapeHtml(uiText("pane.inspector"))}<button class="small-btn" id="inspect">${escapeHtml(uiText("button.inspect"))}</button></h3>
+            <h3>pane.inspector<button class="small-btn" id="inspect">button.inspect</button></h3>
             <pre class="json" id="inspect-json">{}</pre>
           </div>
           <div class="dev-section">
-            <h3>${escapeHtml(uiText("app.developer_panel.terminal"))}</h3>
-            <pre class="json" id="terminal">${escapeHtml(uiText("terminal.ready"))}</pre>
+            <h3>app.developer_panel.terminal</h3>
+            <pre class="json" id="terminal">terminal.ready</pre>
           </div>
           <div class="dev-section">
-            <h3>${escapeHtml(uiText("app.developer_panel.trace"))}</h3>
+            <h3>app.developer_panel.trace</h3>
             <pre class="flow" id="trace"></pre>
           </div>
         </div>
       </aside>
     </div>
   </div>
-  <div class="palette" id="palette"><input id="palette-input" aria-label="${escapeHtml(uiText("palette.aria"))}" /><div class="palette-list" id="palette-list"></div></div>
+  <div class="palette" id="palette"><input id="palette-input" aria-label="palette.aria" /><div class="palette-list" id="palette-list"></div></div>
   <script type="module">
     import { createInitialWorkbenchState, reduceWorkbench, treeFromSnapshot, traceFromEvents, evidenceTreeFromTurn, withheldSurfaceView } from '${WORKBENCH_MODEL_ROUTE}';
-    const I18N = ${uiMessageScript()};
-    const t = key => I18N[key] || key;
     let workbench = createInitialWorkbenchState(${scriptLiteral(serverUrl)});
     const apply = action => { workbench = reduceWorkbench(workbench, action); return workbench; };
     const FRONTIER_SUITE_ID = ${scriptLiteral(options.benchmarkSuiteId ?? "")};
-    const commandLabel = command => command.label.startsWith('i18n:') ? t(command.label.slice(5)) : command.label;
     const messages = document.getElementById('messages');
     const messagesInner = document.getElementById('messages-inner');
     const emptyState = document.getElementById('empty-state');
@@ -291,7 +298,7 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
         const details = document.createElement('details');
         details.className = 'details';
         const summary = document.createElement('summary');
-        summary.textContent = t('chat.details');
+        summary.textContent = 'chat.details';
         const pre = document.createElement('pre');
         pre.textContent = JSON.stringify(detail, null, 2);
         details.appendChild(summary);
@@ -310,12 +317,8 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
         typingRow.innerHTML = '<div class="bubble"><div class="typing"><span id="typing-phase"></span><span class="dots"><span>&bull;</span><span>&bull;</span><span>&bull;</span></span></div></div>';
         messagesInner.appendChild(typingRow);
       }
-      typingRow.querySelector('#typing-phase').textContent = phase ? phaseLabel(phase) : t('chat.working');
+      typingRow.querySelector('#typing-phase').textContent = phase ? String(phase) : 'chat.working';
       messages.scrollTop = messages.scrollHeight;
-    }
-    function phaseLabel(phase) {
-      const label = String(phase).split('.').pop() || phase;
-      return label.charAt(0).toUpperCase() + label.slice(1).replace(/_/g, ' ');
     }
     function hideTyping() { if (typingRow) { typingRow.remove(); typingRow = null; } }
     let runningTaskId = '';
@@ -326,19 +329,19 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
     function setSending(next) {
       sending = next;
       setRuntimeStatus({ requestInFlight: next });
-      sendButton.textContent = sending ? t('button.stop') : t('button.send');
+      sendButton.textContent = sending ? 'button.stop' : 'button.send';
       sendButton.classList.toggle('stop', sending);
     }
 
     function turnSurface(r) {
       if (r && typeof r.answer === 'string' && answerHasSpeech(r.answer)) return r.answer;
       const err = r && (r.error?.message || r.error || r.runtimeError || r.message);
-      return err ? 'Runtime failure: ' + String(err) : 'Runtime failure: /api/turn returned no answer.';
+      return err ? String(err) : 'turn.no_answer_surface';
     }
     function answerHasSpeech(text) { return /[\\p{L}\\p{N}]/u.test(String(text || '')); }
     // A withheld turn travels as typed data on the terminal frame; the error text is only a fallback surface.
     function terminalFrameError(frame) {
-      const error = new Error(frame.error || JSON.stringify(frame.value) || 'streaming turn failed');
+      const error = new Error(frame.error || JSON.stringify(frame.value) || 'stream.frame_failed');
       if (frame.detail !== undefined) error.detail = frame.detail;
       return error;
     }
@@ -370,7 +373,7 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
       apply({ type: 'evidence.replace', evidence: derived });
       tree.innerHTML = '';
       if (!rows.length) {
-        if (!derived.length) { tree.textContent = t('side.evidence.empty'); return; }
+        if (!derived.length) { tree.textContent = 'side.evidence.empty'; return; }
         for (const item of derived) { const row = document.createElement('div'); row.textContent = item.label; tree.appendChild(row); }
         return;
       }
@@ -403,9 +406,9 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
         setInspector({ dialogue, outcome: r });
         row.remove();
       };
-      const accept = document.createElement('button'); accept.className = 'accept'; accept.title = 'Accept'; accept.textContent = '\\u2713'; accept.onclick = () => sendOutcome('accepted');
-      const reject = document.createElement('button'); reject.className = 'reject'; reject.title = 'Reject'; reject.textContent = '\\u2717'; reject.onclick = () => sendOutcome('rejected');
-      const correct = document.createElement('button'); correct.title = 'Correct'; correct.textContent = '\\u270e'; correct.onclick = () => { const text = window.prompt('Correction'); if (text && text.trim()) sendOutcome('corrected', text.trim()); };
+      const accept = document.createElement('button'); accept.className = 'accept'; accept.title = 'turn.outcome.accepted'; accept.textContent = '\\u2713'; accept.onclick = () => sendOutcome('accepted');
+      const reject = document.createElement('button'); reject.className = 'reject'; reject.title = 'turn.outcome.rejected'; reject.textContent = '\\u2717'; reject.onclick = () => sendOutcome('rejected');
+      const correct = document.createElement('button'); correct.title = 'turn.outcome.corrected'; correct.textContent = '\\u270e'; correct.onclick = () => { const text = window.prompt('turn.outcome.corrected'); if (text && text.trim()) sendOutcome('corrected', text.trim()); };
       row.appendChild(accept); row.appendChild(reject); row.appendChild(correct);
       messagesInner.appendChild(row);
       messages.scrollTop = messages.scrollHeight;
@@ -441,7 +444,7 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
       const dot = document.getElementById('status-dot');
       if (!pill || !dot) return;
       const busy = Boolean(workbench.status.requestInFlight);
-      pill.textContent = busy ? t('status.runtime.busy') : (workbench.status.ready ? '' : t('status.runtime.unknown'));
+      pill.textContent = busy ? 'status.runtime.busy' : (workbench.status.ready ? '' : 'status.runtime.unknown');
       dot.classList.toggle('busy', busy);
       dot.classList.toggle('down', !busy && !workbench.status.ready);
     }
@@ -455,7 +458,7 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
       while (!result) {
         let terminalFailure = false;
         if (!response.ok) { const text = await response.text(); throw new Error(text || ('HTTP ' + response.status)); }
-        if (!response.body) throw new Error('streaming response body unavailable');
+        if (!response.body) throw new Error('stream.body_unavailable');
         const reader = response.body.getReader(); const decoder = new TextDecoder(); let pending = '';
         try {
           while (true) {
@@ -485,7 +488,7 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
           if (terminalFailure || !state.reconnectUrl) throw error;
         }
         if (result) break;
-        if (!state.reconnectUrl) throw new Error('streaming turn ended without a reconnectable task receipt');
+        if (!state.reconnectUrl) throw new Error('stream.no_task_receipt');
         await new Promise(resolve => setTimeout(resolve, 500));
         response = await fetch(state.reconnectUrl + '?after=' + state.latestSequence, { headers: { accept: 'application/x-ndjson' } });
       }
@@ -512,13 +515,12 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
       } catch (error) {
         hideTyping(); setSending(false);
         if (streamingAnswerRow) { streamingAnswerRow.remove(); streamingAnswerRow = null; }
-        if (!withheldRow(error)) add('error', t('error.prefix') + ' ' + error.message);
+        if (!withheldRow(error)) add('error', error.message);
       }
     }
     async function post(url, body) { const r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); const t = await r.text(); const j = t ? JSON.parse(t) : null; if (!r.ok) throw httpFailure(r.status, j); return j; }
     function httpFailure(status, payload) { const error = new Error((payload && payload.error) || JSON.stringify(payload) || ('HTTP ' + status)); error.status = status; if (payload && payload.detail !== undefined) error.detail = payload.detail; return error; }
     // Settings and local models (Phase 6/8): labels come from the locale table (settings.<key>).
-    function settingLabel(field) { return (typeof I18N !== 'undefined' && I18N['settings.' + field.key]) || field.label; }
     async function loadSettings() {
       const host = document.getElementById('settings-form'); if (!host) return;
       try {
@@ -526,7 +528,7 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
         host.innerHTML = '';
         for (const field of view.fields) {
           const row = document.createElement('label'); row.className = 'setting';
-          const name = document.createElement('span'); name.textContent = settingLabel(field); row.appendChild(name);
+          const name = document.createElement('span'); name.textContent = field.key; row.appendChild(name);
           let input;
           if (field.kind === 'boolean') { input = document.createElement('input'); input.type = 'checkbox'; input.checked = field.value === true; }
           else if (field.kind === 'choice') { input = document.createElement('select'); for (const choice of field.choices || []) { const o = document.createElement('option'); o.value = choice; o.textContent = choice; if (choice === field.value) o.selected = true; input.appendChild(o); } }
@@ -534,8 +536,8 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
           const status = document.createElement('em');
           input.addEventListener('change', async () => {
             const value = field.kind === 'boolean' ? input.checked : input.value;
-            try { await post('/api/settings', { key: field.key, value }); status.textContent = uiMsg('side.settings.saved'); }
-            catch (error) { status.textContent = uiMsg('side.settings.error') + ': ' + String(error.message || error).slice(0, 120); }
+            try { await post('/api/settings', { key: field.key, value }); status.textContent = 'side.settings.saved'; }
+            catch (error) { status.textContent = String(error.message || error).slice(0, 120); }
           });
           row.appendChild(input); row.appendChild(status); host.appendChild(row);
         }
@@ -546,11 +548,11 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
       try {
         const view = await get('/api/models');
         host.innerHTML = '';
-        if (!view.models.length) { host.textContent = uiMsg('side.models.empty'); return; }
+        if (!view.models.length) { host.textContent = 'side.models.empty'; return; }
         for (const model of view.models) {
           const row = document.createElement('div'); row.className = 'model';
-          row.appendChild(Object.assign(document.createElement('span'), { textContent: (model.active ? '* ' : '') + model.id + '  ' + model.size + (model.active ? '  (' + uiMsg('side.models.active') + ')' : '') }));
-          for (const [label, action] of [[uiMsg('side.models.use_visual'), () => Promise.all([post('/api/settings', { key: 'ingestion.visual.embeddings.modelId', value: model.id }), post('/api/settings', { key: 'ingestion.visual.embeddings.modelDir', value: view.modelDir })])], [uiMsg('side.models.remove'), () => post('/api/models/remove', { modelId: model.id })]]) {
+          row.appendChild(Object.assign(document.createElement('span'), { textContent: (model.active ? '* ' : '') + model.id + '  ' + model.size + (model.active ? '  (' + 'side.models.active' + ')' : '') }));
+          for (const [label, action] of [['side.models.use_visual', () => Promise.all([post('/api/settings', { key: 'ingestion.visual.embeddings.modelId', value: model.id }), post('/api/settings', { key: 'ingestion.visual.embeddings.modelDir', value: view.modelDir })])], ['side.models.remove', () => post('/api/models/remove', { modelId: model.id })]]) {
             const button = document.createElement('button'); button.className = 'small-btn'; button.textContent = label;
             button.addEventListener('click', async () => { try { await action(); await loadModels(); await loadSettings(); } catch (error) { row.appendChild(Object.assign(document.createElement('em'), { textContent: String(error.message || error).slice(0, 120) })); } });
             row.appendChild(button);
@@ -559,10 +561,9 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
         }
       } catch (error) { host.textContent = String(error.message || error); }
     }
-    function uiMsg(key) { return (typeof I18N !== 'undefined' && I18N[key]) || key; }
     const modelDownload = document.getElementById('model-download');
     if (modelDownload) modelDownload.addEventListener('click', async () => {
-      const modelId = window.prompt(uiMsg('side.models.download_prompt')); if (!modelId) return;
+      const modelId = window.prompt('side.models.download_prompt'); if (!modelId) return;
       modelDownload.disabled = true;
       try { await post('/api/models/download', { modelId, kind: 'clip' }); await loadModels(); }
       catch (error) { window.alert(String(error.message || error).slice(0, 200)); }
@@ -577,8 +578,8 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
       const uri = document.createElement('code'); uri.textContent = item.uri; box.appendChild(uri);
       const preview = document.createElement('div'); preview.className = 'hint'; preview.textContent = item.preview || item.snippet || ''; box.appendChild(preview);
       for (const decision of ['promoted', 'rejected']) {
-        const button = document.createElement('button'); button.textContent = uiMsg(decision === 'promoted' ? 'side.learning.confirm' : 'side.learning.reject');
-        button.onclick = async () => { log('POST /api/learning/review ' + decision); try { const r = await post('/api/learning/review', { id: item.id, decision }); setInspector(r); box.remove(); if (onDone) await onDone(decision); } catch (e) { preview.textContent = uiMsg('side.learning.error') + ': ' + e.message; } };
+        const button = document.createElement('button'); button.textContent = 'learning.review.' + decision;
+        button.onclick = async () => { log('POST /api/learning/review ' + decision); try { const r = await post('/api/learning/review', { id: item.id, decision }); setInspector(r); box.remove(); if (onDone) await onDone(decision); } catch (e) { preview.textContent = e.message; } };
         box.appendChild(button);
       }
       return box;
@@ -586,26 +587,26 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
     async function refreshLearning() {
       const list = document.getElementById('learning-list'); if (!list) return;
       const r = await get('/api/learning/held'); list.innerHTML = '';
-      if (!r.held || !r.held.length) { const d = document.createElement('div'); d.textContent = uiMsg('side.learning.none'); list.appendChild(d); return r; }
+      if (!r.held || !r.held.length) { const d = document.createElement('div'); d.textContent = 'side.learning.none'; list.appendChild(d); return r; }
       for (const item of r.held) list.appendChild(heldItem(item, refreshLearning));
       return r;
     }
     // Consent and truthfulness controls ride on the answer row: ask before searching, confirm before learning.
     function addLearningControls(r, text) {
       const motion = r && r.runtimeMotion; if (!motion || typeof motion !== 'object') return;
-      const resend = async () => { add('scce', uiMsg('learn.retry')); prompt.value = text; sendButton.onclick(); };
+      const resend = async () => { add('scce', 'learn.retry'); prompt.value = text; sendButton.onclick(); };
       if (motion.status === 'awaiting_consent' && motion.consent && motion.consent.planId) {
         const row = document.createElement('div'); row.className = 'row scce';
-        const bubble = document.createElement('div'); bubble.className = 'bubble'; bubble.textContent = uiMsg('learn.offer');
-        const button = document.createElement('button'); button.textContent = uiMsg('learn.offer.yes');
-        button.onclick = async () => { log('POST /api/session/approve ' + motion.consent.planId); try { await post('/api/session/approve', { planId: motion.consent.planId }); button.disabled = true; await refreshApprovals(); await resend(); } catch (e) { bubble.textContent = uiMsg('error.prefix') + ' ' + e.message; } };
-        const reject = document.createElement('button'); reject.textContent = uiMsg('learn.offer.no');
-        reject.onclick = async () => { log('POST /api/session/reject ' + motion.consent.planId); try { await post('/api/session/reject', { planId: motion.consent.planId }); button.disabled = true; reject.disabled = true; bubble.textContent = uiMsg('learn.offer.declined'); await refreshApprovals(); } catch (e) { bubble.textContent = uiMsg('error.prefix') + ' ' + e.message; } };
+        const bubble = document.createElement('div'); bubble.className = 'bubble'; bubble.textContent = 'learn.offer';
+        const button = document.createElement('button'); button.textContent = 'learn.offer.yes';
+        button.onclick = async () => { log('POST /api/session/approve ' + motion.consent.planId); try { await post('/api/session/approve', { planId: motion.consent.planId }); button.disabled = true; await refreshApprovals(); await resend(); } catch (e) { bubble.textContent = e.message; } };
+        const reject = document.createElement('button'); reject.textContent = 'learn.offer.no';
+        reject.onclick = async () => { log('POST /api/session/reject ' + motion.consent.planId); try { await post('/api/session/reject', { planId: motion.consent.planId }); button.disabled = true; reject.disabled = true; bubble.textContent = 'learn.offer.declined'; await refreshApprovals(); } catch (e) { bubble.textContent = e.message; } };
         bubble.appendChild(document.createElement('br')); bubble.appendChild(button); bubble.appendChild(reject); row.appendChild(bubble); messages.appendChild(row); messages.scrollTop = messages.scrollHeight;
       }
       if (motion.status === 'held_for_review' && Array.isArray(motion.heldSources) && motion.heldSources.length) {
         const row = document.createElement('div'); row.className = 'row scce';
-        const bubble = document.createElement('div'); bubble.className = 'bubble'; bubble.textContent = uiMsg('learn.held');
+        const bubble = document.createElement('div'); bubble.className = 'bubble'; bubble.textContent = 'learn.held';
         let remaining = motion.heldSources.length;
         for (const item of motion.heldSources) bubble.appendChild(heldItem(item, async decision => { remaining--; await refreshLearning(); if (remaining === 0 && decision === 'promoted') await resend(); }));
         row.appendChild(bubble); messages.appendChild(row); messages.scrollTop = messages.scrollHeight;
@@ -617,23 +618,23 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
       list.innerHTML = '';
       const pending = state.pending || [];
       approvalsBadge.classList.toggle('show', pending.length > 0);
-      approvalsBadge.textContent = pending.length > 0 ? t('status.pending_approvals').replace('{count}', pending.length) : '';
-      if (!pending.length) { const d = document.createElement('div'); d.textContent = state.operatorGrant ? t('side.approvals.operator_grant_enabled') : t('side.approvals.none'); list.appendChild(d); return; }
+      approvalsBadge.textContent = pending.length > 0 ? String(pending.length) : '';
+      if (!pending.length) { const d = document.createElement('div'); d.textContent = state.operatorGrant ? 'side.approvals.operator_grant_enabled' : 'side.approvals.none'; list.appendChild(d); return; }
       pending.forEach(item => {
         const box = document.createElement('div'); box.className = 'approval-item';
         const curriculum = item.input && typeof item.input === 'object' && item.input.kind === 'learning_source_acquisition' && typeof item.input.query === 'string' ? item.input : null;
         if (curriculum) {
-          const title = document.createElement('strong'); title.textContent = uiMsg('learn.curriculum.title') + ': ' + curriculum.query; box.appendChild(title);
+          const title = document.createElement('strong'); title.textContent = 'learn.curriculum.title' + ': ' + curriculum.query; box.appendChild(title);
           const why = document.createElement('code'); why.textContent = curriculum.rationale || item.reason || ''; box.appendChild(why);
-          const button = document.createElement('button'); button.textContent = uiMsg('learn.curriculum.pursue');
-          button.onclick = async () => { log('POST /api/learning/pursue ' + item.planId); button.disabled = true; try { const r = await post('/api/learning/pursue', { planId: item.planId }); setInspector(r); add('scce', r.answer || uiMsg('learn.held'), r.runtimeMotion); addLearningControls(r, curriculum.query); await refreshLearning(); await refreshApprovals(); } catch (e) { why.textContent = t('error.prefix') + ' ' + e.message; button.disabled = false; } };
+          const button = document.createElement('button'); button.textContent = 'learn.curriculum.pursue';
+          button.onclick = async () => { log('POST /api/learning/pursue ' + item.planId); button.disabled = true; try { const r = await post('/api/learning/pursue', { planId: item.planId }); setInspector(r); add('scce', r.answer || 'learn.held', r.runtimeMotion); addLearningControls(r, curriculum.query); await refreshLearning(); await refreshApprovals(); } catch (e) { why.textContent = e.message; button.disabled = false; } };
           box.appendChild(button); list.appendChild(box); return;
         }
         const title = document.createElement('strong'); title.textContent = item.capabilityId; box.appendChild(title);
         const code = document.createElement('code'); code.textContent = item.planId; box.appendChild(code);
-        const reason = document.createElement('code'); reason.textContent = item.reason || t('approval.required'); box.appendChild(reason);
-        const button = document.createElement('button'); button.textContent = t('side.approvals.approve'); button.onclick = async () => { log('POST /api/session/approve ' + item.planId); const r = await post('/api/session/approve', { planId: item.planId }); setInspector(r); renderApprovals(r.session); };
-        const reject = document.createElement('button'); reject.textContent = t('side.approvals.reject'); reject.onclick = async () => { log('POST /api/session/reject ' + item.planId); const r = await post('/api/session/reject', { planId: item.planId }); setInspector(r); renderApprovals(r.session); };
+        const reason = document.createElement('code'); reason.textContent = item.reason || 'approval.required'; box.appendChild(reason);
+        const button = document.createElement('button'); button.textContent = 'side.approvals.approve'; button.onclick = async () => { log('POST /api/session/approve ' + item.planId); const r = await post('/api/session/approve', { planId: item.planId }); setInspector(r); renderApprovals(r.session); };
+        const reject = document.createElement('button'); reject.textContent = 'side.approvals.reject'; reject.onclick = async () => { log('POST /api/session/reject ' + item.planId); const r = await post('/api/session/reject', { planId: item.planId }); setInspector(r); renderApprovals(r.session); };
         box.appendChild(button); box.appendChild(reject); list.appendChild(box);
       });
     }
@@ -644,28 +645,28 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
       const needle = q.toLowerCase();
       paletteList.innerHTML = '';
       commands
-        .filter(c => (commandLabel(c) + ' ' + c.detail + ' ' + c.group).toLowerCase().includes(needle))
+        .filter(c => (c.label + ' ' + c.detail + ' ' + c.group).toLowerCase().includes(needle))
         .forEach((c, i) => {
           const d = document.createElement('div');
           d.className = 'cmd' + (i === 0 ? ' active' : '');
           d.innerHTML = '<strong></strong><span></span>';
-          d.querySelector('strong').textContent = commandLabel(c);
+          d.querySelector('strong').textContent = c.label;
           d.querySelector('span').textContent = c.detail + (c.accelerator ? '  ' + c.accelerator : '');
           d.onclick = () => runCommand(c.id);
           paletteList.appendChild(d);
         });
     }
     async function editCode() {
-      const targetPath = window.prompt(t('prompt.code_path'));
+      const targetPath = window.prompt('prompt.code_path');
       if (!targetPath || !targetPath.trim()) return;
-      const request = window.prompt(t('prompt.code_request'));
+      const request = window.prompt('prompt.code_request');
       if (!request || !request.trim()) return;
       log('POST /api/workspace/code ' + targetPath);
       let result = await post('/api/workspace/code', { path: targetPath.trim(), request: request.trim() });
       // The compiler owns several fixes here; the owner chooses rather than SCCE guessing.
       if (result && result.outcome === 'awaiting_selection' && Array.isArray(result.candidates) && result.candidates.length) {
         const menu = result.candidates.map((candidate, index) => (index + 1) + ') TS' + candidate.diagnosticCode + ' ' + candidate.fixName).join('\\n');
-        const choice = window.prompt(t('code.choose') + '\\n' + menu, '1');
+        const choice = window.prompt('code.choose' + '\\n' + menu, '1');
         const index = Number(choice) - 1;
         const candidate = result.candidates[index];
         if (!candidate) { setInspector(result); toggleDevPanel(true); return; }
@@ -673,24 +674,22 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
       }
       setInspector(result);
       toggleDevPanel(true);
-      add('scce', (result && result.outcome === 'resolved' ? t('code.resolved') : t('code.unchanged'))
-        .replace('{path}', targetPath.trim())
-        .replace('{outcome}', String(result && result.outcome)));
+      add('scce', 'workspace.code.' + String(result && result.outcome) + ' ' + targetPath.trim(), result);
     }
     async function runCommand(id) {
       closePalette();
       try {
         if (id === 'kernel.turn') return sendButton.click();
         if (id === 'workspace.code') return editCode();
-        if (id === 'kernel.codebase_ingest') { const p = window.prompt(t('prompt.codebase_path')); if (!p || !p.trim()) return; log('POST /api/codebase/ingest'); const r = await post('/api/codebase/ingest', { path: p.trim() }); setInspector(r); toggleDevPanel(true); return; }
-        if (id === 'workspace.init') { const p = window.prompt(t('prompt.workspace_path')); if (!p || !p.trim()) return; log('POST /api/workspace/init'); const r = await post('/api/workspace/init', { path: p.trim() }); setInspector(r); toggleDevPanel(true); return; }
-        if (id === 'workspace.ingest') { const p = window.prompt(t('prompt.workspace_path')); log('POST /api/workspace/ingest'); const r = await post('/api/workspace/ingest', p && p.trim() ? { path: p.trim() } : {}); setInspector(r); toggleDevPanel(true); return; }
-        if (id === 'workspace.ask') { const q = window.prompt(t('prompt.workspace_question')); if (!q || !q.trim()) return; log('POST /api/workspace/ask'); const r = await post('/api/workspace/ask', { question: q.trim() }); setInspector(r); add('scce', r.answer || JSON.stringify(r)); return; }
+        if (id === 'kernel.codebase_ingest') { const p = window.prompt('prompt.codebase_path'); if (!p || !p.trim()) return; log('POST /api/codebase/ingest'); const r = await post('/api/codebase/ingest', { path: p.trim() }); setInspector(r); toggleDevPanel(true); return; }
+        if (id === 'workspace.init') { const p = window.prompt('prompt.workspace_path'); if (!p || !p.trim()) return; log('POST /api/workspace/init'); const r = await post('/api/workspace/init', { path: p.trim() }); setInspector(r); toggleDevPanel(true); return; }
+        if (id === 'workspace.ingest') { const p = window.prompt('prompt.workspace_path'); log('POST /api/workspace/ingest'); const r = await post('/api/workspace/ingest', p && p.trim() ? { path: p.trim() } : {}); setInspector(r); toggleDevPanel(true); return; }
+        if (id === 'workspace.ask') { const q = window.prompt('prompt.workspace_question'); if (!q || !q.trim()) return; log('POST /api/workspace/ask'); const r = await post('/api/workspace/ask', { question: q.trim() }); setInspector(r); add('scce', r.answer || JSON.stringify(r)); return; }
         if (id === 'session.approvals') { log('GET /api/session/approvals'); const r = await refreshApprovals(); setInspector(r); toggleDevPanel(true); return; }
         if (id === 'session.operator_grant') { const next = !document.getElementById('operator-grant-toggle').checked; log('POST /api/session/operator-grant ' + next); const r = await post('/api/session/operator-grant', { enabled: next }); renderApprovals(r); setInspector(r); toggleDevPanel(true); return; }
-        if (id === 'kernel.ingest') { const target = window.prompt(t('prompt.ingest_target')); if (!target || !target.trim()) return; log('POST /api/ingest'); const r = await post('/api/ingest', target.trim().includes('://') ? { uri: target.trim() } : { path: target.trim() }); setInspector(r); toggleDevPanel(true); return; }
+        if (id === 'kernel.ingest') { const target = window.prompt('prompt.ingest_target'); if (!target || !target.trim()) return; log('POST /api/ingest'); const r = await post('/api/ingest', target.trim().includes('://') ? { uri: target.trim() } : { path: target.trim() }); setInspector(r); toggleDevPanel(true); return; }
         if (id === 'kernel.train') { log('POST /api/train'); const r = await post('/api/train', { config: {} }); setInspector(r); toggleDevPanel(true); return; }
-        if (id === 'benchmark.run') { if (!FRONTIER_SUITE_ID) { log('no benchmark suite is configured on this server', 'error'); return; } log('POST /api/benchmark'); const r = await post('/api/benchmark', { suite: FRONTIER_SUITE_ID }); setInspector(r); toggleDevPanel(true); return; }
+        if (id === 'benchmark.run') { if (!FRONTIER_SUITE_ID) { log('benchmark.suite_unconfigured', 'error'); return; } log('POST /api/benchmark'); const r = await post('/api/benchmark', { suite: FRONTIER_SUITE_ID }); setInspector(r); toggleDevPanel(true); return; }
         const command = commands.find(c => c.id === id);
         const endpoint = command && command.detail.startsWith('GET ') ? command.detail.slice(4) : '';
         if (!endpoint) { log('unhandled command ' + id, 'error'); return; }
@@ -700,7 +699,7 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
         if (id === 'inspect.snapshot') { apply({ type: 'tree.replace', tree: treeFromSnapshot(r) }); renderTree(); }
         if (id === 'runtime.ready') setRuntimeStatus({ ready: Boolean(r && r.ok) });
         toggleDevPanel(true);
-      } catch (e) { inspector.textContent = t('error.prefix') + ' ' + e.message; toggleDevPanel(true); }
+      } catch (e) { inspector.textContent = e.message; toggleDevPanel(true); }
     }
     paletteInput.oninput = () => renderPalette(paletteInput.value);
     paletteInput.onkeydown = e => { if (e.key === 'Escape') closePalette(); if (e.key === 'Enter') paletteList.querySelector('.cmd')?.click(); };
@@ -717,7 +716,7 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
       if (sending) {
         if (!runningTaskId) return;
         log('POST /api/turn/task/' + runningTaskId + '/cancel');
-        try { await post('/api/turn/task/' + runningTaskId + '/cancel', {}); } catch (e) { add('error', t('error.prefix') + ' ' + e.message); }
+        try { await post('/api/turn/task/' + runningTaskId + '/cancel', {}); } catch (e) { add('error', e.message); }
         return;
       }
       const text = prompt.value.trim(); if (!text) return;
@@ -746,13 +745,13 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
       } catch (e) {
         hideTyping(); setSending(false); runningTaskId = '';
         if (streamingAnswerRow) { streamingAnswerRow.remove(); streamingAnswerRow = null; }
-        if (!withheldRow(e)) add('error', t('error.prefix') + ' ' + e.message);
+        if (!withheldRow(e)) add('error', e.message);
       }
     };
-    document.getElementById('inspect').onclick = async () => { log('GET /api/inspect?target=snapshot'); try { const r = await get('/api/inspect?target=snapshot'); setInspector(r); } catch (e) { inspector.textContent = t('error.prefix') + ' ' + e.message; } };
-    document.getElementById('refresh-learning').onclick = async () => { log('GET /api/learning/held'); try { const r = await refreshLearning(); setInspector(r); } catch (e) { inspector.textContent = t('error.prefix') + ' ' + e.message; } };
-    document.getElementById('refresh-approvals').onclick = async () => { log('GET /api/session/approvals'); try { const r = await refreshApprovals(); setInspector(r); } catch (e) { inspector.textContent = t('error.prefix') + ' ' + e.message; } };
-    document.getElementById('operator-grant-toggle').onchange = async e => { log('POST /api/session/operator-grant ' + e.target.checked); try { const r = await post('/api/session/operator-grant', { enabled: e.target.checked }); renderApprovals(r); setInspector(r); } catch (err) { inspector.textContent = t('error.prefix') + ' ' + err.message; e.target.checked = !e.target.checked; } };
+    document.getElementById('inspect').onclick = async () => { log('GET /api/inspect?target=snapshot'); try { const r = await get('/api/inspect?target=snapshot'); setInspector(r); } catch (e) { inspector.textContent = e.message; } };
+    document.getElementById('refresh-learning').onclick = async () => { log('GET /api/learning/held'); try { const r = await refreshLearning(); setInspector(r); } catch (e) { inspector.textContent = e.message; } };
+    document.getElementById('refresh-approvals').onclick = async () => { log('GET /api/session/approvals'); try { const r = await refreshApprovals(); setInspector(r); } catch (e) { inspector.textContent = e.message; } };
+    document.getElementById('operator-grant-toggle').onchange = async e => { log('POST /api/session/operator-grant ' + e.target.checked); try { const r = await post('/api/session/operator-grant', { enabled: e.target.checked }); renderApprovals(r); setInspector(r); } catch (err) { inspector.textContent = err.message; e.target.checked = !e.target.checked; } };
     renderTree();
     renderTerminal();
     renderTrace();

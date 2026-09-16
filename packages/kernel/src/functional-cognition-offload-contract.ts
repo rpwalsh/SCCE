@@ -9,7 +9,8 @@ import type {
   GraphSlice,
   JsonValue,
   ModelState,
-  PolicyProfile
+  PolicyProfile,
+  TurnLearningNeed
 } from "./types.js";
 
 export interface FunctionalCognitionOffloadRequest {
@@ -20,7 +21,7 @@ export interface FunctionalCognitionOffloadRequest {
   policy: PolicyProfile;
   state?: ForecastState;
   forecast?: ForecastEnvelope;
-  learningNeeds?: string[];
+  learningNeeds?: TurnLearningNeed[];
   personaHistory?: PersonaSnapshot[];
   policyPopulation?: PolicyGenome[];
   governance?: GovernanceObservation;

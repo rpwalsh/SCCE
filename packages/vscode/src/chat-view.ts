@@ -83,7 +83,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       try {
         const client = await this.clientFactory();
         await client.approveLearningConsent(record.planId);
-        this.output.appendLine(`[chat] consent granted for ${record.planId}; asking again`);
+        this.output.appendLine(`[chat] learning.consent.granted ${record.planId}`);
         await this.handleMessage({ type: "send", text: record.text });
       } catch (error) {
         void this.view?.webview.postMessage({ type: "error", text: error instanceof Error ? error.message : String(error) });
@@ -94,7 +94,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       try {
         const client = await this.clientFactory();
         await client.rejectLearningConsent(record.planId);
-        this.output.appendLine(`[chat] consent declined for ${record.planId}; staying offline`);
+        this.output.appendLine(`[chat] learning.consent.declined ${record.planId}`);
       } catch (error) {
         void this.view?.webview.postMessage({ type: "error", text: error instanceof Error ? error.message : String(error) });
       }
@@ -165,7 +165,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return;
       }
       const messageText = error instanceof ScceHttpError
-        ? `SCCE request failed (${error.status}): ${error.message}`
+        ? `${error.status} ${error.message}`
         : error instanceof Error ? error.message : String(error);
       this.output.appendLine(`[chat] ${messageText}`);
       this.appendHistory({ id: cryptoRandomId(), role: "error", text: messageText, createdAt: Date.now() });
@@ -329,13 +329,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 </style>
 </head>
 <body>
-  <div class="toolbar"><button id="voice" title="Speak replies aloud; with speech input available, listens again after each reply">Voice: off</button><button id="clear">Clear conversation</button></div>
-  <div class="messages" id="messages"><div class="empty" id="empty">Ask SCCE anything about this workspace.<div class="hint">It can explain code, plan and apply changes, and answer questions grounded in what it has actually read.</div></div></div>
+  <div class="toolbar"><button id="voice" title="chat.voice">&#128266;</button><button id="clear" title="chat.clear">&#128465;</button></div>
+  <div class="messages" id="messages"><div class="empty" id="empty">chat.empty</div></div>
   <div class="composer">
-    <textarea id="input" rows="1" placeholder="Message SCCE&hellip;"></textarea>
-    <button id="mic" class="secondary" title="Speak a message">&#127908;</button>
-    <button id="plan-code" class="secondary" title="Plan a bounded coding request from this text (file scope and diagnostic selection happen in VS Code dialogs, not here)">Plan code change</button>
-    <button id="send">Send</button>
+    <textarea id="input" rows="1" aria-label="chat.composer"></textarea>
+    <button id="mic" class="secondary" title="chat.mic">&#127908;</button>
+    <button id="plan-code" class="secondary" title="workspace.coding_request">&#128736;</button>
+    <button id="send" title="chat.send">&#10148;</button>
   </div>
 <script nonce="${nonce}">
 (function () {
@@ -382,7 +382,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   function startListening() {
     if (!Recognition) {
-      addMessage('assistant', 'Speech input is not available inside this panel. Windows dictation works instead: click the message box and press Win+H. Voice replies still speak aloud.');
+      addMessage('notice', 'chat.speech_input.unavailable');
       return;
     }
     if (listening) { stopListening(); return; }
@@ -473,18 +473,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const ask = document.createElement('div');
       ask.className = 'learning-ask';
       if (learning.status === 'awaiting_consent') {
-        ask.textContent = 'I have no evidence on this yet. Search the web and learn it?';
+        ask.textContent = 'learning.consent.requested';
         box.appendChild(ask);
         const yes = document.createElement('button');
-        yes.textContent = 'Yes, search and learn';
+        yes.textContent = 'learning.consent.granted';
         yes.onclick = () => { yes.disabled = true; showTyping('learning'); vscodeApi.postMessage({ type: 'consent', planId: learning.planId, text: detail.requestText || '' }); };
         box.appendChild(yes);
         const no = document.createElement('button');
-        no.textContent = 'No, stay offline';
+        no.textContent = 'learning.consent.declined';
         no.onclick = () => { yes.disabled = true; no.disabled = true; vscodeApi.postMessage({ type: 'consentReject', planId: learning.planId }); };
         box.appendChild(no);
       } else if (learning.status === 'held_for_review') {
-        ask.textContent = 'I found material but have not learned it. Is it true?';
+        ask.textContent = 'learning.review.held';
         box.appendChild(ask);
         let remaining = learning.heldSources.length;
         for (const source of learning.heldSources) {
@@ -495,7 +495,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           if (source.snippet) { const snippet = document.createElement('div'); snippet.className = 'source-preview'; snippet.textContent = source.snippet; item.appendChild(snippet); }
           for (const decision of ['promoted', 'rejected']) {
             const button = document.createElement('button');
-            button.textContent = decision === 'promoted' ? 'True, keep it' : 'Not true, discard';
+            button.textContent = 'learning.review.' + decision;
             button.onclick = () => { remaining--; for (const b of item.querySelectorAll('button')) b.disabled = true; if (remaining === 0) showTyping('learning'); vscodeApi.postMessage({ type: 'review', id: source.id, decision, text: detail.requestText || '', resend: remaining === 0 }); };
             item.appendChild(button);
           }
@@ -508,7 +508,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const details = document.createElement('details');
       details.className = 'details';
       const summary = document.createElement('summary');
-      summary.textContent = 'Details';
+      summary.textContent = 'turn.detail';
       const pre = document.createElement('pre');
       pre.textContent = JSON.stringify(detail, null, 2);
       details.appendChild(summary);
@@ -533,13 +533,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       typingRow.innerHTML = '<div class="bubble"><div class="typing"><span id="typing-phase"></span><span class="dots"><span>&bull;</span><span>&bull;</span><span>&bull;</span></span></div></div>';
       messagesEl.appendChild(typingRow);
     }
-    typingRow.querySelector('#typing-phase').textContent = phase ? phaseLabel(phase) : 'Thinking';
+    typingRow.querySelector('#typing-phase').textContent = phase ? String(phase) : 'turn.in_flight';
     messagesEl.scrollTop = messagesEl.scrollHeight;
-  }
-
-  function phaseLabel(phase) {
-    const label = String(phase).split('.').pop() || phase;
-    return label.charAt(0).toUpperCase() + label.slice(1).replace(/_/g, ' ');
   }
 
   function hideTyping() {
@@ -548,7 +543,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   function setSending(next) {
     sending = next;
-    sendButton.textContent = sending ? 'Stop' : 'Send';
+    sendButton.textContent = sending ? '■' : '➤';
     sendButton.classList.toggle('stop', sending);
     inputEl.disabled = sending;
   }
@@ -651,7 +646,7 @@ function answerSurface(answer: TurnAnswer): string {
   if (typeof text === "string" && /[\p{L}\p{N}]/u.test(text)) return text;
   const errorLike = (answer as { error?: unknown; runtimeError?: unknown; message?: unknown } | undefined);
   const error = errorLike?.error ?? errorLike?.runtimeError ?? errorLike?.message;
-  return error ? `Runtime failure: ${String(error)}` : "SCCE returned no answer for this turn.";
+  return error ? String(error) : "turn.no_answer_surface";
 }
 
 function cryptoRandomId(): string {

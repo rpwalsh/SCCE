@@ -4,26 +4,9 @@ import http from "node:http";
 import { readFile } from "node:fs/promises";
 import { createNodeRuntime, readScceRuntimeConfig } from "@scce/adapters-node";
 import { drainDeferredDialoguePersistence, handleRequest, primePostgresStatus, serverPatchValidationRuntime } from "./routes.js";
-import { installProdCalibrations, registerMessageBundle, createTrace, traceEvent } from "@scce/kernel";
+import { installProdCalibrations, createTrace, traceEvent } from "@scce/kernel";
 import { createRuntimeStartupReadiness, startRuntimeSurface } from "./startup.js";
 import { startDreamCycle } from "./dream-cycle.js";
-
-/**
- * Operator-facing surface messages, registered by the host rather than carried in the kernel.
- *
- * `registerMessageBundle` is how a host supplies these and it had no caller, so every bundle stayed empty and
- * `formatSurfaceMessage` resolved nothing: the three learning-need keys the kernel emits produced empty strings on
- * every turn. The kernel deliberately ships no wording of its own -- these are operator prose, not linguistic
- * knowledge the cognition uses -- which is exactly why the registry exists and why the text lives here.
- */
-const OPERATOR_SURFACE_MESSAGES = {
-  "learning.need.evidence": "Needs more supporting evidence before this can be answered from the corpus: {text}",
-  "learning.need.contradiction": "Sources disagree on this claim and the conflict is unresolved: {claim}",
-  "learning.need.language": "Needs language material for {script} before this surface can be produced: {reason}",
-  "runtime.motion.no_grounded_source": "No grounded source in the ingested corpus for: {topic}.",
-  // Reason ids from scce.runtime.withheld_surface.v1. The kernel emits the id; the wording is only ever here.
-} as const;
-
 
 /**
  * Installs the production calibration profile if this instance has one.
@@ -50,7 +33,7 @@ async function installProdCalibrationProfile(trace: ReturnType<typeof createTrac
   }
   const values = (parsed as { calibrations?: Record<string, number> })?.calibrations ?? parsed;
   if (!values || typeof values !== "object") {
-    traceEvent(trace, { stage: "server.calibration", label: "prod.unreadable", support: { path }, warnings: ["no calibration object"] });
+    traceEvent(trace, { stage: "server.calibration", label: "prod.unreadable", support: { path }, warnings: ["calibration.profile.absent"] });
     return;
   }
   const result = installProdCalibrations(values as Record<string, number>);
@@ -62,9 +45,6 @@ async function installProdCalibrationProfile(trace: ReturnType<typeof createTrac
   });
 }
 async function main(): Promise<void> {
-  registerMessageBundle("en", OPERATOR_SURFACE_MESSAGES);
-  // Turns arrive without a locale more often than with one; the default bundle is what they read.
-  registerMessageBundle("und", OPERATOR_SURFACE_MESSAGES);
   const trace = createTrace('server.start');
   const configPath = parseConfigPath(process.argv.slice(2)) ?? "scce.config.json";
   const config = await readScceRuntimeConfig(configPath);
@@ -109,7 +89,7 @@ async function main(): Promise<void> {
     await primePostgresStatus(runtime);
     const memory = process.memoryUsage();
     const warmupLine = [
-      `SCCE runtime warmup ${warmup.failures.length ? "completed with warnings" : "complete"}`,
+      `scce.runtime.warmup.${warmup.failures.length ? "degraded" : "complete"}`,
       `${Math.round(warmup.totalMs)}ms`,
       `graph=${warmup.graph?.nodes ?? 0}/${warmup.graph?.edges ?? 0}`,
       `language=${warmup.language?.models ?? 0}/${warmup.language?.units ?? 0}`,
@@ -129,7 +109,7 @@ async function main(): Promise<void> {
     if (trace) traceEvent(trace, { stage: "runtime.start", label: "server.warmup", durationMs: warmup.totalMs, support: { warmup: warmup as unknown as Record<string, unknown> } });
     if (warmup.failures.length) {
       for (const failure of warmup.failures) process.stderr.write(`${failure}\n`);
-      throw new Error(`SCCE startup warmup failed: ${warmup.failures.join("; ")}`);
+      throw new Error(`scce.runtime.warmup.failed ${warmup.failures.join("; ")}`);
     }
   };
   await startRuntimeSurface({
@@ -138,7 +118,7 @@ async function main(): Promise<void> {
     strictWarmup,
     listen: () => listen(server, port, host, config.server.url),
     warmup: performWarmup,
-    onBackgroundWarmupError: error => process.stderr.write(`SCCE runtime warmup failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`),
+    onBackgroundWarmupError: error => process.stderr.write(`scce.runtime.warmup.failed ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`),
     readiness: startupReadiness
   });
 
@@ -148,14 +128,14 @@ async function main(): Promise<void> {
     await closeServer(server);
     const drained = await drainDeferredDialoguePersistence();
     if (drained.drainedConversations > 0) {
-      process.stdout.write(`SCCE drained deferred dialogue persistence for ${drained.drainedConversations} conversation(s)\n`);
+      process.stdout.write(`scce.dialogue.deferred_persistence.drained conversations=${drained.drainedConversations}\n`);
     }
     await runtime.close();
   })();
   const terminate = () => void shutdown().then(
     () => process.exit(0),
     error => {
-      process.stderr.write(`SCCE shutdown failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
+      process.stderr.write(`scce.server.shutdown.failed ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
       process.exit(1);
     }
   );
@@ -169,7 +149,7 @@ function listen(server: http.Server, port: number, host: string, url: string): P
     server.once("error", onError);
     server.listen(port, host, () => {
       server.off("error", onError);
-      process.stdout.write(`SCCE v3 server listening on ${url}\n`);
+      process.stdout.write(`scce.server.listening ${url}\n`);
       resolve();
     });
   });
