@@ -81,6 +81,7 @@ import {
 } from "@scce/kernel";
 import type { ScceRuntimeConfig } from "./config.js";
 import { trainLanguageCorpusText } from "./language-corpus-trainer.js";
+import { blobContentHash } from "./postgres.js";
 import { resolveWikipediaCorpusTarget, streamWikipediaMultistream, wikipediaRootUri, type ResolvedWikipediaCorpus } from "./wikipedia.js";
 
 /** How many entries of a diagnostic list the alignment provenance event keeps; the true length is recorded beside it. */
@@ -701,7 +702,10 @@ export class WikipediaV3Ingestor {
   private async ingestPageTransaction(file: IngestedSourceFile, checkpoint: IngestionCheckpoint, episodeId: ReturnType<IdFactory["episodeId"]>): Promise<WikipediaPageImport> {
     const now = this.clock.now();
     const warnings: string[] = [];
-    const contentHash = await this.storage.blobs.put(file.bytes, file.mediaType);
+    // Derived, not stored yet: everything this method computes comes from the page's bytes alone, so the whole
+    // derivation runs before the first write. That ordering is what shortens the transaction's write span, and
+    // it is the seam a worker thread needs -- compute is pure, only the writes below need the database.
+    const contentHash = blobContentHash(file.bytes);
     const sourceId = this.ids.sourceId(file.namespace, file.uri);
     const sourceVersionId = this.ids.sourceVersionId(file.bytes);
     const metadata = wikiMetadata(file.metadata);
@@ -728,10 +732,6 @@ export class WikipediaV3Ingestor {
       informationLabel: WIKIPEDIA_INFORMATION_LABEL,
       metadata
     };
-    await this.storage.evidence.putSourceVersion(source);
-    await this.storage.events.append(this.events.create({ episodeId, typeId: "SourceObserved", payload: { sourceId, uri: file.uri, namespace: file.namespace, sourceSystem: "wikipedia" } }));
-    await this.storage.events.append(this.events.create({ episodeId, typeId: "SourceVersionObserved", payload: { sourceVersionId, contentHash, byteLength: file.bytes.byteLength } }));
-
     const profile = {
       ...this.language.acquire({ sourceVersionId, text: file.text, createdAt: now }),
       informationLabel: WIKIPEDIA_INFORMATION_LABEL
@@ -760,6 +760,12 @@ export class WikipediaV3Ingestor {
       },
       metadata
     });
+    // Writes begin here, in the order they were always in: the event ledger is a hash chain, so their
+    // sequence is load-bearing and must never follow computation-completion order.
+    await this.storage.blobs.put(file.bytes, file.mediaType);
+    await this.storage.evidence.putSourceVersion(source);
+    await this.storage.events.append(this.events.create({ episodeId, typeId: "SourceObserved", payload: { sourceId, uri: file.uri, namespace: file.namespace, sourceSystem: "wikipedia" } }));
+    await this.storage.events.append(this.events.create({ episodeId, typeId: "SourceVersionObserved", payload: { sourceVersionId, contentHash, byteLength: file.bytes.byteLength } }));
     await this.storage.quarantine.put({
       id: `${sourceVersionId}:wiki-admission`,
       sourceId,

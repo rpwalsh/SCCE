@@ -1561,10 +1561,18 @@ function createIngestionCheckpointStore(storage: PostgresStorageAdapter): Ingest
   };
 }
 
+/**
+ * The hash a blob will be stored under, derivable without storing it. Ingest computes a page's records before
+ * it writes anything, and a source version needs its content hash while still in that pure phase.
+ */
+export function blobContentHash(content: Uint8Array | Buffer): ContentHash {
+  return `sha256_${sha256(Buffer.from(content))}` as ContentHash;
+}
+
 function createBlobStore(storage: PostgresStorageAdapter): BlobStore {
   return {
     async put(content, mediaType) {
-      const hash = `sha256_${sha256(Buffer.from(content))}` as ContentHash;
+      const hash = blobContentHash(content);
       await storage.query(`INSERT INTO ${storage.table("blobs")}(content_hash, media_type, byte_length, content) VALUES($1,$2,$3,$4) ON CONFLICT(content_hash) DO NOTHING`, [hash, mediaType, content.length, Buffer.from(content)]);
       return hash;
     },
