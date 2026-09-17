@@ -37,7 +37,12 @@ export class NodeFileIngestAdapter implements FileIngestPort {
     const paths = targetIsDirectory ? walkStream(target, this.config.runtime.excludedPaths) : singleFile(target);
     // The walk had no notion of what a project says its own files are for, so 840 of this repository's test files
     // entered the corpus as documentary evidence about the world. Nothing is excluded; the role is declared.
-    const roles = createProjectDeclarationIndex({ stopAt: this.config.runtime.workspaceRoot });
+    // Manifests are looked for from the file up to the repository root, because `codebase ingest
+    // packages/kernel/src` is declared by a config two directories above its target. A target outside the
+    // workspace stops at itself rather than reading a manifest from outside the tree it was pointed at.
+    const roles = createProjectDeclarationIndex({
+      stopAt: isWithin(target, this.config.runtime.workspaceRoot) ? this.config.runtime.workspaceRoot : target
+    });
     const repositoryFiles: RepositoryFileAccumulator[] = [];
     for await (const filePath of paths) {
       const discovered = checkpoint(rootUri, filePath, "discovered", "pending", { workspaceRoot: this.config.runtime.workspaceRoot });
