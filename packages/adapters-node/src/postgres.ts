@@ -942,6 +942,8 @@ export function schemaStatements(q: string, informationAccess?: InformationAcces
        updated_at=EXCLUDED.updated_at`,
     `CREATE TABLE IF NOT EXISTS ${q}.ngram_observations (id TEXT PRIMARY KEY, stream_id TEXT NOT NULL, language_hint TEXT NOT NULL, order_n INT NOT NULL, history TEXT[] NOT NULL, symbol TEXT NOT NULL, count BIGINT NOT NULL, field_weight DOUBLE PRECISION NOT NULL, source_version_id TEXT, evidence_id TEXT, observed_at TIMESTAMPTZ NOT NULL, metadata_json JSONB NOT NULL, information_label JSONB NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.ngram_models (id TEXT PRIMARY KEY, stream_id TEXT NOT NULL, language_hint TEXT NOT NULL, max_order INT NOT NULL, discount DOUBLE PRECISION NOT NULL, model_json JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
+    // The trainedMass DESC ranking and the profile/source-system scope filters read these instead of detoasting model_json (1.68GB of TOAST) per row.
+    `ALTER TABLE ${q}.ngram_models ADD COLUMN IF NOT EXISTS profile_id TEXT GENERATED ALWAYS AS (model_json->>'profileId') STORED, ADD COLUMN IF NOT EXISTS source_system TEXT GENERATED ALWAYS AS (model_json->>'sourceSystem') STORED, ADD COLUMN IF NOT EXISTS trained_mass NUMERIC GENERATED ALWAYS AS (COALESCE((model_json->'model'->>'totalUnigramCount')::numeric, 0)) STORED`,
     `CREATE TABLE IF NOT EXISTS ${q}.language_units (id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, source_version_id TEXT NOT NULL, script TEXT NOT NULL, unit_kind TEXT NOT NULL, unit_text TEXT NOT NULL, features TEXT[] NOT NULL, competence_vector DOUBLE PRECISION[] NOT NULL, alpha DOUBLE PRECISION NOT NULL, evidence_ids TEXT[] NOT NULL, metadata_json JSONB NOT NULL, information_label JSONB NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.language_patterns (id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, pattern_kind TEXT NOT NULL, support DOUBLE PRECISION NOT NULL, entropy DOUBLE PRECISION NOT NULL, pattern_json JSONB NOT NULL, evidence_ids TEXT[] NOT NULL, updated_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
     // candidate_pool's scope filter reads this instead of detoasting pattern_json (5.4GB) per row.
@@ -1161,6 +1163,9 @@ export function schemaStatements(q: string, informationAccess?: InformationAcces
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ngram_model_source_system_updated ON ${q}.ngram_models((model_json->>'sourceSystem'), updated_at DESC)`,
     // Models load best-trained first (learned unigram mass), not newest first.
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ngram_model_source_system_trained ON ${q}.ngram_models((model_json->>'sourceSystem'), (COALESCE((model_json->'model'->>'totalUnigramCount')::numeric, 0)) DESC, updated_at DESC)`,
+    // Same ranking, on the stored narrow columns: cheap enough to build on a populated table, unlike the JSONB-expression indexes above (fresh-schema only, see freshSchemaIndexStatements).
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ngram_model_profile_id_trained_rank ON ${q}.ngram_models(profile_id, trained_mass DESC, updated_at DESC, id)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ngram_model_source_system_trained_rank ON ${q}.ngram_models(source_system, trained_mass DESC, updated_at DESC, id)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_profiles_created ON ${q}.language_profiles(created_at DESC,id ASC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_profiles_ngrams ON ${q}.language_profiles USING GIN(ngram_keys)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_profiles_source_version ON ${q}.language_profiles(source_version_id,created_at DESC,id ASC)`,
@@ -4057,13 +4062,13 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       if (query.profileIds) {
         if (!query.profileIds.length) return [];
         params.push([...query.profileIds]);
-        where.push(`model.model_json->>'profileId'=ANY($${params.length}::text[])`);
+        where.push(`${ngramModelProfileIdExpression("model")}=ANY($${params.length}::text[])`);
       }
-      if (query.sourceSystem) { params.push(query.sourceSystem); where.push(`model.model_json->>'sourceSystem'=$${params.length}`); }
+      if (query.sourceSystem) { params.push(query.sourceSystem); where.push(`${ngramModelSourceSystemExpression("model")}=$${params.length}`); }
       appendInformationAccess(storage, "model", params, where, "bounded_by_order_and_limit");
       params.push(query.limit ?? 100);
       const limitParam = params.length;
-      const trainedMass = "COALESCE((model.model_json->'model'->>'totalUnigramCount')::numeric, 0)";
+      const trainedMass = ngramModelTrainedMassExpression("model");
       // Cumulative byte budget in the same relevance order as the count
       // limit: whole-novel training grew single model_json blobs to tens
       // of MB, so a count limit alone stopped bounding memory (a 4GB
@@ -6132,6 +6137,21 @@ export function evidenceSourceKindExpression(alias: string): string {
 /** A pattern's source system, read from the stored generated column that carries `pattern_json->>'sourceSystem'`. Pure. */
 export function languagePatternSourceSystemExpression(alias: string): string {
   return `${alias}.source_system`;
+}
+
+/** A model's source system, read from the stored generated column that carries `model_json->>'sourceSystem'`. Pure. */
+export function ngramModelSourceSystemExpression(alias: string): string {
+  return `${alias}.source_system`;
+}
+
+/** A model's owning profile, read from the stored generated column that carries `model_json->>'profileId'`. Pure. */
+export function ngramModelProfileIdExpression(alias: string): string {
+  return `${alias}.profile_id`;
+}
+
+/** A model's trained mass, read from the stored generated column that carries the ranking ORDER BY's COALESCE. Pure. */
+export function ngramModelTrainedMassExpression(alias: string): string {
+  return `${alias}.trained_mass`;
 }
 
 /**

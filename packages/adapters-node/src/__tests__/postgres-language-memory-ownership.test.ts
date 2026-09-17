@@ -86,7 +86,8 @@ describe("Postgres language-memory ownership queries", () => {
     await adapter.languageMemory.listNgramModels({ profileIds: ["profile.a"], limit: 7 });
     await adapter.languageMemory.listNgramObservations({ profileIds: ["profile.a"], limit: 7 });
 
-    expect(calls[0]?.sql).toContain("model_json->>'profileId'=ANY($1::text[])");
+    // profile_id is a stored generated column now (carries the exact model_json->>'profileId' the code used to evaluate), not a per-row JSON detoast.
+    expect(calls[0]?.sql).toContain("model.profile_id=ANY($1::text[])");
     expect(calls[0]?.sql).not.toContain("sourceVersionId");
     expect(calls[0]?.params[0]).toEqual(["profile.a"]);
     expect(calls[0]?.params.at(-1)).toBe(7);
@@ -110,7 +111,8 @@ describe("Postgres language-memory ownership queries", () => {
     // record always loads so an undersized budget degrades to one record
     // instead of zero. The two tests below hold the budget quantity itself.
     const modelSql = calls[0]!.sql;
-    expect(modelSql).toContain("ORDER BY COALESCE((model.model_json->'model'->>'totalUnigramCount')::numeric, 0) DESC, model.updated_at DESC, model.id ASC");
+    // trained_mass is a stored generated column now (carries the exact COALESCE the code used to evaluate).
+    expect(modelSql).toContain("ORDER BY model.trained_mass DESC, model.updated_at DESC, model.id ASC");
     const unitSql = calls[1]!.sql;
     expect(unitSql).toContain("SUM(octet_length(unit.metadata_json::text) + octet_length(unit.unit_text)) OVER (ORDER BY unit.alpha DESC, unit.id ASC");
     expect(unitSql).toContain("running_json_bytes <=");
