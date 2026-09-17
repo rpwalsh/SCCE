@@ -2,7 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { afterEach, describe, expect, it } from "vitest";
 import { POSTGRES_REQUIRED_TABLES, type SourceVersionId } from "@scce/kernel";
-import { createPostgresStorageAdapter, type PostgresStorageAdapter } from "../postgres.js";
+import { clearResidentNgramModelJson, createPostgresStorageAdapter, type PostgresStorageAdapter } from "../postgres.js";
 
 const adapters: PostgresStorageAdapter[] = [];
 
@@ -105,15 +105,12 @@ describe("Postgres language-memory ownership queries", () => {
 
     // Count limits stopped bounding memory once whole-novel training grew
     // single model_json blobs to tens of MB (a 4GB server heap OOMed at
-    // warmup, verified live). The window sum admits records until the
-    // byte budget is exhausted, in the SAME relevance order as the count
-    // limit, and the top record always loads so an undersized budget
-    // degrades to one record instead of zero.
+    // warmup, verified live). Records are admitted until the byte budget is
+    // exhausted, in the SAME relevance order as the count limit, and the top
+    // record always loads so an undersized budget degrades to one record
+    // instead of zero. The two tests below hold the budget quantity itself.
     const modelSql = calls[0]!.sql;
-    expect(modelSql).toContain("SUM(octet_length(model.model_json::text)) OVER (ORDER BY model.trained_mass DESC, model.updated_at DESC, model.id ASC");
-    expect(modelSql).toContain("running_json_bytes <=");
-    expect(modelSql).toContain("relevance_rank = 1");
-    expect(calls[0]?.params.at(-1)).toBe(64 * 1024 * 1024);
+    expect(modelSql).toContain("ORDER BY COALESCE((model.model_json->'model'->>'totalUnigramCount')::numeric, 0) DESC, model.updated_at DESC, model.id ASC");
     const unitSql = calls[1]!.sql;
     expect(unitSql).toContain("SUM(octet_length(unit.metadata_json::text) + octet_length(unit.unit_text)) OVER (ORDER BY unit.alpha DESC, unit.id ASC");
     expect(unitSql).toContain("running_json_bytes <=");
@@ -123,6 +120,33 @@ describe("Postgres language-memory ownership queries", () => {
     // to the previous contract.
     await adapter.languageMemory.listNgramModels({ limit: 12 });
     expect(calls[2]?.sql).not.toContain("running_json_bytes");
+  });
+
+  // The budget bounds the bytes this process hydrates, so the deciding quantity is the uncompressed JSON text
+  // length; pg_column_size reports compressed, possibly-TOASTed storage and under-counts the heap it must bound.
+  it("bounds the budget by uncompressed JSON text length, not by compressed storage size", async () => {
+    clearResidentNgramModelJson();
+    const { adapter } = modelFixture([
+      { id: "model.a", storedBytes: 100, jsonBytes: 400 },
+      { id: "model.b", storedBytes: 100, jsonBytes: 400 },
+      { id: "model.c", storedBytes: 100, jsonBytes: 400 }
+    ]);
+
+    // Every record fits three times over weighed by stored size (300 of 1000) and the third does not fit weighed
+    // by JSON text (1200 of 1000), so the returned prefix names which quantity decided.
+    const admitted = await adapter.languageMemory.listNgramModels({ limit: 12, maxTotalJsonBytes: 1000 });
+    expect(admitted.map(model => model.id)).toEqual(["model.a", "model.b"]);
+  });
+
+  it("admits the top record when the budget is smaller than it, rather than returning nothing", async () => {
+    clearResidentNgramModelJson();
+    const { adapter } = modelFixture([
+      { id: "model.solo.a", storedBytes: 100, jsonBytes: 400 },
+      { id: "model.solo.b", storedBytes: 100, jsonBytes: 400 }
+    ]);
+
+    const admitted = await adapter.languageMemory.listNgramModels({ limit: 12, maxTotalJsonBytes: 100 });
+    expect(admitted.map(model => model.id)).toEqual(["model.solo.a"]);
   });
 
   it("requires exact profile ownership for semantic-frame reads", async () => {
@@ -233,6 +257,42 @@ describe("Postgres language-memory ownership queries", () => {
     expect(call.params[1]).toBe(19);
   });
 });
+
+/** Ranked ngram_models rows whose stored size and JSON text length differ, in the order the relevance query returns. */
+function modelFixture(models: ReadonlyArray<{ id: string; storedBytes: number; jsonBytes: number }>): {
+  adapter: PostgresStorageAdapter;
+  calls: Array<{ sql: string; params: unknown[] }>;
+} {
+  const { adapter, calls } = fixture();
+  const label = { tenantId: "tenant.fixture", principals: ["principal.fixture"], compartments: [], exportClass: "restricted", mergePolicy: "isolated" };
+  const updatedAt = new Date(1);
+  adapter.query = async <T>(sql: string, params: unknown[] = []): Promise<T[]> => {
+    calls.push({ sql, params });
+    if (sql.includes("pg_column_size(model.model_json) AS stored_bytes")) {
+      return models.map(model => ({
+        id: model.id,
+        stream_id: "stream.fixture",
+        language_hint: "script:Latn",
+        max_order: 3,
+        discount: "0.75",
+        updated_at: updatedAt,
+        information_label: label,
+        stored_bytes: String(model.storedBytes)
+      })) as unknown as T[];
+    }
+    if (sql.includes("octet_length(model.model_json::text) AS json_bytes")) {
+      const wanted = new Set((params[0] as string[] | undefined) ?? []);
+      return models.filter(model => wanted.has(model.id)).map(model => ({
+        id: model.id,
+        updated_at: updatedAt,
+        model_json: { profileId: "profile.fixture", model: { totalUnigramCount: 1 } },
+        json_bytes: String(model.jsonBytes)
+      })) as unknown as T[];
+    }
+    return [];
+  };
+  return { adapter, calls };
+}
 
 function fixture(): {
   adapter: PostgresStorageAdapter;
