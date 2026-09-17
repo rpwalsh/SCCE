@@ -183,3 +183,4 @@ tools/code-generation-calibration/report*.json
 /.l2build/
 /.tmp-server-l1.err
 scce.config.new.json
+scce.config.test.json
