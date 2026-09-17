@@ -18,6 +18,7 @@ import {
 import { createDeveloperSurfaceState, hydrateApprovals, hydrateSurfaceFromTurn, renderWorkbench, routeForCommand, workbenchModelModulePath, WORKBENCH_MODEL_ROUTE } from "@scce/ui";
 import type { RuntimeStartupReadiness, RuntimeStartupReadinessSnapshot } from "./startup.js";
 import { turnTaskRegistryFor, type TurnTaskFrame } from "./turn-task-registry.js";
+import { createStaleWhileRevalidateCache, type StaleWhileRevalidateCache } from "./stale-while-revalidate.js";
 
 export interface ApiContext {
   /** Path of scce.config.json; settings routes write back through the shared schema. */
@@ -62,15 +63,20 @@ const dialoguePersistenceTails = new Map<string, Promise<void>>();
 // The judge refits its coefficients on a 120s cycle; the dialogue bridge reads the same observations, so it shares
 // that cadence instead of pulling and refitting the calibration table on every turn.
 const CALIBRATION_MODELS_CACHE_MS = 120_000;
-const calibrationModelsCacheByRuntime = new WeakMap<ApiContext["runtime"], { loadedAt: number; value: Promise<Awaited<ReturnType<typeof loadCalibrationModelSet>>> }>();
+const calibrationModelsCacheByRuntime = new WeakMap<ApiContext["runtime"], StaleWhileRevalidateCache<Awaited<ReturnType<typeof loadCalibrationModelSet>>>>();
 
-function cachedCalibrationModels(context: ApiContext): Promise<Awaited<ReturnType<typeof loadCalibrationModelSet>>> {
-  const cached = calibrationModelsCacheByRuntime.get(context.runtime);
-  if (cached && Date.now() - cached.loadedAt < CALIBRATION_MODELS_CACHE_MS) return cached.value;
-  const value = loadCalibrationModelSet({ store: context.runtime.storage.dialogueMemory, minPoints: 2, createdAt: Date.now() });
-  calibrationModelsCacheByRuntime.set(context.runtime, { loadedAt: Date.now(), value });
-  value.catch(() => calibrationModelsCacheByRuntime.delete(context.runtime));
-  return value;
+// The fit is a property of the observation population; the refit runs beside the turn, never inside it.
+function calibrationModelsCache(context: ApiContext): StaleWhileRevalidateCache<Awaited<ReturnType<typeof loadCalibrationModelSet>>> {
+  let cache = calibrationModelsCacheByRuntime.get(context.runtime);
+  if (!cache) {
+    cache = createStaleWhileRevalidateCache({
+      ttlMs: CALIBRATION_MODELS_CACHE_MS,
+      now: () => Date.now(),
+      load: () => loadCalibrationModelSet({ store: context.runtime.storage.dialogueMemory, minPoints: 2, createdAt: Date.now() })
+    });
+    calibrationModelsCacheByRuntime.set(context.runtime, cache);
+  }
+  return cache;
 }
 
 /** Test-only accessor -- exposes the real map's current size without exposing the map itself. */
@@ -919,8 +925,16 @@ async function dispatch(
         })
         : workspaceCoding;
       const calibrationStarted = Date.now();
-      const calibrationModels = await cachedCalibrationModels(context);
-      traceEvent(trace, { stage: "turn.calibration.loaded", label: "api.turn", durationMs: Date.now() - calibrationStarted, counts: { observations: calibrationModels.observationCount } });
+      const calibrationCache = calibrationModelsCache(context);
+      const calibrationModels = await calibrationCache.get();
+      const calibrationState = calibrationCache.state();
+      traceEvent(trace, {
+        stage: "turn.calibration.loaded",
+        label: "api.turn",
+        durationMs: Date.now() - calibrationStarted,
+        counts: { observations: calibrationModels.observationCount, artifactAgeMs: calibrationState.ageMs },
+        support: { compiled: calibrationState.compiled, refreshing: calibrationState.refreshing }
+      });
       const bridgeStarted = Date.now();
       const dialogue = buildTurnDialogueBridge({
         requestText: turn.text,
