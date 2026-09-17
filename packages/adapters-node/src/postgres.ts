@@ -556,7 +556,7 @@ type InformationLabeledTable =
   | "semantic_frames"
   | "translation_alignments";
 
-async function joinDurableRecordLabels(
+export async function joinDurableRecordLabels(
   storage: PostgresStorageAdapter,
   table: InformationLabeledTable,
   records: readonly { id: string; informationLabel?: InformationLabel }[]
@@ -580,16 +580,20 @@ async function joinDurableRecordLabels(
   // on its bucket) while bounding this transaction's lock-table use to at
   // most 256 entries regardless of batch size; unrelated ids sharing a
   // bucket only ever cost a short wait, never a correctness change.
-  // DISTINCT + ORDER BY keeps a deterministic lock order across concurrent
-  // writers so bucket acquisition cannot deadlock.
+  // Advisory lock keys are database-wide, so the bucket alone made every schema and every labeled table
+  // share one 256-bucket space: an ingest into one schema deadlocked an ingest into another over records
+  // that have nothing to do with each other. The first key namespaces the buckets to this qualified table.
+  // The ORDER BY must sit INSIDE the subquery: in the outer query Postgres evaluates the lock function per
+  // unordered row and sorts the results, so the deterministic acquisition order this relies on was not real.
   await storage.query(
-    `SELECT pg_advisory_xact_lock(bucket)
-     FROM (
-       SELECT DISTINCT (hashtextextended(record_id, 0) & 255) AS bucket
+    `WITH namespace AS (SELECT (hashtextextended($2, 0) & 2147483647)::int AS key)
+     SELECT pg_advisory_xact_lock(namespace.key, buckets.bucket)
+     FROM namespace, (
+       SELECT DISTINCT (hashtextextended(record_id, 0) & 255)::int AS bucket
        FROM unnest($1::text[]) AS record(record_id)
-     ) buckets
-     ORDER BY bucket`,
-    [ids]
+       ORDER BY bucket
+     ) buckets`,
+    [ids, storage.table(table)]
   );
   const existing = await storage.query<{ id: string; information_label: InformationLabel }>(
     `SELECT id, information_label
