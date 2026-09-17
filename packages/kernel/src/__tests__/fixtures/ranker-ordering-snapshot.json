@@ -1,0 +1,404 @@
+{
+  "When was Ada Lovelace born? :: pool": {
+    "planRanking": [
+      "Lovelace was the only legitimate child of poet Lord Byron and reformer Anne Isab",
+      "Lord Byron separated from his wife a month after Ada was born, and died when she"
+    ],
+    "proposal": {
+      "sentences": [
+        "Lord Byron separated from his wife a month after Ada was born, and died when she was eight."
+      ],
+      "score": 8.066333333333333,
+      "index": 4,
+      "nearDuplicate": false,
+      "evidenceIds": [
+        "evidence_span.87ae75525ff8b0973cbf3ff726d708fe6a419a06116fe801"
+      ]
+    }
+  },
+  "When was Ada Lovelace born? :: span0": {
+    "planRanking": [],
+    "proposal": null
+  },
+  "When was Ada Lovelace born? :: span1": {
+    "planRanking": [],
+    "proposal": null
+  },
+  "When was Ada Lovelace born? :: span2": {
+    "planRanking": [],
+    "proposal": null
+  },
+  "When was Ada Lovelace born? :: span3": {
+    "planRanking": [],
+    "proposal": null
+  },
+  "When was Ada Lovelace born? :: span4": {
+    "planRanking": [],
+    "proposal": null
+  },
+  "When was Ada Lovelace born? :: span5": {
+    "planRanking": [
+      "Lovelace was the only legitimate child of poet Lord Byron and reformer Anne Isab",
+      "Lord Byron separated from his wife a month after Ada was born, and died when she"
+    ],
+    "proposal": {
+      "sentences": [
+        "Lord Byron separated from his wife a month after Ada was born, and died when she was eight."
+      ],
+      "score": 8.066333333333333,
+      "index": 4,
+      "nearDuplicate": false,
+      "evidenceIds": [
+        "evidence_span.87ae75525ff8b0973cbf3ff726d708fe6a419a06116fe801"
+      ]
+    }
+  },
+  "When was David Mungoshi born? :: pool": {
+    "planRanking": [
+      "He was born in 1949 in Bulawayo, Zimbabwe and was fluent in Shona, Ndebele and E",
+      "He learnt Zulu, similar to Ndebele, which at that time was not recognised as a d"
+    ],
+    "proposal": {
+      "sentences": [
+        "He was born in 1949 in Bulawayo, Zimbabwe and was fluent in Shona, Ndebele and English."
+      ],
+      "score": 8.107636363636363,
+      "index": 2,
+      "nearDuplicate": false,
+      "evidenceIds": [
+        "evidence_003b26d2b2d6177b5408f7ece307c423deda69bd11582edc"
+      ]
+    }
+  },
+  "When was David Mungoshi born? :: span0": {
+    "planRanking": [],
+    "proposal": null
+  },
+  "When was David Mungoshi born? :: span1": {
+    "planRanking": [],
+    "proposal": null
+  },
+  "When was David Mungoshi born? :: span2": {
+    "planRanking": [],
+    "proposal": null
+  },
+  "When was David Mungoshi born? :: span3": {
+    "planRanking": [],
+    "proposal": null
+  },
+  "When was David Mungoshi born? :: span4": {
+    "planRanking": [
+      "He was born in 1949 in Bulawayo, Zimbabwe and was fluent in Shona, Ndebele and E",
+      "He learnt Zulu, similar to Ndebele, which at that time was not recognised as a d"
+    ],
+    "proposal": {
+      "sentences": [
+        "He was born in 1949 in Bulawayo, Zimbabwe and was fluent in Shona, Ndebele and English."
+      ],
+      "score": 8.107636363636363,
+      "index": 2,
+      "nearDuplicate": false,
+      "evidenceIds": [
+        "evidence_003b26d2b2d6177b5408f7ece307c423deda69bd11582edc"
+      ]
+    }
+  },
+  "When was David Mungoshi born? :: span5": {
+    "planRanking": [],
+    "proposal": null
+  },
+  "When was Müjde Uzman born? :: pool": {
+    "planRanking": [
+      "'Müjde Uzman' (born 26 September 1984) is a Turkish actress."
+    ],
+    "proposal": {
+      "sentences": [
+        "'Müjde Uzman' (born 26 September 1984) is a Turkish actress."
+      ],
+      "score": 8.695903614457832,
+      "index": 0,
+      "nearDuplicate": false,
+      "evidenceIds": [
+        "evidence_002c2c2ae1837efd1ae756d0b0ca75b641178675c73f4a3d"
+      ]
+    }
+  },
+  "When was Müjde Uzman born? :: span0": {
+    "planRanking": [],
+    "proposal": null
+  },
+  "When was Müjde Uzman born? :: span1": {
+    "planRanking": [],
+    "proposal": null
+  },
+  "When was Müjde Uzman born? :: span2": {
+    "planRanking": [
+      "'Müjde Uzman' (born 26 September 1984) is a Turkish actress."
+    ],
+    "proposal": {
+      "sentences": [
+        "'Müjde Uzman' (born 26 September 1984) is a Turkish actress."
+      ],
+      "score": 8.695903614457832,
+      "index": 0,
+      "nearDuplicate": false,
+      "evidenceIds": [
+        "evidence_002c2c2ae1837efd1ae756d0b0ca75b641178675c73f4a3d"
+      ]
+    }
+  },
+  "When was Müjde Uzman born? :: span3": {
+    "planRanking": [],
+    "proposal": null
+  },
+  "When was Müjde Uzman born? :: span4": {
+    "planRanking": [],
+    "proposal": null
+  },
+  "When was Müjde Uzman born? :: span5": {
+    "planRanking": [],
+    "proposal": null
+  },
+  "Who designed the Dolphin 15 Senior? :: pool": {
+    "planRanking": [
+      "The 'Dolphin 15 Senior', sometimes referred to as just the 'Dolphin Senior', is "
+    ],
+    "proposal": {
+      "sentences": [
+        "The 'Dolphin 15 Senior', sometimes referred to as just the 'Dolphin Senior', is an American sailing dinghy that was designed by brothers Glenn Corcorran and Murray Corcorran and first built in 1964."
+      ],
+      "score": 8.678333333333335,
+      "index": 0,
+      "nearDuplicate": false,
+      "evidenceIds": [
+        "evidence_000fd4b1cf8cfbead9e7d367b138e42bfce3a36a41cf3091"
+      ]
+    }
+  },
+  "Who designed the Dolphin 15 Senior? :: span0": {
+    "planRanking": [
+      "The 'Dolphin 15 Senior', sometimes referred to as just the 'Dolphin Senior', is "
+    ],
+    "proposal": {
+      "sentences": [
+        "The 'Dolphin 15 Senior', sometimes referred to as just the 'Dolphin Senior', is an American sailing dinghy that was designed by brothers Glenn Corcorran and Murray Corcorran and first built in 1964."
+      ],
+      "score": 8.678333333333335,
+      "index": 0,
+      "nearDuplicate": false,
+      "evidenceIds": [
+        "evidence_000fd4b1cf8cfbead9e7d367b138e42bfce3a36a41cf3091"
+      ]
+    }
+  },
+  "Who designed the Dolphin 15 Senior? :: span1": {
+    "planRanking": [],
+    "proposal": null
+  },
+  "Who designed the Dolphin 15 Senior? :: span2": {
+    "planRanking": [],
+    "proposal": null
+  },
+  "Who designed the Dolphin 15 Senior? :: span3": {
+    "planRanking": [],
+    "proposal": null
+  },
+  "Who designed the Dolphin 15 Senior? :: span4": {
+    "planRanking": [],
+    "proposal": null
+  },
+  "Who designed the Dolphin 15 Senior? :: span5": {
+    "planRanking": [],
+    "proposal": null
+  },
+  "What is the SCG 004? :: pool": {
+    "planRanking": [
+      "The 'Scuderia Cameron Glickenhaus SCG 004' is a sports car developed and manufac",
+      "It is the manufacturer's second model after the 003 of 2017."
+    ],
+    "proposal": {
+      "sentences": [
+        "The 'Scuderia Cameron Glickenhaus SCG 004' is a sports car developed and manufactured by American boutique car maker Scuderia Cameron Glickenhaus LLC."
+      ],
+      "score": 0.21147058823529413,
+      "index": 0,
+      "nearDuplicate": false,
+      "evidenceIds": [
+        "evidence_0016c699a3d5bd928c3b47cb85fd68b702254cdf12b0ad26"
+      ]
+    }
+  },
+  "What is the SCG 004? :: span0": {
+    "planRanking": [],
+    "proposal": null
+  },
+  "What is the SCG 004? :: span1": {
+    "planRanking": [
+      "The 'Scuderia Cameron Glickenhaus SCG 004' is a sports car developed and manufac",
+      "It is the manufacturer's second model after the 003 of 2017."
+    ],
+    "proposal": {
+      "sentences": [
+        "The 'Scuderia Cameron Glickenhaus SCG 004' is a sports car developed and manufactured by American boutique car maker Scuderia Cameron Glickenhaus LLC."
+      ],
+      "score": 0.21147058823529413,
+      "index": 0,
+      "nearDuplicate": false,
+      "evidenceIds": [
+        "evidence_0016c699a3d5bd928c3b47cb85fd68b702254cdf12b0ad26"
+      ]
+    }
+  },
+  "What is the SCG 004? :: span2": {
+    "planRanking": [],
+    "proposal": null
+  },
+  "What is the SCG 004? :: span3": {
+    "planRanking": [],
+    "proposal": null
+  },
+  "What is the SCG 004? :: span4": {
+    "planRanking": [],
+    "proposal": null
+  },
+  "What is the SCG 004? :: span5": {
+    "planRanking": [],
+    "proposal": null
+  },
+  "When was the Sociedade Brasileira de Belas Artes founded? :: pool": {
+    "planRanking": [
+      "The Sociedade Brasileira de Belas Artes SBBA was founded on August 10, 1910, in "
+    ],
+    "proposal": {
+      "sentences": [
+        "The Sociedade Brasileira de Belas Artes SBBA was founded on August 10, 1910, in Rio de Janeiro under the name Centro Artístico Juventas and, on July 1, 1919, the definitive name of “Sociedade Brasileira de Belas Artes” was approved."
+      ],
+      "score": 8.639566878980892,
+      "index": 3,
+      "nearDuplicate": false,
+      "evidenceIds": [
+        "evidence_002e47de600c822aea1dae08fc7d45eaf2728b4c1f3d795d"
+      ]
+    }
+  },
+  "When was the Sociedade Brasileira de Belas Artes founded? :: span0": {
+    "planRanking": [],
+    "proposal": null
+  },
+  "When was the Sociedade Brasileira de Belas Artes founded? :: span1": {
+    "planRanking": [],
+    "proposal": null
+  },
+  "When was the Sociedade Brasileira de Belas Artes founded? :: span2": {
+    "planRanking": [],
+    "proposal": null
+  },
+  "When was the Sociedade Brasileira de Belas Artes founded? :: span3": {
+    "planRanking": [
+      "The Sociedade Brasileira de Belas Artes SBBA was founded on August 10, 1910, in "
+    ],
+    "proposal": {
+      "sentences": [
+        "The Sociedade Brasileira de Belas Artes SBBA was founded on August 10, 1910, in Rio de Janeiro under the name Centro Artístico Juventas and, on July 1, 1919, the definitive name of “Sociedade Brasileira de Belas Artes” was approved."
+      ],
+      "score": 8.639566878980892,
+      "index": 3,
+      "nearDuplicate": false,
+      "evidenceIds": [
+        "evidence_002e47de600c822aea1dae08fc7d45eaf2728b4c1f3d795d"
+      ]
+    }
+  },
+  "When was the Sociedade Brasileira de Belas Artes founded? :: span4": {
+    "planRanking": [],
+    "proposal": null
+  },
+  "When was the Sociedade Brasileira de Belas Artes founded? :: span5": {
+    "planRanking": [],
+    "proposal": null
+  },
+  "Where did David Mungoshi teach? :: pool": {
+    "planRanking": [
+      "'David Sunsly Mungoshi' (30 September 1949 – 29 August 2020) was a Zimbabwean no"
+    ],
+    "proposal": {
+      "sentences": [
+        "'David Sunsly Mungoshi' (30 September 1949 – 29 August 2020) was a Zimbabwean novelist, actor, poet and teacher."
+      ],
+      "score": 3.753846153846154,
+      "index": 0,
+      "nearDuplicate": false,
+      "evidenceIds": [
+        "evidence_003b26d2b2d6177b5408f7ece307c423deda69bd11582edc"
+      ]
+    }
+  },
+  "Where did David Mungoshi teach? :: span0": {
+    "planRanking": [],
+    "proposal": null
+  },
+  "Where did David Mungoshi teach? :: span1": {
+    "planRanking": [],
+    "proposal": null
+  },
+  "Where did David Mungoshi teach? :: span2": {
+    "planRanking": [],
+    "proposal": null
+  },
+  "Where did David Mungoshi teach? :: span3": {
+    "planRanking": [],
+    "proposal": null
+  },
+  "Where did David Mungoshi teach? :: span4": {
+    "planRanking": [
+      "'David Sunsly Mungoshi' (30 September 1949 – 29 August 2020) was a Zimbabwean no"
+    ],
+    "proposal": {
+      "sentences": [
+        "'David Sunsly Mungoshi' (30 September 1949 – 29 August 2020) was a Zimbabwean novelist, actor, poet and teacher."
+      ],
+      "score": 3.753846153846154,
+      "index": 0,
+      "nearDuplicate": false,
+      "evidenceIds": [
+        "evidence_003b26d2b2d6177b5408f7ece307c423deda69bd11582edc"
+      ]
+    }
+  },
+  "Where did David Mungoshi teach? :: span5": {
+    "planRanking": [],
+    "proposal": null
+  },
+  "What is the Dolphin 15 Senior made of? :: pool": {
+    "planRanking": [
+      "The 'Dolphin 15 Senior', sometimes referred to as just the 'Dolphin Senior', is "
+    ],
+    "proposal": null
+  },
+  "What is the Dolphin 15 Senior made of? :: span0": {
+    "planRanking": [
+      "The 'Dolphin 15 Senior', sometimes referred to as just the 'Dolphin Senior', is "
+    ],
+    "proposal": null
+  },
+  "What is the Dolphin 15 Senior made of? :: span1": {
+    "planRanking": [],
+    "proposal": null
+  },
+  "What is the Dolphin 15 Senior made of? :: span2": {
+    "planRanking": [],
+    "proposal": null
+  },
+  "What is the Dolphin 15 Senior made of? :: span3": {
+    "planRanking": [],
+    "proposal": null
+  },
+  "What is the Dolphin 15 Senior made of? :: span4": {
+    "planRanking": [],
+    "proposal": null
+  },
+  "What is the Dolphin 15 Senior made of? :: span5": {
+    "planRanking": [],
+    "proposal": null
+  }
+}
