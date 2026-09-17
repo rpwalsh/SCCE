@@ -40,15 +40,17 @@ const ANSWERING_SURFACE = "July 20, 1969";
 const FALSE_CONTROL = "Albert Einstein was born in Ulm and later won the Nobel Prize in Chemistry.";
 /** The resident closed class this surface is judged against; measured elsewhere, supplied here as a fixture would be. */
 const CLOSED_CLASS = ["on", "the", "and", "in", "was", "later"];
+const SEPARATOR = String.fromCharCode(10);
 
 describe("an exhibited proposition has no authority to license the claim it states", () => {
   it("refuses the fixture's licence for a world fact while the article licenses it, without refusing the fixture's file", async () => {
     const built = await corpus();
     const fixture = built.spanCarrying("lib/apollo.probe.ts", WORLD_FACT);
-    const article = built.spanCarrying("NOTES.md", WORLD_FACT);
+    const article = built.spanCarrying("lib/mission.ts", WORLD_FACT);
 
     // The property, stated over the measurement rather than over a file name: one span exhibits this
-    // proposition and the other asserts it. Neither is identified by path, title or source kind.
+    // proposition and the other asserts it. Neither is identified by path, title or source kind, and both
+    // files are code the same measurement ran over.
     expect(propositionAssertionalStance(fixture, WORLD_FACT)).toBe("exhibited");
     expect(propositionAssertionalStance(article, WORLD_FACT)).toBe("asserted");
 
@@ -85,7 +87,7 @@ describe("an exhibited proposition has no authority to license the claim it stat
   it("never names an exhibiting span as the provenance of the surface it exhibits", async () => {
     const built = await corpus();
     const fixture = built.spanCarrying("lib/apollo.probe.ts", WORLD_FACT);
-    const article = built.spanCarrying("NOTES.md", WORLD_FACT);
+    const article = built.spanCarrying("lib/mission.ts", WORLD_FACT);
     const tidy = (value: string) => value.trim();
 
     // The realizer referenced the fixture, which is how a fixture title reached the citation surface.
@@ -108,6 +110,12 @@ describe("an exhibited proposition has no authority to license the claim it stat
 
   it("treats an unmeasured span exactly as before, so unknown is never read as exhibited", async () => {
     const built = await corpus();
+    // Prose the AST never measured. Its stance is unknown, and unknown licenses.
+    const prose = built.spanCarrying("NOTES.md", WORLD_FACT);
+    expect(propositionAssertionalStance(prose, WORLD_FACT)).toBe("unknown");
+    expect(candidateCommitmentsLicensed(inventory(WORLD_FACT, [prose]))).toBe(true);
+    expect(exhibitedHoldersFor(inventory(WORLD_FACT, [prose]))).not.toContain(String(prose.id));
+
     const fixture = built.spanCarrying("lib/apollo.probe.ts", WORLD_FACT);
     // The live corpus predates the measurement: strip the block and the span reports unknown, not exhibited.
     const unmeasured = withoutExhibitedMeasurement(fixture);
@@ -168,7 +176,8 @@ async function corpus(): Promise<{ spanCarrying: (uri: string, needle: string) =
   await mkdir(path.join(root, "lib"), { recursive: true });
   const files = new Map<string, string>([
     ["lib/apollo.probe.ts", probeSource()],
-    ["NOTES.md", `${WORLD_FACT}\n\nThe mission is described in the paragraph above.\n`]
+    ["lib/mission.ts", missionSource()],
+    ["NOTES.md", [WORLD_FACT, "", "The mission is described in the paragraph above.", ""].join(SEPARATOR)]
   ]);
   for (const [uri, text] of files) await writeFile(path.join(root, uri), text, "utf8");
 
@@ -186,6 +195,17 @@ async function corpus(): Promise<{ spanCarrying: (uri: string, needle: string) =
       return found;
     }
   };
+}
+
+/** A production source file whose documentary sentence lives in a comment, which the measurement excludes. */
+function missionSource(): string {
+  return [
+    `/** ${WORLD_FACT} */`,
+    `export function landedOnMoon(sentence: string): boolean {`,
+    `  return sentence.length > 0;`,
+    `}`,
+    ``
+  ].join(SEPARATOR);
 }
 
 function probeSource(): string {
