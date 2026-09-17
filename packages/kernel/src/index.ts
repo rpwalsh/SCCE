@@ -222,6 +222,26 @@ export * from "./discourse-state.js";
 export { clearCorpusIdentitySignals, corpusIdentityMatchSurface, corpusIdentitySignals, primeCorpusIdentitySignals, type CorpusIdentitySignals } from "./corpus-identity.js";
 export { evidenceSourceIdentity, resolveEvidenceSourceIdentity } from "./evidence-source-identity.js";
 export * from "./source-artifact-role.js";
+export {
+  COMMITMENT_AUTHORITY_IDS,
+  candidateCommitmentInventory,
+  candidateCommitmentsLicensed,
+  candidateMayAssertAsKnown,
+  commitmentEvidenceText,
+  type CandidateCommitmentInventory,
+  type CandidateCommitmentUnit,
+  type CommitmentAuthorityId,
+  type CommitmentEvidenceText
+} from "./candidate-commitment-inventory.js";
+export { citedSpansForSurface, evidenceCitation, evidenceCitations, formatCitationSuffix, type EvidenceCitation } from "./evidence-citation.js";
+export {
+  retrievalBinding,
+  retrievalBindingCarries,
+  retrievalBindingRank,
+  retrievalBindingSupports,
+  type RetrievalBinding,
+  type RetrievalBindingContext
+} from "./retrieval-binding.js";
 export { measureRequestCorpusSubject, type RequestCorpusSubject } from "./corpus-identity-runtime.js";
 export * from "./dialogue-cognitive-memory.js";
 export * from "./dialogue-cognitive-shadow.js";

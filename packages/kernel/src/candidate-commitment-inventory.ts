@@ -8,7 +8,9 @@ import {
   type SurfaceAuthorityClassId
 } from "./conversational-act-binding.js";
 import type { ConversationTurnSurface } from "./language-construction.js";
+import { resolveSpanAssertionalStance, type ExhibitedRange } from "./source-artifact-role.js";
 import { surfaceWords } from "./surface-linguistics.js";
+import type { EvidenceSpan } from "./types.js";
 
 /**
  * Which authority licenses one unit of a candidate. Documentary and conversation provenance are separate
@@ -45,6 +47,11 @@ export interface CandidateCommitmentUnit {
   authorityId: CommitmentAuthorityId;
   /** Ids of the licensing artifacts, in the authority's own namespace. Never re-labelled across namespaces. */
   licenceIds: readonly string[];
+  /**
+   * Evidence that carries this unit only inside content it exhibits rather than asserts, so it licenses nothing
+   * here. Empty when no span exhibits it AND when no span was measured: unmeasured is not exhibited.
+   */
+  exhibitedByIds: readonly string[];
 }
 
 export interface CandidateCommitmentInventory {
@@ -57,10 +64,30 @@ export interface CandidateCommitmentInventory {
   closedClassMeasured: boolean;
 }
 
+/**
+ * One piece of admitted documentary evidence, with the intervals of its own text it exhibits rather than
+ * asserts. `{ id, text }` alone was the lossy abstraction this replaces: it destroyed the stance residue, so a
+ * fixture literal licensed the world fact it merely mentioned. Absent intervals mean unmeasured, never absent.
+ */
+export interface CommitmentEvidenceText {
+  readonly id: string;
+  readonly text: string;
+  readonly exhibited?: readonly ExhibitedRange[];
+}
+
+/** The row a span contributes, carrying its measured stance. The one producer every commitment caller uses. */
+export function commitmentEvidenceText(span: EvidenceSpan): CommitmentEvidenceText {
+  const id = String(span.id);
+  const text = String(span.text ?? "");
+  if (!text) return { id, text: String(span.textPreview ?? "") };
+  const measurement = resolveSpanAssertionalStance(span.provenance);
+  return measurement.measured ? { id, text, exhibited: measurement.exhibited } : { id, text };
+}
+
 export interface CandidateCommitmentInventoryInput {
   text: string;
   /** Admitted documentary evidence, as text the unit may be found in. */
-  evidenceTexts: readonly { id: string; text: string }[];
+  evidenceTexts: readonly CommitmentEvidenceText[];
   /** Turns of this conversation the caller observed, including the request now being answered. */
   conversationTurns: readonly ConversationTurnSurface[];
   /** The turn's planned commitments. Read for provenance only; a producer's own label is never consulted. */
@@ -85,7 +112,7 @@ export function candidateCommitmentInventory(
   input: CandidateCommitmentInventoryInput
 ): CandidateCommitmentInventory {
   const closedClass = measuredClosedClass(input);
-  const documentary = wordIndex(input.evidenceTexts.map(row => [row.id, row.text] as const));
+  const documentary = documentaryIndex(input.evidenceTexts);
   const conversation = wordIndex(input.conversationTurns.map(turn => [turn.turnId, turn.surface] as const));
   const slot = wordIndex((input.slotValues ?? []).map(row => [row.id, row.text] as const));
   const frameForm = wordIndex((input.constructionFormLiterals ?? []).map(row => [row.id, row.text] as const));
@@ -99,24 +126,26 @@ export function candidateCommitmentInventory(
 
   const units = commitmentUnits(input.text).map((unit): CandidateCommitmentUnit => {
     const key = unit.surface.toLocaleLowerCase();
+    // Carried on every unit whatever licenses it, so a consumer can tell a measured refusal from an unmeasured one.
+    const base = { ...unit, exhibitedByIds: documentary.exhibitedOnly.get(key) ?? [] };
     if (closedClass.has(key)) {
-      return { ...unit, externallyMeaningful: false, authorityId: COMMITMENT_AUTHORITY_IDS.form, licenceIds: [] };
+      return { ...base, externallyMeaningful: false, authorityId: COMMITMENT_AUTHORITY_IDS.form, licenceIds: [] };
     }
     // Order is provenance strength, not preference: a documented unit stays documented even if the user also said it.
-    const documented = documentary.get(key);
-    if (documented) return { ...unit, externallyMeaningful: true, authorityId: COMMITMENT_AUTHORITY_IDS.documentary, licenceIds: documented };
+    const documented = documentary.asserted.get(key);
+    if (documented) return { ...base, externallyMeaningful: true, authorityId: COMMITMENT_AUTHORITY_IDS.documentary, licenceIds: documented };
     const said = conversation.get(key);
-    if (said) return { ...unit, externallyMeaningful: true, authorityId: COMMITMENT_AUTHORITY_IDS.conversationSpan, licenceIds: said };
+    if (said) return { ...base, externallyMeaningful: true, authorityId: COMMITMENT_AUTHORITY_IDS.conversationSpan, licenceIds: said };
     // A corpus frame literal is form the construction's own provenance licenses; it names nothing and cites nothing.
     const framed = frameForm.get(key);
-    if (framed) return { ...unit, externallyMeaningful: true, authorityId: COMMITMENT_AUTHORITY_IDS.constructionForm, licenceIds: framed };
+    if (framed) return { ...base, externallyMeaningful: true, authorityId: COMMITMENT_AUTHORITY_IDS.constructionForm, licenceIds: framed };
     const held = slot.get(key);
-    if (held) return { ...unit, externallyMeaningful: true, authorityId: COMMITMENT_AUTHORITY_IDS.typedSlot, licenceIds: held };
+    if (held) return { ...base, externallyMeaningful: true, authorityId: COMMITMENT_AUTHORITY_IDS.typedSlot, licenceIds: held };
     const derived = premise.get(key);
-    if (derived) return { ...unit, externallyMeaningful: true, authorityId: COMMITMENT_AUTHORITY_IDS.derivedPremise, licenceIds: derived };
+    if (derived) return { ...base, externallyMeaningful: true, authorityId: COMMITMENT_AUTHORITY_IDS.derivedPremise, licenceIds: derived };
     const proposed = hypothetical.get(key);
-    if (proposed) return { ...unit, externallyMeaningful: true, authorityId: COMMITMENT_AUTHORITY_IDS.hypothetical, licenceIds: proposed };
-    return { ...unit, externallyMeaningful: true, authorityId: COMMITMENT_AUTHORITY_IDS.none, licenceIds: [] };
+    if (proposed) return { ...base, externallyMeaningful: true, authorityId: COMMITMENT_AUTHORITY_IDS.hypothetical, licenceIds: proposed };
+    return { ...base, externallyMeaningful: true, authorityId: COMMITMENT_AUTHORITY_IDS.none, licenceIds: [] };
   });
 
   const unlicensedUnits = units.filter(unit => unit.authorityId === COMMITMENT_AUTHORITY_IDS.none);
@@ -177,7 +206,7 @@ function measuredClosedClass(input: CandidateCommitmentInventoryInput): Readonly
   return out;
 }
 
-function commitmentUnits(text: string): Array<Omit<CandidateCommitmentUnit, "externallyMeaningful" | "authorityId" | "licenceIds">> {
+function commitmentUnits(text: string): Array<Omit<CandidateCommitmentUnit, "externallyMeaningful" | "authorityId" | "licenceIds" | "exhibitedByIds">> {
   const points = [...text];
   const out: Array<{ surface: string; startCodePoint: number; endCodePoint: number }> = [];
   let cursor = 0;
@@ -201,6 +230,62 @@ function indexOfPoints(haystack: readonly string[], needle: readonly string[], f
     if (match) return start;
   }
   return -1;
+}
+
+/**
+ * The documentary licence, asked of the proposition rather than of the file.
+ *
+ * A span's exhibited intervals split its own text into what it states and what it holds up as an object, and only
+ * the first grants authority. The split is applied before the words are taken so the two sides are read with the
+ * same tokenizer and no offset is carried across NFKC. A span that also asserts a unit elsewhere in its text
+ * licenses it; a span with no measurement licenses exactly as it did before, because unmeasured is not exhibited.
+ */
+interface DocumentaryIndex {
+  readonly asserted: Map<string, string[]>;
+  readonly exhibitedOnly: Map<string, string[]>;
+}
+
+function documentaryIndex(rows: readonly CommitmentEvidenceText[]): DocumentaryIndex {
+  const asserted = new Map<string, string[]>();
+  const exhibitedOnly = new Map<string, string[]>();
+  for (const row of rows) {
+    const split = assertionalSplit(row);
+    for (const word of surfaceWords(split.asserted)) addId(asserted, word.toLocaleLowerCase(), row.id);
+    for (const word of surfaceWords(split.exhibited)) addId(exhibitedOnly, word.toLocaleLowerCase(), row.id);
+  }
+  for (const [key, ids] of exhibitedOnly) {
+    const remaining = ids.filter(id => !(asserted.get(key) ?? []).includes(id));
+    if (remaining.length) exhibitedOnly.set(key, remaining);
+    else exhibitedOnly.delete(key);
+  }
+  return { asserted, exhibitedOnly };
+}
+
+/** Non-word separator between the pieces, so no word is fused across a cut. */
+const SEGMENT_BREAK = String.fromCharCode(10);
+
+/** The row's text cut into the part it asserts and the part it exhibits, in its own code points. Pure. */
+function assertionalSplit(row: CommitmentEvidenceText): { asserted: string; exhibited: string } {
+  const ranges = row.exhibited ?? [];
+  if (!ranges.length) return { asserted: row.text, exhibited: "" };
+  const points = [...row.text];
+  const assertedParts: string[] = [];
+  const exhibitedParts: string[] = [];
+  let cursor = 0;
+  for (const range of [...ranges].sort((left, right) => left.charStart - right.charStart)) {
+    const start = Math.max(cursor, Math.min(range.charStart, points.length));
+    const end = Math.max(start, Math.min(range.charEnd, points.length));
+    if (start > cursor) assertedParts.push(points.slice(cursor, start).join(""));
+    if (end > start) exhibitedParts.push(points.slice(start, end).join(""));
+    cursor = Math.max(cursor, end);
+  }
+  if (cursor < points.length) assertedParts.push(points.slice(cursor).join(""));
+  return { asserted: assertedParts.join(SEGMENT_BREAK), exhibited: exhibitedParts.join(SEGMENT_BREAK) };
+}
+
+function addId(index: Map<string, string[]>, key: string, id: string): void {
+  const ids = index.get(key);
+  if (ids) { if (!ids.includes(id)) ids.push(id); } else index.set(key, [id]);
 }
 
 function wordIndex(sources: readonly (readonly [string, string])[]): Map<string, string[]> {

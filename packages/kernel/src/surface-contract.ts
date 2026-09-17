@@ -3,7 +3,8 @@
 import {
   candidateCommitmentInventory,
   candidateCommitmentsLicensed,
-  candidateMayAssertAsKnown
+  candidateMayAssertAsKnown,
+  type CommitmentEvidenceText
 } from "./candidate-commitment-inventory.js";
 import type { PlannedClaim } from "./cognitive-planner.js";
 import type { ConversationTurnSurface } from "./language-construction.js";
@@ -43,7 +44,7 @@ export interface SurfaceContractMaterial {
   requestTurnId?: string;
   requestText: string;
   conversationTurns?: readonly ConversationTurnSurface[];
-  evidenceTexts?: readonly { id: string; text: string }[];
+  evidenceTexts?: readonly CommitmentEvidenceText[];
   claimBases?: readonly PlannedClaim[];
   slotValues?: readonly { id: string; text: string }[];
   constructionFormLiterals?: readonly { id: string; text: string }[];

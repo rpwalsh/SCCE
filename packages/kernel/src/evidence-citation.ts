@@ -2,6 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { jsonRecord, kernelString } from "./kernel-answer-primitives.js";
 import { evidenceSourceIdentity } from "./evidence-source-identity.js";
+import { propositionAssertionalStance } from "./source-artifact-role.js";
 import type { EvidenceSpan } from "./types.js";
 
 export interface EvidenceCitation {
@@ -67,11 +68,18 @@ export function citedSpansForSurface(
   answer: string,
   tidy: (value: string) => string
 ): EvidenceSpan[] {
-  const referenced = selectedEvidence.filter(span => evidenceRefs.includes(String(span.id)));
+  const referenced = selectedEvidence.filter(span => evidenceRefs.includes(String(span.id)) && !exhibitsSurface(span, answer));
   if (referenced.length) return referenced;
   const surface = tidy(answer);
   if ([...surface].length < CITATION_CONTAINMENT_FLOOR) return [];
-  return selectedEvidence.filter(span => tidy(String(span.text ?? span.textPreview ?? "")).includes(surface)).slice(0, 1);
+  return selectedEvidence
+    .filter(span => tidy(String(span.text ?? span.textPreview ?? "")).includes(surface) && !exhibitsSurface(span, answer))
+    .slice(0, 1);
+}
+
+/** A span that holds this surface as content it exhibits is not its provenance, whichever lane referenced it. */
+function exhibitsSurface(span: EvidenceSpan, answer: string): boolean {
+  return propositionAssertionalStance(span, answer) === "exhibited";
 }
 
 /** A surface shorter than one clause identifies no source by containment; the same floor answer-sentence selection uses. */

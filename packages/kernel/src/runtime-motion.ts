@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { type CandidateField, type CandidateSurface } from "./candidate.js";
-import { candidateCommitmentInventory, candidateCommitmentsLicensed } from "./candidate-commitment-inventory.js";
+import { candidateCommitmentInventory, candidateCommitmentsLicensed, type CommitmentEvidenceText } from "./candidate-commitment-inventory.js";
 import { candidateCompatibleWithAuthority } from "./request-authority.js";
 import { type DialogueState } from "./dialogue-pragmatics.js";
 import { jsonRecord, kernelNumber, kernelString, kernelStringArray, namedSubjectAnchors, normalizePriorKey, uniqueKernelStrings } from "./kernel-answer-primitives.js";
@@ -459,7 +459,7 @@ export function runtimeMotionCandidateField(input: {
   focusAnchors?: readonly string[];
   /** Prior turns of this conversation, admitted evidence and the resident language: the surface's licence sources. */
   conversationTurns?: readonly ConversationTurnSurface[];
-  evidenceTexts?: readonly { id: string; text: string }[];
+  evidenceTexts?: readonly CommitmentEvidenceText[];
   closedClass?: readonly string[];
   hasher: { digestHex(input: string | Uint8Array): string };
 }): CandidateField {
@@ -630,7 +630,7 @@ export interface RuntimeMotionLicensingMaterial {
   /** Turn id for the request now being answered; its own span licenses its own words. */
   requestTurnId: string;
   conversationTurns?: readonly ConversationTurnSurface[];
-  evidenceTexts?: readonly { id: string; text: string }[];
+  evidenceTexts?: readonly CommitmentEvidenceText[];
   /** The learned closed class of the language and corpus role this turn speaks in. */
   closedClass?: readonly string[];
 }

@@ -121,6 +121,7 @@ import {
   candidateCommitmentInventory,
   candidateCommitmentsLicensed,
   candidateMayAssertAsKnown,
+  commitmentEvidenceText,
   type CandidateCommitmentInventory
 } from "./candidate-commitment-inventory.js";
 import {
@@ -677,7 +678,7 @@ function surfaceContractMaterial(input: SpeakInput): SurfaceContractMaterial {
   return {
     requestText: input.requestText ?? String(input.entailment?.claim?.text ?? ""),
     conversationTurns: input.conversationTurns ?? [],
-    evidenceTexts: input.evidence.map(span => ({ id: String(span.id), text: String(span.text ?? span.textPreview ?? "") })),
+    evidenceTexts: input.evidence.map(commitmentEvidenceText),
     claimBases: input.claimBases ?? input.selectedProposal?.claims ?? [],
     slotValues: slots.map(slot => ({ id: String(slot), text: String(slot) })),
     ...(input.languageMemory?.closedClass ? { closedClass: input.languageMemory.closedClass } : {}),
@@ -7830,7 +7831,7 @@ function speakCommitmentInventory(
 ): CandidateCommitmentInventory {
   return candidateCommitmentInventory({
     text,
-    evidenceTexts: input.evidence.map(span => ({ id: String(span.id), text: `${span.text} ${span.textPreview}` })),
+    evidenceTexts: input.evidence.map(commitmentEvidenceText),
     conversationTurns: speakConversationTurns(input),
     claimBases: input.claimBases ?? [],
     ...(constructionFormLiterals?.length ? { constructionFormLiterals } : {}),

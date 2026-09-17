@@ -79,6 +79,7 @@ import {
 import { createEvaluationTrace, executeEvaluationComponent, verifyEvaluationTrace } from "./evaluation-trace.js";
 import { createEventFactory } from "./events.js";
 import { type ConsolidatedEpisode, retrieveRelevantEpisodes } from "./episodic-memory-consolidation.js";
+import { commitmentEvidenceText } from "./candidate-commitment-inventory.js";
 import { citedSpansForSurface, evidenceCitations, formatCitationSuffix } from "./evidence-citation.js";
 import { extractTemporalAnswerFromEvidence } from "./semantic-obligations.js";
 import { induceOperatorFromLedger } from "./induced-reasoning-operator-runtime.js";
@@ -4028,7 +4029,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           learnedLanguageFrameIds: surfaceLanguageMemory.importedSemanticFrames.map(frame => frame.id),
           focusAnchors: sourceAnchorAudit.anchors,
           conversationTurns: conversationTurnSurfacesFromMetadata(input.metadata),
-          evidenceTexts: selectedEvidence.map(span => ({ id: String(span.id), text: span.text })),
+          evidenceTexts: selectedEvidence.map(commitmentEvidenceText),
           ...(surfaceClosedClass.length ? { closedClass: surfaceClosedClass } : {}),
           hasher
         });
