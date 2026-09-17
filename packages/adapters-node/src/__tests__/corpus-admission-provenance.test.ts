@@ -2,6 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
 import { trainLanguageCorpusText } from "../language-corpus-trainer.js";
+import { trainStoredCorpusConstructions } from "../stored-corpus-construction-training.js";
 import { createHasher } from "@scce/kernel";
 import type {
   EvidenceSpan,
@@ -110,6 +111,25 @@ describe("corpus trainer admission and provenance", () => {
     expect(JSON.stringify(fixture.state.quarantine[0]?.decisionJson)).toContain("unmeasured");
   });
 
+  it("keeps parent provenance on a derived construction-training batch and never promotes it as a source of truth", async () => {
+    const fixture = memoryStorage();
+    const parents = [
+      seedStoredArticle(fixture.state, "wikipedia://enwiki/pages/1/Resolver", corpusText("resolver")),
+      seedStoredArticle(fixture.state, "wikipedia://enwiki/pages/2/Declaration", corpusText("declaration"))
+    ];
+
+    await trainStoredCorpusConstructions({ storage: fixture.storage, maxTotalBytes: 1024 * 1024, batchBytes: 1024 * 1024 });
+
+    const derived = fixture.state.evidence;
+    expect(derived.length).toBeGreaterThan(0);
+    const provenance = provenanceOf(derived[0]!);
+    expect(provenance.derivation).toBe("construction_training");
+    const derivedFrom = provenance.derivedFrom as Record<string, JsonValue> | undefined;
+    expect(derivedFrom).toBeTruthy();
+    expect(derivedFrom?.sourceVersionIds).toEqual(parents.map(item => item.sourceVersionId));
+    // Doctrine 10: derived learning state is not a new source of truth.
+    expect(derived.some(span => span.status === "promoted")).toBe(false);
+  });
 });
 
 function seedStoredArticle(state: MemoryState, uri: string, text: string): { sourceVersionId: string; contentHash: string } {

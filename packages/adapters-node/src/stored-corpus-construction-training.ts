@@ -89,6 +89,8 @@ export async function trainStoredCorpusConstructions(
     limit: 100000
   });
 
+  // The parent article each batch range came from, so a derived span names the file or article it is derived from.
+  const uriBySourceVersionId = new Map(versions.map(version => [String(version.sourceVersionId), version.canonicalUri]));
   const reports: LanguageCorpusTrainingReport[] = [];
   let alignmentPromotionMemory: LanguageCorpusTrainingReport["alignmentPromotionObservations"] = [];
   let alignmentCalibrationMemory: LanguageCorpusTrainingReport["alignmentCalibrationObservations"] = [];
@@ -142,11 +144,27 @@ export async function trainStoredCorpusConstructions(
         sourceFamilyRanges: currentFamilyRanges,
         alignmentPromotionObservations: alignmentPromotionMemory,
         alignmentCalibrationObservations: alignmentCalibrationMemory,
+        sourceKind: "construction_training",
+        // Doctrine 10: derived learning state is not a new source of truth, so this batch is declared generated.
+        // The controller promotes a generated source only under owner authority, which this unattended lane lacks.
+        sourceAdmission: { sourceClass: "generated", intendedUse: "language_only", promotionAuthority: "training" },
         corpusMetadata: {
           lane: "stored-corpus-construction-training",
           batchIndex: currentIndex,
           articleCount,
-          purpose: "generation construction inventory from the retrieval corpus"
+          purpose: "generation construction inventory from the retrieval corpus",
+          derivation: "construction_training",
+          derivedFrom: {
+            schema: "scce.derivedFrom.v1",
+            sourceSystem,
+            sourceVersionIds: currentSourceVersionIds,
+            parents: currentFamilyRanges.map(range => ({
+              sourceVersionId: range.sourceFamilyId,
+              canonicalUri: uriBySourceVersionId.get(range.sourceFamilyId) ?? null,
+              charStart: range.start,
+              charEnd: range.end
+            }))
+          }
         }
       });
       reports.push(report);
