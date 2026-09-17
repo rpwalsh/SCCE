@@ -1748,24 +1748,17 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
            -- Rank and filter on the narrow columns first, then read the wide rows for the winners only: joining
            -- evidence.* for every candidate detoasted ~250 spans of text to return 17 (measured 530ms of a 745ms
            -- query on this corpus).
-           SELECT evidence.*
-           FROM (
-             SELECT hits.id, hits.score, hits.overlap_count, hits.first_feature_ord, narrow.status, narrow.alpha, narrow.observed_at,
-                    ${titleMatchExpression("evidence", 4 + access.params.length)} AS title_match,
-                    ${titleExactExpression("evidence", 4 + access.params.length)} AS title_exact,
-                    (evidence.char_start = 0) AS opening_block
-             FROM candidate_hits hits
-             JOIN ${storage.table("evidence_spans")} evidence ON evidence.id=hits.id
-             CROSS JOIN LATERAL (SELECT evidence.status, evidence.alpha, evidence.observed_at) narrow
-             WHERE ${evidenceStatusCondition("evidence", query.status)}
-               AND ${access.sql}
-               AND ${sourceKindExclusion("evidence", query, 3 + access.params.length)}
-               AND ${forceClassExclusion("evidence", 5 + access.params.length)}
-             ORDER BY ${evidenceRankOrder({ rank: "", score: "hits.", row: "evidence.", openingBlockPrior })}
-             LIMIT $2
-           ) top
-           JOIN ${storage.table("evidence_spans")} evidence ON evidence.id=top.id
-           ORDER BY ${evidenceRankOrder({ rank: "top.", score: "top.", row: "top.", openingBlockPrior })}`,
+           ${evidenceAnchorRankingTail({
+             spansTable: storage.table("evidence_spans"),
+             statusCondition: evidenceStatusCondition("evidence", query.status),
+             accessCondition: access.sql,
+             titleMatch: titleMatchExpression("evidence", 4 + access.params.length),
+             titleExact: titleExactExpression("evidence", 4 + access.params.length),
+             sourceKindExclusion: sourceKindExclusion("provenance.source_kind", query, 3 + access.params.length),
+             forceClassExclusion: forceClassExclusion("provenance.force_class", 5 + access.params.length),
+             limitParameter: "$2",
+             openingBlockPrior
+           })}`,
           [features, query.limit ?? 80, ...access.params, query.excludeSourceKinds ?? [], query.titleUnits ?? [], query.excludeForceClasses ?? []]
         );
         return rows.map(row => ({ span: rowToEvidence(row), score: Number(row.alpha), reason: "postgres anchor-posting BM25 evidence search" }));
@@ -1792,7 +1785,7 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
            JOIN ${storage.table("evidence_spans")} ev ON ev.id=hits.id
            WHERE ${evidenceStatusCondition("ev", query.status)}
              AND ${access.sql}
-             AND ${sourceKindExclusion("ev", query, limitIndex + 1 + access.params.length)}
+             AND ${sourceKindExclusion(evidenceSourceKindExpression("ev"), query, limitIndex + 1 + access.params.length)}
            ORDER BY hits.overlap_count DESC,
                     hits.first_feature_ord ASC,
                     CASE WHEN ev.status='promoted' THEN 0 WHEN ev.status='pending' THEN 1 ELSE 2 END ASC,
@@ -1819,7 +1812,7 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
       where.push(access.sql);
       params.push(...access.params);
       params.push(query.excludeSourceKinds ?? []);
-      where.push(sourceKindExclusion("ev", query, params.length));
+      where.push(sourceKindExclusion(evidenceSourceKindExpression("ev"), query, params.length));
       params.push(query.limit ?? 80);
       // A bare integer literal in ORDER BY is a positional column reference
       // in Postgres, not a constant -- "ORDER BY 0" is invalid (positions
@@ -5977,8 +5970,64 @@ export function evidenceRankOrder(input: { rank: string; score: string; row: str
     `${score}first_feature_ord ASC`,
     `CASE WHEN ${row}status='promoted' THEN 0 WHEN ${row}status='pending' THEN 1 ELSE 2 END ASC`,
     `${row}alpha DESC`,
-    `${row}observed_at DESC`
+    `${row}observed_at DESC`,
+    // Total order: without a unique last key the sort permutes ties freely, so replay could differ from itself
+    // and ranking-then-filtering could not be proven to return what filtering-then-ranking returns.
+    `${row}id ASC`
   ].join(",\n                      ");
+}
+
+/**
+ * The ranking tail of the anchor-posting BM25 search: rank the narrow columns, then read the wide ones.
+ *
+ * `provenance_json` averages 58,509 bytes per span on this corpus, so a predicate over it detoasts once per
+ * candidate. Measured live 2026-09-16 over one group's 4,186 candidates: 0.505s joining the narrow columns,
+ * 4.69s with the force-class exclusion in the same WHERE, and past the 8s statement timeout with both
+ * exclusions. The exclusions decide admission, not rank, so ranking is total first and the exclusions then run
+ * down the ranked prefix until the LIMIT is filled -- the same rows, in the same order, for 0.340s.
+ *
+ * `OFFSET 0` is the fence that keeps the planner from pulling the lateral back under the sort. It is a plan
+ * barrier, not a skip. Pure.
+ */
+export function evidenceAnchorRankingTail(input: {
+  spansTable: string;
+  statusCondition: string;
+  accessCondition: string;
+  titleMatch: string;
+  titleExact: string;
+  sourceKindExclusion: string;
+  forceClassExclusion: string;
+  limitParameter: string;
+  openingBlockPrior: boolean;
+}): string {
+  const { openingBlockPrior } = input;
+  return `SELECT evidence.*
+           FROM (
+             SELECT ranked.*
+             FROM (
+               SELECT hits.id, hits.score, hits.overlap_count, hits.first_feature_ord, narrow.status, narrow.alpha, narrow.observed_at,
+                      ${input.titleMatch} AS title_match,
+                      ${input.titleExact} AS title_exact,
+                      (evidence.char_start = 0) AS opening_block
+               FROM candidate_hits hits
+               JOIN ${input.spansTable} evidence ON evidence.id=hits.id
+               CROSS JOIN LATERAL (SELECT evidence.status, evidence.alpha, evidence.observed_at) narrow
+               WHERE ${input.statusCondition}
+                 AND ${input.accessCondition}
+               ORDER BY ${evidenceRankOrder({ rank: "", score: "hits.", row: "evidence.", openingBlockPrior })}
+               OFFSET 0
+             ) ranked
+             CROSS JOIN LATERAL (
+               SELECT ${evidenceSourceKindExpression("wide")} AS source_kind,
+                      ${evidenceForceClassExpression("wide")} AS force_class
+               FROM ${input.spansTable} wide WHERE wide.id = ranked.id
+             ) provenance
+             WHERE ${input.sourceKindExclusion}
+               AND ${input.forceClassExclusion}
+             LIMIT ${input.limitParameter}
+           ) top
+           JOIN ${input.spansTable} evidence ON evidence.id=top.id
+           ORDER BY ${evidenceRankOrder({ rank: "top.", score: "top.", row: "top.", openingBlockPrior })}`;
 }
 
 /** A source titled with the subject the request names, ranked ahead of one that only mentions it. An empty unit
@@ -6001,18 +6050,24 @@ function titleExactExpression(alias: string, parameter: number): string {
 
 /** Measured on this corpus: 25,889 of 73,209 scored spans carry a class that can never certify, so BM25 pays for them and
  *  the turn drops them afterwards. Excluded here, before ranking; an empty list is a no-op through the cardinality guard. */
-function forceClassExclusion(alias: string, parameter: number): string {
-  return `(cardinality($${parameter}::text[]) = 0 OR COALESCE(
-    ${alias}.provenance_json->>'forceClass',
-    ${alias}.provenance_json->'metadata'->>'forceClass',
-    ''
-  ) <> ALL($${parameter}::text[]))`;
+function forceClassExclusion(valueExpression: string, parameter: number): string {
+  return `(cardinality($${parameter}::text[]) = 0 OR ${valueExpression} <> ALL($${parameter}::text[]))`;
+}
+
+/** A span's force class, read from the same two places `resolveEvidenceSourceIdentity` reads. Pure. */
+function evidenceForceClassExpression(alias: string): string {
+  return `COALESCE(${alias}.provenance_json->>'forceClass', ${alias}.provenance_json->'metadata'->>'forceClass', '')`;
+}
+
+/** A span's source kind, read from the same two places `resolveEvidenceSourceIdentity` reads. Pure. */
+function evidenceSourceKindExpression(alias: string): string {
+  return `COALESCE(${alias}.provenance_json->>'sourceKind', ${alias}.provenance_json->'metadata'->>'sourceKind', '')`;
 }
 
 /** A prose question must not draw its candidates from source code: 38,232 promoted spans are the owner's own
  *  repository, and for "When was Ada Lovelace born?" every top BM25 row was a test file mentioning her. The
  *  provenance sourceKind names the lane, so exclusion happens before ranking, not after. Pure. */
-function sourceKindExclusion(alias: string, query: EvidenceQuery, parameter: number): string {
+function sourceKindExclusion(valueExpression: string, query: EvidenceQuery, parameter: number): string {
   void query;
   // The parameter is always bound, so it must always be referenced with its type: returning a bare TRUE for an
   // empty list left the placeholder unreferenced, Postgres refused the statement, and every search by source
@@ -6031,7 +6086,7 @@ function sourceKindExclusion(alias: string, query: EvidenceQuery, parameter: num
   // from provenance can only disagree with it, and did.
   // The same two places resolveEvidenceSourceIdentity reads, and the same COALESCE the source_title generated
   // column already uses: an ingestor that records its kind under metadata was read as unlabelled here.
-  return `(cardinality($${parameter}::text[]) = 0 OR COALESCE(${alias}.provenance_json->>'sourceKind', ${alias}.provenance_json->'metadata'->>'sourceKind', '') <> ALL($${parameter}::text[]))`;
+  return `(cardinality($${parameter}::text[]) = 0 OR ${valueExpression} <> ALL($${parameter}::text[]))`;
 }
 function evidenceStatusCondition(
   alias: string,
