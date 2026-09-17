@@ -20,7 +20,7 @@ import {
 import { extractNodeSourceCodeFacts, measureExhibitedContent } from "./code-graph.js";
 import { inspectEngineeringCorpusFolder, type EngineeringCorpusFolderOptions } from "./engineering-corpus-folder.js";
 import { trainLanguageCorpusText, type LanguageCorpusTrainingReport } from "./language-corpus-trainer.js";
-import { createProjectDeclarationIndex } from "./project-artifact-declarations.js";
+import { createProjectDeclarationIndex, createProjectLicenseIndex, readDeclaredLicense } from "./project-artifact-declarations.js";
 
 export const DEFAULT_OSS_FILES_PER_RUN = 2000;
 export const DEFAULT_OSS_FILES_PER_REPOSITORY = 100000;
@@ -152,18 +152,23 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
   // Keep repository provenance compact on every source/span. The full fileHashes manifest remains on the
   // acquisition report; stamping it onto every projection would multiply tens of thousands of hashes by every
   // evidence span. The current file's own hash is already stored separately as sourceHash.
+  // The repository's own declared licence, read once at the snapshot root. Recorded at the producer because an
+  // ingested span can be cited verbatim, so which licence it is under is a property of the answer.
+  const repositoryLicense = await readDeclaredLicense(root);
   const repositoryIdentity: JsonValue = input.repositoryProvenance
     ? toJsonValue({
       identityKind: "git_commit",
       remoteUrl: input.repositoryProvenance.remoteUrl,
       commitSha: input.repositoryProvenance.commitSha,
-      snapshotHash: input.repositoryProvenance.snapshotHash
+      snapshotHash: input.repositoryProvenance.snapshotHash,
+      license: repositoryLicense
     })
-    : toJsonValue({ identityKind: "ingest_material", snapshotHash });
+    : toJsonValue({ identityKind: "ingest_material", snapshotHash, license: repositoryLicense });
 
   let stoppedByHeapSafetyBound = false;
   let filesConsidered = 0;
   const roles = createProjectDeclarationIndex({ stopAt: root });
+  const licenses = createProjectLicenseIndex({ stopAt: root });
   const hasher = createHasher();
 
   for (const file of window) {
@@ -185,6 +190,7 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
 
     const raw = await readFile(file.absolutePath, "utf8");
     const artifactRole = await roles.roleFor(file.absolutePath);
+    const license = await licenses.licenseFor(file.absolutePath);
     const relativePath = normalizeRelative(file.path);
     const sourceHash = file.contentHash ?? sha256(raw);
     // Same producers document.ts uses, over the file rather than a projection: a projection is a different text,
@@ -252,6 +258,7 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
             projection: projected.projection,
             formalLanguage: codeLanguageForPath(file.path) ?? null,
             artifactRole,
+            license,
             repository: repositoryIdentity,
             exhibitedContent: projected.projection === "verbatim"
               ? measureExhibitedContent({ uri: relativePath, mediaType: file.mediaType, text: projected.text })

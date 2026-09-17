@@ -31,6 +31,7 @@ import {
   type SourcePackageFacts,
   type TypedIngestProjection
 } from "@scce/kernel";
+import { summarizeDeclaredLicenses, type DeclaredLicenseSummary } from "./project-artifact-declarations.js";
 import { extractWorkbookBytes } from "./spreadsheet.js";
 
 export interface EngineeringCorpusFolderOptions {
@@ -163,6 +164,8 @@ export interface EngineeringCorpusFolderRuntimeReport {
     entrypointCandidates: JsonValue[];
     capabilitySupport: JsonValue[];
   };
+  /** Which licences this ingest would take in, and how many files carry each. Reported, never enforced. */
+  licensing: DeclaredLicenseSummary;
   warnings: string[];
 }
 
@@ -444,6 +447,10 @@ async function projectEngineeringCorpusFolder(rootPath: string, options: Enginee
       entrypointCandidates: runtime.rankEntrypoints({ limit: 24 }).map(candidate => toJsonValue(candidate)),
       capabilitySupport: runtime.capabilitySupport({ capabilities: [] }).map(item => toJsonValue(item))
     },
+    licensing: await summarizeDeclaredLicenses({
+      rootPath: root,
+      files: inspection.files.filter(file => file.importable).map(file => file.absolutePath)
+    }),
     warnings
   };
 }
