@@ -173,6 +173,21 @@ export function anchorFeatureSet(text: string, limit = 256): string[] {
   return [...features];
 }
 
+/** Punctuation that bears code rather than prose; the same shape `textShapeIsSourceCode` reads, stated once per line. */
+const CODE_BEARING_LINE = /[;{}]$|=>|::|->|\(\)|\{\}|\[\]/u;
+
+/**
+ * The lines of a source whose punctuation bears code, which is where a file DECLARES rather than mentions.
+ *
+ * A file's text contains its comments, so "contains the identifier" admitted a comment that merely names a subject
+ * -- a comment in `mouth.ts` naming Einstein as an example was bound as a DECLARATION of him. Punctuation shape is
+ * the distinction and it is the one this codebase already reads for source-code shape; it carries no casing, no
+ * length, no word list and no script.
+ */
+export function codeBearingLines(text: string): string[] {
+  return text.split(/\r?\n/u).map(line => line.trim()).filter(line => Boolean(line) && CODE_BEARING_LINE.test(line));
+}
+
 export function sourceTextSurface(text: string, maxChars = 1200): string {
   let out = text.replace(/\u0000/g, " ").normalize("NFC");
   out = mainSourceFragment(out);

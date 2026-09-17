@@ -11,7 +11,7 @@ import { isProseSentence } from "./evidence-gist.js";
 import { isStructuralResidueSurface } from "./structural-residue.js";
 import { traceEvent } from "./debug/trace.js";
 import { calibrated } from "./calibrations/prod-calibrations.js";
-import { anchorSymbolUnits, featureSet, mean, sourceTextSurface, toJsonValue, weightedJaccard } from "./primitives.js";
+import { anchorSymbolUnits, codeBearingLines, featureSet, mean, sourceTextSurface, toJsonValue, weightedJaccard } from "./primitives.js";
 import { evidenceRetrievalSurface, evidenceWindowText } from "./evidence-retrieval-surface.js";
 import type { SemanticAnswerConstructFact } from "./semantic-answer-construct.js";
 import { collapseSurfaceWhitespace, ensureSurfaceSentence as ensureUnicodeSurfaceSentence, hasUncasedNonLatinLetter, hasUppercaseLetter, splitSurfaceClauses, splitSurfaceSentences, surfaceWords, tidySurfaceText } from "./surface-linguistics.js";
@@ -2553,7 +2553,7 @@ export function evidenceIdentityBindingDetail(
       sourceConstituents: titleMatch.units
     };
   }
-  const declared = codeSpanDeclaredRequestIdentifiers(span, requestText);
+  const declared = codeSpanDeclaredRequestIdentifiers(span, requestText, closedClassWords);
   return {
     binding: declared.length ? "declaration" : "none",
     requestConstituents: bindingAnchors,
@@ -2569,7 +2569,7 @@ export function evidenceIdentityBindsRequest(span: EvidenceSpan, requestText: st
 
 const CODE_SOURCE_EXTENSIONS = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs|py|rs|go|java|kt|swift|c|h|cc|cpp|hpp|cs|rb|php|sh|sql)$/iu;
 
-function codeSpanDeclaredRequestIdentifiers(span: EvidenceSpan, requestText: string): string[] {
+function codeSpanDeclaredRequestIdentifiers(span: EvidenceSpan, requestText: string, closedClassWords?: ReadonlySet<string>): string[] {
   const provenance = jsonRecord(span.provenance);
   const metadata = jsonRecord(provenance.metadata);
   const uri = String(provenance.uri ?? provenance.canonicalUri ?? metadata.relativePath ?? "");
@@ -2580,9 +2580,52 @@ function codeSpanDeclaredRequestIdentifiers(span: EvidenceSpan, requestText: str
   if (!source) return [];
   const requestUnits = splitPriorUnits(requestText)
     .map(unit => unit.replace(/^[^\p{L}\p{N}_$]+|[^\p{L}\p{N}_$]+$/gu, ""))
-    .filter(unit => unit.length >= 6 && /[A-Z_$]/u.test(unit));
-  const sourceSurface = normalizePriorKey(source);
-  return requestUnits.filter(unit => sourceSurface.includes(normalizePriorKey(unit)));
+    .filter(unit => declarableRequestUnit(unit, closedClassWords));
+  if (!requestUnits.length) return [];
+  const declaredLines = codeBearingLines(source).map(line => ({ line, surface: normalizePriorKey(line) }));
+  return requestUnits.filter(unit => {
+    const run = anchorSymbolUnits(unit);
+    // Substring presence is necessary, not sufficient, and cheap: the line is split the way the index splits only
+    // where a match is possible at all. `rust` occurs inside `rustFact`, which is why a length bound was needed.
+    return run.length > 0 && declaredLines.some(entry =>
+      run.every(part => entry.surface.includes(part)) && declaredUnitRun(anchorSymbolUnits(entry.line), run));
+  });
+}
+
+/** The request unit's own units, contiguous and exact, inside the source's declared units. */
+function declaredUnitRun(declaredUnits: readonly string[], unitRun: readonly string[]): boolean {
+  if (!unitRun.length || unitRun.length > declaredUnits.length) return false;
+  for (let index = 0; index <= declaredUnits.length - unitRun.length; index += 1) {
+    if (unitRun.every((unit, offset) => declaredUnits[index + offset] === unit)) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether a request unit is discriminative enough to be worth binding a source by its declaration.
+ *
+ * The predecessor asked `unit.length >= 6 && /[A-Z_$]/`, which is a hand-set character count and an ASCII casing
+ * rule. It bound a comment in `mouth.ts` as a DECLARATION of Einstein, because the name is eight characters and
+ * capitalised, and by construction it could never bind a lowercase identifier, a short one, or an identifier in
+ * any writing system without case.
+ *
+ * Two corpus measurements replace it, both already primed on the turn and both properties of the whole store
+ * rather than of this request's retrieved slice: the unit is not one the language uses as scaffolding, and its
+ * spread -- distinct corpus sources carrying it -- is at or below the corpus's own Otsu concentration split. A
+ * unit the corpus spreads across more sources than that is a word the corpus uses, and a file containing it
+ * declares nothing about the request.
+ *
+ * Unmeasured is not refused. With no split measured, or none for this unit, the unit is carried and the binding's
+ * `specificity` reports `concentrated: undefined` downstream, which is where that uncertainty belongs.
+ */
+function declarableRequestUnit(unit: string, closedClassWords?: ReadonlySet<string>): boolean {
+  const key = corpusIdentitySurface(unit);
+  if (!key) return false;
+  const signals = corpusIdentitySignals();
+  if ((closedClassWords ?? signals?.closedClass)?.has(key)) return false;
+  if (!signals?.concentration) return true;
+  const measured = signals.spread.get(key);
+  return measured === undefined || measured <= signals.concentration;
 }
 
  function evidenceIdentityBoundAnchor(
