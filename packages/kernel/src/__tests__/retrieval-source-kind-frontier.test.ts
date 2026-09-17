@@ -51,7 +51,7 @@ function retrieval(pool: readonly any[]) {
 }
 
 let nextSpan = 0;
-function span(kind: string, uri: string, title: string, mediaType: string, text: string): any {
+function span(kind: string, uri: string, title: string, mediaType: string, text: string, identity = ""): any {
   const id = `f${nextSpan++}`;
   return {
     id: `evidence_span.${id}`,
@@ -80,6 +80,10 @@ function span(kind: string, uri: string, title: string, mediaType: string, text:
       charRange: [0, text.length],
       chunkHash: `sha256_${id}_chunk`,
       sourceVersionId: `source_version.${id}`,
+      // Measured over every posting of anchor:sym:bestevidencesentences: the 20 repository spans carry a title
+      // and a derived identity, the 48 training-dump spans carry neither. That asymmetry is what separates the
+      // file from the training corpus's copy of the same file, so the fixture has to carry it.
+      ...(identity ? { title, identity } : {}),
       metadata: { title }
     }
   };
@@ -107,7 +111,8 @@ const TRAINING_TEXT = [
 function identifierPool(): any[] {
   return [
     ...repeat(46, index => span("construction_training", `scce://construction-training/source.5ab6da6d/batch-${index}`, "", "text/plain", TRAINING_TEXT)),
-    ...repeat(20, () => span("developer_intelligence", "packages/kernel/src/local-evidence-runtime.ts", "", "text/plain; charset=utf-8", DECLARING_TEXT)),
+    ...repeat(20, () => span("developer_intelligence", "packages/kernel/src/local-evidence-runtime.ts", "local evidence runtime",
+      "text/plain; charset=utf-8", DECLARING_TEXT, "local evidence runtime import bestEvidenceSentences")),
     ...repeat(2, index => span("", `scce://construction-training/source.5ab6da6d/batch-x${index}`, "", "text/plain", TRAINING_TEXT)),
     span("local_document", "docs/IMPLEMENTATION_STATUS.md", "", "text/markdown",
       "the title-lead boost's coverage transfer ported to bestEvidenceSentences so who-played-X questions reach the deeper cast sentence.")
@@ -136,7 +141,8 @@ function proseSpans(): any[] {
 function deprioritizedSpans(): any[] {
   return [
     ...repeat(354, index => span("construction_training", `scce://construction-training/source.5ab6da6d/batch-z${index}`, "", "text/plain", LOVELACE_MENTION)),
-    ...repeat(169, () => span("developer_intelligence", "packages/kernel/src/mouth.ts", "", "text/plain; charset=utf-8", LOVELACE_MENTION))
+    ...repeat(169, () => span("developer_intelligence", "packages/kernel/src/mouth.ts", "mouth", "text/plain; charset=utf-8",
+      LOVELACE_MENTION, "mouth import realizeSurface"))
   ];
 }
 

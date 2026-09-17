@@ -28,6 +28,8 @@ interface HarnessCase {
   readonly concentration?: number;
   readonly anchor: string;
   readonly answeringUri?: string;
+  /** The title the repository ingestor records for that file; the training dump records none. */
+  readonly answeringTitle?: string;
   readonly proseTitle?: string;
   /** The construction-training dump holds wiki prose as well as repository files; "prose" models the half that
    *  no code predicate can reject, which is the only shape that could take a frontier slot from an article. */
@@ -36,7 +38,7 @@ interface HarnessCase {
 }
 
 let nextSpan = 0;
-function span(kind: string, uri: string, title: string, mediaType: string, text: string): any {
+function span(kind: string, uri: string, title: string, mediaType: string, text: string, identity = ""): any {
   const id = `f${nextSpan++}`;
   return {
     id: `evidence_span.${id}`,
@@ -65,6 +67,9 @@ function span(kind: string, uri: string, title: string, mediaType: string, text:
       charRange: [0, text.length],
       chunkHash: `sha256_${id}_chunk`,
       sourceVersionId: `source_version.${id}`,
+      // The repository ingestor records a title and a derived identity; the construction-training dump records
+      // neither, measured over every posting of anchor:sym:bestevidencesentences (20 titled, 48 not).
+      ...(identity ? { title, identity } : {}),
       metadata: { title }
     }
   };
@@ -102,7 +107,8 @@ function poolFor(entry: HarnessCase): any[] {
         pool.push(span(kind, `wikipedia://enwiki/pages/${index}/${subject.replace(/ /gu, "_")}`, subject, "text/x-wiki",
           `${subject} is the subject of this article. ${subject} was born on 10 December 1815 and it carries the sentence the request asks for.`));
       } else if (kind === "developer_intelligence") {
-        pool.push(span(kind, entry.answeringUri ?? "packages/kernel/src/mouth.ts", "", "text/plain; charset=utf-8", body));
+        pool.push(span(kind, entry.answeringUri ?? "packages/kernel/src/mouth.ts", entry.answeringTitle ?? "mouth",
+          "text/plain; charset=utf-8", body, `${entry.answeringTitle ?? "mouth"} import ${identifier}`));
       } else if (kind === "local_document") {
         pool.push(span(kind, `docs/NOTES_${index}.md`, "", "text/markdown",
           `Release notes mentioning ${subject} and ${identifier} among other work.`));
