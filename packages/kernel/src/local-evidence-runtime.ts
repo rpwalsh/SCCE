@@ -570,6 +570,8 @@ function sourceOwnedSubjectUnitSet(
 export function localEvidenceAnswerSurface(input: {
   requestText: string;
   selectedEvidence: readonly EvidenceSpan[];
+  /** Values the turn's realization contract already bound to the request's relation; a sentence supplying one leads. */
+  boundValues?: readonly string[];
   temporalEvidence?: readonly EvidenceSpan[];
   entailment?: Pick<TurnResult["entailment"], "contradiction" | "evidenceIds" | "force">;
   semanticProof?: { verdict: string; contradiction: number; conflictingEvidenceIds?: readonly string[] };
@@ -949,6 +951,8 @@ export function proposeSourceExactEvidenceAnswer(input: {
  function localEvidenceAnswerPlan(input: {
   requestText: string;
   selectedEvidence: readonly EvidenceSpan[];
+  /** Values the turn's realization contract already bound to the request's relation; a sentence supplying one leads. */
+  boundValues?: readonly string[];
   temporalEvidence?: readonly EvidenceSpan[];
   entailment?: Pick<TurnResult["entailment"], "contradiction" | "evidenceIds" | "force">;
   semanticProof?: { verdict: string; contradiction: number; conflictingEvidenceIds?: readonly string[] };
@@ -999,7 +1003,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
     return sourceConflictAnswerPlan(input.requestText, answerEvidence, input.semanticProof.conflictingEvidenceIds ?? []);
   }
   if (contradiction >= calibrated("plan.contradiction_block") || (contradiction >= calibrated("plan.contradiction_unanchored_block") && !answerAnchoredEvidence.length)) return undefined;
-  const rankedSentences = bestEvidenceSentences(input.requestText, answerEvidence, input.sessionContextEvidence === true, input.closedClassWords, input.functionSymbols);
+  const rankedSentences = bestEvidenceSentences(input.requestText, answerEvidence, input.sessionContextEvidence === true, input.closedClassWords, input.functionSymbols, input.boundValues ?? []);
   // A subject the title does not name is answered by the clause that binds it, not by the whole sentence it sits
   // in: "Who played Sisko?" was answered with a 443-character sentence about Roddenberry and space stations whose
   // final clause was "Benjamin Sisko (played by Avery Brooks)". anchorFocusedAnswerSurface existed for exactly this
@@ -4256,10 +4260,25 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
   score: number;
   unitOverlap: number;
   nearDuplicate: boolean;
+  suppliesBoundValue: boolean;
 }
 
 
- function bestEvidenceSentences(requestText: string, evidence: readonly EvidenceSpan[], sessionContextEvidence = false, closedClassWords?: ReadonlySet<string>, functionSymbols?: ReadonlySet<string>): string[] {
+/**
+ * Whether a sentence supplies a value the turn's realization contract already bound to the request's relation.
+ * Case-folded containment, the SAME test candidateSurvivesRealizationContract (semantic-answer-construct.ts)
+ * applies as `requestedSlotSatisfied` before it will accept any answer -- so a ranked sentence without the bound
+ * value is one the contract has already committed to refusing. No weight and no new calibration: this is a
+ * precedence the contract already decided, not a preference of this ranker's own. Pure.
+ */
+function surfaceSuppliesBoundValue(surface: string, boundValues: readonly string[]): boolean {
+  if (!boundValues.length || !surface) return false;
+  const folded = surface.toLocaleLowerCase();
+  return boundValues.some(value => value && folded.includes(value.toLocaleLowerCase()));
+}
+
+
+ function bestEvidenceSentences(requestText: string, evidence: readonly EvidenceSpan[], sessionContextEvidence = false, closedClassWords?: ReadonlySet<string>, functionSymbols?: ReadonlySet<string>, boundValues: readonly string[] = []): string[] {
   markSourceLeadSpans(evidence);
   // Mirrors proposeSourceExactEvidenceAnswer's ranking contract exactly
   // (see the long notes there): sentences are ranked IN tidySurfaceText
@@ -4383,6 +4402,7 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
         const nearDuplicateBoost = nearDuplicateFraction >= calibrated("ranking.near_duplicate_fraction_floor") && !promotedSessionEvidence(span)
           ? calibrated("ranking.near_duplicate_weight") * nearDuplicateFraction
           : 0;
+        const suppliesBoundValue = surfaceSuppliesBoundValue(sentence, boundValues);
         // Raw values, before any coefficient: the fitter needs the feature, not the weighted term.
         rankFeatureRows.push({
           sentence: sentence.slice(0, 160),
@@ -4397,7 +4417,8 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
             nearDuplicateFraction: nearDuplicateBoost > 0 ? nearDuplicateFraction : 0,
             sourceOrderIndex: index,
             fragmentCount: (lowercaseInitialFragment(sentence) ? 1 : 0) + (danglingTailFragment(sentence) ? 1 : 0),
-            longSentencePenalty: fastAnswerLongSentencePenalty(sentence)
+            longSentencePenalty: fastAnswerLongSentencePenalty(sentence),
+            boundValue: suppliesBoundValue ? 1 : 0
           }
         });
         return {
@@ -4407,6 +4428,7 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
           index,
           unitOverlap,
           nearDuplicate: nearDuplicateBoost > 0,
+          suppliesBoundValue,
           score: unitOverlap * calibrated("ranking.unit_overlap_weight")
             + lexical * calibrated("ranking.lexical_similarity_weight")
             + pairOverlap * calibrated("ranking.best.pair_overlap_weight")
@@ -4428,7 +4450,11 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
       && !cliticOpeningFragment(row.sentence) && !isStructuralResidueSurface(row.sentence))
     // The duplicated sentence outranks everything: a unit-rich table blob
     // can beat the boost on raw overlap count.
-    .sort((left, right) => Number(right.nearDuplicate) - Number(left.nearDuplicate) || right.score - left.score || right.unitOverlap - left.unitOverlap || left.index - right.index || String(left.span.id).localeCompare(String(right.span.id)));
+    // A sentence supplying the contract's bound value leads: the score's terms measure how much of the request a
+    // sentence repeats, and none of them measures whether it answers. Inert when nothing was bound.
+    .sort((left, right) => Number(right.nearDuplicate) - Number(left.nearDuplicate)
+      || Number(right.suppliesBoundValue) - Number(left.suppliesBoundValue)
+      || right.score - left.score || right.unitOverlap - left.unitOverlap || left.index - right.index || String(left.span.id).localeCompare(String(right.span.id)));
   traceEvent((globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace, {
     stage: "local_evidence.rank_features",
     label: "kernel.turn",
@@ -4480,9 +4506,10 @@ function positionPriorSpread(rows: readonly EvidenceSentenceRow[]): number {
   return priors.length ? Math.max(...priors) - Math.min(...priors) : 0;
 }
 
-/** Highest-scoring first, ties in the order they were ranked in: a preference must not lose the ranking. Pure. */
+/** Bound-value bearers first, then highest-scoring, ties in the order they were ranked in: a preference must not lose the ranking. Pure. */
 function sortedByScore(rows: readonly EvidenceSentenceRow[]): EvidenceSentenceRow[] {
-  return [...rows].sort((left, right) => right.score - left.score
+  return [...rows].sort((left, right) => Number(right.suppliesBoundValue) - Number(left.suppliesBoundValue)
+    || right.score - left.score
     || left.index - right.index
     || String(left.span.id).localeCompare(String(right.span.id)));
 }
@@ -4502,6 +4529,7 @@ function predicationPreferredOrder(
   const best = ordered[0];
   if (!best) return [...ordered, ...rest];
   const tied = ordered.filter(row => row.unitOverlap === best.unitOverlap
+    && row.suppliesBoundValue === best.suppliesBoundValue
     && Math.abs(row.score - best.score) <= positionPriorSpread(rerankable));
   if (tied.length < 2) return [...ordered, ...rest];
   const tiedRows = new Set(tied);
