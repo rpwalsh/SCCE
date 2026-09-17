@@ -3962,7 +3962,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
            r.stream_id,
            r.language_hint,
            r.order_n,
-           (SELECT COALESCE(array_agg(h.value), ARRAY[]::text[]) FROM jsonb_array_elements_text(r.history_json) AS h(value)),
+           COALESCE(r.history_json, ARRAY[]::text[]),
            r.symbol,
            r.count,
            r.field_weight,
@@ -3976,7 +3976,10 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
            stream_id text,
            language_hint text,
            order_n integer,
-           history_json jsonb,
+           -- Declared text[] so jsonb_to_recordset converts the history array itself; the correlated
+           -- array_agg over jsonb_array_elements_text it replaces ran once per row (measured 165k times
+           -- per statement, 68% of all ingest database time).
+           history_json text[],
            symbol text,
            count bigint,
            field_weight double precision,
