@@ -155,6 +155,22 @@ export interface PostgresStorageOptions {
   informationAccess?: InformationAccessContext;
 }
 
+/**
+ * How the guarded read is bounded. It decides how the information label is SPELLED, never what it decides.
+ *
+ * The label is one access decision whose true selectivity is 1.0000 on every guarded table, but spelled as four
+ * conjuncts the planner multiplies four unestimable selectivities, estimates one surviving row, and so discards every
+ * LIMIT-aware ordered index path. Measured on scce3_runtime, byte-identical results either way:
+ *
+ *   listNgramModels     2248ms / 318MB (Bitmap Heap Scan)  ->   625ms /  96MB (Index Scan)
+ *   listLanguageUnits    900ms / 145MB (Parallel Bitmap)   ->   230ms /  24MB (Index Scan)
+ *   listSemanticFrames   507ms /1030MB (Parallel Seq Scan) ->    13ms /   9MB (Index Scan)
+ *
+ * Only safe where an ORDER BY and a LIMIT bound the read. On an unbounded scan the truthful estimate costs Gather more
+ * per row and Postgres drops its parallel workers: listLanguagePatterns measured 18.9s -> 66.7s for the same 6.7GB.
+ */
+export type InformationAccessReadShape = "unbounded" | "bounded_by_order_and_limit";
+
 export class PostgresStorageAdapter implements ScceStorage {
   readonly pool: Pool;
   readonly schema: string;
@@ -436,12 +452,15 @@ export class PostgresStorageAdapter implements ScceStorage {
     return normalized;
   }
 
-  informationAccessPredicate(alias: string, firstParameter: number): { sql: string; params: unknown[] } {
+  informationAccessPredicate(
+    alias: string,
+    firstParameter: number,
+    readShape: InformationAccessReadShape = "unbounded"
+  ): { sql: string; params: unknown[] } {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(alias)) throw new Error("unsafe information-label SQL alias");
     const access = this.requireInformationAccess();
     const exportClasses = informationExportClassesThrough(access.maximumExportClass);
-    return {
-      sql: `(
+    const decision = `(
         (${alias}.information_label->>'exportClass' = 'public' OR ${alias}.information_label->>'tenantId' = $${firstParameter})
         AND ${alias}.information_label->>'exportClass' = ANY($${firstParameter + 1}::text[])
         AND (
@@ -449,7 +468,9 @@ export class PostgresStorageAdapter implements ScceStorage {
           OR (${alias}.information_label->'principals') ? $${firstParameter + 2}
         )
         AND (${alias}.information_label->'compartments') <@ $${firstParameter + 3}::jsonb
-      )`,
+      )`;
+    return {
+      sql: readShape === "bounded_by_order_and_limit" ? `(CASE WHEN ${decision} THEN TRUE ELSE FALSE END)` : decision,
       params: [
         access.tenantId.trim(),
         exportClasses,
@@ -576,9 +597,10 @@ function appendInformationAccess(
   storage: PostgresStorageAdapter,
   alias: string,
   params: unknown[],
-  where: string[]
+  where: string[],
+  readShape: InformationAccessReadShape = "unbounded"
 ): void {
-  const access = storage.informationAccessPredicate(alias, params.length + 1);
+  const access = storage.informationAccessPredicate(alias, params.length + 1, readShape);
   where.push(access.sql);
   params.push(...access.params);
 }
@@ -4028,7 +4050,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         where.push(`model.model_json->>'profileId'=ANY($${params.length}::text[])`);
       }
       if (query.sourceSystem) { params.push(query.sourceSystem); where.push(`model.model_json->>'sourceSystem'=$${params.length}`); }
-      appendInformationAccess(storage, "model", params, where);
+      appendInformationAccess(storage, "model", params, where, "bounded_by_order_and_limit");
       params.push(query.limit ?? 100);
       const limitParam = params.length;
       const trainedMass = "COALESCE((model.model_json->'model'->>'totalUnigramCount')::numeric, 0)";
@@ -4212,7 +4234,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       } else if (query.profileId) { params.push(query.profileId); where.push(`unit.profile_id=$${params.length}`); }
       if (query.script) { params.push(query.script); where.push(`unit.script=$${params.length}`); }
       if (query.sourceSystem) { params.push(query.sourceSystem); where.push(`unit.metadata_json->>'sourceSystem'=$${params.length}`); }
-      appendInformationAccess(storage, "unit", params, where);
+      appendInformationAccess(storage, "unit", params, where, "bounded_by_order_and_limit");
       params.push(query.limit ?? 1000);
       const unitLimitParam = params.length;
       // Same cumulative byte budget as listNgramModels (see the note
@@ -4394,7 +4416,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         params.push([...query.profileIds]);
         where.push(`frame.frame_json->>'profileId'=ANY($${params.length}::text[])`);
       }
-      appendInformationAccess(storage, "frame", params, where);
+      appendInformationAccess(storage, "frame", params, where, "bounded_by_order_and_limit");
       params.push(query.limit ?? 500);
       return (await storage.query<SemanticFrameRow>(`SELECT id, frame_json, embedding::text AS embedding, evidence_ids, alpha, created_at, information_label FROM ${storage.table("semantic_frames")} frame WHERE ${where.join(" AND ")} ORDER BY alpha DESC, created_at DESC, id ASC LIMIT $${params.length}`, params)).map(rowToSemanticFrame);
     },
