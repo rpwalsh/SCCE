@@ -9,6 +9,7 @@ import {
   createIdFactory,
   createLanguageAcquisitionEngine,
   createLanguageMemoryRuntime,
+  createSourceAdmissionController,
   compileLanguageTrainingBatch,
   observeLanguageTrainingSegmentation,
   attachSourceDerivedLanguageAliases,
@@ -35,6 +36,8 @@ import {
   type NgramObservation,
   type ScceStorage,
   type SemanticFrameRecord,
+  type SourceAdmissionContext,
+  type SourceAdmissionDecision,
   type SourceTrust,
   type SourceVersion,
   type SourceVersionId,
@@ -59,6 +62,10 @@ export interface LanguageCorpusTrainingInput {
   ngramVocabularyLimit?: number;
   /** Registry overrides, so a corpus can state its own n-gram limits instead of inheriting the defaults. */
   corpusRegistry?: readonly CorpusRegistryOverride[];
+  /** How this lane declares its material to the admission controller. Defaults to the corpus's own declaration. */
+  sourceAdmission?: SourceAdmissionContext;
+  /** Where this material came from. Defaults to the corpus's own declaration; never inferred from the text. */
+  sourceKind?: string;
   corpusMetadata?: JsonValue;
   languageAliases?: readonly string[];
   constructionSets?: readonly SourceBoundLanguageConstructionTrainingSet[];
@@ -102,6 +109,8 @@ export interface LanguageCorpusTrainingReport {
   languageUnits: number;
   languagePatterns: number;
   semanticFrames: number;
+  /** What the admission controller decided for this source version, or `unmeasured` when it had no declaration. */
+  admission: { disposition: SourceAdmissionDecision["disposition"] | "unmeasured" | "not_applicable"; reasons: string[] };
   /** This batch's own alignment observations, so a caller can carry them into the next batch. */
   alignmentPromotionObservations: AlignmentPromotionObservation[];
   alignmentCalibrationObservations: AlignmentCalibrationObservation[];
@@ -223,6 +232,7 @@ async function trainLanguageCorpusTextTransaction(input: LanguageCorpusTrainingI
   });
 
   let evidence = [...(input.evidence ?? [])];
+  let admission: LanguageCorpusTrainingReport["admission"] = { disposition: "not_applicable", reasons: ["this lane persists no source version of its own"] };
   if (!evidence.length && input.persistSource !== false) {
     const extractor = createEvidenceExtractor({ idFactory: ids, hasher });
     const mediaType = input.mediaType ?? "text/plain";
@@ -256,7 +266,58 @@ async function trainLanguageCorpusTextTransaction(input: LanguageCorpusTrainingI
       metadata,
       exactSourceText: true
     });
-    evidence = stampEvidence(extracted.spans, sourceSystem, sourceSystemId, metadata)
+    // Law 1: the corpus lanes stamped `promoted` outright and never consulted the controller, so 1,154 live source
+    // versions carry a promotion nobody decided. A corpus with no declaration is `unmeasured`, which is neither.
+    const context = input.sourceAdmission ?? corpusAdmissionContext(sourceSystemId);
+    const decision = context
+      ? createSourceAdmissionController().decide({
+        source,
+        evidence: extracted.spans,
+        context,
+        // Diagnostic trust is otherwise computed from defaults, which is an unmeasured value deciding an admission.
+        metadata: toJsonValue({ ...jsonRecord(metadata), diagnostics: extractorDiagnostics(input.text, text) })
+      })
+      : undefined;
+    const audit = decision?.audit ?? toJsonValue({
+      sourceVersionId, namespace, sourceSystemId,
+      disposition: "unmeasured",
+      reasons: [`no admission context is declared for corpus source system ${sourceSystem}`]
+    });
+    admission = {
+      disposition: decision?.disposition ?? "unmeasured",
+      reasons: decision?.reasons ?? [`no admission context is declared for corpus source system ${sourceSystem}`]
+    };
+    await input.storage.quarantine.put({
+      id: `${sourceVersionId}:admission`,
+      sourceId,
+      sourceVersionId,
+      uri: sourceUri,
+      contentHash,
+      mediaType,
+      fetchedAt: createdAt,
+      trustVector: audit,
+      permissionVector: toJsonValue({
+        disposition: admission.disposition,
+        sourceAdmission: context ? toJsonValue({ ...context }) : null,
+        activeInfluence: decision ? toJsonValue({ ...decision.activeInfluence }) : null,
+        safetyRails: decision?.safetyRails ?? []
+      }),
+      decision: admission.disposition === "reject" ? "rejected" : admission.disposition === "promote" ? "promoted" : "pending",
+      decisionJson: audit
+    });
+    if (admission.disposition === "reject") {
+      throw new Error(`corpus source rejected at admission: ${admission.reasons.join("; ")}`);
+    }
+    const actionByEvidence = new Map((decision?.evidenceActions ?? []).map(action => [action.evidenceId, action]));
+    evidence = stampEvidence(extracted.spans, {
+      sourceSystem,
+      sourceSystemId,
+      metadata,
+      sourceKind: input.sourceKind ?? corpusSourceKind(sourceSystemId),
+      status: admission.disposition === "promote" ? "promoted" : "quarantined",
+      audit,
+      actionByEvidence
+    })
       .map(span => ({ ...span, informationLabel: sourceInformationLabel }))
       .map(span => withSourceFamily(span, input.sourceFamilyRanges));
     for (const span of evidence) {
@@ -392,6 +453,7 @@ async function trainLanguageCorpusTextTransaction(input: LanguageCorpusTrainingI
     languageUnits: units.length,
     languagePatterns: patterns.length,
     semanticFrames: frames.length,
+    admission,
     alignmentPromotionObservations: [...compiledBatch.alignmentHeldoutEvaluation.promotionObservations],
     alignmentCalibrationObservations: [...compiledBatch.alignmentHeldoutEvaluation.calibrationObservations],
     constructionCandidates: compiledBatch.constructionCandidates,
@@ -418,15 +480,69 @@ function withSourceFamily(
   return { ...span, provenance: { ...provenance, sourceFamilyId: found.sourceFamilyId } };
 }
 
-function stampEvidence(spans: readonly EvidenceSpan[], sourceSystem: string, sourceSystemId: string, metadata: JsonValue): EvidenceSpan[] {
-  return spans.map(span => ({
-    ...span,
-    status: "promoted",
-    // A training batch is a concatenation minted for the construction lane, not a document a person wrote; it names
-    // its lane so a prose question never draws candidates from it.
-    provenance: toJsonValue({ ...jsonRecord(span.provenance), ...jsonRecord(metadata), sourceSystem, sourceSystemId, sourceKind: "construction_training", forceClass: "profile_excerpt_evidence" }),
-    trustVector: toJsonValue({ ...jsonRecord(span.trustVector), sourceSystem, sourceSystemId, forceClass: "profile_excerpt_evidence", sourceTrust: corpusSourceTrust(sourceSystemId) })
-  }));
+/** What each corpus declares itself to be at admission; the same declaration the registry already carries, in the
+ *  controller's vocabulary. An undeclared corpus returns undefined, which is `unmeasured`, not a promotion. Pure. */
+function corpusAdmissionContext(sourceSystemId: string): SourceAdmissionContext | undefined {
+  if (sourceSystemId === CORPUS_SOURCE_SYSTEM_IDS.wikipedia
+    || sourceSystemId === CORPUS_SOURCE_SYSTEM_IDS.gutenberg
+    || sourceSystemId === CORPUS_SOURCE_SYSTEM_IDS.ossDocs
+    || sourceSystemId === CORPUS_SOURCE_SYSTEM_IDS.ossCode) {
+    return { sourceClass: "trusted_corpus", intendedUse: "learned_prior", promotionAuthority: "training" };
+  }
+  if (sourceSystemId === CORPUS_SOURCE_SYSTEM_IDS.dialogue
+    || sourceSystemId === CORPUS_SOURCE_SYSTEM_IDS.corrections
+    || sourceSystemId === CORPUS_SOURCE_SYSTEM_IDS.workspace) {
+    return { sourceClass: "owner_local", intendedUse: "learned_prior", promotionAuthority: "owner" };
+  }
+  return undefined;
+}
+
+/** Where a corpus's material came from, in the vocabulary ingestion-lanes already declares. Pure. */
+function corpusSourceKind(sourceSystemId: string): string {
+  if (sourceSystemId === CORPUS_SOURCE_SYSTEM_IDS.wikipedia) return "wikimedia_dump";
+  if (sourceSystemId === CORPUS_SOURCE_SYSTEM_IDS.gutenberg) return "gutenberg_mirror";
+  if (sourceSystemId === CORPUS_SOURCE_SYSTEM_IDS.ossDocs || sourceSystemId === CORPUS_SOURCE_SYSTEM_IDS.ossCode) return "developer_intelligence";
+  if (sourceSystemId === CORPUS_SOURCE_SYSTEM_IDS.dialogue) return "local_corpus";
+  if (sourceSystemId === CORPUS_SOURCE_SYSTEM_IDS.workspace) return "local_engineering_corpus";
+  return "unknown";
+}
+
+/** The extractor facts this lane can actually measure, so diagnostic trust is not computed from defaults. Pure. */
+function extractorDiagnostics(rawText: string, normalizedText: string): JsonValue {
+  let nulCount = 0;
+  for (let index = 0; index < rawText.length; index += 1) if (rawText.charCodeAt(index) === 0) nulCount += 1;
+  return toJsonValue({
+    charLength: [...normalizedText].length,
+    // One extractor ran over this text; this is a count of what happened, not a tuned parameter.
+    parserCount: 1,
+    binaryRatio: rawText.length ? nulCount / rawText.length : 0,
+    missingPreconditions: [],
+    warnings: []
+  });
+}
+
+function stampEvidence(spans: readonly EvidenceSpan[], stamp: {
+  sourceSystem: string;
+  sourceSystemId: string;
+  metadata: JsonValue;
+  sourceKind: string;
+  status: EvidenceSpan["status"];
+  audit: JsonValue;
+  actionByEvidence: Map<string, { action: string; alpha: number }>;
+}): EvidenceSpan[] {
+  const { sourceSystem, sourceSystemId, metadata, sourceKind, status, audit } = stamp;
+  return spans.map(span => {
+    const action = stamp.actionByEvidence.get(String(span.id));
+    return {
+      ...span,
+      status,
+      alpha: action?.action === "lower-alpha" ? Math.min(span.alpha, action.alpha) : span.alpha,
+      // Source kind names where the material came from. Every lane through this trainer used to say
+      // construction_training, so a repository file arrived labelled as derived training residue.
+      provenance: toJsonValue({ ...jsonRecord(span.provenance), ...jsonRecord(metadata), sourceSystem, sourceSystemId, sourceKind, forceClass: "profile_excerpt_evidence" }),
+      trustVector: toJsonValue({ ...jsonRecord(span.trustVector), sourceSystem, sourceSystemId, forceClass: "profile_excerpt_evidence", sourceTrust: corpusSourceTrust(sourceSystemId), admission: audit, action: action?.action ?? "quarantine" })
+    };
+  });
 }
 
 function stampObservation(observation: NgramObservation, sourceSystem: string, sourceSystemId: string, metadata: JsonValue): NgramObservation {
