@@ -2,7 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { contentRuns, corpusIdentityGeneration, corpusIdentitySignals, corpusIdentitySurface, corpusIdentityUnits, corpusNamedIdentities } from "./corpus-identity.js";
 import { corpusUnitFormVerdict, freeFormLexiconGeneration } from "./free-form-lexicon.js";
-import { evidenceSourceIdentity } from "./evidence-source-identity.js";
+import { evidenceSourceIdentity, isCodeEvidenceSpan } from "./evidence-source-identity.js";
 import { SEMANTIC_CONSTRAINT, SEMANTIC_VERDICT, SEMANTIC_SOURCE } from "./semantic-codes.js";
 import { atomizeText } from "./semantic-proof-system.js";
 import { type IdFactory } from "./ids.js";
@@ -2573,7 +2573,9 @@ function codeSpanDeclaredRequestIdentifiers(span: EvidenceSpan, requestText: str
   const provenance = jsonRecord(span.provenance);
   const metadata = jsonRecord(provenance.metadata);
   const uri = String(provenance.uri ?? provenance.canonicalUri ?? metadata.relativePath ?? "");
-  if (!CODE_SOURCE_EXTENSIONS.test(uri)) return [];
+  // The binding's own predicate, plus this half's extra extensions: a repository span carrying a code media type
+  // and no extension is source code that could never bind by declaration while only the URI was read.
+  if (!isCodeEvidenceSpan(span) && !CODE_SOURCE_EXTENSIONS.test(uri)) return [];
   const source = String(span.text ?? span.textPreview ?? "");
   if (!source) return [];
   const requestUnits = splitPriorUnits(requestText)

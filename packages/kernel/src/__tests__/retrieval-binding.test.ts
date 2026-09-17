@@ -142,6 +142,29 @@ describe("retrievalBinding is the one answer to why evidence is relevant", () =>
     expect([retrievalBindingSupports(unmeasured), retrievalBindingCarries(unmeasured)]).toEqual([false, true]);
   });
 
+  it("binds a declaration in a code-media span the URI does not name as code", () => {
+    // The declaration half read the URI alone while the binding also reads media type and content shape, so a
+    // repository span ingested with a bare path and a code media type was source code that could never declare.
+    primeCorpusIdentitySignals({
+      closedClass: CLOSED,
+      identities: new Set(["createprogramplanner"]),
+      spread: new Map([["createprogramplanner", 10]]),
+      concentration: 289
+    });
+    const mediaOnly = corpusSpan("media_only", "packages/kernel/src/program-planner", "", "text/x-source.ts", [
+      "export function createProgramPlanner(options) {",
+      "  const planner = buildPlanner(options);",
+      "  return planner;",
+      "}"
+    ].join(NL));
+
+    const binding = retrievalBinding(mediaOnly, { requestText: "Which file defines createProgramPlanner?", closedClassWords: CLOSED });
+
+    expect(binding.sourceKind.sourceCode).toBe(true);
+    expect(binding.mechanism).toBe("source_declaration");
+    expect(binding.admissibility).toBe("admissible");
+  });
+
   it("grants an operator-allowed source kind admissibility without erasing the measurement", () => {
     primeCorpusIdentitySignals({ closedClass: CLOSED, identities: new Set(["albania"]), spread: new Map(), concentration: 289 });
     const binding = retrievalBinding(unrelatedCode, {

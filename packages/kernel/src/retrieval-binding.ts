@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { corpusIdentitySignals, corpusIdentityUnits } from "./corpus-identity.js";
-import { evidenceSourceIdentity } from "./evidence-source-identity.js";
+import { evidenceSourceIdentity, isCodeEvidenceSpan } from "./evidence-source-identity.js";
 import { evidenceIdentityBindingDetail } from "./local-evidence-runtime.js";
 import type { EvidenceSourceIdentity, EvidenceSpan } from "./types.js";
 
@@ -39,7 +39,20 @@ export interface RetrievalSourceKind {
   readonly declared: string;
   /** Whether the span itself is source code: declared media type, then URI extension, then content shape. */
   readonly sourceCode: boolean;
+  /** Whether this kind pays the frontier cost: it ranks behind every other kind, and is never removed. */
+  readonly deprioritized: boolean;
 }
+
+/**
+ * The source kinds a request that was not routed to source code makes pay the frontier cost.
+ *
+ * This is the whole of the prior, declared once, read by the SQL frontier rank and by `retrievalBindingRank` so
+ * the two cannot disagree. It was an `excludeSourceKinds` erasure applied before ranking, which made the operator
+ * selection decide the epistemic universe: to recognise a request as being about source the turn needs source
+ * evidence, and to retrieve source evidence it had to have recognised the request already. As a rank it costs a
+ * deprioritized kind every frontier slot another kind wants, and nothing more.
+ */
+export const RETRIEVAL_DEPRIORITIZED_SOURCE_KINDS: readonly string[] = ["developer_intelligence", "construction_training"];
 
 /**
  * How discriminative the binding constituent is, measured over the corpus and not over this request's slice.
@@ -75,6 +88,8 @@ export interface RetrievalBindingContext {
   readonly anchors?: readonly string[];
   /** Operator-granted access. When source code is allowed its kind carries no cost at this boundary. */
   readonly sourceCodeEvidenceAllowed?: boolean;
+  /** The kinds that pay the frontier cost; the declared prior when absent. */
+  readonly deprioritizedSourceKinds?: readonly string[];
 }
 
 const MECHANISM_BY_IDENTITY_BINDING = { title: "source_identity", declaration: "source_declaration", none: "unbound" } as const;
@@ -86,7 +101,10 @@ export function retrievalBinding(span: EvidenceSpan, context: RetrievalBindingCo
     ? MECHANISM_BY_IDENTITY_BINDING[detail.binding]
     : "unmeasured";
   const provenance = evidenceSourceIdentity(span);
-  const sourceKind: RetrievalSourceKind = { declared: provenance.sourceKind, sourceCode: isCodeEvidenceSpan(span) };
+  const deprioritized = context.sourceCodeEvidenceAllowed === true
+    ? false
+    : (context.deprioritizedSourceKinds ?? RETRIEVAL_DEPRIORITIZED_SOURCE_KINDS).includes(provenance.sourceKind);
+  const sourceKind: RetrievalSourceKind = { declared: provenance.sourceKind, sourceCode: isCodeEvidenceSpan(span), deprioritized };
   return {
     evidenceId: String(span.id),
     requestConstituents: detail.requestConstituents,
@@ -155,57 +173,24 @@ export function retrievalBindingSupports(binding: RetrievalBinding): boolean {
  * A source the request is titled with leads. Prose follows, ahead of a declaration match, because a source file
  * whose comment happens to name the subject must not unseat the article about it -- the admission tier states the
  * same order, and this is that order where no admission tier runs. An unmeasured binding is carried last.
+ *
+ * A deprioritized kind sorts behind every kind that is not, matching the SQL frontier rank exactly: what the
+ * database ordered last must not be re-interleaved here, or the frontier's prose guarantee ends at the read
+ * boundary. Within each tier the order above is unchanged.
  */
-export function retrievalBindingRank(binding: RetrievalBinding): number {
-  if (binding.mechanism === "source_identity") return 0;
-  if (!binding.sourceKind.sourceCode) return 1;
-  if (binding.mechanism === "source_declaration") return 2;
-  return 3;
-}
+const RETRIEVAL_BINDING_TIER = 4;
 
-/** Code evidence: a span whose source is code (media type, code-graph facts, or a code file extension). */
-const CODE_MEDIA_MARKERS = ["javascript", "typescript", "x-python", "x-rust", "x-go", "x-java", "x-csharp", "x-c++", "source"];
-const CODE_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".py", ".rs", ".go", ".java", ".cs", ".cpp", ".c", ".h", ".hpp", ".php", ".rb", ".swift", ".kt"];
-/** Markup media types that share the `text/x-` prefix with source code but are prose sources. */
-const MARKUP_MEDIA_TYPES = ["text/x-wiki", "text/x-markdown", "text/x-rst", "text/x-org"] as const;
+export function retrievalBindingRank(binding: RetrievalBinding): number {
+  const tier = binding.sourceKind.deprioritized ? RETRIEVAL_BINDING_TIER : 0;
+  if (binding.mechanism === "source_identity") return tier;
+  if (!binding.sourceKind.sourceCode) return tier + 1;
+  if (binding.mechanism === "source_declaration") return tier + 2;
+  return tier + 3;
+}
 
 /**
- * The one predicate for "this span is source code", used by both the prose filter and the program-authority rule.
- *
- * Two predicates existed and disagreed. The retrieval-side one required a `file://` URI; the repository is ingested
- * with a bare repo-relative path and `text/plain`, so 6,522 promoted spans of the owner's own TypeScript were invisible
- * to it, and "Who was Ada Lovelace?" was answered live from a comment in `mouth.ts` that names her as an example.
- * Declared media type, declared URI and content shape are each checked, because a repository span declares neither.
+ * Code evidence and its code-shape test live with the source identity both of them read, so the declaration half
+ * of the binding can use the same predicate without a module cycle. Re-exported here because this is the contract
+ * every retrieval consumer asks through.
  */
-export function isCodeEvidenceSpan(span: EvidenceSpan): boolean {
-  const media = String(span.mediaType ?? "").toLocaleLowerCase();
-  // Wiki markup shares the `text/x-` prefix with source media types and is the media type of every ingested
-  // Wikipedia span; treating the family as code once emptied the prose corpus from every non-code request.
-  if (MARKUP_MEDIA_TYPES.some(markup => media.startsWith(markup))) return false;
-  if (CODE_MEDIA_MARKERS.some(marker => media.includes(marker))) return true;
-  const provenance = span.provenance && typeof span.provenance === "object" && !Array.isArray(span.provenance) ? span.provenance as Record<string, unknown> : {};
-  // Source-code METADATA says the span came from a code project, not that the span is code. Ingesting a
-  // repository stamps it on every file in the tree, so it was true of the README, the HTML pages and the
-  // package manifest as much as of the TypeScript -- and returning true here on that basis made every prose
-  // document in an ingested project invisible to every non-code question. The private-docs corpus is one such
-  // project: asked what license SlopBlocker uses, the markdown span answering it was classified as code and
-  // filtered out of the pool, after the retrieval fix had already found it.
-  //
-  // The two checks below decide it from the span instead: the URI extension names the language, and failing
-  // that the punctuation shape reads the content. The workspace TypeScript this branch was added for is caught
-  // by both -- it is ingested with its .ts path, and it reads as code -- so nothing that was excluded on
-  // evidence stops being excluded.
-  const uri = String(provenance.uri ?? provenance.canonicalUri ?? "").toLocaleLowerCase();
-  if (CODE_EXTENSIONS.some(extension => uri.endsWith(extension))) return true;
-  return textShapeIsSourceCode(String(span.text ?? ""));
-}
-
-/** Code shape from punctuation alone, for spans whose media type and URI both fail to declare it. No language rules. Pure. */
-export function textShapeIsSourceCode(text: string): boolean {
-  const lines = text.split(/\r?\n/u).map(line => line.trim()).filter(Boolean);
-  if (lines.length < 3) return false;
-  const codeLines = lines.filter(line =>
-    line.startsWith("//") || line.startsWith("/*") || /[;{}]$/u.test(line)
-    || /(=>|::|->|\(\)|\{\}|\[\])/u.test(line)).length;
-  return codeLines / lines.length >= 0.34;
-}
+export { isCodeEvidenceSpan, textShapeIsSourceCode } from "./evidence-source-identity.js";
