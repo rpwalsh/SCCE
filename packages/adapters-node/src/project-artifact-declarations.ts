@@ -4,12 +4,18 @@ import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import ts from "typescript";
 import {
+  isLicenseDeclared,
   normalizePath,
   roleEvidenceFromPath,
   UNDECLARED_SOURCE_ARTIFACT_ROLE,
+  UNDECLARED_SOURCE_LICENSE,
+  type LicenseDeclarationSource,
   type SourceArtifactRole,
   type SourceArtifactRoleObservation,
-  type SourceArtifactRoleResolution
+  type SourceArtifactRoleResolution,
+  type SourceDeclaredLicenseResolution,
+  type SourceLicenseObservation,
+  type UnreadableLicenseDeclaration
 } from "@scce/kernel";
 import { pathGlobMatches, pathGlobSpecificity, pathGlobSupported } from "./path-glob.js";
 
@@ -417,4 +423,305 @@ async function readIfPresent(filePath: string): Promise<string | undefined> {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * The licence a project declares for itself, read from its own machine-readable declarations.
+ *
+ * Authority descends: a package manifest's licence field, then an SPDX identifier tag inside the project's own
+ * licence file, then an SPDX document's declared package licence. Nothing here reads licence prose. A repository
+ * that ships the MIT text without declaring an identifier has made no machine-readable statement, and
+ * recognising the wording would be the same string heuristic the role axis exists to replace.
+ *
+ * Every identifier seen is carried. Only one becomes the declaration, and when a project's declarations disagree
+ * or arrive in a format with no parser here, the resolution stays undeclared with the reason attached.
+ */
+const LICENSE_FILE_STEMS = ["license", "licence", "copying"] as const;
+const LICENSE_FILE_EXTENSIONS = ["", ".txt", ".md"] as const;
+const SPDX_DOCUMENT_EXTENSION = ".spdx";
+const REUSE_MANIFEST = "reuse.toml";
+/** SPDX's own value for "the licence was not asserted", which is the absence of a declaration rather than one. */
+const SPDX_NO_ASSERTION = "NOASSERTION";
+/** Cost bound: a licence file is scanned this far for its tags, so a pathological file cannot stall an ingest. */
+const LICENSE_FILE_SCAN_BYTES = 256 * 1024;
+
+export async function readDeclaredLicense(projectRoot: string): Promise<SourceDeclaredLicenseResolution> {
+  const present = new Map<string, string>();
+  try {
+    for (const entry of await readdir(projectRoot, { withFileTypes: true })) if (entry.isFile()) present.set(entry.name.toLowerCase(), entry.name);
+  } catch {
+    return UNDECLARED_SOURCE_LICENSE;
+  }
+  const readings: LicenseReading[] = [
+    await readPackageManifestLicense(projectRoot, present),
+    await readLicenseFileDeclaration(projectRoot, present),
+    await readSpdxDocumentLicense(projectRoot, present)
+  ];
+  if (present.has(REUSE_MANIFEST)) {
+    readings.push({ ...emptyLicenseReading(), unreadable: [{ file: present.get(REUSE_MANIFEST)!, key: "", reason: "no-parser-for-manifest-format" }] });
+  }
+  const declarations = readings.flatMap(reading => reading.declarations);
+  const unreadable = readings.flatMap(reading => reading.unreadable);
+  const winner = declarations[0];
+  // A candidate that cannot be the declaration is still information about this project and is never discarded.
+  const observations = [...(winner ? declarations.slice(1) : declarations), ...readings.flatMap(reading => reading.observations)].map(toLicenseObservation);
+  if (!winner) return { ...UNDECLARED_SOURCE_LICENSE, observations, unreadable };
+  return { license: winner.license, declaredBy: winner.source, declaration: [winner.evidence], observations, unreadable };
+}
+
+/**
+ * The declared licence of a file, from the nearest ancestor directory that declares one.
+ *
+ * Same walk and same per-directory cache as the role index: a nested or vendored package that declares its own
+ * licence governs its own files and the repository root governs the rest. Reasons collected on the way are kept
+ * even when a further ancestor supplies the answer, because "this nearer manifest was unreadable" stays true.
+ */
+export function createProjectLicenseIndex(options: { stopAt: string }) {
+  const stopAt = path.resolve(options.stopAt);
+  const byDirectory = new Map<string, SourceDeclaredLicenseResolution>();
+  return {
+    async licenseFor(absoluteFilePath: string): Promise<SourceDeclaredLicenseResolution> {
+      const absolute = path.resolve(absoluteFilePath);
+      const observations: SourceLicenseObservation[] = [];
+      const unreadable: UnreadableLicenseDeclaration[] = [];
+      let directory = path.dirname(absolute);
+      for (;;) {
+        let resolution = byDirectory.get(directory);
+        if (!resolution) {
+          resolution = relocateLicense(await readDeclaredLicense(directory), normalizePath(path.relative(stopAt, directory)));
+          byDirectory.set(directory, resolution);
+        }
+        if (isLicenseDeclared(resolution)) {
+          return {
+            ...resolution,
+            observations: [...resolution.observations, ...observations],
+            unreadable: [...resolution.unreadable, ...unreadable]
+          };
+        }
+        observations.push(...resolution.observations);
+        unreadable.push(...resolution.unreadable);
+        if (directory === stopAt) break;
+        const parent = path.dirname(directory);
+        if (parent === directory || !isWithin(directory, stopAt)) break;
+        directory = parent;
+      }
+      return { ...UNDECLARED_SOURCE_LICENSE, observations, unreadable };
+    }
+  };
+}
+
+export interface DeclaredLicenseBucket {
+  readonly license: string;
+  readonly declaredBy: LicenseDeclarationSource;
+  /** Every manifest, key and value that declared this identifier, so a count stays auditable to its source. */
+  readonly declarations: readonly string[];
+  readonly files: number;
+}
+
+export interface DeclaredLicenseSummary {
+  readonly schema: "scce.declaredLicenseSummary.v1";
+  readonly rootPath: string;
+  /** What the repository root declares, which is the snapshot's own licence. */
+  readonly repository: SourceDeclaredLicenseResolution;
+  readonly filesConsidered: number;
+  readonly filesWithDeclaredLicense: number;
+  /** Unreadable and absent alike. Undeclared is not a permission and is never folded into one. */
+  readonly filesWithUndeclaredLicense: number;
+  readonly licenses: readonly DeclaredLicenseBucket[];
+  readonly unreadable: ReadonlyArray<UnreadableLicenseDeclaration & { files: number }>;
+}
+
+/**
+ * What licences an ingest is about to take in, and how many files carry each, before any expensive pass runs.
+ *
+ * This reports and never refuses. Which licence classes may be ingested is an owner policy decision, and a
+ * summary that dropped a class would make that decision while hiding the evidence for it.
+ */
+export async function summarizeDeclaredLicenses(input: { rootPath: string; files: readonly string[] }): Promise<DeclaredLicenseSummary> {
+  const root = path.resolve(input.rootPath);
+  const index = createProjectLicenseIndex({ stopAt: root });
+  const buckets = new Map<string, { license: string; declaredBy: LicenseDeclarationSource; declarations: Set<string>; files: number }>();
+  const unreadable = new Map<string, UnreadableLicenseDeclaration & { files: number }>();
+  let filesWithDeclaredLicense = 0;
+  for (const file of input.files) {
+    const resolution = await index.licenseFor(path.resolve(root, file));
+    if (isLicenseDeclared(resolution)) filesWithDeclaredLicense += 1;
+    // One bucket per identifier, not per manifest: a monorepo declares the same licence in every package.
+    const key = `${resolution.declaredBy}\u0000${resolution.license}`;
+    const bucket = buckets.get(key) ?? { license: resolution.license, declaredBy: resolution.declaredBy, declarations: new Set<string>(), files: 0 };
+    bucket.files += 1;
+    for (const declaration of resolution.declaration) bucket.declarations.add(declaration);
+    buckets.set(key, bucket);
+    for (const reason of resolution.unreadable) {
+      const reasonKey = `${reason.file}\u0000${reason.key}\u0000${reason.reason}`;
+      const seen = unreadable.get(reasonKey);
+      if (seen) seen.files += 1;
+      else unreadable.set(reasonKey, { ...reason, files: 1 });
+    }
+  }
+  return {
+    schema: "scce.declaredLicenseSummary.v1",
+    rootPath: root,
+    repository: await readDeclaredLicense(root),
+    filesConsidered: input.files.length,
+    filesWithDeclaredLicense,
+    filesWithUndeclaredLicense: input.files.length - filesWithDeclaredLicense,
+    licenses: [...buckets.values()]
+      .map(bucket => ({ license: bucket.license, declaredBy: bucket.declaredBy, declarations: [...bucket.declarations].sort(), files: bucket.files }))
+      .sort((left, right) => right.files - left.files || left.license.localeCompare(right.license)),
+    unreadable: [...unreadable.values()].sort((left, right) => right.files - left.files || left.reason.localeCompare(right.reason))
+  };
+}
+
+interface LicenseDeclarationCandidate {
+  readonly license: string;
+  readonly source: LicenseDeclarationSource;
+  readonly evidence: string;
+}
+
+interface LicenseReading {
+  declarations: LicenseDeclarationCandidate[];
+  /** Identifiers this source carries that may never stand as its declaration. */
+  observations: LicenseDeclarationCandidate[];
+  unreadable: UnreadableLicenseDeclaration[];
+}
+
+async function readPackageManifestLicense(projectRoot: string, present: Map<string, string>): Promise<LicenseReading> {
+  const name = present.get("package.json");
+  if (!name) return emptyLicenseReading();
+  const text = await readIfPresent(path.join(projectRoot, name));
+  if (text === undefined) return emptyLicenseReading();
+  const parsed = parseJsonLike(text);
+  if (!parsed) return { ...emptyLicenseReading(), unreadable: [{ file: name, key: "license", reason: "manifest-is-not-parseable-json" }] };
+  const single = licenseText(pick(parsed, ["license"]));
+  if (single) return { ...emptyLicenseReading(), declarations: [{ license: single, source: "package_manifest", evidence: `${name}#license=${single}` }] };
+  const legacy = pick(parsed, ["licenses"]);
+  const listed = [...new Set((Array.isArray(legacy) ? legacy : []).map(licenseText).filter((item): item is string => Boolean(item)))];
+  if (listed.length === 1) return { ...emptyLicenseReading(), declarations: [{ license: listed[0]!, source: "package_manifest", evidence: `${name}#licenses=${listed[0]}` }] };
+  // The legacy array states several licences without stating how they combine, so no one of them is the answer.
+  if (listed.length > 1) {
+    return {
+      declarations: [],
+      observations: listed.map(license => ({ license, source: "package_manifest" as const, evidence: `${name}#licenses=${license}` })),
+      unreadable: [{ file: name, key: "licenses", reason: "manifest-declares-several-licenses-without-an-expression" }]
+    };
+  }
+  if (pick(parsed, ["license"]) !== undefined || legacy !== undefined) {
+    return { ...emptyLicenseReading(), unreadable: [{ file: name, key: "license", reason: "declaration-is-not-a-license-identifier" }] };
+  }
+  return emptyLicenseReading();
+}
+
+async function readLicenseFileDeclaration(projectRoot: string, present: Map<string, string>): Promise<LicenseReading> {
+  const reading = emptyLicenseReading();
+  for (const stem of LICENSE_FILE_STEMS) {
+    for (const extension of LICENSE_FILE_EXTENSIONS) {
+      const name = present.get(`${stem}${extension}`);
+      if (!name) continue;
+      const text = await readIfPresent(path.join(projectRoot, name));
+      if (text === undefined) continue;
+      const tags = spdxIdentifierTags(text.slice(0, LICENSE_FILE_SCAN_BYTES));
+      // An aggregate notice file quotes other projects' tags: a tag past this file's own leading block declares
+      // the quoted component rather than this repository, and is kept as an observation instead of as the answer.
+      const leading = [...new Set(tags.filter(tag => tag.leading).map(tag => tag.license))];
+      for (const tag of tags.filter(item => !item.leading)) {
+        reading.observations.push({ license: tag.license, source: "license_file", evidence: `${name}:${tag.line}#SPDX-License-Identifier=${tag.license}` });
+      }
+      if (leading.length === 1) {
+        reading.declarations.push({ license: leading[0]!, source: "license_file", evidence: `${name}#SPDX-License-Identifier=${leading[0]}` });
+      } else if (leading.length > 1) {
+        reading.unreadable.push({ file: name, key: "SPDX-License-Identifier", reason: "license-file-declares-several-spdx-identifiers-in-its-leading-block" });
+      } else {
+        reading.unreadable.push({ file: name, key: "SPDX-License-Identifier", reason: "license-file-carries-no-spdx-identifier-declaration" });
+      }
+    }
+  }
+  return reading;
+}
+
+async function readSpdxDocumentLicense(projectRoot: string, present: Map<string, string>): Promise<LicenseReading> {
+  const reading = emptyLicenseReading();
+  for (const [lowered, name] of present) {
+    if (!lowered.endsWith(SPDX_DOCUMENT_EXTENSION)) continue;
+    const text = await readIfPresent(path.join(projectRoot, name));
+    if (text === undefined) continue;
+    const declared = [...new Set(tagValues(text.slice(0, LICENSE_FILE_SCAN_BYTES), "PackageLicenseDeclared"))];
+    const asserted = declared.filter(value => value !== SPDX_NO_ASSERTION);
+    if (declared.length && !asserted.length) {
+      reading.unreadable.push({ file: name, key: "PackageLicenseDeclared", reason: "spdx-document-asserts-no-license" });
+      continue;
+    }
+    if (asserted.length === 1) {
+      reading.declarations.push({ license: asserted[0]!, source: "spdx_document", evidence: `${name}#PackageLicenseDeclared=${asserted[0]}` });
+      continue;
+    }
+    if (asserted.length > 1) {
+      reading.observations.push(...asserted.map(license => ({ license, source: "spdx_document" as const, evidence: `${name}#PackageLicenseDeclared=${license}` })));
+      reading.unreadable.push({ file: name, key: "PackageLicenseDeclared", reason: "spdx-document-declares-several-package-licenses" });
+    }
+  }
+  return reading;
+}
+
+/** Every `SPDX-License-Identifier` tag, with whether it stands in the file's own leading declaration block. */
+function spdxIdentifierTags(text: string): Array<{ license: string; line: number; leading: boolean }> {
+  const out: Array<{ license: string; line: number; leading: boolean }> = [];
+  let started = false;
+  let leading = true;
+  for (const [index, line] of text.split(/\r?\n/u).entries()) {
+    const content = line.trim();
+    if (!content) {
+      if (started) leading = false;
+      continue;
+    }
+    started = true;
+    const value = tagValue(content, "SPDX-License-Identifier");
+    if (value) out.push({ license: value, line: index + 1, leading });
+  }
+  return out;
+}
+
+function tagValues(text: string, tag: string): string[] {
+  const out: string[] = [];
+  for (const line of text.split(/\r?\n/u)) {
+    const value = tagValue(line.trim(), tag);
+    if (value) out.push(value);
+  }
+  return out;
+}
+
+/** A tag-value declaration's value: the text after `<tag>:` on one line, with comment framing removed. */
+function tagValue(line: string, tag: string): string | undefined {
+  const at = line.indexOf(`${tag}:`);
+  if (at < 0) return undefined;
+  return line.slice(at + tag.length + 1).replace(/\*\/\s*$/u, "").trim() || undefined;
+}
+
+function licenseText(value: unknown): string | undefined {
+  if (typeof value === "string") return value.trim() || undefined;
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const type = (value as Record<string, unknown>).type;
+    return typeof type === "string" ? type.trim() || undefined : undefined;
+  }
+  return undefined;
+}
+
+function toLicenseObservation(candidate: LicenseDeclarationCandidate): SourceLicenseObservation {
+  return { license: candidate.license, source: candidate.source, evidence: [candidate.evidence] };
+}
+
+/** The same resolution with its file references made relative to the root the walk was fenced to. */
+function relocateLicense(resolution: SourceDeclaredLicenseResolution, directory: string): SourceDeclaredLicenseResolution {
+  const prefix = directory && directory !== "." ? `${directory}/` : "";
+  if (!prefix) return resolution;
+  return {
+    ...resolution,
+    declaration: resolution.declaration.map(item => `${prefix}${item}`),
+    observations: resolution.observations.map(item => ({ ...item, evidence: item.evidence.map(entry => `${prefix}${entry}`) })),
+    unreadable: resolution.unreadable.map(item => ({ ...item, file: `${prefix}${item.file}` }))
+  };
+}
+
+function emptyLicenseReading(): LicenseReading {
+  return { declarations: [], observations: [], unreadable: [] };
 }

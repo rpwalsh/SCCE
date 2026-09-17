@@ -222,6 +222,7 @@ export * from "./discourse-state.js";
 export { clearCorpusIdentitySignals, corpusIdentityMatchSurface, corpusIdentitySignals, primeCorpusIdentitySignals, type CorpusIdentitySignals } from "./corpus-identity.js";
 export { evidenceSourceIdentity, resolveEvidenceSourceIdentity } from "./evidence-source-identity.js";
 export * from "./source-artifact-role.js";
+export * from "./source-declared-license.js";
 export {
   COMMITMENT_AUTHORITY_IDS,
   candidateCommitmentInventory,
