@@ -335,3 +335,53 @@ describe("T1: a credit row written before the reward existed is also unclassifie
     expect(Object.keys(modelSet.models)).toEqual([]);
   });
 });
+
+describe("T3: the binned calibrator's cold-start criterion is the reward split's, not a count", () => {
+  function creditRows(rewards: readonly number[]): CalibrationObservationRecord[] {
+    return rewards.map((reward, index) => calibrationObservationRecord({
+      calibrationId: CALIBRATION_IDS.proofSupport,
+      subsystemId: CALIBRATION_SUBSYSTEM_IDS.proof,
+      taskClass: CALIBRATION_TASK_CLASS_IDS.sourceBoundQa,
+      rawScore: 0.66,
+      outcome: false,
+      finalOutcome: "outcome.unknown",
+      idSeed: `criterion-${index}-${reward}`,
+      createdAt: 1_000 + index,
+      metadata: {
+        schema: "scce.cognitive_credit.stage_observation.v1",
+        episodeId: `episode.criterion.${index}`,
+        stageId: "stage.proof",
+        reached: true,
+        reward
+      }
+    }));
+  }
+
+  function resolve(rewards: readonly number[]) {
+    return calibrateRuntimeScore({
+      raw: 0.66,
+      calibrationId: CALIBRATION_IDS.proofSupport,
+      taskClass: CALIBRATION_TASK_CLASS_IDS.sourceBoundQa,
+      modelSet: buildCalibrationModelSet({ observations: creditRows(rewards), createdAt: 9_000 })
+    });
+  }
+
+  it("stays unmeasured below the reward split's own minimum sample count", () => {
+    // otsuThreshold refuses under four values, so three episodes cannot have produced a class.
+    for (const rewards of [[0.9], [0.9, 0.1], [0.9, 0.5, 0.1]]) {
+      expect(resolve(rewards).measurement).toBe("unmeasured_no_model");
+      expect(resolve(rewards).value).toBe(0.66);
+    }
+  });
+
+  it("stays unmeasured when the episodes' rewards do not separate", () => {
+    // Four episodes, enough rows, but a degenerate split: nothing has distinguished a good turn from a bad one.
+    const resolved = resolve([0.5, 0.5, 0.5, 0.5]);
+    expect(resolved.measurement).toBe("unmeasured_no_model");
+    expect(resolved.value).toBe(0.66);
+  });
+
+  it("calibrates once the episodes' own rewards separate", () => {
+    expect(resolve([0.9, 0.8, 0.2, 0.1]).measurement).toBe("measured");
+  });
+});
