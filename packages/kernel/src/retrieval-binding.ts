@@ -3,6 +3,12 @@
 import { corpusIdentitySignals, corpusIdentityUnits } from "./corpus-identity.js";
 import { evidenceSourceIdentity, isCodeEvidenceSpan } from "./evidence-source-identity.js";
 import { evidenceIdentityBindingDetail } from "./local-evidence-runtime.js";
+import {
+  evidenceSourceArtifactRole,
+  resolveSpanAssertionalStance,
+  type SourceArtifactRoleResolution,
+  type SpanAssertionalStance
+} from "./source-artifact-role.js";
 import type { EvidenceSourceIdentity, EvidenceSpan } from "./types.js";
 
 /**
@@ -77,6 +83,10 @@ export interface RetrievalBinding {
   readonly specificity: RetrievalBindingSpecificity;
   readonly provenance: EvidenceSourceIdentity;
   readonly sourceKind: RetrievalSourceKind;
+  /** What the project declares this file is for. Orthogonal to source kind and to operator; never an erasure. */
+  readonly artifactRole: SourceArtifactRoleResolution;
+  /** Whether this span's content is the source speaking or content it exhibits. Measured, or unknown. */
+  readonly assertionalStance: SpanAssertionalStance;
   readonly admissibility: RetrievalAdmissibility;
 }
 
@@ -113,6 +123,8 @@ export function retrievalBinding(span: EvidenceSpan, context: RetrievalBindingCo
     specificity: bindingSpecificity(detail.boundRequestConstituents),
     provenance,
     sourceKind,
+    artifactRole: evidenceSourceArtifactRole(span),
+    assertionalStance: resolveSpanAssertionalStance(span.provenance),
     admissibility: bindingAdmissibility(mechanism, sourceKind, context.sourceCodeEvidenceAllowed === true)
   };
 }

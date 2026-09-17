@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import ts from "typescript";
+import { pathGlobMatches } from "./path-glob.js";
 
 export const TYPESCRIPT_SEMANTIC_PROGRAM_INDEX_SCHEMA = "scce.typescript.semantic_program_index.v1" as const;
 
@@ -1031,8 +1032,8 @@ function snapshotReadDirectory(
     const workspaceRelative = relative.replace(/\\/gu, "/");
     if (typeof depth === "number" && workspaceRelative.split("/").length - 1 > depth) return false;
     if (extensions.length > 0 && !extensions.some(extension => workspaceRelative.toLocaleLowerCase().endsWith(extension.toLocaleLowerCase()))) return false;
-    if (includes.length > 0 && !includes.some(pattern => globMatches(workspaceRelative, pattern))) return false;
-    if ((excludes ?? []).some(pattern => globMatches(workspaceRelative, pattern))) return false;
+    if (includes.length > 0 && !includes.some(pattern => pathGlobMatches(workspaceRelative, pattern))) return false;
+    if ((excludes ?? []).some(pattern => pathGlobMatches(workspaceRelative, pattern))) return false;
     return true;
   }).map(file => file.absolutePath).sort(compareCanonical);
 }
@@ -1049,24 +1050,6 @@ function snapshotDirectories(snapshot: ExactSnapshot, directoryName: string): st
   return [...directories].sort(compareCanonical);
 }
 
-function globMatches(relativePath: string, rawPattern: string): boolean {
-  let pattern = rawPattern.replace(/\\/gu, "/").replace(/^\.\//u, "").replace(/\/$/u, "");
-  if (!pattern) return false;
-  if (!/[?*]/u.test(pattern)) pattern = path.posix.extname(pattern) ? pattern : `${pattern}/**/*`;
-  let expression = "^";
-  for (let index = 0; index < pattern.length; index += 1) {
-    const char = pattern[index]!;
-    if (char === "*" && pattern[index + 1] === "*") {
-      const followedBySlash = pattern[index + 2] === "/";
-      expression += followedBySlash ? "(?:.*/)?" : ".*";
-      index += followedBySlash ? 2 : 1;
-    } else if (char === "*") expression += "[^/]*";
-    else if (char === "?") expression += "[^/]";
-    else expression += char.replace(/[\\^$.*+?()[\]{}|]/gu, "\\$&");
-  }
-  expression += "$";
-  return new RegExp(expression, ts.sys.useCaseSensitiveFileNames ? "u" : "iu").test(relativePath);
-}
 
 function addParentDirectories(directories: Set<string>, root: string, absoluteFile: string): void {
   let current = path.dirname(absoluteFile);

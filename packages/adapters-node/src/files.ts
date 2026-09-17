@@ -3,9 +3,10 @@
 import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { createHasher, createSourceRepositoryFacts, normalizePath, redactSecretsWithMap, sourceCodeFileFactsFromJson, toJsonValue, type ContentHash, type FileIngestPort, type IngestedSourceFile, type IngestionCheckpoint, type JsonValue, type SourceCodeFileFacts } from "@scce/kernel";
+import { createHasher, createSourceRepositoryFacts, normalizePath, redactSecretsWithMap, sourceCodeFileFactsFromJson, toJsonValue, type ContentHash, type FileIngestPort, type IngestedSourceFile, type IngestionCheckpoint, type JsonValue, type SourceArtifactRoleResolution, type SourceCodeFileFacts } from "@scce/kernel";
 import type { ScceRuntimeConfig } from "./config.js";
 import { diagnoseExtractionTools, extractDocument } from "./document.js";
+import { createProjectDeclarationIndex } from "./project-artifact-declarations.js";
 import { resolveWikipediaCorpusTarget, streamWikipediaMultistream } from "./wikipedia.js";
 
 interface RepositoryFileAccumulator {
@@ -34,6 +35,9 @@ export class NodeFileIngestAdapter implements FileIngestPort {
     const rootUri = normalizePath(path.relative(this.config.runtime.workspaceRoot, target)) || ".";
     const targetIsDirectory = (await safeStat(target)).isDirectory;
     const paths = targetIsDirectory ? walkStream(target, this.config.runtime.excludedPaths) : singleFile(target);
+    // The walk had no notion of what a project says its own files are for, so 840 of this repository's test files
+    // entered the corpus as documentary evidence about the world. Nothing is excluded; the role is declared.
+    const roles = createProjectDeclarationIndex({ stopAt: this.config.runtime.workspaceRoot });
     const repositoryFiles: RepositoryFileAccumulator[] = [];
     for await (const filePath of paths) {
       const discovered = checkpoint(rootUri, filePath, "discovered", "pending", { workspaceRoot: this.config.runtime.workspaceRoot });
@@ -55,7 +59,8 @@ export class NodeFileIngestAdapter implements FileIngestPort {
           rootUri,
           itemUri: extraction.uri,
           rootIsDirectory: targetIsDirectory,
-          parserFactsPresent: sourceCodeFactsPresent(extraction.metadata)
+          parserFactsPresent: sourceCodeFactsPresent(extraction.metadata),
+          artifactRole: await roles.roleFor(filePath)
         });
         repositoryFiles.push({
           path: extraction.uri,
@@ -81,16 +86,20 @@ export class NodeFileIngestAdapter implements FileIngestPort {
               : "extracted-text-utf8" as const,
             redactionMap: redacted.redactionMap
           };
+        // Redaction changes the text the offsets were measured against, so the measurement stops being one.
+        const fileMetadata = redacted.redactionMap.length
+          ? withUnmeasuredExhibitedContent(metadata, "redaction-shifted-offsets")
+          : metadata;
         const file = {
           uri: extraction.uri,
           namespace: extraction.namespace,
           mediaType: extraction.mediaType,
           bytes: extraction.bytes,
           text: redacted.text,
-          metadata,
+          metadata: fileMetadata,
           evidenceDerivative
         };
-        yield { type: "file", file, checkpoint: checkpoint(rootUri, filePath, "extracted", "complete", metadata, undefined, `sha256_${extraction.sha256}` as ContentHash, extraction.bytes.byteLength) };
+        yield { type: "file", file, checkpoint: checkpoint(rootUri, filePath, "extracted", "complete", fileMetadata, undefined, `sha256_${extraction.sha256}` as ContentHash, extraction.bytes.byteLength) };
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
         yield { type: "skipped", skipped: { path: filePath, reason }, checkpoint: checkpoint(rootUri, filePath, "failed", "failed", {}, reason) };
@@ -176,17 +185,36 @@ function shouldSkipRepoPath(candidate: string): boolean {
   ].includes(part));
 }
 
-function withCodebaseContext(metadata: JsonValue, context: { rootUri: string; itemUri: string; rootIsDirectory: boolean; parserFactsPresent: boolean }): JsonValue {
+function withCodebaseContext(metadata: JsonValue, context: { rootUri: string; itemUri: string; rootIsDirectory: boolean; parserFactsPresent: boolean; artifactRole?: SourceArtifactRoleResolution }): JsonValue {
   const base = metadata && typeof metadata === "object" && !Array.isArray(metadata) ? metadata as Record<string, JsonValue> : {};
   return {
     ...base,
     sourceKind: context.parserFactsPresent ? "developer_intelligence" : base.sourceKind ?? "local_corpus",
+    // File role is orthogonal to source kind: both of these are `developer_intelligence` and they do not do the
+    // same thing. Undeclared stays undeclared; it is never rewritten into production source.
+    ...(context.artifactRole ? { artifactRole: toJsonValue(context.artifactRole) } : {}),
     codebase: {
       rootUri: context.rootUri,
       itemUri: context.itemUri,
       rootIsDirectory: context.rootIsDirectory,
       parserFactsPresent: context.parserFactsPresent
     }
+  };
+}
+
+/** Carries why the exhibited-content intervals no longer describe the text, rather than dropping the field. */
+function withUnmeasuredExhibitedContent(metadata: JsonValue, reason: string): JsonValue {
+  const base = metadata && typeof metadata === "object" && !Array.isArray(metadata) ? metadata as Record<string, JsonValue> : {};
+  return {
+    ...base,
+    exhibitedContent: toJsonValue({
+      schema: "scce.exhibited-content.v1",
+      measured: false,
+      unmeasuredReason: reason,
+      coordinateSpace: "extracted-text-code-points",
+      textLength: 0,
+      ranges: []
+    })
   };
 }
 

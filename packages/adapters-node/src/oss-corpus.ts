@@ -5,8 +5,10 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { CORPUS_SOURCE_SYSTEM_IDS, codeCommentProse, codeLanguageForPath, codeTrainingSurface, toJsonValue, type InformationLabel, type ScceStorage } from "@scce/kernel";
+import { measureExhibitedContent } from "./code-graph.js";
 import { inspectEngineeringCorpusFolder, type EngineeringCorpusFolderOptions } from "./engineering-corpus-folder.js";
 import { trainLanguageCorpusText, type LanguageCorpusTrainingReport } from "./language-corpus-trainer.js";
+import { createProjectDeclarationIndex } from "./project-artifact-declarations.js";
 
 export interface OssCorpusTrainOptions extends EngineeringCorpusFolderOptions {
   storage: ScceStorage;
@@ -90,6 +92,9 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
     ? Math.floor(input.heapCheckpointMb)
     : undefined;
   let stoppedByHeapSafetyBound = false;
+  // A snapshot of ten repositories declares ten different sets of roles; the nearest declaring ancestor of each
+  // file is the one its own tools resolve against, which is also how a monorepo package overrides its root.
+  const roles = createProjectDeclarationIndex({ stopAt: root });
   for (const file of inspection.files.filter(file => file.importable)) {
     if (heapCheckpointMb !== undefined && heapMiB() >= heapCheckpointMb) {
       stoppedByHeapSafetyBound = true;
@@ -103,6 +108,7 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
     if (sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.ossDocs && !includeDocs) continue;
     if (sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.ossCode && !includeSource) continue;
     const raw = await readFile(file.absolutePath, "utf8");
+    const artifactRole = await roles.roleFor(file.absolutePath);
     // A source file carries two languages at once, and one projection cannot hold both. The code lane learns the
     // token stream itself, because that is the only thing a generator can compose an expression out of; the
     // documentation lane learns the file's comments and the words its identifiers are built from, because that
@@ -151,6 +157,19 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
             supportedSections: file.supportedSections,
             projection: projected.projection,
             formalLanguage: codeLanguageForPath(file.path) ?? null,
+            artifactRole,
+            // A projection is a different text, so intervals measured on the file do not describe it. Only the
+            // verbatim projection shares the file's coordinate space; the rest carry why they are unmeasured.
+            exhibitedContent: projected.projection === "verbatim"
+              ? measureExhibitedContent({ uri: normalizeRelative(file.path), mediaType: file.mediaType, text: projected.text })
+              : {
+                schema: "scce.exhibited-content.v1",
+                measured: false,
+                unmeasuredReason: `projection-changed-coordinate-space:${projected.projection}`,
+                coordinateSpace: "extracted-text-code-points",
+                textLength: 0,
+                ranges: []
+              },
             ...(input.repositoryProvenance ? { repository: input.repositoryProvenance } : {})
           })
         }));

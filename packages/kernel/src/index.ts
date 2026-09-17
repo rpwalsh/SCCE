@@ -221,6 +221,7 @@ export * from "./runtime-cost-estimate.js";
 export * from "./discourse-state.js";
 export { clearCorpusIdentitySignals, corpusIdentityMatchSurface, corpusIdentitySignals, primeCorpusIdentitySignals, type CorpusIdentitySignals } from "./corpus-identity.js";
 export { evidenceSourceIdentity, resolveEvidenceSourceIdentity } from "./evidence-source-identity.js";
+export * from "./source-artifact-role.js";
 export { measureRequestCorpusSubject, type RequestCorpusSubject } from "./corpus-identity-runtime.js";
 export * from "./dialogue-cognitive-memory.js";
 export * from "./dialogue-cognitive-shadow.js";

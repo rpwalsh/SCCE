@@ -1045,3 +1045,80 @@ function terminalName(value: string): string {
 function sourceId(hasher: Hasher, ...parts: unknown[]): string {
   return `source_fact_${hasher.digestHex(JSON.stringify(parts)).slice(0, 40)}`;
 }
+
+export interface ExhibitedContentMeasurement {
+  schema: "scce.exhibited-content.v1";
+  measured: boolean;
+  unmeasuredReason: string;
+  coordinateSpace: "extracted-text-code-points";
+  textLength: number;
+  ranges: Array<[number, number]>;
+}
+
+/**
+ * Where a source file exhibits content rather than asserting it.
+ *
+ * A string or template literal is content the program manipulates: a test does not assert that Apollo 11 landed
+ * on 20 July 1969, it asserts that a function returns true for that string, and the sentence is mentioned rather
+ * than used. Comments are deliberately NOT included -- a doc comment is the repository's documentary voice, and
+ * treating it as exhibited would delete the one place code speaks in prose.
+ *
+ * Ranges are code points, the coordinate space the evidence chunker records, so a span can intersect them
+ * without a second opinion about offsets. A file no parser owns is reported unmeasured, never as not-exhibited.
+ */
+export function measureExhibitedContent(input: { uri: string; mediaType: string; text: string }): ExhibitedContentMeasurement {
+  const normalized = normalizePath(input.uri);
+  const unmeasured = (reason: string): ExhibitedContentMeasurement => ({
+    schema: "scce.exhibited-content.v1",
+    measured: false,
+    unmeasuredReason: reason,
+    coordinateSpace: "extracted-text-code-points",
+    textLength: 0,
+    ranges: []
+  });
+  if (!sourceFactsTextAdmissible(input.mediaType, input.text)) return unmeasured("text-not-admissible-for-source-facts");
+  if (parserFor(normalized, input.mediaType).id !== "typescript-compiler-api") return unmeasured("no-parser-owns-this-media-type");
+  let sourceFile: ts.SourceFile;
+  try {
+    sourceFile = ts.createSourceFile(normalized, input.text, ts.ScriptTarget.Latest, true, scriptKindFor(normalized));
+  } catch {
+    return unmeasured("source-did-not-parse");
+  }
+  const utf16: Array<[number, number]> = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isStringLiteralLike(node) || ts.isTemplateExpression(node) || ts.isTemplateLiteralTypeNode(node)) {
+      utf16.push([node.getStart(sourceFile), node.getEnd()]);
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return {
+    schema: "scce.exhibited-content.v1",
+    measured: true,
+    unmeasuredReason: "",
+    coordinateSpace: "extracted-text-code-points",
+    textLength: [...input.text].length,
+    ranges: toCodePointRanges(input.text, utf16)
+  };
+}
+
+/** UTF-16 intervals to code-point intervals in one pass over the text. Pure. */
+function toCodePointRanges(text: string, utf16Ranges: ReadonlyArray<[number, number]>): Array<[number, number]> {
+  const offsets = [...new Set(utf16Ranges.flatMap(range => [range[0], range[1]]))].sort((left, right) => left - right);
+  const codePointAt = new Map<number, number>();
+  let utf16Index = 0;
+  let codePointIndex = 0;
+  let cursor = 0;
+  while (cursor < offsets.length && offsets[cursor]! <= 0) codePointAt.set(offsets[cursor++]!, 0);
+  while (utf16Index < text.length && cursor < offsets.length) {
+    const code = text.codePointAt(utf16Index)!;
+    utf16Index += code > 0xffff ? 2 : 1;
+    codePointIndex += 1;
+    while (cursor < offsets.length && offsets[cursor]! <= utf16Index) codePointAt.set(offsets[cursor++]!, codePointIndex);
+  }
+  while (cursor < offsets.length) codePointAt.set(offsets[cursor++]!, codePointIndex);
+  return utf16Ranges
+    .map(range => [codePointAt.get(range[0]) ?? 0, codePointAt.get(range[1]) ?? 0] as [number, number])
+    .filter(range => range[1] > range[0]);
+}

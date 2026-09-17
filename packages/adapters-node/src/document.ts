@@ -8,7 +8,7 @@ import { spawn } from "node:child_process";
 import mammoth from "mammoth";
 import { createHasher, normalizePath, openingIdentityUnits, sourceTitleFromUri, toJsonValue, type JsonValue } from "@scce/kernel";
 import type { ScceRuntimeConfig } from "./config.js";
-import { extractNodeSourceCodeFacts } from "./code-graph.js";
+import { extractNodeSourceCodeFacts, measureExhibitedContent } from "./code-graph.js";
 import { documentExtractionWorkerUrl, runDocumentExtractionWorker } from "./document-extraction-worker-client.js";
 import type { BundledOcrProfile } from "./document-wasm-extraction.js";
 import { ocrProfileSelectionWarnings, resolveOcrProfile, selectOcrProfile, type OcrProfileSelection } from "./ocr-profile.js";
@@ -169,6 +169,8 @@ export async function extractDocument(filePath: string, config: ScceRuntimeConfi
       title: sourceTitleFromUri(relativeUri),
       // A source file is about what it declares, not about the words in its header.
       identity: [...new Set([...openingIdentityUnits(normalized), ...(sourceCodeFacts?.declarations ?? []).map(declaration => declaration.name).filter(Boolean).slice(0, 96)])].join(" "),
+      // Which intervals of this text the source exhibits rather than asserts. A stance axis, not a source kind.
+      exhibitedContent: measureExhibitedContent({ uri: relativeUri, mediaType, text: normalized }),
       extractor: parser,
       attempts: attempts.map(attempt => ({ parser: attempt.parser, ok: attempt.ok, durationMs: attempt.durationMs, warnings: attempt.warnings.slice(0, 8), stderr: attempt.stderr?.slice(0, 500) ?? null })),
       structure: completeStructure,
