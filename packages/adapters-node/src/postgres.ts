@@ -1755,11 +1755,12 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
              titleMatch: titleMatchExpression("evidence", 4 + access.params.length),
              titleExact: titleExactExpression("evidence", 4 + access.params.length),
              sourceKindExclusion: sourceKindExclusion("provenance.source_kind", query, 3 + access.params.length),
+             sourceKindDeprioritized: sourceKindDeprioritized("provenance.source_kind", 3 + access.params.length),
              forceClassExclusion: forceClassExclusion("provenance.force_class", 5 + access.params.length),
              limitParameter: "$2",
              openingBlockPrior
            })}`,
-          [features, query.limit ?? 80, ...access.params, query.excludeSourceKinds ?? [], query.titleUnits ?? [], query.excludeForceClasses ?? []]
+          [features, query.limit ?? 80, ...access.params, query.deprioritizeSourceKinds ?? [], query.titleUnits ?? [], query.excludeForceClasses ?? []]
         );
         return rows.map(row => ({ span: rowToEvidence(row), score: Number(row.alpha), reason: "postgres anchor-posting BM25 evidence search" }));
       }
@@ -1785,14 +1786,14 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
            JOIN ${storage.table("evidence_spans")} ev ON ev.id=hits.id
            WHERE ${evidenceStatusCondition("ev", query.status)}
              AND ${access.sql}
-             AND ${sourceKindExclusion(evidenceSourceKindExpression("ev"), query, limitIndex + 1 + access.params.length)}
-           ORDER BY hits.overlap_count DESC,
+           ORDER BY ${sourceKindDeprioritized(evidenceSourceKindExpression("ev"), limitIndex + 1 + access.params.length)} ASC,
+                    hits.overlap_count DESC,
                     hits.first_feature_ord ASC,
                     CASE WHEN ev.status='promoted' THEN 0 WHEN ev.status='pending' THEN 1 ELSE 2 END ASC,
                     ev.alpha DESC,
                     ev.observed_at DESC
            LIMIT $${limitIndex}`,
-          [...features, query.limit ?? 80, ...access.params, query.excludeSourceKinds ?? []]
+          [...features, query.limit ?? 80, ...access.params, query.deprioritizeSourceKinds ?? []]
         );
         return rows.map(row => ({ span: rowToEvidence(row), score: Number(row.alpha), reason: "postgres GIN feature-hit evidence search" }));
       }
@@ -1811,8 +1812,8 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
       const access = storage.informationAccessPredicate("ev", params.length + 1);
       where.push(access.sql);
       params.push(...access.params);
-      params.push(query.excludeSourceKinds ?? []);
-      where.push(sourceKindExclusion(evidenceSourceKindExpression("ev"), query, params.length));
+      params.push(query.deprioritizeSourceKinds ?? []);
+      const sourceKindRank = sourceKindDeprioritized(evidenceSourceKindExpression("ev"), params.length);
       params.push(query.limit ?? 80);
       // A bare integer literal in ORDER BY is a positional column reference
       // in Postgres, not a constant -- "ORDER BY 0" is invalid (positions
@@ -1823,7 +1824,7 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
       const overlap = featureParamIndex > 0
         ? `(SELECT COUNT(*) FROM unnest(ev.features) AS f(feature) WHERE f.feature = ANY($${featureParamIndex}::text[]))`
         : "0::int";
-      const rows = await storage.query<EvidenceRow>(`SELECT ev.* FROM ${storage.table("evidence_spans")} ev WHERE ${where.join(" AND ")} ORDER BY ${overlap} DESC, CASE WHEN ev.status='promoted' THEN 0 WHEN ev.status='pending' THEN 1 ELSE 2 END ASC, ev.alpha DESC, ev.observed_at DESC LIMIT $${params.length}`, params);
+      const rows = await storage.query<EvidenceRow>(`SELECT ev.* FROM ${storage.table("evidence_spans")} ev WHERE ${where.join(" AND ")} ORDER BY ${sourceKindRank} ASC, ${overlap} DESC, CASE WHEN ev.status='promoted' THEN 0 WHEN ev.status='pending' THEN 1 ELSE 2 END ASC, ev.alpha DESC, ev.observed_at DESC LIMIT $${params.length}`, params);
       return rows.map(row => ({ span: rowToEvidence(row), score: Number(row.alpha), reason: "postgres feature/source bounded evidence search" }));
     },
     async sourceVersionsForEvidence(ids) {
@@ -5959,9 +5960,13 @@ function ginIndexableFeatures(features: readonly string[]): string[] {
  * bigrams and did not appear in the top 64 of a query for all 17, because unrelated document openings carrying one
  * of them outranked it. Callers that do not say otherwise keep the prior. Pure.
  */
-export function evidenceRankOrder(input: { rank: string; score: string; row: string; openingBlockPrior: boolean }): string {
-  const { rank, score, row, openingBlockPrior } = input;
+export function evidenceRankOrder(input: { rank: string; score: string; row: string; openingBlockPrior: boolean; sourceKindRank?: string }): string {
+  const { rank, score, row, openingBlockPrior, sourceKindRank } = input;
   return [
+    // The source-kind prior leads, and it is a narrow integer the partition already computed -- never a read of
+    // provenance_json, which the rank fence exists to keep out of the sort. Deprioritized rows therefore hold
+    // only the positions the admitted pass left empty, and every other row keeps the position it had.
+    ...(sourceKindRank ? [`${sourceKindRank} ASC`] : []),
     `${rank}title_exact DESC`,
     `${rank}title_match DESC`,
     ...(openingBlockPrior ? [`${rank}opening_block DESC`] : []),
@@ -5996,16 +6001,20 @@ export function evidenceAnchorRankingTail(input: {
   titleMatch: string;
   titleExact: string;
   sourceKindExclusion: string;
+  /**
+   * The complement of `sourceKindExclusion`: true for exactly the rows that predicate removes.
+   *
+   * Supplying it turns the source-kind half from an exclusion into a frontier partition. The deprioritized rows
+   * are no longer deleted; they fill the slots the first pass left empty. Omitting it emits the exclusion shape
+   * unchanged, so a caller that does not partition pays nothing and reads the same SQL it always did.
+   */
+  sourceKindDeprioritized?: string;
   forceClassExclusion: string;
   limitParameter: string;
   openingBlockPrior: boolean;
 }): string {
   const { openingBlockPrior } = input;
-  return `SELECT evidence.*
-           FROM (
-             SELECT ranked.*
-             FROM (
-               SELECT hits.id, hits.score, hits.overlap_count, hits.first_feature_ord, narrow.status, narrow.alpha, narrow.observed_at,
+  const fencedRanking = `SELECT hits.id, hits.score, hits.overlap_count, hits.first_feature_ord, narrow.status, narrow.alpha, narrow.observed_at,
                       ${input.titleMatch} AS title_match,
                       ${input.titleExact} AS title_exact,
                       (evidence.char_start = 0) AS opening_block
@@ -6015,19 +6024,41 @@ export function evidenceAnchorRankingTail(input: {
                WHERE ${input.statusCondition}
                  AND ${input.accessCondition}
                ORDER BY ${evidenceRankOrder({ rank: "", score: "hits.", row: "evidence.", openingBlockPrior })}
-               OFFSET 0
+               OFFSET 0`;
+  // One pass down the ranked prefix, admitting the source kinds this request is about. Identical to the
+  // exclusion shape: same fence, same lateral, same LIMIT, same rows.
+  const pass = (sourceKindPredicate: string, tier: string) => `SELECT ranked.*${tier}
+             FROM (
+               ${fencedRanking}
              ) ranked
              CROSS JOIN LATERAL (
                SELECT ${evidenceSourceKindExpression("wide")} AS source_kind,
                       ${evidenceForceClassExpression("wide")} AS force_class
                FROM ${input.spansTable} wide WHERE wide.id = ranked.id
              ) provenance
-             WHERE ${input.sourceKindExclusion}
+             WHERE ${sourceKindPredicate}
                AND ${input.forceClassExclusion}
-             LIMIT ${input.limitParameter}
+             LIMIT ${input.limitParameter}`;
+  const admitted = input.sourceKindDeprioritized
+    ? `SELECT tier.* FROM (
+             (${pass(input.sourceKindExclusion, ", 0 AS source_kind_rank")})
+             UNION ALL
+             (${pass(input.sourceKindDeprioritized, ", 1 AS source_kind_rank")})
+           ) tier
+           LIMIT ${input.limitParameter}`
+    : pass(input.sourceKindExclusion, "");
+  return `SELECT evidence.*
+           FROM (
+             ${admitted}
            ) top
            JOIN ${input.spansTable} evidence ON evidence.id=top.id
-           ORDER BY ${evidenceRankOrder({ rank: "top.", score: "top.", row: "top.", openingBlockPrior })}`;
+           ORDER BY ${evidenceRankOrder({
+             rank: "top.",
+             score: "top.",
+             row: "top.",
+             openingBlockPrior,
+             ...(input.sourceKindDeprioritized ? { sourceKindRank: "top.source_kind_rank" } : {})
+           })}`;
 }
 
 /** A source titled with the subject the request names, ranked ahead of one that only mentions it. An empty unit
@@ -6065,9 +6096,21 @@ function evidenceSourceKindExpression(alias: string): string {
   return `COALESCE(${alias}.provenance_json->>'sourceKind', ${alias}.provenance_json->'metadata'->>'sourceKind', '')`;
 }
 
+/**
+ * The complement of `sourceKindExclusion`: true for exactly the rows it removes, false for every row it keeps.
+ *
+ * The two together partition the ranked prefix instead of truncating it. An empty list makes this constantly
+ * false, so the second pass contributes nothing and the query behaves as the exclusion alone always did. The
+ * cardinality guard is the same one, for the same reason: the parameter must be referenced with its type. Pure.
+ */
+function sourceKindDeprioritized(valueExpression: string, parameter: number): string {
+  return `(cardinality($${parameter}::text[]) > 0 AND ${valueExpression} = ANY($${parameter}::text[]))`;
+}
+
 /** A prose question must not draw its candidates from source code: 38,232 promoted spans are the owner's own
  *  repository, and for "When was Ada Lovelace born?" every top BM25 row was a test file mentioning her. The
- *  provenance sourceKind names the lane, so exclusion happens before the LIMIT, never on the returned rows. Pure. */
+ *  provenance sourceKind names the lane, so this decides which pass of the frontier partition a row belongs to,
+ *  before the LIMIT and never on the returned rows. Pure. */
 function sourceKindExclusion(valueExpression: string, query: EvidenceQuery, parameter: number): string {
   void query;
   // The parameter is always bound, so it must always be referenced with its type: returning a bare TRUE for an

@@ -10,7 +10,7 @@ import { deriveClosedClassWords } from "./closed-class-words.js";
 import { evidenceProofBoundary } from "./proof-boundary.js";
 import { genericQuestionSignal, jsonRecord, kernelNumber, kernelString, kernelStringArray, namedSubjectAnchors, normalizePriorKey, requestContentSurface, splitPriorUnits, uniqueKernelStrings } from "./kernel-answer-primitives.js";
 import { relevanceRequestFocuses } from "./learned-graph-prior-runtime.js";
-import { retrievalBinding, retrievalBindingCarries, retrievalBindingRank } from "./retrieval-binding.js";
+import { RETRIEVAL_DEPRIORITIZED_SOURCE_KINDS, retrievalBinding, retrievalBindingCarries, retrievalBindingRank } from "./retrieval-binding.js";
 import {
   admissionTierDiagnostics,
   evidenceForRequest,
@@ -753,7 +753,7 @@ export function createRuntimeGraphRetrieval(options: {
   /** A request bigram is one word order; the source may use the other ("Who played Sisko?" against "Sisko,
    *  played by Avery Brooks"). When the bigram matches nothing, its own symbols are searched instead, so the
    *  order the asker chose never decides whether the article is found. */
-  async function searchAnchorGroup(group: readonly string[], sourceKinds: { excludeSourceKinds?: string[] }, proseOnly: boolean, text = "", subjectLed = true, allowSymbolFallback = true, searchCache?: Map<string, Promise<Awaited<ReturnType<typeof deps.storage.evidence.searchEvidence>>>>): Promise<Awaited<ReturnType<typeof deps.storage.evidence.searchEvidence>>> {
+  async function searchAnchorGroup(group: readonly string[], sourceKinds: { deprioritizeSourceKinds?: string[] }, proseOnly: boolean, text = "", subjectLed = true, allowSymbolFallback = true, searchCache?: Map<string, Promise<Awaited<ReturnType<typeof deps.storage.evidence.searchEvidence>>>>): Promise<Awaited<ReturnType<typeof deps.storage.evidence.searchEvidence>>> {
     // The subject this group is searching for, so a source *titled* with it outranks one that merely contains it.
     // A group carrying a quoted sentence opens on that sentence's first pair, not on a subject, so its leading
     // feature names no title to rank by and reading one out of it ranks whatever source happens to spell it.
@@ -766,10 +766,16 @@ export function createRuntimeGraphRetrieval(options: {
     // Over-fetch, drop control spans before ranking, and let titled sources precede titleless ones.
     const usable = (rows: Awaited<ReturnType<typeof deps.storage.evidence.searchEvidence>>) => {
       // A source file that declares the identifier the request names is about that request, code lane or not.
-      const kept = (proseOnly ? rows.filter(item => retrievalBindingCarries(retrievalBinding(item.span, { requestText: text }))) : rows).filter(item => !isControlCorpusSpan(item.span));
-      const titled = kept.filter(item => evidenceSpanProvenanceTitle(item.span));
-      const titleless = kept.filter(item => !evidenceSpanProvenanceTitle(item.span));
-      return [...titled, ...titleless].slice(0, 32);
+      const bound = rows.map(item => ({ item, binding: retrievalBinding(item.span, { requestText: text, sourceCodeEvidenceAllowed: !proseOnly }) }));
+      const kept = (proseOnly ? bound.filter(entry => retrievalBindingCarries(entry.binding)) : bound).filter(entry => !isControlCorpusSpan(entry.item.span));
+      // The frontier ranked a deprioritized kind last; re-interleaving it here by title would undo that, so the
+      // kind leads the sort and titled-before-titleless decides within it. Stable: every other row keeps its place.
+      const tier = (entry: typeof kept[number]) => (entry.binding.sourceKind.deprioritized ? 2 : 0) + (evidenceSpanProvenanceTitle(entry.item.span) ? 0 : 1);
+      return kept
+        .map((entry, index) => ({ ...entry, index }))
+        .sort((left, right) => tier(left) - tier(right) || left.index - right.index)
+        .slice(0, 32)
+        .map(entry => entry.item);
     };
     // A request that quotes one of the corpus's own sentences is answered where that sentence sits, so the
     // opening-block prior in the ranking has nothing to say about it and outranks the span that carries it.
@@ -901,11 +907,12 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
     // in alongside "ada lovelace"). Searching per-group and unioning
     // results lets sourceIdentityAdmissibleEvidenceForRequest's real
     // exact-title-match ranking see every candidate document at all.
-    // A question that is not about code draws its candidates from prose lanes only; the exclusion is applied in the
-    // search itself, before ranking, so the owner's repository cannot crowd the article out of the candidate set.
+    // A question that is not about code makes the repository kinds pay the frontier cost rather than deleting
+    // them: they rank behind every other kind in the search itself, so the owner's repository can never crowd the
+    // article out of the candidate set, and a request the operator misread can still see the source that names it.
     const proseSourceKinds = sourceCodeEvidenceAllowed
       ? {}
-      : { excludeSourceKinds: ["developer_intelligence", "construction_training"], excludeForceClasses: ["profile_excerpt_evidence"] };
+      : { deprioritizeSourceKinds: [...RETRIEVAL_DEPRIORITIZED_SOURCE_KINDS], excludeForceClasses: ["profile_excerpt_evidence"] };
     const perGroupCounts: Array<{ group: string[]; rows: number; heads: string[] }> = [];
     const searchCache = new Map<string, Promise<Awaited<ReturnType<typeof deps.storage.evidence.searchEvidence>>>>();
     // The five bounded ordinary groups may each issue one phrase query. Keep

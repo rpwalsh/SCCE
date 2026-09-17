@@ -64,8 +64,8 @@ export interface EvidenceQuery {
    * available only to explicit admission/training inspection.
    */
   status?: "promoted" | "quarantined" | "any";
-  /** Provenance sourceKind values to leave out of the candidate set, e.g. developer_intelligence for a prose question. */
-  excludeSourceKinds?: string[];
+  /** Provenance sourceKind values that rank behind every other kind on the frontier. A cost, never an erasure. */
+  deprioritizeSourceKinds?: string[];
   /** Provenance forceClass values to leave out before ranking: a class that can never certify is scored and then discarded. */
   excludeForceClasses?: string[];
   /**
