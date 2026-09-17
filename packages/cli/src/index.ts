@@ -13,6 +13,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { acquireAndTrainGithubOssRepository, assertHydratedRuntimeReady, buildScce2BrainShardIndex, createHydrationPlan, createNodeRuntime, inspectHydrationRecords, fitRelationPotentialFromGraph, runEvaluationReleaseGate, proposeSelfRewrite, createScce2ToV3Importer, createWikipediaV3Ingestor, createWorkspaceRuntime, dryRunDeveloperRepoPlan, dryRunEngineeringCorpusIngest, fullyVerifyEventLedger, graphDeveloperRepo, importHydrationPlan, inspectDeveloperRepo, inspectEngineeringCorpusFolder, inspectHydrationStatus, inspectV2Artifacts, inspectV2GraphShard, inspectV2Ngram, inspectV2Profile, inspectV2Stream, inspectV2StreamTopic, inspectV2Topic, parseRepoDiagnosticsFixture, readScceRuntimeConfig, routeEngineeringCorpusFixture, scanLanguageControlHygiene, trainDialogueCorpus, trainGutenbergCorpus, trainOssCorpus, trainStoredCorpusConstructions, verifiedCompilerPlansForTurn, type WikipediaV3IngestStatus, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
 import type { BenchmarkInput, InspectionTarget, WorkspaceReportRecord } from "@scce/kernel";
+import { ossCorpusTrainOptionsFrom, parseCorpusTrainOptions } from "./corpus-train-options.js";
 import { parseScce2ImportOptions, parseScce2InspectOptions } from "./scce2-options.js";
 import { defaultWorkspaceCodingRequestId, parseWorkspaceCodingRequest, splitWorkspaceCodingTurnArgs, WORKSPACE_CODE_USAGE } from "./workspace-code-options.js";
 import { CALIBRATION_TASK_CLASS_IDS, buildTurnDialogueBridge, createPostgresContract, detailProfileIdFromSignal, detailSignalCount, renderPostgresContractSql, createTrace, summarizeForTrace, traceSpan, createUniversalCreativeEventConstructionCompiler, dialogueOutcomeMemoryForConversation, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueTurn, toJsonValue, traceEvent, verifyPostgresContract } from "@scce/kernel";
@@ -646,7 +647,7 @@ async function corpus(
     }
     const target = args[2];
     if (!target || (kind !== "gutenberg" && kind !== "oss" && kind !== "oss-github" && kind !== "dialogue")) return usage("scce corpus train <gutenberg|oss|oss-github|dialogue|wikipedia-stored> <path-or-url> [--commit=<sha>] [--language=<source-alias>] [--max-files=<n>] [--max-file-bytes=<n>] [--max-total-bytes=<n>] [--max-depth=<n>] [--ngram-max-order=<n>] [--ngram-max-counters=<n>] [--ngram-vocabulary-limit=<n>] [--acts-only]");
-    const options = parseCorpusTrainOptions(args.slice(3).filter(arg => !arg.startsWith("--commit=")));
+    const options = parseCorpusTrainOptions(args.slice(3));
     if (kind === "dialogue") {
       const access = config?.security?.informationAccess;
       if (!access) return usage("scce corpus train dialogue requires security.informationAccess in the runtime config");
@@ -676,8 +677,7 @@ async function corpus(
       return;
     }
     if (kind === "oss-github") {
-      const commitArg = args.slice(3).find(arg => arg.startsWith("--commit="));
-      const commitSha = commitArg?.slice("--commit=".length).trim();
+      const commitSha = options.commitSha;
       if (!commitSha) return usage("scce corpus train oss-github <https://github.com/owner/repo> --commit=<40-hex-sha> [limits]");
       printJson(await acquireAndTrainGithubOssRepository({
         storage: runtime.storage,
@@ -725,14 +725,7 @@ async function corpus(
     printJson(await trainOssCorpus({
       storage: runtime.storage,
       rootPath: path.resolve(target),
-      maxFiles: options.maxFiles,
-      maxFileBytes: options.maxFileBytes,
-      maxDepth: options.maxDepth,
-      includeDocs: options.includeDocs,
-      includeSource: options.includeSource,
-      ngramMaxOrder: options.ngramMaxOrder,
-      ngramMaxCountersPerOrder: options.ngramMaxCountersPerOrder,
-      ngramVocabularyLimit: options.ngramVocabularyLimit
+      ...ossCorpusTrainOptionsFrom(options)
     }));
     return;
   }
@@ -1742,81 +1735,6 @@ function parseTurnArgs(args: string[]): { text: string; webRequested: boolean; s
   return { text: textParts.join(" ").trim(), webRequested, sessionId, conversationId, targetLanguage, detailProfileId };
 }
 
-function parseCorpusTrainOptions(args: string[]): {
-  maxFiles?: number;
-  maxFileBytes?: number;
-  maxTotalBytes?: number;
-  maxDepth?: number;
-  startFileIndex?: number;
-  includeDocs?: boolean;
-  includeSource?: boolean;
-  ngramMaxOrder?: number;
-  ngramMaxCountersPerOrder?: number;
-  ngramVocabularyLimit?: number;
-  languageAliases?: string[];
-  heapCheckpointMb?: number;
-  sourceVersionIds?: string[];
-  languageOnly?: boolean;
-  includeUriPrefixes?: string[];
-  batchBytes?: number;
-  actsOnly?: boolean;
-} {
-  const out: {
-    maxFiles?: number;
-    maxFileBytes?: number;
-    maxTotalBytes?: number;
-    maxDepth?: number;
-    startFileIndex?: number;
-    includeDocs?: boolean;
-    includeSource?: boolean;
-    ngramMaxOrder?: number;
-    ngramMaxCountersPerOrder?: number;
-    ngramVocabularyLimit?: number;
-    languageAliases?: string[];
-    heapCheckpointMb?: number;
-    sourceVersionIds?: string[];
-    languageOnly?: boolean;
-    includeUriPrefixes?: string[];
-    batchBytes?: number;
-    actsOnly?: boolean;
-  } = {};
-  for (const arg of args) {
-    const [flag, raw] = arg.split("=", 2);
-    const num = raw === undefined ? NaN : Number(raw);
-    if ((flag === "--max-files" || flag === "--max-files-per-run" || flag === "--max-files-per-repo") && Number.isFinite(num)) out.maxFiles = Math.max(1, Math.floor(num));
-    else if ((flag === "--start-file" || flag === "--start-file-index") && Number.isFinite(num)) out.startFileIndex = Math.max(0, Math.floor(num));
-    else if (flag === "--max-file-bytes" && Number.isFinite(num)) out.maxFileBytes = Math.max(1024, Math.floor(num));
-    else if (flag === "--max-total-bytes" && Number.isFinite(num)) out.maxTotalBytes = Math.max(1024, Math.floor(num));
-    else if (flag === "--max-depth" && Number.isFinite(num)) out.maxDepth = Math.max(0, Math.floor(num));
-    else if (flag === "--ngram-max-order" && Number.isFinite(num)) out.ngramMaxOrder = Math.max(1, Math.min(6, Math.floor(num)));
-    else if (flag === "--ngram-max-counters" && Number.isFinite(num)) out.ngramMaxCountersPerOrder = Math.max(32, Math.floor(num));
-    else if (flag === "--ngram-vocabulary-limit" && Number.isFinite(num)) out.ngramVocabularyLimit = Math.max(128, Math.floor(num));
-    else if (flag === "--heap-checkpoint-mb" && Number.isFinite(num)) out.heapCheckpointMb = Math.max(1, Math.floor(num));
-    else if (flag === "--language" && raw?.trim()) {
-      out.languageAliases = [...new Set(raw.split(",").map(value => value.trim()).filter(Boolean))];
-    }
-    else if (flag === "--source-version-ids" && raw?.trim()) {
-      out.sourceVersionIds = [...new Set(raw.split(",").map(value => value.trim()).filter(Boolean))];
-    }
-    else if (arg === "--docs-only") {
-      out.includeDocs = true;
-      out.includeSource = false;
-    } else if (arg === "--language-only") {
-      out.languageOnly = true;
-    } else if (arg === "--acts-only") {
-      out.actsOnly = true;
-    } else if (flag === "--uri-prefix" && raw?.trim()) {
-      out.includeUriPrefixes = [...new Set(raw.split(",").map(value => value.trim()).filter(Boolean))];
-    } else if (flag === "--batch-bytes" && Number.isFinite(num)) {
-      out.batchBytes = Math.max(1024, Math.floor(num));
-    } else if (arg === "--code-only") {
-      out.includeDocs = false;
-      out.includeSource = true;
-    } else throw new Error(`unknown corpus train option: ${arg}`);
-  }
-  return out;
-}
-
 function requiredStringFlag(arg: string, prefix: string): string {
   const value = arg.slice(prefix.length).trim();
   if (!value) throw new Error(`invalid ${prefix.slice(0, -1)} value`);
@@ -1886,7 +1804,7 @@ function usage(error?: string): void {
     "  pnpm scce corpus train dialogue <path>   (human-authored dialogue transcripts; owner-private, enable runtime.corpora.registry.dialogue to hydrate it)",
     "  pnpm scce relation-potential fit [--promote] [--max-edges=N] | status | promote --model-id=<id>",
     "  pnpm scce self-rewrite propose --target=<goal> [--capability=<id>] [--path=<root>]",
-    "  pnpm scce corpus train oss <path>",
+    "  pnpm scce corpus train oss <path> [--start-file-index=<n>] [--max-files=<n>] [--heap-checkpoint-mb=<n>] [--source-uri-base=<uri>] [--commit=<sha>]",
     "  pnpm scce corpus train oss-github <https://github.com/owner/repo> --commit=<40-hex-sha> [limits]",
     "  pnpm scce repo inspect <path>",
     "  pnpm scce repo graph <path>",
