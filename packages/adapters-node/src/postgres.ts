@@ -6049,7 +6049,8 @@ function titleExactExpression(alias: string, parameter: number): string {
 }
 
 /** Measured on this corpus: 25,889 of 73,209 scored spans carry a class that can never certify, so BM25 pays for them and
- *  the turn drops them afterwards. Excluded here, before ranking; an empty list is a no-op through the cardinality guard. */
+ *  the turn drops them afterwards. Excluded before the LIMIT, so ranking still decides among admitted spans only; an
+ *  empty list is a no-op through the cardinality guard. */
 function forceClassExclusion(valueExpression: string, parameter: number): string {
   return `(cardinality($${parameter}::text[]) = 0 OR ${valueExpression} <> ALL($${parameter}::text[]))`;
 }
@@ -6066,7 +6067,7 @@ function evidenceSourceKindExpression(alias: string): string {
 
 /** A prose question must not draw its candidates from source code: 38,232 promoted spans are the owner's own
  *  repository, and for "When was Ada Lovelace born?" every top BM25 row was a test file mentioning her. The
- *  provenance sourceKind names the lane, so exclusion happens before ranking, not after. Pure. */
+ *  provenance sourceKind names the lane, so exclusion happens before the LIMIT, never on the returned rows. Pure. */
 function sourceKindExclusion(valueExpression: string, query: EvidenceQuery, parameter: number): string {
   void query;
   // The parameter is always bound, so it must always be referenced with its type: returning a bare TRUE for an
