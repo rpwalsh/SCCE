@@ -118,7 +118,7 @@ describe("retrievalBinding is the one answer to why evidence is relevant", () =>
     const declaring = retrievalBinding(
       corpusSpan("names_albania", "packages/kernel/src/fixture.ts", "fixture", "text/plain; charset=utf-8", [
         "// Albania is named in this comment only as an example.",
-        "export function fixture(options) {",
+        "export function albania(options) {",
         "  return options;",
         "}"
       ].join(NL)),
