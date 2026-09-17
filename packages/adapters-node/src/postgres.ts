@@ -944,6 +944,8 @@ export function schemaStatements(q: string, informationAccess?: InformationAcces
     `CREATE TABLE IF NOT EXISTS ${q}.ngram_models (id TEXT PRIMARY KEY, stream_id TEXT NOT NULL, language_hint TEXT NOT NULL, max_order INT NOT NULL, discount DOUBLE PRECISION NOT NULL, model_json JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.language_units (id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, source_version_id TEXT NOT NULL, script TEXT NOT NULL, unit_kind TEXT NOT NULL, unit_text TEXT NOT NULL, features TEXT[] NOT NULL, competence_vector DOUBLE PRECISION[] NOT NULL, alpha DOUBLE PRECISION NOT NULL, evidence_ids TEXT[] NOT NULL, metadata_json JSONB NOT NULL, information_label JSONB NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.language_patterns (id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, pattern_kind TEXT NOT NULL, support DOUBLE PRECISION NOT NULL, entropy DOUBLE PRECISION NOT NULL, pattern_json JSONB NOT NULL, evidence_ids TEXT[] NOT NULL, updated_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
+    // candidate_pool's scope filter reads this instead of detoasting pattern_json (5.4GB) per row.
+    `ALTER TABLE ${q}.language_patterns ADD COLUMN IF NOT EXISTS source_system TEXT GENERATED ALWAYS AS (pattern_json->>'sourceSystem') STORED`,
     `CREATE TABLE IF NOT EXISTS ${q}.semantic_frames (id TEXT PRIMARY KEY, frame_json JSONB NOT NULL, embedding VECTOR(64) NOT NULL, evidence_ids TEXT[] NOT NULL, alpha DOUBLE PRECISION NOT NULL, created_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.translation_alignments (id TEXT PRIMARY KEY, source_frame_id TEXT NOT NULL, target_frame_id TEXT NOT NULL, source_language TEXT NOT NULL, target_language TEXT NOT NULL, force TEXT NOT NULL, loss_vector JSONB NOT NULL, alignment_json JSONB NOT NULL, evidence_ids TEXT[] NOT NULL, updated_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
     ...informationLabelMigrationStatements(q, informationAccess),
@@ -1166,6 +1168,8 @@ export function schemaStatements(q: string, informationAccess?: InformationAcces
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_units_profile ON ${q}.language_units(profile_id,alpha DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_units_source_system_rank ON ${q}.language_units((metadata_json->>'sourceSystem'), alpha DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_patterns_source_system_rank ON ${q}.language_patterns((pattern_json->>'sourceSystem'), support DESC, updated_at DESC)`,
+    // Same shape on the stored column: a sequential scan otherwise detoasts the whole table (5.4GB) to evaluate the WHERE (measured 18.9s->1.9s forcing the JSONB index; this one the planner can choose on its own).
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_patterns_source_system_stored_rank ON ${q}.language_patterns(source_system, support DESC, updated_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_patterns_profile_rank ON ${q}.language_patterns(profile_id,support DESC,updated_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_semantic_frames_source_system_rank ON ${q}.semantic_frames((frame_json->>'sourceSystem'), alpha DESC, created_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_semantic_frames_profile_rank ON ${q}.semantic_frames((frame_json->>'profileId'),alpha DESC,created_at DESC)`,
@@ -4276,7 +4280,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         params.push([...query.profileIds]);
         where.push(`pattern.profile_id=ANY($${params.length}::text[])`);
       } else if (query.profileId) { params.push(query.profileId); where.push(`pattern.profile_id=$${params.length}`); }
-      if (query.sourceSystem) { params.push(query.sourceSystem); where.push(`pattern.pattern_json->>'sourceSystem'=$${params.length}`); }
+      if (query.sourceSystem) { params.push(query.sourceSystem); where.push(`${languagePatternSourceSystemExpression("pattern")}=$${params.length}`); }
       if (query.languageId) {
         // sourceSystem alone mixes identities: "wikipedia" carries a small minority of profiles under other
         // learned identities too (measured live -- a 569-profile code/license-header identity still owns 9
@@ -6123,6 +6127,11 @@ function evidenceForceClassExpression(alias: string): string {
 export function evidenceSourceKindExpression(alias: string): string {
   // The stored generated column carries this exact COALESCE; reading it here keeps the column and the code one contract.
   return `${alias}.source_kind`;
+}
+
+/** A pattern's source system, read from the stored generated column that carries `pattern_json->>'sourceSystem'`. Pure. */
+export function languagePatternSourceSystemExpression(alias: string): string {
+  return `${alias}.source_system`;
 }
 
 /**
