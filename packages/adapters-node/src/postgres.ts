@@ -293,7 +293,23 @@ export class PostgresStorageAdapter implements ScceStorage {
       const existing = await client.query<{ present: string | null }>(`SELECT to_regclass($1) AS present`, [`${this.schema}.ngram_models`]);
       const freshSchema = existing.rows[0]?.present === null;
       await client.query("BEGIN");
-      for (const statement of schemaStatements(this.q, this.informationAccess)) await client.query(statement);
+      for (const statement of schemaStatements(this.q, this.informationAccess)) {
+        // An extension is database-wide, so every schema's migration asks for the same one. IF NOT EXISTS does not
+        // make that race-safe: two concurrent migrations both pass the check and the loser fails the unique index,
+        // rolling back a migration that was otherwise complete. Already-present is the outcome either way.
+        if (/^\s*CREATE EXTENSION/iu.test(statement)) {
+          await client.query("SAVEPOINT scce_extension");
+          try {
+            await client.query(statement);
+            await client.query("RELEASE SAVEPOINT scce_extension");
+          } catch (error) {
+            await client.query("ROLLBACK TO SAVEPOINT scce_extension");
+            if (!isDuplicateExtensionError(error)) throw error;
+          }
+          continue;
+        }
+        await client.query(statement);
+      }
       if (freshSchema) for (const statement of freshSchemaIndexStatements(this.q)) await client.query(statement);
       const schemaErrors = await requiredSchemaErrors(client, this.schema);
       if (schemaErrors.length) throw new Error(`schema migration incomplete: ${schemaErrors.slice(0, 12).join("; ")}`);
@@ -1270,6 +1286,16 @@ function requiredHydrationColumns(): Record<string, string[]> {
     target_profile_patterns: ["id", "target_profile_id", "pattern_family_id", "pattern_json", "evidence_ids", "alpha"],
     calibration_observations: ["id", "calibration_id", "subsystem_id", "task_class", "raw_score", "outcome", "final_outcome", "metadata_json"]
   };
+}
+
+/** A concurrent migration created the same database-wide extension first; both wanted it present, and it is. */
+export function isDuplicateExtensionError(error: unknown): boolean {
+  const failure = error as { code?: string; constraint?: string; message?: string } | undefined;
+  if (!failure) return false;
+  // 23505 unique_violation on the extension name index, or 42710 duplicate_object from a concurrent CREATE EXTENSION.
+  if (failure.code === "42710") return true;
+  return failure.code === "23505"
+    && (failure.constraint === "pg_extension_name_index" || String(failure.message ?? "").includes("pg_extension_name_index"));
 }
 
 async function requiredSchemaErrors(client: Pick<PoolClient, "query">, schema: string): Promise<string[]> {
