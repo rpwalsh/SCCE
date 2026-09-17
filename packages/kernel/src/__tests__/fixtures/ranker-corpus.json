@@ -1,0 +1,52 @@
+{
+  "note": "Real promoted document-lead spans from scce3_runtime.evidence_spans (char_start 0), read-only, plus the Ada Lovelace lead the T32/T50 measurements used. Text is the span's own leading characters, verbatim. Used to prove a ranker refactor changes no ordering.",
+  "spans": [
+    {
+      "id": "evidence_000fd4b1cf8cfbead9e7d367b138e42bfce3a36a41cf3091",
+      "title": "dolphin 15 senior",
+      "alpha": 0.6536092679730994,
+      "text": "The 'Dolphin 15 Senior', sometimes referred to as just the 'Dolphin Senior', is an American sailing dinghy that was designed by brothers Glenn Corcorran and Murray Corcorran and first built in 1964. ==Production== The design was built by Silverline Boats in Moorhead, Minnesota, United States, until 1980 when the company closed. Production was then assumed by the Dolphin Sailboat Company of Independence, Missouri from 1981 to 1985 when it ceased business. The boat design is now out of production. ==Design== The Dolphin 15 Senior is a recreational sailboat, built predominantly of fiberglass. It has a lateen rig, a spooned, raked stem, a vertical transom, a rounded, transom-hung rudder controlled by a tiller and a retractable fiberglass daggerboard. The rudder is fiberglass, with an aluminum head. The boat displaces . The boat has a draft of with the daggerboard extended and with it retracted, allowing beaching or ground transportation on a trailer or car roof rack."
+    },
+    {
+      "id": "evidence_0016c699a3d5bd928c3b47cb85fd68b702254cdf12b0ad26",
+      "title": "scg 004",
+      "alpha": 0.6595782854575859,
+      "text": "The 'Scuderia Cameron Glickenhaus SCG 004' is a sports car developed and manufactured by American boutique car maker Scuderia Cameron Glickenhaus LLC. It is the manufacturer's second model after the 003 of 2017. The SCG 004S was unveiled by Scuderia Cameron Glickenhaus in November 2017. In August 2020, the manufacturer presented the production version of the 004S and announced plans to start production in October 2020 at the Connecticut plant in the United States. After several delays, Glickenhaus announced in December 2024 that production had commenced at Roush Performance's facility in Detroit, Michigan, with deliveries starting in Q1 2025. ==Variants== ===SCG 004S=== The 004S or \"'Stradale'\" (Street) is the road-going version of the 004 series."
+    },
+    {
+      "id": "evidence_002c2c2ae1837efd1ae756d0b0ca75b641178675c73f4a3d",
+      "title": "müjde uzman",
+      "alpha": 0.6608511141624678,
+      "text": "'Müjde Uzman' (born 26 September 1984) is a Turkish actress. == Career == In 2001, Uzman won the Elite Model Look contest. She then started working as a presenter on a number of music channels. Uzman started her acting career in 2008 by taking a part in the series 'Paramparça Aşklar'. In 2010, she appeared as a guest on the 'Kapalı Çarşı' and 'Aşk Bir Hayal' series. She subsequently had her breakthrough with recurring roles in 'Eşkıya Dünyaya Hükümdar Olmaz', 'Muhteşem Yüzyıl' and 'Kiralık Aşk'. Between 2018 and 2019, she portrayed the character of Funda Turaç in the 'Savaşçı' TV series."
+    },
+    {
+      "id": "evidence_002e47de600c822aea1dae08fc7d45eaf2728b4c1f3d795d",
+      "title": "sociedade brasileira de belas artes",
+      "alpha": 0.6656852683019588,
+      "text": "The 'Sociedade Brasileira de Belas Artes SBBA' (Brazilian Society of Fine Arts SBBA) is a public benefit entity that aims to promote and disseminate plastic arts. The SBBA is located in the historic building of the 18th century Solar do Marques do Lavradio in downtown Rio de Janeiro, in the Lapa neighborhood, at Rua do Lavradio, nº 84. == History == The Sociedade Brasileira de Belas Artes SBBA was founded on August 10, 1910, in Rio de Janeiro under the name Centro Artístico Juventas and, on July 1, 1919, the definitive name of “Sociedade Brasileira de Belas Artes” was approved."
+    },
+    {
+      "id": "evidence_003b26d2b2d6177b5408f7ece307c423deda69bd11582edc",
+      "title": "david mungoshi",
+      "alpha": 0.6393706757021193,
+      "text": "'David Sunsly Mungoshi' (30 September 1949 – 29 August 2020) was a Zimbabwean novelist, actor, poet and teacher. ==Early life== He was born in 1949 in Bulawayo, Zimbabwe and was fluent in Shona, Ndebele and English. He learnt Zulu, similar to Ndebele, which at that time was not recognised as a distinct language, at school. ==Career== In 1970, he started teaching at St Annes Goto Primary School in Hwedza. He struggled at the start of his writing career, with some believing that he was writing simply because his brother, the then established Charles Mungoshi, was writing, or that his brother had even written them. In 1975, he enrolled for a BA in English and History at the University of Rhodesia. Mungoshi was a teacher for most of his life, and taught at various institutions, including the University of Zimbabwe."
+    },
+    {
+      "id": "evidence_span.87ae75525ff8b0973cbf3ff726d708fe6a419a06116fe801",
+      "title": "Ada Lovelace",
+      "alpha": 0.7252110282556066,
+      "text": "'Augusta Ada King, Countess of Lovelace' ( ; 10 December 1815 – 27 November 1852), also known as 'Ada Lovelace', was an English mathematician and writer chiefly known for work on Charles Babbage's proposed mechanical general-purpose computer, the analytical engine. She was the first to recognise the machine had applications beyond pure calculation. Lovelace is often considered the first computer programmer. Lovelace was the only legitimate child of poet Lord Byron and reformer Anne Isabella Milbanke. Lord Byron separated from his wife a month after Ada was born, and died when she was eight. Although often ill in childhood, Lovelace pursued her studies assiduously. She married William King in 1835."
+    }
+  ],
+  "requests": [
+    "When was Ada Lovelace born?",
+    "When was David Mungoshi born?",
+    "When was Müjde Uzman born?",
+    "Who designed the Dolphin 15 Senior?",
+    "What is the SCG 004?",
+    "When was the Sociedade Brasileira de Belas Artes founded?",
+    "Where did David Mungoshi teach?",
+    "What is the Dolphin 15 Senior made of?"
+  ],
+  "closedClassWords": ["when", "was", "the", "of", "in", "and", "a", "to", "her", "she", "his", "he", "from", "after", "what", "is", "who", "where", "did"]
+}

@@ -572,6 +572,8 @@ export function localEvidenceAnswerSurface(input: {
   selectedEvidence: readonly EvidenceSpan[];
   /** Values the turn's realization contract already bound to the request's relation; a sentence supplying one leads. */
   boundValues?: readonly string[];
+  /** The spans that binding was verified to occur in: the answerhood gate reads a resolution, never a coincidence. */
+  boundValueEvidenceIds?: ReadonlySet<string>;
   temporalEvidence?: readonly EvidenceSpan[];
   entailment?: Pick<TurnResult["entailment"], "contradiction" | "evidenceIds" | "force">;
   semanticProof?: { verdict: string; contradiction: number; conflictingEvidenceIds?: readonly string[] };
@@ -953,6 +955,8 @@ export function proposeSourceExactEvidenceAnswer(input: {
   selectedEvidence: readonly EvidenceSpan[];
   /** Values the turn's realization contract already bound to the request's relation; a sentence supplying one leads. */
   boundValues?: readonly string[];
+  /** The spans that binding was verified to occur in: the answerhood gate reads a resolution, never a coincidence. */
+  boundValueEvidenceIds?: ReadonlySet<string>;
   temporalEvidence?: readonly EvidenceSpan[];
   entailment?: Pick<TurnResult["entailment"], "contradiction" | "evidenceIds" | "force">;
   semanticProof?: { verdict: string; contradiction: number; conflictingEvidenceIds?: readonly string[] };
@@ -1070,7 +1074,13 @@ export function proposeSourceExactEvidenceAnswer(input: {
     nearDuplicate: planNearDuplicate
   });
   const explicitContextBound = answerEvidence.some(span => input.explicitContextEvidenceIds?.has(String(span.id)) === true);
-  if (!planNearDuplicate && !explicitContextBound && !answerEvidence.some(span => answerCoversRequest(answerSurfaceSentences, span, planCoverageUnits, input.requestText, { relationRequired: Boolean(input.closedClassWords?.size), languageClosedClassWords: input.functionSymbols }))) return undefined;
+  // The resolved value travels with the span it was verified in, so a sibling source that merely repeats the
+  // string cannot claim the exemption.
+  if (!planNearDuplicate && !explicitContextBound && !answerEvidence.some(span => answerCoversRequest(answerSurfaceSentences, span, planCoverageUnits, input.requestText, {
+    relationRequired: Boolean(input.closedClassWords?.size),
+    languageClosedClassWords: input.functionSymbols,
+    boundValues: input.boundValueEvidenceIds?.has(String(span.id)) ? input.boundValues ?? [] : []
+  }))) return undefined;
   const relevance = localEvidenceAnswerScore(input.requestText, answerEvidence);
   const evidenceBound = (input.entailment?.evidenceIds.length ?? 0) > 0;
   const answerSessionBound = answerEvidence.some(promotedSessionEvidence);
@@ -1194,7 +1204,12 @@ export function answerCoversRequest(
   span: EvidenceSpan,
   contentUnits: readonly string[],
   requestText = "",
-  options: { relationRequired?: boolean; languageClosedClassWords?: ReadonlySet<string> } = {}
+  options: {
+    relationRequired?: boolean;
+    languageClosedClassWords?: ReadonlySet<string>;
+    /** Values this turn RESOLVED for the request's relation, passed only for the spans the binding was verified in. */
+    boundValues?: readonly string[];
+  } = {}
 ): boolean {
   // Answerhood compares request material with source/title material using the same unitization as corpus identity
   // and anchor indexing. In particular, `Moby-Dick` is two identity units (`moby`, `dick`), not one relation token.
@@ -1312,7 +1327,17 @@ export function answerCoversRequest(
     && relationUnits.length >= 2
     && missingRelationUnits[0] === lastContentUnit
     && sentenceNamesEntityOutsideRequest(answeringText, requestText);
-  const relationCarried = missingRelationUnits.length === 0 || categoryMemberAnswer;
+  // A sentence carrying a value this turn RESOLVED for the request's own relation answers it whether or not it
+  // repeats the relation word: "10 December 1815" structurally cannot restate "born" and does not need to, which
+  // is the reasoning candidateIsVerifiedBoundValue (semantic-answer-construct.ts) already applies one module away
+  // to a bare bound value. Two conditions, and the first is the one that makes this a resolution rather than a
+  // coincidence: the caller passes values ONLY for the spans resolveRequestValueBinding verified the value occurs
+  // in, and the value was resolved against the admitted evidence for this request before any sentence was chosen.
+  // The subject and numeric-qualifier obligations below are untouched, so the fabrications this gate was written
+  // for -- the Einstein lead answering who his dentist was -- resolve no value and are refused exactly as before.
+  const resolvedValueCarried = (options.boundValues ?? []).some(value =>
+    value && answeringText.toLocaleLowerCase().includes(value.toLocaleLowerCase()));
+  const relationCarried = missingRelationUnits.length === 0 || categoryMemberAnswer || resolvedValueCarried;
   const unitPresentIn = (units: readonly string[]) => (unit: string) => units.some(surfaceUnit => surfaceUnit === unit
     || ((unit.startsWith(surfaceUnit) || surfaceUnit.startsWith(unit)) && Math.min(unit.length, surfaceUnit.length) / Math.max(unit.length, surfaceUnit.length) >= calibrated("units.prefix_ratio_floor")));
   // Real prose names its subject once and continues by anaphora ("the mission", omission, a bare pronoun): requiring

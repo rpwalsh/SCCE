@@ -2810,6 +2810,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         }
       });
       const requestBoundValues = requestValueBinding ? [requestValueBinding.value] : [];
+      const requestBoundValueEvidenceIds = new Set(requestValueBinding?.evidenceIds ?? []);
       // localEvidenceAnswerSurface (backed by localEvidenceAnswerPlan) covers
       // however many sentences a compound request actually needs
       // (evidenceAnswerSentenceLimit) and optimizes for request coverage,
@@ -2826,6 +2827,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             requestText: input.text,
             selectedEvidence,
             boundValues: requestBoundValues,
+            boundValueEvidenceIds: requestBoundValueEvidenceIds,
             temporalEvidence: selectedTemporalEvidence,
             entailment: entailmentResult,
             semanticProof: {
