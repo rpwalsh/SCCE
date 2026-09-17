@@ -1090,6 +1090,9 @@ export interface RuntimeRetrievalRoleTrace {
   nodeId?: NodeId;
   role: RetrievalRole;
   score: number;
+  /** The pre-calibration blend and its measurement state, so an observer of this id never records its output. */
+  rawScore?: number;
+  scoreMeasurement?: CalibrationMeasurementState;
   scoreTraces: RuntimeScoreTrace[];
   reason: string;
 }

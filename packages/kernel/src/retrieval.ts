@@ -1,6 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import type { EvidenceSpan, GraphSlice, Hasher, JsonValue, RetrievalRole } from "./types.js";
+import type { CalibrationMeasurementState, EvidenceSpan, GraphSlice, Hasher, JsonValue, RetrievalRole } from "./types.js";
 import { clamp01, featureSet, mean, stableVector, symbolizeData, toJsonValue } from "./primitives.js";
 import { featureScore, provisionalHeuristicScore, type ScoreTrace } from "./scoring/score-trace.js";
 import { PROOF_GRAPH_KIND, SEMANTIC_VERDICT } from "./semantic-codes.js";
@@ -42,6 +42,9 @@ export interface IndexedDocument {
 export interface HybridRecallResult {
   evidenceId: string;
   score: number;
+  /** The blend before `retrieval.hybrid_recall` was applied, so a later observation of this id is not its own output. */
+  rawScore: number;
+  scoreMeasurement: CalibrationMeasurementState;
   bm25: number;
   vector: number;
   graph: number;
@@ -220,6 +223,8 @@ export function hybridRecall(input: { query: string; evidence?: readonly Evidenc
     insertRecall(recall, {
       evidenceId: doc.evidenceId,
       score,
+      rawScore,
+      scoreMeasurement: calibrated.measurement,
       bm25: bm25Score,
       vector: vectorScore,
       graph: graphScore,

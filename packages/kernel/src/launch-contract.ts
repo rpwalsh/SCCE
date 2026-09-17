@@ -169,6 +169,8 @@ export function retrievalRoleTracesFromHybridRecall(recall: readonly HybridRecal
     evidenceId: item.evidenceId as EvidenceId,
     role: item.evidenceRole,
     score: clamp01(item.score),
+    rawScore: clamp01(item.rawScore),
+    scoreMeasurement: item.scoreMeasurement,
     reason: item.reason,
     scoreTraces: item.scoreTrace.map(runtimeScoreTrace)
   }));

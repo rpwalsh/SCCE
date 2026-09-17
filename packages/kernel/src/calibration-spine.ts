@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { canonicalStringify, clamp01, createClock, featureSet, toJsonValue } from "./primitives.js";
-import { buildCalibrationModel, calibratedScoreTrace, calibrateProbability, calibrationBinFor, type CalibrationModel } from "./scoring/calibration.js";
+import { buildCalibrationModel, calibratedScoreTrace, calibrateProbability, calibrationBinFor, type CalibrationModel, type CalibrationPoint } from "./scoring/calibration.js";
 import type { ScoreTrace } from "./scoring/score-trace.js";
 import {
   COGNITIVE_OPERATOR_IDS,
@@ -1078,6 +1078,45 @@ export function calibrationObservationsFromDialogueOutcome(input: {
   return observations;
 }
 
+/** The episode and reward a credit-ledger row carries, from either the whole-turn record or a stage row. */
+function creditRowEpisode(observation: CalibrationObservationRecord): { episodeId: string; reward: number; supervised: boolean } | undefined {
+  const metadata = jsonRecord(observation.metadata);
+  const stage = metadata.schema === "scce.cognitive_credit.stage_observation.v1";
+  const turn = metadata.schema === "scce.cognitive_credit.record.v1";
+  if (!stage && !turn) return undefined;
+  const outcome = turn ? jsonRecord(metadata.outcome) : metadata;
+  const episodeId = typeof metadata.episodeId === "string" ? metadata.episodeId : "";
+  const reward = outcome.reward;
+  if (!episodeId || typeof reward !== "number" || !Number.isFinite(reward)) return undefined;
+  return { episodeId, reward: clamp01(reward), supervised: outcome.supervised === true };
+}
+
+/**
+ * The outcome class a row belongs to, or `undefined` when nothing has classified it. A runtime credit row's
+ * boolean is `label === positive` and the runtime never issues that label, so taking it as a negative reports
+ * an unlabelled turn as a measured failure -- two such turns are enough to make every credit-observed id read
+ * a calibrated zero. A grader's label wins; otherwise the class comes from an Otsu split of the episodes' own
+ * rewards, exactly as the operator routing fit derives it. Rows outside the credit ledger keep their boolean.
+ */
+function labelledOutcomes(observations: readonly CalibrationObservationRecord[]): Map<string, boolean | undefined> {
+  const rewardByEpisode = new Map<string, number>();
+  for (const observation of observations) {
+    const credit = creditRowEpisode(observation);
+    if (credit && !credit.supervised) rewardByEpisode.set(credit.episodeId, credit.reward);
+  }
+  const classes = creditRewardClasses(rewardByEpisode);
+  const resolved = new Map<string, boolean | undefined>();
+  for (const observation of observations) {
+    const credit = creditRowEpisode(observation);
+    if (!credit || credit.supervised) {
+      resolved.set(observation.id, observation.outcome);
+      continue;
+    }
+    resolved.set(observation.id, classes ? classes.positive.has(credit.episodeId) : undefined);
+  }
+  return resolved;
+}
+
 export function buildCalibrationModelsById(input: {
   observations: readonly CalibrationObservationRecord[];
   minPoints?: number;
@@ -1086,25 +1125,28 @@ export function buildCalibrationModelsById(input: {
   clock?: Clock;
 }): Record<string, CalibrationModel> {
   const minPoints = input.minPoints ?? 2;
+  const outcomes = labelledOutcomes(input.observations);
   const createdAt = resolveCreatedAt(
     input.createdAt,
     input.clock,
     latestCreatedAt(input.observations)
   );
-  const groups = new Map<string, CalibrationObservationRecord[]>();
+  const groups = new Map<string, CalibrationPoint[]>();
   for (const observation of input.observations) {
+    const outcome = outcomes.get(observation.id);
+    if (outcome === undefined) continue;
     const key = `${observation.calibrationId}|${observation.taskClass}`;
-    groups.set(key, [...(groups.get(key) ?? []), observation]);
+    groups.set(key, [...(groups.get(key) ?? []), { raw: observation.rawScore, outcome }]);
   }
   const models: Record<string, CalibrationModel> = {};
-  for (const [key, observations] of groups) {
-    if (observations.length < minPoints) continue;
+  for (const [key, points] of groups) {
+    if (points.length < minPoints) continue;
     const [calibrationId, taskClass] = key.split("|");
     if (!calibrationId || !taskClass) continue;
     models[key] = buildCalibrationModel({
       id: `calibration.model.${hashText(key)}`,
       taskClass,
-      points: observations.map(observation => ({ raw: observation.rawScore, outcome: observation.outcome })),
+      points,
       binCount: input.binCount,
       createdAt
     });

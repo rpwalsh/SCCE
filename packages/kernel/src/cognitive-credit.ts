@@ -137,6 +137,15 @@ const arr = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
 const num = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) ? value : 0);
 const str = (value: unknown): string => (typeof value === "string" ? value : "");
 const ids = (values: unknown[], limit = 24): string[] => values.map(str).filter(Boolean).slice(0, limit);
+/**
+ * The pre-calibration quantity a producer carried, selected by presence rather than by truthiness: a value a
+ * calibration produced is the system's own guess, and observing it makes the next fit a fit on its own output.
+ * A raw zero is a real measurement and must never fall through to the calibrated figure.
+ */
+const preCalibrated = (holder: Record<string, unknown>, rawKey: string): number | undefined => {
+  const value = holder[rawKey];
+  return typeof value === "number" && Number.isFinite(value) ? clamp01(value) : undefined;
+};
 
 function hashText(text: string): string {
   let hash = 0x811c9dc5;
@@ -289,7 +298,8 @@ export function buildCognitiveCreditRecord(view: CognitiveCreditTurnView): Cogni
     ? activeOperators.reduce((sum, row) => sum + num(row.activation), 0) / activeOperators.length
     : 0;
   const regionMass = active.length ? active.reduce((sum, row) => sum + num(row.activation), 0) / active.length : 0;
-  const roleMean = roles.length ? roles.reduce((sum, row) => sum + num(row.score), 0) / roles.length : 0;
+  // retrieval.hybrid_recall observes itself unless the pre-calibration blend is what enters the ledger.
+  const roleMean = roles.length ? roles.reduce((sum, row) => sum + (preCalibrated(row, "rawScore") ?? num(row.score)), 0) / roles.length : 0;
   const boundRelations = mappings.filter(row => str(rec(row).status ?? row.status) !== "missing");
 
   const stages: CreditStageFrame[] = [
@@ -323,11 +333,11 @@ export function buildCognitiveCreditRecord(view: CognitiveCreditTurnView): Cogni
       activatedIds, []),
 
     frame(CREDIT_STAGE_IDS.answerFact, Boolean(rec(entailment.claim).id),
-      num(entailment.faithfulnessLcb) || num(entailment.support),
+      num(entailment.faithfulnessLcb) || preCalibrated(entailment, "rawSupport") || num(entailment.support),
       { support: num(entailment.support), contradiction: num(entailment.contradiction), faithfulnessLcb: num(entailment.faithfulnessLcb), confidence: num(entailment.confidence) },
       ids([rec(entailment.claim).id]), ids([proof.id])),
     frame(CREDIT_STAGE_IDS.proof, Boolean(proof.id),
-      num(rec(entailment.scores).support) || num(entailment.support),
+      preCalibrated(entailment, "rawSupport") ?? (num(rec(entailment.scores).support) || num(entailment.support)),
       { obligations: arr(entailment.obligations).length, counterexamples: arr(entailment.counterexamples).length, missing: arr(entailment.missing).length, transforms: transforms.length },
       ids([proof.id]), ids(boundRelations.map(row => rec(row).id ?? rec(row).relationId))),
     frame(CREDIT_STAGE_IDS.relation, mappings.length > 0,
@@ -340,7 +350,7 @@ export function buildCognitiveCreditRecord(view: CognitiveCreditTurnView): Cogni
       ids(active.map(row => row.nodeId)), ids(roles.map(row => row.evidenceId))),
     frame(CREDIT_STAGE_IDS.retrieval, roles.length > 0 || evidenceIds.length > 0,
       roleMean || (evidenceIds.length ? 1 : 0),
-      { roleTraces: roles.length, evidence: evidenceIds.length, meanRoleScore: roleMean },
+      { roleTraces: roles.length, evidence: evidenceIds.length, meanRawRoleScore: roleMean },
       ids(roles.map(row => row.evidenceId).concat(evidenceIds)), [])
   ];
 
