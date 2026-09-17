@@ -206,7 +206,8 @@ import {
   operationalAuthorityForProjection,
   projectRequestAuthority,
   requestOperatorDialogueSupport,
-  requestOperatorGraphSupport
+  requestOperatorGraphSupport,
+  type RequestAuthorityProjection
 } from "./request-authority.js";
 import { hybridRecall } from "./retrieval.js";
 import { captureResourceUsageSnapshot, measureResourceUsageDelta } from "./resource-usage-accounting.js";
@@ -1766,9 +1767,9 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
               // creative candidate's embedded factual premise -- it passed
               // on main with this exact conditional before any of this
               // session's changes.
-              // A thin creative margin still retrieves anchored, so memory can decide the authority (see memoryDecidesAuthority).
+              // An undecided projection still retrieves anchored, so memory can decide the authority (see memoryDecidesAuthority).
               sourceAnchoringRequired: !authoredRequestNeedsNoRetrieval
-                && (requestedAuthority !== "creative" || authorityProjection.scoreMargin < 0.12),
+                && creativeRetrievalNeedsSourceAnchoring(requestedAuthority, authorityProjection),
               residentOnly: fastRuntimeBudget,
               // So a slice served from cache records which condition owns the entry, which is what the sealed
               // verifier's cache-owner check reads.
@@ -1874,7 +1875,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             requestScaffolding: requestClosedClassWords(),
             languageModels: authorityLanguage.state.models ?? [],
             continuationPopulation: authorityLanguage.state.continuationPopulation,
-            sourceAnchoringRequired: requestedAuthority !== "creative" || authorityProjection.scoreMargin < 0.12,
+            sourceAnchoringRequired: creativeRetrievalNeedsSourceAnchoring(requestedAuthority, authorityProjection),
             residentOnly: false
           }).catch(() => undefined);
           // Keep the durable slice when it reaches the subject, or when the resident one held nothing durable at all.
@@ -2381,6 +2382,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       });
       // Quotation recall: the request near-duplicates a remembered sentence, so it is recall whatever the pre-retrieval projection said.
       // Memory decides an undecided projection: a covering evidence answer under a thin creative margin is recall too.
+      // T19: this gap predates 79f6136's rescaling and fired on 44 of 79 replayed live fields before it and 1 after.
       const memoryDecidesAuthority = Boolean(answerProposal) && authorityProjection.scoreMargin < 0.12;
       // Recall outranks any projection, not just a creative one. The rule was written for creative because that is
       // the only place the projection ever landed while the routing patterns were unreachable; once they hydrate,
@@ -6516,6 +6518,22 @@ function compositionDemandTarget(requestText: string): number {
   // ever climb and every request eventually reads as demanding composition.
   if (distinct.length < 2) return 0.15;
   return Math.min(0.92, 0.58 + (distinct.length - 2) * 0.09);
+}
+
+/**
+ * Whether retrieval for this turn must anchor on sources.
+ *
+ * Anything but a creative turn does. A creative turn takes the exception only where the projector separated the
+ * authorities at all: an undecided projection is not a licence to skip the corpus. Both retrieval call sites read
+ * this one function, and it reads the projection's own named separation rather than a cut on the score margin --
+ * 79f6136 rescaled that margin from the absolute requirement level to deviation from each dimension's neutral, so
+ * a gap chosen against the old distribution is measuring a distribution that no longer exists.
+ */
+export function creativeRetrievalNeedsSourceAnchoring(
+  authority: RequestedAuthority,
+  projection: Pick<RequestAuthorityProjection, "authorityDistinguishable">
+): boolean {
+  return authority !== "creative" || !projection.authorityDistinguishable;
 }
 
 function withCompositionDemand(field: TurnRequirementField, requestText: string): TurnRequirementField {
