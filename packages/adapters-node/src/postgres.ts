@@ -1036,6 +1036,10 @@ export function schemaStatements(q: string, informationAccess?: InformationAcces
        updated_at=EXCLUDED.updated_at`,
     `CREATE TABLE IF NOT EXISTS ${q}.ngram_observations (id TEXT PRIMARY KEY, stream_id TEXT NOT NULL, language_hint TEXT NOT NULL, order_n INT NOT NULL, history TEXT[] NOT NULL, symbol TEXT NOT NULL, count BIGINT NOT NULL, field_weight DOUBLE PRECISION NOT NULL, source_version_id TEXT, evidence_id TEXT, observed_at TIMESTAMPTZ NOT NULL, metadata_json JSONB NOT NULL, information_label JSONB NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.ngram_models (id TEXT PRIMARY KEY, stream_id TEXT NOT NULL, language_hint TEXT NOT NULL, max_order INT NOT NULL, discount DOUBLE PRECISION NOT NULL, model_json JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
+    // Same reason as the model columns below, and on the schema's largest table: the profile and source-system
+    // scope filters read a narrow column instead of parsing metadata_json per row, and their indexes hold a
+    // plain text key instead of an expression Postgres must evaluate on every insert and every index entry.
+    `ALTER TABLE ${q}.ngram_observations ADD COLUMN IF NOT EXISTS profile_id TEXT GENERATED ALWAYS AS (metadata_json->>'profileId') STORED, ADD COLUMN IF NOT EXISTS source_system TEXT GENERATED ALWAYS AS (metadata_json->>'sourceSystem') STORED`,
     // The trainedMass DESC ranking and the profile/source-system scope filters read these instead of detoasting model_json (1.68GB of TOAST) per row.
     `ALTER TABLE ${q}.ngram_models ADD COLUMN IF NOT EXISTS profile_id TEXT GENERATED ALWAYS AS (model_json->>'profileId') STORED, ADD COLUMN IF NOT EXISTS source_system TEXT GENERATED ALWAYS AS (model_json->>'sourceSystem') STORED, ADD COLUMN IF NOT EXISTS trained_mass NUMERIC GENERATED ALWAYS AS (COALESCE((model_json->'model'->>'totalUnigramCount')::numeric, 0)) STORED`,
     `CREATE TABLE IF NOT EXISTS ${q}.language_units (id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, source_version_id TEXT NOT NULL, script TEXT NOT NULL, unit_kind TEXT NOT NULL, unit_text TEXT NOT NULL, features TEXT[] NOT NULL, competence_vector DOUBLE PRECISION[] NOT NULL, alpha DOUBLE PRECISION NOT NULL, evidence_ids TEXT[] NOT NULL, metadata_json JSONB NOT NULL, information_label JSONB NOT NULL)`,
@@ -1247,8 +1251,12 @@ export function schemaStatements(q: string, informationAccess?: InformationAcces
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_learning_needs_status ON ${q}.learning_needs(status,priority DESC,updated_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ngram_stream_order ON ${q}.ngram_observations(stream_id,language_hint,order_n,observed_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ngram_source_version_rank ON ${q}.ngram_observations(source_version_id,count DESC,observed_at DESC)`,
-    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ngram_profile_rank ON ${q}.ngram_observations((metadata_json->>'profileId'),count DESC,observed_at DESC)`,
-    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ngram_source_system_rank ON ${q}.ngram_observations((metadata_json->>'sourceSystem'), count DESC, observed_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ngram_profile_rank_stored ON ${q}.ngram_observations(profile_id,count DESC,observed_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ngram_source_system_rank_stored ON ${q}.ngram_observations(source_system, count DESC, observed_at DESC)`,
+    // Superseded by the two stored-column indexes above. Kept as drops rather than deleted lines because an
+    // expression index Postgres still maintains on every insert is the cost this change exists to remove.
+    `DROP INDEX IF EXISTS ${q}.idx_${clean(q)}_ngram_profile_rank`,
+    `DROP INDEX IF EXISTS ${q}.idx_${clean(q)}_ngram_source_system_rank`,
     // Unscoped listNgramObservations ordering; without this the 7.6M-row
     // table is fully sorted per call (measured live: 6+ minutes).
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_ngram_global_rank ON ${q}.ngram_observations(count DESC, observed_at DESC, id ASC)`,
@@ -3734,22 +3742,23 @@ function createModelStore(storage: PostgresStorageAdapter): ModelStore {
 // = lp.id)` makes the planner seq-scan the whole table once per candidate
 // profile that has no observations (verified live: the profile-cluster
 // query sat in IO DataFileRead for 25+ minutes after whole-novel
-// training). This recursive skip scan over the (metadata_json->>
-// 'profileId') expression index enumerates the distinct profileIds in one
-// index probe per distinct value (verified live: 53ms vs 3.5 minutes for
-// the same 23 values), and because the IN subquery is uncorrelated it is
-// hashed once per query instead of re-run per row.
+// training). This recursive skip scan over the stored profile_id index
+// enumerates the distinct profileIds in one index probe per distinct value
+// (verified live: 53ms vs 3.5 minutes for the same 23 values), and because
+// the IN subquery is uncorrelated it is hashed once per query instead of
+// re-run per row.
 function observationReferencedProfileFilterSql(storage: PostgresStorageAdapter): string {
   const observations = storage.table("ngram_observations");
+  const profileId = ngramObservationProfileIdExpression("o");
   return `lp.id IN (
     WITH RECURSIVE obs_profiles(pid) AS (
-      (SELECT o.metadata_json->>'profileId' FROM ${observations} o
-       WHERE o.metadata_json->>'profileId' IS NOT NULL
-       ORDER BY o.metadata_json->>'profileId' LIMIT 1)
+      (SELECT ${profileId} FROM ${observations} o
+       WHERE ${profileId} IS NOT NULL
+       ORDER BY ${profileId} LIMIT 1)
       UNION ALL
-      SELECT (SELECT o.metadata_json->>'profileId' FROM ${observations} o
-              WHERE o.metadata_json->>'profileId' > op.pid
-              ORDER BY o.metadata_json->>'profileId' LIMIT 1)
+      SELECT (SELECT ${profileId} FROM ${observations} o
+              WHERE ${profileId} > op.pid
+              ORDER BY ${profileId} LIMIT 1)
       FROM obs_profiles op WHERE op.pid IS NOT NULL
     )
     SELECT pid FROM obs_profiles WHERE pid IS NOT NULL
@@ -4273,7 +4282,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         const sharedWhere: string[] = [];
         if (query.streamId) { params.push(query.streamId); sharedWhere.push(`observation.stream_id=$${params.length}`); }
         if (query.languageHint) { params.push(query.languageHint); sharedWhere.push(`observation.language_hint=$${params.length}`); }
-        if (query.sourceSystem) { params.push(query.sourceSystem); sharedWhere.push(`observation.metadata_json->>'sourceSystem'=$${params.length}`); }
+        if (query.sourceSystem) { params.push(query.sourceSystem); sharedWhere.push(`${ngramObservationSourceSystemExpression("observation")}=$${params.length}`); }
         appendInformationAccess(storage, "observation", params, sharedWhere);
         params.push([...ownerIds]);
         const ownersParam = params.length;
@@ -4285,7 +4294,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
            CROSS JOIN LATERAL (
              SELECT observation.*
              FROM ${table} observation
-             WHERE ${sharedWhere.length ? `${sharedWhere.join(" AND ")} AND ` : ""}observation.metadata_json->>'profileId'=owner.owner_id
+             WHERE ${sharedWhere.length ? `${sharedWhere.join(" AND ")} AND ` : ""}${ngramObservationProfileIdExpression("observation")}=owner.owner_id
              ORDER BY observation.count DESC, observation.observed_at DESC, observation.id ASC
              LIMIT $${limitParam}
            ) scoped
@@ -4327,7 +4336,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       const innerWhere: string[] = [];
       if (query.streamId) { params.push(query.streamId); innerWhere.push(`observation.stream_id=$${params.length}`); }
       if (query.languageHint) { params.push(query.languageHint); innerWhere.push(`observation.language_hint=$${params.length}`); }
-      if (query.sourceSystem) { params.push(query.sourceSystem); innerWhere.push(`observation.metadata_json->>'sourceSystem'=$${params.length}`); }
+      if (query.sourceSystem) { params.push(query.sourceSystem); innerWhere.push(`${ngramObservationSourceSystemExpression("observation")}=$${params.length}`); }
       const accessWhere: string[] = [];
       appendInformationAccess(storage, "scoped", params, accessWhere);
       params.push(Math.max(1, limit) * 2);
@@ -6248,6 +6257,16 @@ export function languagePatternSourceSystemExpression(alias: string): string {
 
 /** A model's source system, read from the stored generated column that carries `model_json->>'sourceSystem'`. Pure. */
 export function ngramModelSourceSystemExpression(alias: string): string {
+  return `${alias}.source_system`;
+}
+
+/** An observation's owning profile, read from the stored generated column that carries `metadata_json->>'profileId'`. Pure. */
+export function ngramObservationProfileIdExpression(alias: string): string {
+  return `${alias}.profile_id`;
+}
+
+/** An observation's source system, read from the stored generated column that carries `metadata_json->>'sourceSystem'`. Pure. */
+export function ngramObservationSourceSystemExpression(alias: string): string {
   return `${alias}.source_system`;
 }
 
