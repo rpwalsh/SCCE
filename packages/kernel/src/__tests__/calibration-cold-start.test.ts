@@ -10,6 +10,7 @@ import {
   calibrationModelMatchFor,
   calibrationObservationRecord,
   creativePreferenceModelFor,
+  creditRewardClasses,
   judgeRequirementModelFor,
   operatorRoutingModelFor,
   type CalibrationObservationRecord
@@ -336,7 +337,7 @@ describe("T1: a credit row written before the reward existed is also unclassifie
   });
 });
 
-describe("T3: the binned calibrator's cold-start criterion is the reward split's, not a count", () => {
+describe("T3: a turn-level reward never labels a per-quantity calibration", () => {
   function creditRows(rewards: readonly number[]): CalibrationObservationRecord[] {
     return rewards.map((reward, index) => calibrationObservationRecord({
       calibrationId: CALIBRATION_IDS.proofSupport,
@@ -366,22 +367,26 @@ describe("T3: the binned calibrator's cold-start criterion is the reward split's
     });
   }
 
-  it("stays unmeasured below the reward split's own minimum sample count", () => {
-    // otsuThreshold refuses under four values, so three episodes cannot have produced a class.
-    for (const rewards of [[0.9], [0.9, 0.1], [0.9, 0.5, 0.1]]) {
-      expect(resolve(rewards).measurement).toBe("unmeasured_no_model");
-      expect(resolve(rewards).value).toBe(0.66);
+  it("stays unmeasured at every episode count, however well the rewards separate", () => {
+    // Whether the turn went well is a property of the turn, not of the support figure proof.support scores.
+    // All 83 live proof.support rows are credit rows, so its only available label is that turn-level reward.
+    const populations = [
+      [0.9],
+      [0.9, 0.1],
+      [0.9, 0.5, 0.1],
+      [0.5, 0.5, 0.5, 0.5],
+      [0.9, 0.8, 0.2, 0.1],
+      [1, 0.95, 0.9, 0.85, 0.15, 0.1, 0.05, 0]
+    ];
+    for (const rewards of populations) {
+      const resolved = resolve(rewards);
+      expect(resolved.measurement).toBe("unmeasured_no_model");
+      expect(resolved.value).toBe(0.66);
     }
   });
 
-  it("stays unmeasured when the episodes' rewards do not separate", () => {
-    // Four episodes, enough rows, but a degenerate split: nothing has distinguished a good turn from a bad one.
-    const resolved = resolve([0.5, 0.5, 0.5, 0.5]);
-    expect(resolved.measurement).toBe("unmeasured_no_model");
-    expect(resolved.value).toBe(0.66);
-  });
-
-  it("calibrates once the episodes' own rewards separate", () => {
-    expect(resolve([0.9, 0.8, 0.2, 0.1]).measurement).toBe("measured");
+  it("leaves the turn-level reward available to the turn-level fit", () => {
+    // The routing fit consumes exactly this population and derives its own class from it; that is unchanged.
+    expect(creditRewardClasses(new Map([["a", 0.9], ["b", 0.8], ["c", 0.2], ["d", 0.1]]))?.positive.size).toBe(2);
   });
 });

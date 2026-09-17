@@ -1101,28 +1101,28 @@ function creditRowEpisode(observation: CalibrationObservationRecord): { episodeI
 }
 
 /**
- * The outcome class a row belongs to, or `undefined` when nothing has classified it. A runtime credit row's
- * boolean is `label === positive` and the runtime never issues that label, so taking it as a negative reports
- * an unlabelled turn as a measured failure -- two such turns are enough to make every credit-observed id read
- * a calibrated zero. A grader's label wins; otherwise the class comes from an Otsu split of the episodes' own
- * rewards, exactly as the operator routing fit derives it. Rows outside the credit ledger keep their boolean.
+ * The outcome class a row belongs to for a per-quantity calibration, or `undefined` when nothing has measured
+ * one. Two separate reasons a credit row has none, both measured on the live table:
+ *
+ * A runtime credit row's boolean is `label === positive` and `runtimeOutcome` only ever issues
+ * `outcome.unknown`, so taking it as a negative reports an unlabelled turn as a measured failure: two turns
+ * whose measured reward was 0.82 built twelve models and made every credit-observed id read a calibrated zero.
+ *
+ * Its reward is not the fix either, and this is law 3. A turn's reward is a property of the turn; whether
+ * `proof.support` is well calibrated is a property of that support figure. All 83 live `proof.support` rows
+ * are credit rows, so its only available label is the turn's reward, and splitting those rewards puts 17 rows
+ * of raw support 0 in a bin with empirical 0.71 -- "zero proof support predicts a good turn" is true of this
+ * instance and is not a calibration of proof support. The turn-level reward belongs to the turn-level fit, and
+ * `operatorRoutingSamplesFromObservations` is where it is already consumed.
+ *
+ * A grader's verdict is an external judgement of the episode and keeps its boolean. Rows from writers outside
+ * the credit ledger carry an outcome their own writer measured, and keep it untouched.
  */
 function labelledOutcomes(observations: readonly CalibrationObservationRecord[]): Map<string, boolean | undefined> {
-  const rewardByEpisode = new Map<string, number>();
-  for (const observation of observations) {
-    const credit = creditRowEpisode(observation);
-    if (credit && !credit.supervised && credit.reward !== undefined) rewardByEpisode.set(credit.episodeId, credit.reward);
-  }
-  const classes = creditRewardClasses(rewardByEpisode);
   const resolved = new Map<string, boolean | undefined>();
   for (const observation of observations) {
     const credit = creditRowEpisode(observation);
-    if (!credit || credit.supervised) {
-      resolved.set(observation.id, observation.outcome);
-      continue;
-    }
-    // No reward measured means no quantity to split, so this row entered no class. Absent, never negative.
-    resolved.set(observation.id, credit.reward === undefined ? undefined : classes?.positive.has(credit.episodeId));
+    resolved.set(observation.id, !credit || credit.supervised ? observation.outcome : undefined);
   }
   return resolved;
 }
