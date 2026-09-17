@@ -106,7 +106,10 @@ export function resolveWikipediaCorpusTarget(config: ScceRuntimeConfig, absolute
   const usingConfiguredDump = Boolean(configuredDump && configuredDump === normalizedTarget);
   const dumpPath = looksLikeWikiDump ? normalizedTarget : configuredDump ?? normalizedTarget;
   const dumpWikiCode = targetWikiCode ?? wikipediaDumpCode(path.basename(dumpPath).toLocaleLowerCase()) ?? "wiki";
-  const configuredIndex = usingConfiguredDump && configured?.indexPath && configured.indexPath.trim() ? path.resolve(configured.indexPath) : undefined;
+  // The dump is not its own index. Configured that way, every offset read is a line of XML, so each seek
+  // decodes garbage and the whole run reports blocks with zero pages; falling back to the magic scan reads it.
+  const configuredIndexPath = usingConfiguredDump && configured?.indexPath && configured.indexPath.trim() ? path.resolve(configured.indexPath) : undefined;
+  const configuredIndex = configuredIndexPath === dumpPath ? undefined : configuredIndexPath;
   return {
     dumpPath,
     indexPath: configuredIndex,
