@@ -29,6 +29,9 @@ const args = new Map(process.argv.slice(2).filter(a => a.startsWith("--")).map(a
   return at < 0 ? [a.slice(2), "true"] : [a.slice(2, at), a.slice(at + 1)];
 }));
 const root = path.resolve(args.get("root") ?? "corpus/gutenberg");
+// Gutenberg files carry licence boilerplate that would train as prose; other corpora do not, and
+// stripping a wiki article on those markers silently truncates it. --strip=none turns it off.
+const stripMode = args.get("strip") ?? "gutenberg";
 const heldOutBooks = Number(args.get("heldout") ?? 4);
 const passagesPerBook = Number(args.get("passages") ?? 12);
 const passageSymbols = Number(args.get("passageSymbols") ?? 60);
@@ -48,7 +51,7 @@ if (names.length < heldOutBooks + 2) {
 const books = [];
 for (const name of names) {
   const raw = await readFile(path.join(root, name), "utf8");
-  books.push({ name, symbols: symbolizeData(stripGutenbergBoilerplate(raw)) });
+  books.push({ name, symbols: symbolizeData(stripMode === "none" ? raw : stripGutenbergBoilerplate(raw)) });
 }
 // Deterministic split by position so a re-run measures the same thing.
 const stride = Math.ceil(books.length / heldOutBooks);
@@ -132,6 +135,8 @@ await writeFile(outPath, `${JSON.stringify({
   passagesPerBook,
   passageSymbols,
   vocabularyLimit: VOCABULARY_LIMIT,
+  strip: stripMode,
+  corpusSymbolCap,
   discount: DISCOUNT,
   rows,
   best
