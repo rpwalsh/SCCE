@@ -1084,20 +1084,14 @@ export function calibrationObservationsFromDialogueOutcome(input: {
  * old constant-false boolean, so reading absence of a reward as "not a credit row" would keep exactly the rows
  * this resolution exists to exclude.
  */
-function creditRowEpisode(observation: CalibrationObservationRecord): { episodeId: string; reward?: number; supervised: boolean } | undefined {
+function creditRowEpisode(observation: CalibrationObservationRecord): { episodeId: string; supervised: boolean } | undefined {
   const metadata = jsonRecord(observation.metadata);
   const stage = metadata.schema === "scce.cognitive_credit.stage_observation.v1";
   const turn = metadata.schema === "scce.cognitive_credit.record.v1";
   if (!stage && !turn) return undefined;
-  const outcome = turn ? jsonRecord(metadata.outcome) : metadata;
   const episodeId = typeof metadata.episodeId === "string" ? metadata.episodeId : "";
   if (!episodeId) return undefined;
-  const reward = outcome.reward;
-  return {
-    episodeId,
-    reward: typeof reward === "number" && Number.isFinite(reward) ? clamp01(reward) : undefined,
-    supervised: outcome.supervised === true
-  };
+  return { episodeId, supervised: (turn ? jsonRecord(metadata.outcome) : metadata).supervised === true };
 }
 
 /**
