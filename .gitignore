@@ -182,3 +182,4 @@ tools/code-generation-calibration/report*.json
 .agent/locks/
 /.l2build/
 /.tmp-server-l1.err
+scce.config.new.json
