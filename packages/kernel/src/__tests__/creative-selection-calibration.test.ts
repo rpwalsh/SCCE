@@ -7,7 +7,7 @@ import {
   CALIBRATION_TASK_CLASS_IDS,
   CREATIVE_PREFERENCE_FEATURE_SCHEMA,
   buildCalibrationModelSet,
-  calibrationModelFor,
+  calibrationModelMatchFor,
   creativePreferenceObservationPair,
   creativePreferenceScore,
   loadCalibrationModelSet,
@@ -308,10 +308,10 @@ describe("creative candidate selection and preference calibration", () => {
     modelSet.models[`${CALIBRATION_IDS.candidateMass}|${CALIBRATION_TASK_CLASS_IDS.sourceBoundQa}`] = {
       id: "calibration.source-only",
       taskClass: CALIBRATION_TASK_CLASS_IDS.sourceBoundQa,
-      bins: [{ lower: 0, upper: 1, confidence: 0.5, empirical: 0.5 }],
+      bins: [{ lower: 0, upper: 1, confidence: 0.5, empirical: 0.5, count: 2 }],
       createdAt: 1
     };
-    expect(calibrationModelFor({
+    expect(calibrationModelMatchFor({
       modelSet,
       calibrationId: CALIBRATION_IDS.candidateMass,
       taskClass: CALIBRATION_TASK_CLASS_IDS.creativeGeneration

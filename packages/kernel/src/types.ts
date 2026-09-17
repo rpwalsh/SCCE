@@ -572,6 +572,13 @@ export interface SemanticProof {
   createdAt: number;
 }
 
+/** Which of the four distinct states a calibration request landed in. `unmeasured_*` are not measurements. */
+export type CalibrationMeasurementState =
+  | "measured"
+  | "unmeasured_no_model"
+  | "unmeasured_task_class"
+  | "unmeasured_score_region";
+
 export interface SemanticEntailmentResult {
   claim: Claim;
   verdict: SemanticEntailmentVerdict;
@@ -580,6 +587,11 @@ export interface SemanticEntailmentResult {
   force: EpistemicForce;
   support: number;
   contradiction: number;
+  /** Set by the calibrating entailment path only; absent means no calibration was attempted for this result. */
+  supportMeasurement?: CalibrationMeasurementState;
+  contradictionMeasurement?: CalibrationMeasurementState;
+  rawSupport?: number;
+  rawContradiction?: number;
   faithfulnessLcb: number;
   confidence: SemanticEntailmentConfidence;
   sourceAssessment?: SourceEvidenceAssessment;

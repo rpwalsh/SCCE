@@ -165,7 +165,7 @@ describe("scoring calibration harness", () => {
           taskClass: CALIBRATION_TASK_CLASS_IDS.sourceBoundQa,
           createdAt: 1,
           bins: [
-            { lower: 0, upper: 1, confidence: 0.5, empirical: 0.25 }
+            { lower: 0, upper: 1, confidence: 0.5, empirical: 0.25, count: 4 }
           ]
         }
       }

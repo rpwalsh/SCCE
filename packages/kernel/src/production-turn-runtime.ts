@@ -2669,7 +2669,10 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         },
         support: {
           entailmentSupport: entailmentResult.support,
+          entailmentSupportMeasurement: entailmentResult.supportMeasurement ?? "not_attempted",
+          entailmentRawSupport: entailmentResult.rawSupport ?? entailmentResult.support,
           entailmentContradiction: entailmentResult.contradiction,
+          entailmentContradictionMeasurement: entailmentResult.contradictionMeasurement ?? "not_attempted",
           semanticSupport: semanticProof.support,
           semanticContradiction: semanticProof.contradiction,
           semanticVerdict: semanticProof.verdict

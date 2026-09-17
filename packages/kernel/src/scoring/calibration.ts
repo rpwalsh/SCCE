@@ -11,6 +11,8 @@ export interface CalibrationBin {
   upper: number;
   confidence: number;
   empirical: number;
+  /** Training rows in this bin. Zero means `empirical` is the bin's prior midpoint, not an observed frequency. */
+  count: number;
 }
 
 export interface CalibrationModel {
@@ -38,7 +40,7 @@ export function buildCalibrationModel(input: { id: string; taskClass: string; po
     const rows = input.points.filter(point => point.raw >= lower && (i === binCount - 1 ? point.raw <= upper : point.raw < upper));
     const confidence = rows.length ? rows.reduce((sum, row) => sum + clamp01(row.raw), 0) / rows.length : (lower + upper) / 2;
     const empirical = rows.length ? rows.filter(row => row.outcome).length / rows.length : confidence;
-    bins.push({ lower, upper, confidence: clamp01(confidence), empirical: clamp01(empirical) });
+    bins.push({ lower, upper, confidence: clamp01(confidence), empirical: clamp01(empirical), count: rows.length });
   }
   return {
     id: input.id,
@@ -60,10 +62,14 @@ export function buildCalibrationModel(input: { id: string; taskClass: string; po
   };
 }
 
-export function calibrateProbability(raw: number, model: CalibrationModel): number {
+export function calibrationBinFor(raw: number, model: CalibrationModel): CalibrationBin | undefined {
   const x = clamp01(raw);
-  const bin = model.bins.find(item => x >= item.lower && (item.upper === 1 ? x <= item.upper : x < item.upper)) ?? model.bins[model.bins.length - 1];
-  return clamp01(bin?.empirical ?? x);
+  return model.bins.find(item => x >= item.lower && (item.upper === 1 ? x <= item.upper : x < item.upper)) ?? model.bins[model.bins.length - 1];
+}
+
+export function calibrateProbability(raw: number, model: CalibrationModel): number {
+  const bin = calibrationBinFor(raw, model);
+  return clamp01(bin?.empirical ?? raw);
 }
 
 export function calibratedScoreTrace(input: { raw: number; model: CalibrationModel; meaning: string; provenance: string[]; inputs: string[] }): ScoreTrace {

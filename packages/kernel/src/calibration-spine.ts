@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { canonicalStringify, clamp01, createClock, featureSet, toJsonValue } from "./primitives.js";
-import { buildCalibrationModel, calibratedScoreTrace, calibrateProbability, type CalibrationModel } from "./scoring/calibration.js";
+import { buildCalibrationModel, calibratedScoreTrace, calibrateProbability, calibrationBinFor, type CalibrationModel } from "./scoring/calibration.js";
 import type { ScoreTrace } from "./scoring/score-trace.js";
 import {
   COGNITIVE_OPERATOR_IDS,
@@ -12,7 +12,7 @@ import {
   type TurnRequirementField
 } from "./turn-requirements.js";
 import { otsuThreshold } from "./language-identity.js";
-import type { Clock, JsonValue } from "./types.js";
+import type { CalibrationMeasurementState, Clock, JsonValue } from "./types.js";
 
 export const CALIBRATION_IDS = {
   proofForceProved: "proof.force.proved",
@@ -172,9 +172,14 @@ export interface CalibratedRuntimeScore {
   raw: number;
   value: number;
   calibrated: boolean;
+  measurement: CalibrationMeasurementState;
   calibrationId: string;
   taskClass: string;
   modelId?: string;
+  /** A model that exists but did not measure this request; kept as provenance, never applied as a value. */
+  unappliedModelId?: string;
+  /** Training rows behind the applied bin, or behind the bin that was found and refused. */
+  sampleCount?: number;
   scoreTrace?: ScoreTrace;
 }
 
@@ -1247,18 +1252,26 @@ export async function loadCalibrationModelSet(input: {
   });
 }
 
-export function calibrationModelFor(input: {
+export interface CalibrationModelMatch {
+  model: CalibrationModel;
+  /** `cross_task_class` means the model was fit on a different population than the one being asked about. */
+  match: "exact" | "cross_task_class";
+}
+
+export function calibrationModelMatchFor(input: {
   modelSet?: CalibrationModelSet;
   calibrationId: string;
   taskClass?: string;
-}): CalibrationModel | undefined {
+}): CalibrationModelMatch | undefined {
   if (!input.modelSet) return undefined;
   const exactKey = input.taskClass ? `${input.calibrationId}|${input.taskClass}` : undefined;
-  if (exactKey && input.modelSet.models[exactKey]) return input.modelSet.models[exactKey];
+  const exact = exactKey ? input.modelSet.models[exactKey] : undefined;
+  if (exact) return { model: exact, match: "exact" };
   if (input.taskClass === CALIBRATION_TASK_CLASS_IDS.creativeGeneration) return undefined;
-  return Object.entries(input.modelSet.models)
+  const sibling = Object.entries(input.modelSet.models)
     .filter(([key]) => key.startsWith(`${input.calibrationId}|`))
     .sort((left, right) => right[1].createdAt - left[1].createdAt || left[0].localeCompare(right[0]))[0]?.[1];
+  return sibling ? { model: sibling, match: "cross_task_class" } : undefined;
 }
 
 export function creativePreferenceModelFor(input: {
@@ -1280,20 +1293,28 @@ export function calibrateRuntimeScore(input: {
   inputs?: string[];
 }): CalibratedRuntimeScore {
   const raw = clamp01(input.raw);
-  const model = input.fallbackModel ?? calibrationModelFor({ modelSet: input.modelSet, calibrationId: input.calibrationId, taskClass: input.taskClass });
-  if (!model) {
-    return {
-      raw,
-      value: raw,
-      calibrated: false,
-      calibrationId: input.calibrationId,
-      taskClass: input.taskClass
-    };
-  }
-  const value = calibrateProbability(raw, model);
+  const found = input.fallbackModel
+    ? { model: input.fallbackModel, match: input.fallbackModel.taskClass === input.taskClass ? "exact" as const : "cross_task_class" as const }
+    : calibrationModelMatchFor({ modelSet: input.modelSet, calibrationId: input.calibrationId, taskClass: input.taskClass });
+  const unmeasured = (measurement: CalibrationMeasurementState, sampleCount?: number): CalibratedRuntimeScore => ({
+    raw,
+    value: raw,
+    calibrated: false,
+    measurement,
+    calibrationId: input.calibrationId,
+    taskClass: input.taskClass,
+    unappliedModelId: found?.model.id,
+    sampleCount
+  });
+  if (!found) return unmeasured("unmeasured_no_model");
+  // A fit on another task class has not measured this one, and an empty bin holds a prior, not a frequency.
+  if (found.match === "cross_task_class") return unmeasured("unmeasured_task_class");
+  const bin = calibrationBinFor(raw, found.model);
+  if (!bin || bin.count <= 0) return unmeasured("unmeasured_score_region", bin?.count ?? 0);
+  const value = calibrateProbability(raw, found.model);
   const scoreTrace = input.meaning ? calibratedScoreTrace({
     raw,
-    model,
+    model: found.model,
     meaning: input.meaning,
     provenance: input.provenance ?? ["calibration-spine.calibrateRuntimeScore"],
     inputs: [...(input.inputs ?? []), `calibrationId:${input.calibrationId}`]
@@ -1302,9 +1323,11 @@ export function calibrateRuntimeScore(input: {
     raw,
     value,
     calibrated: true,
+    measurement: "measured",
     calibrationId: input.calibrationId,
     taskClass: input.taskClass,
-    modelId: model.id,
+    modelId: found.model.id,
+    sampleCount: bin.count,
     scoreTrace
   };
 }
