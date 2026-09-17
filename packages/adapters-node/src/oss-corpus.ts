@@ -4,8 +4,8 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { CORPUS_SOURCE_SYSTEM_IDS, codeCommentProse, codeLanguageForPath, codeTrainingSurface, toJsonValue, type InformationLabel, type ScceStorage } from "@scce/kernel";
-import { measureExhibitedContent } from "./code-graph.js";
+import { CORPUS_SOURCE_SYSTEM_IDS, codeCommentProse, codeLanguageForPath, codeTrainingSurface, createHasher, openingIdentityUnits, sourceTitleFromUri, toJsonValue, type InformationLabel, type ScceStorage } from "@scce/kernel";
+import { extractNodeSourceCodeFacts, measureExhibitedContent } from "./code-graph.js";
 import { inspectEngineeringCorpusFolder, type EngineeringCorpusFolderOptions } from "./engineering-corpus-folder.js";
 import { trainLanguageCorpusText, type LanguageCorpusTrainingReport } from "./language-corpus-trainer.js";
 import { createProjectDeclarationIndex } from "./project-artifact-declarations.js";
@@ -95,6 +95,7 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
   // A snapshot of ten repositories declares ten different sets of roles; the nearest declaring ancestor of each
   // file is the one its own tools resolve against, which is also how a monorepo package overrides its root.
   const roles = createProjectDeclarationIndex({ stopAt: root });
+  const hasher = createHasher();
   for (const file of inspection.files.filter(file => file.importable)) {
     if (heapCheckpointMb !== undefined && heapMiB() >= heapCheckpointMb) {
       stoppedByHeapSafetyBound = true;
@@ -109,6 +110,23 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
     if (sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.ossCode && !includeSource) continue;
     const raw = await readFile(file.absolutePath, "utf8");
     const artifactRole = await roles.roleFor(file.absolutePath);
+    const relativePath = normalizeRelative(file.path);
+    const sourceHash = file.contentHash ?? sha256(raw);
+    // Same producers document.ts uses, over the file rather than a projection: a projection is a different text,
+    // but every projection of a file is reachable by the one name and identity the file itself declares.
+    const sourceCodeFacts = extractNodeSourceCodeFacts({
+      absolutePath: file.absolutePath,
+      uri: relativePath,
+      mediaType: file.mediaType,
+      text: raw,
+      sha256: sourceHash,
+      hasher
+    });
+    const title = sourceTitleFromUri(relativePath);
+    const identity = [...new Set([
+      ...openingIdentityUnits(raw),
+      ...(sourceCodeFacts?.declarations ?? []).map(declaration => declaration.name).filter(Boolean).slice(0, 96)
+    ])].join(" ");
     // A source file carries two languages at once, and one projection cannot hold both. The code lane learns the
     // token stream itself, because that is the only thing a generator can compose an expression out of; the
     // documentation lane learns the file's comments and the words its identifiers are built from, because that
@@ -137,9 +155,9 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
         reports.push(await trainLanguageCorpusText({
           storage: input.storage,
           sourceSystem: projected.sourceSystem,
-          streamUri: `${projected.sourceSystem}:${normalizeRelative(file.path)}`,
+          streamUri: `${projected.sourceSystem}:${relativePath}`,
           sourceUri: input.sourceUriBase
-            ? `${input.sourceUriBase.replace(/#.*$/u, "")}#path=${encodeURIComponent(normalizeRelative(file.path))}`
+            ? `${input.sourceUriBase.replace(/#.*$/u, "")}#path=${encodeURIComponent(relativePath)}`
             : pathToFileURL(file.absolutePath).href,
           text: projected.text,
           mediaType: file.mediaType,
@@ -151,8 +169,12 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
           languageAliases: input.languageAliases,
           informationLabel: OSS_CORPUS_INFORMATION_LABEL,
           corpusMetadata: toJsonValue({
-            relativePath: normalizeRelative(file.path),
-            sourceHash: file.contentHash ?? sha256(raw),
+            // Retrieval anchors a named subject to a source's title and identity; without them at the producer
+            // every OSS span was unreachable by name until a backfill ran. Same contract as document.ts.
+            title,
+            identity,
+            relativePath,
+            sourceHash,
             extractor: file.extractor,
             supportedSections: file.supportedSections,
             projection: projected.projection,
@@ -161,7 +183,7 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
             // A projection is a different text, so intervals measured on the file do not describe it. Only the
             // verbatim projection shares the file's coordinate space; the rest carry why they are unmeasured.
             exhibitedContent: projected.projection === "verbatim"
-              ? measureExhibitedContent({ uri: normalizeRelative(file.path), mediaType: file.mediaType, text: projected.text })
+              ? measureExhibitedContent({ uri: relativePath, mediaType: file.mediaType, text: projected.text })
               : {
                 schema: "scce.exhibited-content.v1",
                 measured: false,

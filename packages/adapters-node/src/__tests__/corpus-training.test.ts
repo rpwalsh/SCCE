@@ -14,7 +14,7 @@ import {
   validateConfig,
   type ScceRuntimeConfig
 } from "../index.js";
-import { canonicalCorpusSourceSystemId, createClock, createHasher, createIdFactory, CORPUS_ROLE_IDS } from "@scce/kernel";
+import { canonicalCorpusSourceSystemId, createClock, createHasher, createIdFactory, resolveEvidenceSourceIdentity, CORPUS_ROLE_IDS } from "@scce/kernel";
 import type {
   EvidenceSpan,
   InformationLabel,
@@ -191,6 +191,55 @@ describe("multi-corpus training", () => {
     const proseReport = result.reports.find(report => report.streamUri.endsWith("src/pump.ts") && report.sourceSystem === "oss_docs")!;
     expect(codeReport.streamUri.endsWith("src/pump.ts")).toBe(true);
     expect(proseReport).toBeDefined();
+  });
+
+  it("names every OSS and Gutenberg source version by title and identity at ingest, not by backfill", async () => {
+    const ossRoot = await tempDir("oss-identity-fixture-");
+    await mkdir(path.join(ossRoot, "src"), { recursive: true });
+    await writeFile(path.join(ossRoot, "README.md"), "Readable docs explain the pump API and the maintenance flow.", "utf8");
+    await writeFile(path.join(ossRoot, "src", "pump-pressure.ts"), [
+      "// Stabilize pump pressure before returning a status object.",
+      "export function stabilizePumpPressure(input: number) {",
+      "  return { pressureReading: input, stable: input > 0 };",
+      "}"
+    ].join("\n"), "utf8");
+    const oss = memoryStorage();
+    await trainOssCorpus({ storage: oss.storage, rootPath: ossRoot, maxFiles: 10, maxFileBytes: 100_000, ngramMaxOrder: 3, ngramMaxCountersPerOrder: 64 });
+
+    expect(oss.state.sourceVersions.length).toBeGreaterThan(0);
+    for (const source of oss.state.sourceVersions) {
+      expect(nonEmptyString(recordOf(source.metadata).title)).toBe(true);
+      expect(nonEmptyString(recordOf(source.metadata).identity)).toBe(true);
+    }
+    const codeSource = oss.state.sourceVersions.find(source => String(recordOf(source.metadata).relativePath) === "src/pump-pressure.ts")!;
+    expect(String(recordOf(codeSource.metadata).title)).toBe("pump pressure");
+    // A source file is about what it declares, so the declared name has to survive into the identity.
+    expect(String(recordOf(codeSource.metadata).identity)).toContain("stabilizePumpPressure");
+    for (const span of oss.state.evidence) {
+      expect(nonEmptyString(resolveEvidenceSourceIdentity(span.provenance).title)).toBe(true);
+      expect(nonEmptyString(resolveEvidenceSourceIdentity(span.provenance).identity)).toBe(true);
+    }
+
+    const gutenbergRoot = await tempDir("gutenberg-identity-fixture-");
+    await writeFile(path.join(gutenbergRoot, "moby-dick_or-the-whale.txt"), [
+      "The Project Gutenberg eBook of Moby Dick; Or, The Whale",
+      "",
+      "*** START OF THE PROJECT GUTENBERG EBOOK FIXTURE ***",
+      "",
+      "Call me Ishmael. The workshop had a patient rhythm and the sentences were public-domain material.",
+      "",
+      "*** END OF THE PROJECT GUTENBERG EBOOK FIXTURE ***"
+    ].join("\n"), "utf8");
+    const gutenberg = memoryStorage();
+    await trainGutenbergCorpus({ storage: gutenberg.storage, rootPath: gutenbergRoot, maxFilesPerRun: 1, maxFileBytes: 100_000, ngramMaxOrder: 3, ngramMaxCountersPerOrder: 64 });
+
+    const book = gutenberg.state.sourceVersions[0]!;
+    // One title contract, the producer document.ts already uses: separators in a file name are word boundaries.
+    expect(String(recordOf(book.metadata).title)).toBe("moby dick or the whale");
+    expect(String(recordOf(book.metadata).identity)).toContain("whale");
+    for (const span of gutenberg.state.evidence) {
+      expect(nonEmptyString(resolveEvidenceSourceIdentity(span.provenance).identity)).toBe(true);
+    }
   });
 
   it("keeps the code corpus free of prose and the prose corpus free of syntax", async () => {
@@ -656,6 +705,15 @@ function sourceSystemIdOf(value: JsonValue): string | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const sourceSystemId = (value as Record<string, JsonValue>).sourceSystemId;
   return typeof sourceSystemId === "string" ? sourceSystemId : undefined;
+}
+
+function nonEmptyString(value: unknown): boolean {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function recordOf(value: JsonValue | undefined): Record<string, JsonValue> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return value as Record<string, JsonValue>;
 }
 
 function unusedStore(): Record<string, (...args: never[]) => Promise<unknown>> {
