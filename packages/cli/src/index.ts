@@ -11,7 +11,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { acquireAndTrainGithubOssRepository, assertHydratedRuntimeReady, buildScce2BrainShardIndex, createHydrationPlan, createNodeRuntime, inspectHydrationRecords, fitRelationPotentialFromGraph, runEvaluationReleaseGate, proposeSelfRewrite, createScce2ToV3Importer, createWikipediaV3Ingestor, createWorkspaceRuntime, dryRunDeveloperRepoPlan, dryRunEngineeringCorpusIngest, fullyVerifyEventLedger, graphDeveloperRepo, importHydrationPlan, inspectDeveloperRepo, inspectEngineeringCorpusFolder, inspectHydrationStatus, inspectV2Artifacts, inspectV2GraphShard, inspectV2Ngram, inspectV2Profile, inspectV2Stream, inspectV2StreamTopic, inspectV2Topic, parseRepoDiagnosticsFixture, readScceRuntimeConfig, routeEngineeringCorpusFixture, scanLanguageControlHygiene, trainDialogueCorpus, trainGutenbergCorpus, trainOssCorpus, trainStoredCorpusConstructions, verifiedCompilerPlansForTurn, type WikipediaV3IngestStatus, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
+import { BULK_LOAD_DEFERRABLE_TABLES, acquireAndTrainGithubOssRepository, assertHydratedRuntimeReady, deferBulkLoadIndexes, deferredBulkLoadIndexes, buildScce2BrainShardIndex, createHydrationPlan, createNodeRuntime, inspectHydrationRecords, fitRelationPotentialFromGraph, runEvaluationReleaseGate, proposeSelfRewrite, createScce2ToV3Importer, createWikipediaV3Ingestor, createWorkspaceRuntime, dryRunDeveloperRepoPlan, dryRunEngineeringCorpusIngest, fullyVerifyEventLedger, graphDeveloperRepo, importHydrationPlan, inspectDeveloperRepo, inspectEngineeringCorpusFolder, inspectHydrationStatus, inspectV2Artifacts, inspectV2GraphShard, inspectV2Ngram, inspectV2Profile, inspectV2Stream, inspectV2StreamTopic, inspectV2Topic, parseRepoDiagnosticsFixture, readScceRuntimeConfig, routeEngineeringCorpusFixture, scanLanguageControlHygiene, trainDialogueCorpus, trainGutenbergCorpus, trainOssCorpus, trainStoredCorpusConstructions, verifiedCompilerPlansForTurn, type WikipediaV3IngestStatus, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
 import type { BenchmarkInput, InspectionTarget, WorkspaceReportRecord } from "@scce/kernel";
 import { ossCorpusTrainOptionsFrom, parseCorpusTrainOptions } from "./corpus-train-options.js";
 import { parseScce2ImportOptions, parseScce2InspectOptions } from "./scce2-options.js";
@@ -356,11 +356,19 @@ async function ingestWiki(configPath: string, config: Awaited<ReturnType<typeof 
   const options = parseWikiIngestOptions(args.slice(explicitTarget ? 1 : 0));
   const ingestor = createWikipediaV3Ingestor({ storage: runtime.storage, config });
   if (options.statusPath) await mkdir(path.dirname(options.statusPath), { recursive: true });
-  printJson(await ingestor.ingest({
+  const result = await ingestor.ingest({
     dumpPath: path.resolve(target),
     ...options,
     onStatus: options.statusPath ? status => writeJsonReplacing(options.statusPath!, status) : undefined
-  }));
+  });
+  printJson(result);
+  // Reading blocks and storing nothing is a failure that used to exit 0: a dump configured as its own index
+  // decoded garbage at every offset, and 62 seconds of "success" left a clean brain empty. Blocks read with no
+  // page stored means the dump could not be read, and the caller has to hear about it.
+  if (result.blocks > 0 && result.pages === 0) {
+    const reason = result.skipped?.[0]?.reason ?? "no page was extracted from any block";
+    throw new Error(`wiki ingest read ${result.blocks} block(s) and stored no page: ${String(reason).split("\n")[0]}`);
+  }
 }
 
 async function ingestWikiFirehose(configPath: string, config: Awaited<ReturnType<typeof readScceRuntimeConfig>>, args: string[]): Promise<void> {
@@ -1298,6 +1306,23 @@ async function db(runtime: ReturnType<typeof createNodeRuntime>, args: string[],
         passed: contractChecks.filter(check => check.passed).length
       }
     });
+  }
+  if (sub === "indexes") {
+    // Deferring read indexes for a corpus build is a scheduling change, not a schema change: db migrate is the
+    // only way back, and db verify refuses the schema until it has run.
+    const storage = runtime.storage as unknown as Parameters<typeof deferBulkLoadIndexes>[0];
+    if (args[1] === "defer") {
+      if (!args.includes("--confirm-not-serving")) {
+        return usage("scce db indexes defer --confirm-not-serving   (drops read indexes for a bulk corpus build; db verify fails until db migrate restores them)");
+      }
+      const result = await deferBulkLoadIndexes(storage, config.database.schema);
+      return printJson({ ...result, restoreWith: "scce db migrate", verifyFailsUntilRestored: true });
+    }
+    if (args[1] === "status" || args[1] === undefined) {
+      const deferred = await deferredBulkLoadIndexes(storage);
+      return printJson({ deferred, deferrableTables: [...BULK_LOAD_DEFERRABLE_TABLES], restoreWith: deferred.length ? "scce db migrate" : null });
+    }
+    return usage("scce db indexes [status] | defer --confirm-not-serving");
   }
   if (sub === "stats") return printJson(await runtime.storage.stats());
   if (sub === "contract") {

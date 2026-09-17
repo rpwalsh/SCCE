@@ -292,7 +292,18 @@ export class PostgresStorageAdapter implements ScceStorage {
       // Asked before anything is created: an absent ngram_models is what makes this schema new rather than migrated.
       const existing = await client.query<{ present: string | null }>(`SELECT to_regclass($1) AS present`, [`${this.schema}.ngram_models`]);
       const freshSchema = existing.rows[0]?.present === null;
+      const restoringDeferredIndexes = await this.query<{ present: boolean }>(
+        `SELECT EXISTS (SELECT 1 FROM ${this.table("storage_meta")} WHERE key=$1) AS present`,
+        [DEFERRED_INDEX_META_KEY]
+      ).then(rows => rows[0]?.present === true).catch(() => false);
       await client.query("BEGIN");
+      if (restoringDeferredIndexes) {
+        // Building an index is a sort. At the 64MB default against a table of this size (measured: 15,465,844
+        // observations, 32GB) the sort spills to disk repeatedly and a deferred build is no faster than the
+        // per-row maintenance it replaced. SET LOCAL scopes this to the restore transaction only.
+        await client.query(`SET LOCAL maintenance_work_mem = '${DEFERRED_INDEX_RESTORE_SORT_MEMORY}'`);
+        await client.query(`SET LOCAL max_parallel_maintenance_workers = ${DEFERRED_INDEX_RESTORE_PARALLEL_WORKERS}`);
+      }
       for (const statement of schemaStatements(this.q, this.informationAccess)) {
         // An extension is database-wide, so every schema's migration asks for the same one. IF NOT EXISTS does not
         // make that race-safe: two concurrent migrations both pass the check and the loser fails the unique index,
@@ -319,6 +330,9 @@ export class PostgresStorageAdapter implements ScceStorage {
          ON CONFLICT(key) DO UPDATE SET value_json=EXCLUDED.value_json, updated_at=NOW()`,
         [JSON.stringify({ version: POSTGRES_SCHEMA_VERSION, requiredTables: POSTGRES_REQUIRED_TABLES })]
       );
+      // Migration declares every index with CREATE INDEX IF NOT EXISTS, so reaching here means a bulk-load
+      // deferral has just been undone. Clearing the marker here is what makes migrate the single way back.
+      await client.query(`DELETE FROM ${this.table("storage_meta")} WHERE key=$1`, [DEFERRED_INDEX_META_KEY]);
       await client.query("COMMIT");
     } catch (error) {
       await client.query("ROLLBACK").catch(() => undefined);
@@ -362,6 +376,12 @@ export class PostgresStorageAdapter implements ScceStorage {
       else if (version !== POSTGRES_SCHEMA_VERSION) errors.push(`schema version mismatch: expected ${POSTGRES_SCHEMA_VERSION}, found ${version}`);
     }
     if (!vector[0]?.installed) errors.push("missing extension: vector");
+    if (tables.includes("storage_meta")) {
+      // A brain whose read indexes were dropped for a bulk corpus build answers slowly and ranks wrongly while
+      // looking healthy. Verification is the thing that must refuse it, so a half-indexed brain cannot be served.
+      const deferred = await deferredBulkLoadIndexes(this).catch(() => []);
+      if (deferred.length) errors.push(`indexes deferred for bulk load (run db migrate to restore): ${deferred.join(", ")}`);
+    }
     return { ok: errors.length === 0, tables, errors };
   }
 
@@ -555,6 +575,60 @@ type InformationLabeledTable =
   | "language_patterns"
   | "semantic_frames"
   | "translation_alignments";
+
+/**
+ * Bulk corpus builds pay index maintenance per row on the largest table in the schema. Measured on 248,778
+ * real observations: 20,512ms with the production indexes, 13,241ms with the primary key alone, 7,503ms with
+ * none -- index maintenance is 63% of the insert, while rebuilding every one of those indexes afterwards from
+ * sorted data costs 3.5s. Deferring is therefore a scheduling change and nothing else: the same rows, the same
+ * counters, the same brain. It is only safe while nothing serves the schema, and `db verify` fails until
+ * `db migrate` puts the indexes back, so a half-indexed brain cannot quietly be served.
+ */
+export const DEFERRED_INDEX_META_KEY = "deferred_bulk_load_indexes";
+
+/**
+ * Sort memory and workers for the restore transaction, not for the server: an index build is a sort, and at
+ * the 64MB default it spills to disk often enough that deferring buys nothing. Sized for the 15.5GB machine
+ * this runs on, and only ever held while a restore transaction is open -- Postgres may use this much per
+ * parallel worker, so the product of the two is the real peak.
+ */
+export const DEFERRED_INDEX_RESTORE_SORT_MEMORY = "768MB";
+export const DEFERRED_INDEX_RESTORE_PARALLEL_WORKERS = 2;
+
+/** Tables whose secondary indexes exist to serve reads and can be rebuilt after a corpus build. */
+export const BULK_LOAD_DEFERRABLE_TABLES = ["ngram_observations"] as const;
+
+export async function deferredBulkLoadIndexes(storage: PostgresStorageAdapter): Promise<string[]> {
+  const rows = await storage.query<{ value_json: { indexes?: string[] } }>(
+    `SELECT value_json FROM ${storage.table("storage_meta")} WHERE key=$1`,
+    [DEFERRED_INDEX_META_KEY]
+  );
+  return rows[0]?.value_json?.indexes ?? [];
+}
+
+export async function deferBulkLoadIndexes(
+  storage: PostgresStorageAdapter,
+  schema: string
+): Promise<{ deferred: string[]; alreadyDeferred: string[] }> {
+  const alreadyDeferred = await deferredBulkLoadIndexes(storage);
+  const present = await storage.query<{ indexname: string; tablename: string }>(
+    `SELECT indexname, tablename FROM pg_indexes
+     WHERE schemaname=$1 AND tablename=ANY($2) AND indexname NOT LIKE '%\\_pkey'
+     ORDER BY indexname`,
+    [schema, [...BULK_LOAD_DEFERRABLE_TABLES]]
+  );
+  const deferred = [...new Set([...alreadyDeferred, ...present.map(row => row.indexname)])].sort();
+  if (!deferred.length) return { deferred, alreadyDeferred };
+  // The marker is written before the drops so a crash mid-drop still leaves verification refusing the schema.
+  await storage.query(
+    `INSERT INTO ${storage.table("storage_meta")}(key, value_json, updated_at)
+     VALUES($1, $2::jsonb, NOW())
+     ON CONFLICT(key) DO UPDATE SET value_json=EXCLUDED.value_json, updated_at=NOW()`,
+    [DEFERRED_INDEX_META_KEY, JSON.stringify({ indexes: deferred, tables: [...BULK_LOAD_DEFERRABLE_TABLES] })]
+  );
+  for (const row of present) await storage.query(`DROP INDEX IF EXISTS "${schema}"."${row.indexname}"`);
+  return { deferred, alreadyDeferred };
+}
 
 export async function joinDurableRecordLabels(
   storage: PostgresStorageAdapter,
