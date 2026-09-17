@@ -820,9 +820,10 @@ function freshSchemaIndexStatements(q: string): string[] {
   ];
 }
 
-function schemaStatements(q: string, informationAccess?: InformationAccessContext): string[] {
+export function schemaStatements(q: string, informationAccess?: InformationAccessContext): string[] {
   return [
     `CREATE EXTENSION IF NOT EXISTS vector`,
+    `CREATE EXTENSION IF NOT EXISTS pg_trgm`,
     `CREATE SCHEMA IF NOT EXISTS ${q}`,
     `CREATE TABLE IF NOT EXISTS ${q}.storage_meta (key TEXT PRIMARY KEY, value_json JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
     `CREATE TABLE IF NOT EXISTS ${q}.events (id TEXT PRIMARY KEY, episode_id TEXT NOT NULL, type_id TEXT NOT NULL, t BIGINT NOT NULL, payload_json JSONB NOT NULL, parents TEXT[] NOT NULL, hash TEXT NOT NULL UNIQUE, ledger_hash TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
@@ -858,6 +859,8 @@ function schemaStatements(q: string, informationAccess?: InformationAccessContex
     // (max 882 KB) provenance document per candidate row, which measured 7-11s per anchor group. One statement: one
     // table rewrite (each ADD COLUMN ... STORED rewrites the table; measured 12+ minutes on 7 GB).
     `ALTER TABLE ${q}.evidence_spans ADD COLUMN IF NOT EXISTS source_title TEXT GENERATED ALWAYS AS (lower(COALESCE(provenance_json->>'title', provenance_json->'metadata'->>'title', ''))) STORED, ADD COLUMN IF NOT EXISTS source_name TEXT GENERATED ALWAYS AS (btrim(lower(COALESCE(provenance_json->>'title', '') || ' ' || COALESCE(provenance_json->'metadata'->>'title', '') || ' ' || COALESCE(provenance_json->>'identity', '') || ' ' || COALESCE(provenance_json->'metadata'->>'identity', '')))) STORED`,
+    // Source kind is a scalar identity residue read on every ranked candidate; stored narrow, it no longer detoasts 58KB of provenance per row.
+    `ALTER TABLE ${q}.evidence_spans ADD COLUMN IF NOT EXISTS source_kind TEXT GENERATED ALWAYS AS (COALESCE(provenance_json->>'sourceKind', provenance_json->'metadata'->>'sourceKind', '')) STORED`,
     `CREATE TABLE IF NOT EXISTS ${q}.graph_nodes (id TEXT PRIMARY KEY, type_id TEXT NOT NULL, representation_json JSONB NOT NULL, alpha DOUBLE PRECISION NOT NULL, evidence_ids TEXT[] NOT NULL, features TEXT[] NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL, metadata_json JSONB NOT NULL, information_label JSONB NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.graph_edges (id TEXT PRIMARY KEY, source_node_id TEXT NOT NULL, target_node_id TEXT NOT NULL, relation_id TEXT NOT NULL, alpha DOUBLE PRECISION NOT NULL, weight DOUBLE PRECISION NOT NULL, temporal_scope JSONB NOT NULL, evidence_ids TEXT[] NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL, metadata_json JSONB NOT NULL, information_label JSONB NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.graph_hyperedges (id TEXT PRIMARY KEY, schema_id TEXT NOT NULL, relation_id TEXT NOT NULL, participant_ports JSONB NOT NULL, member_node_ids TEXT[] NOT NULL, qualifiers_json JSONB NOT NULL, modality_json JSONB NOT NULL, evidence_ids TEXT[] NOT NULL, weight_vector JSONB NOT NULL, temporal_scope JSONB NOT NULL, provenance_refs TEXT[] NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
@@ -1084,6 +1087,9 @@ function schemaStatements(q: string, informationAccess?: InformationAccessContex
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_evidence_features ON ${q}.evidence_spans USING GIN(features)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_evidence_source ON ${q}.evidence_spans(source_id)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_evidence_source_version ON ${q}.evidence_spans(source_version_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_evidence_source_kind ON ${q}.evidence_spans(source_kind)`,
+    // The title match is LIKE '%unit%' over source_name; only a trigram index serves an unanchored LIKE.
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_evidence_source_name_trgm ON ${q}.evidence_spans USING gin(source_name gin_trgm_ops)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_evidence_status ON ${q}.evidence_spans(status)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_evidence_status_rank ON ${q}.evidence_spans(status, alpha DESC, observed_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_evidence_anchor_features ON ${q}.evidence_anchor_index USING GIN(features)`,
@@ -6114,8 +6120,9 @@ function evidenceForceClassExpression(alias: string): string {
 }
 
 /** A span's source kind, read from the same two places `resolveEvidenceSourceIdentity` reads. Pure. */
-function evidenceSourceKindExpression(alias: string): string {
-  return `COALESCE(${alias}.provenance_json->>'sourceKind', ${alias}.provenance_json->'metadata'->>'sourceKind', '')`;
+export function evidenceSourceKindExpression(alias: string): string {
+  // The stored generated column carries this exact COALESCE; reading it here keeps the column and the code one contract.
+  return `${alias}.source_kind`;
 }
 
 /**
