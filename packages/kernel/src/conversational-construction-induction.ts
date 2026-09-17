@@ -281,7 +281,7 @@ function walkFrames(
         const prefix = linePoints.slice(0, slotStart).join("");
         const suffix = linePoints.slice(slotEnd).join("");
         visit({
-          frameKey: hasher.digestHex(`${prefix} ${suffix}`).slice(0, 24),
+          frameKey: hasher.digestHex(`${prefix}\u0000${suffix}`).slice(0, 24),
           spanIndex: pair.documentIndex,
           evidenceId: String(unit.span.id),
           sourceVersionId: unit.sourceVersionId,
