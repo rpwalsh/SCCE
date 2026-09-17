@@ -8,7 +8,7 @@ import {
   validateGithubPublicRepositoryUrl,
   type GithubOssAcquisitionOptions
 } from "../github-oss-acquisition.js";
-import type { OssCorpusTrainOptions, OssCorpusTrainReport } from "../oss-corpus.js";
+import { boundedOssHeapCheckpointMb, type OssCorpusTrainOptions, type OssCorpusTrainReport } from "../oss-corpus.js";
 import type { ScceStorage } from "@scce/kernel";
 
 const COMMIT = "0123456789abcdef0123456789abcdef01234567";
@@ -95,12 +95,21 @@ function emptyReport(rootPath: string): OssCorpusTrainReport {
   return {
     schema: "scce.ossCorpusTrainReport.v1",
     rootPath,
+    snapshotHash: "0".repeat(64),
+    snapshotKind: "git_snapshot",
+    snapshotComplete: true,
+    sourceUriBase: "https://github.com/example/project/tree/fixture",
+    startFileIndex: 0,
+    nextFileIndex: 0,
+    filesConsidered: 0,
+    heapCheckpointMb: boundedOssHeapCheckpointMb(),
     docsTrained: 0,
     codeTrained: 0,
     filesSkipped: [],
     totals: { oss_docs: totals, oss_code: totals },
     reports: [],
     stoppedByHeapSafetyBound: false,
+    inspectionTruncated: false,
     heapMiBAtExit: 0
   };
 }

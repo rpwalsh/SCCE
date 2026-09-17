@@ -51,7 +51,7 @@
     "maintenance:rechunk-evidence": "node tools/rechunk-evidence-backfill.mjs",
     "maintenance:demote-runtime-html": "node tools/demote-runtime-acquired-html.mjs",
     "validate": "pnpm mcp:verify && pnpm proprietary:check && pnpm test && pnpm eval:kit:verify",
-    "scce": "node --max-old-space-size=7168 packages/cli/dist/index.js",
+    "scce": "node --max-old-space-size=7168 tools/scce-entry.mjs",
     "hygiene:language-control": "node packages/cli/dist/index.js hygiene language-control",
     "scce:server": "node packages/server/dist/index.js",
     "server": "node --max-old-space-size=7168 packages/server/dist/index.js",
