@@ -297,3 +297,41 @@ describe("T33: the model set that decided a turn must be identifiable", () => {
     expect(split.id).not.toBe(agreed.id);
   });
 });
+
+describe("T1: a credit row written before the reward existed is also unclassified", () => {
+  /** The shape 598 of the 1079 live credit rows carry: the credit schema, no reward, boolean false. */
+  function rewardlessCreditRow(index: number): CalibrationObservationRecord {
+    return calibrationObservationRecord({
+      calibrationId: CALIBRATION_IDS.proofSupport,
+      subsystemId: CALIBRATION_SUBSYSTEM_IDS.proof,
+      taskClass: CALIBRATION_TASK_CLASS_IDS.sourceBoundQa,
+      rawScore: 0.66,
+      outcome: false,
+      finalOutcome: "outcome.unknown",
+      idSeed: `rewardless-${index}`,
+      createdAt: 1_000 + index,
+      metadata: {
+        schema: "scce.cognitive_credit.stage_observation.v1",
+        episodeId: `episode.rewardless.${index}`,
+        stageId: "stage.proof",
+        reached: true
+      }
+    });
+  }
+
+  it("does not read a pre-reward credit row as a measured failure", () => {
+    const modelSet = buildCalibrationModelSet({
+      observations: [0, 1, 2, 3].map(rewardlessCreditRow),
+      createdAt: 9_000
+    });
+    const resolved = calibrateRuntimeScore({
+      raw: 0.66,
+      calibrationId: CALIBRATION_IDS.proofSupport,
+      taskClass: CALIBRATION_TASK_CLASS_IDS.sourceBoundQa,
+      modelSet
+    });
+    expect(resolved.measurement).toBe("unmeasured_no_model");
+    expect(resolved.value).toBe(0.66);
+    expect(Object.keys(modelSet.models)).toEqual([]);
+  });
+});

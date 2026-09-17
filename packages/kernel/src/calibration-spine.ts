@@ -1078,17 +1078,26 @@ export function calibrationObservationsFromDialogueOutcome(input: {
   return observations;
 }
 
-/** The episode and reward a credit-ledger row carries, from either the whole-turn record or a stage row. */
-function creditRowEpisode(observation: CalibrationObservationRecord): { episodeId: string; reward: number; supervised: boolean } | undefined {
+/**
+ * A credit-ledger row, from either the whole-turn record or a stage row. Membership is decided by the schema,
+ * never by whether a reward is present: 598 of the 1079 live credit rows predate the reward and carry only the
+ * old constant-false boolean, so reading absence of a reward as "not a credit row" would keep exactly the rows
+ * this resolution exists to exclude.
+ */
+function creditRowEpisode(observation: CalibrationObservationRecord): { episodeId: string; reward?: number; supervised: boolean } | undefined {
   const metadata = jsonRecord(observation.metadata);
   const stage = metadata.schema === "scce.cognitive_credit.stage_observation.v1";
   const turn = metadata.schema === "scce.cognitive_credit.record.v1";
   if (!stage && !turn) return undefined;
   const outcome = turn ? jsonRecord(metadata.outcome) : metadata;
   const episodeId = typeof metadata.episodeId === "string" ? metadata.episodeId : "";
+  if (!episodeId) return undefined;
   const reward = outcome.reward;
-  if (!episodeId || typeof reward !== "number" || !Number.isFinite(reward)) return undefined;
-  return { episodeId, reward: clamp01(reward), supervised: outcome.supervised === true };
+  return {
+    episodeId,
+    reward: typeof reward === "number" && Number.isFinite(reward) ? clamp01(reward) : undefined,
+    supervised: outcome.supervised === true
+  };
 }
 
 /**
@@ -1102,7 +1111,7 @@ function labelledOutcomes(observations: readonly CalibrationObservationRecord[])
   const rewardByEpisode = new Map<string, number>();
   for (const observation of observations) {
     const credit = creditRowEpisode(observation);
-    if (credit && !credit.supervised) rewardByEpisode.set(credit.episodeId, credit.reward);
+    if (credit && !credit.supervised && credit.reward !== undefined) rewardByEpisode.set(credit.episodeId, credit.reward);
   }
   const classes = creditRewardClasses(rewardByEpisode);
   const resolved = new Map<string, boolean | undefined>();
@@ -1112,7 +1121,8 @@ function labelledOutcomes(observations: readonly CalibrationObservationRecord[])
       resolved.set(observation.id, observation.outcome);
       continue;
     }
-    resolved.set(observation.id, classes ? classes.positive.has(credit.episodeId) : undefined);
+    // No reward measured means no quantity to split, so this row entered no class. Absent, never negative.
+    resolved.set(observation.id, credit.reward === undefined ? undefined : classes?.positive.has(credit.episodeId));
   }
   return resolved;
 }
