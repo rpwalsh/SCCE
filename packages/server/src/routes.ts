@@ -933,7 +933,7 @@ async function dispatch(
         label: "api.turn",
         durationMs: Date.now() - calibrationStarted,
         counts: { observations: calibrationModels.observationCount, artifactAgeMs: calibrationState.ageMs },
-        support: { compiled: calibrationState.compiled, refreshing: calibrationState.refreshing }
+        support: { compiled: calibrationState.compiled, refreshing: calibrationState.refreshing, calibrationModelSetId: calibrationModels.id }
       });
       const bridgeStarted = Date.now();
       const dialogue = buildTurnDialogueBridge({
@@ -975,6 +975,7 @@ async function dispatch(
         answerRevision: result.answerRevision,
         corrections: result.corrections,
         timing: result.timing ? toJsonValue(result.timing as unknown as JsonValue) : undefined,
+        calibrationModelSetId: calibrationModels.id,
         createdAt: Date.now()
       });
       const dialoguePersistence = enqueueDialoguePersistence(conversationId, async () => {

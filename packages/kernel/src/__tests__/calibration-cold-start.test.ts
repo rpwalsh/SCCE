@@ -264,3 +264,36 @@ describe("T1: an unclassified credit row is not a measured failure", () => {
     expect(resolved.value).toBe(0.5);
   });
 });
+
+describe("T33: the model set that decided a turn must be identifiable", () => {
+  /** Same id, same class, same timestamps, different measured frequencies. */
+  function window(outcomes: readonly boolean[]) {
+    return buildCalibrationModelSet({
+      observations: outcomes.map((outcome, index) => calibrationObservationRecord({
+        calibrationId: CALIBRATION_IDS.proofSupport,
+        subsystemId: CALIBRATION_SUBSYSTEM_IDS.proof,
+        taskClass: CALIBRATION_TASK_CLASS_IDS.sourceBoundQa,
+        rawScore: 0.15,
+        outcome,
+        idSeed: `window-${index}-${outcome}`,
+        createdAt: 1_000 + index
+      }))
+    });
+  }
+
+  it("gives two windows that calibrate the same score differently two different ids", () => {
+    const split = window([true, false]);
+    const agreed = window([true, true]);
+    const probe = (modelSet: ReturnType<typeof buildCalibrationModelSet>) => calibrateRuntimeScore({
+      raw: 0.15,
+      calibrationId: CALIBRATION_IDS.proofSupport,
+      taskClass: CALIBRATION_TASK_CLASS_IDS.sourceBoundQa,
+      modelSet
+    }).value;
+    // The two windows decide the same raw score differently, so they are not the same model set.
+    expect(probe(split)).not.toBe(probe(agreed));
+    expect(split.createdAt).toBe(agreed.createdAt);
+    expect(Object.keys(split.models)).toEqual(Object.keys(agreed.models));
+    expect(split.id).not.toBe(agreed.id);
+  });
+});

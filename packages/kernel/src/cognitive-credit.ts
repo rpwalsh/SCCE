@@ -127,6 +127,8 @@ export interface CognitiveCreditRecord {
   conversationId: string;
   taskClass: string;
   requestedAuthority: string;
+  /** Which content-addressed calibration model set decided this episode. Absent means none was in hand. */
+  calibrationModelSetId?: string;
   createdAt: number;
   outcome: CognitiveCreditOutcome;
   stages: CreditStageFrame[];
@@ -178,6 +180,8 @@ export interface CognitiveCreditTurnView {
   answerRevision?: JsonValue;
   corrections?: JsonValue;
   timing?: JsonValue;
+  /** The id of the calibration model set this turn's scores were resolved against. */
+  calibrationModelSetId?: string;
   createdAt: number;
 }
 
@@ -362,6 +366,7 @@ export function buildCognitiveCreditRecord(view: CognitiveCreditTurnView): Cogni
     conversationId: view.conversationId,
     taskClass: view.taskClass,
     requestedAuthority: view.requestedAuthority ?? "",
+    calibrationModelSetId: view.calibrationModelSetId,
     createdAt: view.createdAt,
     outcome,
     stages
@@ -420,6 +425,7 @@ export function cognitiveCreditStageObservations(record: CognitiveCreditRecord):
       conversationId: record.conversationId,
       stageId: stage.stageId,
       chainId: stage.chainId,
+      calibrationModelSetId: record.calibrationModelSetId ?? null,
       reached: stage.reached,
       outcomeSource: record.outcome.source,
       supervised: record.outcome.supervised,

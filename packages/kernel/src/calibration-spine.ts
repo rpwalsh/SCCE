@@ -1261,7 +1261,9 @@ export function buildCalibrationModelSet(input: {
   return {
     schema: "scce.calibration.model_set.v1",
     id: `calibration.model_set.${hashText(canonicalStringify({
-      models: Object.keys(models).sort(),
+      // Content, not the key list: two windows with the same keys and timestamp calibrated the same score
+      // differently and shared an id, so the id could not name which model set decided an episode.
+      models: Object.entries(models).sort(([left], [right]) => left.localeCompare(right)).map(([key, model]) => [key, model.bins.map(bin => [bin.lower, bin.upper, bin.confidence, bin.empirical, bin.count])]),
       creativePreferenceModels: Object.values(creativePreferenceModels).map(model => model.modelHash).sort(),
       judgeRequirementModels: Object.values(judgeRequirementModels).map(model => model.modelHash).sort(),
       operatorRoutingModels: Object.values(operatorRoutingModels).map(model => model.modelHash).sort(),
