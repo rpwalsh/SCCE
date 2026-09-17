@@ -1,6 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import type { ConstructGraph, EvidenceId, Hasher, JsonValue } from "./types.js";
+import type { ConstructGraph, EvidenceId, EvidenceSpan, Hasher, JsonValue } from "./types.js";
 import type { SemanticAtom } from "./semantic-proof-types.js";
 import { atomizeText } from "./semantic-proof-system.js";
 import { SEMANTIC_SOURCE } from "./semantic-codes.js";
@@ -76,6 +76,63 @@ export interface SemanticRealizationContract {
   boundValues: Record<string, string>;
   evidenceIds: string[];
   epistemicForce: RealizationEpistemicForce;
+}
+
+/**
+ * ONE value this turn resolved for the REQUEST's own relation, whatever resolved it.
+ *
+ * The turn used to derive this twice and at two different moments: the sentence rankers had no access to it at
+ * all, and the realization contract re-derived it hundreds of lines later, after the answer had already been
+ * selected -- so the ranker that chooses the answering sentence and the contract that verifies it were asking
+ * the same question with only one of them holding the answer. A binding is resolved once, against the evidence
+ * admitted for the request, and both read it.
+ *
+ * Nothing here knows what KIND of value it is. The resolvers are injected by the turn, which is the layer that
+ * knows what it has; this module holds the shape and the verification, never a value type.
+ */
+export interface RequestValueBinding {
+  /** The request's own named subject, empty when it names none. */
+  subject: string;
+  /** What the request asks past its subject: the same split requestRelationUnits makes for the contract. */
+  relation: string;
+  value: string;
+  resolverId: string;
+  /** The admitted spans the value was verified to occur in -- not every span of the turn. */
+  evidenceIds: readonly string[];
+}
+
+/** What a request's relation binds to in the evidence admitted for it, or nothing. Supplied by the turn, never by this module. */
+export interface RequestValueResolver {
+  id: string;
+  resolve(requestText: string, evidence: readonly EvidenceSpan[]): string | undefined;
+}
+
+/**
+ * Resolves the request's relation against the admitted evidence, through the first resolver that binds a value,
+ * and records which of those spans the value actually occurs in. Returns undefined when nothing resolves, which
+ * is the condition under which every downstream consumer must behave exactly as it did before this existed.
+ * Pure: the resolvers are the only thing that reads evidence, and the occurrence check is containment.
+ */
+export function resolveRequestValueBinding(input: {
+  requestText: string;
+  evidence: readonly EvidenceSpan[];
+  resolvers: readonly RequestValueResolver[];
+}): RequestValueBinding | undefined {
+  for (const resolver of input.resolvers) {
+    const value = resolver.resolve(input.requestText, input.evidence);
+    if (!value) continue;
+    const folded = value.toLocaleLowerCase();
+    return {
+      subject: namedSubjectAnchors(input.requestText)[0] ?? "",
+      relation: requestRelationUnits(input.requestText).join(" ") || "is",
+      value,
+      resolverId: resolver.id,
+      evidenceIds: input.evidence
+        .filter(span => String(span.text || span.textPreview || "").toLocaleLowerCase().includes(folded))
+        .map(span => String(span.id))
+    };
+  }
+  return undefined;
 }
 
 /** The request's relation units, with its subject anchors removed: the same subject/relation split answerCoversRequest already makes, reused rather than re-derived. Pure. */

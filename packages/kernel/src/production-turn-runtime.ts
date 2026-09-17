@@ -12,7 +12,7 @@ import { assistantForceClass, assistantForceDecision, unresolvedObligationCount 
 import { assistantForceProposalFromCandidateClaimBasis, attachCognitiveProposal, attachInventionConstruct, cognitiveProposalForCandidate, selectedInventionForCandidate } from "./candidate-construct-binding.js";
 import { candidateIsSafeNonExecutingPlan, candidateUsesNonFactualPlanSemantics, selectedCandidateEntailment } from "./candidate-proof-policy.js";
 import { createCandidateEngine, type CandidateField, type CandidateSurface } from "./candidate.js";
-import { candidateSurvivesRealizationContract, compileRealizationContract, requestRelationUnits, semanticAnswerConstructFacts, type SemanticAnswerConstructFact, type SemanticRealizationContract } from "./semantic-answer-construct.js";
+import { candidateSurvivesRealizationContract, compileRealizationContract, requestRelationUnits, resolveRequestValueBinding, semanticAnswerConstructFacts, type SemanticAnswerConstructFact, type SemanticRealizationContract } from "./semantic-answer-construct.js";
 import { namedSubjectAnchors } from "./kernel-answer-primitives.js";
 import { createPfaceEstimator } from "./causal-estimation.js";
 import { createCcrEngine } from "./ccr.js";
@@ -2785,6 +2785,31 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         && proposalContradiction < 0.72
         && !semanticProof.mutualSourceContradiction
       );
+      // One resolved binding per turn, read by the sentence ranker below and by the realization contract further
+      // down, instead of the contract re-deriving it after selection had already happened. Resolved against the
+      // evidence admitted for the request, BEFORE the basis answer narrows selectedEvidence to whatever the
+      // ranker picked -- the old order resolved the value from the evidence the answer had already chosen, which
+      // on the Ada Lovelace lead is the span the wrong sentence dropped. The resolver list is what the turn has;
+      // this call knows nothing about what kind of value comes back.
+      const requestValueBinding = resolveRequestValueBinding({
+        requestText: input.text,
+        evidence: selectedEvidence,
+        resolvers: [{ id: "resolver.evidence_temporal", resolve: extractTemporalAnswerFromEvidence }]
+      });
+      kernelTrace({
+        stage: "candidate.request_value_binding",
+        label: "kernel.turn",
+        counts: { resolved: requestValueBinding ? 1 : 0, evidenceIds: requestValueBinding?.evidenceIds.length ?? 0 },
+        support: {
+          status: requestValueBinding ? "active" : "bypassed_not_applicable",
+          resolverId: requestValueBinding?.resolverId ?? null,
+          subject: requestValueBinding?.subject ?? null,
+          relation: requestValueBinding?.relation ?? null,
+          value: requestValueBinding?.value ?? null,
+          pool: selectedEvidence.length
+        }
+      });
+      const requestBoundValues = requestValueBinding ? [requestValueBinding.value] : [];
       // localEvidenceAnswerSurface (backed by localEvidenceAnswerPlan) covers
       // however many sentences a compound request actually needs
       // (evidenceAnswerSentenceLimit) and optimizes for request coverage,
@@ -2800,6 +2825,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         ? localEvidenceAnswerSurface({
             requestText: input.text,
             selectedEvidence,
+            boundValues: requestBoundValues,
             temporalEvidence: selectedTemporalEvidence,
             entailment: entailmentResult,
             semanticProof: {
@@ -3276,14 +3302,16 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // separately. Never fabricates: returns undefined (falls through to
       // whichever branch's real answer) for anything that isn't a
       // recognizable temporal question.
-      const temporalAnswerValue = extractTemporalAnswerFromEvidence(input.text, selectedEvidence);
+      // The turn's one resolved binding, not a second derivation of it: the ranker above and this contract read
+      // the same value or there is no single answer for the contract to verify against what was selected.
+      const temporalAnswerValue = requestValueBinding?.value;
       const proofAnswer = temporalAnswerValue || answerSurface.answer;
       // A recognizable temporal question already yields a bare bound VALUE here (a date, not a whole
       // sentence) -- exactly the subject/relation/value triple a realization contract needs, and cheaper to
       // build directly than to wait for a ConstructGraph node that this answer path (local exact-evidence,
       // not the learned-prior/graph-inference path) never populates for a plain one-hop lookup.
-      const temporalAnswerSubject = namedSubjectAnchors(input.text)[0];
-      const temporalRelationPredicate = requestRelationUnits(input.text).join(" ") || "is";
+      const temporalAnswerSubject = requestValueBinding?.subject || undefined;
+      const temporalRelationPredicate = requestValueBinding?.relation ?? (requestRelationUnits(input.text).join(" ") || "is");
       const temporalConstructFact: SemanticAnswerConstructFact | undefined = temporalAnswerValue && temporalAnswerSubject
         ? {
           subject: temporalAnswerSubject,
