@@ -115,7 +115,7 @@ export function createEvidenceExtractor(deps: { idFactory: IdFactory; hasher: Ha
             byteRange: [chunk.byteStart, chunk.byteEnd],
             section: structural ? structural.title : null,
             sourceVersionDerivation: toJsonValue(input.sourceVersionDerivation ?? null),
-            metadata: input.metadata ?? null
+            metadata: narrowExhibitedContentToChunk(input.metadata, chunk) ?? null
           },
           features,
           status: "quarantined",
@@ -169,6 +169,26 @@ function buildByteIndex(text: string): ByteIndexedChar[] {
     byteOffset += size;
   }
   return out;
+}
+
+/**
+ * A span carries the exhibited intervals that fall inside it, not its whole file's.
+ *
+ * The file's metadata is stamped on every span, so mouth.ts's 1,647 literal intervals would have been replicated
+ * across all 115 of its spans: 2.9MB of provenance for one file, against a corpus average of 58KB per span.
+ * Coordinates stay file-absolute, because that is the space the span's own `charRange` is recorded in. Pure.
+ */
+function narrowExhibitedContentToChunk(metadata: JsonValue | undefined, chunk: ChunkBoundary): JsonValue | undefined {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return metadata;
+  const record = metadata as Record<string, JsonValue>;
+  const block = record.exhibitedContent;
+  if (!block || typeof block !== "object" || Array.isArray(block)) return metadata;
+  const ranges = (block as Record<string, JsonValue>).ranges;
+  if (!Array.isArray(ranges)) return metadata;
+  const overlapping = ranges.filter(range =>
+    Array.isArray(range) && Number(range[0]) < chunk.charEnd && Number(range[1]) > chunk.charStart);
+  if (overlapping.length === ranges.length) return metadata;
+  return { ...record, exhibitedContent: { ...(block as Record<string, JsonValue>), ranges: overlapping as JsonValue } };
 }
 
 function segmentByParagraphs(text: string, maxBytes: number, byteIndex: ByteIndexedChar[]): ChunkBoundary[] {

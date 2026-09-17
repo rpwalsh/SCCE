@@ -106,6 +106,34 @@ describe("assertional stance is a span-level axis and refuses no file", () => {
     expect(resolveSpanAssertionalStance(carrying.provenance).stance).not.toBe("exhibited");
   });
 
+  it("gives each span only the exhibited intervals that fall inside it", async () => {
+    const root = await fixtureRoot("narrowing");
+    // Two paragraphs, each holding its own literal and each over the production chunk size, so the file's
+    // intervals outnumber any one span's under the same chunking the ingestor uses.
+    const filler = Array.from({ length: 420 }, (_value, index) => `const pad${index} = ${index};`).join("\n");
+    const text = [
+      `const first = "${EXHIBITED_SENTENCE}";`,
+      filler,
+      ``,
+      `const second = "A different exhibited sentence entirely.";`,
+      filler,
+      ``
+    ].join("\n");
+    await writeFile(path.join(root, "widget.ts"), text, "utf8");
+
+    const walked = await walk(root);
+    const fileRanges = exhibitedRanges((walked.get("widget.ts") as { metadata: JsonValue }).metadata);
+    const spans = spansFor("widget.ts", text, walked.get("widget.ts")!);
+    expect(fileRanges.length).toBeGreaterThan(1);
+    expect(spans.length).toBeGreaterThan(1);
+    for (const span of spans) {
+      const carried = exhibitedRanges((span.provenance as { metadata: JsonValue }).metadata);
+      expect(carried.length).toBeLessThan(fileRanges.length);
+      const range = (span.provenance as { charRange: [number, number] }).charRange;
+      for (const [start, end] of carried) expect(start < range[1] && end > range[0]).toBe(true);
+    }
+  });
+
   it("leaves a documentary sentence unexhibited in a source the project declares nothing about", async () => {
     const root = await fixtureRoot("documentary");
     await writeFile(path.join(root, "NOTES.md"), `${EXHIBITED_SENTENCE}\n\nA second paragraph.\n`, "utf8");
@@ -194,6 +222,13 @@ function recordingStorage(): { storage: ScceStorage; evidence: EvidenceSpan[] } 
     }
   }) as unknown as ScceStorage;
   return { storage, evidence };
+}
+
+function exhibitedRanges(metadata: JsonValue): Array<[number, number]> {
+  const record = metadata as Record<string, JsonValue>;
+  const block = record.exhibitedContent as Record<string, JsonValue> | undefined;
+  const ranges = block?.ranges;
+  return Array.isArray(ranges) ? ranges.map(range => [Number((range as number[])[0]), Number((range as number[])[1])]) : [];
 }
 
 function productionSource(): string {
