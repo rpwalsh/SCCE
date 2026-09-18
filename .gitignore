@@ -179,7 +179,9 @@ tools/code-generation-calibration/report*.json
 /REVIEW_20260912.md
 
 # lane coordination, runtime only
-.agent/locks/
+# The agent working directory is private: doctrine, dead-ends, findings, the calibration inventory and
+# the selection thesis are the hard-won recipe, not the shippable engine. It stays local, never public.
+.agent/
 /.l2build/
 /.tmp-server-l1.err
 scce.config.new.json
