@@ -206,6 +206,7 @@ export * from "./visual-eye.js";
 export * from "./visual-unit-induction.js";
 export * from "./visual-image-field.js";
 export * from "./visual-construction-graph.js";
+export * from "./visual-hypothesis-lattice.js";
 export * from "./relation-hypothesis.js";
 export * from "./structured-semantic-candidate.js";
 export * from "./alpha-field-persistence.js";

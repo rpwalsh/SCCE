@@ -829,6 +829,23 @@ function latticeGraphemes(
 }
 
 /**
+ * How decisively a set of positions falls into bands: the gap between the separating distances and the ones
+ * within a band, or zero when they are one population. Exposed so the same measurement can be taken again on
+ * positions whose banding has been destroyed, which is what calibrates it.
+ */
+export function bandMargin(positions: readonly number[], minMargin: number): number {
+  if (positions.length < 3) return 0;
+  const sorted = [...positions].sort((a, b) => a - b);
+  const gaps: number[] = [];
+  for (let i = 1; i < sorted.length; i++) gaps.push(sorted[i]! - sorted[i - 1]!);
+  const split = acceptedSplit(gaps, minMargin);
+  const low = gaps.filter(gap => gap <= split.cut);
+  const high = gaps.filter(gap => gap > split.cut);
+  if (!low.length || !high.length) return 0;
+  return Math.min(...high) - Math.max(...low);
+}
+
+/**
  * Full layout of a page. Skew is removed in centroid space rather than by resampling pixels: the glyph rasters
  * stay exactly as captured, and a rotation-invariant shape signature reads a skewed mark correctly anyway.
  */

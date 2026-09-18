@@ -28,14 +28,24 @@
 import type { CooccurrenceBigram, CrossLingualAlignmentOptions } from "./cross-lingual-alignment.js";
 import {
   analyzePage,
+  bandMargin,
   transposeImage,
   type GrayImage,
   type PageGrouping,
   type PageLayout
 } from "./visual-page-analysis.js";
 import {
+  calibrateEvidence,
+  jitteredPositions,
+  pruneByDomination,
+  shuffledOrder,
+  type HypothesisLattice,
+  type Interpretation
+} from "./visual-hypothesis-lattice.js";
+import {
   decipherPage,
   readPageSigns,
+  structuralFit,
   type PageSigns,
   type SymbolFrequency
 } from "./visual-sign-inventory.js";
@@ -227,4 +237,109 @@ export function knownLanguageFrom(
   frequencies: readonly SymbolFrequency[]
 ): KnownLanguage {
   return { bigrams, frequencies: [...frequencies].sort((a, b) => b.count - a.count) };
+}
+
+
+/** How many null draws each claim is scored against. A cost budget, not a modelling constant. */
+export const DEFAULT_NULL_DRAWS = 48;
+
+export interface LatticeOptions extends CrossLingualAlignmentOptions {
+  readonly nullDraws?: number;
+}
+
+/**
+ * Read the image and keep every interpretation nothing else dominates, each scored against its own null.
+ *
+ * Two claims are calibrated here. That the marks fall into LINES is scored against the same banding measured
+ * after the positions are jittered by a glyph's own height, which destroys banding and leaves everything else.
+ * That the sequence reads like the LANGUAGE is scored against the same likelihood after the order is shuffled,
+ * which destroys adjacency and leaves the inventory and its frequencies untouched. Both come back as a standard
+ * score and an empirical tail, so they can be compared with each other and across pages.
+ *
+ * Where one reading dominates, the lattice has a single member and `readImage` would have said the same thing.
+ * Where two stand, what they disagree on is reported rather than settled by a coin toss -- which is the useful
+ * answer for a damaged or unfamiliar inscription.
+ */
+export function readImageWithAlternatives(
+  image: GrayImage,
+  language: KnownLanguage,
+  options: LatticeOptions = {}
+): HypothesisLattice {
+  const draws = Math.max(1, options.nullDraws ?? DEFAULT_NULL_DRAWS);
+  const vocabulary = Math.max(2, language.frequencies.length);
+  const sources: Record<ReadingOrientation, GrayImage> = { rows: image, columns: transposeImage(image) };
+
+  const interpretations: Interpretation[] = [];
+  for (const orientation of ["rows", "columns"] as const) {
+    for (const grouping of ["marks", "cells"] as const) {
+      const layout = analyzePage(sources[orientation], { grouping });
+      const signs = readPageSigns(layout);
+      const glyphs = signs.inventory.signOf.length;
+      if (!glyphs) continue;
+
+      const reading = decipherPage({
+        signs,
+        languageBigrams: language.bigrams,
+        languageFrequencies: language.frequencies,
+        options
+      });
+
+      // Lines: the banding actually found, against the banding left once positions are jittered by a glyph.
+      const placed = layout.lines.flatMap(line => line.words.flatMap(word => word.glyphs));
+      const heights = placed.map(glyph => glyph.y1 - glyph.y0 + 1).sort((a, b) => a - b);
+      const glyphHeight = heights.length ? heights[heights.length >> 1]! : 1;
+      const centres = placed.map(glyph => glyph.centroidY);
+      const lineNull: number[] = [];
+      for (let draw = 0; draw < draws; draw++) {
+        lineNull.push(bandMargin(jitteredPositions(centres, glyphHeight, draw + 1), glyphHeight));
+      }
+
+      // Language: the likelihood of the reading, against the likelihood once the order is shuffled.
+      const sequences = signs.lines;
+      const languageNull: number[] = [];
+      for (let draw = 0; draw < draws; draw++) {
+        languageNull.push(structuralFit(
+          sequences.map(sequence => shuffledOrder(sequence, draw * 31 + 7)),
+          reading.signToSymbol,
+          language.bigrams
+        ));
+      }
+
+      const unreadable = sequences.flat().filter(sign => !reading.signToSymbol.has(sign)).length;
+      const tokens = Math.max(1, sequences.reduce((total, sequence) => total + sequence.length, 0));
+
+      // Description length has to include the LAYOUT, or a reading that finds no lines at all looks cheap. A
+      // reading with real lines states each line's position once and then each glyph's small offset from it; a
+      // reading with none must state every glyph's position across the whole page. Measured on an ordinary
+      // page that is the difference between about 420 nats and about 1220, and without it the wrong axis came
+      // out four nats cheaper than the right one and survived as a false alternative.
+      const spreads = layout.lines
+        .map(line => line.words.flatMap(word => word.glyphs).map(glyph => glyph.centroidY))
+        .map(positions => (positions.length ? Math.max(...positions) - Math.min(...positions) : 0))
+        .sort((a, b) => a - b);
+      const typicalSpread = spreads.length ? spreads[spreads.length >> 1]! : 0;
+      const positionCost = layout.lines.length * Math.log(Math.max(2, layout.mask.height))
+        + tokens * Math.log(1 + typicalSpread);
+
+      const codeLength = -reading.fit * tokens + reading.signCount * Math.log(vocabulary) + positionCost;
+
+      interpretations.push({
+        label: `${orientation}/${grouping}`,
+        choices: {
+          direction: reading.reversed ? "right-to-left" : "left-to-right",
+          grouping,
+          mirror: reading.mirrorFolded ? "folded" : "distinct",
+          orientation
+        },
+        text: reading.text,
+        codeLength,
+        evidence: [
+          calibrateEvidence("lines", bandMargin(centres, glyphHeight), lineNull),
+          calibrateEvidence("language", reading.fit, languageNull)
+        ],
+        contradictions: unreadable
+      });
+    }
+  }
+  return pruneByDomination(interpretations);
 }
