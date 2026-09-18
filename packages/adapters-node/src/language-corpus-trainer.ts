@@ -174,6 +174,15 @@ async function graphSnapshotForEvidence(
   }
 }
 
+/** The compact Kneser-Ney summary's most-continued symbols, narrowed for a page signature. Mirrors the wiki path. */
+function trainerProfileTopContinuation(kneserNey: unknown): Array<[string, number]> {
+  const top = (kneserNey as { topContinuation?: unknown } | undefined)?.topContinuation;
+  if (!Array.isArray(top)) return [];
+  return top
+    .filter((pair): pair is [string, number] => Array.isArray(pair) && typeof pair[0] === "string" && typeof pair[1] === "number")
+    .map(pair => [pair[0], pair[1]]);
+}
+
 const TRAINING_SNAPSHOT_EVIDENCE = 64;
 const TRAINING_SNAPSHOT_SOURCES = 8;
 const TRAINING_SNAPSHOT_NODES = 512;
@@ -339,6 +348,25 @@ async function trainLanguageCorpusTextTransaction(input: LanguageCorpusTrainingI
   profile = attachSourceDerivedLanguageAliases({ profile, metadata, evidence });
   profile = { ...profile, informationLabel };
   await input.storage.model.putLanguageProfile(profile);
+
+  // Identity discovery counts documents. A document-owning training call (a book, a source file, a dialogue
+  // transcript -- anything that persists its own source) is one document and joins the closed-class population,
+  // exactly as a wiki page does. The wiki SHARD trainer passes persistSource=false: its pages already have
+  // signatures from the ingestor, and a shard is an aggregate, not a document, so it must not be counted again.
+  if (input.persistSource !== false && input.storage.languageIdentities?.putProfileSignatures) {
+    await input.storage.languageIdentities.putProfileSignatures({
+      informationLabel,
+      rows: [{
+        id: profile.id,
+        sourceVersionId,
+        sourceSystem: input.sourceSystem,
+        sourceUri: input.sourceUri ?? "",
+        scripts: (profile.scripts ?? []).map(row => ({ script: row.script, mass: row.mass })),
+        direction: profile.direction,
+        topContinuation: trainerProfileTopContinuation(profile.kneserNey)
+      }]
+    });
+  }
 
   // The construction lane compiles nothing without the graph its surfaces align to: alignment lattices are
   // built only when the batch carries hyperedges, so with no snapshot every run produced zero reversible

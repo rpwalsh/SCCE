@@ -11,7 +11,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { BULK_LOAD_DEFERRABLE_TABLES, compileCrossLingualTranslationSeeds, acquireAndTrainGithubOssRepository, assertHydratedRuntimeReady, deferBulkLoadIndexes, deferredBulkLoadIndexes, buildScce2BrainShardIndex, createHydrationPlan, createNodeRuntime, inspectHydrationRecords, fitRelationPotentialFromGraph, runEvaluationReleaseGate, proposeSelfRewrite, createScce2ToV3Importer, createWikipediaV3Ingestor, createWorkspaceRuntime, dryRunDeveloperRepoPlan, dryRunEngineeringCorpusIngest, fullyVerifyEventLedger, graphDeveloperRepo, importHydrationPlan, inspectDeveloperRepo, inspectEngineeringCorpusFolder, inspectHydrationStatus, inspectV2Artifacts, inspectV2GraphShard, inspectV2Ngram, inspectV2Profile, inspectV2Stream, inspectV2StreamTopic, inspectV2Topic, parseRepoDiagnosticsFixture, readScceRuntimeConfig, routeEngineeringCorpusFixture, scanLanguageControlHygiene, trainDialogueCorpus, trainGutenbergCorpus, trainOssCorpus, trainStoredCorpusConstructions, verifiedCompilerPlansForTurn, type WikipediaV3IngestStatus, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
+import { BULK_LOAD_DEFERRABLE_TABLES, compileCrossLingualTranslationSeeds, knownLanguageFromBrain, transcribeImageFile, acquireAndTrainGithubOssRepository, assertHydratedRuntimeReady, deferBulkLoadIndexes, deferredBulkLoadIndexes, buildScce2BrainShardIndex, createHydrationPlan, createNodeRuntime, inspectHydrationRecords, fitRelationPotentialFromGraph, runEvaluationReleaseGate, proposeSelfRewrite, createScce2ToV3Importer, createWikipediaV3Ingestor, createWorkspaceRuntime, dryRunDeveloperRepoPlan, dryRunEngineeringCorpusIngest, fullyVerifyEventLedger, graphDeveloperRepo, importHydrationPlan, inspectDeveloperRepo, inspectEngineeringCorpusFolder, inspectHydrationStatus, inspectV2Artifacts, inspectV2GraphShard, inspectV2Ngram, inspectV2Profile, inspectV2Stream, inspectV2StreamTopic, inspectV2Topic, parseRepoDiagnosticsFixture, readScceRuntimeConfig, routeEngineeringCorpusFixture, scanLanguageControlHygiene, trainDialogueCorpus, trainGutenbergCorpus, trainOssCorpus, trainStoredCorpusConstructions, verifiedCompilerPlansForTurn, type WikipediaV3IngestStatus, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
 import type { BenchmarkInput, InspectionTarget, WorkspaceReportRecord } from "@scce/kernel";
 import { ossCorpusTrainOptionsFrom, parseCorpusTrainOptions } from "./corpus-train-options.js";
 import { parseScce2ImportOptions, parseScce2InspectOptions } from "./scce2-options.js";
@@ -96,6 +96,25 @@ async function main(): Promise<void> {
         const [, sourceLanguage, sourceScript, targetLanguage, targetScript] = parsed.args;
         if (!sourceLanguage || !sourceScript || !targetLanguage || !targetScript) return usage("scce translation compile <sourceLang> <sourceScript> <targetLang> <targetScript>");
         printJson(await compileCrossLingualTranslationSeeds(runtime.storage as never, { sourceLanguage, sourceScript, targetLanguage, targetScript, observedAt: Date.now() }));
+        return;
+      }
+      case "read": {
+        // Reads a page with the model-free eye and prints what it found. It writes nothing: a transcription is
+        // a DERIVED projection of an image, not evidence over it, and storing it belongs with the serialised
+        // ingest rather than beside it.
+        if (!runtime) return usage("scce read image <file> [--language=<hint>] [--flatten-light]");
+        if (parsed.args[0] !== "image" || !parsed.args[1]) {
+          return usage("scce read image <file> [--language=<hint>] [--flatten-light]");
+        }
+        const languageHint = parsed.args.find(arg => arg.startsWith("--language="))?.slice(11) ?? "en";
+        const language = await knownLanguageFromBrain(runtime.storage as never, languageHint);
+        if (!language.bigrams.length) {
+          printJson({ read: false, reason: `the brain holds no ${languageHint} co-occurrence to read against yet` });
+          return;
+        }
+        printJson(await transcribeImageFile(parsed.args[1], language, {
+          flattenLight: parsed.args.includes("--flatten-light")
+        }));
         return;
       }
       case "ingest":
