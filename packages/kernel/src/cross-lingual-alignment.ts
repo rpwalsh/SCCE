@@ -128,6 +128,61 @@ export function induceStructuralAlignment(input: {
   return alignLanguagesByStructure(source, target, { ...input.options, anchors });
 }
 
+/** A bidirectional symbol lexicon compiled from alignment pairs: the runtime face of the translation map. */
+export interface TranslationLexicon {
+  forward: ReadonlyMap<string, { symbol: string; score: number }>;
+  backward: ReadonlyMap<string, { symbol: string; score: number }>;
+}
+
+/** Compile alignment pairs into a lexicon, keeping the highest-scoring correspondence per symbol each way. */
+export function buildTranslationLexicon(pairs: ReadonlyArray<{ sourceSymbol: string; targetSymbol: string; score: number }>): TranslationLexicon {
+  const forward = new Map<string, { symbol: string; score: number }>();
+  const backward = new Map<string, { symbol: string; score: number }>();
+  const keepBest = (map: Map<string, { symbol: string; score: number }>, key: string, symbol: string, score: number) => {
+    const prior = map.get(key);
+    if (!prior || score > prior.score) map.set(key, { symbol, score });
+  };
+  for (const pair of pairs) {
+    keepBest(forward, pair.sourceSymbol, pair.targetSymbol, pair.score);
+    keepBest(backward, pair.targetSymbol, pair.sourceSymbol, pair.score);
+  }
+  return { forward, backward };
+}
+
+/** Translate one symbol through the lexicon, or undefined when the map has no correspondence for it. */
+export function translateSymbol(symbol: string, lexicon: TranslationLexicon, direction: "forward" | "backward"): { symbol: string; score: number } | undefined {
+  return (direction === "forward" ? lexicon.forward : lexicon.backward).get(symbol);
+}
+
+/**
+ * The round-trip gate: a correspondence is trustworthy only if translating a symbol across and back returns
+ * the symbol it started from. This is what keeps unsupervised alignment honest -- a spurious pair rarely
+ * survives the round trip -- and it is the quality control the whole feature leans on before an answer is
+ * spoken in another language.
+ */
+export function roundTripConsistent(symbol: string, lexicon: TranslationLexicon, direction: "forward" | "backward" = "forward"): boolean {
+  const across = translateSymbol(symbol, lexicon, direction);
+  if (!across) return false;
+  const back = translateSymbol(across.symbol, lexicon, direction === "forward" ? "backward" : "forward");
+  return back?.symbol === symbol;
+}
+
+/** Translate a sequence of symbols, dropping those with no correspondence and (optionally) those that fail the round trip. */
+export function translateSymbols(
+  symbols: readonly string[],
+  lexicon: TranslationLexicon,
+  options: { direction?: "forward" | "backward"; requireRoundTrip?: boolean } = {}
+): Array<{ source: string; target: string; score: number }> {
+  const direction = options.direction ?? "forward";
+  const out: Array<{ source: string; target: string; score: number }> = [];
+  for (const symbol of symbols) {
+    if (options.requireRoundTrip && !roundTripConsistent(symbol, lexicon, direction)) continue;
+    const translated = translateSymbol(symbol, lexicon, direction);
+    if (translated) out.push({ source: symbol, target: translated.symbol, score: translated.score });
+  }
+  return out;
+}
+
 /** Row-normalized structure matrix over the chosen symbols: each symbol's co-occurrence profile as a distribution. */
 function structureMatrix(structure: LanguageCooccurrence, symbols: readonly string[]): number[][] {
   const index = new Map(symbols.map((s, i) => [s, i]));

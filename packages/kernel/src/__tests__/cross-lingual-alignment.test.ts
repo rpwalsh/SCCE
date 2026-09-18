@@ -4,8 +4,11 @@ import { describe, expect, it } from "vitest";
 import {
   alignLanguagesByStructure,
   anchorsFromClosedClass,
+  buildTranslationLexicon,
   cooccurrenceFromBigrams,
   induceStructuralAlignment,
+  roundTripConsistent,
+  translateSymbols,
   type CooccurrenceBigram,
   type LanguageCooccurrence,
   type StructuralAnchor
@@ -148,5 +151,39 @@ describe("the end-to-end unsupervised path: bigrams and closed classes in, align
     let correct = 0;
     for (let i = 0; i < N; i++) if (recovered.get(`x${i}`) === `x${100 + permutation[i]!}`) correct += 1;
     expect(correct).toBeGreaterThanOrEqual(6);
+  });
+});
+
+describe("the runtime translation lexicon and the round-trip gate (brick 3 core)", () => {
+  const pairs = [
+    { sourceSymbol: "cat", targetSymbol: "gato", score: 0.9 },
+    { sourceSymbol: "dog", targetSymbol: "perro", score: 0.8 },
+    { sourceSymbol: "dog", targetSymbol: "gato", score: 0.3 }, // weaker, must lose to perro
+    { sourceSymbol: "water", targetSymbol: "agua", score: 0.7 }
+  ];
+
+  it("keeps the strongest correspondence each way", () => {
+    const lex = buildTranslationLexicon(pairs);
+    expect(lex.forward.get("dog")?.symbol).toBe("perro");
+    expect(lex.backward.get("gato")?.symbol).toBe("cat");
+  });
+
+  it("passes the round trip for a consistent pair and fails a spurious one", () => {
+    const lex = buildTranslationLexicon(pairs);
+    expect(roundTripConsistent("cat", lex)).toBe(true);     // cat -> gato -> cat
+    // A one-way-only correspondence does not survive the round trip.
+    const lopsided = buildTranslationLexicon([
+      { sourceSymbol: "x", targetSymbol: "y", score: 0.9 },
+      { sourceSymbol: "z", targetSymbol: "y", score: 0.95 } // y maps back to z, not x
+    ]);
+    expect(roundTripConsistent("x", lopsided)).toBe(false);
+  });
+
+  it("translates a sequence, dropping unknown symbols and optionally the round-trip failures", () => {
+    const lex = buildTranslationLexicon(pairs);
+    const all = translateSymbols(["cat", "unknownword", "water"], lex);
+    expect(all.map(t => t.target)).toEqual(["gato", "agua"]);
+    const gated = translateSymbols(["cat", "water"], lex, { requireRoundTrip: true });
+    expect(gated).toHaveLength(2);
   });
 });
