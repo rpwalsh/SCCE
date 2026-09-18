@@ -2,7 +2,9 @@
 # Build a brain from nothing, or resume one: create the schema, migrate it, defer the read indexes, ingest the
 # configured corpora, restore the indexes, verify, then learn the language identities and report what landed.
 #
-#   scripts/new-brain.sh [config] [max-pages]     # default scce.config.new.json, 20000
+#   scripts/new-brain.sh [config] [max-pages] [--fresh]   # default scce.config.new.json, 20000
+#
+# --fresh discards the existing schema first. Without it the build resumes into whatever is already there.
 #
 # Every corpus path and the schema come from the config; credentials come from the config overlay or
 # SCCE_DATABASE_URL and are never echoed.
@@ -19,6 +21,8 @@ set -e
 cd "$(dirname "$0")/.."
 CONFIG="${1:-scce.config.new.json}"
 MAX_PAGES="${2:-20000}"
+FRESH=""
+for arg in "$@"; do [ "$arg" = "--fresh" ] && FRESH=1; done
 CLI="node --max-old-space-size=7168 packages/cli/dist/index.js --config $CONFIG"
 [ -f "$CONFIG" ] || { echo "no such config: $CONFIG"; exit 1; }
 
@@ -26,6 +30,14 @@ SCHEMA=$(node -e "console.log(require('./$CONFIG').database.schema)")
 echo "=== brain build in schema $SCHEMA from $CONFIG (max-pages=$MAX_PAGES)"
 
 step() { echo; echo "--- $1"; shift; "$@"; }
+
+# --fresh discards the schema first, so rebuilding a brain is this one script and never a manual DDL step.
+# Everything the schema needs is declared by migration: tables, stored generated columns, and indexes.
+if [ -n "$FRESH" ]; then
+  echo
+  echo "--- db reset (discarding schema $SCHEMA)"
+  $CLI db reset --confirm-local-dev-only
+fi
 
 step "db migrate" $CLI db migrate
 step "db verify" $CLI db verify

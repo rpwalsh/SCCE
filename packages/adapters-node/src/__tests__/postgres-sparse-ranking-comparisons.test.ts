@@ -7,7 +7,7 @@ import { createPostgresStorageAdapter, type PostgresStorageAdapter } from "../po
 
 const adapters: PostgresStorageAdapter[] = [];
 const liveDatabaseUrl = process.env.SCCE_TEST_DATABASE_URL?.trim();
-const liveSchema = process.env.SCCE_TEST_DATABASE_SCHEMA?.trim() || "scce3_runtime";
+const liveSchema = process.env.SCCE_TEST_DATABASE_SCHEMA?.trim() || "scce_test_runtime";
 
 afterEach(async () => {
   await Promise.all(adapters.splice(0).map(adapter => adapter.close()));

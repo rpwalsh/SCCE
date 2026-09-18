@@ -53,6 +53,13 @@ export function automaticWebAcquisitionEnabled(config: Pick<ScceRuntimeConfig, "
 
 export interface CorpusNgramRuntimeConfig {
   ngramMaxOrder?: number;
+  /**
+   * Characters of shard text one language model is trained on. Measured on wiki at vocabulary 24,000:
+   * 200,000 symbols (about this default) gives 7.08 nats/token and 800,000 gives 5.73, while a 4x smaller
+   * shard was only 20% faster -- text pooled per model buys more than any other setting here. It is a memory
+   * bound, not a modelling choice: one shard at this size measured 2.6GB RSS.
+   */
+  ngramShardChars?: number;
   ngramMaxCountersPerOrder?: number;
   ngramVocabularyLimit?: number;
 }
@@ -428,6 +435,7 @@ function ngramOverride(config: CorpusNgramRuntimeConfig | undefined): CorpusRegi
 function validateNgramConfig(config: CorpusNgramRuntimeConfig | undefined, prefix: string): void {
   if (!config) return;
   if (config.ngramMaxOrder !== undefined && (!Number.isInteger(config.ngramMaxOrder) || config.ngramMaxOrder < 1 || config.ngramMaxOrder > 6)) throw new Error(`${prefix}.ngramMaxOrder must be an integer from 1 through 6`);
+  validatePositiveInt(config.ngramShardChars, `${prefix}.ngramShardChars`);
   validatePositiveInt(config.ngramMaxCountersPerOrder, `${prefix}.ngramMaxCountersPerOrder`);
   validatePositiveInt(config.ngramVocabularyLimit, `${prefix}.ngramVocabularyLimit`);
 }

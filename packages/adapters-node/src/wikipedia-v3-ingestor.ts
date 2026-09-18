@@ -323,6 +323,8 @@ export class WikipediaV3Ingestor {
     let lastStatusAt = 0;
     let activeLanguageShardUri = rootUri;
     let languageShardSamples: WikipediaLanguageShardSample[] = [];
+    let languageShardChars = 0;
+    const shardCharBudget = Math.max(1, this.config.runtime.corpora?.wikipedia?.ngramShardChars ?? 1_200_000);
     const applyLanguageShardImport = (imported: WikipediaLanguageShardImport): void => {
       result.languageProfiles += imported.languageProfiles;
       result.ngramObservations += imported.ngramObservations;
@@ -335,10 +337,18 @@ export class WikipediaV3Ingestor {
       result.graphHyperedges += imported.graphHyperedges;
       result.warnings.push(...imported.warnings);
     };
-    const flushLanguageShard = async (shardUri: string): Promise<void> => {
+    // A block boundary is permission to flush, not a reason to. Flushing on every one trained each model on a
+    // block of this dump -- about five pages, 114KB -- while boundedLanguageShard declares a 1,200,000
+    // character budget, so models got a tenth of the text the code intends them to have. Text per model is the
+    // strongest lever measured on this corpus (200,000 symbols: 7.08 nats/token; 800,000: 5.73), so the shard
+    // now accumulates across blocks until the budget is reached. `force` is for the end of the stream, a heap
+    // bound, or an owner stop, where whatever has accumulated must be trained rather than dropped.
+    const flushLanguageShard = async (shardUri: string, force = false): Promise<void> => {
       if (!languageShardSamples.length) return;
+      if (!force && languageShardChars < shardCharBudget) return;
       const samples = languageShardSamples;
       languageShardSamples = [];
+      languageShardChars = 0;
       applyLanguageShardImport(await this.ingestLanguageShard(samples, shardUri, episodeId));
     };
     const emitStatus = async (state: WikipediaV3IngestStatus["state"], finishedAt?: number): Promise<void> => {
@@ -433,7 +443,15 @@ export class WikipediaV3Ingestor {
         result.semanticFrames += imported.semanticFrames;
         result.relationCandidates += imported.relationCandidates;
         result.promotedRelations += imported.promotedRelations;
-        if (imported.languageSample) languageShardSamples.push(imported.languageSample);
+        if (imported.languageSample) {
+          languageShardSamples.push(imported.languageSample);
+          languageShardChars += (imported.languageSample.title?.length ?? 0) + imported.languageSample.text.length;
+          // The budget needs its own flush point. Flushing only at block boundaries let a block's text pile up
+          // past the budget and boundedLanguageShard then dropped the excess: measured over 150 pages, 2 shards
+          // were offered 4,023,980 characters and 1,623,980 of them -- 40.4% of the corpus -- never reached
+          // language training at all. Flushing as the budget is reached trains all of it, in budget-sized shards.
+          if (languageShardChars >= shardCharBudget) await flushLanguageShard(activeLanguageShardUri, true);
+        }
         result.warnings.push(...imported.warnings);
         const now = nowMs();
         if (now - lastStatusAt > 5000) {
@@ -449,7 +467,7 @@ export class WikipediaV3Ingestor {
           break;
         }
       }
-      await flushLanguageShard(activeLanguageShardUri);
+      await flushLanguageShard(activeLanguageShardUri, true);
       streamReachedEnd = !result.stoppedByHeapSafetyBound && !result.stoppedByOwner;
     } catch (error) {
       stopReason = messageOf(error);
@@ -975,7 +993,10 @@ export class WikipediaV3Ingestor {
   private async ingestLanguageShard(samples: readonly WikipediaLanguageShardSample[], shardUri: string, episodeId: ReturnType<IdFactory["episodeId"]>): Promise<WikipediaLanguageShardImport> {
     if (!samples.length) return zeroLanguageShard({ warnings: [] });
     const createdAt = samples.reduce((max, sample) => Math.max(max, sample.createdAt), 0) || this.clock.now();
-    const boundedShard = boundedLanguageShard(samples, 1_200_000, 2048);
+    // How much text one model is trained on is the strongest lever measured on this corpus, and it is a memory
+    // bound rather than a modelling choice, so it is configurable with the measured-safe value as the default.
+    const shardChars = this.config.runtime.corpora?.wikipedia?.ngramShardChars ?? 1_200_000;
+    const boundedShard = boundedLanguageShard(samples, shardChars, 2048);
     const text = boundedShard.text;
     const sourceVersionId = this.ids.sourceVersionId(`${shardUri}\u001f${text}`);
     const profile = {
@@ -1611,7 +1632,7 @@ function zeroLanguageShard(input: { warnings: string[] }): WikipediaLanguageShar
   };
 }
 
-function boundedLanguageShard(
+export function boundedLanguageShard(
   samples: readonly WikipediaLanguageShardSample[],
   maxChars: number,
   maxEvidence: number
