@@ -53,6 +53,81 @@ export interface CrossLingualAlignmentOptions {
 
 const DEFAULTS = { epsilon: 0.05, outerIterations: 120, innerIterations: 24, maxSymbols: 256 };
 
+/** One directed co-occurrence: a symbol observed following another, with its count. A language's bigrams. */
+export interface CooccurrenceBigram {
+  previous: string;
+  next: string;
+  count: number;
+}
+
+/**
+ * Build a language's co-occurrence structure from its bigram counts -- the natural, monolingual signal an
+ * n-gram model already produces. Co-occurrence is symmetrized (structure, not order): a follows b as strongly
+ * as b precedes a, which is what makes the shape comparable across languages with different word order.
+ */
+export function cooccurrenceFromBigrams(language: string, bigrams: Iterable<CooccurrenceBigram>): LanguageCooccurrence {
+  const cooccurrence = new Map<string, Map<string, number>>();
+  const mass = new Map<string, number>();
+  const bump = (a: string, b: string, count: number) => {
+    let row = cooccurrence.get(a);
+    if (!row) { row = new Map(); cooccurrence.set(a, row); }
+    row.set(b, (row.get(b) ?? 0) + count);
+    mass.set(a, (mass.get(a) ?? 0) + count);
+  };
+  for (const { previous, next, count } of bigrams) {
+    if (!previous || !next || count <= 0) continue;
+    bump(previous, next, count);
+    bump(next, previous, count);
+  }
+  return { language, symbols: [...cooccurrence.keys()], cooccurrence, mass };
+}
+
+/**
+ * Cross-lingual anchors from each language's closed class, paired by document-share rank -- never by spelling.
+ * The most-carried function word of one language corresponds to the most-carried of the other, and so on down
+ * the rank: this is the structural correspondence SCCE's closed-class discovery already exposes, with no
+ * dictionary. Strength decays with rank so the top hubs pin hardest.
+ */
+export function anchorsFromClosedClass(
+  source: ReadonlyArray<{ word: string; documentShare: number }>,
+  target: ReadonlyArray<{ word: string; documentShare: number }>,
+  maxAnchors = 32
+): StructuralAnchor[] {
+  const sourceRanked = [...source].sort((a, b) => b.documentShare - a.documentShare);
+  const targetRanked = [...target].sort((a, b) => b.documentShare - a.documentShare);
+  const count = Math.min(sourceRanked.length, targetRanked.length, maxAnchors);
+  const anchors: StructuralAnchor[] = [];
+  for (let k = 0; k < count; k++) {
+    anchors.push({
+      sourceSymbol: sourceRanked[k]!.word,
+      targetSymbol: targetRanked[k]!.word,
+      // Rank 0 -> strength 1, decaying so lower-confidence rank ties do not overconstrain the coupling.
+      strength: 1 / (1 + k * 0.15)
+    });
+  }
+  return anchors;
+}
+
+/**
+ * The end-to-end unsupervised path: two languages' bigram structures plus their closed classes in, aligned
+ * symbol pairs out, no parallel data and no dictionary anywhere. This is the structural replacement for the
+ * surface-heuristic seed induction; a caller stamps the pairs into TranslationSeeds with their evidence.
+ */
+export function induceStructuralAlignment(input: {
+  sourceLanguage: string;
+  targetLanguage: string;
+  sourceBigrams: Iterable<CooccurrenceBigram>;
+  targetBigrams: Iterable<CooccurrenceBigram>;
+  sourceClosedClass: ReadonlyArray<{ word: string; documentShare: number }>;
+  targetClosedClass: ReadonlyArray<{ word: string; documentShare: number }>;
+  options?: CrossLingualAlignmentOptions;
+}): AlignedSymbolPair[] {
+  const source = cooccurrenceFromBigrams(input.sourceLanguage, input.sourceBigrams);
+  const target = cooccurrenceFromBigrams(input.targetLanguage, input.targetBigrams);
+  const anchors = anchorsFromClosedClass(input.sourceClosedClass, input.targetClosedClass, input.options?.maxSymbols);
+  return alignLanguagesByStructure(source, target, { ...input.options, anchors });
+}
+
 /** Row-normalized structure matrix over the chosen symbols: each symbol's co-occurrence profile as a distribution. */
 function structureMatrix(structure: LanguageCooccurrence, symbols: readonly string[]): number[][] {
   const index = new Map(symbols.map((s, i) => [s, i]));

@@ -1,7 +1,15 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
-import { alignLanguagesByStructure, type LanguageCooccurrence, type StructuralAnchor } from "../cross-lingual-alignment.js";
+import {
+  alignLanguagesByStructure,
+  anchorsFromClosedClass,
+  cooccurrenceFromBigrams,
+  induceStructuralAlignment,
+  type CooccurrenceBigram,
+  type LanguageCooccurrence,
+  type StructuralAnchor
+} from "../cross-lingual-alignment.js";
 
 // The claim: two languages that describe the same world have co-occurrence structures of the same SHAPE, and
 // aligning the shapes -- never the surfaces -- recovers a translation map with no dictionary and no parallel
@@ -86,5 +94,59 @@ describe("aligning two languages by the shape of their structure, with no word l
     const a = alignLanguagesByStructure(source, target, { outerIterations: 25 });
     const b = alignLanguagesByStructure(source, target, { outerIterations: 25 });
     expect(a.map(p => `${p.sourceSymbol}=${p.targetSymbol}`)).toEqual(b.map(p => `${p.sourceSymbol}=${p.targetSymbol}`));
+  });
+});
+
+describe("the end-to-end unsupervised path: bigrams and closed classes in, alignment out", () => {
+  function bigramsFrom(weights: number[][], relabel: (i: number) => number): CooccurrenceBigram[] {
+    const out: CooccurrenceBigram[] = [];
+    for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) if (i !== j) {
+      out.push({ previous: `x${relabel(i)}`, next: `x${relabel(j)}`, count: Math.round(weights[i]![j]! * 100) });
+    }
+    return out;
+  }
+  const closedClass = (weights: number[][], relabel: (i: number) => number) =>
+    [...Array(N).keys()]
+      .sort((a, b) => symbolMass(weights, b) - symbolMass(weights, a))
+      .map((i, rank) => ({ word: `x${relabel(i)}`, documentShare: 1 - rank * 0.05 }));
+
+  it("builds a symmetric co-occurrence structure from bigram counts", () => {
+    const structure = cooccurrenceFromBigrams("demo", [
+      { previous: "a", next: "b", count: 3 },
+      { previous: "b", next: "c", count: 2 }
+    ]);
+    expect(structure.cooccurrence.get("a")?.get("b")).toBe(3);
+    // Symmetric: b follows a as strongly as a precedes b, so word order does not break the shape.
+    expect(structure.cooccurrence.get("b")?.get("a")).toBe(3);
+    expect(structure.cooccurrence.get("b")?.get("c")).toBe(2);
+  });
+
+  it("pairs closed-class hubs by rank, never by spelling", () => {
+    const anchors = anchorsFromClosedClass(
+      [{ word: "the", documentShare: 0.99 }, { word: "of", documentShare: 0.9 }],
+      [{ word: "le", documentShare: 0.98 }, { word: "de", documentShare: 0.88 }]
+    );
+    expect(anchors[0]).toMatchObject({ sourceSymbol: "the", targetSymbol: "le" });
+    expect(anchors[1]).toMatchObject({ sourceSymbol: "of", targetSymbol: "de" });
+    expect(anchors[0]!.strength).toBeGreaterThan(anchors[1]!.strength);
+  });
+
+  it("recovers the alignment end-to-end from bigrams and closed classes alone", () => {
+    const weights = fixedWeights();
+    const permutation = [3, 5, 0, 7, 1, 6, 2, 4];
+    // Two languages with identical prefix 'x' but a hidden relabeling; only structure and closed class connect them.
+    const pairs = induceStructuralAlignment({
+      sourceLanguage: "source",
+      targetLanguage: "target",
+      sourceBigrams: bigramsFrom(weights, i => i),
+      targetBigrams: bigramsFrom(weights, i => 100 + permutation[i]!),
+      sourceClosedClass: closedClass(weights, i => i),
+      targetClosedClass: closedClass(weights, i => 100 + permutation[i]!),
+      options: { outerIterations: 150, epsilon: 0.05, maxSymbols: 8 }
+    });
+    const recovered = new Map(pairs.map(p => [p.sourceSymbol, p.targetSymbol]));
+    let correct = 0;
+    for (let i = 0; i < N; i++) if (recovered.get(`x${i}`) === `x${100 + permutation[i]!}`) correct += 1;
+    expect(correct).toBeGreaterThanOrEqual(6);
   });
 });
