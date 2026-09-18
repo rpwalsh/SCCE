@@ -766,10 +766,10 @@ export interface RelationObservationStore {
   put(rows: readonly RelationObservationRecord[]): Promise<void>;
   list(query?: { channel?: string; limit?: number }): Promise<RelationObservationRecord[]>;
   /**
-   * How many distinct source families the accumulated observations span. One aggregate, so a caller can find out
-   * whether promotion can score anything before deciding to read every row it holds.
+   * How many distinct source families each of these seeds has on file. One indexed aggregate over the caller's
+   * own seeds, so it can find out whether reading every row it holds could change any verdict.
    */
-  countSourceFamilies?(): Promise<number>;
+  sourceFamilyCountsForSeeds?(relationSeedIds: readonly string[]): Promise<Map<string, number>>;
 }
 
 export interface IngestionCheckpointStore {

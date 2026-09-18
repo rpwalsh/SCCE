@@ -42,7 +42,7 @@ import {
 } from "./typed-ingest.js";
 import {
   compileRelationPromotionModel,
-  relationPromotionCanScore,
+  relationPromotionNeedsPriors,
   relationObservationsFromCandidates
 } from "./relation-promotion.js";
 import { compileOpaqueRoleModel } from "./opaque-role-induction.js";
@@ -1142,8 +1142,8 @@ function visualAttributesFromMetadata(metadata: unknown): { embedding: number[];
 }
 
 /**
- * Prior relation observations, read only when the gate could use them. Below the independence threshold every
- * seed is refused whatever the priors hold, so the read is pure cost -- and it is the whole table.
+ * Prior relation observations, read only when they could change a verdict this batch is responsible for. The
+ * check is one indexed aggregate over the batch's own seeds; the read it guards is the whole table.
  */
 async function priorRelationObservationsFor(
   storage: ScceKernelDeps["storage"],
@@ -1151,12 +1151,13 @@ async function priorRelationObservationsFor(
 ): Promise<Awaited<ReturnType<NonNullable<ScceKernelDeps["storage"]["relationObservations"]>["list"]>>> {
   const store = storage.relationObservations;
   if (!store) return [];
-  const batchFamilies = new Set(
-    relationObservationsFromCandidates(candidates).map(observation => observation.sourceFamilyId)
-  );
-  const heldFamilies = store.countSourceFamilies
-    ? await store.countSourceFamilies().catch(() => Number.POSITIVE_INFINITY)
-    : Number.POSITIVE_INFINITY;
-  if (!relationPromotionCanScore(heldFamilies + batchFamilies.size)) return [];
+  const batch = relationObservationsFromCandidates(candidates);
+  if (!batch.length) return [];
+  if (!store.sourceFamilyCountsForSeeds) return store.list({}).catch(() => []);
+  const familyCountsOnFile = await store
+    .sourceFamilyCountsForSeeds([...new Set(batch.map(row => row.relationSeedId))])
+    .catch(() => undefined);
+  if (!familyCountsOnFile) return store.list({}).catch(() => []);
+  if (!relationPromotionNeedsPriors({ batch, familyCountsOnFile })) return [];
   return store.list({}).catch(() => []);
 }

@@ -5,7 +5,8 @@ import {
   RELATION_PROMOTION_MIN_INDEPENDENT_SOURCES,
   compileRelationPromotionModel,
   relationObservationsFromCandidates,
-  relationPromotionCanScore
+  relationPromotionCanScore,
+  relationPromotionNeedsPriors
 } from "../relation-promotion.js";
 import { canonicalTemporalCoordinates } from "../canonical-temporal.js";
 import type { StructuredSemanticCandidate } from "../structured-semantic-candidate.js";
@@ -105,6 +106,31 @@ describe("prior observations are read only when they can change a verdict", () =
       expect(decision.reasons).toContain("insufficient_independent_sources");
       expect(decision.reasons).toContain("missing_source_family_disjoint_holdout");
     }
+  });
+
+  it("decides from the batch's own seeds, not from how many families the corpus holds", () => {
+    const family = "wikimedia:wikipedia";
+    const batch = relationObservationsFromCandidates(candidatesInFamilies(8, [family]));
+    const seeds = [...new Set(batch.map(row => row.relationSeedId))];
+
+    // Nothing on file: the batch alone is one family, so no seed of it can be scored.
+    expect(relationPromotionNeedsPriors({ batch, familyCountsOnFile: new Map() })).toBe(false);
+
+    // Plenty on file for OTHER seeds is irrelevant -- they are not this batch's responsibility.
+    const elsewhere = new Map([["relation_seed.unrelated", 9]]);
+    expect(relationPromotionNeedsPriors({ batch, familyCountsOnFile: elsewhere })).toBe(false);
+
+    // One of the batch's own seeds close to the threshold makes the read matter again.
+    const nearly = new Map([[seeds[0]!, RELATION_PROMOTION_MIN_INDEPENDENT_SOURCES - 1]]);
+    expect(relationPromotionNeedsPriors({ batch, familyCountsOnFile: nearly })).toBe(true);
+  });
+
+  it("counts the batch's families toward the threshold, so a read is never wrongly skipped", () => {
+    // Four families inside one batch is enough on its own, with nothing on file at all.
+    const batch = relationObservationsFromCandidates(
+      candidatesInFamilies(8, ["a:one", "b:two", "c:three", "d:four"])
+    );
+    expect(relationPromotionNeedsPriors({ batch, familyCountsOnFile: new Map() })).toBe(true);
   });
 
   it("still needs priors once the corpus spans enough families", () => {

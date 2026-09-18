@@ -15,7 +15,7 @@ import {
   createSourceGraphBuilder,
   createTypedIngestProjector,
   compileRelationPromotionModel,
-  relationPromotionCanScore,
+  relationPromotionNeedsPriors,
   compileOpaqueRoleModel,
   compileRoleSurfaceOrderModel,
   compileSparseAlignmentTargetIndex,
@@ -735,23 +735,23 @@ export class WikipediaV3Ingestor {
   }
 
   /**
-   * Prior observations, read only when the gate could actually use them. Returns nothing when the corpus spans
-   * too few source families for any seed to be scorable, which is the same set of verdicts at none of the cost.
+   * Prior observations, read only when they could change a verdict this batch is responsible for. The check is
+   * one indexed aggregate over the batch's own seeds; the read it guards is the whole table.
    */
   private async priorRelationObservations(
     candidates: readonly StructuredSemanticCandidate[]
   ): Promise<Awaited<ReturnType<NonNullable<ScceStorage["relationObservations"]>["list"]>>> {
     const store = this.storage.relationObservations;
     if (!store) return [];
-    const batchFamilies = new Set(
-      relationObservationsFromCandidates(candidates).map(observation => observation.sourceFamilyId)
-    );
-    const heldFamilies = store.countSourceFamilies
-      ? await store.countSourceFamilies().catch(() => Number.POSITIVE_INFINITY)
-      : Number.POSITIVE_INFINITY;
-    // The batch's own families may not be on file yet, so count the union optimistically: a read that turns out
-    // unnecessary costs time, while a read wrongly skipped would change a verdict.
-    if (!relationPromotionCanScore(heldFamilies + batchFamilies.size)) return [];
+    const batch = relationObservationsFromCandidates(candidates);
+    if (!batch.length) return [];
+    // Without the aggregate there is nothing to decide on, so read as before rather than guess.
+    if (!store.sourceFamilyCountsForSeeds) return store.list({}).catch(() => []);
+    const familyCountsOnFile = await store
+      .sourceFamilyCountsForSeeds([...new Set(batch.map(row => row.relationSeedId))])
+      .catch(() => undefined);
+    if (!familyCountsOnFile) return store.list({}).catch(() => []);
+    if (!relationPromotionNeedsPriors({ batch, familyCountsOnFile })) return [];
     return store.list({}).catch(() => []);
   }
 
