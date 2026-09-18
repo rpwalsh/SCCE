@@ -98,6 +98,11 @@ export interface PageLayout {
    * found rather than imposed.
    */
   readonly latticeCredible: boolean;
+  /**
+   * How many bands of writing the page's own row periodicity implies, over the rows that carry ink. This is the
+   * page saying how many lines it has, independently of any grouping, so a grouping can be checked against it.
+   */
+  readonly expectedLines: number;
   readonly mask: InkMask;
 }
 
@@ -460,16 +465,32 @@ export function mergeGlyphComponents(a: GlyphComponent, b: GlyphComponent): Glyp
  */
 function attachMarks(
   marks: readonly GlyphComponent[],
-  small: readonly GlyphComponent[]
+  small: readonly GlyphComponent[],
+  stroke: number
 ): { marks: GlyphComponent[]; specks: GlyphComponent[] } {
   const grown = [...marks];
   const specks: GlyphComponent[] = [];
   for (const mark of small) {
+    // Thinner than the pen that drew the page, a component is not a mark of the script at all: no hand or press
+    // lays down a line thinner than its own stroke. The test is on the MINOR dimension, because a stroke is
+    // long and thin -- a letter's stem is one pen wide and many long, while sensor speckle is a pixel or a
+    // three-pixel run one pixel thick. Without the bound a stray run touching a glyph joins it and shifts the
+    // whole normalised profile, which measured on a colour capture collapsed the inventory to a single sign.
+    if (Math.min(mark.x1 - mark.x0 + 1, mark.y1 - mark.y0 + 1) < stroke) {
+      specks.push(mark);
+      continue;
+    }
     let pick = -1;
     let nearest = Number.POSITIVE_INFINITY;
     for (let i = 0; i < grown.length; i++) {
       const candidate = grown[i]!;
       if (mark.x0 > candidate.x1 || candidate.x0 > mark.x1) continue;
+      // A mark's own dot or accent sits within a pen-width of it. Without that bound the nearest mark in the
+      // column wins however far off it is, so a speck of sensor noise in the gap between two lines attaches to
+      // the line above and stretches its glyph down into the gap. Measured on a colour capture, that took the
+      // typical glyph from 21 pixels tall to 27 and collapsed the whole inventory to one sign.
+      const clearance = Math.max(0, candidate.y0 - mark.y1 - 1, mark.y0 - candidate.y1 - 1);
+      if (clearance > stroke) continue;
       const distance = Math.abs(candidate.centroidY - mark.centroidY);
       if (distance < nearest) {
         nearest = distance;
@@ -779,13 +800,31 @@ export function analyzePage(image: GrayImage, options: { grouping?: PageGrouping
   const extentOf = (c: GlyphComponent) => Math.max(c.x1 - c.x0 + 1, c.y1 - c.y0 + 1);
   const scaleSplit = acceptedSplit(all.map(extentOf), stroke);
   const attached = scaleSplit.accepted
-    ? attachMarks(all.filter(c => extentOf(c) > scaleSplit.cut), all.filter(c => extentOf(c) <= scaleSplit.cut))
+    ? attachMarks(
+      all.filter(c => extentOf(c) > scaleSplit.cut),
+      all.filter(c => extentOf(c) <= scaleSplit.cut),
+      stroke
+    )
     : { marks: [...all], specks: [] as GlyphComponent[] };
   const marks = attached.marks;
   const speckles = attached.specks;
 
   const grouping = options.grouping ?? "marks";
   const extents = marks.map(extentOf).sort((a, b) => a - b);
+  // The page's own row periodicity over the rows that carry ink: how many bands of writing there are.
+  const linePeriod = dominantLinePitch(mask.ink, mask.width, mask.height);
+  let firstInkRow = -1;
+  let lastInkRow = -1;
+  for (let y = 0; y < mask.height; y++) {
+    let any = false;
+    for (let x = 0; x < mask.width && !any; x++) if (mask.ink[y * mask.width + x]) any = true;
+    if (!any) continue;
+    if (firstInkRow < 0) firstInkRow = y;
+    lastInkRow = y;
+  }
+  const inkRows = firstInkRow < 0 ? 0 : lastInkRow - firstInkRow + 1;
+  const expectedLines = linePeriod > 1 && inkRows > 0 ? Math.max(1, Math.round(inkRows / linePeriod)) : 0;
+
   const fallback = extents.length ? extents[extents.length >> 1]! : 0;
   const acrossPitch = grouping === "cells" ? dominantPitch(mask.ink, mask.width, mask.height) : 0;
   const downPitch = grouping === "cells" ? dominantLinePitch(mask.ink, mask.width, mask.height) : 0;
@@ -820,7 +859,11 @@ export function analyzePage(image: GrayImage, options: { grouping?: PageGrouping
     };
 
   placed.sort((a, b) => a.y - b.y);
-  const lineGrouping = groupByGaps(placed.slice(1).map((p, i) => p.y - placed[i]!.y), glyphHeight);
+  // An image with no ink has no lines. Gap grouping always returns one group, so without this a blank capture
+  // would index a grapheme that is not there.
+  const lineGrouping = placed.length
+    ? groupByGaps(placed.slice(1).map((p, i) => p.y - placed[i]!.y), glyphHeight)
+    : { groups: [] as number[][], accepted: false, margin: 0 };
 
   const lines: PageLine[] = [];
   for (const group of lineGrouping.groups) {
@@ -843,6 +886,7 @@ export function analyzePage(image: GrayImage, options: { grouping?: PageGrouping
     cellOccupancy: lattice.occupancy,
     extentDispersion: extentDispersionOf(graphemes),
     latticeCredible: lattice.credible,
+    expectedLines,
     mask
   };
 }

@@ -63,6 +63,8 @@ export interface LayoutEvidence {
   readonly extentDispersion: number;
   /** Whether a lattice was found on the page rather than imposed on it. */
   readonly latticeCredible: boolean;
+  /** How many bands of writing the page's own row periodicity implies. */
+  readonly expectedLines: number;
 }
 
 export interface VisualReading {
@@ -102,7 +104,8 @@ function evidenceFor(layout: PageLayout, orientation: ReadingOrientation): Layou
     lineMargin: layout.lineSplit.margin,
     cellOccupancy: layout.cellOccupancy,
     extentDispersion: layout.extentDispersion,
-    latticeCredible: layout.latticeCredible
+    latticeCredible: layout.latticeCredible,
+    expectedLines: layout.expectedLines
   };
 }
 
@@ -144,10 +147,20 @@ export function readImage(
   const cellLayout = analyzePage(sources[orientation], { grouping: "cells" });
   const cellEvidence = evidenceFor(cellLayout, orientation);
   const marksChosen = marksEvidence.find(e => e.orientation === orientation)!;
-  // Size agreement decides between the two groupings, but only once the lattice is established: cells are
-  // uniform whatever the image held, so on a photograph of nothing they would always look like the better read.
-  const useCells = cellEvidence.latticeCredible
-    && cellEvidence.extentDispersion < marksChosen.extentDispersion;
+  // Which grouping read the page is settled against the page's own count of its bands of writing, taken from
+  // the periodicity of its rows and so independent of any grouping. A grouping that over-segments finds far
+  // more lines than there are -- CJK strokes gave 24 for 8 -- and one that under-segments finds none at all.
+  //
+  // Grapheme size agreement cannot decide this, though it looks as if it should. Lattice cells come out
+  // uniformly sized whatever the image held, so the moment binarisation leaves the true graphemes a little
+  // ragged, the lattice wins on tidiness while reading the page as a single sign. Measured on a colour page
+  // that is exactly what happened. Size agreement is still reported, as diagnosis, and no longer decides.
+  const closeness = (evidence: LayoutEvidence) =>
+    evidence.linesFound && evidence.expectedLines > 0
+      ? Math.abs(evidence.lineCount - evidence.expectedLines)
+      : Number.POSITIVE_INFINITY;
+  // Ties go to marks: the components as they came off the page, with nothing imposed on them.
+  const useCells = cellEvidence.latticeCredible && closeness(cellEvidence) < closeness(marksChosen);
   const layout = useCells ? cellLayout : marksLayouts[orientation];
 
   const signs = readPageSigns(layout);
