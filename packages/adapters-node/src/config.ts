@@ -306,6 +306,17 @@ export function validateConfig(config: ScceRuntimeConfig, source = "config"): vo
   if (config.runtime.corpora?.wikipedia?.enabled && !config.runtime.corpora.wikipedia.dumpPath) throw new Error(`${source}: runtime.corpora.wikipedia.dumpPath is required when wikipedia corpus is enabled`);
   if (config.runtime.corpora?.wikipedia?.allowedNamespaces && !config.runtime.corpora.wikipedia.allowedNamespaces.every(Number.isInteger)) throw new Error(`${source}: runtime.corpora.wikipedia.allowedNamespaces must contain integer namespace ids`);
   if (config.runtime.corpora?.wikipedia?.memorySafetyBoundMb !== undefined && config.runtime.corpora.wikipedia.memorySafetyBoundMb < 512) throw new Error(`${source}: runtime.corpora.wikipedia.memorySafetyBoundMb must be at least 512`);
+  // boundedLanguageShard is a bounded prefix, not a splitter, so a page larger than a whole shard loses its
+  // tail from language training. Requiring a shard to hold at least one whole page is what makes shard
+  // building lossless by construction rather than by luck.
+  {
+    const wiki = config.runtime.corpora?.wikipedia;
+    const shardChars = wiki?.ngramShardChars;
+    const articleChars = wiki?.maxArticleChars;
+    if (shardChars !== undefined && articleChars !== undefined && shardChars < articleChars) {
+      throw new Error(`${source}: runtime.corpora.wikipedia.ngramShardChars (${shardChars}) must be at least maxArticleChars (${articleChars}), or a page larger than one shard loses its tail from language training`);
+    }
+  }
   validateNgramConfig(config.runtime.corpora?.wikipedia, `${source}: runtime.corpora.wikipedia`);
   if (config.runtime.corpora?.gutenberg?.enabled && !config.runtime.corpora.gutenberg.rootPath) throw new Error(`${source}: runtime.corpora.gutenberg.rootPath is required when gutenberg corpus is enabled`);
   validatePositiveInt(config.runtime.corpora?.gutenberg?.maxFilesPerRun, `${source}: runtime.corpora.gutenberg.maxFilesPerRun`);

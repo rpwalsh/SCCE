@@ -444,13 +444,17 @@ export class WikipediaV3Ingestor {
         result.relationCandidates += imported.relationCandidates;
         result.promotedRelations += imported.promotedRelations;
         if (imported.languageSample) {
+          // Flushed BEFORE the page is added, not after the budget is passed. boundedLanguageShard is a
+          // bounded prefix rather than a splitter, so a shard offered more than its budget loses the overflow:
+          // flushing only at block boundaries offered 4,023,980 characters across 2 shards and lost 1,623,980
+          // of them, 40.4% of the corpus. Flushing first means a shard is never offered more than it can hold,
+          // which is lossless for every page while ngramShardChars >= maxArticleChars.
+          const sampleChars = (imported.languageSample.title?.length ?? 0) + 1 + imported.languageSample.text.length;
+          if (languageShardSamples.length && languageShardChars + sampleChars + 2 > shardCharBudget) {
+            await flushLanguageShard(activeLanguageShardUri, true);
+          }
           languageShardSamples.push(imported.languageSample);
-          languageShardChars += (imported.languageSample.title?.length ?? 0) + imported.languageSample.text.length;
-          // The budget needs its own flush point. Flushing only at block boundaries let a block's text pile up
-          // past the budget and boundedLanguageShard then dropped the excess: measured over 150 pages, 2 shards
-          // were offered 4,023,980 characters and 1,623,980 of them -- 40.4% of the corpus -- never reached
-          // language training at all. Flushing as the budget is reached trains all of it, in budget-sized shards.
-          if (languageShardChars >= shardCharBudget) await flushLanguageShard(activeLanguageShardUri, true);
+          languageShardChars += sampleChars;
         }
         result.warnings.push(...imported.warnings);
         const now = nowMs();
@@ -998,6 +1002,9 @@ export class WikipediaV3Ingestor {
     const shardChars = this.config.runtime.corpora?.wikipedia?.ngramShardChars ?? 1_200_000;
     const boundedShard = boundedLanguageShard(samples, shardChars, 2048);
     const text = boundedShard.text;
+    const shardWarnings = boundedShard.droppedChars > 0
+      ? [`language shard exceeded ngramShardChars: ${boundedShard.droppedChars} characters across ${boundedShard.droppedSamples} page(s) were not trained; raise runtime.corpora.wikipedia.ngramShardChars to at least maxArticleChars`]
+      : [];
     const sourceVersionId = this.ids.sourceVersionId(`${shardUri}\u001f${text}`);
     const profile = {
       ...this.language.acquire({ sourceVersionId, text, createdAt }),
@@ -1571,7 +1578,7 @@ export class WikipediaV3Ingestor {
           relationPromotionModel.decisions.some(decision =>
             decision.promoted && decision.relationSeedId === candidate.relationSeedId)).length
         : 0,
-      warnings: trained.warnings
+      warnings: [...shardWarnings, ...trained.warnings]
     };
   }
 }
@@ -1632,17 +1639,30 @@ function zeroLanguageShard(input: { warnings: string[] }): WikipediaLanguageShar
   };
 }
 
+/**
+ * Builds one shard's text from whole samples. It is a bounded prefix, not a splitter: material past the budget
+ * cannot be carried into the next shard, so it reports what it could not hold rather than discarding it
+ * quietly. The caller's job is to never offer more than the budget -- which is guaranteed as long as
+ * ngramShardChars >= maxArticleChars, since no page can then exceed a whole shard. `dropped` is therefore
+ * evidence of a misconfiguration, and the ingest warns on it instead of losing corpus in silence.
+ */
 export function boundedLanguageShard(
   samples: readonly WikipediaLanguageShardSample[],
   maxChars: number,
   maxEvidence: number
-): { text: string; evidence: EvidenceSpan[] } {
+): { text: string; evidence: EvidenceSpan[]; droppedChars: number; droppedSamples: number } {
   const parts: string[] = [];
   const evidence: EvidenceSpan[] = [];
   const seenEvidence = new Set<string>();
+  let droppedChars = 0;
+  let droppedSamples = 0;
   let remaining = Math.max(0, maxChars);
   for (const sample of samples) {
-    if (remaining <= 0) break;
+    if (remaining <= 0) {
+      droppedSamples += 1;
+      droppedChars += (sample.title ? sample.title.length + 1 : 0) + sample.text.length;
+      continue;
+    }
     const titlePrefix = sample.title ? `${sample.title}\n` : "";
     const text = `${titlePrefix}${sample.text}`;
     if (!text) continue;
@@ -1666,9 +1686,11 @@ export function boundedLanguageShard(
       continue;
     }
     parts.push(text.slice(0, remaining));
-    break;
+    droppedChars += text.length - remaining;
+    droppedSamples += 1;
+    remaining = 0;
   }
-  return { text: parts.join(""), evidence };
+  return { text: parts.join(""), evidence, droppedChars, droppedSamples };
 }
 
 function stampEvidence(spans: EvidenceSpan[], metadata: JsonValue, informationLabel: InformationLabel): EvidenceSpan[] {

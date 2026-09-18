@@ -19,10 +19,21 @@
 #                 the schema for as long as they are missing, so a half-indexed brain cannot be served.
 set -e
 cd "$(dirname "$0")/.."
+# Options are parsed before positionals, so --fresh in any position is a flag and never mistaken for the
+# config path. Positionals stay [config] [max-pages] for the documented shape.
+FRESH=""
+POSITIONAL=""
+for arg in "$@"; do
+  case "$arg" in
+    --fresh) FRESH=1 ;;
+    --*) echo "unknown option: $arg"; echo "usage: scripts/new-brain.sh [config] [max-pages] [--fresh]"; exit 2 ;;
+    *) POSITIONAL="$POSITIONAL $arg" ;;
+  esac
+done
+# shellcheck disable=SC2086
+set -- $POSITIONAL
 CONFIG="${1:-scce.config.new.json}"
 MAX_PAGES="${2:-20000}"
-FRESH=""
-for arg in "$@"; do [ "$arg" = "--fresh" ] && FRESH=1; done
 CLI="node --max-old-space-size=7168 packages/cli/dist/index.js --config $CONFIG"
 [ -f "$CONFIG" ] || { echo "no such config: $CONFIG"; exit 1; }
 
