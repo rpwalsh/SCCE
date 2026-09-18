@@ -3,7 +3,6 @@
 import { describe, expect, it } from "vitest";
 import {
   COGNITIVE_OPERATOR_IDS,
-  COGNITIVE_PROPOSAL_BOOTSTRAP,
   claimBasisIsAdmissible,
   cognitiveProposalComparisonReceipt,
   createPatchTransactionPlan,
@@ -94,7 +93,7 @@ describe("cognitive meaning planner", () => {
     expect(claimBasisIsAdmissible(claim!)).toBe(true);
   });
 
-  it("detects unsupported reasoning leaps and applies the exact penalty", () => {
+  it("scores a proposal at zero when every derivation it makes is unsupported", () => {
     const unsupported = plannedClaim({
       id: "claim.unsupported",
       text: "A conclusion with no derivation",
@@ -117,7 +116,12 @@ describe("cognitive meaning planner", () => {
     expect(claimBasisIsAdmissible(unsupported)).toBe(false);
     expect(unsupportedQuality.unsupportedLeapRate).toBe(1);
     expect(supportedQuality.unsupportedLeapRate).toBe(0);
-    expect(supportedQuality.score - unsupportedQuality.score).toBeCloseTo(0.45, 12);
+    // A failure rate is not traded off against merit: it is the fraction of a proposal's own derivations that
+    // do not hold up, so a proposal where that fraction is all of them scores zero and the structural gate
+    // drops it. That is stronger than the fixed deduction of 0.45 that used to stand here, which left such a
+    // proposal selectable whenever it scored well enough elsewhere.
+    expect(unsupportedQuality.score).toBe(0);
+    expect(supportedQuality.score).toBeGreaterThan(0);
   });
 
   it("selects diverse proposals with deterministic weighted-Jaccard MMR", () => {
@@ -143,27 +147,38 @@ describe("cognitive meaning planner", () => {
     expect(new Set(first.flatMap(proposal => proposal.claims.map(claim => claim.text))).size).toBeGreaterThanOrEqual(3);
     for (const proposal of first) {
       expect(proposal.quality.mmr).toBeCloseTo(
-        COGNITIVE_PROPOSAL_BOOTSTRAP.mmr.quality * proposal.quality.baseQuality
-          + COGNITIVE_PROPOSAL_BOOTSTRAP.mmr.diversity * proposal.quality.diversity,
+        Math.sqrt(proposal.quality.baseQuality * proposal.quality.diversity),
         12
       );
       const quality = proposal.quality.invention;
       expect(quality).toBeDefined();
-      expect(quality!.novelty).toBeCloseTo(0.70 * quality!.noveltyMemory + 0.30 * quality!.noveltySibling, 12);
-      expect(quality!.score).toBeCloseTo(
-        0.24 * quality!.requirementSatisfaction
-          + 0.18 * quality!.relationCoherence
-          + 0.18 * quality!.novelty
-          + 0.16 * quality!.fit
-          + 0.12 * quality!.usefulness
-          + 0.07 * quality!.languageRealizability
-          + 0.05 * quality!.styleFit
-          - 0.30 * quality!.risk
-          - 0.22 * quality!.repetition
-          - 0.70 * quality!.unsupportedExternallyFactualRate,
-        12
-      );
-      expect(proposal.claims.every(claim => !claim.text.startsWith("{") && !claim.text.includes("\"scores\""))).toBe(true);
+      // Neither kind of novelty is privileged: novel against what SCCE holds and novel against this turn's
+      // other proposals carry equal standing, where 0.70 and 0.30 used to stand and were never fitted.
+      expect(quality!.novelty).toBeCloseTo((quality!.noveltyMemory + quality!.noveltySibling) / 2, 12);
+      // Neither kind of novelty is privileged, so the combined novelty sits between them -- which is the
+      // property of a mean, and is asserted as such rather than as a magnitude.
+      expect(quality!.novelty).toBeGreaterThanOrEqual(Math.min(quality!.noveltyMemory, quality!.noveltySibling));
+      expect(quality!.novelty).toBeLessThanOrEqual(Math.max(quality!.noveltyMemory, quality!.noveltySibling));
+      // The composition asserted by the properties that hold of it exactly, whatever the numbers happen to
+      // be: the score never exceeds the mean of what supports the proposal, because failure rates can only
+      // reduce it and never add; and a rate of one wipes the score out, because that rate is the fraction of
+      // the proposal's own claims which do not hold up.
+      const supporting = [
+        quality!.requirementSatisfaction,
+        quality!.relationCoherence,
+        quality!.novelty,
+        quality!.fit,
+        quality!.usefulness,
+        quality!.languageRealizability,
+        quality!.styleFit
+      ];
+      const support = supporting.reduce((total, value) => total + value, 0) / supporting.length;
+      expect(quality!.score).toBeLessThanOrEqual(support + 1e-12);
+      expect(quality!.score).toBeGreaterThanOrEqual(0);
+      const rates = [quality!.risk, quality!.repetition, quality!.unsupportedExternallyFactualRate];
+      if (rates.some(rate => rate >= 1)) expect(quality!.score).toBe(0);
+      // And selection weighs quality against what the proposal adds, with neither privileged.
+      expect(proposal.quality.mmr).toBeLessThanOrEqual(Math.max(quality!.score, proposal.quality.diversity) + 1e-12);
     }
   });
 
@@ -348,19 +363,22 @@ describe("cognitive meaning planner", () => {
     // this receipt -- every other field is irrelevant to the comparison,
     // matching production usage where the operator only ever reads
     // {quality, diversity} per option.
-    const higher = minimalProposal("proposal.higher", { baseQuality: 0.9, diversity: 0.2 });
-    const lower = minimalProposal("proposal.lower", { baseQuality: 0.4, diversity: 0.9 });
+    // Better on both criteria, so the order is unambiguous under equal standing. The fixture used to lean on
+    // one proposal being far better on quality alone, which only ranked first because quality carried 0.72 of
+    // a chosen weighting; with neither criterion privileged, a proposal that repeats another no longer wins on
+    // quality alone, and the fixture says what it means instead.
+    const higher = minimalProposal("proposal.higher", { baseQuality: 0.9, diversity: 0.8 });
+    const lower = minimalProposal("proposal.lower", { baseQuality: 0.4, diversity: 0.3 });
     const receipt = cognitiveProposalComparisonReceipt([higher, lower]);
 
     expect(receipt).toBeDefined();
     expect(receipt!.operatorId).toBe("reasoning.operator.comparison.weighted_criteria.v1");
     expect(receipt!.proofObligationId).toBe("weighted_criteria_ranking_uses_declared_weights_only");
     expect(receipt!.inputFactIds.sort()).toEqual([`option.${higher.id}`, `option.${lower.id}`].sort());
-    // higher's own MMR (0.72*0.9+0.28*0.2=0.704) beats lower's
-    // (0.72*0.4+0.28*0.9=0.54) under the exact same declared weights the
-    // operator used -- confirms this isn't a coincidental pass.
-    const higherMmr = COGNITIVE_PROPOSAL_BOOTSTRAP.mmr.quality * higher.quality.baseQuality + COGNITIVE_PROPOSAL_BOOTSTRAP.mmr.diversity * higher.quality.diversity;
-    const lowerMmr = COGNITIVE_PROPOSAL_BOOTSTRAP.mmr.quality * lower.quality.baseQuality + COGNITIVE_PROPOSAL_BOOTSTRAP.mmr.diversity * lower.quality.diversity;
+    // higher's own geometric mean beats lower's under the same criteria the operator compared them on, which
+    // confirms this is not a coincidental pass.
+    const higherMmr = Math.sqrt(higher.quality.baseQuality * higher.quality.diversity);
+    const lowerMmr = Math.sqrt(lower.quality.baseQuality * lower.quality.diversity);
     expect(higherMmr).toBeGreaterThan(lowerMmr);
   });
 
@@ -489,7 +507,7 @@ function minimalProposal(id: string, quality: { baseQuality: number; diversity: 
       reasoning: {},
       baseQuality: quality.baseQuality,
       diversity: quality.diversity,
-      mmr: COGNITIVE_PROPOSAL_BOOTSTRAP.mmr.quality * quality.baseQuality + COGNITIVE_PROPOSAL_BOOTSTRAP.mmr.diversity * quality.diversity,
+      mmr: Math.sqrt(quality.baseQuality * quality.diversity),
       hardFailures: []
     } as unknown as CognitiveProposal["quality"],
     trace: {}

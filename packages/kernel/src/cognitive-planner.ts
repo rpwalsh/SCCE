@@ -197,37 +197,77 @@ export interface CognitiveActionPlan {
   trace?: JsonValue;
 }
 
-export const COGNITIVE_PROPOSAL_BOOTSTRAP = Object.freeze({
-  schema: "scce.cognitive_proposal.bootstrap.v1" as const,
-  version: "cognitive-proposal.bootstrap.2026-07-12.v1",
+/**
+ * How a proposal's measurements combine into one preference, WITHOUT any number saying how much each is worth.
+ *
+ * What stood here was a hand-authored linear model -- premise validity 0.20, relation continuity 0.17, an
+ * unsupported-leap penalty of -0.45, and so on, plus 0.72 quality against 0.28 diversity for selection. Those
+ * numbers were never fitted to anything. They were chosen, and they decided which reasoning proposal won, which
+ * is cognition run on preference rather than on measurement.
+ *
+ * They are replaced by two compositions that introduce no quantity of ours:
+ *
+ *   support  = the mean of the supporting measurements
+ *   survival = the product of (1 - rate) over the failure rates
+ *   score    = support * survival
+ *
+ * Equal standing among the supporting terms is not a choice of weights; it is the refusal to make one, since
+ * nothing has measured that any of them deserves privilege. And a failure RATE is not a quantity to be traded
+ * off against merit -- it is the fraction of a proposal's own claims that do not hold up, so rates compose as
+ * independent survivals and a proposal whose derivations are entirely unsupported scores zero however well it
+ * does on everything else. That is what the -0.45 was reaching for, without having to pick its size.
+ *
+ * The score stays in [0, 1], so the structural gate that already drops a proposal at zero still means what it
+ * meant, and the disqualifying cases are still caught where they always were, by claimHardFailures.
+ */
+export const COGNITIVE_PROPOSAL_COMPOSITION = Object.freeze({
+  schema: "scce.cognitive_proposal.composition.v1" as const,
+  version: "cognitive-proposal.composition.2026-09-18.v1",
   calibrationScopeId: "candidate.cognitive_proposal_preference",
   featureSchemaId: "scce.cognitive_proposal.preference_features.v1",
-  mmr: Object.freeze({ quality: 0.72, diversity: 0.28 }),
-  reasoning: Object.freeze({
-    premiseValidity: 0.20,
-    relationContinuity: 0.17,
-    requirementCoverage: 0.15,
-    explanatoryPower: 0.13,
-    contradictionHandling: 0.10,
-    temporalConsistency: 0.09,
-    simplicity: 0.08,
-    usefulness: 0.08,
-    unsupportedLeapRate: -0.45,
-    internalContradiction: -0.35
+  /** Terms that speak for a proposal, combined by their mean. */
+  supporting: Object.freeze({
+    reasoning: Object.freeze([
+      "premiseValidity",
+      "relationContinuity",
+      "requirementCoverage",
+      "explanatoryPower",
+      "contradictionHandling",
+      "temporalConsistency",
+      "simplicity",
+      "usefulness"
+    ] as const),
+    invention: Object.freeze([
+      "requirementSatisfaction",
+      "relationCoherence",
+      "novelty",
+      "fit",
+      "usefulness",
+      "languageRealizability",
+      "styleFit"
+    ] as const)
   }),
-  invention: Object.freeze({
-    requirementSatisfaction: 0.24,
-    relationCoherence: 0.18,
-    novelty: 0.18,
-    fit: 0.16,
-    usefulness: 0.12,
-    languageRealizability: 0.07,
-    styleFit: 0.05,
-    risk: -0.30,
-    repetition: -0.22,
-    unsupportedExternallyFactualRate: -0.70
-  })
+  /** Rates of a proposal's own claims failing, combined as independent survivals. */
+  failureRates: Object.freeze({
+    reasoning: Object.freeze(["unsupportedLeapRate", "internalContradiction"] as const),
+    invention: Object.freeze(["risk", "repetition", "unsupportedExternallyFactualRate"] as const)
+  }),
+  /** Selection weighs a proposal's own quality against how much it adds, by their geometric mean. */
+  selection: "geometric_mean_of_quality_and_diversity" as const
 });
+
+/**
+ * One preference from many measurements: the mean of what supports a proposal, reduced by the rates at which
+ * its own claims fail. No term is weighted against another, because nothing has measured that it should be.
+ */
+function composeProposalScore(supporting: readonly number[], failureRates: readonly number[]): number {
+  const support = supporting.length
+    ? supporting.reduce((total, value) => total + clamp01(value), 0) / supporting.length
+    : 0;
+  let survival = 1;
+  for (const rate of failureRates) survival *= 1 - clamp01(rate);
+  return clamp01(support * survival);
+}
 
 type ProposalDraft = Omit<CognitiveProposal, "id" | "quality" | "trace"> & {
   kind: "reasoning" | "invention" | "counterfactual" | "clarification";
@@ -311,7 +351,9 @@ export function cognitiveProposalComparisonReceipt(
     data: { criteria: { quality: proposal.quality.baseQuality, diversity: proposal.quality.diversity } } as unknown as JsonValue
   }));
   const graph = facts.reduce(addReasoningFact, EMPTY_REASONING_GRAPH);
-  const operator = comparisonOperator(COGNITIVE_PROPOSAL_BOOTSTRAP.mmr);
+  // Equal standing over the two criteria, which is the same refusal to choose that the score itself makes:
+  // nothing has measured that a proposal's own quality matters more than what it adds, or less.
+  const operator = comparisonOperator({ quality: 1, diversity: 1 });
   const inputFactIds = facts.map(fact => fact.id);
   if (!operator.preconditionsSatisfied(graph, inputFactIds)) return undefined;
   return applyReasoningOperator(operator, graph, inputFactIds).receipt;
@@ -1036,18 +1078,19 @@ export function scoreReasoningProposal(input: {
   const unsupportedLeapRate = derivationClaims.length === 0
     ? 0
     : clamp01(derivationClaims.filter(claim => !claimBasisIsAdmissible(claim)).length / derivationClaims.length);
-  const w = COGNITIVE_PROPOSAL_BOOTSTRAP.reasoning;
-  const score =
-    w.premiseValidity * premiseValidity
-    + w.relationContinuity * relationContinuity
-    + w.requirementCoverage * requirementCoverage
-    + w.explanatoryPower * explanatoryPower
-    + w.contradictionHandling * contradictionHandling
-    + w.temporalConsistency * temporalConsistency
-    + w.simplicity * simplicity
-    + w.usefulness * usefulness
-    + w.unsupportedLeapRate * unsupportedLeapRate
-    + w.internalContradiction * internalContradiction;
+  const score = composeProposalScore(
+    [
+      premiseValidity,
+      relationContinuity,
+      requirementCoverage,
+      explanatoryPower,
+      contradictionHandling,
+      temporalConsistency,
+      simplicity,
+      usefulness
+    ],
+    [unsupportedLeapRate, internalContradiction]
+  );
   return finiteQuality({
     premiseValidity,
     relationContinuity,
@@ -1492,7 +1535,10 @@ function scoreInventionProposal(input: CognitivePlannerInput, draft: ProposalDra
   const noveltySibling = siblingInventions.length === 0
     ? 1
     : clamp01(1 - Math.max(...siblingInventions.map(candidate => inventionSimilarity(invention, candidate))));
-  const novelty = clamp01(0.70 * noveltyMemory + 0.30 * noveltySibling);
+  // Novel against what SCCE already holds, and novel against the other proposals of this turn, carry equal
+  // standing. The 0.70 and 0.30 that stood here were chosen and never fitted, and they decided which invention
+  // won -- so they are gone, and neither kind of novelty is privileged over the other.
+  const novelty = clamp01((noveltyMemory + noveltySibling) / 2);
   const explicitRequirements = input.requirements.requiredFeatures.filter(requirement => requirement.status === "explicit");
   const inferredRequirements = input.requirements.requiredFeatures.filter(requirement => requirement.status === "inferred");
   const explicitRequirementFit = requirementSubsetFit(explicitRequirements, draft.satisfiedRequirementIds);
@@ -1522,18 +1568,18 @@ function scoreInventionProposal(input: CognitivePlannerInput, draft: ProposalDra
   const unsupportedExternallyFactualRate = externalClaims.length === 0
     ? 0
     : clamp01(externalClaims.filter(claim => !claimBasisIsAdmissible(claim)).length / externalClaims.length);
-  const w = COGNITIVE_PROPOSAL_BOOTSTRAP.invention;
-  const score =
-    w.requirementSatisfaction * requirementSatisfaction
-    + w.relationCoherence * relationCoherence
-    + w.novelty * novelty
-    + w.fit * fit
-    + w.usefulness * usefulness
-    + w.languageRealizability * languageRealizability
-    + w.styleFit * styleFit
-    + w.risk * risk
-    + w.repetition * repetition
-    + w.unsupportedExternallyFactualRate * unsupportedExternallyFactualRate;
+  const score = composeProposalScore(
+    [
+      requirementSatisfaction,
+      relationCoherence,
+      novelty,
+      fit,
+      usefulness,
+      languageRealizability,
+      styleFit
+    ],
+    [risk, repetition, unsupportedExternallyFactualRate]
+  );
   return finiteQuality({
     requirementSatisfaction,
     relationCoherence,
@@ -1565,14 +1611,18 @@ function selectWithMmr(
       const comparisons: Array<CognitiveProposal | ProposalDraft> = [...memory, ...selected.map(item => item.draft)];
       const similarity = comparisons.length === 0 ? 0 : Math.max(...comparisons.map(other => weightedProposalJaccard(draft, other)));
       const diversity = clamp01(1 - similarity);
-      const mmr = COGNITIVE_PROPOSAL_BOOTSTRAP.mmr.quality * draft.baseQuality
-        + COGNITIVE_PROPOSAL_BOOTSTRAP.mmr.diversity * diversity;
+      // Quality and what it adds, weighed against each other by their geometric mean: a proposal that repeats
+      // one already selected adds nothing and scores nothing, however good it is on its own, and no number
+      // decides how much either side is worth.
+      const mmr = Math.sqrt(clamp01(draft.baseQuality) * diversity);
       return { draft, diversity, mmr, similarity };
     }).sort((left, right) => {
       const routeDelta = draftOperatorRank(left.draft, routeRanks) - draftOperatorRank(right.draft, routeRanks);
       return routeDelta || right.mmr - left.mmr || right.diversity - left.diversity || left.draft.id.localeCompare(right.draft.id);
     });
-    const next = scored.find(item => item.similarity < 0.86) ?? (selected.length === 0 ? scored[0] : undefined);
+    // A proposal that adds nothing is not selected. The geometric mean already says so -- its diversity is
+    // zero, so it scores zero -- which is what the similarity cut-off of 0.86 standing here used to decide.
+    const next = scored.find(item => item.mmr > 0) ?? (selected.length === 0 ? scored[0] : undefined);
     if (!next) break;
     selected.push({ draft: next.draft, diversity: next.diversity, mmr: next.mmr });
     remaining.splice(remaining.findIndex(candidate => candidate.id === next.draft.id), 1);
@@ -1617,14 +1667,18 @@ function finalizeProposal(
       rank: rank + 1,
       claimBases: draft.claims.map(claim => ({ claimId: claim.id, basis: claim.basis, evidenceIds: claim.evidenceIds })),
       equations: {
-        reasoning: "Q_reason=0.20P+0.17C+0.15X+0.13E+0.10K+0.09T+0.08S+0.08U-0.45L-0.35I",
-        invention: "Q_invention=0.24X+0.18C+0.18N+0.16F+0.12U+0.07L+0.05styleFit-0.30R-0.22repetition-0.70H",
-        novelty: "N=0.70*N_memory+0.30*N_sibling",
+        // No coefficient appears in any of these, which is the point of them.
+        reasoning: "Q=mean(P,C,X,E,K,T,S,U)*(1-L)*(1-I)",
+        invention: "Q=mean(X,C,N,F,U,L,styleFit)*(1-R)*(1-repetition)*(1-H)",
+        novelty: "N=mean(N_memory,N_sibling)",
         diversity: "diversity(g,S)=1-max_h(weightedJaccard(phi(g),phi(h)))",
-        mmr: "MMR(g)=0.72*quality(g)+0.28*diversity(g,S)"
+        mmr: "MMR(g)=sqrt(quality(g)*diversity(g,S))"
       },
-      bootstrap: COGNITIVE_PROPOSAL_BOOTSTRAP,
-      calibrationStatus: "bootstrap_uncalibrated",
+      composition: COGNITIVE_PROPOSAL_COMPOSITION,
+      // Nothing here is a coefficient, so there is nothing here left to calibrate. Supporting measurements
+      // carry equal standing and failure rates compose as independent survivals; both are structure, not
+      // preference. What replaced the hand-authored weights is recorded in COGNITIVE_PROPOSAL_COMPOSITION.
+      calibrationStatus: "no_coefficients",
       quality: {
         reasoning: draft.reasoning,
         invention: draft.invention ?? null,
