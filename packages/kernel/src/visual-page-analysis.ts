@@ -5,9 +5,14 @@
 // Otsu split of a histogram the image itself produced (intensity, component area, gap width).
 
 /**
- * How a grapheme is read off the page. Connected components are not graphemes in every script: CJK and Hangul
- * put several disconnected strokes in one square cell, so "marks" over-segments them, while "cells" groups
- * components onto the lattice the writing itself sits on. Neither is assumed correct -- both are read and scored.
+ * How a grapheme is read off the page. A connected component is not a grapheme in most of the world's scripts,
+ * and it fails in both directions at once: CJK and Hangul put several disconnected strokes in one square cell,
+ * so a component is too little, while Arabic joins its letters cursively and Devanagari hangs a whole word from
+ * one headline, so a component is too much.
+ *
+ * Both are the same operation. "cells" assigns the ink to the lattice the script is set on and takes each cell
+ * as a grapheme, which merges the strokes of a CJK character and cuts a joined Arabic or Devanagari word apart
+ * without either being a rule about those scripts. "marks" takes the components as they are. Neither is assumed.
  */
 export type PageGrouping = "marks" | "cells";
 
@@ -81,6 +86,18 @@ export interface PageLayout {
   readonly lineSplit: { readonly accepted: boolean; readonly margin: number; readonly count: number };
   /** The commonest number of marks in a lattice cell. Above one, a cell genuinely holds several strokes. */
   readonly cellOccupancy: number;
+  /**
+   * How unevenly sized this grouping's graphemes are, as the summed coefficient of variation of their widths
+   * and heights. A script sets its graphemes on a common scale, so the grouping that reads them correctly is
+   * the one whose sizes agree -- and that is measurable without knowing any language.
+   */
+  readonly extentDispersion: number;
+  /**
+   * Whether the page is really set on a lattice at all. Lattice cells come out uniformly sized whatever the
+   * image was, so size agreement alone would hand every noisy photograph a lattice; this says the lattice was
+   * found rather than imposed.
+   */
+  readonly latticeCredible: boolean;
   readonly mask: InkMask;
 }
 
@@ -577,76 +594,174 @@ function greatestCommonDivisor(a: number, b: number): number {
  * spans its cell; the lattice phase is chosen to minimise the components straddling a cell boundary. This runs
  * before lines exist on purpose -- a CJK line cannot be found from strokes, whose heights carry no line scale.
  */
-function latticeMerge(
-  marks: readonly GlyphComponent[],
+function coefficientOfVariation(values: readonly number[]): number {
+  if (values.length < 2) return 0;
+  const mean = values.reduce((a, b) => a + b, 0) / values.length;
+  if (mean <= 0) return 0;
+  let variance = 0;
+  for (const value of values) variance += (value - mean) ** 2;
+  return Math.sqrt(variance / values.length) / mean;
+}
+
+function extentDispersionOf(graphemes: readonly GlyphComponent[]): number {
+  return coefficientOfVariation(graphemes.map(g => g.x1 - g.x0 + 1))
+    + coefficientOfVariation(graphemes.map(g => g.y1 - g.y0 + 1));
+}
+
+/**
+ * Take each cell of the script's own lattice as one grapheme, by assigning the ink itself rather than whole
+ * components. Strokes sharing a cell come together; a component spanning several cells is cut between them.
+ *
+ * The lattice phase across a line is chosen by the one principle that holds for every script: a script is a
+ * CLOSED INVENTORY, so the phase that cuts it correctly is the phase that yields the fewest distinct graphemes.
+ * Cutting a hair off makes every cell hold the tail of one letter and the head of the next, and the inventory
+ * swells from letters to letter PAIRS -- measured here as 24 signs where there were 8. Placing the boundary
+ * where the ink is thinnest cannot find it: a cursive script set solid has no thin column at the boundary at
+ * all. Down the page the boundary does fall in real blank space between lines, so least ink settles it there.
+ *
+ * This runs before lines exist on purpose: a CJK line cannot be found from strokes, whose heights carry no line
+ * scale, and an Arabic line cannot be found from word blobs.
+ */
+function latticeGraphemes(
+  mask: InkMask,
   pitchX: number,
-  pitchY: number
-): { graphemes: GlyphComponent[]; occupancy: number } {
-  if (pitchX <= 1 || pitchY <= 1 || marks.length < 2) return { graphemes: [...marks], occupancy: 1 };
+  pitchY: number,
+  stroke: number
+): { graphemes: GlyphComponent[]; occupancy: number; credible: boolean } {
+  const { ink, width, height } = mask;
   const stepX = Math.max(1, Math.round(pitchX));
   const stepY = Math.max(1, Math.round(pitchY));
-  const phase = (step: number, low: (m: GlyphComponent) => number, high: (m: GlyphComponent) => number) => {
-    let best = 0;
-    let fewest = Number.POSITIVE_INFINITY;
-    for (let offset = 0; offset < step; offset++) {
-      let count = 0;
-      for (const mark of marks) {
-        if (Math.floor((low(mark) - offset) / step) !== Math.floor((high(mark) - offset) / step)) count += 1;
-      }
-      if (count < fewest) {
-        fewest = count;
-        best = offset;
-      }
-    }
-    return best;
-  };
-  const offsetX = phase(stepX, m => m.x0, m => m.x1);
-  const offsetY = phase(stepY, m => m.y0, m => m.y1);
+  if (stepX <= 1 || stepY <= 1) return { graphemes: [], occupancy: 1, credible: false };
 
-  const cells = new Map<string, { merged: GlyphComponent; members: GlyphComponent[]; cx: number; cy: number }>();
-  for (const mark of marks) {
-    const cx = Math.floor((mark.centroidX - offsetX) / stepX);
-    const cy = Math.floor((mark.centroidY - offsetY) / stepY);
-    const key = `${cx},${cy}`;
-    const held = cells.get(key);
-    if (held) {
-      held.merged = mergeGlyphComponents(held.merged, mark);
-      held.members.push(mark);
-    } else {
-      cells.set(key, { merged: mark, members: [mark], cx, cy });
+  let offsetY = 0;
+  let leastInk = Number.POSITIVE_INFINITY;
+  for (let offset = 0; offset < stepY; offset++) {
+    let total = 0;
+    for (let y = offset; y < height; y += stepY) {
+      for (let x = 0; x < width; x++) total += ink[y * width + x]!;
+    }
+    if (total < leastInk) {
+      leastInk = total;
+      offsetY = offset;
     }
   }
 
+  // Is the page set on a lattice at all? A real one leaves its boundaries in blank space, so the best phase
+  // carries far less ink than a typical one. The phases themselves are the null: when the boundary could fall
+  // anywhere for all the difference it makes, there is no lattice. Measured, blank paper's best phase carries
+  // 90 per cent of the average column against 0 to 42 per cent for written pages, and it is not an outlier
+  // among phases at all. A cell must also be wider than the stroke that drew the marks in it.
+  const boundaryInkPerPhase: number[] = [];
+  for (let offset = 0; offset < stepX; offset++) {
+    let total = 0;
+    let columns = 0;
+    for (let x = offset; x < width; x += stepX) {
+      columns += 1;
+      for (let y = 0; y < height; y++) total += ink[y * width + x]!;
+    }
+    boundaryInkPerPhase.push(columns ? total / columns : 0);
+  }
+  const phaseMean = boundaryInkPerPhase.reduce((a, b) => a + b, 0) / Math.max(1, boundaryInkPerPhase.length);
+  let phaseVariance = 0;
+  for (const value of boundaryInkPerPhase) phaseVariance += (value - phaseMean) ** 2;
+  const phaseSpread = Math.sqrt(phaseVariance / Math.max(1, boundaryInkPerPhase.length));
+  const quietest = Math.min(...boundaryInkPerPhase);
+  const credible = stepX > Math.max(1, stroke) && phaseMean - quietest > phaseSpread;
+
+  // One cheap pass per candidate phase: how many DISTINCT graphemes does it produce? The signature is the cell's
+  // ink at the resolution the stroke can resolve, so two cells count as one sign when they carry the same mark.
+  const signatureCols = Math.max(1, Math.round(stepX / Math.max(1, stroke)));
+  const signatureRows = Math.max(1, Math.round(stepY / Math.max(1, stroke)));
+  let offsetX = 0;
+  let fewestDistinct = Number.POSITIVE_INFINITY;
+  for (let offset = 0; offset < stepX; offset++) {
+    const seen = new Map<string, number[]>();
+    for (let y = 0; y < height; y++) {
+      const cy = Math.floor((y - offsetY) / stepY);
+      for (let x = 0; x < width; x++) {
+        if (!ink[y * width + x]) continue;
+        const cx = Math.floor((x - offset) / stepX);
+        const key = `${cx},${cy}`;
+        let cell = seen.get(key);
+        if (!cell) {
+          cell = new Array<number>(signatureCols * signatureRows).fill(0);
+          seen.set(key, cell);
+        }
+        const sx = Math.min(signatureCols - 1, Math.floor(((x - offset - cx * stepX) * signatureCols) / stepX));
+        const sy = Math.min(signatureRows - 1, Math.floor(((y - offsetY - cy * stepY) * signatureRows) / stepY));
+        cell[sy * signatureCols + sx]! += 1;
+      }
+    }
+    const distinct = new Set<string>();
+    for (const cell of seen.values()) distinct.add(cell.map(v => (v > 0 ? 1 : 0)).join(""));
+    if (distinct.size < fewestDistinct) {
+      fewestDistinct = distinct.size;
+      offsetX = offset;
+    }
+  }
+
+  const cells = new Map<string, { x0: number; y0: number; x1: number; y1: number; area: number; sx: number; sy: number; cx: number; cy: number }>();
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (!ink[y * width + x]) continue;
+      const cx = Math.floor((x - offsetX) / stepX);
+      const cy = Math.floor((y - offsetY) / stepY);
+      const key = `${cx},${cy}`;
+      const held = cells.get(key);
+      if (!held) cells.set(key, { x0: x, y0: y, x1: x, y1: y, area: 1, sx: x, sy: y, cx, cy });
+      else {
+        if (x < held.x0) held.x0 = x;
+        if (x > held.x1) held.x1 = x;
+        if (y < held.y0) held.y0 = y;
+        if (y > held.y1) held.y1 = y;
+        held.area += 1;
+        held.sx += x;
+        held.sy += y;
+      }
+    }
+  }
+
+  const graphemes: GlyphComponent[] = [];
+  for (const box of cells.values()) {
+    const frameX = offsetX + box.cx * stepX;
+    const frameY = offsetY + box.cy * stepY;
+    const cellRaster: number[][] = Array.from({ length: stepY }, () => new Array<number>(stepX).fill(0));
+    const raster: number[][] = Array.from(
+      { length: box.y1 - box.y0 + 1 },
+      () => new Array<number>(box.x1 - box.x0 + 1).fill(0)
+    );
+    for (let y = Math.max(0, frameY); y < Math.min(height, frameY + stepY); y++) {
+      for (let x = Math.max(0, frameX); x < Math.min(width, frameX + stepX); x++) {
+        if (!ink[y * width + x]) continue;
+        cellRaster[y - frameY]![x - frameX] = 1;
+        if (y >= box.y0 && y <= box.y1 && x >= box.x0 && x <= box.x1) raster[y - box.y0]![x - box.x0] = 1;
+      }
+    }
+    graphemes.push({
+      x0: box.x0, y0: box.y0, x1: box.x1, y1: box.y1,
+      area: box.area,
+      centroidX: box.sx / box.area,
+      centroidY: box.sy / box.area,
+      raster,
+      cellRaster
+    });
+  }
+  graphemes.sort((a, b) => a.y0 - b.y0 || a.x0 - b.x0);
+
   const counts = new Map<number, number>();
-  for (const cell of cells.values()) counts.set(cell.members.length, (counts.get(cell.members.length) ?? 0) + 1);
+  for (const grapheme of graphemes) {
+    const spanned = Math.max(1, Math.round((grapheme.x1 - grapheme.x0 + 1) / Math.max(1, stepX)));
+    counts.set(spanned, (counts.get(spanned) ?? 0) + 1);
+  }
   let occupancy = 1;
   let commonest = -1;
   for (const [size, howMany] of counts) {
-    if (howMany > commonest || (howMany === commonest && size > occupancy)) {
+    if (howMany > commonest) {
       commonest = howMany;
       occupancy = size;
     }
   }
-
-  const graphemes = [...cells.values()].map(cell => {
-    const frameX = offsetX + cell.cx * stepX;
-    const frameY = offsetY + cell.cy * stepY;
-    const cellRaster: number[][] = Array.from({ length: stepY }, () => new Array<number>(stepX).fill(0));
-    for (const member of cell.members) {
-      for (let y = 0; y < member.raster.length; y++) {
-        const row = member.raster[y]!;
-        for (let x = 0; x < row.length; x++) {
-          if (!row[x]) continue;
-          const ty = member.y0 - frameY + y;
-          const tx = member.x0 - frameX + x;
-          if (ty >= 0 && ty < stepY && tx >= 0 && tx < stepX) cellRaster[ty]![tx] = 1;
-        }
-      }
-    }
-    return { ...cell.merged, cellRaster };
-  });
-  graphemes.sort((a, b) => a.y0 - b.y0 || a.x0 - b.x0);
-  return { graphemes, occupancy };
+  return { graphemes, occupancy, credible };
 }
 
 /**
@@ -677,9 +792,9 @@ export function analyzePage(image: GrayImage, options: { grouping?: PageGrouping
   const cellPitch = grouping !== "cells" ? 0 : (acrossPitch > 1 ? acrossPitch : fallback);
   const cellStepY = downPitch > 1 ? downPitch : fallback;
   const lattice = grouping === "cells"
-    ? latticeMerge(marks, cellPitch, cellStepY)
-    : { graphemes: marks, occupancy: 1 };
-  const graphemes = lattice.graphemes;
+    ? latticeGraphemes(mask, cellPitch, cellStepY, stroke)
+    : { graphemes: marks as GlyphComponent[], occupancy: 1, credible: false };
+  const graphemes = lattice.graphemes.length ? lattice.graphemes : (marks as GlyphComponent[]);
 
   const correction = estimateSkew(graphemes, stroke, mask.width);
   const cos = Math.cos(correction);
@@ -726,6 +841,8 @@ export function analyzePage(image: GrayImage, options: { grouping?: PageGrouping
     cellPitch,
     lineSplit: { accepted: lineGrouping.accepted, margin: lineGrouping.margin, count: lines.length },
     cellOccupancy: lattice.occupancy,
+    extentDispersion: extentDispersionOf(graphemes),
+    latticeCredible: lattice.credible,
     mask
   };
 }

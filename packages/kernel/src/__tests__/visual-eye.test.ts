@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { transposeImage, type GrayImage } from "../visual-page-analysis.js";
 import { knownLanguageFrom, readImage } from "../visual-eye.js";
 import {
+  JOINED_FONT,
   BLOCK_FONT,
   bigramsOf,
   editSimilarity,
@@ -105,10 +106,41 @@ describe("SCCE's eye: a picture of writing becomes text", () => {
   it("refuses a page that carries no writing, and says why", () => {
     const reading = readImage(blankPaper(), LANGUAGE, OPTIONS);
     expect(reading.abstained).toBe(true);
-    expect(reading.abstainedBecause).toContain("repeat");
+    // Either honest reason may fire first -- the marks cannot be told apart, or they never repeat -- so the
+    // test pins that a reason is given and that the evidence behind it holds, not which gate got there first.
+    expect(reading.abstainedBecause).toBeTruthy();
     // Blank paper yields marks that never recur; writing's typical sign recurs many times over.
     expect(reading.typicalOccurrence).toBeLessThanOrEqual(1);
     const written = readImage(renderTextPage(PAGE_LINES), LANGUAGE, OPTIONS);
     expect(written.typicalOccurrence).toBeGreaterThan(1);
+  });
+});
+
+describe("scripts that join or stack their letters, where a component is not a grapheme", () => {
+  const SOLID_TRUTH = [...PAGE_LINES.map(l => l.replace(/ /g, "")).join("")];
+
+  it("cuts a cursively joined word into its letters, and reads it", () => {
+    // Every letter hangs from a full-width headline set solid, so a whole word arrives as ONE component --
+    // what Devanagari does with its shirorekha and Arabic does along its baseline.
+    const image = renderTextPageWith(JOINED_FONT, SOLID_LINES, [], 0);
+    const reading = readImage(image, LANGUAGE, OPTIONS);
+    const asMarks = reading.layoutEvidence.find(e => e.grouping === "marks" && e.orientation === "rows")!;
+    // Taking components as graphemes finds a handful of word-blobs, not letters...
+    expect(asMarks.glyphCount).toBeLessThan(SOLID_TRUTH.length / 10);
+    // ...and the lattice cuts them apart, into exactly the letters that were written.
+    expect(reading.grouping).toBe("cells");
+    expect(reading.glyphCount).toBe(SOLID_TRUTH.length);
+    expect(reading.signCount).toBe(new Set(SOLID_TRUTH).size);
+    expect(editSimilarity(reading.lines.flat(), SOLID_TRUTH)).toBe(1);
+  });
+
+  it("refuses to fold mirrored letters together when both forms share a line", () => {
+    // This hand is mirror-symmetric by construction: H and E, T and W, R and D are reflections of each other.
+    // Folding them would shrink the inventory, and a smaller inventory always scores better per symbol, so
+    // likelihood alone folds them and the reading collapses. Mirror variants of ONE sign segregate by line,
+    // because a script that mirrors its glyphs mirrors a whole line of them; these interleave, so they stand.
+    const reading = readImage(renderTextPageWith(JOINED_FONT, SOLID_LINES, [], 0), LANGUAGE, OPTIONS);
+    expect(reading.mirrorFolded).toBe(false);
+    expect(reading.signCount).toBe(new Set(SOLID_TRUTH).size);
   });
 });

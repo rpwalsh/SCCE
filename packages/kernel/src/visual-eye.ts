@@ -59,6 +59,10 @@ export interface LayoutEvidence {
   readonly lineMargin: number;
   /** Commonest number of marks a lattice cell held; 1 means cells buy nothing. */
   readonly cellOccupancy: number;
+  /** How unevenly sized this grouping's graphemes are; a script sets its graphemes on one scale. */
+  readonly extentDispersion: number;
+  /** Whether a lattice was found on the page rather than imposed on it. */
+  readonly latticeCredible: boolean;
 }
 
 export interface VisualReading {
@@ -96,7 +100,9 @@ function evidenceFor(layout: PageLayout, orientation: ReadingOrientation): Layou
     lineCount: layout.lineSplit.count,
     linesFound: layout.lineSplit.accepted,
     lineMargin: layout.lineSplit.margin,
-    cellOccupancy: layout.cellOccupancy
+    cellOccupancy: layout.cellOccupancy,
+    extentDispersion: layout.extentDispersion,
+    latticeCredible: layout.latticeCredible
   };
 }
 
@@ -130,11 +136,18 @@ export function readImage(
   const orientation = ranked[0]!.orientation;
   const undecided = strongerLayout(ranked[0]!, ranked[1]!) === 0;
 
-  // A cell grouping earns its place only where a cell demonstrably holds more than one mark: that is what CJK
-  // and Hangul do and what Latin does not, and it is a measurement rather than a judgement about the script.
+  // A script sets its graphemes on a common scale, so the grouping whose grapheme sizes AGREE is the one that
+  // read them. That single measurement covers both ways a connected component fails to be a grapheme: CJK
+  // strokes come in wildly mixed sizes until they are gathered into cells, and cursive Arabic or Devanagari
+  // words come in wildly mixed widths until they are cut at them. Latin components already agree, so nothing
+  // is done to them. No script is named anywhere in the decision.
   const cellLayout = analyzePage(sources[orientation], { grouping: "cells" });
   const cellEvidence = evidenceFor(cellLayout, orientation);
-  const useCells = cellEvidence.cellOccupancy > 1;
+  const marksChosen = marksEvidence.find(e => e.orientation === orientation)!;
+  // Size agreement decides between the two groupings, but only once the lattice is established: cells are
+  // uniform whatever the image held, so on a photograph of nothing they would always look like the better read.
+  const useCells = cellEvidence.latticeCredible
+    && cellEvidence.extentDispersion < marksChosen.extentDispersion;
   const layout = useCells ? cellLayout : marksLayouts[orientation];
 
   const signs = readPageSigns(layout);

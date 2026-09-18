@@ -148,6 +148,32 @@ export function clusterByDistance(count: number, distance: (a: number, b: number
   return { signOf, groups, cutDistance, cutGap };
 }
 
+/**
+ * Blank the profile cells that carry the same value in every grapheme on the page. A feature that never varies
+ * distinguishes nothing, and worse, it drowns the ones that do: a script like Devanagari hangs every letter from
+ * one continuous headline, so each cell inherits a slice of it and the letters read as two dozen signs instead
+ * of eight. Which cells those are is measured off the page, so no script's furniture has to be named.
+ */
+function informativeCellsOnly(profiles: readonly GlyphProfile[]): GlyphProfile[] {
+  if (profiles.length < 2) return [...profiles];
+  const size = profiles[0]!.density.length;
+  const informative = new Array<boolean>(size).fill(false);
+  for (let cell = 0; cell < size; cell++) {
+    const first = profiles[0]!.density[cell]!;
+    for (const profile of profiles) {
+      if (profile.density[cell]! !== first) {
+        informative[cell] = true;
+        break;
+      }
+    }
+  }
+  return profiles.map(profile => ({
+    cols: profile.cols,
+    rows: profile.rows,
+    density: profile.density.map((value, cell) => (informative[cell] ? value : 0))
+  }));
+}
+
 function meanProfile(profiles: readonly GlyphProfile[], members: readonly number[]): GlyphProfile {
   const first = profiles[members[0]!]!;
   const density = new Array<number>(first.density.length).fill(0);
@@ -173,17 +199,38 @@ export interface PageSigns {
 /** Discover the page's sign inventory from its own marks, on the grid the page measured for itself. */
 export function readPageSigns(layout: PageLayout): PageSigns {
   const glyphs = layout.lines.flatMap(line => line.words.flatMap(word => word.glyphs));
-  const profiles = glyphs.map(g => glyphProfile(g.cellRaster ?? g.raster, layout.glyphGrid.cols, layout.glyphGrid.rows));
+  const profiles = informativeCellsOnly(
+    glyphs.map(g => glyphProfile(g.cellRaster ?? g.raster, layout.glyphGrid.cols, layout.glyphGrid.rows))
+  );
   const base = clusterByDistance(profiles.length, (a, b) => profileDistance(profiles[a]!, profiles[b]!));
   const exemplars = base.groups.map(members => meanProfile(profiles, members));
 
-  // Candidates only. Whether a script treats a mark and its reflection as one sign is not ours to assume:
-  // Egyptian flips its glyphs with the reading direction, while Canadian syllabics use the reflected and
-  // rotated forms of one shape for DIFFERENT syllables. The reading decides, by fit.
+  // Which line each glyph fell on, in the same reading order as the profiles.
+  const lineOfGlyph: number[] = [];
+  layout.lines.forEach((line, index) => {
+    for (const word of line.words) for (let k = 0; k < word.glyphs.length; k++) lineOfGlyph.push(index);
+  });
+
+  // Whether a script treats a mark and its reflection as one sign is not ours to assume, and it cannot be
+  // settled by how well the text reads either: folding shrinks the inventory, and a smaller inventory always
+  // scores better per symbol, so likelihood folds whatever it can. Measured that way three pairs of plainly
+  // different letters folded together and the reading collapsed.
+  //
+  // It is a structural claim, and structure can be measured. A script that mirrors its glyphs with the reading
+  // direction mirrors a whole LINE of them, so the two forms segregate by line. Two genuinely different letters
+  // that merely happen to be reflections -- b and d, or H and E in a symmetric hand -- appear side by side
+  // within one line. So a pair may fold only if no line ever carries both forms.
   const mirrorPairs: [number, number][] = [];
   for (let i = 0; i < exemplars.length; i++) {
     for (let j = i + 1; j < exemplars.length; j++) {
-      if (profileDistance(exemplars[i]!, mirrorProfile(exemplars[j]!)) <= base.cutDistance) mirrorPairs.push([i, j]);
+      if (profileDistance(exemplars[i]!, mirrorProfile(exemplars[j]!)) > base.cutDistance) continue;
+      const linesOf = (cluster: number) =>
+        new Set(base.groups[cluster]!.map(glyph => lineOfGlyph[glyph] ?? -1));
+      const left = linesOf(i);
+      const right = linesOf(j);
+      let shared = false;
+      for (const line of left) if (right.has(line)) { shared = true; break; }
+      if (!shared) mirrorPairs.push([i, j]);
     }
   }
 

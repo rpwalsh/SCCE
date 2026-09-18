@@ -41,6 +41,23 @@ export const BLOCK_FONT: Record<string, readonly string[]> = {
   D: ["..#...#", "..#...#", "..#...#", "..#...#", "..#...#", "..#...#", "..#...#"]
 };
 
+/**
+ * A joined script: every letter hangs from a full-width headline and the letters are set with no gap, so the
+ * headlines run together and a whole word arrives as ONE connected component -- what Devanagari does with its
+ * shirorekha and Arabic does along its baseline. This is the fixture that says whether the eye can cut a joined
+ * word into its letters. Rendered with letterGap 0.
+ */
+export const JOINED_FONT: Record<string, readonly string[]> = {
+  H: ["#####", "#....", "#....", "#....", "#....", "#....", "#...."],
+  E: ["#####", "....#", "....#", "....#", "....#", "....#", "....#"],
+  L: ["#####", "..#..", "..#..", "..#..", "..#..", "..#..", "..#.."],
+  O: ["#####", "#...#", "#...#", "#...#", "#...#", "#...#", "#...#"],
+  T: ["#####", "#.#..", "#.#..", "#.#..", "#.#..", "#.#..", "#.#.."],
+  W: ["#####", "..#.#", "..#.#", "..#.#", "..#.#", "..#.#", "..#.#"],
+  R: ["#####", "#....", "#....", "###..", "..#..", "..#..", "..#.."],
+  D: ["#####", "....#", "....#", "..###", "..#..", "..#..", "..#.."]
+};
+
 export const SCALE = 3;
 export const GLYPH_W = 5;
 export const GLYPH_H = 7;
@@ -72,6 +89,8 @@ export function uniform(seed: number): () => number {
 export interface RenderedLine {
   readonly text: string;
   readonly font: Record<string, readonly string[]>;
+  /** Space between letters in font pixels; 0 sets the script solid, so joined letters touch. */
+  readonly letterGap?: number;
 }
 
 /** Render lines of space-separated words as a grayscale page, plus isolated single-pixel specks. */
@@ -83,9 +102,10 @@ export function renderTextPage(lines: readonly string[], specks: readonly [numbe
 export function renderTextPageWith(
   font: Record<string, readonly string[]>,
   lines: readonly string[],
-  specks: readonly [number, number][] = []
+  specks: readonly [number, number][] = [],
+  letterGap = LETTER_GAP
 ): GrayImage {
-  return renderMixedPage(lines.map(text => ({ text, font })), specks);
+  return renderMixedPage(lines.map(text => ({ text, font, letterGap })), specks);
 }
 
 /** A page whose lines are carved in different hands: mixed reading direction, or two scripts at once. */
@@ -97,10 +117,10 @@ export function renderMixedPage(
     const glyph = Object.values(font)[0]!;
     return { width: glyph[0]!.length, height: glyph.length };
   };
-  const columns = Math.max(...lines.map(({ text, font }) => {
+  const columns = Math.max(...lines.map(({ text, font, letterGap = LETTER_GAP }) => {
     const words = text.split(" ");
     const letters = words.reduce((total, word) => total + word.length, 0);
-    return letters * sizeOf(font).width + (letters - words.length) * LETTER_GAP + (words.length - 1) * WORD_GAP;
+    return letters * sizeOf(font).width + (letters - words.length) * letterGap + (words.length - 1) * WORD_GAP;
   }));
   const rows = lines.reduce((total, line) => total + sizeOf(line.font).height, 0)
     + (lines.length - 1) * LINE_GAP;
@@ -121,14 +141,14 @@ export function renderMixedPage(
   };
 
   let top = MARGIN;
-  lines.forEach(({ text, font }, lineIndex) => {
+  lines.forEach(({ text, font, letterGap = LETTER_GAP }, lineIndex) => {
     if (lineIndex > 0) top += LINE_GAP;
     const size = sizeOf(font);
     let cursor = MARGIN;
     text.split(" ").forEach((word, wordIndex) => {
       if (wordIndex > 0) cursor += WORD_GAP;
       [...word].forEach((character, characterIndex) => {
-        if (characterIndex > 0) cursor += LETTER_GAP;
+        if (characterIndex > 0) cursor += letterGap;
         const glyph = font[character]!;
         glyph.forEach((row, ry) => [...row].forEach((cell, rx) => {
           if (cell === "#") plot(cursor + rx, top + ry);
