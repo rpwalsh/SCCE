@@ -23,9 +23,12 @@ import {
   projectColor,
   flattenIllumination,
   readImage,
+  scriptMemoryOf,
   type ColorImage,
   type CooccurrenceBigram,
   type GrayImage,
+  type LearnedSign,
+  type ScriptMemory,
   type SymbolFrequency
 } from "@scce/kernel";
 
@@ -198,6 +201,28 @@ export interface PageTranscription {
   /** Log-likelihood per symbol under the known language, and the margin over the rejected direction. */
   readonly fit: number;
   readonly directionMargin: number;
+  /** Whether the page read one mark at a time or in the multi-mark units it was found to be written in. */
+  readonly granularity: string;
+  /**
+   * What else the page might say. Readings are cheapest first and `readingMargin` is how far ahead the chosen
+   * one is, in nats. A small margin means the page genuinely admits more than one reading, and a caller that
+   * shows a transcription without showing that is overstating what was read.
+   */
+  readonly alternatives: readonly {
+    readonly orientation: string;
+    readonly grouping: string;
+    readonly framing: string;
+    readonly signCount: number;
+    readonly codeLength: number;
+  }[];
+  readonly readingMargin: number;
+  /** How many of this page's signs were already known from a script read before. */
+  readonly recalledSigns: number;
+  /**
+   * What this reading learned about the script, ready for `rememberScript`. Absent when the eye abstained or
+   * the caller named no script: there is nothing a page the eye would not stand behind can teach.
+   */
+  readonly learned: ScriptMemory | undefined;
 }
 
 /** The storage surface reading a page needs: the same bigram table cross-lingual alignment reads. */
@@ -246,6 +271,12 @@ export interface ReadPageOptions {
   readonly flattenLight?: boolean;
   readonly outerIterations?: number;
   readonly epsilon?: number;
+  /** Signs read before, from `recallScript`. Any that match this page inside its own same-sign scale come in known. */
+  readonly remembered?: readonly LearnedSign[];
+  /** What to call the script this page is in, when keeping what was learned from it. */
+  readonly scriptId?: string;
+  /** Which language the reading is into. Both this and `scriptId` are needed before a reading can be kept. */
+  readonly targetLanguage?: string;
 }
 
 /**
@@ -265,7 +296,8 @@ export async function transcribeImageFile(
 
   const reading = readImage(flattened, knownLanguageFrom(language.bigrams, language.frequencies), {
     outerIterations: options.outerIterations,
-    epsilon: options.epsilon
+    epsilon: options.epsilon,
+    remembered: options.remembered
   });
 
   // A reading the eye would not stand behind carries its reason and no text. Silence is citable.
@@ -287,6 +319,27 @@ export async function transcribeImageFile(
     abstained: reading.abstained,
     abstainedBecause: reading.abstainedBecause,
     fit: reading.fit,
-    directionMargin: reading.directionMargin
+    directionMargin: reading.directionMargin,
+    granularity: reading.granularity,
+    alternatives: reading.considered.map(candidate => ({
+      orientation: candidate.orientation,
+      grouping: candidate.grouping,
+      framing: candidate.framing,
+      signCount: candidate.signCount,
+      codeLength: candidate.codeLength
+    })),
+    readingMargin: reading.margin,
+    recalledSigns: reading.recalledSigns,
+    // What a sign is worth remembering by is the likelihood the known language itself assigns per symbol to the
+    // reading that taught it. Nothing is kept from a page the eye would not stand behind.
+    learned: reading.abstained || options.scriptId === undefined || options.targetLanguage === undefined
+      ? undefined
+      : scriptMemoryOf({
+          scriptId: options.scriptId,
+          targetLanguage: options.targetLanguage,
+          signs: reading.signs,
+          signToSymbol: reading.signToSymbol,
+          score: Math.exp(reading.fit)
+        })
   };
 }

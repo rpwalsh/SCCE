@@ -11,7 +11,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { BULK_LOAD_DEFERRABLE_TABLES, compileCrossLingualTranslationSeeds, knownLanguageFromBrain, transcribeImageFile, acquireAndTrainGithubOssRepository, assertHydratedRuntimeReady, deferBulkLoadIndexes, deferredBulkLoadIndexes, buildScce2BrainShardIndex, createHydrationPlan, createNodeRuntime, inspectHydrationRecords, fitRelationPotentialFromGraph, runEvaluationReleaseGate, proposeSelfRewrite, createScce2ToV3Importer, createWikipediaV3Ingestor, createWorkspaceRuntime, dryRunDeveloperRepoPlan, dryRunEngineeringCorpusIngest, fullyVerifyEventLedger, graphDeveloperRepo, importHydrationPlan, inspectDeveloperRepo, inspectEngineeringCorpusFolder, inspectHydrationStatus, inspectV2Artifacts, inspectV2GraphShard, inspectV2Ngram, inspectV2Profile, inspectV2Stream, inspectV2StreamTopic, inspectV2Topic, parseRepoDiagnosticsFixture, readScceRuntimeConfig, routeEngineeringCorpusFixture, scanLanguageControlHygiene, trainDialogueCorpus, trainGutenbergCorpus, trainOssCorpus, trainStoredCorpusConstructions, verifiedCompilerPlansForTurn, type WikipediaV3IngestStatus, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
+import { BULK_LOAD_DEFERRABLE_TABLES, compileCrossLingualTranslationSeeds, knownLanguageFromBrain, transcribeImageFile, recallScript, rememberScript, acquireAndTrainGithubOssRepository, assertHydratedRuntimeReady, deferBulkLoadIndexes, deferredBulkLoadIndexes, buildScce2BrainShardIndex, createHydrationPlan, createNodeRuntime, inspectHydrationRecords, fitRelationPotentialFromGraph, runEvaluationReleaseGate, proposeSelfRewrite, createScce2ToV3Importer, createWikipediaV3Ingestor, createWorkspaceRuntime, dryRunDeveloperRepoPlan, dryRunEngineeringCorpusIngest, fullyVerifyEventLedger, graphDeveloperRepo, importHydrationPlan, inspectDeveloperRepo, inspectEngineeringCorpusFolder, inspectHydrationStatus, inspectV2Artifacts, inspectV2GraphShard, inspectV2Ngram, inspectV2Profile, inspectV2Stream, inspectV2StreamTopic, inspectV2Topic, parseRepoDiagnosticsFixture, readScceRuntimeConfig, routeEngineeringCorpusFixture, scanLanguageControlHygiene, trainDialogueCorpus, trainGutenbergCorpus, trainOssCorpus, trainStoredCorpusConstructions, verifiedCompilerPlansForTurn, type WikipediaV3IngestStatus, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
 import type { BenchmarkInput, InspectionTarget, WorkspaceReportRecord } from "@scce/kernel";
 import { ossCorpusTrainOptionsFrom, parseCorpusTrainOptions } from "./corpus-train-options.js";
 import { parseScce2ImportOptions, parseScce2InspectOptions } from "./scce2-options.js";
@@ -99,22 +99,35 @@ async function main(): Promise<void> {
         return;
       }
       case "read": {
-        // Reads a page with the model-free eye and prints what it found. It writes nothing: a transcription is
-        // a DERIVED projection of an image, not evidence over it, and storing it belongs with the serialised
-        // ingest rather than beside it.
-        if (!runtime) return usage("scce read image <file> [--language=<hint>] [--flatten-light]");
-        if (parsed.args[0] !== "image" || !parsed.args[1]) {
-          return usage("scce read image <file> [--language=<hint>] [--flatten-light]");
-        }
+        // Reads a page with the model-free eye and prints what it found. The transcription itself is not stored
+        // here: it is a DERIVED projection of an image, not evidence over it, and storing it belongs with the
+        // serialised ingest rather than beside it. What IS kept, when a script is named, is the SIGNS -- the
+        // shapes and what they turned out to stand for -- so the next page of that hand starts from them.
+        const shape = "scce read image <file> [--language=<hint>] [--flatten-light] [--script=<id>] [--no-recall]";
+        if (!runtime) return usage(shape);
+        if (parsed.args[0] !== "image" || !parsed.args[1]) return usage(shape);
         const languageHint = parsed.args.find(arg => arg.startsWith("--language="))?.slice(11) ?? "en";
         const language = await knownLanguageFromBrain(runtime.storage as never, languageHint);
         if (!language.bigrams.length) {
           printJson({ read: false, reason: `the brain holds no ${languageHint} co-occurrence to read against yet` });
           return;
         }
-        printJson(await transcribeImageFile(parsed.args[1], language, {
-          flattenLight: parsed.args.includes("--flatten-light")
-        }));
+        const scriptId = parsed.args.find(arg => arg.startsWith("--script="))?.slice(9);
+        // Recall is not narrowed by the named script: a page does not announce what it is written in, so every
+        // remembered sign for this language is offered and the page's own same-sign scale decides.
+        const remembered = parsed.args.includes("--no-recall")
+          ? []
+          : await recallScript(runtime.storage as never, languageHint);
+        const transcription = await transcribeImageFile(parsed.args[1], language, {
+          flattenLight: parsed.args.includes("--flatten-light"),
+          remembered,
+          scriptId,
+          targetLanguage: languageHint
+        });
+        const kept = transcription.learned
+          ? await rememberScript(runtime.storage as never, transcription.learned, { observedAt: Date.now() })
+          : 0;
+        printJson({ ...transcription, learned: undefined, offered: remembered.length, signsKept: kept });
         return;
       }
       case "ingest":

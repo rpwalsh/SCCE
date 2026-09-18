@@ -46,6 +46,7 @@ export * from "./hydration-runtime.js";
 export * from "./scce2/index.js";
 export * from "./visual-ingest.js";
 export * from "./visual-page-reader.js";
+export * from "./visual-script-memory.js";
 export * from "./code-verification.js";
 export * from "./code-mouth-compiler-proposer.js";
 export * from "./clang-code-mouth-ports.js";

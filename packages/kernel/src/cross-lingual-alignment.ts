@@ -483,6 +483,11 @@ export function induceStructuralSubstitution(input: {
 }): AlignedSymbolPair[] {
   const source = cooccurrenceFromBigrams(input.sourceLanguage, input.sourceBigrams);
   const target = cooccurrenceFromBigrams(input.targetLanguage, input.targetBigrams);
-  const anchors = anchorsFromClosedClass(input.sourceClosedClass, input.targetClosedClass, input.options?.maxSymbols);
+  const ranked = anchorsFromClosedClass(input.sourceClosedClass, input.targetClosedClass, input.options?.maxSymbols);
+  // Correspondences the caller already knows are anchors too, and better ones than a frequency rank: a rank is
+  // a guess that two symbols of similar rarity correspond, while these were read before and held.
+  const given = input.options?.anchors ?? [];
+  const pinned = new Set(given.map(anchor => anchor.sourceSymbol));
+  const anchors = [...given, ...ranked.filter(anchor => !pinned.has(anchor.sourceSymbol))];
   return alignLanguagesAsSubstitution(source, target, { ...input.options, anchors });
 }

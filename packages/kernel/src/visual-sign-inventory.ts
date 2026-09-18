@@ -433,6 +433,11 @@ export interface DeciphermentRequest {
   /** Directed adjacency of the known language, from the corpus, at the granularity the signs carry. */
   readonly languageBigrams: readonly CooccurrenceBigram[];
   readonly languageFrequencies: readonly SymbolFrequency[];
+  /**
+   * Signs already known to stand for a symbol, from a script read before. They anchor the alignment and are
+   * carried into the result unchanged: a correspondence that was read and held is not re-guessed.
+   */
+  readonly known?: ReadonlyMap<number, string>;
   readonly options?: CrossLingualAlignmentOptions;
 }
 
@@ -470,6 +475,12 @@ export function decipherSigns(request: DeciphermentRequest): Decipherment {
     return frequencies.slice(0, anchorDepth).map(f => ({ word: f.symbol, documentShare: f.count / total }));
   };
 
+  const givenAnchors = [...(request.known ?? [])].map(([sign, symbol]) => ({
+    sourceSymbol: signSymbol(sign),
+    targetSymbol: symbol,
+    strength: 1
+  }));
+
   const pairs = induceStructuralSubstitution({
     sourceLanguage: "signs",
     targetLanguage: "language",
@@ -477,7 +488,9 @@ export function decipherSigns(request: DeciphermentRequest): Decipherment {
     targetBigrams: [...request.languageBigrams],
     sourceClosedClass: asClosedClass(signFrequency),
     targetClosedClass: asClosedClass(languageFrequency),
-    options: request.options
+    options: givenAnchors.length
+      ? { ...request.options, anchors: [...givenAnchors, ...(request.options?.anchors ?? [])] }
+      : request.options
   });
 
   const signToSymbol = new Map<number, string>();
@@ -485,6 +498,8 @@ export function decipherSigns(request: DeciphermentRequest): Decipherment {
     const id = Number(pair.sourceSymbol.slice(signSymbol(0).length - 1));
     if (Number.isFinite(id)) signToSymbol.set(id, pair.targetSymbol);
   }
+  // What was already read stands: the alignment may fill in around it but may not overwrite it.
+  for (const [sign, symbol] of request.known ?? []) signToSymbol.set(sign, symbol);
 
   const reversedLines = request.lines.map(line => [...line].reverse());
   const forwardFit = structuralFit(request.lines, signToSymbol, request.languageBigrams);
@@ -520,6 +535,8 @@ export function decipherPage(input: {
   readonly signs: PageSigns;
   readonly languageBigrams: readonly CooccurrenceBigram[];
   readonly languageFrequencies: readonly SymbolFrequency[];
+  /** Signs of this page already known from a script read before. */
+  readonly known?: ReadonlyMap<number, string>;
   readonly options?: CrossLingualAlignmentOptions;
 }): PageReading {
   const hypotheses: { signs: PageSigns; folded: boolean }[] = [{ signs: input.signs, folded: false }];
@@ -531,6 +548,7 @@ export function decipherPage(input: {
       lines: hypothesis.signs.lines,
       languageBigrams: input.languageBigrams,
       languageFrequencies: input.languageFrequencies,
+      known: input.known,
       options: input.options
     });
     const candidate: PageReading = {

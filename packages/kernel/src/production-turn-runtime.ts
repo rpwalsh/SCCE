@@ -3878,10 +3878,12 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       }
       // Plan items 160/162: a real, checked reasoning-operators.ts
       // comparisonOperator receipt proving the final selected cognitive
-      // proposals' relative order really does follow MMR's declared
-      // weights (COGNITIVE_PROPOSAL_BOOTSTRAP.mmr), computed from the same
-      // quality/diversity values selectWithMmr's own greedy process already
-      // produced -- not a recomputation or replacement of that selection.
+      // proposals' relative order really does follow the criteria selection
+      // used -- a proposal's own quality against what it adds, with neither
+      // privileged -- computed from the same quality/diversity values
+      // selectWithMmr's own greedy process already produced, not a
+      // recomputation or replacement of that selection. There are no
+      // coefficients in it to declare any more.
       // Absent (not fabricated) whenever fewer than two proposals exist.
       const cognitiveProposalComparison = cognitiveProposalComparisonReceipt(cognitiveProposals);
       if (cognitiveProposalComparison) {

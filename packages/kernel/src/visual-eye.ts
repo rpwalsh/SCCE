@@ -44,6 +44,7 @@ import {
 } from "./visual-hypothesis-lattice.js";
 import {
   decipherPage,
+  decipherSigns,
   inventoryCodeLength,
   readPageSigns,
   structuralFit,
@@ -51,6 +52,8 @@ import {
   type PageSigns,
   type SymbolFrequency
 } from "./visual-sign-inventory.js";
+import { induceUnits, unitsOf } from "./visual-unit-induction.js";
+import { recallSigns, type LearnedSign } from "./visual-script-memory.js";
 
 /** A language SCCE already knows, at the granularity the script's signs are expected to carry. */
 export interface KnownLanguage {
@@ -79,12 +82,33 @@ export interface LayoutEvidence {
   readonly expectedLines: number;
 }
 
+export type ReadingGranularity = "signs" | "units";
+
+/** One reading the eye considered, and what it cost to describe the page that way. */
+export interface ConsideredReading {
+  readonly orientation: ReadingOrientation;
+  readonly grouping: PageGrouping;
+  readonly framing: IdentityFraming;
+  readonly signCount: number;
+  readonly glyphCount: number;
+  /** Nats to describe the page this way: the inventory, the ink, the text, the key and the layout. */
+  readonly codeLength: number;
+}
+
 export interface VisualReading {
   readonly text: string;
   /** The reading's lines, symbol by symbol; a sign left unassigned reads as "?". */
   readonly lines: readonly (readonly string[])[];
   readonly orientation: ReadingOrientation;
   readonly grouping: PageGrouping;
+  /**
+   * Whether the page read one sign at a time or in the multi-sign units it was found to be written in. An
+   * alphabet spends one sign per symbol; a logographic script spends one on a whole word. Which it is, is not
+   * declared -- both are read and the shorter description wins.
+   */
+  readonly granularity: ReadingGranularity;
+  /** How many units the page was read in, when it was read in units. */
+  readonly unitCount: number;
   readonly reversed: boolean;
   readonly mirrorFolded: boolean;
   readonly signCount: number;
@@ -97,6 +121,16 @@ export interface VisualReading {
   readonly directionMargin: number;
   /** Every candidate layout the geometry was measured on. */
   readonly layoutEvidence: readonly LayoutEvidence[];
+  /**
+   * Every reading that was considered, cheapest first, so a caller can see what else the page might say and
+   * how far ahead the chosen reading is. This is the product's uncertainty, not a diagnostic: where the margin
+   * is small, the page genuinely admits more than one reading and a caller should be told so.
+   */
+  readonly considered: readonly ConsideredReading[];
+  /** Nats by which the chosen reading beat the next cheapest. Small means the page is genuinely ambiguous. */
+  readonly margin: number;
+  /** How many of this page's signs were already known from a script read before. */
+  readonly recalledSigns: number;
   readonly abstained: boolean;
   /** Why the page was not claimed as read, when it was not. */
   readonly abstainedBecause: string | undefined;
@@ -132,10 +166,19 @@ function strongerLayout(a: LayoutEvidence, b: LayoutEvidence): number {
  * Read an image of writing. Layout is measured off the page, identity is scored against the known language, and
  * anything the evidence leaves open is reported rather than guessed.
  */
+export interface ReadImageOptions extends CrossLingualAlignmentOptions {
+  /**
+   * Signs read before, from a script this page may be written in. Any that match a sign of this page inside the
+   * page's own measured same-sign scale are carried in already known, so a second page of the same hand is
+   * easier than the first was.
+   */
+  readonly remembered?: readonly LearnedSign[];
+}
+
 export function readImage(
   image: GrayImage,
   language: KnownLanguage,
-  options?: CrossLingualAlignmentOptions
+  options?: ReadImageOptions
 ): VisualReading {
   const sources: Record<ReadingOrientation, GrayImage> = { rows: image, columns: transposeImage(image) };
   const marksLayouts = {
@@ -180,15 +223,21 @@ export function readImage(
     reading: ReturnType<typeof decipherPage>;
     codeLength: number;
   } | undefined;
+  const considered: ConsideredReading[] = [];
 
   for (const candidate of candidateLayouts) for (const framing of framings) {
     const read = readPageSigns(candidate, { framing });
     const count = read.inventory.signOf.length;
     if (!count) continue;
+    // What this page shares with a script already read: matched on shape, inside this page's own same-sign
+    // scale, and carried in as known rather than guessed at again.
+    const recalled = options?.remembered?.length ? recallSigns(read, options.remembered) : [];
+    const known = new Map(recalled.map(match => [match.sign, match.symbol]));
     const reading = decipherPage({
       signs: read,
       languageBigrams: language.bigrams,
       languageFrequencies: language.frequencies,
+      known: known.size ? known : undefined,
       options
     });
     const tokens = Math.max(1, read.lines.reduce((total, line) => total + line.length, 0));
@@ -206,8 +255,18 @@ export function readImage(
       + reading.signCount * Math.log(vocabulary)
       + candidate.lines.length * Math.log(Math.max(2, candidate.mask.height))
       + tokens * Math.log(1 + typicalSpread);
+    considered.push({
+      orientation,
+      grouping: candidate.grouping,
+      framing,
+      signCount: reading.signCount,
+      glyphCount: count,
+      codeLength
+    });
     if (!chosen || codeLength < chosen.codeLength) chosen = { layout: candidate, signs: read, reading, codeLength };
   }
+  considered.sort((left, right) => left.codeLength - right.codeLength);
+  const margin = considered.length > 1 ? considered[1]!.codeLength - considered[0]!.codeLength : 0;
 
   const layout = chosen ? chosen.layout : marksLayouts[orientation]!;
   const signs = chosen ? chosen.signs : readPageSigns(layout);
@@ -217,14 +276,60 @@ export function readImage(
   if (!glyphCount) {
     return {
       text: "", lines: [], orientation, grouping: layout.grouping,
+      granularity: "signs", unitCount: 0,
       reversed: false, mirrorFolded: false, signCount: 0, glyphCount: 0, typicalOccurrence: 0,
-      fit: Number.NEGATIVE_INFINITY, directionMargin: 0, layoutEvidence,
+      fit: Number.NEGATIVE_INFINITY, directionMargin: 0, layoutEvidence, considered: [], margin: 0,
+      recalledSigns: 0,
       abstained: true, abstainedBecause: "no marks were found on the page",
       signToSymbol: new Map(), layout, signs
     };
   }
 
-  const reading = chosen!.reading;
+  let reading = chosen!.reading;
+  const recalledSigns = options?.remembered?.length ? recallSigns(signs, options.remembered).length : 0;
+  let granularity: ReadingGranularity = "signs";
+  let unitCount = 0;
+
+  // Granularity, settled the same way and on the winning layout. The page's signs are offered as they are and
+  // again in the multi-sign units they were found to be written in, and whichever describes the page more
+  // briefly is the reading. An alphabet keeps its signs because a unit inventory has to pay for itself; a
+  // logographic script does not, because there one sign really does carry a whole word.
+  const unitInventory = induceUnits(signs.lines);
+  const composites = unitInventory.units.filter(unit => unit.signs.length > 1);
+  if (composites.length && glyphCount > 1) {
+    const segmented = unitsOf(signs.lines, unitInventory);
+    const idOfUnit = new Map<string, number>();
+    const asUnits = segmented.map(line => line.map(piece => {
+      const key = piece.join(",");
+      let id = idOfUnit.get(key);
+      if (id === undefined) {
+        id = idOfUnit.size;
+        idOfUnit.set(key, id);
+      }
+      return id;
+    }));
+
+    const unitReading = decipherSigns({
+      lines: asUnits,
+      languageBigrams: language.bigrams,
+      languageFrequencies: language.frequencies,
+      options
+    });
+    const unitTokens = Math.max(1, asUnits.reduce((total, line) => total + line.length, 0));
+    // The unit inventory has to be stated, which is what stops a coarser reading winning for being coarser.
+    const unitCost = unitInventory.codeLength
+      + -unitReading.fit * unitTokens
+      + idOfUnit.size * Math.log(Math.max(2, language.frequencies.length));
+    const signTokens = Math.max(1, signs.lines.reduce((total, line) => total + line.length, 0));
+    const signCost = unitInventory.baseCodeLength
+      + -reading.fit * signTokens
+      + reading.signCount * Math.log(Math.max(2, language.frequencies.length));
+    if (unitCost < signCost) {
+      reading = { ...unitReading, mirrorFolded: reading.mirrorFolded, signCount: idOfUnit.size };
+      granularity = "units";
+      unitCount = idOfUnit.size;
+    }
+  }
 
   // Writing repeats its signs: that is what makes a script a closed inventory rather than a pile of shapes.
   // Measured on blank paper the typical sign occurs once, against 27 on a written page, so a page whose marks
@@ -247,6 +352,8 @@ export function readImage(
     lines: reading.readings,
     orientation,
     grouping: layout.grouping,
+    granularity,
+    unitCount,
     reversed: reading.reversed,
     mirrorFolded: reading.mirrorFolded,
     signCount: reading.signCount,
@@ -255,6 +362,9 @@ export function readImage(
     fit: reading.fit,
     directionMargin: reading.fit - reading.rejectedFit,
     layoutEvidence,
+    considered,
+    margin,
+    recalledSigns,
     abstained: abstainedBecause !== undefined,
     abstainedBecause,
     signToSymbol: reading.signToSymbol,
