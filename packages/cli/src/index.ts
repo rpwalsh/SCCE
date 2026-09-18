@@ -10,8 +10,8 @@ import { describeRelationPotentialCapability, validateRelationPotentialAgainstId
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { BULK_LOAD_DEFERRABLE_TABLES, compileCrossLingualTranslationSeeds, knownLanguageFromBrain, transcribeImageFile, recallScript, rememberScript, acquireAndTrainGithubOssRepository, assertHydratedRuntimeReady, deferBulkLoadIndexes, deferredBulkLoadIndexes, buildScce2BrainShardIndex, createHydrationPlan, createNodeRuntime, inspectHydrationRecords, fitRelationPotentialFromGraph, runEvaluationReleaseGate, proposeSelfRewrite, createScce2ToV3Importer, createWikipediaV3Ingestor, createWorkspaceRuntime, dryRunDeveloperRepoPlan, dryRunEngineeringCorpusIngest, fullyVerifyEventLedger, graphDeveloperRepo, importHydrationPlan, inspectDeveloperRepo, inspectEngineeringCorpusFolder, inspectHydrationStatus, inspectV2Artifacts, inspectV2GraphShard, inspectV2Ngram, inspectV2Profile, inspectV2Stream, inspectV2StreamTopic, inspectV2Topic, parseRepoDiagnosticsFixture, readScceRuntimeConfig, routeEngineeringCorpusFixture, scanLanguageControlHygiene, trainDialogueCorpus, trainGutenbergCorpus, trainOssCorpus, trainStoredCorpusConstructions, verifiedCompilerPlansForTurn, type WikipediaV3IngestStatus, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { BULK_LOAD_DEFERRABLE_TABLES, compileCrossLingualTranslationSeeds, knownLanguageFromBrain, transcribeImageFile, recallScript, rememberScript, ingestTranscribedImage, visualPageSourceTrust, acquireAndTrainGithubOssRepository, assertHydratedRuntimeReady, deferBulkLoadIndexes, deferredBulkLoadIndexes, buildScce2BrainShardIndex, createHydrationPlan, createNodeRuntime, inspectHydrationRecords, fitRelationPotentialFromGraph, runEvaluationReleaseGate, proposeSelfRewrite, createScce2ToV3Importer, createWikipediaV3Ingestor, createWorkspaceRuntime, dryRunDeveloperRepoPlan, dryRunEngineeringCorpusIngest, fullyVerifyEventLedger, graphDeveloperRepo, importHydrationPlan, inspectDeveloperRepo, inspectEngineeringCorpusFolder, inspectHydrationStatus, inspectV2Artifacts, inspectV2GraphShard, inspectV2Ngram, inspectV2Profile, inspectV2Stream, inspectV2StreamTopic, inspectV2Topic, parseRepoDiagnosticsFixture, readScceRuntimeConfig, routeEngineeringCorpusFixture, scanLanguageControlHygiene, trainDialogueCorpus, trainGutenbergCorpus, trainOssCorpus, trainStoredCorpusConstructions, verifiedCompilerPlansForTurn, type WikipediaV3IngestStatus, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
 import type { BenchmarkInput, InspectionTarget, WorkspaceReportRecord } from "@scce/kernel";
 import { ossCorpusTrainOptionsFrom, parseCorpusTrainOptions } from "./corpus-train-options.js";
 import { parseScce2ImportOptions, parseScce2InspectOptions } from "./scce2-options.js";
@@ -103,7 +103,7 @@ async function main(): Promise<void> {
         // here: it is a DERIVED projection of an image, not evidence over it, and storing it belongs with the
         // serialised ingest rather than beside it. What IS kept, when a script is named, is the SIGNS -- the
         // shapes and what they turned out to stand for -- so the next page of that hand starts from them.
-        const shape = "scce read image <file> [--language=<hint>] [--flatten-light] [--script=<id>] [--no-recall]";
+        const shape = "scce read image <file> [--language=<hint>] [--flatten-light] [--script=<id>] [--no-recall] [--ingest [--admit]]";
         if (!runtime) return usage(shape);
         if (parsed.args[0] !== "image" || !parsed.args[1]) return usage(shape);
         const languageHint = parsed.args.find(arg => arg.startsWith("--language="))?.slice(11) ?? "en";
@@ -127,7 +127,35 @@ async function main(): Promise<void> {
         const kept = transcription.learned
           ? await rememberScript(runtime.storage as never, transcription.learned, { observedAt: Date.now() })
           : 0;
-        printJson({ ...transcription, learned: undefined, offered: remembered.length, signsKept: kept });
+
+        // Closing the loop, when asked. The image's own bytes stay the source and keep their own hash; the
+        // transcription is an evidence derivative, the same way a PDF's text layer is, so every span carries
+        // its own bytes and nothing claims the image said something it did not.
+        //
+        // A machine reading of a photograph is held for review unless the caller admits it. The eye abstains on
+        // a page it will not stand behind, but standing behind a reading is not the same as the reading being
+        // true, and a mis-read page promoted to citable fact is the one failure this corpus cannot absorb.
+        const ingest = parsed.args.includes("--ingest");
+        const ingested = ingest
+          ? await ingestTranscribedImage({
+              kernel: runtime.kernel as never,
+              imageBytes: await readFile(parsed.args[1]),
+              transcription,
+              uri: pathToFileURL(path.resolve(parsed.args[1])).href,
+              namespace: parsed.args.find(arg => arg.startsWith("--namespace="))?.slice(12) ?? "visual",
+              sourceAdmission: {
+                sourceClass: "owner_local",
+                intendedUse: "direct_evidence",
+                promotionAuthority: parsed.args.includes("--admit") ? "owner" : "review"
+              },
+              sourceTrust: visualPageSourceTrust(transcription, {
+                independenceGroup: `owner:visual:${languageHint}`,
+                accessScope: "owner_private",
+                licenseStatus: "owner_authorized"
+              })
+            })
+          : undefined;
+        printJson({ ...transcription, learned: undefined, offered: remembered.length, signsKept: kept, ingested });
         return;
       }
       case "ingest":
