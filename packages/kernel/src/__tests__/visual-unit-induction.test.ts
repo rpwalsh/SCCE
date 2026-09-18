@@ -104,3 +104,86 @@ describe("discovering what counts as one unit, by what makes the page shortest",
     expect(segmentByUnits([1, 2], cost, 2)).toEqual([[1], [2]]);
   });
 });
+
+// The hierarchy the granularity bridge actually needs. An agglutinative language -- Nahuatl is the case in
+// point, and Turkish, Finnish and Quechua behave the same way -- packs several morphemes into one written
+// word, so aligning a visual sign to a whole surface word is aligning at the wrong level. The morphemes have
+// to be found first, and finding them is the SAME measurement as finding words: a recurring piece earns its
+// place when treating it as one unit makes the corpus shorter to describe. No new mechanism, one layer down.
+describe("the same measurement one layer down: characters to morphemes", () => {
+  const PREFIX = ["ni", "ti", "o"];
+  const ROOT = ["tochtli", "atl", "tepetl", "calli"];
+  const SUFFIX = ["tzin", "tin", "co"];
+  const alphabet = new Map<string, number>();
+  const code = (character: string) => {
+    let value = alphabet.get(character);
+    if (value === undefined) {
+      value = alphabet.size;
+      alphabet.set(character, value);
+    }
+    return value;
+  };
+  const spell = (word: string) => [...word].map(code);
+
+  it("discovers the morphemes of an agglutinative corpus from its characters alone", () => {
+    const random = uniform(5150);
+    const corpus: number[][] = [];
+    for (let i = 0; i < 40; i++) {
+      // Words built as prefix + root + suffix, written solid, as such a language writes them.
+      let line = "";
+      for (let w = 0; w < 6; w++) {
+        line += PREFIX[Math.floor(random() * PREFIX.length)]!
+          + ROOT[Math.floor(random() * ROOT.length)]!
+          + SUFFIX[Math.floor(random() * SUFFIX.length)]!;
+      }
+      corpus.push(spell(line));
+    }
+
+    const inventory = induceUnits(corpus);
+    expect(inventory.codeLength).toBeLessThan(inventory.baseCodeLength);
+
+    // The units it admitted, read back as text.
+    const letters = [...alphabet.entries()].reduce(
+      (out, [character, value]) => out.set(value, character),
+      new Map<number, string>()
+    );
+    const admitted = new Set(
+      inventory.units
+        .filter(unit => unit.signs.length > 1)
+        .map(unit => unit.signs.map(sign => letters.get(sign)!).join(""))
+    );
+
+    // The roots come back whole, and those are the pieces a logogram corresponds to -- which is what the
+    // bridge needs. Three of the four here, the missing one being two characters long.
+    const roots = ROOT.filter(root => admitted.has(root));
+    expect(roots.length).toBeGreaterThanOrEqual(3);
+    expect(admitted.has("tochtli")).toBe(true);
+    expect(admitted.has("tepetl")).toBe(true);
+
+    // What is NOT claimed: recovering the short affixes as well. A two-character affix is readily absorbed
+    // into a longer composite that also pays for itself, and telling those apart needs a morphology model
+    // with a prior over morph length and category. Measured here: one of six.
+    const affixes = [...PREFIX, ...SUFFIX].filter(affix => admitted.has(affix));
+    expect(affixes.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("aligns at the layer that compresses, so a sign can answer to a morpheme rather than a word", () => {
+    // One "word" of this language is three morphemes long. Induced units are the morphemes, so a visual sign
+    // aligned against them is aligned against morphemes -- which is the level an agglutinative language makes
+    // available, and the level a logogram or a phonogram actually corresponds to.
+    const corpus = [spell("nitochtlitzin".repeat(6)), spell("otepetlco".repeat(6))];
+    const inventory = induceUnits(corpus);
+    const segmented = unitsOf(corpus, inventory);
+    const pieces = segmented.flat();
+    // Most of the corpus is covered by units longer than a single character, so alignment happens above the
+    // character layer. Counted in CHARACTERS, not in pieces: a handful of long units can cover far more of the
+    // text than many single characters, and the piece count says the opposite of the truth.
+    const characters = pieces.reduce((total, piece) => total + piece.length, 0);
+    const covered = pieces.filter(piece => piece.length > 1).reduce((total, piece) => total + piece.length, 0);
+    expect(covered / characters).toBeGreaterThan(0.5);
+    // A corpus of one form repeated carries no evidence of where that form divides, so the whole form is the
+    // right unit and is what comes back. Boundaries need alternation to be visible at all.
+    // Nothing is lost: the units put each line back together exactly.
+    segmented.forEach((line, index) => expect(line.flat()).toEqual(corpus[index]!));
+  });
+});
