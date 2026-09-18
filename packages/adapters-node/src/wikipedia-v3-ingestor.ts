@@ -324,6 +324,10 @@ export class WikipediaV3Ingestor {
     let activeLanguageShardUri = rootUri;
     let languageShardSamples: WikipediaLanguageShardSample[] = [];
     let languageShardChars = 0;
+    let languageTrainedDocuments = 0;
+    // 0 or absent trains every document. Past the limit, pages still become evidence, graph and a page
+    // signature -- the cheap ~9% -- and only shard training stops.
+    const languageTrainingDocumentLimit = Math.max(0, this.config.runtime.corpora?.wikipedia?.languageTrainingDocumentLimit ?? 0);
     const shardCharBudget = effectiveNgramShardChars(this.config.runtime.corpora?.wikipedia?.ngramShardChars);
     const applyLanguageShardImport = (imported: WikipediaLanguageShardImport): void => {
       result.languageProfiles += imported.languageProfiles;
@@ -449,12 +453,20 @@ export class WikipediaV3Ingestor {
           // flushing only at block boundaries offered 4,023,980 characters across 2 shards and lost 1,623,980
           // of them, 40.4% of the corpus. Flushing first means a shard is never offered more than it can hold,
           // which is lossless for every page while ngramShardChars >= maxArticleChars.
-          const sampleChars = (imported.languageSample.title?.length ?? 0) + 1 + imported.languageSample.text.length;
-          if (languageShardSamples.length && languageShardChars + sampleChars + 2 > shardCharBudget) {
-            await flushLanguageShard(activeLanguageShardUri, true);
+          const trainingOpen = !languageTrainingDocumentLimit || languageTrainedDocuments < languageTrainingDocumentLimit;
+          if (trainingOpen) {
+            const sampleChars = (imported.languageSample.title?.length ?? 0) + 1 + imported.languageSample.text.length;
+            if (languageShardSamples.length && languageShardChars + sampleChars + 2 > shardCharBudget) {
+              await flushLanguageShard(activeLanguageShardUri, true);
+            }
+            languageShardSamples.push(imported.languageSample);
+            languageShardChars += sampleChars;
+            languageTrainedDocuments += 1;
+            // Crossing the limit trains what has accumulated; otherwise it waits for a flush that never comes.
+            if (languageTrainingDocumentLimit && languageTrainedDocuments >= languageTrainingDocumentLimit) {
+              await flushLanguageShard(activeLanguageShardUri, true);
+            }
           }
-          languageShardSamples.push(imported.languageSample);
-          languageShardChars += sampleChars;
         }
         result.warnings.push(...imported.warnings);
         const now = nowMs();

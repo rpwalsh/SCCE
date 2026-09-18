@@ -60,6 +60,14 @@ export interface CorpusNgramRuntimeConfig {
    * bound, not a modelling choice: one shard at this size measured 2.6GB RSS.
    */
   ngramShardChars?: number;
+  /**
+   * How many documents' text is used for language training. Beyond it the ingest keeps reading pages into
+   * evidence, the graph and the document population, and stops building language shards -- which is 91% of
+   * ingest time (measured: flushLanguageShard 117.2s of a 129s run). Facts scale with pages; fluency comes
+   * from text per model, not from page count, so there is nothing to gain by training the whole dump.
+   * Absent or 0 means train everything.
+   */
+  languageTrainingDocumentLimit?: number;
   ngramMaxCountersPerOrder?: number;
   ngramVocabularyLimit?: number;
 }
@@ -466,6 +474,7 @@ function validateNgramConfig(config: CorpusNgramRuntimeConfig | undefined, prefi
   if (!config) return;
   if (config.ngramMaxOrder !== undefined && (!Number.isInteger(config.ngramMaxOrder) || config.ngramMaxOrder < 1 || config.ngramMaxOrder > 6)) throw new Error(`${prefix}.ngramMaxOrder must be an integer from 1 through 6`);
   validatePositiveInt(config.ngramShardChars, `${prefix}.ngramShardChars`);
+  validatePositiveInt(config.languageTrainingDocumentLimit, `${prefix}.languageTrainingDocumentLimit`);
   validatePositiveInt(config.ngramMaxCountersPerOrder, `${prefix}.ngramMaxCountersPerOrder`);
   validatePositiveInt(config.ngramVocabularyLimit, `${prefix}.ngramVocabularyLimit`);
 }

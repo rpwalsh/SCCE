@@ -65,16 +65,24 @@ else
   echo; echo "--- skip wikipedia (not enabled, or dump not at the configured path)"
 fi
 
-for dir in data/gutenberg data/books; do
+# Books: prose long enough to carry narrative structure, which wiki articles do not. Override with SCCE_BOOK_DIRS.
+for dir in ${SCCE_BOOK_DIRS:-corpus/gutenberg data/gutenberg data/books}; do
   [ -d "$dir" ] && step "corpus train gutenberg $dir" $CLI corpus train gutenberg "$dir"
 done
 
-# Code corpus: every checkout under data/oss becomes a versioned software artifact, not a pile of text.
-if [ -d data/oss ]; then
-  for repo in data/oss/*; do
+# Human-authored dialogue: the only corpus that carries turn-taking, which no encyclopedia does.
+for dir in ${SCCE_DIALOGUE_DIRS:-corpus/dialogue corpus/dialogue-prose}; do
+  [ -d "$dir" ] && step "corpus train dialogue $dir" $CLI corpus train dialogue "$dir"
+done
+
+# Code: every checkout becomes a versioned software artifact, not a pile of text. Roots are machine paths, so
+# they come from the environment rather than being written into a committed script.
+for root in ${SCCE_CODE_DIRS:-}; do
+  [ -d "$root" ] || continue
+  for repo in "$root"/*; do
     [ -d "$repo" ] && step "corpus train oss $repo" $CLI corpus train oss "$repo"
   done
-fi
+done
 
 step "db migrate (restores the deferred indexes)" $CLI db migrate
 step "db verify (fails while any index is still deferred)" $CLI db verify
