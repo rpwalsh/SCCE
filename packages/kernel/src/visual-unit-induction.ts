@@ -147,9 +147,16 @@ function tokenize(
  * Returns the inventory that describes the page most briefly: for an alphabet the base signs, for a logographic
  * script its words, and for an agglutinative language written solid its morphemes. Long pieces come back most
  * reliably -- measured on a prefix-root-suffix corpus with no spaces, three of four roots and one of six
- * affixes, at 55 per cent compression. A short affix is readily absorbed into a longer composite that also pays
- * for itself, and separating those needs a morphology model with a prior over morph length and category, which
- * this is not. Roots are the pieces a logogram corresponds to, so the bridge holds where it is needed.
+ * affixes, at 55 per cent compression. Roots are the pieces a logogram corresponds to, so the bridge holds
+ * where it is needed.
+ *
+ * Short affixes mostly do not come back separately, and the reason is not a defect in the search. A SPLIT move
+ * was added to reach boundaries inside already-admitted units -- cutting "tepetltin" into "tepetl" and "tin" --
+ * and it changed nothing, because "tepetltzin" is itself a recurring word of the language and paying for it
+ * once is cheaper than paying for its parts. The induction is returning recurring units at whatever length
+ * pays, which is what it is for. Recovering the affix boundary as well needs a morphology model with a prior
+ * over morph length and category, which this deliberately is not, and the move was withdrawn rather than
+ * shipped unexercised.
  */
 export function induceUnits(sequences: readonly (readonly number[])[]): UnitInventory {
   const baseSigns = new Set<number>();
