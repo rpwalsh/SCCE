@@ -25,7 +25,11 @@ export interface EvidenceChannel {
   readonly observed: number;
   readonly nullMean: number;
   readonly nullSpread: number;
-  /** Standard score against the null. Infinite when the null has no spread and the claim still beats it. */
+  /**
+   * Standard score against the null. Where the null has no spread at all the score is not infinite but the
+   * largest a sample of this size can justify -- the z whose Gaussian tail is the smallest tail the draws can
+   * express. Reporting infinity instead loses the claim entirely to any consumer that must add scores up.
+   */
   readonly z: number;
   /** Fraction of null draws at least as extreme, add-one corrected: the empirical tail. */
   readonly tail: number;
@@ -46,9 +50,10 @@ export function calibrateEvidence(name: string, observed: number, nullSamples: r
   for (const value of nullSamples) variance += (value - nullMean) ** 2;
   const nullSpread = Math.sqrt(variance / samples);
   const atLeastAsExtreme = nullSamples.filter(value => value >= observed).length;
+  const ceiling = Math.sqrt(2 * Math.log(samples + 1));
   const z = nullSpread > 0
     ? (observed - nullMean) / nullSpread
-    : (observed > nullMean ? Number.POSITIVE_INFINITY : 0);
+    : (observed > nullMean ? ceiling : (observed < nullMean ? -ceiling : 0));
   return {
     name,
     observed,
