@@ -3,7 +3,18 @@
 import { describe, expect, it } from "vitest";
 import { analyzePage, binarize, otsuValueSplit, type GrayImage } from "../visual-page-analysis.js";
 import { glyphProfile, profileDistance, shapeDistance, shapeSignature } from "../visual-shape-signature.js";
-import { INK, invert, PAPER, renderTextPage, rotate, SCALE } from "./page-fixtures.js";
+import {
+  INK,
+  invert,
+  PAPER,
+  renderCurvedPage,
+  renderTextPage,
+  rotate,
+  sampleWords,
+  SCALE,
+  syntheticLanguage,
+  wrapWords
+} from "./page-fixtures.js";
 
 // The claim: a page of marks becomes lines, words and individual glyphs with no trained model and no tuned
 // constant -- thresholds are Otsu splits of the page's own histograms. Proven on a rendered page with noise,
@@ -120,5 +131,45 @@ describe("reading a page of marks into lines, words and glyphs with no model", (
     expect(flat.separability).toBe(0);
     // Otsu always finds a cut; the separability is what tells you whether to believe it.
     expect(bimodal.separability).toBeGreaterThan(flat.separability);
+  });
+});
+
+// A line of writing is not always straight, and a page whose baseline bends by more than a glyph's height
+// stops falling into bands -- which is how lines are found, so the page becomes unreadable for a reason that
+// has nothing to do with its marks. The shared bend is measured and taken out before grouping, and only where
+// doing so makes the bands separate more decisively.
+describe("reading a page whose lines are not straight", () => {
+  // A bend needs a page with marks enough to measure it on: the shared curvature is read by correlating how
+  // the spread of positions shifts from one band of the page to the next.
+  const CURVED_LINES = wrapWords(sampleWords(syntheticLanguage(20260918), 777, 60), 8);
+  const CURVED_GLYPHS = [...CURVED_LINES.join(" ").replace(/ /g, "")].length;
+
+  it("takes out a bend that would otherwise destroy the bands", () => {
+    // Four font pixels is twelve real ones, over half a glyph's height -- enough that the marks no longer fall
+    // into bands at all, which is how lines are found.
+    const curved = analyzePage(renderCurvedPage(CURVED_LINES, 4, 60));
+    expect(curved.baselineCurved).toBe(true);
+    expect(curved.lineSplit.accepted).toBe(true);
+    expect(curved.lineSplit.count).toBe(CURVED_LINES.length);
+    // Every mark is still found: the bend was in the layout, never in the marks.
+    const glyphs = curved.lines.reduce((total, line) =>
+      total + line.words.reduce((count, word) => count + word.glyphs.length, 0), 0);
+    expect(glyphs).toBe(CURVED_GLYPHS);
+    // A page read on a field has no single tilt to report, because the field absorbed it.
+    expect(curved.skewRadians).toBe(0);
+  });
+
+  it("invents no bend on a straight page", () => {
+    const straight = analyzePage(renderTextPage(CURVED_LINES));
+    expect(straight.baselineCurved).toBe(false);
+    expect(straight.lineSplit.count).toBe(CURVED_LINES.length);
+  });
+
+  it("still finds the bands under a bend that a rotation cannot describe at all", () => {
+    // The rotation estimator reads a large spurious tilt off a curved page -- measured, twelve degrees on a
+    // page with none -- so the two are never applied together and the field is fitted on the marks as they lie.
+    const gentle = analyzePage(renderCurvedPage(CURVED_LINES, 2, 60));
+    expect(gentle.baselineCurved).toBe(true);
+    expect(gentle.lineSplit.count).toBe(CURVED_LINES.length);
   });
 });

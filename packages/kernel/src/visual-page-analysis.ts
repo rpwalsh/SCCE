@@ -4,6 +4,8 @@
 // Page -> ink -> glyphs -> words -> lines, with no trained model and no tuned constant: every threshold is an
 // Otsu split of a histogram the image itself produced (intensity, component area, gap width).
 
+import { baselineAt, estimateSharedCurvature, type BaselineField } from "./visual-baseline-field.js";
+
 /**
  * How a grapheme is read off the page. A connected component is not a grapheme in most of the world's scripts,
  * and it fails in both directions at once: CJK and Hangul put several disconnected strokes in one square cell,
@@ -75,6 +77,13 @@ export interface PageLayout {
   readonly scaleSplit: OtsuSplit & { readonly accepted: boolean };
   /** Cells a mark can resolve across and down: measured glyph extent over measured stroke width. */
   readonly glyphGrid: { readonly cols: number; readonly rows: number };
+  /**
+   * The window identity is read from: the writing's own advance across and down the page. Fixed for every mark
+   * on the page, so a mark's identity does not depend on the size of its own bounding box.
+   */
+  readonly glyphWindow: { readonly width: number; readonly height: number };
+  /** True when the page's lines were found to curve and the curvature was taken out before grouping. */
+  readonly baselineCurved: boolean;
   /** Which reading of "one mark" this layout was built on. */
   readonly grouping: PageGrouping;
   /** Lattice pitch when graphemes were grouped into cells; 0 otherwise. */
@@ -886,8 +895,9 @@ export function analyzePage(image: GrayImage, options: { grouping?: PageGrouping
   const expectedLines = linePeriod > 1 && inkRows > 0 ? Math.max(1, Math.round(inkRows / linePeriod)) : 0;
 
   const fallback = extents.length ? extents[extents.length >> 1]! : 0;
-  const acrossPitch = grouping === "cells" ? dominantPitch(mask.ink, mask.width, mask.height) : 0;
-  const downPitch = grouping === "cells" ? dominantLinePitch(mask.ink, mask.width, mask.height) : 0;
+  // Measured for both groupings now, because identity is read from this window whichever grouping is used.
+  const acrossPitch = dominantPitch(mask.ink, mask.width, mask.height);
+  const downPitch = dominantLinePitch(mask.ink, mask.width, mask.height);
   const cellPitch = grouping !== "cells" ? 0 : (acrossPitch > 1 ? acrossPitch : fallback);
   const cellStepY = downPitch > 1 ? downPitch : fallback;
   const lattice = grouping === "cells"
@@ -895,19 +905,14 @@ export function analyzePage(image: GrayImage, options: { grouping?: PageGrouping
     : { graphemes: marks as GlyphComponent[], occupancy: 1, credible: false };
   const graphemes = lattice.graphemes.length ? lattice.graphemes : (marks as GlyphComponent[]);
 
-  const correction = estimateSkew(graphemes, stroke, mask.width);
-  const cos = Math.cos(correction);
-  const sin = Math.sin(correction);
-  const placed = graphemes.map(c => ({
-    component: c,
-    x: c.centroidX * cos - c.centroidY * sin,
-    y: c.centroidX * sin + c.centroidY * cos
-  }));
-
   const heights = graphemes.map(c => c.y1 - c.y0 + 1).sort((a, b) => a - b);
   const glyphHeight = heights.length ? heights[heights.length >> 1]! : 0;
   const widths = graphemes.map(c => c.x1 - c.x0 + 1).sort((a, b) => a - b);
   const glyphWidth = widths.length ? widths[widths.length >> 1]! : 0;
+  const glyphWindow = {
+    width: acrossPitch > 1 ? acrossPitch : Math.max(1, glyphWidth),
+    height: downPitch > 1 ? downPitch : Math.max(1, glyphHeight)
+  };
   const glyphGrid = grouping === "cells" && cellPitch > 1 && cellStepY > 1
     ? {
       cols: Math.max(1, Math.round(cellPitch / stroke)),
@@ -917,6 +922,50 @@ export function analyzePage(image: GrayImage, options: { grouping?: PageGrouping
       cols: Math.max(1, Math.round(glyphWidth / stroke)),
       rows: Math.max(1, Math.round(glyphHeight / stroke))
     };
+
+  // How the writing lies on the page, decided between a rotation and a curved field by which makes the marks
+  // fall into bands more decisively. A rotation is only the straight case of a field, so the field subsumes it
+  // and the two are never applied together.
+  //
+  // They must never be applied in that order either, which is what made this hard to see. A bend defeats the
+  // rotation estimator outright -- it read twelve degrees of tilt off a page with none -- and rotating by that
+  // scrambles the very structure the curvature estimator needs, taking the band margin from 4.7 down to 0.31.
+  // So the field is fitted on the marks as they lie, before any rotation.
+  const asLaid = graphemes.map(c => ({ along: c.centroidX, across: c.centroidY }));
+  const laidMargin = bandMargin(asLaid.map(point => point.across), glyphHeight);
+
+  const correction = estimateSkew(graphemes, stroke, mask.width);
+  const cos = Math.cos(correction);
+  const sin = Math.sin(correction);
+  const rotated = graphemes.map(c => ({
+    component: c,
+    x: c.centroidX * cos - c.centroidY * sin,
+    y: c.centroidX * sin + c.centroidY * cos
+  }));
+  const rotatedMargin = bandMargin(rotated.map(point => point.y), glyphHeight);
+
+  // The bin the bend is measured over is searched rather than chosen, by the same margin the result is judged
+  // by. Too wide and it averages the bend away; too narrow and each bin holds too few marks to correlate.
+  let curvature: BaselineField | undefined;
+  let curvedMargin = -1;
+  const advance = Math.max(2, glyphWindow.width);
+  for (const bin of [advance, advance * 2, advance * 4]) {
+    const field = estimateSharedCurvature(asLaid, bin, Math.max(1, glyphHeight));
+    const margin = bandMargin(asLaid.map(point => point.across - baselineAt(field, point.along)), glyphHeight);
+    if (margin > curvedMargin) {
+      curvedMargin = margin;
+      curvature = field;
+    }
+  }
+
+  const useCurvature = curvature !== undefined && curvedMargin > Math.max(laidMargin, rotatedMargin);
+  const placed = useCurvature && curvature
+    ? graphemes.map(c => ({
+      component: c,
+      x: c.centroidX,
+      y: c.centroidY - baselineAt(curvature!, c.centroidX)
+    }))
+    : rotated;
 
   placed.sort((a, b) => a.y - b.y);
   // An image with no ink has no lines. Gap grouping always returns one group, so without this a blank capture
@@ -933,13 +982,16 @@ export function analyzePage(image: GrayImage, options: { grouping?: PageGrouping
     lines.push({ words: wordGroups.map(w => ({ glyphs: w.map(i => inLine[i]!.component) })) });
   }
 
-  // Reported skew is the page's own tilt: the negation of the rotation that corrects it.
+  // Reported skew is the page's own tilt: the negation of the rotation that corrects it. A page read on a
+  // curved field has no single tilt to report, because the field absorbed it.
   return {
-    skewRadians: -correction,
+    skewRadians: useCurvature ? 0 : -correction,
     lines,
     speckles,
     scaleSplit,
     glyphGrid,
+    glyphWindow,
+    baselineCurved: useCurvature,
     grouping,
     cellPitch,
     lineSplit: { accepted: lineGrouping.accepted, margin: lineGrouping.margin, count: lines.length },

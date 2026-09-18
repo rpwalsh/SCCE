@@ -91,6 +91,8 @@ export interface RenderedLine {
   readonly font: Record<string, readonly string[]>;
   /** Space between letters in font pixels; 0 sets the script solid, so joined letters touch. */
   readonly letterGap?: number;
+  /** Vertical offset in font pixels at a given position along the line: a baseline that is not straight. */
+  readonly curve?: (along: number) => number;
 }
 
 /** Render lines of space-separated words as a grayscale page, plus isolated single-pixel specks. */
@@ -141,7 +143,7 @@ export function renderMixedPage(
   };
 
   let top = MARGIN;
-  lines.forEach(({ text, font, letterGap = LETTER_GAP }, lineIndex) => {
+  lines.forEach(({ text, font, letterGap = LETTER_GAP, curve }, lineIndex) => {
     if (lineIndex > 0) top += LINE_GAP;
     const size = sizeOf(font);
     let cursor = MARGIN;
@@ -150,8 +152,9 @@ export function renderMixedPage(
       [...word].forEach((character, characterIndex) => {
         if (characterIndex > 0) cursor += letterGap;
         const glyph = font[character]!;
+        const lift = curve ? Math.round(curve(cursor)) : 0;
         glyph.forEach((row, ry) => [...row].forEach((cell, rx) => {
-          if (cell === "#") plot(cursor + rx, top + ry);
+          if (cell === "#") plot(cursor + rx, top + lift + ry);
         }));
         cursor += size.width;
       });
@@ -283,4 +286,20 @@ export function editSimilarity(a: readonly string[], b: readonly string[]): numb
     current = swap;
   }
   return 1 - previous[n]! / Math.max(m, n);
+}
+
+/**
+ * The same page written along a curve, as a hand drifts or a spray can follows the arm. The amplitude is given
+ * in font pixels, so an amplitude near the glyph height is a bend that breaks straight-line band finding.
+ */
+export function renderCurvedPage(
+  lines: readonly string[],
+  amplitude: number,
+  period: number,
+  font: Record<string, readonly string[]> = FONT
+): GrayImage {
+  const curve = (along: number) => amplitude * Math.sin((2 * Math.PI * along) / period);
+  // Extra room above and below, so a bend does not run off the page.
+  const padded = [`${" ".repeat(0)}`, ...lines, ""].filter((line, index) => index !== 0 || line.length > 0);
+  return renderMixedPage((padded.length ? lines : lines).map(text => ({ text, font, curve })));
 }

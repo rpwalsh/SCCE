@@ -209,6 +209,7 @@ export * from "./visual-construction-graph.js";
 export * from "./visual-hypothesis-lattice.js";
 export * from "./visual-variable-arity-alignment.js";
 export * from "./visual-sign-roles.js";
+export * from "./visual-baseline-field.js";
 export * from "./relation-hypothesis.js";
 export * from "./structured-semantic-candidate.js";
 export * from "./alpha-field-persistence.js";

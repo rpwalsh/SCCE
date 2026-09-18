@@ -17,7 +17,7 @@
 import type { AlignedSymbolPair, CooccurrenceBigram, CrossLingualAlignmentOptions } from "./cross-lingual-alignment.js";
 import { induceStructuralSubstitution } from "./cross-lingual-alignment.js";
 import { populationVoidCut, type PageLayout } from "./visual-page-analysis.js";
-import { glyphProfile, mirrorProfile, profileDistance, type GlyphProfile } from "./visual-shape-signature.js";
+import { glyphProfile, mirrorProfile, profileDistance, windowProfile, type GlyphProfile } from "./visual-shape-signature.js";
 
 export interface SignCluster {
   readonly id: number;
@@ -170,6 +170,14 @@ export interface PageSigns {
 /** Discover the page's sign inventory from its own marks, on the grid the page measured for itself. */
 export function readPageSigns(layout: PageLayout): PageSigns {
   const glyphs = layout.lines.flatMap(line => line.words.flatMap(word => word.glyphs));
+  // Identity is read from the mark's own box, and from a cell grapheme's whole cell where there is one.
+  //
+  // A fixed window centred on the ink centroid was tried instead, to stop a speck at a glyph's edge from
+  // stretching the box and shifting every cell. It fixes that and costs more than it saves: a bounding box
+  // snaps exactly to the ink, so two prints of one letter give identical profiles, while a centroid is
+  // fractional and at three-pixel cells its sub-pixel jitter moves ink across cell boundaries. Measured, an
+  // eight-sign page came back as thirteen. Neither framing dominates; windowProfile stays available for scripts
+  // whose marks vary in size, where a box discards exactly the size that distinguishes them.
   const profiles = informativeCellsOnly(
     glyphs.map(g => glyphProfile(g.cellRaster ?? g.raster, layout.glyphGrid.cols, layout.glyphGrid.rows))
   );

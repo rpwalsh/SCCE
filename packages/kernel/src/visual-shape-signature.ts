@@ -147,6 +147,51 @@ export function glyphProfile(raster: GlyphRaster, cols: number, rows: number): G
   return { cols, rows, density };
 }
 
+/**
+ * Ink density over a window of the WRITING's own scale, centred on the mark's ink centroid rather than fitted
+ * to its bounding box. This is the identity feature, and the distinction from a box-fitted one is not cosmetic:
+ * a speck of sensor noise attaching at a glyph's edge stretches its box and shifts every cell of a box-fitted
+ * profile, which measured on a colour capture collapsed an eight-sign inventory to one. Centred on the
+ * centroid and scaled by the page, a speck moves the window slightly and rescales nothing.
+ *
+ * It also stops discarding size. Two marks of different sizes normalise to the same box and become one sign,
+ * where in a real script their size may be exactly what distinguishes them.
+ */
+export function windowProfile(
+  raster: GlyphRaster,
+  centroidX: number,
+  centroidY: number,
+  windowWidth: number,
+  windowHeight: number,
+  cols: number,
+  rows: number
+): GlyphProfile {
+  const height = raster.length;
+  const width = height ? raster[0]!.length : 0;
+  const density = new Array<number>(Math.max(0, cols * rows)).fill(0);
+  if (cols <= 0 || rows <= 0 || windowWidth <= 0 || windowHeight <= 0) return { cols, rows, density };
+
+  const counts = new Array<number>(cols * rows).fill(0);
+  const spanX = Math.max(1, Math.round(windowWidth));
+  const spanY = Math.max(1, Math.round(windowHeight));
+  const left = centroidX - spanX / 2;
+  const top = centroidY - spanY / 2;
+  for (let dy = 0; dy < spanY; dy++) {
+    const sourceY = Math.round(top + dy);
+    const row = sourceY >= 0 && sourceY < height ? raster[sourceY]! : undefined;
+    const cellRow = Math.min(rows - 1, Math.floor((dy * rows) / spanY)) * cols;
+    for (let dx = 0; dx < spanX; dx++) {
+      const sourceX = Math.round(left + dx);
+      const cell = cellRow + Math.min(cols - 1, Math.floor((dx * cols) / spanX));
+      counts[cell]! += 1;
+      // Outside the mark's own raster is background, which is true and is what the window is for.
+      if (row && sourceX >= 0 && sourceX < width && row[sourceX]! > 0) density[cell]! += 1;
+    }
+  }
+  for (let i = 0; i < density.length; i++) if (counts[i]! > 0) density[i]! /= counts[i]!;
+  return { cols, rows, density };
+}
+
 /** The profile of the same mark reflected left-to-right: scripts that flip with reading direction need this. */
 export function mirrorProfile(profile: GlyphProfile): GlyphProfile {
   const density = new Array<number>(profile.density.length).fill(0);

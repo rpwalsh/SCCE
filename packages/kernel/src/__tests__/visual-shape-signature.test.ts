@@ -1,7 +1,14 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
-import { shapeSignature, shapeDistance, type GlyphRaster } from "../visual-shape-signature.js";
+import {
+  glyphProfile,
+  profileDistance,
+  shapeDistance,
+  shapeSignature,
+  windowProfile,
+  type GlyphRaster
+} from "../visual-shape-signature.js";
 
 // The claim: a glyph is recognized by the SHAPE of its mark -- invariant moments -- not by a trained model. A
 // mark reads as the same shape wherever it sits, however big, however turned; a different mark does not. Proven
@@ -88,5 +95,42 @@ describe("recognizing a glyph by the shape of its mark, no model", () => {
 
   it("is deterministic", () => {
     expect(shapeSignature(T).hu).toEqual(shapeSignature(T).hu);
+  });
+});
+
+// A second framing for identity, for scripts whose marks vary in size. A bounding box normalises size away,
+// which is right where every mark is the same size and wrong where size is what distinguishes them. This one
+// takes a window of the writing's own scale centred on the mark's ink, so size is kept and a speck at the
+// edge cannot rescale anything. It is not the default: at small cells a fractional centroid jitters, and on a
+// page of uniform letters that costs more than it saves.
+describe("identity read from a window of the writing's scale rather than the mark's own box", () => {
+  const glyph = (rows: string[]) => rows.map(row => [...row].map(ch => (ch === "#" ? 1 : 0)));
+  const small = glyph(["##", "##"]);
+  const large = glyph(["####", "####", "####", "####"]);
+
+  it("keeps the difference between a small mark and a large one", () => {
+    // Fitted to their own boxes these are the same shape and become one sign. The grid has to be no finer than
+    // the smaller raster, or it resolves cells that raster cannot fill and the two stop matching for that
+    // reason instead.
+    const boxedSmall = glyphProfile(small, 2, 2);
+    const boxedLarge = glyphProfile(large, 2, 2);
+    expect(profileDistance(boxedSmall, boxedLarge)).toBe(0);
+
+    // In a common window they are plainly different marks, which for many scripts they are.
+    const windowedSmall = windowProfile(small, 1, 1, 8, 8, 2, 2);
+    const windowedLarge = windowProfile(large, 2, 2, 8, 8, 2, 2);
+    expect(profileDistance(windowedSmall, windowedLarge)).toBeGreaterThan(0.1);
+  });
+
+  it("is unmoved by where the mark sits, since the window follows its ink", () => {
+    const padded = glyph(["....", ".##.", ".##.", "...."]);
+    const here = windowProfile(small, 1, 1, 8, 8, 2, 2);
+    const there = windowProfile(padded, 2, 2, 8, 8, 2, 2);
+    expect(profileDistance(here, there)).toBe(0);
+  });
+
+  it("returns an empty profile rather than failing on a degenerate window", () => {
+    expect(windowProfile(small, 1, 1, 0, 0, 2, 2).density.every(value => value === 0)).toBe(true);
+    expect(windowProfile(small, 1, 1, 8, 8, 0, 0).density).toHaveLength(0);
   });
 });
