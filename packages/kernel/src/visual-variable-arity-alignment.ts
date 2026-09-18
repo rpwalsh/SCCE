@@ -274,7 +274,14 @@ export function alignVariableArity(request: VariableArityRequest): VariableArity
   }
 
   const table = new Map<string, Unit>();
-  const taken = { source: new Set<string>(), target: new Set<string>() };
+  // Only targets are claimed exclusively. A SIGN may belong to several units and usually does: Egyptian spells
+  // one word with several phonograms and spells other words with those same phonograms, and a syllabary reuses
+  // a sign across every syllable it appears in. Requiring a sign to belong to one unit caps the table at
+  // however many disjoint groups the signs fall into -- measured, 4 correspondences on a page with 8, every one
+  // of the 4 correct and the other 4 unreachable by construction rather than by evidence. What stops a unit
+  // being claimed twice is the table itself, keyed by the whole unit, and what stops a spurious unit being
+  // claimed at all is the description length of the page read through it.
+  const taken = { target: new Set<string>() };
   const accepted: ArityCandidate[] = [];
   let longest = 1;
   let best = pageCost(request.sourceSequences, table, longest, model, symbolCost)
@@ -285,7 +292,7 @@ export function alignVariableArity(request: VariableArityRequest): VariableArity
     let chosenCost = best;
     let chosenLongest = longest;
     for (const candidate of candidates) {
-      if (candidate.source.some(part => taken.source.has(part))) continue;
+      if (table.has(keyOf(candidate.source))) continue;
       if (candidate.target.some(part => taken.target.has(part))) continue;
       const trial = new Map(table);
       trial.set(keyOf(candidate.source), candidate.target);
@@ -301,7 +308,6 @@ export function alignVariableArity(request: VariableArityRequest): VariableArity
     }
     if (!chosen) break;
     table.set(keyOf(chosen.source), chosen.target);
-    for (const part of chosen.source) taken.source.add(part);
     for (const part of chosen.target) taken.target.add(part);
     accepted.push(chosen);
     best = chosenCost;
@@ -315,6 +321,7 @@ export function alignVariableArity(request: VariableArityRequest): VariableArity
   // local search: any swap of two targets, or any exchange for a target still unused, that shortens the
   // description is taken, until none does. Deterministic, and it terminates because the cost strictly falls.
   const freeTargets = targetUnits.filter(unit => !unit.split(" ").some(part => taken.target.has(part)));
+
   for (;;) {
     let improved = false;
     for (let i = 0; i < accepted.length && !improved; i++) {
