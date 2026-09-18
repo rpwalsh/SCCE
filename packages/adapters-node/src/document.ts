@@ -222,9 +222,15 @@ async function extractPdfText(bytes: Uint8Array, options: DocumentExtractionOpti
     const cause = result.boundaryCause ? [`${result.boundaryCause.stage}: ${result.boundaryCause.message}`] : [];
     return { text: "", structural: {}, warnings: [result.boundary, ...cause] };
   }
+  // A partial OCR read is a success with a hole in it: the pages read are returned, and the caller is told which
+  // were not, so a truncated scan cannot look like a complete one.
+  const partialWarnings = [
+    ...(result.partial ? [`ocr_partial: ${result.partial.message}`] : []),
+    ...(result.skippedPages?.length ? [`ocr_skipped_pages: ${result.skippedPages.length} (${result.skippedPages.slice(0, 8).map(p => p.page).join(", ")})`] : [])
+  ];
   return {
-    text: result.text, structural: inferPagedStructure(result.text), warnings: result.scannedPdfOcr ? ocrProfileSelectionWarnings(ocr) : [],
-    ...(result.scannedPdfOcr ? { parser: "pdfjs-rendered-tesseract-wasm-worker", typedExtraction: toJsonValue({ scannedPdfOcr: { profile: result.ocrProfile, profileSelection: ocr.origin, renderer: "pdfjs-napi-canvas", engine: "tesseract.js-wasm" } }) } : {})
+    text: result.text, structural: inferPagedStructure(result.text), warnings: result.scannedPdfOcr ? [...ocrProfileSelectionWarnings(ocr), ...partialWarnings] : partialWarnings,
+    ...(result.scannedPdfOcr ? { parser: "pdfjs-rendered-tesseract-wasm-worker", typedExtraction: toJsonValue({ scannedPdfOcr: { profile: result.ocrProfile, profileSelection: ocr.origin, renderer: "pdfjs-napi-canvas", engine: "tesseract.js-wasm", ...(result.partial ? { partial: result.partial } : {}), ...(result.skippedPages?.length ? { skippedPages: result.skippedPages } : {}) } }) } : {})
   };
 }
 

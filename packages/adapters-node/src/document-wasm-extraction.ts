@@ -12,7 +12,7 @@ import { resolveOcrProfile, type ResolvedOcrProfile } from "./ocr-profile.js";
 export type BundledOcrProfile = string;
 
 export type DocumentWasmExtractionRequest =
-  | { kind: "pdf-text"; bytes: Uint8Array; maxOutputBytes: number; ocrProfile?: BundledOcrProfile }
+  | { kind: "pdf-text"; bytes: Uint8Array; maxOutputBytes: number; ocrProfile?: BundledOcrProfile; softDeadlineMs?: number }
   | { kind: "image-ocr"; bytes: Uint8Array; maxOutputBytes: number; ocrProfile: BundledOcrProfile };
 
 export interface DocumentWasmExtractionResult {
@@ -22,6 +22,10 @@ export interface DocumentWasmExtractionResult {
   scannedPdfOcr?: true;
   boundary?: "embedded_text_absent/ocr_unavailable";
   boundaryCause?: { stage: ScannedPdfOcrStage; message: string };
+  /** Present when OCR stopped before the last page: what was read is kept, and this says what was not. */
+  partial?: { pagesRead: number; pagesTotal: number; stoppedBy: "pixel_budget" | "deadline"; message: string };
+  /** Pages that failed individually; the pages around them are still read. */
+  skippedPages?: Array<{ page: number; stage: ScannedPdfOcrStage; message: string }>;
 }
 
 export type ScannedPdfOcrStage = "load" | "render" | "recognize" | "pixel_budget";
@@ -42,11 +46,11 @@ const SCANNED_PDF_RENDER_SCALE = 2;
  */
 export async function extractDocumentWasm(request: DocumentWasmExtractionRequest): Promise<DocumentWasmExtractionResult> {
   return request.kind === "pdf-text"
-    ? extractPdfText(request.bytes, request.maxOutputBytes, request.ocrProfile)
+    ? extractPdfText(request.bytes, request.maxOutputBytes, request.ocrProfile, request.softDeadlineMs)
     : extractImageText(request.bytes, request.maxOutputBytes, request.ocrProfile);
 }
 
-async function extractPdfText(bytes: Uint8Array, maxOutputBytes: number, ocrProfile?: BundledOcrProfile): Promise<DocumentWasmExtractionResult> {
+async function extractPdfText(bytes: Uint8Array, maxOutputBytes: number, ocrProfile?: BundledOcrProfile, softDeadlineMs?: number): Promise<DocumentWasmExtractionResult> {
   const task = loadPdf(bytes);
   const pdf = await task.promise;
   let text = "";
@@ -66,7 +70,7 @@ async function extractPdfText(bytes: Uint8Array, maxOutputBytes: number, ocrProf
   } finally {
     await task.destroy();
   }
-  return extractScannedPdfText(bytes, maxOutputBytes, ocrProfile);
+  return extractScannedPdfText(bytes, maxOutputBytes, ocrProfile, softDeadlineMs);
 }
 
 async function extractImageText(bytes: Uint8Array, maxOutputBytes: number, profileId: BundledOcrProfile): Promise<DocumentWasmExtractionResult> {
@@ -196,17 +200,17 @@ function readUint32Le(bytes: Uint8Array, offset: number): number { return bytes[
 function readInt32Le(bytes: Uint8Array, offset: number): number { const value = readUint32Le(bytes, offset); return value > 0x7fffffff ? value - 0x100000000 : value; }
 function ascii(bytes: Uint8Array, start: number, end: number): string { return String.fromCharCode(...bytes.subarray(start, end)); }
 
-async function extractScannedPdfText(bytes: Uint8Array, maxOutputBytes: number, ocrProfile?: BundledOcrProfile): Promise<DocumentWasmExtractionResult> {
+async function extractScannedPdfText(bytes: Uint8Array, maxOutputBytes: number, ocrProfile?: BundledOcrProfile, softDeadlineMs?: number): Promise<DocumentWasmExtractionResult> {
   const task = loadPdf(bytes);
   const pdf = await task.promise;
   try {
-    return await renderScannedPdfText(pdf, maxOutputBytes, ocrProfile);
+    return await renderScannedPdfText(pdf, maxOutputBytes, ocrProfile, softDeadlineMs);
   } finally {
     await task.destroy();
   }
 }
 
-async function renderScannedPdfText(pdf: PDFDocumentProxy, maxOutputBytes: number, ocrProfile?: BundledOcrProfile): Promise<DocumentWasmExtractionResult> {
+async function renderScannedPdfText(pdf: PDFDocumentProxy, maxOutputBytes: number, ocrProfile?: BundledOcrProfile, softDeadlineMs?: number): Promise<DocumentWasmExtractionResult> {
   if (!ocrProfile) return { text: "", boundary: "embedded_text_absent/ocr_unavailable", boundaryCause: { stage: "load", message: "no OCR profile is configured and the installation carries no single packaged profile" } };
   const profile = bundledOcrProfile(ocrProfile);
   let worker: Tesseract.Worker | undefined;
@@ -214,17 +218,34 @@ async function renderScannedPdfText(pdf: PDFDocumentProxy, maxOutputBytes: numbe
   try {
     worker = await createOcrWorker(profile);
     const output = new BoundedUtf8Text(maxOutputBytes);
+    // Pages already OCR'd are kept. The pixel budget and the deadline stop FURTHER work; they do not throw away
+    // work already done, and one unreadable page skips itself rather than aborting the document -- the same
+    // rule the language sharder now follows. An empty result means page one produced nothing, not that the
+    // reader gave up partway with text in hand.
+    const deadlineAt = softDeadlineMs && softDeadlineMs > 0 ? Date.now() + softDeadlineMs : undefined;
+    const skippedPages: Array<{ page: number; stage: ScannedPdfOcrStage; message: string }> = [];
     let pixelsUsed = 0;
+    let pagesRead = 0;
+    let partial: DocumentWasmExtractionResult["partial"];
     for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
+      if (deadlineAt && Date.now() >= deadlineAt) {
+        partial = { pagesRead, pagesTotal: pdf.numPages, stoppedBy: "deadline", message: `OCR soft deadline reached after page ${pagesRead} of ${pdf.numPages}` };
+        break;
+      }
       stage = "render";
       const page = await pdf.getPage(pageNumber);
       try {
         const base = page.getViewport({ scale: SCANNED_PDF_RENDER_SCALE });
         const requestedPixels = Math.ceil(base.width) * Math.ceil(base.height);
         const pageBudget = Math.min(MAX_SCANNED_PDF_PAGE_PIXELS, MAX_SCANNED_PDF_TOTAL_PIXELS - pixelsUsed);
-        if (!Number.isFinite(requestedPixels) || requestedPixels <= 0)
-          return ocrUnavailable("render", `page ${pageNumber} has no renderable viewport`);
-        if (pageBudget <= 0) return ocrUnavailable("pixel_budget", `total pixel budget exhausted before page ${pageNumber} of ${pdf.numPages}`);
+        if (pageBudget <= 0) {
+          partial = { pagesRead, pagesTotal: pdf.numPages, stoppedBy: "pixel_budget", message: `pixel budget exhausted before page ${pageNumber} of ${pdf.numPages}` };
+          break;
+        }
+        if (!Number.isFinite(requestedPixels) || requestedPixels <= 0) {
+          skippedPages.push({ page: pageNumber, stage: "render", message: "no renderable viewport" });
+          continue;
+        }
         const scale = requestedPixels > pageBudget ? SCANNED_PDF_RENDER_SCALE * Math.sqrt(pageBudget / requestedPixels) : SCANNED_PDF_RENDER_SCALE;
         const viewport = page.getViewport({ scale });
         const width = Math.max(1, Math.floor(viewport.width));
@@ -240,17 +261,34 @@ async function renderScannedPdfText(pdf: PDFDocumentProxy, maxOutputBytes: numbe
           const image = canvas.toBuffer("image/png");
           stage = "recognize";
           const recognized = await worker.recognize(image);
-          if (pageNumber > 1 && recognized.data.text) output.append("\f");
+          if (pagesRead > 0 && recognized.data.text) output.append("\f");
           output.append(recognized.data.text);
+          pagesRead += 1;
         } finally {
           canvas.width = 1;
           canvas.height = 1;
         }
+      } catch (pageError) {
+        // The output byte cap is a hard stop the caller asked for; everything else is one bad page, not a bad
+        // document, so the page is skipped with a reason and the rest are still read.
+        if (pageError instanceof Error && pageError.message === "document extraction exceeded output byte limit") throw pageError;
+        skippedPages.push({ page: pageNumber, stage, message: pageError instanceof Error ? pageError.message : String(pageError) });
       } finally {
         page.cleanup();
       }
     }
-    return { text: output.text(), ocrProfile: profile.id, scannedPdfOcr: true };
+    // Nothing readable at all is still a failure; some text, however partial, is a success the caller can use.
+    if (!pagesRead) {
+      return ocrUnavailable(partial?.stoppedBy === "pixel_budget" ? "pixel_budget" : stage, partial?.message ?? skippedPages[0]?.message ?? "no page produced text");
+    }
+    return {
+      text: output.text(),
+      ocrProfile: profile.id,
+      scannedPdfOcr: true,
+      pageCount: pdf.numPages,
+      ...(partial ? { partial } : {}),
+      ...(skippedPages.length ? { skippedPages } : {})
+    };
   } catch (error) {
     if (error instanceof Error && error.message === "document extraction exceeded output byte limit") throw error;
     return ocrUnavailable(stage, error instanceof Error ? error.message : String(error));
