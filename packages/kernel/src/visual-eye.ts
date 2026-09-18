@@ -232,7 +232,7 @@ export function readImage(
     // What this page shares with a script already read: matched on shape, inside this page's own same-sign
     // scale, and carried in as known rather than guessed at again.
     const recalled = options?.remembered?.length ? recallSigns(read, options.remembered) : [];
-    const known = new Map(recalled.map(match => [match.sign, match.symbol]));
+    const known = new Map(recalled.map(match => [match.sign, { symbol: match.symbol, strength: match.score }]));
     const reading = decipherPage({
       signs: read,
       languageBigrams: language.bigrams,

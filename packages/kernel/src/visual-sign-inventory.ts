@@ -341,12 +341,12 @@ export function signBigrams(sequences: readonly (readonly number[])[]): Cooccurr
   const counts = new Map<string, number>();
   for (const sequence of sequences) {
     for (let i = 1; i < sequence.length; i++) {
-      const key = `${sequence[i - 1]!} ${sequence[i]!}`;
+      const key = `${sequence[i - 1]!}\u0000${sequence[i]!}`;
       counts.set(key, (counts.get(key) ?? 0) + 1);
     }
   }
   return [...counts].map(([key, count]) => {
-    const parts = key.split(" ");
+    const parts = key.split("\u0000");
     return { previous: signSymbol(Number(parts[0])), next: signSymbol(Number(parts[1])), count };
   });
 }
@@ -434,11 +434,20 @@ export interface DeciphermentRequest {
   readonly languageBigrams: readonly CooccurrenceBigram[];
   readonly languageFrequencies: readonly SymbolFrequency[];
   /**
-   * Signs already known to stand for a symbol, from a script read before. They anchor the alignment and are
-   * carried into the result unchanged: a correspondence that was read and held is not re-guessed.
+   * Signs already known to stand for a symbol, from a script read before, each with how strongly the reading
+   * that taught it was supported. They enter as anchors AT THAT STRENGTH and do not override the alignment:
+   * pinning them outright propagates whatever the earlier page got wrong. Measured on an invented script, a
+   * memory taken from a page that read at 0.38 and pinned at full strength turned a 0.759 reading into 0.689.
    */
-  readonly known?: ReadonlyMap<number, string>;
+  readonly known?: ReadonlyMap<number, KnownSign>;
   readonly options?: CrossLingualAlignmentOptions;
+}
+
+/** A sign whose symbol is already known, and how well supported the reading that established it was. */
+export interface KnownSign {
+  readonly symbol: string;
+  /** Support in 0..1 of the reading that taught this correspondence. */
+  readonly strength: number;
 }
 
 export interface Decipherment {
@@ -475,11 +484,15 @@ export function decipherSigns(request: DeciphermentRequest): Decipherment {
     return frequencies.slice(0, anchorDepth).map(f => ({ word: f.symbol, documentShare: f.count / total }));
   };
 
-  const givenAnchors = [...(request.known ?? [])].map(([sign, symbol]) => ({
-    sourceSymbol: signSymbol(sign),
-    targetSymbol: symbol,
-    strength: 1
-  }));
+  const givenAnchors = [...(request.known ?? [])]
+    .filter(([, known]) => Number.isFinite(known.strength) && known.strength > 0)
+    .map(([sign, known]) => ({
+      sourceSymbol: signSymbol(sign),
+      targetSymbol: known.symbol,
+      // The strength is the support the earlier reading earned, not a constant. A correspondence learned from
+      // a page the language scored poorly pulls weakly, and one from a page it scored well pulls hard.
+      strength: Math.min(1, Math.max(0, known.strength))
+    }));
 
   const pairs = induceStructuralSubstitution({
     sourceLanguage: "signs",
@@ -498,8 +511,9 @@ export function decipherSigns(request: DeciphermentRequest): Decipherment {
     const id = Number(pair.sourceSymbol.slice(signSymbol(0).length - 1));
     if (Number.isFinite(id)) signToSymbol.set(id, pair.targetSymbol);
   }
-  // What was already read stands: the alignment may fill in around it but may not overwrite it.
-  for (const [sign, symbol] of request.known ?? []) signToSymbol.set(sign, symbol);
+  // Deliberately no override here. What was read before enters as evidence of its own measured strength and
+  // has to survive the alignment like anything else; forcing it in would make a weak earlier reading
+  // unfalsifiable by a better later one.
 
   const reversedLines = request.lines.map(line => [...line].reverse());
   const forwardFit = structuralFit(request.lines, signToSymbol, request.languageBigrams);
@@ -535,8 +549,8 @@ export function decipherPage(input: {
   readonly signs: PageSigns;
   readonly languageBigrams: readonly CooccurrenceBigram[];
   readonly languageFrequencies: readonly SymbolFrequency[];
-  /** Signs of this page already known from a script read before. */
-  readonly known?: ReadonlyMap<number, string>;
+  /** Signs of this page already known from a script read before, with the support each was learned at. */
+  readonly known?: ReadonlyMap<number, KnownSign>;
   readonly options?: CrossLingualAlignmentOptions;
 }): PageReading {
   const hypotheses: { signs: PageSigns; folded: boolean }[] = [{ signs: input.signs, folded: false }];
