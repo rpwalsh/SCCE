@@ -2777,6 +2777,12 @@ function createRelationObservationStore(storage: PostgresStorageAdapter): Relati
         );
       }
     },
+    async countSourceFamilies() {
+      const rows = await storage.query<{ families: string }>(
+        `SELECT count(DISTINCT source_family_id)::bigint AS families FROM ${storage.table("relation_observations")}`
+      );
+      return Number(rows[0]?.families ?? 0);
+    },
     async list(query) {
       const params: unknown[] = [];
       const where: string[] = [];

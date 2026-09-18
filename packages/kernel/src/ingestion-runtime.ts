@@ -42,6 +42,7 @@ import {
 } from "./typed-ingest.js";
 import {
   compileRelationPromotionModel,
+  relationPromotionCanScore,
   relationObservationsFromCandidates
 } from "./relation-promotion.js";
 import { compileOpaqueRoleModel } from "./opaque-role-induction.js";
@@ -638,9 +639,8 @@ export function createIngestionRuntime(options: {
       }
       // Independence is a property of the corpus, not of one batch: the sources that supported a relation in
       // earlier runs count here too, or a corpus ingested a few files at a time can never promote anything.
-      const priorRelationObservations = deps.storage.relationObservations
-        ? await deps.storage.relationObservations.list({}).catch(() => [])
-        : [];
+      // Read only when they can change a verdict -- see relationPromotionCanScore.
+      const priorRelationObservations = await priorRelationObservationsFor(deps.storage, relationCandidates);
       const relationPromotionModel = compileRelationPromotionModel({
         candidates: relationCandidates,
         priorObservations: priorRelationObservations.map(row => ({
@@ -1139,4 +1139,24 @@ function visualAttributesFromMetadata(metadata: unknown): { embedding: number[];
   if (!embedding.length) return undefined;
   const regions = Array.isArray(record.regions) ? record.regions.filter(Array.isArray).map(region => (region as unknown[]).map(Number).filter(Number.isFinite)) : [];
   return { embedding, regions, model: typeof record.model === "string" ? record.model : "unknown" };
+}
+
+/**
+ * Prior relation observations, read only when the gate could use them. Below the independence threshold every
+ * seed is refused whatever the priors hold, so the read is pure cost -- and it is the whole table.
+ */
+async function priorRelationObservationsFor(
+  storage: ScceKernelDeps["storage"],
+  candidates: readonly StructuredSemanticCandidate[]
+): Promise<Awaited<ReturnType<NonNullable<ScceKernelDeps["storage"]["relationObservations"]>["list"]>>> {
+  const store = storage.relationObservations;
+  if (!store) return [];
+  const batchFamilies = new Set(
+    relationObservationsFromCandidates(candidates).map(observation => observation.sourceFamilyId)
+  );
+  const heldFamilies = store.countSourceFamilies
+    ? await store.countSourceFamilies().catch(() => Number.POSITIVE_INFINITY)
+    : Number.POSITIVE_INFINITY;
+  if (!relationPromotionCanScore(heldFamilies + batchFamilies.size)) return [];
+  return store.list({}).catch(() => []);
 }

@@ -15,6 +15,7 @@ import {
   createSourceGraphBuilder,
   createTypedIngestProjector,
   compileRelationPromotionModel,
+  relationPromotionCanScore,
   compileOpaqueRoleModel,
   compileRoleSurfaceOrderModel,
   compileSparseAlignmentTargetIndex,
@@ -733,6 +734,27 @@ export class WikipediaV3Ingestor {
     return lifecycle;
   }
 
+  /**
+   * Prior observations, read only when the gate could actually use them. Returns nothing when the corpus spans
+   * too few source families for any seed to be scorable, which is the same set of verdicts at none of the cost.
+   */
+  private async priorRelationObservations(
+    candidates: readonly StructuredSemanticCandidate[]
+  ): Promise<Awaited<ReturnType<NonNullable<ScceStorage["relationObservations"]>["list"]>>> {
+    const store = this.storage.relationObservations;
+    if (!store) return [];
+    const batchFamilies = new Set(
+      relationObservationsFromCandidates(candidates).map(observation => observation.sourceFamilyId)
+    );
+    const heldFamilies = store.countSourceFamilies
+      ? await store.countSourceFamilies().catch(() => Number.POSITIVE_INFINITY)
+      : Number.POSITIVE_INFINITY;
+    // The batch's own families may not be on file yet, so count the union optimistically: a read that turns out
+    // unnecessary costs time, while a read wrongly skipped would change a verdict.
+    if (!relationPromotionCanScore(heldFamilies + batchFamilies.size)) return [];
+    return store.list({}).catch(() => []);
+  }
+
   private async resumeOffset(rootUri: string): Promise<number> {
     const checkpoints = await this.storage.ingestion.list({ rootUri, status: "complete", limit: 2000 });
     return verifiedResumeOffset(checkpoints);
@@ -1051,9 +1073,14 @@ export class WikipediaV3Ingestor {
     });
     const semanticCandidates = samples.flatMap(sample => sample.semanticCandidates);
     // Independence is corpus-wide: sources seen in earlier runs count, or a shard at a time never promotes.
-    const priorRelationObservations = this.storage.relationObservations
-      ? await this.storage.relationObservations.list({}).catch(() => [])
-      : [];
+    //
+    // But reading them is only worth it when they can change a verdict. A seed's independent-source count is a
+    // count of FAMILIES, so it cannot exceed the number of families the corpus holds; below the gate's threshold
+    // every seed is unscorable and refused whatever the priors say. Measured on the live ingest: one family
+    // (wikimedia:wikipedia), 172k observations re-read and all 171,836 seeds re-decided per block, for a set of
+    // refusals that was fixed before the read began -- throughput fell from 576 to 85 sources an hour as the
+    // table grew. One aggregate now decides whether the read can matter.
+    const priorRelationObservations = await this.priorRelationObservations(semanticCandidates);
     const relationPromotionModel = compileRelationPromotionModel({
       candidates: semanticCandidates,
       priorObservations: priorRelationObservations.map(row => ({
