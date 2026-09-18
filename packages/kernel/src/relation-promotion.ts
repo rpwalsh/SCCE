@@ -88,13 +88,26 @@ const DIRICHLET_ALPHA = 0.5;
 const MIN_INDEPENDENT_SOURCES = 4;
 
 /**
- * How many independent source families a relation needs before promotion can be scored at all.
- *
- * Exported because the cost cliff is at exactly this number: below it every seed is refused unconditionally
- * and nothing is scored, at it every seed runs an evaluation plus three negative controls. A test that cannot
- * name the threshold cannot show it is testing the cliff.
+ * How many independent source families a relation needs before promotion can even be scored. Exported because a
+ * caller loading prior observations needs to know whether loading them can change any verdict: a seed's family
+ * count cannot exceed the number of families in the data, so below this threshold every seed is unscorable and
+ * every verdict is a refusal whatever the priors say.
  */
 export const RELATION_PROMOTION_MIN_INDEPENDENT_SOURCES = MIN_INDEPENDENT_SOURCES;
+
+/**
+ * Whether prior observations can change any promotion verdict, given how many distinct source families exist
+ * across the whole corpus and this batch. When they cannot, reading them is pure cost: the whole observation
+ * table was being read and every seed in the corpus re-decided, per block, to produce a set of refusals that
+ * was fixed before the read began.
+ *
+ * This lowers no bar. `scorable` is already `sourceCount >= MIN_INDEPENDENT_SOURCES`, `sourceCount` counts
+ * families for one seed and so is bounded by the corpus's family count, and the two unconditional reasons below
+ * that threshold make `promoted` false for every seed. Skipping is the same answer, not a weaker one.
+ */
+export function relationPromotionCanScore(distinctSourceFamilies: number): boolean {
+  return distinctSourceFamilies >= MIN_INDEPENDENT_SOURCES;
+}
 const MIN_FIT_SOURCES = 2;
 
 /**

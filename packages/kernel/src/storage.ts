@@ -765,6 +765,11 @@ export interface RelationObservationRecord {
 export interface RelationObservationStore {
   put(rows: readonly RelationObservationRecord[]): Promise<void>;
   list(query?: { channel?: string; limit?: number }): Promise<RelationObservationRecord[]>;
+  /**
+   * How many distinct source families the accumulated observations span. One aggregate, so a caller can find out
+   * whether promotion can score anything before deciding to read every row it holds.
+   */
+  countSourceFamilies?(): Promise<number>;
 }
 
 export interface IngestionCheckpointStore {
