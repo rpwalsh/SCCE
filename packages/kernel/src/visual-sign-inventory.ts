@@ -16,7 +16,7 @@
 
 import type { AlignedSymbolPair, CooccurrenceBigram, CrossLingualAlignmentOptions } from "./cross-lingual-alignment.js";
 import { induceStructuralSubstitution } from "./cross-lingual-alignment.js";
-import type { PageLayout } from "./visual-page-analysis.js";
+import { populationVoidCut, type PageLayout } from "./visual-page-analysis.js";
 import { glyphProfile, mirrorProfile, profileDistance, type GlyphProfile } from "./visual-shape-signature.js";
 
 export interface SignCluster {
@@ -80,39 +80,10 @@ export function clusterByDistance(count: number, distance: (a: number, b: number
   edges.sort((x, y) => x.weight - y.weight);
 
   const weights = edges.map(edge => edge.weight);
-  let cutIndex = edges.length;
-  let cutGap = 0;
-  // No accepted void means one population of marks: one sign, and the same-sign scale is the whole range. A page
-  // whose marks never repeat cannot establish a same-sign scale at all, and honestly reads as one sign.
-  let cutDistance = weights.length ? weights[weights.length - 1]! : 0;
-
-  // The cut is the void whose width most exceeds the entire spread of merges beneath it, and it is taken only
-  // when that void is wider than that spread outright: the nearest different sign must stand further off than
-  // the whole range of variation between instances of one sign. Nothing else survives this distribution's shape.
-  // With k signs the tree holds only k-1 between-sign merges against hundreds of within-sign ones, so any rule
-  // weighted by class size structurally penalises the correct void; Otsu cuts above the closest between-sign
-  // merge and welds two signs together; and both a running mean and a ratio in log space blow up on the
-  // near-identical marks at the bottom. The smallest positive distance is the measurement's own quantum, and it
-  // regularises that bottom end -- two marks cannot be said to differ by less than the profile can resolve.
-  const quantum = weights.find(w => w > 0) ?? 0;
-  if (quantum > 0) {
-    let bestRatio = 0;
-    let bestIndex = -1;
-    for (let i = 1; i < weights.length; i++) {
-      const void_ = weights[i]! - weights[i - 1]!;
-      if (void_ <= 0) continue;
-      const ratio = void_ / Math.max(quantum, weights[i - 1]! - weights[0]!);
-      if (ratio > bestRatio) {
-        bestRatio = ratio;
-        bestIndex = i;
-      }
-    }
-    if (bestIndex > 0 && bestRatio > 1) {
-      cutDistance = weights[bestIndex - 1]!;
-      cutGap = weights[bestIndex]! - cutDistance;
-      cutIndex = bestIndex;
-    }
-  }
+  const split = populationVoidCut(weights);
+  const cutDistance = split.cut;
+  const cutGap = split.gap;
+  const cutIndex = split.accepted ? weights.filter(weight => weight <= split.cut).length : edges.length;
 
   const parent = [...Array(count).keys()];
   const find = (a: number): number => {

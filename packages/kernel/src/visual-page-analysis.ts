@@ -184,6 +184,49 @@ export function otsuValueSplit(values: readonly number[]): OtsuSplit {
   return { cut: bestCut, separability: variance > 0 ? Math.max(0, best) / variance : 0 };
 }
 
+export interface VoidCut {
+  /** Values at or below this belong to the near population. */
+  readonly cut: number;
+  /** Width of the void the cut sits in. */
+  readonly gap: number;
+  readonly accepted: boolean;
+}
+
+/**
+ * Split a population of distances at the void that stands wider than the whole spread of values beneath it: the
+ * nearest thing of the other kind must be further off than the entire range of variation within one kind.
+ *
+ * This is the rule that survives distributions of this shape, and it took several wrong ones to find. Otsu's
+ * split cuts INSIDE a widely spread far population -- between-sign merge distances span an order of magnitude,
+ * and so do the gaps between blocks on a page, so Otsu lands among them and welds the two nearest together. A
+ * running mean collapses to zero the moment two things are identical. Weighting by class size penalises the
+ * correct void, because the far population is always the small one. The smallest positive value is the
+ * measurement's own quantum and regularises the near-identical end.
+ *
+ * `values` must be sorted ascending.
+ */
+export function populationVoidCut(values: readonly number[]): VoidCut {
+  const last = values.length ? values[values.length - 1]! : 0;
+  const quantum = values.find(value => value > 0) ?? 0;
+  if (quantum <= 0 || values.length < 2) return { cut: last, gap: 0, accepted: false };
+
+  let bestRatio = 0;
+  let bestIndex = -1;
+  for (let i = 1; i < values.length; i++) {
+    const width = values[i]! - values[i - 1]!;
+    if (width <= 0) continue;
+    const ratio = width / Math.max(quantum, values[i - 1]! - values[0]!);
+    if (ratio > bestRatio) {
+      bestRatio = ratio;
+      bestIndex = i;
+    }
+  }
+  if (bestIndex > 0 && bestRatio > 1) {
+    return { cut: values[bestIndex - 1]!, gap: values[bestIndex]! - values[bestIndex - 1]!, accepted: true };
+  }
+  return { cut: last, gap: 0, accepted: false };
+}
+
 function histogramOf(image: GrayImage, x0: number, y0: number, x1: number, y1: number): Float64Array {
   const histogram = new Float64Array(256);
   for (let y = y0; y < y1; y++) {
