@@ -1,0 +1,471 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+//
+// Marks on a page become a sign inventory, the inventory becomes a sequence, and the sequence is read by
+// aligning its structure against a language SCCE already knows. Nothing here is told what any sign means.
+//
+// Built for scripts that break the assumptions Latin print encourages. Sign adjacency comes from the LINE, not
+// from word gaps, because Egyptian and many other scripts write no word dividers. Reading direction is measured
+// against the known language's own directional statistics rather than assumed. Whether a mark and its mirror
+// image are one sign is scored, not assumed: Egyptian flips its glyphs with the reading direction, while
+// Canadian syllabics give the reflected form of one shape a different sound.
+//
+// Granularity is the honest limit: this aligns signs against whatever unit the known language is supplied in. An
+// alphabetic script aligns to characters; a logographic or consonantal script (hieroglyphs among them) carries
+// morphemes or words per sign, and must be aligned against that granularity to mean anything.
+
+import type { AlignedSymbolPair, CooccurrenceBigram, CrossLingualAlignmentOptions } from "./cross-lingual-alignment.js";
+import { induceStructuralSubstitution } from "./cross-lingual-alignment.js";
+import type { PageLayout } from "./visual-page-analysis.js";
+import { glyphProfile, mirrorProfile, profileDistance, type GlyphProfile } from "./visual-shape-signature.js";
+
+export interface SignCluster {
+  readonly id: number;
+  /** Indices into the reading-order glyph list. */
+  readonly members: readonly number[];
+  readonly occurrences: number;
+  /** Mean density profile of the cluster's members. */
+  readonly exemplar: GlyphProfile;
+  /** Set when this sign was folded together with its own mirror image. */
+  readonly mirrored: boolean;
+}
+
+export interface SignInventory {
+  readonly clusters: readonly SignCluster[];
+  /** Sign id for each glyph, in reading order. */
+  readonly signOf: readonly number[];
+  /** The merge distance the dendrogram was cut at: the page's measured same-sign scale. */
+  readonly cutDistance: number;
+  readonly cutGap: number;
+}
+
+interface Clustering {
+  readonly signOf: readonly number[];
+  readonly groups: readonly (readonly number[])[];
+  readonly cutDistance: number;
+  readonly cutGap: number;
+}
+
+/**
+ * Single-link clustering with the cut chosen by the data: merges are taken in increasing distance (Prim's tree
+ * over the complete graph) and the dendrogram is cut at the void that stands wider than the whole spread of
+ * merges beneath it. Scale-relative and parameter-free -- one uniform population of marks stays one sign,
+ * because no void inside it is wider than the variation it already contains.
+ */
+export function clusterByDistance(count: number, distance: (a: number, b: number) => number): Clustering {
+  if (count <= 0) return { signOf: [], groups: [], cutDistance: 0, cutGap: 0 };
+  if (count === 1) return { signOf: [0], groups: [[0]], cutDistance: 0, cutGap: 0 };
+
+  const inTree = new Uint8Array(count);
+  const best = new Float64Array(count).fill(Number.POSITIVE_INFINITY);
+  const from = new Int32Array(count).fill(-1);
+  const edges: { a: number; b: number; weight: number }[] = [];
+  best[0] = 0;
+  for (let step = 0; step < count; step++) {
+    let pick = -1;
+    for (let i = 0; i < count; i++) if (!inTree[i] && (pick < 0 || best[i]! < best[pick]!)) pick = i;
+    inTree[pick] = 1;
+    if (from[pick]! >= 0) edges.push({ a: pick, b: from[pick]!, weight: best[pick]! });
+    for (let i = 0; i < count; i++) {
+      if (inTree[i]) continue;
+      const d = distance(pick, i);
+      if (d < best[i]!) {
+        best[i] = d;
+        from[i] = pick;
+      }
+    }
+  }
+  edges.sort((x, y) => x.weight - y.weight);
+
+  const weights = edges.map(edge => edge.weight);
+  let cutIndex = edges.length;
+  let cutGap = 0;
+  // No accepted void means one population of marks: one sign, and the same-sign scale is the whole range. A page
+  // whose marks never repeat cannot establish a same-sign scale at all, and honestly reads as one sign.
+  let cutDistance = weights.length ? weights[weights.length - 1]! : 0;
+
+  // The cut is the void whose width most exceeds the entire spread of merges beneath it, and it is taken only
+  // when that void is wider than that spread outright: the nearest different sign must stand further off than
+  // the whole range of variation between instances of one sign. Nothing else survives this distribution's shape.
+  // With k signs the tree holds only k-1 between-sign merges against hundreds of within-sign ones, so any rule
+  // weighted by class size structurally penalises the correct void; Otsu cuts above the closest between-sign
+  // merge and welds two signs together; and both a running mean and a ratio in log space blow up on the
+  // near-identical marks at the bottom. The smallest positive distance is the measurement's own quantum, and it
+  // regularises that bottom end -- two marks cannot be said to differ by less than the profile can resolve.
+  const quantum = weights.find(w => w > 0) ?? 0;
+  if (quantum > 0) {
+    let bestRatio = 0;
+    let bestIndex = -1;
+    for (let i = 1; i < weights.length; i++) {
+      const void_ = weights[i]! - weights[i - 1]!;
+      if (void_ <= 0) continue;
+      const ratio = void_ / Math.max(quantum, weights[i - 1]! - weights[0]!);
+      if (ratio > bestRatio) {
+        bestRatio = ratio;
+        bestIndex = i;
+      }
+    }
+    if (bestIndex > 0 && bestRatio > 1) {
+      cutDistance = weights[bestIndex - 1]!;
+      cutGap = weights[bestIndex]! - cutDistance;
+      cutIndex = bestIndex;
+    }
+  }
+
+  const parent = [...Array(count).keys()];
+  const find = (a: number): number => {
+    let root = a;
+    while (parent[root] !== root) root = parent[root]!;
+    while (parent[a] !== root) {
+      const next = parent[a]!;
+      parent[a] = root;
+      a = next;
+    }
+    return root;
+  };
+  for (let i = 0; i < cutIndex; i++) {
+    const ra = find(edges[i]!.a);
+    const rb = find(edges[i]!.b);
+    if (ra !== rb) parent[Math.max(ra, rb)] = Math.min(ra, rb);
+  }
+
+  const idOfRoot = new Map<number, number>();
+  const groups: number[][] = [];
+  const signOf: number[] = [];
+  for (let i = 0; i < count; i++) {
+    const root = find(i);
+    let id = idOfRoot.get(root);
+    if (id === undefined) {
+      id = groups.length;
+      idOfRoot.set(root, id);
+      groups.push([]);
+    }
+    groups[id]!.push(i);
+    signOf.push(id);
+  }
+  return { signOf, groups, cutDistance, cutGap };
+}
+
+function meanProfile(profiles: readonly GlyphProfile[], members: readonly number[]): GlyphProfile {
+  const first = profiles[members[0]!]!;
+  const density = new Array<number>(first.density.length).fill(0);
+  for (const member of members) {
+    const p = profiles[member]!;
+    for (let i = 0; i < density.length; i++) density[i]! += p.density[i]!;
+  }
+  for (let i = 0; i < density.length; i++) density[i]! /= members.length;
+  return { cols: first.cols, rows: first.rows, density };
+}
+
+export interface PageSigns {
+  readonly inventory: SignInventory;
+  /** Sign ids per line, in the order the layout laid them out. Structure comes from these. */
+  readonly lines: readonly (readonly number[])[];
+  /** Sign ids per word where the script separates words at all; empty of meaning where it does not. */
+  readonly words: readonly (readonly number[])[];
+  readonly profiles: readonly GlyphProfile[];
+  /** Cluster pairs whose exemplars match under reflection inside the page's measured same-sign scale. */
+  readonly mirrorPairs: readonly (readonly [number, number])[];
+}
+
+/** Discover the page's sign inventory from its own marks, on the grid the page measured for itself. */
+export function readPageSigns(layout: PageLayout): PageSigns {
+  const glyphs = layout.lines.flatMap(line => line.words.flatMap(word => word.glyphs));
+  const profiles = glyphs.map(g => glyphProfile(g.raster, layout.glyphGrid.cols, layout.glyphGrid.rows));
+  const base = clusterByDistance(profiles.length, (a, b) => profileDistance(profiles[a]!, profiles[b]!));
+  const exemplars = base.groups.map(members => meanProfile(profiles, members));
+
+  // Candidates only. Whether a script treats a mark and its reflection as one sign is not ours to assume:
+  // Egyptian flips its glyphs with the reading direction, while Canadian syllabics use the reflected and
+  // rotated forms of one shape for DIFFERENT syllables. The reading decides, by fit.
+  const mirrorPairs: [number, number][] = [];
+  for (let i = 0; i < exemplars.length; i++) {
+    for (let j = i + 1; j < exemplars.length; j++) {
+      if (profileDistance(exemplars[i]!, mirrorProfile(exemplars[j]!)) <= base.cutDistance) mirrorPairs.push([i, j]);
+    }
+  }
+
+  const inventory: SignInventory = {
+    clusters: base.groups.map((members, id) => ({
+      id,
+      members: [...members].sort((a, b) => a - b),
+      occurrences: members.length,
+      exemplar: exemplars[id]!,
+      mirrored: false
+    })),
+    signOf: base.signOf,
+    cutDistance: base.cutDistance,
+    cutGap: base.cutGap
+  };
+
+  const lines: number[][] = [];
+  const words: number[][] = [];
+  let cursor = 0;
+  for (const line of layout.lines) {
+    const sequence: number[] = [];
+    for (const word of line.words) {
+      const inWord = word.glyphs.map(() => base.signOf[cursor++]!);
+      words.push(inWord);
+      sequence.push(...inWord);
+    }
+    lines.push(sequence);
+  }
+  return { inventory, lines, words, profiles, mirrorPairs };
+}
+
+/** The same page read on the hypothesis that a mark and its reflection are one sign. */
+export function foldMirrorSigns(signs: PageSigns): PageSigns {
+  if (!signs.mirrorPairs.length) return signs;
+  const count = signs.inventory.clusters.length;
+  const parent = [...Array(count).keys()];
+  const find = (a: number): number => {
+    let root = a;
+    while (parent[root] !== root) root = parent[root]!;
+    while (parent[a] !== root) {
+      const next = parent[a]!;
+      parent[a] = root;
+      a = next;
+    }
+    return root;
+  };
+  for (const [i, j] of signs.mirrorPairs) {
+    const ri = find(i);
+    const rj = find(j);
+    if (ri !== rj) parent[Math.max(ri, rj)] = Math.min(ri, rj);
+  }
+
+  const idOfRoot = new Map<number, number>();
+  const remap = new Map<number, number>();
+  const grouped: number[][] = [];
+  const folded: boolean[] = [];
+  for (let cluster = 0; cluster < count; cluster++) {
+    const root = find(cluster);
+    let id = idOfRoot.get(root);
+    if (id === undefined) {
+      id = grouped.length;
+      idOfRoot.set(root, id);
+      grouped.push([]);
+      folded.push(false);
+    } else {
+      folded[id] = true;
+    }
+    grouped[id]!.push(...signs.inventory.clusters[cluster]!.members);
+    remap.set(cluster, id);
+  }
+
+  const inventory: SignInventory = {
+    clusters: grouped.map((members, id) => ({
+      id,
+      members: [...members].sort((a, b) => a - b),
+      occurrences: members.length,
+      exemplar: meanProfile(signs.profiles, members),
+      mirrored: folded[id]!
+    })),
+    signOf: signs.inventory.signOf.map(id => remap.get(id)!),
+    cutDistance: signs.inventory.cutDistance,
+    cutGap: signs.inventory.cutGap
+  };
+  return {
+    inventory,
+    lines: signs.lines.map(line => line.map(id => remap.get(id)!)),
+    words: signs.words.map(word => word.map(id => remap.get(id)!)),
+    profiles: signs.profiles,
+    mirrorPairs: []
+  };
+}
+
+export const signSymbol = (id: number): string => `sign:${id}`;
+
+export interface SymbolFrequency {
+  readonly symbol: string;
+  readonly count: number;
+}
+
+/** Within-line adjacency of signs, in the shape the structural aligner consumes. No word dividers required. */
+export function signBigrams(sequences: readonly (readonly number[])[]): CooccurrenceBigram[] {
+  const counts = new Map<string, number>();
+  for (const sequence of sequences) {
+    for (let i = 1; i < sequence.length; i++) {
+      const key = `${sequence[i - 1]!} ${sequence[i]!}`;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+  }
+  return [...counts].map(([key, count]) => {
+    const parts = key.split(" ");
+    return { previous: signSymbol(Number(parts[0])), next: signSymbol(Number(parts[1])), count };
+  });
+}
+
+/** Signs by descending frequency. */
+export function signFrequencies(sequences: readonly (readonly number[])[]): SymbolFrequency[] {
+  const counts = new Map<number, number>();
+  for (const sequence of sequences) {
+    for (const sign of sequence) counts.set(sign, (counts.get(sign) ?? 0) + 1);
+  }
+  return [...counts]
+    .sort((a, b) => b[1] - a[1] || a[0] - b[0])
+    .map(([id, count]) => ({ symbol: signSymbol(id), count }));
+}
+
+/**
+ * How many frequency ranks are worth anchoring on: the prefix whose consecutive leads exceed the sampling noise
+ * in the counts that produced them. Anchoring a rank pair that is within noise of swapping would hand the
+ * alignment a wrong correspondence and defend it, so those ranks are left to be recovered by structure instead.
+ */
+export function trustedRankDepth(frequencies: readonly SymbolFrequency[]): number {
+  const total = frequencies.reduce((sum, f) => sum + f.count, 0);
+  if (total <= 0) return 0;
+  let depth = 0;
+  for (let i = 0; i + 1 < frequencies.length; i++) {
+    const p = frequencies[i]!.count / total;
+    const q = frequencies[i + 1]!.count / total;
+    const noise = Math.sqrt((p * (1 - p)) / total) + Math.sqrt((q * (1 - q)) / total);
+    if (p - q <= noise) break;
+    depth = i + 1;
+  }
+  return depth;
+}
+
+/**
+ * How much the decoded adjacency looks like the known language's own adjacency: the mean log-frequency, in the
+ * language, of the bigrams the reading produces. This is the criterion that decides reading direction, and it
+ * doubles as the confidence in a reading -- a wrong key or a wrong direction scores measurably worse.
+ */
+export function structuralFit(
+  sequences: readonly (readonly number[])[],
+  signToSymbol: ReadonlyMap<number, string>,
+  languageBigrams: readonly CooccurrenceBigram[]
+): number {
+  const known = new Map<string, number>();
+  for (const bigram of languageBigrams) {
+    known.set(`${bigram.previous} ${bigram.next}`, bigram.count);
+  }
+  let score = 0;
+  let pairs = 0;
+  for (const sequence of sequences) {
+    for (let i = 1; i < sequence.length; i++) {
+      const previous = signToSymbol.get(sequence[i - 1]!);
+      const next = signToSymbol.get(sequence[i]!);
+      pairs += 1;
+      if (previous === undefined || next === undefined) continue;
+      score += Math.log1p(known.get(`${previous} ${next}`) ?? 0);
+    }
+  }
+  return pairs > 0 ? score / pairs : 0;
+}
+
+export interface DeciphermentRequest {
+  /** Sign sequences per line, as laid out. Reading direction is decided here, not assumed by the caller. */
+  readonly lines: readonly (readonly number[])[];
+  /** Directed adjacency of the known language, from the corpus, at the granularity the signs carry. */
+  readonly languageBigrams: readonly CooccurrenceBigram[];
+  readonly languageFrequencies: readonly SymbolFrequency[];
+  readonly options?: CrossLingualAlignmentOptions;
+}
+
+export interface Decipherment {
+  readonly signToSymbol: ReadonlyMap<number, string>;
+  readonly pairs: readonly AlignedSymbolPair[];
+  /** True when the page reads against the layout order: right-to-left for a left-to-right layout. */
+  readonly reversed: boolean;
+  /** Sequences in the direction that was read, symbol by symbol. */
+  readonly readings: readonly (readonly string[])[];
+  readonly text: string;
+  /** Fit of the chosen direction, and of the one rejected: the margin is the evidence for the choice. */
+  readonly fit: number;
+  readonly rejectedFit: number;
+  /** Anchors the alignment was allowed, after discarding frequency ranks too close to call. */
+  readonly anchorDepth: number;
+}
+
+/**
+ * Read an unknown script by structure alone. The sign sequence's own adjacency is aligned against the adjacency
+ * of a language SCCE has ingested, anchored only by frequency ranks that are statistically distinguishable --
+ * which is how a substitution is broken without a key, and how a script is approached without a bilingual.
+ *
+ * Direction is recovered rather than assumed. The aligner symmetrizes co-occurrence, so a line and its reverse
+ * induce the same key; what separates them is the known language's DIRECTED bigrams, the only place that
+ * information exists. Both readings are scored against it and the better one is returned with its margin.
+ */
+export function decipherSigns(request: DeciphermentRequest): Decipherment {
+  const signFrequency = signFrequencies(request.lines);
+  const languageFrequency = [...request.languageFrequencies].sort((a, b) => b.count - a.count);
+  const anchorDepth = Math.min(trustedRankDepth(signFrequency), trustedRankDepth(languageFrequency));
+
+  const asClosedClass = (frequencies: readonly SymbolFrequency[]) => {
+    const total = frequencies.reduce((sum, f) => sum + f.count, 0) || 1;
+    return frequencies.slice(0, anchorDepth).map(f => ({ word: f.symbol, documentShare: f.count / total }));
+  };
+
+  const pairs = induceStructuralSubstitution({
+    sourceLanguage: "signs",
+    targetLanguage: "language",
+    sourceBigrams: signBigrams(request.lines),
+    targetBigrams: [...request.languageBigrams],
+    sourceClosedClass: asClosedClass(signFrequency),
+    targetClosedClass: asClosedClass(languageFrequency),
+    options: request.options
+  });
+
+  const signToSymbol = new Map<number, string>();
+  for (const pair of pairs) {
+    const id = Number(pair.sourceSymbol.slice(signSymbol(0).length - 1));
+    if (Number.isFinite(id)) signToSymbol.set(id, pair.targetSymbol);
+  }
+
+  const reversedLines = request.lines.map(line => [...line].reverse());
+  const forwardFit = structuralFit(request.lines, signToSymbol, request.languageBigrams);
+  const reverseFit = structuralFit(reversedLines, signToSymbol, request.languageBigrams);
+  const reversed = reverseFit > forwardFit;
+  const chosen = reversed ? reversedLines : request.lines;
+
+  const readings = chosen.map(line => line.map(sign => signToSymbol.get(sign) ?? "?"));
+  return {
+    signToSymbol,
+    pairs,
+    reversed,
+    readings,
+    text: readings.map(line => line.join("")).join("\n"),
+    fit: reversed ? reverseFit : forwardFit,
+    rejectedFit: reversed ? forwardFit : reverseFit,
+    anchorDepth
+  };
+}
+
+export interface PageReading extends Decipherment {
+  /** True when reading the page as a script that mirrors its glyphs fit the known language better. */
+  readonly mirrorFolded: boolean;
+  readonly signCount: number;
+}
+
+/**
+ * Read a page end to end, deciding by measurement every question the script itself answers differently: how
+ * many signs there are, whether a mark and its reflection are one sign, and which direction the line runs. Each
+ * hypothesis is scored by how much the text it produces behaves like the language SCCE already knows.
+ */
+export function decipherPage(input: {
+  readonly signs: PageSigns;
+  readonly languageBigrams: readonly CooccurrenceBigram[];
+  readonly languageFrequencies: readonly SymbolFrequency[];
+  readonly options?: CrossLingualAlignmentOptions;
+}): PageReading {
+  const hypotheses: { signs: PageSigns; folded: boolean }[] = [{ signs: input.signs, folded: false }];
+  if (input.signs.mirrorPairs.length) hypotheses.push({ signs: foldMirrorSigns(input.signs), folded: true });
+
+  let best: PageReading | undefined;
+  for (const hypothesis of hypotheses) {
+    const reading = decipherSigns({
+      lines: hypothesis.signs.lines,
+      languageBigrams: input.languageBigrams,
+      languageFrequencies: input.languageFrequencies,
+      options: input.options
+    });
+    const candidate: PageReading = {
+      ...reading,
+      mirrorFolded: hypothesis.folded,
+      signCount: hypothesis.signs.inventory.clusters.length
+    };
+    if (!best || candidate.fit > best.fit) best = candidate;
+  }
+  return best!;
+}

@@ -313,11 +313,19 @@ function normalizeKernelToMarginals(kernel: number[][], p: number[], q: number[]
  * dictionary. Anchors are optional structural hints (closed-class hubs); with none, the alignment is recovered
  * up to the symmetry the structure itself breaks. Pure and deterministic given its inputs.
  */
-export function alignLanguagesByStructure(
+export interface StructuralCoupling {
+  readonly sourceSymbols: readonly string[];
+  readonly targetSymbols: readonly string[];
+  /** Transport mass between each source and target symbol. */
+  readonly coupling: readonly (readonly number[])[];
+}
+
+/** The entropic Gromov-Wasserstein coupling itself, before any correspondence is read out of it. */
+export function structuralCoupling(
   source: LanguageCooccurrence,
   target: LanguageCooccurrence,
   options: CrossLingualAlignmentOptions = {}
-): AlignedSymbolPair[] {
+): StructuralCoupling {
   const opts = {
     epsilon: options.epsilon ?? DEFAULTS.epsilon,
     outerIterations: options.outerIterations ?? DEFAULTS.outerIterations,
@@ -326,7 +334,7 @@ export function alignLanguagesByStructure(
   };
   const sourceSymbols = topSymbols(source, opts.maxSymbols);
   const targetSymbols = topSymbols(target, opts.maxSymbols);
-  if (!sourceSymbols.length || !targetSymbols.length) return [];
+  if (!sourceSymbols.length || !targetSymbols.length) return { sourceSymbols: [], targetSymbols: [], coupling: [] };
 
   const cSource = structureMatrix(source, sourceSymbols);
   const cTarget = structureMatrix(target, targetSymbols);
@@ -345,8 +353,19 @@ export function alignLanguagesByStructure(
     anchorBias[i]![j] = Math.max(0, anchor.strength) * 25;
   }
 
-  const coupling = entropicGromovWasserstein(cSource, cTarget, p, q, anchorBias, opts);
+  return {
+    sourceSymbols,
+    targetSymbols,
+    coupling: entropicGromovWasserstein(cSource, cTarget, p, q, anchorBias, opts)
+  };
+}
 
+export function alignLanguagesByStructure(
+  source: LanguageCooccurrence,
+  target: LanguageCooccurrence,
+  options: CrossLingualAlignmentOptions = {}
+): AlignedSymbolPair[] {
+  const { sourceSymbols, targetSymbols, coupling } = structuralCoupling(source, target, options);
   const pairs: AlignedSymbolPair[] = [];
   for (let i = 0; i < sourceSymbols.length; i++) {
     const row = coupling[i]!;
@@ -356,4 +375,114 @@ export function alignLanguagesByStructure(
     pairs.push({ sourceSymbol: sourceSymbols[i]!, targetSymbol: targetSymbols[bestJ]!, score: best / rowSum });
   }
   return pairs.sort((a, b) => b.score - a.score);
+}
+
+/**
+ * Maximum-weight one-to-one assignment of rows to columns (Jonker-Volgenant, O(n^3)). Returns the column chosen
+ * for each row, or -1 where no column was left to take. Exact, deterministic, and free of parameters.
+ */
+export function maximumWeightAssignment(weights: readonly (readonly number[])[]): number[] {
+  const rows = weights.length;
+  const cols = rows ? weights[0]!.length : 0;
+  if (!rows || !cols) return new Array<number>(rows).fill(-1);
+  if (rows > cols) {
+    // Every row gets assigned, so with more rows than columns run the transpose and invert the result.
+    const transposed = Array.from({ length: cols }, (_, j) => Array.from({ length: rows }, (_, i) => weights[i]![j]!));
+    const inverse = maximumWeightAssignment(transposed);
+    const forward = new Array<number>(rows).fill(-1);
+    inverse.forEach((row, col) => {
+      if (row >= 0) forward[row] = col;
+    });
+    return forward;
+  }
+
+  const INF = Number.POSITIVE_INFINITY;
+  const u = new Float64Array(rows + 1);
+  const v = new Float64Array(cols + 1);
+  const matchOf = new Int32Array(cols + 1);
+  const way = new Int32Array(cols + 1);
+  for (let i = 1; i <= rows; i++) {
+    matchOf[0] = i;
+    let j0 = 0;
+    const minima = new Float64Array(cols + 1).fill(INF);
+    const used = new Uint8Array(cols + 1);
+    do {
+      used[j0] = 1;
+      const i0 = matchOf[j0]!;
+      let delta = INF;
+      let j1 = 0;
+      for (let j = 1; j <= cols; j++) {
+        if (used[j]) continue;
+        const cost = -weights[i0 - 1]![j - 1]! - u[i0]! - v[j]!;
+        if (cost < minima[j]!) {
+          minima[j] = cost;
+          way[j] = j0;
+        }
+        if (minima[j]! < delta) {
+          delta = minima[j]!;
+          j1 = j;
+        }
+      }
+      for (let j = 0; j <= cols; j++) {
+        if (used[j]) {
+          u[matchOf[j]!]! += delta;
+          v[j]! -= delta;
+        } else {
+          minima[j]! -= delta;
+        }
+      }
+      j0 = j1;
+    } while (matchOf[j0] !== 0);
+    do {
+      const j1 = way[j0]!;
+      matchOf[j0] = matchOf[j1]!;
+      j0 = j1;
+    } while (j0 !== 0);
+  }
+
+  const assignment = new Array<number>(rows).fill(-1);
+  for (let j = 1; j <= cols; j++) if (matchOf[j]! > 0) assignment[matchOf[j]! - 1] = j - 1;
+  return assignment;
+}
+
+/**
+ * The correspondence read out of the coupling as a one-to-one assignment. Use this where the correspondence is
+ * known to be a substitution -- one sign, one symbol -- as a script is. Taking the largest entry of each row
+ * instead lets many signs collapse onto whichever symbol the coupling happens to favour, which cannot be a
+ * valid key. A source symbol with no column left is reported by its absence rather than given a guess.
+ */
+export function alignLanguagesAsSubstitution(
+  source: LanguageCooccurrence,
+  target: LanguageCooccurrence,
+  options: CrossLingualAlignmentOptions = {}
+): AlignedSymbolPair[] {
+  const { sourceSymbols, targetSymbols, coupling } = structuralCoupling(source, target, options);
+  if (!sourceSymbols.length) return [];
+  const assignment = maximumWeightAssignment(coupling);
+  const pairs: AlignedSymbolPair[] = [];
+  for (let i = 0; i < sourceSymbols.length; i++) {
+    const j = assignment[i]!;
+    if (j < 0) continue;
+    const row = coupling[i]!;
+    const rowSum = row.reduce((a, b) => a + b, 0) || 1e-12;
+    pairs.push({ sourceSymbol: sourceSymbols[i]!, targetSymbol: targetSymbols[j]!, score: row[j]! / rowSum });
+  }
+  return pairs.sort((a, b) => b.score - a.score);
+}
+
+
+/** As induceStructuralAlignment, but read out as a substitution: one sign, one symbol. */
+export function induceStructuralSubstitution(input: {
+  sourceLanguage: string;
+  targetLanguage: string;
+  sourceBigrams: Iterable<CooccurrenceBigram>;
+  targetBigrams: Iterable<CooccurrenceBigram>;
+  sourceClosedClass: ReadonlyArray<{ word: string; documentShare: number }>;
+  targetClosedClass: ReadonlyArray<{ word: string; documentShare: number }>;
+  options?: CrossLingualAlignmentOptions;
+}): AlignedSymbolPair[] {
+  const source = cooccurrenceFromBigrams(input.sourceLanguage, input.sourceBigrams);
+  const target = cooccurrenceFromBigrams(input.targetLanguage, input.targetBigrams);
+  const anchors = anchorsFromClosedClass(input.sourceClosedClass, input.targetClosedClass, input.options?.maxSymbols);
+  return alignLanguagesAsSubstitution(source, target, { ...input.options, anchors });
 }

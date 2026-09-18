@@ -147,6 +147,17 @@ export function glyphProfile(raster: GlyphRaster, cols: number, rows: number): G
   return { cols, rows, density };
 }
 
+/** The profile of the same mark reflected left-to-right: scripts that flip with reading direction need this. */
+export function mirrorProfile(profile: GlyphProfile): GlyphProfile {
+  const density = new Array<number>(profile.density.length).fill(0);
+  for (let row = 0; row < profile.rows; row++) {
+    for (let col = 0; col < profile.cols; col++) {
+      density[row * profile.cols + (profile.cols - 1 - col)] = profile.density[row * profile.cols + col]!;
+    }
+  }
+  return { cols: profile.cols, rows: profile.rows, density };
+}
+
 /** Mean absolute density difference in 0..1; profiles on different grids are not comparable. */
 export function profileDistance(a: GlyphProfile, b: GlyphProfile): number {
   if (a.cols !== b.cols || a.rows !== b.rows || !a.density.length) return Number.POSITIVE_INFINITY;

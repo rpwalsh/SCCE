@@ -201,6 +201,7 @@ export * from "./language-induction.js";
 export * from "./cross-lingual-alignment.js";
 export * from "./visual-shape-signature.js";
 export * from "./visual-page-analysis.js";
+export * from "./visual-sign-inventory.js";
 export * from "./relation-hypothesis.js";
 export * from "./structured-semantic-candidate.js";
 export * from "./alpha-field-persistence.js";

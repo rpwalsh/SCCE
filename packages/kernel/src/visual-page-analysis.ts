@@ -378,6 +378,61 @@ function acceptedSplit(values: readonly number[], minMargin: number): OtsuSplit 
   return { ...split, accepted: Math.min(...high) - Math.max(...low) >= minMargin };
 }
 
+function mergeComponents(a: GlyphComponent, b: GlyphComponent): GlyphComponent {
+  const x0 = Math.min(a.x0, b.x0);
+  const y0 = Math.min(a.y0, b.y0);
+  const x1 = Math.max(a.x1, b.x1);
+  const y1 = Math.max(a.y1, b.y1);
+  const raster: number[][] = Array.from({ length: y1 - y0 + 1 }, () => new Array<number>(x1 - x0 + 1).fill(0));
+  for (const part of [a, b]) {
+    for (let y = 0; y < part.raster.length; y++) {
+      const row = part.raster[y]!;
+      for (let x = 0; x < row.length; x++) {
+        if (row[x]! > 0) raster[part.y0 - y0 + y]![part.x0 - x0 + x] = 1;
+      }
+    }
+  }
+  const area = a.area + b.area;
+  return {
+    x0, y0, x1, y1, area,
+    centroidX: (a.centroidX * a.area + b.centroidX * b.area) / area,
+    centroidY: (a.centroidY * a.area + b.centroidY * b.area) / area,
+    raster
+  };
+}
+
+/**
+ * Attach small components to the mark they belong to. A component below the writing's own scale is not
+ * automatically noise: it is an Arabic dot, a European accent, a Devanagari matra, a stroke of a CJK character.
+ * Arabic distinguishes several letters by dots alone, so discarding these would destroy the script rather than
+ * clean it. A small component joins the overlapping mark nearest it vertically; one that overlaps no mark at all
+ * has nothing to belong to, and only then is it reported as a speck.
+ */
+function attachMarks(
+  marks: readonly GlyphComponent[],
+  small: readonly GlyphComponent[]
+): { marks: GlyphComponent[]; specks: GlyphComponent[] } {
+  const grown = [...marks];
+  const specks: GlyphComponent[] = [];
+  for (const mark of small) {
+    let pick = -1;
+    let nearest = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < grown.length; i++) {
+      const candidate = grown[i]!;
+      if (mark.x0 > candidate.x1 || candidate.x0 > mark.x1) continue;
+      const distance = Math.abs(candidate.centroidY - mark.centroidY);
+      if (distance < nearest) {
+        nearest = distance;
+        pick = i;
+      }
+    }
+    if (pick < 0) specks.push(mark);
+    else grown[pick] = mergeComponents(grown[pick]!, mark);
+  }
+  grown.sort((a, b) => a.y0 - b.y0 || a.x0 - b.x0);
+  return { marks: grown, specks };
+}
+
 /** Split a run of items at their large gaps, keeping it whole when the gaps are one population. */
 function groupByGaps(gaps: readonly number[], minMargin: number): number[][] {
   const items = gaps.length + 1;
@@ -407,8 +462,11 @@ export function analyzePage(image: GrayImage): PageLayout {
   // distinguishable when they differ by more than the stroke that drew them.
   const extentOf = (c: GlyphComponent) => Math.max(c.x1 - c.x0 + 1, c.y1 - c.y0 + 1);
   const scaleSplit = acceptedSplit(all.map(extentOf), stroke);
-  const marks = scaleSplit.accepted ? all.filter(c => extentOf(c) > scaleSplit.cut) : all;
-  const speckles = scaleSplit.accepted ? all.filter(c => extentOf(c) <= scaleSplit.cut) : [];
+  const attached = scaleSplit.accepted
+    ? attachMarks(all.filter(c => extentOf(c) > scaleSplit.cut), all.filter(c => extentOf(c) <= scaleSplit.cut))
+    : { marks: [...all], specks: [] as GlyphComponent[] };
+  const marks = attached.marks;
+  const speckles = attached.specks;
 
   const correction = estimateSkew(marks, stroke, mask.width);
   const cos = Math.cos(correction);
