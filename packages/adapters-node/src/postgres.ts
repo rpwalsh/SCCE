@@ -2777,11 +2777,17 @@ function createRelationObservationStore(storage: PostgresStorageAdapter): Relati
         );
       }
     },
-    async countSourceFamilies() {
-      const rows = await storage.query<{ families: string }>(
-        `SELECT count(DISTINCT source_family_id)::bigint AS families FROM ${storage.table("relation_observations")}`
+    async sourceFamilyCountsForSeeds(relationSeedIds) {
+      if (!relationSeedIds.length) return new Map<string, number>();
+      // relation_seed_id leads both indexes on this table, so this is bounded by the caller's seeds.
+      const rows = await storage.query<{ relation_seed_id: string; families: string }>(
+        `SELECT relation_seed_id, count(DISTINCT source_family_id)::bigint AS families
+           FROM ${storage.table("relation_observations")}
+          WHERE relation_seed_id = ANY($1)
+          GROUP BY relation_seed_id`,
+        [[...relationSeedIds]]
       );
-      return Number(rows[0]?.families ?? 0);
+      return new Map(rows.map(row => [row.relation_seed_id, Number(row.families)]));
     },
     async list(query) {
       const params: unknown[] = [];

@@ -86,6 +86,7 @@ const UNSCORED_EVALUATION: Evaluation = {
 
 const DIRICHLET_ALPHA = 0.5;
 const MIN_INDEPENDENT_SOURCES = 4;
+const MIN_FIT_SOURCES = 2;
 
 /**
  * How many independent source families a relation needs before promotion can even be scored. Exported because a
@@ -96,19 +97,46 @@ const MIN_INDEPENDENT_SOURCES = 4;
 export const RELATION_PROMOTION_MIN_INDEPENDENT_SOURCES = MIN_INDEPENDENT_SOURCES;
 
 /**
- * Whether prior observations can change any promotion verdict, given how many distinct source families exist
- * across the whole corpus and this batch. When they cannot, reading them is pure cost: the whole observation
- * table was being read and every seed in the corpus re-decided, per block, to produce a set of refusals that
- * was fixed before the read began.
+ * Whether a seed with this many independent source families could be scored at all.
  *
  * This lowers no bar. `scorable` is already `sourceCount >= MIN_INDEPENDENT_SOURCES`, `sourceCount` counts
- * families for one seed and so is bounded by the corpus's family count, and the two unconditional reasons below
- * that threshold make `promoted` false for every seed. Skipping is the same answer, not a weaker one.
+ * families for one seed, and the two unconditional reasons below that threshold make `promoted` false. Knowing
+ * the answer before reading is the same answer, not a weaker one.
  */
 export function relationPromotionCanScore(distinctSourceFamilies: number): boolean {
   return distinctSourceFamilies >= MIN_INDEPENDENT_SOURCES;
 }
-const MIN_FIT_SOURCES = 2;
+
+/**
+ * Whether reading every prior observation could change any verdict this batch is responsible for.
+ *
+ * The whole table was read once per block and every seed in the corpus re-decided, so per-block cost scaled
+ * with the corpus: measured live, 172k observations and 171,836 seeds per block, throughput falling from 576 to
+ * 85 sources an hour. But a seed can only be scored once it has MIN_INDEPENDENT_SOURCES independent families,
+ * and by this file's own measurement 270,737 of 282,971 seeds are short of that. So the question is not how
+ * many families the corpus has, it is whether any seed IN THIS BATCH could reach the threshold -- which needs
+ * one indexed aggregate over the batch's own seeds rather than the table.
+ *
+ * `familyCountsOnFile` is counts, and the batch contributes a set, so the two are added rather than unioned.
+ * That over-counts a family the batch merely repeats, which is the safe direction: a read that turns out
+ * unnecessary costs time, a read wrongly skipped would change a verdict.
+ */
+export function relationPromotionNeedsPriors(input: {
+  batch: readonly RelationObservation[];
+  familyCountsOnFile: ReadonlyMap<string, number>;
+}): boolean {
+  const batchFamilies = new Map<string, Set<string>>();
+  for (const row of input.batch) {
+    const families = batchFamilies.get(row.relationSeedId);
+    if (families) families.add(row.sourceFamilyId);
+    else batchFamilies.set(row.relationSeedId, new Set([row.sourceFamilyId]));
+  }
+  for (const [relationSeedId, families] of batchFamilies) {
+    const onFile = input.familyCountsOnFile.get(relationSeedId) ?? 0;
+    if (relationPromotionCanScore(onFile + families.size)) return true;
+  }
+  return false;
+}
 
 /**
  * Compiles reusable relation identities from source-structured candidates.
