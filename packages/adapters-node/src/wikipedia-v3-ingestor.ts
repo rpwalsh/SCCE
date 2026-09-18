@@ -79,7 +79,7 @@ import {
   type SourceVersionId,
   type StructuredSemanticCandidate
 } from "@scce/kernel";
-import type { ScceRuntimeConfig } from "./config.js";
+import { effectiveNgramShardChars, type ScceRuntimeConfig } from "./config.js";
 import { trainLanguageCorpusText } from "./language-corpus-trainer.js";
 import { blobContentHash } from "./postgres.js";
 import { resolveWikipediaCorpusTarget, streamWikipediaMultistream, wikipediaRootUri, type ResolvedWikipediaCorpus } from "./wikipedia.js";
@@ -324,7 +324,7 @@ export class WikipediaV3Ingestor {
     let activeLanguageShardUri = rootUri;
     let languageShardSamples: WikipediaLanguageShardSample[] = [];
     let languageShardChars = 0;
-    const shardCharBudget = Math.max(1, this.config.runtime.corpora?.wikipedia?.ngramShardChars ?? 1_200_000);
+    const shardCharBudget = effectiveNgramShardChars(this.config.runtime.corpora?.wikipedia?.ngramShardChars);
     const applyLanguageShardImport = (imported: WikipediaLanguageShardImport): void => {
       result.languageProfiles += imported.languageProfiles;
       result.ngramObservations += imported.ngramObservations;
@@ -999,7 +999,7 @@ export class WikipediaV3Ingestor {
     const createdAt = samples.reduce((max, sample) => Math.max(max, sample.createdAt), 0) || this.clock.now();
     // How much text one model is trained on is the strongest lever measured on this corpus, and it is a memory
     // bound rather than a modelling choice, so it is configurable with the measured-safe value as the default.
-    const shardChars = this.config.runtime.corpora?.wikipedia?.ngramShardChars ?? 1_200_000;
+    const shardChars = effectiveNgramShardChars(this.config.runtime.corpora?.wikipedia?.ngramShardChars);
     const boundedShard = boundedLanguageShard(samples, shardChars, 2048);
     const text = boundedShard.text;
     const shardWarnings = boundedShard.droppedChars > 0

@@ -220,6 +220,25 @@ export interface ScceRuntimeConfig {
 
 /** Operator credentials and machine-local paths live beside the config in an untracked `<config>.local.json`, which
  *  wins over the tracked file. Nothing that belongs to one machine has to reach the repository or the environment. */
+/**
+ * The effective wikipedia bounds. Validation and the ingestor read these same constants: comparing
+ * ngramShardChars against maxArticleChars only when both happen to be written down would leave the
+ * losslessness property resting on the config author, not on the code.
+ */
+export const DEFAULT_WIKIPEDIA_MAX_ARTICLE_CHARS = 160_000;
+export const MIN_WIKIPEDIA_MAX_ARTICLE_CHARS = 4_096;
+export const DEFAULT_WIKIPEDIA_NGRAM_SHARD_CHARS = 1_200_000;
+
+/** The article bound the ingestor will actually apply, defaults and floor included. */
+export function effectiveMaxArticleChars(configured: number | undefined): number {
+  return Math.max(MIN_WIKIPEDIA_MAX_ARTICLE_CHARS, configured ?? DEFAULT_WIKIPEDIA_MAX_ARTICLE_CHARS);
+}
+
+/** The shard budget the ingestor will actually apply, defaults included. */
+export function effectiveNgramShardChars(configured: number | undefined): number {
+  return Math.max(1, configured ?? DEFAULT_WIKIPEDIA_NGRAM_SHARD_CHARS);
+}
+
 export function localConfigOverlayPath(configPath: string): string {
   return path.resolve(configPath).replace(/(\.json)?$/i, "") + ".local.json";
 }
@@ -311,10 +330,10 @@ export function validateConfig(config: ScceRuntimeConfig, source = "config"): vo
   // building lossless by construction rather than by luck.
   {
     const wiki = config.runtime.corpora?.wikipedia;
-    const shardChars = wiki?.ngramShardChars;
-    const articleChars = wiki?.maxArticleChars;
-    if (shardChars !== undefined && articleChars !== undefined && shardChars < articleChars) {
-      throw new Error(`${source}: runtime.corpora.wikipedia.ngramShardChars (${shardChars}) must be at least maxArticleChars (${articleChars}), or a page larger than one shard loses its tail from language training`);
+    const shardChars = effectiveNgramShardChars(wiki?.ngramShardChars);
+    const articleChars = effectiveMaxArticleChars(wiki?.maxArticleChars);
+    if (shardChars < articleChars) {
+      throw new Error(`${source}: runtime.corpora.wikipedia.ngramShardChars (${shardChars} effective) must be at least maxArticleChars (${articleChars} effective), or a page larger than one shard loses its tail from language training`);
     }
   }
   validateNgramConfig(config.runtime.corpora?.wikipedia, `${source}: runtime.corpora.wikipedia`);

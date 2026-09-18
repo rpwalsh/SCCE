@@ -7,7 +7,7 @@ import { stat } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import path from "node:path";
 import { redactSecrets, stripApparatusLines, type ContentHash, type IngestedSourceFile, type IngestionCheckpoint, type JsonValue } from "@scce/kernel";
-import type { ScceRuntimeConfig } from "./config.js";
+import { effectiveMaxArticleChars, type ScceRuntimeConfig } from "./config.js";
 
 type IngestStreamItem =
   | { type: "checkpoint"; checkpoint: IngestionCheckpoint }
@@ -118,7 +118,7 @@ export function resolveWikipediaCorpusTarget(config: ScceRuntimeConfig, absolute
     python: configured?.python || "python",
     maxPagesPerRun: Math.max(1, configured?.maxPagesPerRun ?? 2500),
     maxBlocksPerRun: configured?.maxBlocksPerRun && configured.maxBlocksPerRun > 0 ? configured.maxBlocksPerRun : 0,
-    maxArticleChars: Math.max(4096, configured?.maxArticleChars ?? 160000),
+    maxArticleChars: effectiveMaxArticleChars(configured?.maxArticleChars),
     maxBlockBytes: Math.max(8 * 1024 * 1024, configured?.maxBlockBytes ?? 192 * 1024 * 1024),
     memorySafetyBoundMb: Math.max(512, configured?.memorySafetyBoundMb ?? 8192),
     checkpointEveryPages: Math.max(1, configured?.checkpointEveryPages ?? 1000),
