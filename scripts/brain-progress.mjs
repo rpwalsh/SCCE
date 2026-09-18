@@ -2,7 +2,8 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 //
-// The counts that decide whether a brain can answer: sources ingested, evidence promoted, and the trained
+// The counts that decide whether a brain can answer: sources ingested, evidence promoted, the page
+// signatures identity discovery counts documents with, and the trained
 // language profiles the closed-class machinery needs. majorityClosedClass keeps a word carried by more than
 // half the profiles, so a handful of profiles is a degenerate closed class rather than a small one.
 // Goes through the runtime adapter, so credentials resolve exactly once, the same way every other command does.
@@ -17,7 +18,8 @@ const s = config.database.schema;
 const counts = (await storage.query(`SELECT
     (SELECT count(*) FROM ${s}.source_versions) AS sources,
     (SELECT count(*) FROM ${s}.evidence_spans) AS evidence,
-    (SELECT count(*) FROM ${s}.language_profiles) AS profiles,
+    (SELECT count(*) FROM ${s}.language_profile_signatures) AS signatures,
+    (SELECT count(*) FROM ${s}.language_profiles) AS shard_profiles,
     (SELECT count(*) FROM ${s}.language_identities) AS identities,
     (SELECT count(*) FROM ${s}.ngram_models) AS models,
     (SELECT count(*) FROM ${s}.ngram_observations) AS observations,
@@ -36,7 +38,7 @@ if (dump) {
 }
 process.stdout.write(`wiki_offset    ${String(counts.wiki_offset).padStart(12)}${through}\n`);
 
-if (Number(counts.identities) === 0 && Number(counts.profiles) > 0) {
+if (Number(counts.identities) === 0 && Number(counts.signatures) > 0) {
   process.stdout.write("\nno language identities: run `scce language identities --rebuild` before serving\n");
 }
 await storage.close?.();
