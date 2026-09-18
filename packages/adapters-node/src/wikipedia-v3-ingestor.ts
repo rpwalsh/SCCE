@@ -87,6 +87,15 @@ import { resolveWikipediaCorpusTarget, streamWikipediaMultistream, wikipediaRoot
 /** How many entries of a diagnostic list the alignment provenance event keeps; the true length is recorded beside it. */
 const SPARSE_ALIGNMENT_EVENT_LIST_BOUND = 64;
 
+/** The compact Kneser-Ney summary's most-continued symbols, narrowed out of the profile's JSON shape. */
+function profileTopContinuation(kneserNey: unknown): Array<[string, number]> {
+  const top = (kneserNey as { topContinuation?: unknown } | undefined)?.topContinuation;
+  if (!Array.isArray(top)) return [];
+  return top
+    .filter((pair): pair is [string, number] => Array.isArray(pair) && typeof pair[0] === "string" && typeof pair[1] === "number")
+    .map(pair => [pair[0], pair[1]]);
+}
+
 const WIKIPEDIA_INFORMATION_LABEL: InformationLabel = {
   tenantId: "scce.public.corpus",
   principals: [],
@@ -766,6 +775,21 @@ export class WikipediaV3Ingestor {
     await this.storage.evidence.putSourceVersion(source);
     await this.storage.events.append(this.events.create({ episodeId, typeId: "SourceObserved", payload: { sourceId, uri: file.uri, namespace: file.namespace, sourceSystem: "wikipedia" } }));
     await this.storage.events.append(this.events.create({ episodeId, typeId: "SourceVersionObserved", payload: { sourceVersionId, contentHash, byteLength: file.bytes.byteLength } }));
+    // The page's own profile is computed for extraction and then discarded. Its signature is what identity
+    // discovery counts documents with, so it is kept: a shard may hold any amount of text without shrinking
+    // the population the closed class is measured over. The profile itself still does not become a durable
+    // turn-time surface profile -- only trained shards do.
+    if (this.storage.languageIdentities?.putProfileSignatures) {
+      await this.storage.languageIdentities.putProfileSignatures({ informationLabel: WIKIPEDIA_INFORMATION_LABEL, rows: [{
+        id: profile.id,
+        sourceVersionId,
+        sourceSystem: "wikipedia",
+        sourceUri: file.uri,
+        scripts: profile.scripts.map(row => ({ script: row.script, mass: row.mass })),
+        direction: profile.direction,
+        topContinuation: profileTopContinuation(profile.kneserNey)
+      }] });
+    }
     await this.storage.quarantine.put({
       id: `${sourceVersionId}:wiki-admission`,
       sourceId,

@@ -1042,6 +1042,12 @@ export function schemaStatements(q: string, informationAccess?: InformationAcces
     `ALTER TABLE ${q}.ngram_observations ADD COLUMN IF NOT EXISTS profile_id TEXT GENERATED ALWAYS AS (metadata_json->>'profileId') STORED, ADD COLUMN IF NOT EXISTS source_system TEXT GENERATED ALWAYS AS (metadata_json->>'sourceSystem') STORED`,
     // The trainedMass DESC ranking and the profile/source-system scope filters read these instead of detoasting model_json (1.68GB of TOAST) per row.
     `ALTER TABLE ${q}.ngram_models ADD COLUMN IF NOT EXISTS profile_id TEXT GENERATED ALWAYS AS (model_json->>'profileId') STORED, ADD COLUMN IF NOT EXISTS source_system TEXT GENERATED ALWAYS AS (model_json->>'sourceSystem') STORED, ADD COLUMN IF NOT EXISTS trained_mass NUMERIC GENERATED ALWAYS AS (COALESCE((model_json->'model'->>'totalUnigramCount')::numeric, 0)) STORED`,
+    // Identity discovery counts documents; Kneser-Ney wants text per model. One artifact cannot serve both:
+    // language_profiles holds one row per trained shard, so growing a shard to improve the model shrinks the
+    // document count the closed class is measured over. Page signatures are the discovery population, written
+    // per page from a profile that is computed for every page anyway and otherwise thrown away. Deliberately
+    // NOT language_profiles: turn-time hydration loads that table, and pages must not enter it.
+    `CREATE TABLE IF NOT EXISTS ${q}.language_profile_signatures (id TEXT PRIMARY KEY, source_version_id TEXT NOT NULL, scripts JSONB NOT NULL, direction TEXT NOT NULL, top_continuation JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.language_units (id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, source_version_id TEXT NOT NULL, script TEXT NOT NULL, unit_kind TEXT NOT NULL, unit_text TEXT NOT NULL, features TEXT[] NOT NULL, competence_vector DOUBLE PRECISION[] NOT NULL, alpha DOUBLE PRECISION NOT NULL, evidence_ids TEXT[] NOT NULL, metadata_json JSONB NOT NULL, information_label JSONB NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${q}.language_patterns (id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, pattern_kind TEXT NOT NULL, support DOUBLE PRECISION NOT NULL, entropy DOUBLE PRECISION NOT NULL, pattern_json JSONB NOT NULL, evidence_ids TEXT[] NOT NULL, updated_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
     // candidate_pool's scope filter reads this instead of detoasting pattern_json (5.4GB) per row.
@@ -1273,6 +1279,7 @@ export function schemaStatements(q: string, informationAccess?: InformationAcces
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_profiles_source_version ON ${q}.language_profiles(source_version_id,created_at DESC,id ASC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_profile_alias_lookup ON ${q}.language_profile_aliases(alias_key,confidence DESC,updated_at DESC,profile_id)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_units_profile ON ${q}.language_units(profile_id,alpha DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_profile_signature_source_version ON ${q}.language_profile_signatures(source_version_id)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_units_source_system_rank ON ${q}.language_units((metadata_json->>'sourceSystem'), alpha DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_patterns_source_system_rank ON ${q}.language_patterns((pattern_json->>'sourceSystem'), support DESC, updated_at DESC)`,
     // Same shape on the stored column: a sequential scan otherwise detoasts the whole table (5.4GB) to evaluate the WHERE (measured 18.9s->1.9s forcing the JSONB index; this one the planner can choose on its own).
@@ -3444,15 +3451,47 @@ function createLanguageIdentityStore(storage: PostgresStorageAdapter): LanguageI
       const rows = await storage.query<{ id: string; language_id: string }>(`SELECT id, language_id FROM ${storage.table("language_profiles")} WHERE language_id IS NOT NULL ORDER BY id`);
       return rows.map(row => ({ profileId: row.id, languageId: row.language_id }));
     },
+    async putProfileSignatures({ rows, informationLabel }) {
+      if (!rows.length) return;
+      const label = storage.requireWritableInformationLabel(informationLabel);
+      await storage.query(
+        `INSERT INTO ${storage.table("language_profile_signatures")}(id, source_version_id, scripts, direction, top_continuation, created_at, information_label)
+         SELECT r.id, r.source_version_id, r.scripts, r.direction, r.top_continuation, NOW(), $2::jsonb
+         FROM jsonb_to_recordset($1::jsonb) AS r(
+           id text, source_version_id text, scripts jsonb, direction text, top_continuation jsonb
+         )
+         ON CONFLICT(id) DO UPDATE
+         SET scripts=EXCLUDED.scripts, direction=EXCLUDED.direction, top_continuation=EXCLUDED.top_continuation`,
+        [
+          JSON.stringify(rows.map(row => ({
+            id: row.id,
+            source_version_id: row.sourceVersionId,
+            scripts: row.scripts,
+            direction: row.direction,
+            top_continuation: row.topContinuation
+          }))),
+          JSON.stringify(label)
+        ]
+      );
+    },
     async listProfileSignatures(query) {
+      // Trained shard profiles and page signatures are one discovery population. Unioned rather than replaced:
+      // a brain ingested before page signatures existed still has only shard profiles, and must still discover.
       const rows = await storage.query<{ id: string; source_version_id: string; source_uri: string | null; namespace: string | null; scripts: JsonValue; direction: string | null; top: JsonValue }>(
-        `SELECT lp.id, lp.source_version_id, s.canonical_uri AS source_uri, s.namespace AS namespace,
-                lp.profile_json->'scripts' AS scripts, lp.profile_json->>'direction' AS direction,
-                lp.profile_json->'kneserNey'->'topContinuation' AS top
-         FROM ${storage.table("language_profiles")} lp
-         LEFT JOIN ${storage.table("source_versions")} sv ON sv.id = lp.source_version_id
+        `SELECT src.id, src.source_version_id, s.canonical_uri AS source_uri, s.namespace AS namespace,
+                src.scripts AS scripts, src.direction AS direction, src.top AS top
+         FROM (
+           SELECT lp.id, lp.source_version_id,
+                  lp.profile_json->'scripts' AS scripts, lp.profile_json->>'direction' AS direction,
+                  lp.profile_json->'kneserNey'->'topContinuation' AS top
+           FROM ${storage.table("language_profiles")} lp
+           UNION ALL
+           SELECT ps.id, ps.source_version_id, ps.scripts, ps.direction, ps.top_continuation
+           FROM ${storage.table("language_profile_signatures")} ps
+         ) src
+         LEFT JOIN ${storage.table("source_versions")} sv ON sv.id = src.source_version_id
          LEFT JOIN ${storage.table("sources")} s ON s.id = sv.source_id
-         WHERE lp.id > $1 ORDER BY lp.id LIMIT $2`,
+         WHERE src.id > $1 ORDER BY src.id LIMIT $2`,
         [query.afterId ?? "", Math.max(1, Math.min(10000, Math.floor(query.limit)))]
       );
       return rows.map(row => ({

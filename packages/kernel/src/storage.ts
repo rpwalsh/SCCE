@@ -1196,6 +1196,12 @@ export interface LanguageIdentityStore {
   listProfileLanguages(): Promise<Array<{ profileId: string; languageId: string }>>;
   /** Page through every profile's discovery signature in id order, without loading whole profiles. */
   listProfileSignatures(query: { afterId?: string; limit: number }): Promise<LanguageProfileSignatureRow[]>;
+  /**
+   * Record the discovery signatures of documents that are not trained shards. Identity discovery counts
+   * documents while Kneser-Ney wants text per model, so the discovery population has to be able to grow
+   * without growing the trained-profile population that turn time hydrates.
+   */
+  putProfileSignatures?(input: { rows: readonly LanguageProfileSignatureRow[]; informationLabel: InformationLabel }): Promise<void>;
 }
 
 export interface PolicyEvolutionStore {
@@ -1279,6 +1285,7 @@ export const POSTGRES_REQUIRED_TABLES = [
   "forecast_envelopes",
   "learning_needs",
   "language_profiles",
+  "language_profile_signatures",
   "language_identities",
   "language_profile_aliases",
   "ngram_observations",
