@@ -87,12 +87,13 @@ describe("reading a photograph rather than a page", () => {
     expect(layout.lineSplit.accepted).toBe(true);
     expect(layout.lineSplit.count).toBe(PAGE_LINES.length);
 
-    // What is NOT claimed: reading it end to end. Collapsing three channels to one leaves pen-sized speckle
-    // that no geometric bound can tell from a diacritic, and a speck attaching at a glyph's edge shifts a
-    // bounding-box-normalised profile enough to break the inventory. The fix is an identity feature that is not
-    // anchored on the ink's own box; until then the colour path is proven to the mark, not to the reading.
+    // And it reads. Collapsing three channels to one leaves pen-sized speckle that no geometric bound can tell
+    // from a diacritic, and a speck attaching at a glyph's edge shifts a bounding-box-normalised profile enough
+    // to break the inventory -- which it did, until identity framed to a window of the writing's own scale was
+    // offered as a candidate and costed. It wins here, and the reading survives the speckle it could not before.
     const reading = readImage(projected, LANGUAGE, OPTIONS);
-    expect(reading.abstained).toBe(true);
+    expect(reading.abstained).toBe(false);
+    expect(editSimilarity(reading.lines.flat(), TRUTH)).toBeGreaterThan(0.9);
   });
 
   it("divides out a light so uneven that shadowed paper is darker than lit ink", () => {

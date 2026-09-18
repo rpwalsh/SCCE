@@ -163,24 +163,48 @@ export interface PageSigns {
   /** Sign ids per word where the script separates words at all; empty of meaning where it does not. */
   readonly words: readonly (readonly number[])[];
   readonly profiles: readonly GlyphProfile[];
+  /** Ink area of each mark, in pixels, so a code length can be counted in pixels rather than in cells. */
+  readonly markAreas: readonly number[];
   /** Cluster pairs whose exemplars match under reflection inside the page's measured same-sign scale. */
   readonly mirrorPairs: readonly (readonly [number, number])[];
 }
 
+/**
+ * How a mark's identity is framed. "box" fits the grid to the mark's own bounding box, which normalises size
+ * away -- right where every mark is the same size, and wrong where size is what distinguishes them. "window"
+ * takes a window of the writing's own scale centred on the mark's ink, which keeps size.
+ *
+ * Neither is correct in general and the difference is measurable: a box snaps exactly to the ink so two prints
+ * of one letter match exactly, while a centroid is fractional and at small cells its sub-pixel jitter moves ink
+ * across cell boundaries. Pieces cut out of a joined hand vary in width, and framed to their own boxes they
+ * collapsed into a single sign. So the framing is not decided here: both are read and costed.
+ */
+export type IdentityFraming = "box" | "window";
+
 /** Discover the page's sign inventory from its own marks, on the grid the page measured for itself. */
-export function readPageSigns(layout: PageLayout): PageSigns {
+export function readPageSigns(
+  layout: PageLayout,
+  options: { readonly framing?: IdentityFraming } = {}
+): PageSigns {
   const glyphs = layout.lines.flatMap(line => line.words.flatMap(word => word.glyphs));
-  // Identity is read from the mark's own box, and from a cell grapheme's whole cell where there is one.
-  //
-  // A fixed window centred on the ink centroid was tried instead, to stop a speck at a glyph's edge from
-  // stretching the box and shifting every cell. It fixes that and costs more than it saves: a bounding box
-  // snaps exactly to the ink, so two prints of one letter give identical profiles, while a centroid is
-  // fractional and at three-pixel cells its sub-pixel jitter moves ink across cell boundaries. Measured, an
-  // eight-sign page came back as thirteen. Neither framing dominates; windowProfile stays available for scripts
-  // whose marks vary in size, where a box discards exactly the size that distinguishes them.
-  const profiles = informativeCellsOnly(
-    glyphs.map(g => glyphProfile(g.cellRaster ?? g.raster, layout.glyphGrid.cols, layout.glyphGrid.rows))
-  );
+  // A cell grapheme already carries its whole cell, which is a fixed frame either way. Anything else is framed
+  // as asked: to its own box, or to a window of the writing's scale centred on its ink.
+  const framing = options.framing ?? "box";
+  const profiles = informativeCellsOnly(glyphs.map(g => {
+    if (g.cellRaster) return glyphProfile(g.cellRaster, layout.glyphGrid.cols, layout.glyphGrid.rows);
+    if (framing === "window") {
+      return windowProfile(
+        g.raster,
+        g.centroidX - g.x0,
+        g.centroidY - g.y0,
+        layout.glyphWindow.width,
+        layout.glyphWindow.height,
+        layout.glyphGrid.cols,
+        layout.glyphGrid.rows
+      );
+    }
+    return glyphProfile(g.raster, layout.glyphGrid.cols, layout.glyphGrid.rows);
+  }));
   const base = clusterByDistance(profiles.length, (a, b) => profileDistance(profiles[a]!, profiles[b]!));
   const exemplars = base.groups.map(members => meanProfile(profiles, members));
 
@@ -239,7 +263,7 @@ export function readPageSigns(layout: PageLayout): PageSigns {
     }
     lines.push(sequence);
   }
-  return { inventory, lines, words, profiles, mirrorPairs };
+  return { inventory, lines, words, profiles, markAreas: glyphs.map(g => g.area), mirrorPairs };
 }
 
 /** The same page read on the hypothesis that a mark and its reflection are one sign. */
@@ -300,6 +324,7 @@ export function foldMirrorSigns(signs: PageSigns): PageSigns {
     lines: signs.lines.map(line => line.map(id => remap.get(id)!)),
     words: signs.words.map(word => word.map(id => remap.get(id)!)),
     profiles: signs.profiles,
+    markAreas: signs.markAreas,
     mirrorPairs: []
   };
 }
@@ -516,4 +541,65 @@ export function decipherPage(input: {
     if (!best || candidate.fit > best.fit) best = candidate;
   }
   return best!;
+}
+
+export interface InventoryCodeLength {
+  /** Nats to state the inventory: every sign's exemplar, at the resolution its cells can carry. */
+  readonly model: number;
+  /** Nats to reproduce the page's ink from that inventory: what each mark costs given its own sign. */
+  readonly ink: number;
+  readonly total: number;
+}
+
+/**
+ * What an inventory costs, in the two parts SCCE costs everything in: L(H) to state the signs and L(D|H) to
+ * reproduce the marks from them. This is what makes two readings of one page comparable when they disagree
+ * about how many marks there even are.
+ *
+ * Without the ink term a reading is charged only for the tokens it emits, so the coarsest reading always wins:
+ * seven word-blobs of a cursive page cost almost nothing to emit and were preferred to the two hundred and
+ * sixty-eight letters cut out of them, reading 2.6 per cent of the page. The ink term is what they actually
+ * differ on. Every grouping codes the SAME pixels, so weighting each profile cell by the pixels it stands for
+ * makes the totals comparable: a blob whose sign is a blurred average of seven unlike blobs pays for every
+ * pixel of the difference, and a letter whose sign fits it tightly pays almost nothing.
+ *
+ * Cell probabilities are Laplace-smoothed off the cluster's own members, so a cell that is always ink in its
+ * sign still leaves room for a mark where it is not, and nothing is ever charged infinity.
+ */
+export function inventoryCodeLength(signs: PageSigns): InventoryCodeLength {
+  const { profiles, inventory } = signs;
+  if (!profiles.length || !inventory.clusters.length) return { model: 0, ink: 0, total: 0 };
+
+  const cells = Math.max(1, profiles[0]!.density.length);
+  // Pixels each profile cell stands for, so the ink term is counted in pixels and not in cells.
+  const pixels = profiles.reduce((total, _profile, index) => total + Math.max(1, marksArea(signs, index)), 0);
+  const pixelsPerCell = Math.max(1, pixels / (profiles.length * cells));
+  // A cell's density can carry as many distinct values as it has pixels, and that is what stating one costs.
+  const levels = Math.max(2, Math.round(pixelsPerCell) + 1);
+
+  let model = 0;
+  let ink = 0;
+  for (const cluster of inventory.clusters) {
+    model += cells * Math.log(levels);
+    const members = cluster.members;
+    if (!members.length) continue;
+    for (let cell = 0; cell < cells; cell++) {
+      let present = 0;
+      for (const member of members) present += profiles[member]!.density[cell]!;
+      // Laplace: the sign's own members estimate the cell, and never to certainty.
+      const probability = (present + 1) / (members.length + 2);
+      for (const member of members) {
+        const density = profiles[member]!.density[cell]!;
+        const cost = -(density * Math.log(probability) + (1 - density) * Math.log(1 - probability));
+        ink += cost * pixelsPerCell;
+      }
+    }
+  }
+  return { model, ink, total: model + ink };
+}
+
+/** Ink area of the mark a profile came from, in pixels. */
+function marksArea(signs: PageSigns, index: number): number {
+  const areas = signs.markAreas;
+  return areas && index < areas.length ? areas[index]! : 1;
 }

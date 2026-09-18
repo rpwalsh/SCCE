@@ -119,10 +119,15 @@ export function renderMixedPage(
     const glyph = Object.values(font)[0]!;
     return { width: glyph[0]!.length, height: glyph.length };
   };
+  // Each character advances by its own width, so a font may set letters of differing widths -- which is what
+  // real cursive does, and what leaves it with no single advance to be cut on.
   const columns = Math.max(...lines.map(({ text, font, letterGap = LETTER_GAP }) => {
     const words = text.split(" ");
     const letters = words.reduce((total, word) => total + word.length, 0);
-    return letters * sizeOf(font).width + (letters - words.length) * letterGap + (words.length - 1) * WORD_GAP;
+    const inked = [...text]
+      .filter(character => character !== " ")
+      .reduce((total, character) => total + font[character]![0]!.length, 0);
+    return inked + (letters - words.length) * letterGap + (words.length - 1) * WORD_GAP;
   }));
   const rows = lines.reduce((total, line) => total + sizeOf(line.font).height, 0)
     + (lines.length - 1) * LINE_GAP;
@@ -156,7 +161,7 @@ export function renderMixedPage(
         glyph.forEach((row, ry) => [...row].forEach((cell, rx) => {
           if (cell === "#") plot(cursor + rx, top + lift + ry);
         }));
-        cursor += size.width;
+        cursor += glyph[0]!.length;
       });
     });
     top += size.height;
@@ -303,3 +308,21 @@ export function renderCurvedPage(
   const padded = [`${" ".repeat(0)}`, ...lines, ""].filter((line, index) => index !== 0 || line.length > 0);
   return renderMixedPage((padded.length ? lines : lines).map(text => ({ text, font, curve })));
 }
+
+/**
+ * A joined hand whose letters are of DIFFERENT widths, so it keeps no regular advance at all and the lattice
+ * has nothing to cut on. Every letter hangs from a full-width headline and carries a stem down its first
+ * column, with one or two bars across the middle to tell it from the others; its last column carries only the
+ * headline. So the thinnest columns of a whole word are exactly the joins between its letters, and that is
+ * where such a word can be cut without knowing anything about the script.
+ */
+export const VARIED_JOINED_FONT: Record<string, readonly string[]> = {
+  H: ["####", "#...", "###.", "#...", "#...", "#...", "#..."],
+  E: ["#####", "#....", "#....", "####.", "#....", "#....", "#...."],
+  L: ["######", "#.....", "#.....", "#.....", "#.....", "#####.", "#....."],
+  O: ["####", "#...", "#...", "#...", "###.", "#...", "#..."],
+  T: ["#####", "####.", "#....", "#....", "#....", "#....", "#...."],
+  W: ["######", "#.....", "#####.", "#.....", "#####.", "#.....", "#....."],
+  R: ["#####", "#....", "####.", "#....", "#....", "####.", "#...."],
+  D: ["####", "###.", "#...", "#...", "#...", "###.", "#..."]
+};

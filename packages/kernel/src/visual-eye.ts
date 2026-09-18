@@ -44,8 +44,10 @@ import {
 } from "./visual-hypothesis-lattice.js";
 import {
   decipherPage,
+  inventoryCodeLength,
   readPageSigns,
   structuralFit,
+  type IdentityFraming,
   type PageSigns,
   type SymbolFrequency
 } from "./visual-sign-inventory.js";
@@ -149,33 +151,68 @@ export function readImage(
   const orientation = ranked[0]!.orientation;
   const undecided = strongerLayout(ranked[0]!, ranked[1]!) === 0;
 
-  // A script sets its graphemes on a common scale, so the grouping whose grapheme sizes AGREE is the one that
-  // read them. That single measurement covers both ways a connected component fails to be a grapheme: CJK
-  // strokes come in wildly mixed sizes until they are gathered into cells, and cursive Arabic or Devanagari
-  // words come in wildly mixed widths until they are cut at them. Latin components already agree, so nothing
-  // is done to them. No script is named anywhere in the decision.
+  // Two further readings of what one grapheme is: the lattice the script may be set on, and a joined mark cut
+  // where it is weakest for a hand that keeps no regular advance.
   const cellLayout = analyzePage(sources[orientation], { grouping: "cells" });
   const cellEvidence = evidenceFor(cellLayout, orientation);
-  const marksChosen = marksEvidence.find(e => e.orientation === orientation)!;
-  // Which grouping read the page is settled against the page's own count of its bands of writing, taken from
-  // the periodicity of its rows and so independent of any grouping. A grouping that over-segments finds far
-  // more lines than there are -- CJK strokes gave 24 for 8 -- and one that under-segments finds none at all.
-  //
-  // Grapheme size agreement cannot decide this, though it looks as if it should. Lattice cells come out
-  // uniformly sized whatever the image held, so the moment binarisation leaves the true graphemes a little
-  // ragged, the lattice wins on tidiness while reading the page as a single sign. Measured on a colour page
-  // that is exactly what happened. Size agreement is still reported, as diagnosis, and no longer decides.
-  const closeness = (evidence: LayoutEvidence) =>
-    evidence.linesFound && evidence.expectedLines > 0
-      ? Math.abs(evidence.lineCount - evidence.expectedLines)
-      : Number.POSITIVE_INFINITY;
-  // Ties go to marks: the components as they came off the page, with nothing imposed on them.
-  const useCells = cellEvidence.latticeCredible && closeness(cellEvidence) < closeness(marksChosen);
-  const layout = useCells ? cellLayout : marksLayouts[orientation];
+  const pieceLayout = analyzePage(sources[orientation], { grouping: "pieces" });
+  const pieceEvidence = evidenceFor(pieceLayout, orientation);
 
-  const signs = readPageSigns(layout);
+  // What counts as one grapheme is settled by DESCRIPTION LENGTH: the page read through each grouping, scored
+  // against the known language, plus the key it needs and the cost of stating where its marks are. Whichever
+  // explains the page most briefly is the reading.
+  //
+  // Nothing simpler works, and each simpler thing fails the same way. Grapheme size agreement hands the lattice
+  // every page, because lattice cells are uniformly sized whatever the image held. The page's own band count
+  // cannot separate taking a joined word whole from cutting it into letters, since a word-blob and its letters
+  // lie on the same lines. And choosing the grouping whose inventory RECURS most picks the coarsest reading
+  // every time -- measured, it cut a square-cell script's bars into fragments of two shapes that repeat far
+  // more often than its eight characters do, and read 8 per cent of the page. Description length is the one
+  // criterion that charges a reading for the text it produces as well as for the inventory it needs.
+  // Every reading of what one grapheme is, against every way of framing its identity. Both questions are
+  // settled by the same cost, because neither has an answer that holds for all scripts.
+  const candidateLayouts = [marksLayouts[orientation]!, cellLayout, pieceLayout];
+  const framings: readonly IdentityFraming[] = ["box", "window"];
+  const vocabulary = Math.max(2, language.frequencies.length);
+  let chosen: {
+    layout: PageLayout;
+    signs: PageSigns;
+    reading: ReturnType<typeof decipherPage>;
+    codeLength: number;
+  } | undefined;
+
+  for (const candidate of candidateLayouts) for (const framing of framings) {
+    const read = readPageSigns(candidate, { framing });
+    const count = read.inventory.signOf.length;
+    if (!count) continue;
+    const reading = decipherPage({
+      signs: read,
+      languageBigrams: language.bigrams,
+      languageFrequencies: language.frequencies,
+      options
+    });
+    const tokens = Math.max(1, read.lines.reduce((total, line) => total + line.length, 0));
+    const spreads = candidate.lines
+      .map(line => line.words.flatMap(word => word.glyphs).map(glyph => glyph.centroidY))
+      .map(positions => (positions.length ? Math.max(...positions) - Math.min(...positions) : 0))
+      .sort((a, b) => a - b);
+    const typicalSpread = spreads.length ? spreads[spreads.length >> 1]! : 0;
+    // L(H) + L(D|H), whole: the inventory and the ink it has to reproduce, the key, the text under the known
+    // language, and where the marks lie. The ink term is what lets readings that disagree about how many marks
+    // there are be compared at all -- without it the coarsest reading wins on token count alone.
+    const inventoryCost = inventoryCodeLength(read);
+    const codeLength = inventoryCost.total
+      + -reading.fit * tokens
+      + reading.signCount * Math.log(vocabulary)
+      + candidate.lines.length * Math.log(Math.max(2, candidate.mask.height))
+      + tokens * Math.log(1 + typicalSpread);
+    if (!chosen || codeLength < chosen.codeLength) chosen = { layout: candidate, signs: read, reading, codeLength };
+  }
+
+  const layout = chosen ? chosen.layout : marksLayouts[orientation]!;
+  const signs = chosen ? chosen.signs : readPageSigns(layout);
   const glyphCount = signs.inventory.signOf.length;
-  const layoutEvidence = [...marksEvidence, cellEvidence];
+  const layoutEvidence = [...marksEvidence, cellEvidence, pieceEvidence];
 
   if (!glyphCount) {
     return {
@@ -187,12 +224,7 @@ export function readImage(
     };
   }
 
-  const reading = decipherPage({
-    signs,
-    languageBigrams: language.bigrams,
-    languageFrequencies: language.frequencies,
-    options
-  });
+  const reading = chosen!.reading;
 
   // Writing repeats its signs: that is what makes a script a closed inventory rather than a pile of shapes.
   // Measured on blank paper the typical sign occurs once, against 27 on a written page, so a page whose marks

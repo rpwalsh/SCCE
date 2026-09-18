@@ -109,10 +109,13 @@ describe("SCCE's eye: a picture of writing becomes text", () => {
     // Either honest reason may fire first -- the marks cannot be told apart, or they never repeat -- so the
     // test pins that a reason is given and that the evidence behind it holds, not which gate got there first.
     expect(reading.abstainedBecause).toBeTruthy();
-    // Blank paper yields marks that never recur; writing's typical sign recurs many times over.
-    expect(reading.typicalOccurrence).toBeLessThanOrEqual(1);
+    // The evidence behind it: blank paper's marks cannot be told apart at all, so there is no inventory. A
+    // written page's marks can. (The reading chosen for noise is the cheapest one, which lumps every mark into
+    // a single sign -- so counting how often that sign recurs says nothing; whether the marks DIFFER does.)
+    expect(reading.signs.inventory.distinguishable).toBe(false);
     const written = readImage(renderTextPage(PAGE_LINES), LANGUAGE, OPTIONS);
-    expect(written.typicalOccurrence).toBeGreaterThan(1);
+    expect(written.signs.inventory.distinguishable).toBe(true);
+    expect(written.abstained).toBe(false);
   });
 });
 

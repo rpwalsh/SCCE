@@ -5,6 +5,7 @@
 // Otsu split of a histogram the image itself produced (intensity, component area, gap width).
 
 import { baselineAt, estimateSharedCurvature, type BaselineField } from "./visual-baseline-field.js";
+import { cutJoinedMarks } from "./visual-weak-cuts.js";
 
 /**
  * How a grapheme is read off the page. A connected component is not a grapheme in most of the world's scripts,
@@ -12,11 +13,13 @@ import { baselineAt, estimateSharedCurvature, type BaselineField } from "./visua
  * so a component is too little, while Arabic joins its letters cursively and Devanagari hangs a whole word from
  * one headline, so a component is too much.
  *
- * Both are the same operation. "cells" assigns the ink to the lattice the script is set on and takes each cell
- * as a grapheme, which merges the strokes of a CJK character and cuts a joined Arabic or Devanagari word apart
- * without either being a rule about those scripts. "marks" takes the components as they are. Neither is assumed.
+ * Three readings are offered. "marks" takes the components as they are. "cells" assigns the ink to the lattice
+ * the script is set on and takes each cell as a grapheme, which merges the strokes of a CJK character and cuts
+ * a joined word apart where that script keeps a regular advance. "pieces" cuts a joined mark where it is
+ * weakest instead, for a cursive hand whose letters differ in width and so has no advance to cut on. None is
+ * assumed: all three are read and the one whose inventory actually recurs is the one kept.
  */
-export type PageGrouping = "marks" | "cells";
+export type PageGrouping = "marks" | "cells" | "pieces";
 
 /** Grayscale raster, row-major, 0..255. */
 export interface GrayImage {
@@ -903,7 +906,9 @@ export function analyzePage(image: GrayImage, options: { grouping?: PageGrouping
   const lattice = grouping === "cells"
     ? latticeGraphemes(mask, cellPitch, cellStepY, stroke)
     : { graphemes: marks as GlyphComponent[], occupancy: 1, credible: false };
-  const graphemes = lattice.graphemes.length ? lattice.graphemes : (marks as GlyphComponent[]);
+  const grouped = lattice.graphemes.length ? lattice.graphemes : (marks as GlyphComponent[]);
+  // A joined hand of varying advance has no lattice to cut on, so its marks are cut where they are weakest.
+  const graphemes = grouping === "pieces" ? cutJoinedMarks(marks, stroke) : grouped;
 
   const heights = graphemes.map(c => c.y1 - c.y0 + 1).sort((a, b) => a - b);
   const glyphHeight = heights.length ? heights[heights.length >> 1]! : 0;
