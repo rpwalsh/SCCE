@@ -24,6 +24,23 @@ export const MIRROR_FONT: Record<string, readonly string[]> = Object.fromEntries
   Object.entries(FONT).map(([ch, rows]) => [ch, rows.map(row => [...row].reverse().join(""))])
 );
 
+/**
+ * A square-cell script: every character is several DISCONNECTED strokes inside one cell, the way CJK and Hangul
+ * are built. Connected components over-segment this into strokes, so it is the fixture that says whether the eye
+ * finds the cell lattice. Strokes are full-cell bars so no stroke is small enough to read as a speck, and a
+ * character uses either horizontal or vertical bars, never both, because crossing bars would touch and merge.
+ */
+export const BLOCK_FONT: Record<string, readonly string[]> = {
+  H: ["#######", ".......", ".......", "#######", ".......", ".......", "#######"],
+  E: ["#..#..#", "#..#..#", "#..#..#", "#..#..#", "#..#..#", "#..#..#", "#..#..#"],
+  L: ["#######", ".......", ".......", ".......", ".......", ".......", "#######"],
+  O: ["#.....#", "#.....#", "#.....#", "#.....#", "#.....#", "#.....#", "#.....#"],
+  T: ["#######", ".......", ".......", "#######", ".......", ".......", "......."],
+  W: ["#..#...", "#..#...", "#..#...", "#..#...", "#..#...", "#..#...", "#..#..."],
+  R: [".......", ".......", ".......", "#######", ".......", ".......", "#######"],
+  D: ["..#...#", "..#...#", "..#...#", "..#...#", "..#...#", "..#...#", "..#...#"]
+};
+
 export const SCALE = 3;
 export const GLYPH_W = 5;
 export const GLYPH_H = 7;
@@ -76,13 +93,19 @@ export function renderMixedPage(
   lines: readonly RenderedLine[],
   specks: readonly [number, number][] = []
 ): GrayImage {
-  const columns = Math.max(...lines.map(({ text }) => {
+  const sizeOf = (font: Record<string, readonly string[]>) => {
+    const glyph = Object.values(font)[0]!;
+    return { width: glyph[0]!.length, height: glyph.length };
+  };
+  const columns = Math.max(...lines.map(({ text, font }) => {
     const words = text.split(" ");
     const letters = words.reduce((total, word) => total + word.length, 0);
-    return letters * GLYPH_W + (letters - words.length) * LETTER_GAP + (words.length - 1) * WORD_GAP;
+    return letters * sizeOf(font).width + (letters - words.length) * LETTER_GAP + (words.length - 1) * WORD_GAP;
   }));
+  const rows = lines.reduce((total, line) => total + sizeOf(line.font).height, 0)
+    + (lines.length - 1) * LINE_GAP;
   const width = (columns + 2 * MARGIN) * SCALE;
-  const height = (lines.length * GLYPH_H + (lines.length - 1) * LINE_GAP + 2 * MARGIN) * SCALE;
+  const height = (rows + 2 * MARGIN) * SCALE;
   const data = new Uint8Array(width * height);
   const jitter = noise(99);
   for (let i = 0; i < data.length; i++) data[i] = PAPER + jitter();
@@ -97,8 +120,10 @@ export function renderMixedPage(
     }
   };
 
+  let top = MARGIN;
   lines.forEach(({ text, font }, lineIndex) => {
-    const top = MARGIN + lineIndex * (GLYPH_H + LINE_GAP);
+    if (lineIndex > 0) top += LINE_GAP;
+    const size = sizeOf(font);
     let cursor = MARGIN;
     text.split(" ").forEach((word, wordIndex) => {
       if (wordIndex > 0) cursor += WORD_GAP;
@@ -108,9 +133,10 @@ export function renderMixedPage(
         glyph.forEach((row, ry) => [...row].forEach((cell, rx) => {
           if (cell === "#") plot(cursor + rx, top + ry);
         }));
-        cursor += GLYPH_W;
+        cursor += size.width;
       });
     });
+    top += size.height;
   });
 
   for (const [sx, sy] of specks) plot(sx, sy);
@@ -142,4 +168,99 @@ export function rotate(image: GrayImage, radians: number): GrayImage {
     }
   }
   return { width, height, data };
+}
+
+/**
+ * A synthetic language over the fixture alphabet: frequencies skewed the way real languages are skewed, so some
+ * ranks are genuinely distinguishable and others are not, and an asymmetric transition structure, so direction
+ * carries information and every symbol has its own structural fingerprint.
+ */
+export function syntheticLanguage(seed: number): number[][] {
+  const size = ALPHABET.length;
+  const random = uniform(seed);
+  const weights: number[][] = [];
+  for (let i = 0; i < size; i++) {
+    const row: number[] = [];
+    for (let j = 0; j < size; j++) row.push((1 / (j + 1)) * (0.3 + 0.7 * random()));
+    weights.push(row);
+  }
+  return weights;
+}
+
+export function sampleWords(weights: readonly number[][], seed: number, wordCount: number): string[] {
+  const random = uniform(seed);
+  const size = ALPHABET.length;
+  const words: string[] = [];
+  let previous = 0;
+  for (let w = 0; w < wordCount; w++) {
+    const length = 3 + Math.floor(random() * 4);
+    let word = "";
+    for (let k = 0; k < length; k++) {
+      const row = weights[previous]!;
+      const total = row.reduce((a, b) => a + b, 0);
+      let pick = random() * total;
+      let next = size - 1;
+      for (let j = 0; j < size; j++) {
+        pick -= row[j]!;
+        if (pick <= 0) {
+          next = j;
+          break;
+        }
+      }
+      word += ALPHABET[next]!;
+      previous = next;
+    }
+    words.push(word);
+  }
+  return words;
+}
+
+export function bigramsOf(words: readonly string[]): { previous: string; next: string; count: number }[] {
+  const counts = new Map<string, number>();
+  for (const word of words) {
+    for (let i = 1; i < word.length; i++) {
+      const key = `${word[i - 1]}\u0000${word[i]}`;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+  }
+  return [...counts].map(([key, count]) => {
+    const parts = key.split("\u0000");
+    return { previous: parts[0]!, next: parts[1]!, count };
+  });
+}
+
+export function frequenciesOf(words: readonly string[]): { symbol: string; count: number }[] {
+  const counts = new Map<string, number>();
+  for (const word of words) for (const ch of word) counts.set(ch, (counts.get(ch) ?? 0) + 1);
+  return [...counts].sort((a, b) => b[1] - a[1]).map(([symbol, count]) => ({ symbol, count }));
+}
+
+/** Wrap words into lines of a fixed count. */
+export function wrapWords(words: readonly string[], perLine: number): string[] {
+  const lines: string[] = [];
+  for (let i = 0; i < words.length; i += perLine) lines.push(words.slice(i, i + perLine).join(" "));
+  return lines;
+}
+
+/** 1 minus normalised edit distance: a single split mark costs one insertion, not the whole reading. */
+export function editSimilarity(a: readonly string[], b: readonly string[]): number {
+  const m = a.length;
+  const n = b.length;
+  if (!m && !n) return 1;
+  let previous = Array.from({ length: n + 1 }, (_, j) => j);
+  let current = new Array<number>(n + 1).fill(0);
+  for (let i = 1; i <= m; i++) {
+    current[0] = i;
+    for (let j = 1; j <= n; j++) {
+      current[j] = Math.min(
+        previous[j]! + 1,
+        current[j - 1]! + 1,
+        previous[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1)
+      );
+    }
+    const swap = previous;
+    previous = current;
+    current = swap;
+  }
+  return 1 - previous[n]! / Math.max(m, n);
 }

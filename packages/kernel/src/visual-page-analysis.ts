@@ -4,6 +4,13 @@
 // Page -> ink -> glyphs -> words -> lines, with no trained model and no tuned constant: every threshold is an
 // Otsu split of a histogram the image itself produced (intensity, component area, gap width).
 
+/**
+ * How a grapheme is read off the page. Connected components are not graphemes in every script: CJK and Hangul
+ * put several disconnected strokes in one square cell, so "marks" over-segments them, while "cells" groups
+ * components onto the lattice the writing itself sits on. Neither is assumed correct -- both are read and scored.
+ */
+export type PageGrouping = "marks" | "cells";
+
 /** Grayscale raster, row-major, 0..255. */
 export interface GrayImage {
   readonly width: number;
@@ -38,6 +45,12 @@ export interface GlyphComponent {
   readonly centroidY: number;
   /** The component's own ink, cropped to its bounding box: exactly what a shape signature consumes. */
   readonly raster: ReadonlyArray<ReadonlyArray<number>>;
+  /**
+   * The ink placed in its whole lattice cell, when this grapheme came from a cell. Identity must be read from
+   * this and not from the ink's own bounding box: two characters built from the same strokes at different
+   * heights in the cell normalise to the same box and would otherwise be one sign.
+   */
+  readonly cellRaster?: ReadonlyArray<ReadonlyArray<number>>;
 }
 
 export interface PageWord {
@@ -57,7 +70,27 @@ export interface PageLayout {
   readonly scaleSplit: OtsuSplit & { readonly accepted: boolean };
   /** Cells a mark can resolve across and down: measured glyph extent over measured stroke width. */
   readonly glyphGrid: { readonly cols: number; readonly rows: number };
+  /** Which reading of "one mark" this layout was built on. */
+  readonly grouping: PageGrouping;
+  /** Lattice pitch when graphemes were grouped into cells; 0 otherwise. */
+  readonly cellPitch: number;
+  /**
+   * How decisively the marks fell into lines. This is the page's own evidence for which axis the writing runs
+   * along: on the wrong axis the marks do not separate into bands at all and the whole page reads as one line.
+   */
+  readonly lineSplit: { readonly accepted: boolean; readonly margin: number; readonly count: number };
+  /** The commonest number of marks in a lattice cell. Above one, a cell genuinely holds several strokes. */
+  readonly cellOccupancy: number;
   readonly mask: InkMask;
+}
+
+/** The image with rows and columns exchanged: columns of text become lines of text, read by the same code. */
+export function transposeImage(image: GrayImage): GrayImage {
+  const data = new Uint8Array(image.width * image.height);
+  for (let y = 0; y < image.height; y++) {
+    for (let x = 0; x < image.width; x++) data[x * image.height + y] = image.data[y * image.width + x]!;
+  }
+  return { width: image.height, height: image.width, data };
 }
 
 /** Otsu's split over an intensity histogram: the threshold maximizing between-class variance. */
@@ -378,7 +411,7 @@ function acceptedSplit(values: readonly number[], minMargin: number): OtsuSplit 
   return { ...split, accepted: Math.min(...high) - Math.max(...low) >= minMargin };
 }
 
-function mergeComponents(a: GlyphComponent, b: GlyphComponent): GlyphComponent {
+export function mergeGlyphComponents(a: GlyphComponent, b: GlyphComponent): GlyphComponent {
   const x0 = Math.min(a.x0, b.x0);
   const y0 = Math.min(a.y0, b.y0);
   const x1 = Math.max(a.x1, b.x1);
@@ -427,32 +460,200 @@ function attachMarks(
       }
     }
     if (pick < 0) specks.push(mark);
-    else grown[pick] = mergeComponents(grown[pick]!, mark);
+    else grown[pick] = mergeGlyphComponents(grown[pick]!, mark);
   }
   grown.sort((a, b) => a.y0 - b.y0 || a.x0 - b.x0);
   return { marks: grown, specks };
 }
 
+interface GapGrouping {
+  readonly groups: number[][];
+  readonly accepted: boolean;
+  readonly margin: number;
+}
+
 /** Split a run of items at their large gaps, keeping it whole when the gaps are one population. */
-function groupByGaps(gaps: readonly number[], minMargin: number): number[][] {
+function groupByGaps(gaps: readonly number[], minMargin: number): GapGrouping {
   const items = gaps.length + 1;
-  const whole = () => [[...Array(items).keys()]];
-  if (gaps.length === 0) return whole();
+  const whole = (margin: number) => ({ groups: [[...Array(items).keys()]], accepted: false, margin });
+  if (gaps.length === 0) return whole(0);
+  const low = gaps.filter(g => g <= otsuValueSplit(gaps).cut);
+  const high = gaps.filter(g => g > otsuValueSplit(gaps).cut);
+  const margin = low.length && high.length ? Math.min(...high) - Math.max(...low) : 0;
   const split = acceptedSplit(gaps, minMargin);
-  if (!split.accepted) return whole();
+  if (!split.accepted) return whole(margin);
   const groups: number[][] = [[0]];
   for (let i = 1; i < items; i++) {
     if (gaps[i - 1]! > split.cut) groups.push([i]);
     else groups[groups.length - 1]!.push(i);
   }
-  return groups;
+  return { groups, accepted: true, margin };
+}
+
+/**
+ * The advance of a monospaced script, as the period of its own ink. The column ink profile of cell-set writing
+ * repeats at the advance, so its autocorrelation peaks there and at every multiple; the period returned is the
+ * smallest peak whose multiples land on the strongest one, which is what keeps an octave of the true advance
+ * from being taken for it. The baseline it must clear is the mean autocorrelation, measured, not chosen.
+ *
+ * Measured extent cannot serve here: a stroke spans its cell but the advance also carries the gap to the next
+ * one, so extent under-reads the pitch and the lattice drifts a whole cell across a line.
+ */
+export function dominantPitch(ink: Uint8Array, width: number, height: number): number {
+  const profile = new Float64Array(width);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) if (ink[y * width + x]) profile[x]! += 1;
+  }
+  return periodOfProfile(profile);
+}
+
+/** The line advance, from the same measurement taken down the page instead of across it. */
+export function dominantLinePitch(ink: Uint8Array, width: number, height: number): number {
+  const profile = new Float64Array(height);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) if (ink[y * width + x]) profile[y]! += 1;
+  }
+  return periodOfProfile(profile);
+}
+
+function periodOfProfile(profile: Float64Array): number {
+  const length = profile.length;
+  const maxLag = Math.floor(length / 2);
+  if (maxLag < 4) return 0;
+
+  let mean = 0;
+  for (let i = 0; i < length; i++) mean += profile[i]!;
+  mean /= length;
+  const centred = new Float64Array(length);
+  for (let i = 0; i < length; i++) centred[i] = profile[i]! - mean;
+
+  const correlation = new Float64Array(maxLag + 1);
+  for (let lag = 2; lag <= maxLag; lag++) {
+    let sum = 0;
+    for (let i = 0; i + lag < length; i++) sum += centred[i]! * centred[i + lag]!;
+    correlation[lag] = sum / (length - lag);
+  }
+
+  // Every harmonic of the advance is a peak, so the strongest peak is usually a multiple of the advance and not
+  // the advance itself. The peaks are split into strong and weak by Otsu -- the same split used everywhere else
+  // here -- and the advance is the greatest common divisor of the strong ones, which is what collapses a whole
+  // harmonic series onto its fundamental without any tolerance being chosen.
+  const peaks: { lag: number; value: number }[] = [];
+  for (let lag = 3; lag < maxLag; lag++) {
+    if (correlation[lag]! >= correlation[lag - 1]! && correlation[lag]! >= correlation[lag + 1]!) {
+      peaks.push({ lag, value: correlation[lag]! });
+    }
+  }
+  if (!peaks.length) return 0;
+
+  const split = otsuValueSplit(peaks.map(p => p.value));
+  const strong = peaks.filter(p => p.value > split.cut);
+  if (!strong.length) return 0;
+
+  let pitch = strong[0]!.lag;
+  for (const peak of strong) pitch = greatestCommonDivisor(pitch, peak.lag);
+  // The fundamental must itself be one of the strong peaks; otherwise a stray peak has collapsed the divisor.
+  const weakest = Math.min(...strong.map(p => p.value));
+  if (pitch < 2 || pitch > maxLag || correlation[pitch]! < weakest) {
+    return strong.reduce((best, p) => (p.value > best.value ? p : best), strong[0]!).lag;
+  }
+  return pitch;
+}
+
+function greatestCommonDivisor(a: number, b: number): number {
+  let x = Math.abs(Math.round(a));
+  let y = Math.abs(Math.round(b));
+  while (y > 0) {
+    const t = x % y;
+    x = y;
+    y = t;
+  }
+  return x;
+}
+
+/**
+ * Group components onto the square lattice the writing sits on, and merge everything sharing a cell into one
+ * grapheme. The pitch is the median of the components' own long extents, because a stroke of a square script
+ * spans its cell; the lattice phase is chosen to minimise the components straddling a cell boundary. This runs
+ * before lines exist on purpose -- a CJK line cannot be found from strokes, whose heights carry no line scale.
+ */
+function latticeMerge(
+  marks: readonly GlyphComponent[],
+  pitchX: number,
+  pitchY: number
+): { graphemes: GlyphComponent[]; occupancy: number } {
+  if (pitchX <= 1 || pitchY <= 1 || marks.length < 2) return { graphemes: [...marks], occupancy: 1 };
+  const stepX = Math.max(1, Math.round(pitchX));
+  const stepY = Math.max(1, Math.round(pitchY));
+  const phase = (step: number, low: (m: GlyphComponent) => number, high: (m: GlyphComponent) => number) => {
+    let best = 0;
+    let fewest = Number.POSITIVE_INFINITY;
+    for (let offset = 0; offset < step; offset++) {
+      let count = 0;
+      for (const mark of marks) {
+        if (Math.floor((low(mark) - offset) / step) !== Math.floor((high(mark) - offset) / step)) count += 1;
+      }
+      if (count < fewest) {
+        fewest = count;
+        best = offset;
+      }
+    }
+    return best;
+  };
+  const offsetX = phase(stepX, m => m.x0, m => m.x1);
+  const offsetY = phase(stepY, m => m.y0, m => m.y1);
+
+  const cells = new Map<string, { merged: GlyphComponent; members: GlyphComponent[]; cx: number; cy: number }>();
+  for (const mark of marks) {
+    const cx = Math.floor((mark.centroidX - offsetX) / stepX);
+    const cy = Math.floor((mark.centroidY - offsetY) / stepY);
+    const key = `${cx},${cy}`;
+    const held = cells.get(key);
+    if (held) {
+      held.merged = mergeGlyphComponents(held.merged, mark);
+      held.members.push(mark);
+    } else {
+      cells.set(key, { merged: mark, members: [mark], cx, cy });
+    }
+  }
+
+  const counts = new Map<number, number>();
+  for (const cell of cells.values()) counts.set(cell.members.length, (counts.get(cell.members.length) ?? 0) + 1);
+  let occupancy = 1;
+  let commonest = -1;
+  for (const [size, howMany] of counts) {
+    if (howMany > commonest || (howMany === commonest && size > occupancy)) {
+      commonest = howMany;
+      occupancy = size;
+    }
+  }
+
+  const graphemes = [...cells.values()].map(cell => {
+    const frameX = offsetX + cell.cx * stepX;
+    const frameY = offsetY + cell.cy * stepY;
+    const cellRaster: number[][] = Array.from({ length: stepY }, () => new Array<number>(stepX).fill(0));
+    for (const member of cell.members) {
+      for (let y = 0; y < member.raster.length; y++) {
+        const row = member.raster[y]!;
+        for (let x = 0; x < row.length; x++) {
+          if (!row[x]) continue;
+          const ty = member.y0 - frameY + y;
+          const tx = member.x0 - frameX + x;
+          if (ty >= 0 && ty < stepY && tx >= 0 && tx < stepX) cellRaster[ty]![tx] = 1;
+        }
+      }
+    }
+    return { ...cell.merged, cellRaster };
+  });
+  graphemes.sort((a, b) => a.y0 - b.y0 || a.x0 - b.x0);
+  return { graphemes, occupancy };
 }
 
 /**
  * Full layout of a page. Skew is removed in centroid space rather than by resampling pixels: the glyph rasters
  * stay exactly as captured, and a rotation-invariant shape signature reads a skewed mark correctly anyway.
  */
-export function analyzePage(image: GrayImage): PageLayout {
+export function analyzePage(image: GrayImage, options: { grouping?: PageGrouping } = {}): PageLayout {
   const mask = binarize(image);
   const all = connectedComponents(mask.ink, mask.width, mask.height);
   const stroke = Math.max(1, mask.strokeWidth);
@@ -468,35 +669,63 @@ export function analyzePage(image: GrayImage): PageLayout {
   const marks = attached.marks;
   const speckles = attached.specks;
 
-  const correction = estimateSkew(marks, stroke, mask.width);
+  const grouping = options.grouping ?? "marks";
+  const extents = marks.map(extentOf).sort((a, b) => a - b);
+  const fallback = extents.length ? extents[extents.length >> 1]! : 0;
+  const acrossPitch = grouping === "cells" ? dominantPitch(mask.ink, mask.width, mask.height) : 0;
+  const downPitch = grouping === "cells" ? dominantLinePitch(mask.ink, mask.width, mask.height) : 0;
+  const cellPitch = grouping !== "cells" ? 0 : (acrossPitch > 1 ? acrossPitch : fallback);
+  const cellStepY = downPitch > 1 ? downPitch : fallback;
+  const lattice = grouping === "cells"
+    ? latticeMerge(marks, cellPitch, cellStepY)
+    : { graphemes: marks, occupancy: 1 };
+  const graphemes = lattice.graphemes;
+
+  const correction = estimateSkew(graphemes, stroke, mask.width);
   const cos = Math.cos(correction);
   const sin = Math.sin(correction);
-  const placed = marks.map(c => ({
+  const placed = graphemes.map(c => ({
     component: c,
     x: c.centroidX * cos - c.centroidY * sin,
     y: c.centroidX * sin + c.centroidY * cos
   }));
 
-  const heights = marks.map(c => c.y1 - c.y0 + 1).sort((a, b) => a - b);
+  const heights = graphemes.map(c => c.y1 - c.y0 + 1).sort((a, b) => a - b);
   const glyphHeight = heights.length ? heights[heights.length >> 1]! : 0;
-  const widths = marks.map(c => c.x1 - c.x0 + 1).sort((a, b) => a - b);
+  const widths = graphemes.map(c => c.x1 - c.x0 + 1).sort((a, b) => a - b);
   const glyphWidth = widths.length ? widths[widths.length >> 1]! : 0;
-  const glyphGrid = {
-    cols: Math.max(1, Math.round(glyphWidth / stroke)),
-    rows: Math.max(1, Math.round(glyphHeight / stroke))
-  };
+  const glyphGrid = grouping === "cells" && cellPitch > 1 && cellStepY > 1
+    ? {
+      cols: Math.max(1, Math.round(cellPitch / stroke)),
+      rows: Math.max(1, Math.round(cellStepY / stroke))
+    }
+    : {
+      cols: Math.max(1, Math.round(glyphWidth / stroke)),
+      rows: Math.max(1, Math.round(glyphHeight / stroke))
+    };
 
   placed.sort((a, b) => a.y - b.y);
-  const lineGroups = groupByGaps(placed.slice(1).map((p, i) => p.y - placed[i]!.y), glyphHeight);
+  const lineGrouping = groupByGaps(placed.slice(1).map((p, i) => p.y - placed[i]!.y), glyphHeight);
 
   const lines: PageLine[] = [];
-  for (const group of lineGroups) {
+  for (const group of lineGrouping.groups) {
     const inLine = group.map(i => placed[i]!).sort((a, b) => a.x - b.x);
     const gaps = inLine.slice(1).map((p, i) => p.component.x0 - inLine[i]!.component.x1 - 1);
-    const wordGroups = groupByGaps(gaps, stroke);
+    const wordGroups = groupByGaps(gaps, stroke).groups;
     lines.push({ words: wordGroups.map(w => ({ glyphs: w.map(i => inLine[i]!.component) })) });
   }
 
   // Reported skew is the page's own tilt: the negation of the rotation that corrects it.
-  return { skewRadians: -correction, lines, speckles, scaleSplit, glyphGrid, mask };
+  return {
+    skewRadians: -correction,
+    lines,
+    speckles,
+    scaleSplit,
+    glyphGrid,
+    grouping,
+    cellPitch,
+    lineSplit: { accepted: lineGrouping.accepted, margin: lineGrouping.margin, count: lines.length },
+    cellOccupancy: lattice.occupancy,
+    mask
+  };
 }

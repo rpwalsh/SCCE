@@ -37,6 +37,8 @@ export interface SignInventory {
   /** The merge distance the dendrogram was cut at: the page's measured same-sign scale. */
   readonly cutDistance: number;
   readonly cutGap: number;
+  /** False when no void separated the marks, so they are one population and nothing was told apart. */
+  readonly distinguishable: boolean;
 }
 
 interface Clustering {
@@ -171,7 +173,7 @@ export interface PageSigns {
 /** Discover the page's sign inventory from its own marks, on the grid the page measured for itself. */
 export function readPageSigns(layout: PageLayout): PageSigns {
   const glyphs = layout.lines.flatMap(line => line.words.flatMap(word => word.glyphs));
-  const profiles = glyphs.map(g => glyphProfile(g.raster, layout.glyphGrid.cols, layout.glyphGrid.rows));
+  const profiles = glyphs.map(g => glyphProfile(g.cellRaster ?? g.raster, layout.glyphGrid.cols, layout.glyphGrid.rows));
   const base = clusterByDistance(profiles.length, (a, b) => profileDistance(profiles[a]!, profiles[b]!));
   const exemplars = base.groups.map(members => meanProfile(profiles, members));
 
@@ -195,7 +197,8 @@ export function readPageSigns(layout: PageLayout): PageSigns {
     })),
     signOf: base.signOf,
     cutDistance: base.cutDistance,
-    cutGap: base.cutGap
+    cutGap: base.cutGap,
+    distinguishable: base.cutGap > 0
   };
 
   const lines: number[][] = [];
@@ -263,7 +266,8 @@ export function foldMirrorSigns(signs: PageSigns): PageSigns {
     })),
     signOf: signs.inventory.signOf.map(id => remap.get(id)!),
     cutDistance: signs.inventory.cutDistance,
-    cutGap: signs.inventory.cutGap
+    cutGap: signs.inventory.cutGap,
+    distinguishable: signs.inventory.distinguishable
   };
   return {
     inventory,
@@ -327,31 +331,49 @@ export function trustedRankDepth(frequencies: readonly SymbolFrequency[]): numbe
 }
 
 /**
- * How much the decoded adjacency looks like the known language's own adjacency: the mean log-frequency, in the
- * language, of the bigrams the reading produces. This is the criterion that decides reading direction, and it
- * doubles as the confidence in a reading -- a wrong key or a wrong direction scores measurably worse.
+ * How likely the decoded sequence is under the known language's own bigram model: the mean log conditional
+ * probability of each symbol given the one before it, add-one smoothed over the language's vocabulary. This is
+ * the criterion that decides reading direction, grouping and orientation, and it doubles as the confidence in a
+ * reading.
+ *
+ * It must be a CONDITIONAL probability. Scoring the raw frequency of the bigrams a reading produces cannot tell
+ * a real reading from a wrong one: any decoding that lands mostly on the language's common symbols scores well
+ * whatever order it puts them in, and measured that way a transposed page beat the correct reading of itself.
+ * Normalising by the history makes an improbable continuation cost something, which is what orders the readings.
  */
 export function structuralFit(
   sequences: readonly (readonly number[])[],
   signToSymbol: ReadonlyMap<number, string>,
   languageBigrams: readonly CooccurrenceBigram[]
 ): number {
-  const known = new Map<string, number>();
+  const joint = new Map<string, number>();
+  const history = new Map<string, number>();
+  const vocabulary = new Set<string>();
   for (const bigram of languageBigrams) {
-    known.set(`${bigram.previous} ${bigram.next}`, bigram.count);
+    joint.set(`${bigram.previous}\u0000${bigram.next}`, bigram.count);
+    history.set(bigram.previous, (history.get(bigram.previous) ?? 0) + bigram.count);
+    vocabulary.add(bigram.previous);
+    vocabulary.add(bigram.next);
   }
-  let score = 0;
+  const size = Math.max(1, vocabulary.size);
+
+  let total = 0;
   let pairs = 0;
   for (const sequence of sequences) {
     for (let i = 1; i < sequence.length; i++) {
       const previous = signToSymbol.get(sequence[i - 1]!);
       const next = signToSymbol.get(sequence[i]!);
       pairs += 1;
-      if (previous === undefined || next === undefined) continue;
-      score += Math.log1p(known.get(`${previous} ${next}`) ?? 0);
+      if (previous === undefined || next === undefined) {
+        // An unassigned sign is as unlikely as the rarest continuation, never free.
+        total += Math.log(1 / size);
+        continue;
+      }
+      const seen = joint.get(`${previous}\u0000${next}`) ?? 0;
+      total += Math.log((seen + 1) / ((history.get(previous) ?? 0) + size));
     }
   }
-  return pairs > 0 ? score / pairs : 0;
+  return pairs > 0 ? total / pairs : Number.NEGATIVE_INFINITY;
 }
 
 export interface DeciphermentRequest {
