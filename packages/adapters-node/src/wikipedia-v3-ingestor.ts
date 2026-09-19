@@ -1168,6 +1168,7 @@ export class WikipediaV3Ingestor {
       );
     }
     observeSpan.end({ candidates: semanticCandidates.length });
+    const rolesSpan = trace.span("shard.role-models");
     const opaqueRoleModel = compileOpaqueRoleModel({
       candidates: semanticCandidates,
       promotionModel: relationPromotionModel,
@@ -1179,6 +1180,8 @@ export class WikipediaV3Ingestor {
       opaqueRoleModel,
       hasher: this.hasher
     });
+    rolesSpan.end({ candidates: semanticCandidates.length });
+    const promotedGraphSpan = trace.span("shard.promoted-graph");
     if (semanticCandidates.length) {
       const promotedGraph = graphFromStructuredSemanticCandidates({
         candidates: semanticCandidates,
@@ -1673,6 +1676,7 @@ export class WikipediaV3Ingestor {
           denseMatrixMaterialized: false
       });
     }
+    promotedGraphSpan.end({ candidates: semanticCandidates.length });
     return {
       languageProfiles: trained.languageProfiles,
       ngramObservations: trained.ngramObservations,

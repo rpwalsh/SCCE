@@ -2913,12 +2913,38 @@ interface RelationObservationRow {
 function createRelationObservationStore(storage: PostgresStorageAdapter): RelationObservationStore {
   return {
     async put(rows) {
+      if (!rows.length) return;
+      // One statement, not one round trip per observation. Measured on a live shard: relation.observe was
+      // 4,147ms, the largest relation cost in the block and larger than the promotion fit it feeds.
+      // Deduplicated on the primary key first, because a single batch can carry the same key twice and
+      // ON CONFLICT cannot resolve a conflict against a row in its own statement.
+      const unique = new Map<string, (typeof rows)[number]>();
       for (const row of rows) {
-        await storage.query(
-          `INSERT INTO ${storage.table("relation_observations")}(relation_seed_id,channel,source_family_id,signature,candidate_id,source_id,observed_at) VALUES($1,$2,$3,$4,$5,$6,TO_TIMESTAMP($7/1000.0)) ON CONFLICT(relation_seed_id,channel,source_family_id,signature) DO NOTHING`,
-          [row.relationSeedId, row.channel, row.sourceFamilyId, row.signature, row.candidateId, row.sourceId, row.observedAt]
+        // JSON, not concatenation: joined without a separator, ("a","bc") and ("ab","c") collide.
+        unique.set(
+          JSON.stringify([row.relationSeedId, row.channel, row.sourceFamilyId, row.signature]),
+          row
         );
       }
+      await storage.query(
+        `INSERT INTO ${storage.table("relation_observations")}(relation_seed_id,channel,source_family_id,signature,candidate_id,source_id,observed_at)
+         SELECT r.relation_seed_id, r.channel, r.source_family_id, r.signature, r.candidate_id, r.source_id,
+                TO_TIMESTAMP(r.observed_at_ms/1000.0)
+         FROM jsonb_to_recordset($1::jsonb) AS r(
+           relation_seed_id text, channel text, source_family_id text, signature text,
+           candidate_id text, source_id text, observed_at_ms double precision
+         )
+         ON CONFLICT(relation_seed_id,channel,source_family_id,signature) DO NOTHING`,
+        [JSON.stringify([...unique.values()].map(row => ({
+          relation_seed_id: row.relationSeedId,
+          channel: row.channel,
+          source_family_id: row.sourceFamilyId,
+          signature: row.signature,
+          candidate_id: row.candidateId,
+          source_id: row.sourceId,
+          observed_at_ms: row.observedAt
+        })))]
+      );
     },
     async sourceFamilyCountsForSeeds(relationSeedIds) {
       if (!relationSeedIds.length) return new Map<string, number>();
