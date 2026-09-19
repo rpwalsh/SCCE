@@ -366,15 +366,12 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
           })
         };
       });
-      const selectedPopulationByDocument = new Map([
-        ...segmentationPopulations.assignments.map(assignment => [
-          assignment.documentId,
-          assignment.selectedPopulationId
-        ] as const),
-        // These documents' own routing wins over an inherited assignment for a document of the same id.
-        ...routedPopulationByDocument
-      ]);
-      const defaultPopulationId = segmentationPopulations.populations[0]!.id;
+      // Exactly the routing the lattices were built from. Not merged with the supplied model's assignment
+      // map, which describes the documents that model was FITTED from: merging let an inherited row decide a
+      // document whose lattice had been built from a different population, and a missing row sent it to
+      // populations[0]. Every document in this batch is routed above, from its own statistics, so there is
+      // nothing left to fall back to and no default to fall back on.
+      const selectedPopulationByDocument = routedPopulationByDocument;
       const joinProgram = compileJoinProgramMixture({
         populationModelId: segmentationPopulations.id,
         components: segmentationPopulations.populations.map(population => ({
@@ -383,8 +380,7 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
           program: compileJoinProgram({
             populationId: population.id,
             documents: lattices
-              .filter(({ doc }) =>
-                (selectedPopulationByDocument.get(doc.id) ?? defaultPopulationId) === population.id)
+              .filter(({ doc }) => selectedPopulationByDocument.get(doc.id) === population.id)
               .map(({ doc, lattice }) => ({
                 documentId: doc.id,
                 sourceFamilyId: doc.sourceFamilyId ?? String(doc.sourceVersionId ?? doc.id),
@@ -480,6 +476,11 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
           segmentationPopulationMdlGainNats: segmentationPopulations.selection.mdlGainNats,
           joinProgramId: joinProgram.id,
           joinProgramComponentIds: joinProgram.components.map(component => component.program.id),
+          // Every document routed, and where. Recorded because the routing was silently wrong: unseen
+          // documents fell to populations[0] while their lattices used a different population. If this count
+          // is ever short of the document count, a document was built one way and trained another.
+          routedDocumentCount: routedPopulationByDocument.size,
+          routedPopulationIds: [...new Set(routedPopulationByDocument.values())].sort(),
           relationHypothesisModelId: relationHypothesisModel.id,
           trustMean: documents.length ? mean(documents.map(doc => doc.trust ?? 0.5)) : 0,
           corpusHash: hasher.digestHex(corpusText)

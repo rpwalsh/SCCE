@@ -208,3 +208,60 @@ describe("singleton entries are dropped because they cannot change a feature", (
     expect(JSON.stringify(b.units)).toBe(JSON.stringify(a.units));
   });
 });
+
+describe("the ingest lifecycle keeps learning across consolidations", () => {
+  it("routes every unseen document from its own evidence, none by default", () => {
+    // Invariant: no document reaches training without having been measured and routed. The audit records the
+    // routing precisely because it was once silently wrong -- unseen documents fell to populations[0] while
+    // their lattices had been built from a different population entirely.
+    const engine = createLanguageInductionEngine({ hasher });
+    const consolidated = consolidateSegmentationPopulations({ documents: documents(24, "fitted"), hasher });
+    const shard = documents(9, "never-seen");
+    const model = engine.induce({
+      documents: shard,
+      fittedPopulation: consolidated.model,
+      boundaryFeatureContext: consolidated.boundaryFeatureContext
+    });
+
+    const audit = model.audit as Record<string, unknown>;
+    // Every document in the batch, not "every document minus the ones that fell through".
+    expect(audit.routedDocumentCount).toBe(shard.length);
+    const routed = audit.routedPopulationIds as string[];
+    expect(routed.length).toBeGreaterThan(0);
+    // Whatever populations were used, they are real populations of the model in force.
+    const known = new Set(model.segmentationPopulations.populations.map(row => row.id));
+    for (const populationId of routed) expect(known.has(populationId)).toBe(true);
+  });
+
+  it("learns from documents ingested after the previous consolidation", () => {
+    // empty -> A -> consolidate -> B -> consolidate. The second fit has to contain B, or everything ingested
+    // after a consolidation is invisible to the next one.
+    const batchA = documents(14, "batch-a");
+    const batchB = documents(14, "batch-b");
+    const first = consolidateSegmentationPopulations({ documents: batchA, hasher });
+    expect(first.documentCount).toBe(batchA.length);
+
+    const second = consolidateSegmentationPopulations({ documents: [...batchA, ...batchB], hasher });
+    expect(second.documentCount).toBe(batchA.length + batchB.length);
+
+    // B is genuinely represented, not merely counted: the merged statistics name its documents.
+    const measured = new Set(second.statistics.sourceDocumentIds);
+    for (const doc of batchB) expect(measured.has(doc.id)).toBe(true);
+    // And the second fit is not the first one handed back.
+    expect(second.model.id).not.toBe(first.model.id);
+  });
+
+  it("keeps measuring documents even when both the population and the context are supplied", () => {
+    // The shortcut this file exists to prevent: a supplied context must inform the features, never replace
+    // measuring the document.
+    const engine = createLanguageInductionEngine({ hasher });
+    const consolidated = consolidateSegmentationPopulations({ documents: documents(20, "measure"), hasher });
+    const model = engine.induce({
+      documents: documents(7, "incoming"),
+      fittedPopulation: consolidated.model,
+      boundaryFeatureContext: consolidated.boundaryFeatureContext
+    });
+    expect(model.boundaryStatistics.rows.length).toBeGreaterThan(0);
+    expect(model.boundaryStatistics.sourceDocumentIds.length).toBeGreaterThan(0);
+  });
+});
