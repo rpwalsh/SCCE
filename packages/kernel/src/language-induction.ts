@@ -24,6 +24,7 @@ import {
 import type { SemanticRole } from "./semantic-graph.js";
 import {
   boundaryMixtureForDocument,
+  boundaryMixtureForStatistics,
   learnSegmentationPopulations,
   type SegmentationPopulationModel
 } from "./segmentation-population.js";
@@ -211,7 +212,31 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
   const hasher = options.hasher ?? createHasher();
   const vocabularyLimit = Math.max(512, Math.floor(options.vocabularyLimit ?? 50000));
   return {
-    induce(input: { documents: LanguageInductionDocument[]; order?: NgramOrder; maxNgrams?: number; maxFrames?: number; maxLexicalClasses?: number }): InducedLanguageModel {
+    /**
+     * Separation of powers: ingestion ingests, and fitting happens afterwards.
+     *
+     * induce() fits a boundary estimator and learns segmentation populations from whatever documents it is
+     * handed, then builds the lattices everything downstream reads from that fit. On the ingest path that
+     * happens once per shard, on a bounded slice, at a partial 96 iterations -- measured at 30% of
+     * train.compile, which is itself the largest stage in ingest. It is a model fit living inside a firehose.
+     *
+     * `fittedPopulation` breaks that. When the caller supplies a population already fitted from the whole
+     * corpus, no fit happens here: the supplied one builds the lattices and the expensive half is skipped. The
+     * shard's own boundary statistics are still computed and still returned, because they are the sufficient
+     * statistics a later consolidation pass merges and fits from -- mergeBoundaryStatistics already exists for
+     * exactly that, and the runtime already loads persisted populations at turn time.
+     *
+     * With no population supplied the behaviour is unchanged, so a first pass over an empty brain still works
+     * and a consolidation pass can then fit from what it accumulated.
+     */
+    induce(input: {
+      documents: LanguageInductionDocument[];
+      order?: NgramOrder;
+      maxNgrams?: number;
+      maxFrames?: number;
+      maxLexicalClasses?: number;
+      fittedPopulation?: SegmentationPopulationModel;
+    }): InducedLanguageModel {
       const documents = input.documents.filter(doc => doc.text.trim().length > 0);
       const corpusText = documents.map(doc => doc.text).join("\n");
       let initialLattices = documents.map(doc => ({
@@ -273,13 +298,21 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
           populationId
         )
         : undefined;
-      const boundaryEstimator = fitBoundaryEstimator({
-        statistics: trainingBoundaryStatistics,
-        calibrationStatistics: heldoutBoundaryStatistics,
-        calibrationShards: boundarySplit.heldout.map(document => document.statistics),
-        hasher
-      });
-      const segmentationPopulations = learnSegmentationPopulations({
+      // The expensive half, skipped entirely when a fitted population was supplied. Both of these are model
+      // fits: fitBoundaryEstimator descends a logistic and calibrates it against a held-out split, and
+      // learnSegmentationPopulations clusters documents and fits an estimator per group.
+      // A supplied population already carries a fitted estimator per population; the widest-prior one stands
+      // for the model as a whole in what induce() reports. Nothing is refitted.
+      const supplied = input.fittedPopulation?.populations.length ? input.fittedPopulation : undefined;
+      const boundaryEstimator = supplied
+        ? [...supplied.populations].sort((left, right) => right.prior - left.prior)[0]!.estimator
+        : fitBoundaryEstimator({
+          statistics: trainingBoundaryStatistics,
+          calibrationStatistics: heldoutBoundaryStatistics,
+          calibrationShards: boundarySplit.heldout.map(document => document.statistics),
+          hasher
+        });
+      const segmentationPopulations = supplied ?? learnSegmentationPopulations({
         rootPopulationId: populationId,
         documents: documentBoundaryStatistics,
         hasher
@@ -291,7 +324,17 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
           text: doc.text,
           sourceVersionId: doc.sourceVersionId,
           evidenceIds: doc.evidenceIds,
-          boundaryEstimator: boundaryMixtureForDocument(segmentationPopulations, doc.id, hasher),
+          // A supplied population has never seen these documents, and boundaryMixtureForDocument refuses an
+          // unseen one by design -- boundaryMixtureForStatistics is the call for that, assigning the document
+          // to a population from its own measured statistics.
+          boundaryEstimator: supplied
+            ? boundaryMixtureForStatistics(
+              supplied,
+              doc.id,
+              documentBoundaryStatistics.find(row => row.documentId === doc.id)?.statistics ?? boundaryStatistics,
+              hasher
+            )
+            : boundaryMixtureForDocument(segmentationPopulations, doc.id, hasher),
           boundaryFeatureContext,
           hasher
         })
