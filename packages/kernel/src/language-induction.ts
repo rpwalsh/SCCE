@@ -24,7 +24,6 @@ import {
 import type { SemanticRole } from "./semantic-graph.js";
 import {
   boundaryMixtureForDocument,
-  boundaryMixtureFromPriors,
   boundaryMixtureForStatistics,
   learnSegmentationPopulations,
   type SegmentationPopulationModel
@@ -255,7 +254,9 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
       const corpusText = documents.map(doc => doc.text).join("\n");
       const suppliedPopulation = input.fittedPopulation?.populations.length ? input.fittedPopulation : undefined;
       const suppliedContext = suppliedPopulation ? input.boundaryFeatureContext : undefined;
-      let initialLattices = suppliedContext ? [] : documents.map(doc => ({
+      // The bootstrap pass is not optional. Skipping it to save a lattice build removed the step that measures
+      // what a document is, and a document has to be measured before it can be routed to a population.
+      let initialLattices = documents.map(doc => ({
         doc,
         lattice: buildSurfaceLattice({
           documentId: doc.id,
@@ -333,37 +334,46 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
         documents: documentBoundaryStatistics,
         hasher
       });
-      const lattices = documents.map(doc => ({
-        doc,
-        lattice: buildSurfaceLattice({
-          documentId: doc.id,
-          text: doc.text,
-          sourceVersionId: doc.sourceVersionId,
-          evidenceIds: doc.evidenceIds,
-          // A supplied population has never seen these documents, and boundaryMixtureForDocument refuses an
-          // unseen one by design -- boundaryMixtureForStatistics is the call for that, assigning the document
-          // to a population from its own measured statistics. With a context supplied too there are no such
-          // statistics, because measuring them is the pass that was skipped, so the population's priors route.
-          boundaryEstimator: suppliedContext
-            ? boundaryMixtureFromPriors(suppliedContext ? suppliedPopulation! : segmentationPopulations, hasher)
-            : supplied
-              ? boundaryMixtureForStatistics(
-                supplied,
-                doc.id,
-                documentBoundaryStatistics.find(row => row.documentId === doc.id)?.statistics ?? boundaryStatistics,
-                hasher
-              )
-              : boundaryMixtureForDocument(segmentationPopulations, doc.id, hasher),
-          boundaryFeatureContext,
-          hasher
-        })
-      }));
-      const selectedPopulationByDocument = new Map(
-        segmentationPopulations.assignments.map(assignment => [
+      // One mixture per document, derived from that document's own measured statistics, and the SAME mixture
+      // decides which population owns it below. Two routings existed here: the lattice used one and the join
+      // program used the supplied model's assignment map -- which lists the documents the population was fitted
+      // from, not these -- so every newly ingested document fell through to populations[0]. A multi-population
+      // model cannot be correct that way.
+      const routedPopulationByDocument = new Map<string, string>();
+      const lattices = documents.map(doc => {
+        const documentStatistics = documentBoundaryStatistics
+          .find(row => row.documentId === doc.id)?.statistics ?? boundaryStatistics;
+        const boundaryEstimator = supplied
+          ? boundaryMixtureForStatistics(supplied, doc.id, documentStatistics, hasher)
+          : boundaryMixtureForDocument(segmentationPopulations, doc.id, hasher);
+        const heaviest = [...boundaryEstimator.components]
+          .sort((left, right) => right.weight - left.weight
+            || left.populationId.localeCompare(right.populationId))[0];
+        if (heaviest) routedPopulationByDocument.set(doc.id, heaviest.populationId);
+        return {
+          doc,
+          lattice: buildSurfaceLattice({
+            documentId: doc.id,
+            text: doc.text,
+            sourceVersionId: doc.sourceVersionId,
+            evidenceIds: doc.evidenceIds,
+            boundaryEstimator,
+            // Corpus-wide recurrence when consolidation measured it, this batch's own otherwise. This is the
+            // part of the optimisation that was sound: it changes what the features SAY, not whether the
+            // document is measured at all.
+            boundaryFeatureContext,
+            hasher
+          })
+        };
+      });
+      const selectedPopulationByDocument = new Map([
+        ...segmentationPopulations.assignments.map(assignment => [
           assignment.documentId,
           assignment.selectedPopulationId
-        ])
-      );
+        ] as const),
+        // These documents' own routing wins over an inherited assignment for a document of the same id.
+        ...routedPopulationByDocument
+      ]);
       const defaultPopulationId = segmentationPopulations.populations[0]!.id;
       const joinProgram = compileJoinProgramMixture({
         populationModelId: segmentationPopulations.id,

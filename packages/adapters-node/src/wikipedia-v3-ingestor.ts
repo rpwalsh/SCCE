@@ -1120,6 +1120,10 @@ export class WikipediaV3Ingestor {
         sourceVersionIds: samples.map(sample => String(sample.sourceVersionId)).slice(0, 256)
       },
       persistSource: false,
+      // The compiled models carry this shard's n-gram mass; the raw observations are the same information in
+      // the form the runtime only reads when a scope has no model. Writing them is what makes the corpus
+      // ingest decay, because they never collapse across shards.
+      skipNgramObservationPersistence: true,
       episodeId
     });
     trainSpan.end({ evidence: evidence.length, pages: samples.length, textBytes: Buffer.byteLength(text, "utf8") });

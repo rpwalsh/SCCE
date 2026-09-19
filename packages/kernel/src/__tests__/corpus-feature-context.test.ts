@@ -103,27 +103,53 @@ describe("the accumulated feature context", () => {
 });
 
 describe("induce() with the pair", () => {
-  it("skips the bootstrap lattice pass only when both are supplied", () => {
+  it("still measures every document, whatever is supplied", () => {
+    // THE INVARIANT THAT WAS BROKEN. An earlier version skipped the bootstrap lattice pass when a population
+    // and a context were both supplied, which removed the step that measures a document's own boundary
+    // statistics -- and then routed it by the population's global priors instead. That is not a cheaper way to
+    // do the inference, it is not doing it. A test was even added asserting rows.length === 0, blessing the
+    // absence. A document has to be measured before it can be routed.
     const engine = createLanguageInductionEngine({ hasher });
     const corpus = documents(20, "corpus");
     const consolidated = consolidateSegmentationPopulations({ documents: corpus, hasher });
     const shard = documents(6, "shard");
 
-    // Population alone: still builds both passes, so it still reports the batch's own statistics rows.
     const populationOnly = engine.induce({ documents: shard, fittedPopulation: consolidated.model });
     expect(populationOnly.boundaryStatistics.rows.length).toBeGreaterThan(0);
 
-    // The pair: no bootstrap pass, so there are no batch statistics to report.
     const withContext = engine.induce({
       documents: shard,
       fittedPopulation: consolidated.model,
       boundaryFeatureContext: consolidated.boundaryFeatureContext
     });
-    expect(withContext.boundaryStatistics.rows.length).toBe(0);
-    // And what ingest consumes still comes out.
+    expect(withContext.boundaryStatistics.rows.length).toBeGreaterThan(0);
     expect(withContext.ngrams.length).toBeGreaterThan(0);
     expect(withContext.symbolCount).toBeGreaterThan(0);
     expect(Array.isArray(withContext.graphBoundConstructions)).toBe(true);
+  });
+
+  it("routes a document by its own statistics, never to population zero by default", () => {
+    // The join program grouped documents with the SUPPLIED model's assignment map, which lists the documents
+    // that model was fitted from. Newly ingested documents are not in it, so every one of them fell through to
+    // populations[0] while its lattice had been built from a different routing entirely. Two disagreeing
+    // stories about the same document inside one ingest.
+    const engine = createLanguageInductionEngine({ hasher });
+    const consolidated = consolidateSegmentationPopulations({ documents: documents(24, "routed"), hasher });
+    const shard = documents(8, "unseen");
+    const model = engine.induce({
+      documents: shard,
+      fittedPopulation: consolidated.model,
+      boundaryFeatureContext: consolidated.boundaryFeatureContext
+    });
+
+    // Every document in this batch is one the supplied population never saw.
+    const fittedIds = new Set(consolidated.model.assignments.map(row => row.documentId));
+    for (const doc of shard) expect(fittedIds.has(doc.id)).toBe(false);
+
+    // And the model still reports a population per document, derived here rather than inherited.
+    const assigned = new Set(model.segmentationPopulations.populations.map(row => row.id));
+    expect(assigned.size).toBeGreaterThan(0);
+    expect(model.ngrams.length).toBeGreaterThan(0);
   });
 
   it("ignores a context offered without a population, rather than mixing scopes", () => {

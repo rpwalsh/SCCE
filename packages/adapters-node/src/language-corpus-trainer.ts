@@ -93,6 +93,22 @@ export interface LanguageCorpusTrainingInput {
    * units, patterns, and frames still train and persist.
    */
   skipNgramPersistence?: boolean;
+  /**
+   * Skip the raw n-gram OBSERVATIONS while still writing the compiled models.
+   *
+   * The two carry the same information and the runtime says so itself: it reads models, and falls back to
+   * observations only for a scope with no persisted model at all. On a corpus ingest every shard writes both,
+   * and the observations never collapse -- their ids differ per shard, so each shard adds its own rows rather
+   * than replacing anything. Measured on a clean scce5 after 4,762 articles: 19,382,688 rows and 27GB, with
+   * ngram.insert the largest write in the ingest at 281s a shard and 93% of that spent waiting on the database.
+   *
+   * That is the throughput decay. Each shard inserts ~460,000 randomly-keyed rows into a primary key that grew
+   * with every shard before it, so the ingest starts at 1,217 sources an hour and reaches 348 five hours later.
+   *
+   * What is given up: the reconstruct-from-observations fallback for this corpus. It only fires when a scope
+   * has no parsed model, and a model is written for every shard.
+   */
+  skipNgramObservationPersistence?: boolean;
   persistSource?: boolean;
   /** The consolidated fit, resolved by the caller so no read happens inside a transaction. */
   fittedPopulation?: SegmentationPopulationModel;
@@ -465,7 +481,7 @@ async function trainLanguageCorpusTextTransaction(input: LanguageCorpusTrainingI
     hasher
   });
 
-  const observations = input.skipNgramPersistence
+  const observations = input.skipNgramPersistence || input.skipNgramObservationPersistence
     ? []
     : compiledBatch.observations.map(item => ({ ...stampObservation(item, sourceSystem, sourceSystemId, metadata), informationLabel }));
   const models = input.skipNgramPersistence

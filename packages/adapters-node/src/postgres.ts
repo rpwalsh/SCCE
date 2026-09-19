@@ -4282,9 +4282,21 @@ function batchRowId(row: unknown): string {
 }
 
 function* serializedNgramObservationBatches(observations: readonly NgramObservation[]): Generator<string> {
+  // Sorted by primary key before insertion.
+  //
+  // These ids are content hashes, so arrival order is random with respect to the index. Every upsert then
+  // lands on an arbitrary leaf of a B-tree that is 2GB and growing, and once that index no longer fits in
+  // cache each insert costs a disk read and a write instead of a memory touch. That is the shape of the
+  // throughput this ingest actually has: 1,217 sources an hour at the start of a clean brain and 348 an hour
+  // five hours later, with ngram.insert measured at 93% database wait.
+  //
+  // In key order the inserts walk the leaves instead of jumping between them, so each page is visited about
+  // once per batch rather than repeatedly. Nothing about the result changes: every row is an independent
+  // ON CONFLICT upsert keyed by id, and ids are unique within a batch.
+  const ordered = [...observations].sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
   let rows: string[] = [];
   let payloadBytes = 2;
-  for (const observation of observations) {
+  for (const observation of ordered) {
     const row = JSON.stringify(ngramObservationBatchRow(observation));
     const rowBytes = Buffer.byteLength(row, "utf8");
     if (rowBytes + 2 > NGRAM_OBSERVATION_BATCH_MAX_JSON_BYTES) {
