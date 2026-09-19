@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { AlignmentCalibrationObservation, AlignmentPromotionObservation, GraphEdge, GraphNode, Hyperedge } from "@scce/kernel";
+import { ingestStageTracer } from "./ingest-stage-trace-sink.js";
 import {
   createClock,
   createEventFactory,
@@ -203,6 +204,21 @@ const TRAINING_SNAPSHOT_NODES = 512;
 const TRAINING_SNAPSHOT_EDGES = 1024;
 
 export async function trainLanguageCorpusText(input: LanguageCorpusTrainingInput): Promise<LanguageCorpusTrainingReport> {
+  // A shard trainer holds no source rows of its own, and its compile is minutes of pure CPU. Measured on one
+  // 6-page shard: language.train 88.7s, of which train.compile is 54.5s at 116% CPU (58,264 n-gram observations
+  // from 291KB of text) and train.persist is 33.3s at 12% CPU. Wrapping all of that in one transaction kept a
+  // Postgres backend in `idle in transaction` for the whole compile -- which is what the multi-minute ingest
+  // stalls were, and none of it is a transactional requirement:
+  //
+  //   - with persistSource false the source/blob/evidence writes are skipped entirely, so there is no
+  //     multi-row source identity to make atomic;
+  //   - nothing inside reads back what it wrote, so no statement depends on another's uncommitted state;
+  //   - every write is keyed by a stable content-derived id, so re-running the shard rewrites the same rows,
+  //     and the shard's checkpoint is not marked complete until this returns.
+  //
+  // So this path commits per statement instead, and the compile holds nothing. The document-owning path still
+  // needs its source version and evidence spans to land together, and keeps the transaction.
+  if (input.persistSource === false) return trainLanguageCorpusTextTransaction(input);
   return input.storage.transaction(() => trainLanguageCorpusTextTransaction(input));
 }
 
@@ -386,8 +402,18 @@ async function trainLanguageCorpusTextTransaction(input: LanguageCorpusTrainingI
   // built only when the batch carries hyperedges, so with no snapshot every run produced zero reversible
   // constructions and the mouth had no learned sentence shapes to speak with. The snapshot is this batch's own
   // evidence, read back from the graph the same evidence was projected into.
+  const trainTrace = ingestStageTracer();
+  const snapshotSpan = trainTrace.span("train.graph-snapshot");
   const batchGraphSnapshot = await graphSnapshotForEvidence(input.storage, evidence, input.graphSnapshotSourceVersionIds);
+  snapshotSpan.end({
+    nodes: batchGraphSnapshot?.nodes.length ?? 0,
+    edges: batchGraphSnapshot?.edges.length ?? 0,
+    hyperedges: batchGraphSnapshot?.hyperedges.length ?? 0,
+    evidence: evidence.length
+  });
 
+  // Synchronous CPU, with a Postgres transaction held open around it. Timed because that is the whole question.
+  const compileSpan = trainTrace.span("train.compile");
   const compiledBatch = compileLanguageTrainingBatch({
     runtime: languageMemory,
     hasher,
@@ -409,7 +435,16 @@ async function trainLanguageCorpusTextTransaction(input: LanguageCorpusTrainingI
       ...(input.alignmentCalibrationObservations?.length ? { alignmentCalibrationObservations: input.alignmentCalibrationObservations } : {})
     }
   });
+  compileSpan.end({
+    observations: compiledBatch.observations.length,
+    models: compiledBatch.models.length,
+    units: compiledBatch.units.length,
+    patterns: compiledBatch.patterns.length,
+    semanticFrames: compiledBatch.semanticFrames.length,
+    alignmentSupports: compiledBatch.sparseAlignmentCandidateSupports.length
+  });
   const activeImportVersionValue = jsonRecord(input.corpusMetadata).activeImportVersion;
+  const segmentationSpan = trainTrace.span("train.segmentation");
   await observeLanguageTrainingSegmentation({
     storage: input.storage,
     batch: { text, createdAt },
@@ -451,6 +486,8 @@ async function trainLanguageCorpusTextTransaction(input: LanguageCorpusTrainingI
     .map(item => ({ ...stampPattern(item, sourceSystem, sourceSystemId, metadata), informationLabel }));
   const frames = compiledBatch.semanticFrames.map(item => ({ ...stampFrame(item, sourceSystem, sourceSystemId, metadata), informationLabel }));
 
+  segmentationSpan.end();
+  const persistSpan = trainTrace.span("train.persist");
   await input.storage.languageMemory.putNgramObservationsBatch(observations);
   if (input.storage.languageMemory.putNgramModels) await input.storage.languageMemory.putNgramModels(models);
   else for (const model of models) await input.storage.languageMemory.putNgramModel(model);
@@ -479,6 +516,13 @@ async function trainLanguageCorpusTextTransaction(input: LanguageCorpusTrainingI
       constructionPromotion: compiledBatch.constructionPromotion as unknown as JsonValue,
       corpusMetadata: metadata
     }
+  });
+  persistSpan.end({
+    observations: observations.length,
+    models: models.length,
+    units: units.length,
+    patterns: patterns.length,
+    frames: frames.length
   });
   await input.storage.events.append(learned);
 

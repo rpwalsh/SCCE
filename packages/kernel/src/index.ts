@@ -212,6 +212,7 @@ export * from "./visual-sign-roles.js";
 export * from "./visual-baseline-field.js";
 export * from "./visual-weak-cuts.js";
 export * from "./visual-script-memory.js";
+export * from "./ingest-stage-trace.js";
 export * from "./relation-hypothesis.js";
 export * from "./structured-semantic-candidate.js";
 export * from "./alpha-field-persistence.js";
