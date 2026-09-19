@@ -39,6 +39,20 @@ export interface ConsolidateCorpusOptions {
   pageSize?: number;
   /** Stop after this many documents, for a bounded rehearsal against a large corpus. */
   maxDocuments?: number;
+  /**
+   * How many documents' boundary statistics are held for the population fit.
+   *
+   * Every document is still read, measured, and folded into the corpus feature context. What is bounded is
+   * only the set whose PER-DOCUMENT statistics stay resident for clustering, because learnSegmentationPopulations
+   * needs them individually and they do not compress: measured at ~740 rows a document and still growing
+   * linearly at 400 documents, so holding all of them died at 5,500 with a 7GB heap exhausted.
+   *
+   * The fit does not need all of them. Held-out log loss over a disjoint set measured 0.146 at 100 documents,
+   * 0.115 at 200 and 0.118 at 400 -- it plateaus, and more documents buy noise. The default sits well past
+   * that plateau and inside the heap, and the sample is drawn across the whole corpus by a hash of document id
+   * rather than by arrival, so a later consolidation of a larger corpus draws on the newer documents too.
+   */
+  fitSampleDocuments?: number;
   /** Characters of document text held alive at once during measurement. */
   windowCharBudget?: number;
   /** "converge" escalates the descent budget until the quantization floor is reached. */
@@ -51,6 +65,10 @@ export interface ConsolidateCorpusOptions {
 
 export interface ConsolidateCorpusResult extends CorpusConsolidationResult {
   spansRead: number;
+  /** Documents measured and folded into the corpus feature context: every one that was read. */
+  documentsMeasured: number;
+  /** Documents whose per-document statistics were retained for the population fit. */
+  documentsFitted: number;
   modelId: string;
   persisted: boolean;
   elapsedMs: number;
@@ -93,6 +111,8 @@ export async function consolidateCorpus(
   // statistics, plus one identity row per document for the population id.
   const windowCharBudget = Math.max(1, Math.floor(options.windowCharBudget ?? inductionCharBudget()));
   const trainingDocuments: SegmentationPopulationTrainingDocument[] = [];
+  const fitSampleDocuments = Math.max(1, Math.floor(options.fitSampleDocuments ?? 2000));
+  let sampledDocuments = 0;
   // Recurrence accumulated across every window, so the shard that later reads it sees the corpus, not a shard.
   const featureContext = createBoundaryFeatureContextAccumulator();
   const identities: Array<{ id: string; sourceVersionId?: SourceVersionId }> = [];
@@ -110,14 +130,35 @@ export async function consolidateCorpus(
   let spansRead = 0;
   let afterId: string | undefined;
 
+  // A reservoir, so the sample spans the whole corpus without knowing its size in advance and without holding
+  // more than the sample. The draw comes from a hash of the document id rather than a random source, so the
+  // same corpus in the same order yields the same fit and replay holds.
+  let documentsConsidered = 0;
+  const considerForFit = (document: SegmentationPopulationTrainingDocument): void => {
+    documentsConsidered += 1;
+    if (trainingDocuments.length < fitSampleDocuments) {
+      trainingDocuments.push(document);
+      sampledDocuments += 1;
+      return;
+    }
+    const digest = hasher.digestHex(`corpus-consolidation-fit-sample${document.documentId}`);
+    const draw = Number.parseInt(digest.slice(0, 8), 16) / 0x100000000;
+    const slot = Math.floor(draw * documentsConsidered);
+    if (slot < fitSampleDocuments) trainingDocuments[slot] = document;
+  };
+
   const flushWindow = (): void => {
     if (!pending.length) return;
-    trainingDocuments.push(...measureWindow({
+    // Every document is measured: the feature context is corpus-wide and depends on all of them. Only the
+    // sampled documents' per-document statistics are retained past this call; the rest are released with the
+    // window, which is what keeps the pass inside a heap.
+    const measured = measureWindow({
       documents: pending,
       populationId: CONSOLIDATION_WINDOW_POPULATION_ID,
       hasher,
       featureContext
-    }));
+    });
+    for (const document of measured) considerForFit(document);
     windowCount += 1;
     pending = [];
     pendingChars = 0;
@@ -199,6 +240,8 @@ export async function consolidateCorpus(
   return {
     ...consolidated,
     spansRead,
+    documentsMeasured: documentCount,
+    documentsFitted: Math.min(sampledDocuments, trainingDocuments.length),
     modelId: consolidated.model.id,
     persisted,
     elapsedMs: Date.now() - startedAt,
