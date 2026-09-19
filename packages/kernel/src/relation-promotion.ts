@@ -160,7 +160,10 @@ export function compileRelationPromotionModel(input: {
       relationSeedId,
       channel,
       promoted,
-      candidateCount: observations.filter(row => row.relationSeedId === relationSeedId).length,
+      // The map above, which was built for exactly this and then not read here. The scan it replaces is one
+      // pass over every observation per relation, which is the quadratic in seed count: measured at 932ms for
+      // 2,000 seeds and 18.4s for 8,000 once four source families make seeds scorable.
+      candidateCount: observationCount.get(relationSeedId) ?? 0,
       independentSourceCount: sourceCount,
       fitSourceFamilyIds,
       holdoutSourceFamilyIds,
@@ -340,11 +343,13 @@ function evaluateRelation(
 ): Evaluation {
   const targetFit = scope.fitBySeed.get(relationSeedId) ?? [];
   const targetHoldout = holdoutBySeed.get(relationSeedId) ?? [];
-  const relationCounts = countsBySignature(targetFit);
+  // Memoised: the same three scans of this relation's fit rows ran for every control it was judged against.
+  const relationCounts = signatureCountsForSeed(scope, relationSeedId, targetFit);
+  const targetFitLength = fitLengthForSeed(scope, relationSeedId, targetFit);
   const alphabetSize = scope.signatureAlphabet.length;
   const baselineHeldoutNats = negativeLogLikelihood(targetHoldout, scope.backgroundCounts, alphabetSize);
   const relationHeldoutNats = negativeLogLikelihood(targetHoldout, relationCounts, alphabetSize);
-  const relationModelNats = modelCodeNats(relationCounts, targetFit.length, alphabetSize);
+  const relationModelNats = modelCodeNats(relationCounts, targetFitLength, alphabetSize);
   const recovery = recoveryProbabilities(scope, relationSeedId, targetHoldout);
   return {
     gainNats: quantize(baselineHeldoutNats - relationHeldoutNats - relationModelNats),
@@ -354,8 +359,43 @@ function evaluateRelation(
     baselineRecoveryProbability: recovery.baseline,
     relationRecoveryProbability: recovery.relation,
     recoveryGain: quantize(recovery.relation - recovery.baseline),
-    independentSourceCount: new Set(targetFit.map(row => row.sourceFamilyId)).size
+    independentSourceCount: sourceFamilyCountForSeed(scope, relationSeedId, targetFit)
   };
+}
+
+function signatureCountsForSeed(
+  scope: FitScope,
+  relationSeedId: string,
+  targetFit: readonly RelationObservation[]
+): Map<string, number> {
+  const cached = scope.signatureCountsCache.get(relationSeedId);
+  if (cached) return cached;
+  const counts = countsBySignature(targetFit);
+  scope.signatureCountsCache.set(relationSeedId, counts);
+  return counts;
+}
+
+function fitLengthForSeed(
+  scope: FitScope,
+  relationSeedId: string,
+  targetFit: readonly RelationObservation[]
+): number {
+  const cached = scope.fitLengthCache.get(relationSeedId);
+  if (cached !== undefined) return cached;
+  scope.fitLengthCache.set(relationSeedId, targetFit.length);
+  return targetFit.length;
+}
+
+function sourceFamilyCountForSeed(
+  scope: FitScope,
+  relationSeedId: string,
+  targetFit: readonly RelationObservation[]
+): number {
+  const cached = scope.sourceFamilyCountCache.get(relationSeedId);
+  if (cached !== undefined) return cached;
+  const count = new Set(targetFit.map(row => row.sourceFamilyId)).size;
+  scope.sourceFamilyCountCache.set(relationSeedId, count);
+  return count;
 }
 /**
  * The three negative controls, judged against fit sets prepared once per channel plus one built per relation.
@@ -370,14 +410,14 @@ function controlResults(relationSeedId: string, scope: ChannelScope): RelationPr
   // The same observation repeated. Nothing this control evaluates reads candidateId -- it reads the relation, the
   // signature and the source family, which are identical across the copies by construction -- so the copies share
   // one row rather than allocating one object each, which was an allocation per relation pair over the channel.
-  const duplicate: RelationObservation[] = first
-    ? new Array<RelationObservation>(Math.max(MIN_INDEPENDENT_SOURCES, scope.fit.length)).fill(first)
-    : [];
+  const duplicateCount = Math.max(MIN_INDEPENDENT_SOURCES, scope.fit.length);
   return [
     control("shuffled_relations", evaluateRelation(relationSeedId, scope.shuffled, scope.holdoutBySeed)),
     control("duplicate_only", evaluateRelation(
       relationSeedId,
-      fitScope(duplicate, scope.relationSeedIds, scope.signatureAlphabet),
+      first
+        ? duplicateFitScope(first, duplicateCount, scope.relationSeedIds, scope.signatureAlphabet)
+        : fitScope([], scope.relationSeedIds, scope.signatureAlphabet),
       scope.holdoutBySeed
     )),
     control("random_repetition", evaluateRelation(
@@ -525,6 +565,9 @@ interface FitScope {
   priorDenominator: number;
   signatureCountsCache: Map<string, Map<string, number>>;
   denominatorBySignature: Map<string, number>;
+  /** Per-seed fit size and distinct source families, memoised so evaluateRelation never rescans the fit set. */
+  fitLengthCache: Map<string, number>;
+  sourceFamilyCountCache: Map<string, number>;
 }
 
 interface ChannelScope {
@@ -578,14 +621,56 @@ function fitScope(
     signatureAlphabet,
     priorDenominator: fit.length + DIRICHLET_ALPHA * relationSeedIds.length,
     signatureCountsCache: new Map(),
-    denominatorBySignature: new Map()
+    denominatorBySignature: new Map(),
+    fitLengthCache: new Map(),
+    sourceFamilyCountCache: new Map()
   };
 }
+
+/**
+ * The duplicate-only control's fit set, without materialising it.
+ *
+ * The control repeats one observation fit.length times and asks whether repetition inside a single source can
+ * pass for corroboration across several. Every quantity it needs from that set is closed-form, because the rows
+ * are identical by construction: the signature counts are {signature: count}, the distinct source families are
+ * one, and the fit size is the count. Building the array and then scanning it three times per relation is what
+ * made the pass grow with the square of the seed count -- measured at 932ms for 2,000 seeds and 18.4s for 8,000
+ * once four source families make seeds scorable. Same arithmetic, derived instead of counted.
+ */
+function duplicateFitScope(
+  first: RelationObservation,
+  count: number,
+  relationSeedIds: readonly string[],
+  signatureAlphabet: readonly string[]
+): FitScope {
+  const counts = new Map<string, number>([[first.signature, count]]);
+  const fitBySeed = new Map<string, RelationObservation[]>([[first.relationSeedId, EMPTY_OBSERVATIONS]]);
+  return {
+    // Length-bearing only: nothing reads these rows, because every derived quantity below is pre-seeded.
+    fit: { length: count } as unknown as readonly RelationObservation[],
+    fitBySeed,
+    backgroundCounts: counts,
+    relationSeedIds,
+    relationSeedIdSet: new Set(relationSeedIds),
+    signatureAlphabet,
+    priorDenominator: count + DIRICHLET_ALPHA * relationSeedIds.length,
+    signatureCountsCache: new Map([[first.relationSeedId, counts]]),
+    denominatorBySignature: new Map(),
+    fitLengthCache: new Map([[first.relationSeedId, count]]),
+    sourceFamilyCountCache: new Map([[first.relationSeedId, 1]])
+  };
+}
+
+const EMPTY_OBSERVATIONS: RelationObservation[] = [];
 
 /** A relation's Dirichlet prior under this fit set, or undefined when the fit set does not range over it. Pure. */
 function relationPrior(scope: FitScope, relationSeedId: string): number | undefined {
   if (!scope.relationSeedIdSet.has(relationSeedId)) return undefined;
-  return ((scope.fitBySeed.get(relationSeedId)?.length ?? 0) + DIRICHLET_ALPHA) / scope.priorDenominator;
+  // The cache, not the array: a derived fit set carries its size there and holds no rows to count.
+  const size = scope.fitLengthCache.get(relationSeedId)
+    ?? scope.fitBySeed.get(relationSeedId)?.length
+    ?? 0;
+  return (size + DIRICHLET_ALPHA) / scope.priorDenominator;
 }
 
 /** A relation's signature counts under this fit set, memoised. */
