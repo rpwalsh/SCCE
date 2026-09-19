@@ -3569,7 +3569,15 @@ function createSegmentationPopulationModelStore(
       await storage.query(
         `INSERT INTO ${storage.table("segmentation_population_models")}(id,training_plan_id,model_json,profile_ids,source_version_ids,population_count,mdl_gain_nats,information_label,created_at,boundary_feature_context_json)
          VALUES($1,$2,$3::jsonb,$4,$5,$6,$7,$8::jsonb,TO_TIMESTAMP($9/1000.0),$10::jsonb)
-         ON CONFLICT(id) DO NOTHING`,
+         -- The model id is derived from the documents fitted, so a re-consolidation of the same corpus lands
+         -- on the same id. DO NOTHING there kept a stale feature context: the pass that recomputes a better
+         -- one could not store it. The model itself is identical whenever the id matches, so only the context
+         -- is written, and only when the new pass actually produced one.
+         ON CONFLICT(id) DO UPDATE
+         SET boundary_feature_context_json =
+               COALESCE(EXCLUDED.boundary_feature_context_json, segmentation_population_models.boundary_feature_context_json)
+         WHERE segmentation_population_models.boundary_feature_context_json
+               IS DISTINCT FROM EXCLUDED.boundary_feature_context_json`,
         [
           record.id,
           record.trainingPlanId,
