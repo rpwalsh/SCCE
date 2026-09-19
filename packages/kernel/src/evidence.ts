@@ -451,3 +451,26 @@ export function evidenceAuditRecord(span: EvidenceSpan): JsonValue {
     provenance: span.provenance
   });
 }
+
+/**
+ * One blob per evidence span, in one statement where the store offers it.
+ *
+ * Every ingest path wrote these in a loop, which is one database round trip per span on the hot path: measured,
+ * page.transaction spends 77% of its wall time not on CPU. Blobs are content addressed and the single-row write
+ * already resolves conflicts by doing nothing, so batching is the same operation with the waiting removed, and
+ * it stays idempotent for the same reason -- which the crash-consistency tests depend on.
+ *
+ * An adapter without putBatch keeps the loop, so no caller has to know which it has.
+ */
+export async function putSpanBlobs(
+  blobs: { put(content: Uint8Array, mediaType: string): Promise<unknown>; putBatch?(items: readonly { content: Uint8Array; mediaType: string }[]): Promise<unknown> },
+  spans: readonly { text: string }[],
+  mediaType: string
+): Promise<void> {
+  if (!spans.length) return;
+  if (blobs.putBatch) {
+    await blobs.putBatch(spans.map(span => ({ content: Buffer.from(span.text, "utf8"), mediaType })));
+    return;
+  }
+  for (const span of spans) await blobs.put(Buffer.from(span.text, "utf8"), mediaType);
+}

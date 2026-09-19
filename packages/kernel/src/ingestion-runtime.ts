@@ -7,7 +7,7 @@ import {
   parseCreativeEventCompatibilityCorpus
 } from "./creative-event-compatibility.js";
 import { createEventFactory } from "./events.js";
-import { createEvidenceExtractor } from "./evidence.js";
+import { createEvidenceExtractor, putSpanBlobs } from "./evidence.js";
 import { createSourceGraphBuilder } from "./graphbuild.js";
 import { createIdFactory } from "./ids.js";
 import { routeStoreCounts, sumRecord } from "./ingestion-diagnostics.js";
@@ -393,7 +393,7 @@ export function createIngestionRuntime(options: {
             trustVector: { ...(span.trustVector as Record<string, JsonValue>), admission: decision.audit, action: action?.action ?? "quarantine" }
           };
         });
-        for (const span of admittedSpans) await deps.storage.blobs.put(Buffer.from(span.text, "utf8"), source.mediaType);
+        await putSpanBlobs(deps.storage.blobs, admittedSpans, source.mediaType);
         if (deps.storage.evidence.putEvidenceSpans) await deps.storage.evidence.putEvidenceSpans(admittedSpans);
         else for (const span of admittedSpans) await deps.storage.evidence.putEvidenceSpan(span);
         // Visual attributes (Phase 3) ride on the first admitted span of the document; provenance stays on the node.

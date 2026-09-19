@@ -33,9 +33,10 @@ const RESULT = {
 } as never;
 
 function store() {
-  const written: Record<string, unknown[]> = {
-    outcomes: [], corrections: [], snapshots: [], patterns: [], calibrations: []
-  };
+  const written: {
+    outcomes: unknown[]; corrections: unknown[]; snapshots: unknown[];
+    patterns: unknown[]; calibrations: unknown[];
+  } = { outcomes: [], corrections: [], snapshots: [], patterns: [], calibrations: [] };
   return {
     written,
     store: {
