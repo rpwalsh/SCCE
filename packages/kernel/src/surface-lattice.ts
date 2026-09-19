@@ -694,6 +694,77 @@ export interface BoundaryFeatureContextAccumulator {
   documentCount: number;
 }
 
+/**
+ * One window's contributions to the corpus feature context, deduplicated within the window.
+ *
+ * The in-memory accumulator cannot hold a real corpus: it keeps an entry per distinct surface form class and
+ * per distinct boundary context, and V8's Map tops out near 16.7 million entries -- reached at 11,500
+ * documents of scce5 with `RangeError: Map maximum size exceeded`. Almost all of those entries are singletons
+ * that are pruned at compile time, but a singleton cannot be recognised until the whole corpus has been seen.
+ *
+ * So a corpus-scale caller emits pairs instead and aggregates them somewhere that spills. The counts are the
+ * same counts: distinct documents per class, and distinct classes per boundary context.
+ */
+export function boundaryFeatureContextPairs(lattices: readonly SurfaceLattice[]): {
+  documentCount: number;
+  classDocuments: Array<{ classId: string; documentId: string }>;
+  contextClasses: Array<{ contextKey: string; classId: string }>;
+} {
+  const classDocuments = new Map<string, { classId: string; documentId: string }>();
+  const contextClasses = new Map<string, { contextKey: string; classId: string }>();
+  const documents = new Set<string>();
+  for (const lattice of lattices) {
+    documents.add(lattice.documentId);
+    for (const unit of lattice.units) {
+      if (unit.overlapClass === "base_partition") continue;
+      classDocuments.set(JSON.stringify([unit.surfaceFormClassId, lattice.documentId]), {
+        classId: unit.surfaceFormClassId,
+        documentId: lattice.documentId
+      });
+      const contextKey = boundaryContextKey(unit);
+      contextClasses.set(JSON.stringify([contextKey, unit.surfaceFormClassId]), {
+        contextKey,
+        classId: unit.surfaceFormClassId
+      });
+    }
+  }
+  return {
+    documentCount: documents.size,
+    classDocuments: [...classDocuments.values()],
+    contextClasses: [...contextClasses.values()]
+  };
+}
+
+/** The same compiled shape, from counts a caller aggregated elsewhere. Singletons are inert and dropped. */
+export function compileBoundaryFeatureContextFromCounts(input: {
+  sourceDocumentCount: number;
+  documentCountBySurfaceFormClass: ReadonlyArray<{ classId: string; documents: number }>;
+  classCountByBoundaryContext: ReadonlyArray<{ contextKey: string; classes: number }>;
+  hasher?: Hasher;
+}): CompiledBoundaryFeatureContext {
+  const hasher = input.hasher ?? createHasher();
+  const canonical = {
+    schema: "scce.boundary_feature_context.v1" as const,
+    sourceDocumentCount: input.sourceDocumentCount,
+    documentCountBySurfaceFormClass: Object.fromEntries(
+      input.documentCountBySurfaceFormClass
+        .filter(row => row.documents > 1)
+        .map(row => [row.classId, row.documents] as const)
+        .sort(([left], [right]) => left.localeCompare(right))
+    ),
+    classCountByBoundaryContext: Object.fromEntries(
+      input.classCountByBoundaryContext
+        .filter(row => row.classes > 1)
+        .map(row => [row.contextKey, row.classes] as const)
+        .sort(([left], [right]) => left.localeCompare(right))
+    )
+  };
+  return {
+    ...canonical,
+    id: `boundary_feature_context.${hasher.digestHex(JSON.stringify(canonical)).slice(0, 40)}`
+  };
+}
+
 export function createBoundaryFeatureContextAccumulator(): BoundaryFeatureContextAccumulator {
   return {
     documentsByClass: new Map(),

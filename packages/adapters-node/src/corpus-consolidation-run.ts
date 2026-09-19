@@ -1,12 +1,19 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import {
+  appendConsolidationFeatureContext,
+  readConsolidationFeatureContextCounts,
+  resetConsolidationFeatureContext
+} from "./postgres.js";
+import {
   compileRelationPromotionModel,
   consolidationPopulationId,
   createHasher,
   fitConsolidatedPopulations,
   inductionCharBudget,
   measureWindow,
+  boundaryFeatureContextPairs,
+  compileBoundaryFeatureContextFromCounts,
   createBoundaryFeatureContextAccumulator,
   CONSOLIDATION_WINDOW_POPULATION_ID,
   evidenceToLanguageDocument,
@@ -131,8 +138,13 @@ export async function consolidateCorpus(
   const trainingDocuments: SegmentationPopulationTrainingDocument[] = [];
   const fitSampleDocuments = Math.max(1, Math.floor(options.fitSampleDocuments ?? 2000));
   let sampledDocuments = 0;
-  // Recurrence accumulated across every window, so the shard that later reads it sees the corpus, not a shard.
-  const featureContext = createBoundaryFeatureContextAccumulator();
+  // Accumulated in the database, not in a Map: the counts are per distinct surface form class and per
+  // distinct boundary context over the whole corpus, and V8's Map ceiling near 16.7M entries was reached at
+  // 11,500 documents with `RangeError: Map maximum size exceeded`. Same counts, somewhere that spills.
+  const contextStorage = options.storage as unknown as Parameters<typeof resetConsolidationFeatureContext>[0];
+  const featureContextInDatabase = typeof (contextStorage as { query?: unknown }).query === "function";
+  if (featureContextInDatabase) await resetConsolidationFeatureContext(contextStorage);
+  const featureContext = featureContextInDatabase ? undefined : createBoundaryFeatureContextAccumulator();
   const identities: Array<{ id: string; sourceVersionId?: SourceVersionId }> = [];
   // A model fitted from these spans is derived from every one of them, so it cannot carry a looser label than
   // the strictest contributor. Joined, not assumed.
@@ -163,6 +175,8 @@ export async function consolidateCorpus(
     if (slot < fitSampleDocuments) trainingDocuments[slot] = document;
   };
 
+  const featurePairsOut: Array<ReturnType<typeof boundaryFeatureContextPairs>> = [];
+  let measuredDocumentsForContext = 0;
   const flushWindow = (): void => {
     if (!pending.length) return;
     // Every document is measured: the feature context is corpus-wide and depends on all of them. Only the
@@ -172,12 +186,22 @@ export async function consolidateCorpus(
       documents: pending,
       populationId: CONSOLIDATION_WINDOW_POPULATION_ID,
       hasher,
-      featureContext
+      ...(featureContext ? { featureContext } : {}),
+      ...(featureContextInDatabase ? { featurePairsOut } : {})
     });
     for (const document of measured) considerForFit(document);
     windowCount += 1;
     pending = [];
     pendingChars = 0;
+  };
+
+  const drainFeaturePairs = async (): Promise<void> => {
+    if (!featureContextInDatabase || !featurePairsOut.length) return;
+    for (const pairs of featurePairsOut) {
+      measuredDocumentsForContext += pairs.documentCount;
+      await appendConsolidationFeatureContext(contextStorage, pairs);
+    }
+    featurePairsOut.length = 0;
   };
 
   streaming: for (;;) {
@@ -206,22 +230,34 @@ export async function consolidateCorpus(
       documentCount += 1;
       if (options.maxDocuments !== undefined && documentCount >= options.maxDocuments) break streaming;
     }
+    await drainFeaturePairs();
     options.onProgress?.({ documents: documentCount, spans: spansRead });
     if (page.length < pageSize) break;
   }
   flushWindow();
+  await drainFeaturePairs();
   if (!trainingDocuments.length) {
     throw new Error("consolidation found no promoted evidence spans; ingest first");
   }
 
+  // The corpus context, compiled from counts the database aggregated over every document read.
+  const databaseContext = featureContextInDatabase
+    ? compileBoundaryFeatureContextFromCounts({
+      sourceDocumentCount: measuredDocumentsForContext,
+      ...await readConsolidationFeatureContextCounts(contextStorage),
+      hasher
+    })
+    : undefined;
   const consolidated = fitConsolidatedPopulations({
     trainingDocuments,
     populationId: consolidationPopulationId(identities, hasher),
     windowCount,
     hasher,
-    featureContext,
+    ...(featureContext ? { featureContext } : {}),
     ...(options.fitIterations === undefined ? {} : { fitIterations: options.fitIterations })
   });
+  if (databaseContext) consolidated.boundaryFeatureContext = databaseContext;
+  if (featureContextInDatabase) await resetConsolidationFeatureContext(contextStorage);
 
   let persisted = false;
   if (store) {

@@ -1279,6 +1279,12 @@ export function schemaStatements(q: string, informationAccess?: InformationAcces
     `ALTER TABLE ${q}.segmentation_population_models ADD COLUMN IF NOT EXISTS boundary_feature_context_json JSONB`,
     `CREATE TABLE IF NOT EXISTS ${q}.relation_promotion_models (id TEXT PRIMARY KEY, basis TEXT NOT NULL, model_json JSONB NOT NULL, decision_count INTEGER NOT NULL, promoted_count INTEGER NOT NULL, observation_count INTEGER NOT NULL, information_label JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_relation_promotion_models_created ON ${q}.relation_promotion_models(created_at DESC)`,
+    // Working tables for the consolidation feature context. The counts are distinct-document-per-class and
+    // distinct-class-per-context over the whole corpus, which a Map cannot hold: V8 tops out near 16.7M
+    // entries and scce5 passed that at 11,500 documents. Postgres aggregates and spills; these are truncated
+    // at the start of each pass and hold nothing between them.
+    `CREATE UNLOGGED TABLE IF NOT EXISTS ${q}.consolidation_class_documents (class_id TEXT NOT NULL, document_id TEXT NOT NULL, PRIMARY KEY(class_id, document_id))`,
+    `CREATE UNLOGGED TABLE IF NOT EXISTS ${q}.consolidation_context_classes (context_key TEXT NOT NULL, class_id TEXT NOT NULL, PRIMARY KEY(context_key, class_id))`,
     `CREATE TABLE IF NOT EXISTS ${q}.language_identities (id TEXT PRIMARY KEY, identity_json JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
     `ALTER TABLE ${q}.language_profiles ADD COLUMN IF NOT EXISTS language_id TEXT`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_profiles_language ON ${q}.language_profiles(language_id) WHERE language_id IS NOT NULL`,
@@ -3669,6 +3675,66 @@ function createRelationPromotionModelStore(
       );
       return rows.map(rowToRelationPromotionModelRecord);
     }
+  };
+}
+
+/**
+ * The corpus feature context, aggregated in the database instead of in a Map.
+ *
+ * Exact: the same distinct counts the in-memory accumulator computes, over a corpus it cannot hold. The pairs
+ * are deduplicated by primary key on the way in, so a class seen in a document a hundred times is one row and
+ * the count is a count of documents.
+ */
+export async function resetConsolidationFeatureContext(storage: PostgresStorageAdapter): Promise<void> {
+  await storage.query(`TRUNCATE ${storage.table("consolidation_class_documents")}`);
+  await storage.query(`TRUNCATE ${storage.table("consolidation_context_classes")}`);
+}
+
+export async function appendConsolidationFeatureContext(
+  storage: PostgresStorageAdapter,
+  pairs: {
+    classDocuments: ReadonlyArray<{ classId: string; documentId: string }>;
+    contextClasses: ReadonlyArray<{ contextKey: string; classId: string }>;
+  }
+): Promise<void> {
+  if (pairs.classDocuments.length) {
+    await storage.query(
+      `INSERT INTO ${storage.table("consolidation_class_documents")}(class_id, document_id)
+       SELECT r.class_id, r.document_id
+       FROM jsonb_to_recordset($1::jsonb) AS r(class_id text, document_id text)
+       ON CONFLICT DO NOTHING`,
+      [JSON.stringify(pairs.classDocuments.map(row => ({ class_id: row.classId, document_id: row.documentId })))]
+    );
+  }
+  if (pairs.contextClasses.length) {
+    await storage.query(
+      `INSERT INTO ${storage.table("consolidation_context_classes")}(context_key, class_id)
+       SELECT r.context_key, r.class_id
+       FROM jsonb_to_recordset($1::jsonb) AS r(context_key text, class_id text)
+       ON CONFLICT DO NOTHING`,
+      [JSON.stringify(pairs.contextClasses.map(row => ({ context_key: row.contextKey, class_id: row.classId })))]
+    );
+  }
+}
+
+/** Only the entries that can change a feature: a support of one contributes exactly zero. */
+export async function readConsolidationFeatureContextCounts(storage: PostgresStorageAdapter): Promise<{
+  documentCountBySurfaceFormClass: Array<{ classId: string; documents: number }>;
+  classCountByBoundaryContext: Array<{ contextKey: string; classes: number }>;
+}> {
+  const classes = await storage.query<{ class_id: string; documents: string }>(
+    `SELECT class_id, count(*)::bigint AS documents
+       FROM ${storage.table("consolidation_class_documents")}
+      GROUP BY class_id HAVING count(*) > 1`
+  );
+  const contexts = await storage.query<{ context_key: string; classes: string }>(
+    `SELECT context_key, count(*)::bigint AS classes
+       FROM ${storage.table("consolidation_context_classes")}
+      GROUP BY context_key HAVING count(*) > 1`
+  );
+  return {
+    documentCountBySurfaceFormClass: classes.map(row => ({ classId: row.class_id, documents: Number(row.documents) })),
+    classCountByBoundaryContext: contexts.map(row => ({ contextKey: row.context_key, classes: Number(row.classes) }))
   };
 }
 

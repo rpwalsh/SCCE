@@ -16,6 +16,7 @@ import {
 import {
   buildSurfaceLattice,
   collectBoundaryTrainingObservations,
+  boundaryFeatureContextPairs,
   compileAccumulatedBoundaryFeatureContext,
   createBoundaryFeatureContextAccumulator,
   observeLatticesForFeatureContext,
@@ -170,6 +171,12 @@ export function measureWindow(input: {
   hasher: Hasher;
   /** Folded into, so recurrence is counted across every window rather than within one. */
   featureContext?: BoundaryFeatureContextAccumulator;
+  /**
+   * Receives this window's contributions to the corpus feature context instead of folding them into a Map.
+   * A corpus-scale caller aggregates them somewhere that spills, because the in-memory form cannot hold a
+   * real corpus -- V8's Map ceiling was reached at 11,500 documents.
+   */
+  featurePairsOut?: Array<ReturnType<typeof boundaryFeatureContextPairs>>;
 }): SegmentationPopulationTrainingDocument[] {
   const bounded = input.documents
     .map(document => boundedInductionDocuments([document])[0])
@@ -184,6 +191,7 @@ export function measureWindow(input: {
     hasher: input.hasher
   }));
   if (input.featureContext) observeLatticesForFeatureContext(input.featureContext, lattices);
+  if (input.featurePairsOut) input.featurePairsOut.push(boundaryFeatureContextPairs(lattices));
   const observations = collectBoundaryTrainingObservations({
     lattices,
     anchors: bounded.flatMap(document =>
