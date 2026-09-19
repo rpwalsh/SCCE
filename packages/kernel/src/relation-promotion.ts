@@ -466,7 +466,13 @@ function controlResults(relationSeedId: string, scope: ChannelScope): RelationPr
     control("duplicate_only", evaluateRelation(
       relationSeedId,
       first
-        ? duplicateFitScope(first, duplicateCount, scope.relationSeedIds, scope.signatureAlphabet)
+        ? duplicateFitScope(
+          first,
+          duplicateCount,
+          scope.relationSeedIds,
+          scope.actual.relationSeedIdSet,
+          scope.signatureAlphabet
+        )
         : fitScope([], scope.relationSeedIds, scope.signatureAlphabet),
       scope.holdoutBySeed
     )),
@@ -544,6 +550,21 @@ function recoveryDenominator(scope: FitScope, signature: string): number {
   const cached = scope.denominatorBySignature.get(signature);
   if (cached !== undefined) return cached;
   const alphabetSize = scope.signatureAlphabet.length;
+  const derived = scope.derived;
+  if (derived) {
+    // Same sum, derived. One seed holds `count` rows of one signature; every other seed in the channel holds
+    // none, so its prior is a/denominator and its signature probability is 1/width whatever the signature.
+    const width = Math.max(1, alphabetSize);
+    const seedCount = scope.relationSeedIds.length;
+    const targetPrior = (derived.count + DIRICHLET_ALPHA) / scope.priorDenominator;
+    const targetProbability = ((signature === derived.signature ? derived.count : 0) + DIRICHLET_ALPHA)
+      / (derived.count + DIRICHLET_ALPHA * width);
+    const otherPrior = DIRICHLET_ALPHA / scope.priorDenominator;
+    const sum = targetPrior * targetProbability
+      + Math.max(0, seedCount - 1) * otherPrior * (1 / width);
+    scope.denominatorBySignature.set(signature, sum);
+    return sum;
+  }
   let sum = 0;
   for (const relationSeedId of scope.relationSeedIds) {
     sum += relationPrior(scope, relationSeedId)!
@@ -618,6 +639,12 @@ interface FitScope {
   /** Per-seed fit size and distinct source families, memoised so evaluateRelation never rescans the fit set. */
   fitLengthCache: Map<string, number>;
   sourceFamilyCountCache: Map<string, number>;
+  /**
+   * Present only for the duplicate-only control's set: one signature repeated `count` times, every other seed
+   * empty. Lets the recovery denominator be summed in closed form instead of once per seed in the channel,
+   * which is the remaining quadratic once the set itself stopped being materialised.
+   */
+  derived?: { count: number; signature: string };
 }
 
 interface ChannelScope {
@@ -691,6 +718,7 @@ function duplicateFitScope(
   first: RelationObservation,
   count: number,
   relationSeedIds: readonly string[],
+  relationSeedIdSet: ReadonlySet<string>,
   signatureAlphabet: readonly string[]
 ): FitScope {
   const counts = new Map<string, number>([[first.signature, count]]);
@@ -701,13 +729,15 @@ function duplicateFitScope(
     fitBySeed,
     backgroundCounts: counts,
     relationSeedIds,
-    relationSeedIdSet: new Set(relationSeedIds),
+    // The channel's own set, not a rebuilt one: building it per seed was itself quadratic in seed count.
+    relationSeedIdSet,
     signatureAlphabet,
     priorDenominator: count + DIRICHLET_ALPHA * relationSeedIds.length,
     signatureCountsCache: new Map([[first.relationSeedId, counts]]),
     denominatorBySignature: new Map(),
     fitLengthCache: new Map([[first.relationSeedId, count]]),
-    sourceFamilyCountCache: new Map([[first.relationSeedId, 1]])
+    sourceFamilyCountCache: new Map([[first.relationSeedId, 1]]),
+    derived: { count, signature: first.signature }
   };
 }
 

@@ -46,21 +46,25 @@ describe("promotion cost once seeds become scorable", () => {
     expect(scorable(at)).toBe(40);
   });
 
-  it("does not build one fit-set-sized array per scorable seed", () => {
-    // The duplicate control's fit set is one observation repeated fit.length times, so its every quantity is
-    // closed-form. If it is materialised and scanned instead, doubling the seeds roughly quadruples the time.
-    // This asserts the growth is far below quadratic, which is what the derived scope buys.
-    const small = observations(400, 4);
-    const large = observations(800, 4);
-    const startSmall = Date.now();
-    fit(small);
-    const smallMs = Math.max(1, Date.now() - startSmall);
-    const startLarge = Date.now();
-    fit(large);
-    const largeMs = Date.now() - startLarge;
-    // Quadratic would be ~4x for 2x the seeds. Allow generous headroom for a loaded machine and still catch it.
-    expect(largeMs / smallMs).toBeLessThan(3.4);
-  });
+  it("costs linear time in the number of scorable seeds, not quadratic", () => {
+    // Three things were quadratic here, all of them per scorable seed: the duplicate control materialised an
+    // array the size of the whole fit set, its scope rebuilt a Set of every seed in the channel, and its
+    // recovery denominator summed over every seed against a scope whose cache was always cold. All three are
+    // closed-form for a set of identical rows. Measured 18.4s -> 210ms at 8,000 seeds.
+    const time = (seeds: number): number => {
+      const rows = observations(seeds, RELATION_PROMOTION_MIN_INDEPENDENT_SOURCES);
+      const started = Date.now();
+      fit(rows);
+      return Math.max(1, Date.now() - started);
+    };
+    // Warm the JIT so the first sample is not paying compilation the second one avoids.
+    time(500);
+    const small = time(2000);
+    const large = time(8000);
+    // Four times the seeds. Linear is ~4x, quadratic would be ~16x. Generous headroom, still catches a return
+    // to quadratic, which at this corpus's 184,405 seeds is the difference between seconds and hours.
+    expect(large / small).toBeLessThan(8);
+  }, 120_000);
 
   it("keeps the duplicate control's verdict, which is what the derived scope had to preserve", () => {
     // The control asks whether repetition inside one source can pass for corroboration across several. It must
