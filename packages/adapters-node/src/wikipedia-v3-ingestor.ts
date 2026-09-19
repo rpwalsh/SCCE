@@ -1161,11 +1161,17 @@ export class WikipediaV3Ingestor {
       hasher: this.hasher
     });
     promoteSpan.end({ decisions: relationPromotionModel.decisions.length });
+    // Split, because batching the write did not move this span: 4,147ms before and 4,301ms after. One of the
+    // two halves is the cost and the span could not say which.
     const observeSpan = trace.span("relation.observe");
     if (this.storage.relationObservations && semanticCandidates.length) {
-      await this.storage.relationObservations.put(
-        relationObservationsFromCandidates(semanticCandidates).map(row => ({ ...row, observedAt: createdAt }))
-      );
+      const deriveSpan = trace.span("relation.observe-derive");
+      const derived = relationObservationsFromCandidates(semanticCandidates)
+        .map(row => ({ ...row, observedAt: createdAt }));
+      deriveSpan.end({ candidates: semanticCandidates.length, observations: derived.length });
+      const writeSpan = trace.span("relation.observe-write");
+      await this.storage.relationObservations.put(derived);
+      writeSpan.end({ observations: derived.length });
     }
     observeSpan.end({ candidates: semanticCandidates.length });
     const rolesSpan = trace.span("shard.role-models");
