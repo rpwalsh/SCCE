@@ -1047,6 +1047,9 @@ export class WikipediaV3Ingestor {
         sourceVersionIds: samples.map(sample => String(sample.sourceVersionId)).slice(0, 256)
       },
       persistSource: false,
+      // The compiled models carry this shard's n-gram mass. The raw observations are the same information in
+      // the form nothing reads, and they never collapse across shards, which is what makes ingest decay.
+      skipNgramObservationPersistence: true,
       episodeId
     });
     const semanticCandidates = samples.flatMap(sample => sample.semanticCandidates);

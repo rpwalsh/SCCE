@@ -89,6 +89,71 @@ describe("multi-corpus training", () => {
     expect(allSourceSystems(fixture.state)).toEqual(new Set(["wikipedia"]));
   });
 
+  it("writes the compiled models without the raw observations when asked", async () => {
+    // A corpus ingest wrote its n-gram mass twice: as compiled models, and as the raw observations they were
+    // compiled from. Nothing reads the raw form -- its only consumers are a diagnostic summary and a hydration
+    // fallback whose own comment records it returning 0 rows in 48 of 48 measured executions -- and nothing
+    // learns from it, because training reads evidence spans.
+    //
+    // The rows never collapse, because their ids are per shard. Measured on a clean scce5 after 4,762
+    // articles: 19,382,688 rows and 27GB, roughly 460,000 new rows per shard inserted into a primary key that
+    // grew with every shard before it. Throughput fell from 1,217 sources an hour to 348 across five hours.
+    const fixture = memoryStorage();
+    await trainLanguageCorpusText({
+      storage: fixture.storage,
+      sourceSystem: "wikipedia",
+      streamUri: "wiki://fixture/shard/observations-skipped",
+      text: "Structured source text gives the mouth usable cadence. Evidence remains separate from the generated surface.",
+      persistSource: false,
+      skipNgramObservationPersistence: true,
+      ngramMaxOrder: 3,
+      ngramMaxCountersPerOrder: 64,
+      ngramVocabularyLimit: 512
+    });
+
+    expect(fixture.state.observations.length).toBe(0);
+    // The mass still lands, in the form the runtime actually hydrates.
+    expect(fixture.state.models.length).toBeGreaterThan(0);
+    // And everything else the lane produces is untouched.
+    expect(fixture.state.units.length).toBeGreaterThan(0);
+    expect(fixture.state.patterns.length).toBeGreaterThan(0);
+  });
+
+  it("keeps writing observations for callers that did not ask to skip them", async () => {
+    const fixture = memoryStorage();
+    await trainLanguageCorpusText({
+      storage: fixture.storage,
+      sourceSystem: "wikipedia",
+      streamUri: "wiki://fixture/shard/observations-kept",
+      text: "Structured source text gives the mouth usable cadence. Evidence remains separate from the generated surface.",
+      persistSource: false,
+      ngramMaxOrder: 3,
+      ngramMaxCountersPerOrder: 64,
+      ngramVocabularyLimit: 512
+    });
+
+    expect(fixture.state.observations.length).toBeGreaterThan(0);
+    expect(fixture.state.models.length).toBeGreaterThan(0);
+  });
+
+  it("still drops models too when the whole-lane switch is set, which is a different question", async () => {
+    const fixture = memoryStorage();
+    await trainLanguageCorpusText({
+      storage: fixture.storage,
+      sourceSystem: "wikipedia",
+      streamUri: "wiki://fixture/shard/lane-skipped",
+      text: "Structured source text gives the mouth usable cadence. Evidence remains separate from the generated surface.",
+      persistSource: false,
+      skipNgramPersistence: true,
+      ngramMaxOrder: 3,
+      ngramMaxCountersPerOrder: 64,
+      ngramVocabularyLimit: 512
+    });
+
+    expect(fixture.state.observations.length).toBe(0);
+    expect(fixture.state.models.length).toBe(0);
+  });
+
   it("does not promote auto-induced constructions when no held-out linguistic evidence exists", async () => {
     const fixture = memoryStorage();
     const evidence = [corpusEvidenceSpan("source.no-heldout", constructionFixtureText(), 0)];

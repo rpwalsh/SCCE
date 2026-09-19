@@ -87,6 +87,20 @@ export interface LanguageCorpusTrainingInput {
    * units, patterns, and frames still train and persist.
    */
   skipNgramPersistence?: boolean;
+  /**
+   * Skip the raw n-gram OBSERVATIONS while still writing the compiled models.
+   *
+   * The two are the same information in two forms, and nothing reads the raw one. Its only consumers are a
+   * diagnostic summary and a hydration fallback for a scope with no persisted model -- and the comment on that
+   * fallback records it returning 0 rows in 48 of 48 measured executions. Nothing learns from them either:
+   * training reads evidence spans, which persist regardless.
+   *
+   * Writing them is what makes a corpus ingest decay. The ids are per shard, so the rows never collapse:
+   * measured on a clean scce5 after 4,762 articles, 19,382,688 rows and 27GB, ~460,000 new rows per shard
+   * inserted into a primary key that grew with every shard before it. Throughput went from 1,217 sources an
+   * hour on the empty brain to 348 five hours later, and ngram.insert was 281s a shard at 93% database wait.
+   */
+  skipNgramObservationPersistence?: boolean;
   persistSource?: boolean;
   episodeId?: ReturnType<IdFactory["episodeId"]>;
   idFactory?: IdFactory;
@@ -407,7 +421,7 @@ async function trainLanguageCorpusTextTransaction(input: LanguageCorpusTrainingI
     hasher
   });
 
-  const observations = input.skipNgramPersistence
+  const observations = input.skipNgramPersistence || input.skipNgramObservationPersistence
     ? []
     : compiledBatch.observations.map(item => ({ ...stampObservation(item, sourceSystem, sourceSystemId, metadata), informationLabel }));
   const models = input.skipNgramPersistence
