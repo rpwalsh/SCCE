@@ -18,6 +18,7 @@ import {
   type CorpusConsolidationResult,
   type EvidenceSpan,
   type LanguageInductionDocument,
+  type Hasher,
   type RelationObservation,
   type SegmentationPopulationTrainingDocument,
   type SemanticCandidateChannel,
@@ -94,6 +95,23 @@ function consolidatedLabel(
   throw new Error("consolidation will not label a model it cannot derive a label for; pass informationLabel");
 }
 
+/**
+ * Algorithm R's replacement slot for the nth document considered, drawn from a hash of its id.
+ *
+ * Standard reservoir sampling picks j uniform on [0, n) for the nth item and replaces reservoir[j] when j is
+ * below the reservoir size. The only departure here is the source of j: a hash of the document id rather than
+ * a random number generator, so the same corpus read in the same order selects the same documents and the fit
+ * is replayable. Each document contributes one independent draw, which is what Algorithm R requires, so the
+ * inclusion probability is the standard k/n.
+ *
+ * Exported for the test that checks the sample really does span the stream rather than favouring its start.
+ */
+export function fitSampleSlot(documentId: string, consideredSoFar: number, hasher: Hasher): number {
+  const digest = hasher.digestHex(`corpus-consolidation-fit-sample${documentId}`);
+  const draw = Number.parseInt(digest.slice(0, 8), 16) / 0x100000000;
+  return Math.floor(draw * Math.max(1, consideredSoFar));
+}
+
 export async function consolidateCorpus(
   options: ConsolidateCorpusOptions
 ): Promise<ConsolidateCorpusResult> {
@@ -141,9 +159,7 @@ export async function consolidateCorpus(
       sampledDocuments += 1;
       return;
     }
-    const digest = hasher.digestHex(`corpus-consolidation-fit-sample${document.documentId}`);
-    const draw = Number.parseInt(digest.slice(0, 8), 16) / 0x100000000;
-    const slot = Math.floor(draw * documentsConsidered);
+    const slot = fitSampleSlot(document.documentId, documentsConsidered, hasher);
     if (slot < fitSampleDocuments) trainingDocuments[slot] = document;
   };
 
