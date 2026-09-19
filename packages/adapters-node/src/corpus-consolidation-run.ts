@@ -7,6 +7,7 @@ import {
   fitConsolidatedPopulations,
   inductionCharBudget,
   measureWindow,
+  createBoundaryFeatureContextAccumulator,
   CONSOLIDATION_WINDOW_POPULATION_ID,
   evidenceToLanguageDocument,
   forgetConsolidatedPromotion,
@@ -92,6 +93,8 @@ export async function consolidateCorpus(
   // statistics, plus one identity row per document for the population id.
   const windowCharBudget = Math.max(1, Math.floor(options.windowCharBudget ?? inductionCharBudget()));
   const trainingDocuments: SegmentationPopulationTrainingDocument[] = [];
+  // Recurrence accumulated across every window, so the shard that later reads it sees the corpus, not a shard.
+  const featureContext = createBoundaryFeatureContextAccumulator();
   const identities: Array<{ id: string; sourceVersionId?: SourceVersionId }> = [];
   // A model fitted from these spans is derived from every one of them, so it cannot carry a looser label than
   // the strictest contributor. Joined, not assumed.
@@ -112,7 +115,8 @@ export async function consolidateCorpus(
     trainingDocuments.push(...measureWindow({
       documents: pending,
       populationId: CONSOLIDATION_WINDOW_POPULATION_ID,
-      hasher
+      hasher,
+      featureContext
     }));
     windowCount += 1;
     pending = [];
@@ -158,6 +162,7 @@ export async function consolidateCorpus(
     populationId: consolidationPopulationId(identities, hasher),
     windowCount,
     hasher,
+    featureContext,
     ...(options.fitIterations === undefined ? {} : { fitIterations: options.fitIterations })
   });
 
@@ -172,7 +177,11 @@ export async function consolidateCorpus(
       profileIds: [],
       sourceVersionIds,
       createdAt: Date.now(),
-      informationLabel: consolidatedLabel(labels, options.informationLabel)
+      informationLabel: consolidatedLabel(labels, options.informationLabel),
+      // Stored with the model because a shard must read the pair or neither.
+      ...(consolidated.boundaryFeatureContext
+        ? { boundaryFeatureContext: consolidated.boundaryFeatureContext }
+        : {})
     });
     persisted = true;
     // A process that consolidates and then keeps ingesting must read the new model, not the cached old one.

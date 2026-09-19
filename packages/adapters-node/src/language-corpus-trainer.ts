@@ -14,6 +14,8 @@ import {
   createSourceAdmissionController,
   compileLanguageTrainingBatch,
   loadFittedPopulation,
+  loadFittedFeatureContext,
+  type CompiledBoundaryFeatureContext,
   type SegmentationPopulationModel,
   observeLanguageTrainingSegmentation,
   attachSourceDerivedLanguageAliases,
@@ -94,6 +96,8 @@ export interface LanguageCorpusTrainingInput {
   persistSource?: boolean;
   /** The consolidated fit, resolved by the caller so no read happens inside a transaction. */
   fittedPopulation?: SegmentationPopulationModel;
+  /** Its paired corpus-wide recurrence. Only meaningful alongside fittedPopulation. */
+  boundaryFeatureContext?: CompiledBoundaryFeatureContext;
   episodeId?: ReturnType<IdFactory["episodeId"]>;
   idFactory?: IdFactory;
   clock?: Clock;
@@ -213,7 +217,14 @@ export async function trainLanguageCorpusText(input: LanguageCorpusTrainingInput
   // missing -- a brain that has not been migrated yet -- and a cached value does not help the first caller.
   const fittedPopulation = input.fittedPopulation
     ?? await loadFittedPopulation(input.storage.segmentationPopulations);
-  const resolved = fittedPopulation ? { ...input, fittedPopulation } : input;
+  // The context is read with the population or not at all: measured, the population alone compresses worse
+  // than deriving both per shard, because its estimator was fitted against corpus-level recurrence.
+  const boundaryFeatureContext = fittedPopulation
+    ? input.boundaryFeatureContext ?? await loadFittedFeatureContext(input.storage.segmentationPopulations)
+    : undefined;
+  const resolved = fittedPopulation
+    ? { ...input, fittedPopulation, ...(boundaryFeatureContext ? { boundaryFeatureContext } : {}) }
+    : input;
   if (resolved.persistSource === false) return trainLanguageCorpusTextTransaction(resolved);
   return resolved.storage.transaction(() => trainLanguageCorpusTextTransaction(resolved));
 }
@@ -417,6 +428,7 @@ async function trainLanguageCorpusTextTransaction(input: LanguageCorpusTrainingI
       streamId: input.streamUri,
       ...(batchGraphSnapshot ? { graphSnapshot: batchGraphSnapshot } : {}),
       ...(fittedPopulation ? { fittedPopulation } : {}),
+      ...(input.boundaryFeatureContext ? { boundaryFeatureContext: input.boundaryFeatureContext } : {}),
       sourceSystem,
       profile,
       sourceVersionId,

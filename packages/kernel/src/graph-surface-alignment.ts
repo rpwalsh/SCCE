@@ -4,6 +4,7 @@ import { induceLearnedConstructions, type AlignedSurfaceExample } from "./langua
 import type { SourceBoundLanguageConstructionTrainingSet } from "./language-construction-memory.js";
 import { createLanguageInductionEngine, type GraphBoundConstruction, type LanguageInductionDocument } from "./language-induction.js";
 import type { SegmentationPopulationModel } from "./segmentation-population.js";
+import type { CompiledBoundaryFeatureContext } from "./surface-lattice.js";
 import { buildSurfaceLattice, validateSurfaceLattice, type SurfaceLattice, type SurfaceLatticeUnit } from "./surface-lattice.js";
 import { segmentUnicodeSurfaceV2, type LexicalSegment } from "./unicode-segmentation-v2.js";
 import { boundedInductionDocuments } from "./training-orchestrator.js";
@@ -189,6 +190,8 @@ export function induceSourceBoundConstructionTrainingSets(input: {
   maxObservationsPerConstruction?: number;
   /** A population already fitted from the whole corpus, so this batch performs no fit of its own. */
   fittedPopulation?: SegmentationPopulationModel;
+  /** Its paired corpus-wide recurrence, which also removes the bootstrap lattice pass. */
+  boundaryFeatureContext?: CompiledBoundaryFeatureContext;
 }): SourceBoundLanguageConstructionTrainingSet[] {
   const promoted = input.evidence.filter(span => span.status === "promoted");
   if (!promoted.length) return [];
@@ -210,7 +213,8 @@ export function induceSourceBoundConstructionTrainingSets(input: {
   // second budgeting scheme.
   const model = createLanguageInductionEngine({ hasher: input.hasher }).induce({
     documents: boundedInductionDocuments(documents),
-    fittedPopulation: input.fittedPopulation
+    fittedPopulation: input.fittedPopulation,
+    boundaryFeatureContext: input.boundaryFeatureContext
   });
   if (!model.graphBoundConstructions.length) return [];
 
@@ -290,6 +294,7 @@ export interface HeldOutConstructionCoverageReport {
  * (such constructions are simply absent from the report).
  */
 export function evaluateHeldOutConstructionCoverage(input: {
+  boundaryFeatureContext?: CompiledBoundaryFeatureContext;
   trainDocuments: readonly LanguageInductionDocument[];
   heldOutDocuments: readonly LanguageInductionDocument[];
   profileId: string;
@@ -302,8 +307,11 @@ export function evaluateHeldOutConstructionCoverage(input: {
   // (evaluateConstructionPromotion, on every batch with held-out evidence) --
   // bounded the same way rather than adding a second scheme.
   const boundedTrainDocuments = boundedInductionDocuments(input.trainDocuments);
-  const model = createLanguageInductionEngine({ hasher: input.hasher })
-    .induce({ documents: [...boundedTrainDocuments], fittedPopulation: input.fittedPopulation });
+  const model = createLanguageInductionEngine({ hasher: input.hasher }).induce({
+    documents: [...boundedTrainDocuments],
+    fittedPopulation: input.fittedPopulation,
+    boundaryFeatureContext: input.boundaryFeatureContext
+  });
   if (!model.graphBoundConstructions.length) return [];
 
   const alignments = induceGraphSurfaceAlignments({

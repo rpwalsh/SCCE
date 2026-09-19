@@ -15,7 +15,12 @@ import {
 } from "./segmentation-population.js";
 import {
   buildSurfaceLattice,
-  collectBoundaryTrainingObservations
+  collectBoundaryTrainingObservations,
+  compileAccumulatedBoundaryFeatureContext,
+  createBoundaryFeatureContextAccumulator,
+  observeLatticesForFeatureContext,
+  type BoundaryFeatureContextAccumulator,
+  type CompiledBoundaryFeatureContext
 } from "./surface-lattice.js";
 import { boundedInductionDocuments, inductionCharBudget } from "./training-orchestrator.js";
 import type { Hasher } from "./types.js";
@@ -53,6 +58,11 @@ export interface CorpusConsolidationInput {
 
 export interface CorpusConsolidationResult {
   model: SegmentationPopulationModel;
+  /**
+   * Corpus-wide cross-document recurrence. A shard that is handed this with the population skips its bootstrap
+   * lattice pass and, measured, compresses better than deriving either alone.
+   */
+  boundaryFeatureContext?: CompiledBoundaryFeatureContext;
   /** Merged over every document, which is what makes this a corpus fit rather than a shard fit. */
   statistics: BoundarySufficientStatistics;
   documentCount: number;
@@ -97,9 +107,33 @@ export function loadFittedPopulation(
   return pending;
 }
 
+/**
+ * The context that was fitted with the population, from the same record.
+ *
+ * Read together, never separately: pairing a corpus population with a shard context measured worse than
+ * deriving both per shard, so a caller that cannot get both should pass neither.
+ */
+const fittedContextByStore = new WeakMap<object, Promise<CompiledBoundaryFeatureContext | undefined>>();
+
+export function loadFittedFeatureContext(
+  store: SegmentationPopulationModelStore | undefined
+): Promise<CompiledBoundaryFeatureContext | undefined> {
+  if (!store) return Promise.resolve(undefined);
+  const cached = fittedContextByStore.get(store);
+  if (cached) return cached;
+  const pending = store.listRecent({ limit: 1 })
+    .then(records => records[0]?.boundaryFeatureContext)
+    .catch(() => undefined);
+  fittedContextByStore.set(store, pending);
+  return pending;
+}
+
 /** Drops the cached population, for a process that consolidates and then keeps ingesting. */
 export function forgetFittedPopulation(store: SegmentationPopulationModelStore | undefined): void {
-  if (store) fittedPopulationByStore.delete(store);
+  if (store) {
+    fittedPopulationByStore.delete(store);
+    fittedContextByStore.delete(store);
+  }
 }
 
 /** Windows of documents sized by a char budget, so a window's lattices fit the bound induce() already proved. */
@@ -134,6 +168,8 @@ export function measureWindow(input: {
   documents: readonly LanguageInductionDocument[];
   populationId: string;
   hasher: Hasher;
+  /** Folded into, so recurrence is counted across every window rather than within one. */
+  featureContext?: BoundaryFeatureContextAccumulator;
 }): SegmentationPopulationTrainingDocument[] {
   const bounded = input.documents
     .map(document => boundedInductionDocuments([document])[0])
@@ -147,6 +183,7 @@ export function measureWindow(input: {
     evidenceIds: document.evidenceIds,
     hasher: input.hasher
   }));
+  if (input.featureContext) observeLatticesForFeatureContext(input.featureContext, lattices);
   const observations = collectBoundaryTrainingObservations({
     lattices,
     anchors: bounded.flatMap(document =>
@@ -192,11 +229,13 @@ export function consolidateSegmentationPopulations(
     input.windowCharBudget ?? inductionCharBudget()
   )));
   const trainingDocuments: SegmentationPopulationTrainingDocument[] = [];
+  const featureContext = createBoundaryFeatureContextAccumulator();
   for (const window of windows) {
     trainingDocuments.push(...measureWindow({
       documents: window,
       populationId: CONSOLIDATION_WINDOW_POPULATION_ID,
-      hasher
+      hasher,
+      featureContext
     }));
   }
   return fitConsolidatedPopulations({
@@ -204,6 +243,7 @@ export function consolidateSegmentationPopulations(
     populationId,
     windowCount: windows.length,
     hasher,
+    featureContext,
     ...(input.fitIterations === undefined ? {} : { fitIterations: input.fitIterations }),
     ...(input.maxPopulations === undefined ? {} : { maxPopulations: input.maxPopulations })
   });
@@ -217,6 +257,7 @@ export function fitConsolidatedPopulations(input: {
   hasher?: Hasher;
   fitIterations?: number | "converge";
   maxPopulations?: number;
+  featureContext?: BoundaryFeatureContextAccumulator;
 }): CorpusConsolidationResult {
   const hasher = input.hasher ?? createHasher();
   const populationId = input.populationId;
@@ -273,6 +314,9 @@ export function fitConsolidatedPopulations(input: {
   });
   return {
     model,
+    ...(input.featureContext
+      ? { boundaryFeatureContext: compileAccumulatedBoundaryFeatureContext(input.featureContext, hasher) }
+      : {}),
     statistics,
     documentCount: trainingDocuments.length,
     windowCount: input.windowCount,

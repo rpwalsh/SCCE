@@ -97,6 +97,7 @@ import {
   type SegmentationPopulationModel,
   type SegmentationPopulationModelRecord,
   type SegmentationPopulationModelStore,
+  type CompiledBoundaryFeatureContext,
   type RelationPromotionModel,
   type RelationPromotionModelRecord,
   type RelationPromotionModelStore,
@@ -1275,6 +1276,7 @@ export function schemaStatements(q: string, informationAccess?: InformationAcces
     `CREATE TABLE IF NOT EXISTS ${q}.segmentation_population_models (id TEXT PRIMARY KEY, training_plan_id TEXT NOT NULL, model_json JSONB NOT NULL, profile_ids TEXT[] NOT NULL, source_version_ids TEXT[] NOT NULL, population_count INTEGER NOT NULL, mdl_gain_nats DOUBLE PRECISION NOT NULL, information_label JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_segmentation_population_models_profiles ON ${q}.segmentation_population_models USING GIN(profile_ids)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_segmentation_population_models_created ON ${q}.segmentation_population_models(created_at DESC)`,
+    `ALTER TABLE ${q}.segmentation_population_models ADD COLUMN IF NOT EXISTS boundary_feature_context_json JSONB`,
     `CREATE TABLE IF NOT EXISTS ${q}.relation_promotion_models (id TEXT PRIMARY KEY, basis TEXT NOT NULL, model_json JSONB NOT NULL, decision_count INTEGER NOT NULL, promoted_count INTEGER NOT NULL, observation_count INTEGER NOT NULL, information_label JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_relation_promotion_models_created ON ${q}.relation_promotion_models(created_at DESC)`,
     `CREATE TABLE IF NOT EXISTS ${q}.language_identities (id TEXT PRIMARY KEY, identity_json JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
@@ -3537,6 +3539,7 @@ interface SegmentationPopulationModelRow {
   source_version_ids: SourceVersionId[];
   information_label: JsonValue;
   created_at: Date;
+  boundary_feature_context_json: CompiledBoundaryFeatureContext | null;
 }
 
 function rowToSegmentationPopulationModelRecord(
@@ -3549,7 +3552,12 @@ function rowToSegmentationPopulationModelRecord(
     profileIds: row.profile_ids,
     sourceVersionIds: row.source_version_ids,
     createdAt: row.created_at.getTime(),
-    informationLabel: normalizeInformationLabel(row.information_label as never)
+    informationLabel: normalizeInformationLabel(row.information_label as never),
+    // Absent on models written before the context was stored with them, which is the case a caller must handle
+    // by passing neither: a corpus population with a shard context measured worse than deriving both.
+    ...(row.boundary_feature_context_json
+      ? { boundaryFeatureContext: row.boundary_feature_context_json }
+      : {})
   };
 }
 
@@ -3559,8 +3567,8 @@ function createSegmentationPopulationModelStore(
   return {
     async putModel(record) {
       await storage.query(
-        `INSERT INTO ${storage.table("segmentation_population_models")}(id,training_plan_id,model_json,profile_ids,source_version_ids,population_count,mdl_gain_nats,information_label,created_at)
-         VALUES($1,$2,$3::jsonb,$4,$5,$6,$7,$8::jsonb,TO_TIMESTAMP($9/1000.0))
+        `INSERT INTO ${storage.table("segmentation_population_models")}(id,training_plan_id,model_json,profile_ids,source_version_ids,population_count,mdl_gain_nats,information_label,created_at,boundary_feature_context_json)
+         VALUES($1,$2,$3::jsonb,$4,$5,$6,$7,$8::jsonb,TO_TIMESTAMP($9/1000.0),$10::jsonb)
          ON CONFLICT(id) DO NOTHING`,
         [
           record.id,
@@ -3571,7 +3579,8 @@ function createSegmentationPopulationModelStore(
           record.model.populations.length,
           record.model.selection.mdlGainNats,
           JSON.stringify(record.informationLabel),
-          record.createdAt
+          record.createdAt,
+          record.boundaryFeatureContext ? JSON.stringify(record.boundaryFeatureContext) : null
         ]
       );
     },
