@@ -13,6 +13,7 @@ import {
   createLanguageMemoryRuntime,
   createSourceAdmissionController,
   compileLanguageTrainingBatch,
+  loadFittedPopulation,
   observeLanguageTrainingSegmentation,
   attachSourceDerivedLanguageAliases,
   CORPUS_SOURCE_SYSTEM_IDS,
@@ -397,6 +398,9 @@ async function trainLanguageCorpusTextTransaction(input: LanguageCorpusTrainingI
     evidence: evidence.length
   });
 
+  // The consolidated fit, read once per process rather than per shard. Absent on a brain that has not been
+  // consolidated yet, and induce() then fits as before.
+  const fittedPopulation = await loadFittedPopulation(input.storage.segmentationPopulations);
   // Synchronous CPU, with a Postgres transaction held open around it. Timed because that is the whole question.
   const compileSpan = trainTrace.span("train.compile");
   const compiledBatch = compileLanguageTrainingBatch({
@@ -405,6 +409,7 @@ async function trainLanguageCorpusTextTransaction(input: LanguageCorpusTrainingI
     batch: {
       streamId: input.streamUri,
       ...(batchGraphSnapshot ? { graphSnapshot: batchGraphSnapshot } : {}),
+      ...(fittedPopulation ? { fittedPopulation } : {}),
       sourceSystem,
       profile,
       sourceVersionId,

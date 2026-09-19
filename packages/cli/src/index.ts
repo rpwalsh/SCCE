@@ -11,7 +11,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { BULK_LOAD_DEFERRABLE_TABLES, unusedBulkLoadIndexes, compileCrossLingualTranslationSeeds, ingestStageTracer, knownLanguageFromBrain, transcribeImageFile, recallScript, rememberScript, ingestTranscribedImage, visualPageSourceTrust, acquireAndTrainGithubOssRepository, assertHydratedRuntimeReady, deferBulkLoadIndexes, deferredBulkLoadIndexes, buildScce2BrainShardIndex, createHydrationPlan, createNodeRuntime, inspectHydrationRecords, fitRelationPotentialFromGraph, runEvaluationReleaseGate, proposeSelfRewrite, createScce2ToV3Importer, createWikipediaV3Ingestor, createWorkspaceRuntime, dryRunDeveloperRepoPlan, dryRunEngineeringCorpusIngest, fullyVerifyEventLedger, graphDeveloperRepo, importHydrationPlan, inspectDeveloperRepo, inspectEngineeringCorpusFolder, inspectHydrationStatus, inspectV2Artifacts, inspectV2GraphShard, inspectV2Ngram, inspectV2Profile, inspectV2Stream, inspectV2StreamTopic, inspectV2Topic, parseRepoDiagnosticsFixture, readScceRuntimeConfig, routeEngineeringCorpusFixture, scanLanguageControlHygiene, trainDialogueCorpus, trainGutenbergCorpus, trainOssCorpus, trainStoredCorpusConstructions, verifiedCompilerPlansForTurn, type WikipediaV3IngestStatus, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
+import { BULK_LOAD_DEFERRABLE_TABLES, consolidateCorpus, unusedBulkLoadIndexes, compileCrossLingualTranslationSeeds, ingestStageTracer, knownLanguageFromBrain, transcribeImageFile, recallScript, rememberScript, ingestTranscribedImage, visualPageSourceTrust, acquireAndTrainGithubOssRepository, assertHydratedRuntimeReady, deferBulkLoadIndexes, deferredBulkLoadIndexes, buildScce2BrainShardIndex, createHydrationPlan, createNodeRuntime, inspectHydrationRecords, fitRelationPotentialFromGraph, runEvaluationReleaseGate, proposeSelfRewrite, createScce2ToV3Importer, createWikipediaV3Ingestor, createWorkspaceRuntime, dryRunDeveloperRepoPlan, dryRunEngineeringCorpusIngest, fullyVerifyEventLedger, graphDeveloperRepo, importHydrationPlan, inspectDeveloperRepo, inspectEngineeringCorpusFolder, inspectHydrationStatus, inspectV2Artifacts, inspectV2GraphShard, inspectV2Ngram, inspectV2Profile, inspectV2Stream, inspectV2StreamTopic, inspectV2Topic, parseRepoDiagnosticsFixture, readScceRuntimeConfig, routeEngineeringCorpusFixture, scanLanguageControlHygiene, trainDialogueCorpus, trainGutenbergCorpus, trainOssCorpus, trainStoredCorpusConstructions, verifiedCompilerPlansForTurn, type WikipediaV3IngestStatus, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
 import type { BenchmarkInput, InspectionTarget, WorkspaceReportRecord } from "@scce/kernel";
 import { ossCorpusTrainOptionsFrom, parseCorpusTrainOptions } from "./corpus-train-options.js";
 import { parseScce2ImportOptions, parseScce2InspectOptions } from "./scce2-options.js";
@@ -1414,6 +1414,42 @@ async function db(runtime: ReturnType<typeof createNodeRuntime>, args: string[],
     }
     return usage("scce db indexes [status] | unused | defer --confirm-not-serving [--include-unused]");
   }
+  if (sub === "consolidate") {
+    // Separation of powers: ingestion ingests the firehose, and this fits afterwards. Reads every promoted span,
+    // measures boundary statistics over all of them, fits the segmentation population model once, and persists
+    // it -- which is what the next ingest run reads instead of fitting a population per shard.
+    const flagged = (name: string): number | undefined => {
+      const raw = args.find(item => item.startsWith(`--${name}=`))?.split("=")[1];
+      const value = Number(raw);
+      return Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
+    };
+    const converge = args.includes("--converge");
+    const iterations = flagged("iterations");
+    const result = await consolidateCorpus({
+      storage: runtime.storage,
+      ...(flagged("page-size") === undefined ? {} : { pageSize: flagged("page-size")! }),
+      ...(flagged("max-documents") === undefined ? {} : { maxDocuments: flagged("max-documents")! }),
+      ...(flagged("window-chars") === undefined ? {} : { windowCharBudget: flagged("window-chars")! }),
+      ...(converge ? { fitIterations: "converge" as const } : iterations === undefined ? {} : { fitIterations: iterations }),
+      onProgress: progress => process.stderr.write(`read ${progress.spans} spans, ${progress.documents} documents
+`)
+    });
+    return printJson({
+      modelId: result.modelId,
+      persisted: result.persisted,
+      spansRead: result.spansRead,
+      documents: result.documentCount,
+      windows: result.windowCount,
+      converged: result.converged,
+      populations: result.populations,
+      escalation: result.escalation,
+      elapsedMs: result.elapsedMs,
+      // Whether the fit that was persisted is a converged one, stated rather than implied.
+      basis: result.converged
+        ? "every retained population reached the quantization floor"
+        : "at least one population stopped at its cost budget; re-run with --converge to fit it out"
+    });
+  }
   if (sub === "stats") return printJson(await runtime.storage.stats());
   if (sub === "contract") {
     // The declared schema, printable as the SQL it stands for, so an operator can diff the contract against the database.
@@ -1448,7 +1484,7 @@ async function db(runtime: ReturnType<typeof createNodeRuntime>, args: string[],
     if (!report.passed) process.exitCode = 1;
     return;
   }
-  return usage("scce db <status|init|migrate|verify|stats|audit|reset --confirm-local-dev-only>");
+  return usage("scce db <status|init|migrate|verify|stats|audit|indexes|consolidate|reset --confirm-local-dev-only>");
 }
 
 // Default thresholds a shadow model must clear to be considered

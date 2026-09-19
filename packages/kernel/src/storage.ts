@@ -688,6 +688,15 @@ export interface EvidenceStore {
    * chunks that mention X and never the lead that defines X. Optional: fixture stores need not implement it.
    */
   openingEvidenceForSourceVersions?(sourceVersionIds: readonly SourceVersionId[]): Promise<EvidenceSpan[]>;
+  /**
+   * Promoted spans in id order, one page at a time. The offline consolidation pass fits over the whole corpus,
+   * which means reading the whole corpus: a cursor, because materializing every span at once is the OOM this
+   * codebase has already paid for twice. Optional so fixture stores need not implement it.
+   */
+  listPromotedEvidenceSpans?(query: {
+    limit: number;
+    afterId?: string;
+  }): Promise<EvidenceSpan[]>;
   sourceVersionsForEvidence(ids: EvidenceId[]): Promise<SourceVersion[]>;
   /**
    * Resolve source versions whose stored content hash matches one of the

@@ -11,6 +11,7 @@ export * from "./spreadsheet.js";
 export * from "./wikipedia.js";
 export * from "./wikipedia-v3-ingestor.js";
 export * from "./language-corpus-trainer.js";
+export * from "./corpus-consolidation-run.js";
 export * from "./dialogue-corpus.js";
 export * from "./gutenberg-corpus.js";
 export * from "./oss-corpus.js";

@@ -7,6 +7,7 @@ import {
 } from "./boundary-estimator.js";
 import type { LanguageInductionDocument } from "./language-induction.js";
 import { createHasher } from "./primitives.js";
+import type { SegmentationPopulationModelStore } from "./segmentation-population-persistence.js";
 import {
   learnSegmentationPopulations,
   type SegmentationPopulationModel,
@@ -70,6 +71,35 @@ export interface CorpusConsolidationResult {
   }>;
   /** Every budget the escalation tried, and what the descent reported at it. Empty for a fixed budget. */
   escalation: Array<{ iterations: number; converged: boolean; worstStep: number }>;
+}
+
+/**
+ * The consuming half: ingest reads the consolidated population rather than fitting one.
+ *
+ * Cached per store for the life of the process, because a shard must not pay a database read to find out
+ * something that only changes when the offline consolidation pass runs -- and per-page database work is a
+ * defect under the turn latency contract. Consolidation runs after ingest, never during it, so a value read
+ * once at the start of a run is the value that holds for the whole run.
+ */
+const fittedPopulationByStore = new WeakMap<object, Promise<SegmentationPopulationModel | undefined>>();
+
+export function loadFittedPopulation(
+  store: SegmentationPopulationModelStore | undefined
+): Promise<SegmentationPopulationModel | undefined> {
+  if (!store) return Promise.resolve(undefined);
+  const cached = fittedPopulationByStore.get(store);
+  if (cached) return cached;
+  const pending = store.listRecent({ limit: 1 })
+    .then(records => records[0]?.model)
+    // A brain with no consolidation yet has none, and induce() falls back to fitting. Never fatal to an ingest.
+    .catch(() => undefined);
+  fittedPopulationByStore.set(store, pending);
+  return pending;
+}
+
+/** Drops the cached population, for a process that consolidates and then keeps ingesting. */
+export function forgetFittedPopulation(store: SegmentationPopulationModelStore | undefined): void {
+  if (store) fittedPopulationByStore.delete(store);
 }
 
 /** Windows of documents sized by a char budget, so a window's lattices fit the bound induce() already proved. */

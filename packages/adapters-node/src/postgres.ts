@@ -1795,6 +1795,22 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
       );
       return rows.map(rowToEvidence);
     },
+    async listPromotedEvidenceSpans(query) {
+      // Keyset pagination on the primary key, so the pass is O(corpus) rather than O(corpus^2) in offsets and
+      // survives a resume from wherever it stopped.
+      const access = storage.informationAccessPredicate("evidence", query.afterId ? 3 : 2);
+      const rows = await storage.query<EvidenceRow>(
+        `SELECT * FROM ${storage.table("evidence_spans")} evidence
+         WHERE status='promoted' AND id LIKE 'evidence_span.%'
+           ${query.afterId ? "AND id > $2" : ""} AND ${access.sql}
+         ORDER BY id
+         LIMIT $1`,
+        query.afterId
+          ? [Math.max(1, Math.floor(query.limit)), query.afterId, ...access.params]
+          : [Math.max(1, Math.floor(query.limit)), ...access.params]
+      );
+      return rows.map(rowToEvidence);
+    },
     async sourceIdentityArbitration(input) {
       // Two leading parameters below, so the access predicate's own placeholders start at the third.
       const access = storage.informationAccessPredicate("evidence", 3);

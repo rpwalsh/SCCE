@@ -18,6 +18,7 @@ import {
   compileLanguageTrainingBatch,
   observeLanguageTrainingSegmentation
 } from "./language-training-batch.js";
+import { loadFittedPopulation } from "./corpus-consolidation.js";
 import { corpusRoleIdForSourceSystem, DEFAULT_NGRAM_SETTINGS } from "./corpus-registry.js";
 import {
   createLanguageAcquisitionEngine
@@ -172,6 +173,9 @@ export function createIngestionRuntime(options: {
         throw new Error("ingestion information label is not authorized by the active access context");
       }
 
+      // The consolidated fit, read once per run. With one present no shard fits a population of its own; with
+      // none -- a brain that has not been consolidated yet -- induce() falls back to fitting, unchanged.
+      const fittedPopulation = await loadFittedPopulation(deps.storage.segmentationPopulations);
       const episodeId = idFactory.episodeId();
       const events: ScceEvent[] = [];
       events.push(await append(eventFactory.create({ episodeId, typeId: "OwnerAsked", payload: { ingest: input.path ?? input.uri ?? "inline", metadata: input.metadata ?? null } })));
@@ -509,6 +513,7 @@ export function createIngestionRuntime(options: {
             maxOrder: DEFAULT_NGRAM_SETTINGS.maxOrder,
             maxCountersPerOrder: 12000,
             vocabularyLimit: 24000,
+            ...(fittedPopulation ? { fittedPopulation } : {}),
             // THE ZERO-PRODUCING GATE. compileLanguageTrainingBatch gates
             // its entire alignment -> reversible-construction branch on
             // `batch.graphSnapshot?.hyperedges.length`. This call site

@@ -320,7 +320,7 @@ function geometricMeanOfPresent(channels: readonly number[]): number {
   return present ? Math.exp(logSum / present) : 0;
 }
 
-function evidenceToLanguageDocument(span: EvidenceSpan): LanguageInductionDocument {
+export function evidenceToLanguageDocument(span: EvidenceSpan): LanguageInductionDocument {
   const provenance = span.provenance && typeof span.provenance === "object"
     && !Array.isArray(span.provenance)
     ? span.provenance as Record<string, JsonValue>
