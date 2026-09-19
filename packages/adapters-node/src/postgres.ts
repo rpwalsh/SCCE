@@ -598,6 +598,74 @@ export const DEFERRED_INDEX_RESTORE_PARALLEL_WORKERS = 2;
 /** Tables whose secondary indexes exist to serve reads and can be rebuilt after a corpus build. */
 export const BULK_LOAD_DEFERRABLE_TABLES = ["ngram_observations"] as const;
 
+/**
+ * Tables that ingest both writes AND reads, so their indexes cannot be deferred wholesale.
+ *
+ * ngram_observations is deferrable outright because nothing reads it during a build. These are different:
+ * getSlice reads the graph for every batch's snapshot, and searchEvidence reads spans by source version, so
+ * dropping their indexes blindly turns ingest-time reads into sequential scans and can cost more than the write
+ * maintenance it saves. Which of their indexes are dead has to be MEASURED rather than assumed.
+ */
+export const BULK_LOAD_READ_DURING_INGEST_TABLES = [
+  "evidence_spans",
+  "graph_nodes",
+  "graph_edges",
+  "graph_hyperedges"
+] as const;
+
+export interface UnusedIndexReport {
+  readonly index: string;
+  readonly table: string;
+  readonly scans: number;
+  readonly sizeBytes: number;
+  /** When index statistics were last reset, which bounds what "unused" can mean. */
+  readonly statsResetAt: string | null;
+}
+
+/**
+ * Secondary indexes on the read-during-ingest tables that have never been scanned, with the size they cost to
+ * maintain and the window the claim rests on.
+ *
+ * Measured on a partially built brain: eleven indexes at zero scans totalling about 342MB, nodes_features alone
+ * 164MB maintained for no reader, while the indexes that ARE used were used heavily -- edges_source_rank and
+ * edges_target_rank at 21,338 scans each. So the distinction is real and worth acting on, but only as a
+ * bulk-load decision.
+ *
+ * The caveat travels with the data rather than in someone's head: these counters are cumulative since
+ * statsResetAt, so "never scanned" means nothing has needed it in that window, not that nothing ever will. An
+ * index serving a retrieval path a quiet brain has not exercised looks identical to a dead one here.
+ */
+export async function unusedBulkLoadIndexes(
+  storage: PostgresStorageAdapter,
+  schema: string
+): Promise<UnusedIndexReport[]> {
+  const rows = await storage.query<{
+    index: string; table: string; scans: string; size_bytes: string; stats_reset: string | null;
+  }>(
+    `SELECT s.indexrelname AS index,
+            s.relname AS table,
+            s.idx_scan::bigint AS scans,
+            pg_relation_size(s.indexrelid)::bigint AS size_bytes,
+            (SELECT stats_reset::text FROM pg_stat_database WHERE datname = current_database()) AS stats_reset
+       FROM pg_stat_user_indexes s
+       JOIN pg_index i ON i.indexrelid = s.indexrelid
+      WHERE s.schemaname = $1
+        AND s.relname = ANY($2)
+        AND s.idx_scan = 0
+        AND NOT i.indisprimary
+        AND NOT i.indisunique
+      ORDER BY pg_relation_size(s.indexrelid) DESC`,
+    [schema, [...BULK_LOAD_READ_DURING_INGEST_TABLES]]
+  );
+  return rows.map(row => ({
+    index: row.index,
+    table: row.table,
+    scans: Number(row.scans),
+    sizeBytes: Number(row.size_bytes),
+    statsResetAt: row.stats_reset
+  }));
+}
+
 export async function deferredBulkLoadIndexes(storage: PostgresStorageAdapter): Promise<string[]> {
   const rows = await storage.query<{ value_json: { indexes?: string[] } }>(
     `SELECT value_json FROM ${storage.table("storage_meta")} WHERE key=$1`,
@@ -608,8 +676,15 @@ export async function deferredBulkLoadIndexes(storage: PostgresStorageAdapter): 
 
 export async function deferBulkLoadIndexes(
   storage: PostgresStorageAdapter,
-  schema: string
-): Promise<{ deferred: string[]; alreadyDeferred: string[] }> {
+  schema: string,
+  options: {
+    /**
+     * Also drop indexes on the read-during-ingest tables that have never been scanned. Opt-in, because the
+     * evidence for "never" is a statistics window and not a proof -- see unusedBulkLoadIndexes.
+     */
+    readonly includeMeasuredUnused?: boolean;
+  } = {}
+): Promise<{ deferred: string[]; alreadyDeferred: string[]; measuredUnused: UnusedIndexReport[] }> {
   const alreadyDeferred = await deferredBulkLoadIndexes(storage);
   const present = await storage.query<{ indexname: string; tablename: string }>(
     `SELECT indexname, tablename FROM pg_indexes
@@ -617,17 +692,35 @@ export async function deferBulkLoadIndexes(
      ORDER BY indexname`,
     [schema, [...BULK_LOAD_DEFERRABLE_TABLES]]
   );
-  const deferred = [...new Set([...alreadyDeferred, ...present.map(row => row.indexname)])].sort();
-  if (!deferred.length) return { deferred, alreadyDeferred };
+  const measuredUnused = options.includeMeasuredUnused
+    ? await unusedBulkLoadIndexes(storage, schema)
+    : [];
+  const alsoDrop = measuredUnused.map(row => ({ indexname: row.index, tablename: row.table }));
+  const dropping = [...present, ...alsoDrop];
+  const deferred = [...new Set([...alreadyDeferred, ...dropping.map(row => row.indexname)])].sort();
+  if (!deferred.length) return { deferred, alreadyDeferred, measuredUnused };
   // The marker is written before the drops so a crash mid-drop still leaves verification refusing the schema.
   await storage.query(
     `INSERT INTO ${storage.table("storage_meta")}(key, value_json, updated_at)
      VALUES($1, $2::jsonb, NOW())
      ON CONFLICT(key) DO UPDATE SET value_json=EXCLUDED.value_json, updated_at=NOW()`,
-    [DEFERRED_INDEX_META_KEY, JSON.stringify({ indexes: deferred, tables: [...BULK_LOAD_DEFERRABLE_TABLES] })]
+    [DEFERRED_INDEX_META_KEY, JSON.stringify({
+      indexes: deferred,
+      tables: [
+        ...BULK_LOAD_DEFERRABLE_TABLES,
+        ...(alsoDrop.length ? BULK_LOAD_READ_DURING_INGEST_TABLES : [])
+      ],
+      // The basis each index was dropped on, so a later operator can tell a declared deferral from one that
+      // rested on a statistics window.
+      basis: {
+        declaredTables: present.map(row => row.indexname).sort(),
+        measuredUnused: measuredUnused.map(row => ({ index: row.index, scans: row.scans, sizeBytes: row.sizeBytes })),
+        statsResetAt: measuredUnused[0]?.statsResetAt ?? null
+      }
+    })]
   );
-  for (const row of present) await storage.query(`DROP INDEX IF EXISTS "${schema}"."${row.indexname}"`);
-  return { deferred, alreadyDeferred };
+  for (const row of dropping) await storage.query(`DROP INDEX IF EXISTS "${schema}"."${row.indexname}"`);
+  return { deferred, alreadyDeferred, measuredUnused };
 }
 
 export async function joinDurableRecordLabels(

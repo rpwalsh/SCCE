@@ -11,7 +11,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { BULK_LOAD_DEFERRABLE_TABLES, compileCrossLingualTranslationSeeds, ingestStageTracer, knownLanguageFromBrain, transcribeImageFile, recallScript, rememberScript, ingestTranscribedImage, visualPageSourceTrust, acquireAndTrainGithubOssRepository, assertHydratedRuntimeReady, deferBulkLoadIndexes, deferredBulkLoadIndexes, buildScce2BrainShardIndex, createHydrationPlan, createNodeRuntime, inspectHydrationRecords, fitRelationPotentialFromGraph, runEvaluationReleaseGate, proposeSelfRewrite, createScce2ToV3Importer, createWikipediaV3Ingestor, createWorkspaceRuntime, dryRunDeveloperRepoPlan, dryRunEngineeringCorpusIngest, fullyVerifyEventLedger, graphDeveloperRepo, importHydrationPlan, inspectDeveloperRepo, inspectEngineeringCorpusFolder, inspectHydrationStatus, inspectV2Artifacts, inspectV2GraphShard, inspectV2Ngram, inspectV2Profile, inspectV2Stream, inspectV2StreamTopic, inspectV2Topic, parseRepoDiagnosticsFixture, readScceRuntimeConfig, routeEngineeringCorpusFixture, scanLanguageControlHygiene, trainDialogueCorpus, trainGutenbergCorpus, trainOssCorpus, trainStoredCorpusConstructions, verifiedCompilerPlansForTurn, type WikipediaV3IngestStatus, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
+import { BULK_LOAD_DEFERRABLE_TABLES, unusedBulkLoadIndexes, compileCrossLingualTranslationSeeds, ingestStageTracer, knownLanguageFromBrain, transcribeImageFile, recallScript, rememberScript, ingestTranscribedImage, visualPageSourceTrust, acquireAndTrainGithubOssRepository, assertHydratedRuntimeReady, deferBulkLoadIndexes, deferredBulkLoadIndexes, buildScce2BrainShardIndex, createHydrationPlan, createNodeRuntime, inspectHydrationRecords, fitRelationPotentialFromGraph, runEvaluationReleaseGate, proposeSelfRewrite, createScce2ToV3Importer, createWikipediaV3Ingestor, createWorkspaceRuntime, dryRunDeveloperRepoPlan, dryRunEngineeringCorpusIngest, fullyVerifyEventLedger, graphDeveloperRepo, importHydrationPlan, inspectDeveloperRepo, inspectEngineeringCorpusFolder, inspectHydrationStatus, inspectV2Artifacts, inspectV2GraphShard, inspectV2Ngram, inspectV2Profile, inspectV2Stream, inspectV2StreamTopic, inspectV2Topic, parseRepoDiagnosticsFixture, readScceRuntimeConfig, routeEngineeringCorpusFixture, scanLanguageControlHygiene, trainDialogueCorpus, trainGutenbergCorpus, trainOssCorpus, trainStoredCorpusConstructions, verifiedCompilerPlansForTurn, type WikipediaV3IngestStatus, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
 import type { BenchmarkInput, InspectionTarget, WorkspaceReportRecord } from "@scce/kernel";
 import { ossCorpusTrainOptionsFrom, parseCorpusTrainOptions } from "./corpus-train-options.js";
 import { parseScce2ImportOptions, parseScce2InspectOptions } from "./scce2-options.js";
@@ -1384,18 +1384,35 @@ async function db(runtime: ReturnType<typeof createNodeRuntime>, args: string[],
     // Deferring read indexes for a corpus build is a scheduling change, not a schema change: db migrate is the
     // only way back, and db verify refuses the schema until it has run.
     const storage = runtime.storage as unknown as Parameters<typeof deferBulkLoadIndexes>[0];
+    if (args[1] === "unused") {
+      // A report, not a change. Which secondary indexes on the tables ingest both reads and writes have never
+      // been scanned, and what they cost to maintain -- so the decision to defer them rests on the numbers.
+      const report = await unusedBulkLoadIndexes(storage, config.database.schema);
+      return printJson({
+        unused: report,
+        totalBytes: report.reduce((sum, row) => sum + row.sizeBytes, 0),
+        statsResetAt: report[0]?.statsResetAt ?? null,
+        window: report[0]?.statsResetAt
+          ? `cumulative since ${report[0].statsResetAt}`
+          : "statistics have never been reset, so the window is this database's whole lifetime",
+        caveat: "never-scanned means nothing has needed it in that window, not that nothing ever will -- an index serving a retrieval path a quiet brain has not exercised looks identical to a dead one here",
+        deferWith: "scce db indexes defer --confirm-not-serving --include-unused"
+      });
+    }
     if (args[1] === "defer") {
       if (!args.includes("--confirm-not-serving")) {
-        return usage("scce db indexes defer --confirm-not-serving   (drops read indexes for a bulk corpus build; db verify fails until db migrate restores them)");
+        return usage("scce db indexes defer --confirm-not-serving [--include-unused]   (drops read indexes for a bulk corpus build; db verify fails until db migrate restores them)");
       }
-      const result = await deferBulkLoadIndexes(storage, config.database.schema);
+      const result = await deferBulkLoadIndexes(storage, config.database.schema, {
+        includeMeasuredUnused: args.includes("--include-unused")
+      });
       return printJson({ ...result, restoreWith: "scce db migrate", verifyFailsUntilRestored: true });
     }
     if (args[1] === "status" || args[1] === undefined) {
       const deferred = await deferredBulkLoadIndexes(storage);
       return printJson({ deferred, deferrableTables: [...BULK_LOAD_DEFERRABLE_TABLES], restoreWith: deferred.length ? "scce db migrate" : null });
     }
-    return usage("scce db indexes [status] | defer --confirm-not-serving");
+    return usage("scce db indexes [status] | unused | defer --confirm-not-serving [--include-unused]");
   }
   if (sub === "stats") return printJson(await runtime.storage.stats());
   if (sub === "contract") {
