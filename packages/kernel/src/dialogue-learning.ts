@@ -34,8 +34,10 @@ import {
 } from "./dialogue-pragmatics.js";
 import {
   CALIBRATION_IDS,
+  CALIBRATION_SUBSYSTEM_IDS,
   CALIBRATION_TASK_CLASS_IDS,
   buildCreativePreferenceModels,
+  calibrationObservationRecord,
   calibrationObservationsFromDialogueOutcome,
   creativePreferenceModelSnapshotObservation,
   creativePreferenceObservationPair,
@@ -622,6 +624,16 @@ export async function persistDialogueOutcomeAndLearn(input: {
   failedConstraintRefs?: readonly string[];
   taskClass?: string;
   creativePreferencePair?: DialogueCreativePreferencePair;
+  /**
+   * The evidence spans this answer actually cited, carrying the alpha they were stamped with at ingest.
+   *
+   * evidenceAlpha is decided when a span is written and cannot be judged then: whether a span was worth
+   * learning is only revealed when something cites it and a person grades the answer. So the ingestor emits no
+   * calibration observation -- it would be a row that never gets a label -- and nothing needs duplicating,
+   * because alpha is already durable on the span. The score and the label first exist together HERE, which is
+   * why the observation is made here.
+   */
+  citedEvidence?: readonly { id: string; alpha: number; status?: string }[];
   now?: number;
   clock?: Clock;
 }): Promise<{ outcome: ConversationOutcomeRecord; correction?: UserCorrectionRecord; learning: DialoguePolicyLearningUpdate; calibrationObservations: CalibrationObservationRecord[] }> {
@@ -672,7 +684,45 @@ export async function persistDialogueOutcomeAndLearn(input: {
         createdAt: now
       })
     : [];
-  const calibrationObservations = [...ordinaryCalibrationObservations, ...creativePreferenceObservations];
+  // One observation per cited span: raw score is the alpha the ingestor measured, label is what this grade
+  // says about the answer that used it.
+  //
+  // The selection is recorded rather than left implicit. Only spans that were RETRIEVED can ever be labelled,
+  // so a model fitted from these learns about alpha among spans retrieval already surfaced, not among all
+  // spans. Anything fitting on them has to treat that as the conditioning it is.
+  const evidenceAlphaObservations = (input.citedEvidence ?? [])
+    .filter(span => Number.isFinite(span.alpha))
+    .map(span => calibrationObservationRecord({
+      calibrationId: CALIBRATION_IDS.evidenceAlpha,
+      subsystemId: CALIBRATION_SUBSYSTEM_IDS.evidence,
+      taskClass: input.taskClass ?? CALIBRATION_TASK_CLASS_IDS.generalCognition,
+      rawScore: span.alpha,
+      // The same rule calibration-spine applies to every other observation, not a second opinion about what
+      // a good outcome is: accepted is true, rejected or corrected is false, and otherwise it turns on whether
+      // the answer failed a constraint it was asked to satisfy.
+      outcome: outcome.accepted === true
+        ? true
+        : outcome.rejected === true || outcome.corrected === true
+          ? false
+          : (outcome.failedConstraintRefs?.length ?? 0) === 0,
+      accepted: outcome.accepted,
+      rejected: outcome.rejected,
+      corrected: outcome.corrected,
+      sourceTraceId: input.result.id,
+      sourceRecordId: outcome.id,
+      createdAt: now,
+      metadata: toJsonValue({
+        evidenceId: span.id,
+        evidenceStatus: span.status ?? null,
+        conditionedOnRetrieval: true,
+        citedSpans: input.citedEvidence?.length ?? 0
+      })
+    }));
+  const calibrationObservations = [
+    ...ordinaryCalibrationObservations,
+    ...creativePreferenceObservations,
+    ...evidenceAlphaObservations
+  ];
   await input.store.putConversationOutcome(outcome);
   if (correction) await input.store.putUserCorrection(correction);
   await input.store.putStyleSnapshot(learning.snapshot);
