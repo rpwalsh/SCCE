@@ -15,6 +15,9 @@ import {
 //
 // The rewrite scales once into flat typed arrays. It must produce the SAME MODEL -- performance work that
 // silently changes cognition is a regression -- so this holds the reference arithmetic beside it and compares.
+// iterations and l2 are passed explicitly here: the reference encodes the values that were defaults when it was
+// written, and the defaults have since changed (l2 is derived from the row count now). Stating both keeps this
+// comparing the flattening, which is what it exists to check, rather than silently comparing two configs.
 // End-to-end ingest timings could not settle either question: the same shard's compile measured 54.5s and then
 // 72.5s with no change to that code, so run-to-run variance on a loaded machine exceeds the effect.
 
@@ -123,7 +126,7 @@ describe("the boundary descent keeps its arithmetic and stops repeating work", (
   it("fits the identical model the pre-rewrite descent fit", () => {
     for (const seed of [11, 2026, 777]) {
       const statistics = statisticsOf(900, seed);
-      const fitted = fitBoundaryEstimator({ statistics });
+      const fitted = fitBoundaryEstimator({ statistics, iterations: 96, l2: 0.02 });
       const featureCount = fitted.weights.length;
       const reference = referenceFit(statistics, featureCount);
 
@@ -141,7 +144,7 @@ describe("the boundary descent keeps its arithmetic and stops repeating work", (
       statistics.rows[index]!.positiveMass = 0;
       statistics.rows[index]!.negativeMass = 0;
     }
-    const fitted = fitBoundaryEstimator({ statistics });
+    const fitted = fitBoundaryEstimator({ statistics, iterations: 96, l2: 0.02 });
     const reference = referenceFit(statistics, fitted.weights.length);
     expect(fitted.weights).toEqual(reference.weights);
     expect(fitted.intercept).toBe(reference.intercept);
@@ -150,14 +153,14 @@ describe("the boundary descent keeps its arithmetic and stops repeating work", (
   it("costs less per fit than the reference it replaced", () => {
     // Timed in one process on the same statistics, so this compares the two descents and nothing else.
     const statistics = statisticsOf(6000, 4242);
-    const featureCount = fitBoundaryEstimator({ statistics }).weights.length;
+    const featureCount = fitBoundaryEstimator({ statistics, iterations: 96, l2: 0.02 }).weights.length;
 
     const referenceStart = process.hrtime.bigint();
     for (let run = 0; run < 3; run += 1) referenceFit(statistics, featureCount);
     const referenceMs = Number(process.hrtime.bigint() - referenceStart) / 1e6 / 3;
 
     const fittedStart = process.hrtime.bigint();
-    for (let run = 0; run < 3; run += 1) fitBoundaryEstimator({ statistics });
+    for (let run = 0; run < 3; run += 1) fitBoundaryEstimator({ statistics, iterations: 96, l2: 0.02 });
     const fittedMs = Number(process.hrtime.bigint() - fittedStart) / 1e6 / 3;
 
     // fitBoundaryEstimator does strictly more than the descent (validation, calibration, hashing), so it is not
