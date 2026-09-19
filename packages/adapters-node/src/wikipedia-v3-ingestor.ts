@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import path from "node:path";
+import { ingestStageTracer } from "./ingest-stage-trace-sink.js";
 import { existsSync } from "node:fs";
 import {
   canonicalStringify,
@@ -765,6 +766,16 @@ export class WikipediaV3Ingestor {
   }
 
   private async ingestPageTransaction(file: IngestedSourceFile, checkpoint: IngestionCheckpoint, episodeId: ReturnType<IdFactory["episodeId"]>): Promise<WikipediaPageImport> {
+    const pageTrace = ingestStageTracer();
+    const pageSpan = pageTrace.span("page.transaction");
+    try {
+      return await this.ingestPageTraced(file, checkpoint, episodeId);
+    } finally {
+      pageSpan.end({ bytes: file.bytes.length });
+    }
+  }
+
+  private async ingestPageTraced(file: IngestedSourceFile, checkpoint: IngestionCheckpoint, episodeId: ReturnType<IdFactory["episodeId"]>): Promise<WikipediaPageImport> {
     const now = this.clock.now();
     const warnings: string[] = [];
     // Derived, not stored yet: everything this method computes comes from the page's bytes alone, so the whole
@@ -1048,6 +1059,8 @@ export class WikipediaV3Ingestor {
     const ngramMaxOrder = this.config.runtime.corpora?.wikipedia?.ngramMaxOrder ?? 4;
     const ngramMaxCounters = this.config.runtime.corpora?.wikipedia?.ngramMaxCountersPerOrder ?? 128;
     const vocabularyLimit = this.config.runtime.corpora?.wikipedia?.ngramVocabularyLimit ?? 8192;
+    const trace = ingestStageTracer();
+    const trainSpan = trace.span("language.train");
     const trained = await trainLanguageCorpusText({
       storage: this.storage,
       sourceSystem: "wikipedia",
@@ -1071,6 +1084,7 @@ export class WikipediaV3Ingestor {
       persistSource: false,
       episodeId
     });
+    trainSpan.end({ evidence: evidence.length, pages: samples.length, textBytes: Buffer.byteLength(text, "utf8") });
     const semanticCandidates = samples.flatMap(sample => sample.semanticCandidates);
     // Independence is corpus-wide: sources seen in earlier runs count, or a shard at a time never promotes.
     //
@@ -1080,7 +1094,10 @@ export class WikipediaV3Ingestor {
     // (wikimedia:wikipedia), 172k observations re-read and all 171,836 seeds re-decided per block, for a set of
     // refusals that was fixed before the read began -- throughput fell from 576 to 85 sources an hour as the
     // table grew. One aggregate now decides whether the read can matter.
+    const priorSpan = trace.span("relation.prior-load");
     const priorRelationObservations = await this.priorRelationObservations(semanticCandidates);
+    priorSpan.end({ candidates: semanticCandidates.length, priors: priorRelationObservations.length });
+    const promoteSpan = trace.span("relation.promote");
     const relationPromotionModel = compileRelationPromotionModel({
       candidates: semanticCandidates,
       priorObservations: priorRelationObservations.map(row => ({
@@ -1093,11 +1110,14 @@ export class WikipediaV3Ingestor {
       })),
       hasher: this.hasher
     });
+    promoteSpan.end({ decisions: relationPromotionModel.decisions.length });
+    const observeSpan = trace.span("relation.observe");
     if (this.storage.relationObservations && semanticCandidates.length) {
       await this.storage.relationObservations.put(
         relationObservationsFromCandidates(semanticCandidates).map(row => ({ ...row, observedAt: createdAt }))
       );
     }
+    observeSpan.end({ candidates: semanticCandidates.length });
     const opaqueRoleModel = compileOpaqueRoleModel({
       candidates: semanticCandidates,
       promotionModel: relationPromotionModel,

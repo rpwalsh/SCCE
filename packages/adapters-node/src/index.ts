@@ -48,6 +48,7 @@ export * from "./visual-ingest.js";
 export * from "./visual-page-reader.js";
 export * from "./visual-script-memory.js";
 export * from "./visual-page-ingest.js";
+export * from "./ingest-stage-trace-sink.js";
 export * from "./code-verification.js";
 export * from "./code-mouth-compiler-proposer.js";
 export * from "./clang-code-mouth-ports.js";

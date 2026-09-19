@@ -307,20 +307,44 @@ export function fitBoundaryEstimator(input: {
   const totalMass = Math.max(1, totalPositive + totalNegative);
   let intercept = Math.log((totalPositive + 0.5) / (totalNegative + 0.5));
 
+  // Flat typed arrays through the descent, for the reason buildOperatorRoutingModels already records: a
+  // record-per-row form reallocates inside the loop and pointer-chases every feature. This descent is
+  // iterations x rows x features -- the nesting IS the gradient, so it stays -- but everything avoidable inside
+  // it is hoisted. The features are FIXED, so their scaling is done once rather than re-divided and
+  // re-allocated per row on all 96 iterations; rows carrying no mass are dropped once; and the innermost loop
+  // reads contiguous memory with no bounds-fallback. Measured before this: the fit was 30% of train.compile,
+  // its scaling closure another 16%, and the collector 7%.
+  //
+  // The arithmetic is unchanged and rows are visited in the same order, so the fitted weights are identical.
+  const featureCount = weights.length;
+  const usable = input.statistics.rows.filter(row => row.positiveMass + row.negativeMass > 0);
+  const rowFeatures = new Float64Array(usable.length * featureCount);
+  const rowPositive = new Float64Array(usable.length);
+  const rowMass = new Float64Array(usable.length);
+  for (let r = 0; r < usable.length; r += 1) {
+    const row = usable[r]!;
+    for (let f = 0; f < featureCount; f += 1) {
+      rowFeatures[r * featureCount + f] = (row.featuresFixed[f] ?? 0) / FIXED_SCALE;
+    }
+    rowPositive[r] = row.positiveMass / MASS_SCALE;
+    rowMass[r] = row.positiveMass / MASS_SCALE + row.negativeMass / MASS_SCALE;
+  }
+
+  const gradients = new Float64Array(featureCount);
   for (let iteration = 0; iteration < iterations; iteration += 1) {
-    const gradients = new Array<number>(weights.length).fill(0);
+    gradients.fill(0);
     let interceptGradient = 0;
-    for (const row of input.statistics.rows) {
-      const features = row.featuresFixed.map(value => value / FIXED_SCALE);
-      const positive = row.positiveMass / MASS_SCALE;
-      const negative = row.negativeMass / MASS_SCALE;
-      const mass = positive + negative;
-      if (mass <= 0) continue;
+    for (let r = 0; r < usable.length; r += 1) {
+      const base = r * featureCount;
+      // dot() is Kahan-compensated on purpose. A plain running sum here changed the fitted weights -- caught by
+      // the equivalence test -- so the view is passed to the same dot and the association is left alone.
+      const features = rowFeatures.subarray(base, base + featureCount);
+      const mass = rowMass[r]!;
       const predicted = sigmoid(intercept + dot(weights, features));
-      const residual = predicted * mass - positive;
+      const residual = predicted * mass - rowPositive[r]!;
       interceptGradient += residual;
-      for (let index = 0; index < gradients.length; index += 1) {
-        gradients[index] = gradients[index]! + residual * (features[index] ?? 0);
+      for (let f = 0; f < featureCount; f += 1) {
+        gradients[f] = gradients[f]! + residual * features[f]!;
       }
     }
     intercept = quantize(intercept - learningRate * interceptGradient / totalMass);
@@ -660,7 +684,7 @@ function featureRecord(values: readonly number[]): BoundaryFeatureVector {
   };
 }
 
-function dot(left: readonly number[], right: readonly number[]): number {
+function dot(left: ArrayLike<number>, right: ArrayLike<number>): number {
   let sum = 0;
   let compensation = 0;
   for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
