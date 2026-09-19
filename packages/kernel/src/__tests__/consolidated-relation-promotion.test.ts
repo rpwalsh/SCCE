@@ -2,22 +2,23 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
 import {
-  applyConsolidatedPromotion,
+  consolidatedSourceFamilyCounts,
   forgetConsolidatedPromotion,
   loadConsolidatedPromotion,
   type RelationPromotionModelStore
 } from "../relation-promotion-persistence.js";
 import {
   compileRelationPromotionModel,
+  relationPromotionNeedsPriors,
+  RELATION_PROMOTION_MIN_INDEPENDENT_SOURCES,
   type RelationObservation,
   type RelationPromotionModel
 } from "../relation-promotion.js";
 import { createHasher } from "../primitives.js";
 
-// Separation of powers for relation promotion. Ingest decided it per block, re-reading every observation the
-// corpus held and re-deciding every seed each time. Consolidation decides once over the whole population, and a
-// block prefers that decision -- which is the better-evidenced one, because promotion measures corroboration
-// across independent source families and a block sees a few where the corpus holds all of them.
+// A consolidated fit tells a block whether reading the observation table could change any verdict, using the
+// families it already measured. It must NEVER stand in for a verdict: an earlier version preferred the stored
+// decision for any seed it covered, which discarded a block's new source family until the next consolidation.
 
 const hasher = createHasher();
 
@@ -36,66 +37,59 @@ function modelOver(priorObservations: readonly RelationObservation[]): RelationP
   return compileRelationPromotionModel({ candidates: [], priorObservations, hasher });
 }
 
-describe("promotion decided over the corpus, applied by the block", () => {
-  it("prefers the consolidated decision for a seed it knows", () => {
-    // The corpus holds four independent families; the block holds one. Same seeds either way.
-    const consolidated = modelOver(observations(6, ["family_a", "family_b", "family_c", "family_d"]));
-    const batchModel = modelOver(observations(6, ["family_a"]));
-    expect(batchModel.decisions.length).toBeGreaterThan(0);
-
-    const applied = applyConsolidatedPromotion({ batchModel, consolidated });
-    const consolidatedBySeed = new Map(consolidated.decisions.map(row => [row.relationSeedId, row]));
-    for (const decision of applied.decisions) {
-      const preferred = consolidatedBySeed.get(decision.relationSeedId);
-      if (preferred) expect(decision).toEqual(preferred);
-    }
-    // The block alone could not corroborate anything across families; the corpus-wide fit can.
-    const batchSources = Math.max(...batchModel.decisions.map(row => row.independentSourceCount));
-    const appliedSources = Math.max(...applied.decisions.map(row => row.independentSourceCount));
-    expect(appliedSources).toBeGreaterThan(batchSources);
-  });
-
-  it("keeps the block's own decision for a seed the corpus has never seen", () => {
-    const consolidated = modelOver(observations(3, ["family_a", "family_b"]));
-    // Seeds 0-2 are shared; 3-5 exist only in this block.
-    const batchModel = modelOver(observations(6, ["family_a", "family_b"]));
-    const applied = applyConsolidatedPromotion({ batchModel, consolidated });
-
-    const knownSeeds = new Set(consolidated.decisions.map(row => row.relationSeedId));
-    const batchBySeed = new Map(batchModel.decisions.map(row => [row.relationSeedId, row]));
-    const novel = applied.decisions.filter(row => !knownSeeds.has(row.relationSeedId));
-    expect(novel.length).toBeGreaterThan(0);
-    for (const decision of novel) {
-      expect(decision).toEqual(batchBySeed.get(decision.relationSeedId));
+describe("a consolidated fit answers the guard, never the verdict", () => {
+  it("reports the families it measured per seed", () => {
+    const consolidated = modelOver(observations(4, ["family_a", "family_b", "family_c"]));
+    const counts = consolidatedSourceFamilyCounts(consolidated);
+    expect(counts.size).toBe(consolidated.decisions.length);
+    for (const decision of consolidated.decisions) {
+      const families = new Set([...decision.fitSourceFamilyIds, ...decision.holdoutSourceFamilyIds]);
+      expect(counts.get(decision.relationSeedId)).toBeGreaterThanOrEqual(families.size);
     }
   });
 
-  it("reports where each decision came from rather than hiding the substitution", () => {
-    const consolidated = modelOver(observations(3, ["family_a", "family_b", "family_c"]));
-    const batchModel = modelOver(observations(6, ["family_a"]));
-    const applied = applyConsolidatedPromotion({ batchModel, consolidated });
+  it("lets a block's NEW family reach the gate instead of freezing the stored refusal", () => {
+    // THE BUG. Consolidation saw three families and refused for insufficient independence. The next block
+    // carries a fourth. The stored refusal must not win: the guard has to say priors could matter, so the
+    // block compiles the union and the seed gets a real decision.
+    const known = ["family_a", "family_b", "family_c"];
+    const consolidated = modelOver(observations(4, known));
+    for (const decision of consolidated.decisions) {
+      expect(decision.promoted).toBe(false);
+      expect(decision.reasons).toContain("insufficient_independent_sources");
+    }
+    expect(known.length).toBeLessThan(RELATION_PROMOTION_MIN_INDEPENDENT_SOURCES);
 
-    const audit = applied.audit as Record<string, unknown>;
-    const report = audit.consolidatedPromotion as Record<string, unknown>;
-    expect(report.modelId).toBe(consolidated.id);
-    expect(Number(report.decisionsFromConsolidated)).toBeGreaterThan(0);
-    expect(Number(report.decisionsFromBatch)).toBeGreaterThan(0);
-    expect(
-      Number(report.decisionsFromConsolidated) + Number(report.decisionsFromBatch)
-    ).toBe(applied.decisions.length);
+    const batch = observations(4, ["family_d"]);
+    const needsPriors = relationPromotionNeedsPriors({
+      batch,
+      familyCountsOnFile: consolidatedSourceFamilyCounts(consolidated)
+    });
+    expect(needsPriors).toBe(true);
   });
 
-  it("changes nothing at all when the brain has not been consolidated", () => {
-    const batchModel = modelOver(observations(4, ["family_a", "family_b"]));
-    expect(applyConsolidatedPromotion({ batchModel, consolidated: undefined })).toBe(batchModel);
-    // An empty model is the same case: a fit over nothing must not replace a fit over something.
-    const empty = { ...batchModel, decisions: [] };
-    expect(applyConsolidatedPromotion({ batchModel, consolidated: empty })).toBe(batchModel);
+  it("still skips the read when no seed in the block could reach the gate", () => {
+    // One family in the corpus and one in the block cannot reach four, so the table read changes nothing and
+    // is skipped. This is the case that took throughput from 576 to 85 sources an hour when it was not.
+    const consolidated = modelOver(observations(6, ["family_a"]));
+    const needsPriors = relationPromotionNeedsPriors({
+      batch: observations(6, ["family_a"]),
+      familyCountsOnFile: consolidatedSourceFamilyCounts(consolidated)
+    });
+    expect(needsPriors).toBe(false);
+  });
+
+  it("has no counts to offer when the brain has not been consolidated", () => {
+    expect(consolidatedSourceFamilyCounts(undefined).size).toBe(0);
+    // Which makes the guard read priors rather than assume a seed is unscorable.
+    expect(relationPromotionNeedsPriors({
+      batch: observations(3, ["family_a", "family_b", "family_c", "family_d"]),
+      familyCountsOnFile: consolidatedSourceFamilyCounts(undefined)
+    })).toBe(true);
   });
 
   it("is fitted the same whether observations arrive as candidates or as priors", () => {
-    // The consolidation pass supplies everything as priors, because that is how they are persisted. That must
-    // reach the same model the compiler would build from the same rows.
+    // The consolidation pass supplies everything as priors, because that is how they are persisted.
     const rows = observations(5, ["family_a", "family_b", "family_c"]);
     const asPriors = compileRelationPromotionModel({ candidates: [], priorObservations: rows, hasher });
     expect(asPriors.decisions.length).toBe(new Set(rows.map(row => row.relationSeedId)).size);

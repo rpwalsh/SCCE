@@ -2,8 +2,12 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import {
   compileRelationPromotionModel,
-  consolidateSegmentationPopulations,
+  consolidationPopulationId,
   createHasher,
+  fitConsolidatedPopulations,
+  inductionCharBudget,
+  measureWindow,
+  CONSOLIDATION_WINDOW_POPULATION_ID,
   evidenceToLanguageDocument,
   forgetConsolidatedPromotion,
   forgetFittedPopulation,
@@ -14,6 +18,7 @@ import {
   type EvidenceSpan,
   type LanguageInductionDocument,
   type RelationObservation,
+  type SegmentationPopulationTrainingDocument,
   type SemanticCandidateChannel,
   type ScceStorage,
   type SourceVersionId
@@ -52,6 +57,8 @@ export interface ConsolidateCorpusResult extends CorpusConsolidationResult {
   relationPromotion?: {
     modelId: string;
     observations: number;
+    /** Every observation the table holds, so a bounded fit's scope is visible against it. */
+    observationsOnFile: number;
     decisions: number;
     promoted: number;
     persisted: boolean;
@@ -79,13 +86,40 @@ export async function consolidateCorpus(
   const hasher = createHasher();
   const pageSize = Math.max(1, Math.floor(options.pageSize ?? 500));
 
-  const documents: LanguageInductionDocument[] = [];
+  // Windowed AS IT READS. An earlier version pushed every span into one array and windowed afterwards, so the
+  // whole promoted corpus's text was resident before a single window was measured -- the lattices were bounded
+  // and the input was not. Now only the current window's text is alive; what survives a window is its
+  // statistics, plus one identity row per document for the population id.
+  const windowCharBudget = Math.max(1, Math.floor(options.windowCharBudget ?? inductionCharBudget()));
+  const trainingDocuments: SegmentationPopulationTrainingDocument[] = [];
+  const identities: Array<{ id: string; sourceVersionId?: SourceVersionId }> = [];
   // A model fitted from these spans is derived from every one of them, so it cannot carry a looser label than
   // the strictest contributor. Joined, not assumed.
   const labels = new Map<string, InformationLabel>();
+  const sourceVersions = new Set<SourceVersionId>();
+  // Relation observations key on the SOURCE id, not the source version, so a bounded run has to collect the
+  // ids it can actually match against. Verified against the live table rather than inferred.
+  const sourceIds = new Set<string>();
+  let pending: LanguageInductionDocument[] = [];
+  let pendingChars = 0;
+  let windowCount = 0;
+  let documentCount = 0;
   let spansRead = 0;
   let afterId: string | undefined;
-  for (;;) {
+
+  const flushWindow = (): void => {
+    if (!pending.length) return;
+    trainingDocuments.push(...measureWindow({
+      documents: pending,
+      populationId: CONSOLIDATION_WINDOW_POPULATION_ID,
+      hasher
+    }));
+    windowCount += 1;
+    pending = [];
+    pendingChars = 0;
+  };
+
+  streaming: for (;;) {
     const page: EvidenceSpan[] = await options.storage.evidence.listPromotedEvidenceSpans({
       limit: pageSize,
       ...(afterId ? { afterId } : {})
@@ -98,29 +132,38 @@ export async function consolidateCorpus(
       if (span.informationLabel) {
         labels.set(JSON.stringify(span.informationLabel), span.informationLabel);
       }
-      documents.push(evidenceToLanguageDocument(span));
-      if (options.maxDocuments !== undefined && documents.length >= options.maxDocuments) break;
+      const document = evidenceToLanguageDocument(span);
+      if (pending.length && pendingChars + document.text.length > windowCharBudget) flushWindow();
+      pending.push(document);
+      pendingChars += document.text.length;
+      identities.push({
+        id: document.id,
+        ...(document.sourceVersionId ? { sourceVersionId: document.sourceVersionId } : {})
+      });
+      if (document.sourceVersionId) sourceVersions.add(document.sourceVersionId);
+      if (span.sourceId) sourceIds.add(String(span.sourceId));
+      documentCount += 1;
+      if (options.maxDocuments !== undefined && documentCount >= options.maxDocuments) break streaming;
     }
-    options.onProgress?.({ documents: documents.length, spans: spansRead });
+    options.onProgress?.({ documents: documentCount, spans: spansRead });
     if (page.length < pageSize) break;
-    if (options.maxDocuments !== undefined && documents.length >= options.maxDocuments) break;
   }
-  if (!documents.length) {
+  flushWindow();
+  if (!trainingDocuments.length) {
     throw new Error("consolidation found no promoted evidence spans; ingest first");
   }
 
-  const consolidated = consolidateSegmentationPopulations({
-    documents,
+  const consolidated = fitConsolidatedPopulations({
+    trainingDocuments,
+    populationId: consolidationPopulationId(identities, hasher),
+    windowCount,
     hasher,
-    ...(options.windowCharBudget === undefined ? {} : { windowCharBudget: options.windowCharBudget }),
     ...(options.fitIterations === undefined ? {} : { fitIterations: options.fitIterations })
   });
 
   let persisted = false;
   if (store) {
-    const sourceVersionIds = [...new Set(documents
-      .map(document => document.sourceVersionId)
-      .filter((id): id is SourceVersionId => id !== undefined))].sort();
+    const sourceVersionIds = [...sourceVersions].sort();
     await store.putModel({
       id: consolidated.model.id,
       model: consolidated.model,
@@ -136,7 +179,13 @@ export async function consolidateCorpus(
     forgetFittedPopulation(store);
   }
 
-  const relationPromotion = await consolidateRelationPromotion(options, hasher, labels);
+  // Bounded runs fit relations over the same source versions the population fit saw, never the whole table.
+  const relationPromotion = await consolidateRelationPromotion(
+    options,
+    hasher,
+    labels,
+    options.maxDocuments === undefined ? undefined : sourceIds
+  );
 
   return {
     ...consolidated,
@@ -160,13 +209,20 @@ export async function consolidateCorpus(
 async function consolidateRelationPromotion(
   options: ConsolidateCorpusOptions,
   hasher: ReturnType<typeof createHasher>,
-  labels: ReadonlyMap<string, InformationLabel>
+  labels: ReadonlyMap<string, InformationLabel>,
+  boundToSourceIds: ReadonlySet<string> | undefined
 ): Promise<ConsolidateCorpusResult["relationPromotion"]> {
   const observationStore = options.storage.relationObservations;
   if (!observationStore) return undefined;
   const records = await observationStore.list();
   if (!records.length) return undefined;
-  const priorObservations: RelationObservation[] = records.map(row => ({
+  // A bounded run must not fit relations over the whole table while its label was derived from a slice: the
+  // model would be built from more sources than its label reflects. Bounded runs fit the same population.
+  const scoped = boundToSourceIds
+    ? records.filter(row => boundToSourceIds.has(String(row.sourceId)))
+    : records;
+  if (!scoped.length) return undefined;
+  const priorObservations: RelationObservation[] = scoped.map(row => ({
     candidateId: row.candidateId,
     relationSeedId: row.relationSeedId,
     channel: row.channel as SemanticCandidateChannel,
@@ -182,7 +238,8 @@ async function consolidateRelationPromotion(
     await store.putModel({
       id: model.id,
       model,
-      basis: "corpus_consolidation",
+      // A bounded fit says so, so nothing later mistakes a rehearsal for a corpus-wide model.
+      basis: boundToSourceIds ? "corpus_consolidation_bounded" : "corpus_consolidation",
       observationCount: priorObservations.length,
       createdAt: Date.now(),
       informationLabel: consolidatedLabel(labels, options.informationLabel)
@@ -192,6 +249,7 @@ async function consolidateRelationPromotion(
   return {
     modelId: model.id,
     observations: priorObservations.length,
+    observationsOnFile: records.length,
     decisions: model.decisions.length,
     promoted: model.decisions.filter(decision => decision.promoted).length,
     persisted: Boolean(store)

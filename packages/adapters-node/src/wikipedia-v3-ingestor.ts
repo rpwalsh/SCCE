@@ -16,9 +16,10 @@ import {
   createSourceAdmissionController,
   createSourceGraphBuilder,
   createTypedIngestProjector,
-  applyConsolidatedPromotion,
+  consolidatedSourceFamilyCounts,
   compileRelationPromotionModel,
   loadConsolidatedPromotion,
+  type RelationPromotionModel,
   relationPromotionNeedsPriors,
   compileOpaqueRoleModel,
   compileRoleSurfaceOrderModel,
@@ -743,17 +744,22 @@ export class WikipediaV3Ingestor {
    * one indexed aggregate over the batch's own seeds; the read it guards is the whole table.
    */
   private async priorRelationObservations(
-    candidates: readonly StructuredSemanticCandidate[]
+    candidates: readonly StructuredSemanticCandidate[],
+    consolidated?: RelationPromotionModel
   ): Promise<Awaited<ReturnType<NonNullable<ScceStorage["relationObservations"]>["list"]>>> {
     const store = this.storage.relationObservations;
     if (!store) return [];
     const batch = relationObservationsFromCandidates(candidates);
     if (!batch.length) return [];
-    // Without the aggregate there is nothing to decide on, so read as before rather than guess.
-    if (!store.sourceFamilyCountsForSeeds) return store.list({}).catch(() => []);
-    const familyCountsOnFile = await store
-      .sourceFamilyCountsForSeeds([...new Set(batch.map(row => row.relationSeedId))])
-      .catch(() => undefined);
+    // A consolidated fit already measured every seed's supporting families, so it answers the same question the
+    // aggregate does, for free. Falls through to the aggregate, then to an unguarded read, rather than guessing.
+    const familyCountsOnFile = consolidated
+      ? consolidatedSourceFamilyCounts(consolidated)
+      : store.sourceFamilyCountsForSeeds
+        ? await store
+          .sourceFamilyCountsForSeeds([...new Set(batch.map(row => row.relationSeedId))])
+          .catch(() => undefined)
+        : undefined;
     if (!familyCountsOnFile) return store.list({}).catch(() => []);
     if (!relationPromotionNeedsPriors({ batch, familyCountsOnFile })) return [];
     return store.list({}).catch(() => []);
@@ -1125,37 +1131,34 @@ export class WikipediaV3Ingestor {
     // (wikimedia:wikipedia), 172k observations re-read and all 171,836 seeds re-decided per block, for a set of
     // refusals that was fixed before the read began -- throughput fell from 576 to 85 sources an hour as the
     // table grew. One aggregate now decides whether the read can matter.
-    // Separation of powers. With a consolidated fit on file, promotion was already decided over every
-    // observation the corpus holds, so this block reads that model instead of re-reading the whole observation
-    // table and re-deciding every seed in the corpus. With none -- an unconsolidated brain -- the guarded prior
-    // read below runs exactly as before.
+    // A consolidated fit answers "could reading the table change a verdict" from what it already measured --
+    // which families supported each seed -- so the database aggregate is skipped. It never replaces a verdict:
+    // this block's own evidence is always compiled in, so a family the consolidation never saw still counts.
     const consolidatedSpan = trace.span("relation.consolidated-load");
     const consolidatedPromotion = await loadConsolidatedPromotion(this.storage.relationPromotionModels);
     consolidatedSpan.end({ decisions: consolidatedPromotion?.decisions.length ?? 0 });
     const priorSpan = trace.span("relation.prior-load");
-    const priorRelationObservations = consolidatedPromotion
-      ? []
-      : await this.priorRelationObservations(semanticCandidates);
+    const priorRelationObservations = await this.priorRelationObservations(
+      semanticCandidates,
+      consolidatedPromotion
+    );
     priorSpan.end({
       candidates: semanticCandidates.length,
       priors: priorRelationObservations.length,
-      skippedForConsolidatedFit: consolidatedPromotion ? 1 : 0
+      familyCountsFromConsolidatedFit: consolidatedPromotion ? 1 : 0
     });
     const promoteSpan = trace.span("relation.promote");
-    const relationPromotionModel = applyConsolidatedPromotion({
-      batchModel: compileRelationPromotionModel({
-        candidates: semanticCandidates,
-        priorObservations: priorRelationObservations.map(row => ({
-          candidateId: row.candidateId,
-          relationSeedId: row.relationSeedId,
-          channel: row.channel as StructuredSemanticCandidate["channel"],
-          sourceId: row.sourceId,
-          sourceFamilyId: row.sourceFamilyId,
-          signature: row.signature
-        })),
-        hasher: this.hasher
-      }),
-      consolidated: consolidatedPromotion
+    const relationPromotionModel = compileRelationPromotionModel({
+      candidates: semanticCandidates,
+      priorObservations: priorRelationObservations.map(row => ({
+        candidateId: row.candidateId,
+        relationSeedId: row.relationSeedId,
+        channel: row.channel as StructuredSemanticCandidate["channel"],
+        sourceId: row.sourceId,
+        sourceFamilyId: row.sourceFamilyId,
+        signature: row.signature
+      })),
+      hasher: this.hasher
     });
     promoteSpan.end({ decisions: relationPromotionModel.decisions.length });
     const observeSpan = trace.span("relation.observe");

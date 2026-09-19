@@ -33,7 +33,7 @@ function span(
 ): EvidenceSpan {
   return {
     id: `evidence_span.${String(index).padStart(6, "0")}` as EvidenceSpan["id"],
-    sourceId: `source.family_${index % 3}` as EvidenceSpan["sourceId"],
+    sourceId: `source.${index}` as EvidenceSpan["sourceId"],
     sourceVersionId: `source_version.${index}` as EvidenceSpan["sourceVersionId"],
     text: `Document ${index} states a measured quantity, and repeats enough structure across the corpus `
       + `that recurrence and compression have something to read from it.`,
@@ -51,6 +51,7 @@ interface Recorded {
   store: SegmentationPopulationModelStore;
   put: SegmentationPopulationModelRecord[];
   pages: Array<{ limit: number; afterId?: string }>;
+  promotionModels: Array<{ id: string; basis: string; observationCount: number }>;
 }
 
 function storageOver(spans: readonly EvidenceSpan[], existing?: SegmentationPopulationModelRecord): Recorded {
@@ -61,8 +62,31 @@ function storageOver(spans: readonly EvidenceSpan[], existing?: SegmentationPopu
     async readById(id) { return put.find(row => row.id === id) ?? existing; },
     async listRecent() { return put.length ? [put[put.length - 1]!] : existing ? [existing] : []; }
   };
+  const promotionModels: Array<{ id: string; basis: string; observationCount: number }> = [];
   const storage = {
     segmentationPopulations: store,
+    // Two observations per span's source, so a bounded run can be seen to fit fewer than the table holds.
+    relationObservations: {
+      async put() { /* not used */ },
+      async list() {
+        return spans.flatMap((row, index) => [0, 1].map(slot => ({
+          candidateId: `candidate.${index}.${slot}`,
+          relationSeedId: `relation_seed.${index}.${slot}`,
+          channel: "source_declared_structured",
+          sourceId: String(row.sourceId),
+          sourceFamilyId: `family_${index % 3}`,
+          signature: `signature.${slot}`,
+          observedAt: 1
+        })));
+      }
+    },
+    relationPromotionModels: {
+      async putModel(record: { id: string; basis: string; observationCount: number }) {
+        promotionModels.push(record);
+      },
+      async readById() { return undefined; },
+      async listRecent() { return []; }
+    },
     evidence: {
       async listPromotedEvidenceSpans(query: { limit: number; afterId?: string }) {
         pages.push({ limit: query.limit, ...(query.afterId ? { afterId: query.afterId } : {}) });
@@ -73,7 +97,7 @@ function storageOver(spans: readonly EvidenceSpan[], existing?: SegmentationPopu
       }
     }
   } as unknown as ScceStorage;
-  return { storage, store, put, pages };
+  return { storage, store, put, pages, promotionModels };
 }
 
 describe("consolidating a real corpus", () => {
@@ -191,5 +215,58 @@ describe("the ingest side of the split", () => {
 
   it("has nothing to load when the brain carries no population store at all", async () => {
     await expect(loadFittedPopulation(undefined)).resolves.toBeUndefined();
+  });
+});
+
+describe("consolidation streams instead of materializing the corpus", () => {
+  it("never holds more than one window of text, whatever the corpus size", async () => {
+    // A small explicit budget so the arithmetic is visible: the spans are ~140 chars, so ~3 fit a 500-char
+    // window whatever the corpus size. Five times the corpus must mean five times the WINDOWS, not a window
+    // five times bigger -- that is exactly what bounds resident text.
+    const windowCharBudget = 500;
+    const small = Array.from({ length: 40 }, (_, index) => span(index, "tenant_a"));
+    const large = Array.from({ length: 200 }, (_, index) => span(index, "tenant_a"));
+
+    const smallResult = await consolidateCorpus({
+      storage: storageOver(small).storage, pageSize: 20, windowCharBudget
+    });
+    const largeResult = await consolidateCorpus({
+      storage: storageOver(large).storage, pageSize: 20, windowCharBudget
+    });
+
+    expect(smallResult.documentCount).toBe(small.length);
+    expect(largeResult.documentCount).toBe(large.length);
+    expect(largeResult.windowCount).toBeGreaterThan(smallResult.windowCount * 4);
+    const smallPerWindow = smallResult.documentCount / smallResult.windowCount;
+    const largePerWindow = largeResult.documentCount / largeResult.windowCount;
+    expect(Math.abs(largePerWindow - smallPerWindow)).toBeLessThanOrEqual(1);
+  });
+
+  it("windows across page boundaries rather than once per page", async () => {
+    // Windowing per page would tie the model's windows to a database read size. A window is a char budget.
+    const spans = Array.from({ length: 60 }, (_, index) => span(index, "tenant_a"));
+    const byBigPages = await consolidateCorpus({
+      storage: storageOver(spans).storage, pageSize: 60, windowCharBudget: 500
+    });
+    const bySmallPages = await consolidateCorpus({
+      storage: storageOver(spans).storage, pageSize: 7, windowCharBudget: 500
+    });
+    expect(bySmallPages.windowCount).toBe(byBigPages.windowCount);
+    // And the fit is identical, so the read size cannot change the model.
+    expect(bySmallPages.model.id).toBe(byBigPages.model.id);
+    expect(bySmallPages.statistics.id).toBe(byBigPages.statistics.id);
+  });
+
+  it("bounds the relation fit to the same population when the run is bounded", async () => {
+    const spans = Array.from({ length: 30 }, (_, index) => span(index, "tenant_a"));
+    const recorded = storageOver(spans);
+    const bounded = await consolidateCorpus({
+      storage: recorded.storage, pageSize: 50, maxDocuments: 10
+    });
+    expect(bounded.documentCount).toBe(10);
+    // Relations were fitted only over source versions this bounded run actually saw, not the whole table.
+    expect(bounded.relationPromotion?.observations).toBeLessThan(
+      bounded.relationPromotion?.observationsOnFile ?? Number.POSITIVE_INFINITY
+    );
   });
 });

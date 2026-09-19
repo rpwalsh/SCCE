@@ -52,50 +52,27 @@ export function forgetConsolidatedPromotion(store: RelationPromotionModelStore |
 }
 
 /**
- * The batch's own decisions, overridden per seed by the consolidated model's wherever it has one.
+ * Per-seed count of independent source families the consolidated fit saw.
  *
- * A consolidated decision was reached over every source family the corpus holds; a batch decision was reached
- * over the handful in one block. For the same seed the first strictly dominates, so preferring it is not a
- * weaker verdict but a better-evidenced one -- and it is what lets ingest stop reading the observation table.
+ * This replaces an earlier `applyConsolidatedPromotion` that preferred the consolidated DECISION for any seed
+ * it covered. That was wrong: a block contributing a family the consolidation never saw is exactly the case
+ * where a refused seed should cross the independence gate, and preferring the stored verdict discarded that
+ * evidence until the next consolidation. The comment there claimed the consolidated decision "strictly
+ * dominates"; it does not, and nothing in the code established it.
  *
- * Seeds the consolidated model has never seen keep the batch's decision, so a seed whose evidence arrives
- * entirely within one block is decided exactly as before.
+ * What a consolidated model can be trusted for is what it actually measured: which families supported each
+ * seed. Fed to relationPromotionNeedsPriors, that answers whether reading the observation table could change
+ * any verdict this batch is responsible for -- without the database aggregate, and without overriding anything.
+ * Verdicts stay identical to the path that reads priors.
  */
-export function applyConsolidatedPromotion(input: {
-  batchModel: RelationPromotionModel;
-  consolidated: RelationPromotionModel | undefined;
-}): RelationPromotionModel {
-  const consolidated = input.consolidated;
-  if (!consolidated?.decisions.length) return input.batchModel;
-  const bySeed = new Map<string, RelationPromotionDecision>(
-    consolidated.decisions.map(decision => [decision.relationSeedId, decision])
-  );
-  let fromConsolidated = 0;
-  let flippedToPromoted = 0;
-  let flippedToRefused = 0;
-  const decisions = input.batchModel.decisions.map(decision => {
-    const preferred = bySeed.get(decision.relationSeedId);
-    if (!preferred) return decision;
-    fromConsolidated += 1;
-    if (preferred.promoted && !decision.promoted) flippedToPromoted += 1;
-    if (!preferred.promoted && decision.promoted) flippedToRefused += 1;
-    return preferred;
-  });
-  return {
-    ...input.batchModel,
-    decisions,
-    audit: {
-      ...(input.batchModel.audit && typeof input.batchModel.audit === "object"
-        && !Array.isArray(input.batchModel.audit)
-        ? input.batchModel.audit
-        : {}),
-      consolidatedPromotion: {
-        modelId: consolidated.id,
-        decisionsFromConsolidated: fromConsolidated,
-        decisionsFromBatch: decisions.length - fromConsolidated,
-        flippedToPromoted,
-        flippedToRefused
-      }
-    }
-  };
+export function consolidatedSourceFamilyCounts(
+  model: RelationPromotionModel | undefined
+): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const decision of model?.decisions ?? []) {
+    // The families the fit actually used, both sides of its source-disjoint split.
+    const families = new Set([...decision.fitSourceFamilyIds, ...decision.holdoutSourceFamilyIds]);
+    counts.set(decision.relationSeedId, Math.max(families.size, decision.independentSourceCount));
+  }
+  return counts;
 }

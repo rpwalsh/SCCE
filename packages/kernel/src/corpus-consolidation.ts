@@ -125,50 +125,102 @@ function consolidationWindows(
   return windows;
 }
 
+/**
+ * Measures one window and returns only its statistics, so a caller streaming out of a database never holds the
+ * corpus. The lattices here were always bounded; the INPUT was not -- an array caller accumulates every
+ * document's text before the first window is measured. Streaming callers use this plus fitConsolidatedPopulations.
+ */
+export function measureWindow(input: {
+  documents: readonly LanguageInductionDocument[];
+  populationId: string;
+  hasher: Hasher;
+}): SegmentationPopulationTrainingDocument[] {
+  const bounded = input.documents
+    .map(document => boundedInductionDocuments([document])[0])
+    .filter((document): document is LanguageInductionDocument => document !== undefined);
+  if (!bounded.length) return [];
+  // Lattices for this window only. They derive boundary observations and die with the call.
+  const lattices = bounded.map(document => buildSurfaceLattice({
+    documentId: document.id,
+    text: document.text,
+    sourceVersionId: document.sourceVersionId,
+    evidenceIds: document.evidenceIds,
+    hasher: input.hasher
+  }));
+  const observations = collectBoundaryTrainingObservations({
+    lattices,
+    anchors: bounded.flatMap(document =>
+      (document.boundaryAnchors ?? []).map(anchor => ({ ...anchor, documentId: document.id })))
+  });
+  return bounded.map(document => ({
+    documentId: document.id,
+    sourceFamilyId: document.sourceFamilyId ?? String(document.sourceVersionId ?? document.id),
+    statistics: compileBoundaryStatistics({
+      populationId: input.populationId,
+      observations: observations.filter(observation => observation.sourceDocumentId === document.id),
+      sourceDocumentIds: [document.id],
+      hasher: input.hasher
+    })
+  }));
+}
+
+/**
+ * The id every window's statistics are measured under.
+ *
+ * Deliberately constant rather than a hash of the corpus: a streaming caller does not know the whole document
+ * set until the stream ends, and cannot retroactively re-measure windows it has already dropped the text for.
+ * Per-document statistics are merged under the corpus id below, and nothing compares the two.
+ */
+export const CONSOLIDATION_WINDOW_POPULATION_ID = "corpus_population.window";
+
+/** The fitted population's own id, derived from the document identities the stream actually saw. */
+export function consolidationPopulationId(
+  documents: readonly { id: string; sourceVersionId?: unknown }[],
+  hasher: Hasher
+): string {
+  const key = documents.map(document => [document.id, document.sourceVersionId ?? null]).sort();
+  return "corpus_population." + hasher.digestHex(JSON.stringify(key)).slice(0, 32);
+}
+
 export function consolidateSegmentationPopulations(
   input: CorpusConsolidationInput
 ): CorpusConsolidationResult {
   const hasher = input.hasher ?? createHasher();
   const documents = input.documents.filter(document => document.text.trim().length > 0);
-  const populationId = `corpus_population.${hasher.digestHex(JSON.stringify(
-    documents.map(document => [document.id, document.sourceVersionId ?? null]).sort()
-  )).slice(0, 32)}`;
-
+  const populationId = consolidationPopulationId(documents, hasher);
   const windows = consolidationWindows(documents, Math.max(1, Math.floor(
     input.windowCharBudget ?? inductionCharBudget()
   )));
   const trainingDocuments: SegmentationPopulationTrainingDocument[] = [];
   for (const window of windows) {
-    // Lattices for one window only. They exist to derive boundary observations and nothing else, so they die
-    // with the window and the loop's peak is one window, not the corpus.
-    const lattices = window.map(document => ({
-      document,
-      lattice: buildSurfaceLattice({
-        documentId: document.id,
-        text: document.text,
-        sourceVersionId: document.sourceVersionId,
-        evidenceIds: document.evidenceIds,
-        hasher
-      })
+    trainingDocuments.push(...measureWindow({
+      documents: window,
+      populationId: CONSOLIDATION_WINDOW_POPULATION_ID,
+      hasher
     }));
-    const observations = collectBoundaryTrainingObservations({
-      lattices: lattices.map(row => row.lattice),
-      anchors: lattices.flatMap(({ document }) =>
-        (document.boundaryAnchors ?? []).map(anchor => ({ ...anchor, documentId: document.id })))
-    });
-    for (const { document } of lattices) {
-      trainingDocuments.push({
-        documentId: document.id,
-        sourceFamilyId: document.sourceFamilyId ?? String(document.sourceVersionId ?? document.id),
-        statistics: compileBoundaryStatistics({
-          populationId,
-          observations: observations.filter(observation => observation.sourceDocumentId === document.id),
-          sourceDocumentIds: [document.id],
-          hasher
-        })
-      });
-    }
   }
+  return fitConsolidatedPopulations({
+    trainingDocuments,
+    populationId,
+    windowCount: windows.length,
+    hasher,
+    ...(input.fitIterations === undefined ? {} : { fitIterations: input.fitIterations }),
+    ...(input.maxPopulations === undefined ? {} : { maxPopulations: input.maxPopulations })
+  });
+}
+
+/** Fits from statistics the caller already measured, so nothing in this path sees document text. */
+export function fitConsolidatedPopulations(input: {
+  trainingDocuments: readonly SegmentationPopulationTrainingDocument[];
+  populationId: string;
+  windowCount: number;
+  hasher?: Hasher;
+  fitIterations?: number | "converge";
+  maxPopulations?: number;
+}): CorpusConsolidationResult {
+  const hasher = input.hasher ?? createHasher();
+  const populationId = input.populationId;
+  const trainingDocuments = [...input.trainingDocuments];
 
   const statistics = mergeBoundaryStatistics(
     trainingDocuments.map(document => document.statistics),
@@ -223,7 +275,7 @@ export function consolidateSegmentationPopulations(
     model,
     statistics,
     documentCount: trainingDocuments.length,
-    windowCount: windows.length,
+    windowCount: input.windowCount,
     converged: populations.length > 0 && populations.every(population => population.converged),
     populations,
     escalation
