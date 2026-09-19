@@ -3,6 +3,7 @@
 import { induceLearnedConstructions, type AlignedSurfaceExample } from "./language-construction.js";
 import type { SourceBoundLanguageConstructionTrainingSet } from "./language-construction-memory.js";
 import { createLanguageInductionEngine, type GraphBoundConstruction, type LanguageInductionDocument } from "./language-induction.js";
+import type { SegmentationPopulationModel } from "./segmentation-population.js";
 import { buildSurfaceLattice, validateSurfaceLattice, type SurfaceLattice, type SurfaceLatticeUnit } from "./surface-lattice.js";
 import { segmentUnicodeSurfaceV2, type LexicalSegment } from "./unicode-segmentation-v2.js";
 import { boundedInductionDocuments } from "./training-orchestrator.js";
@@ -186,6 +187,8 @@ export function induceSourceBoundConstructionTrainingSets(input: {
   profileId: string;
   hasher: Hasher;
   maxObservationsPerConstruction?: number;
+  /** A population already fitted from the whole corpus, so this batch performs no fit of its own. */
+  fittedPopulation?: SegmentationPopulationModel;
 }): SourceBoundLanguageConstructionTrainingSet[] {
   const promoted = input.evidence.filter(span => span.status === "promoted");
   if (!promoted.length) return [];
@@ -206,7 +209,8 @@ export function induceSourceBoundConstructionTrainingSets(input: {
   // training-orchestrator.ts's own induce() call site rather than adding a
   // second budgeting scheme.
   const model = createLanguageInductionEngine({ hasher: input.hasher }).induce({
-    documents: boundedInductionDocuments(documents)
+    documents: boundedInductionDocuments(documents),
+    fittedPopulation: input.fittedPopulation
   });
   if (!model.graphBoundConstructions.length) return [];
 
@@ -290,13 +294,16 @@ export function evaluateHeldOutConstructionCoverage(input: {
   heldOutDocuments: readonly LanguageInductionDocument[];
   profileId: string;
   hasher: Hasher;
+  /** A population already fitted from the whole corpus; supplied, this evaluation performs no fit. */
+  fittedPopulation?: SegmentationPopulationModel;
 }): HeldOutConstructionCoverageReport[] {
   // Same unbounded-corpus risk as induceSourceBoundConstructionTrainingSets
   // above, reached via the same production compileLanguageTrainingBatch call
   // (evaluateConstructionPromotion, on every batch with held-out evidence) --
   // bounded the same way rather than adding a second scheme.
   const boundedTrainDocuments = boundedInductionDocuments(input.trainDocuments);
-  const model = createLanguageInductionEngine({ hasher: input.hasher }).induce({ documents: [...boundedTrainDocuments] });
+  const model = createLanguageInductionEngine({ hasher: input.hasher })
+    .induce({ documents: [...boundedTrainDocuments], fittedPopulation: input.fittedPopulation });
   if (!model.graphBoundConstructions.length) return [];
 
   const alignments = induceGraphSurfaceAlignments({

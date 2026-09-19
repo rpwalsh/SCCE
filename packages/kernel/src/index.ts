@@ -48,6 +48,7 @@ export * from "./unicode-segmentation-v2.js";
 export * from "./boundary-estimator.js";
 export * from "./segmentation-forest.js";
 export * from "./segmentation-population.js";
+export * from "./corpus-consolidation.js";
 export * from "./segmentation-population-persistence.js";
 export * from "./language-identity.js";
 export * from "./structural-residue.js";

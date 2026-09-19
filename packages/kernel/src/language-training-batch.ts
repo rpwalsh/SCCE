@@ -98,6 +98,7 @@ import type {
 } from "./storage.js";
 import type { ScceStorage } from "./storage.js";
 import { dominantScriptId, reconstructFromSegmentationModel, segmentUnicodeSurfaceV2 } from "./unicode-segmentation-v2.js";
+import type { SegmentationPopulationModel } from "./segmentation-population.js";
 import type { InformationLabel } from "./types.js";
 import { segmentationAggregateInformationLabel, segmentationAggregateKeyId, segmentationAggregateSpacedRatio } from "./segmentation-aggregate.js";
 import type {
@@ -131,6 +132,12 @@ export interface LanguageTrainingBatch {
   constructionSets?: readonly SourceBoundLanguageConstructionTrainingSet[];
   additionalPatterns?: readonly LanguagePatternRecord[];
   graphSnapshot?: GraphSnapshot;
+  /**
+   * A segmentation population already fitted from the whole corpus. Supplied, this batch performs no boundary
+   * fit of its own: ingestion ingests, and fitting happens afterwards from the statistics ingestion leaves
+   * behind. Absent -- a brain with no consolidation yet -- the batch fits as it always did.
+   */
+  fittedPopulation?: SegmentationPopulationModel;
   maxAlignmentCandidateDegree?: number;
   /**
    * Peak-memory bound on surface<->graph alignment (confirmed V8 heap OOM,
@@ -248,6 +255,7 @@ export function compileLanguageTrainingBatch(input: {
     vocabularyLimit: batch.vocabularyLimit
   }));
   const inducedSets = induceSourceBoundConstructionTrainingSets({
+    fittedPopulation: input.batch.fittedPopulation,
     // Language-only training hands the construction lane nothing, so every stage below compiles empties.
     evidence: batch.languageOnly ? [] : constructionTrainEvidence(batch.evidence, input.hasher),
     profileId: batch.profile.id,
@@ -502,6 +510,7 @@ export function compileLanguageTrainingBatch(input: {
   const constructionPatterns: LanguagePatternRecord[] = [];
   const warnings: string[] = [];
   const promotion = evaluateConstructionPromotion({
+    fittedPopulation: input.batch.fittedPopulation,
     evidence: batch.evidence,
     profileId: batch.profile.id,
     hasher: input.hasher,
@@ -801,6 +810,7 @@ function uniqueRecords<T extends { id: string }>(records: readonly T[]): T[] {
 }
 
 function evaluateConstructionPromotion(input: {
+  fittedPopulation?: SegmentationPopulationModel;
   evidence: readonly EvidenceSpan[];
   profileId: string;
   hasher: Hasher;

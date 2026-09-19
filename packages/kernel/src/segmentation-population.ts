@@ -112,6 +112,8 @@ export function learnSegmentationPopulations(input: {
   maxPopulations?: number;
   mergeDescriptionMarginNats?: number;
   heldoutRegressionToleranceNats?: number;
+  /** Descent cost budget for every fit here, candidates included, so description lengths stay comparable. */
+  fitIterations?: number;
   hasher?: Hasher;
 }): SegmentationPopulationModel {
   const hasher = input.hasher ?? createHasher();
@@ -133,6 +135,7 @@ export function learnSegmentationPopulations(input: {
       fit,
       holdout: selection,
       populationCount,
+      fitIterations: input.fitIterations,
       hasher
     }));
   }
@@ -166,6 +169,7 @@ export function learnSegmentationPopulations(input: {
     fit: finalTrainingDocuments,
     holdout: [],
     populationCount: selected.populationCount,
+    fitIterations: input.fitIterations,
     hasher
   });
   const finalGroups = groupDocuments(
@@ -180,7 +184,7 @@ export function learnSegmentationPopulations(input: {
       hasher,
       provisionalId
     );
-    const provisionalEstimator = fitCalibratedEstimatorForDocuments(group, provisionalId, hasher);
+    const provisionalEstimator = fitCalibratedEstimatorForDocuments(group, provisionalId, hasher, input.fitIterations);
     const prior = quantize(group.length / Math.max(1, finalTrainingDocuments.length));
     const contentSignature = hasher.digestHex(JSON.stringify({
       rootPopulationId: input.rootPopulationId,
@@ -194,7 +198,7 @@ export function learnSegmentationPopulations(input: {
     }));
     const id = `${input.rootPopulationId}.component.${contentSignature.slice(0, 32)}`;
     const statistics = mergeBoundaryStatistics(group.map(document => document.statistics), hasher, id);
-    const estimator = fitCalibratedEstimatorForDocuments(group, id, hasher);
+    const estimator = fitCalibratedEstimatorForDocuments(group, id, hasher, input.fitIterations);
     return {
       id,
       prior,
@@ -364,6 +368,7 @@ function fitPopulationCandidate(input: {
   fit: readonly SegmentationPopulationTrainingDocument[];
   holdout: readonly SegmentationPopulationTrainingDocument[];
   populationCount: number;
+  fitIterations?: number;
   hasher: Hasher;
 }): CandidateFit {
   if (!input.fit.length) {
@@ -388,6 +393,7 @@ function fitPopulationCandidate(input: {
         input.hasher,
         `${input.rootPopulationId}.candidate.${input.populationCount}.${index}`
       ),
+      ...(input.fitIterations === undefined ? {} : { iterations: input.fitIterations }),
       hasher: input.hasher
     }));
     priors = groups.map(group => group.length / input.fit.length);
@@ -410,6 +416,7 @@ function fitPopulationCandidate(input: {
       input.hasher,
       `${input.rootPopulationId}.candidate.${input.populationCount}.${index}`
     ),
+    ...(input.fitIterations === undefined ? {} : { iterations: input.fitIterations }),
     hasher: input.hasher
   }));
   priors = finalGroups.map(group => group.length / input.fit.length);
@@ -625,7 +632,8 @@ function sourceFamilyDisjointPartitions(
 function fitCalibratedEstimatorForDocuments(
   documents: readonly SegmentationPopulationTrainingDocument[],
   populationId: string,
-  hasher: Hasher
+  hasher: Hasher,
+  fitIterations?: number
 ): BoundaryEstimatorModel {
   const split = documentDisjointSplit(documents, hasher);
   const trainingStatistics = mergeBoundaryStatistics(
@@ -644,6 +652,7 @@ function fitCalibratedEstimatorForDocuments(
     statistics: trainingStatistics,
     calibrationStatistics,
     calibrationShards: split.holdout.map(document => document.statistics),
+    ...(fitIterations === undefined ? {} : { iterations: fitIterations }),
     hasher
   });
 }

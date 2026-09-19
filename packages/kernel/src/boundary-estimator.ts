@@ -310,7 +310,10 @@ export function fitBoundaryEstimator(input: {
   // So the budget stays and the model stops pretending: the descent reports whether it converged or stopped at
   // the budget, so a partial fit is visible in the audit instead of an iteration count masquerading as an
   // optimum. A caller that wants the converged fit can ask for the iterations and now knows what it costs.
-  const iterationCeiling = Math.max(1, Math.min(4096, Math.floor(input.iterations ?? 96)));
+  // No upper clamp. 4096 here was a second cap on top of the budget, and it silently bound the offline
+  // consolidation pass -- which exists precisely to spend iterations the ingest path cannot afford. The stop is
+  // the quantization floor below; this is only how much the caller is willing to pay to reach it.
+  const iterationCeiling = Math.max(1, Math.floor(input.iterations ?? 96));
   const learningRate = Math.max(1e-5, Math.min(1, input.learningRate ?? 0.18));
   // Regularization scaled by the evidence rather than fixed at 0.02: a unit-variance Gaussian prior over the
   // weights, divided by the number of rows it is competing with. Strong when there is little to go on and
@@ -351,6 +354,7 @@ export function fitBoundaryEstimator(input: {
   // the convergence test: not a tolerance someone chose, but the resolution the model is stored at.
   let iterationsRun = 0;
   let converged = false;
+  let largestStepAtStop = 0;
   for (let iteration = 0; iteration < iterationCeiling; iteration += 1) {
     iterationsRun = iteration + 1;
     gradients.fill(0);
@@ -377,6 +381,7 @@ export function fitBoundaryEstimator(input: {
       largestStep = Math.max(largestStep, Math.abs(nextWeight - weights[index]!));
       weights[index] = nextWeight;
     }
+    largestStepAtStop = largestStep;
     if (largestStep <= 0) {
       converged = true;
       break;
@@ -418,6 +423,9 @@ export function fitBoundaryEstimator(input: {
       converged,
       iterationsRun,
       iterationCeiling,
+      // The step the descent stopped at, so a caller escalating the budget can tell progress from a stall
+      // without guessing. Zero exactly when it converged.
+      largestStepAtStop,
       l2FromRowCount: usableRowCount,
       deterministicCanonicalRows: true,
       quantizedParameters: true,
