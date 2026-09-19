@@ -1111,6 +1111,11 @@ export interface ScceStorage extends StorageAdmin {
   blobs: BlobStore;
   quarantine: QuarantineStore;
   relationObservations?: RelationObservationStore;
+  /**
+   * Relation promotion models fitted over the whole corpus by the consolidation pass. Ingest reads the most
+   * recent one instead of re-reading every observation and re-deciding every seed per block.
+   */
+  relationPromotionModels?: import("./relation-promotion-persistence.js").RelationPromotionModelStore;
   proofs: ProofStore;
   constructs: ConstructStore;
   capabilities: CapabilityAuditStore;
@@ -1350,6 +1355,7 @@ export const POSTGRES_REQUIRED_TABLES = [
   "segmentation_aggregates",
   "induced_language_models",
   "segmentation_population_models",
+  "relation_promotion_models",
   "user_model_claims",
   "task_resumption_snapshots",
   "document_generation_sessions",

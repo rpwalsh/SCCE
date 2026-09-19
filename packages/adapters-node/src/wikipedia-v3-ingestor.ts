@@ -16,7 +16,9 @@ import {
   createSourceAdmissionController,
   createSourceGraphBuilder,
   createTypedIngestProjector,
+  applyConsolidatedPromotion,
   compileRelationPromotionModel,
+  loadConsolidatedPromotion,
   relationPromotionNeedsPriors,
   compileOpaqueRoleModel,
   compileRoleSurfaceOrderModel,
@@ -1123,21 +1125,37 @@ export class WikipediaV3Ingestor {
     // (wikimedia:wikipedia), 172k observations re-read and all 171,836 seeds re-decided per block, for a set of
     // refusals that was fixed before the read began -- throughput fell from 576 to 85 sources an hour as the
     // table grew. One aggregate now decides whether the read can matter.
+    // Separation of powers. With a consolidated fit on file, promotion was already decided over every
+    // observation the corpus holds, so this block reads that model instead of re-reading the whole observation
+    // table and re-deciding every seed in the corpus. With none -- an unconsolidated brain -- the guarded prior
+    // read below runs exactly as before.
+    const consolidatedSpan = trace.span("relation.consolidated-load");
+    const consolidatedPromotion = await loadConsolidatedPromotion(this.storage.relationPromotionModels);
+    consolidatedSpan.end({ decisions: consolidatedPromotion?.decisions.length ?? 0 });
     const priorSpan = trace.span("relation.prior-load");
-    const priorRelationObservations = await this.priorRelationObservations(semanticCandidates);
-    priorSpan.end({ candidates: semanticCandidates.length, priors: priorRelationObservations.length });
+    const priorRelationObservations = consolidatedPromotion
+      ? []
+      : await this.priorRelationObservations(semanticCandidates);
+    priorSpan.end({
+      candidates: semanticCandidates.length,
+      priors: priorRelationObservations.length,
+      skippedForConsolidatedFit: consolidatedPromotion ? 1 : 0
+    });
     const promoteSpan = trace.span("relation.promote");
-    const relationPromotionModel = compileRelationPromotionModel({
-      candidates: semanticCandidates,
-      priorObservations: priorRelationObservations.map(row => ({
-        candidateId: row.candidateId,
-        relationSeedId: row.relationSeedId,
-        channel: row.channel as StructuredSemanticCandidate["channel"],
-        sourceId: row.sourceId,
-        sourceFamilyId: row.sourceFamilyId,
-        signature: row.signature
-      })),
-      hasher: this.hasher
+    const relationPromotionModel = applyConsolidatedPromotion({
+      batchModel: compileRelationPromotionModel({
+        candidates: semanticCandidates,
+        priorObservations: priorRelationObservations.map(row => ({
+          candidateId: row.candidateId,
+          relationSeedId: row.relationSeedId,
+          channel: row.channel as StructuredSemanticCandidate["channel"],
+          sourceId: row.sourceId,
+          sourceFamilyId: row.sourceFamilyId,
+          signature: row.signature
+        })),
+        hasher: this.hasher
+      }),
+      consolidated: consolidatedPromotion
     });
     promoteSpan.end({ decisions: relationPromotionModel.decisions.length });
     const observeSpan = trace.span("relation.observe");

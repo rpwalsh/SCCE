@@ -97,6 +97,9 @@ import {
   type SegmentationPopulationModel,
   type SegmentationPopulationModelRecord,
   type SegmentationPopulationModelStore,
+  type RelationPromotionModel,
+  type RelationPromotionModelRecord,
+  type RelationPromotionModelStore,
   type LanguageIdentityRecord,
   type LanguageIdentityStore,
   type LanguageProfileSignatureRow,
@@ -185,6 +188,7 @@ export class PostgresStorageAdapter implements ScceStorage {
   readonly blobs: BlobStore;
   readonly quarantine: QuarantineStore;
   readonly relationObservations: RelationObservationStore;
+  readonly relationPromotionModels: RelationPromotionModelStore;
   readonly proofs: ProofStore;
   readonly constructs: ConstructStore;
   readonly capabilities: CapabilityAuditStore;
@@ -231,6 +235,7 @@ export class PostgresStorageAdapter implements ScceStorage {
     this.graph = createGraphStore(this);
     this.quarantine = createQuarantineStore(this);
     this.relationObservations = createRelationObservationStore(this);
+    this.relationPromotionModels = createRelationPromotionModelStore(this);
     this.proofs = createProofStore(this);
     this.constructs = createConstructStore(this);
     this.capabilities = createCapabilityStore(this);
@@ -1269,6 +1274,8 @@ export function schemaStatements(q: string, informationAccess?: InformationAcces
     `CREATE TABLE IF NOT EXISTS ${q}.segmentation_population_models (id TEXT PRIMARY KEY, training_plan_id TEXT NOT NULL, model_json JSONB NOT NULL, profile_ids TEXT[] NOT NULL, source_version_ids TEXT[] NOT NULL, population_count INTEGER NOT NULL, mdl_gain_nats DOUBLE PRECISION NOT NULL, information_label JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_segmentation_population_models_profiles ON ${q}.segmentation_population_models USING GIN(profile_ids)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_segmentation_population_models_created ON ${q}.segmentation_population_models(created_at DESC)`,
+    `CREATE TABLE IF NOT EXISTS ${q}.relation_promotion_models (id TEXT PRIMARY KEY, basis TEXT NOT NULL, model_json JSONB NOT NULL, decision_count INTEGER NOT NULL, promoted_count INTEGER NOT NULL, observation_count INTEGER NOT NULL, information_label JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_relation_promotion_models_created ON ${q}.relation_promotion_models(created_at DESC)`,
     `CREATE TABLE IF NOT EXISTS ${q}.language_identities (id TEXT PRIMARY KEY, identity_json JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
     `ALTER TABLE ${q}.language_profiles ADD COLUMN IF NOT EXISTS language_id TEXT`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_profiles_language ON ${q}.language_profiles(language_id) WHERE language_id IS NOT NULL`,
@@ -3558,6 +3565,65 @@ function createSegmentationPopulationModelStore(
         profileIds.length ? [profileIds, limit] : [limit]
       );
       return rows.map(rowToSegmentationPopulationModelRecord);
+    }
+  };
+}
+
+interface RelationPromotionModelRow {
+  id: string;
+  basis: string;
+  model_json: unknown;
+  observation_count: number;
+  information_label: unknown;
+  created_at: string;
+}
+
+function rowToRelationPromotionModelRecord(row: RelationPromotionModelRow): RelationPromotionModelRecord {
+  return {
+    id: row.id,
+    basis: row.basis,
+    model: row.model_json as RelationPromotionModel,
+    observationCount: Number(row.observation_count),
+    createdAt: new Date(row.created_at).getTime(),
+    informationLabel: normalizeInformationLabel(row.information_label as never)
+  };
+}
+
+function createRelationPromotionModelStore(
+  storage: PostgresStorageAdapter
+): RelationPromotionModelStore {
+  return {
+    async putModel(record) {
+      await storage.query(
+        `INSERT INTO ${storage.table("relation_promotion_models")}(id,basis,model_json,decision_count,promoted_count,observation_count,information_label,created_at)
+         VALUES($1,$2,$3::jsonb,$4,$5,$6,$7::jsonb,TO_TIMESTAMP($8/1000.0))
+         ON CONFLICT(id) DO NOTHING`,
+        [
+          record.id,
+          record.basis,
+          JSON.stringify(record.model),
+          record.model.decisions.length,
+          record.model.decisions.filter(decision => decision.promoted).length,
+          record.observationCount,
+          JSON.stringify(storage.requireWritableInformationLabel(record.informationLabel)),
+          record.createdAt
+        ]
+      );
+    },
+    async readById(id) {
+      const rows = await storage.query<RelationPromotionModelRow>(
+        `SELECT * FROM ${storage.table("relation_promotion_models")} WHERE id=$1`,
+        [id]
+      );
+      return rows[0] ? rowToRelationPromotionModelRecord(rows[0]) : undefined;
+    },
+    async listRecent(query = {}) {
+      const limit = Math.max(1, Math.min(200, query.limit ?? 20));
+      const rows = await storage.query<RelationPromotionModelRow>(
+        `SELECT * FROM ${storage.table("relation_promotion_models")} ORDER BY created_at DESC,id LIMIT $1`,
+        [limit]
+      );
+      return rows.map(rowToRelationPromotionModelRecord);
     }
   };
 }

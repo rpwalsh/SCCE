@@ -1,9 +1,11 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import {
+  compileRelationPromotionModel,
   consolidateSegmentationPopulations,
   createHasher,
   evidenceToLanguageDocument,
+  forgetConsolidatedPromotion,
   forgetFittedPopulation,
   joinInformationLabels,
   normalizeInformationLabel,
@@ -11,6 +13,8 @@ import {
   type CorpusConsolidationResult,
   type EvidenceSpan,
   type LanguageInductionDocument,
+  type RelationObservation,
+  type SemanticCandidateChannel,
   type ScceStorage,
   type SourceVersionId
 } from "@scce/kernel";
@@ -44,6 +48,14 @@ export interface ConsolidateCorpusResult extends CorpusConsolidationResult {
   modelId: string;
   persisted: boolean;
   elapsedMs: number;
+  /** The relation promotion fit, absent when the brain records no observations. */
+  relationPromotion?: {
+    modelId: string;
+    observations: number;
+    decisions: number;
+    promoted: number;
+    persisted: boolean;
+  };
 }
 
 /** Never widens: a model derived from labelled spans carries their join, and an unlabelled corpus refuses. */
@@ -124,11 +136,64 @@ export async function consolidateCorpus(
     forgetFittedPopulation(store);
   }
 
+  const relationPromotion = await consolidateRelationPromotion(options, hasher, labels);
+
   return {
     ...consolidated,
     spansRead,
     modelId: consolidated.model.id,
     persisted,
-    elapsedMs: Date.now() - startedAt
+    elapsedMs: Date.now() - startedAt,
+    ...(relationPromotion ? { relationPromotion } : {})
+  };
+}
+
+/**
+ * Relation promotion, fitted once over every observation the corpus holds.
+ *
+ * Ingest decided this per block, which meant re-reading the observation table and re-deciding every seed in the
+ * corpus each time -- 172k observations and 171,836 seeds per block, measured live, with throughput falling from
+ * 576 to 85 sources an hour as the table grew. Deciding once over the whole population is both cheaper and
+ * better evidenced: promotion measures corroboration across independent source families, and a block sees a
+ * handful of them where the corpus holds all of them.
+ */
+async function consolidateRelationPromotion(
+  options: ConsolidateCorpusOptions,
+  hasher: ReturnType<typeof createHasher>,
+  labels: ReadonlyMap<string, InformationLabel>
+): Promise<ConsolidateCorpusResult["relationPromotion"]> {
+  const observationStore = options.storage.relationObservations;
+  if (!observationStore) return undefined;
+  const records = await observationStore.list();
+  if (!records.length) return undefined;
+  const priorObservations: RelationObservation[] = records.map(row => ({
+    candidateId: row.candidateId,
+    relationSeedId: row.relationSeedId,
+    channel: row.channel as SemanticCandidateChannel,
+    sourceId: row.sourceId,
+    sourceFamilyId: row.sourceFamilyId,
+    signature: row.signature
+  }));
+  // No candidates: every observation is already a persisted sufficient statistic, and the compiler merges the
+  // two the same way regardless of which side they arrive on.
+  const model = compileRelationPromotionModel({ candidates: [], priorObservations, hasher });
+  const store = options.storage.relationPromotionModels;
+  if (store) {
+    await store.putModel({
+      id: model.id,
+      model,
+      basis: "corpus_consolidation",
+      observationCount: priorObservations.length,
+      createdAt: Date.now(),
+      informationLabel: consolidatedLabel(labels, options.informationLabel)
+    });
+    forgetConsolidatedPromotion(store);
+  }
+  return {
+    modelId: model.id,
+    observations: priorObservations.length,
+    decisions: model.decisions.length,
+    promoted: model.decisions.filter(decision => decision.promoted).length,
+    persisted: Boolean(store)
   };
 }

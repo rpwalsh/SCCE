@@ -1443,6 +1443,7 @@ async function db(runtime: ReturnType<typeof createNodeRuntime>, args: string[],
       converged: result.converged,
       populations: result.populations,
       escalation: result.escalation,
+      relationPromotion: result.relationPromotion ?? null,
       elapsedMs: result.elapsedMs,
       // Whether the fit that was persisted is a converged one, stated rather than implied.
       basis: result.converged

@@ -14,6 +14,7 @@ import {
   createSourceAdmissionController,
   compileLanguageTrainingBatch,
   loadFittedPopulation,
+  type SegmentationPopulationModel,
   observeLanguageTrainingSegmentation,
   attachSourceDerivedLanguageAliases,
   CORPUS_SOURCE_SYSTEM_IDS,
@@ -91,6 +92,8 @@ export interface LanguageCorpusTrainingInput {
    */
   skipNgramPersistence?: boolean;
   persistSource?: boolean;
+  /** The consolidated fit, resolved by the caller so no read happens inside a transaction. */
+  fittedPopulation?: SegmentationPopulationModel;
   episodeId?: ReturnType<IdFactory["episodeId"]>;
   idFactory?: IdFactory;
   clock?: Clock;
@@ -206,8 +209,13 @@ export async function trainLanguageCorpusText(input: LanguageCorpusTrainingInput
   //
   // So this path commits per statement instead, and the compile holds nothing. The document-owning path still
   // needs its source version and evidence spans to land together, and keeps the transaction.
-  if (input.persistSource === false) return trainLanguageCorpusTextTransaction(input);
-  return input.storage.transaction(() => trainLanguageCorpusTextTransaction(input));
+  // Resolved before the transaction opens. A read inside one poisons the whole transaction if the table is
+  // missing -- a brain that has not been migrated yet -- and a cached value does not help the first caller.
+  const fittedPopulation = input.fittedPopulation
+    ?? await loadFittedPopulation(input.storage.segmentationPopulations);
+  const resolved = fittedPopulation ? { ...input, fittedPopulation } : input;
+  if (resolved.persistSource === false) return trainLanguageCorpusTextTransaction(resolved);
+  return resolved.storage.transaction(() => trainLanguageCorpusTextTransaction(resolved));
 }
 
 /** The source version this text is stored under, so a later pass can find its evidence without re-training it. */
@@ -398,9 +406,8 @@ async function trainLanguageCorpusTextTransaction(input: LanguageCorpusTrainingI
     evidence: evidence.length
   });
 
-  // The consolidated fit, read once per process rather than per shard. Absent on a brain that has not been
-  // consolidated yet, and induce() then fits as before.
-  const fittedPopulation = await loadFittedPopulation(input.storage.segmentationPopulations);
+  // The consolidated fit, resolved by the caller outside any transaction.
+  const fittedPopulation = input.fittedPopulation;
   // Synchronous CPU, with a Postgres transaction held open around it. Timed because that is the whole question.
   const compileSpan = trainTrace.span("train.compile");
   const compiledBatch = compileLanguageTrainingBatch({

@@ -133,7 +133,7 @@ describe("consolidating a real corpus", () => {
 
   it("refuses a corpus it cannot derive a label for", async () => {
     const spans = Array.from({ length: 6 }, (_, index) => {
-      const row = span(index, "tenant_a") as Record<string, unknown>;
+      const row = span(index, "tenant_a") as unknown as Record<string, unknown>;
       delete row.informationLabel;
       return row as unknown as EvidenceSpan;
     });
