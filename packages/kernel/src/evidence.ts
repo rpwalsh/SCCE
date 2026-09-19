@@ -363,17 +363,58 @@ function evidenceAlpha(input: { features: string[]; structuralConfidence: number
   const byteMass = Math.log2(2 + Math.max(0, input.chunk.byteEnd - input.chunk.byteStart)) / 18;
   const featureMass = Math.log2(2 + input.features.length) / 14;
   const entropyMass = clamp01(input.lexicalEntropy / 12);
-  const mediaPrior = input.mediaType.includes("pdf") || input.mediaType.includes("word") ? 0.72 : input.mediaType.startsWith("text/") ? 0.78 : 0.62;
-  return clamp01(0.12 + 0.25 * byteMass + 0.25 * featureMass + 0.18 * input.structuralConfidence + 0.12 * entropyMass + 0.08 * mediaPrior);
+  // Alpha is how much this span is worth as evidence, and it was a weighted sum: an intercept of 0.12 plus five
+  // channels at 0.25/0.25/0.18/0.12/0.08. Nothing measured those weights. They decided the alpha stamped on
+  // every span ever ingested, and alpha is read downstream by retrieval, the admission ceiling and training
+  // promotion -- so six numbers nobody fitted were the front door to what the corpus considers worth learning.
+  //
+  // The channels themselves ARE measurements: how much text the span carries, how many features it exposes,
+  // how confidently it sits in the document's structure, and how varied its symbols are. What was invented was
+  // their relative importance. Composed geometrically instead, every channel contributes equally by
+  // construction rather than by choice, the result stays in 0..1, and a channel that measures nothing pulls the
+  // span down instead of being offset by a constant -- there is no intercept to float it. This is the same
+  // composition COGNITIVE_PROPOSAL_COMPOSITION already uses in place of its own retired weights.
+  //
+  // The media prior is gone rather than re-expressed. It ranked pdf/word/text/other at 0.72/0.78/0.62 by hand,
+  // and a container format is not a measurement of what a span says.
+  return clamp01(geometricMeanOfPresent([byteMass, featureMass, clamp01(input.structuralConfidence), entropyMass]));
+}
+
+/**
+ * Equal contribution by construction: the nth root of the product over the channels that measured something.
+ * A weighted sum has to be told what matters; this is told nothing.
+ *
+ * Non-positive channels are treated as ABSENT rather than as zero quality, and that distinction is the whole
+ * care here. Every channel is a log-scaled count -- sections, lines, features, bytes -- so a channel reads zero
+ * exactly when its count was zero, which says nothing was observed on that axis rather than that the span is
+ * worthless. Multiplying a zero straight through would annihilate the product: a document with no detected
+ * sections would stamp alpha 0 on every span it produced. When no channel measured anything there is genuinely
+ * nothing to go on, and zero is then the honest answer.
+ */
+function geometricMeanOfPresent(channels: readonly number[]): number {
+  let logSum = 0;
+  let present = 0;
+  for (const channel of channels) {
+    const bounded = clamp01(channel);
+    if (!(bounded > 0)) continue;
+    logSum += Math.log(bounded);
+    present += 1;
+  }
+  return present ? Math.exp(logSum / present) : 0;
 }
 
 function computeStructuralConfidence(input: { text: string; mediaType: string; sections: SectionBoundary[]; chunks: ChunkBoundary[] }): number {
   const lineCount = input.text.split(/\n/).length;
   const sectionMass = clamp01(Math.log2(1 + input.sections.length) / 5);
-  const chunkMass = input.chunks.length > 0 ? 0.45 : 0;
   const lineMass = clamp01(Math.log2(1 + lineCount) / 8);
-  const mediaMass = input.mediaType.startsWith("text/") || input.mediaType.includes("pdf") || input.mediaType.includes("word") ? 0.8 : 0.55;
-  return clamp01(0.2 * sectionMass + 0.35 * chunkMass + 0.25 * lineMass + 0.2 * mediaMass);
+  // Same treatment, and this one fed the other: 0.2/0.35/0.25/0.2 over four channels, one of which was another
+  // media guess at 0.8 or 0.55. Structural confidence is how firmly the text divides into parts -- sections,
+  // chunks and lines -- so those three measurements compose, and the format does not enter it at all.
+  //
+  // chunkMass was 0.45 when any chunk existed and 0 otherwise, which is a constant wearing a variable's
+  // clothes: it discriminated nothing between two texts that both chunked. Dropped for that reason, not for
+  // its magnitude.
+  return clamp01(geometricMeanOfPresent([sectionMass, lineMass]));
 }
 
 function diagnosticsWarnings(input: EvidenceExtractionInput, text: string, chunks: ChunkBoundary[]): string[] {
