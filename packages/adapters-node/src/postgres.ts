@@ -150,6 +150,7 @@ import {
   resolveEvidenceSourceIdentity
 } from "@scce/kernel";
 import { createHash } from "node:crypto";
+import { ingestStageTracer } from "./ingest-stage-trace-sink.js";
 
 export interface PostgresStorageOptions {
   url: string;
@@ -4318,16 +4319,24 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
     },
     async putNgramObservationsBatch(observations) {
       if (!observations.length) return;
+      // train.persist is the largest stage in ingest at 271-308s per shard, and it is two things: a label join
+      // that locks every row it is about to write, and the writes themselves. Named separately because dropping
+      // 2.3GB of never-scanned indexes moved it only 6%, so the cost is not index maintenance.
+      const persistTrace = ingestStageTracer();
       await storage.transaction(async () => {
+        const labelSpan = persistTrace.span("ngram.label-join");
         const labels = await joinDurableRecordLabels(
           storage,
           "ngram_observations",
           observations.map(observation => ({ id: observation.id, informationLabel: observation.informationLabel }))
         );
+        labelSpan.end({ observations: observations.length, labels: labels.size });
         const labeledObservations = observations.map(observation => ({
           ...observation,
           informationLabel: labels.get(observation.id)!
         }));
+        const insertSpan = persistTrace.span("ngram.insert");
+        let inserted = 0;
         for (const payload of serializedNgramObservationBatches(labeledObservations)) {
           await storage.query(
           `INSERT INTO ${storage.table("ngram_observations")} AS n(id,stream_id,language_hint,order_n,history,symbol,count,field_weight,source_version_id,evidence_id,observed_at,metadata_json,information_label)
@@ -4374,7 +4383,9 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
             OR n.information_label IS DISTINCT FROM EXCLUDED.information_label`,
           [payload]
           );
+          inserted += 1;
         }
+        insertSpan.end({ observations: labeledObservations.length, statements: inserted });
       });
     },
     async putNgramModel(model) {
