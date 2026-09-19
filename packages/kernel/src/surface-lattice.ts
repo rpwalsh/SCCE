@@ -675,6 +675,72 @@ export function compileBoundaryFeatureContext(input: {
   };
 }
 
+/**
+ * A boundary feature context accumulated across many windows instead of compiled from one batch.
+ *
+ * The context is cross-document recurrence: how many documents carry each surface form class, and how many
+ * classes occur in each boundary context. compileBoundaryFeatureContext derives it from the lattices of one
+ * batch, so an ingest shard measures recurrence over its own few hundred documents and nothing wider -- the
+ * same shard-scoped mistake the segmentation fit made. Consolidation folds every window into one of these and
+ * compiles it once, so a shard can be handed corpus-wide recurrence instead of deriving its own.
+ *
+ * Counts are kept as sets, not sums: a class appearing in two windows under the same boundary context is one
+ * class, and adding the windows' counts would say two.
+ */
+export interface BoundaryFeatureContextAccumulator {
+  readonly documentsByClass: Map<string, Set<string>>;
+  readonly classesByContext: Map<string, Set<string>>;
+  readonly documents: Set<string>;
+}
+
+export function createBoundaryFeatureContextAccumulator(): BoundaryFeatureContextAccumulator {
+  return { documentsByClass: new Map(), classesByContext: new Map(), documents: new Set() };
+}
+
+export function observeLatticesForFeatureContext(
+  accumulator: BoundaryFeatureContextAccumulator,
+  lattices: readonly SurfaceLattice[]
+): void {
+  for (const lattice of lattices) {
+    accumulator.documents.add(lattice.documentId);
+    for (const unit of lattice.units) {
+      if (unit.overlapClass === "base_partition") continue;
+      const documents = accumulator.documentsByClass.get(unit.surfaceFormClassId);
+      if (documents) documents.add(lattice.documentId);
+      else accumulator.documentsByClass.set(unit.surfaceFormClassId, new Set([lattice.documentId]));
+      const contextKey = boundaryContextKey(unit);
+      const classes = accumulator.classesByContext.get(contextKey);
+      if (classes) classes.add(unit.surfaceFormClassId);
+      else accumulator.classesByContext.set(contextKey, new Set([unit.surfaceFormClassId]));
+    }
+  }
+}
+
+/** Identical in shape and arithmetic to compileBoundaryFeatureContext, over everything accumulated. */
+export function compileAccumulatedBoundaryFeatureContext(
+  accumulator: BoundaryFeatureContextAccumulator,
+  hasher: Hasher = createHasher()
+): CompiledBoundaryFeatureContext {
+  const canonical = {
+    schema: "scce.boundary_feature_context.v1" as const,
+    sourceDocumentCount: accumulator.documents.size,
+    documentCountBySurfaceFormClass: Object.fromEntries(
+      [...accumulator.documentsByClass.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, value]) => [key, value.size])
+    ),
+    classCountByBoundaryContext: Object.fromEntries(
+      [...accumulator.classesByContext.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, value]) => [key, value.size])
+    )
+  };
+  return {
+    ...canonical,
+    id: `boundary_feature_context.${hasher.digestHex(JSON.stringify(canonical)).slice(0, 40)}`
+  };
+}
+
 function boundaryContextKey(unit: SurfaceLatticeUnit): string {
   return boundaryContextKeyParts(unit.leftContextSketch, unit.rightContextSketch);
 }

@@ -24,6 +24,7 @@ import {
 import type { SemanticRole } from "./semantic-graph.js";
 import {
   boundaryMixtureForDocument,
+  boundaryMixtureFromPriors,
   boundaryMixtureForStatistics,
   learnSegmentationPopulations,
   type SegmentationPopulationModel
@@ -236,10 +237,25 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
       maxFrames?: number;
       maxLexicalClasses?: number;
       fittedPopulation?: SegmentationPopulationModel;
+      /**
+       * Corpus-wide cross-document recurrence, measured by consolidation rather than from this batch.
+       *
+       * Supplied together with fittedPopulation it removes the bootstrap lattice pass entirely: that pass
+       * exists to derive boundary statistics and this context, and with both handed in there is nothing left
+       * for it to produce that this call needs. Lattice building is 33% of train.compile, the largest CPU cost
+       * in ingest, and the recurrence is then measured over the corpus instead of one shard -- the same
+       * correction the segmentation fit got.
+       *
+       * Documents are routed by the population's own priors rather than by their measured statistics, because
+       * measuring them is exactly the pass being skipped. That changes what the model sees, not only its cost.
+       */
+      boundaryFeatureContext?: CompiledBoundaryFeatureContext;
     }): InducedLanguageModel {
       const documents = input.documents.filter(doc => doc.text.trim().length > 0);
       const corpusText = documents.map(doc => doc.text).join("\n");
-      let initialLattices = documents.map(doc => ({
+      const suppliedPopulation = input.fittedPopulation?.populations.length ? input.fittedPopulation : undefined;
+      const suppliedContext = suppliedPopulation ? input.boundaryFeatureContext : undefined;
+      let initialLattices = suppliedContext ? [] : documents.map(doc => ({
         doc,
         lattice: buildSurfaceLattice({
           documentId: doc.id,
@@ -257,7 +273,7 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
         anchors: initialLattices.flatMap(({ doc }) =>
           (doc.boundaryAnchors ?? []).map(anchor => ({ ...anchor, documentId: doc.id })))
       });
-      const boundaryFeatureContext = compileBoundaryFeatureContext({
+      const boundaryFeatureContext = suppliedContext ?? compileBoundaryFeatureContext({
         lattices: initialLattices.map(row => row.lattice),
         hasher
       });
@@ -326,15 +342,18 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
           evidenceIds: doc.evidenceIds,
           // A supplied population has never seen these documents, and boundaryMixtureForDocument refuses an
           // unseen one by design -- boundaryMixtureForStatistics is the call for that, assigning the document
-          // to a population from its own measured statistics.
-          boundaryEstimator: supplied
-            ? boundaryMixtureForStatistics(
-              supplied,
-              doc.id,
-              documentBoundaryStatistics.find(row => row.documentId === doc.id)?.statistics ?? boundaryStatistics,
-              hasher
-            )
-            : boundaryMixtureForDocument(segmentationPopulations, doc.id, hasher),
+          // to a population from its own measured statistics. With a context supplied too there are no such
+          // statistics, because measuring them is the pass that was skipped, so the population's priors route.
+          boundaryEstimator: suppliedContext
+            ? boundaryMixtureFromPriors(suppliedContext ? suppliedPopulation! : segmentationPopulations, hasher)
+            : supplied
+              ? boundaryMixtureForStatistics(
+                supplied,
+                doc.id,
+                documentBoundaryStatistics.find(row => row.documentId === doc.id)?.statistics ?? boundaryStatistics,
+                hasher
+              )
+              : boundaryMixtureForDocument(segmentationPopulations, doc.id, hasher),
           boundaryFeatureContext,
           hasher
         })

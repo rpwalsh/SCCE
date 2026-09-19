@@ -322,6 +322,43 @@ export function boundaryMixtureForDocument(
   return boundaryMixtureFromAssignment(model, assignment, documentId, hasher);
 }
 
+/**
+ * The population's own marginal: components weighted by prior, no per-document measurement.
+ *
+ * boundaryMixtureForDocument needs the document to have been in the fit, and boundaryMixtureForStatistics needs
+ * its measured statistics -- which on the ingest path means building a whole lattice pass just to decide which
+ * population a document belongs to, and then a second pass to segment it. This is the answer when a caller has
+ * chosen not to pay for that: route by the corpus's own population priors. Less informed per document, and
+ * honest about it.
+ */
+export function boundaryMixtureFromPriors(
+  model: SegmentationPopulationModel,
+  hasher: Hasher = createHasher()
+): BoundaryEstimatorMixture {
+  if (!model.populations.length) throw new Error("segmentation population model is empty");
+  const components = model.populations.map(population => ({
+    populationId: population.id,
+    weight: population.prior,
+    estimator: population.estimator
+  }));
+  const canonical = {
+    schema: BOUNDARY_ESTIMATOR_MIXTURE_SCHEMA,
+    populationModelId: model.id,
+    documentId: "population_prior",
+    components: components.map(component => ({
+      populationId: component.populationId,
+      weight: component.weight,
+      estimatorId: component.estimator.id
+    }))
+  };
+  return {
+    schema: BOUNDARY_ESTIMATOR_MIXTURE_SCHEMA,
+    id: `boundary_estimator_mixture.${hasher.digestHex(JSON.stringify(canonical)).slice(0, 40)}`,
+    populationModelId: model.id,
+    components
+  };
+}
+
 export function boundaryMixtureForStatistics(
   model: SegmentationPopulationModel,
   documentId: string,

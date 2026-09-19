@@ -76,7 +76,7 @@ function inventGlyph(next) {
 }
 
 /** One candidate script: a shape per symbol, drawn from the seed and nothing else. */
-function drawScript(symbols, seed) {
+export function drawScript(symbols, seed) {
   const next = generator(seed);
   const font = {};
   for (const symbol of symbols) {
@@ -108,7 +108,7 @@ function drawScript(symbols, seed) {
  * told apart at a glance and abandoned when they could not -- and it invents nothing by hand. The seed that
  * produced it is reported, so the run reproduces exactly.
  */
-function inventLegibleScript(symbols, seed, probe, attempts = 64) {
+export function inventLegibleScript(symbols, seed, probe, attempts = 64) {
   for (let attempt = 0; attempt < attempts; attempt++) {
     const trialSeed = seed + attempt * 104729;
     const font = drawScript(symbols, trialSeed);
