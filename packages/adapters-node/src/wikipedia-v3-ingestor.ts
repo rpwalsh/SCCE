@@ -777,6 +777,13 @@ export class WikipediaV3Ingestor {
   }
 
   private async ingestPageTraced(file: IngestedSourceFile, checkpoint: IngestionCheckpoint, episodeId: ReturnType<IdFactory["episodeId"]>): Promise<WikipediaPageImport> {
+    // page.transaction measured 1.9s mean at 23% CPU with nothing inside it named, so three quarters of a page
+    // was unattributed. These stages account for it.
+    const pageTrace = ingestStageTracer();
+    const pageStage = <T>(name: string, work: () => T): T => {
+      const span = pageTrace.span(name);
+      try { return work(); } finally { span.end(); }
+    };
     const now = this.clock.now();
     const warnings: string[] = [];
     // Derived, not stored yet: everything this method computes comes from the page's bytes alone, so the whole
@@ -810,9 +817,10 @@ export class WikipediaV3Ingestor {
       metadata
     };
     const profile = {
-      ...this.language.acquire({ sourceVersionId, text: file.text, createdAt: now }),
+      ...pageStage("page.language-profile", () => this.language.acquire({ sourceVersionId, text: file.text, createdAt: now })),
       informationLabel: WIKIPEDIA_INFORMATION_LABEL
     };
+    const extractSpan = pageTrace.span("page.evidence-extract");
     const extracted = this.evidenceExtractor.extract({
       sourceId,
       sourceVersionId,
@@ -827,6 +835,8 @@ export class WikipediaV3Ingestor {
       metadata,
       exactSourceText: true
     });
+    extractSpan.end({ spans: 0 });
+    const admissionSpan = pageTrace.span("page.admission");
     const decision = this.admission.decide({
       source,
       evidence: extracted.spans,
@@ -839,6 +849,8 @@ export class WikipediaV3Ingestor {
     });
     // Writes begin here, in the order they were always in: the event ledger is a hash chain, so their
     // sequence is load-bearing and must never follow computation-completion order.
+    admissionSpan.end();
+    const sourceSpan = pageTrace.span("page.source-persist");
     await this.storage.blobs.put(file.bytes, file.mediaType);
     await this.storage.evidence.putSourceVersion(source);
     await this.storage.events.append(this.events.create({ episodeId, typeId: "SourceObserved", payload: { sourceId, uri: file.uri, namespace: file.namespace, sourceSystem: "wikipedia" } }));
@@ -858,6 +870,8 @@ export class WikipediaV3Ingestor {
         topContinuation: profileTopContinuation(profile.kneserNey)
       }] });
     }
+    sourceSpan.end({ bytes: file.bytes.length });
+    const quarantineSpan = pageTrace.span("page.quarantine-record");
     await this.storage.quarantine.put({
       id: `${sourceVersionId}:wiki-admission`,
       sourceId,
@@ -881,7 +895,7 @@ export class WikipediaV3Ingestor {
       decisionJson: decision.audit
     });
     if (decision.disposition === "reject") {
-      await this.storage.ingestion.put({ ...checkpoint, phase: "skipped", status: "complete", reason: "admission-rejected", updatedAt: now });
+    await this.storage.ingestion.put({ ...checkpoint, phase: "skipped", status: "complete", reason: "admission-rejected", updatedAt: now });
       return zeroPage({ warnings: decision.reasons });
     }
     if (decision.disposition !== "promote") {
@@ -919,12 +933,15 @@ export class WikipediaV3Ingestor {
     }
 
     const admittedSpans = stampEvidence(extracted.spans, metadata, WIKIPEDIA_INFORMATION_LABEL);
+    const evidenceSpan = pageTrace.span("page.evidence-persist");
     await putSpanBlobs(this.storage.blobs, admittedSpans, file.mediaType);
     if (this.storage.evidence.putEvidenceSpans) await this.storage.evidence.putEvidenceSpans(admittedSpans);
     else for (const span of admittedSpans) await this.storage.evidence.putEvidenceSpan(span);
 
     let graphNodes = 0;
     let graphEdges = 0;
+    evidenceSpan.end({ spans: admittedSpans.length });
+    const projectSpan = pageTrace.span("page.typed-project");
     const typedProjection = this.typedIngest.project({ sourceId, sourceVersionId, uri: file.uri, mediaType: file.mediaType, text: file.text, metadata, evidence: admittedSpans, observedAt: now });
     const typedNodes = stampGraphNodes(typedProjection.graphNodes, WIKIPEDIA_INFORMATION_LABEL);
     const typedEdges = stampGraphEdges(typedProjection.graphEdges, WIKIPEDIA_INFORMATION_LABEL);
@@ -932,18 +949,24 @@ export class WikipediaV3Ingestor {
       ...hyperedge,
       informationLabel: WIKIPEDIA_INFORMATION_LABEL
     }));
+    projectSpan.end();
+    const graphSpan = pageTrace.span("page.graph-persist");
     if (this.storage.graph.upsertNodes) await this.storage.graph.upsertNodes(typedNodes);
     else for (const node of typedNodes) await this.storage.graph.upsertNode(node);
     if (this.storage.graph.upsertEdges) await this.storage.graph.upsertEdges(typedEdges);
     else for (const edge of typedEdges) await this.storage.graph.upsertEdge(edge);
     if (this.storage.graph.upsertHyperedges) await this.storage.graph.upsertHyperedges(typedHyperedges);
     else for (const hyperedge of typedHyperedges) await this.storage.graph.upsertHyperedge(hyperedge);
+    graphSpan.end({ nodes: typedNodes.length, edges: typedEdges.length, hyperedges: typedHyperedges.length });
     graphNodes += typedProjection.graphNodes.length;
     graphEdges += typedProjection.graphEdges.length;
     let graphHyperedges = typedProjection.graphHyperedges.length;
+    const buildSpan = pageTrace.span("page.graph-build");
     const builtGraph = this.graphBuilder.build({ sourceVersionId, uri: file.uri, mediaType: file.mediaType, languageProfile: profile, evidence: admittedSpans, observedAt: now });
     const builtNodes = stampGraphNodes(builtGraph.nodes, WIKIPEDIA_INFORMATION_LABEL);
     const builtEdges = stampGraphEdges(builtGraph.edges, WIKIPEDIA_INFORMATION_LABEL);
+    buildSpan.end();
+    const builtGraphSpan = pageTrace.span("page.graph-persist-built");
     if (this.storage.graph.upsertNodes) await this.storage.graph.upsertNodes(builtNodes);
     else for (const node of builtNodes) await this.storage.graph.upsertNode(node);
     if (this.storage.graph.upsertEdges) await this.storage.graph.upsertEdges(builtEdges);
@@ -951,10 +974,12 @@ export class WikipediaV3Ingestor {
     const builtHyperedges = builtGraph.hyperedges.map(hyperedge => ({ ...hyperedge, informationLabel: WIKIPEDIA_INFORMATION_LABEL }));
     if (this.storage.graph.upsertHyperedges) await this.storage.graph.upsertHyperedges(builtHyperedges);
     else for (const hyperedge of builtHyperedges) await this.storage.graph.upsertHyperedge(hyperedge);
+    builtGraphSpan.end({ nodes: builtNodes.length, edges: builtEdges.length, hyperedges: builtHyperedges.length });
     graphNodes += builtGraph.nodes.length;
     graphEdges += builtGraph.edges.length;
     graphHyperedges += builtGraph.hyperedges.length;
 
+    const checkpointSpan = pageTrace.span("page.checkpoint");
     await this.storage.ingestion.put({
       ...checkpoint,
       phase: "stored",
@@ -970,8 +995,11 @@ export class WikipediaV3Ingestor {
         sourceSystem: "wikipedia"
       }
     });
+    checkpointSpan.end();
+    const eventSpan = pageTrace.span("page.events");
     await this.storage.events.append(this.events.create({ episodeId, typeId: "EvidenceLinked", payload: { sourceVersionId, evidence: admittedSpans.length, sourceSystem: "wikipedia" } }));
     await this.storage.events.append(this.events.create({ episodeId, typeId: "GraphUpdated", payload: { sourceVersionId, typed: typedProjection.diagnostics, built: builtGraph.diagnostics } }));
+    eventSpan.end();
 
     return {
       sources: 1,
