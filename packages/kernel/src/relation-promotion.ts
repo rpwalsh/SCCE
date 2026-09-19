@@ -86,6 +86,15 @@ const UNSCORED_EVALUATION: Evaluation = {
 
 const DIRICHLET_ALPHA = 0.5;
 const MIN_INDEPENDENT_SOURCES = 4;
+
+/**
+ * How many independent source families a relation needs before promotion can be scored at all.
+ *
+ * Exported because the cost cliff is at exactly this number: below it every seed is refused unconditionally
+ * and nothing is scored, at it every seed runs an evaluation plus three negative controls. A test that cannot
+ * name the threshold cannot show it is testing the cliff.
+ */
+export const RELATION_PROMOTION_MIN_INDEPENDENT_SOURCES = MIN_INDEPENDENT_SOURCES;
 const MIN_FIT_SOURCES = 2;
 
 /**
