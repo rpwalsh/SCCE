@@ -1583,6 +1583,33 @@ function createBlobStore(storage: PostgresStorageAdapter): BlobStore {
       await storage.query(`INSERT INTO ${storage.table("blobs")}(content_hash, media_type, byte_length, content) VALUES($1,$2,$3,$4) ON CONFLICT(content_hash) DO NOTHING`, [hash, mediaType, content.length, Buffer.from(content)]);
       return hash;
     },
+    async putBatch(items) {
+      if (!items.length) return [];
+      // Deduplicated before the write: a page's spans routinely repeat a boilerplate line, and the same hash
+      // twice in one statement is a self-conflict Postgres would reject rather than ignore.
+      const byHash = new Map<string, { hash: string; mediaType: string; content: Uint8Array }>();
+      const order: string[] = [];
+      for (const item of items) {
+        const hash = blobContentHash(item.content);
+        order.push(hash);
+        if (!byHash.has(hash)) byHash.set(hash, { hash, mediaType: item.mediaType, content: item.content });
+      }
+      const unique = [...byHash.values()];
+      await storage.query(
+        `INSERT INTO ${storage.table("blobs")}(content_hash, media_type, byte_length, content)
+         SELECT r.content_hash, r.media_type, r.byte_length, decode(r.content_b64, 'base64')
+         FROM jsonb_to_recordset($1::jsonb) AS r(content_hash text, media_type text, byte_length bigint, content_b64 text)
+         ON CONFLICT(content_hash) DO NOTHING`,
+        [JSON.stringify(unique.map(row => ({
+          content_hash: row.hash,
+          media_type: row.mediaType,
+          byte_length: row.content.length,
+          content_b64: Buffer.from(row.content).toString("base64")
+        })))]
+      );
+      // Returned in the caller's order, including the repeats, so a caller can index straight back.
+      return order as ContentHash[];
+    },
     async get(hash) {
       const rows = await storage.query<{ content: Buffer }>(`SELECT content FROM ${storage.table("blobs")} WHERE content_hash=$1`, [hash]);
       if (!rows[0]) throw new Error(`blob not found: ${hash}`);

@@ -6,6 +6,7 @@ import {
   createClock,
   createEventFactory,
   createEvidenceExtractor,
+  putSpanBlobs,
   createHasher,
   createIdFactory,
   createLanguageAcquisitionEngine,
@@ -359,9 +360,7 @@ async function trainLanguageCorpusTextTransaction(input: LanguageCorpusTrainingI
     })
       .map(span => ({ ...span, informationLabel: sourceInformationLabel }))
       .map(span => withSourceFamily(span, input.sourceFamilyRanges));
-    for (const span of evidence) {
-      await input.storage.blobs.put(Buffer.from(span.text, "utf8"), mediaType);
-    }
+    await putSpanBlobs(input.storage.blobs, evidence, mediaType);
     await input.storage.evidence.putSourceVersion(source);
     if (input.storage.evidence.putEvidenceSpans) await input.storage.evidence.putEvidenceSpans(evidence);
     else for (const span of evidence) await input.storage.evidence.putEvidenceSpan(span);

@@ -9,6 +9,7 @@ import {
   createClock,
   createEventFactory,
   createEvidenceExtractor,
+  putSpanBlobs,
   createHasher,
   createIdFactory,
   createLanguageAcquisitionEngine,
@@ -900,7 +901,7 @@ export class WikipediaV3Ingestor {
           }
         };
       });
-      for (const span of quarantinedSpans) await this.storage.blobs.put(Buffer.from(span.text, "utf8"), file.mediaType);
+      await putSpanBlobs(this.storage.blobs, quarantinedSpans, file.mediaType);
       if (this.storage.evidence.putEvidenceSpans) await this.storage.evidence.putEvidenceSpans(quarantinedSpans);
       else for (const span of quarantinedSpans) await this.storage.evidence.putEvidenceSpan(span);
       await this.storage.ingestion.put({
@@ -919,7 +920,7 @@ export class WikipediaV3Ingestor {
     }
 
     const admittedSpans = stampEvidence(extracted.spans, metadata, WIKIPEDIA_INFORMATION_LABEL);
-    for (const span of admittedSpans) await this.storage.blobs.put(Buffer.from(span.text, "utf8"), file.mediaType);
+    await putSpanBlobs(this.storage.blobs, admittedSpans, file.mediaType);
     if (this.storage.evidence.putEvidenceSpans) await this.storage.evidence.putEvidenceSpans(admittedSpans);
     else for (const span of admittedSpans) await this.storage.evidence.putEvidenceSpan(span);
 

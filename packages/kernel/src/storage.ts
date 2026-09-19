@@ -739,6 +739,15 @@ export interface ConversationStore {
 
 export interface BlobStore {
   put(content: Uint8Array, mediaType: string): Promise<ContentHash>;
+  /**
+   * Many blobs in one statement. Every ingest path writes one blob per evidence span in a loop, which is one
+   * round trip per span on the hot path -- a page's spans cost a page's worth of waiting. Blobs are content
+   * addressed and the single-row write already resolves conflicts by doing nothing, so a batch is the same
+   * operation with the waiting removed and is idempotent for the same reason.
+   *
+   * Optional, so an adapter without it keeps working through `put`; callers fall back to the loop.
+   */
+  putBatch?(items: readonly { content: Uint8Array; mediaType: string }[]): Promise<ContentHash[]>;
   get(hash: ContentHash): Promise<Uint8Array>;
   exists(hash: ContentHash): Promise<boolean>;
 }
