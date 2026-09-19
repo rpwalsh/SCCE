@@ -142,3 +142,45 @@ describe("induce() with the pair", () => {
     expect(contextOnly.symbolCount).toBe(neither.symbolCount);
   });
 });
+
+describe("singleton entries are dropped because they cannot change a feature", () => {
+  it("segments identically with and without them", () => {
+    // Both features subtract one before the logarithm, so a support of one contributes zero -- and so does an
+    // absent key, because the lookup defaults to zero and max(0, -1) is zero too. This asserts that directly
+    // rather than trusting the arithmetic: a context with every singleton restored must build the same lattice.
+    const docs = documents(10, "prune");
+    const lattices = latticesFor(docs);
+    const pruned = compileBoundaryFeatureContext({ lattices, hasher });
+
+    // Reconstruct what the context looked like before pruning, by counting without the filter.
+    const accumulator = createBoundaryFeatureContextAccumulator();
+    observeLatticesForFeatureContext(accumulator, lattices);
+    const withSingletons = {
+      ...pruned,
+      documentCountBySurfaceFormClass: Object.fromEntries(
+        [...accumulator.documentsByClass].map(([key, value]) => [key, value.size])
+      ),
+      classCountByBoundaryContext: Object.fromEntries(
+        [...accumulator.classesByContext].map(([key, value]) => [key, value.size])
+      )
+    };
+    // The singletons really are the bulk of it, or this test proves nothing.
+    expect(Object.keys(withSingletons.documentCountBySurfaceFormClass).length)
+      .toBeGreaterThan(Object.keys(pruned.documentCountBySurfaceFormClass).length * 2);
+
+    const target = docs[0]!;
+    const build = (context: typeof pruned) => buildSurfaceLattice({
+      documentId: target.id,
+      text: target.text.slice(0, 2000),
+      sourceVersionId: target.sourceVersionId,
+      evidenceIds: target.evidenceIds,
+      boundaryFeatureContext: context,
+      hasher
+    });
+    const a = build(pruned);
+    const b = build(withSingletons as typeof pruned);
+    // Same units, same boundary features, so the same segmentation and the same n-grams downstream.
+    expect(b.units.length).toBe(a.units.length);
+    expect(JSON.stringify(b.units)).toBe(JSON.stringify(a.units));
+  });
+});

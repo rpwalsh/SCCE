@@ -658,16 +658,8 @@ export function compileBoundaryFeatureContext(input: {
   const canonical = {
     schema: "scce.boundary_feature_context.v1" as const,
     sourceDocumentCount: new Set(input.lattices.map(lattice => lattice.documentId)).size,
-    documentCountBySurfaceFormClass: Object.fromEntries(
-      [...documentsByClass.entries()]
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, value]) => [key, value.size])
-    ),
-    classCountByBoundaryContext: Object.fromEntries(
-      [...classesByContext.entries()]
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, value]) => [key, value.size])
-    )
+    documentCountBySurfaceFormClass: Object.fromEntries(withoutSingletonSupport(documentsByClass)),
+    classCountByBoundaryContext: Object.fromEntries(withoutSingletonSupport(classesByContext))
   };
   return {
     ...canonical,
@@ -716,6 +708,25 @@ export function observeLatticesForFeatureContext(
   }
 }
 
+/**
+ * Entries a count of one, dropped.
+ *
+ * Both features this context feeds subtract one before the logarithm: recurrence is
+ * log1p(max(0, documentSupport - 1))/6 and substitution is log1p(max(0, classSupport - 1))/6. A support of one
+ * therefore contributes exactly zero, and so does a missing key, because the lookup defaults to zero and
+ * max(0, -1) is also zero. Keeping those entries changes no feature and no verdict; it only stores them.
+ *
+ * Measured: a context over 300 real documents serialised to 51.8MB, which extrapolates past 3GB for this
+ * corpus, because a surface form class that occurs in one document is the common case and its key is a hash.
+ */
+function withoutSingletonSupport(counts: Map<string, Set<string>>): Array<[string, number]> {
+  const kept: Array<[string, number]> = [];
+  for (const [key, value] of counts) {
+    if (value.size > 1) kept.push([key, value.size]);
+  }
+  return kept.sort(([left], [right]) => left.localeCompare(right));
+}
+
 /** Identical in shape and arithmetic to compileBoundaryFeatureContext, over everything accumulated. */
 export function compileAccumulatedBoundaryFeatureContext(
   accumulator: BoundaryFeatureContextAccumulator,
@@ -724,16 +735,8 @@ export function compileAccumulatedBoundaryFeatureContext(
   const canonical = {
     schema: "scce.boundary_feature_context.v1" as const,
     sourceDocumentCount: accumulator.documents.size,
-    documentCountBySurfaceFormClass: Object.fromEntries(
-      [...accumulator.documentsByClass.entries()]
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, value]) => [key, value.size])
-    ),
-    classCountByBoundaryContext: Object.fromEntries(
-      [...accumulator.classesByContext.entries()]
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, value]) => [key, value.size])
-    )
+    documentCountBySurfaceFormClass: Object.fromEntries(withoutSingletonSupport(accumulator.documentsByClass)),
+    classCountByBoundaryContext: Object.fromEntries(withoutSingletonSupport(accumulator.classesByContext))
   };
   return {
     ...canonical,
