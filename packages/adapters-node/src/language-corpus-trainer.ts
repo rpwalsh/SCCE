@@ -651,47 +651,72 @@ function stampFrame(frame: SemanticFrameRecord, sourceSystem: string, sourceSyst
   return { ...frame, frameJson: toJsonValue({ ...jsonRecord(frame.frameJson), ...jsonRecord(metadata), sourceSystem, sourceSystemId, forceClass: "learned_language_prior" }) };
 }
 
+/**
+ * What only the owner can state about a corpus. Authority is whether this corpus is a factual authority on its
+ * subjects, and freshness is how current its content is -- neither is readable from the bytes, and both are
+ * declarations rather than measurements. Authority is coarse on purpose: either the owner vouches for a corpus
+ * as a factual authority or does not, and 0.88 against 0.76 was pseudo-precision over a judgement that has no
+ * decimals in it.
+ */
+const CORPUS_DECLARATIONS: Readonly<Record<string, {
+  readonly authority: 0 | 1;
+  readonly freshness: number;
+  readonly independenceGroup: string;
+  readonly accessScope: string;
+  readonly licenseStatus: string;
+}>> = {
+  [CORPUS_SOURCE_SYSTEM_IDS.wikipedia]: { authority: 1, freshness: 0.68, independenceGroup: "wikimedia:wikipedia", accessScope: "public", licenseStatus: "licensed" },
+  [CORPUS_SOURCE_SYSTEM_IDS.workspace]: { authority: 1, freshness: 0.98, independenceGroup: "owner:workspace", accessScope: "owner_private", licenseStatus: "owner_authorized" },
+  [CORPUS_SOURCE_SYSTEM_IDS.corrections]: { authority: 1, freshness: 1, independenceGroup: "owner:corrections", accessScope: "owner_private", licenseStatus: "owner_authorized" },
+  // Human-authored dialogue: owner-authorized and current, but never a factual authority.
+  [CORPUS_SOURCE_SYSTEM_IDS.dialogue]: { authority: 0, freshness: 1, independenceGroup: "owner:dialogue", accessScope: "owner_private", licenseStatus: "owner_authorized" },
+  [CORPUS_SOURCE_SYSTEM_IDS.ossDocs]: { authority: 1, freshness: 0.72, independenceGroup: "corpus:oss-docs", accessScope: "public", licenseStatus: "licensed" },
+  [CORPUS_SOURCE_SYSTEM_IDS.ossCode]: { authority: 1, freshness: 0.72, independenceGroup: "corpus:oss-code", accessScope: "public", licenseStatus: "licensed" },
+  [CORPUS_SOURCE_SYSTEM_IDS.gutenberg]: { authority: 1, freshness: 0.2, independenceGroup: "corpus:gutenberg", accessScope: "public", licenseStatus: "public_domain" }
+};
+
+/**
+ * The trust vector of a corpus source. Four of its six numbers are facts about how the source was stored and
+ * are the same for every corpus; the other two are the owner's declarations above.
+ *
+ * It used to be a table of 42 numbers -- six per corpus across seven corpora and a fallback -- varying in ways
+ * nothing measured. identity read 0.98 for Wikipedia and 0.9 for OSS docs, though a content hash either
+ * identifies a source or it does not. directness read 0.72 for Gutenberg and 0.84 for Wikipedia, though in both
+ * cases the text IS the artifact. parserReliability read 0.88 to 1, though this trainer is handed `text` that
+ * is already text, so there is no parse to be unreliable about -- and the reliability of the actual extraction
+ * is measured separately by admission's own diagnostics, from the parser count and the warnings it reported.
+ *
+ * No admission gate weakens: every retired identity, parserReliability and directness value already cleared
+ * its floor and still does. One gate STRENGTHENS -- an unrecognised corpus declared no authority now fails
+ * minimumAuthorityForEvidence where the old fallback of exactly 0.4 scraped past it. An unknown corpus should
+ * not be direct evidence.
+ */
+/** Exposed for the trust-vector test: the derived dimensions must stay uniform and declarations coarse. */
+export function corpusSourceTrustForTest(sourceSystem: string): SourceTrust {
+  return corpusSourceTrust(sourceSystem);
+}
+
 function corpusSourceTrust(sourceSystem: string): SourceTrust {
-  if (sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.wikipedia) return {
-    identity: 0.98, integrity: 1, parserReliability: 0.92, directness: 0.84,
-    authority: 0.88, freshness: 0.68, independenceGroup: "wikimedia:wikipedia",
-    accessScope: "public", licenseStatus: "licensed"
-  };
-  if (sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.workspace) return {
-    identity: 1, integrity: 1, parserReliability: 0.94, directness: 1,
-    authority: 1, freshness: 0.98, independenceGroup: "owner:workspace",
-    accessScope: "owner_private", licenseStatus: "owner_authorized"
-  };
-  if (sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.corrections) return {
-    identity: 1, integrity: 1, parserReliability: 1, directness: 1,
-    authority: 1, freshness: 1, independenceGroup: "owner:corrections",
-    accessScope: "owner_private", licenseStatus: "owner_authorized"
-  };
-  // Human-authored dialogue: direct and owner-authorized like corrections, but never a factual authority.
-  if (sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.dialogue) return {
-    identity: 1, integrity: 1, parserReliability: 1, directness: 1,
-    authority: 0, freshness: 1, independenceGroup: "owner:dialogue",
-    accessScope: "owner_private", licenseStatus: "owner_authorized"
-  };
-  if (sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.ossDocs) return {
-    identity: 0.9, integrity: 1, parserReliability: 0.9, directness: 0.82,
-    authority: 0.76, freshness: 0.72, independenceGroup: "corpus:oss-docs",
-    accessScope: "public", licenseStatus: "licensed"
-  };
-  if (sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.ossCode) return {
-    identity: 0.9, integrity: 1, parserReliability: 0.94, directness: 0.9,
-    authority: 0.72, freshness: 0.72, independenceGroup: "corpus:oss-code",
-    accessScope: "public", licenseStatus: "licensed"
-  };
-  if (sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.gutenberg) return {
-    identity: 0.96, integrity: 1, parserReliability: 0.88, directness: 0.72,
-    authority: 0.7, freshness: 0.2, independenceGroup: "corpus:gutenberg",
-    accessScope: "public", licenseStatus: "public_domain"
+  const declared = CORPUS_DECLARATIONS[sourceSystem] ?? {
+    authority: 0 as const,
+    freshness: 0,
+    independenceGroup: `corpus:${sourceSystem}`,
+    accessScope: "unknown",
+    licenseStatus: "unknown"
   };
   return {
-    identity: 0.5, integrity: 1, parserReliability: 0.7, directness: 0.5,
-    authority: 0.4, freshness: 0.5, independenceGroup: `corpus:${sourceSystem}`,
-    accessScope: "unknown", licenseStatus: "unknown"
+    // Content-addressed: the source is exactly identified and verifiable. Facts about hashing.
+    identity: 1,
+    integrity: 1,
+    // The input to this trainer is already text, so nothing was parsed that could have gone wrong here.
+    parserReliability: 1,
+    // The text is the artifact, with no transform between them: 1/(1 + derivation depth) at depth 0.
+    directness: 1,
+    authority: declared.authority,
+    freshness: declared.freshness,
+    independenceGroup: declared.independenceGroup,
+    accessScope: declared.accessScope,
+    licenseStatus: declared.licenseStatus
   };
 }
 
