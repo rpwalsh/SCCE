@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   createEvidenceExtractor,
+  createSourceAdmissionController,
   createHasher,
   createIdFactory,
   createLanguageAcquisitionEngine,
@@ -211,9 +212,11 @@ describe("the page's trust vector is measured, not chosen", () => {
     // Content addressing gives exact identity and verifiability. Facts about hashing, not judgements.
     expect(trust.identity).toBe(1);
     expect(trust.integrity).toBe(1);
-    // The one dimension the eye measures: the likelihood the known language assigned per symbol.
-    expect(trust.parserReliability).toBeCloseTo(Math.exp(transcription.fit), 12);
-    expect(trust.parserReliability as number).toBeGreaterThan(0);
+    // How decisively this reading beat the next best: the MDL posterior from the margin in nats. This fixture
+    // happens to TIE -- its two cheapest readings cost the same -- so it sits exactly at 0.5, which is the
+    // honest reading of a page that admitted two equally good interpretations.
+    expect(trust.parserReliability).toBeCloseTo(1 / (1 + Math.exp(-transcription.readingMargin)), 12);
+    expect(trust.parserReliability as number).toBeGreaterThanOrEqual(0.5);
     expect(trust.parserReliability as number).toBeLessThanOrEqual(1);
     // One transform from the artifact.
     expect(trust.directness).toBe(0.5);
@@ -228,10 +231,58 @@ describe("the page's trust vector is measured, not chosen", () => {
     // The same passage set in columns: read correctly, but scored by the same language on its own terms.
     const declared = { independenceGroup: "g", accessScope: "owner_private", licenseStatus: "owner_authorized" };
     const trust = visualPageSourceTrust(clean, declared);
-    // A reading whose fit the language could not score at all asserts no reliability rather than a default.
-    const unscored = visualPageSourceTrust({ ...clean, fit: Number.NEGATIVE_INFINITY }, declared);
-    expect(unscored.parserReliability).toBe(0);
-    expect(trust.parserReliability as number).toBeGreaterThan(unscored.parserReliability as number);
+    // A tie asserts no preference between the two readings; a decisive margin approaches certainty.
+    const tied = visualPageSourceTrust({ ...clean, readingMargin: 0 }, declared);
+    const decisive = visualPageSourceTrust({ ...clean, readingMargin: 700 }, declared);
+    expect(tied.parserReliability).toBeCloseTo(0.5, 12);
+    expect(decisive.parserReliability as number).toBeGreaterThan(0.99);
+    expect(decisive.parserReliability as number).toBeGreaterThan(tied.parserReliability as number);
+  });
+});
+
+describe("a read page can actually clear admission", () => {
+  it("passes the trust gate as a learned prior, and cannot as direct evidence", async () => {
+    // The defect this guards: visualPageSourceTrust asserts authority 0, because a machine reading of a
+    // photograph is not an authority on its subject. Admission applies an authority floor only to
+    // direct_evidence, so declaring that use made every read page fail the gate and quarantine -- and --admit
+    // could never promote one. The honest fix was the declared use, not the number.
+    const { path } = await pageFile(wrapWords(sampleWords(WEIGHTS, 777, 60), 8));
+    const transcription = await transcribeImageFile(path, LANGUAGE);
+    const trust = visualPageSourceTrust(transcription, {
+      independenceGroup: "owner:visual:target",
+      accessScope: "owner_private",
+      licenseStatus: "owner_authorized"
+    });
+    expect(trust.authority).toBe(0);
+
+    const source = {
+      sourceId: "source_visual", sourceVersionId: "source_version_visual", namespace: "visual",
+      canonicalUri: "file://page.pgm", contentHash: "sha256_visual", mediaType: "text/plain",
+      observedAt: 1_000, byteLength: 128, sourceTrust: trust, metadata: {}
+    } as never;
+    const evidence = [{
+      id: "evidence_visual", sourceId: "source_visual", sourceVersionId: "source_version_visual",
+      chunkId: "chunk_visual", contentHash: "sha256_chunk", mediaType: "text/plain",
+      byteStart: 0, byteEnd: 16, charStart: 0, charEnd: 16,
+      text: transcription.text.slice(0, 16), textPreview: transcription.text.slice(0, 16),
+      languageHints: {}, scriptHints: {}, trustVector: {}, provenance: {},
+      features: [], status: "quarantined", alpha: 0.5, observedAt: 1_000
+    }] as never[];
+
+    const asLearnedPrior = createSourceAdmissionController().decide({
+      source, evidence,
+      context: { sourceClass: "owner_local", intendedUse: "learned_prior", promotionAuthority: "owner" }
+    });
+    expect(asLearnedPrior.trustChecks.authority).toBe(true);
+    expect(asLearnedPrior.disposition).toBe("promote");
+
+    // And the reason the declared use had to change: as direct evidence the honest authority of 0 fails.
+    const asDirectEvidence = createSourceAdmissionController().decide({
+      source, evidence,
+      context: { sourceClass: "owner_local", intendedUse: "direct_evidence", promotionAuthority: "owner" }
+    });
+    expect(asDirectEvidence.trustChecks.authority).toBe(false);
+    expect(asDirectEvidence.disposition).not.toBe("promote");
   });
 });
 

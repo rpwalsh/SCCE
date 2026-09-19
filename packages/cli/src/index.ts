@@ -145,7 +145,11 @@ async function main(): Promise<void> {
               namespace: parsed.args.find(arg => arg.startsWith("--namespace="))?.slice(12) ?? "visual",
               sourceAdmission: {
                 sourceClass: "owner_local",
-                intendedUse: "direct_evidence",
+                // A machine reading of a photograph is a learned prior, not a direct factual authority. Its
+                // authority is genuinely unknown -- which is why visualPageSourceTrust asserts none -- and
+                // declaring direct_evidence made admission apply its authority floor to a number that was
+                // honestly zero, so every read page quarantined and --admit could never promote one.
+                intendedUse: "learned_prior",
                 promotionAuthority: parsed.args.includes("--admit") ? "owner" : "review"
               },
               sourceTrust: visualPageSourceTrust(transcription, {

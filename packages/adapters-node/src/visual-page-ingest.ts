@@ -89,8 +89,15 @@ export function visualPageMetadata(transcription: PageTranscription): Record<str
  *
  *   identity, integrity  the image is content-addressed, so it is exactly identified and verifiable. These are
  *                        properties of hashing, not judgements about the page.
- *   parserReliability    the likelihood the known language assigns per symbol to the accepted reading. This is
- *                        the one dimension the eye can genuinely measure, and it is the one that means it.
+ *   parserReliability    how decisively this reading beat the next best one. The eye scores every candidate
+ *                        reading by complete description length and reports the margin in nats, so the
+ *                        posterior odds of the chosen reading against the runner-up are exp(margin) and its
+ *                        posterior probability is 1/(1+exp(-margin)). A tie reads 0.5; a decisive reading
+ *                        approaches 1. Derived, with no constant to pick.
+ *
+ *                        This was exp(fit) first, which was wrong: fit is how likely the TEXT is under the
+ *                        known language, not how reliable the PARSE was. It measured 0.12 on a good page and
+ *                        so failed admission's parserReliability floor, quarantining every read page.
  *   directness           structural: the page is the artifact and the reading is one transform from it, so
  *                        1/(1+depth) with depth 1. Not taste -- derivation depth.
  *   authority, freshness  whether a photographed page is an authority on its subject, and when it was written,
@@ -107,11 +114,13 @@ export function visualPageSourceTrust(
     readonly licenseStatus: string;
   }
 ): Record<string, number | string> {
-  const measured = Math.exp(transcription.fit);
+  // Posterior of the chosen reading against the runner-up, from the margin the eye measured in nats.
+  const margin = transcription.readingMargin;
+  const reliability = Number.isFinite(margin) ? 1 / (1 + Math.exp(-margin)) : 0.5;
   return {
     identity: 1,
     integrity: 1,
-    parserReliability: Number.isFinite(measured) ? Math.min(1, Math.max(0, measured)) : 0,
+    parserReliability: Math.min(1, Math.max(0, reliability)),
     directness: 1 / 2,
     authority: 0,
     freshness: 0,
