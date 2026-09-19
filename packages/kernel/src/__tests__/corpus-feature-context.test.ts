@@ -157,9 +157,7 @@ describe("singleton entries are dropped because they cannot change a feature", (
     observeLatticesForFeatureContext(accumulator, lattices);
     const withSingletons = {
       ...pruned,
-      documentCountBySurfaceFormClass: Object.fromEntries(
-        [...accumulator.documentsByClass].map(([key, value]) => [key, value.size])
-      ),
+      documentCountBySurfaceFormClass: Object.fromEntries([...accumulator.documentsByClass]),
       classCountByBoundaryContext: Object.fromEntries(
         [...accumulator.classesByContext].map(([key, value]) => [key, value.size])
       )

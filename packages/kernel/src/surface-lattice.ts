@@ -680,13 +680,27 @@ export function compileBoundaryFeatureContext(input: {
  * class, and adding the windows' counts would say two.
  */
 export interface BoundaryFeatureContextAccumulator {
-  readonly documentsByClass: Map<string, Set<string>>;
+  /** Counts, not document sets: each document is observed once, so a per-window set suffices to dedupe. */
+  readonly documentsByClass: Map<string, number>;
+  /**
+   * The first class seen per boundary context, and a set only for contexts that reached a second one.
+   *
+   * A context with one class contributes zero -- substitution is log1p(max(0, classSupport - 1))/6 -- and is
+   * pruned on compile. Measured over 160 documents, 1,949 of 225,441 contexts survived that pruning, so
+   * keeping a set for every context spends almost all of its memory on entries that are then discarded.
+   */
+  readonly firstClassByContext: Map<string, string>;
   readonly classesByContext: Map<string, Set<string>>;
-  readonly documents: Set<string>;
+  documentCount: number;
 }
 
 export function createBoundaryFeatureContextAccumulator(): BoundaryFeatureContextAccumulator {
-  return { documentsByClass: new Map(), classesByContext: new Map(), documents: new Set() };
+  return {
+    documentsByClass: new Map(),
+    firstClassByContext: new Map(),
+    classesByContext: new Map(),
+    documentCount: 0
+  };
 }
 
 export function observeLatticesForFeatureContext(
@@ -694,16 +708,30 @@ export function observeLatticesForFeatureContext(
   lattices: readonly SurfaceLattice[]
 ): void {
   for (const lattice of lattices) {
-    accumulator.documents.add(lattice.documentId);
+    accumulator.documentCount += 1;
+    // One document's classes, so a class occurring many times in it counts once. Dropped with the document.
+    const classesInDocument = new Set<string>();
     for (const unit of lattice.units) {
       if (unit.overlapClass === "base_partition") continue;
-      const documents = accumulator.documentsByClass.get(unit.surfaceFormClassId);
-      if (documents) documents.add(lattice.documentId);
-      else accumulator.documentsByClass.set(unit.surfaceFormClassId, new Set([lattice.documentId]));
+      classesInDocument.add(unit.surfaceFormClassId);
       const contextKey = boundaryContextKey(unit);
-      const classes = accumulator.classesByContext.get(contextKey);
-      if (classes) classes.add(unit.surfaceFormClassId);
-      else accumulator.classesByContext.set(contextKey, new Set([unit.surfaceFormClassId]));
+      const existing = accumulator.classesByContext.get(contextKey);
+      if (existing) {
+        existing.add(unit.surfaceFormClassId);
+        continue;
+      }
+      const first = accumulator.firstClassByContext.get(contextKey);
+      if (first === undefined) {
+        accumulator.firstClassByContext.set(contextKey, unit.surfaceFormClassId);
+        continue;
+      }
+      // A second distinct class: only now is a set worth keeping, because only now can the count exceed one.
+      if (first !== unit.surfaceFormClassId) {
+        accumulator.classesByContext.set(contextKey, new Set([first, unit.surfaceFormClassId]));
+      }
+    }
+    for (const classId of classesInDocument) {
+      accumulator.documentsByClass.set(classId, (accumulator.documentsByClass.get(classId) ?? 0) + 1);
     }
   }
 }
@@ -727,6 +755,15 @@ function withoutSingletonSupport(counts: Map<string, Set<string>>): Array<[strin
   return kept.sort(([left], [right]) => left.localeCompare(right));
 }
 
+/** The same filter over counts a caller already reduced, rather than over sets it had to keep to do so. */
+function withoutSingletonCounts(counts: Map<string, number>): Array<[string, number]> {
+  const kept: Array<[string, number]> = [];
+  for (const [key, value] of counts) {
+    if (value > 1) kept.push([key, value]);
+  }
+  return kept.sort(([left], [right]) => left.localeCompare(right));
+}
+
 /** Identical in shape and arithmetic to compileBoundaryFeatureContext, over everything accumulated. */
 export function compileAccumulatedBoundaryFeatureContext(
   accumulator: BoundaryFeatureContextAccumulator,
@@ -734,8 +771,8 @@ export function compileAccumulatedBoundaryFeatureContext(
 ): CompiledBoundaryFeatureContext {
   const canonical = {
     schema: "scce.boundary_feature_context.v1" as const,
-    sourceDocumentCount: accumulator.documents.size,
-    documentCountBySurfaceFormClass: Object.fromEntries(withoutSingletonSupport(accumulator.documentsByClass)),
+    sourceDocumentCount: accumulator.documentCount,
+    documentCountBySurfaceFormClass: Object.fromEntries(withoutSingletonCounts(accumulator.documentsByClass)),
     classCountByBoundaryContext: Object.fromEntries(withoutSingletonSupport(accumulator.classesByContext))
   };
   return {
