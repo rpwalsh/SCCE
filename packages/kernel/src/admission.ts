@@ -16,7 +16,6 @@ export interface SourceAdmissionPolicy {
   allowOpaqueLicenses: boolean;
   rejectNamespaces: string[];
   sensitiveFeatureIds: string[];
-  maxEvidenceAlphaForSensitiveUnpromoted: number;
 }
 
 export interface SourceAdmissionDecision {
@@ -48,8 +47,7 @@ export const DEFAULT_ADMISSION_POLICY: SourceAdmissionPolicy = {
   allowNetworkSources: true,
   allowOpaqueLicenses: true,
   rejectNamespaces: [],
-  sensitiveFeatureIds: [],
-  maxEvidenceAlphaForSensitiveUnpromoted: 0.42
+  sensitiveFeatureIds: []
 };
 
 export function createSourceAdmissionController(policy: Partial<SourceAdmissionPolicy> = {}) {
@@ -90,7 +88,9 @@ export function createSourceAdmissionController(policy: Partial<SourceAdmissionP
       const trustGatePassed = Object.values(trustChecks).every(Boolean);
       if (namespaceRejected) reasons.push("namespace rejected by policy");
       if (input.evidence.length === 0 && p.requireText) reasons.push("no extracted text evidence");
-      if (diagnosticTrust < 0.5) reasons.push("extractor diagnostics reduced trust");
+      // Was a bare 0.5 while the gate it reports on is minimumDiagnosticParserReliability. A reason that
+      // disagrees with its own gate describes nothing.
+      if (diagnosticTrust < p.minimumDiagnosticParserReliability) reasons.push("extractor diagnostics reduced trust");
       if (!networkSourceAllowed) reasons.push("runtime web sources disabled by policy");
       if (input.context.intendedUse === "quarantine_only") reasons.push("source context requires quarantine");
       if (!promotionAuthorized) reasons.push("source context lacks promotion authority");
@@ -99,13 +99,26 @@ export function createSourceAdmissionController(policy: Partial<SourceAdmissionP
       }
       const sensitive = sensitivityScore(input.evidence, metadata, p);
       const binaryRatio = typeof metadata.binaryRatio === "number" ? metadata.binaryRatio : 0;
-      const risk = clamp01(0.45 * sensitive + 0.35 * binaryRatio + 0.2 * (input.evidence.length ? 0 : 1));
-      if (sensitive > 0.15) safetyRails.push("safety.rail.structured_sensitive_source");
+      // Any structured sensitivity raises the rail. It was `> 0.15`, which this file already contradicts three
+      // lines down where a single span counts as sensitive at `> 0`.
+      if (sensitive > 0) safetyRails.push("safety.rail.structured_sensitive_source");
       if (binaryRatio > p.maximumBinaryRatio) reasons.push("binary ratio exceeds policy");
+      // A source with no evidence spans has nothing to promote: promotion grants influence over the graph and
+      // language memory, and there is nothing here to grant it over.
+      //
+      // This replaces `risk < 0.55`, where risk was 0.45*sensitive + 0.35*binaryRatio + 0.2*(no evidence).
+      // That blend decided almost nothing. `binaryRatio > maximumBinaryRatio` already forces reject above, so
+      // by this line binaryRatio is at most 0.12 and contributes at most 0.042. With evidence present the test
+      // was therefore 0.45*sensitive + 0.042 < 0.55, which holds for every sensitivity up to 1.0 -- the gate
+      // could not fire. It bound only when a source carried no evidence, and then on an arbitrary sensitivity
+      // cut. So the condition it was standing in for is stated directly, and sensitivity is left to the rail
+      // and to the per-span discount below, which are the two places it is actually acted on.
+      const hasEvidence = input.evidence.length > 0;
+      if (!hasEvidence) reasons.push("source carries no evidence to promote");
       const disposition = namespaceRejected || binaryRatio > p.maximumBinaryRatio || !trustVectorValid
         ? "reject"
         : trustGatePassed
-          && risk < 0.55
+          && hasEvidence
           && networkSourceAllowed
           && promotionAuthorized
           && input.context.intendedUse !== "quarantine_only"
@@ -117,9 +130,20 @@ export function createSourceAdmissionController(policy: Partial<SourceAdmissionP
           && input.context.intendedUse !== "direct_evidence"
       };
       const evidenceActions = input.evidence.map(span => {
-        const containsSensitive = sensitivityScore([span], metadata, p) > 0;
+        const spanSensitivity = sensitivityScore([span], metadata, p);
+        const containsSensitive = spanSensitivity > 0;
         if (disposition === "promote") return { evidenceId: String(span.id), action: "promote" as const, alpha: span.alpha, reason: "typed source context authorized promotion and trust threshold passed" };
-        if (containsSensitive && span.alpha > p.maxEvidenceAlphaForSensitiveUnpromoted) return { evidenceId: String(span.id), action: "lower-alpha" as const, alpha: p.maxEvidenceAlphaForSensitiveUnpromoted, reason: "sensitive unpromoted evidence alpha ceiling" };
+        // Sensitive evidence that was not promoted is discounted BY HOW SENSITIVE IT MEASURED, rather than
+        // clipped to a fixed ceiling of 0.42. A flat ceiling treats a barely-sensitive span and an entirely
+        // sensitive one identically, and it raised the alpha of anything measuring below it. Scaling by
+        // (1 - sensitivity) is monotone in the measurement, never raises a span's alpha, and reaches zero only
+        // when the span measured wholly sensitive.
+        if (containsSensitive) {
+          const discounted = clamp01(span.alpha * (1 - spanSensitivity));
+          if (discounted < span.alpha) {
+            return { evidenceId: String(span.id), action: "lower-alpha" as const, alpha: discounted, reason: "unpromoted sensitive evidence discounted by measured sensitivity" };
+          }
+        }
         return { evidenceId: String(span.id), action: "quarantine" as const, alpha: span.alpha, reason: reasons[0] ?? "default quarantine until explicit training promotion" };
       });
       return {
@@ -129,7 +153,10 @@ export function createSourceAdmissionController(policy: Partial<SourceAdmissionP
         trustChecks,
         parserDiagnosticReliability: diagnosticTrust,
         activeInfluence,
-        risk,
+        // Reported as the measured sensitivity of this source's evidence, which is the one risk quantity here
+        // that is actually measured. It was a blend of sensitivity, binary ratio and has-no-evidence at
+        // 0.45/0.35/0.2; the other two are reported beside it in the audit as the conditions they are.
+        risk: sensitive,
         reasons: reasons.length ? reasons : [`source ${disposition}`],
         safetyRails,
         evidenceActions,
@@ -141,7 +168,10 @@ export function createSourceAdmissionController(policy: Partial<SourceAdmissionP
           trustChecks,
           parserDiagnosticReliability: diagnosticTrust,
           activeInfluence,
-          risk,
+          risk: sensitive,
+          sensitivity: sensitive,
+          binaryRatio,
+          hasEvidence,
           disposition,
           reasons,
           safetyRails,
@@ -186,12 +216,26 @@ function normalizeMetadata(value: JsonValue): Record<string, JsonValue> {
   return { ...record, ...diagnostics };
 }
 
+/**
+ * How reliable the extraction was, as the share of parse signal that came back clean: parsers that ran against
+ * parsers that ran plus the defects they reported.
+ *
+ * It was `0.35 + min(0.3, parsers*0.08) + min(0.25, log2(1+chars)/40) - min(0.35, missing*0.08 + warnings*0.03)`
+ * -- six numbers and three ceilings, none of them measured. The character count is gone with them: how much
+ * text a source contains is not a statement about whether its parser worked.
+ *
+ * This never weakens the gate it feeds. A clean single-parser source read 0.68 before and reads 1.0 now, so it
+ * passes either way; one warning reads 0.5 against 0.65 and still passes; three warnings read 0.25 against
+ * 0.59 and now fail minimumDiagnosticParserReliability, where before they passed. Monotonically stricter as
+ * defects accumulate, which is the direction a reliability measure should move.
+ */
 function diagnosticTrustFrom(metadata: Record<string, JsonValue>): number {
-  const parserCount = typeof metadata.parserCount === "number" ? metadata.parserCount : 1;
+  const parserCount = typeof metadata.parserCount === "number" ? Math.max(0, metadata.parserCount) : 1;
   const missing = Array.isArray(metadata.missingPreconditions) ? metadata.missingPreconditions.length : 0;
   const warnings = Array.isArray(metadata.warnings) ? metadata.warnings.length : 0;
-  const charLength = typeof metadata.charLength === "number" ? metadata.charLength : 0;
-  return clamp01(0.35 + Math.min(0.3, parserCount * 0.08) + Math.min(0.25, Math.log2(1 + charLength) / 40) - Math.min(0.35, missing * 0.08 + warnings * 0.03));
+  const defects = missing + warnings;
+  const signal = parserCount + defects;
+  return signal > 0 ? clamp01(parserCount / signal) : 0;
 }
 
 function sensitivityScore(evidence: readonly EvidenceSpan[], metadata: Record<string, JsonValue>, policy: SourceAdmissionPolicy): number {
