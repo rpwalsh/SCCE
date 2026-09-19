@@ -2,6 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { Clock, EvidenceSpan, Hasher, JsonValue, ModelState, PolicyProfile, SemanticEntailmentResult, TrainInput } from "./types.js";
 import { clamp01, createClock, createHasher, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";
+import { otsuThreshold } from "./language-identity.js";
 import { createLanguageInductionEngine, type InducedLanguageModel, type LanguageInductionDocument } from "./language-induction.js";
 import type { SemanticProofResult } from "./semantic-proof-system.js";
 import { SEMANTIC_VERDICT } from "./semantic-codes.js";
@@ -224,6 +225,18 @@ function promoteEvidence(evidence: readonly EvidenceSpan[], train: TrainInput, m
   // credit; later duplicates see those features as already claimed.
   const batchClaimedFeatures = new Set<string>();
   const decisionsById = new Map<string, EvidencePromotionDecision>();
+  // Scored in trust order first so novelty claiming is unchanged, then decided once the batch's own cut is known.
+  const scoredSpans: Array<{
+    span: EvidenceSpan;
+    score: number;
+    trust: number;
+    alpha: number;
+    novelty: number;
+    coverage: number;
+    namespaceOk: boolean;
+    usedByProof: boolean;
+    reasons: string[];
+  }> = [];
   const byTrustDescending = [...evidence].sort((a, b) => trustFromSpan(b) - trustFromSpan(a));
   for (const span of byTrustDescending) {
     const trust = trustFromSpan(span);
@@ -231,9 +244,18 @@ function promoteEvidence(evidence: readonly EvidenceSpan[], train: TrainInput, m
     const novelty = noveltyScore(span.features, knownFeatures, batchClaimedFeatures);
     for (const feature of span.features) batchClaimedFeatures.add(feature);
     const coverage = goalFeatures.length ? weightedJaccard(goalFeatures, span.features) : Math.min(1, span.features.length / 256);
-    const proofUse = entailmentEvidence.has(String(span.id)) ? 0.18 : 0;
-    const score = clamp01(0.3 * trust + 0.26 * span.alpha + 0.2 * novelty + 0.18 * coverage + proofUse);
-    const promote = namespaceOk && trust >= minTrust && score >= Math.max(0.42, minTrust * 0.8);
+    // This decided what stored evidence becomes promoted, and promoted evidence drives language learning,
+    // graph retrieval and proof. It was 0.3*trust + 0.26*alpha + 0.2*novelty + 0.18*coverage + proofUse, gated
+    // at score >= max(0.42, minTrust*0.8). Five weights, a bonus and a threshold, none of them fitted -- the
+    // front door to what the brain learns, decided by numbers somebody picked.
+    //
+    // The four channels are measurements: how much the source is trusted, what the span measured as evidence,
+    // how much of it is not already known, and how far it covers what the goal asked for. Composed
+    // geometrically, so none outranks another by choice and a span weak on any axis cannot be carried by an
+    // intercept. Channels reading zero are treated as absent rather than as zero worth, because novelty and
+    // coverage read zero when there was nothing to compare against.
+    const usedByProof = entailmentEvidence.has(String(span.id));
+    const score = geometricMeanOfPresent([clamp01(trust), clamp01(span.alpha), clamp01(novelty), clamp01(coverage)]);
     const reasons = [
       `trust=${trust.toFixed(3)}`,
       `alpha=${span.alpha.toFixed(3)}`,
@@ -242,12 +264,60 @@ function promoteEvidence(evidence: readonly EvidenceSpan[], train: TrainInput, m
     ];
     if (!namespaceOk) reasons.push("namespace not selected");
     if (trust < minTrust) reasons.push("below trust threshold");
-    if (proofUse > 0) reasons.push("used by recent proof");
-    decisionsById.set(String(span.id), { evidenceId: String(span.id), promote, score, trust, alpha: span.alpha, novelty, coverage, reasons });
+    if (usedByProof) reasons.push("used by recent proof");
+    scoredSpans.push({ span, score, trust, alpha: span.alpha, novelty, coverage, namespaceOk, usedByProof, reasons });
+  }
+
+  // Where the cut falls is decided by this batch's own scores rather than by a constant: Otsu over the
+  // candidates, which is how this codebase already derives a split from a selection. When the scores do not
+  // separate into two groups, otsuThreshold returns nothing and no span is promoted on score -- there is no
+  // measured basis to prefer any of them, and inventing one is what the old 0.42 did.
+  const split = otsuThreshold(scoredSpans.map(entry => entry.score));
+  const cut = typeof split === "number" && Number.isFinite(split) ? split : undefined;
+
+  for (const entry of scoredSpans) {
+    // A span a recent proof actually used has demonstrated its evidential worth, which is a fact about it
+    // rather than a 0.18 bonus added to a score. It still has to clear the namespace and trust conditions.
+    // Two regimes, and which one applies is itself measured. When the batch's scores separate, the upper group
+    // is promoted -- a relative judgement the data supports. When they do not separate there is no relative
+    // basis, so the caller's own declared trust threshold decides alone; a batch of one good span must still
+    // be promotable, and requiring separation there promoted nothing at all.
+    const aboveCut = cut === undefined || entry.score >= cut;
+    const promote = entry.namespaceOk && entry.trust >= minTrust && (aboveCut || entry.usedByProof);
+    const reasons = [...entry.reasons];
+    if (cut === undefined) reasons.push("batch scores did not separate; declared trust threshold decides");
+    else reasons.push(`batch cut=${cut.toFixed(3)}`);
+    decisionsById.set(String(entry.span.id), {
+      evidenceId: String(entry.span.id),
+      promote,
+      score: entry.score,
+      trust: entry.trust,
+      alpha: entry.alpha,
+      novelty: entry.novelty,
+      coverage: entry.coverage,
+      reasons
+    });
   }
   return evidence
     .map(span => decisionsById.get(String(span.id))!)
     .sort((a, b) => Number(b.promote) - Number(a.promote) || b.score - a.score);
+}
+
+/**
+ * Equal contribution by construction over the channels that measured something. Non-positive channels are
+ * absent observations, not zero worth: novelty reads zero when nothing new was found to compare against and
+ * coverage reads zero when no goal features were supplied, and neither means the span is worthless.
+ */
+function geometricMeanOfPresent(channels: readonly number[]): number {
+  let logSum = 0;
+  let present = 0;
+  for (const channel of channels) {
+    const bounded = clamp01(channel);
+    if (!(bounded > 0)) continue;
+    logSum += Math.log(bounded);
+    present += 1;
+  }
+  return present ? Math.exp(logSum / present) : 0;
 }
 
 function evidenceToLanguageDocument(span: EvidenceSpan): LanguageInductionDocument {
