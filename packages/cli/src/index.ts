@@ -29,6 +29,8 @@ import {
 
 interface Parsed {
   configPath: string;
+  /** The brain to act on. A brain is a schema, not a copy of the whole runtime config. */
+  schema?: string;
   command?: string;
   args: string[];
 }
@@ -58,6 +60,15 @@ async function main(): Promise<void> {
     return;
   }
   const config = await readScceRuntimeConfig(parsed.configPath);
+  // One tracked config and one credential overlay; the brain is a flag. Copying the entire runtime config to
+  // change one field produced five near-identical files -- new, prof, test, scce5 -- whose names say nothing
+  // about which brain they point at, and "new" turned out to be the older one.
+  if (parsed.schema) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(parsed.schema)) {
+      throw new Error(`--schema must be a safe PostgreSQL identifier: ${parsed.schema}`);
+    }
+    config.database = { ...config.database, schema: parsed.schema };
+  }
   const runtime = createNodeRuntime(config);
   try {
     const reportKind = TOP_LEVEL_WORKSPACE_REPORTS[parsed.command];
@@ -1745,9 +1756,11 @@ function numberFlag(args: string[], prefix: string): number | undefined {
 function parseArgs(argv: string[]): Parsed {
   const args = [...argv];
   let configPath = "scce.config.json";
+  let schema: string | undefined;
   while (args[0]?.startsWith("--")) {
     const flag = args.shift();
     if (flag === "--config") configPath = args.shift() ?? configPath;
+    else if (flag === "--schema") schema = args.shift() ?? schema;
     else throw new Error(`unknown flag: ${flag}`);
   }
   const command = args.shift();
@@ -1757,9 +1770,11 @@ function parseArgs(argv: string[]): Parsed {
     const value = args[index];
     if (value === "--config") { configPath = args[++index] ?? configPath; continue; }
     if (value?.startsWith("--config=")) { configPath = value.slice("--config=".length) || configPath; continue; }
+    if (value === "--schema") { schema = args[++index] ?? schema; continue; }
+    if (value?.startsWith("--schema=")) { schema = value.slice("--schema=".length) || schema; continue; }
     if (value !== undefined) rest.push(value);
   }
-  return { configPath, command, args: rest };
+  return { configPath, command, args: rest, ...(schema ? { schema } : {}) };
 }
 
 function parseTurnArgs(args: string[]): { text: string; webRequested: boolean; sessionId?: string; conversationId?: string; targetLanguage?: string; detailProfileId?: string } {
