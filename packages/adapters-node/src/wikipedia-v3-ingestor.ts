@@ -3,6 +3,7 @@
 import path from "node:path";
 import { ingestStageTracer } from "./ingest-stage-trace-sink.js";
 import { existsSync } from "node:fs";
+import { freemem, totalmem } from "node:os";
 import {
   canonicalStringify,
   createClock,
@@ -1884,14 +1885,46 @@ function isBlockCheckpoint(checkpoint: IngestionCheckpoint): boolean {
 
 function stopDecision(input: WikipediaV3IngestOptions, result: WikipediaV3IngestResult): { kind: "heap" | "owner"; reason: string } | undefined {
   if (input.stopFile && existsSync(input.stopFile)) return { kind: "owner", reason: `owner stop file present at ${input.stopFile}` };
-  const limit = input.heapCheckpointMb;
-  if (limit && limit > 0) {
-    const current = heapMiB();
-    result.heapMiB = current;
-    result.rssMiB = rssMiB();
-    if (current >= limit) return { kind: "heap", reason: `heap safety checkpoint (${current} MiB >= ${limit} MiB)` };
+  const heapLimit = input.heapCheckpointMb;
+  const current = heapMiB();
+  const rss = rssMiB();
+  result.heapMiB = current;
+  result.rssMiB = rss;
+  if (heapLimit && heapLimit > 0 && current >= heapLimit) {
+    return { kind: "heap", reason: `heap safety checkpoint (${current} MiB >= ${heapLimit} MiB)` };
+  }
+  // Resident set, not heap. A clean scce5 run died inside train.compile at 598 MiB of heap and 4,390 MiB of
+  // RSS: lattice building grows resident memory far faster than the V8 heap, so a heap-only checkpoint cannot
+  // see it coming and the supervisor loses the child instead of restarting it. memorySafetyBoundMb was already
+  // declared, validated, plumbed through and written into every checkpoint -- and compared against nothing.
+  const rssLimit = residentSafetyBoundMiB(input.memorySafetyBoundMb);
+  if (rssLimit > 0 && rss >= rssLimit) {
+    return { kind: "heap", reason: `resident safety checkpoint (${rss} MiB >= ${rssLimit} MiB)` };
   }
   return undefined;
+}
+
+/**
+ * The declared bound, capped by the machine it is running on.
+ *
+ * A configured bound larger than physical memory silently disables the check, which is how an 8,192 MiB bound
+ * came to be set on a 15,921 MiB machine that also hosts the database this ingest writes to. The cap is the
+ * memory actually present minus what is already resident elsewhere, read at the moment of the decision rather
+ * than assumed, so the bound tracks the machine instead of a number someone once typed.
+ */
+export function residentSafetyBoundMiBForTest(declaredMb: number | undefined): number {
+  return residentSafetyBoundMiB(declaredMb);
+}
+
+function residentSafetyBoundMiB(declaredMb: number | undefined): number {
+  if (!declaredMb || declaredMb <= 0) return 0;
+  const totalMiB = Math.round(totalmem() / 1024 / 1024);
+  const freeMiB = Math.round(freemem() / 1024 / 1024);
+  const rss = rssMiB();
+  // What this process could grow into before the machine has nothing left: its own resident set plus whatever
+  // is still free. Below that, the declared bound stands.
+  const reachableMiB = rss + freeMiB;
+  return Math.max(512, Math.min(declaredMb, reachableMiB, totalMiB));
 }
 
 export function wikipediaImportCanActivate(result: Pick<WikipediaV3IngestResult, "sources" | "stoppedByHeapSafetyBound" | "stoppedByOwner">): boolean {
