@@ -748,14 +748,34 @@ function codeObservation(input: TypedIngestProjectorInput, evidenceIds: Evidence
 function graphFromObservations(input: { observations: Observation[]; routes: ObservationRoute[]; evidenceIds: EvidenceSpan["id"][]; observedAt: number; ids: IdFactory; hasher: Hasher }): { nodes: GraphNode[]; edges: GraphEdge[] } {
   const nodes = new Map<string, GraphNode>();
   const edges = new Map<string, GraphEdge>();
-  const upsertNode = (key: unknown, kind: string, representation: JsonValue, features: string[], alpha = 0.58): GraphNode["id"] => {
+  /**
+   * `carriesEvidence: false` for a node whose identity is a name rather than a thing the corpus said.
+   *
+   * The graph upsert unions evidence ids on conflict:
+   *   evidence_ids = ARRAY(SELECT DISTINCT unnest(n.evidence_ids || EXCLUDED.evidence_ids))
+   * which is fine for a node one page mentions and pathological for a node EVERY page mentions. Measured on
+   * scce5, the two observation_store nodes had reached 34,592 evidence ids and 2,297 kB apiece, so each page
+   * re-sorted 34,592 elements, rewrote 2.3MB, and re-indexed it in a 288MB GIN -- twice. That is O(n) per page
+   * on an array of length n, so quadratic over the corpus, and it is why writing 21 nodes cost 3,420ms while
+   * writing 231 in the next call cost 1,478ms.
+   *
+   * No linkage is lost: the observation_routes_to_store edge carries the same evidence ids, per observation.
+   */
+  const upsertNode = (
+    key: unknown,
+    kind: string,
+    representation: JsonValue,
+    features: string[],
+    alpha = 0.58,
+    carriesEvidence = true
+  ): GraphNode["id"] => {
     const id = input.ids.nodeId({ kind, key }) as GraphNode["id"];
     if (!nodes.has(id)) nodes.set(id, {
       id,
       typeId: input.ids.dimensionId({ kind }),
       representation,
       alpha,
-      evidenceIds: input.evidenceIds,
+      evidenceIds: carriesEvidence ? input.evidenceIds : [],
       features,
       createdAt: input.observedAt,
       updatedAt: input.observedAt,
@@ -785,7 +805,7 @@ function graphFromObservations(input: { observations: Observation[]; routes: Obs
     const route = input.routes.find(item => item.observationId === observation.id);
     const observationNode = upsertNode(observation.id, `observation:${observation.kind}`, compactObservation(observation), observationFeatures(observation), observationConfidence(observation, route));
     for (const store of route?.durableStores ?? []) {
-      const storeNode = upsertNode(store, "observation_store", toJsonValue({ store }), [`store:${store}`], 0.5);
+      const storeNode = upsertNode(store, "observation_store", toJsonValue({ store }), [`store:${store}`], 0.5, false);
       upsertEdge(observationNode, storeNode, "observation_routes_to_store", toJsonValue({ languageEligible: route?.languageEligible ?? false }), 0.52);
     }
     if (observation.kind === "table") {

@@ -2396,7 +2396,25 @@ async function upsertGraphNodesBatch(storage: PostgresStorageAdapter, nodes: rea
        metadata_json jsonb,
        information_label jsonb
      )
-     ON CONFLICT(id) DO UPDATE SET alpha=GREATEST(n.alpha,EXCLUDED.alpha), evidence_ids=(SELECT ARRAY(SELECT DISTINCT unnest(n.evidence_ids || EXCLUDED.evidence_ids))), features=(SELECT ARRAY(SELECT DISTINCT unnest(n.features || EXCLUDED.features))), updated_at=EXCLUDED.updated_at, metadata_json=n.metadata_json || EXCLUDED.metadata_json, information_label=EXCLUDED.information_label`,
+     ON CONFLICT(id) DO UPDATE SET alpha=GREATEST(n.alpha,EXCLUDED.alpha), evidence_ids=(SELECT ARRAY(SELECT DISTINCT unnest(n.evidence_ids || EXCLUDED.evidence_ids))), features=(SELECT ARRAY(SELECT DISTINCT unnest(n.features || EXCLUDED.features))), updated_at=EXCLUDED.updated_at, metadata_json=n.metadata_json || EXCLUDED.metadata_json, information_label=EXCLUDED.information_label
+     -- Rewrite only a row this page would actually change.
+     --
+     -- The unions above are unconditional, so a node every page touches was re-sorted and rewritten every
+     -- page whether or not anything new arrived. Measured on scce5: two observation_store nodes had reached
+     -- 34,592 evidence ids and 2,297 kB, and writing 21 nodes cost 3,858ms while writing 231 in the next call
+     -- cost 992ms -- the cost was in re-materialising arrays that already contained everything being added,
+     -- then re-indexing 2.3MB in a 288MB GIN, twice a page.
+     --
+     -- The containment test is "is contained by": when this page's evidence ids and features are already
+     -- present, its alpha is no higher, and its metadata and label add nothing, the row is unchanged and is
+     -- left alone. updated_at is
+     -- deliberately NOT a reason to rewrite: a node that nothing new was learned about was not updated, and
+     -- treating the clock as a change makes every row dirty on every page.
+     WHERE EXCLUDED.alpha > n.alpha
+        OR NOT (EXCLUDED.evidence_ids <@ n.evidence_ids)
+        OR NOT (EXCLUDED.features <@ n.features)
+        OR n.metadata_json <> (n.metadata_json || EXCLUDED.metadata_json)
+        OR n.information_label IS DISTINCT FROM EXCLUDED.information_label`,
         [payloadChunk]
       );
     }

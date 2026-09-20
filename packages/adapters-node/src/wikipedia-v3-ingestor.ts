@@ -951,13 +951,22 @@ export class WikipediaV3Ingestor {
       informationLabel: WIKIPEDIA_INFORMATION_LABEL
     }));
     projectSpan.end();
+    // Split three ways: this call writes 21 nodes and 27 edges in 3,909ms while the next writes 231 nodes and
+    // 260 edges in 1,278ms -- thirty times the cost per row, same tables, same transaction. A fixed cost lives
+    // in one of these three and the aggregate span could not say which.
     const graphSpan = pageTrace.span("page.graph-persist");
+    const nodeSpan = pageTrace.span("page.graph-nodes");
     if (this.storage.graph.upsertNodes) await this.storage.graph.upsertNodes(typedNodes);
     else for (const node of typedNodes) await this.storage.graph.upsertNode(node);
+    nodeSpan.end({ nodes: typedNodes.length });
+    const edgeSpan = pageTrace.span("page.graph-edges");
     if (this.storage.graph.upsertEdges) await this.storage.graph.upsertEdges(typedEdges);
     else for (const edge of typedEdges) await this.storage.graph.upsertEdge(edge);
+    edgeSpan.end({ edges: typedEdges.length });
+    const hyperSpan = pageTrace.span("page.graph-hyperedges");
     if (this.storage.graph.upsertHyperedges) await this.storage.graph.upsertHyperedges(typedHyperedges);
     else for (const hyperedge of typedHyperedges) await this.storage.graph.upsertHyperedge(hyperedge);
+    hyperSpan.end({ hyperedges: typedHyperedges.length });
     graphSpan.end({ nodes: typedNodes.length, edges: typedEdges.length, hyperedges: typedHyperedges.length });
     graphNodes += typedProjection.graphNodes.length;
     graphEdges += typedProjection.graphEdges.length;
