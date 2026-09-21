@@ -1,6 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { mkdtemp, rename, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdtemp, rename, rm, unlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -66,6 +66,10 @@ describe("Wikipedia input manifest", () => {
     };
     const first = await createWikipediaInputManifest(options(paths, { indexPath: undefined, hashFile }));
     await writeFile(paths.dumpPath, "bbbb\n", "utf8");
+    // Some filesystems expose coarse timestamp resolution: an immediate same-size
+    // rewrite can otherwise retain the exact stat signature used by the cache key.
+    const changedMtime = new Date(Date.now() + 2_000);
+    await utimes(paths.dumpPath, changedMtime, changedMtime);
     const second = await createWikipediaInputManifest(options(paths, { indexPath: undefined, hashFile }));
 
     expect(hashCalls).toBe(2);

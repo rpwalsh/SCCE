@@ -344,6 +344,46 @@ ablated run. The final production-kernel rerun passed all 58 tests. Combined wit
 the other nine unchanged targeted files, all 126 focused cases have passed.
 The final build passed. Logs: `.tmp/graph-refinement-targeted.log`,
 `.tmp/graph-refinement-kernel-local-rerun.log`, and
-`.tmp/graph-refinement-build-final.log`. A new complete regression run for the
-renamed feature and semantic/calibration changes is pending in
-`.tmp/graph-refinement-full-tests.log`.
+`.tmp/graph-refinement-build-final.log`.
+
+The renamed feature's complete 20-shard run finished with one failure in the
+same-size file-rewrite manifest fixture (`.tmp/graph-refinement-full-tests.log`).
+An immediate rewrite can retain the same filesystem timestamps. The fixture now
+explicitly advances mtime to exercise the stated stat-cache invalidation contract.
+This does not make stat equality a proof of content equality: an edit preserving
+all exposed metadata requires a fresh content hash to detect. The affected shard
+19 rerun passed 28 files / 281 tests, with one skipped file/test
+(`.tmp/graph-refinement-shard19.log`). All other shards had already passed.
+The evaluation validation (40 tests), hidden-model check, source-text check and
+test inventory then passed separately. The original `pnpm test` invocation still
+exited 1; the corrected shard and downstream gates were rerun individually.
+
+A synthetic in-process profile of the real field engine plus structural
+refinement measured median full/ablated times of 11.77/6.02 ms (16 nodes),
+39.42/19.64 ms (64 nodes), and 75.38/38.31 ms (128 nodes), over 20 trials per
+condition after warmup. This measures the additional field pass on synthetic
+chains, not end-to-end answering, database latency, ingestion throughput or
+quality. Raw output: `.tmp/graph-refinement-profile.json`.
+
+### Container deployment checkpoint
+
+The full host unit inventory, replacing only the corrected shard, totals 559
+passed files / 3,470 passed tests, with 10 files / 14 tests skipped. Downstream
+validation gates passed separately as recorded above.
+
+All four development image targets built successfully. Before the host-first
+startup instruction, isolated PostgreSQL and adapter rehearsals passed, the
+sealed evaluation kit verified, and the container served the frontend and API
+with HTTP 200 responses. Eight Linux adapter test files passed 61 cases with one
+skipped case, covering Wikipedia, OSS, multilingual translation, spreadsheets,
+visual helpers and sensors. Vitest required a writable-config workaround in the
+initial evaluation image; its source ownership is corrected in the Dockerfile.
+The revised ownership and 16 GB machine resource limits received static checks
+only; Docker was stopped before rebuilding or rerunning them.
+
+Docker Desktop and all task containers are now stopped. Host ingestion, training
+and calibration must finish before any Docker services start again. No production
+ingestion or database transfer occurred; the seven audited `scce6_runtime` table
+counts remain zero. The images are development builds, not qualified brains or
+an executed host-to-container handoff. See `docs/CONTAINERS.md` for the required
+ordering, memory budget, corpus mounts and remaining restoration checks.

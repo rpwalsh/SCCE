@@ -1,0 +1,151 @@
+name: scce
+
+x-build: &build
+  context: .
+  dockerfile: Dockerfile
+  args:
+    SCCE_REVISION: ${SCCE_REVISION:-development}
+
+x-environment: &environment
+  TZ: UTC
+  LANG: C.UTF-8
+  SCCE_DATABASE_HOST: postgres
+  SCCE_DATABASE_NAME: scce_container
+  SCCE_DATABASE_USER: scce
+  SCCE_DATABASE_PASSWORD_FILE: /run/secrets/pg_password
+  SCCE_API_BEARER_TOKEN_FILE: /run/secrets/api_token
+  SCCE_ALLOW_AUTOMATIC_WEB: ${SCCE_ALLOW_AUTOMATIC_WEB:-0}
+  SCCE_PROD_CALIBRATIONS: /data/models/calibration/prod-calibrations.json
+
+x-app: &app
+  init: true
+  environment: *environment
+  secrets: [pg_password, api_token]
+  depends_on:
+    postgres:
+      condition: service_healthy
+  volumes:
+    - type: bind
+      source: ${SCCE_CONFIG_PATH:-./deploy/scce.config.json}
+      target: /config/scce.config.json
+      read_only: true
+      bind: {create_host_path: false}
+    - type: bind
+      source: ${SCCE_CORPUS_ROOT:-./data/corpora}
+      target: /data/corpora
+      read_only: true
+      bind: {create_host_path: false}
+    - type: bind
+      source: ${SCCE_MODEL_ROOT:-./models}
+      target: /data/models
+      read_only: true
+      bind: {create_host_path: false}
+    - workspace:/workspace
+    - scratch:/scratch
+
+services:
+  postgres:
+    # Host ingestion/training/calibration precede handoff; nothing starts by default.
+    profiles: [handoff, serve, serve-media, tools, evaluation]
+    # Verified image: PostgreSQL 16.14, pgvector 0.8.3. Separate from the host's 16.11 instance.
+    image: pgvector/pgvector:0.8.3-pg16-bookworm@sha256:131dcf7ff6a900545df8e7e092c270aa8c6db2f2c818e408cb45ec21316b74e6
+    environment:
+      POSTGRES_DB: scce_container
+      POSTGRES_USER: scce
+      POSTGRES_PASSWORD_FILE: /run/secrets/pg_password
+      POSTGRES_INITDB_ARGS: --encoding=UTF8 --locale=C.UTF-8
+      TZ: UTC
+    secrets: [pg_password]
+    mem_limit: 1g
+    shm_size: 256m
+    command: [postgres, -c, shared_buffers=256MB, -c, work_mem=8MB, -c, maintenance_work_mem=128MB, -c, max_connections=32]
+    volumes: [postgres-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U scce -d scce_container']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  server:
+    <<: *app
+    profiles: [serve]
+    build: {<<: *build, target: runtime}
+    image: scce-runtime:${SCCE_REVISION:-development}
+    mem_limit: 2g
+    environment:
+      <<: *environment
+      NODE_OPTIONS: --max-old-space-size=1536
+    ports: ['127.0.0.1:${SCCE_SERVER_PORT:-3874}:3873']
+    restart: unless-stopped
+
+  # Same server with native PDF/video dependencies for deployments using those capabilities.
+  server-media:
+    <<: *app
+    profiles: [serve-media]
+    build: {<<: *build, target: runtime-media}
+    image: scce-runtime-media:${SCCE_REVISION:-development}
+    mem_limit: 2g
+    environment:
+      <<: *environment
+      NODE_OPTIONS: --max-old-space-size=1536
+    ports: ['127.0.0.1:${SCCE_SERVER_PORT:-3874}:3873']
+    restart: unless-stopped
+
+  worker:
+    <<: *app
+    profiles: [tools]
+    build: {<<: *build, target: worker}
+    image: scce-worker:${SCCE_REVISION:-development}
+    mem_limit: 4g
+    environment:
+      <<: *environment
+      NODE_OPTIONS: --max-old-space-size=3072
+    # Default image command prints CLI help. Training/ingestion always needs an explicit command.
+    restart: 'no'
+
+  evaluation:
+    <<: *app
+    profiles: [evaluation]
+    build: {<<: *build, target: evaluation}
+    image: scce-evaluation:${SCCE_REVISION:-development}
+    mem_limit: 4g
+    environment:
+      <<: *environment
+      NODE_OPTIONS: --max-old-space-size=3072
+    volumes:
+      - type: bind
+        source: ${SCCE_CONFIG_PATH:-./deploy/scce.config.json}
+        target: /config/scce.config.json
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${SCCE_CORPUS_ROOT:-./data/corpora}
+        target: /data/corpora
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${SCCE_MODEL_ROOT:-./models}
+        target: /data/models
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${SCCE_RESULTS_ROOT:-./artifacts/container}
+        target: /results
+        bind: {create_host_path: false}
+      - evaluation-workspace:/workspace
+      - evaluation-scratch:/scratch
+    restart: 'no'
+
+secrets:
+  pg_password:
+    file: ${SCCE_PG_PASSWORD_FILE:-./.scce/docker/postgres-password}
+  api_token:
+    file: ${SCCE_API_TOKEN_FILE:-./.scce/docker/api-token}
+
+volumes:
+  postgres-data:
+  workspace:
+  scratch:
+  evaluation-workspace:
+  evaluation-scratch:

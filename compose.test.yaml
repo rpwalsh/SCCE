@@ -1,0 +1,44 @@
+# Standalone test project: no production DB, corpus mounts, secrets, or host DB ports.
+name: scce-rehearsal
+services:
+  postgres-test:
+    image: pgvector/pgvector:0.8.3-pg16-bookworm@sha256:131dcf7ff6a900545df8e7e092c270aa8c6db2f2c818e408cb45ec21316b74e6
+    environment:
+      POSTGRES_DB: scce_test
+      POSTGRES_USER: scce_test
+      POSTGRES_PASSWORD: disposable-rehearsal-only
+      POSTGRES_INITDB_ARGS: --encoding=UTF8 --locale=C.UTF-8
+      TZ: UTC
+    volumes: [test-postgres-data:/var/lib/postgresql/data]
+    mem_limit: 1g
+    shm_size: 256m
+    command: [postgres, -c, shared_buffers=256MB, -c, work_mem=8MB, -c, maintenance_work_mem=128MB, -c, max_connections=32]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U scce_test -d scce_test']
+      interval: 3s
+      timeout: 5s
+      retries: 20
+  rehearsal:
+    build:
+      context: .
+      target: evaluation
+      args:
+        SCCE_REVISION: ${SCCE_REVISION:-development}
+    image: scce-evaluation:${SCCE_REVISION:-development}
+    init: true
+    mem_limit: 4g
+    environment:
+      TZ: UTC
+      LANG: C.UTF-8
+      NODE_OPTIONS: --max-old-space-size=3072
+      SCCE_DATABASE_URL: postgresql://scce_test:disposable-rehearsal-only@postgres-test:5432/scce_test
+      SCCE_REHEARSAL_CONFIG: /config/scce.config.json
+      SCCE_API_BEARER_TOKEN: disposable-rehearsal-only
+      SCCE_ALLOW_AUTOMATIC_WEB: '0'
+    volumes:
+      - ./deploy/scce.config.json:/config/scce.config.json:ro
+    depends_on:
+      postgres-test: {condition: service_healthy}
+    command: [node, tools/live-postgres-rehearsal.mjs]
+volumes:
+  test-postgres-data:
