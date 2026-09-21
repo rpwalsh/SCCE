@@ -387,3 +387,43 @@ ingestion or database transfer occurred; the seven audited `scce6_runtime` table
 counts remain zero. The images are development builds, not qualified brains or
 an executed host-to-container handoff. See `docs/CONTAINERS.md` for the required
 ordering, memory budget, corpus mounts and remaining restoration checks.
+
+### Durable Wikipedia batch recovery
+
+Bounded stops now journal pending language samples instead of forcing a smaller
+training batch. The factory-identified journal commits its cursor and cumulative
+counts with learned artifacts. It records a block-local page ordinal, accepts an
+incomplete block at its exact compressed offset, and keeps completed cursors
+authoritative over older block checkpoints. Replayed prefixes retain their stored
+page checkpoints. Explicit rewinds into an existing journal fail closed.
+
+Overflow commits stop before the next page's sample and progress. EOF-only retries
+can republish a failed cumulative manifest without learning twice. Operational
+resume offsets and stop flags remain provenance rather than canonical content
+identity. Historical owner stops do not prevent a successful resumed candidate
+from reaching validation. Publication qualification remains pending.
+
+Validation on the host, with Docker off:
+
+- Focused recovery/lifecycle/input-identity checks: 30 passed; workspace build passed.
+- Disposable PostgreSQL replay: 26 checks passed, including uninterrupted versus
+  bounded/resumed learning and a committed transaction followed by an injected
+  lost acknowledgement. Learned rows, additive totals and final manifest identities
+  matched. Fresh ingestor instances share the test connection; this does not claim
+  an operating-system kill/reconnect test. All three owned schemas were removed.
+- Source preservation and transaction rehearsal: 31 checks passed. Audited schema5
+  and schema6 counts remained unchanged; schema6 was still empty.
+- Full `pnpm test`: exit 0, 559 files / 3,477 tests passed, 10 files / 14 tests
+  skipped. The evaluation harness passed 40 tests; hidden-model, source-text and
+  inventory checks passed. After the final two recovery regressions were added,
+  affected shard 1 passed again: 28 files / 209 tests, with one file/test skipped.
+
+Logs: `.tmp/wikipedia-recovery-full-suite.log`,
+`.tmp/wikipedia-recovery-shard1-final.log`,
+`.tmp/wikipedia-replay-rehearsal-lost-ack-identity.log`, and
+`.tmp/wikipedia-source-contract-final.log`.
+
+`tools/wikipedia-run-report.mjs` provides read-only corpus, training-progress,
+source-byte and stage-timing inspection for the following measured ingestion.
+Article throughput and learned speech still require that actual run; these
+regressions do not establish full-corpus speed, calibration or a Qwen win.

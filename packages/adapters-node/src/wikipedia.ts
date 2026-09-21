@@ -189,6 +189,7 @@ export async function* streamWikipediaMultistream(corpus: ResolvedWikipediaCorpu
       throw new Error(`Wikipedia block at ${block.compressedOffset} failed: ${messageOf(error)}`);
     }
     let blockPages = 0;
+    let blockPageOrdinal = 0;
     let indexedPages = 0;
     for (const pageBlock of drainPages(xml)) {
       if (emitted >= corpus.maxPagesPerRun) {
@@ -203,6 +204,7 @@ export async function* streamWikipediaMultistream(corpus: ResolvedWikipediaCorpu
         }
       }
       pageOrdinal++;
+      blockPageOrdinal++;
       const page = parseWikiPage(pageBlock, corpus.maxArticleChars);
       if (!page || shouldSkip(page, corpus)) {
         skipped++;
@@ -211,7 +213,7 @@ export async function* streamWikipediaMultistream(corpus: ResolvedWikipediaCorpu
       emitted++;
       blockPages++;
       const file = wikiPageFile(page, corpus, pageOrdinal, block);
-      const itemCheckpoint = checkpoint(rootUri, file.uri, "extracted", "complete", block.compressedOffset, { pageOrdinal, blockOrdinal: block.blockOrdinal, blockOffset: block.compressedOffset, title: page.title, pageId: page.pageId, revisionId: page.revisionId, namespace: page.namespace }, `sha256_${sha256(file.bytes)}` as ContentHash, file.bytes.byteLength);
+      const itemCheckpoint = checkpoint(rootUri, file.uri, "extracted", "complete", block.compressedOffset, { pageOrdinal, blockPageOrdinal, blockOrdinal: block.blockOrdinal, blockOffset: block.compressedOffset, title: page.title, pageId: page.pageId, revisionId: page.revisionId, namespace: page.namespace }, `sha256_${sha256(file.bytes)}` as ContentHash, file.bytes.byteLength);
       yield { type: "file", file, checkpoint: itemCheckpoint };
       if (emitted % corpus.checkpointEveryPages === 0) yield { type: "checkpoint", checkpoint: checkpoint(rootUri, corpus.dumpPath, "extracting", "running", block.compressedOffset, { emitted, skipped, blockCount, pageOrdinal }) };
     }
@@ -289,7 +291,10 @@ async function* streamWikiBlocks(indexPath: string, dumpSize: number, corpus: Re
 }
 
 function afterResumeOffset(offset: number, resumeOffset: number, resumeAfterBlock: boolean): boolean {
-  return (!resumeAfterBlock && resumeOffset <= 0) || offset > resumeOffset;
+  // An incomplete journal cursor points at the block that must be replayed so its
+  // block-local page ordinal can skip only the already-processed prefix. A stored
+  // block checkpoint is the only case where the offset itself is safe to skip.
+  return resumeAfterBlock ? offset > resumeOffset : offset >= resumeOffset;
 }
 
 async function* streamWikiIndex(indexPath: string, python: string): AsyncIterable<WikiIndexEntry> {
