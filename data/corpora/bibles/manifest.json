@@ -1,0 +1,66 @@
+﻿{
+    "schema":  "scce.bibleCorpusManifest.v1",
+    "status":  "raw-acquired-not-ingested",
+    "fetchedAt":  "2026-09-21T10:01:33.2014106Z",
+    "provider":  {
+                     "name":  "eBible.org",
+                     "directory":  "https://ebible.org/Scriptures/dir.php",
+                     "publicDomainPolicy":  "https://ebible.org/publicdomain.htm"
+                 },
+    "alignment":  {
+                      "status":  "verse-key-compatible-not-yet-aligned",
+                      "key":  "USFM book identifier + chapter + verse marker",
+                      "commonCanonicalBookCount":  66,
+                      "note":  "The three archives are independent translation witnesses. Pair only matching verse keys after versification and omission checks; do not treat translations as independent factual witnesses."
+                  },
+    "sources":  [
+                    {
+                        "id":  "eng-kjv2006",
+                        "language":  "en",
+                        "title":  "King James (Authorized) Version, standardized 1769, protocanon",
+                        "format":  "USFM zip",
+                        "url":  "https://ebible.org/Scriptures/eng-kjv2006_usfm.zip",
+                        "metadataUrl":  "https://ftp.ebible.org/find/show.php?id=eng-kjv2006",
+                        "license":  "Public Domain outside the UK; eBible notes non-expiring UK printing patent",
+                        "file":  "eng-kjv2006_usfm.zip",
+                        "bytes":  2461781,
+                        "sha256":  "58a1b88c42f1c923bf1aae2fafdfcb0468d02b15c4cf1b0a5b7d93ab537061bb",
+                        "bookCount":  66,
+                        "verseMarkerCount":  31102
+                    },
+                    {
+                        "id":  "deu1912",
+                        "language":  "de",
+                        "title":  "Lutherbibel 1912",
+                        "format":  "USFM zip",
+                        "url":  "https://ebible.org/Scriptures/deu1912_usfm.zip",
+                        "metadataUrl":  "https://ebible.org/bible/details.php?id=deu1912",
+                        "license":  "Public Domain",
+                        "file":  "deu1912_usfm.zip",
+                        "bytes":  2494967,
+                        "sha256":  "650a8192134a8f0057286c469754edcfaee4fbb18800621aee4563f3055bb39b",
+                        "bookCount":  66,
+                        "verseMarkerCount":  31102
+                    },
+                    {
+                        "id":  "latVUC",
+                        "language":  "la",
+                        "title":  "Clementine Vulgate 1598 with Migne 1880 gloss",
+                        "format":  "USFM zip",
+                        "url":  "https://ebible.org/Scriptures/latVUC_usfm.zip",
+                        "metadataUrl":  "https://ebible.org/bible/details.php?id=latVUC",
+                        "license":  "Public Domain",
+                        "file":  "latVUC_usfm.zip",
+                        "bytes":  3549517,
+                        "sha256":  "0ed518ec26617ff80e1d2d9c4562b5a6a0cc79613e72839aa96769453f13e79f",
+                        "bookCount":  73,
+                        "verseMarkerCount":  35809,
+                        "alignmentBookIntersectionWith66BookSources":  66
+                    }
+                ],
+    "ingestion":  {
+                      "performed":  false,
+                      "plannedLane":  "generic corpus training requires a corpus-specific adapter or preprocessor; current CLI has corpus train gutenberg/oss/dialogue/wiki stored, but no Bible or verse-pair command",
+                      "noSchemaWrites":  true
+                  }
+}
