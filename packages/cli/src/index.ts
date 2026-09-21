@@ -4,6 +4,8 @@
 import { spawn } from "node:child_process";
 import { runModelCommand, runSensorCommand, runSettingsCommand } from "./settings-commands.js";
 import { negotiateLearning, runLearnCommand } from "./learning-commands.js";
+import { wikiChildArgs, wikiContinueAfterConfiguredPageCap, wikiRunPaths } from "./wiki-process.js";
+import { resolveWikipediaCorpusTarget } from "@scce/adapters-node";
 import { createClangCodeMouthPorts, createLearnedCodeProposer, createTreeSitterCodeMouthPorts, createTypeScriptCodeMouthPorts, runCodeMouth } from "@scce/adapters-node";
 import { codeLanguageForPath } from "@scce/kernel";
 import { describeRelationPotentialCapability, validateRelationPotentialAgainstIdentity } from "@scce/kernel";
@@ -102,10 +104,14 @@ async function main(): Promise<void> {
         printJson(await runtime.kernel.languageIdentities({ rebuild: parsed.args.includes("--rebuild") }));
         return;
       case "translation": {
-        if (!runtime) return usage("scce translation compile <sourceLang> <sourceScript> <targetLang> <targetScript>");
-        if (parsed.args[0] !== "compile") return usage("scce translation compile <sourceLang> <sourceScript> <targetLang> <targetScript>");
+        const shape = "scce translation compile <sourceIdentityId> <sourceScript> <targetIdentityId> <targetScript>";
+        if (!runtime) return usage(shape);
+        if (parsed.args[0] !== "compile") return usage(shape);
         const [, sourceLanguage, sourceScript, targetLanguage, targetScript] = parsed.args;
-        if (!sourceLanguage || !sourceScript || !targetLanguage || !targetScript) return usage("scce translation compile <sourceLang> <sourceScript> <targetLang> <targetScript>");
+        if (!sourceLanguage || !sourceScript || !targetLanguage || !targetScript) return usage(shape);
+        // Training persists source-derived profile signatures; this explicit off-turn command is the boundary that
+        // discovers current identities and assigns language_profiles.language_id before the profile-scoped reader runs.
+        await runtime.kernel.languageIdentities({ rebuild: true });
         printJson(await compileCrossLingualTranslationSeeds(runtime.storage as never, { sourceLanguage, sourceScript, targetLanguage, targetScript, observedAt: Date.now() }));
         return;
       }
@@ -434,6 +440,14 @@ async function ingestWiki(configPath: string, config: Awaited<ReturnType<typeof 
   const target = explicitTarget ?? config.runtime.corpora?.wikipedia?.dumpPath;
   if (!target) return usage("scce ingest wiki <dump-path> [--index=<path>] [--max-pages=<n>] [--max-blocks=<n>] [--start-offset=<bytes>] [--fresh] [--no-resume] [--memory-safety-bound-mb=<n>]");
   const options = parseWikiIngestOptions(args.slice(explicitTarget ? 1 : 0));
+  const corpusTarget = resolveWikipediaCorpusTarget(config, path.resolve(target));
+  process.stderr.write(`[scce wiki ingest] ${JSON.stringify({
+    schema: config.database.schema, dumpPath: path.resolve(target),
+    indexPath: options.indexPath ?? corpusTarget?.indexPath ?? null,
+    maxPages: options.maxPages ?? config.runtime.corpora?.wikipedia?.maxPagesPerRun ?? 2500,
+    maxBlocks: options.maxBlocks ?? config.runtime.corpora?.wikipedia?.maxBlocksPerRun ?? 0,
+    resume: !options.fresh && options.resume !== false
+  })}\n`);
   const ingestor = createWikipediaV3Ingestor({ storage: runtime.storage, config });
   if (options.statusPath) await mkdir(path.dirname(options.statusPath), { recursive: true });
   const result = await ingestor.ingest({
@@ -453,8 +467,9 @@ async function ingestWiki(configPath: string, config: Awaited<ReturnType<typeof 
 
 async function ingestWikiFirehose(configPath: string, config: Awaited<ReturnType<typeof readScceRuntimeConfig>>, args: string[]): Promise<void> {
   const explicitTarget = args[0] && !args[0].startsWith("--") ? args[0] : undefined;
-  const target = path.resolve(explicitTarget ?? config.runtime.corpora?.wikipedia?.dumpPath ?? "");
-  if (!target) return usage("scce ingest wiki firehose <dump-path> [--runner-max-segments=<n>] [--child-heap-mb=<n>] [--heap-checkpoint-mb=<n>]");
+  const configuredTarget = explicitTarget ?? config.runtime.corpora?.wikipedia?.dumpPath;
+  if (!configuredTarget) return usage("scce ingest wiki firehose <dump-path> [--runner-max-segments=<n>] [--child-heap-mb=<n>] [--heap-checkpoint-mb=<n>]");
+  const target = path.resolve(configuredTarget);
   const firehose = parseWikiFirehoseOptions(args.slice(explicitTarget ? 1 : 0));
   const paths = wikiFirehosePaths(config, firehose);
   await mkdir(paths.root, { recursive: true });
@@ -464,7 +479,8 @@ async function ingestWikiFirehose(configPath: string, config: Awaited<ReturnType
     while (true) {
       const childFlags = wikiChildFlags(firehose, paths, segment === 1);
       const cliPath = fileURLToPath(import.meta.url);
-      const nodeArgs = [`--max-old-space-size=${firehose.childHeapMb}`, cliPath, "--config", path.resolve(configPath), "ingest", "wiki", target, ...childFlags];
+      const nodeArgs = wikiChildArgs({ cliPath, configPath, schema: config.database.schema,
+        childHeapMb: firehose.childHeapMb, target, flags: childFlags });
       process.stdout.write(`\n[scce wiki firehose] segment ${segment} starting: node ${nodeArgs.join(" ")}\n`);
       const code = await runChild(nodeArgs);
       const status = await readJson<WikipediaV3IngestStatus>(paths.statusPath);
@@ -481,7 +497,8 @@ async function ingestWikiFirehose(configPath: string, config: Awaited<ReturnType
         process.stdout.write(`[scce wiki firehose] owner stop observed: ${status.stopReason ?? "stop requested"}\n`);
         return;
       }
-      if (!status?.stoppedByHeapSafetyBound) {
+      const continuePageCap = status ? wikiContinueAfterConfiguredPageCap(status, firehose) : false;
+      if (!status?.stoppedByHeapSafetyBound && !continuePageCap) {
         process.stdout.write(`[scce wiki firehose] segment finished without heap checkpoint; state=${status?.state ?? "unknown"}.\n`);
         return;
       }
@@ -1284,13 +1301,7 @@ function parseWikiStatusOptions(args: string[]): WikiStatusOptions {
 }
 
 function wikiFirehosePaths(config: Awaited<ReturnType<typeof readScceRuntimeConfig>>, options: WikiStatusOptions): { root: string; statusPath: string; lockPath: string; stopFile: string } {
-  const root = path.resolve(config.runtime.tempRoot, "wiki-firehose");
-  return {
-    root,
-    statusPath: options.statusPath ?? path.join(root, "status.json"),
-    lockPath: options.lockPath ?? path.join(root, "lock.json"),
-    stopFile: options.stopFile ?? path.join(root, "stop.json")
-  };
+  return wikiRunPaths(config.runtime.tempRoot, config.database.schema, options);
 }
 
 function wikiChildFlags(options: WikiFirehoseOptions, paths: { statusPath: string; lockPath: string; stopFile: string }, firstSegment: boolean): string[] {

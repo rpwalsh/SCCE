@@ -1561,8 +1561,17 @@ function createIngestionCheckpointStore(storage: PostgresStorageAdapter): Ingest
         params.push(query.status);
         where.push(`status=$${params.length}`);
       }
+      if (query.phase) {
+        params.push(query.phase);
+        where.push(`phase=$${params.length}`);
+      }
+      if (query.itemUriPrefix) {
+        params.push(query.itemUriPrefix);
+        where.push(`starts_with(item_uri,$${params.length})`);
+      }
       params.push(query.limit ?? 200);
-      const rows = await storage.query<IngestionCheckpointRow>(`SELECT * FROM ${storage.table("ingestion_checkpoints")} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY updated_at DESC LIMIT $${params.length}`, params);
+      const order = query.orderBy === "offsetBytes" ? "offset_bytes DESC,updated_at DESC,id" : "updated_at DESC,id";
+      const rows = await storage.query<IngestionCheckpointRow>(`SELECT * FROM ${storage.table("ingestion_checkpoints")} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY ${order} LIMIT $${params.length}`, params);
       return rows.map(rowToIngestionCheckpoint);
     }
   };

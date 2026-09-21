@@ -4,10 +4,20 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { readScceRuntimeConfig, type ScceRuntimeConfig } from "../config.js";
+import { readScceRuntimeConfig, validateConfig, type ScceRuntimeConfig } from "../config.js";
 
 describe("runtime configuration environment overrides", () => {
   afterEach(() => vi.unstubAllEnvs());
+
+  test("accepts the documented train-all setting while rejecting invalid document limits", () => {
+    const candidate = config("postgresql://localhost:5432/scce");
+    candidate.runtime.corpora = { wikipedia: { enabled: true, dumpPath: "enwiki.xml.bz2", languageTrainingDocumentLimit: 0 } };
+    expect(() => validateConfig(candidate)).not.toThrow();
+    for (const limit of [-1, 1.5, NaN]) {
+      candidate.runtime.corpora.wikipedia!.languageTrainingDocumentLimit = limit;
+      expect(() => validateConfig(candidate)).toThrow(/languageTrainingDocumentLimit/);
+    }
+  });
 
   test("takes the database connection URL from SCCE_DATABASE_URL without changing the config file", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "scce-config-environment-"));

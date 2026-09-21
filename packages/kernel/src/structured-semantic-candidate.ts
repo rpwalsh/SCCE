@@ -48,6 +48,8 @@ export type StructuredSemanticCandidateKind =
 
 export interface SemanticCandidateProvenance {
   exactEvidenceIds: EvidenceId[];
+  /** IDs of typed observations that directly produced this candidate; empty for metadata-only candidates. */
+  observationIds?: string[];
   extractionChannel: SemanticCandidateChannel;
   anchors: JsonValue[];
   assumptions: JsonValue[];
@@ -113,6 +115,7 @@ export function structuredSemanticCandidates(input: {
     qualifiers: JsonValue = {},
     channel: SemanticCandidateChannel = channelForKind(kind),
     provenanceInput: {
+      observationIds?: readonly string[];
       anchors?: JsonValue[];
       assumptions?: JsonValue[];
       transformations?: JsonValue[];
@@ -200,6 +203,7 @@ export function structuredSemanticCandidates(input: {
       ...canonical,
       provenance: {
         exactEvidenceIds: [...new Set(evidenceIds)].sort(),
+        observationIds: [...new Set(provenanceInput.observationIds?.map(String) ?? [])].sort(),
         extractionChannel: channel,
         anchors: [...(provenanceInput.anchors ?? [])],
         assumptions: [...(provenanceInput.assumptions ?? [])],
@@ -235,7 +239,7 @@ export function structuredSemanticCandidates(input: {
       add("heading", [
         { value: observation.id, valueKind: "document_structure" },
         { value: observation.title ?? observation.textPreview ?? "", valueKind: "surface" }
-      ], evidenceIds, observation.confidence, { ordinal: observation.ordinal ?? null });
+      ], evidenceIds, observation.confidence, { ordinal: observation.ordinal ?? null }, undefined, { observationIds: [observation.id] });
     } else if (observation.kind === "cell") {
       add("table_cell", [
         { value: observation.tableId, valueKind: "table" },
@@ -245,18 +249,18 @@ export function structuredSemanticCandidates(input: {
         row: observation.row,
         column: observation.column,
         address: observation.address ?? null
-      });
+      }, undefined, { observationIds: [observation.id] });
       if (typeof observation.rawValue === "number") {
         add("number", [
           { value: observation.rawValue, valueKind: "number" },
           { value: observation.header ?? observation.column, valueKind: "measure_context" }
-        ], evidenceIds, observation.confidence);
+        ], evidenceIds, observation.confidence, {}, undefined, { observationIds: [observation.id] });
       }
       if (looksDate(observation.displayValue)) {
         add("date", [
           { value: observation.displayValue, valueKind: "date_surface" },
           { value: observation.header ?? observation.column, valueKind: "time_context" }
-        ], evidenceIds, observation.confidence);
+        ], evidenceIds, observation.confidence, {}, undefined, { observationIds: [observation.id] });
       }
     } else if (observation.kind === "measurement") {
       add("number", [
@@ -265,18 +269,18 @@ export function structuredSemanticCandidates(input: {
       ], evidenceIds, observation.confidence, {
         timestamp: observation.timestamp ?? null,
         sensor: observation.sensor ?? null
-      });
+      }, undefined, { observationIds: [observation.id] });
     } else if (observation.kind === "formula") {
       add("code_structure", [
         { value: observation.cellAddress, valueKind: "formula" },
         ...observation.dependencies.map(value => ({ value, valueKind: "dependency" }))
-      ], evidenceIds, observation.confidence);
+      ], evidenceIds, observation.confidence, {}, undefined, { observationIds: [observation.id] });
     } else if (observation.kind === "code") {
       add(observation.repoId ? "repository_structure" : "code_structure", [
         ...(observation.repoId ? [{ value: observation.repoId as JsonValue, valueKind: "repository" }] : []),
         { value: observation.filePath, valueKind: "file" },
         { value: observation.id, valueKind: "program_graph_ref" }
-      ], evidenceIds, observation.confidence);
+      ], evidenceIds, observation.confidence, {}, undefined, { observationIds: [observation.id] });
     } else if (observation.kind === "log_event" && observation.timestamp) {
       add("interaction_outcome", [
         { value: observation.streamId, valueKind: "interaction_stream" },
@@ -285,7 +289,7 @@ export function structuredSemanticCandidates(input: {
       ], evidenceIds, observation.confidence, {
         sequence: observation.sequence,
         severity: observation.severity ?? null
-      });
+      }, undefined, { observationIds: [observation.id] });
     }
   }
 

@@ -103,6 +103,7 @@ import { DEFAULT_POLICY } from "./safety.js";
 import { createCorrectionMemory } from "./correction-memory.js";
 import { createMouth, type MouthSemanticInput } from "./mouth.js";
 import { createAlphaFieldEngine } from "./field.js";
+import { runGraphSandwich } from "./graph-sandwich.js";
 import { detectCannedAnswerSpeech } from "./surface-quality.js";
 import { inventionConstructNode, type InventionConstruct } from "./prediction.js";
 import {
@@ -206,6 +207,7 @@ export interface SourceOnlyTurnSimulationInput {
   explicitRequirements?: readonly ExplicitTurnRequirement[];
   requirementActivations?: readonly LearnedRequirementActivation[];
   requirementContext?: Partial<Record<TurnRequirementDimension, number>>;
+  disableGraphSandwichRefinement?: boolean;
   languageMemoryState?: LanguageMemoryRuntimeState;
   languageProfiles?: LanguageProfile[];
 }
@@ -214,6 +216,7 @@ export type ScceRuntimeTurnInput = SourceOnlyTurnSimulationInput;
 
 export interface SourceOnlyTurnSimulationTrace {
   schema: "scce.runtime.turn_trace.v1";
+  graphSandwich?: JsonValue;
   id: string;
   turnId: string;
   inputId: string;
@@ -246,6 +249,8 @@ export interface SourceOnlyTurnSimulationTrace {
   sourceRefs: WorkspaceCoreSourceRef[];
   requestedAuthority: RequestedAuthority;
   requestedAuthorityDecision: JsonValue;
+  /** The authority projection consumed this field before structural refinement. */
+  initialRequirementField?: TurnRequirementField;
   requirementField: TurnRequirementField;
   operatorActivations: ActivatedOperator[];
   selectedCandidate: {
@@ -568,7 +573,7 @@ export function createInMemoryScceRuntime(options: { idFactory?: IdFactory; hash
       conversationId
     });
     const explicitAuthority = input.requestedAuthority;
-    const requirementField = deriveTurnRequirementField({
+    const initialRequirementField = deriveTurnRequirementField({
       requestText: input.text,
       languageMemoryState: input.languageMemoryState,
       dialogueState: authorityDialogueState,
@@ -588,7 +593,7 @@ export function createInMemoryScceRuntime(options: { idFactory?: IdFactory; hash
       ],
       contextContribution: input.requirementContext
     });
-    const authorityProjection = projectRequestAuthority({ requirementField, explicitAuthority });
+    const authorityProjection = projectRequestAuthority({ requirementField: initialRequirementField, explicitAuthority });
     const calibrationModels = calibrationModelSetFromRuntimeOutcomes([...state.outcomes.values()], clock.now());
     const workspaceAnswer = await answerFromWorkspaceCoreContext({
       promotion,
@@ -617,19 +622,31 @@ export function createInMemoryScceRuntime(options: { idFactory?: IdFactory; hash
       bounded: true as const,
       query: { features: featureSet(input.text, 256) }
     };
-    const runtimeField = createAlphaFieldEngine().activate({
+    const fieldEngine = createAlphaFieldEngine({ clock });
+    const firstRuntimeField = fieldEngine.activate({
       text: input.text,
       nodes: runtimeGraph.nodes,
       edges: runtimeGraph.edges,
       hyperedges: runtimeGraph.hyperedges
     });
+    const runtimeEvidence = dedupeById([...workspaceAnswer.mouthInput.speakInput.evidence, ...(sourceIngest?.evidence ?? [])]);
+    const sandwich = runGraphSandwich({
+      graph: runtimeGraph, evidence: runtimeEvidence, initialRequirements: initialRequirementField,
+      firstField: firstRuntimeField, idFactory, disabled: input.disableGraphSandwichRefinement,
+      runSecondPass: seedPriors => fieldEngine.activate({
+        text: input.text, nodes: runtimeGraph.nodes, edges: runtimeGraph.edges, hyperedges: runtimeGraph.hyperedges,
+        previous: firstRuntimeField, seedPriors: [...seedPriors]
+      })
+    });
+    const requirementField = sandwich.refinedRequirements;
+    const runtimeField = sandwich.finalField;
     const operatorActivations = activateCognitiveOperators({
       model: operatorRoutingActivationModel({ modelSet: calibrationModels }),
       requirementField,
       dialogueSupport: requestOperatorDialogueSupport(requirementField),
       graphSupport: requestOperatorGraphSupport({
         graph: runtimeGraph,
-        evidence: dedupeById([...workspaceAnswer.mouthInput.speakInput.evidence, ...(sourceIngest?.evidence ?? [])]),
+        evidence: runtimeEvidence,
         field: runtimeField
       })
     });
@@ -662,6 +679,8 @@ export function createInMemoryScceRuntime(options: { idFactory?: IdFactory; hash
       authorityProjection,
       selectedCandidate: routed.selectedCandidate
     });
+    trace.graphSandwich = toJsonValue(sandwich.trace);
+    trace.initialRequirementField = initialRequirementField;
     const result: SourceOnlyTurnSimulationResult = {
       schema: "scce.runtime.turn.v1",
       id: traceId,

@@ -14,6 +14,8 @@ import {
 import type { CandidateField, CandidateSurface } from "./candidate-contract.js";
 import type { EvidenceSpan, FieldState, GraphSlice, JsonValue, RequestedAuthority } from "./types.js";
 import { isKnownGraphTemporalScope } from "./graph-temporal.js";
+import { graphTemporalScope, isTypedParticipantIncidenceEdge } from "./typed-incidence-graph.js";
+import { evidenceSourceFamilyId } from "./source-family.js";
 import { calibrated } from "./calibrations/prod-calibrations.js";
 import type { CalibrationKey } from "./calibrations/public-calibrations.js";
 
@@ -326,21 +328,110 @@ export function requestOperatorGraphSupport(input: {
   evidence: readonly EvidenceSpan[];
   field: FieldState;
 }): OperatorSupportMap {
-  const sourceCount = new Set(input.evidence.map(span => String(span.sourceVersionId))).size;
-  const graphMass = clamp01(Math.log2(1 + input.graph.edges.length) / calibrated("request_authority.graph_edge_log_scale"));
-  const evidenceMass = clamp01(Math.log2(1 + input.evidence.length) / calibrated("request_authority.evidence_log_scale"));
+  return evaluateRequestGraphSupport(input).support;
+}
+
+export function evaluateRequestGraphSupport(input: {
+  graph: GraphSlice;
+  evidence: readonly EvidenceSpan[];
+  field: FieldState;
+}): { summary: RequestGraphSupportSummary; support: OperatorSupportMap } {
+  const summary = summarizeRequestGraphSupport(input.graph, input.evidence);
+  const graphMass = clamp01(Math.log2(1 + summary.graphObjectIds.length) / calibrated("request_authority.graph_edge_log_scale"));
+  const evidenceMass = clamp01(Math.log2(1 + summary.evidenceIds.length) / calibrated("request_authority.evidence_log_scale"));
   const causalMass = clamp01(mean(input.field.causalMass.slice(0, calibrated("request_authority.causal_mass_sample_limit")).map(row => row.mass)));
-  const hasQualifiedTime = input.graph.edges.some(edge =>
-    isKnownGraphTemporalScope(edge.temporalScope)
-    && edge.temporalScope.validTo !== undefined);
-  return {
+  const sourceCount = summary.sourceFamilyIds.length;
+  return { summary, support: {
     [COGNITIVE_OPERATOR_IDS.evidenceActivation]: evidenceMass,
     [COGNITIVE_OPERATOR_IDS.graphPropagation]: graphMass,
     [COGNITIVE_OPERATOR_IDS.sourceSynthesis]: sourceCount >= calibrated("request_authority.source_synthesis_threshold") ? Math.min(1, sourceCount / calibrated("request_authority.source_synthesis_divisor")) : 0,
-    [COGNITIVE_OPERATOR_IDS.relationComposition]: input.graph.edges.length >= calibrated("request_authority.relation_composition_edge_threshold") ? graphMass : 0,
+    [COGNITIVE_OPERATOR_IDS.relationComposition]: summary.compositionObjectIds.length >= calibrated("request_authority.relation_composition_edge_threshold")
+      ? clamp01(Math.log2(1 + summary.compositionObjectIds.length) / calibrated("request_authority.graph_edge_log_scale")) : 0,
     [COGNITIVE_OPERATOR_IDS.semanticProof]: evidenceMass,
-    [COGNITIVE_OPERATOR_IDS.temporalAnalysis]: hasQualifiedTime ? graphMass : 0,
+    [COGNITIVE_OPERATOR_IDS.temporalAnalysis]: clamp01(Math.log2(1 + summary.temporalObjectIds.length) / calibrated("request_authority.graph_edge_log_scale")),
     [COGNITIVE_OPERATOR_IDS.causalAnalysis]: causalMass
+  } };
+}
+
+export interface RequestGraphSupportSummary {
+  objects: Array<{ id: string; memberNodeIds: string[]; evidenceIds: string[] }>;
+  graphObjectIds: string[];
+  temporalObjectIds: string[];
+  compositionObjectIds: string[];
+  evidenceIds: string[];
+  sourceFamilyIds: string[];
+  graphEvidenceIds: string[];
+  graphSourceFamilyIds: string[];
+}
+
+/** Structural applicability signals for operators, never a proof or a change of request authority. */
+export function summarizeRequestGraphSupport(graph: GraphSlice, evidence: readonly EvidenceSpan[]): RequestGraphSupportSummary {
+  const admittedEvidence = new Set(evidence.map(span => String(span.id)));
+  const canonicalHyperedgeIds = new Set(graph.hyperedges.map(edge => String(edge.id)));
+  const objects = new Map<string, { members: Set<string>; temporal: boolean; evidenceIds: Set<string> }>();
+  const graphEvidence = new Set<string>();
+  const hasEvidence = (ids: readonly string[]) => ids.some(id => admittedEvidence.has(String(id)));
+  const recordEvidence = (ids: readonly string[]) => { for (const id of ids) if (admittedEvidence.has(String(id))) graphEvidence.add(String(id)); };
+  const knownTime = (scope: Parameters<typeof isKnownGraphTemporalScope>[0]) =>
+    isKnownGraphTemporalScope(scope) && Number.isFinite(scope.validFrom)
+      && (scope.validTo === undefined || Number.isFinite(scope.validTo) && scope.validTo >= scope.validFrom);
+  for (const edge of graph.hyperedges) {
+    const evidenceIds = [...edge.evidenceIds, ...edge.participantPorts
+      .filter(port => port.realization === "observed").flatMap(port => port.evidenceIds)];
+    if (!hasEvidence(evidenceIds)) continue;
+    recordEvidence(evidenceIds);
+    objects.set(String(edge.id), {
+      members: new Set(edge.participantPorts.filter(port => port.realization === "observed" && port.nodeId !== null).map(port => String(port.nodeId))),
+      evidenceIds: new Set(evidenceIds.filter(id => admittedEvidence.has(String(id))).map(String)),
+      temporal: knownTime(graphTemporalScope(edge))
+    });
+  }
+  for (const edge of graph.edges) {
+    if (!hasEvidence(edge.evidenceIds)) continue;
+    if (isTypedParticipantIncidenceEdge(edge)) {
+      const metadata = edge.metadata as Record<string, JsonValue>;
+      const parent = metadata.hyperedgeId;
+      if (typeof parent !== "string") continue;
+      // The incidence projection is another view of the same hyperedge, not another independent relation.
+      if (canonicalHyperedgeIds.has(parent)) continue;
+      recordEvidence(edge.evidenceIds);
+      const group = objects.get(parent) ?? { members: new Set<string>(), temporal: false, evidenceIds: new Set<string>() };
+      group.members.add(String(edge.target));
+      for (const id of edge.evidenceIds) if (admittedEvidence.has(String(id))) group.evidenceIds.add(String(id));
+      group.temporal ||= knownTime(edge.temporalScope);
+      objects.set(parent, group);
+    } else {
+      recordEvidence(edge.evidenceIds);
+      objects.set(String(edge.id), { members: new Set([String(edge.source), String(edge.target)]), temporal: knownTime(edge.temporalScope), evidenceIds: new Set(edge.evidenceIds.filter(id => admittedEvidence.has(String(id))).map(String)) });
+    }
+  }
+  const byMember = new Map<string, string[]>();
+  for (const [id, object] of objects) {
+    if (object.members.size < 2) continue;
+    for (const member of object.members) {
+      const bucket = byMember.get(member) ?? [];
+      bucket.push(id);
+      byMember.set(member, bucket);
+    }
+  }
+  const composable = new Set<string>();
+  const memberSignatures = new Map([...objects].map(([id, object]) => [id, JSON.stringify([...object.members].sort())]));
+  for (const ids of byMember.values()) {
+    if (ids.length < 2) continue;
+    // Repeated witnesses of the same participant set do not create a relational join.
+    const participantSets = new Set(ids.map(id => memberSignatures.get(id)!));
+    if (participantSets.size < 2) continue;
+    for (const id of ids) composable.add(id);
+  }
+  return {
+    objects: [...objects].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([id, object]) => ({ id, memberNodeIds: [...object.members].sort(), evidenceIds: [...object.evidenceIds].sort() })),
+    graphObjectIds: [...objects.keys()].sort(),
+    temporalObjectIds: [...objects].filter(([, object]) => object.temporal).map(([id]) => id).sort(),
+    compositionObjectIds: [...composable].sort(),
+    evidenceIds: [...admittedEvidence].sort(),
+    sourceFamilyIds: [...new Set(evidence.map(evidenceSourceFamilyId))].sort(),
+    graphEvidenceIds: [...graphEvidence].sort(),
+    graphSourceFamilyIds: [...new Set(evidence.filter(span => graphEvidence.has(String(span.id))).map(evidenceSourceFamilyId))].sort()
   };
 }
 

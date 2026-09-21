@@ -50,7 +50,19 @@ describe("semantic candidate channels and provenance", () => {
           support: 0.4
         }]
       }),
-      observations: [],
+      observations: [{
+        id: "observation.heading",
+        kind: "document_structure",
+        structureKind: "heading",
+        title: "Observed heading",
+        ordinal: 1,
+        sourceId,
+        sourceVersionId,
+        evidenceIds: ["evidence.channels" as EvidenceSpan["id"]],
+        confidence: 0.8,
+        provenance: {},
+        metadata: {}
+      }],
       evidenceIds: ["evidence.channels" as EvidenceSpan["id"]],
       observedAt: 100,
       producerModelId: "candidate.model.fixture",
@@ -85,6 +97,10 @@ describe("semantic candidate channels and provenance", () => {
       });
       expect(candidate.provenance.admissionState).toBe("proposed");
     }
+    expect(channels.anchor_derived.find(candidate => candidate.kind === "heading")?.provenance.observationIds)
+      .toEqual(["observation.heading"]);
+    expect(channels.source_declared_structured.find(candidate => candidate.kind === "state_marker")?.provenance.observationIds)
+      .toEqual([]);
     for (const candidate of [
       ...channels.cross_document_induced.filter(row => row.kind === "opaque_induced_relation"),
       ...channels.weak_free_surface
@@ -143,6 +159,18 @@ describe("semantic candidate channels and provenance", () => {
     expect(projection.graphHyperedges.filter(edge =>
       edge.participantPorts.length === 0)
       .every(edge => edge.memberNodeIds.length === 0)).toBe(true);
+    expect(projection.graphProjectionBindings).toHaveLength(2);
+    expect(projection.graphProjectionBindings.every(binding =>
+      binding.admission === "source_declared_zero_arity"
+      && binding.observationIds.length === 0
+      && binding.sourceVersionId === evidence.sourceVersionId
+      && projection.graphHyperedges.some(edge =>
+        String(edge.relationId) === binding.relationId))).toBe(true);
+    expect(projection.graphNodes.filter(node =>
+      typeof node.metadata === "object"
+      && node.metadata !== null
+      && !Array.isArray(node.metadata)
+      && "graphProjectionBinding" in node.metadata)).toHaveLength(2);
     expect(JSON.stringify(projection.diagnostics)).toContain(
       "\"candidateChannelsEvaluatedSeparately\":true"
     );

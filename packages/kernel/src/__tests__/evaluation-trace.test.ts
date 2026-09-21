@@ -83,7 +83,8 @@ describe("sealed evaluation trace contract", () => {
     expect(result.violations.filter(item => item.code === "DISABLED_COMPONENT_BYPASS_MISSING").map(item => item.component)).toEqual([
       "relation-potential",
       "query-diffusion",
-      "powerwalk"
+      "powerwalk",
+      "graph-sandwich-refinement"
     ]);
   });
 });

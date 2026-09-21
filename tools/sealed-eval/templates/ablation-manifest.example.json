@@ -64,6 +64,16 @@
       ]
     },
     {
+      "conditionId": "no_graph_sandwich_refinement",
+      "disabledComponents": ["graph-sandwich-refinement"],
+      "environment": { "SCCE_EVAL_CONDITION": "no_graph_sandwich_refinement" },
+      "cacheNamespace": "eval-no-graph-sandwich-refinement",
+      "requiredTraceAssertions": [
+        { "component": "graph-sandwich-refinement", "expected": "not-entered" },
+        { "component": "graph-sandwich-refinement", "expected": "no-cache-read" }
+      ]
+    },
+    {
       "conditionId": "no_graph",
       "disabledComponents": [
         "graph"

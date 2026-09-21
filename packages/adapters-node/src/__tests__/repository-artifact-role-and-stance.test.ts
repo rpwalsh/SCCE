@@ -20,6 +20,7 @@ import {
 } from "@scce/kernel";
 import { NodeFileIngestAdapter } from "../files.js";
 import { trainOssCorpus } from "../oss-corpus.js";
+import { blobContentHash } from "../postgres.js";
 import type { ScceRuntimeConfig } from "../config.js";
 
 const roots: string[] = [];
@@ -212,6 +213,8 @@ function recordingStorage(): { storage: ScceStorage; evidence: EvidenceSpan[] } 
         });
       }
       if (key === "events") return store({ readEpisode: async () => [], readRange: async () => [], latestLedgerHash: async () => "" });
+      if (key === "graph") return store({ getSlice: async () => ({ nodes: [], edges: [], hyperedges: [], bounded: true, query: {} }) });
+      if (key === "blobs") return store({ put: async (bytes: Uint8Array) => blobContentHash(bytes) });
       if (key === "model") {
         return store({
           readModel: async () => ({ languageProfiles: [], latentConcepts: [], learnedProgramPatterns: [], learningGoals: [], trainingSteps: 0 })

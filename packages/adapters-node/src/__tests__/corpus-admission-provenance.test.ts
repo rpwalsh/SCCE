@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { trainLanguageCorpusText } from "../language-corpus-trainer.js";
 import { trainStoredCorpusConstructions } from "../stored-corpus-construction-training.js";
+import { blobContentHash } from "../postgres.js";
 import { createHasher } from "@scce/kernel";
 import type {
   EvidenceSpan,
@@ -135,7 +136,7 @@ describe("corpus trainer admission and provenance", () => {
 function seedStoredArticle(state: MemoryState, uri: string, text: string): { sourceVersionId: string; contentHash: string } {
   const hasher = createHasher();
   const bytes = Buffer.from(text, "utf8");
-  const contentHash = hasher.digestHex(bytes);
+  const contentHash = blobContentHash(bytes);
   const sourceVersionId = `source_version.${hasher.digestHex(Buffer.from(uri, "utf8")).slice(0, 24)}`;
   state.blobs.set(contentHash, bytes);
   state.sourceVersions.push({
@@ -184,7 +185,7 @@ function memoryStorage(): { storage: ScceStorage; state: MemoryState } {
         .map(row => ({ sourceVersionId: row.sourceVersionId, contentHash: row.contentHash, byteLength: row.byteLength, canonicalUri: row.canonicalUri }))
     },
     blobs: {
-      put: async (bytes: Uint8Array) => { const hash = hasher.digestHex(Buffer.from(bytes)); state.blobs.set(hash, bytes); return hash; },
+      put: async (bytes: Uint8Array) => { const hash = blobContentHash(bytes); state.blobs.set(hash, bytes); return hash; },
       get: async (hash: string) => { const found = state.blobs.get(hash); if (!found) throw new Error(`no blob ${hash}`); return found; }
     },
     quarantine: {
@@ -225,7 +226,7 @@ function memoryStorage(): { storage: ScceStorage; state: MemoryState } {
       listSemanticFrames: async () => [],
       listTranslationAlignments: async () => []
     },
-    graph: { getSlice: async () => { throw new Error("no graph in this fixture"); } },
+    graph: { getSlice: async () => ({ nodes: [], edges: [], hyperedges: [], bounded: true, query: {} }) },
     init: async () => undefined,
     transaction: async <T>(fn: () => Promise<T>) => fn(),
     migrate: async () => undefined,

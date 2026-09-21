@@ -3,7 +3,7 @@
 import path from "node:path";
 import { ingestStageTracer } from "./ingest-stage-trace-sink.js";
 import { existsSync } from "node:fs";
-import { freemem, totalmem } from "node:os";
+import { freemem, totalmem, tmpdir } from "node:os";
 import {
   canonicalStringify,
   createClock,
@@ -61,7 +61,6 @@ import {
   compileBrainReplayManifest,
   compileCanonicalReplayManifest,
   verifyCanonicalReplayManifest,
-  assertBrainManifestReplayForActivation,
   validationDisposition,
   type BrainLifecycleRecord,
   type BrainManifestContract,
@@ -84,9 +83,12 @@ import {
   type StructuredSemanticCandidate
 } from "@scce/kernel";
 import { effectiveNgramShardChars, type ScceRuntimeConfig } from "./config.js";
-import { trainLanguageCorpusText } from "./language-corpus-trainer.js";
+import { prepareLanguageCorpusTraining, commitLanguageCorpusTraining, type LanguageCorpusTrainingInput } from "./language-corpus-trainer.js";
 import { blobContentHash } from "./postgres.js";
-import { resolveWikipediaCorpusTarget, streamWikipediaMultistream, wikipediaRootUri, type ResolvedWikipediaCorpus } from "./wikipedia.js";
+import { detectWikipediaIndexPath, resolveWikipediaCorpusTarget, streamWikipediaMultistream, wikipediaRootUri, type ResolvedWikipediaCorpus } from "./wikipedia.js";
+import { createWikipediaInputManifest, wikipediaInputSourcesStillMatch, type WikipediaInputManifest } from "./wikipedia-input-manifest.js";
+import { WIKIPEDIA_SURFACE_TRANSFORM } from "./wikipedia-markup.js";
+import { ingestionCodeIdentity } from "./ingestion-code-identity.js";
 
 /** How many entries of a diagnostic list the alignment provenance event keeps; the true length is recorded beside it. */
 const SPARSE_ALIGNMENT_EVENT_LIST_BOUND = 64;
@@ -124,6 +126,7 @@ export interface WikipediaV3IngestOptions {
 
 export interface WikipediaV3IngestResult {
   episodeId: string;
+  inputManifestId?: string;
   rootUri: string;
   dumpPath: string;
   indexPath?: string;
@@ -244,6 +247,24 @@ export function createWikipediaV3Ingestor(options: WikipediaV3IngestorOptions): 
   return new WikipediaV3Ingestor(options);
 }
 
+/** Blob identity deduplicates bytes; a source version additionally owns provenance and a coordinate role. */
+export function wikipediaSourceVersionIdentities(file: IngestedSourceFile, ids: Pick<IdFactory, "sourceId" | "sourceVersionId">) {
+  const sourceId = ids.sourceId(file.namespace, file.uri);
+  const originalVersionId = ids.sourceVersionId(canonicalStringify({
+    contract: "scce.wikipedia-source-version.v1", sourceId,
+    revisionId: objectOrEmpty(file.metadata).revisionId ?? null,
+    contentHash: blobContentHash(file.bytes), role: "original"
+  }));
+  const derivative = file.evidenceDerivative;
+  const evidenceVersionId = derivative ? ids.sourceVersionId(canonicalStringify({
+    contract: "scce.wikipedia-source-version.v1", sourceId, originalVersionId,
+    contentHash: blobContentHash(derivative.bytes), role: "evidence-derivative",
+    transformId: derivative.transformId, originalCoordinateSpace: derivative.originalCoordinateSpace,
+    redactionMap: derivative.redactionMap
+  })) : originalVersionId;
+  return { sourceId, originalVersionId, evidenceVersionId };
+}
+
 export class WikipediaV3Ingestor {
   private readonly storage: ScceStorage;
   private readonly config: ScceRuntimeConfig;
@@ -277,23 +298,49 @@ export class WikipediaV3Ingestor {
     if (!resolved) throw new Error(`not a configured Wikipedia multistream dump: ${target}`);
     const corpus: ResolvedWikipediaCorpus = {
       ...resolved,
-      indexPath: input.indexPath ? path.resolve(input.indexPath) : resolved.indexPath,
+      indexPath: input.indexPath ? path.resolve(input.indexPath) : resolved.indexPath ?? await detectWikipediaIndexPath(resolved.dumpPath),
       maxPagesPerRun: input.maxPages ?? resolved.maxPagesPerRun,
       maxBlocksPerRun: input.maxBlocks ?? resolved.maxBlocksPerRun,
       memorySafetyBoundMb: input.memorySafetyBoundMb ?? resolved.memorySafetyBoundMb
     };
     const rootUri = wikipediaRootUri(corpus);
-    const resumedFromOffset = input.startOffset !== undefined ? Math.max(0, Math.floor(input.startOffset)) : input.fresh ? 0 : input.resume === false ? 0 : await this.resumeOffset(rootUri);
+    const wikiConfig = this.config.runtime.corpora?.wikipedia;
+    const inputManifest = await createWikipediaInputManifest({
+      dumpPath: corpus.dumpPath, indexPath: corpus.indexPath,
+      cacheDir: path.join(this.config.runtime.tempRoot ?? tmpdir(), "wikipedia-input-identities"),
+      normalizationIdentity: WIKIPEDIA_SURFACE_TRANSFORM,
+      compilerIdentity: await ingestionCodeIdentity(),
+      semanticConfig: {
+        namespace: corpus.namespace, wikiCode: corpus.wikiCode, allowedNamespaces: [...corpus.allowedNamespaces].sort((a, b) => a - b),
+        skipRedirects: corpus.skipRedirects, maxArticleChars: corpus.maxArticleChars,
+        maxChunkBytes: this.config.runtime.maxChunkBytes ?? null,
+        ngramShardChars: effectiveNgramShardChars(wikiConfig?.ngramShardChars),
+        ngramMaxOrder: wikiConfig?.ngramMaxOrder ?? 4,
+        ngramMaxCountersPerOrder: wikiConfig?.ngramMaxCountersPerOrder ?? 128,
+        ngramVocabularyLimit: wikiConfig?.ngramVocabularyLimit ?? 8192,
+        languageTrainingDocumentLimit: wikiConfig?.languageTrainingDocumentLimit ?? 0,
+        alignmentLatticesPerShard: wikiConfig?.alignmentLatticesPerShard ?? 48
+      }
+    });
+    const assertInputUnchanged = async (): Promise<void> => {
+      if (!await wikipediaInputSourcesStillMatch(inputManifest)) throw new Error("Wikipedia input changed during ingestion; no further checkpoint or activation is permitted");
+    };
+    await assertInputUnchanged();
+    const resumeCheckpoint = await this.resumeCheckpoint(rootUri, inputManifest.identity);
+    const useStoredResume = input.startOffset === undefined && !input.fresh && input.resume !== false;
+    const resumedFromOffset = input.startOffset !== undefined ? Math.max(0, Math.floor(input.startOffset))
+      : useStoredResume ? resumeCheckpoint?.offsetBytes ?? 0 : 0;
     const episodeId = this.ids.episodeId();
     const startedAt = nowMs();
     await this.storage.events.append(this.events.create({
       episodeId,
       typeId: "OwnerAsked",
-      payload: { command: "ingest.wikipedia.v3", dumpPath: corpus.dumpPath, indexPath: corpus.indexPath ?? null, resumedFromOffset, memorySafetyBoundMb: corpus.memorySafetyBoundMb }
+      payload: { command: "ingest.wikipedia.v3", dumpPath: corpus.dumpPath, indexPath: corpus.indexPath ?? null, inputManifest: toJsonValue(inputManifest), resumedFromOffset, memorySafetyBoundMb: corpus.memorySafetyBoundMb }
     }));
 
     const result: WikipediaV3IngestResult = {
       episodeId: String(episodeId),
+      inputManifestId: inputManifest.identity,
       rootUri,
       dumpPath: corpus.dumpPath,
       indexPath: corpus.indexPath,
@@ -328,7 +375,9 @@ export class WikipediaV3Ingestor {
     let activeLanguageShardUri = rootUri;
     let languageShardSamples: WikipediaLanguageShardSample[] = [];
     let languageShardChars = 0;
+    const pendingBlockCheckpoints: IngestionCheckpoint[] = [];
     let languageTrainedDocuments = 0;
+    let languageSkippedDocuments = 0;
     // 0 or absent trains every document. Past the limit, pages still become evidence, graph and a page
     // signature -- the cheap ~9% -- and only shard training stops.
     const languageTrainingDocumentLimit = Math.max(0, this.config.runtime.corpora?.wikipedia?.languageTrainingDocumentLimit ?? 0);
@@ -352,12 +401,27 @@ export class WikipediaV3Ingestor {
     // now accumulates across blocks until the budget is reached. `force` is for the end of the stream, a heap
     // bound, or an owner stop, where whatever has accumulated must be trained rather than dropped.
     const flushLanguageShard = async (shardUri: string, force = false): Promise<void> => {
-      if (!languageShardSamples.length) return;
-      if (!force && languageShardChars < shardCharBudget) return;
+      if (languageShardSamples.length && !force && languageShardChars < shardCharBudget) return;
+      if (!languageShardSamples.length && !pendingBlockCheckpoints.length) return;
       const samples = languageShardSamples;
+      // Resume may advance only when the language artifacts for these blocks are durable.
+      // Keep the samples and checkpoints pending if compilation or any persistence write fails.
+      const commitProgress = async (): Promise<void> => {
+        await assertInputUnchanged();
+        for (const checkpoint of pendingBlockCheckpoints) await this.storage.ingestion.put(checkpoint);
+      };
+      // The shard owns one transaction around learned writes and progress. Its preparation happens before
+      // that transaction; an empty shard has only progress to commit.
+      const imported = samples.length
+        ? await this.ingestLanguageShard(samples, shardUri, episodeId, inputManifest, commitProgress)
+        : await this.storage.transaction(async () => { await commitProgress(); return undefined; });
+      for (const checkpoint of pendingBlockCheckpoints) {
+        result.lastCheckpointOffset = Math.max(result.lastCheckpointOffset, checkpoint.offsetBytes);
+      }
       languageShardSamples = [];
       languageShardChars = 0;
-      applyLanguageShardImport(await this.ingestLanguageShard(samples, shardUri, episodeId));
+      pendingBlockCheckpoints.length = 0;
+      if (imported) applyLanguageShardImport(imported);
     };
     const emitStatus = async (state: WikipediaV3IngestStatus["state"], finishedAt?: number): Promise<void> => {
       result.heapMiB = heapMiB();
@@ -394,7 +458,7 @@ export class WikipediaV3Ingestor {
         stoppedByHeapSafetyBound: result.stoppedByHeapSafetyBound,
         stoppedByOwner: result.stoppedByOwner,
         fullTrainingRequested,
-        fullTrainingComplete: fullTrainingRequested && streamReachedEnd && !result.stoppedByHeapSafetyBound && !result.stoppedByOwner,
+        fullTrainingComplete: fullTrainingRequested && streamReachedEnd && languageSkippedDocuments === 0 && !result.stoppedByHeapSafetyBound && !result.stoppedByOwner,
         stopReason,
         warnings: result.warnings.slice(-64)
       });
@@ -402,9 +466,16 @@ export class WikipediaV3Ingestor {
     await emitStatus("starting");
 
     try {
-      for await (const item of streamWikipediaMultistream(corpus, { resumeOffset: resumedFromOffset })) {
-        await this.storage.ingestion.put(item.checkpoint);
-        result.lastCheckpointOffset = Math.max(result.lastCheckpointOffset, item.checkpoint.offsetBytes);
+      for await (const item of streamWikipediaMultistream(corpus, {
+        resumeOffset: resumedFromOffset,
+        resumeAfterBlock: useStoredResume && resumeCheckpoint !== undefined,
+        discoverIndex: false
+      })) {
+        item.checkpoint.metadata = toJsonValue({ ...objectOrEmpty(item.checkpoint.metadata), inputManifestId: inputManifest.identity });
+        const blockComplete = item.type === "checkpoint" && isBlockCheckpoint(item.checkpoint) && item.checkpoint.phase === "stored" && item.checkpoint.status === "complete";
+        const streamComplete = item.type === "checkpoint" && !isBlockCheckpoint(item.checkpoint) && item.checkpoint.phase === "stored" && item.checkpoint.status === "complete";
+        if (blockComplete) pendingBlockCheckpoints.push(item.checkpoint);
+        else if (!streamComplete) await this.storage.ingestion.put(item.checkpoint);
         if (item.type === "checkpoint") {
           const blockCheckpoint = isBlockCheckpoint(item.checkpoint);
           if (blockCheckpoint && item.checkpoint.phase === "extracting" && item.checkpoint.status === "running") {
@@ -415,7 +486,12 @@ export class WikipediaV3Ingestor {
             await flushLanguageShard(item.checkpoint.itemUri);
             result.blocks++;
           } else if (!blockCheckpoint && item.checkpoint.phase === "stored" && item.checkpoint.status === "complete") {
-            await flushLanguageShard(activeLanguageShardUri);
+            await flushLanguageShard(activeLanguageShardUri, true);
+            await assertInputUnchanged();
+            await this.storage.ingestion.put(item.checkpoint);
+            const completion = objectOrEmpty(item.checkpoint.metadata);
+            streamReachedEnd = completion.reachedEnd === true;
+            if (typeof completion.stoppedAt === "string") stopReason = completion.stoppedAt;
           }
           const now = nowMs();
           if (now - lastStatusAt > 5000) {
@@ -464,12 +540,14 @@ export class WikipediaV3Ingestor {
               await flushLanguageShard(activeLanguageShardUri, true);
             }
             languageShardSamples.push(imported.languageSample);
-            languageShardChars += sampleChars;
+            languageShardChars += sampleChars + (languageShardSamples.length > 1 ? 2 : 0);
             languageTrainedDocuments += 1;
             // Crossing the limit trains what has accumulated; otherwise it waits for a flush that never comes.
             if (languageTrainingDocumentLimit && languageTrainedDocuments >= languageTrainingDocumentLimit) {
               await flushLanguageShard(activeLanguageShardUri, true);
             }
+          } else {
+            languageSkippedDocuments++;
           }
         }
         result.warnings.push(...imported.warnings);
@@ -488,15 +566,16 @@ export class WikipediaV3Ingestor {
         }
       }
       await flushLanguageShard(activeLanguageShardUri, true);
-      streamReachedEnd = !result.stoppedByHeapSafetyBound && !result.stoppedByOwner;
+      await assertInputUnchanged();
     } catch (error) {
       stopReason = messageOf(error);
       await emitStatus("failed", nowMs()).catch(() => undefined);
       throw error;
     }
     result.stopReason = stopReason;
+    if (languageSkippedDocuments) result.warnings.push(`${languageSkippedDocuments} page(s) were not language-trained because languageTrainingDocumentLimit was reached`);
 
-    if (result.sources > 0) await this.registerActiveWikipediaImport({ result, rootUri, corpus, importedAt: nowMs(), fullTrainingComplete: fullTrainingRequested && streamReachedEnd && !result.stoppedByHeapSafetyBound && !result.stoppedByOwner });
+    if (result.sources > 0) await this.registerActiveWikipediaImport({ result, rootUri, corpus, importedAt: nowMs(), fullTrainingComplete: fullTrainingRequested && streamReachedEnd && languageSkippedDocuments === 0 && !result.stoppedByHeapSafetyBound && !result.stoppedByOwner });
     await this.storage.events.append(this.events.create({
       episodeId,
       typeId: "EpisodeClosed",
@@ -515,6 +594,7 @@ export class WikipediaV3Ingestor {
 
   private async registerActiveWikipediaImport(input: { result: WikipediaV3IngestResult; rootUri: string; corpus: ResolvedWikipediaCorpus; importedAt: number; fullTrainingComplete: boolean }): Promise<void> {
     const versionSeed = {
+      inputManifestId: input.result.inputManifestId ?? null,
       rootUri: input.rootUri,
       dumpPath: input.corpus.dumpPath,
       indexPath: input.corpus.indexPath ?? null,
@@ -601,9 +681,7 @@ export class WikipediaV3Ingestor {
     let lifecycle = await this.ensureWikipediaLifecycle(manifest, input.importedAt);
     if (lifecycle.state === "ACTIVE") return;
     if (lifecycle.state === "READY") {
-      if (!(await this.mayActivateOver(brainVersion, input))) return;
-      assertBrainManifestReplayForActivation(manifest, this.hasher);
-      await this.storage.brainImports.activateReady({ brainVersion, importRunId, updatedAt: input.importedAt });
+      await this.deferWikipediaActivation(input.result);
       return;
     }
     await this.storage.brainImports.putLedger({
@@ -692,19 +770,23 @@ export class WikipediaV3Ingestor {
         await this.storage.brainImports.transitionLifecycle({ importRunId, expectedState: "VALIDATING", toState: "FAILED", updatedAt: input.importedAt, reason: "Wikipedia brain validation failed", validation });
         throw new Error(`Wikipedia brain validation failed for ${importRunId}`);
       }
-      lifecycle = await this.storage.brainImports.transitionLifecycle({ importRunId, expectedState: "VALIDATING", toState: "READY", updatedAt: input.importedAt, reason: "Wikipedia brain validation passed", validation });
+      // These are import-structure checks only. Counts and a self-hash do not qualify learned speech,
+      // calibrators, replay equivalence, or runtime consumption. Keep the candidate in VALIDATING until
+      // the evaluator/publication contract supplies those independent records and pinned artifact IDs.
+      await this.storage.brainImports.putLedger({
+        ...base,
+        id: String(this.ids.semanticId("wiki_import_ledger", { importRunId, sectionId: "__structural_validation__", manifestHash })),
+        sectionId: "__structural_validation__", sectionKind: "manifest", forceClass: "learned_concept_prior",
+        fileHash: manifestHash, rowCounts: {}, warnings: ["publication qualification pending"],
+        metadata: toJsonValue({ structuralValidation: validation, publicationQualification: "pending" })
+      });
     }
-    if (lifecycle.state !== "READY") throw new Error(`Wikipedia brain ${importRunId} is not activatable from ${lifecycle.state}`);
-    assertBrainManifestReplayForActivation(manifest, this.hasher);
-    await this.storage.brainImports.activateReady({ brainVersion, importRunId, updatedAt: input.importedAt });
+    await this.deferWikipediaActivation(input.result);
   }
 
-  /** A bounded run (--max-pages, a stop) must not replace a different brain that is already active; only a complete run may. */
-  private async mayActivateOver(brainVersion: string, input: { result: WikipediaV3IngestResult; fullTrainingComplete: boolean }): Promise<boolean> {
+  private async deferWikipediaActivation(result: WikipediaV3IngestResult): Promise<void> {
     const active = await this.storage.brainImports.active();
-    if (!active.activeBrainVersion || active.activeBrainVersion === brainVersion || input.fullTrainingComplete) return true;
-    input.result.warnings.push(`import left READY: ${active.activeBrainVersion} stays active until a complete run replaces it`);
-    return false;
+    result.warnings.push(`Wikipedia candidate awaits artifact, replay, learned-speech, calibration and runtime qualification${active.activeBrainVersion ? `; ${active.activeBrainVersion} stays active` : ""}`);
   }
 
   private async ensureWikipediaLifecycle(manifest: BrainManifestContract, updatedAt: number): Promise<BrainLifecycleRecord> {
@@ -749,32 +831,26 @@ export class WikipediaV3Ingestor {
     const batch = relationObservationsFromCandidates(candidates);
     if (!batch.length) return [];
     // Without the aggregate there is nothing to decide on, so read as before rather than guess.
-    if (!store.sourceFamilyCountsForSeeds) return store.list({}).catch(() => []);
+    if (!store.sourceFamilyCountsForSeeds) return store.list({});
     const familyCountsOnFile = await store
-      .sourceFamilyCountsForSeeds([...new Set(batch.map(row => row.relationSeedId))])
-      .catch(() => undefined);
-    if (!familyCountsOnFile) return store.list({}).catch(() => []);
+      .sourceFamilyCountsForSeeds([...new Set(batch.map(row => row.relationSeedId))]);
     if (!relationPromotionNeedsPriors({ batch, familyCountsOnFile })) return [];
-    return store.list({}).catch(() => []);
+    return store.list({});
   }
 
-  private async resumeOffset(rootUri: string): Promise<number> {
-    const checkpoints = await this.storage.ingestion.list({ rootUri, status: "complete", limit: 2000 });
-    return verifiedResumeOffset(checkpoints);
+  private async resumeCheckpoint(rootUri: string, inputManifestId: string): Promise<IngestionCheckpoint | undefined> {
+    const latest = await this.storage.ingestion.list({ rootUri, limit: 1 });
+    const checkpoints = await this.storage.ingestion.list({ rootUri, status: "complete", phase: "stored", itemUriPrefix: `${rootUri}/block/`, orderBy: "offsetBytes", limit: 1 });
+    for (const row of [...latest, ...checkpoints]) {
+      if (objectOrEmpty(row.metadata).inputManifestId !== inputManifestId) {
+        throw new Error("Wikipedia resume input identity differs or is missing; use an empty candidate schema for this dump/compiler/configuration");
+      }
+    }
+    return checkpoints[0];
   }
 
   private async ingestPage(file: IngestedSourceFile, checkpoint: IngestionCheckpoint, episodeId: ReturnType<IdFactory["episodeId"]>): Promise<WikipediaPageImport> {
-    return this.storage.transaction(() => this.ingestPageTransaction(file, checkpoint, episodeId));
-  }
-
-  private async ingestPageTransaction(file: IngestedSourceFile, checkpoint: IngestionCheckpoint, episodeId: ReturnType<IdFactory["episodeId"]>): Promise<WikipediaPageImport> {
-    const pageTrace = ingestStageTracer();
-    const pageSpan = pageTrace.span("page.transaction");
-    try {
-      return await this.ingestPageTraced(file, checkpoint, episodeId);
-    } finally {
-      pageSpan.end({ bytes: file.bytes.length });
-    }
+    return this.ingestPageTraced(file, checkpoint, episodeId);
   }
 
   private async ingestPageTraced(file: IngestedSourceFile, checkpoint: IngestionCheckpoint, episodeId: ReturnType<IdFactory["episodeId"]>): Promise<WikipediaPageImport> {
@@ -787,13 +863,18 @@ export class WikipediaV3Ingestor {
     };
     const now = this.clock.now();
     const warnings: string[] = [];
+    const originalFile = file;
+    const derivative = file.evidenceDerivative;
+    const { sourceId, originalVersionId, evidenceVersionId: sourceVersionId } = wikipediaSourceVersionIdentities(file, this.ids);
+    if (derivative) {
+      if (!Buffer.from(derivative.text, "utf8").equals(Buffer.from(derivative.bytes))) throw new Error(`Wikipedia derivative bytes do not encode text: ${file.uri}`);
+      file = { ...file, bytes: derivative.bytes, text: derivative.text, mediaType: "text/plain; charset=utf-8" };
+    }
     // Derived, not stored yet: everything this method computes comes from the page's bytes alone, so the whole
     // derivation runs before the first write. That ordering is what shortens the transaction's write span, and
     // it is the seam a worker thread needs -- compute is pure, only the writes below need the database.
     const contentHash = blobContentHash(file.bytes);
-    const sourceId = this.ids.sourceId(file.namespace, file.uri);
-    const sourceVersionId = this.ids.sourceVersionId(file.bytes);
-    const metadata = wikiMetadata(file.metadata);
+    const metadata = toJsonValue({ ...objectOrEmpty(wikiMetadata(file.metadata)), sourceFamilyId: "wikimedia:wikipedia" });
     const source: SourceVersion = {
       sourceId,
       sourceVersionId,
@@ -815,7 +896,13 @@ export class WikipediaV3Ingestor {
         licenseStatus: "licensed"
       },
       informationLabel: WIKIPEDIA_INFORMATION_LABEL,
-      metadata
+      metadata,
+      role: derivative ? "evidence-derivative" : "original",
+      ...(derivative ? { derivation: {
+        kind: derivative.kind, transformId: derivative.transformId,
+        derivedFromSourceVersionId: originalVersionId,
+        originalCoordinateSpace: derivative.originalCoordinateSpace, redactionMap: derivative.redactionMap
+      } } : {})
     };
     const profile = {
       ...pageStage("page.language-profile", () => this.language.acquire({ sourceVersionId, text: file.text, createdAt: now })),
@@ -834,6 +921,7 @@ export class WikipediaV3Ingestor {
       observedAt: now,
       maxChunkBytes: this.config.runtime.maxChunkBytes,
       metadata,
+      sourceVersionDerivation: source.derivation,
       exactSourceText: true
     });
     extractSpan.end({ spans: 0 });
@@ -851,11 +939,32 @@ export class WikipediaV3Ingestor {
     // Writes begin here, in the order they were always in: the event ledger is a hash chain, so their
     // sequence is load-bearing and must never follow computation-completion order.
     admissionSpan.end();
+    // Both graph producers are pure derivations. Finish them before opening the write transaction.
+    const admittedSpans = stampEvidence(extracted.spans, metadata, WIKIPEDIA_INFORMATION_LABEL);
+    const typedProjection = decision.disposition === "promote" ? pageStage("page.typed-project", () =>
+      this.typedIngest.project({ sourceId, sourceVersionId, uri: file.uri, mediaType: file.mediaType, text: file.text, metadata, evidence: admittedSpans, observedAt: now })) : undefined;
+    const builtGraph = decision.disposition === "promote" ? pageStage("page.graph-build", () =>
+      this.graphBuilder.build({ sourceVersionId, uri: file.uri, mediaType: file.mediaType, languageProfile: profile, evidence: admittedSpans, observedAt: now })) : undefined;
+    return this.storage.transaction(async () => {
+    const transactionSpan = pageTrace.span("page.transaction");
+    try {
     const sourceSpan = pageTrace.span("page.source-persist");
+    if (derivative) {
+      const originalContentHash = blobContentHash(originalFile.bytes);
+      await this.storage.blobs.put(originalFile.bytes, originalFile.mediaType);
+      await this.storage.evidence.putSourceVersion({ ...source, sourceVersionId: originalVersionId,
+        contentHash: originalContentHash, byteLength: originalFile.bytes.byteLength, mediaType: originalFile.mediaType,
+        role: "original", derivation: undefined });
+    }
     await this.storage.blobs.put(file.bytes, file.mediaType);
     await this.storage.evidence.putSourceVersion(source);
     await this.storage.events.append(this.events.create({ episodeId, typeId: "SourceObserved", payload: { sourceId, uri: file.uri, namespace: file.namespace, sourceSystem: "wikipedia" } }));
-    await this.storage.events.append(this.events.create({ episodeId, typeId: "SourceVersionObserved", payload: { sourceVersionId, contentHash, byteLength: file.bytes.byteLength } }));
+    if (derivative) await this.storage.events.append(this.events.create({ episodeId, typeId: "SourceVersionObserved", payload: {
+      sourceVersionId: originalVersionId, contentHash: blobContentHash(originalFile.bytes), byteLength: originalFile.bytes.byteLength, role: "original"
+    } }));
+    await this.storage.events.append(this.events.create({ episodeId, typeId: "SourceVersionObserved", payload: {
+      sourceVersionId, contentHash, byteLength: file.bytes.byteLength, role: source.role, derivation: toJsonValue(source.derivation ?? null)
+    } }));
     // The page's own profile is computed for extraction and then discarded. Its signature is what identity
     // discovery counts documents with, so it is kept: a shard may hold any amount of text without shrinking
     // the population the closed class is measured over. The profile itself still does not become a durable
@@ -933,7 +1042,7 @@ export class WikipediaV3Ingestor {
       return zeroPage({ warnings: decision.reasons });
     }
 
-    const admittedSpans = stampEvidence(extracted.spans, metadata, WIKIPEDIA_INFORMATION_LABEL);
+    if (!typedProjection || !builtGraph) throw new Error("Wikipedia promoted page is missing its derived graph");
     const evidenceSpan = pageTrace.span("page.evidence-persist");
     await putSpanBlobs(this.storage.blobs, admittedSpans, file.mediaType);
     if (this.storage.evidence.putEvidenceSpans) await this.storage.evidence.putEvidenceSpans(admittedSpans);
@@ -942,15 +1051,12 @@ export class WikipediaV3Ingestor {
     let graphNodes = 0;
     let graphEdges = 0;
     evidenceSpan.end({ spans: admittedSpans.length });
-    const projectSpan = pageTrace.span("page.typed-project");
-    const typedProjection = this.typedIngest.project({ sourceId, sourceVersionId, uri: file.uri, mediaType: file.mediaType, text: file.text, metadata, evidence: admittedSpans, observedAt: now });
     const typedNodes = stampGraphNodes(typedProjection.graphNodes, WIKIPEDIA_INFORMATION_LABEL);
     const typedEdges = stampGraphEdges(typedProjection.graphEdges, WIKIPEDIA_INFORMATION_LABEL);
     const typedHyperedges = typedProjection.graphHyperedges.map(hyperedge => ({
       ...hyperedge,
       informationLabel: WIKIPEDIA_INFORMATION_LABEL
     }));
-    projectSpan.end();
     // Split three ways: this call writes 21 nodes and 27 edges in 3,909ms while the next writes 231 nodes and
     // 260 edges in 1,278ms -- thirty times the cost per row, same tables, same transaction. A fixed cost lives
     // in one of these three and the aggregate span could not say which.
@@ -971,11 +1077,8 @@ export class WikipediaV3Ingestor {
     graphNodes += typedProjection.graphNodes.length;
     graphEdges += typedProjection.graphEdges.length;
     let graphHyperedges = typedProjection.graphHyperedges.length;
-    const buildSpan = pageTrace.span("page.graph-build");
-    const builtGraph = this.graphBuilder.build({ sourceVersionId, uri: file.uri, mediaType: file.mediaType, languageProfile: profile, evidence: admittedSpans, observedAt: now });
     const builtNodes = stampGraphNodes(builtGraph.nodes, WIKIPEDIA_INFORMATION_LABEL);
     const builtEdges = stampGraphEdges(builtGraph.edges, WIKIPEDIA_INFORMATION_LABEL);
-    buildSpan.end();
     const builtGraphSpan = pageTrace.span("page.graph-persist-built");
     if (this.storage.graph.upsertNodes) await this.storage.graph.upsertNodes(builtNodes);
     else for (const node of builtNodes) await this.storage.graph.upsertNode(node);
@@ -1012,7 +1115,7 @@ export class WikipediaV3Ingestor {
     eventSpan.end();
 
     return {
-      sources: 1,
+      sources: derivative ? 2 : 1,
       evidence: admittedSpans.length,
       graphNodes,
       graphEdges,
@@ -1039,6 +1142,8 @@ export class WikipediaV3Ingestor {
       },
       warnings
     };
+    } finally { transactionSpan.end({ bytes: originalFile.bytes.length }); }
+    });
   }
 
   /**
@@ -1078,17 +1183,18 @@ export class WikipediaV3Ingestor {
     }));
   }
 
-  private async ingestLanguageShard(samples: readonly WikipediaLanguageShardSample[], shardUri: string, episodeId: ReturnType<IdFactory["episodeId"]>): Promise<WikipediaLanguageShardImport> {
+  private async ingestLanguageShard(samples: readonly WikipediaLanguageShardSample[], shardUri: string, episodeId: ReturnType<IdFactory["episodeId"]>, inputManifest: WikipediaInputManifest, commitProgress: () => Promise<void>): Promise<WikipediaLanguageShardImport> {
     if (!samples.length) return zeroLanguageShard({ warnings: [] });
     const createdAt = samples.reduce((max, sample) => Math.max(max, sample.createdAt), 0) || this.clock.now();
     // How much text one model is trained on is the strongest lever measured on this corpus, and it is a memory
     // bound rather than a modelling choice, so it is configurable with the measured-safe value as the default.
     const shardChars = effectiveNgramShardChars(this.config.runtime.corpora?.wikipedia?.ngramShardChars);
     const boundedShard = boundedLanguageShard(samples, shardChars, 2048);
+    if (boundedShard.droppedChars || boundedShard.droppedSamples) {
+      throw new Error(`Wikipedia language shard exceeds its character budget by ${boundedShard.droppedChars}; refusing incomplete training and checkpoint advancement (the budget must include titles and separators)`);
+    }
     const text = boundedShard.text;
-    const shardWarnings = boundedShard.droppedChars > 0
-      ? [`language shard exceeded ngramShardChars: ${boundedShard.droppedChars} characters across ${boundedShard.droppedSamples} page(s) were not trained; raise runtime.corpora.wikipedia.ngramShardChars to at least maxArticleChars`]
-      : [];
+    const shardWarnings: string[] = [];
     const sourceVersionId = this.ids.sourceVersionId(`${shardUri}\u001f${text}`);
     const profile = {
       ...this.language.acquire({ sourceVersionId, text, createdAt }),
@@ -1100,7 +1206,7 @@ export class WikipediaV3Ingestor {
     const vocabularyLimit = this.config.runtime.corpora?.wikipedia?.ngramVocabularyLimit ?? 8192;
     const trace = ingestStageTracer();
     const trainSpan = trace.span("language.train");
-    const trained = await trainLanguageCorpusText({
+    const trainingInput: LanguageCorpusTrainingInput = {
       storage: this.storage,
       sourceSystem: "wikipedia",
       streamUri: shardUri,
@@ -1116,17 +1222,21 @@ export class WikipediaV3Ingestor {
       ngramMaxCountersPerOrder: ngramMaxCounters,
       ngramVocabularyLimit: vocabularyLimit,
       corpusMetadata: {
+        inputManifestId: inputManifest.identity,
         shardUri,
         pages: samples.length,
-        sourceVersionIds: samples.map(sample => String(sample.sourceVersionId)).slice(0, 256)
+        sourceVersionIds: samples.map(sample => String(sample.sourceVersionId))
       },
       persistSource: false,
-      // The compiled models carry this shard's n-gram mass. The raw observations are the same information in
-      // the form nothing reads, and they never collapse across shards, which is what makes ingest decay.
+      // Compiled models carry the same order counts; the translation compiler consumes these models too.
       skipNgramObservationPersistence: true,
       episodeId
-    });
+    };
+    const prepared = await prepareLanguageCorpusTraining(trainingInput);
     trainSpan.end({ evidence: evidence.length, pages: samples.length, textBytes: Buffer.byteLength(text, "utf8") });
+    return this.storage.transaction(async () => {
+    if (!await wikipediaInputSourcesStillMatch(inputManifest)) throw new Error("Wikipedia input changed during language preparation");
+    const trained = await commitLanguageCorpusTraining(trainingInput, prepared);
     const semanticCandidates = samples.flatMap(sample => sample.semanticCandidates);
     // Independence is corpus-wide: sources seen in earlier runs count, or a shard at a time never promotes.
     //
@@ -1139,6 +1249,13 @@ export class WikipediaV3Ingestor {
     const priorSpan = trace.span("relation.prior-load");
     const priorRelationObservations = await this.priorRelationObservations(semanticCandidates);
     priorSpan.end({ candidates: semanticCandidates.length, priors: priorRelationObservations.length });
+    const observeSpan = trace.span("relation.observe");
+    if (this.storage.relationObservations && semanticCandidates.length) {
+      await this.storage.relationObservations.put(
+        relationObservationsFromCandidates(semanticCandidates).map(row => ({ ...row, observedAt: createdAt }))
+      );
+    }
+    observeSpan.end({ candidates: semanticCandidates.length });
     const promoteSpan = trace.span("relation.promote");
     const relationPromotionModel = compileRelationPromotionModel({
       candidates: semanticCandidates,
@@ -1153,13 +1270,6 @@ export class WikipediaV3Ingestor {
       hasher: this.hasher
     });
     promoteSpan.end({ decisions: relationPromotionModel.decisions.length });
-    const observeSpan = trace.span("relation.observe");
-    if (this.storage.relationObservations && semanticCandidates.length) {
-      await this.storage.relationObservations.put(
-        relationObservationsFromCandidates(semanticCandidates).map(row => ({ ...row, observedAt: createdAt }))
-      );
-    }
-    observeSpan.end({ candidates: semanticCandidates.length });
     const opaqueRoleModel = compileOpaqueRoleModel({
       candidates: semanticCandidates,
       promotionModel: relationPromotionModel,
@@ -1407,14 +1517,15 @@ export class WikipediaV3Ingestor {
           allocation.conservationResidual
         );
       }
-      // Everything this flush admitted, hashed into one replay manifest and verified before it is recorded: the shard
-      // can be re-derived from its own inputs, or the mismatch is named here rather than discovered later.
-      let canonicalReplay: { id: string; byteHash: string; verified: boolean; reason?: string } | undefined;
+      // This verifies canonical serialization and graph integrity. A separate executed replay is required to
+      // establish re-derivation equivalence; a self-consistent hash alone cannot establish that result.
+      let canonicalReplay: { id: string; byteHash: string; blobHash: string; verified: boolean } | undefined;
       try {
         const manifest = compileCanonicalReplayManifest({
-          corpusManifestId: shardUri,
-          codeCommit: String(profile.id),
-          configuration: toJsonValue({ ngramMaxOrder, ngramMaxCounters, vocabularyLimit, alignmentLattices: alignmentLattices.length }),
+          corpusManifestId: inputManifest.identity,
+          codeCommit: inputManifest.semantics.compilerIdentity,
+          configuration: toJsonValue({ semanticConfig: inputManifest.semantics.config, ngramMaxOrder, ngramMaxCounters, vocabularyLimit,
+            alignmentLattices: alignmentLattices.length, trainingTextHash: this.hasher.digestHex(text), sourceVersionIds: samples.map(sample => String(sample.sourceVersionId)) }),
           randomSeed: shardUri,
           surfaceLattices: alignmentLattices,
           boundaryStatistics: [],
@@ -1423,9 +1534,11 @@ export class WikipediaV3Ingestor {
           hasher: this.hasher
         });
         verifyCanonicalReplayManifest(manifest, this.hasher);
-        canonicalReplay = { id: manifest.id, byteHash: manifest.byteHash, verified: true };
+        const manifestBytes = Buffer.from(canonicalStringify(manifest), "utf8");
+        await this.storage.blobs.put(manifestBytes, "application/json");
+        canonicalReplay = { id: manifest.id, byteHash: manifest.byteHash, blobHash: String(blobContentHash(manifestBytes)), verified: true };
       } catch (error) {
-        canonicalReplay = { id: "", byteHash: "", verified: false, reason: messageOf(error) };
+        throw new Error(`Wikipedia canonical replay verification failed: ${messageOf(error)}`, { cause: error });
       }
       const alignmentHeldoutEvaluation =
         compileAutomaticAlignmentEvaluation({
@@ -1665,6 +1778,7 @@ export class WikipediaV3Ingestor {
           denseMatrixMaterialized: false
       });
     }
+    await commitProgress();
     return {
       languageProfiles: trained.languageProfiles,
       ngramObservations: trained.ngramObservations,
@@ -1681,6 +1795,7 @@ export class WikipediaV3Ingestor {
         : 0,
       warnings: [...shardWarnings, ...trained.warnings]
     };
+    });
   }
 }
 
@@ -1767,15 +1882,23 @@ export function boundedLanguageShard(
     const titlePrefix = sample.title ? `${sample.title}\n` : "";
     const text = `${titlePrefix}${sample.text}`;
     if (!text) continue;
-    if (parts.length && remaining > 1) {
+    if (parts.length && remaining < 2) {
+      droppedSamples += 1;
+      droppedChars += text.length;
+      continue;
+    }
+    if (parts.length) {
       parts.push("\n\n");
       remaining -= 2;
     }
-    const consumed = Math.min(text.length, remaining);
+    let consumed = Math.min(text.length, remaining);
+    // A shard budget counts UTF-16 units, while evidence charEnd counts codepoints.
+    if (consumed < text.length && /[\uD800-\uDBFF]/u.test(text.charAt(consumed - 1))) consumed--;
     const consumedPageChars = Math.max(0, consumed - titlePrefix.length);
+    const consumedPageCodepoints = [...sample.text.slice(0, consumedPageChars)].length;
     for (const span of sample.evidence) {
       if (evidence.length >= maxEvidence) break;
-      if (span.charEnd > consumedPageChars) continue;
+      if (span.charEnd > consumedPageCodepoints) continue;
       const key = String(span.id);
       if (seenEvidence.has(key)) continue;
       seenEvidence.add(key);
@@ -1786,8 +1909,8 @@ export function boundedLanguageShard(
       remaining -= text.length;
       continue;
     }
-    parts.push(text.slice(0, remaining));
-    droppedChars += text.length - remaining;
+    parts.push(text.slice(0, consumed));
+    droppedChars += text.length - consumed;
     droppedSamples += 1;
     remaining = 0;
   }

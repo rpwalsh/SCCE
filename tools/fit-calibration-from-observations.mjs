@@ -18,6 +18,9 @@
 //   node tools/fit-calibration-from-observations.mjs
 //   node tools/fit-calibration-from-observations.mjs --traces          # also fit the ranking vector offline
 //   node tools/fit-calibration-from-observations.mjs --install         # write ids that earned it
+//   node tools/fit-calibration-from-observations.mjs --config=scce.config.scce6.json --check-config
+//   --config (or SCCE_CONFIG) selects the runtime config and its own .local.json overlay;
+//   --schema explicitly overrides only the selected database schema.
 //
 // The ranking source is opt-in because its only labels are the sealed suite's: fitting production constants on
 // them would unseal the benchmark, so --install never writes a ranking id no matter how well it scores.
@@ -26,14 +29,11 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { readRuntimeConfig } from "./lib/runtime-config.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 // SCCE_REPO_ROOT lets a worktree with no install of its own borrow the primary checkout's build.
 const repoRoot = process.env.SCCE_REPO_ROOT ? path.resolve(process.env.SCCE_REPO_ROOT) : path.resolve(here, "..");
-const require_ = createRequire(pathToFileURL(path.join(repoRoot, "packages", "adapters-node", "package.json")));
-const pg = require_("pg");
-const kernel = await import(pathToFileURL(path.join(repoRoot, "packages", "kernel", "dist", "index.js")).href);
-
 const args = new Map();
 for (let index = 2; index < process.argv.length; index++) {
   const token = process.argv[index];
@@ -57,6 +57,23 @@ const suitePath = flag("suite", "artifacts/head-to-head/suite.json");
 if (!Number.isFinite(holdoutFraction) || holdoutFraction <= 0 || holdoutFraction >= 1) throw new Error("--holdout must be within (0,1)");
 if (!Number.isFinite(rowLimit) || rowLimit <= 0) throw new Error("--limit must be positive");
 
+const configPath = path.resolve(flag("config", process.env.SCCE_CONFIG ?? path.join(repoRoot, "scce.config.json")));
+const config = readRuntimeConfig(configPath);
+const databaseUrl = config.database?.url?.trim();
+const schema = flag("schema", config.database?.schema);
+if (!databaseUrl) throw new Error("database.url is missing from the selected runtime config; set SCCE_DATABASE_URL or its .local.json overlay");
+if (!/^[a-z0-9_]+$/u.test(String(schema ?? ""))) throw new Error("schema must be a plain identifier");
+// Resolve the exact target without loading a learner, connecting to Postgres, or writing a report.
+// Never include the connection URL: it may contain credentials.
+if (args.has("check-config")) {
+  console.log(JSON.stringify({ configPath, schema, databaseUrlConfigured: true }));
+  process.exit(0);
+}
+
+const require_ = createRequire(pathToFileURL(path.join(repoRoot, "packages", "adapters-node", "package.json")));
+const pg = require_("pg");
+const kernel = await import(pathToFileURL(path.join(repoRoot, "packages", "kernel", "dist", "index.js")).href);
+
 const {
   CALIBRATION_IDS, PUBLIC_CALIBRATIONS, PUBLIC_CALIBRATION_IDS, TURN_REQUIREMENT_DIMENSIONS,
   JUDGE_REQUIREMENT_QUALITY_KEYS, buildJudgeRequirementModels, derivedJudgeRequirementFeatures,
@@ -68,18 +85,6 @@ const publicIds = [...PUBLIC_CALIBRATION_IDS].sort();
 const declaredIds = [...new Set([...spineIds, ...publicIds])].sort();
 
 // ---- read the observations, read-only ------------------------------------------------------------------------
-const config = JSON.parse(readFileSync(path.join(repoRoot, "scce.config.json"), "utf8"));
-let localConfig = {};
-for (const candidate of [path.join(repoRoot, "scce.config.local.json"), path.resolve(process.cwd(), "scce.config.local.json")]) {
-  if (!existsSync(candidate)) continue;
-  localConfig = JSON.parse(readFileSync(candidate, "utf8"));
-  break;
-}
-const databaseUrl = process.env.SCCE_DATABASE_URL ?? localConfig?.database?.url ?? config?.database?.url;
-const schema = localConfig?.database?.schema ?? config?.database?.schema;
-if (!databaseUrl) throw new Error("no database url; set SCCE_DATABASE_URL or scce.config.local.json");
-if (!/^[a-z0-9_]+$/u.test(String(schema ?? ""))) throw new Error("schema must be a plain identifier");
-
 const client = new pg.Client({ connectionString: databaseUrl });
 await client.connect();
 let coverage = [];

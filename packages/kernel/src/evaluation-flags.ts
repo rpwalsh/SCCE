@@ -7,6 +7,7 @@ export const EVALUATION_CONDITION_IDS = [
   "no_relation_potential",
   "no_query_diffusion",
   "no_powerwalk",
+  "no_graph_sandwich_refinement",
   "no_graph",
   "lexical_only",
   "no_support_engine",
@@ -22,6 +23,7 @@ export const EVALUATION_COMPONENT_IDS = [
   "relation-potential",
   "query-diffusion",
   "powerwalk",
+  "graph-sandwich-refinement",
   "graph",
   "learned-semantics",
   "support-engine",
@@ -38,6 +40,7 @@ export interface EvaluationFeatureFlags {
   readonly disableRelationPotential: boolean;
   readonly disableQueryDiffusion: boolean;
   readonly disablePowerWalk: boolean;
+  readonly disableGraphSandwichRefinement: boolean;
   readonly disableGraph: boolean;
   readonly lexicalOnly: boolean;
   readonly disableLearnedSemantics: boolean;
@@ -91,6 +94,7 @@ const ALL_ENABLED: EvaluationFeatureFlags = Object.freeze({
   disableRelationPotential: false,
   disableQueryDiffusion: false,
   disablePowerWalk: false,
+  disableGraphSandwichRefinement: false,
   disableGraph: false,
   lexicalOnly: false,
   disableLearnedSemantics: false,
@@ -106,15 +110,17 @@ const CONDITION_FLAGS: Readonly<Record<EvaluationConditionId, EvaluationFeatureF
   no_relation_potential: flags({ disableRelationPotential: true }),
   no_query_diffusion: flags({ disableQueryDiffusion: true }),
   no_powerwalk: flags({ disablePowerWalk: true }),
+  no_graph_sandwich_refinement: flags({ disableGraphSandwichRefinement: true }),
   // These graph-derived algorithms cannot execute honestly when graph access is disabled.
-  no_graph: flags({ disableGraph: true, disableRelationPotential: true, disableQueryDiffusion: true, disablePowerWalk: true }),
+  no_graph: flags({ disableGraph: true, disableRelationPotential: true, disableQueryDiffusion: true, disablePowerWalk: true, disableGraphSandwichRefinement: true }),
   lexical_only: flags({
     disableGraph: true,
     lexicalOnly: true,
     disableLearnedSemantics: true,
     disableRelationPotential: true,
     disableQueryDiffusion: true,
-    disablePowerWalk: true
+    disablePowerWalk: true,
+    disableGraphSandwichRefinement: true
   }),
   no_support_engine: flags({ disableSupportEngine: true }),
   deterministic_mouth: flags({ deterministicMouth: true }),
@@ -238,6 +244,7 @@ function disabledComponentsForFlags(value: EvaluationFeatureFlags): EvaluationCo
   if (value.disableRelationPotential) disabled.push("relation-potential");
   if (value.disableQueryDiffusion) disabled.push("query-diffusion");
   if (value.disablePowerWalk) disabled.push("powerwalk");
+  if (value.disableGraphSandwichRefinement) disabled.push("graph-sandwich-refinement");
   if (value.disableGraph) disabled.push("graph");
   if (value.disableLearnedSemantics) disabled.push("learned-semantics");
   if (value.disableSupportEngine) disabled.push("support-engine");
@@ -252,8 +259,8 @@ function validateFeatureCombination(value: EvaluationFeatureFlags): void {
   if (value.lexicalOnly && (!value.disableGraph || !value.disableLearnedSemantics || !value.disableRelationPotential || !value.disableQueryDiffusion || !value.disablePowerWalk)) {
     throw new Error("lexicalOnly requires graph, learned semantics, relation potential, query diffusion, and PowerWalk to be disabled");
   }
-  if (value.disableGraph && (!value.disableRelationPotential || !value.disableQueryDiffusion || !value.disablePowerWalk)) {
-    throw new Error("disableGraph requires graph-derived relation potential, query diffusion, and PowerWalk to be disabled");
+  if (value.disableGraph && (!value.disableRelationPotential || !value.disableQueryDiffusion || !value.disablePowerWalk || !value.disableGraphSandwichRefinement)) {
+    throw new Error("disableGraph requires graph-derived relation potential, query diffusion, PowerWalk, and graph refinement to be disabled");
   }
 }
 

@@ -18,6 +18,8 @@ function offlineAdapter(rows: (sql: string) => unknown[] = () => []): { adapter:
     release() { /* offline */ }
   };
   (adapter.pool as unknown as { connect: () => Promise<unknown> }).connect = async () => client;
+  // Migration preflight also queries the pool directly; keep that path offline.
+  (adapter.pool as unknown as { query: typeof client.query }).query = client.query;
   return { adapter, statements };
 }
 

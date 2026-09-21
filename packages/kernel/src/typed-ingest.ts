@@ -53,8 +53,38 @@ export interface TypedIngestProjection extends TypedIngestPreview {
   graphNodes: GraphNode[];
   graphEdges: GraphEdge[];
   graphHyperedges: Hyperedge[];
+  graphProjectionBindings: GraphProjectionBinding[];
   semanticCandidates: StructuredSemanticCandidate[];
   diagnostics: JsonValue;
+}
+
+export interface GraphProjectionBinding {
+  schema: "scce.graph_projection_binding.v1";
+  id: string;
+  candidateId: string;
+  sourceId: SourceId;
+  sourceVersionId: SourceVersionId;
+  sourceFamilyIds: string[];
+  evidenceIds: EvidenceSpan["id"][];
+  exactEvidenceIds: EvidenceSpan["id"][];
+  observationIds: string[];
+  relationSeedId: string;
+  relationId: string;
+  relationNodeId: string;
+  participantNodeIds: string[];
+  hyperedgeId: string;
+  admission: "source_declared_zero_arity" | "learned_promotion";
+  extractionChannel: StructuredSemanticCandidate["channel"];
+  normalizationContractId: string;
+  promotionModelId: string | null;
+  promotionDecision: {
+    relationSeedId: string;
+    promoted: boolean;
+  } | null;
+  producer: {
+    modelId: string;
+    snapshotId: string;
+  };
 }
 
 export interface TypedIngestProjectorInput {
@@ -169,6 +199,7 @@ export function createTypedIngestProjector(options: { idFactory: IdFactory; hash
       graphNodes: graph.nodes,
       graphEdges: graph.edges,
       graphHyperedges: candidateGraph.hyperedges,
+      graphProjectionBindings: candidateGraph.bindings ?? [],
       semanticCandidates,
       observationCounts,
       diagnostics: toJsonValue({
@@ -902,10 +933,11 @@ export function graphFromStructuredSemanticCandidates(input: {
   hasher: Hasher;
   relationPromotionModel?: RelationPromotionModel;
   opaqueRoleModel?: OpaqueRoleModel;
-}): { nodes: GraphNode[]; edges: GraphEdge[]; hyperedges: Hyperedge[] } {
+}): { nodes: GraphNode[]; edges: GraphEdge[]; hyperedges: Hyperedge[]; bindings?: GraphProjectionBinding[] } {
   const nodes: GraphNode[] = [];
   const edges: GraphEdge[] = [];
   const hyperedges: Hyperedge[] = [];
+  const bindings: GraphProjectionBinding[] = [];
   for (const candidate of input.candidates) {
     const promotion = relationPromotionDecision(input.relationPromotionModel, candidate.relationSeedId);
     const sourceDeclaredZeroArity = directlyAdmissibleZeroArity(candidate);
@@ -918,6 +950,10 @@ export function graphFromStructuredSemanticCandidates(input: {
         admissionState: "promoted"
       }
     };
+    const relationId = input.ids.relationId({
+      kind: "promoted_structured_relation",
+      relationSeedId: candidate.relationSeedId
+    });
     const relationNodeId = input.ids.nodeId({
       kind: "structured_semantic_candidate",
       candidateId: candidate.id
@@ -997,10 +1033,6 @@ export function graphFromStructuredSemanticCandidates(input: {
       }
     }
     {
-      const relationId = input.ids.relationId({
-        kind: "promoted_structured_relation",
-        relationSeedId: candidate.relationSeedId
-      });
       const memberNodeIds = participantPorts
         .map(port => port.nodeId)
         .filter((nodeId): nodeId is NonNullable<typeof nodeId> => nodeId !== null);
@@ -1041,9 +1073,54 @@ export function graphFromStructuredSemanticCandidates(input: {
       };
       assertCanonicalHyperedge(hyperedge);
       hyperedges.push(hyperedge);
+      const bindingPayload: Omit<GraphProjectionBinding, "id"> = {
+        schema: "scce.graph_projection_binding.v1",
+        candidateId: candidate.id,
+        sourceId: candidate.sourceId,
+        sourceVersionId: candidate.sourceVersionId,
+        sourceFamilyIds: [...candidate.provenance.sourceIndependence.dependencyGroupIds],
+        evidenceIds: [...candidate.evidenceIds],
+        exactEvidenceIds: [...candidate.provenance.exactEvidenceIds],
+        observationIds: [...(candidate.provenance.observationIds ?? [])],
+        relationSeedId: candidate.relationSeedId,
+        relationId,
+        relationNodeId: String(relationNodeId),
+        participantNodeIds: [...memberNodeIds].map(String),
+        hyperedgeId: String(hyperedge.id),
+        admission: sourceDeclaredZeroArity ? "source_declared_zero_arity" : "learned_promotion",
+        extractionChannel: candidate.channel,
+        normalizationContractId: candidate.provenance.normalizationContractId,
+        promotionModelId: input.relationPromotionModel?.id ?? null,
+        promotionDecision: promotion
+          ? { relationSeedId: promotion.relationSeedId, promoted: promotion.promoted }
+          : null,
+        producer: { ...candidate.provenance.producer }
+      };
+      const binding: GraphProjectionBinding = {
+        ...bindingPayload,
+        id: String(input.ids.artifactId(bindingPayload))
+      };
+      bindings.push(binding);
+      // Attach the candidate-specific occurrence binding to the existing relation node. Participant
+      // identity nodes and merged hyperedges remain shared, while this immutable node keeps origin.
+      const relationNode = nodes.find(node => node.id === relationNodeId);
+      if (!relationNode) throw new Error(`Missing relation node for graph projection binding ${candidate.id}`);
+      const relationNodeMetadata = relationNode.metadata && typeof relationNode.metadata === "object"
+        && !Array.isArray(relationNode.metadata)
+        ? relationNode.metadata as Record<string, JsonValue>
+        : {};
+      relationNode.metadata = toJsonValue({
+        ...relationNodeMetadata,
+        graphProjectionBinding: binding
+      });
     }
   }
-  return { nodes: mergeGraphNodes(nodes), edges, hyperedges: mergeHyperedges(hyperedges) };
+  return {
+    nodes: mergeGraphNodes(nodes),
+    edges,
+    hyperedges: mergeHyperedges(hyperedges),
+    ...(bindings.length ? { bindings } : {})
+  };
 }
 
 function mergeGraphNodes(nodes: readonly GraphNode[]): GraphNode[] {

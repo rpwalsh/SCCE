@@ -63,7 +63,7 @@ describe("the wikipedia ingestor emits the article and not its apparatus", () =>
   });
 
   it("emits the article's own prose, lead first", () => {
-    expect(normalized).toContain("ABBA' were a Swedish pop group formed in Stockholm in 1972");
+    expect(normalized).toContain("ABBA were a Swedish pop group formed in Stockholm in 1972");
     expect(normalized).toContain("ABBA have sold an estimated 150 million records worldwide");
     expect(normalized).toContain("Ulvaeus and Andersson decided to write a song together");
   });

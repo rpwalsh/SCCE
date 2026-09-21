@@ -90,16 +90,24 @@ export function buildLanguageProfileClusters(profiles: readonly LanguageProfile[
   const buckets = new Map<string, Array<{ representative: LanguageProfile; members: LanguageProfile[] }>>();
   for (const { profile, bucket: key } of ordered) {
     const groups = buckets.get(key) ?? [];
-    const candidates = groups.slice(-MAX_CLUSTER_CANDIDATES_PER_BUCKET)
-      .map((group, index) => ({
-        group,
-        index: groups.length - Math.min(groups.length, MAX_CLUSTER_CANDIDATES_PER_BUCKET) + index,
-        fit: profileDistributionFit(profile, group.representative)
-      }))
-      .filter(candidate => !verifiedAliasesConflict(profile, candidate.group.representative))
-      .filter(candidate => candidate.fit.score >= MIN_CLUSTER_DISTRIBUTION_FIT)
-      .sort((left, right) => right.fit.score - left.fit.score || left.index - right.index);
-    const selected = candidates[0]?.group;
+    // The previous map/filter/sort chain allocated several short-lived arrays for every profile. Scan the same
+    // bounded suffix and keep its best admissible candidate directly; score and index comparisons preserve the
+    // original ordering and tie-break exactly.
+    const firstCandidate = Math.max(0, groups.length - MAX_CLUSTER_CANDIDATES_PER_BUCKET);
+    let selected: { representative: LanguageProfile; members: LanguageProfile[] } | undefined;
+    let selectedScore = -Infinity;
+    let selectedIndex = Number.POSITIVE_INFINITY;
+    for (let groupIndex = firstCandidate; groupIndex < groups.length; groupIndex += 1) {
+      const group = groups[groupIndex]!;
+      if (verifiedAliasesConflict(profile, group.representative)) continue;
+      const score = profileDistributionFit(profile, group.representative).score;
+      if (score < MIN_CLUSTER_DISTRIBUTION_FIT) continue;
+      if (score > selectedScore || (score === selectedScore && groupIndex < selectedIndex)) {
+        selected = group;
+        selectedScore = score;
+        selectedIndex = groupIndex;
+      }
+    }
     if (selected) selected.members.push(profile);
     else groups.push({ representative: profile, members: [profile] });
     buckets.set(key, groups);
@@ -492,15 +500,37 @@ function setCoverage(input: ReadonlySet<string>, learned: ReadonlySet<string>): 
 }
 
 function compareCodePoint(left: string, right: string): number {
-  const leftPoints = [...left];
-  const rightPoints = [...right];
-  const length = Math.min(leftPoints.length, rightPoints.length);
-  for (let index = 0; index < length; index++) {
-    const leftPoint = leftPoints[index]!.codePointAt(0)!;
-    const rightPoint = rightPoints[index]!.codePointAt(0)!;
-    if (leftPoint !== rightPoint) return leftPoint < rightPoint ? -1 : 1;
+  // Most learned keys are ASCII. UTF-16 order is code-point order until a surrogate is present, so keep that hot
+  // path allocation-free and fall back only for strings that actually need surrogate-pair handling.
+  const commonLength = Math.min(left.length, right.length);
+  let hasSurrogate = false;
+  for (let index = 0; index < commonLength; index += 1) {
+    const leftUnit = left.charCodeAt(index);
+    const rightUnit = right.charCodeAt(index);
+    if (leftUnit >= 0xd800 || rightUnit >= 0xd800) {
+      hasSurrogate = true;
+      break;
+    }
+    if (leftUnit !== rightUnit) return leftUnit < rightUnit ? -1 : 1;
   }
-  return leftPoints.length - rightPoints.length;
+  if (commonLength === left.length && commonLength === right.length && !hasSurrogate) return 0;
+  if (!hasSurrogate) return left.length - right.length;
+  let leftOffset = 0;
+  let rightOffset = 0;
+  let leftLength = 0;
+  let rightLength = 0;
+  while (leftOffset < left.length && rightOffset < right.length) {
+    const leftPoint = left.codePointAt(leftOffset)!;
+    const rightPoint = right.codePointAt(rightOffset)!;
+    if (leftPoint !== rightPoint) return leftPoint < rightPoint ? -1 : 1;
+    leftOffset += leftPoint > 0xffff ? 2 : 1;
+    rightOffset += rightPoint > 0xffff ? 2 : 1;
+    leftLength += 1;
+    rightLength += 1;
+  }
+  if (leftOffset < left.length) return 1;
+  if (rightOffset < right.length) return -1;
+  return leftLength - rightLength;
 }
 
 interface SurfaceStatistics {
@@ -579,31 +609,61 @@ type LanguageDistribution = Pick<LanguageProfile, "charNgrams" | "scripts" | "sy
 
 interface DistributionFeatures {
   trigrams: ReadonlyMap<string, number>;
+  trigramTotal: number;
+  trigramMass: number;
   repertoire: ReadonlySet<string>;
   characters: ReadonlyMap<string, number>;
+  characterTotal: number;
+  characterMass: number;
   scripts: ReadonlyMap<string, number>;
+  scriptTotal: number;
+  scriptMass: number;
   shapes: ReadonlyMap<string, number>;
+  shapeTotal: number;
+  shapeMass: number;
 }
 
 // Each side's derived maps depend only on that profile, but clustering compares one profile against many.
 const distributionFeatureCache = new WeakMap<LanguageDistribution, DistributionFeatures>();
+const profileIndexBucketCache = new WeakMap<LanguageProfile, string>();
+const profileDistributionKeyCache = new WeakMap<LanguageProfile, string>();
 
 function distributionFeatures(distribution: LanguageDistribution): DistributionFeatures {
   const cached = distributionFeatureCache.get(distribution);
   if (cached) return cached;
   const trigrams = new Map<string, number>();
   const repertoire = new Set<string>();
+  const characters = new Map<string, number>();
   for (const row of distribution.charNgrams) {
     const ngram = row.ngram.normalize("NFC").toLowerCase();
     trigrams.set(ngram, row.count);
-    for (const char of ngram) repertoire.add(char);
+    const weight = finitePositive(row.count);
+    for (const char of ngram) {
+      repertoire.add(char);
+      if (!weight || !/[\p{Letter}\p{Mark}\p{Number}]/u.test(char)) continue;
+      characters.set(char, (characters.get(char) ?? 0) + weight);
+    }
   }
+  const scripts = new Map(distribution.scripts.map(row => [row.script, row.mass]));
+  const shapes = new Map(distribution.symbolShapes.map(row => [row.shape, row.count]));
+  const trigramTotal = positiveMapTotal(trigrams);
+  const characterTotal = positiveMapTotal(characters);
+  const scriptTotal = positiveMapTotal(scripts);
+  const shapeTotal = positiveMapTotal(shapes);
   const features: DistributionFeatures = {
     trigrams,
+    trigramTotal,
+    trigramMass: normalizedMapMass(trigrams, trigramTotal),
     repertoire,
-    characters: characterDistributionFromTrigrams(distribution.charNgrams),
-    scripts: new Map(distribution.scripts.map(row => [row.script, row.mass])),
-    shapes: new Map(distribution.symbolShapes.map(row => [row.shape, row.count]))
+    characters,
+    characterTotal,
+    characterMass: normalizedMapMass(characters, characterTotal),
+    scripts,
+    scriptTotal,
+    scriptMass: normalizedMapMass(scripts, scriptTotal),
+    shapes,
+    shapeTotal,
+    shapeMass: normalizedMapMass(shapes, shapeTotal)
   };
   distributionFeatureCache.set(distribution, features);
   return features;
@@ -612,11 +672,11 @@ function distributionFeatures(distribution: LanguageDistribution): DistributionF
 function profileDistributionFit(left: LanguageDistribution, right: LanguageDistribution): { score: number; lexical: number } {
   const leftFeatures = distributionFeatures(left);
   const rightFeatures = distributionFeatures(right);
-  const trigram = weightedDistributionOverlap(leftFeatures.trigrams, rightFeatures.trigrams);
+  const trigram = weightedDistributionOverlap(leftFeatures.trigrams, rightFeatures.trigrams, leftFeatures.trigramTotal, rightFeatures.trigramTotal, leftFeatures.trigramMass, rightFeatures.trigramMass);
   const repertoire = symmetricSetOverlap(leftFeatures.repertoire, rightFeatures.repertoire);
-  const characterDistribution = weightedDistributionOverlap(leftFeatures.characters, rightFeatures.characters);
-  const scripts = weightedDistributionOverlap(leftFeatures.scripts, rightFeatures.scripts);
-  const shapes = weightedDistributionOverlap(leftFeatures.shapes, rightFeatures.shapes);
+  const characterDistribution = weightedDistributionOverlap(leftFeatures.characters, rightFeatures.characters, leftFeatures.characterTotal, rightFeatures.characterTotal, leftFeatures.characterMass, rightFeatures.characterMass);
+  const scripts = weightedDistributionOverlap(leftFeatures.scripts, rightFeatures.scripts, leftFeatures.scriptTotal, rightFeatures.scriptTotal, leftFeatures.scriptMass, rightFeatures.scriptMass);
+  const shapes = weightedDistributionOverlap(leftFeatures.shapes, rightFeatures.shapes, leftFeatures.shapeTotal, rightFeatures.shapeTotal, leftFeatures.shapeMass, rightFeatures.shapeMass);
   const direction = left.direction === right.direction ? 1 : left.direction === "unknown" || right.direction === "unknown" ? 0.5 : 0;
   return {
     lexical: clamp01(0.48 * characterDistribution + 0.32 * repertoire + 0.2 * trigram),
@@ -626,33 +686,36 @@ function profileDistributionFit(left: LanguageDistribution, right: LanguageDistr
   };
 }
 
-function characterDistributionFromTrigrams(rows: readonly { ngram: string; count: number }[]): Map<string, number> {
-  const out = new Map<string, number>();
-  for (const row of rows) {
-    const weight = finitePositive(row.count);
-    if (!weight) continue;
-    for (const char of row.ngram.normalize("NFC").toLowerCase()) {
-      if (!/[\p{Letter}\p{Mark}\p{Number}]/u.test(char)) continue;
-      out.set(char, (out.get(char) ?? 0) + weight);
-    }
+function weightedDistributionOverlap(
+  left: ReadonlyMap<string, number>,
+  right: ReadonlyMap<string, number>,
+  leftTotal = positiveMapTotal(left),
+  rightTotal = positiveMapTotal(right),
+  leftMass = normalizedMapMass(left, leftTotal),
+  rightMass = normalizedMapMass(right, rightTotal)
+): number {
+  if (leftTotal <= 0 || rightTotal <= 0) return 0;
+  let intersection = 0;
+  const smaller = left.size <= right.size ? left : right;
+  const larger = smaller === left ? right : left;
+  const smallerTotal = smaller === left ? leftTotal : rightTotal;
+  const largerTotal = smaller === left ? rightTotal : leftTotal;
+  for (const [key, rawSmall] of smaller) {
+    const small = finitePositive(rawSmall) / smallerTotal;
+    const large = finitePositive(larger.get(key) ?? 0) / largerTotal;
+    intersection += Math.min(small, large);
   }
-  return out;
+  const union = leftMass + rightMass - intersection;
+  return union > 0 ? clamp01(intersection / union) : 0;
 }
 
-function weightedDistributionOverlap(left: ReadonlyMap<string, number>, right: ReadonlyMap<string, number>): number {
-  const leftTotal = [...left.values()].reduce((sum, value) => sum + finitePositive(value), 0);
-  const rightTotal = [...right.values()].reduce((sum, value) => sum + finitePositive(value), 0);
-  if (leftTotal <= 0 || rightTotal <= 0) return 0;
-  const keys = new Set([...left.keys(), ...right.keys()]);
-  let intersection = 0;
-  let union = 0;
-  for (const key of keys) {
-    const a = finitePositive(left.get(key) ?? 0) / leftTotal;
-    const b = finitePositive(right.get(key) ?? 0) / rightTotal;
-    intersection += Math.min(a, b);
-    union += Math.max(a, b);
-  }
-  return union > 0 ? clamp01(intersection / union) : 0;
+function positiveMapTotal(values: ReadonlyMap<string, number>): number {
+  return [...values.values()].reduce((sum, value) => sum + finitePositive(value), 0);
+}
+
+function normalizedMapMass(values: ReadonlyMap<string, number>, total: number): number {
+  if (total <= 0) return 0;
+  return [...values.values()].reduce((sum, value) => sum + finitePositive(value) / total, 0);
 }
 
 function symmetricSetOverlap(left: ReadonlySet<string>, right: ReadonlySet<string>): number {
@@ -742,16 +805,23 @@ function aggregateDiscoveredNames(members: readonly LanguageProfile[]): Language
 }
 
 function profileIndexBucket(profile: LanguageProfile): string {
+  const cached = profileIndexBucketCache.get(profile);
+  if (cached !== undefined) return cached;
   const scripts = [...profile.scripts]
     .filter(row => finitePositive(row.mass) >= 0.08)
     .sort((left, right) => right.mass - left.mass || compareCodePoint(left.script, right.script))
     .slice(0, 3)
     .map(row => row.script)
     .sort(compareCodePoint);
-  return JSON.stringify({ scripts, direction: profile.direction });
+  const bucket = JSON.stringify({ scripts, direction: profile.direction });
+  profileIndexBucketCache.set(profile, bucket);
+  return bucket;
 }
 
 function verifiedAliasesConflict(left: LanguageProfile, right: LanguageProfile): boolean {
+  // Most persisted profiles carry no source-derived names. Avoid allocating two sets for that common case; an empty
+  // alias set cannot conflict, and this check is on every candidate comparison during clustering.
+  if (!left.discoveredNames?.length || !right.discoveredNames?.length) return false;
   const leftAliases = verifiedProfileAliasKeys(left);
   const rightAliases = verifiedProfileAliasKeys(right);
   if (!leftAliases.size || !rightAliases.size) return false;
@@ -813,12 +883,16 @@ function aliasStrings(value: JsonValue | undefined): string[] {
 }
 
 function profileDistributionKey(profile: LanguageProfile): string {
-  return JSON.stringify({
+  const cached = profileDistributionKeyCache.get(profile);
+  if (cached !== undefined) return cached;
+  const key = JSON.stringify({
     scripts: [...profile.scripts].sort((left, right) => compareCodePoint(left.script, right.script)).map(row => [row.script, rounded(row.mass)]),
     shapes: [...profile.symbolShapes].sort((left, right) => compareCodePoint(left.shape, right.shape)).slice(0, 64).map(row => [row.shape, rounded(row.count)]),
     trigrams: [...profile.charNgrams].sort((left, right) => compareCodePoint(left.ngram, right.ngram)).slice(0, 256).map(row => [row.ngram, rounded(row.count)]),
     direction: profile.direction
   });
+  profileDistributionKeyCache.set(profile, key);
+  return key;
 }
 
 function finitePositive(value: number): number {

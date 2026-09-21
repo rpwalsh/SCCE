@@ -116,6 +116,14 @@ describe("held-out relation promotion", () => {
 
     expect(relationPromotionDecision(model, candidates[0]!.relationSeedId)?.promoted).toBe(true);
     expect(graph.nodes.filter(node => node.features.some(feature => feature.startsWith("promoted-relation:")))).toHaveLength(2);
+    expect(graph.bindings).toHaveLength(2);
+    expect(graph.bindings?.every(binding =>
+      binding.admission === "learned_promotion"
+      && binding.promotionModelId === model.id
+      && binding.promotionDecision?.relationSeedId === binding.relationSeedId
+      && binding.promotionDecision?.promoted === true
+      && binding.relationId === String(graph.hyperedges.find(edge =>
+        edge.id === binding.hyperedgeId)?.relationId))).toBe(true);
     expect(graph.edges.every(edge =>
       typeof edge.metadata === "object"
       && edge.metadata !== null

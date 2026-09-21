@@ -61,11 +61,9 @@ export interface CorpusNgramRuntimeConfig {
    */
   ngramShardChars?: number;
   /**
-   * How many documents' text is used for language training. Beyond it the ingest keeps reading pages into
-   * evidence, the graph and the document population, and stops building language shards -- which is 91% of
-   * ingest time (measured: flushLanguageShard 117.2s of a 129s run). Facts scale with pages; fluency comes
-   * from text per model, not from page count, so there is nothing to gain by training the whole dump.
-   * Absent or 0 means train everything.
+   * Optional diagnostic cap on language-training documents. Later pages still become source evidence but
+   * do not receive shard training, so reaching this cap is incomplete training. Absent or 0 trains every
+   * admitted document. Throughput measurements do not establish that omitted training preserves quality.
    */
   languageTrainingDocumentLimit?: number;
   ngramMaxCountersPerOrder?: number;
@@ -474,7 +472,9 @@ function validateNgramConfig(config: CorpusNgramRuntimeConfig | undefined, prefi
   if (!config) return;
   if (config.ngramMaxOrder !== undefined && (!Number.isInteger(config.ngramMaxOrder) || config.ngramMaxOrder < 1 || config.ngramMaxOrder > 6)) throw new Error(`${prefix}.ngramMaxOrder must be an integer from 1 through 6`);
   validatePositiveInt(config.ngramShardChars, `${prefix}.ngramShardChars`);
-  validatePositiveInt(config.languageTrainingDocumentLimit, `${prefix}.languageTrainingDocumentLimit`);
+  if (config.languageTrainingDocumentLimit !== undefined && (!Number.isInteger(config.languageTrainingDocumentLimit) || config.languageTrainingDocumentLimit < 0)) {
+    throw new Error(`${prefix}.languageTrainingDocumentLimit must be a nonnegative integer (0 trains every document)`);
+  }
   validatePositiveInt(config.ngramMaxCountersPerOrder, `${prefix}.ngramMaxCountersPerOrder`);
   validatePositiveInt(config.ngramVocabularyLimit, `${prefix}.ngramVocabularyLimit`);
 }

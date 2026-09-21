@@ -784,7 +784,7 @@ export interface RelationObservationStore {
 export interface IngestionCheckpointStore {
   put(checkpoint: IngestionCheckpoint): Promise<void>;
   get(id: string): Promise<IngestionCheckpoint | null>;
-  list(query?: { rootUri?: string; status?: IngestionCheckpoint["status"]; limit?: number }): Promise<IngestionCheckpoint[]>;
+  list(query?: { rootUri?: string; status?: IngestionCheckpoint["status"]; phase?: IngestionCheckpoint["phase"]; itemUriPrefix?: string; orderBy?: "updatedAt" | "offsetBytes"; limit?: number }): Promise<IngestionCheckpoint[]>;
 }
 
 export interface ProofStore {

@@ -204,6 +204,7 @@ import {
   activeRequestOperatorIds,
   admitCandidatesForAuthority,
   explicitAuthorityRequirements,
+  evaluateRequestGraphSupport,
   operationalAuthorityForProjection,
   projectRequestAuthority,
   requestOperatorDialogueSupport,
@@ -218,6 +219,7 @@ import { isStructuralResidueSurface, structuralResidueScore } from "./structural
 import { normalizePriorKey, splitPriorUnits } from "./kernel-answer-primitives.js";
 import { codeLanguageForRequirementState, codeRequestObservedRequirements, codeRequestSignal, typedProgramBehaviorFromMetadata } from "./code-request.js";
 import { attachLearnedGraphPriorConstruct } from "./learned-graph-prior-runtime.js";
+import { runGraphSandwich } from "./graph-sandwich.js";
 import { decideRuntimeCoherence } from "./runtime-coherence.js";
 import { executableRuntimeDeadlineFromMetadata, type RuntimeDeadlineDecision } from "./runtime-deadline.js";
 import { estimateAlignmentCostMs, estimateKneserNeyGenerationCostMs, estimateRetrievalCostMs } from "./runtime-cost-estimate.js";
@@ -952,7 +954,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const episodeId = idFactory.episodeId();
       const evaluationTrace = deps.evaluationCondition
         ? createEvaluationTrace(deps.evaluationCondition, {
-          traceId: `eval-trace-${hasher.digestHex(`${deps.evaluationCondition.configHash}:${String(episodeId)}`).slice(0, 32)}`,
+          traceId: idFactory.semanticId("evaluation_trace", { configHash: deps.evaluationCondition.configHash, episodeId }),
           runId: deps.evaluationRunId?.trim() || deps.evaluationCondition.cacheNamespace,
           questionId: evaluationQuestionId(input.metadata, episodeId)
         }, { nowIso: () => deps.evaluationCondition!.clockIso })
@@ -2240,7 +2242,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         representation: walk.representation,
         seedExpansion: walkSeedExpansion.audit
       } } })));
-      const field = fieldEngine.activate({
+      const firstField = fieldEngine.activate({
         text: retrievalText,
         nodes: graph.nodes,
         edges: graph.edges,
@@ -2249,11 +2251,32 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         evaluation: fieldEvaluation,
         seedPriors: [...semanticSeedAnchors, ...walkSeedExpansion.seeds]
       });
+      const refinementStarted = performance.now();
+      const sandwichInput = {
+        graph, evidence: admissibleEvidence, initialRequirements: requirementField, firstField, idFactory,
+        baseSeedPriors: [...semanticSeedAnchors, ...walkSeedExpansion.seeds],
+        runSecondPass: (seedPriors: readonly { nodeId: GraphNode["id"]; weight: number; feature?: string }[]) => fieldEngine.activate({
+          text: retrievalText, nodes: graph.nodes, edges: graph.edges, hyperedges: graph.hyperedges,
+          previous: firstField, evaluation: fieldEvaluation, seedPriors: [...seedPriors]
+        })
+      };
+      const sandwich = evaluationComponent(
+        "graph-sandwich-refinement", "graph.resolve.requirement-refinement",
+        () => runGraphSandwich(sandwichInput),
+        () => runGraphSandwich({ ...sandwichInput, disabled: true })
+      );
+      const field = sandwich.finalField;
+      requirementField = sandwich.refinedRequirements;
+      refreshTurnSignals();
+      events.push(await append(eventFactory.create({ episodeId, typeId: "GraphUpdated", payload: { graphSandwich: toJsonValue(sandwich.trace) } })));
+      kernelTrace({ stage: "graph.resolve", label: "kernel.turn.graph_refinement", durationMs: performance.now() - refinementStarted,
+        counts: { nodes: graph.nodes.length, edges: graph.edges.length, hyperedges: graph.hyperedges.length } });
       runtimeState.lastField = field;
+      const graphSupportEvaluation = evaluateRequestGraphSupport({ graph, evidence: admissibleEvidence, field });
       operatorActivations = activateCognitiveOperators({
         model: operatorModel,
         requirementField,
-        graphSupport: requestOperatorGraphSupport({ graph, evidence: admissibleEvidence, field }),
+        graphSupport: graphSupportEvaluation.support,
         dialogueSupport: requestOperatorDialogueSupport(requirementField),
         outcomeSupport: {
           ...durableOperatorOutcomeSupport,
@@ -2276,7 +2299,12 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       events.push(await append(eventFactory.create({
         episodeId,
         typeId: "CognitiveOperatorsActivated",
-        payload: toJsonValue({ phase: "graph_activated", operators: operatorActivations })
+        payload: toJsonValue({
+          phase: "graph_activated", operators: operatorActivations,
+          graphSupport: graphSupportEvaluation.support,
+          graphSupportOrigins: Object.fromEntries(Object.entries(graphSupportEvaluation.summary)
+            .map(([kind, ids]) => [kind, { count: ids.length, ids: ids.slice(0, 64), truncated: ids.length > 64 }]))
+        })
       })));
       const alphaRecord = alphaRecordFromField({ graph, requestText: input.text, requestFeatures: featureSet(input.text, 1024), field, createdAt: clock.now() });
       // Opt-in only. persistAlphaRecord writes multi-MB ppf_cache and

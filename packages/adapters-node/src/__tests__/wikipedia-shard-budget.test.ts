@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
-import { boundedLanguageShard } from "../wikipedia-v3-ingestor.js";
+import { boundedLanguageShard, createWikipediaV3Ingestor } from "../wikipedia-v3-ingestor.js";
 
 // Measured over 150 wiki pages: flushing a shard only at block boundaries offered 4,023,980 characters across
 // 2 shards and lost 1,623,980 of them -- 40.4% of the corpus -- because boundedLanguageShard is a bounded
@@ -42,6 +42,22 @@ function shardsByFlushingFirst(samples: ReturnType<typeof sample>[], budget: num
 }
 
 describe("shard building loses no corpus text", () => {
+  it("rejects a title that overflows an otherwise valid page budget before writing learned artifacts", async () => {
+    const ingestor = createWikipediaV3Ingestor({ storage: {} as any, config: { runtime: { corpora: { wikipedia: { ngramShardChars: 100000 } } } } as any });
+    await expect((ingestor as any).ingestLanguageShard([sample(0, 100000)], "wikipedia://fixture/shard", "episode"))
+      .rejects.toThrow(/refusing incomplete training/);
+  });
+
+  it("keeps Unicode clipping and evidence coverage in their declared coordinates", () => {
+    const item = { ...sample(0, 0), title: "", text: "😀abc", evidence: [
+      { id: "inside", charEnd: 1 }, { id: "outside", charEnd: 3 }
+    ] };
+    const clipped = boundedLanguageShard([item] as any, 3, 2048);
+    expect(clipped.text).toBe("😀a");
+    expect(clipped.evidence.map(span => span.id)).toEqual(["inside"]);
+    expect(boundedLanguageShard([item] as any, 1, 2048).text).toBe("");
+  });
+
   it("drops nothing across a long run of pages, because no shard is ever overfed", () => {
     const samples = Array.from({ length: 60 }, (_, index) => sample(index, 100_000));
     const offered = samples.reduce((sum, item) => sum + charsOf(item), 0);

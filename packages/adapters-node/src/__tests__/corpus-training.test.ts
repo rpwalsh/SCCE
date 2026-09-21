@@ -15,6 +15,8 @@ import {
   type ScceRuntimeConfig
 } from "../index.js";
 import { canonicalCorpusSourceSystemId, createClock, createHasher, createIdFactory, resolveEvidenceSourceIdentity, CORPUS_ROLE_IDS } from "@scce/kernel";
+import { prepareLanguageCorpusTraining, commitLanguageCorpusTraining } from "../language-corpus-trainer.js";
+import { blobContentHash } from "../postgres.js";
 import type {
   EvidenceSpan,
   InformationLabel,
@@ -35,6 +37,54 @@ const tempRoots: string[] = [];
 
 afterEach(async () => {
   for (const root of tempRoots.splice(0)) await rm(root, { recursive: true, force: true });
+});
+
+describe("prepared corpus training", () => {
+  const options = (storage: ScceStorage) => ({ storage, sourceSystem: "gutenberg", streamUri: "fixture://prepared-book",
+    text: "A reader opens a book. Another reader closes the same book. ".repeat(3), createdAt: 1700000000000,
+    languageOnly: true, ngramMaxOrder: 2, ngramVocabularyLimit: 32 });
+
+  it("prepares without writes and atomically commits one opaque, input-bound result", async () => {
+    const { storage, state } = memoryStorage();
+    const input = options(storage);
+    const prepared = await prepareLanguageCorpusTraining(input);
+    expect(Object.values(state).every(rows => rows.length === 0)).toBe(true);
+    expect(Object.isFrozen(prepared)).toBe(true);
+    expect("models" in prepared).toBe(false);
+    await expect(commitLanguageCorpusTraining(input, { ...prepared })).rejects.toThrow("unrecognized");
+    const report = await commitLanguageCorpusTraining(input, prepared);
+    expect(report.ngramModels).toBeGreaterThan(0);
+    expect(state.sourceVersions).toHaveLength(1);
+    expect(state.events).toHaveLength(1);
+    await expect(commitLanguageCorpusTraining(input, prepared)).rejects.toThrow("already committed");
+    expect(state.events).toHaveLength(1);
+  });
+
+  it("rejects changed input or graph dependencies before persisting prepared learning", async () => {
+    const { storage, state } = memoryStorage();
+    const input = options(storage);
+    const prepared = await prepareLanguageCorpusTraining(input);
+    await expect(commitLanguageCorpusTraining({ ...input, text: "changed source" }, prepared)).rejects.toThrow("input changed");
+    storage.graph.getSlice = async query => ({ bounded: true, query, nodes: [], edges: [], hyperedges: [
+      { id: "changed-hyperedge", modality: { extractionChannel: "fixture" } } as any
+    ] });
+    await expect(commitLanguageCorpusTraining(input, prepared)).rejects.toThrow("graph dependencies changed");
+    expect(Object.values(state).every(rows => rows.length === 0)).toBe(true);
+  });
+
+  it("propagates graph lookup failures and rolls back a later model write failure", async () => {
+    const { storage, state } = memoryStorage();
+    const input = options(storage);
+    const lookup = storage.graph.getSlice;
+    storage.graph.getSlice = async () => { throw new Error("graph unavailable"); };
+    await expect(prepareLanguageCorpusTraining(input)).rejects.toThrow("graph unavailable");
+    expect(Object.values(state).every(rows => rows.length === 0)).toBe(true);
+    storage.graph.getSlice = lookup;
+    const prepared = await prepareLanguageCorpusTraining(input);
+    storage.languageMemory.putNgramModels = async () => { throw new Error("injected model failure"); };
+    await expect(commitLanguageCorpusTraining(input, prepared)).rejects.toThrow("injected model failure");
+    expect(Object.values(state).every(rows => rows.length === 0)).toBe(true);
+  });
 });
 
 describe("multi-corpus training", () => {
@@ -375,7 +425,7 @@ describe("multi-corpus training", () => {
         if (!found) throw new Error(`missing blob ${hash}`);
         return found;
       },
-      put: async (content: Uint8Array) => `sha256_stored_${content.length}`,
+      put: async (content: Uint8Array) => blobContentHash(content),
       exists: async () => true
     };
 
@@ -386,6 +436,7 @@ describe("multi-corpus training", () => {
     });
 
     expect(report.schema).toBe("scce.storedCorpusConstructionTrainReport.v1");
+    expect(report.batchesFailed).toEqual([]);
     expect(report.batchesTrained).toBeGreaterThanOrEqual(1);
     expect(report.articlesTrained).toBe(2);
     expect(report.batchesFailed).toEqual([]);
@@ -420,7 +471,7 @@ describe("multi-corpus training", () => {
     ];
     (fixture.storage as unknown as Record<string, unknown>).blobs = {
       get: async () => blob,
-      put: async (content: Uint8Array) => `sha256_stored_${content.length}`,
+      put: async (content: Uint8Array) => blobContentHash(content),
       exists: async () => true
     };
     // The graph was projected from the original ingestion's spans, so the lane looks them up by source version.
@@ -438,6 +489,7 @@ describe("multi-corpus training", () => {
 
     // Alignment lattices are built only from a batch that carries its graph. Training used to pass none at all,
     // so the construction lane compiled nothing on every run the trainer had ever made.
+    expect(report.batchesFailed).toEqual([]);
     expect(report.batchesTrained).toBeGreaterThanOrEqual(1);
     expect(sliceQueries.length).toBeGreaterThan(0);
     expect((sliceQueries[0]!.evidenceIds as unknown[]).length).toBeGreaterThan(0);
@@ -723,15 +775,18 @@ function memoryStorage(): { storage: ScceStorage; state: MemoryState } {
       listTranslationAlignments: async () => []
     },
     init: async () => undefined,
-    transaction: async <T>(fn: () => Promise<T>) => fn(),
+    transaction: async <T>(fn: () => Promise<T>) => {
+      const before = Object.fromEntries(Object.entries(state).map(([key, rows]) => [key, [...rows]]));
+      try { return await fn(); } catch (error) { Object.assign(state, before); throw error; }
+    },
     migrate: async () => undefined,
     verify: async () => ({ ok: true, tables: [], errors: [] }),
     stats: async () => ({}),
     close: async () => undefined,
     conversation: unusedStore(),
     ingestion: unusedStore(),
-    graph: unusedStore(),
-    blobs: unusedStore(),
+    graph: { getSlice: async (query: unknown) => ({ bounded: true, query, nodes: [], edges: [], hyperedges: [] }) },
+    blobs: { put: async (bytes: Uint8Array) => blobContentHash(bytes) },
     quarantine: unusedStore(),
     proofs: unusedStore(),
     constructs: unusedStore(),

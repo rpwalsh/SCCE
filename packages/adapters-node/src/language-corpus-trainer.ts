@@ -2,8 +2,10 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { AlignmentCalibrationObservation, AlignmentPromotionObservation, GraphEdge, GraphNode, Hyperedge } from "@scce/kernel";
 import { ingestStageTracer } from "./ingest-stage-trace-sink.js";
+import { blobContentHash } from "./postgres.js";
 import {
   createClock,
+  canonicalStringify,
   createEventFactory,
   createEvidenceExtractor,
   putSpanBlobs,
@@ -13,7 +15,8 @@ import {
   createLanguageMemoryRuntime,
   createSourceAdmissionController,
   compileLanguageTrainingBatch,
-  observeLanguageTrainingSegmentation,
+  prepareLanguageTrainingSegmentation,
+  observePreparedLanguageTrainingSegmentation,
   attachSourceDerivedLanguageAliases,
   CORPUS_SOURCE_SYSTEM_IDS,
   canonicalCorpusSourceSystemId,
@@ -26,6 +29,7 @@ import {
   normalizeInformationLabel,
   toJsonValue,
   type Clock,
+  type CompiledLanguageTrainingBatch,
   type CreativeEventConstructionCompiler,
   type EvidenceSpan,
   type IdFactory,
@@ -43,7 +47,10 @@ import {
   type SourceTrust,
   type SourceVersion,
   type SourceVersionId,
-  type SourceBoundLanguageConstructionTrainingSet
+  type SourceBoundLanguageConstructionTrainingSet,
+  type QuarantineSource,
+  type ScceEvent,
+  type PreparedLanguageTrainingSegmentation
 } from "@scce/kernel";
 
 export interface LanguageCorpusTrainingInput {
@@ -138,21 +145,76 @@ export interface LanguageCorpusTrainingReport {
   warnings: string[];
 }
 
+/** An opaque process-local preparation token; learned payloads remain private until the atomic commit. */
+export interface PreparedLanguageCorpusTraining {
+  readonly sourceVersionId: SourceVersionId;
+  readonly inputBinding: string;
+  readonly graphSnapshotDigest: string;
+}
+
+interface PreparedLanguageCorpusPayload {
+  sourceSystem: string;
+  sourceSystemId: string;
+  sourceUri: string;
+  namespace: string;
+  sourceVersionId: SourceVersionId;
+  text: string;
+  bytes: Uint8Array;
+  mediaType: string;
+  source?: SourceVersion;
+  quarantine?: QuarantineSource;
+  profile: LanguageProfile;
+  evidence: EvidenceSpan[];
+  metadata: JsonValue;
+  informationLabel: InformationLabel;
+  admission: LanguageCorpusTrainingReport["admission"];
+  createdAt: number;
+  segmentation?: PreparedLanguageTrainingSegmentation;
+  graphSnapshotDigest: string;
+  compiledBatch: CompiledLanguageTrainingBatch;
+  observations: NgramObservation[];
+  models: NgramModelRecord[];
+  units: LanguageUnitRecord[];
+  patterns: LanguagePatternRecord[];
+  frames: SemanticFrameRecord[];
+  constructionWarnings: string[];
+  languageConstructions: number;
+  learned: ScceEvent;
+}
+
+const preparations = new WeakMap<PreparedLanguageCorpusTraining, {
+  storage: ScceStorage;
+  payload: PreparedLanguageCorpusPayload;
+  committed: boolean;
+}>();
+
+function trainingInputBinding(input: LanguageCorpusTrainingInput): string {
+  // These service objects are used only in preparation; actual output IDs/times are captured in the payload.
+  const { storage: _storage, clock: _clock, idFactory: _ids, creativeEventCompiler: _compiler, ...semantic } = input;
+  return createHasher().digestHex(canonicalStringify(toJsonValue(semantic)));
+}
+
+function graphSnapshotDigest(snapshot: Awaited<ReturnType<typeof graphSnapshotForEvidence>>): string {
+  const ordered = <T extends { id: unknown }>(rows: readonly T[]) => [...rows].sort((a, b) => String(a.id).localeCompare(String(b.id)));
+  return createHasher().digestHex(canonicalStringify(toJsonValue(snapshot ? {
+    nodes: ordered(snapshot.nodes), edges: ordered(snapshot.edges), hyperedges: ordered(snapshot.hyperedges)
+  } : null)));
+}
+
 /** The promoted spans those source versions own, which is what the graph was projected from. Impure: reads storage. */
 async function promotedEvidenceIdsForSourceVersions(
   storage: LanguageCorpusTrainingInput["storage"],
   sourceVersionIds: readonly string[]
 ): Promise<EvidenceSpan["id"][]> {
   const ids: EvidenceSpan["id"][] = [];
+  if (typeof storage.evidence?.searchEvidence !== "function") return ids;
   for (const sourceVersionId of sourceVersionIds.slice(0, TRAINING_SNAPSHOT_SOURCES)) {
-    try {
       const found = await storage.evidence.searchEvidence({
         sourceVersionId: sourceVersionId as EvidenceSpan["sourceVersionId"],
         status: "promoted",
         limit: TRAINING_SNAPSHOT_EVIDENCE
       });
       for (const item of found) ids.push(item.span.id);
-    } catch { /* a lane without this lookup simply trains without a snapshot */ }
     if (ids.length >= TRAINING_SNAPSHOT_EVIDENCE) break;
   }
   return [...new Set(ids)].slice(0, TRAINING_SNAPSHOT_EVIDENCE);
@@ -170,8 +232,7 @@ async function graphSnapshotForEvidence(
   const evidenceIds = sourceVersionIds?.length
     ? await promotedEvidenceIdsForSourceVersions(storage, sourceVersionIds)
     : [...new Set(evidence.map(span => span.id))].slice(0, TRAINING_SNAPSHOT_EVIDENCE);
-  if (!evidenceIds.length) return undefined;
-  try {
+  if (!evidenceIds.length || typeof storage.graph?.getSlice !== "function") return undefined;
     const slice = await storage.graph.getSlice({
       evidenceIds,
       limitNodes: TRAINING_SNAPSHOT_NODES,
@@ -185,9 +246,6 @@ async function graphSnapshotForEvidence(
     });
     if (!hyperedges.length) return undefined;
     return { nodes: slice.nodes, edges: slice.edges, hyperedges };
-  } catch {
-    return undefined;
-  }
 }
 
 /** The compact Kneser-Ney summary's most-continued symbols, narrowed for a page signature. Mirrors the wiki path. */
@@ -205,22 +263,37 @@ const TRAINING_SNAPSHOT_NODES = 512;
 const TRAINING_SNAPSHOT_EDGES = 1024;
 
 export async function trainLanguageCorpusText(input: LanguageCorpusTrainingInput): Promise<LanguageCorpusTrainingReport> {
-  // A shard trainer holds no source rows of its own, and its compile is minutes of pure CPU. Measured on one
-  // 6-page shard: language.train 88.7s, of which train.compile is 54.5s at 116% CPU (58,264 n-gram observations
-  // from 291KB of text) and train.persist is 33.3s at 12% CPU. Wrapping all of that in one transaction kept a
-  // Postgres backend in `idle in transaction` for the whole compile -- which is what the multi-minute ingest
-  // stalls were, and none of it is a transactional requirement:
-  //
-  //   - with persistSource false the source/blob/evidence writes are skipped entirely, so there is no
-  //     multi-row source identity to make atomic;
-  //   - nothing inside reads back what it wrote, so no statement depends on another's uncommitted state;
-  //   - every write is keyed by a stable content-derived id, so re-running the shard rewrites the same rows,
-  //     and the shard's checkpoint is not marked complete until this returns.
-  //
-  // So this path commits per statement instead, and the compile holds nothing. The document-owning path still
-  // needs its source version and evidence spans to land together, and keeps the transaction.
-  if (input.persistSource === false) return trainLanguageCorpusTextTransaction(input);
-  return input.storage.transaction(() => trainLanguageCorpusTextTransaction(input));
+  // Both source-owning and aggregate callers get an atomic learned write. CPU compilation precedes it.
+  const prepared = await prepareLanguageCorpusTraining(input);
+  return commitLanguageCorpusTraining(input, prepared);
+}
+
+export async function prepareLanguageCorpusTraining(input: LanguageCorpusTrainingInput): Promise<PreparedLanguageCorpusTraining> {
+  const inputBinding = trainingInputBinding(input);
+  const payload = await prepareLanguageCorpusTrainingInternal(input);
+  if (trainingInputBinding(input) !== inputBinding) throw new Error("language training input changed during preparation");
+  const token = Object.freeze({ sourceVersionId: payload.sourceVersionId, inputBinding, graphSnapshotDigest: payload.graphSnapshotDigest });
+  // Detach caller-owned evidence/profile objects. The returned token exposes no writable learned rows.
+  preparations.set(token, { storage: input.storage, payload: structuredClone(payload), committed: false });
+  return token;
+}
+
+export async function commitLanguageCorpusTraining(
+  input: LanguageCorpusTrainingInput,
+  prepared: PreparedLanguageCorpusTraining
+): Promise<LanguageCorpusTrainingReport> {
+  const held = preparations.get(prepared);
+  if (!held || held.storage !== input.storage) throw new Error("unrecognized language training preparation or storage");
+  if (held.committed) throw new Error("language training preparation already committed or in progress");
+  if (trainingInputBinding(input) !== prepared.inputBinding) throw new Error("language training input changed before commit");
+  held.committed = true;
+  try { return await input.storage.transaction(async () => {
+    const snapshot = await graphSnapshotForEvidence(input.storage, held.payload.evidence, input.graphSnapshotSourceVersionIds);
+    if (graphSnapshotDigest(snapshot) !== prepared.graphSnapshotDigest) throw new Error("language training graph dependencies changed before commit; prepare again");
+    if (trainingInputBinding(input) !== prepared.inputBinding) throw new Error("language training input changed during commit validation");
+    const result = await commitLanguageCorpusTrainingInternal(input, held.payload);
+    return result;
+  }); } catch (error) { held.committed = false; throw error; }
 }
 
 /** The source version this text is stored under, so a later pass can find its evidence without re-training it. */
@@ -231,7 +304,7 @@ export function corpusSourceVersionIdFor(input: { sourceUri: string; text: strin
     .sourceVersionId(`${input.sourceUri}${hasher.digestHex(Buffer.from(text, "utf8"))}`);
 }
 
-async function trainLanguageCorpusTextTransaction(input: LanguageCorpusTrainingInput): Promise<LanguageCorpusTrainingReport> {
+async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTrainingInput): Promise<PreparedLanguageCorpusPayload> {
   const clock = input.clock ?? createClock();
   const hasher = createHasher();
   const sourceSystemId = canonicalCorpusSourceSystemId(input.sourceSystem);
@@ -272,14 +345,16 @@ async function trainLanguageCorpusTextTransaction(input: LanguageCorpusTrainingI
   });
 
   let evidence = [...(input.evidence ?? [])];
+  let source: SourceVersion | undefined;
+  let quarantine: QuarantineSource | undefined;
   let admission: LanguageCorpusTrainingReport["admission"] = { disposition: "not_applicable", reasons: ["this lane persists no source version of its own"] };
   if (!evidence.length && input.persistSource !== false) {
     const extractor = createEvidenceExtractor({ idFactory: ids, hasher });
     const mediaType = input.mediaType ?? "text/plain";
     // Source-version and evidence rows are FK-bound to canonical blob hashes.
     // Persist those blobs before inserting either referencing record.
-    const contentHash = await input.storage.blobs.put(bytes, mediaType);
-    const source: SourceVersion = {
+    const contentHash = blobContentHash(bytes);
+    source = {
       sourceId,
       sourceVersionId,
       namespace,
@@ -327,7 +402,7 @@ async function trainLanguageCorpusTextTransaction(input: LanguageCorpusTrainingI
       disposition: decision?.disposition ?? "unmeasured",
       reasons: decision?.reasons ?? [`no admission context is declared for corpus source system ${sourceSystem}`]
     };
-    await input.storage.quarantine.put({
+    quarantine = {
       id: `${sourceVersionId}:admission`,
       sourceId,
       sourceVersionId,
@@ -344,7 +419,7 @@ async function trainLanguageCorpusTextTransaction(input: LanguageCorpusTrainingI
       }),
       decision: admission.disposition === "reject" ? "rejected" : admission.disposition === "promote" ? "promoted" : "pending",
       decisionJson: audit
-    });
+    };
     if (admission.disposition === "reject") {
       throw new Error(`corpus source rejected at admission: ${admission.reasons.join("; ")}`);
     }
@@ -360,10 +435,6 @@ async function trainLanguageCorpusTextTransaction(input: LanguageCorpusTrainingI
     })
       .map(span => ({ ...span, informationLabel: sourceInformationLabel }))
       .map(span => withSourceFamily(span, input.sourceFamilyRanges));
-    await putSpanBlobs(input.storage.blobs, evidence, mediaType);
-    await input.storage.evidence.putSourceVersion(source);
-    if (input.storage.evidence.putEvidenceSpans) await input.storage.evidence.putEvidenceSpans(evidence);
-    else for (const span of evidence) await input.storage.evidence.putEvidenceSpan(span);
   }
 
   if (evidence.some(span => !span.informationLabel)) {
@@ -376,27 +447,10 @@ async function trainLanguageCorpusTextTransaction(input: LanguageCorpusTrainingI
   evidence = evidence.map(span => ({ ...span, informationLabel }));
   profile = attachSourceDerivedLanguageAliases({ profile, metadata, evidence });
   profile = { ...profile, informationLabel };
-  await input.storage.model.putLanguageProfile(profile);
-
   // Identity discovery counts documents. A document-owning training call (a book, a source file, a dialogue
   // transcript -- anything that persists its own source) is one document and joins the closed-class population,
   // exactly as a wiki page does. The wiki SHARD trainer passes persistSource=false: its pages already have
   // signatures from the ingestor, and a shard is an aggregate, not a document, so it must not be counted again.
-  if (input.persistSource !== false && input.storage.languageIdentities?.putProfileSignatures) {
-    await input.storage.languageIdentities.putProfileSignatures({
-      informationLabel,
-      rows: [{
-        id: profile.id,
-        sourceVersionId,
-        sourceSystem: input.sourceSystem,
-        sourceUri: input.sourceUri ?? "",
-        scripts: (profile.scripts ?? []).map(row => ({ script: row.script, mass: row.mass })),
-        direction: profile.direction,
-        topContinuation: trainerProfileTopContinuation(profile.kneserNey)
-      }]
-    });
-  }
-
   // The construction lane compiles nothing without the graph its surfaces align to: alignment lattices are
   // built only when the batch carries hyperedges, so with no snapshot every run produced zero reversible
   // constructions and the mouth had no learned sentence shapes to speak with. The snapshot is this batch's own
@@ -411,7 +465,7 @@ async function trainLanguageCorpusTextTransaction(input: LanguageCorpusTrainingI
     evidence: evidence.length
   });
 
-  // Synchronous CPU, with a Postgres transaction held open around it. Timed because that is the whole question.
+  // Pure CPU compilation runs before the write transaction in the ordinary and Wikipedia callers.
   const compileSpan = trainTrace.span("train.compile");
   const compiledBatch = compileLanguageTrainingBatch({
     runtime: languageMemory,
@@ -442,19 +496,6 @@ async function trainLanguageCorpusTextTransaction(input: LanguageCorpusTrainingI
     semanticFrames: compiledBatch.semanticFrames.length,
     alignmentSupports: compiledBatch.sparseAlignmentCandidateSupports.length
   });
-  const activeImportVersionValue = jsonRecord(input.corpusMetadata).activeImportVersion;
-  const segmentationSpan = trainTrace.span("train.segmentation");
-  await observeLanguageTrainingSegmentation({
-    storage: input.storage,
-    batch: { text, createdAt },
-    tenantId: informationLabel.tenantId,
-    corpusRole: corpusRoleIdForSourceSystem(sourceSystemId),
-    activeImportVersion: typeof activeImportVersionValue === "string"
-      ? activeImportVersionValue
-      : sourceSystemId,
-    hasher
-  });
-
   const observations = input.skipNgramPersistence || input.skipNgramObservationPersistence
     ? []
     : compiledBatch.observations.map(item => ({ ...stampObservation(item, sourceSystem, sourceSystemId, metadata), informationLabel }));
@@ -485,17 +526,14 @@ async function trainLanguageCorpusTextTransaction(input: LanguageCorpusTrainingI
     .map(item => ({ ...stampPattern(item, sourceSystem, sourceSystemId, metadata), informationLabel }));
   const frames = compiledBatch.semanticFrames.map(item => ({ ...stampFrame(item, sourceSystem, sourceSystemId, metadata), informationLabel }));
 
-  segmentationSpan.end();
-  const persistSpan = trainTrace.span("train.persist");
-  await input.storage.languageMemory.putNgramObservationsBatch(observations);
-  if (input.storage.languageMemory.putNgramModels) await input.storage.languageMemory.putNgramModels(models);
-  else for (const model of models) await input.storage.languageMemory.putNgramModel(model);
-  if (input.storage.languageMemory.putLanguageUnits) await input.storage.languageMemory.putLanguageUnits(units);
-  else for (const unit of units) await input.storage.languageMemory.putLanguageUnit(unit);
-  if (input.storage.languageMemory.putLanguagePatterns) await input.storage.languageMemory.putLanguagePatterns(patterns);
-  else for (const pattern of patterns) await input.storage.languageMemory.putLanguagePattern(pattern);
-  if (input.storage.languageMemory.putSemanticFrames) await input.storage.languageMemory.putSemanticFrames(frames);
-  else for (const frame of frames) await input.storage.languageMemory.putSemanticFrame(frame);
+  const activeImportVersionValue = jsonRecord(input.corpusMetadata).activeImportVersion;
+  const segmentation = prepareLanguageTrainingSegmentation({
+    batch: { text, createdAt },
+    tenantId: informationLabel.tenantId,
+    corpusRole: corpusRoleIdForSourceSystem(sourceSystemId),
+    activeImportVersion: typeof activeImportVersionValue === "string" ? activeImportVersionValue : sourceSystemId,
+    hasher
+  });
 
   const learned = events.create({
     episodeId: input.episodeId ?? ids.episodeId(),
@@ -516,37 +554,112 @@ async function trainLanguageCorpusTextTransaction(input: LanguageCorpusTrainingI
       corpusMetadata: metadata
     }
   });
+  return {
+    sourceSystem,
+    sourceSystemId,
+    sourceUri,
+    namespace,
+    sourceVersionId,
+    text,
+    bytes,
+    mediaType: input.mediaType ?? "text/plain",
+    source,
+    quarantine,
+    profile,
+    evidence,
+    metadata,
+    informationLabel,
+    admission,
+    createdAt,
+    segmentation,
+    graphSnapshotDigest: graphSnapshotDigest(batchGraphSnapshot),
+    compiledBatch,
+    observations,
+    models,
+    units,
+    patterns,
+    frames,
+    constructionWarnings,
+    languageConstructions: compiledConstructionPatterns.length,
+    learned
+  };
+}
+
+async function commitLanguageCorpusTrainingInternal(input: LanguageCorpusTrainingInput, prepared: PreparedLanguageCorpusPayload): Promise<LanguageCorpusTrainingReport> {
+  if (prepared.source && prepared.quarantine) {
+    const persistedHash = await input.storage.blobs.put(prepared.bytes, prepared.mediaType);
+    if (persistedHash !== prepared.source.contentHash) throw new Error("language training source blob hash mismatch");
+    await input.storage.quarantine.put(prepared.quarantine);
+    await putSpanBlobs(input.storage.blobs, prepared.evidence, prepared.mediaType);
+    await input.storage.evidence.putSourceVersion(prepared.source);
+    if (input.storage.evidence.putEvidenceSpans) await input.storage.evidence.putEvidenceSpans(prepared.evidence);
+    else for (const span of prepared.evidence) await input.storage.evidence.putEvidenceSpan(span);
+  }
+
+  await input.storage.model.putLanguageProfile(prepared.profile);
+  if (input.persistSource !== false && input.storage.languageIdentities?.putProfileSignatures) {
+    await input.storage.languageIdentities.putProfileSignatures({
+      informationLabel: prepared.informationLabel,
+      rows: [{
+        id: prepared.profile.id,
+        sourceVersionId: prepared.sourceVersionId,
+        sourceSystem: input.sourceSystem,
+        sourceUri: input.sourceUri ?? "",
+        scripts: (prepared.profile.scripts ?? []).map(row => ({ script: row.script, mass: row.mass })),
+        direction: prepared.profile.direction,
+        topContinuation: trainerProfileTopContinuation(prepared.profile.kneserNey)
+      }]
+    });
+  }
+
+  const trainTrace = ingestStageTracer();
+  const segmentationSpan = trainTrace.span("train.segmentation");
+  if (prepared.segmentation) {
+    await observePreparedLanguageTrainingSegmentation({ storage: input.storage, prepared: prepared.segmentation });
+  }
+  segmentationSpan.end();
+
+  const persistSpan = trainTrace.span("train.persist");
+  await input.storage.languageMemory.putNgramObservationsBatch(prepared.observations);
+  if (input.storage.languageMemory.putNgramModels) await input.storage.languageMemory.putNgramModels(prepared.models);
+  else for (const model of prepared.models) await input.storage.languageMemory.putNgramModel(model);
+  if (input.storage.languageMemory.putLanguageUnits) await input.storage.languageMemory.putLanguageUnits(prepared.units);
+  else for (const unit of prepared.units) await input.storage.languageMemory.putLanguageUnit(unit);
+  if (input.storage.languageMemory.putLanguagePatterns) await input.storage.languageMemory.putLanguagePatterns(prepared.patterns);
+  else for (const pattern of prepared.patterns) await input.storage.languageMemory.putLanguagePattern(pattern);
+  if (input.storage.languageMemory.putSemanticFrames) await input.storage.languageMemory.putSemanticFrames(prepared.frames);
+  else for (const frame of prepared.frames) await input.storage.languageMemory.putSemanticFrame(frame);
+  await input.storage.events.append(prepared.learned);
   persistSpan.end({
-    observations: observations.length,
-    models: models.length,
-    units: units.length,
-    patterns: patterns.length,
-    frames: frames.length
+    observations: prepared.observations.length,
+    models: prepared.models.length,
+    units: prepared.units.length,
+    patterns: prepared.patterns.length,
+    frames: prepared.frames.length
   });
-  await input.storage.events.append(learned);
 
   return {
     schema: "scce.languageCorpusTrainingReport.v1",
-    sourceSystem,
-    sourceSystemId,
+    sourceSystem: prepared.sourceSystem,
+    sourceSystemId: prepared.sourceSystemId,
     streamUri: input.streamUri,
-    sourceVersionId,
+    sourceVersionId: prepared.sourceVersionId,
     languageProfiles: 1,
-    evidence: evidence.length,
-    ngramObservations: observations.length,
-    ngramModels: models.length,
-    languageUnits: units.length,
-    languagePatterns: patterns.length,
-    semanticFrames: frames.length,
-    admission,
-    alignmentPromotionObservations: [...compiledBatch.alignmentHeldoutEvaluation.promotionObservations],
-    alignmentCalibrationObservations: [...compiledBatch.alignmentHeldoutEvaluation.calibrationObservations],
-    constructionCandidates: compiledBatch.constructionCandidates,
-    languageConstructions: compiledConstructionPatterns.length,
-    graphSurfaceAlignments: compiledBatch.graphSurfaceAlignmentSummaries.length,
-    rejectedLanguageConstructions: compiledBatch.rejectedConstructionCandidates,
-    eventId: String(learned.id),
-    warnings: [...new Set(constructionWarnings)].sort()
+    evidence: prepared.evidence.length,
+    ngramObservations: prepared.observations.length,
+    ngramModels: prepared.models.length,
+    languageUnits: prepared.units.length,
+    languagePatterns: prepared.patterns.length,
+    semanticFrames: prepared.frames.length,
+    admission: prepared.admission,
+    alignmentPromotionObservations: [...prepared.compiledBatch.alignmentHeldoutEvaluation.promotionObservations],
+    alignmentCalibrationObservations: [...prepared.compiledBatch.alignmentHeldoutEvaluation.calibrationObservations],
+    constructionCandidates: prepared.compiledBatch.constructionCandidates,
+    languageConstructions: prepared.languageConstructions,
+    graphSurfaceAlignments: prepared.compiledBatch.graphSurfaceAlignmentSummaries.length,
+    rejectedLanguageConstructions: prepared.compiledBatch.rejectedConstructionCandidates,
+    eventId: String(prepared.learned.id),
+    warnings: [...new Set(prepared.constructionWarnings)].sort()
   };
 }
 

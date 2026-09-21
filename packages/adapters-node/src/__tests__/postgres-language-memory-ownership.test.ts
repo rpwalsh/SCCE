@@ -92,7 +92,7 @@ describe("Postgres language-memory ownership queries", () => {
     expect(calls[0]?.params[0]).toEqual(["profile.a"]);
     expect(calls[0]?.params.at(-1)).toBe(7);
     expect(calls[1]?.sql).toContain("FROM unnest($5::text[]) AS owner(owner_id)");
-    expect(calls[1]?.sql).toContain("metadata_json->>'profileId'=owner.owner_id");
+    expect(calls[1]?.sql).toContain("observation.profile_id=owner.owner_id");
     expect(calls[1]?.params[4]).toEqual(["profile.a"]);
     expect(calls[1]?.params.at(-1)).toBe(7);
     expect(calls).toHaveLength(2);
@@ -225,12 +225,12 @@ describe("Postgres language-memory ownership queries", () => {
     expect(sql).toContain("EXISTS");
     expect(sql).toContain("profile_id=lp.id");
     // Four correlated index-backed probes stay EXISTS; the ngram_observations
-    // probe is a recursive skip scan over the (metadata_json->>'profileId')
-    // expression index -- a correlated EXISTS there seq-scanned the multi-GB
+    // probe is a recursive skip scan over the stored profile_id index -- a
+    // correlated EXISTS there seq-scanned the multi-GB
     // observations table once per candidate profile without observations.
     expect(sql.match(/OFFSET 0/g)).toHaveLength(4);
     expect(sql).toContain("WITH RECURSIVE obs_profiles");
-    expect(sql).toContain("o.metadata_json->>'profileId' > op.pid");
+    expect(sql).toContain("o.profile_id > op.pid");
     expect(sql).not.toContain("EXISTS (SELECT 1 FROM \"fixture\".ngram_observations");
     expect(sql).toContain("LIMIT $1");
     expect(sql).not.toMatch(/artifact_refs|GROUP BY/i);

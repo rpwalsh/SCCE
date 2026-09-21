@@ -718,6 +718,68 @@ export interface SegmentationSpacingEvidence {
   label: InformationLabel;
 }
 
+export interface PreparedLanguageTrainingSegmentation {
+  key: {
+    segmentationVersion: string;
+    languageCluster: string;
+    tenantId: string;
+    corpusRole: string;
+    activeImportVersion: string;
+  };
+  model: ReturnType<typeof segmentUnicodeSurfaceV2>;
+  observedAt: number;
+  principals: readonly string[];
+}
+
+/** Pure segmentation work performed before the durable aggregate write boundary. */
+export function prepareLanguageTrainingSegmentation(input: {
+  batch: Pick<LanguageTrainingBatch, "text" | "createdAt">;
+  tenantId: string;
+  corpusRole: string;
+  activeImportVersion: string;
+  hasher: Hasher;
+  principals?: readonly string[];
+}): PreparedLanguageTrainingSegmentation | undefined {
+  if (!input.batch.text.trim()) return undefined;
+  const model = segmentUnicodeSurfaceV2(input.batch.text, input.hasher);
+  if (input.hasher.digestHex(reconstructFromSegmentationModel(model)) !== model.reconstructionHash) {
+    throw new Error("segmentation model does not reconstruct its own surface; refusing to fold it into the corpus aggregate");
+  }
+  return {
+    key: {
+      segmentationVersion: model.schemaVersion,
+      languageCluster: dominantScriptId(input.batch.text),
+      tenantId: input.tenantId,
+      corpusRole: input.corpusRole,
+      activeImportVersion: input.activeImportVersion
+    },
+    model,
+    observedAt: input.batch.createdAt,
+    principals: input.principals ?? []
+  };
+}
+
+export async function observePreparedLanguageTrainingSegmentation(input: {
+  storage: ScceStorage;
+  prepared: PreparedLanguageTrainingSegmentation;
+}): Promise<SegmentationSpacingEvidence | undefined> {
+  if (!input.storage.segmentationAggregates) return undefined;
+  const aggregate = await input.storage.segmentationAggregates.observeDocument({
+    key: input.prepared.key,
+    model: input.prepared.model,
+    observedAt: input.prepared.observedAt
+  });
+  const spacedRatio = segmentationAggregateSpacedRatio(aggregate);
+  if (spacedRatio === undefined || aggregate.totalBoundaryObservations < MINIMUM_SPACING_EVIDENCE_OBSERVATIONS) return undefined;
+  return {
+    keyId: segmentationAggregateKeyId(input.prepared.key),
+    languageCluster: input.prepared.key.languageCluster,
+    spacedRatio,
+    boundaryObservations: aggregate.totalBoundaryObservations,
+    label: segmentationAggregateInformationLabel(input.prepared.key, input.prepared.principals)
+  };
+}
+
 export async function observeLanguageTrainingSegmentation(input: {
   storage: ScceStorage;
   batch: Pick<LanguageTrainingBatch, "text" | "createdAt">;
@@ -727,34 +789,8 @@ export async function observeLanguageTrainingSegmentation(input: {
   hasher: Hasher;
   principals?: readonly string[];
 }): Promise<SegmentationSpacingEvidence | undefined> {
-  if (!input.storage.segmentationAggregates || !input.batch.text.trim()) return undefined;
-  const model = segmentUnicodeSurfaceV2(input.batch.text, input.hasher);
-  // A segmentation that cannot rebuild its own input is not evidence about anything; it never reaches the aggregate.
-  if (input.hasher.digestHex(reconstructFromSegmentationModel(model)) !== model.reconstructionHash) {
-    throw new Error("segmentation model does not reconstruct its own surface; refusing to fold it into the corpus aggregate");
-  }
-  const key = {
-    segmentationVersion: model.schemaVersion,
-    languageCluster: dominantScriptId(input.batch.text),
-    tenantId: input.tenantId,
-    corpusRole: input.corpusRole,
-    activeImportVersion: input.activeImportVersion
-  };
-  const aggregate = await input.storage.segmentationAggregates.observeDocument({
-    key,
-    model,
-    observedAt: input.batch.createdAt
-  });
-  const spacedRatio = segmentationAggregateSpacedRatio(aggregate);
-  // Below this many observed boundaries the ratio is noise, not the corpus telling us how this script spaces words.
-  if (spacedRatio === undefined || aggregate.totalBoundaryObservations < MINIMUM_SPACING_EVIDENCE_OBSERVATIONS) return undefined;
-  return {
-    keyId: segmentationAggregateKeyId(key),
-    languageCluster: key.languageCluster,
-    spacedRatio,
-    boundaryObservations: aggregate.totalBoundaryObservations,
-    label: segmentationAggregateInformationLabel(key, input.principals ?? [])
-  };
+  const prepared = prepareLanguageTrainingSegmentation(input);
+  return prepared ? observePreparedLanguageTrainingSegmentation({ storage: input.storage, prepared }) : undefined;
 }
 
 const MINIMUM_SPACING_EVIDENCE_OBSERVATIONS = 64;

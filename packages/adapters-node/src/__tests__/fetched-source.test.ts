@@ -121,8 +121,8 @@ describe("bounded fetched document derivatives", () => {
     expect(await readdir(tempRoot)).toEqual([]);
   });
 
-  it("surfaces a scanned PDF exceeding the bounded total pixel budget as the explicit OCR-unavailable boundary", async () => {
-    await expect(normalizeFetchedSource(source(emptyTextPdf(12, 2450, 2450), "application/pdf", "https://publisher.example/scan.pdf"), config)).rejects.toThrow("embedded_text_absent/ocr_unavailable");
+  it("surfaces a scanned PDF exceeding the bounded total pixel budget as a partial OCR failure", async () => {
+    await expect(normalizeFetchedSource(source(emptyTextPdf(12, 2450, 2450), "application/pdf", "https://publisher.example/scan.pdf"), config)).rejects.toThrow("ocr_partial: pixel budget exhausted before page");
     expect(await readdir(tempRoot)).toEqual([]);
   });
 
@@ -162,11 +162,11 @@ describe("bounded fetched document derivatives", () => {
     expect(extracted.attempts[0]?.warnings).toEqual(["embedded_text_absent/ocr_unavailable", expect.stringMatching(/^render: \S/u)]);
   }, 60000);
 
-  it("records pixel budget exhaustion as the cause of the OCR-unavailable boundary", async () => {
+  it("records pixel budget exhaustion as the cause of partial OCR", async () => {
     const filePath = path.join(tempRoot, "oversized-scan.pdf");
     await writeFile(filePath, emptyTextPdf(12, 2450, 2450));
     const extracted = await extractDocument(filePath, config, { includeVisualAttributes: false });
-    expect(extracted.attempts[0]?.warnings).toEqual(["embedded_text_absent/ocr_unavailable", expect.stringMatching(/^pixel_budget: \S/u)]);
+    expect(extracted.attempts[0]?.warnings).toEqual(["ocr_profile:fallback_packaged_profile:eng", expect.stringMatching(/^ocr_partial: pixel budget exhausted before page \d+ of 12$/u)]);
   }, 60000);
 
   it("OCRs every page of a nine-page scanned PDF instead of refusing it for page count", async () => {

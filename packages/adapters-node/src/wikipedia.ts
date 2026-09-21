@@ -6,8 +6,9 @@ import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import path from "node:path";
-import { redactSecrets, stripApparatusLines, type ContentHash, type IngestedSourceFile, type IngestionCheckpoint, type JsonValue } from "@scce/kernel";
+import { redactSecretsWithMap, stripApparatusLines, type ContentHash, type IngestedSourceFile, type IngestionCheckpoint, type JsonValue } from "@scce/kernel";
 import { effectiveMaxArticleChars, type ScceRuntimeConfig } from "./config.js";
+import { decodeWikiEntities, renderWikiLinks, renderWikiTemplates, WIKIPEDIA_SURFACE_TRANSFORM, type WikiNormalizationDiagnostics } from "./wikipedia-markup.js";
 
 type IngestStreamItem =
   | { type: "checkpoint"; checkpoint: IngestionCheckpoint }
@@ -32,6 +33,10 @@ export interface ResolvedWikipediaCorpus {
 
 export interface WikipediaStreamOptions {
   resumeOffset?: number;
+  /** Distinguishes a committed block at byte zero from a fresh run. */
+  resumeAfterBlock?: boolean;
+  /** The ingestor freezes index discovery before hashing its input manifest. */
+  discoverIndex?: boolean;
 }
 
 interface WikiIndexEntry {
@@ -54,6 +59,8 @@ interface ParsedWikiPage {
   namespace: number;
   redirect: boolean;
   text: string;
+  rawText: string;
+  normalization: WikiNormalizationDiagnostics & { normalizedChars: number; truncatedChars: number };
   links: WikiPageLink[];
   headings: WikiPageHeading[];
 }
@@ -83,10 +90,14 @@ export function wikiPageStructure(raw: string): { links: WikiPageLink[]; heading
     if (links.size >= 400) break;
   }
   const headings: WikiPageHeading[] = [];
+  let headingOffset = 0;
+  let headingChars = 0;
   for (const match of raw.matchAll(/^(={2,6})[ \t]*(.+?)[ \t]*\1[ \t]*$/gmu)) {
     const text = collapseWhitespace((match[2] ?? "").replace(/'{2,}/gu, ""));
     if (!text) continue;
-    headings.push({ text, level: match[1]!.length, charStart: match.index ?? 0 });
+    for (const _char of raw.slice(headingOffset, match.index)) headingChars++;
+    headingOffset = match.index;
+    headings.push({ text, level: match[1]!.length, charStart: headingChars });
     if (headings.length >= 128) break;
   }
   return { links: [...links.values()], headings };
@@ -145,7 +156,7 @@ export async function detectWikipediaIndexPath(dumpPath: string): Promise<string
 export async function* streamWikipediaMultistream(corpus: ResolvedWikipediaCorpus, options: WikipediaStreamOptions = {}): AsyncIterable<IngestStreamItem> {
   const info = await stat(corpus.dumpPath);
   const rootUri = wikipediaRootUri(corpus);
-  const indexPath = corpus.indexPath ?? await detectWikipediaIndexPath(corpus.dumpPath);
+  const indexPath = corpus.indexPath ?? (options.discoverIndex === false ? undefined : await detectWikipediaIndexPath(corpus.dumpPath));
   yield { type: "checkpoint", checkpoint: checkpoint(rootUri, corpus.dumpPath, "discovered", "pending", 0, { compressedBytes: info.size, indexPath: indexPath ?? null, indexMode: indexPath ? "index" : "bz2-magic-scan", memorySafetyBoundMb: corpus.memorySafetyBoundMb }) };
 
   let emitted = 0;
@@ -156,10 +167,17 @@ export async function* streamWikipediaMultistream(corpus: ResolvedWikipediaCorpu
   yield { type: "checkpoint", checkpoint: checkpoint(rootUri, corpus.dumpPath, "extracting", "running", lastOffset, { indexPath: indexPath ?? null, indexMode: indexPath ? "index" : "bz2-magic-scan", resumeOffset: lastOffset, memorySafetyBoundMb: corpus.memorySafetyBoundMb }) };
 
   const blocks = indexPath
-    ? streamWikiBlocks(indexPath, info.size, corpus, options.resumeOffset ?? 0)
-    : streamWikiBlocksFromDump(corpus.dumpPath, info.size, options.resumeOffset ?? 0);
+    ? streamWikiBlocks(indexPath, info.size, corpus, options.resumeOffset ?? 0, options.resumeAfterBlock)
+    : streamWikiBlocksFromDump(corpus.dumpPath, info.size, options.resumeOffset ?? 0, options.resumeAfterBlock);
   for await (const block of blocks) {
-    if (corpus.maxBlocksPerRun > 0 && blockCount >= corpus.maxBlocksPerRun) break;
+    if (emitted >= corpus.maxPagesPerRun) {
+      yield { type: "checkpoint", checkpoint: checkpoint(rootUri, corpus.dumpPath, "stored", "complete", lastOffset, { emitted, skipped, blockCount, pageOrdinal, stoppedAt: "maxPagesPerRun", reachedEnd: false }) };
+      return;
+    }
+    if (corpus.maxBlocksPerRun > 0 && blockCount >= corpus.maxBlocksPerRun) {
+      yield { type: "checkpoint", checkpoint: checkpoint(rootUri, corpus.dumpPath, "stored", "complete", lastOffset, { emitted, skipped, blockCount, pageOrdinal, stoppedAt: "maxBlocksPerRun", reachedEnd: false }) };
+      return;
+    }
     blockCount++;
     lastOffset = block.compressedOffset;
     yield { type: "checkpoint", checkpoint: blockCheckpoint(rootUri, corpus, block, "extracting", "running", { entries: block.entries.length }) };
@@ -167,12 +185,23 @@ export async function* streamWikipediaMultistream(corpus: ResolvedWikipediaCorpu
     try {
       xml = await readCompressedBlock(corpus.dumpPath, block.compressedOffset, block.compressedEnd, corpus.python, corpus.maxBlockBytes);
     } catch (error) {
-      skipped++;
-      yield { type: "skipped", skipped: { path: corpus.dumpPath, reason: messageOf(error) }, checkpoint: blockCheckpoint(rootUri, corpus, block, "skipped", "complete", { reason: messageOf(error) }, messageOf(error)) };
-      continue;
+      yield { type: "checkpoint", checkpoint: blockCheckpoint(rootUri, corpus, block, "failed", "failed", { reason: messageOf(error) }, messageOf(error)) };
+      throw new Error(`Wikipedia block at ${block.compressedOffset} failed: ${messageOf(error)}`);
     }
     let blockPages = 0;
-    for (const pageBlock of drainPages(xml, corpus.maxArticleChars)) {
+    let indexedPages = 0;
+    for (const pageBlock of drainPages(xml)) {
+      if (emitted >= corpus.maxPagesPerRun) {
+        yield { type: "checkpoint", checkpoint: checkpoint(rootUri, corpus.dumpPath, "stored", "complete", block.compressedOffset, { emitted, skipped, blockCount, pageOrdinal, stoppedAt: "maxPagesPerRun", reachedEnd: false }) };
+        return;
+      }
+      if (indexPath) {
+        const expected = block.entries[indexedPages++];
+        const head = pageBlock.slice(0, pageBlock.indexOf("<revision>"));
+        if (!expected || tagText(head, "id") !== expected.pageId || decodeXml(tagText(head, "title")) !== expected.title) {
+          throw new Error(`Wikipedia index/dump page identity mismatch in block ${block.compressedOffset}`);
+        }
+      }
       pageOrdinal++;
       const page = parseWikiPage(pageBlock, corpus.maxArticleChars);
       if (!page || shouldSkip(page, corpus)) {
@@ -185,19 +214,18 @@ export async function* streamWikipediaMultistream(corpus: ResolvedWikipediaCorpu
       const itemCheckpoint = checkpoint(rootUri, file.uri, "extracted", "complete", block.compressedOffset, { pageOrdinal, blockOrdinal: block.blockOrdinal, blockOffset: block.compressedOffset, title: page.title, pageId: page.pageId, revisionId: page.revisionId, namespace: page.namespace }, `sha256_${sha256(file.bytes)}` as ContentHash, file.bytes.byteLength);
       yield { type: "file", file, checkpoint: itemCheckpoint };
       if (emitted % corpus.checkpointEveryPages === 0) yield { type: "checkpoint", checkpoint: checkpoint(rootUri, corpus.dumpPath, "extracting", "running", block.compressedOffset, { emitted, skipped, blockCount, pageOrdinal }) };
-      if (emitted >= corpus.maxPagesPerRun) {
-        yield { type: "checkpoint", checkpoint: checkpoint(rootUri, corpus.dumpPath, "stored", "complete", block.compressedOffset, { emitted, skipped, blockCount, pageOrdinal, stoppedAt: "maxPagesPerRun" }) };
-        return;
-      }
+    }
+    if (indexPath && indexedPages !== block.entries.length) {
+      throw new Error(`Wikipedia index/dump page count mismatch in block ${block.compressedOffset}`);
     }
     yield { type: "checkpoint", checkpoint: blockCheckpoint(rootUri, corpus, block, "stored", "complete", { pages: blockPages, emitted, skipped }) };
     xml = "";
   }
 
-  yield { type: "checkpoint", checkpoint: checkpoint(rootUri, corpus.dumpPath, "stored", "complete", lastOffset, { emitted, skipped, blockCount, pageOrdinal }) };
+  yield { type: "checkpoint", checkpoint: checkpoint(rootUri, corpus.dumpPath, "stored", "complete", lastOffset, { emitted, skipped, blockCount, pageOrdinal, reachedEnd: true }) };
 }
 
-async function* streamWikiBlocksFromDump(dumpPath: string, dumpSize: number, resumeOffset: number): AsyncIterable<WikiCompressedBlock> {
+async function* streamWikiBlocksFromDump(dumpPath: string, dumpSize: number, resumeOffset: number, resumeAfterBlock = false): AsyncIterable<WikiCompressedBlock> {
   let previous: number | undefined;
   let ordinal = 0;
   for await (const offset of streamBzip2StreamOffsets(dumpPath)) {
@@ -206,12 +234,12 @@ async function* streamWikiBlocksFromDump(dumpPath: string, dumpSize: number, res
       continue;
     }
     ordinal++;
-    if (afterResumeOffset(previous, resumeOffset)) yield { compressedOffset: previous, compressedEnd: offset, blockOrdinal: ordinal, entries: [] };
+    if (afterResumeOffset(previous, resumeOffset, resumeAfterBlock)) yield { compressedOffset: previous, compressedEnd: offset, blockOrdinal: ordinal, entries: [] };
     previous = offset;
   }
   if (previous !== undefined) {
     ordinal++;
-    if (afterResumeOffset(previous, resumeOffset)) yield { compressedOffset: previous, compressedEnd: dumpSize, blockOrdinal: ordinal, entries: [] };
+    if (afterResumeOffset(previous, resumeOffset, resumeAfterBlock)) yield { compressedOffset: previous, compressedEnd: dumpSize, blockOrdinal: ordinal, entries: [] };
   }
 }
 
@@ -230,11 +258,14 @@ async function* streamBzip2StreamOffsets(dumpPath: string): AsyncIterable<number
   }
 }
 
-async function* streamWikiBlocks(indexPath: string, dumpSize: number, corpus: ResolvedWikipediaCorpus, resumeOffset: number): AsyncIterable<WikiCompressedBlock> {
+async function* streamWikiBlocks(indexPath: string, dumpSize: number, corpus: ResolvedWikipediaCorpus, resumeOffset: number, resumeAfterBlock = false): AsyncIterable<WikiCompressedBlock> {
   let currentOffset: number | undefined;
   let currentEntries: WikiIndexEntry[] = [];
   let ordinal = 0;
   for await (const entry of streamWikiIndex(indexPath, corpus.python)) {
+    if (entry.compressedOffset >= dumpSize || (currentOffset !== undefined && entry.compressedOffset < currentOffset)) {
+      throw new Error("Wikipedia index offsets are outside the dump or out of order");
+    }
     if (currentOffset === undefined) {
       currentOffset = entry.compressedOffset;
       currentEntries = [entry];
@@ -245,7 +276,7 @@ async function* streamWikiBlocks(indexPath: string, dumpSize: number, corpus: Re
       continue;
     }
     ordinal++;
-    if (afterResumeOffset(currentOffset, resumeOffset)) {
+    if (afterResumeOffset(currentOffset, resumeOffset, resumeAfterBlock)) {
       yield { compressedOffset: currentOffset, compressedEnd: entry.compressedOffset, blockOrdinal: ordinal, entries: currentEntries };
     }
     currentOffset = entry.compressedOffset;
@@ -253,12 +284,12 @@ async function* streamWikiBlocks(indexPath: string, dumpSize: number, corpus: Re
   }
   if (currentOffset !== undefined) {
     ordinal++;
-    if (afterResumeOffset(currentOffset, resumeOffset)) yield { compressedOffset: currentOffset, compressedEnd: dumpSize, blockOrdinal: ordinal, entries: currentEntries };
-  }
+    if (afterResumeOffset(currentOffset, resumeOffset, resumeAfterBlock)) yield { compressedOffset: currentOffset, compressedEnd: dumpSize, blockOrdinal: ordinal, entries: currentEntries };
+  } else throw new Error("Wikipedia index contains no page entries");
 }
 
-function afterResumeOffset(offset: number, resumeOffset: number): boolean {
-  return resumeOffset <= 0 || offset > resumeOffset;
+function afterResumeOffset(offset: number, resumeOffset: number, resumeAfterBlock: boolean): boolean {
+  return (!resumeAfterBlock && resumeOffset <= 0) || offset > resumeOffset;
 }
 
 async function* streamWikiIndex(indexPath: string, python: string): AsyncIterable<WikiIndexEntry> {
@@ -267,8 +298,10 @@ async function* streamWikiIndex(indexPath: string, python: string): AsyncIterabl
   try {
     for await (const line of reader) {
       const entry = parseIndexLine(String(line));
+      if (!entry && String(line).trim()) throw new Error("Wikipedia index contains a malformed page entry");
       if (entry) yield entry;
     }
+    await opened.completed?.();
   } finally {
     reader.close();
     opened.close();
@@ -278,6 +311,7 @@ async function* streamWikiIndex(indexPath: string, python: string): AsyncIterabl
 interface CloseableTextStream {
   stream: NodeJS.ReadableStream;
   close: () => void;
+  completed?: () => Promise<void>;
 }
 
 function openIndexText(filePath: string, python: string): CloseableTextStream {
@@ -286,10 +320,17 @@ function openIndexText(filePath: string, python: string): CloseableTextStream {
     return { stream, close: () => stream.destroy() };
   }
   const child = spawn(python, ["-c", "import bz2,sys\nwith bz2.open(sys.argv[1],'rb') as f:\n    while True:\n        b=f.read(1048576)\n        if not b: break\n        sys.stdout.buffer.write(b)\n        sys.stdout.buffer.flush()", filePath], { windowsHide: true, shell: false });
-  child.on("error", () => undefined);
-  child.stderr.on("data", () => undefined);
+  let stderr = "";
+  child.stderr.on("data", chunk => { stderr = (stderr + String(chunk)).slice(0, 800); });
+  // Resolve rather than reject until EOF is observed, avoiding an unhandled
+  // rejection when a bounded consumer intentionally closes the stream early.
+  const outcome = new Promise<Error | undefined>(resolve => {
+    child.once("error", error => resolve(error));
+    child.once("close", code => resolve(code === 0 ? undefined : new Error(`Wikipedia index decode failed (${code}): ${stderr}`)));
+  });
   return {
     stream: child.stdout,
+    completed: async () => { const error = await outcome; if (error) throw error; },
     close: () => {
       child.stdout.destroy();
       child.stderr.destroy();
@@ -305,8 +346,10 @@ function parseIndexLine(line: string): WikiIndexEntry | undefined {
   const second = line.indexOf(":", first + 1);
   if (second < 0) return undefined;
   const compressedOffset = Number(line.slice(0, first));
-  if (!Number.isSafeInteger(compressedOffset) || compressedOffset < 0) return undefined;
-  return { compressedOffset, pageId: line.slice(first + 1, second), title: line.slice(second + 1) };
+  const pageId = line.slice(first + 1, second);
+  const title = line.slice(second + 1);
+  if (!/^\d+$/u.test(line.slice(0, first)) || !Number.isSafeInteger(compressedOffset) || compressedOffset < 0 || !/^\d+$/u.test(pageId) || !title) return undefined;
+  return { compressedOffset, pageId, title };
 }
 
 async function readCompressedBlock(dumpPath: string, offset: number, end: number | undefined, python: string, maxBlockBytes: number): Promise<string> {
@@ -324,46 +367,51 @@ async function readCompressedBlock(dumpPath: string, offset: number, end: number
     "with open(path,'rb') as f:",
     "    f.seek(off)",
     "    while True:",
-    "        want=65536",
-    "        if limit>0:",
-    "            left=limit-read",
-    "            if left<=0: break",
-    "            want=min(want,left)",
-    "        chunk=f.read(want)",
-    "        if not chunk: break",
-    "        read += len(chunk)",
-    "        part=d.decompress(chunk)",
+    "        chunk=b''",
+    "        if d.needs_input:",
+    "            want=65536",
+    "            if limit>0:",
+    "                left=limit-read",
+    "                if left<=0: break",
+    "                want=min(want,left)",
+    "            chunk=f.read(want)",
+    "            if not chunk: break",
+    "            read += len(chunk)",
+    "        part=d.decompress(chunk,max_length=max_out-total+1)",
     "        if part:",
     "            total += len(part)",
     "            if total > max_out: raise RuntimeError('decompressed block exceeds configured max bytes')",
     "            out.append(part)",
     "        if d.eof: break",
+    "if not d.eof: raise RuntimeError('truncated bzip2 stream')",
     "sys.stdout.buffer.write(b''.join(out))"
   ].join("\n");
   const child = spawn(python, ["-c", script, dumpPath, String(offset), String(limit), String(maxBlockBytes)], { windowsHide: true, shell: false });
   const chunks: Buffer[] = [];
   const errors: Buffer[] = [];
-  for await (const raw of child.stdout) chunks.push(Buffer.from(raw as Buffer));
-  for await (const raw of child.stderr) errors.push(Buffer.from(raw as Buffer));
-  const code = await new Promise<number | null>(resolve => child.on("close", resolve));
+  const finished = new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
+  const [code] = await Promise.all([
+    finished,
+    (async () => { for await (const raw of child.stdout) chunks.push(Buffer.from(raw as Buffer)); })(),
+    (async () => { for await (const raw of child.stderr) errors.push(Buffer.from(raw as Buffer)); })()
+  ]);
   if (code !== 0) throw new Error(`wiki block decode failed at ${offset}: ${Buffer.concat(errors).toString("utf8").slice(0, 800)}`);
-  return Buffer.concat(chunks).toString("utf8");
+  return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
 }
 
-function drainPages(buffer: string, maxArticleChars: number): string[] {
-  const pages: string[] = [];
+function* drainPages(buffer: string): Iterable<string> {
   let cursor = 0;
-  while (pages.length < 4096) {
+  while (cursor < buffer.length) {
     const start = buffer.indexOf("<page>", cursor);
     if (start < 0) break;
     const end = buffer.indexOf("</page>", start);
-    if (end < 0) break;
+    if (end < 0) throw new Error("Wikipedia block contains an incomplete page");
     const close = end + "</page>".length;
     const block = buffer.slice(start, close);
-    pages.push(block.length > maxArticleChars * 3 ? block.slice(0, maxArticleChars * 3) : block);
+    // The decoded block is already bounded. Cutting XML can erase </text> and silently skip a large page.
+    yield block;
     cursor = close;
   }
-  return pages;
 }
 
 function parseWikiPage(block: string, maxArticleChars: number): ParsedWikiPage | null {
@@ -377,9 +425,14 @@ function parseWikiPage(block: string, maxArticleChars: number): ParsedWikiPage |
   const rawText = tagTextWithAttributes(block, "text");
   if (!title || !pageId || !rawText) return null;
   const raw = decodeXml(rawText);
-  const text = normalizeWikiText(raw).slice(0, maxArticleChars);
+  const diagnostics: WikiNormalizationDiagnostics = { unexpandedTemplateCount: 0, unexpandedTemplates: [], malformedConstructs: 0 };
+  const normalized = normalizeWikiText(raw, diagnostics);
+  let text = normalized.slice(0, maxArticleChars);
+  if (/[\uD800-\uDBFF]$/u.test(text)) text = text.slice(0, -1);
   const structure = wikiPageStructure(raw);
-  return { title: decodeXml(title), namespace, pageId, revisionId, redirect: block.includes("<redirect"), text, links: structure.links, headings: structure.headings };
+  return { title: decodeXml(title), namespace, pageId, revisionId, redirect: block.includes("<redirect"), text, rawText: raw,
+    normalization: { ...diagnostics, normalizedChars: normalized.length, truncatedChars: normalized.length - text.length },
+    links: structure.links, headings: structure.headings };
 }
 
 function shouldSkip(page: ParsedWikiPage, corpus: ResolvedWikipediaCorpus): boolean {
@@ -390,19 +443,27 @@ function shouldSkip(page: ParsedWikiPage, corpus: ResolvedWikipediaCorpus): bool
 }
 
 function wikiPageFile(page: ParsedWikiPage, corpus: ResolvedWikipediaCorpus, pageOrdinal: number, block: WikiCompressedBlock): IngestedSourceFile {
-  const cleaned = redactSecrets(page.text);
-  const bytes = Buffer.from(cleaned, "utf8");
+  const redacted = redactSecretsWithMap(page.text);
+  const cleaned = redacted.text;
+  const bytes = Buffer.from(page.rawText, "utf8");
   const safeTitle = encodeURIComponent(collapseWhitespace(page.title).replaceAll(" ", "_")).slice(0, 180);
   return {
     uri: `wikipedia://${corpus.wikiCode}/pages/${page.pageId}/${safeTitle}`,
     namespace: corpus.namespace,
     mediaType: "text/x-wiki",
     bytes,
-    text: cleaned,
+    text: page.rawText,
+    ...(cleaned !== page.rawText ? { evidenceDerivative: {
+      bytes: Buffer.from(cleaned, "utf8"), text: cleaned, kind: "extracted-text" as const,
+      transformId: `${WIKIPEDIA_SURFACE_TRANSFORM}+redact-secrets`, originalCoordinateSpace: "extracted-text-utf8" as const,
+      redactionMap: redacted.redactionMap
+    } } : {}),
     metadata: {
       sourceSystem: "wikipedia",
       sourceKind: "wikimedia_dump",
       ingestionLane: "wiki_stream",
+      sourceFamilyId: "wikimedia:wikipedia",
+      normalization: { transformId: WIKIPEDIA_SURFACE_TRANSFORM, characterUnit: "utf16-code-units", ...page.normalization },
       forceClass: "direct_evidence",
       corpus: path.basename(corpus.dumpPath),
       wikiCode: corpus.wikiCode,
@@ -417,9 +478,31 @@ function wikiPageFile(page: ParsedWikiPage, corpus: ResolvedWikipediaCorpus, pag
       namespace: page.namespace,
       redirect: page.redirect,
       links: page.links.map(link => ({ target: link.target, label: link.label })),
-      structure: { headings: page.headings.map(heading => ({ text: heading.text, level: heading.level, charStart: heading.charStart })) }
+      originalStructure: { coordinateSpace: "original-source-codepoints", headings: page.headings.map(heading => ({ ...heading })) },
+      structure: { coordinateSpace: "evidence-source-codepoints", headings: surfaceHeadings(page.headings, cleaned).map(heading => ({ ...heading })) }
     }
   };
+}
+
+/** Bind headings to the actual evidence surface, not the original wikitext's offsets. */
+function surfaceHeadings(headings: WikiPageHeading[], surface: string): WikiPageHeading[] {
+  const result: WikiPageHeading[] = [];
+  let cursor = 0, chars = 0;
+  for (const heading of headings) {
+    const title = redactSecretsWithMap(normalizeWikiText(heading.text)).text;
+    if (!title) continue;
+    const marker = "=".repeat(heading.level);
+    const escaped = title.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+    const pattern = new RegExp(`${marker}\\s*${escaped}\\s*${marker}`, "gu");
+    pattern.lastIndex = cursor;
+    const found = pattern.exec(surface);
+    if (!found) continue; // Dropped apparatus or a clipped heading has no evidence coordinate.
+    for (const _char of surface.slice(cursor, found.index)) chars++;
+    result.push({ text: title, level: heading.level, charStart: chars });
+    for (const _char of found[0]) chars++;
+    cursor = found.index + found[0].length;
+  }
+  return result;
 }
 
 function checkpoint(rootUri: string, itemUri: string, phase: IngestionCheckpoint["phase"], status: IngestionCheckpoint["status"], offsetBytes: number, metadata: JsonValue, contentHash?: ContentHash, byteLength?: number, reason?: string): IngestionCheckpoint {
@@ -466,27 +549,23 @@ function tagTextWithAttributes(block: string, tag: string): string {
 }
 
 function decodeXml(value: string): string {
-  return value
-    .replaceAll("&lt;", "<")
-    .replaceAll("&gt;", ">")
-    .replaceAll("&amp;", "&")
-    .replaceAll("&quot;", "\"")
-    .replaceAll("&apos;", "'")
-    .replaceAll("&#039;", "'");
+  return decodeWikiEntities(value, true);
 }
 
-export function normalizeWikiText(value: string): string {
-  return collapseWhitespace(stripApparatusLines(wikiSurfaceLines(value))).trim();
+export function normalizeWikiText(value: string, diagnostics?: WikiNormalizationDiagnostics): string {
+  return collapseWhitespace(stripApparatusLines(wikiSurfaceLines(value, diagnostics))).trim();
 }
 
 /** The page's surface with wiki constructs resolved and its line structure still intact: that population is what
  *  `stripApparatusLines` measures, and collapsing whitespace first destroys the only evidence the lines carry. */
-export function wikiSurfaceLines(value: string): string {
+export function wikiSurfaceLines(value: string, diagnostics?: WikiNormalizationDiagnostics): string {
   let text = removeDelimited(value, "<!--", "-->");
   text = removeRefTags(text);
-  text = removeTemplates(text);
-  text = renderWikiLinks(text);
+  text = renderWikiTemplates(text, diagnostics);
+  text = renderWikiLinks(text, diagnostics);
+  text = closeSeparatorsLeftByTemplates(text);
   text = removeXmlTags(text);
+  text = decodeWikiEntities(text);
   text = stripRepeatedApostrophes(text);
   return dropCitationListSections(text);
 }
@@ -554,29 +633,6 @@ function removeRefTags(input: string): string {
   return out;
 }
 
-function removeTemplates(input: string): string {
-  let out = "";
-  let cursor = 0;
-  let depth = 0;
-  while (cursor < input.length) {
-    const two = input.slice(cursor, cursor + 2);
-    if (two === "{{") {
-      depth++;
-      cursor += 2;
-      if (depth === 1) out += " ";
-      continue;
-    }
-    if (two === "}}" && depth > 0) {
-      depth--;
-      cursor += 2;
-      continue;
-    }
-    if (depth === 0) out += input[cursor] ?? "";
-    cursor++;
-  }
-  return closeSeparatorsLeftByTemplates(out);
-}
-
 /** A removed template leaves the separator that followed it: "({{IPAc-en|...}}; {{nee|Byron}}; 10 December 1815"
  *  became "( ; 10 December 1815" in 1,426 promoted spans. Punctuation only, so it reads the same in any script. Pure. */
 function closeSeparatorsLeftByTemplates(text: string): string {
@@ -584,56 +640,21 @@ function closeSeparatorsLeftByTemplates(text: string): string {
     .replace(/([(\[{\u3010\uff08])\s*[;,:\u3001\uff0c\uff1b\uff1a]+\s*/gu, "$1")
     .replace(/[;,:\u3001\uff0c\uff1b\uff1a]\s*(?=[;,:\u3001\uff0c\uff1b\uff1a])/gu, "")
     .replace(/\s+([;,:\u3001\uff0c\uff1b\uff1a]|[.\u3002])/gu, "$1")
-    .replace(/[(\[{\u3010\uff08]\s*[)\]}\u3011\uff09]/gu, "");
-}
-
-function renderWikiLinks(input: string): string {
-  let out = "";
-  let cursor = 0;
-  while (cursor < input.length) {
-    const start = input.indexOf("[[", cursor);
-    if (start < 0) return out + input.slice(cursor);
-    out += input.slice(cursor, start);
-    const end = input.indexOf("]]", start + 2);
-    if (end < 0) return out + input.slice(start);
-    const inner = input.slice(start + 2, end);
-    const lower = inner.toLocaleLowerCase();
-    if (!lower.startsWith("file:") && !lower.startsWith("image:") && !lower.startsWith("category:")) {
-      const pipe = inner.lastIndexOf("|");
-      out += pipe >= 0 ? inner.slice(pipe + 1) : inner;
-    }
-    cursor = end + 2;
-  }
-  return out;
+    .replace(/\(\s*\)/gu, "")
+    .replace(/\[\s*\]/gu, "")
+    .replace(/\{\s*\}/gu, "")
+    .replace(/\u3010\s*\u3011/gu, "")
+    .replace(/\uff08\s*\uff09/gu, "");
 }
 
 function removeXmlTags(input: string): string {
-  let out = "";
-  let cursor = 0;
-  while (cursor < input.length) {
-    const start = input.indexOf("<", cursor);
-    if (start < 0) return out + input.slice(cursor);
-    out += input.slice(cursor, start) + " ";
-    const end = input.indexOf(">", start + 1);
-    if (end < 0) return out;
-    cursor = end + 1;
-  }
-  return out;
+  // Angle-bracket comparisons are source content, not tags. Quoted attribute
+  // values may contain '>'; an unmatched '<' must not erase the article tail.
+  return input.replace(/<\/?[A-Za-z][A-Za-z0-9:-]*(?=[\s/>])(?:[^<>"']|"[^"]*"|'[^']*')*>/gu, " ");
 }
 
 function stripRepeatedApostrophes(input: string): string {
-  let out = "";
-  let run = 0;
-  for (const ch of input) {
-    if (ch === "'") {
-      run++;
-      if (run < 2) out += ch;
-      continue;
-    }
-    run = 0;
-    out += ch;
-  }
-  return out;
+  return input.replace(/'{2,}/gu, "");
 }
 
 function collapseWhitespace(input: string): string {

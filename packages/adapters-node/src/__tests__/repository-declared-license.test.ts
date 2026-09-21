@@ -24,6 +24,7 @@ import {
 import { dryRunEngineeringCorpusIngest } from "../engineering-corpus-folder.js";
 import { trainOssCorpus } from "../oss-corpus.js";
 import { createProjectLicenseIndex, readDeclaredLicense, summarizeDeclaredLicenses } from "../project-artifact-declarations.js";
+import { blobContentHash } from "../postgres.js";
 
 const roots: string[] = [];
 
@@ -270,8 +271,8 @@ function memoryStorage(): { storage: ScceStorage; state: MemoryState } {
     close: async () => undefined,
     conversation: unusedStore(),
     ingestion: unusedStore(),
-    graph: unusedStore(),
-    blobs: unusedStore(),
+    graph: { getSlice: async () => ({ nodes: [], edges: [], hyperedges: [], bounded: true, query: {} }) },
+    blobs: { put: async (bytes: Uint8Array) => blobContentHash(bytes) },
     quarantine: unusedStore(),
     proofs: unusedStore(),
     constructs: unusedStore(),
