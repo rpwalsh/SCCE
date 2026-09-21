@@ -103,7 +103,7 @@ import { DEFAULT_POLICY } from "./safety.js";
 import { createCorrectionMemory } from "./correction-memory.js";
 import { createMouth, type MouthSemanticInput } from "./mouth.js";
 import { createAlphaFieldEngine } from "./field.js";
-import { runGraphSandwich } from "./graph-sandwich.js";
+import { runGraphRefinement } from "./graph-refinement.js";
 import { detectCannedAnswerSpeech } from "./surface-quality.js";
 import { inventionConstructNode, type InventionConstruct } from "./prediction.js";
 import {
@@ -207,7 +207,7 @@ export interface SourceOnlyTurnSimulationInput {
   explicitRequirements?: readonly ExplicitTurnRequirement[];
   requirementActivations?: readonly LearnedRequirementActivation[];
   requirementContext?: Partial<Record<TurnRequirementDimension, number>>;
-  disableGraphSandwichRefinement?: boolean;
+  disableGraphRefinement?: boolean;
   languageMemoryState?: LanguageMemoryRuntimeState;
   languageProfiles?: LanguageProfile[];
 }
@@ -216,7 +216,7 @@ export type ScceRuntimeTurnInput = SourceOnlyTurnSimulationInput;
 
 export interface SourceOnlyTurnSimulationTrace {
   schema: "scce.runtime.turn_trace.v1";
-  graphSandwich?: JsonValue;
+  graphRefinement?: JsonValue;
   id: string;
   turnId: string;
   inputId: string;
@@ -630,16 +630,16 @@ export function createInMemoryScceRuntime(options: { idFactory?: IdFactory; hash
       hyperedges: runtimeGraph.hyperedges
     });
     const runtimeEvidence = dedupeById([...workspaceAnswer.mouthInput.speakInput.evidence, ...(sourceIngest?.evidence ?? [])]);
-    const sandwich = runGraphSandwich({
+    const graphRefinement = runGraphRefinement({
       graph: runtimeGraph, evidence: runtimeEvidence, initialRequirements: initialRequirementField,
-      firstField: firstRuntimeField, idFactory, disabled: input.disableGraphSandwichRefinement,
+      firstField: firstRuntimeField, idFactory, disabled: input.disableGraphRefinement,
       runSecondPass: seedPriors => fieldEngine.activate({
         text: input.text, nodes: runtimeGraph.nodes, edges: runtimeGraph.edges, hyperedges: runtimeGraph.hyperedges,
         previous: firstRuntimeField, seedPriors: [...seedPriors]
       })
     });
-    const requirementField = sandwich.refinedRequirements;
-    const runtimeField = sandwich.finalField;
+    const requirementField = graphRefinement.refinedRequirements;
+    const runtimeField = graphRefinement.finalField;
     const operatorActivations = activateCognitiveOperators({
       model: operatorRoutingActivationModel({ modelSet: calibrationModels }),
       requirementField,
@@ -679,7 +679,7 @@ export function createInMemoryScceRuntime(options: { idFactory?: IdFactory; hash
       authorityProjection,
       selectedCandidate: routed.selectedCandidate
     });
-    trace.graphSandwich = toJsonValue(sandwich.trace);
+    trace.graphRefinement = toJsonValue(graphRefinement.trace);
     trace.initialRequirementField = initialRequirementField;
     const result: SourceOnlyTurnSimulationResult = {
       schema: "scce.runtime.turn.v1",

@@ -964,7 +964,7 @@ export function graphFromStructuredSemanticCandidates(input: {
     // handed things like "bi:appointed|headmistress" to parse. Carrying the observed surface is what lets a
     // promoted relation be re-derived as a proposition instead of guessed at from a bigram label.
     const observedSurface = candidateAnchorSurface(candidate);
-    nodes.push({
+    const relationNode: GraphNode = {
       id: relationNodeId,
       typeId: input.ids.dimensionId({
         kind: "semantic_candidate",
@@ -999,7 +999,8 @@ export function graphFromStructuredSemanticCandidates(input: {
             : ["relation_promotion_model_unavailable"]),
         weakFreeProseInference: candidate.channel === "weak_free_surface"
       })
-    });
+    };
+    nodes.push(relationNode);
     const participantPorts: Hyperedge["participantPorts"] = [];
     // Identity is the canonical value and the relation's port, never the occurrence: the same fact from two sources meets.
     for (const [index, participant] of candidate.participants.entries()) {
@@ -1103,8 +1104,6 @@ export function graphFromStructuredSemanticCandidates(input: {
       bindings.push(binding);
       // Attach the candidate-specific occurrence binding to the existing relation node. Participant
       // identity nodes and merged hyperedges remain shared, while this immutable node keeps origin.
-      const relationNode = nodes.find(node => node.id === relationNodeId);
-      if (!relationNode) throw new Error(`Missing relation node for graph projection binding ${candidate.id}`);
       const relationNodeMetadata = relationNode.metadata && typeof relationNode.metadata === "object"
         && !Array.isArray(relationNode.metadata)
         ? relationNode.metadata as Record<string, JsonValue>

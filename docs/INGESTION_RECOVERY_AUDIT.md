@@ -281,7 +281,7 @@ empty observation-ID list; a reverse surface/frame resolver and full promotion
 decision registry remain unfinished.
 
 The production runtime and source-only diagnostic runtime use one shared
-`graph-sandwich.ts` helper: first field activation, one constrained structural
+`graph-refinement.ts` helper: first field activation, one constrained structural
 requirement refinement, then one second activation of the same field engine.
 The second pass consumes requirement-conditioned seed priors over the existing
 bounded graph slice. Temporal validity, actual activation, joined participants,
@@ -295,7 +295,7 @@ may change. Explicit requirements, prohibitions, learned ranges, authority,
 confidence and unrelated dimensions remain protected. The guard weights are
 explicitly uncalibrated bootstrap values. Trace IDs use `IdFactory.artifactId`
 over real inputs, guards and outcomes. The new evaluation condition
-`no_graph_sandwich_refinement` retains pass one and bypasses refinement/pass two;
+`no_graph_refinement` retains pass one and bypasses refinement/pass two;
 the sealed verifier rejects refinement execution under that condition.
 
 Focused helper, graph support, authority routing and evaluation checks passed
@@ -312,3 +312,38 @@ node separately; that change and the new real-kernel two-pass/ablation test awai
 the final targeted rerun. The full command is not represented as passing.
 This is implementation and regression evidence, not a paper-reproduction,
 held-out quality improvement, learned-language qualification, or Qwen result.
+
+### Review follow-up
+
+The feature is named **structural refinement**. Its implementation is
+`graph-refinement.ts`, entry point `runGraphRefinement`, trace payload
+`graphRefinement`, evaluation component `graph-refinement`, and ablation
+`no_graph_refinement`. Historical log filenames above retain their original
+names. This review feature has not been released with a compatibility alias.
+
+Contradiction no longer attenuates structural seed visibility. It can raise
+source scrutiny while proof/admissibility continues to control assertion.
+Weights, seed limits, logit-shift bounds and source-diversity scaling resolve
+through the existing public/production calibration mechanism under
+`graph_refinement.*`, with declared search ranges. Each turn snapshots and
+traces its effective settings and installed override IDs. The trace remains
+explicitly uncalibrated: installing numeric overrides alone does not establish
+measured quality. The existing field engine's 48-seed capacity remains a hard
+upper bound.
+
+Duplicate observations that compile to the same canonical candidate now retain
+the sorted union of their actual observation IDs; reversed input order produces
+the same ancestry. Binding attachment keeps a direct reference to the relation
+node instead of rescanning all accumulated nodes for every candidate.
+
+The original full run completed all 20 shards and exited 1: 558 passed files,
+10 skipped files, one failed file; 3,465 passed tests, 14 skipped tests, one failed
+PowerWalk assertion. That assertion now checks first-pass PPMI provenance and a
+real final-weight difference, allowing ordinary diffusion to reach a node in the
+ablated run. The final production-kernel rerun passed all 58 tests. Combined with
+the other nine unchanged targeted files, all 126 focused cases have passed.
+The final build passed. Logs: `.tmp/graph-refinement-targeted.log`,
+`.tmp/graph-refinement-kernel-local-rerun.log`, and
+`.tmp/graph-refinement-build-final.log`. A new complete regression run for the
+renamed feature and semantic/calibration changes is pending in
+`.tmp/graph-refinement-full-tests.log`.

@@ -196,7 +196,7 @@ export function structuredSemanticCandidates(input: {
       normalizationContract,
       hasher
     }).id;
-    out.set(id, {
+    const candidate: StructuredSemanticCandidate = {
       schema: STRUCTURED_SEMANTIC_CANDIDATE_SCHEMA,
       id,
       relationSeedId,
@@ -228,7 +228,18 @@ export function structuredSemanticCandidates(input: {
         normalizationContractId: normalizationContract.id,
         participantIdentityIds
       }
-    });
+    };
+    const previous = out.get(id);
+    out.set(id, previous ? {
+      ...candidate,
+      provenance: {
+        ...candidate.provenance,
+        observationIds: [...new Set([
+          ...(previous.provenance.observationIds ?? []),
+          ...(candidate.provenance.observationIds ?? [])
+        ])].sort()
+      }
+    } : candidate);
   };
 
   for (const observation of input.observations) {

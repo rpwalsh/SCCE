@@ -35,6 +35,17 @@ const count = (min: number, max: number, coarse: readonly number[]): Calibration
   ({ kind: "count", min, max, coarse, resolution: 1 });
 
 export const CALIBRATION_SEARCH_SPACE: Readonly<Record<CalibrationKey, CalibrationSearchEntry>> = Object.freeze({
+  // --- structural graph refinement; bounded by the field engine's 48-seed capacity
+  "graph_refinement.max_logit_shift": weight(0, 1, [0, 0.25, 0.5, 1]),
+  "graph_refinement.max_structural_seeds": count(1, 48, [8, 16, 32, 48]),
+  "graph_refinement.max_seeds": count(1, 48, [8, 16, 32, 48]),
+  "graph_refinement.seed_weight.active": weight(0, 1, [0, 0.2, 0.4, 0.8]),
+  "graph_refinement.seed_weight.temporal": weight(0, 1, [0, 0.1, 0.2, 0.4]),
+  "graph_refinement.seed_weight.causal": weight(0, 1, [0, 0.15, 0.3, 0.6]),
+  "graph_refinement.seed_weight.composition": weight(0, 1, [0, 0.1, 0.2, 0.4]),
+  "graph_refinement.seed_weight.source_diversity": weight(0, 1, [0, 0.05, 0.1, 0.2]),
+  "graph_refinement.source_diversity_scale": weight(1, 8, [1, 2, 4, 8]),
+
   // --- code request structural demand
   "code_request.demand.fenced_block": weight(0, 1, [0.2, 0.45, 0.7]),
   "code_request.demand.formal_language": weight(0, 1, [0.2, 0.4, 0.7]),

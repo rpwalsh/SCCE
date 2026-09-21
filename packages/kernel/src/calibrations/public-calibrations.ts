@@ -17,6 +17,17 @@
  * Ids follow calibration-spine.ts's convention: subsystem, then what the value governs.
  */
 export const PUBLIC_CALIBRATIONS = Object.freeze({
+  // --- structural graph refinement (graph-refinement.ts), bootstrap profile v1
+  "graph_refinement.max_logit_shift": 1,
+  "graph_refinement.max_structural_seeds": 32,
+  "graph_refinement.max_seeds": 48,
+  "graph_refinement.seed_weight.active": 0.4,
+  "graph_refinement.seed_weight.temporal": 0.2,
+  "graph_refinement.seed_weight.causal": 0.15,
+  "graph_refinement.seed_weight.composition": 0.2,
+  "graph_refinement.seed_weight.source_diversity": 0.05,
+  "graph_refinement.source_diversity_scale": 2,
+
   // --- code request structural demand (code-request.ts)
   // Bootstrap weights are intentionally small and additive: each typed observation contributes evidence,
   // while codeRequestRecognized remains the separate corroboration gate.

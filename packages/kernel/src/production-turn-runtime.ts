@@ -219,7 +219,7 @@ import { isStructuralResidueSurface, structuralResidueScore } from "./structural
 import { normalizePriorKey, splitPriorUnits } from "./kernel-answer-primitives.js";
 import { codeLanguageForRequirementState, codeRequestObservedRequirements, codeRequestSignal, typedProgramBehaviorFromMetadata } from "./code-request.js";
 import { attachLearnedGraphPriorConstruct } from "./learned-graph-prior-runtime.js";
-import { runGraphSandwich } from "./graph-sandwich.js";
+import { runGraphRefinement } from "./graph-refinement.js";
 import { decideRuntimeCoherence } from "./runtime-coherence.js";
 import { executableRuntimeDeadlineFromMetadata, type RuntimeDeadlineDecision } from "./runtime-deadline.js";
 import { estimateAlignmentCostMs, estimateKneserNeyGenerationCostMs, estimateRetrievalCostMs } from "./runtime-cost-estimate.js";
@@ -2252,7 +2252,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         seedPriors: [...semanticSeedAnchors, ...walkSeedExpansion.seeds]
       });
       const refinementStarted = performance.now();
-      const sandwichInput = {
+      const graphRefinementInput = {
         graph, evidence: admissibleEvidence, initialRequirements: requirementField, firstField, idFactory,
         baseSeedPriors: [...semanticSeedAnchors, ...walkSeedExpansion.seeds],
         runSecondPass: (seedPriors: readonly { nodeId: GraphNode["id"]; weight: number; feature?: string }[]) => fieldEngine.activate({
@@ -2260,15 +2260,15 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           previous: firstField, evaluation: fieldEvaluation, seedPriors: [...seedPriors]
         })
       };
-      const sandwich = evaluationComponent(
-        "graph-sandwich-refinement", "graph.resolve.requirement-refinement",
-        () => runGraphSandwich(sandwichInput),
-        () => runGraphSandwich({ ...sandwichInput, disabled: true })
+      const graphRefinement = evaluationComponent(
+        "graph-refinement", "graph.resolve.requirement-refinement",
+        () => runGraphRefinement(graphRefinementInput),
+        () => runGraphRefinement({ ...graphRefinementInput, disabled: true })
       );
-      const field = sandwich.finalField;
-      requirementField = sandwich.refinedRequirements;
+      const field = graphRefinement.finalField;
+      requirementField = graphRefinement.refinedRequirements;
       refreshTurnSignals();
-      events.push(await append(eventFactory.create({ episodeId, typeId: "GraphUpdated", payload: { graphSandwich: toJsonValue(sandwich.trace) } })));
+      events.push(await append(eventFactory.create({ episodeId, typeId: "GraphUpdated", payload: { graphRefinement: toJsonValue(graphRefinement.trace) } })));
       kernelTrace({ stage: "graph.resolve", label: "kernel.turn.graph_refinement", durationMs: performance.now() - refinementStarted,
         counts: { nodes: graph.nodes.length, edges: graph.edges.length, hyperedges: graph.hyperedges.length } });
       runtimeState.lastField = field;

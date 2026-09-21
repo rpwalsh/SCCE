@@ -1,16 +1,17 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { createAlphaFieldEngine } from "../field.js";
+import { clearProdCalibrations, installProdCalibrations } from "../calibrations/prod-calibrations.js";
 import { createClock, createHasher } from "../primitives.js";
 import { createIdFactory } from "../ids.js";
-import { runGraphSandwich, type GraphSandwichSeedPrior } from "../graph-sandwich.js";
+import { runGraphRefinement, type GraphRefinementSeedPrior } from "../graph-refinement.js";
 import type { EvidenceSpan, FieldState, GraphNode, GraphSlice, TurnRequirementField } from "../index.js";
 
 const evidence = [{ id: "evidence.one", provenance: { sourceFamilyId: "family.one" } }] as unknown as EvidenceSpan[];
 
 function ids() {
-  return createIdFactory({ clock: createClock({ fixedTime: 1_700_000_000_000 }), hasher: createHasher(), namespace: "graph-sandwich-test", runSeed: "fixed", deterministicReplay: true });
+  return createIdFactory({ clock: createClock({ fixedTime: 1_700_000_000_000 }), hasher: createHasher(), namespace: "graph-refinement-test", runSeed: "fixed", deterministicReplay: true });
 }
 
 function node(id: string): GraphNode {
@@ -57,21 +58,22 @@ function requirements(): TurnRequirementField {
   };
 }
 
-function run(overrides: Partial<Parameters<typeof runGraphSandwich>[0]> = {}) {
+function run(overrides: Partial<Parameters<typeof runGraphRefinement>[0]> = {}) {
   const first = field();
   let callbackCount = 0;
-  const result = runGraphSandwich({
+  const result = runGraphRefinement({
     graph: graph(), evidence, initialRequirements: requirements(), firstField: first, idFactory: ids(),
-    runSecondPass: (seedPriors: readonly GraphSandwichSeedPrior[]) => {
+    runSecondPass: (seedPriors: readonly GraphRefinementSeedPrior[]) => {
       callbackCount += 1;
-      return { ...first, seeds: seedPriors.map(seed => ({ ...seed, feature: seed.feature ?? "graph-sandwich.structural" })) };
+      return { ...first, seeds: seedPriors.map(seed => ({ ...seed, feature: seed.feature ?? "graph-refinement.structural" })) };
     },
     ...overrides
   });
   return { result, callbackCount };
 }
 
-describe("bounded graph sandwich", () => {
+describe("bounded structural refinement", () => {
+  afterEach(() => clearProdCalibrations());
   it("is deterministic and calls exactly one second pass", () => {
     const first = run();
     const second = run();
@@ -163,5 +165,40 @@ describe("bounded graph sandwich", () => {
     expect(high.finalField).not.toBe(first);
     expect(high.trace.callbackCount).toBe(1);
     expect(high.seedBias.every(seed => slice.nodes.some(node => node.id === seed.nodeId))).toBe(true);
+  });
+
+  it("keeps contradictory structure visible while increasing source scrutiny", () => {
+    const baseline = run().result;
+    const conflicted = run({ firstField: { ...field(), contradictionMass: [{ nodeId: "node.a" as never, mass: 1, reserved: true }] } }).result;
+    const weight = (result: typeof baseline) => result.seedBias.find(seed => seed.nodeId === "node.a")!.weight;
+    expect(conflicted.structuralContext.contradictionMass).toBeGreaterThan(0);
+    expect(conflicted.refinedRequirements.sourceDependence).toBeGreaterThan(baseline.refinedRequirements.sourceDependence);
+    expect(weight(conflicted)).toBeGreaterThanOrEqual(weight(baseline));
+    expect(conflicted.refinedRequirements.externalTruthAuthority).toBe(baseline.refinedRequirements.externalTruthAuthority);
+    expect(conflicted.refinedRequirements.confidence).toBe(baseline.refinedRequirements.confidence);
+  });
+
+  it("uses installed calibration settings for shifts, weights and bounded seed counts", () => {
+    const baseline = run().result;
+    const settings = {
+      "graph_refinement.max_logit_shift": 0,
+      "graph_refinement.max_structural_seeds": 1,
+      "graph_refinement.max_seeds": 1,
+      "graph_refinement.seed_weight.active": 0,
+      "graph_refinement.seed_weight.temporal": 1,
+      "graph_refinement.seed_weight.causal": 0,
+      "graph_refinement.seed_weight.composition": 0,
+      "graph_refinement.seed_weight.source_diversity": 0
+    };
+    expect(installProdCalibrations(settings).ignored).toEqual([]);
+    const configured = run().result;
+    expect(configured.seedBias).toHaveLength(1);
+    expect(configured.seedBias).not.toEqual(baseline.seedBias);
+    expect(configured.refinedRequirements.temporalReasoningDemand).toBe(configured.initialRequirements.temporalReasoningDemand);
+    expect(configured.trace.normalization).toMatchObject({ maxLogitShift: 0, maxSeeds: 1,
+      productionOverrideIds: expect.arrayContaining(Object.keys(settings)), seedWeights: { temporal: 1, active: 0 } });
+    expect(configured.trace.calibration).toBe("uncalibrated_structural_applicability");
+    installProdCalibrations({ "graph_refinement.max_seeds": 1000, "graph_refinement.max_structural_seeds": 1000 });
+    expect(run().result.trace.normalization).toMatchObject({ maxSeeds: 48, maxStructuralSeeds: 48 });
   });
 });

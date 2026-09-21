@@ -266,7 +266,7 @@ export * from "./invention-planner.js";
 export * from "./temporal-subject-comparison.js";
 export * from "./turn-requirement-calibration.js";
 export * from "./turn-requirements.js";
-export * from "./graph-sandwich.js";
+export * from "./graph-refinement.js";
 export * from "./turn-signals.js";
 export * from "./extended-generation-turn.js";
 export * from "./generative-derivation-runtime.js";

@@ -12,11 +12,11 @@ test("trace verifier accepts an explicit disabled-component bypass", () => {
 });
 
 test("graph refinement ablation preserves the first graph pass and rejects entering the second-pass component", () => {
-  const condition = makeCondition("no_graph_sandwich_refinement");
+  const condition = makeCondition("no_graph_refinement");
   const first = event(condition, 0, "componentEntered", "graph");
-  const bypass = event(condition, 1, "componentBypassed", "graph-sandwich-refinement", { reason: "condition-disabled" });
+  const bypass = event(condition, 1, "componentBypassed", "graph-refinement", { reason: "condition-disabled" });
   assert.equal(verifyScceEvaluationTrace(condition, [first, bypass]).valid, true);
-  const entered = event(condition, 1, "componentEntered", "graph-sandwich-refinement");
+  const entered = event(condition, 1, "componentEntered", "graph-refinement");
   const invalid = verifyScceEvaluationTrace(condition, [first, entered]);
   assert.equal(invalid.valid, false);
   assert.ok(invalid.violations.some(item => item.code === "DISABLED_COMPONENT_ENTERED"));
@@ -60,7 +60,7 @@ function makeCondition(conditionId) {
     disableRelationPotential: conditionId === "no_relation_potential",
     disableQueryDiffusion: conditionId === "no_query_diffusion",
     disablePowerWalk: conditionId === "no_powerwalk",
-    disableGraphSandwichRefinement: conditionId === "no_graph_sandwich_refinement" || conditionId === "no_graph" || conditionId === "lexical_only",
+    disableGraphRefinement: conditionId === "no_graph_refinement" || conditionId === "no_graph" || conditionId === "lexical_only",
     disableGraph: conditionId === "no_graph" || conditionId === "lexical_only",
     lexicalOnly: conditionId === "lexical_only",
     disableLearnedSemantics: conditionId === "lexical_only",
@@ -79,7 +79,7 @@ function makeCondition(conditionId) {
     ["disableRelationPotential", "relation-potential"],
     ["disableQueryDiffusion", "query-diffusion"],
     ["disablePowerWalk", "powerwalk"],
-    ["disableGraphSandwichRefinement", "graph-sandwich-refinement"],
+    ["disableGraphRefinement", "graph-refinement"],
     ["disableGraph", "graph"],
     ["disableLearnedSemantics", "learned-semantics"],
     ["disableSupportEngine", "support-engine"],

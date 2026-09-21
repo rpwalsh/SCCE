@@ -278,7 +278,7 @@ The two later graph-interface notes add these requirements to the same lane:
   second activation with conditioned seeds -> operators/proposals. Reuse the
   current field engine and bounded slice; do not iterate to convergence or add
   another runtime lane. Use the ID factory for new artifact and trace identities.
-  `no_graph_sandwich_refinement` preserves the first pass and bypasses both the
+  `no_graph_refinement` preserves the first pass and bypasses both the
   refinement and the second pass. Measure requirement, seed/field, operator,
   proposal and latency deltas; do not call this paper-validated or quality-proven
   before the corresponding experiments have actually run.

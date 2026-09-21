@@ -10,8 +10,10 @@ import {
   semanticCandidatesByChannel,
   toJsonValue,
   type EvidenceSpan,
+  type MeasurementObservation,
   type SourceId,
-  type SourceVersionId
+  type SourceVersionId,
+  structuredSemanticCandidates
 } from "../index.js";
 
 describe("semantic candidate channels and provenance", () => {
@@ -110,6 +112,44 @@ describe("semantic candidate channels and provenance", () => {
       expect(candidate.participants.every(participant =>
         participant.valueKind.startsWith("observable."))).toBe(true);
     }
+  });
+
+  it("unions actual observation IDs when equivalent measurements collapse to one candidate", () => {
+    const sourceId = "source.measurements" as SourceId;
+    const sourceVersionId = "version.measurements" as SourceVersionId;
+    const measurement = (id: string): MeasurementObservation => ({
+      id,
+      kind: "measurement",
+      sourceId,
+      sourceVersionId,
+      evidenceIds: ["evidence.measurements" as EvidenceSpan["id"]],
+      confidence: 0.9,
+      provenance: {},
+      metadata: {},
+      datasetId: "dataset.measurements",
+      measurementId: "measurement.temperature",
+      value: 42,
+      unit: "unit.celsius"
+    });
+    const compile = (observations: MeasurementObservation[]) => structuredSemanticCandidates({
+      sourceId,
+      sourceVersionId,
+      metadata: {},
+      observations,
+      evidenceIds: ["evidence.measurements" as EvidenceSpan["id"]],
+      observedAt: 100,
+      hasher
+    });
+    const forward = compile([measurement("observation.measurement.a"), measurement("observation.measurement.b")]);
+    const reverse = compile([measurement("observation.measurement.b"), measurement("observation.measurement.a")]);
+    expect(forward).toHaveLength(1);
+    expect(reverse).toHaveLength(1);
+    expect(forward[0]!.id).toBe(reverse[0]!.id);
+    expect(forward[0]!.provenance.observationIds).toEqual([
+      "observation.measurement.a",
+      "observation.measurement.b"
+    ]);
+    expect(reverse[0]!.provenance.observationIds).toEqual(forward[0]!.provenance.observationIds);
   });
 
   it("does not directly admit a zero-arity declaration without exact evidence", () => {

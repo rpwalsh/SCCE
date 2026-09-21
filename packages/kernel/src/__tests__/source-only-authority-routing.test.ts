@@ -149,7 +149,7 @@ describe("source-only request-authority routing", () => {
       const repeated = projectRequestAuthority({
         requirementField: turn.trace.initialRequirementField ?? turn.trace.requirementField
       });
-      expect(turn.trace.graphSandwich).toMatchObject({ executed: true, callbackCount: 1 });
+      expect(turn.trace.graphRefinement).toMatchObject({ executed: true, callbackCount: 1 });
       const decision = turn.trace.requestedAuthorityDecision as Record<string, unknown>;
       expect(turn.requestedAuthority, row.behavior).toBe(row.authority);
       expect(turn.trace.requestedAuthority, row.behavior).toBe(row.authority);

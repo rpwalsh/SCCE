@@ -64,13 +64,13 @@
       ]
     },
     {
-      "conditionId": "no_graph_sandwich_refinement",
-      "disabledComponents": ["graph-sandwich-refinement"],
-      "environment": { "SCCE_EVAL_CONDITION": "no_graph_sandwich_refinement" },
-      "cacheNamespace": "eval-no-graph-sandwich-refinement",
+      "conditionId": "no_graph_refinement",
+      "disabledComponents": ["graph-refinement"],
+      "environment": { "SCCE_EVAL_CONDITION": "no_graph_refinement" },
+      "cacheNamespace": "eval-no-graph-refinement",
       "requiredTraceAssertions": [
-        { "component": "graph-sandwich-refinement", "expected": "not-entered" },
-        { "component": "graph-sandwich-refinement", "expected": "no-cache-read" }
+        { "component": "graph-refinement", "expected": "not-entered" },
+        { "component": "graph-refinement", "expected": "no-cache-read" }
       ]
     },
     {

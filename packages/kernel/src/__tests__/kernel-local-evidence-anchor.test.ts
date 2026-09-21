@@ -2309,14 +2309,21 @@ describe("kernel evaluation conditions use production component boundaries", () 
     const fullPowerWalkEvent = full.result.events.find(event => event.typeId === "GraphUpdated" && JSON.stringify(event.payload).includes('"seedExpansion"'));
     const ablatedPowerWalkEvent = ablated.result.events.find(event => event.typeId === "GraphUpdated" && JSON.stringify(event.payload).includes('"seedExpansion"'));
 
-    const fullSandwichEvent = full.result.events.find(event => event.typeId === "GraphUpdated" && JSON.stringify(event.payload).includes('"graphSandwich"'));
+    const fullGraphRefinementEvent = full.result.events.find(event => event.typeId === "GraphUpdated" && JSON.stringify(event.payload).includes('"graphRefinement"'));
     // PowerWalk supplies pass-one priors; the final field also includes the
     // subsequent structural refinement, whose seed label records that step.
-    expect(fullSandwichEvent?.payload).toMatchObject({ graphSandwich: { fieldRefs: { first: {
+    expect(fullGraphRefinementEvent?.payload).toMatchObject({ graphRefinement: { fieldRefs: { first: {
       seeds: expect.arrayContaining([expect.objectContaining({ nodeId: structuralNodeId, feature: expect.stringMatching(/^powerwalk:ppmi-cosine:/) })])
     } } } });
     expect(full.result.field.seeds.some(seed => String(seed.nodeId) === structuralNodeId && seed.weight > 0)).toBe(true);
-    expect(ablated.result.field.seeds.some(seed => String(seed.nodeId) === structuralNodeId)).toBe(false);
+    const ablatedRefinementEvent = ablated.result.events.find(event => event.typeId === "GraphUpdated" && JSON.stringify(event.payload).includes('"graphRefinement"'));
+    expect(ablatedRefinementEvent?.payload).toMatchObject({ graphRefinement: { fieldRefs: { first: {
+      seeds: expect.not.arrayContaining([expect.objectContaining({ nodeId: structuralNodeId })])
+    } } } });
+    // Ordinary diffusion may reach this node without PowerWalk, and refinement
+    // can then reseed it. PowerWalk must still make a real final-weight difference.
+    const finalWeight = (turn: typeof full) => turn.result.field.seeds.find(seed => String(seed.nodeId) === structuralNodeId)?.weight ?? 0;
+    expect(finalWeight(full)).toBeGreaterThan(finalWeight(ablated));
     expect(JSON.stringify(fullPowerWalkEvent?.payload)).toContain('"method":"query_anchor_ppmi_cosine"');
     expect(JSON.stringify(fullPowerWalkEvent?.payload)).toContain('"expandedSeedCount":');
     expect(JSON.stringify(ablatedPowerWalkEvent?.payload)).toContain('"expandedSeedCount":0');
@@ -2361,7 +2368,7 @@ describe("kernel evaluation conditions use production component boundaries", () 
       "no_relation_potential",
       "no_query_diffusion",
       "no_powerwalk",
-      "no_graph_sandwich_refinement",
+      "no_graph_refinement",
       "no_graph",
       "lexical_only",
       "no_support_engine",
@@ -2419,23 +2426,23 @@ describe("kernel evaluation conditions use production component boundaries", () 
 
   it("runs two real graph activations and bypasses only refinement under its ablation", async () => {
     const full = await structuralPowerWalkTurn("full");
-    const ablated = await structuralPowerWalkTurn("no_graph_sandwich_refinement");
-    const sandwich = (turn: typeof full) => turn.result.events.flatMap(event => {
+    const ablated = await structuralPowerWalkTurn("no_graph_refinement");
+    const graphRefinement = (turn: typeof full) => turn.result.events.flatMap(event => {
       const payload = event.payload;
       return event.typeId === "GraphUpdated" && payload && typeof payload === "object" && !Array.isArray(payload)
-        && payload.graphSandwich ? [payload.graphSandwich] : [];
+        && payload.graphRefinement ? [payload.graphRefinement] : [];
     });
-    expect(sandwich(full)).toEqual([expect.objectContaining({
-      schema: "scce.graphSandwich.trace.v1", executed: true, callbackCount: 1,
+    expect(graphRefinement(full)).toEqual([expect.objectContaining({
+      schema: "scce.graphRefinement.trace.v1", executed: true, callbackCount: 1,
       refinement: "bounded_structural_applicability"
     })]);
-    expect(sandwich(ablated)).toEqual([expect.objectContaining({ executed: false, callbackCount: 0, refinement: "disabled" })]);
+    expect(graphRefinement(ablated)).toEqual([expect.objectContaining({ executed: false, callbackCount: 0, refinement: "disabled" })]);
     const fullTrace = full.result.evaluationTrace as unknown as EvaluationTraceEvent[];
     const ablatedTrace = ablated.result.evaluationTrace as unknown as EvaluationTraceEvent[];
     expect(fullTrace.filter(event => event.event === "componentEntered" && event.component === "query-diffusion")).toHaveLength(2);
     expect(ablatedTrace.filter(event => event.event === "componentEntered" && event.component === "query-diffusion")).toHaveLength(1);
     expect(ablatedTrace).toContainEqual(expect.objectContaining({
-      event: "componentBypassed", component: "graph-sandwich-refinement",
+      event: "componentBypassed", component: "graph-refinement",
       boundary: "graph.resolve.requirement-refinement", reason: "condition-disabled"
     }));
     expect(verifyEvaluationTrace(full.condition, fullTrace)).toMatchObject({ valid: true, violations: [] });
@@ -2443,7 +2450,7 @@ describe("kernel evaluation conditions use production component boundaries", () 
     expect(full.fixture.metrics.graphReads).toBe(ablated.fixture.metrics.graphReads);
   });
 
-  async function structuralPowerWalkTurn(conditionId: "full" | "no_powerwalk" | "no_graph_sandwich_refinement") {
+  async function structuralPowerWalkTurn(conditionId: "full" | "no_powerwalk" | "no_graph_refinement") {
     const clock = createClock({ fixedTime: 10_000, stepMs: 1 });
     const hasher = createHasher();
     const ids = createIdFactory({ clock, hasher, deterministicReplay: true });

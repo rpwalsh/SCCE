@@ -84,7 +84,7 @@ describe("sealed evaluation trace contract", () => {
       "relation-potential",
       "query-diffusion",
       "powerwalk",
-      "graph-sandwich-refinement"
+      "graph-refinement"
     ]);
   });
 });
