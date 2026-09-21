@@ -2,6 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
 import {
+  buildNgramSurfaceProjection,
   buildSurfaceLattice,
   canonicalSurfaceSequence,
   collectBoundaryTrainingObservations,
@@ -11,6 +12,54 @@ import {
 
 describe("universal surface lattice", () => {
   const hasher = createHasher();
+
+  it("projects only when the raw grapheme budget is saturated, including controls and whitespace", () => {
+    const saturatedOptions = {
+      documentId: "projection.saturated",
+      text: `${"a".repeat(4094)} \u0000`,
+      sourceVersionId: "source.projection.saturated",
+      evidenceIds: ["evidence.projection.saturated"],
+      hasher
+    } as const;
+    const saturated = buildNgramSurfaceProjection(saturatedOptions);
+    const saturatedFull = buildSurfaceLattice({ ...saturatedOptions, maxUnits: 4096 });
+    expect(saturated.mode).toBe("grapheme_budget_projection");
+    expect(saturated.audit.baseGraphemeCount).toBe(4096);
+    expect(saturated.graphemes).toHaveLength(4096);
+    expect(saturated.canonicalSurfaces).toHaveLength(4094);
+    expect(saturated.latticeId).toBe(saturatedFull.id);
+    expect(saturated.textHash).toBe(saturatedFull.textHash);
+    expect(saturated.graphemes).toEqual(saturatedFull.units.filter(unit => unit.kind === "grapheme").sort((left, right) => left.utf16Start - right.utf16Start).map(unit => unit.surface));
+    expect(saturated.canonicalSurfaces).toEqual(canonicalSurfaceSequence(saturatedFull).map(unit => unit.surface));
+
+    const belowBudgetOptions = {
+      documentId: "projection.full",
+      text: "a".repeat(4095),
+      sourceVersionId: "source.projection.full",
+      evidenceIds: ["evidence.projection.full"],
+      hasher
+    } as const;
+    const belowBudget = buildNgramSurfaceProjection(belowBudgetOptions);
+    const belowBudgetFull = buildSurfaceLattice({ ...belowBudgetOptions, maxUnits: 4096 });
+    expect(belowBudget.mode).toBe("full_lattice");
+    expect(belowBudget.latticeId).toBe(belowBudgetFull.id);
+    expect(belowBudget.canonicalSurfaces).toEqual(canonicalSurfaceSequence(belowBudgetFull).map(unit => unit.surface));
+
+    const longUnicodeOptions = {
+      documentId: "projection.unicode",
+      text: Array.from({ length: 20 }, () => "👩‍💻e\u0301 \u0000\n界").join(""),
+      sourceVersionId: "source.projection.unicode",
+      evidenceIds: ["evidence.projection.unicode"],
+      hasher,
+      maxUnits: 64
+    } as const;
+    const longUnicode = buildNgramSurfaceProjection(longUnicodeOptions);
+    const longUnicodeFull = buildSurfaceLattice(longUnicodeOptions);
+    expect(longUnicode.mode).toBe("grapheme_budget_projection");
+    expect(longUnicode.latticeId).toBe(longUnicodeFull.id);
+    expect(longUnicode.graphemes).toEqual(longUnicodeFull.units.filter(unit => unit.kind === "grapheme").sort((left, right) => left.utf16Start - right.utf16Start).map(unit => unit.surface));
+    expect(longUnicode.canonicalSurfaces).toEqual(canonicalSurfaceSequence(longUnicodeFull).map(unit => unit.surface));
+  });
 
   it("keeps equal form identities independent across occurrences and rebuilds", () => {
     const options = { documentId: "repeated.forms", text: "a a a", hasher };

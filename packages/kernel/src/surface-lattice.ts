@@ -29,6 +29,8 @@ import {
 
 export const SURFACE_LATTICE_SCHEMA = "scce.surface_lattice.v3" as const;
 export const UNTRAINED_BOUNDARY_ESTIMATOR_ID = "boundary_estimator.untrained-neutral.v1" as const;
+export const DEFAULT_SURFACE_LATTICE_MAX_UNITS = 4096 as const;
+export const NGRAM_SURFACE_PROJECTION_SCHEMA = "scce.ngram_surface_projection.v1" as const;
 
 export type SurfaceLatticeUnitKind =
   | "grapheme"
@@ -187,10 +189,100 @@ interface SurfaceCoordinateIndex {
 
 const GRAPHEME_SEGMENTER = canonicalGraphemeSegmenter();
 
+export interface NgramSurfaceInput {
+  schema: typeof NGRAM_SURFACE_PROJECTION_SCHEMA;
+  latticeSchema: typeof SURFACE_LATTICE_SCHEMA;
+  latticeId: string;
+  textHash: string;
+  canonicalSurfaces: string[];
+  graphemes: string[];
+  mode: "grapheme_budget_projection" | "full_lattice";
+  audit: {
+    schema: typeof NGRAM_SURFACE_PROJECTION_SCHEMA;
+    baseGraphemeCount: number;
+    configuredMaxUnits: number;
+    filteredCanonicalCount: number;
+  };
+}
+
+export function canonicalSurfaceLatticeId(options: {
+  documentId: string;
+  sourceVersionId?: SourceVersionId | string;
+  evidenceIds?: readonly (EvidenceId | string)[];
+  text: string;
+  hasher: Hasher;
+  estimatorId?: string;
+  normalizationContract?: NormalizationContract;
+}): string {
+  const normalizationContract = options.normalizationContract ?? canonicalNormalizationContract(options.hasher);
+  return `surface_lattice.${options.hasher.digestHex(JSON.stringify([
+    SURFACE_LATTICE_SCHEMA,
+    options.documentId,
+    options.sourceVersionId === undefined ? undefined : String(options.sourceVersionId),
+    (options.evidenceIds ?? []).map(String).sort(),
+    options.hasher.digestHex(options.text),
+    options.estimatorId ?? UNTRAINED_BOUNDARY_ESTIMATOR_ID,
+    normalizationContract.id
+  ])).slice(0, 32)}`;
+}
+
+export function buildNgramSurfaceProjection(options: {
+  documentId: string;
+  text: string;
+  sourceVersionId?: SourceVersionId | string;
+  evidenceIds?: readonly (EvidenceId | string)[];
+  hasher: Hasher;
+  maxUnits?: number;
+}): NgramSurfaceInput {
+  const configuredMaxUnits = Math.max(64, Math.floor(options.maxUnits ?? DEFAULT_SURFACE_LATTICE_MAX_UNITS));
+  const segments = [...GRAPHEME_SEGMENTER.segment(options.text)];
+  if (!(segments.length >= configuredMaxUnits)) {
+    const lattice = buildSurfaceLattice({ ...options, maxUnits: configuredMaxUnits });
+    const canonicalSurfaces = canonicalSurfaceSequence(lattice).map(unit => unit.surface);
+    const graphemes = lattice.units
+      .filter(unit => unit.kind === "grapheme")
+      .sort((left, right) => left.utf16Start - right.utf16Start)
+      .map(unit => unit.surface);
+    return {
+      schema: NGRAM_SURFACE_PROJECTION_SCHEMA,
+      latticeSchema: lattice.schema,
+      latticeId: lattice.id,
+      textHash: lattice.textHash,
+      canonicalSurfaces,
+      graphemes,
+      mode: "full_lattice",
+      audit: {
+        schema: NGRAM_SURFACE_PROJECTION_SCHEMA,
+        baseGraphemeCount: segments.length,
+        configuredMaxUnits,
+        filteredCanonicalCount: canonicalSurfaces.length
+      }
+    };
+  }
+  const textHash = options.hasher.digestHex(options.text);
+  const graphemes = segments.map(segment => segment.segment);
+  const canonicalSurfaces = graphemes.filter(isCanonicalSurface);
+  return {
+    schema: NGRAM_SURFACE_PROJECTION_SCHEMA,
+    latticeSchema: SURFACE_LATTICE_SCHEMA,
+    latticeId: canonicalSurfaceLatticeId(options),
+    textHash,
+    canonicalSurfaces,
+    graphemes,
+    mode: "grapheme_budget_projection",
+    audit: {
+      schema: NGRAM_SURFACE_PROJECTION_SCHEMA,
+      baseGraphemeCount: segments.length,
+      configuredMaxUnits,
+      filteredCanonicalCount: canonicalSurfaces.length
+    }
+  };
+}
+
 export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): SurfaceLattice {
   const hasher = options.hasher ?? createHasher();
   const normalizationContract = options.normalizationContract ?? canonicalNormalizationContract(hasher);
-  const maxUnits = Math.max(64, Math.floor(options.maxUnits ?? 4096));
+  const maxUnits = Math.max(64, Math.floor(options.maxUnits ?? DEFAULT_SURFACE_LATTICE_MAX_UNITS));
   const maxEdges = Math.max(64, Math.floor(options.maxEdges ?? 8192));
   const text = options.text;
   const model = segmentUnicodeSurfaceV2(text, hasher);
@@ -199,15 +291,15 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
   const occurrenceSourceVersionId = sourceVersionId
     ?? `source_version.content.${hasher.digestHex(text).slice(0, 48)}`;
   const estimatorId = options.boundaryEstimator?.id ?? UNTRAINED_BOUNDARY_ESTIMATOR_ID;
-  const latticeId = `surface_lattice.${hasher.digestHex(JSON.stringify([
-    SURFACE_LATTICE_SCHEMA,
-    options.documentId,
+  const latticeId = canonicalSurfaceLatticeId({
+    documentId: options.documentId,
     sourceVersionId,
     evidenceIds,
-    hasher.digestHex(text),
+    text,
+    hasher,
     estimatorId,
-    normalizationContract.id
-  ])).slice(0, 32)}`;
+    normalizationContract
+  });
   const coordinates = buildSurfaceCoordinateIndex(text);
   const codePointIndexByUtf16 = coordinates.utf16ToCodePoint;
   const transitionEntropyByPosition = localTransitionEntropyByPosition(text);
@@ -522,7 +614,11 @@ export function canonicalSurfaceSequence(
       if (!unit) throw new Error(`segmentation forest references missing unit ${unitId}`);
       return unit;
     })
-    .filter(unit => unit.surface.length > 0 && !/^\s+$/u.test(unit.surface) && !/^\p{Control}+$/u.test(unit.surface));
+    .filter(unit => isCanonicalSurface(unit.surface));
+}
+
+function isCanonicalSurface(surface: string): boolean {
+  return surface.length > 0 && !/^\s+$/u.test(surface) && !/^\p{Control}+$/u.test(surface);
 }
 
 /**

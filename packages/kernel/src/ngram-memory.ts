@@ -18,7 +18,7 @@ import type {
 import { learnedScriptIdForCharacter } from "./language.js";
 import { compactKneserNeyForProfile, trainKneserNey } from "./kneser-ney.js";
 import { clamp01, entropy, featureSet, stableVector, symbolizeData, toJsonValue } from "./primitives.js";
-import { buildSurfaceLattice, canonicalSurfaceSequence } from "./surface-lattice.js";
+import { buildNgramSurfaceProjection } from "./surface-lattice.js";
 
 export interface NgramMemoryCompilation {
   observations: NgramObservation[];
@@ -47,14 +47,14 @@ export function createNgramMemoryCompiler(options: { idFactory: IdFactory; hashe
     compile(input: NgramMemoryInput): NgramMemoryCompilation {
       const maxOrder = Math.max(1, Math.min(6, input.maxOrder ?? 6));
       const maxCounters = Math.max(32, input.maxCountersPerOrder ?? 50000);
-      const lattice = buildSurfaceLattice({
+      const lattice = buildNgramSurfaceProjection({
         documentId: input.streamId,
         text: input.text,
         sourceVersionId: input.sourceVersionId,
         evidenceIds: input.evidence.map(span => span.id),
         hasher: options.hasher
       });
-      const canonicalSymbols = canonicalSurfaceSequence(lattice).map(unit => unit.surface);
+      const canonicalSymbols = lattice.canonicalSurfaces;
       // A grapheme-dominated canonical path over whitespace-spaced text means
       // segmentation never resolved words; the spaced symbols are the
       // structural truth. A char-level KN model trained here poisons every
@@ -63,10 +63,7 @@ export function createNgramMemoryCompiler(options: { idFactory: IdFactory; hashe
       const symbols = sequenceSpeaksInWords(canonicalSymbols) || !sequenceSpeaksInWords(spacedSymbols)
         ? canonicalSymbols
         : spacedSymbols;
-      const graphemes = lattice.units
-        .filter(unit => unit.kind === "grapheme")
-        .sort((left, right) => left.utf16Start - right.utf16Start)
-        .map(unit => unit.surface);
+      const graphemes = lattice.graphemes;
       const languageHint = primaryLanguageHint(input.profile);
       const evidenceIds = input.evidence.map(span => span.id);
       const alpha = input.evidence.length ? input.evidence.reduce((sum, span) => sum + span.alpha, 0) / input.evidence.length : 0.35;
@@ -140,8 +137,8 @@ export function createNgramMemoryCompiler(options: { idFactory: IdFactory; hashe
           sourceVersionId: input.sourceVersionId,
           sourceSystem: input.sourceSystem ?? null,
           languageHint,
-          surfaceLatticeId: lattice.id,
-          surfaceLatticeSchema: lattice.schema,
+          surfaceLatticeId: lattice.latticeId,
+          surfaceLatticeSchema: lattice.latticeSchema,
           sourceTextHash: lattice.textHash,
           symbolCount: symbols.length,
           graphemeCount: graphemes.length,

@@ -478,6 +478,31 @@ correctly exited 1 because no validating candidate existed. Source schema6
 counts remained unchanged. Positive activation still requires testing with an
 actual learned candidate.
 
+## Exact n-gram lattice projection (2026-09-21)
+
+N-gram compilation now avoids materializing full surface-lattice objects when
+the raw grapheme count exhausts the existing unit budget. The projection uses
+the same canonical segmenter, filtering, lattice identity and budget constant;
+short inputs still use the full lattice. Full graph/alignment consumers retain
+the full builder. No occurrence IDs or evidence are invented by the projection.
+
+Complete old/new n-gram compiler payloads matched at 4,095/4,096/4,097
+graphemes, on a 7,200-grapheme Unicode/control sample, and on the saved
+149,995-grapheme diagnostic fixture. The latter took 1.30 seconds projected
+versus 8.47 seconds with the full lattice in one comparison. This is a
+compiler microbenchmark, not measured full-ingestion throughput.
+
+Validation: focused checks passed (17 tests); `pnpm build` and `pnpm test`
+exited 0: 20/20 shards, 560 files and 3,483 tests passed, 10 files and 14 tests
+skipped, plus 43 evaluation-harness tests passed. Source scan reported zero
+violations. Logs are `.tmp/wikipedia-projection-{build,full-suite}.log`.
+
+The failed 33-article candidate was backed up and renamed to
+`scce6_failed_20260921_093905` after backup-hash and exact-count checks. No data
+was deleted. The next bounded run starts a fresh `scce6_runtime`; schema 5
+remains untouched. Learned-speech, calibration and Qwen qualification remain
+unproven pending execution.
+
 ### Memory repair and comparison preparation
 
 The Wikipedia alignment stage now requires promoted structured hyperedges.
