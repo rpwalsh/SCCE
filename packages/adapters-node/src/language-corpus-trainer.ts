@@ -47,6 +47,8 @@ import {
   type SourceTrust,
   type SourceVersion,
   type SourceVersionId,
+  type ContentHash,
+  type IngestionCheckpoint,
   type SourceBoundLanguageConstructionTrainingSet,
   type QuarantineSource,
   type ScceEvent,
@@ -111,10 +113,46 @@ export interface LanguageCorpusTrainingInput {
    */
   skipNgramObservationPersistence?: boolean;
   persistSource?: boolean;
+  /** Raw bytes from which `text` was cleaned or projected into a model-text derivative. */
+  originalSource?: CorpusOriginalSource;
   episodeId?: ReturnType<IdFactory["episodeId"]>;
   idFactory?: IdFactory;
   clock?: Clock;
   informationLabel?: InformationLabel;
+  /**
+   * Optional durable item fence used by file-backed corpus producers. The
+   * checkpoint identity is stable for this source item; its stored semantic
+   * binding includes this content identity and every training option, so a
+   * changed file or recipe fails closed instead of silently reusing the old
+   * learned result. Direct prepare/commit callers leave this unset.
+   */
+  corpusCheckpoint?: CorpusTrainingCheckpoint;
+}
+
+export interface CorpusTrainingCheckpoint {
+  rootUri: string;
+  itemUri: string;
+  contentHash?: string;
+  byteLength?: number;
+  /** Transform declaration bound to the raw bytes for this durable item fence. */
+  transformId?: string;
+  /** Canonical URI of the raw source version when it differs from the derivative URI. */
+  originalSourceUri?: string;
+}
+
+export interface CorpusOriginalSource {
+  bytes: Uint8Array;
+  sourceUri: string;
+  transformId: string;
+  kind?: "redacted-text" | "extracted-text";
+  originalCoordinateSpace?: "source-bytes" | "extracted-text-utf8";
+}
+
+export class CorpusCheckpointConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CorpusCheckpointConflictError";
+  }
 }
 
 export interface LanguageCorpusTrainingReport {
@@ -160,8 +198,10 @@ interface PreparedLanguageCorpusPayload {
   sourceVersionId: SourceVersionId;
   text: string;
   bytes: Uint8Array;
+  originalBytes?: Uint8Array;
   mediaType: string;
   source?: SourceVersion;
+  originalSource?: SourceVersion;
   quarantine?: QuarantineSource;
   profile: LanguageProfile;
   evidence: EvidenceSpan[];
@@ -190,6 +230,131 @@ const preparations = new WeakMap<PreparedLanguageCorpusTraining, {
   committed: boolean;
 }>();
 
+const CORPUS_CHECKPOINT_SCHEMA = "scce.corpusTrainingCheckpoint.v1";
+
+function corpusCheckpointId(input: LanguageCorpusTrainingInput): string | undefined {
+  const checkpoint = input.corpusCheckpoint;
+  if (!checkpoint) return undefined;
+  // Checkpoint identity must remain stable across process retries even when a
+  // caller supplies a run-seeded IdFactory for the learned artifacts.
+  const ids = createIdFactory({
+    clock: createClock(),
+    hasher: createHasher(),
+    namespace: "corpus-training-checkpoint",
+    deterministicReplay: true
+  });
+  return ids.semanticId("corpus_training_checkpoint", {
+    sourceSystem: canonicalCorpusSourceSystemId(input.sourceSystem),
+    rootUri: checkpoint.rootUri,
+    itemUri: checkpoint.itemUri
+  });
+}
+
+function checkpointContentHash(value: string | undefined): ContentHash | undefined {
+  if (!value) return undefined;
+  return (value.startsWith("sha256_") ? value : `sha256_${value}`) as ContentHash;
+}
+
+function validateOriginalSourceBinding(input: LanguageCorpusTrainingInput): void {
+  const original = input.originalSource;
+  const checkpoint = input.corpusCheckpoint;
+  if (original && !original.transformId.trim()) throw new Error("corpus original source requires a non-empty transformId");
+  if (!original || !checkpoint) return;
+  const originalHash = blobContentHash(original.bytes);
+  const checkpointHash = checkpointContentHash(checkpoint.contentHash);
+  if (checkpointHash && checkpointHash !== originalHash) {
+    throw new CorpusCheckpointConflictError(`corpus checkpoint raw content hash does not match original source for ${checkpoint.itemUri}`);
+  }
+  if (checkpoint.byteLength !== undefined && checkpoint.byteLength !== original.bytes.byteLength) {
+    throw new CorpusCheckpointConflictError(`corpus checkpoint byte length does not match original source for ${checkpoint.itemUri}`);
+  }
+  if (checkpoint.transformId !== undefined && checkpoint.transformId !== original.transformId) {
+    throw new CorpusCheckpointConflictError(`corpus checkpoint transform does not match original source for ${checkpoint.itemUri}`);
+  }
+  if (checkpoint.originalSourceUri !== undefined && checkpoint.originalSourceUri !== original.sourceUri) {
+    throw new CorpusCheckpointConflictError(`corpus checkpoint source URI does not match original source for ${checkpoint.itemUri}`);
+  }
+}
+
+function checkpointMetadata(input: LanguageCorpusTrainingInput, binding: string, report?: LanguageCorpusTrainingReport): JsonValue {
+  const checkpoint = input.corpusCheckpoint!;
+  return toJsonValue({
+    schema: CORPUS_CHECKPOINT_SCHEMA,
+    binding,
+    sourceSystem: canonicalCorpusSourceSystemId(input.sourceSystem),
+    rootUri: checkpoint.rootUri,
+    itemUri: checkpoint.itemUri,
+    contentHash: checkpoint.contentHash ?? null,
+    byteLength: checkpoint.byteLength ?? null,
+    transformId: checkpoint.transformId ?? null,
+    originalSourceUri: checkpoint.originalSourceUri ?? null,
+    ...(report ? { report } : {})
+  });
+}
+
+function checkpointRecord(input: LanguageCorpusTrainingInput, binding: string, report?: LanguageCorpusTrainingReport): IngestionCheckpoint {
+  const checkpoint = input.corpusCheckpoint!;
+  const id = corpusCheckpointId(input)!;
+  return {
+    id,
+    rootUri: checkpoint.rootUri,
+    itemUri: checkpoint.itemUri,
+    phase: report ? "stored" : "extracting",
+    status: report ? "complete" : "running",
+    offsetBytes: Math.max(0, Math.floor(checkpoint.byteLength ?? 0)),
+    contentHash: checkpointContentHash(checkpoint.contentHash),
+    byteLength: checkpoint.byteLength,
+    updatedAt: Date.now(),
+    metadata: checkpointMetadata(input, binding, report)
+  };
+}
+
+function checkpointReport(row: IngestionCheckpoint, binding: string): LanguageCorpusTrainingReport | undefined {
+  if (row.status !== "complete") return undefined;
+  const metadata = jsonRecord(row.metadata);
+  if (metadata.schema !== CORPUS_CHECKPOINT_SCHEMA || metadata.binding !== binding) {
+    throw new CorpusCheckpointConflictError(`corpus checkpoint binding mismatch for ${row.itemUri}; refusing replay`);
+  }
+  const report = metadata.report;
+  if (!report || typeof report !== "object" || Array.isArray(report) || (report as Record<string, JsonValue>).schema !== "scce.languageCorpusTrainingReport.v1") {
+    throw new CorpusCheckpointConflictError(`corpus checkpoint ${row.id} is complete but has no valid training report`);
+  }
+  return report as unknown as LanguageCorpusTrainingReport;
+}
+
+async function prepareCorpusCheckpoint(input: LanguageCorpusTrainingInput, binding: string): Promise<LanguageCorpusTrainingReport | undefined> {
+  const id = corpusCheckpointId(input);
+  if (!id) return undefined;
+  const existing = await input.storage.ingestion.get(id);
+  if (existing) {
+    if (existing.rootUri !== input.corpusCheckpoint!.rootUri || existing.itemUri !== input.corpusCheckpoint!.itemUri) {
+      throw new CorpusCheckpointConflictError(`corpus checkpoint identity mismatch for ${id}; refusing replay`);
+    }
+    const metadata = jsonRecord(existing.metadata);
+    if (metadata.schema !== CORPUS_CHECKPOINT_SCHEMA || metadata.binding !== binding) {
+      throw new CorpusCheckpointConflictError(`corpus checkpoint binding mismatch for ${existing.itemUri}; refusing replay`);
+    }
+    const report = checkpointReport(existing, binding);
+    if (report) return report;
+  }
+  await input.storage.ingestion.put(checkpointRecord(input, binding));
+  return undefined;
+}
+
+/**
+ * Reconcile an error raised after a durable transaction committed. A lost
+ * COMMIT acknowledgement must not be reported as a skipped source when the
+ * terminal checkpoint is already present.
+ */
+export async function readCompletedCorpusCheckpoint(input: LanguageCorpusTrainingInput): Promise<LanguageCorpusTrainingReport | undefined> {
+  const id = corpusCheckpointId(input);
+  if (!id) return undefined;
+  const existing = await input.storage.ingestion.get(id);
+  return existing?.status === "complete"
+    ? checkpointReport(existing, trainingInputBinding(input))
+    : undefined;
+}
+
 function preparationInputSnapshot(input: LanguageCorpusTrainingInput): LanguageCorpusTrainingInput {
   // Detach caller-owned semantic inputs before compilation. The output contains the compiled batch and can be
   // very large; cloning that output doubled peak memory, while these bounded input snapshots preserve the same
@@ -208,13 +373,29 @@ function preparationInputSnapshot(input: LanguageCorpusTrainingInput): LanguageC
     sourceFamilyRanges: clone(input.sourceFamilyRanges),
     alignmentPromotionObservations: clone(input.alignmentPromotionObservations),
     alignmentCalibrationObservations: clone(input.alignmentCalibrationObservations),
-    informationLabel: clone(input.informationLabel)
+    informationLabel: clone(input.informationLabel),
+    originalSource: input.originalSource ? {
+      ...input.originalSource,
+      bytes: new Uint8Array(input.originalSource.bytes)
+    } : undefined
   };
 }
 
 function trainingInputBinding(input: LanguageCorpusTrainingInput): string {
   // These service objects are used only in preparation; actual output IDs/times are captured in the payload.
   const { storage: _storage, clock: _clock, idFactory: _ids, creativeEventCompiler: _compiler, ...semantic } = input;
+  // Bind the exact raw source without copying the bytes into checkpoint metadata. The transform and digest are
+  // durable semantic inputs, while the bytes themselves remain in the canonical blob store.
+  if (input.originalSource) {
+    semantic.originalSource = {
+      sourceUri: input.originalSource.sourceUri,
+      transformId: input.originalSource.transformId,
+      kind: input.originalSource.kind ?? "extracted-text",
+      originalCoordinateSpace: input.originalSource.originalCoordinateSpace ?? "source-bytes",
+      contentHash: blobContentHash(input.originalSource.bytes),
+      byteLength: input.originalSource.bytes.byteLength
+    } as unknown as typeof semantic.originalSource;
+  }
   return createHasher().digestHex(canonicalStringify(toJsonValue(semantic)));
 }
 
@@ -294,11 +475,17 @@ const TRAINING_SNAPSHOT_EDGES = 1024;
 
 export async function trainLanguageCorpusText(input: LanguageCorpusTrainingInput): Promise<LanguageCorpusTrainingReport> {
   // Both source-owning and aggregate callers get an atomic learned write. CPU compilation precedes it.
+  validateOriginalSourceBinding(input);
+  if (input.corpusCheckpoint) {
+    const replay = await prepareCorpusCheckpoint(input, trainingInputBinding(input));
+    if (replay) return replay;
+  }
   const prepared = await prepareLanguageCorpusTraining(input);
   return commitLanguageCorpusTraining(input, prepared);
 }
 
 export async function prepareLanguageCorpusTraining(input: LanguageCorpusTrainingInput): Promise<PreparedLanguageCorpusTraining> {
+  validateOriginalSourceBinding(input);
   const inputBinding = trainingInputBinding(input);
   const payload = await prepareLanguageCorpusTrainingInternal(preparationInputSnapshot(input));
   if (trainingInputBinding(input) !== inputBinding) throw new Error("language training input changed during preparation");
@@ -311,6 +498,11 @@ export async function commitLanguageCorpusTraining(
   input: LanguageCorpusTrainingInput,
   prepared: PreparedLanguageCorpusTraining
 ): Promise<LanguageCorpusTrainingReport> {
+  validateOriginalSourceBinding(input);
+  if (input.corpusCheckpoint) {
+    const replay = await prepareCorpusCheckpoint(input, trainingInputBinding(input));
+    if (replay) return replay;
+  }
   const held = preparations.get(prepared);
   if (!held || held.storage !== input.storage) throw new Error("unrecognized language training preparation or storage");
   if (held.committed) throw new Error("language training preparation already committed or in progress");
@@ -323,7 +515,11 @@ export async function commitLanguageCorpusTraining(
       const snapshot = await graphSnapshotForEvidence(input.storage, payload.evidence, input.graphSnapshotSourceVersionIds);
       if (graphSnapshotDigest(snapshot) !== prepared.graphSnapshotDigest) throw new Error("language training graph dependencies changed before commit; prepare again");
       if (trainingInputBinding(input) !== prepared.inputBinding) throw new Error("language training input changed during commit validation");
-      return commitLanguageCorpusTrainingInternal(input, payload);
+      const report = await commitLanguageCorpusTrainingInternal(input, payload);
+      if (input.corpusCheckpoint) {
+        await input.storage.ingestion.put(checkpointRecord(input, prepared.inputBinding, report));
+      }
+      return report;
     });
     // Keep only the committed tombstone so a second use still reports "already committed" without retaining
     // the cloned observations/models/compiled alignment payload through the caller's subsequent work.
@@ -366,6 +562,22 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
   const bytes = Buffer.from(text, "utf8");
   const sourceVersionId = input.sourceVersionId ?? corpusSourceVersionIdFor({ sourceUri, text });
   const sourceId = ids.sourceId(namespace, sourceUri);
+  const originalSpec = input.originalSource;
+  if (originalSpec && !originalSpec.transformId.trim()) throw new Error("corpus original source requires a non-empty transformId");
+  // preparationInputSnapshot already detached caller-owned bytes; retain that one copy through the atomic commit
+  // instead of cloning a second full raw document beside the compiled batch.
+  const originalBytes = originalSpec?.bytes;
+  const originalSourceUri = originalSpec?.sourceUri ?? sourceUri;
+  const originalSourceId = originalSpec ? ids.sourceId(namespace, originalSourceUri) : undefined;
+  const originalContentHash = originalBytes ? blobContentHash(originalBytes) : undefined;
+  const originalSourceVersionId = originalSpec && originalSourceId && originalContentHash
+    ? ids.sourceVersionId(canonicalStringify({
+      contract: "scce.corpus-source-version.v1",
+      sourceId: originalSourceId,
+      contentHash: originalContentHash,
+      role: "original"
+    }))
+    : undefined;
   let profile: LanguageProfile = {
     ...(input.profile ?? language.acquire({ sourceVersionId, text, createdAt })),
     informationLabel: sourceInformationLabel
@@ -382,6 +594,7 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
 
   let evidence = [...(input.evidence ?? [])];
   let source: SourceVersion | undefined;
+  let originalSource: SourceVersion | undefined;
   let quarantine: QuarantineSource | undefined;
   let admission: LanguageCorpusTrainingReport["admission"] = { disposition: "not_applicable", reasons: ["this lane persists no source version of its own"] };
   if (!evidence.length && input.persistSource !== false) {
@@ -401,8 +614,34 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
       byteLength: bytes.byteLength,
       sourceTrust: corpusSourceTrust(sourceSystemId),
       informationLabel: sourceInformationLabel,
-      metadata
+      metadata,
+      ...(originalSpec && originalSourceVersionId ? {
+        role: "evidence-derivative" as const,
+        derivation: {
+          kind: originalSpec.kind ?? "extracted-text" as const,
+          transformId: originalSpec.transformId,
+          derivedFromSourceVersionId: originalSourceVersionId,
+          originalCoordinateSpace: originalSpec.originalCoordinateSpace ?? "source-bytes" as const,
+          redactionMap: []
+        }
+      } : {})
     };
+    if (originalSpec && originalSourceId && originalSourceVersionId && originalContentHash && originalBytes) {
+      originalSource = {
+        sourceId: originalSourceId,
+        sourceVersionId: originalSourceVersionId,
+        namespace,
+        canonicalUri: originalSourceUri,
+        contentHash: originalContentHash,
+        mediaType,
+        observedAt: createdAt,
+        byteLength: originalBytes.byteLength,
+        sourceTrust: corpusSourceTrust(sourceSystemId),
+        informationLabel: sourceInformationLabel,
+        metadata: toJsonValue({ ...jsonRecord(metadata), sourceUri: originalSourceUri }),
+        role: "original"
+      };
+    }
     const extracted = extractor.extract({
       sourceId,
       sourceVersionId,
@@ -600,8 +839,10 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
     sourceVersionId,
     text,
     bytes,
+    originalBytes,
     mediaType: input.mediaType ?? "text/plain",
     source,
+    originalSource,
     quarantine,
     profile,
     evidence,
@@ -625,6 +866,11 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
 
 async function commitLanguageCorpusTrainingInternal(input: LanguageCorpusTrainingInput, prepared: PreparedLanguageCorpusPayload): Promise<LanguageCorpusTrainingReport> {
   if (prepared.source && prepared.quarantine) {
+    if (prepared.originalSource && prepared.originalBytes) {
+      const persistedOriginalHash = await input.storage.blobs.put(prepared.originalBytes, prepared.originalSource.mediaType);
+      if (persistedOriginalHash !== prepared.originalSource.contentHash) throw new Error("language training original source blob hash mismatch");
+      await input.storage.evidence.putSourceVersion(prepared.originalSource);
+    }
     const persistedHash = await input.storage.blobs.put(prepared.bytes, prepared.mediaType);
     if (persistedHash !== prepared.source.contentHash) throw new Error("language training source blob hash mismatch");
     await input.storage.quarantine.put(prepared.quarantine);

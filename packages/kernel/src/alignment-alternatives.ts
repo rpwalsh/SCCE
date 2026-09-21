@@ -1,12 +1,14 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { canonicalStringify, createHasher, toJsonValue } from "./primitives.js";
+import { canonicalDigestHex } from "./canonical-json-digest.js";
 import type {
   SparseAlignmentCandidateSupport,
   SparseAlignmentTargetIndex
 } from "./sparse-alignment-candidates.js";
 import {
   solveSparseFusedUnbalancedTransport,
+  type SparseTransportPlanRetentionPolicy,
   type SparseFusedTransportPlan,
   type SparseTransportBudget,
   type SparseTransportObjective
@@ -75,6 +77,7 @@ export function extractAlignmentAlternatives(input: {
   maxBranchSearches?: number;
   objective?: SparseTransportObjective;
   budget?: Partial<SparseTransportBudget>;
+  retentionPolicy?: SparseTransportPlanRetentionPolicy;
   hasher?: Hasher;
 }): ExtractedAlignmentAlternatives {
   if (input.basePlan.supportId !== input.support.id
@@ -117,14 +120,14 @@ export function extractAlignmentAlternatives(input: {
       || left.surfaceUnitId.localeCompare(right.surfaceUnitId)
       || left.graphTargetId.localeCompare(right.graphTargetId))
     .map(cell => cell.candidateId))];
-  const plans = [input.basePlan];
+  const plans = [input.retentionPolicy?.compact(input.basePlan) ?? input.basePlan];
   const signatures = new Set([planSignature(input.basePlan, hasher)]);
   let attemptedBranchCount = 0;
   for (const candidateId of branchCandidateIds) {
     if (plans.length >= maximum) break;
     if (attemptedBranchCount >= branchSearchBudget) break;
     attemptedBranchCount += 1;
-    const plan = solveSparseFusedUnbalancedTransport({
+    const solvedPlan = solveSparseFusedUnbalancedTransport({
       support: input.support,
       targetIndex: input.targetIndex,
       typedNullCostModel: input.typedNullCostModel,
@@ -135,6 +138,7 @@ export function extractAlignmentAlternatives(input: {
       budget: input.budget,
       hasher
     });
+    const plan = input.retentionPolicy?.compact(solvedPlan) ?? solvedPlan;
     const signature = planSignature(plan, hasher);
     if (signatures.has(signature)) continue;
     signatures.add(signature);
@@ -253,9 +257,7 @@ export function compileAlignmentAlternativeSet(input: {
   };
   return {
     ...canonical,
-    id: `alignment_alternatives.${hasher.digestHex(
-      canonicalStringify(canonical)
-    ).slice(0, 40)}`,
+    id: `alignment_alternatives.${canonicalDigestHex(canonical, hasher).slice(0, 40)}`,
     audit: toJsonValue({
       compiler: "kernel.alignment_alternatives.restricted_gibbs.v1",
       candidatePlanCount: input.plans.length,
@@ -317,7 +319,7 @@ function objectiveValue(plan: SparseFusedTransportPlan): number {
 }
 
 function planSignature(plan: SparseFusedTransportPlan, hasher: Hasher): string {
-  return hasher.digestHex(canonicalStringify({
+  return canonicalDigestHex({
     cells: plan.cells
       .filter(cell => cell.mass > 0)
       .map(cell => ({
@@ -333,7 +335,7 @@ function planSignature(plan: SparseFusedTransportPlan, hasher: Hasher): string {
       graphTargetId: column.graphTargetId,
       graphImplicitMass: column.graphImplicitMass
     }))
-  }));
+  }, hasher);
 }
 
 function restrictedGibbsWeights(

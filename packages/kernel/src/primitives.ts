@@ -46,6 +46,11 @@ export function createHasher(): Hasher {
   return {
     digestHex(input) {
       return createHash("sha256").update(typeof input === "string" ? Buffer.from(input, "utf8") : Buffer.from(input)).digest("hex");
+    },
+    digestChunks(chunks) {
+      const hash = createHash("sha256");
+      for (const chunk of chunks) hash.update(chunk);
+      return hash.digest("hex");
     }
   };
 }

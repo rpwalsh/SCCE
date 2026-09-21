@@ -11,7 +11,7 @@ import {
   type CreativeEventConstructionCompiler,
   type ScceStorage
 } from "@scce/kernel";
-import { trainLanguageCorpusText, type LanguageCorpusTrainingReport } from "./language-corpus-trainer.js";
+import { CorpusCheckpointConflictError, readCompletedCorpusCheckpoint, trainLanguageCorpusText, type LanguageCorpusTrainingInput, type LanguageCorpusTrainingReport } from "./language-corpus-trainer.js";
 
 export interface GutenbergCorpusTrainOptions {
   storage: ScceStorage;
@@ -108,7 +108,8 @@ export async function trainGutenbergCorpus(input: GutenbergCorpusTrainOptions): 
       skipped.push({ path: file.relativePath, reason: "file_exceeds_maxFileBytes", byteLength: file.byteLength });
       continue;
     }
-    const raw = await readFile(file.absolutePath, "utf8");
+    const rawBytes = await readFile(file.absolutePath);
+    const raw = rawBytes.toString("utf8");
     const text = stripGutenbergBoilerplate(raw).trim();
     if (!text) {
       skipped.push({ path: file.relativePath, reason: "empty_after_boilerplate_strip", byteLength: file.byteLength });
@@ -121,13 +122,27 @@ export async function trainGutenbergCorpus(input: GutenbergCorpusTrainOptions): 
     // failure is recorded as an explicit skip with the real reason and the
     // loop continues. A process-level OOM cannot be caught this way --
     // that is what the heap checkpoint above is for.
-    try {
-      reports.push(await trainLanguageCorpusText({
+    const trainingInput: LanguageCorpusTrainingInput = {
         storage: input.storage,
         sourceSystem: CORPUS_SOURCE_SYSTEM_IDS.gutenberg,
         streamUri: `${CORPUS_SOURCE_SYSTEM_IDS.gutenberg}:${normalizeRelative(file.relativePath)}`,
         sourceUri: pathToFileURL(file.absolutePath).href,
+        corpusCheckpoint: {
+          rootUri: pathToFileURL(root).href,
+          itemUri: normalizeRelative(file.relativePath),
+          contentHash: sha256Bytes(rawBytes),
+          transformId: "scce.gutenberg.boilerplate-strip.v1",
+          originalSourceUri: pathToFileURL(file.absolutePath).href,
+          byteLength: rawBytes.byteLength
+        },
         text,
+        originalSource: {
+          bytes: rawBytes,
+          sourceUri: pathToFileURL(file.absolutePath).href,
+          transformId: "scce.gutenberg.boilerplate-strip.v1",
+          kind: "extracted-text",
+          originalCoordinateSpace: "source-bytes"
+        },
         mediaType: "text/plain",
         namespace: `corpus:${CORPUS_SOURCE_SYSTEM_IDS.gutenberg}`,
         maxEvidenceChunkBytes: 64 * 1024,
@@ -144,12 +159,20 @@ export async function trainGutenbergCorpus(input: GutenbergCorpusTrainOptions): 
           // Read from the file as delivered: a Gutenberg text names itself in the header the boilerplate strip removes.
           identity: openingIdentityUnits(raw).join(" "),
           relativePath: normalizeRelative(file.relativePath),
-          sourceHash: sha256(raw),
+          sourceHash: sha256Bytes(rawBytes),
           boilerplateStripped: text.length !== raw.trim().length,
           languageAliases
         }
-      }));
+      };
+    try {
+      reports.push(await trainLanguageCorpusText(trainingInput));
     } catch (error) {
+      if (error instanceof CorpusCheckpointConflictError) throw error;
+      const committed = await readCompletedCorpusCheckpoint(trainingInput);
+      if (committed) {
+        reports.push(committed);
+        continue;
+      }
       skipped.push({
         path: file.relativePath,
         reason: `training_failed: ${error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200)}`,
@@ -251,8 +274,8 @@ function sumReports(reports: readonly LanguageCorpusTrainingReport[]): Gutenberg
   }), { languageProfiles: 0, evidence: 0, ngramObservations: 0, ngramModels: 0, languageUnits: 0, languagePatterns: 0, semanticFrames: 0 });
 }
 
-function sha256(text: string): string {
-  return createHash("sha256").update(text, "utf8").digest("hex");
+function sha256Bytes(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
 }
 
 function normalizeRelative(value: string): string {

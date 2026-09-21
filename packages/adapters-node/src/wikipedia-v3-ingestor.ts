@@ -2,6 +2,12 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import path from "node:path";
 import { ingestStageTracer } from "./ingest-stage-trace-sink.js";
+import {
+  appendBoundedAlignmentEvents,
+  boundedCanonicalJsonBytes,
+  buildBoundedAlignmentEvents,
+  readAlignmentAlternativeSetsFromBoundedPayloads
+} from "./alignment-event-artifacts.js";
 import { existsSync } from "node:fs";
 import { freemem, totalmem, tmpdir } from "node:os";
 import {
@@ -29,7 +35,6 @@ import {
   compileCrossDocumentAlignmentModel,
   compileAlignmentAlternativeSet,
   alignmentAlternativeSeriesId,
-  alignmentAlternativeSetsFromEventPayloads,
   extractAlignmentAlternatives,
   compileAlignmentCommunityRouting,
   compileCoarseToFineAlignmentResult,
@@ -42,6 +47,8 @@ import {
   alignmentCalibrationFeatures,
   calibratedAlignmentProbability,
   solveSparseFusedUnbalancedTransportWithResourceBudget,
+  createSparseTransportPlanRetentionInterner,
+  createTransportEvidenceAllocationRetentionInterner,
   compilePairedAntiUnifiedConstructions,
   compilePairedAntiUnifiedPatterns,
   compileGraphCorrelatedVariabilityModel,
@@ -91,7 +98,6 @@ import { WIKIPEDIA_SURFACE_TRANSFORM } from "./wikipedia-markup.js";
 import { ingestionCodeIdentity } from "./ingestion-code-identity.js";
 
 /** How many entries of a diagnostic list the alignment provenance event keeps; the true length is recorded beside it. */
-const SPARSE_ALIGNMENT_EVENT_LIST_BOUND = 64;
 
 /** The compact Kneser-Ney summary's most-continued symbols, narrowed out of the profile's JSON shape. */
 function profileTopContinuation(kneserNey: unknown): Array<[string, number]> {
@@ -1289,14 +1295,7 @@ export class WikipediaV3Ingestor {
     });
   }
 
-  /**
-   * Appends the alignment provenance event, degrading to counts rather than failing the shard.
-   *
-   * toJsonValue canonically stringifies, and above V8's ~512MB string cap that throws RangeError -- which killed the
-   * corpus ingest mid-run at 21,571 of 27,353 articles. Provenance is worth recording and is not worth losing the
-   * run over, so an unserializable payload is replaced by its own shape: the keys it had and the sizes of what could
-   * not be kept, which is still an honest record that the shard was compiled.
-   */
+  /** Append inline provenance when it fits; otherwise persist every payload field in bounded blob parts. */
   private async appendBoundedAlignmentEvent(
     episodeId: ReturnType<IdFactory["episodeId"]>,
     payload: Record<string, unknown>
@@ -1308,22 +1307,25 @@ export class WikipediaV3Ingestor {
         payload: value
       }));
     };
+    // Preflight with a bounded writer instead of constructing the potentially
+    // hundreds-of-megabytes canonical clone that caused the prior OOM.
+    let inlineBytes: Uint8Array | undefined;
     try {
-      await append(toJsonValue(payload));
-      return;
+      inlineBytes = boundedCanonicalJsonBytes(payload, 16 * 1024 * 1024);
     } catch (error) {
       if (!(error instanceof RangeError)) throw error;
     }
-    const sizes: Record<string, number> = {};
-    for (const [key, value] of Object.entries(payload)) if (Array.isArray(value)) sizes[key] = value.length;
-    await append(toJsonValue({
-      schema: "scce.sparse_alignment_candidate_batch.v1",
-      shardUri: payload.shardUri ?? null,
-      payloadTruncated: true,
-      truncationReason: "canonical payload exceeded the runtime string bound",
-      retainedKeys: Object.keys(payload).sort(),
-      omittedListSizes: sizes
-    }));
+    if (inlineBytes) {
+      await append(JSON.parse(Buffer.from(inlineBytes).toString("utf8")) as JsonValue);
+      return;
+    }
+    const boundedEvents = await buildBoundedAlignmentEvents({
+      episodeId: String(episodeId),
+      payload,
+      blobs: this.storage.blobs,
+      idFactory: this.ids
+    });
+    await appendBoundedAlignmentEvents(append, boundedEvents);
   }
 
   private async ingestLanguageShard(samples: readonly WikipediaLanguageShardSample[], shardUri: string, episodeId: ReturnType<IdFactory["episodeId"]>, inputManifest: WikipediaInputManifest, commitProgress: (trained?: WikipediaLanguageShardImport) => Promise<void>): Promise<WikipediaLanguageShardImport> {
@@ -1490,6 +1492,8 @@ export class WikipediaV3Ingestor {
       let transportIterationCount = 0;
       let transportedCellCount = 0;
       const transportEvidenceAllocationIds: string[] = [];
+      const planRetentionInterner = createSparseTransportPlanRetentionInterner();
+      const evidenceAllocationRetentionInterner = createTransportEvidenceAllocationRetentionInterner();
       let unresolvedTransportEvidenceCount = 0;
       let unresolvedTransportEvidenceAllocationCount = 0;
       let maximumTransportEvidenceResidual = 0;
@@ -1577,7 +1581,7 @@ export class WikipediaV3Ingestor {
         transportResourceUsage.columnCount += solved.resourceUsage.columnCount;
         transportResourceUsage.estimatedWorkingBytes = Math.max(transportResourceUsage.estimatedWorkingBytes, solved.resourceUsage.estimatedWorkingBytes);
         transportResourceUsage.plans += 1;
-        return solved.plan;
+        return planRetentionInterner.compact(solved.plan);
       };
       const initialTransportSpan = trace.span("alignment.transport-initial");
       const initialTransportPlans = routedAlignmentSupports.map(support =>
@@ -1639,6 +1643,7 @@ export class WikipediaV3Ingestor {
           typedNullCostModel,
           populationOrderingModel,
           crossDocumentAlignmentModel,
+          retentionPolicy: planRetentionInterner,
           hasher: this.hasher
         });
         alternativesSpan.end({
@@ -1649,11 +1654,11 @@ export class WikipediaV3Ingestor {
           omittedBranches: extractedAlternatives.omittedSearchBranchCount
         });
         const alternativeAllocations = extractedAlternatives.plans.map(plan =>
-          allocateTransportEvidence({
+          evidenceAllocationRetentionInterner.compact(allocateTransportEvidence({
             plan,
             support,
             hasher: this.hasher
-          }));
+          })));
         allAlignmentEvidenceAllocations.push(...alternativeAllocations);
         const seriesId = alignmentAlternativeSeriesId({
           support,
@@ -1665,10 +1670,11 @@ export class WikipediaV3Ingestor {
           plans: extractedAlternatives.plans,
           evidenceAllocations: alternativeAllocations,
           predecessorSets: [
-            ...alignmentAlternativeSetsFromEventPayloads(
+            ...(await readAlignmentAlternativeSetsFromBoundedPayloads(
               historicalAlignmentPayloads,
-              seriesId
-            ),
+              seriesId,
+              this.storage.blobs
+            )),
             ...alignmentAlternativeSets.filter(set => set.seriesId === seriesId)
           ],
           omittedSearchBranchCount: extractedAlternatives.omittedSearchBranchCount,
@@ -1740,9 +1746,6 @@ export class WikipediaV3Ingestor {
         observations: alignmentHeldoutEvaluation.promotionObservations,
         hasher: this.hasher
       });
-      const promotedSeriesIds = new Set(alignmentPromotionModel.decisions
-        .filter(decision => decision.promoted)
-        .map(decision => decision.seriesId));
       const planById = new Map(alignmentAlternativeSets.flatMap(set => set.hypotheses.map(hypothesis => [hypothesis.plan.id, hypothesis.plan] as const)));
       const calibrationProbabilityByPlanId = new Map<string, number>();
       for (const decision of alignmentPromotionModel.decisions) {
@@ -1877,14 +1880,8 @@ export class WikipediaV3Ingestor {
           }))
         })
       }));
-      // This payload is provenance, and provenance must not be able to stop ingestion. It could: the id lists and
-      // construction inventories below grow with the shard, and JSON.stringify throws RangeError above V8's ~512MB
-      // string cap -- which is exactly how the corpus stopped at 21,571 of 27,353 articles, mid-run, with the comment
-      // two lines down asserting the event "stays bounded". Only alignmentAlternativeSets is ever read back
-      // (alignmentAlternativeSetsFromEventPayloads); everything else is diagnostic, so the diagnostic parts are
-      // bounded the way this file already bounds its rejection lists, and a payload that still cannot be serialized
-      // degrades to counts rather than killing the run.
-      const bounded = <T>(rows: readonly T[]): T[] => rows.slice(0, SPARSE_ALIGNMENT_EVENT_LIST_BOUND);
+      // Inline canonicalization is attempted first for compatibility. If it reaches the runtime
+      // string bound, appendBoundedAlignmentEvent stores every field in blob-backed parts.
       await this.appendBoundedAlignmentEvent(episodeId, {
           schema: "scce.sparse_alignment_candidate_batch.v1",
           shardUri,
@@ -1894,11 +1891,11 @@ export class WikipediaV3Ingestor {
           surfaceUnitCount: alignmentSurfaceUnitCount,
           candidateCount: alignmentCandidateCount,
           maximumCandidateDegree: maximumAlignmentDegree,
-          supportIds: bounded(alignmentSupportIds),
+          supportIds: alignmentSupportIds,
           supportIdCount: alignmentSupportIds.length,
-          routedSupportIds: bounded(routedAlignmentSupportIds),
+          routedSupportIds: routedAlignmentSupportIds,
           routedSupportIdCount: routedAlignmentSupportIds.length,
-          communityRoutingIds: bounded(alignmentCommunityRoutingIds),
+          communityRoutingIds: alignmentCommunityRoutingIds,
           communityRoutingIdCount: alignmentCommunityRoutingIds.length,
           communityCount: alignmentCommunityRoutings.reduce(
             (sum, routing) => sum + routing.communities.length,
@@ -1908,6 +1905,7 @@ export class WikipediaV3Ingestor {
           transportIterationCount,
           transportedCellCount,
           transportEvidenceAllocationIds,
+          transportEvidenceAllocations: allAlignmentEvidenceAllocations,
           unresolvedTransportEvidenceCount,
           unresolvedTransportEvidenceAllocationCount,
           maximumTransportEvidenceResidual,
@@ -1918,8 +1916,8 @@ export class WikipediaV3Ingestor {
           crossDocumentAlignmentModelIds:
             [...crossDocumentAlignmentModelIds].sort(),
           alignmentAlternativeSetIds,
-          // The event stays bounded: plan-bearing sets persist only for promoted series; the rest is summarized.
-          alignmentAlternativeSets: alignmentAlternativeSets.filter(set => promotedSeriesIds.has(set.seriesId)),
+          // Full plan-bearing sets are retained; oversized provenance is externalized into bounded blobs.
+          alignmentAlternativeSets,
           coarseToFineAlignmentIds: coarseToFineAlignments.map(row => row.id),
           alignmentCalibrationModel,
           alignmentPromotionModel,
@@ -1932,8 +1930,8 @@ export class WikipediaV3Ingestor {
           reversibleConstructions:
             reversibleConstructionCompilation.constructions,
           reversibleConstructionRejections:
-            reversibleConstructionCompilation.rejections.slice(0, 64),
-          cycleRejectedConstructionIds: cycleRejectedConstructionIds.slice(0, 64),
+            reversibleConstructionCompilation.rejections,
+          cycleRejectedConstructionIds,
           cycleRejectedConstructionCount: cycleRejectedConstructionIds.length,
           calibratedPlanCount: calibrationProbabilityByPlanId.size,
           canonicalReplay: canonicalReplay ?? null,
@@ -1941,7 +1939,7 @@ export class WikipediaV3Ingestor {
           pairedAntiUnifiedConstructions:
             pairedAntiUnifiedCompilation.constructions,
           pairedAntiUnifiedConstructionRejections:
-            pairedAntiUnifiedCompilation.rejections.slice(0, 64),
+            pairedAntiUnifiedCompilation.rejections,
             graphCorrelatedVariabilityModel:
               pairedAntiUnifiedPatterns.graphCorrelatedVariabilityModel,
             optionalNullRealizationModel,

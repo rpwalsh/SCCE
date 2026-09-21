@@ -6,6 +6,7 @@ import {
   buildSurfaceLattice,
   compileSparseAlignmentCandidateSupports,
   createHasher,
+  createTransportEvidenceAllocationRetentionInterner,
   solveSparseFusedUnbalancedTransport,
   type EvidenceId,
   type GraphNode,
@@ -34,6 +35,9 @@ describe("transport evidence conservation", () => {
       hasher
     });
     const allocation = allocateTransportEvidence({ plan, support, hasher });
+    expect(allocation).toEqual(allocateTransportEvidence({
+      plan, support, hasher: { digestHex: hasher.digestHex }
+    }));
 
     expect(allocation.status).toBe("conserved");
     expect(allocation.conservationResidual).toBeLessThanOrEqual(1e-12);
@@ -83,6 +87,75 @@ describe("transport evidence conservation", () => {
       cell.transportMass > 0
       && cell.status === "unresolved_evidence"
       && cell.shares.length === 0)).toBe(true);
+  });
+
+  it("shares complete immutable cells across one support without merging changed fields", () => {
+    const compiled = fixture();
+    const support = {
+      ...compiled.supports[0]!,
+      candidates: compiled.supports[0]!.candidates.map(candidate => ({
+        ...candidate,
+        surfaceEvidenceIds: ["evidence.1"],
+        graphEvidenceIds: ["evidence.1"],
+        sharedEvidenceIds: ["evidence.1"]
+      }))
+    };
+    const plan = solveSparseFusedUnbalancedTransport({
+      support,
+      targetIndex: compiled.targetIndex,
+      hasher
+    });
+    const allocation = allocateTransportEvidence({ plan, support, hasher });
+    const interner = createTransportEvidenceAllocationRetentionInterner();
+    const first = interner.compact(allocation);
+    const second = interner.compact(allocateTransportEvidence({ plan, support, hasher }));
+    expect(first).toEqual(allocation);
+    expect(JSON.stringify(first)).toBe(JSON.stringify(allocation));
+    expect(allocation.cells.some(cell => !Object.isFrozen(cell))).toBe(true);
+    expect(first.cells[0]).toBe(second.cells[0]);
+    expect(Object.isFrozen(first.cells[0])).toBe(true);
+    expect(Object.isFrozen(first.cells[0]!.shares)).toBe(true);
+    expect(Object.isFrozen(first.cells[0]!.shares[0])).toBe(true);
+
+    const base = first.cells[0]!;
+    const changedMass = interner.compact({
+      ...first,
+      id: "mass-variant",
+      cells: [{ ...base, transportMass: base.transportMass + 0.125 }]
+    });
+    expect(changedMass.cells[0]).not.toBe(base);
+    const probabilityBaseline = interner.compact(first);
+    const changedProbability = interner.compact({
+      ...first,
+      id: "probability-variant",
+      cells: [{
+        ...base,
+        shares: base.shares.map((share, index) => index === 0
+          ? { ...share, conditionalProbability: share.conditionalProbability + 0.125 }
+          : { ...share })
+      }]
+    });
+    expect(changedProbability.cells[0]).not.toBe(probabilityBaseline.cells[0]);
+    const statusBaseline = interner.compact(first);
+    const changedStatus = interner.compact({
+      ...first,
+      id: "status-variant",
+      cells: [{ ...base, status: "unresolved_evidence" }]
+    });
+    expect(changedStatus.cells[0]).not.toBe(statusBaseline.cells[0]);
+
+    const beforeReset = interner.compact(first);
+    const reset = interner.compact({
+      ...first,
+      supportId: "support.other",
+      id: "support-variant",
+      cells: [{ ...base }]
+    });
+    expect(reset.cells[0]).not.toBe(beforeReset.cells[0]);
+    const retainedMass = first.cells[0]!.shares[0]!.allocatedMass;
+    allocation.cells[0]!.shares[0]!.allocatedMass += 1;
+    expect(first.cells[0]!.shares[0]!.allocatedMass).toBe(retainedMass);
+    expect(interner.stats().reusedCells).toBeGreaterThan(0);
   });
 
   function fixture() {

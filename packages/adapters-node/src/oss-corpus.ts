@@ -19,7 +19,7 @@ import {
 } from "@scce/kernel";
 import { extractNodeSourceCodeFacts, measureExhibitedContent } from "./code-graph.js";
 import { inspectEngineeringCorpusFolder, type EngineeringCorpusFolderOptions } from "./engineering-corpus-folder.js";
-import { trainLanguageCorpusText, type LanguageCorpusTrainingReport } from "./language-corpus-trainer.js";
+import { CorpusCheckpointConflictError, readCompletedCorpusCheckpoint, trainLanguageCorpusText, type LanguageCorpusTrainingInput, type LanguageCorpusTrainingReport } from "./language-corpus-trainer.js";
 import { createProjectDeclarationIndex, createProjectLicenseIndex, readDeclaredLicense } from "./project-artifact-declarations.js";
 
 export const DEFAULT_OSS_FILES_PER_RUN = 2000;
@@ -167,6 +167,7 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
 
   let stoppedByHeapSafetyBound = false;
   let filesConsidered = 0;
+  let firstIncompleteFileOffset: number | undefined;
   const roles = createProjectDeclarationIndex({ stopAt: root });
   const licenses = createProjectLicenseIndex({ stopAt: root });
   const hasher = createHasher();
@@ -176,23 +177,26 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
       stoppedByHeapSafetyBound = true;
       break;
     }
-    // Advance the cursor only after this file becomes this run's responsibility. If the heap stop trips before
-    // the file, nextFileIndex points back to it. A training failure is an explicit skip and therefore advances.
+    const fileOffset = filesConsidered;
     filesConsidered += 1;
-
     const sourceSystem = sourceSystemForPath(file.path);
     if (!sourceSystem) {
       skipped.push({ path: file.path, reason: "not_language_training_material", byteLength: file.byteLength });
       continue;
     }
-    if (sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.ossDocs && !includeDocs) continue;
-    if (sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.ossCode && !includeSource) continue;
+    if (sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.ossDocs && !includeDocs) {
+      continue;
+    }
+    if (sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.ossCode && !includeSource) {
+      continue;
+    }
 
-    const raw = await readFile(file.absolutePath, "utf8");
+    const rawBytes = await readFile(file.absolutePath);
+    const raw = rawBytes.toString("utf8");
     const artifactRole = await roles.roleFor(file.absolutePath);
     const license = await licenses.licenseFor(file.absolutePath);
     const relativePath = normalizeRelative(file.path);
-    const sourceHash = file.contentHash ?? sha256(raw);
+    const sourceHash = file.contentHash ?? sha256Bytes(rawBytes);
     // Same producers document.ts uses, over the file rather than a projection: a projection is a different text,
     // but every projection of a file is reachable by the one name and identity the file itself declares.
     const sourceCodeFacts = extractNodeSourceCodeFacts({
@@ -227,65 +231,98 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
         ];
 
     let trainedAnyProjection = false;
+    let fileCompleted = true;
     for (const projected of projections) {
       if (!projected.text.trim()) continue;
       trainedAnyProjection = true;
-      try {
-        const relativePath = normalizeRelative(file.path);
-        reports.push(await trainLanguageCorpusText({
-          storage: input.storage,
-          sourceSystem: projected.sourceSystem,
-          streamUri: `${projected.sourceSystem}:${relativePath}`,
+      const relativePath = normalizeRelative(file.path);
+      const trainingInput: LanguageCorpusTrainingInput = {
+        storage: input.storage,
+        sourceSystem: projected.sourceSystem,
+        streamUri: `${projected.sourceSystem}:${relativePath}`,
+        sourceUri: `${sourceUriBase}#path=${encodeURIComponent(relativePath)}`,
+        corpusCheckpoint: {
+          rootUri: sourceUriBase,
+          itemUri: `${relativePath}#projection=${encodeURIComponent(projected.projection)}`,
+          contentHash: sourceHash,
+          transformId: `scce.oss.corpus-projection.v1:${projected.projection}`,
+          originalSourceUri: `${sourceUriBase}#path=${encodeURIComponent(relativePath)}`,
+          byteLength: file.byteLength
+        },
+        text: projected.text,
+        originalSource: {
+          bytes: rawBytes,
           sourceUri: `${sourceUriBase}#path=${encodeURIComponent(relativePath)}`,
-          text: projected.text,
-          mediaType: file.mediaType,
-          namespace: `corpus:${projected.sourceSystem}`,
-          maxEvidenceChunkBytes: 64 * 1024,
-          ngramMaxOrder: input.ngramMaxOrder,
-          ngramMaxCountersPerOrder: input.ngramMaxCountersPerOrder,
-          ngramVocabularyLimit: input.ngramVocabularyLimit,
-          languageAliases: input.languageAliases,
-          informationLabel: OSS_CORPUS_INFORMATION_LABEL,
-          corpusMetadata: toJsonValue({
-            // Retrieval anchors a named subject to a source's title and identity; without them at the producer
-            // every OSS span was unreachable by name until a backfill ran. Same contract as document.ts.
-            title,
-            identity,
-            relativePath,
-            sourceHash,
-            extractor: file.extractor,
-            supportedSections: file.supportedSections,
-            projection: projected.projection,
-            formalLanguage: codeLanguageForPath(file.path) ?? null,
-            artifactRole,
-            license,
-            repository: repositoryIdentity,
-            exhibitedContent: projected.projection === "verbatim"
-              ? measureExhibitedContent({ uri: relativePath, mediaType: file.mediaType, text: projected.text })
-              : {
-                schema: "scce.exhibited-content.v1",
-                measured: false,
-                unmeasuredReason: `projection-changed-coordinate-space:${projected.projection}`,
-                coordinateSpace: "extracted-text-code-points",
-                textLength: 0,
-                ranges: []
-              }
-          })
-        }));
+          transformId: `scce.oss.corpus-projection.v1:${projected.projection}`,
+          kind: "extracted-text",
+          originalCoordinateSpace: "source-bytes"
+        },
+        mediaType: file.mediaType,
+        namespace: `corpus:${projected.sourceSystem}`,
+        maxEvidenceChunkBytes: 64 * 1024,
+        ngramMaxOrder: input.ngramMaxOrder,
+        ngramMaxCountersPerOrder: input.ngramMaxCountersPerOrder,
+        ngramVocabularyLimit: input.ngramVocabularyLimit,
+        languageAliases: input.languageAliases,
+        informationLabel: OSS_CORPUS_INFORMATION_LABEL,
+        corpusMetadata: toJsonValue({
+          // Retrieval anchors a named subject to a source's title and identity; without them at the producer
+          // every OSS span was unreachable by name until a backfill ran. Same contract as document.ts.
+          title,
+          identity,
+          relativePath,
+          sourceHash,
+          extractor: file.extractor,
+          supportedSections: file.supportedSections,
+          projection: projected.projection,
+          formalLanguage: codeLanguageForPath(file.path) ?? null,
+          artifactRole,
+          license,
+          repository: repositoryIdentity,
+          exhibitedContent: projected.projection === "verbatim"
+            ? measureExhibitedContent({ uri: relativePath, mediaType: file.mediaType, text: projected.text })
+            : {
+              schema: "scce.exhibited-content.v1",
+              measured: false,
+              unmeasuredReason: `projection-changed-coordinate-space:${projected.projection}`,
+              coordinateSpace: "extracted-text-code-points",
+              textLength: 0,
+              ranges: []
+            }
+        })
+      };
+      try {
+        reports.push(await trainLanguageCorpusText(trainingInput));
       } catch (error) {
+        if (error instanceof CorpusCheckpointConflictError) throw error;
+        const committed = await readCompletedCorpusCheckpoint(trainingInput);
+        if (committed) {
+          reports.push(committed);
+          continue;
+        }
+        fileCompleted = false;
         skipped.push({
           path: file.path,
           reason: `training_failed: ${error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200)}`,
           byteLength: file.byteLength
         });
+        // Preserve the file cursor at the first incompletely trained item.
+        // Earlier successful projections have their own durable checkpoints,
+        // so retrying the file reuses them and retries only this failure.
+        break;
       }
     }
     if (!trainedAnyProjection) {
       skipped.push({ path: file.path, reason: "empty_language_training_projection", byteLength: file.byteLength });
+      continue;
+    }
+    if (!fileCompleted) {
+      firstIncompleteFileOffset ??= fileOffset;
+      continue;
     }
   }
 
-  const nextFileIndex = startFileIndex + filesConsidered;
+  const nextFileIndex = startFileIndex + (firstIncompleteFileOffset ?? filesConsidered);
   return {
     schema: "scce.ossCorpusTrainReport.v1",
     rootPath: root,
@@ -419,8 +456,8 @@ function nonNegativeInteger(value: number | undefined, fallback: number): number
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : fallback;
 }
 
-function sha256(text: string): string {
-  return createHash("sha256").update(text, "utf8").digest("hex");
+function sha256Bytes(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
 }
 
 function normalizeRelative(value: string): string {

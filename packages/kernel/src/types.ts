@@ -89,6 +89,8 @@ export interface InformationAccessContext {
 
 export interface Hasher {
   digestHex(input: string | Uint8Array): string;
+  /** Optional incremental hashing of the exact concatenated bytes. */
+  digestChunks?(chunks: Iterable<Uint8Array>): string;
 }
 
 export interface ScceEvent {

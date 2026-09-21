@@ -10,6 +10,7 @@ export * from "./fetched-source.js";
 export * from "./spreadsheet.js";
 export * from "./wikipedia.js";
 export * from "./wikipedia-v3-ingestor.js";
+export * from "./alignment-event-artifacts.js";
 export * from "./language-corpus-trainer.js";
 export * from "./dialogue-corpus.js";
 export * from "./gutenberg-corpus.js";

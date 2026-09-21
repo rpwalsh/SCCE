@@ -14,10 +14,12 @@ import {
   type SparseAlignmentCandidateSupport
 } from "./sparse-alignment-candidates.js";
 import {
+  createSparseTransportPlanRetentionInterner,
   solveSparseFusedUnbalancedTransport,
   type SparseFusedTransportPlan
 } from "./sparse-fused-transport.js";
 import {
+  createTransportEvidenceAllocationRetentionInterner,
   allocateTransportEvidence,
   type TransportEvidenceAllocation
 } from "./transport-evidence-allocation.js";
@@ -287,6 +289,8 @@ export function compileLanguageTrainingBatch(input: {
     : [];
   const routedAlignmentSupports = alignmentCommunityRoutings.map(routing =>
     routing.routedSupport);
+  const planRetentionInterner = createSparseTransportPlanRetentionInterner();
+  const evidenceAllocationRetentionInterner = createTransportEvidenceAllocationRetentionInterner();
   const typedNullCostModel = sparseAlignment
     ? compileTypedNullCostModel({
       supports: routedAlignmentSupports,
@@ -302,13 +306,13 @@ export function compileLanguageTrainingBatch(input: {
     : null;
   const initialSparseTransportPlans = sparseAlignment
     ? routedAlignmentSupports.map(support =>
-      solveSparseFusedUnbalancedTransport({
+      planRetentionInterner.compact(solveSparseFusedUnbalancedTransport({
         support,
         targetIndex: sparseAlignment.targetIndex,
         typedNullCostModel: typedNullCostModel!,
         populationOrderingModel: populationOrderingModel!,
         hasher: input.hasher
-      }))
+      })))
     : [];
   const crossDocumentAlignmentModel = sparseAlignment
     ? compileCrossDocumentAlignmentModel({
@@ -322,14 +326,14 @@ export function compileLanguageTrainingBatch(input: {
   initialSparseTransportPlans.length = 0;
   const sparseTransportPlans = sparseAlignment
     ? routedAlignmentSupports.map(support =>
-      solveSparseFusedUnbalancedTransport({
+      planRetentionInterner.compact(solveSparseFusedUnbalancedTransport({
         support,
         targetIndex: sparseAlignment.targetIndex,
         typedNullCostModel: typedNullCostModel!,
         populationOrderingModel: populationOrderingModel!,
         crossDocumentAlignmentModel: crossDocumentAlignmentModel!,
         hasher: input.hasher
-      }))
+      })))
     : [];
   const retainedAlternatives = sparseAlignment
     ? sparseTransportPlans.map((plan, index) => {
@@ -341,14 +345,15 @@ export function compileLanguageTrainingBatch(input: {
         typedNullCostModel: typedNullCostModel!,
         populationOrderingModel: populationOrderingModel!,
         crossDocumentAlignmentModel: crossDocumentAlignmentModel!,
+        retentionPolicy: planRetentionInterner,
         hasher: input.hasher
       });
       const evidenceAllocations = extracted.plans.map(alternativePlan =>
-        allocateTransportEvidence({
+        evidenceAllocationRetentionInterner.compact(allocateTransportEvidence({
           plan: alternativePlan,
           support,
           hasher: input.hasher
-        }));
+        })));
       const set = compileAlignmentAlternativeSet({
           seriesId: alignmentAlternativeSeriesId({
             support,

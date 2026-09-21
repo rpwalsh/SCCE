@@ -51,16 +51,24 @@ import {
   compileSparseAlignmentTargetIndex,
   generateSparseAlignmentCandidates
 } from "./sparse-alignment-candidates.js";
-import { solveSparseFusedUnbalancedTransport } from "./sparse-fused-transport.js";
+import {
+  createSparseTransportPlanRetentionInterner,
+  solveSparseFusedUnbalancedTransport
+} from "./sparse-fused-transport.js";
 import { compileTypedNullCostModel } from "./typed-null-alignment.js";
 import { compilePopulationOrderingModel } from "./population-ordering.js";
 import { compileCrossDocumentAlignmentModel } from "./cross-document-alignment.js";
 import {
   compileAlignmentAlternativeSet,
   alignmentAlternativeSeriesId,
-  alignmentAlternativeSetsFromEventPayloads,
   extractAlignmentAlternatives
 } from "./alignment-alternatives.js";
+import {
+  appendBoundedAlignmentEvents,
+  boundedCanonicalJsonBytes,
+  buildBoundedAlignmentEvents,
+  readAlignmentAlternativeSetsFromBoundedPayloads
+} from "./bounded-alignment-artifacts.js";
 import {
   compileAlignmentCommunityRouting,
   compileCoarseToFineAlignmentResult
@@ -86,7 +94,10 @@ import {
   compileOptionalNullRealizationModel,
   compileOptionalNullRealizationPatterns
 } from "./optional-null-realization.js";
-import { allocateTransportEvidence } from "./transport-evidence-allocation.js";
+import {
+  allocateTransportEvidence,
+  createTransportEvidenceAllocationRetentionInterner
+} from "./transport-evidence-allocation.js";
 import { buildSurfaceLattice } from "./surface-lattice.js";
 import { evidenceSourceFamilyId } from "./source-family.js";
 import { liftHyperedgesToTypedIncidenceGraph } from "./typed-incidence-graph.js";
@@ -713,6 +724,8 @@ export function createIngestionRuntime(options: {
         let transportIterationCount = 0;
         let transportedCellCount = 0;
         const transportEvidenceAllocationIds: string[] = [];
+        const planRetentionInterner = createSparseTransportPlanRetentionInterner();
+        const evidenceAllocationRetentionInterner = createTransportEvidenceAllocationRetentionInterner();
         let unresolvedTransportEvidenceCount = 0;
         let unresolvedTransportEvidenceAllocationCount = 0;
         let maximumTransportEvidenceResidual = 0;
@@ -788,13 +801,13 @@ export function createIngestionRuntime(options: {
           hasher
         });
         const initialTransportPlans = routedAlignmentSupports.map(support =>
-          solveSparseFusedUnbalancedTransport({
+          planRetentionInterner.compact(solveSparseFusedUnbalancedTransport({
             support,
             targetIndex: alignmentTargetIndex,
             typedNullCostModel,
             populationOrderingModel,
             hasher
-          }));
+          })));
         const crossDocumentAlignmentModel = compileCrossDocumentAlignmentModel({
           supports: routedAlignmentSupports,
           plans: initialTransportPlans,
@@ -804,14 +817,14 @@ export function createIngestionRuntime(options: {
         // Cross-document compilation materializes projections and estimates, with no plan aliases.
         initialTransportPlans.length = 0;
         const finalTransportPlans = routedAlignmentSupports.map(support =>
-          solveSparseFusedUnbalancedTransport({
+          planRetentionInterner.compact(solveSparseFusedUnbalancedTransport({
             support,
             targetIndex: alignmentTargetIndex,
             typedNullCostModel,
             populationOrderingModel,
             crossDocumentAlignmentModel,
             hasher
-          }));
+          })));
         for (let index = 0; index < finalTransportPlans.length; index++) {
           const support = routedAlignmentSupports[index]!;
           const transport = finalTransportPlans[index]!;
@@ -840,14 +853,15 @@ export function createIngestionRuntime(options: {
             typedNullCostModel,
             populationOrderingModel,
             crossDocumentAlignmentModel,
+            retentionPolicy: planRetentionInterner,
             hasher
           });
           const alternativeAllocations = extractedAlternatives.plans.map(plan =>
-            allocateTransportEvidence({
+            evidenceAllocationRetentionInterner.compact(allocateTransportEvidence({
               plan,
               support,
               hasher
-            }));
+            })));
           allAlignmentEvidenceAllocations.push(...alternativeAllocations);
           const seriesId = alignmentAlternativeSeriesId({
             support,
@@ -862,10 +876,12 @@ export function createIngestionRuntime(options: {
             totalBranchCount: extractedAlternatives.totalBranchCount,
             branchSearchBudget: extractedAlternatives.branchSearchBudget,
             predecessorSets: [
-              ...alignmentAlternativeSetsFromEventPayloads(
+              ...(await readAlignmentAlternativeSetsFromBoundedPayloads(
                 historicalAlignmentPayloads,
-                seriesId
-              ),
+                seriesId,
+                deps.storage.blobs,
+                bytes => String(idFactory.contentHash(bytes))
+              )),
               ...(alignmentAlternativeSetsBySeries.get(seriesId) ?? [])
             ],
             omittedSearchBranchCount: extractedAlternatives.omittedSearchBranchCount,
@@ -1020,10 +1036,7 @@ export function createIngestionRuntime(options: {
             }))
           })
         })));
-        events.push(await append(eventFactory.create({
-          episodeId,
-          typeId: "SparseAlignmentCandidatesCompiled",
-          payload: toJsonValue({
+        const alignmentPayload = {
             schema: "scce.sparse_alignment_candidate_batch.v1",
             incidenceGraphId: incidenceGraph.id,
             targetIndexId: alignmentTargetIndex.id,
@@ -1042,6 +1055,7 @@ export function createIngestionRuntime(options: {
             transportIterationCount,
             transportedCellCount,
             transportEvidenceAllocationIds,
+            transportEvidenceAllocations: allAlignmentEvidenceAllocations,
             unresolvedTransportEvidenceCount,
             unresolvedTransportEvidenceAllocationCount,
             maximumTransportEvidenceResidual,
@@ -1080,8 +1094,32 @@ export function createIngestionRuntime(options: {
             globalOptimalityClaimed: false,
             candidateMemory: "O(|S|*K_pi)",
             denseMatrixMaterialized: false
-          })
-        })));
+        };
+        const appendAlignmentPayload = async (payload: JsonValue): Promise<void> => {
+          events.push(await append(eventFactory.create({
+            episodeId,
+            typeId: "SparseAlignmentCandidatesCompiled",
+            payload
+          })));
+        };
+        let inlineBytes: Uint8Array | undefined;
+        try {
+          inlineBytes = boundedCanonicalJsonBytes(alignmentPayload, 16 * 1024 * 1024);
+        } catch (error) {
+          if (!(error instanceof RangeError)) throw error;
+        }
+        if (inlineBytes) {
+          await appendAlignmentPayload(JSON.parse(Buffer.from(inlineBytes).toString("utf8")) as JsonValue);
+        } else {
+          const boundedEvents = await buildBoundedAlignmentEvents({
+            episodeId: String(episodeId),
+            payload: alignmentPayload,
+            blobs: deps.storage.blobs,
+            idFactory,
+            hashContent: bytes => String(idFactory.contentHash(bytes))
+          });
+          await appendBoundedAlignmentEvents(appendAlignmentPayload, boundedEvents);
+        }
       }
       const output = `ingested ${sources} source version(s), ${evidenceCount} evidence span(s), ${sumRecord(typedObservationCounts)} typed observation(s)`;
       const invalidateRuntimeCaches = Boolean(sources || evidenceCount || graphNodes || graphEdges || graphHyperedges || languageProfiles);

@@ -20,6 +20,7 @@ import { blobContentHash } from "../postgres.js";
 import type {
   EvidenceSpan,
   InformationLabel,
+  IngestionCheckpoint,
   JsonValue,
   LanguagePatternRecord,
   LanguageProfile,
@@ -213,6 +214,80 @@ describe("multi-corpus training", () => {
     expect(fixture.state.models.length).toBeGreaterThan(0);
   });
 
+  it("replays a completed corpus checkpoint without repeating learned writes or accepting a changed recipe", async () => {
+    const fixture = memoryStorage();
+    const checkpoints = new Map<string, any>();
+    fixture.storage.ingestion = {
+      put: async (checkpoint: IngestionCheckpoint) => { checkpoints.set(checkpoint.id, structuredClone(checkpoint)); },
+      get: async (id: string) => checkpoints.get(id) ?? null,
+      list: async () => [...checkpoints.values()]
+    } as any;
+    const input = {
+      storage: fixture.storage,
+      sourceSystem: "gutenberg",
+      streamUri: "fixture://prepared-book",
+      text: "A reader opens a book. Another reader closes the same book. ".repeat(3),
+      createdAt: 1700000000000,
+      languageOnly: true,
+      ngramMaxOrder: 2,
+      ngramVocabularyLimit: 32,
+      corpusCheckpoint: { rootUri: "fixture://gutenberg", itemUri: "book.txt", contentHash: "sha256_fixture", byteLength: 128 }
+    };
+
+    const first = await trainLanguageCorpusText(input);
+    const counts = Object.fromEntries(Object.entries(fixture.state).map(([key, rows]) => [key, rows.length]));
+    const second = await trainLanguageCorpusText(input);
+
+    expect(second).toEqual(first);
+    expect(Object.fromEntries(Object.entries(fixture.state).map(([key, rows]) => [key, rows.length]))).toEqual(counts);
+    expect([...checkpoints.values()]).toHaveLength(1);
+    expect([...checkpoints.values()][0].status).toBe("complete");
+    await expect(trainLanguageCorpusText({ ...input, text: "changed source" })).rejects.toThrow(/checkpoint binding mismatch/iu);
+  });
+
+  it("survives a commit acknowledgement loss by replaying the terminal checkpoint", async () => {
+    const fixture = memoryStorage();
+    const checkpoints = new Map<string, any>();
+    fixture.storage.ingestion = {
+      put: async (checkpoint: IngestionCheckpoint) => { checkpoints.set(checkpoint.id, structuredClone(checkpoint)); },
+      get: async (id: string) => checkpoints.get(id) ?? null,
+      list: async () => [...checkpoints.values()]
+    } as any;
+    const input = {
+      storage: fixture.storage,
+      sourceSystem: "gutenberg",
+      streamUri: "fixture://prepared-book",
+      text: "A reader opens a book. Another reader closes the same book. ".repeat(3),
+      createdAt: 1700000000000,
+      languageOnly: true,
+      ngramMaxOrder: 2,
+      ngramVocabularyLimit: 32,
+      corpusCheckpoint: { rootUri: "fixture://gutenberg", itemUri: "lost-ack.txt", contentHash: "sha256_lost_ack", byteLength: 64 }
+    };
+    const transaction = fixture.storage.transaction;
+    let depth = 0;
+    let loseAcknowledgement = true;
+    fixture.storage.transaction = async <T>(callback: () => Promise<T>) => {
+      depth += 1;
+      try {
+        const result = await transaction(callback);
+        if (depth === 1 && loseAcknowledgement) {
+          loseAcknowledgement = false;
+          throw new Error("injected commit acknowledgement loss");
+        }
+        return result;
+      } finally {
+        depth -= 1;
+      }
+    };
+
+    await expect(trainLanguageCorpusText(input)).rejects.toThrow("injected commit acknowledgement loss");
+    expect([...checkpoints.values()][0].status).toBe("complete");
+    const counts = Object.fromEntries(Object.entries(fixture.state).map(([key, rows]) => [key, rows.length]));
+    await trainLanguageCorpusText(input);
+    expect(Object.fromEntries(Object.entries(fixture.state).map(([key, rows]) => [key, rows.length]))).toEqual(counts);
+  });
+
   it("still drops models too when the whole-lane switch is set, which is a different question", async () => {
     const fixture = memoryStorage();
     await trainLanguageCorpusText({
@@ -295,7 +370,30 @@ describe("multi-corpus training", () => {
 
     expect(result.filesTrained).toBe(1);
     expect(result.totals.ngramObservations).toBeGreaterThan(0);
-    expect(fixture.state.sourceVersions.length).toBe(1);
+    expect(fixture.state.sourceVersions.length).toBe(2);
+    const original = fixture.state.sourceVersions.find(source => source.role === "original");
+    const derivative = fixture.state.sourceVersions.find(source => source.role === "evidence-derivative");
+    expect(original).toBeDefined();
+    expect(derivative?.derivation).toMatchObject({
+      kind: "extracted-text",
+      transformId: "scce.gutenberg.boilerplate-strip.v1",
+      derivedFromSourceVersionId: original?.sourceVersionId,
+      originalCoordinateSpace: "source-bytes",
+      redactionMap: []
+    });
+    expect(fixture.state.evidence.every(span => span.sourceVersionId === derivative?.sourceVersionId)).toBe(true);
+    const rawBytes = Buffer.from([
+      "*** START OF THE PROJECT GUTENBERG EBOOK FIXTURE ***",
+      "",
+      "Chapter 1",
+      "",
+      "The workshop had a patient rhythm. The sentences were public-domain training material.",
+      "",
+      "*** END OF THE PROJECT GUTENBERG EBOOK FIXTURE ***"
+    ].join("\n"), "utf8");
+    const derivativeBytes = Buffer.from("Chapter 1\n\nThe workshop had a patient rhythm. The sentences were public-domain training material.", "utf8");
+    expect(fixture.state.blobs.some(bytes => Buffer.from(bytes).equals(rawBytes))).toBe(true);
+    expect(fixture.state.blobs.some(bytes => Buffer.from(bytes).equals(derivativeBytes))).toBe(true);
     expect(fixture.state.evidence.length).toBeGreaterThan(0);
     expect(allSourceSystems(fixture.state)).toEqual(new Set(["gutenberg"]));
     expect(fixture.state.patterns.some(pattern => {
@@ -333,6 +431,66 @@ describe("multi-corpus training", () => {
     const proseReport = result.reports.find(report => report.streamUri.endsWith("src/pump.ts") && report.sourceSystem === "oss_docs")!;
     expect(codeReport.streamUri.endsWith("src/pump.ts")).toBe(true);
     expect(proseReport).toBeDefined();
+  });
+
+  it("keeps the OSS cursor on a file with an incompletely trained projection", async () => {
+    const root = await tempDir("oss-retry-cursor-");
+    await mkdir(path.join(root, "src"), { recursive: true });
+    await writeFile(path.join(root, "src", "pump.ts"), "export function pumpPressure(input: number) { return input + 1; }\n", "utf8");
+    const fixture = memoryStorage();
+    const checkpoints = new Map<string, any>();
+    fixture.storage.ingestion = {
+      put: async (checkpoint: IngestionCheckpoint) => { checkpoints.set(checkpoint.id, structuredClone(checkpoint)); },
+      get: async (id: string) => checkpoints.get(id) ?? null,
+      list: async () => [...checkpoints.values()]
+    } as any;
+    const putModels = fixture.storage.languageMemory.putNgramModels;
+    let failOnce = true;
+    fixture.storage.languageMemory.putNgramModels = async rows => {
+      if (failOnce) {
+        failOnce = false;
+        throw new Error("injected projection failure");
+      }
+      if (!putModels) throw new Error("fixture language model store is unavailable");
+      return putModels(rows);
+    };
+
+    const first = await trainOssCorpus({ storage: fixture.storage, rootPath: root, maxFiles: 10, maxFilesPerRun: 1, includeDocs: true, ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64 });
+    expect(first.filesConsidered).toBe(1);
+    expect(first.nextFileIndex).toBe(first.startFileIndex);
+    expect(first.filesSkipped.some(item => item.reason.includes("training_failed"))).toBe(true);
+
+    const second = await trainOssCorpus({ storage: fixture.storage, rootPath: root, maxFiles: 10, maxFilesPerRun: 1, includeDocs: true, ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64 });
+    expect(second.filesConsidered).toBe(1);
+    expect(second.nextFileIndex).toBe(1);
+    expect(second.codeTrained).toBe(1);
+    expect(second.docsTrained).toBe(1);
+  });
+
+  it("counts an empty projection once so resume advances to the next file", async () => {
+    const root = await tempDir("oss-empty-projection-resume-");
+    await writeFile(path.join(root, "a-empty.ts"), "", "utf8");
+    await writeFile(path.join(root, "b-valid.ts"), "export function validSurface(input: number) { return input + 1; }\n", "utf8");
+    const fixture = memoryStorage();
+
+    const result = await trainOssCorpus({
+      storage: fixture.storage,
+      rootPath: root,
+      maxFiles: 10,
+      maxFilesPerRun: 2,
+      includeDocs: false,
+      includeSource: true,
+      ngramMaxOrder: 2,
+      ngramMaxCountersPerOrder: 64
+    });
+
+    expect(result.filesConsidered).toBe(2);
+    expect(result.nextFileIndex).toBe(2);
+    expect(result.codeTrained).toBe(1);
+    expect(result.filesSkipped).toContainEqual(expect.objectContaining({
+      path: "a-empty.ts",
+      reason: "empty_language_training_projection"
+    }));
   });
 
   it("names every OSS and Gutenberg source version by title and identity at ingest, not by backfill", async () => {
@@ -744,6 +902,7 @@ interface MemoryState {
   units: LanguageUnitRecord[];
   patterns: LanguagePatternRecord[];
   frames: SemanticFrameRecord[];
+  blobs: Uint8Array[];
 }
 
 function memoryStorage(): { storage: ScceStorage; state: MemoryState } {
@@ -756,7 +915,8 @@ function memoryStorage(): { storage: ScceStorage; state: MemoryState } {
     models: [],
     units: [],
     patterns: [],
-    frames: []
+    frames: [],
+    blobs: []
   };
   const storage = {
     events: {
@@ -813,7 +973,7 @@ function memoryStorage(): { storage: ScceStorage; state: MemoryState } {
     conversation: unusedStore(),
     ingestion: unusedStore(),
     graph: { getSlice: async (query: unknown) => ({ bounded: true, query, nodes: [], edges: [], hyperedges: [] }) },
-    blobs: { put: async (bytes: Uint8Array) => blobContentHash(bytes) },
+    blobs: { put: async (bytes: Uint8Array) => { state.blobs.push(new Uint8Array(bytes)); return blobContentHash(bytes); } },
     quarantine: unusedStore(),
     proofs: unusedStore(),
     constructs: unusedStore(),

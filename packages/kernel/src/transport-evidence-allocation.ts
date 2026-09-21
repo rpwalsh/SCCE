@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { canonicalStringify, createHasher, toJsonValue } from "./primitives.js";
+import { canonicalDigestHex } from "./canonical-json-digest.js";
 import type {
   SparseAlignmentCandidate,
   SparseAlignmentCandidateSupport
@@ -46,6 +47,90 @@ export interface TransportEvidenceAllocation {
   conservationResidual: number;
   unresolvedCandidateIds: string[];
   audit: JsonValue;
+}
+
+export interface TransportEvidenceAllocationRetentionStats {
+  seenCells: number;
+  reusedCells: number;
+  uniqueCells: number;
+  indexedCandidates: number;
+}
+
+export interface TransportEvidenceAllocationRetentionPolicy {
+  compact(allocation: TransportEvidenceAllocation): TransportEvidenceAllocation;
+  stats(): TransportEvidenceAllocationRetentionStats;
+}
+
+/**
+ * Shares immutable cell records across alternative allocations for one
+ * support. The allocator itself remains mutable; callers opt into this
+ * retention policy only after an allocation is complete.
+ */
+export function createTransportEvidenceAllocationRetentionInterner(): TransportEvidenceAllocationRetentionPolicy {
+  let supportId: string | undefined;
+  const cellsByCandidate = new Map<string, TransportCellEvidenceAllocation>();
+  const stats: TransportEvidenceAllocationRetentionStats = {
+    seenCells: 0,
+    reusedCells: 0,
+    uniqueCells: 0,
+    indexedCandidates: 0
+  };
+  const compactCell = (cell: TransportCellEvidenceAllocation): TransportCellEvidenceAllocation => {
+    stats.seenCells += 1;
+    const cached = cellsByCandidate.get(cell.candidateId);
+    if (cached && sameTransportCell(cached, cell)) {
+      stats.reusedCells += 1;
+      return cached;
+    }
+    const retainedShares = cell.shares.map(share => ({ ...share }));
+    for (const share of retainedShares) Object.freeze(share);
+    Object.freeze(retainedShares);
+    const retained = { ...cell, shares: retainedShares };
+    Object.freeze(retained);
+    cellsByCandidate.set(cell.candidateId, retained);
+    stats.uniqueCells += 1;
+    stats.indexedCandidates = cellsByCandidate.size;
+    return retained;
+  };
+  return {
+    compact(allocation) {
+      if (supportId !== allocation.supportId) {
+        supportId = allocation.supportId;
+        cellsByCandidate.clear();
+        stats.indexedCandidates = 0;
+      }
+      return {
+        ...allocation,
+        cells: allocation.cells.map(compactCell)
+      };
+    },
+    stats() {
+      return { ...stats };
+    }
+  };
+}
+
+function sameTransportCell(
+  left: TransportCellEvidenceAllocation,
+  right: TransportCellEvidenceAllocation
+): boolean {
+  if (left.candidateId !== right.candidateId
+    || left.surfaceUnitId !== right.surfaceUnitId
+    || left.graphTargetId !== right.graphTargetId
+    || !Object.is(left.transportMass, right.transportMass)
+    || left.status !== right.status
+    || left.sourceCoordinates !== right.sourceCoordinates
+    || !Object.is(left.conditionalProbabilitySum, right.conditionalProbabilitySum)
+    || !Object.is(left.allocatedMass, right.allocatedMass)
+    || !Object.is(left.conservationResidual, right.conservationResidual)
+    || left.shares.length !== right.shares.length) return false;
+  return left.shares.every((share, index) => {
+    const other = right.shares[index]!;
+    return share.evidenceId === other.evidenceId
+      && share.basis === other.basis
+      && Object.is(share.conditionalProbability, other.conditionalProbability)
+      && Object.is(share.allocatedMass, other.allocatedMass);
+  });
 }
 
 export function allocateTransportEvidence(input: {
@@ -161,7 +246,7 @@ export function allocateTransportEvidence(input: {
   };
   return {
     ...canonical,
-    id: `transport_evidence.${hasher.digestHex(canonicalStringify(canonical)).slice(0, 40)}`,
+    id: `transport_evidence.${canonicalDigestHex(canonical, hasher).slice(0, 40)}`,
     audit: toJsonValue({
       allocator: "kernel.transport_evidence.normalized_conditional.v1",
       allocationPolicyId: TRANSPORT_EVIDENCE_ALLOCATION_POLICY,
@@ -172,7 +257,7 @@ export function allocateTransportEvidence(input: {
       conservedCellCount: cells.filter(cell => cell.status === "conserved").length,
       zeroMassCellCount: cells.filter(cell => cell.status === "zero_mass").length,
       unresolvedCellCount: unresolvedCandidateIds.length,
-      maximumCellResidual: Math.max(0, ...cells.map(cell => cell.conservationResidual)),
+      maximumCellResidual: cells.reduce((maximum, cell) => Math.max(maximum, cell.conservationResidual), 0),
       totalConservationResidual: conservationResidual,
       duplicatedTransportMass: false
     })

@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { performance } from "node:perf_hooks";
+import { canonicalDigestHex } from "./canonical-json-digest.js";
 import { createGraphTargetGeometry } from "./graph-target-geometry.js";
 import { canonicalStringify, createHasher, toJsonValue } from "./primitives.js";
 import type {
@@ -149,6 +150,161 @@ export interface SparseFusedTransportPlan {
   iterations: SparseTransportIteration[];
   audit: JsonValue;
 }
+
+type SparseTransportColumnMarginal = SparseFusedTransportPlan["columnMarginals"][number];
+
+export interface SparseTransportPlanRetentionStats {
+  seenColumnMarginals: number;
+  reusedColumnMarginals: number;
+  uniqueColumnMarginals: number;
+  indexedGraphTargets: number;
+  seenRowMarginals: number;
+  reusedRowMarginals: number;
+  uniqueRowMarginals: number;
+  indexedSurfaceUnits: number;
+  seenCells: number;
+  reusedCells: number;
+  uniqueCells: number;
+  indexedCandidates: number;
+}
+
+export interface SparseTransportPlanRetentionPolicy {
+  compact(plan: SparseFusedTransportPlan): SparseFusedTransportPlan;
+}
+
+/**
+ * Batch-local immutable column-record interner. Solver output remains ordinary mutable
+ * objects unless a caller explicitly compacts it through this interner.
+ */
+export function createSparseTransportPlanRetentionInterner(): SparseTransportPlanRetentionPolicy & {
+  stats(): SparseTransportPlanRetentionStats;
+} {
+  const latestByGraphTargetId = new Map<string, SparseTransportColumnMarginal>();
+  const latestBySurfaceUnitId = new Map<string, SparseFusedTransportPlan["rowMarginals"][number]>();
+  const latestByCandidateId = new Map<string, SparseTransportCell>();
+  let indexedSupportId: string | undefined;
+  let seenColumnMarginals = 0;
+  let reusedColumnMarginals = 0;
+  let uniqueColumnMarginals = 0;
+  let seenRowMarginals = 0;
+  let reusedRowMarginals = 0;
+  let uniqueRowMarginals = 0;
+  let seenCells = 0;
+  let reusedCells = 0;
+  let uniqueCells = 0;
+
+  const compact = (plan: SparseFusedTransportPlan): SparseFusedTransportPlan => {
+    if (indexedSupportId !== plan.supportId) {
+      indexedSupportId = plan.supportId;
+      latestBySurfaceUnitId.clear();
+      latestByCandidateId.clear();
+    }
+    const columnMarginals = plan.columnMarginals.map(column => {
+      seenColumnMarginals += 1;
+      const previous = latestByGraphTargetId.get(column.graphTargetId);
+      if (previous && sameColumnMarginal(previous, column)) {
+        reusedColumnMarginals += 1;
+        return previous;
+      }
+      const frozen = Object.isFrozen(column)
+        ? column
+        : Object.freeze({ ...column }) as SparseTransportColumnMarginal;
+      latestByGraphTargetId.set(column.graphTargetId, frozen);
+      uniqueColumnMarginals += 1;
+      return frozen;
+    });
+    const rowMarginals = plan.rowMarginals.map(row => {
+      seenRowMarginals += 1;
+      const previous = latestBySurfaceUnitId.get(row.surfaceUnitId);
+      if (previous && sameRowMarginal(previous, row)) {
+        reusedRowMarginals += 1;
+        return previous;
+      }
+      const frozen = Object.isFrozen(row)
+        ? row
+        : Object.freeze({ ...row }) as SparseFusedTransportPlan["rowMarginals"][number];
+      latestBySurfaceUnitId.set(row.surfaceUnitId, frozen);
+      uniqueRowMarginals += 1;
+      return frozen;
+    });
+    const cells = plan.cells.map(cell => {
+      seenCells += 1;
+      const previous = latestByCandidateId.get(cell.candidateId);
+      if (previous && sameTransportCell(previous, cell)) {
+        reusedCells += 1;
+        return previous;
+      }
+      const frozen = Object.isFrozen(cell)
+        ? cell
+        : Object.freeze({ ...cell });
+      latestByCandidateId.set(cell.candidateId, frozen);
+      uniqueCells += 1;
+      return frozen;
+    });
+    return { ...plan, cells, rowMarginals, columnMarginals };
+  };
+
+  return {
+    compact,
+    stats: () => ({
+      seenColumnMarginals,
+      reusedColumnMarginals,
+      uniqueColumnMarginals,
+      indexedGraphTargets: latestByGraphTargetId.size,
+      seenRowMarginals,
+      reusedRowMarginals,
+      uniqueRowMarginals,
+      indexedSurfaceUnits: latestBySurfaceUnitId.size,
+      seenCells,
+      reusedCells,
+      uniqueCells,
+      indexedCandidates: latestByCandidateId.size
+    })
+  };
+}
+
+function sameColumnMarginal(
+  left: SparseTransportColumnMarginal,
+  right: SparseTransportColumnMarginal
+): boolean {
+  return left.graphTargetId === right.graphTargetId
+    && left.implicitType === right.implicitType
+    && Object.is(left.implicitCost, right.implicitCost)
+    && Object.is(left.targetMass, right.targetMass)
+    && Object.is(left.transportedMass, right.transportedMass)
+    && Object.is(left.graphImplicitMass, right.graphImplicitMass)
+    && Object.is(left.overflowMass, right.overflowMass)
+    && Object.is(left.residual, right.residual);
+}
+
+function sameRowMarginal(
+  left: SparseFusedTransportPlan["rowMarginals"][number],
+  right: SparseFusedTransportPlan["rowMarginals"][number]
+): boolean {
+  return left.surfaceUnitId === right.surfaceUnitId
+    && left.nullType === right.nullType
+    && Object.is(left.nullCost, right.nullCost)
+    && Object.is(left.targetMass, right.targetMass)
+    && Object.is(left.transportedMass, right.transportedMass)
+    && Object.is(left.surfaceNullMass, right.surfaceNullMass)
+    && Object.is(left.overflowMass, right.overflowMass)
+    && Object.is(left.residual, right.residual);
+}
+
+function sameTransportCell(left: SparseTransportCell, right: SparseTransportCell): boolean {
+  return left.candidateId === right.candidateId
+    && left.surfaceUnitId === right.surfaceUnitId
+    && left.graphTargetId === right.graphTargetId
+    && Object.is(left.mass, right.mass)
+    && Object.is(left.featureCost, right.featureCost)
+    && Object.is(left.structuralCost, right.structuralCost)
+    && Object.is(left.orderingCost, right.orderingCost)
+    && Object.is(left.crossDocumentCost, right.crossDocumentCost)
+    && Object.is(left.anchorCost, right.anchorCost)
+    && Object.is(left.effectiveCost, right.effectiveCost)
+    && left.exactAnchor === right.exactAnchor;
+}
+
 
 interface RuntimeCell {
   candidate: SparseAlignmentCandidate;
@@ -459,7 +615,7 @@ export function solveSparseFusedUnbalancedTransport(input: {
   };
   return {
     ...canonical,
-    id: `sparse_transport.${hasher.digestHex(canonicalStringify(canonical)).slice(0, 40)}`,
+    id: `sparse_transport.${canonicalDigestHex(canonical, hasher).slice(0, 40)}`,
     audit: toJsonValue({
       solver: "kernel.sparse_fused_unbalanced_transport.v1",
       supportCellCount: input.support.candidates.length,

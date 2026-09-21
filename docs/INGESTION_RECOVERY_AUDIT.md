@@ -614,3 +614,90 @@ not one uninterrupted `pnpm test` invocation. Logs:
 `.tmp/wikipedia-alignment-repair-final-{build2,focused}.log`,
 `.tmp/wikipedia-alignment-repair-resumed-summary.json`, and
 `.tmp/wikipedia-alignment-repair-gates.log`.
+
+### Third measured trial: stopped on retained-plan growth
+
+Commit `6917344e` was pushed before the next fresh-schema run at 12:02 UTC.
+Compilation took 79.840 seconds; initial and final transport each completed all
+48 supports in 17.270 and 20.636 seconds. Alternative extraction progressed,
+but retained plan data continued accumulating. The stop decision was made after
+19 supports / 152 retained plans at 2,645 MB heap. By the guarded process stop
+at 12:07:36 UTC, the trace recorded 22 completed supports / 176 plans, with a
+sampled heap peak of 2,779 MB. This was an operator stop, not another V8 OOM.
+
+The process exited -1 after 328.376 seconds. Read-only checks found 33 article
+sources, 66 source versions and 311 valid evidence spans; learned tables were
+empty after the outer transaction rolled back. This is not trained throughput.
+The stale status file still says running; `operator-stop.json` and
+`run-exit.json` are the authoritative termination records.
+
+Artifacts: `artifacts/scce6-wikipedia-300-20260921T120208Z`. The backup SHA-256 is
+`7a9c0eaf351cbcff48264904332671887ab4ff9aec7f9928c3635013fa3e8291`;
+the schema was renamed to `scce6_stopped_20260921_120208` after hash and count
+verification. Backup filenames retain the helper's older `post-oom` suffix,
+although this run did not OOM. No source data was deleted.
+
+The next required gate is a complete reconstructed 48-support alignment batch
+under a bounded heap, preserving full plan fields and hypotheses. No further
+production trial is justified merely by passing small solver tests.
+
+### Retained-artifact memory and recovery repair
+
+The reconstructed batch exposed separate retention and serialization costs.
+Under a 2 GB heap, column sharing alone reached 40 completed supports; sharing
+row/cell records also allowed extraction of the largest support (41), but
+evidence allocation still exhausted memory. Incremental allocation hashing
+reached its seventh allocation. Removing the full normalized-tree copy then
+completed all eight allocations and the retained set for support 41, before
+exhausting the heap during support 42. That last run exited 134 after 334.816
+seconds; its log is `.tmp/wiki-alignment-memory-lazy-canonical.log`.
+
+Canonical hashing now streams artifact records while preserving the canonical
+byte format and supporting custom hashers that only implement `digestHex`.
+The focused checks cover Unicode, numeric key ordering, normalization, sparse
+arrays, repeated records, legacy-hasher equivalence and incremental traversal.
+Default solver/allocator outputs remain mutable; explicit batch retention
+policies share equal private records without removing fields or alternatives.
+
+Oversized alignment events now retain their complete payloads in hash-bound
+blob fragments instead of the former counts-only fallback. Both history readers
+resolve those artifacts. Reads validate event groups, fragment ordering, hashes,
+byte counts and configurable aggregate budgets. Evidence allocation bodies are
+included alongside their previously persisted IDs. Small-event compatibility
+and PostgreSQL transaction behavior still require the final integrated checks.
+
+Gutenberg and OSS ingestion now retain original bytes separately from model-text
+derivatives. Existing derivative/model identities are preserved; derivation is
+document-level because these transforms do not provide a precise raw-coordinate
+map. Per-item checkpoints commit with learned state, preventing retries from
+recounting segmentation documents and training events. A disposable PostgreSQL
+rehearsal verifies raw/derivative blobs, evidence offsets, unchanged retry counts,
+and recovery after a lost commit acknowledgement. This assumes the existing
+single host writer; no concurrent lease protocol is claimed.
+
+After sharing equal evidence-allocation cells as well as transport records, the
+complete reconstructed batch passed under `--max-old-space-size=2048`: 48
+supports, 384 retained plans and 384 allocations in 326.340 seconds. Sampled
+heap peaked at 1,776 MB and RSS at 2,026 MB; the process exited 0. Of 1,432,984
+allocation cells, 582,866 reused an equal retained record. No hypothesis or cell
+was removed. The identity-list digest was
+`f6c384e429675718e1f4e2de918c81ee520a10c502e91532498a80f8fa55e582`.
+Report: `.tmp/wiki-alignment-memory-allocation-retention-20260921/report.json`.
+This fixture lacks lattices, so the result does not cover held-out evaluation,
+construction compilation, persistence, or runtime qualification.
+
+The standalone PostgreSQL checks are now reproducible with
+`node tools/rehearse-corpus-training.mjs --run=true` and
+`node tools/rehearse-alignment-artifacts.mjs --run=true` after a build. Both use
+owned disposable schemas. The latter checks multiple artifact groups, complete
+allocation bodies, blob hashes and rollback of event/blob writes together.
+
+Integrated validation: `pnpm test` passed its build, all 20 unit shards (563
+files / 3,511 tests passed; 10 files / 14 tests skipped), 43 evaluation tests,
+hidden-model check, source-text check and inventory. Both promoted PostgreSQL
+rehearsals passed: 12 corpus checks and four artifact checks. The artifact
+rehearsal's first comparison incorrectly required independent event groups to
+arrive in insertion order; comparing complete bodies by allocation ID corrected
+the test expectation. No production behavior was changed for that correction.
+Logs: `.tmp/alignment-retention-full-test.log` and
+`.tmp/alignment-retention-{corpus,artifacts}-postgres.log`.

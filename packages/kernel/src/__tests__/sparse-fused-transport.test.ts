@@ -3,10 +3,12 @@
 import { describe, expect, it } from "vitest";
 import {
   buildSurfaceLattice,
+  canonicalStringify,
   compileSparseAlignmentCandidateSupports,
   createClock,
   createHasher,
   createIdFactory,
+  createSparseTransportPlanRetentionInterner,
   solveSparseFusedUnbalancedTransport,
   solveSparseFusedUnbalancedTransportWithResourceBudget,
   type EvidenceId,
@@ -129,6 +131,82 @@ describe("sparse fused unbalanced graph-surface transport", () => {
       support: compiled.supports[0]!, targetIndex: changedTargetIndex, budget, hasher
     });
     expect(changedFresh).toEqual(changedFirst);
+  });
+
+  it("interns equal column marginals without merging changed records", () => {
+    const compiled = fixture();
+    const support = compiled.supports[0]!;
+    const first = solveSparseFusedUnbalancedTransport({
+      support,
+      targetIndex: compiled.targetIndex,
+      hasher
+    });
+    const second = solveSparseFusedUnbalancedTransport({
+      support,
+      targetIndex: compiled.targetIndex,
+      hasher
+    });
+    const interner = createSparseTransportPlanRetentionInterner();
+    const compactFirst = interner.compact(first);
+    const compactSecond = interner.compact(second);
+    expect(canonicalStringify(compactFirst)).toBe(canonicalStringify(first));
+    expect(canonicalStringify(compactSecond)).toBe(canonicalStringify(second));
+    expect(compactFirst.columnMarginals[0]).toBe(compactSecond.columnMarginals[0]);
+    expect(compactFirst.rowMarginals[0]).toBe(compactSecond.rowMarginals[0]);
+    expect(compactFirst.cells[0]).toBe(compactSecond.cells[0]);
+    expect(Object.isFrozen(compactFirst.columnMarginals[0])).toBe(true);
+    expect(Object.isFrozen(compactFirst.rowMarginals[0])).toBe(true);
+    expect(Object.isFrozen(compactFirst.cells[0])).toBe(true);
+    expect(Object.isFrozen(first.columnMarginals[0])).toBe(false);
+    expect(Object.isFrozen(first.rowMarginals[0])).toBe(false);
+    expect(Object.isFrozen(first.cells[0])).toBe(false);
+    const frozenInterner = createSparseTransportPlanRetentionInterner();
+    const frozenFirst = frozenInterner.compact(first);
+    const frozenOther = frozenInterner.compact({
+      ...frozenFirst,
+      supportId: `${frozenFirst.supportId}.other`
+    });
+    expect(frozenOther.columnMarginals[0]).toBe(frozenFirst.columnMarginals[0]);
+    expect(frozenOther.rowMarginals[0]).toBe(frozenFirst.rowMarginals[0]);
+    expect(frozenOther.cells[0]).toBe(frozenFirst.cells[0]);
+    const otherSupport = interner.compact({
+      ...second,
+      supportId: `${second.supportId}.other`
+    });
+    expect(otherSupport.columnMarginals[0]).toBe(compactSecond.columnMarginals[0]);
+    expect(otherSupport.rowMarginals[0]).not.toBe(compactSecond.rowMarginals[0]);
+    expect(otherSupport.cells[0]).not.toBe(compactSecond.cells[0]);
+
+    const changed = {
+      ...second,
+      columnMarginals: second.columnMarginals.map((column, index) => index === 0
+        ? {
+          ...column,
+          transportedMass: column.transportedMass + 0.25,
+          implicitCost: column.implicitCost + 0.125
+        }
+        : column)
+    };
+    const compactChanged = interner.compact(changed);
+    expect(canonicalStringify(compactChanged)).toBe(canonicalStringify(changed));
+    expect(compactChanged.columnMarginals[0]).not.toBe(compactSecond.columnMarginals[0]);
+    const unmatched = {
+      ...second,
+      columnMarginals: second.columnMarginals.map((column, index) => index === 0
+        ? {
+          ...column,
+          transportedMass: 0,
+          overflowMass: 0,
+          graphImplicitMass: column.targetMass,
+          residual: column.targetMass
+        }
+        : column)
+    };
+    interner.compact(unmatched);
+    const stats = interner.stats();
+    expect(stats.reusedColumnMarginals).toBeGreaterThan(0);
+    expect(stats.uniqueColumnMarginals).toBeGreaterThan(0);
+    expect(stats.reusedColumnMarginals / stats.seenColumnMarginals).toBeGreaterThan(0.5);
   });
 
   // Plan item 115: real per-batch resource-budget instrumentation
