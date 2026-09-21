@@ -1,0 +1,90 @@
+name: Realization proof gate review
+
+on:
+  pull_request:
+    branches: [review/ingestion-graph-refinement]
+    paths:
+      - .github/workflows/realization-proof-gate.yml
+      - packages/kernel/**
+      - package.json
+      - pnpm-lock.yaml
+      - tools/test-unit-sharded.mjs
+
+permissions:
+  contents: read
+
+concurrency:
+  group: realization-proof-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  regression:
+    # This review workflow must not run unrelated changes or fork code.
+    if: github.event.pull_request.number == 5 && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'fix/realization-proof-gate-20260921'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        revision: [base, patch]
+    env:
+      CI: 'true'
+      SCCE_DATABASE_URL: ''
+      SCCE_TEST_DATABASE_URL: ''
+      DATABASE_URL: ''
+      SCCE_ALLOW_AUTOMATIC_WEB: '0'
+    steps:
+      - name: Checkout exact revision without persisting credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ matrix.revision == 'base' && github.event.pull_request.base.sha || github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Install supported Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24.18.0'
+      - name: Install pinned package manager and dependencies
+        id: install
+        run: |
+          node --version
+          git rev-parse HEAD
+          npm install --global pnpm@10.28.2
+          pnpm --version
+          pnpm install --frozen-lockfile
+      - name: Full TypeScript build
+        id: build
+        continue-on-error: true
+        run: pnpm build
+      - name: Real-parser and neighboring realization regressions
+        id: focused
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests=(
+            packages/kernel/src/__tests__/semantic-round-trip.test.ts
+            packages/kernel/src/__tests__/translation-round-trip-gate.test.ts
+            packages/kernel/src/__tests__/deterministic-surface-own-source-text.test.ts
+            packages/kernel/src/__tests__/mouth-learned-construction.test.ts
+          )
+          for test in packages/kernel/src/__tests__/semantic-round-trip-atom-contract.test.ts packages/kernel/src/__tests__/semantic-round-trip-soundness.test.ts; do
+            if [[ -f "$test" ]]; then tests+=("$test"); fi
+          done
+          pnpm exec vitest run "${tests[@]}" --maxWorkers=2 --reporter=verbose
+      - name: Full unit regression suite
+        id: full
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        continue-on-error: true
+        run: pnpm test:unit
+      - name: Require all executed checks to pass
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          FOCUSED_OUTCOME: ${{ steps.focused.outcome }}
+          FULL_OUTCOME: ${{ steps.full.outcome }}
+        run: |
+          printf 'Build=%s Focused=%s Full=%s\n' "$BUILD_OUTCOME" "$FOCUSED_OUTCOME" "$FULL_OUTCOME"
+          test "$BUILD_OUTCOME" = success
+          test "$FOCUSED_OUTCOME" = success
+          test "$FULL_OUTCOME" = success
