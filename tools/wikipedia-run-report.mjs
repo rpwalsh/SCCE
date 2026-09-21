@@ -9,6 +9,7 @@ import { createReadStream } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline";
+import { buildIngestionMetrics, normalizeRunExit, reportStatus } from "./wikipedia-run-report-metrics.mjs";
 
 const SAFE_SCHEMA = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const BATCH_SIZE = 32;
@@ -16,6 +17,7 @@ const args = parseArgs(process.argv.slice(2));
 const startedAt = Date.now();
 const configPath = args.config ?? process.env.SCCE_REHEARSAL_CONFIG ?? "scce.config.json";
 let statusInput;
+let runExit;
 let traceSummary;
 let storage;
 let report;
@@ -25,6 +27,7 @@ try {
   const configModule = await import("../packages/adapters-node/dist/index.js");
   const config = await configModule.readScceRuntimeConfig(configPath);
   statusInput = args.status ? await readJson(args.status, "status") : undefined;
+  runExit = normalizeRunExit(args["run-exit"] ? await readJson(args["run-exit"], "run-exit") : undefined);
   traceSummary = args.trace ? await aggregateTrace(args.trace) : { provided: false };
   storage = configModule.createPostgresStorageAdapter({
     url: config.database.url,
@@ -36,9 +39,9 @@ try {
     await storage.query("SET TRANSACTION READ ONLY");
     return inspectDatabase(storage, statusInput);
   });
-  report = buildReport({ database, status: statusInput, trace: traceSummary, elapsedMs: Date.now() - startedAt, configPath });
+  report = buildReport({ database, status: statusInput, runExit, trace: traceSummary, elapsedMs: Date.now() - startedAt, configPath });
 } catch (error) {
-  report = buildFailureReport({ error, status: statusInput, trace: traceSummary, elapsedMs: Date.now() - startedAt, configPath, schema: args.schema ?? null });
+  report = buildFailureReport({ error, status: statusInput, runExit, trace: traceSummary, elapsedMs: Date.now() - startedAt, configPath, schema: args.schema ?? null });
 } finally {
   if (storage) await storage.close().catch(() => undefined);
 }
@@ -56,7 +59,7 @@ function parseArgs(raw) {
     const name = equal >= 0 ? item.slice(2, equal) : item.slice(2);
     const value = equal >= 0 ? item.slice(equal + 1) : raw[++index];
     if (!value || value.startsWith("--")) throw new Error(`--${name} requires a value`);
-    if (!["schema", "status", "trace", "out", "config"].includes(name)) throw new Error(`unknown option --${name}`);
+    if (!["schema", "status", "trace", "out", "config", "run-exit"].includes(name)) throw new Error(`unknown option --${name}`);
     out[name] = value;
   }
   return out;
@@ -343,36 +346,39 @@ async function aggregateTrace(filePath) {
   };
 }
 
-function buildReport({ database, status, trace, elapsedMs, configPath }) {
-  const pages = Number(status?.pages ?? database.wikipedia.pages.pageSources);
+function buildReport({ database, status, runExit, trace, elapsedMs, configPath }) {
+  const pages = Number(database.wikipedia.pages.pageSources);
   const statusElapsedMs = status?.startedAt && (status.finishedAt ?? status.updatedAt) ? Math.max(0, Number(status.finishedAt ?? status.updatedAt) - Number(status.startedAt)) : null;
   const training = status
     ? { assessment: status.fullTrainingComplete === true ? "reported_complete_by_ingestor" : "partial_or_incomplete", state: status.state, fullTrainingRequested: status.fullTrainingRequested === true, fullTrainingComplete: status.fullTrainingComplete === true, stoppedByHeapSafetyBound: status.stoppedByHeapSafetyBound === true, stoppedByOwner: status.stoppedByOwner === true, warnings: Array.isArray(status.warnings) ? status.warnings.length : null }
     : { assessment: "unknown_without_status", reason: "no --status file supplied" };
-  const passed = database.evidenceOffsets.passed && database.statusConsistency.passed && database.schemaInspection.missingRequiredTables.length === 0;
+  const databasePassed = database.evidenceOffsets.passed && database.statusConsistency.passed && database.schemaInspection.missingRequiredTables.length === 0;
+  const overall = reportStatus({ databasePassed, runExit: runExit ?? normalizeRunExit(undefined) });
   return {
     schema: "scce.wikipediaRunReport.v1",
-    status: passed ? "passed" : "failed",
+    status: overall.status,
+    databaseStatus: overall.databaseStatus,
+    processStatus: overall.processStatus,
     credentialsRecorded: false,
     configPath: path.resolve(configPath),
     database: { schema: database.schema, readOnlyTransaction: true },
     elapsedMs,
-    ingestion: { statusPages: status?.pages ?? null, pagesMeasured: pages, pagesPerSecond: rate(pages, statusElapsedMs ?? elapsedMs), statusElapsedMs },
+    ingestion: buildIngestionMetrics({ status, databasePages: pages, statusElapsedMs, runExit: runExit ?? normalizeRunExit(undefined) }),
     training,
     databaseInspection: database,
     trace
   };
 }
 
-function buildFailureReport({ error, status, trace, elapsedMs, configPath, schema }) {
-  return { schema: "scce.wikipediaRunReport.v1", status: "failed", credentialsRecorded: false, configPath: path.resolve(configPath), database: { schema, readOnlyTransaction: false }, elapsedMs, ingestion: { statusPages: status?.pages ?? null, pagesMeasured: null, pagesPerSecond: null, statusElapsedMs: null }, training: { assessment: status ? "unverified_due_to_report_error" : "unknown_without_status" }, trace: trace ?? { provided: false }, error: safeMessage(error) };
+function buildFailureReport({ error, status, runExit, trace, elapsedMs, configPath, schema }) {
+  const process = runExit ?? normalizeRunExit(undefined);
+  return { schema: "scce.wikipediaRunReport.v1", status: "failed", databaseStatus: "unavailable", processStatus: process.provided ? process.status : "unavailable", credentialsRecorded: false, configPath: path.resolve(configPath), database: { schema, readOnlyTransaction: false }, elapsedMs, ingestion: buildIngestionMetrics({ status, databasePages: null, statusElapsedMs: null, runExit: process }), training: { assessment: status ? "unverified_due_to_report_error" : "unknown_without_status" }, trace: trace ?? { provided: false }, error: safeMessage(error) };
 }
 
 async function queryRows(adapter, sql, params = []) { return adapter.query(sql, params); }
 
 function finite(value) { return typeof value === "number" && Number.isFinite(value) ? value : 0; }
 function maximum(current, value) { return typeof value === "number" && Number.isFinite(value) ? Math.max(current ?? value, value) : current; }
-function rate(pages, elapsedMs) { return elapsedMs > 0 && Number.isFinite(pages) ? Number((pages / (elapsedMs / 1000)).toFixed(3)) : null; }
 function safeMessage(error) { return String(error instanceof Error ? error.message : error).replace(/postgres(?:ql)?:\/\/[^\s"'`]+/giu, "[redacted-database-url]").slice(0, 1200); }
 
 async function readJson(filePath, label) {

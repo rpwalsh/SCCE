@@ -435,3 +435,45 @@ well-formed stage telemetry. Its owned databases were cleaned up before the
 measured source run. The first production launcher rejected `--schema=...` before
 ingestion; the corrected `--schema scce6_runtime` launch began the authorized
 300-page host run. Core code is frozen at `f5fb909d` for this input identity.
+
+### First measured host run: memory failure
+
+The 300-page run on 2026-09-21 exited 134 after 317.405 seconds with a V8
+out-of-memory failure at the 3,072 MiB heap limit. It used the full yopp English
+Wikipedia dump and its verified index. The last status file was stale at 29
+pages; a read-only inspection after the process exited found 33 article sources,
+66 original/derivative source versions and 311 evidence spans. All 311 spans
+passed source-byte, hash and code-point-offset checks. Language profiles,
+n-gram models, language units/patterns, semantic frames, relation observations
+and calibration observations were all zero: the outer training transaction
+rolled back. This candidate is not trained or qualified.
+
+The first 32-page training batch contained 1,196,982 UTF-8 text bytes. Compilation
+took 128.893 seconds and produced eight chunk models and 330,068 observations
+in memory. Persistence inside the subsequently rolled-back transaction took
+15.314 seconds. The last completed trace stage was relation promotion, reporting
+3,816 decisions; a decision count is not a promoted-relation count. Sampled
+memory reached 2,850 MiB heap and 3,261 MiB RSS. No completed 300-page throughput
+or full-Wikipedia projection follows from this failed run.
+
+Artifacts are in `artifacts/scce6-wikipedia-300-20260921T093905Z`. The schema was
+backed up without mutation to `scce6-runtime-post-oom.dump` (12,266,943 bytes,
+SHA-256 `7bc0e86b8f4267b0f9ad74313ac2dca1fd790eae09d0cfa78bff38b03cc85cf2`).
+`pg_dump` and archive-list verification exited zero; restoration has not yet
+been tested. Docker remains off. Compiler identity remains enforced: changing
+the compiler requires preserving this diagnostic candidate and starting a clean
+candidate, rather than silently resuming with different code.
+
+The run reporter now separates database-check results from process exit status
+and accepts `--run-exit`. It never uses its own inspection duration as ingestion
+time. A rate requires both process duration and a recorded run-local page count
+or starting durable count; historical runs lacking that baseline report a null
+rate. Four focused Node tests passed, including resumed cumulative counts.
+
+`tools/wikipedia-candidate-diagnostic.mjs` can clone a selected schema into a
+disposable local PostgreSQL database for testing the ordinary runtime. The clone
+is explicitly not release qualification. Against the failed candidate, dump and
+restore, adapter verification and owned-database cleanup passed; activation
+correctly exited 1 because no validating candidate existed. Source schema6
+counts remained unchanged. Positive activation still requires testing with an
+actual learned candidate.
