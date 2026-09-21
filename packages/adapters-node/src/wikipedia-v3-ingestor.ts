@@ -1424,15 +1424,15 @@ export class WikipediaV3Ingestor {
       opaqueRoleModel,
       hasher: this.hasher
     });
-    if (semanticCandidates.length) {
-      const promotedGraph = graphFromStructuredSemanticCandidates({
+    const promotedGraph = semanticCandidates.length ? graphFromStructuredSemanticCandidates({
         candidates: semanticCandidates,
         observedAt: createdAt,
         ids: this.ids,
         hasher: this.hasher,
         relationPromotionModel,
         opaqueRoleModel
-      });
+      }) : { nodes: [], edges: [], hyperedges: [] };
+    if (promotedGraph.hyperedges.length) {
       const promotedNodes = stampGraphNodes(promotedGraph.nodes, WIKIPEDIA_INFORMATION_LABEL);
       const promotedEdges = stampGraphEdges(promotedGraph.edges, WIKIPEDIA_INFORMATION_LABEL);
       const promotedHyperedges = promotedGraph.hyperedges.map(hyperedge => ({
@@ -1919,6 +1919,12 @@ export class WikipediaV3Ingestor {
           globalOptimalityClaimed: false,
           candidateMemory: "O(|S|*K_pi)",
           denseMatrixMaterialized: false
+      });
+    } else if (semanticCandidates.length) {
+      trace.mark("relation.alignment.skip.no-promoted-hyperedges", {
+        candidates: semanticCandidates.length,
+        promotionDecisions: relationPromotionModel.decisions.length,
+        promotedRelations: relationPromotionModel.decisions.filter(decision => decision.promoted).length
       });
     }
     const importedLanguageShard: WikipediaLanguageShardImport = {

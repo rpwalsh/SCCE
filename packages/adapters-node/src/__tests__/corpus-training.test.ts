@@ -72,6 +72,33 @@ describe("prepared corpus training", () => {
     expect(Object.values(state).every(rows => rows.length === 0)).toBe(true);
   });
 
+  it("detaches a creative compiler's small result while keeping the prepared commit input-bound", async () => {
+    const { storage, state } = memoryStorage();
+    const compilerPattern = {
+      id: "creative.fixture.pattern",
+      profileId: "creative.fixture.profile",
+      patternKind: "semantic_role" as const,
+      support: 1,
+      entropy: 0,
+      patternJson: { schema: "creative.fixture", original: true },
+      evidenceIds: [],
+      updatedAt: 1
+    };
+    const input = {
+      ...options(storage),
+      creativeEventCompiler: {
+        id: "creative.fixture.compiler",
+        compile: () => ({ status: "compiled" as const, pattern: compilerPattern, bundle: {} as any })
+      }
+    };
+    const prepared = await prepareLanguageCorpusTraining(input);
+    compilerPattern.patternJson.original = false;
+    await commitLanguageCorpusTraining(input, prepared);
+    const persisted = state.patterns.find(pattern => pattern.id === compilerPattern.id);
+    expect(persisted?.patternJson).toMatchObject({ original: true });
+    expect(persisted?.patternJson).not.toMatchObject({ original: false });
+  });
+
   it("propagates graph lookup failures and rolls back a later model write failure", async () => {
     const { storage, state } = memoryStorage();
     const input = options(storage);

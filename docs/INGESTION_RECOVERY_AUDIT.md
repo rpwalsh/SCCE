@@ -428,10 +428,10 @@ source-byte and stage-timing inspection for the following measured ingestion.
 Article throughput and learned speech still require that actual run; these
 regressions do not establish full-corpus speed, calibration or a Qwen win.
 
-The replay rehearsal subsequently passed 38 checks after adding populated-data
+The replay rehearsal subsequently passed 33 checks after adding populated-data
 verification with the run report: two pages, four page source versions, two exact
 evidence spans, matching journal totals, two committed training documents and
-well-formed stage telemetry. Its owned databases were cleaned up before the
+38 well-formed stage records. Its owned databases were cleaned up before the
 measured source run. The first production launcher rejected `--schema=...` before
 ingestion; the corrected `--schema scce6_runtime` launch began the authorized
 300-page host run. Core code is frozen at `f5fb909d` for this input identity.
@@ -477,3 +477,38 @@ restore, adapter verification and owned-database cleanup passed; activation
 correctly exited 1 because no validating candidate existed. Source schema6
 counts remained unchanged. Positive activation still requires testing with an
 actual learned candidate.
+
+### Memory repair and comparison preparation
+
+The Wikipedia alignment stage now requires promoted structured hyperedges.
+Previously, 15,003 candidates with zero promoted targets still triggered lattice
+construction for up to 48 spans. The skipped path now emits its actual reason.
+The language trainer snapshots mutable inputs before compilation, releases a
+successfully consumed preparation payload, and retains failed preparations for
+retry. A creative-compiler result is detached separately. No batch, vocabulary,
+order, evidence or promotion threshold was reduced.
+
+Kneser-Ney temporary maps are released before final model assembly. Lattice
+normalization, form identities and script classification reuse identical work
+within a document; occurrence identities and mutable identity records remain
+separate. Complete lattice output matched the prior implementation on Unicode
+fixtures and a saved 150,000-character sample. One full-compiler comparison on
+that sample measured 15.747 seconds before and 14.415 seconds after, with the
+same artifact counts. This single sample does not establish sustained throughput
+or an hours-long full-corpus build.
+
+The post-repair PostgreSQL rehearsal passed 33 checks, including committed
+lost-acknowledgement replay, with schema5/schema6 unchanged and all three owned
+schemas removed (`.tmp/wikipedia-replay-rehearsal-final-adapter.log`). The build
+passed, followed by full `pnpm test` exit 0: 560 files / 3,482 tests passed,
+10 files / 14 tests skipped, and 43 evaluation-harness tests passed. Hidden-model
+and source-text checks passed (1,335 files scanned, zero source-text violations).
+Logs are `.tmp/wikipedia-memory-build.log` and
+`.tmp/wikipedia-memory-full-suite.log`. A fresh measured run remains pending.
+
+The Qwen comparison adapter now supports an explicit `--answer-style=natural`
+for composed corpus answers or closed-book knowledge questions. Corpus citations
+in that mode follow the model's numbered references; their byte spans cover the
+actual supplied windows. The default extractive prompt remains available for
+the existing cloze tests. Five adapter tests passed using a mock local endpoint;
+no actual Qwen inference or comparative score has yet been recorded.

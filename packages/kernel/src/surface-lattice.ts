@@ -211,6 +211,56 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
   const coordinates = buildSurfaceCoordinateIndex(text);
   const codePointIndexByUtf16 = coordinates.utf16ToCodePoint;
   const transitionEntropyByPosition = localTransitionEntropyByPosition(text);
+  const normalizedSurfaceCache = new Map<string, string>();
+  const scriptCache = new Map<string, string>();
+  const normalizedFormIdentityCache = new Map<string, CanonicalIdentity>();
+  const surfaceFormClassIdentityCache = new Map<string, CanonicalIdentity>();
+  const normalizedSurfaceFor = (surface: string): string => {
+    const cached = normalizedSurfaceCache.get(surface);
+    if (cached !== undefined) return cached;
+    const normalized = normalizeSurface(surface, normalizationContract);
+    normalizedSurfaceCache.set(surface, normalized);
+    return normalized;
+  };
+  const scriptForSurface = (surface: string): string => {
+    const cached = scriptCache.get(surface);
+    if (cached !== undefined) return cached;
+    const script = dominantScriptId(surface);
+    scriptCache.set(surface, script);
+    return script;
+  };
+  const normalizedFormIdentityFor = (normalized: string): CanonicalIdentity => {
+    const cached = normalizedFormIdentityCache.get(normalized);
+    if (cached) return cached;
+    const identity = createCanonicalIdentity({
+      kind: "normalized_surface_form",
+      fields: {
+        normalizationContractId: normalizationContract.id,
+        normalizedSurface: normalized
+      },
+      normalizationContract,
+      hasher
+    });
+    normalizedFormIdentityCache.set(normalized, identity);
+    return identity;
+  };
+  const surfaceFormClassIdentityFor = (normalizedFormIdentity: CanonicalIdentity, script: string): CanonicalIdentity => {
+    const key = `${normalizedFormIdentity.id}\u0001${script}`;
+    const cached = surfaceFormClassIdentityCache.get(key);
+    if (cached) return cached;
+    const identity = createCanonicalIdentity({
+      kind: "surface_form_class",
+      fields: {
+        normalizationContractId: normalizationContract.id,
+        normalizedSurfaceFormId: normalizedFormIdentity.id,
+        unicodeScriptId: script
+      },
+      normalizationContract,
+      hasher
+    });
+    surfaceFormClassIdentityCache.set(key, identity);
+    return identity;
+  };
   // Built once and reused for every candidate's boundary evidence below.
   // boundaryEvidenceAt only ever reads the one or two codepoints adjacent to
   // a position; it used to re-spread the *entire* document text into a
@@ -250,13 +300,15 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
     candidates: higherCandidates,
     model,
     coordinates,
-    normalizationContract,
     context: options.boundaryFeatureContext,
-    hasher
+    normalizedSurfaceFor,
+    normalizedFormIdentityFor,
+    surfaceFormClassIdentityFor,
+    scriptForSurface
   });
 
   for (const candidate of candidates) {
-    const key = recurrenceKey(candidate, normalizationContract);
+    const key = recurrenceKey(candidate, normalizedSurfaceFor);
     normalizedCounts.set(key, (normalizedCounts.get(key) ?? 0) + 1);
   }
 
@@ -273,13 +325,14 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
     const identity = `${candidate.kind}\u0001${candidate.codePointStart}\u0001${candidate.codePointEnd}\u0001${candidate.surface}`;
     if (seen.has(identity)) continue;
     seen.add(identity);
-    const normalized = normalizeSurface(candidate.surface, normalizationContract);
-    const recurrenceCount = normalizedCounts.get(recurrenceKey(candidate, normalizationContract)) ?? 1;
+    const normalized = normalizedSurfaceFor(candidate.surface);
+    const recurrenceCount = normalizedCounts.get(recurrenceKey(candidate, normalizedSurfaceFor)) ?? 1;
     const before = boundaryEvidenceAt({
       codePoints,
       positionCodePoint: candidate.codePointStart,
       positionByte: coordinates.utf16ToByte[candidate.utf16Start] ?? 0,
       positionGrapheme: coordinates.utf16ToGraphemeStart[candidate.utf16Start] ?? 0,
+      scriptForSurface,
       structuralBoundary: structuralBoundaryAt(candidate.utf16Start, candidate.utf16End, text),
       transitionEntropyByPosition,
       repeatedContextSupport: recurrenceCount,
@@ -293,6 +346,7 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
       positionCodePoint: candidate.codePointEnd,
       positionByte: coordinates.utf16ToByte[candidate.utf16End] ?? Buffer.byteLength(text, "utf8"),
       positionGrapheme: coordinates.utf16ToGraphemeEnd[candidate.utf16End] ?? baseCandidates.length,
+      scriptForSurface,
       structuralBoundary: structuralBoundaryAt(candidate.utf16Start, candidate.utf16End, text),
       transitionEntropyByPosition,
       repeatedContextSupport: recurrenceCount,
@@ -313,25 +367,10 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
         normalizationContract,
         hasher
       });
-    const normalizedFormIdentity = createCanonicalIdentity({
-      kind: "normalized_surface_form",
-      fields: {
-        normalizationContractId: normalizationContract.id,
-        normalizedSurface: normalized
-      },
-      normalizationContract,
-      hasher
-    });
-    const surfaceFormClassIdentity = createCanonicalIdentity({
-      kind: "surface_form_class",
-      fields: {
-        normalizationContractId: normalizationContract.id,
-        normalizedSurfaceFormId: normalizedFormIdentity.id,
-        unicodeScriptId: dominantScriptId(candidate.surface)
-      },
-      normalizationContract,
-      hasher
-    });
+    const normalizedFormIdentity = cloneCanonicalIdentity(normalizedFormIdentityFor(normalized));
+    const surfaceFormClassIdentity = cloneCanonicalIdentity(
+      surfaceFormClassIdentityFor(normalizedFormIdentity, scriptForSurface(candidate.surface))
+    );
     units.push({
       id: `surface_arc.${hasher.digestHex(occurrenceIdentity.id).slice(0, 40)}`,
       occurrenceId: occurrenceIdentity.id,
@@ -355,7 +394,7 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
       codePointEnd: candidate.codePointEnd,
       graphemeStart: coordinates.utf16ToGraphemeStart[candidate.utf16Start] ?? 0,
       graphemeEnd: coordinates.utf16ToGraphemeEnd[candidate.utf16End] ?? baseCandidates.length,
-      scriptId: dominantScriptId(candidate.surface),
+      scriptId: scriptForSurface(candidate.surface),
       recurrenceCount,
       entropy: entropy([...frequency([...candidate.surface]).values()]),
       predictability: clamp01(Math.log1p(recurrenceCount) / 8),
@@ -1168,13 +1207,14 @@ function boundaryEvidenceAt(input: {
   repeatedContextSupport: number;
   learnedFeatures?: Partial<BoundaryFeatureVector>;
   boundaryEstimator?: BoundaryEstimatorState;
+  scriptForSurface: (surface: string) => string;
 }): SurfaceBoundaryEvidence {
   const left = input.codePoints[input.positionCodePoint - 1] ?? "";
   const right = input.codePoints[input.positionCodePoint] ?? "";
   const whitespaceAdjacent = left && right ? Number(/\s/u.test(left) || /\s/u.test(right)) : 1;
   const punctuationAdjacent = Number(isPunctuation(left) || isPunctuation(right));
   const lineBreakAdjacent = Number(left === "\n" || right === "\n" || left === "\r" || right === "\r");
-  const scriptTransition = left && right && !/\s/u.test(left) && !/\s/u.test(right) && dominantScriptId(left) !== dominantScriptId(right) ? 1 : 0;
+  const scriptTransition = left && right && !/\s/u.test(left) && !/\s/u.test(right) && input.scriptForSurface(left) !== input.scriptForSurface(right) ? 1 : 0;
   const localTransitionEntropy = clamp01((input.transitionEntropyByPosition.get(input.positionCodePoint) ?? 0) / 4);
   const repeatedContextSupport = clamp01(Math.log1p(input.repeatedContextSupport) / 6);
   const features: BoundaryFeatureVector = {
@@ -1236,32 +1276,22 @@ function corpusBoundaryFeaturesByPosition(input: {
   candidates: readonly QuotientedCandidateUnit[];
   model: ReturnType<typeof segmentUnicodeSurfaceV2>;
   coordinates: SurfaceCoordinateIndex;
-  normalizationContract: NormalizationContract;
   context?: CompiledBoundaryFeatureContext;
-  hasher: Hasher;
+  normalizedSurfaceFor: (surface: string) => string;
+  normalizedFormIdentityFor: (normalized: string) => CanonicalIdentity;
+  surfaceFormClassIdentityFor: (normalizedFormIdentity: CanonicalIdentity, script: string) => CanonicalIdentity;
+  scriptForSurface: (surface: string) => string;
 }): Map<number, Partial<BoundaryFeatureVector>> {
   const out = new Map<number, Partial<BoundaryFeatureVector>>();
   if (!input.context) return out;
   for (const candidate of input.candidates) {
-    const normalizedIdentity = createCanonicalIdentity({
-      kind: "normalized_surface_form",
-      fields: {
-        normalizationContractId: input.normalizationContract.id,
-        normalizedSurface: normalizeSurface(candidate.surface, input.normalizationContract)
-      },
-      normalizationContract: input.normalizationContract,
-      hasher: input.hasher
-    });
-    const classId = createCanonicalIdentity({
-      kind: "surface_form_class",
-      fields: {
-        normalizationContractId: input.normalizationContract.id,
-        normalizedSurfaceFormId: normalizedIdentity.id,
-        unicodeScriptId: dominantScriptId(candidate.surface)
-      },
-      normalizationContract: input.normalizationContract,
-      hasher: input.hasher
-    }).id;
+    const normalizedIdentity = input.normalizedFormIdentityFor(
+      input.normalizedSurfaceFor(candidate.surface)
+    );
+    const classId = input.surfaceFormClassIdentityFor(
+      normalizedIdentity,
+      input.scriptForSurface(candidate.surface)
+    ).id;
     const contextKey = boundaryContextKeyParts(
       contextSketch(input.model.lexicalSegments, candidate.codePointStart, "left"),
       contextSketch(input.model.lexicalSegments, candidate.codePointEnd, "right")
@@ -1296,19 +1326,19 @@ function structuralBoundaryAt(startUtf16: number, endUtf16: number, text: string
 
 function localTransitionEntropyByPosition(text: string): Map<number, number> {
   const chars = [...text];
+  const classes = chars.map(charClass);
+  const pairKeys = classes.slice(0, -1).map((left, index) => `${left}\u0001${classes[index + 1]!}`);
   const pairCounts = new Map<string, number>();
-  for (let index = 0; index < chars.length - 1; index++) {
-    const key = `${charClass(chars[index]!)}\u0001${charClass(chars[index + 1]!)}`;
+  for (const key of pairKeys) {
     pairCounts.set(key, (pairCounts.get(key) ?? 0) + 1);
   }
   const out = new Map<number, number>();
   for (let position = 1; position < chars.length; position++) {
     const window: number[] = [];
     for (let offset = -4; offset <= 4; offset++) {
-      const left = chars[position + offset - 1];
-      const right = chars[position + offset];
-      if (!left || !right) continue;
-      window.push(pairCounts.get(`${charClass(left)}\u0001${charClass(right)}`) ?? 1);
+      const pairIndex = position + offset - 1;
+      if (pairIndex < 0 || pairIndex >= pairKeys.length) continue;
+      window.push(pairCounts.get(pairKeys[pairIndex]!) ?? 1);
     }
     out.set(position, entropy(window));
   }
@@ -1437,9 +1467,9 @@ function proposalPriority(kind: SurfaceLatticeUnitKind): number {
 
 function recurrenceKey(
   candidate: CandidateUnit,
-  normalizationContract: NormalizationContract
+  normalizedSurfaceFor: (surface: string) => string
 ): string {
-  return normalizeSurface(candidate.surface, normalizationContract);
+  return normalizedSurfaceFor(candidate.surface);
 }
 
 function normalizeSurface(
@@ -1447,6 +1477,16 @@ function normalizeSurface(
   normalizationContract: NormalizationContract
 ): string {
   return normalizeCanonicalSurface(surface, normalizationContract).replace(/\s+/gu, " ").trim();
+}
+
+function cloneCanonicalIdentity(identity: CanonicalIdentity): CanonicalIdentity {
+  const fields = identity.fields;
+  return {
+    ...identity,
+    fields: fields && typeof fields === "object" && !Array.isArray(fields)
+      ? { ...fields }
+      : fields
+  };
 }
 
 function overlapClassFor(kind: SurfaceLatticeUnitKind): SurfaceLatticeOverlapClass {

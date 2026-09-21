@@ -12,6 +12,22 @@ import {
 describe("universal surface lattice", () => {
   const hasher = createHasher();
 
+  it("keeps equal form identities independent across occurrences and rebuilds", () => {
+    const options = { documentId: "repeated.forms", text: "a a a", hasher };
+    const lattice = buildSurfaceLattice(options);
+    const repeated = lattice.units.filter(unit => unit.kind === "grapheme" && unit.surface === "a");
+    expect(repeated).toHaveLength(3);
+    const expectedForm = structuredClone(repeated[1]!.canonicalIdentities.normalizedForm);
+    const expectedClass = structuredClone(repeated[1]!.canonicalIdentities.surfaceFormClass);
+    (repeated[0]!.canonicalIdentities.normalizedForm.fields as Record<string, unknown>).normalizedSurface = "changed";
+    (repeated[0]!.canonicalIdentities.surfaceFormClass.fields as Record<string, unknown>).unicodeScriptId = "changed";
+    expect(repeated[1]!.canonicalIdentities.normalizedForm).toEqual(expectedForm);
+    expect(repeated[1]!.canonicalIdentities.surfaceFormClass).toEqual(expectedClass);
+    const rebuilt = buildSurfaceLattice(options).units.find(unit => unit.kind === "grapheme" && unit.surface === "a")!;
+    expect(rebuilt.canonicalIdentities.normalizedForm).toEqual(expectedForm);
+    expect(rebuilt.canonicalIdentities.surfaceFormClass).toEqual(expectedClass);
+  });
+
   it("builds multiscale evidence-offset units without assuming spaces identify words", () => {
     const text = "猫追鼠。dog chased ball.\ncode_symbol42 = 7";
     const lattice = buildSurfaceLattice({

@@ -101,27 +101,56 @@ export function trainKneserNey(text: string | readonly string[], options: { orde
   const continuationCounts = new Map<string, number>();
   for (const [symbol, contexts] of continuationContexts) continuationCounts.set(symbol, contexts.size);
   const totalContinuationTypes = [...continuationContexts.values()].reduce((sum, contexts) => sum + contexts.size, 0);
+  const compiledContextContinuationTypes = new Map<string, number>();
+  for (const [key, set] of contextContinuationTypes) {
+    compiledContextContinuationTypes.set(key, set.size);
+  }
   const compiled = compileSuccessorIndexes({
     successorCounts,
     continuationCounts,
     unigramCounts,
     contextCounts,
-    contextContinuationTypes: new Map([...contextContinuationTypes.entries()].map(([key, set]) => [key, set.size])),
+    contextContinuationTypes: compiledContextContinuationTypes,
     discount
   });
+
+  const contextContinuationTypeRecord = Object.fromEntries(compiledContextContinuationTypes);
+  const observedSymbolCount = normalized.length;
+
+  // The returned model owns plain records and arrays. Release the temporary
+  // counting graph before materializing those records so a large shard does
+  // not keep both representations live through the return expression.
+  for (const successors of successorCounts.values()) successors.clear();
+  successorCounts.clear();
+  continuationContexts.clear();
+  contextContinuationTypes.clear();
+  compiledContextContinuationTypes.clear();
+  vocabSet.clear();
+  normalized.length = 0;
+  padded.length = 0;
+
+  const countRecord = Object.fromEntries(counts);
+  counts.clear();
+  const contextCountRecord = Object.fromEntries(contextCounts);
+  contextCounts.clear();
+  const continuationCountRecord = Object.fromEntries(continuationCounts);
+  continuationCounts.clear();
+  const unigramCountRecord = Object.fromEntries(unigramCounts);
+  const totalUnigramCount = [...unigramCounts.values()].reduce((sum, count) => sum + count, 0);
+  unigramCounts.clear();
   return {
     schema: KNESER_NEY_SCHEMA,
     order,
     discount,
-    observedSymbolCount: normalized.length,
+    observedSymbolCount,
     vocabularySize: vocabulary.length,
-    counts: Object.fromEntries(counts),
-    contextCounts: Object.fromEntries(contextCounts),
-    continuationCounts: Object.fromEntries(continuationCounts),
-    contextContinuationTypes: Object.fromEntries([...contextContinuationTypes.entries()].map(([key, set]) => [key, set.size])),
+    counts: countRecord,
+    contextCounts: contextCountRecord,
+    continuationCounts: continuationCountRecord,
+    contextContinuationTypes: contextContinuationTypeRecord,
     totalContinuationTypes,
-    unigramCounts: Object.fromEntries(unigramCounts),
-    totalUnigramCount: [...unigramCounts.values()].reduce((sum, count) => sum + count, 0),
+    unigramCounts: unigramCountRecord,
+    totalUnigramCount,
     vocabulary,
     ...compiled
   };

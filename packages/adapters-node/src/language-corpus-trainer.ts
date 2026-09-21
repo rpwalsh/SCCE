@@ -184,9 +184,33 @@ interface PreparedLanguageCorpusPayload {
 
 const preparations = new WeakMap<PreparedLanguageCorpusTraining, {
   storage: ScceStorage;
-  payload: PreparedLanguageCorpusPayload;
+  // The payload is needed for retry after a rolled-back commit, but retaining it after a successful
+  // transaction keeps the full compiled batch alive while callers continue with alignment/promotion work.
+  payload?: PreparedLanguageCorpusPayload;
   committed: boolean;
 }>();
+
+function preparationInputSnapshot(input: LanguageCorpusTrainingInput): LanguageCorpusTrainingInput {
+  // Detach caller-owned semantic inputs before compilation. The output contains the compiled batch and can be
+  // very large; cloning that output doubled peak memory, while these bounded input snapshots preserve the same
+  // isolation and input-binding checks without retaining a second copy of learned rows.
+  const clone = <T>(value: T): T => value === undefined ? value : structuredClone(value);
+  return {
+    ...input,
+    evidence: clone(input.evidence),
+    profile: clone(input.profile),
+    corpusRegistry: clone(input.corpusRegistry),
+    sourceAdmission: clone(input.sourceAdmission),
+    corpusMetadata: clone(input.corpusMetadata),
+    languageAliases: clone(input.languageAliases),
+    constructionSets: clone(input.constructionSets),
+    graphSnapshotSourceVersionIds: clone(input.graphSnapshotSourceVersionIds),
+    sourceFamilyRanges: clone(input.sourceFamilyRanges),
+    alignmentPromotionObservations: clone(input.alignmentPromotionObservations),
+    alignmentCalibrationObservations: clone(input.alignmentCalibrationObservations),
+    informationLabel: clone(input.informationLabel)
+  };
+}
 
 function trainingInputBinding(input: LanguageCorpusTrainingInput): string {
   // These service objects are used only in preparation; actual output IDs/times are captured in the payload.
@@ -245,7 +269,13 @@ async function graphSnapshotForEvidence(
         && typeof (modality as Record<string, unknown>).extractionChannel === "string";
     });
     if (!hyperedges.length) return undefined;
-    return { nodes: slice.nodes, edges: slice.edges, hyperedges };
+    // Storage adapters may return caller-owned objects. Keep the bounded snapshot detached so
+    // compilation cannot retain or mutate the adapter's graph slice after this read.
+    return {
+      nodes: structuredClone(slice.nodes),
+      edges: structuredClone(slice.edges),
+      hyperedges: structuredClone(hyperedges)
+    };
 }
 
 /** The compact Kneser-Ney summary's most-continued symbols, narrowed for a page signature. Mirrors the wiki path. */
@@ -270,11 +300,10 @@ export async function trainLanguageCorpusText(input: LanguageCorpusTrainingInput
 
 export async function prepareLanguageCorpusTraining(input: LanguageCorpusTrainingInput): Promise<PreparedLanguageCorpusTraining> {
   const inputBinding = trainingInputBinding(input);
-  const payload = await prepareLanguageCorpusTrainingInternal(input);
+  const payload = await prepareLanguageCorpusTrainingInternal(preparationInputSnapshot(input));
   if (trainingInputBinding(input) !== inputBinding) throw new Error("language training input changed during preparation");
   const token = Object.freeze({ sourceVersionId: payload.sourceVersionId, inputBinding, graphSnapshotDigest: payload.graphSnapshotDigest });
-  // Detach caller-owned evidence/profile objects. The returned token exposes no writable learned rows.
-  preparations.set(token, { storage: input.storage, payload: structuredClone(payload), committed: false });
+  preparations.set(token, { storage: input.storage, payload, committed: false });
   return token;
 }
 
@@ -287,13 +316,20 @@ export async function commitLanguageCorpusTraining(
   if (held.committed) throw new Error("language training preparation already committed or in progress");
   if (trainingInputBinding(input) !== prepared.inputBinding) throw new Error("language training input changed before commit");
   held.committed = true;
-  try { return await input.storage.transaction(async () => {
-    const snapshot = await graphSnapshotForEvidence(input.storage, held.payload.evidence, input.graphSnapshotSourceVersionIds);
-    if (graphSnapshotDigest(snapshot) !== prepared.graphSnapshotDigest) throw new Error("language training graph dependencies changed before commit; prepare again");
-    if (trainingInputBinding(input) !== prepared.inputBinding) throw new Error("language training input changed during commit validation");
-    const result = await commitLanguageCorpusTrainingInternal(input, held.payload);
+  try {
+    const payload = held.payload;
+    if (!payload) throw new Error("prepared language training payload was released before commit");
+    const result = await input.storage.transaction(async () => {
+      const snapshot = await graphSnapshotForEvidence(input.storage, payload.evidence, input.graphSnapshotSourceVersionIds);
+      if (graphSnapshotDigest(snapshot) !== prepared.graphSnapshotDigest) throw new Error("language training graph dependencies changed before commit; prepare again");
+      if (trainingInputBinding(input) !== prepared.inputBinding) throw new Error("language training input changed during commit validation");
+      return commitLanguageCorpusTrainingInternal(input, payload);
+    });
+    // Keep only the committed tombstone so a second use still reports "already committed" without retaining
+    // the cloned observations/models/compiled alignment payload through the caller's subsequent work.
+    held.payload = undefined;
     return result;
-  }); } catch (error) { held.committed = false; throw error; }
+  } catch (error) { held.committed = false; throw error; }
 }
 
 /** The source version this text is stored under, so a later pass can find its evidence without re-training it. */
@@ -513,7 +549,9 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
       updatedAt: createdAt
     });
     if (creativeEventCompilation.status === "compiled") {
-      compiledConstructionPatterns.push(creativeEventCompilation.pattern);
+      // The compiler is an adapter-owned service and may return a mutable pattern object. Detach just this
+      // small result; cloning the entire compiled batch here was the memory-retention regression this path avoids.
+      compiledConstructionPatterns.push(structuredClone(creativeEventCompilation.pattern));
     } else if (creativeEventCompilation.issues.some(issue =>
       issue.code !== "surface.construction_memory.reject.induction")) {
       constructionWarnings.push(...creativeEventCompilation.issues.map(issue => issue.code));
