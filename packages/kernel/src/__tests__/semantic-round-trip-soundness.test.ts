@@ -49,3 +49,22 @@ describe("detected semantic corruption is an acceptance failure", () => {
     expect(candidateIsVerifiedBoundValue("20:17 on Mars", contract)).toBe(false);
   });
 });
+
+
+describe("complete semantic coverage for full restatements", () => {
+  it("rejects a dropped sentence only when complete coverage is required", () => {
+    const texts = {
+      intendedText: "alice ships 42 crates to boston. bob invents 7 gadgets.",
+      realizedText: "alice ships 42 crates to boston."
+    };
+    expect(factualRoundTripGate(texts).accepted).toBe(true);
+    const complete = factualRoundTripGate({ ...texts, requireComplete: true });
+    expect(complete.accepted).toBe(false);
+    expect(complete.cycleTrace.distance.missing).toHaveLength(1);
+  });
+
+  it("accepts an unchanged complete multi-sentence realization", () => {
+    const text = "alice ships 42 crates to boston. bob invents 7 gadgets.";
+    expect(factualRoundTripGate({ intendedText: text, realizedText: text, requireComplete: true }).accepted).toBe(true);
+  });
+});

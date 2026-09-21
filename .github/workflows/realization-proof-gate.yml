@@ -68,7 +68,7 @@ jobs:
             packages/kernel/src/__tests__/deterministic-surface-own-source-text.test.ts
             packages/kernel/src/__tests__/mouth-learned-construction.test.ts
           )
-          for test in packages/kernel/src/__tests__/semantic-round-trip-atom-contract.test.ts packages/kernel/src/__tests__/semantic-round-trip-soundness.test.ts; do
+          for test in packages/kernel/src/__tests__/semantic-round-trip-atom-contract.test.ts packages/kernel/src/__tests__/semantic-round-trip-preservation-contract.test.ts packages/kernel/src/__tests__/semantic-round-trip-soundness.test.ts packages/kernel/src/__tests__/translation-round-trip-preservation.test.ts; do
             if [[ -f "$test" ]]; then tests+=("$test"); fi
           done
           pnpm exec vitest run "${tests[@]}" --maxWorkers=2 --reporter=verbose
