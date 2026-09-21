@@ -29,6 +29,8 @@ const manifestPath = args.get("corpus-manifest") ?? process.env.SCCE_EVAL_CORPUS
 if (!manifestPath) throw new Error("Missing corpus manifest");
 const mode = args.get("mode") ?? "rag";
 if (mode !== "rag" && mode !== "closed_book") throw new Error(`unsupported mode: ${mode}`);
+const answerStyle = args.get("answer-style") ?? "extractive";
+if (!["extractive", "natural"].includes(answerStyle)) throw new Error(`unsupported answer style: ${answerStyle}`);
 const model = args.get("model") ?? process.env.SCCE_EVAL_OLLAMA_MODEL ?? "qwen2.5:3b";
 const endpoint = args.get("endpoint") ?? process.env.SCCE_EVAL_OLLAMA_URL ?? "http://127.0.0.1:11434";
 if (!["127.0.0.1", "localhost", "[::1]"].includes(new URL(endpoint).hostname)) throw new Error("The local baseline requires a loopback Ollama endpoint");
@@ -53,7 +55,8 @@ const modelIdentity = tags.models?.find(row => row.name === model || row.model =
 if (!modelIdentity?.digest) throw new Error(`Requested model is not installed locally: ${model}`);
 const runtimeMetadata = {
   baseline: `ollama-${mode}`, model, digest: modelIdentity.digest, details: modelIdentity.details,
-  ollamaVersion: version.version, requestedDevice: device, options, keepAlive, endpoint
+  ollamaVersion: version.version, requestedDevice: device, options, keepAlive, endpoint, answerStyle,
+  citationSelection: answerStyle === "natural" ? "model-referenced-context" : "retrieved-context"
 };
 
 const manifest = await readJson(manifestPath);
@@ -73,13 +76,22 @@ const documentFrequency = new Map();
 for (const document of docs) for (const token of new Set(document.tokens)) documentFrequency.set(token, (documentFrequency.get(token) ?? 0) + 1);
 const averageLength = docs.reduce((sum, document) => sum + document.tokens.length, 0) / Math.max(1, documentCount);
 
-const INSTRUCTIONS = [
+const INSTRUCTIONS = (answerStyle === "natural" && mode === "closed_book" ? [
+  "Answer the question clearly in your own words using your existing knowledge.",
+  "If you cannot answer reliably, reply with exactly: I don't know.",
+  "Do not invent facts or source citations."
+] : answerStyle === "natural" ? [
+  "Answer the question clearly in your own words using only the supplied material.",
+  "Cite the numbered passages that support your claims using [1], [2], and so on.",
+  "If sources conflict, explain the conflict. Do not invent supporting facts or citations.",
+  "If the material does not contain the answer, reply with exactly: I don't know."
+] : [
   "You are answering questions about a fixed set of documents.",
   "Answer with the exact missing text only, copied verbatim from the material, and nothing else.",
   "Do not explain, restate the question, or add punctuation that is not part of the answer.",
   "If the material does not contain the answer, reply with exactly: I don't know.",
   "Replying \"I don't know\" is the correct and preferred answer whenever the material does not support one."
-].join(" ");
+]).join(" ");
 
 const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
 for await (const line of rl) {
@@ -92,10 +104,14 @@ for await (const line of rl) {
     // The model's own refusal, recognised structurally: a reply whose entire content is a declination. Nothing else
     // in the reply is interpreted, and a declination buried inside an answer is still an answer.
     const declined = isDeclination(answer);
+    const referencedPassages = new Set([...answer.matchAll(/\[(\d+)\]/gu)].map(match => Number(match[1])));
+    const cited = answerStyle === "natural"
+      ? retrieved.filter((_, index) => referencedPassages.has(index + 1))
+      : retrieved;
     process.stdout.write(`${JSON.stringify({
       status: declined ? "abstained" : "ok",
       answer: declined ? "" : answer,
-      citations: declined ? [] : retrieved.map(row => row.citation),
+      citations: declined ? [] : cited.map(row => row.citation),
       metadata: { ...runtimeMetadata, passages: retrieved.length, rawReply: answer.slice(0, 400), inference: generated.inference, residency: generated.residency }
     })}\n`);
   } catch (error) {
@@ -138,7 +154,7 @@ function bestWindow(text, queryTokens) {
   // retriever's precision, not on its own reading.
   const start = Math.max(0, best.start - 600);
   const end = Math.min(text.length, best.end + 600);
-  return { text: text.slice(start, end), start: best.start, end: best.end };
+  return { text: text.slice(start, end), start, end };
 }
 
 function retrieve(prompt) {
