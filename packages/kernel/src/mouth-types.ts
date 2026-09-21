@@ -154,6 +154,8 @@ export interface SurfacePlan {
   caveatBindings: CaveatBinding[];
   constructForces: Array<{ id: ConstructOutputForce; weight: number; source: string }>;
   targetLanguage: LanguageId;
+  /** Opaque learned-language identity used for admission; locale/display aliases stay in targetLanguage. */
+  targetLanguageIdentityId?: string;
   targetScript?: ScriptId;
   styleProfileId: StyleProfileId;
   style: Required<StyleProfile>;

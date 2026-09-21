@@ -165,6 +165,36 @@ describe("retained alignment alternatives", () => {
     })).toThrow(/cannot be excluded/);
   });
 
+  it("preserves set output for repeated plan references and detached equivalents", () => {
+    const compiled = fixture();
+    const support = compiled.supports[0]!;
+    const basePlan = solveSparseFusedUnbalancedTransport({
+      support,
+      targetIndex: compiled.targetIndex,
+      hasher
+    });
+    const seriesId = alignmentAlternativeSeriesId({
+      support,
+      targetIndex: compiled.targetIndex,
+      hasher
+    });
+    const sharedReference = compileAlignmentAlternativeSet({
+      seriesId,
+      plans: [basePlan, basePlan],
+      maximumRetainedAlternatives: 2,
+      hasher
+    });
+    const detached = structuredClone(basePlan);
+    const detachedEquivalent = compileAlignmentAlternativeSet({
+      seriesId,
+      plans: [detached, structuredClone(detached)],
+      maximumRetainedAlternatives: 2,
+      hasher
+    });
+
+    expect(detachedEquivalent).toEqual(sharedReference);
+  });
+
   it("accounts every unattempted branch when the explicit search budget is zero", () => {
     const compiled = fixture();
     const support = compiled.supports[0]!;

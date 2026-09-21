@@ -48,6 +48,13 @@
       "provider": "trusted-host"
     },
     "corpora": {
+      "registry": {
+        "bible": {
+          "enabled": true,
+          "languageMemoryEligible": true,
+          "graphEvidenceEligible": true
+        }
+      },
       "wikipedia": {
         "enabled": true,
         "dumpPath": "data/wiki/enwiki-latest-pages-articles-multistream.xml.bz2",

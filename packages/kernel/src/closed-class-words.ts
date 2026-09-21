@@ -49,12 +49,19 @@ export function requestClosedClassWords(input: {
   requestText: string;
   models?: readonly KneserNeyModel[];
   continuationPopulation?: LanguageContinuationPopulation;
+  /** Learned by the selected language identity; used only when turn hydration has no runtime statistics. */
+  identityClosedClassWords?: ReadonlySet<string>;
   patterns?: readonly LanguagePatternRecord[];
   authority?: string;
   limit?: number;
 }): Set<string> {
   const scaffolding = deriveClosedClassWords({ constructions: requestScaffoldingConstructions(input.patterns ?? [], input.authority) });
-  const corpus = deriveClosedClassWords({ models: input.models ?? [], continuationPopulation: input.continuationPopulation, limit: input.limit });
+  const corpus = deriveClosedClassWords({
+    models: input.models ?? [],
+    continuationPopulation: input.continuationPopulation,
+    identityClosedClassWords: input.identityClosedClassWords,
+    limit: input.limit
+  });
   const out = new Set(scaffolding);
   for (const unit of requestContentAnchorUnits(input.requestText)) if (corpus.has(unit)) out.add(unit);
   // The request corpus teaches its frames with real subjects in them ("Who was Ada Lovelace?"), so the subjects'
@@ -70,7 +77,15 @@ export function requestClosedClassWords(input: {
   // The population, not the models a turn happens to hold: the byte-budgeted slice is 138 word types on the live
   // brain and contains none of the language's function words, and deriveClosedClassWords already refuses to name a
   // class from a population smaller than the limit, which is what the empty set here means.
-  const ranked = deriveClosedClassWords({ continuationPopulation: input.continuationPopulation, limit: input.limit });
+  const ranked = deriveClosedClassWords({
+    // Identity cues may protect a named-run function word only on the same cold path where they supplied the
+    // request corpus class above. A populated runtime model keeps the historical population-only protection.
+    ...(input.models?.length || input.continuationPopulation
+      ? {}
+      : { identityClosedClassWords: input.identityClosedClassWords }),
+    continuationPopulation: input.continuationPopulation,
+    limit: input.limit
+  });
   for (const anchor of namedSubjectAnchors(input.requestText)) {
     for (const unit of anchor.toLocaleLowerCase().split(/\s+/u)) if (!ranked.has(unit)) out.delete(unit);
   }
@@ -80,10 +95,20 @@ export function requestClosedClassWords(input: {
 export function deriveClosedClassWords(input: {
   models?: readonly KneserNeyModel[];
   continuationPopulation?: LanguageContinuationPopulation;
+  /** Learned by the selected language identity; never substitutes for present runtime statistics. */
+  identityClosedClassWords?: ReadonlySet<string>;
   constructions?: readonly { parts?: readonly { kind: string; surface?: string; [key: string]: unknown }[] }[];
   limit?: number;
 }): Set<string> {
   const limit = closedClassLimit(input.limit);
+  const hasRuntimeStatistics = Boolean(input.continuationPopulation) || (input.models?.length ?? 0) > 0;
+  if (!hasRuntimeStatistics && input.identityClosedClassWords?.size) {
+    const out = new Set([...input.identityClosedClassWords]
+      .map(symbol => symbol.toLocaleLowerCase())
+      .filter(isWordSymbol));
+    addConstructionWords(out, input.constructions ?? []);
+    return new Set([...out].slice(0, limit));
+  }
   const populationWords = input.continuationPopulation
     ? closedClassFromPopulation(input.continuationPopulation, limit)
     : undefined;

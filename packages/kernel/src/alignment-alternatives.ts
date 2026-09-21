@@ -186,9 +186,17 @@ export function compileAlignmentAlternativeSet(input: {
       allocation
     ])
   );
+  const signatureCache = new WeakMap<SparseFusedTransportPlan, string>();
+  const signatureOf = (plan: SparseFusedTransportPlan): string => {
+    const cached = signatureCache.get(plan);
+    if (cached !== undefined) return cached;
+    const signature = planSignature(plan, hasher);
+    signatureCache.set(plan, signature);
+    return signature;
+  };
   const deduplicated = new Map<string, SparseFusedTransportPlan>();
   for (const plan of input.plans) {
-    const signature = planSignature(plan, hasher);
+    const signature = signatureOf(plan);
     const current = deduplicated.get(signature);
     if (!current || objectiveValue(plan) < objectiveValue(current)) {
       deduplicated.set(signature, plan);
@@ -209,7 +217,7 @@ export function compileAlignmentAlternativeSet(input: {
   const predecessorPlansBySignature = new Map<string, string[]>();
   for (const set of predecessorSets) {
     for (const hypothesis of set.hypotheses) {
-      const signature = planSignature(hypothesis.plan, hasher);
+      const signature = signatureOf(hypothesis.plan);
       const ids = predecessorPlansBySignature.get(signature) ?? [];
       ids.push(hypothesis.plan.id);
       predecessorPlansBySignature.set(signature, ids);
@@ -222,7 +230,7 @@ export function compileAlignmentAlternativeSet(input: {
     restrictedGibbsWeight: weights[index]!,
     evidenceAllocationId: allocationByPlanId.get(plan.id)?.id ?? null,
     predecessorPlanIds: [...new Set(
-      predecessorPlansBySignature.get(planSignature(plan, hasher)) ?? []
+      predecessorPlansBySignature.get(signatureOf(plan)) ?? []
     )].sort()
   }));
   const branchSearchMetadata = branchSearchMetadataFor(input);

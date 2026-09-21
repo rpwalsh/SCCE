@@ -30,4 +30,21 @@ describe("closed-class words derived from the active language", () => {
     const words = deriveClosedClassWords({ models: [model] });
     expect([...words].some(word => word.startsWith("<"))).toBe(false);
   });
+
+  it("uses the selected identity class only when runtime statistics are absent", () => {
+    const identityWords = new Set(["The", "and", "identity-only"]);
+    const cold = deriveClosedClassWords({ identityClosedClassWords: identityWords, limit: 8 });
+    expect(cold).toEqual(new Set(["the", "and", "identity-only"]));
+
+    const trained = trainKneserNey("alpha alpha beta beta alpha", { order: 2 });
+    const warm = deriveClosedClassWords({ models: [trained], identityClosedClassWords: identityWords, limit: 8 });
+    expect(warm.has("identity-only")).toBe(false);
+
+    const emptyPopulation = deriveClosedClassWords({
+      continuationPopulation: { languageId: "language.fixture", modelCount: 0, continuationCounts: {} },
+      identityClosedClassWords: identityWords,
+      limit: 8
+    });
+    expect(emptyPopulation.has("identity-only")).toBe(false);
+  });
 });

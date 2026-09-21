@@ -180,6 +180,89 @@ describe("Wikipedia recovery boundaries", () => {
     } finally { vi.restoreAllMocks(); await f.close(); }
   });
 
+  it("finishes an open language batch without reading another page and retries without duplication", async () => {
+    const f = await sameBlockFixture();
+    try {
+      const p = mockPipeline(f.config);
+      const first = await p.ingestor.ingest({ dumpPath: f.dumpPath, maxPages: 1 });
+      expect(first.pages).toBe(1);
+      const journalBefore = (p.rows().find(row => row.itemUri.endsWith("/language-batch"))?.metadata as any)?.languageBatch;
+      expect(journalBefore?.state).toBe("open");
+      expect(journalBefore?.pendingSamples).toHaveLength(1);
+      const registerCallsBeforeDrain = p.activate.mock.calls.length;
+      const pageCallsBeforeDrain = p.page.mock.calls.length;
+
+      // The training spy commits the journal callback, then loses its acknowledgement. The
+      // retry must observe the committed empty journal and avoid training the same sample again.
+      const train = p.train.getMockImplementation()!;
+      p.train.mockImplementationOnce(async (...args: any[]) => {
+        await train(...args);
+        throw new Error("lost finish-pending acknowledgement");
+      });
+      await expect(p.ingestor.ingest({ dumpPath: f.dumpPath, finishPending: true }))
+        .rejects.toThrow("lost finish-pending acknowledgement");
+      const journalAfterLostAck = (p.rows().find(row => row.itemUri.endsWith("/language-batch"))?.metadata as any)?.languageBatch;
+      expect(journalAfterLostAck?.pendingSamples).toHaveLength(0);
+      expect(journalAfterLostAck?.lastProcessedPageOrdinal).toBe(journalBefore.lastProcessedPageOrdinal);
+      expect(p.trainedShards).toHaveLength(1);
+
+      const statuses: any[] = [];
+      const retry = await p.ingestor.ingest({ dumpPath: f.dumpPath, finishPending: true, onStatus: status => { statuses.push(status); } });
+      expect(retry.pages).toBe(0);
+      expect(retry.stopReason).toBe("finish-pending");
+      expect(p.page.mock.calls).toHaveLength(pageCallsBeforeDrain);
+      expect(p.trainedShards).toHaveLength(1);
+      expect(statuses.at(-1)?.fullTrainingRequested).toBe(false);
+      expect(statuses.at(-1)?.fullTrainingComplete).toBe(false);
+      const journalAfterRetry = (p.rows().find(row => row.itemUri.endsWith("/language-batch"))?.metadata as any)?.languageBatch;
+      expect(journalAfterRetry?.state).toBe("open");
+      expect(journalAfterRetry?.pendingSamples).toHaveLength(0);
+      expect(p.activate.mock.calls).toHaveLength(registerCallsBeforeDrain + 1);
+      expect((p.activate.mock.calls.at(-1)?.[0] as any).fullTrainingComplete).toBe(false);
+
+      // A normal guarded resume still owns the cursor and can process the next page.
+      const next = await p.ingestor.ingest({ dumpPath: f.dumpPath, maxPages: 1 });
+      expect(next.pages).toBe(1);
+      expect(p.trainedShards.flatMap(shard => shard.samples)).toHaveLength(2);
+    } finally { vi.restoreAllMocks(); await f.close(); }
+  });
+
+  it("rejects finish-pending controls that could bypass the stored resume", async () => {
+    const f = await sameBlockFixture();
+    try {
+      const p = mockPipeline(f.config);
+      await expect(p.ingestor.ingest({ dumpPath: f.dumpPath, finishPending: true, fresh: true }))
+        .rejects.toThrow(/requires stored resume/);
+      await expect(p.ingestor.ingest({ dumpPath: f.dumpPath, finishPending: true, resume: false }))
+        .rejects.toThrow(/requires stored resume/);
+      await expect(p.ingestor.ingest({ dumpPath: f.dumpPath, finishPending: true, startOffset: 0 }))
+        .rejects.toThrow(/requires stored resume/);
+      await expect(p.ingestor.ingest({ dumpPath: f.dumpPath, finishPending: true }))
+        .rejects.toThrow(/requires an open language batch journal/);
+    } finally { vi.restoreAllMocks(); await f.close(); }
+  });
+
+  it.each(["owner", "heap"])("preserves pending training when the %s fence stops a drain", async kind => {
+    const f = await sameBlockFixture();
+    try {
+      const p = mockPipeline(f.config);
+      await p.ingestor.ingest({ dumpPath: f.dumpPath, maxPages: 1 });
+      const before = structuredClone(p.rows().find(row => row.itemUri.endsWith("/language-batch"))?.metadata);
+      const stopFile = path.join(f.root, "finish-owner.stop");
+      if (kind === "owner") await writeFile(stopFile, "stop");
+      const stopped = await p.ingestor.ingest({
+        dumpPath: f.dumpPath,
+        finishPending: true,
+        ...(kind === "owner" ? { stopFile } : { heapCheckpointMb: 1 })
+      });
+      expect(stopped.pages).toBe(0);
+      expect(stopped.stoppedByOwner).toBe(kind === "owner");
+      expect(stopped.stoppedByHeapSafetyBound).toBe(kind === "heap");
+      expect(p.trainedShards).toHaveLength(0);
+      expect(p.rows().find(row => row.itemUri.endsWith("/language-batch"))?.metadata).toEqual(before);
+    } finally { vi.restoreAllMocks(); await f.close(); }
+  });
+
   it("uses block-local ordinals when resuming a later partially processed block", async () => {
     const f = await sameBlockFixture(8, true);
     try {

@@ -438,7 +438,7 @@ async function ingestWiki(configPath: string, config: Awaited<ReturnType<typeof 
   }
   const explicitTarget = args[0] && !args[0].startsWith("--") ? args[0] : undefined;
   const target = explicitTarget ?? config.runtime.corpora?.wikipedia?.dumpPath;
-  if (!target) return usage("scce ingest wiki <dump-path> [--index=<path>] [--max-pages=<n>] [--max-blocks=<n>] [--start-offset=<bytes>] [--fresh] [--no-resume] [--memory-safety-bound-mb=<n>]");
+  if (!target) return usage("scce ingest wiki <dump-path> [--index=<path>] [--max-pages=<n>] [--max-blocks=<n>] [--start-offset=<bytes>] [--fresh] [--no-resume] [--finish-pending] [--memory-safety-bound-mb=<n>]");
   const options = parseWikiIngestOptions(args.slice(explicitTarget ? 1 : 0));
   const corpusTarget = resolveWikipediaCorpusTarget(config, path.resolve(target));
   process.stderr.write(`[scce wiki ingest] ${JSON.stringify({
@@ -446,6 +446,7 @@ async function ingestWiki(configPath: string, config: Awaited<ReturnType<typeof 
     indexPath: options.indexPath ?? corpusTarget?.indexPath ?? null,
     maxPages: options.maxPages ?? config.runtime.corpora?.wikipedia?.maxPagesPerRun ?? 2500,
     maxBlocks: options.maxBlocks ?? config.runtime.corpora?.wikipedia?.maxBlocksPerRun ?? 0,
+    finishPending: options.finishPending === true,
     resume: !options.fresh && options.resume !== false
   })}\n`);
   const ingestor = createWikipediaV3Ingestor({ storage: runtime.storage, config });
@@ -471,6 +472,7 @@ async function ingestWikiFirehose(configPath: string, config: Awaited<ReturnType
   if (!configuredTarget) return usage("scce ingest wiki firehose <dump-path> [--runner-max-segments=<n>] [--child-heap-mb=<n>] [--heap-checkpoint-mb=<n>]");
   const target = path.resolve(configuredTarget);
   const firehose = parseWikiFirehoseOptions(args.slice(explicitTarget ? 1 : 0));
+  if (firehose.finishPending) throw new Error("--finish-pending is only valid for direct 'scce ingest wiki' resume");
   const paths = wikiFirehosePaths(config, firehose);
   await mkdir(paths.root, { recursive: true });
   const release = await acquireWikiFirehoseLock(paths.lockPath, target, paths.statusPath);
@@ -1229,6 +1231,7 @@ interface WikiCliIngestOptions {
   indexPath?: string;
   maxPages?: number;
   maxBlocks?: number;
+  finishPending?: boolean;
   startOffset?: number;
   fresh?: boolean;
   resume?: boolean;
@@ -1260,6 +1263,7 @@ function parseWikiIngestOptions(args: string[]): WikiCliIngestOptions {
     if (flag === "--index" && raw) out.indexPath = path.resolve(raw);
     else if (flag === "--max-pages" && Number.isFinite(num)) out.maxPages = Math.max(1, num);
     else if (flag === "--max-blocks" && Number.isFinite(num)) out.maxBlocks = Math.max(0, num);
+    else if (arg === "--finish-pending") out.finishPending = true;
     else if (flag === "--start-offset" && Number.isFinite(num)) out.startOffset = Math.max(0, Math.floor(num));
     else if (flag === "--memory-safety-bound-mb" && Number.isFinite(num)) out.memorySafetyBoundMb = Math.max(512, num);
     else if (flag === "--heap-checkpoint-mb" && Number.isFinite(num)) out.heapCheckpointMb = Math.max(128, num);

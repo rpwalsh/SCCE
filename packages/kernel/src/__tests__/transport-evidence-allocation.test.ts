@@ -114,8 +114,27 @@ describe("transport evidence conservation", () => {
     expect(allocation.cells.some(cell => !Object.isFrozen(cell))).toBe(true);
     expect(first.cells[0]).toBe(second.cells[0]);
     expect(Object.isFrozen(first.cells[0])).toBe(true);
+    expect(Object.isFrozen(first.cells[0]!.sourceCoordinates)).toBe(true);
+    expect(first.cells[0]!.sourceCoordinates).not.toBe(allocation.cells[0]!.sourceCoordinates);
     expect(Object.isFrozen(first.cells[0]!.shares)).toBe(true);
     expect(Object.isFrozen(first.cells[0]!.shares[0])).toBe(true);
+
+    const mutableCoordinates = { ...allocation.cells[0]!.sourceCoordinates };
+    const coordinateVariant = interner.compact({
+      ...allocation,
+      id: "coordinate-variant",
+      cells: [{ ...allocation.cells[0]!, sourceCoordinates: mutableCoordinates }]
+    });
+    expect(coordinateVariant.cells[0]).toBe(first.cells[0]);
+    mutableCoordinates.byteStart += 1;
+    expect(first.cells[0]!.sourceCoordinates.byteStart)
+      .toBe(allocation.cells[0]!.sourceCoordinates.byteStart);
+    const changedCoordinates = interner.compact({
+      ...allocation,
+      cells: [{ ...allocation.cells[0]!, sourceCoordinates: mutableCoordinates }]
+    });
+    expect(changedCoordinates.cells[0]).not.toBe(first.cells[0]);
+    expect(changedCoordinates.cells[0]!.sourceCoordinates.byteStart).toBe(mutableCoordinates.byteStart);
 
     const base = first.cells[0]!;
     const changedMass = interner.compact({

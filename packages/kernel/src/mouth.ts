@@ -455,6 +455,8 @@ export interface SpeakInput {
   evidence: EvidenceSpan[];
   entailment: SemanticEntailmentResult;
   languageMemory: LanguageMemoryRuntimeState;
+  /** Opaque identity for the requested realization language; never a locale/display alias. */
+  targetLanguageIdentityId?: string;
   answerDraft?: string;
   targetLanguage?: LanguageId;
   /** Formal language this turn's artifact is written in, when the request named one. */
@@ -1647,6 +1649,12 @@ export function createDeterministicMouth(options: { hashText: (text: string) => 
       const deterministicEvidenceIds = new Set((input.selectedCandidate?.evidenceIds ?? []).map(String));
       const deterministicSpans = input.evidence.filter(span => deterministicEvidenceIds.has(String(span.id)));
       const explicitContextBound = deterministicSpans.some(span => input.explicitContextEvidenceIds?.has(String(span.id)) === true);
+      const relationRequired = mouthRelationRequired(input);
+      const languageClosedClassWords = mouthLanguageClosedClass(input);
+      const coverageSpansForSurface = (surface: string): EvidenceSpan[] => {
+        const owners = exactSourceExcerptOwners(surface, deterministicSpans);
+        return owners.length ? owners : deterministicSpans;
+      };
       // A bare bound value (a date/time/name a realization contract required, e.g. "20:17" for "when did X
       // land") cannot lexically restate the request's own words -- that is what makes it a bound value rather
       // than a sentence -- so it needs candidateIsVerifiedBoundValue's narrower check instead of the full
@@ -1662,12 +1670,16 @@ export function createDeterministicMouth(options: { hashText: (text: string) => 
       // titled with the subject is what binds it. "who were the characters in Andromeda?" had the cast list and
       // spoke nothing because no member carried the request's words.
       const enumerationAnswer = (surface: string) => surface === input.selectedCandidate?.answer && isEntitySaladSurface(surface)
-        && deterministicSpans.some(span => evidenceTitledForRequestSubject(input.requestText ?? "", [span]));
+        && coverageSpansForSurface(surface).some(span => evidenceTitledForRequestSubject(input.requestText ?? "", [span]));
+      const coveringSpanIds = (surface: string): string[] => coverageSpansForSurface(surface)
+        .filter(span => answerCoversRequest([surface], span, deterministicUnits, input.requestText ?? "", { relationRequired, languageClosedClassWords }))
+        .map(span => String(span.id))
+        .slice(0, 8);
       const coversRequest = (surface: string) => deterministicQuotation || !deterministicUnits.length || !deterministicSpans.length
         || (contractVerifiedCandidateAnswer && surface === input.selectedCandidate?.answer)
         || explicitContextBound
         || enumerationAnswer(surface)
-        || deterministicSpans.some(span => answerCoversRequest([surface], span, deterministicUnits, input.requestText ?? "", { relationRequired: mouthRelationRequired(input), languageClosedClassWords: mouthLanguageClosedClass(input) }));
+        || coveringSpanIds(surface).length > 0;
       // Apparatus is refused rather than deprioritized. Sorting it last only helps while something else survives,
       // and a source whose only admitted span is its citation table then speaks the table: "the boiling point of
       // tungsten" was answered with `["CITEREFMasten2003"] = 1,` repeated. A turn holding nothing but apparatus
@@ -1691,12 +1703,17 @@ export function createDeterministicMouth(options: { hashText: (text: string) => 
           modelsByCorpus: countBy(input.languageMemory?.records ?? [], record => String(jsonRecord(record.modelJson).sourceSystem ?? record.streamId.split(":")[0])),
           boundSpans: deterministicSpans.length,
           quotation: deterministicQuotation,
+          relationRequired,
+          explicitContextBound,
+          contractVerifiedCandidateAnswer,
           terminalRuntimeMotion: terminalRuntimeMotionSelected,
           rows: clippedDeterministicSurfaces.slice(0, 5).map(surface => ({
             head: surface.slice(0, 60),
             admissible: admissibleMouthSurface(surface, deterministicEvidenceTexts),
             structuralResidue: isStructuralResidueSurface(surface),
             repeatsPrompt: surfaceRepeatsPrompt(surface, input.requestText ?? ""),
+            enumerationAnswer: enumerationAnswer(surface),
+            coveringSpanIds: coveringSpanIds(surface),
             covers: coversRequest(surface)
           }))
         }
@@ -1798,6 +1815,7 @@ function surfacePlanSummary(plan: SurfacePlan): JsonValue {
     forbiddenSurfaces: plan.forbiddenSurfaces.length,
     constructForces: plan.constructForces,
     targetLanguage: plan.targetLanguage,
+    targetLanguageIdentityId: plan.targetLanguageIdentityId ?? null,
     targetScript: plan.targetScript ?? null,
     styleProfileId: plan.styleProfileId,
     detailProfileId: plan.detailProfileId,
@@ -2006,6 +2024,7 @@ function buildSurfacePlan(
     caveatBindings,
     constructForces,
     targetLanguage,
+    ...(input.targetLanguageIdentityId ? { targetLanguageIdentityId: input.targetLanguageIdentityId } : {}),
     targetScript,
     styleProfileId,
     style,
@@ -2019,6 +2038,7 @@ function buildSurfacePlan(
       source: "mouth.surface-plan",
       requestedAuthority: input.requestedAuthority ?? null,
       targetLanguage,
+      targetLanguageIdentityId: input.targetLanguageIdentityId ?? null,
       targetScript: targetScript ?? null,
       styleProfileId,
       registerId: registerId ?? null,
@@ -2607,7 +2627,7 @@ function semanticReversibleConstructionCandidate(
   if (!state?.certificationBoundary.externalFactCertification
     || state.forceId !== "output.force.source_bound_answer"
     || state.boundaryId !== "output.force.source_bound"
-    || !planTargetsLanguageProfile(plan, input.languageProfile)) return undefined;
+    || !planTargetsLanguageProfile(plan, input.languageProfile, input.languageMemory)) return undefined;
   const facts = uniquePriorBoundFacts(state.selectedFacts);
   const fact = singleCoreFact(facts);
   if (!fact) return undefined;
@@ -2702,7 +2722,7 @@ function semanticAntiUnifiedConstructionCandidate(
   if (!state?.certificationBoundary.externalFactCertification
     || state.forceId !== "output.force.source_bound_answer"
     || state.boundaryId !== "output.force.source_bound"
-    || !planTargetsLanguageProfile(plan, input.languageProfile)) return undefined;
+    || !planTargetsLanguageProfile(plan, input.languageProfile, input.languageMemory)) return undefined;
   const facts = uniquePriorBoundFacts(state.selectedFacts);
   const fact = singleCoreFact(facts);
   if (!fact) return undefined;
@@ -2973,7 +2993,7 @@ function semanticLearnedConstructionCandidate(
   if (state.forceId !== "output.force.source_bound_answer" || state.boundaryId !== "output.force.source_bound") {
     return done("force_or_boundary_mismatch", { forceId: state.forceId, boundaryId: state.boundaryId });
   }
-  if (!planTargetsLanguageProfile(plan, input.languageProfile)) return done("target_language_mismatch", { planLanguage: plan.targetLanguage, profileLanguage: input.languageProfile.id });
+  if (!planTargetsLanguageProfile(plan, input.languageProfile, input.languageMemory)) return done("target_language_mismatch", { planLanguage: plan.targetLanguage, targetLanguageIdentityId: plan.targetLanguageIdentityId ?? null, scopeLanguageId: input.languageMemory.scope.languageId ?? null, profileLanguage: input.languageProfile.id });
   const certifiedEvidenceIds = new Set(state.certificationBoundary.evidenceSpanIds);
   if (!certifiedEvidenceIds.size) return done("no_certified_evidence_ids");
   const certifiedSourceVersionIds = new Set(state.certificationBoundary.sourceVersionIds);
@@ -3410,15 +3430,19 @@ function finiteUnitSignal(value: number | undefined): boolean {
 /**
  * plan.targetLanguage is a locale-ish tag (defaults to "und" when the turn named no explicit target language
  * -- see localeFromMetadata); languageProfile.id is an opaque, content-hash-keyed learned-profile identity.
- * These are different ID spaces and are only comparable when the turn actually requested a specific target
- * language. Real bug, confirmed live: comparing them for exact equality unconditionally made every
+ * These are different ID spaces. Production supplies targetLanguageIdentityId when the selected learned identity is
+ * known, and that opaque ID is checked against the active memory scope. Real bug, confirmed live: comparing them for exact equality unconditionally made every
  * construction-grammar and reversible-construction candidate permanently unreachable on any ordinary
  * (non-translation) turn, since "und" can never equal a profile hash -- traced via a live Apollo-11 probe
  * (mouth.learned_construction.reject: target_language_mismatch, planLanguage "und"). "und" honestly means "no
  * explicit language was requested," so it is treated as compatible with whichever profile is active, not as a
  * mismatch; an explicit non-"und" target (e.g. a translation request) still requires a real match.
  */
-function planTargetsLanguageProfile(plan: SurfacePlan, languageProfile: LanguageProfile): boolean {
+function planTargetsLanguageProfile(plan: SurfacePlan, languageProfile: LanguageProfile, languageMemory: LanguageMemoryRuntimeState): boolean {
+  // Locale/display targets and learned identities are different namespaces. When the caller supplies the opaque
+  // identity binding, the active memory scope is the admission proof. A synthetic profile such as surface-und never
+  // proves a match by its display-like name. Legacy direct Mouth callers retain the profile-ID/und contract.
+  if (plan.targetLanguageIdentityId) return languageMemory.scope.languageId === plan.targetLanguageIdentityId;
   return plan.targetLanguage === "und" || plan.targetLanguage === languageProfile.id;
 }
 
@@ -3437,7 +3461,7 @@ function profileInHydratedScope(profileId: string, activeProfile: LanguageProfil
 
 function exactSurfaceSatisfiesPlan(surface: string, input: SpeakInput, plan: SurfacePlan): boolean {
   if (input.maxLength && input.maxLength > 0 && [...surface].length > input.maxLength) return false;
-  if (!planTargetsLanguageProfile(plan, input.languageProfile)) return false;
+  if (!planTargetsLanguageProfile(plan, input.languageProfile, input.languageMemory)) return false;
   if (plan.targetScript && !input.languageProfile.scripts.some(row => row.script === plan.targetScript)) return false;
   if (input.requirementField || input.requiredOutputFeatures?.length || input.prohibitedOutputFeatures?.length || input.revisionConstraints?.length) return false;
   if (plan.caveatBindings.some(binding => !containsSurface(surface, binding.reason))) return false;
@@ -6600,7 +6624,10 @@ export function inferConstructForces(input: SpeakInput): ConstructForceInference
   if (input.construct.nodes.some(node => node.kind === "construct:invention")) add("CreativeConstruct", 0.74, "force.construct.invention", "signal.construct.invention", "construct_graph", 0.74);
   const semanticAnswer = semanticAnswerConstructState(input.construct);
   if (semanticAnswer) add("InferenceConstruct", 0.76, "force.construct.semantic_answer", "signal.construct.semantic_answer", "construct_graph", semanticAnswer.selectedFacts.length / Math.max(1, semanticAnswer.selectedFacts.length + 2));
-  if (!semanticAnswer && input.targetLanguage && input.targetLanguage !== "und" && input.targetLanguage !== languageIdFromProfile(input.languageProfile)) add("TranslationConstruct", 0.78, "force.language.target", "signal.language.target_differs", "language_target");
+  const targetIdentityDiffers = input.targetLanguageIdentityId
+    ? input.languageMemory.scope.languageId !== input.targetLanguageIdentityId
+    : input.targetLanguage !== languageIdFromProfile(input.languageProfile);
+  if (!semanticAnswer && input.targetLanguage && input.targetLanguage !== "und" && targetIdentityDiffers) add("TranslationConstruct", 0.78, "force.language.target", "signal.language.target_differs", "language_target");
   if (hasFamily("construct:action_plan")) add("PlanningConstruct", 0.58 + input.field.alphaTrace.surfaces.actionability * 0.28, "force.construct.plan", "signal.construct.action_plan", "construct_graph", input.field.alphaTrace.surfaces.actionability);
   const importSummarySurface = forceAwareHydratedAnswerSurface(input);
   if (importSummarySurface) add("ImportSummaryConstruct", 0.88, "force.brain.learned_prior_summary", importSummarySurface.policy.reasonId, "field_state", importSummarySurface.support);
@@ -7983,6 +8010,16 @@ function sessionAssertionTurn(input: SpeakInput): boolean {
   return input.evidence.some(span => String(span.id).startsWith("evidence_session_"));
 }
 
+/** Source ownership for a deterministic surface: whitespace/case normalization may differ, but the words must remain
+ * an exact contiguous excerpt of the evidence that licensed the surface. This keeps attached spans from combining
+ * their subject and relation to admit prose taken from another source. */
+function exactSourceExcerptOwners(surface: string, spans: readonly EvidenceSpan[]): EvidenceSpan[] {
+  const normalizedSurface = collapsePromptWhitespace(surface).trim().toLocaleLowerCase();
+  if (!normalizedSurface) return [];
+  return spans.filter(span => collapsePromptWhitespace(String(span.text ?? span.textPreview ?? ""))
+    .toLocaleLowerCase().includes(normalizedSurface));
+}
+
 /** Corpus-oriented truth at the mouth: a sourced surface that shares none of the request's content units (nor its source title) speaks about something else. Pure. */
 function requestCoverageHits(text: string, candidate: SurfaceCandidate, input: SpeakInput, quotation: boolean): string[] {
   if (quotation || candidate.id.startsWith("candidate:generated:code:")) return [];
@@ -7992,7 +8029,9 @@ function requestCoverageHits(text: string, candidate: SurfaceCandidate, input: S
   const bound = input.evidence.filter(span => ids.has(String(span.id)));
   const spans = bound.length ? bound : input.evidence;
   if (!spans.length) return [];
-  return spans.some(span => answerCoversRequest([text], span, units, input.requestText ?? "", { relationRequired: mouthRelationRequired(input), languageClosedClassWords: mouthLanguageClosedClass(input) })) ? [] : ["surface.reject.request_coverage"];
+  const coverageSpans = exactSourceExcerptOwners(text, spans);
+  const checkedSpans = coverageSpans.length ? coverageSpans : spans;
+  return checkedSpans.some(span => answerCoversRequest([text], span, units, input.requestText ?? "", { relationRequired: mouthRelationRequired(input), languageClosedClassWords: mouthLanguageClosedClass(input) })) ? [] : ["surface.reject.request_coverage"];
 }
 
 /** A surface repeats the request when it echoes it or when every content unit it carries is already in the request: it adds nothing. Pure. */
@@ -8652,7 +8691,7 @@ function scoreLabel(value: number): string {
 }
 
 function planHash(plan: SurfacePlan, hashText: (text: string) => string): string {
-  return hashText(JSON.stringify({ thesis: plan.thesis, points: plan.orderedPoints.map(point => [point.id, point.force]), targetLanguage: plan.targetLanguage, targetScript: plan.targetScript ?? null, detailProfileId: plan.detailProfileId, constructForces: plan.constructForces.map(force => [force.id, force.weight]) })).slice(0, 24);
+  return hashText(JSON.stringify({ thesis: plan.thesis, points: plan.orderedPoints.map(point => [point.id, point.force]), targetLanguage: plan.targetLanguage, targetLanguageIdentityId: plan.targetLanguageIdentityId ?? null, targetScript: plan.targetScript ?? null, detailProfileId: plan.detailProfileId, constructForces: plan.constructForces.map(force => [force.id, force.weight]) })).slice(0, 24);
 }
 
 function patternSurfaceKeys(pattern: { patternJson: JsonValue }): string[] {

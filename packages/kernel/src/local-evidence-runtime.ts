@@ -1270,10 +1270,12 @@ export function answerCoversRequest(
   // A sentence carrying nothing of the asked relation supports every candidate value for it equally, so it
   // discriminates nothing and settles nothing.
   //
-  // When the subtraction empties, the subject is taken from the SOURCE instead of from the request: the corpus's
+  // When the source names the subject, it takes precedence over the request's inferred anchors: the corpus's
   // own title and derived identity for this document are what it says the document is about, and the request's
   // content past that is the relation. That holds with no runtime corpus signal primed at all, which is the
-  // condition the whole-content-run anchor comes from in the first place -- and identity priming has already been
+  // condition the whole-content-run anchor comes from in the first place. Partial identity priming can also move
+  // an attribute into the subject while leaving part of the name in the relation; a nonempty subtraction is not
+  // evidence that those boundaries are correct. Identity priming has already been
   // observed absent or a turn stale in production, so the gate must not depend on it. Only where the corpus is
   // silent about the source too (no title, no identity) is the request re-read, and then only for a caller
   // holding the language's own closed class: without one, "what" is indistinguishable from "commanded".
@@ -1287,9 +1289,7 @@ export function answerCoversRequest(
   // The language's closed class comes off this branch too: "which" mid-request is scaffolding, not a relation the answer restates.
   const subtractedRelationUnits = answerContentUnits.filter(unit => !subjectUnits.some(subjectUnit => requestUnitSharesStem(unit, subjectUnit))
     && !options.languageClosedClassWords?.has(unit));
-  const sourceIdentityUnits = subtractedRelationUnits.length
-    ? []
-    : corpusIdentityUnits(`${evidenceIdentity(span)} ${evidenceTitle(span)}`).map(stripOuterPriorSeparators).filter(Boolean);
+  const sourceIdentityUnits = corpusIdentityUnits(`${evidenceIdentity(span)} ${evidenceTitle(span)}`).map(stripOuterPriorSeparators).filter(Boolean);
   const sourceSubjectUnits = answerContentUnits.filter(unit => sourceIdentityUnits.some(identityUnit => requestUnitSharesStem(unit, identityUnit)));
   // An obligation names what the ANSWER must carry, so the request's own opening scaffolding and the language's
   // closed class come off it here too: "When did the American Revolutionary War end?" reached the gate as
@@ -1299,7 +1299,7 @@ export function answerCoversRequest(
       && unit !== requestLeadingScaffoldingUnit(requestText)
       && !options.languageClosedClassWords?.has(unit))
     : [];
-  const relationUnits = subtractedRelationUnits.length
+  const relationUnits = !sourceSubjectUnits.length && subtractedRelationUnits.length
     ? subtractedRelationUnits
     : beyondSourceSubject.length
       ? beyondSourceSubject
@@ -1316,7 +1316,7 @@ export function answerCoversRequest(
   // member. Every other relation unit is still required, so a sentence about the subject that merely shares a word
   // with the request does not pass (the fabrication case this gate exists for).
   // The re-derived obligation is read off the request, so its own last unit is the request's last content unit there.
-  const lastContentUnit = subtractedRelationUnits.length
+  const lastContentUnit = !sourceSubjectUnits.length && subtractedRelationUnits.length
     ? answerContentUnits[answerContentUnits.length - 1]
     : relationUnits[relationUnits.length - 1];
   // The escape excuses the category the answer replaces, never the relation itself: it requires a second relation

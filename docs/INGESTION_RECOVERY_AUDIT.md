@@ -701,3 +701,220 @@ arrive in insertion order; comparing complete bodies by allocation ID corrected
 the test expectation. No production behavior was changed for that correction.
 Logs: `.tmp/alignment-retention-full-test.log` and
 `.tmp/alignment-retention-{corpus,artifacts}-postgres.log`.
+
+### Fourth measured trial: source metadata guard
+
+Commit `2324ca24` was pushed before the 13:30:48 UTC fresh-schema run. It
+exited 1 after 108.607 seconds because the source metadata guard detected a
+change before the training transaction committed. This was not an OOM.
+Compilation took 75.218 seconds; the durable result remained 33 articles,
+66 source versions and 311 verified evidence spans, with no learned state.
+Artifacts: `artifacts/scce6-wikipedia-300-20260921T133048Z`.
+
+Only `ctimeNs` changed on the dump and index; size, modification time, device
+and file identity stayed equal. A new full streaming SHA-256 verification of
+both files completed at 13:41:16 UTC. Both matched the previously recorded
+hashes, and all five metadata fields stayed stable during this verification.
+Report: `.tmp/scce6-source-rehash-after-ctime-1789998076603.json`.
+The metadata change's cause is not established. No source guard was bypassed,
+and the existing schema is retained for a cursor-checked resume.
+
+### Fifth measured trial: first committed training, oversized recovery artifacts
+
+The unchanged build resumed at 13:42:41 UTC. No training journal or completed
+block cursor existed after the guard failure, so the correct bound remained
+300: existing article identities replayed without adding duplicate sources.
+The process exited 0 after 1,032.398 seconds, stopping at the configured
+2,200 MiB heap checkpoint with 36 durable articles. The journal records 32
+committed training documents and four pending samples, with matching durable
+page/source/evidence counts. This is partial ingestion, not a completed
+300-article run. Artifacts: `artifacts/scce6-wikipedia-300-20260921T134241Z`.
+
+Committed state includes one language profile, eight n-gram models, 611 units,
+232 patterns, 308 semantic frames, 4,602 relation observations and one
+segmentation aggregate. All 48 alignment supports completed alternative
+extraction. A 15-second profile during artifact persistence attributed 6,330
+of 10,312 samples to garbage collection. The blob relation reached
+1,062,969,344 bytes, including indexes and PostgreSQL compression.
+
+The real recovery check failed: one externalized event group contains
+6,329,160,926 canonical bytes across 1,450 fragments in 23 events. Its largest
+selected series requires 754,228,003 bytes, exceeding the production reader's
+384 MiB aggregate budget; its largest individual item is 68,898,145 bytes.
+Report: `.tmp/wiki-alignment-artifact-read-20260921T1401.json`. Small-fixture
+PostgreSQL checks did not establish this real-batch recovery property. A
+lossless shared-record codec is required before continuing scale testing.
+
+A subsequent one-page resume exited 0 in 5.730 seconds, reaching a normal
+declared batch boundary with 37 articles, 32 trained and five pending. It
+prepares the existing diagnostic-only clone path without manually editing
+the source lifecycle. Artifacts:
+`artifacts/scce6-wikipedia-300-20260921T140359Z`. No learned-English or Qwen
+comparison result is established by these ingestion counts.
+
+### First ordinary-runtime diagnostic versus Qwen
+
+The 37-article schema was copied into an owned disposable database. All 21
+structural diagnostic checks passed, including 365 evidence spans with no
+coordinate/hash mismatches. Diagnostic activation used the existing lifecycle
+API only in that clone and retained `qualification:false`; the source schema
+was not activated.
+
+The ordinary SCCE JSONL adapter and local `qwen2.5:3b` natural RAG adapter then
+answered the same 12 questions against the same hash-verified 37-document
+corpus, sequentially. Both returned 12 rows and exited 0 without a process
+timeout. SCCE's automatic score was 4/12; Qwen's was 8/12. Qwen's arithmetic
+mean answer was also semantically correct but missed the literal gold string.
+SCCE selected unrelated passages for an Andorra paraphrase and a blood-type
+question, and emitted correct albedo text with an abstained status. Citation
+byte checks passed for all 19 SCCE citations and all five Qwen citations;
+that does not establish relevance or factual responsiveness.
+
+Artifacts: `.tmp/scce6-trained32-diagnostic-run/diagnostic-run.json` and the
+adjacent raw answer/gold files. Corpus SHA-256:
+`6509a529fd533ded634088727603fbb56d5beffb98a91eba985db93d50ac21ad`.
+Adapter process elapsed times were 23.663 seconds for SCCE and 171.919 seconds
+for Qwen. Per-turn/request budgets differed (10 versus 120 seconds), so this
+is not a controlled speed comparison, sealed evaluation, learned-generation
+qualification, or evidence of a SCCE win. Qwen was unloaded after the run to
+release RAM for repair testing.
+
+The successfully restored 37-article backup is 744,136,684 bytes with SHA-256
+`63e45227ffea8049f10ebd950eb7359ecb35ddb194b40e73767a74c5d98ede41`.
+A post-diagnostic, pre-rebuild code snapshot records compiled identity
+`sha256:e9c26ae1d17c877c60901584091b6de3d5e2ac6a85cf8df09c8779c43293e2da`
+in `.tmp/scce6-trained32-diagnostic-run/build-snapshot.json`. Subsequent
+diagnostics must use fresh output directories and record their actual compiled
+identity; changing compiler code does not authorize bypassing the Wikipedia
+resume identity guard.
+
+### Shared alignment records: recovery rehearsal
+
+The next writer uses versioned shared-record dictionaries within each series,
+emitted one series at a time. Complete marginal, cell, share and allocation
+fields remain present. Source indexes preserve interleaved input order;
+allocation ownership follows plan/allocation identities. The reader checks
+fragment hashes, series ownership, source indexes, aggregate reference limits
+and the existing byte limits. Decoded shared records are immutable. Legacy v1
+events remain readable; this does not repair oversized v1 artifacts already
+stored by the fifth trial.
+
+`pnpm build` and the 11-check PostgreSQL artifact rehearsal passed. The latter
+verified two committed groups, interleaved ordering, complete set/allocation
+bodies, selected-series allocation isolation, immutable sharing, legacy
+envelopes, blob hashes and transactional rollback. Log:
+`.tmp/shared-codec-postgres.log`.
+
+The reconstructed 48-support rehearsal completed under a 3,072 MiB Node heap
+limit in 406.761 seconds: 300.973 seconds through alignment, 100.709 seconds
+writing artifacts and 5.077 seconds reading and comparing. All 384 plan and
+allocation identities retained the previously verified digest. The writer
+produced 1,408,807,610 bytes in 195 blobs and four events. The largest encoded
+alternative series was 80,397,662 bytes and recovered with the default
+384 MiB limits. Full canonical hashes matched for its largest set and largest
+allocation; all eight selected allocation identities matched.
+
+Sampled peak heap was 2,244 MiB; process maximum RSS was 3,189,644 KiB. Report:
+`.tmp/wiki-alignment-codec-20260921T1443/report.json`. This reconstructed
+fixture differs from the live batch and excludes source/language compilation,
+held-out/construction compilation, PostgreSQL persistence and runtime
+qualification. These figures establish neither a live compression ratio nor
+a full-Wikipedia completion estimate.
+
+A second ordinary-adapter run on the diagnostic clone, still using the old
+compiled identity, again scored 4/12. A subsequent native trace on the new
+build also reproduced the unrelated biography answer to the blood-type
+question. The cold-language fallback is therefore not established as that
+failure's cause. The trace is recorded in
+`.tmp/scce6-native-trace-dwan-blood.jsonl`; the returned answer basis says
+`certifiesSourceClaim:false` and `truth.insufficient_evidence` while the
+assistant force remains `source_grounded_answer`. Candidate admissibility
+still requires repair before claiming answering readiness.
+
+The first full-suite run of this change failed three adapter artifact tests:
+their minimal/generic alternative-set fixtures had no typed transport arrays.
+Earlier targeted adapter runs had loaded the prior compiled kernel, so those
+passes did not verify the new writer. Shared encoding is now conditional on
+every set having complete transport arrays; otherwise the entire payload keeps
+the legacy format and exact original shape. After rebuilding, both targeted
+files passed all 19 tests, and the 11-check PostgreSQL artifact rehearsal
+passed again. Logs: `.tmp/shared-codec-full-test.log`,
+`.tmp/shared-codec-compat-targeted.log`,
+`.tmp/shared-codec-compat-postgres.log`. Full-suite completion remains pending.
+The separate Gutenberg/OSS PostgreSQL rehearsal passed all 12 checks with the
+shared-codec build (`.tmp/shared-codec-corpus-postgres.log`).
+
+The actual blood-type request had hydrated language statistics: one model,
+611 units, 308 frames and a nonempty request closed class. The missing cold
+fallback was not the cause. A reproduced identity-priming defect let part of
+the subject remain in the relation obligation while the requested attribute
+became a subject anchor. Source-owned identity now takes precedence when
+deriving that obligation. The focused answerhood tests pass, including a
+German fixture, bound values, subject summaries and category-member answers.
+
+The first native runtime check after this correction rejected the false
+source-exact proposal, but a later deterministic fallback still emitted the
+biography with `assistantForce: insufficient_support`. That is not a correct
+abstention. Result: `.tmp/scce6-native-trace-dwan-source-subject.jsonl.result.json`;
+compiled identity:
+`sha256:82845c23be8a42e0f608b011b6a4dc1d35963f84dd0546859d8613929d0a6482`.
+The fallback remains under repair; a changed force label alone cannot count
+as an answering improvement.
+
+Bounded ingestion also needed a way to train the final pending samples without
+reading another article. Direct `ingest wiki --finish-pending` now verifies
+the existing input/code manifest and open journal, applies the normal stop
+guards, and uses the existing transactional batch trainer. It keeps the
+page/block cursor and refreshes the cumulative candidate manifest. A retry
+after a lost commit acknowledgement does not train the samples twice.
+Ordinary capped runs still preserve batch membership; this explicit operation
+closes a partial training batch and records that choice. It does not request
+or report full-dump completion. Fresh, explicit-offset, no-resume and firehose
+controls cannot be combined with it. The recovery suite passed 25 tests,
+including separate owner/heap drain fences (`.tmp/wiki-finish-pending-targeted.log`).
+
+The expanded native trace identified the remaining fallback defect: only the
+attached Lincoln span passed coverage for Dwan's biography. Quote, context,
+enumeration and bound-value exemptions were all false. Exact excerpts now
+check coverage against their owning spans, shared by deterministic and learned
+surface validation. The regression fails with the former unrestricted span
+selection and passes with ownership enforced. The subsequent native result
+is an empty answer with `insufficient_support`, not the biography:
+`.tmp/scce6-native-trace-dwan-owned-excerpt.jsonl.result.json`, compiled identity
+`sha256:08ab5164146ddddb606e5a50a56c7fcf7607da1ee3307d9348a193abe68e2469`.
+Focused ownership/answerhood tests passed 15/15. This verifies one abstention
+failure; it does not establish a comparative quality win.
+
+Realization now carries an opaque learned-language identity separately from
+the locale hint. A selected identity is compared with the hydrated language
+scope, allowing the synthetic surface-profile fallback without pretending its
+name proves compatibility. A known foreign identity remains rejected; ordinary
+locale metadata no longer creates a false translation force when the identities
+match. The focused mouth suites passed 46 tests before the ownership change;
+the complete combined suite is still pending.
+
+The combined `pnpm test` run subsequently passed: 564 unit-test files and
+3,543 tests passed, followed by all 43 sealed-evaluation harness tests, the
+hidden-model dependency check and source-text checks. Log:
+`.tmp/scce6-readiness-full-test.log`. Existing environment-dependent skips are
+not counted as executed checks.
+
+The prepared Bible importer correctly labels its artifacts `sourceSystem:
+"bible"`, but the default runtime registry did not include that corpus. Both
+host and deployment configurations now enable its existing custom-registry
+entry for language memory and graph evidence. The ID factory resolves the
+same opaque corpus identity used by training, and the hydration plan queries
+`bible`; source labels were not changed to another corpus. The registry/config
+tests passed 11/11 after this configuration addition. Deployment validation
+covered the registry mapping only: normal deployment configuration still
+requires its bearer-token environment, and no Docker service was started.
+
+The repeated ordinary-adapter diagnostic after these repairs still scored
+4/12, in 22.315 seconds, with 22/22 byte-valid citations. Blood type now
+correctly abstained with an empty answer. The previously correct Dwan
+birthplace item instead returned his biography; the cause of that regression
+is not yet isolated. The reference baseline remains Qwen 8/12 literal
+(9/12 on semantic inspection), with unequal per-turn budgets. Report:
+`.tmp/scce6-trained32-after-admission-repair/diagnostic-run.json`.
+Neither the test-suite pass nor the corrected abstention qualifies the
+candidate or establishes an overall quality gain.

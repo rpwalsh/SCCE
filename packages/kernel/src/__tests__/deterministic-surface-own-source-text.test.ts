@@ -1,6 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   createClock,
   createDeterministicMouth,
@@ -11,6 +11,9 @@ import {
   featureSet
 } from "../index.js";
 import { trainKneserNey } from "../kneser-ney.js";
+import { answerCoversRequest } from "../local-evidence-runtime.js";
+import { clearCorpusIdentitySignals, primeCorpusIdentitySignals } from "../corpus-identity.js";
+import { resetCorpusIdentityMeasurements } from "../corpus-identity-runtime.js";
 import type { CandidateSurface } from "../candidate-contract.js";
 import type { SpeakInput } from "../mouth.js";
 import type { NgramModelRecord } from "../storage.js";
@@ -40,6 +43,8 @@ const OWN_SOURCE_TEXT = [
 const LEAKED_CONTROL_ID = "The program planner is decided by surface.boundary.decline and proof.status.non_certifying.v3 here.";
 
 describe("a source's own text is speakable; a control id the corpus does not contain is not", () => {
+  beforeEach(() => { clearCorpusIdentitySignals(); resetCorpusIdentityMeasurements(); });
+  afterEach(() => { clearCorpusIdentitySignals(); resetCorpusIdentityMeasurements(); });
   it("speaks the admitted span's own text even though it carries a control-id shape", async () => {
     const spoken = await speakDeterministic(OWN_SOURCE_TEXT, OWN_SOURCE_TEXT);
     expect(spoken.text).toContain("program-planner.ts");
@@ -50,18 +55,33 @@ describe("a source's own text is speakable; a control id the corpus does not con
     expect(spoken.text).not.toContain("surface.boundary.decline");
     expect(spoken.text).not.toContain("proof.status.non_certifying");
   });
+
+  it("keeps an exact source excerpt bound to its own span when another admitted span supplies relation words", async () => {
+    const requestText = "What was Allan Dwan's blood type?";
+    const dwan = promotedSpanWithSource("Allan Dwan", "Allan Dwan (born Joseph Aloysius Dwan; April 3, 1885 – December 28, 1981) was a pioneering Canadian and American motion picture director, producer, and screenwriter.");
+    const unrelated = promotedSpanWithSource("Abraham Lincoln", "Abraham Lincoln discussed the blood of citizens during a political dispute.");
+    primeCorpusIdentitySignals({ closedClass: new Set(["was"]), identities: new Set(["allan", "blood"]), spread: new Map([["allan", 1], ["blood", 1]]), concentration: 1 });
+    const candidate: CandidateSurface = {
+      ...sourceBoundProofAnswer(dwan.text, dwan),
+      evidenceIds: [dwan.id, unrelated.id]
+    };
+    const spoken = await createDeterministicMouth({ hashText: text => hasher.digestHex(text) }).speak(speakInput(dwan.text, dwan.text, { requestText, evidence: [dwan, unrelated], candidate }));
+    expect(answerCoversRequest([dwan.text], unrelated, ["allan", "dwan's", "blood", "type"], requestText, { relationRequired: true, languageClosedClassWords: new Set(["was"]) })).toBe(true);
+    expect(spoken.text).not.toContain("pioneering Canadian and American motion picture director");
+  });
 });
 
 async function speakDeterministic(answer: string, evidenceText: string) {
   return createDeterministicMouth({ hashText: text => hasher.digestHex(text) }).speak(speakInput(answer, evidenceText));
 }
 
-function speakInput(answer: string, evidenceText: string): SpeakInput {
-  const evidence = promotedSpan(evidenceText);
-  const field = emptyField(REQUEST);
+function speakInput(answer: string, evidenceText: string, options: { requestText?: string; evidence?: EvidenceSpan[]; candidate?: CandidateSurface } = {}): SpeakInput {
+  const requestText = options.requestText ?? REQUEST;
+  const evidence = options.evidence ?? [promotedSpan(evidenceText)];
+  const field = emptyField(requestText);
   const entailment = createSemanticEntailmentEngine({ idFactory: ids, hasher }).check({
-    text: REQUEST,
-    evidence: [evidence],
+    text: requestText,
+    evidence,
     nodes: [],
     field,
     createdAt: clock.now()
@@ -85,11 +105,11 @@ function speakInput(answer: string, evidenceText: string): SpeakInput {
     createdAt: clock.now()
   };
   return {
-    requestText: REQUEST,
+    requestText,
     construct,
     field,
     languageProfile: profile,
-    evidence: [evidence],
+    evidence,
     entailment,
     languageMemory: languageRuntime.hydrateFromImportedBrain({
       importRunId: "own-source-text-dialogue",
@@ -100,9 +120,14 @@ function speakInput(answer: string, evidenceText: string): SpeakInput {
       semanticFrames: []
     }),
     conversationTurns: [],
-    selectedCandidate: sourceBoundProofAnswer(answer, evidence),
+    selectedCandidate: options.candidate ?? sourceBoundProofAnswer(answer, evidence[0]!),
     targetLanguage: "language.dialogue"
   };
+}
+
+function promotedSpanWithSource(title: string, text: string): EvidenceSpan {
+  const span = promotedSpan(text);
+  return { ...span, sourceIdentity: { title, identity: title, sourceKind: "wikipedia" }, provenance: { ...(span.provenance as Record<string, unknown>), title, identity: title, sourceKind: "wikipedia", forceClass: "direct_evidence" } } as unknown as EvidenceSpan;
 }
 
 function sourceBoundProofAnswer(answer: string, evidence: EvidenceSpan): CandidateSurface {

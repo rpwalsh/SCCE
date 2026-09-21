@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { createTurnSignals } from "../turn-signals.js";
 import { requestClosedClassWords, requestScaffoldingConstructions } from "../closed-class-words.js";
+import { trainKneserNey } from "../kneser-ney.js";
 import type { LanguagePatternRecord } from "../storage.js";
 import type { TurnRequirementField } from "../turn-requirements.js";
 
@@ -66,5 +67,50 @@ describe("turn language state", () => {
 
     expect(signals.closedClassWords.has("please")).toBe(true);
     expect(signals.closedClassWords.has("ada")).toBe(false);
+  });
+
+  it("retains selected identity closed-class cues during a cold runtime fallback", () => {
+    const signals = createTurnSignals({
+      requestText: "What is the capital?",
+      authority: "factual",
+      requirementField: requirementField(),
+      models: [],
+      identityClosedClassWords: new Set(["what", "is", "the", "identity-only"]),
+      patterns: [{
+        id: "pattern.request.what-is",
+        profileId: "profile.identity",
+        patternKind: "semantic_role",
+        support: 1,
+        entropy: 0,
+        patternJson: {
+          schema: "scce.request_requirement_pattern.v1",
+          surface: "what is",
+          anchor: "start",
+          selectedAuthority: "factual"
+        },
+        evidenceIds: [],
+        updatedAt: 1
+      }]
+    });
+
+    expect(signals.functionSymbols.has("the")).toBe(true);
+    expect(signals.functionSymbols.has("identity-only")).toBe(true);
+    expect(signals.closedClassWords.has("what")).toBe(true);
+    expect(signals.closedClassWords.has("the")).toBe(true);
+    expect(signals.closedClassWords.has("identity-only")).toBe(false);
+  });
+
+  it("does not let identity cues replace populated runtime language statistics", () => {
+    const signals = createTurnSignals({
+      requestText: "What is the capital?",
+      authority: "factual",
+      requirementField: requirementField(),
+      models: [trainKneserNey("the capital is the capital and the capital is stable", { order: 2 })],
+      identityClosedClassWords: new Set(["identity-only"]),
+      patterns: []
+    });
+
+    expect(signals.functionSymbols.has("the")).toBe(true);
+    expect(signals.functionSymbols.has("identity-only")).toBe(false);
   });
 });

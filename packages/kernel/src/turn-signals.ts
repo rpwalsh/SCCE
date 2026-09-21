@@ -53,6 +53,8 @@ export interface TurnSignalsInput {
   requirementField: TurnRequirementField;
   models: readonly KneserNeyModel[];
   continuationPopulation?: LanguageContinuationPopulation;
+  /** Learned by the selected request-language identity for a cold hydration fallback. */
+  identityClosedClassWords?: ReadonlySet<string>;
   patterns: readonly LanguagePatternRecord[];
 }
 
@@ -83,12 +85,17 @@ export function createTurnSignals(input: TurnSignalsInput): TurnSignals {
         requestText: input.requestText,
         models: input.models,
         continuationPopulation: input.continuationPopulation,
+        identityClosedClassWords: input.identityClosedClassWords,
         patterns: input.patterns,
         authority: input.authority
       }));
     },
     get functionSymbols(): ReadonlySet<string> {
-      return (functionSymbols ??= deriveClosedClassWords({ models: input.models, continuationPopulation: input.continuationPopulation }));
+      return (functionSymbols ??= deriveClosedClassWords({
+        models: input.models,
+        continuationPopulation: input.continuationPopulation,
+        identityClosedClassWords: input.identityClosedClassWords
+      }));
     },
     quotesSource(evidence: readonly EvidenceSpan[]): boolean {
       const requestSequences = signals.sentenceSequences;

@@ -84,6 +84,11 @@
         "rootPath": "/data/corpora/oss"
       },
       "registry": {
+        "bible": {
+          "enabled": true,
+          "languageMemoryEligible": true,
+          "graphEvidenceEligible": true
+        },
         "dialogue": {
           "enabled": true,
           "localPath": "/data/corpora/dialogue"

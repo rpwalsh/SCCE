@@ -85,7 +85,11 @@ export function createTransportEvidenceAllocationRetentionInterner(): TransportE
     const retainedShares = cell.shares.map(share => ({ ...share }));
     for (const share of retainedShares) Object.freeze(share);
     Object.freeze(retainedShares);
-    const retained = { ...cell, shares: retainedShares };
+    const retained = {
+      ...cell,
+      sourceCoordinates: freezeSourceCoordinates(cell.sourceCoordinates),
+      shares: retainedShares
+    };
     Object.freeze(retained);
     cellsByCandidate.set(cell.candidateId, retained);
     stats.uniqueCells += 1;
@@ -119,7 +123,7 @@ function sameTransportCell(
     || left.graphTargetId !== right.graphTargetId
     || !Object.is(left.transportMass, right.transportMass)
     || left.status !== right.status
-    || left.sourceCoordinates !== right.sourceCoordinates
+    || !sameSourceCoordinates(left.sourceCoordinates, right.sourceCoordinates)
     || !Object.is(left.conditionalProbabilitySum, right.conditionalProbabilitySum)
     || !Object.is(left.allocatedMass, right.allocatedMass)
     || !Object.is(left.conservationResidual, right.conservationResidual)
@@ -131,6 +135,26 @@ function sameTransportCell(
       && Object.is(share.conditionalProbability, other.conditionalProbability)
       && Object.is(share.allocatedMass, other.allocatedMass);
   });
+}
+
+function freezeSourceCoordinates(
+  coordinates: SparseAlignmentCandidate["sourceCoordinates"]
+): SparseAlignmentCandidate["sourceCoordinates"] {
+  return Object.freeze({ ...coordinates }) as SparseAlignmentCandidate["sourceCoordinates"];
+}
+
+function sameSourceCoordinates(
+  left: SparseAlignmentCandidate["sourceCoordinates"],
+  right: SparseAlignmentCandidate["sourceCoordinates"]
+): boolean {
+  return left.byteStart === right.byteStart
+    && left.byteEnd === right.byteEnd
+    && left.utf16Start === right.utf16Start
+    && left.utf16End === right.utf16End
+    && left.codePointStart === right.codePointStart
+    && left.codePointEnd === right.codePointEnd
+    && left.graphemeStart === right.graphemeStart
+    && left.graphemeEnd === right.graphemeEnd;
 }
 
 export function allocateTransportEvidence(input: {

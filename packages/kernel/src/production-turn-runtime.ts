@@ -1437,12 +1437,34 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       //
       // Rebuilt when the turn reprojects its authority, because the request's own scaffolding is authority-scoped;
       // everything inside is derived on first use, so rebuilding costs nothing that is not asked for again.
+      const identityClosedClassWords = new Set((requestLanguage?.identity.closedClass ?? []).map(row => row.word));
+      const identityClosedClassFallback = (authorityLanguage.state.models?.length ?? 0) === 0
+        && !authorityLanguage.state.continuationPopulation
+        && identityClosedClassWords.size > 0;
+      if (identityClosedClassFallback) {
+        kernelTrace({
+          stage: "runtime.seed.language.degraded",
+          label: "kernel.turn",
+          counts: {
+            models: authorityLanguage.state.models?.length ?? 0,
+            continuationPopulationModels: authorityLanguage.state.continuationPopulation?.modelCount ?? 0,
+            identityClosedClassWords: identityClosedClassWords.size
+          },
+          support: {
+            reason: "runtime-language-statistics-unavailable",
+            languageId: requestLanguage?.identity.id ?? null,
+            fallback: "selected-language-identity.closedClass"
+          },
+          warnings: ["runtime language statistics unavailable; using selected identity closed class"]
+        });
+      }
       let turnSignals = createTurnSignals({
         requestText: input.text,
         authority: requestedAuthority,
         requirementField,
         models: authorityLanguage.state.models ?? [],
         continuationPopulation: authorityLanguage.state.continuationPopulation,
+        identityClosedClassWords,
         // The request-language state is the complete learned control surface for
         // this turn.  Passing only the corrections store here silently discarded
         // request-frame constructions that were already admitted by the active
@@ -1457,6 +1479,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           requirementField,
           models: authorityLanguage.state.models ?? [],
           continuationPopulation: authorityLanguage.state.continuationPopulation,
+          identityClosedClassWords,
           patterns: requestRequirementLanguageState.importedPatterns
         });
       };
@@ -2385,9 +2408,22 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           admissible: admissibleEvidence.length,
           promoted: admissibleEvidence.filter(span => span.status === "promoted").length,
           ranked: rankedSupportEvidence.length,
-          candidates: supportCandidates.length
+          candidates: supportCandidates.length,
+          requestClosedClassWords: requestClosedClassWords().size,
+          corpusFunctionSymbols: corpusFunctionSymbols().size
         },
-        support: { titledOpening: Boolean(admittedTitledOpeningSpan), limit: turnProofEvidenceLimit }
+        support: {
+          titledOpening: Boolean(admittedTitledOpeningSpan),
+          limit: turnProofEvidenceLimit,
+          requestClosedClassWords: [...requestClosedClassWords()].slice(0, 128),
+          corpusFunctionSymbols: [...corpusFunctionSymbols()].slice(0, 128),
+          candidateEvidence: supportCandidates.slice(0, 16).map(span => ({
+            id: String(span.id),
+            sourceVersionId: String(span.sourceVersionId),
+            charStart: span.charStart ?? null,
+            charEnd: span.charEnd ?? null
+          }))
+        }
       });
       const proofNodes = graph.nodes;
       const proofEdges = graph.edges;
@@ -3126,6 +3162,9 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         )).profiles
         : [];
       let productionTranslationPlan: TranslationPlan | undefined;
+      // Keep the opaque identity separate from locale/display metadata. Ordinary turns use the selected request
+      // identity; an explicit translation replaces it with the target profile's persisted identity when known.
+      let realizationLanguageIdentityId = requestLanguageId;
       if (translationTarget) {
         const canonicalTranslationTarget = canonicalTranslationTargetKey(translationTarget);
         // These are independent read models for the same target. Keep their contents identical while allowing
@@ -3151,6 +3190,9 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           calibrationModels,
           createdAt: clock.now()
         });
+        realizationLanguageIdentityId = productionTranslationPlan.targetProfile
+          ? languageIdentityRuntime.resolver()?.profile(productionTranslationPlan.targetProfile.id)
+          : undefined;
         if (deps.storage.translationSeeds && productionTranslationPlan.inducedSeeds.length) {
           await deps.storage.translationSeeds.putSeeds({
             sourceLanguage: productionTranslationPlan.sourceLanguage,
@@ -4769,6 +4811,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         entailment: answerEntailment,
         languageMemory: surfaceLanguageMemory,
         targetLanguage: translationTarget ?? locale,
+        targetLanguageIdentityId: realizationLanguageIdentityId,
         detailProfileId: surfaceDetailProfileIdFromMetadata(input.metadata),
         styleProfileId: styleProfileIdFromMetadata(input.metadata),
         registerId: registerIdFromMetadata(input.metadata),

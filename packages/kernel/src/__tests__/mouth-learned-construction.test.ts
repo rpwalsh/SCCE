@@ -209,6 +209,54 @@ describe("Mouth learned-construction candidate", () => {
     expect(learnedCandidate(wrongTarget.spoken)).toBeUndefined();
   });
 
+  it("uses the opaque active identity when the profile is the unresolved surface fallback", async () => {
+    const result = await speakFixture({
+      sentence: "Aster powers pump.",
+      subject: "Aster",
+      predicate: "powers",
+      object: "pump",
+      question: "What powers the pump?",
+      targetLanguage: "en",
+      targetLanguageIdentityId: "language.identity.en",
+      activeLanguageIdentityId: "language.identity.en",
+      syntheticSurfaceProfile: true
+    });
+
+    expect(learnedCandidate(result.spoken)).toBeDefined();
+    expect(result.spoken.surfacePlan.targetLanguage).toBe("en");
+    expect(result.spoken.surfacePlan.targetLanguageIdentityId).toBe("language.identity.en");
+    expect(result.spoken.surfacePlan.constructForces.some(force => force.id === "TranslationConstruct")).toBe(false);
+  });
+
+  it("keeps rejecting a proven cross-language identity even when the locale matches", async () => {
+    const result = await speakFixture({
+      sentence: "Aster powers pump.",
+      subject: "Aster",
+      predicate: "powers",
+      object: "pump",
+      question: "What powers the pump?",
+      targetLanguage: "en",
+      targetLanguageIdentityId: "language.identity.en",
+      activeLanguageIdentityId: "language.identity.fr"
+    });
+
+    expect(learnedCandidate(result.spoken)).toBeUndefined();
+  });
+
+  it("does not treat the synthetic surface-und profile as an identity match", async () => {
+    const result = await speakFixture({
+      sentence: "Aster powers pump.",
+      subject: "Aster",
+      predicate: "powers",
+      object: "pump",
+      question: "What powers the pump?",
+      targetLanguage: "en",
+      syntheticSurfaceProfile: true
+    });
+
+    expect(learnedCandidate(result.spoken)).toBeUndefined();
+  });
+
   it("honors length, caveat, and proof-format constraints by declining exact output", async () => {
     const tooLong = await speakFixture({
       sentence: "Aster powers pump.",
@@ -297,6 +345,9 @@ async function speakFixture(input: {
   answerGrade?: boolean;
   finalQuestionFit?: number;
   targetLanguage?: string;
+  targetLanguageIdentityId?: string;
+  activeLanguageIdentityId?: string;
+  syntheticSurfaceProfile?: boolean;
   maxLength?: number;
   learningCaveat?: boolean;
   exposeProofTerms?: boolean;
@@ -325,11 +376,14 @@ async function speakFixture(input: {
     createdAt: clock.now()
   });
   const profileSource = input.profileCorpus ? sourceVersion(input.profileCorpus) : source;
-  const profile = languageAcquisition.acquire({
+  const acquiredProfile = languageAcquisition.acquire({
     sourceVersionId: profileSource.sourceVersionId,
     text: input.profileCorpus ?? evidenceText,
     createdAt: clock.now()
   });
+  const profile = input.syntheticSurfaceProfile
+    ? { ...acquiredProfile, id: "surface-und" }
+    : acquiredProfile;
   const mouth = createMouth({
     languageMemory: languageMemoryRuntime,
     correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }),
@@ -395,6 +449,14 @@ async function speakFixture(input: {
     semanticFrames: [],
     constructionEvidence: [evidence, alternativeEvidence].filter((value): value is EvidenceSpan => Boolean(value))
   });
+  if (input.activeLanguageIdentityId) {
+    languageMemory.scope = {
+      ...languageMemory.scope,
+      mode: "language",
+      languageId: input.activeLanguageIdentityId,
+      purityProven: true
+    };
+  }
   const primaryConstructionIds = languageMemory.importedConstructionBundles
     .filter(bundle => bundle.evidenceIds.includes(String(evidence.id)))
     .flatMap(bundle => bundle.constructions.map(construction => construction.id));
@@ -410,6 +472,7 @@ async function speakFixture(input: {
     evidence: [evidence],
     entailment,
     languageMemory,
+    targetLanguageIdentityId: input.targetLanguageIdentityId,
     targetLanguage: input.targetLanguage ?? profile.id,
     requestedAuthority: "factual",
     cycleConsistencyByConstructionId: input.cycleScores,

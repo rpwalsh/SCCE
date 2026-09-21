@@ -121,6 +121,8 @@ export interface WikipediaV3IngestOptions {
   indexPath?: string;
   maxPages?: number;
   maxBlocks?: number;
+  /** Drain the verified open language journal without reading another page. */
+  finishPending?: boolean;
   resume?: boolean;
   fresh?: boolean;
   startOffset?: number;
@@ -332,6 +334,9 @@ export class WikipediaV3Ingestor {
   }
 
   async ingest(input: WikipediaV3IngestOptions): Promise<WikipediaV3IngestResult> {
+    if (input.finishPending && (input.fresh || input.resume === false || input.startOffset !== undefined)) {
+      throw new Error("Wikipedia --finish-pending requires stored resume; fresh, --no-resume, and --start-offset are incompatible");
+    }
     const target = path.resolve(input.dumpPath);
     const resolved = resolveWikipediaCorpusTarget(this.config, target);
     if (!resolved) throw new Error(`not a configured Wikipedia multistream dump: ${target}`);
@@ -372,6 +377,9 @@ export class WikipediaV3Ingestor {
     const languageBatchJournalCheckpoint = await this.storage.ingestion.get(languageBatchJournalId) ?? null;
     const storedLanguageBatchJournal = readWikipediaLanguageBatchJournal(languageBatchJournalCheckpoint, inputManifest.identity, shardCharBudget);
     const languageBatchJournal = storedLanguageBatchJournal?.state === "open" ? storedLanguageBatchJournal : undefined;
+    if (input.finishPending && !languageBatchJournal) {
+      throw new Error("Wikipedia --finish-pending requires an open language batch journal for this verified input");
+    }
     const resumeJournal = useStoredResume ? storedLanguageBatchJournal : undefined;
     if (storedLanguageBatchJournal && !useStoredResume) {
       throw new Error("Wikipedia language batch journal exists; refusing fresh or explicit-offset replay that could duplicate learned contributions");
@@ -384,7 +392,7 @@ export class WikipediaV3Ingestor {
     await this.storage.events.append(this.events.create({
       episodeId,
       typeId: "OwnerAsked",
-      payload: { command: "ingest.wikipedia.v3", dumpPath: corpus.dumpPath, indexPath: corpus.indexPath ?? null, inputManifest: toJsonValue(inputManifest), resumedFromOffset, memorySafetyBoundMb: corpus.memorySafetyBoundMb }
+      payload: { command: "ingest.wikipedia.v3", dumpPath: corpus.dumpPath, indexPath: corpus.indexPath ?? null, inputManifest: toJsonValue(inputManifest), resumedFromOffset, memorySafetyBoundMb: corpus.memorySafetyBoundMb, finishPending: input.finishPending === true }
     }));
 
     const result: WikipediaV3IngestResult = {
@@ -417,7 +425,7 @@ export class WikipediaV3Ingestor {
       skipped: [],
       warnings: []
     };
-    const fullTrainingRequested = corpus.maxBlocksPerRun === 0 && input.maxPages === undefined;
+    const fullTrainingRequested = !input.finishPending && corpus.maxBlocksPerRun === 0 && input.maxPages === undefined;
     let stopReason: string | undefined;
     let streamReachedEnd = false;
     let stoppedBeforeEnd = false;
@@ -483,7 +491,8 @@ export class WikipediaV3Ingestor {
     // character budget, so models got a tenth of the text the code intends them to have. Text per model is the
     // strongest lever measured on this corpus (200,000 symbols: 7.08 nats/token; 800,000: 5.73), so the shard
     // now accumulates across blocks until the budget is reached. Only overflow, a training limit, or actual
-    // EOF forces a partial batch. Bounded stops persist the buffer and cursor without changing batch membership.
+    // EOF or an explicit finish-pending request forces a partial batch. Ordinary bounded stops persist the buffer
+    // and cursor without changing batch membership.
     const flushLanguageShard = async (shardUri: string, force = false): Promise<void> => {
       if (languageShardSamples.length && !force && languageShardChars < shardCharBudget) return;
       if (!languageShardSamples.length && !pendingBlockCheckpoints.length) return;
@@ -556,15 +565,33 @@ export class WikipediaV3Ingestor {
     await emitStatus("starting");
 
     try {
-      const replaySkippedPages = languageBatchJournal && !languageBatchJournal.blockComplete ? languageBatchJournal.processedPageCount : 0;
-      const streamCorpus = replaySkippedPages > 0 && corpus.maxPagesPerRun > 0
-        ? { ...corpus, maxPagesPerRun: corpus.maxPagesPerRun + replaySkippedPages }
-        : corpus;
-      for await (const item of streamWikipediaMultistream(streamCorpus, {
-        resumeOffset: resumedFromOffset,
-        resumeAfterBlock: resumeAfterBlock,
-        discoverIndex: false
-      })) {
+      let stream: ReturnType<typeof streamWikipediaMultistream> | undefined;
+      if (input.finishPending) {
+        // This operation deliberately does not open the dump stream. The journal's cursor,
+        // manifest identity, and owner/heap fences remain authoritative for the next resume.
+        stopReason = "finish-pending";
+        stoppedBeforeEnd = true;
+        const stop = stopDecision(input, result);
+        if (stop) {
+          stopReason = stop.reason;
+          result.stoppedByHeapSafetyBound = stop.kind === "heap";
+          result.stoppedByOwner = stop.kind === "owner";
+          await emitStatus("stopping");
+        } else {
+          await flushLanguageShard(activeLanguageShardUri, true);
+        }
+      } else {
+        const replaySkippedPages = languageBatchJournal && !languageBatchJournal.blockComplete ? languageBatchJournal.processedPageCount : 0;
+        const streamCorpus = replaySkippedPages > 0 && corpus.maxPagesPerRun > 0
+          ? { ...corpus, maxPagesPerRun: corpus.maxPagesPerRun + replaySkippedPages }
+          : corpus;
+        stream = streamWikipediaMultistream(streamCorpus, {
+          resumeOffset: resumedFromOffset,
+          resumeAfterBlock: resumeAfterBlock,
+          discoverIndex: false
+        });
+      }
+      if (stream) for await (const item of stream) {
         item.checkpoint.metadata = toJsonValue({ ...objectOrEmpty(item.checkpoint.metadata), inputManifestId: inputManifest.identity });
         const blockComplete = item.type === "checkpoint" && isBlockCheckpoint(item.checkpoint) && item.checkpoint.phase === "stored" && item.checkpoint.status === "complete";
         const streamComplete = item.type === "checkpoint" && !isBlockCheckpoint(item.checkpoint) && item.checkpoint.phase === "stored" && item.checkpoint.status === "complete";

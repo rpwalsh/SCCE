@@ -91,6 +91,17 @@ describe("answerhood gate", () => {
     expect(requestUnitSharesStem("moon", "months")).toBe(false);
   });
 
+  it("keeps a carried relation whose final category is replaced by its member", () => {
+    const sentence = "Athens is the capital and largest city of Greece.";
+    expect(answerCoversRequest(
+      [sentence],
+      openingBlock("evidence:athens", "Athens", sentence),
+      ["athens", "capital", "country"],
+      "Athens is the capital of which country?",
+      { relationRequired: true, languageClosedClassWords: new Set(["is", "the", "of", "which"]) }
+    )).toBe(true);
+  });
+
   it("counts unresolved obligations from the proof boundaries and withholds certification over them", () => {
     expect(unresolvedObligationCount(["underdetermined-obligations:34", "missing-role:1a2b", "source-excerpt-exact"])).toBe(35);
     expect(unresolvedObligationCount([])).toBe(0);
