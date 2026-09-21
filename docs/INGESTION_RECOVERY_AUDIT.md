@@ -427,3 +427,11 @@ Logs: `.tmp/wikipedia-recovery-full-suite.log`,
 source-byte and stage-timing inspection for the following measured ingestion.
 Article throughput and learned speech still require that actual run; these
 regressions do not establish full-corpus speed, calibration or a Qwen win.
+
+The replay rehearsal subsequently passed 38 checks after adding populated-data
+verification with the run report: two pages, four page source versions, two exact
+evidence spans, matching journal totals, two committed training documents and
+well-formed stage telemetry. Its owned databases were cleaned up before the
+measured source run. The first production launcher rejected `--schema=...` before
+ingestion; the corrected `--schema scce6_runtime` launch began the authorized
+300-page host run. Core code is frozen at `f5fb909d` for this input identity.
