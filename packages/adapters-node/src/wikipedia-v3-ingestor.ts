@@ -1412,7 +1412,11 @@ export class WikipediaV3Ingestor {
       })),
       hasher: this.hasher
     });
-    promoteSpan.end({ decisions: relationPromotionModel.decisions.length });
+    promoteSpan.end({
+      decisions: relationPromotionModel.decisions.length,
+      promotedDecisions: relationPromotionModel.decisions.filter(decision => decision.promoted).length
+    });
+    const roleModelsSpan = trace.span("relation.role-models");
     const opaqueRoleModel = compileOpaqueRoleModel({
       candidates: semanticCandidates,
       promotionModel: relationPromotionModel,
@@ -1424,6 +1428,8 @@ export class WikipediaV3Ingestor {
       opaqueRoleModel,
       hasher: this.hasher
     });
+    roleModelsSpan.end({ assignments: opaqueRoleModel.assignments.length });
+    const graphProjectionSpan = trace.span("relation.graph-project");
     const promotedGraph = semanticCandidates.length ? graphFromStructuredSemanticCandidates({
         candidates: semanticCandidates,
         observedAt: createdAt,
@@ -1432,7 +1438,9 @@ export class WikipediaV3Ingestor {
         relationPromotionModel,
         opaqueRoleModel
       }) : { nodes: [], edges: [], hyperedges: [] };
+    graphProjectionSpan.end({ nodes: promotedGraph.nodes.length, edges: promotedGraph.edges.length, hyperedges: promotedGraph.hyperedges.length });
     if (promotedGraph.hyperedges.length) {
+      const graphPersistSpan = trace.span("relation.graph-persist");
       const promotedNodes = stampGraphNodes(promotedGraph.nodes, WIKIPEDIA_INFORMATION_LABEL);
       const promotedEdges = stampGraphEdges(promotedGraph.edges, WIKIPEDIA_INFORMATION_LABEL);
       const promotedHyperedges = promotedGraph.hyperedges.map(hyperedge => ({
@@ -1445,6 +1453,8 @@ export class WikipediaV3Ingestor {
       else for (const edge of promotedEdges) await this.storage.graph.upsertEdge(edge);
       if (this.storage.graph.upsertHyperedges) await this.storage.graph.upsertHyperedges(promotedHyperedges);
       else for (const hyperedge of promotedHyperedges) await this.storage.graph.upsertHyperedge(hyperedge);
+      graphPersistSpan.end({ hyperedges: promotedHyperedges.length });
+      const targetIndexSpan = trace.span("alignment.target-index");
       // Alignment runs over the spans that carry the most corroborated targets and the graph region those spans evidence.
       const alignmentEvidence = rankEvidenceForAlignment({
         evidence,
@@ -1469,6 +1479,7 @@ export class WikipediaV3Ingestor {
         maxTargetsPerPosting: 512,
         hasher: this.hasher
       });
+      targetIndexSpan.end({ targets: alignmentTargetIndex.targets.length, evidence: alignmentEvidence.length });
       let alignmentCandidateCount = 0;
       let alignmentSurfaceUnitCount = 0;
       let maximumAlignmentDegree = 0;
@@ -1505,6 +1516,7 @@ export class WikipediaV3Ingestor {
       const alignmentLattices:
         ReturnType<typeof buildSurfaceLattice>[] = [];
       for (const span of alignmentEvidence) {
+        const latticeSpan = trace.span("alignment.lattice");
         const lattice = buildSurfaceLattice({
           documentId: String(span.id),
           sourceFamilyId: evidenceSourceFamilyId(span),
@@ -1514,6 +1526,8 @@ export class WikipediaV3Ingestor {
           hasher: this.hasher
         });
         alignmentLattices.push(lattice);
+        latticeSpan.end({ units: lattice.units.length, bytes: Buffer.byteLength(span.text, "utf8") });
+        const candidateSpan = trace.span("alignment.candidates");
         const support = generateSparseAlignmentCandidates({
           lattice,
           targetIndex: alignmentTargetIndex,
@@ -1527,7 +1541,9 @@ export class WikipediaV3Ingestor {
           ...support.rows.map(row => row.candidateIds.length)
         );
         alignmentSupports.push(support);
+        candidateSpan.end({ rows: support.rows.length, candidates: support.candidates.length });
       }
+      const routingModelsSpan = trace.span("alignment.routing-models");
       const alignmentCommunityRoutings = alignmentSupports.map(support =>
         compileAlignmentCommunityRouting({
           support,
@@ -1539,6 +1555,8 @@ export class WikipediaV3Ingestor {
         routedAlignmentSupportIds.push(routing.routedSupport.id);
         return routing.routedSupport;
       });
+      // Routing copies the support rows/candidates it retains; the pre-routing supports are no longer read.
+      alignmentSupports.length = 0;
       const typedNullCostModel = compileTypedNullCostModel({
         supports: routedAlignmentSupports,
         targetIndex: alignmentTargetIndex,
@@ -1548,6 +1566,7 @@ export class WikipediaV3Ingestor {
         supports: routedAlignmentSupports,
         hasher: this.hasher
       });
+      routingModelsSpan.end({ supports: routedAlignmentSupports.length });
       const transportResourceUsage = { elapsedMs: 0, outerIterations: 0, cellCount: 0, rowCount: 0, columnCount: 0, estimatedWorkingBytes: 0, plans: 0 };
       const solveBudgeted = (solverInput: Parameters<typeof solveSparseFusedUnbalancedTransport>[0]) => {
         const solved = solveSparseFusedUnbalancedTransportWithResourceBudget(solverInput);
@@ -1560,6 +1579,7 @@ export class WikipediaV3Ingestor {
         transportResourceUsage.plans += 1;
         return solved.plan;
       };
+      const initialTransportSpan = trace.span("alignment.transport-initial");
       const initialTransportPlans = routedAlignmentSupports.map(support =>
         solveBudgeted({
           support,
@@ -1568,12 +1588,18 @@ export class WikipediaV3Ingestor {
           populationOrderingModel,
           hasher: this.hasher
         }));
+      initialTransportSpan.end({ plans: initialTransportPlans.length });
+      const crossDocumentSpan = trace.span("alignment.cross-document");
       const crossDocumentAlignmentModel = compileCrossDocumentAlignmentModel({
         supports: routedAlignmentSupports,
         plans: initialTransportPlans,
         targetIndex: alignmentTargetIndex,
         hasher: this.hasher
       });
+      // Cross-document compilation materializes projections and estimates, with no plan aliases.
+      initialTransportPlans.length = 0;
+      crossDocumentSpan.end();
+      const finalTransportSpan = trace.span("alignment.transport-final");
       const finalTransportPlans = routedAlignmentSupports.map(support =>
         solveBudgeted({
           support,
@@ -1583,6 +1609,7 @@ export class WikipediaV3Ingestor {
           crossDocumentAlignmentModel,
           hasher: this.hasher
         }));
+      finalTransportSpan.end({ plans: finalTransportPlans.length });
       for (let index = 0; index < finalTransportPlans.length; index++) {
         const support = routedAlignmentSupports[index]!;
         const transport = finalTransportPlans[index]!;
@@ -1604,6 +1631,7 @@ export class WikipediaV3Ingestor {
           (sum, column) => sum + column.graphImplicitMass,
           0
         );
+        const alternativesSpan = trace.span("alignment.alternatives");
         const extractedAlternatives = extractAlignmentAlternatives({
           basePlan: transport,
           support,
@@ -1612,6 +1640,13 @@ export class WikipediaV3Ingestor {
           populationOrderingModel,
           crossDocumentAlignmentModel,
           hasher: this.hasher
+        });
+        alternativesSpan.end({
+          plans: extractedAlternatives.plans.length,
+          attemptedBranches: extractedAlternatives.attemptedBranchCount,
+          totalBranches: extractedAlternatives.totalBranchCount,
+          branchBudget: extractedAlternatives.branchSearchBudget,
+          omittedBranches: extractedAlternatives.omittedSearchBranchCount
         });
         const alternativeAllocations = extractedAlternatives.plans.map(plan =>
           allocateTransportEvidence({
@@ -1637,6 +1672,9 @@ export class WikipediaV3Ingestor {
             ...alignmentAlternativeSets.filter(set => set.seriesId === seriesId)
           ],
           omittedSearchBranchCount: extractedAlternatives.omittedSearchBranchCount,
+          attemptedBranchCount: extractedAlternatives.attemptedBranchCount,
+          totalBranchCount: extractedAlternatives.totalBranchCount,
+          branchSearchBudget: extractedAlternatives.branchSearchBudget,
           hasher: this.hasher
         });
         alignmentAlternativeSetIds.push(alternativeSet.id);

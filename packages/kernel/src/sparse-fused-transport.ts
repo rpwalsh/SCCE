@@ -181,6 +181,10 @@ export function solveSparseFusedUnbalancedTransport(input: {
   const objective = validatedObjective(input.objective ?? SPARSE_TRANSPORT_OBJECTIVE_V1);
   const budget = transportBudget(input.budget);
   const targetById = new Map(input.targetIndex.targets.map(target => [target.id, target]));
+  // Geometry owns a bounded LRU per-source BFS cache. Keep one instance for this solve so each outer transport
+  // iteration reuses the same target indexing, feature weights, and recent walks; rebuilding it inside
+  // localStructuralCosts made the profile pay that work once per iteration without changing any distances.
+  const targetGeometry = createGraphTargetGeometry(targetById.values());
   const typedNullCostModel = input.typedNullCostModel ?? compileTypedNullCostModel({
     supports: [input.support],
     targetIndex: input.targetIndex,
@@ -300,6 +304,7 @@ export function solveSparseFusedUnbalancedTransport(input: {
       cells,
       rowCells,
       targetById,
+      targetGeometry,
       maxNeighbors: budget.maxStructuralNeighbors,
       remainingComparisons: budget.maxStructuralComparisons
         - structuralComparisonsTotal
@@ -633,14 +638,12 @@ function localStructuralCosts(input: {
   cells: RuntimeCell[];
   rowCells: readonly number[][];
   targetById: ReadonlyMap<string, SparseAlignmentTarget>;
+  targetGeometry: ReturnType<typeof createGraphTargetGeometry>;
   maxNeighbors: number;
   remainingComparisons: number;
 }): { costs: number[]; comparisons: number } {
   const costs = input.cells.map(() => 0);
   const weights = input.cells.map(() => 0);
-  // The geometry over exactly the targets this call will compare, so the walk stays inside material already in
-  // memory. Built once per call and memoised per source.
-  const geometry = createGraphTargetGeometry(input.targetById.values());
   let comparisons = 0;
   for (let row = 0; row < input.rowCells.length; row++) {
     const current = input.rowCells[row] ?? [];
@@ -675,7 +678,7 @@ function localStructuralCosts(input: {
             source.candidate,
             neighbor.candidate
           );
-          const graphDistance = geometry.distance(sourceTarget, neighborTarget);
+          const graphDistance = input.targetGeometry.distance(sourceTarget, neighborTarget);
           const loss = huber(surfaceDistance - graphDistance, 0.25);
           const weight = neighbor.mass;
           costs[index] = (costs[index] ?? 0) + weight * loss;

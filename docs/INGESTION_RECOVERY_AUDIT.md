@@ -505,9 +505,12 @@ unproven pending execution.
 
 ### Memory repair and comparison preparation
 
-The Wikipedia alignment stage now requires promoted structured hyperedges.
-Previously, 15,003 candidates with zero promoted targets still triggered lattice
-construction for up to 48 spans. The skipped path now emits its actual reason.
+The Wikipedia alignment stage now requires an admitted structured hyperedge.
+A regression covers candidate inputs that produce no admitted graph targets;
+that path skips lattice construction and emits its actual reason. The first
+failed run's decision count and rolled-back database did not establish that
+its graph was empty. That earlier inference was incorrect: the later live
+profile below proves that the real first batch enters alignment.
 The language trainer snapshots mutable inputs before compilation, releases a
 successfully consumed preparation payload, and retains failed preparations for
 retry. A creative-compiler result is detached separately. No batch, vocabulary,
@@ -537,3 +540,77 @@ in that mode follow the model's numbered references; their byte spans cover the
 actual supplied windows. The default extractive prompt remains available for
 the existing cloze tests. Five adapter tests passed using a mock local endpoint;
 no actual Qwen inference or comparative score has yet been recorded.
+
+### Second measured trial: alignment search still fails
+
+The first fresh-schema launch at 11:04 UTC failed before processing pages
+because the CLI requires explicit `db migrate`. Migration then succeeded
+(schema version 26, 74 required tables), and the retry started at 11:06 UTC.
+The retry exited 134 after 644.933 seconds with another V8 heap failure.
+Read-only verification found 33 article sources, 66 source versions and
+311 valid evidence spans, but zero language profiles/models/calibration:
+the outer training transaction again rolled back.
+
+Batch compilation took 106.136 seconds and in-transaction persistence took
+15.513 seconds. A 20.438-second inspector profile captured the active stack
+inside alternative alignment search: `extractAlignmentAlternatives` →
+`solveSparseFusedUnbalancedTransport` → `localStructuralCosts` →
+`createGraphTargetGeometry`. Geometry construction and garbage collection
+dominated. The inspector was detached; the process later exhausted its heap
+before an attempted operator stop, so no stop signal was sent.
+
+Artifacts: `artifacts/scce6-wikipedia-300-20260921T110604Z`, including the
+actual exit record, failed run report, and verified database backup. Profile:
+`.tmp/active-wiki-34164.cpuprofile`. The backup SHA-256 is
+`5e2d48138fc587fe619b7383409ee6c4d19e5759c9cef74b6823f23791ad3b56`.
+This is a failed diagnostic, not a completed ingestion or training result.
+
+### Bounded alignment search repair
+
+The alternative search previously stopped after retaining eight distinct plans.
+Duplicate solutions did not advance that limit, so it could solve every eligible
+exclusion branch. The search now also limits attempted branches (seven by
+default), preserves the base plan and exact anchors, and records attempted,
+total, budgeted and omitted branches in the retained-set artifact. This changes
+the search extent; it is not a lossless speed optimization or a global-posterior
+claim. Callers can explicitly request a larger branch budget.
+
+Within each transport solve, graph geometry is built once and reused across
+iterations. Its traversal cache retains at most 64 source walks; eviction
+recomputes the same distances. Separate solves still derive geometry from their
+own target input.
+
+A reconstructed first-batch fixture contains 32 actual derivative documents,
+308 evidence spans, 15,003 semantic candidates, four promoted relation decisions,
+8,526 hyperedges, 25,578 target ports and 48 alignment supports. A bounded
+comparison used the same full target index with one support at a time, deriving
+local null/ordering models and omitting routed/cross-document context on both
+versions. Complete old/new plan digests matched. Support 01 took 262.5 versus
+200.1 ms; support 41 took 2,954.7 versus 3,058.7 ms and exhausted the existing
+work budget in both versions. All four child processes exited 0 under a 3 GB
+heap limit. These samples do not establish end-to-end performance or memory
+safety. Results: `.tmp/wiki-alignment-transport-benchmark.jsonl`.
+
+Raw support arrays are released after community routing, and initial transport
+plans are released after cross-document projection. The projected model owns
+its data; final transport plans and retained alternatives remain available for
+evaluation. This removes unused objects without dropping solver output.
+Branch eligibility now indexes candidate multiplicities once instead of scanning
+the full candidate array for each surface row. Duplicate/missing identifiers and
+first-row selection retain the previous helper's semantics.
+
+An existing durability limitation remains: `appendBoundedAlignmentEvent` catches
+an oversized serialization and records counts instead of retained alternative
+sets. Those sets participate in predecessor reconstruction, so that fallback
+loses recovery functionality. It must be replaced with durable bounded artifacts
+before claiming full-corpus provenance preservation. The next 300-page run is a
+diagnostic, not release qualification.
+
+Validation of the alignment repair: the final build exited 0; five focused files
+passed 19 tests. All 20 unit-test shards passed across the interrupted and resumed
+executions (560 files / 3,488 tests passed; 10 files / 14 tests skipped).
+`eval:validate`, hidden-model, source-text and inventory checks exited 0. This was
+not one uninterrupted `pnpm test` invocation. Logs:
+`.tmp/wikipedia-alignment-repair-final-{build2,focused}.log`,
+`.tmp/wikipedia-alignment-repair-resumed-summary.json`, and
+`.tmp/wikipedia-alignment-repair-gates.log`.

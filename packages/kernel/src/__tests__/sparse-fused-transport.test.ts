@@ -4,7 +4,9 @@ import { describe, expect, it } from "vitest";
 import {
   buildSurfaceLattice,
   compileSparseAlignmentCandidateSupports,
+  createClock,
   createHasher,
+  createIdFactory,
   solveSparseFusedUnbalancedTransport,
   solveSparseFusedUnbalancedTransportWithResourceBudget,
   type EvidenceId,
@@ -16,6 +18,7 @@ import {
 
 describe("sparse fused unbalanced graph-surface transport", () => {
   const hasher = createHasher();
+  const ids = createIdFactory({ hasher, clock: createClock({ fixedTime: 0 }), deterministicReplay: true });
 
   it("moves mass only on candidate support and reserves exact-anchor row mass", () => {
     const compiled = fixture();
@@ -85,6 +88,47 @@ describe("sparse fused unbalanced graph-surface transport", () => {
     expect(first.iterations).toHaveLength(1);
     expect(first.iterations[0]!.sinkhornIterations).toBeLessThanOrEqual(3);
     expect(first.iterations[0]!.structuralComparisons).toBeLessThanOrEqual(1_000);
+  });
+
+  it("reuses one geometry across outer iterations and rebuilds it for a changed target set", () => {
+    const compiled = fixture();
+    const budget = {
+      maxOuterIterations: 4,
+      maxSinkhornIterations: 16,
+      maxStructuralNeighbors: 2,
+      maxStructuralComparisons: 1_000
+    };
+    const first = solveSparseFusedUnbalancedTransport({
+      support: compiled.supports[0]!, targetIndex: compiled.targetIndex, budget, hasher
+    });
+    const repeated = solveSparseFusedUnbalancedTransport({
+      support: compiled.supports[0]!, targetIndex: compiled.targetIndex, budget, hasher
+    });
+    expect(repeated).toEqual(first);
+    expect(first.iterations.length).toBeGreaterThan(1);
+    // Captured from the repository HEAD solver before geometry reuse was introduced. This is a complete plan
+    // payload digest, so the regression compares the optimization with a fixed old implementation output.
+    expect(hasher.digestHex(JSON.stringify(first)))
+      .toBe("845a4b97fabaaa2e6aae40151373a845ea72af60d6a01a83174cd5c9fd98720b");
+
+    const changedTargetIndex = {
+      ...compiled.targetIndex,
+      targets: compiled.targetIndex.targets.map((target, index) => index === 0
+        ? {
+          ...target,
+          relationId: ids.relationId({ fixture: "changed-geometry" }),
+          relationNodeId: ids.nodeId({ fixture: "changed-geometry" }),
+          hyperedgeId: ids.semanticId("hyperedge", { fixture: "changed-geometry" })
+        }
+        : target)
+    };
+    const changedFirst = solveSparseFusedUnbalancedTransport({
+      support: compiled.supports[0]!, targetIndex: changedTargetIndex, budget, hasher
+    });
+    const changedFresh = solveSparseFusedUnbalancedTransport({
+      support: compiled.supports[0]!, targetIndex: changedTargetIndex, budget, hasher
+    });
+    expect(changedFresh).toEqual(changedFirst);
   });
 
   // Plan item 115: real per-batch resource-budget instrumentation

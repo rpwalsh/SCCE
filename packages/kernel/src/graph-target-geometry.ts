@@ -30,6 +30,8 @@ import type { SparseAlignmentTarget } from "./sparse-alignment-candidates.js";
 
 /** How far the walk looks before calling a pair unrelated. */
 export const GRAPH_TARGET_GEOMETRY_RADIUS = 4;
+/** Retain enough recent source walks to cover normal transport reuse without retaining every target forever. */
+export const GRAPH_TARGET_GEOMETRY_WALK_CACHE_SIZE = 64;
 
 /** Same relation node in different roles: the tightest relation between distinct targets. */
 const SAME_RELATION_DIFFERENT_KIND = 0.1;
@@ -137,7 +139,12 @@ export function createGraphTargetGeometry(
   /** Hop counts from one target outward, to the radius. Computed once per source and reused. */
   const hopsFrom = (sourceId: string): Map<string, number> => {
     const cached = walked.get(sourceId);
-    if (cached) return cached;
+    if (cached) {
+      // Deterministic LRU: a repeated source remains hot, while a large target set cannot retain every walk.
+      walked.delete(sourceId);
+      walked.set(sourceId, cached);
+      return cached;
+    }
     const hops = new Map<string, number>([[sourceId, 0]]);
     let frontier = [sourceId];
     for (let depth = 1; depth <= bounded && frontier.length; depth++) {
@@ -157,6 +164,10 @@ export function createGraphTargetGeometry(
       frontier = next;
     }
     walks++;
+    if (walked.size >= GRAPH_TARGET_GEOMETRY_WALK_CACHE_SIZE) {
+      const oldest = walked.keys().next().value;
+      if (typeof oldest === "string") walked.delete(oldest);
+    }
     walked.set(sourceId, hops);
     return hops;
   };

@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
-import { createGraphTargetGeometry } from "../graph-target-geometry.js";
+import { createGraphTargetGeometry, GRAPH_TARGET_GEOMETRY_WALK_CACHE_SIZE } from "../graph-target-geometry.js";
 import type { SparseAlignmentTarget } from "../sparse-alignment-candidates.js";
 
 const target = (id: string, hyperedgeId: string, relationNodeId: string, kind = "participant"): SparseAlignmentTarget =>
@@ -72,5 +72,25 @@ describe("graph target geometry", () => {
     // types say. A narrower radius can only make a pair look further apart, never nearer.
     expect(narrow.distance(targets[0]!, targets[2]!))
       .toBeGreaterThan(wide.distance(targets[0]!, targets[2]!));
+  });
+
+  it("evicts old source walks but preserves exact distances after a revisit", () => {
+    const many = Array.from({ length: GRAPH_TARGET_GEOMETRY_WALK_CACHE_SIZE + 2 }, (_, index) => target(
+      `many.${index}`,
+      `edge.${index}`,
+      `relation-node.${index}`,
+      index % 2 ? "participant" : "literal"
+    ));
+    const geometry = createGraphTargetGeometry(many);
+    const fresh = createGraphTargetGeometry(many);
+    const initial = geometry.distance(many[0]!, many[1]!);
+    for (let index = 1; index < many.length; index += 1) {
+      geometry.distance(many[index]!, many[(index + 1) % many.length]!);
+    }
+    const revisited = geometry.distance(many[0]!, many[1]!);
+    expect(revisited).toBe(initial);
+    expect(revisited).toBe(fresh.distance(many[0]!, many[1]!));
+    // More than the cache was touched, and the first source was revisited after eviction.
+    expect(geometry.audit().walks).toBeGreaterThan(GRAPH_TARGET_GEOMETRY_WALK_CACHE_SIZE);
   });
 });

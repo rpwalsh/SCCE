@@ -776,6 +776,8 @@ export function createIngestionRuntime(options: {
           routedAlignmentSupportIds.push(routing.routedSupport.id);
           return routing.routedSupport;
         });
+        // Routing copies the support rows/candidates it retains; the pre-routing supports are no longer read.
+        alignmentSupports.length = 0;
         const typedNullCostModel = compileTypedNullCostModel({
           supports: routedAlignmentSupports,
           targetIndex: alignmentTargetIndex,
@@ -799,6 +801,8 @@ export function createIngestionRuntime(options: {
           targetIndex: alignmentTargetIndex,
           hasher
         });
+        // Cross-document compilation materializes projections and estimates, with no plan aliases.
+        initialTransportPlans.length = 0;
         const finalTransportPlans = routedAlignmentSupports.map(support =>
           solveSparseFusedUnbalancedTransport({
             support,
@@ -854,6 +858,9 @@ export function createIngestionRuntime(options: {
             seriesId,
             plans: extractedAlternatives.plans,
             evidenceAllocations: alternativeAllocations,
+            attemptedBranchCount: extractedAlternatives.attemptedBranchCount,
+            totalBranchCount: extractedAlternatives.totalBranchCount,
+            branchSearchBudget: extractedAlternatives.branchSearchBudget,
             predecessorSets: [
               ...alignmentAlternativeSetsFromEventPayloads(
                 historicalAlignmentPayloads,

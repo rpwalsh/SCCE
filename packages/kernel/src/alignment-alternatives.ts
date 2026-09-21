@@ -1,7 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { canonicalStringify, createHasher, toJsonValue } from "./primitives.js";
-import { sparseAlignmentCandidatesForUnit } from "./sparse-alignment-candidates.js";
 import type {
   SparseAlignmentCandidateSupport,
   SparseAlignmentTargetIndex
@@ -44,11 +43,18 @@ export interface AlignmentAlternativeSet {
   predecessorSetIds: string[];
   hypotheses: AlignmentAlternativeHypothesis[];
   omittedSearchBranchCount: number;
+  /** Present when extraction recorded its bounded branch-search accounting. */
+  attemptedBranchCount?: number;
+  totalBranchCount?: number;
+  branchSearchBudget?: number;
   audit: JsonValue;
 }
 
 export interface ExtractedAlignmentAlternatives {
   plans: SparseFusedTransportPlan[];
+  attemptedBranchCount: number;
+  totalBranchCount: number;
+  branchSearchBudget: number;
   omittedSearchBranchCount: number;
 }
 
@@ -65,6 +71,8 @@ export function extractAlignmentAlternatives(input: {
   populationOrderingModel: PopulationOrderingModel;
   crossDocumentAlignmentModel?: CrossDocumentAlignmentModel;
   maximumRetainedAlternatives?: number;
+  /** Maximum exclusion branches to actually solve. Defaults to retained-cap minus the base plan. */
+  maxBranchSearches?: number;
   objective?: SparseTransportObjective;
   budget?: Partial<SparseTransportBudget>;
   hasher?: Hasher;
@@ -75,30 +83,47 @@ export function extractAlignmentAlternatives(input: {
   }
   const hasher = input.hasher ?? createHasher();
   const maximum = boundedMaximum(input.maximumRetainedAlternatives);
-  // How many candidates a unit really has, not how many ids its row names. A row that references a candidate absent
-  // from `support.candidates` inflated the inline count, so a cell with one usable option read as a branch point and
-  // the search spent an alternative on it. `sparseAlignmentCandidatesForUnit` resolves ids against the candidate set
-  // and had no caller; memoized per unit, so each one is resolved once however many cells reference it.
+  const branchSearchBudget = boundedBranchSearches(
+    input.maxBranchSearches,
+    Math.max(0, maximum - 1)
+  );
+  // How many candidates a unit really has, not how many ids its row names. Preserve the candidate helper's
+  // semantics in one pass: first matching row, deduplicated row ids, duplicate candidate objects counted, and
+  // absent candidate ids ignored.
+  const candidateMultiplicityById = new Map<string, number>();
+  for (const candidate of input.support.candidates) {
+    candidateMultiplicityById.set(
+      candidate.id,
+      (candidateMultiplicityById.get(candidate.id) ?? 0) + 1
+    );
+  }
   const candidateCountByUnit = new Map<string, number>();
-  const availableCandidateCount = (surfaceUnitId: string): number => {
-    const cached = candidateCountByUnit.get(surfaceUnitId);
-    if (cached !== undefined) return cached;
-    const count = sparseAlignmentCandidatesForUnit(input.support, surfaceUnitId).length;
-    candidateCountByUnit.set(surfaceUnitId, count);
-    return count;
-  };
-  const branchCandidateIds = input.basePlan.cells
+  for (const row of input.support.rows) {
+    if (candidateCountByUnit.has(row.surfaceUnitId)) continue;
+    const candidateIds = new Set(row.candidateIds);
+    let count = 0;
+    for (const candidateId of candidateIds) {
+      count += candidateMultiplicityById.get(candidateId) ?? 0;
+    }
+    candidateCountByUnit.set(row.surfaceUnitId, count);
+  }
+  const availableCandidateCount = (surfaceUnitId: string): number =>
+    candidateCountByUnit.get(surfaceUnitId) ?? 0;
+  const branchCandidateIds = [...new Set(input.basePlan.cells
     .filter(cell => cell.mass > 0 && !cell.exactAnchor)
     .filter(cell => availableCandidateCount(cell.surfaceUnitId) > 1)
     .sort((left, right) =>
       right.mass - left.mass
       || left.surfaceUnitId.localeCompare(right.surfaceUnitId)
       || left.graphTargetId.localeCompare(right.graphTargetId))
-    .map(cell => cell.candidateId);
+    .map(cell => cell.candidateId))];
   const plans = [input.basePlan];
   const signatures = new Set([planSignature(input.basePlan, hasher)]);
+  let attemptedBranchCount = 0;
   for (const candidateId of branchCandidateIds) {
     if (plans.length >= maximum) break;
+    if (attemptedBranchCount >= branchSearchBudget) break;
+    attemptedBranchCount += 1;
     const plan = solveSparseFusedUnbalancedTransport({
       support: input.support,
       targetIndex: input.targetIndex,
@@ -117,7 +142,10 @@ export function extractAlignmentAlternatives(input: {
   }
   return {
     plans,
-    omittedSearchBranchCount: Math.max(0, branchCandidateIds.length - (plans.length - 1))
+    attemptedBranchCount,
+    totalBranchCount: branchCandidateIds.length,
+    branchSearchBudget,
+    omittedSearchBranchCount: Math.max(0, branchCandidateIds.length - attemptedBranchCount)
   };
 }
 
@@ -131,6 +159,9 @@ export function compileAlignmentAlternativeSet(input: {
   evidenceAllocations?: readonly TransportEvidenceAllocation[];
   temperature?: number;
   maximumRetainedAlternatives?: number;
+  attemptedBranchCount?: number;
+  totalBranchCount?: number;
+  branchSearchBudget?: number;
   predecessorSets?: readonly AlignmentAlternativeSet[];
   omittedSearchBranchCount?: number;
   hasher?: Hasher;
@@ -190,6 +221,21 @@ export function compileAlignmentAlternativeSet(input: {
       predecessorPlansBySignature.get(planSignature(plan, hasher)) ?? []
     )].sort()
   }));
+  const branchSearchMetadata = branchSearchMetadataFor(input);
+  const suppliedOmittedBranchCount = input.omittedSearchBranchCount;
+  if (suppliedOmittedBranchCount !== undefined
+    && (!Number.isFinite(suppliedOmittedBranchCount)
+      || !Number.isInteger(suppliedOmittedBranchCount)
+      || suppliedOmittedBranchCount < 0)) {
+    throw new Error("alignment omitted search branch count must be a finite nonnegative integer");
+  }
+  const derivedOmittedBranchCount = branchSearchMetadata
+    ? branchSearchMetadata.totalBranchCount - branchSearchMetadata.attemptedBranchCount
+    : suppliedOmittedBranchCount ?? Math.max(0, input.plans.length - retained.length);
+  if (branchSearchMetadata && suppliedOmittedBranchCount !== undefined
+    && suppliedOmittedBranchCount !== derivedOmittedBranchCount) {
+    throw new Error("alignment omitted search branch count contradicts branch-search metadata");
+  }
   const canonical = {
     schema: ALIGNMENT_ALTERNATIVE_SET_SCHEMA,
     seriesId: input.seriesId,
@@ -202,9 +248,8 @@ export function compileAlignmentAlternativeSet(input: {
     exactGlobalPosteriorClaimed: false as const,
     predecessorSetIds: predecessorSets.map(set => set.id),
     hypotheses,
-    omittedSearchBranchCount: Math.max(0, Math.floor(
-      input.omittedSearchBranchCount ?? Math.max(0, input.plans.length - retained.length)
-    ))
+    omittedSearchBranchCount: derivedOmittedBranchCount,
+    ...branchSearchMetadata
   };
   return {
     ...canonical,
@@ -217,6 +262,11 @@ export function compileAlignmentAlternativeSet(input: {
       distinctPlanCount: deduplicated.size,
       retainedPlanCount: hypotheses.length,
       omittedSearchBranchCount: canonical.omittedSearchBranchCount,
+      ...(branchSearchMetadata ? {
+        attemptedBranchCount: branchSearchMetadata.attemptedBranchCount,
+        totalBranchCount: branchSearchMetadata.totalBranchCount,
+        branchSearchBudget: branchSearchMetadata.branchSearchBudget
+      } : {}),
       restrictedWeightSum: sum(weights),
       exactGlobalPosteriorClaimed: false,
       posteriorScope: canonical.posteriorScope,
@@ -310,6 +360,48 @@ function boundedMaximum(value: number | undefined): number {
     throw new Error("maximum retained alignment alternatives must be in [1,64]");
   }
   return maximum;
+}
+
+function boundedBranchSearches(value: number | undefined, fallback: number): number {
+  const maximum = value ?? fallback;
+  if (!Number.isFinite(maximum) || !Number.isInteger(maximum) || maximum < 0) {
+    throw new Error("maximum branch searches must be a finite nonnegative integer");
+  }
+  return maximum;
+}
+
+function branchSearchMetadataFor(input: {
+  attemptedBranchCount?: number;
+  totalBranchCount?: number;
+  branchSearchBudget?: number;
+}): {
+  attemptedBranchCount: number;
+  totalBranchCount: number;
+  branchSearchBudget: number;
+} | undefined {
+  const values = [
+    input.attemptedBranchCount,
+    input.totalBranchCount,
+    input.branchSearchBudget
+  ];
+  if (values.every(value => value === undefined)) return undefined;
+  if (values.some(value => value === undefined)) {
+    throw new Error("alignment branch-search metadata must include attempted, total, and budget");
+  }
+  const [attempted, total, budget] = values as [number, number, number];
+  for (const [name, value] of [["attemptedBranchCount", attempted], ["totalBranchCount", total], ["branchSearchBudget", budget]] as const) {
+    if (!Number.isFinite(value) || !Number.isInteger(value) || value < 0) {
+      throw new Error(`alignment ${name} must be a finite nonnegative integer`);
+    }
+  }
+  if (attempted > total || attempted > budget) {
+    throw new Error("alignment branch-search metadata exceeds its declared bounds");
+  }
+  return {
+    attemptedBranchCount: attempted,
+    totalBranchCount: total,
+    branchSearchBudget: budget
+  };
 }
 
 function finiteTemperature(value: number | undefined): number {

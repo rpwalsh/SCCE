@@ -41,6 +41,9 @@ describe("cross-document canonical graph-region alignment", () => {
       targetIndex: compiled.targetIndex,
       hasher
     });
+    const modelBeforePlanRelease = JSON.stringify(model);
+    firstPass.length = 0;
+    expect(JSON.stringify(model)).toBe(modelBeforePlanRelease);
 
     expect(model.schema).toBe("scce.cross_document_alignment_consistency.v1");
     expect(model.projections).toHaveLength(3);

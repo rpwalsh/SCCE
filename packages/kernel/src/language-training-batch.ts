@@ -318,6 +318,8 @@ export function compileLanguageTrainingBatch(input: {
       hasher: input.hasher
     })
     : null;
+  // Cross-document compilation materializes projections and estimates, with no plan aliases.
+  initialSparseTransportPlans.length = 0;
   const sparseTransportPlans = sparseAlignment
     ? routedAlignmentSupports.map(support =>
       solveSparseFusedUnbalancedTransport({
@@ -355,6 +357,9 @@ export function compileLanguageTrainingBatch(input: {
           }),
           plans: extracted.plans,
           evidenceAllocations,
+          attemptedBranchCount: extracted.attemptedBranchCount,
+          totalBranchCount: extracted.totalBranchCount,
+          branchSearchBudget: extracted.branchSearchBudget,
           predecessorSets: batch.alignmentAlternativePredecessorSets,
           omittedSearchBranchCount: extracted.omittedSearchBranchCount,
           hasher: input.hasher
