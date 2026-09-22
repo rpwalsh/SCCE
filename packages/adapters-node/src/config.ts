@@ -73,6 +73,8 @@ export interface CorpusNgramRuntimeConfig {
 export interface WikipediaCorpusConfig extends CorpusNgramRuntimeConfig {
   enabled: boolean;
   alignmentLatticesPerShard?: number;
+  /** Persist every shard's alternative sets and evidence allocations (32 MB/article, no serving reader); default off. */
+  retainAlignmentProvenance?: boolean;
   dumpPath: string;
   indexPath?: string;
   namespace?: string;

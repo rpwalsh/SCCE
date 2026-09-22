@@ -1534,10 +1534,13 @@ export class WikipediaV3Ingestor {
         ReturnType<typeof compileCoarseToFineAlignmentResult>[] = [];
       const allAlignmentEvidenceAllocations:
         ReturnType<typeof allocateTransportEvidence>[] = [];
-      const historicalAlignmentPayloads = (await this.storage.events.readRange({
+      const retainAlignmentProvenance = this.config.runtime.corpora?.wikipedia?.retainAlignmentProvenance === true;
+      // Predecessor sets only exist when earlier shards retained them; otherwise the history read is dead weight.
+      const historicalAlignmentPayloads = retainAlignmentProvenance ? (await this.storage.events.readRange({
         typeId: "SparseAlignmentCandidatesCompiled",
         limit: 1_024
-      })).map(event => event.payload);
+      })).map(event => event.payload) : [];
+      if (!retainAlignmentProvenance) trace.mark("alignment.provenance.not-retained", { historyReadSkipped: 1_024 });
       let retainedAlignmentHypothesisCount = 0;
       let omittedAlignmentSearchBranchCount = 0;
       let surfaceNullMass = 0;
@@ -1909,7 +1912,7 @@ export class WikipediaV3Ingestor {
       }));
       // Inline canonicalization is attempted first for compatibility. If it reaches the runtime
       // string bound, appendBoundedAlignmentEvent stores every field in blob-backed parts.
-      await this.appendBoundedAlignmentEvent(episodeId, {
+      await this.appendBoundedAlignmentEvent(episodeId, alignmentEventPayloadFor({
           schema: "scce.sparse_alignment_candidate_batch.v1",
           shardUri,
           incidenceGraphId: incidenceGraph.id,
@@ -1982,7 +1985,7 @@ export class WikipediaV3Ingestor {
           globalOptimalityClaimed: false,
           candidateMemory: "O(|S|*K_pi)",
           denseMatrixMaterialized: false
-      });
+      }, retainAlignmentProvenance));
     } else if (semanticCandidates.length) {
       trace.mark("relation.alignment.skip.no-promoted-hyperedges", {
         candidates: semanticCandidates.length,
@@ -2302,6 +2305,18 @@ function stopDecision(input: WikipediaV3IngestOptions, result: WikipediaV3Ingest
  */
 export function residentSafetyBoundMiBForTest(declaredMb: number | undefined): number {
   return residentSafetyBoundMiB(declaredMb);
+}
+
+/** Measured on scce6_trained32: these two keys were 6,036 of 6,036 MB persisted per 32 articles and nothing reads them back. */
+export function alignmentEventPayloadFor(payload: Record<string, unknown>, retainProvenance: boolean): Record<string, unknown> {
+  if (retainProvenance) return { ...payload, alignmentProvenanceRetained: true };
+  const { alignmentAlternativeSets, transportEvidenceAllocations, ...rest } = payload;
+  return {
+    ...rest,
+    alignmentAlternativeSetCount: Array.isArray(alignmentAlternativeSets) ? alignmentAlternativeSets.length : 0,
+    transportEvidenceAllocationCount: Array.isArray(transportEvidenceAllocations) ? transportEvidenceAllocations.length : 0,
+    alignmentProvenanceRetained: false
+  };
 }
 
 function residentSafetyBoundMiB(declaredMb: number | undefined): number {
