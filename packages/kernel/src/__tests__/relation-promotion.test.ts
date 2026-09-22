@@ -84,6 +84,35 @@ describe("held-out relation promotion", () => {
     expect(graph).toEqual({ nodes: [], edges: [], hyperedges: [] });
   });
 
+  it("stores a promoted candidate's provenance once, on the node's representation", () => {
+    const candidates = separableCandidates(80);
+    const model = compileRelationPromotionModel({ candidates });
+    const hasher = createHasher();
+    const ids = createIdFactory({
+      clock: createClock({ fixedTime: 1 }),
+      hasher,
+      namespace: "relation-promotion-provenance"
+    });
+    const graph = graphFromStructuredSemanticCandidates({
+      candidates: candidates.slice(0, 2),
+      observedAt: 1,
+      ids,
+      hasher,
+      relationPromotionModel: model
+    });
+    const relationNodes = graph.nodes.filter(node => node.features.some(feature => feature.startsWith("promoted-relation:")));
+
+    expect(relationNodes).toHaveLength(2);
+    for (const node of relationNodes) {
+      const representation = node.representation as Record<string, any>;
+      const metadata = node.metadata as Record<string, any>;
+      expect(representation.provenance.admissionState).toBe("promoted");
+      expect(representation.provenance.exactEvidenceIds.length).toBeGreaterThan(0);
+      expect(metadata.admissionState).toBe("promoted");
+      expect(metadata).not.toHaveProperty("candidateProvenance");
+    }
+  });
+
   it("keeps shuffled and random-repetition controls below the promotion boundary", () => {
     const model = compileRelationPromotionModel({ candidates: separableCandidates(120) });
 

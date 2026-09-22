@@ -985,10 +985,10 @@ export function graphFromStructuredSemanticCandidates(input: {
       ],
       createdAt: input.observedAt,
       updatedAt: input.observedAt,
+      // The representation already carries candidate.provenance (admitted); a second copy here was 1.8 kB per node.
       metadata: toJsonValue({
         schema: candidate.schema,
         extractionChannel: candidate.channel,
-        candidateProvenance: candidate.provenance,
         admissionState: "promoted",
         promoted: true,
         promotionModelId: input.relationPromotionModel?.id ?? null,
