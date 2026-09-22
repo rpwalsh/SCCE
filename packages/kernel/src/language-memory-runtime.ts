@@ -5,7 +5,7 @@ import type { NarrativeConditioning } from "./document-generation-session.js";
 import { deriveClosedClassWords } from "./closed-class-words.js";
 import { calibrated } from "./calibrations/prod-calibrations.js";
 import type { BeamSentenceContinuation, KneserNeyModel } from "./kneser-ney.js";
-import { KNESER_NEY_SCHEMA, beamContinueSentence, compileKneserNeyRuntimeIndexes, continueBoundedProse, kneserNeyProbability, predictKneserNey } from "./kneser-ney.js";
+import { KNESER_NEY_SCHEMA, beamContinueSentence, compileKneserNeyRuntimeIndexes, continueBoundedProse, deriveKneserNeyContextTables, kneserNeyProbability, predictKneserNey } from "./kneser-ney.js";
 import { createNgramMemoryCompiler, type NgramMemoryCompilation } from "./ngram-memory.js";
 import { buildLanguageProfileClusters, type LanguageProfileCluster } from "./language.js";
 import { clamp01, featureSet, mean, symbolizeData, toJsonValue, weightedJaccard } from "./primitives.js";
@@ -4893,15 +4893,18 @@ function compileNgramModelFromRecord(record: NgramModelRecord): KneserNeyModel |
     typeof row.order !== "number"
     || typeof row.discount !== "number"
     || !isRecord(row.counts)
-    || !isRecord(row.contextCounts)
     || !Array.isArray(row.vocabulary)
   ) return undefined;
+  const counts = numberRecord(row.counts);
+  // Records written since the persisted form carry counts only; the context tables are derived from them.
+  const contextTables = isRecord(row.contextCounts) && isRecord(row.contextContinuationTypes)
+    ? { contextCounts: numberRecord(row.contextCounts), contextContinuationTypes: numberRecord(row.contextContinuationTypes) }
+    : deriveKneserNeyContextTables(counts);
   const core = {
     discount: row.discount,
-    counts: numberRecord(row.counts),
-    contextCounts: numberRecord(row.contextCounts),
+    counts,
+    ...contextTables,
     continuationCounts: numberRecord(row.continuationCounts),
-    contextContinuationTypes: numberRecord(row.contextContinuationTypes),
     unigramCounts: numberRecord(row.unigramCounts)
   };
   // Persisted models carry counts only (every model in the live brain: 1,993 records, none with a successor

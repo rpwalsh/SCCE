@@ -530,6 +530,88 @@ export function compileKneserNeyRuntimeIndexes(input: {
   };
 }
 
+const DERIVED_KNESER_NEY_KEYS = ["contextCounts", "contextContinuationTypes", "successorIndex", "successorOverflowCounts", "backoffWeights", "baseContinuations"] as const;
+export type PersistedKneserNeyModel = Omit<KneserNeyModel, typeof DERIVED_KNESER_NEY_KEYS[number]>;
+
+/** Context tables are sums and type counts over the n-gram counts; readers derive them instead of storing them. */
+export function deriveKneserNeyContextTables(counts: Record<string, number>): Pick<KneserNeyModel, "contextCounts" | "contextContinuationTypes"> {
+  const contextCounts = new Map<string, number>();
+  const continuationTypes = new Map<string, Set<string>>();
+  for (const [key, count] of Object.entries(counts)) {
+    const parts = key.split("");
+    if (parts.length <= 1) continue;
+    const context = gramKey(parts.slice(0, -1));
+    contextCounts.set(context, (contextCounts.get(context) ?? 0) + count);
+    const types = continuationTypes.get(context) ?? new Set<string>();
+    types.add(parts[parts.length - 1]!);
+    continuationTypes.set(context, types);
+  }
+  return {
+    contextCounts: Object.fromEntries(contextCounts),
+    contextContinuationTypes: Object.fromEntries([...continuationTypes.entries()].map(([context, types]) => [context, types.size]))
+  };
+}
+
+/** The persisted form is the sufficient statistics; on a live brain the derived tables were 69% of every model row. */
+export function persistedKneserNey(model: KneserNeyModel): PersistedKneserNeyModel {
+  const persisted: Record<string, unknown> = { ...model };
+  for (const key of DERIVED_KNESER_NEY_KEYS) delete persisted[key];
+  return persisted as PersistedKneserNeyModel;
+}
+
+/** A stored model in either form (statistics only, or the older full record) becomes a compiled runtime model. */
+export function materializeKneserNey(stored: JsonValue | undefined): KneserNeyModel | undefined {
+  if (!jsonRecordOf(stored)) return undefined;
+  const row = stored;
+  if (typeof row.order !== "number" || typeof row.discount !== "number" || !jsonRecordOf(row.counts) || !Array.isArray(row.vocabulary)) return undefined;
+  const counts = numberRecordOf(row.counts);
+  const contextTables = jsonRecordOf(row.contextCounts) && jsonRecordOf(row.contextContinuationTypes)
+    ? { contextCounts: numberRecordOf(row.contextCounts), contextContinuationTypes: numberRecordOf(row.contextContinuationTypes) }
+    : deriveKneserNeyContextTables(counts);
+  const core = {
+    discount: row.discount,
+    counts,
+    ...contextTables,
+    continuationCounts: numberRecordOf(row.continuationCounts),
+    unigramCounts: numberRecordOf(row.unigramCounts)
+  };
+  const persistedIndexes = jsonRecordOf(row.successorIndex) && jsonRecordOf(row.successorOverflowCounts)
+    && jsonRecordOf(row.backoffWeights) && Array.isArray(row.baseContinuations);
+  const indexes = persistedIndexes
+    ? {
+      successorIndex: Object.fromEntries(Object.entries(row.successorIndex as Record<string, JsonValue>)
+        .flatMap(([context, symbols]) => Array.isArray(symbols) ? [[context, symbols.map(String)] as const] : [])),
+      successorOverflowCounts: numberRecordOf(row.successorOverflowCounts),
+      backoffWeights: numberRecordOf(row.backoffWeights),
+      baseContinuations: (row.baseContinuations as JsonValue[]).map(String)
+    }
+    : compileKneserNeyRuntimeIndexes(core);
+  return {
+    schema: KNESER_NEY_SCHEMA,
+    order: row.order,
+    observedSymbolCount: finiteNumberOf(row.observedSymbolCount),
+    vocabularySize: finiteNumberOf(row.vocabularySize),
+    ...core,
+    totalContinuationTypes: finiteNumberOf(row.totalContinuationTypes),
+    totalUnigramCount: finiteNumberOf(row.totalUnigramCount),
+    vocabulary: row.vocabulary.map(String),
+    ...indexes
+  };
+}
+
+function jsonRecordOf(value: JsonValue | undefined): value is Record<string, JsonValue> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function numberRecordOf(value: JsonValue | undefined): Record<string, number> {
+  if (!jsonRecordOf(value)) return {};
+  return Object.fromEntries(Object.entries(value).map(([key, raw]) => [key, finiteNumberOf(raw)]));
+}
+
+function finiteNumberOf(value: JsonValue | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
 function compileSuccessorIndexes(input: {
   successorCounts: ReadonlyMap<string, ReadonlyMap<string, number>>;
   continuationCounts: ReadonlyMap<string, number>;

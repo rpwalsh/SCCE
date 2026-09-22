@@ -16,7 +16,7 @@ import type {
   SemanticFrameRecord
 } from "./storage.js";
 import { learnedScriptIdForCharacter } from "./language.js";
-import { compactKneserNeyForProfile, trainKneserNey } from "./kneser-ney.js";
+import { compactKneserNeyForProfile, persistedKneserNey, trainKneserNey } from "./kneser-ney.js";
 import { clamp01, entropy, featureSet, stableVector, symbolizeData, toJsonValue } from "./primitives.js";
 import { buildNgramSurfaceProjection } from "./surface-lattice.js";
 
@@ -110,7 +110,7 @@ export function createNgramMemoryCompiler(options: { idFactory: IdFactory; hashe
           profileId: input.profile.id,
           ...(input.sourceSystem ? { sourceSystem: input.sourceSystem } : {}),
           languageHint,
-          model,
+          model: persistedKneserNey(model),
           compact: compactKneserNeyForProfile(model, input.text)
         }),
         updatedAt: input.createdAt

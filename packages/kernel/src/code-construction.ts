@@ -1,6 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { kneserNeyProbability, predictKneserNey, trainKneserNey, type KneserNeyModel } from "./kneser-ney.js";
+import { kneserNeyProbability, materializeKneserNey, predictKneserNey, trainKneserNey, type KneserNeyModel } from "./kneser-ney.js";
 import { CORPUS_SOURCE_SYSTEM_IDS, corpusSourceAlias } from "./corpus-registry.js";
 import { codeLanguageForPath } from "./code-request.js";
 import type { NgramModelRecord } from "./storage.js";
@@ -435,8 +435,8 @@ export function codeModelsFromRecords(
     if (stored.sourceSystem !== undefined && stored.sourceSystem !== corpusSourceAlias(CORPUS_SOURCE_SYSTEM_IDS.ossCode)) continue;
     const declared = typeof stored.formalLanguage === "string" ? stored.formalLanguage : codeLanguageForPath(record.streamId);
     if (declared !== languageId) continue;
-    const model = stored.model as KneserNeyModel | undefined;
-    if (!model || typeof model !== "object" || !Number.isInteger(model.order) || !model.counts) continue;
+    const model = materializeKneserNey(stored.model as JsonValue | undefined);
+    if (!model || !Number.isInteger(model.order) || !model.counts) continue;
     out.push(model);
     if (out.length >= limit) break;
   }
