@@ -92,7 +92,7 @@ import {
 import { effectiveNgramShardChars, type ScceRuntimeConfig } from "./config.js";
 import { prepareLanguageCorpusTraining, commitLanguageCorpusTraining, type LanguageCorpusTrainingInput } from "./language-corpus-trainer.js";
 import { blobContentHash } from "./postgres.js";
-import { detectWikipediaIndexPath, resolveWikipediaCorpusTarget, streamWikipediaMultistream, wikipediaRootUri, type ResolvedWikipediaCorpus } from "./wikipedia.js";
+import { detectWikipediaIndexPath, resolveWikipediaCorpusTarget, spanProvenanceMetadata, streamWikipediaMultistream, wikipediaRootUri, type ResolvedWikipediaCorpus } from "./wikipedia.js";
 import { createWikipediaInputManifest, wikipediaInputSourcesStillMatch, type WikipediaInputManifest } from "./wikipedia-input-manifest.js";
 import { WIKIPEDIA_SURFACE_TRANSFORM } from "./wikipedia-markup.js";
 import { ingestionCodeIdentity } from "./ingestion-code-identity.js";
@@ -2204,16 +2204,21 @@ export function boundedLanguageShard(
   return { text: parts.join(""), evidence, droppedChars, droppedSamples };
 }
 
-function stampEvidence(spans: EvidenceSpan[], metadata: JsonValue, informationLabel: InformationLabel): EvidenceSpan[] {
+export function stampEvidence(spans: EvidenceSpan[], metadata: JsonValue, informationLabel: InformationLabel): EvidenceSpan[] {
   const sourceFeatures = sourceAnchorFeaturesFromMetadata(metadata);
-  return spans.map(span => ({
+  // Measured: the page's link list and structure rode on every span twice, 14 kB of provenance beside 2 kB of text.
+  const pageIdentity = spanProvenanceMetadata(metadata) as Record<string, JsonValue>;
+  return spans.map(span => {
+    const provenance = objectOrEmpty(span.provenance);
+    return {
     ...span,
     informationLabel,
     features: [...new Set([...sourceFeatures, ...span.features])].slice(0, 720),
     status: "promoted",
     provenance: {
-      ...objectOrEmpty(span.provenance),
-      ...objectOrEmpty(metadata),
+      ...provenance,
+      ...pageIdentity,
+      metadata: spanProvenanceMetadata(provenance.metadata ?? metadata) as JsonValue,
       sourceSystem: "wikipedia",
       forceClass: "direct_evidence" satisfies BrainShardProvenanceClass
     },
@@ -2222,7 +2227,8 @@ function stampEvidence(spans: EvidenceSpan[], metadata: JsonValue, informationLa
       sourceSystem: "wikipedia",
       forceClass: "direct_evidence"
     }
-  }));
+  };
+  });
 }
 
 function sourceAnchorFeaturesFromMetadata(metadata: JsonValue): string[] {

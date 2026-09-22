@@ -489,6 +489,16 @@ function wikiPageFile(page: ParsedWikiPage, corpus: ResolvedWikipediaCorpus, pag
   };
 }
 
+/** Page structure is persisted once on the source version; a span's provenance carries the page's identity, not its link list. */
+export const WIKI_PAGE_STRUCTURE_KEYS = ["links", "structure", "originalStructure", "normalization"] as const;
+
+export function spanProvenanceMetadata(metadata: unknown): Record<string, unknown> {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return {};
+  const scoped: Record<string, unknown> = { ...(metadata as Record<string, unknown>) };
+  for (const key of WIKI_PAGE_STRUCTURE_KEYS) delete scoped[key];
+  return scoped;
+}
+
 /** Bind headings to the actual evidence surface, not the original wikitext's offsets. */
 function surfaceHeadings(headings: WikiPageHeading[], surface: string): WikiPageHeading[] {
   const result: WikiPageHeading[] = [];
