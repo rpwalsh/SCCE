@@ -591,6 +591,9 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
     streamUri: input.streamUri,
     provenanceClass: "learned_language_prior"
   });
+  // Every learned row carried the shard's whole page list (7 kB on a 6-byte unit); it lives once, on the learned event.
+  const { sourceVersionIds: _shardPages, ...rowMetadataRecord } = jsonRecord(metadata);
+  const rowMetadata = toJsonValue(rowMetadataRecord);
 
   let evidence = [...(input.evidence ?? [])];
   let source: SourceVersion | undefined;
@@ -776,8 +779,8 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
     : compiledBatch.observations.map(item => ({ ...stampObservation(item, sourceSystem, sourceSystemId, metadata), informationLabel }));
   const models = input.skipNgramPersistence
     ? []
-    : compiledBatch.models.map(item => ({ ...stampModel(item, sourceSystem, sourceSystemId, metadata), informationLabel }));
-  const units = compiledBatch.units.map(item => ({ ...stampUnit(item, sourceSystem, sourceSystemId, metadata), informationLabel }));
+    : compiledBatch.models.map(item => ({ ...stampModel(item, sourceSystem, sourceSystemId, rowMetadata), informationLabel }));
+  const units = compiledBatch.units.map(item => ({ ...stampUnit(item, sourceSystem, sourceSystemId, rowMetadata), informationLabel }));
   const compiledConstructionPatterns: LanguagePatternRecord[] = [...compiledBatch.constructionPatterns];
   const constructionWarnings: string[] = [...compiledBatch.warnings];
   if (input.creativeEventCompiler) {
@@ -800,8 +803,8 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
     ...compiledBatch.patterns.filter(pattern => !compiledConstructionPatterns.some(item => item.id === pattern.id)),
     ...compiledConstructionPatterns
   ]
-    .map(item => ({ ...stampPattern(item, sourceSystem, sourceSystemId, metadata), informationLabel }));
-  const frames = compiledBatch.semanticFrames.map(item => ({ ...stampFrame(item, sourceSystem, sourceSystemId, metadata), informationLabel }));
+    .map(item => ({ ...stampPattern(item, sourceSystem, sourceSystemId, rowMetadata), informationLabel }));
+  const frames = compiledBatch.semanticFrames.map(item => ({ ...stampFrame(item, sourceSystem, sourceSystemId, rowMetadata), informationLabel }));
 
   const activeImportVersionValue = jsonRecord(input.corpusMetadata).activeImportVersion;
   const segmentation = prepareLanguageTrainingSegmentation({
@@ -825,7 +828,8 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
       evidence: evidence.length,
       constructionCandidates: compiledBatch.constructionCandidates,
       languageConstructions: compiledConstructionPatterns.length,
-      graphSurfaceAlignments: compiledBatch.graphSurfaceAlignmentSummaries,
+      // The audit already carries every summary under graphSurfaceAlignment; this key was a second full copy (49% of the event).
+      graphSurfaceAlignments: compiledBatch.graphSurfaceAlignmentSummaries.length,
       rejectedLanguageConstructions: compiledBatch.rejectedConstructionCandidates,
       constructionPromotion: compiledBatch.constructionPromotion as unknown as JsonValue,
       corpusMetadata: metadata

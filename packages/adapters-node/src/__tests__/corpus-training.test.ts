@@ -40,6 +40,30 @@ afterEach(async () => {
   for (const root of tempRoots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 
+describe("learned rows carry the shard's provenance once", () => {
+  it("stamps units, patterns, frames and models without the page list and keeps it on the learned event", async () => {
+    const { storage, state } = memoryStorage();
+    const input = {
+      storage, sourceSystem: "gutenberg", streamUri: "fixture://provenance-once",
+      text: "A reader opens a book. Another reader closes the same book. ".repeat(3), createdAt: 1700000000000,
+      languageOnly: true, ngramMaxOrder: 2, ngramVocabularyLimit: 32,
+      corpusMetadata: { shardUri: "fixture://shard/1", pages: 2, sourceVersionIds: ["version.a", "version.b"] }
+    };
+    const report = await commitLanguageCorpusTraining(input, await prepareLanguageCorpusTraining(input));
+    expect(report.ngramModels).toBeGreaterThan(0);
+    for (const model of state.models) expect(model.modelJson).not.toHaveProperty("sourceVersionIds");
+    for (const unit of state.units) expect(unit.metadata).not.toHaveProperty("sourceVersionIds");
+    for (const pattern of state.patterns) expect(pattern.patternJson).not.toHaveProperty("sourceVersionIds");
+    for (const frame of state.frames) expect(frame.frameJson).not.toHaveProperty("sourceVersionIds");
+    expect(state.models.every(model => (model.modelJson as Record<string, JsonValue>).shardUri === "fixture://shard/1")).toBe(true);
+    const learned = state.events.find(event => event.typeId === "SymbolPatternLearned");
+    const payload = learned!.payload as Record<string, any>;
+    expect(payload.corpusMetadata.sourceVersionIds).toEqual(["version.a", "version.b"]);
+    expect(typeof payload.graphSurfaceAlignments).toBe("number");
+    expect(Array.isArray(payload.graphSurfaceAlignment)).toBe(true);
+  });
+});
+
 describe("prepared corpus training", () => {
   const options = (storage: ScceStorage) => ({ storage, sourceSystem: "gutenberg", streamUri: "fixture://prepared-book",
     text: "A reader opens a book. Another reader closes the same book. ".repeat(3), createdAt: 1700000000000,
