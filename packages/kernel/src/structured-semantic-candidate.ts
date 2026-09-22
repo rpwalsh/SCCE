@@ -96,6 +96,8 @@ export function structuredSemanticCandidates(input: {
   metadata: JsonValue;
   observations: readonly Observation[];
   evidenceIds: readonly EvidenceId[];
+  /** The spans behind evidenceIds, with their text, so a link can cite the span that carries it. */
+  evidence?: ReadonlyArray<{ id: EvidenceId; text: string }>;
   observedAt: number;
   producerModelId?: string;
   producerSnapshotId?: string;
@@ -383,7 +385,7 @@ export function structuredSemanticCandidates(input: {
     add("link", [
       { value: label, valueKind: "anchor_surface" },
       { value: target, valueKind: "target_ref" }
-    ], input.evidenceIds, 0.82);
+    ], citingEvidenceIds(label, input), 0.82);
   }
   const redirects = records(metadata.redirects);
   const redirectTarget = text(metadata.redirectTarget ?? metadata.redirect);
@@ -429,6 +431,16 @@ export function structuredSemanticCandidates(input: {
   }
   return [...out.values()].sort((left, right) =>
     right.support - left.support || left.id.localeCompare(right.id));
+}
+
+/** A link cites the spans whose text carries its label; citing the whole page put 4 kB of span ids on every link, four times over. */
+function citingEvidenceIds(
+  label: string,
+  input: { evidenceIds: readonly EvidenceId[]; evidence?: ReadonlyArray<{ id: EvidenceId; text: string }> }
+): readonly EvidenceId[] {
+  if (!label || !input.evidence?.length) return input.evidenceIds;
+  const citing = input.evidence.filter(span => span.text.includes(label)).map(span => span.id);
+  return citing.length ? citing : input.evidenceIds;
 }
 
 export function semanticCandidatesByChannel(

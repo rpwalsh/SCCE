@@ -165,6 +165,7 @@ export function createTypedIngestProjector(options: { idFactory: IdFactory; hash
       metadata: proseMetadata,
       observations,
       evidenceIds,
+      evidence: input.evidence.map(span => ({ id: span.id, text: span.text })),
       observedAt: input.observedAt,
       sourceDependencyGroupIds: evidenceSourceDependencyGroups(input.evidence, input.sourceId),
       hasher
