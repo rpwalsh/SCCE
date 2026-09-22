@@ -1545,7 +1545,7 @@ export function propositionNodeRepresentation(atom: SemanticAtom): JsonValue {
     schema: PROPOSITION_GRAPH_NODE_SCHEMA,
     predicate: atom.predicate,
     predicateFeatures: atom.predicateFeatures,
-    roles: atom.roles as unknown as JsonValue,
+    roles: atom.roles.map(persistedRoleBinding) as unknown as JsonValue,
     constraints: atom.constraints as unknown as JsonValue,
     polarity: atom.polarity,
     modality: atom.modality,
@@ -1555,6 +1555,24 @@ export function propositionNodeRepresentation(atom: SemanticAtom): JsonValue {
     proofBoundaryReason: atom.proofBoundaryReason ?? null,
     text: atom.sourceText
   });
+}
+
+/** A role's features and normalized form are functions of its value (roleBinding); the node stores the value only. */
+function persistedRoleBinding(role: SemanticRoleBinding): Omit<SemanticRoleBinding, "features" | "normalized"> {
+  const { features: _features, normalized: _normalized, ...persisted } = role;
+  return persisted;
+}
+
+/** A stored role in either form (value only, or the older record with its derivations inline) becomes a full binding. */
+export function materializeRoleBinding(stored: JsonValue): SemanticRoleBinding | undefined {
+  if (!stored || typeof stored !== "object" || Array.isArray(stored)) return undefined;
+  const role = stored as Record<string, JsonValue>;
+  if (typeof role.name !== "string" || typeof role.value !== "string" || typeof role.type !== "string") return undefined;
+  return {
+    ...(role as unknown as SemanticRoleBinding),
+    normalized: typeof role.normalized === "string" ? role.normalized : symbolizeData(role.value).join(" "),
+    features: Array.isArray(role.features) ? role.features.map(String) : featureSet(role.value, 128)
+  };
 }
 
 /** The proposition a node carries, rehydrated, or undefined when the node carries a surface instead. Pure. */
@@ -1570,7 +1588,10 @@ function propositionAtomFromNode(
   if (record.schema !== PROPOSITION_GRAPH_NODE_SCHEMA) return undefined;
   const predicate = typeof record.predicate === "string" ? record.predicate : "";
   if (!predicate) return undefined;
-  const roles = (Array.isArray(record.roles) ? record.roles : []) as unknown as SemanticRoleBinding[];
+  const roles = (Array.isArray(record.roles) ? record.roles : []).flatMap(stored => {
+    const role = materializeRoleBinding(stored);
+    return role ? [role] : [];
+  });
   const constraints = (Array.isArray(record.constraints) ? record.constraints : []) as unknown as SemanticConstraint[];
   const predicateFeatures = Array.isArray(record.predicateFeatures)
     ? record.predicateFeatures.filter((feature): feature is string => typeof feature === "string")
