@@ -7,7 +7,7 @@ import { SEMANTIC_CONSTRAINT, SEMANTIC_SOURCE } from "./semantic-codes.js";
 import { weightedJaccard } from "./primitives.js";
 
 /**
- * Plan items 142-143. Complete semantic round-trip validation:
+ * Plan items 142-143. Semantic round-trip validation over extracted atoms:
  * `A -> Realize -> Interpret -> Ahat`. `atomizeText` (already real,
  * already tested, `semantic-proof-system.ts`) is the "Interpret" step,
  * reused here rather than reimplemented -- both `A` (the intended
@@ -18,7 +18,9 @@ import { weightedJaccard } from "./primitives.js";
  * step producing the surface text `Ahat` gets re-parsed from) is the
  * caller's concern -- Mouth, a translation pipeline, or, in this module's
  * own tests, a deliberately mutated string standing in for a specific
- * corruption -- not something this module performs itself.
+ * corruption -- not something this module performs itself. Acceptance is
+ * conditional on this interpreter retaining the meaning-bearing distinctions;
+ * it is not a proof of arbitrary natural-language interpretation.
  */
 
 export const SEMANTIC_ROUND_TRIP_SCHEMA = "scce.semantic_round_trip.v1" as const;
@@ -72,6 +74,82 @@ function atomFeatures(atom: SemanticAtom): string[] {
   return [`predicate:${atom.predicate}`, ...roleTokenFeatures];
 }
 
+/** Invalid semantic values must not compare equal after a storage-oriented normalization. */
+class InvalidSemanticMeaning extends Error {}
+
+/**
+ * Lossless canonical JSON for the represented claim, not the storage serializer:
+ * storage normalizes NUL, non-finite numbers and undefined. Those repairs must
+ * never make distinct or malformed meanings equal at an acceptance boundary.
+ * Object keys are emitted directly, including "__proto__"; no dictionary object
+ * is populated. JSON object order is irrelevant; array order remains significant.
+ */
+function semanticValueKey(value: unknown, active = new WeakSet<object>(), depth = 0): string {
+  if (depth > 128) throw new InvalidSemanticMeaning("semantic value nesting exceeds bound");
+  if (value === null) return "null";
+  if (typeof value === "string" || typeof value === "boolean") return JSON.stringify(value);
+  if (typeof value === "number" && Number.isFinite(value)) return JSON.stringify(value);
+  if (typeof value !== "object") throw new InvalidSemanticMeaning("semantic value is not finite JSON");
+  if (active.has(value)) throw new InvalidSemanticMeaning("semantic value contains a cycle");
+  const prototype = Object.getPrototypeOf(value);
+  if (!Array.isArray(value) && prototype !== Object.prototype && prototype !== null) {
+    throw new InvalidSemanticMeaning("semantic value is not a plain JSON record");
+  }
+  active.add(value);
+  try {
+    const field = (key: string): string => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || !("value" in descriptor)) throw new InvalidSemanticMeaning("semantic field is absent or an accessor");
+      return semanticValueKey(descriptor.value, active, depth + 1);
+    };
+    if (Array.isArray(value)) {
+      return `[${Array.from({ length: value.length }, (_, index) => field(String(index))).join(",")}]`;
+    }
+    return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${field(key)}`).join(",")}}`;
+  } finally {
+    active.delete(value);
+  }
+}
+
+/** Meaning-bearing fields only. Scores, provenance and record order cannot authorize a different claim. */
+function roleMeaning(atom: SemanticAtom): string {
+  return JSON.stringify(atom.roles.map(role => semanticValueKey({
+    name: role.name,
+    normalized: role.normalized,
+    type: role.type,
+    nodeId: role.nodeId ?? null
+  })).sort());
+}
+
+function constraintMeaning(atom: SemanticAtom, kind?: string): string {
+  return JSON.stringify(atom.constraints.filter(constraint => kind === undefined || constraint.kind === kind)
+    .map(constraint => semanticValueKey({
+      kind: constraint.kind,
+      subject: constraint.subject,
+      operator: constraint.operator,
+      value: constraint.value
+    })).sort());
+}
+
+function atomMeaning(atom: SemanticAtom): string {
+  return semanticValueKey([
+    atom.predicate, roleMeaning(atom), constraintMeaning(atom), atom.polarity,
+    atom.modality, discourseForceFromSurface(atom.sourceText)
+  ]);
+}
+
+function atomMeanings(atoms: readonly SemanticAtom[]): Map<string, string> {
+  const meanings = new Map<string, string>();
+  for (const atom of atoms) {
+    const meaning = atomMeaning(atom);
+    if (meanings.has(atom.id) && meanings.get(atom.id) !== meaning) {
+      throw new InvalidSemanticMeaning("one atom identity names different represented meanings");
+    }
+    meanings.set(atom.id, meaning);
+  }
+  return meanings;
+}
+
 const MATCH_SIMILARITY_THRESHOLD = 0.5;
 
 /**
@@ -96,7 +174,8 @@ function sameClaimShape(a: SemanticAtom, ahat: SemanticAtom): boolean {
 }
 
 /**
- * Real greedy bipartite matching by descending similarity (predicate +
+ * Exact represented meanings are paired first; remaining atoms use descending
+ * similarity for diagnostics (predicate +
  * role-value overlap, via `primitives.ts`'s own `weightedJaccard`, not a
  * separate ad hoc metric, OR the same-claim-shape structural rule above):
  * each atom on each side matched at most once, so a discrepancy is never
@@ -108,6 +187,10 @@ function matchAtoms(
   atomsAhat: readonly SemanticAtom[]
 ): { pairs: RoundTripAtomPair[]; unmatchedA: SemanticAtom[]; unmatchedAhat: SemanticAtom[] } {
   const candidates: RoundTripAtomPair[] = [];
+  // Cache per atom, not per candidate pair. Same-shape claims can differ only in
+  // polarity or constraints, so lexical ties must not steal an exact counterpart.
+  const meaningsA = atomMeanings(atomsA);
+  const meaningsAhat = atomMeanings(atomsAhat);
   for (const a of atomsA) {
     for (const ahat of atomsAhat) {
       const similarity = weightedJaccard(atomFeatures(a), atomFeatures(ahat));
@@ -116,7 +199,11 @@ function matchAtoms(
       }
     }
   }
-  candidates.sort((left, right) => right.similarity - left.similarity || left.aId.localeCompare(right.aId) || left.ahatId.localeCompare(right.ahatId));
+  const exactMeaning = (pair: RoundTripAtomPair): number =>
+    Number(meaningsA.get(pair.aId) === meaningsAhat.get(pair.ahatId));
+  candidates.sort((left, right) => exactMeaning(right) - exactMeaning(left)
+    || right.similarity - left.similarity
+    || left.aId.localeCompare(right.aId) || left.ahatId.localeCompare(right.ahatId));
   const usedA = new Set<string>();
   const usedAhat = new Set<string>();
   const pairs: RoundTripAtomPair[] = [];
@@ -134,7 +221,7 @@ function matchAtoms(
 }
 
 function constraintValuesByKind(atom: SemanticAtom, kind: string): string {
-  return JSON.stringify(atom.constraints.filter(constraint => constraint.kind === kind).map(constraint => constraint.value).sort());
+  return constraintMeaning(atom, kind);
 }
 
 /** A genuine structural role swap: two distinct role names in A whose values appear exchanged in Ahat, not merely reworded. */
@@ -207,22 +294,43 @@ export interface FactualRoundTripGateResult {
 }
 
 /**
- * Plan item 143. The hard factual gate: any real `Added` atom (something
- * the realized text asserts with no counterpart in the intended meaning)
- * rejects the output outright -- not a soft penalty, not a warning, a
- * real refusal. The full cycle trace (both atom sets and the complete
- * distance decomposition) is always returned, accepted or not, so every
- * emitted factual answer this gate approves carries its own real
- * provenance rather than a bare boolean.
+ * Plan item 143. Reject additions and mutations of represented meaning, not
+ * merely unmatched atoms. Similarity establishes correspondence for diagnostics;
+ * it does not prove equivalence. Uninterpretable output cannot pass vacuously.
+ * Whole-atom omission retains the existing summary contract. A caller requiring
+ * full preservation (translation) opts into requireComplete; this never weakens
+ * any factual check. Removing a constraint or a
+ * role from a retained atom is a mutation, not a permitted whole-atom omission.
+ * Return the existing cycle-trace schema on every path. No policy flag bypasses
+ * these checks and no source/brain data is rewritten.
  */
 export function factualRoundTripGate(input: {
   intendedText: string;
   realizedText: string;
+  /** Strengthens coverage for translation/full restatement; never relaxes mutation checks. */
+  requireComplete?: boolean;
   hasher?: Hasher;
 }): FactualRoundTripGateResult {
   const atomsA = atomizeText({ text: input.intendedText, source: SEMANTIC_SOURCE.CLAIM, ...(input.hasher ? { hasher: input.hasher } : {}) });
   const atomsAhat = atomizeText({ text: input.realizedText, source: SEMANTIC_SOURCE.CLAIM, ...(input.hasher ? { hasher: input.hasher } : {}) });
-  const distance = computeSemanticRoundTripDistance(atomsA, atomsAhat);
+  let distance: SemanticRoundTripDistance;
+  try {
+    distance = computeSemanticRoundTripDistance(atomsA, atomsAhat);
+  } catch (error) {
+    if (!(error instanceof InvalidSemanticMeaning)) throw error;
+    // Do not copy malformed objects into the rejection trace: a cycle/accessor
+    // could otherwise fail again during logging. No equivalence is asserted.
+    distance = {
+      schema: SEMANTIC_ROUND_TRIP_SCHEMA, matched: [], missing: [], added: [],
+      reversed: [], quantityMismatches: [], timeMismatches: [], polarityMismatches: [],
+      modalityMismatches: [], discourseForceMismatches: []
+    };
+    return {
+      accepted: false, reason: `invalid semantic interpretation: ${error.message}`,
+      cycleTrace: { schema: SEMANTIC_ROUND_TRIP_SCHEMA, intendedText: input.intendedText,
+        realizedText: input.realizedText, atomsA: [], atomsAhat: [], distance }
+    };
+  }
   const cycleTrace: FactualRoundTripCycleTrace = {
     schema: SEMANTIC_ROUND_TRIP_SCHEMA,
     intendedText: input.intendedText,
@@ -235,6 +343,38 @@ export function factualRoundTripGate(input: {
     return {
       accepted: false,
       reason: `realized text asserts ${distance.added.length} atom(s) with no counterpart in the intended meaning`,
+      cycleTrace
+    };
+  }
+  if (atomsA.length === 0 || atomsAhat.length === 0) {
+    return { accepted: false, reason: "semantic round trip has no interpreted intended or realized claim", cycleTrace };
+  }
+  const mutations = [
+    ["role reversal", distance.reversed],
+    ["quantity constraint", distance.quantityMismatches],
+    ["temporal constraint", distance.timeMismatches],
+    ["polarity", distance.polarityMismatches],
+    ["modality", distance.modalityMismatches],
+    ["discourse force", distance.discourseForceMismatches]
+  ] as const;
+  const mutation = mutations.find(([, pairs]) => pairs.length > 0);
+  if (mutation) {
+    return { accepted: false, reason: `realized text changes ${mutation[0]} on ${mutation[1].length} matched atom(s)`, cycleTrace };
+  }
+  const meaningsA = atomMeanings(atomsA);
+  const meaningsAhat = atomMeanings(atomsAhat);
+  const changed = distance.matched.filter(pair => meaningsA.get(pair.aId) !== meaningsAhat.get(pair.ahatId));
+  if (changed.length > 0) {
+    return {
+      accepted: false,
+      reason: `realized text changes a predicate, role binding or constraint on ${changed.length} matched atom(s)`,
+      cycleTrace
+    };
+  }
+  if (input.requireComplete && distance.missing.length > 0) {
+    return {
+      accepted: false,
+      reason: `realized text omits ${distance.missing.length} required atom(s) from the intended meaning`,
       cycleTrace
     };
   }

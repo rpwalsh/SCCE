@@ -9,7 +9,7 @@ import type { Hasher } from "./types.js";
  * Plan items 124-125: real translation-quality round-trip validation
  * specific to the translation path (`A -> Realize -> y -> Interpret ->
  * Ahat`, `d_G` distance) and a hard factual gate rejecting any
- * translation that introduces an atom absent from the source. Built
+ * translation that introduces, mutates or omits represented source meaning. Built
  * entirely on already-real, already-tested machinery, never
  * reimplemented here: `buildTranslationPlan`
  * (`multilingual-translation.ts`) performs the real Realize (A->y) step,
@@ -66,6 +66,9 @@ export function validateTranslationRoundTrip(input: {
   const gate = factualRoundTripGate({
     intendedText: input.sourceText,
     realizedText: interpretedPlan.targetText,
+    // Translation is a full restatement, not a summary. A faithful subset is
+    // still incomplete and must not pass this semantic-preservation boundary.
+    requireComplete: true,
     ...(input.hasher ? { hasher: input.hasher } : {})
   });
   return {
