@@ -362,6 +362,7 @@ interface LicensedContentPlan {
   /** The selected entailment claim a source surface is licensed to express. */
   requiredClaimText?: string;
   claimEvidenceIds?: EvidenceId[];
+  discourseEvidenceIds?: EvidenceId[];
 }
 
 type FactualProducerAuthority =
@@ -369,6 +370,8 @@ type FactualProducerAuthority =
   | { schema: "scce.mouth.factual_producer_authority.v1"; kind: "source_excerpt"; evidenceIds: EvidenceId[]; contentPlan: LicensedContentPlan }
   | { schema: "scce.mouth.factual_producer_authority.v1"; kind: "verified_computation"; expression: string; exactResult: string; answer: string; validatorVersion: string }
   | { schema: "scce.mouth.factual_producer_authority.v1"; kind: "insufficient_support"; questionShapeId: string; requestedFocuses: string[] };
+
+const sourceContentPlans = new WeakMap<SpeakInput, readonly PlannedClaim[]>();
 
 type MouthProducerAuthority = FactualProducerAuthority
   | { schema: "scce.mouth.producer_authority.v1"; kind: "learned_prior_proposition"; questionShapeId: string; boundaryId: string; factKeys: string[]; sourceSurfacePieceId?: string }
@@ -1438,7 +1441,8 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
   };
   return {
     async speak(input) {
-      return withSurfaceContract(input, await learned.speak(input), SURFACE_REALIZATION_STRATEGY_IDS.learned);
+      const realizationInput = { ...input };
+      return withSurfaceContract(realizationInput, await learned.speak(realizationInput), SURFACE_REALIZATION_STRATEGY_IDS.learned);
     }
   };
 }
@@ -3188,18 +3192,8 @@ function persistedLearnedSurfaceCandidate(input: {
     discoursePlan,
     boundaryDecisions: [],
     exactSurface: true,
-    plannedClaims: [{
-      id: semanticFactKey(fact),
-      text: input.realization.text,
-      basis: "direct_evidence",
-      evidenceIds: input.proofEvidenceIds.map(id => id as EvidenceId),
-      priorIds: [bundle.id, construction.id],
-      graphNodeIds: [fact.sourceNodeId, fact.targetNodeId],
-      graphEdgeIds: [],
-      externallyFactual: true,
-      hypothetical: false,
-      trace: toJsonValue({ source: "learned_construction", selectedFactKey: semanticFactKey(fact), planId: input.input.plan.id, constructionId: construction.id })
-    }],
+    plannedClaims: [sourceClaimForRealizedFact(fact, input.realization.text, input.proofEvidenceIds, [bundle.id, construction.id],
+      toJsonValue({ source: "learned_construction", selectedFactKey: semanticFactKey(fact), realizationId: input.realization.id, constructionId: construction.id }))],
     constructionCycleOutcome: input.constructionCycleOutcome,
     audit: toJsonValue({
       schema: "scce.mouth.learned_construction_candidate.v2",
@@ -3861,41 +3855,11 @@ function semanticDirectEvidenceCandidate(
     if (selected.length >= Math.max(1, Math.min(4, discoursePlan.units.length || 2))) break;
   }
   if (!selected.length) return undefined;
-  // Real bug, confirmed live: joining 2+ real, independently-valid evidence
-  // sentences requires renderJoinedCandidateAlternatives to find a genuine
-  // discourse connective between them -- when it honestly can't (rather
-  // than fabricating a transition), it returns status:"unresolved" and no
-  // text, which used to fail this whole candidate even though the single
-  // best sentence on its own was already a real, valid, evidence-backed
-  // answer. Degrading to that one sentence when the join can't be
-  // resolved is strictly safer than the prior behavior (abandoning a real
-  // candidate entirely, which fed the "why does it just quote Wikipedia"
-  // problem), and never joins anything the resolver didn't itself accept.
-  // Single-fact fallbacks are ordered away from whatever surface the real
-  // downstream question-echo gate (questionEchoHits, called against
-  // input.requestText once this reaches scoring) would reject. Real bug,
-  // confirmed live: this used to compare against input.entailment.claim.text
-  // instead -- correct for most turns (claim.text is built from the raw
-  // request there) but wrong for the graph-inference/longPathBasisAnswer
-  // path, where claim.text gets reseeded to an evidence-derived proof claim
-  // that is frequently this exact "core" fact's own surface. Comparing the
-  // best, most complete fact against its own source claim scored it as
-  // maximally "echoing," deprioritizing it below a worse, more fragmentary
-  // fact with less overlap -- confirmed live for "What is Star Trek?"
-  // ("It was the first time in 18 years... would be produced, the
-  // beginning of a hiatus..." lost this ordering to "would be produced,").
-  // input.requestText (the real question) is what this check is actually
-  // supposed to guard against replaying, regardless of path.
-  const claimText = mouthEchoQuestionText(input);
-  const singleFactFallbacks = selected.length > 1
-    ? [...selected].sort((left, right) => (
-      questionEchoHits(left.surface, claimText).length - questionEchoHits(right.surface, claimText).length
-    )).map(row => [row])
-    : [];
-  const joinAttempts = selected.length > 1 ? [selected, ...singleFactFallbacks] : [selected];
+  sourceContentPlans.set(input, selected.map(row => sourceClaimForRealizedFact(row.fact, row.surface, row.evidenceIds, [],
+    toJsonValue({ source: "semantic_source_content_plan", selectedFactKey: semanticFactKey(row.fact) }))));
   let text = "";
   let resolved: typeof selected = [];
-  for (const attempt of joinAttempts) {
+  for (const attempt of [selected]) {
     const attemptSurfaces = attempt.map(row => row.surface);
     const observedSourceSpan = exactObservedSourceSpan(
       input.evidence,
@@ -3938,6 +3902,8 @@ function semanticDirectEvidenceCandidate(
     path: "generated",
     text,
     evidenceIds,
+    plannedClaims: resolved.map(row => sourceClaimForRealizedFact(row.fact, row.surface, row.evidenceIds, [],
+      toJsonValue({ source: "semantic_direct_evidence", selectedFactKey: semanticFactKey(row.fact) }))),
     fit: clamp01(0.82 + mean(resolved.map(row => row.fact.support)) * 0.14),
     importedPieceIds: [],
     discoursePlan,
@@ -5092,14 +5058,18 @@ function learnedTemporalCounterexampleCandidate(discoursePlan: DiscoursePlan, in
     ...(support.evidenceIds ?? []).map(id => id as EvidenceId),
     ...state.certificationBoundary.evidenceSpanIds.map(id => id as EvidenceId)
   ]);
+  const supportClaim = { ...sourceClaimForRealizedFact(support, supportSurface, evidenceIds, [],
+    toJsonValue({ source: "temporal_counterexample", selectedFactKey: semanticFactKey(support) })), basis: "temporal_inference" as const };
   if (!bridge) {
     if (!admissibleMouthSurface(supportSurface) || questionEchoHits(supportSurface, mouthEchoQuestionText(input)).length) return undefined;
+    sourceContentPlans.set(input, [supportClaim]);
     return {
       id: "candidate:generated:semantic-temporal-counterexample",
       style: "surface.path.generated.semantic_temporal_counterexample.source",
       path: "generated",
       text: supportSurface,
       evidenceIds,
+      plannedClaims: [supportClaim],
       fit: 0.78,
       importedPieceIds: [],
       discoursePlan,
@@ -5137,12 +5107,16 @@ function learnedTemporalCounterexampleCandidate(discoursePlan: DiscoursePlan, in
     activeJoinProgram(input.languageMemory)
   ) || ensureSurfaceSentence([conclusion, supportSurface].join(" "));
   if (!admissibleMouthSurface(text) || questionEchoHits(text, mouthEchoQuestionText(input)).length) return undefined;
+  const conclusionClaim = { ...sourceClaimForRealizedFact(rejection, conclusion, evidenceIds, bridge.priorIds,
+    toJsonValue({ source: "temporal_counterexample", selectedFactKey: semanticFactKey(rejection) })), basis: "temporal_inference" as const };
+  sourceContentPlans.set(input, [conclusionClaim, supportClaim]);
   return {
     id: "candidate:generated:semantic-temporal-counterexample",
     style: "surface.path.generated.semantic_temporal_counterexample",
     path: "generated",
     text,
     evidenceIds,
+    plannedClaims: [conclusionClaim, supportClaim],
     fit: clamp01(0.78 + bridge.confidence * 0.18),
     importedPieceIds: bridge.priorIds,
     discoursePlan,
@@ -7936,6 +7910,22 @@ function exactSourceExcerptOwners(surface: string, spans: readonly EvidenceSpan[
     .toLocaleLowerCase().includes(normalizedSurface));
 }
 
+function discourseOwnsSourceExcerpt(input: SpeakInput, text: string, ownerId: EvidenceId): boolean {
+  return jsonRecord(input.selectedCandidate?.audit).explicitContextBound === true
+    && input.explicitContextEvidenceIds?.has(String(ownerId)) === true
+    && input.selectedCandidate?.evidenceIds.includes(ownerId) === true
+    && normalizeEvidenceSentence(input.selectedCandidate.answer) === normalizeEvidenceSentence(text);
+}
+
+function sourceClaimForRealizedFact(fact: SemanticAnswerFact, text: string, evidenceIds: readonly string[], priorIds: string[], trace: JsonValue): PlannedClaim {
+  return {
+    id: semanticFactKey(fact), text, basis: "direct_evidence",
+    evidenceIds: evidenceIds.map(id => id as EvidenceId), priorIds,
+    graphNodeIds: [fact.sourceNodeId, fact.targetNodeId], graphEdgeIds: [],
+    externallyFactual: true, hypothetical: false, trace
+  };
+}
+
 function factualProducerAuthority(candidate: SurfaceCandidate, input: SpeakInput): FactualProducerAuthority | undefined {
   const proofGraph = input.entailment.proof.proofGraph;
   const computationBoundary = proofGraph.nodes.find(node => node.kind === "boundary" && node.label === "proof.boundary.deterministic_computation");
@@ -8292,6 +8282,9 @@ function factualProducerAuthorityHits(
 ): string[] {
   const authority = candidate.producerAuthority;
   if (!authority || authority.schema !== "scce.mouth.factual_producer_authority.v1") return ["surface.reject.missing_factual_producer_authority"];
+  if ((sourceContentPlans.get(input) ?? []).some(claim => !normalizeEvidenceSentence(text).includes(normalizeEvidenceSentence(claim.text)))) {
+    return ["surface.reject.incomplete_source_content_plan"];
+  }
   if (authority.kind === "verified_computation") {
     const current = factualProducerAuthority(candidate, input);
     return current?.kind === "verified_computation"
@@ -8330,7 +8323,12 @@ function factualProducerAuthorityHits(
       && input.selectedCandidate?.evidenceIds.some(id => String(id) === String(plan.ownerEvidenceId))
       && normalizeEvidenceSentence(text) === normalizeEvidenceSentence(plan.requiredClaimText)
       && exactSourceExcerptOwners(plan.requiredClaimText, owners).some(span => String(span.id) === String(plan.ownerEvidenceId));
-    const claimBound = plan.requiredClaimText === undefined
+    const discourseBoundClaim = plan.discourseEvidenceIds?.length === 1
+      && String(plan.discourseEvidenceIds[0]) === String(plan.ownerEvidenceId)
+      && plan.requiredClaimText !== undefined
+      && discourseOwnsSourceExcerpt(input, plan.requiredClaimText, plan.ownerEvidenceId)
+      && normalizeEvidenceSentence(text) === normalizeEvidenceSentence(plan.requiredClaimText);
+    const claimBound = discourseBoundClaim || plan.requiredClaimText === undefined
       || (plan.requiredClaimText === input.entailment.claim.text
         && Boolean(plan.claimEvidenceIds?.length)
         && (explicitlyPreservedSelectedClaim || plan.claimEvidenceIds!.every(id => input.entailment.evidenceIds.map(String).includes(String(id))
@@ -8351,8 +8349,10 @@ function factualProducerAuthorityHits(
     claimBases: authority.kind === "evidence_bound_proposition" ? authority.claims : []
   };
   const quotation = authority.kind === "source_excerpt";
+  const discourseBound = quotation && authority.contentPlan.discourseEvidenceIds?.length === 1
+    && discourseOwnsSourceExcerpt(input, text, authority.contentPlan.discourseEvidenceIds[0]!);
   return uniqueStrings([
-    ...requestCoverageHits(text, candidate, scopedInput, false),
+    ...(candidate.plannedClaims?.length || discourseBound ? [] : requestCoverageHits(text, candidate, scopedInput, false)),
     ...(authority.kind === "evidence_bound_proposition" ? semanticAnswerDriftHits(text, scopedInput, priorPieces) : []),
     ...questionEchoHits(text, mouthEchoQuestionText(input)),
     ...unlicensedCommitmentHits(text, scopedInput, candidate.constructionFormLiterals),
@@ -9372,13 +9372,15 @@ function sourceExcerptContentCandidate(
     && exactSourceExcerptOwners(input.selectedCandidate!.answer, input.evidence.filter(span => boundIds.has(String(span.id)))).length > 0;
   const preservedSelectedClaim = selectedExcerptOwned
     && normalizeEvidenceSentence(input.selectedCandidate!.answer) === normalizeEvidenceSentence(input.entailment.claim.text);
+  const discourseBoundSelectedClaim = selectedExcerptOwned && input.selectedCandidate!.evidenceIds.some(id =>
+    discourseOwnsSourceExcerpt(input, input.selectedCandidate!.answer, id));
   const exactPlannedExcerptWithoutQuestion = !input.requestText
     && input.selectedCandidate?.kind === "proof-answer";
   const selectedSourceExcerpt = selectedExcerptOwned
-    && (semanticStateBindsRequest
+    && (discourseBoundSelectedClaim || (semanticStateBindsRequest
       ? preservedSelectedClaim
-      : (sourcePreservationRequested || exactPlannedExcerptWithoutQuestion));
-  const window = semanticState && claimEvidenceIds.length
+      : (sourcePreservationRequested || exactPlannedExcerptWithoutQuestion)));
+  const window = discourseBoundSelectedClaim ? input.selectedCandidate!.answer : semanticState && claimEvidenceIds.length
     ? claimText
     : selectedSourceExcerpt
       ? input.selectedCandidate!.answer
@@ -9394,6 +9396,7 @@ function sourceExcerptContentCandidate(
     kind: "source_excerpt",
     ownerEvidenceId: owner.id,
     requestUnits: mouthCoverageUnits(input),
+    ...(discourseBoundSelectedClaim ? { requiredClaimText: input.selectedCandidate!.answer, discourseEvidenceIds: [owner.id] } : {}),
     ...(claimEvidenceIds.some(id => String(id) === String(owner.id)) || (preservedSelectedClaim && String(owner.id) === String(input.selectedCandidate?.evidenceIds.find(id => boundIds.has(String(id)))))
       ? { requiredClaimText: input.entailment.claim.text, claimEvidenceIds: [owner.id] }
       : {})
