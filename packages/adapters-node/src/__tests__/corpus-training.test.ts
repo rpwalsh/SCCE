@@ -411,14 +411,14 @@ describe("prepared corpus training", () => {
     await expect(trainLanguageCorpusText({ ...input, corpusMetadata: { declaredLicense: "changed-license" } })).rejects.toThrow("checkpoint binding mismatch");
   });
 
-  it("keeps exact source spans searchable as direct evidence and filters true profile excerpts", async () => {
+  it("keeps exact source spans byte-bound and excludes profile excerpts", async () => {
     const fixture = memoryStorage();
     const input = {
       storage: fixture.storage,
       sourceSystem: "gutenberg",
       streamUri: "fixture://moby-search",
       sourceUri: "fixture://moby-search",
-      text: "The captain of the Pequod was Ahab. The Pequod carried a crew of sailors.",
+      text: "Émile notes that the captain of the Pequod was Ahab. The Pequod carried a crew of sailors.",
       createdAt: 1700000000000,
       languageOnly: true,
       ngramMaxOrder: 2,
@@ -432,6 +432,13 @@ describe("prepared corpus training", () => {
     expect(recordOf(exactSourceSpan.provenance).forceClass).toBe("direct_evidence");
     expect(recordOf(exactSourceSpan.trustVector).forceClass).toBe("direct_evidence");
     expect(exactSourceSpan.features).toContain("anchor:sym:pequod");
+    const sourceVersion = fixture.state.sourceVersions.find(row => row.sourceVersionId === exactSourceSpan.sourceVersionId)!;
+    const persistedFullSource = fixture.state.blobs.find(bytes => blobContentHash(bytes) === sourceVersion.contentHash)!;
+    const spanBytes = Buffer.from(persistedFullSource).subarray(exactSourceSpan.byteStart, exactSourceSpan.byteEnd);
+    expect(blobContentHash(persistedFullSource)).toBe(sourceVersion.contentHash);
+    expect(blobContentHash(spanBytes)).toBe(exactSourceSpan.contentHash);
+    expect(spanBytes.toString("utf8")).toBe(exactSourceSpan.text);
+    expect([...persistedFullSource.toString("utf8")].slice(exactSourceSpan.charStart, exactSourceSpan.charEnd).join("")).toBe(exactSourceSpan.text);
 
     const profileExcerpt: EvidenceSpan = {
       ...exactSourceSpan,
@@ -447,15 +454,13 @@ describe("prepared corpus training", () => {
       .filter(span => !query.excludeForceClasses?.includes(String(recordOf(span.provenance).forceClass)))
       .slice(0, query.limit ?? fixture.state.evidence.length)
       .map(span => ({ span, score: 1, reason: "fixture anchor index" }));
-
     const results = await fixture.storage.evidence.searchEvidence({
-      features: ["anchor:sym:pequod"],
-      status: "promoted",
-      limit: 64,
+      features: ["anchor:sym:pequod"], status: "promoted", limit: 64,
       excludeForceClasses: ["profile_excerpt_evidence"]
     });
     expect(results.map(result => result.span.id)).toContain(exactSourceSpan.id);
     expect(results.map(result => result.span.id)).not.toContain(profileExcerpt.id);
+
   });
 
   it("avoids graph and natural construction pool reads for automatic formal code training", async () => {
@@ -857,10 +862,24 @@ describe("multi-corpus training", () => {
   it.each(["wikipedia", "oss_code"])("keeps %s recipe changes separate from other source systems", async sourceSystem => {
     const fixture = memoryStorage();
     const text = sourceSystem === "oss_code" ? "export function f9(x: number): number { return x + 1; }" : "cat chased mouse. dog chased mouse. cat chased ball. dog chased ball.";
+    const wikiBorrowedSpan = sourceSystem === "wikipedia" ? corpusEvidenceSpan("wiki-recipe", text, 0) : undefined;
+    if (wikiBorrowedSpan) {
+      const bytes = Buffer.from(text, "utf8");
+      fixture.state.evidence.push(wikiBorrowedSpan);
+      fixture.state.sourceVersions.push({
+        sourceId: wikiBorrowedSpan.sourceId, sourceVersionId: wikiBorrowedSpan.sourceVersionId,
+        namespace: "corpus:wikipedia", canonicalUri: "wikipedia://enwiki/source-recipes/wiki-recipe",
+        contentHash: blobContentHash(bytes) as SourceVersion["contentHash"], byteLength: bytes.byteLength,
+        mediaType: "text/plain", observedAt: 1, sourceTrust: {} as any,
+        informationLabel: publicCorpusInformationLabel, metadata: { sourceSystem: "wikipedia" }
+      });
+      fixture.state.blobs.push(bytes);
+    }
     const sourceHash = createHasher().digestHex(text);
     const input = { storage: fixture.storage, sourceSystem, streamUri: `fixture://${sourceSystem}`, sourceUri: `fixture://${sourceSystem}`, text,
       createdAt: 1700000000000, informationLabel: publicCorpusInformationLabel, ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64,
       ...(sourceSystem === "oss_code" ? { corpusMetadata: toJsonValue({ sourceHash, formalLanguage: "typescript", codeFunctionConstructions: compileSourceCodeFunctions({ text, path: "f9.ts", languageId: "typescript", sourceHash }) }) } : {}),
+      ...(wikiBorrowedSpan ? { persistSource: false, evidence: [wikiBorrowedSpan] } : {}),
       corpusCheckpoint: { rootUri: "fixture://source-recipes", itemUri: sourceSystem } };
     const hasher = createHasher();
     const ids = createIdFactory({ clock: createClock(), hasher, namespace: "corpus-training-checkpoint", deterministicReplay: true });
@@ -884,6 +903,30 @@ describe("multi-corpus training", () => {
     const rows = fixture.state.patterns.length;
     expect(await trainLanguageCorpusText(input)).toEqual(first);
     expect(fixture.state.patterns).toHaveLength(rows);
+  });
+
+  it("scopes the source-evidence recipe checkpoint only to full-source extraction", async () => {
+    const fixture = memoryStorage();
+    const input = { storage: fixture.storage, sourceSystem: "gutenberg", streamUri: "fixture://source-evidence-recipe",
+      sourceUri: "fixture://source-evidence-recipe", text: "A full source owns its exact extracted evidence span.",
+      createdAt: 1700000000000, informationLabel: publicCorpusInformationLabel, ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64,
+      corpusCheckpoint: { rootUri: "fixture://source-evidence", itemUri: "full-source.txt" } };
+    const ids = createIdFactory({ clock: createClock(), hasher: createHasher(), namespace: "corpus-training-checkpoint", deterministicReplay: true });
+    const checkpointKey = { compilerRecipe: LANGUAGE_CORPUS_TRAINING_RECIPE_ID,
+      sourceSystem: canonicalCorpusSourceSystemId(input.sourceSystem), rootUri: input.corpusCheckpoint.rootUri, itemUri: input.corpusCheckpoint.itemUri };
+    const legacyId = ids.semanticId("corpus_training_checkpoint", checkpointKey);
+    const scopedId = ids.semanticId("corpus_training_checkpoint", { ...checkpointKey, sourceEvidenceRecipe: "scce.language_corpus_source_evidence.v1" });
+    const checkpoints = new Map<string, IngestionCheckpoint>();
+    fixture.storage.ingestion = { put: async row => { checkpoints.set(row.id, structuredClone(row)); },
+      get: async id => checkpoints.get(id) ?? null, list: async () => [...checkpoints.values()] } as ScceStorage["ingestion"];
+
+    const first = await trainLanguageCorpusText(input);
+    expect(first.compilerRecipe).toBe(LANGUAGE_CORPUS_TRAINING_RECIPE_ID);
+    expect(checkpoints.has(scopedId)).toBe(true);
+    expect(checkpoints.has(legacyId)).toBe(false);
+    const beforeReplay = structuredClone(fixture.state);
+    expect(await trainLanguageCorpusText(input)).toEqual(first);
+    expect(fixture.state).toEqual(beforeReplay);
   });
 
   it("recompiles a legacy completed recipe under a new derived checkpoint without changing immutable source identities", async () => {

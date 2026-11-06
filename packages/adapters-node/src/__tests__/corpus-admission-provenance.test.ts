@@ -1,10 +1,10 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
-import { trainLanguageCorpusText } from "../language-corpus-trainer.js";
+import { LANGUAGE_CORPUS_TRAINING_RECIPE_ID, trainLanguageCorpusText } from "../language-corpus-trainer.js";
 import { trainStoredCorpusConstructions } from "../stored-corpus-construction-training.js";
 import { blobContentHash } from "../postgres.js";
-import { canonicalCorpusSourceSystemId } from "@scce/kernel";
+import { canonicalCorpusSourceSystemId, createClock, createHasher, createIdFactory } from "@scce/kernel";
 import type {
   EvidenceSpan,
   EvidenceBackedSourceVersionQuery,
@@ -101,6 +101,76 @@ describe("corpus trainer admission and provenance", () => {
     const kinds = new Set(fixture.state.evidence.map(span => provenanceOf(span).sourceKind));
     expect(kinds).not.toContain("construction_training");
     expect(kinds).toEqual(new Set(["developer_intelligence"]));
+  });
+
+  it("keeps a supplied Wikipedia profile excerpt excerpt-classified while learned rows remain priors", async () => {
+    const fixture = memoryStorage();
+    const sourceText = corpusText("Pequod");
+    const excerptText = "Pequod module resolves a declared symbol";
+    const charStart = sourceText.indexOf(excerptText);
+    const byteStart = Buffer.byteLength(sourceText.slice(0, charStart), "utf8");
+    const excerptBytes = Buffer.from(excerptText, "utf8");
+    const fullSourceBytes = Buffer.from(sourceText, "utf8");
+    const sourceId = "source.profile-excerpt" as SourceVersion["sourceId"];
+    const sourceVersionId = "source_version.profile-excerpt" as SourceVersion["sourceVersionId"];
+    const sourceUri = "wikipedia://enwiki/pages/profile-excerpt";
+    const sourceVersion: SourceVersion = {
+      sourceId, sourceVersionId, namespace: "corpus:wikipedia", canonicalUri: sourceUri,
+      contentHash: blobContentHash(fullSourceBytes) as SourceVersion["contentHash"], byteLength: fullSourceBytes.byteLength,
+      mediaType: "text/plain", observedAt: 1, sourceTrust: {} as any, informationLabel: OSS_INFORMATION_LABEL,
+      metadata: { sourceSystem: "wikipedia" }
+    };
+    const profileExcerpt: EvidenceSpan = {
+      id: "evidence.profile-excerpt" as EvidenceSpan["id"], sourceId, sourceVersionId,
+      chunkId: "chunk.profile-excerpt" as EvidenceSpan["chunkId"],
+      contentHash: blobContentHash(excerptBytes) as EvidenceSpan["contentHash"], mediaType: "text/plain",
+      byteStart, byteEnd: byteStart + excerptBytes.byteLength, charStart, charEnd: charStart + excerptText.length,
+      text: excerptText, textPreview: excerptText, languageHints: {}, scriptHints: {},
+      trustVector: { forceClass: "profile_excerpt_evidence" },
+      provenance: { sourceSystem: "wikipedia", sourceKind: "wikimedia_dump", forceClass: "profile_excerpt_evidence" },
+      features: [], status: "promoted", alpha: 0.9, observedAt: 1, informationLabel: OSS_INFORMATION_LABEL
+    };
+    fixture.state.sourceVersions.push(sourceVersion);
+    fixture.state.evidence.push(profileExcerpt);
+    fixture.state.blobs.set(String(sourceVersion.contentHash), fullSourceBytes);
+    const persistedExcerptSource = fixture.state.blobs.get(String(sourceVersion.contentHash))!;
+    const persistedExcerptBytes = persistedExcerptSource.subarray(profileExcerpt.byteStart, profileExcerpt.byteEnd);
+    expect(blobContentHash(persistedExcerptSource)).toBe(sourceVersion.contentHash);
+    expect(blobContentHash(persistedExcerptBytes)).toBe(profileExcerpt.contentHash);
+    expect(persistedExcerptBytes.toString("utf8")).toBe(profileExcerpt.text);
+    expect(profileExcerpt.byteStart).toBeGreaterThan(0);
+    expect(profileExcerpt.byteEnd).toBeLessThan(persistedExcerptSource.byteLength);
+
+    const input = {
+      storage: fixture.storage, sourceSystem: "wikipedia", streamUri: sourceUri, sourceUri, text: sourceText,
+      createdAt: 2, informationLabel: OSS_INFORMATION_LABEL, persistSource: false, evidence: [profileExcerpt],
+      ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64,
+      corpusCheckpoint: { rootUri: "wikipedia://enwiki/pages", itemUri: "profile-excerpt" }
+    };
+    const checkpointId = createIdFactory({ clock: createClock(), hasher: createHasher(), namespace: "corpus-training-checkpoint", deterministicReplay: true })
+      .semanticId("corpus_training_checkpoint", {
+        compilerRecipe: LANGUAGE_CORPUS_TRAINING_RECIPE_ID,
+        sourceSystem: canonicalCorpusSourceSystemId("wikipedia"),
+        rootUri: input.corpusCheckpoint.rootUri,
+        itemUri: input.corpusCheckpoint.itemUri
+      });
+
+    const report = await trainLanguageCorpusText(input);
+    expect(report.evidence).toBe(1);
+    expect(fixture.state.evidence).toEqual([profileExcerpt]);
+    expect(fixture.state.sourceVersions).toEqual([sourceVersion]);
+    expect(fixture.state.checkpoints.has(checkpointId)).toBe(true);
+    expect(fixture.state.checkpoints.size).toBe(1);
+    expect(fixture.state.models.length).toBeGreaterThan(0);
+    expect(fixture.state.patterns.length).toBeGreaterThan(0);
+    expect(fixture.state.models.every(row => (row.modelJson as Record<string, JsonValue>).forceClass === "learned_language_prior")).toBe(true);
+    expect(fixture.state.patterns.every(row => (row.patternJson as Record<string, JsonValue>).forceClass === "learned_language_prior")).toBe(true);
+    expect(provenanceOf(fixture.state.evidence[0]!).forceClass).toBe("profile_excerpt_evidence");
+    expect(provenanceOf(fixture.state.evidence[0]!).forceClass).not.toBe("direct_evidence");
+
+    const beforeReplay = structuredClone(fixture.state);
+    expect(await trainLanguageCorpusText(input)).toEqual(report);
+    expect(fixture.state).toEqual(beforeReplay);
   });
 
   it("refuses to promote a corpus whose admission context is unmeasured, and records that state", async () => {
