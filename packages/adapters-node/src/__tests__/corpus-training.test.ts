@@ -411,6 +411,53 @@ describe("prepared corpus training", () => {
     await expect(trainLanguageCorpusText({ ...input, corpusMetadata: { declaredLicense: "changed-license" } })).rejects.toThrow("checkpoint binding mismatch");
   });
 
+  it("keeps exact source spans searchable as direct evidence and filters true profile excerpts", async () => {
+    const fixture = memoryStorage();
+    const input = {
+      storage: fixture.storage,
+      sourceSystem: "gutenberg",
+      streamUri: "fixture://moby-search",
+      sourceUri: "fixture://moby-search",
+      text: "The captain of the Pequod was Ahab. The Pequod carried a crew of sailors.",
+      createdAt: 1700000000000,
+      languageOnly: true,
+      ngramMaxOrder: 2,
+      ngramMaxCountersPerOrder: 64,
+      corpusMetadata: { title: "Moby Dick", identity: "herman melville pequod ahab" }
+    };
+    const report = await trainLanguageCorpusText(input);
+    const exactSourceSpan = fixture.state.evidence[0]!;
+    expect(report.evidence).toBeGreaterThan(0);
+    expect(exactSourceSpan.status).toBe("promoted");
+    expect(recordOf(exactSourceSpan.provenance).forceClass).toBe("direct_evidence");
+    expect(recordOf(exactSourceSpan.trustVector).forceClass).toBe("direct_evidence");
+    expect(exactSourceSpan.features).toContain("anchor:sym:pequod");
+
+    const profileExcerpt: EvidenceSpan = {
+      ...exactSourceSpan,
+      id: "evidence.profile-excerpt" as EvidenceSpan["id"],
+      sourceVersionId: "source_version.profile-excerpt" as EvidenceSpan["sourceVersionId"],
+      provenance: toJsonValue({ ...recordOf(exactSourceSpan.provenance), forceClass: "profile_excerpt_evidence" }),
+      trustVector: toJsonValue({ ...recordOf(exactSourceSpan.trustVector), forceClass: "profile_excerpt_evidence" })
+    };
+    fixture.state.evidence.push(profileExcerpt);
+    fixture.storage.evidence.searchEvidence = async query => fixture.state.evidence
+      .filter(span => query.status !== "promoted" || span.status === "promoted")
+      .filter(span => (query.features ?? []).every(feature => span.features.includes(feature)))
+      .filter(span => !query.excludeForceClasses?.includes(String(recordOf(span.provenance).forceClass)))
+      .slice(0, query.limit ?? fixture.state.evidence.length)
+      .map(span => ({ span, score: 1, reason: "fixture anchor index" }));
+
+    const results = await fixture.storage.evidence.searchEvidence({
+      features: ["anchor:sym:pequod"],
+      status: "promoted",
+      limit: 64,
+      excludeForceClasses: ["profile_excerpt_evidence"]
+    });
+    expect(results.map(result => result.span.id)).toContain(exactSourceSpan.id);
+    expect(results.map(result => result.span.id)).not.toContain(profileExcerpt.id);
+  });
+
   it("avoids graph and natural construction pool reads for automatic formal code training", async () => {
     const fixture = memoryStorage();
     const graph = vi.spyOn(fixture.storage.graph, "getSlice");

@@ -263,8 +263,8 @@ const preparations = new WeakMap<PreparedLanguageCorpusTraining, {
 }>();
 
 const CORPUS_CHECKPOINT_SCHEMA = "scce.corpusTrainingCheckpoint.v1";
-export const LANGUAGE_CORPUS_TRAINING_RECIPE_ID = "scce.language_corpus_training.v3" as const;
-export const LANGUAGE_CODE_CORPUS_TRAINING_RECIPE_ID = "scce.language_corpus_training.v4" as const;
+export const LANGUAGE_CORPUS_TRAINING_RECIPE_ID = "scce.language_corpus_training.v4" as const;
+export const LANGUAGE_CODE_CORPUS_TRAINING_RECIPE_ID = "scce.language_corpus_training.v5" as const;
 
 export function languageCorpusTrainingRecipeId(sourceSystem: string): string {
   return canonicalCorpusSourceSystemId(sourceSystem) === CORPUS_SOURCE_SYSTEM_IDS.ossCode
@@ -1278,8 +1278,8 @@ function stampEvidence(spans: readonly EvidenceSpan[], stamp: {
       alpha: action?.action === "lower-alpha" ? Math.min(span.alpha, action.alpha) : span.alpha,
       // Source kind names where the material came from. Every lane through this trainer used to say
       // construction_training, so a repository file arrived labelled as derived training residue.
-      provenance: toJsonValue({ ...jsonRecord(span.provenance), ...jsonRecord(metadata), sourceSystem, sourceSystemId, sourceKind, forceClass: "profile_excerpt_evidence" }),
-      trustVector: toJsonValue({ ...jsonRecord(span.trustVector), sourceSystem, sourceSystemId, forceClass: "profile_excerpt_evidence", sourceTrust: corpusSourceTrust(sourceSystemId), admission: audit, action: action?.action ?? "quarantine" })
+      provenance: toJsonValue({ ...jsonRecord(span.provenance), ...jsonRecord(metadata), sourceSystem, sourceSystemId, sourceKind, forceClass: "direct_evidence" }),
+      trustVector: toJsonValue({ ...jsonRecord(span.trustVector), sourceSystem, sourceSystemId, forceClass: "direct_evidence", sourceTrust: corpusSourceTrust(sourceSystemId), admission: audit, action: action?.action ?? "quarantine" })
     };
   });
 }
