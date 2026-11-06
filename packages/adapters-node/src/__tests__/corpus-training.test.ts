@@ -760,6 +760,53 @@ describe("multi-corpus training", () => {
     await expect(trainLanguageCorpusText({ ...input, text: "changed source" })).rejects.toThrow(/checkpoint binding mismatch/iu);
   });
 
+  it("binds checkpoint replay to the creative compiler identity while preserving owned output", async () => {
+    const fixture = memoryStorage();
+    const checkpoints = new Map<string, IngestionCheckpoint>();
+    fixture.storage.ingestion = {
+      put: async row => { checkpoints.set(row.id, structuredClone(row)); },
+      get: async id => checkpoints.get(id) ?? null,
+      list: async () => [...checkpoints.values()]
+    } as ScceStorage["ingestion"];
+    const input = {
+      storage: fixture.storage,
+      sourceSystem: "gutenberg",
+      streamUri: "fixture://creative-compiler-book",
+      text: "A reader opens a book. Another reader closes the same book. ".repeat(3),
+      createdAt: 1700000000000,
+      languageOnly: true,
+      ngramMaxOrder: 2,
+      ngramVocabularyLimit: 32,
+      corpusCheckpoint: { rootUri: "fixture://creative-books", itemUri: "book.txt" }
+    };
+    const pattern = {
+      id: "creative.fixture.pattern",
+      profileId: "creative.fixture.profile",
+      patternKind: "semantic_role" as const,
+      support: 1,
+      entropy: 0,
+      patternJson: { schema: "creative.fixture" },
+      evidenceIds: [],
+      updatedAt: 1
+    };
+    const compiler = (id: string) => ({
+      id,
+      compile: () => ({ status: "compiled" as const, pattern: { ...pattern }, bundle: {} as any })
+    });
+
+    const first = await trainLanguageCorpusText({ ...input, creativeEventCompiler: compiler("creative.compiler.v1") });
+    const counts = Object.fromEntries(Object.entries(fixture.state).map(([key, rows]) => [key, rows.length]));
+    expect(fixture.state.patterns.some(row => row.id === pattern.id)).toBe(true);
+    expect(await trainLanguageCorpusText({ ...input, creativeEventCompiler: compiler("creative.compiler.v1") })).toEqual(first);
+    expect(Object.fromEntries(Object.entries(fixture.state).map(([key, rows]) => [key, rows.length]))).toEqual(counts);
+    await expect(trainLanguageCorpusText(input)).rejects.toThrow(/checkpoint binding mismatch/iu);
+    await expect(trainLanguageCorpusText({ ...input, creativeEventCompiler: compiler("creative.compiler.v2") })).rejects.toThrow(/checkpoint binding mismatch/iu);
+    expect(Object.fromEntries(Object.entries(fixture.state).map(([key, rows]) => [key, rows.length]))).toEqual(counts);
+    expect(fixture.state.sourceVersions.every(row => row.sourceVersionId === first.sourceVersionId)).toBe(true);
+    expect(fixture.state.profiles.every(row => row.sourceVersionId === first.sourceVersionId)).toBe(true);
+    expect(fixture.state.models.every(row => (row.modelJson as { sourceSystem?: string }).sourceSystem === "gutenberg")).toBe(true);
+  });
+
   it.each(["wikipedia", "oss_code"])("keeps %s recipe changes separate from other source systems", async sourceSystem => {
     const fixture = memoryStorage();
     const text = sourceSystem === "oss_code" ? "export function f9(x: number): number { return x + 1; }" : "cat chased mouse. dog chased mouse. cat chased ball. dog chased ball.";
