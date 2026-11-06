@@ -8,7 +8,7 @@ import { createNgramMemoryCompiler } from "../ngram-memory.js";
 import { createIdFactory } from "../ids.js";
 import { createClock, createHasher } from "../primitives.js";
 import { createSurfaceLanguageRuntime } from "../surface-language-runtime.js";
-import type { ScceKernelDeps, SemanticFrameRecord } from "../storage.js";
+import type { LanguageContinuationPopulation, ScceKernelDeps, SemanticFrameRecord } from "../storage.js";
 import type { SegmentationPopulationModelRecord } from "../segmentation-population-persistence.js";
 import type { LanguageProfile } from "../types.js";
 
@@ -48,7 +48,8 @@ describe("surface language resident-only cache", () => {
     await expect(fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "request-seed", undefined, "", { languageId: population.languageId, purpose: "request_seed", residentOnly: true })).rejects.toThrow(/was not warmed/u);
   });
 
-  it.each([undefined, { languageId: "language.foreign", modelCount: 1, continuationCounts: { foreign: 9 } }, { languageId: "language.fixture", modelCount: 0, continuationCounts: {} }, { languageId: "language.fixture", modelCount: 1, continuationCounts: { sparse: 9 } }])("retains canonical model hydration when no valid learned request population is available: %j", async population => {
+  const unavailablePopulations: (LanguageContinuationPopulation | undefined)[] = [undefined, { languageId: "language.foreign", modelCount: 1, continuationCounts: { foreign: 9 } }, { languageId: "language.fixture", modelCount: 0, continuationCounts: {} }, { languageId: "language.fixture", modelCount: 1, continuationCounts: { sparse: 9 } }];
+  it.each(unavailablePopulations)("retains canonical model hydration when no valid learned request population is available: %j", async population => {
     const fixture = runtimeFixture({ languageResolver: () => ({ profile: () => "language.fixture", corpus: () => "language.fixture" }) });
     const hasher = createHasher();
     const compiled = createNgramMemoryCompiler({ hasher, idFactory: createIdFactory({ hasher, clock: createClock(), deterministicReplay: true }) }).compile({
