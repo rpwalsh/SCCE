@@ -453,7 +453,7 @@ function trainingInputBinding(input: LanguageCorpusTrainingInput): string {
       byteLength: input.originalSource.bytes.byteLength
     } as unknown as typeof semantic.originalSource;
   }
-  const semanticBinding = { ...semantic, creativeEventCompilerId: input.creativeEventCompiler?.id ?? null };
+  const semanticBinding = { ...semantic, ...(input.creativeEventCompiler ? { creativeEventCompilerId: input.creativeEventCompiler.id } : {}) };
   return createHasher().digestHex(canonicalStringify(toJsonValue({ compilerRecipe: languageCorpusTrainingRecipeId(input.sourceSystem), batchRecipe: LANGUAGE_TRAINING_BATCH_RECIPE_ID, input: semanticBinding })));
 }
 
