@@ -1,0 +1,14 @@
+{
+  "schema": "scce.test_source_excerpt.v1",
+  "sourceTitle": "Pride and Prejudice",
+  "author": "Jane Austen",
+  "sourceUri": "https://www.gutenberg.org/ebooks/1342",
+  "sourceSha256": "74f2665d6e6925fc2c17dec644bec9e87df478a0f1836822125e8acbb3777806",
+  "sourceByteStart": 36382,
+  "sourceByteEnd": 56163,
+  "sourceCodePointStart": 35962,
+  "sourceCodePointEnd": 55363,
+  "excerptByteLength": 19781,
+  "excerptSha256": "636877b65f5801dbdfc6fc609d0d68123c9588957ce931f2d2c58b1c659d9b62",
+  "selection": "Opening chapters I-III, verbatim; no repetition or vocabulary padding."
+}

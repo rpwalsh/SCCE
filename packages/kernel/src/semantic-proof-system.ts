@@ -1139,17 +1139,17 @@ function splitSemanticSentences(text: string): string[] {
 }
 
 function deriveRoles(symbols: readonly string[], predicateIndex: number, evidenceIds: EvidenceId[] | undefined, quantityTokens: ReadonlyMap<number, QuantityToken>): SemanticRoleBinding[] {
-  const left = symbols.slice(Math.max(0, predicateIndex - 10), predicateIndex).filter(semanticSymbol);
-  const right = symbols.slice(predicateIndex + 1, Math.min(symbols.length, predicateIndex + 11)).filter(semanticSymbol);
+  const left = symbols.slice(0, predicateIndex).filter(semanticSymbol);
+  const right = symbols.slice(predicateIndex + 1).filter(semanticSymbol);
   const quantities = [...quantityTokens.values()].filter(item => item.quantity);
   const roles: SemanticRoleBinding[] = [];
-  if (left.length > 0) roles.push(roleBinding("arg0", compactRoleValue(left), SEMANTIC_ROLE.ENTITY, evidenceIds, 0.38));
-  if (right.length > 0) roles.push(roleBinding("arg1", compactRoleValue(right), SEMANTIC_ROLE.ENTITY, evidenceIds, 0.38));
-  for (let i = 0; i < Math.min(4, quantities.length); i++) {
+  if (left.length > 0) roles.push(roleBinding("arg0", left.join(" "), SEMANTIC_ROLE.ENTITY, evidenceIds, 0.38));
+  if (right.length > 0) roles.push(roleBinding("arg1", right.join(" "), SEMANTIC_ROLE.ENTITY, evidenceIds, 0.38));
+  for (let i = 0; i < quantities.length; i++) {
     const item = quantities[i]!;
     roles.push(roleBinding(`q${i}`, item.symbol, SEMANTIC_ROLE.QUANTITY, evidenceIds, 0.14));
   }
-  if (roles.length === 0) roles.push(roleBinding("span", symbols.filter(semanticSymbol).slice(0, 12).join(" "), SEMANTIC_ROLE.SPAN, evidenceIds, 1));
+  if (roles.length === 0) roles.push(roleBinding("span", symbols.filter(semanticSymbol).join(" "), SEMANTIC_ROLE.SPAN, evidenceIds, 1));
   return roles;
 }
 
@@ -1164,16 +1164,6 @@ function roleBinding(name: string, value: string, type: SemanticRoleBinding["typ
     weight,
     evidenceId: evidenceIds?.[0]
   };
-}
-
-function compactRoleValue(symbols: readonly string[]): string {
-  if (symbols.length <= 8) return symbols.join(" ");
-  const scored = symbols
-    .map((symbol, index) => ({ symbol, score: Math.min(1, symbol.length / 12) + index / symbols.length * 0.2 }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 8)
-    .sort((a, b) => symbols.indexOf(a.symbol) - symbols.indexOf(b.symbol));
-  return scored.map(item => item.symbol).join(" ");
 }
 
 function deriveConstraints(sentence: string, symbols: readonly string[], hasher: Hasher, evidenceIds: EvidenceId[], quantityTokens: ReadonlyMap<number, QuantityToken>): SemanticConstraint[] {

@@ -78,6 +78,18 @@ describe("a sparse chat turn after an evidence-bearing turn", () => {
     expect(win.result.evidence.every(span => String(span.id).startsWith("evidence:einstein"))).toBe(true);
   }, 120_000);
 
+  it("keeps new content authoritative when no language closed class has been measured", async () => {
+    for (const text of ["请换个话题", "የተለየ ጥያቄ", "zuv krel"]) {
+      const session = chatSession({ unmeasuredClass: true });
+      const first = await session.turn("who is albert einstein");
+      expect(first.result.answer).toContain("theoretical physicist");
+      const next = await session.turn(text);
+      expect(next.result.evidence).toEqual([]);
+      expect(next.result.answer).not.toContain(EINSTEIN_LEAD);
+      expect(next.trace.find(row => row.stage === "graph.resolve.discourse_carry_unshared")).toBeDefined();
+    }
+  }, 120_000);
+
   it("keeps a follow-up whose relation the carried evidence does carry", async () => {
     const session = chatSession();
     await session.turn("who is albert einstein");
@@ -88,7 +100,7 @@ describe("a sparse chat turn after an evidence-bearing turn", () => {
   }, 120_000);
 });
 
-function chatSession() {
+function chatSession(options: { unmeasuredClass?: boolean } = {}) {
   const evidence = [
     span("evidence:einstein", "Albert Einstein", EINSTEIN_LEAD, 0),
     span("evidence:einstein-nobel", "Albert Einstein", EINSTEIN_NOBEL, 400),
@@ -129,7 +141,7 @@ function chatSession() {
     id: "language.fixture",
     script: "Latn",
     directions: [{ direction: "ltr", count: 1 }],
-    closedClass: [...deriveClosedClassWords({ models: [trained] })].map(word => ({ word, documentShare: 1 })),
+    closedClass: options.unmeasuredClass ? [] : [...deriveClosedClassWords({ models: [trained] })].map(word => ({ word, documentShare: 1 })),
     families: [{ family: "fixture", count: 1 }],
     profileCount: 1,
     membershipCut: 0.1,

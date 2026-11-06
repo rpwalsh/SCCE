@@ -55,6 +55,8 @@ export interface TurnSignalsInput {
   continuationPopulation?: LanguageContinuationPopulation;
   /** Learned by the selected request-language identity for a cold hydration fallback. */
   identityClosedClassWords?: ReadonlySet<string>;
+  /** Present when the selected language identity scopes these models; an empty class is unmeasured, not source-local language evidence. */
+  languageIdentityProfileCount?: number;
   patterns: readonly LanguagePatternRecord[];
 }
 
@@ -83,8 +85,8 @@ export function createTurnSignals(input: TurnSignalsInput): TurnSignals {
     get closedClassWords(): ReadonlySet<string> {
       return (closedClass ??= requestClosedClassWords({
         requestText: input.requestText,
-        models: input.models,
-        continuationPopulation: input.continuationPopulation,
+        models: input.languageIdentityProfileCount === undefined ? input.models : [],
+        continuationPopulation: input.languageIdentityProfileCount === undefined ? input.continuationPopulation : undefined,
         identityClosedClassWords: input.identityClosedClassWords,
         patterns: input.patterns,
         authority: input.authority
@@ -92,9 +94,9 @@ export function createTurnSignals(input: TurnSignalsInput): TurnSignals {
     },
     get functionSymbols(): ReadonlySet<string> {
       return (functionSymbols ??= deriveClosedClassWords({
-        models: input.models,
-        continuationPopulation: input.continuationPopulation,
-        identityClosedClassWords: input.identityClosedClassWords
+        ...(input.languageIdentityProfileCount === undefined
+          ? { models: input.models, continuationPopulation: input.continuationPopulation, identityClosedClassWords: input.identityClosedClassWords }
+          : { identityClosedClassWords: input.identityClosedClassWords })
       }));
     },
     quotesSource(evidence: readonly EvidenceSpan[]): boolean {

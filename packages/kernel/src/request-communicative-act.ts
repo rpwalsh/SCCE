@@ -20,6 +20,7 @@ export interface RequestCommunicativeActContinuation {
 export interface RequestCommunicativeActObservation {
   requestText: string;
   responseEvidenceCount: number;
+  responseExternallyFactual?: boolean;
   accepted?: boolean;
   rejected?: boolean;
   corrected?: boolean;
@@ -65,7 +66,7 @@ export function compileRequestCommunicativeActModel(observations: readonly Reque
     if (observation.accepted !== true || observation.rejected === true || observation.corrected === true) continue;
     const actId = requestCommunicativeActIdForSignature({
       accepted: true,
-      evidenceBearing: observation.responseEvidenceCount > 0,
+      evidenceBearing: observation.responseExternallyFactual === true || observation.responseEvidenceCount > 0,
       ...(observation.continuation ? { continuation: observation.continuation } : {})
     });
     classCounts[actId] = (classCounts[actId] ?? 0) + 1;

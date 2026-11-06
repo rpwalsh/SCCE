@@ -4,12 +4,14 @@ import { createEventFactory } from "./events.js";
 import { createAlphaFieldEngine } from "./field.js";
 import { createIdFactory } from "./ids.js";
 import { createLanguageMemoryRuntime } from "./language-memory-runtime.js";
+import { sourceLanguageTrainingStreamId } from "./source-language-training-identity.js";
+import { sourceCompilationChunkCount, validateSourceCompilationArtifactInventory, validateSourceCompilationReceipt, validateSourceLanguageCompilation } from "./source-language-compilation.js";
 import {
   compileLanguageTrainingBatch,
   observeLanguageTrainingSegmentation
 } from "./language-training-batch.js";
 import { languageMemoryPatternsFromInducedLanguageModel } from "./language-induction-memory.js";
-import { corpusRoleIdForSourceSystem, DEFAULT_NGRAM_SETTINGS } from "./corpus-registry.js";
+import { CORPUS_ROLE_IDS, canonicalCorpusSourceSystemId, corpusSourceAlias, corpusRoleIdForSourceSystem, DEFAULT_NGRAM_SETTINGS } from "./corpus-registry.js";
 import {
   createLanguageAcquisitionEngine
 } from "./language.js";
@@ -19,6 +21,7 @@ import { createLearningController } from "./learning.js";
 import { createPredictionLayer } from "./prediction.js";
 import { createClock, createHasher, toJsonValue } from "./primitives.js";
 import { joinInformationLabels } from "./information-flow.js";
+import { jsonRecord, kernelString } from "./kernel-answer-primitives.js";
 import { createFunctionalConsciousnessScore, createSpectralSelfDistillation } from "./self-distillation.js";
 import { createFunctionalSelfModel } from "./self.js";
 import type { ScceKernelDeps } from "./storage.js";
@@ -143,6 +146,8 @@ export function createTrainingRuntime(options: {
     let surfaceNullMass = 0;
     let graphImplicitMass = 0;
     let profilesCreated = 0;
+    let reusedSourceGroups = 0;
+    let reusedModels = 0;
     // Heap-safety bound, mirroring the wikipedia ingestor's own proven
     // stopDecision(): sample real heap between groups and stop cleanly
     // rather than letting V8 abort the process. A confirmed OOM here
@@ -166,7 +171,24 @@ export function createTrainingRuntime(options: {
       if (spans.some(span => !span.informationLabel)) {
         throw new Error(`training evidence for ${sourceVersionId} is missing an information label`);
       }
-      const existingProfile = profileBySourceVersion.get(String(sourceVersionId));
+      if (spans.some(span => span.sourceId !== first.sourceId)) throw new Error(`training source version ${sourceVersionId} has conflicting owners`);
+      const declarations = spans.map(span => {
+        const provenance = jsonRecord(span.provenance);
+        const metadata = jsonRecord(provenance.metadata);
+        const names = [provenance.sourceSystem, metadata.sourceSystem].map(kernelString).filter((value): value is string => Boolean(value));
+        const ids = [provenance.sourceSystemId, metadata.sourceSystemId].map(kernelString).filter((value): value is string => Boolean(value));
+        const unique = [...new Set([...ids, ...names.map(canonicalCorpusSourceSystemId)])];
+        if (unique.length !== 1) throw new Error(`training evidence ${span.id} requires one declared source system`);
+        return { id: unique[0]!, name: names.length ? corpusSourceAlias(names[0]!) : corpusSourceAlias(unique[0]!) };
+      });
+      if (new Set(declarations.map(value => value.id)).size !== 1) throw new Error(`training source version ${sourceVersionId} has conflicting source systems`);
+      const sourceSystem = declarations[0]!.name;
+      let existingProfile = profileBySourceVersion.get(String(sourceVersionId));
+      if (!existingProfile) {
+        const ownedProfiles = await deps.storage.model.listLanguageProfiles({ sourceVersionIds: [sourceVersionId], limit: 2 });
+        if (ownedProfiles.length > 1) throw new Error(`training source version ${sourceVersionId} has ambiguous language profiles`);
+        existingProfile = ownedProfiles[0];
+      }
       const informationLabel = joinInformationLabels(
         [
           ...spans.map(span => span.informationLabel!),
@@ -174,14 +196,58 @@ export function createTrainingRuntime(options: {
         ],
         { explicitMergeAuthority: deps.informationAccess?.explicitMergeAuthority === true }
       );
-      const text = spans.map(span => span.text).join("\n");
+      const ownedSources = await deps.storage.evidence.sourceVersionsForEvidence(spans.map(span => span.id));
+      if (ownedSources.length !== 1 || ownedSources[0]!.sourceVersionId !== sourceVersionId || ownedSources[0]!.sourceId !== first.sourceId) {
+        throw new Error(`training source version ${sourceVersionId} requires its exact owned canonical source`);
+      }
+      const source = ownedSources[0]!;
+      const sourceMetadata = jsonRecord(source.metadata);
+      const declaredSourceSystem = kernelString(sourceMetadata.sourceSystemId) ?? (kernelString(sourceMetadata.sourceSystem) ? canonicalCorpusSourceSystemId(kernelString(sourceMetadata.sourceSystem)!) : undefined);
+      if (declaredSourceSystem !== declarations[0]!.id) throw new Error(`training source version ${sourceVersionId} has a different canonical source system`);
+      const bytes = await deps.storage.blobs.get(source.contentHash);
+      if (bytes.byteLength !== source.byteLength || hasher.digestHex(bytes) !== String(source.contentHash).replace(/^sha256_/u, "")) throw new Error(`training source blob ${sourceVersionId} changed`);
+      const text = Buffer.from(bytes).toString("utf8");
+      if (!Buffer.from(text, "utf8").equals(Buffer.from(bytes))) throw new Error(`training source ${sourceVersionId} requires a canonical text projection`);
+      for (const span of spans) {
+        if (Buffer.from(bytes).subarray(span.byteStart, span.byteEnd).toString("utf8") !== span.text) throw new Error(`training evidence ${span.id} does not bind its canonical source bytes`);
+      }
+      if (existingProfile) {
+        const receipts = await deps.storage.languageMemory.listLanguagePatterns({ profileIds: [existingProfile.id], sourceSystem, patternKind: "source_compilation", limit: 2 });
+        if (receipts.length > 1) throw new Error("canonical source compilation has ambiguous receipts");
+        const receipt = receipts[0] ? jsonRecord(receipts[0].patternJson).compilation : undefined;
+        const current = receipt ? await deps.storage.languageMemory.listNgramModels({ profileIds: [existingProfile.id], sourceSystem,
+          limit: sourceCompilationChunkCount(receipt, bytes.byteLength) + 1 }) : await deps.storage.languageMemory.listNgramModels({ profileIds: [existingProfile.id], sourceSystem, limit: 1 });
+        if (!receipt) {
+          const existingArtifacts = await Promise.all([
+            deps.storage.languageMemory.listLanguageUnits({ profileIds: [existingProfile.id], limit: 1 }),
+            deps.storage.languageMemory.listLanguagePatterns({ profileIds: [existingProfile.id], limit: 1 }),
+            deps.storage.languageMemory.listSemanticFrames({ profileIds: [existingProfile.id], limit: 1 })
+          ]);
+          if (current.length || existingArtifacts.some(rows => rows.length)) throw new Error("canonical source compilation is missing its receipt");
+        }
+        if (receipt) validateSourceCompilationReceipt(receipt, current, hasher);
+        const reused = validateSourceLanguageCompilation({ owner: { sourceId: source.sourceId, sourceVersionId, contentHash: source.contentHash },
+          profileId: existingProfile.id, sourceSystem, models: current, hasher });
+        if (reused) {
+          if (jsonRecord(receipt).compilationId !== reused.compilationId) throw new Error("canonical source compilation receipt does not own its models");
+          const listArtifacts = deps.storage.languageMemory.listSourceCompilationArtifactIds;
+          if (!listArtifacts) throw new Error("canonical language replay requires its durable artifact inventory");
+          await validateSourceCompilationArtifactInventory({ compilation: reused, profileId: existingProfile.id, hasher,
+            list: query => listArtifacts.call(deps.storage.languageMemory, query) });
+          if (!profileBySourceVersion.has(String(sourceVersionId))) { profiles.push(existingProfile); profileBySourceVersion.set(String(sourceVersionId), existingProfile); }
+          reusedSourceGroups++;
+          reusedModels += reused.models;
+          continue;
+        }
+      }
+      if (source.mediaType.toLocaleLowerCase().includes("html") || source.mediaType.toLocaleLowerCase().includes("xml")
+        || (!source.mediaType.toLocaleLowerCase().startsWith("text/") && corpusRoleIdForSourceSystem(sourceSystem) !== CORPUS_ROLE_IDS.softwareSymbolic)) {
+        throw new Error(`training source ${sourceVersionId} requires a canonical learning projection from its source producer`);
+      }
       let profile = existingProfile;
+      const createsProfile = !profile;
       if (!profile) {
         profile = { ...language.acquire({ sourceVersionId, text, createdAt: clock.now() }), informationLabel };
-        await deps.storage.model.putLanguageProfile(profile);
-        profiles.push(profile);
-        profileBySourceVersion.set(String(sourceVersionId), profile);
-        profilesCreated++;
       }
       const trainedAt = clock.now();
       groupProbe("acquired", { g: groupsProcessed });
@@ -208,9 +274,11 @@ export function createTrainingRuntime(options: {
         runtime: languageMemoryRuntime,
         hasher,
         batch: {
-          streamId: `training:${trainingPlanId}:${String(sourceVersionId)}`,
+          streamId: sourceLanguageTrainingStreamId({ sourceId: first.sourceId, sourceVersionId, sourceSystem, hasher }),
+          sourceSystem,
           profile,
           sourceVersionId,
+          canonicalSource: { sourceId: source.sourceId, contentHash: source.contentHash },
           text,
           evidence: spans,
           createdAt: trainedAt,
@@ -218,6 +286,7 @@ export function createTrainingRuntime(options: {
           // cost several times the training; see tools/prose-order-calibration.
           maxOrder: DEFAULT_NGRAM_SETTINGS.maxOrder,
           maxCountersPerOrder: 12000,
+          retainNgramObservations: false,
           vocabularyLimit: 24000,
           ...(groupSnapshot ? { graphSnapshot: groupSnapshot } : {})
         }
@@ -226,19 +295,27 @@ export function createTrainingRuntime(options: {
       // uses, so a slow training pass is visible as a number rather than a stall.
       estimatedAlignmentCostMs += estimateAlignmentCostMs(text.length);
       groupProbe("compiled", { g: groupsProcessed, estimatedAlignmentCostMs: Math.round(estimatedAlignmentCostMs) });
-      await observeLanguageTrainingSegmentation({
-        storage: deps.storage,
-        batch: { text, createdAt: trainedAt },
-        tenantId: informationLabel.tenantId,
-        corpusRole: corpusRoleIdForSourceSystem("training"),
-        activeImportVersion: trainingPlanId,
-        hasher
+      const groupProfile = profile;
+      await deps.storage.transaction(async () => {
+        if (createsProfile) await deps.storage.model.putLanguageProfile(groupProfile);
+        await observeLanguageTrainingSegmentation({
+          storage: deps.storage,
+          batch: { text, createdAt: trainedAt },
+          tenantId: informationLabel.tenantId,
+          corpusRole: corpusRoleIdForSourceSystem(sourceSystem),
+          activeImportVersion: trainingPlanId,
+          hasher
+        });
+        for (const model of memory.models) await deps.storage.languageMemory.putNgramModel({ ...model, informationLabel });
+        for (const unit of memory.units) await deps.storage.languageMemory.putLanguageUnit({ ...unit, informationLabel });
+        for (const pattern of memory.patterns) await deps.storage.languageMemory.putLanguagePattern({ ...pattern, informationLabel });
+        for (const frame of memory.semanticFrames) await deps.storage.languageMemory.putSemanticFrame({ ...frame, informationLabel });
       });
-      await deps.storage.languageMemory.putNgramObservationsBatch(memory.observations.map(record => ({ ...record, informationLabel })));
-      for (const model of memory.models) await deps.storage.languageMemory.putNgramModel({ ...model, informationLabel });
-      for (const unit of memory.units) await deps.storage.languageMemory.putLanguageUnit({ ...unit, informationLabel });
-      for (const pattern of memory.patterns) await deps.storage.languageMemory.putLanguagePattern({ ...pattern, informationLabel });
-      for (const frame of memory.semanticFrames) await deps.storage.languageMemory.putSemanticFrame({ ...frame, informationLabel });
+      if (!profileBySourceVersion.has(String(sourceVersionId))) {
+        profiles.push(groupProfile);
+        profileBySourceVersion.set(String(sourceVersionId), groupProfile);
+      }
+      if (createsProfile) profilesCreated++;
       observations += memory.observations.length;
       models += memory.models.length;
       units += memory.units.length;
@@ -313,6 +390,7 @@ export function createTrainingRuntime(options: {
         evidenceSpans: evidence.length,
         sourceVersions: groups.size,
         profilesCreated,
+        reusedSourceGroups, reusedModels,
         observations,
         models,
         units,
@@ -391,7 +469,10 @@ export function createTrainingRuntime(options: {
       // attempted when both a real store and a real information label are
       // configured; never invents a label to force persistence through.
       const inducedLanguageModel = mvpTrainPlan.checkpoint.languageModel;
-      if (inducedLanguageModel && deps.storage.inducedLanguageModels && deps.sourceInformationLabel) {
+      const languageAudit = jsonRecord(trainingLanguage.audit);
+      const reusedCanonicalCompilation = Number(languageAudit.sourceGroupsTotal) > 0
+        && languageAudit.reusedSourceGroups === languageAudit.sourceGroupsTotal;
+      if (inducedLanguageModel && !reusedCanonicalCompilation && deps.storage.inducedLanguageModels && deps.sourceInformationLabel) {
         await deps.storage.inducedLanguageModels.putModel({
           id: inducedLanguageModel.id,
           model: inducedLanguageModel,

@@ -12,7 +12,7 @@ The current first-class language-memory source systems are:
 - `workspace`: local workspace corpora when persisted.
 - `corrections`: learned interaction/correction memory when persisted.
 
-These IDs are source-system IDs, not a semantic ontology. Corpus labels do not decide truth. The kernel/planner still selects facts from evidence and graph paths; the Mouth uses language memory only to realize an already selected plan.
+These IDs are source-system IDs, not a semantic ontology. Corpus labels do not decide truth. Language patterns and other reusable structure are learned from admitted source material, not supplied by English-only conversation rules. The kernel interprets and reasons over persisted evidence and graph state, plans governed actions, and learns from recorded outcomes. Language memory helps realize selected meaning. Source-backed factual claims still require admissible evidence; proof/certification metadata can be attached when a relevant operation produces it, and is not a universal prerequisite for ordinary or creative output.
 
 ## Data Layout
 
@@ -42,37 +42,45 @@ powershell -ExecutionPolicy Bypass -File tools/clone-oss-starter.ps1
 
 Both scripts are optional. Tests use local fixtures and do not need network access.
 
-## Training Commands
+## First local build
 
-Build first so the CLI exists:
+For installation, PostgreSQL configuration and the local runtime, follow the [quickstart](../QUICKSTART.md). Build the CLI, then use the same configured database for initialization, training and serving. Initialize its schema before training:
 
 ```powershell
 pnpm build
+pnpm scce db init
+pnpm scce corpus train oss corpus/first-brain --docs-only --max-files=1 --max-file-bytes=65536
 ```
+
+The training report includes file outcomes and, for a complete eligible bounded source build, a compact `sourceBrainBuild` lifecycle receipt. Check its `status`, `active` flag and validation checks before treating the build as active. Incomplete, skipped or stopped work does not qualify for activation. The receipt records lifecycle validation; it is not a capability or answer-quality claim.
+
+## Training commands
+
+The examples below assume the default `scce.config.json` plus its optional local overlay, configured as described in the [quickstart](../QUICKSTART.md). If using another config path, pass it consistently to initialization, training and serving.
 
 Train Gutenberg:
 
 ```powershell
-pnpm scce --config scce.corpus-dev.config.json corpus train gutenberg corpus/gutenberg
+pnpm scce corpus train gutenberg corpus/gutenberg
 ```
 
 Train OSS docs/code:
 
 ```powershell
-pnpm scce --config scce.corpus-dev.config.json corpus train oss corpus/oss
+pnpm scce corpus train oss corpus/oss
 ```
 
 Useful bounds:
 
 ```powershell
-pnpm scce --config scce.corpus-dev.config.json corpus train gutenberg corpus/gutenberg --max-files=16 --max-file-bytes=1000000
-pnpm scce --config scce.corpus-dev.config.json corpus train oss corpus/oss --max-files=500 --docs-only
+pnpm scce corpus train gutenberg corpus/gutenberg --max-files=16 --max-file-bytes=1000000
+pnpm scce corpus train oss corpus/oss --max-files=500 --docs-only
 ```
 
 Wikipedia ingestion uses the same CLI surface, but activation now follows the durable lifecycle contract: importing, validating, READY, then transactional ACTIVE. Stopped or incomplete runs remain inactive and resumable.
 
 ```powershell
-pnpm scce --config scce.corpus-dev.config.json ingest wiki data/wiki/enwiki-latest-pages-articles-multistream.xml.bz2 --index=data/wiki/enwiki-latest-pages-articles-multistream-index.txt.bz2
+pnpm scce ingest wiki data/wiki/enwiki-latest-pages-articles-multistream.xml.bz2 --index=data/wiki/enwiki-latest-pages-articles-multistream-index.txt.bz2
 ```
 
 ## Mouth Hydration
@@ -83,7 +91,7 @@ The kernel builds a bounded hydration plan from the corpus registry and asks the
 
 - PostgreSQL schema v25 enforces at most one ACTIVE lifecycle row, retains the lifecycle repair, stores durable segmentation-population models, and persists arbitrary-arity hyperedge ports, qualifiers, modality and evidence.
 - Generic lifecycle CAS cannot enter or leave ACTIVE; activation must use the locked READY-only path.
-- Corpus promotion and language-memory eligibility do not certify facts. Exact evidence spans and graph/proof admissibility remain required for source-backed claims.
+- Corpus promotion and language-memory eligibility do not certify facts. Source-backed factual claims require admissible evidence; proof or certification metadata is retained when produced by the relevant operation.
 
 ## Corpus compilation boundary
 

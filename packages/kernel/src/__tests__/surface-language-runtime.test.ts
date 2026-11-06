@@ -3,6 +3,8 @@
 import { describe, expect, it } from "vitest";
 import { createLanguageMemoryRuntime } from "../language-memory-runtime.js";
 import { languageSurfaceTrigrams } from "../language.js";
+import { createNgramMemoryCompiler } from "../ngram-memory.js";
+import { createIdFactory } from "../ids.js";
 import { createClock, createHasher } from "../primitives.js";
 import { createSurfaceLanguageRuntime } from "../surface-language-runtime.js";
 import type { ScceKernelDeps, SemanticFrameRecord } from "../storage.js";
@@ -96,17 +98,53 @@ describe("surface language resident-only cache", () => {
     expect(fixture.runtime.cacheOccupancy().scopedStateReferences).toBeLessThanOrEqual(1);
   });
 
-  it("refreshes a scope when observation contents change without changing their IDs", async () => {
+  it("refreshes a scope when persisted model contents change without changing their IDs", async () => {
     const fixture = runtimeFixture({ surfaceLanguageMemoryCacheMaxEntries: 1, languageResolver: () => ({ profile: () => "language.fixture", corpus: () => "language.fixture" }) });
-    const observation = { id: "observation.fixture", streamId: "stream.fixture", languageHint: "und", order: 1, history: [] as string[], symbol: "alpha", count: 2, fieldWeight: 1, observedAt: 1, metadata: { profileId: "profile.fixture" } };
-    fixture.storage.languageMemory.listNgramObservations = async () => [observation];
+    const hasher = createHasher();
+    const compiler = createNgramMemoryCompiler({ hasher, idFactory: createIdFactory({ hasher, clock: createClock(), deterministicReplay: true }) });
+    const compile = (text: string, createdAt: number) => compiler.compile({ streamId: "stream.fixture", sourceSystem: "oss_code", profile: fixture.profile,
+      sourceVersionId: fixture.profile.sourceVersionId, text, evidence: [], createdAt, retainObservations: false }).models;
+    let models = compile("alpha alpha", 1);
+    const originalId = models[0]!.id;
+    fixture.storage.languageMemory.listNgramModels = async () => models;
+    fixture.storage.languageMemory.listNgramObservations = async () => { throw new Error("serving must not load raw counts"); };
     const hydrate = () => fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "language-scoped", undefined, "", { languageId: "language.fixture" });
     const first = await hydrate();
+    expect(first.state.models[0]?.vocabulary).toContain("alpha");
     await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "evicting-entry");
-    observation.symbol = "beta";
+    models = compile("beta beta", 2);
+    expect(models[0]!.id).toBe(originalId);
     const second = await hydrate();
     expect(second.state).not.toBe(first.state);
-    expect(second.state.importedObservations[0]?.symbol).toBe("beta");
+    expect(second.state.models[0]?.vocabulary).toContain("beta");
+    expect(second.state.models[0]?.vocabulary).not.toContain("alpha");
+  });
+
+  it("keeps observation-only serving untrained until a canonical compiled model exists", async () => {
+    const fixture = runtimeFixture();
+    const hasher = createHasher();
+    const compiler = createNgramMemoryCompiler({ hasher, idFactory: createIdFactory({ hasher, clock: createClock(), deterministicReplay: true }) });
+    const compiled = compiler.compile({ streamId: "stream.fixture", sourceSystem: "oss_code", profile: fixture.profile,
+      sourceVersionId: fixture.profile.sourceVersionId, text: "alpha beta alpha beta", evidence: [], createdAt: 1 });
+    let rawReads = 0;
+    fixture.storage.languageMemory.listNgramObservations = async () => { rawReads += 1; return compiled.observations; };
+    fixture.storage.languageMemory.listSemanticFrames = async () => [];
+    expect(createLanguageMemoryRuntime().hydrate({ models: [], observations: compiled.observations }).models.length).toBeGreaterThan(0);
+    const cluster = await fixture.runtime.surfaceLanguageClusterCached("fixture language");
+    const first = await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, cluster, "canonical-only");
+    expect(first.state.models).toEqual([]);
+    expect(first.state.importedObservations).toEqual([]);
+    expect(first.state.maxOrder).toBe(0);
+    expect(createLanguageMemoryRuntime().generate({ state: first.state, contextSymbols: ["alpha"] }).text).toBe("");
+    expect(await fixture.runtime.languageMemorySummary()).toMatchObject({ usableModels: 0, observedSymbolCount: 0 });
+    expect(rawReads).toBe(0);
+    fixture.storage.languageMemory.listNgramModels = async () => compiled.models;
+    fixture.runtime.invalidate();
+    const trained = await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, cluster, "canonical-only");
+    expect(trained.state.models).toHaveLength(1);
+    expect(trained.state.models[0]?.vocabulary).toContain("alpha");
+    expect(trained.state.importedObservations).toEqual([]);
+    expect(rawReads).toBe(0);
   });
 
   it("fails explicitly on an unwarmed resident-only request without durable calls", async () => {
@@ -456,6 +494,7 @@ function runtimeFixture(cacheOverrides: { cacheMs?: number; surfaceLanguageMemor
   return {
     runtime,
     storage,
+    profile,
     frame,
     profileQueries,
     populationQueries,

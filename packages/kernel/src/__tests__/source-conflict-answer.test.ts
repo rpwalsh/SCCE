@@ -2,6 +2,9 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
 import { assistantForceDecision } from "../assistant-force.js";
+import { localEvidenceAnswerSurface, localEvidenceAnswerReportsSourceConflict, localEvidenceAnswerClaimSurface, proposeSourceExactEvidenceAnswer } from "../local-evidence-runtime.js";
+import { SEMANTIC_VERDICT } from "../semantic-codes.js";
+import type { EvidenceSpan } from "../types.js";
 
 // When two sources disagree the turn reports each of them and asserts neither. The force has to say that, because
 // every consumer downstream gates on it: calling the report "insufficient_support" told a caller the answer was
@@ -59,5 +62,35 @@ describe("the force of an answer that reports disagreeing sources", () => {
     });
 
     expect(decision.force).not.toBe("source_conflict_reported");
+  });
+
+  it("selects each conflicting owner's statement through the same source proposal with its learned language and bound values", () => {
+    const statement = (value: string) => `Aster was assigned the value ${value}.`;
+    const owners = ["7", "9"].map(value => {
+      const text = `Aster maintains an assigned label registry with extensive historical filing procedures. ${statement(value)}`;
+      return {
+        id: `evidence.aster.${value}`, sourceVersionId: `source.aster.${value}`, text, textPreview: text,
+        status: "promoted", alpha: 1, charStart: 0, charEnd: text.length, features: [],
+        provenance: { title: "Aster", uri: `fixture://aster/${value}`, metadata: { title: "Aster" } }
+      } as unknown as EvidenceSpan;
+    });
+    const input = {
+      requestText: "What label was Aster assigned?", selectedEvidence: owners,
+      closedClassWords: new Set(["what", "was"]), functionSymbols: new Set(["what", "was"]),
+      boundValues: ["7", "9"], boundValueEvidenceIds: new Set(owners.map(span => String(span.id)))
+    };
+    const perOwner = owners.map(span => proposeSourceExactEvidenceAnswer({ ...input, selectedEvidence: [span] }));
+    expect(perOwner.every(Boolean)).toBe(true);
+    expect(perOwner.map(proposal => localEvidenceAnswerClaimSurface(proposal!))).toEqual([statement("7"), statement("9")]);
+    const conflict = localEvidenceAnswerSurface({
+      ...input, semanticProof: { verdict: SEMANTIC_VERDICT.CONTRADICTED, contradiction: 1, conflictingEvidenceIds: owners.map(span => String(span.id)) }
+    });
+    expect(conflict).toBeDefined();
+    expect(localEvidenceAnswerReportsSourceConflict(conflict!.plan)).toBe(true);
+    expect(conflict!.plan.proofExcerpts).toEqual([
+      { text: statement("7"), evidenceId: owners[0]!.id },
+      { text: statement("9"), evidenceId: owners[1]!.id }
+    ]);
+    expect(conflict!.evidence.map(span => span.id)).toEqual(owners.map(span => span.id));
   });
 });

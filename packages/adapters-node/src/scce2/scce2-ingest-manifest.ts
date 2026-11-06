@@ -2,7 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import { toJsonValue, type BrainShardManifest, type BrainShardProvenanceClass, type JsonValue } from "@scce/kernel";
+import { toJsonValue, type BrainShardManifest, type BrainShardProvenanceClass, type JsonValue, type SourceBoundConstructionObservation } from "@scce/kernel";
 import { inspectScce2BrainBundle, isScce2BrainBundlePath, makeBrainEntryPath } from "./brain-bundle.js";
 
 export interface Scce2GraphManifestShard {
@@ -58,6 +58,12 @@ export interface Scce2ProfileFileEvidence {
   charRange?: [number, number] | number[];
   originalByteRange?: [number, number] | number[];
   originalCharRange?: [number, number] | number[];
+  /** Hash the exact UTF-8 excerpt; observation ranges use the canonical Unicode code-point coordinates. */
+  sourceConstructions?: Array<Omit<SourceBoundConstructionObservation, "sourceVersionId" | "evidenceId"> & {
+    bindingId: string;
+    sourceTextHash: string;
+    coordinateSystemId: "unicode.code_point.v1";
+  }>;
   byteStart?: number;
   byteEnd?: number;
   charStart?: number;

@@ -91,15 +91,34 @@ describe("answerhood gate", () => {
     expect(requestUnitSharesStem("moon", "months")).toBe(false);
   });
 
-  it("keeps a carried relation whose final category is replaced by its member", () => {
+  it("requires a resolved binding when a requested category is replaced by its member", () => {
     const sentence = "Athens is the capital and largest city of Greece.";
+    const evidence = openingBlock("evidence:athens", "Athens", sentence);
+    const options = { relationRequired: true, languageClosedClassWords: new Set(["is", "the", "of", "which"]) };
+    expect(answerCoversRequest([sentence], evidence, ["athens", "capital", "country"], "Athens is the capital of which country?", options)).toBe(false);
     expect(answerCoversRequest(
       [sentence],
-      openingBlock("evidence:athens", "Athens", sentence),
+      evidence,
       ["athens", "capital", "country"],
       "Athens is the capital of which country?",
-      { relationRequired: true, languageClosedClassWords: new Set(["is", "the", "of", "which"]) }
+      { ...options, boundValues: ["Greece"] }
     )).toBe(true);
+  });
+
+  it.each([
+    "Which city serves as Andorra's capital?",
+    "Which capital serves as Andorra's city?"
+  ])("does not let a differently cased name excuse an absent relation in %s", request => {
+    for (const destination of ["Toulouse", "toulouse"]) {
+      const sentence = `There are frequent long-distance bus services from Andorra to Barcelona and ${destination}, plus a daily tour from the former city.`;
+      const evidence = openingBlock("evidence:andorra-services", "Andorra", sentence);
+      expect(answerCoversRequest([sentence], evidence, ["city", "serves", "andorra's", "capital"], request, { relationRequired: true })).toBe(false);
+    }
+  });
+
+  it.each(["qzalpha rvdelta pfomega?", "qzalpha pfomega rvdelta?"])("keeps every opaque relation obligation regardless of position in %s", request => {
+    const sentence = "qzalpha rvdelta Zeta.";
+    expect(answerCoversRequest([sentence], openingBlock("evidence:opaque", "qzalpha", sentence), ["qzalpha", "rvdelta", "pfomega"], request, { relationRequired: true })).toBe(false);
   });
 
   it("counts unresolved obligations from the proof boundaries and withholds certification over them", () => {

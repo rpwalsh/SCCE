@@ -29,7 +29,7 @@ export function workbenchModelModulePath(): string {
 export interface WorkbenchRenderOptions {
   /** The benchmark suite the page's run command posts; the server owns the id, the page only names it. */
   benchmarkSuiteId?: string;
-  /** Enables the Pages-hosted shell's explicit, loopback-only connector. */
+  /** Uses relative assets and includes the pinned-source form for static export. */
   staticConnector?: boolean;
 }
 
@@ -173,17 +173,17 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
       <div class="brand"><span class="dot" id="status-dot"></span><span>SCCE</span></div>
       <div class="origin" id="status-runtime" title="${escapeHtml(serverUrl)}"></div>
       <div class="spacer"></div>
-      ${options.staticConnector ? '<button class="connector" id="connector-open">Connect runtime</button>' : ''}
+      <button class="connector" id="connector-open">Connect runtime</button>
       <div class="badge" id="approvals-badge"></div>
-      <button class="iconbtn" id="dev-toggle" title="${options.staticConnector ? "Local runtime details" : "app.developer_panel"}" aria-label="${options.staticConnector ? "Local runtime details" : "app.developer_panel"}">&#9881;</button>
+      <button class="iconbtn" id="dev-toggle" title="Runtime panel" aria-label="Runtime panel">&#9881;</button>
     </div>
     <div class="body">
       <div class="chat-column">
         <div class="messages" id="messages">
           <div class="messages-inner" id="messages-inner">
             <div class="empty-state" id="empty-state">
-              <h2>${options.staticConnector ? "Build from a bounded source" : "chat.empty.title"}</h2>
-              <p>${options.staticConnector ? "Connect runtime" : "chat.empty.hint"}</p>
+              <h2>Connect your local brain</h2>
+              <p>Connect runtime</p>
             ${options.staticConnector ? `<section class="static-build" aria-label="Pinned source">
               <strong>Pinned source</strong>
               <label>Repository URL<input id="build-repository" type="url" placeholder="https://github.com/owner/repository" /></label>
@@ -196,54 +196,54 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
         </div>
         <div class="composer-wrap">
           <div class="composer">
-            <textarea id="prompt" rows="1" placeholder="${options.staticConnector ? "Ask SCCE a question" : "composer.placeholder"}"></textarea>
-            <button id="send">${options.staticConnector ? "Send" : "button.send"}</button>
+            <textarea id="prompt" rows="1" placeholder="Ask SCCE a question"></textarea>
+            <button id="send">Send</button>
           </div>
         </div>
       </div>
       <aside class="devpanel" id="devpanel">
         <div class="devpanel-header">
-          <strong>${options.staticConnector ? "Runtime details" : "app.developer_panel"}</strong>
-          <button class="iconbtn" id="dev-close" aria-label="${options.staticConnector ? "Close runtime details" : "app.developer_panel.close"}">&times;</button>
+          <strong>Runtime details</strong>
+          <button class="iconbtn" id="dev-close" aria-label="Close panel">&times;</button>
         </div>
         <div class="devpanel-body">
           <div class="dev-section">
-            <h3>${options.staticConnector ? "Workspace" : "side.explorer"}</h3>
+            <h3>Workspace</h3>
             <div class="tree" id="explorer-tree"></div>
           </div>
           <div class="dev-section">
-            <h3>${options.staticConnector ? "Evidence" : "side.evidence"}</h3>
-            <div class="tree" id="evidence-tree"><div>${options.staticConnector ? "Evidence empty" : "side.evidence.empty"}</div></div>
+            <h3>Evidence</h3>
+            <div class="tree" id="evidence-tree"><div>Evidence empty</div></div>
           </div>
           <div class="dev-section">
-            <h3>${options.staticConnector ? "Approvals" : "side.approvals"}<button id="refresh-approvals">${options.staticConnector ? "Refresh" : "side.approvals.refresh"}</button></h3>
-            <div class="approval-head"><label class="toggle"><input type="checkbox" id="operator-grant-toggle" /> ${options.staticConnector ? "Operator grant" : "side.approvals.operator_grant"}</label></div>
-            <div id="approval-list" class="tree"><div>${options.staticConnector ? "Approvals empty" : "side.approvals.none"}</div></div>
+            <h3>Approvals<button id="refresh-approvals">Refresh</button></h3>
+            <div class="approval-head"><label class="toggle"><input type="checkbox" id="operator-grant-toggle" /> Operator grant</label></div>
+            <div id="approval-list" class="tree"><div>Approvals empty</div></div>
           </div>
           <div class="dev-section">
-            <h3>${options.staticConnector ? "Local settings" : "side.settings"}</h3>
-            <div class="hint">${options.staticConnector ? "Local settings" : "side.settings.hint"}</div>
+            <h3 data-surface-id="side.settings">Local settings</h3>
+            <div class="hint" data-surface-id="side.settings.hint">Settings unavailable</div>
             <div id="settings-form" class="tree"></div>
           </div>
           <div class="dev-section">
-            <h3>${options.staticConnector ? "Visual assets" : "side.models"}<button class="small-btn" id="model-download">${options.staticConnector ? "Manage assets" : "side.models.download"}</button></h3>
-            <div id="models-list" class="tree"><div>${options.staticConnector ? "Assets empty" : "side.models.empty"}</div></div>
+            <h3 data-surface-id="side.models">Visual assets<button class="small-btn" id="model-download" data-surface-id="side.models.download">Manage assets</button></h3>
+            <div id="models-list" class="tree"><div data-surface-id="side.models.empty">Assets empty</div></div>
           </div>
           <div class="dev-section">
-            <h3>${options.staticConnector ? "Learning review" : "side.learning"}<button class="small-btn" id="refresh-learning">${options.staticConnector ? "Refresh" : "side.learning.refresh"}</button></h3>
-            <div class="hint">${options.staticConnector ? "Review pending" : "side.learning.hint"}</div>
-            <div id="learning-list" class="tree"><div>${options.staticConnector ? "Reviews empty" : "side.learning.none"}</div></div>
+            <h3>Learning review<button class="small-btn" id="refresh-learning">Refresh</button></h3>
+            <div class="hint">Review pending</div>
+            <div id="learning-list" class="tree"><div>Reviews empty</div></div>
           </div>
           <div class="dev-section">
-            <h3>${options.staticConnector ? "Turn inspector" : "pane.inspector"}<button class="small-btn" id="inspect">${options.staticConnector ? "Inspect" : "button.inspect"}</button></h3>
+            <h3>Turn inspector<button class="small-btn" id="inspect">Inspect</button></h3>
             <pre class="json" id="inspect-json">{}</pre>
           </div>
           <div class="dev-section">
-            <h3>${options.staticConnector ? "Local activity" : "app.developer_panel.terminal"}</h3>
-            <pre class="json" id="terminal">${options.staticConnector ? "Ready" : "terminal.ready"}</pre>
+            <h3>Local activity</h3>
+            <pre class="json" id="terminal">Ready</pre>
           </div>
           <div class="dev-section">
-            <h3>${options.staticConnector ? "Runtime trace" : "app.developer_panel.trace"}</h3>
+            <h3>Runtime trace</h3>
             <pre class="flow" id="trace"></pre>
           </div>
         </div>
@@ -251,21 +251,22 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
     </div>
   </div>
   <div class="palette" id="palette"><input id="palette-input" aria-label="palette.aria" /><div class="palette-list" id="palette-list"></div></div>
-  ${options.staticConnector ? `<dialog class="connector-dialog" id="connector-dialog">
+  <dialog class="connector-dialog" id="connector-dialog">
     <h2>Connect runtime</h2>
     <p class="hint">Loopback server. Exact origin. Local bearer token.</p>
     <form id="connector-form" method="dialog">
-      <label>Local API address<input id="connector-origin" type="url" value="http://127.0.0.1:3873" autocomplete="url" /></label>
+      <label>Local API address<input id="connector-origin" type="url" value="${escapeHtml(serverUrl || "http://127.0.0.1:3873")}" autocomplete="url" /></label>
       <label>API bearer token<input id="connector-token" type="password" autocomplete="off" /></label>
       <div class="build-progress" id="connector-status" role="status"></div>
       <div class="actions"><button class="connector" id="connector-close" type="button">Close</button><button class="connector" id="connector-save" type="button">Connect</button></div>
     </form>
-  </dialog>` : ''}
+  </dialog>
   <script type="module">
     import { createInitialWorkbenchState, reduceWorkbench, treeFromSnapshot, traceFromEvents, evidenceTreeFromTurn, withheldSurfaceView } from '${workbenchModelRoute}';
-    const STATIC_CONNECTOR = ${scriptLiteral(options.staticConnector === true)};
+    const STATIC_EXPORT = ${scriptLiteral(options.staticConnector === true)};
+    const CONNECTOR_ENABLED = true;
     let workbench = createInitialWorkbenchState(${scriptLiteral(serverUrl)});
-    if (STATIC_CONNECTOR) workbench = reduceWorkbench(workbench, { type: 'tree.replace', tree: [] });
+    if (STATIC_EXPORT) workbench = reduceWorkbench(workbench, { type: 'tree.replace', tree: [] });
     const apply = action => { workbench = reduceWorkbench(workbench, action); return workbench; };
     const FRONTIER_SUITE_ID = ${scriptLiteral(options.benchmarkSuiteId ?? "")};
     const messages = document.getElementById('messages');
@@ -287,7 +288,7 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
     let typingRow = null;
     let streamingAnswerRow = null;
     let sending = false;
-    let connectorOrigin = STATIC_CONNECTOR ? (localStorage.getItem('scce.localApiOrigin') || 'http://127.0.0.1:3873') : '';
+    let connectorOrigin = 'http://127.0.0.1:3873';
     let connectorToken = '';
 
     function toggleDevPanel(open) {
@@ -336,7 +337,7 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
         const details = document.createElement('details');
         details.className = 'details';
         const summary = document.createElement('summary');
-        summary.textContent = STATIC_CONNECTOR ? 'Details' : 'chat.details';
+        summary.textContent = 'Details';
         const pre = document.createElement('pre');
         pre.textContent = JSON.stringify(detail, null, 2);
         details.appendChild(summary);
@@ -355,7 +356,7 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
         typingRow.innerHTML = '<div class="bubble"><div class="typing"><span id="typing-phase"></span><span class="dots"><span>&bull;</span><span>&bull;</span><span>&bull;</span></span></div></div>';
         messagesInner.appendChild(typingRow);
       }
-      typingRow.querySelector('#typing-phase').textContent = phase ? (STATIC_CONNECTOR ? 'Working locally…' : String(phase)) : (STATIC_CONNECTOR ? 'Thinking locally…' : 'chat.working');
+      typingRow.querySelector('#typing-phase').textContent = phase ? 'Working locally…' : 'Thinking locally…';
       messages.scrollTop = messages.scrollHeight;
     }
     function hideTyping() { if (typingRow) { typingRow.remove(); typingRow = null; } }
@@ -367,7 +368,7 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
     function setSending(next) {
       sending = next;
       setRuntimeStatus({ requestInFlight: next });
-      sendButton.textContent = STATIC_CONNECTOR ? (sending ? 'Stop' : 'Send') : (sending ? 'button.stop' : 'button.send');
+      sendButton.textContent = sending ? 'Stop' : 'Send';
       sendButton.classList.toggle('stop', sending);
     }
 
@@ -452,7 +453,7 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
       messages.scrollTop = messages.scrollHeight;
     }
     function renderTerminal() {
-      terminal.textContent = workbench.terminal.map(line => '$ ' + (STATIC_CONNECTOR && line.text === 'terminal.ready' ? 'Ready' : line.text)).join('\\n');
+      terminal.textContent = workbench.terminal.map(line => '$ ' + (line.text === 'terminal.ready' ? 'Ready' : line.text)).join('\\n');
       terminal.scrollTop = terminal.scrollHeight;
     }
     function log(text, stream) { apply({ type: 'terminal.append', line: { stream: stream || 'request', text } }); renderTerminal(); }
@@ -463,7 +464,7 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
       const host = document.getElementById('explorer-tree');
       if (!host) return;
       host.innerHTML = '';
-      if (STATIC_CONNECTOR && workbench.tree.length === 0) {
+      if (workbench.tree.length === 0) {
         const empty = document.createElement('div');
         empty.className = 'hint';
         empty.textContent = 'Workspace offline';
@@ -489,7 +490,7 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
       const dot = document.getElementById('status-dot');
       if (!pill || !dot) return;
       const busy = Boolean(workbench.status.requestInFlight);
-      pill.textContent = busy ? (STATIC_CONNECTOR ? 'Request active' : 'status.runtime.busy') : (workbench.status.ready ? '' : (STATIC_CONNECTOR ? 'Runtime offline' : 'status.runtime.unknown'));
+      pill.textContent = busy ? 'Request active' : (workbench.status.ready ? '' : 'Runtime offline');
       dot.classList.toggle('busy', busy);
       dot.classList.toggle('down', !busy && !workbench.status.ready);
     }
@@ -614,28 +615,31 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
       catch (error) { window.alert(String(error.message || error).slice(0, 200)); }
       finally { modelDownload.disabled = false; }
     });
-    setTimeout(() => { if (!STATIC_CONNECTOR || connectorToken) { loadSettings(); loadModels(); } }, 0);
     async function get(url) { const r = await apiFetch(url); const t = await r.text(); const j = t ? JSON.parse(t) : null; if (!r.ok) throw httpFailure(r.status, j); return j; }
     function localApiOrigin(value) {
       const parsed = new URL(String(value || '').trim());
       if (parsed.protocol !== 'http:' || parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash || !['127.0.0.1', 'localhost', '[::1]'].includes(parsed.hostname.toLowerCase())) throw new Error('Loopback required');
       return parsed.origin;
     }
+    try {
+      const savedApiOrigin = localStorage.getItem('scce.localApiOrigin');
+      const configuredApiOrigin = ${scriptLiteral(serverUrl || "http://127.0.0.1:3873")};
+      connectorOrigin = localApiOrigin(STATIC_EXPORT ? (savedApiOrigin || configuredApiOrigin) : (configuredApiOrigin || savedApiOrigin));
+    } catch {}
     function apiUrl(path) {
-      if (!STATIC_CONNECTOR) return path;
       const target = new URL(path, connectorOrigin);
       if (target.origin !== connectorOrigin) throw new Error('Loopback only');
       return target.href;
     }
     function apiFetch(path, init = {}) {
       const headers = new Headers(init.headers || {});
-      if (STATIC_CONNECTOR) {
+      if (CONNECTOR_ENABLED) {
         if (!connectorToken) throw new Error('Connect runtime');
         headers.set('authorization', 'Bearer ' + connectorToken);
       }
       return fetch(apiUrl(path), { ...init, headers });
     }
-    if (STATIC_CONNECTOR) {
+    if (CONNECTOR_ENABLED) {
       const dialog = document.getElementById('connector-dialog');
       const status = document.getElementById('connector-status');
       document.getElementById('connector-origin').value = connectorOrigin;
@@ -657,11 +661,13 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
           status.textContent = payload.ok ? 'Connected' : 'Still warming';
           document.getElementById('connector-token').value = '';
           void loadSettings(); void loadModels(); void refreshApprovals();
+          void resumeStoredTurn();
           setTimeout(() => dialog.close(), 700);
+          if (new URLSearchParams(location.search).has('q')) setTimeout(() => sendButton.click(), 750);
         } catch (error) { connectorToken = ''; status.textContent = String(error.message || error); }
         finally { button.disabled = false; }
       });
-      document.getElementById('build-source').addEventListener('click', async () => {
+      document.getElementById('build-source')?.addEventListener('click', async () => {
         const button = document.getElementById('build-source');
         const status = document.getElementById('build-status');
         const remoteUrl = document.getElementById('build-repository').value.trim();
@@ -886,16 +892,15 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
     renderTerminal();
     renderTrace();
     renderRuntimeStatus();
-    // The status dot reflects the runtime, not a guess: one readiness check on load, and again when a turn ends.
-    get('/api/ready').then(r => setRuntimeStatus({ ready: Boolean(r && r.ok) })).catch(() => setRuntimeStatus({ ready: false }));
-    refreshApprovals().catch(() => {});
-    resumeStoredTurn().catch(() => {});
+    // Wait for an operator-provided loopback token before checking runtime readiness.
+    setRuntimeStatus({ ready: false });
     prompt.focus();
     // A shareable link that asks on arrival: /?q=Who%20is%20Ada%20Lovelace%3F
     const linkedQuestion = new URLSearchParams(location.search).get('q');
     if (linkedQuestion && linkedQuestion.trim()) {
       prompt.value = linkedQuestion.trim(); autoGrow();
-      setTimeout(() => sendButton.click(), 250);
+      if (connectorToken) setTimeout(() => sendButton.click(), 250);
+      else document.getElementById('connector-dialog').showModal();
     }
   </script>
 </body>

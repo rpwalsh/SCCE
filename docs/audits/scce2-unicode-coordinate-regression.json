@@ -1,0 +1,44 @@
+{
+  "schema": "scce.focused_regression.v1",
+  "case": "SCCE2 annotated astral/CJK source coordinates",
+  "baseline": "6316931",
+  "coordinateSystemId": "unicode.code_point.v1",
+  "fixtureLengths": {
+    "codePoints": 21,
+    "utf16Units": 25,
+    "utf8Bytes": 61
+  },
+  "ownership": {
+    "sourceAndEvidenceIds": "unchanged content-derived UTF-8 identities",
+    "localRanges": "charRange uses code points; byteRange uses UTF-8 bytes; coordinateSourceVersionId identifies the excerpt",
+    "externalReference": "originalSource URI/version/byteRange/charRange preserved verbatim",
+    "historicalRecords": "completed-import replay leaves a preexisting legacy-coordinate row untouched"
+  },
+  "counterfactual": {
+    "change": "Restore only charEnd = input.text.length in the source producer",
+    "testFilter": "imports astral",
+    "exitCode": 1,
+    "rejection": "surface.construction_memory.reject.coordinates",
+    "sourceBytesRestored": true
+  },
+  "green": {
+    "buildCommand": "node --max-old-space-size=1536 node_modules/typescript/bin/tsc -b packages/adapters-node --pretty false",
+    "buildExitCode": 0,
+    "testCommand": "node --max-old-space-size=768 node_modules/vitest/vitest.mjs run packages/adapters-node/src/__tests__/scce2-closure-source-only.test.ts --maxWorkers=1 --minWorkers=1 --no-file-parallelism --pool=threads",
+    "testsPassed": 9,
+    "testsFailed": 0,
+    "testsSkipped": 0,
+    "durationMs": 3800,
+    "testBodyDurationMs": 461,
+    "checks": [
+      "exact source UTF-8 blob/hash and content-derived owner IDs",
+      "persisted span and provenance code-point ranges",
+      "canonical construction rehydration with exact astral/CJK role surfaces",
+      "new caller-intended role combination realized as 🧪甲が🦉丁を運ぶ。 with unverified provenance",
+      "UTF-16 offsets rejected without conversion fallback",
+      "declared UTF-16 coordinate system rejected even when coordinates would fit",
+      "historical replay leaves old coordinates unchanged",
+      "all six prior source-only closure/proof/alpha/correction/hygiene/lifecycle checks retained"
+    ]
+  }
+}

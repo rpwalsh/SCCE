@@ -144,7 +144,7 @@ function labeledSpan(input: { id: string; text: string; trust: number; alpha: nu
     languageHints: { language: "fixture" },
     scriptHints: { script: "Latn" },
     trustVector: { trust: input.trust, sourceTrust: input.trust, structuralConfidence: input.trust },
-    provenance: { namespace: "local", source: "evidence-promotion-evaluation" },
+    provenance: { namespace: "local", source: "evidence-promotion-evaluation", sourceSystem: "workspace" },
     features: featureSet(input.text, 256),
     status: "quarantined",
     alpha: input.alpha,

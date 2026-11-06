@@ -66,7 +66,10 @@ describe("a source's own text is speakable; a control id the corpus does not con
       evidenceIds: [dwan.id, unrelated.id]
     };
     const spoken = await createDeterministicMouth({ hashText: text => hasher.digestHex(text) }).speak(speakInput(dwan.text, dwan.text, { requestText, evidence: [dwan, unrelated], candidate }));
-    expect(answerCoversRequest([dwan.text], unrelated, ["allan", "dwan's", "blood", "type"], requestText, { relationRequired: true, languageClosedClassWords: new Set(["was"]) })).toBe(true);
+    expect(answerCoversRequest([dwan.text], unrelated, ["allan", "dwan's", "blood", "type"], requestText, { relationRequired: true, languageClosedClassWords: new Set(["was"]) })).toBe(false);
+    expect(answerCoversRequest([dwan.text], dwan, ["allan", "dwan", "director"], "Was Allan Dwan a director?", {
+      relationRequired: true, languageClosedClassWords: new Set(["was", "a"])
+    })).toBe(true);
     expect(spoken.text).not.toContain("pioneering Canadian and American motion picture director");
   });
 });

@@ -28,6 +28,24 @@ describe("corpus identity answerhood priming", () => {
     resetCorpusIdentityMeasurements();
   });
 
+  it.each([
+    ["qzalfa-pomega", "qzalfa pomega"],
+    ["山川林－海雲岸", "山川林 海雲岸"],
+    ["альфа–омега", "альфа омега"]
+  ])("reads source identity %s through its existing orthographic comparison key", (requestedIdentity, sourceIdentity) => {
+    const sentence = `${sourceIdentity} rvdelta sigma.`;
+    const evidence = { ...span(sentence), provenance: { title: sourceIdentity, metadata: { title: sourceIdentity } } };
+    expect(answerCoversRequest([sentence], evidence, [requestedIdentity, "rvdelta"], `${requestedIdentity} rvdelta?`, { relationRequired: true })).toBe(true);
+    expect(answerCoversRequest([sentence], evidence, [requestedIdentity, "unknownrel"], `${requestedIdentity} unknownrel?`, { relationRequired: true })).toBe(false);
+  });
+
+  it("does not fold a numeric sign or change a numeric subject qualifier while comparing identities", () => {
+    const sentence = "qzalfa 7 rvdelta sigma.";
+    const evidence = { ...span(sentence), provenance: { title: "qzalfa 7", metadata: { title: "qzalfa 7" } } };
+    expect(answerCoversRequest([sentence], evidence, ["qzalfa", "-7", "rvdelta"], "qzalfa -7 rvdelta?", { relationRequired: true })).toBe(false);
+    expect(answerCoversRequest([sentence], evidence, ["qzalfa", "8", "rvdelta"], "qzalfa 8 rvdelta?", { relationRequired: true })).toBe(false);
+  });
+
   it("rejects an unrelated biography before corpus identity priming", () => {
     expect(answerCoversRequest(
       [biography],

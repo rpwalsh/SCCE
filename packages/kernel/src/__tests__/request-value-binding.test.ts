@@ -90,4 +90,50 @@ describe("the request's value binding is resolved once, against the evidence adm
       resolvers: [{ id: "resolver.declines", resolve: () => undefined }]
     })).toBeUndefined();
   });
+
+  it("declines unattested resolver values and continues to a grounded resolver", () => {
+    const resolvers: RequestValueResolver[] = [
+      { id: "resolver.absent", resolve: () => "unattested" },
+      { id: "resolver.grounded", resolve: () => "Ada Lovelace" }
+    ];
+    const binding = resolveRequestValueBinding({ requestText: REQUEST, evidence: [lead], resolvers });
+    expect(binding?.resolverId).toBe("resolver.grounded");
+    expect(binding?.evidenceIds).toEqual([String(lead.id)]);
+    expect(resolveRequestValueBinding({ requestText: REQUEST, evidence: [lead], resolvers: resolvers.slice(0, 1) })).toBeUndefined();
+  });
+
+  it.each([
+    ["16", "2016"],
+    ["16", "16th"],
+    ["1", "128"],
+    ["1", "1.25"],
+    ["1", "1/2"],
+    ["1", "21:17"],
+    ["1", "-1"],
+    ["1", "\u22121"],
+    ["q7", "q73"],
+    ["\u0661", "\u0661\u0662"],
+    ["\u0661", "\u0661\u066b\u0662"],
+    ["\u043b\u0430\u043d", "\u043b\u0430\u043d\u0430"],
+    ["\u4e59\u4e19", "\u7532\u4e59\u4e19"]
+  ])("does not bind %s from the larger source value %s", (value, sourceValue) => {
+    const evidence = [span("value", `\u03be ${sourceValue}.`, 0)];
+    expect(resolveRequestValueBinding({
+      requestText: "\u03be?",
+      evidence,
+      resolvers: [{ id: "resolver.typed", resolve: () => value }]
+    })).toBeUndefined();
+  });
+
+  it.each(["16th", "seven-bit", "0 to 1", "\u0660 \u2192 \u0661", "\u043b\u0430\u043d", "\u7532\u4e59\u4e19", "\u{10400}\u{10401}"])("binds the complete source value %s and only its owning span", value => {
+    const owner = span("owner", `\u03be (${value}).`, 0);
+    const other = span("other", "\u03be q73.", 100);
+    const binding = resolveRequestValueBinding({
+      requestText: "\u03be?",
+      evidence: [other, owner],
+      resolvers: [{ id: "resolver.typed", resolve: () => value }]
+    });
+    expect(binding?.value).toBe(value);
+    expect(binding?.evidenceIds).toEqual([String(owner.id)]);
+  });
 });

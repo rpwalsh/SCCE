@@ -132,6 +132,15 @@ export interface SurfaceLatticeValidation {
   issues: string[];
 }
 
+export interface SourceAlignmentSurfaceLattice {
+  schema: "scce.surface_lattice.source_alignment_projection.v1";
+  id: string;
+  documentId: string;
+  textHash: string;
+  units: SurfaceLatticeUnit[];
+  sourceUnitCount: number;
+}
+
 export interface SurfaceLatticeBuildOptions {
   documentId: string;
   sourceFamilyId?: string;
@@ -280,6 +289,16 @@ export function buildNgramSurfaceProjection(options: {
 }
 
 export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): SurfaceLattice {
+  return buildSurfaceLatticeInternal(options, false);
+}
+
+export function buildSourceAlignmentSurfaceLattice(options: SurfaceLatticeBuildOptions): SourceAlignmentSurfaceLattice {
+  return buildSurfaceLatticeInternal(options, true);
+}
+
+function buildSurfaceLatticeInternal(options: SurfaceLatticeBuildOptions, lexicalProjection: false): SurfaceLattice;
+function buildSurfaceLatticeInternal(options: SurfaceLatticeBuildOptions, lexicalProjection: true): SourceAlignmentSurfaceLattice;
+function buildSurfaceLatticeInternal(options: SurfaceLatticeBuildOptions, lexicalProjection: boolean): SurfaceLattice | SourceAlignmentSurfaceLattice {
   const hasher = options.hasher ?? createHasher();
   const normalizationContract = options.normalizationContract ?? canonicalNormalizationContract(hasher);
   const maxUnits = Math.max(64, Math.floor(options.maxUnits ?? DEFAULT_SURFACE_LATTICE_MAX_UNITS));
@@ -411,12 +430,16 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
     ...higherCandidates.sort(compareCandidateUnits)
   ];
   const effectiveMaxUnits = Math.max(maxUnits, baseCandidates.length);
+  let retainedCandidateCount = 0;
   for (const candidate of orderedCandidates) {
-    if (units.length >= effectiveMaxUnits) break;
+    if (retainedCandidateCount >= effectiveMaxUnits) break;
     if (!candidate.surface) continue;
     const identity = `${candidate.kind}\u0001${candidate.codePointStart}\u0001${candidate.codePointEnd}\u0001${candidate.surface}`;
     if (seen.has(identity)) continue;
     seen.add(identity);
+    // Projection keeps the full producer's retention order and budget.
+    retainedCandidateCount++;
+    if (lexicalProjection && !candidate.proposalSources.includes("lexical")) continue;
     const normalized = normalizedSurfaceFor(candidate.surface);
     const recurrenceCount = normalizedCounts.get(recurrenceKey(candidate, normalizedSurfaceFor)) ?? 1;
     const before = boundaryEvidenceAt({
@@ -498,6 +521,15 @@ export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): Surfac
       ...(sourceVersionId ? { sourceVersionId } : {})
     });
   }
+
+  if (lexicalProjection) return {
+    schema: "scce.surface_lattice.source_alignment_projection.v1",
+    id: latticeId,
+    documentId: options.documentId,
+    textHash: hasher.digestHex(text),
+    units,
+    sourceUnitCount: retainedCandidateCount
+  };
 
   const effectiveMaxEdges = maxEdges + Math.max(0, baseCandidates.length - 1);
   const edges = latticeEdges(units, hasher, effectiveMaxEdges);

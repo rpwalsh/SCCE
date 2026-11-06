@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
+import { sourceOwnedMouthTeaching } from "./fixtures/source-owned-mouth-teaching.js";
 import {
   boundaryProfileFor,
   createClock,
@@ -35,6 +36,49 @@ import {
 import { genericChatMouthFixture as mouthFixture } from "./fixtures/generic-chat-mouth-fixture.js";
 
 describe("Walsh surface energy", () => {
+  it("enforces hard required output features without a requirement field", () => {
+    const energyContext: SurfaceEnergyContext = {
+      ...context({ proofVerdict: "certified" }),
+      requiredOutputFeatures: [{ id: "required.reading", surface: "42%", hard: true }]
+    };
+    expect(energyContext.requirementField).toBeUndefined();
+    const missing = scoreSurfaceEnergy(candidate("required:missing", "pump pressure stabilized"), energyContext);
+    const present = scoreSurfaceEnergy(candidate("required:present", "pump pressure is 42%"), energyContext);
+    expect(missing.valid).toBe(false);
+    expect(rejectionIds(missing)).toContain("surface.reject.required_output_feature_dropped");
+    expect(present.valid).toBe(true);
+    expect(rejectionIds(present)).not.toContain("surface.reject.required_output_feature_dropped");
+
+    const optional = scoreSurfaceEnergy(candidate("required:soft", "pump pressure stabilized"), {
+      ...energyContext, requiredOutputFeatures: [{ id: "preferred.reading", surface: "42%", hard: false }]
+    });
+    expect(optional.valid).toBe(true);
+  });
+
+  it("enforces prohibited output features without a requirement field", () => {
+    const energyContext: SurfaceEnergyContext = {
+      ...context({ proofVerdict: "certified" }),
+      prohibitedOutputFeatures: [{ id: "prohibited.reading", surface: "42%", hard: true }]
+    };
+    expect(energyContext.requirementField).toBeUndefined();
+    const prohibited = scoreSurfaceEnergy(candidate("prohibited:present", "pump pressure is 42%"), energyContext);
+    const permitted = scoreSurfaceEnergy(candidate("prohibited:absent", "pump pressure stabilized"), energyContext);
+    expect(prohibited.valid).toBe(false);
+    expect(rejectionIds(prohibited)).toContain("surface.reject.prohibited_output_feature");
+    expect(permitted.valid).toBe(true);
+    expect(rejectionIds(permitted)).not.toContain("surface.reject.prohibited_output_feature");
+  });
+
+  it("measures code meaning by typed behavior coverage instead of copying its example values", () => {
+    const code = "export function pulse(left: number, right: number) { return left + right; }";
+    const energyContext = context({ proofVerdict: "certified", proposition: "pulse(2,3)=5", requiredNumbers: ["2", "3", "5"] });
+    const complete = scoreSurfaceEnergy({ ...candidate("code:complete", code),
+      semanticObligations: { kind: "program_behavior", requiredIds: ["fit.one", "fit.two"], coveredIds: ["fit.one", "fit.two"] } }, energyContext);
+    const incomplete = scoreSurfaceEnergy({ ...candidate("code:incomplete", code),
+      semanticObligations: { kind: "program_behavior", requiredIds: ["fit.one", "fit.two"], coveredIds: ["fit.one"] } }, energyContext);
+    expect(componentRaw(complete, "surface.energy.semantic_loss")).toBe(0);
+    expect(componentRaw(incomplete, "surface.energy.semantic_loss")).toBe(0.5);
+  });
   it("penalizes unsupported factual candidates without silencing them", () => {
     const result = scoreSurfaceEnergy(candidate("c:unsupported", "pump pressure is 42"), context({
       proofVerdict: "unsupported_prior_only",
@@ -261,6 +305,8 @@ describe("Walsh surface energy", () => {
     const languageRuntime = createLanguageMemoryRuntime({ idFactory: ids, hasher });
     const source = sourceVersion(ids, clock.now());
     const evidence = directEvidence(ids, source, clock.now());
+    const teaching = sourceOwnedMouthTeaching({ ids, hasher, evidence, profileId: "fixture-language", phrase: mouthFixture.importedPhrase,
+      subject: "The greenhouse", predicate: "opens", object: "its vents before noon when humidity rises above 70%" });
     const field = emptyField();
     const entailment = createSemanticEntailmentEngine({ idFactory: ids, hasher }).check({
       text: mouthFixture.claim,
@@ -271,12 +317,12 @@ describe("Walsh surface energy", () => {
     });
     const mouth = createMouth({ languageMemory: languageRuntime, correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }), hashText: text => hasher.digestHex(text) });
     const spoken = await mouth.speak({
-      construct: constructGraph(ids),
+      construct: { ...constructGraph(ids), nodes: [...constructGraph(ids).nodes, teaching.semanticNode] },
       field,
-      languageProfile: languageProfile(source, clock.now()),
+      languageProfile: teaching.profile,
       evidence: [evidence],
       entailment,
-      languageMemory: importedMemory({ languageRuntime, source, evidence, importRunId: "surface-energy", now: clock.now() }),
+      languageMemory: importedMemory({ languageRuntime, source, evidence, importRunId: "surface-energy", now: clock.now(), teaching }),
       targetLanguage: "fixture-language",
       brainMarker: { activeBrainVersion: "fixture-brain", activeImportRunIds: ["surface-energy"] }
     });
@@ -546,14 +592,16 @@ function importedMemory(input: {
   evidence: EvidenceSpan;
   importRunId: string;
   now: number;
+  teaching: ReturnType<typeof sourceOwnedMouthTeaching>;
 }) {
   return input.languageRuntime.hydrateFromImportedBrain({
     importRunId: input.importRunId,
     models: [ngramModel(input.now)],
     observations: [ngramObservation(input.source, input.now)],
     units: [languageUnit(input.source)],
-    patterns: [languagePattern(input.now)],
-    semanticFrames: [semanticFrame(input.evidence, input.now)]
+    patterns: [languagePattern(input.now), input.teaching.pattern],
+    semanticFrames: [semanticFrame(input.evidence, input.now)],
+    constructionEvidence: input.teaching.lessons
   });
 }
 

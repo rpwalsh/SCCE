@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { estimateRetainedProgramBytes } from "./retained-program-size.js";
 import { traceEvent } from "./debug/trace.js";
 import { canonicalDigestHex } from "./canonical-json-digest.js";
 import { createCorpusRegistry, languageMemoryHydrationPlan, type CorpusRoleId } from "./corpus-registry.js";
@@ -28,7 +29,7 @@ import { createClock, createHasher, sourceTextSurface, toJsonValue } from "./pri
 import {
   isRequestRequirementPattern
 } from "./request-requirement-learning.js";
-import type { LanguageContinuationPopulation, LanguagePatternRecord, ScceKernelDeps, SemanticFrameRecord, TargetProfilePatternRecord } from "./storage.js";
+import type { LanguageContinuationPopulation, LanguagePatternRecord, NgramObservation, ScceKernelDeps, SemanticFrameRecord, TargetProfilePatternRecord } from "./storage.js";
 import type { SegmentationPopulationModelRecord } from "./segmentation-population-persistence.js";
 import type {
   EvidenceSpan,
@@ -92,8 +93,8 @@ function boundedCacheSet<K, V>(map: Map<K, V>, key: K, value: V, maxEntries: num
  * re-hydrate on demand, which is strictly better than an OOM that takes
  * every in-flight request with it.
  */
-// Sized for a 7GB Node heap (node --max-old-space-size=7168 on a 16GB machine): the resident language cache may hold
-// about five sixths of it, and each hydration below is bounded so several fit.
+// Portable fallback ceiling. Host adapters must also supply their runtime-specific resource allowance;
+// a deployment with a smaller heap must never inherit a cache budget sized for a larger process.
 const SURFACE_LANGUAGE_MEMORY_CACHE_MAX_ESTIMATED_BYTES = 5 * 1024 * 1024 * 1024;
 
 /**
@@ -150,8 +151,9 @@ function approximateHydrationEstimatedBytes(value: {
   patterns?: readonly unknown[];
   semanticFrames?: readonly unknown[];
   constructionEvidence?: readonly unknown[];
-  state?: { continuationPopulation?: { continuationCounts: Readonly<Record<string, number>> } };
-}): number {
+  state?: Partial<LanguageMemoryRuntimeState>;
+  retainedProgramState?: LanguageMemoryRuntimeState;
+}, allowance: number): number {
   const jsonBytes = approximateRecordBytes(value.models ?? [])
     + approximateRecordBytes(value.units ?? [])
     + approximateRecordBytes(value.observations ?? [])
@@ -159,7 +161,16 @@ function approximateHydrationEstimatedBytes(value: {
     + approximateRecordBytes(value.semanticFrames ?? [])
     + approximateRecordBytes(value.constructionEvidence ?? [])
     + approximateRecordBytes(value.state?.continuationPopulation ? [value.state.continuationPopulation.continuationCounts] : []);
-  return jsonBytes;
+  if (jsonBytes > allowance) return jsonBytes;
+  // rescopeForSurface captures the unscoped state as well as returning a scoped state. Both remain live.
+  // Visit their program roots together so aliases between scopes and between compiled programs cost once.
+  const programRoots = [value.state, value.retainedProgramState].flatMap(state => state ? [
+    state.importedConstructionBundles, state.importedReversibleConstructions,
+    state.importedPairedAntiUnifiedConstructions, state.optionalNullRealizationModels,
+    state.joinPrograms, state.creativeEventCompatibilityModels, state.structuralDeltas,
+    state.requestRequirementHydration
+  ] : []);
+  return jsonBytes + estimateRetainedProgramBytes(programRoots, allowance - jsonBytes);
 }
 
 function boundedSurfaceLanguageMemoryCacheSet<K, V extends { approxEstimatedBytes: number }>(
@@ -198,7 +209,7 @@ const hydrateHeapTrace = (stage: string, counts: Record<string, number>) =>
   traceEvent((globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace, { stage, label: "kernel.language.hydrate", counts: { ...counts, heapMb: (process.env.SCCE_TRACE_GC === "1" && typeof (globalThis as { gc?: () => void }).gc === "function" ? ((globalThis as { gc?: () => void }).gc!(), 0) : 0) + Math.round(process.memoryUsage().heapUsed / 1048576) } });
 
 export function createSurfaceLanguageRuntime(options: {
-  deps: Pick<ScceKernelDeps, "storage" | "corpusRegistry">;
+  deps: Pick<ScceKernelDeps, "storage" | "corpusRegistry" | "surfaceLanguageMemoryCacheMaxEstimatedBytes">;
   languageMemoryRuntime: ReturnType<typeof createLanguageMemoryRuntime>;
   clock: ReturnType<typeof createClock>;
   hasher: ReturnType<typeof createHasher>;
@@ -216,7 +227,12 @@ export function createSurfaceLanguageRuntime(options: {
   const surfaceLanguageProfileLimit = options.profileLimit;
   const surfaceLanguageMemoryCacheMaxEntries = options.surfaceLanguageMemoryCacheMaxEntries ?? DEFAULT_SURFACE_LANGUAGE_MEMORY_CACHE_MAX_ENTRIES;
   const surfaceCandidateProfileCacheMaxEntries = options.surfaceCandidateProfileCacheMaxEntries ?? DEFAULT_SURFACE_CANDIDATE_PROFILE_CACHE_MAX_ENTRIES;
-  const surfaceLanguageMemoryCacheMaxEstimatedBytes = options.surfaceLanguageMemoryCacheMaxEstimatedBytes ?? SURFACE_LANGUAGE_MEMORY_CACHE_MAX_ESTIMATED_BYTES;
+  const requestedCacheBytes = options.surfaceLanguageMemoryCacheMaxEstimatedBytes ?? SURFACE_LANGUAGE_MEMORY_CACHE_MAX_ESTIMATED_BYTES;
+  const hostCacheBytes = deps.surfaceLanguageMemoryCacheMaxEstimatedBytes ?? SURFACE_LANGUAGE_MEMORY_CACHE_MAX_ESTIMATED_BYTES;
+  if (![requestedCacheBytes, hostCacheBytes].every(value => Number.isFinite(value) && value >= 0)) {
+    throw new Error("surface language cache allowance must be a finite nonnegative byte count");
+  }
+  const surfaceLanguageMemoryCacheMaxEstimatedBytes = Math.min(requestedCacheBytes, hostCacheBytes);
 
   const corpusRegistry = createCorpusRegistry(deps.corpusRegistry ?? []);
 
@@ -341,10 +357,9 @@ export function createSurfaceLanguageRuntime(options: {
 
   async function languageMemorySummary(limit = 36): Promise<JsonValue> {
     const models = await deps.storage.languageMemory.listNgramModels({ limit });
-    const observations = await deps.storage.languageMemory.listNgramObservations({ limit: 10000 });
     const units = await deps.storage.languageMemory.listLanguageUnits({ limit: 2048 });
     const patterns = await deps.storage.languageMemory.listLanguagePatterns({ limit: 512 });
-    const state = languageMemoryRuntime.hydrate({ models, observations, units, patterns });
+    const state = languageMemoryRuntime.hydrate({ models, observations: [], units, patterns });
     return toJsonValue({
       modelRecords: models.length,
       usableModels: state.models.length,
@@ -469,13 +484,6 @@ export function createSurfaceLanguageRuntime(options: {
       ? [{ profileIds, limits: exactProfileHydrationLimits }]
       : corpusQueries;
     hydrateHeapTrace("language.hydrate.start", { queries: hydrationQueries.length, boundedLimit, limit, obsLimit: hydrationQueries[0]?.limits.ngramObservations ?? -1, unitLimit: hydrationQueries[0]?.limits.languageUnits ?? -1, patternLimit: hydrationQueries[0]?.limits.languagePatterns ?? -1, profiles: hydrationQueries[0]?.profileIds?.length ?? -1, corpora: corpusRegistry.length });
-    // Models load WITH the rest, not before them.
-    //
-    // This query was awaited alone -- 17.3s, 58.7% of a hydration -- not for its own result but to compute
-    // persistedModelsPresent, whose only job is deciding whether to run the observations query below. That query
-    // returned 0 rows in 48 of 48 measured executions. A 17.3s serial phase existed to gate a no-op, making the
-    // load 17.3 + 7.0 instead of max(17.3, 7.0). The gate still runs, after the parallel block, where it costs
-    // the 7.6ms the observations query actually takes.
     const [
       modelsBySource,
       unitsBySource,
@@ -500,15 +508,8 @@ export function createSurfaceLanguageRuntime(options: {
         })
         : Promise.resolve([] as SegmentationPopulationModelRecord[])
     ]);
-    // The gate, now where it belongs: after the models it reads, and in front of the query it guards.
-    const persistedModelsPresent = modelsBySource.flat().some(record => languageMemoryRuntime.hydrateFromImportedBrain({ importRunId: undefined, models: [record], observations: [], units: [], patterns: [], semanticFrames: [], constructionEvidence: [] }).models.length > 0);
-    // Observations are the uncompiled form of the same models, read only for a scope with no persisted model at
-    // all: measured, 20,480 rows across a 1,960-profile scope took 260s and added nothing the parsed models carry.
-    const observationsBySource = persistedModelsPresent
-      ? hydrationQueries.map(() => [] as Awaited<ReturnType<typeof deps.storage.languageMemory.listNgramObservations>>)
-      : await Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listNgramObservations({ sourceSystem: item.sourceSystem, profileIds: item.profileIds, limit: item.limits.ngramObservations }))).then(rows => { hydrateHeapTrace("language.hydrate.part", { elapsedMs: Date.now() - hydrateStartedAt, part: "listNgramObservations", rows: rows.flat().length } as unknown as Record<string, number>); return rows; });
     const models = uniqueRecordsById(modelsBySource.flat(), Math.max(boundedLimit, corpusPlan.reduce((sum, item) => sum + item.limits.ngramModels, 0)));
-    const observations = uniqueRecordsById(observationsBySource.flat(), Math.max(1200, boundedLimit * 320));
+    const observations: NgramObservation[] = [];
     const units = uniqueRecordsById(unitsBySource.flat(), Math.max(512, boundedLimit * 128));
     const patterns = uniqueRecordsById(patternsBySource.flat(), Math.max(256, boundedLimit * 64));
     const queriedSemanticFrames = uniqueRecordsById(semanticFramesBySource.flat(), Math.max(512, boundedLimit * 96));
@@ -624,6 +625,7 @@ export function createSurfaceLanguageRuntime(options: {
       constructionEvidence,
       requestControlPatterns: learnedRequestControlPatterns,
       state: scoped.state,
+      retainedProgramState: hydrated,
       surfaceProfile: scoped.surfaceProfile,
       clusterMembers: (cluster?.members ?? []) as LanguageProfile[],
       active,
@@ -787,7 +789,7 @@ export function createSurfaceLanguageRuntime(options: {
             if (generation === languageMemoryGeneration && hydrationWorthCaching(hydrated)) boundedSurfaceLanguageMemoryCacheSet(
               surfaceLanguageMemoryCache,
               languageKey,
-              { limit, loadedAt: clock.now(), value: hydrated, approxEstimatedBytes: approximateHydrationEstimatedBytes(hydrated) },
+              { limit, loadedAt: clock.now(), value: hydrated, approxEstimatedBytes: approximateHydrationEstimatedBytes(hydrated, surfaceLanguageMemoryCacheMaxEstimatedBytes) },
               surfaceLanguageMemoryCacheMaxEntries,
               surfaceLanguageMemoryCacheMaxEstimatedBytes
             );
@@ -891,7 +893,7 @@ export function createSurfaceLanguageRuntime(options: {
         if (generation === languageMemoryGeneration && (resolvedUnscoped || hydrationWorthCaching(value))) boundedSurfaceLanguageMemoryCacheSet(
           surfaceLanguageMemoryCache,
           cacheKey,
-          { limit, loadedAt: clock.now(), value, approxEstimatedBytes: approximateHydrationEstimatedBytes(value) },
+          { limit, loadedAt: clock.now(), value, approxEstimatedBytes: approximateHydrationEstimatedBytes(value, surfaceLanguageMemoryCacheMaxEstimatedBytes) },
           surfaceLanguageMemoryCacheMaxEntries,
           surfaceLanguageMemoryCacheMaxEstimatedBytes
         );
@@ -1415,6 +1417,7 @@ export function createSurfaceLanguageRuntime(options: {
       return {
         languageMemoryEntries: surfaceLanguageMemoryCache.size,
         languageMemoryEstimatedBytes,
+        languageMemoryMaxEstimatedBytes: surfaceLanguageMemoryCacheMaxEstimatedBytes,
         scopedStateReferences: languageScopeCache.size,
         activeHydrations,
         waitingHydrations,

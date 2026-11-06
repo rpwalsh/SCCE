@@ -19,6 +19,9 @@ import { learnedScriptIdForCharacter } from "./language.js";
 import { compactKneserNeyForProfile, persistedKneserNey, trainKneserNey } from "./kneser-ney.js";
 import { clamp01, entropy, featureSet, stableVector, symbolizeData, toJsonValue } from "./primitives.js";
 import { buildNgramSurfaceProjection } from "./surface-lattice.js";
+import { CORPUS_ROLE_IDS, corpusSourceAlias, corpusRoleIdForSourceSystem } from "./corpus-registry.js";
+import { codeSurfaceTokens } from "./code-surface.js";
+import { canonicalNgramModelId } from "./source-language-training-identity.js";
 
 export interface NgramMemoryCompilation {
   observations: NgramObservation[];
@@ -47,25 +50,27 @@ export interface NgramMemoryInput {
 export function createNgramMemoryCompiler(options: { idFactory: IdFactory; hasher: Hasher }) {
   return {
     compile(input: NgramMemoryInput): NgramMemoryCompilation {
+      const sourceSystem = input.sourceSystem ? corpusSourceAlias(input.sourceSystem) : undefined;
       const maxOrder = Math.max(1, Math.min(6, input.maxOrder ?? 6));
       const maxCounters = Math.max(32, input.maxCountersPerOrder ?? 50000);
-      const lattice = buildNgramSurfaceProjection({
+      const formalCode = Boolean(sourceSystem && corpusRoleIdForSourceSystem(sourceSystem) === CORPUS_ROLE_IDS.softwareSymbolic);
+      const lattice = formalCode ? undefined : buildNgramSurfaceProjection({
         documentId: input.streamId,
         text: input.text,
         sourceVersionId: input.sourceVersionId,
         evidenceIds: input.evidence.map(span => span.id),
         hasher: options.hasher
       });
-      const canonicalSymbols = lattice.canonicalSurfaces;
+      const canonicalSymbols = lattice?.canonicalSurfaces ?? [];
       // A grapheme-dominated canonical path over whitespace-spaced text means
       // segmentation never resolved words; the spaced symbols are the
       // structural truth. A char-level KN model trained here poisons every
       // downstream generation call with letter soup (verified live).
-      const spacedSymbols = symbolizeData(input.text);
-      const symbols = sequenceSpeaksInWords(canonicalSymbols) || !sequenceSpeaksInWords(spacedSymbols)
+      const spacedSymbols = formalCode ? [] : symbolizeData(input.text);
+      const symbols = formalCode ? codeSurfaceTokens(input.text) : sequenceSpeaksInWords(canonicalSymbols) || !sequenceSpeaksInWords(spacedSymbols)
         ? canonicalSymbols
         : spacedSymbols;
-      const graphemes = lattice.graphemes;
+      const graphemes = lattice?.graphemes ?? [];
       const languageHint = primaryLanguageHint(input.profile);
       const evidenceIds = input.evidence.map(span => span.id);
       const alpha = input.evidence.length ? input.evidence.reduce((sum, span) => sum + span.alpha, 0) / input.evidence.length : 0.35;
@@ -96,13 +101,13 @@ export function createNgramMemoryCompiler(options: { idFactory: IdFactory; hashe
             sourceVersionId: input.sourceVersionId,
             evidenceId: evidenceIds[0],
             observedAt: input.createdAt,
-            metadata: toJsonValue({ profileId: input.profile.id, ...(input.sourceSystem ? { sourceSystem: input.sourceSystem } : {}), error: entry.error, approximate: entry.error > 0, evidenceIds: evidenceIds.slice(0, 16) })
+            metadata: toJsonValue({ profileId: input.profile.id, ...(sourceSystem ? { sourceSystem: sourceSystem } : {}), error: entry.error, approximate: entry.error > 0, evidenceIds: evidenceIds.slice(0, 16) })
           } satisfies NgramObservation;
         });
       });
       const kneserNeyModels = [trainKneserNey(symbols, { order: maxOrder, discount: 0.75, vocabularyLimit: input.vocabularyLimit ?? 24000 })];
       const models = kneserNeyModels.map(model => ({
-        id: options.idFactory.semanticId("ngram_model", { streamId: input.streamId, profileId: input.profile.id, languageHint, order: model.order, sourceVersionId: input.sourceVersionId }),
+        id: canonicalNgramModelId({ streamId: input.streamId, sourceSystem, profileId: input.profile.id, languageHint, order: model.order, sourceVersionId: input.sourceVersionId, hasher: options.hasher }),
         streamId: input.streamId,
         languageHint,
         maxOrder: model.order,
@@ -110,23 +115,23 @@ export function createNgramMemoryCompiler(options: { idFactory: IdFactory; hashe
         modelJson: toJsonValue({
           sourceVersionId: input.sourceVersionId,
           profileId: input.profile.id,
-          ...(input.sourceSystem ? { sourceSystem: input.sourceSystem } : {}),
+          ...(sourceSystem ? { sourceSystem: sourceSystem } : {}),
           languageHint,
           model: persistedKneserNey(model),
           compact: compactKneserNeyForProfile(model, input.text)
         }),
         updatedAt: input.createdAt
       } satisfies NgramModelRecord));
-      const units = compileLanguageUnits({ profile: input.profile, sourceVersionId: input.sourceVersionId, sourceSystem: input.sourceSystem, symbols, graphemes, evidenceIds, alpha, idFactory: options.idFactory, hasher: options.hasher });
-      const patterns = compileLanguagePatterns({ profile: input.profile, sourceVersionId: input.sourceVersionId, sourceSystem: input.sourceSystem, text: input.text, symbols, evidence: input.evidence, evidenceIds, createdAt: input.createdAt, idFactory: options.idFactory, hasher: options.hasher });
-      const semanticFrames = input.retainSemanticFrames === false ? [] : input.evidence.slice(0, 512).map((span, index) => semanticFrameForSpan(
+      const units = formalCode ? [] : compileLanguageUnits({ profile: input.profile, sourceVersionId: input.sourceVersionId, sourceSystem: sourceSystem, symbols, graphemes, evidenceIds, alpha, idFactory: options.idFactory, hasher: options.hasher });
+      const patterns = formalCode ? [] : compileLanguagePatterns({ profile: input.profile, sourceVersionId: input.sourceVersionId, sourceSystem: sourceSystem, text: input.text, symbols, evidence: input.evidence, evidenceIds, createdAt: input.createdAt, idFactory: options.idFactory, hasher: options.hasher });
+      const semanticFrames = formalCode || input.retainSemanticFrames === false ? [] : input.evidence.slice(0, 512).map((span, index) => semanticFrameForSpan(
         span,
         index,
         input.profile.id,
         options.idFactory,
         options.hasher,
         input.createdAt,
-        input.sourceSystem
+        sourceSystem
       ));
       return {
         observations,
@@ -137,11 +142,13 @@ export function createNgramMemoryCompiler(options: { idFactory: IdFactory; hashe
         audit: toJsonValue({
           streamId: input.streamId,
           sourceVersionId: input.sourceVersionId,
-          sourceSystem: input.sourceSystem ?? null,
+          sourceSystem: sourceSystem ?? null,
           languageHint,
-          surfaceLatticeId: lattice.latticeId,
-          surfaceLatticeSchema: lattice.latticeSchema,
-          sourceTextHash: lattice.textHash,
+          surfaceLatticeId: lattice?.latticeId ?? null,
+          corpusRole: sourceSystem ? corpusRoleIdForSourceSystem(sourceSystem) : null,
+          surfaceLatticeSchema: lattice?.latticeSchema ?? null,
+          sourceTextHash: lattice?.textHash ?? options.hasher.digestHex(input.text),
+          trainingOptions: { maxOrder, maxCountersPerOrder: maxCounters, vocabularyLimit: input.vocabularyLimit ?? 24000 },
           symbolCount: symbols.length,
           graphemeCount: graphemes.length,
           orders: counters.map(counter => ({ order: counter.order, retained: counter.size, total: counter.total })),

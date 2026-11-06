@@ -1,0 +1,2 @@
+# Preserve the pinned source excerpt's original bytes across platforms.
+packages/kernel/src/__tests__/fixtures/pride-and-prejudice-context-excerpt.txt -text whitespace=cr-at-eol,-blank-at-eof

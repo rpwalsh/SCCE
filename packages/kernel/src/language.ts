@@ -116,6 +116,23 @@ export function buildLanguageProfileClusters(profiles: readonly LanguageProfile[
     .sort((left, right) => compareCodePoint(left.id, right.id));
 }
 
+/** Pairwise compatibility uses clustering's own measurements without merging profile identities. */
+export function languageProfileCompatibility(left: LanguageProfile, right: LanguageProfile): {
+  status: "compatible" | "incompatible" | "unmeasured";
+  basis: "source_owned_identity_conflict" | "distribution_cluster" | "surface_distribution_absent";
+  score?: number;
+} {
+  if (verifiedAliasesConflict(left, right)) return { status: "incompatible", basis: "source_owned_identity_conflict" };
+  const leftFeatures = distributionFeatures(left);
+  const rightFeatures = distributionFeatures(right);
+  if (!leftFeatures.characterTotal || !rightFeatures.characterTotal || !leftFeatures.trigramTotal || !rightFeatures.trigramTotal) {
+    return { status: "unmeasured", basis: "surface_distribution_absent" };
+  }
+  const score = profileDistributionFit(left, right).score;
+  return { status: profileIndexBucket(left) === profileIndexBucket(right) && score >= MIN_CLUSTER_DISTRIBUTION_FIT
+    ? "compatible" : "incompatible", basis: "distribution_cluster", score };
+}
+
 /** Deterministic provisional fallback over learned artifact/source support. */
 export function selectDominantLanguageProfileCluster(
   clusters: readonly LanguageProfileCluster[]

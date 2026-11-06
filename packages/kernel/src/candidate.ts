@@ -746,10 +746,11 @@ function proofAnswer(input: {
       && input.ownerSessionEvidenceIds?.has(String(span.id)) === true
       && boundEvidenceSurface([span.id], input.evidence) === answer)
     .map(span => span.id);
+  const availableEvidenceIds = new Set(input.evidence.map(span => String(span.id)));
   const candidateEvidenceIds = [...new Set([
     ...input.entailment.evidenceIds,
     ...surfacedOwnerEvidenceIds
-  ])];
+  ])].filter(id => availableEvidenceIds.has(String(id)));
   return {
     id: candidateId("proof", input.entailment, answer),
     kind: "proof-answer",

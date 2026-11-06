@@ -43,7 +43,7 @@ describe("a zero-evidence conversational turn hydrates a population it can speak
     expect(role.languageId).not.toBeNull();
 
     // And the mouth realizes with that population resident, not with an empty substrate.
-    const mouth = support(last.trace, "mouth.deterministic.select") as {
+    const mouth = support(last.trace, "mouth.surface_contract") as {
       modelsHydrated: number;
       modelsByCorpus: Record<string, number>;
       closedClassSample: string[];

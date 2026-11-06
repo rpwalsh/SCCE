@@ -6,6 +6,13 @@ import {
   createHasher,
   createIdFactory,
   createScceKernel,
+  createLanguageMemoryRuntime,
+  DEFAULT_NGRAM_SETTINGS,
+  type NgramModelRecord,
+  type LanguagePatternRecord,
+  type LanguageUnitRecord,
+  type SemanticFrameRecord,
+  type LanguageProfile,
   featureSet,
   type AlphaTrace,
   type BuildTestResult,
@@ -28,9 +35,30 @@ import {
 import type { EventRangeQuery } from "../storage.js";
 import type { EpisodeId } from "../types.js";
 import { filterEpisodeEvents, filterEventRange } from "./event-range-fixture.js";
+import { compilationArtifactIds, ownedSourceFixture } from "./owned-source-fixture.js";
 import { sessionOwnerObservationSurface } from "../kernel.js";
 
 describe("kernel training", () => {
+  it("rolls back compiled language models and a new profile when a source-group form write fails", async () => {
+    const clock = createClock({ fixedTime: 900, stepMs: 1 });
+    const hasher = createHasher();
+    const ids = createIdFactory({ clock, hasher, deterministicReplay: true });
+    const eligible = evidenceSpan({ id: "evidence:atomic-training", sourceVersionId: "source:atomic-training" as SourceVersionId,
+      text: "Zephyr valve pressure remains stable after calibration.", trust: 0.95, alpha: 0.94, status: "quarantined" });
+    const fixture = storageFixture({ evidence: [eligible], clockNow: () => clock.now() });
+    fixture.storage.languageMemory.putLanguageUnit = async () => { throw new Error("source-group form write failed"); };
+    const kernel = createScceKernel({ storage: fixture.storage, files: { streamPath: async function* () {} },
+      buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+      idFactory: ids, clock, deterministicReplay: true });
+    await expect(kernel.train({ config: { learningGoals: ["Zephyr valve pressure calibration"], promotion: { minTrust: 0.45 } } })).rejects.toThrow("source-group form write failed");
+    expect(fixture.transactions).toBe(1);
+    expect(fixture.languageWrites).toEqual({ observations: 0, models: 0, units: 0, patterns: 0, semanticFrames: 0 });
+    expect(fixture.learned.models).toEqual([]);
+    expect(fixture.learned.profiles).toEqual([]);
+    expect(fixture.languageProfilesCreated).toBe(0);
+    expect(fixture.writtenModel).toBeUndefined();
+  });
+
   it("promotes only orchestrator-selected evidence and trains language memory from it", async () => {
     const clock = createClock({ fixedTime: 1000, stepMs: 1 });
     const hasher = createHasher();
@@ -71,19 +99,88 @@ describe("kernel training", () => {
 
     expect(result.promotedEvidence).toBe(1);
     expect(fixture.promotedIds).toEqual([String(eligible.id)]);
-    expect(fixture.languageWrites.observations).toBeGreaterThan(0);
+    expect(fixture.languageWrites.observations).toBe(0);
+    expect(fixture.transactions).toBe(1);
+    expect(fixture.languageWriteDepths.every(depth => depth > 0)).toBe(true);
     expect(fixture.languageWrites.models).toBeGreaterThan(0);
     expect(fixture.languageWrites.units).toBeGreaterThan(0);
     expect(fixture.languageWrites.patterns).toBeGreaterThan(0);
     expect(fixture.languageWrites.semanticFrames).toBeGreaterThan(0);
     expect(fixture.languageProfilesCreated).toBe(1);
     expect(fixture.writtenModel?.trainingSteps).toBe(1);
+    const reference = createLanguageMemoryRuntime({ idFactory: ids, hasher }).observe({ streamId: "generic-retained-counts", profile: fixture.learned.profiles[0]!,
+      sourceVersionId, sourceSystem: "workspace", text: eligible.text, evidence: [eligible], createdAt: 1, maxOrder: DEFAULT_NGRAM_SETTINGS.maxOrder,
+      maxCountersPerOrder: 12000, vocabularyLimit: 24000 });
+    expect(reference.observations.length).toBeGreaterThan(0);
+    expect((fixture.learned.models[0]!.modelJson as { model: JsonValue }).model).toEqual((reference.models[0]!.modelJson as { model: JsonValue }).model);
+    expect(fixture.learned.units.map(unit => [unit.unitKind, unit.text])).toEqual(reference.units.map(unit => [unit.unitKind, unit.text]));
+    expect(fixture.learned.patterns.filter(pattern => pattern.patternKind !== "source_compilation").map(pattern => pattern.patternKind)).toEqual(reference.patterns.map(pattern => pattern.patternKind));
+    const live = createLanguageMemoryRuntime().hydrate({ models: fixture.learned.models, units: fixture.learned.units, patterns: fixture.learned.patterns });
+    expect(live.models).toHaveLength(1);
+    expect((fixture.learned.models[0]!.modelJson as { sourceSystem: string }).sourceSystem).toBe("workspace");
+    expect(live.observedSymbolCount).toBeGreaterThan(0);
     const promotedEvent = fixture.events.find(event => event.typeId === "LearningPromoted");
     expect(promotedEvent).toBeDefined();
     const payload = promotedEvent?.payload as { selectedEvidenceIds?: string[]; trainingPromotion?: Array<{ evidenceId: string; promote: boolean }> };
     expect(payload.selectedEvidenceIds).toEqual([String(eligible.id)]);
     expect(payload.trainingPromotion?.find(item => item.evidenceId === String(eligible.id))?.promote).toBe(true);
     expect(payload.trainingPromotion?.find(item => item.evidenceId === String(rejected.id))?.promote).toBe(false);
+    let modelReads = 0;
+    const listModels = fixture.storage.languageMemory.listNgramModels;
+    fixture.storage.languageMemory.listNgramModels = async query => { modelReads += 1; return listModels(query); };
+    fixture.storage.model.listLanguageProfiles = async () => fixture.learned.profiles;
+    await kernel.turn({ text: "Zephyr valve pressure stabilizes after calibration." });
+    expect(modelReads).toBeGreaterThan(0);
+  });
+
+  it.each(["owner", "source-system"])("rejects conflicting %s declarations before writing a trained source model", async kind => {
+    const clock = createClock({ fixedTime: 1700, stepMs: 1 });
+    const hasher = createHasher();
+    const ids = createIdFactory({ clock, hasher, deterministicReplay: true });
+    const first = evidenceSpan({ id: "evidence:declared-first", sourceVersionId: "source:declared" as SourceVersionId,
+      text: "Zephyr valve pressure remains stable after calibration.", trust: 0.95, alpha: 0.94, status: "quarantined" });
+    const second = evidenceSpan({ id: "evidence:declared-second", sourceVersionId: first.sourceVersionId,
+      text: "Orion outlet measurement reaches forty units before inspection.", trust: 0.96, alpha: 0.95, status: "quarantined" });
+    if (kind === "owner") second.sourceId = "source:other-owner" as SourceId;
+    else second.provenance = { sourceSystem: "oss_code" };
+    const fixture = storageFixture({ evidence: [first, second], clockNow: () => clock.now() });
+    const kernel = createScceKernel({ storage: fixture.storage, files: { streamPath: async function* () {} },
+      buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+      idFactory: ids, clock, deterministicReplay: true });
+    await expect(kernel.train({ config: { learningGoals: ["Zephyr valve pressure and Orion outlet measurement"], promotion: { minTrust: 0.45 } } })).rejects.toThrow(/conflicting/);
+    expect(fixture.learned.models).toEqual([]);
+    expect(fixture.languageProfilesCreated).toBe(0);
+  });
+
+  it("reuses canonical source models across repeated training plans and versions only changed source content", async () => {
+    const clock = createClock({ fixedTime: 1800, stepMs: 1 });
+    const hasher = createHasher();
+    const ids = createIdFactory({ clock, hasher, deterministicReplay: true });
+    const original = evidenceSpan({ id: "evidence:stable-training", sourceVersionId: "source:stable-training:v1" as SourceVersionId,
+      text: "Zephyr valve pressure remains stable after calibration.", trust: 0.95, alpha: 0.94, status: "quarantined" });
+    const evidence = [original];
+    const fixture = storageFixture({ evidence, clockNow: () => clock.now() });
+    const kernel = createScceKernel({ storage: fixture.storage, files: { streamPath: async function* () {} },
+      buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+      idFactory: ids, clock, deterministicReplay: true });
+    const input = { config: { learningGoals: ["Zephyr valve pressure calibration"], promotion: { minTrust: 0.45 } } };
+    await kernel.train(input);
+    const first = fixture.learned.models[0]!;
+    const firstModelIds = fixture.learned.models.map(row => row.id);
+    const mass = createLanguageMemoryRuntime().hydrate({ models: fixture.learned.models }).observedSymbolCount;
+    await kernel.train(input);
+    expect(fixture.learned.models.map(row => row.id)).toEqual(firstModelIds);
+    expect(createLanguageMemoryRuntime().hydrate({ models: fixture.learned.models }).observedSymbolCount).toBe(mass);
+    expect(fixture.languageProfilesCreated).toBe(1);
+    expect(fixture.languageWrites.observations).toBe(0);
+    expect(fixture.events.filter(event => event.typeId === "LearningPlanBuilt").length).toBeGreaterThan(1);
+    const changed = evidenceSpan({ id: "evidence:stable-training:v2", sourceVersionId: "source:stable-training:v2" as SourceVersionId,
+      text: "Zephyr valve pressure reaches forty units after calibration.", trust: 0.95, alpha: 0.94, status: "quarantined" });
+    evidence.splice(0, 1, changed);
+    await kernel.train(input);
+    expect(fixture.learned.models).toHaveLength(2);
+    expect(fixture.learned.models.find(row => row.id === first.id)?.modelJson).toEqual(first.modelJson);
+    expect((fixture.learned.models.find(row => row.id !== first.id)!.modelJson as { sourceVersionId: string }).sourceVersionId).toBe(changed.sourceVersionId);
   });
 
   it("does not promote a large batch of near-duplicate low-trust evidence by volume alone (plan item 22)", async () => {
@@ -393,7 +490,7 @@ function evidenceSpan(input: { id: string; sourceVersionId: SourceVersionId; tex
     languageHints: { language: "fixture" },
     scriptHints: { script: "Latn" },
     trustVector: input.trustVector ?? { trust: input.trust, sourceTrust: input.trust, structuralConfidence: input.trust },
-    provenance: input.provenance ?? { namespace: "local", source: "kernel-training-test" },
+    provenance: { sourceSystem: "workspace", ...(input.provenance && typeof input.provenance === "object" && !Array.isArray(input.provenance) ? input.provenance : { namespace: "local", source: "kernel-training-test" }) },
     features: featureSet(input.text, 256),
     status: input.status,
     alpha: input.alpha,
@@ -420,6 +517,9 @@ function storageFixture(input: { evidence: EvidenceSpan[]; clockNow: () => numbe
   languageProfilesCreated: number;
   languageWrites: { observations: number; models: number; units: number; patterns: number; semanticFrames: number };
   writtenModel?: ModelState;
+  transactions: number;
+  languageWriteDepths: number[];
+  learned: { profiles: LanguageProfile[]; models: NgramModelRecord[]; units: LanguageUnitRecord[]; patterns: LanguagePatternRecord[]; frames: SemanticFrameRecord[] };
 } {
   const events: ScceEvent[] = [];
   const promotedIds: string[] = [];
@@ -427,8 +527,25 @@ function storageFixture(input: { evidence: EvidenceSpan[]; clockNow: () => numbe
   let writtenModel: ModelState | undefined;
   let evidenceSearchCalls = 0;
   const languageWrites = { observations: 0, models: 0, units: 0, patterns: 0, semanticFrames: 0 };
+  let transactions = 0;
+  let transactionDepth = 0;
+  const languageWriteDepths: number[] = [];
+  const learned = { profiles: [] as LanguageProfile[], models: [] as NgramModelRecord[], units: [] as LanguageUnitRecord[], patterns: [] as LanguagePatternRecord[], frames: [] as SemanticFrameRecord[] };
+  const ownedSources = ownedSourceFixture(input.evidence);
   const currentGraph = () => graphSlice(input.evidence);
   const storage = {
+    transaction: async <T>(operation: () => Promise<T>) => {
+      transactions++;
+      const before = { writes: { ...languageWrites }, profilesCreated: languageProfilesCreated, lengths: Object.values(learned).map(rows => rows.length) };
+      transactionDepth++;
+      try { return await operation(); }
+      catch (error) {
+        Object.assign(languageWrites, before.writes);
+        languageProfilesCreated = before.profilesCreated;
+        Object.values(learned).forEach((rows, index) => rows.splice(before.lengths[index]!));
+        throw error;
+      } finally { transactionDepth--; }
+    },
     events: {
       append: async (event: ScceEvent) => { events.push(event); },
       appendBatch: async (rows: ScceEvent[]) => { events.push(...rows); },
@@ -461,7 +578,7 @@ function storageFixture(input: { evidence: EvidenceSpan[]; clockNow: () => numbe
         evidenceSearchCalls++;
         return input.evidence.map(span => ({ span, score: span.alpha, reason: "fixture" }));
       },
-      sourceVersionsForEvidence: async () => []
+      sourceVersionsForEvidence: ownedSources.sourcesForEvidence
     },
     quarantine: {
       put: async () => undefined,
@@ -472,21 +589,22 @@ function storageFixture(input: { evidence: EvidenceSpan[]; clockNow: () => numbe
     model: {
       readModel: async (): Promise<ModelState> => ({ languageProfiles: [], latentConcepts: [], learnedProgramPatterns: [], learningGoals: [], trainingSteps: 0 }),
       writeModel: async (model: ModelState) => { writtenModel = model; },
-      putLanguageProfile: async () => { languageProfilesCreated++; },
-      listLanguageProfiles: async () => []
+      putLanguageProfile: async (profile: LanguageProfile) => { languageWriteDepths.push(transactionDepth); learned.profiles.push(profile); languageProfilesCreated++; },
+      listLanguageProfiles: async (query: Parameters<ScceStorage["model"]["listLanguageProfiles"]>[0]) => learned.profiles.filter(profile => typeof query !== "object" || !query.sourceVersionIds || query.sourceVersionIds.includes(profile.sourceVersionId))
     },
     languageMemory: {
+      listSourceCompilationArtifactIds: async (query: Parameters<NonNullable<ScceStorage["languageMemory"]["listSourceCompilationArtifactIds"]>>[0]) => compilationArtifactIds(query.family === "semanticFrames" ? learned.frames : learned[query.family], query),
       putNgramObservation: async () => { languageWrites.observations++; },
       putNgramObservationsBatch: async (observations: readonly unknown[]) => { languageWrites.observations += observations.length; },
-      putNgramModel: async () => { languageWrites.models++; },
-      putLanguageUnit: async () => { languageWrites.units++; },
-      putLanguagePattern: async () => { languageWrites.patterns++; },
-      putSemanticFrame: async () => { languageWrites.semanticFrames++; },
+      putNgramModel: async (row: NgramModelRecord) => { languageWriteDepths.push(transactionDepth); const prior = learned.models.findIndex(model => model.id === row.id); if (prior >= 0) learned.models[prior] = row; else learned.models.push(row); languageWrites.models++; },
+      putLanguageUnit: async (row: LanguageUnitRecord) => { languageWriteDepths.push(transactionDepth); learned.units.push(row); languageWrites.units++; },
+      putLanguagePattern: async (row: LanguagePatternRecord) => { languageWriteDepths.push(transactionDepth); learned.patterns.push(row); languageWrites.patterns++; },
+      putSemanticFrame: async (row: SemanticFrameRecord) => { languageWriteDepths.push(transactionDepth); learned.frames.push(row); languageWrites.semanticFrames++; },
       putTranslationAlignment: async () => undefined,
-      listNgramModels: async () => [],
+      listNgramModels: async (query: Parameters<ScceStorage["languageMemory"]["listNgramModels"]>[0]) => learned.models.filter(row => (!query?.sourceSystem || (row.modelJson as { sourceSystem?: string }).sourceSystem === query.sourceSystem) && (!query?.profileIds?.length || query.profileIds.includes((row.modelJson as { profileId: string }).profileId))),
       listNgramObservations: async () => [],
       listLanguageUnits: async () => [],
-      listLanguagePatterns: async () => [],
+      listLanguagePatterns: async (query: Parameters<ScceStorage["languageMemory"]["listLanguagePatterns"]>[0]) => learned.patterns.filter(row => (query?.patternKind ? row.patternKind === query.patternKind : row.patternKind !== "source_compilation") && (!query?.profileIds || query.profileIds.includes(row.profileId))).slice(0, query?.limit ?? learned.patterns.length),
       listSemanticFrames: async () => [],
       listTranslationAlignments: async () => []
     },
@@ -501,7 +619,7 @@ function storageFixture(input: { evidence: EvidenceSpan[]; clockNow: () => numbe
     migrate: async () => undefined,
     verify: async () => ({ ok: true, tables: [], errors: [] }),
     close: async () => undefined,
-    blobs: unusedStore(),
+    blobs: ownedSources.blobs,
     ingestion: unusedStore(),
     proofs: unusedStore(),
     constructs: unusedStore(),
@@ -588,6 +706,9 @@ function storageFixture(input: { evidence: EvidenceSpan[]; clockNow: () => numbe
     get evidenceSearchCalls() { return evidenceSearchCalls; },
     get languageProfilesCreated() { return languageProfilesCreated; },
     languageWrites,
+    learned,
+    languageWriteDepths,
+    get transactions() { return transactions; },
     get writtenModel() { return writtenModel; }
   };
 }

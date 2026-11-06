@@ -14,15 +14,16 @@ import { routeStoreCounts, sumRecord } from "./ingestion-diagnostics.js";
 import { inlineIngestStream } from "./inline-ingest-source.js";
 import { jsonRecord, kernelString } from "./kernel-answer-primitives.js";
 import { createLanguageMemoryRuntime } from "./language-memory-runtime.js";
+import { sourceLanguageTrainingStreamId } from "./source-language-training-identity.js";
 import {
   compileLanguageTrainingBatch,
   observeLanguageTrainingSegmentation
 } from "./language-training-batch.js";
-import { corpusRoleIdForSourceSystem, DEFAULT_NGRAM_SETTINGS } from "./corpus-registry.js";
+import { CORPUS_SOURCE_SYSTEM_IDS, canonicalCorpusSourceSystemId, corpusSourceAlias, corpusRoleIdForSourceSystem, DEFAULT_NGRAM_SETTINGS } from "./corpus-registry.js";
 import {
   createLanguageAcquisitionEngine
 } from "./language.js";
-import { createClock, createHasher, toJsonValue, sourceTextSurface } from "./primitives.js";
+import { canonicalStringify, createClock, createHasher, toJsonValue, sourceTextSurface } from "./primitives.js";
 import {
   informationLabelAllowsRead,
   joinInformationLabels,
@@ -221,10 +222,18 @@ export function createIngestionRuntime(options: {
         // source-qualified assertions.  Do not honor a caller supplied
         // "promoted" tag here: promotion is a proof outcome, never an ingest
         // option.
-        const sourceMetadata = assertedSourceMetadata(file.metadata, input.sourceAdmission);
+        const suppliedMetadata = jsonRecord(file.metadata);
+        const declaredSystem = kernelString(suppliedMetadata.sourceSystem);
+        const declaredSystemId = kernelString(suppliedMetadata.sourceSystemId);
+        const sourceSystemId = declaredSystem ? canonicalCorpusSourceSystemId(declaredSystem) : declaredSystemId ?? CORPUS_SOURCE_SYSTEM_IDS.workspace;
+        if (declaredSystemId && declaredSystemId !== sourceSystemId) throw new Error(`ingestion source ${file.uri} has conflicting source system declarations`);
+        const sourceSystem = corpusSourceAlias(declaredSystem ?? sourceSystemId);
+        const sourceMetadata = assertedSourceMetadata(toJsonValue({ ...suppliedMetadata, sourceSystem, sourceSystemId }), input.sourceAdmission);
         const sourceId = idFactory.sourceId(file.namespace, file.uri);
         const originalContentHash = await deps.storage.blobs.put(file.bytes, file.mediaType);
-        const originalSourceVersionId = idFactory.sourceVersionId(file.bytes);
+        const originalSourceVersionId = idFactory.sourceVersionId(canonicalStringify({
+          contract: "scce.owned-source-version.v1", role: "original", sourceId, contentHash: originalContentHash
+        }));
         const originalSource: SourceVersion = {
           sourceId,
           sourceVersionId: originalSourceVersionId,
@@ -273,7 +282,12 @@ export function createIngestionRuntime(options: {
           ? await deps.storage.blobs.put(sourceBytes, derivativeMediaType)
           : originalContentHash;
         const sourceVersionId = derivative
-          ? idFactory.sourceVersionId(sourceBytes)
+          ? idFactory.sourceVersionId(canonicalStringify({
+            contract: "scce.owned-source-version.v1", role: "evidence-derivative", sourceId,
+            parentSourceVersionId: originalSourceVersionId, contentHash,
+            transform: { kind: derivative.kind, transformId: derivative.transformId,
+              originalCoordinateSpace: derivative.originalCoordinateSpace, redactionMap: derivative.redactionMap }
+          }))
           : originalSourceVersionId;
         const source: SourceVersion = derivative
           ? {
@@ -508,10 +522,11 @@ export function createIngestionRuntime(options: {
           runtime: languageMemoryRuntime,
           hasher,
           batch: {
-            streamId: file.uri,
-            sourceSystem: kernelString(jsonRecord(file.metadata).sourceSystem),
+            streamId: sourceLanguageTrainingStreamId({ sourceId, sourceVersionId, sourceSystem, hasher }),
+            sourceSystem,
             profile,
             sourceVersionId,
+            canonicalSource: { sourceId, contentHash: source.contentHash },
             text: languageTrainingText,
             evidence: admittedSpans,
             createdAt: now,
@@ -519,6 +534,7 @@ export function createIngestionRuntime(options: {
             // cost several times the training; see tools/prose-order-calibration.
             maxOrder: DEFAULT_NGRAM_SETTINGS.maxOrder,
             maxCountersPerOrder: 12000,
+            retainNgramObservations: false,
             vocabularyLimit: 24000,
             // THE ZERO-PRODUCING GATE. compileLanguageTrainingBatch gates
             // its entire alignment -> reversible-construction branch on
@@ -552,7 +568,6 @@ export function createIngestionRuntime(options: {
             ]
           }
         });
-        const sourceSystem = kernelString(jsonRecord(file.metadata).sourceSystem) ?? "workspace";
         const spacingEvidence = await observeLanguageTrainingSegmentation({
           storage: deps.storage,
           batch: { text: languageTrainingText, createdAt: now },
@@ -577,7 +592,6 @@ export function createIngestionRuntime(options: {
             })
           })));
         }
-        const observations = labelRecords(compiledBatch.observations, informationLabel);
         const models = labelRecords(compiledBatch.models, informationLabel);
         const units = labelRecords(compiledBatch.units, informationLabel);
         const learnedPatterns = labelRecords(compiledBatch.patterns, informationLabel);
@@ -587,7 +601,6 @@ export function createIngestionRuntime(options: {
         const labeledRequestRequirementPatterns = learnedPatterns.filter(pattern => requestRequirementPatternIds.has(pattern.id));
         const otherLearnedPatterns = learnedPatterns.filter(pattern => !requestRequirementPatternIds.has(pattern.id));
         const semanticFrames = labelRecords(compiledBatch.semanticFrames, informationLabel);
-        await deps.storage.languageMemory.putNgramObservationsBatch(observations);
         if (deps.storage.languageMemory.putNgramModels) await deps.storage.languageMemory.putNgramModels(models);
         else for (const model of models) await deps.storage.languageMemory.putNgramModel(model);
         if (deps.storage.languageMemory.putLanguageUnits) await deps.storage.languageMemory.putLanguageUnits(units);

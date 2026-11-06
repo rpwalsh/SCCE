@@ -1,0 +1,245 @@
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { describe, expect, it } from "vitest";
+import { compileLanguageTrainingBatch } from "../language-training-batch.js";
+import { createLanguageMemoryRuntime } from "../language-memory-runtime.js";
+import { createLanguageAcquisitionEngine } from "../language.js";
+import { createClock, createHasher } from "../primitives.js";
+import { createIdFactory } from "../ids.js";
+import { resolveRequestValueBinding } from "../semantic-answer-construct.js";
+import { sourceConstructionRequestValueResolver } from "../source-construction-request-binding.js";
+import { induceSourceBoundConstructionTrainingSets } from "../graph-surface-alignment.js";
+import { answerCoversRequest } from "../local-evidence-runtime.js";
+import { createEvidenceExtractor } from "../evidence.js";
+import { jsonRecord } from "../kernel-answer-primitives.js";
+import type { EvidenceSpan, GraphNode, GraphSnapshot, Hyperedge } from "../types.js";
+import type { SourceBoundConstructionObservation, SourceConstructionGraphBinding } from "../language-construction-memory.js";
+
+const hasher = createHasher();
+const clock = createClock({ fixedTime: 140_000, stepMs: 1 });
+const ids = createIdFactory({ clock, hasher, deterministicReplay: true, namespace: "typed-request-transfer" });
+
+function evidenceSpan(text: string): EvidenceSpan {
+  const sourceVersionId = ids.sourceVersionId(text);
+  const languageProfile = createLanguageAcquisitionEngine({ idFactory: ids }).acquire({ sourceVersionId, text, createdAt: 140_000 });
+  const extracted = createEvidenceExtractor({ idFactory: ids, hasher }).extract({
+    sourceId: ids.sourceId("fixture", "fixture://declared-source"), sourceVersionId, namespace: "fixture", uri: "fixture://declared-source",
+    mediaType: "text/plain", text, languageProfile, observedAt: 140_000, maxChunkBytes: Buffer.byteLength(text) + 1,
+    sourceTrust: { identity: 1, integrity: 1, parserReliability: 1, directness: 1, authority: 1, freshness: 1, independenceGroup: "fixture", accessScope: "fixture", licenseStatus: "fixture" }
+  });
+  expect(extracted.spans).toHaveLength(1);
+  const span = extracted.spans[0]!;
+  expect(span.text).toBe(text);
+  expect([...text].slice(span.charStart, span.charEnd).join("")).toBe(span.text);
+  expect(Buffer.from(text).subarray(span.byteStart, span.byteEnd).toString()).toBe(span.text);
+  return { ...span, status: "promoted", alpha: 1 };
+}
+
+function teach(input: { subjects: [string, string, string]; marker: string; value: string; valueKind: string; statement?: string; semanticRole?: "entity" | "quantity" }) {
+  const questions = input.subjects.slice(0, 2).map(subject => `${subject} ${input.marker}？`);
+  const text = `${questions.join("\n")}\n${input.statement ?? `${input.subjects[2]} ${input.value}。`}`;
+  const evidence = evidenceSpan(text);
+  const sourceVersionId = evidence.sourceVersionId;
+  const subjectBinding = { relationId: "relation.opaque", roleId: "role.anchor", valueKind: "opaque.entity", semanticRole: "entity" as const };
+  const answerBinding = { relationId: "relation.opaque", roleId: "role.answer", valueKind: input.valueKind, semanticRole: input.semanticRole ?? "quantity" as const };
+  let start = 0;
+  const observations: SourceBoundConstructionObservation[] = questions.map((question, index) => {
+    const observation: SourceBoundConstructionObservation = {
+      sourceVersionId: String(sourceVersionId), evidenceId: String(evidence.id),
+      surfaceStartCodePoint: start, surfaceEndCodePoint: start + [...question].length,
+      roles: [{ slotIndex: 0, startCodePoint: 0, endCodePoint: [...input.subjects[index]!].length, graphBinding: subjectBinding }],
+      nullRoles: [{ slotIndex: 1, graphBinding: answerBinding }]
+    };
+    start += [...question].length + 1;
+    return observation;
+  });
+  const node = (id: string, surface: string) => ({ id, representation: { surface }, metadata: {}, evidenceIds: [evidence.id] }) as unknown as GraphNode;
+  const port = (nodeId: string, roleId: string, valueKind: string) => ({
+    nodeId, portId: roleId, roleId, valueKind, realization: "observed", evidenceIds: [evidence.id]
+  });
+  const graph = {
+    nodes: [node("node.subject", input.subjects[2]), node("node.value", input.value)], edges: [],
+    hyperedges: [{
+      schema: "scce.hyperedge.v2", memberNodeIds: ["node.subject", "node.value"],
+      qualifiers: {}, modality: {}, weightVector: {}, temporalScope: {}, provenanceRefs: [], createdAt: 140_000, updatedAt: 140_000,
+      id: "hyperedge.fact", relationId: "relation.opaque", evidenceIds: [evidence.id],
+      participantPorts: [port("node.subject", "role.anchor", "opaque.entity"), port("node.value", "role.answer", input.valueKind)]
+    } as unknown as Hyperedge]
+  } satisfies GraphSnapshot;
+  const runtime = createLanguageMemoryRuntime({ idFactory: ids, hasher });
+  const profile = createLanguageAcquisitionEngine({ idFactory: ids }).acquire({ sourceVersionId, text, createdAt: 140_000 });
+  const trained = compileLanguageTrainingBatch({
+    runtime, hasher,
+    batch: {
+      streamId: "fixture://typed-request", profile, sourceVersionId, text, evidence: [evidence], createdAt: 140_000,
+      constructionSets: [{ bindingId: "request.opaque", observations }], graphSnapshot: graph
+    }
+  });
+  const restarted = createLanguageMemoryRuntime({ idFactory: ids, hasher }).hydrate({
+    models: [], patterns: trained.constructionPatterns, constructionEvidence: [evidence]
+  });
+  expect(restarted.rejectedConstructionPatterns).toEqual([]);
+  const bundle = restarted.importedConstructionBundles.find(bundle => bundle.bindingId === "request.opaque");
+  expect(bundle).toBeDefined();
+  expect(bundle!.sourceExamples[0]!.nullRoles[0]!.graphBinding).toEqual(answerBinding);
+  const requestText = `${input.subjects[2]} ${input.marker}？`;
+  const resolve = (candidateGraph = graph, spans: EvidenceSpan[] = [evidence], request = requestText) => resolveRequestValueBinding({
+    requestText: request, evidence: spans,
+    resolvers: [sourceConstructionRequestValueResolver({ bundles: restarted.importedConstructionBundles, graph: candidateGraph })]
+  });
+  return { resolve, graph, evidence, requestText, value: input.value, patterns: trained.constructionPatterns };
+}
+
+describe("acquired typed request construction transfer", () => {
+  it.each([
+    { subjects: ["Luma", "Vela", "Zora"], values: ["3-bit", "5-bit", "9-bit"], valueKind: "opaque.width",
+      source: (subject: string, value: string) => `${subject} encodes each code-point as a ${value} integer.`,
+      request: (subject: string) => `How many bits does ${subject} use to encode each code point?` },
+    { subjects: ["甲", "乙", "丙"], values: ["０から１", "２から３", "４から８"], valueKind: "opaque.scale",
+      source: (subject: string, value: string) => `${subject} の尺度は ${value} です。`,
+      request: (subject: string) => `${subject} の尺度を示して？` }
+  ])("learns graph-conditioned source prose and answers a new source's $valueKind through the acquired request form", input => {
+    const anchor: SourceConstructionGraphBinding = { relationId: "relation.conditioned", roleId: "role.subject", valueKind: "opaque.entity" };
+    const valueRole: SourceConstructionGraphBinding = { relationId: "relation.conditioned", roleId: "role.measure", valueKind: input.valueKind };
+    const statements = input.subjects.slice(0, 2).map((subject, index) => input.source(subject, input.values[index]!));
+    const requests = input.subjects.slice(0, 2).map(input.request);
+    const text = [...statements, ...requests].join("\n");
+    const lesson = evidenceSpan(text);
+    const observation = (surface: string, start: number, fields: Array<{ surface: string; binding: SourceConstructionGraphBinding }>, omitted = false): SourceBoundConstructionObservation => ({
+      sourceVersionId: String(lesson.sourceVersionId), evidenceId: String(lesson.id), surfaceStartCodePoint: start, surfaceEndCodePoint: start + [...surface].length,
+      roles: fields.map((field, slotIndex) => {
+        expect(surface.indexOf(field.surface)).toBe(surface.lastIndexOf(field.surface));
+        const startCodePoint = [...surface.slice(0, surface.indexOf(field.surface))].length;
+        return { slotIndex, startCodePoint, endCodePoint: startCodePoint + [...field.surface].length, graphBinding: field.binding };
+      }),
+      nullRoles: omitted ? [{ slotIndex: 1, graphBinding: valueRole }] : []
+    });
+    let offset = 0;
+    const sourceObservations = statements.map((surface, index) => {
+      const result = observation(surface, offset, [{ surface: input.subjects[index]!, binding: anchor }, { surface: input.values[index]!, binding: valueRole }]);
+      offset += [...surface].length + 1;
+      return result;
+    });
+    const requestObservations = requests.map((surface, index) => {
+      const result = observation(surface, offset, [{ surface: input.subjects[index]!, binding: anchor }], true);
+      offset += [...surface].length + 1;
+      return result;
+    });
+    const nodes = input.subjects.slice(0, 2).flatMap((subject, index) => [
+      { id: `subject.${index}`, representation: { surface: subject } }, { id: `value.${index}`, representation: { surface: input.values[index]! } }
+    ]) as unknown as GraphNode[];
+    const graph: GraphSnapshot = { nodes, edges: [], hyperedges: statements.map((_, index) => ({
+      schema: "scce.hyperedge.v2", id: `fact.${index}`, relationId: anchor.relationId, evidenceIds: [lesson.id], memberNodeIds: [`subject.${index}`, `value.${index}`],
+      qualifiers: {}, modality: {}, temporalScope: {}, weightVector: {}, provenanceRefs: [], createdAt: 140_000, updatedAt: 140_000,
+      participantPorts: [anchor, valueRole].map((binding, slotIndex) => ({
+        roleId: binding.roleId, valueKind: binding.valueKind, portId: binding.roleId,
+        nodeId: `${slotIndex === 0 ? "subject" : "value"}.${index}`, realization: "observed", evidenceIds: [lesson.id]
+      }))
+    } as unknown as Hyperedge)) };
+    const profile = createLanguageAcquisitionEngine({ idFactory: ids }).acquire({ sourceVersionId: lesson.sourceVersionId, text, createdAt: 140_000 });
+    const trained = compileLanguageTrainingBatch({ hasher, runtime: createLanguageMemoryRuntime({ hasher, idFactory: ids }), batch: {
+      streamId: "fixture://conditioned-prose", profile, sourceVersionId: lesson.sourceVersionId, text, evidence: [lesson], graphSnapshot: graph, createdAt: 140_000,
+      constructionSets: [{ bindingId: "source.conditioned", observations: sourceObservations }, { bindingId: "request.conditioned", observations: requestObservations }]
+    } });
+    const restarted = createLanguageMemoryRuntime({ hasher, idFactory: ids }).hydrate({ models: [], patterns: trained.constructionPatterns, constructionEvidence: [lesson] });
+    expect(restarted.rejectedConstructionPatterns).toEqual([]);
+    const fresh = evidenceSpan(input.source(input.subjects[2]!, input.values[2]!));
+    const resolver = sourceConstructionRequestValueResolver({ bundles: restarted.importedConstructionBundles, graph: { nodes: [], hyperedges: [] } });
+    const requestText = input.request(input.subjects[2]!);
+    const resolve = (evidence: EvidenceSpan[]) => resolveRequestValueBinding({ requestText, evidence, resolvers: [resolver] });
+    expect(resolve([fresh])).toMatchObject({ value: input.values[2], subject: input.subjects[2], evidenceIds: [String(fresh.id)] });
+    expect(resolve([])).toBeUndefined();
+    expect(resolve([lesson])).toBeUndefined();
+    expect(resolve([evidenceSpan(`${input.subjects[2]} unrelated ${input.values[2]}.`)])).toBeUndefined();
+    expect(resolve([evidenceSpan(input.source(input.subjects[2]!, ""))])).toBeUndefined();
+    expect(resolve([evidenceSpan(input.source(input.subjects[0]!, input.values[2]!))])).toBeUndefined();
+    expect(resolve([evidenceSpan(input.source(input.values[2]!, input.subjects[2]!))])).toBeUndefined();
+    expect(resolve([evidenceSpan(input.source(`¬ ${input.subjects[2]}`, input.values[2]!))])).toBeUndefined();
+    const ambiguous = evidenceSpan(input.source(input.subjects[2]!, input.source(input.subjects[0]!, input.values[2]!)));
+    expect(resolve([ambiguous])).toBeUndefined();
+    expect(resolve([{ ...fresh, status: "quarantined" }])).toBeUndefined();
+    const rival = evidenceSpan(input.source(input.subjects[2]!, input.values[0]!));
+    expect(resolve([fresh, rival])).toBeUndefined();
+    const requestOnly = sourceConstructionRequestValueResolver({ bundles: restarted.importedConstructionBundles.filter(bundle => bundle.bindingId !== "source.conditioned"), graph: { nodes: [], hyperedges: [] } });
+    expect(resolveRequestValueBinding({ requestText, evidence: [fresh], resolvers: [requestOnly] })).toBeUndefined();
+  });
+
+  it("passes a learned category binding into answerhood instead of guessing from the final word or a cased name", () => {
+    const sentence = "Athens is the capital and largest city of Greece.";
+    const fixture = teach({
+      subjects: ["Rome", "Paris", "Athens"], marker: "is the capital of which country", value: "Greece", valueKind: "opaque.country",
+      semanticRole: "entity", statement: sentence
+    });
+    const binding = fixture.resolve();
+    expect(binding?.value).toBe("Greece");
+    const evidence = { ...fixture.evidence, provenance: { ...jsonRecord(fixture.evidence.provenance), title: "Athens" } };
+    const units = ["athens", "capital", "country"];
+    const options = { relationRequired: true, languageClosedClassWords: new Set(["is", "the", "of", "which"]) };
+    expect(answerCoversRequest([sentence], evidence, units, fixture.requestText, options)).toBe(false);
+    expect(answerCoversRequest([sentence], evidence, units, fixture.requestText, { ...options, boundValues: binding ? [binding.value] : [] })).toBe(true);
+    const unrelated = "Athens has ferry services to OtherCity.";
+    expect(answerCoversRequest([unrelated], evidence, units, fixture.requestText, { ...options, boundValues: binding ? [binding.value] : [] })).toBe(false);
+  });
+
+  it("carries available graph-port value kinds into automatically aligned source observations", () => {
+    const evidence = evidenceSpan("甲 結 7。乙 結 9。甲 連 7。乙 連 9。");
+    const graph: GraphSnapshot = {
+      nodes: ["7", "9"].map(value => ({ id: value, representation: { surface: value } } as unknown as GraphNode)), edges: [],
+      hyperedges: ["7", "9"].map(value => ({
+        id: `fact.${value}`, relationId: "relation.opaque", qualifiers: {}, modality: {}, temporalScope: {},
+        participantPorts: [{ nodeId: value, portId: "port.value", roleId: "role.quantity", valueKind: "opaque.quantity", realization: "observed", evidenceIds: [evidence.id] }]
+      } as unknown as Hyperedge))
+    };
+    const sets = induceSourceBoundConstructionTrainingSets({ evidence: [evidence], profileId: "profile.opaque", hasher, graphSnapshot: graph });
+    const typedRoles = sets.flatMap(set => set.observations.flatMap(observation => observation.roles.filter(role => role.graphBinding)));
+    expect(typedRoles.length).toBeGreaterThan(0);
+    expect(typedRoles.every(role => role.graphBinding?.roleId === "role.quantity" && role.graphBinding?.valueKind === "opaque.quantity")).toBe(true);
+    const ambiguous = structuredClone(graph);
+    ambiguous.hyperedges.push(...graph.hyperedges.map(edge => ({
+      ...edge, id: `${edge.id}.other` as Hyperedge["id"], participantPorts: edge.participantPorts.map(port => ({ ...port, roleId: "role.other" }))
+    })));
+    const ambiguousSets = induceSourceBoundConstructionTrainingSets({ evidence: [evidence], profileId: "profile.opaque", hasher, graphSnapshot: ambiguous });
+    expect(ambiguousSets.flatMap(set => set.observations.flatMap(observation => observation.roles.filter(role => role.graphBinding)))).toEqual([]);
+  });
+
+  it.each([
+    { subjects: ["甲", "乙", "丙"] as [string, string, string], marker: "幅", value: "０–１", valueKind: "opaque.scale" },
+    { subjects: ["z1", "z2", "z3"] as [string, string, string], marker: "qv", value: "7", valueKind: "opaque.quantity" },
+    { subjects: ["\u{10400}", "\u{10401}", "\u{10402}"] as [string, string, string], marker: "\u03be", value: "第十六", valueKind: "opaque.ordinal" }
+  ])("learns a request and binds a new subject's exact $valueKind port after restart", input => {
+    const fixture = teach(input);
+    expect(fixture.resolve()).toMatchObject({ value: fixture.value, resolverId: "resolver.acquired_source_construction", evidenceIds: [String(fixture.evidence.id)] });
+    const wrongRole = structuredClone(fixture.graph);
+    wrongRole.hyperedges[0]!.participantPorts[1]!.roleId = "role.other";
+    expect(fixture.resolve(wrongRole)).toBeUndefined();
+    const wrongKind = structuredClone(fixture.graph);
+    wrongKind.hyperedges[0]!.participantPorts[1]!.valueKind = "opaque.unrelated";
+    expect(fixture.resolve(wrongKind)).toBeUndefined();
+    const missingValue = structuredClone(fixture.graph);
+    missingValue.hyperedges[0]!.participantPorts[1]!.realization = "omitted";
+    expect(fixture.resolve(missingValue)).toBeUndefined();
+    const negated = structuredClone(fixture.graph);
+    negated.hyperedges[0]!.modality = { polarity: "negative" };
+    expect(fixture.resolve(negated)).toBeUndefined();
+    const qualified = structuredClone(fixture.graph);
+    qualified.hyperedges[0]!.qualifiers = { scope: "unrelated" };
+    expect(fixture.resolve(qualified)).toBeUndefined();
+    const dated = structuredClone(fixture.graph);
+    dated.hyperedges[0]!.temporalScope = { status: "known", validFrom: 10 };
+    expect(fixture.resolve(dated)).toBeUndefined();
+    expect(fixture.resolve(fixture.graph, [{ ...fixture.evidence, text: "unknown" }])).toBeUndefined();
+    expect(fixture.resolve(fixture.graph, [{ ...fixture.evidence, id: "unowned" as EvidenceSpan["id"] }])).toBeUndefined();
+    expect(fixture.resolve(fixture.graph, [fixture.evidence], `${input.subjects[2]} unseen？`)).toBeUndefined();
+  });
+
+  it("rejects type declarations changed after the source-bound construction was compiled", () => {
+    const fixture = teach({ subjects: ["甲", "乙", "丙"], marker: "幅", value: "０–１", valueKind: "opaque.scale" });
+    const patterns = structuredClone(fixture.patterns.filter(pattern => (pattern.patternJson as { bundle: { bindingId: string } }).bundle.bindingId === "request.opaque"));
+    const pattern = patterns.find(pattern => JSON.stringify(pattern.patternJson).includes('"request.opaque"'))!;
+    const content = pattern.patternJson as unknown as { bundle: { sourceExamples: Array<{ nullRoles: Array<{ graphBinding: { valueKind: string } }> }> } };
+    content.bundle.sourceExamples[0]!.nullRoles[0]!.graphBinding.valueKind = "opaque.unrelated";
+    const restarted = createLanguageMemoryRuntime({ idFactory: ids, hasher }).hydrate({ models: [], patterns, constructionEvidence: [fixture.evidence] });
+    expect(restarted.importedConstructionBundles).toEqual([]);
+    expect(restarted.rejectedConstructionPatterns.length).toBeGreaterThan(0);
+  });
+});

@@ -9,6 +9,11 @@ import {
   createUniversalCreativeEventConstructionCompiler,
   createEvaluationCondition,
   createLanguageAcquisitionEngine,
+  createEvidenceExtractor,
+  createNgramMemoryCompiler,
+  createLanguageMemoryRuntime,
+  deriveClosedClassWords,
+  canonicalCorpusSourceSystemId,
   createScceKernel,
   anchorFeatureSet,
   featureSet,
@@ -1116,7 +1121,33 @@ describe("kernel local evidence source anchoring", () => {
       text: "Ada Lovelace was an English mathematician. She published an algorithm intended for Charles Babbage's Analytical Engine.",
       alpha: 0.94
     });
-    const fixture = storageFixture({ evidence: [ada] });
+    const ids = createIdFactory({ clock, hasher, deterministicReplay: true });
+    const languageText = readFileSync(new URL("./fixtures/pride-and-prejudice-context-excerpt.txt", import.meta.url), "utf8");
+    const provenance = JSON.parse(readFileSync(new URL("./fixtures/pride-and-prejudice-context-excerpt.provenance.json", import.meta.url), "utf8"));
+    expect(hasher.digestHex(Buffer.from(languageText))).toBe(provenance.excerptSha256);
+    const sourceVersionId = ids.sourceVersionId(Buffer.from(languageText));
+    const uri = `${provenance.sourceUri}#opening-chapters`;
+    const profile = createLanguageAcquisitionEngine({ idFactory: ids }).acquire({ sourceVersionId, text: languageText, createdAt: clock.now() });
+    const observed = createEvidenceExtractor({ idFactory: ids, hasher }).extract({
+      sourceId: ids.sourceId("gutenberg", uri), sourceVersionId, namespace: "fixture", uri, mediaType: "text/plain",
+      text: languageText, languageProfile: profile, observedAt: clock.now(), maxChunkBytes: 4096, exactSourceText: true,
+      sourceTrust: { identity: 1, integrity: 1, parserReliability: 1, directness: 1, authority: 1, freshness: 1,
+        independenceGroup: provenance.sourceUri, accessScope: "public", licenseStatus: "public-domain" }
+    }).spans;
+    const compiled = createNgramMemoryCompiler({ idFactory: ids, hasher }).compile({ streamId: uri, sourceSystem: "gutenberg",
+      profile, sourceVersionId, text: languageText, evidence: observed, createdAt: clock.now(), maxOrder: 3,
+      maxCountersPerOrder: 4096, vocabularyLimit: 2048, retainObservations: false });
+    const languageState = createLanguageMemoryRuntime({ idFactory: ids, hasher }).hydrate({ models: compiled.models });
+    const measuredClass = deriveClosedClassWords({ models: languageState.models });
+    for (const symbol of ["what", "about", "her"]) expect(measuredClass.has(symbol), `source-measured scaffolding ${symbol}`).toBe(true);
+    expect(compiled.observations).toEqual([]);
+    expect(compiled.models.every(model => (model.modelJson as Record<string, JsonValue>).sourceVersionId === sourceVersionId)).toBe(true);
+    const fixture = storageFixture({ evidence: [ada], languageProfiles: [profile] });
+    fixture.storage.languageMemory.listNgramModels = async query => compiled.models.filter(model => {
+      const metadata = model.modelJson as Record<string, JsonValue>;
+      return (!query?.profileIds?.length || query.profileIds.includes(profile.id))
+        && (!query?.sourceSystem || canonicalCorpusSourceSystemId(query.sourceSystem) === canonicalCorpusSourceSystemId(String(metadata.sourceSystem)));
+    }).slice(0, query?.limit);
     const kernel = createScceKernel({
       storage: fixture.storage,
       files: { streamPath: async function* () { /* unused */ } },

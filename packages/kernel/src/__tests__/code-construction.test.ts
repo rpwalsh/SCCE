@@ -429,4 +429,16 @@ describe("finding the code corpus in a hydrated language memory", () => {
       updatedAt: 0
     }], "typescript")).toHaveLength(0);
   });
+
+  it.each([
+    { streamId: "corpus:oss_code:src/main.ts#training-chunk-000002", metadata: {} },
+    { streamId: "opaque-stream", metadata: { relativePath: "src/main.ts" } },
+    { streamId: "opaque-stream", metadata: { streamUri: "oss_code:src/main.ts#training-chunk-000002" } }
+  ])("keeps a legacy native code model reachable through its persisted source identity ($streamId)", ({ streamId, metadata }) => {
+    const records = [{ id: "native-code", streamId, languageHint: "script:Latin;direction:ltr", maxOrder: 5, discount: 0.75,
+      modelJson: toJsonValue({ sourceSystem: "oss_code", ...metadata, model: model as unknown as never }), updatedAt: 0 }];
+    expect(codeModelsFromRecords(records, "typescript")).toHaveLength(1);
+    expect(codeModelsFromRecords(records, "python")).toHaveLength(0);
+    expect(codeModelsFromRecords([{ ...records[0]!, modelJson: toJsonValue({ sourceSystem: "oss_docs", ...metadata, model: model as unknown as never }) }], "typescript")).toEqual([]);
+  });
 });

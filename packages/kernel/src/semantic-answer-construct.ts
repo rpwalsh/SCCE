@@ -7,7 +7,7 @@ import { SEMANTIC_SOURCE } from "./semantic-codes.js";
 import { jsonRecord, namedSubjectAnchors, normalizePriorKey, splitPriorUnits } from "./kernel-answer-primitives.js";
 import { requestContentEvidenceUnits, requestUnitSharesStem } from "./local-evidence-runtime.js";
 import { factualRoundTripGate } from "./semantic-round-trip.js";
-import { surfaceWords } from "./surface-linguistics.js";
+import { surfaceContainsBoundValue, surfaceWords } from "./surface-linguistics.js";
 
 export interface SemanticAnswerConstructFact {
   subject: string;
@@ -97,6 +97,7 @@ export interface RequestValueBinding {
   relation: string;
   value: string;
   resolverId: string;
+  relationId?: string;
   /** The admitted spans the value was verified to occur in -- not every span of the turn. */
   evidenceIds: readonly string[];
 }
@@ -104,7 +105,15 @@ export interface RequestValueBinding {
 /** What a request's relation binds to in the evidence admitted for it, or nothing. Supplied by the turn, never by this module. */
 export interface RequestValueResolver {
   id: string;
-  resolve(requestText: string, evidence: readonly EvidenceSpan[]): string | undefined;
+  resolve(requestText: string, evidence: readonly EvidenceSpan[]): string | ResolvedRequestValue | undefined;
+}
+
+export interface ResolvedRequestValue {
+  value: string;
+  evidenceIds: readonly string[];
+  subject?: string;
+  relation?: string;
+  relationId?: string;
 }
 
 /**
@@ -119,17 +128,22 @@ export function resolveRequestValueBinding(input: {
   resolvers: readonly RequestValueResolver[];
 }): RequestValueBinding | undefined {
   for (const resolver of input.resolvers) {
-    const value = resolver.resolve(input.requestText, input.evidence);
+    const resolved = resolver.resolve(input.requestText, input.evidence);
+    if (!resolved) continue;
+    const value = typeof resolved === "string" ? resolved : resolved.value;
     if (!value) continue;
-    const folded = value.toLocaleLowerCase();
+    const evidenceIds = input.evidence
+      .filter(span => typeof resolved === "string" || resolved.evidenceIds.includes(String(span.id)))
+      .filter(span => surfaceContainsBoundValue(String(span.text || span.textPreview || ""), value))
+      .map(span => String(span.id));
+    if (!evidenceIds.length) continue;
     return {
-      subject: namedSubjectAnchors(input.requestText)[0] ?? "",
-      relation: requestRelationUnits(input.requestText).join(" ") || "is",
+      subject: (typeof resolved === "string" ? undefined : resolved.subject) ?? namedSubjectAnchors(input.requestText)[0] ?? "",
+      relation: (typeof resolved === "string" ? undefined : resolved.relation) ?? (requestRelationUnits(input.requestText).join(" ") || "is"),
+      ...(typeof resolved !== "string" && resolved.relationId ? { relationId: resolved.relationId } : {}),
       value,
       resolverId: resolver.id,
-      evidenceIds: input.evidence
-        .filter(span => String(span.text || span.textPreview || "").toLocaleLowerCase().includes(folded))
-        .map(span => String(span.id))
+      evidenceIds
     };
   }
   return undefined;
@@ -233,8 +247,7 @@ export function candidateSurvivesRealizationContract(
   const missingRelationUnits = contract.requiredRelationUnits.filter(unit =>
     !surfaceUnits.some(surfaceUnit => requestUnitSharesStem(unit, surfaceUnit)));
   const boundValues = Object.values(contract.boundValues).filter(Boolean);
-  const candidateNormalized = candidateText.toLocaleLowerCase();
-  const requestedSlotSatisfied = boundValues.every(value => candidateNormalized.includes(value.toLocaleLowerCase()));
+  const requestedSlotSatisfied = boundValues.every(value => surfaceContainsBoundValue(candidateText, value));
   const survives = missingRelationUnits.length === 0 && requestedSlotSatisfied;
   return {
     survives,

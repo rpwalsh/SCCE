@@ -23,12 +23,18 @@ export const BOUNDED_ALIGNMENT_EVENT_SCHEMA_SHARED =
   "scce.sparse_alignment_candidate_blob_event.v2" as const;
 export const BOUNDED_ALIGNMENT_PART_SCHEMA_SHARED =
   "scce.sparse_alignment_candidate_blob_part.v3" as const;
+export const BOUNDED_ALIGNMENT_EVENT_SCHEMA_COMPRESSED =
+  "scce.sparse_alignment_candidate_blob_event.v3" as const;
+export const BOUNDED_ALIGNMENT_EVENT_SCHEMA_SHARED_COMPRESSED =
+  "scce.sparse_alignment_candidate_blob_event.v4" as const;
+export const BOUNDED_ALIGNMENT_PART_SCHEMA_COMPRESSED =
+  "scce.sparse_alignment_candidate_blob_part.v4" as const;
 export const BOUNDED_ALIGNMENT_PART_MEDIA_TYPE = "application/json";
 const SHARED_ALIGNMENT_SERIES_SCHEMA = "scce.sparse_alignment_shared_series.v1" as const;
 const SHARED_ALIGNMENT_REFS_SCHEMA = "scce.sparse_alignment_shared_record_refs.v1" as const;
 
 export interface BoundedAlignmentArtifactRef {
-  schema: typeof BOUNDED_ALIGNMENT_PART_SCHEMA | typeof BOUNDED_ALIGNMENT_PART_SCHEMA_SHARED;
+  schema: typeof BOUNDED_ALIGNMENT_PART_SCHEMA | typeof BOUNDED_ALIGNMENT_PART_SCHEMA_SHARED | typeof BOUNDED_ALIGNMENT_PART_SCHEMA_COMPRESSED;
   artifactId: string;
   key: string;
   kind: "array" | "value";
@@ -39,11 +45,14 @@ export interface BoundedAlignmentArtifactRef {
   blobHash: string;
   byteLength: number;
   mediaType: typeof BOUNDED_ALIGNMENT_PART_MEDIA_TYPE;
+  contentEncoding?: "deflate";
+  contentHash?: string;
+  contentByteLength?: number;
   seriesIds?: string[];
 }
 
 export interface BoundedAlignmentEventPayload {
-  schema: typeof BOUNDED_ALIGNMENT_EVENT_SCHEMA | typeof BOUNDED_ALIGNMENT_EVENT_SCHEMA_SHARED;
+  schema: typeof BOUNDED_ALIGNMENT_EVENT_SCHEMA | typeof BOUNDED_ALIGNMENT_EVENT_SCHEMA_SHARED | typeof BOUNDED_ALIGNMENT_EVENT_SCHEMA_COMPRESSED | typeof BOUNDED_ALIGNMENT_EVENT_SCHEMA_SHARED_COMPRESSED;
   sourceSchema: JsonValue;
   shardUri: JsonValue;
   payloadExternalized: true;
@@ -64,6 +73,7 @@ export interface BuildBoundedAlignmentEventsInput {
   blobs: BlobStore;
   idFactory: Pick<IdFactory, "artifactId">;
   hashContent: (bytes: Uint8Array) => string;
+  compressArtifacts?: boolean;
   maxPartBytes?: number;
   maxPartsPerEvent?: number;
 }
@@ -75,6 +85,10 @@ const DEFAULT_MAX_READ_PARTS = 4096;
 // small while each read is explicitly bounded and fail-closed at 384MB.
 const DEFAULT_MAX_ASSEMBLED_ITEM_BYTES = 384 * 1024 * 1024;
 const DEFAULT_MAX_TOTAL_DECODED_BYTES = 384 * 1024 * 1024;
+// Keep the adapter request bounded while avoiding one database round-trip per
+// fragment. Four default-size chunks cap queued input at 32 MiB.
+const MAX_PENDING_BLOB_BATCH_PARTS = 4;
+const MIN_COMPRESSED_PART_BYTES = 1024;
 const SHARED_RECORD_MAX_COUNT = 2_000_000;
 const SHARED_RECORD_MAX_BYTES = 384 * 1024 * 1024;
 const SHARED_RECORD_MAX_REFERENCES = 8_000_000;
@@ -350,6 +364,68 @@ export function canonicalJsonFragments(value: unknown, maxBytes: number): Uint8A
   return [...canonicalJsonByteChunksBounded(value, maxBytes)];
 }
 
+async function compressDeflate(bytes: Uint8Array): Promise<Uint8Array | undefined> {
+  if (typeof CompressionStream === "undefined" || typeof Blob === "undefined") return undefined;
+  try {
+    const reader = new Blob([new Uint8Array(bytes)]).stream().pipeThrough(new CompressionStream("deflate")).getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      total += next.value.byteLength;
+      if (total >= bytes.byteLength) {
+        await reader.cancel();
+        return undefined;
+      }
+      chunks.push(next.value);
+    }
+    return concatBytes(chunks, total);
+  } catch {
+    return undefined;
+  }
+}
+
+async function decompressDeflateBounded(
+  bytes: Uint8Array,
+  expectedBytes: number,
+  maxBytes: number
+): Promise<Uint8Array> {
+  if (typeof DecompressionStream === "undefined" || typeof Blob === "undefined") {
+    throw new Error("deflate alignment artifact requires DecompressionStream support");
+  }
+  const reader = new Blob([new Uint8Array(bytes)]).stream().pipeThrough(new DecompressionStream("deflate")).getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      total += next.value.byteLength;
+      if (total > expectedBytes || total > maxBytes) {
+        await reader.cancel();
+        throw new Error("decompressed alignment artifact exceeds its declared size bound");
+      }
+      chunks.push(next.value);
+    }
+  } catch (error) {
+    await reader.cancel().catch(() => undefined);
+    throw error;
+  }
+  if (total !== expectedBytes) throw new Error("decompressed alignment artifact size mismatch");
+  return concatBytes(chunks, total);
+}
+
+function concatBytes(chunks: readonly Uint8Array[], total: number): Uint8Array {
+  const output = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    output.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return output;
+}
+
 /**
  * Canonicalize a value only when its UTF-8 representation fits the supplied
  * inline bound. Oversized values fail before a large string or JSON tree is
@@ -400,11 +476,35 @@ export async function buildBoundedAlignmentEvents(
     ? sharedSourceGroups(input.payload)
     : new Map<string, Map<string, SharedSourceGroup>>();
   const sharedEvent = shared.size > 0;
-  const eventSchema = sharedEvent ? BOUNDED_ALIGNMENT_EVENT_SCHEMA_SHARED : BOUNDED_ALIGNMENT_EVENT_SCHEMA;
-  const partSchema = sharedEvent ? BOUNDED_ALIGNMENT_PART_SCHEMA_SHARED : BOUNDED_ALIGNMENT_PART_SCHEMA;
+  const legacyEventSchema = sharedEvent ? BOUNDED_ALIGNMENT_EVENT_SCHEMA_SHARED : BOUNDED_ALIGNMENT_EVENT_SCHEMA;
+  const legacyPartSchema = sharedEvent ? BOUNDED_ALIGNMENT_PART_SCHEMA_SHARED : BOUNDED_ALIGNMENT_PART_SCHEMA;
+  let compressedParts = false;
   const emptyKeys: string[] = [];
   const references: BoundedAlignmentArtifactRef[] = [];
   const leafTokenCache = createCanonicalLeafTokenCache();
+  const pendingBlobs: Array<{ content: Uint8Array; hash: string; key: string; itemIndex: number; chunkIndex: number }> = [];
+  const flushPendingBlobs = async (): Promise<void> => {
+    if (!pendingBlobs.length) return;
+    const batch = pendingBlobs.splice(0, pendingBlobs.length);
+    if (input.blobs.putBatch) {
+      const storedHashes = await input.blobs.putBatch(batch.map(item => ({
+        content: item.content,
+        mediaType: BOUNDED_ALIGNMENT_PART_MEDIA_TYPE
+      })));
+      if (storedHashes.length !== batch.length) throw new Error("blob batch returned an incomplete hash list");
+      for (let index = 0; index < batch.length; index += 1) {
+        if (String(storedHashes[index]) !== batch[index]!.hash) {
+          const item = batch[index]!;
+          throw new Error(`blob hash mismatch while storing ${item.key}[${item.itemIndex}:${item.chunkIndex}]`);
+        }
+      }
+      return;
+    }
+    for (const item of batch) {
+      const storedHash = String(await input.blobs.put(item.content, BOUNDED_ALIGNMENT_PART_MEDIA_TYPE));
+      if (storedHash !== item.hash) throw new Error(`blob hash mismatch while storing ${item.key}[${item.itemIndex}:${item.chunkIndex}]`);
+    }
+  };
   const storeItem = async (inputItem: {
     key: string;
     kind: "array" | "value";
@@ -416,21 +516,35 @@ export async function buildBoundedAlignmentEvents(
     const itemReferences: Array<Omit<BoundedAlignmentArtifactRef, "artifactId" | "chunkCount">> = [];
     let chunkIndex = 0;
     for (const bytes of canonicalJsonByteChunksBounded(inputItem.value, maxPartBytes, leafTokenCache)) {
-      const blobHash = input.hashContent(bytes);
-      const storedHash = String(await input.blobs.put(bytes, BOUNDED_ALIGNMENT_PART_MEDIA_TYPE));
-      if (storedHash !== blobHash) throw new Error(`blob hash mismatch while storing ${inputItem.key}[${inputItem.itemIndex}:${chunkIndex}]`);
+      let storedBytes = bytes;
+      let contentEncoding: "deflate" | undefined;
+      if (input.compressArtifacts !== false && bytes.byteLength >= MIN_COMPRESSED_PART_BYTES) {
+        const candidate = await compressDeflate(bytes);
+        if (candidate && candidate.byteLength < bytes.byteLength) {
+          storedBytes = candidate;
+          contentEncoding = "deflate";
+          compressedParts = true;
+        }
+      }
+      const blobHash = input.hashContent(storedBytes);
+      const rawContentHash = contentEncoding ? input.hashContent(bytes) : undefined;
+      pendingBlobs.push({ content: storedBytes, hash: blobHash, key: inputItem.key, itemIndex: inputItem.itemIndex, chunkIndex });
       itemReferences.push({
-        schema: partSchema,
+        schema: contentEncoding ? BOUNDED_ALIGNMENT_PART_SCHEMA_COMPRESSED : legacyPartSchema,
         key: inputItem.key,
         kind: inputItem.kind,
         itemIndex: inputItem.itemIndex,
         chunkIndex,
         totalItems: inputItem.totalItems,
         blobHash,
-        byteLength: bytes.byteLength,
+        byteLength: storedBytes.byteLength,
         mediaType: BOUNDED_ALIGNMENT_PART_MEDIA_TYPE,
+        ...(contentEncoding ? { contentEncoding, contentHash: rawContentHash, contentByteLength: bytes.byteLength } : {}),
         ...(inputItem.seriesIds ? { seriesIds: inputItem.seriesIds } : {})
       });
+      if (!input.blobs.putBatch || pendingBlobs.length >= MAX_PENDING_BLOB_BATCH_PARTS) {
+        await flushPendingBlobs();
+      }
       chunkIndex += 1;
     }
     if (!chunkIndex) throw new Error(`canonical JSON produced no fragments for ${inputItem.key}[${inputItem.itemIndex}]`);
@@ -440,15 +554,17 @@ export async function buildBoundedAlignmentEvents(
         ...reference,
         chunkCount,
         artifactId: String(input.idFactory.artifactId({
-          schema: partSchema,
+          schema: legacyPartSchema,
           episodeId: input.episodeId,
           key: reference.key,
           itemIndex: reference.itemIndex,
           chunkIndex: reference.chunkIndex,
           chunkCount,
           totalItems: reference.totalItems,
-          blobHash: reference.blobHash,
-          byteLength: reference.byteLength
+          // Keep artifact identity tied to the original canonical bytes so
+          // enabling storage compression does not change logical identities.
+          blobHash: reference.contentHash ?? reference.blobHash,
+          byteLength: reference.contentByteLength ?? reference.byteLength
         }))
       });
     }
@@ -514,10 +630,16 @@ export async function buildBoundedAlignmentEvents(
       });
     }
   }
+  await flushPendingBlobs();
+  const eventSchema = compressedParts
+    ? (sharedEvent ? BOUNDED_ALIGNMENT_EVENT_SCHEMA_SHARED_COMPRESSED : BOUNDED_ALIGNMENT_EVENT_SCHEMA_COMPRESSED)
+    : legacyEventSchema;
   const artifactGroupId = String(input.idFactory.artifactId({
     schema: eventSchema,
     episodeId: input.episodeId,
     shardUri: input.payload.shardUri ?? null,
+    // The group ID describes this physical event set. Individual artifact IDs
+    // remain based on canonical bytes and therefore codec-independent.
     partHashes: references.map(reference => reference.blobHash)
   }));
   const events: BoundedAlignmentEventPayload[] = [];
@@ -537,7 +659,7 @@ function eventFor(
   parts: BoundedAlignmentArtifactRef[],
   offset: number,
   total: number,
-  eventSchema: typeof BOUNDED_ALIGNMENT_EVENT_SCHEMA | typeof BOUNDED_ALIGNMENT_EVENT_SCHEMA_SHARED
+  eventSchema: typeof BOUNDED_ALIGNMENT_EVENT_SCHEMA | typeof BOUNDED_ALIGNMENT_EVENT_SCHEMA_SHARED | typeof BOUNDED_ALIGNMENT_EVENT_SCHEMA_COMPRESSED | typeof BOUNDED_ALIGNMENT_EVENT_SCHEMA_SHARED_COMPRESSED
 ): BoundedAlignmentEventPayload {
   return {
     schema: eventSchema,
@@ -574,8 +696,12 @@ export async function readBoundedAlignmentPayload(
   const decodedBudget = { used: 0, max: positive(options.maxTotalDecodedBytes, DEFAULT_MAX_TOTAL_DECODED_BYTES) };
   const sharedDecodeBudget = { used: 0, max: SHARED_RECORD_MAX_REFERENCES };
   const externalEvents = payloads.flatMap(payload => {
-    if (!isRecord(payload) || (payload.schema !== BOUNDED_ALIGNMENT_EVENT_SCHEMA && payload.schema !== BOUNDED_ALIGNMENT_EVENT_SCHEMA_SHARED)) return [];
-    const shared = payload.schema === BOUNDED_ALIGNMENT_EVENT_SCHEMA_SHARED;
+    if (!isRecord(payload) || (payload.schema !== BOUNDED_ALIGNMENT_EVENT_SCHEMA
+      && payload.schema !== BOUNDED_ALIGNMENT_EVENT_SCHEMA_SHARED
+      && payload.schema !== BOUNDED_ALIGNMENT_EVENT_SCHEMA_COMPRESSED
+      && payload.schema !== BOUNDED_ALIGNMENT_EVENT_SCHEMA_SHARED_COMPRESSED)) return [];
+    const shared = payload.schema === BOUNDED_ALIGNMENT_EVENT_SCHEMA_SHARED
+      || payload.schema === BOUNDED_ALIGNMENT_EVENT_SCHEMA_SHARED_COMPRESSED;
     if (!Array.isArray(payload.artifactParts)) throw new Error("invalid bounded alignment event envelope");
     if (typeof payload.artifactGroupId !== "string") throw new Error("invalid bounded alignment event envelope");
     const offset = payload.artifactPartOffset;
@@ -704,7 +830,7 @@ async function assembleKey(
         throw new Error(`shared alignment artifact series metadata is inconsistent for ${key}[${first.itemIndex}]`);
       }
     }
-    const byteLength = ordered.reduce((sum, row) => sum + row.byteLength, 0);
+    const byteLength = ordered.reduce((sum, row) => sum + (row.contentByteLength ?? row.byteLength), 0);
     if (byteLength > maxBytes) throw new Error(`bounded alignment artifact item exceeds assembled byte budget for ${key}[${first.itemIndex}]`);
     if (decodedBudget.used + byteLength > decodedBudget.max) throw new Error(`bounded alignment artifact total decoded byte budget exceeded at ${key}[${first.itemIndex}]`);
     decodedBudget.used += byteLength;
@@ -930,6 +1056,11 @@ async function readFragment(
   const bytes = await blobs.get(reference.blobHash as Parameters<BlobStore["get"]>[0]);
   if (bytes.byteLength !== reference.byteLength) throw new Error(`alignment artifact size mismatch: ${reference.blobHash}`);
   if (hashContent(bytes) !== reference.blobHash) throw new Error(`alignment artifact hash mismatch: ${reference.blobHash}`);
+  if (reference.contentEncoding === "deflate") {
+    const canonical = await decompressDeflateBounded(bytes, reference.contentByteLength!, maxBytes);
+    if (hashContent(canonical) !== reference.contentHash) throw new Error(`alignment canonical content hash mismatch: ${reference.contentHash}`);
+    return canonical;
+  }
   return bytes;
 }
 
@@ -939,9 +1070,11 @@ function validateReferenceMetadata(
   shared?: boolean,
   requireSeriesMetadata = false
 ): void {
-  const schemaValid = shared === undefined
-    ? reference?.schema === BOUNDED_ALIGNMENT_PART_SCHEMA || reference?.schema === BOUNDED_ALIGNMENT_PART_SCHEMA_SHARED
-    : reference?.schema === (shared ? BOUNDED_ALIGNMENT_PART_SCHEMA_SHARED : BOUNDED_ALIGNMENT_PART_SCHEMA);
+  const compressedSchema = reference?.schema === BOUNDED_ALIGNMENT_PART_SCHEMA_COMPRESSED;
+  const schemaValid = compressedSchema
+    || (shared === undefined
+      ? reference?.schema === BOUNDED_ALIGNMENT_PART_SCHEMA || reference?.schema === BOUNDED_ALIGNMENT_PART_SCHEMA_SHARED
+      : reference?.schema === (shared ? BOUNDED_ALIGNMENT_PART_SCHEMA_SHARED : BOUNDED_ALIGNMENT_PART_SCHEMA));
   if (!isRecord(reference) || !schemaValid
     || typeof reference.artifactId !== "string" || typeof reference.key !== "string"
     || (reference.kind !== "array" && reference.kind !== "value")
@@ -952,6 +1085,16 @@ function validateReferenceMetadata(
     || !Number.isSafeInteger(reference.byteLength) || reference.byteLength < 0 || reference.byteLength > maxBytes
     || typeof reference.blobHash !== "string" || reference.mediaType !== BOUNDED_ALIGNMENT_PART_MEDIA_TYPE) {
     throw new Error("invalid bounded alignment artifact reference");
+  }
+  if (compressedSchema && (reference.contentEncoding !== "deflate"
+    || typeof reference.contentHash !== "string" || !reference.contentHash.length
+    || !Number.isSafeInteger(reference.contentByteLength) || reference.contentByteLength! < 0
+    || reference.contentByteLength! > maxBytes)) {
+    throw new Error("invalid compressed alignment artifact reference");
+  }
+  if (!compressedSchema && (reference.contentEncoding !== undefined
+    || reference.contentHash !== undefined || reference.contentByteLength !== undefined)) {
+    throw new Error("legacy alignment artifact reference contains compressed content metadata");
   }
   if (requireSeriesMetadata && !isSingleSeriesIdList(reference.seriesIds)) {
     throw new Error("shared alignment artifact series metadata is invalid");

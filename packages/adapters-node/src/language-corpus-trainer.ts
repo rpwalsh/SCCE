@@ -13,12 +13,19 @@ import {
   createIdFactory,
   createLanguageAcquisitionEngine,
   createLanguageMemoryRuntime,
+  inductionCharBudget,
+  languageProfileCompatibility,
+  LANGUAGE_TRAINING_BATCH_RECIPE_ID,
+  sourceCodeFunctionConstructionId,
   createSourceAdmissionController,
   compileLanguageTrainingBatch,
+  sourceLanguageTrainingStreamId,
+  stampSourceLanguageCompilation,
   prepareLanguageTrainingSegmentation,
   observePreparedLanguageTrainingSegmentation,
   attachSourceDerivedLanguageAliases,
   CORPUS_SOURCE_SYSTEM_IDS,
+  CORPUS_ROLE_IDS,
   canonicalCorpusSourceSystemId,
   corpusNgramSettings,
   createCorpusRegistry,
@@ -34,6 +41,7 @@ import {
   type EvidenceSpan,
   type IdFactory,
   type InformationLabel,
+  type GraphSnapshot,
   type JsonValue,
   type LanguagePatternRecord,
   type LanguageProfile,
@@ -78,11 +86,17 @@ export interface LanguageCorpusTrainingInput {
   /** Where this material came from. Defaults to the corpus's own declaration; never inferred from the text. */
   sourceKind?: string;
   corpusMetadata?: JsonValue;
+  /** Acquisition occurrence witness; retained on source versions without retraining identical material. */
+  acquisitionProvenance?: JsonValue;
   languageAliases?: readonly string[];
   constructionSets?: readonly SourceBoundLanguageConstructionTrainingSet[];
+  /** Canonical source URI scope when the replay checkpoint has a separate control URI. */
+  constructionPoolUriPrefix?: string;
   creativeEventCompiler?: CreativeEventConstructionCompiler;
   /** Source versions this text came from; their promoted evidence is what the batch's graph slice is read from. */
   graphSnapshotSourceVersionIds?: readonly string[];
+  /** Pure source-evidenced projection prepared by the caller and persisted in the same commit transaction. */
+  graphSnapshotAdditions?: GraphSnapshot;
   /** Character ranges of the concatenated text and the source family each belongs to. */
   sourceFamilyRanges?: readonly { start: number; end: number; sourceFamilyId: string }[];
   /** Alignment evidence carried from earlier batches: a construction is promoted on what the corpus shows, not one document. */
@@ -95,7 +109,9 @@ export interface LanguageCorpusTrainingInput {
    * re-runs the language lane over previously-ingested articles),
    * re-inserting hundreds of thousands of observation rows per MB both
    * dominates wall time and double-counts the corpus. Constructions,
-   * units, patterns, and frames still train and persist.
+   * units, patterns, and frames still train and persist. With both source
+   * and profile persistence disabled, only construction learning is emitted;
+   * the existing canonical compilation remains intact.
    */
   skipNgramPersistence?: boolean;
   /**
@@ -113,6 +129,8 @@ export interface LanguageCorpusTrainingInput {
    */
   skipNgramObservationPersistence?: boolean;
   persistSource?: boolean;
+  /** Replay may read an owned profile without rewriting its derived aliases. */
+  persistProfile?: boolean;
   /** Raw bytes from which `text` was cleaned or projected into a model-text derivative. */
   originalSource?: CorpusOriginalSource;
   episodeId?: ReturnType<IdFactory["episodeId"]>;
@@ -185,6 +203,10 @@ export interface LanguageCorpusTrainingReport {
   alignmentCalibrationObservations: AlignmentCalibrationObservation[];
   constructionCandidates: number;
   languageConstructions: number;
+  compilerRecipe?: string;
+  sourceCodeFunctionPatterns?: number;
+  graphSnapshotDigest?: string;
+  constructionAcquisition?: { sourceObserved: number; documentHeldOutQualified: number; rejectedQualification: number };
   graphSurfaceAlignments: number;
   rejectedLanguageConstructions: number;
   eventId: string;
@@ -219,6 +241,8 @@ interface PreparedLanguageCorpusPayload {
   createdAt: number;
   segmentation?: PreparedLanguageTrainingSegmentation;
   graphSnapshotDigest: string;
+  constructionPoolEvidence: EvidenceSpan[];
+  constructionPoolProfiles: LanguageProfile[];
   compiledBatch: CompiledLanguageTrainingBatch;
   observations: NgramObservation[];
   models: NgramModelRecord[];
@@ -239,6 +263,13 @@ const preparations = new WeakMap<PreparedLanguageCorpusTraining, {
 }>();
 
 const CORPUS_CHECKPOINT_SCHEMA = "scce.corpusTrainingCheckpoint.v1";
+export const LANGUAGE_CORPUS_TRAINING_RECIPE_ID = "scce.language_corpus_training.v3" as const;
+export const LANGUAGE_CODE_CORPUS_TRAINING_RECIPE_ID = "scce.language_corpus_training.v4" as const;
+
+export function languageCorpusTrainingRecipeId(sourceSystem: string): string {
+  return canonicalCorpusSourceSystemId(sourceSystem) === CORPUS_SOURCE_SYSTEM_IDS.ossCode
+    ? LANGUAGE_CODE_CORPUS_TRAINING_RECIPE_ID : LANGUAGE_CORPUS_TRAINING_RECIPE_ID;
+}
 
 function corpusCheckpointId(input: LanguageCorpusTrainingInput): string | undefined {
   const checkpoint = input.corpusCheckpoint;
@@ -252,6 +283,7 @@ function corpusCheckpointId(input: LanguageCorpusTrainingInput): string | undefi
     deterministicReplay: true
   });
   return ids.semanticId("corpus_training_checkpoint", {
+    compilerRecipe: languageCorpusTrainingRecipeId(input.sourceSystem),
     sourceSystem: canonicalCorpusSourceSystemId(input.sourceSystem),
     rootUri: checkpoint.rootUri,
     itemUri: checkpoint.itemUri
@@ -288,6 +320,8 @@ function checkpointMetadata(input: LanguageCorpusTrainingInput, binding: string,
   const checkpoint = input.corpusCheckpoint!;
   return toJsonValue({
     schema: CORPUS_CHECKPOINT_SCHEMA,
+    compilerRecipe: languageCorpusTrainingRecipeId(input.sourceSystem),
+    batchRecipe: LANGUAGE_TRAINING_BATCH_RECIPE_ID,
     binding,
     sourceSystem: canonicalCorpusSourceSystemId(input.sourceSystem),
     rootUri: checkpoint.rootUri,
@@ -317,10 +351,12 @@ function checkpointRecord(input: LanguageCorpusTrainingInput, binding: string, r
   };
 }
 
-function checkpointReport(row: IngestionCheckpoint, binding: string): LanguageCorpusTrainingReport | undefined {
+function checkpointReport(row: IngestionCheckpoint, binding: string, compilerRecipe: string): LanguageCorpusTrainingReport | undefined {
   if (row.status !== "complete") return undefined;
   const metadata = jsonRecord(row.metadata);
-  if (metadata.schema !== CORPUS_CHECKPOINT_SCHEMA || metadata.binding !== binding) {
+  if (metadata.schema !== CORPUS_CHECKPOINT_SCHEMA || metadata.binding !== binding
+    || metadata.compilerRecipe !== compilerRecipe
+    || metadata.batchRecipe !== LANGUAGE_TRAINING_BATCH_RECIPE_ID) {
     throw new CorpusCheckpointConflictError(`corpus checkpoint binding mismatch for ${row.itemUri}; refusing replay`);
   }
   const report = metadata.report;
@@ -339,10 +375,12 @@ async function prepareCorpusCheckpoint(input: LanguageCorpusTrainingInput, bindi
       throw new CorpusCheckpointConflictError(`corpus checkpoint identity mismatch for ${id}; refusing replay`);
     }
     const metadata = jsonRecord(existing.metadata);
-    if (metadata.schema !== CORPUS_CHECKPOINT_SCHEMA || metadata.binding !== binding) {
+    if (metadata.schema !== CORPUS_CHECKPOINT_SCHEMA || metadata.binding !== binding
+      || metadata.compilerRecipe !== languageCorpusTrainingRecipeId(input.sourceSystem)
+      || metadata.batchRecipe !== LANGUAGE_TRAINING_BATCH_RECIPE_ID) {
       throw new CorpusCheckpointConflictError(`corpus checkpoint binding mismatch for ${existing.itemUri}; refusing replay`);
     }
-    const report = checkpointReport(existing, binding);
+    const report = checkpointReport(existing, binding, languageCorpusTrainingRecipeId(input.sourceSystem));
     if (report) return report;
   }
   await input.storage.ingestion.put(checkpointRecord(input, binding));
@@ -359,7 +397,7 @@ export async function readCompletedCorpusCheckpoint(input: LanguageCorpusTrainin
   if (!id) return undefined;
   const existing = await input.storage.ingestion.get(id);
   return existing?.status === "complete"
-    ? checkpointReport(existing, trainingInputBinding(input))
+    ? checkpointReport(existing, checkpointBinding(input), languageCorpusTrainingRecipeId(input.sourceSystem))
     : undefined;
 }
 
@@ -375,9 +413,11 @@ function preparationInputSnapshot(input: LanguageCorpusTrainingInput): LanguageC
     corpusRegistry: clone(input.corpusRegistry),
     sourceAdmission: clone(input.sourceAdmission),
     corpusMetadata: clone(input.corpusMetadata),
+    acquisitionProvenance: clone(input.acquisitionProvenance),
     languageAliases: clone(input.languageAliases),
     constructionSets: clone(input.constructionSets),
     graphSnapshotSourceVersionIds: clone(input.graphSnapshotSourceVersionIds),
+    graphSnapshotAdditions: clone(input.graphSnapshotAdditions),
     sourceFamilyRanges: clone(input.sourceFamilyRanges),
     alignmentPromotionObservations: clone(input.alignmentPromotionObservations),
     alignmentCalibrationObservations: clone(input.alignmentCalibrationObservations),
@@ -387,6 +427,15 @@ function preparationInputSnapshot(input: LanguageCorpusTrainingInput): LanguageC
       bytes: new Uint8Array(input.originalSource.bytes)
     } : undefined
   };
+}
+
+function needsConstructionContext(input: LanguageCorpusTrainingInput): boolean {
+  return corpusRoleIdForSourceSystem(input.sourceSystem) !== CORPUS_ROLE_IDS.softwareSymbolic || Boolean(input.constructionSets?.length) || Boolean(input.graphSnapshotAdditions);
+}
+
+function checkpointBinding(input: LanguageCorpusTrainingInput): string {
+  const { acquisitionProvenance: _acquisition, ...material } = input;
+  return trainingInputBinding(material);
 }
 
 function trainingInputBinding(input: LanguageCorpusTrainingInput): string {
@@ -404,7 +453,7 @@ function trainingInputBinding(input: LanguageCorpusTrainingInput): string {
       byteLength: input.originalSource.bytes.byteLength
     } as unknown as typeof semantic.originalSource;
   }
-  return createHasher().digestHex(canonicalStringify(toJsonValue(semantic)));
+  return createHasher().digestHex(canonicalStringify(toJsonValue({ compilerRecipe: languageCorpusTrainingRecipeId(input.sourceSystem), batchRecipe: LANGUAGE_TRAINING_BATCH_RECIPE_ID, input: semantic })));
 }
 
 function graphSnapshotDigest(snapshot: Awaited<ReturnType<typeof graphSnapshotForEvidence>>): string {
@@ -412,6 +461,93 @@ function graphSnapshotDigest(snapshot: Awaited<ReturnType<typeof graphSnapshotFo
   return createHasher().digestHex(canonicalStringify(toJsonValue(snapshot ? {
     nodes: ordered(snapshot.nodes), edges: ordered(snapshot.edges), hyperedges: ordered(snapshot.hyperedges)
   } : null)));
+}
+
+function trainingGraphSnapshot(stored: GraphSnapshot | undefined, additions: GraphSnapshot | undefined, evidence: readonly EvidenceSpan[]): GraphSnapshot | undefined {
+  if (!additions) return stored;
+  const admitted = new Set(evidence.filter(span => span.status === "promoted").map(span => String(span.id)));
+  const exact = (ids: readonly unknown[]) => ids.every(id => admitted.has(String(id)));
+  if (additions.nodes.some(row => !exact(row.evidenceIds)) || additions.edges.some(row => !exact(row.evidenceIds))
+    || additions.hyperedges.some(row => !row.evidenceIds.length || !exact(row.evidenceIds)
+      || typeof jsonRecord(row.modality).extractionChannel !== "string"
+      || row.participantPorts.some(port => !exact(port.evidenceIds)))) throw new Error("language training projected graph is not owned by the admitted source evidence");
+  const merge = <T extends { id: unknown }>(left: readonly T[], right: readonly T[]) => [...new Map([...left, ...right].map(row => [String(row.id), row] as const)).values()]
+    .sort((left, right) => String(left.id).localeCompare(String(right.id)));
+  const graph = { nodes: merge(stored?.nodes ?? [], additions.nodes), edges: merge(stored?.edges ?? [], additions.edges),
+    hyperedges: merge(stored?.hyperedges ?? [], additions.hyperedges) };
+  return graph.hyperedges.length ? graph : undefined;
+}
+
+function evidenceDependencyDigest(evidence: readonly EvidenceSpan[]): string {
+  return createHasher().digestHex(canonicalStringify(toJsonValue([...evidence].sort((a, b) => String(a.id).localeCompare(String(b.id))))));
+}
+
+async function durableConstructionPoolEvidence(input: {
+  input: LanguageCorpusTrainingInput;
+  evidence: readonly EvidenceSpan[];
+  sourceSystem: string;
+  informationLabel: InformationLabel;
+  profile: LanguageProfile;
+}): Promise<{
+  evidence: EvidenceSpan[];
+  profiles: LanguageProfile[];
+  languageCompatibility: Array<{ sourceVersionId: string; profileId?: string; status: "compatible" | "incompatible" | "unmeasured"; basis: string; score?: number }>;
+}> {
+  // The canonical evidence store is the bounded replay pool; no process-local corpus accumulates.
+  const rootUri = input.input.constructionPoolUriPrefix ?? input.input.corpusCheckpoint?.rootUri;
+  const list = input.input.storage.evidence.listEvidenceBackedSourceVersions;
+  const result = { evidence: [] as EvidenceSpan[], profiles: [] as LanguageProfile[], languageCompatibility: [] as Array<{ sourceVersionId: string; profileId?: string; status: "compatible" | "incompatible" | "unmeasured"; basis: string; score?: number }> };
+  if (!rootUri || !list || !input.evidence.some(span => span.status === "promoted")) return result;
+  const budget = inductionCharBudget();
+  const versions = await list.call(input.input.storage.evidence, {
+    sourceSystem: input.sourceSystem,
+    includeUriPrefixes: [rootUri],
+    maxByteLength: budget,
+    limit: budget
+  });
+  const current = new Set(input.evidence.map(span => String(span.sourceVersionId)));
+  const canonicalUris = new Set<string>();
+  const label = canonicalStringify(toJsonValue(input.informationLabel));
+  let used = 0;
+  for (const version of [...versions].sort((a, b) => a.canonicalUri.localeCompare(b.canonicalUri) || String(a.sourceVersionId).localeCompare(String(b.sourceVersionId)))) {
+    if (current.has(String(version.sourceVersionId)) || canonicalUris.has(version.canonicalUri)
+      || !version.canonicalUri.startsWith(rootUri) || version.byteLength <= 0
+      || used + version.byteLength > budget || version.promotedSpanCount <= 0) continue;
+    const profiles = (await input.input.storage.model.listLanguageProfiles({ sourceVersionIds: [version.sourceVersionId], limit: 2 }))
+      .filter(profile => profile.sourceVersionId === version.sourceVersionId);
+    if (profiles.length !== 1) {
+      result.languageCompatibility.push({ sourceVersionId: String(version.sourceVersionId), status: "unmeasured", basis: "source_profile_absent_or_ambiguous" });
+      continue;
+    }
+    const priorProfile = profiles[0]!;
+    const compatibility = languageProfileCompatibility(input.profile, priorProfile);
+    result.languageCompatibility.push({ sourceVersionId: String(version.sourceVersionId), profileId: priorProfile.id, ...compatibility });
+    if (compatibility.status !== "compatible") continue;
+    const found = await input.input.storage.evidence.searchEvidence({ sourceVersionId: version.sourceVersionId, status: "promoted", limit: version.promotedSpanCount });
+    const spans = found.map(row => row.span).sort((a, b) => a.charStart - b.charStart || String(a.id).localeCompare(String(b.id)));
+    if (spans.length !== version.promotedSpanCount || spans.some(span => span.status !== "promoted"
+      || span.sourceVersionId !== version.sourceVersionId
+      || jsonRecord(span.provenance).sourceSystem !== input.sourceSystem
+      || canonicalStringify(toJsonValue(span.informationLabel ?? null)) !== label)) continue;
+    if (input.sourceSystem === corpusSourceAlias(CORPUS_SOURCE_SYSTEM_IDS.ossCode)) {
+      const declared = (spans: readonly EvidenceSpan[]) => new Set(spans.map(span => jsonRecord(span.provenance).formalLanguage)
+        .filter((value): value is string => typeof value === "string" && Boolean(value)));
+      const currentLanguages = declared(input.evidence);
+      const priorLanguages = declared(spans);
+      if (currentLanguages.size !== 1 || priorLanguages.size !== 1 || !priorLanguages.has([...currentLanguages][0]!)) {
+        result.languageCompatibility[result.languageCompatibility.length - 1] = { sourceVersionId: String(version.sourceVersionId), profileId: priorProfile.id,
+          status: currentLanguages.size === 1 && priorLanguages.size === 1 ? "incompatible" : "unmeasured", basis: "declared_formal_language" };
+        continue;
+      }
+    }
+    const size = spans.reduce((sum, span) => sum + Math.max(span.text.length, span.byteEnd - span.byteStart), 0);
+    if (used + size > budget) continue;
+    canonicalUris.add(version.canonicalUri);
+    used += size;
+    result.evidence.push(...spans.map(span => structuredClone(span)));
+    result.profiles.push(structuredClone(priorProfile));
+  }
+  return result;
 }
 
 /** The promoted spans those source versions own, which is what the graph was projected from. Impure: reads storage. */
@@ -485,7 +621,7 @@ export async function trainLanguageCorpusText(input: LanguageCorpusTrainingInput
   // Both source-owning and aggregate callers get an atomic learned write. CPU compilation precedes it.
   validateOriginalSourceBinding(input);
   if (input.corpusCheckpoint) {
-    const replay = await prepareCorpusCheckpoint(input, trainingInputBinding(input));
+    const replay = await prepareCorpusCheckpoint(input, checkpointBinding(input));
     if (replay) return replay;
   }
   const prepared = await prepareLanguageCorpusTraining(input);
@@ -508,7 +644,7 @@ export async function commitLanguageCorpusTraining(
 ): Promise<LanguageCorpusTrainingReport> {
   validateOriginalSourceBinding(input);
   if (input.corpusCheckpoint) {
-    const replay = await prepareCorpusCheckpoint(input, trainingInputBinding(input));
+    const replay = await prepareCorpusCheckpoint(input, checkpointBinding(input));
     if (replay) return replay;
   }
   const held = preparations.get(prepared);
@@ -520,12 +656,19 @@ export async function commitLanguageCorpusTraining(
     const payload = held.payload;
     if (!payload) throw new Error("prepared language training payload was released before commit");
     const result = await input.storage.transaction(async () => {
-      const snapshot = await graphSnapshotForEvidence(input.storage, payload.evidence, input.graphSnapshotSourceVersionIds);
+      const snapshot = needsConstructionContext(input)
+        ? trainingGraphSnapshot(await graphSnapshotForEvidence(input.storage, payload.evidence, input.graphSnapshotSourceVersionIds), input.graphSnapshotAdditions, payload.evidence) : undefined;
       if (graphSnapshotDigest(snapshot) !== prepared.graphSnapshotDigest) throw new Error("language training graph dependencies changed before commit; prepare again");
+      if (payload.constructionPoolEvidence.length) {
+        const current = await input.storage.evidence.getEvidenceBatch(payload.constructionPoolEvidence.map(span => span.id));
+        if (evidenceDependencyDigest(current) !== evidenceDependencyDigest(payload.constructionPoolEvidence)) throw new Error("language training construction evidence changed before commit; prepare again");
+        const profiles = await input.storage.model.listLanguageProfiles({ sourceVersionIds: payload.constructionPoolProfiles.map(profile => profile.sourceVersionId), limit: payload.constructionPoolProfiles.length + 1 });
+        if (canonicalStringify(toJsonValue(profiles.sort((a, b) => a.id.localeCompare(b.id)))) !== canonicalStringify(toJsonValue([...payload.constructionPoolProfiles].sort((a, b) => a.id.localeCompare(b.id))))) throw new Error("language training construction language profiles changed before commit; prepare again");
+      }
       if (trainingInputBinding(input) !== prepared.inputBinding) throw new Error("language training input changed during commit validation");
       const report = await commitLanguageCorpusTrainingInternal(input, payload);
       if (input.corpusCheckpoint) {
-        await input.storage.ingestion.put(checkpointRecord(input, prepared.inputBinding, report));
+        await input.storage.ingestion.put(checkpointRecord(input, checkpointBinding(input), report));
       }
       return report;
     });
@@ -590,8 +733,9 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
     ...(input.profile ?? language.acquire({ sourceVersionId, text, createdAt })),
     informationLabel: sourceInformationLabel
   };
+  const { codeFunctionConstructions: sourceCodeFunctions, ...sourceMetadata } = jsonRecord(input.corpusMetadata);
   const metadata = toJsonValue({
-    ...jsonRecord(input.corpusMetadata),
+    ...sourceMetadata,
     ...(input.languageAliases?.length ? { languageAliases: [...input.languageAliases] } : {}),
     sourceSystem,
     sourceSystemId,
@@ -625,7 +769,7 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
       byteLength: bytes.byteLength,
       sourceTrust: corpusSourceTrust(sourceSystemId),
       informationLabel: sourceInformationLabel,
-      metadata,
+      metadata: toJsonValue({ ...jsonRecord(metadata), ...(input.acquisitionProvenance ? { acquisitionProvenance: input.acquisitionProvenance } : {}) }),
       ...(originalSpec && originalSourceVersionId ? {
         role: "evidence-derivative" as const,
         derivation: {
@@ -649,7 +793,8 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
         byteLength: originalBytes.byteLength,
         sourceTrust: corpusSourceTrust(sourceSystemId),
         informationLabel: sourceInformationLabel,
-        metadata: toJsonValue({ ...jsonRecord(metadata), sourceUri: originalSourceUri }),
+        metadata: toJsonValue({ ...jsonRecord(metadata), sourceUri: originalSourceUri,
+          ...(input.acquisitionProvenance ? { acquisitionProvenance: input.acquisitionProvenance } : {}) }),
         role: "original"
       };
     }
@@ -743,7 +888,8 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
   // evidence, read back from the graph the same evidence was projected into.
   const trainTrace = ingestStageTracer();
   const snapshotSpan = trainTrace.span("train.graph-snapshot");
-  const batchGraphSnapshot = await graphSnapshotForEvidence(input.storage, evidence, input.graphSnapshotSourceVersionIds);
+  const batchGraphSnapshot = needsConstructionContext(input)
+    ? trainingGraphSnapshot(await graphSnapshotForEvidence(input.storage, evidence, input.graphSnapshotSourceVersionIds), input.graphSnapshotAdditions, evidence) : undefined;
   snapshotSpan.end({
     nodes: batchGraphSnapshot?.nodes.length ?? 0,
     edges: batchGraphSnapshot?.edges.length ?? 0,
@@ -753,22 +899,34 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
 
   // Pure CPU compilation runs before the write transaction in the ordinary and Wikipedia callers.
   const compileSpan = trainTrace.span("train.compile");
+  const constructionPool = input.languageOnly || !needsConstructionContext(input)
+    ? { evidence: [], profiles: [], languageCompatibility: [] }
+    : await durableConstructionPoolEvidence({ input, evidence, sourceSystem, informationLabel, profile });
+  const constructionPoolEvidence = constructionPool.evidence;
+  const existingSources = !source && evidence.length > 0 && evidence.every(span => span.sourceVersionId === sourceVersionId)
+    ? await input.storage.evidence.sourceVersionsForEvidence(evidence.map(span => span.id)) : [];
+  const canonicalSource = source ?? (existingSources.length === 1 && existingSources[0]!.sourceVersionId === sourceVersionId ? existingSources[0] : undefined);
+  if (canonicalSource && canonicalSource.contentHash !== blobContentHash(bytes)) throw new Error("canonical corpus learning projection differs from its owned source blob");
+  const constructionOnly = input.skipNgramPersistence === true && input.persistSource === false && input.persistProfile === false;
   const compiledBatch = compileLanguageTrainingBatch({
     runtime: languageMemory,
     hasher,
     batch: {
-      streamId: input.streamUri,
+      streamId: sourceLanguageTrainingStreamId({ sourceId: canonicalSource?.sourceId ?? sourceId, sourceVersionId, sourceSystem, hasher }),
       ...(batchGraphSnapshot ? { graphSnapshot: batchGraphSnapshot } : {}),
       sourceSystem,
       profile,
       sourceVersionId,
+      ...(canonicalSource ? { canonicalSource: { sourceId: canonicalSource.sourceId, contentHash: canonicalSource.contentHash } } : {}),
       text,
       evidence,
+      ...(constructionPoolEvidence.length ? { constructionEvidence: [...evidence, ...constructionPoolEvidence] } : {}),
       createdAt,
       maxOrder: input.ngramMaxOrder ?? registryNgram.maxOrder,
       maxCountersPerOrder: input.ngramMaxCountersPerOrder ?? registryNgram.maxCountersPerOrder,
       vocabularyLimit: input.ngramVocabularyLimit ?? registryNgram.vocabularyLimit,
       retainNgramObservations: !(input.skipNgramPersistence || input.skipNgramObservationPersistence),
+      ...(constructionOnly ? { artifactScope: "construction_only" as const } : {}),
       constructionSets: input.constructionSets,
       ...(input.languageOnly ? { languageOnly: true } : {}),
       ...(input.alignmentPromotionObservations?.length ? { alignmentPromotionObservations: input.alignmentPromotionObservations } : {}),
@@ -786,10 +944,10 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
   const observations = input.skipNgramPersistence || input.skipNgramObservationPersistence
     ? []
     : compiledBatch.observations.map(item => ({ ...stampObservation(item, sourceSystem, sourceSystemId, metadata), informationLabel }));
-  const models = input.skipNgramPersistence
+  let models = input.skipNgramPersistence
     ? []
     : compiledBatch.models.map(item => ({ ...stampModel(item, sourceSystem, sourceSystemId, rowMetadata), informationLabel }));
-  const units = compiledBatch.units.map(item => ({ ...stampUnit(item, sourceSystem, sourceSystemId, rowMetadata), informationLabel }));
+  let units = compiledBatch.units.map(item => ({ ...stampUnit(item, sourceSystem, sourceSystemId, rowMetadata), informationLabel }));
   const compiledConstructionPatterns: LanguagePatternRecord[] = [...compiledBatch.constructionPatterns];
   const constructionWarnings: string[] = [...compiledBatch.warnings];
   if (input.creativeEventCompiler) {
@@ -808,15 +966,31 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
       constructionWarnings.push(...creativeEventCompilation.issues.map(issue => issue.code));
     }
   }
-  const patterns = [
+  let patterns = [
     ...compiledBatch.patterns.filter(pattern => !compiledConstructionPatterns.some(item => item.id === pattern.id)),
-    ...compiledConstructionPatterns
+    ...compiledConstructionPatterns,
+    ...compactSourceCodeFunctionPatterns({ constructions: sourceCodeFunctions, metadata, sourceSystem, profileId: profile.id, sourceVersionId,
+      originalSourceVersionId: originalSourceVersionId ?? sourceVersionId, text: originalBytes ? Buffer.from(originalBytes).toString("utf8") : input.text,
+      evidence, hasher, updatedAt: createdAt })
   ]
     .map(item => ({ ...stampPattern(item, sourceSystem, sourceSystemId, rowMetadata), informationLabel }));
-  const frames = compiledBatch.semanticFrames.map(item => ({ ...stampFrame(item, sourceSystem, sourceSystemId, rowMetadata), informationLabel }));
+  let frames = compiledBatch.semanticFrames.map(item => ({ ...stampFrame(item, sourceSystem, sourceSystemId, rowMetadata), informationLabel }));
 
+  if (canonicalSource && models.length) {
+    const receipts = models.map(model => jsonRecord(jsonRecord(model.modelJson).sourceCompilation));
+    const chunks = receipts.map(receipt => jsonRecord(receipt.chunk)).sort((left, right) => Number(left.index) - Number(right.index))
+      .map(chunk => text.slice(Number(chunk.start), Number(chunk.end)));
+    const stamped = stampSourceLanguageCompilation({ owner: { sourceId: canonicalSource.sourceId, sourceVersionId, contentHash: canonicalSource.contentHash },
+      profileId: profile.id, sourceSystem, streamId: sourceLanguageTrainingStreamId({ sourceId: canonicalSource.sourceId, sourceVersionId, sourceSystem, hasher }),
+      text, chunks, models, options: receipts[0]!.options as unknown as Parameters<typeof stampSourceLanguageCompilation>[0]["options"],
+      artifacts: { units, patterns, semanticFrames: frames }, hasher });
+    models = stamped.models.map(row => ({ ...row, informationLabel }));
+    units = stamped.units.map(row => ({ ...row, informationLabel }));
+    patterns = stamped.patterns.map(row => ({ ...row, informationLabel }));
+    frames = stamped.semanticFrames.map(row => ({ ...row, informationLabel }));
+  }
   const activeImportVersionValue = jsonRecord(input.corpusMetadata).activeImportVersion;
-  const segmentation = prepareLanguageTrainingSegmentation({
+  const segmentation = constructionOnly ? undefined : prepareLanguageTrainingSegmentation({
     batch: { text, createdAt },
     tenantId: informationLabel.tenantId,
     corpusRole: corpusRoleIdForSourceSystem(sourceSystemId),
@@ -837,11 +1011,25 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
       evidence: evidence.length,
       constructionCandidates: compiledBatch.constructionCandidates,
       languageConstructions: compiledConstructionPatterns.length,
+      sourceCodeFunctionPatterns: patterns.filter(pattern => pattern.patternKind === "source_code_function").length,
       // The audit already carries every summary under graphSurfaceAlignment; this key was a second full copy (49% of the event).
       graphSurfaceAlignments: compiledBatch.graphSurfaceAlignmentSummaries.length,
       rejectedLanguageConstructions: compiledBatch.rejectedConstructionCandidates,
       constructionPromotion: compiledBatch.constructionPromotion as unknown as JsonValue,
-      corpusMetadata: metadata
+      constructionPool: {
+        sourceSystem,
+        rootUri: input.corpusCheckpoint?.rootUri ?? null,
+        sourceUriPrefix: input.constructionPoolUriPrefix ?? input.corpusCheckpoint?.rootUri ?? null,
+        evidenceIds: constructionPoolEvidence.map(span => String(span.id)),
+        sourceVersionIds: [...new Set(constructionPoolEvidence.map(span => String(span.sourceVersionId)))].sort(),
+        utf16Length: constructionPoolEvidence.reduce((sum, span) => sum + span.text.length, 0),
+        charBudget: inductionCharBudget(),
+        languageCompatibility: constructionPool.languageCompatibility
+      },
+      compilerRecipe: languageCorpusTrainingRecipeId(sourceSystem),
+      graphProjection: { mode: input.graphSnapshotAdditions ? "stored_graph_plus_source_projection" : "stored_graph_snapshot", dependencyDigest: graphSnapshotDigest(batchGraphSnapshot) },
+      corpusMetadata: metadata,
+      ...(input.acquisitionProvenance ? { acquisitionProvenance: input.acquisitionProvenance } : {})
     }
   });
   return {
@@ -865,6 +1053,8 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
     createdAt,
     segmentation,
     graphSnapshotDigest: graphSnapshotDigest(batchGraphSnapshot),
+    constructionPoolEvidence,
+    constructionPoolProfiles: constructionPool.profiles,
     compiledBatch,
     observations,
     models,
@@ -875,6 +1065,43 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
     languageConstructions: compiledConstructionPatterns.length,
     learned
   };
+}
+
+function compactSourceCodeFunctionPatterns(input: {
+  constructions: JsonValue | undefined;
+  metadata: JsonValue;
+  sourceSystem: string;
+  profileId: string;
+  sourceVersionId: SourceVersionId;
+  originalSourceVersionId: SourceVersionId;
+  text: string;
+  evidence: readonly EvidenceSpan[];
+  hasher: ReturnType<typeof createHasher>;
+  updatedAt: number;
+}): LanguagePatternRecord[] {
+  if (input.sourceSystem !== "oss_code" || !Array.isArray(input.constructions)) return [];
+  const metadata = jsonRecord(input.metadata);
+  const sourceHash = metadata.sourceHash;
+  const formalLanguage = metadata.formalLanguage;
+  const evidenceIds = input.evidence.filter(span => span.status === "promoted" && span.sourceVersionId === input.sourceVersionId).map(span => span.id);
+  if (!evidenceIds.length || typeof sourceHash !== "string" || typeof formalLanguage !== "string"
+    || sourceHash.replace(/^sha256_/u, "") !== input.hasher.digestHex(input.text)) return [];
+  const patterns = new Map<string, LanguagePatternRecord>();
+  for (const value of input.constructions) {
+    const row = jsonRecord(value);
+    const { id, ...material } = row;
+    if (row.schema !== "scce.source_code_function_construction.v1" || row.sourceHash !== sourceHash || row.languageId !== formalLanguage
+      || typeof id !== "string" || id !== sourceCodeFunctionConstructionId(material as unknown as Parameters<typeof sourceCodeFunctionConstructionId>[0])
+      || typeof row.sourceStart !== "number" || typeof row.sourceEnd !== "number" || !Number.isSafeInteger(row.sourceStart) || !Number.isSafeInteger(row.sourceEnd)
+      || row.sourceStart < 0 || row.sourceEnd <= row.sourceStart || row.sourceEnd > input.text.length
+      || input.text.slice(row.sourceStart, row.sourceEnd) !== row.sourceText || !Array.isArray(row.parameters)) continue;
+    const patternId = `source.code.function.pattern.${input.hasher.digestHex(canonicalStringify({ constructionId: id, profileId: input.profileId, sourceVersionId: input.sourceVersionId }))}`;
+    patterns.set(patternId, { id: patternId, profileId: input.profileId, patternKind: "source_code_function", support: 1, entropy: 0,
+      patternJson: { schema: "scce.source_code_function_pattern.v1", sourceSystem: input.sourceSystem, sourceHash, formalLanguage,
+        parameterCount: row.parameters.length, sourceVersionId: input.sourceVersionId, originalSourceVersionId: input.originalSourceVersionId, codeFunctionConstructions: [value] },
+      evidenceIds, updatedAt: input.updatedAt });
+  }
+  return [...patterns.values()].sort((a, b) => a.id.localeCompare(b.id));
 }
 
 async function commitLanguageCorpusTrainingInternal(input: LanguageCorpusTrainingInput, prepared: PreparedLanguageCorpusPayload): Promise<LanguageCorpusTrainingReport> {
@@ -893,7 +1120,7 @@ async function commitLanguageCorpusTrainingInternal(input: LanguageCorpusTrainin
     else for (const span of prepared.evidence) await input.storage.evidence.putEvidenceSpan(span);
   }
 
-  await input.storage.model.putLanguageProfile(prepared.profile);
+  if (input.persistProfile !== false) await input.storage.model.putLanguageProfile(prepared.profile);
   if (input.persistSource !== false && input.storage.languageIdentities?.putProfileSignatures) {
     await input.storage.languageIdentities.putProfileSignatures({
       informationLabel: prepared.informationLabel,
@@ -961,6 +1188,14 @@ async function commitLanguageCorpusTrainingInternal(input: LanguageCorpusTrainin
     alignmentCalibrationObservations: [...prepared.compiledBatch.alignmentHeldoutEvaluation.calibrationObservations],
     constructionCandidates: prepared.compiledBatch.constructionCandidates,
     languageConstructions: prepared.languageConstructions,
+    compilerRecipe: languageCorpusTrainingRecipeId(prepared.sourceSystem),
+    sourceCodeFunctionPatterns: prepared.patterns.filter(pattern => pattern.patternKind === "source_code_function").length,
+    graphSnapshotDigest: prepared.graphSnapshotDigest,
+    constructionAcquisition: {
+      sourceObserved: prepared.compiledBatch.constructionPromotion.sourceObservedInducedConstructionSets,
+      documentHeldOutQualified: prepared.compiledBatch.constructionPromotion.promotedInducedConstructionSets,
+      rejectedQualification: prepared.compiledBatch.constructionPromotion.rejectedInducedConstructionSets
+    },
     graphSurfaceAlignments: prepared.compiledBatch.graphSurfaceAlignmentSummaries.length,
     rejectedLanguageConstructions: prepared.compiledBatch.rejectedConstructionCandidates,
     eventId: String(prepared.learned.id),

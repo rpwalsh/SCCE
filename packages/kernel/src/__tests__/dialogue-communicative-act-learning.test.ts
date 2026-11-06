@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
-import { dialogueRequestActObservations, induceTranscriptTurns } from "../dialogue-communicative-act-learning.js";
+import { dialogueRequestActObservations, induceTranscriptTurns, validateDeclaredTranscriptSource } from "../dialogue-communicative-act-learning.js";
 import {
   classifyRequestCommunicativeAct,
   compileRequestCommunicativeActModel,
@@ -98,5 +98,51 @@ describe("dialogue communicative act learning", () => {
     const reused = new Set(report.observations.filter(row => row.continuation!.replyDrawsOnTurn).map(row => row.requestText));
     expect([...shortQuoted].filter(text => reused.has(text)).length).toBe(shortQuoted.size);
     expect([...longGeneric].filter(text => reused.has(text)).length).toBe(0);
+  });
+});
+
+describe("source-declared dialogue segmentation", () => {
+  const text = "\u{1f9ed} source\n\u03b1: the feed reads high\n\u03b2: compare that reading with the baseline\n\u03b1: we checked the valve";
+  const points = [...text];
+  const surfaces = ["the feed reads high", "compare that reading with the baseline", "we checked the valve"];
+  const turns = surfaces.map((surface, index) => ({ index, speakerId: index % 2 ? "\u03b2" : "\u03b1", surface,
+    startCodePoint: [...text.slice(0, text.indexOf(surface))].length,
+    endCodePoint: [...text.slice(0, text.indexOf(surface))].length + [...surface].length }));
+  const source = { schema: "scce.dialogue_transcript.v1" as const, text, turns };
+
+  it("learns from exact source ranges without manufacturing recurring line openers", () => {
+    const report = dialogueRequestActObservations([validateDeclaredTranscriptSource(source)]);
+    expect(report.documentsSegmented).toBe(1);
+    expect(report.turns).toBe(3);
+    expect(report.observations.map(row => row.requestText)).toEqual(surfaces.slice(0, -1));
+  });
+
+  it("rejects forged, overlapping, out-of-range and UTF-16 coordinates", () => {
+    for (const replacement of [
+      { ...turns[0]!, surface: "the capital of Denmark is Copenhagen" },
+      { ...turns[0]!, startCodePoint: turns[0]!.startCodePoint + 1 },
+      { ...turns[0]!, endCodePoint: points.length + 1 },
+      { ...turns[0]!, index: 1 }
+    ]) expect(() => validateDeclaredTranscriptSource({ ...source, turns: [replacement, ...turns.slice(1)] })).toThrow();
+    expect(() => validateDeclaredTranscriptSource({ ...source, turns: [turns[0], { ...turns[1]!, startCodePoint: turns[0]!.startCodePoint }] })).toThrow();
+  });
+
+  it("learns declared commitment scope independently of whether a reply has proof", () => {
+    const declared = { ...source, turns: turns.map((turn, index) => index === 1
+      ? { ...turn, replyToTurnIndex: 0, commitmentScope: "conversation" as const } : turn) };
+    const conversation = dialogueRequestActObservations([declared]);
+    expect(conversation.observations).toHaveLength(1);
+    expect(conversation.observations[0]!.responseEvidenceCount).toBe(0);
+    expect(Object.keys(compileRequestCommunicativeActModel(conversation.observations).classCounts)).not.toContain(DIALOGUE_ACT_IDS.neutral);
+    const external = dialogueRequestActObservations([{ ...declared, turns: declared.turns.map((turn, index) => index === 1
+      ? { ...turn, commitmentScope: "external" as const } : turn) }]);
+    expect(external.observations[0]!.responseEvidenceCount).toBe(0);
+    expect(compileRequestCommunicativeActModel(external.observations).classCounts[DIALOGUE_ACT_IDS.neutral]).toBe(1);
+    expect(() => validateDeclaredTranscriptSource({ ...declared, turns: declared.turns.map((turn, index) => index === 1
+      ? { ...turn, commitmentScope: undefined } : turn) })).toThrow();
+  });
+
+  it("refuses declared monologue as conversational adjacency", () => {
+    expect(dialogueRequestActObservations([{ ...source, turns: turns.map(turn => ({ ...turn, speakerId: "same" })) }]).observations).toEqual([]);
   });
 });

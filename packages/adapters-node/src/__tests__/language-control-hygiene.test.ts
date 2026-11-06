@@ -1,6 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import ts from "typescript";
@@ -46,7 +46,14 @@ describe("language control hygiene scanner", () => {
     ))).join("\n");
     const kernel = await readFile(path.resolve("packages/kernel/src/kernel.ts"), "utf8");
     const questionCognitiveEdge = await readFile(path.resolve("packages/kernel/src/question-cognitive-edge.ts"), "utf8");
-    const mouth = await readFile(path.resolve("packages/kernel/src/mouth.ts"), "utf8");
+    const kernelDir = path.resolve("packages/kernel/src");
+    const mouthFiles = (await readdir(kernelDir)).filter(file => /^mouth(?:[.-].*)?\.ts$/u.test(file)).sort();
+    expect(mouthFiles).toEqual(expect.arrayContaining(["mouth.ts", "mouth-contracts.ts", "mouth-surface-text.ts"]));
+    const mouthModules = await Promise.all(mouthFiles.map(async file => {
+      const text = await readFile(path.join(kernelDir, file), "utf8");
+      return { file, text, syntax: ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true) };
+    }));
+    const mouth = mouthModules.map(module => module.text).join("\n");
     const languageMemory = await readFile(path.resolve("packages/kernel/src/language-memory-runtime.ts"), "utf8");
     const surfaceRealizer = await readFile(path.resolve("packages/kernel/src/surface-realizer.ts"), "utf8");
 
@@ -97,7 +104,26 @@ describe("language control hygiene scanner", () => {
     expect(languageMemory).not.toContain(hygienePhrase("It", "stays", "bounded", "until", "matching", "source", "evidence", "is", "attached"));
     expect(languageMemory).not.toContain(hygienePhrase("In", "short:"));
     expect(mouth).toContain("selectedCandidate?: CandidateSurface");
-    const syntax = ts.createSourceFile("mouth.ts", mouth, ts.ScriptTarget.Latest, true);
+    const syntax = mouthModules.find(module => module.file === "mouth.ts")!.syntax;
+    const speakExport = syntax.statements.find((statement): statement is ts.ExportDeclaration => ts.isExportDeclaration(statement)
+      && Boolean(statement.exportClause && ts.isNamedExports(statement.exportClause)
+        && statement.exportClause.elements.some(element => element.name.text === "SpeakInput")));
+    expect(speakExport?.isTypeOnly).toBe(true);
+    expect(speakExport?.moduleSpecifier && ts.isStringLiteral(speakExport.moduleSpecifier)).toBe(true);
+    const declarationModule = (speakExport!.moduleSpecifier as ts.StringLiteral).text.replace(/^\.\//u, "").replace(/\.js$/u, ".ts");
+    const contracts = mouthModules.find(module => module.file === declarationModule);
+    expect(contracts).toBeDefined();
+    expect(syntax.statements.some(statement => ts.isImportDeclaration(statement)
+      && ts.isStringLiteral(statement.moduleSpecifier) && statement.moduleSpecifier.text === (speakExport!.moduleSpecifier as ts.StringLiteral).text
+      && statement.importClause?.namedBindings && ts.isNamedImports(statement.importClause.namedBindings)
+      && statement.importClause.namedBindings.elements.some(element => element.name.text === "SpeakInput"))).toBe(true);
+    const speakInput = contracts!.syntax.statements.find((statement): statement is ts.InterfaceDeclaration => ts.isInterfaceDeclaration(statement)
+      && statement.name.text === "SpeakInput");
+    expect(speakInput).toBeDefined();
+    const selectedCandidate = speakInput!.members.find(member => ts.isPropertySignature(member)
+      && ts.isIdentifier(member.name) && member.name.text === "selectedCandidate") as ts.PropertySignature | undefined;
+    expect(selectedCandidate?.questionToken).toBeDefined();
+    expect(selectedCandidate?.type?.getText(contracts!.syntax)).toBe("CandidateSurface");
     const normalMouth = syntax.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === "createMouth");
     expect(normalMouth).toBeDefined();
     const alternateRealizers: string[] = [];
@@ -105,7 +131,7 @@ describe("language control hygiene scanner", () => {
       if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "createDeterministicMouth") alternateRealizers.push(node.expression.text);
       ts.forEachChild(node, inspect);
     };
-    inspect(normalMouth!);
+    for (const module of mouthModules) inspect(module.syntax);
     expect(alternateRealizers).toEqual([]);
     expect(mouth).not.toContain("plannerSelectedCandidate ??");
     expect(mouth).toContain("extentRequiredSurfaces");
@@ -122,6 +148,27 @@ describe("language control hygiene scanner", () => {
     expect(surfaceRealizer).not.toContain("surface.point=");
     expect(surfaceRealizer).not.toContain("surface.limit=");
     expect(surfaceRealizer).not.toContain("surface.grounding=");
+  });
+
+  it.each(["mouth-surface-text.ts", "mouth-output.ts"])("keeps extracted runtime helper %s inside the same canned-routing scan", async helper => {
+    const root = await tempRepo();
+    try {
+      await writeSource(root, "packages/kernel/src/mouth.ts", `export { speak } from "./${helper.replace(/\.ts$/u, ".js")}";`);
+      await writeSource(root, `packages/kernel/src/${helper}`, [
+        "declare function candidate(text: string): unknown;",
+        "export function speak(requestText: string): unknown {",
+        '  if (requestText.includes("poem")) return candidate("I cannot answer that right now");',
+        "  return undefined;",
+        "}"
+      ].join("\n"));
+      const result = await scanLanguageControlHygiene({ root });
+      expect(result.failed).toBe(true);
+      expect(result.scannedFiles).toBe(2);
+      const issues = result.issues.filter(issue => issue.path === `packages/kernel/src/${helper}`);
+      expect(issues.map(issue => issue.ruleId)).toContain("prompt_text_router");
+      expect(issues.map(issue => issue.ruleId)).toContain("runtime_canned_surface");
+      expect(result.ignored).not.toContain(`packages/kernel/src/${helper}`);
+    } finally { await rm(root, { recursive: true, force: true }); }
   });
 
   it("fails prompt-text routing in runtime source", async () => {

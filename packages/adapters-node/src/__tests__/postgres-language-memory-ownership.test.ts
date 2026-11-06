@@ -2,7 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { afterEach, describe, expect, it } from "vitest";
 import { POSTGRES_REQUIRED_TABLES, type SourceVersionId } from "@scce/kernel";
-import { clearResidentNgramModelJson, createPostgresStorageAdapter, type PostgresStorageAdapter } from "../postgres.js";
+import { clearResidentNgramModelJson, createPostgresStorageAdapter, schemaStatements, type PostgresStorageAdapter } from "../postgres.js";
 
 const adapters: PostgresStorageAdapter[] = [];
 
@@ -11,6 +11,59 @@ afterEach(async () => {
 });
 
 describe("Postgres language-memory ownership queries", () => {
+  it("preserves original compilation membership on construction-only pattern updates", async () => {
+    const { adapter, calls } = fixture();
+    adapter.transaction = async operation => operation();
+    await adapter.languageMemory.putLanguagePattern({ id: "surface.construction.bundle.owned", profileId: "profile.owned", patternKind: "syntax", support: 1, entropy: 0,
+      patternJson: { schema: "construction.fixture" }, evidenceIds: [], updatedAt: 2,
+      informationLabel: { tenantId: "tenant.fixture", principals: ["principal.fixture"], compartments: [], exportClass: "restricted", mergePolicy: "isolated" } });
+    const insertion = calls.find(call => call.sql.includes('INSERT INTO "fixture"."language_patterns"'));
+    expect(insertion?.sql).toContain("jsonb_build_object('sourceCompilationId',lp.pattern_json->'sourceCompilationId')");
+    expect(insertion?.sql).toContain("|| EXCLUDED.pattern_json");
+  });
+
+  it("keeps compilation metadata out of language hydration and pages only artifact IDs", async () => {
+    const { adapter, calls } = fixture();
+    await adapter.languageMemory.listLanguagePatterns({ profileId: "profile.owned" });
+    expect(calls.at(-1)?.sql).toContain("pattern.pattern_kind<>'source_compilation'");
+    await adapter.languageMemory.listLanguagePatterns({ profileId: "profile.owned", patternKind: "source_compilation", limit: 2 });
+    expect(calls.at(-1)?.params).toContain("source_compilation");
+    await adapter.languageMemory.listSourceCompilationArtifactIds?.({ profileId: "profile.owned", compilationId: "compile.owned", family: "patterns", afterId: "pattern.before", limit: 256 });
+    expect(calls.at(-1)?.sql).toContain("SELECT artifact.id FROM");
+    expect(calls.at(-1)?.sql).toContain("sourceCompilationId");
+    expect(calls.at(-1)?.sql).not.toContain("SELECT artifact.*");
+    expect(calls.at(-1)?.params).toContain("pattern.before");
+    expect(calls.at(-1)?.params.at(-1)).toBe(256);
+  });
+
+  it("preserves immutable source metadata when a canonical model is recompiled by another producer", async () => {
+    const { adapter, calls } = fixture();
+    adapter.transaction = async operation => operation();
+    await adapter.languageMemory.putNgramModel({ id: "ngram.canonical", streamId: "source.language.training.canonical", languageHint: "und", maxOrder: 3, discount: 0.75,
+      modelJson: { profileId: "profile.owned", sourceVersionId: "source.owned", sourceSystem: "oss_code", model: { observedSymbolCount: 8 } }, updatedAt: 2,
+      informationLabel: { tenantId: "tenant.fixture", principals: ["principal.fixture"], compartments: [], exportClass: "restricted", mergePolicy: "isolated" } });
+    const insertion = calls.find(call => call.sql.includes('INSERT INTO "fixture"."ngram_models"'));
+    expect(insertion?.sql).toContain("AS n(id,stream_id");
+    expect(insertion?.sql).toContain("model_json=n.model_json || EXCLUDED.model_json");
+    expect(insertion?.sql).toContain("information_label=EXCLUDED.information_label");
+  });
+
+  it("filters compact source functions by declared language and arity before spending any row or byte budget", async () => {
+    const { adapter, calls } = fixture();
+    await adapter.languageMemory.listLanguagePatterns({ sourceSystem: "oss_code", patternKind: "source_code_function", formalLanguage: "typescript", parameterCount: 0, limit: 500, maxTotalJsonBytes: 1_000_000 });
+    const call = calls[0]!;
+    expect(call.params).toContain("source_code_function");
+    expect(call.params).toContain("typescript");
+    expect(call.params).toContain("0");
+    expect(call.sql.indexOf("pattern.pattern_kind=")).toBeLessThan(call.sql.indexOf("ranked_pool AS"));
+    expect(call.sql.indexOf("pattern.pattern_json->>'formalLanguage'=")).toBeLessThan(call.sql.indexOf("ranked_pool AS"));
+    expect(call.sql.indexOf("pattern.pattern_json->>'parameterCount'=")).toBeLessThan(call.sql.indexOf("ranked_pool AS"));
+    expect(call.sql).toContain("pattern.source_system=");
+    await expect(adapter.languageMemory.listLanguagePatterns({ parameterCount: -1 })).rejects.toThrow("non-negative integer");
+    const index = schemaStatements('"fixture"').find(sql => sql.includes("_source_code_function_lookup"));
+    expect(index).toContain("WHERE pattern_kind='source_code_function'");
+    expect(index).toContain("source_system,(pattern_json->>'formalLanguage'),(pattern_json->>'parameterCount')");
+  });
   it("filters plural profile ownership before unit and pattern limits", async () => {
     const { adapter, calls } = fixture();
 
@@ -86,13 +139,19 @@ describe("Postgres language-memory ownership queries", () => {
     await adapter.languageMemory.listNgramModels({ profileIds: ["profile.a"], limit: 7 });
     await adapter.languageMemory.listNgramObservations({ profileIds: ["profile.a"], limit: 7 });
 
-    // profile_id is a stored generated column now (carries the exact model_json->>'profileId' the code used to evaluate), not a per-row JSON detoast.
+    // Models use the stored key; observations use the migration's matching indexed metadata expression.
     expect(calls[0]?.sql).toContain("model.profile_id=ANY($1::text[])");
     expect(calls[0]?.sql).not.toContain("sourceVersionId");
     expect(calls[0]?.params[0]).toEqual(["profile.a"]);
     expect(calls[0]?.params.at(-1)).toBe(7);
     expect(calls[1]?.sql).toContain("FROM unnest($5::text[]) AS owner(owner_id)");
-    expect(calls[1]?.sql).toContain("observation.profile_id=owner.owner_id");
+    const observationSql = calls[1]!.sql;
+    expect(observationSql).toContain("observation.metadata_json->>'profileId'=owner.owner_id");
+    expect(observationSql.indexOf("observation.metadata_json->>'profileId'=owner.owner_id"))
+      .toBeLessThan(observationSql.indexOf("ORDER BY observation.count"));
+    expect(observationSql).not.toMatch(/\bOR\s*\(*\s*observation\.(?:metadata_json|profile_id)/u);
+    expect(observationSql).not.toMatch(/sourceVersionId|source_version_id/u);
+    expect(schemaStatements('"fixture"')).toContain('CREATE INDEX IF NOT EXISTS idx_fixture_ngram_profile_rank ON "fixture".ngram_observations((metadata_json->>\'profileId\'),count DESC,observed_at DESC)');
     expect(calls[1]?.params[4]).toEqual(["profile.a"]);
     expect(calls[1]?.params.at(-1)).toBe(7);
     expect(calls).toHaveLength(2);
@@ -225,12 +284,16 @@ describe("Postgres language-memory ownership queries", () => {
     expect(sql).toContain("EXISTS");
     expect(sql).toContain("profile_id=lp.id");
     // Four correlated index-backed probes stay EXISTS; the ngram_observations
-    // probe is a recursive skip scan over the stored profile_id index -- a
+    // probe is a recursive skip scan over the indexed profileId expression -- a
     // correlated EXISTS there seq-scanned the multi-GB
     // observations table once per candidate profile without observations.
     expect(sql.match(/OFFSET 0/g)).toHaveLength(4);
     expect(sql).toContain("WITH RECURSIVE obs_profiles");
-    expect(sql).toContain("o.profile_id > op.pid");
+    expect(sql).toContain("WHERE o.metadata_json->>'profileId' IS NOT NULL");
+    expect(sql).toContain("WHERE o.metadata_json->>'profileId' > op.pid");
+    expect(sql.match(/ORDER BY o\.metadata_json->>'profileId' LIMIT 1/g)).toHaveLength(2);
+    expect(sql).not.toMatch(/\bo\.profile_id\b/u);
+    expect(schemaStatements('"fixture"')).toContain('CREATE INDEX IF NOT EXISTS idx_fixture_ngram_profile_rank ON "fixture".ngram_observations((metadata_json->>\'profileId\'),count DESC,observed_at DESC)');
     expect(sql).not.toContain("EXISTS (SELECT 1 FROM \"fixture\".ngram_observations");
     expect(sql).toContain("LIMIT $1");
     expect(sql).not.toMatch(/artifact_refs|GROUP BY/i);

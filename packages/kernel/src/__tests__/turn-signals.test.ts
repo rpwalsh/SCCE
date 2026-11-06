@@ -1,11 +1,14 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { createTurnSignals } from "../turn-signals.js";
 import { requestClosedClassWords, requestScaffoldingConstructions } from "../closed-class-words.js";
 import { trainKneserNey } from "../kneser-ney.js";
+import { clearCorpusIdentitySignals, corpusNamedIdentities, primeCorpusIdentitySignals } from "../corpus-identity.js";
 import type { LanguagePatternRecord } from "../storage.js";
 import type { TurnRequirementField } from "../turn-requirements.js";
+
+afterEach(() => clearCorpusIdentitySignals());
 
 function requirementField(): TurnRequirementField {
   return {
@@ -112,5 +115,28 @@ describe("turn language state", () => {
 
     expect(signals.functionSymbols.has("the")).toBe(true);
     expect(signals.functionSymbols.has("identity-only")).toBe(false);
+  });
+
+  it("does not promote a one-profile source vocabulary into the language closed class", () => {
+    const model = trainKneserNey("Animalia copies book. Animalia copies book. Animalia is discussed in the book.", { order: 3 });
+    const signals = createTurnSignals({
+      requestText: "What is Animalia?",
+      authority: "factual",
+      requirementField: requirementField(),
+      models: [model],
+      identityClosedClassWords: new Set(),
+      languageIdentityProfileCount: 1,
+      patterns: []
+    });
+
+    expect(signals.functionSymbols.has("animalia")).toBe(false);
+    expect(signals.closedClassWords.has("animalia")).toBe(false);
+    primeCorpusIdentitySignals({
+      closedClass: signals.functionSymbols,
+      identities: new Set(["animalia"]),
+      spread: new Map(),
+      concentration: 0
+    });
+    expect(corpusNamedIdentities("What is Animalia?")).toEqual(["animalia"]);
   });
 });

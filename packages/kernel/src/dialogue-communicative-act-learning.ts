@@ -12,6 +12,63 @@ export interface TranscriptTurn {
   /** Code-point range of this speech in the document it was segmented from, annotation excluded. */
   startCodePoint: number;
   endCodePoint: number;
+  /** Source-declared reply and commitment scope; evidence remains optional for an external assertion. */
+  replyToTurnIndex?: number;
+  commitmentScope?: "conversation" | "external";
+  /** Documentary support ranges cannot overlap speech. */
+  supportingSourceRanges?: readonly { startCodePoint: number; endCodePoint: number; surface: string }[];
+}
+
+/** A source-declared segmentation; coordinates address the exact NFC source text, never inferred language. */
+export interface DeclaredTranscriptSource {
+  schema: "scce.dialogue_transcript.v1";
+  text: string;
+  turns: readonly TranscriptTurn[];
+}
+
+export type DialogueTranscriptSource = string | DeclaredTranscriptSource;
+
+/** Reject malformed annotations before they can confer dialogue provenance. */
+export function validateDeclaredTranscriptSource(value: unknown): DeclaredTranscriptSource {
+  if (!value || typeof value !== "object") throw new Error("invalid declared transcript");
+  const source = value as DeclaredTranscriptSource;
+  if (source.schema !== "scce.dialogue_transcript.v1" || typeof source.text !== "string"
+    || source.text !== source.text.normalize("NFC") || !Array.isArray(source.turns)) throw new Error("invalid declared transcript schema or text");
+  const points = [...source.text];
+  let end = 0;
+  for (const [index, turn] of source.turns.entries()) {
+    if (!turn || turn.index !== index || typeof turn.speakerId !== "string" || !turn.speakerId.trim()
+      || typeof turn.surface !== "string" || !turn.surface.trim()
+      || !Number.isInteger(turn.startCodePoint) || !Number.isInteger(turn.endCodePoint)
+      || turn.startCodePoint < end || turn.endCodePoint <= turn.startCodePoint || turn.endCodePoint > points.length
+      || points.slice(turn.startCodePoint, turn.endCodePoint).join("") !== turn.surface) throw new Error(`invalid declared transcript turn ${index}`);
+    if (turn.replyToTurnIndex !== undefined && (!Number.isInteger(turn.replyToTurnIndex)
+      || turn.replyToTurnIndex < 0 || turn.replyToTurnIndex !== index - 1
+      || (turn.commitmentScope !== "conversation" && turn.commitmentScope !== "external"))) throw new Error(`invalid declared transcript reply ${index}`);
+    if (turn.supportingSourceRanges !== undefined) {
+      if (!Array.isArray(turn.supportingSourceRanges)) throw new Error(`invalid declared transcript support ${index}`);
+      for (const range of turn.supportingSourceRanges) {
+        if (!range || !Number.isInteger(range.startCodePoint) || !Number.isInteger(range.endCodePoint)
+          || range.startCodePoint < 0 || range.endCodePoint <= range.startCodePoint || range.endCodePoint > points.length
+          || source.turns.some(speech => range.startCodePoint < speech.endCodePoint && range.endCodePoint > speech.startCodePoint)
+          || typeof range.surface !== "string" || !range.surface.trim()
+          || points.slice(range.startCodePoint, range.endCodePoint).join("") !== range.surface) throw new Error(`invalid declared transcript support ${index}`);
+      }
+    }
+    end = turn.endCodePoint;
+  }
+  return source;
+}
+
+export function transcriptSourceTurns(source: DialogueTranscriptSource): TranscriptTurnInduction {
+  if (typeof source === "string") return induceTranscriptTurns(source);
+  const declared = validateDeclaredTranscriptSource(source);
+  let changes = 0;
+  for (let index = 1; index < declared.turns.length; index++) {
+    if (declared.turns[index]!.speakerId !== declared.turns[index - 1]!.speakerId) changes++;
+  }
+  return { markers: [], markerCountFloor: 0, markerExclusivityFloor: 0, turns: declared.turns,
+    speakerChangeRate: declared.turns.length > 1 ? changes / (declared.turns.length - 1) : 0 };
 }
 
 export interface TranscriptTurnInduction {
@@ -95,20 +152,25 @@ export interface DialogueActObservationReport {
 interface PairMeasurement {
   documentIndex: number;
   requestText: string;
+  request: TranscriptTurn;
   reply: TranscriptTurn;
   /** Observed share of the reply's unit types the turn already supplied, over the share chance alone predicts. */
   reuseLift: number;
   rareUnits: number;
   surprisal: number;
   floorReturned: boolean;
+  declaredEvidenceCount?: number;
+  externallyFactual?: boolean;
 }
 
 /** One measured adjacency pair, labelled with the signature the act id is derived from. */
 export interface DialogueTurnPair {
   documentIndex: number;
   requestText: string;
+  request: TranscriptTurn;
   reply: TranscriptTurn;
   responseEvidenceCount: number;
+  externallyFactual?: boolean;
   continuation: TurnContinuationSignature;
 }
 
@@ -128,7 +190,7 @@ export interface DialogueTurnPairReport {
  * the corpus baseline, and whether the floor comes back to the speaker. Each continuous axis is split by the
  * Otsu of its own observed distribution, so nothing here is a declared number or a list of words.
  */
-export function dialogueRequestActObservations(documents: readonly string[]): DialogueActObservationReport {
+export function dialogueRequestActObservations(documents: readonly DialogueTranscriptSource[]): DialogueActObservationReport {
   const measured = dialogueTurnPairs(documents);
   const signatureCells: Record<string, number> = {};
   const observations = measured.pairs.map(pair => {
@@ -137,6 +199,7 @@ export function dialogueRequestActObservations(documents: readonly string[]): Di
     return {
       requestText: pair.requestText,
       responseEvidenceCount: pair.responseEvidenceCount,
+      ...(pair.externallyFactual !== undefined ? { responseExternallyFactual: pair.externallyFactual } : {}),
       accepted: true as const,
       continuation: pair.continuation
     };
@@ -160,14 +223,14 @@ export function dialogueRequestActObservations(documents: readonly string[]): Di
  * The same measurement, keeping each pair's reply and the document it was read from, so a caller that needs
  * the corpus's own replies -- not just what the requests before them looked like -- reads one measurement.
  */
-export function dialogueTurnPairs(documents: readonly string[]): DialogueTurnPairReport {
+export function dialogueTurnPairs(documents: readonly DialogueTranscriptSource[]): DialogueTurnPairReport {
   const segmented: Array<{ documentIndex: number; induction: TranscriptTurnInduction }> = [];
   for (let documentIndex = 0; documentIndex < documents.length; documentIndex++) {
-    const induction = induceTranscriptTurns(documents[documentIndex]!);
+    const induction = transcriptSourceTurns(documents[documentIndex]!);
     if (induction.turns.length > 1) segmented.push({ documentIndex, induction });
   }
   const changeFloor = otsuThreshold(segmented.map(row => row.induction.speakerChangeRate)) ?? 0;
-  const alternating = segmented.filter(row => row.induction.speakerChangeRate >= changeFloor).map(row => ({ ...row }));
+  const alternating = segmented.filter(row => row.induction.speakerChangeRate > 0 && row.induction.speakerChangeRate >= changeFloor).map(row => ({ ...row }));
 
   const corpusUnitCounts = new Map<string, number>();
   let corpusUnitTotal = 0;
@@ -194,6 +257,7 @@ export function dialogueTurnPairs(documents: readonly string[]): DialogueTurnPai
       const reply = induction.turns[index + 1]!;
       // A reply by the same speaker is a continuation of one turn, not the answer another turn drew out.
       if (reply.speakerId === turn.speakerId) continue;
+      if (induction.turns.some(item => item.replyToTurnIndex !== undefined) && reply.replyToTurnIndex !== turn.index) continue;
       const replyUnits = unitTypes(reply.surface);
       const supplied = unitTypes(turn.surface);
       if (!replyUnits.size || !supplied.size) continue;
@@ -213,7 +277,9 @@ export function dialogueTurnPairs(documents: readonly string[]): DialogueTurnPai
       if (chanceShare <= 0) continue;
       measurements.push({
         documentIndex,
+        ...(typeof documents[documentIndex] !== "string" ? { declaredEvidenceCount: reply.supportingSourceRanges?.length ?? 0, externallyFactual: reply.commitmentScope !== "conversation" } : {}),
         requestText: turn.surface,
+        request: turn,
         reply,
         reuseLift: (shared / replyUnits.size) / chanceShare,
         rareUnits: rare,
@@ -228,10 +294,12 @@ export function dialogueTurnPairs(documents: readonly string[]): DialogueTurnPai
   const pairs = measurements.map(row => ({
     documentIndex: row.documentIndex,
     requestText: row.requestText,
+    request: row.request,
     reply: row.reply,
+    ...(row.externallyFactual !== undefined ? { externallyFactual: row.externallyFactual } : {}),
     // A reply the corpus routine does not supply committed to material from outside it: the count of the reply's
     // units above the corpus rarity split, credited only when the reply's mean surprisal clears its own split.
-    responseEvidenceCount: row.surprisal >= surprisalFloor ? row.rareUnits : 0,
+    responseEvidenceCount: row.declaredEvidenceCount ?? (row.surprisal >= surprisalFloor ? row.rareUnits : 0),
     continuation: { floorReturned: row.floorReturned, replyDrawsOnTurn: row.reuseLift >= reuseFloor }
   }));
 

@@ -1,8 +1,9 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { getHeapStatistics } from "node:v8";
 import {
   CORPUS_SOURCE_SYSTEM_IDS,
@@ -10,6 +11,9 @@ import {
   codeLanguageForPath,
   codeTrainingSurface,
   createHasher,
+  createClock,
+  createIdFactory,
+  canonicalStringify,
   openingIdentityUnits,
   sourceTitleFromUri,
   toJsonValue,
@@ -21,6 +25,7 @@ import { extractNodeSourceCodeFacts, measureExhibitedContent } from "./code-grap
 import { inspectEngineeringCorpusFolder, type EngineeringCorpusFolderOptions } from "./engineering-corpus-folder.js";
 import { CorpusCheckpointConflictError, readCompletedCorpusCheckpoint, trainLanguageCorpusText, type LanguageCorpusTrainingInput, type LanguageCorpusTrainingReport } from "./language-corpus-trainer.js";
 import { createProjectDeclarationIndex, createProjectLicenseIndex, readDeclaredLicense } from "./project-artifact-declarations.js";
+import { compileSourceCodeFunctions } from "./source-code-function-learning.js";
 import { sourceBrainBuildReceipt, type SourceBrainBuildReceipt, type SourceBrainBuildResult } from "./source-brain-build.js";
 
 export const DEFAULT_OSS_FILES_PER_RUN = 2000;
@@ -31,7 +36,7 @@ export interface OssCorpusTrainOptions extends EngineeringCorpusFolderOptions {
   rootPath: string;
   /** Provenance of a fetched repository snapshot, retained on every trained projection. */
   repositoryProvenance?: OssRepositoryProvenance;
-  /** Stable source URI prefix for a fetched snapshot. Local training derives one from the ingest-material snapshot. */
+  /** Stable source owner URI; independent of acquisition snapshot and file content versions. */
   sourceUriBase?: string;
   /** Resume point over the deterministic importable-file ordering. */
   startFileIndex?: number;
@@ -78,6 +83,7 @@ export interface OssCorpusTrainReport {
   /** False when the caller's repository inventory ceiling was reached. */
   snapshotComplete: boolean;
   sourceUriBase: string;
+  acquisitionProvenance?: JsonValue;
   startFileIndex: number;
   nextFileIndex: number;
   filesConsidered: number;
@@ -108,6 +114,7 @@ export interface OssCorpusTrainingTotals {
   constructionCandidates: number;
   languageConstructions: number;
   rejectedLanguageConstructions: number;
+  constructionAcquisition?: { sourceObserved: number; documentHeldOutQualified: number; rejectedQualification: number };
 }
 
 type OssCorpusSourceSystem = typeof CORPUS_SOURCE_SYSTEM_IDS.ossDocs | typeof CORPUS_SOURCE_SYSTEM_IDS.ossCode;
@@ -150,8 +157,8 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
   const heapCheckpointMb = boundedOssHeapCheckpointMb(input.heapCheckpointMb);
   const sourceUriBase = input.sourceUriBase?.replace(/#.*$/u, "")
     || (input.repositoryProvenance
-      ? `${input.repositoryProvenance.remoteUrl.replace(/\.git$/u, "")}/tree/${input.repositoryProvenance.commitSha}`
-      : `scce://oss-ingest/${snapshotHash}`);
+      ? input.repositoryProvenance.remoteUrl.replace(/\.git$/u, "")
+      : `scce://oss-local/${sha256Bytes(Buffer.from(pathToFileURL(await realpath(root)).href, "utf8"))}`);
 
   // Keep repository provenance compact on every source/span. The full fileHashes manifest remains on the
   // acquisition report; stamping it onto every projection would multiply tens of thousands of hashes by every
@@ -159,15 +166,18 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
   // The repository's own declared licence, read once at the snapshot root. Recorded at the producer because an
   // ingested span can be cited verbatim, so which licence it is under is a property of the answer.
   const repositoryLicense = await readDeclaredLicense(root);
-  const repositoryIdentity: JsonValue = input.repositoryProvenance
+  const acquisitionProvenance: JsonValue = input.repositoryProvenance
     ? toJsonValue({
       identityKind: "git_commit",
       remoteUrl: input.repositoryProvenance.remoteUrl,
       commitSha: input.repositoryProvenance.commitSha,
       snapshotHash: input.repositoryProvenance.snapshotHash,
+      snapshotUriBase: `${input.repositoryProvenance.remoteUrl.replace(/\.git$/u, "")}/tree/${input.repositoryProvenance.commitSha}`,
       license: repositoryLicense
     })
     : toJsonValue({ identityKind: "ingest_material", snapshotHash, license: repositoryLicense });
+  const repositoryIdentity = toJsonValue({ identityKind: input.repositoryProvenance ? "git_repository" : "local_root",
+    ownerUri: sourceUriBase, ...(input.repositoryProvenance ? { remoteUrl: input.repositoryProvenance.remoteUrl } : {}), license: repositoryLicense });
 
   let stoppedByHeapSafetyBound = false;
   let filesConsidered = 0;
@@ -175,6 +185,7 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
   const roles = createProjectDeclarationIndex({ stopAt: root });
   const licenses = createProjectLicenseIndex({ stopAt: root });
   const hasher = createHasher();
+  const ids = createIdFactory({ clock: createClock(), hasher });
 
   for (const file of window) {
     if (heapMiB() >= heapCheckpointMb) {
@@ -240,30 +251,36 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
       if (!projected.text.trim()) continue;
       trainedAnyProjection = true;
       const relativePath = normalizeRelative(file.path);
+      const sourceUri = `${sourceUriBase}#path=${encodeURIComponent(relativePath)}`;
+      const transformId = `scce.oss.corpus-projection.v1:${projected.projection}`;
       const trainingInput: LanguageCorpusTrainingInput = {
         storage: input.storage,
         sourceSystem: projected.sourceSystem,
         streamUri: `${projected.sourceSystem}:${relativePath}`,
-        sourceUri: `${sourceUriBase}#path=${encodeURIComponent(relativePath)}`,
+        sourceUri,
+        sourceVersionId: ids.sourceVersionId(canonicalStringify({ contract: "scce.oss-projection-source-version.v1",
+          sourceUri, sourceHash, transformId, projectedTextHash: hasher.digestHex(projected.text) })),
+        acquisitionProvenance,
         corpusCheckpoint: {
           rootUri: sourceUriBase,
-          itemUri: `${relativePath}#projection=${encodeURIComponent(projected.projection)}`,
+          itemUri: `${relativePath}#projection=${encodeURIComponent(projected.projection)}&sourceHash=${sourceHash}`,
           contentHash: sourceHash,
-          transformId: `scce.oss.corpus-projection.v1:${projected.projection}`,
-          originalSourceUri: `${sourceUriBase}#path=${encodeURIComponent(relativePath)}`,
+          transformId,
+          originalSourceUri: sourceUri,
           byteLength: file.byteLength
         },
         text: projected.text,
         originalSource: {
           bytes: rawBytes,
-          sourceUri: `${sourceUriBase}#path=${encodeURIComponent(relativePath)}`,
-          transformId: `scce.oss.corpus-projection.v1:${projected.projection}`,
+          sourceUri,
+          transformId,
           kind: "extracted-text",
           originalCoordinateSpace: "source-bytes"
         },
         mediaType: file.mediaType,
         namespace: `corpus:${projected.sourceSystem}`,
         maxEvidenceChunkBytes: 64 * 1024,
+        skipNgramObservationPersistence: true,
         ngramMaxOrder: input.ngramMaxOrder,
         ngramMaxCountersPerOrder: input.ngramMaxCountersPerOrder,
         ngramVocabularyLimit: input.ngramVocabularyLimit,
@@ -280,6 +297,9 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
           supportedSections: file.supportedSections,
           projection: projected.projection,
           formalLanguage: codeLanguageForPath(file.path) ?? null,
+          ...(projected.sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.ossCode ? { codeFunctionConstructions: compileSourceCodeFunctions({
+            text: raw, path: file.path, languageId: codeLanguageForPath(file.path), sourceHash
+          }) } : {}),
           artifactRole,
           license,
           repository: repositoryIdentity,
@@ -334,6 +354,7 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
     snapshotKind,
     snapshotComplete: !inspectionTruncated,
     sourceUriBase,
+    acquisitionProvenance,
     startFileIndex,
     nextFileIndex,
     filesConsidered,
@@ -422,7 +443,7 @@ function splitIdentifierSurface(value: string): string {
 }
 
 function sumReports(reports: readonly LanguageCorpusTrainingReport[]): OssCorpusTrainingTotals {
-  return reports.reduce((sum, report) => ({
+  return reports.reduce<OssCorpusTrainingTotals>((sum, report) => ({
     languageProfiles: sum.languageProfiles + report.languageProfiles,
     evidence: sum.evidence + report.evidence,
     ngramObservations: sum.ngramObservations + report.ngramObservations,
@@ -432,7 +453,12 @@ function sumReports(reports: readonly LanguageCorpusTrainingReport[]): OssCorpus
     semanticFrames: sum.semanticFrames + report.semanticFrames,
     constructionCandidates: sum.constructionCandidates + report.constructionCandidates,
     languageConstructions: sum.languageConstructions + report.languageConstructions,
-    rejectedLanguageConstructions: sum.rejectedLanguageConstructions + report.rejectedLanguageConstructions
+    rejectedLanguageConstructions: sum.rejectedLanguageConstructions + report.rejectedLanguageConstructions,
+    constructionAcquisition: {
+      sourceObserved: (sum.constructionAcquisition?.sourceObserved ?? 0) + (report.constructionAcquisition?.sourceObserved ?? 0),
+      documentHeldOutQualified: (sum.constructionAcquisition?.documentHeldOutQualified ?? 0) + (report.constructionAcquisition?.documentHeldOutQualified ?? 0),
+      rejectedQualification: (sum.constructionAcquisition?.rejectedQualification ?? 0) + (report.constructionAcquisition?.rejectedQualification ?? 0)
+    }
   }), {
     languageProfiles: 0,
     evidence: 0,

@@ -105,12 +105,18 @@ describe("issue-to-symbol localization validated against this repo's real files 
     expect(candidates[0]!.symbol.name).toBe("buildImportGraph");
   });
 
-  it("extracts real CREATE TABLE symbols from this repo's actual postgres.ts, including graph_nodes", () => {
-    const text = readFileSync(join(adaptersSrcDir, "postgres.ts"), "utf8");
-    const symbols = extractSqlTableSymbols("packages/adapters-node/src/postgres.ts", text);
+  it("follows the adapter's public schema export to real CREATE TABLE symbols, including graph_nodes", () => {
+    const adapter = readFileSync(join(adaptersSrcDir, "postgres.ts"), "utf8");
+    const schemaExport = adapter.match(/export\s*\{[^}]*\bschemaStatements\b[^}]*\}\s*from\s*["'](\.[^"']+)["']/u);
+    expect(schemaExport).not.toBeNull();
+    const schemaModule = schemaExport![1]!.replace(/\.js$/u, ".ts");
+    const text = readFileSync(resolve(adaptersSrcDir, schemaModule), "utf8");
+    const symbolPath = `packages/adapters-node/src/${schemaModule.replace(/^\.\//u, "")}`;
+    const symbols = extractSqlTableSymbols(symbolPath, text);
 
     expect(symbols.length).toBeGreaterThan(10);
     expect(symbols.some(symbol => symbol.name === "graph_nodes")).toBe(true);
+    expect(symbols.find(symbol => symbol.name === "graph_nodes")?.id).toBe(`${symbolPath}#TABLE:graph_nodes`);
     expect(symbols.some(symbol => symbol.name === "evidence_spans")).toBe(true);
     for (const symbol of symbols) {
       expect(symbol.lineStart).toBeGreaterThan(0);

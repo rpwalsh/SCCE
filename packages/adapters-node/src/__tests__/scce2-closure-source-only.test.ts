@@ -12,9 +12,12 @@ import {
   createIdFactory,
   createInMemoryDialogueMemoryStore,
   createLanguageMemoryRuntime,
+  createLanguageAcquisitionEngine,
   createMouth,
   createSemanticEntailmentEngine,
   evidenceProofBoundary,
+  isLanguageConstructionPattern,
+  realizeLearnedSurface,
   assertBrainLifecycleTransition,
   type BenchmarkStore,
   type BlobStore,
@@ -75,6 +78,10 @@ import {
 } from "@scce/kernel";
 import { createScce2ToV3Importer } from "../scce2/scce2-to-v3-importer.js";
 import { routeEngineeringCorpusFixture } from "../engineering-corpus-folder.js";
+
+const closureMeaning = {
+  subject: "The azurite operator", predicate: "preserves", object: "70% thermal margin", relationId: "relation.closure.preserves"
+};
 
 describe("SCCE2 bridge closure source-only loop", () => {
   it("keeps inspect read-only, imports idempotently, and feeds proof, alpha, Mouth, and hygiene-safe traces", async () => {
@@ -153,9 +160,14 @@ describe("SCCE2 bridge closure source-only loop", () => {
         observations: storage.ngramObservations,
         units: storage.languageUnits,
         patterns: storage.languagePatterns,
-        semanticFrames: storage.semanticFrames
+        semanticFrames: storage.semanticFrames,
+        constructionEvidence: storage.evidenceSpans
       });
       expect(languageState.importedLanguagePriorCount).toBeGreaterThan(0);
+      expect(languageState.importedConstructionBundles).toHaveLength(1);
+      expect(languageState.rejectedConstructionPatterns).toEqual([]);
+      expect(languageState.importedConstructionBundles[0]!.sourceExamples.every(example => example.evidenceId === String(profileExcerpt.id)
+        && example.sourceVersionId === String(profileExcerpt.sourceVersionId))).toBe(true);
 
       const correctionMemory = createCorrectionMemory({ idFactory: ids, hasher });
       const correction = correctionMemory.record({
@@ -170,10 +182,10 @@ describe("SCCE2 bridge closure source-only loop", () => {
           weight: 0.94
         }
       });
-      const spoken = await createMouth({ languageMemory: languageRuntime, correctionMemory, hashText: text => hasher.digestHex(text) }).speak({
-        construct: constructGraph(ids, direct.text),
+      const speakInput = {
+        construct: constructGraph(ids, direct),
         field,
-        languageProfile: languageProfile(direct.sourceVersionId, clock.now()),
+        languageProfile: languageProfile(ids, profileExcerpt, clock.now()),
         evidence: [direct],
         entailment: directProof,
         languageMemory: languageState,
@@ -189,12 +201,20 @@ describe("SCCE2 bridge closure source-only loop", () => {
           importedLearnedPriorCount: summary.importedLearnedPriorCount,
           unknownPriorCount: summary.unknownPriorCount
         }
-      });
+      };
+      const mouth = createMouth({ languageMemory: languageRuntime, correctionMemory, hashText: (text: string) => hasher.digestHex(text) });
+      const spoken = await mouth.speak(speakInput);
 
       expect(spoken.realizationTrace.selected.path).toBe("generated");
       expect(spoken.text).not.toBe(direct.text);
       expect(spoken.text).toContain("70%");
       expect(spoken.text).toContain("azurite closure");
+      expect(spoken.text).toContain(closureMeaning.subject);
+      expect(spoken.text).not.toContain("The azurite closure operator");
+      expect(spoken.evidenceRefs).toEqual([direct.id]);
+      expect(spoken.surfaceValid).toBe(true);
+      expect(spoken.text.indexOf(closureMeaning.object)).toBeLessThan(spoken.text.indexOf(closureMeaning.subject));
+      expect(spoken.realizationTrace.selected.id).toMatch(/^candidate:generated:learned-construction:/u);
       expect(spoken.text).not.toContain("no-kind-compatible-evidence");
       expect(JSON.stringify(spoken.realizationTrace.brainInfluence)).toContain("activeBrainVersion");
       expect(JSON.stringify(spoken.realizationTrace.brainInfluence)).toContain("generatedSurfacePieces");
@@ -203,6 +223,18 @@ describe("SCCE2 bridge closure source-only loop", () => {
       const traceText = JSON.stringify(spoken.realizationTrace);
       expect(traceText).not.toContain(forbiddenTerm([116, 114, 97, 110, 115, 102, 111, 114, 109, 101, 114], [119, 101, 105, 103, 104, 116]));
       expect(traceText).not.toContain(forbiddenTerm([109, 111, 100, 101, 108], [119, 101, 105, 103, 104, 116]));
+
+      const untrainedState = languageRuntime.hydrateFromImportedBrain({
+        importRunId: String(first.importRunId), models: storage.ngramModels, observations: storage.ngramObservations,
+        units: storage.languageUnits, patterns: storage.languagePatterns.filter(pattern => !isLanguageConstructionPattern(pattern)),
+        semanticFrames: storage.semanticFrames, constructionEvidence: storage.evidenceSpans
+      });
+      const withoutForms = await mouth.speak({ ...speakInput, languageMemory: untrainedState });
+      expect(withoutForms.text).toBe(direct.text);
+      expect(withoutForms.realizationTrace.selected.id).not.toMatch(/^candidate:generated:learned-construction:/u);
+      expect(withoutForms.text).not.toContain("azurite closure");
+      expect(withoutForms.text).not.toContain("is what");
+      expect(withoutForms.text).toContain(closureMeaning.subject);
 
       const corpusRoot = await writePhase4CorpusFixture();
       try {
@@ -226,6 +258,87 @@ describe("SCCE2 bridge closure source-only loop", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it.each(["source_hash", "range"] as const)("rejects %s construction annotations without activating them", async fault => {
+    const root = await writeSyntheticScce2Brain(fault);
+    try {
+      const clock = createClock({ fixedTime: 12500, stepMs: 1 }), hasher = createHasher();
+      const ids = createIdFactory({ clock, hasher, deterministicReplay: true, namespace: `closure-invalid-${fault}` });
+      const storage = new MemoryScceStorage(hasher.digestHex);
+      const importer = createScce2ToV3Importer({ storage, clock, hasher, idFactory: ids, namespace: "closure-invalid" });
+      await expect(importer.import(root, { now: clock.now() })).rejects.toThrow(/source construction/u);
+      expect(storage.languagePatterns.some(isLanguageConstructionPattern)).toBe(false);
+      expect((await storage.brainImports.active()).activeImportRunIds).toEqual([]);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("imports astral/CJK source coordinates and realizes their owned construction without changing source identity", async () => {
+    const fixture = await writeUnicodeScce2Brain();
+    try {
+      const clock = createClock({ fixedTime: 12600, stepMs: 1 }), hasher = createHasher();
+      const ids = createIdFactory({ clock, hasher, deterministicReplay: true, namespace: "closure-unicode" });
+      const storage = new MemoryScceStorage(hasher.digestHex);
+      const importer = createScce2ToV3Importer({ storage, clock, hasher, idFactory: ids, namespace: "closure-unicode" });
+      await importer.import(fixture.root, { now: clock.now() });
+      const source = storage.evidenceSpans.find(span => span.text === fixture.excerpt)!;
+      expect(source).toBeDefined();
+      const bytes = Buffer.from(fixture.excerpt, "utf8"), sourceVersionId = ids.sourceVersionId(bytes);
+      expect(source.sourceVersionId).toBe(sourceVersionId);
+      expect(source.id).toBe(ids.evidenceId({ sourceVersionId, byteStart: 0, byteEnd: bytes.length, spanHash: ids.contentHash(bytes) }));
+      expect(source.charEnd).toBe([...fixture.excerpt].length);
+      expect(source.charEnd).not.toBe(fixture.excerpt.length);
+      expect(source.byteEnd).toBe(bytes.length);
+      expect(Buffer.from(await storage.blobs.get(source.contentHash))).toEqual(bytes);
+      const provenance = jsonRecord(source.provenance), original = jsonRecord(provenance.originalSource);
+      expect(provenance.charRange).toEqual([0, [...fixture.excerpt].length]);
+      expect(provenance.byteRange).toEqual([0, bytes.length]);
+      expect(provenance.coordinateSystemId).toBe("unicode.code_point.v1");
+      expect(provenance.coordinateSourceVersionId).toBe(sourceVersionId);
+      expect(original).toEqual({ uri: "fixture://unicode/source", version: "unicode-version-1", byteRange: [100, 100 + bytes.length], charRange: [50, 50 + [...fixture.excerpt].length] });
+      const version = (await storage.evidence.sourceVersionsForEvidence([source.id]))[0]!;
+      expect(version.sourceId).toBe(source.sourceId);
+      expect(version.contentHash).toBe(source.contentHash);
+      expect(jsonRecord(jsonRecord(version.metadata).provenance).charRange).toEqual(provenance.charRange);
+      const runtime = createLanguageMemoryRuntime({ idFactory: ids, hasher });
+      const state = runtime.hydrateFromImportedBrain({ models: [], observations: [], units: [], patterns: storage.languagePatterns, constructionEvidence: [source] });
+      expect(state.rejectedConstructionPatterns).toEqual([]);
+      expect(state.importedConstructionBundles).toHaveLength(1);
+      const bundle = state.importedConstructionBundles[0]!;
+      expect(bundle.sourceExamples.map(example => example.roles.map(role => role.surface))).toEqual(fixture.forms.map(form => form.slots));
+      expect(bundle.sourceExamples.every(example => example.evidenceId === String(source.id) && example.sourceVersionId === String(source.sourceVersionId)
+        && example.evidenceCharStart === 0 && example.evidenceCharEnd === [...fixture.excerpt].length)).toBe(true);
+      const example = bundle.sourceExamples[0]!;
+      const realized = realizeLearnedSurface({ hasher, constructions: bundle.constructions, formClasses: bundle.formClasses, plan: {
+        id: "meaning.unicode.crossed", profileKey: bundle.targetProfileId, roleSignature: example.roles.map(role => role.roleId),
+        slots: example.roles.map(role => ({ roleId: role.roleId, occurrenceId: role.occurrenceId,
+          variants: [{ id: `${role.occurrenceId}.crossed`, profileKey: bundle.targetProfileId, surface: role.slotIndex === 2 ? "🦉丁" : role.surface, evidenceIds: [String(source.id)] }] }))
+      } });
+      expect(realized.status).toBe("realized");
+      if (realized.status === "realized") {
+        expect(realized.realization.text).toBe("🧪甲が🦉丁を運ぶ。");
+        expect(realized.realization.provenance.verification).toBe("unverified");
+      }
+
+      const { coordinateSystemId: _system, coordinateSourceVersionId: _coordinateOwner, ...historicalProvenance } = provenance;
+      const historical = { ...source, charEnd: fixture.excerpt.length, provenance: { ...historicalProvenance, charRange: [0, fixture.excerpt.length] } };
+      await storage.evidence.putEvidenceSpan(historical);
+      await importer.import(fixture.root, { now: clock.now() });
+      expect(await storage.evidence.getEvidence(source.id)).toEqual(historical);
+    } finally { await rm(fixture.root, { recursive: true, force: true }); }
+  });
+
+  it.each(["utf16_offsets", "utf16_system"] as const)("rejects declared %s instead of guessing an alternative coordinate system", async fault => {
+    const fixture = await writeUnicodeScce2Brain(fault);
+    try {
+      const clock = createClock({ fixedTime: 12700, stepMs: 1 }), hasher = createHasher();
+      const ids = createIdFactory({ clock, hasher, deterministicReplay: true, namespace: `closure-${fault}` });
+      const storage = new MemoryScceStorage(hasher.digestHex);
+      const importer = createScce2ToV3Importer({ storage, clock, hasher, idFactory: ids, namespace: "closure-unicode" });
+      await expect(importer.import(fixture.root, { now: clock.now() })).rejects.toThrow(/source construction/u);
+      expect(storage.languagePatterns.some(isLanguageConstructionPattern)).toBe(false);
+      expect((await storage.brainImports.active()).activeImportRunIds).toEqual([]);
+    } finally { await rm(fixture.root, { recursive: true, force: true }); }
   });
 
   it("never activates a stopped partial import and resumes it to an explicit completion record", async () => {
@@ -308,8 +421,66 @@ describe("SCCE2 bridge closure source-only loop", () => {
   });
 });
 
-async function writeSyntheticScce2Brain(): Promise<string> {
+function closureConstructionTeaching() {
+  const forms = [
+    { text: "For azurite assessment, 20% thermal margin is what The annex operator preserves.", slots: ["The annex operator", "preserves", "20% thermal margin"] },
+    { text: "For azurite assessment, 30% thermal margin is what The atrium operator preserves.", slots: ["The atrium operator", "preserves", "30% thermal margin"] }
+  ];
+  const introduction = "The profile-only closure claim is not external proof.\n";
+  const excerpt = introduction + forms.map(form => form.text).join("\n");
+  const sourceTextHash = createHasher().digestHex(Buffer.from(excerpt, "utf8"));
+  let offset = [...introduction].length;
+  const sourceConstructions = forms.map(form => {
+    const observation = {
+      bindingId: closureMeaning.relationId, sourceTextHash,
+      coordinateSystemId: "unicode.code_point.v1" as const,
+      surfaceStartCodePoint: offset, surfaceEndCodePoint: offset + [...form.text].length,
+      roles: form.slots.map((surface, slotIndex) => {
+        const startCodePoint = [...form.text.slice(0, form.text.indexOf(surface))].length;
+        return { slotIndex, startCodePoint, endCodePoint: startCodePoint + [...surface].length,
+          graphBinding: { relationId: closureMeaning.relationId, roleId: `role.closure.${slotIndex}`, valueKind: ["entity", "relation", "quantity"][slotIndex]! } };
+      })
+    };
+    offset = observation.surfaceEndCodePoint + 1;
+    return observation;
+  });
+  return { excerpt, sourceConstructions };
+}
+
+async function writeUnicodeScce2Brain(fault?: "utf16_offsets" | "utf16_system") {
+  const root = await mkdtemp(path.join(os.tmpdir(), "scce2-unicode-"));
+  await mkdir(path.join(root, "language"), { recursive: true });
+  const forms = [
+    { text: "🧪甲が🦉乙を運ぶ。", slots: ["🧪甲", "運ぶ", "🦉乙"] },
+    { text: "🧪丙が🦉丁を運ぶ。", slots: ["🧪丙", "運ぶ", "🦉丁"] }
+  ];
+  const excerpt = `\n${forms.map(form => form.text).join("\n")}\n`;
+  const sourceTextHash = createHasher().digestHex(Buffer.from(excerpt, "utf8"));
+  const length = (text: string) => fault === "utf16_offsets" ? text.length : [...text].length;
+  const sourceConstructions = forms.map(form => ({
+    bindingId: "relation.unicode.transport", sourceTextHash,
+    coordinateSystemId: fault === "utf16_system" ? "unicode.utf16.v1" : "unicode.code_point.v1",
+    surfaceStartCodePoint: length(excerpt.slice(0, excerpt.indexOf(form.text))),
+    surfaceEndCodePoint: length(excerpt.slice(0, excerpt.indexOf(form.text))) + length(form.text),
+    roles: form.slots.map((surface, slotIndex) => ({ slotIndex,
+      startCodePoint: length(form.text.slice(0, form.text.indexOf(surface))),
+      endCodePoint: length(form.text.slice(0, form.text.indexOf(surface))) + length(surface),
+      graphBinding: { relationId: "relation.unicode.transport", roleId: `role.unicode.${slotIndex}`, valueKind: ["entity", "relation", "entity"][slotIndex]! }
+    }))
+  }));
+  await writeJson(path.join(root, "language", "language-shard-0001.profile.json"), {
+    schema: "scce.learnedLanguageProfileShard.v1", sourceId: "unicode-source", shardId: "language-shard-0001", languageId: "unicode-language",
+    fileEvidence: [{ title: "Unicode source", excerpt, sourceConstructions, originalSourceUri: "fixture://unicode/source",
+      originalSourceVersionId: "unicode-version-1", originalByteRange: [100, 100 + Buffer.byteLength(excerpt)], originalCharRange: [50, 50 + [...excerpt].length] }]
+  });
+  return { root, excerpt, forms };
+}
+
+async function writeSyntheticScce2Brain(teachingFault?: "source_hash" | "range"): Promise<string> {
   const root = await mkdtemp(path.join(os.tmpdir(), "scce2-closure-"));
+  const teaching = closureConstructionTeaching();
+  if (teachingFault === "source_hash") teaching.sourceConstructions[0]!.sourceTextHash = "not-the-exported-bytes";
+  if (teachingFault === "range") teaching.sourceConstructions[0]!.surfaceEndCodePoint = [...teaching.excerpt].length + 1;
   await mkdir(path.join(root, "language"), { recursive: true });
   await writeJson(path.join(root, "concept-graph.json"), {
     concepts: [
@@ -358,7 +529,7 @@ async function writeSyntheticScce2Brain(): Promise<string> {
       {
         id: "profile-only-evidence",
         title: "profile excerpt without coordinates",
-        excerpt: "The profile-only closure claim is not external proof."
+        ...teaching
       }
     ]
   });
@@ -421,27 +592,32 @@ async function writeJson(filePath: string, value: unknown): Promise<void> {
   await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
-function constructGraph(ids: ReturnType<typeof createIdFactory>, text: string): ConstructGraph {
+function constructGraph(ids: ReturnType<typeof createIdFactory>, evidence: EvidenceSpan): ConstructGraph {
+  const text = evidence.text;
+  if (![closureMeaning.subject, closureMeaning.predicate, closureMeaning.object].every(surface => text.includes(surface))) throw new Error("selected closure meaning is not in its source");
+  const fact = { ...closureMeaning, sourceNodeId: "node.closure.operator", targetNodeId: "node.closure.margin", forceClass: "direct_evidence",
+    score: 1, activation: 1, overlap: 1, support: 1, certificationPower: 1, semanticQuality: 1, answerGrade: true, finalQuestionFit: 1, questionSlotScore: 1,
+    sourceVersionId: String(evidence.sourceVersionId), evidenceIds: [String(evidence.id)] };
   return {
     id: ids.constructId({ test: "closure", text }),
     episodeId: ids.episodeId(),
     forceVector: {},
-    nodes: [{ id: "construct:closure-answer", kind: "construct:answer", label: text, metadata: {} }],
+    nodes: [{ id: "construct:closure-answer", kind: "construct:semantic_answer", label: fact.subject, metadata: {
+      schema: "scce.semantic_answer_construct.v1", questionShapeId: "question.shape.closure", selectedSubject: fact.subject,
+      selectedFacts: [fact], activatedNeighborhood: [fact], selectedRelations: [fact.relationId],
+      answerSlots: [{ id: "slot.closure", relationIds: [fact.relationId], factKeys: [[fact.subject, fact.predicate, fact.object, fact.relationId].map(value => value.normalize("NFKC").toLocaleLowerCase().replace(/\s+/gu, " ").trim()).join("\u0001")], support: fact.support, activation: fact.activation }],
+      forceId: "output.force.source_bound_answer", boundaryId: "output.force.source_bound",
+      certificationBoundary: { directEvidenceCount: 1, evidenceSpanIds: [String(evidence.id)], sourceVersionIds: [String(evidence.sourceVersionId)], externalFactCertification: evidenceProofBoundary(evidence).certifiesFactualProof }
+    } }],
     edges: [],
     artifacts: []
   };
 }
 
-function languageProfile(sourceVersionId: SourceVersion["sourceVersionId"], now: number): LanguageProfile {
+function languageProfile(ids: ReturnType<typeof createIdFactory>, source: EvidenceSpan, now: number): LanguageProfile {
   return {
+    ...createLanguageAcquisitionEngine({ idFactory: ids }).acquire({ sourceVersionId: source.sourceVersionId, text: source.text, createdAt: now }),
     id: "closure-language",
-    sourceVersionId,
-    scripts: [{ script: "Latn", mass: 1 }],
-    symbolShapes: [],
-    charNgrams: [],
-    direction: "ltr",
-    entropy: 0.2,
-    createdAt: now
   };
 }
 

@@ -2,12 +2,6 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import path from "node:path";
 import { ingestStageTracer } from "./ingest-stage-trace-sink.js";
-import {
-  appendBoundedAlignmentEvents,
-  boundedCanonicalJsonBytes,
-  buildBoundedAlignmentEvents,
-  readAlignmentAlternativeSetsFromBoundedPayloads
-} from "./alignment-event-artifacts.js";
 import { existsSync } from "node:fs";
 import { freemem, totalmem, tmpdir } from "node:os";
 import {
@@ -27,55 +21,17 @@ import {
   relationPromotionNeedsPriors,
   compileOpaqueRoleModel,
   compileRoleSurfaceOrderModel,
-  compileSparseAlignmentTargetIndex,
-  prepareSparseTransportSolver,
-  generateSparseAlignmentCandidates,
-  rankEvidenceForAlignment,
-  compileTypedNullCostModel,
-  compilePopulationOrderingModel,
-  compileCrossDocumentAlignmentModel,
-  compileAlignmentAlternativeSet,
-  alignmentAlternativeSeriesId,
-  extractAlignmentAlternatives,
-  compileAlignmentCommunityRouting,
-  compileCoarseToFineAlignmentResult,
-  compileAlignmentCalibrationModel,
-  compileAlignmentPromotionModel,
-  compileAutomaticAlignmentEvaluation,
-  compileReversibleConstructionPattern,
-  compileReversibleConstructions,
-  reversibleConstructionCycle,
-  alignmentCalibrationFeatures,
-  calibratedAlignmentProbability,
-  solveSparseFusedUnbalancedTransportWithResourceBudget,
-  createSparseTransportPlanRetentionInterner,
-  createTransportEvidenceAllocationRetentionInterner,
-  compilePairedAntiUnifiedConstructions,
-  compilePairedAntiUnifiedPatterns,
-  compileGraphCorrelatedVariabilityModel,
-  admittedPairedAntiUnifiedConstructions,
-  compileOptionalNullRealizationModel,
-  compileOptionalNullRealizationPatterns,
-  reversibleConstructionCreationSnapshotId,
-  solveSparseFusedUnbalancedTransport,
-  allocateTransportEvidence,
   graphFromStructuredSemanticCandidates,
   relationObservationsFromCandidates,
-  buildSurfaceLattice,
-  evidenceSourceFamilyId,
-  liftHyperedgesToTypedIncidenceGraph,
   toJsonValue,
   validateBrainManifestContract,
   compileBrainReplayManifest,
-  compileCanonicalReplayManifest,
-  verifyCanonicalReplayManifest,
   validationDisposition,
   type BrainLifecycleRecord,
   type BrainManifestContract,
   type BrainValidationReport,
   type BrainShardProvenanceClass,
   type Clock,
-  type ContentHash,
   type EvidenceSpan,
   type GraphEdge,
   type GraphNode,
@@ -91,14 +47,12 @@ import {
   type StructuredSemanticCandidate
 } from "@scce/kernel";
 import { effectiveNgramShardChars, type ScceRuntimeConfig } from "./config.js";
-import { prepareLanguageCorpusTraining, commitLanguageCorpusTraining, type LanguageCorpusTrainingInput } from "./language-corpus-trainer.js";
+import { prepareLanguageCorpusTraining, commitLanguageCorpusTraining, languageCorpusTrainingRecipeId, type LanguageCorpusTrainingInput } from "./language-corpus-trainer.js";
 import { blobContentHash } from "./postgres.js";
 import { detectWikipediaIndexPath, resolveWikipediaCorpusTarget, spanProvenanceMetadata, streamWikipediaMultistream, wikipediaRootUri, type ResolvedWikipediaCorpus } from "./wikipedia.js";
 import { createWikipediaInputManifest, wikipediaInputSourcesStillMatch, type WikipediaInputManifest } from "./wikipedia-input-manifest.js";
 import { WIKIPEDIA_SURFACE_TRANSFORM } from "./wikipedia-markup.js";
 import { ingestionCodeIdentity } from "./ingestion-code-identity.js";
-
-/** How many entries of a diagnostic list the alignment provenance event keeps; the true length is recorded beside it. */
 
 /** The compact Kneser-Ney summary's most-continued symbols, narrowed out of the profile's JSON shape. */
 function profileTopContinuation(kneserNey: unknown): Array<[string, number]> {
@@ -143,6 +97,8 @@ export interface WikipediaV3IngestResult {
   blocks: number;
   pages: number;
   sources: number;
+  truncatedPages: number;
+  truncatedCharacters: number;
   evidence: number;
   graphNodes: number;
   graphEdges: number;
@@ -180,6 +136,7 @@ interface WikipediaLanguageBatchJournal {
   readonly version: 1;
   readonly state: "open" | "idle";
   readonly blockOffset: number;
+  readonly blockOrdinal: number;
   readonly blockComplete: boolean;
   readonly lastProcessedPageOrdinal: number;
   readonly processedPageCount: number;
@@ -194,6 +151,8 @@ interface WikipediaLanguageBatchJournal {
 interface WikipediaLanguageProgressCounts {
   pages: number;
   sources: number;
+  truncatedPages: number;
+  truncatedCharacters: number;
   evidence: number;
   graphNodes: number;
   graphEdges: number;
@@ -211,6 +170,8 @@ interface WikipediaLanguageProgressCounts {
 
 interface WikipediaPageImport {
   sources: number;
+  truncatedPages?: number;
+  truncatedCharacters?: number;
   evidence: number;
   graphNodes: number;
   graphEdges: number;
@@ -252,6 +213,8 @@ export interface WikipediaV3IngestStatus {
   blocks: number;
   pages: number;
   sources: number;
+  truncatedPages: number;
+  truncatedCharacters: number;
   evidence: number;
   graphNodes: number;
   graphEdges: number;
@@ -359,6 +322,7 @@ export class WikipediaV3Ingestor {
         namespace: corpus.namespace, wikiCode: corpus.wikiCode, allowedNamespaces: [...corpus.allowedNamespaces].sort((a, b) => a - b),
         skipRedirects: corpus.skipRedirects, maxArticleChars: corpus.maxArticleChars,
         maxChunkBytes: this.config.runtime.maxChunkBytes ?? null,
+        languageTrainingRecipeId: languageCorpusTrainingRecipeId("wikipedia"),
         ngramShardChars: effectiveNgramShardChars(wikiConfig?.ngramShardChars),
         ngramMaxOrder: wikiConfig?.ngramMaxOrder ?? 4,
         ngramMaxCountersPerOrder: wikiConfig?.ngramMaxCountersPerOrder ?? 128,
@@ -388,6 +352,11 @@ export class WikipediaV3Ingestor {
     const resumedFromOffset = input.startOffset !== undefined ? Math.max(0, Math.floor(input.startOffset))
       : useStoredResume ? resumeJournal?.blockOffset ?? resumeCheckpoint?.offsetBytes ?? 0 : 0;
     const resumeAfterBlock = useStoredResume && (resumeJournal === undefined ? resumeCheckpoint !== undefined : resumeJournal.blockComplete);
+    const resumedBlockOrdinal = resumeJournal?.blockOrdinal
+      ?? (useStoredResume && resumeCheckpoint ? Number(objectOrEmpty(resumeCheckpoint.metadata).blockOrdinal) : 0);
+    if (!Number.isSafeInteger(resumedBlockOrdinal) || resumedBlockOrdinal < 0 || (useStoredResume && resumedFromOffset > 0 && resumedBlockOrdinal < 1)) {
+      throw new Error("Wikipedia resume cursor has no valid absolute block ordinal");
+    }
     const episodeId = this.ids.episodeId();
     const startedAt = nowMs();
     await this.storage.events.append(this.events.create({
@@ -406,6 +375,8 @@ export class WikipediaV3Ingestor {
       blocks: 0,
       pages: 0,
       sources: 0,
+      truncatedPages: 0,
+      truncatedCharacters: 0,
       evidence: 0,
       graphNodes: 0,
       graphEdges: 0,
@@ -436,6 +407,7 @@ export class WikipediaV3Ingestor {
     let languageShardChars = languageBatchJournal?.pendingChars ?? 0;
     const pendingBlockCheckpoints: IngestionCheckpoint[] = [];
     let currentBlockOffset = languageBatchJournal?.blockOffset ?? resumedFromOffset;
+    let currentBlockOrdinal = resumedBlockOrdinal;
     let currentBlockComplete = languageBatchJournal?.blockComplete ?? false;
     let lastProcessedPageOrdinal = languageBatchJournal?.lastProcessedPageOrdinal ?? 0;
     let processedPageCount = languageBatchJournal?.processedPageCount ?? 0;
@@ -454,6 +426,7 @@ export class WikipediaV3Ingestor {
         version: 1,
         state,
         blockOffset: currentBlockOffset,
+        blockOrdinal: currentBlockOrdinal,
         blockComplete: currentBlockComplete,
         lastProcessedPageOrdinal,
         processedPageCount,
@@ -538,6 +511,8 @@ export class WikipediaV3Ingestor {
         blocks: result.blocks,
         pages: result.pages,
         sources: result.sources,
+        truncatedPages: result.truncatedPages,
+        truncatedCharacters: result.truncatedCharacters,
         evidence: result.evidence,
         graphNodes: result.graphNodes,
         graphEdges: result.graphEdges,
@@ -558,7 +533,7 @@ export class WikipediaV3Ingestor {
         stoppedByHeapSafetyBound: result.stoppedByHeapSafetyBound,
         stoppedByOwner: result.stoppedByOwner,
         fullTrainingRequested,
-        fullTrainingComplete: fullTrainingRequested && streamReachedEnd && languageSkippedDocuments === 0 && !result.stoppedByHeapSafetyBound && !result.stoppedByOwner,
+        fullTrainingComplete: fullTrainingRequested && streamReachedEnd && languageSkippedDocuments === 0 && (committedProgressCounts.truncatedPages ?? 0) === 0 && !result.stoppedByHeapSafetyBound && !result.stoppedByOwner,
         stopReason,
         warnings: result.warnings.slice(-64)
       });
@@ -588,6 +563,7 @@ export class WikipediaV3Ingestor {
           : corpus;
         stream = streamWikipediaMultistream(streamCorpus, {
           resumeOffset: resumedFromOffset,
+          resumeBlockOrdinal: resumedBlockOrdinal || undefined,
           resumeAfterBlock: resumeAfterBlock,
           discoverIndex: false
         });
@@ -604,6 +580,7 @@ export class WikipediaV3Ingestor {
             await flushLanguageShard(activeLanguageShardUri);
             activeLanguageShardUri = item.checkpoint.itemUri;
             const blockOffset = item.checkpoint.offsetBytes;
+            currentBlockOrdinal = Number(objectOrEmpty(item.checkpoint.metadata).blockOrdinal);
             if (!(languageBatchJournal && !languageBatchJournal.blockComplete && languageBatchJournal.blockOffset === blockOffset)) {
               currentBlockOffset = blockOffset;
               currentBlockComplete = false;
@@ -658,6 +635,8 @@ export class WikipediaV3Ingestor {
         const imported = await this.ingestPage(item.file, item.checkpoint, episodeId);
         result.pages++;
         result.sources += imported.sources;
+        result.truncatedPages += imported.truncatedPages ?? 0;
+        result.truncatedCharacters += imported.truncatedCharacters ?? 0;
         result.evidence += imported.evidence;
         result.graphNodes += imported.graphNodes;
         result.graphEdges += imported.graphEdges;
@@ -734,6 +713,7 @@ export class WikipediaV3Ingestor {
       throw error;
     }
     result.stopReason = stopReason;
+    if (result.truncatedPages) result.warnings.push(`${result.truncatedPages} page(s) omit ${result.truncatedCharacters} normalized UTF-16 units beyond maxArticleChars; full raw source bytes remain stored`);
     if (languageSkippedDocuments) result.warnings.push(`${languageSkippedDocuments} page(s) were not language-trained because languageTrainingDocumentLimit was reached`);
 
     // An EOF-only resume can finish a journaled batch without importing a new page. It still
@@ -741,7 +721,7 @@ export class WikipediaV3Ingestor {
     // at the earlier partial run. Empty corpora with no prior checkpoint remain unregistered.
     const manifestResult = wikipediaResultWithProgress(result, committedProgressCounts);
     if (manifestResult.sources > 0 || (streamReachedEnd && (resumeCheckpoint !== undefined || languageBatchJournalCheckpoint !== null))) {
-      await this.registerActiveWikipediaImport({ result: manifestResult, rootUri, corpus, importedAt: nowMs(), fullTrainingComplete: fullTrainingRequested && streamReachedEnd && languageSkippedDocuments === 0 && !result.stoppedByHeapSafetyBound && !result.stoppedByOwner });
+      await this.registerActiveWikipediaImport({ result: manifestResult, rootUri, corpus, importedAt: nowMs(), fullTrainingComplete: fullTrainingRequested && streamReachedEnd && languageSkippedDocuments === 0 && (committedProgressCounts.truncatedPages ?? 0) === 0 && !result.stoppedByHeapSafetyBound && !result.stoppedByOwner });
     }
     await this.storage.events.append(this.events.create({
       episodeId,
@@ -1040,6 +1020,9 @@ export class WikipediaV3Ingestor {
     };
     const now = this.clock.now();
     const warnings: string[] = [];
+    const normalization = objectOrEmpty(objectOrEmpty(file.metadata).normalization ?? null);
+    const truncatedCharacters = Math.max(0, Number(normalization.truncatedChars) || 0);
+    const truncatedPages = truncatedCharacters > 0 ? 1 : 0;
     const originalFile = file;
     const derivative = file.evidenceDerivative;
     const { sourceId, originalVersionId, evidenceVersionId: sourceVersionId } = wikipediaSourceVersionIdentities(file, this.ids);
@@ -1183,7 +1166,7 @@ export class WikipediaV3Ingestor {
     });
     if (decision.disposition === "reject") {
     await this.storage.ingestion.put({ ...checkpoint, phase: "skipped", status: "complete", reason: "admission-rejected", updatedAt: now });
-      return zeroPage({ warnings: decision.reasons });
+      return zeroPage({ warnings: decision.reasons, truncatedPages, truncatedCharacters });
     }
     if (decision.disposition !== "promote") {
       const actionByEvidence = new Map(decision.evidenceActions.map(action => [action.evidenceId, action]));
@@ -1216,7 +1199,7 @@ export class WikipediaV3Ingestor {
           activeInfluence: decision.activeInfluence
         }
       });
-      return zeroPage({ warnings: decision.reasons });
+      return zeroPage({ warnings: decision.reasons, truncatedPages, truncatedCharacters });
     }
 
     if (!typedProjection || !builtGraph) throw new Error("Wikipedia promoted page is missing its derived graph");
@@ -1293,6 +1276,8 @@ export class WikipediaV3Ingestor {
 
     return {
       sources: derivative ? 2 : 1,
+      truncatedPages,
+      truncatedCharacters,
       evidence: admittedSpans.length,
       graphNodes,
       graphEdges,
@@ -1321,39 +1306,6 @@ export class WikipediaV3Ingestor {
     };
     } finally { transactionSpan.end({ bytes: originalFile.bytes.length }); }
     });
-  }
-
-  /** Append inline provenance when it fits; otherwise persist every payload field in bounded blob parts. */
-  private async appendBoundedAlignmentEvent(
-    episodeId: ReturnType<IdFactory["episodeId"]>,
-    payload: Record<string, unknown>
-  ): Promise<void> {
-    const append = async (value: JsonValue): Promise<void> => {
-      await this.storage.events.append(this.events.create({
-        episodeId,
-        typeId: "SparseAlignmentCandidatesCompiled",
-        payload: value
-      }));
-    };
-    // Preflight with a bounded writer instead of constructing the potentially
-    // hundreds-of-megabytes canonical clone that caused the prior OOM.
-    let inlineBytes: Uint8Array | undefined;
-    try {
-      inlineBytes = boundedCanonicalJsonBytes(payload, 16 * 1024 * 1024);
-    } catch (error) {
-      if (!(error instanceof RangeError)) throw error;
-    }
-    if (inlineBytes) {
-      await append(JSON.parse(Buffer.from(inlineBytes).toString("utf8")) as JsonValue);
-      return;
-    }
-    const boundedEvents = await buildBoundedAlignmentEvents({
-      episodeId: String(episodeId),
-      payload,
-      blobs: this.storage.blobs,
-      idFactory: this.ids
-    });
-    await appendBoundedAlignmentEvents(append, boundedEvents);
   }
 
   private async ingestLanguageShard(samples: readonly WikipediaLanguageShardSample[], shardUri: string, episodeId: ReturnType<IdFactory["episodeId"]>, inputManifest: WikipediaInputManifest, commitProgress: (trained?: WikipediaLanguageShardImport) => Promise<void>): Promise<WikipediaLanguageShardImport> {
@@ -1405,11 +1357,6 @@ export class WikipediaV3Ingestor {
       skipNgramObservationPersistence: true,
       episodeId
     };
-    const prepared = await prepareLanguageCorpusTraining(trainingInput);
-    trainSpan.end({ evidence: evidence.length, pages: samples.length, textBytes: Buffer.byteLength(text, "utf8") });
-    return this.storage.transaction(async () => {
-    if (!await wikipediaInputSourcesStillMatch(inputManifest)) throw new Error("Wikipedia input changed during language preparation");
-    const trained = await commitLanguageCorpusTraining(trainingInput, prepared);
     const semanticCandidates = samples.flatMap(sample => sample.semanticCandidates);
     // Independence is corpus-wide: sources seen in earlier runs count, or a shard at a time never promotes.
     //
@@ -1422,13 +1369,6 @@ export class WikipediaV3Ingestor {
     const priorSpan = trace.span("relation.prior-load");
     const priorRelationObservations = await this.priorRelationObservations(semanticCandidates);
     priorSpan.end({ candidates: semanticCandidates.length, priors: priorRelationObservations.length });
-    const observeSpan = trace.span("relation.observe");
-    if (this.storage.relationObservations && semanticCandidates.length) {
-      await this.storage.relationObservations.put(
-        relationObservationsFromCandidates(semanticCandidates).map(row => ({ ...row, observedAt: createdAt }))
-      );
-    }
-    observeSpan.end({ candidates: semanticCandidates.length });
     const promoteSpan = trace.span("relation.promote");
     const relationPromotionModel = compileRelationPromotionModel({
       candidates: semanticCandidates,
@@ -1469,14 +1409,26 @@ export class WikipediaV3Ingestor {
         opaqueRoleModel
       }) : { nodes: [], edges: [], hyperedges: [] };
     graphProjectionSpan.end({ nodes: promotedGraph.nodes.length, edges: promotedGraph.edges.length, hyperedges: promotedGraph.hyperedges.length });
+    const projectedGraph = {
+      nodes: stampGraphNodes(promotedGraph.nodes, WIKIPEDIA_INFORMATION_LABEL),
+      edges: stampGraphEdges(promotedGraph.edges, WIKIPEDIA_INFORMATION_LABEL),
+      hyperedges: promotedGraph.hyperedges.map(hyperedge => ({ ...hyperedge, informationLabel: WIKIPEDIA_INFORMATION_LABEL }))
+    };
+    trainingInput.graphSnapshotAdditions = projectedGraph;
+    const prepared = await prepareLanguageCorpusTraining(trainingInput);
+    trainSpan.end({ evidence: evidence.length, pages: samples.length, textBytes: Buffer.byteLength(text, "utf8") });
+    return this.storage.transaction(async () => {
+    if (!await wikipediaInputSourcesStillMatch(inputManifest)) throw new Error("Wikipedia input changed during language preparation");
+    const observeSpan = trace.span("relation.observe");
+    if (this.storage.relationObservations && semanticCandidates.length) {
+      await this.storage.relationObservations.put(
+        relationObservationsFromCandidates(semanticCandidates).map(row => ({ ...row, observedAt: createdAt }))
+      );
+    }
+    observeSpan.end({ candidates: semanticCandidates.length });
     if (promotedGraph.hyperedges.length) {
       const graphPersistSpan = trace.span("relation.graph-persist");
-      const promotedNodes = stampGraphNodes(promotedGraph.nodes, WIKIPEDIA_INFORMATION_LABEL);
-      const promotedEdges = stampGraphEdges(promotedGraph.edges, WIKIPEDIA_INFORMATION_LABEL);
-      const promotedHyperedges = promotedGraph.hyperedges.map(hyperedge => ({
-        ...hyperedge,
-        informationLabel: WIKIPEDIA_INFORMATION_LABEL
-      }));
+      const { nodes: promotedNodes, edges: promotedEdges, hyperedges: promotedHyperedges } = projectedGraph;
       if (this.storage.graph.upsertNodes) await this.storage.graph.upsertNodes(promotedNodes);
       else for (const node of promotedNodes) await this.storage.graph.upsertNode(node);
       if (this.storage.graph.upsertEdges) await this.storage.graph.upsertEdges(promotedEdges);
@@ -1484,417 +1436,6 @@ export class WikipediaV3Ingestor {
       if (this.storage.graph.upsertHyperedges) await this.storage.graph.upsertHyperedges(promotedHyperedges);
       else for (const hyperedge of promotedHyperedges) await this.storage.graph.upsertHyperedge(hyperedge);
       graphPersistSpan.end({ hyperedges: promotedHyperedges.length });
-      const targetIndexSpan = trace.span("alignment.target-index");
-      // Alignment runs over the spans that carry the most corroborated targets and the graph region those spans evidence.
-      const alignmentEvidence = rankEvidenceForAlignment({
-        evidence,
-        targetIndex: compileSparseAlignmentTargetIndex({
-          incidenceGraph: liftHyperedgesToTypedIncidenceGraph({ hyperedges: promotedGraph.hyperedges, hasher: this.hasher }),
-          nodes: promotedGraph.nodes,
-          hasher: this.hasher
-        }),
-        limit: this.config.runtime.corpora?.wikipedia?.alignmentLatticesPerShard ?? 48
-      });
-      const alignmentEvidenceIds = new Set(alignmentEvidence.map(span => String(span.id)));
-      const alignmentHyperedges = promotedGraph.hyperedges.filter(hyperedge =>
-        hyperedge.evidenceIds.some(evidenceId => alignmentEvidenceIds.has(String(evidenceId))));
-      const alignmentNodeIds = new Set(alignmentHyperedges.flatMap(hyperedge => hyperedge.memberNodeIds.map(String)));
-      const incidenceGraph = liftHyperedgesToTypedIncidenceGraph({
-        hyperedges: alignmentHyperedges,
-        hasher: this.hasher
-      });
-      const transportSolver = prepareSparseTransportSolver({ targetIndex: compileSparseAlignmentTargetIndex({
-        incidenceGraph,
-        nodes: promotedGraph.nodes.filter(node => alignmentNodeIds.has(String(node.id))),
-        maxTargetsPerPosting: 512,
-        hasher: this.hasher
-      }) });
-      const alignmentTargetIndex = transportSolver.targetIndex;
-      targetIndexSpan.end({ targets: alignmentTargetIndex.targets.length, evidence: alignmentEvidence.length });
-      let alignmentCandidateCount = 0;
-      let alignmentSurfaceUnitCount = 0;
-      let maximumAlignmentDegree = 0;
-      const alignmentSupportIds: string[] = [];
-      const routedAlignmentSupportIds: string[] = [];
-      const alignmentCommunityRoutingIds: string[] = [];
-      const transportPlanIds: string[] = [];
-      let transportIterationCount = 0;
-      let transportedCellCount = 0;
-      const transportEvidenceAllocationIds: string[] = [];
-      const planRetentionInterner = createSparseTransportPlanRetentionInterner();
-      const evidenceAllocationRetentionInterner = createTransportEvidenceAllocationRetentionInterner();
-      let unresolvedTransportEvidenceCount = 0;
-      let unresolvedTransportEvidenceAllocationCount = 0;
-      let maximumTransportEvidenceResidual = 0;
-      const typedNullCostModelIds = new Set<string>();
-      const populationOrderingModelIds = new Set<string>();
-      const crossDocumentAlignmentModelIds = new Set<string>();
-      const alignmentAlternativeSetIds: string[] = [];
-      const alignmentAlternativeSets:
-        ReturnType<typeof compileAlignmentAlternativeSet>[] = [];
-      const coarseToFineAlignments:
-        ReturnType<typeof compileCoarseToFineAlignmentResult>[] = [];
-      const allAlignmentEvidenceAllocations:
-        ReturnType<typeof allocateTransportEvidence>[] = [];
-      const retainAlignmentProvenance = this.config.runtime.corpora?.wikipedia?.retainAlignmentProvenance === true;
-      // Predecessor sets only exist when earlier shards retained them; otherwise the history read is dead weight.
-      const historicalAlignmentPayloads = retainAlignmentProvenance ? (await this.storage.events.readRange({
-        typeId: "SparseAlignmentCandidatesCompiled",
-        limit: 1_024
-      })).map(event => event.payload) : [];
-      if (!retainAlignmentProvenance) trace.mark("alignment.provenance.not-retained", { historyReadSkipped: 1_024 });
-      let retainedAlignmentHypothesisCount = 0;
-      let omittedAlignmentSearchBranchCount = 0;
-      let surfaceNullMass = 0;
-      let graphImplicitMass = 0;
-      const alignmentSupports:
-        ReturnType<typeof generateSparseAlignmentCandidates>[] = [];
-      const alignmentLattices:
-        ReturnType<typeof buildSurfaceLattice>[] = [];
-      for (const span of alignmentEvidence) {
-        const latticeSpan = trace.span("alignment.lattice");
-        const lattice = buildSurfaceLattice({
-          documentId: String(span.id),
-          sourceFamilyId: evidenceSourceFamilyId(span),
-          text: span.text,
-          sourceVersionId: span.sourceVersionId,
-          evidenceIds: [span.id],
-          hasher: this.hasher
-        });
-        alignmentLattices.push(lattice);
-        latticeSpan.end({ units: lattice.units.length, bytes: Buffer.byteLength(span.text, "utf8") });
-        const candidateSpan = trace.span("alignment.candidates");
-        const support = generateSparseAlignmentCandidates({
-          lattice,
-          targetIndex: alignmentTargetIndex,
-          hasher: this.hasher
-        });
-        alignmentSupportIds.push(support.id);
-        alignmentCandidateCount += support.candidates.length;
-        alignmentSurfaceUnitCount += support.rows.length;
-        maximumAlignmentDegree = Math.max(
-          maximumAlignmentDegree,
-          ...support.rows.map(row => row.candidateIds.length)
-        );
-        alignmentSupports.push(support);
-        candidateSpan.end({ rows: support.rows.length, candidates: support.candidates.length });
-      }
-      const routingModelsSpan = trace.span("alignment.routing-models");
-      const alignmentCommunityRoutings = alignmentSupports.map(support =>
-        compileAlignmentCommunityRouting({
-          support,
-          targetIndex: alignmentTargetIndex,
-          hasher: this.hasher
-        }));
-      const routedAlignmentSupports = alignmentCommunityRoutings.map(routing => {
-        alignmentCommunityRoutingIds.push(routing.id);
-        routedAlignmentSupportIds.push(routing.routedSupport.id);
-        return routing.routedSupport;
-      });
-      // Routing copies the support rows/candidates it retains; the pre-routing supports are no longer read.
-      alignmentSupports.length = 0;
-      const typedNullCostModel = compileTypedNullCostModel({
-        supports: routedAlignmentSupports,
-        targetIndex: alignmentTargetIndex,
-        hasher: this.hasher
-      });
-      const populationOrderingModel = compilePopulationOrderingModel({
-        supports: routedAlignmentSupports,
-        hasher: this.hasher
-      });
-      routingModelsSpan.end({ supports: routedAlignmentSupports.length });
-      const transportResourceUsage = { elapsedMs: 0, outerIterations: 0, cellCount: 0, rowCount: 0, columnCount: 0, estimatedWorkingBytes: 0, plans: 0 };
-      const solveBudgeted = (solverInput: Parameters<typeof solveSparseFusedUnbalancedTransport>[0]) => {
-        const solved = solveSparseFusedUnbalancedTransportWithResourceBudget(solverInput, transportSolver);
-        transportResourceUsage.elapsedMs += solved.resourceUsage.elapsedMs;
-        transportResourceUsage.outerIterations += solved.resourceUsage.outerIterations;
-        transportResourceUsage.cellCount += solved.resourceUsage.cellCount;
-        transportResourceUsage.rowCount += solved.resourceUsage.rowCount;
-        transportResourceUsage.columnCount += solved.resourceUsage.columnCount;
-        transportResourceUsage.estimatedWorkingBytes = Math.max(transportResourceUsage.estimatedWorkingBytes, solved.resourceUsage.estimatedWorkingBytes);
-        transportResourceUsage.plans += 1;
-        return planRetentionInterner.compact(solved.plan);
-      };
-      const initialTransportSpan = trace.span("alignment.transport-initial");
-      const initialTransportPlans = routedAlignmentSupports.map(support =>
-        solveBudgeted({
-          support,
-          targetIndex: alignmentTargetIndex,
-          typedNullCostModel,
-          populationOrderingModel,
-          hasher: this.hasher
-        }));
-      initialTransportSpan.end({ plans: initialTransportPlans.length });
-      const crossDocumentSpan = trace.span("alignment.cross-document");
-      const crossDocumentAlignmentModel = compileCrossDocumentAlignmentModel({
-        supports: routedAlignmentSupports,
-        plans: initialTransportPlans,
-        targetIndex: alignmentTargetIndex,
-        hasher: this.hasher
-      });
-      // Cross-document compilation materializes projections and estimates, with no plan aliases.
-      initialTransportPlans.length = 0;
-      crossDocumentSpan.end();
-      const finalTransportSpan = trace.span("alignment.transport-final");
-      const finalTransportPlans = routedAlignmentSupports.map(support =>
-        solveBudgeted({
-          support,
-          targetIndex: alignmentTargetIndex,
-          typedNullCostModel,
-          populationOrderingModel,
-          crossDocumentAlignmentModel,
-          hasher: this.hasher
-        }));
-      finalTransportSpan.end({ plans: finalTransportPlans.length });
-      for (let index = 0; index < finalTransportPlans.length; index++) {
-        const support = routedAlignmentSupports[index]!;
-        const transport = finalTransportPlans[index]!;
-        transportPlanIds.push(transport.id);
-        transportIterationCount += transport.iterations.length;
-        transportedCellCount += transport.cells.length;
-        typedNullCostModelIds.add(transport.typedNullCostModelId);
-        populationOrderingModelIds.add(transport.populationOrderingModelId);
-        if (transport.crossDocumentAlignmentModelId) {
-          crossDocumentAlignmentModelIds.add(
-            transport.crossDocumentAlignmentModelId
-          );
-        }
-        surfaceNullMass += transport.rowMarginals.reduce(
-          (sum, row) => sum + row.surfaceNullMass,
-          0
-        );
-        graphImplicitMass += transport.columnMarginals.reduce(
-          (sum, column) => sum + column.graphImplicitMass,
-          0
-        );
-        const alternativesSpan = trace.span("alignment.alternatives");
-        const extractedAlternatives = extractAlignmentAlternatives({
-          basePlan: transport,
-          support,
-          targetIndex: alignmentTargetIndex,
-          solver: transportSolver,
-          typedNullCostModel,
-          populationOrderingModel,
-          crossDocumentAlignmentModel,
-          retentionPolicy: planRetentionInterner,
-          hasher: this.hasher
-        });
-        alternativesSpan.end({
-          plans: extractedAlternatives.plans.length,
-          attemptedBranches: extractedAlternatives.attemptedBranchCount,
-          totalBranches: extractedAlternatives.totalBranchCount,
-          branchBudget: extractedAlternatives.branchSearchBudget,
-          omittedBranches: extractedAlternatives.omittedSearchBranchCount
-        });
-        const alternativeAllocations = extractedAlternatives.plans.map(plan =>
-          evidenceAllocationRetentionInterner.compact(allocateTransportEvidence({
-            plan,
-            support,
-            hasher: this.hasher
-          })));
-        allAlignmentEvidenceAllocations.push(...alternativeAllocations);
-        const seriesId = alignmentAlternativeSeriesId({
-          support,
-          targetIndex: alignmentTargetIndex,
-          hasher: this.hasher
-        });
-        const alternativeSet = compileAlignmentAlternativeSet({
-          seriesId,
-          plans: extractedAlternatives.plans,
-          evidenceAllocations: alternativeAllocations,
-          predecessorSets: [
-            ...(await readAlignmentAlternativeSetsFromBoundedPayloads(
-              historicalAlignmentPayloads,
-              seriesId,
-              this.storage.blobs
-            )),
-            ...alignmentAlternativeSets.filter(set => set.seriesId === seriesId)
-          ],
-          omittedSearchBranchCount: extractedAlternatives.omittedSearchBranchCount,
-          attemptedBranchCount: extractedAlternatives.attemptedBranchCount,
-          totalBranchCount: extractedAlternatives.totalBranchCount,
-          branchSearchBudget: extractedAlternatives.branchSearchBudget,
-          hasher: this.hasher
-        });
-        alignmentAlternativeSetIds.push(alternativeSet.id);
-        alignmentAlternativeSets.push(alternativeSet);
-        coarseToFineAlignments.push(compileCoarseToFineAlignmentResult({
-          routing: alignmentCommunityRoutings[index]!,
-          primaryPlan: transport,
-          alternativeSet,
-          hasher: this.hasher
-        }));
-        retainedAlignmentHypothesisCount += alternativeSet.hypotheses.length;
-        omittedAlignmentSearchBranchCount += alternativeSet.omittedSearchBranchCount;
-        const allocation = alternativeAllocations.find(item =>
-          item.transportPlanId === transport.id)!;
-        transportEvidenceAllocationIds.push(allocation.id);
-        unresolvedTransportEvidenceCount += allocation.unresolvedCandidateIds.length;
-        unresolvedTransportEvidenceAllocationCount +=
-          allocation.status === "unresolved_evidence" ? 1 : 0;
-        maximumTransportEvidenceResidual = Math.max(
-          maximumTransportEvidenceResidual,
-          allocation.conservationResidual
-        );
-      }
-      // This verifies canonical serialization and graph integrity. A separate executed replay is required to
-      // establish re-derivation equivalence; a self-consistent hash alone cannot establish that result.
-      let canonicalReplay: { id: string; byteHash: string; blobHash: string; verified: boolean } | undefined;
-      try {
-        const manifest = compileCanonicalReplayManifest({
-          corpusManifestId: inputManifest.identity,
-          codeCommit: inputManifest.semantics.compilerIdentity,
-          configuration: toJsonValue({ semanticConfig: inputManifest.semantics.config, ngramMaxOrder, ngramMaxCounters, vocabularyLimit,
-            alignmentLattices: alignmentLattices.length, trainingTextHash: this.hasher.digestHex(text), sourceVersionIds: samples.map(sample => String(sample.sourceVersionId)) }),
-          randomSeed: shardUri,
-          surfaceLattices: alignmentLattices,
-          boundaryStatistics: [],
-          candidates: semanticCandidates,
-          admittedGraph: promotedGraph,
-          hasher: this.hasher
-        });
-        verifyCanonicalReplayManifest(manifest, this.hasher);
-        const manifestBytes = Buffer.from(canonicalStringify(manifest), "utf8");
-        await this.storage.blobs.put(manifestBytes, "application/json");
-        canonicalReplay = { id: manifest.id, byteHash: manifest.byteHash, blobHash: String(blobContentHash(manifestBytes)), verified: true };
-      } catch (error) {
-        throw new Error(`Wikipedia canonical replay verification failed: ${messageOf(error)}`, { cause: error });
-      }
-      const alignmentHeldoutEvaluation =
-        compileAutomaticAlignmentEvaluation({
-          alternativeSets: alignmentAlternativeSets,
-          supports: routedAlignmentSupports,
-          referencePlans: finalTransportPlans,
-          evidenceAllocations: allAlignmentEvidenceAllocations,
-          targetIndex: alignmentTargetIndex,
-          lattices: alignmentLattices,
-          hasher: this.hasher
-        });
-      const alignmentCalibrationModel = compileAlignmentCalibrationModel({
-        observations: alignmentHeldoutEvaluation.calibrationObservations,
-        hasher: this.hasher
-      });
-      const alignmentPromotionModel = compileAlignmentPromotionModel({
-        alternativeSets: alignmentAlternativeSets,
-        observations: alignmentHeldoutEvaluation.promotionObservations,
-        hasher: this.hasher
-      });
-      const planById = new Map(alignmentAlternativeSets.flatMap(set => set.hypotheses.map(hypothesis => [hypothesis.plan.id, hypothesis.plan] as const)));
-      const calibrationProbabilityByPlanId = new Map<string, number>();
-      for (const decision of alignmentPromotionModel.decisions) {
-        const plan = planById.get(decision.planId);
-        if (!plan || !plan.iterations.length) continue;
-        const probability = calibratedAlignmentProbability({
-          model: alignmentCalibrationModel,
-          features: alignmentCalibrationFeatures({
-            plan,
-            independentAnchorSourceFamilies: decision.independentHeldoutSourceFamilyIds.length,
-            cycleRecall: decision.cycleRecall,
-            unsupportedAdditionRate: decision.unsupportedAdditionCount > 0 ? 1 : 0
-          })
-        });
-        if (probability !== null) calibrationProbabilityByPlanId.set(decision.planId, probability);
-      }
-      const reversibleConstructionCompilation =
-        compileReversibleConstructions({
-          alternativeSets: alignmentAlternativeSets,
-          promotionModel: alignmentPromotionModel,
-          calibrationModel: alignmentCalibrationModel,
-          supports: routedAlignmentSupports,
-          targetIndex: alignmentTargetIndex,
-          lattices: alignmentLattices,
-          evidenceAllocations: allAlignmentEvidenceAllocations,
-          profileId: profile.id,
-          creationSnapshotId: reversibleConstructionCreationSnapshotId({
-            sourceVersionId: [...new Set(samples.map(sample =>
-              String(sample.sourceVersionId)))].sort().join("\u001f"),
-            graphNodeIds: promotedGraph.nodes.map(node => String(node.id)),
-            graphEdgeIds: promotedGraph.edges.map(edge => String(edge.id)),
-            hyperedgeIds: promotedGraph.hyperedges.map(edge => String(edge.id)),
-            hasher: this.hasher
-          }),
-          createdAt,
-          calibrationProbabilityByPlanId,
-          hasher: this.hasher
-        });
-      // Round trip before anything persists: realize, interpret back, and require both the surface and the fragment to return.
-      const cycleRejectedConstructionIds: string[] = [];
-      reversibleConstructionCompilation.constructions = reversibleConstructionCompilation.constructions.filter(construction => {
-        const cycle = reversibleConstructionCycle({ construction, profileId: construction.profileId });
-        if (cycle.exactSurfaceRecovered && cycle.exactGraphFragmentRecovered) return true;
-        cycleRejectedConstructionIds.push(construction.id);
-        return false;
-      });
-      const reversibleConstructionPatterns =
-        reversibleConstructionCompilation.constructions.map(construction => ({
-          ...compileReversibleConstructionPattern(construction),
-          informationLabel: WIKIPEDIA_INFORMATION_LABEL
-        }));
-      const pairedAntiUnifiedCompilation =
-        compilePairedAntiUnifiedConstructions({
-          constructions: reversibleConstructionCompilation.constructions,
-          createdAt,
-          creationSnapshotId: `paired_anti_unification_snapshot.${
-            this.hasher.digestHex(reversibleConstructionCompilation.constructions
-              .map(construction => construction.id).sort()
-              .join("\u001f")).slice(0, 40)
-          }`,
-          hasher: this.hasher
-        });
-      const pairedAntiUnifiedPatterns =
-        (() => {
-          const graphCorrelatedVariabilityModel =
-            compileGraphCorrelatedVariabilityModel({
-              constructions: pairedAntiUnifiedCompilation.constructions,
-              hasher: this.hasher
-            });
-          const admitted = admittedPairedAntiUnifiedConstructions({
-            constructions: pairedAntiUnifiedCompilation.constructions,
-            model: graphCorrelatedVariabilityModel
-          });
-          return {
-            graphCorrelatedVariabilityModel,
-            admitted,
-            patterns: admitted.flatMap(({ construction, admission }) =>
-              compilePairedAntiUnifiedPatterns(
-                construction,
-                admission
-              ).map(pattern => ({
-            ...pattern,
-            informationLabel: WIKIPEDIA_INFORMATION_LABEL
-              })))
-          };
-        })();
-      const optionalNullRealizationModel =
-        compileOptionalNullRealizationModel({
-          constructions: reversibleConstructionCompilation.constructions,
-          hasher: this.hasher
-        });
-      const optionalNullRealizationPatterns =
-        compileOptionalNullRealizationPatterns(
-          optionalNullRealizationModel,
-          createdAt
-        ).map(pattern => ({
-          ...pattern,
-          informationLabel: WIKIPEDIA_INFORMATION_LABEL
-        }));
-      if (this.storage.languageMemory.putLanguagePatterns) {
-        await this.storage.languageMemory.putLanguagePatterns(
-          [
-            ...reversibleConstructionPatterns,
-            ...pairedAntiUnifiedPatterns.patterns,
-            ...optionalNullRealizationPatterns
-          ]
-        );
-      } else {
-        for (const pattern of [
-          ...reversibleConstructionPatterns,
-          ...pairedAntiUnifiedPatterns.patterns,
-          ...optionalNullRealizationPatterns
-        ]) {
-          await this.storage.languageMemory.putLanguagePattern(pattern);
-        }
-      }
       await this.storage.events.append(this.events.create({
         episodeId,
         typeId: "RelationPromotionCompiled",
@@ -1913,82 +1454,6 @@ export class WikipediaV3Ingestor {
           }))
         })
       }));
-      // Inline canonicalization is attempted first for compatibility. If it reaches the runtime
-      // string bound, appendBoundedAlignmentEvent stores every field in blob-backed parts.
-      await this.appendBoundedAlignmentEvent(episodeId, alignmentEventPayloadFor({
-          schema: "scce.sparse_alignment_candidate_batch.v1",
-          shardUri,
-          incidenceGraphId: incidenceGraph.id,
-          targetIndexId: alignmentTargetIndex.id,
-          evidenceCount: evidence.length,
-          surfaceUnitCount: alignmentSurfaceUnitCount,
-          candidateCount: alignmentCandidateCount,
-          maximumCandidateDegree: maximumAlignmentDegree,
-          supportIds: alignmentSupportIds,
-          supportIdCount: alignmentSupportIds.length,
-          routedSupportIds: routedAlignmentSupportIds,
-          routedSupportIdCount: routedAlignmentSupportIds.length,
-          communityRoutingIds: alignmentCommunityRoutingIds,
-          communityRoutingIdCount: alignmentCommunityRoutingIds.length,
-          communityCount: alignmentCommunityRoutings.reduce(
-            (sum, routing) => sum + routing.communities.length,
-            0
-          ),
-          transportPlanIds,
-          transportIterationCount,
-          transportedCellCount,
-          transportEvidenceAllocationIds,
-          transportEvidenceAllocations: allAlignmentEvidenceAllocations,
-          unresolvedTransportEvidenceCount,
-          unresolvedTransportEvidenceAllocationCount,
-          maximumTransportEvidenceResidual,
-          evidenceMassConserved: unresolvedTransportEvidenceAllocationCount === 0,
-          typedNullCostModelIds: [...typedNullCostModelIds].sort(),
-          typedNullCostsCalibrated: false,
-          populationOrderingModelIds: [...populationOrderingModelIds].sort(),
-          crossDocumentAlignmentModelIds:
-            [...crossDocumentAlignmentModelIds].sort(),
-          alignmentAlternativeSetIds,
-          // Full plan-bearing sets are retained; oversized provenance is externalized into bounded blobs.
-          alignmentAlternativeSets,
-          coarseToFineAlignmentIds: coarseToFineAlignments.map(row => row.id),
-          alignmentCalibrationModel,
-          alignmentPromotionModel,
-          alignmentHeldoutEvaluation: {
-            artifactCount: alignmentHeldoutEvaluation.artifacts.length,
-            promotionObservationCount: alignmentHeldoutEvaluation.promotionObservations.length,
-            calibrationObservationCount: alignmentHeldoutEvaluation.calibrationObservations.length,
-            candidateRecall: alignmentHeldoutEvaluation.candidateRecall
-          },
-          reversibleConstructions:
-            reversibleConstructionCompilation.constructions,
-          reversibleConstructionRejections:
-            reversibleConstructionCompilation.rejections,
-          cycleRejectedConstructionIds,
-          cycleRejectedConstructionCount: cycleRejectedConstructionIds.length,
-          calibratedPlanCount: calibrationProbabilityByPlanId.size,
-          canonicalReplay: canonicalReplay ?? null,
-          transportResourceUsage,
-          pairedAntiUnifiedConstructions:
-            pairedAntiUnifiedCompilation.constructions,
-          pairedAntiUnifiedConstructionRejections:
-            pairedAntiUnifiedCompilation.rejections,
-            graphCorrelatedVariabilityModel:
-              pairedAntiUnifiedPatterns.graphCorrelatedVariabilityModel,
-            optionalNullRealizationModel,
-            admittedPairedAntiUnifiedConstructions:
-            pairedAntiUnifiedPatterns.admitted.map(row => row.construction),
-          retainedAlignmentHypothesisCount,
-          omittedAlignmentSearchBranchCount,
-          alignmentPosteriorScope: "retained_candidate_set_only",
-          exactGlobalAlignmentPosteriorClaimed: false,
-          surfaceNullMass,
-          graphImplicitMass,
-          transportSolver: "scce.sparse_fused_unbalanced_transport.v1",
-          globalOptimalityClaimed: false,
-          candidateMemory: "O(|S|*K_pi)",
-          denseMatrixMaterialized: false
-      }, retainAlignmentProvenance));
     } else if (semanticCandidates.length) {
       trace.mark("relation.alignment.skip.no-promoted-hyperedges", {
         candidates: semanticCandidates.length,
@@ -1996,6 +1461,7 @@ export class WikipediaV3Ingestor {
         promotedRelations: relationPromotionModel.decisions.filter(decision => decision.promoted).length
       });
     }
+    const trained = await commitLanguageCorpusTraining(trainingInput, prepared);
     const importedLanguageShard: WikipediaLanguageShardImport = {
       languageProfiles: trained.languageProfiles,
       ngramObservations: trained.ngramObservations,
@@ -2054,6 +1520,7 @@ function readWikipediaLanguageBatchJournal(checkpoint: IngestionCheckpoint | nul
   const value = raw as Record<string, unknown>;
   if (value.version !== 1 || (value.state !== "open" && value.state !== "idle")) throw new Error("Wikipedia language batch journal version or state is invalid");
   const blockOffset = typeof value.blockOffset === "number" ? value.blockOffset : NaN;
+  const blockOrdinal = typeof value.blockOrdinal === "number" ? value.blockOrdinal : NaN;
   const lastProcessedPageOrdinal = typeof value.lastProcessedPageOrdinal === "number" ? value.lastProcessedPageOrdinal : NaN;
   const processedPageCount = typeof value.processedPageCount === "number" ? value.processedPageCount : NaN;
   const pendingChars = typeof value.pendingChars === "number" ? value.pendingChars : NaN;
@@ -2064,17 +1531,17 @@ function readWikipediaLanguageBatchJournal(checkpoint: IngestionCheckpoint | nul
     ? progress as Record<string, unknown> : {};
   const progressKeys: Array<keyof WikipediaLanguageProgressCounts> = [
     "pages", "sources", "evidence", "graphNodes", "graphEdges", "graphHyperedges", "languageProfiles",
-    "ngramObservations", "ngramModels", "languageUnits", "languagePatterns", "semanticFrames",
+    "ngramObservations", "ngramModels", "languageUnits", "languagePatterns", "semanticFrames", "truncatedPages", "truncatedCharacters",
     "relationCandidates", "promotedRelations", "lastCheckpointOffset"
   ];
-  if (!Number.isSafeInteger(blockOffset) || !Number.isSafeInteger(lastProcessedPageOrdinal) || !Number.isSafeInteger(processedPageCount)
+  if (!Number.isSafeInteger(blockOffset) || !Number.isSafeInteger(blockOrdinal) || !Number.isSafeInteger(lastProcessedPageOrdinal) || !Number.isSafeInteger(processedPageCount)
     || !Number.isSafeInteger(pendingChars) || !Number.isSafeInteger(languageTrainingDocumentCount)
     || !Number.isSafeInteger(languageSkippedDocumentCount)
     || progressKeys.some(key => typeof progressCounts[key] !== "number" || !Number.isSafeInteger(progressCounts[key]))
     || typeof value.blockComplete !== "boolean" || typeof value.shardUri !== "string" || !Array.isArray(value.pendingSamples)) {
     throw new Error("Wikipedia language batch journal fields are invalid");
   }
-  if (blockOffset < 0 || lastProcessedPageOrdinal < 0 || processedPageCount < 0 || pendingChars < 0
+  if (blockOffset < 0 || blockOrdinal < 0 || (blockOffset > 0 && blockOrdinal < 1) || lastProcessedPageOrdinal < 0 || processedPageCount < 0 || pendingChars < 0
     || pendingChars > shardCharBudget || languageTrainingDocumentCount < 0
     || languageSkippedDocumentCount < 0
     || progressKeys.some(key => Number(progressCounts[key]) < 0)
@@ -2111,9 +1578,11 @@ function languageShardCharsForSamples(samples: readonly WikipediaLanguageShardSa
   return samples.reduce((total, sample, index) => total + (sample.title?.length ?? 0) + 1 + sample.text.length + (index > 0 ? 2 : 0), 0);
 }
 
-function zeroPage(input: { warnings: string[] }): WikipediaPageImport {
+function zeroPage(input: { warnings: string[]; truncatedPages?: number; truncatedCharacters?: number }): WikipediaPageImport {
   return {
     sources: 0,
+    truncatedPages: input.truncatedPages ?? 0,
+    truncatedCharacters: input.truncatedCharacters ?? 0,
     evidence: 0,
     graphNodes: 0,
     graphEdges: 0,
@@ -2361,7 +1830,7 @@ function objectOrEmpty(value: JsonValue): Record<string, JsonValue> {
 
 function zeroWikipediaLanguageProgressCounts(): WikipediaLanguageProgressCounts {
   return {
-    pages: 0, sources: 0, evidence: 0, graphNodes: 0, graphEdges: 0, graphHyperedges: 0,
+    pages: 0, sources: 0, truncatedPages: 0, truncatedCharacters: 0, evidence: 0, graphNodes: 0, graphEdges: 0, graphHyperedges: 0,
     languageProfiles: 0, ngramObservations: 0, ngramModels: 0, languageUnits: 0,
     languagePatterns: 0, semanticFrames: 0, relationCandidates: 0, promotedRelations: 0,
     lastCheckpointOffset: 0
@@ -2370,7 +1839,7 @@ function zeroWikipediaLanguageProgressCounts(): WikipediaLanguageProgressCounts 
 
 function wikipediaProgressCountsFromResult(result: WikipediaV3IngestResult): WikipediaLanguageProgressCounts {
   return {
-    pages: result.pages, sources: result.sources, evidence: result.evidence, graphNodes: result.graphNodes,
+    pages: result.pages, sources: result.sources, truncatedPages: result.truncatedPages, truncatedCharacters: result.truncatedCharacters, evidence: result.evidence, graphNodes: result.graphNodes,
     graphEdges: result.graphEdges, graphHyperedges: result.graphHyperedges, languageProfiles: result.languageProfiles,
     ngramObservations: result.ngramObservations, ngramModels: result.ngramModels, languageUnits: result.languageUnits,
     languagePatterns: result.languagePatterns, semanticFrames: result.semanticFrames,
@@ -2382,6 +1851,8 @@ function wikipediaProgressCountsFromResult(result: WikipediaV3IngestResult): Wik
 function addWikipediaPageProgress(counts: WikipediaLanguageProgressCounts, imported: WikipediaPageImport): void {
   counts.pages += 1;
   counts.sources += imported.sources;
+  counts.truncatedPages += imported.truncatedPages ?? 0;
+  counts.truncatedCharacters += imported.truncatedCharacters ?? 0;
   counts.evidence += imported.evidence;
   counts.graphNodes += imported.graphNodes;
   counts.graphEdges += imported.graphEdges;
@@ -2411,7 +1882,7 @@ function addWikipediaLanguageProgress(counts: WikipediaLanguageProgressCounts, i
 function wikipediaResultWithProgress(result: WikipediaV3IngestResult, counts: WikipediaLanguageProgressCounts): WikipediaV3IngestResult {
   return {
     ...result,
-    pages: counts.pages, sources: counts.sources, evidence: counts.evidence,
+    pages: counts.pages, sources: counts.sources, truncatedPages: counts.truncatedPages, truncatedCharacters: counts.truncatedCharacters, evidence: counts.evidence,
     graphNodes: counts.graphNodes, graphEdges: counts.graphEdges, graphHyperedges: counts.graphHyperedges,
     languageProfiles: counts.languageProfiles, ngramObservations: counts.ngramObservations,
     ngramModels: counts.ngramModels, languageUnits: counts.languageUnits,

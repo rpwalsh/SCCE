@@ -135,7 +135,7 @@ export interface LanguageUnitRecord {
 export interface LanguagePatternRecord {
   id: string;
   profileId: string;
-  patternKind: "segmentation" | "morphology" | "syntax" | "cadence" | "discourse" | "narrative" | "semantic_role";
+  patternKind: "segmentation" | "morphology" | "syntax" | "cadence" | "discourse" | "narrative" | "semantic_role" | "source_code_function" | "source_compilation";
   support: number;
   entropy: number;
   patternJson: JsonValue;
@@ -654,6 +654,30 @@ export interface CorpusIdentityArbitration {
   readonly spread: ReadonlyMap<string, number>;
 }
 
+export interface EvidenceBackedSourceVersionQuery {
+  /** Existing source metadata declarations, supplied as canonical IDs and storage aliases. */
+  sourceSystems?: readonly string[];
+  sourceSystem?: string;
+  excludeUriPrefixes?: readonly string[];
+  /** Only sources whose canonical URI starts with one of these, so a lane can train one corpus at a time. */
+  includeUriPrefixes?: readonly string[];
+  sourceVersionIds?: readonly string[];
+  minByteLength?: number;
+  maxByteLength?: number;
+  limit?: number;
+  afterSourceVersionId?: string;
+  orderBySourceVersionId?: boolean;
+  excludeTrainingDerived?: boolean;
+}
+
+export interface EvidenceBackedSourceVersionInventory {
+  evidenceBackedSources: number;
+  derivedTrainingSources: number;
+  eligibleSources: number;
+  belowMinArticleBytes: number;
+  aboveMaxArticleBytes: number;
+}
+
 export interface EvidenceStore {
   putSourceVersion(source: SourceVersion): Promise<void>;
   putEvidenceSpan(span: EvidenceSpan): Promise<void>;
@@ -714,15 +738,8 @@ export interface EvidenceStore {
    * can be built from the same corpus retrieval already trusts, without
    * re-ingesting anything.
    */
-  listEvidenceBackedSourceVersions?(query?: {
-    excludeUriPrefixes?: readonly string[];
-    /** Only sources whose canonical URI starts with one of these, so a lane can train one corpus at a time. */
-    includeUriPrefixes?: readonly string[];
-    sourceVersionIds?: readonly string[];
-    minByteLength?: number;
-    maxByteLength?: number;
-    limit?: number;
-  }): Promise<Array<{
+  countEvidenceBackedSourceVersions?(query?: EvidenceBackedSourceVersionQuery): Promise<EvidenceBackedSourceVersionInventory>;
+  listEvidenceBackedSourceVersions?(query?: EvidenceBackedSourceVersionQuery): Promise<Array<{
     sourceVersionId: SourceVersionId;
     contentHash: ContentHash;
     canonicalUri: string;
@@ -889,12 +906,13 @@ export interface LanguageMemoryStore {
    * single n-gram models to tens of MB, and 64 "records" of them OOMed a
    * 4GB server heap at warmup (verified live).
    */
+  listSourceCompilationArtifactIds?(query: { compilationId: string; profileId: string; family: "units" | "patterns" | "semanticFrames"; afterId?: string; limit: number }): Promise<string[]>;
   listNgramModels(query?: { streamId?: string; languageHint?: string; profileIds?: readonly string[]; sourceSystem?: string; limit?: number; maxTotalJsonBytes?: number }): Promise<NgramModelRecord[]>;
   /** Complete continuation statistics of accessible models belonging to one learned language identity. */
   continuationPopulation?(query: { languageId: string }): Promise<LanguageContinuationPopulation | undefined>;
   listNgramObservations(query?: { streamId?: string; languageHint?: string; profileIds?: readonly string[]; sourceSystem?: string; limit?: number }): Promise<NgramObservation[]>;
   listLanguageUnits(query?: { profileId?: string; profileIds?: readonly string[]; script?: string; sourceSystem?: string; limit?: number; maxTotalJsonBytes?: number }): Promise<LanguageUnitRecord[]>;
-  listLanguagePatterns(query?: { profileId?: string; profileIds?: readonly string[]; sourceSystem?: string; languageId?: string; limit?: number; maxTotalJsonBytes?: number }): Promise<LanguagePatternRecord[]>;
+  listLanguagePatterns(query?: { profileId?: string; profileIds?: readonly string[]; sourceSystem?: string; languageId?: string; patternKind?: LanguagePatternRecord["patternKind"]; formalLanguage?: string; parameterCount?: number; limit?: number; maxTotalJsonBytes?: number }): Promise<LanguagePatternRecord[]>;
   listSemanticFrames(query?: { profileIds?: readonly string[]; sourceSystem?: string; surface?: string; limit?: number }): Promise<SemanticFrameRecord[]>;
   listTranslationAlignments(query?: { sourceLanguage?: string; targetLanguage?: string; limit?: number }): Promise<TranslationAlignmentRecord[]>;
 }
@@ -1372,6 +1390,8 @@ export interface ScceKernelDeps {
   runSeed?: string;
   deterministicReplay?: boolean;
   maxChunkBytes?: number;
+  /** Host resource allowance for retained surface-language state; independent of language semantics. */
+  surfaceLanguageMemoryCacheMaxEstimatedBytes?: number;
   policy?: Partial<import("./types.js").PolicyProfile>;
   corpusRegistry?: readonly CorpusRegistryEntry[];
   /**

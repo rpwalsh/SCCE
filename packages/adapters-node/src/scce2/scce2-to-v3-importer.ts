@@ -11,6 +11,8 @@ import {
   createHasher,
   createIdFactory,
   compileKneserNeyRuntimeIndexes,
+  compileLanguageConstructionPatterns,
+  SOURCE_EXAMPLE_CONSTRUCTION_STORAGE,
   featureSet,
   stableVector,
   toJsonValue,
@@ -46,6 +48,7 @@ import {
   type SemanticFrameRecord,
   type SourceVersion,
   type SourceTrust,
+  type SourceBoundConstructionObservation,
   type SourceVersionId
 } from "@scce/kernel";
 import {
@@ -1063,6 +1066,8 @@ export class Scce2ToV3Importer implements BrainShardImporter {
     let programLanguageUnits = 0;
     let programLanguagePatterns = 0;
     let programNgramObservations = 0;
+    const constructionEvidence: EvidenceSpan[] = [];
+    const constructionObservations = new Map<string, SourceBoundConstructionObservation[]>();
     const profileId = profile.languageId ?? `learned:${profile.sourceId ?? "scce2"}`;
     const script = profile.script ?? "unknown";
 
@@ -1137,8 +1142,8 @@ export class Scce2ToV3Importer implements BrainShardImporter {
 
     if (options.importDirectEvidence) {
       for (const example of (profile.fileEvidence ?? []).slice(0, options.fileEvidenceLimitPerShard)) {
-        const text = String(example.excerpt ?? "").trim();
-        if (!text) continue;
+        const text = String(example.excerpt ?? "");
+        if (!text.trim()) continue;
         const classification = classifyProfileFileEvidence(profile, example);
         const evidence = await this.putExcerptEvidence({
           sourceVersionId,
@@ -1152,6 +1157,21 @@ export class Scce2ToV3Importer implements BrainShardImporter {
         });
         evidenceIds.push(evidence.id);
         sourceVersionIds.push(evidence.sourceVersionId);
+        if (example.sourceConstructions !== undefined) {
+          if (!Array.isArray(example.sourceConstructions)) throw new Error("SCCE2 source constructions must be an array");
+          const sourceTextHash = this.hasher.digestHex(Buffer.from(text, "utf8"));
+          for (const observation of example.sourceConstructions) {
+            if (!observation || typeof observation.bindingId !== "string" || !observation.bindingId.trim()
+              || observation.sourceTextHash !== sourceTextHash || observation.coordinateSystemId !== "unicode.code_point.v1"
+              || !Array.isArray(observation.roles)) {
+              throw new Error("SCCE2 source construction does not match its exported source bytes");
+            }
+            const observations = constructionObservations.get(observation.bindingId) ?? [];
+            observations.push({ ...observation, sourceVersionId: String(evidence.sourceVersionId), evidenceId: String(evidence.id) });
+            constructionObservations.set(observation.bindingId, observations);
+          }
+          if (example.sourceConstructions.length) constructionEvidence.push(evidence);
+        }
         if (classification.forceClass === "direct_evidence") {
           directEvidenceIds.push(evidence.id);
           directEvidenceSourceVersionIds.push(evidence.sourceVersionId);
@@ -1178,6 +1198,17 @@ export class Scce2ToV3Importer implements BrainShardImporter {
         if (classification.forceClass === "direct_evidence") directEvidenceSemanticFrames++;
         else profileExcerptSemanticFrames++;
       }
+    }
+    for (const compiled of compileLanguageConstructionPatterns({
+      profileId, evidence: constructionEvidence, hasher: this.hasher, updatedAt: options.now,
+      storageEncoding: SOURCE_EXAMPLE_CONSTRUCTION_STORAGE,
+      sets: [...constructionObservations].map(([bindingId, observations]) => ({ bindingId, observations, acquisitionStatus: "source_observed" as const }))
+    })) {
+      if (compiled.status !== "compiled") throw new Error(`SCCE2 source construction rejected: ${compiled.issues.map(issue => issue.code).join(", ")}`);
+      await this.storage.languageMemory.putLanguagePattern({ ...compiled.pattern,
+        patternJson: toJsonValue({ ...asRecord(compiled.pattern.patternJson), sourceSystem: "scce2", provenanceClass: "learned_language_prior" })
+      });
+      languagePatterns++;
     }
     return {
       languageUnits,
@@ -1357,6 +1388,11 @@ export class Scce2ToV3Importer implements BrainShardImporter {
     const canonicalUri = `scce2://profile-excerpt/${encodeURIComponent(String(input.sourceVersionId))}/${encodeURIComponent(input.title).slice(0, 160)}`;
     const sourceId = this.ids.sourceId(`${this.namespace}:excerpt`, canonicalUri);
     const excerptSourceVersionId = this.ids.sourceVersionId(bytes);
+    const charEnd = [...input.text].length;
+    const provenance = toJsonValue({ ...asRecord(input.provenance),
+      charRange: [0, charEnd], byteRange: [0, bytes.byteLength],
+      coordinateSystemId: "unicode.code_point.v1", coordinateSourceVersionId: excerptSourceVersionId
+    });
     const sourceVersion: SourceVersion = {
       sourceId,
       sourceVersionId: excerptSourceVersionId,
@@ -1367,7 +1403,7 @@ export class Scce2ToV3Importer implements BrainShardImporter {
       observedAt: input.observedAt,
       byteLength: bytes.byteLength,
       sourceTrust: scce2SourceTrust(canonicalUri, input.forceClass),
-      metadata: toJsonValue({ title: input.title, profileSourceVersionId: input.sourceVersionId, provenanceClass: input.forceClass, provenance: input.provenance })
+      metadata: toJsonValue({ title: input.title, profileSourceVersionId: input.sourceVersionId, provenanceClass: input.forceClass, provenance })
     };
     await this.storage.evidence.putSourceVersion(sourceVersion);
     const spanHash = this.ids.contentHash(bytes);
@@ -1381,13 +1417,13 @@ export class Scce2ToV3Importer implements BrainShardImporter {
       byteStart: 0,
       byteEnd: bytes.byteLength,
       charStart: 0,
-      charEnd: input.text.length,
+      charEnd,
       text: input.text,
       textPreview: input.text.slice(0, 600),
       languageHints: toJsonValue({ source: "scce2-language-profile", provenanceClass: input.forceClass }),
       scriptHints: toJsonValue({}),
-      trustVector: toJsonValue({ sourceTrust: sourceVersion.sourceTrust, imported: true, provenanceClass: input.forceClass }),
-      provenance: input.provenance,
+      trustVector: toJsonValue({ sourceTrust: sourceVersion.sourceTrust, imported: true, provenanceClass: input.forceClass, forceClass: input.forceClass }),
+      provenance,
       features: featureSet(input.text, 512),
       status: "promoted",
       alpha: input.alpha,

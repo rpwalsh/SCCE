@@ -15,7 +15,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { BULK_LOAD_DEFERRABLE_TABLES, compileCrossLingualTranslationSeeds, ingestStageTracer, knownLanguageFromBrain, transcribeImageFile, recallScript, rememberScript, ingestTranscribedImage, visualPageSourceTrust, acquireAndTrainGithubOssRepository, assertHydratedRuntimeReady, completeInitialSourceBrainFromGutenbergReport, completeInitialSourceBrainFromOssReport, deferBulkLoadIndexes, deferredBulkLoadIndexes, buildScce2BrainShardIndex, createHydrationPlan, createNodeRuntime, inspectHydrationRecords, fitRelationPotentialFromGraph, runEvaluationReleaseGate, proposeSelfRewrite, createScce2ToV3Importer, createWikipediaV3Ingestor, createWorkspaceRuntime, dryRunDeveloperRepoPlan, dryRunEngineeringCorpusIngest, fullyVerifyEventLedger, graphDeveloperRepo, importHydrationPlan, inspectDeveloperRepo, inspectEngineeringCorpusFolder, inspectHydrationStatus, inspectV2Artifacts, inspectV2GraphShard, inspectV2Ngram, inspectV2Profile, inspectV2Stream, inspectV2StreamTopic, inspectV2Topic, parseRepoDiagnosticsFixture, readScceRuntimeConfig, routeEngineeringCorpusFixture, scanLanguageControlHygiene, trainDialogueCorpus, trainGutenbergCorpus, trainOssCorpus, trainStoredCorpusConstructions, verifiedCompilerPlansForTurn, type WikipediaV3IngestStatus, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
 import type { BenchmarkInput, InspectionTarget, WorkspaceReportRecord } from "@scce/kernel";
-import { ossCorpusTrainOptionsFrom, parseCorpusTrainOptions } from "./corpus-train-options.js";
+import { ossCorpusTrainOptionsFrom, parseCorpusTrainOptions, storedCorpusTrainOptionsFrom } from "./corpus-train-options.js";
 import { parseScce2ImportOptions, parseScce2InspectOptions } from "./scce2-options.js";
 import { defaultWorkspaceCodingRequestId, parseWorkspaceCodingRequest, splitWorkspaceCodingTurnArgs, WORKSPACE_CODE_USAGE } from "./workspace-code-options.js";
 import { CALIBRATION_TASK_CLASS_IDS, buildTurnDialogueBridge, createPostgresContract, detailProfileIdFromSignal, detailSignalCount, renderPostgresContractSql, createTrace, summarizeForTrace, traceSpan, createUniversalCreativeEventConstructionCompiler, dialogueOutcomeMemoryForConversation, latestDialoguePragmaticsFromMemory, latestDialogueStyleProfile, loadCalibrationModelSet, persistDialogueTurn, toJsonValue, traceEvent, verifyPostgresContract } from "@scce/kernel";
@@ -734,7 +734,7 @@ async function corpus(
     const informationLabel = config?.security?.defaultSourceInformationLabel;
     if (!informationLabel) throw new Error("corpus training requires security.defaultSourceInformationLabel");
     const kind = args[1];
-    if (kind === "wikipedia-stored") {
+    if (kind === "wikipedia-stored" || kind === "stored") {
       // Production lane for building the generation construction
       // inventory from text the blob store already holds (the corpus
       // retrieval already trusts) -- no path argument, the corpus IS the
@@ -743,13 +743,7 @@ async function corpus(
       const options = parseCorpusTrainOptions(args.slice(2));
       printJson(await trainStoredCorpusConstructions({
         storage: runtime.storage,
-        startBatchIndex: options.startFileIndex,
-        maxTotalBytes: options.maxFileBytes,
-        heapCheckpointMb: options.heapCheckpointMb,
-        ...(options.sourceVersionIds ? { sourceVersionIds: options.sourceVersionIds } : {}),
-        ...(options.languageOnly ? { languageOnly: true } : {}),
-        ...(options.includeUriPrefixes?.length ? { includeUriPrefixes: options.includeUriPrefixes } : {}),
-        ...(options.batchBytes ? { batchBytes: options.batchBytes } : {}),
+        ...storedCorpusTrainOptionsFrom(options),
         creativeEventCompiler: createUniversalCreativeEventConstructionCompiler()
       }));
       return;
@@ -1973,8 +1967,9 @@ function usage(error?: string): void {
     "  pnpm scce corpus inspect <path>",
     "  pnpm scce corpus ingest --dry-run <path>",
     "  pnpm scce corpus route --fixture <path>",
+    "  pnpm scce corpus train stored --source-system=<wikipedia|gutenberg|dialogue|code> [--after-source-version=ID] [--source-page-size=N] [--start-batch=N] [--max-total-bytes=N] [--max-source-attempts=N] [--batch-bytes=N] [--heap-checkpoint-mb=N] [--min-article-bytes=N] [--max-article-bytes=N]",
     "  pnpm scce corpus train gutenberg <path>",
-    "  pnpm scce corpus train dialogue <path>   (human-authored dialogue transcripts; owner-private, enable runtime.corpora.registry.dialogue to hydrate it)",
+    "  pnpm scce corpus train dialogue <path>   (human-authored .txt or scce.dialogue_transcript.v1 .json sources; owner-private, enable runtime.corpora.registry.dialogue to hydrate it)",
     "  pnpm scce relation-potential fit [--promote] [--max-edges=N] | status | promote --model-id=<id>",
     "  pnpm scce self-rewrite propose --target=<goal> [--capability=<id>] [--path=<root>]",
     "  pnpm scce corpus train oss <path> [--start-file-index=<n>] [--max-files=<n>] [--heap-checkpoint-mb=<n>] [--source-uri-base=<uri>] [--commit=<sha>]",

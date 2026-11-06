@@ -15,13 +15,17 @@ import {
   featureSet
 } from "../index.js";
 import { conversationalActBindingId } from "../conversational-act-binding.js";
+import { jsonRecord } from "../kernel-answer-primitives.js";
 import { induceLearnedConstructions, type AlignedSurfaceExample } from "../language-construction.js";
 import { candidateCommitmentInventory, candidateCommitmentsLicensed } from "../candidate-commitment-inventory.js";
 import type { DurableLanguageConstructionBundle } from "../language-construction-memory.js";
 import type { RequestCommunicativeActClassification } from "../request-communicative-act.js";
 import { DIALOGUE_ACT_IDS } from "../dialogue-pragmatics.js";
 import { trainKneserNey } from "../kneser-ney.js";
+import { withSurfaceContract, type SpokenOutput } from "../mouth.js";
+import { SURFACE_REALIZATION_STRATEGY_IDS } from "../surface-contract.js";
 import { DIALOGUE_CLOSED_CLASS, DIALOGUE_POPULATION } from "./conversational-session-fixture.js";
+import type { CandidateSurface } from "../candidate-contract.js";
 import type { ConstructGraph, EvidenceSpan, FieldState, LanguageProfile } from "../types.js";
 
 const clock = createClock({ fixedTime: 5000, stepMs: 1 });
@@ -189,8 +193,10 @@ async function speakWith(
     requestText?: string;
     requestedAuthority?: "creative";
     bundles?: readonly DurableLanguageConstructionBundle[];
+    selectedCandidate?: CandidateSurface;
+    finalSurfaceSuffix?: string;
   } = {}
-): Promise<{ text: string; trace: TraceRow[] }> {
+): Promise<{ text: string; trace: TraceRow[]; spoken: SpokenOutput }> {
   const dir = mkdtempSync(join(tmpdir(), "scce-act-binding-"));
   const traceFile = join(dir, "trace.jsonl");
   const globals = globalThis as { __sccTrace?: unknown };
@@ -216,12 +222,7 @@ async function speakWith(
       patterns: [],
       semanticFrames: []
     });
-    const spoken = await createMouth({
-      languageMemory: languageRuntime,
-      correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }),
-      hashText: text => hasher.digestHex(text),
-      hasher
-    }).speak({
+    const mouthInput = {
       construct: constructGraph(),
       field,
       languageProfile: languageProfile(),
@@ -230,6 +231,7 @@ async function speakWith(
       requestText,
       conversationTurns: turns,
       ...(options.requestedAuthority ? { requestedAuthority: options.requestedAuthority } : {}),
+      ...(options.selectedCandidate ? { selectedCandidate: options.selectedCandidate } : {}),
       ...(act ? { requestCommunicativeAct: act } : {}),
       languageMemory: {
         ...state,
@@ -237,9 +239,21 @@ async function speakWith(
         closedClass: DIALOGUE_CLOSED_CLASS,
         importedConstructionBundles: [...(options.bundles ?? scopedBundles())]
       }
-    });
+    };
+    let spoken = await createMouth({
+      languageMemory: languageRuntime,
+      correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }),
+      hashText: text => hasher.digestHex(text),
+      hasher
+    }).speak(mouthInput);
+    if (options.finalSurfaceSuffix && spoken.text) {
+      spoken = withSurfaceContract(mouthInput, {
+        ...spoken,
+        text: `${spoken.text} ${options.finalSurfaceSuffix}`
+      }, SURFACE_REALIZATION_STRATEGY_IDS.learned);
+    }
     const trace = readFileSync(traceFile, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line) as TraceRow);
-    return { text: spoken.text, trace };
+    return { text: spoken.text, trace, spoken };
   } finally {
     globals.__sccTrace = previous;
     rmSync(dir, { recursive: true, force: true });
@@ -278,6 +292,43 @@ describe("the conversation-bound lane is reachable from a production speak", () 
     expect(inventory.unlicensedUnits.map(unit => unit.surface)).toEqual([]);
     expect(candidateCommitmentsLicensed(inventory)).toBe(true);
     expect(inventory.authorityClassId).not.toBe("authority.grounded_factual");
+  }, 120_000);
+
+  it("rechecks the selected construction against its private form provenance, not a stale kernel motion candidate", async () => {
+    const selectedKernelMotion: CandidateSurface = {
+      id: "runtime-motion:fixture",
+      kind: "dialogue-continuation",
+      answer: "No source was found.",
+      force: "unknown",
+      evidenceIds: [],
+      scores: { support: 0, contradiction: 0, faithfulness: 1, alphaPressure: 0, actionability: 0.4, evidenceCoverage: 0, novelty: 0, realizability: 1 },
+      boundaries: ["runtime-motion-non-assertive", "runtime-motion-acquisition-exhausted", "runtime-motion-no-fabricated-evidence"],
+      audit: {
+        schema: "scce.runtime_motion_candidate.v1",
+        source: "kernel.runtime_decision_boundary",
+        externalFactCertification: false,
+        fakeEvidenceForbidden: true,
+        semanticFrame: { frameId: "semantic.runtime.motion.clarification.v1" }
+      }
+    } as CandidateSurface;
+    const produced = await speakWith(classification(), { selectedCandidate: selectedKernelMotion });
+    const selected = produced.trace.find(row => row.stage === "mouth.candidate.select");
+    expect(selected?.support?.selectedSource).toBe("conversation_bound");
+    expect(String(produced.spoken.realizationTrace.selected.id)).toMatch(/^candidate:generated:conversational-act-binding:/u);
+    expect(produced.text.trim()).not.toBe("");
+    expect(jsonRecord(jsonRecord(produced.spoken.realizationTrace.surfaceContract).commitments).licensed).toBe(true);
+    expect(jsonRecord(jsonRecord(produced.spoken.realizationTrace.surfaceContract).surface).withheld).toBe(false);
+
+    const withExtraClaim = await speakWith(classification(), {
+      selectedCandidate: selectedKernelMotion,
+      finalSurfaceSuffix: "The moon is made of cheese."
+    });
+    expect(withExtraClaim.text).toBe("");
+    const finalContract = jsonRecord(withExtraClaim.spoken.realizationTrace.surfaceContract);
+    const commitments = jsonRecord(finalContract.commitments);
+    expect(commitments.licensed).toBe(false);
+    expect((commitments.unlicensedUnits as string[]).map(unit => unit.toLocaleLowerCase())).toContain("cheese");
+    expect(jsonRecord(finalContract.surface).withheld).toBe(true);
   }, 120_000);
 
   // Retrieval admitting something irrelevant is not a reason to fall silent: evidence bounds what may be

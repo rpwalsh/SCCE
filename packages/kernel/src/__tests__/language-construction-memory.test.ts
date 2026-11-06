@@ -7,9 +7,11 @@ import {
   UNIVERSAL_CREATIVE_EVENT_COMPILER_ID,
   LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS,
   LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA,
+  SOURCE_EXAMPLE_CONSTRUCTION_STORAGE,
   OBSOLETE_CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA_V2,
   compileUniversalCreativeEventConstructionPattern,
   compileLanguageConstructionPattern,
+  compileLanguageConstructionPatterns,
   hydrateLanguageConstructionPatterns
 } from "../language-construction-memory.js";
 import { createLanguageMemoryRuntime, scopeLanguageMemoryStateToCluster } from "../language-memory-runtime.js";
@@ -24,6 +26,99 @@ const clock = createClock({ fixedTime: 91_000, stepMs: 1 });
 const ids = createIdFactory({ clock, hasher, deterministicReplay: true, namespace: "construction-memory" });
 
 describe("durable language-construction memory", () => {
+  it("shares source coordinates across a streaming batch without retaining stale source or profile state", () => {
+    const evidence = evidenceSpan("source.batch", "🧪甲 f9 🦉乙。", 17);
+    const observations = [{ sourceVersionId: String(evidence.sourceVersionId), evidenceId: String(evidence.id),
+      surfaceStartCodePoint: 0, surfaceEndCodePoint: 9,
+      roles: [{ slotIndex: 0, startCodePoint: 0, endCodePoint: 2 }, { slotIndex: 1, startCodePoint: 3, endCodePoint: 5 }, { slotIndex: 2, startCodePoint: 6, endCodePoint: 8 }] }];
+    const shared = { profileId: "profile.batch", evidence: [evidence], hasher, updatedAt: 91_500, storageEncoding: SOURCE_EXAMPLE_CONSTRUCTION_STORAGE };
+    const sets = ["relation.甲", "relation.乙", "relation.丙"].map(bindingId => ({ bindingId, observations }));
+    const expected = sets.map(set => compileLanguageConstructionPattern({ ...shared, ...set }));
+    let reads = 0;
+    let text = evidence.text;
+    const observed = { ...evidence, get text() { reads++; return text; } };
+    const iterator = compileLanguageConstructionPatterns({ ...shared, evidence: [observed], sets });
+    expect(reads).toBe(0);
+    const first = iterator.next();
+    text = text.replace("甲", "丁");
+    expect([first.value, ...iterator]).toEqual(expected);
+    expect(reads).toBe(1);
+    const changed = [...compileLanguageConstructionPatterns({ ...shared, profileId: "profile.other", evidence: [observed], sets })];
+    expect(reads).toBe(2);
+    expect(changed).toEqual(sets.map(set => compileLanguageConstructionPattern({ ...shared, profileId: "profile.other", evidence: [{ ...evidence, text }], ...set })));
+    expect(changed[0]).not.toEqual(expected[0]);
+    reads = 0;
+    text = evidence.text;
+    const patterns = expected.flatMap(result => result.status === "compiled" ? [result.pattern] : []);
+    expect(hydrateLanguageConstructionPatterns({ patterns, evidence: [observed], hasher }).rejected).toEqual([]);
+    expect(reads).toBe(1);
+    text = text.replace("甲", "丁");
+    expect(hydrateLanguageConstructionPatterns({ patterns, evidence: [observed], hasher }).bundles).toEqual([]);
+    expect(reads).toBe(2);
+    const wrongOwner = { ...sets[0]!, observations: [{ ...observations[0]!, sourceVersionId: "source.foreign" }] };
+    const wrongRange = { ...sets[0]!, observations: [{ ...observations[0]!, surfaceEndCodePoint: 90 }] };
+    expect([...compileLanguageConstructionPatterns({ ...shared, sets: [wrongOwner, wrongRange] })].map(result => result.status)).toEqual(["rejected", "rejected"]);
+  });
+
+  it("rehydrates versioned source-example references into exactly the same programs and source identities as legacy storage", () => {
+    const evidence = evidenceSpan("source.compact", "🧪甲 f9 🦉乙。\n🧪丙 f9 🦉丁。", 17);
+    const observations = [0, 10].map(start => ({ sourceVersionId: String(evidence.sourceVersionId), evidenceId: String(evidence.id),
+      surfaceStartCodePoint: start, surfaceEndCodePoint: start + 9,
+      roles: [{ slotIndex: 0, startCodePoint: 0, endCodePoint: 2 }, { slotIndex: 1, startCodePoint: 3, endCodePoint: 5 }, { slotIndex: 2, startCodePoint: 6, endCodePoint: 8 }] }));
+    const input = { bindingId: "relation.compact", profileId: "profile.compact", observations, evidence: [evidence], hasher, updatedAt: 91_500 };
+    const legacy = compileLanguageConstructionPattern(input);
+    const compact = compileLanguageConstructionPattern({ ...input, storageEncoding: SOURCE_EXAMPLE_CONSTRUCTION_STORAGE });
+    expect(legacy.status).toBe("compiled");
+    expect(compact.status).toBe("compiled");
+    if (legacy.status !== "compiled" || compact.status !== "compiled") return;
+    expect(compact.bundle).toEqual(legacy.bundle);
+    expect(compact.pattern.id).toBe(legacy.pattern.id);
+    expect(compact.pattern.evidenceIds).toEqual(legacy.pattern.evidenceIds);
+    expect(JSON.stringify(compact.pattern.patternJson).length).toBeLessThan(JSON.stringify(legacy.pattern.patternJson).length);
+    const compactBody = (compact.pattern.patternJson as { bundle: Record<string, JsonValue> }).bundle;
+    expect(compactBody).not.toHaveProperty("constructions");
+    expect(compactBody).not.toHaveProperty("formClasses");
+    expect(hydrateLanguageConstructionPatterns({ patterns: [compact.pattern], evidence: [evidence], hasher }).bundles).toEqual([legacy.bundle]);
+    expect(hydrateLanguageConstructionPatterns({ patterns: [legacy.pattern], evidence: [evidence], hasher }).bundles).toEqual([legacy.bundle]);
+    const tampered = structuredClone(compact.pattern);
+    (tampered.patternJson as { bundle: { formClasses?: JsonValue[] } }).bundle.formClasses = [];
+    expect(hydrateLanguageConstructionPatterns({ patterns: [tampered], evidence: [evidence], hasher }).bundles).toEqual([]);
+  });
+  it("reads each owned Unicode source once per compilation while preserving exact observation and antecedent records", () => {
+    const request = "🤖？";
+    const surfaces = Array.from({ length: 128 }, (_, index) => `🧪甲${index} f9 乙${index}。`);
+    const text = surfaces.map(surface => `${request}\n${surface}`).join("\n");
+    const evidence = evidenceSpan("source.coordinate-budget", text, 17);
+    let offset = 0;
+    const observations = surfaces.map((surface, index) => {
+      const subject = `🧪甲${index}`;
+      const start = offset + [...request].length + 1;
+      const result = { sourceVersionId: String(evidence.sourceVersionId), evidenceId: String(evidence.id),
+        surfaceStartCodePoint: start, surfaceEndCodePoint: start + [...surface].length,
+        antecedent: { startCodePoint: offset, endCodePoint: offset + [...request].length },
+        roles: [
+          { slotIndex: 0, startCodePoint: 0, endCodePoint: [...subject].length },
+          { slotIndex: 1, startCodePoint: [...subject].length + 1, endCodePoint: [...subject].length + 3 },
+          { slotIndex: 2, startCodePoint: [...subject].length + 4, endCodePoint: [...surface].length - 1 }
+        ] };
+      offset = result.surfaceEndCodePoint + 1;
+      return result;
+    });
+    const input = { bindingId: "relation.coordinate-budget", profileId: "profile.coordinate-budget", observations, hasher, updatedAt: 91_500 };
+    const expected = compileLanguageConstructionPattern({ ...input, evidence: [evidence] });
+    let reads = 0;
+    let currentText = text;
+    const observed = { ...evidence, get text() { reads++; return currentText; } };
+    const compiled = compileLanguageConstructionPattern({ ...input, evidence: [observed] });
+    expect(compiled.status).toBe("compiled");
+    expect(compiled).toEqual(expected);
+    expect(reads).toBe(1);
+    if (compiled.status !== "compiled") return;
+    expect(compiled.bundle.sourceExamples.every(example => example.antecedent?.surface === request)).toBe(true);
+    currentText = text.replace("🤖", "🦉");
+    expect(hydrateLanguageConstructionPatterns({ patterns: [compiled.pattern], evidence: [observed], hasher }).bundles).toEqual([]);
+  });
+
   it("restarts from an exact evidence-bound Unicode/code-point record", () => {
     const evidence = evidenceSpan("source.jp", "🧪\n東京は日本。", 17);
     const compiled = compile(evidence, "profile.jp", "relation.location", {

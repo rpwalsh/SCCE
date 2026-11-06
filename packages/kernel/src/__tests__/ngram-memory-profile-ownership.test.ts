@@ -4,10 +4,40 @@ import { describe, expect, it, vi } from "vitest";
 import { createIdFactory } from "../ids.js";
 import { createLanguageMemoryRuntime } from "../language-memory-runtime.js";
 import { createNgramMemoryCompiler } from "../ngram-memory.js";
+import { CORPUS_SOURCE_SYSTEM_IDS } from "../corpus-registry.js";
+import { sourceLanguageTrainingStreamId } from "../source-language-training-identity.js";
 import { createClock, createHasher, featureSet } from "../primitives.js";
 import type { EvidenceSpan, LanguageProfile } from "../types.js";
 
 describe("n-gram memory profile ownership", () => {
+  it("does not admit compilation receipts as language capability", () => {
+    const runtime = createLanguageMemoryRuntime();
+    const state = runtime.hydrate({ models: [], observations: [], patterns: [{ id: "source.language.compilation.fixture", profileId: "profile.fixture", patternKind: "source_compilation",
+      support: 1, entropy: 0, patternJson: { schema: "scce.source_language_compilation_receipt.v1", compilation: {} }, evidenceIds: [], updatedAt: 1 }] });
+    expect(state.importedPatterns).toEqual([]);
+    expect(state.importedLanguagePriorCount).toBe(0);
+    expect(state.models).toEqual([]);
+    expect(runtime.generate({ state }).text).toBe("");
+  });
+
+  it("shares canonical source model identities across producer namespaces without merging owners", () => {
+    const hasher = createHasher();
+    const learned = profile("profile.canonical", "source.canonical");
+    const evidence = span("evidence.canonical", "alpha beta alpha gamma");
+    const owner = evidence.sourceId;
+    const streamId = sourceLanguageTrainingStreamId({ sourceId: owner, sourceVersionId: learned.sourceVersionId, sourceSystem: "workspace", hasher });
+    const input = { streamId, sourceSystem: "workspace", profile: learned, sourceVersionId: learned.sourceVersionId, text: evidence.text, evidence: [evidence], createdAt: 1, retainObservations: false };
+    const compile = (namespace: string, stream = streamId, sourceSystem = "workspace") => createNgramMemoryCompiler({ hasher,
+      idFactory: createIdFactory({ clock: createClock({ fixedTime: 1 }), hasher, deterministicReplay: true, namespace }) }).compile({ ...input, streamId: stream, sourceSystem });
+    const corpus = compile("corpus-producer", streamId, CORPUS_SOURCE_SYSTEM_IDS.workspace);
+    const retrained = compile("kernel-producer");
+    expect(corpus.models).toEqual(retrained.models);
+    expect(corpus.models).toHaveLength(1);
+    expect(corpus.models[0]?.modelJson).toMatchObject({ sourceSystem: "workspace" });
+    const otherStream = sourceLanguageTrainingStreamId({ sourceId: "source.other-owner" as EvidenceSpan["sourceId"], sourceVersionId: learned.sourceVersionId, sourceSystem: "workspace", hasher });
+    expect(compile("kernel-producer", otherStream).models[0]?.id).not.toBe(corpus.models[0]?.id);
+  });
+
   it("avoids discarded observation identities while retaining identical learned artifacts", () => {
     const hasher = createHasher();
     const idFactory = createIdFactory({ clock: createClock({ fixedTime: 1 }), hasher, deterministicReplay: true });

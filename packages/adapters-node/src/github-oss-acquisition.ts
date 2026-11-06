@@ -116,7 +116,7 @@ export async function acquireAndTrainGithubOssRepository(input: GithubOssAcquisi
       maxFileBytes: bounds.maxFileBytes,
       maxDepth: bounds.maxDepth,
       repositoryProvenance: provenance,
-      sourceUriBase: `${remoteUrl.replace(/\.git$/u, "")}/tree/${commitSha}`
+      sourceUriBase: remoteUrl.replace(/\.git$/u, "")
     };
     const training = await (input.trainCorpus ?? trainOssCorpus)(trainingInput);
     return {

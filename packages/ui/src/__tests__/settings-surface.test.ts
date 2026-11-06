@@ -16,8 +16,10 @@ describe("workbench settings and models surfaces", () => {
   it("labels every settings surface with its own id and every field with the server's key", () => {
     const html = renderWorkbench("http://127.0.0.1:3873");
     for (const id of ["side.settings", "side.settings.hint", "side.models", "side.models.download", "side.models.empty"]) {
-      expect(html, `settings surface id ${id} is not rendered`).toContain(id);
+      expect(html, `settings surface id ${id} is not rendered`).toContain(`data-surface-id="${id}"`);
+      expect(html).not.toContain(`>${id}<`);
     }
+    for (const label of ["Local settings", "Settings unavailable", "Visual assets", "Manage assets", "Assets empty"]) expect(html).toContain(label);
     // A field names itself by the key the server sent; no table stands between the schema and the row.
     expect(html).toContain("textContent = field.key");
     expect(html).not.toContain("I18N");

@@ -433,7 +433,7 @@ export function codeModelsFromRecords(
       : {};
     // Records carry the corpus label the trainer stamped, not the opaque source-system identity.
     if (stored.sourceSystem !== undefined && stored.sourceSystem !== corpusSourceAlias(CORPUS_SOURCE_SYSTEM_IDS.ossCode)) continue;
-    const declared = typeof stored.formalLanguage === "string" ? stored.formalLanguage : codeLanguageForPath(record.streamId);
+    const declared = codeLanguageForModelRecord(record);
     if (declared !== languageId) continue;
     const model = materializeKneserNey(stored.model as JsonValue | undefined);
     if (!model || !Number.isInteger(model.order) || !model.counts) continue;
@@ -441,6 +441,20 @@ export function codeModelsFromRecords(
     if (out.length >= limit) break;
   }
   return out.sort((left, right) => right.order - left.order);
+}
+
+/** Formal-language ownership survives source chunks and older rows through their persisted source paths. */
+export function codeLanguageForModelRecord(record: NgramModelRecord): string | undefined {
+  const stored = record.modelJson && typeof record.modelJson === "object" && !Array.isArray(record.modelJson)
+    ? record.modelJson as Record<string, JsonValue>
+    : {};
+  if (typeof stored.formalLanguage === "string" && stored.formalLanguage.trim()) return stored.formalLanguage;
+  for (const path of [stored.relativePath, stored.streamUri, record.streamId]) {
+    if (typeof path !== "string") continue;
+    const language = codeLanguageForPath(path.replace(/#training-chunk-[0-9]+$/u, ""));
+    if (language) return language;
+  }
+  return undefined;
 }
 
 export interface LearnedCodeSurface {

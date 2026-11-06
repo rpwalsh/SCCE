@@ -1,0 +1,26 @@
+{
+  "schema": "scce.focused_regression.v1",
+  "case": "typed source-owned counterexample realization",
+  "sourceSha256": "6311807d7c42b5ea98fe4169ca352ba3c345268023f1847306bc6f09260dd39a",
+  "mutation": "Only the canonical counterexample realizer was disabled; exact source bytes restored in finally.",
+  "red": {
+    "exitCode": 1,
+    "originalNonemptyGateFailed": true,
+    "testsPassed": 0,
+    "output": ".tmp/counterexample-mutation-red.log"
+  },
+  "green": {
+    "exitCode": 0,
+    "originalNonemptyGateFailed": false,
+    "testsPassed": 3,
+    "output": ".tmp/counterexample-mutation-green.log"
+  },
+  "sourceRestored": true,
+  "coverage": [
+    "Original nonempty 40%/100% contradiction answer",
+    "Same answer without optional proof",
+    "Same answer with production requirement field",
+    "English/Japanese source constructions",
+    "Reversed roles, foreign source, prior-only owner, missing construction, wrong script and hard output constraints"
+  ]
+}

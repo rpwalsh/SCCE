@@ -9,16 +9,20 @@ import {
   REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA,
   canonicalStringify,
   compileLanguageConstructionPattern,
+  SOURCE_EXAMPLE_CONSTRUCTION_STORAGE,
   compileRequestCommunicativeActModel,
   corpusRoleIdForSourceSystem,
   createHasher,
   dialogueRequestActObservations,
+  validateDeclaredTranscriptSource,
   induceConversationalActConstructionTrainingSets,
   requestCommunicativeActPatterns,
   toJsonValue,
   type ConversationalConstructionDocument,
   type ConversationalConstructionInductionReport,
   type DialogueActObservationReport,
+  type DialogueTranscriptSource,
+  type TranscriptTurn,
   type EvidenceSpan,
   type InformationLabel,
   type JsonValue,
@@ -142,8 +146,8 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
     await walkTextFiles(root, Math.max(0, Math.floor(input.maxDepth ?? DEFAULT_MAX_DEPTH)), startFileIndex + maxFiles)
   ).slice(startFileIndex, startFileIndex + maxFiles);
   const reports: LanguageCorpusTrainingReport[] = [];
-  const transcripts: string[] = [];
-  const read: Array<{ sourceUri: string; text: string }> = [];
+  const transcripts: DialogueTranscriptSource[] = [];
+  const read: Array<{ sourceUri: string; text: string; transcriptTurns?: readonly TranscriptTurn[] }> = [];
   const skipped: DialogueCorpusTrainReport["filesSkipped"] = [];
   const heapCheckpointMb = input.heapCheckpointMb !== undefined && input.heapCheckpointMb > 0
     ? Math.floor(input.heapCheckpointMb)
@@ -159,13 +163,16 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
       continue;
     }
     const raw = await readFile(file.absolutePath, "utf8");
-    const text = raw.trim();
+    const declared = path.extname(file.absolutePath).toLowerCase() === ".json"
+      ? validateDeclaredTranscriptSource(JSON.parse(raw)) : undefined;
+    const text = declared?.text ?? raw.trim();
     if (!text) {
       skipped.push({ path: file.relativePath, reason: "empty_file", byteLength: file.byteLength });
       continue;
     }
-    transcripts.push(text);
-    read.push({ sourceUri: pathToFileURL(file.absolutePath).href, text });
+    transcripts.push(declared ?? text);
+    read.push({ sourceUri: pathToFileURL(file.absolutePath).href, text,
+      ...(declared ? { transcriptTurns: declared.turns } : {}) });
     if (input.actsOnly) continue;
     // One pathological file costs that file, never the whole run.
     try {
@@ -179,6 +186,7 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
         namespace: `corpus:${CORPUS_SOURCE_SYSTEM_IDS.dialogue}`,
         informationLabel: input.informationLabel,
         maxEvidenceChunkBytes: 64 * 1024,
+        skipNgramObservationPersistence: true,
         ngramMaxOrder: input.ngramMaxOrder,
         ngramMaxCountersPerOrder: input.ngramMaxCountersPerOrder,
         ngramVocabularyLimit: input.ngramVocabularyLimit,
@@ -189,6 +197,7 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
           sourceHash: sha256(raw),
           corpusRole: corpusRoleIdForSourceSystem(CORPUS_SOURCE_SYSTEM_IDS.dialogue),
           authorship: input.authorship,
+          ...(declared ? { transcriptSchema: declared.schema, annotatedTurns: declared.turns.length } : {}),
           ...(input.languageAliases?.length ? { languageAliases: [...input.languageAliases] } : {})
         }
       }));
@@ -211,7 +220,7 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
     filesSkipped: skipped,
     totals: sumReports(reports),
     reports,
-    communicativeActs: await persistDialogueCommunicativeActs(input, transcripts),
+    communicativeActs: await persistDialogueCommunicativeActs(input, transcripts, read.map(file => String(corpusSourceVersionIdFor(file)))),
     conversationalConstructions: await persistConversationalConstructions(input, read),
     stoppedByHeapSafetyBound,
     heapMiBAtExit: heapMiB()
@@ -225,7 +234,8 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
  */
 async function persistDialogueCommunicativeActs(
   input: DialogueCorpusTrainOptions,
-  transcripts: readonly string[]
+  transcripts: readonly DialogueTranscriptSource[],
+  sourceVersionIds: readonly string[]
 ): Promise<DialogueCommunicativeActTrainingReport> {
   const hasher = createHasher();
   const profileId = `language_profile_act_${hasher.digestHex(canonicalStringify([
@@ -239,7 +249,11 @@ async function persistDialogueCommunicativeActs(
     profileId,
     updatedAt,
     makeId: (representation: JsonValue) => `request_communicative_act_pattern_${hasher.digestHex(canonicalStringify(representation))}`
-  }).map(pattern => ({ ...pattern, informationLabel: input.informationLabel }));
+  }).map(pattern => ({ ...pattern,
+    patternJson: toJsonValue({ ...(pattern.patternJson as Record<string, JsonValue>),
+      trainingSourceVersionIds: [...sourceVersionIds],
+      trainingSourceDigests: transcripts.map(source => hasher.digestHex(canonicalStringify(source))) }),
+    informationLabel: input.informationLabel }));
   if (patterns.length) {
     if (input.storage.languageMemory.putLanguagePatterns) await input.storage.languageMemory.putLanguagePatterns(patterns);
     else for (const pattern of patterns) await input.storage.languageMemory.putLanguagePattern(pattern);
@@ -268,11 +282,12 @@ async function persistDialogueCommunicativeActs(
  */
 async function persistConversationalConstructions(
   input: DialogueCorpusTrainOptions,
-  read: ReadonlyArray<{ sourceUri: string; text: string }>
+  read: ReadonlyArray<{ sourceUri: string; text: string; transcriptTurns?: readonly TranscriptTurn[] }>
 ): Promise<DialogueConversationalConstructionTrainingReport> {
   const hasher = createHasher();
   const updatedAt = Date.now();
   const sourceVersionIds = read.map(file => corpusSourceVersionIdFor(file));
+  const turnsBySource = new Map(read.map(file => [String(corpusSourceVersionIdFor(file)), file.transcriptTurns] as const));
   const profiles = sourceVersionIds.length
     ? await input.storage.model.listLanguageProfiles({ limit: Math.max(64, sourceVersionIds.length * 4), sourceVersionIds })
     : [];
@@ -290,7 +305,7 @@ async function persistConversationalConstructions(
     const spans = found.map(row => row.span);
     if (!spans.length) continue;
     evidence.push(...spans);
-    documents.push({ sourceVersionId: String(sourceVersionId), profileId, spans });
+    documents.push({ sourceVersionId: String(sourceVersionId), profileId, spans, transcriptTurns: turnsBySource.get(String(sourceVersionId)) });
   }
 
   const { sets, ...induction } = induceConversationalActConstructionTrainingSets({ documents, hasher });
@@ -305,6 +320,7 @@ async function persistConversationalConstructions(
   const rejected: DialogueConversationalConstructionTrainingReport["rejected"] = [];
   for (const set of sets) {
     const compiled = compileLanguageConstructionPattern({
+      storageEncoding: SOURCE_EXAMPLE_CONSTRUCTION_STORAGE,
       bindingId: set.bindingId,
       profileId: set.profileId,
       observations: set.observations,
@@ -361,7 +377,7 @@ async function walkTextFiles(root: string, maxDepth: number, maxFiles: number): 
         if (!item.name.startsWith(".")) await visit(absolute, depth + 1);
         continue;
       }
-      if (!item.isFile() || path.extname(item.name).toLowerCase() !== ".txt") continue;
+      if (!item.isFile() || ![".txt", ".json"].includes(path.extname(item.name).toLowerCase())) continue;
       const info = await stat(absolute);
       out.push({ absolutePath: absolute, relativePath: path.relative(root, absolute), byteLength: info.size });
     }

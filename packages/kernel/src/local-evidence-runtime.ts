@@ -1,6 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { contentRuns, corpusIdentityGeneration, corpusIdentitySignals, corpusIdentitySurface, corpusIdentityUnits, corpusNamedIdentities } from "./corpus-identity.js";
+import { contentRuns, corpusIdentityGeneration, corpusIdentityMatchSurface, corpusIdentitySignals, corpusIdentitySurface, corpusIdentityUnits, corpusNamedIdentities } from "./corpus-identity.js";
 import { corpusUnitFormVerdict, freeFormLexiconGeneration } from "./free-form-lexicon.js";
 import { evidenceSourceIdentity, isCodeEvidenceSpan } from "./evidence-source-identity.js";
 import { SEMANTIC_CONSTRAINT, SEMANTIC_VERDICT, SEMANTIC_SOURCE } from "./semantic-codes.js";
@@ -14,7 +14,7 @@ import { calibrated } from "./calibrations/prod-calibrations.js";
 import { anchorSymbolUnits, codeBearingLines, featureSet, mean, sourceTextSurface, toJsonValue, weightedJaccard } from "./primitives.js";
 import { evidenceRetrievalSurface, evidenceWindowText } from "./evidence-retrieval-surface.js";
 import type { SemanticAnswerConstructFact } from "./semantic-answer-construct.js";
-import { collapseSurfaceWhitespace, ensureSurfaceSentence as ensureUnicodeSurfaceSentence, hasUncasedNonLatinLetter, hasUppercaseLetter, splitSurfaceClauses, splitSurfaceSentences, surfaceWords, tidySurfaceText } from "./surface-linguistics.js";
+import { collapseSurfaceWhitespace, ensureSurfaceSentence as ensureUnicodeSurfaceSentence, hasUncasedNonLatinLetter, hasUppercaseLetter, splitSurfaceClauses, splitSurfaceSentences, surfaceContainsBoundValue, surfaceWords, tidySurfaceText } from "./surface-linguistics.js";
 import type {
   ConstructGraph,
   EpistemicForce,
@@ -687,7 +687,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
     const boundedText = boundedChars.join("");
     const allSentences = splitSurfaceSentences(boundedText);
     let sentences = (boundedChars.length < [...tidySpanText].length ? allSentences.slice(0, -1) : allSentences).slice(0, 80);
-    // Splitter mismatch guard (see bestEvidenceSentences): inject the
+    // Splitter mismatch guard: inject the
     // near-duplicate gate's matching sentences when verbatim-preserving.
     if (proposeSequences.length) {
       const gateMatches = fastAnswerSentences(sourceTextSurface(evidenceWindowText(span), 6000))
@@ -775,7 +775,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
       // "as Captain James T. Kirk in action, ..." outranked the article's
       // real cast sentence). Uncased scripts are exempt by construction.
       const fragmentPenalty = (lowercaseInitialFragment(sentence) ? calibrated("ranking.fragment_penalty") : 0) + (danglingTailFragment(sentence) ? calibrated("ranking.fragment_penalty") : 0);
-      // Same near-duplicate dominance as bestEvidenceSentences.
+      // Quoted source material precedes approximate overlap.
       const nearDuplicateFraction = proposeSequences.reduce((best, sequence) =>
         Math.max(best, surfaceRequestOrderedAdjacentPairFraction(sentence, sequence, titleUnits)), 0);
       const nearDuplicateBoost = nearDuplicateFraction >= calibrated("ranking.near_duplicate_fraction_floor") && !promotedSessionEvidence(span)
@@ -786,7 +786,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
         sentence,
         index,
         suppliesBoundValue: input.boundValueEvidenceIds?.has(String(span.id)) === true
-          && (input.boundValues ?? []).some(value => tidySurfaceText(sentence).includes(tidySurfaceText(value))),
+          && (input.boundValues ?? []).some(value => surfaceContainsBoundValue(sentence, value)),
         nearDuplicate: nearDuplicateBoost > 0,
         score: unitOverlap * calibrated("ranking.unit_overlap_weight")
           + weightedJaccard(requestFeatures, featureSet(sentence, 256)) * calibrated("ranking.lexical_similarity_weight")
@@ -1011,7 +1011,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
   if (!answerEvidence.length) return undefined;
   const contradiction = Math.max(input.entailment?.contradiction ?? 0, input.semanticProof?.contradiction ?? 0);
   if (input.semanticProof?.verdict === SEMANTIC_VERDICT.CONTRADICTED && input.semanticProof.conflictingEvidenceIds?.length) {
-    return sourceConflictAnswerPlan(input.requestText, answerEvidence, input.semanticProof.conflictingEvidenceIds ?? []);
+    return sourceConflictAnswerPlan({ ...input, selectedEvidence: answerEvidence, conflictingEvidenceIds: input.semanticProof.conflictingEvidenceIds });
   }
   const selected = proposeSourceExactEvidenceAnswer({
     requestText: input.requestText,
@@ -1137,7 +1137,7 @@ export function answerCoversRequest(
 ): boolean {
   // Answerhood compares request material with source/title material using the same unitization as corpus identity
   // and anchor indexing. In particular, `Moby-Dick` is two identity units (`moby`, `dick`), not one relation token.
-  const answerContentUnits = uniqueKernelStrings(contentUnits.flatMap(unit => corpusIdentityUnits(unit)));
+  const answerContentUnits = uniqueKernelStrings(contentUnits.flatMap(answerhoodComparisonUnits));
   // The request's subject: its named anchors when it has any, else its longer content units. A request with none (a pronoun follow-up) is covered by whatever it was bound to.
   // A lone short cased run (a sentence-initial question word) is not a name.
   // A digit qualifier stays: it is the whole difference between Apollo and Apollo 11, and between Project Apollo
@@ -1148,15 +1148,15 @@ export function answerCoversRequest(
   // sentence naming Lima -- retrieved, ranked second -- failed coverage and the country's landscape answered
   // instead (live 2026-09-12). The floor still applies where the corpus has said nothing.
   const corpusIdentityGroups = corpusNamedIdentities(requestText)
-    .map(anchor => splitPriorUnits(normalizePriorKey(anchor)).filter(Boolean))
+    .map(answerhoodComparisonUnits)
     .filter(units => units.length > 0);
   const namedGroups = corpusIdentityGroups.length ? corpusIdentityGroups : namedSubjectAnchors(requestText)
-    .map(anchor => splitPriorUnits(normalizePriorKey(anchor)).filter(unit => [...unit].length >= 3 || /^\p{Number}+$/u.test(unit)))
+    .map(anchor => answerhoodComparisonUnits(anchor).filter(unit => [...unit].length >= 3 || /^\p{Number}+$/u.test(unit)))
     .filter(units => units.length >= 2 || [...(units[0] ?? "")].length >= 5);
   const subjectUnits = namedGroups.length ? namedGroups.flat() : answerContentUnits.filter(unit => [...unit].length >= 6);
   if (!subjectUnits.length) return true;
   // Short units match exactly (the fuzzy matcher confuses "what" with "that"); longer ones tolerate inflection.
-  const surfaceUnits = corpusIdentityUnits(sentences.join(" ") + " " + evidenceTitle(span)).map(stripOuterPriorSeparators);
+  const surfaceUnits = answerhoodComparisonUnits(sentences.join(" ") + " " + evidenceTitle(span)).map(stripOuterPriorSeparators);
   const matches = (unit: string) => surfaceUnits.some(surfaceUnit => [...unit].length < 5 ? surfaceUnit === unit : requestUnitMatchesSurface(unit, surfaceUnit));
   // A subject matches by identity or inflection only: similarity let "Majorian" stand in for "Bajoran".
   const subjectMatches = (unit: string) => surfaceUnits.some(surfaceUnit => surfaceUnit === unit
@@ -1213,7 +1213,7 @@ export function answerCoversRequest(
   // The language's closed class comes off this branch too: "which" mid-request is scaffolding, not a relation the answer restates.
   const subtractedRelationUnits = answerContentUnits.filter(unit => !subjectUnits.some(subjectUnit => requestUnitSharesStem(unit, subjectUnit))
     && !options.languageClosedClassWords?.has(unit));
-  const sourceIdentityUnits = corpusIdentityUnits(`${evidenceIdentity(span)} ${evidenceTitle(span)}`).map(stripOuterPriorSeparators).filter(Boolean);
+  const sourceIdentityUnits = answerhoodComparisonUnits(`${evidenceIdentity(span)} ${evidenceTitle(span)}`).map(stripOuterPriorSeparators).filter(Boolean);
   const sourceSubjectUnits = answerContentUnits.filter(unit => sourceIdentityUnits.some(identityUnit => requestUnitSharesStem(unit, identityUnit)));
   // An obligation names what the ANSWER must carry, so the request's own opening scaffolding and the language's
   // closed class come off it here too: "When did the American Revolutionary War end?" reached the gate as
@@ -1231,26 +1231,8 @@ export function answerCoversRequest(
         ? requestRelationBeyondSourceIdentity(requestText, span, options.languageClosedClassWords)
         : [];
   const answeringText = sentences.join(" ");
-  const sentenceUnits = corpusIdentityUnits(answeringText).map(stripOuterPriorSeparators);
+  const sentenceUnits = answerhoodComparisonUnits(answeringText).map(stripOuterPriorSeparators);
   const missingRelationUnits = relationUnits.filter(unit => !sentenceUnits.some(surfaceUnit => requestUnitSharesStem(unit, surfaceUnit)));
-  // A request that ends on a category ("...the capital of which country?", "...indigenous to which country?") is
-  // answered by a member of that category, and the member's sentence does not repeat the category: "'Athens' is the
-  // capital and largest city of Greece" never says "country". The one relation unit allowed to be absent is the
-  // request's last content unit, and only when the sentence names something cased the request did not -- the
-  // member. Every other relation unit is still required, so a sentence about the subject that merely shares a word
-  // with the request does not pass (the fabrication case this gate exists for).
-  // The re-derived obligation is read off the request, so its own last unit is the request's last content unit there.
-  const lastContentUnit = !sourceSubjectUnits.length && subtractedRelationUnits.length
-    ? answerContentUnits[answerContentUnits.length - 1]
-    : relationUnits[relationUnits.length - 1];
-  // The escape excuses the category the answer replaces, never the relation itself: it requires a second relation
-  // unit, which the sentence must therefore be carrying. That is what the subject leaking into the obligation
-  // defeated -- with "einstein's" counted as a carried relation unit beside "dentist", the Einstein lead was
-  // exactly this shape, and the escape is how it answered who his dentist was on the live server.
-  const categoryMemberAnswer = missingRelationUnits.length === 1
-    && relationUnits.length >= 2
-    && missingRelationUnits[0] === lastContentUnit
-    && sentenceNamesEntityOutsideRequest(answeringText, requestText);
   // A sentence carrying a value this turn RESOLVED for the request's own relation answers it whether or not it
   // repeats the relation word: "10 December 1815" structurally cannot restate "born" and does not need to, which
   // is the reasoning candidateIsVerifiedBoundValue (semantic-answer-construct.ts) already applies one module away
@@ -1260,8 +1242,8 @@ export function answerCoversRequest(
   // The subject and numeric-qualifier obligations below are untouched, so the fabrications this gate was written
   // for -- the Einstein lead answering who his dentist was -- resolve no value and are refused exactly as before.
   const resolvedValueCarried = (options.boundValues ?? []).some(value =>
-    value && answeringText.toLocaleLowerCase().includes(value.toLocaleLowerCase()));
-  const relationCarried = missingRelationUnits.length === 0 || categoryMemberAnswer || resolvedValueCarried;
+    surfaceContainsBoundValue(answeringText, value));
+  const relationCarried = missingRelationUnits.length === 0 || resolvedValueCarried;
   const unitPresentIn = (units: readonly string[]) => (unit: string) => units.some(surfaceUnit => surfaceUnit === unit
     || ((unit.startsWith(surfaceUnit) || surfaceUnit.startsWith(unit)) && Math.min(unit.length, surfaceUnit.length) / Math.max(unit.length, surfaceUnit.length) >= calibrated("units.prefix_ratio_floor")));
   // Real prose names its subject once and continues by anaphora ("the mission", omission, a bare pronoun): requiring
@@ -1283,12 +1265,12 @@ export function answerCoversRequest(
   // A self-identifying source can bind an anaphoric relation through one of its learned identity units beyond the
   // title (for example, Ahab in a Moby-Dick passage). The title itself is not appended to context: doing so makes a
   // generic sentence such as "The captain was below" look subject-bound merely because the source is titled Pequod.
-  const titleUnits = new Set(corpusIdentityUnits(evidenceTitle(span)));
+  const titleUnits = new Set(answerhoodComparisonUnits(evidenceTitle(span)));
   const sourceIdentitySupportUnits = evidenceIdentityBeyondTitle(span)
-    ? corpusIdentityUnits(evidenceIdentity(span)).filter(unit => !titleUnits.has(unit))
+    ? answerhoodComparisonUnits(evidenceIdentity(span)).filter(unit => !titleUnits.has(unit))
     : [];
   const sourceIdentityBound = sourceIdentitySupportUnits.some(unitPresentIn(sentenceUnits));
-  const contextUnits = corpusIdentityUnits(`${precedingSentenceContext(span, answeringText)} ${answeringText}`).map(stripOuterPriorSeparators);
+  const contextUnits = answerhoodComparisonUnits(`${precedingSentenceContext(span, answeringText)} ${answeringText}`).map(stripOuterPriorSeparators);
   const subjectGroups = sourceSubjectUnits.length ? [sourceSubjectUnits] : namedGroups.length ? namedGroups : [subjectUnits];
   // A titled source's opening block is about its title by construction, and states the standing fact anaphorically:
   // "Baku is the capital and largest city", "Tirana is the capital ... in the country", "Alabama's capital is
@@ -1306,6 +1288,12 @@ export function answerCoversRequest(
   // what tells "Apollo" alone apart from "Apollo 11".
   const numericQualifiersPresent = subjectUnits.filter(unit => /^\p{Number}+$/u.test(unit)).every(unit => contextUnits.includes(unit));
   return subjectSatisfied && numericQualifiersPresent && relationCarried;
+}
+
+/** Reuse the corpus's dash/space comparison while preserving numeric designations and signs. */
+function answerhoodComparisonUnits(text: string): string[] {
+  return corpusIdentityUnits(text).flatMap(unit => /\p{Number}/u.test(unit)
+    ? [unit] : corpusIdentityUnits(corpusIdentityMatchSurface(unit)));
 }
 
 /**
@@ -1397,15 +1385,6 @@ function sentenceNamesRequestSubject(sentence: string, requestText: string): boo
 
 /** A cased word inside the sentence (not its first) whose normalized form the request does not contain: the member a
  *  category question is answered with ("Greece", "Japan", "Maurya"). Cased scripts only; uncased scripts never pass. */
-function sentenceNamesEntityOutsideRequest(sentence: string, requestText: string): boolean {
-  const requestUnits = new Set(memoizedSurfaceUnits(requestText).map(stripOuterPriorSeparators).map(unit => normalizePriorKey(unit)));
-  const words = surfaceWords(sentence).map(stripOuterPriorSeparators).filter(Boolean);
-  return words.some((word, index) => index > 0
-    && hasUppercaseLetter(word)
-    && [...word].length >= 3
-    && !requestUnits.has(normalizePriorKey(word)));
-}
-
 /**
  * Two surfaces share a stem when one matches the other by identity or inflection, or when their common prefix is at
  * least four code points and most of the longer surface: commanded/commander, land/landed, develop/developing. A
@@ -1508,130 +1487,6 @@ export function localEvidenceAnswerProofExcerpts(
 }
 
 
- function collectionAnswerPlan(
-  requestText: string,
-  evidence: readonly EvidenceSpan[],
-  entailment?: Pick<TurnResult["entailment"], "contradiction">,
-  semanticProof?: { verdict: string; contradiction: number; conflictingEvidenceIds?: readonly string[] }
-): LocalEvidenceAnswerPlan | undefined {
-  const contradiction = Math.max(entailment?.contradiction ?? 0, semanticProof?.contradiction ?? 0);
-  const anchored = sourceAnchoredEvidenceForRequest(requestText, evidence);
-  const anchors = sourceEvidenceAnchorsForRequest(requestText);
-  const titleMatched = evidence.filter(span => evidenceExactSourceAnchorMatches(span, anchors) || evidenceTitleDistinctAnchorMatches(span, anchors));
-  const candidateEvidence = titleMatched.length ? titleMatched : anchored.evidence.length ? anchored.evidence : evidence;
-  const namedAnchors = namedSubjectAnchors(requestText).filter(sourceAnchorSpecificEnough);
-  if (namedAnchors.length && !candidateEvidence.some(span => evidenceExactSourceAnchorMatches(span, namedAnchors) || evidenceTitleDistinctAnchorMatches(span, namedAnchors))) return undefined;
-  if (candidateEvidence.some(span => anchoredBiographicalSubject(span, anchors))) return undefined;
-  const requestUnits = requestUnitSet(requestText);
-  const requestFeatures = featureSet(requestText, 256);
-  const sourceSectionRows = sourceDerivedCollectionRows(candidateEvidence, requestText, requestUnits, requestFeatures);
-  const rows = [
-    ...sourceSectionRows,
-    ...candidateEvidence
-    .filter(span => span.status === "promoted" || promotedSessionEvidence(span))
-    .flatMap(span => fastAnswerSentences(sourceTextSurface(evidenceWindowText(span), 24000)).slice(0, 80).map((sentence, index) => {
-      const names = collectionNamesFromSurface(sentence, requestText, span);
-      const unitOverlap = requestUnitOverlapForSurface(sentence, requestUnits);
-      const lexical = weightedJaccard(requestFeatures, featureSet(sentence, 128));
-      const delimiterMass = collectionListMass(sentence);
-      const sectionAffinity = sourceDerivedSectionOverlap(sentence, requestUnits, sourceTitleUnitSet(span));
-      return {
-        span,
-        sentence,
-        names,
-        sectionAffinity,
-        delimiterMass,
-        score: names.length * 0.18 + unitOverlap * 0.08 + lexical * 0.32 + delimiterMass * 0.18 + sectionAffinity * 0.5 + Math.max(0, 0.08 - index * 0.004)
-      };
-    }))
-  ]
-    .filter(row => row.names.length >= 2)
-    .sort((left, right) => right.score - left.score || right.names.length - left.names.length);
-  const sourceLabelRows = rows.filter(row => row.sectionAffinity > 0 && row.names.length >= 2);
-  const listRichRows = rows.filter(row => row.names.length >= 4 && row.delimiterMass >= 0.28);
-  if (!sourceLabelRows.length) return undefined;
-  if (contradiction >= calibrated("plan.contradiction_block") && !sourceLabelRows.length) return undefined;
-  const answerRows = (sourceLabelRows.length ? sourceLabelRows : listRichRows.length ? listRichRows : rows)
-    .sort((left, right) => right.sectionAffinity - left.sectionAffinity || right.names.length - left.names.length || right.score - left.score);
-  const selectedNames: string[] = [];
-  const selectedEvidence: EvidenceSpan[] = [];
-  for (const row of answerRows.slice(0, 8)) {
-    selectedEvidence.push(row.span);
-    for (const name of row.names) {
-      if (selectedNames.some(existing => sameCollectionName(existing, name))) continue;
-      selectedNames.push(name);
-      if (selectedNames.length >= 12) break;
-    }
-    if (selectedNames.length >= 12) break;
-  }
-  if (selectedNames.length < 2) return undefined;
-  const selectedEvidenceUnique = uniqueEvidenceById(selectedEvidence);
-  return {
-    planId: "ans.plan.6d1f7c0a",
-    kindId: LOCAL_ANSWER_KIND_IDS.collection,
-    evidence: selectedEvidenceUnique,
-    slotSurfaces: {
-      [LOCAL_ANSWER_SLOT_IDS.memberList]: selectedNames
-    },
-    maxSentences: 1,
-    audit: toJsonValue({
-      source: "kernel.turn.collection_answer",
-      basisClassId: "basis.54d2a9be",
-      certificationId: "cert.2b4f8a11",
-      evidenceIds: selectedEvidenceUnique.map(span => String(span.id)),
-      evidenceCount: selectedEvidenceUnique.length,
-      sourceDerivedRows: sourceLabelRows.length,
-      listRichRows: listRichRows.length,
-      answerObjectId: "ans.obj.6d1f7c0a",
-      actionId: "act.3be50f92",
-      supportStatusId: "support.7d7a2cf1",
-      fakeEvidenceForbidden: true
-    })
-  };
-}
-
-
- interface CollectionAnswerRow {
-  span: EvidenceSpan;
-  sentence: string;
-  names: string[];
-  sectionAffinity: number;
-  delimiterMass: number;
-  score: number;
-}
-
-
- function sourceDerivedCollectionRows(
-  evidence: readonly EvidenceSpan[],
-  requestText: string,
-  requestUnits: ReadonlySet<string>,
-  requestFeatures: readonly string[]
-): CollectionAnswerRow[] {
-  const out: CollectionAnswerRow[] = [];
-  for (const span of evidence.filter(item => item.status === "promoted" || promotedSessionEvidence(item))) {
-    const source = sourceTextSurface(evidenceWindowText(span), 24000);
-    const excludedHeadingUnits = sourceTitleUnitSet(span);
-    for (const section of sourceSections(source)) {
-      const sectionAffinity = sourceHeadingOverlap(section.heading, requestUnits, excludedHeadingUnits);
-      if (sectionAffinity <= 0) continue;
-      const names = collectionNamesFromSurface(section.body, requestText, span);
-      if (names.length < 2) continue;
-      const surface = `${section.heading} ${names.join(", ")}`;
-      const lexical = weightedJaccard(requestFeatures, featureSet(surface, 128));
-      out.push({
-        span,
-        sentence: surface,
-        names,
-        sectionAffinity,
-        delimiterMass: collectionListMass(section.body),
-        score: 0.72 + sectionAffinity * 0.8 + names.length * 0.12 + lexical * 0.28
-      });
-    }
-  }
-  return out.sort((left, right) => right.score - left.score || right.names.length - left.names.length);
-}
-
-
  function sourceSections(source: string): Array<{ heading: string; body: string; index: number }> {
   const matches = [...source.matchAll(/==([^=\r\n]{1,120})==/gu)];
   const sections: Array<{ heading: string; body: string; index: number }> = [];
@@ -1649,81 +1504,6 @@ export function localEvidenceAnswerProofExcerpts(
 }
 
 
- function collectionNamesFromSurface(sentence: string, requestText: string, span: EvidenceSpan): string[] {
-  const sourceTitle = normalizePriorKey(evidenceTitle(span));
-  const requestAnchors = new Set(sourceEvidenceAnchorsForRequest(requestText));
-  const requestUnits = requestUnitSet(requestText);
-  const headNames = collectionListHeadNames(sentence);
-  const rawNames = headNames.length ? headNames : surfaceEntityRuns(sentence);
-  const out: string[] = [];
-  for (const raw of rawNames) {
-    const clean = raw.replace(/^[\s"'`]+|[\s"'`,;:.]+$/gu, "").replace(/\s+/gu, " ").trim();
-    if (!clean) continue;
-    const key = normalizePriorKey(clean);
-    if (!key) continue;
-    const nameUnits = splitPriorUnits(key).filter(unit => unit.length >= 4);
-    if (nameUnits.length && nameUnits.every(unit => [...requestUnits].some(requestUnit => requestUnitMatchesSurface(unit, requestUnit)))) continue;
-    if (sourceTitle && (key === sourceTitle || sourceTitle.includes(key) || key.includes(sourceTitle))) continue;
-    if ([...requestAnchors].some(anchor => anchor === key || anchor.includes(key) || key.includes(anchor))) continue;
-    if (collectionNameLooksInstitutional(clean)) continue;
-    out.push(clean);
-  }
-  return uniqueKernelStrings(out).slice(0, 16);
-}
-
-
- function collectionListHeadNames(surface: string): string[] {
-  const out: string[] = [];
-  for (const segment of surface.split(/(?:^|\s)[*\u2022]\s+/u).slice(1)) {
-    const head = segment
-      .split(/\s[-\u2013\u2014:]\s/u)[0]
-      ?.replace(/\([^)]{0,160}\)/gu, " ")
-      .replace(/==[^=]{1,120}==/gu, " ")
-      .trim() ?? "";
-    if (!head) continue;
-    const direct = sourceBulletHeadName(head);
-    if (direct) {
-      out.push(direct);
-      continue;
-    }
-    const [name] = surfaceEntityRuns(head);
-    if (name) out.push(name);
-  }
-  return uniqueKernelStrings(out).slice(0, 24);
-}
-
-
- function sourceBulletHeadName(surface: string): string {
-  const clean = cleanSourceAnswerSurface(surface)
-    .replace(/\([^)]{0,160}\)/gu, " ")
-    .replace(/["'`]+/gu, " ")
-    .replace(/\s+/gu, " ")
-    .replace(/^[\s,;:.]+|[\s,;:.]+$/gu, "")
-    .trim();
-  if (!clean || clean.length > 90) return "";
-  const units = splitPriorUnits(normalizePriorKey(clean)).filter(Boolean);
-  if (!units.length || units.length > 7) return "";
-  if (!units.some(unit => [...unit].some(char => char.toLocaleLowerCase() !== char.toLocaleUpperCase()))) return "";
-  return clean;
-}
-
-
- function collectionListMass(surface: string): number {
-  const markers = surface.match(/[,;*\u2022]|\s[-\u2013\u2014:]\s/gu) ?? [];
-  return Math.min(1, markers.length / 8);
-}
-
-
- function sourceDerivedSectionOverlap(surface: string, requestUnits: ReadonlySet<string>, excludedUnits: ReadonlySet<string> = new Set()): number {
-  if (!requestUnits.size) return 0;
-  let overlap = 0;
-  for (const match of surface.matchAll(/==([^=]{1,120})==/gu)) {
-    overlap += sourceHeadingOverlap(match[1] ?? "", requestUnits, excludedUnits);
-  }
-  return Math.min(1, overlap);
-}
-
-
  function sourceHeadingOverlap(heading: string, requestUnits: ReadonlySet<string>, excludedUnits: ReadonlySet<string> = new Set()): number {
   if (!requestUnits.size) return 0;
   const units = splitPriorUnits(normalizePriorKey(heading))
@@ -1738,20 +1518,6 @@ export function localEvidenceAnswerProofExcerpts(
 
  function sourceTitleUnitSet(span: EvidenceSpan): Set<string> {
   return new Set(splitPriorUnits(normalizePriorKey(evidenceTitle(span))).filter(unit => unit.length >= 4));
-}
-
-
- function collectionNameLooksInstitutional(name: string): boolean {
-  const units = splitPriorUnits(normalizePriorKey(name));
-  return units.length > 5;
-}
-
-
- function sameCollectionName(left: string, right: string): boolean {
-  const a = normalizePriorKey(left);
-  const b = normalizePriorKey(right);
-  if (!a || !b) return false;
-  return a === b || a.includes(b) || b.includes(a);
 }
 
 
@@ -1781,19 +1547,18 @@ export function assistantForceFromLocalEvidenceAudit(audit: JsonValue, defaultFo
  * each with the source that made it, and the disagreement is expressed by the relation rather than by any word:
  * the mouth realizes it from learned constructions, so no phrasing is written here.
  */
-function sourceConflictAnswerPlan(
-  requestText: string,
-  evidence: readonly EvidenceSpan[],
-  conflictingEvidenceIds: readonly string[]
-): LocalEvidenceAnswerPlan | undefined {
-  if (conflictingEvidenceIds.length < 2) return undefined;
-  const wanted = new Set(conflictingEvidenceIds.map(String));
-  const spans = evidence.filter(span => wanted.has(String(span.id)));
+function sourceConflictAnswerPlan(input: Parameters<typeof proposeSourceExactEvidenceAnswer>[0] & {
+  conflictingEvidenceIds: readonly string[];
+}): LocalEvidenceAnswerPlan | undefined {
+  if (input.conflictingEvidenceIds.length < 2) return undefined;
+  const wanted = new Set(input.conflictingEvidenceIds.map(String));
+  const spans = input.selectedEvidence.filter(span => wanted.has(String(span.id)));
   if (spans.length < 2) return undefined;
   const statements: string[] = [];
   const kept: EvidenceSpan[] = [];
   for (const span of spans) {
-    const sentence = cleanSourceAnswerSurface(bestEvidenceSentences(requestText, [span], false)[0] ?? "");
+    const proposal = proposeSourceExactEvidenceAnswer({ ...input, selectedEvidence: [span] });
+    const sentence = proposal ? localEvidenceAnswerClaimSurface(proposal) : "";
     if (!sentence || statements.includes(sentence)) continue;
     statements.push(sentence);
     kept.push(span);
@@ -1804,7 +1569,7 @@ function sourceConflictAnswerPlan(
     kindId: LOCAL_ANSWER_KIND_IDS.sourceConflict,
     evidence: uniqueEvidenceById(kept),
     slotSurfaces: {
-      [LOCAL_ANSWER_SLOT_IDS.subject]: cleanSourceAnswerSurface(evidenceTitle(kept[0]!) || requestText),
+      [LOCAL_ANSWER_SLOT_IDS.subject]: cleanSourceAnswerSurface(evidenceTitle(kept[0]!) || input.requestText),
       [LOCAL_ANSWER_SLOT_IDS.conflictingStatement]: statements
     },
     maxSentences: Math.max(2, statements.length),
@@ -4193,304 +3958,6 @@ export function promotedSessionEvidence(span: EvidenceSpan): boolean {
 }
 
 
- function bestEvidenceSurface(requestText: string, evidence: readonly EvidenceSpan[]): string {
-  return bestEvidenceSentences(requestText, evidence)
-    .map(ensureSentenceSurface)
-    .filter(Boolean)
-    .join(" ");
-}
-
-
- interface EvidenceSentenceRow {
-  span: EvidenceSpan;
-  sentence: string;
-  features: string[];
-  index: number;
-  score: number;
-  unitOverlap: number;
-  nearDuplicate: boolean;
-  suppliesBoundValue: boolean;
-}
-
-
-/**
- * Whether a sentence supplies a value the turn's realization contract already bound to the request's relation.
- * Case-folded containment, the SAME test candidateSurvivesRealizationContract (semantic-answer-construct.ts)
- * applies as `requestedSlotSatisfied` before it will accept any answer -- so a ranked sentence without the bound
- * value is one the contract has already committed to refusing. No weight and no new calibration: this is a
- * precedence the contract already decided, not a preference of this ranker's own. Pure.
- */
-function surfaceSuppliesBoundValue(surface: string, boundValues: readonly string[]): boolean {
-  if (!boundValues.length || !surface) return false;
-  const folded = surface.toLocaleLowerCase();
-  return boundValues.some(value => value && folded.includes(value.toLocaleLowerCase()));
-}
-
-
- function bestEvidenceSentences(requestText: string, evidence: readonly EvidenceSpan[], sessionContextEvidence = false, closedClassWords?: ReadonlySet<string>, functionSymbols?: ReadonlySet<string>, boundValues: readonly string[] = []): string[] {
-  markSourceLeadSpans(evidence);
-  // Mirrors proposeSourceExactEvidenceAnswer's ranking contract exactly
-  // (see the long notes there): sentences are ranked IN tidySurfaceText
-  // space so every returned surface is a verbatim substring of its span
-  // (fastAnswerSentences' cleaning could glue quote-heavy regions into one
-  // giant block that wins on content it never surfaces, and its
-  // anchor-focus trimming mangled quotes/parentheses into surfaces the
-  // mouth's excerpt verifier then rejected); lowercase-initial fragments
-  // are penalized; and cross-span ranking carries the source-affinity
-  // weight so the span whose title the request names most completely wins
-  // over a sibling source scoring on words that happen to be absent from
-  // its own title.
-  const limit = evidenceAnswerSentenceLimit(requestText, evidence, sessionContextEvidence);
-  const requestFeatures = featureSet(requestText, 256);
-  const requestUnits = requestUnitSet(requestText);
-  const orderedRequestUnits = requestUnitsFromText(requestText);
-  const requestSequences = requestSentenceSequences(requestText);
-  const anchors = sourceEvidenceAnchorsForRequest(requestText);
-  const singleSpan = evidence.length === 1;
-  const rankFeatureRows: { sentence: string; f: Record<string, number> }[] = [];
-  const candidates = evidence
-    .flatMap(span => {
-      const tidySpanText = tidySurfaceText(span.text);
-      const boundedChars = [...tidySpanText].slice(0, 24000);
-      const allSentences = splitSurfaceSentences(boundedChars.join(""));
-      let sentences = (boundedChars.length < [...tidySpanText].length ? allSentences.slice(0, -1) : allSentences).slice(0, 80);
-      // This builder keeps verbatim substrings and so bypasses fastAnswerSentences; the same rule applies here.
-      // A reference line names the subject and carries years, which is how a cited article's publication date
-      // answered "When was Ada Lovelace born?". Citations stand aside while any prose remains.
-      const citationFlags = citationSentenceFlags(sentences);
-      const proseSentences = sentences.filter((_, index) => !citationFlags[index]);
-      if (proseSentences.length) sentences = proseSentences;
-      // Splitter mismatch guard: the near-duplicate GATE segments with
-      // fastAnswerSentences; in table-heavy chunks this splitter glues the
-      // duplicated sentence into a blob no row can match. Inject the
-      // gate's matching sentences as rows, but only when they survive as
-      // verbatim tidy-space substrings (the mouth verifier's contract).
-      if (requestSequences.length) {
-        const gateMatches = fastAnswerSentences(sourceTextSurface(evidenceWindowText(span), 6000))
-          .filter(candidate => requestSequences.some(sequence =>
-            surfaceRequestOrderedAdjacentPairFraction(candidate, sequence) >= 0.5))
-          .filter(candidate => tidySpanText.includes(candidate) && !sentences.includes(candidate));
-        if (gateMatches.length) sentences = [...gateMatches, ...sentences].slice(0, 80);
-      }
-      const titleMatches = anchors.length > 0 && evidenceTitleDistinctAnchorMatches(span, anchors);
-      const titleUnitList = requestUnitsFromText(evidenceTitle(span));
-      const titleUnitSet = new Set(titleUnitList);
-      const titleRequestCoverage = titleUnitList.length
-        ? titleUnitList.filter(titleUnit =>
-          [...requestUnits].some(unit => requestUnitMatchesSurface(unit, titleUnit))).length / titleUnitList.length
-        : 0;
-      const sourceAffinityBoost = titleMatches && !singleSpan ? calibrated("ranking.source_affinity_weight") * titleRequestCoverage : 0;
-      // Content-net scoring + coverage transfer, identical in doctrine to
-      // proposeSourceExactEvidenceAnswer (see the notes there): without
-      // it, the boosted article lead beats the deeper sentence carrying
-      // the request's actual content terms (verified live in run-f: "Who
-      // played Captain James T. Kirk / Benjamin Sisko" both returned the
-      // article opener without the actor's name).
-      const leadingScaffolding = requestLeadingScaffoldingUnit(requestText);
-      const contentRequestUnits = new Set([...requestUnits].filter(unit =>
-        !titleUnitList.some(titleUnit => requestUnitMatchesSurface(unit, titleUnit)) && unit !== leadingScaffolding));
-      let contentBoostIndex = -1;
-      // Only the document's opening block has a lead to transfer from: in a mid-article chunk the first two
-    // "sentences" are whatever the cut left, their coverage is zero, and the boost went to any sentence with a
-    // content word -- "The Athens area encompasses a variety of terrain ... the capital is the only major city in
-    // Europe" beat "'Athens' is the capital and largest city of Greece" by exactly that (live 2026-09-10).
-      // The tie-break counted the request's own interrogative: "most of what is now Kenya" scored a third unit
-      // for a historical sentence over "Kenya's capital and largest city is Nairobi." (live 2026-09-12).
-      const scaffoldingFreeRequestUnits = closedClassWords?.size
-        ? new Set([...requestUnits].filter(unit => !closedClassWords.has(unit)))
-        : requestUnits;
-    if (titleMatches && contentRequestUnits.size && documentLeadSpan(span)) {
-        const coverage = sentences
-          .map((sentence, index) => ({
-            index,
-            contentOverlap: requestUnitOverlapForSurface(sentence, contentRequestUnits, functionSymbols),
-            fullOverlap: requestUnitOverlapForSurface(sentence, scaffoldingFreeRequestUnits, functionSymbols)
-          }))
-          .filter(row => !lowercaseInitialFragment(sentences[row.index] ?? ""));
-        const leadContent = Math.max(0, ...coverage.filter(row => row.index <= 1).map(row => row.contentOverlap));
-        const best = [...coverage].sort((left, right) =>
-          right.contentOverlap - left.contentOverlap
-          || right.fullOverlap - left.fullOverlap
-          || left.index - right.index)[0];
-        if (best && best.contentOverlap > leadContent) contentBoostIndex = best.index;
-        traceEvent((globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace, {
-          stage: "local_evidence.coverage",
-          label: "kernel.turn",
-          support: {
-            contentUnits: [...contentRequestUnits],
-            requestUnits: [...scaffoldingFreeRequestUnits],
-            closedClassSize: closedClassWords?.size ?? 0,
-            functionSymbolCount: functionSymbols?.size ?? 0,
-            remainderProbe: remainderIsLearnedFunctionMaterial("kenya", String.fromCharCode(39) + "s", functionSymbols),
-            leadContent,
-            contentBoostIndex,
-            top: [...coverage]
-              .sort((left, right) => right.contentOverlap - left.contentOverlap || right.fullOverlap - left.fullOverlap || left.index - right.index)
-              .slice(0, 6)
-              .map(row => ({ index: row.index, content: row.contentOverlap, full: row.fullOverlap, text: (sentences[row.index] ?? "").slice(0, 70) }))
-          }
-        });
-      }
-      return sentences.map((sentence, index): EvidenceSentenceRow => {
-        const features = featureSet(sentence, 256);
-        const lexical = weightedJaccard(requestFeatures, features) + (singleSpan ? 0 : weightedJaccard(requestFeatures, span.features) * calibrated("ranking.lexical_similarity_weight"));
-        const unitOverlap = titleMatches && contentRequestUnits.size
-          ? requestUnitOverlapForSurface(sentence, contentRequestUnits, functionSymbols)
-          : requestUnitOverlapForSurface(sentence, scaffoldingFreeRequestUnits, functionSymbols);
-        const pairOverlap = surfaceRequestAdjacentUnitPairOverlap(sentence, orderedRequestUnits);
-        const anchorBoost = sourceSurfaceMatchesAnyAnchor(sentence, anchors) ? calibrated("ranking.anchor_boost") : 0;
-        const titleLeadBoost = titleMatches
-          && (contentBoostIndex >= 0 ? index === contentBoostIndex : (documentLeadSpan(span) && index <= 1))
-          && (contentBoostIndex >= 0 || evidenceTitleAppearsInSurface(span, sentence))
-          ? calibrated("ranking.title_lead_boost")
-          : 0;
-        const fragmentPenalty = (lowercaseInitialFragment(sentence) ? calibrated("ranking.fragment_penalty") : 0) + (danglingTailFragment(sentence) ? calibrated("ranking.fragment_penalty") : 0);
-        // Near-duplicated source sentence must outrank titleLead(4)+affinity(<=3).
-        const nearDuplicateFraction = requestSequences.reduce((best, sequence) =>
-          Math.max(best, surfaceRequestOrderedAdjacentPairFraction(sentence, sequence, titleUnitSet)), 0);
-        const nearDuplicateBoost = nearDuplicateFraction >= calibrated("ranking.near_duplicate_fraction_floor") && !promotedSessionEvidence(span)
-          ? calibrated("ranking.near_duplicate_weight") * nearDuplicateFraction
-          : 0;
-        const suppliesBoundValue = surfaceSuppliesBoundValue(sentence, boundValues);
-        // Raw values, before any coefficient: the fitter needs the feature, not the weighted term.
-        rankFeatureRows.push({
-          sentence: sentence.slice(0, 160),
-          f: {
-            unitOverlap,
-            lexical,
-            pairOverlap,
-            alpha: span.alpha,
-            anchorMatch: anchorBoost > 0 ? 1 : 0,
-            titleLead: titleLeadBoost > 0 ? 1 : 0,
-            sourceAffinity: sourceAffinityBoost > 0 ? sourceAffinityBoost / Math.max(1e-9, calibrated("ranking.source_affinity_weight")) : 0,
-            nearDuplicateFraction: nearDuplicateBoost > 0 ? nearDuplicateFraction : 0,
-            sourceOrderIndex: index,
-            fragmentCount: (lowercaseInitialFragment(sentence) ? 1 : 0) + (danglingTailFragment(sentence) ? 1 : 0),
-            longSentencePenalty: fastAnswerLongSentencePenalty(sentence),
-            boundValue: suppliesBoundValue ? 1 : 0
-          }
-        });
-        return {
-          span,
-          sentence,
-          features,
-          index,
-          unitOverlap,
-          nearDuplicate: nearDuplicateBoost > 0,
-          suppliesBoundValue,
-          score: unitOverlap * calibrated("ranking.unit_overlap_weight")
-            + lexical * calibrated("ranking.lexical_similarity_weight")
-            + pairOverlap * calibrated("ranking.best.pair_overlap_weight")
-            + nearDuplicateBoost
-            + span.alpha * calibrated("ranking.best.evidence_alpha_weight")
-            + anchorBoost
-            + titleLeadBoost
-            + sourceAffinityBoost
-            + Math.max(0, calibrated("ranking.best.source_order_bonus") - index * calibrated("ranking.best.source_order_decay"))
-            - fastAnswerLongSentencePenalty(sentence)
-            - fragmentPenalty
-        };
-      });
-    })
-    // Heading/list clozes duplicate real but short surfaces ("== Cultural impact ==").
-    // Serialized apparatus is never a candidate answer. Measured at sentence granularity, never at span
-    // granularity: an article whose span also holds a results table keeps its prose lead.
-    .filter(row => (row.sentence.length >= 24 || row.nearDuplicate) && !isHeadingOnlySurface(row.sentence)
-      && !cliticOpeningFragment(row.sentence) && !isStructuralResidueSurface(row.sentence))
-    // The duplicated sentence outranks everything: a unit-rich table blob
-    // can beat the boost on raw overlap count.
-    // A sentence supplying the contract's bound value leads: the score's terms measure how much of the request a
-    // sentence repeats, and none of them measures whether it answers. Inert when nothing was bound.
-    .sort((left, right) => Number(right.nearDuplicate) - Number(left.nearDuplicate)
-      || Number(right.suppliesBoundValue) - Number(left.suppliesBoundValue)
-      || right.score - left.score || right.unitOverlap - left.unitOverlap || left.index - right.index || String(left.span.id).localeCompare(String(right.span.id)));
-  traceEvent((globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace, {
-    stage: "local_evidence.rank_features",
-    label: "kernel.turn",
-    support: { request: requestText.slice(0, 160), rows: rankFeatureRows.slice(0, 40) }
-  });
-  // The quoted sentence answers a quotation by itself (same doctrine as the source-exact window).
-  // Among the top candidates, the ones that predicate about the requested subject go first -- before the limit cuts
-  // the list, because a preference applied after truncation can only reorder sentences that already survived.
-  // Measured on "Who was Charles Babbage?": this returned two sentences, both merely naming him (a cast list and a
-  // Doctor Who credit), while "Charles Babbage and Ada Lovelace conceived the first programmable computer" ranked
-  // below the cut and never reached the answer. Stable partition of a bounded prefix: nothing is dropped, and when
-  // no candidate predicates about the anchor the order is untouched.
-  // Same rule as proposeSourceExactEvidenceAnswer: a request that only names its subject is answered by the titled
-  // source's opening sentence, which predicates about its subject by construction even when it names it in a
-  // longer form the anchor test cannot see. This ranker is the one the fast local-evidence plan actually uses, and
-  // it sent "Who is Ada Lovelace?" to a Starfield trivia bullet while her article's lead sat in the pool.
-  const leadingScaffoldingUnit = requestLeadingScaffoldingUnit(requestText);
-  const coverageUnits = requestContentEvidenceUnits(requestText).filter(unit => unit !== leadingScaffoldingUnit);
-  const subjectUnitSet = sourceOwnedSubjectUnitSet(requestText, evidence, functionSymbols);
-  const definitional = subjectUnitSet.size > 0 && coverageUnits.every(unit => subjectUnitSet.has(unit));
-  const openingRow = definitional && !candidates[0]?.nearDuplicate
-    ? candidates.find(row => row.index <= 1 && documentLeadSpan(row.span) && anchors.length > 0 && evidenceTitleDistinctAnchorMatches(row.span, anchors) && isProseSentence(row.sentence))
-    : undefined;
-  const rerankable = anchors.length && !candidates[0]?.nearDuplicate && !openingRow
-    ? candidates.slice(0, ANCHOR_PREDICATION_RERANK_LIMIT)
-    : [];
-  const ranked = openingRow
-    ? [openingRow, ...candidates.filter(row => row !== openingRow && String(row.span.id) === String(openingRow.span.id))]
-    : rerankable.length
-      ? predicationPreferredOrder(rerankable, anchors, candidates.slice(ANCHOR_PREDICATION_RERANK_LIMIT))
-      : candidates;
-  const selected = selectEvidenceSentenceRows(ranked, ranked[0]?.nearDuplicate ? 1 : limit);
-  // Adjacent sentences read in document order, whatever order they were
-  // scored in (run-f emitted "It acquired the retronym... 'Star Trek' is
-  // an American..." -- the article's sentences reversed).
-  return [...selected]
-    .sort((left, right) => String(left.span.id).localeCompare(String(right.span.id)) || left.index - right.index)
-    .map(item => item.sentence);
-}
-
-
-/**
- * How much of a score difference the document-position prior alone can account for: the ranker adds at most
- * `0.18 - index * 0.015` for where a sentence sits, so two rows differing by less than the spread of that term
- * across the candidates carry the same content and differ only in placement. Derived from the ranker's own term. Pure.
- */
-function positionPriorSpread(rows: readonly EvidenceSentenceRow[]): number {
-  const priors = rows.map(row => Math.max(0, 0.18 - row.index * 0.015));
-  return priors.length ? Math.max(...priors) - Math.min(...priors) : 0;
-}
-
-/** Bound-value bearers first, then highest-scoring, ties in the order they were ranked in: a preference must not lose the ranking. Pure. */
-function sortedByScore(rows: readonly EvidenceSentenceRow[]): EvidenceSentenceRow[] {
-  return [...rows].sort((left, right) => Number(right.suppliesBoundValue) - Number(left.suppliesBoundValue)
-    || right.score - left.score
-    || left.index - right.index
-    || String(left.span.id).localeCompare(String(right.span.id)));
-}
-
-/**
- * Predication is a tie-break, never an override. Hoisting every predicating row above every other discarded the
- * ranker's own scores: measured, "The Bryges were also present in central Albania" (4.762) was promoted over
- * "Tirana is the capital and largest city in the country" (8.206) purely for opening on the anchor. Tied means the
- * ranker did not separate them -- same coverage, and a score gap no wider than the document-position prior. Pure.
- */
-function predicationPreferredOrder(
-  rerankable: readonly EvidenceSentenceRow[],
-  anchors: readonly string[],
-  rest: readonly EvidenceSentenceRow[]
-): EvidenceSentenceRow[] {
-  const ordered = sortedByScore(rerankable);
-  const best = ordered[0];
-  if (!best) return [...ordered, ...rest];
-  const tied = ordered.filter(row => row.unitOverlap === best.unitOverlap
-    && row.suppliesBoundValue === best.suppliesBoundValue
-    && Math.abs(row.score - best.score) <= positionPriorSpread(rerankable));
-  if (tied.length < 2) return [...ordered, ...rest];
-  const tiedRows = new Set(tied);
-  return [
-    ...tied.filter(row => sentencePredicatesAboutAnchors(row.sentence, anchors)),
-    ...tied.filter(row => !sentencePredicatesAboutAnchors(row.sentence, anchors)),
-    ...ordered.filter(row => !tiedRows.has(row)),
-    ...rest
-  ];
-}
-
-
  function anchorFocusedAnswerSurface(surface: string, anchors: readonly string[], title = ""): string {
   if (!surface || !anchors.length) return surface;
   const parts = splitSourceSentenceBoundaries(surface);
@@ -4660,35 +4127,6 @@ function predicationPreferredOrder(
     const anchorUnits = splitPriorUnits(anchor).filter(Boolean);
     return anchorUnits.length > 0 && sourceAnchorPhraseContains(units, anchorUnits);
   });
-}
-
-
- function selectEvidenceSentenceRows(rows: readonly EvidenceSentenceRow[], limit: number): EvidenceSentenceRow[] {
-  const selected: EvidenceSentenceRow[] = [];
-  for (const candidate of rows) {
-    if (selected.length >= limit) break;
-    if (selected.some(item => weightedJaccard(item.features, candidate.features) > 0.9)) continue;
-    // Coherence contract shared with every other multi-sentence surface
-    // (source-exact window, direct-evidence join): sentences shown
-    // together must be document-adjacent in the same span, or the reader
-    // gets verbatim-but-disjoint prose whose pronouns and discourse
-    // markers dangle ("He went on to appear in 31 episodes..." with no
-    // antecedent -- verified live in the sealed-eval DS9 answers). A
-    // non-adjacent runner-up is dropped rather than stitched; a
-    // single-sentence answer is always coherent by construction.
-    // Character-index adjacency, no language assumptions.
-    if (selected.length && !selected.some(item => item.span.id === candidate.span.id && Math.abs(item.index - candidate.index) === 1)) continue;
-    selected.push(candidate);
-  }
-  return selected;
-}
-
-
- function evidenceAnswerSentenceLimit(requestText: string, evidence: readonly EvidenceSpan[], sessionContextEvidence = false): number {
-  if (sessionContextEvidence && !namedSubjectAnchors(requestText).length) return 1;
-  const anchors = sourceEvidenceAnchorsForRequest(requestText);
-  if (!anchors.length && evidence.some(promotedSessionEvidence)) return 1;
-  return anchors.length ? 2 : 1;
 }
 
 
@@ -4868,11 +4306,6 @@ function fastAnswerSentences(text: string): string[] {
 
  function fastAnswerLongSentencePenalty(text: string): number {
   return Math.max(0, Math.min(1, Math.max(0, text.length - 560) / 1600)) * 0.18;
-}
-
-
- function ensureSentenceSurface(text: string): string {
-  return ensureUnicodeSurfaceSentence(text);
 }
 
 

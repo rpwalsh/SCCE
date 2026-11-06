@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { conversationalActBindingId } from "./conversational-act-binding.js";
-import { dialogueTurnPairs, type DialogueTurnPair } from "./dialogue-communicative-act-learning.js";
+import { dialogueTurnPairs, type DialogueTurnPair, type TranscriptTurn } from "./dialogue-communicative-act-learning.js";
 import { DIALOGUE_ACT_IDS, type DialogueActId } from "./dialogue-pragmatics.js";
 import { otsuThreshold } from "./language-identity.js";
 import type { SourceBoundConstructionObservation, SourceBoundLanguageConstructionTrainingSet } from "./language-construction-memory.js";
@@ -14,6 +14,8 @@ export interface ConversationalConstructionDocument {
   sourceVersionId: string;
   profileId: string;
   spans: readonly EvidenceSpan[];
+  /** Optional exact turn coordinates in the source document. */
+  transcriptTurns?: readonly TranscriptTurn[];
 }
 
 export interface ConversationalActConstructionSet extends SourceBoundLanguageConstructionTrainingSet {
@@ -49,6 +51,7 @@ interface SpanUnit {
   points: string[];
   sourceVersionId: string;
   profileId: string;
+  transcriptTurns?: readonly TranscriptTurn[];
 }
 
 interface FrameOccurrence {
@@ -64,6 +67,7 @@ interface FrameOccurrence {
   /** Lexical units the line keeps outside the slot. The frame's own size, measured, not its character count. */
   literalUnits: number;
   filler: string;
+  antecedent?: { startCodePoint: number; endCodePoint: number };
 }
 
 /**
@@ -91,17 +95,30 @@ export function induceConversationalActConstructionTrainingSets(input: {
       const points = [...span.text];
       // The compiler re-slices the span by code point, so a span whose recorded range is not its own text cannot align.
       if (span.charEnd - span.charStart !== points.length) continue;
-      units.push({ span, points, sourceVersionId: document.sourceVersionId, profileId: document.profileId });
+      const completeTurns = document.transcriptTurns?.filter(turn => turn.startCodePoint >= span.charStart && turn.endCodePoint <= span.charEnd
+        && (turn.supportingSourceRanges ?? []).every(range => range.startCodePoint >= span.charStart && range.endCodePoint <= span.charEnd));
+      const retainedTurns = completeTurns?.filter(turn => turn.replyToTurnIndex === undefined || completeTurns.some(request => request.index === turn.replyToTurnIndex));
+      const retainedIndexes = new Map(retainedTurns?.map((turn, index) => [turn.index, index] as const));
+      const transcriptTurns = retainedTurns?.map((turn, index) => ({ ...turn, index,
+        startCodePoint: turn.startCodePoint - span.charStart, endCodePoint: turn.endCodePoint - span.charStart,
+        ...(turn.replyToTurnIndex !== undefined ? { replyToTurnIndex: retainedIndexes!.get(turn.replyToTurnIndex)! } : {}),
+        ...(turn.supportingSourceRanges ? { supportingSourceRanges: turn.supportingSourceRanges.map(range => ({ ...range,
+          startCodePoint: range.startCodePoint - span.charStart, endCodePoint: range.endCodePoint - span.charStart })) } : {})
+      }));
+      units.push({ span, points, sourceVersionId: document.sourceVersionId, profileId: document.profileId,
+        ...(transcriptTurns ? { transcriptTurns } : {}) });
     }
   }
 
-  const measured = dialogueTurnPairs(units.map(unit => unit.span.text));
+  const measured = dialogueTurnPairs(units.map(unit => unit.transcriptTurns
+    ? { schema: "scce.dialogue_transcript.v1" as const, text: unit.span.text, turns: unit.transcriptTurns }
+    : unit.span.text));
   const byAct = new Map<DialogueActId, DialogueTurnPair[]>();
   let neutralPairs = 0;
   for (const pair of measured.pairs) {
     const actId = requestCommunicativeActIdForSignature({
       accepted: true,
-      evidenceBearing: pair.responseEvidenceCount > 0,
+      evidenceBearing: pair.externallyFactual === true || pair.responseEvidenceCount > 0,
       continuation: pair.continuation
     });
     // The neutral act is the evidence-bearing lookup shape the factual lane already answers; this lane may not speak it.
@@ -143,14 +160,20 @@ export function induceConversationalActConstructionTrainingSets(input: {
     const varying = [...frames.entries()].filter(([, frame]) => frame.fillers.size > 1);
     varyingFrames += varying.length;
     // How much form a frame keeps outside its slot is what separates a scrap of a turn from a whole move.
-    const literalFloor = otsuThreshold(varying.map(([, frame]) => frame.literalUnits));
+    const sourceAligned = pairs.every(pair => units[pair.documentIndex]?.transcriptTurns !== undefined);
+    // Exact request-to-reply role transfer already excludes identity slots and fragments in declared transcripts.
+    const literalFloor = sourceAligned && varying.length
+      ? Math.min(...varying.map(([, frame]) => frame.literalUnits))
+      : otsuThreshold(varying.map(([, frame]) => frame.literalUnits));
     if (literalFloor === undefined) continue;
     literalFormFloor = literalFloor;
     // Diversity is measured over the moves, not over the scraps: a one-unit residue recurs on mass, not on form.
     const bodied = varying.filter(([, frame]) => frame.literalUnits >= literalFloor);
     bodiedFrames += bodied.length;
-    const fillerFloor = otsuThreshold(bodied.map(([, frame]) => frame.fillers.size));
-    const familyFloor = otsuThreshold(bodied.map(([, frame]) => frame.families.size));
+    const fillerFloor = sourceAligned && bodied.length ? Math.min(...bodied.map(([, frame]) => frame.fillers.size))
+      : otsuThreshold(bodied.map(([, frame]) => frame.fillers.size));
+    const familyFloor = sourceAligned && bodied.length ? Math.min(...bodied.map(([, frame]) => frame.families.size))
+      : otsuThreshold(bodied.map(([, frame]) => frame.families.size));
     if (fillerFloor === undefined || familyFloor === undefined) continue;
     fillerDiversityFloor = fillerFloor;
     sourceFamilyFloor = familyFloor;
@@ -181,6 +204,7 @@ export function induceConversationalActConstructionTrainingSets(input: {
         evidenceId: row.evidenceId,
         surfaceStartCodePoint: row.lineStart,
         surfaceEndCodePoint: row.lineEnd,
+        ...(row.antecedent ? { antecedent: row.antecedent } : {}),
         roles: [{ slotIndex: 0, occurrenceIndex: 0, startCodePoint: row.slotStartInLine, endCodePoint: row.slotEndInLine }]
       } satisfies SourceBoundConstructionObservation))
     });
@@ -278,6 +302,11 @@ function walkFrames(
         if (literalUnits < 1) continue;
         const slotStart = segments[first]!.codePointStart;
         const slotEnd = segments[last]!.codePointEnd;
+        const filler = linePoints.slice(slotStart, slotEnd).join("");
+        // A conversation role is material the preceding turn supplied; new reply wording is form.
+        const requestUnits = unicodeLexicalSegments(pair.requestText).map(segment => segment.normalized);
+        const fillerUnits = unicodeLexicalSegments(filler).map(segment => segment.normalized);
+        if (unit.transcriptTurns && !requestUnits.some((_word, start) => fillerUnits.every((word, index) => requestUnits[start + index] === word))) continue;
         const prefix = linePoints.slice(0, slotStart).join("");
         const suffix = linePoints.slice(slotEnd).join("");
         visit({
@@ -290,7 +319,8 @@ function walkFrames(
           slotStartInLine: slotStart,
           slotEndInLine: slotEnd,
           literalUnits,
-          filler: linePoints.slice(slotStart, slotEnd).join("")
+          filler,
+          ...(unit.transcriptTurns ? { antecedent: { startCodePoint: pair.request.startCodePoint, endCodePoint: pair.request.endCodePoint } } : {})
         });
       }
     }

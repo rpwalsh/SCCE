@@ -1,5 +1,8 @@
 import { defineConfig } from "vitest/config";
 
+const testHeapMb = Number(process.env.SCCE_TEST_HEAP_MB ?? 8192);
+if (!Number.isSafeInteger(testHeapMb) || testHeapMb <= 0) throw new Error("SCCE_TEST_HEAP_MB must be a positive integer");
+
 export default defineConfig({
   test: {
     include: ["packages/**/*.test.ts"],
@@ -24,7 +27,7 @@ export default defineConfig({
         // leak). Shards run strictly sequentially (one forked process
         // alive at a time, never concurrent) on a 16GB machine, so there
         // is real headroom to raise this further.
-        execArgv: ["--max-old-space-size=8192"]
+        execArgv: [`--max-old-space-size=${testHeapMb}`]
       }
     }
   }

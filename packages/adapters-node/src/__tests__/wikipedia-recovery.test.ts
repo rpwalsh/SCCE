@@ -279,6 +279,8 @@ describe("Wikipedia recovery boundaries", () => {
       expect((await p.ingestor.ingest({ dumpPath: f.dumpPath, maxPages: 1 })).pages).toBe(1);
       expect(p.rows().find(row => row.id === pageCheckpointBeforeReplay!.id)?.phase).toBe("stored");
       expect(p.trainedShards.flatMap(shard => shard.samples)).toHaveLength(3);
+      expect(p.page.mock.calls.map(call => (call[1] as IngestionCheckpoint).metadata as any).map(metadata => metadata.blockOrdinal)).toEqual([1, 2, 2]);
+      expect((p.rows().find(row => row.itemUri.endsWith("/language-batch"))?.metadata as any).languageBatch.blockOrdinal).toBe(2);
     } finally { vi.restoreAllMocks(); await f.close(); }
   });
 

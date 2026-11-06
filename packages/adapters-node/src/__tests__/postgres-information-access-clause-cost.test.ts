@@ -68,6 +68,47 @@ describe("the information-access label is one decision, and costs the planner as
     }
   });
 
+  it("filters stored replay by its source metadata before reading evidence and keeps information access enforced", async () => {
+    const created = adapter();
+    const calls: Array<{ sql: string; params: unknown[] }> = [];
+    created.query = async <T,>(sql: string, params: unknown[] = []): Promise<T[]> => { calls.push({ sql, params }); return []; };
+    await created.evidence.listEvidenceBackedSourceVersions!({ sourceSystems: ["opaque.dialogue", "dialogue"], limit: 32 });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.sql).toContain("COALESCE(sv.metadata_json->>'sourceSystemId', sv.metadata_json->>'sourceSystem') = ANY($1::text[])");
+    expect(calls[0]!.sql).toContain("e.status='promoted'");
+    expect(calls[0]!.sql).toContain("sv.information_label");
+    expect(calls[0]!.sql).toContain("LIMIT");
+    expect(calls[0]!.params[0]).toEqual(["opaque.dialogue", "dialogue"]);
+  });
+
+  it("uses a bounded source-ID keyset and counts excluded article sizes without an OFFSET scan", async () => {
+    const created = adapter();
+    const calls: Array<{ sql: string; params: unknown[] }> = [];
+    created.query = async <T,>(sql: string, params: unknown[] = []): Promise<T[]> => {
+      calls.push({ sql, params });
+      return sql.includes("AS total") ? [{ total: "11", derived: "2", eligible: "6", below: "1", above: "2" }] as T[] : [];
+    };
+    const query = { sourceSystem: "dialogue", sourceSystems: ["dialogue"], afterSourceVersionId: "sv-100001", orderBySourceVersionId: true,
+      minByteLength: 20, maxByteLength: 50, excludeTrainingDerived: true, limit: 17 };
+    await created.evidence.listEvidenceBackedSourceVersions!(query);
+    const inventory = await created.evidence.countEvidenceBackedSourceVersions!(query);
+    expect(inventory).toEqual({ evidenceBackedSources: 11, derivedTrainingSources: 2, eligibleSources: 6, belowMinArticleBytes: 1, aboveMaxArticleBytes: 2 });
+    expect(calls[0]!.sql).toContain('ORDER BY sv.id COLLATE "C" ASC');
+    expect(calls[0]!.params.at(-1)).toBe(17);
+    for (const call of calls) {
+      expect(call.sql).toContain('sv.id COLLATE "C" >');
+      expect(call.sql).toContain("sv.information_label");
+      expect(call.sql).toContain("construction_training");
+      expect(call.sql).toContain("scce://construction-probe/%");
+      expect(call.sql).toContain("sourceClass");
+      expect(call.sql).toContain("e.provenance_json->>'sourceSystem'");
+      expect(call.sql).not.toContain("e.provenance->");
+      expect(call.sql).not.toContain("OFFSET");
+      expect(call.params).toContain("sv-100001");
+    }
+    expect(calls[1]!.sql).toContain("COUNT(DISTINCT sv.id) FILTER");
+  });
+
   it("still decides on every facet of the label, with every parameter bound", () => {
     const access = adapter().informationAccessPredicate("model", 7, "bounded_by_order_and_limit");
 

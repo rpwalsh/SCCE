@@ -1,10 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
-import { afterEach, describe, expect, it } from "vitest";
-import { localEvidenceAnswerSurface } from "../local-evidence-runtime.js";
+import { describe, expect, it } from "vitest";
+import { localEvidenceAnswerProofExcerpts, localEvidenceAnswerSurface } from "../local-evidence-runtime.js";
 import type { EvidenceId, EvidenceSpan, SourceVersionId } from "../types.js";
 
 /**
@@ -13,7 +10,7 @@ import type { EvidenceId, EvidenceSpan, SourceVersionId } from "../types.js";
  * stating "10 December 1815" scored unitOverlap 0 -- the value is not the word "born" -- while "Lord Byron
  * separated from his wife a month after Ada was born" scored 1 and took the title-lead boost, so
  * `local_evidence.plan.rank` proposed it. The same turn's realization contract had already resolved the value.
- * Asserted on the ranker's own traced ordering, which is the quantity that was measured live.
+ * Asserted on the selected public source plan, which is what realization receives.
  */
 
 // Verbatim prefix of evidence_span.87ae75525ff8b0973cbf3ff726d708fe6a419a06116fe801 (char_start 0, promoted).
@@ -31,11 +28,6 @@ const CLOSED_CLASS = new Set(["when", "was", "the", "of", "in", "and", "a", "to"
 const CONTRACT_VALUE = "10 December 1815";
 /** The relation unit the request asks about. The sentence that only repeats it is the one that used to win. */
 const RELATION_UNIT = "born";
-
-const directories: string[] = [];
-afterEach(() => {
-  for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
-});
 
 function adaSpan(): EvidenceSpan {
   return {
@@ -58,26 +50,17 @@ function adaSpan(): EvidenceSpan {
   } as unknown as EvidenceSpan;
 }
 
-/** The sentences `local_evidence.plan.rank` reports, in ranked order: what the live measurement read. */
+/** The selected source sentences, with the same owner-bound value inputs production supplies. */
 function rankedSentences(boundValues?: readonly string[]): string[] {
-  const directory = mkdtempSync(join(tmpdir(), "scce-rank-"));
-  directories.push(directory);
-  const handle = { traceId: "bound-value-rank", file: join(directory, "rank.jsonl") };
-  const globals = globalThis as { __sccTrace?: unknown };
-  globals.__sccTrace = handle;
-  try {
-    localEvidenceAnswerSurface({
-      requestText: REQUEST,
-      selectedEvidence: [adaSpan()],
-      closedClassWords: CLOSED_CLASS,
-      ...(boundValues ? { boundValues } : {})
-    });
-  } finally {
-    delete globals.__sccTrace;
-  }
-  const rows = readFileSync(handle.file, "utf8").trim().split("\n")
-    .map(line => JSON.parse(line) as { stage: string; support?: { ranked?: string[] } });
-  return rows.find(row => row.stage === "local_evidence.plan.rank")?.support?.ranked ?? [];
+  const evidence = adaSpan();
+  const candidate = localEvidenceAnswerSurface({
+    requestText: REQUEST,
+    selectedEvidence: [evidence],
+    closedClassWords: CLOSED_CLASS,
+    functionSymbols: CLOSED_CLASS,
+    ...(boundValues ? { boundValues, boundValueEvidenceIds: new Set([String(evidence.id)]) } : {})
+  });
+  return candidate ? localEvidenceAnswerProofExcerpts(candidate).map(excerpt => excerpt.text) : [];
 }
 
 describe("a sentence supplying the request's bound value outranks one that only repeats the relation word", () => {

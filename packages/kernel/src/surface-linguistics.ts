@@ -9,6 +9,35 @@ export function surfaceContainsTerm(surface: string, term: string): boolean {
   return target.length > 0 && units.some((_, start) => target.every((unit, offset) => units[start + offset] === unit));
 }
 
+/** A bound value must occur whole, preserving its punctuation and numeric sign. */
+export function surfaceContainsBoundValue(surface: string, value: string): boolean {
+  const normalized = collapseSurfaceWhitespace(surface.normalize("NFKC")).toLocaleLowerCase();
+  const target = collapseSurfaceWhitespace(value.normalize("NFKC")).toLocaleLowerCase();
+  if (!target) return false;
+  const chars = [...normalized];
+  const targetLength = [...target].length;
+  const numericJoin = (left: string, mark: string, right: string) => /\p{Number}/u.test(left)
+    && /[\p{Po}\p{Sm}]/u.test(mark) && /\p{Number}/u.test(right);
+  let offset = 0;
+  for (let index = 0; index < chars.length; index++) {
+    if (normalized.startsWith(target, offset)) {
+      const end = index + targetLength;
+      const first = chars[index] ?? "";
+      const last = chars[end - 1] ?? "";
+      const leftConnected = isSurfaceUnitChar(first) && (isSurfaceUnitChar(chars[index - 1] ?? "")
+        || isWordInternalJoiner(chars, index - 1)
+        || numericJoin(chars[index - 2] ?? "", chars[index - 1] ?? "", first)
+        || (/\p{Number}/u.test(first) && /[+\-\u2212]/u.test(chars[index - 1] ?? "")));
+      const rightConnected = isSurfaceUnitChar(last) && (isSurfaceUnitChar(chars[end] ?? "")
+        || isWordInternalJoiner(chars, end)
+        || numericJoin(last, chars[end] ?? "", chars[end + 1] ?? ""));
+      if (!leftConnected && !rightConnected) return true;
+    }
+    offset += chars[index]!.length;
+  }
+  return false;
+}
+
 export const SENTENCE_BOUNDARY_SYMBOLS = [
   ".",
   "!",

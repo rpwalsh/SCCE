@@ -28,6 +28,7 @@ export interface SurfaceEnergyCandidate {
   languageActivation?: number;
   languageFit?: number;
   semanticPreservation?: number;
+  semanticObligations?: { kind: "program_behavior"; requiredIds: readonly string[]; coveredIds: readonly string[] };
   correctionAppliedCount?: number;
   forbiddenSurfaceHits?: readonly string[];
   boundaryDecisions?: readonly SurfaceBoundaryDecision[];
@@ -850,6 +851,18 @@ function hardConstraintViolations(candidate: SurfaceEnergyCandidate, context: Su
   if (cannedSpeech.length) add(SURFACE_QUALITY_REJECTION_IDS.blockedSurface, toJsonValue({ issues: cannedSpeech.map(issue => ({ id: issue.id, kind: issue.kind, matched: issue.matched })) }));
   const fragment = fragmentCost(candidate, context, stats);
   if (fragment.raw > 0.88 && stats.surfaceUnitCount > 0) add("surface.reject.phrase_salad", fragment.trace);
+  // Explicit output constraints also apply to direct callers without a derived requirement field.
+  const requiredOutputSurfaces = (context.requiredOutputFeatures ?? context.requirementField?.requiredFeatures ?? [])
+    .filter(feature => outputFeatureHard(feature))
+    .map(outputFeatureSurface)
+    .filter((surface): surface is string => Boolean(surface));
+  const missingOutputSurfaces = requiredOutputSurfaces.filter(surface => !containsSurface(stats.normalized, surface));
+  if (missingOutputSurfaces.length) add("surface.reject.required_output_feature_dropped", toJsonValue({ missingOutputSurfaces }));
+  const prohibitedOutputHits = (context.prohibitedOutputFeatures ?? context.requirementField?.prohibitedFeatures ?? [])
+    .map(outputFeatureSurface)
+    .filter((surface): surface is string => Boolean(surface))
+    .filter(surface => containsSurface(stats.normalized, surface));
+  if (prohibitedOutputHits.length) add("surface.reject.prohibited_output_feature", toJsonValue({ prohibitedOutputHits }));
   if (context.requirementField) {
     const telemetry = telemetryLeak(candidate);
     if (telemetry.raw > 0) add("surface.reject.telemetry_leak", telemetry.trace);
@@ -857,17 +870,6 @@ function hardConstraintViolations(candidate: SurfaceEnergyCandidate, context: Su
     if (minimumPreservation > 0 && (candidate.semanticPreservation ?? 0) < minimumPreservation) {
       add("surface.reject.semantic_meaning_loss", toJsonValue({ required: minimumPreservation, observed: candidate.semanticPreservation ?? null }));
     }
-    const requiredOutputSurfaces = (context.requiredOutputFeatures ?? [])
-      .filter(feature => outputFeatureHard(feature))
-      .map(outputFeatureSurface)
-      .filter((surface): surface is string => Boolean(surface));
-    const missingOutputSurfaces = requiredOutputSurfaces.filter(surface => !containsSurface(stats.normalized, surface));
-    if (missingOutputSurfaces.length) add("surface.reject.required_output_feature_dropped", toJsonValue({ missingOutputSurfaces }));
-    const prohibitedOutputHits = (context.prohibitedOutputFeatures ?? [])
-      .map(outputFeatureSurface)
-      .filter((surface): surface is string => Boolean(surface))
-      .filter(surface => containsSurface(stats.normalized, surface));
-    if (prohibitedOutputHits.length) add("surface.reject.prohibited_output_feature", toJsonValue({ prohibitedOutputHits }));
     const transformation = context.transformationBaseline;
     if (transformation) {
       const missingSurfaces = uniqueStrings([...(transformation.requiredSurfaces ?? []), ...(transformation.requiredCodeLiterals ?? [])])
@@ -884,6 +886,14 @@ function hardConstraintViolations(candidate: SurfaceEnergyCandidate, context: Su
 }
 
 function semanticLoss(candidate: SurfaceEnergyCandidate, context: SurfaceEnergyContext, stats: SurfaceStats): TermScore {
+  if (candidate.semanticObligations?.kind === "program_behavior") {
+    const required = uniqueStrings([...candidate.semanticObligations.requiredIds]);
+    const covered = new Set(candidate.semanticObligations.coveredIds);
+    const missing = required.filter(id => !covered.has(id));
+    const raw = required.length ? missing.length / required.length : 1;
+    return { raw, reasonIds: [missing.length ? "energy.semantic.behavior_missing" : "energy.semantic.behavior_covered"],
+      trace: toJsonValue({ kind: "program_behavior", required, missing, covered: required.filter(id => covered.has(id)) }) };
+  }
   const terms = requiredTerms(context);
   const missing = terms.filter(term => !containsSurface(stats.normalized, term.text));
   const weightedMissing = sum(missing.map(term => term.weight));

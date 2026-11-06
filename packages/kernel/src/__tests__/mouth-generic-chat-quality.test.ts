@@ -15,12 +15,25 @@ import {
 import type { ConstructGraph, EvidenceSpan, FieldState, JsonValue, LanguageProfile, SemanticEntailmentResult, SourceVersion } from "../types.js";
 import type { LanguagePatternRecord, LanguageUnitRecord, NgramModelRecord, NgramObservation, SemanticFrameRecord } from "../storage.js";
 import { genericChatQualityFixture as fixture } from "./fixtures/generic-chat-quality-fixture.js";
+import { sourceOwnedMouthTeaching } from "./fixtures/source-owned-mouth-teaching.js";
+import { withSurfaceContract } from "../mouth.js";
+import { SURFACE_REALIZATION_STRATEGY_IDS } from "../surface-contract.js";
 
 describe("Mouth generic chat quality gate", () => {
   const clock = createClock({ fixedTime: 7000, stepMs: 1 });
   const hasher = createHasher();
   const ids = createIdFactory({ clock, hasher, deterministicReplay: true });
   const languageRuntime = createLanguageMemoryRuntime({ idFactory: ids, hasher });
+  const teachingCache = new WeakMap<EvidenceSpan, ReturnType<typeof sourceOwnedMouthTeaching>>();
+  function teaching(evidence: EvidenceSpan) {
+    let value = teachingCache.get(evidence);
+    if (!value) {
+      value = sourceOwnedMouthTeaching({ ids, hasher, evidence, profileId: "quality-language", phrase: fixture.importedPhrase,
+        subject: "The library lighting policy", predicate: "dims", object: "reading-room lights to 40% after 9:00 p.m. so late patrons have less screen glare" });
+      teachingCache.set(evidence, value);
+    }
+    return value;
+  }
 
   it("handles normal chat shapes without evidence copying, telemetry output, or boundary stitching", async () => {
     const source = sourceVersion();
@@ -157,6 +170,73 @@ describe("Mouth generic chat quality gate", () => {
     for (const semanticError of semanticErrors) expect(forbidden).not.toContain(semanticError.id);
   });
 
+  it.each([
+    ["changed quantity", fixture.importedSemanticFrame.replace("40%", "60%"), "60%"],
+    ["negated relation", fixture.importedSemanticFrame.replace("dims", "never dims"), "never dims"],
+    ["extra world clause", `${fixture.importedSemanticFrame} The library serves free dinners.`, "free dinners"],
+    ["wrong owner", fixture.importedSemanticFrame.replace("library", "hospital"), "hospital"]
+  ])("does not promote a learned frame's %s to documentary knowledge", async (_name, surface, forbidden) => {
+    const source = sourceVersion();
+    const evidence = directEvidence(source);
+    const field = emptyField();
+    const languageMemory = importedMemory(source, evidence, "quality-import-hostile");
+    const original = languageMemory.importedSemanticFrames[0]!;
+    languageMemory.importedSemanticFrames[0] = { ...original, frameJson: { ...original.frameJson as Record<string, JsonValue>, surface } };
+    const spoken = await createMouth({ languageMemory: languageRuntime, correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }), hashText: text => hasher.digestHex(text) }).speak(baseInput({ source, evidence, field, entailment: semanticEntailment(evidence, field), languageMemory, construct: constructGraph(false) }));
+    expect(spoken.text).not.toContain(forbidden);
+  });
+
+  it.each([
+    { subject: "The observatory", predicate: "dims", object: "aisle lights to 55% after 22:00", phrase: "quiet-hours lighting cue", sourceDerivedBinding: true,
+      examples: [["Annex", "dims", "reading lights to 20%"], ["Atrium", "dims", "reading lights to 30%"]] as const,
+      source: "The observatory dims aisle lights to 55% after 22:00.", render: (slots: readonly string[]) => `quiet-hours lighting cue: ${slots.join(" ")}.` },
+    { subject: "中央図書館", predicate: "調光", object: "照明を４５％へ", phrase: "夜間照明",
+      examples: [["東館", "調光", "照明を２０％へ"], ["西館", "調光", "照明を３０％へ"]] as const,
+      source: "中央図書館調光照明を４５％へ。", render: (slots: readonly string[]) => `夜間照明：${slots.join("")}。` }
+  ])("transfers the imported form to an unseen source-owned subject and value ($subject)", async test => {
+    const source = sourceVersion(test.source);
+    const evidence = directEvidence(source, test.source);
+    const taught = sourceOwnedMouthTeaching({ ids, hasher, evidence, profileId: "quality-transfer", ...test });
+    const memory = languageRuntime.hydrateFromImportedBrain({ importRunId: "quality-transfer", models: [], observations: [], units: [],
+      patterns: [taught.pattern], semanticFrames: [], constructionEvidence: taught.lessons });
+    const field = emptyField();
+    const entailment = createSemanticEntailmentEngine({ idFactory: ids, hasher }).check({ text: test.source, evidence: [evidence], nodes: [], field, createdAt: clock.now() });
+    const mouth = createMouth({ languageMemory: languageRuntime, correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }), hashText: text => hasher.digestHex(text) });
+    const base = constructGraph(false);
+    const input = { construct: { ...base, nodes: [...base.nodes, taught.semanticNode] }, field, entailment, languageProfile: taught.profile,
+      evidence: [evidence], languageMemory: memory, targetLanguage: taught.profile.id };
+    const spoken = await mouth.speak(input);
+    expect(spoken.text).toBe(test.render([test.subject, test.predicate, test.object]));
+    expect(spoken.text).not.toBe(test.source);
+    expect(spoken.evidenceRefs).toEqual([evidence.id]);
+    expect(spoken.realizationTrace.selected.id).toMatch(/^candidate:generated:learned-construction:/u);
+    expect(JSON.stringify(spoken.realizationTrace.selected.audit)).toContain(taught.pattern.id);
+    for (const text of [
+      spoken.text.replace(test.subject, "unrelated-owner"),
+      spoken.text.replace(test.object, test.examples[0][2]),
+      spoken.text.replace(test.predicate, `¬${test.predicate}`),
+      `${spoken.text} unrelated-world-clause`
+    ]) {
+      const mutated = withSurfaceContract(input, { ...spoken, text }, SURFACE_REALIZATION_STRATEGY_IDS.learned);
+      expect(mutated.text).toBe("");
+      expect(JSON.stringify(mutated.realizationTrace.surfaceContract)).toContain("surface.reject.factual_surface_mutated_after_selection");
+    }
+    const ablated = await mouth.speak({ ...input, languageMemory: languageRuntime.hydrateFromImportedBrain({ importRunId: "quality-ablated", models: [], observations: [], units: [], patterns: [], semanticFrames: [] }) });
+    expect(ablated.text).not.toContain(test.phrase);
+    expect(ablated.realizationTrace.selected.id).not.toMatch(/^candidate:generated:learned-construction:/u);
+    const onceTaught = sourceOwnedMouthTeaching({ ids, hasher, evidence, profileId: taught.profile.id, ...test, examples: test.examples.slice(0, 1) });
+    const once = await mouth.speak({ ...input,
+      entailment: { ...entailment, verdict: "underdetermined", semanticVerdict: "underdetermined", evidenceIds: [],
+        proof: { ...entailment.proof, scores: {}, validatorVersion: "", evidenceIds: [], proofGraph: { nodes: [], edges: [] } } },
+      languageMemory: languageRuntime.hydrateFromImportedBrain({ importRunId: "quality-observed-once", models: [], observations: [], units: [],
+        patterns: [onceTaught.pattern], semanticFrames: [], constructionEvidence: onceTaught.lessons })
+    });
+    expect(once.text).toBe(spoken.text);
+    expect(once.evidenceRefs).toEqual([evidence.id]);
+    expect(once.uncertainty).toContainEqual(expect.objectContaining({ reason: "surface.uncertainty.source_observed_form" }));
+    expect(JSON.stringify(once.realizationTrace.selected.audit)).toContain("observed_once");
+  });
+
   function baseInput(input: {
     source: SourceVersion;
     evidence: EvidenceSpan;
@@ -166,9 +246,9 @@ describe("Mouth generic chat quality gate", () => {
     construct: ConstructGraph;
   }) {
     return {
-      construct: input.construct,
+      construct: input.construct.artifacts.length ? input.construct : { ...input.construct, nodes: [...input.construct.nodes, teaching(input.evidence).semanticNode] },
       field: input.field,
-      languageProfile: languageProfile(input.source),
+      languageProfile: teaching(input.evidence).profile,
       evidence: [input.evidence],
       entailment: input.entailment,
       languageMemory: input.languageMemory,
@@ -203,8 +283,8 @@ describe("Mouth generic chat quality gate", () => {
     if (options.correctionId) expect(JSON.stringify(spoken.realizationTrace.corrections)).toContain(options.correctionId);
   }
 
-  function sourceVersion(): SourceVersion {
-    const bytes = Buffer.from(fixture.evidenceText);
+  function sourceVersion(text: string = fixture.evidenceText): SourceVersion {
+    const bytes = Buffer.from(text);
     const uri = "fixture://library/lighting-policy";
     return {
       sourceId: ids.sourceId("fixture", uri),
@@ -220,8 +300,8 @@ describe("Mouth generic chat quality gate", () => {
     };
   }
 
-  function directEvidence(source: SourceVersion): EvidenceSpan {
-    const bytes = Buffer.from(fixture.evidenceText);
+  function directEvidence(source: SourceVersion, text: string = fixture.evidenceText): EvidenceSpan {
+    const bytes = Buffer.from(text);
     const contentHash = ids.contentHash(bytes);
     return {
       id: ids.evidenceId({ sourceVersionId: source.sourceVersionId, byteStart: 0, byteEnd: bytes.length, spanHash: contentHash }),
@@ -233,14 +313,14 @@ describe("Mouth generic chat quality gate", () => {
       byteStart: 0,
       byteEnd: bytes.length,
       charStart: 0,
-      charEnd: fixture.evidenceText.length,
-      text: fixture.evidenceText,
-      textPreview: fixture.evidenceText,
+      charEnd: [...text].length,
+      text,
+      textPreview: text,
       languageHints: {},
       scriptHints: {},
       trustVector: { sourceTrust: source.sourceTrust, forceClass: "direct_evidence" },
-      provenance: { sourceSystem: "fixture", provenanceClass: "direct_evidence", uri: source.canonicalUri, sourceVersionId: source.sourceVersionId, byteRange: [0, bytes.length], charRange: [0, fixture.evidenceText.length] },
-      features: featureSet(fixture.evidenceText, 128),
+      provenance: { sourceSystem: "fixture", provenanceClass: "direct_evidence", uri: source.canonicalUri, sourceVersionId: source.sourceVersionId, byteRange: [0, bytes.length], charRange: [0, [...text].length] },
+      features: featureSet(text, 128),
       status: "promoted",
       alpha: 0.9,
       observedAt: clock.now()
@@ -320,8 +400,9 @@ describe("Mouth generic chat quality gate", () => {
       models: [ngramModel()],
       observations: [ngramObservation(source)],
       units: [languageUnit(source)],
-      patterns: [languagePattern()],
-      semanticFrames: [semanticFrame(evidence)]
+      patterns: [languagePattern(), teaching(evidence).pattern],
+      semanticFrames: [semanticFrame(evidence)],
+      constructionEvidence: teaching(evidence).lessons
     });
   }
 

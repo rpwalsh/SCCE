@@ -2,33 +2,34 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import {
   CORPUS_SOURCE_SYSTEM_IDS,
+  canonicalCorpusSourceSystemId,
+  corpusSourceAlias,
   createUniversalCreativeEventConstructionCompiler,
+  joinInformationLabels,
   type CreativeEventConstructionCompiler,
-  type ScceStorage
+  type EvidenceSpan,
+  type EvidenceBackedSourceVersionQuery,
+  type EvidenceBackedSourceVersionInventory,
+  type JsonValue,
+  type LanguageProfile,
+  type ScceStorage,
+  type SourceVersion
 } from "@scce/kernel";
-import { trainLanguageCorpusText, type LanguageCorpusTrainingReport } from "./language-corpus-trainer.js";
-
-/** Alignment observations carried between batches; bounded so a long run stays inside its heap budget. */
-const ALIGNMENT_MEMORY = 4096;
+import { LANGUAGE_CORPUS_TRAINING_RECIPE_ID, trainLanguageCorpusText, type LanguageCorpusTrainingReport } from "./language-corpus-trainer.js";
 
 export interface StoredCorpusConstructionTrainingOptions {
   storage: ScceStorage;
-  /** Cumulative text budget across this run. Default 64MB. */
+  sourceSystem?: string;
   maxTotalBytes?: number;
-  /**
-   * Target concatenated-batch size. Default 1MB: the compile pipeline's
-   * peak heap scales with batch text (a ~1MB novel peaks ~3GB on a 4GB
-   * heap; a 3MB batch OOMed it, verified live), and the heap checkpoint
-   * can only stop BETWEEN batches, so the batch itself must fit.
-   */
+  /** IO bound; failed and zero-byte documents still consume one attempt. Default 1024. */
+  maxSourceAttempts?: number;
+  /** A batch schedules bounded existing documents; it never concatenates their provenance. */
   batchBytes?: number;
-  /** Resume point: skip this many batches' worth of articles first. */
   startBatchIndex?: number;
-  /** Stop with a resumable report when heap crosses this bound (MiB). */
+  afterSourceVersionId?: string;
+  sourcePageSize?: number;
   heapCheckpointMb?: number;
-  /** Sources to exclude (local files re-train through their own lanes). */
   excludeUriPrefixes?: readonly string[];
-  /** Train only these source versions (a re-ingested slice, for instance). */
   sourceVersionIds?: readonly string[];
   minArticleBytes?: number;
   maxArticleBytes?: number;
@@ -40,190 +41,231 @@ export interface StoredCorpusConstructionTrainingOptions {
 export interface StoredCorpusConstructionTrainingReport {
   schema: "scce.storedCorpusConstructionTrainReport.v1";
   sourceSystem: string;
+  recipeId: string;
   startBatchIndex: number;
+  startSourceVersionId: string | null;
+  nextSourceVersionId: string | null;
+  exhausted: boolean;
+  sourcePageSize: number;
+  sourcesEnumerated: number;
+  sourcesConsidered: number;
+  sourcesAttempted: number;
+  maxSourceAttempts: number;
+  legacyBatchSourcesSkipped: number;
+  bytesScheduled: number;
+  inventory: EvidenceBackedSourceVersionInventory | null;
+  inventoryScope: "after_start_cursor";
+  eligibleSourcesRemaining: number | null;
+  articleBounds: { minBytes: number; maxBytes: number };
   batchesTrained: number;
   articlesTrained: number;
   bytesTrained: number;
   nextBatchIndex: number;
   stoppedByHeapSafetyBound: boolean;
+  stoppedByStorageFailure: boolean;
+  storageFailure: { code: string; reason: string; sourceVersionId: string } | null;
   heapMiBAtExit: number;
-  batchesFailed: Array<{ batchIndex: number; reason: string }>;
+  batchesFailed: Array<{ batchIndex: number; sourceVersionId?: string; reason: string }>;
+  sourcesSkipped: Array<{ sourceVersionId: string; reason: string }>;
   reports: LanguageCorpusTrainingReport[];
 }
 
-/**
- * Re-run the language-construction training lane over text the blob store
- * already holds, prioritized by the evidence alpha of the source versions
- * promoted evidence actually draws on. This is how the generation
- * inventory (constructions, n-gram continuation mass) gets built from the
- * same corpus retrieval already trusts -- the knowledge extraction ran at
- * ingest time, but no production trainer ever ran the construction lane
- * over Wikipedia until this existed (the compiler was built and tested,
- * yet wired to no trainer; the Mouth could retrieve facts it had no
- * learned sentence shapes to express).
- *
- * Same operational contract as the gutenberg trainer: bounded batches,
- * heap checkpoint honored as given, per-batch failures recorded as skips,
- * resumable via startBatchIndex, never a crash.
- */
-export async function trainStoredCorpusConstructions(
-  input: StoredCorpusConstructionTrainingOptions
-): Promise<StoredCorpusConstructionTrainingReport> {
+interface ReplaySource {
+  source: SourceVersion;
+  profile: LanguageProfile;
+  evidence: EvidenceSpan[];
+  text: string;
+  bytes: number;
+}
+
+/** Recompile existing promoted documents, keeping the graph, evidence, profile and labels under their original owners. */
+export async function trainStoredCorpusConstructions(input: StoredCorpusConstructionTrainingOptions): Promise<StoredCorpusConstructionTrainingReport> {
   const list = input.storage.evidence.listEvidenceBackedSourceVersions;
   if (!list) throw new Error("storage adapter does not support listEvidenceBackedSourceVersions");
   const maxTotalBytes = Math.max(1024, Math.floor(input.maxTotalBytes ?? 64 * 1024 * 1024));
+  const maxSourceAttempts = Math.max(1, Math.floor(input.maxSourceAttempts ?? 1024));
   const batchBytes = Math.max(1024, Math.floor(input.batchBytes ?? 1024 * 1024));
   const startBatchIndex = Math.max(0, Math.floor(input.startBatchIndex ?? 0));
-  const heapCheckpointMb = input.heapCheckpointMb !== undefined && input.heapCheckpointMb > 0
-    ? Math.floor(input.heapCheckpointMb)
-    : undefined;
-  const sourceSystem = CORPUS_SOURCE_SYSTEM_IDS.wikipedia;
+  const heapCheckpointMb = input.heapCheckpointMb !== undefined && input.heapCheckpointMb > 0 ? Math.floor(input.heapCheckpointMb) : undefined;
+  const sourceSystem = canonicalCorpusSourceSystemId(input.sourceSystem ?? CORPUS_SOURCE_SYSTEM_IDS.wikipedia);
   const compiler = input.creativeEventCompiler ?? createUniversalCreativeEventConstructionCompiler();
-
-  const versions = await list.call(input.storage.evidence, {
-    excludeUriPrefixes: input.excludeUriPrefixes ?? ["file://"],
+  if (input.afterSourceVersionId !== undefined && startBatchIndex > 0) throw new Error("choose a source cursor or a legacy batch cursor, not both");
+  const sourcePageSize = Math.max(1, Math.min(1024, Math.floor(input.sourcePageSize ?? 128)));
+  const minArticleBytes = Math.max(0, Math.floor(input.minArticleBytes ?? 2000));
+  const maxArticleBytes = Math.max(1, Math.floor(input.maxArticleBytes ?? 400000));
+  if (minArticleBytes > maxArticleBytes) throw new Error("minimum article bytes exceeds maximum article bytes");
+  const query: EvidenceBackedSourceVersionQuery = {
+    sourceSystems: [sourceSystem, corpusSourceAlias(sourceSystem)],
+    excludeUriPrefixes: input.excludeUriPrefixes ?? [],
     ...(input.includeUriPrefixes?.length ? { includeUriPrefixes: input.includeUriPrefixes } : {}),
     ...(input.sourceVersionIds?.length ? { sourceVersionIds: input.sourceVersionIds } : {}),
-    minByteLength: Math.max(0, Math.floor(input.minArticleBytes ?? 2000)),
-    maxByteLength: Math.max(1, Math.floor(input.maxArticleBytes ?? 400000)),
-    limit: 100000
-  });
-
-  // The parent article each batch range came from, so a derived span names the file or article it is derived from.
-  const uriBySourceVersionId = new Map(versions.map(version => [String(version.sourceVersionId), version.canonicalUri]));
+    ...(input.afterSourceVersionId !== undefined ? { afterSourceVersionId: input.afterSourceVersionId } : {}),
+    minByteLength: minArticleBytes, maxByteLength: maxArticleBytes,
+    orderBySourceVersionId: true, excludeTrainingDerived: true, limit: sourcePageSize
+  };
+  const inventory = await input.storage.evidence.countEvidenceBackedSourceVersions?.(query) ?? null;
   const reports: LanguageCorpusTrainingReport[] = [];
-  let alignmentPromotionMemory: LanguageCorpusTrainingReport["alignmentPromotionObservations"] = [];
-  let alignmentCalibrationMemory: LanguageCorpusTrainingReport["alignmentCalibrationObservations"] = [];
   const batchesFailed: StoredCorpusConstructionTrainingReport["batchesFailed"] = [];
+  const sourcesSkipped: StoredCorpusConstructionTrainingReport["sourcesSkipped"] = [];
   let batchIndex = 0;
   let articlesTrained = 0;
   let bytesTrained = 0;
   let stoppedByHeapSafetyBound = false;
-  let pending: string[] = [];
-  let pendingSourceVersionIds: string[] = [];
-  let pendingFamilyRanges: { start: number; end: number; sourceFamilyId: string }[] = [];
-  let pendingBytes = 0;
+  let nextSourceVersionId = input.afterSourceVersionId ?? null;
+  let exhausted = false;
+  let sourcesEnumerated = 0;
+  let sourcesConsidered = 0;
+  let sourcesAttempted = 0;
+  let storageFailure: StoredCorpusConstructionTrainingReport["storageFailure"] = null;
+  let legacyBatchSourcesSkipped = 0;
+  let bytesScheduled = 0;
+  let currentBatchBytes = 0;
+  const successfulBatches = new Set<number>();
 
-  const trainPending = async (): Promise<void> => {
-    if (!pending.length) return;
-    const currentIndex = batchIndex++;
-    const text = pending.join("\n\n");
-    const articleCount = pending.length;
-    const currentSourceVersionIds = pendingSourceVersionIds;
-    const currentFamilyRanges = pendingFamilyRanges;
-    pending = [];
-    pendingSourceVersionIds = [];
-    pendingFamilyRanges = [];
-    const currentBytes = pendingBytes;
-    pendingBytes = 0;
-    if (currentIndex < startBatchIndex) return;
+  const trainSource = async (item: ReplaySource): Promise<void> => {
     try {
+      const metadata = recordOf(item.source.metadata);
+      const informationLabel = joinInformationLabels([
+        ...(item.source.informationLabel ? [item.source.informationLabel] : []),
+        ...(item.profile.informationLabel ? [item.profile.informationLabel] : []),
+        ...item.evidence.map(span => span.informationLabel!)
+      ], { explicitMergeAuthority: false });
+      const prefix = input.includeUriPrefixes?.find(value => item.source.canonicalUri.startsWith(value)) ?? canonicalCorpusRoot(item.source.canonicalUri);
       const report = await trainLanguageCorpusText({
         storage: input.storage,
         sourceSystem,
-        streamUri: `${sourceSystem}:construction-training:batch-${String(currentIndex).padStart(4, "0")}`,
-        sourceUri: `scce://construction-training/${sourceSystem}/batch-${String(currentIndex).padStart(4, "0")}`,
-        text,
-        mediaType: "text/plain",
-        namespace: `corpus:${sourceSystem}`,
-        // Held-out evaluation draws on the other alignment supports in the same compile, and there is one support
-        // per evidence span. A 64KB chunk swallowed the whole batch into a single span, so there was one family
-        // and never anything to hold out. Chunking near article size gives each source its own support.
-        maxEvidenceChunkBytes: 8 * 1024,
-        // These articles' n-gram mass is already in the store from the
-        // original ingestion: re-inserting it would double-count the
-        // corpus and dominate wall time (~700K observation rows per MB).
-        // This lane exists for the construction inventory only.
-        // Language-only inverts this lane: the n-gram layer IS the product, and no synthetic source is written --
-        // the text already lives in the brain, so only the learned language attaches to it.
-        ...(input.languageOnly
-          ? { skipNgramPersistence: false, persistSource: false, languageOnly: true }
-          : { skipNgramPersistence: true, ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64, ngramVocabularyLimit: 4096 }),
+        streamUri: typeof metadata.streamUri === "string" ? metadata.streamUri : item.source.canonicalUri,
+        sourceUri: item.source.canonicalUri,
+        sourceVersionId: item.source.sourceVersionId,
+        evidence: item.evidence,
+        profile: item.profile,
+        text: item.text,
+        mediaType: item.source.mediaType,
+        namespace: item.source.namespace,
+        createdAt: item.source.observedAt,
+        informationLabel,
+        persistSource: false,
+        persistProfile: false,
+        skipNgramPersistence: !input.languageOnly,
+        ...(input.languageOnly ? { languageOnly: true } : { ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64, ngramVocabularyLimit: 4096 }),
         creativeEventCompiler: compiler,
-        graphSnapshotSourceVersionIds: currentSourceVersionIds,
-        sourceFamilyRanges: currentFamilyRanges,
-        alignmentPromotionObservations: alignmentPromotionMemory,
-        alignmentCalibrationObservations: alignmentCalibrationMemory,
-        sourceKind: "construction_training",
-        // Doctrine 10: derived learning state is not a new source of truth, so this batch is declared generated.
-        // The controller promotes a generated source only under owner authority, which this unattended lane lacks.
-        sourceAdmission: { sourceClass: "generated", intendedUse: "language_only", promotionAuthority: "training" },
-        corpusMetadata: {
-          lane: "stored-corpus-construction-training",
-          batchIndex: currentIndex,
-          articleCount,
-          purpose: "generation construction inventory from the retrieval corpus",
-          derivation: "construction_training",
-          derivedFrom: {
-            schema: "scce.derivedFrom.v1",
-            sourceSystem,
-            sourceVersionIds: currentSourceVersionIds,
-            parents: currentFamilyRanges.map(range => ({
-              sourceVersionId: range.sourceFamilyId,
-              canonicalUri: uriBySourceVersionId.get(range.sourceFamilyId) ?? null,
-              charStart: range.start,
-              charEnd: range.end
-            }))
-          }
-        }
+        graphSnapshotSourceVersionIds: [String(item.source.sourceVersionId)],
+        constructionPoolUriPrefix: prefix,
+        corpusCheckpoint: {
+          rootUri: `scce://stored-corpus-replay/${sourceSystem}/${LANGUAGE_CORPUS_TRAINING_RECIPE_ID}`,
+          itemUri: item.source.canonicalUri,
+          contentHash: String(item.source.contentHash),
+          byteLength: item.source.byteLength
+        },
+        corpusMetadata: { ...metadata, lane: "stored-corpus-construction-replay", replayRecipeId: LANGUAGE_CORPUS_TRAINING_RECIPE_ID } as JsonValue
       });
       reports.push(report);
-      // A construction is promoted on what the corpus shows, not on one batch. The held-out evidence each batch
-      // produces is carried into the next, bounded so a long run stays inside its heap budget.
-      alignmentPromotionMemory = [...alignmentPromotionMemory, ...report.alignmentPromotionObservations].slice(-ALIGNMENT_MEMORY);
-      alignmentCalibrationMemory = [...alignmentCalibrationMemory, ...report.alignmentCalibrationObservations].slice(-ALIGNMENT_MEMORY);
-      articlesTrained += articleCount;
-      bytesTrained += currentBytes;
+      articlesTrained++;
+      bytesTrained += item.bytes;
+      successfulBatches.add(batchIndex);
     } catch (error) {
-      batchesFailed.push({
-        batchIndex: currentIndex,
-        reason: error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200)
-      });
+      batchesFailed.push({ batchIndex, sourceVersionId: String(item.source.sourceVersionId), reason: errorText(error) });
+      markStorageFailure(error, String(item.source.sourceVersionId));
     }
   };
 
-  for (const version of versions) {
-    // Pending text counts against the budget too, or articles accumulate
-    // past the cap before the first flush.
-    if (bytesTrained + pendingBytes >= maxTotalBytes) break;
-    if (heapCheckpointMb !== undefined && heapMiB() >= heapCheckpointMb) {
-      stoppedByHeapSafetyBound = true;
-      break;
+  pages: while (true) {
+    if (bytesScheduled >= maxTotalBytes || sourcesAttempted >= maxSourceAttempts) break;
+    if (heapCheckpointMb !== undefined && heapMiB() >= heapCheckpointMb) { stoppedByHeapSafetyBound = true; break; }
+    const versions = await list.call(input.storage.evidence, { ...query,
+      ...(nextSourceVersionId !== null ? { afterSourceVersionId: nextSourceVersionId } : {}) });
+    if (versions.length > sourcePageSize) throw new Error("storage replay page exceeded its requested bound");
+    if (!versions.length) { exhausted = true; break; }
+    sourcesEnumerated += versions.length;
+    let previous = nextSourceVersionId;
+    for (const version of versions) {
+      const sourceId = String(version.sourceVersionId);
+      if (previous !== null && Buffer.compare(Buffer.from(sourceId), Buffer.from(previous)) <= 0) throw new Error("storage replay page did not advance in source-version order");
+      previous = sourceId;
+      if (bytesScheduled >= maxTotalBytes || sourcesAttempted >= maxSourceAttempts) break pages;
+      if (heapCheckpointMb !== undefined && heapMiB() >= heapCheckpointMb) { stoppedByHeapSafetyBound = true; break pages; }
+      if (batchIndex < startBatchIndex) {
+        legacyBatchSourcesSkipped++;
+      } else {
+        bytesScheduled += version.byteLength;
+        sourcesAttempted++;
+        await loadAndTrain(version);
+        if (storageFailure) break pages;
+      }
+      nextSourceVersionId = sourceId;
+      sourcesConsidered++;
+      currentBatchBytes += version.byteLength;
+      if (currentBatchBytes >= batchBytes) { batchIndex++; currentBatchBytes = 0; }
     }
-    let text = "";
-    try {
-      const bytes = await input.storage.blobs.get(version.contentHash);
-      text = Buffer.from(bytes).toString("utf8").trim();
-    } catch {
-      continue;
-    }
-    if (!text) continue;
-    // Each article keeps its own family: collapsing a batch into one synthetic source left the held-out gate
-    // with a single family to draw on, which no amount of training could turn into independent evidence.
-    const start = pending.reduce((total, item) => total + item.length + 2, 0);
-    pendingFamilyRanges.push({ start, end: start + text.length, sourceFamilyId: String(version.sourceVersionId) });
-    pending.push(text);
-    pendingSourceVersionIds.push(String(version.sourceVersionId));
-    pendingBytes += Buffer.byteLength(text, "utf8");
-    if (pendingBytes >= batchBytes) await trainPending();
+    if (versions.length < sourcePageSize) { exhausted = true; break; }
   }
-  if (!stoppedByHeapSafetyBound) await trainPending();
+  if (inventory && sourcesConsidered >= inventory.eligibleSources) exhausted = true;
+  const batchesTrained = successfulBatches.size;
+  const nextBatchIndex = batchIndex + (exhausted && currentBatchBytes > 0 ? 1 : 0);
+  return { schema: "scce.storedCorpusConstructionTrainReport.v1", sourceSystem, recipeId: LANGUAGE_CORPUS_TRAINING_RECIPE_ID,
+    startBatchIndex, startSourceVersionId: input.afterSourceVersionId ?? null, nextSourceVersionId, exhausted, sourcePageSize,
+    sourcesEnumerated, sourcesConsidered, sourcesAttempted, maxSourceAttempts, legacyBatchSourcesSkipped, bytesScheduled, inventory, inventoryScope: "after_start_cursor",
+    eligibleSourcesRemaining: inventory ? Math.max(0, inventory.eligibleSources - sourcesConsidered) : null,
+    articleBounds: { minBytes: minArticleBytes, maxBytes: maxArticleBytes },
+    batchesTrained, articlesTrained, bytesTrained, nextBatchIndex, stoppedByHeapSafetyBound,
+    heapMiBAtExit: heapMiB(), stoppedByStorageFailure: storageFailure !== null, storageFailure, batchesFailed, sourcesSkipped, reports };
 
-  return {
-    schema: "scce.storedCorpusConstructionTrainReport.v1",
-    sourceSystem,
-    startBatchIndex,
-    batchesTrained: reports.length,
-    articlesTrained,
-    bytesTrained,
-    nextBatchIndex: batchIndex,
-    stoppedByHeapSafetyBound,
-    heapMiBAtExit: heapMiB(),
-    batchesFailed,
-    reports
-  };
+  async function loadAndTrain(version: Awaited<ReturnType<NonNullable<typeof list>>>[number]): Promise<void> {
+    try {
+      const found = await input.storage.evidence.searchEvidence({ sourceVersionId: version.sourceVersionId, status: "promoted", limit: 4096 });
+      const evidence = found.map(row => row.span).filter(span => String(span.sourceVersionId) === String(version.sourceVersionId) && span.status === "promoted")
+        .sort((left, right) => left.charStart - right.charStart || String(left.id).localeCompare(String(right.id)));
+      if (!evidence.length || evidence.some(span => !span.informationLabel)) throw new Error("promoted source evidence or information label is missing");
+      if (version.promotedSpanCount > evidence.length) throw new Error("source evidence exceeds bounded replay read");
+      const sources = await input.storage.evidence.sourceVersionsForEvidence(evidence.map(span => span.id));
+      const source = sources.find(row => String(row.sourceVersionId) === String(version.sourceVersionId));
+      if (!source) throw new Error("original source version is missing");
+      const metadata = recordOf(source.metadata);
+      if (source.canonicalUri.startsWith("scce://construction-training/") || source.canonicalUri.startsWith("scce://construction-probe/")
+        || metadata.derivation === "construction_training" || metadata.derivation === "construction_probe" || metadata.sourceKind === "construction_probe"
+        || metadata.lane === "stored-corpus-construction-training" || metadata.sourceClass === "generated"
+        || recordOf(metadata.sourceAdmission ?? null).sourceClass === "generated") {
+        sourcesSkipped.push({ sourceVersionId: String(version.sourceVersionId), reason: "derived_training_source" });
+        return;
+      }
+      const declaredSystem = metadata.sourceSystemId ?? metadata.sourceSystem;
+      if (typeof declaredSystem !== "string" || canonicalCorpusSourceSystemId(declaredSystem) !== sourceSystem) {
+        sourcesSkipped.push({ sourceVersionId: String(version.sourceVersionId), reason: "different_or_undeclared_source_system" });
+        return;
+      }
+      const profiles = await input.storage.model.listLanguageProfiles({ sourceVersionIds: [source.sourceVersionId], limit: 4096 });
+      const profile = profiles.filter(row => String(row.sourceVersionId) === String(source.sourceVersionId))
+        .sort((left, right) => (right.updatedAt ?? right.createdAt) - (left.updatedAt ?? left.createdAt) || left.id.localeCompare(right.id))[0];
+      if (!profile) throw new Error("original language profile is missing");
+      if (String(source.contentHash) !== String(version.contentHash) || source.byteLength !== version.byteLength) throw new Error("source content ownership changed during replay");
+      const bytes = await input.storage.blobs.get(source.contentHash);
+      const text = Buffer.from(bytes).toString("utf8");
+      const points = [...text];
+      if (bytes.byteLength !== source.byteLength || evidence.some(span => points.slice(span.charStart, span.charEnd).join("") !== span.text)) throw new Error("stored source/evidence coordinates do not match");
+      if (!text.trim()) throw new Error("stored source is empty");
+      await trainSource({ source, profile, evidence, text, bytes: bytes.byteLength });
+    } catch (error) {
+      if (markStorageFailure(error, String(version.sourceVersionId))) batchesFailed.push({ batchIndex, sourceVersionId: String(version.sourceVersionId), reason: errorText(error) });
+      else sourcesSkipped.push({ sourceVersionId: String(version.sourceVersionId), reason: errorText(error) });
+    }
+  }
+
+  function markStorageFailure(error: unknown, sourceVersionId: string): boolean {
+    const visited = new Set<unknown>();
+    for (let cause = error; cause && typeof cause === "object" && !visited.has(cause); cause = (cause as { cause?: unknown }).cause) {
+      visited.add(cause);
+      const code = (cause as { code?: unknown }).code;
+      if (typeof code === "string" && (/^(?:08|42|3F)/u.test(code) || ["57P01", "57P02", "57P03"].includes(code))) {
+        storageFailure = { code, reason: errorText(error), sourceVersionId };
+        return true;
+      }
+    }
+    return false;
+  }
+
 }
 
-function heapMiB(): number {
-  return Math.round(process.memoryUsage().heapUsed / (1024 * 1024));
-}
+function recordOf(value: JsonValue): Record<string, JsonValue> { return value !== null && typeof value === "object" && !Array.isArray(value) ? value : {}; }
+function canonicalCorpusRoot(uri: string): string { try { return new URL(".", uri).href; } catch { return uri; } }
+function errorText(error: unknown): string { return error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200); }
+function heapMiB(): number { return Math.round(process.memoryUsage().heapUsed / (1024 * 1024)); }

@@ -43,6 +43,15 @@ class MemoryBlobs implements BlobStore {
   }
 }
 
+class BatchMemoryBlobs extends MemoryBlobs {
+  readonly batchSizes: number[] = [];
+
+  async putBatch(items: readonly { content: Uint8Array; mediaType: string }[]): Promise<ContentHash[]> {
+    this.batchSizes.push(items.length);
+    return Promise.all(items.map(item => this.put(item.content)));
+  }
+}
+
 describe("bounded alignment artifact codec", () => {
   it("hashes and measures a new shared record in one canonical traversal", async () => {
     const blobs = new MemoryBlobs();
@@ -107,6 +116,163 @@ describe("bounded alignment artifact codec", () => {
       bytes => String(ids.contentHash(bytes)),
       { maxAssembledItemBytes: 2_000, maxTotalDecodedBytes: 100 }
     )).rejects.toThrow(/total decoded byte budget/);
+  });
+
+  it("persists bounded fragment batches and preserves the same artifact bytes and hashes", async () => {
+    const blobs = new BatchMemoryBlobs();
+    const ids = createIdFactory({ clock: createClock({ fixedTime: 1 }), hasher: createHasher(), deterministicReplay: true });
+    const payload = { diagnostic: [{ id: "one", text: "x".repeat(900) }] };
+    const events = await buildBoundedAlignmentEvents({
+      episodeId: "episode.fixture",
+      payload,
+      blobs,
+      idFactory: ids,
+      hashContent: bytes => String(ids.contentHash(bytes)),
+      maxPartBytes: 17
+    });
+    const references = events.flatMap(event => event.artifactParts);
+    expect(blobs.batchSizes.length).toBeGreaterThan(1);
+    expect(blobs.batchSizes.every(size => size > 0 && size <= 4)).toBe(true);
+    expect(blobs.batchSizes.reduce((sum, size) => sum + size, 0)).toBe(references.length);
+    for (const reference of references) {
+      expect(blobs.values.has(reference.blobHash as ContentHash)).toBe(true);
+    }
+    const restored = await readBoundedAlignmentPayload(
+      events as unknown as JsonValue[],
+      blobs,
+      bytes => String(ids.contentHash(bytes)),
+      { maxAssembledItemBytes: 2_000 }
+    );
+    expect(restored).toEqual(payload);
+  });
+
+  it("compresses large fragments while preserving raw artifact identity and reading legacy fragments", async () => {
+    const payload = { diagnostic: [{ id: "repeat", text: "transport-cell candidate evidence ".repeat(700) }] };
+    const ids = createIdFactory({ clock: createClock({ fixedTime: 1 }), hasher: createHasher(), deterministicReplay: true });
+    const compressedBlobs = new MemoryBlobs();
+    const compressedEvents = await buildBoundedAlignmentEvents({
+      episodeId: "episode.codec",
+      payload,
+      blobs: compressedBlobs,
+      idFactory: ids,
+      hashContent: bytes => String(ids.contentHash(bytes)),
+      maxPartBytes: 8 * 1024
+    });
+    const compressedRef = compressedEvents[0]!.artifactParts[0]!;
+    expect(compressedEvents[0]!.schema).toBe("scce.sparse_alignment_candidate_blob_event.v3");
+    expect(compressedRef.schema).toBe("scce.sparse_alignment_candidate_blob_part.v4");
+    expect(compressedRef.contentEncoding).toBe("deflate");
+    expect(compressedRef.contentByteLength).toBeGreaterThan(compressedRef.byteLength);
+    expect(await readBoundedAlignmentPayload(
+      compressedEvents as unknown as JsonValue[],
+      compressedBlobs,
+      bytes => String(ids.contentHash(bytes)),
+      { maxAssembledItemBytes: 64 * 1024 }
+    )).toEqual(payload);
+
+    const legacyBlobs = new MemoryBlobs();
+    const legacyEvents = await buildBoundedAlignmentEvents({
+      episodeId: "episode.codec",
+      payload,
+      blobs: legacyBlobs,
+      idFactory: ids,
+      hashContent: bytes => String(ids.contentHash(bytes)),
+      maxPartBytes: 8 * 1024,
+      compressArtifacts: false
+    });
+    expect(legacyEvents[0]!.schema).toBe("scce.sparse_alignment_candidate_blob_event.v1");
+    expect(legacyEvents[0]!.artifactParts[0]!.artifactId).toBe(compressedRef.artifactId);
+    expect(legacyEvents[0]!.artifactGroupId).not.toBe(compressedEvents[0]!.artifactGroupId);
+    expect(await readBoundedAlignmentPayload(
+      legacyEvents as unknown as JsonValue[],
+      legacyBlobs,
+      bytes => String(ids.contentHash(bytes)),
+      { maxAssembledItemBytes: 64 * 1024 }
+    )).toEqual(payload);
+  });
+
+  it("rejects tampered, truncated, and over-bound compressed fragments before decoding", async () => {
+    const payload = { diagnostic: [{ text: "same row ".repeat(800) }] };
+    const ids = createIdFactory({ clock: createClock({ fixedTime: 1 }), hasher: createHasher(), deterministicReplay: true });
+    const make = async () => {
+      const blobs = new MemoryBlobs();
+      const events = await buildBoundedAlignmentEvents({
+        episodeId: "episode.tamper",
+        payload,
+        blobs,
+        idFactory: ids,
+        hashContent: bytes => String(ids.contentHash(bytes)),
+        maxPartBytes: 8 * 1024
+      });
+      return { blobs, events };
+    };
+
+    const wrongRawHash = await make();
+    const wrongRawHashRef = wrongRawHash.events[0]!.artifactParts[0]!;
+    wrongRawHashRef.contentHash = "sha256_wrong";
+    await expect(readBoundedAlignmentPayload(
+      wrongRawHash.events as unknown as JsonValue[], wrongRawHash.blobs,
+      bytes => String(ids.contentHash(bytes)), { maxAssembledItemBytes: 8 * 1024 }
+    )).rejects.toThrow(/canonical content hash mismatch/);
+
+    const truncated = await make();
+    const truncatedRef = truncated.events[0]!.artifactParts[0]!;
+    truncated.blobs.values.set(truncatedRef.blobHash as ContentHash, new Uint8Array([1, 2, 3]));
+    await expect(readBoundedAlignmentPayload(
+      truncated.events as unknown as JsonValue[], truncated.blobs,
+      bytes => String(ids.contentHash(bytes)), { maxAssembledItemBytes: 8 * 1024 }
+    )).rejects.toThrow(/artifact size mismatch|artifact hash mismatch/);
+
+    const overBound = await make();
+    const overBoundRef = overBound.events[0]!.artifactParts[0]!;
+    overBoundRef.contentByteLength = 8 * 1024 + 1;
+    await expect(readBoundedAlignmentPayload(
+      overBound.events as unknown as JsonValue[], overBound.blobs,
+      bytes => String(ids.contentHash(bytes)), { maxAssembledItemBytes: 8 * 1024 }
+    )).rejects.toThrow(/invalid compressed alignment artifact reference/);
+
+    const overExpand = await make();
+    const overExpandRef = overExpand.events[0]!.artifactParts[0]!;
+    overExpandRef.contentByteLength = overExpandRef.contentByteLength! - 1;
+    await expect(readBoundedAlignmentPayload(
+      overExpand.events as unknown as JsonValue[], overExpand.blobs,
+      bytes => String(ids.contentHash(bytes)), { maxAssembledItemBytes: 16 * 1024 }
+    )).rejects.toThrow(/decompressed alignment artifact exceeds its declared size bound/);
+  });
+
+  it("reads compressed fragments inside shared alignment event envelopes", async () => {
+    const blobs = new MemoryBlobs();
+    const ids = createIdFactory({ clock: createClock({ fixedTime: 1 }), hasher: createHasher(), deterministicReplay: true });
+    const plan = { id: "plan.shared", supportId: "support.shared", cells: [], rowMarginals: [], columnMarginals: [] };
+    const payload = {
+      alignmentAlternativeSets: [{
+        id: "set.shared", seriesId: "series.shared", supportId: "support.shared",
+        hypotheses: [{ plan, evidenceAllocationId: "allocation.shared" }],
+        note: "shared alignment set ".repeat(300)
+      }],
+      transportEvidenceAllocations: [{
+        id: "allocation.shared", transportPlanId: plan.id, supportId: "support.shared", cells: [],
+        note: "shared allocation record ".repeat(300)
+      }],
+      diagnostic: [{ text: "shared alignment envelope ".repeat(300) }]
+    };
+    const events = await buildBoundedAlignmentEvents({
+      episodeId: "episode.shared-codec",
+      payload,
+      blobs,
+      idFactory: ids,
+      hashContent: bytes => String(ids.contentHash(bytes)),
+      maxPartBytes: 4 * 1024
+    });
+    expect(events[0]!.schema).toBe("scce.sparse_alignment_candidate_blob_event.v4");
+    const compressedParts = events.flatMap(event => event.artifactParts)
+      .filter(part => part.schema === "scce.sparse_alignment_candidate_blob_part.v4");
+    expect(compressedParts.some(part => part.key === "alignmentAlternativeSets" && part.seriesIds?.includes("series.shared"))).toBe(true);
+    expect(compressedParts.some(part => part.key === "transportEvidenceAllocations" && part.seriesIds?.includes("series.shared"))).toBe(true);
+    expect(await readBoundedAlignmentPayload(
+      events as unknown as JsonValue[], blobs,
+      bytes => String(ids.contentHash(bytes)), { maxAssembledItemBytes: 32 * 1024 }
+    )).toEqual(payload);
   });
 
   it("keeps minimal and heterogeneous alternative sets on the legacy v1 writer", async () => {

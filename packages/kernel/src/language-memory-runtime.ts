@@ -531,7 +531,7 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
       const languageHints = uniqueStrings([...records.map(record => record.languageHint), ...importedObservations.map(item => item.languageHint)]).sort(compareCodePoint);
       const observedSymbolCount = models.reduce((sum, model) => sum + model.observedSymbolCount, 0);
       const importedUnits = [...(input.units ?? [])].sort((a, b) => b.alpha - a.alpha || compareCodePoint(a.text, b.text) || compareCodePoint(a.id, b.id)).slice(0, 4096);
-      const requestRequirements = reconcileRequestRequirementPatterns(input.patterns ?? []);
+      const requestRequirements = reconcileRequestRequirementPatterns((input.patterns ?? []).filter(pattern => pattern.patternKind !== "source_compilation"));
       const persistedPatterns = requestRequirements.patterns
         .sort((a, b) => b.support - a.support || compareCodePoint(a.patternKind, b.patternKind) || compareCodePoint(a.id, b.id))
         .slice(0, 1024);

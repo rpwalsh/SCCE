@@ -1,0 +1,77 @@
+{
+  "schema": "scce.refactor.ast_equality.v1",
+  "baseline": "5490383",
+  "source": "packages/kernel/src/mouth.ts",
+  "extractedModule": "packages/kernel/src/mouth-source-facts.ts",
+  "normalization": "CRLF converted to LF; function-body and interface-member text otherwise unchanged",
+  "functionBodies": {
+    "count": 386,
+    "sha256": "2ec590ed5ae579f9eb4e9ac8b86564ecc403e8244d27d01a5ed84025c8e5d6a7"
+  },
+  "publicMouthExportDeclarations": {
+    "count": 11,
+    "sha256": "bc91e35c8d1e00e2ecf445dc5751c027bd6468bcd2a9c29ff576fd2caf44f5f2"
+  },
+  "privateIdentityOwnerDeclarations": {
+    "count": 7,
+    "sha256": "7d1a252c69eb71be388d2d18f3d6537e4b404673b518363e08f8da788d1ac695"
+  },
+  "factInterfacesPreserved": 4,
+  "movedDeclarations": [
+    "SemanticAnswerFact",
+    "SemanticAnswerSlot",
+    "SemanticAnswerConstructState",
+    "InsufficientSupportConstructState",
+    "jsonRecord",
+    "semanticFactFromRealizationConstraints",
+    "exactFactSurface",
+    "completeLearnedFactCoverage",
+    "learnedFactSurfaceKeys",
+    "learnedFactRouteAdmissible",
+    "learnedFactRouteAdmissibility",
+    "finiteUnitSignal",
+    "semanticFactImportanceRank",
+    "semanticAnswerFactKey",
+    "stringArrayFromJson",
+    "arrayRecords",
+    "stringFromJson",
+    "numberFromJson",
+    "optionalNumberFromJson",
+    "EXCERPT_PARAPHRASE_FLOOR",
+    "fabricationCheckable",
+    "foldedContains",
+    "VERBATIM_RECITATION_FLOOR",
+    "recitationKey",
+    "surfaceIsVerbatimSource",
+    "meaningSurvives",
+    "MEANING_SUPPORT_FLOOR",
+    "MEANING_CONTRADICTION_CEILING",
+    "sourceExcerptFacts",
+    "semanticAnswerConstructState",
+    "semanticAnswerSlotFromJson",
+    "insufficientSupportConstructState",
+    "semanticAnswerFactFromJson",
+    "semanticFactKey",
+    "invariantSymbols",
+    "invariantKind",
+    "isInvariantSymbolChar",
+    "hasCaseSignal"
+  ],
+  "supportingLeafMove": {
+    "name": "containsSurface",
+    "module": "packages/kernel/src/mouth-surface-text.ts"
+  },
+  "runtimeImports": [
+    "./mouth-surface-text.js",
+    "./primitives.js",
+    "./surface-linguistics.js",
+    "./semantic-round-trip.js"
+  ],
+  "runtimeDependencyFilesVisited": 22,
+  "reachesMouthAtRuntime": false,
+  "lines": {
+    "mouthBefore": 9519,
+    "mouthAfter": 9068,
+    "module": 486
+  }
+}

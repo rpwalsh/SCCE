@@ -4,11 +4,14 @@ import { describe, expect, it, vi } from "vitest";
 import * as induction from "../language-induction.js";
 import {
   compileLanguageTrainingBatch,
+  CORPUS_SOURCE_SYSTEM_IDS,
+  CORPUS_ROLE_IDS,
   createClock,
   createHasher,
   createIdFactory,
   createLanguageAcquisitionEngine,
   createLanguageMemoryRuntime,
+  prepareLanguageTrainingSegmentation,
   toJsonValue,
   type EvidenceSpan,
   type GraphNode,
@@ -22,6 +25,32 @@ describe("shared language training batch", () => {
   const ids = createIdFactory({ clock, hasher, deterministicReplay: true, namespace: "language-training-batch" });
   const language = createLanguageAcquisitionEngine({ idFactory: ids });
   const runtime = createLanguageMemoryRuntime({ idFactory: ids, hasher });
+
+  it("dispatches formal source roles to token models without natural grammar induction", () => {
+    const text = 'export const label = (value: string) => "two words" + value;';
+    const sourceVersionId = ids.sourceVersionId(text);
+    const profile = language.acquire({ sourceVersionId, text, createdAt: 140_000 });
+    const evidence = [evidenceSpan(text, sourceVersionId)];
+    const engine = vi.spyOn(induction, "createLanguageInductionEngine");
+    try {
+      expect(prepareLanguageTrainingSegmentation({ batch: { text, createdAt: 140_000 }, tenantId: "fixture", corpusRole: CORPUS_ROLE_IDS.softwareSymbolic,
+        activeImportVersion: "fixture", hasher })).toBeUndefined();
+      expect(prepareLanguageTrainingSegmentation({ batch: { text: "Source documentation.", createdAt: 140_000 }, tenantId: "fixture", corpusRole: CORPUS_ROLE_IDS.softwareDocumentation,
+        activeImportVersion: "fixture", hasher })).toBeDefined();
+      for (const sourceSystem of ["oss_code", CORPUS_SOURCE_SYSTEM_IDS.ossCode]) {
+        const compiled = compileLanguageTrainingBatch({ runtime, hasher, batch: { streamId: "fixture://code", sourceSystem,
+          profile, sourceVersionId, text, evidence, createdAt: 140_000 } });
+        expect(compiled.models).toHaveLength(1);
+        expect(compiled.observations.some(row => row.symbol === '"two words"')).toBe(true);
+        expect(compiled.units).toEqual([]);
+        expect(compiled.patterns).toEqual([]);
+        expect(compiled.semanticFrames).toEqual([]);
+        expect(compiled.constructionCandidates).toBe(0);
+        expect(compiled.constructionPromotion.heldOutCoverage).toEqual([]);
+      }
+      expect(engine).not.toHaveBeenCalled();
+    } finally { engine.mockRestore(); }
+  });
 
   it("keeps construction induction out of a language-only batch with held-out evidence", () => {
     const text = "cat chased mouse. dog chased ball. cat pushed cart. dog pushed box.";
@@ -199,7 +228,7 @@ describe("shared language training batch", () => {
   });
 
   function evidenceSpan(text: string, sourceVersionId: ReturnType<typeof ids.sourceVersionId>): EvidenceSpan {
-    const sourceId = ids.sourceId("fixture", "fixture://typed-incidence-training");
+    const sourceId = ids.sourceId("fixture", `fixture://typed-incidence-training/${sourceVersionId}`);
     const contentHash = ids.contentHash(text);
     return {
       id: ids.evidenceId({
@@ -227,7 +256,7 @@ describe("shared language training batch", () => {
       languageHints: {},
       scriptHints: {},
       trustVector: { trust: 1 },
-      provenance: toJsonValue({ sourceFamilyId: "family.fixture" }),
+      provenance: toJsonValue({ sourceFamilyId: `family.fixture.${sourceVersionId}` }),
       features: [],
       status: "promoted",
       alpha: 1,

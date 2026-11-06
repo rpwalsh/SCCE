@@ -34,12 +34,27 @@ import {
 } from "../question-routing-ids.js";
 import type { CandidateSurface } from "../candidate.js";
 import { genericChatMouthFixture as fixture } from "./fixtures/generic-chat-mouth-fixture.js";
+import { sourceOwnedMouthTeaching } from "./fixtures/source-owned-mouth-teaching.js";
 
 describe("Mouth runtime surface planning", () => {
   const clock = createClock({ fixedTime: 5000, stepMs: 1 });
   const hasher = createHasher();
   const ids = createIdFactory({ clock, hasher, deterministicReplay: true });
   const languageRuntime = createLanguageMemoryRuntime({ idFactory: ids, hasher });
+  const teachingCache = new WeakMap<EvidenceSpan, ReturnType<typeof sourceOwnedMouthTeaching>>();
+  function teaching(evidence: EvidenceSpan) {
+    let value = teachingCache.get(evidence);
+    if (!value) {
+      value = sourceOwnedMouthTeaching({ ids, hasher, evidence, profileId: "fixture-language", phrase: fixture.importedPhrase,
+        subject: "The greenhouse", predicate: "opens", object: "its vents before noon when humidity rises above 70%" });
+      teachingCache.set(evidence, value);
+    }
+    return value;
+  }
+  function taughtConstruct(evidence: EvidenceSpan) {
+    const base = constructGraph(false);
+    return { ...base, nodes: [...base.nodes, teaching(evidence).semanticNode] };
+  }
 
   it("realizes a typed structural action preview without inventing completion", async () => {
     const source = sourceVersion();
@@ -786,6 +801,40 @@ describe("Mouth runtime surface planning", () => {
     expect(result.proof.scores).toMatchObject({ sourceExcerptExact: true });
   });
 
+  it.each([
+    ["changed value", "Greenhouse vents open before noon above 90% humidity.", "90%"],
+    ["negated relation", "Greenhouse vents stay closed before noon above 70% humidity.", "stay closed"],
+    ["extra factual clause", "Greenhouse vents open before noon above 70% humidity, and inspectors certified the sensors.", "inspectors certified"]
+  ])("does not let an owner-bound selected claim exceed its evidence (%s)", async (_name, mutatedClaim, forbidden) => {
+    const source = sourceVersion();
+    const evidence = directEvidence(source);
+    const field = emptyField();
+    const base = createSemanticEntailmentEngine({ idFactory: ids, hasher }).check({
+      text: fixture.claim,
+      evidence: [evidence],
+      nodes: [],
+      field,
+      createdAt: clock.now()
+    });
+    const entailment = { ...base, claim: { ...base.claim, text: mutatedClaim } };
+    const spoken = await createMouth({
+      languageMemory: languageRuntime,
+      correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }),
+      hashText: text => hasher.digestHex(text)
+    }).speak({
+      construct: constructGraph(false),
+      field,
+      languageProfile: languageProfile(source),
+      evidence: [evidence],
+      entailment,
+      languageMemory: importedMemory(source, evidence, `stale-selected-claim-${_name}`),
+      requestText: "What happens to the greenhouse vents before noon?",
+      targetLanguage: "fixture-language"
+    });
+
+    expect(spoken.text.toLocaleLowerCase()).not.toContain(forbidden.toLocaleLowerCase());
+  });
+
   it("rejects a cited planner surface that is absent from its evidence", async () => {
     const source = sourceVersion();
     const evidence = directEvidence(source);
@@ -904,6 +953,18 @@ describe("Mouth runtime surface planning", () => {
       evidence: [evidence],
       entailment,
       languageMemory: importedMemory(source, evidence, "factual-overlap-regression"),
+      claimBases: [{
+        id: "claim:factual-overlap:source",
+        text: factualSurface,
+        basis: "direct_evidence",
+        evidenceIds: [evidence.id],
+        priorIds: [],
+        graphNodeIds: [],
+        graphEdgeIds: [],
+        externallyFactual: true,
+        hypothetical: false,
+        trace: { source: "mouth-runtime.repetition-regression" }
+      }],
       requirementField: deriveTurnRequirementField({ requestText: claim }),
       requestedAuthority: "factual",
       selectedCandidate
@@ -917,6 +978,57 @@ describe("Mouth runtime surface planning", () => {
     expect(spoken.text).toContain("1843");
     expect(spoken.text).toContain("Engine-7");
     expect(spoken.text.split("symbolic notation with mechanical calculation")).toHaveLength(2);
+  });
+
+  it("collapses short source-owned repetitions without deleting unrelated Han content", async () => {
+    const claimText = "阿丽娅发现了影响机器规则的关键变化";
+    const source = sourceVersion(claimText);
+    const evidence = directEvidence(source, claimText);
+    const field = emptyField();
+    const entailment = createSemanticEntailmentEngine({ idFactory: ids, hasher }).check({
+      text: "阿丽娅发现了什么变化？", evidence: [evidence], nodes: [], field, createdAt: clock.now()
+    });
+    const claim = {
+      id: "claim:short-han-overlap",
+      text: claimText,
+      basis: "direct_evidence" as const,
+      evidenceIds: [evidence.id],
+      priorIds: [],
+      graphNodeIds: [],
+      graphEdgeIds: [],
+      externallyFactual: true,
+      hypothetical: false,
+      trace: { source: "mouth-runtime.short-han-overlap" }
+    };
+    const selectedCandidate: CandidateSurface = {
+      id: "candidate:short-han-overlap",
+      kind: "proof-answer",
+      answer: `${claimText}; 发现机器; ${claimText}。`,
+      force: "proved",
+      evidenceIds: [evidence.id],
+      scores: { support: 0.96, contradiction: 0, faithfulness: 0.98, alphaPressure: 0.8, actionability: 0.5, evidenceCoverage: 1, novelty: 0, realizability: 0.9, risk: 0 },
+      claimBases: ["direct_evidence"],
+      boundaries: ["selected-evidence-bound"],
+      audit: { source: "mouth-runtime.short-han-overlap" }
+    };
+    const speak = (answer: string, id: string) => createMouth({
+      languageMemory: languageRuntime,
+      correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }),
+      hashText: text => hasher.digestHex(text)
+    }).speak({
+      construct: constructGraph(false), field, languageProfile: languageProfile(source), evidence: [evidence], entailment,
+      languageMemory: importedMemory(source, evidence, `short-han-${id}`), claimBases: [claim],
+      requestedAuthority: "factual",
+      selectedCandidate: { ...selectedCandidate, id, answer }
+    });
+
+    const collapsed = await speak(`${claimText}; 发现了影响机器规则; ${claimText}。`, selectedCandidate.id);
+    const unrelated = await speak(`${claimText}; 另一项陈述; ${claimText}。`, `${selectedCandidate.id}:unrelated`);
+
+    expect(collapsed.realizationTrace.candidates.find(candidate => candidate.id === selectedCandidate.id)?.textPreview).toBe(`${claimText}。`);
+    expect(collapsed.text).toContain(claimText);
+    expect(unrelated.realizationTrace.selected.id).not.toBe(`${selectedCandidate.id}:unrelated`);
+    expect(unrelated.text).not.toContain("另一项陈述");
   });
 
   it("does not emit a bound-selected reasoned surface that did not participate in the proof", async () => {
@@ -1000,14 +1112,14 @@ describe("Mouth runtime surface planning", () => {
       field,
       createdAt: clock.now()
     });
-    const construct = constructGraph(false);
+    const construct = taughtConstruct(evidence);
     const mouth = createMouth({ languageMemory: languageRuntime, correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }), hashText: text => hasher.digestHex(text) });
 
     const beforeMemory = languageRuntime.hydrateFromImportedBrain({ importRunId: "before", models: [], observations: [], units: [], patterns: [], semanticFrames: [] });
     const before = await mouth.speak({
       construct,
       field,
-      languageProfile: languageProfile(source),
+      languageProfile: teaching(evidence).profile,
       evidence: [evidence],
       entailment,
       languageMemory: beforeMemory,
@@ -1015,7 +1127,7 @@ describe("Mouth runtime surface planning", () => {
       brainMarker: { activeBrainVersion: null, activeImportRunIds: [] }
     });
 
-    const afterMemory = importedMemory(source, evidence, "after");
+    const afterMemory = importedMemory(source, evidence, "after", true);
     const correctionMemory = createCorrectionMemory({ idFactory: ids, hasher });
     const rule = correctionMemory.record({
       episodeId: ids.episodeId(),
@@ -1033,7 +1145,7 @@ describe("Mouth runtime surface planning", () => {
     const after = await correctedMouth.speak({
       construct,
       field,
-      languageProfile: languageProfile(source),
+      languageProfile: teaching(evidence).profile,
       evidence: [evidence],
       entailment,
       languageMemory: afterMemory,
@@ -1051,7 +1163,7 @@ describe("Mouth runtime surface planning", () => {
     expect(after.surfacePlan.realizationFrames.length).toBeGreaterThan(0);
     expect(JSON.stringify(after.realizationTrace.realizationFrames)).toContain("atomCount");
     expect(after.realizationTrace.candidates.length).toBeGreaterThan(0);
-    expect(JSON.stringify(after.realizationTrace.brainInfluence)).toContain("frame:greenhouse");
+    expect(JSON.stringify(after.realizationTrace.selected.audit)).toContain(teaching(evidence).pattern.id);
     expect(JSON.stringify(after.realizationTrace.brainInfluence)).toContain("generatedSurfacePieces");
     expect(JSON.stringify(after.realizationTrace.corrections)).toContain(String(rule.id));
     expect(Number((after.realizationTrace.preservation as Record<string, JsonValue>).score ?? 0)).toBeGreaterThan(0.55);
@@ -1103,12 +1215,12 @@ describe("Mouth runtime surface planning", () => {
     });
     const mouth = createMouth({ languageMemory: languageRuntime, correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }), hashText: text => hasher.digestHex(text) });
     const spoken = await mouth.speak({
-      construct: constructGraph(false),
+      construct: taughtConstruct(evidence),
       field,
-      languageProfile: languageProfile(source),
+      languageProfile: teaching(evidence).profile,
       evidence: [evidence],
       entailment,
-      languageMemory: importedMemory(source, evidence, "generated-proof"),
+      languageMemory: importedMemory(source, evidence, "generated-proof", true),
       targetLanguage: "fixture-language",
       brainMarker: { activeBrainVersion: "fixture-brain", activeImportRunIds: ["generated-proof"] }
     });
@@ -1123,11 +1235,11 @@ describe("Mouth runtime surface planning", () => {
     expect(JSON.stringify(spoken.realizationTrace.discoursePlan)).toContain("unitCount");
     expect(JSON.stringify(spoken.realizationTrace.languageMemory)).toContain("generatedSentences");
     expect(JSON.stringify(spoken.realizationTrace.surfaceRepair)).toContain("mouth.surface-repair");
-    expect(JSON.stringify(spoken.realizationTrace.languageMemory)).toContain("language-memory-runtime.generate");
-    expect(JSON.stringify(spoken.realizationTrace.languageMemory)).toContain("discourseScore");
-    expect(JSON.stringify(spoken.realizationTrace.languageMemory)).toContain("beamExpansions");
-    expect(JSON.stringify(spoken.realizationTrace.languageMemory)).toContain("latentCoherence");
-    expect(JSON.stringify(spoken.realizationTrace.languageMemory)).toContain("ngramMeanActivation");
+    expect(JSON.stringify(spoken.realizationTrace.selected.audit)).toContain("scce.mouth.learned_construction_candidate.v2");
+    expect(JSON.stringify(spoken.realizationTrace.selected.audit)).toContain(teaching(evidence).pattern.id);
+    expect(spoken.constructionCycleOutcome?.constructionId).toBeTypeOf("string");
+    expect(JSON.stringify(spoken.realizationTrace.selected.audit)).toContain("sourceExamples");
+    expect(JSON.stringify(spoken.realizationTrace.selected.audit)).toContain("proofEvidenceIds");
     expect(JSON.stringify(spoken.realizationTrace.languageMemory)).toContain("unit:greenhouse");
   });
 
@@ -1161,12 +1273,12 @@ describe("Mouth runtime surface planning", () => {
     };
     const mouth = createMouth({ languageMemory: languageRuntime, correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }), hashText: text => hasher.digestHex(text) });
     const spoken = await mouth.speak({
-      construct: constructGraph(false),
+      construct: taughtConstruct(evidence),
       field,
-      languageProfile: languageProfile(source),
+      languageProfile: teaching(evidence).profile,
       evidence: [evidence],
       entailment: caveat,
-      languageMemory: importedMemory(source, evidence, "caveat-discourse"),
+      languageMemory: importedMemory(source, evidence, "caveat-discourse", true),
       targetLanguage: "fixture-language",
       brainMarker: { activeBrainVersion: "fixture-brain", activeImportRunIds: ["caveat-discourse"] }
     });
@@ -1239,6 +1351,38 @@ describe("Mouth runtime surface planning", () => {
     expect(spoken.force).toBe("creative");
     expect(JSON.stringify(spoken.surfacePlan.constructForces)).toContain("CreativeConstruct");
     expect(spoken.text).toContain(fixture.creativeArtifact.path);
+  });
+
+  it("does not license creative artifact wording when the declared content hash is stale", async () => {
+    const source = sourceVersion();
+    const evidence = directEvidence(source);
+    const field = emptyField(0.82);
+    const entailment = createSemanticEntailmentEngine({ idFactory: ids, hasher }).check({
+      text: fixture.claim,
+      evidence: [evidence],
+      nodes: [],
+      field,
+      createdAt: clock.now()
+    });
+    const construct = constructGraph(true);
+    const artifact = construct.artifacts[0]!;
+    construct.artifacts[0] = { ...artifact, contentHash: ids.contentHash("different-content") };
+    const spoken = await createMouth({
+      languageMemory: languageRuntime,
+      correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }),
+      hashText: text => hasher.digestHex(text)
+    }).speak({
+      construct,
+      field,
+      languageProfile: languageProfile(source),
+      evidence: [evidence],
+      entailment: { ...entailment, force: "invented", support: 0.18, evidenceIds: [] },
+      languageMemory: languageRuntime.hydrateFromImportedBrain({ importRunId: "stale-artifact", models: [], observations: [], units: [], patterns: [], semanticFrames: [] }),
+      targetLanguage: "fixture-language"
+    });
+
+    expect(spoken.text).toBe("");
+    expect(spoken.realizationAvailability).toMatchObject({ status: "realization_unavailable" });
   });
 
   it("does not let an evidence-bound extractive candidate preempt a creative-authority request (plan item: creative preemption bar)", async () => {
@@ -1421,7 +1565,7 @@ describe("Mouth runtime surface planning", () => {
 
     expect(spoken.text).toBe("");
     expect(spoken.evidenceRefs).toEqual([]);
-    expect(spoken.force).toBe("bounded");
+    expect(spoken.force).toBe("underdetermined");
     expect(spoken.realizationTrace.selected.path).toBe("generated");
     expect(spoken.realizationTrace.selected.textHash).toBe(hasher.digestHex(""));
     expect(spoken.inspectRefs.some(ref => ref.kind === "construct")).toBe(true);
@@ -1816,8 +1960,8 @@ describe("Mouth runtime surface planning", () => {
     expect(JSON.stringify(spoken.realizationTrace.brainInfluence)).toContain("import-summary");
   });
 
-  function sourceVersion(): SourceVersion {
-    const bytes = Buffer.from(fixture.evidenceText);
+  function sourceVersion(text: string = fixture.evidenceText): SourceVersion {
+    const bytes = Buffer.from(text);
     const uri = "fixture://greenhouse/evidence";
     return {
       sourceId: ids.sourceId("fixture", uri),
@@ -1833,8 +1977,8 @@ describe("Mouth runtime surface planning", () => {
     };
   }
 
-  function directEvidence(source: SourceVersion): EvidenceSpan {
-    const bytes = Buffer.from(fixture.evidenceText);
+  function directEvidence(source: SourceVersion, text: string = fixture.evidenceText): EvidenceSpan {
+    const bytes = Buffer.from(text);
     const contentHash = ids.contentHash(bytes);
     return {
       id: ids.evidenceId({ sourceVersionId: source.sourceVersionId, byteStart: 0, byteEnd: bytes.length, spanHash: contentHash }),
@@ -1846,14 +1990,14 @@ describe("Mouth runtime surface planning", () => {
       byteStart: 0,
       byteEnd: bytes.length,
       charStart: 0,
-      charEnd: fixture.evidenceText.length,
-      text: fixture.evidenceText,
-      textPreview: fixture.evidenceText,
+      charEnd: text.length,
+      text,
+      textPreview: text,
       languageHints: {},
       scriptHints: {},
       trustVector: { sourceTrust: source.sourceTrust, forceClass: "direct_evidence" },
-      provenance: { sourceSystem: "fixture", provenanceClass: "direct_evidence", uri: source.canonicalUri, sourceVersionId: source.sourceVersionId, byteRange: [0, bytes.length], charRange: [0, fixture.evidenceText.length] },
-      features: featureSet(fixture.evidenceText, 128),
+      provenance: { sourceSystem: "fixture", provenanceClass: "direct_evidence", uri: source.canonicalUri, sourceVersionId: source.sourceVersionId, byteRange: [0, bytes.length], charRange: [0, text.length] },
+      features: featureSet(text, 128),
       status: "promoted",
       alpha: 0.9,
       observedAt: clock.now()
@@ -2283,14 +2427,15 @@ describe("Mouth runtime surface planning", () => {
     };
   }
 
-  function importedMemory(source: SourceVersion, evidence: EvidenceSpan, importRunId: string) {
+  function importedMemory(source: SourceVersion, evidence: EvidenceSpan, importRunId: string, sourceTeaching = false) {
     return languageRuntime.hydrateFromImportedBrain({
       importRunId,
       models: [ngramModel()],
       observations: [ngramObservation(source)],
       units: [languageUnit(source)],
-      patterns: [languagePattern(), joinProgramPattern()],
-      semanticFrames: [semanticFrame(evidence)]
+      patterns: [languagePattern(), joinProgramPattern(), ...(sourceTeaching ? [teaching(evidence).pattern] : [])],
+      semanticFrames: [semanticFrame(evidence)],
+      constructionEvidence: sourceTeaching ? teaching(evidence).lessons : []
     });
   }
 

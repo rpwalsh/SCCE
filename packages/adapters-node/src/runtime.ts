@@ -1,5 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { getHeapStatistics } from "node:v8";
+import { surfaceLanguageCacheBudgetForHeap } from "./runtime-language-memory-budget.js";
 import {
   createDurableExecutiveEpisode,
   createExecutiveEpisodeMachine,
@@ -42,6 +44,8 @@ export interface NodeScceRuntime {
 }
 
 export interface NodeScceRuntimeOptions {
+  /** Optional lower cache allowance; capped by the actual Node heap limit and resident heap headroom. */
+  surfaceLanguageMemoryCacheMaxEstimatedBytes?: number;
   /** Explicit, immutable condition injection for sealed evaluation runs. */
   evaluationCondition?: EvaluationConditionConfig;
   evaluationRunId?: string;
@@ -116,6 +120,11 @@ export function createNodeRuntime(config: ScceRuntimeConfig, options: NodeScceRu
     runtimeWebAutomaticAdmission: automaticWebAcquisitionEnabled(config),
     policy: config.policy,
     maxChunkBytes: config.runtime.maxChunkBytes,
+    surfaceLanguageMemoryCacheMaxEstimatedBytes: surfaceLanguageCacheBudgetForHeap({
+      heapLimitBytes: getHeapStatistics().heap_size_limit,
+      residentHeapBytes: process.memoryUsage().heapUsed,
+      requestedBytes: options.surfaceLanguageMemoryCacheMaxEstimatedBytes
+    }),
     informationAccess,
     sourceInformationLabel,
     namespace: "scce-v3-runtime",

@@ -1,13 +1,14 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { induceLearnedConstructions, type AlignedSurfaceExample } from "./language-construction.js";
-import type { SourceBoundLanguageConstructionTrainingSet } from "./language-construction-memory.js";
+import type { SourceBoundLanguageConstructionTrainingSet, SourceConstructionGraphBinding } from "./language-construction-memory.js";
+import { graphNodeSurface } from "./semantic-proof-adapter.js";
 import { createLanguageInductionEngine, type GraphBoundConstruction, type LanguageInductionDocument } from "./language-induction.js";
-import { buildSurfaceLattice, validateSurfaceLattice, type SurfaceLattice, type SurfaceLatticeUnit } from "./surface-lattice.js";
+import { buildSurfaceLattice, buildSourceAlignmentSurfaceLattice, validateSurfaceLattice, type SurfaceLattice, type SourceAlignmentSurfaceLattice, type SurfaceLatticeUnit } from "./surface-lattice.js";
 import { segmentUnicodeSurfaceV2, type LexicalSegment } from "./unicode-segmentation-v2.js";
 import { boundedInductionDocuments } from "./training-orchestrator.js";
 import { canonicalStringify, clamp01, toJsonValue } from "./primitives.js";
-import type { EvidenceSpan, Hasher, JsonValue } from "./types.js";
+import type { EvidenceSpan, GraphSnapshot, Hasher, JsonValue } from "./types.js";
 
 /**
  * First module of the graph-surface alignment / construction-induction seam:
@@ -56,7 +57,11 @@ export interface GraphSurfaceLatticeSummary {
   units: number;
   edges: number;
   textHash: string;
+  projection?: SourceAlignmentSurfaceLattice["schema"];
+  sourceUnits?: number;
 }
+
+type AlignmentSurfaceLattice = SurfaceLattice | SourceAlignmentSurfaceLattice;
 
 export interface GraphSurfaceTransportCell {
   surfaceUnitId: string;
@@ -223,6 +228,7 @@ export function induceSourceBoundConstructionTrainingSets(input: {
   hasher: Hasher;
   maxObservationsPerConstruction?: number;
   preparedInduction?: PreparedConstructionInduction;
+  graphSnapshot?: GraphSnapshot;
 }): SourceBoundLanguageConstructionTrainingSet[] {
   const promoted = input.evidence.filter(span => span.status === "promoted");
   if (!promoted.length) return [];
@@ -251,6 +257,7 @@ export function induceSourceBoundConstructionTrainingSets(input: {
   const setsByBindingId = new Map<string, SourceBoundLanguageConstructionTrainingSet>();
   const tracesByBindingId = new Map<string, GraphSurfaceTransportTrace[]>();
   const latticesByBindingId = new Map<string, GraphSurfaceLatticeSummary[]>();
+  const graphBindings = sourceGraphRoleBindings(input.graphSnapshot);
 
   for (const span of promoted) {
     const evidenceIds = [String(span.id)];
@@ -261,7 +268,7 @@ export function induceSourceBoundConstructionTrainingSets(input: {
       const bindingId = sourceRelationConstructionBindingId(input.hasher, input.profileId, construction.predicate);
       return (bySlotOrdinal.get(bindingId) ?? 0) < maxObservations;
     })) continue;
-    const lattice = buildSurfaceLattice({
+    const lattice = buildSourceAlignmentSurfaceLattice({
       documentId: String(span.id),
       text: span.text,
       sourceVersionId: span.sourceVersionId,
@@ -275,7 +282,7 @@ export function induceSourceBoundConstructionTrainingSets(input: {
       const bindingId = sourceRelationConstructionBindingId(input.hasher, input.profileId, construction.predicate);
       const ordinal = bySlotOrdinal.get(bindingId) ?? 0;
       if (ordinal >= maxObservations) continue;
-      const aligned = sourceBoundObservationForOccurrence({ span, lexical, lattice, index, construction, hasher: input.hasher });
+      const aligned = sourceBoundObservationForOccurrence({ span, lexical, lattice, index, construction, hasher: input.hasher, graphBindings });
       if (!aligned) continue;
       bySlotOrdinal.set(bindingId, ordinal + 1);
       const set = setsByBindingId.get(bindingId) ?? { bindingId, observations: [] };
@@ -434,10 +441,11 @@ function boundedConstructionObservationLimit(requested?: number): number {
 function sourceBoundObservationForOccurrence(input: {
   span: EvidenceSpan;
   lexical: readonly LexicalSegment[];
-  lattice: SurfaceLattice;
+  lattice: AlignmentSurfaceLattice;
   index: number;
   construction: GraphBoundConstruction;
   hasher: Hasher;
+  graphBindings: ReadonlyMap<string, SourceConstructionGraphBinding>;
 }): { observation: SourceBoundLanguageConstructionTrainingSet["observations"][number]; trace: GraphSurfaceTransportTrace } | undefined {
   const selected = selectOccurrenceAlignment({
     lexical: input.lexical,
@@ -461,7 +469,9 @@ function sourceBoundObservationForOccurrence(input: {
         slotIndex: role.slotIndex,
         occurrenceIndex: role.occurrenceIndex,
         startCodePoint: role.segment.codePointStart - selected.surfaceStartCodePoint,
-        endCodePoint: role.segment.codePointEnd - selected.surfaceStartCodePoint
+        endCodePoint: role.segment.codePointEnd - selected.surfaceStartCodePoint,
+        ...(input.graphBindings.has(canonicalStringify([String(input.span.id), role.segment.surface]))
+          ? { graphBinding: input.graphBindings.get(canonicalStringify([String(input.span.id), role.segment.surface]))! } : {})
       })),
       ...(selected.nullRoles.length ? { nullRoles: selected.nullRoles } : {})
     },
@@ -469,10 +479,34 @@ function sourceBoundObservationForOccurrence(input: {
   };
 }
 
+function sourceGraphRoleBindings(graph: GraphSnapshot | undefined): Map<string, SourceConstructionGraphBinding> {
+  const result = new Map<string, SourceConstructionGraphBinding>();
+  if (!graph) return result;
+  const nodes = new Map(graph.nodes.map(node => [String(node.id), node]));
+  const bindings = new Map<string, Map<string, SourceConstructionGraphBinding>>();
+  for (const edge of graph.hyperedges) for (const port of edge.participantPorts) {
+    if (port.realization !== "observed" || !port.nodeId) continue;
+    const surface = graphNodeSurface(nodes.get(String(port.nodeId)));
+    if (!surface) continue;
+    const binding: SourceConstructionGraphBinding = {
+      relationId: String(edge.relationId), roleId: port.roleId, valueKind: port.valueKind,
+      qualifiers: edge.qualifiers, modality: edge.modality, temporalScope: edge.temporalScope
+    };
+    for (const evidenceId of port.evidenceIds) {
+      const key = canonicalStringify([String(evidenceId), surface]);
+      const candidates = bindings.get(key) ?? new Map<string, SourceConstructionGraphBinding>();
+      candidates.set(canonicalStringify(binding), binding);
+      bindings.set(key, candidates);
+    }
+  }
+  for (const [key, candidates] of bindings) if (candidates.size === 1) result.set(key, [...candidates.values()][0]!);
+  return result;
+}
+
 function alignedExampleForOccurrence(input: {
   text: string;
   lexical: readonly LexicalSegment[];
-  lattice: SurfaceLattice;
+  lattice: AlignmentSurfaceLattice;
   index: number;
   construction: GraphBoundConstruction;
   profileId: string;
@@ -553,7 +587,7 @@ interface OccurrenceAlignmentSelection {
 
 function selectOccurrenceAlignment(input: {
   lexical: readonly LexicalSegment[];
-  lattice: SurfaceLattice;
+  lattice: AlignmentSurfaceLattice;
   index: number;
   construction: GraphBoundConstruction;
   evidenceIds: readonly string[];
@@ -664,7 +698,7 @@ function selectOccurrenceAlignment(input: {
 
 function candidateCellsForSlot(input: {
   lexical: readonly LexicalSegment[];
-  lattice: SurfaceLattice;
+  lattice: AlignmentSurfaceLattice;
   unitByLexicalKey: ReadonlyMap<string, SurfaceLatticeUnit>;
   predicateIndex: number;
   slotIndex: number;
@@ -757,9 +791,9 @@ function transportCell(input: {
   };
 }
 
-const lexicalUnitMapByLattice = new WeakMap<SurfaceLattice, Map<string, SurfaceLatticeUnit>>();
+const lexicalUnitMapByLattice = new WeakMap<AlignmentSurfaceLattice, Map<string, SurfaceLatticeUnit>>();
 
-function lexicalLatticeUnitMap(lattice: SurfaceLattice): Map<string, SurfaceLatticeUnit> {
+function lexicalLatticeUnitMap(lattice: AlignmentSurfaceLattice): Map<string, SurfaceLatticeUnit> {
   const cached = lexicalUnitMapByLattice.get(lattice);
   if (cached) return cached;
   const out = new Map<string, SurfaceLatticeUnit>();
@@ -828,13 +862,14 @@ function occurrenceIdForRole(roleId: string, occurrenceIndex: number): string {
   return occurrenceIndex === 0 ? roleId : `${roleId}#${occurrenceIndex}`;
 }
 
-function summarizeLattice(lattice: SurfaceLattice): GraphSurfaceLatticeSummary {
+function summarizeLattice(lattice: AlignmentSurfaceLattice): GraphSurfaceLatticeSummary {
   return {
     latticeId: lattice.id,
     documentId: lattice.documentId,
     units: lattice.units.length,
-    edges: lattice.edges.length,
-    textHash: lattice.textHash
+    edges: "edges" in lattice ? lattice.edges.length : 0,
+    textHash: lattice.textHash,
+    ...("sourceUnitCount" in lattice ? { projection: lattice.schema, sourceUnits: lattice.sourceUnitCount } : {})
   };
 }
 

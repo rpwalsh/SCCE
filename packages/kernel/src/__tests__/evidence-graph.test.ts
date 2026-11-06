@@ -12,6 +12,46 @@ describe("evidence extraction and graph build", () => {
   const hasher = createHasher();
   const ids = createIdFactory({ clock, hasher, deterministicReplay: true });
 
+  it("keeps whole-source Unicode traversals constant as exact-source paragraphs grow", () => {
+    const measure = (count: number) => {
+      const text = Array.from({ length: count }, (_, index) => `# 🧪章 ${index}\r\n\r\n甲 e\u0301 🦉 العربية ${index}。\r\n`).join("\r\n");
+      const sourceVersionId = ids.sourceVersionId(text);
+      const profile = createLanguageAcquisitionEngine({ idFactory: ids }).acquire({ sourceVersionId, text, createdAt: 10 });
+      const original = String.prototype[Symbol.iterator];
+      let traversals = 0;
+      String.prototype[Symbol.iterator] = function (this: string) {
+        if (String(this) === text) traversals++;
+        return original.call(this);
+      };
+      let extracted;
+      try {
+        extracted = createEvidenceExtractor({ idFactory: ids, hasher }).extract({
+          sourceId: ids.sourceId("test", "inline://source-coordinate-scaling"), sourceVersionId, namespace: "test", uri: "inline://source-coordinate-scaling",
+          mediaType: "text/markdown", text, languageProfile: profile, observedAt: 10, maxChunkBytes: 160, exactSourceText: true,
+          sourceTrust: { identity: 1, integrity: 1, parserReliability: 1, directness: 1, authority: 1, freshness: 1, independenceGroup: "fixture", accessScope: "fixture", licenseStatus: "fixture" }
+        });
+      } finally { String.prototype[Symbol.iterator] = original; }
+      const points = [...text];
+      const bytes = Buffer.from(text);
+      expect(extracted.spans.length).toBeGreaterThan(1);
+      for (const span of extracted.spans) {
+        expect(points.slice(span.charStart, span.charEnd).join("")).toBe(span.text);
+        expect(bytes.subarray(span.byteStart, span.byteEnd).toString()).toBe(span.text);
+        expect(span.byteEnd - span.byteStart).toBe(Buffer.byteLength(span.text));
+        expect(span.contentHash).toBe(ids.contentHash(Buffer.from(span.text)));
+      }
+      for (const section of extracted.sections) {
+        expect(bytes.subarray(section.byteStart, section.byteEnd).toString()).toBe(points.slice(section.charStart, section.charEnd).join(""));
+      }
+      expect(extracted.spans.some(span => span.text.includes("e\u0301"))).toBe(true);
+      return traversals;
+    };
+    const first = measure(128);
+    const second = measure(256);
+    expect(first).toBeGreaterThan(0);
+    expect(second).toBe(first);
+  });
+
   it("preserves byte ranges and builds higher-order graph material", () => {
     const sourceVersionId = ids.sourceVersionId(Buffer.from("alpha"));
     const sourceId = ids.sourceId("test", "inline://alpha");

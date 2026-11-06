@@ -78,6 +78,7 @@ export * from "./surface-quality.js";
 export * from "./surface-linguistics.js";
 export * from "./language-construction.js";
 export * from "./language-construction-memory.js";
+export * from "./source-construction-request-binding.js";
 export * from "./graph-surface-alignment.js";
 export * from "./sparse-alignment-candidates.js";
 export * from "./typed-null-alignment.js";
@@ -285,6 +286,7 @@ export * from "./code-intent.js";
 export * from "./code-construction-grammar.js";
 export * from "./code-span-repair.js";
 export * from "./code-construction.js";
+export * from "./source-code-function-construction.js";
 export * from "./request-authority.js";
 export * from "./cognitive-planner.js";
 export * from "./spectral-forecast.js";
@@ -325,3 +327,7 @@ export * from "./repo-cognition.js";
 export * from "./loopback.js";
 export * from "./bounded-autonomous-debugging.js";
 export * from "./learning-review.js";
+
+export { sourceLanguageTrainingStreamId } from "./source-language-training-identity.js";
+
+export { stampSourceLanguageCompilation } from "./source-language-compilation.js";

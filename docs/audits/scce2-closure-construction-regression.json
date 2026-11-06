@@ -1,0 +1,55 @@
+{
+  "schema": "scce.focused_regression.v1",
+  "case": "SCCE2 bridge closure source-only loop",
+  "rootCauses": [
+    "The legacy importer persisted token counters and excerpt frames without acquired canonical source constructions.",
+    "The old fixture supplied an empty measured language profile and a plain answer label without selected typed meaning.",
+    "Exact-surface validation retried an already fulfilled literal correction against protected source arguments."
+  ],
+  "sourceContract": {
+    "field": "fileEvidence.sourceConstructions",
+    "sourceBinding": "SHA-256 of the exact UTF-8 excerpt plus canonical source-coordinate validation",
+    "compiler": "compileLanguageConstructionPatterns",
+    "acquisitionStatus": "source_observed",
+    "formalProofAuthorityAdded": false
+  },
+  "counterfactual": {
+    "scope": "Only the pending-correction repair was removed from the generated Mouth output; the original output bytes were restored in finally.",
+    "exitCode": 1,
+    "learnedCandidateText": "For azurite closure assessment, 70% thermal margin is what The azurite operator preserves.",
+    "learnedCandidateRejection": ["surface.exact.correction_required"],
+    "selectedCandidate": "candidate:generated:source-excerpt",
+    "failedOriginalAssertion": "spoken.text must not equal direct.text",
+    "generatedOutputRestored": true
+  },
+  "green": {
+    "buildCommand": "node --max-old-space-size=1536 node_modules/typescript/bin/tsc -b packages/kernel packages/adapters-node --pretty false",
+    "buildExitCode": 0,
+    "testCommand": "node --max-old-space-size=768 node_modules/vitest/vitest.mjs run packages/adapters-node/src/__tests__/scce2-closure-source-only.test.ts --maxWorkers=1 --minWorkers=1 --no-file-parallelism --pool=threads",
+    "testExitCode": 0,
+    "testsPassed": 6,
+    "testsFailed": 0,
+    "testsSkipped": 0,
+    "durationMs": 3570,
+    "testBodyDurationMs": 369,
+    "preservedChecks": [
+      "inspect is read-only",
+      "import replay is idempotent",
+      "direct proof and profile-only evidence remain distinct",
+      "imported graph activates alpha",
+      "nonverbatim composed wording retains 70% and the original source subject",
+      "the original owner-feedback correction influences only a licensed form literal",
+      "returned evidence belongs to the original direct source",
+      "surfaceValid is true",
+      "trace hygiene and engineering-corpus routing remain intact",
+      "stopped imports resume without activating partial state",
+      "activation failure retains the prior active brain",
+      "replacement advertises only the active lifecycle"
+    ],
+    "newAblationsAndNegatives": [
+      "Without canonical constructions, the same retained counters and frames produce only the original source text and do not invent the learned wording or rename the source argument.",
+      "Stale source-byte hashes reject construction import without activation.",
+      "Out-of-range source coordinates reject construction import without activation."
+    ]
+  }
+}

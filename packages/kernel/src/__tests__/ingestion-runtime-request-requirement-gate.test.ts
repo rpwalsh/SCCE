@@ -9,8 +9,9 @@ import { REQUEST_REQUIREMENT_CORPUS_SCHEMA } from "../request-requirement-learni
 import { createLanguageMemoryRuntime } from "../language-memory-runtime.js";
 import { createLanguageAcquisitionEngine } from "../language.js";
 import { createClock, createHasher } from "../primitives.js";
-import type { LanguagePatternRecord, QuarantineSource, ScceKernelDeps } from "../storage.js";
-import type { EvidenceSpan, ScceEvent, SourceVersion } from "../types.js";
+import { DEFAULT_NGRAM_SETTINGS } from "../corpus-registry.js";
+import type { LanguagePatternRecord, LanguageUnitRecord, NgramModelRecord, NgramObservation, QuarantineSource, ScceKernelDeps } from "../storage.js";
+import type { EvidenceSpan, ScceEvent, SourceVersion, LanguageProfile, JsonValue } from "../types.js";
 
 // A hand-authored English request/authority-routing corpus used to disguise a
 // synthetic classifier as learned language evidence (see
@@ -28,6 +29,28 @@ const REQUEST_REQUIREMENT_CORPUS_TEXT = JSON.stringify({
 });
 
 describe("request-requirement corpus ingestion gate", () => {
+  it("persists ordinary upload models and forms atomically without raw count duplicates", async () => {
+    const text = "Zephyr valve pressure remains stable. Measurements follow the recorded calibration.";
+    const fixture = await ingestFixtureText({}, text);
+    expect(fixture.rawObservationWrites).toBe(0);
+    expect(fixture.rawObservationCalls).toBe(0);
+    expect(fixture.learnedModels).toHaveLength(1);
+    expect((fixture.learnedModels[0]!.modelJson as { sourceSystem: string }).sourceSystem).toBe("workspace");
+    expect(fixture.learnedUnits.length).toBeGreaterThan(0);
+    expect(fixture.learnedPatterns.length).toBeGreaterThan(0);
+    expect(fixture.languageWriteDepths.every(depth => depth > 0)).toBe(true);
+    const reference = createLanguageMemoryRuntime({ idFactory: fixture.idFactory, hasher: fixture.hasher }).observe({ streamId: "generic-retained-upload", profile: fixture.profiles[0]!,
+      sourceVersionId: fixture.profiles[0]!.sourceVersionId, text, evidence: fixture.evidence, createdAt: 1,
+      maxOrder: DEFAULT_NGRAM_SETTINGS.maxOrder, maxCountersPerOrder: 12000, vocabularyLimit: 24000 });
+    expect(reference.observations.length).toBeGreaterThan(0);
+    expect((fixture.learnedModels[0]!.modelJson as { model: JsonValue }).model).toEqual((reference.models[0]!.modelJson as { model: JsonValue }).model);
+    expect(fixture.learnedUnits.map(unit => [unit.unitKind, unit.text])).toEqual(reference.units.map(unit => [unit.unitKind, unit.text]));
+    const language = createLanguageMemoryRuntime();
+    const state = language.hydrate({ models: fixture.learnedModels, observations: [], units: fixture.learnedUnits, patterns: fixture.learnedPatterns });
+    expect(state.models).toHaveLength(1);
+    expect(language.suggest({ state, context: [] }).length).toBeGreaterThan(0);
+  });
+
   it("does not classify request-requirement text into production patterns by default", async () => {
     const { learnedPatterns, symbolPatternLearnedPayloads } = await ingestFixtureText({
       allowSyntheticRequestRequirementBootstrap: false
@@ -58,7 +81,7 @@ function isRequestRequirementPattern(pattern: LanguagePatternRecord): boolean {
   );
 }
 
-async function ingestFixtureText(depsOverrides: Partial<ScceKernelDeps>) {
+async function ingestFixtureText(depsOverrides: Partial<ScceKernelDeps>, content = REQUEST_REQUIREMENT_CORPUS_TEXT) {
   const clock = createClock({ fixedTime: 1_000 });
   const hasher = createHasher();
   const idFactory = createIdFactory({ clock, hasher, deterministicReplay: true });
@@ -66,6 +89,13 @@ async function ingestFixtureText(depsOverrides: Partial<ScceKernelDeps>) {
   const evidence: EvidenceSpan[] = [];
   const quarantined: QuarantineSource[] = [];
   const learnedPatterns: LanguagePatternRecord[] = [];
+  const learnedModels: NgramModelRecord[] = [];
+  const learnedUnits: LanguageUnitRecord[] = [];
+  const profiles: LanguageProfile[] = [];
+  const languageWriteDepths: number[] = [];
+  let rawObservationWrites = 0;
+  let rawObservationCalls = 0;
+  let transactionDepth = 0;
   const events: ScceEvent[] = [];
   const symbolPatternLearnedPayloads: unknown[] = [];
   const informationLabel = {
@@ -86,7 +116,7 @@ async function ingestFixtureText(depsOverrides: Partial<ScceKernelDeps>) {
     sourceInformationLabel: informationLabel,
     ...depsOverrides,
     storage: {
-      transaction: async <T>(operation: () => Promise<T>) => operation(),
+      transaction: async <T>(operation: () => Promise<T>) => { transactionDepth++; try { return await operation(); } finally { transactionDepth--; } },
       blobs: {
         put: async (content: Uint8Array) => {
           const hash = idFactory.contentHash(content);
@@ -110,7 +140,7 @@ async function ingestFixtureText(depsOverrides: Partial<ScceKernelDeps>) {
         put: async () => undefined
       },
       model: {
-        putLanguageProfiles: async () => undefined
+        putLanguageProfiles: async (rows: LanguageProfile[]) => { languageWriteDepths.push(transactionDepth); profiles.push(...rows); }
       },
       graph: {
         upsertNodes: async () => undefined,
@@ -118,10 +148,11 @@ async function ingestFixtureText(depsOverrides: Partial<ScceKernelDeps>) {
         upsertHyperedges: async () => undefined
       },
       languageMemory: {
-        putNgramObservationsBatch: async () => undefined,
-        putNgramModels: async () => undefined,
-        putLanguageUnits: async () => undefined,
+        putNgramObservationsBatch: async (rows: NgramObservation[]) => { rawObservationCalls++; rawObservationWrites += rows.length; },
+        putNgramModels: async (rows: NgramModelRecord[]) => { languageWriteDepths.push(transactionDepth); learnedModels.push(...rows); },
+        putLanguageUnits: async (rows: LanguageUnitRecord[]) => { languageWriteDepths.push(transactionDepth); learnedUnits.push(...rows); },
         putLanguagePatterns: async (patterns: LanguagePatternRecord[]) => {
+          languageWriteDepths.push(transactionDepth);
           learnedPatterns.push(...patterns);
         },
         putSemanticFrames: async () => undefined
@@ -149,7 +180,7 @@ async function ingestFixtureText(depsOverrides: Partial<ScceKernelDeps>) {
     uri: "inline://request-requirement-gate-fixture",
     namespace: "fixture",
     mediaType: "application/json",
-    content: REQUEST_REQUIREMENT_CORPUS_TEXT,
+    content,
     sourceAdmission: {
       sourceClass: "owner_local",
       intendedUse: "learned_prior",
@@ -172,5 +203,5 @@ async function ingestFixtureText(depsOverrides: Partial<ScceKernelDeps>) {
   expect(evidence.length).toBeGreaterThan(0);
   expect(quarantined.length).toBeGreaterThan(0);
 
-  return { learnedPatterns, symbolPatternLearnedPayloads };
+  return { learnedPatterns, symbolPatternLearnedPayloads, learnedModels, learnedUnits, profiles, evidence, idFactory, hasher, languageWriteDepths, rawObservationWrites, rawObservationCalls };
 }

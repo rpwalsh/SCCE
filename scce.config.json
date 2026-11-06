@@ -6,7 +6,7 @@
   },
   "database": {
     "url": "postgresql://localhost:5432/scce",
-    "schema": "scce3_runtime"
+    "schema": "scce_runtime"
   },
   "runtime": {
     "workspaceRoot": ".",

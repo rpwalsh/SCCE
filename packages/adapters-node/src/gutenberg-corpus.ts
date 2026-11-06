@@ -150,6 +150,7 @@ export async function trainGutenbergCorpus(input: GutenbergCorpusTrainOptions): 
         mediaType: "text/plain",
         namespace: `corpus:${CORPUS_SOURCE_SYSTEM_IDS.gutenberg}`,
         maxEvidenceChunkBytes: 64 * 1024,
+        skipNgramObservationPersistence: true,
         ngramMaxOrder: input.ngramMaxOrder,
         ngramMaxCountersPerOrder: input.ngramMaxCountersPerOrder,
         ngramVocabularyLimit: input.ngramVocabularyLimit,

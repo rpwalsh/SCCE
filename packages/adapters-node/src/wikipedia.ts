@@ -3,7 +3,7 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
+import { open, stat, type FileHandle } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import path from "node:path";
 import { redactSecretsWithMap, stripApparatusLines, type ContentHash, type IngestedSourceFile, type IngestionCheckpoint, type JsonValue } from "@scce/kernel";
@@ -33,6 +33,8 @@ export interface ResolvedWikipediaCorpus {
 
 export interface WikipediaStreamOptions {
   resumeOffset?: number;
+  /** Absolute ordinal of the cursor block, persisted alongside its compressed offset. */
+  resumeBlockOrdinal?: number;
   /** Distinguishes a committed block at byte zero from a fresh run. */
   resumeAfterBlock?: boolean;
   /** The ingestor freezes index discovery before hashing its input manifest. */
@@ -167,7 +169,7 @@ export async function* streamWikipediaMultistream(corpus: ResolvedWikipediaCorpu
   yield { type: "checkpoint", checkpoint: checkpoint(rootUri, corpus.dumpPath, "extracting", "running", lastOffset, { indexPath: indexPath ?? null, indexMode: indexPath ? "index" : "bz2-magic-scan", resumeOffset: lastOffset, memorySafetyBoundMb: corpus.memorySafetyBoundMb }) };
 
   const blocks = indexPath
-    ? streamWikiBlocks(indexPath, info.size, corpus, options.resumeOffset ?? 0, options.resumeAfterBlock)
+    ? streamWikiBlocks(indexPath, info.size, corpus, options.resumeOffset ?? 0, options.resumeAfterBlock, options.resumeBlockOrdinal)
     : streamWikiBlocksFromDump(corpus.dumpPath, info.size, options.resumeOffset ?? 0, options.resumeAfterBlock);
   for await (const block of blocks) {
     if (emitted >= corpus.maxPagesPerRun) {
@@ -260,11 +262,19 @@ async function* streamBzip2StreamOffsets(dumpPath: string): AsyncIterable<number
   }
 }
 
-async function* streamWikiBlocks(indexPath: string, dumpSize: number, corpus: ResolvedWikipediaCorpus, resumeOffset: number, resumeAfterBlock = false): AsyncIterable<WikiCompressedBlock> {
+export async function* streamWikiBlocks(indexPath: string, dumpSize: number, corpus: Pick<ResolvedWikipediaCorpus, "python">, resumeOffset: number, resumeAfterBlock = false, resumeBlockOrdinal?: number): AsyncIterable<WikiCompressedBlock> {
+  if (resumeBlockOrdinal !== undefined && (!Number.isSafeInteger(resumeBlockOrdinal) || resumeBlockOrdinal < 1)) {
+    throw new Error("Wikipedia resume block ordinal must be a positive safe integer");
+  }
+  const seek = resumeOffset > 0 && resumeBlockOrdinal !== undefined && !indexPath.toLocaleLowerCase().endsWith(".bz2");
+  const indexByteStart = seek ? await seekWikipediaIndexByteOffset(indexPath, resumeOffset) : 0;
   let currentOffset: number | undefined;
   let currentEntries: WikiIndexEntry[] = [];
-  let ordinal = 0;
-  for await (const entry of streamWikiIndex(indexPath, corpus.python)) {
+  let ordinal = seek ? resumeBlockOrdinal! - 1 : 0;
+  for await (const entry of streamWikiIndex(indexPath, corpus.python, indexByteStart)) {
+    if (seek && currentOffset === undefined && entry.compressedOffset !== resumeOffset) {
+      throw new Error("Wikipedia resume cursor block is missing from the index");
+    }
     if (entry.compressedOffset >= dumpSize || (currentOffset !== undefined && entry.compressedOffset < currentOffset)) {
       throw new Error("Wikipedia index offsets are outside the dump or out of order");
     }
@@ -287,7 +297,7 @@ async function* streamWikiBlocks(indexPath: string, dumpSize: number, corpus: Re
   if (currentOffset !== undefined) {
     ordinal++;
     if (afterResumeOffset(currentOffset, resumeOffset, resumeAfterBlock)) yield { compressedOffset: currentOffset, compressedEnd: dumpSize, blockOrdinal: ordinal, entries: currentEntries };
-  } else throw new Error("Wikipedia index contains no page entries");
+  } else throw new Error(seek ? "Wikipedia resume cursor block is missing from the index" : "Wikipedia index contains no page entries");
 }
 
 function afterResumeOffset(offset: number, resumeOffset: number, resumeAfterBlock: boolean): boolean {
@@ -297,8 +307,8 @@ function afterResumeOffset(offset: number, resumeOffset: number, resumeAfterBloc
   return resumeAfterBlock ? offset > resumeOffset : offset >= resumeOffset;
 }
 
-async function* streamWikiIndex(indexPath: string, python: string): AsyncIterable<WikiIndexEntry> {
-  const opened = openIndexText(indexPath, python);
+async function* streamWikiIndex(indexPath: string, python: string, byteStart = 0): AsyncIterable<WikiIndexEntry> {
+  const opened = openIndexText(indexPath, python, byteStart);
   const reader = createInterface({ input: opened.stream, crlfDelay: Infinity });
   try {
     for await (const line of reader) {
@@ -319,9 +329,9 @@ interface CloseableTextStream {
   completed?: () => Promise<void>;
 }
 
-function openIndexText(filePath: string, python: string): CloseableTextStream {
+function openIndexText(filePath: string, python: string, byteStart = 0): CloseableTextStream {
   if (!filePath.toLocaleLowerCase().endsWith(".bz2")) {
-    const stream = createReadStream(filePath, { encoding: "utf8" });
+    const stream = createReadStream(filePath, { encoding: "utf8", start: byteStart });
     return { stream, close: () => stream.destroy() };
   }
   const child = spawn(python, ["-c", "import bz2,sys\nwith bz2.open(sys.argv[1],'rb') as f:\n    while True:\n        b=f.read(1048576)\n        if not b: break\n        sys.stdout.buffer.write(b)\n        sys.stdout.buffer.flush()", filePath], { windowsHide: true, shell: false });
@@ -342,6 +352,67 @@ function openIndexText(filePath: string, python: string): CloseableTextStream {
       if (!child.killed) child.kill();
     }
   };
+}
+
+const INDEX_SEEK_READ_BYTES = 64 * 1024;
+
+interface PositionedIndexEntry {
+  entry: WikiIndexEntry;
+  byteStart: number;
+  nextByte: number;
+}
+
+async function indexEntryAtOrAfter(handle: FileHandle, position: number, size: number): Promise<PositionedIndexEntry | undefined> {
+  const buffer = Buffer.allocUnsafe(INDEX_SEEK_READ_BYTES);
+  let cursor = position;
+  if (cursor > 0) {
+    await handle.read(buffer, 0, 1, cursor - 1);
+    if (buffer[0] !== 10) {
+      while (cursor < size) {
+        const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, size - cursor), cursor);
+        if (!bytesRead) return undefined;
+        const newline = buffer.subarray(0, bytesRead).indexOf(10);
+        cursor += newline < 0 ? bytesRead : newline + 1;
+        if (newline >= 0) break;
+      }
+    }
+  }
+  while (cursor < size) {
+    const byteStart = cursor;
+    const parts: Buffer[] = [];
+    while (cursor < size) {
+      const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, size - cursor), cursor);
+      if (!bytesRead) return undefined;
+      const newline = buffer.subarray(0, bytesRead).indexOf(10);
+      const length = newline < 0 ? bytesRead : newline;
+      parts.push(Buffer.from(buffer.subarray(0, length)));
+      cursor += newline < 0 ? bytesRead : newline + 1;
+      if (newline >= 0) break;
+    }
+    const line = Buffer.concat(parts).toString("utf8").replace(/\r$/u, "");
+    const entry = parseIndexLine(line);
+    if (entry) return { entry, byteStart, nextByte: cursor };
+    if (line.trim()) throw new Error("Wikipedia index contains a malformed page entry");
+  }
+  return undefined;
+}
+
+/** Lower bound in the sorted, uncompressed index; seek probes and the sequential reader share one line parser. */
+export async function seekWikipediaIndexByteOffset(indexPath: string, compressedOffset: number): Promise<number> {
+  if (indexPath.toLocaleLowerCase().endsWith(".bz2")) throw new Error("Wikipedia index seeking requires uncompressed text");
+  const handle = await open(indexPath, "r");
+  try {
+    const { size } = await handle.stat();
+    let lower = 0;
+    let upper = size;
+    while (lower < upper) {
+      const middle = lower + Math.floor((upper - lower) / 2);
+      const positioned = await indexEntryAtOrAfter(handle, middle, size);
+      if (!positioned || positioned.entry.compressedOffset >= compressedOffset) upper = middle;
+      else lower = positioned.nextByte;
+    }
+    return (await indexEntryAtOrAfter(handle, lower, size))?.byteStart ?? size;
+  } finally { await handle.close(); }
 }
 
 function parseIndexLine(line: string): WikiIndexEntry | undefined {

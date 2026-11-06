@@ -29,7 +29,7 @@ const record = {
     }
   ],
   totalTestFiles: vitestFiles.length + sealedFiles.length,
-  status: "generated-after-standard-runners-passed"
+  status: "inventory-only"
 };
 
 const out = path.join(root, "artifacts", "test-inventory.json");

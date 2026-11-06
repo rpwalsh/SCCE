@@ -1,0 +1,79 @@
+{
+  "schema": "scce.refactor.ast_equality.v1",
+  "baseline": "923504e",
+  "source": "packages/kernel/src/mouth.ts",
+  "extractedModule": "packages/kernel/src/mouth-contracts.ts",
+  "normalization": "CRLF converted to LF; declaration text otherwise unchanged",
+  "runtimeFunctionDeclarations": {
+    "count": 351,
+    "sha256": "35efac976caac8f26c1c2d34868b486b1355d73567fa6cc557a24fafe86e856b"
+  },
+  "runtimeVariableDeclarations": {
+    "count": 17,
+    "sha256": "0e5472afefe47840b8689491f55e7a9ddc2f7b9d1b2d819fa9d35d62cef2e015"
+  },
+  "publicMouthExportNames": {
+    "names": [
+      "CaveatBinding",
+      "ConstructNodeId",
+      "ConstructOutputForce",
+      "DEFAULT_FACTUAL_SURFACE_EXTENT",
+      "DetailProfileId",
+      "DiscourseBoundaryKind",
+      "DiscoursePlan",
+      "DiscourseUnit",
+      "DiscourseUnitRole",
+      "EvidenceBinding",
+      "ForceBinding",
+      "InspectRef",
+      "LanguageId",
+      "MeterPatternId",
+      "Mouth",
+      "MouthSemanticInput",
+      "MouthSemanticRelation",
+      "MouthSemanticSlot",
+      "OutputForce",
+      "PropositionAtom",
+      "RealizationFrame",
+      "RealizationOrdering",
+      "RealizationTrace",
+      "RegisterId",
+      "ScriptId",
+      "SpeakInput",
+      "SpokenOutput",
+      "StyleProfile",
+      "StyleProfileId",
+      "SurfaceFormId",
+      "SurfacePlan",
+      "SurfacePoint",
+      "SurfaceRole",
+      "SurfaceTerm",
+      "UncertaintyMarker",
+      "createDeterministicMouth",
+      "createMouth",
+      "creativeRequestFrameContentTerms",
+      "creativeSurfaceSentenceUnits",
+      "inferConstructForces",
+      "resolveLearnedCreativeGenerationExtent",
+      "surfaceCarriesInternalFeatureKeys",
+      "withSurfaceContract"
+    ],
+    "sha256": "54068656c41dc1ee3297c5ef8a01f7da9660f36df9b0906e39f23cd95c6067d3"
+  },
+  "publicInterfaceDeclarations": {
+    "count": 9,
+    "sha256": "6cb9dc51b0650f3be38016f24b0810edb193ee0fee1ab4485937a41050a59463"
+  },
+  "auxiliaryType": {
+    "name": "SurfaceCandidatePath",
+    "definition": "\"generated\"",
+    "reexportedByMouth": false
+  },
+  "moduleRuntimeStatements": 0,
+  "moduleRuntimeImports": 0,
+  "lines": {
+    "mouthBefore": 9658,
+    "mouthAfter": 9519,
+    "module": 191
+  }
+}

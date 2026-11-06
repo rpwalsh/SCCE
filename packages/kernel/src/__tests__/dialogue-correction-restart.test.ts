@@ -87,6 +87,8 @@ describe("dialogue correction across a process restart", () => {
     const selected = corrected.result.selectedCandidate as { audit?: { typedDialogueSelection?: { adjustmentIds?: string[] } } };
     expect(selected.audit?.typedDialogueSelection?.adjustmentIds).toEqual([conversation.adjustmentId]);
     expect(corrected.result.answer).toContain("smallest planet");
+    expect(corrected.result.answer).not.toContain("chemical element");
+    expect(corrected.result.evidence.map(span => String(span.id))).toEqual(["evidence:mercury-planet"]);
   });
 });
 

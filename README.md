@@ -1,43 +1,42 @@
 # SCCE — Self-Contained Cognitive Engine
 
-SCCE is a local cognitive engine that turns material chosen by its operator into persistent evidence, structured knowledge, and language memory. It uses that state to interpret requests, reason over evidence, plan and carry out governed actions, express results, and learn from recorded outcomes.
+SCCE is a local cognitive engine for material selected by its operator. It takes source material through ingestion and learning into persistent evidence, a cognitive graph, and language memory. At runtime it interprets requests, reasons over the available state, plans governed actions, realizes responses, and can learn from recorded outcomes.
 
 ```mermaid
 flowchart LR
-  S[Your sources] --> C[Admit and compile]
-  C --> B[(Evidence, cognitive graph and language memory)]
-  Q[Request and context] --> A[Activate relevant state]
-  B --> A
-  A --> P[Reason and plan]
-  P --> D[Typed decision]
-  D --> R[Realize an answer or review an action]
-  R --> O[Observe the outcome]
-  O --> L[Validate and learn]
-  L --> B
+  S[Operator-selected sources] --> I[Ingest and learn]
+  I --> P[(Persistent evidence, graph and language memory)]
+  Q[Request and context] --> R[Interpret, reason and plan]
+  P --> R
+  R --> A[Governed action or selected meaning]
+  A --> O[Observe outcome]
+  O --> L[Learn and update]
+  L --> P
+  A --> M[Realize response]
 ```
 
-The graph retains participant roles, qualifiers, time and provenance. Bounded cognitive operators work over the relevant state, and explicit plans connect reasoning to responses and actions. Language memory supplies learned constructions and wording; corrections and observed outcomes update persistent state. That complete loop is the engine's organizing principle.
+PostgreSQL is the canonical local store. Source identity and evidence spans are retained alongside learned structures. Language memory is learned from the selected source material; language coverage and output quality depend on the trained data and require separate evaluation. SCCE is not based on English-only hand-authored conversational rules.
 
-The same local engine owns ingestion, durable state, turns, and learning. Its reasoning and language pipeline runs locally without an LLM or hosted inference service. Source evidence keeps its identity and location; language memory is learned from admitted material. Optional perception components are listed in [the model declaration](models.declared.json).
+Evidence and proof are distinct. Source-backed factual claims require admissible evidence; proof or certification metadata is attached where the relevant operation produces it. Proof is not a blanket precondition for every conversational or creative response, and language memory does not establish factual truth.
 
-## Try the local workflow
+## Start locally
 
-[QUICKSTART.md](QUICKSTART.md) covers local setup. The operator selects bounded source material, ingests and trains it into the local PostgreSQL store, inspects the resulting evidence and structures, then runs requests through the existing local runtime. The owner controls what sources are acquired and which proposed actions are approved.
+[QUICKSTART.md](QUICKSTART.md) describes local setup, PostgreSQL configuration, a bounded first corpus, and running the local runtime. [Corpus training](docs/CORPUS_TRAINING.md) documents supported inputs, bounds, lifecycle behavior, and the detailed compilation pipeline. The CLI and server operate on the same local PostgreSQL-backed brain; source acquisition, ingestion, training, and turn processing are not hosted services.
 
-The static workbench packages as ordinary web assets for Cloudflare Pages Free. The browser connects to a loopback SCCE server; PostgreSQL, acquisition, training, and request processing stay on the operator's device. The page cannot browse local files on its own. The operator supplies a pinned public GitHub source or uses the documented local runtime path. See [Static Pages workbench](packages/ui/STATIC_PAGES.md) for the exact origin allowlist, bearer-token, and local-server requirements. The static artifact is verified; the Pages-hosted browser to live local-runtime connection still awaits integration verification. This is a UI, not a hosted brain or serverless turn service.
+Hosting is deferred. The current product path is local operation, with the operator choosing material and approving governed actions. No hosted per-turn compute or prebuilt giant brain is part of this release boundary.
 
-## Current qualification
+## Qualification status
 
-The useful 8 GB initial brain, restartable serving and learned-speech gates remain open. The [build plan](docs/INGESTION_BRAIN_BUILD_PLAN.md) defines acceptance; the [recovery audit](docs/INGESTION_RECOVERY_AUDIT.md) records measured results. See the [acceptance suite](docs/ACCEPTANCE_SUITE.md), [ablation report](docs/ABLATION.md) and [evaluation index](docs/README.md#evidence-and-evaluation) for capability-specific evidence, with the revision and scope of each result.
+SCCE's architecture and available checks do not establish general commercial readiness. The useful user-built initial brain within an 8 GB whole-machine limit, restartable serving, multilingual quality, and learned-speech quality remain open qualification work. The [build plan](docs/INGESTION_BRAIN_BUILD_PLAN.md) defines the acceptance scope; the [recovery audit](docs/INGESTION_RECOVERY_AUDIT.md) records measured results and limits. The [acceptance suite](docs/ACCEPTANCE_SUITE.md), [ablation report](docs/ABLATION.md), and [evaluation index](docs/README.md#evidence-and-evaluation) link capability-specific evidence and its revision scope.
 
 ## Repository
 
 - `packages/kernel` — local reasoning, evidence admission, planning, realization, and learning
 - `packages/adapters-node` — PostgreSQL persistence and local source/runtime adapters
 - `packages/server` — local HTTP API and workbench runtime
-- `packages/ui` — browser workbench, including the static Pages shell
+- `packages/ui` — browser workbench
 - `packages/cli` — command-line ingestion, training, and operations
 - `packages/vscode` — reviewed local workspace actions
 - `docs/` — operating contracts, architecture, qualification plans, and evidence indexes
 
-The PostgreSQL-backed data model is canonical. The source repository is available for inspection; commercial use requires a separate agreement. See [COMMERCIAL.md](COMMERCIAL.md) and [LICENSE](LICENSE).
+The source repository is available for inspection. Commercial use requires a separate agreement; see [COMMERCIAL.md](COMMERCIAL.md) and [LICENSE](LICENSE).

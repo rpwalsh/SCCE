@@ -4,9 +4,13 @@ import { describe, expect, it } from "vitest";
 import { trainLanguageCorpusText } from "../language-corpus-trainer.js";
 import { trainStoredCorpusConstructions } from "../stored-corpus-construction-training.js";
 import { blobContentHash } from "../postgres.js";
-import { createHasher } from "@scce/kernel";
+import { canonicalCorpusSourceSystemId } from "@scce/kernel";
 import type {
   EvidenceSpan,
+  EvidenceBackedSourceVersionQuery,
+  EvidenceQuery,
+  IngestionCheckpoint,
+  LanguageProfileQuery,
   JsonValue,
   LanguagePatternRecord,
   LanguageProfile,
@@ -32,6 +36,12 @@ interface MemoryState {
   evidence: EvidenceSpan[];
   quarantine: QuarantineRecord[];
   blobs: Map<string, Uint8Array>;
+  profiles: LanguageProfile[];
+  patterns: LanguagePatternRecord[];
+  models: NgramModelRecord[];
+  observations: NgramObservation[];
+  checkpoints: Map<string, IngestionCheckpoint>;
+  replayPages: EvidenceBackedSourceVersionQuery[];
 }
 
 const OSS_INFORMATION_LABEL = {
@@ -112,57 +122,76 @@ describe("corpus trainer admission and provenance", () => {
     expect(JSON.stringify(fixture.state.quarantine[0]?.decisionJson)).toContain("unmeasured");
   });
 
-  it("keeps parent provenance on a derived construction-training batch and never promotes it as a source of truth", async () => {
+  it("keeps original source provenance during construction replay without creating a new truth source", async () => {
     const fixture = memoryStorage();
-    const parents = [
-      seedStoredArticle(fixture.state, "wikipedia://enwiki/pages/1/Resolver", corpusText("resolver")),
-      seedStoredArticle(fixture.state, "wikipedia://enwiki/pages/2/Declaration", corpusText("declaration"))
-    ];
+    const parents: Awaited<ReturnType<typeof trainLanguageCorpusText>>[] = [];
+    for (const [title, subject] of [["Resolver", "resolver"], ["Declaration", "declaration"]]) {
+      const uri = `wikipedia://enwiki/pages/${parents.length + 1}/${title}`;
+      parents.push(await trainLanguageCorpusText({ storage: fixture.storage, sourceSystem: "wikipedia",
+        streamUri: uri, sourceUri: uri, text: corpusText(subject!), mediaType: "text/plain", createdAt: 1,
+        informationLabel: OSS_INFORMATION_LABEL, ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64,
+        corpusMetadata: { title: title!, identity: subject! } }));
+    }
+    expect(fixture.state.profiles).toHaveLength(2);
+    expect(fixture.state.evidence.length).toBeGreaterThan(0);
+    expect(fixture.state.evidence.every(span => span.status === "promoted")).toBe(true);
+    for (const profile of fixture.state.profiles) {
+      expect(parents.some(parent => parent.sourceVersionId === String(profile.sourceVersionId))).toBe(true);
+    }
+    const original = structuredClone({ sourceVersions: fixture.state.sourceVersions, evidence: fixture.state.evidence,
+      profiles: fixture.state.profiles, models: fixture.state.models, observations: fixture.state.observations,
+      quarantine: fixture.state.quarantine, blobKeys: [...fixture.state.blobs.keys()] });
+    const originalCompilations = structuredClone(fixture.state.patterns.filter(pattern => pattern.patternKind === "source_compilation"));
+    expect(originalCompilations).toHaveLength(parents.length);
+    const eventStart = fixture.state.events.length;
+    const report = await trainStoredCorpusConstructions({ storage: fixture.storage, sourcePageSize: 1,
+      maxTotalBytes: 1024 * 1024, batchBytes: 1024 * 1024 });
 
-    await trainStoredCorpusConstructions({ storage: fixture.storage, maxTotalBytes: 1024 * 1024, batchBytes: 1024 * 1024 });
-
-    const derived = fixture.state.evidence;
-    expect(derived.length).toBeGreaterThan(0);
-    const provenance = provenanceOf(derived[0]!);
-    expect(provenance.derivation).toBe("construction_training");
-    const derivedFrom = provenance.derivedFrom as Record<string, JsonValue> | undefined;
-    expect(derivedFrom).toBeTruthy();
-    expect(derivedFrom?.sourceVersionIds).toEqual(parents.map(item => item.sourceVersionId));
-    // Doctrine 10: derived learning state is not a new source of truth.
-    expect(derived.some(span => span.status === "promoted")).toBe(false);
+    const sourceIds = parents.map(parent => parent.sourceVersionId).sort((left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right)));
+    expect(report.articlesTrained).toBe(2);
+    expect(report.exhausted).toBe(true);
+    expect(report.batchesFailed).toEqual([]);
+    expect(report.sourcesSkipped).toEqual([]);
+    expect(report.reports.map(item => item.sourceVersionId)).toEqual(sourceIds);
+    expect(report.reports.every(item => item.languagePatterns > 0)).toBe(true);
+    expect(fixture.state.replayPages.filter(query => query.orderBySourceVersionId).map(query => query.afterSourceVersionId))
+      .toEqual([undefined, sourceIds[0], sourceIds[1]]);
+    expect({ sourceVersions: fixture.state.sourceVersions, evidence: fixture.state.evidence, profiles: fixture.state.profiles,
+      models: fixture.state.models, observations: fixture.state.observations, quarantine: fixture.state.quarantine,
+      blobKeys: [...fixture.state.blobs.keys()] }).toEqual(original);
+    expect(fixture.state.patterns.filter(pattern => pattern.patternKind === "source_compilation")).toEqual(originalCompilations);
+    expect(fixture.state.sourceVersions.some(source => source.canonicalUri.startsWith("scce://construction-training/"))).toBe(false);
+    expect(fixture.state.evidence.some(span => provenanceOf(span).derivation === "construction_training")).toBe(false);
+    const evidenceById = new Map(fixture.state.evidence.map(span => [String(span.id), span]));
+    const profilesById = new Map(fixture.state.profiles.map(profile => [profile.id, profile]));
+    const sourceUris = new Set(fixture.state.sourceVersions.map(source => source.canonicalUri));
+    expect(fixture.state.patterns.filter(pattern => pattern.patternKind !== "source_compilation").length).toBeGreaterThan(0);
+    for (const pattern of fixture.state.patterns) {
+      const profile = profilesById.get(pattern.profileId);
+      expect(profile).toBeDefined();
+      for (const id of pattern.evidenceIds) expect(evidenceById.get(String(id))?.sourceVersionId).toBe(profile!.sourceVersionId);
+      const metadata = pattern.patternJson as Record<string, JsonValue>;
+      if (pattern.patternKind === "source_compilation") {
+        expect(pattern.evidenceIds).toEqual([]);
+        expect(metadata.schema).toBe("scce.source_language_compilation_receipt.v1");
+        expect(metadata.forceClass).toBeUndefined();
+        continue;
+      }
+      expect(metadata.forceClass).toBe("learned_language_prior");
+      expect(sourceUris.has(String(metadata.sourceUri))).toBe(true);
+    }
+    const replayedLearning = fixture.state.events.slice(eventStart).filter(event => event.typeId === "SymbolPatternLearned");
+    expect(replayedLearning.map(event => (event.payload as Record<string, JsonValue>).sourceVersionId)).toEqual(sourceIds);
   });
 });
 
-function seedStoredArticle(state: MemoryState, uri: string, text: string): { sourceVersionId: string; contentHash: string } {
-  const hasher = createHasher();
-  const bytes = Buffer.from(text, "utf8");
-  const contentHash = blobContentHash(bytes);
-  const sourceVersionId = `source_version.${hasher.digestHex(Buffer.from(uri, "utf8")).slice(0, 24)}`;
-  state.blobs.set(contentHash, bytes);
-  state.sourceVersions.push({
-    sourceId: `source.${sourceVersionId}`,
-    sourceVersionId,
-    namespace: "corpus:wikipedia",
-    canonicalUri: uri,
-    contentHash,
-    mediaType: "text/plain",
-    observedAt: 1,
-    byteLength: bytes.byteLength,
-    sourceTrust: {
-      identity: 0.98, integrity: 1, parserReliability: 0.92, directness: 0.84,
-      authority: 0.88, freshness: 0.68, independenceGroup: "wikimedia:wikipedia",
-      accessScope: "public", licenseStatus: "licensed"
-    },
-    informationLabel: OSS_INFORMATION_LABEL,
-    metadata: { title: uri }
-  } as unknown as SourceVersion);
-  return { sourceVersionId, contentHash };
-}
-
 function memoryStorage(): { storage: ScceStorage; state: MemoryState } {
-  const state: MemoryState = { events: [], sourceVersions: [], evidence: [], quarantine: [], blobs: new Map() };
-  const hasher = createHasher();
-  const seeded = new Set<string>();
+  const state: MemoryState = { events: [], sourceVersions: [], evidence: [], quarantine: [], blobs: new Map(),
+    profiles: [], patterns: [], models: [], observations: [], checkpoints: new Map(), replayPages: [] };
+  const put = <T extends { id: string }>(rows: T[], row: T) => {
+    const index = rows.findIndex(existing => existing.id === row.id);
+    if (index < 0) rows.push(row); else rows[index] = row;
+  };
   const storage = {
     events: {
       append: async (event: ScceEvent) => { state.events.push(event); },
@@ -176,13 +205,35 @@ function memoryStorage(): { storage: ScceStorage; state: MemoryState } {
       putEvidenceSpan: async (span: EvidenceSpan) => { state.evidence.push(span); },
       putEvidenceSpans: async (spans: readonly EvidenceSpan[]) => { state.evidence.push(...spans); },
       promoteEvidence: async (ids: EvidenceSpan["id"][]) => ids.length,
-      getEvidence: async () => null,
-      getEvidenceBatch: async () => [],
-      searchEvidence: async () => [],
-      sourceVersionsForEvidence: async () => [],
-      listEvidenceBackedSourceVersions: async () => state.sourceVersions
-        .filter(row => seeded.has(String(row.sourceVersionId)) || state.blobs.has(String(row.contentHash)))
-        .map(row => ({ sourceVersionId: row.sourceVersionId, contentHash: row.contentHash, byteLength: row.byteLength, canonicalUri: row.canonicalUri }))
+      getEvidence: async (id: EvidenceSpan["id"]) => state.evidence.find(span => span.id === id) ?? null,
+      getEvidenceBatch: async (ids: EvidenceSpan["id"][]) => state.evidence.filter(span => ids.includes(span.id)),
+      searchEvidence: async (query: EvidenceQuery) => state.evidence
+        .filter(span => (!query.sourceVersionId || span.sourceVersionId === query.sourceVersionId) && (!query.status || span.status === query.status))
+        .slice(0, query.limit).map(span => ({ span, score: span.alpha, reason: "exact source owner" })),
+      sourceVersionsForEvidence: async (ids: EvidenceSpan["id"][]) => {
+        const versions = new Set(state.evidence.filter(span => ids.includes(span.id)).map(span => span.sourceVersionId));
+        return state.sourceVersions.filter(source => versions.has(source.sourceVersionId));
+      },
+      listEvidenceBackedSourceVersions: async (query: EvidenceBackedSourceVersionQuery = {}) => {
+        state.replayPages.push(structuredClone(query));
+        return state.sourceVersions.filter(source => {
+          const id = String(source.sourceVersionId);
+          const metadata = source.metadata as Record<string, JsonValue>;
+          const declared = canonicalCorpusSourceSystemId(String(metadata.sourceSystemId ?? metadata.sourceSystem));
+          return state.evidence.some(span => span.sourceVersionId === source.sourceVersionId && span.status === "promoted")
+            && (!query.afterSourceVersionId || Buffer.compare(Buffer.from(id), Buffer.from(query.afterSourceVersionId)) > 0)
+            && (!query.sourceVersionIds?.length || query.sourceVersionIds.includes(id))
+            && (!query.sourceSystem || canonicalCorpusSourceSystemId(query.sourceSystem) === declared)
+            && (!query.sourceSystems?.length || query.sourceSystems.some(system => canonicalCorpusSourceSystemId(system) === declared))
+            && (!query.includeUriPrefixes?.length || query.includeUriPrefixes.some(prefix => source.canonicalUri.startsWith(prefix)))
+            && !(query.excludeUriPrefixes ?? []).some(prefix => source.canonicalUri.startsWith(prefix))
+            && (query.minByteLength === undefined || source.byteLength >= query.minByteLength)
+            && (query.maxByteLength === undefined || source.byteLength <= query.maxByteLength);
+        }).sort((left, right) => Buffer.compare(Buffer.from(String(left.sourceVersionId)), Buffer.from(String(right.sourceVersionId))))
+          .slice(0, query.limit).map(source => ({ sourceVersionId: source.sourceVersionId, contentHash: source.contentHash,
+            byteLength: source.byteLength, canonicalUri: source.canonicalUri,
+            promotedSpanCount: state.evidence.filter(span => span.sourceVersionId === source.sourceVersionId && span.status === "promoted").length }));
+      }
     },
     blobs: {
       put: async (bytes: Uint8Array) => { const hash = blobContentHash(bytes); state.blobs.set(hash, bytes); return hash; },
@@ -202,29 +253,36 @@ function memoryStorage(): { storage: ScceStorage; state: MemoryState } {
       decide: async () => undefined
     },
     model: {
-      readModel: async () => ({ languageProfiles: [], latentConcepts: [], learnedProgramPatterns: [], learningGoals: [], trainingSteps: 0 }),
+      readModel: async () => ({ languageProfiles: state.profiles, latentConcepts: [], learnedProgramPatterns: [], learningGoals: [], trainingSteps: 0 }),
       writeModel: async () => undefined,
-      putLanguageProfile: async (_profile: LanguageProfile) => undefined,
-      listLanguageProfiles: async () => []
+      putLanguageProfile: async (profile: LanguageProfile) => { put(state.profiles, profile); },
+      listLanguageProfiles: async (query?: number | LanguageProfileQuery) => state.profiles
+        .filter(profile => typeof query === "number" || !query?.sourceVersionIds?.length || query.sourceVersionIds.includes(profile.sourceVersionId))
+        .slice(0, typeof query === "number" ? query : query?.limit)
     },
     languageMemory: {
-      putNgramObservation: async (_row: NgramObservation) => undefined,
-      putNgramObservationsBatch: async (_rows: readonly NgramObservation[]) => undefined,
-      putNgramModel: async (_row: NgramModelRecord) => undefined,
-      putNgramModels: async (_rows: readonly NgramModelRecord[]) => undefined,
+      putNgramObservation: async (row: NgramObservation) => { put(state.observations, row); },
+      putNgramObservationsBatch: async (rows: readonly NgramObservation[]) => { for (const row of rows) put(state.observations, row); },
+      putNgramModel: async (row: NgramModelRecord) => { put(state.models, row); },
+      putNgramModels: async (rows: readonly NgramModelRecord[]) => { for (const row of rows) put(state.models, row); },
       putLanguageUnit: async (_row: LanguageUnitRecord) => undefined,
       putLanguageUnits: async (_rows: readonly LanguageUnitRecord[]) => undefined,
-      putLanguagePattern: async (_row: LanguagePatternRecord) => undefined,
-      putLanguagePatterns: async (_rows: readonly LanguagePatternRecord[]) => undefined,
+      putLanguagePattern: async (row: LanguagePatternRecord) => { put(state.patterns, row); },
+      putLanguagePatterns: async (rows: readonly LanguagePatternRecord[]) => { for (const row of rows) put(state.patterns, row); },
       putSemanticFrame: async (_row: SemanticFrameRecord) => undefined,
       putSemanticFrames: async (_rows: readonly SemanticFrameRecord[]) => undefined,
       putTranslationAlignment: async () => undefined,
-      listNgramModels: async () => [],
-      listNgramObservations: async () => [],
+      listNgramModels: async () => state.models,
+      listNgramObservations: async () => state.observations,
       listLanguageUnits: async () => [],
       listLanguagePatterns: async () => [],
       listSemanticFrames: async () => [],
       listTranslationAlignments: async () => []
+    },
+    ingestion: {
+      put: async (checkpoint: IngestionCheckpoint) => { state.checkpoints.set(checkpoint.id, structuredClone(checkpoint)); },
+      get: async (id: string) => state.checkpoints.get(id) ?? null,
+      list: async () => [...state.checkpoints.values()]
     },
     graph: { getSlice: async () => ({ nodes: [], edges: [], hyperedges: [], bounded: true, query: {} }) },
     init: async () => undefined,

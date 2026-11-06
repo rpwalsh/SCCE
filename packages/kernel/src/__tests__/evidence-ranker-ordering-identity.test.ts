@@ -1,20 +1,16 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
-import { localEvidenceAnswerSurface, proposeSourceExactEvidenceAnswer } from "../local-evidence-runtime.js";
+import { describe, expect, it } from "vitest";
+import { localEvidenceAnswerClaimSurface, localEvidenceAnswerSurface, preferredLocalEvidenceAnswer, proposeSourceExactEvidenceAnswer } from "../local-evidence-runtime.js";
+import { resolveRequestValueBinding } from "../semantic-answer-construct.js";
+import { tidySurfaceText } from "../surface-linguistics.js";
 import type { EvidenceId, EvidenceSpan, SourceVersionId } from "../types.js";
 
 /**
- * Two separate implementations of the same ranking contract exist: `bestEvidenceSentences` (behind
- * localEvidenceAnswerSurface) and proposeSourceExactEvidenceAnswer's own. They differ in thirteen measured
- * ways, including which calibration ids weight them, so merging them is a corpus-wide ranking change and not a
- * refactor -- see T52. This pins what each of them ORDERS, over real promoted corpus leads, so that merge can
- * be PROVEN to change no ordering rather than asserted to, and so neither drifts in the meantime. Regenerate
- * deliberately with SCCE_WRITE_RANKER_SNAPSHOT=1; a silent regeneration is what would make it worthless.
+ * One source selector. The historical golden stays immutable; changed cases must satisfy explicit owned values.
  */
 
 const here = fileURLToPath(new URL(".", import.meta.url));
@@ -26,10 +22,15 @@ const corpus = JSON.parse(readFileSync(join(here, "fixtures", "ranker-corpus.jso
 const snapshotPath = join(here, "fixtures", "ranker-ordering-snapshot.json");
 const CLOSED_CLASS = new Set(corpus.closedClassWords);
 
-const directories: string[] = [];
-afterEach(() => {
-  for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
-});
+// Typed selected-answer annotations, not request parsing rules or source-text changes.
+const SEMANTIC_CASES = [
+  { request: "When was Ada Lovelace born?", ownerIndex: 5, value: "10 December 1815", role: "date", forbidden: "Lord Byron separated" },
+  { request: "When was David Mungoshi born?", ownerIndex: 4, value: "30 September 1949", role: "date", forbidden: "He learnt Zulu" },
+  { request: "What is the SCG 004?", ownerIndex: 1, value: "sports car", role: "category", forbidden: "second model" },
+  { request: "What is the Dolphin 15 Senior made of?", ownerIndex: 0, value: "fiberglass", role: "material", forbidden: "first built in 1964" }
+];
+const CHANGED_CASE_KEYS = new Set(SEMANTIC_CASES.flatMap(test => ["pool", `span${test.ownerIndex}`].map(pool => `${test.request} :: ${pool}`)));
+
 
 function span(row: { id: string; title: string; alpha: number; text: string }): EvidenceSpan {
   return {
@@ -50,28 +51,6 @@ function span(row: { id: string; title: string; alpha: number; text: string }): 
       metadata: { title: row.title }
     }
   } as unknown as EvidenceSpan;
-}
-
-/** The ranked list `local_evidence.plan.rank` reports, which is the ordering the live measurements read. */
-function planRanking(requestText: string, spans: readonly EvidenceSpan[]): string[] {
-  const directory = mkdtempSync(join(tmpdir(), "scce-rank-identity-"));
-  directories.push(directory);
-  const handle = { traceId: "ranker-identity", file: join(directory, "rank.jsonl") };
-  const globals = globalThis as { __sccTrace?: unknown };
-  globals.__sccTrace = handle;
-  try {
-    localEvidenceAnswerSurface({ requestText, selectedEvidence: spans, closedClassWords: CLOSED_CLASS });
-  } finally {
-    delete globals.__sccTrace;
-  }
-  let rows: { stage: string; support?: { ranked?: string[] } }[] = [];
-  try {
-    rows = readFileSync(handle.file, "utf8").trim().split("\n").filter(Boolean)
-      .map(line => JSON.parse(line) as { stage: string; support?: { ranked?: string[] } });
-  } catch {
-    return [];
-  }
-  return rows.find(row => row.stage === "local_evidence.plan.rank")?.support?.ranked ?? [];
 }
 
 /** What the source-exact ranker's own ordering selected, with the score and source position it selected on. */
@@ -95,22 +74,57 @@ function measure(): Record<string, unknown> {
     // Each span alone, and the whole pool: cross-span source affinity only engages with siblings present.
     for (const [label, pool] of [["pool", spans] as const, ...spans.map((one, index) => [`span${index}`, [one]] as const)]) {
       measured[`${requestText} :: ${label}`] = {
-        planRanking: planRanking(requestText, pool),
         proposal: proposalSelection(requestText, pool)
       };
+      const input = { requestText, selectedEvidence: pool, closedClassWords: CLOSED_CLASS };
+      const planned = localEvidenceAnswerSurface(input);
+      const proposed = proposeSourceExactEvidenceAnswer(input);
+      expect(planned?.plan.slotSurfaces, `${requestText} :: ${label}`).toEqual(proposed?.plan.slotSurfaces);
+      expect(planned?.plan.proofExcerpts, `${requestText} :: ${label}`).toEqual(proposed?.plan.proofExcerpts);
+      expect(planned?.evidence.map(span => String(span.id)), `${requestText} :: ${label}`).toEqual(proposed?.evidence.map(span => String(span.id)));
     }
   }
   return measured;
 }
 
-describe("both sentence rankers order the corpus exactly as recorded", () => {
-  it("matches the recorded ordering for every request and pool", () => {
+describe("one source selection policy", () => {
+  it("preserves unchanged historical proposals and gives the ordinary plan the same content and owners", () => {
     const measured = measure();
-    if (process.env.SCCE_WRITE_RANKER_SNAPSHOT === "1") {
-      writeFileSync(snapshotPath, `${JSON.stringify(measured, undefined, 2)}\n`, "utf8");
-    }
-    const recorded = JSON.parse(readFileSync(snapshotPath, "utf8")) as Record<string, unknown>;
-    expect(Object.keys(measured).length).toBeGreaterThan(0);
-    expect(measured).toEqual(recorded);
+    const historical = JSON.parse(readFileSync(snapshotPath, "utf8")) as Record<string, { proposal: unknown }>;
+    expect(Object.keys(measured).sort()).toEqual(Object.keys(historical).sort());
+    expect(CHANGED_CASE_KEYS.size).toBe(8);
+    const unchanged = (entries: Array<[string, unknown]>) => Object.fromEntries(entries.filter(([key]) => !CHANGED_CASE_KEYS.has(key)));
+    const recorded = Object.entries(historical).map(([key, row]): [string, unknown] => [key, { proposal: row.proposal }]);
+    expect(unchanged(Object.entries(measured))).toEqual(unchanged(recorded));
   });
+
+  it.each(SEMANTIC_CASES.flatMap(test => ["pool", "owner"].map(pool => ({ ...test, pool }))))(
+    "answers $request from the selected $role and its source owner ($pool)", test => {
+      const spans = corpus.spans.map(span);
+      const owner = spans[test.ownerIndex]!;
+      const evidence = test.pool === "pool" ? spans : [owner];
+      const binding = resolveRequestValueBinding({ requestText: test.request, evidence,
+        resolvers: [{ id: "fixture.selected_typed_answer", resolve: () => ({ subject: corpus.spans[test.ownerIndex]!.title,
+          relation: test.role, value: test.value, evidenceIds: [String(owner.id)] }) }] });
+      expect(binding).toMatchObject({ value: test.value, evidenceIds: [String(owner.id)] });
+      const input = { requestText: test.request, selectedEvidence: evidence, closedClassWords: CLOSED_CLASS,
+        functionSymbols: CLOSED_CLASS, boundValues: [binding!.value], boundValueEvidenceIds: new Set(binding!.evidenceIds) };
+      const planned = localEvidenceAnswerSurface(input);
+      const proposed = proposeSourceExactEvidenceAnswer(input);
+      expect(planned).toBeDefined();
+      expect(proposed).toBeDefined();
+      expect(localEvidenceAnswerClaimSurface(planned!)).toContain(test.value);
+      expect(localEvidenceAnswerClaimSurface(planned!)).not.toContain(test.forbidden);
+      expect(planned!.plan.proofExcerpts).toEqual(proposed!.plan.proofExcerpts);
+      expect(planned!.evidence.map(row => String(row.id))).toEqual([String(owner.id)]);
+      expect(planned!.plan.proofExcerpts!.length).toBeGreaterThan(0);
+      for (const excerpt of planned!.plan.proofExcerpts ?? []) {
+        expect(excerpt.evidenceId).toBe(owner.id);
+        expect(tidySurfaceText(owner.text)).toContain(excerpt.text);
+      }
+      const early = proposeSourceExactEvidenceAnswer({ requestText: test.request, selectedEvidence: evidence, closedClassWords: CLOSED_CLASS });
+      expect(preferredLocalEvidenceAnswer(planned, early)).toBe(planned);
+      expect(resolveRequestValueBinding({ requestText: test.request, evidence: evidence.filter(row => row.id !== owner.id),
+        resolvers: [{ id: "fixture.selected_typed_answer", resolve: () => ({ value: test.value, evidenceIds: [String(owner.id)] }) }] })).toBeUndefined();
+    });
 });

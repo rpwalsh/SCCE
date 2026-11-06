@@ -79,6 +79,26 @@ describe("renderWorkbench", () => {
     expect(html).not.toContain("SCCE_API_BEARER_TOKEN=");
   });
 
+  it("gives the local workbench the same readable chrome and in-memory bearer connector", () => {
+    const html = renderWorkbench("http://127.0.0.1:3874");
+    for (const text of ["Connect runtime", "Connect your local brain", "Ask SCCE a question", "Send", "Runtime details", "Evidence", "Local API address", "API bearer token"]) {
+      expect(html).toContain(text);
+    }
+    for (const key of ["chat.empty.title", "composer.placeholder", "button.send", "app.developer_panel"]) {
+      expect(html).not.toContain(key);
+    }
+    expect(html).toContain('value="http://127.0.0.1:3874"');
+    expect(html).toContain("['127.0.0.1', 'localhost', '[::1]']");
+    expect(html).toContain("parsed.protocol !== 'http:'");
+    expect(html).toContain("headers.set('authorization', 'Bearer ' + connectorToken)");
+    expect(html).toContain("const response = await apiFetch('/api/ready')");
+    expect(html).not.toContain("get('/api/ready')");
+    expect(html).toContain("localStorage.setItem('scce.localApiOrigin'");
+    expect(html).not.toMatch(/localStorage\.setItem\([^)]*(?:token|bearer)/iu);
+    expect(html).toContain("connectorToken = ''");
+    expect(html).toContain("document.getElementById('connector-token').value = ''");
+  });
+
   it("keeps a hostile server origin inside the script string it is embedded in", () => {
     const html = renderWorkbench('http://127.0.0.1:3873"></script><script>alert(1)</script>');
     expect(html).not.toContain("<script>alert(1)</script>");
@@ -91,12 +111,12 @@ describe("renderWorkbench", () => {
     expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
   });
 
-  it("renders each surface as its own identifier, with no message table on the page", () => {
+  it("renders readable operator chrome independent of trained language memory", () => {
     const html = renderWorkbench("http://127.0.0.1:3873");
-    for (const id of ["side.explorer", "side.evidence", "side.approvals", "side.settings", "chat.empty.title"]) {
-      expect(html, `surface id ${id} is not rendered`).toContain(`>${id}<`);
+    for (const text of ["Workspace", "Evidence", "Approvals", "Local settings", "Connect your local brain"]) {
+      expect(html, `readable operator label ${text} is not rendered`).toContain(text);
     }
-    // Nothing on the page maps an id to wording, and the document declares no authored language.
+    // UI chrome is concise operator wording and never renders a message table or engine-language model.
     expect(html).not.toContain("I18N");
     expect(html).toContain('<html lang="und">');
   });

@@ -8,6 +8,7 @@ import {
   createSemanticProofSystem,
   createSourceGraphBuilder,
   PROPOSITION_GRAPH_NODE_SCHEMA,
+  SEMANTIC_CONSTRAINT,
   toJsonValue,
   type EvidenceSpan,
   type GraphNode,
@@ -101,5 +102,39 @@ describe("a stored proposition role carries its value, not its derivations", () 
       })
     }));
     expect(proof.atomizeGraph(legacy)).toEqual(proof.atomizeGraph(nodes));
+  });
+
+  it("retains service-year quantity roles after the four birth-date numbers in a real source lead", () => {
+    const text = "Abraham Lincoln (February 12, 1809 April 15, 1865) was the 16th president of the United States, serving from 1861 until his assassination in 1865.";
+    const sourceVersionId = ids.sourceVersionId(text);
+    const stored = builder.build({ sourceVersionId, uri: "fixture://lincoln", mediaType: "text/plain", languageProfile,
+      evidence: [spanFor("fixture://lincoln", text, sourceVersionId)], observedAt: 100 }).nodes;
+    const atoms = proof.atomizeGraph(stored);
+    const quantities = atoms.flatMap(atom => atom.constraints.filter(constraint => constraint.kind === SEMANTIC_CONSTRAINT.QUANTITY)
+      .map(constraint => ({ name: constraint.subject, value: (constraint.value as { value: number }).value })));
+    expect(quantities).toEqual(expect.arrayContaining([{ name: "q4", value: 1861 }, { name: "q5", value: 1865 }]));
+    const roles = atoms.flatMap(atom => atom.roles);
+    expect(roles).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "q4", value: "1861" }),
+      expect.objectContaining({ name: "q5", value: "1865" })
+    ]));
+    for (const atom of atoms) for (const constraint of atom.constraints.filter(constraint => constraint.kind === SEMANTIC_CONSTRAINT.QUANTITY)) {
+      expect(atom.roles.some(role => role.name === constraint.subject)).toBe(true);
+    }
+  });
+
+  it.each([
+    "It is measured on a scale from 0 (corresponding to a black body that absorbs all incident radiation) to 1 (corresponding to a body that reflects all incident radiation).",
+    "甲 乙 丙 丁 戊 己 庚 辛 壬 癸 子 丑 寅 卯 辰 巳 午 未 申 酉 戌 亥 ０ １。",
+    "qalpha qbravo qcharlie qdelta qecho qfoxtrot qgolf qhotel qindia qjuliet qkilo qlima qmike qnovember qoscar qpapa qquebec qromeo qsierra qtango quniform qvictor qwhiskey qxray qyankee qzulu."
+  ])("keeps every source symbol in its acquired argument roles: %s", text => {
+    const sourceVersionId = ids.sourceVersionId(text);
+    const stored = builder.build({ sourceVersionId, uri: "fixture://complete-roles", mediaType: "text/plain", languageProfile,
+      evidence: [spanFor("fixture://complete-roles", text, sourceVersionId)], observedAt: 100 }).nodes;
+    const atoms = proof.atomizeGraph(stored);
+    expect(atoms.length).toBeGreaterThan(0);
+    const retained = new Set(atoms.flatMap(atom => [atom.predicate, ...atom.roles.flatMap(role => symbolizeData(role.value))]));
+    for (const symbol of symbolizeData(text).filter(symbol => /[\p{Letter}\p{Number}]/u.test(symbol))) expect(retained.has(symbol)).toBe(true);
+    if (text.startsWith("It")) expect(atoms.some(atom => atom.roles.some(role => role.name === "arg1" && role.value.includes("to 1")))).toBe(true);
   });
 });

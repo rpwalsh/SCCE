@@ -1,0 +1,71 @@
+{
+  "schema": "scce.refactor.ast_equality.v1",
+  "baseline": "93bb843edd6278ce1fbcfd618800d288d0e4eb54",
+  "source": "packages/kernel/src/mouth.ts",
+  "extractedModule": "packages/kernel/src/mouth-surface-text.ts",
+  "normalization": "CRLF converted to LF; function-body text otherwise unchanged",
+  "functionBodies": {
+    "count": 386,
+    "sha256": "2ec590ed5ae579f9eb4e9ac8b86564ecc403e8244d27d01a5ed84025c8e5d6a7"
+  },
+  "publicExportDeclarations": {
+    "count": 19,
+    "sha256": "d7ebd874eb2b06f908b6180eaa262467c5d9184646ca47bcb5f37f59dd59bf60"
+  },
+  "privateIdentityOwnerDeclarations": {
+    "count": 7,
+    "sha256": "7d1a252c69eb71be388d2d18f3d6537e4b404673b518363e08f8da788d1ac695"
+  },
+  "movedDeclarations": [
+    "MINIMUM_REPEATED_TOKEN_SPAN",
+    "isLikelySentenceBoundary",
+    "isLikelyInlineOnlyBoundary",
+    "isBoundaryGlyph",
+    "withoutBracketedAsides",
+    "closeSpacingAfterCut",
+    "normalizeEvidenceSentence",
+    "stripOuterSurfaceBoundary",
+    "isSurfaceBoundaryChar",
+    "removeEmptyLines",
+    "SurfaceTokenOffset",
+    "surfaceTokenOffsets",
+    "collapseRepeatedTokenSpans",
+    "longestRepeatedTokenSpan",
+    "SURFACE_DELIMITER_PAIRS",
+    "SURFACE_OPENING_BY_CLOSER",
+    "SURFACE_CLOSING_DELIMITERS",
+    "SURFACE_SENTENCE_TRAILING_CLOSERS",
+    "extentUnitHasTerminalBoundary",
+    "surfaceCodePointLength",
+    "compactAnchorSurface",
+    "compactWholeWordSurface",
+    "normalizeSurfaceEcho",
+    "collapseEmptyBracketLead",
+    "collapseRepeatedSurfaceUnits",
+    "collapseRepeatedSurfaceSequences",
+    "repeatedSurfaceSymbolKey",
+    "collapseRepeatedSentenceSegments",
+    "nearDuplicateSentence",
+    "lexicalSurfaceSymbols",
+    "splitSurfaceSentences",
+    "collapseRepeatedInlineBoundaries",
+    "repairSurfaceDelimiterBalance",
+    "isLetterChar",
+    "isDigitChar",
+    "splitLines",
+    "collapseWhitespace",
+    "tidySurface",
+    "collapseConsecutiveBoundaryGlyphs",
+    "splitWhitespace",
+    "isWhitespaceChar"
+  ],
+  "moduleImports": [
+    "./primitives.js",
+    "./surface-linguistics.js"
+  ],
+  "lines": {
+    "mouthBefore": 10091,
+    "mouthAfter": 9658,
+    "module": 468
+  }
+}

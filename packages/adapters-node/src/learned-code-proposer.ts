@@ -6,6 +6,7 @@ import {
   anchorFeatureSet,
   codeIntentFromDocumentation,
   codeLanguageForPath,
+  codeLanguageForModelRecord,
   induceCodeConstructions,
   codeSurfaceTokens,
   codeIdentifierTokens,
@@ -209,7 +210,8 @@ export function createLearnedCodeProposer(options: LearnedCodeProposerOptions): 
       log(`attempt ${attempt} (offer ${retry + 1} of ${candidates.length}): composed ${languageId} from ${models.length} trained models (${candidate.strategy}, avg log p ${candidate.averageLogProbability.toFixed(3)})`);
       return {
         operations: [learnedCodeRepairOperation(candidate, context.targetPath)],
-        surface: candidate.surface
+        surface: candidate.surface,
+        source: "learned_construction"
       };
     }
   };
@@ -363,11 +365,7 @@ async function loadCodeModels(storage: ScceStorage, languageId: string, limit: n
 }
 
 function modelLanguage(record: NgramModelRecord): string | undefined {
-  const stored = jsonRecord(record.modelJson);
-  const declared = stored.formalLanguage;
-  if (typeof declared === "string" && declared) return declared;
-  // The stream id is `<source system>:<relative path>`; the path's extension is the language.
-  return codeLanguageForPath(record.streamId);
+  return codeLanguageForModelRecord(record);
 }
 
 /** A stored model back into the runtime shape, or nothing when the record does not carry one. */

@@ -148,6 +148,8 @@ interface ByteIndexedChar {
   charEnd: number;
   byteStart: number;
   byteEnd: number;
+  utf16Start: number;
+  utf16End: number;
 }
 
 interface ChunkBoundary {
@@ -162,11 +164,14 @@ function buildByteIndex(text: string): ByteIndexedChar[] {
   const out: ByteIndexedChar[] = [];
   let charOffset = 0;
   let byteOffset = 0;
+  let utf16Offset = 0;
   for (const char of text) {
     const size = Buffer.byteLength(char, "utf8");
-    out.push({ char, charStart: charOffset, charEnd: charOffset + 1, byteStart: byteOffset, byteEnd: byteOffset + size });
+    out.push({ char, charStart: charOffset, charEnd: charOffset + 1, byteStart: byteOffset, byteEnd: byteOffset + size,
+      utf16Start: utf16Offset, utf16End: utf16Offset + char.length });
     charOffset++;
     byteOffset += size;
+    utf16Offset += char.length;
   }
   return out;
 }
@@ -206,7 +211,7 @@ function segmentByParagraphs(text: string, maxBytes: number, byteIndex: ByteInde
       chunks.push(...splitOversized(paragraph, maxBytes, byteIndex));
       continue;
     }
-    current = current ? mergeChunks(current, paragraph, text) : paragraph;
+    current = current ? mergeChunks(current, paragraph, text, byteIndex) : paragraph;
   }
   if (current) chunks.push(current);
   return chunks.length ? chunks : text ? [{ text, charStart: 0, charEnd: [...text].length, byteStart: 0, byteEnd: Buffer.byteLength(text, "utf8") }] : [];
@@ -218,7 +223,7 @@ function paragraphBoundaries(text: string, byteIndex: ByteIndexedChar[]): ChunkB
   let match: RegExpExecArray | null;
   while ((match = re.exec(text))) {
     const raw = match[0];
-    const charStart = codePointOffsetAtUtf16(text, match.index);
+    const charStart = codePointOffsetAtUtf16(byteIndex, match.index);
     const charEnd = charStart + [...raw].length;
     out.push({ text: raw, charStart, charEnd, byteStart: byteAt(byteIndex, charStart), byteEnd: byteAt(byteIndex, charEnd) });
     if (match.index === re.lastIndex) re.lastIndex++;
@@ -255,9 +260,9 @@ function boundary(text: string, charStart: number, charEnd: number, byteIndex: B
   return { text, charStart, charEnd, byteStart: byteAt(byteIndex, charStart), byteEnd: byteAt(byteIndex, charEnd) };
 }
 
-function mergeChunks(left: ChunkBoundary, right: ChunkBoundary, fullText: string): ChunkBoundary {
+function mergeChunks(left: ChunkBoundary, right: ChunkBoundary, fullText: string, byteIndex: ByteIndexedChar[]): ChunkBoundary {
   return {
-    text: sliceByCodePoints(fullText, left.charStart, right.charEnd),
+    text: fullText.slice(utf16AtCodePoint(byteIndex, left.charStart), utf16AtCodePoint(byteIndex, right.charEnd)),
     charStart: left.charStart,
     charEnd: right.charEnd,
     byteStart: left.byteStart,
@@ -271,13 +276,19 @@ function byteAt(byteIndex: ByteIndexedChar[], charOffset: number): number {
   return byteIndex[charOffset]?.byteStart ?? byteIndex[byteIndex.length - 1]?.byteEnd ?? 0;
 }
 
-function codePointOffsetAtUtf16(text: string, utf16Offset: number): number {
-  if (utf16Offset <= 0) return 0;
-  return [...text.slice(0, utf16Offset)].length;
+function codePointOffsetAtUtf16(byteIndex: ByteIndexedChar[], utf16Offset: number): number {
+  let low = 0;
+  let high = byteIndex.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (byteIndex[middle]!.utf16Start < utf16Offset) low = middle + 1;
+    else high = middle;
+  }
+  return low;
 }
 
-function sliceByCodePoints(text: string, start: number, end: number): string {
-  return [...text].slice(start, end).join("");
+function utf16AtCodePoint(byteIndex: ByteIndexedChar[], offset: number): number {
+  return byteIndex[offset]?.utf16Start ?? byteIndex.at(-1)?.utf16End ?? 0;
 }
 
 function detectSections(text: string, byteIndex: ByteIndexedChar[]): SectionBoundary[] {
@@ -297,8 +308,8 @@ function detectSections(text: string, byteIndex: ByteIndexedChar[]): SectionBoun
       const depth = markdown ? (markdown[1]?.length ?? 1) : numbered ? (numbered[1]?.split(".").length ?? 1) : 1;
       const utf16Start = match.index + line.indexOf(trimmed);
       const utf16End = utf16Start + trimmed.length;
-      const charStart = codePointOffsetAtUtf16(text, utf16Start);
-      const charEnd = codePointOffsetAtUtf16(text, utf16End);
+      const charStart = codePointOffsetAtUtf16(byteIndex, utf16Start);
+      const charEnd = codePointOffsetAtUtf16(byteIndex, utf16End);
       sections.push({
         index: sections.length,
         title: title.trim(),

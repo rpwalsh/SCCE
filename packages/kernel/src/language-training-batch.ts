@@ -1,7 +1,8 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import {
-  compileLanguageConstructionPattern,
+  compileLanguageConstructionPatterns,
+  SOURCE_EXAMPLE_CONSTRUCTION_STORAGE,
   type SourceBoundLanguageConstructionTrainingSet
 } from "./language-construction-memory.js";
 import {
@@ -91,6 +92,9 @@ import {
 } from "./optional-null-realization.js";
 import type { LanguageMemoryRuntime } from "./language-memory-runtime.js";
 import { toJsonValue } from "./primitives.js";
+import { LANGUAGE_TRAINING_BATCH_RECIPE_ID, LANGUAGE_TRAINING_CHUNK_UTF16_LIMIT } from "./language-training-recipe.js";
+import { stampSourceLanguageCompilation } from "./source-language-compilation.js";
+import { CORPUS_ROLE_IDS, corpusRoleIdForSourceSystem } from "./corpus-registry.js";
 import { buildSurfaceLattice } from "./surface-lattice.js";
 import { evidenceSourceFamilyId } from "./source-family.js";
 import type {
@@ -110,8 +114,12 @@ import type {
   Hasher,
   JsonValue,
   LanguageProfile,
-  SourceVersionId
+  SourceVersionId,
+  SourceId,
+  ContentHash
 } from "./types.js";
+
+export { LANGUAGE_TRAINING_BATCH_RECIPE_ID } from "./language-training-recipe.js";
 
 /**
  * The single in-memory compilation boundary shared by file ingestion, corpus
@@ -124,6 +132,7 @@ export interface LanguageTrainingBatch {
   sourceSystem?: string;
   profile: LanguageProfile;
   sourceVersionId: SourceVersionId;
+  canonicalSource?: { sourceId: SourceId; contentHash: ContentHash };
   text: string;
   evidence: EvidenceSpan[];
   createdAt: number;
@@ -131,9 +140,13 @@ export interface LanguageTrainingBatch {
   maxCountersPerOrder?: number;
   vocabularyLimit?: number;
   retainNgramObservations?: boolean;
+  /** Relearn source-owned constructions without replacing an existing full language compilation. */
+  artifactScope?: "construction_only";
   /** Train the language layer only: n-gram observations, models, units, frames. No construction induction or alignment. */
   languageOnly?: boolean;
   constructionSets?: readonly SourceBoundLanguageConstructionTrainingSet[];
+  /** Owned durable evidence for construction learning; n-grams and graph alignment still use this document's evidence. */
+  constructionEvidence?: readonly EvidenceSpan[];
   additionalPatterns?: readonly LanguagePatternRecord[];
   graphSnapshot?: GraphSnapshot;
   maxAlignmentCandidateDegree?: number;
@@ -175,6 +188,10 @@ export interface LanguageTrainingConstructionPromotionReport {
   promotedSuppliedConstructionSets: number;
   promotedInducedConstructionSets: number;
   rejectedInducedConstructionSets: number;
+  sourceObservedInducedConstructionSets: number;
+  failedInducedConstructionSets: number;
+  trainDocumentIds: string[];
+  heldOutDocumentIds: string[];
   thresholds: {
     minHeldOutOccurrences: number;
     minPrePredicateCoverage: number;
@@ -237,8 +254,10 @@ export function compileLanguageTrainingBatch(input: {
   hasher: Hasher;
 }): CompiledLanguageTrainingBatch {
   const { batch } = input;
+  const formalCode = Boolean(batch.sourceSystem && corpusRoleIdForSourceSystem(batch.sourceSystem) === CORPUS_ROLE_IDS.softwareSymbolic);
+  const induceNaturalLanguage = !formalCode && !batch.languageOnly;
   const textChunks = boundedTrainingTextChunks(batch.text);
-  const memories = textChunks.map((text, index) => input.runtime.train({
+  const memories = batch.artifactScope === "construction_only" ? [] : textChunks.map((text, index) => input.runtime.train({
     streamId: textChunks.length === 1
       ? batch.streamId
       : `${batch.streamId}#training-chunk-${String(index + 1).padStart(6, "0")}`,
@@ -254,19 +273,20 @@ export function compileLanguageTrainingBatch(input: {
     retainObservations: batch.retainNgramObservations,
     retainSemanticFrames: index === 0
   }));
-  const constructionSplit = splitConstructionEvidence(batch.evidence, input.hasher);
-  const constructionEvidence = batch.languageOnly ? [] : constructionSplit.train;
+  const ownedConstructionEvidence = batch.constructionEvidence ?? batch.evidence;
+  const constructionSplit = splitConstructionEvidence(formalCode ? [] : ownedConstructionEvidence, input.hasher);
+  const constructionEvidence = induceNaturalLanguage ? batch.evidence.filter(span => span.status === "promoted") : [];
   const preparedInduction = prepareConstructionInduction({ documents: evidenceDocuments(constructionEvidence), hasher: input.hasher });
   const inducedSets = induceSourceBoundConstructionTrainingSets({
-    // Language-only training hands the construction lane nothing, so every stage below compiles empties.
     evidence: constructionEvidence,
     profileId: batch.profile.id,
     hasher: input.hasher,
-    preparedInduction
+    preparedInduction,
+    graphSnapshot: batch.graphSnapshot
   });
   const maxAlignmentTextBytes = Math.max(512, Math.min(65536, Math.floor(batch.maxAlignmentTextBytes ?? 8192)));
   const maxAlignmentLattices = Math.max(1, Math.min(64, Math.floor(batch.maxAlignmentLattices ?? 8)));
-  const alignmentLattices = batch.graphSnapshot?.hyperedges.length
+  const alignmentLattices = !formalCode && batch.graphSnapshot?.hyperedges.length
     ? batch.evidence.slice(0, maxAlignmentLattices).map(span => buildSurfaceLattice({
       documentId: String(span.id),
       sourceFamilyId: evidenceSourceFamilyId(span),
@@ -522,54 +542,75 @@ export function compileLanguageTrainingBatch(input: {
   const constructionPatterns: LanguagePatternRecord[] = [];
   const warnings: string[] = [];
   const promotion = evaluateConstructionPromotion({
-    evidence: batch.evidence,
+    evidence: ownedConstructionEvidence,
     profileId: batch.profile.id,
     hasher: input.hasher,
     suppliedSets: batch.constructionSets ?? [],
     inducedSets,
     split: constructionSplit,
-    preparedInduction: batch.languageOnly ? undefined : preparedInduction,
-    languageOnly: batch.languageOnly
+    preparedInduction: !induceNaturalLanguage ? undefined
+      : constructionSplit.heldOut.length
+        ? prepareConstructionInduction({ documents: evidenceDocuments(constructionSplit.train), hasher: input.hasher })
+        : preparedInduction,
+    languageOnly: !induceNaturalLanguage
   });
-  const compileEvidence = constructionSplit.heldOut.length ? constructionSplit.train : [...batch.evidence];
-  const sets = uniqueConstructionWorkItems([
-    ...(batch.constructionSets ?? []).map(set => ({ set, evidence: batch.evidence })),
-    ...inducedSets
-      .filter(set => promotion.promotedInducedBindingIds.has(set.bindingId))
-      .map(set => ({ set, evidence: compileEvidence }))
-  ]);
-  for (const item of sets) {
-    const compiled = compileLanguageConstructionPattern({
-      bindingId: item.set.bindingId,
-      profileId: batch.profile.id,
-      observations: item.set.observations,
-      evidence: item.evidence,
-      hasher: input.hasher,
-      updatedAt: batch.createdAt
-    });
-    if (compiled.status === "compiled") constructionPatterns.push(compiled.pattern);
-    else warnings.push(...compiled.issues.map(issue => issue.code));
+  const sets = uniqueConstructionSets([...(batch.constructionSets ?? []), ...inducedSets]);
+  // Source observation is retained independently of document-heldout generalization qualification.
+  const suppliedBindingIds = new Set((batch.constructionSets ?? []).map(set => set.bindingId));
+  let failedConstructions = 0;
+  const compiledSets = compileLanguageConstructionPatterns({
+    profileId: batch.profile.id,
+    evidence: batch.evidence,
+    hasher: input.hasher,
+    updatedAt: batch.createdAt,
+    storageEncoding: SOURCE_EXAMPLE_CONSTRUCTION_STORAGE,
+    sets: sets.map(set => ({ ...set,
+      ...(!suppliedBindingIds.has(set.bindingId) ? {
+        acquisitionStatus: "source_observed" as const
+      } : {})
+    }))
+  });
+  let compiledIndex = 0;
+  for (const compiled of compiledSets) {
+    const set = sets[compiledIndex++]!;
+    if (compiled.status === "compiled") {
+      if (!suppliedBindingIds.has(set.bindingId)) compiled.pattern.patternJson = {
+        ...jsonObject(compiled.pattern.patternJson), constructionQualification: promotion.promotedInducedBindingIds.has(set.bindingId) ? "document_heldout_qualified" : "unqualified"
+      };
+      constructionPatterns.push(compiled.pattern);
+      if (compiled.bundle.acquisitionStatus === "source_observed" && !promotion.promotedInducedBindingIds.has(set.bindingId)) promotion.report.sourceObservedInducedConstructionSets++;
+    } else {
+      failedConstructions++;
+      if (!suppliedBindingIds.has(set.bindingId)) promotion.report.failedInducedConstructionSets++;
+      warnings.push(...compiled.issues.map(issue => issue.code));
+    }
   }
 
+  let units = uniqueRecords(memories.flatMap(memory => memory.units));
+  let patterns = uniquePatterns([
+    ...memories.flatMap(memory => memory.patterns), ...constructionPatterns, ...reversibleConstructionPatterns,
+    ...pairedAntiUnifiedConstructionPatterns, ...optionalNullRealizationPatterns, ...(batch.additionalPatterns ?? [])
+  ]);
+  let semanticFrames = uniqueRecords(memories.flatMap(memory => memory.semanticFrames));
+  const rawModels = uniqueRecords(memories.flatMap(memory => memory.models));
+  const compileOptions = jsonObject(memories[0]?.audit ?? {}).trainingOptions;
+  const stamped = batch.canonicalSource && batch.sourceSystem && compileOptions
+    ? stampSourceLanguageCompilation({ owner: { ...batch.canonicalSource, sourceVersionId: batch.sourceVersionId }, profileId: batch.profile.id,
+      sourceSystem: batch.sourceSystem, streamId: batch.streamId, text: batch.text, chunks: textChunks, models: rawModels,
+      options: { ...(compileOptions as unknown as { maxOrder: number; maxCountersPerOrder: number; vocabularyLimit: number }),
+        languageOnly: Boolean(batch.languageOnly), retainNgramObservations: batch.retainNgramObservations !== false },
+      artifacts: { units, patterns, semanticFrames }, hasher: input.hasher }) : undefined;
+  const models = stamped?.models ?? rawModels;
+  if (stamped) { units = stamped.units; patterns = stamped.patterns; semanticFrames = stamped.semanticFrames; }
   return {
     observations: uniqueRecords(memories.flatMap(memory => memory.observations)),
-    models: uniqueRecords(memories.flatMap(memory => memory.models)),
-    units: uniqueRecords(memories.flatMap(memory => memory.units)),
-    patterns: uniquePatterns([
-      ...memories.flatMap(memory => memory.patterns),
-      ...constructionPatterns,
-      ...reversibleConstructionPatterns,
-      ...pairedAntiUnifiedConstructionPatterns,
-      ...optionalNullRealizationPatterns,
-      ...(batch.additionalPatterns ?? [])
-    ]),
-    semanticFrames: uniqueRecords(memories.flatMap(memory => memory.semanticFrames)),
-    constructionPatterns,
+    models, units, patterns, semanticFrames,
+    constructionPatterns: constructionPatterns.map(record => patterns.find(item => item.id === record.id) ?? record),
     reversibleConstructionPatterns,
     pairedAntiUnifiedConstructionPatterns,
     optionalNullRealizationPatterns,
     graphSurfaceAlignmentSummaries: sets
-      .map(item => item.set.alignmentSummary)
+      .map(set => set.alignmentSummary)
       .filter((summary): summary is JsonValue => summary !== undefined),
     sparseAlignmentCandidateSupports,
     sparseAlignmentCandidateSummaries,
@@ -598,11 +639,13 @@ export function compileLanguageTrainingBatch(input: {
     alignmentAlternativeSets,
     alternativeTransportEvidenceAllocations,
     constructionCandidates: (batch.constructionSets?.length ?? 0) + inducedSets.length,
-    rejectedConstructionCandidates: promotion.report.rejectedInducedConstructionSets,
+    rejectedConstructionCandidates: failedConstructions,
     constructionPromotion: promotion.report,
     warnings: [...new Set(warnings)].sort(),
     audit: toJsonValue({
-      compiler: "kernel.language_training_batch.v1",
+      compiler: LANGUAGE_TRAINING_BATCH_RECIPE_ID,
+      corpusRole: batch.sourceSystem ? corpusRoleIdForSourceSystem(batch.sourceSystem) : null,
+      naturalLanguageInduction: induceNaturalLanguage,
       inputUtf16Length: batch.text.length,
       chunks: textChunks.length,
       chunkUtf16Lengths: textChunks.map(text => text.length),
@@ -612,7 +655,7 @@ export function compileLanguageTrainingBatch(input: {
       inducedConstructionSets: inducedSets.length,
       constructionPromotion: promotion.report as unknown as JsonValue,
       graphSurfaceAlignment: sets
-        .map(item => item.set.alignmentSummary)
+        .map(set => set.alignmentSummary)
         .filter(summary => summary !== undefined) as JsonValue[],
       sparseTypedIncidenceAlignment: {
         targetIndexId: sparseAlignment?.targetIndex.id ?? null,
@@ -764,7 +807,7 @@ export function prepareLanguageTrainingSegmentation(input: {
   hasher: Hasher;
   principals?: readonly string[];
 }): PreparedLanguageTrainingSegmentation | undefined {
-  if (!input.batch.text.trim()) return undefined;
+  if (input.corpusRole === CORPUS_ROLE_IDS.softwareSymbolic || !input.batch.text.trim()) return undefined;
   const model = segmentUnicodeSurfaceV2(input.batch.text, input.hasher);
   if (input.hasher.digestHex(reconstructFromSegmentationModel(model)) !== model.reconstructionHash) {
     throw new Error("segmentation model does not reconstruct its own surface; refusing to fold it into the corpus aggregate");
@@ -836,16 +879,6 @@ function uniqueConstructionSets(
     });
   }
   return [...byBindingId.values()].sort((left, right) => left.bindingId.localeCompare(right.bindingId));
-}
-
-function uniqueConstructionWorkItems(
-  items: readonly { set: SourceBoundLanguageConstructionTrainingSet; evidence: readonly EvidenceSpan[] }[]
-): Array<{ set: SourceBoundLanguageConstructionTrainingSet; evidence: readonly EvidenceSpan[] }> {
-  const merged = uniqueConstructionSets(items.map(item => item.set));
-  return merged.map(set => ({
-    set,
-    evidence: items.find(item => item.set.bindingId === set.bindingId)?.evidence ?? []
-  }));
 }
 
 function uniquePatterns(patterns: readonly LanguagePatternRecord[]): LanguagePatternRecord[] {
@@ -952,6 +985,10 @@ function evaluateConstructionPromotion(input: {
       promotedSuppliedConstructionSets: input.suppliedSets.length,
       promotedInducedConstructionSets: promoted.size,
       rejectedInducedConstructionSets: rejections.length,
+      sourceObservedInducedConstructionSets: 0,
+      failedInducedConstructionSets: 0,
+      trainDocumentIds: [...new Set(split.train.map(evidenceSourceFamilyId))].sort(),
+      heldOutDocumentIds: [...new Set(split.heldOut.map(evidenceSourceFamilyId))].sort(),
       thresholds,
       heldOutCoverage: coverage,
       rejections
@@ -969,26 +1006,37 @@ function splitConstructionEvidence(evidence: readonly EvidenceSpan[], hasher: Ha
       if (offset) return offset;
       return String(left.id).localeCompare(String(right.id));
     });
-  if (promoted.length < 3) return { train: promoted, heldOut: [] };
+  const documents = new Map<string, EvidenceSpan[]>();
+  for (const span of promoted) {
+    const key = evidenceSourceFamilyId(span);
+    const spans = documents.get(key) ?? [];
+    spans.push(span);
+    documents.set(key, spans);
+  }
+  const orderedDocuments = [...documents.entries()].sort(([left], [right]) => left.localeCompare(right));
+  if (orderedDocuments.length < 3) return { train: promoted, heldOut: [] };
 
   const heldOut: EvidenceSpan[] = [];
   const train: EvidenceSpan[] = [];
-  for (let index = 0; index < promoted.length; index++) {
-    const span = promoted[index]!;
-    const digest = hasher.digestHex(`${span.sourceVersionId}\u001f${span.id}`);
-    // One third held out (was one fifth): on heterogeneous multi-article
-    // batches a ~3-chunk holdout gave most constructions no statistical
-    // chance to recur at all -- 574 of 786 candidates were rejected with
-    // zero held-out occurrences (verified live).
+  for (let index = 0; index < orderedDocuments.length; index++) {
+    const [documentId, spans] = orderedDocuments[index]!;
+    const digest = hasher.digestHex(documentId);
+    // Every version and chunk of a source family stays in one partition.
     const offset = Number.parseInt(digest.slice(0, 2), 16) % 3;
-    ((index + offset) % 3 === 2 ? heldOut : train).push(span);
+    ((index + offset) % 3 === 2 ? heldOut : train).push(...spans);
   }
   if (!heldOut.length) {
-    heldOut.push(promoted[promoted.length - 1]!);
-    train.splice(train.findIndex(span => span.id === heldOut[0]!.id), 1);
+    const [documentId, spans] = orderedDocuments[orderedDocuments.length - 1]!;
+    heldOut.push(...spans);
+    for (let index = train.length - 1; index >= 0; index--) {
+      if (evidenceSourceFamilyId(train[index]!) === documentId) train.splice(index, 1);
+    }
   }
-  if (train.length < 2) {
-    return { train: promoted, heldOut: [] };
+  while (new Set(train.map(evidenceSourceFamilyId)).size < 2) {
+    const documentId = evidenceSourceFamilyId(heldOut[0]!);
+    for (let index = heldOut.length - 1; index >= 0; index--) {
+      if (evidenceSourceFamilyId(heldOut[index]!) === documentId) train.push(...heldOut.splice(index, 1));
+    }
   }
   return { train, heldOut };
 }
@@ -1010,7 +1058,7 @@ function clampUnit(value: number): number {
   return Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
 }
 
-function boundedTrainingTextChunks(text: string, maxUtf16Length = 150_000): string[] {
+function boundedTrainingTextChunks(text: string, maxUtf16Length = LANGUAGE_TRAINING_CHUNK_UTF16_LIMIT): string[] {
   if (!text.length) return [""];
   const chunks: string[] = [];
   let start = 0;

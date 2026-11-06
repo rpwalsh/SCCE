@@ -20,15 +20,13 @@ beforeEach(() => {
 });
 
 describe("a record is compiled into a runtime model once, not once per hydration or scoping", () => {
-  it("does not recompile a record the gate in front of the hydration already compiled", async () => {
+  it("compiles each persisted record at most once while hydrating", async () => {
     const fixture = runtimeFixture();
     const cluster = await fixture.runtime.surfaceLanguageClusterCached("fixture language survey");
 
     const hydrated = await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, cluster, "source-cluster-selected");
 
     expect(hydrated.state.models.length).toBeGreaterThan(0);
-    // surface-language-runtime's persistedModelsPresent gate compiles records one at a time in front of the
-    // hydration that compiles them again. Each loaded record may be compiled at most once across both.
     expect(ngramModelCompilationCount()).toBeLessThanOrEqual(fixture.records.length);
   });
 

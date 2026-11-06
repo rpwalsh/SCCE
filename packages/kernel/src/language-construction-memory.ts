@@ -13,9 +13,11 @@ import { createLanguageInductionEngine, type GraphBoundConstruction } from "./la
 import { boundedInductionDocuments } from "./training-orchestrator.js";
 import { segmentUnicodeSurfaceV2, type LexicalSegment } from "./unicode-segmentation-v2.js";
 import type { LanguagePatternRecord } from "./storage.js";
+import type { SemanticRole } from "./semantic-graph.js";
 import type { EvidenceSpan, Hasher, JsonValue } from "./types.js";
 
 export const LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA = "scce.language_construction_pattern.v1" as const;
+export const SOURCE_EXAMPLE_CONSTRUCTION_STORAGE = "scce.language_construction.source_examples.v1" as const;
 export const OBSOLETE_CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA_V2 = "scce.creative_event_construction_pattern.v2" as const;
 export const CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA = "scce.creative_event_construction_pattern.v3" as const;
 export const CREATIVE_EVENT_ARGUMENT_FRAME_SCHEMA = "scce.creative_event_argument_frame.v1" as const;
@@ -47,16 +49,28 @@ export type LanguageConstructionMemoryRejectionId =
  * A role alignment supplied by a typed corpus extractor. Coordinates are
  * Unicode code-point offsets relative to the example surface.
  */
+export interface SourceConstructionGraphBinding {
+  relationId: string;
+  roleId: string;
+  valueKind: string;
+  semanticRole?: SemanticRole;
+  qualifiers?: JsonValue;
+  modality?: JsonValue;
+  temporalScope?: JsonValue;
+}
+
 export interface SourceBoundConstructionRoleSpan {
   slotIndex: number;
   occurrenceIndex?: number;
   startCodePoint: number;
   endCodePoint: number;
+  graphBinding?: SourceConstructionGraphBinding;
 }
 
 export interface SourceBoundConstructionNullRole {
   slotIndex: number;
   occurrenceIndex?: number;
+  graphBinding?: SourceConstructionGraphBinding;
 }
 
 /**
@@ -71,6 +85,8 @@ export interface SourceBoundConstructionObservation {
   surfaceEndCodePoint: number;
   roles: readonly SourceBoundConstructionRoleSpan[];
   nullRoles?: readonly SourceBoundConstructionNullRole[];
+  /** Preceding source turn, in code points relative to this observation's evidence. */
+  antecedent?: { startCodePoint: number; endCodePoint: number };
 }
 
 export interface SourceBoundLanguageConstructionTrainingSet {
@@ -93,6 +109,7 @@ export interface DurableSourceConstructionExample {
   surfaceEndCodePoint: number;
   surface: string;
   surfaceDigest: string;
+  antecedent?: { startCodePoint: number; endCodePoint: number; surface: string; surfaceDigest: string };
   roles: Array<{
     slotIndex: number;
     occurrenceIndex: number;
@@ -101,12 +118,14 @@ export interface DurableSourceConstructionExample {
     startCodePoint: number;
     endCodePoint: number;
     surface: string;
+    graphBinding?: SourceConstructionGraphBinding;
   }>;
   nullRoles: Array<{
     slotIndex: number;
     occurrenceIndex: number;
     roleId: string;
     occurrenceId: string;
+    graphBinding?: SourceConstructionGraphBinding;
   }>;
 }
 
@@ -122,11 +141,13 @@ export interface DurableLanguageConstructionBundleContent {
   constructions: LearnedConstruction[];
   formClasses: LearnedFormClass[];
   creativeEvents?: DurableCreativeEventConstruction[];
+  acquisitionStatus?: "source_observed" | "document_heldout_qualified";
 }
 
 export interface DurableLanguageConstructionBundle extends DurableLanguageConstructionBundleContent {
   id: string;
   contentDigest: string;
+  qualificationStatus?: "document_heldout_qualified" | "unqualified";
 }
 
 export interface DurableCreativeEventConstruction {
@@ -251,23 +272,46 @@ export function languageConstructionOccurrenceId(
   ]);
 }
 
-export function compileLanguageConstructionPattern(input: {
+interface LanguageConstructionPatternInput {
   bindingId: string;
   profileId: string;
   observations: readonly SourceBoundConstructionObservation[];
   evidence: readonly EvidenceSpan[];
   hasher: Hasher;
   updatedAt: number;
-}): LanguageConstructionPatternCompilation {
+  acquisitionStatus?: DurableLanguageConstructionBundleContent["acquisitionStatus"];
+  storageEncoding?: typeof SOURCE_EXAMPLE_CONSTRUCTION_STORAGE;
+}
+
+export function compileLanguageConstructionPattern(input: LanguageConstructionPatternInput): LanguageConstructionPatternCompilation {
+  return compileConstructionPattern(input, uniqueEvidenceById(input.evidence), new Map());
+}
+
+export function* compileLanguageConstructionPatterns(input: Omit<LanguageConstructionPatternInput, "bindingId" | "observations" | "acquisitionStatus"> & {
+  sets: readonly Pick<LanguageConstructionPatternInput, "bindingId" | "observations" | "acquisitionStatus">[];
+}): IterableIterator<LanguageConstructionPatternCompilation> {
+  const evidenceById = uniqueEvidenceById(input.evidence.map(span => ({ ...span })));
+  const evidencePointsById = new Map<string, string[]>();
+  for (const set of input.sets) yield compileConstructionPattern({ ...input, ...set }, evidenceById, evidencePointsById);
+}
+
+function compileConstructionPattern(
+  input: LanguageConstructionPatternInput,
+  evidenceById: ReadonlyMap<string, EvidenceSpan> | undefined,
+  evidencePointsById: Map<string, string[]>
+): LanguageConstructionPatternCompilation {
   if (!nonempty(input.bindingId)
     || !nonempty(input.profileId)
     || !Number.isFinite(input.updatedAt)
     || input.observations.length === 0
-    || input.observations.length > 256) {
+    || input.observations.length > 256
+    || (input.storageEncoding !== undefined && input.storageEncoding !== SOURCE_EXAMPLE_CONSTRUCTION_STORAGE)
+    || (input.acquisitionStatus !== undefined
+      && input.acquisitionStatus !== "source_observed"
+      && input.acquisitionStatus !== "document_heldout_qualified")) {
     return rejected(LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.input);
   }
 
-  const evidenceById = uniqueEvidenceById(input.evidence);
   if (!evidenceById || evidenceById.size === 0) {
     return rejected(LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.evidence);
   }
@@ -275,7 +319,7 @@ export function compileLanguageConstructionPattern(input: {
   const durableExamples: DurableSourceConstructionExample[] = [];
   const alignedExamples: AlignedSurfaceExample[] = [];
   for (const observation of input.observations) {
-    const prepared = prepareObservation({ ...input, observation, evidenceById });
+    const prepared = prepareObservation({ ...input, observation, evidenceById, evidencePointsById });
     if ("issue" in prepared) return { status: "rejected", issues: [prepared.issue] };
     durableExamples.push(prepared.durable);
     alignedExamples.push(prepared.aligned);
@@ -309,7 +353,8 @@ export function compileLanguageConstructionPattern(input: {
     evidenceContentHashes,
     sourceExamples,
     constructions: [...induction.constructions],
-    formClasses: [...induction.formClasses]
+    formClasses: [...induction.formClasses],
+    ...(input.acquisitionStatus ? { acquisitionStatus: input.acquisitionStatus } : {})
   };
   const contentDigest = input.hasher.digestHex(canonicalStringify(content));
   const id = `surface.construction.bundle.${contentDigest}`;
@@ -324,12 +369,27 @@ export function compileLanguageConstructionPattern(input: {
     patternJson: {
       schema: LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA,
       contentDigest,
-      bundle: bundle as unknown as JsonValue
+      bundle: (input.storageEncoding === SOURCE_EXAMPLE_CONSTRUCTION_STORAGE ? sourceExampleStorageBundle(bundle) : bundle) as unknown as JsonValue,
+      ...(input.storageEncoding ? { storageEncoding: input.storageEncoding } : {})
     },
     evidenceIds: evidenceIds as EvidenceSpan["id"][],
     updatedAt: input.updatedAt
   };
   return { status: "compiled", pattern, bundle, mdl };
+}
+
+function sourceExampleStorageBundle(bundle: DurableLanguageConstructionBundle): Record<string, unknown> {
+  const { constructions: _programs, formClasses: _variants, sourceExamples, qualificationStatus: _annotation, ...header } = bundle;
+  return { ...header, sourceExamples: sourceExamples.map(example => ({
+    evidenceIndex: bundle.evidenceIds.indexOf(example.evidenceId),
+    surfaceStartCodePoint: example.surfaceStartCodePoint,
+    surfaceEndCodePoint: example.surfaceEndCodePoint,
+    roles: example.roles.map(role => ({ slotIndex: role.slotIndex, occurrenceIndex: role.occurrenceIndex,
+      startCodePoint: role.startCodePoint, endCodePoint: role.endCodePoint, ...(role.graphBinding ? { graphBinding: role.graphBinding } : {}) })),
+    ...(example.nullRoles.length ? { nullRoles: example.nullRoles.map(role => ({ slotIndex: role.slotIndex, occurrenceIndex: role.occurrenceIndex,
+      ...(role.graphBinding ? { graphBinding: role.graphBinding } : {}) })) } : {}),
+    ...(example.antecedent ? { antecedent: { startCodePoint: example.antecedent.startCodePoint, endCodePoint: example.antecedent.endCodePoint } } : {})
+  })) };
 }
 
 export function createUniversalCreativeEventConstructionCompiler(): CreativeEventConstructionCompiler {
@@ -630,7 +690,8 @@ export function hydrateLanguageConstructionPatterns(input: {
   }
 
   const duplicatePatternIds = duplicateValues(constructionPatterns.map(pattern => pattern.id));
-  const evidenceById = uniqueEvidenceById(input.evidence);
+  const evidenceById = uniqueEvidenceById(input.evidence.map(span => ({ ...span })));
+  const evidencePointsById = new Map<string, string[]>();
   const bundles: DurableLanguageConstructionBundle[] = [];
   for (const pattern of constructionPatterns) {
     if (duplicatePatternIds.has(pattern.id)) {
@@ -645,7 +706,7 @@ export function hydrateLanguageConstructionPatterns(input: {
       ? verifyCreativeEventPattern(pattern, evidenceById, input.hasher)
       : isObsoleteCreativeEventConstructionPatternV2(pattern)
         ? issue(pattern, LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.obsoleteCreativeV2)
-        : verifyPersistedPattern(pattern, evidenceById, input.hasher);
+        : verifyPersistedPattern(pattern, evidenceById, input.hasher, evidencePointsById);
     if ("issue" in verified) rejectedIssues.push(verified.issue);
     else bundles.push(verified.bundle);
   }
@@ -679,6 +740,7 @@ function prepareObservation(input: {
   profileId: string;
   observation: SourceBoundConstructionObservation;
   evidenceById: ReadonlyMap<string, EvidenceSpan>;
+  evidencePointsById: Map<string, string[]>;
   hasher: Hasher;
 }): { durable: DurableSourceConstructionExample; aligned: AlignedSurfaceExample } | { issue: LanguageConstructionMemoryIssue } {
   const observation = input.observation;
@@ -702,7 +764,11 @@ function prepareObservation(input: {
       }
     };
   }
-  const evidencePoints = [...evidence.text];
+  let evidencePoints = input.evidencePointsById.get(observation.evidenceId);
+  if (!evidencePoints) {
+    evidencePoints = [...evidence.text];
+    input.evidencePointsById.set(observation.evidenceId, evidencePoints);
+  }
   if (!validRange(observation.surfaceStartCodePoint, observation.surfaceEndCodePoint, evidencePoints.length)
     || evidence.charEnd - evidence.charStart !== evidencePoints.length) {
     return { issue: { code: LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.coordinates, evidenceId: observation.evidenceId } };
@@ -713,12 +779,21 @@ function prepareObservation(input: {
   if (!surface || surface !== surface.normalize("NFC")) {
     return { issue: { code: LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.coordinates, evidenceId: observation.evidenceId } };
   }
+  const antecedentRange = observation.antecedent;
+  if (antecedentRange && (!validRange(antecedentRange.startCodePoint, antecedentRange.endCodePoint, evidencePoints.length)
+    || antecedentRange.startCodePoint === antecedentRange.endCodePoint
+    || antecedentRange.endCodePoint > observation.surfaceStartCodePoint)) {
+    return { issue: { code: LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.coordinates, evidenceId: observation.evidenceId } };
+  }
+  const antecedentSurface = antecedentRange ? evidencePoints.slice(antecedentRange.startCodePoint, antecedentRange.endCodePoint).join("") : undefined;
+  const antecedent = antecedentRange && antecedentSurface ? { ...antecedentRange, surface: antecedentSurface, surfaceDigest: input.hasher.digestHex(antecedentSurface) } : undefined;
   const surfacePoints = [...surface];
   const roleKeys = new Set<string>();
   const durableRoles: DurableSourceConstructionExample["roles"] = [];
   for (const role of observation.roles) {
     const occurrenceIndex = role.occurrenceIndex ?? 0;
     if (!validIndex(role.slotIndex)
+      || !validGraphBinding(role.graphBinding)
       || !validIndex(occurrenceIndex)
       || !validRange(role.startCodePoint, role.endCodePoint, surfacePoints.length)
       || role.startCodePoint === role.endCodePoint) {
@@ -734,13 +809,14 @@ function prepareObservation(input: {
       occurrenceId: languageConstructionOccurrenceId(input.hasher, input.bindingId, role.slotIndex, occurrenceIndex),
       startCodePoint: role.startCodePoint,
       endCodePoint: role.endCodePoint,
-      surface: surfacePoints.slice(role.startCodePoint, role.endCodePoint).join("")
+      surface: surfacePoints.slice(role.startCodePoint, role.endCodePoint).join(""),
+      ...(role.graphBinding ? { graphBinding: { ...role.graphBinding } } : {})
     });
   }
   const durableNullRoles: DurableSourceConstructionExample["nullRoles"] = [];
   for (const role of observation.nullRoles ?? []) {
     const occurrenceIndex = role.occurrenceIndex ?? 0;
-    if (!validIndex(role.slotIndex) || !validIndex(occurrenceIndex)) {
+    if (!validIndex(role.slotIndex) || !validIndex(occurrenceIndex) || !validGraphBinding(role.graphBinding)) {
       return { issue: { code: LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.coordinates, evidenceId: observation.evidenceId } };
     }
     const key = `${role.slotIndex}\u0001${occurrenceIndex}`;
@@ -750,7 +826,8 @@ function prepareObservation(input: {
       slotIndex: role.slotIndex,
       occurrenceIndex,
       roleId: languageConstructionRoleId(input.hasher, input.bindingId, role.slotIndex),
-      occurrenceId: languageConstructionOccurrenceId(input.hasher, input.bindingId, role.slotIndex, occurrenceIndex)
+      occurrenceId: languageConstructionOccurrenceId(input.hasher, input.bindingId, role.slotIndex, occurrenceIndex),
+      ...(role.graphBinding ? { graphBinding: { ...role.graphBinding } } : {})
     });
   }
   durableRoles.sort(compareDurableRoles);
@@ -771,7 +848,8 @@ function prepareObservation(input: {
     observation.surfaceEndCodePoint,
     surfaceDigest,
     durableRoles,
-    durableNullRoles
+    durableNullRoles,
+    ...(antecedent ? [antecedent] : [])
   ]);
   const durable: DurableSourceConstructionExample = {
     id,
@@ -788,7 +866,8 @@ function prepareObservation(input: {
     surface,
     surfaceDigest,
     roles: durableRoles,
-    nullRoles: durableNullRoles
+    nullRoles: durableNullRoles,
+    ...(antecedent ? { antecedent } : {})
   };
   const aligned: AlignedSurfaceExample = {
     id,
@@ -1111,7 +1190,8 @@ function creativeClosedClassConnectorFromPersisted(input: {
 function verifyPersistedPattern(
   pattern: LanguagePatternRecord,
   evidenceById: ReadonlyMap<string, EvidenceSpan>,
-  hasher: Hasher
+  hasher: Hasher,
+  evidencePointsById: Map<string, string[]>
 ): { bundle: DurableLanguageConstructionBundle } | { issue: LanguageConstructionMemoryIssue } {
   const row = recordOf(pattern.patternJson);
   const rawBundle = recordOf(row.bundle);
@@ -1119,6 +1199,8 @@ function verifyPersistedPattern(
     || rawBundle.schema !== LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA) {
     return issue(pattern, LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.input);
   }
+  if (row.storageEncoding !== undefined && row.storageEncoding !== SOURCE_EXAMPLE_CONSTRUCTION_STORAGE) return issue(pattern, LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.input);
+  if (row.constructionQualification !== undefined && row.constructionQualification !== "document_heldout_qualified" && row.constructionQualification !== "unqualified") return issue(pattern, LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.input);
   const bindingId = stringOf(rawBundle.bindingId);
   const sourceProfileId = stringOf(rawBundle.sourceProfileId);
   const targetProfileId = stringOf(rawBundle.targetProfileId);
@@ -1132,7 +1214,24 @@ function verifyPersistedPattern(
     return issue(pattern, LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.member);
   }
   const observations: SourceBoundConstructionObservation[] = [];
+  const storedEvidenceIds = arrayOfStrings(rawBundle.evidenceIds);
   for (const raw of sourceExamples) {
+    if (row.storageEncoding === SOURCE_EXAMPLE_CONSTRUCTION_STORAGE) {
+      const evidenceIndex = numberOf(raw.evidenceIndex);
+      const evidenceId = Number.isSafeInteger(evidenceIndex) && evidenceIndex >= 0 ? storedEvidenceIds[evidenceIndex] : undefined;
+      const evidence = evidenceId ? evidenceById.get(evidenceId) : undefined;
+      if (!evidence) return issue(pattern, LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.evidence);
+      observations.push({ sourceVersionId: String(evidence.sourceVersionId), evidenceId: String(evidence.id),
+        surfaceStartCodePoint: numberOf(raw.surfaceStartCodePoint), surfaceEndCodePoint: numberOf(raw.surfaceEndCodePoint),
+        roles: arrayOfRecords(raw.roles).map(role => ({ slotIndex: numberOf(role.slotIndex), occurrenceIndex: numberOf(role.occurrenceIndex),
+          startCodePoint: numberOf(role.startCodePoint), endCodePoint: numberOf(role.endCodePoint),
+          ...(role.graphBinding !== undefined ? { graphBinding: role.graphBinding as unknown as SourceConstructionGraphBinding } : {}) })),
+        nullRoles: arrayOfRecords(raw.nullRoles).map(role => ({ slotIndex: numberOf(role.slotIndex), occurrenceIndex: numberOf(role.occurrenceIndex),
+          ...(role.graphBinding !== undefined ? { graphBinding: role.graphBinding as unknown as SourceConstructionGraphBinding } : {}) })),
+        ...(raw.antecedent !== undefined ? { antecedent: { startCodePoint: numberOf(recordOf(raw.antecedent).startCodePoint), endCodePoint: numberOf(recordOf(raw.antecedent).endCodePoint) } } : {})
+      });
+      continue;
+    }
     const parsed = observationFromPersistedExample(raw, {
       bindingId,
       sourceProfileId,
@@ -1145,14 +1244,18 @@ function verifyPersistedPattern(
   const evidenceIds = uniqueSorted(observations.map(item => item.evidenceId));
   const evidence = evidenceIds.map(id => evidenceById.get(id)).filter((item): item is EvidenceSpan => Boolean(item));
   if (evidence.length !== evidenceIds.length) return issue(pattern, LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.evidence);
-  const recompiled = compileLanguageConstructionPattern({
+  const recompiled = compileConstructionPattern({
     bindingId,
     profileId: targetProfileId,
     observations,
     evidence,
     hasher,
-    updatedAt: pattern.updatedAt
-  });
+    updatedAt: pattern.updatedAt,
+    ...(row.storageEncoding === SOURCE_EXAMPLE_CONSTRUCTION_STORAGE ? { storageEncoding: SOURCE_EXAMPLE_CONSTRUCTION_STORAGE } : {}),
+    ...(rawBundle.acquisitionStatus !== undefined
+      ? { acquisitionStatus: rawBundle.acquisitionStatus as DurableLanguageConstructionBundleContent["acquisitionStatus"] }
+      : {})
+  }, evidenceById, evidencePointsById);
   if (recompiled.status !== "compiled") return issue(pattern, LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.member);
   const expectedRow = recordOf(recompiled.pattern.patternJson);
   if (stringOf(row.contentDigest) !== recompiled.bundle.contentDigest
@@ -1169,7 +1272,8 @@ function verifyPersistedPattern(
   if (canonicalStringify(rawBundle) !== canonicalStringify(recordOf(expectedRow.bundle))) {
     return issue(pattern, LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.member);
   }
-  return { bundle: recompiled.bundle };
+  return { bundle: { ...recompiled.bundle,
+    ...(row.constructionQualification ? { qualificationStatus: row.constructionQualification as DurableLanguageConstructionBundle["qualificationStatus"] } : {}) } };
 }
 
 function observationFromPersistedExample(
@@ -1201,11 +1305,13 @@ function observationFromPersistedExample(
     slotIndex: numberOf(role.slotIndex),
     occurrenceIndex: numberOf(role.occurrenceIndex),
     startCodePoint: numberOf(role.startCodePoint),
-    endCodePoint: numberOf(role.endCodePoint)
+    endCodePoint: numberOf(role.endCodePoint),
+    ...(role.graphBinding !== undefined ? { graphBinding: role.graphBinding as unknown as SourceConstructionGraphBinding } : {})
   }));
   const nullRoles = arrayOfRecords(raw.nullRoles).map(role => ({
     slotIndex: numberOf(role.slotIndex),
-    occurrenceIndex: numberOf(role.occurrenceIndex)
+    occurrenceIndex: numberOf(role.occurrenceIndex),
+    ...(role.graphBinding !== undefined ? { graphBinding: role.graphBinding as unknown as SourceConstructionGraphBinding } : {})
   }));
   const observation: SourceBoundConstructionObservation = {
     sourceVersionId,
@@ -1213,7 +1319,11 @@ function observationFromPersistedExample(
     surfaceStartCodePoint: numberOf(raw.surfaceStartCodePoint),
     surfaceEndCodePoint: numberOf(raw.surfaceEndCodePoint),
     roles,
-    nullRoles
+    nullRoles,
+    ...(raw.antecedent !== undefined ? { antecedent: {
+      startCodePoint: numberOf(recordOf(raw.antecedent).startCodePoint),
+      endCodePoint: numberOf(recordOf(raw.antecedent).endCodePoint)
+    } } : {})
   };
   const points = [...evidence.text];
   const surface = points.slice(observation.surfaceStartCodePoint, observation.surfaceEndCodePoint).join("");
@@ -1234,6 +1344,14 @@ function observationFromPersistedExample(
 
 function rejected(code: LanguageConstructionMemoryRejectionId): LanguageConstructionPatternCompilation {
   return { status: "rejected", issues: [{ code }] };
+}
+
+function validGraphBinding(binding: SourceConstructionGraphBinding | undefined): boolean {
+  return binding === undefined || (binding !== null && typeof binding === "object"
+    && typeof binding.relationId === "string" && nonempty(binding.relationId)
+    && typeof binding.roleId === "string" && nonempty(binding.roleId)
+    && typeof binding.valueKind === "string" && nonempty(binding.valueKind)
+    && (binding.semanticRole === undefined || ["entity", "predicate", "modifier", "quantity", "time", "location", "negation", "unknown"].includes(binding.semanticRole)));
 }
 
 /** Real Unicode sentence-terminal punctuation, script-agnostic (matches ASCII ./!/? as well as CJK full-width terminators). */

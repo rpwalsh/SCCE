@@ -33,7 +33,9 @@ import {
   type SpokenOutput
 } from "../index.js";
 import type { LanguagePatternRecord, LanguageUnitRecord, NgramModelRecord, NgramObservation, SemanticFrameRecord } from "../storage.js";
+import { sourceOwnedMouthTeaching } from "./fixtures/source-owned-mouth-teaching.js";
 import { genericChatQualityFixture as fixture } from "./fixtures/generic-chat-quality-fixture.js";
+import { counterexampleSourceTeaching } from "./fixtures/counterexample-source-teaching.js";
 
 describe("Phase 10 generic chat quality gate", () => {
   const clock = createClock({ fixedTime: 41000, stepMs: 1 });
@@ -55,6 +57,8 @@ describe("Phase 10 generic chat quality gate", () => {
     { id: "factual answer with insufficient evidence", run: async () => ({ ...await speakBasic({ claim: "State whether holiday exceptions keep lights at 40% after 9:00 p.m.", verdict: "insufficient_evidence", force: "conjectured" }), allowEmpty: true }) },
     { id: "source-bound answer", run: () => speakSourceBound() },
     { id: "contradiction answer", run: () => speakContradiction() },
+    { id: "contradiction answer without optional proof", run: () => speakContradiction({ proof: false }) },
+    { id: "contradiction answer with production requirements", run: () => speakContradiction({ requirements: true }) },
     { id: "creative artifact", run: () => speakCreativeArtifact() },
     { id: "code artifact request using ProgramGraph", run: () => speakProgramArtifact() },
     { id: "repo codebase question using Developer Intelligence", run: () => speakDeveloperIntelligence() },
@@ -74,6 +78,21 @@ describe("Phase 10 generic chat quality gate", () => {
     if (result.verdict) assertProofVerdictObeyed(result.spoken, result.verdict);
   });
 
+  it.each(["foreign", "unsupported"] as const)("does not observe a corrected relational fact with %s ownership", async ownership => {
+    const result = await speakCorrected({ ownership });
+    expect(["observed", "entailed"]).not.toContain(result.spoken.force);
+    const frames = result.spoken.realizationTrace.realizationFrames;
+    expect(Array.isArray(frames)).toBe(true);
+    expect((frames as unknown[]).length).toBeGreaterThan(0);
+    expect((frames as unknown[]).map(objectRecord).some(frame => frame.force === "observed")).toBe(false);
+  });
+
+  it.each(["source_bound_only", "proof_unavailable"] as const)("preserves the corrected proposition's %s force boundary", async forceBoundary => {
+    const result = await speakCorrected({ forceBoundary });
+    assertHumanAnswer(result.spoken, { require: result.require, forbidden: result.forbidden });
+    expect(result.spoken.force).toBe(forceBoundary === "source_bound_only" ? "bounded" : "observed");
+  });
+
   it("do not ask a follow-up direct answer", async () => {
     const result = await speakNoFollowUp();
     assertHumanAnswer(result.spoken, { require: result.require, forbidden: result.forbidden });
@@ -81,6 +100,16 @@ describe("Phase 10 generic chat quality gate", () => {
     assertLearnedPriorsNotCited(result.spoken, result.learnedPriorEvidenceIds ?? []);
     for (const id of result.directEvidenceIds ?? []) expect(result.spoken.evidenceRefs.map(String)).toContain(id);
     if (result.verdict) assertProofVerdictObeyed(result.spoken, result.verdict);
+  });
+
+  it.each([
+    { targetScript: "script.untrained" },
+    { requiredSurface: "unattested-required-clause" },
+    { omitConstruction: true }
+  ])("does not bypass an unsatisfied contrast constraint $targetScript $requiredSurface $omitConstruction", async options => {
+    const { spoken } = await speakContradiction(options);
+    expect(spoken.text).toBe("");
+    expect(spoken.realizationAvailability.status).not.toBe("realized");
   });
 
   it("concise and detailed profiles change surface shape through detail profile ids", async () => {
@@ -133,27 +162,37 @@ describe("Phase 10 generic chat quality gate", () => {
     return { spoken, directEvidenceIds: [], learnedPriorEvidenceIds: [], require: ["SCCE2 profile excerpt", "40%"], verdict: "source_bound_only" };
   }
 
-  async function speakContradiction() {
+  async function speakContradiction(options: { proof?: boolean; requirements?: boolean; targetScript?: string; requiredSurface?: string; omitConstruction?: boolean } = {}) {
     const source = sourceVersion("fixture://phase10/contradiction", fixture.evidenceText);
     const direct = evidenceSpan(source, fixture.evidenceText, "direct_evidence");
     const field = emptyField("The library keeps reading-room lights at 100% after 9:00 p.m.");
-    const entailment = withProofVerdict({
-      ...semanticEntailment("The library keeps reading-room lights at 100% after 9:00 p.m.", [direct], field),
-      verdict: "contradicted",
-      semanticVerdict: "contradicted",
+    const measured = semanticEntailment("The library keeps reading-room lights at 100% after 9:00 p.m.", [direct], field);
+    const quantityConflict = measured.counterexamples.find(counterexample => counterexample.kind === "quantity" && counterexample.claimText === "100%");
+    expect(quantityConflict).toBeDefined();
+    expect(objectRecord(objectRecord(objectRecord(quantityConflict!.audit).metadata).matched).value).toBe("40%");
+    const typed = {
+      ...measured,
+      verdict: "contradicted" as const,
+      semanticVerdict: "contradicted" as const,
       contradiction: 0.92,
-      counterexamples: [{
-        id: "counter:phase10",
-        kind: "quantity",
-        claimText: "The library keeps reading-room lights at 100% after 9:00 p.m.",
-        evidenceIds: [direct.id],
-        sourceVersionIds: [direct.sourceVersionId],
-        contradiction: 0.92,
-        reason: "direct evidence says 40%, not 100%",
-        audit: {}
-      }]
-    }, "contradicted", "proved");
-    const spoken = await mouth.speak(baseSpeakInput({ claim: entailment.claim.text, source, evidence: [direct], field, entailment, construct: answerConstruct("contradiction") }));
+      counterexamples: [quantityConflict!]
+    };
+    const prooflessScores = { ...objectRecord(typed.proof.scores) };
+    delete prooflessScores.semanticProofEngine;
+    const entailment = options.proof === false ? { ...typed,
+      boundaries: typed.boundaries.filter(boundary => !String(boundary).startsWith("semantic-proof-engine:")),
+      proof: { ...typed.proof, scores: toJsonValue(prooflessScores) }
+    } : withProofVerdict(typed, "contradicted", "proved");
+    const teaching = counterexampleSourceTeaching({ ids, hasher });
+    const spoken = await mouth.speak({
+      ...baseSpeakInput({ claim: entailment.claim.text, source, evidence: [direct], field, entailment, construct: answerConstruct("contradiction") }),
+      languageProfile: teaching.profile, targetLanguage: teaching.profile.id,
+      targetScript: options.targetScript,
+      requirementField: options.requirements ? deriveTurnRequirementField({ requestText: entailment.claim.text, activations: [] }) : undefined,
+      requiredOutputFeatures: options.requiredSurface ? [{ id: "contrast.required", surface: options.requiredSurface, hard: true }] : undefined,
+      languageMemory: languageRuntime.hydrateFromImportedBrain({ importRunId: "phase10-contrast", models: [], observations: [], units: [],
+        patterns: options.omitConstruction ? [] : [teaching.pattern], semanticFrames: [], constructionEvidence: [teaching.evidence] })
+    });
     return { spoken, directEvidenceIds: [String(direct.id)], learnedPriorEvidenceIds: [], require: ["40%", "100%"], verdict: "contradicted" };
   }
 
@@ -204,12 +243,14 @@ describe("Phase 10 generic chat quality gate", () => {
     return { spoken, directEvidenceIds: evidence.map(item => String(item.id)), learnedPriorEvidenceIds: [], require: ["src/cli.ts", "pnpm run build"] };
   }
 
-  async function speakCorrected() {
+  async function speakCorrected(input: { ownership?: "foreign" | "unsupported"; forceBoundary?: "source_bound_only" | "proof_unavailable" } = {}) {
     const source = sourceVersion("fixture://phase10/correction", fixture.evidenceText);
     const direct = evidenceSpan(source, fixture.evidenceText, "direct_evidence");
     const field = emptyField(fixture.claim);
     const claim = `${fixture.correction.observedSurface} lights dim to 40% after 9:00 p.m.`;
-    const entailment = withProofVerdict(semanticEntailment(claim, [direct], field), "certified", "proved");
+    const measured = semanticEntailment(claim, [direct], field);
+    const entailment = input.forceBoundary === "proof_unavailable" ? measured
+      : withProofVerdict(measured, input.forceBoundary ?? "certified", input.forceBoundary === "source_bound_only" ? "inferred" : "proved");
     const correctionMemory = createCorrectionMemory({ idFactory: ids, hasher });
     const correction = correctionMemory.record({
       episodeId: ids.episodeId(),
@@ -223,9 +264,18 @@ describe("Phase 10 generic chat quality gate", () => {
         weight: 0.97
       }
     });
+    const foreignSource = input.ownership === "foreign" ? sourceVersion("fixture://phase10/foreign-owner", "Another source records no lighting policy.") : undefined;
+    const taught = sourceOwnedMouthTeaching({ ids, hasher,
+      evidence: foreignSource ? evidenceSpan(foreignSource, "Another source records no lighting policy.", "direct_evidence") : direct,
+      profileId: "phase10-language", phrase: fixture.importedPhrase,
+      subject: input.ownership === "unsupported" ? "The unrecorded policy" : "The library lighting policy",
+      predicate: "dims", object: "reading-room lights to 40% after 9:00 p.m. so late patrons have less screen glare" });
     const correctedMouth = createMouth({ languageMemory: languageRuntime, correctionMemory, hashText: text => hasher.digestHex(text) });
     const spoken = await correctedMouth.speak({
       ...baseSpeakInput({ claim, source, evidence: [direct], field, entailment, construct: answerConstruct("corrected") }),
+      construct: { ...answerConstruct("corrected"), nodes: [taught.semanticNode] },
+      languageProfile: taught.profile,
+      languageMemory: importedMemory(source, direct, "phase10-correction-source-owned", taught),
       correctionRules: [correction]
     });
     return { spoken, directEvidenceIds: [String(direct.id)], learnedPriorEvidenceIds: [], require: [fixture.correction.preferredSurface], forbidden: [fixture.correction.observedSurface], verdict: "certified" };
@@ -600,14 +650,15 @@ describe("Phase 10 generic chat quality gate", () => {
     };
   }
 
-  function importedMemory(source: SourceVersion, evidence: EvidenceSpan | undefined, importRunId: string) {
+  function importedMemory(source: SourceVersion, evidence: EvidenceSpan | undefined, importRunId: string, taught?: ReturnType<typeof sourceOwnedMouthTeaching>) {
     return languageRuntime.hydrateFromImportedBrain({
       importRunId,
       models: [ngramModel()],
       observations: [ngramObservation(source)],
       units: [languageUnit(source)],
-      patterns: [languagePattern()],
-      semanticFrames: evidence ? [semanticFrame(evidence)] : []
+      patterns: [languagePattern(), ...(taught ? [taught.pattern] : [])],
+      semanticFrames: evidence ? [semanticFrame(evidence)] : [],
+      constructionEvidence: taught?.lessons
     });
   }
 
@@ -747,6 +798,7 @@ describe("Phase 10 generic chat quality gate", () => {
   }
 
   function hasPhraseSalad(text: string): boolean {
+    if (!text.trim()) return false;
     const units = text.split(" ").map(unit => unit.trim()).filter(Boolean);
     if (units.length < 3) return true;
     let repeatedRun = 1;

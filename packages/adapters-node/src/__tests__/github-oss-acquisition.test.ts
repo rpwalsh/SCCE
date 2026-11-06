@@ -66,7 +66,7 @@ describe("public GitHub OSS acquisition", () => {
     expect(report.files.every(file => /^[0-9a-f]{64}$/u.test(file.contentHash))).toBe(true);
     expect(report.provenance.fileHashes["src/main.ts"]).toBe(report.files.find(file => file.path === "src/main.ts")?.contentHash);
     expect(received?.repositoryProvenance).toEqual(report.provenance);
-    expect(received?.sourceUriBase).toContain(`/tree/${COMMIT}`);
+    expect(received?.sourceUriBase).toBe("https://github.com/example/project");
     expect(received?.rootPath).toBe(materializedRoot);
     await expect(readFile(path.join(materializedRoot, "README.md"), "utf8")).rejects.toThrow();
   });

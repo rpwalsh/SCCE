@@ -9,6 +9,7 @@ SCCE is a TypeScript cognitive engine. It contains no language model and never w
 - PostgreSQL remains canonical state. Deterministic replay is preserved.
 - Every behavioral fix carries a regression check that fails without the fix.
 - Trace actual runtime reachability before changing behavior. Prefer `.scce/traces` over inferring from interfaces.
+- Treat apparently dead code as required unfinished functionality unless conclusive evidence proves it obsolete; wire intended behavior rather than deleting it for lint.
 - Database credentials live only in the untracked local config. Never print or commit them.
 - One terse comment line where a comment is needed. History belongs in commit messages.
 - There is one database and one server. Never restart the server from a worktree; live verification is serialized.
