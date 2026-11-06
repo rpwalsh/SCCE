@@ -12,10 +12,13 @@ import {
   type BrainManifestContract,
   type BrainValidationReport,
   type EvidenceId,
+  type InformationLabel,
   type SourceVersionId,
   type ScceStorage
 } from "@scce/kernel";
 import type { LanguageCorpusTrainingReport } from "./language-corpus-trainer.js";
+import type { OssCorpusTrainReport } from "./oss-corpus.js";
+import type { GutenbergCorpusTrainReport } from "./gutenberg-corpus.js";
 
 export interface SourceBrainSelectedItem {
   /** Stable raw source-version identity; one raw source may produce several trained projections. */
@@ -27,6 +30,7 @@ export interface SourceBrainSelectedItem {
 
 export interface SourceBrainBuildInput {
   storage: ScceStorage;
+  informationLabel: InformationLabel;
   sourceId: string;
   sourceSchema: string;
   rootPath: string;
@@ -54,7 +58,137 @@ export interface SourceBrainBuildResult {
   report: BrainValidationReport;
   replayManifestHash: string;
   active: boolean;
+  activeBrainVersion?: string;
   idempotent: boolean;
+}
+
+export interface SourceBrainBuildReceipt {
+  status: "activated" | "ready" | "validation_failed" | "existing_active";
+  importRunId?: string;
+  brainVersion?: string;
+  lifecycleState?: BrainLifecycleRecord["state"];
+  activeBrainVersion?: string;
+  active: boolean;
+  idempotent: boolean;
+  replayManifestHash?: string;
+  validationDisposition?: BrainValidationReport["disposition"];
+  checks: Array<{ id: string; passed: boolean }>;
+}
+
+export function sourceBrainBuildReceipt(result: SourceBrainBuildResult): SourceBrainBuildReceipt {
+  return {
+    status: result.active ? "activated" : result.activeBrainVersion ? "existing_active" : result.lifecycle.state === "READY" ? "ready" : "validation_failed",
+    importRunId: result.lifecycle.importRunId,
+    brainVersion: result.lifecycle.brainVersion,
+    lifecycleState: result.lifecycle.state,
+    ...(result.active ? { activeBrainVersion: result.lifecycle.brainVersion } : {}),
+    ...(!result.active && result.activeBrainVersion ? { activeBrainVersion: result.activeBrainVersion } : {}),
+    active: result.active,
+    idempotent: result.idempotent,
+    replayManifestHash: result.replayManifestHash,
+    validationDisposition: result.report.disposition,
+    checks: result.report.checks.map(check => ({ id: check.id, passed: check.passed }))
+  };
+}
+
+export function sourceBrainBuildExistingActiveReceipt(active: { activeBrainVersion?: string; activeImportRunIds: string[] }): SourceBrainBuildReceipt {
+  return {
+    status: "existing_active",
+    ...(active.activeBrainVersion ? { activeBrainVersion: active.activeBrainVersion } : {}),
+    active: Boolean(active.activeBrainVersion && active.activeImportRunIds.length),
+    idempotent: false,
+    checks: []
+  };
+}
+
+/** Activate the exact successful raw inputs in one local OSS trainer report. */
+export async function completeInitialSourceBrainFromOssReport(input: {
+  storage: ScceStorage;
+  informationLabel: InformationLabel;
+  report: OssCorpusTrainReport;
+  sourceId?: string;
+  sourceSchema?: string;
+  rootPath?: string;
+  configuration?: unknown;
+  sourceManifestHash?: string;
+  now?: number;
+}): Promise<SourceBrainBuildResult | SourceBrainBuildReceipt> {
+  const selectedItems = sourceBrainSelectedItemsFromReports(input.report.reports);
+  const failedItems = input.report.filesSkipped.filter(item => item.reason.startsWith("training_failed:"));
+  const selectedIds = selectedItems.map(item => item.sourceVersionId);
+  try { return await completeInitialSourceBrainBuild({
+    storage: input.storage,
+    informationLabel: input.informationLabel,
+    sourceId: input.sourceId ?? `oss-local:${input.report.rootPath}`,
+    sourceSchema: input.sourceSchema ?? "scce.oss.corpus.v1",
+    rootPath: input.rootPath ?? input.report.rootPath,
+    sourceManifestHash: input.sourceManifestHash ?? input.report.snapshotHash,
+    selectedItems,
+    reports: input.report.reports,
+    completion: {
+      explicitSelection: selectedItems.length > 0,
+      selectedItemIds: selectedIds,
+      completedItemIds: selectedIds,
+      stoppedByHeapSafetyBound: input.report.stoppedByHeapSafetyBound,
+      interrupted: !input.report.snapshotComplete || input.report.inspectionTruncated || failedItems.length > 0
+        || input.report.nextFileIndex < input.report.startFileIndex + input.report.filesConsidered,
+      skippedRequiredItemIds: failedItems.map(item => item.path)
+    },
+    configuration: input.configuration ?? {
+      snapshotKind: input.report.snapshotKind,
+      startFileIndex: input.report.startFileIndex,
+      nextFileIndex: input.report.nextFileIndex,
+      filesConsidered: input.report.filesConsidered
+    },
+    now: input.now
+  }); } catch (error) {
+    if (error instanceof Error && error.message.includes("refuses to replace an existing active brain")) {
+      return sourceBrainBuildExistingActiveReceipt(await input.storage.brainImports.active());
+    }
+    throw error;
+  }
+}
+
+/** Activate Gutenberg only when all discovered entries in this bounded run were trained. */
+export async function completeInitialSourceBrainFromGutenbergReport(input: {
+  storage: ScceStorage;
+  informationLabel: InformationLabel;
+  report: GutenbergCorpusTrainReport;
+  configuration?: unknown;
+  now?: number;
+}): Promise<SourceBrainBuildResult | SourceBrainBuildReceipt> {
+  const selectedItems = sourceBrainSelectedItemsFromReports(input.report.reports);
+  const selectedIds = selectedItems.map(item => item.sourceVersionId);
+  const configuration = input.configuration ?? {
+    startFileIndex: input.report.startFileIndex,
+    maxFilesTrained: input.report.filesTrained,
+    sourceSystem: input.report.sourceSystem
+  };
+  try { return await completeInitialSourceBrainBuild({
+    storage: input.storage,
+    informationLabel: input.informationLabel,
+    sourceId: `gutenberg:${input.report.rootPath}`,
+    sourceSchema: "scce.gutenberg.corpus.v1",
+    rootPath: input.report.rootPath,
+    sourceManifestHash: sourceBrainInputManifestHash({ sourceId: `gutenberg:${input.report.rootPath}`, sourceSchema: "scce.gutenberg.corpus.v1", selectedItems, configuration }),
+    selectedItems,
+    reports: input.report.reports,
+    completion: {
+      explicitSelection: selectedItems.length > 0,
+      selectedItemIds: selectedIds,
+      completedItemIds: selectedIds,
+      stoppedByHeapSafetyBound: input.report.stoppedByHeapSafetyBound,
+      interrupted: input.report.filesSkipped.length > 0,
+      skippedRequiredItemIds: input.report.filesSkipped.map(item => item.path)
+    },
+    configuration,
+    now: input.now
+  }); } catch (error) {
+    if (error instanceof Error && error.message.includes("refuses to replace an existing active brain")) {
+      return sourceBrainBuildExistingActiveReceipt(await input.storage.brainImports.active());
+    }
+    throw error;
+  }
 }
 
 /** Collapse code/prose projections back to the exact raw files they came from. */
@@ -96,6 +230,7 @@ export function sourceBrainInputManifestHash(input: {
 export async function completeInitialSourceBrainBuild(input: SourceBrainBuildInput): Promise<SourceBrainBuildResult> {
   const now = input.now ?? Date.now();
   const hasher = createHasher();
+  const configuration = sanitizeSourceBrainBuildConfiguration(input.configuration ?? {});
   const selected = [...input.selectedItems].sort((a, b) => compare(a.sourceVersionId, b.sourceVersionId));
   if (!selected.length) throw new Error("source brain build requires an explicit nonempty source selection");
   if (selected.length > 512) throw new Error("source brain build selection exceeds the bounded 512-item completion limit");
@@ -146,7 +281,7 @@ export async function completeInitialSourceBrainBuild(input: SourceBrainBuildInp
     sourceSchema: input.sourceSchema,
     sourceManifestHash: input.sourceManifestHash,
     selected,
-    configuration: input.configuration ?? {}
+    configuration
   })));
   const importRunId = `source_brain.${selectedDigest.slice(0, 40)}`;
   const brainVersion = `source_brain_v1_${selectedDigest.slice(0, 32)}`;
@@ -216,7 +351,8 @@ export async function completeInitialSourceBrainBuild(input: SourceBrainBuildInp
   const identityRuntime = createLanguageIdentityRuntime({
     store: input.storage.languageIdentities,
     hasher,
-    now: () => now
+    now: () => now,
+    informationLabel: input.informationLabel
   });
   let identityResult = await identityRuntime.ensure();
   let assignments = input.storage.languageIdentities ? await input.storage.languageIdentities.listProfileLanguages() : [];
@@ -246,7 +382,7 @@ export async function completeInitialSourceBrainBuild(input: SourceBrainBuildInp
     sourceManifestHash: input.sourceManifestHash,
     componentIds: [...sourceVersionIds, ...trainedSourceVersionIds, ...profileIds, ...evidenceIds, ...ngramModelIds, ...persistedIdentityIds, ...selectedAssignments.map(item => `${item.profileId}->${item.languageId}`)].sort(compare),
     content,
-    configuration: toJsonValue(input.configuration ?? {}),
+    configuration: toJsonValue(configuration),
     hasher
   });
   const manifestHash = hasher.digestHex(canonicalStringify(toJsonValue({
@@ -255,7 +391,7 @@ export async function completeInitialSourceBrainBuild(input: SourceBrainBuildInp
     sourceManifestHash: input.sourceManifestHash,
     selected,
     replayManifestHash: replayManifest.byteHash,
-    configuration: input.configuration ?? {}
+    configuration
   })));
   const manifest: BrainManifestContract = {
     schema: "scce.brainManifestContract.v1",
@@ -273,7 +409,7 @@ export async function completeInitialSourceBrainBuild(input: SourceBrainBuildInp
       selectedItems: selected,
       sourceManifestHash: input.sourceManifestHash,
       sourceManifestDigest: selectedDigest,
-      configuration: input.configuration ?? {},
+      configuration,
       persistedArtifacts: { profileIds, evidenceIds, ngramModelIds, languageIdentityIds: [...persistedIdentityIds].sort(compare), profileLanguageAssignments: selectedAssignments }
     }),
     createdAt: now
@@ -352,7 +488,10 @@ export async function completeInitialSourceBrainBuild(input: SourceBrainBuildInp
   } catch (error) {
     if (error instanceof Error && error.message.includes("no existing active brain")) {
       const ready = await input.storage.brainImports.getLifecycle(importRunId);
-      if (ready) return { lifecycle: ready, report: validation, replayManifestHash: replayManifest.byteHash, active: false, idempotent: false };
+      if (ready) {
+        const active = await input.storage.brainImports.active();
+        return { lifecycle: ready, report: validation, replayManifestHash: replayManifest.byteHash, active: false, activeBrainVersion: active.activeBrainVersion, idempotent: false };
+      }
     }
     throw error;
   }
@@ -364,3 +503,21 @@ export async function completeInitialSourceBrainBuild(input: SourceBrainBuildInp
 function compare(left: string, right: string): number { return left < right ? -1 : left > right ? 1 : 0; }
 function normalizeContentHash(value: string): string { return value.replace(/^sha256_/iu, "").toLowerCase(); }
 function sameStrings(left: readonly string[], right: readonly string[]): boolean { return left.length === right.length && left.every((value, index) => value === right[index]); }
+
+const SOURCE_BUILD_CONFIGURATION_KEYS = new Set([
+  "bounds", "commitSha", "filesConsidered", "heapCheckpointMb", "includeDocs", "includeSource", "languageAliases",
+  "maxDepth", "maxFileBytes", "maxFiles", "maxFilesPerRepo", "maxFilesPerRun", "maxTotalBytes", "ngramMaxCountersPerOrder",
+  "ngramMaxOrder", "ngramVocabularyLimit", "nextFileIndex", "snapshotKind", "startFileIndex"
+]);
+
+/** Keep only source/training bounds in the durable manifest; runtime settings and credentials never belong here. */
+export function sanitizeSourceBrainBuildConfiguration(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sanitizeSourceBrainBuildConfiguration);
+  if (!value || typeof value !== "object") return value;
+  const safe: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (!SOURCE_BUILD_CONFIGURATION_KEYS.has(key)) continue;
+    safe[key] = sanitizeSourceBrainBuildConfiguration(child);
+  }
+  return safe;
+}

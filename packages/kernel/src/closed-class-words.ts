@@ -74,22 +74,49 @@ export function requestClosedClassWords(input: {
   // 92,989 word types, inside the limit -- was dropped with "mercury" and the request kept every word as content.
   // Naming something cannot make a function word of this language stop being one.
   //
-  // The population, not the models a turn happens to hold: the byte-budgeted slice is 138 word types on the live
-  // brain and contains none of the language's function words, and deriveClosedClassWords already refuses to name a
-  // class from a population smaller than the limit, which is what the empty set here means.
-  const ranked = deriveClosedClassWords({
-    // Identity cues may protect a named-run function word only on the same cold path where they supplied the
-    // request corpus class above. A populated runtime model keeps the historical population-only protection.
-    ...(input.models?.length || input.continuationPopulation
-      ? {}
-      : { identityClosedClassWords: input.identityClosedClassWords }),
-    continuationPopulation: input.continuationPopulation,
-    limit: input.limit
-  });
+  // Use the best corpus statistic available. A full continuation population wins when present; otherwise the
+  // hydrated models carry the same learned continuation counts. Omitting models here erased every model-only
+  // function word inside a maximal named run, even when the request-scoped corpus set had correctly ranked it.
+  const ranked = namedRunClosedClassWords(input);
   for (const anchor of namedSubjectAnchors(input.requestText)) {
     for (const unit of anchor.toLocaleLowerCase().split(/\s+/u)) if (!ranked.has(unit)) out.delete(unit);
   }
   return out;
+}
+
+function namedRunClosedClassWords(input: {
+  models?: readonly KneserNeyModel[];
+  continuationPopulation?: LanguageContinuationPopulation;
+  identityClosedClassWords?: ReadonlySet<string>;
+  limit?: number;
+}): Set<string> {
+  const limit = closedClassLimit(input.limit);
+  if (input.continuationPopulation) {
+    const measuredPopulation = closedClassFromPopulation(input.continuationPopulation, limit);
+    if (measuredPopulation) return new Set(measuredPopulation);
+  }
+  if (input.models?.length) {
+    const continuationSymbols = new Set<string>();
+    const unigramSymbols = new Set<string>();
+    let hasContinuations = false;
+    for (const model of input.models) {
+      for (const [symbol, count] of Object.entries(model.continuationCounts ?? {})) {
+        if (!isWordSymbol(symbol) || !Number.isFinite(count) || count <= 0) continue;
+        hasContinuations = true;
+        continuationSymbols.add(symbol);
+      }
+      for (const [symbol, count] of Object.entries(model.unigramCounts ?? {})) {
+        if (isWordSymbol(symbol) && Number.isFinite(count) && count > 0) unigramSymbols.add(symbol);
+      }
+    }
+    const observedTypes = hasContinuations ? continuationSymbols : unigramSymbols;
+    // A sparse turn model may rank every content word simply because it has fewer types than the class window.
+    // Keep named-run protection unmeasured until the available corpus can fill that learned rank window.
+    if (observedTypes.size < limit) return new Set();
+    return deriveClosedClassWords({ models: input.models, limit });
+  }
+  if (input.continuationPopulation) return new Set();
+  return deriveClosedClassWords({ identityClosedClassWords: input.identityClosedClassWords, limit });
 }
 
 export function deriveClosedClassWords(input: {

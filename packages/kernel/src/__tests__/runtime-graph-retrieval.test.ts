@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { createRuntimeGraphRetrieval, learnedMorphologyPrefixIndex } from "../runtime-graph-retrieval.js";
 import { createClock, createHasher } from "../primitives.js";
+import { evidenceProofBoundary, isSourceContentEvidence } from "../proof-boundary.js";
 import type { KneserNeyModel } from "../kneser-ney.js";
 import type { LanguageContinuationPopulation, ScceKernelDeps } from "../storage.js";
 import type {
@@ -351,12 +352,17 @@ describe("runtime hot graph retrieval", () => {
       ?.support).toMatchObject({ sourceIdentityBoundEvidenceAbsent: true });
   });
 
-  it("hydrates a factual graph slice when source identity matches the requested anchor", async () => {
+  it.each(["direct_evidence", "profile_excerpt_evidence"])("hydrates source content independently of proof certification: %s", async forceClass => {
     const source = evidenceSpan(
       "evidence:armand-vega",
       "Armand Vega",
       "Armand Vega was an engineer."
     );
+    source.trustVector = { forceClass };
+    expect(isSourceContentEvidence(source)).toBe(true);
+    expect(isSourceContentEvidence({ ...source, status: "quarantined" })).toBe(false);
+    expect(isSourceContentEvidence({ ...source, trustVector: { forceClass: "learned_language_prior" } })).toBe(false);
+    expect(evidenceProofBoundary(source).certifiesFactualProof).toBe(forceClass === "direct_evidence");
     const node = graphNode("node:armand-vega", ["sym:armand", "sym:vega"], [String(source.id)]);
     const fixture = runtimeFixture(graphSlice([node], [], []));
     fixture.searchEvidence.mockResolvedValue([{

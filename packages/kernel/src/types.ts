@@ -1518,6 +1518,8 @@ export interface ScceKernel {
     discovered: boolean;
     elapsedMs: number;
   }>;
+  /** Drop in-process state cached against the previous active brain and reload persisted language identities. */
+  refreshAfterBrainActivation(): Promise<{ languageIdentities: number; assignedProfiles: number }>;
   /** What the learned construction grammar composes with no semantic target. Diagnostic only; never spoken. */
   inspectGenerativeStructure(query?: { constructionLimit?: number; maxRecursionDepth?: number; treewidthBudget?: number }): Promise<{
     schema: "scce.generative_structure_inspection.v1";

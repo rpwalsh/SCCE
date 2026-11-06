@@ -15,7 +15,10 @@ vi.mock("@scce/kernel", () => {
       const byteHash = digestHex(canonicalBytes);
       return { schema: "scce.brain_replay_manifest.v1", id: `brain_replay.${byteHash.slice(0, 48)}`, byteHash, canonicalBytes, componentIds: [...new Set(input.componentIds)].sort() };
     },
-    createLanguageIdentityRuntime: () => ({ ensure: async () => ({ assigned: 1, identities: [], discovered: false, elapsedMs: 0 }) }),
+    createLanguageIdentityRuntime: (options: { informationLabel?: { tenantId: string } }) => {
+      if (options.informationLabel?.tenantId !== "tenant.owner") throw new Error("identity discovery lost its durable information label");
+      return { ensure: async () => ({ assigned: 1, identities: [], discovered: false, elapsedMs: 0 }) };
+    },
     toJsonValue: (value: unknown) => value,
     validateBrainManifestContract: () => [],
     validationDisposition: (checks: Array<{ passed: boolean; severity: string }>) => checks.some(check => !check.passed && check.severity === "error") ? "FAILED" : "PASSED"
@@ -34,6 +37,10 @@ describe("initial source brain completion", () => {
     expect(result.active).toBe(true);
     expect(result.lifecycle.state).toBe("ACTIVE");
     expect(result.report.disposition).toBe("PASSED");
+    const manifestText = JSON.stringify(result.lifecycle.manifest.metadata);
+    expect(manifestText).not.toContain("postgres://private");
+    expect(manifestText).not.toContain("private-token-value");
+    expect(manifestText).toContain("maxFilesPerRun");
     expect(result.lifecycle.manifest.replayManifest?.componentIds).toEqual(expect.arrayContaining([
       "sv-one", "profile-one", "evidence-one", "model-one"
     ]));
@@ -75,6 +82,7 @@ describe("initial source brain completion", () => {
 function buildInput(storage: ScceStorage) {
   return {
     storage,
+    informationLabel: { tenantId: "tenant.owner", principals: ["owner"], compartments: [], exportClass: "restricted" as const, mergePolicy: "isolated" as const },
     sourceId: "owner-source",
     sourceSchema: "scce.owner.source.v1",
     rootPath: "C:/source/one-document",
@@ -82,7 +90,7 @@ function buildInput(storage: ScceStorage) {
     selectedItems: [{ sourceVersionId: "sv-one", contentHash: CONTENT_HASH, byteLength: 64 }],
     reports: [report()] as LanguageCorpusTrainingReport[],
     completion: { explicitSelection: true, selectedItemIds: ["sv-one"], completedItemIds: ["sv-one"], stoppedByHeapSafetyBound: false, interrupted: false, skippedRequiredItemIds: [] },
-    configuration: { maxFilesPerRun: 1 },
+    configuration: { maxFilesPerRun: 1, databaseUrl: "postgres://private/password", apiToken: "private-token-value" },
     now: 100
   };
 }

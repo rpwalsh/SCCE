@@ -200,8 +200,9 @@ describe("semantic proof engine vertical slice", () => {
     const priorOnly = await mouth.speak({ ...shared, entailment: entailment(ids, clock.now(), span, priorGate, "unknown") });
 
     expect(certified.force).toBe("entailed");
-    expect(certified.realizationAvailability.status).toBe("realization_unavailable");
-    expect(certified.evidenceRefs).toEqual([]);
+    expect(certified.realizationAvailability.status).toBe("realized");
+    expect(certified.text).toBe(span.text);
+    expect(certified.evidenceRefs.map(String)).toContain(String(span.id));
     expect(priorOnly.force).toBe("underdetermined");
     expect(priorOnly.evidenceRefs).toEqual([]);
     expect(JSON.stringify(priorOnly.realizationTrace.walshSurfaceEnergy)).toContain("unsupported_prior_only");
@@ -209,6 +210,42 @@ describe("semantic proof engine vertical slice", () => {
       expect(priorOnly.text).not.toContain(forbidden);
     }
     expect(JSON.stringify(priorOnly.realizationTrace.surfacePlan)).toContain("pointCount");
+  });
+
+  it("can realize opaque non-Latin source content without a certified proof receipt", async () => {
+    const clock = createClock({ fixedTime: 9100, stepMs: 1 });
+    const hasher = createHasher();
+    const ids = createIdFactory({ clock, hasher, deterministicReplay: true });
+    const source = sourceVersion(ids, clock.now());
+    const opaqueText = "星舟Δ7由青色索引系统维护。";
+    const span = evidenceSpan(ids, source, opaqueText, clock.now());
+    const languageMemory = createLanguageMemoryRuntime({ idFactory: ids, hasher });
+    const mouth = createMouth({ languageMemory, correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }), hashText: text => hasher.digestHex(text) });
+    const priorGate = proveClaim({ claim: claim(), candidateEvidence: [evidence({ forceClass: "learned_language_prior" })], policy: basePolicy });
+    const unprovenClaim = entailment(ids, clock.now(), span, priorGate, "unknown");
+    unprovenClaim.claim = {
+      ...unprovenClaim.claim,
+      id: ids.claimId({ text: opaqueText }),
+      text: opaqueText,
+      normalized: opaqueText,
+      features: featureSet(opaqueText, 128)
+    };
+    unprovenClaim.evidenceIds = [span.id];
+    const languageState = languageMemory.hydrateFromImportedBrain({ importRunId: "opaque-source", models: [], observations: [], units: [], patterns: [], semanticFrames: [] });
+    const spoken = await mouth.speak({
+      construct: constructGraph(ids),
+      field: emptyField(),
+      languageProfile: languageProfile(source, clock.now()),
+      evidence: [span],
+      entailment: unprovenClaim,
+      languageMemory: languageState,
+      targetLanguage: "fixture-language"
+    });
+
+    expect(spoken.realizationAvailability.status).toBe("realized");
+    expect(spoken.text).toBe(opaqueText);
+    expect(spoken.evidenceRefs.map(String)).toContain(String(span.id));
+    expect(unprovenClaim.proof.evidenceIds).toEqual([]);
   });
 
   function claim(overrides: Partial<ProofClaim> = {}): ProofClaim {

@@ -7,11 +7,13 @@ import { handleRequest, ROUTES, type ApiContext } from "../routes.js";
 
 const servers: ReturnType<typeof createServer>[] = [];
 const commitSha = "a".repeat(40);
+const refreshAfterBrainActivation = vi.fn(async () => ({ languageIdentities: 1, assignedProfiles: 1 }));
 
 beforeEach(() => vi.stubEnv("SCCE_ALLOW_AUTOMATIC_WEB", "1"));
 
 afterEach(async () => {
   vi.unstubAllEnvs();
+  refreshAfterBrainActivation.mockClear();
   await Promise.all(servers.splice(0).map(server => new Promise<void>(resolve => server.close(() => resolve()))));
 });
 
@@ -40,7 +42,7 @@ function report(): GithubOssAcquisitionReport {
 
 async function startFixture(acquire: NonNullable<ApiContext["githubOssAcquisition"]>): Promise<string> {
   const context = {
-    runtime: { storage: {} },
+    runtime: { storage: {}, kernel: { refreshAfterBrainActivation } },
     config: { server: { url: "http://127.0.0.1:0" }, security: {} },
     maxBodyBytes: 1_000_000,
     githubOssAcquisition: acquire,
@@ -79,7 +81,21 @@ describe("public GitHub OSS ingest API", () => {
       calls += 1;
       expect(input.remoteUrl).toBe("https://github.com/example/project.git");
       expect(input.commitSha).toBe(commitSha);
-      return report();
+      expect(typeof input.training?.onSourceBrainTrainingComplete).toBe("function");
+      const result = report();
+      result.training.sourceBrainBuild = {
+        status: "activated",
+        importRunId: "source_brain.fixture",
+        brainVersion: "source_brain_v1_fixture",
+        lifecycleState: "ACTIVE",
+        activeBrainVersion: "source_brain_v1_fixture",
+        active: true,
+        idempotent: false,
+        replayManifestHash: "d".repeat(64),
+        validationDisposition: "PASSED",
+        checks: [{ id: "source.selection_complete", passed: true }]
+      };
+      return result;
     });
     const response = await fetch(`${url}/api/ingest/github`, {
       method: "POST",
@@ -95,6 +111,9 @@ describe("public GitHub OSS ingest API", () => {
     expect(body.training.skipped).toHaveLength(128);
     expect(body.training.skippedTruncated).toBe(true);
     expect(body.training.reports).toBeUndefined();
+    expect(body.training.sourceBrainBuild.status).toBe("activated");
+    expect(body.training.sourceBrainBuild.activeBrainVersion).toBe("source_brain_v1_fixture");
+    expect(refreshAfterBrainActivation).toHaveBeenCalledOnce();
   });
 
   it("rejects branch URLs, non-exact commits, and extra execution controls before acquisition", async () => {

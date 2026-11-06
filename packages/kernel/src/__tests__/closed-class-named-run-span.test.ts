@@ -4,6 +4,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { requestClosedClassWords } from "../closed-class-words.js";
 import { clearCorpusIdentitySignals } from "../corpus-identity.js";
 import { namedSubjectAnchors } from "../kernel-answer-primitives.js";
+import { requestContentAnchorUnits } from "../local-evidence-runtime.js";
+import type { KneserNeyModel } from "../kneser-ney.js";
 import type { LanguageContinuationPopulation, LanguagePatternRecord } from "../storage.js";
 
 afterEach(() => clearCorpusIdentitySignals());
@@ -37,6 +39,21 @@ describe("a named run spanning the request does not delete the corpus closed cla
     expect(closed.has("who")).toBe(true);
     expect(closed.has("ada")).toBe(false);
     expect(closed.has("lovelace")).toBe(false);
+  });
+
+  it("uses model-only continuation ranks inside an opaque non-Latin request without discounting its relation or identity", () => {
+    const model = {
+      continuationCounts: { "ποια": 100, "θέση": 5, "κατέχει": 3, "διώνη": 1 },
+      unigramCounts: {}
+    } as unknown as KneserNeyModel;
+    const requestText = "Ποια θέση κατέχει Διώνη;";
+
+    const closed = requestClosedClassWords({ requestText, models: [model], limit: 1 });
+    const contentUnits = requestContentAnchorUnits(requestText).filter(unit => !closed.has(unit));
+
+    expect(closed.has("ποια")).toBe(true);
+    expect(closed.has("διώνη")).toBe(false);
+    expect(contentUnits).toContain("κατέχει");
   });
 });
 

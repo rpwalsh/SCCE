@@ -7,7 +7,7 @@ import { createCandidateEngine } from "./candidate.js";
 import { traceEvent } from "./debug/trace.js";
 import { discourseObjectStateFromMetadata } from "./discourse-state.js";
 import { deriveClosedClassWords } from "./closed-class-words.js";
-import { evidenceProofBoundary } from "./proof-boundary.js";
+import { isSourceContentEvidence } from "./proof-boundary.js";
 import { genericQuestionSignal, jsonRecord, kernelNumber, kernelString, kernelStringArray, namedSubjectAnchors, normalizePriorKey, requestContentSurface, splitPriorUnits, uniqueKernelStrings } from "./kernel-answer-primitives.js";
 import { relevanceRequestFocuses } from "./learned-graph-prior-runtime.js";
 import { RETRIEVAL_DEPRIORITIZED_SOURCE_KINDS, retrievalBinding, retrievalBindingCarries, retrievalBindingRank } from "./retrieval-binding.js";
@@ -494,7 +494,7 @@ export function createRuntimeGraphRetrieval(options: {
           ? await sourceAnchorSemanticFrameEvidence(text, true)
           : { evidence: [], semanticFrameBoundEvidenceIds: [] };
         const certifyingSemanticEvidence = semanticSelection.evidence
-          .filter(span => evidenceProofBoundary(span).certifiesFactualProof);
+          .filter(span => isSourceContentEvidence(span));
         const semanticIds = new Set(semanticSelection.semanticFrameBoundEvidenceIds
           .filter(id => certifyingSemanticEvidence.some(span => String(span.id) === id)));
         const anchored = sourceIdentityAdmissibleEvidenceForRequest(text, certifyingSemanticEvidence, semanticIds);
@@ -1010,7 +1010,7 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
       : mergedCandidates.filter(span => retrievalBindingCarries(retrievalBinding(span, { requestText: text })));
     const promoted = dropContainerSpans(proseCandidates
       .filter(span => (span.status === "promoted" || promotedSessionEvidence(span))
-        && evidenceProofBoundary(span).certifiesFactualProof
+        && isSourceContentEvidence(span)
         && !isControlCorpusSpan(span)
         && !spanIsUnparsedMarkup(span)));
     const semanticFrameBoundEvidenceIds = new Set(semanticFrameEvidence.semanticFrameBoundEvidenceIds);
@@ -1879,7 +1879,7 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
       .map(id => hot.evidenceById.get(id))
       .filter((span): span is EvidenceSpan => Boolean(span));
     const candidates = indexedEvidence
-      .filter(span => evidenceProofBoundary(span).certifiesFactualProof && !spanIsUnparsedMarkup(span) && !isControlCorpusSpan(span));
+      .filter(span => isSourceContentEvidence(span) && !spanIsUnparsedMarkup(span) && !isControlCorpusSpan(span));
     // sourceAnchoredEvidenceForRequest's generic fallback ("selected") only
     // requires loose content/anchor overlap, not an exact or
     // title-distinct match -- the full DB-backed path already guards
@@ -1926,7 +1926,7 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
     if (!missing.length) return [...spans];
     const openingStarted = Date.now();
     const opening = (await fetchOpening(missing.map(id => id as SourceVersionId)).catch(() => [] as EvidenceSpan[]))
-      .filter(span => evidenceProofBoundary(span).certifiesFactualProof && !spanIsUnparsedMarkup(span));
+      .filter(span => isSourceContentEvidence(span) && !spanIsUnparsedMarkup(span));
     kernelTrace({
       stage: "graph.resolve.opening_block",
       label: "kernel.sourceAnchoredEvidenceForText",

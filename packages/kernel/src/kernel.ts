@@ -307,6 +307,11 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
       const result = await languageIdentityRuntime.ensure(input);
       return { schema: "scce.language_identities.v1" as const, ...result };
     },
+    async refreshAfterBrainActivation() {
+      invalidateRuntimeCaches();
+      const result = await languageIdentityRuntime.ensure();
+      return { languageIdentities: result.identities.length, assignedProfiles: result.assigned };
+    },
     async warmup(input: RuntimeWarmupInput = {}): Promise<RuntimeWarmupResult> {
       const started = clock.now();
       const failures: string[] = [];

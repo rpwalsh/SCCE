@@ -383,7 +383,6 @@ type FactualProducerAuthority =
   | { schema: "scce.mouth.factual_producer_authority.v1"; kind: "insufficient_support"; questionShapeId: string; requestedFocuses: string[] };
 
 const sourceContentPlans = new WeakMap<SpeakInput, readonly PlannedClaim[]>();
-const verifiedEntailmentPlans = new WeakSet<SpeakInput>();
 
 type MouthProducerAuthority = FactualProducerAuthority
   | { schema: "scce.mouth.producer_authority.v1"; kind: "learned_prior_proposition"; questionShapeId: string; boundaryId: string; factKeys: string[]; sourceSurfacePieceId?: string }
@@ -1047,7 +1046,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
             ? uniqueStrings([
               ...forbiddenSurfaceHits(bounded, plan),
               ...(conversationContextCandidate ? [] : questionEchoHits(bounded, mouthEchoQuestionText(input))),
-              ...unlicensedCommitmentHits(bounded, input),
+              ...unlicensedCommitmentHits(bounded, ownerConversationInput(input)),
               ...unanchoredImportedPriorHits(candidate, input, bounded)
             ])
           : uniqueStrings([
@@ -1462,7 +1461,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
   };
   return {
     async speak(input) {
-      const realizationInput = withVerifiedEntailmentClaim({ ...input });
+      const realizationInput = withSelectedSourceContentPlan(withVerifiedEntailmentClaim({ ...input }));
       return withSurfaceContract(realizationInput, await learned.speak(realizationInput), SURFACE_REALIZATION_STRATEGY_IDS.learned);
     }
   };
@@ -4599,6 +4598,37 @@ function conversationMemoryCandidate(
   languageMemory: LanguageMemoryRuntime,
   generationWorkBudget: MouthGenerationWorkBudget
 ): SurfaceCandidate | undefined {
+  const classification = input.requestCommunicativeAct;
+  const classificationIsActive = classification?.status === "active"
+    && classification.actId !== DIALOGUE_ACT_IDS.neutral
+    && classification.matchedPatternIds.length > 0;
+  const traceCandidateDecision = (reason: string, surface: string | null, refusals: readonly string[], turns: readonly ConversationTurnSurface[]) => {
+    traceEvent((globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace, {
+      stage: "mouth.conversation_memory.candidate",
+      label: "mouth.speak",
+      counts: { attempts: refusals.length + (surface ? 1 : 0), produced: surface ? 1 : 0 },
+      support: {
+        reason,
+        actStatus: classification?.status ?? null,
+        classifiedActId: classification?.actId ?? null,
+        matchedPatternIds: classification?.matchedPatternIds ?? [],
+        observedTurnIds: turns.map(turn => turn.turnId),
+        ownerTurnIds: turns.filter(turn => turn.roleId === "session.role.owner").map(turn => turn.turnId),
+        surface,
+        refusals: refusals.slice(0, 8)
+      }
+    });
+  };
+  const observedTurns = speakConversationTurns(input);
+  if (!classificationIsActive) {
+    traceCandidateDecision("no_active_non_neutral_owner_act", null, [], observedTurns);
+    return undefined;
+  }
+  const ownerTurns = observedTurns.filter(turn => turn.roleId === "session.role.owner");
+  if (!ownerTurns.length) {
+    traceCandidateDecision("no_owner_turn_context", null, [], observedTurns);
+    return undefined;
+  }
   if (semanticAnswerConstructState(input.construct)) return undefined;
   // The runtime-motion boundary is not a selected meaning; treating it as one left this producer unreachable.
   if (generatedConstructSurface(input.construct) && !isNonAssertiveRuntimeMotionConstruct(input.construct)) return undefined;
@@ -4606,7 +4636,7 @@ function conversationMemoryCandidate(
   if (input.evidence.length || input.entailment.evidenceIds.length) return undefined;
   if (importSummaryRequested(input.entailment.claim.text)) return undefined;
   // The conversation's own turns are what can license this surface, so they are also what it is conditioned on.
-  const conversationContext = uniqueStrings(speakConversationTurns(input).flatMap(turn => splitWhitespace(turn.surface)));
+  const conversationContext = uniqueStrings(observedTurns.flatMap(turn => splitWhitespace(turn.surface)));
   let generation: LanguageGenerationResult | undefined;
   let text: string | undefined;
   const refusals: string[] = [];
@@ -4650,17 +4680,12 @@ function conversationMemoryCandidate(
     if (isBoundaryGlyph(admissible) || ![...admissible].some(char => isLetterChar(char) || isDigitChar(char)) || looksLikeOrphanLanguageFragment(admissible)) { refusals.push(`fragment:${admissible.slice(0, 48)}`); continue; }
     if (questionEchoHits(admissible, mouthEchoQuestionText(input)).length) { refusals.push(`echo:${admissible.slice(0, 48)}`); continue; }
     // Replaces the turn-verdict gate: what licenses this surface is its own units' provenance, not what the turn proved.
-    const inventory = speakCommitmentInventory(admissible, input);
+    const inventory = speakCommitmentInventory(admissible, ownerConversationInput(input));
     if (!candidateCommitmentsLicensed(inventory)) { refusals.push(`unlicensed:${inventory.unlicensedUnits.map(unit => unit.surface).join(",")}`); continue; }
     generation = sampled;
     text = admissible;
   }
-  traceEvent((globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace, {
-    stage: "mouth.conversation_memory.candidate",
-    label: "mouth.speak",
-    counts: { attempts: refusals.length + (text ? 1 : 0), produced: text ? 1 : 0 },
-    support: { surface: text ?? null, refusals: refusals.slice(0, 8), conversationContext: conversationContext.slice(-9) }
-  });
+  traceCandidateDecision("active_non_neutral_owner_act", text ?? null, refusals, observedTurns);
   if (!generation || !text) return undefined;
   return {
     id: "candidate:generated:conversation-memory",
@@ -4668,6 +4693,12 @@ function conversationMemoryCandidate(
     path: "generated",
     text,
     evidenceIds: [],
+    audit: {
+      actId: classification.actId,
+      matchedPatternIds: [...classification.matchedPatternIds],
+      conversationTurnIds: observedTurns.map(turn => turn.turnId),
+      ownerTurnIds: ownerTurns.map(turn => turn.turnId)
+    },
     fit: clamp01(0.46 + generation.confidence * 0.32 + input.languageMemory.competenceVector.generationReliability * 0.18),
     importedPieceIds: generationImportedPriorIds(generation),
     generation,
@@ -7738,6 +7769,7 @@ function semanticAnswerDriftHits(text: string, input: SpeakInput, priorPieces: r
 
 function mouthEchoQuestionText(input: SpeakInput): string {
   if (sessionAssertionTurn(input)) return "";
+  if (!input.requestText && (selectedSourceContentPlans.has(input) || verifiedEntailmentPlans.has(input))) return "";
   return input.requestText ?? input.entailment.claim?.text ?? "";
 }
 
@@ -7806,10 +7838,14 @@ function speakConversationTurns(input: SpeakInput): ConversationTurnSurface[] {
   const supplied = [...(input.conversationTurns ?? [])];
   const requestText = input.requestText ?? mouthEchoQuestionText(input);
   const highest = supplied.reduce((index, turn) => Math.max(index, turn.turnIndex), -1);
-  if (requestText.trim() && !supplied.some(turn => turn.surface === requestText)) {
-    supplied.push({ turnId: "conversation.turn.request", turnIndex: highest + 1, surface: requestText });
+  if (requestText.trim() && !supplied.some(turn => turn.surface === requestText && turn.roleId === "session.role.owner")) {
+    supplied.push({ turnId: "conversation.turn.request", turnIndex: highest + 1, surface: requestText, roleId: "session.role.owner" });
   }
   return supplied;
+}
+
+function ownerConversationInput(input: SpeakInput): SpeakInput {
+  return { ...input, conversationTurns: speakConversationTurns(input).filter(turn => turn.roleId === "session.role.owner") };
 }
 
 function speakCommitmentInventory(
@@ -8065,6 +8101,34 @@ function factualProducerAuthority(candidate: SurfaceCandidate, input: SpeakInput
   };
 }
 
+/** Proof-verified plans stay private to this Mouth invocation; caller-authored JSON cannot mint source authority. */
+const verifiedEntailmentPlans = new WeakMap<SpeakInput, { claim: PlannedClaim; evidenceIds: readonly EvidenceId[] }>();
+const selectedSourceContentPlans = new WeakMap<SpeakInput, { claimText: string; evidenceIds: readonly EvidenceId[] }>();
+
+/** Selected semantic content is usable when its exact words have a real owner, whether or not a proof receipt exists. */
+function withSelectedSourceContentPlan(input: SpeakInput): SpeakInput {
+  if (input.selectedCandidate) return input;
+  const claims = [
+    ...(input.claimBases ?? []),
+    ...(input.entailment.claim.text.trim() ? [{
+      text: input.entailment.claim.text,
+      evidenceIds: input.entailment.evidenceIds
+    }] : [])
+  ];
+  for (const claim of claims) {
+    const claimText = claim.text.trim();
+    if (!claimText) continue;
+    const claimEvidenceIds = new Set(claim.evidenceIds.map(String));
+    const admittedEvidenceIds = uniqueEvidenceIds(input.evidence
+      .filter(span => claimEvidenceIds.has(String(span.id)) && exactSourceExcerptOwners(claimText, [span]).length > 0)
+      .map(span => span.id));
+    if (!admittedEvidenceIds.length) continue;
+    selectedSourceContentPlans.set(input, { claimText, evidenceIds: admittedEvidenceIds });
+    break;
+  }
+  return input;
+}
+
 /** Normalize the verified entailment claim into the same typed claim inventory all Mouth producers share. */
 function withVerifiedEntailmentClaim(input: SpeakInput): SpeakInput {
   const existing = input.claimBases ?? input.selectedProposal?.claims ?? [];
@@ -8095,9 +8159,14 @@ function withVerifiedEntailmentClaim(input: SpeakInput): SpeakInput {
     && claim.evidenceIds.length > 0
     && claim.evidenceIds.every(id => evidenceIds.some(owner => String(owner) === String(id))));
   if (alreadyBound) {
-    const normalized = input.claimBases ? input : { ...input, claimBases: existing };
-    verifiedEntailmentPlans.add(normalized);
-    return normalized;
+    const claim = existing.find(claim => normalizeEvidenceSentence(claim.text) === normalizeEvidenceSentence(input.entailment.claim.text)
+      && claim.evidenceIds.length > 0
+      && claim.evidenceIds.every(id => evidenceIds.some(owner => String(owner) === String(id))));
+    if (claim) {
+      const normalized = input.claimBases ? input : { ...input, claimBases: existing };
+      verifiedEntailmentPlans.set(normalized, { claim, evidenceIds: uniqueEvidenceIds(evidenceIds) });
+      return normalized;
+    }
   }
   const planned: PlannedClaim = {
     id: `claim:verified-entailment:${input.entailment.claim.id}`,
@@ -8120,7 +8189,7 @@ function withVerifiedEntailmentClaim(input: SpeakInput): SpeakInput {
     })
   };
   const normalized = { ...input, claimBases: [...existing, planned] };
-  verifiedEntailmentPlans.add(normalized);
+  verifiedEntailmentPlans.set(normalized, { claim: planned, evidenceIds: uniqueEvidenceIds(evidenceIds) });
   return normalized;
 }
 
@@ -8304,7 +8373,14 @@ function mouthProducerAuthorityAllows(candidate: SurfaceCandidate, input: SpeakI
       return input.requestedAuthority === "translation" && authority.sourceEvidenceIds.every(id => candidate.evidenceIds.map(String).includes(String(id)));
     case "conversation_bound":
       return (authority.importedPieceIds.length > 0 || Boolean(authority.actId))
-        && (candidate.style === "surface.path.generated.conversational_act_binding" || input.requestCommunicativeAct !== undefined);
+        && (candidate.style === "surface.path.generated.conversational_act_binding"
+          || (candidate.style === "surface.path.generated.conversation_memory"
+            && input.requestCommunicativeAct?.status === "active"
+            && input.requestCommunicativeAct.actId !== DIALOGUE_ACT_IDS.neutral
+            && input.requestCommunicativeAct.matchedPatternIds.length > 0
+            && authority.actId === input.requestCommunicativeAct.actId
+            && stringArrayFromJson(jsonRecord(candidate.audit).ownerTurnIds).some(turnId =>
+              speakConversationTurns(input).some(turn => turn.turnId === turnId && turn.roleId === "session.role.owner"))));
   }
 }
 
@@ -8530,10 +8606,25 @@ function factualProducerAuthorityHits(
   const quotation = authority.kind === "source_excerpt";
   const discourseBound = quotation && authority.contentPlan.discourseEvidenceIds?.length === 1
     && discourseOwnsSourceExcerpt(input, text, authority.contentPlan.discourseEvidenceIds[0]!);
+  const verifiedExactClaimExcerpt = authority.kind === "source_excerpt"
+    && !input.requestText
+    && (() => {
+      const verified = verifiedEntailmentPlans.get(input);
+      const selected = selectedSourceContentPlans.get(input);
+      const plan = authority.contentPlan;
+      const authorizedText = selected?.claimText ?? verified?.claim.text;
+      const authorizedEvidenceIds = selected?.evidenceIds ?? verified?.evidenceIds ?? [];
+      return Boolean(authorizedText
+        && plan.requiredClaimText === authorizedText
+        && normalizeEvidenceSentence(text) === normalizeEvidenceSentence(authorizedText)
+        && plan.claimEvidenceIds?.some(id => String(id) === String(plan.ownerEvidenceId))
+        && authorizedEvidenceIds.some(id => String(id) === String(plan.ownerEvidenceId))
+        && exactSourceExcerptOwners(text, owners).some(span => String(span.id) === String(plan.ownerEvidenceId)));
+    })();
   return uniqueStrings([
-    ...(candidate.plannedClaims?.length || discourseBound ? [] : requestCoverageHits(text, candidate, scopedInput, false)),
+    ...(candidate.plannedClaims?.length || discourseBound || verifiedExactClaimExcerpt ? [] : requestCoverageHits(text, candidate, scopedInput, false)),
     ...(authority.kind === "evidence_bound_proposition" ? semanticAnswerDriftHits(text, scopedInput, priorPieces) : []),
-    ...questionEchoHits(text, mouthEchoQuestionText(input)),
+    ...(verifiedExactClaimExcerpt ? [] : questionEchoHits(text, mouthEchoQuestionText(input))),
     ...unlicensedCommitmentHits(text, scopedInput, candidate.constructionFormLiterals),
     ...(input.realizationContract && !candidateSurvivesRealizationContract(text, input.realizationContract).survives
       ? ["surface.reject.realization_contract"]
@@ -9530,14 +9621,23 @@ function sourceExcerptContentCandidate(
   plan: SurfacePlan,
   discoursePlan: DiscoursePlan
 ): SurfaceCandidate | undefined {
-  const boundIds = new Set((input.selectedCandidate?.evidenceIds ?? []).map(String));
+  const verifiedPlan = input.selectedCandidate ? undefined : verifiedEntailmentPlans.get(input);
+  const sourcePlan = input.selectedCandidate ? undefined : selectedSourceContentPlans.get(input);
+  const boundIds = new Set((input.selectedCandidate?.evidenceIds ?? sourcePlan?.evidenceIds ?? verifiedPlan?.evidenceIds ?? []).map(String));
   if (!boundIds.size) return undefined;
   const semanticState = semanticAnswerConstructState(input.construct);
-  const claimText = semanticState ? normalizeEvidenceSentence(input.entailment.claim.text) : "";
-  const claimEvidenceIds = semanticState
-    ? input.entailment.evidenceIds.filter(id => boundIds.has(String(id))
+  const selectedClaimText = sourcePlan?.claimText ?? verifiedPlan?.claim.text ?? (semanticState ? input.entailment.claim.text : "");
+  const claimText = selectedClaimText ? normalizeEvidenceSentence(selectedClaimText) : "";
+  const claimEvidenceIds = sourcePlan
+    ? sourcePlan.evidenceIds.filter(id => boundIds.has(String(id))
       && input.evidence.some(span => String(span.id) === String(id) && exactSourceExcerptOwners(claimText, [span]).length > 0))
-    : [];
+    : verifiedPlan
+      ? verifiedPlan.evidenceIds.filter(id => boundIds.has(String(id))
+      && input.evidence.some(span => String(span.id) === String(id) && exactSourceExcerptOwners(claimText, [span]).length > 0))
+      : semanticState
+        ? input.entailment.evidenceIds.filter(id => boundIds.has(String(id))
+          && input.evidence.some(span => String(span.id) === String(id) && exactSourceExcerptOwners(claimText, [span]).length > 0))
+        : [];
   const requestForStateBinding = input.requestText ?? input.entailment.claim.text;
   const semanticStateBindsRequest = Boolean(semanticState?.selectedSubject.trim())
     && normalizeSurfaceEcho(requestForStateBinding).includes(normalizeSurfaceEcho(semanticState!.selectedSubject));
@@ -9554,8 +9654,9 @@ function sourceExcerptContentCandidate(
   const selectedExcerptOwned = Boolean(input.selectedCandidate?.answer)
     && input.selectedCandidate!.evidenceIds.some(id => boundIds.has(String(id)))
     && exactSourceExcerptOwners(input.selectedCandidate!.answer, input.evidence.filter(span => boundIds.has(String(span.id)))).length > 0;
-  const preservedSelectedClaim = selectedExcerptOwned
-    && normalizeEvidenceSentence(input.selectedCandidate!.answer) === normalizeEvidenceSentence(input.entailment.claim.text);
+  const preservedSelectedClaim = Boolean(input.selectedCandidate?.answer)
+    && selectedExcerptOwned
+    && normalizeEvidenceSentence(input.selectedCandidate!.answer) === normalizeEvidenceSentence(selectedClaimText || input.entailment.claim.text);
   const discourseBoundSelectedClaim = selectedExcerptOwned && input.selectedCandidate!.evidenceIds.some(id =>
     discourseOwnsSourceExcerpt(input, input.selectedCandidate!.answer, id));
   const exactPlannedExcerptWithoutQuestion = !input.requestText
@@ -9564,7 +9665,7 @@ function sourceExcerptContentCandidate(
     && (discourseBoundSelectedClaim || (semanticStateBindsRequest
       ? preservedSelectedClaim
       : (sourcePreservationRequested || exactPlannedExcerptWithoutQuestion)));
-  const window = discourseBoundSelectedClaim ? input.selectedCandidate!.answer : semanticState && claimEvidenceIds.length
+  const window = discourseBoundSelectedClaim ? input.selectedCandidate!.answer : claimEvidenceIds.length
     ? claimText
     : selectedSourceExcerpt
       ? input.selectedCandidate!.answer
@@ -9588,7 +9689,7 @@ function sourceExcerptContentCandidate(
     requestUnits: mouthCoverageUnits(input),
     ...(discourseBoundSelectedClaim ? { requiredClaimText: input.selectedCandidate!.answer, discourseEvidenceIds: [owner.id] } : {}),
     ...(!discourseBoundSelectedClaim && (claimEvidenceIds.some(id => String(id) === String(owner.id)) || (preservedSelectedClaim && String(owner.id) === String(input.selectedCandidate?.evidenceIds.find(id => boundIds.has(String(id))))))
-      ? { requiredClaimText: input.entailment.claim.text, claimEvidenceIds: [owner.id] }
+      ? { requiredClaimText: selectedClaimText || input.entailment.claim.text, claimEvidenceIds: [owner.id] }
       : {})
   };
   return {

@@ -21,6 +21,7 @@ import { extractNodeSourceCodeFacts, measureExhibitedContent } from "./code-grap
 import { inspectEngineeringCorpusFolder, type EngineeringCorpusFolderOptions } from "./engineering-corpus-folder.js";
 import { CorpusCheckpointConflictError, readCompletedCorpusCheckpoint, trainLanguageCorpusText, type LanguageCorpusTrainingInput, type LanguageCorpusTrainingReport } from "./language-corpus-trainer.js";
 import { createProjectDeclarationIndex, createProjectLicenseIndex, readDeclaredLicense } from "./project-artifact-declarations.js";
+import { sourceBrainBuildReceipt, type SourceBrainBuildReceipt, type SourceBrainBuildResult } from "./source-brain-build.js";
 
 export const DEFAULT_OSS_FILES_PER_RUN = 2000;
 export const DEFAULT_OSS_FILES_PER_REPOSITORY = 100000;
@@ -56,7 +57,7 @@ export interface OssCorpusTrainOptions extends EngineeringCorpusFolderOptions {
    */
   heapCheckpointMb?: number;
   /** Called only after the full bounded training report is assembled; use it to finalize an explicitly selected initial brain. */
-  onSourceBrainTrainingComplete?: (report: OssCorpusTrainReport) => Promise<void>;
+  onSourceBrainTrainingComplete?: (report: OssCorpusTrainReport) => Promise<SourceBrainBuildResult | SourceBrainBuildReceipt | void>;
 }
 
 export interface OssRepositoryProvenance {
@@ -93,6 +94,7 @@ export interface OssCorpusTrainReport {
   /** Whether folder inspection hit its repository ceiling. */
   inspectionTruncated: boolean;
   heapMiBAtExit: number;
+  sourceBrainBuild?: SourceBrainBuildReceipt;
 }
 
 export interface OssCorpusTrainingTotals {
@@ -348,7 +350,8 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
     inspectionTruncated,
     heapMiBAtExit: heapMiB()
   };
-  await input.onSourceBrainTrainingComplete?.(report);
+  const sourceBrainBuild = await input.onSourceBrainTrainingComplete?.(report);
+  if (sourceBrainBuild) report.sourceBrainBuild = "lifecycle" in sourceBrainBuild ? sourceBrainBuildReceipt(sourceBrainBuild) : sourceBrainBuild;
   return report;
 }
 

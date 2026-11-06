@@ -607,6 +607,9 @@ export function proposeSourceExactEvidenceAnswer(input: {
   requestText: string;
   selectedEvidence: readonly EvidenceSpan[];
   semanticFrameBoundEvidenceIds?: ReadonlySet<string>;
+  explicitContextEvidenceIds?: ReadonlySet<string>;
+  boundValues?: readonly string[];
+  boundValueEvidenceIds?: ReadonlySet<string>;
   /**
    * Sentence budget from the request's LEARNED response form
    * (`requirementField.responseForm.surfaceLayout.sentencesPerBlock`) --
@@ -781,6 +784,8 @@ export function proposeSourceExactEvidenceAnswer(input: {
         span,
         sentence,
         index,
+        suppliesBoundValue: input.boundValueEvidenceIds?.has(String(span.id)) === true
+          && (input.boundValues ?? []).some(value => tidySurfaceText(sentence).includes(tidySurfaceText(value))),
         nearDuplicate: nearDuplicateBoost > 0,
         score: unitOverlap * calibrated("ranking.unit_overlap_weight")
           + weightedJaccard(requestFeatures, featureSet(sentence, 256)) * calibrated("ranking.lexical_similarity_weight")
@@ -801,13 +806,19 @@ export function proposeSourceExactEvidenceAnswer(input: {
       && !cliticOpeningFragment(row.sentence) && !isStructuralResidueSurface(row.sentence))
     // The duplicated sentence outranks everything: a unit-rich table blob
     // can beat the boost on raw overlap count.
-    .sort((left, right) => Number(right.nearDuplicate) - Number(left.nearDuplicate) || right.score - left.score || left.index - right.index || String(left.span.id).localeCompare(String(right.span.id)));
+    .sort((left, right) => Number(right.nearDuplicate) - Number(left.nearDuplicate)
+      || Number(right.suppliesBoundValue) - Number(left.suppliesBoundValue)
+      || right.score - left.score || left.index - right.index || String(left.span.id).localeCompare(String(right.span.id)));
   const leadingScaffoldingUnit = requestLeadingScaffoldingUnit(input.requestText);
   const coverageUnits = requestContentEvidenceUnits(input.requestText)
     .filter(unit => !input.closedClassWords?.has(unit) && unit !== leadingScaffoldingUnit);
   const relationRequired = Boolean(input.closedClassWords?.size);
   const covers = (row: { sentence: string; span: EvidenceSpan; nearDuplicate: boolean }) =>
-    row.nearDuplicate || answerCoversRequest([row.sentence], row.span, coverageUnits, input.requestText, { relationRequired, languageClosedClassWords: input.functionSymbols });
+    row.nearDuplicate || input.explicitContextEvidenceIds?.has(String(row.span.id)) === true
+      || answerCoversRequest([row.sentence], row.span, coverageUnits, input.requestText, {
+        relationRequired, languageClosedClassWords: input.functionSymbols,
+        boundValues: input.boundValueEvidenceIds?.has(String(row.span.id)) ? input.boundValues : []
+      });
   // A request that names its subject and asks nothing else is answered by the subject's own opening sentence when
   // a titled source has one: an encyclopedic lead predicates about its subject by construction, even when it names
   // the subject in a longer form the anchor test cannot see ("Augusta Ada King, Countess of Lovelace ... also known
@@ -846,7 +857,8 @@ export function proposeSourceExactEvidenceAnswer(input: {
   const valueTyped = requestQuantityUnits.length
     ? covering.filter(row => compiledQuantityUnits(row.sentence).some(unit => requestQuantityUnits.some(requestUnit => requestUnitMatchesSurface(requestUnit, unit))))
     : [];
-  const typedCovering = valueTyped.length ? valueTyped : covering;
+  const valueBound = covering.filter(row => row.suppliesBoundValue);
+  const typedCovering = valueBound.length ? valueBound : valueTyped.length ? valueTyped : covering;
   const fullestCoverage = Math.max(0, ...typedCovering.map(relationCoverage));
   const fullest = typedCovering.filter(row => relationCoverage(row) === fullestCoverage);
   const predicating = anchored.anchors.length
@@ -979,12 +991,6 @@ export function proposeSourceExactEvidenceAnswer(input: {
     const counterexample = temporalCounterexampleAnswerPlan(input.requestText, temporalEvidence);
     if (counterexample) return counterexample;
   }
-  // A near-duplicate is a quotation, not an enumeration request: the
-  // collection plan answered clozes with name-list salads.
-  const collection = planNearDuplicate
-    ? undefined
-    : collectionAnswerPlan(input.requestText, evidence, input.entailment, input.semanticProof);
-  if (collection) return collection;
   // Single admission authority (same fix as proposeSourceExactEvidenceAnswer).
   const anchored = sourceIdentityAdmissibleEvidenceForRequest(input.requestText, evidence, input.semanticFrameBoundEvidenceIds ?? new Set(), input.closedClassWords);
   const answerAnchoredEvidence = anchored.evidence;
@@ -999,119 +1005,32 @@ export function proposeSourceExactEvidenceAnswer(input: {
       : sourceCoherentUnanchoredEvidence(input.requestText, evidence);
   if (!answerEvidence.length) return undefined;
   const contradiction = Math.max(input.entailment?.contradiction ?? 0, input.semanticProof?.contradiction ?? 0);
-  // A contradicted proof blocks a plain answer whatever the mass is. The bounds below are calibrated for
-  // claim-versus-evidence contradiction; a verdict of contradicted also covers two admitted sources refuting each
-  // other, which scores lower than either bound and means something stronger -- there is no side to answer from.
-  // There is still something to say: which sources disagree, and what each of them states.
-  if (input.semanticProof?.verdict === SEMANTIC_VERDICT.CONTRADICTED) {
+  if (input.semanticProof?.verdict === SEMANTIC_VERDICT.CONTRADICTED && input.semanticProof.conflictingEvidenceIds?.length) {
     return sourceConflictAnswerPlan(input.requestText, answerEvidence, input.semanticProof.conflictingEvidenceIds ?? []);
   }
-  if (contradiction >= calibrated("plan.contradiction_block") || (contradiction >= calibrated("plan.contradiction_unanchored_block") && !answerAnchoredEvidence.length)) return undefined;
-  const rankedSentences = bestEvidenceSentences(input.requestText, answerEvidence, input.sessionContextEvidence === true, input.closedClassWords, input.functionSymbols, input.boundValues ?? []);
-  // A subject the title does not name is answered by the clause that binds it, not by the whole sentence it sits
-  // in: "Who played Sisko?" was answered with a 443-character sentence about Roddenberry and space stations whose
-  // final clause was "Benjamin Sisko (played by Avery Brooks)". anchorFocusedAnswerSurface existed for exactly this
-  // and was called from nowhere. It applies only when no span's title matches the anchors, so definitional
-  // answers about an article's own subject keep their full lead sentence.
-  const titleAnswersRequest = anchored.anchors.length > 0 && answerEvidence.some(span => evidenceTitleDistinctAnchorMatches(span, anchored.anchors));
-  // Applied to the WHOLE sentences, before anchorFocusedAnswerSurface below rewrites them into clauses. Focusing
-  // moves the anchor to the front of whatever clause contains it, so "alongside characterisations of Charles Babbage
-  // and Noor Inayat Khan." comes out looking exactly like a sentence predicating about Babbage. Judge the sentence
-  // the corpus actually wrote, then focus whichever survives.
-  const predicatingRanked = anchored.anchors.length && !planNearDuplicate
-    ? rankedSentences.slice(0, ANCHOR_PREDICATION_RERANK_LIMIT)
-      .filter(sentence => sentencePredicatesAboutAnchors(sentence, anchored.anchors))
-    : [];
-  // A preference, as the comment below says, so a reorder: the sentences that predicate about the subject lead and
-  // the rest follow. Dropping the rest silently cut "Who was Ada Lovelace, and what did she contribute?" to its
-  // first sentence once the lead was recognised as predicating (2026-09-10).
-  const preferredRanked = predicatingRanked.length
-    ? [...predicatingRanked, ...rankedSentences.filter(sentence => !predicatingRanked.includes(sentence))]
-    : rankedSentences;
-  // Which sentences the plan ranked and which of them predicate about the anchor: the answer only ever shows the survivors.
-  traceEvent((globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace, {
-    stage: "local_evidence.plan.rank",
-    label: "kernel.turn",
-    support: {
-      anchors: anchored.anchors.slice(0, 4),
-      ranked: rankedSentences.slice(0, 10).map(sentence => sentence.slice(0, 80)),
-      predicating: predicatingRanked.slice(0, 10).map(sentence => sentence.slice(0, 80))
-    }
-  });
-  const sentences = planNearDuplicate || titleAnswersRequest || !anchored.anchors.length
-    ? preferredRanked
-    : preferredRanked.map(sentence => {
-      const focused = anchorFocusedAnswerSurface(sentence, anchored.anchors, evidenceTitle(answerEvidence[0]!));
-      return focused && focused.length >= 24 ? focused : sentence;
-    });
-  if (!sentences.length) return undefined;
-  // Same rule the exact-sentence plan applies, at the branch that actually wins the priority comparison: among
-  // sentences that name the subject, prefer the ones that say something about it. Measured on "Who was Charles
-  // Babbage?", this plan carried three sentences of Doctor Who trivia from the Ada Lovelace article while the
-  // sentence stating what Babbage did ranked below them -- and this plan, not the exact-sentence proposal, is what
-  // preferredLocalEvidenceAnswer selected and the mouth spoke. Preference, never exclusion: when nothing predicates
-  // about the anchor the ranked order stands unchanged.
-  const planCoverageUnits = requestContentEvidenceUnits(input.requestText).filter(unit => !input.closedClassWords?.has(unit));
-  // Directness, not selection. These sentences are already the right ones; speaking all of them buries the answer
-  // inside a passage, and the grader's containment test hides that. Measured over the frozen baseline's correct
-  // answers, 37% reach the expected fact inside their first 60 characters against the reference model's 60%:
-  // "What is the capital of Algeria?" answered "With a population of over 47 million, Algeria is the tenth-most
-  // populous country in Africa. Its capital and largest city is Algiers." -- the answering sentence second.
-  //
-  // Where one sentence STRICTLY leads the others on the relation asked past the source's own identity, that
-  // sentence is what was asked for and the rest is the article continuing. The ranker is not overridden and
-  // nothing is reordered: this only drops trailing sentences, so what is spoken stays a contiguous excerpt of the
-  // span. Silent when nothing leads -- every sentence carrying the same, which includes every sentence carrying
-  // none -- and the narrowed set must satisfy the same answerhood gate the full set does, so it can shorten an
-  // answer and never turn one into a decline.
-  const answerSurfaceSentences = directAnswerSentences({
-    sentences,
-    evidence: answerEvidence,
+  const selected = proposeSourceExactEvidenceAnswer({
     requestText: input.requestText,
-    planCoverageUnits,
+    selectedEvidence: answerEvidence,
+    semanticFrameBoundEvidenceIds: input.semanticFrameBoundEvidenceIds,
+    explicitContextEvidenceIds: input.explicitContextEvidenceIds,
     closedClassWords: input.closedClassWords,
     functionSymbols: input.functionSymbols,
-    nearDuplicate: planNearDuplicate
+    boundValues: input.boundValues,
+    boundValueEvidenceIds: input.boundValueEvidenceIds,
+    responseSentenceBudget: evidenceAnswerSentenceLimit(input.requestText, answerEvidence, input.sessionContextEvidence === true)
   });
-  const explicitContextBound = answerEvidence.some(span => input.explicitContextEvidenceIds?.has(String(span.id)) === true);
-  // The resolved value travels with the span it was verified in, so a sibling source that merely repeats the
-  // string cannot claim the exemption.
-  if (!planNearDuplicate && !explicitContextBound && !answerEvidence.some(span => answerCoversRequest(answerSurfaceSentences, span, planCoverageUnits, input.requestText, {
-    relationRequired: Boolean(input.closedClassWords?.size),
-    languageClosedClassWords: input.functionSymbols,
-    boundValues: input.boundValueEvidenceIds?.has(String(span.id)) ? input.boundValues ?? [] : []
-  }))) return undefined;
-  const relevance = localEvidenceAnswerScore(input.requestText, answerEvidence);
-  const evidenceBound = (input.entailment?.evidenceIds.length ?? 0) > 0;
-  const answerSessionBound = answerEvidence.some(promotedSessionEvidence);
-  if (!evidenceBound && !answerSessionBound && relevance < calibrated("plan.relevance_floor")) return undefined;
+  if (!selected) return undefined;
   return {
-    planId: "ans.plan.31a6c2f8",
-    kindId: LOCAL_ANSWER_KIND_IDS.evidenceBoundary,
-    evidence: answerEvidence,
-    slotSurfaces: {
-      [LOCAL_ANSWER_SLOT_IDS.sentence]: answerSurfaceSentences
-    },
-    maxSentences: evidenceAnswerSentenceLimit(input.requestText, answerEvidence, input.sessionContextEvidence === true),
-    audit: toJsonValue({
-      source: "kernel.turn.fast_local_evidence",
-      basisClassId: "basis.54d2a9be",
-      certificationId: evidenceBound ? "cert.2b4f8a11" : "cert.4e8b2d11",
-      evidenceIds: answerEvidence.map(span => String(span.id)),
-      evidenceCount: answerEvidence.length,
-      sourceAnchorRequired: anchored.required,
-      sourceAnchorMatched: answerAnchoredEvidence.length > 0,
-      sourceAnchors: anchored.anchors,
-      evidenceBound,
-      sessionBound: answerSessionBound,
-      explicitContextBound,
-      relevance,
-      contradiction,
-      entailmentForce: input.entailment?.force ?? "unverified-proposal",
-      certificationVerifierVerdict: input.semanticProof?.verdict ?? "unverified-proposal",
-      selectedSentenceCount: sentences.length,
-      nearDuplicate: planNearDuplicate,
-      fakeEvidenceForbidden: true
+    ...selected.plan,
+    audit: toJsonValue({ ...jsonRecord(selected.plan.audit),
+      source: "kernel.turn.source_content_plan",
+      evidenceBound: selected.evidence.length > 0,
+      evidenceCount: selected.evidence.length,
+      sourceAnchorMatched: !anchored.required || selected.evidence.some(span => answerAnchoredEvidence.includes(span)
+        || input.explicitContextEvidenceIds?.has(String(span.id)) === true),
+      sessionBound: selected.evidence.some(promotedSessionEvidence),
+      explicitContextBound: selected.evidence.some(span => input.explicitContextEvidenceIds?.has(String(span.id)) === true),
+      proofAnnotation: { verdict: input.semanticProof?.verdict ?? null, contradiction }
     })
   };
 }

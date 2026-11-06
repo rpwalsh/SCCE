@@ -6,7 +6,7 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { realpath, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { performance } from "node:perf_hooks";
-import { acquireAndTrainGithubOssRepository, assertHydratedRuntimeReady, automaticWebAcquisitionEnabled, publicNetworkAcquisitionEnabled, collectRepoFilesForCognition, createLearnedCodeProposer, createTypeScriptCodeMouthPorts, runCodeMouth, createDockerSandboxPatchValidationProvider, createNodeRuntime, createWorkspaceRuntime, diagnoseDocumentTools, executeWorkspacePatchTransaction, resolveSecret, runStructuredPatchValidation, trustedHostPatchValidationProvider, verifiedCompilerPlansForTurn, WorkspacePatchTransactionError, DEFAULT_WEB_REQUESTS_PER_MINUTE, type GithubOssAcquisitionOptions, type GithubOssAcquisitionReport, type readScceRuntimeConfig, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type WorkspaceCodingPatchPlanningInput, type WorkspacePatchPlanningInput, type WorkspaceRuntimeOptions, applySetting, settingsView, listLocalModels, downloadModel, removeLocalModel, formatBytes, validateGithubCommitSha, validateGithubPublicRepositoryUrl } from "@scce/adapters-node";
+import { acquireAndTrainGithubOssRepository, assertHydratedRuntimeReady, automaticWebAcquisitionEnabled, completeInitialSourceBrainFromOssReport, publicNetworkAcquisitionEnabled, collectRepoFilesForCognition, createLearnedCodeProposer, createTypeScriptCodeMouthPorts, runCodeMouth, createDockerSandboxPatchValidationProvider, createNodeRuntime, createWorkspaceRuntime, diagnoseDocumentTools, executeWorkspacePatchTransaction, resolveSecret, runStructuredPatchValidation, trustedHostPatchValidationProvider, verifiedCompilerPlansForTurn, WorkspacePatchTransactionError, DEFAULT_WEB_REQUESTS_PER_MINUTE, type GithubOssAcquisitionOptions, type GithubOssAcquisitionReport, type readScceRuntimeConfig, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type WorkspaceCodingPatchPlanningInput, type WorkspacePatchPlanningInput, type WorkspaceRuntimeOptions, applySetting, settingsView, listLocalModels, downloadModel, removeLocalModel, formatBytes, validateGithubCommitSha, validateGithubPublicRepositoryUrl } from "@scce/adapters-node";
 import type { BenchmarkInput, CausalAnalysisRequest, CausalDiscoveryRequest, CausalAssumptionDag, CausalAssumptionEdge, CausalObservation, ConversationTurnRecord, DialogueInterpretationCorrectionInput, EventLedger, GraphSlice, IdentificationDesign, IngestInput, InspectionTarget, JsonValue, NodeId, OwnerInput, PatchTransactionPlan, ProgramGraph, RequestedAuthority, SourceAdmissionContext, SourceTrust, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
 import {
   behaviorRoleExecutionGraphInputFromTaskConstraintGraph, createProgramBehaviorValidationLedger, PROGRAM_BEHAVIOR_VALIDATION_PLAN_BINDING_SCHEMA, curriculumItemFromPlan,
@@ -575,7 +575,32 @@ async function dispatch(
     requirePublicNetworkAcquisition();
     const request = parseGithubOssIngestRequest(preloadedBody ?? await readBody(req, context.maxBodyBytes));
     const acquire = context.githubOssAcquisition ?? acquireAndTrainGithubOssRepository;
-    const report = await acquire({ storage: context.runtime.storage, remoteUrl: request.remoteUrl, commitSha: request.commitSha });
+    const report = await acquire({
+      storage: context.runtime.storage,
+      remoteUrl: request.remoteUrl,
+      commitSha: request.commitSha,
+      training: {
+        onSourceBrainTrainingComplete: training => completeInitialSourceBrainFromOssReport({
+          storage: context.runtime.storage,
+          informationLabel: context.config.security!.defaultSourceInformationLabel!,
+          report: training,
+          sourceId: `github:${request.remoteUrl}#${request.commitSha}`,
+          sourceSchema: "scce.github-oss-snapshot.v1",
+          rootPath: `${request.remoteUrl.replace(/\.git$/u, "")}/tree/${request.commitSha}`,
+          configuration: {
+            remoteUrl: request.remoteUrl,
+            commitSha: request.commitSha,
+            bounds: { maxFiles: 2000, maxFileBytes: 1_000_000, maxTotalBytes: 50_000_000, maxDepth: 12 },
+            includeDocs: true,
+            includeSource: true
+          }
+        })
+      }
+    });
+    if (report.training.sourceBrainBuild?.status === "activated") {
+      await context.runtime.kernel.refreshAfterBrainActivation();
+      invalidateHydratedRuntimeReadiness(context);
+    }
     return json(boundedGithubOssIngestReceipt(report));
   }
   if (req.method === "POST" && url.pathname === "/api/session/reject") {
@@ -2430,6 +2455,7 @@ export function boundedGithubOssIngestReceipt(report: GithubOssAcquisitionReport
       skipped: skipped,
       skippedTruncated: report.training.filesSkipped.length > skipped.length,
       totals: report.training.totals,
+      sourceBrainBuild: report.training.sourceBrainBuild ?? null,
       stoppedByHeapSafetyBound: report.training.stoppedByHeapSafetyBound,
       heapMiBAtExit: report.training.heapMiBAtExit
     }
@@ -4225,7 +4251,32 @@ async function streamGithubOssIngestResponse(input: {
   });
   try {
     const acquire = input.context.githubOssAcquisition ?? acquireAndTrainGithubOssRepository;
-    const report = await acquire({ storage: input.context.runtime.storage, remoteUrl: request.remoteUrl, commitSha: request.commitSha });
+    const report = await acquire({
+      storage: input.context.runtime.storage,
+      remoteUrl: request.remoteUrl,
+      commitSha: request.commitSha,
+      training: {
+        onSourceBrainTrainingComplete: training => completeInitialSourceBrainFromOssReport({
+          storage: input.context.runtime.storage,
+          informationLabel: input.context.config.security!.defaultSourceInformationLabel!,
+          report: training,
+          sourceId: `github:${request.remoteUrl}#${request.commitSha}`,
+          sourceSchema: "scce.github-oss-snapshot.v1",
+          rootPath: `${request.remoteUrl.replace(/\.git$/u, "")}/tree/${request.commitSha}`,
+          configuration: {
+            remoteUrl: request.remoteUrl,
+            commitSha: request.commitSha,
+            bounds: { maxFiles: 2000, maxFileBytes: 1_000_000, maxTotalBytes: 50_000_000, maxDepth: 12 },
+            includeDocs: true,
+            includeSource: true
+          }
+        })
+      }
+    });
+    if (report.training.sourceBrainBuild?.status === "activated") {
+      await input.context.runtime.kernel.refreshAfterBrainActivation();
+      invalidateHydratedRuntimeReadiness(input.context);
+    }
     writeGithubOssIngestStreamFrame(input.res, {
       schema: "scce.githubOssIngestStream.v1",
       type: "result",

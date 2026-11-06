@@ -136,6 +136,13 @@ export function certifyingEvidence(spans: readonly EvidenceSpan[]): EvidenceSpan
   return spans.filter(span => certified.has(String(span.id)));
 }
 
+/** Exact admitted source material remains usable content when it carries no formal proof. */
+export function isSourceContentEvidence(span: EvidenceSpan): boolean {
+  if (span.status !== "promoted") return false;
+  const boundary = evidenceProofBoundary(span);
+  return boundary.exactSourceSemantics && !isLearnedPriorClass(boundary.forceClass);
+}
+
 /**
  * Resolve a proof boundary over the evidence set selected for one claim.
  * Multiple documents from the same family or source lineage stay one

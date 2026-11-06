@@ -2757,9 +2757,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const metadataSelectedEvidence = metadataEvidenceIds.size
         ? metadataEvidence.filter(span => span.status === "promoted" && metadataEvidenceIds.has(String(span.id)))
         : [];
-      const evidenceSelectionPool = proofSelectedEvidence.length
-        ? mergeEvidenceSpans([...proofSelectedEvidence, ...metadataSelectedEvidence])
-        : promoted;
+      const evidenceSelectionPool = mergeEvidenceSpans([...promoted, ...metadataSelectedEvidence]);
       // A subject-only request is answered by the subject's own opening block; relevance ranking prefers the chunks
       // that repeat the name most ("What is acupuncture?" selected the injection and licensing chunks over the
       // definition), so the titled opening block, when the pool holds one, leads the selection.
@@ -2836,7 +2834,6 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // It calibrates force, but it is not counterevidence against an exact
       // promoted source excerpt. Only contradiction mass from the selected
       // evidence lane can reject that excerpt.
-      const proposalContradiction = entailmentResult.contradiction;
       // Two admitted sources refuting each other is counterevidence from the evidence lane, not formal-proof
       // pressure, and it is the one thing that must stop an exact excerpt being spoken as the answer. Both
       // filings were promoted and both were quoted exactly; picking the earlier one and stating it as fact is
@@ -2844,7 +2841,6 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const evidenceProposalAdmissible = Boolean(
         answerProposal
         && proofSourceExcerpts.length > 0
-        && proposalContradiction < 0.72
         && !semanticProof.mutualSourceContradiction
       );
       // One resolved binding per turn, read by the sentence ranker below and by the realization contract further
@@ -2884,8 +2880,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // pre-empt a real compound answer by default.
       // A source conflict is reported even when the proof attached no evidence of its own: the spans that disagree
       // are named by the counterexamples, and the reader is owed what each of them says rather than silence.
-      const richLocalEvidenceAnswer = proofSelectedEvidence.length || semanticProof.mutualSourceContradiction
-        ? localEvidenceAnswerSurface({
+      const richLocalEvidenceAnswer = localEvidenceAnswerSurface({
             requestText: input.text,
             selectedEvidence,
             boundValues: requestBoundValues,
@@ -2906,8 +2901,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             semanticFrameBoundEvidenceIds,
             closedClassWords: requestClosedClassWords(),
             functionSymbols: corpusFunctionSymbols()
-          })
-        : undefined;
+          });
       // Priority by plan kind (temporal counterexample > collection > single sentence): the richer plan still leads by default, and the exact-sentence proposal takes over only when its plan outranks it.
       const selectedPoolLocalEvidenceAnswer = preferredLocalEvidenceAnswer(richLocalEvidenceAnswer, evidenceProposalAdmissible ? answerProposal : undefined);
       // Direct source evidence may propose a bounded answer without full proof.
@@ -2923,8 +2917,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         },
         support: {
           entailmentContradiction: entailmentResult.contradiction,
-          semanticProofContradiction,
-          proposalContradiction
+          semanticProofContradiction
         }
       });
       const localEvidenceAnswer = deps.evaluationCondition?.flags.disableSupportEngine

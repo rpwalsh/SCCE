@@ -12,6 +12,7 @@ import {
   type ScceStorage
 } from "@scce/kernel";
 import { CorpusCheckpointConflictError, readCompletedCorpusCheckpoint, trainLanguageCorpusText, type LanguageCorpusTrainingInput, type LanguageCorpusTrainingReport } from "./language-corpus-trainer.js";
+import { sourceBrainBuildReceipt, type SourceBrainBuildReceipt, type SourceBrainBuildResult } from "./source-brain-build.js";
 
 export interface GutenbergCorpusTrainOptions {
   storage: ScceStorage;
@@ -37,7 +38,7 @@ export interface GutenbergCorpusTrainOptions {
    */
   heapCheckpointMb?: number;
   /** Called only after the full bounded training report is assembled; use it to finalize an explicitly selected initial brain. */
-  onSourceBrainTrainingComplete?: (report: GutenbergCorpusTrainReport) => Promise<void>;
+  onSourceBrainTrainingComplete?: (report: GutenbergCorpusTrainReport) => Promise<SourceBrainBuildResult | SourceBrainBuildReceipt | void>;
 }
 
 export interface GutenbergCorpusTrainReport {
@@ -57,6 +58,7 @@ export interface GutenbergCorpusTrainReport {
    */
   stoppedByHeapSafetyBound: boolean;
   heapMiBAtExit: number;
+  sourceBrainBuild?: SourceBrainBuildReceipt;
 }
 
 export interface GutenbergCorpusTrainingTotals {
@@ -194,7 +196,8 @@ export async function trainGutenbergCorpus(input: GutenbergCorpusTrainOptions): 
     stoppedByHeapSafetyBound,
     heapMiBAtExit: heapMiB()
   };
-  await input.onSourceBrainTrainingComplete?.(report);
+  const sourceBrainBuild = await input.onSourceBrainTrainingComplete?.(report);
+  if (sourceBrainBuild) report.sourceBrainBuild = "lifecycle" in sourceBrainBuild ? sourceBrainBuildReceipt(sourceBrainBuild) : sourceBrainBuild;
   return report;
 }
 

@@ -23,21 +23,18 @@ describe("collapsing the anchor set to one runtime-motion focus preserves the re
     expect(unmeasured.basis).toBe("closed_class_unmeasured");
   });
 
-  it("does not speak a focus that drops a content unit the turn's own anchors carried", async () => {
+  it.each([REQUEST, REQUEST.slice(0, -1)])("does not turn an inert dialogue prior into an answer to a cold factual request: %s", async request => {
     const session = conversationalSession();
-    const turn = await session.turn(REQUEST);
+    const turn = await session.turn(request);
 
     const anchors = (turn.trace.find(row => row.stage === "turn.source_anchor_audit")?.support?.anchors ?? []) as string[];
-    const select = turn.trace.find(row => row.stage === "mouth.deterministic.select");
-    const units = (select?.support?.units ?? []) as string[];
-    const spokenSurface = ((select?.support?.rows ?? []) as { head: string }[])[0]?.head ?? "";
     expect(anchors.length).toBeGreaterThan(0);
-    expect(units.length).toBeGreaterThan(0);
-    expect(spokenSurface).not.toBe("");
-
-    // Stated over the turn's own measurements: a request content unit some anchor kept must survive the focus.
-    const recoverable = units.filter(unit => anchors.some(anchor => anchorSymbolUnits(anchor).includes(unit)));
-    const spokenUnits = new Set(anchorSymbolUnits(spokenSurface));
-    expect(recoverable.filter(unit => !spokenUnits.has(unit))).toEqual([]);
+    expect(turn.result.answer).toBe("");
+    expect(turn.trace.some(row => row.stage === "mouth.deterministic.select")).toBe(false);
+    const conversationMemory = turn.trace.find(row => row.stage === "mouth.conversation_memory.candidate")?.support as Record<string, unknown> | undefined;
+    expect(conversationMemory?.reason).toBe("no_active_non_neutral_owner_act");
+    const selected = turn.trace.find(row => row.stage === "mouth.candidate.select")?.support as Record<string, unknown> | undefined;
+    expect(selected?.selectedSource).toBe("none");
+    expect((selected?.contentPlanAdmission as { status?: string } | undefined)?.status).toBe("insufficient_support");
   }, 600_000);
 });

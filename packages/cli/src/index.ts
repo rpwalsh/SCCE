@@ -13,7 +13,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { BULK_LOAD_DEFERRABLE_TABLES, compileCrossLingualTranslationSeeds, ingestStageTracer, knownLanguageFromBrain, transcribeImageFile, recallScript, rememberScript, ingestTranscribedImage, visualPageSourceTrust, acquireAndTrainGithubOssRepository, assertHydratedRuntimeReady, deferBulkLoadIndexes, deferredBulkLoadIndexes, buildScce2BrainShardIndex, createHydrationPlan, createNodeRuntime, inspectHydrationRecords, fitRelationPotentialFromGraph, runEvaluationReleaseGate, proposeSelfRewrite, createScce2ToV3Importer, createWikipediaV3Ingestor, createWorkspaceRuntime, dryRunDeveloperRepoPlan, dryRunEngineeringCorpusIngest, fullyVerifyEventLedger, graphDeveloperRepo, importHydrationPlan, inspectDeveloperRepo, inspectEngineeringCorpusFolder, inspectHydrationStatus, inspectV2Artifacts, inspectV2GraphShard, inspectV2Ngram, inspectV2Profile, inspectV2Stream, inspectV2StreamTopic, inspectV2Topic, parseRepoDiagnosticsFixture, readScceRuntimeConfig, routeEngineeringCorpusFixture, scanLanguageControlHygiene, trainDialogueCorpus, trainGutenbergCorpus, trainOssCorpus, trainStoredCorpusConstructions, verifiedCompilerPlansForTurn, type WikipediaV3IngestStatus, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
+import { BULK_LOAD_DEFERRABLE_TABLES, compileCrossLingualTranslationSeeds, ingestStageTracer, knownLanguageFromBrain, transcribeImageFile, recallScript, rememberScript, ingestTranscribedImage, visualPageSourceTrust, acquireAndTrainGithubOssRepository, assertHydratedRuntimeReady, completeInitialSourceBrainFromGutenbergReport, completeInitialSourceBrainFromOssReport, deferBulkLoadIndexes, deferredBulkLoadIndexes, buildScce2BrainShardIndex, createHydrationPlan, createNodeRuntime, inspectHydrationRecords, fitRelationPotentialFromGraph, runEvaluationReleaseGate, proposeSelfRewrite, createScce2ToV3Importer, createWikipediaV3Ingestor, createWorkspaceRuntime, dryRunDeveloperRepoPlan, dryRunEngineeringCorpusIngest, fullyVerifyEventLedger, graphDeveloperRepo, importHydrationPlan, inspectDeveloperRepo, inspectEngineeringCorpusFolder, inspectHydrationStatus, inspectV2Artifacts, inspectV2GraphShard, inspectV2Ngram, inspectV2Profile, inspectV2Stream, inspectV2StreamTopic, inspectV2Topic, parseRepoDiagnosticsFixture, readScceRuntimeConfig, routeEngineeringCorpusFixture, scanLanguageControlHygiene, trainDialogueCorpus, trainGutenbergCorpus, trainOssCorpus, trainStoredCorpusConstructions, verifiedCompilerPlansForTurn, type WikipediaV3IngestStatus, type WorkspaceRuntimeOptions } from "@scce/adapters-node";
 import type { BenchmarkInput, InspectionTarget, WorkspaceReportRecord } from "@scce/kernel";
 import { ossCorpusTrainOptionsFrom, parseCorpusTrainOptions } from "./corpus-train-options.js";
 import { parseScce2ImportOptions, parseScce2InspectOptions } from "./scce2-options.js";
@@ -731,6 +731,8 @@ async function corpus(
   }
   if (sub === "train") {
     if (!runtime) return usage("scce corpus train <gutenberg|oss|oss-github|wikipedia-stored> <path-or-url> [limits]");
+    const informationLabel = config?.security?.defaultSourceInformationLabel;
+    if (!informationLabel) throw new Error("corpus training requires security.defaultSourceInformationLabel");
     const kind = args[1];
     if (kind === "wikipedia-stored") {
       // Production lane for building the generation construction
@@ -803,7 +805,32 @@ async function corpus(
           ngramMaxCountersPerOrder: options.ngramMaxCountersPerOrder,
           ngramVocabularyLimit: options.ngramVocabularyLimit,
           languageAliases: options.languageAliases,
-          heapCheckpointMb: options.heapCheckpointMb
+          heapCheckpointMb: options.heapCheckpointMb,
+          onSourceBrainTrainingComplete: report => completeInitialSourceBrainFromOssReport({
+            storage: runtime.storage,
+            informationLabel,
+            report,
+            sourceId: `github:${target}#${commitSha}`,
+            sourceSchema: "scce.github-oss-snapshot.v1",
+            rootPath: `${target.replace(/\.git$/u, "")}/tree/${commitSha}`,
+            configuration: {
+              remoteUrl: target,
+              commitSha,
+              bounds: {
+                ...(options.maxFiles !== undefined ? { maxFiles: options.maxFiles } : {}),
+                ...(options.maxFileBytes !== undefined ? { maxFileBytes: options.maxFileBytes } : {}),
+                ...(options.maxTotalBytes !== undefined ? { maxTotalBytes: options.maxTotalBytes } : {}),
+                ...(options.maxDepth !== undefined ? { maxDepth: options.maxDepth } : {})
+              },
+              includeDocs: options.includeDocs,
+              includeSource: options.includeSource,
+              ngramMaxOrder: options.ngramMaxOrder,
+              ngramMaxCountersPerOrder: options.ngramMaxCountersPerOrder,
+              ngramVocabularyLimit: options.ngramVocabularyLimit,
+              languageAliases: options.languageAliases,
+              heapCheckpointMb: options.heapCheckpointMb
+            }
+          })
         }
       }));
       return;
@@ -821,6 +848,21 @@ async function corpus(
         ngramVocabularyLimit: options.ngramVocabularyLimit,
         languageAliases: options.languageAliases,
         heapCheckpointMb: options.heapCheckpointMb,
+        onSourceBrainTrainingComplete: report => completeInitialSourceBrainFromGutenbergReport({
+          storage: runtime.storage,
+          informationLabel,
+          report,
+          configuration: {
+            startFileIndex: options.startFileIndex,
+            maxFilesPerRun: options.maxFiles,
+            maxFileBytes: options.maxFileBytes,
+            maxDepth: options.maxDepth,
+            ngramMaxOrder: options.ngramMaxOrder,
+            ngramMaxCountersPerOrder: options.ngramMaxCountersPerOrder,
+            ngramVocabularyLimit: options.ngramVocabularyLimit,
+            languageAliases: options.languageAliases
+          }
+        }),
         // The universal creative-event construction compiler was built and
         // tested but never wired into any production trainer -- without it,
         // prose training can never yield the creative-event constructions
@@ -829,10 +871,17 @@ async function corpus(
       }));
       return;
     }
+    const trainingOptions = ossCorpusTrainOptionsFrom(options);
     printJson(await trainOssCorpus({
       storage: runtime.storage,
       rootPath: path.resolve(target),
-      ...ossCorpusTrainOptionsFrom(options)
+      ...trainingOptions,
+      onSourceBrainTrainingComplete: report => completeInitialSourceBrainFromOssReport({
+        storage: runtime.storage,
+        informationLabel,
+        report,
+        configuration: trainingOptions
+      })
     }));
     return;
   }
