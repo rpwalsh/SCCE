@@ -282,7 +282,7 @@ describe("Mouth learned-construction candidate", () => {
       question: "What powers the pump?",
       exposeProofTerms: true
     });
-    const structuredFormat = await speakFixture({
+    const ordinaryRequirements = await speakFixture({
       sentence: "Aster powers pump.",
       subject: "Aster",
       predicate: "powers",
@@ -290,11 +290,19 @@ describe("Mouth learned-construction candidate", () => {
       question: "What powers the pump?",
       requirementField: true
     });
+    const unsatisfiedFeature = await speakFixture({
+      sentence: "Aster powers pump.", subject: "Aster", predicate: "powers", object: "pump",
+      question: "What powers the pump?", requirementField: true, requiredSurface: "unattested-required-clause"
+    });
 
     expect(learnedCandidate(tooLong.spoken)).toBeUndefined();
     expect(learnedCandidate(caveatRequired.spoken)).toBeUndefined();
     expect(learnedCandidate(proofFormat.spoken)).toBeUndefined();
-    expect(learnedCandidate(structuredFormat.spoken)).toBeUndefined();
+    expect(learnedCandidate(ordinaryRequirements.spoken)).toBeDefined();
+    expect(ordinaryRequirements.spoken.text).toBe("Aster powers pump.");
+    expect(ordinaryRequirements.spoken.surfaceValid).toBe(true);
+    expect(unsatisfiedFeature.spoken.text).toBe("");
+    expect(unsatisfiedFeature.spoken.realizationAvailability.status).not.toBe("realized");
   });
 
   it("keeps closing quotation punctuation and reports code-point evidence offsets", async () => {
@@ -352,6 +360,7 @@ async function speakFixture(input: {
   learningCaveat?: boolean;
   exposeProofTerms?: boolean;
   requirementField?: boolean;
+  requiredSurface?: string;
   persistConstruction?: boolean;
   sourceDerivedBinding?: boolean;
   alternativeSentence?: string;
@@ -479,6 +488,7 @@ async function speakFixture(input: {
     maxLength: input.maxLength,
     style: input.exposeProofTerms ? { exposeProofTerms: true } : undefined,
     requirementField: input.requirementField ? deriveTurnRequirementField({ requestText: input.question }) : undefined,
+    requiredOutputFeatures: input.requiredSurface ? [{ id: "construction.required", surface: input.requiredSurface, hard: true }] : undefined,
     learningDecision: input.learningCaveat ? {
       id: "continue:learned-construction:caveat",
       decisionKindId: "continue.answer_with_caveat",
