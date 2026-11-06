@@ -16,6 +16,7 @@ export * from "./dialogue-corpus.js";
 export * from "./gutenberg-corpus.js";
 export * from "./oss-corpus.js";
 export * from "./github-oss-acquisition.js";
+export * from "./source-brain-build.js";
 export * from "./evaluation-gate-runner.js";
 export * from "./relation-potential-training.js";
 export * from "./self-rewrite-runtime.js";

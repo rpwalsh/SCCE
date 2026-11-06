@@ -51,6 +51,7 @@ export * from "./segmentation-forest.js";
 export * from "./segmentation-population.js";
 export * from "./segmentation-population-persistence.js";
 export * from "./language-identity.js";
+export * from "./language-identity-runtime.js";
 export * from "./structural-residue.js";
 export * from "./apparatus-lines.js";
 export * from "./join-program.js";

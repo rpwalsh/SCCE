@@ -383,6 +383,7 @@ type FactualProducerAuthority =
   | { schema: "scce.mouth.factual_producer_authority.v1"; kind: "insufficient_support"; questionShapeId: string; requestedFocuses: string[] };
 
 const sourceContentPlans = new WeakMap<SpeakInput, readonly PlannedClaim[]>();
+const verifiedEntailmentPlans = new WeakSet<SpeakInput>();
 
 type MouthProducerAuthority = FactualProducerAuthority
   | { schema: "scce.mouth.producer_authority.v1"; kind: "learned_prior_proposition"; questionShapeId: string; boundaryId: string; factKeys: string[]; sourceSurfacePieceId?: string }
@@ -956,7 +957,14 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
           || candidateCommitmentsLicensed(speakCommitmentInventory(candidate.text, input, candidate.constructionFormLiterals))
           || candidate.claimBasis === "invented"
           || creativeRequested))
-        .map(candidate => ({ ...candidate, producerAuthority: mouthProducerAuthority(candidate, input, plan, creativeRequested) }));
+        .map(candidate => {
+          const producerAuthority = mouthProducerAuthority(candidate, input, plan, creativeRequested);
+          const authorityEvidenceIds = producerAuthority?.schema === "scce.mouth.factual_producer_authority.v1"
+            && (producerAuthority.kind === "evidence_bound_proposition" || producerAuthority.kind === "source_excerpt")
+            ? producerAuthority.evidenceIds
+            : candidate.evidenceIds;
+          return { ...candidate, evidenceIds: authorityEvidenceIds, producerAuthority };
+        });
       const scoredCandidates = rawCandidates.map(candidate => {
         const appliedCorrection = options.correctionMemory.applyText({ text: candidate.text, rules: input.correctionRules ?? [] });
         const structuralCandidateSurface = Boolean(structuralCreativeSelectionBindingFromSurface(candidate));
@@ -1305,6 +1313,8 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         language: plan.targetLanguage,
         force: !outputSurfaceText.trim() && contentPlanAdmission.status === "insufficient_support"
           ? "underdetermined"
+          : !outputSurfaceText.trim() && hasVerifiedEntailmentPlan(input)
+            ? "entailed"
           : dominantForce(plan),
         evidenceRefs: outputSurfaceText.trim() ? evidenceRefs : [],
         surfaceValid: selectedSurfaceEnergy.valid,
@@ -1452,7 +1462,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
   };
   return {
     async speak(input) {
-      const realizationInput = { ...input };
+      const realizationInput = withVerifiedEntailmentClaim({ ...input });
       return withSurfaceContract(realizationInput, await learned.speak(realizationInput), SURFACE_REALIZATION_STRATEGY_IDS.learned);
     }
   };
@@ -8039,8 +8049,9 @@ function factualProducerAuthority(candidate: SurfaceCandidate, input: SpeakInput
       requestedFocuses: [...support.requestedFocuses]
     };
   }
-  if (candidate.evidenceIds.length === 0) return undefined;
-  const evidenceIds = uniqueEvidenceIds(candidate.evidenceIds);
+  const candidateEvidenceIds = candidate.evidenceIds.length ? candidate.evidenceIds : input.entailment.evidenceIds;
+  if (candidateEvidenceIds.length === 0) return undefined;
+  const evidenceIds = uniqueEvidenceIds(candidateEvidenceIds);
   const ids = new Set(evidenceIds.map(String));
   const claims = (candidate.plannedClaims ?? input.claimBases ?? input.selectedProposal?.claims ?? []).filter(claim =>
     claim.evidenceIds.length > 0 && claim.evidenceIds.every(id => ids.has(String(id)))
@@ -8052,6 +8063,69 @@ function factualProducerAuthority(candidate: SurfaceCandidate, input: SpeakInput
     evidenceIds,
     claims: [...claims]
   };
+}
+
+/** Normalize the verified entailment claim into the same typed claim inventory all Mouth producers share. */
+function withVerifiedEntailmentClaim(input: SpeakInput): SpeakInput {
+  const existing = input.claimBases ?? input.selectedProposal?.claims ?? [];
+  const gate = jsonRecord(jsonRecord(input.entailment.proof.scores).semanticProofEngine);
+  const gateVerdict = stringFromJson(gate.verdict);
+  const certifiedEvidenceIds = stringArrayFromJson(gate.certifiedEvidenceIds);
+  if (gateVerdict !== "certified"
+    || input.entailment.verdict !== "entailed"
+    || input.entailment.semanticVerdict !== "entailed"
+    || !input.entailment.claim.text.trim()
+    || input.entailment.proof.claimId !== input.entailment.claim.id
+    || !input.entailment.proof.validatorVersion.trim()) {
+    return input.claimBases ? input : { ...input, claimBases: existing };
+  }
+  const proofObligations = arrayRecords(gate.obligations);
+  if (!proofObligations.length || proofObligations.some(obligation => obligation.passed !== true)) {
+    return input.claimBases ? input : { ...input, claimBases: existing };
+  }
+  const knownOwners = new Set(input.evidence.map(span => String(span.id)));
+  const proofOwners = new Set(input.entailment.proof.evidenceIds.map(String));
+  const entailmentOwners = new Set(input.entailment.evidenceIds.map(String));
+  const evidenceIds = uniqueEvidenceIds([...proofOwners]
+    .filter(id => knownOwners.has(id) && entailmentOwners.has(id))
+    .map(id => input.evidence.find(span => String(span.id) === id)?.id)
+    .filter((id): id is EvidenceId => id !== undefined));
+  if (!certifiedEvidenceIds.length || !evidenceIds.length) return input.claimBases ? input : { ...input, claimBases: existing };
+  const alreadyBound = existing.some(claim => normalizeEvidenceSentence(claim.text) === normalizeEvidenceSentence(input.entailment.claim.text)
+    && claim.evidenceIds.length > 0
+    && claim.evidenceIds.every(id => evidenceIds.some(owner => String(owner) === String(id))));
+  if (alreadyBound) {
+    const normalized = input.claimBases ? input : { ...input, claimBases: existing };
+    verifiedEntailmentPlans.add(normalized);
+    return normalized;
+  }
+  const planned: PlannedClaim = {
+    id: `claim:verified-entailment:${input.entailment.claim.id}`,
+    text: input.entailment.claim.text,
+    basis: "source_synthesis",
+    evidenceIds,
+    priorIds: [],
+    graphNodeIds: [],
+    graphEdgeIds: [],
+    externallyFactual: true,
+    hypothetical: false,
+    trace: toJsonValue({
+      schema: "scce.mouth.verified_entailment_claim.v1",
+      proofId: input.entailment.proof.id,
+      proofClaimId: input.entailment.proof.claimId,
+      validatorVersion: input.entailment.proof.validatorVersion,
+      gateVerdict,
+      passedProofObligationCount: proofObligations.length,
+      certifiedEvidenceIds: evidenceIds.map(String)
+    })
+  };
+  const normalized = { ...input, claimBases: [...existing, planned] };
+  verifiedEntailmentPlans.add(normalized);
+  return normalized;
+}
+
+function hasVerifiedEntailmentPlan(input: SpeakInput): boolean {
+  return verifiedEntailmentPlans.has(input);
 }
 
 /** Admission is decided before wording selection: supported content with no surviving surface is unavailable;
@@ -8080,6 +8154,17 @@ function admitRequestedContentPlan(
   }));
   if (admittedCandidates.length) {
     return { status: "supported", decisionId: "content_plan.selected_typed_claim", reasonId: "typed_claim_admitted", ownerEvidenceIds: licensedOwners };
+  }
+  if (hasVerifiedEntailmentPlan(input)) {
+    return {
+      status: "supported",
+      decisionId: "content_plan.verified_entailment_claim",
+      reasonId: "certified_proof_and_owned_obligations",
+      ownerEvidenceIds: uniqueStrings((input.claimBases ?? []).flatMap(claim =>
+        stringFromJson(jsonRecord(claim.trace).schema) === "scce.mouth.verified_entailment_claim.v1"
+          ? claim.evidenceIds.map(String)
+          : []))
+    };
   }
   const state = semanticAnswerConstructState(input.construct);
   if (state && learnedPriorRequiredFacts(state).length) {

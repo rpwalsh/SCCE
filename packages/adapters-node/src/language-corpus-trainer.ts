@@ -162,7 +162,15 @@ export interface LanguageCorpusTrainingReport {
   /** Opaque deterministic identity used by cognition and internal joins. */
   sourceSystemId: string;
   streamUri: string;
+  /** Exact raw source version when a derivative projection was trained; otherwise equals sourceVersionId. */
+  originalSourceVersionId: string;
   sourceVersionId: string;
+  /** Durable artifact identities written by this document transaction; used by source-brain completion validation. */
+  artifacts: { languageProfileId: string; evidenceIds: string[]; ngramModelIds: string[] };
+  /** Hash of the exact source bytes when a source-byte binding was supplied, otherwise the trained text bytes. */
+  sourceContentHash: string;
+  /** Exact source-byte count for the same content binding. */
+  sourceByteLength: number;
   languageProfiles: number;
   evidence: number;
   ngramObservations: number;
@@ -932,7 +940,15 @@ async function commitLanguageCorpusTrainingInternal(input: LanguageCorpusTrainin
     sourceSystem: prepared.sourceSystem,
     sourceSystemId: prepared.sourceSystemId,
     streamUri: input.streamUri,
+    originalSourceVersionId: String(prepared.originalSource?.sourceVersionId ?? prepared.sourceVersionId),
     sourceVersionId: prepared.sourceVersionId,
+    artifacts: {
+      languageProfileId: String(prepared.profile.id),
+      evidenceIds: prepared.evidence.map(span => String(span.id)),
+      ngramModelIds: prepared.models.map(model => String(model.id))
+    },
+    sourceContentHash: prepared.originalSource?.contentHash ?? prepared.source?.contentHash ?? createHasher().digestHex(Buffer.from(prepared.text, "utf8")),
+    sourceByteLength: prepared.originalSource?.byteLength ?? prepared.source?.byteLength ?? Buffer.byteLength(prepared.text, "utf8"),
     languageProfiles: 1,
     evidence: prepared.evidence.length,
     ngramObservations: prepared.observations.length,

@@ -55,6 +55,8 @@ export interface OssCorpusTrainOptions extends EngineeringCorpusFolderOptions {
    * clamped below that limit so the checkpoint can fire before V8 aborts.
    */
   heapCheckpointMb?: number;
+  /** Called only after the full bounded training report is assembled; use it to finalize an explicitly selected initial brain. */
+  onSourceBrainTrainingComplete?: (report: OssCorpusTrainReport) => Promise<void>;
 }
 
 export interface OssRepositoryProvenance {
@@ -323,7 +325,7 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
   }
 
   const nextFileIndex = startFileIndex + (firstIncompleteFileOffset ?? filesConsidered);
-  return {
+  const report: OssCorpusTrainReport = {
     schema: "scce.ossCorpusTrainReport.v1",
     rootPath: root,
     snapshotHash,
@@ -346,6 +348,8 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
     inspectionTruncated,
     heapMiBAtExit: heapMiB()
   };
+  await input.onSourceBrainTrainingComplete?.(report);
+  return report;
 }
 
 export function sourceSystemForPath(relativePath: string): OssCorpusSourceSystem | undefined {

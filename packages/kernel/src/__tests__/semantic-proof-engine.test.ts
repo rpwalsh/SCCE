@@ -200,6 +200,8 @@ describe("semantic proof engine vertical slice", () => {
     const priorOnly = await mouth.speak({ ...shared, entailment: entailment(ids, clock.now(), span, priorGate, "unknown") });
 
     expect(certified.force).toBe("entailed");
+    expect(certified.realizationAvailability.status).toBe("realization_unavailable");
+    expect(certified.evidenceRefs).toEqual([]);
     expect(priorOnly.force).toBe("underdetermined");
     expect(priorOnly.evidenceRefs).toEqual([]);
     expect(JSON.stringify(priorOnly.realizationTrace.walshSurfaceEnergy)).toContain("unsupported_prior_only");

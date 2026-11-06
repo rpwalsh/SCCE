@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { getHeapStatistics } from "node:v8";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ScceStorage } from "@scce/kernel";
 import { inspectEngineeringCorpusFolder } from "../engineering-corpus-folder.js";
 import {
@@ -53,6 +53,7 @@ describe("OSS corpus resume contract", () => {
     const root = await fixture();
     const previousSnapshot = await measuredSnapshot(root);
     await writeFile(path.join(root, "src", "b.ts"), "export const b = 3;\n", "utf8");
+    const completion = vi.fn(async () => undefined);
 
     await expect(trainOssCorpus({
       storage: {} as ScceStorage,
@@ -60,8 +61,10 @@ describe("OSS corpus resume contract", () => {
       startFileIndex: 1,
       expectedSnapshotHash: previousSnapshot,
       maxFiles: 10,
-      maxFilesPerRun: 1
+      maxFilesPerRun: 1,
+      onSourceBrainTrainingComplete: completion
     })).rejects.toThrow(/snapshot changed/iu);
+    expect(completion).not.toHaveBeenCalled();
   });
 
   it("keeps maxFiles as the repository inventory ceiling rather than silently redefining it as the run window", async () => {
@@ -100,6 +103,24 @@ describe("OSS corpus resume contract", () => {
     expect(report.nextFileIndex).toBeGreaterThan(report.startFileIndex);
     expect(report.filesSkipped.some(item => item.reason === "not_language_training_material")).toBe(true);
     expect(report.codeTrained + report.docsTrained).toBe(0);
+  });
+
+  it("invokes the source-brain completion hook only with the assembled bounded report", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "scce-oss-completion-hook-"));
+    roots.push(root);
+    await writeFile(path.join(root, "one.unknown"), "one\n", "utf8");
+    let callbackReport: unknown;
+    const report = await trainOssCorpus({
+      storage: {} as ScceStorage,
+      rootPath: root,
+      maxFiles: 10,
+      maxFilesPerRun: 1,
+      onSourceBrainTrainingComplete: async completed => { callbackReport = completed; }
+    });
+    expect(callbackReport).toBe(report);
+    expect(report.filesConsidered).toBe(1);
+    expect(report.filesSkipped).toHaveLength(1);
+    expect(report.stoppedByHeapSafetyBound).toBe(false);
   });
 
   it("hashes ingest material independent of input order", () => {

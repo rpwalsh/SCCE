@@ -35,6 +35,7 @@ import {
   type DocumentGenerationSessionRecord
 } from "../index.js";
 import {
+  attachLocalEvidenceAnswerConstruct,
   localEvidenceAnswerClaimSurface,
   localEvidenceAnswerSurface,
   proposeSourceExactEvidenceAnswer,
@@ -151,6 +152,27 @@ vi.mock("../evaluation-runtime-bypass.js", async importOriginal => {
 });
 
 describe("kernel local evidence source anchoring", () => {
+  it("carries the final owned proof passage instead of a stale local answer into realization", () => {
+    const lead = "Mira Vale was an engineer who designed navigation instruments.";
+    const birthplace = "Mira Vale was born in Valparaíso, Chile.";
+    const span = evidenceSpan({ id: "evidence:mira-final-claim", sourceVersionId: "source:mira-final-claim:v1" as SourceVersionId,
+      title: "Mira Vale", uri: "fixture://mira-vale", text: `${lead} ${birthplace}`, alpha: 0.94 });
+    const proposal = proposeSourceExactEvidenceAnswer({ requestText: "Who was Mira Vale?", selectedEvidence: [span] });
+    expect(proposal).toBeDefined();
+    const attach = (evidenceIds: string[]) => attachLocalEvidenceAnswerConstruct({
+      construct: { id: "construct:mira-final-claim" as never, episodeId: "episode:mira-final-claim" as EpisodeId,
+        forceVector: {}, nodes: [], edges: [], artifacts: [] },
+      plan: proposal!.plan, requestText: "Where was Mira Vale born?", brainMarker: {}, hasher: createHasher(),
+      selectedAnswer: { text: lead, claimText: birthplace, evidenceIds }
+    });
+    const final = attach([String(span.id)]).nodes.find(node => node.kind === "construct:semantic_answer")!;
+    const facts = (final.metadata as { selectedFacts: Array<{ object: string; evidenceIds: string[] }> }).selectedFacts;
+    expect(facts.map(fact => fact.object)).toEqual([birthplace]);
+    expect(facts.flatMap(fact => fact.evidenceIds)).toEqual([String(span.id)]);
+    const unowned = attach(["evidence:unrelated-owner"]).nodes.find(node => node.kind === "construct:semantic_answer")!;
+    expect((unowned.metadata as { selectedFacts: Array<{ object: string }> }).selectedFacts.map(fact => fact.object)).not.toEqual([birthplace]);
+  });
+
   it("keeps punctuation-neutral multi-token source anchors ahead of generic features", () => {
     const features = anchorFeatureSet(
       "The analytical engine was designed by Charles Babbage's team.",

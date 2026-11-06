@@ -4990,19 +4990,21 @@ export function attachLocalEvidenceAnswerConstruct(input: {
   additionalFacts?: readonly SemanticAnswerConstructFact[];
   /** The request's learned scaffolding; without it the request's interrogative survives into the fact predicate. */
   closedClassWords?: ReadonlySet<string>;
+  selectedAnswer?: { text: string; claimText: string; evidenceIds: readonly string[] };
 }): ConstructGraph {
+  const { plan, sourceSurfaces } = finalizedLocalEvidenceAnswerPlan(input.plan, input.selectedAnswer);
   const facts = input.additionalFacts?.length
     ? [...input.additionalFacts]
-    : localEvidenceAnswerFacts(input.plan, input.requestText, input.hasher, input.closedClassWords);
+    : localEvidenceAnswerFacts(plan, input.requestText, input.hasher, input.closedClassWords, sourceSurfaces);
   if (!facts.length) return input.construct;
   const marker = jsonRecord(input.brainMarker);
-  const evidenceIds = uniqueKernelStrings(input.plan.evidence.map(span => String(span.id)));
-  const sourceVersionIds = uniqueKernelStrings(input.plan.evidence.map(span => String(span.sourceVersionId)));
+  const evidenceIds = uniqueKernelStrings(plan.evidence.map(span => String(span.id)));
+  const sourceVersionIds = uniqueKernelStrings(plan.evidence.map(span => String(span.sourceVersionId)));
   const nodeId = `construct:ans:${input.hasher.digestHex(JSON.stringify({ planId: input.plan.planId, evidenceIds })).slice(0, 20)}`;
   // completeLearnedFactCoverage requires state.selectedSubject === fact.subject exactly -- when additionalFacts
   // replaced the quote-derived facts above, selectedSubject must track that same fact's own subject, not the
   // local-evidence plan's independently-derived one (real risk of a byte-level mismatch between the two).
-  const selectedSubject = input.additionalFacts?.length ? input.additionalFacts[0]!.subject : localEvidenceSelectedSubject(input.plan, input.requestText);
+  const selectedSubject = input.additionalFacts?.length ? input.additionalFacts[0]!.subject : localEvidenceSelectedSubject(plan, input.requestText);
   const metadata = {
     schema: "scce.semantic_answer_construct.v1",
     questionShapeId: `qshape.${input.hasher.digestHex(input.requestText).slice(0, 12)}`,
@@ -5063,6 +5065,24 @@ export function attachLocalEvidenceAnswerConstruct(input: {
   };
 }
 
+function finalizedLocalEvidenceAnswerPlan(
+  plan: LocalEvidenceAnswerPlan,
+  selected?: { text: string; claimText: string; evidenceIds: readonly string[] }
+): { plan: LocalEvidenceAnswerPlan; sourceSurfaces?: string[] } {
+  if (!selected || plan.kindId !== LOCAL_ANSWER_KIND_IDS.evidenceBoundary) return { plan };
+  const ownerIds = new Set(selected.evidenceIds);
+  const owners = plan.evidence.filter(span => ownerIds.has(String(span.id)));
+  const normalized = (text: string): string => cleanSourceAnswerSurface(text).normalize("NFKC").toLocaleLowerCase();
+  const claimText = cleanSourceAnswerSurface(selected.claimText);
+  if (!claimText || !owners.some(span => normalized(String(span.text ?? span.textPreview ?? "")).includes(normalized(claimText)))) return { plan };
+  const selectedSentences = splitSurfaceSentences(cleanSourceAnswerSurface(selected.text));
+  const completeSelectedAnswer = normalized(selected.text).includes(normalized(claimText))
+    && selectedSentences.length > 0
+    && selectedSentences.every(sentence => owners.some(span => normalized(String(span.text ?? span.textPreview ?? "")).includes(normalized(sentence))));
+  const sentences = completeSelectedAnswer ? selectedSentences : splitSurfaceSentences(claimText);
+  return { plan: { ...plan, evidence: owners, slotSurfaces: { ...plan.slotSurfaces, [LOCAL_ANSWER_SLOT_IDS.sentence]: sentences } }, sourceSurfaces: sentences };
+}
+
 
 // Request relation minus subject anchors, so predicate hashes to a relation word ("born"), not a whole sentence.
 function localAnswerRelationUnits(requestText: string, closedClassWords?: ReadonlySet<string>): string[] {
@@ -5076,7 +5096,7 @@ function localAnswerRelationText(requestText: string, closedClassWords?: Readonl
   return localAnswerRelationUnits(requestText, closedClassWords).join(" ");
 }
 
-function localEvidenceAnswerFacts(plan: LocalEvidenceAnswerPlan, requestText: string, hasher: { digestHex(input: string | Uint8Array): string }, closedClassWords?: ReadonlySet<string>): SemanticAnswerConstructFact[] {
+function localEvidenceAnswerFacts(plan: LocalEvidenceAnswerPlan, requestText: string, hasher: { digestHex(input: string | Uint8Array): string }, closedClassWords?: ReadonlySet<string>, finalizedSourceSurfaces?: readonly string[]): SemanticAnswerConstructFact[] {
   if (plan.kindId === LOCAL_ANSWER_KIND_IDS.collection) {
     const subject = localEvidenceSelectedSubject(plan, requestText);
     return stringArrayFromSlot(plan.slotSurfaces[LOCAL_ANSWER_SLOT_IDS.memberList]).map((member, index) => localEvidenceSemanticFact({
@@ -5137,7 +5157,7 @@ function localEvidenceAnswerFacts(plan: LocalEvidenceAnswerPlan, requestText: st
   }
   const relationUnits = localAnswerRelationUnits(requestText, closedClassWords);
   const relationText = relationUnits.join(" ");
-  const surfaces = localEvidenceFactSurfaces(plan, requestText);
+  const surfaces = finalizedSourceSurfaces ?? localEvidenceFactSurfaces(plan, requestText);
   // The fact the contract is compiled from is the one whose own surface carries the request's relation, not
   // whichever sentence the document opened with.
   const relationOverlaps = relationUnits.length

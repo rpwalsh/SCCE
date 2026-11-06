@@ -907,7 +907,7 @@ export interface BrainImportStore {
   getLifecycle(importRunId: string): Promise<import("./brain-lifecycle.js").BrainLifecycleRecord | null>;
   listLifecycle(query?: { state?: import("./brain-lifecycle.js").BrainLifecycleState; limit?: number }): Promise<import("./brain-lifecycle.js").BrainLifecycleRecord[]>;
   transitionLifecycle(input: import("./brain-lifecycle.js").BrainLifecycleTransition): Promise<import("./brain-lifecycle.js").BrainLifecycleRecord>;
-  activateReady(input: { brainVersion: string; importRunId: string; updatedAt: number }): Promise<{ activeBrainVersion: string; activeImportRunIds: string[] }>;
+  activateReady(input: { brainVersion: string; importRunId: string; updatedAt: number; requireNoActive?: boolean }): Promise<{ activeBrainVersion: string; activeImportRunIds: string[] }>;
   active(): Promise<{ activeBrainVersion?: string; activeImportRunIds: string[] }>;
 }
 

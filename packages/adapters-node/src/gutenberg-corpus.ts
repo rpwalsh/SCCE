@@ -36,6 +36,8 @@ export interface GutenbergCorpusTrainOptions {
    * training could take down the entire multi-file run.
    */
   heapCheckpointMb?: number;
+  /** Called only after the full bounded training report is assembled; use it to finalize an explicitly selected initial brain. */
+  onSourceBrainTrainingComplete?: (report: GutenbergCorpusTrainReport) => Promise<void>;
 }
 
 export interface GutenbergCorpusTrainReport {
@@ -180,7 +182,7 @@ export async function trainGutenbergCorpus(input: GutenbergCorpusTrainOptions): 
       });
     }
   }
-  return {
+  const report: GutenbergCorpusTrainReport = {
     schema: "scce.gutenbergCorpusTrainReport.v1",
     rootPath: root,
     sourceSystem: CORPUS_SOURCE_SYSTEM_IDS.gutenberg,
@@ -192,6 +194,8 @@ export async function trainGutenbergCorpus(input: GutenbergCorpusTrainOptions): 
     stoppedByHeapSafetyBound,
     heapMiBAtExit: heapMiB()
   };
+  await input.onSourceBrainTrainingComplete?.(report);
+  return report;
 }
 
 function heapMiB(): number {

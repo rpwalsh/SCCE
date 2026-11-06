@@ -18,6 +18,7 @@ import {
   type GraphSlice,
   type JsonValue,
   type ModelState,
+  featureSet,
   type ScceEvent,
   type ScceStorage,
   type TaskResumptionSnapshotRecord,
@@ -53,7 +54,7 @@ describe("runtime deadline integration with a real turn", () => {
     const clock = createClock({ fixedTime: 9000, stepMs: 1 });
     const hasher = createHasher();
     const ids = createIdFactory({ clock, hasher, deterministicReplay: true });
-    const fixture = storageFixture({ evidence: [], clockNow: () => clock.now() });
+    const fixture = storageFixture({ evidence: [zephyrCalibrationEvidence()], clockNow: () => clock.now() });
     const kernel = createScceKernel({
       storage: fixture.storage,
       files: { streamPath: async function* () { /* unused in this test */ } },
@@ -70,7 +71,7 @@ describe("runtime deadline integration with a real turn", () => {
     const progress: Array<{ phase: string; cognition?: JsonValue }> = [];
 
     const result = await kernel.turn({
-      text: "Zephyr valve pressure stabilizes after calibration.",
+      text: "Tell me the calibration time for the Zephyr valve.",
       runtimeControl: { onProgress: frame => progress.push({ phase: frame.phase, cognition: frame.cognition }) },
       metadata: {
         runtime: {
@@ -89,6 +90,7 @@ describe("runtime deadline integration with a real turn", () => {
 
     expect(typeof result.answer).toBe("string");
     expect(result.answer.trim().length).toBeGreaterThan(0);
+    expect(result.answer).toContain("14:20");
     const plan = progress.find(frame => frame.phase === "cognition.plan");
     expect(plan?.cognition).toMatchObject({ schema: "scce.turn.cognition_plan.v1" });
   });
@@ -97,7 +99,7 @@ describe("runtime deadline integration with a real turn", () => {
     const clock = createClock({ fixedTime: 9100, stepMs: 1 });
     const hasher = createHasher();
     const ids = createIdFactory({ clock, hasher, deterministicReplay: true });
-    const fixture = storageFixture({ evidence: [], clockNow: () => clock.now() });
+    const fixture = storageFixture({ evidence: [zephyrCalibrationEvidence()], clockNow: () => clock.now() });
     const kernel = createScceKernel({
       storage: fixture.storage,
       files: { streamPath: async function* () { /* unused in this test */ } },
@@ -113,7 +115,7 @@ describe("runtime deadline integration with a real turn", () => {
     const deadlineMonotonicMs = startedMonotonicMs + budgetMs;
 
     const result = await kernel.turn({
-      text: "Zephyr valve pressure stabilizes after calibration.",
+      text: "Tell me the calibration time for the Zephyr valve.",
       metadata: {
         runtime: {
           initialResponseDeadline: {
@@ -131,6 +133,7 @@ describe("runtime deadline integration with a real turn", () => {
 
     expect(typeof result.answer).toBe("string");
     expect(result.answer.trim().length).toBeGreaterThan(0);
+    expect(result.answer).toContain("14:20");
   });
 
   // T3: a traced remainingMs is unreadable without the window it counts down from, and a kernel window that
@@ -184,6 +187,41 @@ describe("runtime deadline integration with a real turn", () => {
     expect(turnStart!.durationMs + turnStart!.support.remainingMs).toBeCloseTo(budgetMs, 3);
   });
 });
+
+function zephyrCalibrationEvidence(): EvidenceSpan {
+  const text = "The Zephyr valve was calibrated at 14:20 UTC on 2026-11-05.";
+  return {
+    id: "evidence.zephyr.calibration",
+    sourceId: "source.zephyr.maintenance-log",
+    sourceVersionId: "source_version.zephyr.maintenance-log.v1",
+    chunkId: "chunk.zephyr.calibration",
+    contentHash: "fixture-hash.zephyr-calibration",
+    mediaType: "text/plain",
+    byteStart: 0,
+    byteEnd: Buffer.byteLength(text, "utf8"),
+    charStart: 0,
+    charEnd: [...text].length,
+    text,
+    textPreview: text,
+    languageHints: { language: "en" },
+    scriptHints: { script: "Latn" },
+    trustVector: { trust: 0.94, sourceTrust: 0.94, structuralConfidence: 0.94, forceClass: "direct_evidence" },
+    provenance: {
+      namespace: "owner-local",
+      source: "fixture-maintenance-log",
+      title: "Zephyr valve maintenance log",
+      uri: "fixture://zephyr/maintenance-log",
+      canonicalUri: "fixture://zephyr/maintenance-log",
+      sourceVersionId: "source_version.zephyr.maintenance-log.v1",
+      byteRange: [0, Buffer.byteLength(text, "utf8")],
+      charRange: [0, [...text].length]
+    },
+    features: featureSet(text, 64),
+    status: "promoted",
+    alpha: 0.9,
+    observedAt: 1
+  } as unknown as EvidenceSpan;
+}
 
 function storageFixture(input: { evidence: EvidenceSpan[]; clockNow: () => number }): {
   storage: ScceStorage;

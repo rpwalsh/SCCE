@@ -4962,6 +4962,24 @@ function createBrainImportStore(storage: PostgresStorageAdapter): BrainImportSto
         if (target.brainVersion !== input.brainVersion) throw new Error(`brain lifecycle version mismatch for ${input.importRunId}`);
         if (target.state !== "READY") throw new Error(`brain activation requires READY, found ${target.state}`);
 
+        if (input.requireNoActive) {
+          const activeRows = await client.query<{ import_run_id: string }>(
+            `SELECT import_run_id FROM ${storage.table("brain_import_lifecycle")} WHERE state='ACTIVE' FOR UPDATE`
+          );
+          if (activeRows.rows.length) throw new Error("brain activation requires no existing active brain");
+          const markerRows = await client.query<{ model_json: JsonValue }>(
+            `SELECT model_json FROM ${storage.table("model_state")} WHERE id='scce2.active_brain' FOR UPDATE`
+          );
+          const marker = markerRows.rows[0]?.model_json;
+          const markerVersion = marker && typeof marker === "object" && !Array.isArray(marker)
+            ? marker.activeBrainVersion : undefined;
+          const markerRuns = marker && typeof marker === "object" && !Array.isArray(marker)
+            && Array.isArray(marker.activeImportRunIds) ? marker.activeImportRunIds : [];
+          if (markerVersion || markerRuns.length) {
+            throw new Error("brain activation requires no existing active brain");
+          }
+        }
+
         // Lifecycle rows are authoritative. Demote every other ACTIVE row,
         // including orphan rows absent from (or hidden behind) a stale marker.
         await client.query(

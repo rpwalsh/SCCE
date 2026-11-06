@@ -2,6 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it, vi } from "vitest";
 import type { BrainLifecycleRecord, BrainLifecycleState } from "@scce/kernel";
+vi.mock("pg", () => ({ Pool: class { async end() {} async query() { return { rows: [], rowCount: 0 }; } } }));
 import { createPostgresStorageAdapter } from "../postgres.js";
 
 interface LifecycleRow {
@@ -105,6 +106,46 @@ describe("Postgres brain lifecycle invariants", () => {
       expect(rows.get("marker-active")?.state).toBe("READY");
       expect(rows.get("orphan-active")?.state).toBe("READY");
       expect(marker).toEqual({ activeBrainVersion: "brain-target", activeImportRunIds: ["ready-target"], updatedAt: 10 });
+    } finally {
+      await storage.close();
+    }
+  });
+
+  it("atomically refuses first-brain activation when another lifecycle is already active", async () => {
+    const storage = createPostgresStorageAdapter({ url: "postgres://localhost/scce-lifecycle-test", schema: "lifecycle_test" });
+    const rows = new Map<string, LifecycleRow>([
+      ["existing-active", lifecycleRow("existing-active", "brain-existing", "ACTIVE", 1)],
+      ["ready-target", lifecycleRow("ready-target", "brain-target", "READY", 3)]
+    ]);
+    const statements: string[] = [];
+    const fakeClient = {
+      query: async (sql: string, params: unknown[] = []) => {
+        const normalized = sql.replace(/\s+/gu, " ").trim();
+        statements.push(normalized);
+        if (normalized.includes("pg_advisory_xact_lock")) return { rows: [], rowCount: 1 };
+        if (normalized.startsWith("SELECT *") && normalized.includes("WHERE import_run_id=$1 FOR UPDATE")) {
+          const row = rows.get(String(params[0]));
+          return { rows: row ? [row] : [], rowCount: row ? 1 : 0 };
+        }
+        if (normalized.startsWith("SELECT import_run_id") && normalized.includes("WHERE state='ACTIVE' FOR UPDATE")) {
+          return { rows: [...rows.values()].filter(row => row.state === "ACTIVE").map(row => ({ import_run_id: row.import_run_id })), rowCount: 1 };
+        }
+        throw new Error(`unexpected lifecycle SQL: ${normalized}`);
+      }
+    };
+    Object.defineProperty(storage, "tx", {
+      value: async (operation: (client: typeof fakeClient) => Promise<unknown>) => operation(fakeClient)
+    });
+    try {
+      await expect(storage.brainImports.activateReady({
+        brainVersion: "brain-target",
+        importRunId: "ready-target",
+        updatedAt: 10,
+        requireNoActive: true
+      })).rejects.toThrow("requires no existing active brain");
+      expect(rows.get("existing-active")?.state).toBe("ACTIVE");
+      expect(rows.get("ready-target")?.state).toBe("READY");
+      expect(statements.some(statement => statement.startsWith("UPDATE"))).toBe(false);
     } finally {
       await storage.close();
     }
