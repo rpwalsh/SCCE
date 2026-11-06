@@ -53,4 +53,28 @@ describe("a binding mark is orthography, not identity", () => {
     const identities = await arbiterOverTitles(CORPUS_TITLES)("Who wrote Bleak House?");
     expect(identities).toEqual([]);
   });
+
+  it("measures the same sampled source spreads in one database round trip", async () => {
+    const adapter = createPostgresStorageAdapter({
+      url: "postgres://fixture/fixture",
+      schema: "fixture",
+      informationAccess: { tenantId: "fixture", principalId: "owner", compartments: ["test"], maximumExportClass: "restricted" }
+    });
+    const reads: Array<{ sql: string; params?: unknown[] }> = [];
+    Object.defineProperty(adapter, "query", {
+      value: async (sql: string, params?: unknown[]) => {
+        reads.push({ sql, params });
+        return [{ sources: 3 }, { sources: 0 }, { sources: 2 }];
+      },
+      writable: true
+    });
+
+    const measured = await adapter.evidence.sourceSpreadDistribution!(400);
+
+    expect(reads).toHaveLength(1);
+    expect(reads[0]?.params).toEqual([400]);
+    expect(reads[0]?.sql).toContain("WITH vocabulary AS MATERIALIZED");
+    expect(reads[0]?.sql).toContain("features @> ARRAY['sym:' || vocabulary.unit]::text[] LIMIT 1500");
+    expect(measured).toEqual([3, 2]);
+  });
 });

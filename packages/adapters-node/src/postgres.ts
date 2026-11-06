@@ -1071,24 +1071,24 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
     async sourceSpreadDistribution(sampleSize: number) {
       // The identity vocabulary sampled at random, then measured the same way a request's runs are, so the
       // threshold derived from it is on the same scale as what it will be compared against.
-      const vocabulary = await storage.query<{ unit: string }>(
-        `SELECT unit FROM (
-           SELECT DISTINCT unnest(string_to_array(source_title, ' ')) AS unit
-           FROM ${storage.table("evidence_spans")} WHERE source_title <> ''
-         ) units WHERE unit <> '' ORDER BY random() LIMIT $1`,
+      const rows = await storage.query<{ sources: number }>(
+        `WITH vocabulary AS MATERIALIZED (
+           SELECT unit FROM (
+             SELECT DISTINCT unnest(string_to_array(source_title, ' ')) AS unit
+             FROM ${storage.table("evidence_spans")} WHERE source_title <> ''
+           ) units WHERE unit <> '' ORDER BY random() LIMIT $1
+         )
+         SELECT measured.sources
+         FROM vocabulary
+         CROSS JOIN LATERAL (
+           SELECT count(DISTINCT source_id)::int AS sources FROM (
+             SELECT source_id FROM ${storage.table("evidence_spans")}
+             WHERE features @> ARRAY['sym:' || vocabulary.unit]::text[] LIMIT ${SPREAD_SCAN_CAP}
+           ) sampled
+         ) measured`,
         [Math.max(1, Math.trunc(sampleSize))]
       );
-      const measured = await Promise.all(vocabulary.map(async row => {
-        const rows = await storage.query<{ sources: number }>(
-          `SELECT count(DISTINCT source_id)::int AS sources FROM (
-             SELECT source_id FROM ${storage.table("evidence_spans")}
-             WHERE features @> ARRAY[$1]::text[] LIMIT ${SPREAD_SCAN_CAP}
-           ) sampled`,
-          [`sym:${row.unit}`]
-        );
-        return Number(rows[0]?.sources ?? 0);
-      }));
-      return measured.filter(value => value > 0);
+      return rows.map(row => Number(row.sources ?? 0)).filter(value => value > 0);
     },
     async searchEvidence(query: EvidenceQuery) {
       const features = evidenceQueryFeatures(query.features ?? []);
