@@ -1426,6 +1426,7 @@ export class WikipediaV3Ingestor {
       );
     }
     observeSpan.end({ candidates: semanticCandidates.length });
+    const trained = await commitLanguageCorpusTraining(trainingInput, prepared);
     if (promotedGraph.hyperedges.length) {
       const graphPersistSpan = trace.span("relation.graph-persist");
       const { nodes: promotedNodes, edges: promotedEdges, hyperedges: promotedHyperedges } = projectedGraph;
@@ -1461,7 +1462,6 @@ export class WikipediaV3Ingestor {
         promotedRelations: relationPromotionModel.decisions.filter(decision => decision.promoted).length
       });
     }
-    const trained = await commitLanguageCorpusTraining(trainingInput, prepared);
     const importedLanguageShard: WikipediaLanguageShardImport = {
       languageProfiles: trained.languageProfiles,
       ngramObservations: trained.ngramObservations,
