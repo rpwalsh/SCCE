@@ -1006,9 +1006,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         const structuralCreativeCandidateBound = Boolean(
           structuralCreativeSelectionBindingFromSurface(candidate)
         );
-        const commonProducerAuthorityHits = candidate.producerAuthority
-          ? mouthProducerAuthorityHits(candidate, bounded, input, priorPieces)
-          : [];
+        const commonProducerAuthorityHits = mouthProducerAuthorityHits(candidate, bounded, input, priorPieces);
         const forbiddenHits = creativeSurfaceCandidate
           ? uniqueStrings([
             ...forbiddenSurfaceHits(bounded, plan),
@@ -3901,6 +3899,14 @@ function semanticDirectEvidenceCandidate(
       contexts: observedSourceSpan ? [{ observedSourceSpan }] : undefined
     });
     const attemptText = admissibleJoinedCandidateText(joined);
+    const surfaceAdmissible = Boolean(attemptText) && admissibleMouthSurface(attemptText);
+    const surfaceComplete = Boolean(attemptText) && structurallyCompleteSurface(attemptText);
+    const argumentsPreserved = Boolean(attemptText) && factArgumentsIntactInSurface(attemptText, attempt.map(row => row.fact));
+    traceEvent((globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace, {
+      stage: "mouth.source_content.realization", label: "mouth.speak",
+      counts: { facts: attempt.length, chars: attemptText.length },
+      support: { joinStatus: joined.status, surfaceAdmissible, surfaceComplete, argumentsPreserved }
+    });
     // Claim authority and surface quality are separate judgments (the
     // architecture's own doctrine). The CLAIMS here are already licensed:
     // every fact came from the graph with its own evidenceIds and
@@ -3913,10 +3919,7 @@ function semanticDirectEvidenceCandidate(
     // verbatim-substring requirement here was wrong: it banned honest
     // composition along with the salad, collapsing the chatbot into a
     // quotation engine.
-    if (attemptText
-      && admissibleMouthSurface(attemptText)
-      && structurallyCompleteSurface(attemptText)
-      && factArgumentsIntactInSurface(attemptText, attempt.map(row => row.fact))) {
+    if (surfaceAdmissible && surfaceComplete && argumentsPreserved) {
       text = attemptText;
       resolved = attempt;
       break;
@@ -4758,15 +4761,20 @@ function conversationalActBindingCandidate(
   const scoped = hydrated
     .filter(bundle => bundle.bindingId === conversationalActBindingId(hasher, bundle.targetProfileId, classification.actId))
     .sort((left, right) => compareSurfaceText(left.id, right.id));
-  const sourceFamiliesByBundleId = new Map(scoped.map(bundle => [bundle.id, uniqueStrings(bundle.sourceVersionIds).length] as const));
-  // Form-versus-content is a corpus property of a construction, so the split is measured over every hydrated
-  // construction; over only the handful an act keys it fell under Otsu's minimum and refused every candidate.
-  const observedDistribution = hydrated.map(bundle => uniqueStrings(bundle.sourceVersionIds).length);
-
-  const rows: Array<{ candidate: SurfaceCandidate; bundleId: string; constructionId: string; cost: number }> = [];
+  const rows: Array<{ candidate: SurfaceCandidate; bundleId: string; constructionId: string; cost: number; literalInvariance: LiteralInvarianceEvidence }> = [];
   const refusals: string[] = [];
   for (const bundle of scoped) {
     for (const construction of bundle.constructions) {
+      const literalInvariance = literalResidueIsCorpusInvariant({
+        literals: construction.sequence
+          .filter((part): part is Extract<LearnedConstructionPart, { kind: "literal" }> => part.kind === "literal")
+          .map(part => ({ surface: part.surface, origins: part.origins })),
+        sourceExamples: bundle.sourceExamples.map(example => ({
+          id: example.id,
+          sourceVersionId: example.sourceVersionId,
+          evidenceId: example.evidenceId
+        }))
+      });
       const produced = conversationalActBindingRow({
         input,
         discoursePlan,
@@ -4777,10 +4785,7 @@ function conversationalActBindingCandidate(
         contentSpans,
         currentTurn,
         conversationId,
-        literalInvariance: {
-          independentSourceFamilies: sourceFamiliesByBundleId.get(bundle.id) ?? 0,
-          observedDistribution
-        },
+        literalInvariance,
         hasher
       });
       if (typeof produced === "string") refusals.push(produced);
@@ -4789,7 +4794,8 @@ function conversationalActBindingCandidate(
           candidate: produced,
           bundleId: bundle.id,
           constructionId: construction.id,
-          cost: residentSurfaceCost(produced.text, input.languageMemory.models)
+          cost: residentSurfaceCost(produced.text, input.languageMemory.models),
+          literalInvariance
         });
       }
     }
@@ -4805,25 +4811,18 @@ function conversationalActBindingCandidate(
   traceEvent((globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace, {
     stage: "mouth.conversational_act_binding.candidate",
     label: "mouth.speak",
-    counts: { bundles: scoped.length, invariancePopulation: observedDistribution.length, rows: rows.length, contentSpans: contentSpans.length },
+    counts: { bundles: scoped.length, constructions: scoped.reduce((count, bundle) => count + bundle.constructions.length, 0), rows: rows.length, contentSpans: contentSpans.length },
     support: {
       actId: classification.actId,
       logOddsOverNeutral: classification.logOddsOverNeutral,
       surface: winner?.candidate.text ?? null,
       bundleId: winner?.bundleId ?? null,
       constructionId: winner?.constructionId ?? null,
-      literalInvarianceFloor: measuredLiteralInvarianceFloor(observedDistribution),
-      sourceFamilies: [...sourceFamiliesByBundleId.values()].sort((left, right) => right - left).slice(0, 8),
+      literalInvariance: winner?.literalInvariance ?? null,
       refusals: refusalCountsByReason(refusals)
     }
   });
   return winner?.candidate;
-}
-
-/** The floor the admission measured, reported so a trace shows what the population decided, not just the verdict. */
-function measuredLiteralInvarianceFloor(observedDistribution: readonly number[]): number | null {
-  const measured = literalResidueIsCorpusInvariant({ independentSourceFamilies: 0, observedDistribution });
-  return measured.measured ? measured.floor : null;
 }
 
 /** Refusal reasons with how many rows each stopped, most first: one unique example never showed the shape. */

@@ -2900,7 +2900,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             explicitContextEvidenceIds,
             semanticFrameBoundEvidenceIds,
             closedClassWords: requestClosedClassWords(),
-            functionSymbols: corpusFunctionSymbols()
+            functionSymbols: corpusFunctionSymbols(),
+            responseSentenceBudget: responseFormSentences
           });
       // Priority by plan kind (temporal counterexample > collection > single sentence): the richer plan still leads by default, and the exact-sentence proposal takes over only when its plan outranks it.
       const selectedPoolLocalEvidenceAnswer = preferredLocalEvidenceAnswer(richLocalEvidenceAnswer, evidenceProposalAdmissible ? answerProposal : undefined);
@@ -4719,6 +4720,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // rhetorical-generation machinery never gets a chance to run at all. Attaching whenever a local-evidence
       // plan exists, not only when it exactly matches the judge's pick, costs nothing when a different
       // candidate wins (the facts simply go unused) and unlocks the real generation lanes when it does.
+      const localSourceContent = longPathBasisAnswer ? localEvidenceAnswerClaimSurface(longPathBasisAnswer) : "";
       const localAnswerConstructGraph = runtimeDiagnosticRequested
         ? assembly.constructGraph
         : longPathBasisAnswer
@@ -4729,7 +4731,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             brainMarker: brain,
             hasher,
             closedClassWords: requestClosedClassWords(),
-            selectedAnswer: { text: judged.selected.answer, claimText: answerEntailment.claim.text, evidenceIds: judged.selected.evidenceIds },
+            selectedAnswer: { text: localSourceContent, claimText: localSourceContent,
+              evidenceIds: longPathBasisAnswer.evidence.map(span => String(span.id)) },
             additionalFacts: temporalConstructFact ? [temporalConstructFact] : undefined
           })
           : assembly.constructGraph;

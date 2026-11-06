@@ -584,6 +584,7 @@ export function localEvidenceAnswerSurface(input: {
   closedClassWords?: ReadonlySet<string>;
   /** Symbols the corpus itself treats as function material, ranked by Kneser-Ney continuation counts. */
   functionSymbols?: ReadonlySet<string>;
+  responseSentenceBudget?: number;
 }): LocalEvidenceAnswerCandidate | undefined {
   if (input.translationTarget) return undefined;
   const plan = localEvidenceAnswerPlan(input);
@@ -920,12 +921,15 @@ export function proposeSourceExactEvidenceAnswer(input: {
   // included publishing an algorithm...") is read with the sentence that names her: the two are spoken together,
   // contiguous and verified as a substring the same way the window above is. The subject test is the one
   // answerCoversRequest resolves through the preceding sentence; here that sentence becomes part of the answer.
-  if (answerSentences.length === 1 && !sentenceNamesRequestSubject(answerSentences[0]!, input.requestText)) {
+  const sourceNamesSubject = (surface: string): boolean => titleAnswersRequest
+    ? evidenceTitleAppearsInSurface(selected.span, surface)
+    : sentenceNamesRequestSubject(surface, input.requestText);
+  if (answerSentences.length === 1 && !sourceNamesSubject(answerSentences[0]!)) {
     const tidySpan = tidySurfaceText(selected.span.text);
     const tidySentences = splitSurfaceSentences(tidySpan);
     const matchIndex = tidySentences.findIndex(sentence => sentence.includes(selected.sentence) || selected.sentence.includes(sentence));
     const preceding = matchIndex > 0 ? tidySentences[matchIndex - 1] : undefined;
-    if (preceding && sentenceNamesRequestSubject(preceding, input.requestText) && isProseSentence(preceding)) {
+    if (preceding && sourceNamesSubject(preceding) && isProseSentence(preceding)) {
       const pair = [preceding, tidySentences[matchIndex]!];
       if (tidySpan.includes(pair.join(" "))) answerSentences = pair;
     }
@@ -977,6 +981,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
   semanticFrameBoundEvidenceIds?: ReadonlySet<string>;
   closedClassWords?: ReadonlySet<string>;
   functionSymbols?: ReadonlySet<string>;
+  responseSentenceBudget?: number;
 }): LocalEvidenceAnswerPlan | undefined {
   const evidence = input.selectedEvidence.filter(span => span.status === "promoted" || promotedSessionEvidence(span));
   if (!evidence.length) return undefined;
@@ -1017,7 +1022,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
     functionSymbols: input.functionSymbols,
     boundValues: input.boundValues,
     boundValueEvidenceIds: input.boundValueEvidenceIds,
-    responseSentenceBudget: evidenceAnswerSentenceLimit(input.requestText, answerEvidence, input.sessionContextEvidence === true)
+    responseSentenceBudget: input.responseSentenceBudget
   });
   if (!selected) return undefined;
   return {

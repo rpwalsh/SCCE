@@ -32,9 +32,6 @@ const PROFILE = "profile.conversational.01";
 const INDUCED_ACT = "actshape.6b1d0f24";
 const CONVERSATION = "conversation.01";
 
-// A plausible measured spread of independent source families; its Otsu split is the floor.
-const FAMILY_DISTRIBUTION = [1, 1, 2, 2, 3, 7, 8, 9];
-
 const TURNS: ConversationTurnSurface[] = [
   { turnId: "turn.01", turnIndex: 0, surface: "the pump feed reads high" },
   { turnId: "turn.02", turnIndex: 1, surface: "no thats wrong" }
@@ -76,15 +73,12 @@ function stripIdentity(overrides: Partial<ConversationalActBinding>): Partial<Om
   return rest;
 }
 
-function admit(input: { binding?: ConversationalActBinding; classification?: RequestCommunicativeActClassification; distribution?: readonly number[]; families?: number }) {
+function admit(input: { binding?: ConversationalActBinding; classification?: RequestCommunicativeActClassification; literalInvariance?: { status: "observed_once"; literalCount: number; independentSourceVersionCount: 1 } | { status: "measured_invariant"; literalCount: number; independentSourceVersionCount: number } | { status: "invalid"; literalCount: number; reason: "no_literals" | "missing_origin" | "unknown_source_example" | "source_evidence_mismatch" | "literal_surface_mismatch" } }) {
   return admitConversationalActBinding({
     binding: input.binding ?? binding(),
     classification: input.classification ?? classification(),
     conversationTurns: TURNS,
-    literalInvariance: {
-      independentSourceFamilies: input.families ?? 9,
-      observedDistribution: input.distribution ?? FAMILY_DISTRIBUTION
-    },
+    literalInvariance: input.literalInvariance ?? { status: "measured_invariant", literalCount: 1, independentSourceVersionCount: 2 },
     hasher: HASHER
   });
 }
@@ -187,18 +181,57 @@ describe("conversational act binding admission", () => {
     expect(admission.reasonIds).toContain(CONVERSATIONAL_BINDING_REFUSAL_IDS.fillerFromFutureTurn);
   });
 
-  it("refuses when the literal residue's invariance is unmeasured or below the measured split", () => {
-    const unmeasured = admit({ distribution: [3, 3] });
-    expect(unmeasured.status).toBe("refused");
-    if (unmeasured.status !== "refused") return;
-    expect(unmeasured.reasonIds).toContain(CONVERSATIONAL_BINDING_REFUSAL_IDS.literalInvarianceUnmeasured);
+  it("keeps a one-source literal usable with uncertainty and rejects missing or contradictory origins", () => {
+    const oneSource = { status: "observed_once", literalCount: 1, independentSourceVersionCount: 1 } as const;
+    expect(admit({ literalInvariance: oneSource }).status).toBe("admissible");
 
-    const measured = literalResidueIsCorpusInvariant({ independentSourceFamilies: 1, observedDistribution: FAMILY_DISTRIBUTION });
-    expect(measured).toMatchObject({ measured: true, invariant: false });
-    const belowFloor = admit({ families: 1 });
-    expect(belowFloor.status).toBe("refused");
-    if (belowFloor.status !== "refused") return;
-    expect(belowFloor.reasonIds).toContain(CONVERSATIONAL_BINDING_REFUSAL_IDS.literalResidueNotInvariant);
+    const noOrigin = literalResidueIsCorpusInvariant({
+      literals: [{ surface: "I hear", origins: [] }],
+      sourceExamples: [{ id: "example.01", sourceVersionId: "version.01", evidenceId: "evidence.01" }]
+    });
+    expect(noOrigin).toMatchObject({ status: "invalid", reason: "missing_origin" });
+    expect(admit({ literalInvariance: noOrigin }).status).toBe("refused");
+
+    const contradictory = literalResidueIsCorpusInvariant({
+      literals: [{ surface: "I hear", origins: [{ sourceExampleId: "example.01", observedSurface: "I know", evidenceIds: ["evidence.01"] }] }],
+      sourceExamples: [{ id: "example.01", sourceVersionId: "version.01", evidenceId: "evidence.01" }]
+    });
+    expect(contradictory).toMatchObject({ status: "invalid", reason: "literal_surface_mismatch" });
+    expect(admit({ literalInvariance: contradictory }).status).toBe("refused");
+  });
+
+  it("measures an exact literal over its own independent source versions", () => {
+    const measured = literalResidueIsCorpusInvariant({
+      literals: [{
+        surface: "I hear",
+        origins: [
+          { sourceExampleId: "example.01", observedSurface: "I hear", evidenceIds: ["evidence.01"] },
+          { sourceExampleId: "example.02", observedSurface: "I hear", evidenceIds: ["evidence.02"] }
+        ]
+      }],
+      sourceExamples: [
+        { id: "example.01", sourceVersionId: "version.01", evidenceId: "evidence.01" },
+        { id: "example.02", sourceVersionId: "version.02", evidenceId: "evidence.02" }
+      ]
+    });
+    expect(measured).toEqual({ status: "measured_invariant", literalCount: 1, independentSourceVersionCount: 2 });
+  });
+
+  it("measures opaque multilingual literals by exact source identity without language-specific rules", () => {
+    const measured = literalResidueIsCorpusInvariant({
+      literals: [{
+        surface: "説明はこちらです",
+        origins: [
+          { sourceExampleId: "例文.甲", observedSurface: "説明はこちらです", evidenceIds: ["証拠.甲"] },
+          { sourceExampleId: "例文.乙", observedSurface: "説明はこちらです", evidenceIds: ["証拠.乙"] }
+        ]
+      }],
+      sourceExamples: [
+        { id: "例文.甲", sourceVersionId: "版.甲", evidenceId: "証拠.甲" },
+        { id: "例文.乙", sourceVersionId: "版.乙", evidenceId: "証拠.乙" }
+      ]
+    });
+    expect(measured).toEqual({ status: "measured_invariant", literalCount: 1, independentSourceVersionCount: 2 });
   });
 });
 

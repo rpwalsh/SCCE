@@ -59,6 +59,26 @@ function frameBundle(): DurableLanguageConstructionBundle {
     }]
   };
   const learned = induceLearnedConstructions({ hasher, examples: [example] });
+  const literalOrigins = learned.constructions.flatMap(construction => construction.sequence.flatMap(part =>
+    part.kind === "literal" ? part.origins.map(origin => ({ sourceExampleId: origin.sourceExampleId, evidenceId: origin.evidenceIds[0] })) : []
+  ));
+  const sourceExamples = [...new Map(literalOrigins.map(origin => [origin.sourceExampleId, origin] as const)).values()].map(origin => ({
+    id: origin.sourceExampleId,
+    bindingId: conversationalActBindingId(hasher, PROFILE_ID, ACT_ID),
+    sourceProfileId: PROFILE_ID,
+    targetProfileId: PROFILE_ID,
+    sourceVersionId: "source_version.dialogue.pg844",
+    evidenceId: origin.evidenceId ?? "evidence.corpus.dialogue.pg844",
+    evidenceContentHash: hasher.digestHex(DIALOGUE_LINE),
+    evidenceCharStart: 0,
+    evidenceCharEnd: DIALOGUE_LINE.length,
+    surfaceStartCodePoint: 0,
+    surfaceEndCodePoint: DIALOGUE_LINE.length,
+    surface: DIALOGUE_LINE,
+    surfaceDigest: hasher.digestHex(DIALOGUE_LINE),
+    roles: [],
+    nullRoles: []
+  }));
   return {
     id: "bundle.conversational.frame.01",
     contentDigest: hasher.digestHex("bundle.conversational.frame.01"),
@@ -69,33 +89,20 @@ function frameBundle(): DurableLanguageConstructionBundle {
     sourceVersionIds: ["source_version.dialogue.pg844", "source_version.dialogue.pg1750", "source_version.dialogue.pg1008"],
     evidenceIds: ["evidence.corpus.dialogue.pg844"],
     evidenceContentHashes: [hasher.digestHex(DIALOGUE_LINE)],
-    sourceExamples: [],
+    sourceExamples,
     constructions: [...learned.constructions],
     formClasses: [...learned.formClasses]
   } as DurableLanguageConstructionBundle;
 }
 
-/** The literal-invariance floor is an Otsu split of the observed source-family distribution, so it needs a population. */
+/** A single source realization remains usable with explicit uncertainty; it has no population-level measurement. */
 function scopedBundles(): DurableLanguageConstructionBundle[] {
-  const singleFamily = [0, 1, 2].map(index => ({
-    ...frameBundle(),
-    id: `bundle.conversational.single.${index}`,
-    sourceVersionIds: [`source_version.dialogue.single.${index}`],
-    constructions: [],
-    formClasses: []
-  } as DurableLanguageConstructionBundle));
-  return [frameBundle(), ...singleFamily];
+  return [frameBundle()];
 }
 
-/**
- * What production actually hydrates: the other constructions carry their own binding ids, so only one bundle
- * keys this act. Measured live 2026-09-16: 76 of 120 traced turns scoped exactly 3, under Otsu's minimum.
- */
+/** No unrelated act bundles are needed to speak a source-observed construction. */
 function corpusShapedBundles(): DurableLanguageConstructionBundle[] {
-  return scopedBundles().map((bundle, index) => (index === 0 ? bundle : {
-    ...bundle,
-    bindingId: conversationalActBindingId(hasher, PROFILE_ID, `${ACT_ID}.other.${index}`)
-  }));
+  return scopedBundles();
 }
 
 function classification(overrides: Partial<RequestCommunicativeActClassification> = {}): RequestCommunicativeActClassification {
@@ -359,9 +366,8 @@ describe("the conversation-bound lane is reachable from a production speak", () 
     expect(inventory.authorityClassId).not.toBe("authority.grounded_factual");
   }, 120_000);
 
-  // Live 2026-09-16: "Hello, how are you today?" scoped 3 act-keyed bundles, so the literal-invariance floor was
-  // an Otsu split of a 3-sample distribution -- unmeasurable -- and all 45 candidates refused unmeasured.
-  it("measures the literal-invariance floor over the hydrated corpus, not over the bundles one act happens to key", async () => {
+  // A single observed form remains usable, with uncertainty, even when no unrelated corpus population exists.
+  it("uses a one-source construction with explicit measurement uncertainty", async () => {
     const spoken = await speakWith(classification(), { bundles: corpusShapedBundles() });
     const row = bindingRow(spoken.trace);
     expect(row).toBeDefined();
@@ -370,9 +376,9 @@ describe("the conversation-bound lane is reachable from a production speak", () 
     expect(surface).toBeTruthy();
     expect(Object.keys((row?.support?.refusals ?? {}) as Record<string, number>))
       .not.toContain("conversational_binding.refuse.literal_invariance_unmeasured");
-    expect(row?.support?.literalInvarianceFloor).not.toBeNull();
+    expect(row?.support?.literalInvariance).toMatchObject({ status: "observed_once", independentSourceVersionCount: 1 });
     expect(row?.counts?.bundles).toBe(1);
-    expect(row?.counts?.invariancePopulation).toBe(corpusShapedBundles().length);
+    expect(Number(row?.counts?.constructions)).toBeGreaterThan(0);
     const inventory = candidateCommitmentInventory({
       text: surface as string,
       evidenceTexts: [],

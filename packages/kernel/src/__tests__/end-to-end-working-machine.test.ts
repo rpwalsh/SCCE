@@ -9,6 +9,7 @@ import {
   createIdFactory,
   createInventionConstruct,
   createLanguageMemoryRuntime,
+  createNgramMemoryCompiler,
   createMouth,
   createPredictionConstruct,
   createProgramGraphBuilder,
@@ -20,12 +21,14 @@ import {
   detectFieldGaps,
   featureSet,
   inventionConstructNode,
+  planInventions,
   planLearningSources,
   predictionConstructNode,
   proveClaim,
   runLearningLoop,
   runToolCapability,
   toJsonValue,
+  updateDialogueState,
   validateProgramHydrationContract,
   type ConstructGraph,
   type EvidenceSpan,
@@ -193,15 +196,73 @@ describe("end-to-end working machine source-only path", () => {
     expect(predictionSpoken.text).toBe("");
     expect(predictionSpoken.text).not.toContain("certified fact unavailable");
 
+    const inventionLanguageText = "In this fictional exercise, each pressure gauge marks the reading. A report tells the operator which checks finished. The operator reviews each result before the next step. A diagnostic explains which input needs another look.";
+    const inventionLanguageSource = sourceVersion("fixture://working-machine/creative-language", inventionLanguageText);
+    const inventionLanguageEvidence = evidenceSpan(inventionLanguageSource, inventionLanguageText, "direct_evidence");
+    const inventionLanguageCompilation = createNgramMemoryCompiler({ hasher, idFactory: ids }).compile({
+      streamId: "stream:working-machine:creative-language",
+      profile: languageProfile(inventionLanguageSource),
+      sourceVersionId: inventionLanguageSource.sourceVersionId,
+      text: inventionLanguageText,
+      evidence: [inventionLanguageEvidence],
+      createdAt: clock.now()
+    });
+    const inventionLanguageMemory = languageRuntime.hydrateFromImportedBrain({
+      importRunId: "working-machine-creative-language",
+      models: inventionLanguageCompilation.models,
+      observations: inventionLanguageCompilation.observations,
+      units: inventionLanguageCompilation.units,
+      patterns: inventionLanguageCompilation.patterns,
+      semanticFrames: inventionLanguageCompilation.semanticFrames
+    });
+    const pressureUnit = required(inventionLanguageMemory.importedUnits.find(unit => (
+      unit.text.normalize("NFKC").toLocaleLowerCase() === "pressure"
+      && unit.unitKind === "symbol"
+    )));
+    const inventionRequest = "Invent a pressure drift CLI.";
+    const plannedInvention = required(planInventions({
+      requestText: inventionRequest,
+      requestedAuthority: "creative",
+      field: emptyField(inventionRequest),
+      graph: { nodes: [], edges: [], hyperedges: [], bounded: true, query: { features: ["creative.request"] } },
+      languageMemory: languageRuntime,
+      languageMemoryState: inventionLanguageMemory,
+      dialogueState: updateDialogueState({ requestText: inventionRequest }),
+      evidence: [],
+      construct: programConstruct,
+      requirementField: {
+        noveltyDemand: 1,
+        activatedFrameIds: [],
+        activatedPatternIds: [],
+        activatedPhraseUnitIds: [pressureUnit.id],
+        activatedConstructIds: []
+      },
+      samplingDisabled: true
+    })[0]);
+    const plannerTrace = plannedInvention.trace as Record<string, unknown>;
+    const proposalRealization = plannerTrace.proposalRealization as Record<string, unknown>;
+    expect(plannerTrace.source).toBe("invention-planner.plan");
+    expect(proposalRealization.path).toBe("learned_structural_composition");
+    expect(proposalRealization.sourcePieceIds).toContain(pressureUnit.id);
+    expect(proposalRealization.structuralSourceIds).toHaveLength(1);
+    expect(inventionLanguageMemory.importedSemanticFrames.some(frame => (
+      (proposalRealization.structuralSourceIds as string[])[0]?.startsWith(`${frame.id}:surface:`)
+    ))).toBe(true);
+    expect(plannerTrace.claimBasis).toEqual([
+      expect.objectContaining({ force: "invented", kind: "invention", evidenceIds: [] })
+    ]);
     const invention = createInventionConstruct({
-      title: "pressure drift CLI",
-      proposalSurface: "a CLI that checks pressure drift and emits a bounded diagnostic",
-      artifactKindIds: ["artifact.cli"],
-      basisEvidenceIds: [String(engineering.evidence.id)],
-      basisPriorIds: [prior.id],
+      id: plannedInvention.id,
+      title: plannedInvention.title,
+      proposalSurface: plannedInvention.proposalSurface,
+      artifactKindIds: plannedInvention.artifactKindIds,
+      basisEvidenceIds: plannedInvention.basisEvidenceIds,
+      basisPriorIds: plannedInvention.basisPriorIds,
       programGraph: program,
-      supportScore: 0.58,
-      riskScore: 0.34
+      supportScore: plannedInvention.supportScore,
+      riskScore: plannedInvention.riskScore,
+      noveltyScore: plannedInvention.noveltyScore,
+      trace: plannedInvention.trace
     });
     expect(invention.proofStatusId).toBe("proof.status.generated_not_evidence");
     expect(invention.validationPlan).toHaveLength(2);
@@ -209,16 +270,18 @@ describe("end-to-end working machine source-only path", () => {
     const inventionSpoken = await mouth.speak({
       construct: { ...programConstruct, nodes: [...programConstruct.nodes, inventionConstructNode(invention)] },
       field: emptyField("invention"),
-      languageProfile: languageProfile(source),
-      evidence: [engineering.evidence],
-      entailment: conjectureEntailment("Invent a pressure drift CLI.", [engineering.evidence], "invented"),
-      languageMemory: languageRuntime.hydrateFromImportedBrain({ importRunId: "invention", models: [], observations: [], units: [], patterns: [], semanticFrames: [] }),
+      languageProfile: languageProfile(inventionLanguageSource),
+      evidence: [],
+      entailment: conjectureEntailment(inventionRequest, [], "invented"),
+      languageMemory: inventionLanguageMemory,
       targetLanguage: "working-language"
     });
-    expect(inventionSpoken.text).toContain("pressure drift");
+    expect(inventionSpoken.text.toLocaleLowerCase()).toContain("pressure drift");
     expect(inventionSpoken.text).toContain("CLI");
     expect(inventionSpoken.text).not.toContain("evidence unavailable");
     expect(inventionSpoken.text).not.toContain("guaranteed");
+    expect(inventionSpoken.force).toBe("creative");
+    expect(inventionSpoken.evidenceRefs).toEqual([]);
     assertHumanSurface(inventionSpoken.text);
   });
 

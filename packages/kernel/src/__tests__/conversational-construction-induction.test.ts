@@ -6,7 +6,8 @@ import {
   admitConversationalActBinding,
   conversationalActBindingId,
   conversationalActBindingRecordId,
-  CONVERSATIONAL_ACT_BINDING_SCHEMA
+  CONVERSATIONAL_ACT_BINDING_SCHEMA,
+  literalResidueIsCorpusInvariant
 } from "../conversational-act-binding.js";
 import { induceConversationalActConstructionTrainingSets } from "../conversational-construction-induction.js";
 import { compileLanguageConstructionPattern, type DurableLanguageConstructionBundle } from "../language-construction-memory.js";
@@ -109,8 +110,17 @@ describe("a dialogue corpus induces conversational constructions of its own", ()
           binding: { schema: CONVERSATIONAL_ACT_BINDING_SCHEMA, id: conversationalActBindingRecordId(hasher, base), ...base },
           classification,
           conversationTurns: [turn],
-          // The scoped population the floor is measured over; the induced bundle spans every transcript it recurred in.
-          literalInvariance: { independentSourceFamilies: row.bundle.sourceVersionIds.length, observedDistribution: [1, 1, 1, row.bundle.sourceVersionIds.length] },
+          // Measure exact literal origins through their source examples, independent of unrelated bundles.
+          literalInvariance: literalResidueIsCorpusInvariant({
+            literals: construction.sequence
+              .filter((part): part is Extract<typeof part, { kind: "literal" }> => part.kind === "literal")
+              .map(part => ({ surface: part.surface, origins: part.origins })),
+            sourceExamples: row.bundle.sourceExamples.map(example => ({
+              id: example.id,
+              sourceVersionId: example.sourceVersionId,
+              evidenceId: example.evidenceId
+            }))
+          }),
           hasher
         });
         expect(admission.status).toBe("admissible");

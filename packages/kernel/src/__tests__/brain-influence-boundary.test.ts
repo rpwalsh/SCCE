@@ -1,21 +1,24 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
+import { compileLanguageConstructionPattern } from "../language-construction-memory.js";
 import {
   createAlphaFieldEngine,
   createClock,
   createCorrectionMemory,
   createHasher,
   createIdFactory,
+  createLanguageAcquisitionEngine,
   createLanguageMemoryRuntime,
   createMouth,
   createNgramMemoryCompiler,
   createSemanticEntailmentEngine,
   evidenceProofBoundaries,
   evidenceProofBoundary,
-  featureSet
+  featureSet,
+  sourceRelationConstructionBindingId
 } from "../index.js";
-import type { EvidenceSpan, FieldState, GraphEdge, GraphNode, JsonValue, LanguageProfile, SourceVersion } from "../types.js";
+import type { ConstructGraph, EvidenceSpan, FieldState, GraphEdge, GraphNode, JsonValue, LanguageProfile, SourceVersion } from "../types.js";
 import type { LanguagePatternRecord, LanguageUnitRecord, NgramModelRecord, NgramObservation } from "../storage.js";
 import { scce2ImportedBrainFixture as fixture } from "./fixtures/scce2-imported-brain-fixture.js";
 
@@ -189,18 +192,42 @@ describe("imported brain influence and proof boundary", () => {
       "Every azurite operator stabilizes the cyan surface with care.",
       "The tired azurite operator stabilizes the cyan surface again."
     ].join(" ");
+    const learnedProfile = createLanguageAcquisitionEngine({ idFactory: ids }).acquire({
+      sourceVersionId: direct.sourceVersionId,
+      text: corpusText,
+      createdAt: clock.now()
+    });
     const compiled = createNgramMemoryCompiler({ hasher, idFactory: ids }).compile({
       streamId: fixture.language.streamId,
-      profile: languageProfile(source),
+      profile: learnedProfile,
       sourceVersionId: direct.sourceVersionId,
       text: corpusText,
       evidence: [direct],
       createdAt: clock.now()
     });
-    const azuriteUnit = compiled.units.find(unit => unit.unitKind === "symbol" && unit.text.toLocaleLowerCase() === "azurite");
-    if (!azuriteUnit) throw new Error("fixture expected a real compiled unit for 'azurite'");
-    const azuriteObservation = compiled.observations.find(observation => observation.symbol.toLocaleLowerCase() === "azurite");
-    if (!azuriteObservation) throw new Error("fixture expected a real compiled observation for 'azurite'");
+    const relationId = sourceRelationConstructionBindingId(hasher, learnedProfile.id, "stabilizes");
+    const surfacePoints = [...fixture.directEvidence.text];
+    const roleSurfaces = ["azurite operator", "stabilizes", "the cyan surface"];
+    const roles = roleSurfaces.map((surface, slotIndex) => {
+      const startCodePoint = fixture.directEvidence.text.indexOf(surface);
+      if (startCodePoint < 0) throw new Error(`fixture source does not contain role ${surface}`);
+      return { slotIndex, startCodePoint, endCodePoint: startCodePoint + [...surface].length };
+    });
+    const construction = compileLanguageConstructionPattern({
+      bindingId: relationId,
+      profileId: learnedProfile.id,
+      observations: [{
+        sourceVersionId: String(direct.sourceVersionId),
+        evidenceId: String(direct.id),
+        surfaceStartCodePoint: 0,
+        surfaceEndCodePoint: surfacePoints.length,
+        roles
+      }],
+      evidence: [direct],
+      hasher,
+      updatedAt: clock.now()
+    });
+    if (construction.status !== "compiled") throw new Error("fixture source should compile as a role-bound construction");
     // The compiler tags freshly-compiled models with a script/direction hint
     // (this session's own corpus), not a "learned:" one -- a real cross-brain
     // import carries the source brain's own learned-prior hint (see
@@ -213,26 +240,33 @@ describe("imported brain influence and proof boundary", () => {
       models: importedModels,
       observations: compiled.observations,
       units: compiled.units,
-      patterns: compiled.patterns
+      patterns: [...compiled.patterns, construction.pattern],
+      constructionEvidence: [direct]
     });
     expect(languageMemory.importedLanguagePriorCount).toBeGreaterThan(0);
     const mouth = createMouth({ languageMemory: languageRuntime, correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }), hashText: text => hasher.digestHex(text) });
     const spoken = await mouth.speak({
-      construct: {
-        id: ids.constructId("fixture"),
-        episodeId: ids.episodeId(),
-        forceVector: {},
-        nodes: [],
-        edges: [],
-        artifacts: []
-      },
+      construct: semanticAnswerConstruct(direct, relationId),
       field: emptyField(),
-      languageProfile: languageProfile(source),
+      languageProfile: learnedProfile,
       evidence: [direct],
       entailment,
       languageMemory,
+      claimBases: [{
+        id: "claim:brain-influence:direct-source",
+        text: entailment.claim.text,
+        basis: "direct_evidence",
+        evidenceIds: [direct.id],
+        priorIds: [],
+        graphNodeIds: [],
+        graphEdgeIds: [],
+        externallyFactual: true,
+        hypothetical: false,
+        trace: { source: "brain-influence-boundary.direct-evidence" }
+      }],
+      requestText: "What stabilizes the cyan surface?",
       answerDraft: fixture.directEvidence.text,
-      targetLanguage: "fixture-language",
+      targetLanguage: learnedProfile.id,
       brainMarker: {
         activeBrainVersion: fixture.activeBrainVersion,
         activeImportRunIds: [fixture.importRunId],
@@ -241,9 +275,20 @@ describe("imported brain influence and proof boundary", () => {
     });
     const trace = spoken.realizationTrace.brainInfluence as Record<string, JsonValue>;
     expect(trace.activeBrainVersion).toBe(fixture.activeBrainVersion);
-    expect(trace.importedLanguageUnitIdsUsed).toContain(azuriteUnit.id);
-    expect(trace.importedObservationIdsUsed).toContain(azuriteObservation.id);
-    expect((trace.importedNgramModelIdsUsed as string[]).length).toBeGreaterThan(0);
+    expect(spoken.text).toBe(fixture.directEvidence.text);
+    expect(spoken.realizationAvailability.status).toBe("realized");
+    expect(spoken.realizationTrace.selected.id).toMatch(/^candidate:generated:learned-construction:/u);
+    const selectedAudit = jsonObject(spoken.realizationTrace.selected.audit);
+    const candidateAudit = jsonObject(selectedAudit.candidateAudit);
+    const selectedBundle = jsonObject(candidateAudit.bundle);
+    const selectedConstruction = jsonObject(candidateAudit.construction);
+    const importedBundle = languageMemory.importedConstructionBundles.find(bundle => bundle.evidenceIds.includes(String(direct.id)));
+    expect(importedBundle).toBeDefined();
+    expect(selectedBundle.id).toBe(importedBundle!.id);
+    expect(selectedBundle.evidenceIds).toContain(String(direct.id));
+    expect(selectedConstruction.id).toBe(importedBundle!.constructions[0]?.id);
+    expect(selectedConstruction.patternEvidenceIds).toContain(String(direct.id));
+    expect(selectedAudit.source).toBe("mouth.selected-factual-producer");
   });
 
   it("reports imported graph priors activated by alpha and PPF", () => {
@@ -309,6 +354,67 @@ describe("imported brain influence and proof boundary", () => {
       byteLength: bytes.length,
       sourceTrust: { identity: trust, integrity: trust, parserReliability: trust, directness: trust, authority: trust, freshness: trust, independenceGroup: options.independenceGroup ?? `fixture:${namespace}`, accessScope: options.accessScope ?? "fixture", licenseStatus: "fixture" },
       metadata: {}
+    };
+  }
+
+  function jsonObject(value: JsonValue | undefined): Record<string, JsonValue> {
+    return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, JsonValue> : {};
+  }
+
+  function semanticAnswerConstruct(evidence: EvidenceSpan, relationId: string): ConstructGraph {
+    const fact = {
+      subject: "azurite operator",
+      predicate: "stabilizes",
+      object: "the cyan surface",
+      sourceNodeId: "node:azurite-operator",
+      targetNodeId: "node:cyan-surface",
+      relationId,
+      forceClass: "direct_evidence",
+      score: 0.95,
+      activation: 0.95,
+      overlap: 1,
+      support: 0.95,
+      finalQuestionFit: 0.95,
+      certificationPower: 0.95,
+      semanticQuality: 0.95,
+      questionSlotScore: 0.95,
+      sourceVersionId: String(evidence.sourceVersionId),
+      evidenceIds: [String(evidence.id)],
+      answerGrade: true
+    };
+    const factKey = [fact.subject, fact.predicate, fact.object, relationId].join("\u0001");
+    return {
+      id: ids.constructId({ fixture: "brain-influence-semantic-answer", evidenceId: evidence.id }),
+      episodeId: ids.episodeId(),
+      forceVector: { factual: 1 },
+      nodes: [{
+        id: "construct:semantic-answer:brain-influence",
+        kind: "construct:semantic_answer",
+        label: fact.subject,
+        metadata: {
+          schema: "scce.semantic_answer_construct.v1",
+          questionShapeId: "question.shape.brain-influence",
+          selectedSubject: fact.subject,
+          selectedFacts: [fact],
+          answerSlots: [{ id: "slot:relation:stabilizes", relationIds: [relationId], factKeys: [factKey], support: fact.support, activation: fact.activation }],
+          selectedRelations: [relationId],
+          activatedNeighborhood: [fact],
+          rejectedCandidates: [],
+          supportIds: [String(evidence.id)],
+          forceId: "output.force.source_bound_answer",
+          boundaryId: "output.force.source_bound",
+          activeBrainVersion: fixture.activeBrainVersion,
+          activeImportRunIds: [fixture.importRunId],
+          certificationBoundary: {
+            directEvidenceCount: 1,
+            evidenceSpanIds: [String(evidence.id)],
+            sourceVersionIds: [String(evidence.sourceVersionId)],
+            externalFactCertification: true
+          }
+        }
+      }],
+      edges: [],
+      artifacts: []
     };
   }
 
