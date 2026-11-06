@@ -263,8 +263,9 @@ const preparations = new WeakMap<PreparedLanguageCorpusTraining, {
 }>();
 
 const CORPUS_CHECKPOINT_SCHEMA = "scce.corpusTrainingCheckpoint.v1";
-export const LANGUAGE_CORPUS_TRAINING_RECIPE_ID = "scce.language_corpus_training.v4" as const;
-export const LANGUAGE_CODE_CORPUS_TRAINING_RECIPE_ID = "scce.language_corpus_training.v5" as const;
+export const LANGUAGE_CORPUS_TRAINING_RECIPE_ID = "scce.language_corpus_training.v3" as const;
+export const LANGUAGE_CODE_CORPUS_TRAINING_RECIPE_ID = "scce.language_corpus_training.v4" as const;
+const LANGUAGE_CORPUS_SOURCE_EVIDENCE_RECIPE_ID = "scce.language_corpus_source_evidence.v1" as const;
 
 export function languageCorpusTrainingRecipeId(sourceSystem: string): string {
   return canonicalCorpusSourceSystemId(sourceSystem) === CORPUS_SOURCE_SYSTEM_IDS.ossCode
@@ -286,8 +287,13 @@ function corpusCheckpointId(input: LanguageCorpusTrainingInput): string | undefi
     compilerRecipe: languageCorpusTrainingRecipeId(input.sourceSystem),
     sourceSystem: canonicalCorpusSourceSystemId(input.sourceSystem),
     rootUri: checkpoint.rootUri,
-    itemUri: checkpoint.itemUri
+    itemUri: checkpoint.itemUri,
+    ...(sourceEvidenceRecipeId(input) ? { sourceEvidenceRecipe: sourceEvidenceRecipeId(input) } : {})
   });
+}
+
+function sourceEvidenceRecipeId(input: LanguageCorpusTrainingInput): typeof LANGUAGE_CORPUS_SOURCE_EVIDENCE_RECIPE_ID | undefined {
+  return input.persistSource !== false && !input.evidence?.length ? LANGUAGE_CORPUS_SOURCE_EVIDENCE_RECIPE_ID : undefined;
 }
 
 function checkpointContentHash(value: string | undefined): ContentHash | undefined {
@@ -453,8 +459,16 @@ function trainingInputBinding(input: LanguageCorpusTrainingInput): string {
       byteLength: input.originalSource.bytes.byteLength
     } as unknown as typeof semantic.originalSource;
   }
-  const semanticBinding = { ...semantic, ...(input.creativeEventCompiler ? { creativeEventCompilerId: input.creativeEventCompiler.id } : {}) };
-  return createHasher().digestHex(canonicalStringify(toJsonValue({ compilerRecipe: languageCorpusTrainingRecipeId(input.sourceSystem), batchRecipe: LANGUAGE_TRAINING_BATCH_RECIPE_ID, input: semanticBinding })));
+  const semanticBinding = {
+    ...semantic,
+    ...(input.creativeEventCompiler ? { creativeEventCompilerId: input.creativeEventCompiler.id } : {})
+  };
+  return createHasher().digestHex(canonicalStringify(toJsonValue({
+    compilerRecipe: languageCorpusTrainingRecipeId(input.sourceSystem),
+    batchRecipe: LANGUAGE_TRAINING_BATCH_RECIPE_ID,
+    ...(sourceEvidenceRecipeId(input) ? { sourceEvidenceRecipe: sourceEvidenceRecipeId(input) } : {}),
+    input: semanticBinding
+  })));
 }
 
 function graphSnapshotDigest(snapshot: Awaited<ReturnType<typeof graphSnapshotForEvidence>>): string {
