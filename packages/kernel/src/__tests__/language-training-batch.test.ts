@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import * as induction from "../language-induction.js";
 import {
   compileLanguageTrainingBatch,
   createClock,
@@ -21,6 +22,38 @@ describe("shared language training batch", () => {
   const ids = createIdFactory({ clock, hasher, deterministicReplay: true, namespace: "language-training-batch" });
   const language = createLanguageAcquisitionEngine({ idFactory: ids });
   const runtime = createLanguageMemoryRuntime({ idFactory: ids, hasher });
+
+  it("keeps construction induction out of a language-only batch with held-out evidence", () => {
+    const text = "cat chased mouse. dog chased ball. cat pushed cart. dog pushed box.";
+    const sourceVersionId = ids.sourceVersionId(text);
+    const profile = language.acquire({ sourceVersionId, text, createdAt: 140_000 });
+    const evidence = Array.from({ length: 4 }, (_, index) => evidenceSpan(text, ids.sourceVersionId(`source.${index}`)));
+    const engine = vi.spyOn(induction, "createLanguageInductionEngine");
+    try {
+      const compiled = compileLanguageTrainingBatch({ runtime, hasher, batch: { streamId: "fixture://language-only", profile, sourceVersionId, text, evidence, createdAt: 140_000, languageOnly: true } });
+      expect(compiled.constructionPromotion.heldOutEvidence).toBeGreaterThan(0);
+      expect(compiled.constructionPromotion.heldOutCoverage).toEqual([]);
+      expect(engine).not.toHaveBeenCalled();
+    } finally { engine.mockRestore(); }
+  });
+
+  it("compiles evidence-owned semantic frames once across text chunks", () => {
+    const text = "a".repeat(150_001);
+    const sourceVersionId = ids.sourceVersionId(text);
+    const profile = language.acquire({ sourceVersionId, text: "fixture", createdAt: 140_000 });
+    const frame = { id: "frame.fixture", frameJson: {}, embedding: [], evidenceIds: [], alpha: 1, createdAt: 140_000 };
+    let emittedFrames = 0;
+    const boundedRuntime = {
+      train(input: { retainSemanticFrames?: boolean }) {
+        const frames = input.retainSemanticFrames === false ? [] : [frame];
+        emittedFrames += frames.length;
+        return { observations: [], models: [], units: [], patterns: [], semanticFrames: frames, audit: {} };
+      }
+    } as unknown as typeof runtime;
+    const compiled = compileLanguageTrainingBatch({ runtime: boundedRuntime, hasher, batch: { streamId: "fixture://chunks", profile, sourceVersionId, text, evidence: [], createdAt: 140_000, languageOnly: true } });
+    expect(compiled.semanticFrames).toEqual([frame]);
+    expect(emittedFrames).toBe(1);
+  });
 
   it("compiles bounded typed-incidence candidate supports on the production training path", () => {
     const text = "Ada built engine.";

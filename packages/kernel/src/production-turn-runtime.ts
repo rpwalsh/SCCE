@@ -147,15 +147,14 @@ import {
   requestSentenceSequences,
   runtimeEvidenceWindowsForRequest,
   sessionContextEvidenceEnabled,
-  sourceAnchoredEvidenceForRequest, sourceIdentityAdmissibleEvidenceForRequest, evidenceIdentityBindsRequest, evidenceIdentityBeyondTitle, spanIsSourceFrontMatter,
+  sourceAnchoredEvidenceForRequest, sourceIdentityAdmissibleEvidenceForRequest, evidenceIdentityBeyondTitle,
   evidenceSpanProvenanceTitle,
   evidenceTitledForRequestSubject,
   isUnparsedMarkupText,
   requestLeadingScaffoldingUnit,
   spanContainsRequestNearDuplicateSentence,
   temporalCounterexampleExpected,
-  temporalConceptTitledEvidence,
-  cliticOpeningFragment
+  temporalConceptTitledEvidence
 } from "./local-evidence-runtime.js";
 import { localeFromMetadata } from "./localization.js";
 import {
@@ -214,8 +213,8 @@ import {
 import { hybridRecall } from "./retrieval.js";
 import { captureResourceUsageSnapshot, measureResourceUsageDelta } from "./resource-usage-accounting.js";
 import { createRuntimeAcquisition } from "./runtime-acquisition.js";
-import { admissionTierDiagnostics, answerCoversRequest, evidenceDiscriminatesAskedRelation, localEvidenceAnswerIsQuotationRecall, preferredLocalEvidenceAnswer, requestContentEvidenceUnits, requestRelationBeyondSourceIdentity, requestUnitSharesStem, sourceEvidenceAnchorsForRequest } from "./local-evidence-runtime.js";
-import { isStructuralResidueSurface, structuralResidueScore } from "./structural-residue.js";
+import { admissionTierDiagnostics, answerCoversRequest, localEvidenceAnswerIsQuotationRecall, preferredLocalEvidenceAnswer, requestContentEvidenceUnits, requestUnitSharesStem, sourceEvidenceAnchorsForRequest } from "./local-evidence-runtime.js";
+import { isStructuralResidueSurface } from "./structural-residue.js";
 import { normalizePriorKey, splitPriorUnits } from "./kernel-answer-primitives.js";
 import { codeLanguageForRequirementState, codeRequestObservedRequirements, codeRequestSignal, typedProgramBehaviorFromMetadata } from "./code-request.js";
 import { attachLearnedGraphPriorConstruct } from "./learned-graph-prior-runtime.js";
@@ -234,7 +233,6 @@ import type { EvidenceId, GraphEdge, GraphNode, NodeId, RequestedAuthority } fro
 import { createRuntimeGraphRetrieval, isControlCorpusSpan } from "./runtime-graph-retrieval.js";
 import { isCodeEvidenceSpan, retrievalBinding, retrievalBindingSupports } from "./retrieval-binding.js";
 import { updateFtrlFromTurnOutcome } from "./sparse-ranking-outcome.js";
-import { summarizeAdmittedSource } from "./source-summary.js";
 import { createRuntimeMemoryControl } from "./runtime-memory-control.js";
 import type { ConversationTurnSurface } from "./language-construction.js";
 import type { RuntimeReplanMotion } from "./runtime-motion.js";
@@ -4896,9 +4894,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const realizeOnce = (realizationInput: SpeakInput) => evaluationComponent(
         "learned-mouth",
         "mouth.realize",
-        () => learnedMouthDecision?.allowed === false
-          ? deterministicMouth.speak(realizationInput)
-          : mouth.speak(realizationInput),
+        () => mouth.speak(realizationInput),
         () => deterministicMouth.speak(realizationInput)
       );
       // Plan items 221-228, live routing: a turn whose own learned
@@ -5186,292 +5182,6 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             deadlineDecision: recoveryDecision
           })
         })));
-        spoken = await deterministicMouth.speak(speakInput);
-      }
-      if (emptyAuthoritySurface && inheritedRuntimeMotion) {
-        // Learned Mouth remains the primary realization lane. The
-        // deterministic Mouth is the bounded terminal realization of the
-        // already-selected semantic motion/candidate, never a new fact lane.
-        spoken = await deterministicMouth.speak(speakInput);
-      }
-      if (!spoken.text.trim() && candidateIsSafeNonExecutingPlan(judged.selected)) {
-        spoken = await deterministicMouth.speak(speakInput);
-      }
-      // Empty or truncated realization can recover the same selected
-      // candidate from its bound evidence. Exact-source tasks also retain
-      // their contiguous-excerpt check. A reasoned/dialogue surface that
-      // independently satisfies its meaning contract and final quality
-      // gates must survive this fallback; substring inequality alone does
-      // not invalidate a supported realization.
-      const preserveReasonedRealization = reasonedRealizationPreservesContract({
-        requestedAuthority,
-        requirementField,
-        spoken,
-        realizationContract,
-        closedClassWords: corpusFunctionSymbols(),
-        hasher
-      });
-      // A source-independent dialogue turn has no source contract to preserve.
-      const preserveSourceIndependentDialogue = sourceIndependentDialogueSurfaceAcceptable({
-        requestedAuthority,
-        requirementField,
-        spoken,
-        selectedEvidenceCount: selectedEvidence.length
-      });
-      const excerptGoverned = !preserveReasonedRealization && !preserveSourceIndependentDialogue
-        && (requestedAuthority === "factual" || requestedAuthority === "reasoned")
-        && selectedEvidence.length > 0;
-      const admittedSpanText = excerptGoverned
-        ? selectedEvidence.map(span => tidySurfaceText(String(span.text ?? span.textPreview ?? "")))
-        : [];
-      const isContiguousExcerpt = (text: string): boolean => {
-        if (!text) return false;
-        const tidy = tidySurfaceText(text);
-        return admittedSpanText.some(spanText => spanText.includes(tidy));
-      };
-      const learnedSurface = spoken.text.trim();
-      const learnedNotAnExcerpt = excerptGoverned && learnedSurface.length > 0 && !isContiguousExcerpt(learnedSurface);
-      const learnedRecovery = {
-        learnedSurface,
-        requestText: input.text,
-        closedClassWords: corpusFunctionSymbols(),
-        realizationContract
-      };
-      if (learnedSurfaceConsultsSourceBound({
-        ...learnedRecovery,
-        preserved: preserveReasonedRealization || preserveSourceIndependentDialogue,
-        learnedNotAnExcerpt
-      })) {
-        const deterministic = await deterministicMouth.speak(speakInput);
-        const sourceBound = deterministic.text.trim();
-        const truncated = learnedSurfaceTruncatesSourceBound({ ...learnedRecovery, sourceBound });
-        const stitched = learnedNotAnExcerpt && isContiguousExcerpt(sourceBound);
-        if (sourceBound && (!learnedSurface || truncated || stitched)) {
-          kernelTrace({
-            stage: "mouth.deterministic_fallback",
-            label: "kernel.turn",
-            counts: { answerChars: deterministic.text.length, learnedChars: learnedSurface.length },
-            support: {
-              selectedCandidateId: judged.selected.id,
-              reason: !learnedSurface
-                ? "learned-lane-realized-nothing"
-                : stitched
-                  ? "learned-surface-not-a-contiguous-excerpt"
-                  : "learned-surface-truncates-source-bound"
-            }
-          });
-          spoken = deterministic;
-        }
-      }
-      // A candidate that realizes nothing must not outrank one that realizes something.
-      //
-      // Selection ranks on requirement quality, coverage and truth, none of which know whether the winner can
-      // actually be said. Once composition demand let graph-inference candidates compete, they began winning turns
-      // and then realizing to an empty surface, because there is no promoted construction to generate from yet --
-      // and the turn returned silence while holding an admitted, evidence-grounded answer. Measured live on "Why is
-      // Ada Lovelace considered important to computing?": two candidates, the grounded one rejected, answerChars 0,
-      // and the server declined a turn whose answer was sitting in the rejected list.
-      //
-      // Realizability is therefore a tiebreak applied after selection rather than a new scoring term: the ranking
-      // stands, and only a winner that produced no surface yields, to the highest-ranked rejected candidate that
-      // does produce one. When none does, the turn abstains exactly as before.
-      if (!spoken.text.trim()) {
-        for (const fallback of judged.rejected) {
-          const candidate = fallback.candidate;
-          if (!candidate || !String(candidate.answer ?? "").trim()) continue;
-          const retried = await deterministicMouth.speak({ ...speakInput, selectedCandidate: candidate });
-          if (!retried.text.trim()) continue;
-          kernelTrace({
-            stage: "mouth.realizable_fallback",
-            label: "kernel.turn",
-            counts: { answerChars: retried.text.length, rejectedConsidered: judged.rejected.length },
-            support: { selectedCandidateId: judged.selected.id, realizedCandidateId: candidate.id, kind: candidate.kind }
-          });
-          spoken = retried;
-          break;
-        }
-      }
-      // A candidate whose absence of a surface reflects a real, already-computed contradiction against the
-      // request's own premise (proof-calculus.ts's existing contradiction-pressure threshold, 0.2 -- not a new
-      // number) is a different failure from "nothing was found": real evidence WAS found and cited, it simply
-      // cannot lexically restate a premise the evidence itself contradicts, which is exactly what the coverage
-      // gate every other realization path requires to prevent fabrication. Measured live: "Why did Apollo 11
-      // land on Mars?" retrieved and cited the real Apollo 11 landing evidence, computed a real contradiction
-      // score, and returned silence -- the honest, cited evidence was sitting there and never spoken. Letting
-      // it stand as the answer invents nothing: it is the same admitted span text every other source-bound path
-      // in this function already trusts, bounded to its first sentences the same way local-evidence quoting is.
-      //
-      // The span spoken must be the one the winning candidate actually cited, never a stand-in. The previous
-      // `?? selectedEvidence[0]` fallback fired whenever `judged.selected.evidenceIds` was empty or didn't
-      // overlap `selectedEvidence` -- exactly the signature of a genuinely unsupported request (no fact exists
-      // for the asked-about attribute at all, e.g. "What was Durrani's shoe size?") rather than a real, lexically-
-      // blocked contradiction -- and spoke an arbitrary, topically unrelated span as if it were the contradicted
-      // one. Measured live across seven cases: real cited biography/lead-sentence text with zero relation to the
-      // asked attribute (shoe size, blood type, favorite tea), and once the wrong entity's evidence entirely (a
-      // ship named "Alexander" answering a question about Alexander the Great). A candidate with no genuinely
-      // cited, selected span has no contradicted span to speak and must fall through to abstention, not guess.
-      if (!spoken.text.trim() && judged.selected.scores.contradiction > calibrated("calculus.contradiction_pressure_floor") && selectedEvidence.length > 0) {
-        const citedIds = new Set((judged.selected.evidenceIds ?? []).map(String));
-        // A book's opening block is its apparatus, not a claim it can be contradicted on.
-        const contradictedSpan = selectedEvidence.find(span => citedIds.has(String(span.id)) && !spanIsSourceFrontMatter(span));
-        const spanText = tidySurfaceText(String(contradictedSpan?.text ?? contradictedSpan?.textPreview ?? ""));
-        // A chunk cut inside a sentence opens with the tail of one ("'s well-developed ferry system..."): a fragment,
-        // never the first thing spoken. Measured live on "Alaska's official state dinosaur".
-        const spanSentences = splitSurfaceSentences(spanText);
-        const wholeSentences = spanSentences.length > 1 && (cliticOpeningFragment(spanSentences[0] ?? "") || /^\p{Ll}/u.test((spanSentences[0] ?? "").trimStart()))
-          ? spanSentences.slice(1)
-          : spanSentences;
-        const boundedText = wholeSentences.slice(0, 2).join(" ").trim();
-        // Two independent reasons the cited span must not be trusted here, checked before either one is
-        // allowed to speak.
-        //
-        // (1) Some corpus spans are unparsed source markup (wikitext tables in particular: "|style=",
-        // "background:#", bare "|" cell separators) that ingestion never stripped. That is not prose a
-        // contradiction can be voiced in -- measured live on "Ahmad Shah Durrani's shoe size", where this
-        // exact fallback spoke a raw table row.
-        //
-        // (2) A span can be clean prose about the right subject and still answer nothing the request asked --
-        // measured live across six cases: "What was Lincoln's pocket watch serial number?" cited his religious
-        // views, "Bell's blood type?" cited his birth-and-career opening sentence, and so on, because the
-        // candidate's own cited evidence shared the subject and nothing else. The subject alone is not evidence
-        // of relevance -- it is true of nearly every sentence in that person's article. What distinguishes a
-        // real premise contradiction (the Apollo-11-landed-on-Mars case this fallback exists for: the evidence
-        // is centrally about the same landing being asked about, just not the false detail) from these misses
-        // is whether the span relates to anything the request asked about *beyond* who or what it names --
-        // requestContentEvidenceUnits with the request's own named-subject words stripped out, the same
-        // subject-minus-content pattern local-evidence-runtime.ts's localAnswerRelationText already uses to
-        // keep a relation hash from degenerating into a whole sentence. No overlap on what is left means the
-        // span was never about the question, only about its subject.
-        //
-        // Subtracting the request's own named anchors empties that set whenever the corpus attests no identity for
-        // them, because the anchor is then the whole content run and swallows the attribute asked about
-        // ("Albert Einstein's shoe size" is one run). An empty relation is not a satisfied one, so the remainder is
-        // re-derived against what the corpus says the cited source is about, and the span must carry it.
-        const subjectWords = new Set(namedSubjectAnchors(input.text).flatMap(anchor => anchor.toLocaleLowerCase().split(/\s+/u)).filter(Boolean));
-        const subtractedRelationUnits = requestContentEvidenceUnits(input.text).filter(unit => !subjectWords.has(unit.toLocaleLowerCase()));
-        const relationUnits = subtractedRelationUnits.length || !contradictedSpan
-          ? subtractedRelationUnits
-          : requestRelationBeyondSourceIdentity(input.text, contradictedSpan, corpusFunctionSymbols());
-        const boundedTextLower = boundedText.toLocaleLowerCase();
-        const relatesBeyondSubject = relationUnits.length === 0 || relationUnits.some(unit => boundedTextLower.includes(unit.toLocaleLowerCase()));
-        // Reciting a span verbatim is admission: the same gates primary selection applies (measured 2026-09-13, five turns recited a bibliography entry whose only tie to "whats up" was a URL slug).
-        const admissibility = contradictedSpan && boundedText
-          ? recitedEvidenceAdmissibility({ surface: boundedText, span: contradictedSpan, requestText: input.text })
-          : "admissible";
-        if (boundedText && admissibility !== "admissible") {
-          kernelTrace({
-            stage: `mouth.contradiction_fallback.rejected_${admissibility}`,
-            label: "kernel.turn",
-            counts: { answerChars: boundedText.length, contentUnits: requestContentEvidenceUnits(input.text).length },
-            support: {
-              selectedCandidateId: judged.selected.id,
-              evidenceId: contradictedSpan ? String(contradictedSpan.id) : null,
-              residue: structuralResidueScore(boundedText)
-            }
-          });
-        } else if (boundedText && !relatesBeyondSubject) {
-          kernelTrace({
-            stage: "mouth.contradiction_fallback.rejected_subject_only",
-            label: "kernel.turn",
-            counts: { answerChars: boundedText.length, relationUnits: relationUnits.length },
-            support: { selectedCandidateId: judged.selected.id, evidenceId: contradictedSpan ? String(contradictedSpan.id) : null }
-          });
-        } else if (contradictedSpan && boundedText) {
-          kernelTrace({
-            stage: "mouth.contradiction_fallback",
-            label: "kernel.turn",
-            counts: { answerChars: boundedText.length },
-            support: { selectedCandidateId: judged.selected.id, contradiction: judged.selected.scores.contradiction, evidenceId: String(contradictedSpan.id) }
-          });
-          spoken = withSurfaceContract(speakInput, { ...spoken, text: boundedText, evidenceRefs: [contradictedSpan.id] }, SURFACE_REALIZATION_STRATEGY_IDS.recitedEvidence);
-        }
-      }
-      // A source the request names, with nothing narrower to say about it.
-      //
-      // The corpus holds Moby Dick's full text and no article about it, so every narrower lane above fails by
-      // construction: the answerhood gate wants the request's relation in the answering sentence and a novel's
-      // prose never says "plot". What the source says about itself is still an answer, and it is the source's own
-      // sentences -- so this speaks them rather than declining a turn whose evidence is sitting right there.
-      //
-      // Three conditions keep it away from every turn the answerhood gate exists for. It runs last, so a narrower
-      // answer always wins: by here the learned lane, the deterministic lane, the realizable-candidate fallback and
-      // the contradiction fallback have all produced nothing. The evidence must be identity-bound -- the source is
-      // ABOUT what the request names, the same authority retrieval admitted on -- so a request that merely brushes
-      // a source gets the abstention it got before. And every sentence spoken is checked back into an admitted
-      // span, so the summary is an excerpt of this turn's own evidence or it is not said at all.
-      if (!spoken.text.trim() && (requestedAuthority === "factual" || requestedAuthority === "reasoned") && selectedEvidence.length > 0) {
-        // What a source says about itself is an answer; what its publisher, printer and chapter index say about it
-        // is not, and on a book those are exactly the sentences the extractive summary ranks highest.
-        const identityBound = selectedEvidence.filter(span => evidenceIdentityBindsRequest(span, input.text, requestClosedClassWords())
-          && !spanIsSourceFrontMatter(span));
-        // A lane that goes quiet because its whole input was front matter must say so, not look like one that had
-        // no identity-bound evidence at all.
-        const frontMatterOnly = !identityBound.length
-          && selectedEvidence.some(span => evidenceIdentityBindsRequest(span, input.text, requestClosedClassWords()) && spanIsSourceFrontMatter(span));
-        if (frontMatterOnly) {
-          kernelTrace({
-            stage: "mouth.source_summary_fallback.withheld",
-            label: "kernel.turn",
-            counts: { identityBound: 0, selected: selectedEvidence.length },
-            support: { selectedCandidateId: judged.selected.id, reason: "every-identity-bound-span-is-the-source's-front-matter" }
-          });
-        }
-        const excerpt = identityBound.length
-          ? summarizeAdmittedSource({
-            spans: identityBound.map(span => ({
-              sourceKey: String(span.sourceVersionId ?? span.sourceId ?? ""),
-              text: String(span.text ?? span.textPreview ?? "")
-            })),
-            closedClass: corpusFunctionSymbols(),
-            maxChars: DEFAULT_FACTUAL_SURFACE_EXTENT,
-            // The summary is the last thing the turn can say, and it was chosen without ever reading the request:
-            // "Athens is the capital of which country?" rejected the article's own "Athens is the capital and largest
-            // city of Greece" upstream and then spoke the city's metro network from here, which settles strictly less
-            // of the same request. What the request asks past the source's identity orders the sentences first.
-            relationUnits: requestRelationBeyondSourceIdentity(input.text, identityBound[0]!, corpusFunctionSymbols())
-          })
-          : undefined;
-        // A summary answers one question -- what is this source about -- and identity binding only establishes that
-        // the request names the source. When the request asks about an attribute the source's own subject does not
-        // account for, that summary supports every candidate value for the attribute equally: it discriminates
-        // nothing. Measured live: "What was Albert Einstein's shoe size?" declined at every narrower lane and then
-        // spoke four sentences of the Einstein biography from here. The summary speaks when the request asks about
-        // the source itself, or when the summary carries what is asked past it.
-        const discriminates = excerpt
-          ? identityBound.some(span => evidenceDiscriminatesAskedRelation(excerpt.text, span, input.text, corpusFunctionSymbols()))
-          : false;
-        // The same apparatus gate primary selection applies: a summary of a source's reference list is not an answer.
-        if (excerpt && isStructuralResidueSurface(excerpt.text)) {
-          kernelTrace({
-            stage: "mouth.source_summary_fallback.withheld",
-            label: "kernel.turn",
-            counts: { identityBound: identityBound.length, answerChars: excerpt.text.length },
-            support: { selectedCandidateId: judged.selected.id, reason: "summary-is-structural-apparatus", residue: structuralResidueScore(excerpt.text) }
-          });
-        } else if (excerpt && !discriminates) {
-          kernelTrace({
-            stage: "mouth.source_summary_fallback.withheld",
-            label: "kernel.turn",
-            counts: { identityBound: identityBound.length, answerChars: excerpt.text.length },
-            support: { selectedCandidateId: judged.selected.id, reason: "summary-carries-none-of-the-asked-relation" }
-          });
-        } else if (excerpt) {
-          const cited = excerpt.spokenFrom.map(position => identityBound[position]!);
-          kernelTrace({
-            stage: "mouth.source_summary_fallback",
-            label: "kernel.turn",
-            counts: { answerChars: excerpt.text.length, identityBound: identityBound.length, cited: cited.length },
-            support: { selectedCandidateId: judged.selected.id, sourceVersionId: String(cited[0]?.sourceVersionId ?? ""), evidenceIds: cited.slice(0, 4).map(span => String(span.id)) }
-          });
-          spoken = withSurfaceContract(speakInput, { ...spoken, text: excerpt.text, evidenceRefs: cited.map(span => span.id) }, SURFACE_REALIZATION_STRATEGY_IDS.recitedEvidence);
-        } else if (identityBound.length) {
-          kernelTrace({
-            stage: "mouth.source_summary_fallback.withheld",
-            label: "kernel.turn",
-            counts: { identityBound: identityBound.length },
-            support: { selectedCandidateId: judged.selected.id, reason: "no-sentence-of-the-summary-is-an-excerpt-of-admitted-evidence" }
-          });
-        }
       }
       // Real citation, not a stylistic flourish: an evidence-grounded
       // factual/reasoned answer -- quoted or synthesized, doesn't matter
@@ -5570,7 +5280,9 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       }
       // Withheld only when the corpus genuinely could not answer: a three-word answer like "10 December 1815" is not a stub.
       if (performedRuntimeMotion?.status === "awaiting_consent" && emptyAuthoritySurface && !spoken.evidenceRefs.length) answer = "";
-      const mouthAssistantForce = assistantForceDecision({
+      const mouthAssistantForce = spoken.realizationAvailability.status === "realization_unavailable"
+        ? { force: "realization_unavailable" as const, audit: toJsonValue({ source: "mouth.typed-producer-selection", ...spoken.realizationAvailability }) }
+        : assistantForceDecision({
         requestedAuthority,
         selectedProposal: selectedAssistantForceProposal,
         epistemicForce: answerEntailment.force,
@@ -5623,7 +5335,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         // The release is what certification left of the claim, named by the source it was drawn from.
         : { ...certifiedPcaReport, releaseAnswer: withCitation(certifiedPcaReport.releaseAnswer, spoken) };
       let validation = validationBuilder.build({ construct: spokenConstructGraph, entailment: answerEntailment, buildTest, pca: pcaReport as unknown as JsonValue });
-      let rawEmission = emissionEngine.emit({ construct: spokenConstructGraph, validation, entailment: answerEntailment, answer, pca: pcaReport as unknown as JsonValue });
+      let rawEmission = emissionEngine.emit({ construct: spokenConstructGraph, validation, entailment: answerEntailment, answer, pca: pcaReport as unknown as JsonValue, realization: spoken });
       markValidationWindow("certified");
       let answerRevisionTrace: JsonValue | undefined;
       const sourceStructuralCreativeSurface = Boolean(
@@ -5729,12 +5441,15 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             validation,
             entailment: answerEntailment,
             answer,
-            pca: pcaReport as unknown as JsonValue
+            pca: pcaReport as unknown as JsonValue,
+            realization: spoken
           });
         }
       }
       markValidationWindow("revised");
-      const emissionAssistantForce = assistantForceDecision({
+      const emissionAssistantForce = spoken.realizationAvailability.status === "realization_unavailable"
+        ? { force: "realization_unavailable" as const, audit: toJsonValue({ source: "mouth.typed-producer-selection", ...spoken.realizationAvailability }) }
+        : assistantForceDecision({
         requestedAuthority,
         selectedProposal: selectedAssistantForceProposal,
         epistemicForce: rawEmission.epistemicForce,
@@ -5860,7 +5575,11 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const artifactCompilerVerified = spokenArtifact && workspacePlanContext.plans.length > 0;
       const emission = {
         ...rawEmission,
-        assistantForce: artifactCompilerVerified
+        assistantForce: spoken.realizationAvailability.status === "realization_unavailable"
+          ? "realization_unavailable" as const
+          : spoken.realizationAvailability.status === "insufficient_support"
+            ? "insufficient_support" as const
+            : artifactCompilerVerified
           ? "verified_artifact" as const
           : spokenArtifact
             ? "conjecture" as const
@@ -6062,7 +5781,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           answer: emission.answer,
           epistemicForce: emission.epistemicForce,
           assistantForce: emission.assistantForce,
-          evidence: selectedEvidence,
+          realizationAvailability: toJsonValue(spoken.realizationAvailability),
+          evidence: selectedEvidence.filter(span => emission.evidenceIds.includes(span.id)),
           field,
           entailment: answerEntailment,
           constructGraph: spokenConstructGraph,
@@ -6218,7 +5938,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         answer: emission.answer,
         epistemicForce: emission.epistemicForce,
         assistantForce: emission.assistantForce,
-        evidence: selectedEvidence,
+          realizationAvailability: toJsonValue(spoken.realizationAvailability),
+        evidence: selectedEvidence.filter(span => emission.evidenceIds.includes(span.id)),
         field,
         entailment: answerEntailment,
         constructGraph: spokenConstructGraph,

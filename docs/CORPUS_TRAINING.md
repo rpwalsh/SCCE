@@ -116,7 +116,13 @@ The same canonical path applies when a low-support turn acquires new material: s
 
 Relation-hypothesis state is candidate memory, not promoted semantics. The compiler records occurrence, source independence, left/right substitution, context-pair diversity, Unicode-shape support, and evidence IDs. Frame observations are distributed by posterior mass.
 
-Typed ingestion separately emits structured semantic candidates. Promotion is now
+Typed ingestion separately emits structured semantic candidates. An exact typed
+source observation can enter the graph with `source_observed` authority after its
+source version, evidence bytes and observation binding are verified. This records
+what that source establishes without requiring other documents. It does not grant
+the relation reusable inference authority.
+
+Reusable relation promotion is
 compiled per multi-source ingest batch or bounded Wikipedia shard. Occurrences with
 the same relation/signature/source-dependency-family identity collapse before
 fitting. Dependency families are split into fit and holdout sets. The null code uses
@@ -126,8 +132,9 @@ relation-conditioned distribution and pays an explicit two-part model cost.
 Positive held-out codelength gain and improved held-out relation recovery are both
 required. A shuffled relation assignment, a duplicate-only one-source corpus and a
 deterministic random-repetition corpus must all fail the same promotion boundary.
-The frozen model ID and gain are written to admitted graph metadata. Unpromoted
-candidates remain outside the ordinary graph. Promoted candidates materialize as
+The frozen model ID and gain are written to admitted graph metadata. Candidates
+without exact source-observation authority or learned promotion remain outside
+the ordinary graph. Admitted candidates materialize as
 `scce.hyperedge.v2`. A relation may
 have zero or more ports; an omitted participant remains an explicit port with a null
 node reference. Qualifiers, temporal validity, modality and evidence have dedicated

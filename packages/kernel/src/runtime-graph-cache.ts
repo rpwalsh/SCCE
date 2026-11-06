@@ -90,15 +90,19 @@ export function estimateRuntimeGraphSliceBytes(value: RuntimeGraphSliceValue): n
       + estimateJsonBytes(hyperedge.weightVector, 2048) + estimateJsonBytes(hyperedge.temporalScope, 2048));
   }
   for (const span of value.evidence) {
-    bytes += memoizedBytes(span, () => 360
+    bytes += estimateEvidenceSpanBytes(span);
+  }
+  bytes += (value.semanticFrameBoundEvidenceIds ?? []).reduce((sum, id) => sum + id.length * 2 + 16, 0);
+  return bytes;
+}
+
+export function estimateEvidenceSpanBytes(span: EvidenceSpan): number {
+  return memoizedBytes(span, () => 360
       + String(span.id).length * 2 + String(span.sourceId).length * 2 + String(span.sourceVersionId).length * 2
       + (span.text?.length ?? 0) * 2 + (span.textPreview?.length ?? 0) * 2
       + span.features.reduce((sum, feature) => sum + feature.length * 2 + 24, 0)
       + estimateJsonBytes(span.languageHints, 2048) + estimateJsonBytes(span.scriptHints, 2048)
       + estimateJsonBytes(span.trustVector, 2048) + estimateJsonBytes(span.provenance, 4096));
-  }
-  bytes += (value.semanticFrameBoundEvidenceIds ?? []).reduce((sum, id) => sum + id.length * 2 + 16, 0);
-  return bytes;
 }
 
 
@@ -156,18 +160,20 @@ function estimateJsonBytes(value: JsonValue | undefined, cap: number): number {
 
 
 export function fitRuntimeGraphSliceToBudget(value: RuntimeGraphSliceValue, budgetBytes: number): RuntimeGraphSliceValue {
+  if (!Number.isFinite(budgetBytes) || budgetBytes < 0) throw new RangeError("graph slice budget must be a finite nonnegative byte count");
   let current = value;
   let bytes = estimateRuntimeGraphSliceBytes(current);
   let nodeLimit = current.graph.nodes.length;
   let edgeLimit = current.graph.edges.length;
   let evidenceLimit = current.evidence.length;
-  while (bytes > budgetBytes && nodeLimit > 256) {
-    nodeLimit = Math.max(256, Math.floor(nodeLimit * 0.74));
-    edgeLimit = Math.max(512, Math.floor(edgeLimit * 0.74));
-    evidenceLimit = Math.max(128, Math.floor(evidenceLimit * 0.74));
+  while (bytes > budgetBytes && (nodeLimit > 0 || edgeLimit > 0 || evidenceLimit > 0)) {
+    nodeLimit = Math.floor(nodeLimit * 0.74);
+    edgeLimit = Math.floor(edgeLimit * 0.74);
+    evidenceLimit = Math.floor(evidenceLimit * 0.74);
     current = limitRuntimeGraphSlice(value, nodeLimit, edgeLimit, evidenceLimit);
     bytes = estimateRuntimeGraphSliceBytes(current);
   }
+  if (bytes > budgetBytes) throw new RangeError(`graph slice requires ${bytes} bytes; budget is ${budgetBytes}`);
   return current;
 }
 

@@ -3,9 +3,9 @@
 The maintained operating, architecture, and engineering documentation for SCCE. Start with the user guide, then open
 only the contract or reference the task needs.
 
-This is the published subset. Detailed method specifications — alignment, transport, segmentation, language induction,
-calibration, and the mathematical appendix — are proprietary and are not published in this repository. They are
-available to licensees and to evaluators under a signed agreement; see [COMMERCIAL.md](../COMMERCIAL.md).
+This is the published documentation subset. Detailed method specifications — alignment, transport, segmentation, language
+induction, calibration, and the mathematical appendix — are proprietary and are not published in this repository. They
+are available to licensees and to evaluators under a signed agreement; see [COMMERCIAL.md](../COMMERCIAL.md).
 
 ## Start here
 
@@ -23,6 +23,16 @@ available to licensees and to evaluators under a signed agreement; see [COMMERCI
   application.
 - [Spreadsheet ingestion](SPREADSHEET_INGESTION_CONTRACT.md) — supported workbook formats, limits, formula handling,
   provenance, and failure behavior.
+- [Static Pages workbench](../packages/ui/STATIC_PAGES.md) — static browser shell and the local loopback connection,
+  origin allowlist, bearer token, and pinned-source build workflow.
+
+## Build a user-owned brain
+
+- [Ingestion-to-runtime build plan](INGESTION_BRAIN_BUILD_PLAN.md) — the Nov 5 frozen build scope, resource and speech
+  acceptance gates, and required artifact trail. The full user-built initial brain has not yet passed the whole-machine
+  8 GB and learned-speech qualification.
+- [Ingestion recovery audit](INGESTION_RECOVERY_AUDIT.md) — recorded incident analysis, repairs, audits, and bounded
+  verification evidence. Stored-data integrity and completed jobs do not establish conversational quality.
 
 ## Evidence and evaluation
 

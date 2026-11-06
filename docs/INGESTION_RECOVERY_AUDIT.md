@@ -918,3 +918,79 @@ is not yet isolated. The reference baseline remains Qwen 8/12 literal
 `.tmp/scce6-trained32-after-admission-repair/diagnostic-run.json`.
 Neither the test-suite pass nor the corrected abstention qualifies the
 candidate or establishes an overall quality gain.
+
+### User-built initial brain: efficiency replay, 2026-11-05
+
+The current priority is a useful brain built by its user within an 8 GB
+machine envelope, with a static Cloudflare Pages interface and local
+computation. Full-corpus streaming is not the starting requirement. The
+saved candidate's answering limits above still apply.
+
+The archived 32-document batch was recovered read-only from
+`scce6_trained32_20260921_140359`. Its 308 training spans include the 48
+alignment supports. Reconstructing all 8,526 promoted hyperedges, including
+the 30 weak free-surface edges omitted by the ordinary retrieval projection,
+reproduced the recorded 25,578-target index identity exactly:
+`alignment_target_index.297d1a2e8ebdfc2e7fb9c12aaa1c55b25166be738b83affd`.
+Compilation uses the graph before storage access labels are attached; adding
+those labels during reconstruction would change that identity.
+
+The baseline at `ac4fcc1` completed this fixed alignment fixture in
+305.572 seconds. The modified build completed in 227.808 seconds, a 25.4%
+reduction. Both retained 48 sets, 384 plans, 384 evidence allocations and
+336 attempted branches, with the same 155,554 unsearched branches. The
+complete canonical retained-output SHA-256 is identical:
+`605ab817f37da614519f8dde1f2369c881a2474e5c3fb373583dae625e39cef9`.
+The modified compiled-JavaScript identity is
+`091453dd06a4f31c0c7a04d54df570e69d7d4c0a5dd0e98a175f52b53081f957`;
+the report records the dirty checkout and base commit separately.
+
+This replay uses one immutable target snapshot, graph geometry and bounded
+canonical-token cache across initial, final and alternative solves. Equal
+column records are shared before hashing. The public standalone solver
+retains its ordinary output ownership. No target, candidate, branch budget,
+transport cell, marginal or allocation is removed to obtain the speedup.
+Alignment maximum RSS increased from 2,503,544 to 2,750,964 KiB; faster
+compilation is not evidence of a smaller whole-machine memory requirement.
+Both runs used `--max-old-space-size=3072`.
+
+Other repairs remove work already discarded by production callers: raw
+observation compilation when observation persistence is disabled; repeated
+evidence-owned semantic frames across text chunks; repeated induction and
+held-out segmentation; repeated join hashing; and construction induction
+inside explicitly language-only batches. Full training retains its held-out
+construction evaluation. Runtime hydration now admits one cold build at a
+time, bounds secondary scope references, fingerprints the complete hydration
+inputs, and prevents queued stale work from repopulating invalidated scopes.
+Graph slices can shrink below the old count floors, and source-anchor
+evidence caching has a byte allowance in addition to its entry limit.
+
+Reproduction uses `tools/benchmark-alignment-batch.mjs` to export the
+source-owned fixture and compare built kernels. Its exporter is read-only
+and refuses a reconstructed target-index mismatch. Reports bind the input
+file hash, compiled JavaScript, base commit, dirty state and heap limit.
+The compiler-only counterpart is `tools/benchmark-brain-compiler.mjs`.
+These are stage measurements; they omit the complete source/language build,
+database persistence, served-answer qualification and the 8 GB machine gate.
+Logs and reports: `.tmp/alignment-before.json`,
+`.tmp/alignment-after-verified.json`, `.tmp/efficiency-focused.log`.
+
+The first recovery comparison incorrectly expected one set per series.
+Several sets legitimately share a series, so that harness check failed.
+The corrected check compares every set and allocation in each selected
+series. All 23 series recovered under the unchanged production limits,
+including all 48 sets and 384 allocations. The largest selected series was
+229,984,271 encoded bytes, below the 384 MiB read limit. The writer emitted
+1,561,029,621 bytes in 214 parts and four events, taking 125.379 seconds;
+reading and hashing every selected series against its original data took
+171.399 seconds. This is not a persistence speed comparison with the older,
+different reconstructed fixture. Maximum process RSS including recovery was
+3,197,908 KiB. The large artifact expansion remains unresolved.
+
+The build and 54 focused tests passed. The subsequent full `pnpm test`
+completed with exit 0: 572 files and 3,577 unit tests passed (10 files and
+14 tests skipped), followed by all 43 evaluation-harness tests, the hidden
+model check and the source-text check. Log: `.tmp/efficiency-full-test.log`.
+This verifies the efficiency snapshot before the later unified-mouth and
+single-source admission changes. Live database rehearsals, later changes,
+served answers and the whole-machine gate require their own results.

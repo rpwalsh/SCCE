@@ -27,6 +27,7 @@ export type SemanticCandidateChannel =
 export type SemanticCandidateAdmissionState =
   | "proposed"
   | "quarantined"
+  | "source_observed"
   | "promoted"
   | "rejected";
 

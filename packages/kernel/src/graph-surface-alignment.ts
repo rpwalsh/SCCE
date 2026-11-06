@@ -6,7 +6,7 @@ import { createLanguageInductionEngine, type GraphBoundConstruction, type Langua
 import { buildSurfaceLattice, validateSurfaceLattice, type SurfaceLattice, type SurfaceLatticeUnit } from "./surface-lattice.js";
 import { segmentUnicodeSurfaceV2, type LexicalSegment } from "./unicode-segmentation-v2.js";
 import { boundedInductionDocuments } from "./training-orchestrator.js";
-import { clamp01, toJsonValue } from "./primitives.js";
+import { canonicalStringify, clamp01, toJsonValue } from "./primitives.js";
 import type { EvidenceSpan, Hasher, JsonValue } from "./types.js";
 
 /**
@@ -94,6 +94,38 @@ export interface GraphSurfaceTransportTrace {
   cells: GraphSurfaceTransportCell[];
 }
 
+export interface PreparedConstructionInduction {
+  readonly inputDigest: string;
+}
+
+const preparedConstructionInductions = new WeakMap<PreparedConstructionInduction, readonly GraphBoundConstruction[]>();
+
+export function prepareConstructionInduction(input: {
+  documents: readonly LanguageInductionDocument[];
+  hasher: Hasher;
+}): PreparedConstructionInduction {
+  const documents = boundedInductionDocuments(input.documents);
+  const prepared = Object.freeze({ inputDigest: input.hasher.digestHex(canonicalStringify(documents)) });
+  const constructions = documents.length
+    ? createLanguageInductionEngine({ hasher: input.hasher }).induce({ documents }).graphBoundConstructions
+    : [];
+  preparedConstructionInductions.set(prepared, constructions);
+  return prepared;
+}
+
+function constructionInductionFor(input: {
+  documents: readonly LanguageInductionDocument[];
+  hasher: Hasher;
+  prepared?: PreparedConstructionInduction;
+}): readonly GraphBoundConstruction[] {
+  const prepared = input.prepared ?? prepareConstructionInduction(input);
+  const constructions = preparedConstructionInductions.get(prepared);
+  if (!constructions || prepared.inputDigest !== input.hasher.digestHex(canonicalStringify(boundedInductionDocuments(input.documents)))) {
+    throw new Error("construction induction inputs changed; prepare again");
+  }
+  return constructions;
+}
+
 export function induceGraphSurfaceAlignments(input: {
   documents: readonly LanguageInductionDocument[];
   constructions: readonly GraphBoundConstruction[];
@@ -110,6 +142,11 @@ export function induceGraphSurfaceAlignments(input: {
   for (const doc of input.documents) {
     const evidenceIds = (doc.evidenceIds ?? []).map(String);
     if (!evidenceIds.length) continue;
+    const lexical = segmentUnicodeSurfaceV2(doc.text, input.hasher).lexicalSegments;
+    if (!lexical.some(segment => {
+      const construction = constructionsByPredicate.get(segment.normalized);
+      return construction && (observationsByConstructionId.get(construction.id)?.length ?? 0) < maxObservations;
+    })) continue;
     const lattice = buildSurfaceLattice({
       documentId: doc.id,
       text: doc.text,
@@ -125,7 +162,6 @@ export function induceGraphSurfaceAlignments(input: {
     const latticeCheck = validateSurfaceLattice(lattice, doc.text);
     if (!latticeCheck.valid) continue;
     const latticeSummary = summarizeLattice(lattice);
-    const lexical = segmentUnicodeSurfaceV2(doc.text, input.hasher).lexicalSegments;
     for (let index = 0; index < lexical.length; index++) {
       const construction = constructionsByPredicate.get(lexical[index]!.normalized);
       if (!construction) continue;
@@ -186,6 +222,7 @@ export function induceSourceBoundConstructionTrainingSets(input: {
   profileId: string;
   hasher: Hasher;
   maxObservationsPerConstruction?: number;
+  preparedInduction?: PreparedConstructionInduction;
 }): SourceBoundLanguageConstructionTrainingSet[] {
   const promoted = input.evidence.filter(span => span.status === "promoted");
   if (!promoted.length) return [];
@@ -205,13 +242,11 @@ export function induceSourceBoundConstructionTrainingSets(input: {
   // many spans instead of one. Reuses the same bound already proven for
   // training-orchestrator.ts's own induce() call site rather than adding a
   // second budgeting scheme.
-  const model = createLanguageInductionEngine({ hasher: input.hasher }).induce({
-    documents: boundedInductionDocuments(documents)
-  });
-  if (!model.graphBoundConstructions.length) return [];
+  const constructions = constructionInductionFor({ documents, hasher: input.hasher, prepared: input.preparedInduction });
+  if (!constructions.length) return [];
 
   const maxObservations = boundedConstructionObservationLimit(input.maxObservationsPerConstruction);
-  const constructionsByPredicate = new Map(model.graphBoundConstructions.map(item => [item.predicate, item]));
+  const constructionsByPredicate = new Map(constructions.map(item => [item.predicate, item]));
   const bySlotOrdinal = new Map<string, number>();
   const setsByBindingId = new Map<string, SourceBoundLanguageConstructionTrainingSet>();
   const tracesByBindingId = new Map<string, GraphSurfaceTransportTrace[]>();
@@ -219,6 +254,13 @@ export function induceSourceBoundConstructionTrainingSets(input: {
 
   for (const span of promoted) {
     const evidenceIds = [String(span.id)];
+    const lexical = segmentUnicodeSurfaceV2(span.text, input.hasher).lexicalSegments;
+    if (!lexical.some(segment => {
+      const construction = constructionsByPredicate.get(segment.normalized);
+      if (!construction) return false;
+      const bindingId = sourceRelationConstructionBindingId(input.hasher, input.profileId, construction.predicate);
+      return (bySlotOrdinal.get(bindingId) ?? 0) < maxObservations;
+    })) continue;
     const lattice = buildSurfaceLattice({
       documentId: String(span.id),
       text: span.text,
@@ -227,7 +269,6 @@ export function induceSourceBoundConstructionTrainingSets(input: {
       hasher: input.hasher
     });
     const latticeSummary = summarizeLattice(lattice);
-    const lexical = segmentUnicodeSurfaceV2(span.text, input.hasher).lexicalSegments;
     for (let index = 0; index < lexical.length; index++) {
       const construction = constructionsByPredicate.get(lexical[index]!.normalized);
       if (!construction) continue;
@@ -290,25 +331,50 @@ export function evaluateHeldOutConstructionCoverage(input: {
   heldOutDocuments: readonly LanguageInductionDocument[];
   profileId: string;
   hasher: Hasher;
+  preparedInduction?: PreparedConstructionInduction;
 }): HeldOutConstructionCoverageReport[] {
   // Same unbounded-corpus risk as induceSourceBoundConstructionTrainingSets
   // above, reached via the same production compileLanguageTrainingBatch call
   // (evaluateConstructionPromotion, on every batch with held-out evidence) --
   // bounded the same way rather than adding a second scheme.
   const boundedTrainDocuments = boundedInductionDocuments(input.trainDocuments);
-  const model = createLanguageInductionEngine({ hasher: input.hasher }).induce({ documents: [...boundedTrainDocuments] });
-  if (!model.graphBoundConstructions.length) return [];
+  const constructions = constructionInductionFor({ documents: boundedTrainDocuments, hasher: input.hasher, prepared: input.preparedInduction });
+  if (!constructions.length) return [];
 
   const alignments = induceGraphSurfaceAlignments({
     documents: boundedTrainDocuments,
-    constructions: model.graphBoundConstructions,
+    constructions: [...constructions],
     profileId: input.profileId,
     hasher: input.hasher
   });
   const alignmentByBindingId = new Map(alignments.map(set => [set.bindingId, set]));
+  const predicates = new Set(constructions.map(construction => construction.predicate));
+  const heldOutByPredicate = new Map<string, {
+    occurrences: number;
+    pre: Map<string, number>;
+    post: Map<string, number>;
+    postOccurrences: number;
+  }>();
+  for (const doc of input.heldOutDocuments) {
+    const lexical = segmentUnicodeSurfaceV2(doc.text, input.hasher).lexicalSegments;
+    for (let index = 1; index < lexical.length; index++) {
+      const predicate = lexical[index]!.normalized;
+      if (!predicates.has(predicate)) continue;
+      const counts = heldOutByPredicate.get(predicate) ?? { occurrences: 0, pre: new Map(), post: new Map(), postOccurrences: 0 };
+      const left = lexical[index - 1]!.normalized;
+      counts.occurrences++;
+      counts.pre.set(left, (counts.pre.get(left) ?? 0) + 1);
+      const right = lexical[index + 1]?.normalized;
+      if (right !== undefined) {
+        counts.postOccurrences++;
+        counts.post.set(right, (counts.post.get(right) ?? 0) + 1);
+      }
+      heldOutByPredicate.set(predicate, counts);
+    }
+  }
 
   const reports: HeldOutConstructionCoverageReport[] = [];
-  for (const construction of model.graphBoundConstructions) {
+  for (const construction of constructions) {
     const bindingId = sourceRelationConstructionBindingId(input.hasher, input.profileId, construction.predicate);
     const alignmentSet = alignmentByBindingId.get(bindingId);
     if (!alignmentSet) continue;
@@ -324,10 +390,6 @@ export function evaluateHeldOutConstructionCoverage(input: {
     );
     if (!trainedPreSurfaces.size) continue;
 
-    let heldOutOccurrences = 0;
-    let heldOutPreCovered = 0;
-    let heldOutPostOccurrences = 0;
-    let heldOutPostCovered = 0;
     const preSlot = construction.slots.find(slot => slot.relationDirection === "source");
     const postSlot = construction.slots.find(slot => slot.relationDirection === "target");
     // Coverage generalizes at the SLOT level, not the exact-adjacency
@@ -340,31 +402,22 @@ export function evaluateHeldOutConstructionCoverage(input: {
     // the most formulaic phrasing survived.
     const preCoverageSurfaces = new Set([...trainedPreSurfaces, ...(preSlot?.observedFillers ?? [])]);
     const postCoverageSurfaces = new Set([...trainedPostSurfaces, ...(postSlot?.observedFillers ?? [])]);
-    for (const doc of input.heldOutDocuments) {
-      const lexical = segmentUnicodeSurfaceV2(doc.text, input.hasher).lexicalSegments;
-      for (let index = 0; index < lexical.length; index++) {
-        if (lexical[index]!.normalized !== construction.predicate) continue;
-        const left = lexical[index - 1];
-        if (!left || !preSlot) continue;
-        heldOutOccurrences++;
-        if (preCoverageSurfaces.has(left.normalized)) heldOutPreCovered++;
-        const right = lexical[index + 1];
-        if (right) {
-          heldOutPostOccurrences++;
-          if (postCoverageSurfaces.has(right.normalized)) heldOutPostCovered++;
-        }
-      }
-    }
-    if (!heldOutOccurrences) continue;
+    const counts = heldOutByPredicate.get(construction.predicate);
+    if (!preSlot || !counts?.occurrences) continue;
+    const coveredCount = (values: ReadonlyMap<string, number>, accepted: ReadonlySet<string>) => {
+      let total = 0;
+      for (const [surface, count] of values) if (accepted.has(surface)) total += count;
+      return total;
+    };
     reports.push({
       bindingId,
       predicate: construction.predicate,
       trainedPrePredicateVariantCount: trainedPreSurfaces.size,
       trainedPostPredicateVariantCount: trainedPostSurfaces.size,
-      heldOutOccurrences,
-      heldOutPrePredicateCovered: heldOutPreCovered,
-      heldOutPostPredicateOccurrences: heldOutPostOccurrences,
-      heldOutPostPredicateCovered: heldOutPostCovered
+      heldOutOccurrences: counts.occurrences,
+      heldOutPrePredicateCovered: coveredCount(counts.pre, preCoverageSurfaces),
+      heldOutPostPredicateOccurrences: counts.postOccurrences,
+      heldOutPostPredicateCovered: coveredCount(counts.post, postCoverageSurfaces)
     });
   }
   return reports.sort((a, b) => a.bindingId.localeCompare(b.bindingId));

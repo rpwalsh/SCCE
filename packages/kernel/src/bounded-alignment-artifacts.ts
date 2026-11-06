@@ -120,9 +120,16 @@ function sharedRecordIndex(state: SharedRecordState, kind: SharedRecordKind, val
   const frozenScalar = isFrozenScalarRecord(value);
   assertAcyclicJson(value);
   const normalized = value as JsonValue;
+  let byteLength = 0;
+  const measuredChunks = function* () {
+    for (const chunk of canonicalJsonByteChunks(normalized, state.leafTokenCache)) {
+      byteLength += chunk.byteLength;
+      yield chunk;
+    }
+  };
   const digest = sharedRecordHasher.digestChunks
-    ? sharedRecordHasher.digestChunks(canonicalJsonByteChunks(normalized, state.leafTokenCache))
-    : canonicalDigestHex(normalized, sharedRecordHasher);
+    ? sharedRecordHasher.digestChunks(measuredChunks())
+    : sharedRecordHasher.digestHex(Buffer.concat([...measuredChunks()]));
   const bucket = state.buckets[kind].get(digest) ?? [];
   for (const candidate of bucket) {
     if (sameJson(candidate.value, normalized)) {
@@ -133,8 +140,6 @@ function sharedRecordIndex(state: SharedRecordState, kind: SharedRecordKind, val
   }
   const index = state.records[kind].length;
   if (index >= SHARED_RECORD_MAX_COUNT) throw new Error(`shared alignment ${kind} dictionary count exceeds bound`);
-  let byteLength = 0;
-  for (const chunk of canonicalJsonByteChunks(normalized, state.leafTokenCache)) byteLength += chunk.byteLength;
   if (byteLength > SHARED_RECORD_MAX_BYTES - state.uniqueBytes) {
     throw new Error(`shared alignment ${kind} dictionary bytes exceed bound`);
   }

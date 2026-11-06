@@ -84,6 +84,7 @@ export function corpusFamilyForSource(
 function signatureFromRow(row: LanguageProfileSignatureRow, registry: readonly CorpusRegistryEntry[]): LanguageProfileSignature {
   return {
     id: row.id,
+    sourceVersionId: row.sourceVersionId,
     family: corpusFamilyForSource(row, registry),
     scripts: row.scripts,
     direction: row.direction,

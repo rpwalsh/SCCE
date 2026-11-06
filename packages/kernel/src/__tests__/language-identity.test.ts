@@ -37,10 +37,10 @@ describe("language identity discovery", () => {
   const hasher = createHasher();
   const wikipedia = corpus("wikipedia", 40, ENGLISH, [["rowspan", "align", "style", "born"], ["senate", "state", "film", "album"], ["river", "county", "school"]]);
   const gutenberg = corpus("gutenberg", 8, ENGLISH, [["captain", "ship", "treasure"], ["marsh", "fog", "london"]]);
-  const batches = corpus("synthetic", 6, ENGLISH, [["align", "style", "rowspan", "references"]]);
+  const batches = corpus("synthetic", 6, ENGLISH, [["align", "style", "rowspan", "references"], ["template", "markup", "table", "links"], ["chapter", "paragraph", "quote", "notes"]]);
   const code = corpus("files", 12, CODE, [["evidence", "graph", "kernel"], ["mouth", "surface", "plan"]]);
   const docs = corpus("files", 5, ENGLISH, [["license", "install", "runtime"]], undefined, "docs");
-  const french = corpus("frwiki", 10, FRENCH, [["fleuve", "commune", "département"]]);
+  const french = corpus("frwiki", 10, FRENCH, [["fleuve", "commune", "département"], ["village", "region", "histoire"], ["ecole", "route", "province"]]);
 
   it("learns a family's closed class from document frequency, not from a list", () => {
     const closed = majorityClosedClass(wikipedia).map(row => row.word);
@@ -84,8 +84,8 @@ describe("language identity discovery", () => {
     expect(selectLanguageIdentityForSurface(identities, "When was Albert Einstein born?")?.identity).toBe(english);
     expect(selectLanguageIdentityForSurface(identities, "export const kernel: string")?.identity).toBe(codeIdentity);
     expect(selectLanguageIdentityForSurface(identities, "Quelle est la capitale de la France?")?.identity).toBe(frenchIdentity);
-    // No closed-class word at all: the largest identity of the script, which is the language the corpus mostly speaks.
-    expect(selectLanguageIdentityForSurface(identities, "Apollo 11 commander")?.identity).toBe(english);
+    // No learned symbol distinguishes these identities, so retain uncertainty rather than choosing the largest.
+    expect(selectLanguageIdentityForSurface(identities, "Apollo 11 commander")).toBeUndefined();
   });
 
   it("reads a signature from a profile's compact Kneser-Ney summary and drops apparatus symbols", () => {

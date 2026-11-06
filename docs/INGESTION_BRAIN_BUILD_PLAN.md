@@ -1,9 +1,22 @@
 # SCCE ingestion-to-runtime build plan
 
-Status: frozen implementation contract. Translation scope is fixed below:
-English <-> German and English <-> Latin are mandatory in both directions.
-No Wikipedia ingestion into `scce6_runtime` has started. Existing scce5 records
-are audit material.
+Status: implementation active; read the latest results in
+`INGESTION_RECOVERY_AUDIT.md`. The saved 32-document training batch is a
+diagnostic candidate, not a qualified conversational brain.
+
+User-directed scope update, 2026-11-05: first deliver a useful initial brain
+that users build from bounded source inputs on a machine with 8 GB RAM.
+Measure the complete build, PostgreSQL, recovery and served answers together.
+A giant downloaded brain or full-corpus streaming run does not meet this
+requirement. The hosted interface must fit Cloudflare Pages Free static
+hosting; ingestion, durable brain state and per-turn computation run locally.
+No LLM or model API is introduced. The full-corpus and comparative requirements
+below remain gates for those later capability claims; they do not replace the
+initial-brain requirement. Learned speech, factual support and recovery gates
+still apply to the initial brain.
+
+Translation scope below remains English <-> German and English <-> Latin in
+both directions. Existing scce5 records are audit material.
 Implementation has started. Parser/source-preservation regressions, the real
 300-page parser audit, and Postgres page/trainer rollback checks pass in disposable
 storage. Full dump/index hashes are verified. Factory-identified candidate-to-graph

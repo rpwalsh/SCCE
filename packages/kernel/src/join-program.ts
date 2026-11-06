@@ -587,15 +587,16 @@ function aggregateChoices(
   };
 }
 
-function joinEvents(document: {
+function* joinEvents(document: {
   documentId: string;
   sourceFamilyId?: string;
   text: string;
   lattice: SurfaceLattice;
   constructionId?: string;
   discourseStateId?: string;
-}): JoinEvent[] {
-  const events: JoinEvent[] = [];
+}): Generator<JoinEvent> {
+  const hashes = new Map<string, string>();
+  const hasher = createHasher();
   const unitsById = new Map(document.lattice.units.map(unit => [unit.id, unit]));
   for (const path of document.lattice.segmentationForest.paths) {
     const units = path.unitIds
@@ -607,6 +608,11 @@ function joinEvents(document: {
       const left = units[index - 1]!;
       const right = units[index]!;
       const join = document.text.slice(left.utf16End, right.utf16Start);
+      let exactSurfaceHash = hashes.get(join);
+      if (exactSurfaceHash === undefined) {
+        exactSurfaceHash = hasher.digestHex(join);
+        hashes.set(join, exactSurfaceHash);
+      }
       const evidenceIds = [...new Set([...left.evidenceIds, ...right.evidenceIds])].sort();
       const byteStart = left.byteEnd;
       const byteEnd = right.byteStart;
@@ -620,7 +626,7 @@ function joinEvents(document: {
         byteEnd,
         utf16Start: left.utf16End,
         utf16End: right.utf16Start,
-        exactSurfaceHash: createHasher().digestHex(join)
+        exactSurfaceHash
       }));
       const leftContext = unitContext(left);
       const rightContext = unitContext(right);
@@ -630,7 +636,7 @@ function joinEvents(document: {
         discourseStateId: document.discourseStateId,
         derivationShapeId
       };
-      events.push({
+      yield {
         left,
         right,
         join,
@@ -662,10 +668,9 @@ function joinEvents(document: {
           ) }
           : {}),
         crossScript: left.scriptId !== right.scriptId
-      });
+      };
     }
   }
-  return events;
 }
 
 function evaluateHeldoutJoins(input: {
@@ -827,7 +832,7 @@ function selectConfidenceThreshold(
 ): number {
   if (!documents.length) return 1;
   const observations = documents.flatMap(document =>
-    joinEvents(document).map(event => {
+    Array.from(joinEvents(document), event => {
       const prediction = predictionForEvent(event, indexes);
       return {
       event,

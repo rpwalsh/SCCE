@@ -8,6 +8,7 @@ import {
   createIdFactory,
   createLanguageMemoryRuntime,
   createMouth,
+  createDeterministicMouth,
   createSemanticEntailmentEngine,
   buildSurfaceLattice,
   compileJoinProgram,
@@ -204,7 +205,7 @@ describe("Mouth runtime surface planning", () => {
     expect(spoken.realizationTrace.selected.id).not.toBe("candidate:generated:governed-action-preview");
   });
 
-  it("keeps an audited terminal runtime-motion surface ahead of graph-derived prose", async () => {
+  it("keeps the deterministic evaluation ablation's audited motion surface ahead of graph-derived prose", async () => {
     const source = sourceVersion();
     const evidence = directEvidence(source);
     const field = emptyField();
@@ -216,11 +217,7 @@ describe("Mouth runtime surface planning", () => {
       createdAt: clock.now()
     });
     const selectedCandidate = terminalRuntimeMotionCandidate("fixture focus.");
-    const spoken = await createMouth({
-      languageMemory: languageRuntime,
-      correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }),
-      hashText: text => hasher.digestHex(text)
-    }).speak({
+    const spoken = await createDeterministicMouth({ hashText: text => hasher.digestHex(text) }).speak({
       // A motion surface is composed from the request's own anchors, so the request is what licenses it.
       requestText: "What is the fixture focus?",
       construct: semanticAnswerConstructGraph(),
@@ -239,6 +236,47 @@ describe("Mouth runtime surface planning", () => {
     expect(spoken.realizationTrace.languageMemory).toMatchObject({ bypassed: true, reason: "deterministic-mouth" });
   });
 
+  it("does not route an unsupported terminal motion through a deterministic fallback", async () => {
+    const source = sourceVersion();
+    const field = emptyField();
+    const requestText = "How many copies of Animalia have been sold worldwide?";
+    const entailment = createSemanticEntailmentEngine({ idFactory: ids, hasher }).check({
+      text: requestText,
+      evidence: [],
+      nodes: [],
+      field,
+      createdAt: clock.now()
+    });
+    const selectedCandidate = terminalRuntimeMotionCandidate("been sold");
+    const spoken = await createMouth({
+      languageMemory: languageRuntime,
+      correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }),
+      hashText: text => hasher.digestHex(text)
+    }).speak({
+      requestText,
+      construct: insufficientSupportConstructGraph(),
+      field,
+      languageProfile: languageProfile(source),
+      evidence: [],
+      entailment,
+      languageMemory: languageRuntime.hydrateFromImportedBrain({
+        importRunId: "unsupported-terminal-motion-no-fallback",
+        models: [],
+        observations: [],
+        units: [],
+        patterns: [],
+        semanticFrames: []
+      }),
+      requestedAuthority: "factual",
+      selectedCandidate
+    });
+
+    expect(spoken.text).toBe("");
+    expect(spoken.realizationAvailability.status).toBe("insufficient_support");
+    expect(spoken.force).toBe("underdetermined");
+    expect(spoken.evidenceRefs).toEqual([]);
+  });
+
   it("removes unmatched structural closers without changing the selected surface content", async () => {
     const source = sourceVersion();
     const field = emptyField();
@@ -250,11 +288,7 @@ describe("Mouth runtime surface planning", () => {
       createdAt: clock.now()
     });
     const selectedCandidate = terminalRuntimeMotionCandidate("Aster (Beta) ) ).");
-    const spoken = await createMouth({
-      languageMemory: languageRuntime,
-      correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }),
-      hashText: text => hasher.digestHex(text)
-    }).speak({
+    const spoken = await createDeterministicMouth({ hashText: text => hasher.digestHex(text) }).speak({
       requestText: "What about Aster (Beta)?",
       construct: semanticAnswerConstructGraph(),
       field,
@@ -286,11 +320,7 @@ describe("Mouth runtime surface planning", () => {
     const unfinished = "Γάμμα αποσ";
     const selectedCandidate = terminalRuntimeMotionCandidate(`${completed} ${oversized} ${unfinished}`);
     const maxLength = 64;
-    const spoken = await createMouth({
-      languageMemory: languageRuntime,
-      correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }),
-      hashText: text => hasher.digestHex(text)
-    }).speak({
+    const spoken = await createDeterministicMouth({ hashText: text => hasher.digestHex(text) }).speak({
       requestText: `${completed} ${unfinished}`,
       construct: semanticAnswerConstructGraph(),
       field,
@@ -520,6 +550,191 @@ describe("Mouth runtime surface planning", () => {
     expect(spoken.text).toBe(answer);
     expect(spoken.evidenceRefs).toEqual([evidence.id]);
     expect(spoken.realizationTrace.selected.id).toBe(selectedCandidate.id);
+  });
+
+  it("selects one owner-bound answer sentence in the common Mouth pipeline and withholds unsupported attributes", async () => {
+    const isolatedLanguageRuntime = createLanguageMemoryRuntime({ idFactory: ids, hasher });
+    const source = sourceVersion();
+    const text = "Allan Dwan was an American film director, producer, and screenwriter. Allan Dwan was born in Toronto, Ontario, Canada.";
+    const baseEvidence = directEvidence(source);
+    const evidence: EvidenceSpan = {
+      ...baseEvidence,
+      text,
+      textPreview: text,
+      byteEnd: Buffer.byteLength(text),
+      charEnd: [...text].length,
+      features: featureSet(text, 128),
+      provenance: typeof baseEvidence.provenance === "object" && baseEvidence.provenance !== null && !Array.isArray(baseEvidence.provenance)
+        ? { ...baseEvidence.provenance, title: "Allan Dwan" }
+        : { title: "Allan Dwan" }
+    };
+    const languageMemory = {
+      ...isolatedLanguageRuntime.hydrateFromImportedBrain({
+        importRunId: "unified-mouth-source-window",
+        models: [],
+        observations: [],
+        units: [],
+        patterns: [],
+        semanticFrames: []
+      }),
+      closedClass: ["the", "was", "in", "where"]
+    };
+    const mouth = createMouth({
+      languageMemory: isolatedLanguageRuntime,
+      correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }),
+      hashText: value => hasher.digestHex(value)
+    });
+    const makeTurn = (
+      requestText: string,
+      id: string,
+      answer: string,
+      turnEvidence: EvidenceSpan[] = [evidence],
+      ownerEvidenceIds: EvidenceSpan["id"][] = [evidence.id],
+      answerConstruct: ConstructGraph = constructGraph(false),
+      entailmentText = requestText
+    ) => {
+      const field = emptyField();
+      const entailment = createSemanticEntailmentEngine({ idFactory: ids, hasher }).check({
+        text: entailmentText,
+        evidence: turnEvidence,
+        nodes: [],
+        field,
+        createdAt: clock.now()
+      });
+      const selectedCandidate: CandidateSurface = {
+        id,
+        kind: "proof-answer",
+        answer,
+        force: "inferred",
+        evidenceIds: ownerEvidenceIds,
+        scores: { support: 0.8, contradiction: 0, faithfulness: 0.8, alphaPressure: 0.5, actionability: 0.5, evidenceCoverage: 0.8, novelty: 0, realizability: 0.8, risk: 0 },
+        claimBases: ["direct_evidence"],
+        boundaries: ["selected-evidence-bound"],
+        audit: { source: "unified-mouth-regression" }
+      };
+      return mouth.speak({
+        requestText,
+        construct: answerConstruct,
+        field,
+        languageProfile: languageProfile(source),
+        evidence: turnEvidence,
+        entailment,
+        languageMemory,
+        requirementField: deriveTurnRequirementField({ requestText }),
+        requestedAuthority: "factual",
+        selectedCandidate
+      });
+    };
+
+    const birthplace = await makeTurn(
+      "Where was Allan Dwan born?",
+      "candidate:dwan-biography",
+      "Allan Dwan was an American film director, producer, and screenwriter."
+    );
+    expect(birthplace.text).toBe("Allan Dwan was born in Toronto, Ontario, Canada.");
+    expect(birthplace.evidenceRefs).toEqual([evidence.id]);
+    expect(birthplace.realizationTrace.selected.id).toBe("candidate:generated:source-excerpt");
+    expect(JSON.stringify(birthplace.realizationTrace.selected.audit)).toContain("scce.mouth.content_plan.v1");
+    expect(birthplace.realizationTrace.candidates.find(candidate => candidate.id === "candidate:dwan-biography")?.forbiddenHits).toBeGreaterThan(0);
+    expect(birthplace.text.split("Allan Dwan was an American film director")).toHaveLength(1);
+
+    const dwanLead = "Allan Dwan (born Joseph Aloysius Dwan; April 3, 1885 – December 28, 1981) was a pioneering Canadian and American motion picture director, producer, and screenwriter.";
+    const dwanBirthClaim = "Born Joseph Aloysius Dwan in Toronto, Ontario, Canada, Dwan was the younger son of commercial traveler of woolen clothing Joseph Michael Dwan.";
+    const dwanSemanticConstruct: ConstructGraph = {
+      ...constructGraph(false),
+      nodes: [...constructGraph(false).nodes, {
+        id: "construct:semantic-answer:dwan",
+        kind: "construct:semantic_answer",
+        label: "Allan Dwan",
+        metadata: {
+          schema: "scce.semantic_answer_construct.v1",
+          questionShapeId: "question-shape.dwan.birthplace",
+          selectedSubject: dwanLead.slice(0, dwanLead.indexOf(" was")),
+          selectedFacts: [{
+            subject: dwanLead.slice(0, dwanLead.indexOf(" was")),
+            predicate: "where born",
+            object: dwanLead,
+            sourceNodeId: "node:dwan",
+            targetNodeId: "node:dwan-biography",
+            relationId: "edge:dwan:malformed-biography",
+            forceClass: "direct_evidence",
+            score: 0.9,
+            activation: 0.9,
+            overlap: 0.8,
+            support: 0.9,
+            evidenceIds: [evidence.id],
+            sourceVersionId: source.sourceVersionId
+          }],
+          selectedRelations: ["edge:dwan:malformed-biography"],
+          supportIds: [String(evidence.id)],
+          forceId: "output.force.source_bound_answer",
+          boundaryId: "output.force.source_bound",
+          certificationBoundary: { directEvidenceCount: 1, evidenceSpanIds: [evidence.id], sourceVersionIds: [source.sourceVersionId], externalFactCertification: true }
+        }
+      }]
+    };
+    const productionEvidence: EvidenceSpan = {
+      ...evidence,
+      id: "evidence.dwan.production-shape" as EvidenceSpan["id"],
+      text: `${dwanLead} ${dwanBirthClaim}`,
+      textPreview: `${dwanLead} ${dwanBirthClaim}`,
+      byteEnd: Buffer.byteLength(`${dwanLead} ${dwanBirthClaim}`),
+      charEnd: [...`${dwanLead} ${dwanBirthClaim}`].length,
+      features: featureSet(`${dwanLead} ${dwanBirthClaim}`, 128)
+    };
+    const productionShape = await makeTurn(
+      "Where was Allan Dwan born?",
+      "candidate:dwan-biography-with-date",
+      dwanLead,
+      [productionEvidence],
+      [productionEvidence.id],
+      dwanSemanticConstruct,
+      dwanBirthClaim
+    );
+    expect(productionShape.text).toBe(dwanBirthClaim);
+    expect(productionShape.realizationTrace.selected.id).toBe("candidate:generated:source-excerpt");
+    expect(JSON.stringify(productionShape.realizationTrace.selected.audit)).toContain("requiredClaimText");
+
+    const bloodType = await makeTurn(
+      "What was Allan Dwan's blood type?",
+      "candidate:dwan-blood-type",
+      "Allan Dwan was an American film director, producer, and screenwriter."
+    );
+    expect(bloodType.text).toBe("");
+    expect(bloodType.realizationAvailability).toMatchObject({
+      status: "insufficient_support",
+      decisionId: "content_plan.no_supported_relation",
+      reasonId: "no_selected_owner_discriminates_asked_relation"
+    });
+    expect(bloodType.realizationTrace.selected.id).not.toBe("candidate:generated:source-excerpt");
+
+    const biographyOnly = "Allan Dwan was an American film director, producer, and screenwriter.";
+    const birthSentence = "Allan Dwan was born in Toronto, Ontario, Canada.";
+    const biographyOwner: EvidenceSpan = {
+      ...evidence,
+      id: "evidence.dwan.biography-only" as EvidenceSpan["id"],
+      text: biographyOnly,
+      textPreview: biographyOnly,
+      byteEnd: Buffer.byteLength(biographyOnly),
+      charEnd: [...biographyOnly].length
+    };
+    const unrelatedAttachedSpan: EvidenceSpan = {
+      ...evidence,
+      id: "evidence.dwan.birthplace-unbound" as EvidenceSpan["id"],
+      text: birthSentence,
+      textPreview: birthSentence,
+      byteEnd: Buffer.byteLength(birthSentence),
+      charEnd: [...birthSentence].length
+    };
+    const ownerMismatch = await makeTurn(
+      "Where was Allan Dwan born?",
+      "candidate:dwan-owner-mismatch",
+      biographyOnly,
+      [biographyOwner, unrelatedAttachedSpan],
+      [biographyOwner.id]
+    );
+    expect(ownerMismatch.text).toBe("");
+    expect(ownerMismatch.realizationTrace.selected.id).not.toBe("candidate:generated:source-excerpt");
   });
 
   it("uses the bounded exact-excerpt entailment route when source text is available", () => {
@@ -1225,6 +1440,23 @@ describe("Mouth runtime surface planning", () => {
       field,
       createdAt: clock.now()
     });
+    const ordinaryPriorMemory = importedMemory(source, evidence, "ordinary-prior-answer");
+    // This corpus unit supplies real learned wording; the selected graph
+    // facts remain the authority for what the sentence may say.
+    const learnedAnswerSurface = "Ada Lovelace is a mathematician. Ada Lovelace wrote notes about the Analytical Engine. The Analytical Engine is a mechanical computer.";
+    ordinaryPriorMemory.importedUnits.push({
+      id: "unit:ada-answer-surface",
+      profileId: "profile:wiki-fixture",
+      sourceVersionId: source.sourceVersionId,
+      script: "fixture-script",
+      unitKind: "phrase",
+      text: learnedAnswerSurface,
+      features: featureSet(learnedAnswerSurface, 64),
+      competenceVector: [1],
+      alpha: 0.94,
+      evidenceIds: [],
+      metadata: { sourceSystem: "scce2", provenanceClass: "learned_language_prior" }
+    });
     const mouth = createMouth({ languageMemory: languageRuntime, correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }), hashText: text => hasher.digestHex(text) });
     const spoken = await mouth.speak({
       construct: semanticAnswerConstructGraph(),
@@ -1232,7 +1464,7 @@ describe("Mouth runtime surface planning", () => {
       languageProfile: languageProfile(source),
       evidence: [],
       entailment,
-      languageMemory: importedMemory(source, evidence, "ordinary-prior-answer"),
+      languageMemory: ordinaryPriorMemory,
       targetLanguage: "fixture-language",
       brainMarker: {
         activeBrainVersion: "scce2:wiki-fixture",
@@ -1255,7 +1487,7 @@ describe("Mouth runtime surface planning", () => {
       }
     });
 
-    expect(spoken.text).toContain("Ada Lovelace");
+    expect(spoken.text, JSON.stringify(spoken.realizationTrace.candidates.map(candidate => ({ id: candidate.id, forbiddenHitIds: candidate.forbiddenHitIds, textPreview: candidate.textPreview, audit: candidate.audit })))).toContain("Ada Lovelace");
     expect(spoken.text).toContain("Analytical Engine");
     expect(spoken.text.toLocaleLowerCase()).toContain("mathematician");
     expect(spoken.text.toLocaleLowerCase()).toContain("notes");
@@ -1293,17 +1525,18 @@ describe("Mouth runtime surface planning", () => {
     expect(spoken.evidenceRefs).toEqual([]);
     expect(detectCannedAnswerSpeech(spoken.text)).toEqual([]);
     expectNoSystemMetaSpeech(spoken.text);
-    expect(JSON.stringify(spoken.realizationTrace.selected)).toContain("candidate:generated:rhetorical-lattice");
+    const selectedPriorSurface = JSON.stringify(spoken.realizationTrace.selected);
+    expect(selectedPriorSurface).toContain("candidate:learned-prior-surface");
+    expect(selectedPriorSurface).toContain("unit:ada-answer-surface");
+    expect(selectedPriorSurface).toContain("learned_prior_proposition");
     expect(JSON.stringify(spoken.surfacePlan.constructForces)).toContain("InferenceConstruct");
     expect(JSON.stringify(spoken.surfacePlan.constructForces)).not.toContain("ImportSummaryConstruct");
     expect(JSON.stringify(spoken.surfacePlan.audit)).toContain("semanticAnswer");
-    expect(JSON.stringify(spoken.realizationTrace.languageMemory)).toContain("rhetoricalSentenceLattice");
-    expect(JSON.stringify(spoken.realizationTrace.languageMemory)).toContain("proseCandidates");
-    expect(JSON.stringify(spoken.realizationTrace.languageMemory)).toContain("critic");
+    expect(JSON.stringify(spoken.realizationTrace.languageMemory)).toContain("unit:ada-answer-surface");
     expect(JSON.stringify(spoken.realizationTrace.brainInfluence)).toContain("ordinary-prior-answer");
   });
 
-  it("realizes graph answer slots through the rhetorical lattice instead of emitting an empty semantic answer", async () => {
+  it("realizes graph answer slots from a source-owned language surface instead of emitting an empty semantic answer", async () => {
     const source = sourceVersion();
     const field = emptyField();
     const question = "Who was Ada Lovelace?";
@@ -1325,7 +1558,19 @@ describe("Mouth runtime surface planning", () => {
         importRunId: "semantic-answer-with-join-program",
         models: [],
         observations: [],
-        units: [],
+        units: [{
+          id: "unit:ada-graph-answer-surface",
+          profileId: "profile:wiki-fixture",
+          sourceVersionId: source.sourceVersionId,
+          script: "fixture-script",
+          unitKind: "phrase",
+          text: "Ada Lovelace is a mathematician. Ada Lovelace wrote notes about the Analytical Engine. The Analytical Engine is a mechanical computer.",
+          features: featureSet("Ada Lovelace is a mathematician. Ada Lovelace wrote notes about the Analytical Engine. The Analytical Engine is a mechanical computer.", 128),
+          competenceVector: [1],
+          alpha: 0.94,
+          evidenceIds: [],
+          metadata: { sourceSystem: "scce2", provenanceClass: "learned_language_prior" }
+        }],
         patterns: [joinProgramPattern()],
         semanticFrames: []
       }),
@@ -1347,7 +1592,8 @@ describe("Mouth runtime surface planning", () => {
     expect(spoken.text).not.toContain("[no_proof]");
     expect(spoken.text).toContain("Ada Lovelace");
     expect(spoken.text).toContain("Analytical Engine");
-    expect(spoken.realizationTrace.selected.id).toBe("candidate:generated:rhetorical-lattice");
+    expect(spoken.realizationTrace.selected.id).toContain("candidate:learned-prior-surface");
+    expect(JSON.stringify(spoken.realizationTrace.selected.audit)).toContain("unit:ada-graph-answer-surface");
     expect(spoken.realizationTrace.selected.textHash).not.toBe("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
     expect(spoken.evidenceRefs).toEqual([]);
   });
@@ -2107,6 +2353,18 @@ describe("Mouth runtime surface planning", () => {
         features: featureSet(text, 64),
         competenceVector: [1],
         alpha: 0.97,
+        evidenceIds: [],
+        metadata: { sourceSystem: "scce2", provenanceClass: "learned_language_prior" }
+      }, {
+        id: "unit:star-trek-selected-members",
+        profileId: "profile:star-trek",
+        sourceVersionId: source.sourceVersionId,
+        script: "fixture-script",
+        unitKind: "phrase",
+        text: "Star Trek main characters include Spock and James T. Kirk.",
+        features: featureSet("Star Trek main characters include Spock and James T. Kirk.", 64),
+        competenceVector: [1],
+        alpha: 0.96,
         evidenceIds: [],
         metadata: { sourceSystem: "scce2", provenanceClass: "learned_language_prior" }
       }],

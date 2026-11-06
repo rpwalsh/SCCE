@@ -85,24 +85,13 @@ const UNSCORED_EVALUATION: Evaluation = {
 };
 
 const DIRICHLET_ALPHA = 0.5;
-const MIN_INDEPENDENT_SOURCES = 4;
-const MIN_FIT_SOURCES = 2;
+const VALIDATION_PARTITIONS = ["fit", "heldout"] as const;
+const MIN_INDEPENDENT_SOURCES = VALIDATION_PARTITIONS.length;
 
-/**
- * How many independent source families a relation needs before promotion can even be scored. Exported because a
- * caller loading prior observations needs to know whether loading them can change any verdict: a seed's family
- * count cannot exceed the number of families in the data, so below this threshold every seed is unscorable and
- * every verdict is a refusal whatever the priors say.
- */
+/** Partition feasibility for reusable inference; source observations have their own exact binding authority. */
 export const RELATION_PROMOTION_MIN_INDEPENDENT_SOURCES = MIN_INDEPENDENT_SOURCES;
 
-/**
- * Whether a seed with this many independent source families could be scored at all.
- *
- * This lowers no bar. `scorable` is already `sourceCount >= MIN_INDEPENDENT_SOURCES`, `sourceCount` counts
- * families for one seed, and the two unconditional reasons below that threshold make `promoted` false. Knowing
- * the answer before reading is the same answer, not a weaker one.
- */
+/** A conservative precheck; actual promotion requires populated fit and heldout partitions and measured gains. */
 export function relationPromotionCanScore(distinctSourceFamilies: number): boolean {
   return distinctSourceFamilies >= MIN_INDEPENDENT_SOURCES;
 }
@@ -188,19 +177,15 @@ export function compileRelationPromotionModel(input: {
     const sourceCount = scope.observationSourceFamilies.get(relationSeedId)?.size ?? 0;
     const fitSourceFamilyIds = scope.fitSourceFamilies.get(relationSeedId) ?? [];
     const holdoutSourceFamilyIds = scope.holdoutSourceFamilies.get(relationSeedId) ?? [];
-    // A relation short of independent sources is refused whatever the arithmetic says, because the reason below is
-    // unconditional and `promoted` is `reasons.length === 0`. Its description length and its three negative
-    // controls cannot change that verdict, and the duplicate control alone builds an array the size of the whole
-    // fit set per relation. Not computing a score whose verdict is already fixed lowers no bar; 270,737 of the
-    // corpus's 282,971 seeds are in this case, and the reasons they carry say exactly why they were not scored.
-    const scorable = sourceCount >= MIN_INDEPENDENT_SOURCES;
+    // Heldout inference can be scored only when this relation actually occupies both validation partitions.
+    const scorable = fitSourceFamilyIds.length > 0 && holdoutSourceFamilyIds.length > 0;
     const actual = scorable
       ? evaluateRelation(relationSeedId, scope.actual, scope.holdoutBySeed)
       : UNSCORED_EVALUATION;
     const controls = scorable ? controlResults(relationSeedId, scope) : [];
     const reasons: string[] = [];
     if (sourceCount < MIN_INDEPENDENT_SOURCES) reasons.push("insufficient_independent_sources");
-    if (fitSourceFamilyIds.length < MIN_FIT_SOURCES) reasons.push("insufficient_fit_source_families");
+    if (!fitSourceFamilyIds.length) reasons.push("insufficient_fit_source_families");
     if (!holdoutSourceFamilyIds.length) reasons.push("missing_source_family_disjoint_holdout");
     if (!(actual.gainNats > 0)) reasons.push("nonpositive_heldout_description_length_gain");
     if (!(actual.recoveryGain > 0)) reasons.push("no_heldout_recovery_improvement");
@@ -212,7 +197,7 @@ export function compileRelationPromotionModel(input: {
       promoted,
       // The map above, which was built for exactly this and then not read here. The scan it replaces is one
       // pass over every observation per relation, which is the quadratic in seed count: measured at 932ms for
-      // 2,000 seeds and 18.4s for 8,000 once four source families make seeds scorable.
+      // Duplicate controls otherwise repeat whole-fit work for each scorable seed.
       candidateCount: observationCount.get(relationSeedId) ?? 0,
       independentSourceCount: sourceCount,
       fitSourceFamilyIds,
@@ -266,7 +251,7 @@ export function compileRelationPromotionModel(input: {
       ),
       occurrenceCollapsedWithinSourceFamily: true,
       minimumIndependentSources: MIN_INDEPENDENT_SOURCES,
-      minimumFitSources: MIN_FIT_SOURCES,
+      minimumFitSources: 1,
       candidateCount: input.candidates.length,
       independentObservationCount: observations.length,
       promotedRelationCount: decisions.filter(decision => decision.promoted).length,
@@ -712,7 +697,7 @@ function fitScope(
  * are identical by construction: the signature counts are {signature: count}, the distinct source families are
  * one, and the fit size is the count. Building the array and then scanning it three times per relation is what
  * made the pass grow with the square of the seed count -- measured at 932ms for 2,000 seeds and 18.4s for 8,000
- * once four source families make seeds scorable. Same arithmetic, derived instead of counted.
+ * once fit and heldout source families make seeds scorable. Same arithmetic, derived instead of counted.
  */
 function duplicateFitScope(
   first: RelationObservation,

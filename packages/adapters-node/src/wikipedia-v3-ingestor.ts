@@ -28,6 +28,7 @@ import {
   compileOpaqueRoleModel,
   compileRoleSurfaceOrderModel,
   compileSparseAlignmentTargetIndex,
+  prepareSparseTransportSolver,
   generateSparseAlignmentCandidates,
   rankEvidenceForAlignment,
   compileTypedNullCostModel,
@@ -1502,12 +1503,13 @@ export class WikipediaV3Ingestor {
         hyperedges: alignmentHyperedges,
         hasher: this.hasher
       });
-      const alignmentTargetIndex = compileSparseAlignmentTargetIndex({
+      const transportSolver = prepareSparseTransportSolver({ targetIndex: compileSparseAlignmentTargetIndex({
         incidenceGraph,
         nodes: promotedGraph.nodes.filter(node => alignmentNodeIds.has(String(node.id))),
         maxTargetsPerPosting: 512,
         hasher: this.hasher
-      });
+      }) });
+      const alignmentTargetIndex = transportSolver.targetIndex;
       targetIndexSpan.end({ targets: alignmentTargetIndex.targets.length, evidence: alignmentEvidence.length });
       let alignmentCandidateCount = 0;
       let alignmentSurfaceUnitCount = 0;
@@ -1603,7 +1605,7 @@ export class WikipediaV3Ingestor {
       routingModelsSpan.end({ supports: routedAlignmentSupports.length });
       const transportResourceUsage = { elapsedMs: 0, outerIterations: 0, cellCount: 0, rowCount: 0, columnCount: 0, estimatedWorkingBytes: 0, plans: 0 };
       const solveBudgeted = (solverInput: Parameters<typeof solveSparseFusedUnbalancedTransport>[0]) => {
-        const solved = solveSparseFusedUnbalancedTransportWithResourceBudget(solverInput);
+        const solved = solveSparseFusedUnbalancedTransportWithResourceBudget(solverInput, transportSolver);
         transportResourceUsage.elapsedMs += solved.resourceUsage.elapsedMs;
         transportResourceUsage.outerIterations += solved.resourceUsage.outerIterations;
         transportResourceUsage.cellCount += solved.resourceUsage.cellCount;
@@ -1670,6 +1672,7 @@ export class WikipediaV3Ingestor {
           basePlan: transport,
           support,
           targetIndex: alignmentTargetIndex,
+          solver: transportSolver,
           typedNullCostModel,
           populationOrderingModel,
           crossDocumentAlignmentModel,

@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import * as targetGeometry from "../graph-target-geometry.js";
 import {
   buildSurfaceLattice,
   canonicalStringify,
@@ -9,6 +10,7 @@ import {
   createHasher,
   createIdFactory,
   createSparseTransportPlanRetentionInterner,
+  prepareSparseTransportSolver,
   solveSparseFusedUnbalancedTransport,
   solveSparseFusedUnbalancedTransportWithResourceBudget,
   type EvidenceId,
@@ -21,6 +23,28 @@ import {
 describe("sparse fused unbalanced graph-surface transport", () => {
   const hasher = createHasher();
   const ids = createIdFactory({ hasher, clock: createClock({ fixedTime: 0 }), deterministicReplay: true });
+
+  it("reuses one target geometry across solves with an immutable owned snapshot", () => {
+    const compiled = fixture();
+    const support = compiled.supports[0]!;
+    const expected = solveSparseFusedUnbalancedTransport({ support, targetIndex: compiled.targetIndex, hasher });
+    const geometry = vi.spyOn(targetGeometry, "createGraphTargetGeometry");
+    try {
+      const prepared = prepareSparseTransportSolver({ targetIndex: compiled.targetIndex });
+      const first = prepared.solve({ support, hasher });
+      const second = prepared.solve({ support, hasher });
+      expect(first).toEqual(expected);
+      expect(second).toEqual(expected);
+      expect(second.columnMarginals[0]).toBe(first.columnMarginals[0]);
+      expect(Object.isFrozen(first.columnMarginals[0])).toBe(true);
+      compiled.targetIndex.targets.length = 0;
+      expect(prepared.solve({ support, hasher })).toEqual(expected);
+      expect(geometry).toHaveBeenCalledTimes(1);
+      expect(() => { prepared.targetIndex.targets.length = 0; }).toThrow();
+    } finally {
+      geometry.mockRestore();
+    }
+  });
 
   it("moves mass only on candidate support and reserves exact-anchor row mass", () => {
     const compiled = fixture();

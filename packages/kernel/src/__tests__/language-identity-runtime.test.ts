@@ -48,10 +48,12 @@ describe("language identity runtime", () => {
   });
 
   it("discovers once, persists, and resolves artifacts by profile or by corpus family", async () => {
+    const topics = [["river", "county"], ["school", "county"], ["senate", "state"], ["film", "album"]] as const;
+    const batchTopics = [["align", "style"], ["template", "markup"], ["pattern", "construction"], ["evidence", "syntax"]] as const;
     const rows = [
-      ...Array.from({ length: 12 }, (_, index) => row(`wiki:${index}`, "wikipedia://enwiki/block/" + index, [...ENGLISH, "river", "county"])),
-      ...Array.from({ length: 6 }, (_, index) => row(`batch:${index}`, "scce://construction-training/source.x/batch-000" + index, [...ENGLISH, "align", "style"])),
-      ...Array.from({ length: 8 }, (_, index) => row(`code:${index}`, "file:///repo/src/file" + index + ".ts", [...CODE, "kernel", "graph"]))
+      ...Array.from({ length: 12 }, (_, index) => row(`wiki:${index}`, "wikipedia://enwiki/block/" + index, [...ENGLISH, ...topics[index % topics.length]!])),
+      ...Array.from({ length: 6 }, (_, index) => row(`batch:${index}`, "scce://construction-training/source.x/batch-000" + index, [...ENGLISH, ...batchTopics[index % batchTopics.length]!])),
+      ...Array.from({ length: 8 }, (_, index) => row(`code:${index}`, "file:///repo/src/file" + index + ".ts", [...CODE, ...topics[index % topics.length]!]))
     ];
     const store = memoryStore(rows);
     const runtime = createLanguageIdentityRuntime({ store, hasher: createHasher(), now: () => 1 });
@@ -71,5 +73,23 @@ describe("language identity runtime", () => {
     const second = await createLanguageIdentityRuntime({ store, hasher: createHasher(), now: () => 2 }).ensure();
     expect(second.discovered).toBe(false);
     expect(second.identities.map(identity => identity.id)).toEqual(first.identities.map(identity => identity.id));
+  });
+
+  it("assigns a singleton corpus profile to a source-owned identity that can route its learned model", async () => {
+    const singleton = row("solo:wiki", "wikipedia://enwiki/pages/1", [...ENGLISH, "azurite", "crystal"]);
+    const store = memoryStore([singleton]);
+    const runtime = createLanguageIdentityRuntime({ store, hasher: createHasher(), now: () => 1 });
+    const result = await runtime.ensure();
+    const identity = result.identities[0]!;
+
+    expect(result.assigned).toBe(1);
+    expect(runtime.resolver()?.profile(singleton.id)).toBe(identity.id);
+    expect(runtime.resolver()?.corpus("wikipedia")).toBe(identity.id);
+    expect(identity.families.map(item => item.family)).toContain("wikipedia");
+    expect(identity.closedClass).toEqual([]);
+    expect(identity.evidence?.sampleCount).toBe(1);
+    expect(identity.evidence?.status).toBe("source_observed");
+    expect(identity.evidence?.observedSymbols.map(item => item.symbol)).toContain("azurite");
+    expect(runtime.selectForSurface("azurite crystal")?.identity.id).toBe(identity.id);
   });
 });

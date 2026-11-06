@@ -78,6 +78,26 @@ test("question mapping passes conversation identity but never gold or protected 
   assert.equal(owner.metadata.turnIndex, 2);
   assert.equal("gold" in owner.metadata, false);
   assert.equal("protectedMetadata" in owner.metadata, false);
+  assert.equal(owner.metadata.runtime.deadline.budgetMs, 10_000);
+});
+
+test("question turn budget is bounded and gold remains outside the owner input", () => {
+  const question = {
+    schemaVersion: "1.0",
+    questionId: "q-30s",
+    category: "knowledge",
+    prompt: "What is supported?",
+    timeLimitMs: 30_000,
+    gold: { acceptedAnswers: ["secret"] }
+  };
+  const context = { runId: "run-1", condition: { conditionId: "full", configHash: "hash", cacheNamespace: "namespace" } };
+  const owner = ownerInputForEvaluationQuestion(question, context);
+
+  assert.equal(owner.metadata.runtime.deadline.budgetMs, 30_000);
+  assert.equal("gold" in owner.metadata, false);
+  assert.throws(() => ownerInputForEvaluationQuestion({ ...question, timeLimitMs: 0 }, context), /timeLimitMs must be an integer/u);
+  assert.throws(() => ownerInputForEvaluationQuestion({ ...question, timeLimitMs: 30_001 }, context), /timeLimitMs must be an integer/u);
+  assert.throws(() => ownerInputForEvaluationQuestion({ ...question, timeLimitMs: "30000" }, context), /timeLimitMs must be an integer/u);
 });
 
 test("exact citation mapping verifies UTF-8 bytes, source version, span text, and both hashes", () => {

@@ -84,6 +84,31 @@ describe("surface language resident-only cache", () => {
     expect(second.state.scope).toMatchObject({ mode: "language", languageId: "language.fixture" });
   });
 
+  it("bounds secondary scope references and refreshes changed artifacts with stable IDs", async () => {
+    const fixture = runtimeFixture({ surfaceLanguageMemoryCacheMaxEntries: 1, languageResolver: () => ({ profile: () => "language.fixture", corpus: () => "language.fixture" }) });
+    const hydrate = () => fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "language-scoped", undefined, "", { languageId: "language.fixture" });
+    const first = await hydrate();
+    await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "evicting-entry");
+    fixture.frame.frameJson = { surface: "replacement", text: "replacement" };
+    const second = await hydrate();
+    expect(second.state).not.toBe(first.state);
+    expect(second.state.importedSemanticFrames[0]?.frameJson).toMatchObject({ text: "replacement" });
+    expect(fixture.runtime.cacheOccupancy().scopedStateReferences).toBeLessThanOrEqual(1);
+  });
+
+  it("refreshes a scope when observation contents change without changing their IDs", async () => {
+    const fixture = runtimeFixture({ surfaceLanguageMemoryCacheMaxEntries: 1, languageResolver: () => ({ profile: () => "language.fixture", corpus: () => "language.fixture" }) });
+    const observation = { id: "observation.fixture", streamId: "stream.fixture", languageHint: "und", order: 1, history: [] as string[], symbol: "alpha", count: 2, fieldWeight: 1, observedAt: 1, metadata: { profileId: "profile.fixture" } };
+    fixture.storage.languageMemory.listNgramObservations = async () => [observation];
+    const hydrate = () => fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "language-scoped", undefined, "", { languageId: "language.fixture" });
+    const first = await hydrate();
+    await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "evicting-entry");
+    observation.symbol = "beta";
+    const second = await hydrate();
+    expect(second.state).not.toBe(first.state);
+    expect(second.state.importedObservations[0]?.symbol).toBe("beta");
+  });
+
   it("fails explicitly on an unwarmed resident-only request without durable calls", async () => {
     const fixture = runtimeFixture();
     const notWarm = /hydrated runtime unavailable: resident .* was not warmed/u;
@@ -430,6 +455,8 @@ function runtimeFixture(cacheOverrides: { cacheMs?: number; surfaceLanguageMemor
 
   return {
     runtime,
+    storage,
+    frame,
     profileQueries,
     populationQueries,
     totalDurableCalls: () => Object.values(calls).reduce((sum, count) => sum + count, 0)

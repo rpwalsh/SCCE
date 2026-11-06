@@ -5,6 +5,7 @@ import type { IdFactory } from "./ids.js";
 import { featureSet, toJsonValue, weightedJaccard } from "./primitives.js";
 import { createProgramPlanner } from "./program-planner.js";
 import { validationMessageKey } from "./localization.js";
+import type { SpokenOutput } from "./mouth.js";
 
 interface ProgramActivationDecision {
   activate: boolean;
@@ -140,16 +141,21 @@ export function createValidationGraphBuilder(options: { idFactory: IdFactory }) 
 
 export function createEmissionEngine(options: { idFactory: IdFactory }) {
   return {
-    emit(input: { construct: ConstructGraph; validation: ValidationGraph; entailment: SemanticEntailmentResult; answer: string; pca?: JsonValue }): EmissionGraph {
+    emit(input: { construct: ConstructGraph; validation: ValidationGraph; entailment: SemanticEntailmentResult; answer: string; pca?: JsonValue; realization?: Pick<SpokenOutput, "realizationAvailability" | "evidenceRefs"> }): EmissionGraph {
       const pcaAnswer = pcaReleaseAnswer(input.pca);
       const releaseAnswer = pcaAnswer ?? input.answer;
+      const availability = input.realization?.realizationAvailability;
+      if (availability && availability.status !== "realized" && releaseAnswer.trim()) {
+        throw new Error("An unrealized content decision cannot emit an answer surface");
+      }
       return {
         id: options.idFactory.emissionId({ constructId: input.construct.id, validationId: input.validation.id }),
         constructId: input.construct.id,
         answer: releaseAnswer,
-        epistemicForce: input.entailment.force,
+        epistemicForce: availability?.status === "insufficient_support" ? "unknown" : input.entailment.force,
+        ...(availability ? { realizationAvailability: toJsonValue(availability) } : {}),
         artifacts: input.validation.passed ? input.construct.artifacts : [],
-        evidenceIds: input.entailment.evidenceIds,
+        evidenceIds: input.realization ? input.realization.evidenceRefs : input.entailment.evidenceIds,
         proofId: input.entailment.proof.id,
         pca: input.pca
       };

@@ -43,9 +43,9 @@ export function createCanonicalLeafTokenCache(options: {
 }
 
 /** The same canonical bytes and hash, without allocating one full JSON string. */
-export function canonicalDigestHex(value: unknown, hasher: Hasher): string {
+export function canonicalDigestHex(value: unknown, hasher: Hasher, leafTokenCache?: CanonicalLeafTokenCache): string {
   if (!hasher.digestChunks) return hasher.digestHex(canonicalStringify(value));
-  return hasher.digestChunks(canonicalJsonByteChunks(value));
+  return hasher.digestChunks(canonicalJsonByteChunks(value, leafTokenCache));
 }
 
 /**

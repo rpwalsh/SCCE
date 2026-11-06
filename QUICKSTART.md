@@ -1,124 +1,57 @@
-# SCCE Quickstart — evaluate it on your own machine
+# SCCE quickstart
 
-Everything below runs locally. No cloud services, no model downloads, no GPU.
+Build a local brain from a small collection you choose, then use the same runtime to inspect it and ask questions. PostgreSQL holds durable state; ingestion, reasoning and language realization run on your CPU.
 
-## Prerequisites
+## Install and build
 
-- Node.js 24.x (`>=24.18.0 <25`) and pnpm
-- PostgreSQL 14+ running locally
-- ~10 minutes for a small training corpus
-
-## 1. Build
+Use Node.js `>=24.18.0 <25`, pnpm, and a local PostgreSQL instance. From the repository:
 
 ```sh
 pnpm install
 pnpm build
 ```
 
-## 2. Point SCCE at your database
+## Configure your local database
 
-Create an empty database, then set its URL in `scce.config.json`:
+Create an empty PostgreSQL database. Put its connection settings in the ignored `scce.config.local.json`, which overlays `scce.config.json`:
 
 ```json
-"database": { "url": "postgresql://localhost:5432/scce", "schema": "scce3_runtime" }
+{
+  "database": {
+    "url": "postgresql://YOUR_USER:YOUR_PASSWORD@127.0.0.1:5432/YOUR_DATABASE",
+    "schema": "scce3_runtime"
+  }
+}
 ```
 
-The runtime creates and migrates its own schema on first start.
+The runtime creates and migrates its schema. Use the same configuration for training and serving so the server opens the brain you built.
 
-## 3. Teach it something
+## Teach a bounded first collection
 
-SCCE answers only from evidence it has ingested — a fresh brain knows
-nothing and says so. Train it on a small corpus (see
-[docs/CORPUS_TRAINING.md](docs/CORPUS_TRAINING.md) for the full guide):
+Put a short README or Markdown document you own in `corpus/first-brain/`, then run:
 
 ```sh
-pnpm scce --config scce.corpus-dev.config.json corpus train gutenberg corpus/gutenberg --max-files=16
+pnpm scce corpus train oss corpus/first-brain --docs-only --max-files=1 --max-file-bytes=65536
 ```
 
-Wikipedia ingestion from a standard multistream dump is also supported:
+This compiles document evidence, cognitive structures and language memory into PostgreSQL. Inspect the returned report for completed files, skipped files and resource stops before adding material. One source can contribute its own observations; a source-count minimum does not decide whether its exact facts are usable. The default CLI heap allowance is 3 GiB; whole-machine memory also includes PostgreSQL, the browser and the operating system. The whole-machine 8 GB qualification remains open.
 
-```sh
-pnpm scce --config scce.corpus-dev.config.json ingest wiki <pages-articles-multistream.xml.bz2> --index=<index.txt.bz2>
-```
+See [corpus training](docs/CORPUS_TRAINING.md) for larger bounded collections, resumable imports and other source formats.
 
-A single part file (`...multistream1.xml-p1p41242.bz2`) works without an
-index; the streamer locates its blocks itself. `--max-pages=N` bounds a
-run, and `runtime.corpora.wikipedia.alignmentLatticesPerShard` (default 48)
-bounds how many evidence spans each block flush aligns to the graph.
-
-## 4. Start the server
+## Start and use the brain
 
 ```sh
 pnpm server
 ```
 
-The runtime listens on `http://127.0.0.1:3873` (configurable in `scce.config.json`).
+Open `http://127.0.0.1:3873/`. `/api/ready` reports startup readiness. Ask about a concrete fact in your document, inspect its supporting evidence, then ask about something the document does not establish. The runtime records decisions and outcomes in the same durable store. Restarting the server reopens that state.
 
-## 5. Talk to it
+The gear opens evidence, approvals, settings and trace inspection. [Workspace runtime](docs/WORKSPACE_RUNTIME.md) covers governed local actions; [the user guide](docs/USER_GUIDE.md) covers learning and operation.
 
-**VS Code extension** (chat, bounded coding requests, voice mode):
+## Use the Pages interface
 
-```sh
-npx @vscode/vsce package --no-dependencies
-```
+[Static Pages workbench](packages/ui/STATIC_PAGES.md) explains the static export and authenticated browser connection to your local server. The operator's device runs the brain. Cloudflare Pages serves the interface assets.
 
-from `packages/vscode`, then install the generated `.vsix` via VS Code's
-"Install from VSIX". The SCCE chat view connects to the local server.
+## Verify a change
 
-**Browser workbench**: open `http://127.0.0.1:3873/`. It is a chat; the gear opens the developer panel with the
-evidence tree, approvals, settings, the proof inspector and the turn trace. A question can travel in the link:
-`http://127.0.0.1:3873/?q=Who%20is%20Ada%20Lovelace%3F` asks on arrival. `/api/ready` reports `ok: true` once
-warmup has hydrated the resident graph and language memory (two to three minutes on the full brain); it answers
-instantly while warming and never runs a table scan on the request path.
-
-**CLI**: `pnpm scce` exposes the same runtime from the terminal.
-
-**Demo script**: [docs/DEMO_RUNBOOK.md](docs/DEMO_RUNBOOK.md) — what to ask, what each answer shows, and the
-commands that reproduce every quoted number (`tools/live-probe.mjs`, `tools/reference-comparison-large.mjs --server`).
-
-## What to look for
-
-- Every answer is evidence-bound: sources are listed with the answer, and
-  the audit detail shows the proof route that produced it.
-- Ask about something it was never taught — it asks whether it may search
-  and learn instead of inventing an answer, and what it fetches waits for
-  your confirmation before it counts as knowledge.
-- Turn latency on ordinary hardware: ~2.5s median on the sealed benchmark
-  corpus.
-
-## 6. Let it learn, with your consent
-
-Enable a web connector in `scce.config.json`, then ask about something
-outside what you taught it. The answer carries an offer to search; approve
-it (chat button, workbench Approvals panel, or the prompt in `pnpm scce turn`).
-The fetched pages land in the Learning panel with a preview. Mark each one
-true or not true; only confirmed material is promoted to evidence, and the
-question is answered again from it. `pnpm scce learn curriculum` lists what
-SCCE itself wants to learn next; `pnpm scce learn pursue <planId>` consents.
-
-What it has learned *about you* is inspectable and reversible in the same way:
-
-```sh
-curl "http://127.0.0.1:3873/api/learning/about-me?conversationId=<id>"
-curl -X POST http://127.0.0.1:3873/api/learning/forget \
-  -H 'content-type: application/json' \
-  -d '{"conversationId":"<id>","claimId":"<id>"}'
-```
-
-The first returns every recorded claim with how it was learned — an explicit
-instruction, a demonstrated behaviour, or an inference — and which one currently
-governs each subject. The second deletes one for good; it is a real removal, not
-a superseding tombstone.
-
-## 7. Coding
-
-`pnpm scce code --path=src/file.ts "<request>"` applies a code action the
-TypeScript compiler owns for that file (name the diagnostic or fix) and keeps
-it only if the project still typechecks. There is no model anywhere in SCCE.
-
-## Verification
-
-The claims in the README are backed by this repository's own gates:
-`pnpm test` runs the full suite; the sealed evaluation harness and its
-protocol live in [tools/sealed-eval](tools/sealed-eval) and
-[the sealed evaluation kit](tools/sealed-eval/README_FIRST.md); the per-run record is available on request.
+`pnpm test` builds the packages and runs the repository checks. Capability and resource results have their own revision-bound evidence in the [evaluation index](docs/README.md#evidence-and-evaluation) and [recovery audit](docs/INGESTION_RECOVERY_AUDIT.md).

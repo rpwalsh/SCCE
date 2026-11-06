@@ -1,7 +1,8 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { createHash } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import * as canonical from "../canonical-json-digest.js";
 import {
   buildBoundedAlignmentEvents,
   canonicalJsonFragments,
@@ -43,6 +44,22 @@ class MemoryBlobs implements BlobStore {
 }
 
 describe("bounded alignment artifact codec", () => {
+  it("hashes and measures a new shared record in one canonical traversal", async () => {
+    const blobs = new MemoryBlobs();
+    const ids = createIdFactory({ clock: createClock({ fixedTime: 1 }), hasher: createHasher(), deterministicReplay: true });
+    const column = { graphTargetId: "target.fixture", targetMass: 1, transportedMass: 1 };
+    const payload = { alignmentAlternativeSets: [{ id: "set.fixture", seriesId: "series.fixture", supportId: "support.fixture", hypotheses: [{ plan: { id: "plan.fixture", cells: [], rowMarginals: [], columnMarginals: [column] }, evidenceAllocationId: null }] }] };
+    const traversal = vi.spyOn(canonical, "canonicalJsonByteChunks");
+    try {
+      const events = await buildBoundedAlignmentEvents({ episodeId: "episode.fixture", payload, blobs, idFactory: ids, hashContent: bytes => String(ids.contentHash(bytes)) });
+      expect(traversal.mock.calls.filter(([value]) => value === column)).toHaveLength(1);
+      const restored = await readBoundedAlignmentPayload(events as unknown as JsonValue[], blobs, bytes => String(ids.contentHash(bytes)));
+      expect(canonicalStringify(restored)).toBe(canonicalStringify(payload));
+    } finally {
+      traversal.mockRestore();
+    }
+  });
+
   it("matches canonical JSON while fragmenting multibyte values", () => {
     const value = { z: "emoji 😀".repeat(20), a: [undefined, 0, -0, "x"] };
     const fragments = canonicalJsonFragments(value, 7);

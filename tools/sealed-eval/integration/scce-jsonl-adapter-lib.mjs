@@ -52,7 +52,10 @@ export function ownerInputForEvaluationQuestion(question, evaluation) {
   // the evaluation too: overruns degrade at stage boundaries into the best
   // answer available instead of being killed from outside mid-thought.
   const startedMonotonicMs = performance.now();
-  const turnBudgetMs = 10_000;
+  const turnBudgetMs = question.timeLimitMs ?? 10_000;
+  if (!Number.isSafeInteger(turnBudgetMs) || turnBudgetMs < 1 || turnBudgetMs > 30_000) {
+    throw new Error("question.timeLimitMs must be an integer from 1 through 30000");
+  }
   const deadline = {
     schema: "scce.runtime_deadline.v1",
     clock: "node.performance.v1",

@@ -1,6 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createIdFactory } from "../ids.js";
 import { createLanguageMemoryRuntime } from "../language-memory-runtime.js";
 import { createNgramMemoryCompiler } from "../ngram-memory.js";
@@ -8,6 +8,26 @@ import { createClock, createHasher, featureSet } from "../primitives.js";
 import type { EvidenceSpan, LanguageProfile } from "../types.js";
 
 describe("n-gram memory profile ownership", () => {
+  it("avoids discarded observation identities while retaining identical learned artifacts", () => {
+    const hasher = createHasher();
+    const idFactory = createIdFactory({ clock: createClock({ fixedTime: 1 }), hasher, deterministicReplay: true });
+    const compiler = createNgramMemoryCompiler({ hasher, idFactory });
+    const evidence = span("evidence.retention", "alpha beta alpha gamma alpha beta");
+    const learned = profile("profile.retention", "source.retention");
+    const input = { streamId: "stream.retention", profile: learned, sourceVersionId: learned.sourceVersionId, text: evidence.text, evidence: [evidence], createdAt: 1 };
+    const full = compiler.compile(input);
+    const identity = vi.spyOn(idFactory, "semanticId");
+    const lean = compiler.compile({ ...input, retainObservations: false });
+    const served = createLanguageMemoryRuntime({ idFactory, hasher }).train({ ...input, retainObservations: false });
+    expect(full.observations.length).toBeGreaterThan(0);
+    expect(lean.observations).toEqual([]);
+    expect(served.observations).toEqual([]);
+    expect(served.models).toEqual(full.models);
+    expect(identity.mock.calls.some(([kind]) => kind === "ngram_observation")).toBe(false);
+    expect({ models: lean.models, units: lean.units, patterns: lean.patterns, frames: lean.semanticFrames }).toEqual({ models: full.models, units: full.units, patterns: full.patterns, frames: full.semanticFrames });
+    identity.mockRestore();
+  });
+
   it("includes profile ownership in semantic-frame identity", () => {
     const hasher = createHasher();
     const compiler = createNgramMemoryCompiler({

@@ -29,15 +29,19 @@ export function workbenchModelModulePath(): string {
 export interface WorkbenchRenderOptions {
   /** The benchmark suite the page's run command posts; the server owns the id, the page only names it. */
   benchmarkSuiteId?: string;
+  /** Enables the Pages-hosted shell's explicit, loopback-only connector. */
+  staticConnector?: boolean;
 }
 
 export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptions = {}): string {
+  const workbenchModelRoute = options.staticConnector ? "./ui/workbench-model.js" : WORKBENCH_MODEL_ROUTE;
   return `<!doctype html>
 <html lang="und">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>SCCE</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%235fb3c7'/%3E%3C/svg%3E" />
   <style>
     :root {
       color-scheme: dark;
@@ -107,6 +111,18 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
     .composer button { min-width:76px; height:34px; border:0; border-radius:8px; background:var(--accent-strong); color:#fff; font-weight:600; cursor:pointer; }
     .composer button:hover { background:var(--accent); }
     .composer button.stop { background:#7a2f35; }
+    .connector { border:1px solid var(--line); border-radius:8px; background:var(--panel2); color:var(--text); padding:5px 9px; cursor:pointer; }
+    .connector-dialog { width:min(460px, calc(100vw - 32px)); border:1px solid var(--line); border-radius:12px; background:var(--panel); color:var(--text); padding:20px; }
+    .connector-dialog::backdrop { background:rgba(0,0,0,.65); }
+    .connector-dialog label { display:block; margin:12px 0; color:var(--muted); }
+    .connector-dialog input { display:block; width:100%; margin-top:5px; padding:9px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--text); }
+    .connector-dialog .hint { line-height:1.45; }
+    .connector-dialog .actions { display:flex; justify-content:flex-end; gap:8px; margin-top:16px; }
+    .build-progress { white-space:pre-wrap; overflow-wrap:anywhere; color:var(--muted); }
+    .static-build { text-align:left; margin-top:24px; padding:14px; border:1px solid var(--line); border-radius:10px; background:var(--panel); }
+    .static-build label { display:block; margin:10px 0; text-align:left; color:var(--muted); font-size:12px; }
+    .static-build input { display:block; width:100%; margin-top:4px; padding:8px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--text); }
+    .static-build button { min-height:34px; padding:0 10px; border:0; border-radius:6px; background:var(--accent-strong); color:white; cursor:pointer; }
     .devpanel {
       flex:none; width:0; overflow:hidden; border-left:1px solid var(--line); background:var(--panel);
       display:flex; flex-direction:column; transition:width 0.15s ease;
@@ -157,69 +173,77 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
       <div class="brand"><span class="dot" id="status-dot"></span><span>SCCE</span></div>
       <div class="origin" id="status-runtime" title="${escapeHtml(serverUrl)}"></div>
       <div class="spacer"></div>
+      ${options.staticConnector ? '<button class="connector" id="connector-open">Connect local runtime</button>' : ''}
       <div class="badge" id="approvals-badge"></div>
-      <button class="iconbtn" id="dev-toggle" title="app.developer_panel" aria-label="app.developer_panel">&#9881;</button>
+      <button class="iconbtn" id="dev-toggle" title="${options.staticConnector ? "Local runtime details" : "app.developer_panel"}" aria-label="${options.staticConnector ? "Local runtime details" : "app.developer_panel"}">&#9881;</button>
     </div>
     <div class="body">
       <div class="chat-column">
         <div class="messages" id="messages">
           <div class="messages-inner" id="messages-inner">
             <div class="empty-state" id="empty-state">
-              <h2>chat.empty.title</h2>
-              <p>chat.empty.hint</p>
+              <h2>${options.staticConnector ? "Build from a bounded source" : "chat.empty.title"}</h2>
+              <p>${options.staticConnector ? "Connect your local PostgreSQL runtime, acquire and train a pinned source, then use the SCCE runtime on this device." : "chat.empty.hint"}</p>
+            ${options.staticConnector ? `<section class="static-build" aria-label="Acquire and train from a pinned source">
+              <strong>Build from a pinned public GitHub commit</strong>
+              <label>Repository URL<input id="build-repository" type="url" placeholder="https://github.com/owner/repository" /></label>
+              <label>Exact 40-character commit<input id="build-commit" type="text" spellcheck="false" autocomplete="off" /></label>
+              <button id="build-source" type="button">Acquire and train locally</button>
+              <p class="build-progress" id="build-status" role="status">Connect the local runtime before starting a build.</p>
+            </section>` : ''}
             </div>
           </div>
         </div>
         <div class="composer-wrap">
           <div class="composer">
-            <textarea id="prompt" rows="1" placeholder="composer.placeholder"></textarea>
-            <button id="send">button.send</button>
+            <textarea id="prompt" rows="1" placeholder="${options.staticConnector ? "Ask SCCE a question" : "composer.placeholder"}"></textarea>
+            <button id="send">${options.staticConnector ? "Send" : "button.send"}</button>
           </div>
         </div>
       </div>
       <aside class="devpanel" id="devpanel">
         <div class="devpanel-header">
-          <strong>app.developer_panel</strong>
-          <button class="iconbtn" id="dev-close" aria-label="app.developer_panel.close">&times;</button>
+          <strong>${options.staticConnector ? "Local runtime details" : "app.developer_panel"}</strong>
+          <button class="iconbtn" id="dev-close" aria-label="${options.staticConnector ? "Close runtime details" : "app.developer_panel.close"}">&times;</button>
         </div>
         <div class="devpanel-body">
           <div class="dev-section">
-            <h3>side.explorer</h3>
+            <h3>${options.staticConnector ? "Workspace" : "side.explorer"}</h3>
             <div class="tree" id="explorer-tree"></div>
           </div>
           <div class="dev-section">
-            <h3>side.evidence</h3>
-            <div class="tree" id="evidence-tree"><div>side.evidence.empty</div></div>
+            <h3>${options.staticConnector ? "Evidence" : "side.evidence"}</h3>
+            <div class="tree" id="evidence-tree"><div>${options.staticConnector ? "No evidence selected" : "side.evidence.empty"}</div></div>
           </div>
           <div class="dev-section">
-            <h3>side.approvals<button id="refresh-approvals">side.approvals.refresh</button></h3>
-            <div class="approval-head"><label class="toggle"><input type="checkbox" id="operator-grant-toggle" /> side.approvals.operator_grant</label></div>
-            <div id="approval-list" class="tree"><div>side.approvals.none</div></div>
+            <h3>${options.staticConnector ? "Approvals" : "side.approvals"}<button id="refresh-approvals">${options.staticConnector ? "Refresh" : "side.approvals.refresh"}</button></h3>
+            <div class="approval-head"><label class="toggle"><input type="checkbox" id="operator-grant-toggle" /> ${options.staticConnector ? "Temporary operator grant" : "side.approvals.operator_grant"}</label></div>
+            <div id="approval-list" class="tree"><div>${options.staticConnector ? "No approvals waiting" : "side.approvals.none"}</div></div>
           </div>
           <div class="dev-section">
-            <h3>side.settings</h3>
-            <div class="hint">side.settings.hint</div>
+            <h3>${options.staticConnector ? "Local settings" : "side.settings"}</h3>
+            <div class="hint">${options.staticConnector ? "Settings are read from the local runtime." : "side.settings.hint"}</div>
             <div id="settings-form" class="tree"></div>
           </div>
           <div class="dev-section">
-            <h3>side.models<button class="small-btn" id="model-download">side.models.download</button></h3>
-            <div id="models-list" class="tree"><div>side.models.empty</div></div>
+            <h3>${options.staticConnector ? "Visual perception" : "side.models"}<button class="small-btn" id="model-download">${options.staticConnector ? "Manage optional visual assets" : "side.models.download"}</button></h3>
+            <div id="models-list" class="tree"><div>${options.staticConnector ? "No visual assets installed" : "side.models.empty"}</div></div>
           </div>
           <div class="dev-section">
-            <h3>side.learning<button class="small-btn" id="refresh-learning">side.learning.refresh</button></h3>
-            <div class="hint">side.learning.hint</div>
-            <div id="learning-list" class="tree"><div>side.learning.none</div></div>
+            <h3>${options.staticConnector ? "Learning review" : "side.learning"}<button class="small-btn" id="refresh-learning">${options.staticConnector ? "Refresh" : "side.learning.refresh"}</button></h3>
+            <div class="hint">${options.staticConnector ? "Sources awaiting review appear here." : "side.learning.hint"}</div>
+            <div id="learning-list" class="tree"><div>${options.staticConnector ? "No sources awaiting review" : "side.learning.none"}</div></div>
           </div>
           <div class="dev-section">
-            <h3>pane.inspector<button class="small-btn" id="inspect">button.inspect</button></h3>
+            <h3>${options.staticConnector ? "Turn inspector" : "pane.inspector"}<button class="small-btn" id="inspect">${options.staticConnector ? "Inspect" : "button.inspect"}</button></h3>
             <pre class="json" id="inspect-json">{}</pre>
           </div>
           <div class="dev-section">
-            <h3>app.developer_panel.terminal</h3>
-            <pre class="json" id="terminal">terminal.ready</pre>
+            <h3>${options.staticConnector ? "Local activity" : "app.developer_panel.terminal"}</h3>
+            <pre class="json" id="terminal">${options.staticConnector ? "Ready" : "terminal.ready"}</pre>
           </div>
           <div class="dev-section">
-            <h3>app.developer_panel.trace</h3>
+            <h3>${options.staticConnector ? "Runtime trace" : "app.developer_panel.trace"}</h3>
             <pre class="flow" id="trace"></pre>
           </div>
         </div>
@@ -227,9 +251,21 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
     </div>
   </div>
   <div class="palette" id="palette"><input id="palette-input" aria-label="palette.aria" /><div class="palette-list" id="palette-list"></div></div>
+  ${options.staticConnector ? `<dialog class="connector-dialog" id="connector-dialog">
+    <h2>Connect to your local SCCE runtime</h2>
+    <p class="hint">The page sends requests to a loopback server on this device. Configure that exact Pages origin in SCCE_PAGES_ORIGINS and enter your local API bearer token here.</p>
+    <form id="connector-form" method="dialog">
+      <label>Local API address<input id="connector-origin" type="url" value="http://127.0.0.1:3873" autocomplete="url" /></label>
+      <label>API bearer token<input id="connector-token" type="password" autocomplete="off" /></label>
+      <div class="build-progress" id="connector-status" role="status"></div>
+      <div class="actions"><button class="connector" id="connector-close" type="button">Close</button><button class="connector" id="connector-save" type="button">Connect</button></div>
+    </form>
+  </dialog>` : ''}
   <script type="module">
-    import { createInitialWorkbenchState, reduceWorkbench, treeFromSnapshot, traceFromEvents, evidenceTreeFromTurn, withheldSurfaceView } from '${WORKBENCH_MODEL_ROUTE}';
+    import { createInitialWorkbenchState, reduceWorkbench, treeFromSnapshot, traceFromEvents, evidenceTreeFromTurn, withheldSurfaceView } from '${workbenchModelRoute}';
+    const STATIC_CONNECTOR = ${scriptLiteral(options.staticConnector === true)};
     let workbench = createInitialWorkbenchState(${scriptLiteral(serverUrl)});
+    if (STATIC_CONNECTOR) workbench = reduceWorkbench(workbench, { type: 'tree.replace', tree: [] });
     const apply = action => { workbench = reduceWorkbench(workbench, action); return workbench; };
     const FRONTIER_SUITE_ID = ${scriptLiteral(options.benchmarkSuiteId ?? "")};
     const messages = document.getElementById('messages');
@@ -251,6 +287,8 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
     let typingRow = null;
     let streamingAnswerRow = null;
     let sending = false;
+    let connectorOrigin = STATIC_CONNECTOR ? (localStorage.getItem('scce.localApiOrigin') || 'http://127.0.0.1:3873') : '';
+    let connectorToken = '';
 
     function toggleDevPanel(open) {
       devpanel.classList.toggle('open', open);
@@ -298,7 +336,7 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
         const details = document.createElement('details');
         details.className = 'details';
         const summary = document.createElement('summary');
-        summary.textContent = 'chat.details';
+        summary.textContent = STATIC_CONNECTOR ? 'Details' : 'chat.details';
         const pre = document.createElement('pre');
         pre.textContent = JSON.stringify(detail, null, 2);
         details.appendChild(summary);
@@ -317,7 +355,7 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
         typingRow.innerHTML = '<div class="bubble"><div class="typing"><span id="typing-phase"></span><span class="dots"><span>&bull;</span><span>&bull;</span><span>&bull;</span></span></div></div>';
         messagesInner.appendChild(typingRow);
       }
-      typingRow.querySelector('#typing-phase').textContent = phase ? String(phase) : 'chat.working';
+      typingRow.querySelector('#typing-phase').textContent = phase ? (STATIC_CONNECTOR ? 'Working locally…' : String(phase)) : (STATIC_CONNECTOR ? 'Thinking locally…' : 'chat.working');
       messages.scrollTop = messages.scrollHeight;
     }
     function hideTyping() { if (typingRow) { typingRow.remove(); typingRow = null; } }
@@ -329,7 +367,7 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
     function setSending(next) {
       sending = next;
       setRuntimeStatus({ requestInFlight: next });
-      sendButton.textContent = sending ? 'button.stop' : 'button.send';
+      sendButton.textContent = STATIC_CONNECTOR ? (sending ? 'Stop' : 'Send') : (sending ? 'button.stop' : 'button.send');
       sendButton.classList.toggle('stop', sending);
     }
 
@@ -414,7 +452,7 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
       messages.scrollTop = messages.scrollHeight;
     }
     function renderTerminal() {
-      terminal.textContent = workbench.terminal.map(line => '$ ' + line.text).join('\\n');
+      terminal.textContent = workbench.terminal.map(line => '$ ' + (STATIC_CONNECTOR && line.text === 'terminal.ready' ? 'Ready' : line.text)).join('\\n');
       terminal.scrollTop = terminal.scrollHeight;
     }
     function log(text, stream) { apply({ type: 'terminal.append', line: { stream: stream || 'request', text } }); renderTerminal(); }
@@ -425,6 +463,13 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
       const host = document.getElementById('explorer-tree');
       if (!host) return;
       host.innerHTML = '';
+      if (STATIC_CONNECTOR && workbench.tree.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'hint';
+        empty.textContent = 'No local workspace is connected.';
+        host.appendChild(empty);
+        return;
+      }
       for (const item of workbench.tree) {
         const row = document.createElement('div');
         row.textContent = item.label;
@@ -444,13 +489,13 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
       const dot = document.getElementById('status-dot');
       if (!pill || !dot) return;
       const busy = Boolean(workbench.status.requestInFlight);
-      pill.textContent = busy ? 'status.runtime.busy' : (workbench.status.ready ? '' : 'status.runtime.unknown');
+      pill.textContent = busy ? (STATIC_CONNECTOR ? 'Local request in progress' : 'status.runtime.busy') : (workbench.status.ready ? '' : (STATIC_CONNECTOR ? 'Local runtime not connected' : 'status.runtime.unknown'));
       dot.classList.toggle('busy', busy);
       dot.classList.toggle('down', !busy && !workbench.status.ready);
     }
     function setRuntimeStatus(status) { apply({ type: 'status.patch', status }); renderRuntimeStatus(); }
     async function postTurnStream(url, body, onFrame) {
-      const response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/x-ndjson' }, body: JSON.stringify(body) });
+      const response = await apiFetch(url, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/x-ndjson' }, body: JSON.stringify(body) });
       return continueTurnStream(response, { reconnectUrl: '', latestSequence: 0, promptText: String(body.text || '') }, onFrame);
     }
     async function continueTurnStream(response, state, onFrame) {
@@ -490,7 +535,7 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
         if (result) break;
         if (!state.reconnectUrl) throw new Error('stream.no_task_receipt');
         await new Promise(resolve => setTimeout(resolve, 500));
-        response = await fetch(state.reconnectUrl + '?after=' + state.latestSequence, { headers: { accept: 'application/x-ndjson' } });
+        response = await apiFetch(state.reconnectUrl + '?after=' + state.latestSequence, { headers: { accept: 'application/x-ndjson' } });
       }
       localStorage.removeItem('scce.activeTurnTask');
       return result;
@@ -502,7 +547,7 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
       setSending(true);
       showTyping('');
       try {
-        const stream = await fetch(state.reconnectUrl + '?after=' + Number(state.latestSequence || 0), { headers: { accept: 'application/x-ndjson' } });
+        const stream = await apiFetch(state.reconnectUrl + '?after=' + Number(state.latestSequence || 0), { headers: { accept: 'application/x-ndjson' } });
         const result = await continueTurnStream(stream, state, frame => {
           if (frame.type === 'progress') showTyping(frame.phase);
           if (typeof frame.answer === 'string' && answerHasSpeech(frame.answer)) showAnswerPreview(frame.answer);
@@ -518,7 +563,7 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
         if (!withheldRow(error)) add('error', error.message);
       }
     }
-    async function post(url, body) { const r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); const t = await r.text(); const j = t ? JSON.parse(t) : null; if (!r.ok) throw httpFailure(r.status, j); return j; }
+    async function post(url, body) { const r = await apiFetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); const t = await r.text(); const j = t ? JSON.parse(t) : null; if (!r.ok) throw httpFailure(r.status, j); return j; }
     function httpFailure(status, payload) { const error = new Error((payload && payload.error) || JSON.stringify(payload) || ('HTTP ' + status)); error.status = status; if (payload && payload.detail !== undefined) error.detail = payload.detail; return error; }
     // Settings and local models (Phase 6/8): labels come from the locale table (settings.<key>).
     async function loadSettings() {
@@ -569,8 +614,93 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
       catch (error) { window.alert(String(error.message || error).slice(0, 200)); }
       finally { modelDownload.disabled = false; }
     });
-    setTimeout(() => { loadSettings(); loadModels(); }, 0);
-    async function get(url) { const r = await fetch(url); const t = await r.text(); const j = t ? JSON.parse(t) : null; if (!r.ok) throw new Error(JSON.stringify(j)); return j; }
+    setTimeout(() => { if (!STATIC_CONNECTOR || connectorToken) { loadSettings(); loadModels(); } }, 0);
+    async function get(url) { const r = await apiFetch(url); const t = await r.text(); const j = t ? JSON.parse(t) : null; if (!r.ok) throw httpFailure(r.status, j); return j; }
+    function localApiOrigin(value) {
+      const parsed = new URL(String(value || '').trim());
+      if (parsed.protocol !== 'http:' || parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash || !['127.0.0.1', 'localhost', '[::1]'].includes(parsed.hostname.toLowerCase())) throw new Error('Enter an http://127.0.0.1, http://localhost, or http://[::1] API address.');
+      return parsed.origin;
+    }
+    function apiUrl(path) {
+      if (!STATIC_CONNECTOR) return path;
+      const target = new URL(path, connectorOrigin);
+      if (target.origin !== connectorOrigin) throw new Error('Local connector refused a non-loopback API address.');
+      return target.href;
+    }
+    function apiFetch(path, init = {}) {
+      const headers = new Headers(init.headers || {});
+      if (STATIC_CONNECTOR) {
+        if (!connectorToken) throw new Error('Connect to your local SCCE runtime first.');
+        headers.set('authorization', 'Bearer ' + connectorToken);
+      }
+      return fetch(apiUrl(path), { ...init, headers });
+    }
+    if (STATIC_CONNECTOR) {
+      const dialog = document.getElementById('connector-dialog');
+      const status = document.getElementById('connector-status');
+      document.getElementById('connector-origin').value = connectorOrigin;
+      document.getElementById('connector-open').addEventListener('click', () => dialog.showModal());
+      document.getElementById('connector-close').addEventListener('click', () => dialog.close());
+      document.getElementById('connector-save').addEventListener('click', async () => {
+        const button = document.getElementById('connector-save');
+        button.disabled = true;
+        status.textContent = 'Checking the local runtime…';
+        try {
+          connectorOrigin = localApiOrigin(document.getElementById('connector-origin').value);
+          connectorToken = document.getElementById('connector-token').value.trim();
+          if (!connectorToken) throw new Error('Enter the local API bearer token.');
+          const response = await apiFetch('/api/ready');
+          const payload = await response.json();
+          if (response.status !== 200 && response.status !== 503) throw httpFailure(response.status, payload);
+          localStorage.setItem('scce.localApiOrigin', connectorOrigin);
+          setRuntimeStatus({ ready: payload.ok === true });
+          status.textContent = payload.ok ? 'Connected and ready.' : 'Connected; the local runtime is still warming up.';
+          document.getElementById('connector-token').value = '';
+          void loadSettings(); void loadModels(); void refreshApprovals();
+          setTimeout(() => dialog.close(), 700);
+        } catch (error) { connectorToken = ''; status.textContent = String(error.message || error); }
+        finally { button.disabled = false; }
+      });
+      document.getElementById('build-source').addEventListener('click', async () => {
+        const button = document.getElementById('build-source');
+        const status = document.getElementById('build-status');
+        const remoteUrl = document.getElementById('build-repository').value.trim();
+        const commitSha = document.getElementById('build-commit').value.trim();
+        if (!/^[0-9a-f]{40}$/iu.test(commitSha)) { status.textContent = 'Enter the repository’s exact 40-character commit SHA.'; return; }
+        button.disabled = true;
+        status.textContent = 'Submitting the pinned source to the local runtime…';
+        let serverFailure = false;
+        let completed = false;
+        const handleBuildFrame = frame => {
+          if (frame.type === 'accepted') status.textContent = 'Accepted pinned source. Acquisition and training are running on this device.';
+          if (frame.type === 'result') {
+            const receipt = frame.receipt || {}; const snapshot = receipt.snapshot || {}; const training = receipt.training || {};
+            const bounds = receipt.bounds || {};
+            status.textContent = 'Build complete. ' + String(receipt.remoteUrl || remoteUrl) + '@' + String(receipt.commitSha || commitSha) + ': ' + Number(snapshot.fileCount || 0) + ' source files (' + Number(snapshot.totalBytes || 0) + ' bytes; configured maximum ' + Number(bounds.maxTotalBytes || 0) + ' bytes); ' + Number(training.docsTrained || 0) + ' documents trained; snapshot ' + String(snapshot.snapshotHash || 'unreported') + '.';
+            completed = true;
+          }
+          if (frame.type === 'error') { serverFailure = true; throw new Error(String(frame.error || 'Local build failed.')); }
+        };
+        try {
+          const response = await apiFetch('/api/ingest/github?stream=1', { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/x-ndjson' }, body: JSON.stringify({ remoteUrl, commitSha }) });
+          if (!response.ok) { serverFailure = true; const body = await response.text(); throw new Error(body || ('HTTP ' + response.status)); }
+          if (!response.body) throw new Error('The local runtime did not provide a progress stream.');
+          const reader = response.body.getReader(); const decoder = new TextDecoder(); let pending = '';
+          while (true) {
+            const next = await reader.read(); pending += decoder.decode(next.value || new Uint8Array(), { stream: !next.done });
+            const lines = pending.split('\\n'); pending = lines.pop() || '';
+            for (const line of lines) {
+              if (!line.trim()) continue;
+              handleBuildFrame(JSON.parse(line));
+            }
+            if (next.done) break;
+          }
+          if (pending.trim()) handleBuildFrame(JSON.parse(pending));
+          if (!completed) throw new Error('The local runtime closed the stream before reporting a build result.');
+        } catch (error) { status.textContent = (serverFailure ? 'Build failed: ' : 'No build result was confirmed: ') + String(error.message || error); }
+        finally { button.disabled = false; }
+      });
+    }
     async function refreshApprovals() { const r = await get('/api/session/approvals'); renderApprovals(r); return r; }
     function heldItem(item, onDone) {
       const box = document.createElement('div'); box.className = 'approval-item';

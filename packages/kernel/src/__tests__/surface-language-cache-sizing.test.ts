@@ -12,6 +12,35 @@ const NOT_WARM = /hydrated runtime unavailable: resident .* was not warmed/u;
 const CACHE_BUDGET_BYTES = 512 * 1024;
 
 describe("surface language cache entry sizing", () => {
+  it("admits one cold hydration at a time across distinct language keys", async () => {
+    const fixture = await runtimeFixture({ observations: 40, gateHydration: true });
+    const left = fixture.hydrate("language.alpha");
+    const right = fixture.hydrate("language.beta");
+    await fixture.hydrationStarted;
+    expect(fixture.runtime.cacheOccupancy()).toMatchObject({ activeHydrations: 1, waitingHydrations: 1 });
+    fixture.releaseHydration();
+    await Promise.all([left, right]);
+    expect(fixture.hydrations).toBe(2);
+    expect(fixture.runtime.cacheOccupancy()).toMatchObject({ activeHydrations: 0, waitingHydrations: 0 });
+  });
+
+  it("does not retain a single hydration larger than the cache allowance", async () => {
+    const fixture = await runtimeFixture({ observations: 4000 });
+    await fixture.hydrate("language.alpha");
+    expect(fixture.runtime.cacheOccupancy().languageMemoryEstimatedBytes).toBeLessThanOrEqual(CACHE_BUDGET_BYTES);
+  });
+
+  it("does not repopulate secondary scopes from hydrations queued before invalidation", async () => {
+    const fixture = await runtimeFixture({ observations: 40, gateHydration: true });
+    const first = fixture.hydrate("language.alpha");
+    const queued = fixture.hydrate("language.beta");
+    await fixture.hydrationStarted;
+    fixture.invalidate();
+    fixture.releaseHydration();
+    await Promise.all([first, queued]);
+    expect(fixture.runtime.cacheOccupancy()).toMatchObject({ languageMemoryEntries: 0, scopedStateReferences: 0 });
+  });
+
   it.each(["profiles", "aliases", "evidence", "frames"] as const)("does not restore invalidated %s metadata from an older read", async kind => {
     const fixture = await runtimeFixture({ observations: 40 });
     fixture.invalidate();

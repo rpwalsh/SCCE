@@ -40,6 +40,8 @@ export interface NgramMemoryInput {
   maxOrder?: number;
   maxCountersPerOrder?: number;
   vocabularyLimit?: number;
+  retainObservations?: boolean;
+  retainSemanticFrames?: boolean;
 }
 
 export function createNgramMemoryCompiler(options: { idFactory: IdFactory; hasher: Hasher }) {
@@ -67,8 +69,8 @@ export function createNgramMemoryCompiler(options: { idFactory: IdFactory; hashe
       const languageHint = primaryLanguageHint(input.profile);
       const evidenceIds = input.evidence.map(span => span.id);
       const alpha = input.evidence.length ? input.evidence.reduce((sum, span) => sum + span.alpha, 0) / input.evidence.length : 0.35;
-      const counters = Array.from({ length: maxOrder }, (_, i) => new SpaceSavingCounter<string>(maxCounters, i + 1));
-      for (let i = 0; i < symbols.length; i++) {
+      const counters = input.retainObservations === false ? [] : Array.from({ length: maxOrder }, (_, i) => new SpaceSavingCounter<string>(maxCounters, i + 1));
+      for (let i = 0; counters.length && i < symbols.length; i++) {
         for (let order = 1; order <= maxOrder; order++) {
           if (i + 1 < order) continue;
           const gram = symbols.slice(i + 1 - order, i + 1).join("\u0001");
@@ -117,7 +119,7 @@ export function createNgramMemoryCompiler(options: { idFactory: IdFactory; hashe
       } satisfies NgramModelRecord));
       const units = compileLanguageUnits({ profile: input.profile, sourceVersionId: input.sourceVersionId, sourceSystem: input.sourceSystem, symbols, graphemes, evidenceIds, alpha, idFactory: options.idFactory, hasher: options.hasher });
       const patterns = compileLanguagePatterns({ profile: input.profile, sourceVersionId: input.sourceVersionId, sourceSystem: input.sourceSystem, text: input.text, symbols, evidence: input.evidence, evidenceIds, createdAt: input.createdAt, idFactory: options.idFactory, hasher: options.hasher });
-      const semanticFrames = input.evidence.slice(0, 512).map((span, index) => semanticFrameForSpan(
+      const semanticFrames = input.retainSemanticFrames === false ? [] : input.evidence.slice(0, 512).map((span, index) => semanticFrameForSpan(
         span,
         index,
         input.profile.id,

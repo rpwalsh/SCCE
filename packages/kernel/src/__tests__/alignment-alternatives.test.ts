@@ -11,6 +11,18 @@ vi.mock("../sparse-fused-transport.js", async () => {
   );
   return {
     ...actual,
+    prepareSparseTransportSolver: (input: Parameters<typeof actual.prepareSparseTransportSolver>[0]) => {
+      const prepared = actual.prepareSparseTransportSolver(input);
+      return {
+        targetIndex: prepared.targetIndex,
+        solve(options: Parameters<typeof prepared.solve>[0]) {
+          transportMockState.calls += 1;
+          return transportMockState.override
+            ? transportMockState.override({ ...options, targetIndex: prepared.targetIndex }) as ReturnType<typeof actual.solveSparseFusedUnbalancedTransport>
+            : prepared.solve(options);
+        }
+      };
+    },
     solveSparseFusedUnbalancedTransport: (input: Parameters<typeof actual.solveSparseFusedUnbalancedTransport>[0]) => {
       transportMockState.calls += 1;
       return transportMockState.override

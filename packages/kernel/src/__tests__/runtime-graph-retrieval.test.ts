@@ -17,6 +17,20 @@ import type {
 import type { EvidenceSearchResult, SemanticFrameRecord } from "../storage.js";
 
 describe("runtime hot graph retrieval", () => {
+  it("does not retain oversized evidence below the entry-count limit", async () => {
+    vi.stubEnv("SCCE_SOURCE_ANCHOR_EVIDENCE_CACHE_MB", "1");
+    try {
+      const span = evidenceSpan("evidence:large", "large", "x".repeat(1024 * 1024));
+      const fixture = runtimeFixture(graphSlice([], [], []), [span]);
+      expect(await fixture.runtime.sourceAnchorEvidenceBatchCached([span.id])).toEqual([span]);
+      expect(fixture.runtime.cacheOccupancy()).toMatchObject({ sourceAnchorEvidenceEntries: 0, sourceAnchorEvidenceBytes: 0 });
+      await fixture.runtime.sourceAnchorEvidenceBatchCached([span.id]);
+      expect(fixture.getEvidenceBatch).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("indexes learned morphology prefixes once per model set", () => {
     let vocabularyReads = 0;
     const model = { vocabulary: [] as string[], vocabularySize: 4 } as unknown as KneserNeyModel;

@@ -15,6 +15,8 @@ const result = await runtime.kernel.turn({ text: question, ...(process.env.SCCE_
 console.log(JSON.stringify({
   answer: result.answer,
   force: result.epistemicForce,
+  assistantForce: result.assistantForce,
+  realizationAvailability: result.realizationAvailability,
   evidenceCount: result.evidence.length,
   evidenceHeads: result.evidence.slice(0, 3).map(span => String(span.text ?? span.textPreview ?? "").slice(0, 80)),
   entailment: { support: result.entailment?.support, force: result.entailment?.force, claim: String(result.entailment?.claim?.text ?? "").slice(0, 100) },

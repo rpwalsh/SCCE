@@ -760,6 +760,7 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
       maxOrder: input.ngramMaxOrder ?? registryNgram.maxOrder,
       maxCountersPerOrder: input.ngramMaxCountersPerOrder ?? registryNgram.maxCountersPerOrder,
       vocabularyLimit: input.ngramVocabularyLimit ?? registryNgram.vocabularyLimit,
+      retainNgramObservations: !(input.skipNgramPersistence || input.skipNgramObservationPersistence),
       constructionSets: input.constructionSets,
       ...(input.languageOnly ? { languageOnly: true } : {}),
       ...(input.alignmentPromotionObservations?.length ? { alignmentPromotionObservations: input.alignmentPromotionObservations } : {}),

@@ -7,6 +7,8 @@ import {
 import {
   evaluateHeldOutConstructionCoverage,
   induceSourceBoundConstructionTrainingSets,
+  prepareConstructionInduction,
+  type PreparedConstructionInduction,
   type HeldOutConstructionCoverageReport
 } from "./graph-surface-alignment.js";
 import {
@@ -15,7 +17,7 @@ import {
 } from "./sparse-alignment-candidates.js";
 import {
   createSparseTransportPlanRetentionInterner,
-  solveSparseFusedUnbalancedTransport,
+  prepareSparseTransportSolver,
   type SparseFusedTransportPlan
 } from "./sparse-fused-transport.js";
 import {
@@ -128,6 +130,7 @@ export interface LanguageTrainingBatch {
   maxOrder?: number;
   maxCountersPerOrder?: number;
   vocabularyLimit?: number;
+  retainNgramObservations?: boolean;
   /** Train the language layer only: n-gram observations, models, units, frames. No construction induction or alignment. */
   languageOnly?: boolean;
   constructionSets?: readonly SourceBoundLanguageConstructionTrainingSet[];
@@ -247,13 +250,19 @@ export function compileLanguageTrainingBatch(input: {
     createdAt: batch.createdAt,
     maxOrder: batch.maxOrder,
     maxCountersPerOrder: batch.maxCountersPerOrder,
-    vocabularyLimit: batch.vocabularyLimit
+    vocabularyLimit: batch.vocabularyLimit,
+    retainObservations: batch.retainNgramObservations,
+    retainSemanticFrames: index === 0
   }));
+  const constructionSplit = splitConstructionEvidence(batch.evidence, input.hasher);
+  const constructionEvidence = batch.languageOnly ? [] : constructionSplit.train;
+  const preparedInduction = prepareConstructionInduction({ documents: evidenceDocuments(constructionEvidence), hasher: input.hasher });
   const inducedSets = induceSourceBoundConstructionTrainingSets({
     // Language-only training hands the construction lane nothing, so every stage below compiles empties.
-    evidence: batch.languageOnly ? [] : constructionTrainEvidence(batch.evidence, input.hasher),
+    evidence: constructionEvidence,
     profileId: batch.profile.id,
-    hasher: input.hasher
+    hasher: input.hasher,
+    preparedInduction
   });
   const maxAlignmentTextBytes = Math.max(512, Math.min(65536, Math.floor(batch.maxAlignmentTextBytes ?? 8192)));
   const maxAlignmentLattices = Math.max(1, Math.min(64, Math.floor(batch.maxAlignmentLattices ?? 8)));
@@ -279,6 +288,8 @@ export function compileLanguageTrainingBatch(input: {
     })
     : undefined;
   const sparseAlignmentCandidateSupports = sparseAlignment?.supports ?? [];
+  const transportSolver = sparseAlignment ? prepareSparseTransportSolver({ targetIndex: sparseAlignment.targetIndex }) : undefined;
+  if (sparseAlignment && transportSolver) sparseAlignment.targetIndex = transportSolver.targetIndex;
   const alignmentCommunityRoutings = sparseAlignment
     ? sparseAlignmentCandidateSupports.map(support =>
       compileAlignmentCommunityRouting({
@@ -306,9 +317,8 @@ export function compileLanguageTrainingBatch(input: {
     : null;
   const initialSparseTransportPlans = sparseAlignment
     ? routedAlignmentSupports.map(support =>
-      planRetentionInterner.compact(solveSparseFusedUnbalancedTransport({
+      planRetentionInterner.compact(transportSolver!.solve({
         support,
-        targetIndex: sparseAlignment.targetIndex,
         typedNullCostModel: typedNullCostModel!,
         populationOrderingModel: populationOrderingModel!,
         hasher: input.hasher
@@ -326,9 +336,8 @@ export function compileLanguageTrainingBatch(input: {
   initialSparseTransportPlans.length = 0;
   const sparseTransportPlans = sparseAlignment
     ? routedAlignmentSupports.map(support =>
-      planRetentionInterner.compact(solveSparseFusedUnbalancedTransport({
+      planRetentionInterner.compact(transportSolver!.solve({
         support,
-        targetIndex: sparseAlignment.targetIndex,
         typedNullCostModel: typedNullCostModel!,
         populationOrderingModel: populationOrderingModel!,
         crossDocumentAlignmentModel: crossDocumentAlignmentModel!,
@@ -342,6 +351,7 @@ export function compileLanguageTrainingBatch(input: {
         basePlan: plan,
         support,
         targetIndex: sparseAlignment.targetIndex,
+        solver: transportSolver,
         typedNullCostModel: typedNullCostModel!,
         populationOrderingModel: populationOrderingModel!,
         crossDocumentAlignmentModel: crossDocumentAlignmentModel!,
@@ -516,13 +526,17 @@ export function compileLanguageTrainingBatch(input: {
     profileId: batch.profile.id,
     hasher: input.hasher,
     suppliedSets: batch.constructionSets ?? [],
-    inducedSets
+    inducedSets,
+    split: constructionSplit,
+    preparedInduction: batch.languageOnly ? undefined : preparedInduction,
+    languageOnly: batch.languageOnly
   });
+  const compileEvidence = constructionSplit.heldOut.length ? constructionSplit.train : [...batch.evidence];
   const sets = uniqueConstructionWorkItems([
     ...(batch.constructionSets ?? []).map(set => ({ set, evidence: batch.evidence })),
     ...inducedSets
       .filter(set => promotion.promotedInducedBindingIds.has(set.bindingId))
-      .map(set => ({ set, evidence: constructionCompileEvidence(batch.evidence, input.hasher) }))
+      .map(set => ({ set, evidence: compileEvidence }))
   ]);
   for (const item of sets) {
     const compiled = compileLanguageConstructionPattern({
@@ -853,6 +867,9 @@ function evaluateConstructionPromotion(input: {
   suppliedSets: readonly SourceBoundLanguageConstructionTrainingSet[];
   inducedSets: readonly SourceBoundLanguageConstructionTrainingSet[];
   policy?: LanguageTrainingConstructionPromotionPolicy;
+  split?: { train: EvidenceSpan[]; heldOut: EvidenceSpan[] };
+  preparedInduction?: PreparedConstructionInduction;
+  languageOnly?: boolean;
 }): { promotedInducedBindingIds: ReadonlySet<string>; report: LanguageTrainingConstructionPromotionReport } {
   // Cold-start calibration (2026-08-17): the prior defaults (2 held-out
   // occurrences, 0.5/0.5 coverage) rejected ~97% of induced constructions
@@ -870,13 +887,14 @@ function evaluateConstructionPromotion(input: {
     minPrePredicateCoverage: clampUnit(input.policy?.minPrePredicateCoverage ?? 1 / 3),
     minPostPredicateCoverage: clampUnit(input.policy?.minPostPredicateCoverage ?? 1 / 3)
   };
-  const split = splitConstructionEvidence(input.evidence, input.hasher);
-  const coverage = split.heldOut.length
+  const split = input.split ?? splitConstructionEvidence(input.evidence, input.hasher);
+  const coverage = !input.languageOnly && split.heldOut.length
     ? evaluateHeldOutConstructionCoverage({
       trainDocuments: evidenceDocuments(split.train),
       heldOutDocuments: evidenceDocuments(split.heldOut),
       profileId: input.profileId,
-      hasher: input.hasher
+      hasher: input.hasher,
+      preparedInduction: input.preparedInduction
     })
     : [];
   const coverageByBindingId = new Map(coverage.map(row => [row.bindingId, row]));
@@ -939,15 +957,6 @@ function evaluateConstructionPromotion(input: {
       rejections
     }
   };
-}
-
-function constructionTrainEvidence(evidence: readonly EvidenceSpan[], hasher: Hasher): EvidenceSpan[] {
-  return splitConstructionEvidence(evidence, hasher).train;
-}
-
-function constructionCompileEvidence(evidence: readonly EvidenceSpan[], hasher: Hasher): EvidenceSpan[] {
-  const split = splitConstructionEvidence(evidence, hasher);
-  return split.heldOut.length ? split.train : [...evidence];
 }
 
 function splitConstructionEvidence(evidence: readonly EvidenceSpan[], hasher: Hasher): { train: EvidenceSpan[]; heldOut: EvidenceSpan[] } {

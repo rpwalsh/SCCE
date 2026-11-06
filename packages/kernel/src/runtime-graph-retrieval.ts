@@ -38,6 +38,7 @@ import { anchorFeatureSet, clamp01, createClock, createHasher, featureSet, toJso
 import type { RuntimeGraphSliceValue } from "./runtime-graph-cache.js";
 import {
   estimateRuntimeGraphSliceBytes,
+  estimateEvidenceSpanBytes,
   fitRuntimeGraphSliceToBudget,
   positiveRuntimeInt,
   runtimeFlag,
@@ -159,6 +160,7 @@ export function createRuntimeGraphRetrieval(options: {
   candidates: ReturnType<typeof createCandidateEngine>;
   failures: string[];
   cacheMs: number;
+  sourceAnchorEvidenceCacheMaxBytes?: number;
   /** Stable inputs that scope process-local graph/evidence caches. A caller that
    * changes corpus, brain, or serving configuration must supply the new identity
    * (or call invalidate) so an in-flight read cannot cross that boundary. */
@@ -226,6 +228,8 @@ export function createRuntimeGraphRetrieval(options: {
   const sourceAnchorHotEdgeLimit = positiveRuntimeInt("SCCE_SOURCE_ANCHOR_HOT_EDGES", 32);
 
   const sourceAnchorEvidenceCacheMaxEntries = positiveRuntimeInt("SCCE_SOURCE_ANCHOR_EVIDENCE_CACHE_ENTRIES", 4096);
+  const sourceAnchorEvidenceCacheMaxBytes = options.sourceAnchorEvidenceCacheMaxBytes
+    ?? positiveRuntimeInt("SCCE_SOURCE_ANCHOR_EVIDENCE_CACHE_MB", graphSliceCacheMaxBytes / 1024 / 1024) * 1024 * 1024;
 
   const graphSliceCache = new Map<string, GraphSliceCacheEntry>();
   const graphSliceInFlight = new Map<string, { epoch: number; promise: Promise<RuntimeGraphSliceValue> }>();
@@ -249,15 +253,29 @@ export function createRuntimeGraphRetrieval(options: {
 
   let hotNeighborhoodLoad: Promise<HotGraphNeighborhood | undefined> | undefined;
 
-  const sourceAnchorEvidenceCache = new Map<string, { loadedAt: number; value: EvidenceSpan }>();
+  const sourceAnchorEvidenceCache = new Map<string, { loadedAt: number; value: EvidenceSpan; bytes: number }>();
+  let sourceAnchorEvidenceCacheBytes = 0;
+
+  function cacheSourceAnchorEvidence(span: EvidenceSpan, loadedAt: number): void {
+    const id = String(span.id);
+    sourceAnchorEvidenceCacheBytes -= sourceAnchorEvidenceCache.get(id)?.bytes ?? 0;
+    sourceAnchorEvidenceCache.delete(id);
+    const bytes = estimateEvidenceSpanBytes(span);
+    if (bytes > sourceAnchorEvidenceCacheMaxBytes) return;
+    sourceAnchorEvidenceCache.set(id, { loadedAt, value: span, bytes });
+    sourceAnchorEvidenceCacheBytes += bytes;
+    trimSourceAnchorEvidenceCache();
+  }
 
   function trimSourceAnchorEvidenceCache(): void {
-    const overflow = sourceAnchorEvidenceCache.size - sourceAnchorEvidenceCacheMaxEntries;
-    if (overflow <= 0) return;
+    if (sourceAnchorEvidenceCache.size <= sourceAnchorEvidenceCacheMaxEntries && sourceAnchorEvidenceCacheBytes <= sourceAnchorEvidenceCacheMaxBytes) return;
     const eviction = [...sourceAnchorEvidenceCache.entries()]
-      .sort((left, right) => left[1].loadedAt - right[1].loadedAt || left[0].localeCompare(right[0]))
-      .slice(0, overflow);
-    for (const [key] of eviction) sourceAnchorEvidenceCache.delete(key);
+      .sort((left, right) => left[1].loadedAt - right[1].loadedAt || left[0].localeCompare(right[0]));
+    for (const [key, entry] of eviction) {
+      if (sourceAnchorEvidenceCache.size <= sourceAnchorEvidenceCacheMaxEntries && sourceAnchorEvidenceCacheBytes <= sourceAnchorEvidenceCacheMaxBytes) break;
+      sourceAnchorEvidenceCache.delete(key);
+      sourceAnchorEvidenceCacheBytes -= entry.bytes;
+    }
   }
 
   async function evidenceBatchSingleFlight(ids: readonly EvidenceSpan["id"][]): Promise<EvidenceSpan[]> {
@@ -277,7 +295,7 @@ export function createRuntimeGraphRetrieval(options: {
     const loaded = await pending.promise;
     if (epoch === runtimeCacheEpoch) {
       const now = clock.now();
-      for (const span of loaded) sourceAnchorEvidenceCache.set(String(span.id), { loadedAt: now, value: span });
+      for (const span of loaded) cacheSourceAnchorEvidence(span, now);
       trimSourceAnchorEvidenceCache();
     }
     return loaded;
@@ -322,7 +340,7 @@ export function createRuntimeGraphRetrieval(options: {
       const resident = hot?.evidenceById.get(id);
       if (resident) {
         selected.set(id, resident);
-        sourceAnchorEvidenceCache.set(id, { loadedAt: now, value: resident });
+        cacheSourceAnchorEvidence(resident, now);
       }
     }
     const missing = boundedIds
@@ -2595,6 +2613,9 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
 
   return {
     sourceAnchorEvidenceCacheMaxEntries,
+    cacheOccupancy() {
+      return { sourceAnchorEvidenceEntries: sourceAnchorEvidenceCache.size, sourceAnchorEvidenceBytes: sourceAnchorEvidenceCacheBytes, sourceAnchorEvidenceMaxBytes: sourceAnchorEvidenceCacheMaxBytes, graphSliceCacheBytes };
+    },
     hotNeighborhoodCached,
     sourceAnchorEvidenceBatchCached,
     graphForText,
@@ -2622,6 +2643,7 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
       hotNeighborhood = undefined;
       hotNeighborhoodLoad = undefined;
       sourceAnchorEvidenceCache.clear();
+      sourceAnchorEvidenceCacheBytes = 0;
     }
   };
 }

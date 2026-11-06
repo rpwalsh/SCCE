@@ -53,7 +53,7 @@ import {
 } from "./sparse-alignment-candidates.js";
 import {
   createSparseTransportPlanRetentionInterner,
-  solveSparseFusedUnbalancedTransport
+  prepareSparseTransportSolver
 } from "./sparse-fused-transport.js";
 import { compileTypedNullCostModel } from "./typed-null-alignment.js";
 import { compilePopulationOrderingModel } from "./population-ordering.js";
@@ -703,11 +703,12 @@ export function createIngestionRuntime(options: {
           hyperedges: promotedGraph.hyperedges,
           hasher
         });
-        const alignmentTargetIndex = compileSparseAlignmentTargetIndex({
+        const transportSolver = prepareSparseTransportSolver({ targetIndex: compileSparseAlignmentTargetIndex({
           incidenceGraph,
           nodes: promotedGraph.nodes,
           hasher
-        });
+        }) });
+        const alignmentTargetIndex = transportSolver.targetIndex;
         const relationEvidenceIds = [...new Set(
           relationCandidates.flatMap(candidate => candidate.evidenceIds.map(String))
         )].sort();
@@ -801,9 +802,8 @@ export function createIngestionRuntime(options: {
           hasher
         });
         const initialTransportPlans = routedAlignmentSupports.map(support =>
-          planRetentionInterner.compact(solveSparseFusedUnbalancedTransport({
+          planRetentionInterner.compact(transportSolver.solve({
             support,
-            targetIndex: alignmentTargetIndex,
             typedNullCostModel,
             populationOrderingModel,
             hasher
@@ -817,9 +817,8 @@ export function createIngestionRuntime(options: {
         // Cross-document compilation materializes projections and estimates, with no plan aliases.
         initialTransportPlans.length = 0;
         const finalTransportPlans = routedAlignmentSupports.map(support =>
-          planRetentionInterner.compact(solveSparseFusedUnbalancedTransport({
+          planRetentionInterner.compact(transportSolver.solve({
             support,
-            targetIndex: alignmentTargetIndex,
             typedNullCostModel,
             populationOrderingModel,
             crossDocumentAlignmentModel,
@@ -850,6 +849,7 @@ export function createIngestionRuntime(options: {
             basePlan: transport,
             support,
             targetIndex: alignmentTargetIndex,
+            solver: transportSolver,
             typedNullCostModel,
             populationOrderingModel,
             crossDocumentAlignmentModel,

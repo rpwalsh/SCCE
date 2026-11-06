@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { traceEvent } from "./debug/trace.js";
+import { canonicalDigestHex } from "./canonical-json-digest.js";
 import { createCorpusRegistry, languageMemoryHydrationPlan, type CorpusRoleId } from "./corpus-registry.js";
 import { isCreativeEventCompatibilityPattern } from "./creative-event-compatibility.js";
 import { jsonRecord, kernelString, normalizePriorKey, splitPriorUnits } from "./kernel-answer-primitives.js";
@@ -169,6 +170,7 @@ function boundedSurfaceLanguageMemoryCacheSet<K, V extends { approxEstimatedByte
   maxBytes: number
 ): void {
   map.delete(key);
+  if (value.approxEstimatedBytes > maxBytes) return;
   map.set(key, value);
   let totalBytes = 0;
   for (const entry of map.values()) totalBytes += entry.approxEstimatedBytes;
@@ -238,7 +240,22 @@ export function createSurfaceLanguageRuntime(options: {
   // Language scoping is independent of the request surface. Keep the compiled
   // result by the durable language/model identity so a cache hit from another
   // hydration object does not rebuild every model and construction program.
-  const languageScopeCache = new Map<string, LanguageMemoryRuntimeState>();
+  const languageScopeCache = new Map<string, WeakRef<LanguageMemoryRuntimeState>>();
+  let hydrationTail = Promise.resolve();
+  let activeHydrations = 0;
+  let waitingHydrations = 0;
+  function admitHydration<T>(run: () => Promise<T>): Promise<T> {
+    const previous = hydrationTail;
+    let release!: () => void;
+    hydrationTail = new Promise<void>(resolve => { release = resolve; });
+    waitingHydrations++;
+    return (async () => {
+      await previous;
+      waitingHydrations--;
+      activeHydrations++;
+      try { return await run(); } finally { activeHydrations--; release(); }
+    })();
+  }
   const continuationPopulationCache = new Map<string, { loadedAt: number; value: WeakRef<LanguageContinuationPopulation> }>();
   const continuationPopulationInFlight = new Map<string, Promise<LanguageContinuationPopulation | undefined>>();
   let languageMemoryGeneration = 0;
@@ -349,7 +366,8 @@ export function createSurfaceLanguageRuntime(options: {
     unscopedReason = "no-language-cluster-selected",
     preferredCorpusRoleId?: CorpusRoleId,
     preferredSurface = "",
-    languageId?: string
+    languageId?: string,
+    generation = languageMemoryGeneration
   ) {
     const boundedLimit = Math.max(1, Math.min(256, Math.floor(limit)));
     const hydrateHeapStart = process.memoryUsage().heapUsed;
@@ -505,7 +523,7 @@ export function createSurfaceLanguageRuntime(options: {
       ? await deps.storage.evidence.getEvidenceBatch(constructionEvidenceIds)
       : [];
     hydrateHeapTrace("language.hydrate.loaded", { elapsedMs: Date.now() - hydrateStartedAt, modelsJsonMb: approxJsonMb(models), observationsJsonMb: approxJsonMb(observations), unitsJsonMb: approxJsonMb(units), patternsJsonMb: approxJsonMb(patterns), framesJsonMb: approxJsonMb(semanticFrames), constructionEvidenceJsonMb: approxJsonMb(constructionEvidence), models: models.length, observations: observations.length, units: units.length, patterns: patterns.length, semanticFrames: semanticFrames.length, constructionEvidence: constructionEvidence.length, queries: hydrationQueries.length });
-    const hydratedBase = languageMemoryRuntime.hydrateFromImportedBrain({
+    const hydrationInput = {
       importRunId: active.activeImportRunIds[0],
       models,
       observations,
@@ -516,7 +534,8 @@ export function createSurfaceLanguageRuntime(options: {
       ], Math.max(256, boundedLimit * 64)),
       semanticFrames,
       constructionEvidence
-    });
+    };
+    const hydratedBase = languageMemoryRuntime.hydrateFromImportedBrain(hydrationInput);
     const hydrated = continuationPopulation ? { ...hydratedBase, continuationPopulation } : hydratedBase;
     hydrateHeapTrace("language.hydrate.built", { elapsedMs: Date.now() - hydrateStartedAt, importedUnits: hydrated.importedUnits?.length ?? 0, importedPatterns: hydrated.importedPatterns?.length ?? 0, constructionBundles: hydrated.importedConstructionBundles?.length ?? 0, rejectedBundles: hydrated.rejectedConstructionPatterns?.length ?? 0 });
     const roleProfileIds = new Set<string>([
@@ -542,21 +561,21 @@ export function createSurfaceLanguageRuntime(options: {
     // cache hit, measured); it is computed once per hydration and only the surface profile is chosen per request.
     let languageScopedState: LanguageMemoryRuntimeState | undefined;
     const languageScopeKey = languageId
-      ? `${languageId}${UNIT_SEPARATOR}${preferredCorpusRoleId ?? "corpus-role:any"}${UNIT_SEPARATOR}${hasher.digestHex(JSON.stringify({
-        models: hydrated.records.map(record => record.id),
-        units: hydrated.importedUnits.map(record => record.id),
-        patterns: hydrated.importedPatterns.map(record => record.id),
-        frames: hydrated.importedSemanticFrames.map(record => record.id),
-        bundles: hydrated.importedConstructionBundles.map(bundle => bundle.id)
-      }))}`
+      ? `${languageId}${UNIT_SEPARATOR}${preferredCorpusRoleId ?? "corpus-role:any"}${UNIT_SEPARATOR}${canonicalDigestHex({
+        generation,
+        active,
+        hydrationInput,
+        continuationPopulation: continuationPopulation ?? null
+      }, hasher)}`
       : undefined;
     const scopeForSurface = (surface: string) => {
       // A language identity scopes by what each artifact is, not by which document it came from.
       const resolver = languageId ? options.languageResolver?.() : undefined;
       if (languageId && resolver) {
-        languageScopedState ??= (languageScopeKey ? languageScopeCache.get(languageScopeKey) : undefined)
+        languageScopedState ??= (languageScopeKey ? languageScopeCache.get(languageScopeKey)?.deref() : undefined)
           ?? scopeLanguageMemoryStateToLanguage(hydrated, languageId, resolver);
-        if (languageScopeKey) languageScopeCache.set(languageScopeKey, languageScopedState);
+        if (languageScopeKey && generation === languageMemoryGeneration) boundedCacheSet(
+          languageScopeCache, languageScopeKey, new WeakRef(languageScopedState), surfaceLanguageMemoryCacheMaxEntries);
         // cluster is the document/evidence-similarity cluster this hydration was originally asked to scope to --
         // unrelated to languageId, and its members can belong to any identity at all (verified live: a factual
         // turn's cluster member ended up a profile trained almost entirely from this repo's own source files and
@@ -763,7 +782,7 @@ export function createSurfaceLanguageRuntime(options: {
       if (hydrationOptions.residentOnly) return residentRuntimeNotWarm(`language-memory:${unscopedReason}`);
       let pending = surfaceLanguageMemoryInFlight.get(languageKey);
       if (!pending) {
-        pending = hydrateSurfaceLanguageMemory(limit, cluster, unscopedReason, preferredCorpusRoleId, preferredSurface, languageId)
+        pending = admitHydration(() => hydrateSurfaceLanguageMemory(limit, cluster, unscopedReason, preferredCorpusRoleId, preferredSurface, languageId, generation))
           .then(hydrated => {
             if (generation === languageMemoryGeneration && hydrationWorthCaching(hydrated)) boundedSurfaceLanguageMemoryCacheSet(
               surfaceLanguageMemoryCache,
@@ -864,7 +883,7 @@ export function createSurfaceLanguageRuntime(options: {
     // selected profile.
     let pending = surfaceLanguageMemoryInFlight.get(cacheKey);
     if (!pending) {
-      pending = hydrateSurfaceLanguageMemory(limit, cluster, unscopedReason, preferredCorpusRoleId, "");
+      pending = admitHydration(() => hydrateSurfaceLanguageMemory(limit, cluster, unscopedReason, preferredCorpusRoleId, "", undefined, generation));
       void pending.then(value => {
         // An explicit unscoped decision is reusable; missing data for a
         // selected language must remain retryable.
@@ -1396,6 +1415,9 @@ export function createSurfaceLanguageRuntime(options: {
       return {
         languageMemoryEntries: surfaceLanguageMemoryCache.size,
         languageMemoryEstimatedBytes,
+        scopedStateReferences: languageScopeCache.size,
+        activeHydrations,
+        waitingHydrations,
         candidateProfileEntries: surfaceCandidateProfileCache.size,
         aliasProfileEntries: sourceOwnedAliasProfileCache.size,
         evidenceProfileEntries: evidenceOwnedProfileCache.size,

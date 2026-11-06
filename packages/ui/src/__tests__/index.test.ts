@@ -38,12 +38,16 @@ describe("renderWorkbench", () => {
   });
 
   it("emits a page script the JavaScript engine can actually parse", () => {
-    const html = renderWorkbench("http://127.0.0.1:3873", { benchmarkSuiteId: "scce.eval.frontier_broad_capability.v1" });
     const opening = '<script type="module">';
-    const body = html.slice(html.indexOf(opening) + opening.length, html.indexOf("</script>"));
-    // The page is one module: strip its single import so the body can be parsed as a plain function body here.
-    const withoutImport = body.replace(/^\s*import\s+\{[^}]*\}\s+from\s+'[^']*';/m, "");
-    expect(() => new Function(withoutImport)).not.toThrow();
+    for (const html of [
+      renderWorkbench("http://127.0.0.1:3873", { benchmarkSuiteId: "scce.eval.frontier_broad_capability.v1" }),
+      renderWorkbench("", { staticConnector: true })
+    ]) {
+      const body = html.slice(html.indexOf(opening) + opening.length, html.indexOf("</script>"));
+      // The page is one module: strip its single import so the body can be parsed as a plain function body here.
+      const withoutImport = body.replace(/^\s*import\s+\{[^}]*\}\s+from\s+'[^']*';/m, "");
+      expect(() => new Function(withoutImport)).not.toThrow();
+    }
   });
 
   it("loads the workbench model as a module rather than restating it in the page", () => {
@@ -53,6 +57,26 @@ describe("renderWorkbench", () => {
     expect(html).toContain("const commands = workbench.commands;");
     expect(html).not.toContain("const map = {");
     for (const command of DEFAULT_COMMANDS) expect(html).not.toContain(`'${command.id}': '/api`);
+  });
+
+  it("resolves the exported static asset at both the site root and a nested Pages path", () => {
+    const html = renderWorkbench("", { staticConnector: true });
+    expect(html).toContain('from \'./ui/workbench-model.js\'');
+
+    const modelUrl = "./ui/workbench-model.js";
+    expect(new URL(modelUrl, "https://rpwalsh.com/").pathname).toBe("/ui/workbench-model.js");
+    expect(new URL(modelUrl, "https://rpwalsh.com/scce/").pathname).toBe("/scce/ui/workbench-model.js");
+  });
+
+  it("renders the Pages shell with a loopback-only local connector and pinned-source build stream", () => {
+    const html = renderWorkbench("", { staticConnector: true });
+    expect(html).toContain('id="connector-origin"');
+    expect(html).toContain('id="connector-token"');
+    expect(html).toContain('id="build-source"');
+    expect(html).toContain("/api/ingest/github?stream=1");
+    expect(html).toContain("['127.0.0.1', 'localhost', '[::1]']");
+    expect(html).toContain("localStorage.setItem('scce.localApiOrigin'");
+    expect(html).not.toContain("SCCE_API_BEARER_TOKEN=");
   });
 
   it("keeps a hostile server origin inside the script string it is embedded in", () => {

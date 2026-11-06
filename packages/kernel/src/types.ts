@@ -57,6 +57,7 @@ export type AssistantForceClass =
   | "conjecture"
   /** The sources were read, they disagree, and each is reported rather than one of them being asserted. */
   | "source_conflict_reported"
+  | "realization_unavailable"
   | "insufficient_support";
 
 export interface Clock {
@@ -803,6 +804,8 @@ export interface EmissionGraph {
   answer: string;
   epistemicForce: EpistemicForce;
   assistantForce?: AssistantForceClass;
+  /** Mouth outcome distinguishes truthful abstention from an eligible plan it could not realize. */
+  realizationAvailability?: JsonValue;
   artifacts: FileArtifact[];
   evidenceIds: EvidenceId[];
   proofId: ProofId;
@@ -1104,6 +1107,8 @@ export interface TurnResult {
   answer: string;
   epistemicForce: EpistemicForce;
   assistantForce?: AssistantForceClass;
+  /** Mouth outcome distinguishes truthful abstention from an eligible plan it could not realize. */
+  realizationAvailability?: JsonValue;
   requestedAuthority?: RequestedAuthority;
   /** Opaque calibration class selected by the typed requirement/authority lane for this turn. */
   calibrationTaskClass?: string;

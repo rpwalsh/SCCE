@@ -900,6 +900,48 @@ describe("ProgramGraph runtime and artifact emission", () => {
     expect(emission.artifacts).toEqual([]);
   });
 
+  it("emits the final realization decision instead of an earlier inferred claim", () => {
+    const fixture = engineeringFixture();
+    const construct = buildProgram("read stdin accept --value and write stdout command result", [fixture.evidence]);
+    const entailment = { ...entailmentFor(fixture.evidence), force: "inferred" as const };
+    const validation = { id: ids.validationId({ constructId: construct.id }), constructId: construct.id, checks: [], passed: true };
+    const engine = createEmissionEngine({ idFactory: ids });
+    const insufficient = engine.emit({
+      construct, validation, entailment, answer: "",
+      realization: { realizationAvailability: { status: "insufficient_support", decisionId: "content_plan.no_supported_relation" }, evidenceRefs: [] }
+    });
+    expect(insufficient.epistemicForce).toBe("unknown");
+    expect(insufficient.evidenceIds).toEqual([]);
+    expect(insufficient.realizationAvailability).toMatchObject({ status: "insufficient_support" });
+
+    const unavailable = engine.emit({
+      construct, validation, entailment, answer: "",
+      realization: { realizationAvailability: { status: "realization_unavailable", reasonId: "no_eligible_candidate", eligibleCandidateCount: 0 }, evidenceRefs: [] }
+    });
+    expect(unavailable.epistemicForce).toBe("inferred");
+    expect(unavailable.realizationAvailability).toMatchObject({ status: "realization_unavailable" });
+
+    const realized = engine.emit({
+      construct, validation, entailment, answer: "fixture.release.surface",
+      realization: { realizationAvailability: { status: "realized" }, evidenceRefs: [fixture.evidence.id] }
+    });
+    expect(realized.answer).toBe("fixture.release.surface");
+    expect(realized.epistemicForce).toBe("inferred");
+    expect(realized.evidenceIds).toEqual([fixture.evidence.id]);
+  });
+
+  it("rejects a stale certified surface when the final content decision withheld speech", () => {
+    const fixture = engineeringFixture();
+    const construct = buildProgram("read stdin accept --value and write stdout command result", [fixture.evidence]);
+    expect(() => createEmissionEngine({ idFactory: ids }).emit({
+      construct,
+      validation: { id: ids.validationId({ constructId: construct.id }), constructId: construct.id, checks: [], passed: true },
+      entailment: entailmentFor(fixture.evidence), answer: "",
+      pca: { releaseAnswer: "stale claim" },
+      realization: { realizationAvailability: { status: "insufficient_support", decisionId: "content_plan.no_supported_relation" }, evidenceRefs: [] }
+    })).toThrow("An unrealized content decision cannot emit an answer surface");
+  });
+
   function buildProgram(text: string, evidence: EvidenceSpan[], programIntent?: ProgramConstructIntent) {
     return createProgramGraphBuilder({ idFactory: ids, hasher }).build({
       episodeId: ids.episodeId(),

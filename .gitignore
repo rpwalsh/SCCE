@@ -1,6 +1,9 @@
 # Dependencies and compiler output
 node_modules/
 dist/
+/dist-pages/
+/.playwright-cli/
+/output/playwright/
 build/
 out/
 *.tsbuildinfo

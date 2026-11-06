@@ -495,6 +495,8 @@ export interface LanguageMemoryRuntime {
     maxOrder?: number;
     maxCountersPerOrder?: number;
     vocabularyLimit?: number;
+    retainObservations?: boolean;
+    retainSemanticFrames?: boolean;
   }): NgramMemoryCompilation;
   score(input: { state: LanguageMemoryRuntimeState; text: string; contextText?: string }): LanguageMemoryScore;
   suggest(input: { state: LanguageMemoryRuntimeState; context: string | readonly string[]; limit?: number }): LanguageMemorySuggestion[];
@@ -4531,7 +4533,9 @@ function trainWithOptions(input: Parameters<LanguageMemoryRuntime["train"]>[0], 
     createdAt: input.createdAt,
     maxOrder: input.maxOrder ?? 6,
     maxCountersPerOrder: input.maxCountersPerOrder,
-    vocabularyLimit: input.vocabularyLimit
+    vocabularyLimit: input.vocabularyLimit,
+    retainObservations: input.retainObservations,
+    retainSemanticFrames: input.retainSemanticFrames
   });
 }
 

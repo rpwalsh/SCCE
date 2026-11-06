@@ -66,7 +66,9 @@ try {
         : mapExactCitations({ evidence: result.evidence, sourceVersions, corpus: state.corpus });
       const trace = Array.isArray(result.evaluationTrace) ? result.evaluationTrace : [];
       write({
-        status: result.assistantForce === "insufficient_support" ? "abstained" : "ok",
+        status: result.assistantForce === "insufficient_support"
+          ? "abstained"
+          : result.assistantForce === "realization_unavailable" ? "error" : "ok",
         answer: result.answer,
         citations: citationResult.citations,
         support: {
@@ -75,11 +77,15 @@ try {
           evidenceForce: result.evidenceForce,
           truthState: result.truthState,
           answerBasis: result.answerBasis ?? null,
+          realizationAvailability: result.realizationAvailability ?? null,
           guardFlags: result.guardFlags,
           evidenceCount: result.evidence.length,
           calibrationStatus: result.calibrationStatus,
           calibration: result.calibration ?? null
         },
+        ...(result.assistantForce === "realization_unavailable"
+          ? { error: { code: "mouth.realization_unavailable", message: "No eligible typed Mouth candidate survived validation and energy selection." } }
+          : {}),
         // These are the production kernel's component-boundary events verbatim.
         // The adapter does not invent lifecycle or component events.
         trace,

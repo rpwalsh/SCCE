@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { learnedScriptIdForCharacter } from "./language.js";
+import { canonicalStringify } from "./primitives.js";
 
 import type { Hasher, InformationLabel, JsonValue, LanguageProfile } from "./types.js";
 
@@ -33,9 +34,15 @@ export interface LanguageIdentityRecord {
   directions: Array<{ direction: string; count: number }>;
   /** The learned function words of this language, by the share of member documents that carry them. */
   closedClass: Array<{ word: string; documentShare: number }>;
-  /** Corpus families whose documents belong to this identity, with counts and each family's own learned class. */
-  families: Array<{ family: string; count: number; closedClass?: Array<{ word: string; documentShare: number }> }>;
+  /** Corpus families whose documents belong to this identity, with counts and each family's own evidence. */
+  families: Array<{
+    family: string;
+    count: number;
+    closedClass?: Array<{ word: string; documentShare: number }>;
+    evidence?: LanguageIdentityEvidence;
+  }>;
   profileCount: number;
+  evidence?: LanguageIdentityEvidence;
   /** The document-level presence cut below which a document of this script is not this language. */
   membershipCut: number;
   createdAt: number;
@@ -44,6 +51,8 @@ export interface LanguageIdentityRecord {
 
 export interface LanguageProfileSignature {
   id: string;
+  /** Exact canonical source version when the store provides it; unlike a compact signature, this is safe to deduplicate. */
+  sourceVersionId?: string;
   /** Corpus family the document came from: a corpus label or a URI scheme. A prior for assignment, never a gate. */
   family: string;
   scripts: ReadonlyArray<{ script: string; mass: number }>;
@@ -52,13 +61,22 @@ export interface LanguageProfileSignature {
   topContinuation: ReadonlyArray<readonly [string, number]>;
 }
 
+export interface LanguageIdentityEvidence {
+  observedProfileCount: number;
+  sampleCount: number;
+  sourceFamilyCount: number;
+  independentSourceFamilyCount: number;
+  status: "source_observed" | "family_measured" | "cross_family_measured";
+  uncertainty: string[];
+  /** Observed Kneser-Ney symbols, not a claim that each symbol is grammatical. */
+  observedSymbols: Array<{ symbol: string; profileCount: number; continuationCount: number }>;
+}
+
 export interface LanguageIdentityDiscovery {
   identities: LanguageIdentityRecord[];
   assignments: Map<string, string>;
   audit: JsonValue;
 }
-
-const MIN_FAMILY_DOCUMENTS = 4;
 
 /** Word symbols only: letters with optional marks and apostrophes; markup, digits and punctuation are apparatus. */
 export function isLanguageWordSymbol(symbol: string): boolean {
@@ -138,6 +156,95 @@ interface Draft {
   seedFamily: string;
 }
 
+function profileSignatureKey(signature: LanguageProfileSignature): string {
+  return canonicalStringify({
+    scripts: [...signature.scripts].sort((left, right) => left.script.localeCompare(right.script)),
+    direction: signature.direction,
+    topContinuation: [...signature.topContinuation]
+      .map(([symbol, count]) => [symbol, count] as const)
+      .sort(([left], [right]) => left.localeCompare(right))
+  });
+}
+
+function uniqueProfileSignatures(documents: readonly LanguageProfileSignature[]): LanguageProfileSignature[] {
+  const byKey = new Map<string, LanguageProfileSignature>();
+  for (const document of documents) {
+    const key = document.sourceVersionId ? `source:${document.sourceVersionId}` : `profile:${document.id}`;
+    if (!byKey.has(key)) byKey.set(key, document);
+  }
+  return [...byKey].sort(([left], [right]) => left.localeCompare(right)).map(([, profile]) => profile);
+}
+
+function signatureShares(documents: readonly LanguageProfileSignature[]): Array<{ word: string; documentShare: number }> {
+  const counts = new Map<string, number>();
+  for (const document of documents) {
+    for (const word of new Set(document.topContinuation.map(([symbol]) => symbol))) {
+      counts.set(word, (counts.get(word) ?? 0) + 1);
+    }
+  }
+  return [...counts].map(([word, count]) => ({ word, documentShare: count / Math.max(1, documents.length) }))
+    .sort((left, right) => right.documentShare - left.documentShare || left.word.localeCompare(right.word));
+}
+
+function measuredFamilyClass(documents: readonly LanguageProfileSignature[]): Array<{ word: string; documentShare: number }> {
+  const samples = uniqueProfileSignatures(documents);
+  // One document cannot distinguish shared grammatical material from its subject matter. Preserve its exact
+  // source-owned identity and symbols, but leave the reusable class unresolved.
+  if (samples.length <= 1) return [];
+  const shares = signatureShares(samples);
+  if (!shares.length) return [];
+  const split = otsuThreshold(shares.map(row => row.documentShare));
+  if (split === undefined) return [];
+  return shares.filter(row => row.documentShare >= split);
+}
+
+function familySignatureSetKey(documents: readonly LanguageProfileSignature[]): string {
+  return canonicalStringify(uniqueProfileSignatures(documents).map(profileSignatureKey).sort());
+}
+
+function identityEvidence(input: {
+  documents: readonly LanguageProfileSignature[];
+  status: LanguageIdentityEvidence["status"];
+  hasMeasuredClass: boolean;
+}): LanguageIdentityEvidence {
+  const profiles = uniqueProfileSignatures(input.documents);
+  const symbols = new Map<string, { profileCount: number; continuationCount: number }>();
+  for (const profile of profiles) {
+    for (const [symbol, continuationCount] of profile.topContinuation) {
+      const row = symbols.get(symbol) ?? { profileCount: 0, continuationCount: 0 };
+      row.profileCount += 1;
+      row.continuationCount += continuationCount;
+      symbols.set(symbol, row);
+    }
+  }
+  const families = new Map<string, LanguageProfileSignature[]>();
+  for (const profile of input.documents) {
+    const rows = families.get(profile.family) ?? [];
+    rows.push(profile);
+    families.set(profile.family, rows);
+  }
+  const distinctFamilySignatures = new Set([...families.values()].map(familySignatureSetKey)).size;
+  const uncertainty: string[] = [];
+  if (!input.hasMeasuredClass) uncertainty.push("language_class_split_unresolved");
+  if (distinctFamilySignatures < 2) uncertainty.push("cross_family_equivalence_unresolved");
+  if (input.documents.length !== profiles.length) uncertainty.push("exact_source_version_duplicates_collapsed");
+  if (distinctFamilySignatures !== families.size) uncertainty.push("identical_family_signature_sets_collapsed");
+  return {
+    observedProfileCount: input.documents.length,
+    sampleCount: profiles.length,
+    sourceFamilyCount: families.size,
+    independentSourceFamilyCount: distinctFamilySignatures,
+    status: input.status,
+    uncertainty,
+    observedSymbols: [...symbols]
+      .map(([symbol, counts]) => ({ symbol, ...counts }))
+      .sort((left, right) => right.profileCount - left.profileCount
+        || right.continuationCount - left.continuationCount
+        || left.symbol.localeCompare(right.symbol))
+      .slice(0, 256)
+  };
+}
+
 /**
  * Discover the language identities of a corpus from its profile signatures and assign every profile to one. Pure and
  * deterministic: families are visited largest first, documents assigned by nearest identity within their script.
@@ -165,18 +272,26 @@ export function discoverLanguageIdentities(input: {
     }
     const families = [...byFamily].sort((a, b) => b[1].length - a[1].length || (a[0] < b[0] ? -1 : 1));
     const drafts: Draft[] = [];
-    const smallFamilies: Array<[string, LanguageProfileSignature[]]> = [];
+    const unresolvedFamilies: Array<[string, LanguageProfileSignature[]]> = [];
     for (const [family, documents] of families) {
-      if (documents.length < MIN_FAMILY_DOCUMENTS) { smallFamilies.push([family, documents]); continue; }
-      const closedClass = majorityClosedClass(documents);
-      if (!closedClass.length) { smallFamilies.push([family, documents]); continue; }
+      const closedClass = measuredFamilyClass(documents);
+      if (!closedClass.length) {
+        unresolvedFamilies.push([family, documents]);
+        continue;
+      }
       // A family joins the identity whose closed class its typical document carries; the cut is Otsu's over every
       // document of the script measured against that identity, so a family cannot lower the bar for itself.
       let joined: Draft | undefined;
       let joinedPresence = 0;
+      const signatureSet = familySignatureSetKey(documents);
       for (const draft of drafts) {
+        const exactSignatureMatch = [...draft.families.keys()].some(draftFamily =>
+          familySignatureSetKey(byFamily.get(draftFamily) ?? []) === signatureSet);
+        if (exactSignatureMatch) { joined = draft; joinedPresence = 1; break; }
         const presence = median(documents.map(document => closedClassPresence(document, draft.closedSet)));
-        const cut = otsuThreshold(pool.map(document => closedClassPresence(document, draft.closedSet))) ?? 0;
+        const cut = otsuThreshold(uniqueProfileSignatures(pool)
+          .map(document => closedClassPresence(document, draft.closedSet)));
+        if (cut === undefined) continue;
         if (presence >= cut && presence > joinedPresence) { joined = draft; joinedPresence = presence; }
       }
       if (joined) {
@@ -187,17 +302,54 @@ export function discoverLanguageIdentities(input: {
       const closedSet = new Set(closedClass.map(row => row.word));
       drafts.push({ script, closedClass, closedSet, families: new Map([[family, documents.length]]), members: [...documents], seedFamily: family });
     }
+    for (const [family, documents] of unresolvedFamilies) {
+      // An unresolved family has no defensible language class of its own, but its documents can still carry a
+      // measured identity's class. Join only when the same corpus-wide Otsu presence cut used above supports it;
+      // retain the family's own source observations as evidence and do not invent a family closed class.
+      let joined: Draft | undefined;
+      let joinedPresence = 0;
+      const signatureSet = familySignatureSetKey(documents);
+      for (const draft of drafts) {
+        const exactSignatureMatch = [...draft.families.keys()].some(draftFamily =>
+          familySignatureSetKey(byFamily.get(draftFamily) ?? []) === signatureSet);
+        if (exactSignatureMatch) { joined = draft; joinedPresence = 1; break; }
+        if (!draft.closedSet.size) continue;
+        const presence = median(documents.map(document => closedClassPresence(document, draft.closedSet)));
+        const cut = otsuThreshold(uniqueProfileSignatures(pool)
+          .map(document => closedClassPresence(document, draft.closedSet)));
+        if (cut === undefined) continue;
+        if (presence >= cut && presence > joinedPresence) { joined = draft; joinedPresence = presence; }
+      }
+      if (joined) {
+        joined.members.push(...documents);
+        joined.families.set(family, (joined.families.get(family) ?? 0) + documents.length);
+        continue;
+      }
+      drafts.push({
+        script,
+        closedClass: [],
+        closedSet: new Set(),
+        families: new Map([[family, documents.length]]),
+        members: [...documents],
+        seedFamily: family
+      });
+    }
     if (!drafts.length) {
-      // Nothing in this script had a majority closed class (too few documents, or word-less material): one identity
-      // by script alone, so the material is still addressable.
+      // Word-less signatures still receive a script identity so their profiles remain addressable.
       drafts.push({ script, closedClass: [], closedSet: new Set(), families: new Map(), members: [], seedFamily: "" });
     }
-    // Every document of the script goes to the nearest identity by closed-class presence; its family breaks ties.
+    // Assign unresolved families to their own identity; measured families use closed-class presence.
     const familyOf = new Map<string, Draft>();
     for (const draft of drafts) for (const family of draft.families.keys()) familyOf.set(family, draft);
-    const membershipCuts = drafts.map(draft => otsuThreshold(pool.map(document => closedClassPresence(document, draft.closedSet))) ?? 0);
+    const membershipCuts = drafts.map(draft => otsuThreshold(uniqueProfileSignatures(pool)
+      .map(document => closedClassPresence(document, draft.closedSet))) ?? 0);
     const assigned = new Map<Draft, LanguageProfileSignature[]>(drafts.map(draft => [draft, []]));
     for (const document of pool) {
+      const sourceOwned = familyOf.get(document.family);
+      if (sourceOwned && sourceOwned.closedClass.length === 0) {
+        assigned.get(sourceOwned)!.push(document);
+        continue;
+      }
       let best: Draft | undefined;
       let bestPresence = -1;
       for (const draft of drafts) {
@@ -220,7 +372,14 @@ export function discoverLanguageIdentities(input: {
         directions.set(member.direction, (directions.get(member.direction) ?? 0) + 1);
       }
       const signature = `${script}${draft.closedClass.slice(0, 16).map(row => row.word).join("")}`;
-      const id = `language_identity_${input.hasher.digestHex(signature).slice(0, 32)}`;
+      const sameClassDrafts = drafts.filter(other => other !== draft
+        && other.script === draft.script
+        && other.closedClass.slice(0, 16).map(row => row.word).join("\u001f")
+          === draft.closedClass.slice(0, 16).map(row => row.word).join("\u001f"));
+      const identityMaterial = draft.closedClass.length && !sameClassDrafts.length
+        ? signature
+        : `${signature}\u001fsource-family:${draft.seedFamily}`;
+      const id = `language_identity_${input.hasher.digestHex(identityMaterial).slice(0, 32)}`;
       identities.push({
         schema: LANGUAGE_IDENTITY_SCHEMA,
         id,
@@ -230,17 +389,40 @@ export function discoverLanguageIdentities(input: {
         // A family that joined another family's identity keeps the class its own documents carry; it is what that corpus role speaks.
         families: [...familyCounts].map(([family, count]) => {
           const own = familyMembers.get(family) ?? [];
-          const closedClass = own.length >= MIN_FAMILY_DOCUMENTS ? majorityClosedClass(own) : [];
-          return closedClass.length ? { family, count, closedClass } : { family, count };
+          const closedClass = measuredFamilyClass(own);
+          const evidence = identityEvidence({
+            documents: own,
+            status: closedClass.length
+              ? (draft.closedClass.length ? "family_measured" : "cross_family_measured")
+              : "source_observed",
+            hasMeasuredClass: closedClass.length > 0
+          });
+          return { family, count, ...(closedClass.length ? { closedClass } : {}), evidence };
         }).sort((a, b) => b.count - a.count),
         profileCount: members.length,
+        evidence: identityEvidence({
+          documents: members,
+          status: draft.closedClass.length
+            ? (new Set([...familyCounts.keys()].map(family => familySignatureSetKey(familyMembers.get(family) ?? []))).size > 1
+              ? "cross_family_measured"
+              : "family_measured")
+            : "source_observed",
+          hasMeasuredClass: draft.closedClass.length > 0
+        }),
         membershipCut: membershipCuts[index] ?? 0,
         createdAt: input.now,
         ...(input.informationLabel ? { informationLabel: input.informationLabel } : {})
       });
       for (const member of members) assignments.set(member.id, id);
     });
-    auditBuckets.push({ script, documents: pool.length, families: families.length, identities: drafts.length, smallFamilies: smallFamilies.map(([family, documents]) => `${family}:${documents.length}`) });
+    auditBuckets.push({
+      script,
+      documents: pool.length,
+      uniqueProfileSignatures: uniqueProfileSignatures(pool).length,
+      families: families.length,
+      identities: drafts.length,
+      unresolvedFamilies: unresolvedFamilies.map(([family, documents]) => ({ family, profiles: documents.length }))
+    });
   }
   return { identities, assignments, audit: { schema: LANGUAGE_IDENTITY_SCHEMA, buckets: auditBuckets } };
 }
@@ -261,9 +443,7 @@ export function closedClassForFamilies(identity: LanguageIdentityRecord, familie
 }
 
 /**
- * The identity a request surface is written in: the identity of its script whose closed class covers most of its
- * words; with no closed-class word in the surface, the largest identity of that script (the language the corpus
- * mostly speaks). Deterministic. Pure.
+ * Route by measured closed class, then observed profile symbols; an unresolved tie stays unresolved.
  */
 export function selectLanguageIdentityForSurface(
   identities: readonly LanguageIdentityRecord[],
@@ -275,12 +455,26 @@ export function selectLanguageIdentityForSurface(
   const candidates = identities.filter(identity => !script || identity.script === script);
   const pool = candidates.length ? candidates : identities;
   let best: { identity: LanguageIdentityRecord; coverage: number } | undefined;
+  let bestObserved: { identity: LanguageIdentityRecord; coverage: number } | undefined;
+  let tiedObserved = false;
   for (const identity of [...pool].sort((a, b) => b.profileCount - a.profileCount || (a.id < b.id ? -1 : 1))) {
     const closed = new Set(identity.closedClass.map(row => row.word));
     const coverage = words.length ? words.filter(word => closed.has(word)).length / words.length : 0;
     if (!best || coverage > best.coverage) best = { identity, coverage };
+    if (!closed.size) {
+      const observed = new Set(identity.evidence?.observedSymbols.map(row => row.symbol) ?? []);
+      const observedCoverage = words.length ? words.filter(word => observed.has(word)).length / words.length : 0;
+      if (observedCoverage > (bestObserved?.coverage ?? 0)) {
+        bestObserved = { identity, coverage: observedCoverage };
+        tiedObserved = false;
+      } else if (observedCoverage > 0 && observedCoverage === bestObserved?.coverage) {
+        tiedObserved = true;
+      }
+    }
   }
-  return best;
+  if (best && best.coverage > 0) return best;
+  if (bestObserved && bestObserved.coverage > 0 && !tiedObserved) return bestObserved;
+  return pool.length === 1 ? best : undefined;
 }
 
 /** The script most of a surface's letters belong to, named the way profiles name scripts, or undefined when it has none. */

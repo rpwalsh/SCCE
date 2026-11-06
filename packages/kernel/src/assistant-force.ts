@@ -424,6 +424,7 @@ function reasonForProposalForce(force: AssistantForceClass): string {
     case "learned_corpus_answer": return "assistant_force.proposal.learned_prior";
     case "conjecture": return "assistant_force.proposal.conjectured";
     case "source_conflict_reported": return "assistant_force.proposal.source_conflict_reported";
+    case "realization_unavailable": return "assistant_force.proposal.realization_unavailable";
     case "insufficient_support": return "assistant_force.proposal.unsupported";
   }
 }

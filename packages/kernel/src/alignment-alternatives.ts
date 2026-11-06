@@ -7,7 +7,8 @@ import type {
   SparseAlignmentTargetIndex
 } from "./sparse-alignment-candidates.js";
 import {
-  solveSparseFusedUnbalancedTransport,
+  prepareSparseTransportSolver,
+  type PreparedSparseTransportSolver,
   type SparseTransportPlanRetentionPolicy,
   type SparseFusedTransportPlan,
   type SparseTransportBudget,
@@ -69,6 +70,7 @@ export function extractAlignmentAlternatives(input: {
   basePlan: SparseFusedTransportPlan;
   support: SparseAlignmentCandidateSupport;
   targetIndex: SparseAlignmentTargetIndex;
+  solver?: PreparedSparseTransportSolver;
   typedNullCostModel: TypedNullCostModel;
   populationOrderingModel: PopulationOrderingModel;
   crossDocumentAlignmentModel?: CrossDocumentAlignmentModel;
@@ -85,6 +87,7 @@ export function extractAlignmentAlternatives(input: {
     throw new Error("base alignment plan does not match alternative support");
   }
   const hasher = input.hasher ?? createHasher();
+  if (input.solver && input.solver.targetIndex !== input.targetIndex) throw new Error("alignment solver and target snapshot do not match");
   const maximum = boundedMaximum(input.maximumRetainedAlternatives);
   const branchSearchBudget = boundedBranchSearches(
     input.maxBranchSearches,
@@ -123,13 +126,14 @@ export function extractAlignmentAlternatives(input: {
   const plans = [input.retentionPolicy?.compact(input.basePlan) ?? input.basePlan];
   const signatures = new Set([planSignature(input.basePlan, hasher)]);
   let attemptedBranchCount = 0;
+  let solver = input.solver;
   for (const candidateId of branchCandidateIds) {
     if (plans.length >= maximum) break;
     if (attemptedBranchCount >= branchSearchBudget) break;
     attemptedBranchCount += 1;
-    const solvedPlan = solveSparseFusedUnbalancedTransport({
+    solver ??= prepareSparseTransportSolver({ targetIndex: input.targetIndex });
+    const solvedPlan = solver.solve({
       support: input.support,
-      targetIndex: input.targetIndex,
       typedNullCostModel: input.typedNullCostModel,
       populationOrderingModel: input.populationOrderingModel,
       crossDocumentAlignmentModel: input.crossDocumentAlignmentModel,

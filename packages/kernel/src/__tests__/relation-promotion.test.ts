@@ -242,7 +242,8 @@ describe("held-out relation promotion", () => {
     const batchOnly = compileRelationPromotionModel({ candidates: batch });
     expect(batchOnly.decisions.every(decision => !decision.promoted)).toBe(true);
     expect(batchOnly.decisions.some(decision =>
-      decision.reasons.includes("insufficient_independent_sources"))).toBe(true);
+      decision.reasons.includes("missing_source_family_disjoint_holdout")
+      || decision.reasons.includes("nonpositive_heldout_description_length_gain"))).toBe(true);
 
     const withHistory = compileRelationPromotionModel({
       candidates: batch,

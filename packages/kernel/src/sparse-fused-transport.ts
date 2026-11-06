@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { performance } from "node:perf_hooks";
-import { canonicalDigestHex } from "./canonical-json-digest.js";
+import { canonicalDigestHex, createCanonicalLeafTokenCache, type CanonicalLeafTokenCache } from "./canonical-json-digest.js";
 import { createGraphTargetGeometry } from "./graph-target-geometry.js";
 import { canonicalStringify, createHasher, toJsonValue } from "./primitives.js";
 import type {
@@ -319,7 +319,7 @@ interface RuntimeCell {
   mass: number;
 }
 
-export function solveSparseFusedUnbalancedTransport(input: {
+export interface SparseTransportSolveInput {
   support: SparseAlignmentCandidateSupport;
   targetIndex: SparseAlignmentTargetIndex;
   objective?: SparseTransportObjective;
@@ -329,18 +329,68 @@ export function solveSparseFusedUnbalancedTransport(input: {
   excludedCandidateIds?: readonly string[];
   budget?: Partial<SparseTransportBudget>;
   hasher?: Hasher;
-}): SparseFusedTransportPlan {
+}
+
+export interface PreparedSparseTransportSolver {
+  readonly targetIndex: SparseAlignmentTargetIndex;
+  /** Repeated column records are immutable and shared within this solver. */
+  solve(input: Omit<SparseTransportSolveInput, "targetIndex">): SparseFusedTransportPlan;
+}
+
+type SparseTransportTargetContext = {
+  targetById: Map<string, SparseAlignmentTarget>;
+  geometry: ReturnType<typeof createGraphTargetGeometry>;
+  columnIds: string[];
+  columnIndex: Map<string, number>;
+  previousColumnMarginals: Map<string, SparseTransportColumnMarginal>;
+  canonicalTokens: CanonicalLeafTokenCache;
+};
+
+export function prepareSparseTransportSolver(input: { targetIndex: SparseAlignmentTargetIndex }): PreparedSparseTransportSolver {
+  const targetIndex = structuredClone(input.targetIndex);
+  const pending: object[] = [targetIndex];
+  const seen = new WeakSet<object>();
+  while (pending.length) {
+    const value = pending.pop()!;
+    if (seen.has(value)) continue;
+    seen.add(value);
+    for (const child of Object.values(value)) if (child && typeof child === "object") pending.push(child);
+    Object.freeze(value);
+  }
+  const targetById = new Map(targetIndex.targets.map(target => [target.id, target]));
+  const columnIds = targetIndex.targets.map(target => target.id);
+  const context: SparseTransportTargetContext = {
+    targetById,
+    geometry: createGraphTargetGeometry(targetById.values()),
+    columnIds,
+    columnIndex: new Map(columnIds.map((id, index) => [id, index])),
+    previousColumnMarginals: new Map(),
+    canonicalTokens: createCanonicalLeafTokenCache()
+  };
+  return Object.freeze({
+    targetIndex,
+    solve(options: Omit<SparseTransportSolveInput, "targetIndex">) {
+      return solveSparseTransport({ ...options, targetIndex }, context);
+    }
+  });
+}
+
+export function solveSparseFusedUnbalancedTransport(input: SparseTransportSolveInput): SparseFusedTransportPlan {
+  return solveSparseTransport(input);
+}
+
+function solveSparseTransport(input: SparseTransportSolveInput, prepared?: SparseTransportTargetContext): SparseFusedTransportPlan {
   if (input.support.targetIndexId !== input.targetIndex.id) {
     throw new Error("transport support and target index do not match");
   }
   const hasher = input.hasher ?? createHasher();
   const objective = validatedObjective(input.objective ?? SPARSE_TRANSPORT_OBJECTIVE_V1);
   const budget = transportBudget(input.budget);
-  const targetById = new Map(input.targetIndex.targets.map(target => [target.id, target]));
+  const targetById = prepared?.targetById ?? new Map(input.targetIndex.targets.map(target => [target.id, target]));
   // Geometry owns a bounded LRU per-source BFS cache. Keep one instance for this solve so each outer transport
   // iteration reuses the same target indexing, feature weights, and recent walks; rebuilding it inside
   // localStructuralCosts made the profile pay that work once per iteration without changing any distances.
-  const targetGeometry = createGraphTargetGeometry(targetById.values());
+  const targetGeometry = prepared?.geometry ?? createGraphTargetGeometry(targetById.values());
   const typedNullCostModel = input.typedNullCostModel ?? compileTypedNullCostModel({
     supports: [input.support],
     targetIndex: input.targetIndex,
@@ -355,9 +405,9 @@ export function solveSparseFusedUnbalancedTransport(input: {
       hasher
     });
   const rowIds = input.support.rows.map(row => row.surfaceUnitId);
-  const columnIds = input.targetIndex.targets.map(target => target.id);
+  const columnIds = prepared?.columnIds ?? input.targetIndex.targets.map(target => target.id);
   const rowIndex = new Map(rowIds.map((id, index) => [id, index]));
-  const columnIndex = new Map(columnIds.map((id, index) => [id, index]));
+  const columnIndex = prepared?.columnIndex ?? new Map(columnIds.map((id, index) => [id, index]));
   const candidateById = new Map(input.support.candidates.map(candidate => [
     candidate.id,
     candidate
@@ -569,7 +619,7 @@ export function solveSparseFusedUnbalancedTransport(input: {
   const columnMarginals = columnIds.map((graphTargetId, index) => {
     const transportedMass = sumIndexes(columnCells[index] ?? [], cells);
     const targetMass = graphTargetMass[index] ?? 0;
-    return {
+    const column = {
       graphTargetId,
       implicitType: graphImplicitTypes[index]!,
       implicitCost: quantize(graphImplicitCosts[index]!),
@@ -579,6 +629,12 @@ export function solveSparseFusedUnbalancedTransport(input: {
       overflowMass: quantize(Math.max(0, transportedMass - targetMass)),
       residual: quantize(Math.abs(transportedMass - targetMass))
     };
+    if (!prepared) return column;
+    const previous = prepared.previousColumnMarginals.get(graphTargetId);
+    if (previous && sameColumnMarginal(previous, column)) return previous;
+    const frozen = Object.freeze(column);
+    prepared.previousColumnMarginals.set(graphTargetId, frozen);
+    return frozen;
   });
   const planCells: SparseTransportCell[] = cells.map(cell => ({
     candidateId: cell.candidate.id,
@@ -615,7 +671,7 @@ export function solveSparseFusedUnbalancedTransport(input: {
   };
   return {
     ...canonical,
-    id: `sparse_transport.${canonicalDigestHex(canonical, hasher).slice(0, 40)}`,
+    id: `sparse_transport.${canonicalDigestHex(canonical, hasher, prepared?.canonicalTokens).slice(0, 40)}`,
     audit: toJsonValue({
       solver: "kernel.sparse_fused_unbalanced_transport.v1",
       supportCellCount: input.support.candidates.length,
@@ -670,10 +726,12 @@ export interface SparseTransportResourceUsage {
 }
 
 export function solveSparseFusedUnbalancedTransportWithResourceBudget(
-  input: Parameters<typeof solveSparseFusedUnbalancedTransport>[0]
+  input: Parameters<typeof solveSparseFusedUnbalancedTransport>[0],
+  solver?: PreparedSparseTransportSolver
 ): { plan: SparseFusedTransportPlan; resourceUsage: SparseTransportResourceUsage } {
+  if (solver && solver.targetIndex !== input.targetIndex) throw new Error("transport solver and target snapshot do not match");
   const startedAt = performance.now();
-  const plan = solveSparseFusedUnbalancedTransport(input);
+  const plan = solver ? solver.solve(input) : solveSparseFusedUnbalancedTransport(input);
   const elapsedMs = performance.now() - startedAt;
   const audit = plan.audit as { estimatedWorkingBytes?: number };
   return {

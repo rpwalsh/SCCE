@@ -34,6 +34,8 @@ export interface ApiContext {
   };
   /** Test/infrastructure seam; production always uses the canonical bounded adapter path. */
   githubOssAcquisition?: (input: GithubOssAcquisitionOptions) => Promise<GithubOssAcquisitionReport>;
+  /** Exact HTTPS origins allowed to reach this loopback API from a static Pages UI. */
+  pagesOrigins?: readonly string[];
 }
 
 type LoadedConfig = Awaited<ReturnType<typeof readScceRuntimeConfig>>;
@@ -196,6 +198,28 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
   if (trace) traceEvent(trace, { stage: 'api.request', label: req.method + ' ' + (req.url ?? '/') });
   try {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "127.0.0.1"}`);
+    const pagesOrigin = allowedPagesOrigin(req, context);
+    if (req.headers.origin && !isSameRequestOrigin(req) && !pagesOrigin) throw new HttpError(403, "browser origin is not configured for SCCE Pages access");
+    if (pagesOrigin) {
+      res.setHeader("access-control-allow-origin", pagesOrigin);
+      res.setHeader("vary", "Origin");
+      if (req.method === "OPTIONS") {
+        if (!isLoopbackAddress(req.socket.localAddress)) throw new HttpError(403, "Pages connector requires a loopback SCCE server");
+        const requestedMethod = String(req.headers["access-control-request-method"] ?? "").toUpperCase();
+        if (!(requestedMethod === "GET" || requestedMethod === "POST")) throw new HttpError(403, "Pages connector request method is not allowed");
+        res.writeHead(204, {
+          "access-control-allow-methods": "GET, POST, OPTIONS",
+          "access-control-allow-headers": "authorization, content-type, accept, x-request-id",
+          "access-control-max-age": "600",
+          ...(String(req.headers["access-control-request-private-network"] ?? "").toLowerCase() === "true"
+            ? { "access-control-allow-private-network": "true" }
+            : {})
+        });
+        res.end();
+        return;
+      }
+      if (!isLoopbackAddress(req.socket.localAddress)) throw new HttpError(403, "Pages connector requires a loopback SCCE server");
+    }
     assertAuthorizedRequest(req, url, context);
     const readinessMutation = invalidatesHydratedRuntimeReadiness(req.method, url.pathname);
     if (readinessMutation) invalidateHydratedRuntimeReadiness(context);
@@ -239,10 +263,53 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
 
 function assertAuthorizedRequest(req: http.IncomingMessage, url: URL, context: ApiContext): void {
   const route = routeFor(req.method ?? "GET", url.pathname);
+  if (url.pathname.startsWith("/api/") && isConfiguredPagesRequest(req, context)) {
+    if (!bearerAuthorized(req, context.config)) throw new HttpError(401, "a bearer token is required for SCCE Pages access");
+    return;
+  }
   if (!requiresApiAuth(url.pathname, route)) return;
   if (isLocalRequest(req)) return;
   if (bearerAuthorized(req, context.config)) return;
   throw new HttpError(401, "authentication required for SCCE API route");
+}
+
+function allowedPagesOrigin(req: http.IncomingMessage, context: ApiContext): string | undefined {
+  const supplied = req.headers.origin;
+  if (!supplied) return undefined;
+  const origin = Array.isArray(supplied) ? supplied[0] : supplied;
+  const allowed = context.pagesOrigins ?? configuredPagesOrigins();
+  return allowed.includes(origin) && isExactHttpsOrigin(origin) ? origin : undefined;
+}
+
+function configuredPagesOrigins(): readonly string[] {
+  return (process.env.SCCE_PAGES_ORIGINS ?? "").split(",").map(value => value.trim()).filter(isExactHttpsOrigin);
+}
+
+function isExactHttpsOrigin(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "https:" && parsed.origin === value && parsed.pathname === "/" && !parsed.search && !parsed.hash;
+  } catch {
+    return false;
+  }
+}
+
+function isConfiguredPagesRequest(req: http.IncomingMessage, context: ApiContext): boolean {
+  const origin = allowedPagesOrigin(req, context);
+  if (!origin) return false;
+  return !isSameRequestOrigin(req);
+}
+
+function isSameRequestOrigin(req: http.IncomingMessage): boolean {
+  const supplied = req.headers.origin;
+  const origin = Array.isArray(supplied) ? supplied[0] : supplied;
+  const host = String(req.headers.host ?? "");
+  return origin === `http://${host}` || origin === `https://${host}`;
+}
+
+function isLoopbackAddress(address: string | undefined): boolean {
+  const normalized = address?.replace(/^::ffff:/u, "").toLowerCase();
+  return normalized === "127.0.0.1" || normalized === "::1" || normalized === "localhost";
 }
 
 function requiresApiAuth(pathname: string, route: (typeof ROUTES)[number] | undefined): boolean {
