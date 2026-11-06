@@ -154,6 +154,7 @@ import {
   isUnparsedMarkupText,
   requestLeadingScaffoldingUnit,
   spanContainsRequestNearDuplicateSentence,
+  sourceBodyAnswersRequest,
   temporalCounterexampleExpected,
   temporalConceptTitledEvidence
 } from "./local-evidence-runtime.js";
@@ -1906,9 +1907,10 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             sourceAnchoringRequired: creativeRetrievalNeedsSourceAnchoring(requestedAuthority, authorityProjection),
             residentOnly: false
           }).catch(() => undefined);
-          // Keep the durable slice when it reaches the subject, or when the resident one held nothing durable at all.
+          // A book can answer about an internal subject that is absent from its document title.
+          const durableBodyAnswersRequest = durableSlice?.evidence.some(span => sourceBodyAnswersRequest(span, input.text, requestClosedClassWords())) ?? false;
           if (durableSlice && durableSliceEvidence(durableSlice) > 0
-            && (identityBoundResident(durableSlice) > 0 || durableSliceEvidence(graphSlice) === 0)) graphSlice = durableSlice;
+            && (identityBoundResident(durableSlice) > 0 || durableBodyAnswersRequest || durableSliceEvidence(graphSlice) === 0)) graphSlice = durableSlice;
           kernelTrace({
             stage: "graph.resolve.durable_escalation",
             label: "kernel.turn.graph_slice",

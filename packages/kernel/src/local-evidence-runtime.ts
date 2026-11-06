@@ -166,6 +166,16 @@ function spanCarriesAnsweringSentence(span: EvidenceSpan, requestText: string, c
     .some(sentence => answerCoversRequest([sentence], span, coverageUnits, requestText, { relationRequired: true }));
 }
 
+/** The same sentence-level answerhood used to rank source evidence, before choosing a retrieval slice. */
+export function sourceBodyAnswersRequest(span: EvidenceSpan, requestText: string, closedClassWords: ReadonlySet<string>): boolean {
+  return spanCarriesAnsweringSentence(span, requestText, requestAnswerhoodCoverageUnits(requestText, closedClassWords));
+}
+
+function requestAnswerhoodCoverageUnits(text: string, closedClassWords: ReadonlySet<string>): string[] {
+  const leadingScaffolding = requestLeadingScaffoldingUnit(text);
+  return closedClassWords.size ? requestContentEvidenceUnits(text).filter(unit => !closedClassWords.has(unit) && unit !== leadingScaffolding) : [];
+}
+
 export function evidenceForRequest(
   text: string,
   evidence: readonly EvidenceSpan[],
@@ -182,10 +192,7 @@ export function evidenceForRequest(
   // The same units the mouth judges coverage with, so ranking and speaking ask one question. Only a learned closed
   // class can tell the relation from the request's scaffolding; without one there is nothing to rank on and the
   // order below is exactly what it was.
-  const leadingScaffolding = requestLeadingScaffoldingUnit(text);
-  const coverageUnits = closedClassWords.size
-    ? contentUnits.filter(unit => !closedClassWords.has(unit) && unit !== leadingScaffolding)
-    : [];
+  const coverageUnits = requestAnswerhoodCoverageUnits(text, closedClassWords);
   const promoted = evidence.filter(span => span.status === "promoted");
   const pool = promoted.length ? promoted : evidence.filter(span => span.status !== "quarantined");
   const scoredRows = pool

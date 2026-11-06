@@ -44,6 +44,7 @@ import {
   localEvidenceAnswerClaimSurface,
   localEvidenceAnswerSurface,
   proposeSourceExactEvidenceAnswer,
+  sourceBodyAnswersRequest,
   sourceAnchoredEvidenceForRequest
 } from "../local-evidence-runtime.js";
 import type { EventRangeQuery } from "../storage.js";
@@ -1664,6 +1665,49 @@ describe("kernel local evidence source anchoring", () => {
     expect(result.evidence.map(span => String(span.id))).toEqual([String(ada.id)]);
     expect(fixture.metrics.graphReads).toBe(1);
   });
+
+  it.each([{ vessel: "Pequod", captain: "Ahab", title: "Moby Dick" }, { vessel: "Nereid", captain: "Marin", title: "Harbor Record" }])(
+    "keeps a durable book body answering about $vessel instead of unrelated resident captain evidence", async ({ vessel, captain, title }) => {
+      const clock = createClock({ fixedTime: 6_900, stepMs: 1 });
+      const hasher = createHasher();
+      const ids = createIdFactory({ clock, hasher, deterministicReplay: true });
+      const distractor = evidenceSpan({ id: "evidence:resident-captain", sourceVersionId: "source:resident-captain:v1" as SourceVersionId,
+        title: "Abraham Lincoln", uri: "fixture://wiki/Abraham_Lincoln", text: "Abraham Lincoln served as captain of a group of soldiers during a campaign.", alpha: 0.99 });
+      const book = evidenceSpan({ id: "evidence:durable-book-body", sourceVersionId: "source:durable-book:v1" as SourceVersionId,
+        title, uri: "fixture://gutenberg/book", text: `The captain of the ${vessel} was ${captain}. The vessel sailed through the harbor.`, alpha: 0.95 });
+      book.provenance = { ...(book.provenance as Record<string, JsonValue>), metadata: { title, identity: `${title}; voyage and harbor record` } };
+      const grammarText = Array.from({ length: 192 }, (_, index) => {
+        const name = `locus${String.fromCharCode(97 + Math.floor(index / 26))}${String.fromCharCode(97 + index % 26)}`;
+        return `who is the owner of ${name}? the owner of ${name} is recorded in the register.`;
+      }).join(" ");
+      const profile = createLanguageAcquisitionEngine({ idFactory: ids }).acquire({ text: grammarText, sourceVersionId: "source:request-grammar:v1" as SourceVersionId, createdAt: clock.now() });
+      const compiled = createNgramMemoryCompiler({ idFactory: ids, hasher }).compile({ streamId: "stream:request-grammar", sourceSystem: "dialogue", profile,
+        sourceVersionId: profile.sourceVersionId, text: grammarText, evidence: [], createdAt: clock.now(), retainObservations: false });
+      const learnedState = createLanguageMemoryRuntime().hydrate({ models: compiled.models });
+      const closed = deriveClosedClassWords({ models: learnedState.models });
+      expect(closed.has("the")).toBe(true);
+      expect(closed.has("captain")).toBe(false);
+      const request = `Who is the captain of the ${vessel}?`;
+      expect(sourceBodyAnswersRequest(book, request, closed)).toBe(true);
+      expect(sourceBodyAnswersRequest(book, `Who is the dentist of the ${vessel}?`, closed)).toBe(false);
+      expect(sourceBodyAnswersRequest(distractor, request, closed)).toBe(false);
+      const sources = [distractor];
+      const residentCompilation = createNgramMemoryCompiler({ idFactory: ids, hasher }).compile({ streamId: "stream:resident-source", sourceSystem: "wikipedia", profile,
+        sourceVersionId: distractor.sourceVersionId, text: distractor.text, evidence: [distractor], createdAt: clock.now(), retainObservations: false });
+      const fixture = storageFixture({ evidence: sources, languageProfiles: [profile], semanticFrames: residentCompilation.semanticFrames });
+      fixture.storage.languageMemory.listNgramModels = async () => compiled.models;
+      const kernel = createScceKernel({ storage: fixture.storage, files: { streamPath: async function* () {} },
+        buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+        idFactory: ids, clock, deterministicReplay: true });
+      await kernel.warmup({ graph: true, language: true, brain: false, profile: false, corrections: false });
+      sources.push(book);
+      const result = await kernel.turn({ text: request, metadata: { fastLocalEvidenceAnswer: true } });
+      expect(result.evidence.map(span => String(span.id))).toContain(String(book.id));
+      expect(result.answer).toContain(captain);
+      expect(result.answer).toContain(vessel);
+      expect(result.answer).not.toContain("soldiers");
+    }
+  );
 
   it("keeps the empty-memory acquisition floor non-assertive without inventing facts or templates", async () => {
     const clock = createClock({ fixedTime: 7000, stepMs: 1 });
