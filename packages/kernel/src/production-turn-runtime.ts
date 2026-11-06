@@ -1154,7 +1154,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         unscopedLanguageReason,
         undefined,
         "",
-        { residentOnly: fastRuntimeBudget, languageId: requestLanguageId }
+        { residentOnly: fastRuntimeBudget, languageId: requestLanguageId, purpose: "request_seed" }
       );
       const baseAuthorityLanguage = await evaluationComponent(
         "language-memory",
@@ -1164,7 +1164,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           : withStageBudget(
             hydrateAuthorityLanguage,
             languageHydrationBudgetMs,
-            () => hydrateSurfaceLanguageMemoryCached(12, selectedSurfaceCluster, unscopedLanguageReason, undefined, "", { residentOnly: true, languageId: requestLanguageId })
+            () => hydrateSurfaceLanguageMemoryCached(12, selectedSurfaceCluster, unscopedLanguageReason, undefined, "", { residentOnly: true, languageId: requestLanguageId, purpose: "request_seed" })
               .catch(() => emptySurfaceLanguageMemory()),
             overrun => kernelTrace({
               stage: "runtime.seed.language.budget_exceeded",
@@ -1181,6 +1181,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         durationMs: Date.now() - authorityLanguageStarted,
         counts: {
           models: baseAuthorityLanguage.models.length,
+          continuationPopulationModels: baseAuthorityLanguage.state.continuationPopulation?.modelCount ?? 0,
           patterns: baseAuthorityLanguage.patterns.length,
           semanticFrames: baseAuthorityLanguage.semanticFrames.length
         }
@@ -1236,7 +1237,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         ? toJsonValue(repoCognitionForTurn({
           requestText: input.text,
           files: repoFiles,
-          closedClassWords: deriveClosedClassWords({ models: authorityLanguage.state.models ?? [] })
+          closedClassWords: deriveClosedClassWords({ models: authorityLanguage.state.models ?? [], continuationPopulation: authorityLanguage.state.continuationPopulation })
         }))
         : undefined;
       const previousDialogueState = previousDialogueStateFromMetadata(input.metadata);

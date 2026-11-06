@@ -1,7 +1,8 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
-import { createLanguageMemoryRuntime } from "../language-memory-runtime.js";
+import { clearNgramModelCompilationMemo, createLanguageMemoryRuntime, ngramModelCompilationCount } from "../language-memory-runtime.js";
+import { deriveClosedClassWords } from "../closed-class-words.js";
 import { languageSurfaceTrigrams } from "../language.js";
 import { createNgramMemoryCompiler } from "../ngram-memory.js";
 import { createIdFactory } from "../ids.js";
@@ -12,6 +13,53 @@ import type { SegmentationPopulationModelRecord } from "../segmentation-populati
 import type { LanguageProfile } from "../types.js";
 
 describe("surface language resident-only cache", () => {
+  it("seeds request interpretation from canonical population statistics without reading or compiling full histories", async () => {
+    const fixture = runtimeFixture({ cacheMs: 100000, languageResolver: () => ({ profile: () => "language.fixture", corpus: () => "language.fixture" }) });
+    const hasher = createHasher();
+    const compiler = createNgramMemoryCompiler({ hasher, idFactory: createIdFactory({ hasher, clock: createClock(), deterministicReplay: true }) });
+    const compiled = compiler.compile({ streamId: "stream.fixture", sourceSystem: "wikipedia", profile: fixture.profile,
+      sourceVersionId: fixture.profile.sourceVersionId, text: "the captain commands the vessel. the captain guides the vessel. "
+        + Array.from({ length: 192 }, (_, index) => `the vessel carries cargo${String.fromCharCode(97 + Math.floor(index / 26))}${String.fromCharCode(97 + index % 26)}.`).join(" "),
+      evidence: [], createdAt: 1, retainObservations: false });
+    const fullState = createLanguageMemoryRuntime().hydrate({ models: compiled.models });
+    const continuationCounts = Object.fromEntries(fullState.models.flatMap(model => Object.entries(model.continuationCounts)));
+    const population = { languageId: "language.fixture", modelCount: compiled.models.length, continuationCounts };
+    let historyReads = 0;
+    let populationReads = 0;
+    fixture.storage.languageMemory.continuationPopulation = async () => { populationReads++; return population; };
+    fixture.storage.languageMemory.listNgramModels = async () => { historyReads++; return compiled.models; };
+    fixture.storage.languageMemory.listLanguagePatterns = async () => compiled.patterns;
+    clearNgramModelCompilationMemo();
+    const seed = await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "request-seed", undefined, "", { languageId: population.languageId, purpose: "request_seed" });
+    expect(historyReads).toBe(0);
+    expect(ngramModelCompilationCount()).toBe(0);
+    expect(seed.state.continuationPopulation).toBe(population);
+    expect(seed.state.importedPatterns.map(row => row.id)).toEqual(expect.arrayContaining(compiled.patterns.map(row => row.id)));
+    expect(deriveClosedClassWords({ continuationPopulation: seed.state.continuationPopulation })).toEqual(deriveClosedClassWords({ models: fullState.models, continuationPopulation: population }));
+    const resident = await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "request-seed", undefined, "", { languageId: population.languageId, purpose: "request_seed", residentOnly: true });
+    expect(resident).toBe(seed);
+    expect(populationReads).toBe(1);
+    await expect(fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "realization", undefined, "", { languageId: population.languageId, residentOnly: true })).rejects.toThrow(/was not warmed/u);
+    const realization = await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "realization", undefined, "", { languageId: population.languageId });
+    expect(historyReads).toBeGreaterThan(0);
+    expect(realization.state.models).toEqual(fullState.models);
+    expect(realization.state).not.toBe(seed.state);
+    fixture.runtime.invalidate();
+    await expect(fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "request-seed", undefined, "", { languageId: population.languageId, purpose: "request_seed", residentOnly: true })).rejects.toThrow(/was not warmed/u);
+  });
+
+  it.each([undefined, { languageId: "language.foreign", modelCount: 1, continuationCounts: { foreign: 9 } }, { languageId: "language.fixture", modelCount: 0, continuationCounts: {} }, { languageId: "language.fixture", modelCount: 1, continuationCounts: { sparse: 9 } }])("retains canonical model hydration when no valid learned request population is available: %j", async population => {
+    const fixture = runtimeFixture({ languageResolver: () => ({ profile: () => "language.fixture", corpus: () => "language.fixture" }) });
+    const hasher = createHasher();
+    const compiled = createNgramMemoryCompiler({ hasher, idFactory: createIdFactory({ hasher, clock: createClock(), deterministicReplay: true }) }).compile({
+      streamId: "stream.fixture", sourceSystem: "wikipedia", profile: fixture.profile, sourceVersionId: fixture.profile.sourceVersionId, text: "alpha beta alpha gamma", evidence: [], createdAt: 1, retainObservations: false });
+    fixture.storage.languageMemory.continuationPopulation = async () => population;
+    fixture.storage.languageMemory.listNgramModels = async () => compiled.models;
+    const seed = await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "request-seed", undefined, "", { languageId: "language.fixture", purpose: "request_seed" });
+    expect(seed.state.models).toHaveLength(compiled.models.length);
+    expect(seed.state.continuationPopulation).toBe(population?.languageId === "language.fixture" && population.modelCount > 0 ? population : undefined);
+  });
+
   it("reuses expired warmed language, frame, and source-profile entries without durable calls", async () => {
     const fixture = runtimeFixture();
 
