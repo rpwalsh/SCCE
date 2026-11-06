@@ -5,7 +5,7 @@ import type { NarrativeConditioning } from "./document-generation-session.js";
 import { deriveClosedClassWords } from "./closed-class-words.js";
 import { calibrated } from "./calibrations/prod-calibrations.js";
 import type { BeamSentenceContinuation, KneserNeyModel } from "./kneser-ney.js";
-import { KNESER_NEY_SCHEMA, beamContinueSentence, compileKneserNeyRuntimeIndexes, continueBoundedProse, deriveKneserNeyContextTables, kneserNeyProbability, predictKneserNey } from "./kneser-ney.js";
+import { KNESER_NEY_SCHEMA, beamContinueSentence, compileKneserNeyRuntimeIndexes, continueBoundedProse, materializeKneserNey, kneserNeyProbability, predictKneserNey } from "./kneser-ney.js";
 import { createNgramMemoryCompiler, type NgramMemoryCompilation } from "./ngram-memory.js";
 import { buildLanguageProfileClusters, type LanguageProfileCluster } from "./language.js";
 import { clamp01, featureSet, mean, symbolizeData, toJsonValue, weightedJaccard } from "./primitives.js";
@@ -4890,69 +4890,9 @@ export function clearNgramModelCompilationMemo(): void {
 function compileNgramModelFromRecord(record: NgramModelRecord): KneserNeyModel | undefined {
   const json = record.modelJson;
   if (!json || typeof json !== "object" || Array.isArray(json)) return undefined;
-  const model = (json as Record<string, JsonValue>).model;
-  if (!model || typeof model !== "object" || Array.isArray(model)) return undefined;
-  const row = model as Record<string, JsonValue>;
-  if (
-    typeof row.order !== "number"
-    || typeof row.discount !== "number"
-    || !isRecord(row.counts)
-    || !Array.isArray(row.vocabulary)
-  ) return undefined;
-  const counts = numberRecord(row.counts);
-  // Records written since the persisted form carry counts only; the context tables are derived from them.
-  const contextTables = isRecord(row.contextCounts) && isRecord(row.contextContinuationTypes)
-    ? { contextCounts: numberRecord(row.contextCounts), contextContinuationTypes: numberRecord(row.contextContinuationTypes) }
-    : deriveKneserNeyContextTables(counts);
-  const core = {
-    discount: row.discount,
-    counts,
-    ...contextTables,
-    continuationCounts: numberRecord(row.continuationCounts),
-    unigramCounts: numberRecord(row.unigramCounts)
-  };
-  // Persisted models carry counts only (every model in the live brain: 1,993 records, none with a successor
-  // index), so the runtime indexes are compiled here exactly as they are for observation-built models.
-  // Requiring them persisted rejected every hydrated record silently and left the mouth with observation samples.
-  const persistedIndexes = row.schema === KNESER_NEY_SCHEMA
-    && isRecord(row.successorIndex)
-    && isRecord(row.successorOverflowCounts)
-    && isRecord(row.backoffWeights)
-    && Array.isArray(row.baseContinuations);
-  const indexes = persistedIndexes
-    ? {
-      successorIndex: stringArrayRecord(row.successorIndex),
-      successorOverflowCounts: numberRecord(row.successorOverflowCounts),
-      backoffWeights: numberRecord(row.backoffWeights),
-      baseContinuations: (row.baseContinuations as JsonValue[]).map(String)
-    }
-    : compileKneserNeyRuntimeIndexes(core);
-  return {
-    schema: KNESER_NEY_SCHEMA,
-    sourceKey: modelProfileId(record) ?? record.streamId,
-    order: row.order,
-    observedSymbolCount: numberOf(row.observedSymbolCount),
-    vocabularySize: numberOf(row.vocabularySize),
-    ...core,
-    totalContinuationTypes: numberOf(row.totalContinuationTypes),
-    totalUnigramCount: numberOf(row.totalUnigramCount),
-    vocabulary: row.vocabulary.map(String),
-    ...indexes
-  };
-}
-
-function stringArrayRecord(value: JsonValue | undefined): Record<string, string[]> {
-  if (!isRecord(value)) return {};
-  const out: Record<string, string[]> = {};
-  for (const [key, raw] of Object.entries(value)) {
-    if (Array.isArray(raw)) out[key] = raw.map(String);
-  }
-  return out;
-}
-
-function numberRecord(value: JsonValue | undefined): Record<string, number> {
-  if (!isRecord(value)) return {};
-  return Object.fromEntries(Object.entries(value).map(([key, raw]) => [key, numberOf(raw)]));
+  const model = materializeKneserNey((json as Record<string, JsonValue>).model);
+  if (model) model.sourceKey = modelProfileId(record) ?? record.streamId;
+  return model;
 }
 
 function numberOf(value: JsonValue | undefined): number {

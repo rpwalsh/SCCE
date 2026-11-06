@@ -10,6 +10,7 @@ import {
 } from "../language-memory-runtime.js";
 import { buildLanguageProfileClusters, languageSurfaceTrigrams } from "../language.js";
 import { createNgramMemoryCompiler } from "../ngram-memory.js";
+import { kneserNeyMaterializationCounts, kneserNeyProbability, predictKneserNey } from "../kneser-ney.js";
 import { createClock, createHasher, featureSet } from "../primitives.js";
 import type { ScceKernelDeps } from "../storage.js";
 import { createSurfaceLanguageRuntime } from "../surface-language-runtime.js";
@@ -20,6 +21,26 @@ beforeEach(() => {
 });
 
 describe("a record is compiled into a runtime model once, not once per hydration or scoping", () => {
+  it("keeps cold model indexes lazy and owner-isolated across hydration, inference and scope reuse", () => {
+    const fixture = runtimeFixture();
+    const before = kneserNeyMaterializationCounts();
+    const runtime = createLanguageMemoryRuntime();
+    const state = runtime.hydrate({ models: fixture.records });
+    const scoped = scopeLanguageMemoryStateToCluster(state, buildLanguageProfileClusters(fixture.profiles)[0]!);
+    expect(kneserNeyMaterializationCounts()).toEqual(before);
+    const model = scoped.models[0]!;
+    expect(state.models).toContain(model);
+    expect(new Set(state.models.map(row => row.sourceKey)).size).toBe(fixture.profiles.length);
+    const first = predictKneserNey(model, ["the", "valley"], 8);
+    expect(first.length).toBeGreaterThan(0);
+    for (const prediction of first) expect(prediction.probability).toBe(kneserNeyProbability(model, ["the", "valley"], prediction.symbol));
+    expect(kneserNeyMaterializationCounts()).toEqual({ contextTables: before.contextTables + 1, runtimeIndexes: before.runtimeIndexes + 1 });
+    const reused = runtime.hydrate({ models: fixture.records });
+    expect(reused.models.find(row => row.sourceKey === model.sourceKey)).toBe(model);
+    expect(predictKneserNey(model, ["the", "valley"], 8)).toEqual(first);
+    expect(kneserNeyMaterializationCounts()).toEqual({ contextTables: before.contextTables + 1, runtimeIndexes: before.runtimeIndexes + 1 });
+  });
+
   it("compiles each persisted record at most once while hydrating", async () => {
     const fixture = runtimeFixture();
     const cluster = await fixture.runtime.surfaceLanguageClusterCached("fixture language survey");

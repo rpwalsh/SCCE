@@ -3,6 +3,8 @@
 import { describe, expect, it } from "vitest";
 import {
   deriveKneserNeyContextTables,
+  kneserNeyMaterializationCounts,
+  kneserNeyProbability,
   materializeKneserNey,
   persistedKneserNey,
   predictKneserNey,
@@ -27,6 +29,28 @@ function corpus(): string {
 }
 
 describe("a persisted Kneser-Ney model carries its sufficient statistics only", () => {
+  it.each([2, 3, 4])("defers order %i derived tables until inference and preserves every probability exactly", order => {
+    const trained = trainKneserNey(`${corpus()} 船長 は 海 を 見る。 船長 は 船 を 見る。`, { order, vocabularyLimit: 4000 });
+    const stored = JSON.parse(JSON.stringify(persistedKneserNey(trained)));
+    const before = kneserNeyMaterializationCounts();
+    const lazy = materializeKneserNey(stored)!;
+    expect(lazy.observedSymbolCount).toBe(trained.observedSymbolCount);
+    expect(lazy.continuationCounts).toEqual(trained.continuationCounts);
+    expect(persistedKneserNey(lazy)).toEqual(stored);
+    expect(kneserNeyMaterializationCounts()).toEqual(before);
+    stored.counts = {};
+    stored.continuationCounts = {};
+    stored.vocabulary.length = 0;
+    for (const context of [[], ["the"], ["the", "valley"], ["records"], ["metres", "for"], ["船長"], ["unseen-context"]]) {
+      for (const symbol of [...trained.vocabulary, "unseen-symbol"]) {
+        expect(kneserNeyProbability(lazy, context, symbol)).toBe(kneserNeyProbability(trained, context, symbol));
+      }
+      expect(predictKneserNey(lazy, context, 12)).toEqual(predictKneserNey(trained, context, 12));
+    }
+    expect(kneserNeyMaterializationCounts()).toEqual({ contextTables: before.contextTables + 1, runtimeIndexes: before.runtimeIndexes + 1 });
+    expect(lazy).toEqual(trained);
+  });
+
   for (const order of [2, 3, 4]) {
     it(`order ${order}: materializing the persisted form reproduces the trained model exactly`, () => {
       const model = trainKneserNey(corpus(), { order, vocabularyLimit: 4000 });

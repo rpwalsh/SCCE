@@ -554,9 +554,17 @@ export function deriveKneserNeyContextTables(counts: Record<string, number>): Pi
 
 /** The persisted form is the sufficient statistics; on a live brain the derived tables were 69% of every model row. */
 export function persistedKneserNey(model: KneserNeyModel): PersistedKneserNeyModel {
-  const persisted: Record<string, unknown> = { ...model };
-  for (const key of DERIVED_KNESER_NEY_KEYS) delete persisted[key];
+  const persisted: Record<string, unknown> = {};
+  for (const key of Object.keys(model)) if (!(DERIVED_KNESER_NEY_KEYS as readonly string[]).includes(key)) persisted[key] = model[key as keyof KneserNeyModel];
   return persisted as PersistedKneserNeyModel;
+}
+
+let materializedContextTables = 0;
+let materializedRuntimeIndexes = 0;
+
+/** Counts actual derived-table work, separately from admitting a canonical model's sufficient statistics. */
+export function kneserNeyMaterializationCounts(): { contextTables: number; runtimeIndexes: number } {
+  return { contextTables: materializedContextTables, runtimeIndexes: materializedRuntimeIndexes };
 }
 
 /** A stored model in either form (statistics only, or the older full record) becomes a compiled runtime model. */
@@ -565,19 +573,22 @@ export function materializeKneserNey(stored: JsonValue | undefined): KneserNeyMo
   const row = stored;
   if (typeof row.order !== "number" || typeof row.discount !== "number" || !jsonRecordOf(row.counts) || !Array.isArray(row.vocabulary)) return undefined;
   const counts = numberRecordOf(row.counts);
-  const contextTables = jsonRecordOf(row.contextCounts) && jsonRecordOf(row.contextContinuationTypes)
+  let contextTables = jsonRecordOf(row.contextCounts) && jsonRecordOf(row.contextContinuationTypes)
     ? { contextCounts: numberRecordOf(row.contextCounts), contextContinuationTypes: numberRecordOf(row.contextContinuationTypes) }
-    : deriveKneserNeyContextTables(counts);
+    : undefined;
+  const contexts = () => {
+    if (!contextTables) { materializedContextTables++; contextTables = deriveKneserNeyContextTables(counts); }
+    return contextTables;
+  };
   const core = {
     discount: row.discount,
     counts,
-    ...contextTables,
     continuationCounts: numberRecordOf(row.continuationCounts),
     unigramCounts: numberRecordOf(row.unigramCounts)
   };
-  const persistedIndexes = jsonRecordOf(row.successorIndex) && jsonRecordOf(row.successorOverflowCounts)
+  const persistedIndexes = row.schema === KNESER_NEY_SCHEMA && jsonRecordOf(row.successorIndex) && jsonRecordOf(row.successorOverflowCounts)
     && jsonRecordOf(row.backoffWeights) && Array.isArray(row.baseContinuations);
-  const indexes = persistedIndexes
+  let indexes = persistedIndexes
     ? {
       successorIndex: Object.fromEntries(Object.entries(row.successorIndex as Record<string, JsonValue>)
         .flatMap(([context, symbols]) => Array.isArray(symbols) ? [[context, symbols.map(String)] as const] : [])),
@@ -585,17 +596,26 @@ export function materializeKneserNey(stored: JsonValue | undefined): KneserNeyMo
       backoffWeights: numberRecordOf(row.backoffWeights),
       baseContinuations: (row.baseContinuations as JsonValue[]).map(String)
     }
-    : compileKneserNeyRuntimeIndexes(core);
+    : undefined;
+  const runtimeIndexes = () => {
+    if (!indexes) { materializedRuntimeIndexes++; indexes = compileKneserNeyRuntimeIndexes({ ...core, ...contexts() }); }
+    return indexes;
+  };
   return {
     schema: KNESER_NEY_SCHEMA,
     order: row.order,
     observedSymbolCount: finiteNumberOf(row.observedSymbolCount),
     vocabularySize: finiteNumberOf(row.vocabularySize),
     ...core,
+    get contextCounts() { return contexts().contextCounts; },
+    get contextContinuationTypes() { return contexts().contextContinuationTypes; },
     totalContinuationTypes: finiteNumberOf(row.totalContinuationTypes),
     totalUnigramCount: finiteNumberOf(row.totalUnigramCount),
     vocabulary: row.vocabulary.map(String),
-    ...indexes
+    get successorIndex() { return runtimeIndexes().successorIndex; },
+    get successorOverflowCounts() { return runtimeIndexes().successorOverflowCounts; },
+    get backoffWeights() { return runtimeIndexes().backoffWeights; },
+    get baseContinuations() { return runtimeIndexes().baseContinuations; }
   };
 }
 
