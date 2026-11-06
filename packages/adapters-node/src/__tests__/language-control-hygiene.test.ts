@@ -3,6 +3,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import { scanLanguageControlHygiene } from "../language-control-hygiene.js";
 
@@ -96,9 +97,17 @@ describe("language control hygiene scanner", () => {
     expect(languageMemory).not.toContain(hygienePhrase("It", "stays", "bounded", "until", "matching", "source", "evidence", "is", "attached"));
     expect(languageMemory).not.toContain(hygienePhrase("In", "short:"));
     expect(mouth).toContain("selectedCandidate?: CandidateSurface");
-    expect(mouth).toContain("const selectedKernelCandidate");
-    expect(mouth).toContain("plannerSelectedCandidate ??");
-    expect(mouth).toContain("kernelCandidateCanPreempt");
+    const syntax = ts.createSourceFile("mouth.ts", mouth, ts.ScriptTarget.Latest, true);
+    const normalMouth = syntax.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === "createMouth");
+    expect(normalMouth).toBeDefined();
+    const alternateRealizers: string[] = [];
+    const inspect = (node: ts.Node): void => {
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "createDeterministicMouth") alternateRealizers.push(node.expression.text);
+      ts.forEachChild(node, inspect);
+    };
+    inspect(normalMouth!);
+    expect(alternateRealizers).toEqual([]);
+    expect(mouth).not.toContain("plannerSelectedCandidate ??");
     expect(mouth).toContain("extentRequiredSurfaces");
     expect(mouth).toContain("candidate:generated:rhetorical-lattice");
     expect(languageMemory).toContain("export type RhetoricalMove");

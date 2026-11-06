@@ -5782,7 +5782,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           epistemicForce: emission.epistemicForce,
           assistantForce: emission.assistantForce,
           realizationAvailability: toJsonValue(spoken.realizationAvailability),
-          evidence: selectedEvidence.filter(span => emission.evidenceIds.includes(span.id)),
+          evidence: selectedEvidence,
           field,
           entailment: answerEntailment,
           constructGraph: spokenConstructGraph,
@@ -5939,7 +5939,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         epistemicForce: emission.epistemicForce,
         assistantForce: emission.assistantForce,
           realizationAvailability: toJsonValue(spoken.realizationAvailability),
-        evidence: selectedEvidence.filter(span => emission.evidenceIds.includes(span.id)),
+        evidence: selectedEvidence,
         field,
         entailment: answerEntailment,
         constructGraph: spokenConstructGraph,
@@ -6167,6 +6167,7 @@ export function conversationTurnSurfacesFromMetadata(metadata: JsonValue | undef
       return {
         turnId: kernelString(record.id) || `${sessionId}:${index}`,
         turnIndex: Number.isFinite(turnIndex) ? turnIndex : index,
+        ...(kernelString(record.roleId) ? { roleId: kernelString(record.roleId) } : {}),
         surface
       };
     })

@@ -226,6 +226,9 @@ describe("creative Mouth production boundary", () => {
       dialogueUserStyleProfile: { ...input.dialogueUserStyleProfile, weights: { [INTERACTION_FEATURE_IDS.compactness]: 0.08 } }
     });
     const structuralTrace = record(record(first.realizationTrace.languageMemory).structuralCreative);
+    const selectedAudit = record(first.realizationTrace.selected.audit);
+    const producerAuthority = record(selectedAudit.producerAuthority);
+    const inventionBinding = record(producerAuthority.binding);
     for (const result of [first, second, correctedTurn, compact, expanded]) {
       const emitted = record(record(result.realizationTrace.walshSurfaceEnergy).emitted);
       expect(result.surfaceValid).toBe(emitted.valid);
@@ -235,7 +238,12 @@ describe("creative Mouth production boundary", () => {
     }
 
     expect(first.force).toBe("creative");
+    expect(first.text.trim().length).toBeGreaterThan(0);
     expect(first.text).toBe(second.text);
+    expect(producerAuthority.kind).toBe("licensed_invention");
+    expect(inventionBinding.schema).toBe("scce.mouth.invention_surface_binding.v1");
+    expect(JSON.stringify(inventionBinding.factualPremises)).toContain(String(premise.id));
+    expect(JSON.stringify(inventionBinding.factualPremises)).not.toContain(String(unrelated.id));
     expect(generationContexts.some(context => context.includes("river"))).toBe(true);
     expect(generationContexts.some(context => context.includes("river continuity"))).toBe(true);
     // Supplied material must hand the generator its ordered continuation
@@ -252,6 +260,14 @@ describe("creative Mouth production boundary", () => {
       preflightAdmitted: false,
       realizationAdmitted: false
     });
+
+    const untyped = await mouth.speak({
+      ...input,
+      construct: { ...construct, nodes: [] },
+      selectedCandidate: { ...selectedCandidate, id: "candidate:generated:creative:spoof", claimBases: ["invented"] }
+    });
+    expect(untyped.text).toBe("");
+    expect(untyped.realizationAvailability.status).toBe("realization_unavailable");
   });
 
 });

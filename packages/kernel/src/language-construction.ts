@@ -49,6 +49,7 @@ export const CONVERSATION_INTERNAL_PROVENANCE_METHOD_ID = "surface.provenance.co
 
 /** One turn of this conversation, as the caller observed it. The only material a conversational filler may carry. */
 export interface ConversationTurnSurface {
+  roleId?: string;
   turnId: string;
   turnIndex: number;
   surface: string;

@@ -4,6 +4,7 @@ import { createInterface } from "node:readline";
 import { createClock, createEvaluationCondition } from "../../../packages/kernel/dist/index.js";
 import { assertHydratedRuntimeReady, createNodeRuntime, readScceRuntimeConfig } from "../../../packages/adapters-node/dist/index.js";
 import {
+  answerEvidenceForKernelResult,
   loadVerifiedCorpusManifest,
   mapExactCitations,
   ownerInputForEvaluationQuestion,
@@ -52,18 +53,19 @@ try {
       const started = performance.now();
       const result = await state.runtime.kernel.turn(ownerInput);
       const elapsedMs = Math.max(0, performance.now() - started);
+      const citationEvidence = answerEvidenceForKernelResult(result);
       let sourceVersions = [];
       let citationLookupError;
       try {
-        sourceVersions = result.evidence.length
-          ? await state.runtime.storage.evidence.sourceVersionsForEvidence(result.evidence.map(span => span.id))
+        sourceVersions = citationEvidence.length
+          ? await state.runtime.storage.evidence.sourceVersionsForEvidence(citationEvidence.map(span => span.id))
           : [];
       } catch (error) {
         citationLookupError = sanitizeAdapterError(error);
       }
       const citationResult = citationLookupError
-        ? { citations: [], omissions: result.evidence.map(span => ({ evidenceId: String(span.id), sourceVersionId: String(span.sourceVersionId), reason: "source-version-lookup-failed" })) }
-        : mapExactCitations({ evidence: result.evidence, sourceVersions, corpus: state.corpus });
+        ? { citations: [], omissions: citationEvidence.map(span => ({ evidenceId: String(span.id), sourceVersionId: String(span.sourceVersionId), reason: "source-version-lookup-failed" })) }
+        : mapExactCitations({ evidence: citationEvidence, sourceVersions, corpus: state.corpus });
       const trace = Array.isArray(result.evaluationTrace) ? result.evaluationTrace : [];
       write({
         status: result.assistantForce === "insufficient_support"

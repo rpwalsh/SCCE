@@ -3,11 +3,20 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import test from "node:test";
 import {
+  answerEvidenceForKernelResult,
   buildVerifiedCorpusIndex,
   mapExactCitations,
   ownerInputForEvaluationQuestion,
   parseEvaluationEnvironment
 } from "../../integration/scce-jsonl-adapter-lib.mjs";
+
+test("answer citations exclude retrieved context that the final emission did not use", () => {
+  const used = { id: "used", text: "bound answer" };
+  const other = { id: "unrelated", text: "retrieved context" };
+  assert.deepEqual(answerEvidenceForKernelResult({ answer: "bound answer", evidence: [used, other], emissionGraph: { evidenceIds: ["used"] } }), [used]);
+  assert.deepEqual(answerEvidenceForKernelResult({ answer: "", evidence: [used], emissionGraph: { evidenceIds: ["used"] } }), []);
+  assert.deepEqual(answerEvidenceForKernelResult({ answer: "unbound answer", evidence: [used] }), []);
+});
 
 test("evaluation environment produces one explicit typed condition input", () => {
   const parsed = parseEvaluationEnvironment({

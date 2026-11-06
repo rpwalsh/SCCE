@@ -7,6 +7,13 @@ import { CONDITION_IDS } from "./scce-trace-verifier.mjs";
 
 export const EVALUATION_CONDITION_IDS = CONDITION_IDS;
 
+/** Retrieved context becomes a citation only when the final emission binds it to a spoken answer. */
+export function answerEvidenceForKernelResult(result) {
+  if (!String(result.answer ?? "").trim()) return [];
+  const ids = new Set((result.emissionGraph?.evidenceIds ?? []).map(String));
+  return (result.evidence ?? []).filter(span => ids.has(String(span.id)));
+}
+
 /** Parse the process environment once, before a runtime is constructed. */
 export function parseEvaluationEnvironment(environment) {
   const conditionId = requiredEnvironment(environment, "SCCE_EVAL_CONDITION");

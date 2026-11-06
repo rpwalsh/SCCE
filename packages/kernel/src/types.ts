@@ -1117,6 +1117,7 @@ export interface TurnResult {
   operatorActivations?: JsonValue;
   cognitiveProposals?: JsonValue;
   answerRevision?: JsonValue;
+  /** Admitted context spans; emissionGraph.evidenceIds names the sources actually bound to the answer. */
   evidence: EvidenceSpan[];
   field: FieldState;
   entailment: SemanticEntailmentResult;

@@ -350,8 +350,19 @@ interface SurfaceCandidate {
   contentPlan?: LicensedContentPlan;
   /** Typed factual authority is separate from candidate IDs and checked before factual selection. */
   producerAuthority?: MouthProducerAuthority;
+  /** A creative surface is licensed only by the typed invention construct and its premise bindings. */
+  inventionBinding?: InventionSurfaceBinding;
   plannedClaims?: readonly PlannedClaim[];
   claimBases?: readonly ClaimBasis[];
+}
+
+interface InventionSurfaceBinding {
+  schema: "scce.mouth.invention_surface_binding.v1";
+  constructNodeId: string;
+  realizationPath: string;
+  semanticPlanId?: string;
+  inventionClaimIds: string[];
+  factualPremises: Array<{ claimId: string; surface: string; evidenceIds: string[] }>;
 }
 
 interface LicensedContentPlan {
@@ -375,7 +386,7 @@ const sourceContentPlans = new WeakMap<SpeakInput, readonly PlannedClaim[]>();
 
 type MouthProducerAuthority = FactualProducerAuthority
   | { schema: "scce.mouth.producer_authority.v1"; kind: "learned_prior_proposition"; questionShapeId: string; boundaryId: string; factKeys: string[]; sourceSurfacePieceId?: string }
-  | { schema: "scce.mouth.producer_authority.v1"; kind: "licensed_invention"; binding: JsonValue }
+  | { schema: "scce.mouth.producer_authority.v1"; kind: "licensed_invention"; binding: InventionSurfaceBinding | { semanticCandidateId: string; semanticPlanId: string; surfaceRealizationId: string } }
   | { schema: "scce.mouth.producer_authority.v1"; kind: "compiler_code"; language: string; intent: JsonValue }
   | { schema: "scce.mouth.producer_authority.v1"; kind: "governed_action_preview"; planId: string; capabilityId: string }
   | { schema: "scce.mouth.producer_authority.v1"; kind: "workspace_plan"; planId: string; authorizationGranted: false; executionState: "not_executed" }
@@ -1000,7 +1011,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
           : candidate.contentPlan
             ? uniqueStrings([
               ...forbiddenSurfaceHits(bounded, plan),
-              ...(input.requestText ? questionEchoHits(bounded, input.requestText) : []),
+              ...questionEchoHits(bounded, mouthEchoQuestionText(input)),
               ...unlicensedCommitmentHits(bounded, input)
             ])
           : workspaceAnchoredCandidate || governedActionCandidate
@@ -2443,6 +2454,14 @@ function semanticFrameIdsFromPoint(point: SurfacePoint): string[] {
 function surfaceCandidateFromKernelCandidate(candidate: CandidateSurface, discoursePlan: DiscoursePlan, input: SpeakInput): SurfaceCandidate | undefined {
   if (!kernelCandidateDirectSurfaceAllowed(candidate, input)) return undefined;
   if (!kernelCandidateSurfaceAdmissible(candidate, input)) return undefined;
+  const invention = inventionConstructState(input.construct);
+  const candidateInventionClaims = arrayRecords(jsonRecord(candidate.audit).claimBases)
+    .filter(claim => claim.basis === "invented" && invention?.claimBasis.some(row => row.id === stringFrom(claim.claimId) && row.kind === "invention"))
+    .map(claim => stringFrom(claim.claimId)).filter(Boolean);
+  const typedInventionBinding = invention && (candidate.constructIds ?? []).map(String).includes(String(invention.nodeId))
+    && candidateInventionClaims.length
+    ? inventionSurfaceBinding(invention)
+    : undefined;
   return {
     id: candidate.id,
     style: `surface.path.kernel_selected.${candidate.kind}`,
@@ -2471,6 +2490,7 @@ function surfaceCandidateFromKernelCandidate(candidate: CandidateSurface, discou
       selectionAdjustment: candidate.selectionAdjustment ?? null,
       candidateAudit: candidate.audit
     }),
+    ...(typedInventionBinding ? { inventionBinding: typedInventionBinding } : {}),
     exactSurface: kernelCandidateCarriesExactBoundSourceSurface(candidate, input)
       || kernelCandidateCarriesVerifiedSourceExcerptSurface(candidate, input)
   };
@@ -3855,7 +3875,7 @@ function semanticDirectEvidenceCandidate(
     if (selected.length >= Math.max(1, Math.min(4, discoursePlan.units.length || 2))) break;
   }
   if (!selected.length) return undefined;
-  sourceContentPlans.set(input, selected.map(row => sourceClaimForRealizedFact(row.fact, row.surface, row.evidenceIds, [],
+  if (!sourceContentPlans.has(input)) sourceContentPlans.set(input, selected.map(row => sourceClaimForRealizedFact(row.fact, row.surface, row.evidenceIds, [],
     toJsonValue({ source: "semantic_source_content_plan", selectedFactKey: semanticFactKey(row.fact) }))));
   let text = "";
   let resolved: typeof selected = [];
@@ -4065,6 +4085,7 @@ function creativeCandidatesFromFrames(
       style: variant.style,
       path: "generated",
       claimBasis: "invented",
+      inventionBinding: inventionSurfaceBinding(invention),
       text,
       evidenceIds,
       fit: clamp01(0.46 + generation.confidence * 0.34 + invention.noveltyScore * 0.12 + (1 - invention.riskScore) * 0.08),
@@ -4364,6 +4385,7 @@ function learnedCreativeProposalCandidate(
     text,
     evidenceIds,
     fit: clamp01(0.72 + invention.supportScore * 0.12 + invention.noveltyScore * 0.1 + (1 - invention.riskScore) * 0.06),
+    inventionBinding: inventionSurfaceBinding(invention),
     importedPieceIds: uniqueStrings([
       ...sourcePieceIds,
       ...priorPieces.filter(piece => containsSurface(text, piece.text) || overlapsClaim(piece.text, text)).map(piece => piece.id)
@@ -4381,6 +4403,46 @@ function selectedNonEventCreativeMouthHandoff(input: SpeakInput): boolean {
   return realization.path === "mouth_non_event_realization_deferred";
 }
 
+function inventionSurfaceBinding(invention: InventionConstructState): InventionSurfaceBinding | undefined {
+  if (!invention.realizationPath) return undefined;
+  const inventionClaimIds = invention.claimBasis
+    .filter(claim => claim.kind === "invention" && claim.force === "invented")
+    .map(claim => claim.id);
+  if (!inventionClaimIds.length) return undefined;
+  const factualPremises = invention.claimBasis
+    .filter(claim => claim.kind === "factual_premise" && claim.evidenceIds.length > 0)
+    .map(claim => ({ claimId: claim.id, surface: claim.surface, evidenceIds: uniqueStrings(claim.evidenceIds.map(String)) }));
+  const premiseEvidenceIds = new Set(factualPremises.flatMap(premise => premise.evidenceIds));
+  if (premiseEvidenceIds.size && [...premiseEvidenceIds].some(id => !invention.basisEvidenceIds.some(evidenceId => String(evidenceId) === id))) return undefined;
+  return {
+    schema: "scce.mouth.invention_surface_binding.v1",
+    constructNodeId: String(invention.nodeId),
+    realizationPath: invention.realizationPath,
+    ...(invention.semanticPlanId ? { semanticPlanId: invention.semanticPlanId } : {}),
+    inventionClaimIds,
+    factualPremises
+  };
+}
+
+function licensedInventionBinding(candidate: SurfaceCandidate, input: SpeakInput): InventionSurfaceBinding | undefined {
+  const state = inventionConstructState(input.construct);
+  const binding = candidate.inventionBinding;
+  if (!state || !binding || candidate.claimBasis !== "invented") return undefined;
+  const expected = inventionSurfaceBinding(state);
+  if (!expected
+    || binding.schema !== expected.schema
+    || binding.constructNodeId !== expected.constructNodeId
+    || binding.realizationPath !== expected.realizationPath
+    || binding.semanticPlanId !== expected.semanticPlanId
+    || binding.inventionClaimIds.join("\u0000") !== expected.inventionClaimIds.join("\u0000")
+    || JSON.stringify(binding.factualPremises) !== JSON.stringify(expected.factualPremises)) return undefined;
+  const licensedEvidenceIds = new Set(expected.factualPremises.flatMap(premise => premise.evidenceIds));
+  const candidateEvidenceIds = uniqueStrings(candidate.evidenceIds.map(String));
+  if (candidateEvidenceIds.some(id => !licensedEvidenceIds.has(id))) return undefined;
+  if ([...licensedEvidenceIds].some(id => !input.evidence.some(span => String(span.id) === id))) return undefined;
+  return expected;
+}
+
 /**
  * One bounded learned continuation for an ordinary creative turn. This is
  * deliberately a normal candidate: the surface-energy judge still chooses
@@ -4394,6 +4456,8 @@ function directCreativeSectionCandidate(
 ): SurfaceCandidate | undefined {
   const generationExtent = claimMouthGenerationWork(budget, 160);
   if (generationExtent === undefined) return undefined;
+  const typedInvention = inventionConstructState(input.construct);
+  const typedInventionBinding = typedInvention ? inventionSurfaceBinding(typedInvention) : undefined;
   const requestTerms = creativeRequestContentTerms(input);
   const realization = realizeCreativeSection({
     languageMemory,
@@ -4426,6 +4490,7 @@ function directCreativeSectionCandidate(
     text: realization.text,
     evidenceIds: [],
     fit: clamp01(0.68 + (realization.generationAudit?.confidence ?? 0) * 0.2),
+    ...(typedInventionBinding ? { inventionBinding: typedInventionBinding } : {}),
     importedPieceIds: [],
     discoursePlan,
     boundaryDecisions: [],
@@ -7662,6 +7727,7 @@ function semanticAnswerDriftHits(text: string, input: SpeakInput, priorPieces: r
 }
 
 function mouthEchoQuestionText(input: SpeakInput): string {
+  if (sessionAssertionTurn(input)) return "";
   return input.requestText ?? input.entailment.claim?.text ?? "";
 }
 
@@ -7897,7 +7963,11 @@ function mouthRelationRequired(input: SpeakInput): boolean {
 
 /** An owner assertion bound as session evidence is confirmed by restating it; it is not a question to cover or an echo to reject. Pure. */
 function sessionAssertionTurn(input: SpeakInput): boolean {
-  return input.evidence.some(span => String(span.id).startsWith("evidence_session_"));
+  return input.evidence.some(span => span.mediaType === "application/scce-session-turn+json"
+    && jsonRecord(span.provenance).sourceSystem === "conversation-session"
+    && jsonRecord(span.provenance).roleId === "session.role.owner"
+    && jsonRecord(span.trustVector).forceClass === "session_owner_turn_evidence"
+    && normalizeEvidenceSentence(span.text) === normalizeEvidenceSentence(input.requestText ?? ""));
 }
 
 /** Source ownership for a deterministic surface: whitespace/case normalization may differ, but the words must remain
@@ -7911,8 +7981,7 @@ function exactSourceExcerptOwners(surface: string, spans: readonly EvidenceSpan[
 }
 
 function discourseOwnsSourceExcerpt(input: SpeakInput, text: string, ownerId: EvidenceId): boolean {
-  return jsonRecord(input.selectedCandidate?.audit).explicitContextBound === true
-    && input.explicitContextEvidenceIds?.has(String(ownerId)) === true
+  return input.explicitContextEvidenceIds?.has(String(ownerId)) === true
     && input.selectedCandidate?.evidenceIds.includes(ownerId) === true
     && normalizeEvidenceSentence(input.selectedCandidate.answer) === normalizeEvidenceSentence(text);
 }
@@ -8048,6 +8117,14 @@ function mouthProducerAuthority(
   plan: SurfacePlan,
   creativeRequested: boolean
 ): MouthProducerAuthority | undefined {
+  if (creativeRequested) {
+    const binding = licensedCreativeBinding(candidate, input);
+    if (binding) return {
+      schema: "scce.mouth.producer_authority.v1",
+      kind: "licensed_invention",
+      binding
+    };
+  }
   const factual = factualProducerAuthority(candidate, input);
   if (factual) return factual;
   const priorState = semanticAnswerConstructState(input.construct);
@@ -8062,13 +8139,6 @@ function mouthProducerAuthority(
       ...(stringFromJson(jsonRecord(candidate.audit).sourceSurfacePieceId)
         ? { sourceSurfacePieceId: stringFromJson(jsonRecord(candidate.audit).sourceSurfacePieceId) }
         : {})
-    };
-  }
-  if (creativeRequested && (candidate.claimBasis === "invented" || structuralCreativeSelectionBindingFromSurface(candidate))) {
-    return {
-      schema: "scce.mouth.producer_authority.v1",
-      kind: "licensed_invention",
-      binding: toJsonValue(structuralCreativeSelectionBindingFromSurface(candidate) ?? candidate.audit)
     };
   }
   if (candidate.style === "surface.path.generated.code" && input.codeLanguage) {
@@ -8110,6 +8180,17 @@ function mouthProducerAuthority(
   return undefined;
 }
 
+function licensedCreativeBinding(
+  candidate: SurfaceCandidate,
+  input: SpeakInput
+): InventionSurfaceBinding | { semanticCandidateId: string; semanticPlanId: string; surfaceRealizationId: string } | undefined {
+  const inventionBinding = licensedInventionBinding(candidate, input);
+  if (inventionBinding) return inventionBinding;
+  const structuralBinding = structuralCreativeSelectionBindingFromSurface(candidate);
+  if (!structuralBinding || input.selectedCandidate?.id !== structuralBinding.semanticCandidateId) return undefined;
+  return structuralBinding;
+}
+
 function mouthProducerAuthorityAllows(candidate: SurfaceCandidate, input: SpeakInput, creativeRequested: boolean): boolean {
   const authority = candidate.producerAuthority;
   if (!authority) return false;
@@ -8119,8 +8200,10 @@ function mouthProducerAuthorityAllows(candidate: SurfaceCandidate, input: SpeakI
   switch (authority.kind) {
     case "learned_prior_proposition":
       return input.requestedAuthority !== "creative" && !creativeRequested;
-    case "licensed_invention":
-      return creativeRequested && (candidate.claimBasis === "invented" || Boolean(structuralCreativeSelectionBindingFromSurface(candidate)));
+    case "licensed_invention": {
+      const binding = licensedCreativeBinding(candidate, input);
+      return creativeRequested && Boolean(binding) && JSON.stringify(binding) === JSON.stringify(authority.binding);
+    }
     case "compiler_code":
       return input.codeLanguage === authority.language;
     case "governed_action_preview":
@@ -8172,6 +8255,12 @@ function mouthProducerAuthorityHits(
     return learnedPriorFactsSurviveSurface(text, requiredFacts, input)
       ? []
       : ["surface.reject.learned_prior_content_mismatch"];
+  }
+  if (authority.kind === "licensed_invention") {
+    const binding = licensedCreativeBinding(candidate, input);
+    return binding && JSON.stringify(binding) === JSON.stringify(authority.binding)
+      ? []
+      : ["surface.reject.invention_authority_mismatch"];
   }
   return [];
 }
@@ -8282,8 +8371,13 @@ function factualProducerAuthorityHits(
 ): string[] {
   const authority = candidate.producerAuthority;
   if (!authority || authority.schema !== "scce.mouth.factual_producer_authority.v1") return ["surface.reject.missing_factual_producer_authority"];
-  if ((sourceContentPlans.get(input) ?? []).some(claim => !normalizeEvidenceSentence(text).includes(normalizeEvidenceSentence(claim.text)))) {
+  const requiredSourceClaims = sourceContentPlans.get(input) ?? [];
+  if (requiredSourceClaims.some(claim => !normalizeEvidenceSentence(text).includes(normalizeEvidenceSentence(claim.text)))) {
     return ["surface.reject.incomplete_source_content_plan"];
+  }
+  if (requiredSourceClaims.length && splitUnicodeSurfaceSentences(text).some(sentence => !requiredSourceClaims.some(claim =>
+    stripOuterSurfaceBoundary(normalizeEvidenceSentence(claim.text)).includes(stripOuterSurfaceBoundary(normalizeEvidenceSentence(sentence)))))) {
+    return ["surface.reject.extra_source_content"];
   }
   if (authority.kind === "verified_computation") {
     const current = factualProducerAuthority(candidate, input);
@@ -8705,6 +8799,8 @@ interface InventionConstraintState {
 interface InventionConstructState {
   nodeId: ConstructNodeId;
   proposalSurface: string;
+  realizationPath: string;
+  semanticPlanId?: string;
   basisEvidenceIds: EvidenceId[];
   basisPriorIds: string[];
   noveltyScore: number;
@@ -8816,6 +8912,7 @@ function inventionConstructState(construct: ConstructGraph, selectedNodeId?: str
     ));
   if (!row) return undefined;
   const trace = jsonRecord(row.metadata.trace);
+  const proposalRealization = jsonRecord(trace.proposalRealization);
   const proposalSurface = tidySurface(stringFrom(row.metadata.proposalSurface) || stringFrom(row.metadata.title) || row.node.label);
   if (!proposalSurface) return undefined;
   const basisEvidenceIds = stringArrayFromJson(row.metadata.basisEvidenceIds).map(id => id as EvidenceId);
@@ -8836,6 +8933,8 @@ function inventionConstructState(construct: ConstructGraph, selectedNodeId?: str
   return {
     nodeId: row.node.id,
     proposalSurface,
+    realizationPath: stringFrom(proposalRealization.path) ?? "",
+    ...(stringFrom(proposalRealization.semanticPlanId) ? { semanticPlanId: stringFrom(proposalRealization.semanticPlanId) } : {}),
     basisEvidenceIds,
     basisPriorIds: stringArrayFromJson(row.metadata.basisPriorIds),
     noveltyScore: clamp01(numberFrom(row.metadata.noveltyScore, 0)),
@@ -9391,13 +9490,19 @@ function sourceExcerptContentCandidate(
   const owner = input.evidence.find(span => boundIds.has(String(span.id))
     && exactSourceExcerptOwners(window, [span]).length > 0);
   if (!owner) return undefined;
+  if (discourseBoundSelectedClaim) sourceContentPlans.set(input, [{
+    id: `selected-source:${input.selectedCandidate!.id}`, text: window, basis: "direct_evidence",
+    evidenceIds: [owner.id], priorIds: [], graphNodeIds: [], graphEdgeIds: [],
+    externallyFactual: true, hypothetical: false,
+    trace: toJsonValue({ source: "discourse_bound_source_content_plan", selectedCandidateId: input.selectedCandidate!.id })
+  }]);
   const contentPlan: LicensedContentPlan = {
     schema: "scce.mouth.content_plan.v1",
     kind: "source_excerpt",
     ownerEvidenceId: owner.id,
     requestUnits: mouthCoverageUnits(input),
     ...(discourseBoundSelectedClaim ? { requiredClaimText: input.selectedCandidate!.answer, discourseEvidenceIds: [owner.id] } : {}),
-    ...(claimEvidenceIds.some(id => String(id) === String(owner.id)) || (preservedSelectedClaim && String(owner.id) === String(input.selectedCandidate?.evidenceIds.find(id => boundIds.has(String(id)))))
+    ...(!discourseBoundSelectedClaim && (claimEvidenceIds.some(id => String(id) === String(owner.id)) || (preservedSelectedClaim && String(owner.id) === String(input.selectedCandidate?.evidenceIds.find(id => boundIds.has(String(id))))))
       ? { requiredClaimText: input.entailment.claim.text, claimEvidenceIds: [owner.id] }
       : {})
   };

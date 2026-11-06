@@ -1650,8 +1650,10 @@ describe("kernel local evidence source anchoring", () => {
     expect(result.assistantForce).toBe("insufficient_support");
     expect(result.requestedAuthority).toBe("factual");
     expect(result.constructGraph.nodes.some(node => node.kind === "construct:invention")).toBe(false);
-    expect(result.answer.toLocaleLowerCase()).toContain("star trek");
-    expect(result.answer.trim().length).toBeGreaterThan(0);
+    expect(result.answer).toBe("");
+    expect(result.realizationAvailability).toMatchObject({ status: "insufficient_support" });
+    expect(result.epistemicForce).toBe("unknown");
+    expect(result.emissionGraph.evidenceIds).toEqual([]);
     expect(result.answer).not.toBe("Who are the main characters in Star Trek?");
     expect(result.answer.toLocaleLowerCase()).not.toContain("main — characters");
     expect(result.answer).not.toContain("Insufficient support");
@@ -1718,7 +1720,9 @@ describe("kernel local evidence source anchoring", () => {
     expect(result.runtimeMotion).toMatchObject({ attempt: 1, status: "unavailable" });
     expect(result.selectedCandidate).toMatchObject({ kind: "dialogue-continuation", evidenceIds: [] });
     expect(result.assistantForce).not.toBe("creative_answer");
-    expect(result.answer.trim().length).toBeGreaterThan(0);
+    expect(result.answer).toBe("");
+    expect(result.assistantForce).toBe("insufficient_support");
+    expect(result.realizationAvailability).toMatchObject({ status: "insufficient_support" });
     expect(result.answer).not.toContain(priorSurface);
     expect(result.answer).not.toBe(requestText);
     expect(result.evidence).toEqual([]);
@@ -2012,7 +2016,6 @@ describe("kernel local evidence source anchoring", () => {
 
     expect(result.requestedAuthority).toBe("creative");
     expect(result.epistemicForce).toBe("invented");
-    expect(result.assistantForce).toBe("creative_answer");
     expect(inventionNode).toBeDefined();
     expect(JSON.stringify(inventionNode?.metadata)).toContain("scce.invention_construct.v1");
     expect(JSON.stringify(result.candidateField)).toContain("creative-candidate");
@@ -2024,8 +2027,13 @@ describe("kernel local evidence source anchoring", () => {
     // non-empty surface must be real prose, not the prompt.
     expect(surfaceEchoesPrompt(result.answer, "Invent a new indexing algorithm for this graph"), result.answer).toBe(false);
     if (result.answer.trim().length > 0) {
+      expect(result.assistantForce).toBe("creative_answer");
+      expect(result.realizationAvailability).toMatchObject({ status: "realized" });
       expect(result.answer.trim().startsWith("{")).toBe(false);
       expect(result.answer).not.toContain("scce.invention_construct");
+    } else {
+      expect(result.assistantForce).toBe("realization_unavailable");
+      expect(result.realizationAvailability).toMatchObject({ status: "realization_unavailable", reasonId: "no_eligible_candidate" });
     }
   });
 
@@ -2192,20 +2200,23 @@ describe("kernel local evidence source anchoring", () => {
 
     expect(result.requestedAuthority).toBe("creative");
     expect(result.epistemicForce).toBe("invented");
-    expect(result.assistantForce).toBe("creative_answer");
-    expect(result.constructGraph.nodes.some(node => node.kind === "construct:invention")).toBe(true);
-    expect(result.emissionGraph.evidenceIds).toEqual([premise.id]);
+    const inventionNode = result.constructGraph.nodes.find(node => node.kind === "construct:invention");
+    expect(inventionNode).toBeDefined();
+    expect(JSON.stringify(inventionNode?.metadata)).toContain(premise.id);
+    expect(result.emissionGraph.evidenceIds).toEqual(result.answer.trim() ? [premise.id] : []);
     expect(result.events.some(event => event.typeId === "InventionPlanned")).toBe(true);
+    if (result.answer.trim()) {
+      expect(result.assistantForce).toBe("creative_answer");
+      expect(result.realizationAvailability).toMatchObject({ status: "realized" });
+    } else {
+      expect(result.assistantForce).toBe("realization_unavailable");
+      expect(result.realizationAvailability).toMatchObject({ status: "realization_unavailable", reasonId: "no_eligible_candidate" });
+    }
 
-    // Compositional force refactor: the invention's own real embedded
-    // factual_premise claim (grounded on `premise`) must now be visible to
-    // assistantForceDecision as its own validated claim -- not collapsed
-    // into one opaque "creative" label with the premise's grounding
-    // invisible to the force machinery. Since that premise IS backed by
-    // real evidence, no claim is unsupported and the answer legitimately
-    // stays creative_answer (this is the "fiction with exact factual
-    // constraints" case: the constraint is satisfied, so nothing blocks
-    // emission).
+    // The invention's factual premise remains a separate typed claim with
+    // its exact source evidence. Its presence does not itself license a
+    // spoken surface: an empty, unrealized turn must not be reported as an
+    // answer or emit the premise's evidence as if it had been spoken.
     const selectedEvent = result.events.find(event => event.typeId === "CandidateSelected");
     const trace = selectedEvent?.payload as { assistantForceTrace?: { claimBasis?: Array<{ basis: string; force: string }>; unsupportedClaimIds?: string[] } } | undefined;
     expect(trace?.assistantForceTrace?.unsupportedClaimIds).toEqual([]);
