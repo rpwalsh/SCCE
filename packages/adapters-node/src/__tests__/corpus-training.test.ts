@@ -438,7 +438,7 @@ describe("prepared corpus training", () => {
     expect(blobContentHash(persistedFullSource)).toBe(sourceVersion.contentHash);
     expect(blobContentHash(spanBytes)).toBe(exactSourceSpan.contentHash);
     expect(spanBytes.toString("utf8")).toBe(exactSourceSpan.text);
-    expect([...persistedFullSource.toString("utf8")].slice(exactSourceSpan.charStart, exactSourceSpan.charEnd).join("")).toBe(exactSourceSpan.text);
+    expect([...Buffer.from(persistedFullSource).toString("utf8")].slice(exactSourceSpan.charStart, exactSourceSpan.charEnd).join("")).toBe(exactSourceSpan.text);
 
     const profileExcerpt: EvidenceSpan = {
       ...exactSourceSpan,

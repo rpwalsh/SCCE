@@ -137,7 +137,7 @@ describe("corpus trainer admission and provenance", () => {
     const persistedExcerptBytes = persistedExcerptSource.subarray(profileExcerpt.byteStart, profileExcerpt.byteEnd);
     expect(blobContentHash(persistedExcerptSource)).toBe(sourceVersion.contentHash);
     expect(blobContentHash(persistedExcerptBytes)).toBe(profileExcerpt.contentHash);
-    expect(persistedExcerptBytes.toString("utf8")).toBe(profileExcerpt.text);
+    expect(Buffer.from(persistedExcerptBytes).toString("utf8")).toBe(profileExcerpt.text);
     expect(profileExcerpt.byteStart).toBeGreaterThan(0);
     expect(profileExcerpt.byteEnd).toBeLessThan(persistedExcerptSource.byteLength);
 
