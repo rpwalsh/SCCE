@@ -5,7 +5,7 @@ export const HYDRATION_REQUIREMENTS = Object.freeze({
   evidence_spans: 10000,
   graph_nodes: 250000,
   graph_edges: 250000,
-  ngram_observations: 1000000,
+  ngram_models: 1,
   language_units: 25000,
   semantic_frames: 10000
 });
@@ -33,11 +33,17 @@ export function exactHydrationSummary(readiness) {
     else if (actual < minimum) failures.push(`hydration table ${table} has ${actual}, expected at least ${minimum}`);
   }
 
+  const observations = tableCounts?.ngram_observations;
+  const exactObservations = typeof observations === "number" && Number.isSafeInteger(observations) && observations >= 0;
+  rows.ngram_observations = exactObservations ? observations : null;
+  if (!exactObservations) failures.push("hydration table ngram_observations has no exact count");
+  else if (observations !== 0) failures.push(`hydration table ngram_observations has ${observations}, expected 0`);
+
   return {
     ok: failures.length === 0,
     countSemantics: postgres?.countSemantics ?? null,
     rows,
-    required: { ...HYDRATION_REQUIREMENTS },
+    required: { ...HYDRATION_REQUIREMENTS, ngram_observations: 0 },
     failures
   };
 }

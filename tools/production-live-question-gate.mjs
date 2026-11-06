@@ -5,6 +5,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
+import { productionReadinessFailures } from "./production-live-question-contract.mjs";
 
 const DEFAULT_SERVER_URL = process.env.SCCE_LIVE_SERVER_URL ?? "http://127.0.0.1:3873";
 const DEFAULT_CASE_COUNT = 240;
@@ -157,22 +158,7 @@ async function readHydratedReadiness(serverUrl, headers, timeoutMs) {
   });
   if (response.status !== 200) throw new Error(`live readiness returned HTTP ${response.status}: ${response.preview}`);
   const body = parseJson(response.text, "live readiness");
-  const counts = body?.postgres?.tableCounts;
-  const activeBrain = body?.postgres?.activeBrain;
-  const failures = [
-    [body?.ok === true, "ready.ok"],
-    [body?.warmup?.ok === true && body?.warmup?.complete === true && body?.warmup?.phase === "ready", "warmup.complete"],
-    [body?.postgres?.schema === "scce.postgres.status.v1", "postgres.status_schema"],
-    [body?.postgres?.ok === true && body?.postgres?.connected === true, "postgres.connected"],
-    [body?.postgres?.countSemantics === "postgres_exact_table_counts" && body?.exactCounts === true, "postgres.exact_counts"],
-    [positiveCount(counts, "sources"), "postgres.sources_hydrated"],
-    [positiveCount(counts, "evidence_spans"), "postgres.evidence_hydrated"],
-    [positiveCount(counts, "graph_nodes") && positiveCount(counts, "graph_edges"), "postgres.graph_hydrated"],
-    [positiveCount(counts, "language_profiles"), "postgres.language_profiles_hydrated"],
-    [positiveCount(counts, "language_patterns") && positiveCount(counts, "ngram_observations"), "postgres.language_state_hydrated"],
-    [typeof activeBrain?.activeBrainVersion === "string" && activeBrain.activeBrainVersion.length > 0, "postgres.active_brain"],
-    [Array.isArray(activeBrain?.activeImportRunIds) && activeBrain.activeImportRunIds.length > 0, "postgres.active_import"]
-  ].filter(([passed]) => !passed).map(([, id]) => id);
+  const failures = productionReadinessFailures(body);
   if (failures.length) throw new Error(`server is not a real hydrated production runtime: ${failures.join(", ")}`);
   return body;
 }
@@ -545,10 +531,6 @@ function normalizedServerUrl(value) {
   return url;
 }
 
-function positiveCount(counts, key) {
-  return isRecord(counts) && Number(counts[key]) > 0;
-}
-
 function readinessSummary(body) {
   const counts = body.postgres.tableCounts;
   return {
@@ -568,6 +550,7 @@ function readinessSummary(body) {
       graphEdges: counts.graph_edges,
       languageProfiles: counts.language_profiles,
       languagePatterns: counts.language_patterns,
+      ngramModels: counts.ngram_models,
       ngramObservations: counts.ngram_observations
     },
     activeBrain: body.postgres.activeBrain
