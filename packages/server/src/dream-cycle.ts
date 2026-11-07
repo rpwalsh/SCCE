@@ -57,6 +57,7 @@ export function startDreamCycle(input: {
           heapCheckpointMb
         });
         if (report.batchesTrained > 0) {
+          await input.runtime.kernel.refreshAfterBrainActivation();
           nextBatchIndex = report.nextBatchIndex;
           log(`SCCE dream cycle: trained batch ${report.nextBatchIndex - 1} (${report.articlesTrained} articles, +${report.reports.reduce((sum, item) => sum + item.languageConstructions, 0)} constructions)`);
         } else {
