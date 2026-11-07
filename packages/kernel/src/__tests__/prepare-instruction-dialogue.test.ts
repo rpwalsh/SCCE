@@ -70,6 +70,7 @@ describe("instruction dialogue preparation", () => {
     expect(validated.turns.some(turn => turn.surface.includes("source"))).toBe(false);
     expect(result.source.rawJsonlSha256).toBe(createHash("sha256").update(inputBytes).digest("hex"));
     expect(result.source.rawJsonlBytes).toBe(inputBytes.byteLength);
+    expect(result.preparation.recordsPrepared).toBe(2);
     expect(result.outputs[0]!.bytes).toBeLessThanOrEqual(2 * 1024 * 1024);
     expect(result.source.shareAlikeNotice).toBe(metadata().shareAlikeNotice);
     expect(result.preparation.categoryCommitmentScopes).toEqual(metadata().categoryCommitmentScopes);

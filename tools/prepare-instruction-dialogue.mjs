@@ -56,15 +56,16 @@ export async function prepareInstructionDialogue({ inputPath, outputDir, metadat
   let shard = emptyShard();
   const outputs = [];
   const categoryCounts = new Map();
-  const input = createReadStream(inputPath);
-  input.on("data", chunk => {
-    inputBytes += chunk.byteLength;
-    sourceHash.update(chunk);
-    if (inputBytes > caps.maxInputBytes) input.destroy(new Error(`input exceeds maxInputBytes (${caps.maxInputBytes})`));
-  });
+  let input;
 
   try {
     await mkdir(join(stageDir, transcriptDirectory));
+    input = createReadStream(inputPath);
+    input.on("data", chunk => {
+      inputBytes += chunk.byteLength;
+      sourceHash.update(chunk);
+      if (inputBytes > caps.maxInputBytes) input.destroy(new Error(`input exceeds maxInputBytes (${caps.maxInputBytes})`));
+    });
     const lines = createInterface({ input, crlfDelay: Infinity });
     for await (const line of lines) {
       inputLineNumber++;
@@ -139,7 +140,7 @@ export async function prepareInstructionDialogue({ inputPath, outputDir, metadat
     await rename(safeStageDir, safeOutputDir);
     return { ...manifest, totalOutputBytes };
   } catch (error) {
-    input.destroy();
+    input?.destroy();
     assertDirectChildPath(resolvedOutputDir, parent, "output directory");
     const safeStageDir = assertDirectChildPath(stageDir, parent, "staging directory");
     await rm(safeStageDir, { recursive: true, force: true });
