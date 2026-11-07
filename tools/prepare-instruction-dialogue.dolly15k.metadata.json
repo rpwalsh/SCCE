@@ -5,7 +5,7 @@
   "license": "CC-BY-SA-3.0",
   "attribution": "Databricks, Inc. (2023); instruction records were authored by Databricks employees. Some source contexts are Wikipedia excerpts as documented by the dataset card.",
   "shareAlikeNotice": "This preparation is adapted from material licensed CC BY-SA 3.0. Retain attribution and license notices; distribute adaptations under the same license.",
-  "changeNotice": "Instructions and responses are represented as NFC-normalized speech turns; source context is retained only through non-speech supportingSourceRanges. The source category is mapped explicitly to commitmentScope; no scope is inferred from prompt wording.",
+  "changeNotice": "Instructions and responses are represented as NFC-normalized speech turns; source context is retained only through non-speech supportingSourceRanges. The source category is mapped explicitly to commitmentScope and requestAuthority and copied as sourceCategory on each pair of turns; no scope or authority is inferred from prompt wording.",
   "categoryCommitmentScopes": {
     "brainstorming": "conversation",
     "classification": "conversation",
@@ -15,5 +15,15 @@
     "information_extraction": "external",
     "open_qa": "external",
     "summarization": "external"
+  },
+  "categoryRequestAuthorities": {
+    "brainstorming": "creative",
+    "classification": "factual",
+    "closed_qa": "factual",
+    "creative_writing": "creative",
+    "general_qa": "factual",
+    "information_extraction": "factual",
+    "open_qa": "factual",
+    "summarization": "factual"
   }
 }

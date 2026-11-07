@@ -18,12 +18,7 @@ export const DEFAULT_PREPARATION_LIMITS = Object.freeze({
   maxRecords: 20_000
 });
 
-const EMPTY_DOCUMENT_BYTES = Buffer.byteLength(JSON.stringify({
-  schema: DECLARED_TRANSCRIPT_SCHEMA,
-  text: "",
-  turns: []
-}), "utf8");
-const DOCUMENT_FIXED_BYTES = EMPTY_DOCUMENT_BYTES + Buffer.byteLength("\n", "utf8");
+const REQUEST_AUTHORITIES = new Set(["factual", "reasoned", "creative", "translation", "program", "action"]);
 
 /** Convert categorized instruction rows to the kernel's existing declared transcript format. */
 export async function prepareInstructionDialogue({ inputPath, outputDir, metadata, limits = {} }) {
@@ -32,6 +27,7 @@ export async function prepareInstructionDialogue({ inputPath, outputDir, metadat
     ? JSON.parse(await readFile(metadata, "utf8"))
     : metadata;
   validateSourceMetadata(sourceMetadata);
+  const transcriptSourceMetadata = transcriptSourceMetadataFrom(sourceMetadata);
 
   const caps = { ...DEFAULT_PREPARATION_LIMITS, ...limits };
   validateLimits(caps);
@@ -53,7 +49,7 @@ export async function prepareInstructionDialogue({ inputPath, outputDir, metadat
   let recordsPrepared = 0;
   let totalOutputBytes = 0;
   let outputIndex = 0;
-  let shard = emptyShard();
+  let shard = emptyShard(transcriptSourceMetadata);
   const outputs = [];
   const categoryCounts = new Map();
   let input;
@@ -83,13 +79,14 @@ export async function prepareInstructionDialogue({ inputPath, outputDir, metadat
       } catch {
         throw new Error(`invalid JSON at line ${inputLineNumber}`);
       }
-      const category = validateInstructionRow(row, inputLineNumber, sourceMetadata.categoryCommitmentScopes);
+      const category = validateInstructionRow(row, inputLineNumber, sourceMetadata.categoryCommitmentScopes, sourceMetadata.categoryRequestAuthorities);
       const commitmentScope = sourceMetadata.categoryCommitmentScopes[category];
-      let entry = makeTranscriptEntry(row, category, commitmentScope, shard);
+      const requestAuthority = sourceMetadata.categoryRequestAuthorities[category];
+      let entry = makeTranscriptEntry(row, category, commitmentScope, requestAuthority, shard);
       let candidateBytes = shardDocumentByteLength(shard, entry);
       if (candidateBytes > caps.maxOutputFileBytes && shard.records > 0) {
         await flushShard();
-        entry = makeTranscriptEntry(row, category, commitmentScope, shard);
+        entry = makeTranscriptEntry(row, category, commitmentScope, requestAuthority, shard);
         candidateBytes = shardDocumentByteLength(shard, entry);
       }
       if (candidateBytes > caps.maxOutputFileBytes) {
@@ -122,6 +119,7 @@ export async function prepareInstructionDialogue({ inputPath, outputDir, metadat
         transcriptSchema: DECLARED_TRANSCRIPT_SCHEMA,
         transcriptDirectory,
         categoryCommitmentScopes: sortedRecord(sourceMetadata.categoryCommitmentScopes),
+        categoryRequestAuthorities: sortedRecord(sourceMetadata.categoryRequestAuthorities),
         recordsPrepared,
         blankLinesSkipped,
         categoryCounts: sortedRecord(Object.fromEntries(categoryCounts)),
@@ -153,7 +151,7 @@ export async function prepareInstructionDialogue({ inputPath, outputDir, metadat
       throw new Error(`outputs exceed maxOutputFiles (${caps.maxOutputFiles})`);
     }
     const name = `dialogue-${String(outputIndex + 1).padStart(5, "0")}.json`;
-    const serialized = `${JSON.stringify({ schema: DECLARED_TRANSCRIPT_SCHEMA, text: shard.text, turns: shard.turns })}\n`;
+    const serialized = `${JSON.stringify({ schema: DECLARED_TRANSCRIPT_SCHEMA, sourceMetadata: shard.sourceMetadata, text: shard.text, turns: shard.turns })}\n`;
     const bytes = Buffer.from(serialized, "utf8");
     if (bytes.byteLength !== shard.documentBytes || bytes.byteLength > caps.maxOutputFileBytes) {
       throw new Error("transcript shard byte accounting mismatch");
@@ -170,7 +168,7 @@ export async function prepareInstructionDialogue({ inputPath, outputDir, metadat
       bytes: bytes.byteLength,
       records: shard.records
     });
-    shard = emptyShard();
+    shard = emptyShard(transcriptSourceMetadata);
   }
 }
 
@@ -191,6 +189,18 @@ function validateSourceMetadata(metadata) {
       throw new Error(`invalid commitment scope mapping for category ${category}`);
     }
   }
+  const authorities = metadata.categoryRequestAuthorities;
+  if (!authorities || typeof authorities !== "object" || Array.isArray(authorities)) {
+    throw new Error("source metadata requires categoryRequestAuthorities");
+  }
+  for (const category of Object.keys(scopes)) {
+    if (!Object.hasOwn(authorities, category) || !REQUEST_AUTHORITIES.has(authorities[category])) {
+      throw new Error(`missing or invalid request authority mapping for category ${category}`);
+    }
+  }
+  for (const category of Object.keys(authorities)) {
+    if (!Object.hasOwn(scopes, category)) throw new Error(`request authority mapping has unmapped category ${category}`);
+  }
 }
 
 function validateLimits(limits) {
@@ -199,17 +209,18 @@ function validateLimits(limits) {
   }
 }
 
-function validateInstructionRow(row, lineNumber, categoryScopes) {
+function validateInstructionRow(row, lineNumber, categoryScopes, categoryAuthorities) {
   if (!row || typeof row !== "object" || Array.isArray(row)) throw new Error(`invalid instruction record at line ${lineNumber}`);
   for (const key of ["instruction", "response", "context", "category"]) {
     if (typeof row[key] !== "string") throw new Error(`record at line ${lineNumber} requires string ${key}`);
   }
   if (!row.instruction.trim() || !row.response.trim()) throw new Error(`record at line ${lineNumber} has empty instruction or response`);
   if (!Object.hasOwn(categoryScopes, row.category)) throw new Error(`unmapped category at line ${lineNumber}: ${row.category}`);
+  if (!Object.hasOwn(categoryAuthorities, row.category)) throw new Error(`unmapped request authority category at line ${lineNumber}: ${row.category}`);
   return row.category;
 }
 
-function makeTranscriptEntry(row, category, commitmentScope, currentShard) {
+function makeTranscriptEntry(row, category, commitmentScope, requestAuthority, currentShard) {
   const instruction = row.instruction.normalize("NFC");
   const response = row.response.normalize("NFC");
   const context = row.context.normalize("NFC");
@@ -225,7 +236,9 @@ function makeTranscriptEntry(row, category, commitmentScope, currentShard) {
     speakerId: "user",
     surface: instruction,
     startCodePoint: codePointBase,
-    endCodePoint: codePointBase + instructionLength
+    endCodePoint: codePointBase + instructionLength,
+    sourceCategory: category,
+    requestAuthority
   };
   const responseStart = codePointBase + instructionLength + 1;
   const responseTurn = {
@@ -236,6 +249,7 @@ function makeTranscriptEntry(row, category, commitmentScope, currentShard) {
     endCodePoint: responseStart + responseLength,
     replyToTurnIndex: instructionIndex,
     commitmentScope,
+    sourceCategory: category,
     ...(includeContext ? {
       supportingSourceRanges: [{
         startCodePoint: responseStart + responseLength + 1,
@@ -257,12 +271,30 @@ function makeTranscriptEntry(row, category, commitmentScope, currentShard) {
   };
 }
 
-function emptyShard() {
-  return { text: "", turns: [], records: 0, codePoints: 0, textPayloadBytes: 0, turnPayloadBytes: 0, documentBytes: DOCUMENT_FIXED_BYTES };
+function transcriptSourceMetadataFrom(metadata) {
+  return {
+    dataset: metadata.dataset,
+    uri: metadata.uri,
+    pinnedRevision: metadata.pinnedRevision,
+    license: metadata.license,
+    attribution: metadata.attribution,
+    shareAlikeNotice: metadata.shareAlikeNotice,
+    changeNotice: metadata.changeNotice
+  };
+}
+
+function emptyShard(sourceMetadata) {
+  const fixedBytes = Buffer.byteLength(JSON.stringify({
+    schema: DECLARED_TRANSCRIPT_SCHEMA,
+    sourceMetadata,
+    text: "",
+    turns: []
+  }), "utf8") + Buffer.byteLength("\n", "utf8");
+  return { sourceMetadata, fixedBytes, text: "", turns: [], records: 0, codePoints: 0, textPayloadBytes: 0, turnPayloadBytes: 0, documentBytes: fixedBytes };
 }
 
 function shardDocumentByteLength(shard, entry) {
-  return DOCUMENT_FIXED_BYTES
+  return shard.fixedBytes
     + shard.textPayloadBytes
     + entry.textPayloadBytesAdded
     + shard.turnPayloadBytes
@@ -271,6 +303,8 @@ function shardDocumentByteLength(shard, entry) {
 
 function appendEntry(shard, entry, documentBytes) {
   return {
+    sourceMetadata: shard.sourceMetadata,
+    fixedBytes: shard.fixedBytes,
     text: `${shard.text}${entry.separator}${entry.fragment}`,
     turns: [...shard.turns, ...entry.turns],
     records: shard.records + 1,

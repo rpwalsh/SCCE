@@ -12,10 +12,16 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map(path => rm(path, { recursive: true, force: true })));
 });
 
-function metadata(categoryCommitmentScopes: Record<string, "conversation" | "external"> = {
-  creative_writing: "conversation",
-  open_qa: "external"
-}) {
+function metadata(
+  categoryCommitmentScopes: Record<string, "conversation" | "external"> = {
+    creative_writing: "conversation",
+    open_qa: "external"
+  },
+  categoryRequestAuthorities: Record<string, "factual" | "reasoned" | "creative" | "translation" | "program" | "action"> = {
+    creative_writing: "creative",
+    open_qa: "factual"
+  }
+) {
   return {
     dataset: "fixture/opaque-instructions",
     uri: "https://example.invalid/datasets/opaque-instructions/tree/0123456789abcdef0123456789abcdef01234567",
@@ -24,7 +30,8 @@ function metadata(categoryCommitmentScopes: Record<string, "conversation" | "ext
     attribution: "Synthetic fixture attribution.",
     shareAlikeNotice: "Synthetic fixture share-alike notice.",
     changeNotice: "Synthetic fixture transformation notice.",
-    categoryCommitmentScopes
+    categoryCommitmentScopes,
+    categoryRequestAuthorities
   };
 }
 
@@ -63,6 +70,18 @@ describe("instruction dialogue preparation", () => {
     expect(validated.text).toBe(validated.text.normalize("NFC"));
     expect(validated.turns.map(turn => turn.surface)).toEqual(["Å🪶", "ž𐐷", "what value?", "µ"]);
     expect(validated.turns[1]).toMatchObject({ replyToTurnIndex: 0, commitmentScope: "conversation" });
+    expect(shard.sourceMetadata).toEqual({
+      dataset: metadata().dataset,
+      uri: metadata().uri,
+      pinnedRevision: metadata().pinnedRevision,
+      license: metadata().license,
+      attribution: metadata().attribution,
+      shareAlikeNotice: metadata().shareAlikeNotice,
+      changeNotice: metadata().changeNotice
+    });
+    expect(validated.turns[0]).toMatchObject({ sourceCategory: "creative_writing", requestAuthority: "creative" });
+    expect(validated.turns[1]).toMatchObject({ sourceCategory: "creative_writing" });
+    expect("requestAuthority" in validated.turns[1]!).toBe(false);
     expect(validated.turns[3]).toMatchObject({ replyToTurnIndex: 2, commitmentScope: "external" });
     expect(validated.turns[1]!.supportingSourceRanges).toHaveLength(1);
     const contextRange = validated.turns[1]!.supportingSourceRanges![0]!;
@@ -95,7 +114,9 @@ describe("instruction dialogue preparation", () => {
     const shard = JSON.parse(await readFile(join(root, "prepared", result.outputs[0]!.path), "utf8"));
 
     expect(shard.turns[1]!.commitmentScope).toBe("conversation");
+    expect(shard.turns[0]).toMatchObject({ sourceCategory: "creative_writing", requestAuthority: "creative" });
     expect(shard.turns[3]!.commitmentScope).toBe("external");
+    expect(shard.turns[2]).toMatchObject({ sourceCategory: "open_qa", requestAuthority: "factual" });
   });
 
   it("rejects an unmapped source category without leaving partial output", async () => {
@@ -106,6 +127,18 @@ describe("instruction dialogue preparation", () => {
 
     await expect(prepareInstructionDialogue({ inputPath, outputDir, metadata: metadata() })).rejects.toThrow(/unmapped category/u);
     await expect(readFile(join(outputDir, "manifest.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("requires an explicit request authority for every source category", async () => {
+    const root = await fixtureDirectory();
+    const inputPath = join(root, "opaque.jsonl");
+    await writeFile(inputPath, `${JSON.stringify({ instruction: "x", response: "y", context: "", category: "open_qa" })}\n`, "utf8");
+
+    await expect(prepareInstructionDialogue({
+      inputPath,
+      outputDir: join(root, "prepared"),
+      metadata: metadata(undefined, { creative_writing: "creative" })
+    })).rejects.toThrow(/missing or invalid request authority mapping for category open_qa/u);
   });
 
   it("replays byte-for-byte and enforces the configured shard cap", async () => {
