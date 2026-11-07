@@ -72,6 +72,20 @@
       "purpose": "Harness for the acceptance-workload comparison: gives SCCE and the same local reference model an identical invented corpus and identical questions, one of which the corpus cannot answer, and scores grounding and fabrication from the corpus bytes. Measurement only.",
       "endpoint": "127.0.0.1:11434",
       "productReachable": false
+    },
+    {
+      "file": "tools/scce-dev-mcp/evaluations/qwen-mcp-coding.mjs",
+      "purpose": "Measurement-only constrained MCP coding evaluation of the declared local Qwen reference against an isolated scratch repository; never part of SCCE product execution.",
+      "endpoint": "127.0.0.1:11434",
+      "model": "qwen2.5:3b",
+      "productReachable": false
+    },
+    {
+      "file": "tools/scce-dev-mcp/evaluations/tool-choice-protocol.mjs",
+      "purpose": "Measurement-only JSON Schema tool-choice protocol support for the isolated local Qwen coding evaluation; never part of SCCE product execution.",
+      "endpoint": "127.0.0.1:11434",
+      "model": "qwen2.5:3b",
+      "productReachable": false
     }
   ]
 }
