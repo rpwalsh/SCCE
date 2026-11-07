@@ -3,12 +3,12 @@
 import {
   BOUNDARY_ESTIMATOR_MIXTURE_SCHEMA,
   boundaryNegativeLogLikelihood,
-  fitBoundaryEstimator,
   mergeBoundaryStatistics,
   type BoundaryEstimatorMixture,
   type BoundaryEstimatorModel,
   type BoundarySufficientStatistics
 } from "./boundary-estimator.js";
+import { createBoundaryEstimatorFitter, type BoundaryEstimatorFitter } from "./boundary-fit-reuse.js";
 import { evaluatePopulationCollapseGuard } from "./population-collapse-guard.js";
 import { clamp01, createHasher, toJsonValue } from "./primitives.js";
 import type { Hasher, JsonValue } from "./types.js";
@@ -115,6 +115,7 @@ export function learnSegmentationPopulations(input: {
   hasher?: Hasher;
 }): SegmentationPopulationModel {
   const hasher = input.hasher ?? createHasher();
+  const fitEstimator = createBoundaryEstimatorFitter(hasher);
   const documents = [...input.documents]
     .filter(document => document.statistics.positiveMass + document.statistics.negativeMass > 0)
     .sort((left, right) => left.documentId.localeCompare(right.documentId));
@@ -133,7 +134,8 @@ export function learnSegmentationPopulations(input: {
       fit,
       holdout: selection,
       populationCount,
-      hasher
+      hasher,
+      fitEstimator
     }));
   }
   applyMergeGuards({
@@ -166,7 +168,8 @@ export function learnSegmentationPopulations(input: {
     fit: finalTrainingDocuments,
     holdout: [],
     populationCount: selected.populationCount,
-    hasher
+    hasher,
+    fitEstimator
   });
   const finalGroups = groupDocuments(
     finalTrainingDocuments,
@@ -180,7 +183,7 @@ export function learnSegmentationPopulations(input: {
       hasher,
       provisionalId
     );
-    const provisionalEstimator = fitCalibratedEstimatorForDocuments(group, provisionalId, hasher);
+    const provisionalEstimator = fitCalibratedEstimatorForDocuments(group, provisionalId, hasher, fitEstimator);
     const prior = quantize(group.length / Math.max(1, finalTrainingDocuments.length));
     const contentSignature = hasher.digestHex(JSON.stringify({
       rootPopulationId: input.rootPopulationId,
@@ -194,7 +197,7 @@ export function learnSegmentationPopulations(input: {
     }));
     const id = `${input.rootPopulationId}.component.${contentSignature.slice(0, 32)}`;
     const statistics = mergeBoundaryStatistics(group.map(document => document.statistics), hasher, id);
-    const estimator = fitCalibratedEstimatorForDocuments(group, id, hasher);
+    const estimator = fitCalibratedEstimatorForDocuments(group, id, hasher, fitEstimator);
     return {
       id,
       prior,
@@ -365,6 +368,7 @@ function fitPopulationCandidate(input: {
   holdout: readonly SegmentationPopulationTrainingDocument[];
   populationCount: number;
   hasher: Hasher;
+  fitEstimator: BoundaryEstimatorFitter;
 }): CandidateFit {
   if (!input.fit.length) {
     return { ...emptyCandidate(), populationCount: input.populationCount, collapsed: input.populationCount > 1 };
@@ -382,13 +386,12 @@ function fitPopulationCandidate(input: {
     if (groups.some(group => group.length < minimum)) {
       return { ...emptyCandidate(), populationCount: input.populationCount, collapsed: true };
     }
-    estimators = groups.map((group, index) => fitBoundaryEstimator({
+    estimators = groups.map((group, index) => input.fitEstimator({
       statistics: mergeBoundaryStatistics(
         group.map(document => document.statistics),
         input.hasher,
         `${input.rootPopulationId}.candidate.${input.populationCount}.${index}`
-      ),
-      hasher: input.hasher
+      )
     }));
     priors = groups.map(group => group.length / input.fit.length);
     const costs = input.fit.map(document => estimators.map(estimator =>
@@ -404,13 +407,12 @@ function fitPopulationCandidate(input: {
     assignments = next;
   }
   const finalGroups = groupDocuments(input.fit, assignments, input.populationCount);
-  estimators = finalGroups.map((group, index) => fitBoundaryEstimator({
+  estimators = finalGroups.map((group, index) => input.fitEstimator({
     statistics: mergeBoundaryStatistics(
       group.map(document => document.statistics),
       input.hasher,
       `${input.rootPopulationId}.candidate.${input.populationCount}.${index}`
-    ),
-    hasher: input.hasher
+    )
   }));
   priors = finalGroups.map(group => group.length / input.fit.length);
   const heldoutDataNats = quantize(input.holdout.reduce((sum, document) =>
@@ -625,7 +627,8 @@ function sourceFamilyDisjointPartitions(
 function fitCalibratedEstimatorForDocuments(
   documents: readonly SegmentationPopulationTrainingDocument[],
   populationId: string,
-  hasher: Hasher
+  hasher: Hasher,
+  fitEstimator: BoundaryEstimatorFitter
 ): BoundaryEstimatorModel {
   const split = documentDisjointSplit(documents, hasher);
   const trainingStatistics = mergeBoundaryStatistics(
@@ -640,11 +643,10 @@ function fitCalibratedEstimatorForDocuments(
       populationId
     )
     : undefined;
-  return fitBoundaryEstimator({
+  return fitEstimator({
     statistics: trainingStatistics,
     calibrationStatistics,
-    calibrationShards: split.holdout.map(document => document.statistics),
-    hasher
+    calibrationShards: split.holdout.map(document => document.statistics)
   });
 }
 

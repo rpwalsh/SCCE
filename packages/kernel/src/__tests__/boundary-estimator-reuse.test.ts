@@ -3,11 +3,29 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import * as boundary from "../boundary-estimator.js";
+import * as reuse from "../boundary-fit-reuse.js";
 import { createLanguageInductionEngine } from "../language-induction.js";
 import { sourceInductionBatches } from "../source-window-induction.js";
 import { createHasher } from "../primitives.js";
 
 describe("boundary fitting repeated-work equivalence", () => {
+  it("reuses exact immutable fit results only within one pass and rejects stale input identities", () => {
+    const statistics = boundary.compileBoundaryStatistics({ populationId: "reuse", sourceDocumentIds: ["owned"], observations: [] });
+    const compute = vi.spyOn(boundary, "fitBoundaryEstimator");
+    try {
+      const fit = reuse.createBoundaryEstimatorFitter();
+      const first = fit({ statistics, iterations: 2 });
+      expect(fit({ statistics: structuredClone(statistics), iterations: 2 })).toBe(first);
+      expect(compute).toHaveBeenCalledTimes(1);
+      expect(() => { first.weights[0] = 99; }).toThrow();
+      const changed = { ...statistics, positiveMass: 1024 };
+      expect(fit({ statistics: changed, iterations: 2 })).not.toBe(first);
+      expect(fit({ statistics, iterations: 3 })).not.toBe(first);
+      expect(reuse.createBoundaryEstimatorFitter()({ statistics, iterations: 2 })).toEqual(first);
+      expect(compute).toHaveBeenCalledTimes(4);
+      expect(() => fit({ statistics, calibrationStatistics: statistics })).toThrow("overlap");
+    } finally { compute.mockRestore(); }
+  });
   it("does not rebuild descent views or fixed calibration logits on every iteration", () => {
     const order = boundary.compileBoundaryStatistics({ populationId: "work", observations: [] }).featureOrder;
     const statistics = (source: string) => boundary.compileBoundaryStatistics({ populationId: "work", sourceDocumentIds: [source],
@@ -56,13 +74,30 @@ describe("boundary fitting repeated-work equivalence", () => {
     expect(text.length).toBe(19_000);
     const hasher = createHasher();
     const fit = boundary.fitBoundaryEstimator;
+    const createFitter = reuse.createBoundaryEstimatorFitter;
     const fitted: boundary.BoundaryEstimatorModel[] = [];
+    const signatures = new Set<string>();
+    let computedFits = 0;
+    let scopedDepth = 0;
     let fittingMs = 0;
+    const factorySpy = vi.spyOn(reuse, "createBoundaryEstimatorFitter").mockImplementation(hasher => {
+      const scoped = createFitter(hasher);
+      return input => {
+        scopedDepth++;
+        signatures.add(JSON.stringify(input));
+        try {
+          const model = scoped(input);
+          fitted.push(model);
+          return model;
+        } finally { scopedDepth--; }
+      };
+    });
     const spy = vi.spyOn(boundary, "fitBoundaryEstimator").mockImplementation(input => {
       const start = performance.now();
       const model = fit(input);
       fittingMs += performance.now() - start;
-      fitted.push(model);
+      computedFits++;
+      if (!scopedDepth) fitted.push(model);
       return model;
     });
     const start = performance.now();
@@ -82,11 +117,12 @@ describe("boundary fitting repeated-work equivalence", () => {
       expect(outputs.length).toBe(reference.outputModels);
       expect(hasher.digestHex(JSON.stringify(result))).toBe(reference.resultDigest);
       writeFileSync(".tmp-boundary-alice-result.json", JSON.stringify(result, null, 2));
-      writeFileSync(".tmp-boundary-alice-timing.json", JSON.stringify({ elapsedMs, fittingMs, fits: fitted.length,
+      writeFileSync(".tmp-boundary-alice-timing.json", JSON.stringify({ elapsedMs, fittingMs, fits: fitted.length, computedFits, uniqueScopedInputs: signatures.size,
         peakRssKiB: process.resourceUsage().maxRSS }, null, 2));
-      process.stdout.write(`\nAlice 19k total=${elapsedMs.toFixed(1)}ms boundary-fit=${fittingMs.toFixed(1)}ms fits=${fitted.length}\n`);
+      process.stdout.write(`\nAlice 19k total=${elapsedMs.toFixed(1)}ms boundary-fit=${fittingMs.toFixed(1)}ms requested=${fitted.length} computed=${computedFits}\n`);
       expect(outputs.length).toBeGreaterThan(1);
       expect(fitted.length).toBeGreaterThan(1);
-    } finally { spy.mockRestore(); }
+      expect(computedFits).toBeLessThan(fitted.length);
+    } finally { spy.mockRestore(); factorySpy.mockRestore(); }
   });
 });
