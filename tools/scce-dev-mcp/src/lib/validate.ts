@@ -78,7 +78,7 @@ export const toolSchemas = {
   }).strict(),
   test_run: z.object({
     commandId: boundedString(64),
-    filter: boundedString(300).optional(),
+    filter: z.preprocess(value => value === '' ? undefined : value, boundedString(300).optional()),
     maxOutputLines: boundedInt(1, 5000, 200)
   }).strict(),
   test_failures: z.object({

@@ -4,6 +4,12 @@ import { describe, expect, it } from 'vitest';
 import { validateToolArgs, ToolArgumentError, repoRelativePath, sqlIdentifier, traceId } from '../lib/validate.js';
 
 describe('validateToolArgs', () => {
+  it('treats an empty optional test filter as absent, matching the command resolver', () => {
+    expect(validateToolArgs('test_run', { commandId: 'unit', filter: '' }).filter).toBeUndefined();
+    expect(validateToolArgs('test_run', { commandId: 'unit', filter: 'packages/kernel/src/__tests__/code-request.test.ts' }).filter)
+      .toBe('packages/kernel/src/__tests__/code-request.test.ts');
+    expect(() => validateToolArgs('test_run', { commandId: 'unit', filter: 3 })).toThrow(ToolArgumentError);
+  });
   it('rejects unknown properties', () => {
     expect(() => validateToolArgs('repo_shape', { extra: 'nope' })).toThrow(ToolArgumentError);
   });

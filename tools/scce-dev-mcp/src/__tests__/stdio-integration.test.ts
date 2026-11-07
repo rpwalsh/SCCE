@@ -77,7 +77,7 @@ describe('scce-dev-mcp stdio protocol', () => {
   });
 
   it('runs one real, fast, non-recursive allowlisted command successfully', async () => {
-    const result = await client.callTool({ name: 'test_run', arguments: { commandId: 'shape' } });
+    const result = await client.callTool({ name: 'test_run', arguments: { commandId: 'shape', filter: '' } });
     const { data, isError } = parseToolText(result as any);
     expect(isError).toBe(false);
     expect(data.ok).toBe(true);
