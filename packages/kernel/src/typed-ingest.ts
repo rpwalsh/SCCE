@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { IdFactory } from "./ids.js";
+import type { GraphBoundConstruction } from "./language-induction.js";
 import type { EvidenceSpan, GraphEdge, GraphNode, Hasher, Hyperedge, JsonValue, SourceId, SourceVersionId } from "./types.js";
 import {
   classifyIngestionLane,
@@ -102,6 +103,8 @@ export interface TypedIngestProjectorInput {
   opaqueRoleModel?: OpaqueRoleModel;
   /** Source-owned labels already observed in an entity argument slot or declared by this source. */
   entitySurfaces?: readonly string[];
+  /** Exact observed argument roles of a prepared construction owned by this source's evidence. */
+  entityConstructions?: readonly GraphBoundConstruction[];
 }
 
 export function createTypedIngestProjector(options: { idFactory: IdFactory; hasher: Hasher }) {
@@ -2297,7 +2300,9 @@ function metadataWithProseRelations(input: TypedIngestProjectorInput, languageTe
   const declared = metadata.weakFreeSurfaceRelations;
   if (Array.isArray(declared) && declared.length > 0) return input.metadata;
   const entitySurfaces = [...declaredEntitySurfacesFromMetadata(input.metadata), ...(input.entitySurfaces ?? [])];
-  const relations = proseRelationMetadata(languageText, { entitySurfaces });
+  const ownedEvidence = new Set(input.evidence.filter(span => span.status === "promoted").map(span => String(span.id)));
+  const entityConstructions = input.entityConstructions?.filter(construction => construction.evidenceIds.some(id => ownedEvidence.has(String(id))));
+  const relations = proseRelationMetadata(languageText, { entitySurfaces, entityConstructions });
   if (!Array.isArray(relations) || relations.length === 0) return input.metadata;
   return toJsonValue({ ...metadata, weakFreeSurfaceRelations: relations });
 }

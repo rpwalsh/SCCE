@@ -112,7 +112,11 @@ export function learnedEntitySurfacesFromLanguageMemory(state: Pick<LanguageMemo
     if (record.patternKind !== "semantic_role" || !ownedProfiles.has(record.profileId)) continue;
     const payload = entityRecord(record.patternJson);
     if (payload.schema !== "scce.induced_language_model.semantic_memory.v1" || payload.profileId !== record.profileId) continue;
-    if (typeof payload.sourceVersionId === "string" && ownedSources.size && !ownedSources.has(payload.sourceVersionId)) continue;
+    if (typeof payload.sourceVersionId === "string" && ownedSources.size && !ownedSources.has(payload.sourceVersionId)) {
+      const parents = entityStringArray(payload.parentSourceVersionIds);
+      if (typeof payload.profileBindingDigest !== "string" || !payload.profileBindingDigest
+        || !parents.length || !parents.every(sourceVersionId => ownedSources.has(sourceVersionId))) continue;
+    }
     const durableEvidence = new Set(record.evidenceIds.map(String));
     if (!durableEvidence.size) continue;
     const constructions = Array.isArray(payload.graphBoundConstructions) ? payload.graphBoundConstructions : [];

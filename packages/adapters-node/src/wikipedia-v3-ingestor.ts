@@ -17,6 +17,11 @@ import {
   createSourceAdmissionController,
   createSourceGraphBuilder,
   createTypedIngestProjector,
+  prepareConstructionInduction,
+  preparedLanguageInductionModel,
+  sourceLanguageInductionDocuments,
+  observedEntitySurfacesFromInducedLanguageModel,
+  preparePooledLanguageProfileBinding,
   compileRelationPromotionModel,
   relationPromotionNeedsPriors,
   compileOpaqueRoleModel,
@@ -46,6 +51,8 @@ import {
   type SourceVersionId,
   type StructuredSemanticCandidate
 } from "@scce/kernel";
+import { evidenceSourceFamilyId } from "@scce/kernel";
+import type { SourceLanguageFamilyRange } from "@scce/kernel";
 import { effectiveNgramShardChars, type ScceRuntimeConfig } from "./config.js";
 import { prepareLanguageCorpusTraining, commitLanguageCorpusTraining, languageCorpusTrainingRecipeId, type LanguageCorpusTrainingInput } from "./language-corpus-trainer.js";
 import { blobContentHash } from "./postgres.js";
@@ -1326,6 +1333,11 @@ export class WikipediaV3Ingestor {
       informationLabel: WIKIPEDIA_INFORMATION_LABEL
     };
     const evidence = boundedShard.evidence;
+    const documents = sourceLanguageInductionDocuments(evidence);
+    const preparedInduction = prepareConstructionInduction({ documents, hasher: this.hasher });
+    const inducedModel = preparedLanguageInductionModel({ documents, hasher: this.hasher, prepared: preparedInduction });
+    const profileBinding = preparePooledLanguageProfileBinding({ profile, sourceVersionId, text, evidence,
+      parentSourceVersionIds: boundedShard.sourceFamilyRanges.map(range => String(range.sourceVersionId)), sourceFamilyRanges: boundedShard.sourceFamilyRanges, hasher: this.hasher });
     const ngramMaxOrder = this.config.runtime.corpora?.wikipedia?.ngramMaxOrder ?? 4;
     const ngramMaxCounters = this.config.runtime.corpora?.wikipedia?.ngramMaxCountersPerOrder ?? 128;
     const vocabularyLimit = this.config.runtime.corpora?.wikipedia?.ngramVocabularyLimit ?? 8192;
@@ -1340,6 +1352,9 @@ export class WikipediaV3Ingestor {
       text,
       evidence,
       profile,
+      preparedInduction,
+      profileBinding,
+      sourceFamilyRanges: boundedShard.sourceFamilyRanges,
       informationLabel: WIKIPEDIA_INFORMATION_LABEL,
       languageAliases: [...new Set(samples.flatMap(sample => sample.languageAliases))].sort(),
       createdAt,
@@ -1357,7 +1372,16 @@ export class WikipediaV3Ingestor {
       skipNgramObservationPersistence: true,
       episodeId
     };
-    const semanticCandidates = samples.flatMap(sample => sample.semanticCandidates);
+    const semanticCandidates = samples.flatMap(sample => {
+      const current = sample.evidence[0];
+      if (!current || !inducedModel) return sample.semanticCandidates;
+      const projected = this.typedIngest.project({ sourceId: current.sourceId, sourceVersionId: sample.sourceVersionId,
+        uri: sample.uri, mediaType: current.mediaType, text: sample.text, metadata: toJsonValue({ title: sample.title ?? "", sourceFamilyId: evidenceSourceFamilyId(current) }),
+        evidence: sample.evidence, observedAt: sample.createdAt,
+        entityConstructions: inducedModel.graphBoundConstructions,
+        entitySurfaces: observedEntitySurfacesFromInducedLanguageModel(inducedModel, sample.evidence.map(span => String(span.id))) });
+      return [...sample.semanticCandidates.filter(candidate => candidate.channel !== "weak_free_surface"), ...projected.semanticCandidates.filter(candidate => candidate.channel === "weak_free_surface")];
+    });
     // Independence is corpus-wide: sources seen in earlier runs count, or a shard at a time never promotes.
     //
     // But reading them is only worth it when they can change a verdict. A seed's independent-source count is a
@@ -1625,13 +1649,15 @@ export function boundedLanguageShard(
   samples: readonly WikipediaLanguageShardSample[],
   maxChars: number,
   maxEvidence: number
-): { text: string; evidence: EvidenceSpan[]; droppedChars: number; droppedSamples: number } {
+): { text: string; evidence: EvidenceSpan[]; sourceFamilyRanges: SourceLanguageFamilyRange[]; droppedChars: number; droppedSamples: number } {
   const parts: string[] = [];
   const evidence: EvidenceSpan[] = [];
+  const sourceFamilyRanges: SourceLanguageFamilyRange[] = [];
   const seenEvidence = new Set<string>();
   let droppedChars = 0;
   let droppedSamples = 0;
   let remaining = Math.max(0, maxChars);
+  let outputLength = 0;
   for (const sample of samples) {
     if (remaining <= 0) {
       droppedSamples += 1;
@@ -1649,11 +1675,14 @@ export function boundedLanguageShard(
     if (parts.length) {
       parts.push("\n\n");
       remaining -= 2;
+      outputLength += 2;
     }
     let consumed = Math.min(text.length, remaining);
     // A shard budget counts UTF-16 units, while evidence charEnd counts codepoints.
     if (consumed < text.length && /[\uD800-\uDBFF]/u.test(text.charAt(consumed - 1))) consumed--;
     const consumedPageChars = Math.max(0, consumed - titlePrefix.length);
+    if (consumedPageChars > 0) sourceFamilyRanges.push({ start: outputLength + titlePrefix.length, end: outputLength + titlePrefix.length + consumedPageChars,
+      sourceVersionId: sample.sourceVersionId, sourceFamilyId: sample.evidence[0] ? evidenceSourceFamilyId(sample.evidence[0]) : "wikimedia:wikipedia" });
     const consumedPageCodepoints = [...sample.text.slice(0, consumedPageChars)].length;
     for (const span of sample.evidence) {
       if (evidence.length >= maxEvidence) break;
@@ -1666,14 +1695,16 @@ export function boundedLanguageShard(
     if (text.length <= remaining) {
       parts.push(text);
       remaining -= text.length;
+      outputLength += text.length;
       continue;
     }
     parts.push(text.slice(0, consumed));
+    outputLength += consumed;
     droppedChars += text.length - consumed;
     droppedSamples += 1;
     remaining = 0;
   }
-  return { text: parts.join(""), evidence, droppedChars, droppedSamples };
+  return { text: parts.join(""), evidence, sourceFamilyRanges, droppedChars, droppedSamples };
 }
 
 export function stampEvidence(spans: EvidenceSpan[], metadata: JsonValue, informationLabel: InformationLabel): EvidenceSpan[] {

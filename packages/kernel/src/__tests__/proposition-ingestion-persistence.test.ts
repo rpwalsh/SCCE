@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import * as induction from "../language-induction.js";
 
 import { createEventFactory } from "../events.js";
 import { createIdFactory } from "../ids.js";
@@ -16,7 +17,7 @@ import type { EvidenceSpan, GraphNode, ScceEvent, SourceVersion } from "../types
 // it lives in, because a node that never reaches storage.graph.upsertNodes is not persistence. This is the seam the
 // corpus importer and the ingestion runtime share, so what this test observes is what a real ingest would store.
 describe("propositions reach storage through ingestion", () => {
-  async function ingest(text: string) {
+  async function ingest(text: string, intendedUse: "direct_evidence" | "learned_prior" = "direct_evidence") {
     const clock = createClock({ fixedTime: 1_700_000_000_000, stepMs: 1 });
     const hasher = createHasher();
     const idFactory = createIdFactory({ clock, hasher, deterministicReplay: true, namespace: "proposition-ingest" });
@@ -83,14 +84,14 @@ describe("propositions reach storage through ingestion", () => {
       onKernelStateMutation: () => undefined
     });
 
-    await runtime.ingest({
+    const result = await runtime.ingest({
       uri: "inline://proposition-ingest",
       namespace: "fixture",
       mediaType: "text/plain",
       content: text,
       sourceAdmission: {
         sourceClass: "owner_local",
-        intendedUse: "direct_evidence",
+        intendedUse,
         promotionAuthority: "owner"
       },
       sourceTrust: {
@@ -113,7 +114,7 @@ describe("propositions reach storage through ingestion", () => {
         && !Array.isArray(representation)
         && (representation as Record<string, unknown>).schema === PROPOSITION_GRAPH_NODE_SCHEMA;
     });
-    return { upsertedNodes, propositions, evidence };
+    return { upsertedNodes, propositions, evidence, result };
   }
 
   it("stores a proposition node for prose, carrying its measured value as a constraint", async () => {
@@ -125,6 +126,16 @@ describe("propositions reach storage through ingestion", () => {
       ((node.representation as Record<string, unknown>).constraints as Array<{ value: { value?: number } }>)
         .map(constraint => constraint.value?.value));
     expect(values).toContain(417);
+  });
+
+  it("acquires lowercase source relations before graph projection with one shared language induction", async () => {
+    const engine = vi.spyOn(induction, "createLanguageInductionEngine");
+    try {
+      const ingested = await ingest("ada visited london. ada visited paris. ada visited berlin. ada visited madrid. eve visited london. eve visited paris. eve visited berlin. eve visited madrid.", "learned_prior");
+      expect(ingested.result.relationCandidates).toBeGreaterThan(0);
+      expect(engine).toHaveBeenCalledTimes(1);
+      expect(ingested.evidence.every(span => span.status === "promoted")).toBe(true);
+    } finally { engine.mockRestore(); }
   });
 
   it("binds every stored proposition to the evidence that states it", async () => {

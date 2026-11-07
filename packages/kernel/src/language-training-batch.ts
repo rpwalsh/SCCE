@@ -10,6 +10,7 @@ import {
   induceSourceBoundConstructionTrainingSets,
   prepareConstructionInduction,
   preparedLanguageInductionModel,
+  sourceLanguageInductionDocuments,
   type PreparedConstructionInduction,
   type HeldOutConstructionCoverageReport
 } from "./graph-surface-alignment.js";
@@ -95,6 +96,7 @@ import type { LanguageMemoryRuntime } from "./language-memory-runtime.js";
 import { createClock, toJsonValue } from "./primitives.js";
 import { createIdFactory } from "./ids.js";
 import { languageMemoryPatternsFromInducedLanguageModel } from "./language-induction-memory.js";
+import type { PooledLanguageProfileBinding } from "./pooled-language-profile-binding.js";
 import { LANGUAGE_TRAINING_BATCH_RECIPE_ID, LANGUAGE_TRAINING_CHUNK_UTF16_LIMIT } from "./language-training-recipe.js";
 import { stampSourceLanguageCompilation } from "./source-language-compilation.js";
 import { CORPUS_ROLE_IDS, corpusRoleIdForSourceSystem } from "./corpus-registry.js";
@@ -148,6 +150,8 @@ export interface LanguageTrainingBatch {
   /** Train the language layer only: n-gram observations, models, units, frames. No construction induction or alignment. */
   languageOnly?: boolean;
   constructionSets?: readonly SourceBoundLanguageConstructionTrainingSet[];
+  preparedInduction?: PreparedConstructionInduction;
+  profileBinding?: PooledLanguageProfileBinding;
   /** Owned durable evidence for construction learning; n-grams and graph alignment still use this document's evidence. */
   constructionEvidence?: readonly EvidenceSpan[];
   additionalPatterns?: readonly LanguagePatternRecord[];
@@ -280,14 +284,15 @@ export function compileLanguageTrainingBatch(input: {
   const ownedConstructionEvidence = batch.constructionEvidence ?? batch.evidence;
   const constructionSplit = splitConstructionEvidence(formalCode ? [] : ownedConstructionEvidence, input.hasher);
   const constructionEvidence = induceNaturalLanguage ? batch.evidence.filter(span => span.status === "promoted") : [];
-  const preparedInduction = prepareConstructionInduction({ documents: evidenceDocuments(constructionEvidence), hasher: input.hasher });
+  const preparedInduction = batch.preparedInduction ?? prepareConstructionInduction({ documents: sourceLanguageInductionDocuments(constructionEvidence), hasher: input.hasher });
   const inducedLanguageModel = induceNaturalLanguage
-    ? preparedLanguageInductionModel({ documents: evidenceDocuments(constructionEvidence), hasher: input.hasher, prepared: preparedInduction })
+    ? preparedLanguageInductionModel({ documents: sourceLanguageInductionDocuments(constructionEvidence), hasher: input.hasher, prepared: preparedInduction })
     : undefined;
   const inducedLanguagePatterns = inducedLanguageModel ? languageMemoryPatternsFromInducedLanguageModel({
     model: inducedLanguageModel, profiles: [batch.profile],
     idFactory: createIdFactory({ hasher: input.hasher, clock: createClock({ fixedTime: 0 }), namespace: "source-language-induction", deterministicReplay: true }),
-    sourceSystem: batch.sourceSystem, updatedAt: batch.createdAt
+    sourceSystem: batch.sourceSystem, updatedAt: batch.createdAt,
+    ...(batch.profileBinding ? { profileBinding: batch.profileBinding } : {})
   }).patterns : [];
   const inducedSets = induceSourceBoundConstructionTrainingSets({
     evidence: constructionEvidence,

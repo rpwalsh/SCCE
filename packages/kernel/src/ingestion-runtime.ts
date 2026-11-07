@@ -12,14 +12,15 @@ import { createSourceGraphBuilder } from "./graphbuild.js";
 import { createIdFactory } from "./ids.js";
 import { routeStoreCounts, sumRecord } from "./ingestion-diagnostics.js";
 import { inlineIngestStream } from "./inline-ingest-source.js";
-import { jsonRecord, kernelString } from "./kernel-answer-primitives.js";
+import { jsonRecord, kernelString, observedEntitySurfacesFromInducedLanguageModel } from "./kernel-answer-primitives.js";
+import { prepareConstructionInduction, preparedLanguageInductionModel, sourceLanguageInductionDocuments } from "./graph-surface-alignment.js";
 import { createLanguageMemoryRuntime } from "./language-memory-runtime.js";
 import { sourceLanguageTrainingStreamId } from "./source-language-training-identity.js";
 import {
   compileLanguageTrainingBatch,
   observeLanguageTrainingSegmentation
 } from "./language-training-batch.js";
-import { CORPUS_SOURCE_SYSTEM_IDS, canonicalCorpusSourceSystemId, corpusSourceAlias, corpusRoleIdForSourceSystem, DEFAULT_NGRAM_SETTINGS } from "./corpus-registry.js";
+import { CORPUS_ROLE_IDS, CORPUS_SOURCE_SYSTEM_IDS, canonicalCorpusSourceSystemId, corpusSourceAlias, corpusRoleIdForSourceSystem, DEFAULT_NGRAM_SETTINGS } from "./corpus-registry.js";
 import {
   createLanguageAcquisitionEngine
 } from "./language.js";
@@ -457,6 +458,10 @@ export function createIngestionRuntime(options: {
           })));
           languageProfiles++;
         }
+        const inductionDocuments = sourceLanguageInductionDocuments(admittedSpans);
+        const preparedInduction = decision.activeInfluence.language && corpusRoleIdForSourceSystem(sourceSystem) !== CORPUS_ROLE_IDS.softwareSymbolic
+          ? prepareConstructionInduction({ documents: inductionDocuments, hasher }) : undefined;
+        const inducedModel = preparedInduction ? preparedLanguageInductionModel({ documents: inductionDocuments, hasher, prepared: preparedInduction }) : undefined;
         const typedProjection = typedIngest.project({
           sourceId,
           sourceVersionId,
@@ -465,6 +470,8 @@ export function createIngestionRuntime(options: {
           text: sourceText,
           metadata: sourceMetadata,
           evidence: admittedSpans,
+          entitySurfaces: inducedModel ? observedEntitySurfacesFromInducedLanguageModel(inducedModel, admittedSpans.map(span => String(span.id))) : [],
+          entityConstructions: inducedModel?.graphBoundConstructions,
           observedAt: now
         });
         for (const [kind, count] of Object.entries(typedProjection.observationCounts)) typedObservationCounts[kind] = (typedObservationCounts[kind] ?? 0) + count;
@@ -529,6 +536,7 @@ export function createIngestionRuntime(options: {
             canonicalSource: { sourceId, contentHash: source.contentHash },
             text: languageTrainingText,
             evidence: admittedSpans,
+            ...(preparedInduction ? { preparedInduction } : {}),
             createdAt: now,
             // Measured, not assumed: orders 6 through 9 are identical on this corpus (no 6-gram context recurs) and
             // cost several times the training; see tools/prose-order-calibration.

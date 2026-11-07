@@ -3,6 +3,7 @@
 import type { AlignmentCalibrationObservation, AlignmentPromotionObservation, GraphEdge, GraphNode, Hyperedge } from "@scce/kernel";
 import { ingestStageTracer } from "./ingest-stage-trace-sink.js";
 import { blobContentHash } from "./postgres.js";
+import { prepareCorpusSourceGraphProjection, SOURCE_ENTITY_GRAPH_COMPONENT_RECIPE_ID } from "./corpus-source-graph-projection.js";
 import {
   createClock,
   canonicalStringify,
@@ -20,6 +21,9 @@ import {
   sourceCodeFunctionConstructionId,
   createSourceAdmissionController,
   compileLanguageTrainingBatch,
+  prepareConstructionInduction,
+  preparedLanguageInductionModel,
+  sourceLanguageInductionDocuments,
   sourceLanguageTrainingStreamId,
   stampSourceLanguageCompilation,
   prepareLanguageTrainingSegmentation,
@@ -38,6 +42,9 @@ import {
   toJsonValue,
   type Clock,
   type CompiledLanguageTrainingBatch,
+  type PreparedConstructionInduction,
+  type PooledLanguageProfileBinding,
+  type SourceLanguageFamilyRange,
   type CreativeEventConstructionCompiler,
   type EvidenceSpan,
   type IdFactory,
@@ -99,7 +106,9 @@ export interface LanguageCorpusTrainingInput {
   /** Pure source-evidenced projection prepared by the caller and persisted in the same commit transaction. */
   graphSnapshotAdditions?: GraphSnapshot;
   /** Character ranges of the concatenated text and the source family each belongs to. */
-  sourceFamilyRanges?: readonly { start: number; end: number; sourceFamilyId: string }[];
+  sourceFamilyRanges?: readonly SourceLanguageFamilyRange[];
+  preparedInduction?: PreparedConstructionInduction;
+  profileBinding?: PooledLanguageProfileBinding;
   /** Alignment evidence carried from earlier batches: a construction is promoted on what the corpus shows, not one document. */
   alignmentPromotionObservations?: readonly AlignmentPromotionObservation[];
   alignmentCalibrationObservations?: readonly AlignmentCalibrationObservation[];
@@ -222,6 +231,8 @@ export interface PreparedLanguageCorpusTraining {
 }
 
 interface PreparedLanguageCorpusPayload {
+  projectedGraph?: GraphSnapshot;
+  relationObservations?: Awaited<ReturnType<NonNullable<ScceStorage["relationObservations"]>["list"]>>;
   sourceSystem: string;
   sourceSystemId: string;
   sourceUri: string;
@@ -360,8 +371,13 @@ function checkpointRecord(input: LanguageCorpusTrainingInput, binding: string, r
 }
 
 function corpusComponentRecipes(input: LanguageCorpusTrainingInput): Record<string, string> {
-  return !input.languageOnly && corpusRoleIdForSourceSystem(input.sourceSystem) !== CORPUS_ROLE_IDS.softwareSymbolic
+  const components: Record<string, string> = !input.languageOnly && corpusRoleIdForSourceSystem(input.sourceSystem) !== CORPUS_ROLE_IDS.softwareSymbolic
     ? { inducedLanguageMemory: INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID } : {};
+  if (!input.languageOnly && corpusRoleIdForSourceSystem(input.sourceSystem) !== CORPUS_ROLE_IDS.softwareSymbolic && input.persistSource !== false && createCorpusRegistry(input.corpusRegistry ?? []).some(row =>
+    row.sourceSystemId === canonicalCorpusSourceSystemId(input.sourceSystem) && row.enabled && row.graphEvidenceEligible)) {
+    components.sourceEntityGraph = SOURCE_ENTITY_GRAPH_COMPONENT_RECIPE_ID;
+  }
+  return components;
 }
 
 function checkpointReport(row: IngestionCheckpoint, binding: string, compilerRecipe: string, componentRecipes: Record<string, string>): LanguageCorpusTrainingReport | undefined {
@@ -680,7 +696,7 @@ export async function commitLanguageCorpusTraining(
     if (!payload) throw new Error("prepared language training payload was released before commit");
     const result = await input.storage.transaction(async () => {
       const snapshot = needsConstructionContext(input)
-        ? trainingGraphSnapshot(await graphSnapshotForEvidence(input.storage, payload.evidence, input.graphSnapshotSourceVersionIds), input.graphSnapshotAdditions, payload.evidence) : undefined;
+        ? trainingGraphSnapshot(trainingGraphSnapshot(await graphSnapshotForEvidence(input.storage, payload.evidence, input.graphSnapshotSourceVersionIds), input.graphSnapshotAdditions, payload.evidence), payload.projectedGraph, payload.evidence) : undefined;
       if (graphSnapshotDigest(snapshot) !== prepared.graphSnapshotDigest) throw new Error("language training graph dependencies changed before commit; prepare again");
       if (payload.constructionPoolEvidence.length) {
         const current = await input.storage.evidence.getEvidenceBatch(payload.constructionPoolEvidence.map(span => span.id));
@@ -910,9 +926,17 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
   // constructions and the mouth had no learned sentence shapes to speak with. The snapshot is this batch's own
   // evidence, read back from the graph the same evidence was projected into.
   const trainTrace = ingestStageTracer();
+  const inductionDocuments = sourceLanguageInductionDocuments(evidence);
+  const naturalInduction = !input.languageOnly && corpusRoleIdForSourceSystem(sourceSystem) !== CORPUS_ROLE_IDS.softwareSymbolic;
+  const preparedInduction = naturalInduction ? input.preparedInduction ?? prepareConstructionInduction({ documents: inductionDocuments, hasher }) : undefined;
+  const inducedModel = preparedInduction ? preparedLanguageInductionModel({ documents: inductionDocuments, hasher, prepared: preparedInduction }) : undefined;
+  const graphEligible = createCorpusRegistry(input.corpusRegistry ?? []).some(row => row.sourceSystemId === sourceSystemId && row.enabled && row.graphEvidenceEligible);
+  const sourceProjection = source && input.persistSource !== false && graphEligible && naturalInduction
+    ? await prepareCorpusSourceGraphProjection({ storage: input.storage, sourceId, sourceVersionId, uri: sourceUri, mediaType: input.mediaType ?? "text/plain",
+      text, metadata, evidence, model: inducedModel, informationLabel, ids, hasher, observedAt: createdAt }) : undefined;
   const snapshotSpan = trainTrace.span("train.graph-snapshot");
   const batchGraphSnapshot = needsConstructionContext(input)
-    ? trainingGraphSnapshot(await graphSnapshotForEvidence(input.storage, evidence, input.graphSnapshotSourceVersionIds), input.graphSnapshotAdditions, evidence) : undefined;
+    ? trainingGraphSnapshot(trainingGraphSnapshot(await graphSnapshotForEvidence(input.storage, evidence, input.graphSnapshotSourceVersionIds), input.graphSnapshotAdditions, evidence), sourceProjection?.graph, evidence) : undefined;
   snapshotSpan.end({
     nodes: batchGraphSnapshot?.nodes.length ?? 0,
     edges: batchGraphSnapshot?.edges.length ?? 0,
@@ -943,6 +967,8 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
       ...(canonicalSource ? { canonicalSource: { sourceId: canonicalSource.sourceId, contentHash: canonicalSource.contentHash } } : {}),
       text,
       evidence,
+      ...(preparedInduction ? { preparedInduction } : {}),
+      ...(input.profileBinding ? { profileBinding: input.profileBinding } : {}),
       ...(constructionPoolEvidence.length ? { constructionEvidence: [...evidence, ...constructionPoolEvidence] } : {}),
       createdAt,
       maxOrder: input.ngramMaxOrder ?? registryNgram.maxOrder,
@@ -1058,6 +1084,8 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
   });
   return {
     sourceSystem,
+    projectedGraph: sourceProjection?.graph,
+    relationObservations: sourceProjection?.observations,
     sourceSystemId,
     sourceUri,
     namespace,
@@ -1145,6 +1173,13 @@ async function commitLanguageCorpusTrainingInternal(input: LanguageCorpusTrainin
   }
 
   if (input.persistProfile !== false) await input.storage.model.putLanguageProfile(prepared.profile);
+  if (prepared.relationObservations?.length && input.storage.relationObservations) await input.storage.relationObservations.put(prepared.relationObservations);
+  if (prepared.projectedGraph) {
+    const graph = prepared.projectedGraph;
+    if (input.storage.graph.upsertNodes) await input.storage.graph.upsertNodes(graph.nodes); else for (const row of graph.nodes) await input.storage.graph.upsertNode(row);
+    if (input.storage.graph.upsertEdges) await input.storage.graph.upsertEdges(graph.edges); else for (const row of graph.edges) await input.storage.graph.upsertEdge(row);
+    if (input.storage.graph.upsertHyperedges) await input.storage.graph.upsertHyperedges(graph.hyperedges); else for (const row of graph.hyperedges) await input.storage.graph.upsertHyperedge(row);
+  }
   if (input.persistSource !== false && input.storage.languageIdentities?.putProfileSignatures) {
     await input.storage.languageIdentities.putProfileSignatures({
       informationLabel: prepared.informationLabel,

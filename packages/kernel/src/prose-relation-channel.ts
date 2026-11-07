@@ -3,6 +3,13 @@
 import { isSurfaceUnitChar, splitSurfaceSentences, surfaceWords } from "./surface-linguistics.js";
 import { surfaceEntityRuns } from "./kernel-answer-primitives.js";
 import type { JsonValue } from "./types.js";
+import type { GraphBoundConstruction } from "./language-induction.js";
+
+interface ProseRelationOptions {
+  maxRelations?: number;
+  entitySurfaces?: readonly string[];
+  entityConstructions?: readonly GraphBoundConstruction[];
+}
 
 /**
  * The relation channel prose has never had.
@@ -67,7 +74,7 @@ export interface ProseRelation {
  * a support number, and the assumptions and transformations this extraction made, recorded so a reviewer can see
  * exactly what was assumed rather than inferring it from the output.
  */
-export function proseRelationMetadata(text: string, options: { maxRelations?: number; entitySurfaces?: readonly string[] } = {}): JsonValue {
+export function proseRelationMetadata(text: string, options: ProseRelationOptions = {}): JsonValue {
   const relations = proseRelations(text, options);
   if (!relations.length) return [];
   return relations.map(relation => ({
@@ -94,12 +101,26 @@ export function proseRelationMetadata(text: string, options: { maxRelations?: nu
 }
 
 /** Every relation the prose of `text` observably states, ordered by the sentence they appear in. Pure. */
-export function proseRelations(text: string, options: { maxRelations?: number; entitySurfaces?: readonly string[] } = {}): ProseRelation[] {
+export function proseRelations(text: string, options: ProseRelationOptions = {}): ProseRelation[] {
   const maxRelations = Math.max(1, Math.min(2_000, Math.floor(options.maxRelations ?? 400)));
   const out: ProseRelation[] = [];
   for (const sentence of splitSurfaceSentences(text)) {
     if (sentence.length > MAX_SENTENCE_CHARS) continue;
-    for (const relation of sentenceRelations(sentence, options.entitySurfaces ?? [])) {
+    const observed = sentenceRelations(sentence, options.entitySurfaces ?? []);
+    for (const construction of options.entityConstructions ?? []) {
+      const source = construction.slots.filter(slot => slot.semanticRole === "entity" && slot.relationDirection === "source").flatMap(slot => slot.observedFillers);
+      const target = construction.slots.filter(slot => slot.semanticRole === "entity" && slot.relationDirection === "target").flatMap(slot => slot.observedFillers);
+      if (!source.length || !target.length) continue;
+      const sourceSet = new Set(source.map(normalizePredicate));
+      const targetSet = new Set(target.map(normalizePredicate));
+      const predicate = normalizePredicate(construction.predicate);
+      for (const relation of sentenceRelations(sentence, [...source, ...target])) {
+        if (relation.predicateSurface === predicate && sourceSet.has(normalizePredicate(relation.subject.surface))
+          && targetSet.has(normalizePredicate(relation.object.surface))) observed.push(relation);
+      }
+    }
+    const unique = new Map(observed.map(relation => [JSON.stringify([relation.subject, relation.predicateSurface, relation.object]), relation]));
+    for (const relation of unique.values()) {
       out.push(relation);
       if (out.length >= maxRelations) return out;
     }

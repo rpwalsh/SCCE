@@ -28,6 +28,8 @@ import { createWikipediaV3Ingestor } from "../wikipedia-v3-ingestor.js";
 import * as corpusTrainer from "../language-corpus-trainer.js";
 import { MIN_WIKIPEDIA_MAX_ARTICLE_CHARS } from "../config.js";
 import { INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID } from "../../../kernel/src/language-induction-memory.js";
+import { SOURCE_ENTITY_GRAPH_COMPONENT_RECIPE_ID } from "../corpus-source-graph-projection.js";
+import * as languageInduction from "../../../kernel/src/language-induction.js";
 import { primeLearnedAnswerUnitForms } from "../../../kernel/src/learned-answer-unit-forms.js";
 import { requestUnitMatchesSurface } from "../../../kernel/src/local-evidence-runtime.js";
 import { scopeLanguageMemoryStateToLanguage } from "../../../kernel/src/language-memory-runtime.js";
@@ -56,6 +58,22 @@ afterEach(async () => {
 });
 
 describe("learned rows carry the shard's provenance once", () => {
+  it("projects real lowercase source relations using the canonical batch's one prepared model", async () => {
+    const fixture = memoryStorage();
+    const observations: Awaited<ReturnType<NonNullable<ScceStorage["relationObservations"]>["list"]>> = [];
+    fixture.storage.relationObservations = { list: async () => observations, put: async rows => { observations.push(...rows); } };
+    const engine = vi.spyOn(languageInduction, "createLanguageInductionEngine");
+    try {
+      await trainLanguageCorpusText({ storage: fixture.storage, sourceSystem: "gutenberg", sourceUri: "fixture://lowercase-entity", streamUri: "fixture://lowercase-entity",
+        text: "ada visited london. ada visited paris. ada visited berlin. ada visited madrid. eve visited london. eve visited paris. eve visited berlin. eve visited madrid.",
+        createdAt: 1700000000000, skipNgramObservationPersistence: true, informationLabel: publicCorpusInformationLabel });
+      expect(engine).toHaveBeenCalledTimes(1);
+      expect(observations.filter(row => row.channel === "weak_free_surface").length).toBeGreaterThan(0);
+      expect(observations.every(row => fixture.state.sourceVersions.some(source => source.sourceId === row.sourceId))).toBe(true);
+      expect(fixture.state.patterns.some(row => recordOf(row.patternJson).schema === "scce.induced_language_model.semantic_memory.v1")).toBe(true);
+    } finally { engine.mockRestore(); }
+  });
+
   it.each([{ sourceSystem: "oss_code", languageOnly: false }, { sourceSystem: "gutenberg", languageOnly: true }])(
     "does not invoke a natural creative compiler for $sourceSystem languageOnly=$languageOnly", async mode => {
       const fixture = memoryStorage();
@@ -110,7 +128,7 @@ describe("learned rows carry the shard's provenance once", () => {
     expect(fixture.state.patterns).toEqual(before.patterns);
     expect(checkpoints.size).toBe(1);
     expect([...checkpoints.values()][0]!.id).toBe(checkpoint.id);
-    expect(recordOf([...checkpoints.values()][0]!.metadata).componentRecipes).toEqual({ inducedLanguageMemory: INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID });
+    expect(recordOf([...checkpoints.values()][0]!.metadata).componentRecipes).toEqual({ inducedLanguageMemory: INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID, sourceEntityGraph: SOURCE_ENTITY_GRAPH_COMPONENT_RECIPE_ID });
     const writes = fixture.state.events.length;
     await trainLanguageCorpusText(input);
     expect(fixture.state.events).toHaveLength(writes);
@@ -2124,7 +2142,8 @@ function memoryStorage(): { storage: ScceStorage; state: MemoryState } {
     close: async () => undefined,
     conversation: unusedStore(),
     ingestion: unusedStore(),
-    graph: { getSlice: async (query: unknown) => ({ bounded: true, query, nodes: [], edges: [], hyperedges: [] }) },
+    graph: { getSlice: async (query: unknown) => ({ bounded: true, query, nodes: [], edges: [], hyperedges: [] }),
+      upsertNodes: async () => undefined, upsertEdges: async () => undefined, upsertHyperedges: async () => undefined },
     blobs: { put: async (bytes: Uint8Array) => { state.blobs.push(new Uint8Array(bytes)); return blobContentHash(bytes); } },
     quarantine: unusedStore(),
     proofs: unusedStore(),

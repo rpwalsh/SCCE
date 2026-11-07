@@ -59,6 +59,7 @@ export * from "./surface-lattice.js";
 export * from "./segmentation-aggregate.js";
 export * from "./language-induction-persistence.js";
 export * from "./language-induction-memory.js";
+export * from "./pooled-language-profile-binding.js";
 export * from "./ppf.js";
 export * from "./powerwalk.js";
 export * from "./latent.js";

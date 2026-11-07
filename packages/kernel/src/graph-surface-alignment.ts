@@ -103,6 +103,12 @@ export interface PreparedConstructionInduction {
   readonly inputDigest: string;
 }
 
+export function sourceLanguageInductionDocuments(evidence: readonly EvidenceSpan[]): LanguageInductionDocument[] {
+  return evidence.filter(span => span.status === "promoted").map(span => ({
+    id: String(span.id), text: span.text, sourceVersionId: span.sourceVersionId, evidenceIds: [span.id]
+  }));
+}
+
 const preparedConstructionInductions = new WeakMap<PreparedConstructionInduction, InducedLanguageModel | undefined>();
 
 export function prepareConstructionInduction(input: {

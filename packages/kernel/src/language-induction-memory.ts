@@ -5,6 +5,7 @@ import type { InducedLanguageModel } from "./language-induction.js";
 import { canonicalStringify, clamp01, entropy, toJsonValue } from "./primitives.js";
 import type { LanguagePatternRecord } from "./storage.js";
 import type { EvidenceId, InformationLabel, JsonValue, LanguageProfile } from "./types.js";
+import { pooledLanguageProfileBindingFor, type PooledLanguageProfileBinding } from "./pooled-language-profile-binding.js";
 
 export interface InducedLanguageModelMemoryProjection {
   schema: "scce.induced_language_model.memory_projection.v1";
@@ -23,10 +24,13 @@ export function languageMemoryPatternsFromInducedLanguageModel(input: {
   updatedAt: number;
   sourceSystem?: string;
   informationLabel?: InformationLabel;
+  profileBinding?: PooledLanguageProfileBinding;
 }): InducedLanguageModelMemoryProjection {
   const profileIds = sourceVersionIdsFromAudit(input.model.audit);
   const targetProfiles = input.profiles
-    .filter(profile => profileIds.size === 0 || profileIds.has(String(profile.sourceVersionId)))
+    .filter(profile => profileIds.size === 0 || profileIds.has(String(profile.sourceVersionId)) || (input.profileBinding && pooledLanguageProfileBindingFor({
+      binding: input.profileBinding, profile, sourceVersionIds: profileIds, evidenceIds: evidenceIdsFromAudit(input.model.audit).map(String)
+    })))
     .sort((left, right) => left.id.localeCompare(right.id));
   if (!targetProfiles.length) {
     return {
@@ -46,6 +50,7 @@ export function languageMemoryPatternsFromInducedLanguageModel(input: {
     updatedAt: input.updatedAt,
     sourceSystem: input.sourceSystem,
     informationLabel: input.informationLabel,
+      ...(input.profileBinding ? { profileBinding: pooledLanguageProfileBindingFor({ binding: input.profileBinding, profile, sourceVersionIds: profileIds, evidenceIds: evidenceIds.map(String) }) } : {}),
     evidenceIds
   }));
   return {
@@ -64,6 +69,7 @@ function patternsForProfile(input: {
   sourceSystem?: string;
   informationLabel?: InformationLabel;
   evidenceIds: readonly EvidenceId[];
+  profileBinding?: ReturnType<typeof pooledLanguageProfileBindingFor>;
 }): LanguagePatternRecord[] {
   const rows: LanguagePatternRecord[] = [];
   const base = {
@@ -71,6 +77,7 @@ function patternsForProfile(input: {
     modelId: input.model.id,
     profileId: input.profile.id,
     sourceVersionId: input.profile.sourceVersionId,
+    ...(input.profileBinding ? { parentSourceVersionIds: input.profileBinding.parents, sourceFamilyIds: input.profileBinding.families, profileBindingDigest: input.profileBinding.inputDigest } : {}),
     ...(input.sourceSystem ? { sourceSystem: input.sourceSystem } : {})
   };
   const add = (
