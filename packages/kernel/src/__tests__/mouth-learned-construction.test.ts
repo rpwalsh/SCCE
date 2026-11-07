@@ -98,6 +98,8 @@ describe("Mouth learned-construction candidate", () => {
     expect(owned.spoken.text).toBe("Aster powers pump.");
     expect(learnedCandidate(owned.spoken)).toBeDefined();
     expect(learnedCandidate(foreign.spoken)).toBeUndefined();
+    expect(foreign.spoken.text).toBe("");
+    expect(foreign.spoken.realizationAvailability.status).not.toBe("realized");
   });
 
   it("preserves a no-space script's learned order and punctuation", async () => {

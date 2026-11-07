@@ -1722,6 +1722,41 @@ describe("Mouth runtime surface planning", () => {
     expect(JSON.stringify(spoken.realizationTrace.brainInfluence)).toContain("ordinary-prior-answer");
   });
 
+  it.each(["missing", "foreign", "current", "learned"])("keeps source-bound facts out of the learned-prior route when their owners are %s", async ownership => {
+    const source = sourceVersion();
+    const text = "Ada Lovelace is a mathematician. Ada Lovelace wrote notes about the Analytical Engine. The Analytical Engine is a mechanical computer.";
+    const owner = { ...directEvidence(source), text, textPreview: text, features: featureSet(text, 128) };
+    const field = emptyField();
+    const evidence = ownership === "missing" || ownership === "learned" ? [] : ownership === "current" ? [owner]
+      : [{ ...owner, id: "evidence:foreign:owner" as EvidenceSpan["id"] }];
+    const construct = semanticAnswerConstructGraph();
+    for (const node of construct.nodes.filter(row => row.kind === "construct:semantic_answer")) {
+      const metadata = node.metadata as Record<string, JsonValue>;
+      const facts = metadata.selectedFacts as Array<Record<string, JsonValue>>;
+      node.metadata = toJsonValue({ ...metadata,
+        selectedFacts: facts.map(fact => ({ ...fact, forceClass: ownership === "learned" ? "learned_concept_prior" : "direct_evidence", evidenceIds: [String(owner.id)], sourceVersionId: String(owner.sourceVersionId) })),
+        supportIds: [String(owner.id)],
+        certificationBoundary: { directEvidenceCount: 1, evidenceSpanIds: [String(owner.id)], sourceVersionIds: [String(owner.sourceVersionId)], externalFactCertification: false }
+      });
+    }
+    const memory = importedMemory(source, owner, `source-fact-owner:${ownership}`);
+    memory.importedUnits.push({ id: "unit:source-fact-owner:wording", profileId: "profile:wiki-fixture",
+      sourceVersionId: source.sourceVersionId, script: "fixture-script", unitKind: "phrase", text,
+      features: featureSet(text, 64), competenceVector: [1], alpha: 0.94, evidenceIds: [],
+      metadata: { sourceSystem: "scce2", provenanceClass: "learned_language_prior" } });
+    const mouth = createMouth({ languageMemory: languageRuntime, correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }), hashText: value => hasher.digestHex(value) });
+    const spoken = await mouth.speak({ construct, field, languageProfile: languageProfile(source), evidence,
+      entailment: createSemanticEntailmentEngine({ idFactory: ids, hasher }).check({ text: "Who was Ada Lovelace and what was her contribution to computer science?", evidence, nodes: [], field, createdAt: clock.now() }),
+      languageMemory: memory, targetLanguage: "fixture-language" });
+    if (ownership === "current" || ownership === "learned") {
+      expect(spoken.text).toContain("Ada Lovelace");
+      expect(spoken.text).toContain("Analytical Engine");
+    } else {
+      expect(spoken.text).toBe("");
+      expect(spoken.realizationAvailability.status).not.toBe("realized");
+    }
+  });
+
   it("realizes graph answer slots from a source-owned language surface instead of emitting an empty semantic answer", async () => {
     const source = sourceVersion();
     const field = emptyField();

@@ -8063,9 +8063,11 @@ function learnedPriorFactsSurviveSurface(
   facts: readonly SemanticAnswerFact[],
   input: SpeakInput
 ): boolean {
+  const state = semanticAnswerConstructState(input.construct);
+  if (facts.some(fact => fact.forceClass === "direct_evidence"
+    && (!state || currentSourceBoundFactEvidenceOwners(state, fact, input.evidence).length === 0))) return false;
   const sentences = splitUnicodeSurfaceSentences(text).map(sentence => sentence.trim()).filter(Boolean);
   if (!sentences.length || !facts.length) return false;
-  const state = semanticAnswerConstructState(input.construct);
   const slotPlan = jsonRecord(state?.questionSlotPlan);
   const collectionMemberPlan = slotPlan.questionTypeId === QUESTION_TYPE_IDS.collectionMember
     && stringArrayFromJson(slotPlan.requiredSlots).includes(ANSWER_SLOT_IDS.memberRelation);
