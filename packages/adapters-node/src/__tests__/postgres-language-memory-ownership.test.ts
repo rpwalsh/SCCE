@@ -64,6 +64,21 @@ describe("Postgres language-memory ownership queries", () => {
     expect(index).toContain("WHERE pattern_kind='source_code_function'");
     expect(index).toContain("source_system,(pattern_json->>'formalLanguage'),(pattern_json->>'parameterCount')");
   });
+
+  it("filters requested pattern schemas in the candidate pool before any row limit is applied", async () => {
+    const { adapter, calls } = fixture();
+    await adapter.languageMemory.listLanguagePatterns({
+      sourceSystem: "source.dialogue",
+      patternSchemas: ["scce.request_requirement_pattern.v1", "scce.creative_event_compatibility_model.v1"],
+      limit: 2048
+    });
+    const call = calls[0]!;
+    const filter = call.sql.indexOf("pattern.pattern_json->>'schema'=ANY(");
+    expect(filter).toBeGreaterThanOrEqual(0);
+    expect(filter).toBeLessThan(call.sql.indexOf("ranked_pool AS"));
+    expect(filter).toBeLessThan(call.sql.lastIndexOf("LIMIT"));
+    expect(call.params).toContainEqual(["scce.request_requirement_pattern.v1", "scce.creative_event_compatibility_model.v1"]);
+  });
   it("filters plural profile ownership before unit and pattern limits", async () => {
     const { adapter, calls } = fixture();
 

@@ -723,7 +723,6 @@ export function createProductionTurnRuntime(options: {
   let turnRequirementModelDirtySteps = 0;
   let turnRequirementModelFlush: Promise<void> | undefined;
 
-  let requestControlPatterns: LanguagePatternRecord[] | undefined;
   /**
    * The routing patterns that carry the requirement coefficients, held for the process.
    *
@@ -736,12 +735,7 @@ export function createProductionTurnRuntime(options: {
    * control is not corpus content and must not be hostage to a corpus-hydration budget.
    */
   async function requestControlPatternsCached(): Promise<LanguagePatternRecord[]> {
-    if (requestControlPatterns) return requestControlPatterns;
-    requestControlPatterns = await Promise.all(["corrections", "dialogue"].map(sourceSystem =>
-      deps.storage.languageMemory.listLanguagePatterns({ sourceSystem, limit: 2048 })))
-      .then(groups => groups.flat())
-      .catch(() => [] as LanguagePatternRecord[]);
-    return requestControlPatterns;
+    return surfaceLanguageRuntime.requestControlPatternsCached().catch(() => [] as LanguagePatternRecord[]);
   }
 
   let requestCommunicativeActHydration: { model: RequestCommunicativeActModel | undefined } | undefined;

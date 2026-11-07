@@ -3912,6 +3912,11 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         where.push(`pattern.profile_id=ANY($${params.length}::text[])`);
       } else if (query.profileId) { params.push(query.profileId); where.push(`pattern.profile_id=$${params.length}`); }
       if (query.sourceSystem) { params.push(query.sourceSystem); where.push(`${languagePatternSourceSystemExpression("pattern")}=$${params.length}`); }
+      if (query.patternSchemas) {
+        if (!query.patternSchemas.length) return [];
+        params.push([...new Set(query.patternSchemas)]);
+        where.push(`pattern.pattern_json->>'schema'=ANY($${params.length}::text[])`);
+      }
       if (query.patternKind) { params.push(query.patternKind); where.push(`pattern.pattern_kind=$${params.length}`); }
       if (query.formalLanguage !== undefined) { params.push(query.formalLanguage); where.push(`pattern.pattern_json->>'formalLanguage'=$${params.length}`); }
       if (query.parameterCount !== undefined) {

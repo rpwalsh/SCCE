@@ -8,11 +8,38 @@ import { createNgramMemoryCompiler } from "../ngram-memory.js";
 import { createIdFactory } from "../ids.js";
 import { createClock, createHasher } from "../primitives.js";
 import { createSurfaceLanguageRuntime } from "../surface-language-runtime.js";
+import { CORPUS_SOURCE_SYSTEM_IDS } from "../corpus-registry.js";
 import type { LanguageContinuationPopulation, ScceKernelDeps, SemanticFrameRecord } from "../storage.js";
 import type { SegmentationPopulationModelRecord } from "../segmentation-population-persistence.js";
 import type { LanguageProfile } from "../types.js";
 
 describe("surface language resident-only cache", () => {
+  it("loads exact request-control schemas, retries read failures, and TTL-caches a successful empty result", async () => {
+    const fixture = runtimeFixture({ cacheMs: 100_000 });
+    const queries: Array<{ sourceSystem?: string; patternSchemas?: readonly string[] }> = [];
+    let fail = true;
+    fixture.storage.languageMemory.listLanguagePatterns = async query => {
+      queries.push(query ?? {});
+      if (fail) throw new Error("temporary pattern-store failure");
+      return [];
+    };
+    await expect(fixture.runtime.requestControlPatternsCached()).rejects.toThrow("temporary pattern-store failure");
+    expect(queries).toHaveLength(2);
+    fail = false;
+    expect(await fixture.runtime.requestControlPatternsCached()).toEqual([]);
+    expect(queries).toHaveLength(4);
+    expect(await fixture.runtime.requestControlPatternsCached()).toEqual([]);
+    expect(queries).toHaveLength(4);
+    expect(queries.slice(2).map(query => query.sourceSystem).sort()).toEqual([
+      CORPUS_SOURCE_SYSTEM_IDS.dialogue,
+      CORPUS_SOURCE_SYSTEM_IDS.corrections
+    ].sort());
+    expect(queries.slice(2).every(query => query.patternSchemas?.includes("scce.request_requirement_pattern.v1"))).toBe(true);
+    fixture.runtime.invalidate();
+    await fixture.runtime.requestControlPatternsCached();
+    expect(queries).toHaveLength(6);
+  });
+
   it("seeds request interpretation from canonical population statistics without reading or compiling full histories", async () => {
     const fixture = runtimeFixture({ cacheMs: 100000, languageResolver: () => ({ profile: () => "language.fixture", corpus: () => "language.fixture" }) });
     const hasher = createHasher();

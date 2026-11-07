@@ -912,7 +912,7 @@ export interface LanguageMemoryStore {
   continuationPopulation?(query: { languageId: string }): Promise<LanguageContinuationPopulation | undefined>;
   listNgramObservations(query?: { streamId?: string; languageHint?: string; profileIds?: readonly string[]; sourceSystem?: string; limit?: number }): Promise<NgramObservation[]>;
   listLanguageUnits(query?: { profileId?: string; profileIds?: readonly string[]; script?: string; sourceSystem?: string; limit?: number; maxTotalJsonBytes?: number }): Promise<LanguageUnitRecord[]>;
-  listLanguagePatterns(query?: { profileId?: string; profileIds?: readonly string[]; sourceSystem?: string; languageId?: string; patternKind?: LanguagePatternRecord["patternKind"]; formalLanguage?: string; parameterCount?: number; limit?: number; maxTotalJsonBytes?: number }): Promise<LanguagePatternRecord[]>;
+  listLanguagePatterns(query?: { profileId?: string; profileIds?: readonly string[]; sourceSystem?: string; patternSchemas?: readonly string[]; languageId?: string; patternKind?: LanguagePatternRecord["patternKind"]; formalLanguage?: string; parameterCount?: number; limit?: number; maxTotalJsonBytes?: number }): Promise<LanguagePatternRecord[]>;
   listSemanticFrames(query?: { profileIds?: readonly string[]; sourceSystem?: string; surface?: string; limit?: number }): Promise<SemanticFrameRecord[]>;
   listTranslationAlignments(query?: { sourceLanguage?: string; targetLanguage?: string; limit?: number }): Promise<TranslationAlignmentRecord[]>;
 }

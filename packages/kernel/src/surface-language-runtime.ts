@@ -4,8 +4,8 @@ import { estimateRetainedProgramBytes } from "./retained-program-size.js";
 import { traceEvent } from "./debug/trace.js";
 import { canonicalDigestHex } from "./canonical-json-digest.js";
 import { deriveClosedClassWords } from "./closed-class-words.js";
-import { createCorpusRegistry, languageMemoryHydrationPlan, requestLanguageHydrationPlan, type CorpusRoleId } from "./corpus-registry.js";
-import { isCreativeEventCompatibilityPattern } from "./creative-event-compatibility.js";
+import { CORPUS_SOURCE_SYSTEM_IDS, createCorpusRegistry, languageMemoryHydrationPlan, requestLanguageHydrationPlan, type CorpusRoleId } from "./corpus-registry.js";
+import { CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA, isCreativeEventCompatibilityPattern } from "./creative-event-compatibility.js";
 import { jsonRecord, kernelString, normalizePriorKey, splitPriorUnits } from "./kernel-answer-primitives.js";
 import { featureSetMemoStats } from "./primitives.js";
 import { tidySurfaceTextMemoStats } from "./surface-linguistics.js";
@@ -27,9 +27,7 @@ import {
 } from "./language.js";
 import { primeNumericTokenCounts } from "./numeric-token-statistics.js";
 import { createClock, createHasher, sourceTextSurface, toJsonValue } from "./primitives.js";
-import {
-  isRequestRequirementPattern
-} from "./request-requirement-learning.js";
+import { isRequestRequirementPattern, REQUEST_REQUIREMENT_PATTERN_SCHEMA } from "./request-requirement-learning.js";
 import type { LanguageContinuationPopulation, LanguagePatternRecord, NgramObservation, ScceKernelDeps, SemanticFrameRecord, TargetProfilePatternRecord } from "./storage.js";
 import type { SegmentationPopulationModelRecord } from "./segmentation-population-persistence.js";
 import type {
@@ -276,6 +274,28 @@ export function createSurfaceLanguageRuntime(options: {
   const continuationPopulationCache = new Map<string, { loadedAt: number; value: WeakRef<LanguageContinuationPopulation> }>();
   const continuationPopulationInFlight = new Map<string, Promise<LanguageContinuationPopulation | undefined>>();
   let languageMemoryGeneration = 0;
+  let requestControlPatternCache: { loadedAt: number; value: LanguagePatternRecord[] } | undefined;
+  let requestControlPatternInFlight: Promise<LanguagePatternRecord[]> | undefined;
+
+  async function requestControlPatternsCached(): Promise<LanguagePatternRecord[]> {
+    const now = clock.now();
+    if (requestControlPatternCache && now - requestControlPatternCache.loadedAt < surfaceLanguageMemoryCacheMs) return requestControlPatternCache.value;
+    if (requestControlPatternInFlight) return requestControlPatternInFlight;
+    const generation = languageMemoryGeneration;
+    const pending = Promise.all([CORPUS_SOURCE_SYSTEM_IDS.corrections, CORPUS_SOURCE_SYSTEM_IDS.dialogue].map(sourceSystem =>
+      deps.storage.languageMemory.listLanguagePatterns({
+        sourceSystem,
+        patternSchemas: [REQUEST_REQUIREMENT_PATTERN_SCHEMA, CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA],
+        limit: 2048
+      }))).then(groups => {
+      const value = groups.flat();
+      if (generation === languageMemoryGeneration) requestControlPatternCache = { loadedAt: clock.now(), value };
+      return value;
+    });
+    requestControlPatternInFlight = pending;
+    try { return await pending; }
+    finally { if (requestControlPatternInFlight === pending) requestControlPatternInFlight = undefined; }
+  }
 
   async function continuationPopulationCached(languageId: string): Promise<LanguageContinuationPopulation | undefined> {
     if (!deps.storage.languageMemory.continuationPopulation) return undefined;
@@ -434,13 +454,11 @@ export function createSurfaceLanguageRuntime(options: {
     const corpusPlan = purpose === "request_seed"
       ? requestLanguageHydrationPlan(corpusRegistry, hydrationLimits, preferredCorpusRoleId ? "role-scoped" : "unscoped")
       : languageMemoryHydrationPlan(corpusRegistry, hydrationLimits, preferredCorpusRoleId ? "role-scoped" : "unscoped");
-    const [active, requestControlPatternGroups, continuationPopulation] = await Promise.all([
+    const [active, requestControlPatterns, continuationPopulation] = await Promise.all([
       deps.storage.brainImports.active(),
-      Promise.all(["corrections", "dialogue"].map(sourceSystem =>
-        deps.storage.languageMemory.listLanguagePatterns({ sourceSystem, limit: 2048 }))),
+      requestControlPatternsCached(),
       languageId ? continuationPopulationCached(languageId) : undefined
     ]);
-    const requestControlPatterns = requestControlPatternGroups.flat();
     const learnedRequestControlPatterns = latestRequestRequirementPatterns(requestControlPatterns);
     const populationSeed = purpose === "request_seed" && continuationPopulation !== undefined
       && deriveClosedClassWords({ continuationPopulation }).size > 0;
@@ -1122,15 +1140,13 @@ export function createSurfaceLanguageRuntime(options: {
     const existing = surfaceProfileInFlight;
     if (existing) return existing;
     const pending = (async () => {
-      const [persistedProfiles, requestControlPatternGroups] = await Promise.all([
+      const [persistedProfiles, requestControlPatterns] = await Promise.all([
         deps.storage.model.listLanguageProfiles({
           limit: surfaceLanguageProfileLimit,
           referencedByLanguageMemory: true
         }),
-        Promise.all(["corrections", "dialogue"].map(sourceSystem =>
-          deps.storage.languageMemory.listLanguagePatterns({ sourceSystem, limit: 2048 })))
+        requestControlPatternsCached()
       ]);
-      const requestControlPatterns = requestControlPatternGroups.flat();
       const requestControlProfileIds = new Set(
         latestRequestRequirementPatterns(requestControlPatterns).map(pattern => pattern.profileId)
       );
@@ -1424,6 +1440,7 @@ export function createSurfaceLanguageRuntime(options: {
 
   return {
     corpusRegistry,
+    requestControlPatternsCached,
     languageMemorySummary,
     targetProfilePatternsCached,
     warmTargetProfilePatterns,
@@ -1472,6 +1489,8 @@ export function createSurfaceLanguageRuntime(options: {
     },
     invalidate() {
       surfaceLanguageMemoryCache.clear();
+      requestControlPatternCache = undefined;
+      requestControlPatternInFlight = undefined;
       languageScopeCache.clear();
       languageMemoryGeneration += 1;
       surfaceLanguageMemoryInFlight.clear();
