@@ -338,6 +338,7 @@ async function persistDialogueCommunicativeActs(
   const updatedAt = Date.now();
   const { observations, ...induction } = dialogueRequestActObservations(transcripts);
   const model = compileRequestCommunicativeActModel(observations);
+  const trainingSourceDigests = transcripts.map(source => hasher.digestHex(canonicalStringify(source)));
   const patterns = requestCommunicativeActPatterns(model, {
     profileId,
     updatedAt,
@@ -345,7 +346,7 @@ async function persistDialogueCommunicativeActs(
   }).map(pattern => ({ ...pattern,
     patternJson: toJsonValue({ ...(pattern.patternJson as Record<string, JsonValue>),
       trainingSourceVersionIds: [...sourceVersionIds],
-      trainingSourceDigests: transcripts.map(source => hasher.digestHex(canonicalStringify(source))) }),
+      trainingSourceDigests }),
     informationLabel: input.informationLabel }));
   if (patterns.length) {
     if (input.storage.languageMemory.putLanguagePatterns) await input.storage.languageMemory.putLanguagePatterns(patterns);

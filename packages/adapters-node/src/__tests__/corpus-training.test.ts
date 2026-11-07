@@ -30,6 +30,7 @@ import { MIN_WIKIPEDIA_MAX_ARTICLE_CHARS } from "../config.js";
 import { INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID } from "../../../kernel/src/language-induction-memory.js";
 import { SOURCE_ENTITY_GRAPH_COMPONENT_RECIPE_ID } from "../corpus-source-graph-projection.js";
 import * as languageInduction from "../../../kernel/src/language-induction.js";
+import * as kernelPrimitives from "../../../kernel/src/primitives.js";
 import { primeLearnedAnswerUnitForms } from "../../../kernel/src/learned-answer-unit-forms.js";
 import { requestUnitMatchesSurface } from "../../../kernel/src/local-evidence-runtime.js";
 import { scopeLanguageMemoryStateToLanguage } from "../../../kernel/src/language-memory-runtime.js";
@@ -1963,9 +1964,15 @@ describe("dialogue corpus training", () => {
     });
     const sourceMetadata = { dataset: "declared-dialogue-fixture", uri: "fixture://dialogue/authority", pinnedRevision: "rev-1", license: "CC BY" };
     await writeFile(path.join(root, "authority.json"), JSON.stringify({ schema: "scce.dialogue_transcript.v1", text, turns, sourceMetadata }), "utf8");
-
+    let sourceSerializations = 0;
+    const canonical = kernelPrimitives.canonicalStringify;
+    const stringify = vi.spyOn(kernelPrimitives, "canonicalStringify").mockImplementation(value => {
+      if (recordOf(value).schema === "scce.dialogue_transcript.v1") sourceSerializations++;
+      return canonical(value);
+    });
     const result = await trainDialogueCorpus({ storage: fixture.storage, rootPath: root, authorship: "human_authored", informationLabel: ownerLabel,
-      ngramMaxOrder: 2, ngramMaxCountersPerOrder: 32 });
+      ngramMaxOrder: 2, ngramMaxCountersPerOrder: 32 }).finally(() => stringify.mockRestore());
+    expect(sourceSerializations).toBe(1);
     const patterns = fixture.state.patterns.filter(pattern => recordOf(pattern.patternJson).schema === "scce.request_requirement_pattern.v1");
     expect(result.requestAuthorities).toEqual({ examples: 6, evidenceBoundExamples: 6, patternsPersisted: patterns.length });
     expect(patterns.length).toBeGreaterThan(0);
