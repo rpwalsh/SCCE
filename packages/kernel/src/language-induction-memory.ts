@@ -134,7 +134,7 @@ function patternsForProfile(input: {
       {
         templates: input.model.syntaxTemplates.slice(0, 256) as unknown as JsonValue,
         boundarySignals: input.model.boundarySignals.slice(0, 256) as unknown as JsonValue,
-        joinProgram: joinProgramMixtureStorageForm(input.model.joinProgram),
+        joinProgram: joinProgramMixtureStorageForm(input.model.joinProgram) as unknown as JsonValue,
         counts: Object.fromEntries(topCounts(input.model.syntaxTemplates.map(template => template.shape.join(" ")), 128))
       });
   }
