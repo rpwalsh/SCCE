@@ -755,7 +755,7 @@ const EVENT_LEDGER_HEAD_KEY = "events.ledger_head.v1";
 interface EventLedgerHead { eventId: string; eventHash: string; ledgerHash: string }
 
 function eventIdentityConflict(id: string): Error & { code: "SCCE_EVENT_IDENTITY_CONFLICT" } {
-  return Object.assign(new Error(`event identity has different immutable content: ${id}`), { code: "SCCE_EVENT_IDENTITY_CONFLICT" });
+  return Object.assign(new Error(`event identity has different immutable content: ${id}`), { code: "SCCE_EVENT_IDENTITY_CONFLICT" as const });
 }
 
 async function readEventLedgerHead(query: (sql: string, params: readonly unknown[]) => Promise<Array<{ value_json: EventLedgerHead }>>, metadataTable: string): Promise<EventLedgerHead | undefined> {
@@ -855,7 +855,7 @@ function createEventLedger(storage: PostgresStorageAdapter): EventLedger {
       return rows.map(rowToEvent);
     },
     async latestLedgerHash() {
-      const head = await readEventLedgerHead((sql, params) => storage.query<{ value_json: EventLedgerHead }>(sql, params), storage.table("storage_meta"));
+      const head = await readEventLedgerHead((sql, params) => storage.query<{ value_json: EventLedgerHead }>(sql, [...params]), storage.table("storage_meta"));
       if (head) return head.ledgerHash;
       const rows = await storage.query<{ ledger_hash: string }>(latestLedgerHashSql(storage.table("events")));
       return rows[0]?.ledger_hash ?? "";
