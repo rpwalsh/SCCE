@@ -186,11 +186,18 @@ export function creativeContinuationDecision(input: {
   offered: readonly CreativeContinuationCandidate[];
   selectedCandidateId: string;
 }): CreativeContinuationDecision {
-  const selected = input.offered.find(candidate => candidate.candidateId === input.selectedCandidateId);
+  const byId = new Map<string, CreativeContinuationCandidate>();
+  for (const candidate of input.offered) {
+    const prior = byId.get(candidate.candidateId);
+    if (prior && canonicalStringify(prior) !== canonicalStringify(candidate)) throw new Error("creative offer identity has conflicting continuations");
+    if (!prior) byId.set(candidate.candidateId, candidate);
+  }
+  const selected = byId.get(input.selectedCandidateId);
+  if (!selected) throw new Error("selected creative continuation was not offered");
   return {
     schema: CREATIVE_CONTINUATION_DECISION_SCHEMA,
     state: input.state,
-    offered: [...input.offered],
+    offered: [...byId.values()],
     selectedCandidateId: input.selectedCandidateId,
     ...(selected ? { selectedContinuationCandidateId: selected.candidateId } : {})
   };

@@ -18,6 +18,21 @@ import {
 } from "../creative-continuation-learning.js";
 
 describe("creative continuation learning", () => {
+  it("records each offered continuation once across planner aliases and preserves distinct alternatives", async () => {
+    const first = candidate("candidate.first", "structure.first", "mode.first", "operator.first");
+    const second = candidate("candidate.second", "structure.second", "mode.second", "operator.second");
+    const decision = creativeContinuationDecision({ state: continuationState("conversation.aliases", "turn.1"),
+      offered: [first, { ...first }, second, { ...second }], selectedCandidateId: first.candidateId });
+    expect(decision.offered).toEqual([first, second]);
+    const store = createInMemoryDialogueMemoryStore();
+    const record = await persistCreativeContinuationOffer({ store, decision, createdAt: 1 });
+    expect(creativeContinuationDecisionFromObservation(JSON.parse(JSON.stringify(record)))).toEqual(decision);
+    expect(decision.offered.filter(row => row.candidateId !== decision.selectedCandidateId)).toEqual([second]);
+    expect(() => creativeContinuationDecision({ ...decision, offered: [first, { ...first, structureId: "structure.conflicting" }] }))
+      .toThrow("identity has conflicting continuations");
+    expect(() => creativeContinuationDecision({ ...decision, selectedCandidateId: "candidate.unoffered" }))
+      .toThrow("was not offered");
+  });
   it("reloads owner feedback and changes the structural continuation choice", async () => {
     const store = createInMemoryDialogueMemoryStore();
     const state = continuationState("conversation.owner", "turn.2");
