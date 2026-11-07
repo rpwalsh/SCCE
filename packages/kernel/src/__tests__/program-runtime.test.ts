@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { ModuleKind, ScriptTarget, transpileModule } from "typescript";
+import { createProgram as createTypeScriptProgram, flattenDiagnosticMessageText, getPreEmitDiagnostics, ModuleKind, parseJsonConfigFileContent, readConfigFile, ScriptTarget, sys as typeScriptSystem, transpileModule } from "typescript";
 import {
   codeRequestSignal,
   COGNITIVE_OPERATOR_IDS,
@@ -377,11 +377,22 @@ describe("ProgramGraph runtime and artifact emission", () => {
         const output = transpileModule(file.content, { compilerOptions: { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 } }).outputText;
         writeFileSync(join(root, file.path.replace(/\.ts$/u, ".js")), output, "utf8");
       }
+      for (const file of selectedProgram.files.filter(item => item.path.startsWith("src/") && item.path.endsWith(".d.mts"))) {
+        writeFileSync(join(root, file.path), file.content, "utf8");
+      }
       for (const file of selectedProgram.files.filter(item => item.path.startsWith("src/") && item.path.endsWith(".mjs"))) {
         writeFileSync(join(root, file.path), file.content, "utf8");
       }
       const packageJson = required(selectedProgram.files.find(file => file.path === "package.json"));
       writeFileSync(join(root, "package.json"), packageJson.content, "utf8");
+      const tsconfig = required(selectedProgram.files.find(file => file.path === "tsconfig.json"));
+      writeFileSync(join(root, "tsconfig.json"), tsconfig.content, "utf8");
+      const parsedTsconfig = readConfigFile(join(root, "tsconfig.json"), typeScriptSystem.readFile);
+      expect(parsedTsconfig.error).toBeUndefined();
+      const configuration = parseJsonConfigFileContent(parsedTsconfig.config, typeScriptSystem, root);
+      const typecheckedPackage = createTypeScriptProgram(configuration.fileNames, configuration.options);
+      const typeErrors = getPreEmitDiagnostics(typecheckedPackage);
+      expect(typeErrors.map(diagnostic => flattenDiagnosticMessageText(diagnostic.messageText, "\n"))).toEqual([]);
       const packageInputs = spawnSync(process.execPath, ["--input-type=module", "-e", [
         "import assert from 'node:assert/strict';",
         "const program = await import('./src/index.js');",
