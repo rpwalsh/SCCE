@@ -7,6 +7,7 @@ import {
   POSTGRES_SCHEMA_VERSION,
   assertCanonicalHyperedge,
   createAlphaLayer,
+  canonicalStringify,
   featureSet,
   informationLabelAllowsRead,
   joinInformationLabels,
@@ -749,34 +750,82 @@ const EVENT_INSERT_COLUMN_TYPES = ["text", "text", "text", "bigint", "jsonb", "t
 // tuning choice -- is what splits one batch into more than one statement.
 const POSTGRES_BIND_PARAMETER_LIMIT = 65535;
 const EVENT_INSERT_MAX_ROWS_PER_STATEMENT = Math.floor(POSTGRES_BIND_PARAMETER_LIMIT / EVENT_INSERT_COLUMN_TYPES.length);
+const EVENT_LEDGER_HEAD_KEY = "events.ledger_head.v1";
+
+interface EventLedgerHead { eventId: string; eventHash: string; ledgerHash: string }
+
+function eventIdentityConflict(id: string): Error & { code: "SCCE_EVENT_IDENTITY_CONFLICT" } {
+  return Object.assign(new Error(`event identity has different immutable content: ${id}`), { code: "SCCE_EVENT_IDENTITY_CONFLICT" });
+}
+
+async function readEventLedgerHead(query: (sql: string, params: readonly unknown[]) => Promise<Array<{ value_json: EventLedgerHead }>>, metadataTable: string): Promise<EventLedgerHead | undefined> {
+  const rows = await query(`SELECT value_json FROM ${metadataTable} WHERE key=$1`, [EVENT_LEDGER_HEAD_KEY]);
+  const head = rows[0]?.value_json;
+  if (rows.length && (!head || [head.eventId, head.eventHash, head.ledgerHash].some(value => typeof value !== "string" || !value))) throw new Error("invalid canonical event ledger head");
+  return head;
+}
 
 function createEventLedger(storage: PostgresStorageAdapter): EventLedger {
+  const appendQueues = new WeakMap<PoolClient, Promise<void>>();
   return {
     append: event => storage.events.appendBatch([event]),
     async appendBatch(events) {
       if (events.length === 0) return;
+      const unique = new Map<string, ScceEvent>();
+      for (const event of events) {
+        const prior = unique.get(String(event.id));
+        if (prior && canonicalStringify(prior) !== canonicalStringify(event)) throw eventIdentityConflict(String(event.id));
+        unique.set(String(event.id), event);
+      }
       await storage.tx(async client => {
-        const table = storage.table("events");
-        let prev = await latestLedgerHash(client, table);
-        // The chain is pure JS over the previous hash, so every row's ledger_hash is known before any statement runs.
-        const rows = events.map(event => {
-          const ledgerHash = sha256(`${prev}\u001f${event.hash}`);
-          prev = ledgerHash;
-          return [event.id, event.episodeId, event.typeId, event.t, JSON.stringify(event.payload), event.parents, event.hash, ledgerHash];
-        });
-        for (let start = 0; start < rows.length; start += EVENT_INSERT_MAX_ROWS_PER_STATEMENT) {
-          const params: unknown[] = [];
-          const tuples = rows.slice(start, start + EVENT_INSERT_MAX_ROWS_PER_STATEMENT).map(row => `(${row.map((value, column) => {
-            params.push(value);
-            return `$${params.length}::${EVENT_INSERT_COLUMN_TYPES[column]}`;
-          }).join(",")})`);
-          await client.query(
-            `INSERT INTO ${table}(id, episode_id, type_id, t, payload_json, parents, hash, ledger_hash)
-             VALUES${tuples.join(",")}
-             ON CONFLICT(id) DO NOTHING`,
-            params
+        await serializeEventAppend(client, appendQueues, async () => {
+          const table = storage.table("events");
+          const metadataTable = storage.table("storage_meta");
+          await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [`${table}:ledger_append`]);
+          const head = await readEventLedgerHead((sql, params) => client.query<{ value_json: EventLedgerHead }>(sql, [...params]).then(result => result.rows), metadataTable);
+          let prev = head?.ledgerHash ?? await latestLedgerHash(client, table);
+          const existing = await client.query<{ id: string; hash: string; ledger_hash: string }>(
+            `SELECT id, hash, ledger_hash FROM ${table} WHERE id=ANY($1)`,
+            [[...unique.keys(), ...(head ? [head.eventId] : [])]]
           );
-        }
+          const existingById = new Map(existing.rows.map(row => [row.id, row]));
+          if (head && (existingById.get(head.eventId)?.hash !== head.eventHash || existingById.get(head.eventId)?.ledger_hash !== head.ledgerHash)) {
+            throw new Error("canonical event ledger head does not match its immutable event");
+          }
+          const repeated = [...unique.values()].filter(event => existingById.has(String(event.id)));
+          if (repeated.length) {
+            const bodies = await client.query<EventRow>(`SELECT * FROM ${table} WHERE id=ANY($1)`, [repeated.map(event => String(event.id))]);
+            const stored = new Map(bodies.rows.map(row => [row.id, rowToEvent(row)]));
+            for (const event of repeated) if (canonicalStringify(stored.get(String(event.id))) !== canonicalStringify(event)) throw eventIdentityConflict(String(event.id));
+          }
+          const fresh = [...unique.values()].filter(event => !existingById.has(String(event.id)));
+          if (!fresh.length) return;
+          // Hashing stays synchronous; the queue serializes head selection and persistence on one client.
+          const rows = fresh.map(event => {
+            const ledgerHash = sha256(`${prev}\u001f${event.hash}`);
+            prev = ledgerHash;
+            return [event.id, event.episodeId, event.typeId, event.t, JSON.stringify(event.payload), event.parents, event.hash, ledgerHash];
+          });
+          for (let start = 0; start < rows.length; start += EVENT_INSERT_MAX_ROWS_PER_STATEMENT) {
+            const params: unknown[] = [];
+            const tuples = rows.slice(start, start + EVENT_INSERT_MAX_ROWS_PER_STATEMENT).map(row => `(${row.map((value, column) => {
+              params.push(value);
+              return `$${params.length}::${EVENT_INSERT_COLUMN_TYPES[column]}`;
+            }).join(",")})`);
+            await client.query(
+              `INSERT INTO ${table}(id, episode_id, type_id, t, payload_json, parents, hash, ledger_hash)
+               VALUES${tuples.join(",")}
+               ON CONFLICT(id) DO NOTHING`,
+              params
+            );
+          }
+          const last = fresh[fresh.length - 1]!;
+          await client.query(
+            `INSERT INTO ${metadataTable}(key,value_json,updated_at) VALUES($1,$2::jsonb,NOW())
+             ON CONFLICT(key) DO UPDATE SET value_json=EXCLUDED.value_json,updated_at=NOW()`,
+            [EVENT_LEDGER_HEAD_KEY, JSON.stringify({ eventId: String(last.id), eventHash: last.hash, ledgerHash: prev })]
+          );
+        });
       });
     },
     async readEpisode(episodeId) {
@@ -806,10 +855,24 @@ function createEventLedger(storage: PostgresStorageAdapter): EventLedger {
       return rows.map(rowToEvent);
     },
     async latestLedgerHash() {
+      const head = await readEventLedgerHead((sql, params) => storage.query<{ value_json: EventLedgerHead }>(sql, params), storage.table("storage_meta"));
+      if (head) return head.ledgerHash;
       const rows = await storage.query<{ ledger_hash: string }>(latestLedgerHashSql(storage.table("events")));
       return rows[0]?.ledger_hash ?? "";
     }
   };
+}
+
+async function serializeEventAppend(client: PoolClient, queues: WeakMap<PoolClient, Promise<void>>, operation: () => Promise<void>): Promise<void> {
+  const prior = queues.get(client);
+  const queued = prior ? prior.then(operation) : Promise.resolve().then(operation);
+  queues.set(client, queued);
+  void queued.catch(() => undefined);
+  try {
+    await queued;
+  } finally {
+    if (queues.get(client) === queued) queues.delete(client);
+  }
 }
 
 function createConversationStore(storage: PostgresStorageAdapter): ConversationStore {
