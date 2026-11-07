@@ -223,6 +223,7 @@ import { admissionTierDiagnostics, answerCoversRequest, localEvidenceAnswerIsQuo
 import { isStructuralResidueSurface } from "./structural-residue.js";
 import { normalizePriorKey, splitPriorUnits } from "./kernel-answer-primitives.js";
 import { codeLanguageForRequirementState, codeRequestObservedRequirements, codeRequestSignal, typedProgramBehaviorFromMetadata } from "./code-request.js";
+import { codeIntentFromDocumentation, sourceOwnedBehaviorRequirementsFromDocumentation } from "./code-intent.js";
 import { attachLearnedGraphPriorConstruct } from "./learned-graph-prior-runtime.js";
 import { runGraphRefinement } from "./graph-refinement.js";
 import { decideRuntimeCoherence } from "./runtime-coherence.js";
@@ -3470,10 +3471,22 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         : undefined;
       // One structured intent per turn: derived from the projected authority and the structural code signal, read by
       // both builds and the planner, so a program-authority turn cannot end with no ProgramGraph.
+      const documentationCodeIntent = codeIntentFromDocumentation({ requestText: input.text, documentation: selectedEvidence });
+      const sourceOwnedContractPatterns = documentationCodeIntent.languageId
+        ? await deps.storage.languageMemory.listLanguagePatterns({ sourceSystem: corpusSourceAlias(CORPUS_SOURCE_SYSTEM_IDS.ossCode),
+          patternKind: "source_code_assertion_contract", formalLanguage: documentationCodeIntent.languageId, limit: 4096 })
+        : [];
+      const sourceOwnedRequirements = sourceOwnedBehaviorRequirementsFromDocumentation({ requestText: input.text,
+        intent: documentationCodeIntent, patterns: sourceOwnedContractPatterns });
+      const programCodeSignal = sourceOwnedRequirements.length ? {
+        ...codeSignal,
+        language: codeSignal.language ?? documentationCodeIntent.languageId,
+        behaviorRequirements: [...codeSignal.behaviorRequirements, ...sourceOwnedRequirements]
+      } : codeSignal;
       const programIntent = programIntentForTurn({
         requestedAuthority,
         activeOperatorIds: activeRequestOperatorIds(operatorActivations),
-        codeSignal,
+        codeSignal: programCodeSignal,
         evidence: selectedEvidence
       });
       const candidateConstructSeed = programBuilder.build({ episodeId, text: input.text, entailment: answerEntailmentSeed, evidence: selectedEvidence, createdAt: clock.now(), programIntent });
@@ -4489,8 +4502,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       if (construct.program) {
         const registry = createCapabilityRegistry({ process: true, network: Boolean(deps.connectors) });
         const requestRequirementIds = [
-          ...codeSignal.behaviorRequirements.map(requirement => requirement.id),
-          ...codeSignal.statefulBehaviorRequirements.map(requirement => requirement.id)
+          ...programCodeSignal.behaviorRequirements.map(requirement => requirement.id),
+          ...programCodeSignal.statefulBehaviorRequirements.map(requirement => requirement.id)
         ];
         const localValidationProof = validateOwnerProgramLocalValidation({
           program: construct.program,
@@ -4938,9 +4951,9 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           return { support: 0, contradiction: 1 };
         }
       };
-      const codeLanguage = codeLanguageForRequirementState({ signal: codeSignal, requirementField, operators: operatorActivations });
+      const codeLanguage = codeLanguageForRequirementState({ signal: programCodeSignal, requirementField, operators: operatorActivations });
       const codePatternQueries = codeLanguage && deps.evaluationCondition?.flags.disableLanguageMemory !== true
-        ? [...new Set(codeSignal.behaviorRequirements.filter(row => row.verificationRole === "fit").map(row => row.arguments.length))]
+        ? [...new Set(programCodeSignal.behaviorRequirements.filter(row => row.verificationRole === "fit").map(row => row.arguments.length))]
           .map(parameterCount => ({ sourceSystem: corpusSourceAlias(CORPUS_SOURCE_SYSTEM_IDS.ossCode), patternKind: "source_code_function" as const, formalLanguage: codeLanguage, parameterCount }))
         : [];
       const codeFunctionPatterns = (await Promise.all(codePatternQueries.map(query => deps.storage.languageMemory.listLanguagePatterns(query)))).flat();
@@ -4950,7 +4963,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         // words in encyclopedic prose, and a turn about the island should not reach a code lane at all -- which
         // was harmless only while that lane had no producer to reach.
         ...(codeLanguage ? { codeLanguage } : {}),
-        programBehaviorRequirements: codeSignal.behaviorRequirements,
+        programBehaviorRequirements: programCodeSignal.behaviorRequirements,
         codeFunctionPatterns,
         meaningVerifier,
         realizationContract,

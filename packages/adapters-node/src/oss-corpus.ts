@@ -5,6 +5,7 @@ import { readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { getHeapStatistics } from "node:v8";
+import ts from "typescript";
 import {
   CORPUS_SOURCE_SYSTEM_IDS,
   codeCommentProse,
@@ -28,6 +29,8 @@ import { CorpusCheckpointConflictError, readCompletedCorpusCheckpoint, trainLang
 import { createProjectDeclarationIndex, createProjectLicenseIndex, readDeclaredLicense } from "./project-artifact-declarations.js";
 import { compileSourceCodeFunctionsAsync } from "./source-code-function-learning.js";
 import { sourceBrainBuildReceipt, type SourceBrainBuildReceipt, type SourceBrainBuildResult } from "./source-brain-build.js";
+import { buildTypeScriptSemanticProgramIndex } from "./typescript-semantic-program-index.js";
+import { sourceOwnedTestCases } from "./source-owned-test-contracts.js";
 
 export const DEFAULT_OSS_FILES_PER_RUN = 2000;
 export const DEFAULT_OSS_FILES_PER_REPOSITORY = 100000;
@@ -118,6 +121,125 @@ export interface OssCorpusTrainingTotals {
   constructionAcquisition?: { sourceObserved: number; documentHeldOutQualified: number; rejectedQualification: number };
 }
 
+async function ingestSourceOwnedTestContracts(input: {
+  root: string;
+  window: readonly { path: string; absolutePath: string; byteLength: number; contentHash?: string }[];
+  sourceUriBase: string;
+  ids: ReturnType<typeof createIdFactory>;
+  hasher: ReturnType<typeof createHasher>;
+  maxFileBytes: number;
+}): Promise<Map<string, JsonValue[]>> {
+  const result = new Map<string, JsonValue[]>();
+  const configPath = path.join(input.root, "tsconfig.json");
+  let configBytes: Buffer;
+  try { configBytes = await readFile(configPath); } catch { return result; }
+  const available = input.window.filter(file => codeLanguageForPath(file.path)
+    && /\.(?:[cm]?js|jsx|[cm]?ts|tsx)$/iu.test(file.path) && file.byteLength <= input.maxFileBytes);
+  const availableByPath = new Map(available.map(file => [normalizeRelative(file.path), file]));
+  const testCandidates: Array<{ path: string; imports: string[] }> = [];
+  for (const file of available) {
+    const text = (await readFile(file.absolutePath)).toString("utf8");
+    if (importsNodeTest(text, file.path)) testCandidates.push({ path: normalizeRelative(file.path), imports: relativeModulePaths(text, file.path) });
+  }
+  if (!testCandidates.length) return result;
+  const chosenTests = testCandidates.sort((a, b) => a.path.localeCompare(b.path)).slice(0, 32);
+  const sourceTargets = [...new Set(chosenTests.flatMap(test => test.imports).filter(importPath => availableByPath.has(importPath)))].sort().slice(0, 95);
+  const selectedPaths = [...chosenTests.map(test => test.path), ...sourceTargets].slice(0, 127);
+  const candidates = selectedPaths.map(selectedPath => availableByPath.get(selectedPath)!).filter(Boolean);
+  const configRelative = "tsconfig.json";
+  const workspacePaths = [...candidates.map(file => normalizeRelative(file.path)), configRelative].sort();
+  if (workspacePaths.length < 3) return result;
+  const sourceTexts = new Map<string, string>();
+  const testPaths: string[] = [];
+  const sourceVersions = new Map<string, { sourceVersionId: string; sourceHash: string }>();
+  const testVersions = new Map<string, { sourceVersionId: string; sourceHash: string }>();
+  for (const file of candidates) {
+    const relativePath = normalizeRelative(file.path);
+    const raw = await readFile(file.absolutePath);
+    const text = raw.toString("utf8");
+    const sourceHash = file.contentHash ?? sha256Bytes(raw);
+    const fileVersion = input.ids.sourceVersionId(canonicalStringify({
+      contract: "scce.oss-projection-source-version.v1",
+      sourceUri: `${input.sourceUriBase}#path=${encodeURIComponent(relativePath)}`,
+      sourceHash,
+      transformId: `${CODE_SURFACE_RECIPE_ID}:code_surface_tokens`,
+      projectedTextHash: input.hasher.digestHex(codeTrainingSurface(text))
+    }));
+    sourceTexts.set(relativePath, text);
+    const isTest = importsNodeTest(text, relativePath);
+    if (isTest) {
+      testPaths.push(relativePath);
+      testVersions.set(relativePath, { sourceVersionId: String(fileVersion), sourceHash });
+    } else sourceVersions.set(relativePath, { sourceVersionId: String(fileVersion), sourceHash });
+  }
+  if (!testPaths.length || sourceVersions.size === 0) return result;
+  const configSize = configBytes.byteLength;
+  if (configSize > input.maxFileBytes) return result;
+  const program = await buildTypeScriptSemanticProgramIndex({
+    workspaceRoot: input.root,
+    tsconfigPath: configRelative,
+    compileOnlyBoundedFiles: true,
+    bounds: {
+      workspacePaths,
+      observedTestPaths: testPaths,
+      maxFiles: workspacePaths.length,
+      maxFileBytes: input.maxFileBytes,
+      maxTotalBytes: candidates.reduce((sum, file) => sum + file.byteLength, configSize)
+    }
+  });
+  const cases = sourceOwnedTestCases({ program, sourceVersions, testVersions, sourceTexts });
+  const grouped = new Map<string, typeof cases>();
+  for (const item of cases) grouped.set(item.sourcePath, [...(grouped.get(item.sourcePath) ?? []), item]);
+  for (const [sourcePath, values] of grouped) {
+    if (values.length < 2) continue;
+    const sourceFile = program.files.find(file => file.path === sourcePath);
+    const sourceVersion = sourceVersions.get(sourcePath);
+    if (!sourceFile || !sourceVersion) continue;
+    const bySymbol = new Map<string, typeof values>();
+    for (const value of values) bySymbol.set(value.targetSymbolId, [...(bySymbol.get(value.targetSymbolId) ?? []), value]);
+    const contracts: JsonValue[] = [];
+    for (const [targetSymbolId, symbolCases] of bySymbol) {
+      if (symbolCases.length < 2) continue;
+      contracts.push(toJsonValue({
+        schema: "scce.source_owned_test_contract.v1",
+        repositoryFamily: input.sourceUriBase,
+        sourcePath,
+        sourceHash: sourceVersion.sourceHash,
+        sourceVersionId: sourceVersion.sourceVersionId,
+        formalLanguage: codeLanguageForPath(sourcePath),
+        targetSymbolId,
+        targetName: symbolCases[0]!.targetName,
+        cases: symbolCases
+      }));
+    }
+    if (contracts.length) result.set(sourcePath, contracts);
+  }
+  return result;
+}
+
+function importsNodeTest(text: string, fileName: string): boolean {
+  const source = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true);
+  return source.statements.some(statement => ts.isImportDeclaration(statement)
+    && ts.isStringLiteral(statement.moduleSpecifier) && statement.moduleSpecifier.text === "node:test");
+}
+
+function relativeModulePaths(text: string, fileName: string): string[] {
+  const source = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true);
+  const candidates = new Set<string>();
+  for (const statement of source.statements) {
+    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
+    const specifier = statement.moduleSpecifier.text;
+    if (!specifier.startsWith("./") && !specifier.startsWith("../")) continue;
+    const base = path.posix.normalize(path.posix.join(path.posix.dirname(normalizeRelative(fileName)), specifier));
+    candidates.add(base);
+    const extension = path.posix.extname(base);
+    if (extension === ".js" || extension === ".mjs" || extension === ".cjs") candidates.add(base.slice(0, -extension.length) + (extension === ".mjs" ? ".mts" : extension === ".cjs" ? ".cts" : ".ts"));
+    if (!extension) for (const suffix of [".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs"]) candidates.add(base + suffix);
+    candidates.add(path.posix.join(base, "index.ts"));
+  }
+  return [...candidates].sort();
+}
+
 type OssCorpusSourceSystem = typeof CORPUS_SOURCE_SYSTEM_IDS.ossDocs | typeof CORPUS_SOURCE_SYSTEM_IDS.ossCode;
 
 export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssCorpusTrainReport> {
@@ -187,6 +309,7 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
   const licenses = createProjectLicenseIndex({ stopAt: root });
   const hasher = createHasher();
   const ids = createIdFactory({ clock: createClock(), hasher });
+  const sourceOwnedContractsByPath = await ingestSourceOwnedTestContracts({ root, window, sourceUriBase, ids, hasher, maxFileBytes: input.maxFileBytes ?? 1_000_000 });
 
   for (const file of window) {
     if (heapMiB() >= heapCheckpointMb) {
@@ -301,7 +424,7 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
           formalLanguage: codeLanguageForPath(file.path) ?? null,
           ...(projected.sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.ossCode ? { codeFunctionConstructions: await compileSourceCodeFunctionsAsync({
             text: raw, path: file.path, languageId: codeLanguageForPath(file.path), sourceHash
-          }) } : {}),
+          }), ...(sourceOwnedContractsByPath.get(relativePath)?.length ? { sourceOwnedTestContracts: sourceOwnedContractsByPath.get(relativePath) } : {}) } : {}),
           artifactRole,
           license,
           repository: repositoryIdentity,

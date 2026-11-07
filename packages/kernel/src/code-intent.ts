@@ -2,8 +2,8 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { codeIdentifierTokens, codeSurfaceTokens } from "./code-surface.js";
 import { codeLanguageForPath } from "./code-request.js";
-import { toJsonValue } from "./primitives.js";
-import type { EvidenceSpan, JsonValue } from "./types.js";
+import { canonicalStringify, createHasher, toJsonValue } from "./primitives.js";
+import type { EvidenceSpan, JsonValue, ProgramBehaviorRequirement } from "./types.js";
 
 /**
  * What a request written in a human language has to do with code.
@@ -25,6 +25,10 @@ export interface CodeIntentReference {
   relativePath?: string;
   /** The formal language that path is written in. */
   languageId?: string;
+  /** Stable repository/source-family owner recorded by corpus ingestion. */
+  sourceFamily?: string;
+  /** Raw-source content hash shared across code and documentation projections. */
+  sourceHash?: string;
   /** How strongly this surface answered the request, as the retrieval scored it. */
   score: number;
 }
@@ -78,6 +82,8 @@ export function codeIntentFromDocumentation(input: {
     references.push({
       relativePath,
       ...(languageId ? { languageId } : {}),
+      ...(documentedRepositoryFamily(span) ? { sourceFamily: documentedRepositoryFamily(span) } : {}),
+      ...(documentedSourceHash(span) ? { sourceHash: documentedSourceHash(span) } : {}),
       score: Number.isFinite(span.alpha) ? span.alpha : 0
     });
     if (references.length >= referenceLimit) break;
@@ -116,11 +122,102 @@ export function codeIntentFromDocumentation(input: {
   };
 }
 
+/** Convert only persisted, exact-source assertion cases whose target file was selected by documentation retrieval. */
+export function sourceOwnedBehaviorRequirementsFromDocumentation(input: {
+  readonly requestText: string;
+  readonly intent: CodeIntent;
+  readonly patterns: readonly { readonly patternJson: JsonValue }[];
+}): ProgramBehaviorRequirement[] {
+  const references = new Set(input.intent.references.filter(row => row.sourceFamily && row.sourceHash)
+    .map(row => `${row.sourceFamily}\u0000${row.relativePath}\u0000${row.sourceHash}`));
+  const grouped = new Map<string, Array<Record<string, JsonValue>>>();
+  const matchedKeys = new Set<string>();
+  for (const pattern of input.patterns) {
+    const body = objectRecord(pattern.patternJson);
+    if (body.schema !== "scce.source_owned_test_contract.v1" || typeof body.sourcePath !== "string"
+      || typeof body.targetSymbolId !== "string" || typeof body.targetName !== "string"
+      || !references.has(`${body.repositoryFamily}\u0000${body.sourcePath}\u0000${body.sourceHash}`) || body.formalLanguage !== input.intent.languageId
+      || typeof body.sourceHash !== "string" || !validContentHash(body.sourceHash) || typeof body.sourceVersionId !== "string"
+      || typeof body.repositoryFamily !== "string" || !Array.isArray(body.cases)) continue;
+    const key = `${body.repositoryFamily}\u0000${body.sourcePath}\u0000${body.sourceVersionId}\u0000${body.targetSymbolId}`;
+    if (matchedKeys.has(key)) return [];
+    matchedKeys.add(key);
+    const cases = grouped.get(key) ?? [];
+    for (const value of body.cases) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+      const row = value as Record<string, JsonValue>;
+      if (row.targetSymbolId !== body.targetSymbolId || !Array.isArray(row.arguments) || !isJsonValue(row.expectedResult)
+        || typeof row.testSourceVersionId !== "string" || typeof row.testHash !== "string" || !validContentHash(row.testHash)
+        || !validSpan(row.inputSpan) || !validSpan(row.expectedSpan) || !validSpan(row.assertionSpan)) continue;
+      cases.push({ ...row, sourceHash: body.sourceHash, sourcePath: body.sourcePath, sourceVersionId: body.sourceVersionId,
+        targetName: body.targetName, targetSymbolId: body.targetSymbolId, repositoryFamily: body.repositoryFamily });
+    }
+    grouped.set(key, cases);
+  }
+  // Multiple independent target symbols/families are ambiguous. No caller wording is used to pick one.
+  if (grouped.size !== 1) return [];
+  const [familyKey, rows] = [...grouped.entries()][0]!;
+  const ordered = rows.sort((a, b) => spanStart(a.assertionSpan) - spanStart(b.assertionSpan));
+  if (ordered.length < 2) return [];
+  const [family, sourcePath, sourceVersionId, targetSymbolId] = familyKey.split("\u0000");
+  const targetName = ordered[0]!.targetName;
+  if (typeof targetName !== "string" || typeof sourcePath !== "string" || typeof sourceVersionId !== "string" || typeof targetSymbolId !== "string" || typeof family !== "string") return [];
+  if (ordered.some(row => row.targetName !== targetName)) return [];
+  const requestHash = `sha256:${createHasher().digestHex(input.requestText)}`;
+  const sourceSpan = (value: JsonValue): { charStart: number; charEnd: number } => ({ charStart: spanStart(value), charEnd: spanEnd(value) });
+  return ordered.map((row, index) => ({
+    id: `source_assertion.${createHasher().digestHex(canonicalStringify([family, sourcePath, sourceVersionId, targetSymbolId, row.testSourceVersionId, row.assertionSpan])).slice(0, 40)}`,
+    requestHash,
+    callableId: targetName,
+    arguments: row.arguments as JsonValue[],
+    expectedResult: row.expectedResult,
+    verificationRole: index === ordered.length - 1 ? "held_out" : "fit",
+    relationSurface: "source-owned-assertion",
+    sourceSpan: sourceSpan(row.assertionSpan),
+    sourceContract: {
+      targetSymbolId, sourcePath, sourceVersionId,
+      sourceHash: String(row.sourceHash), testPath: String(row.testPath),
+      testSourceVersionId: String(row.testSourceVersionId), testHash: String(row.testHash),
+      inputSpan: row.inputSpan as unknown as NonNullable<ProgramBehaviorRequirement["sourceContract"]>["inputSpan"],
+      expectedSpan: row.expectedSpan as unknown as NonNullable<ProgramBehaviorRequirement["sourceContract"]>["expectedSpan"],
+      assertionSpan: row.assertionSpan as unknown as NonNullable<ProgramBehaviorRequirement["sourceContract"]>["assertionSpan"]
+    }
+  }));
+}
+
+function objectRecord(value: JsonValue): Record<string, JsonValue> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, JsonValue> : {}; }
+function isJsonValue(value: JsonValue | undefined): value is JsonValue { return value !== undefined; }
+function validSpan(value: JsonValue | undefined): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const span = value as Record<string, JsonValue>;
+  return Number.isSafeInteger(span.start) && Number.isSafeInteger(span.end) && Number(span.start) >= 0 && Number(span.end) > Number(span.start)
+    && typeof span.textHash === "string" && /^sha256:[0-9a-f]{64}$/u.test(span.textHash);
+}
+function validContentHash(value: JsonValue): boolean { return typeof value === "string" && /^(?:sha256:|sha256_)?[0-9a-f]{64}$/iu.test(value); }
+function spanStart(value: JsonValue | undefined): number { return objectRecord(value ?? null).start as number; }
+function spanEnd(value: JsonValue | undefined): number { return objectRecord(value ?? null).end as number; }
+
 /** The path a documentation surface was trained from, as the corpus lane recorded it. */
 function documentedPath(span: EvidenceSpan): string | undefined {
   const provenance = span.provenance;
   if (!provenance || typeof provenance !== "object" || Array.isArray(provenance)) return undefined;
   const value = (provenance as Record<string, JsonValue>).relativePath;
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function documentedRepositoryFamily(span: EvidenceSpan): string | undefined {
+  const provenance = span.provenance;
+  if (!provenance || typeof provenance !== "object" || Array.isArray(provenance)) return undefined;
+  const repository = (provenance as Record<string, JsonValue>).repository;
+  if (!repository || typeof repository !== "object" || Array.isArray(repository)) return undefined;
+  const ownerUri = (repository as Record<string, JsonValue>).ownerUri;
+  return typeof ownerUri === "string" && ownerUri.trim() ? ownerUri : undefined;
+}
+
+function documentedSourceHash(span: EvidenceSpan): string | undefined {
+  const provenance = span.provenance;
+  if (!provenance || typeof provenance !== "object" || Array.isArray(provenance)) return undefined;
+  const value = (provenance as Record<string, JsonValue>).sourceHash;
   return typeof value === "string" && value.trim() ? value : undefined;
 }
 

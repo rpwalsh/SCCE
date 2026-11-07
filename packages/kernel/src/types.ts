@@ -680,6 +680,19 @@ export interface ProgramBehaviorRequirement {
   /** Exact source separator retained as an opaque observed relation surface. */
   readonly relationSurface: string;
   readonly sourceSpan: { readonly charStart: number; readonly charEnd: number };
+  /** Exact persisted source-owned assertion identity when this came from an admitted repository contract. */
+  readonly sourceContract?: {
+    readonly targetSymbolId: string;
+    readonly sourcePath: string;
+    readonly sourceVersionId: string;
+    readonly sourceHash: string;
+    readonly testPath: string;
+    readonly testSourceVersionId: string;
+    readonly testHash: string;
+    readonly inputSpan: { readonly start: number; readonly end: number; readonly textHash: string };
+    readonly expectedSpan: { readonly start: number; readonly end: number; readonly textHash: string };
+    readonly assertionSpan: { readonly start: number; readonly end: number; readonly textHash: string };
+  };
 }
 
 /** A source-bound ordered behavior trace. Callable IDs retain source identity; their roles are inferred by search. */

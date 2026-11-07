@@ -3697,7 +3697,8 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       const patternIds = [...new Set(projection.patternIds)].sort();
       if (!projection.profileId.trim() || !projection.sourceId || !projection.sourceVersionId || !projection.sourceSystem.trim()
         || !((projection.patternSchema === LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA && projection.componentRecipe === LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID)
-          || (projection.patternSchema === SOURCE_CODE_FUNCTION_PATTERN_SCHEMA && projection.componentRecipe === SOURCE_CODE_FUNCTION_PROJECTION_RECIPE_ID))
+          || (projection.patternSchema === SOURCE_CODE_FUNCTION_PATTERN_SCHEMA && projection.componentRecipe === SOURCE_CODE_FUNCTION_PROJECTION_RECIPE_ID)
+          || (projection.patternSchema === "scce.source_owned_test_contract.v1" && projection.componentRecipe === "scce.source_owned_test_contract_projection.v1"))
         || patternIds.length !== projection.patternIds.length) {
         throw new Error("invalid active language-pattern projection scope");
       }
@@ -3710,7 +3711,9 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         return !row || row.profileId !== projection.profileId || metadata.schema !== projection.patternSchema
           || metadata.sourceSystem !== projection.sourceSystem
           || (projection.patternSchema === SOURCE_CODE_FUNCTION_PATTERN_SCHEMA
-            && (row.patternKind !== "source_code_function" || metadata.sourceVersionId !== projection.sourceVersionId));
+            && (row.patternKind !== "source_code_function" || metadata.sourceVersionId !== projection.sourceVersionId))
+          || (projection.patternSchema === "scce.source_owned_test_contract.v1"
+            && (row.patternKind !== "source_code_assertion_contract" || metadata.sourceVersionId !== projection.sourceVersionId));
       })) throw new Error("active language-pattern IDs must name rows in the replacement batch");
       const informationLabel = storage.requireWritableInformationLabel(projection.informationLabel);
       const key = activeLanguagePatternProjectionKey({ ...projection, tenantId: informationLabel.tenantId });

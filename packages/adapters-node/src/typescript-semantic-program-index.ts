@@ -24,6 +24,8 @@ export interface TypeScriptSemanticProgramIndexInput {
   readonly workspaceRoot: string;
   readonly tsconfigPath: string;
   readonly bounds: TypeScriptSemanticProgramBounds;
+  /** Ingestion may compile only the explicit source snapshot while retaining options from its observed tsconfig. */
+  readonly compileOnlyBoundedFiles?: boolean;
 }
 
 export interface TypeScriptExactSourceSpan {
@@ -293,6 +295,10 @@ async function buildTypeScriptSemanticProgramIndexFromSnapshot(
   if (!configFile) throw new Error("typescript semantic index config is absent from the bounded snapshot");
 
   const parsed = parseProjectConfig(snapshot, configFile);
+  if (input.compileOnlyBoundedFiles) {
+    parsed.fileNames = parsed.fileNames.filter(fileName => snapshot.byAbsolutePath.has(canonicalAbsolute(fileName)));
+    parsed.projectReferences = [];
+  }
   assertParsedProjectIsBounded(snapshot, parsed);
   const host = createBoundedCompilerHost(snapshot, parsed.options);
   const program = ts.createProgram({
@@ -527,6 +533,7 @@ function semanticProgramIndexCacheKey(input: TypeScriptSemanticProgramIndexInput
   return stableSerialize([
     snapshot.rootPath,
     normalizeWorkspacePath(input.tsconfigPath),
+    input.compileOnlyBoundedFiles === true,
     ts.version,
     snapshot.revisionHash,
     observedTestPaths

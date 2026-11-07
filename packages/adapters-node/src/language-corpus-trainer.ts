@@ -1063,7 +1063,9 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
     ...compiledConstructionPatterns,
     ...compactSourceCodeFunctionPatterns({ constructions: sourceCodeFunctions, metadata, sourceSystem, profileId: profile.id, sourceVersionId,
       originalSourceVersionId: originalSourceVersionId ?? sourceVersionId, text: originalBytes ? Buffer.from(originalBytes).toString("utf8") : input.text,
-      evidence, hasher, updatedAt: createdAt })
+      evidence, hasher, updatedAt: createdAt }),
+    ...sourceOwnedAssertionPatterns({ metadata, sourceSystem, profileId: profile.id, sourceVersionId,
+      originalSourceVersionId: originalSourceVersionId ?? sourceVersionId, evidence, hasher, updatedAt: createdAt })
   ]
     .map(item => ({ ...stampPattern(item, sourceSystem, sourceSystemId, rowMetadata), informationLabel }));
   let frames = compiledBatch.semanticFrames.map(item => ({ ...stampFrame(item, sourceSystem, sourceSystemId, rowMetadata), informationLabel }));
@@ -1163,6 +1165,29 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
     languageConstructions: compiledConstructionPatterns.length,
     learned
   };
+}
+
+function sourceOwnedAssertionPatterns(input: {
+  metadata: JsonValue; sourceSystem: string; profileId: string; sourceVersionId: SourceVersionId;
+  originalSourceVersionId: SourceVersionId; evidence: readonly EvidenceSpan[]; hasher: ReturnType<typeof createHasher>; updatedAt: number;
+}): LanguagePatternRecord[] {
+  if (input.sourceSystem !== "oss_code") return [];
+  const metadata = jsonRecord(input.metadata);
+  const contracts = metadata.sourceOwnedTestContracts;
+  const evidenceIds = input.evidence.filter(span => span.status === "promoted" && span.sourceVersionId === input.sourceVersionId).map(span => span.id);
+  if (!Array.isArray(contracts) || !evidenceIds.length) return [];
+  const patterns: LanguagePatternRecord[] = [];
+  for (const value of contracts) {
+    const row = jsonRecord(value);
+    if (row.schema !== "scce.source_owned_test_contract.v1" || row.sourceVersionId !== input.sourceVersionId
+      || row.sourceHash !== metadata.sourceHash || typeof row.sourcePath !== "string" || typeof row.formalLanguage !== "string"
+      || typeof row.repositoryFamily !== "string" || typeof row.targetSymbolId !== "string" || !Array.isArray(row.cases) || row.cases.length < 2) continue;
+    const material = { ...row, sourceSystem: input.sourceSystem };
+    const id = `source.code.assertion.pattern.${input.hasher.digestHex(canonicalStringify({ profileId: input.profileId, sourceVersionId: input.sourceVersionId, material })).slice(0, 40)}`;
+    patterns.push({ id, profileId: input.profileId, patternKind: "source_code_assertion_contract", support: row.cases.length, entropy: 0,
+      patternJson: material, evidenceIds, updatedAt: input.updatedAt });
+  }
+  return patterns;
 }
 
 function compactSourceCodeFunctionPatterns(input: {
@@ -1269,6 +1294,16 @@ async function commitLanguageCorpusTrainingInternal(input: LanguageCorpusTrainin
         componentRecipe: patternProjectionRecipe,
         patternIds: prepared.patterns.filter(pattern => jsonRecord(pattern.patternJson).schema === patternSchema).map(pattern => pattern.id).sort(),
         informationLabel: prepared.informationLabel
+      }
+    });
+    const assertionPatterns = prepared.patterns.filter(pattern => pattern.patternKind === "source_code_assertion_contract");
+    if (assertionPatterns.length) await input.storage.languageMemory.replaceLanguagePatternProjection({
+      patterns: assertionPatterns,
+      projection: {
+        profileId: String(prepared.profile.id), sourceId: prepared.sourceId, sourceVersionId: prepared.sourceVersionId,
+        sourceSystem: prepared.sourceSystem, patternSchema: "scce.source_owned_test_contract.v1",
+        componentRecipe: "scce.source_owned_test_contract_projection.v1",
+        patternIds: assertionPatterns.map(pattern => pattern.id).sort(), informationLabel: prepared.informationLabel
       }
     });
   } else if (input.storage.languageMemory.putLanguagePatterns) await input.storage.languageMemory.putLanguagePatterns(prepared.patterns);

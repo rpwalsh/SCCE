@@ -137,7 +137,7 @@ export interface LanguageUnitRecord {
 export interface LanguagePatternRecord {
   id: string;
   profileId: string;
-  patternKind: "segmentation" | "morphology" | "syntax" | "cadence" | "discourse" | "narrative" | "semantic_role" | "source_code_function" | "source_compilation";
+  patternKind: "segmentation" | "morphology" | "syntax" | "cadence" | "discourse" | "narrative" | "semantic_role" | "source_code_function" | "source_code_assertion_contract" | "source_compilation";
   support: number;
   entropy: number;
   patternJson: JsonValue;
