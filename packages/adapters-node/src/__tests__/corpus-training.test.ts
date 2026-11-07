@@ -22,6 +22,7 @@ import { canonicalCorpusSourceSystemId, createClock, createHasher, createIdFacto
 import { compilationArtifactIds } from "../../../kernel/src/__tests__/owned-source-fixture.js";
 import { storageFixtureForEvaluation } from "../../../kernel/src/__tests__/evidence-promotion-evaluation-fixture.js";
 import { compileSourceCodeFunctions } from "../source-code-function-learning.js";
+import { SOURCE_CONSTRUCTION_CONTEXT_RECIPE_ID } from "@scce/kernel";
 import { SURFACE_REALIZATION_STRATEGY_IDS } from "../../../kernel/src/surface-contract.js";
 import { prepareLanguageCorpusTraining, commitLanguageCorpusTraining, corpusSourceVersionIdFor, LANGUAGE_CORPUS_TRAINING_RECIPE_ID, LANGUAGE_CODE_CORPUS_TRAINING_RECIPE_ID, languageCorpusTrainingRecipeId } from "../language-corpus-trainer.js";
 import { blobContentHash } from "../postgres.js";
@@ -243,7 +244,8 @@ describe("learned rows carry the shard's provenance once", () => {
     expect([...checkpoints.values()][0]!.id).toBe(checkpoint.id);
     expect(recordOf([...checkpoints.values()][0]!.metadata).componentRecipes).toEqual({ inducedLanguageMemory: INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID,
       sourceConstructionProjection: LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID,
-      sourceConstructionBindings: SOURCE_CONSTRUCTION_BINDINGS_COMPONENT_RECIPE_ID, sourceEntityGraph: SOURCE_ENTITY_GRAPH_COMPONENT_RECIPE_ID });
+      sourceConstructionBindings: SOURCE_CONSTRUCTION_BINDINGS_COMPONENT_RECIPE_ID, sourceEntityGraph: SOURCE_ENTITY_GRAPH_COMPONENT_RECIPE_ID,
+      constructionContext: SOURCE_CONSTRUCTION_CONTEXT_RECIPE_ID });
     const writes = fixture.state.events.length;
     await trainLanguageCorpusText(input);
     expect(activeProjectionWrites).toHaveLength(2);

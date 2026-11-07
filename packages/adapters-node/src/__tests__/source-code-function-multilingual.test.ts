@@ -21,7 +21,7 @@ describe("multilingual source callable ingestion", () => {
 
   it("ingests and renames the actual Python stdlib colorsys callable, then checks a held-out result with Python", async () => {
     const python = pythonExecutable();
-    if (!python) return;
+    if (!python) throw new Error("Python is required for the source callable execution regression; set SCCE_TEST_PYTHON to its executable");
     const stdlib = spawnSync(python, ["-c", "import sysconfig; print(sysconfig.get_path('stdlib'))"], { encoding: "utf8" });
     expect(stdlib.status).toBe(0);
     const source = await readFile(`${stdlib.stdout.trim()}/colorsys.py`, "utf8");
