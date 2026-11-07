@@ -1,7 +1,10 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { answerCoversRequest, evidenceDiscriminatesAskedRelation, requestRelationBeyondSourceIdentity } from "../local-evidence-runtime.js";
+import { learnedAnswerUnitFormVerdict, primeLearnedAnswerUnitForms } from "../learned-answer-unit-forms.js";
+import { scopeLanguageMemoryStateToLanguage } from "../language-memory-runtime.js";
+import { sourceOwnedAnswerhoodLanguage } from "./fixtures/source-owned-answerhood-language.js";
 import type { EvidenceId, EvidenceSpan, SourceVersionId } from "../types.js";
 
 /**
@@ -14,8 +17,27 @@ import type { EvidenceId, EvidenceSpan, SourceVersionId } from "../types.js";
  * require, and the article's own lead passed as the answer to who his dentist was.
  */
 describe("answerhood discrimination", () => {
-  // The language's own scaffolding, the shape deriveClosedClassWords returns from a hydrated model.
-  const closedClass = new Set(["the", "of", "and", "in", "to", "a", "was", "is", "for", "as", "on", "that", "his", "with", "by"]);
+  const teaching = sourceOwnedAnswerhoodLanguage();
+  const closedClass = teaching.closedClass;
+  beforeEach(() => teaching.forms.prime());
+  afterEach(() => primeLearnedAnswerUnitForms({ deltas: [], profileIds: new Set() }));
+
+  it("uses only acquired request scaffolding and source-owned form witnesses", () => {
+    for (const unit of ["who", "what", "when"]) expect(closedClass.has(unit)).toBe(true);
+    expect(teaching.compiled.observations).toEqual([]);
+    expect(teaching.forms.projection.patterns.some(row => row.evidenceIds.length > 0)).toBe(true);
+    const acquired = learnedAnswerUnitFormVerdict("einstein", "einstein's");
+    expect(acquired.status).toBe("same");
+    expect(acquired.witnesses[0]?.evidenceIds.length).toBeGreaterThan(0);
+    expect(learnedAnswerUnitFormVerdict("bohr", "bohr's").status).toBe("unresolved");
+    const foreign = scopeLanguageMemoryStateToLanguage(teaching.forms.state, "language.foreign", {
+      profile: () => "language.learned-answer-forms", corpus: () => undefined
+    });
+    primeLearnedAnswerUnitForms({ deltas: foreign.structuralDeltas ?? [], profileIds: new Set(foreign.importedPatterns.map(row => row.profileId)) });
+    expect(learnedAnswerUnitFormVerdict("einstein", "einstein's").status).toBe("unresolved");
+    primeLearnedAnswerUnitForms({ deltas: [], profileIds: new Set() });
+    expect(learnedAnswerUnitFormVerdict("einstein", "einstein's").status).toBe("unresolved");
+  });
 
   it("refuses a subject-only sentence when the request asks past what the source is about", () => {
     const einstein = openingBlock(
