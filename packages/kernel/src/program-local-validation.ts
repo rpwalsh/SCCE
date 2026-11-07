@@ -44,8 +44,11 @@ export function validateOwnerProgramLocalValidation(input: {
     if (file.contentHash !== `sha256_${input.hasher.digestHex(file.content)}`) return undefined;
   }
 
-  const expectedBuild = { command: runtime.commandName, args: [...runtime.syntaxCheckArgs, runtime.sourcePath], cwd: "." };
-  const expectedTest = { command: runtime.commandName, args: [runtime.testPath], cwd: "." };
+  const expectedBuild = { command: runtime.commandName, args: runtime.languageId === "rust"
+    ? [...runtime.syntaxCheckArgs] : [...runtime.syntaxCheckArgs, runtime.sourcePath], cwd: "." };
+  const expectedTest = runtime.languageId === "rust"
+    ? { command: "./program_test.exe", args: [], cwd: "." }
+    : { command: runtime.commandName, args: [runtime.testPath], cwd: "." };
   if (!sameCommand(program.build, expectedBuild) || !sameCommand(program.test, expectedTest)) return undefined;
   return {
     programId: program.id,

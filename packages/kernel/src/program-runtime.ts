@@ -569,7 +569,8 @@ function evidenceIdsFromNodes(nodes: readonly { metadata: JsonValue }[]): string
 }
 
 function validCommand(command: { command: string; args: string[] }): boolean {
-  return Boolean(command.command && command.args.length);
+  return Boolean(command.command && (command.args.length
+    || (command.command.startsWith("./") && safePath(command.command.slice(2)))));
 }
 
 function safePath(value: string): boolean {

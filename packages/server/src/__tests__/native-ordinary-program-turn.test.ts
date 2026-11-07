@@ -10,7 +10,11 @@ import { createScceKernel, createInMemoryDialogueMemoryStore, createHasher, code
 import { storageFixtureForEvaluation } from "../../../kernel/src/__tests__/evidence-promotion-evaluation-fixture.js";
 import { validateOwnerProgramLocalValidation } from "../../../kernel/src/program-local-validation.js";
 import { programResponseReadiness } from "../program-response-readiness.js";
-import { createApprovalSession, NodeBuildTestAdapter, runProcess, type ScceRuntimeConfig } from "@scce/adapters-node";
+import { createApprovalSession } from "../../../adapters-node/src/approval-session.js";
+import { findCodeVerifierCapability } from "../../../adapters-node/src/code-verifier-discovery.js";
+import { NodeBuildTestAdapter } from "../../../adapters-node/src/process.js";
+import { runProcess } from "../../../adapters-node/src/document.js";
+import type { ScceRuntimeConfig } from "../../../adapters-node/src/config.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -18,6 +22,65 @@ afterEach(async () => {
 });
 
 describe("cold ordinary owner program execution", () => {
+  it("compiles and executes a Rust f64 owner program with an independent held-out call", async () => {
+    const rust = await findCodeVerifierCapability("rust");
+    expect(rust.status, rust.status === "unavailable" ? rust.reason : "").toBe("available");
+    if (rust.status !== "available") throw new Error(rust.reason);
+    const executionRoot = await mkdtemp(path.join(tmpdir(), "scce-cold-rust-turn-"));
+    roots.push(executionRoot);
+    const fixture = storageFixtureForEvaluation({ evidence: [], clockNow: Date.now });
+    fixture.storage.dialogueMemory = createInMemoryDialogueMemoryStore();
+    const claims = new Map<string, UserModelClaimRecord>();
+    const snapshots = new Map<string, TaskResumptionSnapshotRecord>();
+    fixture.storage.userModelClaims = {
+      putClaim: async claim => { claims.set(claim.id, claim); },
+      listClaims: async query => [...claims.values()].filter(claim => claim.conversationId === query.conversationId).slice(0, query.limit)
+    };
+    fixture.storage.taskResumption = {
+      putSnapshot: async snapshot => { snapshots.set(snapshot.goalId, snapshot); },
+      getLatestSnapshot: async goalId => snapshots.get(goalId) ?? null
+    };
+    const approvals = createApprovalSession();
+    const native = new NodeBuildTestAdapter({ runtime: { tempRoot: executionRoot } } as ScceRuntimeConfig);
+    const attempts: BuildTestResult[] = [];
+    const kernel = createScceKernel({ storage: fixture.storage, files: { streamPath: async function* () {} }, approvals,
+      deterministicReplay: false, functionalCognitionAuthorizeCapabilities: true,
+      policy: { allowMutation: false, dryRunByDefault: true, requireTwoPhaseCommit: true },
+      buildTest: { executeProgram: async input => {
+        const result = await native.executeProgram(input);
+        attempts.push(result);
+        return result;
+      } } });
+    const text = "Create a Rust fn double(x: f64) -> f64 such that double(3) returns 6, double(7) returns 14, double(-2) returns -4, and double(11) returns 22. Add and run a native test.";
+    const result = await kernel.turn({ text });
+    expect(result.requestedAuthority).toBe("program");
+    expect(result.buildTest?.passed).toBe(true);
+    expect(attempts.some(attempt => attempt.build.code === 0 && attempt.test.code === 0)).toBe(true);
+    const program = result.constructGraph.program!;
+    expect(program.language).toBe("rust");
+    expect(program.entrypoint).toBe("src/program.rs");
+    expect(program.build).toMatchObject({ command: "rustc", args: ["--edition", "2021", "--test", "test/program_test.rs", "-o", "program_test.exe"] });
+    expect(program.test).toMatchObject({ command: "./program_test.exe", args: [] });
+    const proofScope = { canonicalProgram: program, requestedAuthority: "program" as const,
+      requestRequirementIds: codeRequestSignal(text).behaviorRequirements.map(requirement => requirement.id), hasher: createHasher() };
+    expect(validateOwnerProgramLocalValidation({ ...proofScope, program })?.programId).toBe(program.id);
+    const source = result.buildTest!.artifacts.find(artifact => artifact.path === "src/program.rs")!;
+    const test = result.buildTest!.artifacts.find(artifact => artifact.path === "test/program_test.rs")!;
+    expect(source.content).toContain("pub fn r#double(arg0: f64) -> f64");
+    expect(source.content).not.toContain("expected");
+    expect(test.content).toContain("owner_requirement_3");
+    const checkRoot = await mkdtemp(path.join(tmpdir(), "scce-rust-heldout-"));
+    roots.push(checkRoot);
+    await mkdir(path.join(checkRoot, "src"), { recursive: true });
+    await writeFile(path.join(checkRoot, source.path), source.content, "utf8");
+    await writeFile(path.join(checkRoot, "independent.rs"), `#[path = "src/program.rs"] mod program;\nfn main() { assert_eq!(program::r#double(37.0), 74.0); assert_eq!(program::r#double(-0.25), -0.5); }\n`, "utf8");
+    const compile = await runProcess(rust.verifier.command, ["--edition", "2021", "independent.rs", "-o", "independent.exe"], { cwd: checkRoot, timeoutMs: 30_000 });
+    expect(compile.code, compile.stderr).toBe(0);
+    const independent = await runProcess(path.join(checkRoot, "independent.exe"), [], { cwd: checkRoot, timeoutMs: 10_000 });
+    expect(independent.code, independent.stderr).toBe(0);
+    await expect(kernel.turn({ text: "Create a Rust fn divide(x: i64, y: i64) -> i64 such that divide(8, 2) returns 4 and divide(9, 3) returns 3." }))
+      .rejects.toThrow(/Rust native callable requires f64 parameters and return/u);
+  }, 90_000);
   it.each([
     { namedLanguage: false, factual: false },
     { namedLanguage: true, factual: false },

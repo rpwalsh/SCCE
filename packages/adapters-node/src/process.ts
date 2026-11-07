@@ -6,6 +6,7 @@ import path from "node:path";
 import type { BuildTestPort, BuildTestResult, ConstructGraph, EpisodeId, FileArtifact } from "@scce/kernel";
 import type { ScceRuntimeConfig } from "./config.js";
 import { runProcess } from "./document.js";
+import { findCodeVerifierCapability } from "./code-verifier-discovery.js";
 
 export class NodeBuildTestAdapter implements BuildTestPort {
   constructor(private readonly config: ScceRuntimeConfig) {}
@@ -122,6 +123,11 @@ async function writeArtifacts(root: string, artifacts: FileArtifact[]): Promise<
 
 async function runExpanded(command: string, args: string[], cwd: string) {
   const expandedArgs = args.flatMap(arg => arg.includes("*") ? expandGlob(arg, cwd) : [arg]);
+  if (command === "rustc") {
+    const capability = await findCodeVerifierCapability("rust");
+    if (capability.status !== "available") throw new Error(`Rust native validation unavailable: ${capability.reason}`);
+    return runProcess(capability.verifier.command, expandedArgs, { cwd, timeoutMs: 120000 });
+  }
   return runProcess(command, expandedArgs, { cwd, timeoutMs: 120000 });
 }
 

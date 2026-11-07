@@ -1637,7 +1637,10 @@ function ownerBehaviorCompositionPaths(
 }
 
 function ownerCompositionRuntimeForShape(shape: ProgramShape): BehaviorCompositionRuntime | undefined {
-  if (!nodeRuntimeForShape(shape)) return emittedProgramRuntimeForLanguage(shape.target.language);
+  if (!nodeRuntimeForShape(shape)) {
+    const runtime = emittedProgramRuntimeForLanguage(shape.target.language);
+    return runtime.languageId === "rust" ? undefined : runtime;
+  }
   const language = shape.target.language.toLocaleLowerCase();
   if (!["javascript", "typescript", "js", "ts"].includes(language)) return undefined;
   return EMITTED_PROGRAM_RUNTIME;
@@ -1691,6 +1694,9 @@ function emitFiles(plan: ProgramPlan, input: ProgramPlannerInput, idFactory: IdF
     } else if (emittedRuntime.languageId === "python") {
       byPath.set(emittedRuntime.sourcePath, executablePythonProgramModule(plan, contracts, statefulContracts));
       byPath.set(emittedRuntime.testPath, executablePythonProgramTest(plan));
+    } else if (emittedRuntime.languageId === "rust") {
+      byPath.set(emittedRuntime.sourcePath, executableRustProgramModule(plan, input.requestText));
+      byPath.set(emittedRuntime.testPath, executableRustProgramTest(plan));
     } else if (emittedRuntime.languageId === "typescript" && plan.ownerBehaviorRequirements.length) {
       byPath.set(emittedRuntime.sourcePath, [...new Set(plan.ownerBehaviorRequirements.map(requirement => requirement.callableId))].map(callableId =>
         plan.ownerBehaviorImplementationPhase === "selected"
@@ -3455,6 +3461,104 @@ if __name__ == "__main__":
 `;
 }
 
+function rustF64Literal(value: number): string {
+  if (!Number.isFinite(value)) throw new Error("Rust native program requires finite f64 values");
+  if (Object.is(value, -0)) return "-0.0";
+  const surface = String(value);
+  return Number.isInteger(value) && !/[eE]/u.test(surface) ? `${surface}.0` : surface;
+}
+
+function rustCallableName(name: string): string {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name) || ["_", "self", "Self", "super", "crate"].includes(name)) {
+    throw new Error(`Rust native program has an invalid callable identifier: ${name}`);
+  }
+  return `r#${name}`;
+}
+
+function renderRustF64Expression(expression: ProgramExpression, arity: number): { source: string; type: "f64" | "bool" } {
+  if (expression.kind === "argument" && expression.index >= 0 && expression.index < arity) return { source: `arg${expression.index}`, type: "f64" };
+  if (expression.kind === "literal") return { source: rustF64Literal(expression.value), type: "f64" };
+  if (expression.kind === "unary") {
+    const operand = renderRustF64Expression(expression.operand, arity);
+    if (operand.type === "f64") return { source: `(-${operand.source})`, type: "f64" };
+  }
+  if (expression.kind === "binary" || expression.kind === "comparison" || expression.kind === "equivalent") {
+    const left = renderRustF64Expression(expression.left, arity);
+    const right = renderRustF64Expression(expression.right, arity);
+    if (left.type === "f64" && right.type === "f64") {
+      if (expression.kind === "equivalent") return { source: `(${left.source} == ${right.source})`, type: "bool" };
+      if (expression.kind === "comparison") {
+        const operator = expression.operator === "less" ? "<" : expression.operator === "less_or_equal" ? "<=" : expression.operator === "greater" ? ">" : ">=";
+        return { source: `(${left.source} ${operator} ${right.source})`, type: "bool" };
+      }
+      if (expression.operator === "minimum" || expression.operator === "maximum") {
+        return { source: `(${left.source}).${expression.operator === "minimum" ? "min" : "max"}(${right.source})`, type: "f64" };
+      }
+      const operator = expression.operator === "add" ? "+" : expression.operator === "subtract" ? "-" : expression.operator === "multiply" ? "*" : "/";
+      return { source: `(${left.source} ${operator} ${right.source})`, type: "f64" };
+    }
+  }
+  if (expression.kind === "conditional") {
+    const condition = renderRustF64Expression(expression.condition, arity);
+    const whenTrue = renderRustF64Expression(expression.whenTrue, arity);
+    const whenFalse = renderRustF64Expression(expression.whenFalse, arity);
+    if (condition.type === "bool" && whenTrue.type === "f64" && whenFalse.type === "f64") {
+      return { source: `(if ${condition.source} { ${whenTrue.source} } else { ${whenFalse.source} })`, type: "f64" };
+    }
+  }
+  throw new Error(`Rust native program cannot emit expression kind: ${expression.kind}`);
+}
+
+function rustOwnerRequirements(plan: ProgramPlan): Map<string, ProgramBehaviorRequirement[]> {
+  if (plan.ownerStatefulBehaviorRequirements.length || !plan.ownerBehaviorRequirements.length) {
+    throw new Error("Rust native program requires pure scalar owner behavior");
+  }
+  const groups = new Map<string, ProgramBehaviorRequirement[]>();
+  for (const requirement of plan.ownerBehaviorRequirements) {
+    if (!requirement.arguments.length || requirement.arguments.length > 3
+      || requirement.arguments.some(value => typeof value !== "number" || !Number.isFinite(value))
+      || typeof requirement.expectedResult !== "number" || !Number.isFinite(requirement.expectedResult)) {
+      throw new Error("Rust native program requires finite f64 owner examples");
+    }
+    rustCallableName(requirement.callableId);
+    const group = groups.get(requirement.callableId) ?? [];
+    if (group.length && group[0]!.arguments.length !== requirement.arguments.length) throw new Error("Rust native callable arity differs across examples");
+    group.push(requirement);
+    groups.set(requirement.callableId, group);
+  }
+  return groups;
+}
+
+function executableRustProgramModule(plan: ProgramPlan, requestText: string): string {
+  const groups = rustOwnerRequirements(plan);
+  for (const [name, requirements] of groups) {
+    const declaration = new RegExp(`\\bfn\\s+${name}\\s*\\(([^)]*)\\)\\s*->\\s*([A-Za-z_][A-Za-z0-9_]*)`, "u").exec(requestText);
+    if (!declaration) {
+      if (new RegExp(`\\bfn\\s+${name}\\s*\\(`, "u").test(requestText)) throw new Error(`Rust native callable lacks a typed f64 declaration: ${name}`);
+      continue;
+    }
+    const parameters = declaration[1]!.split(",").map(value => value.trim()).filter(Boolean);
+    if (declaration[2] !== "f64" || parameters.length !== requirements[0]!.arguments.length
+      || parameters.some(parameter => !/^[A-Za-z_][A-Za-z0-9_]*\s*:\s*f64$/u.test(parameter))) {
+      throw new Error(`Rust native callable requires f64 parameters and return: ${name}`);
+    }
+  }
+  return [...groups].map(([name, requirements]) => {
+    const arity = requirements[0]!.arguments.length;
+    const candidate = plan.ownerBehaviorTransformationCandidates.find(item => item.callableId === name && plan.selectedOwnerBehaviorTransformationIds.includes(item.id));
+    if (plan.ownerBehaviorImplementationPhase === "selected" && !candidate) throw new Error(`Rust native program lacks selected source-owned IR: ${name}`);
+    const body = candidate ? renderRustF64Expression(candidate.producedIr, arity) : { source: "arg0", type: "f64" as const };
+    if (body.type !== "f64") throw new Error(`Rust native callable does not return f64: ${name}`);
+    return `pub fn ${rustCallableName(name)}(${Array.from({ length: arity }, (_, index) => `arg${index}: f64`).join(", ")}) -> f64 {\n    ${body.source}\n}`;
+  }).join("\n\n") + "\n";
+}
+
+function executableRustProgramTest(plan: ProgramPlan): string {
+  rustOwnerRequirements(plan);
+  const tests = plan.ownerBehaviorRequirements.map((requirement, index) => `#[test]\nfn owner_requirement_${index}() {\n    let actual = program::${rustCallableName(requirement.callableId)}(${requirement.arguments.map(value => rustF64Literal(value as number)).join(", ")});\n    let expected = ${rustF64Literal(requirement.expectedResult as number)};\n    assert!(actual.is_finite() && (actual - expected).abs() <= 1e-9_f64 * expected.abs().max(1.0_f64), "owner requirement ${index} failed: actual={:?}, expected={:?}", actual, expected);\n}`);
+  return `#[path = "../src/program.rs"]\nmod program;\n\n${tests.join("\n\n")}\n`;
+}
+
 function executableBehaviorTransformationFunction(
   callableId: string,
   candidates: readonly ProgramTransformationCandidate[],
@@ -3824,6 +3928,9 @@ function isJavaScriptPropertyIdentifier(value: string): boolean {
 }
 
 function buildNotes(plan: ProgramPlan): string {
+  const runtimeNote = emittedRuntimeForShape(plan.intent.shape).languageId === "rust"
+    ? "The emitted Rust test module imports the emitted Rust source. The installed rustc compiles that harness, and the validation command runs the resulting native binary."
+    : "The target's language, package manager, capabilities, dependencies, and operations come from the learned code graph and source program contract rather than a closed artifact menu. The commands above validate the emitted program with its selected runtime.";
   return `# Source-Derived Build Notes
 
 Target: ${plan.intent.shape.target.label}
@@ -3836,7 +3943,7 @@ Build command: \`${plan.build.command} ${plan.build.args.join(" ")}\`
 
 Validation command: \`${plan.test.command} ${plan.test.args.join(" ")}\`
 
-The target's language, package manager, capabilities, dependencies, and operations come from the learned code graph and source program contract rather than a closed artifact menu. Because no package toolchain was observed for that target, the emitted program is written for the runtime executing this engine, and the commands above are that runtime checking and running it.
+${runtimeNote}
 `;
 }
 
@@ -3989,6 +4096,10 @@ function webAppModel(plan: ProgramPlan, input: ProgramPlannerInput): JsonValue {
 }
 
 function buildCommand(shape: ProgramShape, files: readonly ProgramFilePlan[]): { command: string; args: string[]; cwd: string } {
+  const nativeRuntime = emittedRuntimeForShape(shape);
+  if (nativeRuntime.languageId === "rust" && emittedRuntimeFile(files, "source", nativeRuntime)) {
+    return { command: nativeRuntime.commandName, args: [...nativeRuntime.syntaxCheckArgs], cwd: "." };
+  }
   const observed = commandFromHints(shape, ["script.build", "script.validation"]);
   if (observed) return observed;
   const source = emittedRuntimeFile(files, "source", emittedRuntimeForShape(shape));
@@ -3998,6 +4109,7 @@ function buildCommand(shape: ProgramShape, files: readonly ProgramFilePlan[]): {
 }
 
 function testCommand(shape: ProgramShape, files: readonly ProgramFilePlan[]): { command: string; args: string[]; cwd: string } {
+  if (emittedRuntimeForShape(shape).languageId === "rust") return { command: "./program_test.exe", args: [], cwd: "." };
   const observed = commandFromHints(shape, ["script.validation", "script.build"]);
   if (observed) return observed;
   const test = emittedRuntimeFile(files, "test", emittedRuntimeForShape(shape));
@@ -4009,7 +4121,7 @@ function testCommand(shape: ProgramShape, files: readonly ProgramFilePlan[]): { 
 function emittedRuntimeFile(files: readonly ProgramFilePlan[], role: ProgramFilePlan["role"], runtime: EmittedProgramRuntime): string | undefined {
   const expectedPath = role === "source" ? runtime.sourcePath : runtime.testPath;
   return files.find(file => file.role === role && file.path === expectedPath)?.path
-    ?? files.find(file => file.role === role && [".mjs", ".py", ".ts"].some(extension => file.path.endsWith(extension)))?.path;
+    ?? files.find(file => file.role === role && [".mjs", ".py", ".ts", ".rs"].some(extension => file.path.endsWith(extension)))?.path;
 }
 
 function commandFromHints(shape: ProgramShape, preferredKinds: readonly string[]): { command: string; args: string[]; cwd: string } | undefined {

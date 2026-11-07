@@ -718,6 +718,18 @@ export const TYPESCRIPT_EMITTED_PROGRAM_RUNTIME = {
   testMediaType: "text/javascript"
 } as const;
 
+export const RUST_EMITTED_PROGRAM_RUNTIME = {
+  id: "program.runtime.rust-stdlib.v1",
+  languageId: "rust",
+  commandName: "rustc",
+  syntaxCheckArgs: ["--edition", "2021", "--test", "test/program_test.rs", "-o", "program_test.exe"],
+  moduleExtension: ".rs",
+  mediaType: "text/x-rust",
+  sourcePath: "src/program.rs",
+  testPath: "test/program_test.rs",
+  testMediaType: "text/x-rust"
+} as const;
+
 export class UnsupportedProgramLanguageError extends Error {
   readonly code = "SCCE_PROGRAM_LANGUAGE_UNSUPPORTED";
   readonly status = "unsupported";
@@ -727,7 +739,7 @@ export class UnsupportedProgramLanguageError extends Error {
   }
 }
 
-export type EmittedProgramRuntime = typeof EMITTED_PROGRAM_RUNTIME | typeof PYTHON_EMITTED_PROGRAM_RUNTIME | typeof TYPESCRIPT_EMITTED_PROGRAM_RUNTIME;
+export type EmittedProgramRuntime = typeof EMITTED_PROGRAM_RUNTIME | typeof PYTHON_EMITTED_PROGRAM_RUNTIME | typeof TYPESCRIPT_EMITTED_PROGRAM_RUNTIME | typeof RUST_EMITTED_PROGRAM_RUNTIME;
 
 /**
  * Chooses a concrete emitter SCCE can execute without project dependencies.
@@ -737,6 +749,7 @@ export function emittedProgramRuntimeForLanguage(language: string, options: { re
   const identity = language.toLocaleLowerCase();
   if (identity === "python") return PYTHON_EMITTED_PROGRAM_RUNTIME;
   if (identity === "typescript") return TYPESCRIPT_EMITTED_PROGRAM_RUNTIME;
+  if (identity === "rust") return RUST_EMITTED_PROGRAM_RUNTIME;
   if (options.requireNativeBackend && identity !== "javascript") throw new UnsupportedProgramLanguageError(language);
   return EMITTED_PROGRAM_RUNTIME;
 }
@@ -747,8 +760,10 @@ function runtimeForBlueprint(language: CodeLanguage, target: string): CodeImplem
   return {
     packageManager: runtime.commandName,
     entrypoint: runtime.sourcePath,
-    build: { command: runtime.commandName, args: [...runtime.syntaxCheckArgs, runtime.sourcePath], cwd: "." },
-    test: { command: runtime.commandName, args: [runtime.testPath], cwd: "." }
+    build: { command: runtime.commandName, args: runtime.languageId === "rust" ? [...runtime.syntaxCheckArgs] : [...runtime.syntaxCheckArgs, runtime.sourcePath], cwd: "." },
+    test: runtime.languageId === "rust"
+      ? { command: "./program_test.exe", args: [], cwd: "." }
+      : { command: runtime.commandName, args: [runtime.testPath], cwd: "." }
   };
 }
 
