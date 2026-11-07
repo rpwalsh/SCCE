@@ -4,7 +4,7 @@ import { kneserNeyProbability, materializeKneserNey, predictKneserNey, trainKnes
 import { CORPUS_SOURCE_SYSTEM_IDS, corpusSourceAlias } from "./corpus-registry.js";
 import { codeLanguageForPath } from "./code-request.js";
 import type { NgramModelRecord } from "./storage.js";
-import { CODE_LINE_SYMBOL, codeBracketBalance, codeIdentifierTokens, codeSurfaceTokens, renderCodeTokens } from "./code-surface.js";
+import { CODE_LINE_SYMBOL, CODE_SOURCE_SYMBOL, codeBracketBalance, codeIdentifierTokens, codeSurfaceTokens, renderCodeTokens } from "./code-surface.js";
 import { composeSpanFillings } from "./code-span-repair.js";
 import type { CodeConstruction } from "./code-construction-grammar.js";
 import type { ProgramDiagnostic, RepairOperation } from "./program-repair-kernel.js";
@@ -208,7 +208,7 @@ export function generateLearnedCodeRepairs(input: LearnedCodeGenerationInput): L
         beamWidth: Math.max(2, Math.min(12, Math.floor(input.beamWidth ?? 6)))
       });
       if (!generated) continue;
-      const rendered = renderCodeTokens(generated.symbols).trimEnd();
+      const rendered = (strategy === "tail" ? renderCodeTokens(generated.symbols) : renderCodeTokens(generated.symbols, indent, "replace")).trimEnd();
       if (!rendered.trim()) continue;
       // What the fragment did not replace, it keeps. A tail regenerates from the defect to the end of a
       // statement, and where it stopped at the line boundary instead of a terminator the rest of the
@@ -216,7 +216,7 @@ export function generateLearnedCodeRepairs(input: LearnedCodeGenerationInput): L
       const preserved = strategy === "tail" && !rendered.endsWith(";")
         ? lineText.slice(site.column - 1).replace(/^[\p{Letter}\p{Number}_$]+/u, "")
         : "";
-      const candidate: string = (strategy === "tail" ? `${prefixText}${rendered}${preserved}` : `${indent}${rendered}`).trimEnd();
+      const candidate: string = (strategy === "tail" ? `${prefixText}${rendered}${preserved}` : rendered).trimEnd();
       if (!candidate.trim() || candidate === lineText) continue;
       if (!preservesUninvolvedTokens(lineText, candidate, site.column)) continue;
       const coveredSymbols = (input.requiredSymbols ?? []).filter(symbol => generated.symbols.includes(symbol));
@@ -514,7 +514,7 @@ export function generateLearnedCodeSurface(input: {
       beamWidth
     });
     if (!generated) break;
-    const rendered = renderCodeTokens(generated.symbols, indentForDepth(codeBracketBalance(context).open.length)).trimEnd();
+    const rendered = renderCodeTokens(generated.symbols).trimEnd();
     if (!rendered.trim()) break;
     lines.push(rendered);
     emitted.push(...generated.symbols);
@@ -546,11 +546,6 @@ export function generateLearnedCodeSurface(input: {
       coveredSymbols
     })
   };
-}
-
-/** Two spaces per open bracket: the indentation almost every formal language is written with, and none require. */
-function indentForDepth(depth: number): string {
-  return "  ".repeat(Math.max(0, Math.min(8, depth)));
 }
 
 /**
@@ -676,6 +671,7 @@ function beamGenerateFragment(input: {
     for (const beam of beams) {
       const context = [...input.prompt, ...beam.symbols];
       for (const item of interpolatedPredictions(input, context)) {
+        if (item.symbol === CODE_SOURCE_SYMBOL) continue;
         if (step === 0 && input.firstSymbolVocabulary && identifierLikeSymbol(item.symbol)
           && !input.firstSymbolVocabulary.has(item.symbol)) continue;
         const symbols = [...beam.symbols, item.symbol];

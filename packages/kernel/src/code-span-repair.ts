@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { kneserNeyProbability, predictKneserNey, type KneserNeyModel } from "./kneser-ney.js";
-import { CODE_LINE_SYMBOL, codeBracketBalance, codeSurfaceTokens, renderCodeTokens } from "./code-surface.js";
+import { CODE_LINE_SYMBOL, CODE_SOURCE_SYMBOL, codeBracketBalance, codeSurfaceTokens, codeTokenIsLayout, renderCodeTokens } from "./code-surface.js";
 import { applicableCodeConstructions, realizeCodeConstruction, type CodeConstruction } from "./code-construction-grammar.js";
 
 /**
@@ -128,13 +128,14 @@ export function composeSpanFillings(input: SpanCompositionInput): SpanFragment[]
   const requiredBrackets = bracketCounts(originalTokens);
   // Where the toolchain names what may legally stand here and the hole opened with a name, the filling opens
   // with one of those names -- not merely with something that is not forbidden.
-  const headMustBeAdmissible = Boolean(input.admissible?.size) && identifierLike(originalTokens[0] ?? "");
+  const originalHead = originalTokens.find(token => !codeTokenIsLayout(token)) ?? "";
+  const headMustBeAdmissible = Boolean(input.admissible?.size) && identifierLike(originalHead);
   // And it opens the way the hole opened.
   //
   // A structural claim, not a semantic one: an object literal is replaced by something that also starts by
   // opening a brace, a name by something that also starts with a name. Without it the search filled `{ x: 0 }`
   // with `; Point { x: number; }`, which balances, carries enough values, and is not an expression.
-  const requiredOpening = tokenClass(originalTokens[0] ?? "");
+  const requiredOpening = tokenClass(originalHead);
   // Length is priced, not forbidden.
   //
   // A cap tied to the hole's own size is a guess about how much repair a defect needs, and a wrong guess makes
@@ -160,7 +161,9 @@ export function composeSpanFillings(input: SpanCompositionInput): SpanFragment[]
         ? [...input.admissible, ...(input.admissibleInside ?? [])]
         : [...(input.admissibleInside ?? []), ...input.boost.keys()];
       for (const item of interpolatedPredictions(input, context, forced)) {
-        if (step === 0 && input.admissible) {
+        if (item.symbol === CODE_SOURCE_SYMBOL) continue;
+        const opening = !beam.symbols.some(symbol => !codeTokenIsLayout(symbol)) && !codeTokenIsLayout(item.symbol);
+        if (opening && input.admissible) {
           if (headMustBeAdmissible && !input.admissible.has(item.symbol)) continue;
           if (identifierLike(item.symbol) && !input.admissible.has(item.symbol)) continue;
         }
@@ -170,7 +173,7 @@ export function composeSpanFillings(input: SpanCompositionInput): SpanFragment[]
         if (item.symbol === CODE_LINE_SYMBOL) continue;
         // An unterminated literal is a token the tokenizer produces at end of input and never valid to write.
         if (unterminatedLiteral(item.symbol)) continue;
-        if (step === 0 && requiredOpening && tokenClass(item.symbol) !== requiredOpening) continue;
+        if (opening && requiredOpening && tokenClass(item.symbol) !== requiredOpening) continue;
         const symbols = [...beam.symbols, item.symbol];
         const balance = codeBracketBalance(symbols);
         // A filling may not close a bracket it did not open: that bracket belongs to the text around the hole.
@@ -400,7 +403,7 @@ function constructionFillings(input: SpanCompositionInput, prompt: readonly stri
       if (balance.underflow || balance.open.length) continue;
       if (symbols.filter(valueLike).length < requiredValues) continue;
       if (!coversBrackets(bracketCounts(symbols), requiredBrackets)) continue;
-      if (tokenClass(symbols[0] ?? "") !== tokenClass(originalTokens[0] ?? "")) continue;
+      if (tokenClass(symbols.find(symbol => !codeTokenIsLayout(symbol)) ?? "") !== tokenClass(originalTokens.find(symbol => !codeTokenIsLayout(symbol)) ?? "")) continue;
       const text = renderCodeTokens(symbols);
       if (!text.trim() || text === input.originalText || seen.has(text)) continue;
       seen.add(text);

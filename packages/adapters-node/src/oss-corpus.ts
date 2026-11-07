@@ -10,6 +10,7 @@ import {
   codeCommentProse,
   codeLanguageForPath,
   codeTrainingSurface,
+  CODE_SURFACE_RECIPE_ID,
   createHasher,
   createClock,
   createIdFactory,
@@ -252,7 +253,8 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
       trainedAnyProjection = true;
       const relativePath = normalizeRelative(file.path);
       const sourceUri = `${sourceUriBase}#path=${encodeURIComponent(relativePath)}`;
-      const transformId = `scce.oss.corpus-projection.v1:${projected.projection}`;
+      const transformId = projected.projection === "code_surface_tokens"
+        ? `${CODE_SURFACE_RECIPE_ID}:${projected.projection}` : `scce.oss.corpus-projection.v1:${projected.projection}`;
       const trainingInput: LanguageCorpusTrainingInput = {
         storage: input.storage,
         sourceSystem: projected.sourceSystem,

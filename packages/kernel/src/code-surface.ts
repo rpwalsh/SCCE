@@ -7,7 +7,7 @@
  * The corpus lane previously reduced a source file to its comments plus its identifiers split into words, so the
  * only thing a model ever observed was English. Nothing could compose `foo(bar)` because no token sequence of
  * that shape was ever seen. These are the projection and its inverse: a formal-language token stream trained the
- * same way prose is trained, and a rendering back to source text.
+ * same way prose is trained, and a rendering back to the observed source text.
  *
  * Language-neutral by construction. No keyword list, no per-language grammar: identifiers, numbers, delimited
  * literals, and punctuation are lexical categories every formal language shares, and everything a specific
@@ -16,6 +16,10 @@
 
 /** Line boundary, carried as a symbol so line structure is learnable rather than lost to whitespace. */
 export const CODE_LINE_SYMBOL = "⏎";
+export const CODE_SOURCE_SYMBOL = "\u001ecode-source.v2";
+const CODE_WHITESPACE_PREFIX = "\u001ecode-whitespace:";
+const CODE_ESCAPED_SYMBOL_PREFIX = "\u001ecode-symbol:";
+export const CODE_SURFACE_RECIPE_ID = "scce.code_source_surface.v2" as const;
 
 /** Brackets pair the same way in every formal language that has them; this is structure, not vocabulary. */
 const OPENING_BRACKETS: ReadonlyMap<string, string> = new Map([["(", ")"], ["[", "]"], ["{", "}"]]);
@@ -24,8 +28,8 @@ const CLOSING_BRACKETS: ReadonlySet<string> = new Set([")", "]", "}"]);
 /** Punctuation that always stands alone: grouping and separation never fuse into a longer operator. */
 const SOLO_PUNCTUATION: ReadonlySet<string> = new Set(["(", ")", "[", "]", "{", "}", ",", ";"]);
 
-const IDENTIFIER_START = /[\p{Letter}_$\\]/u;
-const IDENTIFIER_PART = /[\p{Letter}\p{Number}_$]/u;
+const IDENTIFIER_START = /[\p{ID_Start}_$\\]/u;
+const IDENTIFIER_PART = /[\p{ID_Continue}$]/u;
 const DIGIT = /\p{Number}/u;
 const OPERATOR_CHARACTER = /[!%&*+\-/:<=>?^|~.@#]/u;
 const QUOTES: ReadonlySet<string> = new Set(["\"", "'", "`"]);
@@ -36,18 +40,24 @@ const QUOTES: ReadonlySet<string> = new Set(["\"", "'", "`"]);
  * A delimited literal is one symbol so a model learns where literals go without memorising their contents;
  * an operator run is one symbol so `=>` and `::` are single units rather than a pair the model must re-derive.
  */
-export function codeSurfaceTokens(text: string, maxTokens = 200_000): string[] {
+export function codeSurfaceTokens(text: string, maxTokens = Number.POSITIVE_INFINITY): string[] {
   const characters = [...text];
-  const tokens: string[] = [];
+  const tokens: string[] = [CODE_SOURCE_SYMBOL];
   let index = 0;
   while (index < characters.length && tokens.length < maxTokens) {
     const character = characters[index]!;
     if (character === "\n") {
-      if (tokens[tokens.length - 1] !== CODE_LINE_SYMBOL) tokens.push(CODE_LINE_SYMBOL);
+      tokens.push(CODE_LINE_SYMBOL);
       index += 1;
       continue;
     }
-    if (/\s/u.test(character)) { index += 1; continue; }
+    if (/\s/u.test(character)) {
+      let end = index + 1;
+      while (end < characters.length && characters[end] !== "\n" && /\s/u.test(characters[end]!)) end += 1;
+      tokens.push(CODE_WHITESPACE_PREFIX + JSON.stringify(characters.slice(index, end).join("")));
+      index = end;
+      continue;
+    }
     if (QUOTES.has(character)) {
       const literal = readDelimitedLiteral(characters, index);
       tokens.push(literal.token);
@@ -76,25 +86,46 @@ export function codeSurfaceTokens(text: string, maxTokens = 200_000): string[] {
       index = end;
       continue;
     }
-    tokens.push(character);
+    tokens.push(character === CODE_LINE_SYMBOL ? CODE_ESCAPED_SYMBOL_PREFIX + JSON.stringify(character) : character);
     index += 1;
   }
+  if (index < characters.length) throw new RangeError("code surface token budget does not cover the complete source");
   return tokens;
 }
 
-/** The training text for one source file: its own tokens, space-delimited, which is what the n-gram lane reads. */
-export function codeTrainingSurface(text: string, maxTokens = 200_000): string {
-  return codeSurfaceTokens(text, maxTokens).join(" ");
+/** The canonical compiler performs lexical projection once over this complete source surface. */
+export function codeTrainingSurface(text: string, maxTokens = Number.POSITIVE_INFINITY): string {
+  if (Number.isFinite(maxTokens)) codeSurfaceTokens(text, maxTokens);
+  return text;
+}
+
+export function codeTokenWhitespace(token: string): string | undefined {
+  if (!token.startsWith(CODE_WHITESPACE_PREFIX)) return undefined;
+  try {
+    const whitespace: unknown = JSON.parse(token.slice(CODE_WHITESPACE_PREFIX.length));
+    return typeof whitespace === "string" && /^\s+$/u.test(whitespace) ? whitespace : undefined;
+  } catch { return undefined; }
+}
+
+export function codeTokenIsLayout(token: string): boolean {
+  return token === CODE_SOURCE_SYMBOL || token === CODE_LINE_SYMBOL || codeTokenWhitespace(token) !== undefined;
 }
 
 /**
  * Symbols back to source text.
  *
- * Spacing here is formal-language typography, not grammar: a separator closes up against what precedes it, a
- * grouping bracket against what it groups. Every language this runs over accepts the result as whitespace, and
- * the compiler -- not this function -- decides whether the code is right.
+ * Annotated streams retain their observed whitespace; unannotated lexical arrays retain the existing token API.
  */
-export function renderCodeTokens(tokens: readonly string[], indent = ""): string {
+export function renderCodeTokens(tokens: readonly string[], indent = "", indentation: "preserve" | "replace" = "preserve"): string {
+  const observed = tokens.includes(CODE_SOURCE_SYMBOL) || tokens.some(token => codeTokenWhitespace(token) !== undefined);
+  if (observed) {
+    const text = tokens.map(token => token === CODE_SOURCE_SYMBOL ? "" : token === CODE_LINE_SYMBOL ? "\n"
+      : codeTokenWhitespace(token) ?? (token.startsWith(CODE_ESCAPED_SYMBOL_PREFIX) ? JSON.parse(token.slice(CODE_ESCAPED_SYMBOL_PREFIX.length)) as string : token)).join("");
+    if (indentation === "preserve") return text;
+    const lines = text.split("\n");
+    const observedIndent = lines.find(line => line.trim())?.match(/^[\t ]*/u)?.[0] ?? "";
+    return lines.map(line => line.trim() ? indent + (line.startsWith(observedIndent) ? line.slice(observedIndent.length) : line) : line).join("\n");
+  }
   const lines: string[] = [];
   let current = "";
   for (const token of tokens) {
@@ -153,7 +184,7 @@ export function codeBracketBalance(tokens: readonly string[]): CodeBracketBalanc
 export function codeIdentifierTokens(tokens: readonly string[], limit = 256): string[] {
   const out: string[] = [];
   for (const token of tokens) {
-    if (!IDENTIFIER_START.test(token.slice(0, 1))) continue;
+    if (codeTokenIsLayout(token) || !IDENTIFIER_START.test([...token][0] ?? "")) continue;
     if (out.includes(token)) continue;
     out.push(token);
     if (out.length >= limit) break;

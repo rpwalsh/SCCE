@@ -287,7 +287,7 @@ const preparations = new WeakMap<PreparedLanguageCorpusTraining, {
 
 const CORPUS_CHECKPOINT_SCHEMA = "scce.corpusTrainingCheckpoint.v1";
 export const LANGUAGE_CORPUS_TRAINING_RECIPE_ID = "scce.language_corpus_training.v3" as const;
-export const LANGUAGE_CODE_CORPUS_TRAINING_RECIPE_ID = "scce.language_corpus_training.v4" as const;
+export const LANGUAGE_CODE_CORPUS_TRAINING_RECIPE_ID = "scce.language_corpus_training.v5" as const;
 const LANGUAGE_CORPUS_SOURCE_EVIDENCE_RECIPE_ID = "scce.language_corpus_source_evidence.v1" as const;
 
 export function languageCorpusTrainingRecipeId(sourceSystem: string): string {

@@ -1,6 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { codeSurfaceTokens } from "./code-surface.js";
+import { codeSurfaceTokens, codeTokenIsLayout } from "./code-surface.js";
 import { createClock, createHasher } from "./primitives.js";
 import { createIdFactory } from "./ids.js";
 
@@ -147,10 +147,10 @@ export function applicableCodeConstructions(
   holeTokens: readonly string[],
   limit = 8
 ): CodeConstruction[] {
-  const opening = holeTokens[0];
+  const opening = holeTokens.find(token => !codeTokenIsLayout(token));
   if (!opening) return [];
   const holeIsValue = VALUE.test(opening);
-  const holePunctuation = holeTokens.filter(token => !VALUE.test(token));
+  const holePunctuation = holeTokens.filter(token => !codeTokenIsLayout(token) && !VALUE.test(token));
   const scored: Array<{ construction: CodeConstruction; distance: number }> = [];
   for (const construction of constructions) {
     const first = construction.parts[0];
@@ -204,9 +204,12 @@ function bracketedSpans(tokens: readonly string[], maximumLength: number): strin
     if (start === undefined) continue;
     if (OPENING.get(tokens[start]!) !== token) continue;
     // The head is the token before the bracket when it names something; `(` alone is a grouping, `f(` is a call.
-    const headIndex = start > 0 && VALUE.test(tokens[start - 1]!) ? start - 1 : start;
+    let previous = start - 1;
+    while (previous >= 0 && codeTokenIsLayout(tokens[previous]!)) previous--;
+    const headIndex = previous >= 0 && VALUE.test(tokens[previous]!) ? previous : start;
     const span = tokens.slice(headIndex, index + 1);
-    if (span.length >= 3 && span.length <= maximumLength) out.push(span);
+    const lexicalLength = span.filter(token => !codeTokenIsLayout(token)).length;
+    if (lexicalLength >= 3 && lexicalLength <= maximumLength) out.push(span);
   }
   return out;
 }

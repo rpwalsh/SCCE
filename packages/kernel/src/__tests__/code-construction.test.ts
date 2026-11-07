@@ -7,6 +7,7 @@ import {
   codeCommentProse,
   codeIdentifierTokens,
   codeSurfaceTokens,
+  codeTokenIsLayout,
   codeTrainingSurface,
   renderCodeTokens
 } from "../code-surface.js";
@@ -49,20 +50,20 @@ function corpusModel(order = 5) {
 
 describe("code as a learnable surface", () => {
   it("keeps the token sequence a generator has to compose from", () => {
-    expect(codeSurfaceTokens("const a = f(b);")).toEqual(["const", "a", "=", "f", "(", "b", ")", ";"]);
+    expect(codeSurfaceTokens("const a = f(b);").filter(token => !codeTokenIsLayout(token))).toEqual(["const", "a", "=", "f", "(", "b", ")", ";"]);
   });
 
   it("reads a delimited literal as one symbol so its contents are not learned as code", () => {
-    expect(codeSurfaceTokens('x("a b c");')).toEqual(["x", "(", '"a b c"', ")", ";"]);
+    expect(codeSurfaceTokens('x("a b c");').filter(token => !codeTokenIsLayout(token))).toEqual(["x", "(", '"a b c"', ")", ";"]);
   });
 
   it("reads an operator run as one symbol", () => {
-    expect(codeSurfaceTokens("a => b")).toEqual(["a", "=>", "b"]);
-    expect(codeSurfaceTokens("A::b")).toEqual(["A", "::", "b"]);
+    expect(codeSurfaceTokens("a => b").filter(token => !codeTokenIsLayout(token))).toEqual(["a", "=>", "b"]);
+    expect(codeSurfaceTokens("A::b").filter(token => !codeTokenIsLayout(token))).toEqual(["A", "::", "b"]);
   });
 
   it("carries line structure as a symbol rather than dropping it with the whitespace", () => {
-    expect(codeSurfaceTokens("a;\nb;")).toEqual(["a", ";", CODE_LINE_SYMBOL, "b", ";"]);
+    expect(codeSurfaceTokens("a;\nb;").filter(token => token === CODE_LINE_SYMBOL || !codeTokenIsLayout(token))).toEqual(["a", ";", CODE_LINE_SYMBOL, "b", ";"]);
   });
 
   it("round-trips a statement back to something a compiler accepts", () => {
@@ -91,8 +92,8 @@ describe("code as a learnable surface", () => {
   });
 
   it("projects a whole file to a training surface", () => {
-    expect(codeTrainingSurface("const a = 1;")).toBe("const a = 1 ;");
-    expect(codeTrainingSurface("a;\nb;")).toBe("a ; ⏎ b ;");
+    expect(codeTrainingSurface("const a = 1;")).toBe("const a = 1;");
+    expect(codeTrainingSurface("a;\nb;")).toBe("a;\nb;");
   });
 
   it("names the formal language of a path from the same table the request signal reads", () => {
@@ -326,7 +327,8 @@ describe("shapes induced from what code recurs on", () => {
     { id: "c.ts", text: "export const e = { id: 7, kind: 8 };\nexport const h = k(9, 10);\n" }
   ];
   const render = (construction: { parts: Array<{ kind: string; surface?: string; slot?: number }> }): string =>
-    construction.parts.map(part => (part.kind === "literal" ? part.surface : `<${part.slot}>`)).join(" ");
+    construction.parts.filter(part => part.kind !== "literal" || !codeTokenIsLayout(part.surface ?? ""))
+      .map(part => (part.kind === "literal" ? part.surface : `<${part.slot}>`)).join(" ");
 
   it("marks the positions that vary, not the ones a predicate sits beside", () => {
     const constructions = induceCodeConstructions({ documents, minimumDocuments: 2, minimumOccurrences: 2 });
@@ -358,9 +360,11 @@ describe("shapes induced from what code recurs on", () => {
   it("realizes a shape only when every slot has a filler", () => {
     const construction = induceCodeConstructions({ documents, minimumDocuments: 2, minimumOccurrences: 2 })
       .find(item => render(item) === "<0> ( <1> , <2> )")!;
-    expect(realizeCodeConstruction(construction, new Map([[0, "add"], [1, "1"], [2, "2"]]))).toEqual(
+    const realized = realizeCodeConstruction(construction, new Map([[0, "add"], [1, "1"], [2, "2"]]))!;
+    expect(realized.filter(token => !codeTokenIsLayout(token))).toEqual(
       ["add", "(", "1", ",", "2", ")"]
     );
+    expect(renderCodeTokens(realized)).toBe("add(1, 2)");
     expect(realizeCodeConstruction(construction, new Map([[0, "add"]]))).toBeUndefined();
   });
 });
