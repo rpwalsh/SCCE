@@ -1091,10 +1091,13 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
            ) sampled
          ) AS sources`;
       });
-      const rows = await storage.query<{ unit: string; sources: number }>(
-        measurements.join("\nUNION ALL\n"),
-        params
-      );
+      const rows = await storage.transaction(async () => {
+        const [planner] = await storage.query<{ enabled: string }>("SELECT current_setting('enable_seqscan') AS enabled");
+        await storage.query("SET LOCAL enable_seqscan = off");
+        const measured = await storage.query<{ unit: string; sources: number }>(measurements.join("\nUNION ALL\n"), params);
+        await storage.query("SELECT set_config('enable_seqscan', $1, true)", [planner.enabled]);
+        return measured;
+      });
       return rows.map(row => Number(row.sources ?? 0)).filter(value => value > 0);
     },
     async searchEvidence(query: EvidenceQuery) {
