@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { IngestionCheckpoint } from "@scce/kernel";
+import { canonicalStringify, createClock, createEvidenceExtractor, createHasher, createIdFactory, createLanguageAcquisitionEngine, type IngestionCheckpoint } from "@scce/kernel";
 import { createWikipediaV3Ingestor } from "../wikipedia-v3-ingestor.js";
 import { resolveWikipediaCorpusTarget, streamWikipediaMultistream } from "../wikipedia.js";
 import * as corpusTrainer from "../language-corpus-trainer.js";
@@ -107,8 +107,28 @@ describe("Wikipedia recovery boundaries", () => {
     try {
       const p = mockPipeline(f.config);
       p.train.mockRestore();
+      const hasher = createHasher();
+      const ids = createIdFactory({ hasher, clock: createClock({ fixedTime: 1 }), namespace: "wiki-recovery-source", deterministicReplay: true });
+      const language = createLanguageAcquisitionEngine({ idFactory: ids });
+      const extractor = createEvidenceExtractor({ hasher, idFactory: ids });
+      p.page.mockImplementation(async (...args: any[]) => {
+        const file = args[0];
+        const sourceId = ids.sourceId("wikipedia", file.uri);
+        const sourceVersionId = ids.sourceVersionId(canonicalStringify({ sourceId, contentHash: ids.contentHash(file.text) }));
+        const evidence = extractor.extract({ sourceId, sourceVersionId, namespace: "wikipedia", uri: file.uri, mediaType: "text/plain", text: file.text,
+          languageProfile: language.acquire({ sourceVersionId, text: file.text, createdAt: 1 }), observedAt: 1, exactSourceText: true,
+          metadata: { sourceFamilyId: "wikimedia:wikipedia" }, sourceTrust: { identity: 1, integrity: 1, parserReliability: 1, directness: 1, authority: 1,
+            freshness: 1, independenceGroup: "wikimedia:wikipedia", accessScope: "public", licenseStatus: "fixture" } }).spans
+          .map(span => ({ ...span, status: "promoted" as const, provenance: { ...span.provenance as object, sourceFamilyId: "wikimedia:wikipedia" } }));
+        return { ...p.counts, languageSample: { uri: file.uri, title: "source", text: file.text, evidence, sourceVersionId, createdAt: 1,
+          languageAliases: [], semanticCandidates: [] } };
+      });
       const stages: string[] = [];
-      vi.spyOn(corpusTrainer, "prepareLanguageCorpusTraining").mockImplementation(async () => {
+      vi.spyOn(corpusTrainer, "prepareLanguageCorpusTraining").mockImplementation(async input => {
+        expect(input.evidence!.length).toBeGreaterThan(0);
+        expect(input.profile!.sourceVersionId).toBe(input.sourceVersionId);
+        expect(input.profileBinding).toBeDefined();
+        expect(input.preparedInduction).toBeDefined();
         expect(p.depth()).toBe(0); stages.push("prepare"); return {} as any;
       });
       vi.spyOn(corpusTrainer, "commitLanguageCorpusTraining").mockImplementation(async () => {
