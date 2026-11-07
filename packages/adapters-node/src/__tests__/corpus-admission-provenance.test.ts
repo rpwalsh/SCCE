@@ -132,7 +132,7 @@ describe("corpus trainer admission and provenance", () => {
     };
     fixture.state.sourceVersions.push(sourceVersion);
     fixture.state.evidence.push(profileExcerpt);
-    fixture.state.blobs.set(String(sourceVersion.contentHash), fullSourceBytes);
+    fixture.state.blobs.set(String(sourceVersion.contentHash), new Uint8Array(fullSourceBytes));
     const persistedExcerptSource = fixture.state.blobs.get(String(sourceVersion.contentHash))!;
     const persistedExcerptBytes = persistedExcerptSource.subarray(profileExcerpt.byteStart, profileExcerpt.byteEnd);
     expect(blobContentHash(persistedExcerptSource)).toBe(sourceVersion.contentHash);
