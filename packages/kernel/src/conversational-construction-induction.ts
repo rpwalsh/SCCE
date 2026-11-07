@@ -6,7 +6,7 @@ import { DIALOGUE_ACT_IDS, type DialogueActId } from "./dialogue-pragmatics.js";
 import { otsuThreshold } from "./language-identity.js";
 import type { SourceBoundConstructionObservation, SourceBoundLanguageConstructionTrainingSet } from "./language-construction-memory.js";
 import { requestCommunicativeActIdForSignature } from "./request-communicative-act.js";
-import { unicodeLexicalSegments } from "./unicode-segmentation.js";
+import { prepareConversationalFramePairs, walkConversationalFrames, type ConversationalSpanUnit as SpanUnit, type ConversationalFrameOccurrence as FrameOccurrence } from "./conversational-frame-walk.js";
 import type { EvidenceSpan, Hasher } from "./types.js";
 
 /** One transcript, as the promoted evidence spans it was stored as. Each span is read on its own terms. */
@@ -43,31 +43,6 @@ export interface ConversationalConstructionInductionReport {
   keptFrames: number;
   observations: number;
   sets: ConversationalActConstructionSet[];
-}
-
-/** One evidence span read as its own transcript, so every offset a frame records is exact within that span. */
-interface SpanUnit {
-  span: EvidenceSpan;
-  points: string[];
-  sourceVersionId: string;
-  profileId: string;
-  transcriptTurns?: readonly TranscriptTurn[];
-}
-
-interface FrameOccurrence {
-  frameKey: string;
-  spanIndex: number;
-  evidenceId: string;
-  sourceVersionId: string;
-  /** Code-point range of the whole line the frame was measured in, within its own evidence span. */
-  lineStart: number;
-  lineEnd: number;
-  slotStartInLine: number;
-  slotEndInLine: number;
-  /** Lexical units the line keeps outside the slot. The frame's own size, measured, not its character count. */
-  literalUnits: number;
-  filler: string;
-  antecedent?: { startCodePoint: number; endCodePoint: number };
 }
 
 /**
@@ -139,12 +114,13 @@ export function induceConversationalActConstructionTrainingSets(input: {
   let sourceFamilyFloor = 0;
 
   for (const [actId, pairs] of [...byAct.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+    const framePairs = prepareConversationalFramePairs(units, pairs);
     const counts = new Map<string, number>();
-    walkFrames(units, pairs, input.hasher, occurrence => {
+    walkConversationalFrames(framePairs, input.hasher, occurrence => {
       counts.set(occurrence.frameKey, (counts.get(occurrence.frameKey) ?? 0) + 1);
     });
     const frames = new Map<string, { fillers: Set<string>; families: Set<string>; literalUnits: number; occurrences: FrameOccurrence[] }>();
-    walkFrames(units, pairs, input.hasher, occurrence => {
+    walkConversationalFrames(framePairs, input.hasher, occurrence => {
       if ((counts.get(occurrence.frameKey) ?? 0) < 2) return;
       const frame = frames.get(occurrence.frameKey)
         ?? { fillers: new Set<string>(), families: new Set<string>(), literalUnits: occurrence.literalUnits, occurrences: [] };
@@ -269,74 +245,4 @@ function dominantProfileId(observations: readonly FrameOccurrence[], units: read
   }
   return [...mass.entries()]
     .sort(([leftId, left], [rightId, right]) => right - left || leftId.localeCompare(rightId))[0]?.[0] ?? "";
-}
-
-/**
- * Visits every one-slot frame the corpus's own replies present, the slot being any contiguous run of the line's
- * lexical units. The line is the transcript's own layout unit, so
- * the frame's literals are an exact contiguous region of one evidence span and need no re-normalization.
- */
-function walkFrames(
-  units: readonly SpanUnit[],
-  pairs: readonly DialogueTurnPair[],
-  hasher: Hasher,
-  visit: (occurrence: FrameOccurrence) => void
-): void {
-  for (const pair of pairs) {
-    const unit = units[pair.documentIndex];
-    if (!unit) continue;
-    const lines = replyLines(unit.points, pair.reply.startCodePoint, pair.reply.endCodePoint);
-    // What this lane realizes is a whole conversational move, so a whole move is what it may generalize from:
-    // a line lifted out of a longer speech is a fragment of one, and the corpus never used it as a turn.
-    if (lines.length !== 1) continue;
-    const line = lines[0]!;
-    const surface = unit.points.slice(line.start, line.end).join("");
-    const segments = unicodeLexicalSegments(surface);
-    // A line of one lexical unit leaves no literal behind whatever the slot takes.
-    if (segments.length < 2) continue;
-    const linePoints = [...surface];
-    for (let first = 0; first < segments.length; first++) {
-      for (let last = first; last < segments.length; last++) {
-        const literalUnits = first + (segments.length - 1 - last);
-        // Nothing outside the slot leaves the identity, not a construction.
-        if (literalUnits < 1) continue;
-        const slotStart = segments[first]!.codePointStart;
-        const slotEnd = segments[last]!.codePointEnd;
-        const filler = linePoints.slice(slotStart, slotEnd).join("");
-        // A conversation role is material the preceding turn supplied; new reply wording is form.
-        const requestUnits = unicodeLexicalSegments(pair.requestText).map(segment => segment.normalized);
-        const fillerUnits = unicodeLexicalSegments(filler).map(segment => segment.normalized);
-        if (unit.transcriptTurns && !requestUnits.some((_word, start) => fillerUnits.every((word, index) => requestUnits[start + index] === word))) continue;
-        const prefix = linePoints.slice(0, slotStart).join("");
-        const suffix = linePoints.slice(slotEnd).join("");
-        visit({
-          frameKey: hasher.digestHex(`${prefix}\u0000${suffix}`).slice(0, 24),
-          spanIndex: pair.documentIndex,
-          evidenceId: String(unit.span.id),
-          sourceVersionId: unit.sourceVersionId,
-          lineStart: line.start,
-          lineEnd: line.end,
-          slotStartInLine: slotStart,
-          slotEndInLine: slotEnd,
-          literalUnits,
-          filler,
-          ...(unit.transcriptTurns ? { antecedent: { startCodePoint: pair.request.startCodePoint, endCodePoint: pair.request.endCodePoint } } : {})
-        });
-      }
-    }
-  }
-}
-
-function replyLines(points: readonly string[], start: number, end: number): Array<{ start: number; end: number }> {
-  const lines: Array<{ start: number; end: number }> = [];
-  let lineStart = start;
-  for (let index = start; index <= end; index++) {
-    if (index !== end && points[index] !== "\n") continue;
-    let lineEnd = index;
-    while (lineEnd > lineStart && /\s/u.test(points[lineEnd - 1] ?? "")) lineEnd -= 1;
-    while (lineStart < lineEnd && /\s/u.test(points[lineStart] ?? "")) lineStart += 1;
-    if (lineEnd > lineStart) lines.push({ start: lineStart, end: lineEnd });
-    lineStart = index + 1;
-  }
-  return lines;
 }
