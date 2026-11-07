@@ -882,7 +882,7 @@ function requestCompositionIngredients(requestText: string): CompositionIngredie
 
 function creativeRequestSubject(input: PlanInventionsInput): string {
   if (input.requestedAuthority !== "creative" || !input.requirementField?.trace) return input.requestText;
-  return requestSubjectSegments(input.requestText, input.requirementField).join(" ").trim() || input.requestText;
+  return requestSubjectSegments(input.requestText, { trace: input.requirementField.trace }).join(" ").trim() || input.requestText;
 }
 
 function uniqueIngredients(rows: readonly CompositionIngredient[]): CompositionIngredient[] {

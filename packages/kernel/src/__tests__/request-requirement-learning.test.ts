@@ -32,7 +32,7 @@ describe("source-backed response-form learning", () => {
     expect(subject).toContain(subjects[0]);
     expect(subject).not.toContain(prefix.trim());
     const scaffolding = requestScaffoldingConstructions(compiled.patterns, "factual").flatMap(row => row.parts.map(part => part.surface));
-    expect(scaffolding).not.toContain(subjects[0].toLocaleLowerCase());
+    expect(scaffolding).not.toContain(subjects[0]!.toLocaleLowerCase());
   });
 
   it("learns control and topic span roles from owned request-reply pairs", () => {
