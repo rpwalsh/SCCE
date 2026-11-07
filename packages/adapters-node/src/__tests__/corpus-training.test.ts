@@ -628,6 +628,7 @@ describe("prepared corpus training", () => {
     };
     const input = {
       ...options(storage),
+      languageOnly: false,
       creativeEventCompiler: {
         id: "creative.fixture.compiler",
         compile: () => ({ status: "compiled" as const, pattern: compilerPattern, bundle: {} as any })
@@ -912,7 +913,7 @@ describe("multi-corpus training", () => {
       streamUri: "fixture://creative-compiler-book",
       text: "A reader opens a book. Another reader closes the same book. ".repeat(3),
       createdAt: 1700000000000,
-      languageOnly: true,
+      languageOnly: false,
       ngramMaxOrder: 2,
       ngramVocabularyLimit: 32,
       corpusCheckpoint: { rootUri: "fixture://creative-books", itemUri: "book.txt" }

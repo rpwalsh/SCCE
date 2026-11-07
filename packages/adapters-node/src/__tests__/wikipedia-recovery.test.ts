@@ -116,7 +116,7 @@ describe("Wikipedia recovery boundaries", () => {
         const sourceId = ids.sourceId("wikipedia", file.uri);
         const sourceVersionId = ids.sourceVersionId(canonicalStringify({ sourceId, contentHash: ids.contentHash(file.text) }));
         const evidence = extractor.extract({ sourceId, sourceVersionId, namespace: "wikipedia", uri: file.uri, mediaType: "text/plain", text: file.text,
-          languageProfile: language.acquire({ sourceVersionId, text: file.text, createdAt: 1 }), observedAt: 1, exactSourceText: true,
+          languageProfile: language.acquire({ sourceVersionId, text: file.text, createdAt: 1 }), observedAt: 1, exactSourceText: true, maxChunkBytes: 65536,
           metadata: { sourceFamilyId: "wikimedia:wikipedia" }, sourceTrust: { identity: 1, integrity: 1, parserReliability: 1, directness: 1, authority: 1,
             freshness: 1, independenceGroup: "wikimedia:wikipedia", accessScope: "public", licenseStatus: "fixture" } }).spans
           .map(span => ({ ...span, status: "promoted" as const, provenance: { ...span.provenance as object, sourceFamilyId: "wikimedia:wikipedia" } }));

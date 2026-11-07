@@ -20,7 +20,7 @@ export function sourceOwnedAnswerUnitForms(sourceText?: string) {
   const sourceVersionId = ids.sourceVersionId(canonicalStringify({ sourceId, contentHash: ids.contentHash(bytes), role: "original" }));
   const profile = createLanguageAcquisitionEngine({ idFactory: ids }).acquire({ sourceVersionId, text, createdAt: 1 });
   const evidence = createEvidenceExtractor({ hasher, idFactory: ids }).extract({ sourceId, sourceVersionId, uri, namespace: "workspace",
-    mediaType: "text/plain", text, languageProfile: profile, observedAt: 1, exactSourceText: true,
+    mediaType: "text/plain", text, languageProfile: profile, observedAt: 1, exactSourceText: true, maxChunkBytes: 65536,
     metadata: { sourceSystem: "workspace", purpose: "authored_language_examples" }, sourceTrust: { identity: 1, integrity: 1, parserReliability: 1,
       directness: 1, authority: 1, freshness: 1, independenceGroup: uri, accessScope: "fixture", licenseStatus: "fixture" } }).spans
     .map(span => ({ ...span, status: "promoted" as const }));

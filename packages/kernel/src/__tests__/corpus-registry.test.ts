@@ -63,7 +63,7 @@ describe("corpus registry", () => {
     const result = await kernel.warmup({ language: true, graph: false, brain: false, profile: false, corrections: false });
 
     expect(result.language?.loaded).toBe(true);
-    const exactProfileQueries = queried.filter(query => query.profileIds.length > 0);
+    const exactProfileQueries = queried.filter(query => (query.profileIds?.length ?? 0) > 0);
     expect(exactProfileQueries).toEqual([]);
     const controlQueries = queried.filter(query => query.sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.corrections
       || query.sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.dialogue);
@@ -158,7 +158,7 @@ describe("corpus registry", () => {
 
     await kernel.warmup({ language: true, graph: false, brain: false, profile: false, corrections: false });
 
-    const exactProfileQueries = queried.filter(query => query.profileIds.length > 0);
+    const exactProfileQueries = queried.filter(query => (query.profileIds?.length ?? 0) > 0);
     expect(exactProfileQueries).toEqual([]);
   });
 });
