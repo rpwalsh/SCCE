@@ -29,12 +29,37 @@ async function turn(text, metadata = {}, liveConfig) {
     signal: AbortSignal.timeout(60_000),
     body: JSON.stringify({ text, sessionId: `coding-spine-${Date.now()}`, metadata })
   });
-  const body = await response.json();
-  const result = body.turn ?? body.result ?? body;
+  const responseText = await response.text();
+  let body;
+  try { body = JSON.parse(responseText); } catch { body = undefined; }
+  const result = body?.turn ?? body?.result ?? body ?? {};
   const events = (result.events ?? []).map(event => ({ typeId: event.typeId, payload: event.payload ?? {} }));
   return { status: response.status, elapsedMs: Date.now() - started, answer: String(result.answer ?? "").slice(0, 400), events,
     taskReplanning: result.taskReplanning ?? null, programReadiness: result.programReadiness ?? null,
-    programArtifacts: result.programArtifacts ?? result.buildTest?.artifacts ?? [], buildTest: result.buildTest ?? null };
+    programArtifacts: result.programArtifacts ?? result.buildTest?.artifacts ?? [], buildTest: result.buildTest ?? null,
+    ...(response.ok ? {} : { httpFailure: httpFailureDetail(body, responseText, response.status) }) };
+}
+
+export function httpFailureDetail(body, fallbackText = "", status) {
+  const error = body && typeof body === "object" && !Array.isArray(body) ? body.error : undefined;
+  const candidates = [
+    ["status", Number.isInteger(body?.status) ? body.status : status],
+    ["code", body?.code ?? error?.code],
+    ["error", typeof error === "string" ? error : error?.name],
+    ["message", body?.message ?? error?.message],
+    ["detail", body?.detail ?? body?.reason ?? error?.detail ?? error?.reason]
+  ];
+  const fields = Object.fromEntries(candidates.filter(([, value]) => typeof value === "string" && value.trim())
+    .map(([key, value]) => [key, value.trim().slice(0, 1000)]));
+  if (Number.isInteger(candidates[0][1])) fields.status = candidates[0][1];
+  const detail = body?.detail && typeof body.detail === "object" && !Array.isArray(body.detail) ? body.detail : undefined;
+  const detailFields = Object.fromEntries(["schema", "status", "reasonId", "languageId"]
+    .filter(key => typeof detail?.[key] === "string").map(key => [key, detail[key].slice(0, 200)]));
+  if (Object.keys(detailFields).length) fields.detail = detailFields;
+  if (Object.keys(fields).some(key => key !== "status")) return fields;
+  if (fallbackText.trim()) return { ...fields, bodyText: fallbackText.trim().slice(0, 1000) };
+  if (Object.keys(fields).length) return fields;
+  return { bodyText: "" };
 }
 
 const count = (events, typeId, predicate = () => true) => events.filter(event => event.typeId === typeId && predicate(event.payload)).length;
@@ -153,12 +178,12 @@ export async function runAcceptance(outputPath = outPath) {
     const heldOut = await executeHeldOut(run, scenario.language);
     const passed = run.status === 200 && eventVerdict.passed && artifacts.passed && heldOut.passed;
     results.push({ ...scenario, run, eventVerdict, artifactVerdict: artifacts, heldOut, passed });
-    console.log(`${scenario.id}: ${passed ? "PASS" : "FAIL"} ${JSON.stringify({ events: eventVerdict.checks, artifacts: artifacts.checks, heldOut })} in ${(run.elapsedMs / 1000).toFixed(1)}s`);
+    console.log(`${scenario.id}: ${passed ? "PASS" : "FAIL"} ${JSON.stringify({ httpFailure: run.httpFailure, events: eventVerdict.checks, artifacts: artifacts.checks, heldOut })} in ${(run.elapsedMs / 1000).toFixed(1)}s`);
   }
 
   await mkdir(dirname(outputPath), { recursive: true });
   await writeFile(outputPath, JSON.stringify({
-    schema: "scce.coding_spine_acceptance.v3", generatedAt: new Date().toISOString(),
+    schema: "scce.coding_spine_acceptance.v4", generatedAt: new Date().toISOString(),
     scope: { languages: ["javascript", "typescript"], lanes: ["programming", "debugging"], excluded: ["chat", "creative", "factual", "proof"] },
     scenarios: results.map(({ run, ...scenario }) => ({ ...scenario, run }))
   }, null, 2) + "\n", "utf8");

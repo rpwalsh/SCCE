@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
-import { artifactChecks, executeHeldOut, isSafeHeldOutRoot } from "./coding-spine-acceptance.mjs";
+import { artifactChecks, executeHeldOut, httpFailureDetail, isSafeHeldOutRoot } from "./coding-spine-acceptance.mjs";
 
 const artifact = (path, content, role = "source") => ({
   path, role, content, contentHash: `sha256_${createHash("sha256").update(content).digest("hex")}`
@@ -70,6 +70,17 @@ test("only allows cleanup of a direct child created under the OS temp directory"
   assert.equal(isSafeHeldOutRoot("C:\\Temp\\scce-coding-heldout-a1", "C:\\Temp"), true);
   assert.equal(isSafeHeldOutRoot("C:\\scce-coding-heldout-a1", "C:\\Temp"), false);
   assert.equal(isSafeHeldOutRoot("C:\\Temp\\..\\outside", "C:\\Temp"), false);
+});
+
+test("retains bounded structured HTTP failure details without copying arbitrary response fields", () => {
+  assert.deepEqual(httpFailureDetail({ status: 422, error: "runtime.declined.program_not_ready",
+    detail: { schema: "scce.program.response_readiness.v1", status: "not_ready", reasonId: "program.readiness.behavior_contract_missing", token: "discard" },
+    secret: "discard" }, "", 422), {
+    status: 422, error: "runtime.declined.program_not_ready",
+    detail: { schema: "scce.program.response_readiness.v1", status: "not_ready", reasonId: "program.readiness.behavior_contract_missing" }
+  });
+  assert.deepEqual(httpFailureDetail(undefined, "unprocessable request", 422), { status: 422, bodyText: "unprocessable request" });
+  assert.deepEqual(httpFailureDetail({ message: "x".repeat(1200) }).message.length, 1000);
 });
 
 test("independently executes correct behavior and rejects semantically wrong code", async () => {
