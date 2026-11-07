@@ -336,15 +336,13 @@ export function fitBoundaryEstimator(input: {
     let interceptGradient = 0;
     for (let r = 0; r < usable.length; r += 1) {
       const base = r * featureCount;
-      // dot() is Kahan-compensated on purpose. A plain running sum here changed the fitted weights -- caught by
-      // the equivalence test -- so the view is passed to the same dot and the association is left alone.
-      const features = rowFeatures.subarray(base, base + featureCount);
+      // Preserve Kahan order without allocating a per-row view.
       const mass = rowMass[r]!;
-      const predicted = sigmoid(intercept + dot(weights, features));
+      const predicted = sigmoid(intercept + dot(weights, rowFeatures, base, featureCount));
       const residual = predicted * mass - rowPositive[r]!;
       interceptGradient += residual;
       for (let f = 0; f < featureCount; f += 1) {
-        gradients[f] = gradients[f]! + residual * features[f]!;
+        gradients[f] = gradients[f]! + residual * rowFeatures[base + f]!;
       }
     }
     intercept = quantize(intercept - learningRate * interceptGradient / totalMass);
@@ -399,7 +397,7 @@ export function scoreBoundary(
   features: BoundaryFeatureVector
 ): number {
   validateModel(model);
-  const rawLogit = model.intercept + dot(model.weights, featureArray(features));
+  const rawLogit = model.intercept + dotFeatureRecord(model.weights, features);
   return clamp01(sigmoid(
     model.calibration.slope * rawLogit + model.calibration.intercept
   ));
@@ -431,7 +429,8 @@ export function boundaryNegativeLogLikelihood(
     const positive = row.positiveMass / MASS_SCALE;
     const negative = row.negativeMass / MASS_SCALE;
     const features = featureRecord(row.featuresFixed.map(value => value / FIXED_SCALE));
-    const predicted = clampProbability(scoreBoundary(model, features));
+    const rawLogit = model.intercept + dotFeatureRecord(model.weights, features);
+    const predicted = clampProbability(clamp01(sigmoid(model.calibration.slope * rawLogit + model.calibration.intercept)));
     negativeLogLikelihood += -positive * Math.log(predicted) - negative * Math.log(1 - predicted);
     mass += positive + negative;
   }
@@ -470,19 +469,22 @@ function fitHeldoutCalibration(input: {
   let slope = 1;
   let calibrationIntercept = 0;
   const mass = Math.max(1, (statistics.positiveMass + statistics.negativeMass) / MASS_SCALE);
+  const rows = statistics.rows.filter(row => row.positiveMass + row.negativeMass > 0);
+  const rawLogits = new Float64Array(rows.length);
+  const positives = new Float64Array(rows.length);
+  const masses = new Float64Array(rows.length);
+  for (let index = 0; index < rows.length; index++) {
+    const row = rows[index]!;
+    positives[index] = row.positiveMass / MASS_SCALE;
+    masses[index] = row.positiveMass / MASS_SCALE + row.negativeMass / MASS_SCALE;
+    rawLogits[index] = input.intercept + dot(input.weights, row.featuresFixed.map(value => value / FIXED_SCALE));
+  }
   for (let iteration = 0; iteration < 160; iteration += 1) {
     let slopeGradient = 0;
     let interceptGradient = 0;
-    for (const row of statistics.rows) {
-      const positive = row.positiveMass / MASS_SCALE;
-      const negative = row.negativeMass / MASS_SCALE;
-      const rowMass = positive + negative;
-      if (rowMass <= 0) continue;
-      const rawLogit = input.intercept + dot(
-        input.weights,
-        row.featuresFixed.map(value => value / FIXED_SCALE)
-      );
-      const residual = sigmoid(slope * rawLogit + calibrationIntercept) * rowMass - positive;
+    for (let index = 0; index < rows.length; index++) {
+      const rawLogit = rawLogits[index]!;
+      const residual = sigmoid(slope * rawLogit + calibrationIntercept) * masses[index]! - positives[index]!;
       slopeGradient += residual * rawLogit;
       interceptGradient += residual;
     }
@@ -644,9 +646,12 @@ function validateSourceDisjoint(
 
 function validateModel(model: BoundaryEstimatorModel): void {
   if (model.schema !== BOUNDARY_ESTIMATOR_SCHEMA
-    || model.featureOrder.join("\u001f") !== FEATURE_ORDER.join("\u001f")
+    || model.featureOrder.length !== FEATURE_ORDER.length
     || model.weights.length !== FEATURE_ORDER.length) {
     throw new Error("incompatible boundary estimator model");
+  }
+  for (let index = 0; index < FEATURE_ORDER.length; index++) {
+    if (model.featureOrder[index] !== FEATURE_ORDER[index]) throw new Error("incompatible boundary estimator model");
   }
 }
 
@@ -684,11 +689,24 @@ function featureRecord(values: readonly number[]): BoundaryFeatureVector {
   };
 }
 
-function dot(left: ArrayLike<number>, right: ArrayLike<number>): number {
+function dot(left: ArrayLike<number>, right: ArrayLike<number>, offset = 0, length = right.length): number {
   let sum = 0;
   let compensation = 0;
-  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
-    const product = (left[index] ?? 0) * (right[index] ?? 0);
+  for (let index = 0; index < Math.max(left.length, length); index += 1) {
+    const product = (left[index] ?? 0) * (right[offset + index] ?? 0);
+    const adjusted = product - compensation;
+    const next = sum + adjusted;
+    compensation = (next - sum) - adjusted;
+    sum = next;
+  }
+  return sum;
+}
+
+function dotFeatureRecord(weights: readonly number[], features: BoundaryFeatureVector): number {
+  let sum = 0;
+  let compensation = 0;
+  for (let index = 0; index < FEATURE_ORDER.length; index++) {
+    const product = (weights[index] ?? 0) * (features[FEATURE_ORDER[index]!] ?? 0);
     const adjusted = product - compensation;
     const next = sum + adjusted;
     compensation = (next - sum) - adjusted;
