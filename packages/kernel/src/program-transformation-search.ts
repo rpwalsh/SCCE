@@ -14,6 +14,7 @@ export type ProgramExpression =
   | { readonly kind: "mapping"; readonly entries: readonly { readonly key: string; readonly value: ProgramExpression }[] }
   | { readonly kind: "cardinality"; readonly operand: ProgramExpression }
   | { readonly kind: "equivalent"; readonly left: ProgramExpression; readonly right: ProgramExpression }
+  | { readonly kind: "comparison"; readonly operator: "less" | "less_or_equal" | "greater" | "greater_or_equal"; readonly left: ProgramExpression; readonly right: ProgramExpression }
   | { readonly kind: "map_sequence"; readonly source: ProgramExpression; readonly projection: ProgramExpression }
   | { readonly kind: "filter_sequence"; readonly source: ProgramExpression; readonly predicate: ProgramExpression }
   | { readonly kind: "fold_sequence"; readonly source: ProgramExpression; readonly initial: ProgramExpression; readonly reducer: ProgramExpression }
@@ -37,6 +38,7 @@ export type ProgramTransformationOperator =
   | "mapping"
   | "cardinality"
   | "equivalent"
+  | "comparison"
   | "map_sequence"
   | "filter_sequence"
   | "fold_sequence"
@@ -217,6 +219,7 @@ function expressionOperands(expression: ProgramExpression): ProgramExpression[] 
   if (expression.kind === "mapping") return expression.entries.map(entry => entry.value);
   if (expression.kind === "cardinality") return [expression.operand];
   if (expression.kind === "equivalent") return [expression.left, expression.right];
+  if (expression.kind === "comparison") return [expression.left, expression.right];
   if (expression.kind === "map_sequence") return [expression.source, expression.projection];
   if (expression.kind === "filter_sequence") return [expression.source, expression.predicate];
   if (expression.kind === "fold_sequence") return [expression.source, expression.initial, expression.reducer];
@@ -225,7 +228,7 @@ function expressionOperands(expression: ProgramExpression): ProgramExpression[] 
 }
 
 function containsArithmetic(expression: ProgramExpression): boolean {
-  return expression.kind === "unary" || expression.kind === "binary" || expressionOperands(expression).some(containsArithmetic);
+  return expression.kind === "unary" || expression.kind === "binary" || expression.kind === "comparison" || expressionOperands(expression).some(containsArithmetic);
 }
 
 function commutativeOperator(operator: ProgramTransformationOperator): boolean {
@@ -778,6 +781,14 @@ function evaluateExpression(expression: ProgramExpression, arguments_: readonly 
       const right = evaluateExpression(expression.right, arguments_, element, accumulator, sourceSemantics, safeNumericDomain);
       return left === undefined || right === undefined ? undefined : sourceSemantics ? left === right : jsonEqual(left, right);
     }
+    case "comparison": {
+      const left = evaluateExpression(expression.left, arguments_, element, accumulator, sourceSemantics, safeNumericDomain);
+      const right = evaluateExpression(expression.right, arguments_, element, accumulator, sourceSemantics, safeNumericDomain);
+      if (typeof left !== "number" || typeof right !== "number" || !Number.isFinite(left) || !Number.isFinite(right)
+        || (safeNumericDomain && (!supportedBinary64Number(left) || !supportedBinary64Number(right)))) return undefined;
+      return expression.operator === "less" ? left < right : expression.operator === "less_or_equal" ? left <= right
+        : expression.operator === "greater" ? left > right : left >= right;
+    }
     case "map_sequence": {
       const source = evaluateExpression(expression.source, arguments_, element, accumulator, sourceSemantics, safeNumericDomain);
       if (!Array.isArray(source) || source.length > 64) return undefined;
@@ -863,6 +874,9 @@ function numericArgumentIndexes(expression: ProgramExpression, arithmeticContext
     numericArgumentIndexes(expression.left, arithmeticContext),
     numericArgumentIndexes(expression.right, arithmeticContext)
   );
+  if (expression.kind === "comparison") return unionNumericArgumentIndexes(
+    numericArgumentIndexes(expression.left, true), numericArgumentIndexes(expression.right, true)
+  );
   if (expression.kind === "map_sequence") return unionNumericArgumentIndexes(
     numericArgumentIndexes(expression.source, false),
     numericArgumentIndexes(expression.projection, arithmeticContext)
@@ -897,6 +911,7 @@ function usesNumericOperators(expression: ProgramExpression): boolean {
   if (expression.kind === "mapping") return expression.entries.some(entry => usesNumericOperators(entry.value));
   if (expression.kind === "cardinality") return usesNumericOperators(expression.operand);
   if (expression.kind === "equivalent") return usesNumericOperators(expression.left) || usesNumericOperators(expression.right);
+  if (expression.kind === "comparison") return true;
   if (expression.kind === "map_sequence") return usesNumericOperators(expression.source) || usesNumericOperators(expression.projection);
   if (expression.kind === "filter_sequence") return usesNumericOperators(expression.source) || usesNumericOperators(expression.predicate);
   if (expression.kind === "fold_sequence") return usesNumericOperators(expression.source) || usesNumericOperators(expression.initial) || usesNumericOperators(expression.reducer);
@@ -919,7 +934,7 @@ function collectDenominatorPreconditions(expression: ProgramExpression, output: 
     for (const entry of expression.entries) collectDenominatorPreconditions(entry.value, output);
   } else if (expression.kind === "cardinality") {
     collectDenominatorPreconditions(expression.operand, output);
-  } else if (expression.kind === "equivalent") {
+  } else if (expression.kind === "equivalent" || expression.kind === "comparison") {
     collectDenominatorPreconditions(expression.left, output);
     collectDenominatorPreconditions(expression.right, output);
   } else if (expression.kind === "map_sequence") {
@@ -960,6 +975,7 @@ function multiplicationCount(expression: ProgramExpression): number {
   if (expression.kind === "mapping") return expression.entries.reduce((sum, entry) => sum + multiplicationCount(entry.value), 0);
   if (expression.kind === "cardinality") return multiplicationCount(expression.operand);
   if (expression.kind === "equivalent") return multiplicationCount(expression.left) + multiplicationCount(expression.right);
+  if (expression.kind === "comparison") return multiplicationCount(expression.left) + multiplicationCount(expression.right);
   if (expression.kind === "map_sequence") return multiplicationCount(expression.source) + multiplicationCount(expression.projection);
   if (expression.kind === "filter_sequence") return multiplicationCount(expression.source) + multiplicationCount(expression.predicate);
   if (expression.kind === "fold_sequence") return multiplicationCount(expression.source) + multiplicationCount(expression.initial) + multiplicationCount(expression.reducer);
@@ -982,6 +998,7 @@ function expressionComplexity(expression: ProgramExpression): number {
   if (expression.kind === "mapping") return 1 + expression.entries.reduce((sum, entry) => sum + expressionComplexity(entry.value), 0);
   if (expression.kind === "cardinality") return 1 + expressionComplexity(expression.operand);
   if (expression.kind === "equivalent") return 1 + expressionComplexity(expression.left) + expressionComplexity(expression.right);
+  if (expression.kind === "comparison") return 1 + expressionComplexity(expression.left) + expressionComplexity(expression.right);
   if (expression.kind === "map_sequence") return 1 + expressionComplexity(expression.source) + expressionComplexity(expression.projection);
   if (expression.kind === "filter_sequence") return 1 + expressionComplexity(expression.source) + expressionComplexity(expression.predicate);
   if (expression.kind === "fold_sequence") return 1 + expressionComplexity(expression.source) + expressionComplexity(expression.initial) + expressionComplexity(expression.reducer);
@@ -999,6 +1016,7 @@ function expressionKey(expression: ProgramExpression): string {
   if (expression.kind === "mapping") return `o(${expression.entries.map(entry => `${stableJson(entry.key)}:${expressionKey(entry.value)}`).join(",")})`;
   if (expression.kind === "cardinality") return `c(${expressionKey(expression.operand)})`;
   if (expression.kind === "equivalent") return `e(${expressionKey(expression.left)},${expressionKey(expression.right)})`;
+  if (expression.kind === "comparison") return `cmp:${expression.operator}(${expressionKey(expression.left)},${expressionKey(expression.right)})`;
   if (expression.kind === "map_sequence") return `q(${expressionKey(expression.source)},${expressionKey(expression.projection)})`;
   if (expression.kind === "filter_sequence") return `f(${expressionKey(expression.source)},${expressionKey(expression.predicate)})`;
   if (expression.kind === "fold_sequence") return `r(${expressionKey(expression.source)},${expressionKey(expression.initial)},${expressionKey(expression.reducer)})`;

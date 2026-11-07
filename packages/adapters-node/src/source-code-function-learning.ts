@@ -4,7 +4,7 @@ import ts from "typescript";
 import { sourceCodeFunctionConstructionId, type SourceCodeFunctionConstruction, type ProgramExpression } from "@scce/kernel";
 import { compileTreeSitterSourceCodeFunctions } from "./source-code-function-tree-learning.js";
 
-export const SOURCE_CODE_FUNCTION_COMPILER_RECIPE_ID = "scce.source_code_function_compiler.v2";
+export const SOURCE_CODE_FUNCTION_COMPILER_RECIPE_ID = "scce.source_code_function_compiler.v3";
 
 export async function compileSourceCodeFunctionsAsync(input: { text: string; path: string; languageId?: string; sourceHash: string }): Promise<SourceCodeFunctionConstruction[]> {
   if (input.languageId === "typescript" || input.languageId === "javascript") return compileSourceCodeFunctions(input);

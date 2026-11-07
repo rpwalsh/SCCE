@@ -255,6 +255,23 @@ function expressionFromBody(body: SyntaxNode, parameters: readonly string[], lan
   const bindings = new Map<string, ProgramExpression>();
   const expressions: ProgramExpression[] = [];
   for (const [index, statement] of statements.entries()) {
+    if (languageId === "python" && statement.type === "if_statement") {
+      const conditionNode = statement.childForFieldName("condition");
+      const consequence = statement.childForFieldName("consequence");
+      if (!conditionNode || !consequence || statement.namedChildren.length !== 2 || consequence.type !== "block" || consequence.namedChildren.length !== 1) return undefined;
+      const branchStatement = consequence.namedChildren[0]!;
+      const branchExecutable = branchStatement.type === "expression_statement" && branchStatement.namedChildren.length === 1
+        ? branchStatement.namedChildren[0]! : branchStatement;
+      const assignment = assignmentParts(branchExecutable, languageId);
+      if (!assignment || (!bindings.has(assignment.name) && !parameters.includes(assignment.name))) return undefined;
+      const condition = expressionFromNode(conditionNode, parameters, bindings, languageId);
+      const whenTrue = expressionFromNode(assignment.value, parameters, bindings, languageId);
+      const whenFalse = bindings.get(assignment.name) ?? { kind: "argument" as const, index: parameters.indexOf(assignment.name) };
+      if (!condition || condition.kind !== "comparison" || !whenTrue) return undefined;
+      expressions.push({ kind: "conditional", condition, whenTrue, whenFalse });
+      bindings.set(assignment.name, { kind: "argument", index: parameters.length + expressions.length - 1 });
+      continue;
+    }
     const executable = languageId === "python" && statement.type === "expression_statement" && statement.namedChildren.length === 1
       ? statement.namedChildren[0]!
       : statement;
@@ -346,6 +363,15 @@ function expressionFromNode(node: SyntaxNode, parameters: readonly string[], bin
     const loweredLeft = expressionFromNode(left, parameters, bindings, languageId);
     const loweredRight = expressionFromNode(right, parameters, bindings, languageId);
     return irOperator && loweredLeft && loweredRight ? { kind: "binary", operator: irOperator, left: loweredLeft, right: loweredRight } : undefined;
+  }
+  if (languageId === "python" && node.type === "comparison_operator" && node.namedChildren.length === 2) {
+    const [left, right] = node.namedChildren;
+    const operator = node.children.find(child => child.startIndex >= left!.endIndex && child.endIndex <= right!.startIndex && child.text.trim().length > 0);
+    const irOperator = operator?.text === "<" ? "less" : operator?.text === "<=" ? "less_or_equal"
+      : operator?.text === ">" ? "greater" : operator?.text === ">=" ? "greater_or_equal" : undefined;
+    const loweredLeft = expressionFromNode(left!, parameters, bindings, languageId);
+    const loweredRight = expressionFromNode(right!, parameters, bindings, languageId);
+    return irOperator && loweredLeft && loweredRight ? { kind: "comparison", operator: irOperator, left: loweredLeft, right: loweredRight } : undefined;
   }
   if (languageId === "python" && node.type === "tuple") {
     const items = node.namedChildren.map(child => expressionFromNode(child, parameters, bindings, languageId));

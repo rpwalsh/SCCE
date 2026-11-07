@@ -3384,6 +3384,10 @@ function renderPythonProgramExpression(expression: ProgramExpression, elementBin
   if (expression.kind === "mapping") return `{${expression.entries.map(entry => `${JSON.stringify(entry.key)}: ${renderPythonProgramExpression(entry.value, elementBinding, depth, accumulatorBinding)}`).join(", ")}}`;
   if (expression.kind === "cardinality") return `len(${renderPythonProgramExpression(expression.operand, elementBinding, depth, accumulatorBinding)})`;
   if (expression.kind === "equivalent") return `(${renderPythonProgramExpression(expression.left, elementBinding, depth, accumulatorBinding)} == ${renderPythonProgramExpression(expression.right, elementBinding, depth, accumulatorBinding)})`;
+  if (expression.kind === "comparison") {
+    const operator = expression.operator === "less" ? "<" : expression.operator === "less_or_equal" ? "<=" : expression.operator === "greater" ? ">" : ">=";
+    return `(${renderPythonProgramExpression(expression.left, elementBinding, depth, accumulatorBinding)} ${operator} ${renderPythonProgramExpression(expression.right, elementBinding, depth, accumulatorBinding)})`;
+  }
   if (expression.kind === "map_sequence") {
     const nextBinding = `_program_element_${depth + 1}`;
     return `[${renderPythonProgramExpression(expression.projection, nextBinding, depth + 1, accumulatorBinding)} for ${nextBinding} in ${renderPythonProgramExpression(expression.source, elementBinding, depth, accumulatorBinding)}]`;
@@ -3554,6 +3558,10 @@ function renderProgramExpression(expression: ProgramExpression, elementBinding =
   if (expression.kind === "mapping") return `Object.fromEntries([${expression.entries.map(entry => `[${JSON.stringify(entry.key)}, ${renderProgramExpression(entry.value, elementBinding, depth, accumulatorBinding)}]`).join(", ")}])`;
   if (expression.kind === "cardinality") return `${renderProgramExpression(expression.operand, elementBinding, depth, accumulatorBinding)}.length`;
   if (expression.kind === "equivalent") return `JSON.stringify(${renderProgramExpression(expression.left, elementBinding, depth, accumulatorBinding)}) === JSON.stringify(${renderProgramExpression(expression.right, elementBinding, depth, accumulatorBinding)})`;
+  if (expression.kind === "comparison") {
+    const operator = expression.operator === "less" ? "<" : expression.operator === "less_or_equal" ? "<=" : expression.operator === "greater" ? ">" : ">=";
+    return `(${renderProgramExpression(expression.left, elementBinding, depth, accumulatorBinding)} ${operator} ${renderProgramExpression(expression.right, elementBinding, depth, accumulatorBinding)})`;
+  }
   if (expression.kind === "map_sequence") {
     const nextBinding = `_programElement${depth + 1}`;
     return `${renderProgramExpression(expression.source, elementBinding, depth, accumulatorBinding)}.map((${nextBinding}) => ${renderProgramExpression(expression.projection, nextBinding, depth + 1, accumulatorBinding)})`;

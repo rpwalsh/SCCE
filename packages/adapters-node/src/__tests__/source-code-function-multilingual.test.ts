@@ -55,6 +55,35 @@ describe("multilingual source callable ingestion", () => {
     expect(JSON.parse(executed.stdout.trim())).toEqual(expected);
   });
 
+  it("learns the actual Python stdlib conditional clamps and executes the preserved source on held-out inputs", async () => {
+    const python = pythonExecutable();
+    if (!python) throw new Error("Python is required for the source callable execution regression; set SCCE_TEST_PYTHON to its executable");
+    const stdlib = spawnSync(python, ["-c", "import sysconfig; print(sysconfig.get_path('stdlib'))"], { encoding: "utf8" });
+    expect(stdlib.status).toBe(0);
+    const source = await readFile(`${stdlib.stdout.trim()}/colorsys.py`, "utf8");
+    const sourceHash = createHasher().digestHex(source);
+    const constructions = await compileSourceCodeFunctionsAsync({ text: source, path: "colorsys.py", languageId: "python", sourceHash });
+    const construction = constructions.find(row => row.callable.name === "yiq_to_rgb");
+    expect(construction).toBeDefined();
+    expect(source.slice(construction!.sourceStart, construction!.sourceEnd)).toBe(construction!.sourceText);
+
+    const fitInputs = [[0.25, 0, 0], [0, 1, 0], [1, 0, 1]];
+    const fitResults = pythonYiqToRgb(python, fitInputs);
+    const requirements = codeRequestSignal(fitInputs.map((args, index) =>
+      `learnedColor(${args.join(",")})=${JSON.stringify(fitResults[index])}`).join("; ")).behaviorRequirements;
+    expect(requirements).toHaveLength(fitInputs.length);
+    const record: NgramModelRecord = { id: "stdlib-colorsys-clamp", streamId: "oss_code:colorsys.py", languageHint: "python", maxOrder: 1, discount: 0.75, updatedAt: 1,
+      modelJson: toJsonValue({ sourceSystem: "oss_code", sourceHash, formalLanguage: "python", codeFunctionConstructions: constructions }) };
+    const realized = realizeSourceCodeFunctions({ records: [record], languageId: "python", requirements });
+    expect(realized).toHaveLength(1);
+    expect(realized[0]!.text).toBe(construction!.sourceText.replace("def yiq_to_rgb(", "def learnedColor("));
+    const heldOut = [[0.7, -0.2, 0.1], [0.4, 0.2, -0.3]];
+    const expected = pythonYiqToRgb(python, heldOut);
+    const executed = spawnSync(python, ["-c", `${realized[0]!.text}\nimport json; print(json.dumps([learnedColor(*row) for row in ${JSON.stringify(heldOut)}]))`], { encoding: "utf8" });
+    expect(executed.status).toBe(0);
+    expect(JSON.parse(executed.stdout.trim())).toEqual(expected);
+  });
+
   it("lowers only floating-point callable bodies in Rust and Kotlin and preserves their native source", async () => {
     const cases = [
       { languageId: "rust", path: "scale.rs", source: "pub fn twice(value: f64) -> f64 { value * 2.0 }", expected: "pub fn learnedScale(value: f64) -> f64 { value * 2.0 }" },
@@ -113,6 +142,17 @@ describe("multilingual source callable ingestion", () => {
     expect(requirements).toHaveLength(2);
     expect(realizeSourceCodeFunctions({ records: [record], languageId: "python", requirements })).toHaveLength(1);
   });
+
+  it("rejects branch effects and unsupported branch shapes instead of claiming pure source behavior", async () => {
+    const sources = [
+      "def observed(value):\n    if value < 0:\n        print(value)\n    return value\n",
+      "def observed(value):\n    if value < 0:\n        value = side_effect()\n    return value\n",
+      "def observed(value):\n    if value < 0:\n        value = 0\n    else:\n        value = 1\n    return value\n"
+    ];
+    for (const text of sources) {
+      expect(await compileSourceCodeFunctionsAsync({ text, path: "branch.py", languageId: "python", sourceHash: createHasher().digestHex(text) })).toEqual([]);
+    }
+  });
 });
 
 function pythonExecutable(): string | undefined {
@@ -127,6 +167,13 @@ function pythonExecutable(): string | undefined {
 
 function pythonRgbToYiq(python: string, rows: readonly (readonly number[])[]): number[][] {
   const script = "import colorsys,json,sys; print(json.dumps([colorsys.rgb_to_yiq(*row) for row in json.load(sys.stdin)]))";
+  const result = spawnSync(python, ["-c", script], { input: JSON.stringify(rows), encoding: "utf8" });
+  expect(result.status).toBe(0);
+  return JSON.parse(result.stdout.trim()) as number[][];
+}
+
+function pythonYiqToRgb(python: string, rows: readonly (readonly number[])[]): number[][] {
+  const script = "import colorsys,json,sys; print(json.dumps([colorsys.yiq_to_rgb(*row) for row in json.load(sys.stdin)]))";
   const result = spawnSync(python, ["-c", script], { input: JSON.stringify(rows), encoding: "utf8" });
   expect(result.status).toBe(0);
   return JSON.parse(result.stdout.trim()) as number[][];
