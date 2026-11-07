@@ -111,7 +111,11 @@ Understand → locate → plan → generate patch → validate → report, then 
 **Pass:** it detects the failure and repairs within the supported families; the workspace mutation boundary cannot be
 bypassed.
 **Today:** partial. Patch transactions are content-addressed, authorization-gated and tested; the repair loop exists
-(`bounded-autonomous-debugging.ts`); the bypass-attempt test is missing.
+(`bounded-autonomous-debugging.ts`). `tools/coding-spine-acceptance.mjs` now checks the live clean and injected-failure
+programming turns against the event chain, returned artifact path/hash integrity, and held-out execution of the actual
+JavaScript source on unseen inputs. This is evidence for JavaScript programming/debugging only; it does not score
+general chat, creative work, factual answers, proof quality, or programming in other languages. The workspace mutation
+bypass attempt and independently judged coverage of those other lanes remain uncovered.
 
 ### 12. Determinism
 The same turn from the same persisted state, repeatedly.
