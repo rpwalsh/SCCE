@@ -1,6 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import * as boundary from "../boundary-estimator.js";
 import * as reuse from "../boundary-fit-reuse.js";
@@ -76,7 +76,6 @@ describe("boundary fitting repeated-work equivalence", () => {
     const fit = boundary.fitBoundaryEstimator;
     const createFitter = reuse.createBoundaryEstimatorFitter;
     const fitted: boundary.BoundaryEstimatorModel[] = [];
-    const signatures = new Set<string>();
     let computedFits = 0;
     let scopedDepth = 0;
     let fittingMs = 0;
@@ -84,7 +83,6 @@ describe("boundary fitting repeated-work equivalence", () => {
       const scoped = createFitter(hasher);
       return input => {
         scopedDepth++;
-        signatures.add(JSON.stringify(input));
         try {
           const model = scoped(input);
           fitted.push(model);
@@ -116,9 +114,6 @@ describe("boundary fitting repeated-work equivalence", () => {
       expect(fitted.length).toBe(reference.fits);
       expect(outputs.length).toBe(reference.outputModels);
       expect(hasher.digestHex(JSON.stringify(result))).toBe(reference.resultDigest);
-      writeFileSync(".tmp-boundary-alice-result.json", JSON.stringify(result, null, 2));
-      writeFileSync(".tmp-boundary-alice-timing.json", JSON.stringify({ elapsedMs, fittingMs, fits: fitted.length, computedFits, uniqueScopedInputs: signatures.size,
-        peakRssKiB: process.resourceUsage().maxRSS }, null, 2));
       process.stdout.write(`\nAlice 19k total=${elapsedMs.toFixed(1)}ms boundary-fit=${fittingMs.toFixed(1)}ms requested=${fitted.length} computed=${computedFits}\n`);
       expect(outputs.length).toBeGreaterThan(1);
       expect(fitted.length).toBeGreaterThan(1);
