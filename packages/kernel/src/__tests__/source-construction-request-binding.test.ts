@@ -8,6 +8,8 @@ import { createClock, createHasher } from "../primitives.js";
 import { createIdFactory } from "../ids.js";
 import { resolveRequestValueBinding } from "../semantic-answer-construct.js";
 import { sourceConstructionRequestValueResolver } from "../source-construction-request-binding.js";
+import { createSurfaceLanguageRuntime } from "../surface-language-runtime.js";
+import { CORPUS_ROLE_IDS } from "../corpus-registry.js";
 import { induceSourceBoundConstructionTrainingSets } from "../graph-surface-alignment.js";
 import { answerCoversRequest } from "../local-evidence-runtime.js";
 import { createEvidenceExtractor } from "../evidence.js";
@@ -19,6 +21,7 @@ import { surfaceSentenceRanges } from "../surface-linguistics.js";
 import { sourceOwnedAnswerhoodLanguage } from "./fixtures/source-owned-answerhood-language.js";
 import { createTrace } from "../debug/trace.js";
 import type { SourceBoundConstructionObservation, SourceConstructionGraphBinding } from "../language-construction-memory.js";
+import type { ScceKernelDeps } from "../storage.js";
 
 const hasher = createHasher();
 const clock = createClock({ fixedTime: 140_000, stepMs: 1 });
@@ -92,10 +95,43 @@ function teach(input: { subjects: [string, string, string]; marker: string; valu
     requestText: request, evidence: spans,
     resolvers: [sourceConstructionRequestValueResolver({ bundles: restarted.importedConstructionBundles, graph: candidateGraph })]
   });
-  return { resolve, graph, evidence, requestText, value: input.value, patterns: trained.constructionPatterns };
+  return { resolve, graph, evidence, profile, requestText, value: input.value, patterns: trained.constructionPatterns };
 }
 
 describe("acquired typed request construction transfer", () => {
+  it("hydrates admitted source constructions for factual binding despite a separate wording corpus", async () => {
+    const fixture = teach({ subjects: ["Luma", "Vela", "Zora"], marker: "HAS TOKEN", value: "Bora", valueKind: "opaque.token" });
+    const gutenbergPatterns = fixture.patterns.map(pattern => ({ ...pattern,
+      patternJson: { ...jsonRecord(pattern.patternJson), sourceSystem: "gutenberg" } }));
+    const queries: Array<{ profileIds?: readonly string[]; sourceSystem?: string; patternSchemas?: readonly string[] }> = [];
+    const storage = {
+      brainImports: { active: async () => ({ activeImportRunIds: [] }) },
+      model: { listLanguageProfiles: async (query: { sourceVersionIds?: readonly string[] }) =>
+        query.sourceVersionIds?.includes(String(fixture.evidence.sourceVersionId)) ? [fixture.profile] : [] },
+      languageMemory: { listNgramModels: async () => [], listLanguageUnits: async () => [], listSemanticFrames: async () => [],
+        listLanguagePatterns: async (query: { profileIds?: readonly string[]; sourceSystem?: string; patternSchemas?: readonly string[] }) => {
+        queries.push(query);
+        return query.profileIds?.includes(fixture.profile.id) ? gutenbergPatterns : [];
+      } },
+      evidence: { getEvidenceBatch: async (ids: readonly string[]) =>
+        ids.includes(String(fixture.evidence.id)) ? [fixture.evidence] : [] }
+    } as unknown as ScceKernelDeps["storage"];
+    const runtime = createSurfaceLanguageRuntime({ deps: { storage, corpusRegistry: [] },
+      languageMemoryRuntime: createLanguageMemoryRuntime({ hasher }), clock, hasher, cacheMs: 100_000, profileLimit: 32 });
+    const wikipediaWording = await runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "wording", CORPUS_ROLE_IDS.encyclopedic, fixture.requestText);
+    const bundles = await runtime.sourceOwnedConstructionsForEvidence([fixture.evidence]);
+    expect(wikipediaWording.state.importedConstructionBundles).toEqual([]);
+    expect(gutenbergPatterns.every(pattern => jsonRecord(pattern.patternJson).sourceSystem === "gutenberg")).toBe(true);
+    const sourceQueries = queries.filter(query => query.profileIds?.includes(fixture.profile.id));
+    expect(sourceQueries).toHaveLength(1);
+    expect(sourceQueries[0]).toMatchObject({ profileIds: [fixture.profile.id], patternSchemas: ["scce.language_construction_pattern.v1"] });
+    expect(sourceQueries[0]?.sourceSystem).toBeUndefined();
+    const binding = resolveRequestValueBinding({ requestText: fixture.requestText, evidence: [fixture.evidence],
+      resolvers: [sourceConstructionRequestValueResolver({ bundles, graph: fixture.graph })] });
+    expect(binding).toMatchObject({ value: "Bora", evidenceIds: [String(fixture.evidence.id)] });
+    expect(await runtime.sourceOwnedConstructionsForEvidence([fixture.evidence])).toBe(bundles);
+    expect(queries.filter(query => query.profileIds?.includes(fixture.profile.id))).toHaveLength(1);
+  });
   it("keeps exact Unicode sentence ranges through astral and combining code points", () => {
     const prefix = "\u{1f9f6}e\u0301: ";
     const text = `${prefix}ada visited london\u3002${prefix}ada visited paris\u3002`;

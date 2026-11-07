@@ -802,6 +802,7 @@ export function createProductionTurnRuntime(options: {
   } = graphRetrieval;
   const {
     evidenceOwnedLanguageClusterCached, hydrateSurfaceLanguageMemoryCached, requestSemanticFrames, warmSurfaceLanguageMemory,
+    sourceOwnedConstructionsForEvidence,
     sourceOwnedLanguageClusterForAlias, sourceOwnedLanguageProfilesCached, surfaceLanguageClusterCached,
     surfaceLanguageProfilesCached, targetProfilePatternsCached, warmTargetProfilePatterns, uniqueRecordsById
   } = surfaceLanguageRuntime;
@@ -2421,12 +2422,16 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         ? admissibleEvidence.find(span => span.status === "promoted" && Number(span.charStart ?? -1) === 0
           && evidenceTitledForRequestSubject(input.text, [span]) && openingSpanAnswersRequest(span))
         : undefined;
+      const sourceOwnedConstructionBundles = deps.evaluationCondition?.flags.disableLanguageMemory
+        ? [] : await sourceOwnedConstructionsForEvidence(admissibleEvidence);
       const rankedSupportEvidence = evidenceForRequest(input.text, admissibleEvidence.filter(span => span.status === "promoted"), metadataEvidenceIds, explicitContextEvidenceIds, semanticFrameBoundEvidenceIds, requestClosedClassWords());
       const requestValueBinding = resolveRequestValueBinding({
         requestText: input.text,
         evidence: admissibleEvidence,
         resolvers: [
-          sourceConstructionRequestValueResolver({ bundles: authorityLanguage.state.importedConstructionBundles ?? [], graph }),
+          sourceConstructionRequestValueResolver({ bundles: uniqueRecordsById([
+            ...authorityLanguage.state.importedConstructionBundles, ...sourceOwnedConstructionBundles
+          ], 1024), graph }),
           { id: "resolver.evidence_temporal", resolve: extractTemporalAnswerFromEvidence }
         ]
       });

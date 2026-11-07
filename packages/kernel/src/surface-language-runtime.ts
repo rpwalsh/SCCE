@@ -9,7 +9,7 @@ import { CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA, isCreativeEventCompatibility
 import { jsonRecord, kernelString, normalizePriorKey, splitPriorUnits } from "./kernel-answer-primitives.js";
 import { featureSetMemoStats } from "./primitives.js";
 import { tidySurfaceTextMemoStats } from "./surface-linguistics.js";
-import { isLanguageConstructionPattern } from "./language-construction-memory.js";
+import { hydrateLanguageConstructionPatterns, isLanguageConstructionPattern, LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, type DurableLanguageConstructionBundle } from "./language-construction-memory.js";
 import { cloneLanguageMemoryRuntimeState, createLanguageMemoryRuntime, markLanguageMemoryStateUnscoped, onLanguageMemoryConstructionHydrated, peekLanguageMemoryConstructionState, scopeLanguageMemoryStateToCluster, scopeLanguageMemoryStateToLanguage } from "./language-memory-runtime.js";
 import type { LanguageResolver } from "./language-identity-runtime.js";
 import type { LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
@@ -272,6 +272,7 @@ export function createSurfaceLanguageRuntime(options: {
     })();
   }
   const continuationPopulationCache = new Map<string, { loadedAt: number; value: WeakRef<LanguageContinuationPopulation> }>();
+  const sourceOwnedConstructionCache = new Map<string, { loadedAt: number; bundles: WeakRef<DurableLanguageConstructionBundle[]> }>();
   const continuationPopulationInFlight = new Map<string, Promise<LanguageContinuationPopulation | undefined>>();
   let languageMemoryGeneration = 0;
   let requestControlPatternCache: { loadedAt: number; value: LanguagePatternRecord[] } | undefined;
@@ -1298,6 +1299,36 @@ export function createSurfaceLanguageRuntime(options: {
     return { profiles, clusters };
   }
 
+  /** Source semantics follow the admitted source versions, independently of the corpus chosen to word the answer. */
+  async function sourceOwnedConstructionsForEvidence(evidence: readonly EvidenceSpan[]): Promise<DurableLanguageConstructionBundle[]> {
+    const versionIds = [...new Set(evidence.filter(span => span.status === "promoted").map(span => String(span.sourceVersionId)).filter(Boolean))].sort();
+    if (!versionIds.length) return [];
+    const key = versionIds.join(UNIT_SEPARATOR);
+    const cached = sourceOwnedConstructionCache.get(key);
+    const resident = cached?.bundles.deref();
+    if (resident && clock.now() - cached!.loadedAt < surfaceLanguageMemoryCacheMs) return resident;
+    const owned = await evidenceOwnedLanguageProfilesCached(versionIds as SourceVersionId[]);
+    const profileIds = owned.profiles.filter(profile => versionIds.includes(String(profile.sourceVersionId)))
+      .map(profile => profile.id).sort().slice(0, 32);
+    if (!profileIds.length) return [];
+    // Read only source-owned construction artifacts. Generic models and output-role priors do not compete for this budget.
+    const patterns = await deps.storage.languageMemory.listLanguagePatterns({
+      profileIds, patternSchemas: [LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA], limit: 512, maxTotalJsonBytes: 8 * 1024 * 1024
+    });
+    const constructionEvidenceIds = [...new Set(patterns.filter(isLanguageConstructionPattern)
+      .flatMap(pattern => pattern.evidenceIds.map(String)))].sort().slice(0, 4096);
+    const constructionEvidence = constructionEvidenceIds.length
+      ? await deps.storage.evidence.getEvidenceBatch(constructionEvidenceIds as EvidenceSpan["id"][]) : [];
+    const admittedVersions = new Set(versionIds);
+    const memory = hydrateLanguageConstructionPatterns({ patterns, evidence: constructionEvidence, hasher });
+    const bundles = memory.bundles.filter(bundle => bundle.sourceVersionIds.length > 0
+      && bundle.sourceVersionIds.every(id => admittedVersions.has(String(id))));
+    hydrateHeapTrace("language.source_constructions", { profiles: profileIds.length, patterns: patterns.length,
+      evidence: constructionEvidence.length, bundles: bundles.length, rejected: memory.rejected.length });
+    boundedCacheSet(sourceOwnedConstructionCache, key, { loadedAt: clock.now(), bundles: new WeakRef(bundles) }, surfaceCandidateProfileCacheMaxEntries);
+    return bundles;
+  }
+
 
   /**
    * The cluster the admitted evidence speaks in, resolved from its own profiles rather than from the global window.
@@ -1454,6 +1485,7 @@ export function createSurfaceLanguageRuntime(options: {
     sourceOwnedLanguageClusterForAlias,
     sourceOwnedLanguageClustersForWarmup,
     evidenceOwnedLanguageProfilesCached,
+    sourceOwnedConstructionsForEvidence,
     evidenceOwnedLanguageClusterCached,
     surfaceLanguageClusterCached,
     requestSemanticFrames,
@@ -1502,6 +1534,7 @@ export function createSurfaceLanguageRuntime(options: {
       sourceOwnedAliasProfileInFlight.clear();
       surfaceCandidateProfileCache.clear();
       evidenceOwnedProfileCache.clear();
+      sourceOwnedConstructionCache.clear();
       surfaceProfileCache = undefined;
       surfaceProfileInFlight = undefined;
       sourceAnchorSemanticFrameCache = undefined;
