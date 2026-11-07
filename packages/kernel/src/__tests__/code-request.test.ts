@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { CODE_REQUEST_BOOTSTRAP_DEMAND_MODEL, codeLanguageForRequirementState, codeRequestCorroborated, codeRequestDemand, codeRequestObservedRequirements, codeRequestRecognized, codeRequestRequirements, codeRequestSignal, typedProgramBehaviorFromMetadata } from "../code-request.js";
 import { clearProdCalibrations, installProdCalibrations } from "../calibrations/prod-calibrations.js";
+import { operationalAuthorityForProjection, projectRequestAuthority } from "../request-authority.js";
 import { COGNITIVE_OPERATOR_IDS, activateCognitiveOperators, deriveTurnRequirementField } from "../turn-requirements.js";
 
 const recognized = (text: string) => codeRequestRecognized(codeRequestSignal(text));
@@ -129,6 +130,46 @@ describe("code request structure", () => {
     expect(codeRequestSignal("Explain double(3) in prose.").behaviorRequirements).toEqual([]);
     expect(codeRequestSignal("Compare double(3) against 6.").behaviorRequirements).toEqual([]);
     expect(codeRequestSignal("double(3) returns 6.").behaviorRequirements).toEqual([]);
+  });
+
+  it("routes owner call/result contracts to program authority without a language-name or learned-score cue", () => {
+    const request = "Create a function double(x) such that double(3) returns 6, double(7) returns 14, double(-2) returns -4, and double(11) returns 22. Add and run a test proving it.";
+    const signal = codeRequestSignal(request);
+    expect(signal.language).toBeUndefined();
+    expect(signal.behaviorRequirements).toHaveLength(4);
+    const field = deriveTurnRequirementField({
+      requestText: request,
+      explicitRequirements: codeRequestObservedRequirements(request, signal)
+    });
+    const projection = projectRequestAuthority({
+      requirementField: field,
+      typedProgramBehaviorRequirementIds: signal.behaviorRequirements.map(requirement => requirement.id)
+    });
+    const operators = activateCognitiveOperators({ requirementField: field });
+
+    expect(projection.requestedAuthority).toBe("program");
+    expect(projection.explicitOverride).toBe(false);
+    expect(projection.trace).toMatchObject({
+      selectionSource: "typed_owner_behavior_contract",
+      typedProgramBehaviorRequirementIds: signal.behaviorRequirements.map(requirement => requirement.id)
+    });
+    expect(operationalAuthorityForProjection({
+      projection,
+      activeOperatorIds: operators.filter(operator => operator.active).map(operator => operator.operatorId)
+    })).toBe("program");
+    expect(projectRequestAuthority({ requirementField: field, explicitAuthority: "factual", typedProgramBehaviorRequirementIds: signal.behaviorRequirements.map(requirement => requirement.id) }).requestedAuthority).toBe("factual");
+  });
+
+  it("leaves ordinary arithmetic requests outside the owner behavior program lane", () => {
+    const request = "What is 17 + 25?";
+    const signal = codeRequestSignal(request);
+    const field = deriveTurnRequirementField({
+      requestText: request,
+      explicitRequirements: codeRequestObservedRequirements(request, signal)
+    });
+
+    expect(signal.behaviorRequirements).toEqual([]);
+    expect(projectRequestAuthority({ requirementField: field, typedProgramBehaviorRequirementIds: signal.behaviorRequirements.map(requirement => requirement.id) }).requestedAuthority).toBe("factual");
   });
 
   it("keeps an opaque Unicode source relation and held-out split without an English template", () => {

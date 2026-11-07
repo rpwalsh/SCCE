@@ -1382,7 +1382,14 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           requirementValues: Object.fromEntries(TURN_REQUIREMENT_DIMENSIONS.map(dimension => [dimension, requirementField[dimension]]))
         }
       });
-      const authorityProjection = projectRequestAuthority({ requirementField, explicitAuthority });
+      const authorityProjection = projectRequestAuthority({
+        requirementField,
+        explicitAuthority,
+        typedProgramBehaviorRequirementIds: [
+          ...codeSignal.behaviorRequirements.map(requirement => requirement.id),
+          ...codeSignal.statefulBehaviorRequirements.map(requirement => requirement.id)
+        ]
+      });
       // Why the turn is routed where it is. The requirement field decides the authority, the authority decides
       // which lane answers, and nothing recorded whether the routing patterns that carry the requirement
       // coefficients had even been hydrated: offline they put noveltyDemand at 1.0 and authority at creative for
@@ -1393,11 +1400,17 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         counts: {
           controlPatterns: turnRequestControlPatterns.length,
           importedPatterns: requestRequirementLanguageState.importedPatterns.length,
-          activations: (requirementField.activationsUsed ?? []).length
+          activations: (requirementField.activationsUsed ?? []).length,
+          typedProgramBehaviorRequirements: codeSignal.behaviorRequirements.length + codeSignal.statefulBehaviorRequirements.length
         },
         support: {
           requestedAuthority: authorityProjection.requestedAuthority,
           projectedAuthority: authorityProjection.projectedAuthority,
+          selectionSource: jsonRecord(authorityProjection.trace).selectionSource ?? "turn_requirement_field",
+          typedProgramBehaviorRequirementIds: [
+            ...codeSignal.behaviorRequirements.map(requirement => requirement.id),
+            ...codeSignal.statefulBehaviorRequirements.map(requirement => requirement.id)
+          ],
           scoreMargin: authorityProjection.scoreMargin,
           explicit: Boolean(explicitAuthority),
           noveltyDemand: requirementField.noveltyDemand,

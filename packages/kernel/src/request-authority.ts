@@ -67,6 +67,8 @@ export type NeutralAuthorityReasonId =
 export interface ProjectRequestAuthorityInput {
   requirementField: TurnRequirementField;
   explicitAuthority?: RequestedAuthority;
+  /** Exact IDs of owner-declared executable behavior observations from CodeRequestSignal. */
+  typedProgramBehaviorRequirementIds?: readonly string[];
 }
 
 const AUTHORITY_COEFFICIENT_KEYS: Record<RequestedAuthority, Partial<Record<TurnRequirementDimension, CalibrationKey>>> = {
@@ -250,7 +252,9 @@ export function projectRequestAuthority(input: ProjectRequestAuthorityInput): Re
     : !authorityDistinguishable ? NEUTRAL_AUTHORITY_REASON_IDS.indistinguishable : null;
   const neutralAuthorityApplied = neutralAuthorityReasonId !== null;
   const projectedAuthority = neutralAuthorityApplied ? "factual" : (ranked[0]?.authority ?? "factual");
-  const requestedAuthority = input.explicitAuthority ?? projectedAuthority;
+  const typedProgramBehaviorRequirementIds = [...new Set((input.typedProgramBehaviorRequirementIds ?? []).filter(id => typeof id === "string" && id.trim()))];
+  const requestedAuthority = input.explicitAuthority
+    ?? (typedProgramBehaviorRequirementIds.length ? "program" : projectedAuthority);
   const scoreMargin = neutralAuthorityApplied
     ? 0
     : clamp01((ranked[0]?.score ?? 0) - (ranked[1]?.score ?? 0));
@@ -261,6 +265,12 @@ export function projectRequestAuthority(input: ProjectRequestAuthorityInput): Re
     projectedAuthority,
     explicitOverride: Boolean(input.explicitAuthority),
     source: "turn_requirement_field",
+    selectionSource: input.explicitAuthority
+      ? "explicit_authority"
+      : typedProgramBehaviorRequirementIds.length
+        ? "typed_owner_behavior_contract"
+        : "turn_requirement_field",
+    typedProgramBehaviorRequirementIds,
     lexicalRouterUsed: false,
     scoreReliability: "uncalibrated_bootstrap",
     scoreSemantics: "bounded_routing_energy_not_probability",
