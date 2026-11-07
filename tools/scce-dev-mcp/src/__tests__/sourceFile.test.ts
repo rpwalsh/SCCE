@@ -1,11 +1,11 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { handleRepoEdit, handleRepoRead } from '../tools/sourceFile.js';
+import { handleRepoCreate, handleRepoEdit, handleRepoRead } from '../tools/sourceFile.js';
 
 let root = '';
 let outside = '';
@@ -30,6 +30,19 @@ afterEach(() => {
 });
 
 describe('repo_read and repo_edit', () => {
+  it('creates a new UTF-8 file without clobbering and returns the hash for a follow-up edit', async () => {
+    const content = 'export const café = "雪";\r\n';
+    const created = JSON.parse(await handleRepoCreate({ path: 'new.ts', content }));
+    expect(created).toMatchObject({ ok: true, path: 'new.ts', sha256: sha(content), bytes: Buffer.byteLength(content), action: 'repo_read' });
+    expect(readFileSync(join(root, 'new.ts'))).toEqual(Buffer.from(content, 'utf8'));
+    const conflict = JSON.parse(await handleRepoCreate({ path: 'new.ts', content: 'replacement' }));
+    expect(conflict).toMatchObject({ ok: false, error: 'file_exists' });
+    expect(readFileSync(join(root, 'new.ts'))).toEqual(Buffer.from(content, 'utf8'));
+    const edited = JSON.parse(await handleRepoEdit({ path: 'new.ts', expectedSha256: created.sha256, replacements: [{ before: '"雪"', after: '"é"' }] }));
+    expect(edited.ok).toBe(true);
+    expect(readFileSync(join(root, 'new.ts'))).toEqual(Buffer.from('export const café = "é";\r\n', 'utf8'));
+  });
+
   it('reads bounded numbered lines and continues only while the file hash remains current', async () => {
     writeFileSync(join(root, 'sample.ts'), 'one\r\ntwo\r\nthree\r\n');
     const first = JSON.parse(await handleRepoRead({ path: 'sample.ts', startLine: 1, endLine: 2 }));
@@ -62,6 +75,20 @@ describe('repo_read and repo_edit', () => {
     const tooLong = await handleRepoRead({ path: 'sample.ts' });
     expect(Buffer.byteLength(tooLong, 'utf8')).toBeLessThan(500);
     expect(JSON.parse(tooLong)).toMatchObject({ ok: false, error: 'line_too_large', line: 1 });
+    writeFileSync(path, `${Array.from({ length: 100 }, (_, index) => `${index}: ${'y'.repeat(400)}`).join('\n')}\n`);
+    const bounded = JSON.parse(await handleRepoRead({ path: 'sample.ts' }));
+    expect(Buffer.byteLength(JSON.stringify(bounded), 'utf8')).toBeLessThanOrEqual(16 * 1024);
+    expect(bounded.lines.length).toBeGreaterThan(0);
+    expect(bounded.lines.length).toBeLessThan(100);
+    const continued = await handleRepoRead({ path: 'sample.ts', cursor: bounded.cursor });
+    expect(Buffer.byteLength(continued, 'utf8')).toBeLessThanOrEqual(16 * 1024);
+  });
+
+  it('checks oversized files before allocating or reading their full contents', async () => {
+    const path = join(root, 'sparse-large.ts');
+    writeFileSync(path, '');
+    truncateSync(path, 2 * 1024 * 1024 + 1);
+    await expect(handleRepoRead({ path: 'sparse-large.ts' })).rejects.toThrow('file_too_large');
   });
 
   it('requires a unique exact match and preserves UTF-8 and CRLF bytes', async () => {

@@ -56,6 +56,10 @@ export const toolSchemas = {
     expectedSha256: z.string().regex(/^[a-f0-9]{64}$/i),
     replacements: z.array(z.object({ before: z.string().min(1).max(20_000), after: z.string().max(20_000) }).strict()).min(1).max(20)
   }).strict(),
+  repo_create: z.object({
+    path: repoRelativePath,
+    content: z.string().max(2 * 1024 * 1024)
+  }).strict(),
   repo_callsites: z.object({
     symbol: boundedString(300),
     maxResults: boundedInt(1, 500, 50)

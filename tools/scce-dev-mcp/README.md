@@ -43,6 +43,7 @@ configured working directory as the repository root.
 - repo_search
 - repo_read
 - repo_edit
+- repo_create
 - repo_symbol
 - repo_callsites
 - repo_routes

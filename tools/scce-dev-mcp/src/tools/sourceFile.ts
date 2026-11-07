@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { createHash } from 'node:crypto';
-import { lstatSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, fstatSync, lstatSync, linkSync, openSync, readSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { resolveRepositoryRoot } from '../lib/repoRoot.js';
 
@@ -44,8 +44,24 @@ function resolveSafeFile(root: string, path: string, mustExist: boolean): string
 
 function readBytes(root: string, path: string): { file: string; bytes: Buffer; text: string; sha256: string } {
   const file = resolveSafeFile(root, path, true);
-  const bytes = readFileSync(file);
-  if (bytes.length > MAX_FILE_BYTES) throw new Error('file_too_large');
+  const fd = openSync(file, 'r');
+  let bytes: Buffer;
+  try {
+    const stats = fstatSync(fd);
+    if (!stats.isFile()) throw new Error('not_regular_file');
+    if (stats.size > MAX_FILE_BYTES) throw new Error('file_too_large');
+    const bounded = Buffer.alloc(MAX_FILE_BYTES + 1);
+    let total = 0;
+    while (total < bounded.length) {
+      const count = readSync(fd, bounded, total, bounded.length - total, null);
+      if (count === 0) break;
+      total += count;
+    }
+    if (total > MAX_FILE_BYTES) throw new Error('file_too_large');
+    bytes = bounded.subarray(0, total);
+  } finally {
+    closeSync(fd);
+  }
   const text = bytes.toString('utf8');
   if (!Buffer.from(text, 'utf8').equals(bytes)) throw new Error('file_not_valid_utf8');
   return { file, bytes, text, sha256: digest(bytes) };
@@ -91,6 +107,30 @@ function readLines(path: string, data: { text: string; sha256: string }, start: 
   return JSON.stringify({ ok: true, path, sha256: data.sha256, startLine: start, endLine: Math.max(start - 1, nextLine - 1), lines: selected, cursor });
 }
 
+export async function handleRepoCreate(args: { path: string; content: string }): Promise<string> {
+  const root = resolveRepositoryRoot();
+  const file = resolveSafeFile(root, args.path, false);
+  const bytes = Buffer.from(args.content, 'utf8');
+  if (bytes.length > MAX_FILE_BYTES) throw new Error('file_too_large');
+  if (bytes.toString('utf8') !== args.content) throw new Error('content_not_valid_utf8');
+  const temp = `${file}.scce-create-${process.pid}-${Math.random().toString(16).slice(2)}.tmp`;
+  try {
+    writeFileSync(temp, bytes, { flag: 'wx', mode: 0o644 });
+    resolveSafeFile(root, args.path, false);
+    try {
+      linkSync(temp, file);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+        return JSON.stringify({ ok: false, error: 'file_exists', path: args.path, action: 'repo_read' });
+      }
+      throw error;
+    }
+  } finally {
+    try { unlinkSync(temp); } catch {}
+  }
+  return JSON.stringify({ ok: true, path: args.path, sha256: digest(bytes), bytes: bytes.length, action: 'repo_read' });
+}
+
 export async function handleRepoEdit(args: { path: string; expectedSha256: string; replacements: Array<{ before: string; after: string }> }): Promise<string> {
   const root = resolveRepositoryRoot();
   const data = readBytes(root, args.path);
@@ -110,13 +150,14 @@ export async function handleRepoEdit(args: { path: string; expectedSha256: strin
   const output = Buffer.from(next, 'utf8');
   if (output.length > MAX_FILE_BYTES) throw new Error('file_too_large');
   const file = resolveSafeFile(root, args.path, true);
-  const current = readFileSync(file);
-  if (digest(current) !== data.sha256) return JSON.stringify({ ok: false, error: 'content_changed', action: 'repo_read_again', path: args.path, currentSha256: digest(current) });
+  const current = readBytes(root, args.path);
+  if (current.sha256 !== data.sha256) return JSON.stringify({ ok: false, error: 'content_changed', action: 'repo_read_again', path: args.path, currentSha256: current.sha256 });
   const temp = `${file}.scce-edit-${process.pid}-${Math.random().toString(16).slice(2)}.tmp`;
   try {
     writeFileSync(temp, output, { flag: 'wx', mode: lstatSync(file).mode });
     resolveSafeFile(root, args.path, true);
-    if (digest(readFileSync(file)) !== data.sha256) return JSON.stringify({ ok: false, error: 'content_changed', action: 'repo_read_again', path: args.path, currentSha256: digest(readFileSync(file)) });
+    const latest = readBytes(root, args.path);
+    if (latest.sha256 !== data.sha256) return JSON.stringify({ ok: false, error: 'content_changed', action: 'repo_read_again', path: args.path, currentSha256: latest.sha256 });
     renameSync(temp, file);
   } finally {
     try { unlinkSync(temp); } catch {}
