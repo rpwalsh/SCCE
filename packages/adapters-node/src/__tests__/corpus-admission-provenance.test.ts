@@ -9,6 +9,9 @@ import type {
   EvidenceSpan,
   EvidenceBackedSourceVersionQuery,
   EvidenceQuery,
+  GraphEdge,
+  GraphNode,
+  Hyperedge,
   IngestionCheckpoint,
   LanguageProfileQuery,
   JsonValue,
@@ -42,6 +45,7 @@ interface MemoryState {
   observations: NgramObservation[];
   checkpoints: Map<string, IngestionCheckpoint>;
   replayPages: EvidenceBackedSourceVersionQuery[];
+  graph: { nodes: GraphNode[]; edges: GraphEdge[]; hyperedges: Hyperedge[] };
 }
 
 const OSS_INFORMATION_LABEL = {
@@ -61,6 +65,38 @@ function corpusText(subject: string): string {
 function provenanceOf(span: EvidenceSpan): Record<string, JsonValue> {
   const value = span.provenance;
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, JsonValue> : {};
+}
+
+function mergeGraphRow<T extends GraphNode | GraphEdge | Hyperedge>(rows: T[], row: T, kind: "nodes" | "edges" | "hyperedges"): void {
+  const index = rows.findIndex(existing => existing.id === row.id);
+  if (index < 0) { rows.push(structuredClone(row)); return; }
+  const previous = rows[index]!;
+  const merged = { ...previous, evidenceIds: [...new Set([...previous.evidenceIds, ...row.evidenceIds])],
+    updatedAt: row.updatedAt, informationLabel: row.informationLabel } as unknown as T;
+  if (kind === "nodes") {
+    const before = previous as GraphNode;
+    const incoming = row as GraphNode;
+    Object.assign(merged, { alpha: Math.max(before.alpha, incoming.alpha), features: [...new Set([...before.features, ...incoming.features])],
+      metadata: mergeJsonRecord(before.metadata, incoming.metadata) });
+  } else if (kind === "edges") {
+    const before = previous as GraphEdge;
+    const incoming = row as GraphEdge;
+    Object.assign(merged, { alpha: Math.max(before.alpha, incoming.alpha), weight: Math.max(before.weight, incoming.weight),
+      metadata: mergeJsonRecord(before.metadata, incoming.metadata) });
+  } else {
+    const before = previous as Hyperedge;
+    const incoming = row as Hyperedge;
+    Object.assign(merged, { schema: incoming.schema, relationId: incoming.relationId, participantPorts: incoming.participantPorts,
+      memberNodeIds: incoming.memberNodeIds, qualifiers: incoming.qualifiers, modality: incoming.modality, weightVector: incoming.weightVector,
+      temporalScope: incoming.temporalScope, provenanceRefs: [...new Set([...before.provenanceRefs, ...incoming.provenanceRefs])] });
+  }
+  rows[index] = merged;
+}
+
+function mergeJsonRecord(left: JsonValue, right: JsonValue): JsonValue {
+  const asRecord = (value: JsonValue) => value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, JsonValue> : {};
+  return { ...asRecord(left), ...asRecord(right) };
 }
 
 describe("corpus trainer admission and provenance", () => {
@@ -212,6 +248,11 @@ describe("corpus trainer admission and provenance", () => {
       profiles: fixture.state.profiles, models: fixture.state.models, observations: fixture.state.observations,
       quarantine: fixture.state.quarantine, blobKeys: [...fixture.state.blobs.keys()] });
     const originalCompilations = structuredClone(fixture.state.patterns.filter(pattern => pattern.patternKind === "source_compilation"));
+    const originalGraphIds = {
+      nodes: fixture.state.graph.nodes.map(row => row.id).sort(),
+      edges: fixture.state.graph.edges.map(row => row.id).sort(),
+      hyperedges: fixture.state.graph.hyperedges.map(row => row.id).sort()
+    };
     expect(originalCompilations).toHaveLength(parents.length);
     const eventStart = fixture.state.events.length;
     const report = await trainStoredCorpusConstructions({ storage: fixture.storage, sourcePageSize: 1,
@@ -233,6 +274,15 @@ describe("corpus trainer admission and provenance", () => {
     expect(fixture.state.sourceVersions.some(source => source.canonicalUri.startsWith("scce://construction-training/"))).toBe(false);
     expect(fixture.state.evidence.some(span => provenanceOf(span).derivation === "construction_training")).toBe(false);
     const evidenceById = new Map(fixture.state.evidence.map(span => [String(span.id), span]));
+    expect({
+      nodes: fixture.state.graph.nodes.map(row => row.id).sort(),
+      edges: fixture.state.graph.edges.map(row => row.id).sort(),
+      hyperedges: fixture.state.graph.hyperedges.map(row => row.id).sort()
+    }).toEqual(originalGraphIds);
+    for (const record of [...fixture.state.graph.nodes, ...fixture.state.graph.edges, ...fixture.state.graph.hyperedges]) {
+      expect(record.evidenceIds.length).toBeGreaterThan(0);
+      expect(record.evidenceIds.every(id => evidenceById.has(String(id)))).toBe(true);
+    }
     const profilesById = new Map(fixture.state.profiles.map(profile => [profile.id, profile]));
     const sourceUris = new Set(fixture.state.sourceVersions.map(source => source.canonicalUri));
     expect(fixture.state.patterns.filter(pattern => pattern.patternKind !== "source_compilation").length).toBeGreaterThan(0);
@@ -257,7 +307,7 @@ describe("corpus trainer admission and provenance", () => {
 
 function memoryStorage(): { storage: ScceStorage; state: MemoryState } {
   const state: MemoryState = { events: [], sourceVersions: [], evidence: [], quarantine: [], blobs: new Map(),
-    profiles: [], patterns: [], models: [], observations: [], checkpoints: new Map(), replayPages: [] };
+    profiles: [], patterns: [], models: [], observations: [], checkpoints: new Map(), replayPages: [], graph: { nodes: [], edges: [], hyperedges: [] } };
   const put = <T extends { id: string }>(rows: T[], row: T) => {
     const index = rows.findIndex(existing => existing.id === row.id);
     if (index < 0) rows.push(row); else rows[index] = row;
@@ -354,7 +404,21 @@ function memoryStorage(): { storage: ScceStorage; state: MemoryState } {
       get: async (id: string) => state.checkpoints.get(id) ?? null,
       list: async () => [...state.checkpoints.values()]
     },
-    graph: { getSlice: async () => ({ nodes: [], edges: [], hyperedges: [], bounded: true, query: {} }) },
+    graph: {
+      upsertNode: async (row: GraphNode) => mergeGraphRow(state.graph.nodes, row, "nodes"),
+      upsertNodes: async (rows: readonly GraphNode[]) => { for (const row of rows) mergeGraphRow(state.graph.nodes, row, "nodes"); },
+      upsertEdge: async (row: GraphEdge) => mergeGraphRow(state.graph.edges, row, "edges"),
+      upsertEdges: async (rows: readonly GraphEdge[]) => { for (const row of rows) mergeGraphRow(state.graph.edges, row, "edges"); },
+      upsertHyperedge: async (row: Hyperedge) => mergeGraphRow(state.graph.hyperedges, row, "hyperedges"),
+      upsertHyperedges: async (rows: readonly Hyperedge[]) => { for (const row of rows) mergeGraphRow(state.graph.hyperedges, row, "hyperedges"); },
+      getSlice: async (query: { evidenceIds?: readonly EvidenceSpan["id"][]; limitNodes?: number; limitEdges?: number }) => {
+        const evidence = new Set((query.evidenceIds ?? []).map(String));
+        const owns = (row: { evidenceIds: readonly EvidenceSpan["id"][] }) => row.evidenceIds.some(id => evidence.has(String(id)));
+        return { nodes: state.graph.nodes.filter(owns).slice(0, query.limitNodes ?? state.graph.nodes.length),
+          edges: state.graph.edges.filter(owns).slice(0, query.limitEdges ?? state.graph.edges.length),
+          hyperedges: state.graph.hyperedges.filter(owns).slice(0, query.limitEdges ?? state.graph.hyperedges.length), bounded: true as const, query };
+      }
+    },
     init: async () => undefined,
     transaction: async <T>(fn: () => Promise<T>) => fn(),
     migrate: async () => undefined,
