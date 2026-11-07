@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { clearCorpusIdentitySignals, corpusIdentityUnits, corpusNamedRuns, primeCorpusIdentitySignals } from "../corpus-identity.js";
+import { clearCorpusIdentitySignals, corpusIdentityUnits, primeCorpusIdentitySignals } from "../corpus-identity.js";
 import { genericQuestionSignal, namedSubjectAnchors, normalizePriorKey, splitPriorUnits } from "../kernel-answer-primitives.js";
 
 afterEach(() => clearCorpusIdentitySignals());
@@ -24,18 +24,6 @@ function oldGenericQuestionSignal(unit: string): boolean {
     previous = char;
   }
   return letters <= 1 || repeated / Math.max(1, unit.length - 1) > 0.72;
-}
-
-function oldNamedSubjectAnchors(text: string): string[] {
-  const specific = (anchor: string) => {
-    const units = splitPriorUnits(anchor);
-    if (units.length >= 2) return true;
-    return units.some(unit => [...unit].length >= 3 && !oldGenericQuestionSignal(unit));
-  };
-  return corpusNamedRuns(text)
-    .map(normalizePriorKey)
-    .filter(specific)
-    .sort((left, right) => splitPriorUnits(right).length - splitPriorUnits(left).length || right.length - left.length);
 }
 
 const cased = (char: string) => char.toLocaleLowerCase() !== char.toLocaleUpperCase();
@@ -114,7 +102,7 @@ describe("genericQuestionSignal reads letterhood from Unicode, not from case", (
     expect(casedButNotAlphabetic).toEqual([]);
   });
 
-  it("is identical to the cased-only implementation on real requests and generated cased strings", () => {
+  it("keeps Unicode letterhood identical to the cased implementation on real and generated input", () => {
     const real = realRequestTexts().filter(allLettersCased);
     const generated = generatedCasedTexts(20000).filter(allLettersCased);
     expect(real.length).toBeGreaterThan(50);
@@ -140,10 +128,17 @@ describe("genericQuestionSignal reads letterhood from Unicode, not from case", (
           if (genericQuestionSignal(unit) !== oldGenericQuestionSignal(unit)) mismatches.push(`generic:${unit}`);
         }
         compared++;
-        if (JSON.stringify(namedSubjectAnchors(text)) !== JSON.stringify(oldNamedSubjectAnchors(text))) mismatches.push(`anchors:${text}`);
       }
     }
     console.info(`identity property: ${compared} comparisons, ${mismatches.length} mismatches`);
     expect(mismatches.slice(0, 20)).toEqual([]);
+  });
+
+  it("uses a measured short identity across case and keeps the no-signal content fallback", () => {
+    clearCorpusIdentitySignals();
+    expect(namedSubjectAnchors("q")).toEqual(["q"]);
+    primeCorpusIdentitySignals({ closedClass: new Set(["what", "is"]), identities: new Set(["ai"]), spread: new Map(), concentration: 0 });
+    expect(namedSubjectAnchors("What is AI?")).toEqual(["ai"]);
+    expect(namedSubjectAnchors("what is ai?")).toEqual(["ai"]);
   });
 });

@@ -605,6 +605,7 @@ function constructGraph(ids: ReturnType<typeof createIdFactory>, evidence: Evide
     nodes: [{ id: "construct:closure-answer", kind: "construct:semantic_answer", label: fact.subject, metadata: {
       schema: "scce.semantic_answer_construct.v1", questionShapeId: "question.shape.closure", selectedSubject: fact.subject,
       selectedFacts: [fact], activatedNeighborhood: [fact], selectedRelations: [fact.relationId],
+      supportIds: [String(evidence.id)],
       answerSlots: [{ id: "slot.closure", relationIds: [fact.relationId], factKeys: [[fact.subject, fact.predicate, fact.object, fact.relationId].map(value => value.normalize("NFKC").toLocaleLowerCase().replace(/\s+/gu, " ").trim()).join("\u0001")], support: fact.support, activation: fact.activation }],
       forceId: "output.force.source_bound_answer", boundaryId: "output.force.source_bound",
       certificationBoundary: { directEvidenceCount: 1, evidenceSpanIds: [String(evidence.id)], sourceVersionIds: [String(evidence.sourceVersionId)], externalFactCertification: evidenceProofBoundary(evidence).certifiesFactualProof }
