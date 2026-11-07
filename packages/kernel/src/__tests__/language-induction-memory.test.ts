@@ -46,6 +46,9 @@ describe("induced language model memory projection", () => {
       updatedAt: 170_000,
       sourceSystem: "training"
     });
+    const restarted = languageMemoryPatternsFromInducedLanguageModel({ model, profiles: [profile],
+      idFactory: createIdFactory({ clock, hasher, deterministicReplay: true, namespace: "another-caller-after-restart" }), updatedAt: 170_000, sourceSystem: "training" });
+    expect(restarted.patterns).toEqual(projection.patterns);
 
     expect(projection.skippedReason).toBeUndefined();
     expect(projection.profileIds).toEqual([profile.id]);

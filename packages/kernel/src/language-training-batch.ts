@@ -9,6 +9,7 @@ import {
   evaluateHeldOutConstructionCoverage,
   induceSourceBoundConstructionTrainingSets,
   prepareConstructionInduction,
+  preparedLanguageInductionModel,
   type PreparedConstructionInduction,
   type HeldOutConstructionCoverageReport
 } from "./graph-surface-alignment.js";
@@ -91,7 +92,9 @@ import {
   type OptionalNullRealizationModel
 } from "./optional-null-realization.js";
 import type { LanguageMemoryRuntime } from "./language-memory-runtime.js";
-import { toJsonValue } from "./primitives.js";
+import { createClock, toJsonValue } from "./primitives.js";
+import { createIdFactory } from "./ids.js";
+import { languageMemoryPatternsFromInducedLanguageModel } from "./language-induction-memory.js";
 import { LANGUAGE_TRAINING_BATCH_RECIPE_ID, LANGUAGE_TRAINING_CHUNK_UTF16_LIMIT } from "./language-training-recipe.js";
 import { stampSourceLanguageCompilation } from "./source-language-compilation.js";
 import { CORPUS_ROLE_IDS, corpusRoleIdForSourceSystem } from "./corpus-registry.js";
@@ -208,6 +211,7 @@ export interface LanguageTrainingConstructionPromotionReport {
 }
 
 export interface CompiledLanguageTrainingBatch {
+  preparedInduction?: PreparedConstructionInduction;
   observations: NgramObservation[];
   models: NgramModelRecord[];
   units: LanguageUnitRecord[];
@@ -277,6 +281,14 @@ export function compileLanguageTrainingBatch(input: {
   const constructionSplit = splitConstructionEvidence(formalCode ? [] : ownedConstructionEvidence, input.hasher);
   const constructionEvidence = induceNaturalLanguage ? batch.evidence.filter(span => span.status === "promoted") : [];
   const preparedInduction = prepareConstructionInduction({ documents: evidenceDocuments(constructionEvidence), hasher: input.hasher });
+  const inducedLanguageModel = induceNaturalLanguage
+    ? preparedLanguageInductionModel({ documents: evidenceDocuments(constructionEvidence), hasher: input.hasher, prepared: preparedInduction })
+    : undefined;
+  const inducedLanguagePatterns = inducedLanguageModel ? languageMemoryPatternsFromInducedLanguageModel({
+    model: inducedLanguageModel, profiles: [batch.profile],
+    idFactory: createIdFactory({ hasher: input.hasher, clock: createClock({ fixedTime: 0 }), namespace: "source-language-induction", deterministicReplay: true }),
+    sourceSystem: batch.sourceSystem, updatedAt: batch.createdAt
+  }).patterns : [];
   const inducedSets = induceSourceBoundConstructionTrainingSets({
     evidence: constructionEvidence,
     profileId: batch.profile.id,
@@ -588,7 +600,7 @@ export function compileLanguageTrainingBatch(input: {
 
   let units = uniqueRecords(memories.flatMap(memory => memory.units));
   let patterns = uniquePatterns([
-    ...memories.flatMap(memory => memory.patterns), ...constructionPatterns, ...reversibleConstructionPatterns,
+    ...memories.flatMap(memory => memory.patterns), ...inducedLanguagePatterns, ...constructionPatterns, ...reversibleConstructionPatterns,
     ...pairedAntiUnifiedConstructionPatterns, ...optionalNullRealizationPatterns, ...(batch.additionalPatterns ?? [])
   ]);
   let semanticFrames = uniqueRecords(memories.flatMap(memory => memory.semanticFrames));
@@ -603,6 +615,7 @@ export function compileLanguageTrainingBatch(input: {
   const models = stamped?.models ?? rawModels;
   if (stamped) { units = stamped.units; patterns = stamped.patterns; semanticFrames = stamped.semanticFrames; }
   return {
+    ...(inducedLanguageModel ? { preparedInduction } : {}),
     observations: uniqueRecords(memories.flatMap(memory => memory.observations)),
     models, units, patterns, semanticFrames,
     constructionPatterns: constructionPatterns.map(record => patterns.find(item => item.id === record.id) ?? record),

@@ -2,6 +2,11 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it, vi } from "vitest";
 import * as induction from "../language-induction.js";
+import { preparedLanguageInductionModel } from "../graph-surface-alignment.js";
+import { compileUniversalCreativeEventConstructionPattern } from "../language-construction-memory.js";
+import { scopeLanguageMemoryStateToLanguage } from "../language-memory-runtime.js";
+import { primeLearnedAnswerUnitForms } from "../learned-answer-unit-forms.js";
+import { requestUnitMatchesSurface } from "../local-evidence-runtime.js";
 import {
   compileLanguageTrainingBatch,
   CORPUS_SOURCE_SYSTEM_IDS,
@@ -25,6 +30,34 @@ describe("shared language training batch", () => {
   const ids = createIdFactory({ clock, hasher, deterministicReplay: true, namespace: "language-training-batch" });
   const language = createLanguageAcquisitionEngine({ idFactory: ids });
   const runtime = createLanguageMemoryRuntime({ idFactory: ids, hasher });
+
+  it("projects the one source induction into canonical scoped forms and reuses it for creative compilation", () => {
+    const text = "walla r0. wallawalla r0. tinu r0. tinutinu r0. kobo r0. kobokobo r0. "
+      + "cat chased mouse. dog chased ball. cat chased ball. dog chased mouse. cat chased mouse. dog chased ball.";
+    const sourceVersionId = ids.sourceVersionId(text);
+    const profile = language.acquire({ sourceVersionId, text, createdAt: 140_000 });
+    const evidence = [evidenceSpan(text, sourceVersionId)];
+    const engine = vi.spyOn(induction, "createLanguageInductionEngine");
+    try {
+      const compiled = compileLanguageTrainingBatch({ runtime, hasher, batch: { streamId: "fixture://shared-induced", sourceSystem: "gutenberg", profile,
+        sourceVersionId, text, evidence, createdAt: 140_000, retainNgramObservations: false } });
+      expect(engine).toHaveBeenCalledTimes(1);
+      const patterns = compiled.patterns.filter(pattern => (pattern.patternJson as { schema?: string }).schema === "scce.induced_language_model.morphology_memory.v1");
+      expect(patterns).toHaveLength(1);
+      expect(patterns[0]!.evidenceIds).toEqual([evidence[0]!.id]);
+      const state = scopeLanguageMemoryStateToLanguage(runtime.hydrate({ models: compiled.models, patterns: compiled.patterns, units: compiled.units,
+        semanticFrames: compiled.semanticFrames, constructionEvidence: evidence }), "language.fixture", { profile: () => "language.fixture", corpus: () => "language.fixture" });
+      primeLearnedAnswerUnitForms({ deltas: state.structuralDeltas ?? [], profileIds: new Set(state.importedPatterns.map(pattern => pattern.profileId)) });
+      expect(requestUnitMatchesSurface("walla", "wallawalla")).toBe(true);
+      expect(requestUnitMatchesSurface("walla", "wallaxwalla")).toBe(false);
+      expect(compileUniversalCreativeEventConstructionPattern({ profileId: profile.id, evidence, hasher, updatedAt: 140_000, preparedInduction: compiled.preparedInduction }).status).toBe("compiled");
+      expect(engine).toHaveBeenCalledTimes(1);
+      const documents = evidence.map(span => ({ id: String(span.id), sourceVersionId: span.sourceVersionId, evidenceIds: [span.id], text: span.text }));
+      expect(preparedLanguageInductionModel({ documents, hasher, prepared: compiled.preparedInduction })?.morphology.length).toBeGreaterThan(0);
+      expect(() => preparedLanguageInductionModel({ documents: documents.map(doc => ({ ...doc, text: doc.text + " changed" })), hasher, prepared: compiled.preparedInduction })).toThrow("inputs changed");
+      expect(() => preparedLanguageInductionModel({ documents, hasher, prepared: { ...compiled.preparedInduction! } })).toThrow("inputs changed");
+    } finally { engine.mockRestore(); primeLearnedAnswerUnitForms({ deltas: [], profileIds: new Set() }); }
+  });
 
   it("dispatches formal source roles to token models without natural grammar induction", () => {
     const text = 'export const label = (value: string) => "two words" + value;';

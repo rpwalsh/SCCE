@@ -3,7 +3,7 @@
 import { induceLearnedConstructions, type AlignedSurfaceExample } from "./language-construction.js";
 import type { SourceBoundLanguageConstructionTrainingSet, SourceConstructionGraphBinding } from "./language-construction-memory.js";
 import { graphNodeSurface } from "./semantic-proof-adapter.js";
-import { createLanguageInductionEngine, type GraphBoundConstruction, type LanguageInductionDocument } from "./language-induction.js";
+import { createLanguageInductionEngine, type GraphBoundConstruction, type InducedLanguageModel, type LanguageInductionDocument } from "./language-induction.js";
 import { buildSurfaceLattice, buildSourceAlignmentSurfaceLattice, validateSurfaceLattice, type SurfaceLattice, type SourceAlignmentSurfaceLattice, type SurfaceLatticeUnit } from "./surface-lattice.js";
 import { segmentUnicodeSurfaceV2, type LexicalSegment } from "./unicode-segmentation-v2.js";
 import { boundedInductionDocuments } from "./training-orchestrator.js";
@@ -103,7 +103,7 @@ export interface PreparedConstructionInduction {
   readonly inputDigest: string;
 }
 
-const preparedConstructionInductions = new WeakMap<PreparedConstructionInduction, readonly GraphBoundConstruction[]>();
+const preparedConstructionInductions = new WeakMap<PreparedConstructionInduction, InducedLanguageModel | undefined>();
 
 export function prepareConstructionInduction(input: {
   documents: readonly LanguageInductionDocument[];
@@ -111,11 +111,23 @@ export function prepareConstructionInduction(input: {
 }): PreparedConstructionInduction {
   const documents = boundedInductionDocuments(input.documents);
   const prepared = Object.freeze({ inputDigest: input.hasher.digestHex(canonicalStringify(documents)) });
-  const constructions = documents.length
-    ? createLanguageInductionEngine({ hasher: input.hasher }).induce({ documents }).graphBoundConstructions
-    : [];
-  preparedConstructionInductions.set(prepared, constructions);
+  const model = documents.length
+    ? createLanguageInductionEngine({ hasher: input.hasher }).induce({ documents })
+    : undefined;
+  preparedConstructionInductions.set(prepared, model);
   return prepared;
+}
+
+export function preparedLanguageInductionModel(input: {
+  documents: readonly LanguageInductionDocument[];
+  hasher: Hasher;
+  prepared?: PreparedConstructionInduction;
+}): InducedLanguageModel | undefined {
+  const prepared = input.prepared ?? prepareConstructionInduction(input);
+  if (!preparedConstructionInductions.has(prepared) || prepared.inputDigest !== input.hasher.digestHex(canonicalStringify(boundedInductionDocuments(input.documents)))) {
+    throw new Error("construction induction inputs changed; prepare again");
+  }
+  return preparedConstructionInductions.get(prepared);
 }
 
 function constructionInductionFor(input: {
@@ -123,12 +135,7 @@ function constructionInductionFor(input: {
   hasher: Hasher;
   prepared?: PreparedConstructionInduction;
 }): readonly GraphBoundConstruction[] {
-  const prepared = input.prepared ?? prepareConstructionInduction(input);
-  const constructions = preparedConstructionInductions.get(prepared);
-  if (!constructions || prepared.inputDigest !== input.hasher.digestHex(canonicalStringify(boundedInductionDocuments(input.documents)))) {
-    throw new Error("construction induction inputs changed; prepare again");
-  }
-  return constructions;
+  return preparedLanguageInductionModel(input)?.graphBoundConstructions ?? [];
 }
 
 export function induceGraphSurfaceAlignments(input: {

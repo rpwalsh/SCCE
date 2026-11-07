@@ -27,6 +27,10 @@ import { blobContentHash } from "../postgres.js";
 import { createWikipediaV3Ingestor } from "../wikipedia-v3-ingestor.js";
 import * as corpusTrainer from "../language-corpus-trainer.js";
 import { MIN_WIKIPEDIA_MAX_ARTICLE_CHARS } from "../config.js";
+import { INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID } from "../../../kernel/src/language-induction-memory.js";
+import { primeLearnedAnswerUnitForms } from "../../../kernel/src/learned-answer-unit-forms.js";
+import { requestUnitMatchesSurface } from "../../../kernel/src/local-evidence-runtime.js";
+import { scopeLanguageMemoryStateToLanguage } from "../../../kernel/src/language-memory-runtime.js";
 import { conversationalSession } from "../../../kernel/src/__tests__/conversational-session-fixture.js";
 import type {
   EvidenceSpan,
@@ -52,6 +56,66 @@ afterEach(async () => {
 });
 
 describe("learned rows carry the shard's provenance once", () => {
+  it.each([{ sourceSystem: "oss_code", languageOnly: false }, { sourceSystem: "gutenberg", languageOnly: true }])(
+    "does not invoke a natural creative compiler for $sourceSystem languageOnly=$languageOnly", async mode => {
+      const fixture = memoryStorage();
+      const compile = vi.fn(() => { throw new Error("natural compiler must remain outside this source role"); });
+      await trainLanguageCorpusText({ storage: fixture.storage, ...mode, sourceUri: `fixture://dispatch/${mode.sourceSystem}`, streamUri: `fixture://dispatch/${mode.sourceSystem}`,
+        text: "export const value = 1;", informationLabel: publicCorpusInformationLabel, creativeEventCompiler: { id: "fixture.natural.compiler", compile }, skipNgramObservationPersistence: true });
+      expect(compile).not.toHaveBeenCalled();
+      expect(fixture.state.models).toHaveLength(1);
+      expect(fixture.state.patterns.some(row => recordOf(row.patternJson).componentRecipe === INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID)).toBe(false);
+    });
+
+  it("learns scoped forms from raw source and upgrades only the projection component without duplicating models", async () => {
+    const fixture = memoryStorage();
+    const upsert = <T extends { id: string }>(target: T[], rows: readonly T[]) => {
+      for (const row of rows) { const index = target.findIndex(prior => prior.id === row.id); if (index < 0) target.push(row); else target[index] = row; }
+    };
+    fixture.storage.languageMemory.putNgramModels = async rows => { upsert(fixture.state.models, rows); };
+    fixture.storage.languageMemory.putLanguageUnits = async rows => { upsert(fixture.state.units, rows); };
+    fixture.storage.languageMemory.putLanguagePatterns = async rows => { upsert(fixture.state.patterns, rows); };
+    fixture.storage.languageMemory.putSemanticFrames = async rows => { upsert(fixture.state.frames, rows); };
+    const checkpoints = new Map<string, IngestionCheckpoint>();
+    fixture.storage.ingestion = { put: async row => { checkpoints.set(row.id, structuredClone(row)); }, get: async id => checkpoints.get(id) ?? null,
+      list: async () => [...checkpoints.values()] } as ScceStorage["ingestion"];
+    const text = "walla r0. wallawalla r0. tinu r0. tinutinu r0. kobo r0. kobokobo r0. cat chased mouse. dog chased ball. cat chased ball. dog chased mouse.";
+    const input = { storage: fixture.storage, sourceSystem: "gutenberg", sourceUri: "fixture://raw-forms", streamUri: "fixture://raw-forms", text, createdAt: 1700000000000,
+      ngramMaxOrder: 3, skipNgramObservationPersistence: true, informationLabel: publicCorpusInformationLabel,
+      corpusCheckpoint: { rootUri: "fixture://raw-forms", itemUri: "forms.txt", contentHash: blobContentHash(Buffer.from(text)), byteLength: Buffer.byteLength(text) } };
+    await trainLanguageCorpusText(input);
+    const morphology = fixture.state.patterns.filter(row => recordOf(row.patternJson).schema === "scce.induced_language_model.morphology_memory.v1");
+    expect(morphology).toHaveLength(1);
+    expect(recordOf(morphology[0]!.patternJson).componentRecipe).toBe(INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID);
+    const runtime = createLanguageMemoryRuntime({ hasher: corpusTestHasher, idFactory: corpusTestIds });
+    const state = scopeLanguageMemoryStateToLanguage(runtime.hydrate({ models: fixture.state.models, units: fixture.state.units, patterns: fixture.state.patterns,
+      semanticFrames: fixture.state.frames, constructionEvidence: fixture.state.evidence }), "language.raw", { profile: () => "language.raw", corpus: () => "language.raw" });
+    primeLearnedAnswerUnitForms({ deltas: state.structuralDeltas ?? [], profileIds: new Set(state.importedPatterns.map(row => row.profileId)) });
+    try {
+      expect(requestUnitMatchesSurface("walla", "wallawalla")).toBe(true);
+      expect(requestUnitMatchesSurface("wallawalla", "wallawallb")).toBe(false);
+    } finally { primeLearnedAnswerUnitForms({ deltas: [], profileIds: new Set() }); }
+    const before = structuredClone({ models: fixture.state.models, units: fixture.state.units, frames: fixture.state.frames, patterns: fixture.state.patterns });
+    const checkpoint = [...checkpoints.values()][0]!;
+    const metadata = { ...recordOf(checkpoint.metadata) };
+    delete metadata.componentRecipes;
+    checkpoints.set(checkpoint.id, { ...checkpoint, metadata });
+    const writesBeforeUpgrade = fixture.state.events.length;
+    const upgraded = await trainLanguageCorpusText(input);
+    expect(upgraded.artifacts.ngramModelIds).toEqual(before.models.map(row => row.id));
+    expect(fixture.state.events.length).toBeGreaterThan(writesBeforeUpgrade);
+    expect(fixture.state.models).toEqual(before.models);
+    expect(fixture.state.units).toEqual(before.units);
+    expect(fixture.state.frames).toEqual(before.frames);
+    expect(fixture.state.patterns).toEqual(before.patterns);
+    expect(checkpoints.size).toBe(1);
+    expect([...checkpoints.values()][0]!.id).toBe(checkpoint.id);
+    expect(recordOf([...checkpoints.values()][0]!.metadata).componentRecipes).toEqual({ inducedLanguageMemory: INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID });
+    const writes = fixture.state.events.length;
+    await trainLanguageCorpusText(input);
+    expect(fixture.state.events).toHaveLength(writes);
+    expect(fixture.state.models.map(row => row.id)).toEqual(before.models.map(row => row.id));
+  });
   it("keeps actual corpus CLI and manual training on one canonical model identity", async () => {
     const root = await tempDir("oss-canonical-training-");
     await mkdir(path.join(root, "src"), { recursive: true });
@@ -1326,11 +1390,12 @@ describe("multi-corpus training", () => {
 
   it("preserves canonical compilation through construction-only replay and manual training", async () => {
     const fixture = memoryStorage();
-    const text = constructionFixtureText();
+    const text = constructionFixtureText() + " walla r0. wallawalla r0. tinu r0. tinutinu r0. kobo r0. kobokobo r0.";
     await trainLanguageCorpusText({ storage: fixture.storage, sourceSystem: "wikipedia", sourceUri: "https://example.org/canonical-replay", streamUri: "https://example.org/canonical-replay",
       text, createdAt: 1700000000000, informationLabel: publicCorpusInformationLabel, ngramMaxOrder: 3, ngramMaxCountersPerOrder: 64, ngramVocabularyLimit: 17,
       skipNgramObservationPersistence: true });
     expect(fixture.state.patterns.some(isConstructionBundle)).toBe(true);
+    expect(fixture.state.patterns.some(row => recordOf(row.patternJson).schema === "scce.induced_language_model.morphology_memory.v1")).toBe(true);
     const canonical = structuredClone({ models: fixture.state.models, units: fixture.state.units, frames: fixture.state.frames,
       receipts: fixture.state.patterns.filter(row => row.patternKind === "source_compilation") });
     const memberships = new Map(fixture.state.patterns.filter(row => row.patternKind !== "source_compilation")

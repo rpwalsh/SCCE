@@ -16,6 +16,7 @@ import {
   inductionCharBudget,
   languageProfileCompatibility,
   LANGUAGE_TRAINING_BATCH_RECIPE_ID,
+  INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID,
   sourceCodeFunctionConstructionId,
   createSourceAdmissionController,
   compileLanguageTrainingBatch,
@@ -328,6 +329,7 @@ function checkpointMetadata(input: LanguageCorpusTrainingInput, binding: string,
     schema: CORPUS_CHECKPOINT_SCHEMA,
     compilerRecipe: languageCorpusTrainingRecipeId(input.sourceSystem),
     batchRecipe: LANGUAGE_TRAINING_BATCH_RECIPE_ID,
+    componentRecipes: corpusComponentRecipes(input),
     binding,
     sourceSystem: canonicalCorpusSourceSystemId(input.sourceSystem),
     rootUri: checkpoint.rootUri,
@@ -357,7 +359,12 @@ function checkpointRecord(input: LanguageCorpusTrainingInput, binding: string, r
   };
 }
 
-function checkpointReport(row: IngestionCheckpoint, binding: string, compilerRecipe: string): LanguageCorpusTrainingReport | undefined {
+function corpusComponentRecipes(input: LanguageCorpusTrainingInput): Record<string, string> {
+  return !input.languageOnly && corpusRoleIdForSourceSystem(input.sourceSystem) !== CORPUS_ROLE_IDS.softwareSymbolic
+    ? { inducedLanguageMemory: INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID } : {};
+}
+
+function checkpointReport(row: IngestionCheckpoint, binding: string, compilerRecipe: string, componentRecipes: Record<string, string>): LanguageCorpusTrainingReport | undefined {
   if (row.status !== "complete") return undefined;
   const metadata = jsonRecord(row.metadata);
   if (metadata.schema !== CORPUS_CHECKPOINT_SCHEMA || metadata.binding !== binding
@@ -369,7 +376,8 @@ function checkpointReport(row: IngestionCheckpoint, binding: string, compilerRec
   if (!report || typeof report !== "object" || Array.isArray(report) || (report as Record<string, JsonValue>).schema !== "scce.languageCorpusTrainingReport.v1") {
     throw new CorpusCheckpointConflictError(`corpus checkpoint ${row.id} is complete but has no valid training report`);
   }
-  return report as unknown as LanguageCorpusTrainingReport;
+  return canonicalStringify(metadata.componentRecipes ?? {}) === canonicalStringify(componentRecipes)
+    ? report as unknown as LanguageCorpusTrainingReport : undefined;
 }
 
 async function prepareCorpusCheckpoint(input: LanguageCorpusTrainingInput, binding: string): Promise<LanguageCorpusTrainingReport | undefined> {
@@ -386,7 +394,7 @@ async function prepareCorpusCheckpoint(input: LanguageCorpusTrainingInput, bindi
       || metadata.batchRecipe !== LANGUAGE_TRAINING_BATCH_RECIPE_ID) {
       throw new CorpusCheckpointConflictError(`corpus checkpoint binding mismatch for ${existing.itemUri}; refusing replay`);
     }
-    const report = checkpointReport(existing, binding, languageCorpusTrainingRecipeId(input.sourceSystem));
+    const report = checkpointReport(existing, binding, languageCorpusTrainingRecipeId(input.sourceSystem), corpusComponentRecipes(input));
     if (report) return report;
   }
   await input.storage.ingestion.put(checkpointRecord(input, binding));
@@ -403,7 +411,7 @@ export async function readCompletedCorpusCheckpoint(input: LanguageCorpusTrainin
   if (!id) return undefined;
   const existing = await input.storage.ingestion.get(id);
   return existing?.status === "complete"
-    ? checkpointReport(existing, checkpointBinding(input), languageCorpusTrainingRecipeId(input.sourceSystem))
+    ? checkpointReport(existing, checkpointBinding(input), languageCorpusTrainingRecipeId(input.sourceSystem), corpusComponentRecipes(input))
     : undefined;
 }
 
@@ -965,12 +973,13 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
   let units = compiledBatch.units.map(item => ({ ...stampUnit(item, sourceSystem, sourceSystemId, rowMetadata), informationLabel }));
   const compiledConstructionPatterns: LanguagePatternRecord[] = [...compiledBatch.constructionPatterns];
   const constructionWarnings: string[] = [...compiledBatch.warnings];
-  if (input.creativeEventCompiler) {
+  if (input.creativeEventCompiler && !input.languageOnly && corpusRoleIdForSourceSystem(sourceSystem) !== CORPUS_ROLE_IDS.softwareSymbolic) {
     const creativeEventCompilation = input.creativeEventCompiler.compile({
       profileId: profile.id,
       evidence,
       hasher,
-      updatedAt: createdAt
+      updatedAt: createdAt,
+      ...(compiledBatch.preparedInduction ? { preparedInduction: compiledBatch.preparedInduction } : {})
     });
     if (creativeEventCompilation.status === "compiled") {
       // The compiler is an adapter-owned service and may return a mutable pattern object. Detach just this

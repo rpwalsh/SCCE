@@ -2,7 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { IdFactory } from "./ids.js";
 import type { InducedLanguageModel } from "./language-induction.js";
-import { clamp01, entropy, toJsonValue } from "./primitives.js";
+import { canonicalStringify, clamp01, entropy, toJsonValue } from "./primitives.js";
 import type { LanguagePatternRecord } from "./storage.js";
 import type { EvidenceId, InformationLabel, JsonValue, LanguageProfile } from "./types.js";
 
@@ -13,6 +13,8 @@ export interface InducedLanguageModelMemoryProjection {
   patterns: LanguagePatternRecord[];
   skippedReason?: "no_matching_profiles";
 }
+
+export const INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID = "kernel.induced_language_memory_projection.v1" as const;
 
 export function languageMemoryPatternsFromInducedLanguageModel(input: {
   model: InducedLanguageModel;
@@ -65,6 +67,7 @@ function patternsForProfile(input: {
 }): LanguagePatternRecord[] {
   const rows: LanguagePatternRecord[] = [];
   const base = {
+    componentRecipe: INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID,
     modelId: input.model.id,
     profileId: input.profile.id,
     sourceVersionId: input.profile.sourceVersionId,
@@ -78,12 +81,12 @@ function patternsForProfile(input: {
     payload: Record<string, JsonValue>
   ) => {
     rows.push({
-      id: input.idFactory.semanticId("induced_language_memory_pattern", {
+      id: `induced_language_memory_pattern_${String(input.idFactory.contentHash(canonicalStringify({
         modelId: input.model.id,
         profileId: input.profile.id,
         patternKind,
         schema
-      }),
+      }))).replace(/^sha256_/u, "")}`,
       profileId: input.profile.id,
       patternKind,
       support: clamp01(support),

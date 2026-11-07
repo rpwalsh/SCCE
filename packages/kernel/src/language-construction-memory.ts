@@ -9,8 +9,8 @@ import {
   type LearnedFormClass
 } from "./language-construction.js";
 import { canonicalStringify } from "./primitives.js";
-import { createLanguageInductionEngine, type GraphBoundConstruction } from "./language-induction.js";
-import { boundedInductionDocuments } from "./training-orchestrator.js";
+import { type GraphBoundConstruction } from "./language-induction.js";
+import { preparedLanguageInductionModel, type PreparedConstructionInduction } from "./graph-surface-alignment.js";
 import { segmentUnicodeSurfaceV2, type LexicalSegment } from "./unicode-segmentation-v2.js";
 import type { LanguagePatternRecord } from "./storage.js";
 import type { SemanticRole } from "./semantic-graph.js";
@@ -232,6 +232,7 @@ export interface CreativeEventConstructionCompilerInput {
   hasher: Hasher;
   updatedAt: number;
   maxEvents?: number;
+  preparedInduction?: PreparedConstructionInduction;
 }
 
 /**
@@ -434,15 +435,15 @@ export function compileUniversalCreativeEventConstructionPattern(
   // inventing a second scheme; event extraction below still walks EVERY
   // promoted span, only the induction model is fitted on the bounded
   // subset.
-  const model = createLanguageInductionEngine({ hasher: input.hasher }).induce({
-    documents: boundedInductionDocuments(promotedEvidence.map(span => ({
+  const model = preparedLanguageInductionModel({ hasher: input.hasher, prepared: input.preparedInduction,
+    documents: (input.preparedInduction ? input.evidence.filter(span => span.status === "promoted") : promotedEvidence).map(span => ({
       id: String(span.id),
       text: span.text,
       evidenceIds: [span.id],
       sourceVersionId: span.sourceVersionId
-    })))
+    }))
   });
-  if (!model.graphBoundConstructions.length) return rejected(LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.induction);
+  if (!model?.graphBoundConstructions.length) return rejected(LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.induction);
   const constructionsByPredicate = new Map(model.graphBoundConstructions.map(item => [item.predicate, item]));
 
   const maxEvents = Math.max(1, Math.min(2048, Math.floor(input.maxEvents ?? 768)));
