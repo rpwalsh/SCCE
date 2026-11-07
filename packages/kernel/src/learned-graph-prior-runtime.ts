@@ -854,9 +854,9 @@ export function attachLearnedGraphPriorConstruct(input: {
     if (rawSubject.markerId === "question" || rawSubject.markerId === "object") continue;
     if (rawObject.markerId === "question") continue;
     if (rawSubject.text === rawObject.text) continue;
-    const subject = displayPriorTerm(rawSubject.text, "subject");
-    const predicate = rawPredicate.text.toLocaleLowerCase();
-    const object = displayPriorTerm(rawObject.text, "object");
+    const subject = displayPriorTerm(rawSubject.text);
+    const predicate = rawPredicate.text;
+    const object = displayPriorTerm(rawObject.text);
     if (primaryUnits.length && !graphPriorFactMatchesPrimaryUnit({ subject, predicate, object, sourceNode, targetNode, primaryUnits })) continue;
     const graphQuality = scoreGraphEdgeQuality({
       edgeId: String(edge.id),
@@ -2278,24 +2278,9 @@ export function structuredHyperedgeEdges(hyperedges: readonly Hyperedge[], nodeB
 }
 
 
- function displayPriorTerm(value: string, role: "subject" | "object"): string {
-  const clean = stripOuterPriorSeparators(collapsePriorWhitespace(value));
-  if (role === "object") return clean;
-  return titleCaseShortPriorTerm(clean);
-}
-
-
- function titleCaseShortPriorTerm(value: string): string {
-  const units = splitPriorUnits(value);
-  if (!units.length || units.length > 6) return uppercaseInitial(value);
-  return units.map(uppercaseInitial).join(" ");
-}
-
-
- function uppercaseInitial(value: string): string {
-  if (!value) return value;
-  const first = value[0] ?? "";
-  return `${first.toLocaleUpperCase()}${value.slice(1)}`;
+/** Keep the graph's observed surface; normalization belongs in comparison keys, not display terms. */
+export function displayPriorTerm(value: string): string {
+  return stripOuterPriorSeparators(collapsePriorWhitespace(value));
 }
 
 
