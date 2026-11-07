@@ -23,6 +23,11 @@ describe("answerhood discrimination", () => {
   afterEach(() => primeLearnedAnswerUnitForms({ deltas: [], profileIds: new Set() }));
 
   it("uses only acquired request scaffolding and source-owned form witnesses", () => {
+    expect(teaching.profiles.map(profile => profile.id)).toEqual([teaching.profile.id]);
+    expect(teaching.models.every(row => (row.modelJson as { profileId?: string }).profileId === teaching.profile.id)).toBe(true);
+    expect(teaching.patterns.every(row => row.profileId === teaching.profile.id)).toBe(true);
+    expect(teaching.state.models.length).toBeGreaterThan(0);
+    expect(teaching.forms.state.scope.profileIds).toEqual([teaching.profile.id]);
     for (const unit of ["who", "what", "when"]) expect(closedClass.has(unit)).toBe(true);
     expect(teaching.compiled.observations).toEqual([]);
     expect(teaching.forms.projection.patterns.some(row => row.evidenceIds.length > 0)).toBe(true);
