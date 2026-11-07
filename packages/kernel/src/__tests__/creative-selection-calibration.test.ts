@@ -194,6 +194,9 @@ describe("creative candidate selection and preference calibration", () => {
       taskClass: CALIBRATION_TASK_CLASS_IDS.creativeGeneration
     });
     expect(learnedPreferred.source).toBe("pairwise_preference");
+    if (typeof learnedPreferred.score !== "number" || typeof learnedRejected.score !== "number") {
+      throw new Error("fitted creative preference model must return both candidate scores");
+    }
     expect(learnedPreferred.score).toBeGreaterThan(learnedRejected.score);
   });
 
