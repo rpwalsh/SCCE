@@ -11,6 +11,9 @@ interface SyntaxNode {
   readonly namedChildren: readonly SyntaxNode[];
   readonly children: readonly SyntaxNode[];
   readonly parent?: SyntaxNode;
+  readonly hasError?: boolean;
+  readonly isError?: boolean;
+  readonly isMissing?: boolean;
   childForFieldName(name: string): SyntaxNode | null;
 }
 
@@ -39,6 +42,7 @@ function lowerRoot(input: { root: SyntaxNode; text: string; path: string; langua
   const out: SourceCodeFunctionConstruction[] = [];
   for (const node of input.root.namedChildren) {
     if (!callableNode(node.type, input.languageId)) continue;
+    if (containsParseRecovery(node)) continue;
     const name = node.childForFieldName("name") ?? (input.languageId === "kotlin" ? node.namedChildren.find(child => child.type === "simple_identifier") : undefined);
     const parametersNode = node.childForFieldName("parameters") ?? node.childForFieldName("function_value_parameters")
       ?? (input.languageId === "kotlin" ? node.namedChildren.find(child => child.type === "function_value_parameters") : undefined);
@@ -48,10 +52,7 @@ function lowerRoot(input: { root: SyntaxNode; text: string; path: string; langua
     if (!parameters || new Set(parameters.map(parameter => parameter.name)).size !== parameters.length) continue;
     const program = expressionFromBody(body, parameters.map(parameter => parameter.name), input.languageId);
     if (!program) continue;
-    if (input.languageId === "rust" && containsArithmetic(program.expression, program.bindings)
-      && parameters.some(parameter => parameter.declaredType !== "f64")) continue;
-    if (input.languageId === "kotlin" && containsArithmetic(program.expression, program.bindings)
-      && parameters.some(parameter => parameter.declaredType !== "Double")) continue;
+    if (input.languageId !== "python" && !nativeFloatingArithmeticSupported(node, body, parameters, input.languageId)) continue;
     const sourceStart = sourceOffset(input.text, node.startIndex);
     const sourceEnd = sourceOffset(input.text, node.endIndex);
     if (sourceStart === undefined || sourceEnd === undefined || sourceEnd <= sourceStart) continue;
@@ -114,9 +115,136 @@ function callableParameters(node: SyntaxNode, languageId: string): Array<{ name:
   return parameters;
 }
 
+function nativeFloatingArithmeticSupported(callable: SyntaxNode, body: SyntaxNode, parameters: readonly { name: string; declaredType?: string }[], languageId: string): boolean {
+  const environment = new Map<string, "floating" | "integer" | "unknown">();
+  const floatingType = languageId === "rust" ? "f64" : "Double";
+  for (const parameter of parameters) environment.set(parameter.name, parameter.declaredType === floatingType ? "floating" : "unknown");
+  let hasArithmetic = false;
+  const inspect = (node: SyntaxNode): boolean => {
+    if (isArithmeticNode(node, languageId)) {
+      hasArithmetic = true;
+      const operands = arithmeticOperands(node);
+      if (!operands.length || operands.some(operand => numericType(operand, environment, languageId) !== "floating")) return false;
+    }
+    for (const child of node.namedChildren) if (!inspect(child)) return false;
+    return true;
+  };
+  for (const statement of statementsIn(body, languageId)) {
+    const local = localBinding(statement, languageId);
+    if (local) {
+      if (!inspect(local.value)) return false;
+      const inferred = numericType(local.value, environment, languageId);
+      if (local.declaredType && local.declaredType !== floatingType && inferred === "floating" && containsArithmeticNode(local.value, languageId)) return false;
+      environment.set(local.name, local.declaredType === floatingType ? "floating" : local.declaredType ? "unknown" : inferred);
+      continue;
+    }
+    if (!inspect(statement)) return false;
+  }
+  if (!hasArithmetic) return true;
+  const result = terminalExpression(body, languageId);
+  if (!result || numericType(result, environment, languageId) !== "floating") return false;
+  const declaredReturnType = returnType(callable, languageId);
+  if (languageId === "rust" && declaredReturnType !== floatingType) return false;
+  return declaredReturnType === undefined || declaredReturnType === floatingType;
+}
+
+function returnType(callable: SyntaxNode, languageId: string): string | undefined {
+  if (languageId === "rust") return callable.childForFieldName("return_type")?.text;
+  const parameters = callable.namedChildren.find(child => child.type === "function_value_parameters");
+  const body = callable.namedChildren.find(child => child.type === "function_body");
+  return callable.namedChildren.find(child => child !== parameters && child !== body && child.type !== "simple_identifier")?.text;
+}
+
+function terminalExpression(body: SyntaxNode, languageId: string): SyntaxNode | undefined {
+  if (languageId === "rust") {
+    const terminal = body.namedChildren.at(-1);
+    if (terminal?.type === "return_expression") return terminal.namedChildren.at(-1);
+    return terminal;
+  }
+  if (languageId === "kotlin") {
+    const content = body.type === "function_body" ? body.namedChildren[0] : body;
+    if (!content) return undefined;
+    if (content.type !== "block" && content.type !== "statements") return content;
+    const terminal = content.namedChildren.at(-1);
+    if (terminal?.type === "jump_expression" && terminal.children.some(child => child.type === "return")) return terminal.namedChildren.at(-1);
+  }
+  return undefined;
+}
+
+function statementsIn(body: SyntaxNode, languageId: string): readonly SyntaxNode[] {
+  if (languageId === "kotlin" && body.type === "function_body" && body.namedChildren.length === 1) {
+    const content = body.namedChildren[0]!;
+    if (content.type === "statements" || content.type === "block") return content.namedChildren;
+  }
+  return body.namedChildren;
+}
+
+function localBinding(statement: SyntaxNode, languageId: string): { name: string; declaredType?: string; value: SyntaxNode } | undefined {
+  if (languageId === "rust" && statement.type === "let_declaration") {
+    const name = statement.childForFieldName("pattern");
+    const value = statement.childForFieldName("value");
+    const type = statement.childForFieldName("type");
+    return name?.type === "identifier" && value ? { name: name.text, ...(type ? { declaredType: type.text } : {}), value } : undefined;
+  }
+  if (languageId === "kotlin" && statement.type === "property_declaration") {
+    const declaration = statement.namedChildren.find(child => child.type === "variable_declaration");
+    const name = declaration?.namedChildren.find(child => child.type === "simple_identifier");
+    const type = declaration?.namedChildren.find(child => child !== name);
+    const value = statement.childForFieldName("value") ?? statement.namedChildren.find(child => child !== declaration && child.type !== "binding_pattern_kind");
+    return name && value ? { name: name.text, ...(type ? { declaredType: type.text } : {}), value } : undefined;
+  }
+  return undefined;
+}
+
+function isArithmeticNode(node: SyntaxNode, languageId: string): boolean {
+  return languageId === "python" ? node.type === "binary_operator" || node.type === "unary_operator"
+    : node.type === "binary_expression" || node.type === "additive_expression" || node.type === "multiplicative_expression"
+      || node.type === "unary_expression";
+}
+
+function containsArithmeticNode(node: SyntaxNode, languageId: string): boolean {
+  return isArithmeticNode(node, languageId) || node.namedChildren.some(child => containsArithmeticNode(child, languageId));
+}
+
+function arithmeticOperands(node: SyntaxNode): SyntaxNode[] {
+  if (node.type === "unary_operator" || node.type === "unary_expression") return node.namedChildren.slice(-1);
+  const left = node.childForFieldName("left") ?? node.namedChildren[0];
+  const right = node.childForFieldName("right") ?? node.namedChildren.at(-1);
+  return left && right && left !== right ? [left, right] : [];
+}
+
+function numericType(node: SyntaxNode, environment: ReadonlyMap<string, "floating" | "integer" | "unknown">, languageId: string): "floating" | "integer" | "unknown" {
+  if (["identifier", "simple_identifier"].includes(node.type)) return environment.get(node.text) ?? "unknown";
+  if (["float", "float_literal", "real_literal"].includes(node.type)) return "floating";
+  if (["integer", "integer_literal", "decimal_integer_literal"].includes(node.type)) return "integer";
+  if (["parenthesized_expression", "parenthesized", "expression"].includes(node.type) && node.namedChildren.length === 1) {
+    return numericType(node.namedChildren[0]!, environment, languageId);
+  }
+  if (["unary_operator", "unary_expression"].includes(node.type)) {
+    const operand = node.namedChildren.at(-1);
+    return operand ? numericType(operand, environment, languageId) : "unknown";
+  }
+  if (isArithmeticNode(node, languageId)) {
+    const [left, right] = arithmeticOperands(node);
+    if (!right) return left ? numericType(left, environment, languageId) : "unknown";
+    const leftType = numericType(left!, environment, languageId);
+    const rightType = numericType(right, environment, languageId);
+    return leftType === "floating" && rightType === "floating" ? "floating"
+      : leftType === "integer" && rightType === "integer" ? "integer"
+        : "unknown";
+  }
+  return "unknown";
+}
+
+function containsParseRecovery(node: SyntaxNode): boolean {
+  if (node.isError || node.isMissing || node.hasError) return true;
+  return node.children.some(child => containsParseRecovery(child));
+}
+
 function expressionFromBody(body: SyntaxNode, parameters: readonly string[], languageId: string): { expression: ProgramExpression; bindings: ProgramExpression[] } | undefined {
   if (languageId === "kotlin" && body.type === "function_body" && body.namedChildren.length === 1) {
     const content = body.namedChildren[0]!;
+    if (content.type === "statements" || content.type === "block") return expressionFromBody(content, parameters, languageId);
     if (content.type !== "block") {
       const expression = expressionFromNode(content, parameters, new Map(), languageId);
       return expression ? { expression, bindings: [] } : undefined;
@@ -181,6 +309,7 @@ function returnedExpression(statement: SyntaxNode, languageId: string): SyntaxNo
     if (child?.type === "return_expression") return child.namedChildren[0];
   }
   if (languageId === "kotlin" && statement.type === "return_expression") return statement.namedChildren[0];
+  if (languageId === "kotlin" && statement.type === "jump_expression" && statement.children.some(child => child.type === "return")) return statement.namedChildren.at(-1);
   return undefined;
 }
 
@@ -223,18 +352,6 @@ function expressionFromNode(node: SyntaxNode, parameters: readonly string[], bin
     return items.length && items.every((item): item is ProgramExpression => item !== undefined) ? { kind: "sequence", items } : undefined;
   }
   return undefined;
-}
-
-function containsArithmetic(expression: ProgramExpression, bindings: readonly ProgramExpression[]): boolean {
-  const pending = [expression, ...bindings];
-  while (pending.length) {
-    const current = pending.pop()!;
-    if (current.kind === "unary" || current.kind === "binary") return true;
-    if (current.kind === "member" || current.kind === "cardinality") pending.push(current.kind === "member" ? current.subject : current.operand);
-    else if (current.kind === "sequence") pending.push(...current.items);
-    else if (current.kind === "mapping") pending.push(...current.entries.map(entry => entry.value));
-  }
-  return false;
 }
 
 function isNonReferenceName(node: SyntaxNode): boolean {

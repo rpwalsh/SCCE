@@ -58,7 +58,7 @@ describe("multilingual source callable ingestion", () => {
   it("lowers only floating-point callable bodies in Rust and Kotlin and preserves their native source", async () => {
     const cases = [
       { languageId: "rust", path: "scale.rs", source: "pub fn twice(value: f64) -> f64 { value * 2.0 }", expected: "pub fn learnedScale(value: f64) -> f64 { value * 2.0 }" },
-      { languageId: "kotlin", path: "scale.kt", source: "fun twice(value: Double): Double = value * 2.0", expected: "fun learnedScale(value: Double): Double = value * 2.0" }
+      { languageId: "kotlin", path: "scale.kt", source: "fun twice(value: Double): Double { val result = value * 2.0; return result }", expected: "fun learnedScale(value: Double): Double { val result = value * 2.0; return result }" }
     ];
     for (const item of cases) {
       const sourceHash = createHasher().digestHex(item.source);
@@ -74,6 +74,24 @@ describe("multilingual source callable ingestion", () => {
     }
     const rustInteger = "fn twice(value: i32) -> i32 { value * 2 }";
     expect(await compileSourceCodeFunctionsAsync({ text: rustInteger, path: "integer.rs", languageId: "rust", sourceHash: createHasher().digestHex(rustInteger) })).toEqual([]);
+    const integerDivisionCases = [
+      { languageId: "rust", path: "half.rs", source: "pub fn half() -> i32 { 1 / 2 }" },
+      { languageId: "rust", path: "unused.rs", source: "pub fn half(unused: f64) -> f64 { 1 / 2 }" },
+      { languageId: "rust", path: "local.rs", source: "pub fn half(unused: f64) -> i32 { let local: i32 = 1 / 2; local }" },
+      { languageId: "rust", path: "local-float.rs", source: "pub fn half(value: f64) -> f64 { let local: i32 = 1 / 2; value * 2.0 }" },
+      { languageId: "rust", path: "local-mismatch.rs", source: "pub fn half(value: f64) -> f64 { let local: i32 = value / 2.0; value * 2.0 }" },
+      { languageId: "kotlin", path: "Half.kt", source: "fun half(unused: Double): Int { return 1 / 2 }" },
+      { languageId: "kotlin", path: "unused.kt", source: "fun half(unused: Double): Double = 1 / 2" },
+      { languageId: "kotlin", path: "Local.kt", source: "fun half(value: Double): Double { val local: Int = 1 / 2; return value * 2.0 }" },
+      { languageId: "kotlin", path: "LocalMismatch.kt", source: "fun half(value: Double): Double { val local: Int = value / 2.0; return value * 2.0 }" }
+    ];
+    for (const item of integerDivisionCases) {
+      expect(await compileSourceCodeFunctionsAsync({ text: item.source, path: item.path, languageId: item.languageId, sourceHash: createHasher().digestHex(item.source) })).toEqual([]);
+    }
+    const malformed = "def malformed(value):\n    return value +\n";
+    expect(await compileSourceCodeFunctionsAsync({ text: malformed, path: "malformed.py", languageId: "python", sourceHash: createHasher().digestHex(malformed) })).toEqual([]);
+    const validLiteralDivision = "pub fn half() -> f64 { 1.0 / 2.0 }";
+    expect(await compileSourceCodeFunctionsAsync({ text: validLiteralDivision, path: "float.rs", languageId: "rust", sourceHash: createHasher().digestHex(validLiteralDivision) })).toHaveLength(1);
   });
 
   it("does not treat Python string addition as numeric addition in the shared behavior IR", async () => {
