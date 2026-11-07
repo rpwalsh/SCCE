@@ -1435,7 +1435,14 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       //
       // Rebuilt when the turn reprojects its authority, because the request's own scaffolding is authority-scoped;
       // everything inside is derived on first use, so rebuilding costs nothing that is not asked for again.
+      const identityClosedClassStarted = performance.now();
       const identityClosedClassWords = new Set((requestLanguage?.identity.closedClass ?? []).map(row => row.word));
+      kernelTrace({
+        stage: "turn.signal.closed_class",
+        label: "kernel.turn",
+        durationMs: performance.now() - identityClosedClassStarted,
+        counts: { words: identityClosedClassWords.size }
+      });
       const identityClosedClassFallback = (authorityLanguage.state.models?.length ?? 0) === 0
         && !authorityLanguage.state.continuationPopulation
         && identityClosedClassWords.size > 0;
@@ -1456,24 +1463,9 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           warnings: ["runtime language statistics unavailable; using selected identity closed class"]
         });
       }
-      let turnSignals = createTurnSignals({
-        requestText: input.text,
-        authority: requestedAuthority,
-        requirementField,
-        models: authorityLanguage.state.models ?? [],
-        continuationPopulation: authorityLanguage.state.continuationPopulation,
-        identityClosedClassWords,
-        languageIdentityProfileCount: requestLanguage?.identity.profileCount,
-        languageIdentityId: requestLanguage?.identity.id,
-        // The request-language state is the complete learned control surface for
-        // this turn.  Passing only the corrections store here silently discarded
-        // request-frame constructions that were already admitted by the active
-        // language profile, so learned openers (and the resulting closed class)
-        // never reached retrieval or answer realization.
-        patterns: requestRequirementLanguageState.importedPatterns
-      });
-      const refreshTurnSignals = (): void => {
-        turnSignals = createTurnSignals({
+      const prepareTurnSignals = () => {
+        const started = performance.now();
+        const signals = createTurnSignals({
           requestText: input.text,
           authority: requestedAuthority,
           requirementField,
@@ -1482,8 +1474,21 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           identityClosedClassWords,
           languageIdentityProfileCount: requestLanguage?.identity.profileCount,
           languageIdentityId: requestLanguage?.identity.id,
+          // The request-language state is the complete learned control surface for
+          // this turn. Passing only corrections drops admitted request constructions.
           patterns: requestRequirementLanguageState.importedPatterns
         });
+        kernelTrace({
+          stage: "turn.signals.prepare",
+          label: "kernel.turn",
+          durationMs: performance.now() - started,
+          counts: { functionSymbols: signals.functionSymbols.size, closedClassWords: signals.closedClassWords.size }
+        });
+        return signals;
+      };
+      let turnSignals = prepareTurnSignals();
+      const refreshTurnSignals = (): void => {
+        turnSignals = prepareTurnSignals();
       };
       const corpusFunctionSymbols = () => turnSignals.functionSymbols;
       const requestClosedClassWords = () => turnSignals.closedClassWords;

@@ -29,20 +29,42 @@ export async function primeCorpusIdentityForTurn(input: {
   requestText: string;
   closedClass: ReadonlySet<string>;
   evidence: Pick<EvidenceStore, "sourceIdentityArbitration" | "sourceSpreadDistribution">;
-  onTrace?: (record: { runs: number; measured: number; identities: readonly string[]; concentration: number }) => void;
+  onTrace?: (record: {
+    runs: number;
+    measured: number;
+    identities: readonly string[];
+    concentration: number;
+    contentRunsDurationMs: number;
+    thresholdDurationMs: number;
+    arbitrationDurationMs: number;
+    preparationDurationMs: number;
+    totalDurationMs: number;
+  }) => void;
 }): Promise<void> {
+  const totalStarted = performance.now();
   const generation = measurementGeneration;
   const measurements = measurementsFor(input.evidence);
+  const runsStarted = performance.now();
   const runs = contentRuns(input.requestText, input.closedClass);
+  const runsDurationMs = performance.now() - runsStarted;
+  const thresholdStarted = performance.now();
   await ensureThreshold(measurements, input.evidence, generation);
+  const thresholdDurationMs = performance.now() - thresholdStarted;
   if (generation !== measurementGeneration) return;
+  let preparationStarted = performance.now();
+  let preparationDurationMs = 0;
   // The identity question is asked of the whole request, so it is cached per request rather than per run.
   const cachedIdentities = measurements.identitiesByText.get(input.requestText);
   const unmeasured = runs.filter(run => !measurements.answeredSpreadRuns.has(run));
   let identities = cachedIdentities;
+  let arbitrationDurationMs = 0;
   if ((identities === undefined || unmeasured.length) && input.evidence.sourceIdentityArbitration) {
+    preparationDurationMs += performance.now() - preparationStarted;
+    const arbitrationStarted = performance.now();
     const arbitration = await input.evidence.sourceIdentityArbitration({ text: input.requestText, runs: unmeasured });
+    arbitrationDurationMs = performance.now() - arbitrationStarted;
     if (generation !== measurementGeneration) return;
+    preparationStarted = performance.now();
     identities = new Set(arbitration.identities);
     if (measurements.identitiesByText.size >= 512) measurements.identitiesByText.clear();
     measurements.identitiesByText.set(input.requestText, identities);
@@ -63,7 +85,18 @@ export async function primeCorpusIdentityForTurn(input: {
     spread,
     concentration: measurements.threshold ?? 0
   });
-  input.onTrace?.({ runs: runs.length, measured: unmeasured.length, identities: [...(identities ?? [])], concentration: measurements.threshold ?? 0 });
+  preparationDurationMs += performance.now() - preparationStarted;
+  input.onTrace?.({
+    runs: runs.length,
+    measured: unmeasured.length,
+    identities: [...(identities ?? [])],
+    concentration: measurements.threshold ?? 0,
+    thresholdDurationMs,
+    arbitrationDurationMs,
+    contentRunsDurationMs: runsDurationMs,
+    preparationDurationMs,
+    totalDurationMs: performance.now() - totalStarted
+  });
 }
 
 export interface RequestCorpusSubject {

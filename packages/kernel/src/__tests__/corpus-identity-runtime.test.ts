@@ -106,7 +106,15 @@ describe("corpus identity runtime measurements", () => {
 
   it("keeps an omitted spread unknown while remembering that arbitration answered the run", async () => {
     let arbitrationCalls = 0;
-    const traces: Array<{ measured: number }> = [];
+    const traces: Array<{
+      runs: number;
+      measured: number;
+      contentRunsDurationMs: number;
+      thresholdDurationMs: number;
+      arbitrationDurationMs: number;
+      preparationDurationMs: number;
+      totalDurationMs: number;
+    }> = [];
     const evidence: IdentityEvidence = {
       sourceIdentityArbitration: async () => {
         arbitrationCalls += 1;
@@ -130,6 +138,13 @@ describe("corpus identity runtime measurements", () => {
     expect(arbitrationCalls).toBe(1);
     expect(corpusIdentitySignals()?.spread.has("named source")).toBe(false);
     expect(traces.map(trace => trace.measured)).toEqual([3, 0]);
+    expect(traces.every(trace =>
+      trace.runs === 3
+      && [trace.contentRunsDurationMs, trace.thresholdDurationMs, trace.arbitrationDurationMs, trace.preparationDurationMs, trace.totalDurationMs]
+        .every(duration => Number.isFinite(duration) && duration >= 0)
+    )).toBe(true);
+    expect(traces[0]?.arbitrationDurationMs).toBeGreaterThanOrEqual(0);
+    expect(traces[1]?.arbitrationDurationMs).toBe(0);
   });
 
   it("fences pending measurement work when the cache is reset", async () => {
