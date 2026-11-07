@@ -203,7 +203,7 @@ describe("production owner program turn through the API", () => {
     const profile = createLanguageAcquisitionEngine({ idFactory: fixtureIds }).acquire({ sourceVersionId: source.sourceVersionId, text: source.text, createdAt: 102_000 });
     const trainedLanguage = createLanguageMemoryRuntime({ idFactory: fixtureIds, hasher: createHasher() }).train({ streamId: "source:production-creative-language", sourceSystem: "gutenberg", profile, sourceVersionId: source.sourceVersionId, text: source.text, evidence: [source], createdAt: 102_000, maxOrder: 4, maxCountersPerOrder: 256 });
     const compiled = createUniversalCreativeEventConstructionCompiler().compile({ profileId: profile.id, evidence: [source], hasher: createHasher(), updatedAt: 102_000 });
-    if (compiled.status !== "compiled") throw new Error("creative API fixture did not compile");
+    if (compiled.status !== "compiled") throw new Error(`creative API fixture did not compile: ${JSON.stringify(compiled)}`);
     const bundle = hydrateLanguageConstructionPatterns({ patterns: [compiled.pattern], evidence: [source], hasher: createHasher() }).bundles[0];
     if (!bundle?.creativeEvents?.length) throw new Error("creative API fixture has no events");
     const requestText = "Invent two alternative indexing algorithms for this graph, each with a distinct structural approach.";
@@ -268,7 +268,7 @@ function ownerValidationPolicy(): StructuredPatchValidationPolicy {
 }
 
 function creativeLanguageSource(): EvidenceSpan {
-  const text = "method indexes graph. routine indexes graph. process indexes graph. method indexes graph. method partitions graph. routine partitions graph. process partitions graph. routine partitions graph.";
+  const text = "the method indexes the graph. the routine indexes the graph. the method indexes a bucket. the routine indexes a bucket. the method partitions the graph. the routine partitions the graph. the method partitions a bucket. the routine partitions a bucket.";
   return { id: "evidence:production-creative-language", sourceId: "source:production-creative-language", sourceVersionId: "source:production-creative-language:v1", chunkId: "chunk:production-creative-language", contentHash: "hash:production-creative-language", mediaType: "text/plain", byteStart: 0, byteEnd: Buffer.byteLength(text), charStart: 0, charEnd: text.length, text, textPreview: text, languageHints: {}, scriptHints: {}, trustVector: {}, provenance: {}, features: [], status: "promoted", alpha: 0.9, observedAt: 102_000 } as unknown as EvidenceSpan;
 }
 
