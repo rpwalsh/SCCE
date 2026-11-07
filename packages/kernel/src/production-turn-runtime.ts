@@ -329,6 +329,7 @@ import {
 } from "./working-memory.js";
 import type {
   BuildTestResult,
+  ProgramGraph,
   CapabilityPlan,
   ConstructGraph,
   EpisodeId,

@@ -9,11 +9,8 @@ import { createScceKernel, createInMemoryDialogueMemoryStore, createHasher, code
   type UserModelClaimRecord, type TaskResumptionSnapshotRecord } from "@scce/kernel";
 import { storageFixtureForEvaluation } from "../../../kernel/src/__tests__/evidence-promotion-evaluation-fixture.js";
 import { validateOwnerProgramLocalValidation } from "../../../kernel/src/program-local-validation.js";
-import { programResponseReadiness } from "../../../server/src/program-response-readiness.js";
-import { createApprovalSession } from "../approval-session.js";
-import { NodeBuildTestAdapter } from "../process.js";
-import { runProcess } from "../document.js";
-import type { ScceRuntimeConfig } from "../config.js";
+import { programResponseReadiness } from "../program-response-readiness.js";
+import { createApprovalSession, NodeBuildTestAdapter, runProcess, type ScceRuntimeConfig } from "@scce/adapters-node";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -124,6 +121,21 @@ describe("cold ordinary owner program execution", () => {
       && !(plan.permission as { dryRun?: boolean }).dryRun)).toBe(true);
     expect(plans.filter(plan => plan.capabilityId === "process.build_test").every(plan => !(plan.permission as { allowed?: boolean; dryRun?: boolean }).allowed
       || (plan.permission as { dryRun?: boolean }).dryRun)).toBe(true);
+    const localPlans = plans.filter(plan => plan.capabilityId === "program.local_validation");
+    expect(localPlans).toHaveLength(attempts.length);
+    for (const [index, plan] of localPlans.entries()) {
+      const payload = plan.input as unknown as {
+        files: Array<{ path: string; hash: string }>;
+        ownerRequirementIds: string[];
+        build: { command: string; args: string[]; cwd: string };
+        test: { command: string; args: string[]; cwd: string };
+      };
+      expect(payload.ownerRequirementIds).toEqual([...program.hydration!.ownerRequirementIds!].sort());
+      expect(payload.files).toEqual(attempts[index]!.artifacts.map(artifact => ({ path: artifact.path, hash: artifact.contentHash }))
+        .sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
+      expect(payload.build.cwd).toBe(".");
+      expect(payload.test.cwd).toBe(".");
+    }
     const checkRoot = await mkdtemp(path.join(tmpdir(), "scce-native-heldout-"));
     roots.push(checkRoot);
     for (const artifact of result.buildTest!.artifacts) {
