@@ -6,6 +6,7 @@ import {
   type SemanticAnswerFact,
   arrayRecords,
   completeLearnedFactCoverage,
+  currentSourceBoundFactEvidenceOwners,
   exactFactSurface,
   insufficientSupportConstructState,
   invariantSymbols,
@@ -2883,13 +2884,12 @@ function semanticLearnedConstructionCandidate(
     return undefined;
   };
   const state = semanticAnswerConstructState(input.construct);
-  if (!state?.certificationBoundary.externalFactCertification) return done("no_state_or_uncertified");
+  if (!state) return done("no_semantic_answer_state");
   if (state.forceId !== "output.force.source_bound_answer" || state.boundaryId !== "output.force.source_bound") {
     return done("force_or_boundary_mismatch", { forceId: state.forceId, boundaryId: state.boundaryId });
   }
   if (!planTargetsLanguageProfile(plan, input.languageProfile, input.languageMemory)) return done("target_language_mismatch", { planLanguage: plan.targetLanguage, targetLanguageIdentityId: plan.targetLanguageIdentityId ?? null, scopeLanguageId: input.languageMemory.scope.languageId ?? null, profileLanguage: input.languageProfile.id });
   const certifiedEvidenceIds = new Set(state.certificationBoundary.evidenceSpanIds);
-  if (!certifiedEvidenceIds.size) return done("no_certified_evidence_ids");
   const certifiedSourceVersionIds = new Set(state.certificationBoundary.sourceVersionIds);
   const rows: LearnedConstructionCandidateRow[] = [];
   const facts = uniquePriorBoundFacts(state.selectedFacts);
@@ -2924,26 +2924,24 @@ function semanticLearnedConstructionCandidate(
   }
   const factEvidenceIds = new Set(fact.evidenceIds ?? []);
   if (!factEvidenceIds.size || !fact.sourceVersionId) return done("no_fact_evidence_or_source_version", { evidenceCount: factEvidenceIds.size, sourceVersionId: fact.sourceVersionId ?? null });
-  const proofEvidence = input.evidence
-    .filter(span => span.status === "promoted"
-      && jsonRecord(span.trustVector).forceClass === "direct_evidence"
-      && certifiedEvidenceIds.has(String(span.id))
-      && factEvidenceIds.has(String(span.id))
-      && fact.sourceVersionId === String(span.sourceVersionId)
-      && certifiedSourceVersionIds.has(String(span.sourceVersionId)))
+  const currentOwners = currentSourceBoundFactEvidenceOwners(state, fact, input.evidence)
     .sort((left, right) => compareSurfaceText(String(left.id), String(right.id)));
-  if (!proofEvidence.length) {
-    return done("no_matching_proof_evidence", {
+  if (!currentOwners.length) {
+    return done("no_current_source_fact_owners", {
       factEvidenceIds: [...factEvidenceIds],
-      certifiedEvidenceIds: [...certifiedEvidenceIds],
       factSourceVersionId: fact.sourceVersionId,
-      certifiedSourceVersionIds: [...certifiedSourceVersionIds],
       evidenceStatuses: input.evidence.filter(span => factEvidenceIds.has(String(span.id))).map(span => ({ id: String(span.id), status: span.status, forceClass: jsonRecord(span.trustVector).forceClass ?? null, sourceVersionId: String(span.sourceVersionId) }))
     });
   }
-  const routeAdmissibility = Math.max(...proofEvidence.map(span => learnedFactRouteAdmissibility(fact, span)));
+  const proofEvidence = state.certificationBoundary.externalFactCertification
+    ? currentOwners.filter(span => jsonRecord(span.trustVector).forceClass === "direct_evidence"
+      && certifiedEvidenceIds.has(String(span.id))
+      && certifiedSourceVersionIds.has(String(span.sourceVersionId)))
+    : [];
+  const admissibleEvidence = proofEvidence.length ? proofEvidence : currentOwners;
+  const routeAdmissibility = Math.max(...admissibleEvidence.map(span => learnedFactRouteAdmissibility(fact, span)));
   if (routeAdmissibility <= 0) return done("zero_route_admissibility");
-  const proofEvidenceIds = proofEvidence.map(span => String(span.id));
+  const proofEvidenceIds = admissibleEvidence.map(span => String(span.id));
   // Real bug, confirmed live: hydration brings in construction bundles from every profile in the turn's active
   // language scope (traced live -- 25 real bundles, all from OTHER profiles than the one arbitrarily chosen as
   // input.languageProfile, since selectLanguageProfileForSurface (language.ts) picks a cluster's alphabetically

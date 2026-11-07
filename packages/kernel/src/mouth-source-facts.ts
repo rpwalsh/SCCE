@@ -83,6 +83,24 @@ export interface SemanticAnswerConstructState {
   };
 }
 
+/** Resolve a fact's exact, current promoted source owners without relying on a proof-stage annotation. */
+export function currentSourceBoundFactEvidenceOwners(
+  state: SemanticAnswerConstructState,
+  fact: SemanticAnswerFact,
+  evidence: readonly EvidenceSpan[]
+): EvidenceSpan[] {
+  const ids = [...new Set((fact.evidenceIds ?? []).filter(Boolean))];
+  const sourceVersionId = fact.sourceVersionId;
+  const boundary = state.certificationBoundary;
+  if (!ids.length || !sourceVersionId
+    || ids.some(id => !state.supportIds.includes(id) || !boundary.evidenceSpanIds.includes(id))
+    || !boundary.sourceVersionIds.includes(sourceVersionId)) return [];
+  const owners = evidence.filter(span => span.status === "promoted"
+    && ids.includes(String(span.id))
+    && String(span.sourceVersionId) === sourceVersionId);
+  return owners.length === ids.length ? owners : [];
+}
+
 export interface InsufficientSupportConstructState {
   schema: "scce.insufficient_support_construct.v1";
   questionShapeId: string;

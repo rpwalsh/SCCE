@@ -93,8 +93,10 @@ export interface SemanticRealizationContract {
 export interface RequestValueBinding {
   /** The request's own named subject, empty when it names none. */
   subject: string;
-  /** What the request asks past its subject: the same split requestRelationUnits makes for the contract. */
-  relation: string;
+  /** An owned semantic predicate surface, absent when the source program has no predicate label. */
+  relation?: string;
+  /** The exact graph role asked for, kept separate from the predicate's spoken surface. */
+  requestedRoleId?: string;
   value: string;
   resolverId: string;
   relationId?: string;
@@ -113,6 +115,7 @@ export interface ResolvedRequestValue {
   evidenceIds: readonly string[];
   subject?: string;
   relation?: string;
+  requestedRoleId?: string;
   relationId?: string;
 }
 
@@ -137,9 +140,12 @@ export function resolveRequestValueBinding(input: {
       .filter(span => surfaceContainsBoundValue(String(span.text || span.textPreview || ""), value))
       .map(span => String(span.id));
     if (!evidenceIds.length) continue;
+    const relation = typeof resolved === "string" ? undefined : resolved.relation;
+    const requestedRoleId = typeof resolved === "string" ? undefined : resolved.requestedRoleId;
     return {
       subject: (typeof resolved === "string" ? undefined : resolved.subject) ?? namedSubjectAnchors(input.requestText)[0] ?? "",
-      relation: (typeof resolved === "string" ? undefined : resolved.relation) ?? (requestRelationUnits(input.requestText).join(" ") || "is"),
+      ...(relation ? { relation } : requestedRoleId ? {} : { relation: requestRelationUnits(input.requestText).join(" ") || "is" }),
+      ...(requestedRoleId ? { requestedRoleId } : {}),
       ...(typeof resolved !== "string" && resolved.relationId ? { relationId: resolved.relationId } : {}),
       value,
       resolverId: resolver.id,

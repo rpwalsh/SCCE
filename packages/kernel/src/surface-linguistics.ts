@@ -123,6 +123,43 @@ export function splitSurfaceSentences(text: string): string[] {
   return out;
 }
 
+/** Exact source-coordinate ranges from the same Unicode sentence segmentation used by splitSurfaceSentences. */
+export function surfaceSentenceRanges(text: string): Array<{ startUtf16: number; endUtf16: number }> {
+  const chars = [...text];
+  const utf16Offsets = new Array<number>(chars.length + 1);
+  utf16Offsets[0] = 0;
+  for (let index = 0; index < chars.length; index++) utf16Offsets[index + 1] = utf16Offsets[index]! + chars[index]!.length;
+  const out: Array<{ startUtf16: number; endUtf16: number }> = [];
+  let startCodePoint = 0;
+  const push = (endCodePoint: number) => {
+    if (chars.slice(startCodePoint, endCodePoint).some(char => !isSurfaceWhitespace(char))) {
+      out.push({ startUtf16: utf16Offsets[startCodePoint]!, endUtf16: utf16Offsets[endCodePoint]! });
+    }
+    startCodePoint = endCodePoint;
+  };
+  for (let index = 0; index < chars.length; index++) {
+    const char = chars[index] ?? "";
+    if (char === "\n" || char === "\r") {
+      const after = char === "\r" && chars[index + 1] === "\n" ? index + 2 : index + 1;
+      push(index);
+      startCodePoint = after;
+      index = after - 1;
+      continue;
+    }
+    if (!isSentenceBoundarySymbol(char)) continue;
+    let after = index + 1;
+    while (after < chars.length && /[\p{Pe}\p{Pf}\p{Cf}"']/u.test(chars[after]!)) after++;
+    const next = chars[after] ?? "";
+    if ((!next || isSurfaceWhitespace(next) || after > index + 1 || sentenceBoundaryMayOmitWhitespace(chars, index))
+      && shouldCloseSentence(chars, index)) {
+      push(after);
+      index = after - 1;
+    }
+  }
+  push(chars.length);
+  return out;
+}
+
 function sentenceBoundaryMayOmitWhitespace(chars: readonly string[], index: number): boolean {
   const boundary = chars[index] ?? "";
   if (!boundary) return false;

@@ -17,7 +17,7 @@ import {
   validateConfig,
   type ScceRuntimeConfig
 } from "../index.js";
-import { canonicalCorpusSourceSystemId, createClock, createHasher, createIdFactory, createLanguageMemoryRuntime, inductionCharBudget, resolveEvidenceSourceIdentity, CORPUS_ROLE_IDS, hydrateLanguageConstructionPatterns, isLanguageConstructionPattern, requestCommunicativeActModelFromPatterns, classifyRequestCommunicativeAct, codeModelsFromRecords, generateLearnedCodeRepairs, createMouth, createCorrectionMemory, createSemanticEntailmentEngine, codeRequestSignal, featureSet, createScceKernel, withSurfaceContract, toJsonValue, DEFAULT_NGRAM_SETTINGS, type FieldState } from "@scce/kernel";
+import { canonicalCorpusSourceSystemId, createClock, createHasher, createIdFactory, createLanguageAcquisitionEngine, createLanguageMemoryRuntime, inductionCharBudget, resolveEvidenceSourceIdentity, CORPUS_ROLE_IDS, hydrateLanguageConstructionPatterns, isLanguageConstructionPattern, requestCommunicativeActModelFromPatterns, classifyRequestCommunicativeAct, codeModelsFromRecords, generateLearnedCodeRepairs, createMouth, createCorrectionMemory, createSemanticEntailmentEngine, codeRequestSignal, featureSet, createScceKernel, withSurfaceContract, toJsonValue, DEFAULT_NGRAM_SETTINGS, type FieldState } from "@scce/kernel";
 import { compilationArtifactIds } from "../../../kernel/src/__tests__/owned-source-fixture.js";
 import { storageFixtureForEvaluation } from "../../../kernel/src/__tests__/evidence-promotion-evaluation-fixture.js";
 import { compileSourceCodeFunctions } from "../source-code-function-learning.js";
@@ -28,6 +28,7 @@ import { createWikipediaV3Ingestor } from "../wikipedia-v3-ingestor.js";
 import * as corpusTrainer from "../language-corpus-trainer.js";
 import { MIN_WIKIPEDIA_MAX_ARTICLE_CHARS } from "../config.js";
 import { INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID } from "../../../kernel/src/language-induction-memory.js";
+import { SOURCE_CONSTRUCTION_BINDINGS_COMPONENT_RECIPE_ID } from "../../../kernel/src/language-construction-memory.js";
 import { SOURCE_ENTITY_GRAPH_COMPONENT_RECIPE_ID } from "../corpus-source-graph-projection.js";
 import * as languageInduction from "../../../kernel/src/language-induction.js";
 import * as kernelPrimitives from "../../../kernel/src/primitives.js";
@@ -40,6 +41,9 @@ import { CORPUS_SOURCE_SYSTEM_IDS } from "../../../kernel/src/corpus-registry.js
 import { REQUEST_COMMUNICATIVE_ACT_SOURCE_SYSTEM } from "../../../kernel/src/request-communicative-act.js";
 import type {
   EvidenceSpan,
+  GraphNode,
+  GraphSnapshot,
+  Hyperedge,
   InformationLabel,
   IngestionCheckpoint,
   JsonValue,
@@ -101,14 +105,54 @@ describe("learned rows carry the shard's provenance once", () => {
     const checkpoints = new Map<string, IngestionCheckpoint>();
     fixture.storage.ingestion = { put: async row => { checkpoints.set(row.id, structuredClone(row)); }, get: async id => checkpoints.get(id) ?? null,
       list: async () => [...checkpoints.values()] } as ScceStorage["ingestion"];
-    const text = "walla r0. wallawalla r0. tinu r0. tinutinu r0. kobo r0. kobokobo r0. cat chased mouse. dog chased ball. cat chased ball. dog chased mouse.";
+    const text = "walla r0. wallawalla r0. tinu r0. tinutinu r0. kobo r0. kobokobo r0. cat chased mouse. dog chased ball. cat chased ball. dog chased mouse. cat chased. dog chased.";
+    const evidence = corpusEvidenceSpan("raw-forms", text, 0);
+    const profile = createLanguageAcquisitionEngine({ idFactory: corpusTestIds }).acquire({ sourceVersionId: evidence.sourceVersionId, text, createdAt: 1700000000000 });
+    const graphNodes: GraphNode[] = [];
+    const relationFacts: Hyperedge[] = [];
+    const addFact = (name: string, subject: string, object?: string) => {
+      const subjectId = `node.${name}.subject`;
+      graphNodes.push({ id: subjectId as GraphNode["id"], representation: { surface: subject }, typeId: "type.entity" as GraphNode["typeId"],
+        alpha: 1, evidenceIds: [evidence.id], features: [], createdAt: 1700000000000, updatedAt: 1700000000000, metadata: {} });
+      const participantPorts: Hyperedge["participantPorts"] = [{ nodeId: subjectId as Hyperedge["participantPorts"][number]["nodeId"],
+        portId: "role.agent", roleId: "role.agent", valueKind: "entity.person", realization: "observed", evidenceIds: [evidence.id] }];
+      const memberNodeIds: Hyperedge["memberNodeIds"] = [subjectId as Hyperedge["memberNodeIds"][number]];
+      if (object !== undefined) {
+        const objectId = `node.${name}.object`;
+        graphNodes.push({ id: objectId as GraphNode["id"], representation: { surface: object }, typeId: "type.entity" as GraphNode["typeId"],
+          alpha: 1, evidenceIds: [evidence.id], features: [], createdAt: 1700000000000, updatedAt: 1700000000000, metadata: {} });
+        participantPorts.push({ nodeId: objectId as Hyperedge["participantPorts"][number]["nodeId"], portId: "role.patient", roleId: "role.patient",
+          valueKind: "entity.object", realization: "observed", evidenceIds: [evidence.id] });
+        memberNodeIds.push(objectId as Hyperedge["memberNodeIds"][number]);
+      } else participantPorts.push({ nodeId: null, portId: "role.patient", roleId: "role.patient", valueKind: "entity.object", realization: "omitted", evidenceIds: [evidence.id] });
+      relationFacts.push({ schema: "scce.hyperedge.v2", id: `fact.${name}` as Hyperedge["id"], relationId: "relation.chase" as Hyperedge["relationId"],
+        participantPorts, memberNodeIds, qualifiers: {}, modality: { extractionChannel: "source_declared_structured" }, evidenceIds: [evidence.id], weightVector: {}, temporalScope: {}, provenanceRefs: [],
+        createdAt: 1700000000000, updatedAt: 1700000000000 });
+    };
+    addFact("cat-mouse", "cat", "mouse"); addFact("dog-ball", "dog", "ball"); addFact("cat-ball", "cat", "ball"); addFact("dog-mouse", "dog", "mouse");
+    addFact("cat-request", "cat"); addFact("dog-request", "dog");
+    const graphSnapshotAdditions: GraphSnapshot = { nodes: graphNodes, edges: [], hyperedges: relationFacts };
     const input = { storage: fixture.storage, sourceSystem: "gutenberg", sourceUri: "fixture://raw-forms", streamUri: "fixture://raw-forms", text, createdAt: 1700000000000,
       ngramMaxOrder: 3, skipNgramObservationPersistence: true, informationLabel: publicCorpusInformationLabel,
+      sourceVersionId: evidence.sourceVersionId, evidence: [evidence], profile, graphSnapshotAdditions,
       corpusCheckpoint: { rootUri: "fixture://raw-forms", itemUri: "forms.txt", contentHash: blobContentHash(Buffer.from(text)), byteLength: Buffer.byteLength(text) } };
     await trainLanguageCorpusText(input);
     const morphology = fixture.state.patterns.filter(row => recordOf(row.patternJson).schema === "scce.induced_language_model.morphology_memory.v1");
     expect(morphology).toHaveLength(1);
     expect(recordOf(morphology[0]!.patternJson).componentRecipe).toBe(INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID);
+    const learnedNullPattern = fixture.state.patterns.find(row => {
+      if (!isConstructionBundle(row)) return false;
+      const bundle = recordOf(row.patternJson).bundle as { sourceExamples?: Array<{ nullRoles?: Array<{ graphBinding?: { roleId?: string } }> }> };
+      return bundle.sourceExamples?.some(example => example.nullRoles?.some(role => role.graphBinding?.roleId === "role.patient")) ?? false;
+    });
+    expect(learnedNullPattern).toBeDefined();
+    const stalePatternJson = structuredClone(learnedNullPattern!.patternJson) as Record<string, unknown>;
+    const staleBundle = stalePatternJson.bundle as { sourceExamples: Array<{ nullRoles?: Array<{ graphBinding?: { roleId?: string } }> }> };
+    for (const example of staleBundle.sourceExamples) for (const role of example.nullRoles ?? []) {
+      if (role.graphBinding?.roleId === "role.patient") delete role.graphBinding;
+    }
+    const staleIndex = fixture.state.patterns.findIndex(row => row.id === learnedNullPattern!.id);
+    fixture.state.patterns[staleIndex] = { ...learnedNullPattern!, patternJson: stalePatternJson as JsonValue };
     const runtime = createLanguageMemoryRuntime({ hasher: corpusTestHasher, idFactory: corpusTestIds });
     const state = scopeLanguageMemoryStateToLanguage(runtime.hydrate({ models: fixture.state.models, units: fixture.state.units, patterns: fixture.state.patterns,
       semanticFrames: fixture.state.frames, constructionEvidence: fixture.state.evidence }), "language.raw", { profile: () => "language.raw", corpus: () => "language.raw" });
@@ -118,9 +162,10 @@ describe("learned rows carry the shard's provenance once", () => {
       expect(requestUnitMatchesSurface("wallawalla", "wallawallb")).toBe(false);
     } finally { primeLearnedAnswerUnitForms({ deltas: [], profileIds: new Set() }); }
     const before = structuredClone({ models: fixture.state.models, units: fixture.state.units, frames: fixture.state.frames, patterns: fixture.state.patterns });
+    const beforePatternIds = before.patterns.map(row => row.id).sort();
     const checkpoint = [...checkpoints.values()][0]!;
     const metadata = { ...recordOf(checkpoint.metadata) };
-    delete metadata.componentRecipes;
+    delete (metadata.componentRecipes as Record<string, JsonValue>).sourceConstructionBindings;
     checkpoints.set(checkpoint.id, { ...checkpoint, metadata });
     const writesBeforeUpgrade = fixture.state.events.length;
     const upgraded = await trainLanguageCorpusText(input);
@@ -129,10 +174,18 @@ describe("learned rows carry the shard's provenance once", () => {
     expect(fixture.state.models).toEqual(before.models);
     expect(fixture.state.units).toEqual(before.units);
     expect(fixture.state.frames).toEqual(before.frames);
-    expect(fixture.state.patterns).toEqual(before.patterns);
+    expect(fixture.state.patterns.find(row => row.id === learnedNullPattern!.id)?.patternJson).not.toEqual(stalePatternJson);
+    const repaired = fixture.state.patterns.filter(isConstructionBundle).some(row => {
+      const bundle = recordOf(row.patternJson).bundle as { sourceExamples?: Array<{ nullRoles?: Array<{ graphBinding?: { roleId?: string } }> }> };
+      return bundle.sourceExamples?.some(example => example.nullRoles?.some(role => role.graphBinding?.roleId === "role.patient")) ?? false;
+    });
+    expect(repaired).toBe(true);
+    expect(fixture.state.patterns.map(row => row.id).sort()).toEqual(beforePatternIds);
+    expect(fixture.state.patterns.some(row => row.id === learnedNullPattern!.id)).toBe(true);
     expect(checkpoints.size).toBe(1);
     expect([...checkpoints.values()][0]!.id).toBe(checkpoint.id);
-    expect(recordOf([...checkpoints.values()][0]!.metadata).componentRecipes).toEqual({ inducedLanguageMemory: INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID, sourceEntityGraph: SOURCE_ENTITY_GRAPH_COMPONENT_RECIPE_ID });
+    expect(recordOf([...checkpoints.values()][0]!.metadata).componentRecipes).toEqual({ inducedLanguageMemory: INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID,
+      sourceConstructionBindings: SOURCE_CONSTRUCTION_BINDINGS_COMPONENT_RECIPE_ID, sourceEntityGraph: SOURCE_ENTITY_GRAPH_COMPONENT_RECIPE_ID });
     const writes = fixture.state.events.length;
     await trainLanguageCorpusText(input);
     expect(fixture.state.events).toHaveLength(writes);

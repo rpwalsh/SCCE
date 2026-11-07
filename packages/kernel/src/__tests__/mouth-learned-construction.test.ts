@@ -85,6 +85,21 @@ describe("Mouth learned-construction candidate", () => {
     expect(result.spoken.realizationTrace.selected.id).toMatch(/^candidate:generated:learned-construction:/u);
   });
 
+  it("uses current promoted fact owners when the optional proof annotation is absent", async () => {
+    const owned = await speakFixture({
+      sentence: "Aster powers pump.", subject: "Aster", predicate: "powers", object: "pump",
+      question: "What powers the pump?", externalFactCertification: false
+    });
+    const foreign = await speakFixture({
+      sentence: "Aster powers pump.", subject: "Aster", predicate: "powers", object: "pump",
+      question: "What powers the pump?", externalFactCertification: false, substituteCurrentEvidence: true
+    });
+
+    expect(owned.spoken.text).toBe("Aster powers pump.");
+    expect(learnedCandidate(owned.spoken)).toBeDefined();
+    expect(learnedCandidate(foreign.spoken)).toBeUndefined();
+  });
+
   it("preserves a no-space script's learned order and punctuation", async () => {
     const result = await speakFixture({
       sentence: "東京在日本。",
@@ -363,6 +378,8 @@ async function speakFixture(input: {
   requiredSurface?: string;
   persistConstruction?: boolean;
   sourceDerivedBinding?: boolean;
+  externalFactCertification?: boolean;
+  substituteCurrentEvidence?: boolean;
   alternativeSentence?: string;
   cycleScores?: ReadonlyMap<string, number>;
 }): Promise<{
@@ -376,10 +393,13 @@ async function speakFixture(input: {
   const evidenceText = input.evidenceText ?? input.sentence;
   const source = sourceVersion(evidenceText);
   const evidence = evidenceSpan(source, evidenceText, input.evidenceCharStart ?? 0);
+  const currentEvidence = input.substituteCurrentEvidence
+    ? evidenceSpan(sourceVersion("Beryl guides turbine."), "Beryl guides turbine.", 0)
+    : evidence;
   const field = emptyField(input.question);
   const entailment = createSemanticEntailmentEngine({ idFactory: ids, hasher }).check({
     text: input.question,
-    evidence: [evidence],
+    evidence: [currentEvidence],
     nodes: [],
     field,
     createdAt: clock.now()
@@ -475,10 +495,10 @@ async function speakFixture(input: {
       .flatMap(bundle => bundle.constructions.map(construction => construction.id))
     : [];
   const spoken = await mouth.speak({
-    construct: semanticAnswerConstruct(fact, evidence, input.completeCoverage ?? true),
+    construct: semanticAnswerConstruct(fact, evidence, input.completeCoverage ?? true, input.externalFactCertification ?? true),
     field,
     languageProfile: profile,
-    evidence: [evidence],
+    evidence: [currentEvidence],
     entailment,
     languageMemory,
     targetLanguageIdentityId: input.targetLanguageIdentityId,
@@ -563,7 +583,8 @@ function exactOccurrence(source: readonly string[], wanted: readonly string[]): 
 function semanticAnswerConstruct(
   fact: Record<string, string | number | boolean | string[]>,
   evidence: EvidenceSpan,
-  completeCoverage: boolean
+  completeCoverage: boolean,
+  externalFactCertification: boolean
 ): ConstructGraph {
   return {
     id: ids.constructId({ fixture: "learned-construction", evidenceId: evidence.id }),
@@ -597,7 +618,7 @@ function semanticAnswerConstruct(
           directEvidenceCount: 1,
           evidenceSpanIds: [String(evidence.id)],
           sourceVersionIds: [String(evidence.sourceVersionId)],
-          externalFactCertification: true
+          externalFactCertification
         }
       }
     }],

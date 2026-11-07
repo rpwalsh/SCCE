@@ -40,6 +40,7 @@ import {
 import { assertCanonicalHyperedge } from "./hyperedge.js";
 import {
   opaqueRoleId,
+  UNRESOLVED_SEMANTIC_ROLE_ID_PREFIX,
   type OpaqueRoleModel
 } from "./opaque-role-induction.js";
 
@@ -1031,7 +1032,7 @@ export function graphFromStructuredSemanticCandidates(input: {
       participantPorts.push({
         portId: graphPortId,
         roleId: opaqueRoleId(input.opaqueRoleModel, candidate.id, participant.portId)
-          ?? `role.unresolved.${input.hasher.digestHex(`${candidate.relationSeedId}\u001f${participant.valueKind}`).slice(0, 24)}`,
+          ?? `${UNRESOLVED_SEMANTIC_ROLE_ID_PREFIX}${input.hasher.digestHex(`${candidate.relationSeedId}\u001f${participant.valueKind}`).slice(0, 24)}`,
         nodeId: participant.realization === "omitted" ? null : participantNodeId,
         valueKind: participant.valueKind,
         realization: participant.realization,

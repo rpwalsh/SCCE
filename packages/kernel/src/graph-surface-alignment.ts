@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { induceLearnedConstructions, type AlignedSurfaceExample } from "./language-construction.js";
+import { SOURCE_CONSTRUCTION_PREDICATE_SLOT_INDEX } from "./language-construction-memory.js";
 import type { SourceBoundLanguageConstructionTrainingSet, SourceConstructionGraphBinding } from "./language-construction-memory.js";
 import { graphNodeSurface } from "./semantic-proof-adapter.js";
 import { createLanguageInductionEngine, type GraphBoundConstruction, type InducedLanguageModel, type LanguageInductionDocument } from "./language-induction.js";
@@ -8,6 +9,8 @@ import { buildSurfaceLattice, buildSourceAlignmentSurfaceLattice, validateSurfac
 import { segmentUnicodeSurfaceV2, type LexicalSegment } from "./unicode-segmentation-v2.js";
 import { boundedInductionDocuments } from "./training-orchestrator.js";
 import { canonicalStringify, clamp01, toJsonValue } from "./primitives.js";
+import { UNRESOLVED_SEMANTIC_ROLE_ID_PREFIX } from "./opaque-role-induction.js";
+import { surfaceSentenceRanges } from "./surface-linguistics.js";
 import type { EvidenceSpan, GraphSnapshot, Hasher, JsonValue } from "./types.js";
 
 /**
@@ -97,6 +100,17 @@ export interface GraphSurfaceTransportTrace {
     priorWeight: number;
   };
   cells: GraphSurfaceTransportCell[];
+  nullRoleBindingAudit?: NullRoleBindingAudit[];
+}
+
+interface NullRoleBindingAudit {
+  slotIndex: number;
+  occurrenceIndex: number;
+  reason: "bound" | "no_typed_anchor" | "multiple_null_roles" | "incompatible_construction_slot"
+    | "no_slot_declaration" | "ambiguous_slot_declaration" | "no_matching_fact" | "ambiguous_facts"
+    | "no_omitted_port" | "ambiguous_omitted_ports" | "unresolved_omitted_role" | "slot_binding_mismatch";
+  candidateFactCount: number;
+  omittedPortCount: number;
 }
 
 export interface PreparedConstructionInduction {
@@ -161,6 +175,7 @@ export function induceGraphSurfaceAlignments(input: {
     const evidenceIds = (doc.evidenceIds ?? []).map(String);
     if (!evidenceIds.length) continue;
     const lexical = segmentUnicodeSurfaceV2(doc.text, input.hasher).lexicalSegments;
+    const sentenceRanges = surfaceSentenceRanges(doc.text);
     if (!lexical.some(segment => {
       const construction = constructionsByPredicate.get(segment.normalized);
       return construction && (observationsByConstructionId.get(construction.id)?.length ?? 0) < maxObservations;
@@ -194,6 +209,7 @@ export function induceGraphSurfaceAlignments(input: {
         profileId: input.profileId,
         evidenceIds,
         hasher: input.hasher,
+        sentenceRanges,
         ordinal: existing.length
       });
       if (!aligned) continue;
@@ -270,11 +286,23 @@ export function induceSourceBoundConstructionTrainingSets(input: {
   const setsByBindingId = new Map<string, SourceBoundLanguageConstructionTrainingSet>();
   const tracesByBindingId = new Map<string, GraphSurfaceTransportTrace[]>();
   const latticesByBindingId = new Map<string, GraphSurfaceLatticeSummary[]>();
+  const slotGraphBindings = new Map<string, Map<string, Map<string, SourceConstructionGraphBinding>>>();
+  const pendingNullRoleBindings: Array<{
+    bindingId: string;
+    observation: SourceBoundLanguageConstructionTrainingSet["observations"][number];
+    evidenceId: string;
+    construction: GraphBoundConstruction;
+    roles: Array<{ role: SelectedRoleAlignment; graphBinding?: SourceConstructionGraphBinding }>;
+    nullRoles: Array<{ slotIndex: number; occurrenceIndex?: number }>;
+    facts: readonly SourceGraphFact[];
+    trace: GraphSurfaceTransportTrace;
+  }> = [];
   const graphBindings = sourceGraphRoleBindings(input.graphSnapshot);
 
   for (const span of promoted) {
     const evidenceIds = [String(span.id)];
     const lexical = segmentUnicodeSurfaceV2(span.text, input.hasher).lexicalSegments;
+    const sentenceRanges = surfaceSentenceRanges(span.text);
     if (!lexical.some(segment => {
       const construction = constructionsByPredicate.get(segment.normalized);
       if (!construction) return false;
@@ -295,12 +323,22 @@ export function induceSourceBoundConstructionTrainingSets(input: {
       const bindingId = sourceRelationConstructionBindingId(input.hasher, input.profileId, construction.predicate);
       const ordinal = bySlotOrdinal.get(bindingId) ?? 0;
       if (ordinal >= maxObservations) continue;
-      const aligned = sourceBoundObservationForOccurrence({ span, lexical, lattice, index, construction, hasher: input.hasher, graphBindings });
+      const aligned = sourceBoundObservationForOccurrence({ span, lexical, lattice, index, construction, hasher: input.hasher, graphBindings, sentenceRanges });
       if (!aligned) continue;
       bySlotOrdinal.set(bindingId, ordinal + 1);
       const set = setsByBindingId.get(bindingId) ?? { bindingId, observations: [] };
       (set.observations as typeof set.observations[number][]).push(aligned.observation);
       setsByBindingId.set(bindingId, set);
+      for (const role of aligned.observation.roles) {
+        if (!role.graphBinding) continue;
+        const declarations = slotGraphBindings.get(bindingId) ?? new Map<string, Map<string, SourceConstructionGraphBinding>>();
+        const key = `${role.slotIndex}\u0001${role.occurrenceIndex ?? 0}`;
+        const variants = declarations.get(key) ?? new Map<string, SourceConstructionGraphBinding>();
+        variants.set(canonicalStringify(role.graphBinding), role.graphBinding);
+        declarations.set(key, variants);
+        slotGraphBindings.set(bindingId, declarations);
+      }
+      if (aligned.nullRoleBindingContext) pendingNullRoleBindings.push({ bindingId, observation: aligned.observation, ...aligned.nullRoleBindingContext, trace: aligned.trace });
       const traces = tracesByBindingId.get(bindingId) ?? [];
       traces.push(aligned.trace);
       tracesByBindingId.set(bindingId, traces);
@@ -308,6 +346,30 @@ export function induceSourceBoundConstructionTrainingSets(input: {
       if (!summaries.some(summary => summary.latticeId === latticeSummary.latticeId)) summaries.push(latticeSummary);
       latticesByBindingId.set(bindingId, summaries);
     }
+  }
+
+  for (const pending of pendingNullRoleBindings) {
+    const declarations = slotGraphBindings.get(pending.bindingId) ?? new Map();
+    const bindingResult = bindSourceNullRoles({
+      evidenceId: pending.evidenceId,
+      construction: pending.construction,
+      roles: pending.roles,
+      nullRoles: pending.nullRoles,
+      facts: pending.facts,
+      slotGraphBindings: declarations
+    });
+    pending.trace.nullRoleBindingAudit = bindingResult.audit;
+    const set = setsByBindingId.get(pending.bindingId);
+    const rows = set?.observations as SourceBoundLanguageConstructionTrainingSet["observations"][number][] | undefined;
+    const index = rows?.indexOf(pending.observation) ?? -1;
+    if (!rows || index < 0) continue;
+    rows[index] = {
+      ...pending.observation,
+      nullRoles: pending.observation.nullRoles?.map(role => {
+        const binding = bindingResult.bindings.get(`${role.slotIndex}\u0001${role.occurrenceIndex ?? 0}`);
+        return binding ? { ...role, graphBinding: binding } : role;
+      })
+    };
   }
 
   return [...setsByBindingId.values()]
@@ -458,19 +520,34 @@ function sourceBoundObservationForOccurrence(input: {
   index: number;
   construction: GraphBoundConstruction;
   hasher: Hasher;
-  graphBindings: ReadonlyMap<string, SourceConstructionGraphBinding>;
-}): { observation: SourceBoundLanguageConstructionTrainingSet["observations"][number]; trace: GraphSurfaceTransportTrace } | undefined {
+  graphBindings: SourceGraphRoleBindingIndex;
+  sentenceRanges: readonly { startUtf16: number; endUtf16: number }[];
+}): { observation: SourceBoundLanguageConstructionTrainingSet["observations"][number]; trace: GraphSurfaceTransportTrace;
+  nullRoleBindingContext?: {
+    evidenceId: string;
+    construction: GraphBoundConstruction;
+    roles: Array<{ role: SelectedRoleAlignment; graphBinding?: SourceConstructionGraphBinding }>;
+    nullRoles: Array<{ slotIndex: number; occurrenceIndex?: number }>;
+    facts: readonly SourceGraphFact[];
+  } } | undefined {
   const selected = selectOccurrenceAlignment({
     lexical: input.lexical,
     lattice: input.lattice,
     index: input.index,
     construction: input.construction,
     evidenceIds: [String(input.span.id)],
-    hasher: input.hasher
+    hasher: input.hasher,
+    sentenceRanges: input.sentenceRanges
   });
   if (!selected) return undefined;
   const surface = codePointsOf(input.span).slice(selected.surfaceStartCodePoint, selected.surfaceEndCodePoint).join("");
   if (surface !== surface.normalize("NFC")) return undefined;
+  const graphBoundRoles = selected.roles.map(role => ({
+    role,
+    graphBinding: input.graphBindings.byEvidenceSurface.get(canonicalStringify([String(input.span.id), role.segment.surface]))
+  }));
+  const evidenceId = String(input.span.id);
+  const facts = input.graphBindings.factsByEvidence.get(evidenceId) ?? [];
 
   return {
     observation: {
@@ -478,42 +555,142 @@ function sourceBoundObservationForOccurrence(input: {
       evidenceId: String(input.span.id),
       surfaceStartCodePoint: selected.surfaceStartCodePoint,
       surfaceEndCodePoint: selected.surfaceEndCodePoint,
-      roles: selected.roles.map(role => ({
+      roles: graphBoundRoles.map(({ role, graphBinding }) => ({
         slotIndex: role.slotIndex,
         occurrenceIndex: role.occurrenceIndex,
         startCodePoint: role.segment.codePointStart - selected.surfaceStartCodePoint,
         endCodePoint: role.segment.codePointEnd - selected.surfaceStartCodePoint,
-        ...(input.graphBindings.has(canonicalStringify([String(input.span.id), role.segment.surface]))
-          ? { graphBinding: input.graphBindings.get(canonicalStringify([String(input.span.id), role.segment.surface]))! } : {})
+        ...(graphBinding ? { graphBinding } : {})
       })),
       ...(selected.nullRoles.length ? { nullRoles: selected.nullRoles } : {})
     },
-    trace: selected.trace
+    trace: selected.trace,
+    ...(selected.nullRoles.length ? { nullRoleBindingContext: { evidenceId, construction: input.construction,
+      roles: graphBoundRoles, nullRoles: selected.nullRoles, facts } } : {})
   };
 }
 
-function sourceGraphRoleBindings(graph: GraphSnapshot | undefined): Map<string, SourceConstructionGraphBinding> {
+interface SourceGraphPort {
+  binding: SourceConstructionGraphBinding;
+  surface?: string;
+  realization: "observed" | "omitted";
+  nodeId: string | null;
+  evidenceIds: readonly string[];
+}
+
+interface SourceGraphFact {
+  id: string;
+  relationId: string;
+  qualifiers: JsonValue;
+  modality: JsonValue;
+  temporalScope: JsonValue;
+  evidenceIds: readonly string[];
+  ports: readonly SourceGraphPort[];
+}
+
+interface SourceGraphRoleBindingIndex {
+  byEvidenceSurface: ReadonlyMap<string, SourceConstructionGraphBinding>;
+  factsByEvidence: ReadonlyMap<string, readonly SourceGraphFact[]>;
+}
+
+function sourceGraphRoleBindings(graph: GraphSnapshot | undefined): SourceGraphRoleBindingIndex {
   const result = new Map<string, SourceConstructionGraphBinding>();
-  if (!graph) return result;
+  const factsByEvidence = new Map<string, SourceGraphFact[]>();
+  if (!graph) return { byEvidenceSurface: result, factsByEvidence };
   const nodes = new Map(graph.nodes.map(node => [String(node.id), node]));
   const bindings = new Map<string, Map<string, SourceConstructionGraphBinding>>();
-  for (const edge of graph.hyperedges) for (const port of edge.participantPorts) {
-    if (port.realization !== "observed" || !port.nodeId) continue;
-    const surface = graphNodeSurface(nodes.get(String(port.nodeId)));
-    if (!surface) continue;
-    const binding: SourceConstructionGraphBinding = {
-      relationId: String(edge.relationId), roleId: port.roleId, valueKind: port.valueKind,
-      qualifiers: edge.qualifiers, modality: edge.modality, temporalScope: edge.temporalScope
+  for (const edge of graph.hyperedges) {
+    const ports = edge.participantPorts.map(port => {
+      const binding: SourceConstructionGraphBinding = {
+        relationId: String(edge.relationId), roleId: port.roleId, valueKind: port.valueKind,
+        qualifiers: edge.qualifiers, modality: edge.modality, temporalScope: edge.temporalScope
+      };
+      const surface = port.realization === "observed" && port.nodeId
+        ? graphNodeSurface(nodes.get(String(port.nodeId))) : undefined;
+      if (surface) for (const evidenceId of port.evidenceIds) {
+        const key = canonicalStringify([String(evidenceId), surface]);
+        const candidates = bindings.get(key) ?? new Map<string, SourceConstructionGraphBinding>();
+        candidates.set(canonicalStringify(binding), binding);
+        bindings.set(key, candidates);
+      }
+      return { binding, surface, realization: port.realization, nodeId: port.nodeId === null ? null : String(port.nodeId), evidenceIds: port.evidenceIds.map(String) };
+    });
+    const fact: SourceGraphFact = {
+      id: String(edge.id), relationId: String(edge.relationId), qualifiers: edge.qualifiers,
+      modality: edge.modality, temporalScope: edge.temporalScope,
+      evidenceIds: edge.evidenceIds.map(String), ports
     };
-    for (const evidenceId of port.evidenceIds) {
-      const key = canonicalStringify([String(evidenceId), surface]);
-      const candidates = bindings.get(key) ?? new Map<string, SourceConstructionGraphBinding>();
-      candidates.set(canonicalStringify(binding), binding);
-      bindings.set(key, candidates);
+    for (const evidenceId of fact.evidenceIds) {
+      const facts = factsByEvidence.get(evidenceId) ?? [];
+      facts.push(fact);
+      factsByEvidence.set(evidenceId, facts);
     }
   }
   for (const [key, candidates] of bindings) if (candidates.size === 1) result.set(key, [...candidates.values()][0]!);
-  return result;
+  return { byEvidenceSurface: result, factsByEvidence };
+}
+
+function bindSourceNullRoles(input: {
+  evidenceId: string;
+  construction: GraphBoundConstruction;
+  roles: readonly { role: SelectedRoleAlignment; graphBinding?: SourceConstructionGraphBinding }[];
+  nullRoles: readonly { slotIndex: number; occurrenceIndex?: number }[];
+  facts: readonly SourceGraphFact[];
+  slotGraphBindings: ReadonlyMap<string, ReadonlyMap<string, SourceConstructionGraphBinding>>;
+}): { bindings: Map<string, SourceConstructionGraphBinding>; audit: NullRoleBindingAudit[] } {
+  const bindings = new Map<string, SourceConstructionGraphBinding>();
+  if (!input.nullRoles.length) return { bindings, audit: [] };
+  const anchors = input.roles.filter((row): row is typeof row & { graphBinding: SourceConstructionGraphBinding } => Boolean(row.graphBinding));
+  const audits: NullRoleBindingAudit[] = [];
+  const reasonForAll = (reason: NullRoleBindingAudit["reason"], candidateFactCount = 0, omittedPortCount = 0) => {
+    for (const role of input.nullRoles) audits.push({ slotIndex: role.slotIndex, occurrenceIndex: role.occurrenceIndex ?? 0, reason, candidateFactCount, omittedPortCount });
+  };
+  if (!anchors.length) { reasonForAll("no_typed_anchor"); return { bindings, audit: audits }; }
+  if (input.nullRoles.length !== 1) { reasonForAll("multiple_null_roles"); return { bindings, audit: audits }; }
+  const nullRole = input.nullRoles[0]!;
+  const constructionSlot = input.construction.slots.find((slot, index) =>
+    slotIndexForConstructionSlot(slot.relationDirection) === nullRole.slotIndex
+    && occurrenceIndexForSlot(input.construction.slots, index) === (nullRole.occurrenceIndex ?? 0));
+  if (!constructionSlot) {
+    reasonForAll("incompatible_construction_slot");
+    return { bindings, audit: audits };
+  }
+  const declaredBindings = input.slotGraphBindings.get(`${nullRole.slotIndex}\u0001${nullRole.occurrenceIndex ?? 0}`);
+  if (!declaredBindings?.size) { reasonForAll("no_slot_declaration"); return { bindings, audit: audits }; }
+  if (declaredBindings.size !== 1) { reasonForAll("ambiguous_slot_declaration"); return { bindings, audit: audits }; }
+  const declaredBinding = [...declaredBindings.values()][0]!;
+  const anchorScopes = new Set(anchors.map(({ graphBinding }) => canonicalStringify({
+    relationId: graphBinding.relationId, qualifiers: graphBinding.qualifiers ?? {},
+    modality: graphBinding.modality ?? {}, temporalScope: graphBinding.temporalScope ?? {}
+  })));
+  if (anchorScopes.size !== 1) { reasonForAll("no_matching_fact"); return { bindings, audit: audits }; }
+  const matchingFacts = input.facts.filter(fact => fact.evidenceIds.includes(input.evidenceId)
+    && anchors.every(anchor => fact.ports.filter(port => port.realization === "observed" && port.nodeId !== null
+      && port.surface === anchor.role.segment.surface && port.evidenceIds.includes(input.evidenceId)
+      && sameGraphBinding(port.binding, anchor.graphBinding)).length === 1)
+    && fact.ports.filter(port => port.realization === "observed" && port.nodeId !== null && port.evidenceIds.includes(input.evidenceId)).length === anchors.length);
+  if (!matchingFacts.length) { reasonForAll("no_matching_fact"); return { bindings, audit: audits }; }
+  if (matchingFacts.length !== 1) { reasonForAll("ambiguous_facts", matchingFacts.length); return { bindings, audit: audits }; }
+  const fact = matchingFacts[0]!;
+  const omitted = fact.ports.filter(port => port.realization === "omitted" && port.nodeId === null && port.evidenceIds.includes(input.evidenceId));
+  if (!omitted.length) { reasonForAll("no_omitted_port", 1); return { bindings, audit: audits }; }
+  if (omitted.length !== 1) { reasonForAll("ambiguous_omitted_ports", 1, omitted.length); return { bindings, audit: audits }; }
+  const port = omitted[0]!;
+  if (!port.binding.roleId || port.binding.roleId.startsWith(UNRESOLVED_SEMANTIC_ROLE_ID_PREFIX) || !port.binding.valueKind) {
+    reasonForAll("unresolved_omitted_role", 1, 1);
+    return { bindings, audit: audits };
+  }
+  if (!sameGraphBinding(port.binding, declaredBinding)) {
+    reasonForAll("slot_binding_mismatch", 1, 1);
+    return { bindings, audit: audits };
+  }
+  bindings.set(`${nullRole.slotIndex}\u0001${nullRole.occurrenceIndex ?? 0}`, port.binding);
+  audits.push({ slotIndex: nullRole.slotIndex, occurrenceIndex: nullRole.occurrenceIndex ?? 0, reason: "bound", candidateFactCount: 1, omittedPortCount: 1 });
+  return { bindings, audit: audits };
+}
+
+function sameGraphBinding(left: SourceConstructionGraphBinding, right: SourceConstructionGraphBinding): boolean {
+  return canonicalStringify(left) === canonicalStringify(right);
 }
 
 function alignedExampleForOccurrence(input: {
@@ -526,6 +703,7 @@ function alignedExampleForOccurrence(input: {
   evidenceIds: readonly string[];
   hasher: Hasher;
   ordinal: number;
+  sentenceRanges: readonly { startUtf16: number; endUtf16: number }[];
 }): { example: AlignedSurfaceExample; trace: GraphSurfaceTransportTrace } | undefined {
   const selected = selectOccurrenceAlignment({
     lexical: input.lexical,
@@ -533,7 +711,8 @@ function alignedExampleForOccurrence(input: {
     index: input.index,
     construction: input.construction,
     evidenceIds: input.evidenceIds,
-    hasher: input.hasher
+    hasher: input.hasher,
+    sentenceRanges: input.sentenceRanges
   });
   if (!selected) return undefined;
 
@@ -605,14 +784,17 @@ function selectOccurrenceAlignment(input: {
   construction: GraphBoundConstruction;
   evidenceIds: readonly string[];
   hasher: Hasher;
+  sentenceRanges: readonly { startUtf16: number; endUtf16: number }[];
 }): OccurrenceAlignmentSelection | undefined {
   const predicate = input.lexical[input.index];
   if (!predicate) return undefined;
+  const sentenceRange = input.sentenceRanges.find(range => predicate.utf16Start >= range.startUtf16 && predicate.utf16End <= range.endUtf16);
+  if (!sentenceRange) return undefined;
   const unitByLexicalKey = lexicalLatticeUnitMap(input.lattice);
   const predicateUnit = unitByLexicalKey.get(lexicalKey(predicate));
   const roles: SelectedRoleAlignment[] = [{
     roleId: GRAPH_SURFACE_ROLE_IDS.predicate,
-    slotIndex: 1,
+    slotIndex: SOURCE_CONSTRUCTION_PREDICATE_SLOT_INDEX,
     occurrenceIndex: 0,
     segment: predicate,
     unitId: predicateUnit?.id ?? syntheticUnitId(input.hasher, predicate),
@@ -653,6 +835,7 @@ function selectOccurrenceAlignment(input: {
       roleId: slot.roleId,
       observedFillers: slot.slot.observedFillers,
       expectedSide: slot.slot.relationDirection === "source" ? "before" : slot.slot.relationDirection === "target" ? "after" : "either",
+      sentenceRange,
       hasher: input.hasher
     });
     cells.push(...candidates.map(candidate => candidate.cell));
@@ -719,6 +902,7 @@ function candidateCellsForSlot(input: {
   roleId: string;
   observedFillers: readonly string[];
   expectedSide: "before" | "after" | "same" | "either";
+  sentenceRange: { startUtf16: number; endUtf16: number };
   hasher: Hasher;
 }): Array<{ segment: LexicalSegment; segmentIndex: number; cell: GraphSurfaceTransportCell }> {
   const fillerSet = normalizedFillerSet(input.observedFillers);
@@ -728,6 +912,7 @@ function candidateCellsForSlot(input: {
   for (let index = Math.max(0, input.predicateIndex - maxWindow); index <= Math.min(input.lexical.length - 1, input.predicateIndex + maxWindow); index++) {
     if (index === input.predicateIndex) continue;
     const segment = input.lexical[index]!;
+    if (segment.utf16Start < input.sentenceRange.startUtf16 || segment.utf16End > input.sentenceRange.endUtf16) continue;
     if (!fillerSet.has(normalizeSurfaceKey(segment.normalized))) continue;
     const unit = input.unitByLexicalKey.get(lexicalKey(segment));
     candidates.push({
@@ -860,7 +1045,7 @@ function slotIndexForConstructionSlot(direction: "source" | "target"): number {
 
 function roleIdForSlotIndex(slotIndex: number): string {
   if (slotIndex === 0) return GRAPH_SURFACE_ROLE_IDS.prePredicate;
-  if (slotIndex === 1) return GRAPH_SURFACE_ROLE_IDS.predicate;
+  if (slotIndex === SOURCE_CONSTRUCTION_PREDICATE_SLOT_INDEX) return GRAPH_SURFACE_ROLE_IDS.predicate;
   if (slotIndex === 2) return GRAPH_SURFACE_ROLE_IDS.postPredicate;
   return `scce.role.aligned_slot_${slotIndex}`;
 }
@@ -892,6 +1077,9 @@ function alignmentSummaryJson(input: {
   traces: readonly GraphSurfaceTransportTrace[];
 }): JsonValue {
   const selectedCells = input.traces.flatMap(trace => trace.cells.filter(cell => cell.selected));
+  const nullRoleAudit = input.traces.flatMap(trace => trace.nullRoleBindingAudit ?? []);
+  const nullRoleReasons = new Map<string, number>();
+  for (const row of nullRoleAudit) nullRoleReasons.set(row.reason, (nullRoleReasons.get(row.reason) ?? 0) + 1);
   return toJsonValue({
     schema: "scce.graph_surface_alignment.summary.v1",
     bindingId: input.bindingId,
@@ -904,6 +1092,11 @@ function alignmentSummaryJson(input: {
     meanSelectedCost: selectedCells.length
       ? selectedCells.reduce((sum, cell) => sum + cell.cost, 0) / selectedCells.length
       : 0,
+    nullRoleBindingAudit: {
+      evaluated: nullRoleAudit.length,
+      bound: nullRoleAudit.filter(row => row.reason === "bound").length,
+      reasons: [...nullRoleReasons].sort(([left], [right]) => left.localeCompare(right)).map(([reason, count]) => ({ reason, count }))
+    },
     lattices: input.lattices,
     objective: input.traces[0]?.objective ?? {
       solver: "sparse_anchor_transport_v1",

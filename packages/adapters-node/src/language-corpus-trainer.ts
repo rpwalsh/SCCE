@@ -18,6 +18,7 @@ import {
   languageProfileCompatibility,
   LANGUAGE_TRAINING_BATCH_RECIPE_ID,
   INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID,
+  SOURCE_CONSTRUCTION_BINDINGS_COMPONENT_RECIPE_ID,
   sourceCodeFunctionConstructionId,
   createSourceAdmissionController,
   compileLanguageTrainingBatch,
@@ -371,10 +372,14 @@ function checkpointRecord(input: LanguageCorpusTrainingInput, binding: string, r
 }
 
 function corpusComponentRecipes(input: LanguageCorpusTrainingInput): Record<string, string> {
-  const components: Record<string, string> = !input.languageOnly && corpusRoleIdForSourceSystem(input.sourceSystem) !== CORPUS_ROLE_IDS.softwareSymbolic
-    ? { inducedLanguageMemory: INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID } : {};
-  if (!input.languageOnly && corpusRoleIdForSourceSystem(input.sourceSystem) !== CORPUS_ROLE_IDS.softwareSymbolic && input.persistSource !== false && createCorpusRegistry(input.corpusRegistry ?? []).some(row =>
-    row.sourceSystemId === canonicalCorpusSourceSystemId(input.sourceSystem) && row.enabled && row.graphEvidenceEligible)) {
+  const naturalSource = !input.languageOnly && corpusRoleIdForSourceSystem(input.sourceSystem) !== CORPUS_ROLE_IDS.softwareSymbolic;
+  const graphProjectionEnabled = naturalSource && input.persistSource !== false && createCorpusRegistry(input.corpusRegistry ?? []).some(row =>
+    row.sourceSystemId === canonicalCorpusSourceSystemId(input.sourceSystem) && row.enabled && row.graphEvidenceEligible);
+  const hasGraphDependency = Boolean(input.graphSnapshotAdditions?.hyperedges.length || input.graphSnapshotSourceVersionIds?.length || graphProjectionEnabled);
+  const components: Record<string, string> = naturalSource
+    ? { inducedLanguageMemory: INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID,
+      ...(hasGraphDependency ? { sourceConstructionBindings: SOURCE_CONSTRUCTION_BINDINGS_COMPONENT_RECIPE_ID } : {}) } : {};
+  if (graphProjectionEnabled) {
     components.sourceEntityGraph = SOURCE_ENTITY_GRAPH_COMPONENT_RECIPE_ID;
   }
   return components;

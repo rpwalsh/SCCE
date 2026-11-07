@@ -59,11 +59,11 @@ describe("the request's value binding is resolved once, against the evidence adm
     // The contract compiled from this binding carries the same value; ranking and realization read one binding.
     const contract = compileRealizationContract(REQUEST, {
       subject: binding!.subject,
-      predicate: binding!.relation,
+      predicate: binding!.relation!,
       object: binding!.value,
       sourceNodeId: "",
       targetNodeId: "",
-      relationId: `local:temporal:relation:${binding!.relation}`,
+      relationId: `local:temporal:relation:${binding!.relation!}`,
       forceClass: "direct_evidence",
       score: 1,
       activation: 1,

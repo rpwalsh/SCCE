@@ -12,7 +12,12 @@ import { induceSourceBoundConstructionTrainingSets } from "../graph-surface-alig
 import { answerCoversRequest } from "../local-evidence-runtime.js";
 import { createEvidenceExtractor } from "../evidence.js";
 import { jsonRecord } from "../kernel-answer-primitives.js";
-import type { EvidenceSpan, GraphNode, GraphSnapshot, Hyperedge } from "../types.js";
+import type { BuildTestResult, EvidenceSpan, GraphNode, GraphSnapshot, GraphSlice, Hyperedge } from "../types.js";
+import { createScceKernel } from "../kernel.js";
+import { storageFixtureForEvaluation } from "./evidence-promotion-evaluation-fixture.js";
+import { surfaceSentenceRanges } from "../surface-linguistics.js";
+import { sourceOwnedAnswerhoodLanguage } from "./fixtures/source-owned-answerhood-language.js";
+import { createTrace } from "../debug/trace.js";
 import type { SourceBoundConstructionObservation, SourceConstructionGraphBinding } from "../language-construction-memory.js";
 
 const hasher = createHasher();
@@ -91,6 +96,16 @@ function teach(input: { subjects: [string, string, string]; marker: string; valu
 }
 
 describe("acquired typed request construction transfer", () => {
+  it("keeps exact Unicode sentence ranges through astral and combining code points", () => {
+    const prefix = "\u{1f9f6}e\u0301: ";
+    const text = `${prefix}ada visited london\u3002${prefix}ada visited paris\u3002`;
+    const ranges = surfaceSentenceRanges(text);
+    expect(ranges.map(range => text.slice(range.startUtf16, range.endUtf16))).toEqual([
+      `${prefix}ada visited london\u3002`, `${prefix}ada visited paris\u3002`
+    ]);
+    expect(ranges.every(range => text.slice(range.startUtf16, range.endUtf16).length > 0)).toBe(true);
+  });
+
   it("matches lowercased learned request literals and subjects while preserving the source value", () => {
     const fixture = teach({ subjects: ["Luma", "Vela", "Zora"], marker: "HAS TOKEN", value: "Bora", valueKind: "opaque.token" });
     const state = createLanguageMemoryRuntime({ idFactory: ids, hasher }).hydrate({ models: [], patterns: fixture.patterns, constructionEvidence: [fixture.evidence] });
@@ -99,6 +114,8 @@ describe("acquired typed request construction transfer", () => {
     const binding = resolveRequestValueBinding({ requestText: fixture.requestText.toLowerCase(), evidence: [fixture.evidence],
       resolvers: [sourceConstructionRequestValueResolver({ bundles: state.importedConstructionBundles, graph: fixture.graph })] });
     expect(binding).toMatchObject({ value: "Bora", subject: "zora", evidenceIds: [String(fixture.evidence.id)] });
+    expect(binding?.requestedRoleId).toBe("role.answer");
+    expect(binding?.relation).toBeUndefined();
   });
 
   it("does not scan facts or source bodies when no acquired request form matches", () => {
@@ -212,7 +229,7 @@ describe("acquired typed request construction transfer", () => {
     const graph: GraphSnapshot = {
       nodes: ["7", "9"].map(value => ({ id: value, representation: { surface: value } } as unknown as GraphNode)), edges: [],
       hyperedges: ["7", "9"].map(value => ({
-        id: `fact.${value}`, relationId: "relation.opaque", qualifiers: {}, modality: {}, temporalScope: {},
+        id: `fact.${value}`, relationId: "relation.opaque", evidenceIds: [evidence.id], qualifiers: {}, modality: {}, temporalScope: {},
         participantPorts: [{ nodeId: value, portId: "port.value", roleId: "role.quantity", valueKind: "opaque.quantity", realization: "observed", evidenceIds: [evidence.id] }]
       } as unknown as Hyperedge))
     };
@@ -267,5 +284,160 @@ describe("acquired typed request construction transfer", () => {
     const restarted = createLanguageMemoryRuntime({ idFactory: ids, hasher }).hydrate({ models: [], patterns, constructionEvidence: [fixture.evidence] });
     expect(restarted.importedConstructionBundles).toEqual([]);
     expect(restarted.rejectedConstructionPatterns.length).toBeGreaterThan(0);
+  });
+
+  it("acquires, persists, hydrates, and applies a graph-owned omitted role to a cold request", async () => {
+    const prefix = "\u{1f9f6}: ";
+    const text = `${prefix}ada visited london\u3002 ${prefix}ada visited paris\u3002 ${prefix}eve visited london\u3002 ${prefix}eve visited paris\u3002 ${prefix}ada visited\u3002 ${prefix}eve visited\u3002`;
+    const evidence = evidenceSpan(text);
+    const profile = createLanguageAcquisitionEngine({ idFactory: ids }).acquire({ sourceVersionId: evidence.sourceVersionId, text, createdAt: 140_000 });
+    const nodeRows: GraphNode[] = [];
+    const addNode = (key: string, surface: string) => {
+      const id = `node.${key}`;
+      nodeRows.push({ id: id as GraphNode["id"], representation: { surface }, metadata: {}, evidenceIds: [evidence.id] } as unknown as GraphNode);
+      return id;
+    };
+    const fact = (id: string, subject: string, object?: string): Hyperedge => {
+      const participantPorts = [
+        { nodeId: addNode(`${id}.subject`, subject), portId: "role.visitor", roleId: "role.visitor", valueKind: "entity.person", realization: "observed", evidenceIds: [evidence.id] },
+        object === undefined
+          ? { nodeId: null, portId: "role.destination", roleId: "role.destination", valueKind: "entity.place", realization: "omitted", evidenceIds: [evidence.id] }
+          : { nodeId: addNode(`${id}.object`, object), portId: "role.destination", roleId: "role.destination", valueKind: "entity.place", realization: "observed", evidenceIds: [evidence.id] }
+      ];
+      return {
+        schema: "scce.hyperedge.v2", id: `fact.${id}`, relationId: "relation.visit", evidenceIds: [evidence.id],
+        participantPorts, memberNodeIds: participantPorts.flatMap(port => port.nodeId ? [port.nodeId] : []),
+        qualifiers: {}, modality: {}, temporalScope: {}, weightVector: {}, provenanceRefs: [], createdAt: 140_000, updatedAt: 140_000
+      } as unknown as Hyperedge;
+    };
+    const graph: GraphSnapshot = { nodes: nodeRows, edges: [], hyperedges: [
+      fact("ada-london", "ada", "london"), fact("ada-paris", "ada", "paris"), fact("eve-london", "eve", "london"),
+      fact("eve-paris", "eve", "paris"), fact("ada-request", "ada"), fact("eve-request", "eve")
+    ] };
+    const trained = compileLanguageTrainingBatch({ hasher, runtime: createLanguageMemoryRuntime({ hasher, idFactory: ids }), batch: {
+      streamId: "fixture://null-role-transfer", profile, sourceVersionId: evidence.sourceVersionId, text, evidence: [evidence], graphSnapshot: graph, createdAt: 140_000
+    } });
+    const restarted = createLanguageMemoryRuntime({ hasher, idFactory: ids }).hydrate({ models: [], patterns: trained.patterns, constructionEvidence: [evidence] });
+    expect(restarted.rejectedConstructionPatterns).toEqual([]);
+    const bundle = restarted.importedConstructionBundles.find(candidate => candidate.sourceExamples.some(example =>
+      example.nullRoles.some(role => role.graphBinding?.roleId === "role.destination")));
+    expect(bundle).toBeDefined();
+    expect(bundle!.sourceExamples.some(example => example.roles.some(role => role.graphBinding?.roleId === "role.destination"))).toBe(true);
+    expect(bundle!.sourceExamples.filter(example => example.nullRoles.some(role => role.graphBinding?.roleId === "role.destination"))).toHaveLength(2);
+    for (const example of bundle!.sourceExamples) {
+      const owner = [evidence].find(span => String(span.id) === example.evidenceId)!;
+      expect([...owner.text].slice(example.surfaceStartCodePoint, example.surfaceEndCodePoint).join("")).toBe(example.surface);
+    }
+
+    const fresh = evidenceSpan("zoe visited tokyo.");
+    const freshNode = (id: string, surface: string): GraphNode => ({ id: id as GraphNode["id"], typeId: "type.entity" as GraphNode["typeId"],
+      representation: { surface }, alpha: 1, features: [], evidenceIds: [fresh.id], createdAt: 140_000, updatedAt: 140_000, metadata: {} });
+    const freshGraph: GraphSnapshot = {
+      nodes: [freshNode("node.zoe", "zoe"), freshNode("node.tokyo", "tokyo")], edges: [], hyperedges: [{
+        schema: "scce.hyperedge.v2", id: "fact.fresh", relationId: "relation.visit", evidenceIds: [fresh.id], memberNodeIds: ["node.zoe", "node.tokyo"],
+        participantPorts: [
+          { nodeId: "node.zoe", portId: "role.visitor", roleId: "role.visitor", valueKind: "entity.person", realization: "observed", evidenceIds: [fresh.id] },
+          { nodeId: "node.tokyo", portId: "role.destination", roleId: "role.destination", valueKind: "entity.place", realization: "observed", evidenceIds: [fresh.id] }
+        ], qualifiers: {}, modality: {}, temporalScope: {}, weightVector: {}, provenanceRefs: [], createdAt: 140_000, updatedAt: 140_000
+      } as unknown as Hyperedge]
+    };
+    const request = resolveRequestValueBinding({ requestText: "zoe visited?", evidence: [fresh],
+      resolvers: [sourceConstructionRequestValueResolver({ bundles: restarted.importedConstructionBundles, graph: freshGraph })] });
+    expect(request).toMatchObject({ value: "tokyo", subject: "zoe", relation: "visited", requestedRoleId: "role.destination",
+      relationId: "relation.visit", evidenceIds: [String(fresh.id)] });
+
+    const residentLanguage = sourceOwnedAnswerhoodLanguage();
+    const storedEvidence = [evidence, fresh, ...residentLanguage.evidence];
+    const fixture = storageFixtureForEvaluation({ evidence: storedEvidence, clockNow: () => 140_000 });
+    fixture.storage.userModelClaims = { putClaim: async () => undefined, listClaims: async () => [] };
+    fixture.storage.taskResumption = { putSnapshot: async () => undefined, getLatestSnapshot: async () => null };
+    fixture.storage.model.listLanguageProfiles = async query => {
+      const profiles = [profile, ...residentLanguage.profiles];
+      return typeof query === "number" ? profiles.slice(0, query)
+        : profiles.filter(row => !query?.sourceVersionIds || query.sourceVersionIds.includes(String(row.sourceVersionId))).slice(0, query?.limit);
+    };
+    const storedModels = [...trained.models, ...residentLanguage.models];
+    fixture.storage.languageMemory.listNgramModels = async query => storedModels.filter(model =>
+      !query?.profileIds || query.profileIds.includes(String((model.modelJson as { profileId: string }).profileId)));
+    const storedPatterns = [...trained.patterns, ...residentLanguage.patterns];
+    fixture.storage.languageMemory.listLanguagePatterns = async query => storedPatterns.filter(pattern =>
+      (!query?.profileIds || query.profileIds.includes(pattern.profileId))
+      && (!query?.patternKind || query.patternKind === pattern.patternKind));
+    fixture.storage.graph.getSlice = async query => ({ bounded: true, query: query as GraphSlice["query"],
+      nodes: freshGraph.nodes, edges: [], hyperedges: freshGraph.hyperedges });
+    const clock = createClock({ fixedTime: 141_000, stepMs: 1 });
+    const kernel = createScceKernel({ storage: fixture.storage, files: { streamPath: async function* () {} },
+      buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: { code: 0, stdout: "", stderr: "", durationMs: 0 },
+        test: { code: 0, stdout: "", stderr: "", durationMs: 0 }, repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+      idFactory: createIdFactory({ clock, hasher, deterministicReplay: true, namespace: "null-role-cold-turn" }), clock, deterministicReplay: true });
+    const traceGlobal = globalThis as unknown as { __sccTrace?: unknown };
+    const previousTrace = traceGlobal.__sccTrace;
+    traceGlobal.__sccTrace = createTrace("null-role-cold-turn");
+    const turned = await kernel.turn({ text: "zoe visited?", requestedAuthority: "factual" });
+    traceGlobal.__sccTrace = previousTrace;
+    expect(turned.evidence.map(span => String(span.id))).toContain(String(fresh.id));
+    const semanticAnswer = turned.constructGraph.nodes.find(node => node.kind === "construct:semantic_answer");
+    expect(semanticAnswer).toBeDefined();
+    const semanticAnswerMetadata = jsonRecord(semanticAnswer!.metadata);
+    expect(semanticAnswerMetadata.supportIds).toEqual([String(fresh.id)]);
+    expect(semanticAnswerMetadata.selectedFacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ subject: "zoe", predicate: "visited", object: "tokyo", relationRoleId: "role.destination",
+        evidenceIds: [String(fresh.id)], sourceVersionId: String(fresh.sourceVersionId) })
+    ]));
+    expect(turned.constructGraph.edges.filter(edge => edge.source === semanticAnswer!.id).every(edge => Boolean(edge.target))).toBe(true);
+    expect(turned.answer.toLocaleLowerCase()).toContain("tokyo");
+  });
+
+  it("keeps null-role candidates unbound when graph ownership or the omitted port is ambiguous", () => {
+    const prefix = "🪶: ";
+    const text = `${prefix}ada visited london。 ${prefix}ada visited paris。 ${prefix}eve visited london。 ${prefix}eve visited paris。 ${prefix}ada visited。 ${prefix}eve visited。`;
+    const evidence = evidenceSpan(text);
+    const node = (id: string, surface: string) => ({ id, representation: { surface }, metadata: {}, evidenceIds: [evidence.id] }) as unknown as GraphNode;
+    const edge = (id: string, subject: string, object?: string, evidenceId: string = String(evidence.id)): Hyperedge => ({
+      schema: "scce.hyperedge.v2", id, relationId: "relation.visit", evidenceIds: [evidenceId], memberNodeIds: [id],
+      participantPorts: [
+        { nodeId: `node.${id}.subject`, portId: "role.visitor", roleId: "role.visitor", valueKind: "entity.person", realization: "observed", evidenceIds: [evidenceId] },
+        ...(object === undefined ? [{ nodeId: null, portId: "role.destination", roleId: "role.destination", valueKind: "entity.place", realization: "omitted", evidenceIds: [evidenceId] }] : [
+          { nodeId: `node.${id}.object`, portId: "role.destination", roleId: "role.destination", valueKind: "entity.place", realization: "observed", evidenceIds: [evidenceId] }
+        ])
+      ], qualifiers: {}, modality: {}, temporalScope: {}, weightVector: {}, provenanceRefs: [], createdAt: 140_000, updatedAt: 140_000
+    } as unknown as Hyperedge);
+    const baseEdges = [edge("ada-london", "ada", "london"), edge("ada-paris", "ada", "paris"), edge("eve-london", "eve", "london"),
+      edge("eve-paris", "eve", "paris"), edge("ada-request", "ada"), edge("eve-request", "eve")];
+    const align = (hyperedges: Hyperedge[]) => induceSourceBoundConstructionTrainingSets({
+      evidence: [evidence], profileId: "profile.null-role", hasher,
+      graphSnapshot: { nodes: [node("node.ada-london.subject", "ada"), node("node.ada-london.object", "london"),
+        node("node.ada-paris.subject", "ada"), node("node.ada-paris.object", "paris"), node("node.eve-london.subject", "eve"),
+        node("node.eve-london.object", "london"), node("node.eve-paris.subject", "eve"), node("node.eve-paris.object", "paris"),
+        node("node.ada-request.subject", "ada"), node("node.eve-request.subject", "eve")], edges: [], hyperedges }
+    });
+    const rowsForSubject = (sets: ReturnType<typeof align>, subject: string) => sets.flatMap(set => set.observations
+      .filter(observation => [...evidence.text].slice(observation.surfaceStartCodePoint, observation.surfaceEndCodePoint).join("").includes(subject))
+      .flatMap(observation => observation.nullRoles ?? []));
+    const withTwoOmissions = structuredClone(baseEdges);
+    withTwoOmissions[4]!.participantPorts.push({ nodeId: null, portId: "role.other", roleId: "role.other", valueKind: "entity.other", realization: "omitted", evidenceIds: [evidence.id] } as never);
+    const ambiguousSets = align(withTwoOmissions);
+    const ambiguous = rowsForSubject(ambiguousSets, "ada");
+    expect(ambiguous.some(row => row.graphBinding)).toBe(false);
+    expect(ambiguous.length).toBeGreaterThan(0);
+    expect(rowsForSubject(ambiguousSets, "eve").some(row => row.graphBinding?.roleId === "role.destination")).toBe(true);
+    expect(JSON.stringify(ambiguousSets.map(set => set.alignmentSummary))).toContain("ambiguous_omitted_ports");
+
+    const reversed = baseEdges.map((row, index) => index >= 4 ? {
+      ...row,
+      participantPorts: row.participantPorts.map(port => port.realization === "omitted"
+        ? { ...port, roleId: "role.visitor", portId: "role.visitor", valueKind: "entity.person" }
+        : port)
+    } as Hyperedge : row);
+    const reversedRows = rowsForSubject(align(reversed), "ada");
+    expect(reversedRows.some(row => row.graphBinding)).toBe(false);
+    expect(JSON.stringify(align(reversed).map(set => set.alignmentSummary))).toContain("slot_binding_mismatch");
+
+    const foreign = baseEdges.map((row, index) => index >= 4
+      ? { ...row, evidenceIds: ["evidence.foreign" as never], participantPorts: row.participantPorts.map(port => ({ ...port, evidenceIds: ["evidence.foreign" as never] })) } as Hyperedge
+      : row);
+    const foreignRows = rowsForSubject(align(foreign), "ada");
+    expect(foreignRows.some(row => row.graphBinding)).toBe(false);
+    expect(JSON.stringify(align(foreign).map(set => set.alignmentSummary)).toLowerCase()).toContain("no_matching_fact");
   });
 });

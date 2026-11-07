@@ -4275,6 +4275,8 @@ export function attachLocalEvidenceAnswerConstruct(input: {
    *  completeLearnedFactCoverage requires exactly one relation/one answer slot, and this fact is strictly more
    *  precise than the quote it was extracted from, so there is nothing to gain from carrying both. */
   additionalFacts?: readonly SemanticAnswerConstructFact[];
+  /** Exact promoted source spans that own additionalFacts. */
+  additionalEvidence?: readonly EvidenceSpan[];
   /** The request's learned scaffolding; without it the request's interrogative survives into the fact predicate. */
   closedClassWords?: ReadonlySet<string>;
   selectedAnswer?: { text: string; claimText: string; evidenceIds: readonly string[] };
@@ -4283,15 +4285,55 @@ export function attachLocalEvidenceAnswerConstruct(input: {
   const facts = input.additionalFacts?.length
     ? [...input.additionalFacts]
     : localEvidenceAnswerFacts(plan, input.requestText, input.hasher, input.closedClassWords, sourceSurfaces);
+  const ownedEvidence = input.additionalFacts?.length
+    ? (input.additionalEvidence ?? plan.evidence).filter(span => facts.some(fact => fact.evidenceIds?.includes(String(span.id))))
+    : plan.evidence;
+  return attachSourceBoundAnswerConstruct({
+    construct: input.construct,
+    requestText: input.requestText,
+    brainMarker: input.brainMarker,
+    hasher: input.hasher,
+    facts,
+    evidence: ownedEvidence,
+    identitySeed: input.plan.planId,
+    selectedSubject: input.additionalFacts?.length ? facts[0]?.subject : localEvidenceSelectedSubject(plan, input.requestText),
+    forceId: localEvidenceAnswerReportsSourceConflict(input.plan)
+      ? SOURCE_CONFLICT_FORCE_ID
+      : "output.force.source_bound_answer",
+    externalFactCertification: !input.additionalFacts?.length,
+    localEvidenceAnswer: { planId: input.plan.planId, kindId: input.plan.kindId, audit: input.plan.audit }
+  });
+}
+
+/** Attach already-resolved facts using the canonical source-owned semantic-answer record. */
+export function attachSourceBoundAnswerConstruct(input: {
+  construct: ConstructGraph;
+  requestText: string;
+  brainMarker: JsonValue;
+  hasher: { digestHex(input: string | Uint8Array): string };
+  facts: readonly SemanticAnswerConstructFact[];
+  evidence: readonly EvidenceSpan[];
+  identitySeed?: string;
+  selectedSubject?: string;
+  forceId?: string;
+  externalFactCertification?: boolean;
+  localEvidenceAnswer?: { planId: string; kindId: string; audit: JsonValue };
+}): ConstructGraph {
+  const owners = new Map(input.evidence.filter(span => span.status === "promoted").map(span => [String(span.id), span] as const));
+  const facts = input.facts.flatMap(fact => {
+    const evidenceIds = uniqueKernelStrings(fact.evidenceIds ?? []);
+    if (!fact.subject || !fact.predicate || !fact.object || !evidenceIds.length || evidenceIds.some(id => !owners.has(id))) return [];
+    const sourceVersionIds = uniqueKernelStrings(evidenceIds.map(id => String(owners.get(id)?.sourceVersionId ?? "")));
+    if (fact.sourceVersionId && !sourceVersionIds.includes(fact.sourceVersionId)) return [];
+    if (!fact.sourceVersionId && sourceVersionIds.length !== 1) return [];
+    return [{ ...fact, evidenceIds, sourceVersionId: fact.sourceVersionId ?? sourceVersionIds[0] }];
+  });
   if (!facts.length) return input.construct;
   const marker = jsonRecord(input.brainMarker);
-  const evidenceIds = uniqueKernelStrings(plan.evidence.map(span => String(span.id)));
-  const sourceVersionIds = uniqueKernelStrings(plan.evidence.map(span => String(span.sourceVersionId)));
-  const nodeId = `construct:ans:${input.hasher.digestHex(JSON.stringify({ planId: input.plan.planId, evidenceIds })).slice(0, 20)}`;
-  // completeLearnedFactCoverage requires state.selectedSubject === fact.subject exactly -- when additionalFacts
-  // replaced the quote-derived facts above, selectedSubject must track that same fact's own subject, not the
-  // local-evidence plan's independently-derived one (real risk of a byte-level mismatch between the two).
-  const selectedSubject = input.additionalFacts?.length ? input.additionalFacts[0]!.subject : localEvidenceSelectedSubject(plan, input.requestText);
+  const evidenceIds = uniqueKernelStrings(facts.flatMap(fact => fact.evidenceIds ?? []));
+  const sourceVersionIds = uniqueKernelStrings(evidenceIds.map(id => String(owners.get(id)?.sourceVersionId ?? "")).filter(Boolean));
+  const nodeId = `construct:ans:${input.hasher.digestHex(JSON.stringify({ seed: input.identitySeed ?? input.requestText, factKeys: facts.map(localEvidenceSemanticFactKey), evidenceIds })).slice(0, 20)}`;
+  const selectedSubject = input.selectedSubject ?? facts[0]!.subject;
   const metadata = {
     schema: "scce.semantic_answer_construct.v1",
     questionShapeId: `qshape.${input.hasher.digestHex(input.requestText).slice(0, 12)}`,
@@ -4308,11 +4350,7 @@ export function attachLocalEvidenceAnswerConstruct(input: {
     activatedNeighborhood: facts,
     rejectedCandidates: [],
     supportIds: evidenceIds,
-    // A conflict answer is source-bound like any other, and it is not one source speaking: the mouth must realize
-    // every fact rather than lead with one, so the force says so instead of leaving it to be inferred.
-    forceId: localEvidenceAnswerReportsSourceConflict(input.plan)
-      ? SOURCE_CONFLICT_FORCE_ID
-      : "output.force.source_bound_answer",
+    forceId: input.forceId ?? "output.force.source_bound_answer",
     boundaryId: "output.force.source_bound",
     activeBrainVersion: kernelString(marker.activeBrainVersion) ?? "",
     activeImportRunIds: kernelStringArray(marker.activeImportRunIds),
@@ -4323,32 +4361,21 @@ export function attachLocalEvidenceAnswerConstruct(input: {
       directEvidenceCount: evidenceIds.length,
       evidenceSpanIds: evidenceIds,
       sourceVersionIds,
-      externalFactCertification: true
+      externalFactCertification: input.externalFactCertification ?? false
     },
-    localEvidenceAnswer: {
-      planId: input.plan.planId,
-      kindId: input.plan.kindId,
-      audit: input.plan.audit
-    }
+    ...(input.localEvidenceAnswer ? { localEvidenceAnswer: input.localEvidenceAnswer } : {})
   };
+  const factEdges = facts.flatMap(fact => [
+    ...(fact.sourceNodeId ? [{ source: nodeId, target: fact.sourceNodeId, relation: "rel.b40c2e11", weight: fact.support }] : []),
+    ...(fact.targetNodeId ? [{ source: nodeId, target: fact.targetNodeId, relation: "rel.f73a91d0", weight: fact.support }] : [])
+  ]);
   return {
     ...input.construct,
     nodes: [
       ...input.construct.nodes.filter(node => node.kind !== "construct:semantic_answer"),
-      {
-        id: nodeId,
-        kind: "construct:semantic_answer",
-        label: selectedSubject || facts[0]?.subject || nodeId,
-        metadata: toJsonValue(metadata)
-      }
+      { id: nodeId, kind: "construct:semantic_answer", label: selectedSubject || facts[0]?.subject || nodeId, metadata: toJsonValue(metadata) }
     ],
-    edges: [
-      ...input.construct.edges,
-      ...facts.flatMap(fact => [
-        { source: nodeId, target: fact.sourceNodeId, relation: "rel.b40c2e11", weight: fact.support },
-        { source: nodeId, target: fact.targetNodeId, relation: "rel.f73a91d0", weight: fact.support }
-      ])
-    ]
+    edges: [...input.construct.edges, ...factEdges]
   };
 }
 

@@ -12,7 +12,7 @@ import { assistantForceClass, assistantForceDecision, unresolvedObligationCount 
 import { assistantForceProposalFromCandidateClaimBasis, attachCognitiveProposal, attachInventionConstruct, cognitiveProposalForCandidate, selectedInventionForCandidate } from "./candidate-construct-binding.js";
 import { candidateIsSafeNonExecutingPlan, candidateUsesNonFactualPlanSemantics, selectedCandidateEntailment } from "./candidate-proof-policy.js";
 import { createCandidateEngine, type CandidateField, type CandidateSurface } from "./candidate.js";
-import { candidateSurvivesRealizationContract, compileRealizationContract, requestRelationUnits, resolveRequestValueBinding, semanticAnswerConstructFacts, type SemanticAnswerConstructFact, type SemanticRealizationContract } from "./semantic-answer-construct.js";
+import { candidateSurvivesRealizationContract, compileRealizationContract, resolveRequestValueBinding, semanticAnswerConstructFacts, type SemanticAnswerConstructFact, type SemanticRealizationContract } from "./semantic-answer-construct.js";
 import { sourceConstructionRequestValueResolver } from "./source-construction-request-binding.js";
 import { learnedEntitySurfacesFromLanguageMemory, namedSubjectAnchors } from "./kernel-answer-primitives.js";
 import { createPfaceEstimator } from "./causal-estimation.js";
@@ -135,6 +135,7 @@ import {
   arithmeticAnswerForText,
   assistantForceFromLocalEvidenceAudit,
   attachLocalEvidenceAnswerConstruct,
+  attachSourceBoundAnswerConstruct,
   createArithmeticEntailment,
   evidenceBatchFromSlice,
   bindSelectedEvidenceToEntailment,
@@ -2403,9 +2404,24 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           && evidenceTitledForRequestSubject(input.text, [span]) && openingSpanAnswersRequest(span))
         : undefined;
       const rankedSupportEvidence = evidenceForRequest(input.text, admissibleEvidence.filter(span => span.status === "promoted"), metadataEvidenceIds, explicitContextEvidenceIds, semanticFrameBoundEvidenceIds, requestClosedClassWords());
-      const supportCandidates = runtimeEvidenceWindowsForRequest(input.text, (admittedTitledOpeningSpan
+      const requestValueBinding = resolveRequestValueBinding({
+        requestText: input.text,
+        evidence: admissibleEvidence,
+        resolvers: [
+          sourceConstructionRequestValueResolver({ bundles: authorityLanguage.state.importedConstructionBundles ?? [], graph }),
+          { id: "resolver.evidence_temporal", resolve: extractTemporalAnswerFromEvidence }
+        ]
+      });
+      const requestBoundValueEvidenceIds = new Set(requestValueBinding?.evidenceIds ?? []);
+      const requestBoundEvidence = admissibleEvidence.filter(span => requestBoundValueEvidenceIds.has(String(span.id)))
+        .slice(0, turnProofEvidenceLimit);
+      const supportEvidence = requestBoundEvidence.length
+        ? uniqueRecordsById([...requestBoundEvidence, ...(admittedTitledOpeningSpan
+          ? [admittedTitledOpeningSpan, ...rankedSupportEvidence] : rankedSupportEvidence)], Math.max(2, rankedSupportEvidence.length))
+        : admittedTitledOpeningSpan
         ? uniqueRecordsById([admittedTitledOpeningSpan, ...rankedSupportEvidence], Math.max(2, rankedSupportEvidence.length))
-        : rankedSupportEvidence).slice(0, turnProofEvidenceLimit));
+        : rankedSupportEvidence;
+      const supportCandidates = runtimeEvidenceWindowsForRequest(input.text, supportEvidence.slice(0, turnProofEvidenceLimit));
       // Between admission and the proof: relevance ranking and windowing each return a list, and a turn that
       // admitted evidence and proved nothing gave no way to tell which of them emptied it.
       kernelTrace({
@@ -2416,6 +2432,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           promoted: admissibleEvidence.filter(span => span.status === "promoted").length,
           ranked: rankedSupportEvidence.length,
           candidates: supportCandidates.length,
+          requestBoundEvidence: requestBoundEvidence.length,
           requestClosedClassWords: requestClosedClassWords().size,
           corpusFunctionSymbols: corpusFunctionSymbols().size
         },
@@ -2446,6 +2463,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         requestText: input.text,
         selectedEvidence: supportCandidates,
         semanticFrameBoundEvidenceIds,
+        boundValues: requestValueBinding ? [requestValueBinding.value] : [],
+        boundValueEvidenceIds: requestBoundValueEvidenceIds,
         closedClassWords: requestClosedClassWords(),
         functionSymbols: corpusFunctionSymbols(),
         ...(Number.isFinite(responseFormSentences) && (responseFormSentences ?? 0) > 1
@@ -2502,6 +2521,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           requestText: input.text,
           selectedEvidence: supportCandidates,
           semanticFrameBoundEvidenceIds,
+          boundValues: requestValueBinding ? [requestValueBinding.value] : [],
+          boundValueEvidenceIds: requestBoundValueEvidenceIds,
           closedClassWords: requestClosedClassWords(),
           functionSymbols: corpusFunctionSymbols(),
           ...(Number.isFinite(responseFormSentences) && (responseFormSentences ?? 0) > 1
@@ -2889,14 +2910,6 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       });
       const preferredDialogueEvidenceIds = preferredDialogueEvidenceForAdjustments(dialoguePreselection.candidates, dialogueInterpretationAdjustments);
       if (preferredDialogueEvidenceIds) selectedEvidence = selectedEvidence.filter(span => preferredDialogueEvidenceIds.has(String(span.id)));
-      const requestValueBinding = resolveRequestValueBinding({
-        requestText: input.text,
-        evidence: selectedEvidence,
-        resolvers: [
-          sourceConstructionRequestValueResolver({ bundles: authorityLanguage.state.importedConstructionBundles ?? [], graph }),
-          { id: "resolver.evidence_temporal", resolve: extractTemporalAnswerFromEvidence }
-        ]
-      });
       kernelTrace({
         stage: "candidate.request_value_binding",
         label: "kernel.turn",
@@ -2906,12 +2919,13 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           resolverId: requestValueBinding?.resolverId ?? null,
           subject: requestValueBinding?.subject ?? null,
           relation: requestValueBinding?.relation ?? null,
+          requestedRoleId: requestValueBinding?.requestedRoleId ?? null,
           value: requestValueBinding?.value ?? null,
-          pool: selectedEvidence.length
+          pool: admissibleEvidence.length,
+          selectedPool: selectedEvidence.length
         }
       });
       const requestBoundValues = requestValueBinding ? [requestValueBinding.value] : [];
-      const requestBoundValueEvidenceIds = new Set(requestValueBinding?.evidenceIds ?? []);
       // localEvidenceAnswerSurface (backed by localEvidenceAnswerPlan) covers
       // however many sentences a compound request actually needs
       // (evidenceAnswerSentenceLimit) and optimizes for request coverage,
@@ -3396,35 +3410,27 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // the same value or there is no single answer for the contract to verify against what was selected.
       const temporalAnswerValue = requestValueBinding?.value;
       const proofAnswer = temporalAnswerValue || answerSurface.answer;
-      // A recognizable temporal question already yields a bare bound VALUE here (a date, not a whole
-      // sentence) -- exactly the subject/relation/value triple a realization contract needs, and cheaper to
-      // build directly than to wait for a ConstructGraph node that this answer path (local exact-evidence,
-      // not the learned-prior/graph-inference path) never populates for a plain one-hop lookup.
       const temporalAnswerSubject = requestValueBinding?.subject || undefined;
-      const temporalRelationPredicate = requestValueBinding?.relation ?? (requestRelationUnits(input.text).join(" ") || "is");
-      const temporalConstructFact: SemanticAnswerConstructFact | undefined = temporalAnswerValue && temporalAnswerSubject
+      const temporalRelationPredicate = requestValueBinding?.relation;
+      const temporalBoundEvidence = requestValueBinding
+        ? admissibleEvidence.filter(span => span.status === "promoted" && requestValueBinding.evidenceIds.includes(String(span.id))) : [];
+      const temporalConstructFact: SemanticAnswerConstructFact | undefined = temporalAnswerValue && temporalAnswerSubject && temporalRelationPredicate && temporalBoundEvidence.length > 0
         ? {
           subject: temporalAnswerSubject,
           predicate: temporalRelationPredicate,
           object: temporalAnswerValue,
           sourceNodeId: "",
           targetNodeId: "",
-          // Real bug, confirmed live: an empty relationId is dropped by uniqueKernelStrings (kernel-answer-
-          // primitives.ts) as blank, so mouth.ts's completeLearnedFactCoverage saw selectedRelations.length===0
-          // (not 1) and rejected construction-grammar realization outright, before even reaching the real
-          // predicate-hash bundle lookup. No real graph relation ID exists for this fast path (it never
-          // populates a ConstructGraph edge), so this reuses the predicate text itself -- deterministic,
-          // non-empty, and harmless for bundle matching (bundle.bindingId is a hash, so this never
-          // accidentally matches the wrong bundle; the real match still comes from
-          // sourceRelationConstructionBindingId keyed on this same predicate).
+          // Preserve the typed port identity without speaking it as a predicate.
           relationId: requestValueBinding?.relationId ?? `local:temporal:relation:${temporalRelationPredicate}`,
           forceClass: "direct_evidence",
           score: 1,
           activation: 1,
           overlap: 1,
           support: 1,
-          evidenceIds: selectedEvidence.map(span => String(span.id)),
-          sourceVersionId: selectedEvidence[0]?.sourceVersionId ? String(selectedEvidence[0].sourceVersionId) : undefined,
+          evidenceIds: temporalBoundEvidence.map(span => String(span.id)),
+          sourceVersionId: temporalBoundEvidence[0]?.sourceVersionId ? String(temporalBoundEvidence[0].sourceVersionId) : undefined,
+          relationRoleId: requestValueBinding?.requestedRoleId,
           questionSlotImportance: "core",
           // Same gate as localEvidenceSemanticFact's (local-evidence-runtime.ts) -- mouth.ts's
           // learnedFactRouteAdmissible requires all five, real bug confirmed live via candidate.field.generate's
@@ -4759,9 +4765,20 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             closedClassWords: requestClosedClassWords(),
             selectedAnswer: { text: localSourceContent, claimText: localSourceContent,
               evidenceIds: longPathBasisAnswer.evidence.map(span => String(span.id)) },
-            additionalFacts: temporalConstructFact ? [temporalConstructFact] : undefined
+            additionalFacts: temporalConstructFact ? [temporalConstructFact] : undefined,
+            additionalEvidence: temporalConstructFact ? temporalBoundEvidence : undefined
           })
-          : assembly.constructGraph;
+          : temporalConstructFact
+            ? attachSourceBoundAnswerConstruct({
+              construct: assembly.constructGraph,
+              requestText: input.text,
+              brainMarker: brain,
+              hasher,
+              facts: [temporalConstructFact],
+              evidence: temporalBoundEvidence,
+              identitySeed: requestValueBinding?.resolverId
+            })
+            : assembly.constructGraph;
       // Learned graph prior: the graph-node answer / insufficient-support constructs the mouth already knows how to realize.
       const priorConstructGraph = runtimeDiagnosticRequested
         ? localAnswerConstructGraph

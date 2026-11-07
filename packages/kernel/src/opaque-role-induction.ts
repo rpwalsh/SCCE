@@ -6,6 +6,7 @@ import type { StructuredSemanticCandidate } from "./structured-semantic-candidat
 import type { Hasher, JsonValue } from "./types.js";
 
 export const OPAQUE_ROLE_MODEL_SCHEMA = "scce.opaque_role_model.v1" as const;
+export const UNRESOLVED_SEMANTIC_ROLE_ID_PREFIX = "role.unresolved." as const;
 
 export interface OpaqueRoleCluster {
   id: string;
@@ -143,7 +144,7 @@ export function compileOpaqueRoleModel(input: {
       occurrenceId: occurrence.id,
       candidateId: occurrence.candidateId,
       provisionalPortId: occurrence.provisionalPortId,
-      roleId: posterior[0]?.roleId ?? `role.unresolved.${hasher.digestHex(occurrence.id).slice(0, 24)}`,
+      roleId: posterior[0]?.roleId ?? `${UNRESOLVED_SEMANTIC_ROLE_ID_PREFIX}${hasher.digestHex(occurrence.id).slice(0, 24)}`,
       posterior
     };
   });
