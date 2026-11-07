@@ -354,7 +354,7 @@ describe("acquired typed request construction transfer", () => {
     fixture.storage.model.listLanguageProfiles = async query => {
       const profiles = [profile, ...residentLanguage.profiles];
       return typeof query === "number" ? profiles.slice(0, query)
-        : profiles.filter(row => !query?.sourceVersionIds || query.sourceVersionIds.includes(String(row.sourceVersionId))).slice(0, query?.limit);
+        : profiles.filter(row => !query?.sourceVersionIds || query.sourceVersionIds.includes(row.sourceVersionId)).slice(0, query?.limit);
     };
     const storedModels = [...trained.models, ...residentLanguage.models];
     fixture.storage.languageMemory.listNgramModels = async query => storedModels.filter(model =>
