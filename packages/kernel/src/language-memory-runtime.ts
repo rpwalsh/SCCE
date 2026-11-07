@@ -71,6 +71,76 @@ const composedJoinProgramCache = new WeakMap<
   JoinProgramMixture | null
 >();
 
+interface DeferredConstructionState {
+  independent: LanguageMemoryRuntimeState;
+  read(): LanguageMemoryRuntimeState;
+  peek(): LanguageMemoryRuntimeState | undefined;
+  subscribe(listener: () => void): void;
+  roots: readonly unknown[];
+}
+const deferredConstructionStates = new WeakMap<LanguageMemoryRuntimeState, DeferredConstructionState>();
+const constructionStateKeys = ["importedConstructionBundles", "rejectedConstructionPatterns", "creativeEventCompatibilityModels", "importedLanguagePriorCount", "competenceVector", "audit"] as const;
+
+/** Preserve deferred compiler properties when adding turn-owned metadata. */
+export function cloneLanguageMemoryRuntimeState(state: LanguageMemoryRuntimeState, overrides: Partial<LanguageMemoryRuntimeState>): LanguageMemoryRuntimeState {
+  const clone = Object.defineProperties({}, Object.getOwnPropertyDescriptors(state)) as LanguageMemoryRuntimeState;
+  Object.defineProperties(clone, Object.getOwnPropertyDescriptors(overrides));
+  const deferred = deferredConstructionStates.get(state);
+  if (deferred) {
+    let ready: LanguageMemoryRuntimeState | undefined;
+    deferredConstructionStates.set(clone, {
+      independent: cloneLanguageMemoryRuntimeState(deferred.independent, overrides),
+      read: () => ready ??= cloneLanguageMemoryRuntimeState(deferred.read(), overrides),
+      peek: () => ready ?? (deferred.peek() ? cloneLanguageMemoryRuntimeState(deferred.peek()!, overrides) : undefined),
+      subscribe: deferred.subscribe,
+      roots: deferred.roots
+    });
+  }
+  return clone;
+}
+
+export function onLanguageMemoryConstructionHydrated(state: LanguageMemoryRuntimeState, listener: () => void): void {
+  deferredConstructionStates.get(state)?.subscribe(listener);
+}
+
+/** Cache accounting visits retained inputs or completed programs without invoking the compiler. */
+export function peekLanguageMemoryConstructionState(state: Partial<LanguageMemoryRuntimeState>): {
+  bundles?: readonly DurableLanguageConstructionBundle[];
+  rejected?: readonly LanguageConstructionMemoryIssue[];
+  roots: readonly unknown[];
+} {
+  const deferred = deferredConstructionStates.get(state as LanguageMemoryRuntimeState);
+  const ready = deferred?.peek();
+  if (deferred && !ready) return { roots: deferred.roots };
+  const value = ready ?? state;
+  return { bundles: value.importedConstructionBundles, rejected: value.rejectedConstructionPatterns,
+    roots: [...(deferred?.roots ?? []), value.importedConstructionBundles, value.creativeEventCompatibilityModels] };
+}
+
+function deferConstructionState(independent: LanguageMemoryRuntimeState, compile: () => LanguageMemoryRuntimeState, roots: readonly unknown[]): LanguageMemoryRuntimeState {
+  let completed: LanguageMemoryRuntimeState | undefined;
+  const listeners = new Set<() => void>();
+  const read = () => {
+    if (!completed) {
+      completed = compile();
+      for (const listener of listeners) listener();
+      listeners.clear();
+    }
+    return completed;
+  };
+  const state = cloneLanguageMemoryRuntimeState(independent, {});
+  for (const key of constructionStateKeys) Object.defineProperty(state, key, {
+    enumerable: true, configurable: true, get: () => read()[key]
+  });
+  const scope = { ...independent.scope };
+  for (const key of ["profileIds", "sourceVersionIds", "degraded", "reason"] as const) Object.defineProperty(scope, key, {
+    enumerable: true, configurable: true, get: () => read().scope[key]
+  });
+  state.scope = scope;
+  deferredConstructionStates.set(state, { independent, read, peek: () => completed, subscribe: listener => { listeners.add(listener); }, roots });
+  return state;
+}
+
 /** Which corpus population a resident model came from. Index-aligned with `models`; the record already carried it. */
 export interface LanguageModelPopulation {
   modelId: string;
@@ -550,11 +620,10 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
         optionalNullRealizationModelsFromPatterns(persistedPatterns);
       const importedSemanticFrames = [...(input.semanticFrames ?? [])].sort((a, b) => b.alpha - a.alpha || compareCodePoint(a.id, b.id)).slice(0, 2048);
       const structuralDeltas = languageStructuralDeltasFromPatterns(persistedPatterns);
-      const constructionMemory = hydrateLanguageConstructionPatterns({
-        patterns: persistedPatterns,
-        evidence: input.constructionEvidence ?? [],
-        hasher: options.hasher
-      });
+      const constructionPatterns = persistedPatterns.filter(isLanguageConstructionPattern);
+      const constructionInput = constructionPatterns.length ? structuredClone({
+        patterns: constructionPatterns, evidence: input.constructionEvidence ?? []
+      }) : undefined;
       const creativeEventCompatibilityModels = normalizeCreativeEventCompatibilityModels(
         [
           ...(input.creativeEventCompatibilityModels ?? []),
@@ -563,72 +632,79 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
       );
       const joinPrograms = joinProgramsFromPatterns(importedPatterns);
       const vocabularySize = uniqueVocabularySize(models) + uniqueUnitVocabularySize(importedUnits);
-      const importedLanguagePriorCount = importedUnits.length + importedPatterns.length + importedObservations.length + importedSemanticFrames.length + constructionMemory.bundles.length + importedReversibleConstructions.length + importedPairedAntiUnifiedConstructions.length + optionalNullRealizationModels.length + creativeEventCompatibilityModels.length + joinPrograms.length + input.models.filter(isImportedLanguagePriorModel).length;
-      const competenceVector = competenceFromRuntime({ models, observedSymbolCount, vocabularySize, languageHints, importedUnits, importedPatterns, importedObservations, importedSemanticFrames, importedConstructionBundles: constructionMemory.bundles });
-      return {
-        models,
-        modelPopulations,
-        records,
-        streamIds,
-        languageHints,
-        maxOrder: models.reduce((max, model) => Math.max(max, model.order), 0),
-        observedSymbolCount,
-        vocabularySize,
-        importedUnits,
-        importedPatterns,
-        importedObservations,
-        importedSemanticFrames,
-        structuralDeltas,
-        importedConstructionBundles: constructionMemory.bundles,
-        importedReversibleConstructions,
-        importedPairedAntiUnifiedConstructions,
-        optionalNullRealizationModels,
-        joinPrograms,
-        creativeEventCompatibilityModels,
-        rejectedConstructionPatterns: constructionMemory.rejected,
-        requestRequirementHydration: requestRequirements.report,
-        importedLanguagePriorCount,
-        competenceVector,
-        scope: {
-          mode: "unscoped",
-          profileIds: [],
-          sourceVersionIds: [],
-          purityProven: false,
-          degraded: false,
-          reason: "no-language-cluster-requested"
-        },
-        audit: toJsonValue({
-          source: "language-memory-runtime",
-          importRunId: input.importRunId ?? null,
-          modelRecords: input.models.length,
-          reconstructedModels: reconstructed.length,
-          usableModels: models.length,
-          importedUnits: importedUnits.length,
-          importedPatterns: importedPatterns.length,
-          persistedConstructionPatterns: persistedPatterns.length - importedPatterns.length,
-          importedObservations: importedObservations.length,
-          importedSemanticFrames: importedSemanticFrames.length,
-          importedConstructionBundles: constructionMemory.bundles.length,
-          importedReversibleConstructions:
-            importedReversibleConstructions.length,
-          importedPairedAntiUnifiedConstructions:
-            importedPairedAntiUnifiedConstructions.length,
-          optionalNullRealizationModels:
-            optionalNullRealizationModels.length,
-          joinPrograms: joinPrograms.map(program => program.id),
-          creativeEventCompatibilityModels: creativeEventCompatibilityModels.length,
+      const priorModelCount = input.models.filter(isImportedLanguagePriorModel).length;
+      const finish = (constructionMemory: ReturnType<typeof hydrateLanguageConstructionPatterns>): LanguageMemoryRuntimeState => {
+        const importedLanguagePriorCount = importedUnits.length + importedPatterns.length + importedObservations.length + importedSemanticFrames.length + constructionMemory.bundles.length + importedReversibleConstructions.length + importedPairedAntiUnifiedConstructions.length + optionalNullRealizationModels.length + creativeEventCompatibilityModels.length + joinPrograms.length + priorModelCount;
+        const competenceVector = competenceFromRuntime({ models, observedSymbolCount, vocabularySize, languageHints, importedUnits, importedPatterns, importedObservations, importedSemanticFrames, importedConstructionBundles: constructionMemory.bundles });
+        return {
+          models,
+          modelPopulations,
+          records,
+          streamIds,
+          languageHints,
+          maxOrder: models.reduce((max, model) => Math.max(max, model.order), 0),
+          observedSymbolCount,
+          vocabularySize,
+          importedUnits,
+          importedPatterns,
+          importedObservations,
+          importedSemanticFrames,
+          structuralDeltas,
+          importedConstructionBundles: constructionMemory.bundles,
+          importedReversibleConstructions,
+          importedPairedAntiUnifiedConstructions,
+          optionalNullRealizationModels,
+          joinPrograms,
+          creativeEventCompatibilityModels,
           rejectedConstructionPatterns: constructionMemory.rejected,
           requestRequirementHydration: requestRequirements.report,
           importedLanguagePriorCount,
-          orders: models.map(model => model.order),
-          streamIds: streamIds.slice(0, 24),
-          languageHints: languageHints.slice(0, 24),
-          observedSymbolCount,
-          vocabularySize,
           competenceVector,
-          scope: { mode: "unscoped", purityProven: false, degraded: false }
-        })
-      };
+          scope: {
+            mode: "unscoped",
+            profileIds: [],
+            sourceVersionIds: [],
+            purityProven: false,
+            degraded: false,
+            reason: "no-language-cluster-requested"
+          },
+          audit: toJsonValue({
+            source: "language-memory-runtime",
+            importRunId: input.importRunId ?? null,
+            modelRecords: input.models.length,
+            reconstructedModels: reconstructed.length,
+            usableModels: models.length,
+            importedUnits: importedUnits.length,
+            importedPatterns: importedPatterns.length,
+            persistedConstructionPatterns: persistedPatterns.length - importedPatterns.length,
+            importedObservations: importedObservations.length,
+            importedSemanticFrames: importedSemanticFrames.length,
+            importedConstructionBundles: constructionMemory.bundles.length,
+            importedReversibleConstructions:
+              importedReversibleConstructions.length,
+            importedPairedAntiUnifiedConstructions:
+              importedPairedAntiUnifiedConstructions.length,
+            optionalNullRealizationModels:
+              optionalNullRealizationModels.length,
+            joinPrograms: joinPrograms.map(program => program.id),
+            creativeEventCompatibilityModels: creativeEventCompatibilityModels.length,
+            rejectedConstructionPatterns: constructionMemory.rejected,
+            requestRequirementHydration: requestRequirements.report,
+            importedLanguagePriorCount,
+            orders: models.map(model => model.order),
+            streamIds: streamIds.slice(0, 24),
+            languageHints: languageHints.slice(0, 24),
+            observedSymbolCount,
+            vocabularySize,
+            competenceVector,
+            scope: { mode: "unscoped", purityProven: false, degraded: false }
+          })
+        };
+        };
+      const independent = finish({ bundles: [], constructions: [], formClasses: [], rejected: [] });
+      return constructionInput ? deferConstructionState(independent, () => finish(hydrateLanguageConstructionPatterns({
+        ...constructionInput, hasher: options.hasher
+      })), [constructionInput]) : independent;
     },
 
     hydrateFromImportedBrain(input) {
@@ -2012,6 +2088,11 @@ function scopeLanguageMemoryStateWith(
   ownership: LanguageMemoryOwnership,
   meta: LanguageMemoryScopeMeta
 ): LanguageMemoryRuntimeState {
+  const deferred = deferredConstructionStates.get(state);
+  if (deferred) {
+    const independent = scopeLanguageMemoryStateWith(deferred.independent, ownership, meta);
+    return deferConstructionState(independent, () => scopeLanguageMemoryStateWith(deferred.read(), ownership, meta), deferred.roots);
+  }
   const continuationPopulation = meta.languageId && state.continuationPopulation?.languageId === meta.languageId
     ? state.continuationPopulation
     : undefined;

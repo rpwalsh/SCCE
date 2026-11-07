@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { compileLanguageConstructionPattern, SOURCE_EXAMPLE_CONSTRUCTION_STORAGE } from "../language-construction-memory.js";
 import { estimateRetainedProgramBytes } from "../retained-program-size.js";
-import { createLanguageMemoryRuntime } from "../language-memory-runtime.js";
+import { createLanguageMemoryRuntime, peekLanguageMemoryConstructionState } from "../language-memory-runtime.js";
 import { languageSurfaceTrigrams } from "../language.js";
 import { createNgramMemoryCompiler } from "../ngram-memory.js";
 import { createIdFactory } from "../ids.js";
@@ -16,6 +16,25 @@ const NOT_WARM = /hydrated runtime unavailable: resident .* was not warmed/u;
 const CACHE_BUDGET_BYTES = 512 * 1024;
 
 describe("surface language cache entry sizing", () => {
+  it("keeps request-seed setup lazy and reweighs the cache when canonical programs are first used", async () => {
+    const fixture = await runtimeFixture({ modelSymbolCount: 8, compactGrammar: true, cacheBudgetBytes: 8 * 1024 * 1024 });
+    const seed = await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "request-seed", undefined, "", { languageId: "language.alpha", purpose: "request_seed" });
+    expect(peekLanguageMemoryConstructionState(seed.state).bundles).toBeUndefined();
+    const deferredBytes = fixture.runtime.cacheOccupancy().languageMemoryEstimatedBytes;
+    expect(deferredBytes).toBeGreaterThan(0);
+    const bundles = seed.state.importedConstructionBundles;
+    expect(bundles).toHaveLength(1);
+    const expandedBytes = fixture.runtime.cacheOccupancy().languageMemoryEstimatedBytes;
+    expect(expandedBytes).toBeGreaterThan(deferredBytes);
+    expect(seed.state.importedConstructionBundles).toBe(bundles);
+    const resident = await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "request-seed", undefined, "", { languageId: "language.alpha", purpose: "request_seed", residentOnly: true });
+    expect(resident).toBe(seed);
+    const pressure = await runtimeFixture({ modelSymbolCount: 8, compactGrammar: true, cacheBudgetBytes: Math.floor((deferredBytes + expandedBytes) / 2) });
+    const cold = await pressure.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "request-seed", undefined, "", { languageId: "language.alpha", purpose: "request_seed" });
+    expect(pressure.runtime.cacheOccupancy().languageMemoryEntries).toBe(1);
+    expect(cold.state.importedConstructionBundles).toEqual(bundles);
+    expect(pressure.runtime.cacheOccupancy().languageMemoryEntries).toBe(0);
+  });
   it("counts expanded source-example programs against the allowance even when compact storage fits", async () => {
     const generous = await runtimeFixture({ modelSymbolCount: 8, compactGrammar: true, cacheBudgetBytes: 8 * 1024 * 1024 });
     const warm = await generous.hydrate("language.alpha");

@@ -122,7 +122,7 @@ import {
   translationTargetFromMetadata
 } from "./kernel-input-controls.js";
 import type { LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
-import { activeJoinProgram, createLanguageMemoryRuntime, scopeLanguageMemoryStateToProfile } from "./language-memory-runtime.js";
+import { activeJoinProgram, cloneLanguageMemoryRuntimeState, createLanguageMemoryRuntime, scopeLanguageMemoryStateToProfile } from "./language-memory-runtime.js";
 import {
   selectLanguageProfileClusterForSourceVersions,
   languageHintFromProfile,
@@ -1220,16 +1220,15 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         ? {
           ...baseAuthorityLanguage,
           semanticFrames: uniqueRecordsById([...exactRequestFrames, ...baseAuthorityLanguage.semanticFrames], 128),
-          state: {
-            ...baseAuthorityLanguage.state,
+          state: cloneLanguageMemoryRuntimeState(baseAuthorityLanguage.state, {
             importedSemanticFrames: uniqueRecordsById([...exactRequestFrames, ...baseAuthorityLanguage.state.importedSemanticFrames], 128),
-            importedLanguagePriorCount: baseAuthorityLanguage.state.importedLanguagePriorCount + exactRequestFrames.filter(frame => !baseAuthorityLanguage.state.importedSemanticFrames.some(existing => existing.id === frame.id)).length,
-            audit: toJsonValue({
+            get importedLanguagePriorCount() { return baseAuthorityLanguage.state.importedLanguagePriorCount + exactRequestFrames.filter(frame => !baseAuthorityLanguage.state.importedSemanticFrames.some(existing => existing.id === frame.id)).length; },
+            get audit() { return toJsonValue({
               ...jsonRecord(baseAuthorityLanguage.state.audit),
               requestExactSemanticFrameIds: exactRequestFrames.map(frame => frame.id),
               requestExactSemanticFrameMatch: true
-            })
-          }
+            }); }
+          })
         }
         : baseAuthorityLanguage;
       // Repo cognition runs after the language seed so symbol localization filters
@@ -1349,13 +1348,12 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         : authorityLanguage.requestControlPatterns.length
           ? authorityLanguage.requestControlPatterns
           : await requestControlPatternsCached();
-      const requestRequirementLanguageState: LanguageMemoryRuntimeState = {
-        ...authorityLanguage.state,
+      const requestRequirementLanguageState = cloneLanguageMemoryRuntimeState(authorityLanguage.state, {
         importedPatterns: uniqueRecordsById([
           ...turnRequestControlPatterns,
           ...authorityLanguage.state.importedPatterns
         ], 2048)
-      };
+      });
       // Structure, not vocabulary: a request that names a formal language or a code path is asking for an artifact.
       const typedProgramBehavior = typedProgramBehaviorFromMetadata(input.metadata);
       const codeSignal = codeRequestSignal(input.text, { typedBehavior: typedProgramBehavior });

@@ -10,7 +10,7 @@ import { jsonRecord, kernelString, normalizePriorKey, splitPriorUnits } from "./
 import { featureSetMemoStats } from "./primitives.js";
 import { tidySurfaceTextMemoStats } from "./surface-linguistics.js";
 import { isLanguageConstructionPattern } from "./language-construction-memory.js";
-import { createLanguageMemoryRuntime, markLanguageMemoryStateUnscoped, scopeLanguageMemoryStateToCluster, scopeLanguageMemoryStateToLanguage } from "./language-memory-runtime.js";
+import { cloneLanguageMemoryRuntimeState, createLanguageMemoryRuntime, markLanguageMemoryStateUnscoped, onLanguageMemoryConstructionHydrated, peekLanguageMemoryConstructionState, scopeLanguageMemoryStateToCluster, scopeLanguageMemoryStateToLanguage } from "./language-memory-runtime.js";
 import type { LanguageResolver } from "./language-identity-runtime.js";
 import type { LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
 import {
@@ -166,9 +166,9 @@ function approximateHydrationEstimatedBytes(value: {
   // rescopeForSurface captures the unscoped state as well as returning a scoped state. Both remain live.
   // Visit their program roots together so aliases between scopes and between compiled programs cost once.
   const programRoots = [value.state, value.retainedProgramState].flatMap(state => state ? [
-    state.importedConstructionBundles, state.importedReversibleConstructions,
+    ...peekLanguageMemoryConstructionState(state).roots, state.importedReversibleConstructions,
     state.importedPairedAntiUnifiedConstructions, state.optionalNullRealizationModels,
-    state.joinPrograms, state.creativeEventCompatibilityModels, state.structuralDeltas,
+    state.joinPrograms, state.structuralDeltas,
     state.requestRequirementHydration
   ] : []);
   return jsonBytes + estimateRetainedProgramBytes(programRoots, allowance - jsonBytes);
@@ -547,8 +547,10 @@ export function createSurfaceLanguageRuntime(options: {
       constructionEvidence
     };
     const hydratedBase = languageMemoryRuntime.hydrateFromImportedBrain(hydrationInput);
-    const hydrated = continuationPopulation ? { ...hydratedBase, continuationPopulation } : hydratedBase;
-    hydrateHeapTrace("language.hydrate.built", { elapsedMs: Date.now() - hydrateStartedAt, importedUnits: hydrated.importedUnits?.length ?? 0, importedPatterns: hydrated.importedPatterns?.length ?? 0, constructionBundles: hydrated.importedConstructionBundles?.length ?? 0, rejectedBundles: hydrated.rejectedConstructionPatterns?.length ?? 0 });
+    const hydrated = continuationPopulation ? cloneLanguageMemoryRuntimeState(hydratedBase, { continuationPopulation }) : hydratedBase;
+    if (purpose !== "request_seed") void hydrated.importedConstructionBundles;
+    const constructionPeek = peekLanguageMemoryConstructionState(hydrated);
+    hydrateHeapTrace("language.hydrate.built", { elapsedMs: Date.now() - hydrateStartedAt, importedUnits: hydrated.importedUnits?.length ?? 0, importedPatterns: hydrated.importedPatterns?.length ?? 0, constructionBundles: constructionPeek.bundles?.length ?? -1, rejectedBundles: constructionPeek.rejected?.length ?? -1 });
     const roleProfileIds = new Set<string>([
       ...units.map(unit => unit.profileId),
       ...patterns.map(pattern => pattern.profileId),
@@ -596,8 +598,12 @@ export function createSurfaceLanguageRuntime(options: {
         // state itself was filtered to, or every downstream profile-identity comparison is comparing across
         // unrelated corpora by accident. Falls back to the old cluster-based pick only if scoping produced no
         // candidate profiles at all, rather than leaving surfaceProfile undefined.
-        const languageScopedProfileIds = new Set(languageScopedState.scope.profileIds);
-        const languageScopedProfiles = roleProfiles.filter(profile => languageScopedProfileIds.has(profile.id));
+        const languageScopedProfileIds = purpose === "request_seed" ? undefined : new Set(languageScopedState.scope.profileIds);
+        const languageScopedProfiles = roleProfiles.filter(profile => {
+          if (languageScopedProfileIds) return languageScopedProfileIds.has(profile.id);
+          const owner = resolver.profile(profile.id);
+          return owner === undefined || owner === languageId;
+        });
         return {
           state: languageScopedState,
           surfaceProfile: (languageScopedProfiles.length
@@ -803,6 +809,15 @@ export function createSurfaceLanguageRuntime(options: {
               surfaceLanguageMemoryCacheMaxEntries,
               surfaceLanguageMemoryCacheMaxEstimatedBytes
             );
+            const reweigh = () => {
+              const entry = surfaceLanguageMemoryCache.get(languageKey);
+              if (generation !== languageMemoryGeneration || entry?.value !== hydrated) return;
+              boundedSurfaceLanguageMemoryCacheSet(surfaceLanguageMemoryCache, languageKey,
+                { ...entry, approxEstimatedBytes: approximateHydrationEstimatedBytes(hydrated, surfaceLanguageMemoryCacheMaxEstimatedBytes) },
+                surfaceLanguageMemoryCacheMaxEntries, surfaceLanguageMemoryCacheMaxEstimatedBytes);
+            };
+            onLanguageMemoryConstructionHydrated(hydrated.state, reweigh);
+            if (hydrated.retainedProgramState) onLanguageMemoryConstructionHydrated(hydrated.retainedProgramState, reweigh);
             return hydrated;
           });
         // Cleared only after the store above has run, so a turn arriving late still joins rather than restarting.

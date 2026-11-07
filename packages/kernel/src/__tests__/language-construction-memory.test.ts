@@ -14,7 +14,8 @@ import {
   compileLanguageConstructionPatterns,
   hydrateLanguageConstructionPatterns
 } from "../language-construction-memory.js";
-import { createLanguageMemoryRuntime, scopeLanguageMemoryStateToCluster } from "../language-memory-runtime.js";
+import { cloneLanguageMemoryRuntimeState, createLanguageMemoryRuntime, peekLanguageMemoryConstructionState, scopeLanguageMemoryStateToCluster, scopeLanguageMemoryStateToLanguage } from "../language-memory-runtime.js";
+import { estimateRetainedProgramBytes } from "../retained-program-size.js";
 import { createClock, createHasher } from "../primitives.js";
 import { createIdFactory } from "../ids.js";
 import type { LanguageProfileCluster } from "../language.js";
@@ -26,6 +27,52 @@ const clock = createClock({ fixedTime: 91_000, stepMs: 1 });
 const ids = createIdFactory({ clock, hasher, deterministicReplay: true, namespace: "construction-memory" });
 
 describe("durable language-construction memory", () => {
+  it("defers canonical construction verification through request setup, then memoizes exact source-owned programs", () => {
+    const evidence = evidenceSpan("source.lazy", "🧪甲 f9 🦉乙。\n🧪丙 f9 🦉丁。", 17);
+    const compiled = compileLanguageConstructionPattern({ bindingId: "relation.lazy", profileId: "profile.lazy", evidence: [evidence], hasher,
+      updatedAt: 91_500, storageEncoding: SOURCE_EXAMPLE_CONSTRUCTION_STORAGE,
+      observations: [0, 10].map(start => ({ sourceVersionId: String(evidence.sourceVersionId), evidenceId: String(evidence.id),
+        surfaceStartCodePoint: start, surfaceEndCodePoint: start + 9,
+        roles: [{ slotIndex: 0, startCodePoint: 0, endCodePoint: 2 }, { slotIndex: 1, startCodePoint: 3, endCodePoint: 5 }, { slotIndex: 2, startCodePoint: 6, endCodePoint: 8 }] })) });
+    expect(compiled.status).toBe("compiled");
+    if (compiled.status !== "compiled") throw new Error("source compiler failed");
+    const patterns = [structuredClone(compiled.pattern)];
+    const expected = hydrateLanguageConstructionPatterns({ patterns, evidence: [evidence], hasher });
+    let digests = 0;
+    const measuredHasher = { ...hasher, digestHex: (...args: Parameters<typeof hasher.digestHex>) => { digests++; return hasher.digestHex(...args); } };
+    const runtime = createLanguageMemoryRuntime({ hasher: measuredHasher });
+    const state = runtime.hydrateFromImportedBrain({ models: [], observations: [], units: [], patterns, constructionEvidence: [evidence] });
+    const overlaid = cloneLanguageMemoryRuntimeState(state, { closedClass: ["f9"] });
+    const scoped = scopeLanguageMemoryStateToLanguage(overlaid, "language.lazy", { profile: () => "language.lazy", corpus: () => "language.lazy" });
+    const request = cloneLanguageMemoryRuntimeState(scoped, { importedPatterns: [...scoped.importedPatterns] });
+    expect(request.scope.mode).toBe("language");
+    expect(request.scope.purityProven).toBe(true);
+    expect(request.importedUnits).toEqual([]);
+    expect(digests).toBe(0);
+    expect(peekLanguageMemoryConstructionState(request).bundles).toBeUndefined();
+    expect(estimateRetainedProgramBytes(peekLanguageMemoryConstructionState(request).roots)).toBeGreaterThan(0);
+    expect(digests).toBe(0);
+    evidence.text = evidence.text.replace("甲", "戊");
+    (patterns[0]!.patternJson as Record<string, JsonValue>).contentDigest = "forged-after-hydration";
+    const bundles = request.importedConstructionBundles;
+    expect(bundles).toEqual(expected.bundles);
+    const compiledDigests = digests;
+    expect(compiledDigests).toBeGreaterThan(0);
+    expect(request.importedConstructionBundles).toBe(bundles);
+    expect(request.rejectedConstructionPatterns).toEqual([]);
+    expect(request.scope.profileIds).toEqual(["profile.lazy"]);
+    expect(request.scope.sourceVersionIds).toEqual(["source.lazy"]);
+    expect(digests).toBe(compiledDigests);
+    const foreign = scopeLanguageMemoryStateToLanguage(state, "language.foreign", { profile: () => "language.lazy", corpus: () => "language.lazy" });
+    expect(foreign.importedConstructionBundles).toEqual([]);
+    expect(foreign.importedLanguagePriorCount).toBe(0);
+    const mutated = runtime.hydrateFromImportedBrain({ models: [], observations: [], units: [], patterns, constructionEvidence: [evidence] });
+    expect(mutated.importedConstructionBundles).toEqual([]);
+    const rejectedDigests = digests;
+    expect(mutated.rejectedConstructionPatterns).not.toEqual([]);
+    expect(mutated.importedConstructionBundles).toEqual([]);
+    expect(digests).toBe(rejectedDigests);
+  });
   it("shares source coordinates across a streaming batch without retaining stale source or profile state", () => {
     const evidence = evidenceSpan("source.batch", "🧪甲 f9 🦉乙。", 17);
     const observations = [{ sourceVersionId: String(evidence.sourceVersionId), evidenceId: String(evidence.id),
