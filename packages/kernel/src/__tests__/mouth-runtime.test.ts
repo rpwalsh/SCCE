@@ -35,6 +35,8 @@ import {
 import type { CandidateSurface } from "../candidate.js";
 import { genericChatMouthFixture as fixture } from "./fixtures/generic-chat-mouth-fixture.js";
 import { sourceOwnedMouthTeaching } from "./fixtures/source-owned-mouth-teaching.js";
+import { clearCorpusIdentitySignals, primeCorpusIdentitySignals } from "../corpus-identity.js";
+import { answerCoversRequest, localEvidenceAnswerClaimSurface, localEvidenceAnswerSurface } from "../local-evidence-runtime.js";
 
 describe("Mouth runtime surface planning", () => {
   const clock = createClock({ fixedTime: 5000, stepMs: 1 });
@@ -565,6 +567,46 @@ describe("Mouth runtime surface planning", () => {
     expect(spoken.text).toBe(answer);
     expect(spoken.evidenceRefs).toEqual([evidence.id]);
     expect(spoken.realizationTrace.selected.id).toBe(selectedCandidate.id);
+  });
+
+  it("uses the canonical selector for quoted Moby-Dick dialogue and rejects an unsupported role", async () => {
+    const isolated = createLanguageMemoryRuntime({ idFactory: ids, hasher });
+    const closed = new Set(["who", "what", "is", "the", "of", "was", "in", "where"]);
+    primeCorpusIdentitySignals({ closedClass: closed, identities: new Set(["pequod"]), spread: new Map(), concentration: 0 });
+    try {
+      const dialogue = "“Captain Ahab.” “What! the captain of our ship, the Pequod?” “Aye, among some of us old sailor chaps, he goes by that name.";
+      const fact = "But if you are speaking of Captain Ahab, of that ship there, the Pequod, then let me tell you, that I know all about the loss of his leg.";
+      const text = `${dialogue} ${"The vessel sailed through the harbor. ".repeat(340)}${fact}`;
+      const source = sourceVersion(text);
+      const base = directEvidence(source, text);
+      const evidence: EvidenceSpan = { ...base, charStart: 192444, charEnd: 192444 + [...text].length,
+        provenance: { title: "Moby Dick", metadata: { title: "Moby Dick", identity: "Moby Dick; or, The Whale. By Herman Melville" } } };
+      const languageMemory = { ...isolated.hydrateFromImportedBrain({ importRunId: "moby-dialogue", models: [], observations: [], units: [], patterns: [], semanticFrames: [] }), closedClass: [...closed] };
+      const mouth = createMouth({ languageMemory: isolated, correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }), hashText: value => hasher.digestHex(value) });
+      const speak = (requestText: string) => {
+        const field = emptyField();
+        const entailment = createSemanticEntailmentEngine({ idFactory: ids, hasher }).check({ text: requestText, evidence: [evidence], nodes: [], field, createdAt: clock.now() });
+        return mouth.speak({ requestText, construct: constructGraph(false), field, languageProfile: languageProfile(source), evidence: [evidence], entailment, languageMemory,
+          requirementField: deriveTurnRequirementField({ requestText }), requestedAuthority: "factual", selectedCandidate: {
+            id: "candidate:moby-dialogue", kind: "proof-answer", answer: dialogue, force: "inferred", evidenceIds: [evidence.id],
+            scores: { support: 0.8, contradiction: 0, faithfulness: 0.8, alphaPressure: 0.5, actionability: 0.5, evidenceCoverage: 0.8, novelty: 0, realizability: 0.8, risk: 0 },
+            claimBases: ["direct_evidence"], boundaries: ["selected-evidence-bound"], audit: { source: "moby-dialogue-regression" }
+          } });
+      };
+      const requestText = "Who is the captain of the Pequod?";
+      const selected = localEvidenceAnswerSurface({ requestText, selectedEvidence: [evidence], closedClassWords: closed, functionSymbols: closed });
+      expect(selected).toBeDefined();
+      expect(localEvidenceAnswerClaimSurface(selected!)).toBe(fact);
+      const spoken = await speak(requestText);
+      expect(spoken.text).toBe(fact);
+      expect(spoken.evidenceRefs).toEqual([evidence.id]);
+      expect((await speak("Who is the dentist of the Pequod?")).text).toBe("");
+      const question = "the captain of our ship, the Pequod?”";
+      expect(answerCoversRequest([question], evidence, ["captain", "pequod"], requestText, { relationRequired: true, languageClosedClassWords: closed })).toBe(false);
+      expect(answerCoversRequest([question], evidence, ["captain", "pequod"], requestText, { relationRequired: true, languageClosedClassWords: closed, boundValues: ["Pequod"] })).toBe(true);
+    } finally {
+      clearCorpusIdentitySignals();
+    }
   });
 
   it("selects one owner-bound answer sentence in the common Mouth pipeline and withholds unsupported attributes", async () => {

@@ -70,7 +70,7 @@ import { selectClarificationQuestion } from "./clarification-question.js";
 import { isEntitySaladSurface } from "./evidence-gist.js";
 import { isStructuralResidueSurface } from "./structural-residue.js";
 import { mostLikelyHypothesis, normalizeHypothesisSet } from "./correlated-uncertainty.js";
-import { evidenceDiscriminatesAskedRelation, requestSentenceSequences, spanContainsRequestNearDuplicateSentence } from "./local-evidence-runtime.js";
+import { evidenceDiscriminatesAskedRelation, localEvidenceAnswerClaimSurface, localEvidenceAnswerSurface, requestSentenceSequences, spanContainsRequestNearDuplicateSentence } from "./local-evidence-runtime.js";
 import { quotedSentenceGap } from "./quoted-gap.js";
 import { creativeRequestContentSurface, realizeCreativeSection, surfaceEchoesPrompt } from "./creative-section-realization.js";
 import type { CreativeRequestFrame } from "./creative-event-compatibility.js";
@@ -8868,82 +8868,24 @@ function clarificationSurfaceFromFacts(facts: readonly SemanticAnswerFact[]): { 
   return surface ? { surface, selectedKey, evidenceIds: (fact.evidenceIds ?? []).map(String) } : undefined;
 }
 
-/**
- * The window of an admitted span that carries the request's own content units, cut verbatim from the source.
- *
- * Sentences are split on terminal punctuation shared across writing systems, never on any language's rules. Windows
- * are scored by the request units they cover, each weighted by how rare it is *inside this document*: a question about
- * the characters in a series is distinguished from every other question about that series by the word "characters",
- * and weighting by local rarity is what makes the window land on the cast list rather than on the lead paragraph that
- * repeats the title. Nothing is composed -- the words are the source's own, in the source's own order.
- *
- * List and heading markers are removed from this window and only this one. The general rule stands: scrubbing every
- * mouth surface once emptied twenty certified answers, because the sealed gold is cut from raw chunk text. This
- * surface is new, is reached only after every fact-built candidate has failed, and a window that still carries link,
- * template or table markup after the markers come off is refused rather than cleaned further.
- */
 /** Template, wiki-link, table or reference markup: apparatus a prose window must not carry. */
 const windowStructuralMarkup = new RegExp("[{]{2}|[[]{2}|[|]-|<ref|[=]{2,}", "u");
 
 function requestWindowSurfaceFromEvidence(input: SpeakInput, plan: SurfacePlan): string {
-  const units = mouthCoverageUnits(input);
-  if (!units.length) return "";
+  if (!mouthCoverageUnits(input).length) return "";
   const boundIds = new Set((input.selectedCandidate?.evidenceIds ?? []).map(String));
   const bound = input.evidence.filter(span => boundIds.has(String(span.id)));
   const searched = bound.length ? bound : input.evidence;
-  if (!searched.length) return "";
-  const budget = Math.min(420, Math.max(240, input.maxLength ?? DEFAULT_FACTUAL_SURFACE_EXTENT));
-  const unitSet = new Set(units);
-  let best: { score: number; chars: number; text: string; span: EvidenceSpan } | undefined;
-  for (const span of searched.slice(0, 4)) {
-    const text = String(span.text ?? span.textPreview ?? "");
-    if (!text) continue;
-    const sentences = text.slice(0, 60_000).split(/(?<=[.!?。．！？])\s+/u).map(sentence => sentence.trim()).filter(Boolean);
-    const hits = sentences.map(sentence => {
-      const surface = new Set(promptSurfaceUnits(sentence));
-      return [...unitSet].filter(unit => surface.has(unit));
-    });
-    const documentFrequency = new Map<string, number>();
-    for (const row of hits) for (const unit of row) documentFrequency.set(unit, (documentFrequency.get(unit) ?? 0) + 1);
-    const weight = (unit: string) => 1 / (1 + Math.log1p(documentFrequency.get(unit) ?? 1));
-    for (let start = 0; start < sentences.length; start++) {
-      if (!hits[start]?.length) continue;
-      const seen = new Set<string>();
-      let chars = 0;
-      for (let end = start; end < sentences.length && end < start + 8; end++) {
-        const sentence = sentences[end] ?? "";
-        if (chars + sentence.length + 1 > budget) break;
-        chars += sentence.length + 1;
-        for (const unit of hits[end] ?? []) seen.add(unit);
-        const score = [...seen].reduce((total, unit) => total + weight(unit), 0);
-        if (!best || score > best.score + 1e-9 || (Math.abs(score - best.score) <= 1e-9 && chars < best.chars)) {
-          best = { score, chars, text: sentences.slice(start, end + 1).join(" "), span };
-        }
-      }
-    }
-  }
-  if (!best) return "";
-  const cleaned = withoutListAndHeadingMarkers(best.text);
-  if (!cleaned || surfaceIsSourceApparatus(cleaned) || windowStructuralMarkup.test(cleaned)) return "";
-  const window = preserveSurfaceExtent(tidySurface(cleaned), input.maxLength ?? DEFAULT_FACTUAL_SURFACE_EXTENT, plan);
-  if (!window) return "";
-  const relationRequired = mouthRelationRequired(input);
-  if (!answerCoversRequest([window], best.span, units, input.requestText ?? "", { relationRequired, languageClosedClassWords: mouthLanguageClosedClass(input) })) return "";
-  // The window is scored as a bag of units across up to eight sentences, so it can cover every unit while no
-  // sentence inside it relates them to each other: two disjoint quotes that jointly mention the subject and the
-  // relation word are not one fact. Measured live: "It almost seems to me that man was not born to be a
-  // carnivore." next to "Albert Einstein [...] also read Blavatsky and attended lectures by Rudolf Steiner."
-  // covers albert/einstein/born between them and answers nothing about when Einstein was born. At least one
-  // sentence inside the window -- with the same one-sentence anaphora resolution a single-sentence answer
-  // already gets -- must carry the relation bound to the subject on its own.
-  if (relationRequired) {
-    const boundSpan = best.span;
-    const windowSentences = window.split(/(?<=[.!?。．！？])\s+/u).map(sentence => sentence.trim()).filter(Boolean);
-    const coherent = windowSentences.some(sentence => answerCoversRequest([sentence], boundSpan, units, input.requestText ?? "", { relationRequired: true, languageClosedClassWords: mouthLanguageClosedClass(input) }));
-    if (!coherent) return "";
-  }
-  return window;
+  const selected = localEvidenceAnswerSurface({ requestText: input.requestText ?? "", selectedEvidence: searched,
+    explicitContextEvidenceIds: input.explicitContextEvidenceIds,
+    closedClassWords: mouthClosedClass(input), functionSymbols: mouthLanguageClosedClass(input) });
+  if (!selected) return "";
+  const text = localEvidenceAnswerClaimSurface(selected);
+  if (!text || surfaceIsSourceApparatus(text) || windowStructuralMarkup.test(text)) return "";
+  const extent = preserveSurfaceExtent(tidySurface(text), input.maxLength ?? DEFAULT_FACTUAL_SURFACE_EXTENT, plan);
+  return extent === tidySurface(text) ? extent : "";
 }
+
 
 /** A licensed excerpt is a normal candidate: it keeps its source owner and enters ordinary Mouth validation/ranking. */
 function selectedSourceSynthesisCandidate(

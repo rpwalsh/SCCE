@@ -4,6 +4,12 @@ import { describe, expect, it } from "vitest";
 import { splitSurfaceSentences, structurallyCompleteSurface, tidySurfaceText } from "../surface-linguistics.js";
 
 describe("surface sentence boundaries", () => {
+  it("keeps closing quotation marks with the sentence they close", () => {
+    expect(splitSurfaceSentences("“Captain Ahab.” “What! the captain of our ship, the Pequod?” “Aye, among some of us old sailor chaps, he goes by that name.”")).toEqual([
+      "“Captain Ahab.”", "“What!", "the captain of our ship, the Pequod?”", "“Aye, among some of us old sailor chaps, he goes by that name.”"
+    ]);
+    expect(splitSurfaceSentences("「甲です。」 「誰ですか？」 「乙です。」")).toEqual(["「甲です。」", "「誰ですか？」", "「乙です。」"]);
+  });
   it("does not split after a single-letter personal initial", () => {
     const text = "The crew are led by Captain James T. Kirk, Science Officer Spock, and Chief Medical Officer Leonard H. \"Bones\" McCoy. The series aired on NBC.";
 

@@ -110,9 +110,14 @@ export function splitSurfaceSentences(text: string): string[] {
     }
     current += char;
     if (!isSentenceBoundarySymbol(char)) continue;
-    const next = chars[index + 1] ?? "";
-    if ((!next || isSurfaceWhitespace(next) || sentenceBoundaryMayOmitWhitespace(chars, index))
-      && shouldCloseSentence(chars, index)) push();
+    let after = index + 1;
+    while (after < chars.length && /[\p{Pe}\p{Pf}\p{Cf}"']/u.test(chars[after]!)) after++;
+    const next = chars[after] ?? "";
+    if ((!next || isSurfaceWhitespace(next) || after > index + 1 || sentenceBoundaryMayOmitWhitespace(chars, index))
+      && shouldCloseSentence(chars, index)) {
+      while (index + 1 < after) current += chars[++index];
+      push();
+    }
   }
   push();
   return out;

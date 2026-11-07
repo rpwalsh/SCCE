@@ -518,7 +518,7 @@ export function sessionOwnerObservationSurface(text: string, typedState?: JsonVa
     const codePoint = symbol.codePointAt(0);
     if (codePoint !== undefined && SESSION_QUESTION_TERMINAL_CODE_POINTS.has(codePoint)) return true;
     if (codePoint !== undefined && SESSION_EXCLAMATION_TERMINAL_CODE_POINTS.has(codePoint)) continue;
-    if (/^[\p{Pe}\p{Pf}\p{Cf}]$/u.test(symbol)) continue;
+    if (/^[\p{Pe}\p{Pf}\p{Cf}"']$/u.test(symbol)) continue;
     return false;
   }
   return false;
@@ -689,12 +689,9 @@ export function proposeSourceExactEvidenceAnswer(input: {
     // block whose visible head was the retronym sentence). Sentences
     // split from tidySurfaceText are verbatim substrings of the span by
     // construction, so whatever wins here survives excerpt verification
-    // unchanged. Truncation drops the final (possibly cut) sentence.
+    // unchanged. The owner span already bounds the source scan.
     const tidySpanText = tidySurfaceText(span.text);
-    const boundedChars = [...tidySpanText].slice(0, 12000);
-    const boundedText = boundedChars.join("");
-    const allSentences = splitSurfaceSentences(boundedText);
-    let sentences = (boundedChars.length < [...tidySpanText].length ? allSentences.slice(0, -1) : allSentences).slice(0, 80);
+    let sentences = splitSurfaceSentences(tidySpanText);
     // Splitter mismatch guard: inject the
     // near-duplicate gate's matching sentences when verbatim-preserving.
     if (proposeSequences.length) {
@@ -812,6 +809,7 @@ export function proposeSourceExactEvidenceAnswer(input: {
     // Serialized apparatus is never a candidate answer. Measured at sentence granularity, never at span
     // granularity: an article whose span also holds a results table keeps its prose lead.
     .filter(row => (row.sentence.length >= 24 || row.nearDuplicate) && !isHeadingOnlySurface(row.sentence)
+      && (row.nearDuplicate || row.suppliesBoundValue || !endsWithUnicodeQuestionMark(row.sentence))
       && !cliticOpeningFragment(row.sentence) && !isStructuralResidueSurface(row.sentence))
     // The duplicated sentence outranks everything: a unit-rich table blob
     // can beat the boost on raw overlap count.
@@ -903,7 +901,8 @@ export function proposeSourceExactEvidenceAnswer(input: {
   const focusedSentence = !selected.nearDuplicate && anchored.anchors.length > 0 && !titleAnswersRequest
     ? anchorFocusedAnswerSurface(selected.sentence, anchored.anchors, evidenceTitle(selected.span))
     : selected.sentence;
-  let answerSentences = [focusedSentence && focusedSentence.length >= 24 && selected.sentence.includes(focusedSentence) ? focusedSentence : selected.sentence];
+  let answerSentences = [focusedSentence && focusedSentence.length >= 24 && selected.sentence.includes(focusedSentence)
+    && covers({ ...selected, sentence: focusedSentence }) ? focusedSentence : selected.sentence];
   if (sentenceBudget > 1) {
     // The window is built in tidySurfaceText space -- the exact space
     // mouth.ts's source-excerpt verification compares answers to evidence
@@ -1143,6 +1142,8 @@ export function answerCoversRequest(
     boundValues?: readonly string[];
   } = {}
 ): boolean {
+  if (requestText && options.relationRequired && sentences.length > 0 && sentences.every(endsWithUnicodeQuestionMark)
+    && !(options.boundValues ?? []).some(value => sentences.some(sentence => surfaceContainsBoundValue(sentence, value)))) return false;
   // Answerhood compares request material with source/title material using the same unitization as corpus identity
   // and anchor indexing. In particular, `Moby-Dick` is two identity units (`moby`, `dick`), not one relation token.
   const answerContentUnits = uniqueKernelStrings(contentUnits.flatMap(answerhoodComparisonUnits));
