@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { canonicalTemporalCoordinates } from "@scce/kernel";
+import { canonicalTemporalCoordinates, createHasher } from "@scce/kernel";
 import { createWikipediaInputManifest } from "../wikipedia-input-manifest.js";
 import { createWikipediaV3Ingestor } from "../wikipedia-v3-ingestor.js";
 
@@ -23,6 +23,7 @@ describe("Wikipedia shard graph dependency validation", () => {
       let transactionDepth = 0;
       const transactionDepthAt: number[] = [];
       const graphRows = { nodes: new Map<string, any>(), edges: new Map<string, any>(), hyperedges: new Map<string, any>() };
+      const hasher = createHasher();
       const storage = {
         transaction: async (fn: () => Promise<unknown>) => { transactionDepth++; try { return await fn(); } finally { transactionDepth--; } },
         events: { append: async (event: any) => { if (event.typeId === "SymbolPatternLearned") { order.push("training.commit"); transactionDepthAt.push(transactionDepth); } }, readRange: async () => [] },
@@ -51,11 +52,14 @@ describe("Wikipedia shard graph dependency validation", () => {
         const sourceId = `source.${index}`;
         const sourceVersionId = `version.${index}`;
         const text = `Measured fixture statement ${index}.`;
+        const byteLength = Buffer.byteLength(text, "utf8");
+        const codePointLength = [...text].length;
         const evidence = {
-          id: evidenceId, sourceId, sourceVersionId, chunkId: `chunk.${index}`, contentHash: `sha256:${index}`,
-          mediaType: "text/plain", byteStart: 0, byteEnd: Buffer.byteLength(text), charStart: 0, charEnd: text.length,
+          id: evidenceId, sourceId, sourceVersionId, chunkId: `chunk.${index}`, contentHash: hasher.digestHex(text),
+          mediaType: "text/plain", byteStart: 0, byteEnd: byteLength, charStart: 0, charEnd: codePointLength,
           text, textPreview: text,
           status: "promoted", alpha: 1, observedAt: index,
+          provenance: { sourceFamilyId: "wikimedia:wikipedia", sourceVersionId, byteRange: [0, byteLength], charRange: [0, codePointLength] },
           informationLabel: { tenantId: "scce.public.corpus", principals: [], compartments: [], exportClass: "public", mergePolicy: "same_owner" }
         } as any;
         const valueKinds = first ? ["anchor_surface", "target_ref"] : ["date_surface", "time_context"];
