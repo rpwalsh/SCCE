@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { createNodeRuntime } from "@scce/adapters-node";
-import { trainStoredCorpusConstructions } from "@scce/adapters-node";
+import { LANGUAGE_CORPUS_TRAINING_RECIPE_ID, trainStoredCorpusConstructions } from "@scce/adapters-node";
 
 export interface DreamCycleConfig {
   enabled?: boolean;
@@ -40,8 +40,9 @@ export function startDreamCycle(input: {
   const log = input.log ?? ((line: string) => process.stdout.write(`${line}\n`));
   let lastActivityAt = Date.now();
   let dreaming = false;
-  let nextBatchIndex = 0;
   let stopped = false;
+  const cursorId = `dream-cycle:wikipedia:${LANGUAGE_CORPUS_TRAINING_RECIPE_ID}`;
+  const cursorUri = `scce://dream-cycle/wikipedia/${LANGUAGE_CORPUS_TRAINING_RECIPE_ID}`;
 
   const timer = setInterval(() => {
     if (stopped || !enabled || dreaming) return;
@@ -49,22 +50,34 @@ export function startDreamCycle(input: {
     dreaming = true;
     void (async () => {
       try {
+        const checkpoint = await input.runtime.storage.ingestion.get(cursorId);
+        const metadata = checkpoint?.metadata;
+        if (checkpoint && (!metadata || typeof metadata !== "object" || Array.isArray(metadata)
+          || metadata.schema !== "scce.dream_source_cursor.v1"
+          || metadata.recipeId !== LANGUAGE_CORPUS_TRAINING_RECIPE_ID
+          || metadata.nextSourceVersionId !== null && typeof metadata.nextSourceVersionId !== "string")) {
+          throw new Error("dream source cursor is invalid");
+        }
+        const afterSourceVersionId = metadata && typeof metadata === "object" && !Array.isArray(metadata)
+          && typeof metadata.nextSourceVersionId === "string" ? metadata.nextSourceVersionId : undefined;
         const report = await trainStoredCorpusConstructions({
           storage: input.runtime.storage,
-          startBatchIndex: nextBatchIndex,
+          ...(afterSourceVersionId ? { afterSourceVersionId } : {}),
           maxTotalBytes: batchBytes,
           batchBytes,
           heapCheckpointMb
         });
         if (report.batchesTrained > 0) {
           await input.runtime.kernel.refreshAfterBrainActivation();
-          nextBatchIndex = report.nextBatchIndex;
+        }
+        if (report.stoppedByStorageFailure || report.batchesFailed.length) throw new Error("dream training reported incomplete source work; source cursor retained");
+        await input.runtime.storage.ingestion.put({
+          id: cursorId, rootUri: cursorUri, itemUri: cursorUri, phase: "stored", status: "complete", offsetBytes: 0,
+          updatedAt: Date.now(), metadata: { schema: "scce.dream_source_cursor.v1", recipeId: LANGUAGE_CORPUS_TRAINING_RECIPE_ID,
+            nextSourceVersionId: report.exhausted ? null : report.nextSourceVersionId, exhausted: report.exhausted }
+        });
+        if (report.batchesTrained > 0) {
           log(`SCCE dream cycle: trained batch ${report.nextBatchIndex - 1} (${report.articlesTrained} articles, +${report.reports.reduce((sum, item) => sum + item.languageConstructions, 0)} constructions)`);
-        } else {
-          // Nothing left to dream about at this index -- wrap around so a
-          // later idle period re-extracts from the top with whatever
-          // evaluator improvements have landed since.
-          nextBatchIndex = 0;
         }
       } catch (error) {
         log(`SCCE dream cycle batch failed (will retry next idle period): ${error instanceof Error ? error.message : String(error)}`);
