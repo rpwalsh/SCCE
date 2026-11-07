@@ -186,7 +186,7 @@ function sharedStorage(evidence: EvidenceSpan[], dialogueMemory: DialogueMemoryS
     ...base,
     model: { ...base.model, listLanguageProfiles: teaching.readProfiles },
     languageMemory: { ...base.languageMemory, listNgramModels: teaching.readModels, listLanguagePatterns: teaching.readPatterns },
-    evidence: { ...base.evidence, getEvidenceBatch: async ids => [...await base.evidence.getEvidenceBatch(ids), ...teaching.evidence.filter(span => ids.includes(span.id))] },
+    evidence: { ...base.evidence, getEvidenceBatch: async (ids: EvidenceId[]) => [...await base.evidence.getEvidenceBatch(ids), ...teaching.evidence.filter(span => ids.includes(span.id))] },
     dialogueMemory,
     userModelClaims: {
       putClaim: async (claim: UserModelClaimRecord) => { claims.set(`${claim.conversationId} ${claim.id}`, claim); },

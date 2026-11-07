@@ -967,7 +967,9 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
             ...questionEchoHits(bounded, mouthEchoQuestionText(input)),
             ...languagePriorLeakageHits(bounded, input, priorPieces),
             ...unanchoredImportedPriorHits(candidate, input),
-            ...requestCoverageHits(bounded, candidate, input, nearDuplicatePreservation),
+            // Factual producer validation owns request and selected-plan coverage.
+            ...(candidate.producerAuthority?.schema === "scce.mouth.factual_producer_authority.v1"
+              ? [] : requestCoverageHits(bounded, candidate, input, nearDuplicatePreservation)),
             // Generated prose cut at its budget mid-word ("...the analytical engine wri") is not a surface any
             // selection chain may fall through to; measured live on "Who was Ada Lovelace?".
             ...(generationStoppedAtExtent(candidate.generation) ? ["surface.reject.unfinished_generation"] : [])

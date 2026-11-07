@@ -172,7 +172,7 @@ function chatSession(options: { unmeasuredClass?: boolean } = {}) {
     },
     evidence: {
       ...base.evidence,
-      getEvidenceBatch: teaching ? async ids => [...await base.evidence.getEvidenceBatch(ids), ...teaching.evidence.filter(span => ids.includes(span.id))] : base.evidence.getEvidenceBatch,
+      getEvidenceBatch: teaching ? async (ids: EvidenceId[]) => [...await base.evidence.getEvidenceBatch(ids), ...teaching.evidence.filter(span => ids.includes(span.id))] : base.evidence.getEvidenceBatch,
       sourceIdentityArbitration: async ({ text }: { text: string }) => ({
         identities: titles.filter(title => ` ${corpusIdentitySurface(text)} `.includes(` ${title} `)),
         spread: new Map<string, number>()

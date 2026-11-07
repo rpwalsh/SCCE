@@ -59,6 +59,9 @@ import { metadataWithRuntimeReplanMotion, priorRejectedHypothesesFromCandidates,
 import type { CandidateSurface } from "../candidate-contract.js";
 import { tidySurfaceText } from "../surface-linguistics.js";
 import { surfaceEchoesPrompt } from "../creative-section-realization.js";
+import { sourceOwnedAnswerhoodLanguage } from "./fixtures/source-owned-answerhood-language.js";
+import { withRequestLanguageFormScope } from "../request-language-form-scope.js";
+import { primeFreeFormLexicon } from "../free-form-lexicon.js";
 
 const proofEngineCalls = vi.hoisted(() => ({
   ablatedSupport: 0,
@@ -190,7 +193,7 @@ describe("kernel local evidence source anchoring", () => {
     expect(features).toContain("anchor:sym:babbage");
   });
 
-  it("admits a bounded source preview that names the requested multi-token subject", () => {
+  it("admits a bounded source preview that names the requested multi-token subject", async () => {
     const analyticalEngine = evidenceSpan({
       id: "evidence:ada-babbage",
       sourceVersionId: "source:ada-babbage:v1" as SourceVersionId,
@@ -200,10 +203,12 @@ describe("kernel local evidence source anchoring", () => {
       alpha: 0.93
     });
 
-    const anchored = sourceAnchoredEvidenceForRequest(
-      "What did Charles Babbage design?",
-      [analyticalEngine]
-    );
+    const language = sourceOwnedAnswerhoodLanguage("babbage r0. babbage's r0. newton r0. newton's r0. curie r0. curie's r0.");
+    const anchored = await withRequestLanguageFormScope(async () => {
+      primeFreeFormLexicon(language.state.models);
+      language.forms.prime();
+      return sourceAnchoredEvidenceForRequest("What did Charles Babbage design?", [analyticalEngine], undefined, language.closedClass);
+    });
 
     expect(anchored.required).toBe(true);
     expect(anchored.evidence.map(span => String(span.id))).toEqual([String(analyticalEngine.id)]);
@@ -1092,7 +1097,9 @@ describe("kernel local evidence source anchoring", () => {
       text: "Ada Lovelace was an English mathematician. Her contributions included publishing an algorithm intended for Charles Babbage's Analytical Engine.",
       alpha: 0.94
     });
-    const fixture = storageFixture({ evidence: [ada] });
+    const fixture = storageFixture({ evidence: [ada], answerLanguage: sourceOwnedAnswerhoodLanguage(
+      "contribute r0. contributes r0. contributed r0. contributing r0. contribution r0. contributions r0. operate r0. operates r0. operated r0. operating r0. operation r0. operations r0."
+    ) });
     const kernel = createScceKernel({
       storage: fixture.storage,
       files: { streamPath: async function* () { /* unused */ } },
@@ -1320,7 +1327,9 @@ describe("kernel local evidence source anchoring", () => {
       alpha: 0.94
     });
     expect((flagHistory.text ?? "").length).toBeGreaterThan(6_000);
-    const fixture = storageFixture({ evidence: [subject, flagHistory] });
+    const fixture = storageFixture({ evidence: [subject, flagHistory], answerLanguage: sourceOwnedAnswerhoodLanguage(
+      "flag r0. flags r0. boat r0. boats r0. banner r0. banners r0."
+    ) });
     const kernel = createScceKernel({
       storage: fixture.storage,
       files: { streamPath: async function* () { /* unused */ } },
@@ -1445,10 +1454,13 @@ describe("kernel local evidence source anchoring", () => {
       text: "Captain James T. Kirk was known for commanding the starship Enterprise in Star Trek.",
       alpha: 0.99
     });
-    const fixture = storageFixture({ evidence: [kirkMention], semanticFrames: [] });
-    const proposal = proposeSourceExactEvidenceAnswer({
-      requestText: "What was Captain Kirk known for?",
-      selectedEvidence: [kirkMention]
+    const language = sourceOwnedAnswerhoodLanguage();
+    const fixture = storageFixture({ evidence: [kirkMention], semanticFrames: [], answerLanguage: language });
+    const proposal = await withRequestLanguageFormScope(async () => {
+      primeFreeFormLexicon(language.state.models);
+      language.forms.prime();
+      return proposeSourceExactEvidenceAnswer({ requestText: "What was Captain Kirk known for?",
+        selectedEvidence: [kirkMention], closedClassWords: language.closedClass, functionSymbols: language.closedClass });
     });
     expect(proposal?.plan.proofExcerpts?.[0]?.text).toContain("commanding the starship Enterprise");
     const kernel = createScceKernel({
@@ -2630,7 +2642,9 @@ async function typedRelationTurn(input: { hyperedges: "role_mismatch" | "none" |
           ? [hyperedge("hyperedge:answer", answer.id, ["role:controlled", "role:controller"]), hyperedge("hyperedge:answer-other", answer.id, ["role:controlled", "role:controller"], otherNodes), hyperedge("hyperedge:independent-other", independent.id, ["role:controller", "role:controlled"], otherNodes)]
           : [];
   const graph: GraphSlice = { ...base, nodes: [...base.nodes, ...nodes, ...otherNodes], hyperedges };
-  const fixture = storageFixture({ evidence: [answer, independent, unadmitted], graph });
+  const fixture = storageFixture({ evidence: [answer, independent, unadmitted], graph, answerLanguage: sourceOwnedAnswerhoodLanguage(
+    "control r0. controls r0. controlled r0. settle r0. settled r0. handle r0. handled r0. inspect r0. inspects r0. inspected r0. monitor r0. monitors r0. monitored r0."
+  ) });
   const kernel = createScceKernel({
     storage: fixture.storage,
     files: { streamPath: async function* () { /* unused */ } },
@@ -2690,11 +2704,13 @@ function storageFixture(input: {
   semanticFrames?: SemanticFrameRecord[];
   languageProfiles?: LanguageProfile[];
   languagePatterns?: LanguagePatternRecord[];
+  answerLanguage?: ReturnType<typeof sourceOwnedAnswerhoodLanguage>;
 }): { storage: ScceStorage; events: ScceEvent[]; metrics: { graphReads: number; languageMemoryReads: number } } {
   const events: ScceEvent[] = [];
   const quarantined = new Map<string, QuarantineSource>();
   const metrics = { graphReads: 0, languageMemoryReads: 0 };
   const currentGraph = () => input.graph ?? graphSlice(input.evidence);
+  const ownedEvidence = () => [...input.evidence, ...(input.answerLanguage?.evidence ?? [])];
   const storage = {
     // Real pass-through, not a no-op stub: the connector-ingestion test
     // exercises the actual ingestion pipeline (ingestion-runtime.ts), which
@@ -2729,8 +2745,8 @@ function storageFixture(input: {
         for (const span of input.evidence) if (ids.map(String).includes(String(span.id)) && span.status !== "promoted") { (span as { status: string }).status = "promoted"; promoted++; }
         return promoted;
       },
-      getEvidence: async (id: EvidenceId) => input.evidence.find(span => String(span.id) === String(id)) ?? null,
-      getEvidenceBatch: async (ids: EvidenceId[]) => input.evidence.filter(span => ids.map(String).includes(String(span.id))),
+      getEvidence: async (id: EvidenceId) => ownedEvidence().find(span => String(span.id) === String(id)) ?? null,
+      getEvidenceBatch: async (ids: EvidenceId[]) => ownedEvidence().filter(span => ids.map(String).includes(String(span.id))),
       searchEvidence: async (query?: { status?: string; sourceVersionId?: unknown }) => input.evidence
         .filter(span => (query?.status ?? "promoted") === "any" || (span.status ?? "promoted") === (query?.status ?? "promoted"))
         .filter(span => !query?.sourceVersionId || String(span.sourceVersionId) === String(query.sourceVersionId))
@@ -2747,7 +2763,7 @@ function storageFixture(input: {
       readModel: async (): Promise<ModelState> => ({ languageProfiles: [], latentConcepts: [], learnedProgramPatterns: [], learningGoals: [], trainingSteps: 0 }),
       writeModel: async () => undefined,
       putLanguageProfile: async () => undefined,
-      listLanguageProfiles: async () => input.languageProfiles ?? []
+      listLanguageProfiles: async (query?: Parameters<ScceStorage["model"]["listLanguageProfiles"]>[0]) => [...(input.languageProfiles ?? []), ...(await input.answerLanguage?.readProfiles(query) ?? [])]
     },
     languageMemory: {
       putNgramObservation: async () => undefined,
@@ -2757,10 +2773,10 @@ function storageFixture(input: {
       putLanguagePattern: async () => undefined,
       putSemanticFrame: async () => undefined,
       putTranslationAlignment: async () => undefined,
-      listNgramModels: async () => { metrics.languageMemoryReads++; return []; },
+      listNgramModels: async (query?: Parameters<ScceStorage["languageMemory"]["listNgramModels"]>[0]) => { metrics.languageMemoryReads++; return await input.answerLanguage?.readModels(query) ?? []; },
       listNgramObservations: async () => { metrics.languageMemoryReads++; return []; },
       listLanguageUnits: async () => { metrics.languageMemoryReads++; return []; },
-      listLanguagePatterns: async () => { metrics.languageMemoryReads++; return input.languagePatterns ?? []; },
+      listLanguagePatterns: async (query?: Parameters<ScceStorage["languageMemory"]["listLanguagePatterns"]>[0]) => { metrics.languageMemoryReads++; return [...(input.languagePatterns ?? []), ...(await input.answerLanguage?.readPatterns(query) ?? [])]; },
       listSemanticFrames: async () => { metrics.languageMemoryReads++; return input.semanticFrames ?? []; },
       listTranslationAlignments: async () => { metrics.languageMemoryReads++; return []; }
     },
