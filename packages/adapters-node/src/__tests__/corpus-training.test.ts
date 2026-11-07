@@ -68,6 +68,29 @@ afterEach(async () => {
 });
 
 describe("learned rows carry the shard's provenance once", () => {
+  it("publishes source callable replacements and retires the callable set when recompilation learns none", async () => {
+    const root = await tempDir("oss-callable-projection-");
+    const file = path.join(root, "source.ts");
+    const fixture = memoryStorage();
+    const publications: Parameters<NonNullable<ScceStorage["languageMemory"]["replaceLanguagePatternProjection"]>>[0][] = [];
+    fixture.storage.languageMemory.replaceLanguagePatternProjection = async input => {
+      publications.push(structuredClone(input));
+      fixture.state.patterns.push(...input.patterns);
+    };
+    const options = { storage: fixture.storage, rootPath: root, maxFiles: 2, includeDocs: false, ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64 };
+    await writeFile(file, "export function original(value: number) { return value + 1; }");
+    await trainOssCorpus(options);
+    await writeFile(file, "export function revised(value: number) { return value * 2; }");
+    await trainOssCorpus(options);
+    await writeFile(file, "export function sideEffect(value: number) { console.log(value); return value; }");
+    await trainOssCorpus(options);
+    expect(publications).toHaveLength(3);
+    expect(publications.map(row => row.projection.patternSchema)).toEqual(Array(3).fill("scce.source_code_function_pattern.v1"));
+    expect(new Set(publications.map(row => row.projection.sourceId)).size).toBe(1);
+    expect(new Set(publications.map(row => row.projection.sourceVersionId)).size).toBe(3);
+    expect(publications.map(row => row.projection.patternIds.length)).toEqual([1, 1, 0]);
+    for (const row of publications) expect(row.projection.patternIds).toEqual(row.patterns.filter(pattern => pattern.patternKind === "source_code_function").map(pattern => pattern.id).sort());
+  });
   it("projects real lowercase source relations using the canonical batch's one prepared model", async () => {
     const fixture = memoryStorage();
     const observations: Awaited<ReturnType<NonNullable<ScceStorage["relationObservations"]>["list"]>> = [];
@@ -816,7 +839,7 @@ describe("multi-corpus training", () => {
     const fixture = memoryStorage();
     installDurableConstructionPool(fixture);
     const common = { storage: fixture.storage, sourceSystem: "oss_docs", sourceUri: "scce://same-book/source.md", streamUri: "oss_docs:source",
-      informationLabel: { tenantId: "context.fixture", principals: ["context.owner"], compartments: [], exportClass: "restricted" as const },
+      informationLabel: { tenantId: "context.fixture", principals: ["context.owner"], compartments: [], exportClass: "restricted" as const, mergePolicy: "isolated" as const },
       constructionPoolUriPrefix: "scce://same-book/", ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64, skipNgramObservationPersistence: true };
     await trainLanguageCorpusText({ ...common, text: "The source describes a small pump. The pump carries water.", languageOnly: true });
     const oldVersions = fixture.state.sourceVersions.map(version => String(version.sourceVersionId));

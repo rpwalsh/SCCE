@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { afterEach, describe, expect, it } from "vitest";
-import { INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID, INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA, LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID, LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, POSTGRES_REQUIRED_TABLES, type SourceVersionId } from "@scce/kernel";
+import { INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID, INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA, LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID, LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, SOURCE_CODE_FUNCTION_PATTERN_SCHEMA, SOURCE_CODE_FUNCTION_PROJECTION_RECIPE_ID, POSTGRES_REQUIRED_TABLES, type SourceVersionId } from "@scce/kernel";
 import { clearResidentNgramModelJson, createPostgresStorageAdapter, schemaStatements, type PostgresStorageAdapter } from "../postgres.js";
 
 const adapters: PostgresStorageAdapter[] = [];
@@ -11,6 +11,29 @@ afterEach(async () => {
 });
 
 describe("Postgres language-memory ownership queries", () => {
+  it("publishes the exact callable learning result, including empty recompiles, before retrieval budgets", async () => {
+    const { adapter, calls } = fixture();
+    adapter.transaction = async operation => operation();
+    const informationLabel = { tenantId: "tenant.fixture", principals: ["principal.fixture"], compartments: [], exportClass: "restricted" as const, mergePolicy: "isolated" as const };
+    const pattern = { id: "source.code.function.pattern.current", profileId: "profile.owned", patternKind: "source_code_function" as const,
+      support: 1, entropy: 0, patternJson: { schema: SOURCE_CODE_FUNCTION_PATTERN_SCHEMA, sourceSystem: "oss_code", sourceVersionId: "source-version.owned", formalLanguage: "python" }, evidenceIds: [], updatedAt: 2, informationLabel };
+    const projection = { profileId: pattern.profileId, sourceId: "source.owned" as never, sourceVersionId: "source-version.owned" as SourceVersionId,
+      sourceSystem: "oss_code", patternSchema: SOURCE_CODE_FUNCTION_PATTERN_SCHEMA, componentRecipe: SOURCE_CODE_FUNCTION_PROJECTION_RECIPE_ID,
+      patternIds: [pattern.id], informationLabel };
+    await adapter.languageMemory.replaceLanguagePatternProjection?.({ patterns: [pattern], projection });
+    await adapter.languageMemory.replaceLanguagePatternProjection?.({ patterns: [], projection: { ...projection, profileId: "profile.recompiled", sourceVersionId: "version.recompiled" as SourceVersionId, patternIds: [] } });
+    const writes = calls.filter(call => call.sql.includes('INSERT INTO "fixture"."storage_meta"'));
+    expect(writes).toHaveLength(2);
+    expect(writes[0]!.params[0]).toBe(writes[1]!.params[0]);
+    expect(writes[1]!.params[1]).toContain('"patternIds":[]');
+    expect(calls.some(call => /DELETE FROM/u.test(call.sql))).toBe(false);
+    calls.length = 0;
+    await adapter.languageMemory.listLanguagePatterns({ sourceSystem: "oss_code", patternKind: "source_code_function", formalLanguage: "python", limit: 1 });
+    const query = calls[0]!;
+    expect(query.params).toContain(SOURCE_CODE_FUNCTION_PATTERN_SCHEMA);
+    expect(query.params).toContain(SOURCE_CODE_FUNCTION_PROJECTION_RECIPE_ID);
+    expect(query.sql.indexOf("active_projection.value_json->'patternIds' ? pattern.id")).toBeLessThan(query.sql.indexOf("ranked_pool AS"));
+  });
   it("preserves original compilation membership on construction-only pattern updates", async () => {
     const { adapter, calls } = fixture();
     adapter.transaction = async operation => operation();

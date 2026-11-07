@@ -17,6 +17,8 @@ import {
   toJsonValue,
   LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID,
   LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA,
+  SOURCE_CODE_FUNCTION_PATTERN_SCHEMA,
+  SOURCE_CODE_FUNCTION_PROJECTION_RECIPE_ID,
   INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID,
   INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA,
   type AlphaTraceRecord,
@@ -3682,8 +3684,8 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       const projection = input.projection;
       const patternIds = [...new Set(projection.patternIds)].sort();
       if (!projection.profileId.trim() || !projection.sourceId || !projection.sourceVersionId || !projection.sourceSystem.trim()
-        || projection.patternSchema !== LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA
-        || projection.componentRecipe !== LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID
+        || !((projection.patternSchema === LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA && projection.componentRecipe === LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID)
+          || (projection.patternSchema === SOURCE_CODE_FUNCTION_PATTERN_SCHEMA && projection.componentRecipe === SOURCE_CODE_FUNCTION_PROJECTION_RECIPE_ID))
         || patternIds.length !== projection.patternIds.length) {
         throw new Error("invalid active language-pattern projection scope");
       }
@@ -3694,7 +3696,9 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
           ? row.patternJson as Record<string, JsonValue>
           : {};
         return !row || row.profileId !== projection.profileId || metadata.schema !== projection.patternSchema
-          || metadata.sourceSystem !== projection.sourceSystem;
+          || metadata.sourceSystem !== projection.sourceSystem
+          || (projection.patternSchema === SOURCE_CODE_FUNCTION_PATTERN_SCHEMA
+            && (row.patternKind !== "source_code_function" || metadata.sourceVersionId !== projection.sourceVersionId));
       })) throw new Error("active language-pattern IDs must name rows in the replacement batch");
       const informationLabel = storage.requireWritableInformationLabel(projection.informationLabel);
       const key = activeLanguagePatternProjectionKey({ ...projection, tenantId: informationLabel.tenantId });
@@ -4065,13 +4069,17 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
             AND active_syntax.pattern_json->>'componentRecipe'=$${inducedSyntaxRecipeParam}
             AND ${activeSyntaxAccess.sql}
         ))`);
-      const constructionSchemaParam = params.length + 1;
-      params.push(LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA);
-      const constructionRecipeParam = params.length + 1;
-      params.push(LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID);
-      const projectionAccess = storage.informationAccessPredicate("active_projection", params.length + 1);
-      params.push(...projectionAccess.params);
-      where.push(`(pattern.pattern_json->>'schema' IS DISTINCT FROM $${constructionSchemaParam}
+      for (const [patternSchema, componentRecipe] of [
+        [LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID],
+        [SOURCE_CODE_FUNCTION_PATTERN_SCHEMA, SOURCE_CODE_FUNCTION_PROJECTION_RECIPE_ID]
+      ]) {
+        const constructionSchemaParam = params.length + 1;
+        params.push(patternSchema);
+        const constructionRecipeParam = params.length + 1;
+        params.push(componentRecipe);
+        const projectionAccess = storage.informationAccessPredicate("active_projection", params.length + 1);
+        params.push(...projectionAccess.params);
+        where.push(`(pattern.pattern_json->>'schema' IS DISTINCT FROM $${constructionSchemaParam}
         OR EXISTS (
           SELECT 1 FROM (SELECT value_json,value_json->'informationLabel' AS information_label FROM ${storage.table("storage_meta")}) active_projection
           WHERE ${projectionAccess.sql}
@@ -4082,6 +4090,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
             AND active_projection.value_json->>'componentRecipe'=$${constructionRecipeParam}
             AND active_projection.value_json->'patternIds' ? pattern.id
         ))`);
+      }
       appendInformationAccess(storage, "pattern", params, where);
       params.push(query.limit ?? 1000);
       const limitParam = params.length;
@@ -4853,6 +4862,11 @@ function activeLanguagePatternProjectionKey(input: {
   patternSchema: string;
   tenantId: string;
 }): string {
+  if (input.patternSchema === SOURCE_CODE_FUNCTION_PATTERN_SCHEMA) {
+    return `active_language_pattern_projection:${JSON.stringify([
+      "source-owned", input.tenantId, input.sourceSystem, input.sourceId, input.patternSchema
+    ])}`;
+  }
   return `active_language_pattern_projection:${JSON.stringify([
     input.tenantId,
     input.profileId,

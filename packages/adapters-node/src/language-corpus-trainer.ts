@@ -23,6 +23,8 @@ import {
   SOURCE_CONSTRUCTION_BINDINGS_COMPONENT_RECIPE_ID,
   LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID,
   LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA,
+  SOURCE_CODE_FUNCTION_PATTERN_SCHEMA,
+  SOURCE_CODE_FUNCTION_PROJECTION_RECIPE_ID,
   sourceCodeFunctionConstructionId,
   createSourceAdmissionController,
   compileLanguageTrainingBatch,
@@ -389,6 +391,9 @@ function corpusComponentRecipes(input: LanguageCorpusTrainingInput): Record<stri
       sourceConstructionProjection: LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID,
       ...(hasGraphDependency ? { sourceConstructionBindings: SOURCE_CONSTRUCTION_BINDINGS_COMPONENT_RECIPE_ID } : {}) } : {};
   if (!input.languageOnly && needsConstructionContext(input)) components.constructionContext = SOURCE_CONSTRUCTION_CONTEXT_RECIPE_ID;
+  if (canonicalCorpusSourceSystemId(input.sourceSystem) === CORPUS_SOURCE_SYSTEM_IDS.ossCode) {
+    components.sourceCodeFunctions = SOURCE_CODE_FUNCTION_PROJECTION_RECIPE_ID;
+  }
   if (graphProjectionEnabled) {
     components.sourceEntityGraph = SOURCE_ENTITY_GRAPH_COMPONENT_RECIPE_ID;
   }
@@ -1243,7 +1248,9 @@ async function commitLanguageCorpusTrainingInternal(input: LanguageCorpusTrainin
   else for (const model of prepared.models) await input.storage.languageMemory.putNgramModel(model);
   if (input.storage.languageMemory.putLanguageUnits) await input.storage.languageMemory.putLanguageUnits(prepared.units);
   else for (const unit of prepared.units) await input.storage.languageMemory.putLanguageUnit(unit);
-  const patternProjectionRecipe = corpusComponentRecipes(input).sourceConstructionProjection;
+  const componentRecipes = corpusComponentRecipes(input);
+  const patternProjectionRecipe = componentRecipes.sourceCodeFunctions ?? componentRecipes.sourceConstructionProjection;
+  const patternSchema = componentRecipes.sourceCodeFunctions ? SOURCE_CODE_FUNCTION_PATTERN_SCHEMA : LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA;
   if (patternProjectionRecipe && input.storage.languageMemory.replaceLanguagePatternProjection) {
     await input.storage.languageMemory.replaceLanguagePatternProjection({
       patterns: prepared.patterns,
@@ -1252,9 +1259,9 @@ async function commitLanguageCorpusTrainingInternal(input: LanguageCorpusTrainin
         sourceId: prepared.sourceId,
         sourceVersionId: prepared.sourceVersionId,
         sourceSystem: prepared.sourceSystem,
-        patternSchema: LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA,
+        patternSchema,
         componentRecipe: patternProjectionRecipe,
-        patternIds: prepared.patterns.filter(pattern => jsonRecord(pattern.patternJson).schema === LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA).map(pattern => pattern.id).sort(),
+        patternIds: prepared.patterns.filter(pattern => jsonRecord(pattern.patternJson).schema === patternSchema).map(pattern => pattern.id).sort(),
         informationLabel: prepared.informationLabel
       }
     });

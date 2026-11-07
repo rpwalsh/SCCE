@@ -6,6 +6,9 @@ import type { LanguagePatternRecord, NgramModelRecord } from "./storage.js";
 import type { JsonValue, ProgramBehaviorRequirement } from "./types.js";
 import { codeLanguageForModelRecord } from "./code-construction.js";
 
+export const SOURCE_CODE_FUNCTION_PATTERN_SCHEMA = "scce.source_code_function_pattern.v1" as const;
+export const SOURCE_CODE_FUNCTION_PROJECTION_RECIPE_ID = "scce.source_code_function_projection.v1" as const;
+
 export interface SourceCodeFunctionConstruction {
   schema: "scce.source_code_function_construction.v1";
   id: string;
