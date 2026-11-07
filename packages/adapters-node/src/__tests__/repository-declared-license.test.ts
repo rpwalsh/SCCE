@@ -157,7 +157,13 @@ describe("the declared licence survives to the evidence it licenses", () => {
     expect(fixture.state.graphNodes.length).toBeGreaterThan(0);
     expect(new Set(fixture.state.graphNodes.map(node => String(node.id))).size).toBe(fixture.state.graphNodes.length);
     const evidenceById = new Map(fixture.state.evidence.map(span => [String(span.id), span]));
+    const sourceClaimNodes = fixture.state.graphNodes.filter(node => !isObservationStoreTopologyNode(node));
+    expect(sourceClaimNodes.length).toBeGreaterThan(0);
     for (const node of fixture.state.graphNodes) {
+      if (isObservationStoreTopologyNode(node)) {
+        expect(fixture.state.graphEdges.some(edge => edge.target === node.id && edge.evidenceIds.some(id => evidenceById.has(String(id))))).toBe(true);
+        continue;
+      }
       expect(node.evidenceIds.length).toBeGreaterThan(0);
       for (const evidenceId of node.evidenceIds) {
         const span = evidenceById.get(String(evidenceId));
@@ -218,6 +224,13 @@ async function fixtureRoot(label: string): Promise<string> {
 
 function recordOf(value: JsonValue | undefined): Record<string, JsonValue> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, JsonValue> : {};
+}
+
+function isObservationStoreTopologyNode(node: GraphNode): boolean {
+  const representation = recordOf(node.representation);
+  return node.evidenceIds.length === 0
+    && typeof representation.store === "string"
+    && node.features.includes(`store:${representation.store}`);
 }
 
 interface MemoryState {

@@ -279,7 +279,18 @@ describe("corpus trainer admission and provenance", () => {
       edges: fixture.state.graph.edges.map(row => row.id).sort(),
       hyperedges: fixture.state.graph.hyperedges.map(row => row.id).sort()
     }).toEqual(originalGraphIds);
-    for (const record of [...fixture.state.graph.nodes, ...fixture.state.graph.edges, ...fixture.state.graph.hyperedges]) {
+    const sourceClaimRecords = [
+      ...fixture.state.graph.nodes.filter(node => !isObservationStoreTopologyNode(node)),
+      ...fixture.state.graph.edges,
+      ...fixture.state.graph.hyperedges
+    ];
+    expect(sourceClaimRecords.length).toBeGreaterThan(0);
+    for (const node of fixture.state.graph.nodes.filter(isObservationStoreTopologyNode)) {
+      expect(fixture.state.graph.edges.some(edge => edge.target === node.id
+        && edge.evidenceIds.length > 0
+        && edge.evidenceIds.every(id => evidenceById.has(String(id))))).toBe(true);
+    }
+    for (const record of sourceClaimRecords) {
       expect(record.evidenceIds.length).toBeGreaterThan(0);
       expect(record.evidenceIds.every(id => evidenceById.has(String(id)))).toBe(true);
     }
@@ -427,4 +438,13 @@ function memoryStorage(): { storage: ScceStorage; state: MemoryState } {
     close: async () => undefined
   } as unknown as ScceStorage;
   return { storage, state };
+}
+
+function isObservationStoreTopologyNode(node: GraphNode): boolean {
+  const representation = node.representation && typeof node.representation === "object" && !Array.isArray(node.representation)
+    ? node.representation as Record<string, JsonValue>
+    : {};
+  return node.evidenceIds.length === 0
+    && typeof representation.store === "string"
+    && node.features.includes(`store:${representation.store}`);
 }
