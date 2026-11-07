@@ -26,7 +26,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { integratePowerSamples, startConditionMeasurement } from "../sealed-eval/harness/lib/power-measurement.mjs";
 import { score, summarizeVerdicts, formatPerCorpus } from "./grade.mjs";
-import { interpretTurnResponse } from "./absence.mjs";
+import { createScceMeasurementClient } from "./scce-client.mjs";
 import { processCpuSeconds, ollamaTokenCost } from "./cost-meter.mjs";
 import { assembleArtifact, counterbalancedOrder } from "./measure.mjs";
 
@@ -71,20 +71,8 @@ const shell = (command, commandArgs) => {
 };
 
 // ---- systems ---------------------------------------------------------------------------------------------------
-async function askScce(prompt) {
-  try {
-    const response = await fetch(`${settings.serverUrl}/api/turn`, {
-      method: "POST", headers: { "content-type": "application/json" },
-      signal: AbortSignal.timeout(settings.requestTimeoutMs),
-      body: JSON.stringify({ text: prompt })
-    });
-    const payload = await response.json().catch(() => null);
-    const read = interpretTurnResponse({ status: response.status, payload, ms: 0 });
-    return { answer: read.answer, evidence: read.evidence, runtimeDeclined: read.declinedByRuntime, httpStatus: read.httpStatus, transportError: read.error };
-  } catch (error) {
-    return { answer: "", evidence: null, runtimeDeclined: false, httpStatus: null, transportError: String(error?.message ?? error) };
-  }
-}
+let scceClient;
+const askScce = prompt => scceClient.ask(prompt);
 
 async function askReference(prompt) {
   try {
@@ -123,8 +111,7 @@ async function runTurn(system, item, position) {
 // ---- bindings ----------------------------------------------------------------------------------------------------
 async function corpusSnapshot() {
   try {
-    const response = await fetch(`${settings.serverUrl}/api/ready`, { signal: AbortSignal.timeout(60000) });
-    const body = await response.json();
+    const body = await scceClient.ready();
     const pg = body?.postgres ?? {};
     return {
       schemaVersion: pg.schemaVersion ?? null, schema: pg.database?.schema ?? null,
@@ -224,6 +211,8 @@ if (replayPath) {
 }
 
 // ---- live run ------------------------------------------------------------------------------------------------------
+scceClient = await createScceMeasurementClient({ serverUrl: settings.serverUrl,
+  requestTimeoutMs: settings.requestTimeoutMs, configPath: flag("config", "scce.config.json") });
 if (!existsSync(settings.suitePath)) { console.error(`no-suite ${settings.suitePath}`); process.exit(2); }
 const suiteBytes = readFileSync(settings.suitePath);
 const suite = JSON.parse(suiteBytes.toString("utf8"));
@@ -234,7 +223,8 @@ const measuredSet = settings.limit > 0 ? items.slice(settings.warmupItems, setti
 if (!measuredSet.length) { console.error("no-items-after-warmup"); process.exit(2); }
 
 for (const [label, url] of [["scce", `${settings.serverUrl}/api/ready`], ["reference", `${settings.ollamaUrl}/api/version`]]) {
-  const probe = await fetch(url, { signal: AbortSignal.timeout(60000) }).then(r => r.ok, () => false);
+  const probe = label === "scce" ? await scceClient.ready().then(() => true, () => false)
+    : await fetch(url, { signal: AbortSignal.timeout(60000) }).then(r => r.ok, () => false);
   if (!probe) { console.error(`unreachable ${label} ${url}`); process.exit(3); }
 }
 
