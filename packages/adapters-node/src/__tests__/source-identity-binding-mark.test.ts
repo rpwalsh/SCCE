@@ -54,7 +54,7 @@ describe("a binding mark is orthography, not identity", () => {
     expect(identities).toEqual([]);
   });
 
-  it("measures the same sampled source spreads in one database round trip", async () => {
+  it("measures each sampled spread with a bounded parameterized index query", async () => {
     const adapter = createPostgresStorageAdapter({
       url: "postgres://fixture/fixture",
       schema: "fixture",
@@ -64,6 +64,7 @@ describe("a binding mark is orthography, not identity", () => {
     Object.defineProperty(adapter, "query", {
       value: async (sql: string, params?: unknown[]) => {
         reads.push({ sql, params });
+        if (/source_title/u.test(sql)) return [{ unit: "alpha" }, { unit: "beta" }, { unit: "quiet" }];
         return [{ sources: 3 }, { sources: 0 }, { sources: 2 }];
       },
       writable: true
@@ -71,10 +72,11 @@ describe("a binding mark is orthography, not identity", () => {
 
     const measured = await adapter.evidence.sourceSpreadDistribution!(400);
 
-    expect(reads).toHaveLength(1);
+    expect(reads).toHaveLength(2);
     expect(reads[0]?.params).toEqual([400]);
-    expect(reads[0]?.sql).toContain("WITH vocabulary AS MATERIALIZED");
-    expect(reads[0]?.sql).toContain("features @> ARRAY['sym:' || vocabulary.unit]::text[] LIMIT 1500");
+    expect(reads[1]?.params).toEqual(["alpha", "sym:alpha", "beta", "sym:beta", "quiet", "sym:quiet"]);
+    expect(reads[1]?.sql.match(/features @> ARRAY\[\$\d+\]::text\[\] LIMIT 1500/gu)).toHaveLength(3);
+    expect(reads[1]?.sql).toContain("count(DISTINCT source_id)::int AS sources");
     expect(measured).toEqual([3, 2]);
   });
 });

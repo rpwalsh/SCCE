@@ -1071,22 +1071,29 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
     async sourceSpreadDistribution(sampleSize: number) {
       // The identity vocabulary sampled at random, then measured the same way a request's runs are, so the
       // threshold derived from it is on the same scale as what it will be compared against.
-      const rows = await storage.query<{ sources: number }>(
-        `WITH vocabulary AS MATERIALIZED (
-           SELECT unit FROM (
-             SELECT DISTINCT unnest(string_to_array(source_title, ' ')) AS unit
-             FROM ${storage.table("evidence_spans")} WHERE source_title <> ''
-           ) units WHERE unit <> '' ORDER BY random() LIMIT $1
-         )
-         SELECT measured.sources
-         FROM vocabulary
-         CROSS JOIN LATERAL (
+      const vocabulary = await storage.query<{ unit: string }>(
+        `SELECT unit FROM (
+           SELECT DISTINCT unnest(string_to_array(source_title, ' ')) AS unit
+           FROM ${storage.table("evidence_spans")} WHERE source_title <> ''
+         ) units WHERE unit <> '' ORDER BY random() LIMIT $1`,
+        [Math.max(1, Math.trunc(sampleSize))]
+      );
+      if (!vocabulary.length) return [];
+      const params: string[] = [];
+      const measurements = vocabulary.map((row, index) => {
+        const unitParameter = index * 2 + 1;
+        const featureParameter = unitParameter + 1;
+        params.push(row.unit, `sym:${row.unit}`);
+        return `SELECT $${unitParameter}::text AS unit, (
            SELECT count(DISTINCT source_id)::int AS sources FROM (
              SELECT source_id FROM ${storage.table("evidence_spans")}
-             WHERE features @> ARRAY['sym:' || vocabulary.unit]::text[] LIMIT ${SPREAD_SCAN_CAP}
+             WHERE features @> ARRAY[$${featureParameter}]::text[] LIMIT ${SPREAD_SCAN_CAP}
            ) sampled
-         ) measured`,
-        [Math.max(1, Math.trunc(sampleSize))]
+         ) AS sources`;
+      });
+      const rows = await storage.query<{ unit: string; sources: number }>(
+        measurements.join("\nUNION ALL\n"),
+        params
       );
       return rows.map(row => Number(row.sources ?? 0)).filter(value => value > 0);
     },
