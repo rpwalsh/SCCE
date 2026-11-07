@@ -2284,7 +2284,7 @@ function memoryStorage(): { storage: ScceStorage; state: MemoryState } {
       listNgramModels: async (query: Parameters<ScceStorage["languageMemory"]["listNgramModels"]>[0]) => state.models.filter(row => (!query?.sourceSystem || recordOf(row.modelJson).sourceSystem === query.sourceSystem) && (!query?.profileIds || query.profileIds.includes(String(recordOf(row.modelJson).profileId)))).slice(0, query?.limit ?? state.models.length),
       listNgramObservations: async () => state.observations,
       listLanguageUnits: async () => state.units,
-      listLanguagePatterns: async (query: Parameters<ScceStorage["languageMemory"]["listLanguagePatterns"]>[0]) => state.patterns.filter(row => (query?.patternKind ? row.patternKind === query.patternKind : row.patternKind !== "source_compilation") && (!query?.profileIds || query.profileIds.includes(row.profileId)) && (!query?.sourceSystem || recordOf(row.patternJson).sourceSystem === query.sourceSystem)).slice(0, query?.limit ?? state.patterns.length),
+      listLanguagePatterns: async (query: Parameters<ScceStorage["languageMemory"]["listLanguagePatterns"]>[0]) => state.patterns.filter(row => (query?.patternKind ? row.patternKind === query.patternKind : row.patternKind !== "source_compilation") && (!query?.profileIds || query.profileIds.includes(row.profileId)) && (!query?.sourceSystem || recordOf(row.patternJson).sourceSystem === query.sourceSystem) && (!query?.patternSchemas || query.patternSchemas.includes(String(recordOf(row.patternJson).schema)))).slice(0, query?.limit ?? state.patterns.length),
       listSemanticFrames: async () => state.frames,
       listTranslationAlignments: async () => []
     },

@@ -212,7 +212,8 @@ export function createTrainingRuntime(options: {
         if (Buffer.from(bytes).subarray(span.byteStart, span.byteEnd).toString("utf8") !== span.text) throw new Error(`training evidence ${span.id} does not bind its canonical source bytes`);
       }
       if (existingProfile) {
-        const receipts = await deps.storage.languageMemory.listLanguagePatterns({ profileIds: [existingProfile.id], sourceSystem, patternKind: "source_compilation", limit: 2 });
+        const receipts = await deps.storage.languageMemory.listLanguagePatterns({ profileIds: [existingProfile.id], sourceSystem,
+          patternKind: "source_compilation", patternSchemas: ["scce.source_language_compilation_receipt.v1"], limit: 2 });
         if (receipts.length > 1) throw new Error("canonical source compilation has ambiguous receipts");
         const receipt = receipts[0] ? jsonRecord(receipts[0].patternJson).compilation : undefined;
         const current = receipt ? await deps.storage.languageMemory.listNgramModels({ profileIds: [existingProfile.id], sourceSystem,

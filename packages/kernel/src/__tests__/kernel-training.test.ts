@@ -167,6 +167,12 @@ describe("kernel training", () => {
     await kernel.train(input);
     const first = fixture.learned.models[0]!;
     const firstModelIds = fixture.learned.models.map(row => row.id);
+    const compilationReceipt = fixture.learned.patterns.find(row => row.patternKind === "source_compilation"
+      && (row.patternJson as { schema?: string }).schema === "scce.source_language_compilation_receipt.v1");
+    expect(compilationReceipt).toBeDefined();
+    fixture.learned.patterns.push({ ...compilationReceipt!, id: "source.induction.coverage.fixture", support: 0,
+      patternJson: { schema: "scce.source_induction_coverage.v1", sourceSystem: "workspace", sourceVersionId: original.sourceVersionId,
+        complete: true, inputUtf16Length: original.text.length, coveredUtf16Length: original.text.length }, evidenceIds: [original.id] });
     const mass = createLanguageMemoryRuntime().hydrate({ models: fixture.learned.models }).observedSymbolCount;
     await kernel.train(input);
     expect(fixture.learned.models.map(row => row.id)).toEqual(firstModelIds);
@@ -604,7 +610,7 @@ function storageFixture(input: { evidence: EvidenceSpan[]; clockNow: () => numbe
       listNgramModels: async (query: Parameters<ScceStorage["languageMemory"]["listNgramModels"]>[0]) => learned.models.filter(row => (!query?.sourceSystem || (row.modelJson as { sourceSystem?: string }).sourceSystem === query.sourceSystem) && (!query?.profileIds?.length || query.profileIds.includes((row.modelJson as { profileId: string }).profileId))),
       listNgramObservations: async () => [],
       listLanguageUnits: async () => [],
-      listLanguagePatterns: async (query: Parameters<ScceStorage["languageMemory"]["listLanguagePatterns"]>[0]) => learned.patterns.filter(row => (query?.patternKind ? row.patternKind === query.patternKind : row.patternKind !== "source_compilation") && (!query?.profileIds || query.profileIds.includes(row.profileId))).slice(0, query?.limit ?? learned.patterns.length),
+      listLanguagePatterns: async (query: Parameters<ScceStorage["languageMemory"]["listLanguagePatterns"]>[0]) => learned.patterns.filter(row => (query?.patternKind ? row.patternKind === query.patternKind : row.patternKind !== "source_compilation") && (!query?.profileIds || query.profileIds.includes(row.profileId)) && (!query?.patternSchemas || query.patternSchemas.includes(String((row.patternJson as { schema?: unknown }).schema)))).slice(0, query?.limit ?? learned.patterns.length),
       listSemanticFrames: async () => [],
       listTranslationAlignments: async () => []
     },

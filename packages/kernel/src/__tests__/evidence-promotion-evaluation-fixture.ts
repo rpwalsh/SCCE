@@ -87,7 +87,7 @@ export function storageFixtureForEvaluation(input: { evidence: EvidenceSpan[]; c
       listNgramModels: async (query: Parameters<ScceStorage["languageMemory"]["listNgramModels"]>[0]) => artifacts.models.filter(row => !query?.profileIds || query.profileIds.includes(String((row.modelJson as { profileId: string }).profileId))).slice(0, query?.limit ?? artifacts.models.length),
       listNgramObservations: async () => [],
       listLanguageUnits: async () => [],
-      listLanguagePatterns: async (query: Parameters<ScceStorage["languageMemory"]["listLanguagePatterns"]>[0]) => artifacts.patterns.filter(row => (query?.patternKind ? row.patternKind === query.patternKind : row.patternKind !== "source_compilation") && (!query?.profileIds || query.profileIds.includes(row.profileId))).slice(0, query?.limit ?? artifacts.patterns.length),
+      listLanguagePatterns: async (query: Parameters<ScceStorage["languageMemory"]["listLanguagePatterns"]>[0]) => artifacts.patterns.filter(row => (query?.patternKind ? row.patternKind === query.patternKind : row.patternKind !== "source_compilation") && (!query?.profileIds || query.profileIds.includes(row.profileId)) && (!query?.patternSchemas || query.patternSchemas.includes(String((row.patternJson as { schema?: unknown }).schema)))).slice(0, query?.limit ?? artifacts.patterns.length),
       listSemanticFrames: async () => [],
       listTranslationAlignments: async () => []
     },
