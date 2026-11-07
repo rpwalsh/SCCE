@@ -1967,7 +1967,7 @@ describe("dialogue corpus training", () => {
     let sourceSerializations = 0;
     const canonical = kernelPrimitives.canonicalStringify;
     const stringify = vi.spyOn(kernelPrimitives, "canonicalStringify").mockImplementation(value => {
-      if (recordOf(value).schema === "scce.dialogue_transcript.v1") sourceSerializations++;
+      if (value && typeof value === "object" && "schema" in value && value.schema === "scce.dialogue_transcript.v1") sourceSerializations++;
       return canonical(value);
     });
     const result = await trainDialogueCorpus({ storage: fixture.storage, rootPath: root, authorship: "human_authored", informationLabel: ownerLabel,

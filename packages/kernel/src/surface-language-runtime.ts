@@ -1148,7 +1148,9 @@ export function createSurfaceLanguageRuntime(options: {
         requestControlPatternsCached()
       ]);
       const requestControlProfileIds = new Set(
-        latestRequestRequirementPatterns(requestControlPatterns).map(pattern => pattern.profileId)
+        latestRequestRequirementPatterns(requestControlPatterns)
+          .filter(pattern => jsonRecord(pattern.patternJson).sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.corrections)
+          .map(pattern => pattern.profileId)
       );
       const profiles = persistedProfiles
         .filter(profile => !requestControlProfileIds.has(profile.id))
