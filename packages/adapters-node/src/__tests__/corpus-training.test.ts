@@ -1487,7 +1487,10 @@ describe("multi-corpus training", () => {
     expect(fixture.state.patterns.some(isConstructionBundle)).toBe(true);
     expect(fixture.state.patterns.some(row => recordOf(row.patternJson).schema === "scce.induced_language_model.morphology_memory.v1")).toBe(true);
     const canonical = structuredClone({ models: fixture.state.models, units: fixture.state.units, frames: fixture.state.frames,
-      receipts: fixture.state.patterns.filter(row => row.patternKind === "source_compilation") });
+      receipts: fixture.state.patterns.filter(row => row.patternKind === "source_compilation"
+        && recordOf(row.patternJson).schema === "scce.source_language_compilation_receipt.v1") });
+    const originalCoverage = structuredClone(fixture.state.patterns.filter(row => row.patternKind === "source_compilation"
+      && recordOf(row.patternJson).schema === "scce.source_induction_coverage.v1"));
     const memberships = new Map(fixture.state.patterns.filter(row => row.patternKind !== "source_compilation")
       .map(row => [row.id, recordOf(row.patternJson).sourceCompilationId]));
     installDurableConstructionPool(fixture);
@@ -1512,7 +1515,17 @@ describe("multi-corpus training", () => {
     expect(replay.reports.some(report => report.languageConstructions > 0)).toBe(true);
     expect(replay.reports.every(report => report.ngramModels === 0 && report.languageUnits === 0 && report.semanticFrames === 0)).toBe(true);
     expect({ models: fixture.state.models, units: fixture.state.units, frames: fixture.state.frames,
-      receipts: fixture.state.patterns.filter(row => row.patternKind === "source_compilation") }).toEqual(canonical);
+      receipts: fixture.state.patterns.filter(row => row.patternKind === "source_compilation"
+        && recordOf(row.patternJson).schema === "scce.source_language_compilation_receipt.v1") }).toEqual(canonical);
+    const replayedCoverage = fixture.state.patterns.filter(row => row.patternKind === "source_compilation"
+      && recordOf(row.patternJson).schema === "scce.source_induction_coverage.v1");
+    const withoutReplayAnnotations = (row: typeof replayedCoverage[number]) => {
+      const { lane: _lane, replayRecipeId: _replayRecipeId, ...metadata } = recordOf(row.patternJson);
+      return { ...row, patternJson: metadata };
+    };
+    expect(replayedCoverage.map(withoutReplayAnnotations)).toEqual(originalCoverage.map(withoutReplayAnnotations));
+    expect(replayedCoverage.every(row => recordOf(row.patternJson).lane === "stored-corpus-construction-replay"
+      && recordOf(row.patternJson).replayRecipeId === LANGUAGE_CORPUS_TRAINING_RECIPE_ID)).toBe(true);
     for (const [id, membership] of memberships) expect(recordOf(fixture.state.patterns.find(row => row.id === id)!.patternJson).sourceCompilationId).toBe(membership);
     const beforeManual = structuredClone({ models: fixture.state.models, units: fixture.state.units, frames: fixture.state.frames, patterns: fixture.state.patterns });
     const clock = createClock({ fixedTime: 140000, stepMs: 1 });
