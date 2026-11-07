@@ -1357,6 +1357,10 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // Structure, not vocabulary: a request that names a formal language or a code path is asking for an artifact.
       const typedProgramBehavior = typedProgramBehaviorFromMetadata(input.metadata);
       const codeSignal = codeRequestSignal(input.text, { typedBehavior: typedProgramBehavior });
+      const typedProgramBehaviorRequirementIds = [
+        ...codeSignal.behaviorRequirements.map(requirement => requirement.id),
+        ...codeSignal.statefulBehaviorRequirements.map(requirement => requirement.id)
+      ];
       let requirementField = deriveTurnRequirementField({
         requestText: input.text,
         explicitRequirements: [
@@ -1387,10 +1391,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const authorityProjection = projectRequestAuthority({
         requirementField,
         explicitAuthority,
-        typedProgramBehaviorRequirementIds: [
-          ...codeSignal.behaviorRequirements.map(requirement => requirement.id),
-          ...codeSignal.statefulBehaviorRequirements.map(requirement => requirement.id)
-        ]
+        typedProgramBehaviorRequirementIds
       });
       // Why the turn is routed where it is. The requirement field decides the authority, the authority decides
       // which lane answers, and nothing recorded whether the routing patterns that carry the requirement
@@ -1525,6 +1526,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       let operatorActivations = activateCognitiveOperators({
         model: operatorModel,
         requirementField,
+        typedProgramBehaviorRequirementIds: authorityProjection.requestedAuthority === "program" ? typedProgramBehaviorRequirementIds : [],
         dialogueSupport: requestOperatorDialogueSupport(requirementField),
         outcomeSupport: {
           ...durableOperatorOutcomeSupport,
@@ -2322,6 +2324,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       operatorActivations = activateCognitiveOperators({
         model: operatorModel,
         requirementField,
+        typedProgramBehaviorRequirementIds: requestedAuthority === "program" ? typedProgramBehaviorRequirementIds : [],
         graphSupport: graphSupportEvaluation.support,
         dialogueSupport: requestOperatorDialogueSupport(requirementField),
         outcomeSupport: {

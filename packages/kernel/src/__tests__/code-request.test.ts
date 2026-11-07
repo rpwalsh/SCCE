@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { CODE_REQUEST_BOOTSTRAP_DEMAND_MODEL, codeLanguageForRequirementState, codeRequestCorroborated, codeRequestDemand, codeRequestObservedRequirements, codeRequestRecognized, codeRequestRequirements, codeRequestSignal, typedProgramBehaviorFromMetadata } from "../code-request.js";
 import { clearProdCalibrations, installProdCalibrations } from "../calibrations/prod-calibrations.js";
 import { operationalAuthorityForProjection, projectRequestAuthority } from "../request-authority.js";
-import { COGNITIVE_OPERATOR_IDS, activateCognitiveOperators, deriveTurnRequirementField } from "../turn-requirements.js";
+import { COGNITIVE_OPERATOR_IDS, DEFAULT_COGNITIVE_OPERATOR_MODEL, activateCognitiveOperators, deriveTurnRequirementField } from "../turn-requirements.js";
 
 const recognized = (text: string) => codeRequestRecognized(codeRequestSignal(text));
 
@@ -174,6 +174,44 @@ describe("code request structure", () => {
       activeOperatorIds: operators.filter(operator => operator.active).map(operator => operator.operatorId)
     })).toBe("program");
     expect(projectRequestAuthority({ requirementField: field, explicitAuthority: "factual", typedProgramBehaviorRequirementIds: signal.behaviorRequirements.map(requirement => requirement.id) }).requestedAuthority).toBe("factual");
+  });
+
+  it("activates program planning from typed owner obligations despite a competing factual language control", () => {
+    const request = "Create a function double(x) such that double(3) returns 6, double(7) returns 14, double(-2) returns -4, and double(11) returns 22. Add and run a test proving it.";
+    const signal = codeRequestSignal(request);
+    const typedIds = signal.behaviorRequirements.map(requirement => requirement.id);
+    const requirementField = deriveTurnRequirementField({
+      requestText: request,
+      explicitRequirements: codeRequestObservedRequirements(request, signal),
+      activations: [{
+        id: "pattern.learned.factual-source-control",
+        kind: "frame",
+        activation: 1,
+        requirementCoefficients: { externalTruthAuthority: 3, sourceDependence: 3 },
+        semanticRoleId: "role.learned.factual-source-control",
+        learnedFrameOrPatternId: "frame.learned.factual-source-control"
+      }]
+    });
+    const model = {
+      ...DEFAULT_COGNITIVE_OPERATOR_MODEL,
+      id: "fixture.factual-language-control",
+      intercepts: { ...DEFAULT_COGNITIVE_OPERATOR_MODEL.intercepts, [COGNITIVE_OPERATOR_IDS.programPlanning]: -4 },
+      requirementWeights: { ...DEFAULT_COGNITIVE_OPERATOR_MODEL.requirementWeights, [COGNITIVE_OPERATOR_IDS.programPlanning]: {} }
+    };
+    const learnedOnly = activateCognitiveOperators({ model, requirementField });
+    const typedActivation = activateCognitiveOperators({ model, requirementField, typedProgramBehaviorRequirementIds: typedIds });
+    const typedProjection = projectRequestAuthority({ requirementField, typedProgramBehaviorRequirementIds: typedIds });
+    const factualProjection = projectRequestAuthority({ requirementField, explicitAuthority: "factual", typedProgramBehaviorRequirementIds: typedIds });
+
+    expect(learnedOnly.some(operator => operator.operatorId === COGNITIVE_OPERATOR_IDS.programPlanning && operator.active)).toBe(false);
+    expect(typedActivation.find(operator => operator.operatorId === COGNITIVE_OPERATOR_IDS.programPlanning)).toMatchObject({
+      active: true,
+      trace: expect.objectContaining({ typedProgramBehaviorRequirementIds: typedIds })
+    });
+    expect(operationalAuthorityForProjection({ projection: typedProjection, activeOperatorIds: typedActivation.filter(operator => operator.active).map(operator => operator.operatorId) })).toBe("program");
+    expect(factualProjection.requestedAuthority).toBe("factual");
+    const factualActivation = activateCognitiveOperators({ model, requirementField });
+    expect(operationalAuthorityForProjection({ projection: factualProjection, activeOperatorIds: factualActivation.filter(operator => operator.active).map(operator => operator.operatorId) })).toBe("factual");
   });
 
   it("leaves ordinary arithmetic requests outside the owner behavior program lane", () => {

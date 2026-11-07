@@ -276,6 +276,8 @@ export type OperatorSupportMap = Partial<Record<CognitiveOperatorId, number>>;
 
 export interface ActivateCognitiveOperatorsInput {
   requirementField: TurnRequirementField;
+  /** Source-typed owner obligations that directly require the program-planning operator. */
+  typedProgramBehaviorRequirementIds?: readonly string[];
   graphSupport?: OperatorSupportMap;
   dialogueSupport?: OperatorSupportMap;
   constructSupport?: OperatorSupportMap;
@@ -521,6 +523,7 @@ export function requestSubjectText(requestText: string, field: Pick<TurnRequirem
 export function activateCognitiveOperators(input: ActivateCognitiveOperatorsInput): ActivatedOperator[] {
   const model = input.model ?? DEFAULT_COGNITIVE_OPERATOR_MODEL;
   const threshold = clamp01(finiteOr(model.activationThreshold, DEFAULT_COGNITIVE_OPERATOR_MODEL.activationThreshold));
+  const typedProgramBehaviorRequirementIds = [...new Set((input.typedProgramBehaviorRequirementIds ?? []).filter(id => typeof id === "string" && id.trim()))];
   return (Object.values(COGNITIVE_OPERATOR_IDS) as CognitiveOperatorId[]).map(operatorId => {
     const intercept = finiteOr(model.intercepts[operatorId], finiteOr(DEFAULT_COGNITIVE_OPERATOR_MODEL.intercepts[operatorId], 0));
     const weights = model.requirementWeights[operatorId] ?? {};
@@ -536,21 +539,27 @@ export function activateCognitiveOperators(input: ActivateCognitiveOperatorsInpu
     const outcome = supportValue(input.outcomeSupport, operatorId);
     const logit = finiteOr(intercept + requirement + graph + dialogue + construct + outcome, 0);
     const activation = clamp01(sigmoid(logit));
+    const typedProgramContract = operatorId === COGNITIVE_OPERATOR_IDS.programPlanning && typedProgramBehaviorRequirementIds.length > 0;
+    const active = activation >= threshold || typedProgramContract;
     const contributingRequirementDimensions = requirementTerms
       .filter(row => Math.abs(row.contribution) >= 0.04)
       .sort((left, right) => Math.abs(right.contribution) - Math.abs(left.contribution) || left.dimension.localeCompare(right.dimension))
       .map(row => row.dimension);
     return {
-      id: `activation.${stableId(`${model.id}|${model.version}|${operatorId}|${activation.toFixed(12)}`)}`,
+      id: `activation.${stableId(`${model.id}|${model.version}|${operatorId}|${activation.toFixed(12)}|${typedProgramContract ? typedProgramBehaviorRequirementIds.join("|") : ""}`)}`,
       operatorId,
       activation,
-      active: activation >= threshold,
+      active,
       contributingRequirementDimensions,
       support: { requirement, graph, dialogue, construct, outcome },
       trace: toJsonValue({
         schema: "scce.cognitive_operator.activation_trace.v1",
         equation: "sigmoid(intercept + requirement + graph + dialogue + construct + outcome)",
+        activationRule: "active when threshold reached or when typed owner program contract is present",
         coefficientModel: { id: model.id, version: model.version, reliability: model.reliability },
+        typedProgramBehaviorRequirementIds: typedProgramContract ? typedProgramBehaviorRequirementIds : [],
+        activeByThreshold: activation >= threshold,
+        activeByTypedProgramBehaviorContract: typedProgramContract,
         intercept,
         requirementTerms,
         support: { requirement, graph, dialogue, construct, outcome },
