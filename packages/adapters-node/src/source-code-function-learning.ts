@@ -2,6 +2,14 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import ts from "typescript";
 import { sourceCodeFunctionConstructionId, type SourceCodeFunctionConstruction, type ProgramExpression } from "@scce/kernel";
+import { compileTreeSitterSourceCodeFunctions } from "./source-code-function-tree-learning.js";
+
+export const SOURCE_CODE_FUNCTION_COMPILER_RECIPE_ID = "scce.source_code_function_compiler.v2";
+
+export async function compileSourceCodeFunctionsAsync(input: { text: string; path: string; languageId?: string; sourceHash: string }): Promise<SourceCodeFunctionConstruction[]> {
+  if (input.languageId === "typescript" || input.languageId === "javascript") return compileSourceCodeFunctions(input);
+  return compileTreeSitterSourceCodeFunctions({ ...input, languageId: input.languageId ?? "" });
+}
 
 /** The compiler supplies binding coordinates and a bounded pure expression; every emitted code byte belongs to the source. */
 export function compileSourceCodeFunctions(input: { text: string; path: string; languageId?: string; sourceHash: string }): SourceCodeFunctionConstruction[] {

@@ -26,7 +26,7 @@ import { extractNodeSourceCodeFacts, measureExhibitedContent } from "./code-grap
 import { inspectEngineeringCorpusFolder, type EngineeringCorpusFolderOptions } from "./engineering-corpus-folder.js";
 import { CorpusCheckpointConflictError, readCompletedCorpusCheckpoint, trainLanguageCorpusText, type LanguageCorpusTrainingInput, type LanguageCorpusTrainingReport } from "./language-corpus-trainer.js";
 import { createProjectDeclarationIndex, createProjectLicenseIndex, readDeclaredLicense } from "./project-artifact-declarations.js";
-import { compileSourceCodeFunctions } from "./source-code-function-learning.js";
+import { compileSourceCodeFunctionsAsync } from "./source-code-function-learning.js";
 import { sourceBrainBuildReceipt, type SourceBrainBuildReceipt, type SourceBrainBuildResult } from "./source-brain-build.js";
 
 export const DEFAULT_OSS_FILES_PER_RUN = 2000;
@@ -299,7 +299,7 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
           supportedSections: file.supportedSections,
           projection: projected.projection,
           formalLanguage: codeLanguageForPath(file.path) ?? null,
-          ...(projected.sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.ossCode ? { codeFunctionConstructions: compileSourceCodeFunctions({
+          ...(projected.sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.ossCode ? { codeFunctionConstructions: await compileSourceCodeFunctionsAsync({
             text: raw, path: file.path, languageId: codeLanguageForPath(file.path), sourceHash
           }) } : {}),
           artifactRole,

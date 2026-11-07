@@ -34,6 +34,7 @@ export * from "./typescript-code-actions.js";
 export * from "./typescript-command-lane.js";
 export * from "./typescript-semantic-program-index.js";
 export * from "./tree-sitter-syntax.js";
+export * from "./source-code-function-learning.js";
 export * from "./code-verifier-discovery.js";
 export * from "./tree-sitter-code-mouth-ports.js";
 export * from "./repo-cognition-files.js";

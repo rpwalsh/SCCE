@@ -67,7 +67,8 @@ export function realizeSourceCodeFunctions(input: {
         const construction = admittedConstruction(value, metadata.sourceHash);
         if (!construction || construction.languageId !== input.languageId || !fit.every(row => row.arguments.length === construction.parameters.length)) continue;
         if (!fit.every(row => {
-          try { return sameJsonResult(evaluateProgramExpressionBindings(construction.expression, row.arguments, construction.bindings ?? []), row.expectedResult); }
+          try { return sameJsonResult(evaluateProgramExpressionBindings(construction.expression, row.arguments, construction.bindings ?? [],
+            construction.languageId === "python" ? { numericDomain: "finite-binary64-safe-integer" } : {}), row.expectedResult); }
           catch { return false; }
         })) continue;
         const body = construction.sourceText.slice(0, construction.callable.start) + callableId + construction.sourceText.slice(construction.callable.end);

@@ -186,14 +186,21 @@ export function evaluateProgramExpression(expression: ProgramExpression, input: 
 }
 
 /** Source-local bindings form a DAG: each expression is stored and evaluated once rather than recursively copied. */
-export function evaluateProgramExpressionBindings(expression: ProgramExpression, arguments_: readonly JsonValue[], bindings: readonly ProgramExpression[]): JsonValue | undefined {
+export function evaluateProgramExpressionBindings(
+  expression: ProgramExpression,
+  arguments_: readonly JsonValue[],
+  bindings: readonly ProgramExpression[],
+  options: { numericDomain?: "finite-binary64-safe-integer" } = {}
+): JsonValue | undefined {
   const values = [...arguments_];
+  const safeNumericDomain = options.numericDomain === "finite-binary64-safe-integer"
+    && (containsArithmetic(expression) || bindings.some(containsArithmetic));
   for (const binding of bindings) {
-    const value = evaluateExpression(binding, values, undefined, undefined, true);
+    const value = evaluateExpression(binding, values, undefined, undefined, true, safeNumericDomain);
     if (value === undefined) return undefined;
     values.push(value);
   }
-  return evaluateExpression(expression, values, undefined, undefined, true);
+  return evaluateExpression(expression, values, undefined, undefined, true, safeNumericDomain);
 }
 
 function topLevelOperator(expression: ProgramExpression): ProgramTransformationOperator {
@@ -215,6 +222,10 @@ function expressionOperands(expression: ProgramExpression): ProgramExpression[] 
   if (expression.kind === "fold_sequence") return [expression.source, expression.initial, expression.reducer];
   if (expression.kind === "conditional") return [expression.condition, expression.whenTrue, expression.whenFalse];
   return [];
+}
+
+function containsArithmetic(expression: ProgramExpression): boolean {
+  return expression.kind === "unary" || expression.kind === "binary" || expressionOperands(expression).some(containsArithmetic);
 }
 
 function commutativeOperator(operator: ProgramTransformationOperator): boolean {
@@ -723,7 +734,7 @@ function behaviorFitStats(expression: ProgramExpression, examples: readonly Beha
   return { meanSquaredError: loss / examples.length, predictedIds };
 }
 
-function evaluateExpression(expression: ProgramExpression, arguments_: readonly JsonValue[], element?: JsonValue, accumulator?: JsonValue, sourceSemantics = false): JsonValue | undefined {
+function evaluateExpression(expression: ProgramExpression, arguments_: readonly JsonValue[], element?: JsonValue, accumulator?: JsonValue, sourceSemantics = false, safeNumericDomain = false): JsonValue | undefined {
   switch (expression.kind) {
     case "argument": return arguments_[expression.index];
     case "element": return element;
@@ -731,7 +742,7 @@ function evaluateExpression(expression: ProgramExpression, arguments_: readonly 
     case "literal": return expression.value;
     case "value": return expression.value;
     case "member": {
-      const subject = evaluateExpression(expression.subject, arguments_, element, accumulator, sourceSemantics);
+      const subject = evaluateExpression(expression.subject, arguments_, element, accumulator, sourceSemantics, safeNumericDomain);
       if (subject === null || typeof subject !== "object") return undefined;
       if (typeof expression.key === "number") {
         return Array.isArray(subject) ? subject[expression.key] : undefined;
@@ -743,7 +754,7 @@ function evaluateExpression(expression: ProgramExpression, arguments_: readonly 
     case "sequence": {
       const values: JsonValue[] = [];
       for (const item of expression.items) {
-        const value = evaluateExpression(item, arguments_, element, accumulator, sourceSemantics);
+        const value = evaluateExpression(item, arguments_, element, accumulator, sourceSemantics, safeNumericDomain);
         if (value === undefined) return undefined;
         values.push(value);
       }
@@ -752,72 +763,74 @@ function evaluateExpression(expression: ProgramExpression, arguments_: readonly 
     case "mapping": {
       const entries: Array<[string, JsonValue]> = [];
       for (const entry of expression.entries) {
-        const resolved = evaluateExpression(entry.value, arguments_, element, accumulator, sourceSemantics);
+        const resolved = evaluateExpression(entry.value, arguments_, element, accumulator, sourceSemantics, safeNumericDomain);
         if (resolved === undefined) return undefined;
         entries.push([entry.key, resolved]);
       }
       return Object.fromEntries(entries) as Record<string, JsonValue>;
     }
     case "cardinality": {
-      const value = evaluateExpression(expression.operand, arguments_, element, accumulator, sourceSemantics);
+      const value = evaluateExpression(expression.operand, arguments_, element, accumulator, sourceSemantics, safeNumericDomain);
       return typeof value === "string" || Array.isArray(value) ? value.length : undefined;
     }
     case "equivalent": {
-      const left = evaluateExpression(expression.left, arguments_, element, accumulator, sourceSemantics);
-      const right = evaluateExpression(expression.right, arguments_, element, accumulator, sourceSemantics);
+      const left = evaluateExpression(expression.left, arguments_, element, accumulator, sourceSemantics, safeNumericDomain);
+      const right = evaluateExpression(expression.right, arguments_, element, accumulator, sourceSemantics, safeNumericDomain);
       return left === undefined || right === undefined ? undefined : sourceSemantics ? left === right : jsonEqual(left, right);
     }
     case "map_sequence": {
-      const source = evaluateExpression(expression.source, arguments_, element, accumulator, sourceSemantics);
+      const source = evaluateExpression(expression.source, arguments_, element, accumulator, sourceSemantics, safeNumericDomain);
       if (!Array.isArray(source) || source.length > 64) return undefined;
       const values: JsonValue[] = [];
       for (const item of source) {
-        const value = evaluateExpression(expression.projection, arguments_, item, accumulator, sourceSemantics);
+        const value = evaluateExpression(expression.projection, arguments_, item, accumulator, sourceSemantics, safeNumericDomain);
         if (value === undefined) return undefined;
         values.push(value);
       }
       return values;
     }
     case "filter_sequence": {
-      const source = evaluateExpression(expression.source, arguments_, element, accumulator, sourceSemantics);
+      const source = evaluateExpression(expression.source, arguments_, element, accumulator, sourceSemantics, safeNumericDomain);
       if (!Array.isArray(source) || source.length > 64) return undefined;
       const values: JsonValue[] = [];
       for (const item of source) {
-        const predicate = evaluateExpression(expression.predicate, arguments_, item, accumulator, sourceSemantics);
+        const predicate = evaluateExpression(expression.predicate, arguments_, item, accumulator, sourceSemantics, safeNumericDomain);
         if (typeof predicate !== "boolean") return undefined;
         if (predicate) values.push(item);
       }
       return values;
     }
     case "fold_sequence": {
-      const source = evaluateExpression(expression.source, arguments_, element, accumulator, sourceSemantics);
+      const source = evaluateExpression(expression.source, arguments_, element, accumulator, sourceSemantics, safeNumericDomain);
       if (!Array.isArray(source) || source.length > 64) return undefined;
-      let currentAccumulator = evaluateExpression(expression.initial, arguments_, element, accumulator, sourceSemantics);
+      let currentAccumulator = evaluateExpression(expression.initial, arguments_, element, accumulator, sourceSemantics, safeNumericDomain);
       if (currentAccumulator === undefined) return undefined;
       for (const item of source) {
-        currentAccumulator = evaluateExpression(expression.reducer, arguments_, item, currentAccumulator, sourceSemantics);
+        currentAccumulator = evaluateExpression(expression.reducer, arguments_, item, currentAccumulator, sourceSemantics, safeNumericDomain);
         if (currentAccumulator === undefined) return undefined;
       }
       return currentAccumulator;
     }
     case "conditional": {
-      const condition = evaluateExpression(expression.condition, arguments_, element, accumulator, sourceSemantics);
+      const condition = evaluateExpression(expression.condition, arguments_, element, accumulator, sourceSemantics, safeNumericDomain);
       if (typeof condition !== "boolean") return undefined;
-      return evaluateExpression(condition ? expression.whenTrue : expression.whenFalse, arguments_, element, accumulator, sourceSemantics);
+      return evaluateExpression(condition ? expression.whenTrue : expression.whenFalse, arguments_, element, accumulator, sourceSemantics, safeNumericDomain);
     }
     case "unary": {
-      const operand = evaluateExpression(expression.operand, arguments_, element, accumulator, sourceSemantics);
-      return typeof operand === "number" ? evaluatedNumber(-operand, sourceSemantics) : undefined;
+      const operand = evaluateExpression(expression.operand, arguments_, element, accumulator, sourceSemantics, safeNumericDomain);
+      const value = typeof operand === "number" ? evaluatedNumber(-operand, sourceSemantics) : undefined;
+      return safeNumericDomain && typeof value === "number" && !supportedBinary64Number(value) ? undefined : value;
     }
     case "binary": {
-      const left = evaluateExpression(expression.left, arguments_, element, accumulator, sourceSemantics);
-      const right = evaluateExpression(expression.right, arguments_, element, accumulator, sourceSemantics);
-      if (typeof left !== "number" || typeof right !== "number") return undefined;
-      if (expression.operator === "add") return evaluatedNumber(left + right, sourceSemantics);
-      if (expression.operator === "subtract") return evaluatedNumber(left - right, sourceSemantics);
-      if (expression.operator === "multiply") return evaluatedNumber(left * right, sourceSemantics);
-      if (expression.operator === "divide") return (sourceSemantics ? right === 0 : Math.abs(right) <= EPSILON) ? undefined : evaluatedNumber(left / right, sourceSemantics);
-      return expression.operator === "minimum" ? Math.min(left, right) : Math.max(left, right);
+      const left = evaluateExpression(expression.left, arguments_, element, accumulator, sourceSemantics, safeNumericDomain);
+      const right = evaluateExpression(expression.right, arguments_, element, accumulator, sourceSemantics, safeNumericDomain);
+      if (typeof left !== "number" || typeof right !== "number" || (safeNumericDomain && (!supportedBinary64Number(left) || !supportedBinary64Number(right)))) return undefined;
+      const value = expression.operator === "add" ? evaluatedNumber(left + right, sourceSemantics)
+        : expression.operator === "subtract" ? evaluatedNumber(left - right, sourceSemantics)
+          : expression.operator === "multiply" ? evaluatedNumber(left * right, sourceSemantics)
+            : expression.operator === "divide" ? ((sourceSemantics ? right === 0 : Math.abs(right) <= EPSILON) ? undefined : evaluatedNumber(left / right, sourceSemantics))
+              : evaluatedNumber(expression.operator === "minimum" ? Math.min(left, right) : Math.max(left, right), sourceSemantics);
+      return safeNumericDomain && typeof value === "number" && !supportedBinary64Number(value) ? undefined : value;
     }
   }
 }
@@ -1076,6 +1089,10 @@ function finiteOrUndefined(value: number): number | undefined {
 
 function evaluatedNumber(value: number, sourceSemantics: boolean): number | undefined {
   return sourceSemantics ? Number.isFinite(value) ? value : undefined : finiteOrUndefined(value);
+}
+
+function supportedBinary64Number(value: number): boolean {
+  return Number.isFinite(value) && (!Number.isInteger(value) || Number.isSafeInteger(value));
 }
 
 function cleanNumber(value: number): number {
