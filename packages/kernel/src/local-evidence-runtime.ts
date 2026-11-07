@@ -141,7 +141,7 @@ function anchorBindingSentenceAligned(span: EvidenceSpan, anchors: readonly stri
  * so it hid at most 5,536 characters from 0.3% of the corpus while the spans it truncated are the long book
  * chunks this test exists to search. Pure.
  */
-function spanCarriesAnsweringSentence(span: EvidenceSpan, requestText: string, coverageUnits: readonly string[]): boolean {
+function spanCarriesAnsweringSentence(span: EvidenceSpan, requestText: string, coverageUnits: readonly string[], closedClassWords?: ReadonlySet<string>): boolean {
   if (!coverageUnits.length) return false;
   // Only where relevance ranking has nothing to rank on.
   //
@@ -161,14 +161,15 @@ function spanCarriesAnsweringSentence(span: EvidenceSpan, requestText: string, c
   // does, because a chapter index carries the title and not what the request asks past it.
   const text = String(span.text ?? span.textPreview ?? "");
   if (!text) return false;
-  if (!answerCoversRequest([text], span, coverageUnits, requestText, { relationRequired: true })) return false;
+  const coverageOptions = { relationRequired: true, languageClosedClassWords: closedClassWords };
+  if (!answerCoversRequest([text], span, coverageUnits, requestText, coverageOptions)) return false;
   return splitSurfaceSentences(text)
-    .some(sentence => answerCoversRequest([sentence], span, coverageUnits, requestText, { relationRequired: true }));
+    .some(sentence => answerCoversRequest([sentence], span, coverageUnits, requestText, coverageOptions));
 }
 
 /** The same sentence-level answerhood used to rank source evidence, before choosing a retrieval slice. */
 export function sourceBodyAnswersRequest(span: EvidenceSpan, requestText: string, closedClassWords: ReadonlySet<string>): boolean {
-  return spanCarriesAnsweringSentence(span, requestText, requestAnswerhoodCoverageUnits(requestText, closedClassWords));
+  return spanCarriesAnsweringSentence(span, requestText, requestAnswerhoodCoverageUnits(requestText, closedClassWords), closedClassWords);
 }
 
 function requestAnswerhoodCoverageUnits(text: string, closedClassWords: ReadonlySet<string>): string[] {
@@ -257,7 +258,7 @@ export function evidenceForRequest(
   // exactly the order that was there before. No weight is added to the score for the same reason -- a chunk that
   // answers is not "more relevant", it is the only kind of chunk the mouth can speak from at all.
   const rows = scoredRows
-    .map(row => ({ ...row, answering: spanCarriesAnsweringSentence(row.span, text, coverageUnits) }))
+    .map(row => ({ ...row, answering: spanCarriesAnsweringSentence(row.span, text, coverageUnits, closedClassWords) }))
     .sort((a, b) => Number(b.answering) - Number(a.answering) || b.score - a.score || b.span.alpha - a.span.alpha || String(a.span.id).localeCompare(String(b.span.id)));
   // Reported, never inferred: whether the test ran at all, how many spans it admitted, and whether it actually
   // moved the lead. A pass that silently degrades to the old order must not look like one that decided something.
