@@ -33,6 +33,7 @@ import { createJudge } from "./judge.js";
 import { jsonRecord, uniqueKernelStrings } from "./kernel-answer-primitives.js";
 import { createLanguageMemoryRuntime } from "./language-memory-runtime.js";
 import { createLanguageIdentityRuntime } from "./language-identity-runtime.js";
+import type { LanguageIdentityRecord } from "./language-identity.js";
 import {
   aggregateLanguageProfileCluster,
   createLanguageAcquisitionEngine,
@@ -322,6 +323,17 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
       };
       const languageLimit = Math.max(1, Math.min(256, Math.floor(input.languageLimit ?? 36)));
       const tasks: Array<Promise<void>> = [];
+      const fullLanguageWarmup = input.language ?? true;
+      const requestLanguageWarmup = input.requestLanguage ?? false;
+      const identityWarmup = fullLanguageWarmup || requestLanguageWarmup
+        ? await languageIdentityRuntime.ensure().catch(error => {
+          failures.push(`language identity warmup failed: ${error instanceof Error ? error.message : String(error)}`);
+          return undefined;
+        })
+        : undefined;
+      if (identityWarmup) {
+        kernelTrace({ stage: "runtime.start.language_identities", label: "kernel.warmup", durationMs: identityWarmup.elapsedMs, counts: { identities: identityWarmup.identities.length, assigned: identityWarmup.assigned }, support: { discovered: identityWarmup.discovered, identities: identityWarmup.identities.map(identity => ({ id: identity.id, script: identity.script, profiles: identity.profileCount, closedClass: identity.closedClass.slice(0, 8).map(row => row.word), families: identity.families.slice(0, 4) })) } });
+      }
 
       if (input.graph ?? true) {
         tasks.push(hotNeighborhoodCached()
@@ -342,17 +354,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
           }));
       }
 
-      if (input.language ?? true) {
-        // Language identities are part of the language capability. Avoid
-        // discovering and assigning the whole corpus for a lightweight
-        // startup warmup that explicitly disables language loading.
-        const identityWarmup = await languageIdentityRuntime.ensure().catch(error => {
-          failures.push(`language identity warmup failed: ${error instanceof Error ? error.message : String(error)}`);
-          return undefined;
-        });
-        if (identityWarmup) {
-          kernelTrace({ stage: "runtime.start.language_identities", label: "kernel.warmup", durationMs: identityWarmup.elapsedMs, counts: { identities: identityWarmup.identities.length, assigned: identityWarmup.assigned }, support: { discovered: identityWarmup.discovered, identities: identityWarmup.identities.map(identity => ({ id: identity.id, script: identity.script, profiles: identity.profileCount, closedClass: identity.closedClass.slice(0, 8).map(row => row.word), families: identity.families.slice(0, 4) })) } });
-        }
+      if (fullLanguageWarmup) {
         tasks.push(Promise.all([
           surfaceLanguageProfilesCached()
             // The cluster an unmatched request surface falls back to is the one turns most often realize from, and it
@@ -447,6 +449,33 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
             failures.push(`language warmup failed: ${error instanceof Error ? error.message : String(error)}`);
             result.language = { loaded: false, models: 0, observations: 0, units: 0, patterns: 0, semanticFrames: 0 };
           }));
+      }
+
+      if (requestLanguageWarmup) {
+        const identity = primaryRequestLanguageIdentity(languageIdentityRuntime.identities());
+        if (!identity) {
+          result.requestLanguage = { loaded: false, units: 0, patterns: 0, semanticFrames: 0 };
+        } else {
+          tasks.push(hydrateSurfaceLanguageMemoryCached(
+            12,
+            undefined,
+            "request-seed",
+            undefined,
+            "",
+            { languageId: identity.id, purpose: "request_seed" }
+          ).then(language => {
+            result.requestLanguage = {
+              loaded: true,
+              languageId: identity.id,
+              units: language.units.length,
+              patterns: language.patterns.length,
+              semanticFrames: language.semanticFrames.length
+            };
+          }).catch(error => {
+            failures.push(`request language warmup failed: ${error instanceof Error ? error.message : String(error)}`);
+            result.requestLanguage = { loaded: false, languageId: identity.id, units: 0, patterns: 0, semanticFrames: 0 };
+          }));
+        }
       }
 
       if (input.brain ?? true) {
@@ -795,14 +824,19 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
 
   return kernel;
 }
-/**
- * The turn's own score and every input to it, read back from the events the turn already wrote.
- *
- * `cognitive-substrate.ts` defines the scored typed answer action -- support, recency, source quality, path strength,
- * contradiction mass, connectivity, spectral connectivity, compression rank and inference bound, under explicit guard
- * flags -- and nothing built one, so those figures stayed scattered across five event payloads. Diagnostic only:
- * nothing here feeds a turn, and every number is read, never recomputed from evidence.
- */
+function primaryRequestLanguageIdentity(identities: readonly LanguageIdentityRecord[]): LanguageIdentityRecord | undefined {
+  const candidates = identities.map(identity => ({
+    identity,
+    naturalRoleCount: identity.corpusRoles
+      .filter(role => role.corpusRoleId !== CORPUS_ROLE_IDS.softwareSymbolic)
+      .reduce((sum, role) => sum + role.count, 0)
+  })).filter(candidate => candidate.naturalRoleCount > 0)
+    .sort((left, right) => right.naturalRoleCount - left.naturalRoleCount);
+  if (!candidates.length || candidates[1]?.naturalRoleCount === candidates[0]!.naturalRoleCount) return undefined;
+  return candidates[0]!.identity;
+}
+
+/** The turn's own score and every input to it, read back from the events it wrote. */
 function cognitiveSubstrateForTurn(events: readonly ScceEvent[], answer: string): JsonValue {
   const latest = (typeId: string): Record<string, unknown> =>
     jsonRecord((events.filter(event => event.typeId === typeId).map(event => event.payload).at(-1) ?? null) as JsonValue);

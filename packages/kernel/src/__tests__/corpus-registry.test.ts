@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   createCorpusRegistry,
   createScceKernel,
+  CORPUS_ROLE_IDS,
   canonicalCorpusSourceSystemId,
   languageMemoryEligibleCorpora,
   languageMemoryHydrationPlan,
@@ -13,6 +14,7 @@ import {
 } from "../index.js";
 import type { EventRangeQuery } from "../storage.js";
 import type { EpisodeId } from "../types.js";
+import type { LanguageIdentityRecord } from "../language-identity.js";
 import { filterEpisodeEvents, filterEventRange } from "./event-range-fixture.js";
 
 describe("corpus registry", () => {
@@ -73,6 +75,61 @@ describe("corpus registry", () => {
     const result = await kernel.warmup({ language: false, graph: false, brain: false, profile: false, corrections: false });
 
     expect(result.language).toBeUndefined();
+    expect(queried).toEqual([]);
+  });
+
+  it("warms one canonical request seed by typed natural-language role and reuses it", async () => {
+    const queried: Array<{ sourceSystem?: string; profileIds: string[] }> = [];
+    const storage = corpusQueryStorage(queried);
+    const natural = languageIdentity("language.natural", [
+      { corpusRoleId: CORPUS_ROLE_IDS.dialogue, count: 8 },
+      { corpusRoleId: CORPUS_ROLE_IDS.publicDomainProse, count: 12 }
+    ]);
+    const symbolic = languageIdentity("language.symbolic", [
+      { corpusRoleId: CORPUS_ROLE_IDS.softwareSymbolic, count: 500 }
+    ]);
+    storage.languageIdentities = identityStore([natural, symbolic]);
+    const kernel = createScceKernel({
+      storage,
+      files: { streamPath: async function* () { /* unused */ } },
+      buildTest: { executeProgram: async () => ({ build: commandResult(), test: commandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+      corpusRegistry: createCorpusRegistry([
+        { sourceSystem: "gutenberg", enabled: true },
+        { sourceSystem: "oss_docs", enabled: true },
+        { sourceSystem: "oss_code", enabled: true }
+      ])
+    });
+
+    const result = await kernel.warmup({ language: false, requestLanguage: true, graph: false, brain: false, profile: false, corrections: false });
+
+    expect(result.language).toBeUndefined();
+    expect(result.requestLanguage).toMatchObject({ loaded: true, languageId: natural.id });
+    expect(queried.some(query => query.sourceSystem === "oss_code")).toBe(false);
+    expect(queried.length).toBeGreaterThan(0);
+    const queriesAfterWarmup = queried.length;
+
+    await kernel.warmup({ language: false, requestLanguage: true, graph: false, brain: false, profile: false, corrections: false });
+
+    expect(queried).toHaveLength(queriesAfterWarmup);
+  });
+
+  it("leaves request-language warmup unresolved when natural role evidence is tied", async () => {
+    const queried: Array<{ sourceSystem?: string; profileIds: string[] }> = [];
+    const storage = corpusQueryStorage(queried);
+    storage.languageIdentities = identityStore([
+      languageIdentity("language.one", [{ corpusRoleId: CORPUS_ROLE_IDS.publicDomainProse, count: 3 }]),
+      languageIdentity("language.two", [{ corpusRoleId: CORPUS_ROLE_IDS.dialogue, count: 3 }]),
+      languageIdentity("language.symbolic", [{ corpusRoleId: CORPUS_ROLE_IDS.softwareSymbolic, count: 50 }])
+    ]);
+    const kernel = createScceKernel({
+      storage,
+      files: { streamPath: async function* () { /* unused */ } },
+      buildTest: { executeProgram: async () => ({ build: commandResult(), test: commandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) }
+    });
+
+    const result = await kernel.warmup({ language: false, requestLanguage: true, graph: false, brain: false, profile: false, corrections: false });
+
+    expect(result.requestLanguage).toMatchObject({ loaded: false });
     expect(queried).toEqual([]);
   });
 
@@ -138,11 +195,15 @@ function corpusQueryStorage(
       putLanguagePattern: async () => undefined,
       putSemanticFrame: async () => undefined,
       putTranslationAlignment: async () => undefined,
+      continuationPopulation: async ({ languageId }: { languageId: string }) => ({ languageId, modelCount: 1, continuationCounts: { a: 1 } }),
       listNgramModels: remember,
       listNgramObservations: remember,
       listLanguageUnits: remember,
       listLanguagePatterns: remember,
-      listSemanticFrames: remember,
+      listSemanticFrames: async (query: { sourceSystem?: string; profileIds?: readonly string[] }) => {
+        await remember(query);
+        return [{ id: "frame.request-seed", frameJson: { surface: "fixture" }, embedding: [], evidenceIds: [], alpha: 1, createdAt: 1 }];
+      },
       listTranslationAlignments: async () => []
     },
     brainImports: {
@@ -177,6 +238,31 @@ function corpusQueryStorage(
     workspace: unusedStore(),
     dialogueMemory: unusedStore()
   } as unknown as ScceStorage;
+}
+
+function languageIdentity(id: string, corpusRoles: LanguageIdentityRecord["corpusRoles"]): LanguageIdentityRecord {
+  return {
+    schema: "scce.language_identity.v2",
+    id,
+    script: "script.fixture",
+    directions: [{ direction: "unknown", count: 1 }],
+    closedClass: [],
+    families: [],
+    corpusRoles,
+    profileCount: corpusRoles.reduce((sum, role) => sum + role.count, 0),
+    membershipCut: 0,
+    createdAt: 1
+  };
+}
+
+function identityStore(identities: readonly LanguageIdentityRecord[]) {
+  return {
+    putIdentities: async () => undefined,
+    listIdentities: async () => [...identities],
+    assignProfileLanguages: async () => undefined,
+    listProfileLanguages: async () => [],
+    listProfileSignatures: async () => []
+  };
 }
 
 function unusedStore(): Record<string, (...args: never[]) => Promise<unknown>> {

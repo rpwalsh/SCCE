@@ -1444,6 +1444,8 @@ export interface OwnerInput {
 export interface RuntimeWarmupInput {
   graph?: boolean;
   language?: boolean;
+  /** Warm the compact seed used to interpret a natural-language request, without generation histories. */
+  requestLanguage?: boolean;
   brain?: boolean;
   profile?: boolean;
   corrections?: boolean;
@@ -1465,6 +1467,13 @@ export interface RuntimeWarmupResult {
     loaded: boolean;
     models: number;
     observations: number;
+    units: number;
+    patterns: number;
+    semanticFrames: number;
+  };
+  requestLanguage?: {
+    loaded: boolean;
+    languageId?: string;
     units: number;
     patterns: number;
     semanticFrames: number;

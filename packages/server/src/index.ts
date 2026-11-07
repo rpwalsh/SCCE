@@ -79,6 +79,7 @@ async function main(): Promise<void> {
     // to start and leaves accepted/progress turn paths responsive.
     const warmup = await runtime.kernel.warmup({
       language: startupLanguageWarmupEnabled(),
+      requestLanguage: startupRequestLanguageWarmupEnabled(),
       languageLimit: startupWarmupLanguageLimit()
     });
     // Exact table counts are part of the readiness contract. Prime them before
@@ -93,6 +94,7 @@ async function main(): Promise<void> {
       `${Math.round(warmup.totalMs)}ms`,
       `graph=${warmup.graph?.nodes ?? 0}/${warmup.graph?.edges ?? 0}`,
       `language=${warmup.language?.models ?? 0}/${warmup.language?.units ?? 0}`,
+      `requestLanguage=${warmup.requestLanguage?.languageId ?? "none"}/${warmup.requestLanguage?.units ?? 0}`,
       // Attribution for the repeated post-warmup OOMs: heapUsed is what the
       // --max-old-space-size limit actually governs, and external/arrayBuffers
       // is memory a heap bound does not cover at all. Reported every start so
@@ -174,6 +176,10 @@ function startupWarmupLanguageLimit(): number {
 
 function startupLanguageWarmupEnabled(): boolean {
   return process.env.SCCE_STARTUP_LANGUAGE_WARMUP === "1";
+}
+
+function startupRequestLanguageWarmupEnabled(): boolean {
+  return process.env.SCCE_STARTUP_REQUEST_LANGUAGE_WARMUP !== "0";
 }
 
 function parseConfigPath(argv: string[]): string | undefined {
