@@ -28,6 +28,7 @@ import { createWikipediaV3Ingestor } from "../wikipedia-v3-ingestor.js";
 import * as corpusTrainer from "../language-corpus-trainer.js";
 import { MIN_WIKIPEDIA_MAX_ARTICLE_CHARS } from "../config.js";
 import { INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID } from "../../../kernel/src/language-induction-memory.js";
+import { LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID, LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA } from "../../../kernel/src/language-construction-memory.js";
 import { SOURCE_CONSTRUCTION_BINDINGS_COMPONENT_RECIPE_ID } from "../../../kernel/src/language-construction-memory.js";
 import { SOURCE_ENTITY_GRAPH_COMPONENT_RECIPE_ID } from "../corpus-source-graph-projection.js";
 import * as languageInduction from "../../../kernel/src/language-induction.js";
@@ -95,12 +96,17 @@ describe("learned rows carry the shard's provenance once", () => {
 
   it("learns scoped forms from raw source and upgrades only the projection component without duplicating models", async () => {
     const fixture = memoryStorage();
+    const activeProjectionWrites: Array<NonNullable<ScceStorage["languageMemory"]["replaceLanguagePatternProjection"]> extends (input: infer T) => Promise<void> ? T : never> = [];
     const upsert = <T extends { id: string }>(target: T[], rows: readonly T[]) => {
       for (const row of rows) { const index = target.findIndex(prior => prior.id === row.id); if (index < 0) target.push(row); else target[index] = row; }
     };
     fixture.storage.languageMemory.putNgramModels = async rows => { upsert(fixture.state.models, rows); };
     fixture.storage.languageMemory.putLanguageUnits = async rows => { upsert(fixture.state.units, rows); };
     fixture.storage.languageMemory.putLanguagePatterns = async rows => { upsert(fixture.state.patterns, rows); };
+    fixture.storage.languageMemory.replaceLanguagePatternProjection = async input => {
+      activeProjectionWrites.push(structuredClone(input));
+      upsert(fixture.state.patterns, input.patterns);
+    };
     fixture.storage.languageMemory.putSemanticFrames = async rows => { upsert(fixture.state.frames, rows); };
     const checkpoints = new Map<string, IngestionCheckpoint>();
     fixture.storage.ingestion = { put: async row => { checkpoints.set(row.id, structuredClone(row)); }, get: async id => checkpoints.get(id) ?? null,
@@ -137,6 +143,10 @@ describe("learned rows carry the shard's provenance once", () => {
       sourceVersionId: evidence.sourceVersionId, evidence: [evidence], profile, graphSnapshotAdditions,
       corpusCheckpoint: { rootUri: "fixture://raw-forms", itemUri: "forms.txt", contentHash: blobContentHash(Buffer.from(text)), byteLength: Buffer.byteLength(text) } };
     await trainLanguageCorpusText(input);
+    expect(activeProjectionWrites).toHaveLength(1);
+    expect(activeProjectionWrites[0]!.projection.componentRecipe).toBe(LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID);
+    expect(activeProjectionWrites[0]!.projection.patternIds).toEqual(fixture.state.patterns
+      .filter(row => recordOf(row.patternJson).schema === LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA).map(row => row.id).sort());
     const morphology = fixture.state.patterns.filter(row => recordOf(row.patternJson).schema === "scce.induced_language_model.morphology_memory.v1");
     expect(morphology).toHaveLength(1);
     expect(recordOf(morphology[0]!.patternJson).componentRecipe).toBe(INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID);
@@ -165,10 +175,12 @@ describe("learned rows carry the shard's provenance once", () => {
     const beforePatternIds = before.patterns.map(row => row.id).sort();
     const checkpoint = [...checkpoints.values()][0]!;
     const metadata = { ...recordOf(checkpoint.metadata) };
-    delete (metadata.componentRecipes as Record<string, JsonValue>).sourceConstructionBindings;
+    delete (metadata.componentRecipes as Record<string, JsonValue>).sourceConstructionProjection;
     checkpoints.set(checkpoint.id, { ...checkpoint, metadata });
     const writesBeforeUpgrade = fixture.state.events.length;
     const upgraded = await trainLanguageCorpusText(input);
+    expect(activeProjectionWrites).toHaveLength(2);
+    expect(activeProjectionWrites[1]!.projection.sourceId).toBe(activeProjectionWrites[0]!.projection.sourceId);
     expect(upgraded.artifacts.ngramModelIds).toEqual(before.models.map(row => row.id));
     expect(fixture.state.events.length).toBeGreaterThan(writesBeforeUpgrade);
     expect(fixture.state.models).toEqual(before.models);
@@ -185,9 +197,11 @@ describe("learned rows carry the shard's provenance once", () => {
     expect(checkpoints.size).toBe(1);
     expect([...checkpoints.values()][0]!.id).toBe(checkpoint.id);
     expect(recordOf([...checkpoints.values()][0]!.metadata).componentRecipes).toEqual({ inducedLanguageMemory: INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID,
+      sourceConstructionProjection: LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID,
       sourceConstructionBindings: SOURCE_CONSTRUCTION_BINDINGS_COMPONENT_RECIPE_ID, sourceEntityGraph: SOURCE_ENTITY_GRAPH_COMPONENT_RECIPE_ID });
     const writes = fixture.state.events.length;
     await trainLanguageCorpusText(input);
+    expect(activeProjectionWrites).toHaveLength(2);
     expect(fixture.state.events).toHaveLength(writes);
     expect(fixture.state.models.map(row => row.id)).toEqual(before.models.map(row => row.id));
   });

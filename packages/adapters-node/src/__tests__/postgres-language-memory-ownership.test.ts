@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { afterEach, describe, expect, it } from "vitest";
-import { POSTGRES_REQUIRED_TABLES, type SourceVersionId } from "@scce/kernel";
+import { LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID, LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, POSTGRES_REQUIRED_TABLES, type SourceVersionId } from "@scce/kernel";
 import { clearResidentNgramModelJson, createPostgresStorageAdapter, schemaStatements, type PostgresStorageAdapter } from "../postgres.js";
 
 const adapters: PostgresStorageAdapter[] = [];
@@ -78,6 +78,68 @@ describe("Postgres language-memory ownership queries", () => {
     expect(filter).toBeLessThan(call.sql.indexOf("ranked_pool AS"));
     expect(filter).toBeLessThan(call.sql.lastIndexOf("LIMIT"));
     expect(call.params).toContainEqual(["scce.request_requirement_pattern.v1", "scce.creative_event_compatibility_model.v1"]);
+  });
+
+  it("filters historical construction bundles through the active source projection before row limits", async () => {
+    const { adapter, calls } = fixture();
+    await adapter.languageMemory.listLanguagePatterns({ profileId: "profile.owned", sourceSystem: "wikipedia", limit: 32 });
+    const call = calls[0]!;
+    const activeFilter = call.sql.indexOf("active_projection.value_json->'patternIds' ? pattern.id");
+    expect(activeFilter).toBeGreaterThanOrEqual(0);
+    expect(activeFilter).toBeLessThan(call.sql.indexOf("ranked_pool AS"));
+    expect(activeFilter).toBeLessThan(call.sql.lastIndexOf("LIMIT"));
+    expect(call.sql).toContain("pattern.pattern_json->>'schema' IS DISTINCT FROM");
+    expect(call.sql).toContain("active_projection.value_json->>'sourceSystem'=pattern.source_system");
+    expect(call.sql).toContain("active_projection.information_label->>'tenantId'");
+    expect(call.params).toContain(LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA);
+    expect(call.params).toContain(LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID);
+  });
+
+  it("atomically publishes active construction IDs, including an empty replacement, without deleting history", async () => {
+    const { adapter, calls } = fixture();
+    adapter.transaction = async operation => operation();
+    const informationLabel = { tenantId: "tenant.fixture", principals: ["principal.fixture"], compartments: [], exportClass: "restricted" as const, mergePolicy: "isolated" as const };
+    const previous = { id: "surface.construction.bundle.previous", profileId: "profile.owned", patternKind: "semantic_role" as const,
+      support: 1, entropy: 0, patternJson: { schema: LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, sourceSystem: "wikipedia" }, evidenceIds: [], updatedAt: 2, informationLabel };
+    const projection = { profileId: "profile.owned", sourceId: "source.owned" as never, sourceVersionId: "source-version.owned" as SourceVersionId,
+      sourceSystem: "wikipedia", patternSchema: LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, componentRecipe: LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID,
+      patternIds: [previous.id], informationLabel };
+    await adapter.languageMemory.replaceLanguagePatternProjection?.({ patterns: [previous], projection });
+    const patternWrite = calls.findIndex(call => call.sql.includes('INSERT INTO "fixture"."language_patterns"'));
+    const firstActiveWrite = calls.findIndex(call => call.sql.includes('INSERT INTO "fixture"."storage_meta"'));
+    expect(patternWrite).toBeGreaterThanOrEqual(0);
+    expect(firstActiveWrite).toBeGreaterThan(patternWrite);
+    expect(calls[firstActiveWrite]!.params[0]).toContain("source.owned");
+    expect(calls[firstActiveWrite]!.params[1]).toContain(previous.id);
+
+    const current = { ...previous, id: "surface.construction.bundle.current", updatedAt: 3 };
+    await adapter.languageMemory.replaceLanguagePatternProjection?.({ patterns: [current], projection: { ...projection, sourceVersionId: "source-version.current" as SourceVersionId, patternIds: [current.id] } });
+    const activeWrites = calls.filter(call => call.sql.includes('INSERT INTO "fixture"."storage_meta"'));
+    expect(activeWrites).toHaveLength(2);
+    expect(activeWrites[0]!.params[0]).toBe(activeWrites[1]!.params[0]);
+    expect(activeWrites[1]!.params[1]).toContain(current.id);
+    expect(activeWrites[1]!.params[1]).not.toContain(previous.id);
+    await adapter.languageMemory.replaceLanguagePatternProjection?.({ patterns: [current], projection: { ...projection,
+      sourceVersionId: "source-version.current" as SourceVersionId, patternIds: [current.id] } });
+    const replayWrites = calls.filter(call => call.sql.includes('INSERT INTO "fixture"."storage_meta"'));
+    expect(replayWrites).toHaveLength(3);
+    expect(replayWrites[2]!.params[0]).toBe(replayWrites[1]!.params[0]);
+    expect(replayWrites[2]!.params[1]).toBe(replayWrites[1]!.params[1]);
+    expect(replayWrites[2]!.sql).toContain("WHERE metadata.value_json IS DISTINCT FROM EXCLUDED.value_json");
+    const otherSource = { ...previous, id: "surface.construction.bundle.other-source" };
+    await adapter.languageMemory.replaceLanguagePatternProjection?.({ patterns: [otherSource], projection: { ...projection,
+      sourceId: "source.other" as never, sourceVersionId: "source-version.other" as SourceVersionId, patternIds: [otherSource.id] } });
+    const scopedWrites = calls.filter(call => call.sql.includes('INSERT INTO "fixture"."storage_meta"'));
+    expect(scopedWrites).toHaveLength(4);
+    expect(scopedWrites[3]!.params[0]).not.toBe(scopedWrites[1]!.params[0]);
+    expect(scopedWrites[3]!.params[1]).toContain(otherSource.id);
+    expect(calls.some(call => /DELETE FROM "fixture"\."language_patterns"/u.test(call.sql))).toBe(false);
+
+    calls.length = 0;
+    await adapter.languageMemory.replaceLanguagePatternProjection?.({ patterns: [], projection: { ...projection, sourceVersionId: "source-version.current" as SourceVersionId, patternIds: [] } });
+    const emptyManifest = calls.find(call => call.sql.includes('INSERT INTO "fixture"."storage_meta"'));
+    expect(emptyManifest?.params[1]).toContain('"patternIds":[]');
+    expect(calls.some(call => /DELETE FROM "fixture"\."language_patterns"/u.test(call.sql))).toBe(false);
   });
   it("filters plural profile ownership before unit and pattern limits", async () => {
     const { adapter, calls } = fixture();

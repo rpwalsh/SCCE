@@ -19,6 +19,8 @@ import {
   LANGUAGE_TRAINING_BATCH_RECIPE_ID,
   INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID,
   SOURCE_CONSTRUCTION_BINDINGS_COMPONENT_RECIPE_ID,
+  LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID,
+  LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA,
   sourceCodeFunctionConstructionId,
   createSourceAdmissionController,
   compileLanguageTrainingBatch,
@@ -64,6 +66,7 @@ import {
   type SourceTrust,
   type SourceVersion,
   type SourceVersionId,
+  type SourceId,
   type ContentHash,
   type IngestionCheckpoint,
   type SourceBoundLanguageConstructionTrainingSet,
@@ -236,6 +239,7 @@ interface PreparedLanguageCorpusPayload {
   relationObservations?: Awaited<ReturnType<NonNullable<ScceStorage["relationObservations"]>["list"]>>;
   sourceSystem: string;
   sourceSystemId: string;
+  sourceId: SourceId;
   sourceUri: string;
   namespace: string;
   sourceVersionId: SourceVersionId;
@@ -378,6 +382,7 @@ function corpusComponentRecipes(input: LanguageCorpusTrainingInput): Record<stri
   const hasGraphDependency = Boolean(input.graphSnapshotAdditions?.hyperedges.length || input.graphSnapshotSourceVersionIds?.length || graphProjectionEnabled);
   const components: Record<string, string> = naturalSource
     ? { inducedLanguageMemory: INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID,
+      sourceConstructionProjection: LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID,
       ...(hasGraphDependency ? { sourceConstructionBindings: SOURCE_CONSTRUCTION_BINDINGS_COMPONENT_RECIPE_ID } : {}) } : {};
   if (graphProjectionEnabled) {
     components.sourceEntityGraph = SOURCE_ENTITY_GRAPH_COMPONENT_RECIPE_ID;
@@ -1092,6 +1097,7 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
     projectedGraph: sourceProjection?.graph,
     relationObservations: sourceProjection?.observations,
     sourceSystemId,
+    sourceId,
     sourceUri,
     namespace,
     sourceVersionId,
@@ -1213,7 +1219,22 @@ async function commitLanguageCorpusTrainingInternal(input: LanguageCorpusTrainin
   else for (const model of prepared.models) await input.storage.languageMemory.putNgramModel(model);
   if (input.storage.languageMemory.putLanguageUnits) await input.storage.languageMemory.putLanguageUnits(prepared.units);
   else for (const unit of prepared.units) await input.storage.languageMemory.putLanguageUnit(unit);
-  if (input.storage.languageMemory.putLanguagePatterns) await input.storage.languageMemory.putLanguagePatterns(prepared.patterns);
+  const patternProjectionRecipe = corpusComponentRecipes(input).sourceConstructionProjection;
+  if (patternProjectionRecipe && input.storage.languageMemory.replaceLanguagePatternProjection) {
+    await input.storage.languageMemory.replaceLanguagePatternProjection({
+      patterns: prepared.patterns,
+      projection: {
+        profileId: String(prepared.profile.id),
+        sourceId: prepared.sourceId,
+        sourceVersionId: prepared.sourceVersionId,
+        sourceSystem: prepared.sourceSystem,
+        patternSchema: LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA,
+        componentRecipe: patternProjectionRecipe,
+        patternIds: prepared.patterns.filter(pattern => jsonRecord(pattern.patternJson).schema === LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA).map(pattern => pattern.id).sort(),
+        informationLabel: prepared.informationLabel
+      }
+    });
+  } else if (input.storage.languageMemory.putLanguagePatterns) await input.storage.languageMemory.putLanguagePatterns(prepared.patterns);
   else for (const pattern of prepared.patterns) await input.storage.languageMemory.putLanguagePattern(pattern);
   if (input.storage.languageMemory.putSemanticFrames) await input.storage.languageMemory.putSemanticFrames(prepared.frames);
   else for (const frame of prepared.frames) await input.storage.languageMemory.putSemanticFrame(frame);

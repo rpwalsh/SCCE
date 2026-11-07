@@ -894,6 +894,20 @@ export interface LanguageMemoryStore {
     compilerFingerprint: string;
     patterns: readonly LanguagePatternRecord[];
   }): Promise<void>;
+  /** Writes patterns and atomically publishes the active content-addressed projection for one source scope. */
+  replaceLanguagePatternProjection?(input: {
+    patterns: readonly LanguagePatternRecord[];
+    projection: {
+      profileId: string;
+      sourceId: SourceId;
+      sourceVersionId: SourceVersionId;
+      sourceSystem: string;
+      patternSchema: string;
+      componentRecipe: string;
+      patternIds: readonly string[];
+      informationLabel: InformationLabel;
+    };
+  }): Promise<void>;
   putSemanticFrame(frame: SemanticFrameRecord): Promise<void>;
   putSemanticFrames?(frames: readonly SemanticFrameRecord[]): Promise<void>;
   putTranslationAlignment(alignment: TranslationAlignmentRecord): Promise<void>;

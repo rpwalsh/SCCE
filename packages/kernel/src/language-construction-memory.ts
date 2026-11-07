@@ -19,6 +19,7 @@ import type { EvidenceSpan, Hasher, JsonValue } from "./types.js";
 export const LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA = "scce.language_construction_pattern.v1" as const;
 export const SOURCE_EXAMPLE_CONSTRUCTION_STORAGE = "scce.language_construction.source_examples.v1" as const;
 export const SOURCE_CONSTRUCTION_BINDINGS_COMPONENT_RECIPE_ID = "kernel.source_construction_graph_bindings.v1" as const;
+export const LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID = "kernel.language_construction_active_projection.v1" as const;
 export const SOURCE_CONSTRUCTION_PREDICATE_SLOT_INDEX = 1 as const;
 export const OBSOLETE_CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA_V2 = "scce.creative_event_construction_pattern.v2" as const;
 export const CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA = "scce.creative_event_construction_pattern.v3" as const;
