@@ -12,9 +12,41 @@ import { deriveTurnRequirementField, requestSubjectSegments } from "../turn-requ
 import { extendedGenerationDecision } from "../extended-generation-turn.js";
 import { createHasher } from "../primitives.js";
 import { requestScaffoldingConstructions } from "../closed-class-words.js";
+import { REQUESTED_AUTHORITY_IDS } from "../request-authority.js";
 import type { EvidenceId, JsonValue, SourceVersionId } from "../types.js";
 
 describe("source-backed response-form learning", () => {
+  it.each(REQUESTED_AUTHORITY_IDS)("preserves paired span roles through durable hydration and compiler replacement for %s", authority => {
+    const compiled = compileRequestRequirementCorpus({
+      corpus: { schema: REQUEST_REQUIREMENT_CORPUS_SCHEMA, language: "und", examples: ["toma", "ravi", "toma", "ravi"].map(subject => ({
+        text: `nava sula ${subject}`, responseText: `${subject} miri.`, authority
+      })) },
+      profileId: "profile.roles", sourceVersionId: "source-version.roles" as SourceVersionId,
+      evidenceIds: ["evidence.roles" as EvidenceId], sourceSystem: "dialogue", updatedAt: 1,
+      makeId: value => `pattern.${createHasher().digestHex(JSON.stringify(value))}`
+    });
+    const durable = JSON.parse(JSON.stringify(compiled.patterns)) as typeof compiled.patterns;
+    const stale = durable.map(pattern => ({ ...pattern, id: `${pattern.id}.stale`, patternJson: {
+      ...(pattern.patternJson as Record<string, JsonValue>), compilerFingerprint: "previous.compiler"
+    } }));
+    const runtime = createLanguageMemoryRuntime();
+    for (const patterns of [durable, stale, [...stale, ...durable]]) {
+      const hydrated = runtime.hydrate({ models: [], patterns });
+      expect(hydrated.importedPatterns).toHaveLength(durable.length);
+      for (const original of durable) {
+        const expected = original.patternJson as Record<string, JsonValue>;
+        const actual = hydrated.importedPatterns.find(pattern => (pattern.patternJson as Record<string, JsonValue>).learnedFrameOrPatternId === expected.learnedFrameOrPatternId)!;
+        for (const key of ["requestSpanRole", "responseMatchRate", "responseMatchCut", "pairedExamples"]) {
+          expect((actual.patternJson as Record<string, JsonValue>)[key]).toEqual(expected[key]);
+        }
+      }
+      const field = deriveTurnRequirementField({ requestText: "nava sula toma", languageMemoryState: hydrated });
+      expect(requestSubjectSegments("nava sula toma", field)).toEqual(["toma"]);
+      expect(requestScaffoldingConstructions(hydrated.importedPatterns, authority).flatMap(row => row.parts.map(part => part.surface))).not.toContain("toma");
+      expect(hydrated.requestRequirementHydration?.droppedStaleCompiler).toBe(0);
+    }
+  });
+
   it.each([
     ["Who was ", ["Mira", "Vela", "Sora", "Mira"], " was an explorer."],
     ["ποιος ήταν ", ["Μίρα", "Βέλα", "Σόρα", "Μίρα"], " ήταν εξερευνητής."]
