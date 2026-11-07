@@ -4,6 +4,7 @@ import { runProcess } from '../lib/run.js';
 import { limitLength } from '../lib/limit.js';
 import { resolveRepositoryRoot } from '../lib/repoRoot.js';
 import { handleSourceNavigation } from '../lib/sourceNavigation.js';
+import { COMMAND_REGISTRY } from '../lib/commands.js';
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { extname, join } from 'node:path';
 
@@ -25,7 +26,11 @@ export async function handleRepoShape(): Promise<string> {
 
   try {
     const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as Record<string, unknown>;
-    result.scripts = (pkg.scripts as Record<string, string>) ?? {};
+    const scripts = (pkg.scripts as Record<string, string>) ?? {};
+    result.scripts = Object.fromEntries([...new Set(Object.values(COMMAND_REGISTRY).map(command => command.args[0]!))]
+      .filter(name => Object.hasOwn(scripts, name)).map(name => [name, scripts[name]]));
+    result.scriptCount = Object.keys(scripts).length;
+    result.allScripts = { tool: 'repo_read', arguments: { path: 'package.json', startLine: 1, endLine: 110 } };
   } catch {}
 
   try {

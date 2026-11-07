@@ -4,6 +4,7 @@ import type { AlignmentCalibrationObservation, AlignmentPromotionObservation, Gr
 import { ingestStageTracer } from "./ingest-stage-trace-sink.js";
 import { blobContentHash } from "./postgres.js";
 import { prepareCorpusSourceGraphProjection, SOURCE_ENTITY_GRAPH_COMPONENT_RECIPE_ID } from "./corpus-source-graph-projection.js";
+import { SOURCE_CODE_FUNCTION_COMPILER_RECIPE_ID } from "./source-code-function-learning.js";
 import {
   createClock,
   canonicalStringify,
@@ -393,6 +394,7 @@ function corpusComponentRecipes(input: LanguageCorpusTrainingInput): Record<stri
   if (!input.languageOnly && needsConstructionContext(input)) components.constructionContext = SOURCE_CONSTRUCTION_CONTEXT_RECIPE_ID;
   if (canonicalCorpusSourceSystemId(input.sourceSystem) === CORPUS_SOURCE_SYSTEM_IDS.ossCode) {
     components.sourceCodeFunctions = SOURCE_CODE_FUNCTION_PROJECTION_RECIPE_ID;
+    components.sourceCodeFunctionCompiler = SOURCE_CODE_FUNCTION_COMPILER_RECIPE_ID;
   }
   if (graphProjectionEnabled) {
     components.sourceEntityGraph = SOURCE_ENTITY_GRAPH_COMPONENT_RECIPE_ID;
