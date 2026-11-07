@@ -24,7 +24,7 @@ export const REQUEST_REQUIREMENT_PATTERN_SCHEMA = "scce.request_requirement_patt
  * so a recompile cannot leave an earlier semantic shape active.
  */
 export const REQUEST_REQUIREMENT_PATTERN_COMPILER_FINGERPRINT =
-  "scce.request_requirement_pattern.class_conditional.v3";
+  "scce.request_requirement_pattern.source_background.v4";
 
 export interface RequestRequirementCorpusExample {
   text: string;
@@ -250,6 +250,7 @@ export function compileRequestRequirementCorpus(
     otsuThreshold([...featureCounts.values()]
       .filter(counts => counts.pairedExamples[authority] > 0)
       .map(counts => counts.responseMatches[authority] / counts.pairedExamples[authority]))] as const));
+  const sourceAuthorityBackground = authorityPrototypeBackground(classTotals);
   const patterns = [...featureCounts.values()].flatMap(counts => {
     const calibration = classConditionalAuthority(counts.byAuthority, classTotals);
     if (!calibration) return [];
@@ -268,7 +269,7 @@ export function compileRequestRequirementCorpus(
       const bounds = counts.requirementTargetBounds[dimension]!;
       requirementTargets[dimension] = Math.max(bounds.lower, Math.min(bounds.upper, counts.requirementTargetTotals[dimension]! / targetCount));
     }
-    const requirementCoefficients = requirementCoefficientsFromAuthorityMass(authorityProbabilities, 1, reliability, requirementTargets);
+    const requirementCoefficients = requirementCoefficientsFromAuthorityMass(authorityProbabilities, reliability, requirementTargets, sourceAuthorityBackground);
     const responseForm = compiledResponseForm(counts, input.corpus.responseFormProfiles);
     const patternJson = toJsonValue({
       schema: REQUEST_REQUIREMENT_PATTERN_SCHEMA,
@@ -290,6 +291,7 @@ export function compileRequestRequirementCorpus(
       requirementTargetBounds: counts.requirementTargetBounds,
       authorityMass: counts.byAuthority,
       sourceClassTotals: classTotals,
+      sourceAuthorityBackground,
       authorityProbabilities,
       selectedAuthority: winner.authority,
       posterior,
@@ -345,6 +347,7 @@ export function compileRequestRequirementCorpus(
       featureCandidates: featureCounts.size,
       learnedPatterns: patterns.length,
       classTotals,
+      sourceAuthorityBackground,
       responseFormTotals: responseFormRecord(input.corpus.examples),
       responseFormAnnotatedExamples: input.corpus.examples.filter(example => example.responseFormId).length,
       responseFormProfileIds: (input.corpus.responseFormProfiles ?? []).map(profile => profile.id),
@@ -381,7 +384,7 @@ export function reconcileRequestRequirementPatterns(
 ): { patterns: LanguagePatternRecord[]; report: RequestRequirementHydrationReport } {
   const currentIdentities = new Set<string>();
   for (const pattern of patterns) {
-    if (isRequestRequirementPattern(pattern) && jsonRecord(pattern.patternJson).compilerFingerprint === REQUEST_REQUIREMENT_PATTERN_COMPILER_FINGERPRINT) {
+    if (isRequestRequirementPattern(pattern) && hasCurrentRequestRequirementCalibration(pattern)) {
       currentIdentities.add(requestRequirementPatternIdentity(pattern));
     }
   }
@@ -400,7 +403,7 @@ export function reconcileRequestRequirementPatterns(
       out.push(pattern);
       continue;
     }
-    if (jsonRecord(pattern.patternJson).compilerFingerprint === REQUEST_REQUIREMENT_PATTERN_COMPILER_FINGERPRINT) {
+    if (hasCurrentRequestRequirementCalibration(pattern)) {
       report.current += 1;
       out.push(pattern);
       continue;
@@ -423,6 +426,17 @@ export function reconcileRequestRequirementPatterns(
     ? "inert_stale_compiler"
     : report.current + report.recompiled > 0 ? "active" : "inert_unconfigured";
   return { patterns: out, report };
+}
+
+function hasCurrentRequestRequirementCalibration(pattern: LanguagePatternRecord): boolean {
+  const record = jsonRecord(pattern.patternJson);
+  if (record.compilerFingerprint !== REQUEST_REQUIREMENT_PATTERN_COMPILER_FINGERPRINT) return false;
+  const mass = readAuthorityCounts(record.authorityMass);
+  const totals = readAuthorityCounts(record.sourceClassTotals);
+  const background = record.sourceAuthorityBackground;
+  return Boolean(mass && totals && classConditionalAuthority(mass, totals)
+    && isRecord(background) && Object.keys(background).length > 0
+    && Object.values(background).every(value => typeof value === "number" && Number.isFinite(value)));
 }
 
 export function recompileRequestRequirementPattern(pattern: LanguagePatternRecord): LanguagePatternRecord | undefined {
@@ -457,7 +471,8 @@ export function recompileRequestRequirementPattern(pattern: LanguagePatternRecor
   const carriedCoefficients = isRecord(record.requirementCoefficients) ? requirementVector(record.requirementCoefficients) : {};
   if (!Object.keys(carriedCoefficients).length && !Object.keys(requirementTargets).length) return undefined;
   const reliability = patternReliability(posterior, margin, mass[winner.authority]);
-  const requirementCoefficients = requirementCoefficientsFromAuthorityMass(authorityProbabilities, 1, reliability, requirementTargets);
+  const sourceAuthorityBackground = authorityPrototypeBackground(sourceClassTotals);
+  const requirementCoefficients = requirementCoefficientsFromAuthorityMass(authorityProbabilities, reliability, requirementTargets, sourceAuthorityBackground);
   const patternJson = toJsonValue({
     ...record,
     schema: REQUEST_REQUIREMENT_PATTERN_SCHEMA,
@@ -472,6 +487,7 @@ export function recompileRequestRequirementPattern(pattern: LanguagePatternRecor
     requirementTargetBounds,
     authorityMass: mass,
     sourceClassTotals,
+    sourceAuthorityBackground,
     authorityProbabilities,
     selectedAuthority: winner.authority,
     posterior,
@@ -537,25 +553,35 @@ function patternReliability(posterior: number, margin: number, winnerCount: numb
   return clamp01(0.45 * posterior + 0.35 * margin + 0.20 * Math.min(1, winnerCount / 8));
 }
 
+function authorityPrototypeBackground(
+  sourceClassTotals: Record<RequestedAuthority, number>
+): Partial<Record<TurnRequirementDimension, number>> {
+  const sourceClasses = REQUESTED_AUTHORITY_IDS.filter(authority => sourceClassTotals[authority] > 0);
+  const prototypes = sourceClasses.map(authority => authorityRequirementCoefficients(authority));
+  const background: Partial<Record<TurnRequirementDimension, number>> = {};
+  for (const dimension of TURN_REQUIREMENT_DIMENSIONS) {
+    if (!prototypes.some(prototype => prototype[dimension] !== undefined)) continue;
+    background[dimension] = prototypes.reduce((sum, prototype) => sum + (prototype[dimension] ?? 0), 0) / sourceClasses.length;
+  }
+  return background;
+}
+
 function requirementCoefficientsFromAuthorityMass(
-  mass: Record<RequestedAuthority, number>,
-  examples: number,
+  probabilities: Record<RequestedAuthority, number>,
   reliability: number,
-  requirementTargets: Partial<Record<TurnRequirementDimension, number>>
+  requirementTargets: Partial<Record<TurnRequirementDimension, number>>,
+  sourceAuthorityBackground: Partial<Record<TurnRequirementDimension, number>>
 ): Partial<Record<TurnRequirementDimension, number>> {
   const activationScale = 0.72 + 0.58 * reliability;
   const out: Partial<Record<TurnRequirementDimension, number>> = {};
   for (const dimension of TURN_REQUIREMENT_DIMENSIONS) {
     if (requirementTargets[dimension] !== undefined) continue;
-    let total: number | undefined;
-    for (const authority of REQUESTED_AUTHORITY_IDS) {
-      const count = mass[authority];
-      if (count <= 0) continue;
-      const value = authorityRequirementCoefficients(authority)[dimension];
-      if (value === undefined || !Number.isFinite(value)) continue;
-      total = (total ?? 0) + count * value;
-    }
-    if (total !== undefined) out[dimension] = (total / Math.max(1, examples)) * activationScale;
+    const background = sourceAuthorityBackground[dimension];
+    if (background === undefined) continue;
+    const expected = REQUESTED_AUTHORITY_IDS.reduce((sum, authority) => sum
+      + probabilities[authority] * (authorityRequirementCoefficients(authority)[dimension] ?? 0), 0);
+    // Shared prototype components describe the source population, not feature-specific evidence.
+    out[dimension] = (expected - background) * activationScale;
   }
   return out;
 }

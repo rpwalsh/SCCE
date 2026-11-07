@@ -1,0 +1,2147 @@
+{
+  "schema": "scce.request_authority.source_snapshot.v1",
+  "sourceMetadata": {
+    "dataset": "databricks/databricks-dolly-15k",
+    "uri": "https://huggingface.co/datasets/databricks/databricks-dolly-15k/tree/bdd27f4d94b9c1f951818a7da7fd7aeea5dbff1a",
+    "pinnedRevision": "bdd27f4d94b9c1f951818a7da7fd7aeea5dbff1a",
+    "license": "CC-BY-SA-3.0",
+    "attribution": "Databricks, Inc. (2023); instruction records were authored by Databricks employees. Some source contexts are Wikipedia excerpts as documented by the dataset card.",
+    "shareAlikeNotice": "This preparation is adapted from material licensed CC BY-SA 3.0. Retain attribution and license notices; distribute adaptations under the same license.",
+    "changeNotice": "Instructions and responses are represented as NFC-normalized speech turns; source context is retained only through non-speech supportingSourceRanges. The source category is mapped explicitly to commitmentScope and requestAuthority and copied as sourceCategory on each pair of turns; no scope or authority is inferred from prompt wording."
+  },
+  "sourceExampleCount": 1076,
+  "selection": "All compiled n-grams matching the listed held request probes",
+  "requests": [
+    "Write a short scene about a sailor who befriends a clockmaker.",
+    "Write a short story about a gardener who discovers a hidden city.",
+    "Write a poem about the moon over a harbor.",
+    "Invent a character who lives in a forest.",
+    "What does the White Rabbit carry?",
+    "Who was Ada Lovelace?",
+    "What is Rust used for?",
+    "Write a TypeScript function named chunk() that splits an array."
+  ],
+  "patterns": [
+    {
+      "id": "8a90a323b5591793878288b0748e3f343aadd0a716b28a243d4583318f9c4ee7",
+      "profileId": "source.dolly",
+      "patternKind": "semantic_role",
+      "support": 0.918521394526857,
+      "entropy": 0.31569495497213645,
+      "patternJson": {
+        "anchor": "any",
+        "authorityMass": {
+          "action": 0,
+          "creative": 21,
+          "factual": 317,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 0.25303914743212125,
+          "factual": 0.7469608525678787,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.class_conditional.v3",
+        "exampleSupport": 338,
+        "learnedFrameOrPatternId": "any:is",
+        "margin": 0.49392170513575745,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 317,
+        "posterior": 0.7469608525678787,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "control",
+        "requirementCoefficients": {
+          "actionCommitment": -2.3741928849369334,
+          "counterfactualDemand": 0.25761930777263703,
+          "executableArtifactDemand": -2.543188727608902,
+          "externalTruthAuthority": 2.7419296802435666,
+          "inferentialDepth": -0.3324909603243601,
+          "noveltyDemand": -1.498959683969409,
+          "sourceDependence": 2.1531945934014645,
+          "uncertaintyTolerance": -0.4414877054259539
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 0.5,
+        "responseMatchRate": 0,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "factual",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 176,
+          "factual": 900,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "dialogue",
+        "sourceVersionId": "source.dolly",
+        "surface": "is"
+      },
+      "evidenceIds": [
+        "source.dolly.evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "7b74f616bd3ea937c5a25e3193cf7fc572a0d3ffd0a1a80bfacf7bbae55a5174",
+      "profileId": "source.dolly",
+      "patternKind": "semantic_role",
+      "support": 0.9172727272727272,
+      "entropy": 0,
+      "patternJson": {
+        "anchor": "start",
+        "authorityMass": {
+          "action": 0,
+          "creative": 18,
+          "factual": 0,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 1,
+          "factual": 0,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.class_conditional.v3",
+        "exampleSupport": 18,
+        "learnedFrameOrPatternId": "start:write",
+        "margin": 1,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 18,
+        "posterior": 1,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "control",
+        "requirementCoefficients": {
+          "actionCommitment": -2.34,
+          "counterfactualDemand": 1.17,
+          "executableArtifactDemand": -2.34,
+          "externalTruthAuthority": -5.199999999999999,
+          "inferentialDepth": 1.5599999999999998,
+          "noveltyDemand": 6.239999999999999,
+          "sourceDependence": -4.419999999999999,
+          "uncertaintyTolerance": 2.5999999999999996
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 0.5,
+        "responseMatchRate": 0,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "creative",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 176,
+          "factual": 900,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "dialogue",
+        "sourceVersionId": "source.dolly",
+        "surface": "write"
+      },
+      "evidenceIds": [
+        "source.dolly.evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "fcbc1b78533f8b010c89b55eadc51b4f5b090f5b9e6bcf62ae0d53d18bf79a27",
+      "profileId": "source.dolly",
+      "patternKind": "semantic_role",
+      "support": 0.9108098892258184,
+      "entropy": 0.07510856801152017,
+      "patternJson": {
+        "anchor": "any",
+        "authorityMass": {
+          "action": 0,
+          "creative": 19,
+          "factual": 3,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 0.9700476514635807,
+          "factual": 0.029952348536419336,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.class_conditional.v3",
+        "exampleSupport": 22,
+        "learnedFrameOrPatternId": "any:write",
+        "margin": 0.9400953029271614,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 19,
+        "posterior": 0.9700476514635807,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "control",
+        "requirementCoefficients": {
+          "actionCommitment": -2.3193750737849297,
+          "counterfactualDemand": 1.11751391243864,
+          "executableArtifactDemand": -2.3270430055038065,
+          "externalTruthAuthority": -4.790366070193113,
+          "inferentialDepth": 1.4593468230426778,
+          "noveltyDemand": 5.829719360451834,
+          "sourceDependence": -4.079862487968967,
+          "uncertaintyTolerance": 2.4373566595503813
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 0.5,
+        "responseMatchRate": 0,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "creative",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 176,
+          "factual": 900,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "dialogue",
+        "sourceVersionId": "source.dolly",
+        "surface": "write"
+      },
+      "evidenceIds": [
+        "source.dolly.evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "e8980bd9fc6c0b038ee2acf757ccbe0dfd85256f27afc38002dc93e1e3862079",
+      "profileId": "source.dolly",
+      "patternKind": "semantic_role",
+      "support": 0.909159908702987,
+      "entropy": 0.2800154109800586,
+      "patternJson": {
+        "anchor": "any",
+        "authorityMass": {
+          "action": 0,
+          "creative": 9,
+          "factual": 183,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 0.20095266448347726,
+          "factual": 0.7990473355165228,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.class_conditional.v3",
+        "exampleSupport": 192,
+        "learnedFrameOrPatternId": "any:what is",
+        "margin": 0.5980946710330456,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 183,
+        "posterior": 0.7990473355165228,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "control",
+        "requirementCoefficients": {
+          "actionCommitment": -2.471400585098788,
+          "counterfactualDemand": 0.21087331883585408,
+          "executableArtifactDemand": -2.6577327621376137,
+          "externalTruthAuthority": 3.348425321511411,
+          "inferentialDepth": -0.4641642830408297,
+          "noveltyDemand": -2.0429893092021443,
+          "sourceDependence": 2.650512737393933,
+          "uncertaintyTolerance": -0.6493856870421658
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 0.5,
+        "responseMatchRate": 0,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "factual",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 176,
+          "factual": 900,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "dialogue",
+        "sourceVersionId": "source.dolly",
+        "surface": "what is"
+      },
+      "evidenceIds": [
+        "source.dolly.evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "5035e8a6ce308d5690cdf42087bb109ca137c8edd8f736a0dc62a5033bf9b47f",
+      "profileId": "source.dolly",
+      "patternKind": "semantic_role",
+      "support": 0.903,
+      "entropy": 0.34151524532864624,
+      "patternJson": {
+        "anchor": "any",
+        "authorityMass": {
+          "action": 0,
+          "creative": 88,
+          "factual": 194,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 0.6987577639751553,
+          "factual": 0.30124223602484473,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.class_conditional.v3",
+        "exampleSupport": 282,
+        "learnedFrameOrPatternId": "any:a",
+        "margin": 0.3975155279503106,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 88,
+        "posterior": 0.6987577639751553,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "control",
+        "requirementCoefficients": {
+          "actionCommitment": -2.1107632653061223,
+          "counterfactualDemand": 0.6911862244897959,
+          "executableArtifactDemand": -2.176980612244898,
+          "externalTruthAuthority": -1.5489397959183675,
+          "inferentialDepth": 0.6567122448979592,
+          "noveltyDemand": 2.5606316326530614,
+          "sourceDependence": -1.3861270408163264,
+          "uncertaintyTolerance": 1.138665306122449
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 0.5,
+        "responseMatchRate": 0,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "creative",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 176,
+          "factual": 900,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "dialogue",
+        "sourceVersionId": "source.dolly",
+        "surface": "a"
+      },
+      "evidenceIds": [
+        "source.dolly.evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "cac20fca6d192dbf38559b608fc8e23cfa3a40afdeaf4220d113ddecdbe0324f",
+      "profileId": "source.dolly",
+      "patternKind": "semantic_role",
+      "support": 0.9013636363636364,
+      "entropy": 0,
+      "patternJson": {
+        "anchor": "start",
+        "authorityMass": {
+          "action": 0,
+          "creative": 13,
+          "factual": 0,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 1,
+          "factual": 0,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.class_conditional.v3",
+        "exampleSupport": 13,
+        "learnedFrameOrPatternId": "start:write a",
+        "margin": 1,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 13,
+        "posterior": 1,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "control",
+        "requirementCoefficients": {
+          "actionCommitment": -2.34,
+          "counterfactualDemand": 1.17,
+          "executableArtifactDemand": -2.34,
+          "externalTruthAuthority": -5.199999999999999,
+          "inferentialDepth": 1.5599999999999998,
+          "noveltyDemand": 6.239999999999999,
+          "sourceDependence": -4.419999999999999,
+          "uncertaintyTolerance": 2.5999999999999996
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 0.5,
+        "responseMatchRate": 0,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "creative",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 176,
+          "factual": 900,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "dialogue",
+        "sourceVersionId": "source.dolly",
+        "surface": "write a"
+      },
+      "evidenceIds": [
+        "source.dolly.evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "1e5e97bf5af25e149ae63f87d6e04ceee7892602224b705744eaf9187c47a6d5",
+      "profileId": "source.dolly",
+      "patternKind": "semantic_role",
+      "support": 0.9004444444444444,
+      "entropy": 0,
+      "patternJson": {
+        "anchor": "any",
+        "authorityMass": {
+          "action": 0,
+          "creative": 0,
+          "factual": 65,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 0,
+          "factual": 1,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.class_conditional.v3",
+        "exampleSupport": 65,
+        "learnedFrameOrPatternId": "any:was",
+        "margin": 1,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 65,
+        "posterior": 1,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "content",
+        "requirementCoefficients": {
+          "actionCommitment": -2.86,
+          "executableArtifactDemand": -3.1199999999999997,
+          "externalTruthAuthority": 5.979999999999999,
+          "inferentialDepth": -1.0399999999999998,
+          "noveltyDemand": -4.419999999999999,
+          "sourceDependence": 4.81,
+          "uncertaintyTolerance": -1.5599999999999998
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 0.5,
+        "responseMatchRate": 0.6461538461538462,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "factual",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 176,
+          "factual": 900,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "dialogue",
+        "sourceVersionId": "source.dolly",
+        "surface": "was"
+      },
+      "evidenceIds": [
+        "source.dolly.evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "ab4fae504d231ea50915d4c970bf6caebb5b75481e6f0835c6d7b76e6818605d",
+      "profileId": "source.dolly",
+      "patternKind": "semantic_role",
+      "support": 0.8981153628652214,
+      "entropy": 0.2883638321288972,
+      "patternJson": {
+        "anchor": "start",
+        "authorityMass": {
+          "action": 0,
+          "creative": 9,
+          "factual": 171,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 0.21206409048067862,
+          "factual": 0.7879359095193214,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.class_conditional.v3",
+        "exampleSupport": 180,
+        "learnedFrameOrPatternId": "start:what is",
+        "margin": 0.5758718190386427,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 171,
+        "posterior": 0.7879359095193214,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "control",
+        "requirementCoefficients": {
+          "actionCommitment": -2.450542136994868,
+          "counterfactualDemand": 0.22111878742601407,
+          "executableArtifactDemand": -2.6331152790078534,
+          "externalTruthAuthority": 3.2164320999608242,
+          "inferentialDepth": -0.4354675181505897,
+          "noveltyDemand": -1.9244432146153438,
+          "sourceDependence": 2.5422654858530667,
+          "uncertaintyTolerance": -0.6040637689089923
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 0.5,
+        "responseMatchRate": 0,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "factual",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 176,
+          "factual": 900,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "dialogue",
+        "sourceVersionId": "source.dolly",
+        "surface": "what is"
+      },
+      "evidenceIds": [
+        "source.dolly.evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "6dfa87037772da30c011452bab9f6b4d290fcdafd3345f4835c5f73525977b1b",
+      "profileId": "source.dolly",
+      "patternKind": "semantic_role",
+      "support": 0.89579437363131,
+      "entropy": 0.0696459593801477,
+      "patternJson": {
+        "anchor": "any",
+        "authorityMass": {
+          "action": 0,
+          "creative": 14,
+          "factual": 2,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 0.9728227300802965,
+          "factual": 0.027177269919703522,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.class_conditional.v3",
+        "exampleSupport": 16,
+        "learnedFrameOrPatternId": "any:write a",
+        "margin": 0.945645460160593,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 14,
+        "posterior": 0.9728227300802965,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "control",
+        "requirementCoefficients": {
+          "actionCommitment": -2.321306090545373,
+          "counterfactualDemand": 1.122331463042522,
+          "executableArtifactDemand": -2.328273650950857,
+          "externalTruthAuthority": -4.8278859464184,
+          "inferentialDepth": 1.4685717091014248,
+          "noveltyDemand": 5.867319276000214,
+          "sourceDependence": -4.111018992881398,
+          "uncertaintyTolerance": 2.4522645554393643
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 0.5,
+        "responseMatchRate": 0,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "creative",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 176,
+          "factual": 900,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "dialogue",
+        "sourceVersionId": "source.dolly",
+        "surface": "write a"
+      },
+      "evidenceIds": [
+        "source.dolly.evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "ea35ea5ce0a859e48b75be87a81d4cdda80476ea84a6341f0f970a3cbb6428a3",
+      "profileId": "source.dolly",
+      "patternKind": "semantic_role",
+      "support": 0.8743111111111111,
+      "entropy": 0,
+      "patternJson": {
+        "anchor": "any",
+        "authorityMass": {
+          "action": 0,
+          "creative": 0,
+          "factual": 23,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 0,
+          "factual": 1,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.class_conditional.v3",
+        "exampleSupport": 23,
+        "learnedFrameOrPatternId": "any:about the",
+        "margin": 1,
+        "matchMode": "unicode_token_ngram",
+        "posterior": 1,
+        "provenanceClass": "learned_language_prior",
+        "requirementCoefficients": {
+          "actionCommitment": -2.86,
+          "executableArtifactDemand": -3.1199999999999997,
+          "externalTruthAuthority": 5.979999999999999,
+          "inferentialDepth": -1.0399999999999998,
+          "noveltyDemand": -4.419999999999999,
+          "sourceDependence": 4.81,
+          "uncertaintyTolerance": -1.5599999999999998
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "factual",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 176,
+          "factual": 900,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "dialogue",
+        "sourceVersionId": "source.dolly",
+        "surface": "about the"
+      },
+      "evidenceIds": [
+        "source.dolly.evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "da3c5b91c1193edf794e4181b9d71c2ff18675dbb1ff8ea220f73da0a11b883e",
+      "profileId": "source.dolly",
+      "patternKind": "semantic_role",
+      "support": 0.8693333333333333,
+      "entropy": 0,
+      "patternJson": {
+        "anchor": "any",
+        "authorityMass": {
+          "action": 0,
+          "creative": 0,
+          "factual": 15,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 0,
+          "factual": 1,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.class_conditional.v3",
+        "exampleSupport": 15,
+        "learnedFrameOrPatternId": "any:who was",
+        "margin": 1,
+        "matchMode": "unicode_token_ngram",
+        "posterior": 1,
+        "provenanceClass": "learned_language_prior",
+        "requirementCoefficients": {
+          "actionCommitment": -2.86,
+          "executableArtifactDemand": -3.1199999999999997,
+          "externalTruthAuthority": 5.979999999999999,
+          "inferentialDepth": -1.0399999999999998,
+          "noveltyDemand": -4.419999999999999,
+          "sourceDependence": 4.81,
+          "uncertaintyTolerance": -1.5599999999999998
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "factual",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 176,
+          "factual": 900,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "dialogue",
+        "sourceVersionId": "source.dolly",
+        "surface": "who was"
+      },
+      "evidenceIds": [
+        "source.dolly.evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "e304f446abebc52005045ab4570b8986ece924f86f167302485328e72c704518",
+      "profileId": "source.dolly",
+      "patternKind": "semantic_role",
+      "support": 0.8680888888888889,
+      "entropy": 0,
+      "patternJson": {
+        "anchor": "start",
+        "authorityMass": {
+          "action": 0,
+          "creative": 0,
+          "factual": 13,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 0,
+          "factual": 1,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.class_conditional.v3",
+        "exampleSupport": 13,
+        "learnedFrameOrPatternId": "start:who was",
+        "margin": 1,
+        "matchMode": "unicode_token_ngram",
+        "posterior": 1,
+        "provenanceClass": "learned_language_prior",
+        "requirementCoefficients": {
+          "actionCommitment": -2.86,
+          "executableArtifactDemand": -3.1199999999999997,
+          "externalTruthAuthority": 5.979999999999999,
+          "inferentialDepth": -1.0399999999999998,
+          "noveltyDemand": -4.419999999999999,
+          "sourceDependence": 4.81,
+          "uncertaintyTolerance": -1.5599999999999998
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "factual",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 176,
+          "factual": 900,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "dialogue",
+        "sourceVersionId": "source.dolly",
+        "surface": "who was"
+      },
+      "evidenceIds": [
+        "source.dolly.evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "1c76bb3608a2876ba7d28f909d297ac3b5486ce48f4aeea12b2b1ae4bd9f2818",
+      "profileId": "source.dolly",
+      "patternKind": "semantic_role",
+      "support": 0.8656,
+      "entropy": 0,
+      "patternJson": {
+        "anchor": "any",
+        "authorityMass": {
+          "action": 0,
+          "creative": 0,
+          "factual": 9,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 0,
+          "factual": 1,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.class_conditional.v3",
+        "exampleSupport": 9,
+        "learnedFrameOrPatternId": "any:used",
+        "margin": 1,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 9,
+        "posterior": 1,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "content",
+        "requirementCoefficients": {
+          "actionCommitment": -2.86,
+          "executableArtifactDemand": -3.1199999999999997,
+          "externalTruthAuthority": 5.979999999999999,
+          "inferentialDepth": -1.0399999999999998,
+          "noveltyDemand": -4.419999999999999,
+          "sourceDependence": 4.81,
+          "uncertaintyTolerance": -1.5599999999999998
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 0.5,
+        "responseMatchRate": 0.5555555555555556,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "factual",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 176,
+          "factual": 900,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "dialogue",
+        "sourceVersionId": "source.dolly",
+        "surface": "used"
+      },
+      "evidenceIds": [
+        "source.dolly.evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "c51b9748f47dea0f8f6c218912bc6a9f5d0d55e918405a4547890cc8b2c4b54a",
+      "profileId": "source.dolly",
+      "patternKind": "semantic_role",
+      "support": 0.8549273509847397,
+      "entropy": 0.0782119024203073,
+      "patternJson": {
+        "anchor": "any",
+        "authorityMass": {
+          "action": 0,
+          "creative": 6,
+          "factual": 1,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 0.9684361549497847,
+          "factual": 0.03156384505021521,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.class_conditional.v3",
+        "exampleSupport": 7,
+        "learnedFrameOrPatternId": "any:short",
+        "margin": 0.9368723098995695,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 6,
+        "posterior": 0.9684361549497847,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "control",
+        "requirementCoefficients": {
+          "actionCommitment": -2.2656856999355712,
+          "counterfactualDemand": 1.0894444061349213,
+          "executableArtifactDemand": -2.273576326087001,
+          "externalTruthAuthority": -4.66049073689454,
+          "inferentialDepth": 1.4210300369075088,
+          "noveltyDemand": 5.676229521478605,
+          "sourceDependence": -3.9697022838193607,
+          "uncertaintyTolerance": 2.3736438122801347
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 0.5,
+        "responseMatchRate": 0.16666666666666666,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "creative",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 176,
+          "factual": 900,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "dialogue",
+        "sourceVersionId": "source.dolly",
+        "surface": "short"
+      },
+      "evidenceIds": [
+        "source.dolly.evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "e694d49edf7b3125cc4c7b7c9d61322c520822430eb2df1ed37c50b6d590a622",
+      "profileId": "source.dolly",
+      "patternKind": "semantic_role",
+      "support": 0.8497333333333335,
+      "entropy": 0,
+      "patternJson": {
+        "anchor": "end",
+        "authorityMass": {
+          "action": 0,
+          "creative": 0,
+          "factual": 6,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 0,
+          "factual": 1,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.class_conditional.v3",
+        "exampleSupport": 6,
+        "learnedFrameOrPatternId": "end:for",
+        "margin": 1,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 6,
+        "posterior": 1,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "content",
+        "requirementCoefficients": {
+          "actionCommitment": -2.7962000000000002,
+          "executableArtifactDemand": -3.0504,
+          "externalTruthAuthority": 5.846599999999999,
+          "inferentialDepth": -1.0168,
+          "noveltyDemand": -4.3214,
+          "sourceDependence": 4.7027,
+          "uncertaintyTolerance": -1.5252
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 0.5,
+        "responseMatchRate": 0.6666666666666666,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "factual",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 176,
+          "factual": 900,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "dialogue",
+        "sourceVersionId": "source.dolly",
+        "surface": "for"
+      },
+      "evidenceIds": [
+        "source.dolly.evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "03ce808ff7e487ec527d330c260496a2b832af20b5b8c558a65417ff878a031d",
+      "profileId": "source.dolly",
+      "patternKind": "semantic_role",
+      "support": 0.8447272727272728,
+      "entropy": 0,
+      "patternJson": {
+        "anchor": "any",
+        "authorityMass": {
+          "action": 0,
+          "creative": 4,
+          "factual": 0,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 1,
+          "factual": 0,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.class_conditional.v3",
+        "exampleSupport": 4,
+        "learnedFrameOrPatternId": "any:write a short",
+        "margin": 1,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 4,
+        "posterior": 1,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "control",
+        "requirementCoefficients": {
+          "actionCommitment": -2.2356000000000003,
+          "counterfactualDemand": 1.1178000000000001,
+          "executableArtifactDemand": -2.2356000000000003,
+          "externalTruthAuthority": -4.968,
+          "inferentialDepth": 1.4904,
+          "noveltyDemand": 5.9616,
+          "sourceDependence": -4.222799999999999,
+          "uncertaintyTolerance": 2.484
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 0.5,
+        "responseMatchRate": 0,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "creative",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 176,
+          "factual": 900,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "dialogue",
+        "sourceVersionId": "source.dolly",
+        "surface": "write a short"
+      },
+      "evidenceIds": [
+        "source.dolly.evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "345dabaf365d3fe739c58ee81410c85a51f8ecedfa7e9530f2ce9b6708e023fc",
+      "profileId": "source.dolly",
+      "patternKind": "semantic_role",
+      "support": 0.8447272727272728,
+      "entropy": 0,
+      "patternJson": {
+        "anchor": "start",
+        "authorityMass": {
+          "action": 0,
+          "creative": 4,
+          "factual": 0,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 1,
+          "factual": 0,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.class_conditional.v3",
+        "exampleSupport": 4,
+        "learnedFrameOrPatternId": "start:write a short",
+        "margin": 1,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 4,
+        "posterior": 1,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "control",
+        "requirementCoefficients": {
+          "actionCommitment": -2.2356000000000003,
+          "counterfactualDemand": 1.1178000000000001,
+          "executableArtifactDemand": -2.2356000000000003,
+          "externalTruthAuthority": -4.968,
+          "inferentialDepth": 1.4904,
+          "noveltyDemand": 5.9616,
+          "sourceDependence": -4.222799999999999,
+          "uncertaintyTolerance": 2.484
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 0.5,
+        "responseMatchRate": 0,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "creative",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 176,
+          "factual": 900,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "dialogue",
+        "sourceVersionId": "source.dolly",
+        "surface": "write a short"
+      },
+      "evidenceIds": [
+        "source.dolly.evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "6f840b5dd6a3d68bb65e2991c2dcaf12d2d82bbb4d5c25f6d539fc7c8fa096c2",
+      "profileId": "source.dolly",
+      "patternKind": "semantic_role",
+      "support": 0.842111111111111,
+      "entropy": 0,
+      "patternJson": {
+        "anchor": "start",
+        "authorityMass": {
+          "action": 0,
+          "creative": 0,
+          "factual": 5,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 0,
+          "factual": 1,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.class_conditional.v3",
+        "exampleSupport": 5,
+        "learnedFrameOrPatternId": "start:what does",
+        "margin": 1,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 5,
+        "posterior": 1,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "control",
+        "requirementCoefficients": {
+          "actionCommitment": -2.7643,
+          "executableArtifactDemand": -3.0155999999999996,
+          "externalTruthAuthority": 5.7799,
+          "inferentialDepth": -1.0052,
+          "noveltyDemand": -4.2721,
+          "sourceDependence": 4.64905,
+          "uncertaintyTolerance": -1.5077999999999998
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 0.5,
+        "responseMatchRate": 0,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "factual",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 176,
+          "factual": 900,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "dialogue",
+        "sourceVersionId": "source.dolly",
+        "surface": "what does"
+      },
+      "evidenceIds": [
+        "source.dolly.evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "d418d3417a4e1b74dcb8eefbcf445411331527bcec76061358598ffe8c282192",
+      "profileId": "source.dolly",
+      "patternKind": "semantic_role",
+      "support": 0.842111111111111,
+      "entropy": 0,
+      "patternJson": {
+        "anchor": "any",
+        "authorityMass": {
+          "action": 0,
+          "creative": 0,
+          "factual": 5,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 0,
+          "factual": 1,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.class_conditional.v3",
+        "exampleSupport": 5,
+        "learnedFrameOrPatternId": "any:what does",
+        "margin": 1,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 5,
+        "posterior": 1,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "control",
+        "requirementCoefficients": {
+          "actionCommitment": -2.7643,
+          "executableArtifactDemand": -3.0155999999999996,
+          "externalTruthAuthority": 5.7799,
+          "inferentialDepth": -1.0052,
+          "noveltyDemand": -4.2721,
+          "sourceDependence": 4.64905,
+          "uncertaintyTolerance": -1.5077999999999998
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 0.5,
+        "responseMatchRate": 0,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "factual",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 176,
+          "factual": 900,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "dialogue",
+        "sourceVersionId": "source.dolly",
+        "surface": "what does"
+      },
+      "evidenceIds": [
+        "source.dolly.evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "f640db4d7260a04e11acc9579d86480ec28cb4bcd1b033b3476ef5b6e5f9308c",
+      "profileId": "source.dolly",
+      "patternKind": "semantic_role",
+      "support": 0.842111111111111,
+      "entropy": 0,
+      "patternJson": {
+        "anchor": "any",
+        "authorityMass": {
+          "action": 0,
+          "creative": 0,
+          "factual": 5,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 0,
+          "factual": 1,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.class_conditional.v3",
+        "exampleSupport": 5,
+        "learnedFrameOrPatternId": "any:white",
+        "margin": 1,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 5,
+        "posterior": 1,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "content",
+        "requirementCoefficients": {
+          "actionCommitment": -2.7643,
+          "executableArtifactDemand": -3.0155999999999996,
+          "externalTruthAuthority": 5.7799,
+          "inferentialDepth": -1.0052,
+          "noveltyDemand": -4.2721,
+          "sourceDependence": 4.64905,
+          "uncertaintyTolerance": -1.5077999999999998
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 0.5,
+        "responseMatchRate": 0.8,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "factual",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 176,
+          "factual": 900,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "dialogue",
+        "sourceVersionId": "source.dolly",
+        "surface": "white"
+      },
+      "evidenceIds": [
+        "source.dolly.evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "08a49fab57417a4502d10fee3e73a167e720f85a72b7505c2856a7637025fa4f",
+      "profileId": "source.dolly",
+      "patternKind": "semantic_role",
+      "support": 0.8297187981510015,
+      "entropy": 0.1051538773472593,
+      "patternJson": {
+        "anchor": "any",
+        "authorityMass": {
+          "action": 0,
+          "creative": 4,
+          "factual": 1,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 0.9533898305084746,
+          "factual": 0.046610169491525424,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.class_conditional.v3",
+        "exampleSupport": 5,
+        "learnedFrameOrPatternId": "any:a short",
+        "margin": 0.9067796610169492,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 4,
+        "posterior": 0.9533898305084746,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "control",
+        "requirementCoefficients": {
+          "actionCommitment": -2.202216137604137,
+          "counterfactualDemand": 1.0390232242889976,
+          "executableArtifactDemand": -2.2135042911519682,
+          "externalTruthAuthority": -4.358253465239874,
+          "inferentialDepth": 1.3402116848606722,
+          "noveltyDemand": 5.349558585894859,
+          "sourceDependence": -3.716368006679115,
+          "uncertaintyTolerance": 2.241211577133008
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 0.5,
+        "responseMatchRate": 0,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "creative",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 176,
+          "factual": 900,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "dialogue",
+        "sourceVersionId": "source.dolly",
+        "surface": "a short"
+      },
+      "evidenceIds": [
+        "source.dolly.evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "b5063f31bd8a0485086e30d56f39c063d1cb7db4428a9bdf0946d1b68fab93aa",
+      "profileId": "source.dolly",
+      "patternKind": "semantic_role",
+      "support": 0.8268666666666666,
+      "entropy": 0,
+      "patternJson": {
+        "anchor": "any",
+        "authorityMass": {
+          "action": 0,
+          "creative": 0,
+          "factual": 3,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 0,
+          "factual": 1,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.class_conditional.v3",
+        "exampleSupport": 3,
+        "learnedFrameOrPatternId": "any:used for",
+        "margin": 1,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 3,
+        "posterior": 1,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "content",
+        "requirementCoefficients": {
+          "actionCommitment": -2.7005000000000003,
+          "executableArtifactDemand": -2.946,
+          "externalTruthAuthority": 5.6465,
+          "inferentialDepth": -0.9820000000000001,
+          "noveltyDemand": -4.1735,
+          "sourceDependence": 4.54175,
+          "uncertaintyTolerance": -1.473
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 0.5,
+        "responseMatchRate": 0.6666666666666666,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "factual",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 176,
+          "factual": 900,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "dialogue",
+        "sourceVersionId": "source.dolly",
+        "surface": "used for"
+      },
+      "evidenceIds": [
+        "source.dolly.evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "c426d65ed96bfcbdc1c03cceb80e4ef321b4f07e2061b87bae81a42c24cdd668",
+      "profileId": "source.dolly",
+      "patternKind": "semantic_role",
+      "support": 0.8268666666666666,
+      "entropy": 0,
+      "patternJson": {
+        "anchor": "any",
+        "authorityMass": {
+          "action": 0,
+          "creative": 0,
+          "factual": 3,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 0,
+          "factual": 1,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.class_conditional.v3",
+        "exampleSupport": 3,
+        "learnedFrameOrPatternId": "any:does the",
+        "margin": 1,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 3,
+        "posterior": 1,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "control",
+        "requirementCoefficients": {
+          "actionCommitment": -2.7005000000000003,
+          "executableArtifactDemand": -2.946,
+          "externalTruthAuthority": 5.6465,
+          "inferentialDepth": -0.9820000000000001,
+          "noveltyDemand": -4.1735,
+          "sourceDependence": 4.54175,
+          "uncertaintyTolerance": -1.473
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 0.5,
+        "responseMatchRate": 0,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "factual",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 176,
+          "factual": 900,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "dialogue",
+        "sourceVersionId": "source.dolly",
+        "surface": "does the"
+      },
+      "evidenceIds": [
+        "source.dolly.evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "2237f9feac12f15e0480e3c7523b307490282366b242a7581b3d1a82e05db922",
+      "profileId": "source.dolly",
+      "patternKind": "semantic_role",
+      "support": 0.8243636363636364,
+      "entropy": 0,
+      "patternJson": {
+        "anchor": "any",
+        "authorityMass": {
+          "action": 0,
+          "creative": 2,
+          "factual": 0,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 1,
+          "factual": 0,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.class_conditional.v3",
+        "exampleSupport": 2,
+        "learnedFrameOrPatternId": "any:a short story",
+        "margin": 1,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 2,
+        "posterior": 1,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "control",
+        "requirementCoefficients": {
+          "actionCommitment": -2.1834000000000002,
+          "counterfactualDemand": 1.0917000000000001,
+          "executableArtifactDemand": -2.1834000000000002,
+          "externalTruthAuthority": -4.852,
+          "inferentialDepth": 1.4556,
+          "noveltyDemand": 5.8224,
+          "sourceDependence": -4.1242,
+          "uncertaintyTolerance": 2.426
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 0.5,
+        "responseMatchRate": 0,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "creative",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 176,
+          "factual": 900,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "dialogue",
+        "sourceVersionId": "source.dolly",
+        "surface": "a short story"
+      },
+      "evidenceIds": [
+        "source.dolly.evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "4fef2c14070fe3a1c1f8617c5fa5f54a164619d711ca0a6ce5894a24290d5339",
+      "profileId": "source.dolly",
+      "patternKind": "semantic_role",
+      "support": 0.8243636363636364,
+      "entropy": 0,
+      "patternJson": {
+        "anchor": "any",
+        "authorityMass": {
+          "action": 0,
+          "creative": 2,
+          "factual": 0,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 1,
+          "factual": 0,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.class_conditional.v3",
+        "exampleSupport": 2,
+        "learnedFrameOrPatternId": "any:short story",
+        "margin": 1,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 2,
+        "posterior": 1,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "control",
+        "requirementCoefficients": {
+          "actionCommitment": -2.1834000000000002,
+          "counterfactualDemand": 1.0917000000000001,
+          "executableArtifactDemand": -2.1834000000000002,
+          "externalTruthAuthority": -4.852,
+          "inferentialDepth": 1.4556,
+          "noveltyDemand": 5.8224,
+          "sourceDependence": -4.1242,
+          "uncertaintyTolerance": 2.426
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 0.5,
+        "responseMatchRate": 0,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "creative",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 176,
+          "factual": 900,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "dialogue",
+        "sourceVersionId": "source.dolly",
+        "surface": "short story"
+      },
+      "evidenceIds": [
+        "source.dolly.evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "70a0b9c9c499f69bfcd7c15410a2cfc0fdd7e2da66aa693dca93e6cd942fd115",
+      "profileId": "source.dolly",
+      "patternKind": "semantic_role",
+      "support": 0.8243636363636364,
+      "entropy": 0,
+      "patternJson": {
+        "anchor": "any",
+        "authorityMass": {
+          "action": 0,
+          "creative": 2,
+          "factual": 0,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 1,
+          "factual": 0,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.class_conditional.v3",
+        "exampleSupport": 2,
+        "learnedFrameOrPatternId": "any:story about",
+        "margin": 1,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 2,
+        "posterior": 1,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "control",
+        "requirementCoefficients": {
+          "actionCommitment": -2.1834000000000002,
+          "counterfactualDemand": 1.0917000000000001,
+          "executableArtifactDemand": -2.1834000000000002,
+          "externalTruthAuthority": -4.852,
+          "inferentialDepth": 1.4556,
+          "noveltyDemand": 5.8224,
+          "sourceDependence": -4.1242,
+          "uncertaintyTolerance": 2.426
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 0.5,
+        "responseMatchRate": 0,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "creative",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 176,
+          "factual": 900,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "dialogue",
+        "sourceVersionId": "source.dolly",
+        "surface": "story about"
+      },
+      "evidenceIds": [
+        "source.dolly.evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "765559d7c32ead7e8ed2b158da6f959d59c1663d4e5dd6c091ece4414f8c7ce3",
+      "profileId": "source.dolly",
+      "patternKind": "semantic_role",
+      "support": 0.8243636363636364,
+      "entropy": 0,
+      "patternJson": {
+        "anchor": "any",
+        "authorityMass": {
+          "action": 0,
+          "creative": 2,
+          "factual": 0,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 1,
+          "factual": 0,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.class_conditional.v3",
+        "exampleSupport": 2,
+        "learnedFrameOrPatternId": "any:short story about",
+        "margin": 1,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 2,
+        "posterior": 1,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "control",
+        "requirementCoefficients": {
+          "actionCommitment": -2.1834000000000002,
+          "counterfactualDemand": 1.0917000000000001,
+          "executableArtifactDemand": -2.1834000000000002,
+          "externalTruthAuthority": -4.852,
+          "inferentialDepth": 1.4556,
+          "noveltyDemand": 5.8224,
+          "sourceDependence": -4.1242,
+          "uncertaintyTolerance": 2.426
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 0.5,
+        "responseMatchRate": 0,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "creative",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 176,
+          "factual": 900,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "dialogue",
+        "sourceVersionId": "source.dolly",
+        "surface": "short story about"
+      },
+      "evidenceIds": [
+        "source.dolly.evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "abcf18bb7875a482b9c2a357b762fd916255f7964d9824bd17aa0d27b249ea47",
+      "profileId": "source.dolly",
+      "patternKind": "semantic_role",
+      "support": 0.8243636363636364,
+      "entropy": 0,
+      "patternJson": {
+        "anchor": "any",
+        "authorityMass": {
+          "action": 0,
+          "creative": 2,
+          "factual": 0,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 1,
+          "factual": 0,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.class_conditional.v3",
+        "exampleSupport": 2,
+        "learnedFrameOrPatternId": "any:story about a",
+        "margin": 1,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 2,
+        "posterior": 1,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "control",
+        "requirementCoefficients": {
+          "actionCommitment": -2.1834000000000002,
+          "counterfactualDemand": 1.0917000000000001,
+          "executableArtifactDemand": -2.1834000000000002,
+          "externalTruthAuthority": -4.852,
+          "inferentialDepth": 1.4556,
+          "noveltyDemand": 5.8224,
+          "sourceDependence": -4.1242,
+          "uncertaintyTolerance": 2.426
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 0.5,
+        "responseMatchRate": 0,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "creative",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 176,
+          "factual": 900,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "dialogue",
+        "sourceVersionId": "source.dolly",
+        "surface": "story about a"
+      },
+      "evidenceIds": [
+        "source.dolly.evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "3146a56dcaa24a1710fc26aab8436bbfb461a00e137a2706564f04257c4bc3b8",
+      "profileId": "source.dolly",
+      "patternKind": "semantic_role",
+      "support": 0.8218351393373998,
+      "entropy": 0.3089688804547939,
+      "patternJson": {
+        "anchor": "start",
+        "authorityMass": {
+          "action": 0,
+          "creative": 4,
+          "factual": 64,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 0.24219590958019377,
+          "factual": 0.7578040904198063,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.class_conditional.v3",
+        "exampleSupport": 68,
+        "learnedFrameOrPatternId": "start:who",
+        "margin": 0.5156081808396126,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 64,
+        "posterior": 0.7578040904198063,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "control",
+        "requirementCoefficients": {
+          "actionCommitment": -2.3943100327794395,
+          "counterfactualDemand": 0.24815630138081507,
+          "executableArtifactDemand": -2.566855253690149,
+          "externalTruthAuthority": 2.8656231859204837,
+          "inferentialDepth": -0.35930581513508636,
+          "noveltyDemand": -1.6097684814510556,
+          "sourceDependence": 2.2546072260761663,
+          "uncertaintyTolerance": -0.48381287795133726
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 0.5,
+        "responseMatchRate": 0.125,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "factual",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 176,
+          "factual": 900,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "dialogue",
+        "sourceVersionId": "source.dolly",
+        "surface": "who"
+      },
+      "evidenceIds": [
+        "source.dolly.evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "eb5b73df1619722d4f3b91dfb2052249112dce418241d16798453d0def90a293",
+      "profileId": "source.dolly",
+      "patternKind": "semantic_role",
+      "support": 0.8129596349073297,
+      "entropy": 0.27022980682227876,
+      "patternJson": {
+        "anchor": "any",
+        "authorityMass": {
+          "action": 0,
+          "creative": 1,
+          "factual": 22,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 0.18860016764459347,
+          "factual": 0.8113998323554066,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.class_conditional.v3",
+        "exampleSupport": 23,
+        "learnedFrameOrPatternId": "any:does",
+        "margin": 0.6227996647108132,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 22,
+        "posterior": 0.8113998323554066,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "control",
+        "requirementCoefficients": {
+          "actionCommitment": -2.4946661090223845,
+          "counterfactualDemand": 0.19930951119586243,
+          "executableArtifactDemand": -2.685215844170626,
+          "externalTruthAuthority": 3.4968238586501723,
+          "inferentialDepth": -0.49645292566515076,
+          "noveltyDemand": -2.1763614378088443,
+          "sourceDependence": 2.7722230579469933,
+          "uncertaintyTolerance": -0.7003883860097564
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 0.5,
+        "responseMatchRate": 0,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "factual",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 176,
+          "factual": 900,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "dialogue",
+        "sourceVersionId": "source.dolly",
+        "surface": "does"
+      },
+      "evidenceIds": [
+        "source.dolly.evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "a960e8fca8a1230cc6ae93be643dcad1023ea529c5853acc3781410ed36bbd82",
+      "profileId": "source.dolly",
+      "patternKind": "semantic_role",
+      "support": 0.8072451368084681,
+      "entropy": 0.34753572926845056,
+      "patternJson": {
+        "anchor": "any",
+        "authorityMass": {
+          "action": 0,
+          "creative": 7,
+          "factual": 78,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 0.31455961653684844,
+          "factual": 0.6854403834631516,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.class_conditional.v3",
+        "exampleSupport": 85,
+        "learnedFrameOrPatternId": "any:who",
+        "margin": 0.3708807669263032,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 78,
+        "posterior": 0.6854403834631516,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "control",
+        "requirementCoefficients": {
+          "actionCommitment": -2.261243478423197,
+          "counterfactualDemand": 0.3086364156089204,
+          "executableArtifactDemand": -2.4106953554418658,
+          "externalTruthAuthority": 2.065675768723068,
+          "inferentialDepth": -0.18629228726278116,
+          "noveltyDemand": -0.8946210260697934,
+          "sourceDependence": 1.598899932545006,
+          "uncertaintyTolerance": -0.2108525607588561
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 0.5,
+        "responseMatchRate": 0.14102564102564102,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "factual",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 176,
+          "factual": 900,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "dialogue",
+        "sourceVersionId": "source.dolly",
+        "surface": "who"
+      },
+      "evidenceIds": [
+        "source.dolly.evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "09028fcf5fe4aa7b67910faf382021f9447afce01ee2e8badd527b3b5f7784a5",
+      "profileId": "source.dolly",
+      "patternKind": "semantic_role",
+      "support": 0.7974078398665554,
+      "entropy": 0.19953820687124474,
+      "patternJson": {
+        "anchor": "any",
+        "authorityMass": {
+          "action": 0,
+          "creative": 3,
+          "factual": 2,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 0.8846657929226737,
+          "factual": 0.11533420707732635,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.class_conditional.v3",
+        "exampleSupport": 5,
+        "learnedFrameOrPatternId": "any:story",
+        "margin": 0.7693315858453473,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 3,
+        "posterior": 0.8846657929226737,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "control",
+        "requirementCoefficients": {
+          "actionCommitment": -2.1241098785747785,
+          "counterfactualDemand": 0.9160845884098948,
+          "executableArtifactDemand": -2.1506499423706864,
+          "externalTruthAuthority": -3.4610655922936466,
+          "inferentialDepth": 1.1152858626962274,
+          "noveltyDemand": 4.434603386989001,
+          "sourceDependence": -2.9697728204353036,
+          "uncertaintyTolerance": 1.8765031470243179
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 0.5,
+        "responseMatchRate": 0,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "creative",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 176,
+          "factual": 900,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "dialogue",
+        "sourceVersionId": "source.dolly",
+        "surface": "story"
+      },
+      "evidenceIds": [
+        "source.dolly.evidence"
+      ],
+      "updatedAt": 1
+    }
+  ]
+}

@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { compileRequestRequirementCorpus, REQUEST_REQUIREMENT_CORPUS_SCHEMA, reconcileRequestRequirementPatterns, type RequestRequirementCorpusExample } from "../request-requirement-learning.js";
 import { createLanguageMemoryRuntime } from "../language-memory-runtime.js";
-import { deriveTurnRequirementField } from "../turn-requirements.js";
-import { projectRequestAuthority } from "../request-authority.js";
+import { TURN_REQUIREMENT_DIMENSIONS, deriveTurnRequirementField } from "../turn-requirements.js";
+import { authorityRequirementCoefficients, projectRequestAuthority } from "../request-authority.js";
+import { codeRequestObservedRequirements, codeRequestSignal } from "../code-request.js";
+import type { LanguagePatternRecord } from "../storage.js";
 import { createHasher } from "../primitives.js";
 import type { EvidenceId, JsonValue, SourceVersionId } from "../types.js";
 
@@ -81,6 +84,68 @@ describe("source class-conditional requirement learning", () => {
     expect(classify(patterns, "Write a short scene about a sailor who befriends a clockmaker.")).toBe("creative");
   });
 
+  it("centers zero-inclusive prototype evidence over the occupied source classes", () => {
+    const patterns = compile([
+      ...Array.from({ length: 8 }, (_, index) => ({ text: `nava subject${index}`, authority: "creative" as const })),
+      ...Array.from({ length: 8 }, (_, index) => ({ text: `sula entity${index}`, authority: "factual" as const }))
+    ]);
+    const row = (surface: string) => patterns.find(pattern => {
+      const value = pattern.patternJson as Record<string, JsonValue>;
+      return value.surface === surface && value.anchor === "start";
+    })!.patternJson as Record<string, JsonValue>;
+    const creative = row("nava");
+    const factual = row("sula");
+    const creativeCoefficients = creative.requirementCoefficients as Record<string, number>;
+    const factualCoefficients = factual.requirementCoefficients as Record<string, number>;
+    for (const dimension of TURN_REQUIREMENT_DIMENSIONS) {
+      expect((creativeCoefficients[dimension] ?? 0) + (factualCoefficients[dimension] ?? 0)).toBeCloseTo(0, 12);
+    }
+    const background = creative.sourceAuthorityBackground as Record<string, number>;
+    expect(background.executableArtifactDemand).toBeCloseTo(((authorityRequirementCoefficients("creative").executableArtifactDemand ?? 0)
+      + (authorityRequirementCoefficients("factual").executableArtifactDemand ?? 0)) / 2, 12);
+    expect(factualCoefficients.counterfactualDemand).toBeLessThan(0);
+    expect(creativeCoefficients.executableArtifactDemand).toBeGreaterThan(0);
+    const single = compile(Array.from({ length: 8 }, (_, index) => ({ text: `nava subject${index}`, authority: "creative" as const })));
+    for (const pattern of single) {
+      expect(Object.values((pattern.patternJson as Record<string, JsonValue>).requirementCoefficients as Record<string, number>)
+        .every(coefficient => coefficient === 0)).toBe(true);
+    }
+    const singleField = deriveTurnRequirementField({ requestText: "nava unseen", languageMemoryState: createLanguageMemoryRuntime().hydrate({ models: [], patterns: single }) });
+    expect(projectRequestAuthority({ requirementField: singleField }).contributionPresent).toBe(false);
+  });
+
+  it("preserves absolute observed requirement targets while centering authority evidence", () => {
+    const patterns = compile([
+      ...Array.from({ length: 8 }, (_, index) => ({ text: `nava subject${index}`, authority: "creative" as const, requirements: { executableArtifactDemand: 0.96 } })),
+      ...Array.from({ length: 8 }, (_, index) => ({ text: `sula entity${index}`, authority: "factual" as const, requirements: { executableArtifactDemand: 0.96 } }))
+    ]);
+    const field = deriveTurnRequirementField({ requestText: "nava unseen", languageMemoryState: createLanguageMemoryRuntime().hydrate({ models: [], patterns }) });
+    expect(field.executableArtifactDemand).toBeCloseTo(0.96, 12);
+    expect(field.learnedRequirementBounds?.executableArtifactDemand).toEqual({ lower: field.executableArtifactDemand, upper: field.executableArtifactDemand });
+    for (const pattern of patterns) expect((pattern.patternJson as Record<string, JsonValue>).requirementCoefficients)
+      .not.toHaveProperty("executableArtifactDemand");
+  });
+
+  it("recompiles actual Dolly source statistics and composes structural TypeScript demand with learned prose", () => {
+    const snapshot = JSON.parse(readFileSync(new URL("./fixtures/dolly-request-authority-source-snapshot.json", import.meta.url), "utf8")) as {
+      sourceExampleCount: number; requests: string[]; patterns: LanguagePatternRecord[];
+    };
+    expect(snapshot.sourceExampleCount).toBe(1076);
+    const reconciled = reconcileRequestRequirementPatterns(snapshot.patterns);
+    const languageMemoryState = createLanguageMemoryRuntime().hydrate({ models: [], patterns: reconciled.patterns });
+    for (const [index, requestText] of snapshot.requests.entries()) {
+      const field = deriveTurnRequirementField({ requestText, languageMemoryState,
+        explicitRequirements: codeRequestObservedRequirements(requestText, codeRequestSignal(requestText)) });
+      expect(projectRequestAuthority({ requirementField: field }).projectedAuthority).toBe(index < 4 ? "creative" : index < 7 ? "factual" : "program");
+    }
+    expect(reconciled.report).toMatchObject({ status: "active", recompiled: snapshot.patterns.length, droppedStaleCompiler: 0 });
+    const duplicated = createLanguageMemoryRuntime().hydrate({ models: [], patterns: [...reconciled.patterns,
+      ...reconciled.patterns.map(pattern => ({ ...pattern, id: `${pattern.id}.copy` }))] });
+    const requestText = snapshot.requests[7]!;
+    expect(projectRequestAuthority({ requirementField: deriveTurnRequirementField({ requestText, languageMemoryState: duplicated,
+      explicitRequirements: codeRequestObservedRequirements(requestText, codeRequestSignal(requestText)) }) }).projectedAuthority).toBe("program");
+  });
+
   it("persists class totals and refuses stale calibration when sufficient statistics are absent", () => {
     const patterns = compile([
       { text: "nava toma", authority: "creative" }, { text: "nava ravi", authority: "creative" },
@@ -89,13 +154,17 @@ describe("source class-conditional requirement learning", () => {
     const pattern = patterns[0]!;
     const row = pattern.patternJson as Record<string, JsonValue>;
     expect(row.sourceClassTotals).toMatchObject({ creative: 2, factual: 2 });
+    expect(row.sourceAuthorityBackground).toMatchObject({ executableArtifactDemand: expect.any(Number) });
     const { sourceClassTotals: _totals, ...withoutTotals } = row;
-    const stale = { ...pattern, patternJson: { ...withoutTotals, compilerFingerprint: "previous.compiler" } };
-    const reconciled = reconcileRequestRequirementPatterns([stale]);
-    expect(reconciled.patterns).toEqual([]);
-    expect(reconciled.report).toMatchObject({ status: "inert_stale_compiler", droppedStaleCompiler: 1 });
+    for (const compilerFingerprint of [String(row.compilerFingerprint), "previous.compiler"]) {
+      const stale = { ...pattern, patternJson: { ...withoutTotals, compilerFingerprint } };
+      const reconciled = reconcileRequestRequirementPatterns([stale]);
+      expect(reconciled.patterns).toEqual([]);
+      expect(reconciled.report).toMatchObject({ status: "inert_stale_compiler", droppedStaleCompiler: 1 });
+    }
     const carried = reconcileRequestRequirementPatterns([{ ...pattern, patternJson: { ...row, compilerFingerprint: "previous.compiler" } }]);
     expect(carried.report).toMatchObject({ status: "active", recompiled: 1 });
     expect((carried.patterns[0]!.patternJson as Record<string, JsonValue>).requirementCoefficients).toEqual(row.requirementCoefficients);
+    expect((carried.patterns[0]!.patternJson as Record<string, JsonValue>).sourceAuthorityBackground).toEqual(row.sourceAuthorityBackground);
   });
 });
