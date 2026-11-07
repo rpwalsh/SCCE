@@ -94,7 +94,7 @@ describe("Wikipedia alignment target guard", () => {
         warnings: []
       } as any);
       process.env.SCCE_INGEST_TRACE = tracePath;
-      const sourceText = "A small fixture page.";
+      const sourceText = "Fixture.";
       const byteLength = Buffer.byteLength(sourceText);
       const codePointLength = [...sourceText].length;
       const evidence = {
