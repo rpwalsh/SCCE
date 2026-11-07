@@ -799,7 +799,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       // formal language this request names. Absent a trained corpus for that language this produces nothing and
       // the turn answers as it did before -- a language never shown to the system is one it declines to write.
       const learnedCodeCandidate = learnedCodeSurfaceCandidate(input);
-      const rawCandidates = [
+      const rawCandidatePool = [
         ...(directCreativeCandidate ? [directCreativeCandidate] : []),
         ...learnedPriorSurfaceCandidates(input, discoursePlan, priorPieces),
         ...(learnedCodeCandidate ? [learnedCodeCandidate] : []),
@@ -818,23 +818,47 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         ...(constructAnchored ? [constructAnchored] : []),
         ...generatedCandidates.filter(candidate => candidate.id !== kernelSelectedCandidate?.id),
         ...(supportBoundary && supportBoundary.id !== kernelSelectedCandidate?.id ? [supportBoundary] : [])
-      ].filter(candidate => (candidate.id.startsWith("candidate:generated:code:") ? candidate.text.trim().length > 0 : admissibleMouthSurface(candidate.text))
-        // An echo of the request is never an answer, grounded or not; a quotation the corpus holds is recall, not an echo.
-        && !(!nearDuplicatePreservation && !sessionAssertionTurn(input) && !candidate.id.startsWith("candidate:generated:code:") && surfaceRepeatsPrompt(candidate.text, input.requestText ?? ""))
-        // A candidate that cites nothing, in a turn that promoted nothing, asserts on air: only surfaces that do not
-        // assert survive it (the proof boundary, a clarification, compiler-owned code, this session's own memory).
-        // A run of proper nouns with almost no lowercase between them, citing nothing, is the entity roster this guard
-        // was written for. A cited sentence about people and works is not, however many capitals it carries.
-        && !(candidate.evidenceIds.length === 0 && isEntitySaladSurface(candidate.text))
-        && (groundedSurfaceAvailable
+      ];
+      const rawCandidates = rawCandidatePool.filter(candidate => {
+        const codeCandidate = candidate.id.startsWith("candidate:generated:code:");
+        let rejectionReason: string | undefined;
+        if (codeCandidate ? !candidate.text.trim().length : !admissibleMouthSurface(candidate.text)) {
+          rejectionReason = "inadmissible_surface";
+        } else if (!nearDuplicatePreservation && !sessionAssertionTurn(input) && !codeCandidate && surfaceRepeatsPrompt(candidate.text, input.requestText ?? "")) {
+          // An echo of the request is never an answer, grounded or not; a quotation the corpus holds is recall, not an echo.
+          rejectionReason = "surface_repeats_prompt";
+        } else if (candidate.evidenceIds.length === 0 && isEntitySaladSurface(candidate.text)) {
+          // A candidate that cites nothing, in a turn that promoted nothing, asserts on air: only surfaces that do not
+          // assert survive it (the proof boundary, a clarification, compiler-owned code, this session's own memory).
+          // A run of proper nouns with almost no lowercase between them, citing nothing, is the entity roster this guard
+          // was written for. A cited sentence about people and works is not, however many capitals it carries.
+          rejectionReason = "entity_salad_surface";
+        } else if (!(groundedSurfaceAvailable
           || candidate.evidenceIds.length > 0
           || candidate.id === supportBoundary?.id
-          || candidate.id.startsWith("candidate:generated:code:")
+          || codeCandidate
           || candidate.id.startsWith("candidate:generated:clarification")
           // Not "which producer made it": whether every unit it would commit the system to is licensed by some authority.
           || candidateCommitmentsLicensed(speakCommitmentInventory(candidate.text, input, candidate.constructionFormLiterals))
           || candidate.claimBasis === "invented"
-          || creativeRequested))
+          || creativeRequested)) {
+          rejectionReason = "unlicensed_commitments";
+        }
+        if (rejectionReason && candidate.id.startsWith("candidate:generated:creative:")) {
+          traceEvent((globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace, {
+            stage: "mouth.creative_candidate.filtered",
+            label: "mouth.speak",
+            counts: { candidates: 1 },
+            support: {
+              candidateId: candidate.id,
+              rejectionReason,
+              textHash: options.hashText(candidate.text),
+              textHead: candidate.text.slice(0, 120)
+            }
+          });
+        }
+        return rejectionReason === undefined;
+      })
         .map(candidate => {
           const producerAuthority = mouthProducerAuthority(candidate, input, plan, creativeRequested, options.hashText);
           const authorityEvidenceIds = producerAuthority?.schema === "scce.mouth.factual_producer_authority.v1"
