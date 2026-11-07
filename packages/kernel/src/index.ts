@@ -31,6 +31,7 @@ export * from "./language.js";
 export * from "./multilingual-acquisition.js";
 export * from "./language-memory-runtime.js";
 export * from "./language-state-delta.js";
+export * from "./request-language-form-scope.js";
 export * from "./language-round-trip-learning.js";
 export * from "./creative-section-realization.js";
 export * from "./corpus-registry.js";

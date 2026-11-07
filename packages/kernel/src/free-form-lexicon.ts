@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { KneserNeyModel } from "./kneser-ney.js";
+import { allocateRequestLanguageFormGeneration, cacheRequestLanguageFormScopeValue, requestLanguageFormScopeValue, setRequestLanguageFormScopeValue } from "./request-language-form-scope.js";
 
 /**
  * Which surfaces the corpus uses as free forms, and which are fragments of one fixed phrase.
@@ -42,6 +43,12 @@ export interface FreeFormLexicon {
 
 const GRAM_SEPARATOR = "\u0001";
 const EMPTY_LEXICON: FreeFormLexicon = { forms: 0, verdict: () => "unknown", measure: () => undefined };
+const REQUEST_FORM_SCOPE_KEY = "free-form-lexicon.v1";
+
+interface ScopedFreeFormLexicon {
+  models: readonly KneserNeyModel[];
+  lexicon?: FreeFormLexicon;
+}
 
 /** The exact normal lower-tail bound (Mills): P(Z < z) <= phi(z)/|z| for z < 0. No fitted constants. */
 function lowerTailBound(z: number): number {
@@ -136,36 +143,57 @@ let generation = 0;
  * itself is deferred to the first question asked of it, so a turn that never compares two forms pays nothing.
  */
 export function primeFreeFormLexicon(models: readonly KneserNeyModel[]): void {
+  const scoped = requestLanguageFormScopeValue<ScopedFreeFormLexicon>(REQUEST_FORM_SCOPE_KEY);
+  if (scoped.active) {
+    setRequestLanguageFormScopeValue(REQUEST_FORM_SCOPE_KEY, { models: Object.freeze([...models]) });
+    return;
+  }
   let next = `${models.length}`;
   for (const model of models) next += `|${model.sourceKey ?? ""}:${model.order}:${model.observedSymbolCount}`;
   if (next === signature) return;
   resident = models;
   lexicon = undefined;
   signature = next;
-  generation += 1;
+  generation = allocateRequestLanguageFormGeneration();
 }
 
 /** Bumped whenever the model set changes, so callers memoizing a match derived from it can tell it is stale. */
 export function freeFormLexiconGeneration(): number {
-  return generation;
+  return requestLanguageFormScopeValue(REQUEST_FORM_SCOPE_KEY).generation ?? generation;
 }
 
 /** The language models the current turn installed, for other corpus measurements keyed to the same generation. */
 export function residentLanguageModels(): readonly KneserNeyModel[] {
+  const scoped = requestLanguageFormScopeValue<ScopedFreeFormLexicon>(REQUEST_FORM_SCOPE_KEY);
+  if (scoped.active) return scoped.value?.models ?? [];
   return resident;
 }
 
 export function freeFormLexicon(): FreeFormLexicon | undefined {
+  const scoped = requestLanguageFormScopeValue<ScopedFreeFormLexicon>(REQUEST_FORM_SCOPE_KEY);
+  if (scoped.active) {
+    const current = scoped.value;
+    if (!current?.models.length) return undefined;
+    if (current.lexicon) return current.lexicon;
+    const lexicon = deriveFreeFormLexicon(current.models);
+    cacheRequestLanguageFormScopeValue(REQUEST_FORM_SCOPE_KEY, { ...current, lexicon });
+    return lexicon;
+  }
   if (!lexicon && resident.length) lexicon = deriveFreeFormLexicon(resident);
   return lexicon;
 }
 
 /** Test seam: forget what the corpus taught, so a unit test starts from no corpus knowledge. */
 export function clearFreeFormLexicon(): void {
+  const scoped = requestLanguageFormScopeValue<ScopedFreeFormLexicon>(REQUEST_FORM_SCOPE_KEY);
+  if (scoped.active) {
+    setRequestLanguageFormScopeValue(REQUEST_FORM_SCOPE_KEY, { models: Object.freeze([]) });
+    return;
+  }
   resident = [];
   lexicon = undefined;
   signature = "";
-  generation += 1;
+  generation = allocateRequestLanguageFormGeneration();
 }
 
 /** "silent" is a corpus that has not been hydrated at all, which decides nothing and leaves the caller its own rules. */

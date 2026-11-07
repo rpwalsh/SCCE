@@ -184,6 +184,7 @@ import { repoCognitionForTurn } from "./repo-cognition.js";
 import { deriveClosedClassWords, requestClosedClassWords as requestClosedClassWordsFor } from "./closed-class-words.js";
 import { primeFreeFormLexicon } from "./free-form-lexicon.js";
 import { primeLearnedAnswerUnitForms } from "./learned-answer-unit-forms.js";
+import { withRequestLanguageFormScope } from "./request-language-form-scope.js";
 import { documentGenerationRequestFromMetadata, syncDocumentGenerationRequestForTurn } from "./document-generation-turn-request.js";
 import { extendedGenerationDecision, extendedGenerationSessionForTurn, runExtendedGeneration } from "./extended-generation-turn.js";
 import { checkAntiCopyGuard } from "./voice-profile.js";
@@ -901,7 +902,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
 
   async function turn(input: OwnerInput, acquisitionContinuation?: RuntimeReplanMotion): Promise<TurnResult> {
 
-      return withBufferedEventWrites(async () => {
+      return withRequestLanguageFormScope(() => withBufferedEventWrites(async () => {
       const turnStarted = Date.now();
       // A recovery motion that ran but did not justify a replan still has to
       // be reported: result.runtimeMotion previously came only from
@@ -6031,7 +6032,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         }),
         events
       };
-      });
+      }));
 
   }
 

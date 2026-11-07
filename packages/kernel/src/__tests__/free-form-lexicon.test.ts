@@ -4,6 +4,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { trainKneserNey } from "../kneser-ney.js";
 import { clearFreeFormLexicon, corpusTreatsUnitsAsOneForm, freeFormLexicon, primeFreeFormLexicon } from "../free-form-lexicon.js";
 import { requestUnitSharesStem } from "../local-evidence-runtime.js";
+import { learnedAnswerUnitFormVerdict } from "../learned-answer-unit-forms.js";
+import { sourceOwnedAnswerUnitForms } from "./fixtures/source-owned-answer-unit-forms.js";
+import { withRequestLanguageFormScope } from "../request-language-form-scope.js";
 
 /**
  * One surface plus one letter is the same unit when the corpus uses both as free forms, and not when either is a
@@ -51,13 +54,20 @@ describe("free-form lexicon", () => {
     expect(lexicon?.measure("quixa")?.contexts).toBe(1);
   });
 
-  it("reads one extra letter as the same unit only where both forms are free", () => {
-    hydrate();
-    expect(corpusTreatsUnitsAsOneForm("zorbit", "zorbity")).toBe(true);
-    expect(corpusTreatsUnitsAsOneForm("quixa", "quixal")).toBe(false);
-    // The letter is never the reason: the accepted pair ends in "y" and the refused one in "l".
-    expect(requestUnitSharesStem("zorbit", "zorbity")).toBe(true);
-    expect(requestUnitSharesStem("quixa", "quixal")).toBe(false);
+  it("requires source-owned morphology for unit sharing, alongside free-form evidence", async () => {
+    const teaching = sourceOwnedAnswerUnitForms("zorbit r0. zorbity r0. pluxen r0. pluxeny r0. vandra r0. vandray r0.");
+    await withRequestLanguageFormScope(async () => {
+      hydrate();
+      teaching.prime();
+      expect(corpusTreatsUnitsAsOneForm("zorbit", "zorbity")).toBe(true);
+      expect(corpusTreatsUnitsAsOneForm("quixa", "quixal")).toBe(false);
+      expect(teaching.state.structuralDeltas?.some(delta => delta.surface.from === "zorbit" && delta.surface.to === "zorbity")).toBe(true);
+      const verdict = learnedAnswerUnitFormVerdict("zorbit", "zorbity");
+      expect(verdict.status).toBe("same");
+      expect(verdict.witnesses.some(witness => witness.evidenceIds.length > 0)).toBe(true);
+      expect(requestUnitSharesStem("zorbit", "zorbity")).toBe(true);
+      expect(requestUnitSharesStem("quixa", "quixal")).toBe(false);
+    });
   });
 
   it("says nothing about a surface the corpus has not seen", () => {
