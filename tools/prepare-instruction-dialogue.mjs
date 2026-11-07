@@ -23,7 +23,7 @@ const EMPTY_DOCUMENT_BYTES = Buffer.byteLength(JSON.stringify({
   text: "",
   turns: []
 }), "utf8");
-const DOCUMENT_FIXED_BYTES = EMPTY_DOCUMENT_BYTES;
+const DOCUMENT_FIXED_BYTES = EMPTY_DOCUMENT_BYTES + Buffer.byteLength("\n", "utf8");
 
 /** Convert categorized instruction rows to the kernel's existing declared transcript format. */
 export async function prepareInstructionDialogue({ inputPath, outputDir, metadata, limits = {} }) {
