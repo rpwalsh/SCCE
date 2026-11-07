@@ -9,6 +9,8 @@ import { createNgramMemoryCompiler } from "../../ngram-memory.js";
 import { createLanguageMemoryRuntime } from "../../language-memory-runtime.js";
 import { deriveClosedClassWords } from "../../closed-class-words.js";
 import { sourceOwnedAnswerUnitForms } from "./source-owned-answer-unit-forms.js";
+import { canonicalCorpusSourceSystemId } from "../../corpus-registry.js";
+import type { ScceStorage } from "../../storage.js";
 
 /** Actual source wording supplies scaffolding; separate raw examples supply observed name forms. */
 export function sourceOwnedAnswerhoodLanguage(rawFormsText = "einstein r0. einstein's r0. newton r0. newton's r0. curie r0. curie's r0.") {
@@ -29,6 +31,25 @@ export function sourceOwnedAnswerhoodLanguage(rawFormsText = "einstein r0. einst
     text, evidence, createdAt: 1, maxOrder: 3, maxCountersPerOrder: 4096, vocabularyLimit: 2048, retainObservations: false });
   const state = createLanguageMemoryRuntime({ hasher, idFactory: ids }).hydrate({ models: compiled.models });
   const forms = sourceOwnedAnswerUnitForms(rawFormsText);
-  return { profile, profiles: [profile, forms.profile], evidence: [...evidence, ...forms.evidence], grammarEvidence: evidence,
+  const profiles = [profile, forms.profile];
+  const sameSource = (actual: unknown, requested?: string) => !requested || typeof actual === "string"
+    && canonicalCorpusSourceSystemId(actual) === canonicalCorpusSourceSystemId(requested);
+  const readModels: ScceStorage["languageMemory"]["listNgramModels"] = async query => compiled.models.filter(row => {
+    const metadata = row.modelJson as Record<string, unknown>;
+    return sameSource(metadata.sourceSystem, query?.sourceSystem) && (!query?.profileIds || query.profileIds.includes(String(metadata.profileId)))
+      && (!query?.streamId || query.streamId === row.streamId) && (!query?.languageHint || query.languageHint === row.languageHint);
+  }).slice(0, query?.limit);
+  const readPatterns: ScceStorage["languageMemory"]["listLanguagePatterns"] = async query => forms.projection.patterns.filter(row => {
+    const metadata = row.patternJson as Record<string, unknown>;
+    return sameSource(metadata.sourceSystem, query?.sourceSystem) && (!query?.profileIds || query.profileIds.includes(row.profileId))
+      && (!query?.profileId || query.profileId === row.profileId) && (!query?.patternKind || query.patternKind === row.patternKind)
+      && (!query?.patternSchemas || query.patternSchemas.includes(String(metadata.schema)))
+      && (!query?.formalLanguage || query.formalLanguage === metadata.formalLanguage)
+      && (query?.parameterCount === undefined || query.parameterCount === metadata.parameterCount);
+  }).slice(0, query?.limit);
+  const readProfiles: ScceStorage["model"]["listLanguageProfiles"] = async query => typeof query === "object" && query?.sourceDerivedAliases?.length ? []
+    : profiles.filter(row => typeof query === "number" || !query?.sourceVersionIds || query.sourceVersionIds.includes(row.sourceVersionId))
+      .slice(0, typeof query === "number" ? query : query?.limit);
+  return { profile, profiles, readModels, readPatterns, readProfiles, evidence: [...evidence, ...forms.evidence], grammarEvidence: evidence,
     models: compiled.models, patterns: forms.projection.patterns, compiled, state, closedClass: deriveClosedClassWords({ models: state.models }), forms };
 }

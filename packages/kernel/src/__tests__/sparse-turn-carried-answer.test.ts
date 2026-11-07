@@ -26,6 +26,7 @@ import { clearCorpusIdentitySignals, corpusIdentitySurface } from "../corpus-ide
 import { deriveClosedClassWords } from "../closed-class-words.js";
 import { trainKneserNey } from "../kneser-ney.js";
 import { storageFixtureForEvaluation } from "./evidence-promotion-evaluation-fixture.js";
+import { sourceOwnedAnswerhoodLanguage } from "./fixtures/source-owned-answerhood-language.js";
 
 afterEach(() => clearCorpusIdentitySignals());
 
@@ -101,6 +102,7 @@ describe("a sparse chat turn after an evidence-bearing turn", () => {
 });
 
 function chatSession(options: { unmeasuredClass?: boolean } = {}) {
+  const teaching = options.unmeasuredClass ? undefined : sourceOwnedAnswerhoodLanguage();
   const evidence = [
     span("evidence:einstein", "Albert Einstein", EINSTEIN_LEAD, 0),
     span("evidence:einstein-nobel", "Albert Einstein", EINSTEIN_NOBEL, 400),
@@ -141,8 +143,8 @@ function chatSession(options: { unmeasuredClass?: boolean } = {}) {
     id: "language.fixture",
     script: "Latn",
     directions: [{ direction: "ltr", count: 1 }],
-    closedClass: options.unmeasuredClass ? [] : [...deriveClosedClassWords({ models: [trained] })].map(word => ({ word, documentShare: 1 })),
-    families: [{ family: "fixture", count: 1 }],
+    closedClass: teaching ? [...teaching.closedClass].map(word => ({ word, documentShare: 1 })) : [],
+    families: [{ family: teaching ? "gutenberg" : "fixture", count: 1 }],
     corpusRoles: [],
     profileCount: 1,
     membershipCut: 0.1,
@@ -150,14 +152,16 @@ function chatSession(options: { unmeasuredClass?: boolean } = {}) {
   };
   const storage = {
     ...base,
+    model: teaching ? { ...base.model, listLanguageProfiles: teaching.readProfiles } : base.model,
     userModelClaims: { putClaim: async () => undefined, listClaims: async () => [] },
     taskResumption: { putSnapshot: async () => undefined, getLatestSnapshot: async () => null },
     documentGeneration: { putSession: async () => undefined, getSession: async () => null, compareAndPutSession: async () => ({ stored: true, currentUpdatedAt: null }) },
     languageMemory: {
       ...base.languageMemory,
-      listNgramModels: async () => [modelRecord],
-      listLanguagePatterns: async (query?: { sourceSystem?: string }) => query?.sourceSystem === "corrections" ? requestPatterns : [],
-      continuationPopulation: async () => ({ languageId: "language.fixture", modelCount: 1, continuationCounts: trained.continuationCounts })
+      listNgramModels: teaching?.readModels ?? (async () => [modelRecord]),
+      listLanguagePatterns: teaching?.readPatterns ?? (async (query?: { sourceSystem?: string }) => query?.sourceSystem === "corrections" ? requestPatterns : []),
+      continuationPopulation: async () => ({ languageId: "language.fixture", modelCount: teaching?.state.models.length ?? 1,
+        continuationCounts: teaching?.state.models[0]?.continuationCounts ?? trained.continuationCounts })
     },
     languageIdentities: {
       putIdentities: async () => undefined,
@@ -168,6 +172,7 @@ function chatSession(options: { unmeasuredClass?: boolean } = {}) {
     },
     evidence: {
       ...base.evidence,
+      getEvidenceBatch: teaching ? async ids => [...await base.evidence.getEvidenceBatch(ids), ...teaching.evidence.filter(span => ids.includes(span.id))] : base.evidence.getEvidenceBatch,
       sourceIdentityArbitration: async ({ text }: { text: string }) => ({
         identities: titles.filter(title => ` ${corpusIdentitySurface(text)} `.includes(` ${title} `)),
         spread: new Map<string, number>()

@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { contentRuns, corpusIdentityGeneration, corpusIdentityMatchSurface, corpusIdentitySignals, corpusIdentitySurface, corpusIdentityUnits, corpusNamedIdentities } from "./corpus-identity.js";
-import { learnedAnswerUnitFormVerdict, learnedAnswerUnitFormsGeneration } from "./learned-answer-unit-forms.js";
+import { learnedAnswerUnitFormVerdict, learnedAnswerUnitFormsGeneration, learnedAnswerUnitSharedBaseWitnesses } from "./learned-answer-unit-forms.js";
 import { evidenceSourceIdentity, isCodeEvidenceSpan } from "./evidence-source-identity.js";
 import { SEMANTIC_CONSTRAINT, SEMANTIC_VERDICT, SEMANTIC_SOURCE } from "./semantic-codes.js";
 import { atomizeText } from "./semantic-proof-system.js";
@@ -1331,7 +1331,7 @@ export function requestUnitSharesStem(unit: string, surfaceUnit: string): boolea
 
 function computeRequestUnitSharesStem(unit: string, surfaceUnit: string): boolean {
   stemEvaluations++;
-  return requestUnitMatchesSurface(unit, surfaceUnit);
+  return requestUnitMatchesSurface(unit, surfaceUnit) || learnedAnswerUnitSharedBaseWitnesses(unit, surfaceUnit).length > 0;
 }
 
 export function requestContentEvidenceUnits(requestText: string): string[] {

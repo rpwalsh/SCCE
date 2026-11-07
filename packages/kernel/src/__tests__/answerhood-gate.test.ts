@@ -1,13 +1,18 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { assistantForceDecision, unresolvedObligationCount } from "../assistant-force.js";
 import { answerCoversRequest, requestUnitSharesStem } from "../local-evidence-runtime.js";
 import type { EvidenceId, EvidenceSpan, SourceVersionId } from "../types.js";
+import { learnedAnswerUnitSharedBaseWitnesses, primeLearnedAnswerUnitForms } from "../learned-answer-unit-forms.js";
+import { sourceOwnedAnswerhoodLanguage } from "./fixtures/source-owned-answerhood-language.js";
 
 /** Aboutness is the title's; answerhood is the sentence's. The relation asked about must be carried by the sentence that names the subject. */
 describe("answerhood gate", () => {
   const apollo = span("evidence:apollo", "Apollo 11", "unused");
+  const teaching = sourceOwnedAnswerhoodLanguage("command r0. commanded r0. commander r0. commanding r0. land r0. landed r0. lander r0. landing r0. develop r0. developed r0. developer r0. developing r0.");
+  beforeEach(() => teaching.forms.prime());
+  afterEach(() => primeLearnedAnswerUnitForms({ deltas: [], profileIds: new Set() }));
 
   it("requires the relation asked about, not only the subject, once the closed class is learned", () => {
     const units = ["commanded", "apollo"];
@@ -89,6 +94,16 @@ describe("answerhood gate", () => {
     expect(requestUnitSharesStem("develop", "developing")).toBe(true);
     expect(requestUnitSharesStem("born", "byrds")).toBe(false);
     expect(requestUnitSharesStem("moon", "months")).toBe(false);
+  });
+
+  it("requires both observed derivations and an independently attested base in the same source profile", () => {
+    const witnesses = learnedAnswerUnitSharedBaseWitnesses("commanded", "commander");
+    expect(witnesses.some(row => row.base === "command" && row.profileId === teaching.forms.profile.id)).toBe(true);
+    expect(witnesses.every(row => row.left.evidenceIds.length > 0 && row.right.evidenceIds.length > 0)).toBe(true);
+    primeLearnedAnswerUnitForms({ deltas: [], profileIds: new Set() });
+    expect(requestUnitSharesStem("commanded", "commander")).toBe(false);
+    primeLearnedAnswerUnitForms({ deltas: teaching.forms.state.structuralDeltas ?? [], profileIds: new Set(["profile.foreign"]) });
+    expect(requestUnitSharesStem("commanded", "commander")).toBe(false);
   });
 
   it("requires a resolved binding when a requested category is replaced by its member", () => {

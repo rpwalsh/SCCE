@@ -31,11 +31,13 @@ import {
   type UserModelClaimRecord
 } from "../index.js";
 import { storageFixtureForEvaluation } from "./evidence-promotion-evaluation-fixture.js";
+import { sourceOwnedAnswerhoodLanguage } from "./fixtures/source-owned-answerhood-language.js";
 
 const CONVERSATION_ID = "conversation.restart-correction";
 const REQUEST = "What is Mercury?";
 const REJECTED_REFERENT_ID = "node:evidence:mercury-element";
 const PREFERRED_REFERENT_ID = "node:evidence:mercury-planet";
+const teaching = sourceOwnedAnswerhoodLanguage();
 
 describe("dialogue correction across a process restart", () => {
   it("hydrates the owner's typed correction from persisted records after a restart and applies it with its adjustment id in the trace", async () => {
@@ -182,6 +184,9 @@ function sharedStorage(evidence: EvidenceSpan[], dialogueMemory: DialogueMemoryS
   const sessions = new Map<string, DocumentGenerationSessionRecord>();
   return {
     ...base,
+    model: { ...base.model, listLanguageProfiles: teaching.readProfiles },
+    languageMemory: { ...base.languageMemory, listNgramModels: teaching.readModels, listLanguagePatterns: teaching.readPatterns },
+    evidence: { ...base.evidence, getEvidenceBatch: async ids => [...await base.evidence.getEvidenceBatch(ids), ...teaching.evidence.filter(span => ids.includes(span.id))] },
     dialogueMemory,
     userModelClaims: {
       putClaim: async (claim: UserModelClaimRecord) => { claims.set(`${claim.conversationId} ${claim.id}`, claim); },
