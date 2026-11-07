@@ -10,7 +10,8 @@ import { boundedEditDistance, collapsePriorWhitespace, genericQuestionSignal, js
 import { isProseSentence } from "./evidence-gist.js";
 import { isStructuralResidueSurface } from "./structural-residue.js";
 import { traceEvent } from "./debug/trace.js";
-import { calibrated } from "./calibrations/prod-calibrations.js";
+import { calibrated, prodCalibrationIds } from "./calibrations/prod-calibrations.js";
+import { createStringMemo } from "./pure-memo.js";
 import { anchorSymbolUnits, codeBearingLines, featureSet, mean, sourceTextSurface, toJsonValue, weightedJaccard } from "./primitives.js";
 import { evidenceRetrievalSurface, evidenceWindowText } from "./evidence-retrieval-surface.js";
 import type { SemanticAnswerConstructFact } from "./semantic-answer-construct.js";
@@ -1146,7 +1147,7 @@ export function answerCoversRequest(
     && !(options.boundValues ?? []).some(value => sentences.some(sentence => surfaceContainsBoundValue(sentence, value)))) return false;
   // Answerhood compares request material with source/title material using the same unitization as corpus identity
   // and anchor indexing. In particular, `Moby-Dick` is two identity units (`moby`, `dick`), not one relation token.
-  const answerContentUnits = uniqueKernelStrings(contentUnits.flatMap(answerhoodComparisonUnits));
+  const { answerContentUnits, namedGroups, subjectUnits } = answerhoodRequestUnits(requestText, contentUnits);
   // The request's subject: its named anchors when it has any, else its longer content units. A request with none (a pronoun follow-up) is covered by whatever it was bound to.
   // A lone short cased run (a sentence-initial question word) is not a name.
   // A digit qualifier stays: it is the whole difference between Apollo and Apollo 11, and between Project Apollo
@@ -1156,13 +1157,6 @@ export function answerCoversRequest(
   // four-letter one: "What is the capital of Peru?" made "capital" the subject and "peru" the relation, so the
   // sentence naming Lima -- retrieved, ranked second -- failed coverage and the country's landscape answered
   // instead (live 2026-09-12). The floor still applies where the corpus has said nothing.
-  const corpusIdentityGroups = corpusNamedIdentities(requestText)
-    .map(answerhoodComparisonUnits)
-    .filter(units => units.length > 0);
-  const namedGroups = corpusIdentityGroups.length ? corpusIdentityGroups : namedSubjectAnchors(requestText)
-    .map(anchor => answerhoodComparisonUnits(anchor).filter(unit => [...unit].length >= 3 || /^\p{Number}+$/u.test(unit)))
-    .filter(units => units.length >= 2 || [...(units[0] ?? "")].length >= 5);
-  const subjectUnits = namedGroups.length ? namedGroups.flat() : answerContentUnits.filter(unit => [...unit].length >= 6);
   if (!subjectUnits.length) return true;
   // Short units match exactly (the fuzzy matcher confuses "what" with "that"); longer ones tolerate inflection.
   const surfaceUnits = answerhoodComparisonUnits(sentences.join(" ") + " " + evidenceTitle(span)).map(stripOuterPriorSeparators);
@@ -1303,8 +1297,7 @@ export function answerCoversRequest(
 
 /** Reuse the corpus's dash/space comparison while preserving numeric designations and signs. */
 function answerhoodComparisonUnits(text: string): string[] {
-  return corpusIdentityUnits(text).flatMap(unit => /\p{Number}/u.test(unit)
-    ? [unit] : corpusIdentityUnits(corpusIdentityMatchSurface(unit)));
+  return answerhoodComparisonMemo(text);
 }
 
 /**
@@ -1405,6 +1398,15 @@ function sentenceNamesRequestSubject(sentence: string, requestText: string): boo
 export function requestUnitSharesStem(unit: string, surfaceUnit: string): boolean {
   if (!unit || !surfaceUnit) return false;
   if (unit === surfaceUnit) return true;
+  const entry = requestUnitPair(unit, surfaceUnit);
+  if (entry?.stem !== undefined) return entry.stem;
+  const value = computeRequestUnitSharesStem(unit, surfaceUnit);
+  if (entry) entry.stem = value;
+  return value;
+}
+
+function computeRequestUnitSharesStem(unit: string, surfaceUnit: string): boolean {
+  stemEvaluations++;
   if ([...unit].length >= calibrated("units.stem_direct_match_min_length") && requestUnitMatchesSurface(unit, surfaceUnit)) return true;
   const left = [...unit];
   const right = [...surfaceUnit];
@@ -2013,14 +2015,84 @@ export function temporalConceptTitledEvidence(requestText: string, admitted: rea
 }
 
 
-/**
- * Pair-memoized (re-applied after the 8cdd0d1 revert: the memo is pure
- * performance with byte-identical results, measured at 1.8s of a 6.9s
- * steady-state turn; the behavioral admission/ordering changes from that
- * commit are what regressed and stay reverted).
- */
-const requestUnitMatchMemo = new Map<string, boolean>();
+interface RequestUnitPair {
+  match?: { value: boolean; functionRemainder?: string };
+  stem?: boolean;
+}
+const requestUnitPairs = new Map<string, Map<string, RequestUnitPair>>();
+const requestUnitPairOrder: Array<readonly [string, string]> = [];
+let requestUnitPairHead = 0;
+let requestUnitPairGeneration = -1;
+let requestUnitPairCalibrations = prodCalibrationIds();
+let matchEvaluations = 0;
+let stemEvaluations = 0;
+let subjectEvaluations = 0;
 const REQUEST_UNIT_MATCH_MEMO_MAX = 200_000;
+
+function requestUnitPair(unit: string, surfaceUnit: string): RequestUnitPair | undefined {
+  const generation = freeFormLexiconGeneration();
+  const calibrations = prodCalibrationIds();
+  if (generation !== requestUnitPairGeneration || calibrations !== requestUnitPairCalibrations) {
+    requestUnitPairs.clear();
+    requestUnitPairOrder.length = 0;
+    requestUnitPairHead = 0;
+    requestUnitPairGeneration = generation;
+    requestUnitPairCalibrations = calibrations;
+  }
+  if (unit.length > 64 || surfaceUnit.length > 64) return undefined;
+  let surfaces = requestUnitPairs.get(unit);
+  if (!surfaces) { surfaces = new Map(); requestUnitPairs.set(unit, surfaces); }
+  const cached = surfaces.get(surfaceUnit);
+  if (cached) return cached;
+  const entry: RequestUnitPair = {};
+  surfaces.set(surfaceUnit, entry);
+  requestUnitPairOrder.push([unit, surfaceUnit]);
+  if (requestUnitPairOrder.length - requestUnitPairHead > REQUEST_UNIT_MATCH_MEMO_MAX) {
+    const [oldUnit, oldSurface] = requestUnitPairOrder[requestUnitPairHead++]!;
+    const oldSurfaces = requestUnitPairs.get(oldUnit)!;
+    oldSurfaces.delete(oldSurface);
+    if (!oldSurfaces.size) requestUnitPairs.delete(oldUnit);
+    if (requestUnitPairHead >= REQUEST_UNIT_MATCH_MEMO_MAX) {
+      requestUnitPairOrder.splice(0, requestUnitPairHead);
+      requestUnitPairHead = 0;
+    }
+  }
+  return entry;
+}
+
+const answerhoodComparisonMemo = createStringMemo(text => corpusIdentityUnits(text).flatMap(unit => /\p{Number}/u.test(unit)
+  ? [unit] : corpusIdentityUnits(corpusIdentityMatchSurface(unit))), {
+  maxEntries: 4096, maxKeyChars: 262_144, maxTotalChars: 4_000_000
+});
+let answerhoodRequestGeneration = -1;
+const answerhoodRequestMemo = createStringMemo(key => {
+  subjectEvaluations++;
+  const [requestText, contentUnits] = JSON.parse(key) as [string, string[]];
+  const answerContentUnits = uniqueKernelStrings(contentUnits.flatMap(answerhoodComparisonUnits));
+  const corpusIdentityGroups = corpusNamedIdentities(requestText).map(answerhoodComparisonUnits).filter(units => units.length > 0);
+  const namedGroups = corpusIdentityGroups.length ? corpusIdentityGroups : namedSubjectAnchors(requestText)
+    .map(anchor => answerhoodComparisonUnits(anchor).filter(unit => [...unit].length >= 3 || /^\p{Number}+$/u.test(unit)))
+    .filter(units => units.length >= 2 || [...(units[0] ?? "")].length >= 5);
+  const subjectUnits = namedGroups.length ? namedGroups.flat() : answerContentUnits.filter(unit => [...unit].length >= 6);
+  return { answerContentUnits, namedGroups, subjectUnits };
+}, { maxEntries: 4096, maxKeyChars: 262_144, maxTotalChars: 4_000_000 });
+
+function answerhoodRequestUnits(requestText: string, contentUnits: readonly string[]) {
+  const generation = corpusIdentityGeneration();
+  if (generation !== answerhoodRequestGeneration) { answerhoodRequestMemo.clear(); answerhoodRequestGeneration = generation; }
+  return answerhoodRequestMemo(JSON.stringify([requestText, contentUnits]));
+}
+
+export function answerhoodMemoWorkStats() {
+  return { matchEvaluations, stemEvaluations, subjectEvaluations,
+    pairs: requestUnitPairOrder.length - requestUnitPairHead, comparisons: answerhoodComparisonMemo.stats() };
+}
+
+export function clearAnswerhoodWorkMemos(): void {
+  requestUnitPairs.clear(); requestUnitPairOrder.length = 0; requestUnitPairHead = 0;
+  answerhoodComparisonMemo.clear(); answerhoodRequestMemo.clear();
+  matchEvaluations = 0; stemEvaluations = 0; subjectEvaluations = 0;
+}
 
 // Corpus sentences are stable strings re-tokenized by several scorers per turn.
 const surfaceUnitsMemo = new Map<string, string[]>();
@@ -2052,14 +2124,17 @@ function remainderIsLearnedFunctionMaterial(unit: string, remainder: string, fun
   }
   return false;
 }
- function requestUnitMatchesSurface(unit: string, surfaceUnit: string, functionSymbols?: ReadonlySet<string>): boolean {
+export function requestUnitMatchesSurface(unit: string, surfaceUnit: string, functionSymbols?: ReadonlySet<string>): boolean {
   if (!unit || !surfaceUnit) return false;
   if (unit === surfaceUnit) return true;
-  const memoKey = unit.length <= 64 && surfaceUnit.length <= 64 ? `${freeFormLexiconGeneration()}${functionSymbols?.size ?? 0}${unit}${surfaceUnit}` : undefined;
-  if (memoKey !== undefined) {
-    const cached = requestUnitMatchMemo.get(memoKey);
-    if (cached !== undefined) return cached;
-  }
+  const entry = requestUnitPair(unit, surfaceUnit);
+  const match = entry?.match ?? computeRequestUnitMatch(unit, surfaceUnit);
+  if (entry && !entry.match) entry.match = match;
+  return match.value || (match.functionRemainder !== undefined && remainderIsLearnedFunctionMaterial(unit, match.functionRemainder, functionSymbols));
+}
+
+function computeRequestUnitMatch(unit: string, surfaceUnit: string): NonNullable<RequestUnitPair["match"]> {
+  matchEvaluations++;
   const minLength = Math.min(unit.length, surfaceUnit.length);
   const maxLength = Math.max(unit.length, surfaceUnit.length);
   const prefixRelated = unit.startsWith(surfaceUnit) || surfaceUnit.startsWith(unit);
@@ -2073,21 +2148,11 @@ function remainderIsLearnedFunctionMaterial(unit: string, remainder: string, fun
     ? corpusUnitFormVerdict(unit, surfaceUnit)
     : "silent";
   if (oneFormVerdict !== "silent") {
-    const value = oneFormVerdict === "same";
-    if (memoKey !== undefined) requestUnitMatchMemo.set(memoKey, value);
-    return value;
-  }
-  if (prefixRelated && remainderIsLearnedFunctionMaterial(unit, longer.slice(minLength), functionSymbols)) {
-    if (memoKey !== undefined) requestUnitMatchMemo.set(memoKey, true);
-    return true;
+    return { value: oneFormVerdict === "same" };
   }
   const prefixCompatible = prefixRelated && minLength / Math.max(1, maxLength) >= calibrated("units.prefix_ratio_floor");
   const value = prefixCompatible || requestUnitSimilarity(unit, surfaceUnit) >= calibrated("units.similarity_floor");
-  if (memoKey !== undefined) {
-    if (requestUnitMatchMemo.size >= REQUEST_UNIT_MATCH_MEMO_MAX) requestUnitMatchMemo.clear();
-    requestUnitMatchMemo.set(memoKey, value);
-  }
-  return value;
+  return { value, ...(prefixRelated ? { functionRemainder: longer.slice(minLength) } : {}) };
 }
 
 
