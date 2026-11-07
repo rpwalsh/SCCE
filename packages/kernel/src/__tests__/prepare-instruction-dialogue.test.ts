@@ -107,7 +107,7 @@ describe("instruction dialogue preparation", () => {
     const second = await prepareInstructionDialogue({ inputPath, outputDir: secondDir, metadata: metadata() });
 
     expect(await readFile(join(firstDir, "manifest.json"), "utf8")).toBe(await readFile(join(secondDir, "manifest.json"), "utf8"));
-    expect(await readFile(join(firstDir, first.outputs[0]!.path)).equals(await readFile(join(secondDir, second.outputs[0]!.path))).toBe(true);
+    expect((await readFile(join(firstDir, first.outputs[0]!.path))).equals(await readFile(join(secondDir, second.outputs[0]!.path)))).toBe(true);
     await expect(prepareInstructionDialogue({
       inputPath,
       outputDir: join(root, "too-small"),

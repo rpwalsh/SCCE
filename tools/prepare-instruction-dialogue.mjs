@@ -1,8 +1,10 @@
 #!/usr/bin/env node
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { createReadStream } from "node:fs";
 import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
@@ -35,7 +37,7 @@ export async function prepareInstructionDialogue({ inputPath, outputDir, metadat
   const caps = { ...DEFAULT_PREPARATION_LIMITS, ...limits };
   validateLimits(caps);
   const resolvedOutputDir = resolve(outputDir);
-  const parent = dirname(resolvedOutputDir);
+  const parent = resolve(dirname(resolvedOutputDir));
   await mkdir(parent, { recursive: true });
   try {
     await stat(resolvedOutputDir);
@@ -130,11 +132,15 @@ export async function prepareInstructionDialogue({ inputPath, outputDir, metadat
     }
     await writeFile(join(stageDir, "manifest.json"), manifestBytes, { flag: "wx" });
     totalOutputBytes += manifestBytes.byteLength;
-    await rename(stageDir, resolvedOutputDir);
+    const safeStageDir = assertDirectChildPath(stageDir, parent, "staging directory");
+    const safeOutputDir = assertDirectChildPath(resolvedOutputDir, parent, "output directory");
+    await rename(safeStageDir, safeOutputDir);
     return { ...manifest, totalOutputBytes };
   } catch (error) {
     input.destroy();
-    await rm(stageDir, { recursive: true, force: true });
+    assertDirectChildPath(resolvedOutputDir, parent, "output directory");
+    const safeStageDir = assertDirectChildPath(stageDir, parent, "staging directory");
+    await rm(safeStageDir, { recursive: true, force: true });
     throw error;
   }
 
@@ -278,6 +284,17 @@ function jsonStringPayloadBytes(value) {
 
 function sortedRecord(record) {
   return Object.fromEntries(Object.entries(record).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0));
+}
+
+function assertDirectChildPath(candidate, parent, label) {
+  const resolvedParent = resolve(parent);
+  const resolvedCandidate = resolve(candidate);
+  const childPath = relative(resolvedParent, resolvedCandidate);
+  if (!childPath || childPath === "." || isAbsolute(childPath) || childPath === ".."
+    || childPath.startsWith(`..${sep}`) || childPath.includes(sep)) {
+    throw new Error(`${label} must resolve to a direct child of the staging parent`);
+  }
+  return resolvedCandidate;
 }
 
 function parseArgs(argv) {
