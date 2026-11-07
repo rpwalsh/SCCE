@@ -118,6 +118,7 @@ describe("a surface carrying the request's resolved value satisfies the relation
     let newlyAdmitted = 0;
     let newlyRefused = 0;
     let carriesResolvedValue = 0;
+    const admittedBindings: Array<[string, string]> = [];
     for (const requestText of corpus.requests) {
       const units = requestContentEvidenceUnits(requestText).filter(unit => !CLOSED_CLASS.has(unit));
       for (const span of spans) {
@@ -128,7 +129,10 @@ describe("a surface carrying the request's resolved value satisfies the relation
           considered += 1;
           const was = answerCoversRequest([sentence], span, units, requestText, { relationRequired: true });
           const now = answerCoversRequest([sentence], span, units, requestText, { relationRequired: true, boundValues: values });
-          if (!was && now) newlyAdmitted += 1;
+          if (!was && now) {
+            newlyAdmitted += 1;
+            admittedBindings.push([requestText, String((span.provenance as { title: string }).title)]);
+          }
           if (was && !now) newlyRefused += 1;
           if (!was && values.some(value => sentence.includes(value))) carriesResolvedValue += 1;
         }
@@ -136,14 +140,13 @@ describe("a surface carrying the request's resolved value satisfies the relation
     }
     expect(considered).toBeGreaterThan(100);
     expect(newlyRefused).toBe(0);
-    // Carrying the value is necessary, never sufficient: the exemption lifts the relation obligation only, and the
-    // subject obligation still refuses one of the three carriers here -- "When was the Sociedade Brasileira de
-    // Belas Artes founded?" against the Müjde Uzman lead, a different source that happens to state the same date.
-    // That is the cross-source fabrication the gate exists for, and it stays refused.
+    // A resolved date cannot turn another source's subject into the requested subject.
     expect(newlyAdmitted).toBeLessThan(carriesResolvedValue);
-    // Measured 2026-09-16 on these fixtures: 304 triples, 74 admitted before, 76 after, 3 carriers. The counts are
-    // pinned so a widening of the exemption cannot arrive quietly.
-    expect(carriesResolvedValue).toBe(3);
+    expect(carriesResolvedValue).toBe(14);
     expect(newlyAdmitted).toBe(2);
+    expect(admittedBindings).toEqual([
+      ["When was Ada Lovelace born?", "Ada Lovelace"],
+      ["When was David Mungoshi born?", "david mungoshi"]
+    ]);
   });
 });

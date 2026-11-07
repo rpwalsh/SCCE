@@ -1081,16 +1081,8 @@ export function answerCoversRequest(
   // Answerhood compares request material with source/title material using the same unitization as corpus identity
   // and anchor indexing. In particular, `Moby-Dick` is two identity units (`moby`, `dick`), not one relation token.
   const { answerContentUnits, namedGroups, subjectUnits } = answerhoodRequestUnits(requestText, contentUnits);
-  // The request's subject: its named anchors when it has any, else its longer content units. A request with none (a pronoun follow-up) is covered by whatever it was bound to.
-  // A lone short cased run (a sentence-initial question word) is not a name.
-  // A digit qualifier stays: it is the whole difference between Apollo and Apollo 11, and between Project Apollo
-  // reaching for the Moon and the mission that landed on it.
-  // A run the corpus carries as a source identity is the subject at any length. The five-character floor below was
-  // a stand-in for "long enough to be a name rather than a question word", and it swapped the roles of a
-  // four-letter one: "What is the capital of Peru?" made "capital" the subject and "peru" the relation, so the
-  // sentence naming Lima -- retrieved, ranked second -- failed coverage and the country's landscape answered
-  // instead (live 2026-09-12). The floor still applies where the corpus has said nothing.
-  if (!subjectUnits.length) return true;
+  // Unrecognized request material cannot supply a guessed subject.
+  if (!subjectUnits.length && !options.relationRequired) return true;
   // Short units match exactly (the fuzzy matcher confuses "what" with "that"); longer ones tolerate inflection.
   const surfaceUnits = answerhoodComparisonUnits(sentences.join(" ") + " " + evidenceTitle(span)).map(stripOuterPriorSeparators);
   const matches = (unit: string) => surfaceUnits.some(surfaceUnit => requestUnitMatchesSurface(unit, surfaceUnit));
@@ -1196,7 +1188,9 @@ export function answerCoversRequest(
   // otherwise be satisfied by the relation word itself -- "Their son Eduard was born in Zurich" carries "born",
   // and "born" was inside the anchor, so the sentence counted as naming Einstein.
   const answerSubjectUnits = sourceSubjectUnits.length ? sourceSubjectUnits : subjectUnits;
-  const subjectInAnsweringText = answerSubjectUnits.some(unitPresentIn(sentenceUnits));
+  const subjectInAnsweringText = sourceSubjectUnits.length || namedGroups.length
+    ? answerSubjectUnits.some(unitPresentIn(sentenceUnits))
+    : answerContentUnits.length > 0 && answerContentUnits.every(unitPresentIn(sentenceUnits));
   // A self-identifying source can bind an anaphoric relation through one of its learned identity units beyond the
   // title (for example, Ahab in a Moby-Dick passage). The title itself is not appended to context: doing so makes a
   // generic sentence such as "The captain was below" look subject-bound merely because the source is titled Pequod.
@@ -1204,10 +1198,11 @@ export function answerCoversRequest(
   const sourceIdentitySupportUnits = evidenceIdentityBeyondTitle(span)
     ? answerhoodComparisonUnits(evidenceIdentity(span)).filter(unit => !titleUnits.has(unit))
     : [];
-  const sourceIdentityBound = sourceIdentitySupportUnits.some(unitPresentIn(sentenceUnits));
+  const sourceIdentityBound = sourceSubjectUnits.length > 0 && sourceIdentitySupportUnits.some(unitPresentIn(sentenceUnits));
   let contextUnits: string[] | undefined;
   const precedingContextUnits = () => contextUnits ??= answerhoodComparisonUnits(`${precedingSentenceContext(span, answeringText)} ${answeringText}`).map(stripOuterPriorSeparators);
-  const subjectGroups = sourceSubjectUnits.length ? [sourceSubjectUnits] : namedGroups.length ? namedGroups : [subjectUnits];
+  const subjectGroups = (sourceSubjectUnits.length ? [sourceSubjectUnits] : namedGroups)
+    .filter(group => group.length > 0);
   // A titled source's opening block is about its title by construction, and states the standing fact anaphorically:
   // "Baku is the capital and largest city", "Tirana is the capital ... in the country", "Alabama's capital is
   // Montgomery". Requiring the name inside those sentences declined the article's own definition of its subject.
@@ -1222,7 +1217,8 @@ export function answerCoversRequest(
   // Apollo 11), so every numeric unit of the subject must be in the answering text or the one sentence before it --
   // checked in the widened context regardless of whether a bare name already matched there, since that is exactly
   // what tells "Apollo" alone apart from "Apollo 11".
-  const numericQualifiersPresent = subjectUnits.filter(unit => /^\p{Number}+$/u.test(unit)).every(unit => precedingContextUnits().includes(unit));
+  const numericQualifiersPresent = answerhoodComparisonUnits(requestText).filter(unit => /^\p{Number}+$/u.test(unit))
+    .every(unit => precedingContextUnits().includes(unit));
   return subjectSatisfied && numericQualifiersPresent && relationCarried;
 }
 
@@ -1231,12 +1227,12 @@ function answerhoodComparisonUnits(text: string): string[] {
   return answerhoodComparisonMemo(text);
 }
 
-/** Keep qualified identifiers atomic when judging a natural-language relation. */
+/** Formal identifiers do not discharge natural-language predicate obligations. */
 function answerhoodRelationComparisonUnits(text: string): string[] {
   return splitPriorUnits(normalizePriorKey(text)).flatMap(raw => {
     const unit = stripOuterPriorSeparators(raw);
     return /[/\\_:`]/u.test(unit) || /[\p{L}\p{N}]\.[\p{L}\p{N}]/u.test(unit)
-      ? [unit] : answerhoodComparisonUnits(unit).map(stripOuterPriorSeparators);
+      ? [] : answerhoodComparisonUnits(unit).map(stripOuterPriorSeparators);
   });
 }
 
@@ -1966,11 +1962,8 @@ const answerhoodRequestMemo = createStringMemo(key => {
   subjectEvaluations++;
   const [requestText, contentUnits] = JSON.parse(key) as [string, string[]];
   const answerContentUnits = uniqueKernelStrings(contentUnits.flatMap(answerhoodComparisonUnits));
-  const corpusIdentityGroups = corpusNamedIdentities(requestText).map(answerhoodComparisonUnits).filter(units => units.length > 0);
-  const namedGroups = corpusIdentityGroups.length ? corpusIdentityGroups : namedSubjectAnchors(requestText)
-    .map(anchor => answerhoodComparisonUnits(anchor).filter(unit => [...unit].length >= 3 || /^\p{Number}+$/u.test(unit)))
-    .filter(units => units.length >= 2 || [...(units[0] ?? "")].length >= 5);
-  const subjectUnits = namedGroups.length ? namedGroups.flat() : answerContentUnits.filter(unit => [...unit].length >= 6);
+  const namedGroups = corpusNamedIdentities(requestText).map(answerhoodComparisonUnits).filter(units => units.length > 0);
+  const subjectUnits = namedGroups.length ? namedGroups.flat() : answerContentUnits;
   return { answerContentUnits, namedGroups, subjectUnits };
 }, { maxEntries: 4096, maxKeyChars: 262_144, maxTotalChars: 4_000_000 });
 
@@ -2114,8 +2107,14 @@ export function spanIsUnparsedMarkup(span: EvidenceSpan): boolean {
 /** True when some span's source title names one of the request's own named subjects. A resident shortcut that
  *  cannot show this is a tangential mention, and must not preempt the corpus search that can find the subject's article. */
 export function evidenceTitledForRequestSubject(text: string, spans: readonly EvidenceSpan[]): boolean {
-  const anchors = namedSubjectAnchors(text).map(anchor => normalizePriorKey(anchor)).filter(anchor => anchor.length >= 3);
-  if (!anchors.length) return true;
+  const anchors = corpusNamedIdentities(text).map(anchor => normalizePriorKey(anchor)).filter(Boolean);
+  if (!anchors.length) {
+    const request = ` ${answerhoodComparisonUnits(text).join(" ")} `;
+    return spans.some(span => {
+      const title = answerhoodComparisonUnits(evidenceTitle(span));
+      return title.length > 0 && request.includes(` ${title.join(" ")} `);
+    });
+  }
   // Whole units, not substrings: "born" is inside "Borna Reichstag constituency", and that match kept a pronoun
   // follow-up on the wrong article.
   return spans.some(span => {

@@ -34,9 +34,7 @@ export function namedSubjectAnchors(text: string): string[] {
 
 
  function namedSourceAnchorSpecificEnough(anchor: string): boolean {
-  const units = splitPriorUnits(anchor);
-  if (units.length >= 2) return true;
-  return units.some(unit => [...unit].length >= 3 && !genericQuestionSignal(unit));
+  return splitPriorUnits(anchor).length > 0;
 }
 
 
