@@ -1252,6 +1252,7 @@ export function answerCoversRequest(
   const resolvedValueCarried = (options.boundValues ?? []).some(value =>
     surfaceContainsBoundValue(answeringText, value));
   const relationCarried = missingRelationUnits.length === 0 || resolvedValueCarried;
+  if (!relationCarried) return false;
   const unitPresentIn = (units: readonly string[]) => (unit: string) => units.some(surfaceUnit => surfaceUnit === unit
     || ((unit.startsWith(surfaceUnit) || surfaceUnit.startsWith(unit)) && Math.min(unit.length, surfaceUnit.length) / Math.max(unit.length, surfaceUnit.length) >= calibrated("units.prefix_ratio_floor")));
   // Real prose names its subject once and continues by anaphora ("the mission", omission, a bare pronoun): requiring
@@ -1278,7 +1279,8 @@ export function answerCoversRequest(
     ? answerhoodComparisonUnits(evidenceIdentity(span)).filter(unit => !titleUnits.has(unit))
     : [];
   const sourceIdentityBound = sourceIdentitySupportUnits.some(unitPresentIn(sentenceUnits));
-  const contextUnits = answerhoodComparisonUnits(`${precedingSentenceContext(span, answeringText)} ${answeringText}`).map(stripOuterPriorSeparators);
+  let contextUnits: string[] | undefined;
+  const precedingContextUnits = () => contextUnits ??= answerhoodComparisonUnits(`${precedingSentenceContext(span, answeringText)} ${answeringText}`).map(stripOuterPriorSeparators);
   const subjectGroups = sourceSubjectUnits.length ? [sourceSubjectUnits] : namedGroups.length ? namedGroups : [subjectUnits];
   // A titled source's opening block is about its title by construction, and states the standing fact anaphorically:
   // "Baku is the capital and largest city", "Tirana is the capital ... in the country", "Alabama's capital is
@@ -1289,12 +1291,12 @@ export function answerCoversRequest(
   const subjectSatisfied = subjectInAnsweringText
     || titledOpeningBlock
     || sourceIdentityBound
-    || subjectGroups.some(group => group.every(unitPresentIn(contextUnits)));
+    || subjectGroups.some(group => group.every(unitPresentIn(precedingContextUnits())));
   // A name's parts are redundant (Einstein names Albert Einstein); a numeric qualifier is not (Apollo does not name
   // Apollo 11), so every numeric unit of the subject must be in the answering text or the one sentence before it --
   // checked in the widened context regardless of whether a bare name already matched there, since that is exactly
   // what tells "Apollo" alone apart from "Apollo 11".
-  const numericQualifiersPresent = subjectUnits.filter(unit => /^\p{Number}+$/u.test(unit)).every(unit => contextUnits.includes(unit));
+  const numericQualifiersPresent = subjectUnits.filter(unit => /^\p{Number}+$/u.test(unit)).every(unit => precedingContextUnits().includes(unit));
   return subjectSatisfied && numericQualifiersPresent && relationCarried;
 }
 
