@@ -1,0 +1,19 @@
+{
+  "dataset": "databricks/databricks-dolly-15k",
+  "uri": "https://huggingface.co/datasets/databricks/databricks-dolly-15k/tree/bdd27f4d94b9c1f951818a7da7fd7aeea5dbff1a",
+  "pinnedRevision": "bdd27f4d94b9c1f951818a7da7fd7aeea5dbff1a",
+  "license": "CC-BY-SA-3.0",
+  "attribution": "Databricks, Inc. (2023); instruction records were authored by Databricks employees. Some source contexts are Wikipedia excerpts as documented by the dataset card.",
+  "shareAlikeNotice": "This preparation is adapted from material licensed CC BY-SA 3.0. Retain attribution and license notices; distribute adaptations under the same license.",
+  "changeNotice": "Instructions and responses are represented as NFC-normalized speech turns; source context is retained only through non-speech supportingSourceRanges. The source category is mapped explicitly to commitmentScope; no scope is inferred from prompt wording.",
+  "categoryCommitmentScopes": {
+    "brainstorming": "conversation",
+    "classification": "conversation",
+    "closed_qa": "external",
+    "creative_writing": "conversation",
+    "general_qa": "external",
+    "information_extraction": "external",
+    "open_qa": "external",
+    "summarization": "external"
+  }
+}
