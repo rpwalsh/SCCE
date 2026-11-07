@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { trainKneserNey } from "../kneser-ney.js";
 import { clearFreeFormLexicon, freeFormLexicon, freeFormLexiconGeneration, primeFreeFormLexicon, residentLanguageModels } from "../free-form-lexicon.js";
-import { learnedAnswerUnitFormVerdict, learnedAnswerUnitFormsGeneration, primeLearnedAnswerUnitForms } from "../learned-answer-unit-forms.js";
+import { learnedAnswerUnitFormVerdict, learnedAnswerUnitFormsGeneration, learnedAnswerUnitSharedBaseWitnesses, primeLearnedAnswerUnitForms } from "../learned-answer-unit-forms.js";
 import { withRequestLanguageFormScope } from "../request-language-form-scope.js";
 import type { KneserNeyModel } from "../kneser-ney.js";
 import type { LanguageStructuralDelta } from "../language-state-delta.js";
@@ -70,10 +70,32 @@ describe("request language form scope", () => {
     });
     expect(learnedAnswerUnitFormVerdict("walla", "wallawalla").status).toBe("unresolved");
   });
+
+  it("requires two forward derivations from one attested base in the same profile", async () => {
+    await withRequestLanguageFormScope(async () => {
+      const deltas = [
+        learnedDelta("owner.a", "and", "command"),
+        learnedDelta("owner.a", "command", "commanded"),
+        learnedDelta("owner.a", "command", "commander"),
+        learnedDelta("owner.b", "rootword", "command"),
+        learnedDelta("owner.b", "command", "commanded"),
+        learnedDelta("owner.b", "rootword", "plux"),
+        learnedDelta("owner.b", "plux", "pluxity"),
+        learnedDelta("owner.c", "rootword", "command"),
+        learnedDelta("owner.c", "command", "commander"),
+        learnedDelta("owner.c", "rootword", "plux"),
+        learnedDelta("owner.c", "plux", "pluxer")
+      ];
+      primeLearnedAnswerUnitForms({ deltas, profileIds: new Set(["owner.a", "owner.b", "owner.c"]) });
+      expect(learnedAnswerUnitSharedBaseWitnesses("commanded", "commander")).toHaveLength(1);
+      expect(learnedAnswerUnitSharedBaseWitnesses("and", "commanded")).toEqual([]);
+      expect(learnedAnswerUnitSharedBaseWitnesses("pluxity", "pluxer")).toEqual([]);
+    });
+  });
 });
 
 function learnedDelta(profileId: string, from: string, to: string): LanguageStructuralDelta {
-  return { id: `delta.${profileId}`, patternId: `pattern.${profileId}`, profileId, kind: "morphology",
+  return { id: `delta.${profileId}.${from}.${to}`, patternId: `pattern.${profileId}.${from}.${to}`, profileId, kind: "morphology",
     surface: { from, to }, grammatical: { ruleId: `rule.${profileId}` }, semantic: {}, support: 1,
     evidenceIds: [`evidence.${profileId}`] as never[] };
 }

@@ -9,6 +9,8 @@ export interface LearnedFormWitness {
   profileId: string;
   ruleId: string;
   evidenceIds: readonly string[];
+  from: string;
+  to: string;
 }
 let generation = 0;
 let signature = "";
@@ -65,7 +67,7 @@ function buildLearnedForms(owned: readonly LanguageStructuralDelta[]): {
     let profileForms = observed.get(delta.profileId);
     if (!profileForms) { profileForms = new Set(); observed.set(delta.profileId, profileForms); }
     profileForms.add(right);
-    const witness = Object.freeze({ patternId: delta.patternId, profileId: delta.profileId, ruleId: delta.grammatical.ruleId!, evidenceIds: Object.freeze([...delta.evidenceIds].map(String)) });
+    const witness = Object.freeze({ patternId: delta.patternId, profileId: delta.profileId, ruleId: delta.grammatical.ruleId!, evidenceIds: Object.freeze([...delta.evidenceIds].map(String)), from: left, to: right });
     for (const [from, to] of [[left, right], [right, left]] as const) {
       let targets = result.get(from);
       if (!targets) { targets = new Map(); result.set(from, targets); }
@@ -101,15 +103,18 @@ export function learnedAnswerUnitSharedBaseWitnesses(left: string, right: string
   const visibleAttested = scoped.active ? scoped.value?.attestedForms : attestedForms;
   if (!visibleForms || !visibleAttested) return [];
   const out: LearnedAnswerUnitSharedBaseWitness[] = [];
-  for (const [base, targets] of visibleForms) {
+  const leftTargets = visibleForms.get(leftSurface);
+  if (!leftTargets) return [];
+  for (const [base, leftWitnesses] of leftTargets) {
     if (base === leftSurface || base === rightSurface) continue;
-    const leftWitnesses = targets.get(leftSurface) ?? [];
-    const rightWitnesses = targets.get(rightSurface) ?? [];
+    const rightWitnesses = visibleForms.get(base)?.get(rightSurface) ?? [];
     if (!leftWitnesses.length || !rightWitnesses.length) continue;
     for (const leftWitness of leftWitnesses) {
-      if (!visibleAttested.get(leftWitness.profileId)?.has(base)) continue;
+      if (leftWitness.from !== base || leftWitness.to !== leftSurface || !visibleAttested.get(leftWitness.profileId)?.has(base)) continue;
       for (const rightWitness of rightWitnesses) {
-        if (rightWitness.profileId === leftWitness.profileId) out.push({ base, profileId: leftWitness.profileId, left: leftWitness, right: rightWitness });
+        if (rightWitness.profileId === leftWitness.profileId && rightWitness.from === base && rightWitness.to === rightSurface) {
+          out.push({ base, profileId: leftWitness.profileId, left: leftWitness, right: rightWitness });
+        }
       }
     }
   }
