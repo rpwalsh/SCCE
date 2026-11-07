@@ -7,7 +7,8 @@ import type { TranslationPlan } from "./translation.js";
 import { canonicalStringify, clamp01, createHasher, mean, symbolizeData, toJsonValue } from "./primitives.js";
 import { projectGraphEdgeRelationPotential } from "./relation-potential.js";
 import { attemptConstructRealization } from "./answer-realization.js";
-import type { SemanticRealizationContract } from "./semantic-answer-construct.js";
+import { candidateIsVerifiedBoundValue, candidateSurvivesRealizationContract, type SemanticRealizationContract } from "./semantic-answer-construct.js";
+import { surfaceContainsBoundValue } from "./surface-linguistics.js";
 import type { LanguageMemoryRuntime, LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
 import {
   addReasoningFact,
@@ -310,7 +311,7 @@ export function planCognitiveProposals(input: CognitivePlannerInput): CognitiveP
     hypothesisDrafts(input, activeOperators, nodeById),
     relationDraftsResult,
     sourceSynthesisDraftsResult,
-    oneHopConstructDraft(input, relationDraftsResult.length > 0 || sourceSynthesisDraftsResult.length > 0),
+    oneHopConstructDraft(input),
     constructPriorDrafts(input, activeOperators),
     clarificationDrafts(input, activeOperators)
   ];
@@ -1379,19 +1380,29 @@ function sourceSynthesisDrafts(
  * Closes a real gap, confirmed live: this planner made zero calls to languageMemory.generate, and
  * relationDrafts/sourceSynthesisDrafts both require multi-step graph structure or >=2 distinct sources -- a
  * plain one-hop fact ("Apollo 11 landed on 20:17") satisfies neither, so reasoned-synthesis candidates always
- * scored support:0 for ordinary one-hop questions. Only fires when neither of those two drafts produced
- * anything (this planner's own zero-fired check, not per-subject -- MMR/dedup downstream absorbs any overlap).
+ * scored support:0 for ordinary one-hop questions. Owned bound facts compete with every other draft;
+ * MMR/dedup downstream absorbs overlap.
  * Real generation is attempted first via the same attemptConstructRealization every other realization call
  * site uses; when it fails (the known Kneser-Ney/frames limitation -- see
  * [[project-semantic-realization-contract-20260909]]), the fact's own already-attested bound value is used
  * directly -- real, verified content, not a fabrication, the same value proofAnswer's temporal-value path
  * already surfaces for the candidate lane this proposal competes against.
  */
-function oneHopConstructDraft(input: CognitivePlannerInput, otherDraftsFired: boolean): ProposalDraft[] {
-  if (otherDraftsFired || !input.realizationContract) return [];
-  const fact = input.realizationContract.sourceFact;
+function oneHopConstructDraft(input: CognitivePlannerInput): ProposalDraft[] {
+  const contract = input.realizationContract;
+  if (!contract) return [];
+  const fact = contract.sourceFact;
   const object = fact.object.trim();
   if (!object) return [];
+  const evidenceIds = asEvidenceIds(fact.evidenceIds ?? []);
+  const ownerIds = new Set(evidenceIds.map(String));
+  const owners = evidenceIds.map(id => input.evidence.find(span => String(span.id) === String(id)));
+  const boundValues = Object.values(contract.boundValues);
+  if (!evidenceIds.length || owners.some(span => !span || span.status !== "promoted")
+    || contract.evidenceIds.length !== ownerIds.size || contract.evidenceIds.some(id => !ownerIds.has(String(id)))
+    || contract.requestedSlotId !== (fact.requestedSlotId ?? fact.questionSlotId)
+    || !boundValues.length || boundValues.some(value => value.trim() !== object)
+    || !owners.some(span => span && surfaceContainsBoundValue(String(span.text ?? span.textPreview ?? ""), object))) return [];
   const realizationAttempt = input.languageMemoryForRealization
     ? attemptConstructRealization(input.realizationContract, {
       ...input.languageMemoryForRealization,
@@ -1400,7 +1411,7 @@ function oneHopConstructDraft(input: CognitivePlannerInput, otherDraftsFired: bo
     : undefined;
   const text = cleanMeaningSurface(realizationAttempt?.accepted && realizationAttempt.surface ? realizationAttempt.surface.text : object);
   if (!text) return [];
-  const evidenceIds = asEvidenceIds(fact.evidenceIds ?? []);
+  if (!candidateIsVerifiedBoundValue(text, contract) && !candidateSurvivesRealizationContract(text, contract).survives) return [];
   const claim = plannedClaim({
     seed: ["one_hop_construct", fact.subject, fact.predicate, fact.object],
     text,
@@ -1408,7 +1419,9 @@ function oneHopConstructDraft(input: CognitivePlannerInput, otherDraftsFired: bo
     evidenceIds,
     priorIds: [],
     graphNodeIds: [fact.sourceNodeId, fact.targetNodeId].filter(Boolean),
-    graphEdgeIds: fact.relationId ? [fact.relationId] : [],
+    graphEdgeIds: input.graph.edges.filter(edge => String(edge.source) === fact.sourceNodeId
+      && String(edge.target) === fact.targetNodeId && String(edge.relationId) === fact.relationId
+      && edge.evidenceIds.some(id => ownerIds.has(String(id)))).map(edge => String(edge.id)),
     externallyFactual: true,
     hypothetical: false,
     trace: {

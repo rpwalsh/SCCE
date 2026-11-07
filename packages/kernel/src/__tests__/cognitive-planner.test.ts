@@ -407,7 +407,10 @@ describe("cognitive meaning planner", () => {
       evidenceIds: ["evidence.apollo11"]
     };
     const contract = compileRealizationContract("When did Apollo 11 land on the Moon?", fact);
-    const proposals = planCognitiveProposals(plannerInput({ realizationContract: contract }));
+    const proposals = planCognitiveProposals(plannerInput({
+      evidence: [evidence("evidence.apollo11", "source.apollo11", "Apollo 11 landed at 20:17.")],
+      realizationContract: contract
+    }));
 
     const oneHop = proposals.find(proposal => proposal.claims.some(claim => claim.text === "20:17"));
     expect(oneHop).toBeDefined();
@@ -415,9 +418,10 @@ describe("cognitive meaning planner", () => {
     expect(claim.basis).toBe("direct_evidence");
     expect(claim.evidenceIds).toEqual(["evidence.apollo11"]);
     expect(claim.externallyFactual).toBe(true);
+    expect(claim.graphEdgeIds).toEqual([]);
   });
 
-  it("does not add the one-hop draft when relationDrafts or sourceSynthesisDrafts already produced a claim", () => {
+  it("rejects an unowned bound fact even when another graph draft exists", () => {
     const premise = evidence("evidence.premise", "source.premise", "The upstream gate is closed.");
     const source = node("node.upstream", "upstream gate closure", [premise.id]);
     const target = node("node.downstream", "downstream flow reduction", []);
@@ -446,6 +450,58 @@ describe("cognitive meaning planner", () => {
     }));
 
     expect(proposals.some(proposal => proposal.claims.some(claim => claim.text === "unrelated bound value"))).toBe(false);
+  });
+
+  it("keeps an owned bound fact alongside an unrelated graph draft and records only real matching edge IDs", () => {
+    const premise = evidence("evidence.premise", "source.premise", "The upstream gate is closed.");
+    const owned = evidence("evidence.owned", "source.owned", "ada visited tokyo.");
+    const upstream = node("node.upstream", "upstream gate closure", [premise.id]);
+    const downstream = node("node.downstream", "downstream flow reduction", []);
+    const subject = node("node.ada", "ada", [owned.id]);
+    const target = node("node.tokyo", "tokyo", [owned.id]);
+    const fact: SemanticAnswerConstructFact = {
+      subject: "ada", predicate: "visited", object: "tokyo",
+      sourceNodeId: String(subject.id), targetNodeId: String(target.id), relationId: "relation.visited",
+      forceClass: "direct_evidence", score: 1, activation: 1, overlap: 1, support: 1,
+      evidenceIds: [String(owned.id)], requestedSlotId: "slot.destination"
+    };
+    const graph = graphSlice([upstream, downstream, subject, target], [
+      edge("edge.flow", upstream, downstream, [premise.id]),
+      edge("edge.actual_visit", subject, target, [owned.id], { relationId: fact.relationId }),
+      edge("edge.other_relation", subject, target, [owned.id]),
+      edge("edge.foreign_visit", subject, target, [premise.id], { relationId: fact.relationId })
+    ]);
+    const contract = compileRealizationContract("fixture request", fact);
+    const proposals = planCognitiveProposals(plannerInput({
+      graph, evidence: [premise, owned], realizationContract: contract,
+      operators: [operator("relation", COGNITIVE_OPERATOR_IDS.relationComposition, ["inferentialDepth"])]
+    }));
+    expect(proposals.some(proposal => proposal.claims.some(claim => claim.basis === "reasoned_inference"))).toBe(true);
+    const claim = proposals.flatMap(proposal => proposal.claims).find(claim =>
+      (claim.trace as Record<string, unknown>)?.source === "cognitive_planner.one_hop_construct");
+    expect(claim).toMatchObject({ text: "tokyo", basis: "direct_evidence", evidenceIds: [owned.id], graphEdgeIds: ["edge.actual_visit"] });
+    expect(claim!.graphEdgeIds).not.toContain(fact.relationId);
+  });
+
+  it("rejects foreign, mismatched, unattested and unpromoted bound contracts", () => {
+    const owned = evidence("evidence.owned", "source.owned", "ada visited tokyo.");
+    const fact: SemanticAnswerConstructFact = {
+      subject: "ada", predicate: "visited", object: "tokyo", sourceNodeId: "", targetNodeId: "", relationId: "relation.visited",
+      forceClass: "direct_evidence", score: 1, activation: 1, overlap: 1, support: 1, evidenceIds: [String(owned.id)],
+      requestedSlotId: "slot.destination"
+    };
+    const contract = compileRealizationContract("fixture request", fact);
+    const cases = [
+      { evidence: [owned], realizationContract: { ...contract, sourceFact: { ...fact, evidenceIds: ["evidence.foreign"] } } },
+      { evidence: [owned], realizationContract: { ...contract, evidenceIds: ["evidence.foreign"] } },
+      { evidence: [owned], realizationContract: { ...contract, boundValues: { "slot.destination": "osaka" } } },
+      { evidence: [owned], realizationContract: { ...contract, requestedSlotId: "slot.wrong_role" } },
+      { evidence: [{ ...owned, text: "ada visited osaka.", textPreview: "ada visited osaka." }], realizationContract: contract },
+      { evidence: [{ ...owned, status: "quarantined" as EvidenceSpan["status"] }], realizationContract: contract }
+    ];
+    for (const input of cases) {
+      expect(planCognitiveProposals(plannerInput(input)).flatMap(proposal => proposal.claims)).toEqual([]);
+    }
   });
 
   it("replans proposal-family execution after an empty first operator outcome", () => {
