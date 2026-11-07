@@ -5,6 +5,9 @@ import {
   createCorpusRegistry,
   createScceKernel,
   CORPUS_ROLE_IDS,
+  CORPUS_SOURCE_SYSTEM_IDS,
+  CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA,
+  REQUEST_REQUIREMENT_PATTERN_SCHEMA,
   canonicalCorpusSourceSystemId,
   languageMemoryEligibleCorpora,
   languageMemoryHydrationPlan,
@@ -16,6 +19,8 @@ import type { EventRangeQuery } from "../storage.js";
 import type { EpisodeId } from "../types.js";
 import type { LanguageIdentityRecord } from "../language-identity.js";
 import { filterEpisodeEvents, filterEventRange } from "./event-range-fixture.js";
+
+type LanguageMemoryQuery = { sourceSystem?: string; profileIds?: readonly string[]; patternSchemas?: readonly string[]; limit?: number };
 
 describe("corpus registry", () => {
   it("selects enabled language-memory corpora with bounded hydration limits", () => {
@@ -42,7 +47,7 @@ describe("corpus registry", () => {
   });
 
   it("does not guess a dominant Mouth language profile during surface-free warmup", async () => {
-    const queried: Array<{ sourceSystem?: string; profileIds: string[] }> = [];
+    const queried: LanguageMemoryQuery[] = [];
     const storage = corpusQueryStorage(queried);
     const kernel = createScceKernel({
       storage,
@@ -60,11 +65,20 @@ describe("corpus registry", () => {
     expect(result.language?.loaded).toBe(true);
     const exactProfileQueries = queried.filter(query => query.profileIds.length > 0);
     expect(exactProfileQueries).toEqual([]);
-    expect(queried.some(query => query.sourceSystem === "corrections")).toBe(true);
+    const controlQueries = queried.filter(query => query.sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.corrections
+      || query.sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.dialogue);
+    expect(controlQueries.map(query => query.sourceSystem).sort()).toEqual([
+      CORPUS_SOURCE_SYSTEM_IDS.corrections,
+      CORPUS_SOURCE_SYSTEM_IDS.dialogue
+    ].sort());
+    expect(controlQueries.every(query => query.patternSchemas?.length === 2
+      && query.patternSchemas.includes(REQUEST_REQUIREMENT_PATTERN_SCHEMA)
+      && query.patternSchemas.includes(CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA)
+      && query.limit === 2048)).toBe(true);
   });
 
   it("skips the language capability entirely when startup asks for a lightweight warmup", async () => {
-    const queried: Array<{ sourceSystem?: string; profileIds: string[] }> = [];
+    const queried: LanguageMemoryQuery[] = [];
     const kernel = createScceKernel({
       storage: corpusQueryStorage(queried),
       files: { streamPath: async function* () { /* unused */ } },
@@ -79,7 +93,7 @@ describe("corpus registry", () => {
   });
 
   it("warms one canonical request seed by typed natural-language role and reuses it", async () => {
-    const queried: Array<{ sourceSystem?: string; profileIds: string[] }> = [];
+    const queried: LanguageMemoryQuery[] = [];
     const storage = corpusQueryStorage(queried);
     const natural = languageIdentity("language.natural", [
       { corpusRoleId: CORPUS_ROLE_IDS.dialogue, count: 8 },
@@ -114,7 +128,7 @@ describe("corpus registry", () => {
   });
 
   it("leaves request-language warmup unresolved when natural role evidence is tied", async () => {
-    const queried: Array<{ sourceSystem?: string; profileIds: string[] }> = [];
+    const queried: LanguageMemoryQuery[] = [];
     const storage = corpusQueryStorage(queried);
     storage.languageIdentities = identityStore([
       languageIdentity("language.one", [{ corpusRoleId: CORPUS_ROLE_IDS.publicDomainProse, count: 3 }]),
@@ -134,7 +148,7 @@ describe("corpus registry", () => {
   });
 
   it("defers source-owned language hydration until a source is selected", async () => {
-    const queried: Array<{ sourceSystem?: string; profileIds: string[] }> = [];
+    const queried: LanguageMemoryQuery[] = [];
     const kernel = createScceKernel({
       storage: corpusQueryStorage(queried, true),
       files: { streamPath: async function* () { /* unused */ } },
@@ -150,7 +164,7 @@ describe("corpus registry", () => {
 });
 
 function corpusQueryStorage(
-  queried: Array<{ sourceSystem?: string; profileIds: string[] }>,
+  queried: LanguageMemoryQuery[],
   sourceOwned = false
 ): ScceStorage {
   const events: ScceEvent[] = [];
@@ -172,10 +186,12 @@ function corpusQueryStorage(
     entropy: 0,
     createdAt: 1
   };
-  const remember = async (query?: { sourceSystem?: string; profileIds?: readonly string[] }) => {
+  const remember = async (query?: LanguageMemoryQuery) => {
     queried.push({
       sourceSystem: query?.sourceSystem,
-      profileIds: [...(query?.profileIds ?? [])]
+      profileIds: [...(query?.profileIds ?? [])],
+      patternSchemas: query?.patternSchemas ? [...query.patternSchemas] : undefined,
+      limit: query?.limit
     });
     return [];
   };
