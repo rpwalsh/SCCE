@@ -737,8 +737,9 @@ export function createProductionTurnRuntime(options: {
    */
   async function requestControlPatternsCached(): Promise<LanguagePatternRecord[]> {
     if (requestControlPatterns) return requestControlPatterns;
-    requestControlPatterns = await deps.storage.languageMemory
-      .listLanguagePatterns({ sourceSystem: "corrections", limit: 2048 })
+    requestControlPatterns = await Promise.all(["corrections", "dialogue"].map(sourceSystem =>
+      deps.storage.languageMemory.listLanguagePatterns({ sourceSystem, limit: 2048 })))
+      .then(groups => groups.flat())
       .catch(() => [] as LanguagePatternRecord[]);
     return requestControlPatterns;
   }

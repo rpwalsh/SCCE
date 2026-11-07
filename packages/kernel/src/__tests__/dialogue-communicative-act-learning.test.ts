@@ -142,6 +142,22 @@ describe("source-declared dialogue segmentation", () => {
       ? { ...turn, commitmentScope: undefined } : turn) })).toThrow();
   });
 
+  it("accepts only source-declared request authority labels and preserves the source metadata", () => {
+    const declared = validateDeclaredTranscriptSource({
+      ...source,
+      sourceMetadata: { dataset: "dialogue", uri: "fixture://request", license: "CC BY" },
+      turns: turns.map((turn, index) => index === 0
+        ? { ...turn, requestAuthority: "factual" as const, sourceCategory: "knowledge" }
+        : turn)
+    });
+    expect(declared.turns[0]!.requestAuthority).toBe("factual");
+    expect(declared.sourceMetadata).toEqual({ dataset: "dialogue", uri: "fixture://request", license: "CC BY" });
+    expect(() => validateDeclaredTranscriptSource({ ...source, turns: turns.map((turn, index) => index === 0
+      ? { ...turn, requestAuthority: "creative-ish" } : turn) })).toThrow(/request authority/);
+    expect(() => validateDeclaredTranscriptSource({ ...source, sourceMetadata: ["not", "an object"] })).toThrow(/source metadata/);
+    expect(() => validateDeclaredTranscriptSource({ ...source, sourceMetadata: { value: Number.NaN } })).toThrow(/source metadata/);
+  });
+
   it("refuses declared monologue as conversational adjacency", () => {
     expect(dialogueRequestActObservations([{ ...source, turns: turns.map(turn => ({ ...turn, speakerId: "same" })) }]).observations).toEqual([]);
   });

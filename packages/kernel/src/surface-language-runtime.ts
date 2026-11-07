@@ -434,11 +434,13 @@ export function createSurfaceLanguageRuntime(options: {
     const corpusPlan = purpose === "request_seed"
       ? requestLanguageHydrationPlan(corpusRegistry, hydrationLimits, preferredCorpusRoleId ? "role-scoped" : "unscoped")
       : languageMemoryHydrationPlan(corpusRegistry, hydrationLimits, preferredCorpusRoleId ? "role-scoped" : "unscoped");
-    const [active, requestControlPatterns, continuationPopulation] = await Promise.all([
+    const [active, requestControlPatternGroups, continuationPopulation] = await Promise.all([
       deps.storage.brainImports.active(),
-      deps.storage.languageMemory.listLanguagePatterns({ sourceSystem: "corrections", limit: 2048 }),
+      Promise.all(["corrections", "dialogue"].map(sourceSystem =>
+        deps.storage.languageMemory.listLanguagePatterns({ sourceSystem, limit: 2048 }))),
       languageId ? continuationPopulationCached(languageId) : undefined
     ]);
+    const requestControlPatterns = requestControlPatternGroups.flat();
     const learnedRequestControlPatterns = latestRequestRequirementPatterns(requestControlPatterns);
     const populationSeed = purpose === "request_seed" && continuationPopulation !== undefined
       && deriveClosedClassWords({ continuationPopulation }).size > 0;
@@ -741,12 +743,21 @@ export function createSurfaceLanguageRuntime(options: {
     const requestPatterns = records
       .filter(isRequestRequirementPattern)
       .sort((left, right) => right.updatedAt - left.updatedAt || left.id.localeCompare(right.id));
-    const latest = requestPatterns[0];
-    if (!latest) return [];
-    const latestSourceVersionId = kernelString(jsonRecord(latest.patternJson).sourceVersionId);
-    const current = latestSourceVersionId
-      ? requestPatterns.filter(pattern => kernelString(jsonRecord(pattern.patternJson).sourceVersionId) === latestSourceVersionId)
-      : requestPatterns.filter(pattern => pattern.updatedAt === latest.updatedAt);
+    const latestByOwner = new Map<string, LanguagePatternRecord>();
+    for (const pattern of requestPatterns) {
+      const record = jsonRecord(pattern.patternJson);
+      const owner = `${String(record.sourceSystem ?? "")}:${pattern.profileId}`;
+      if (!latestByOwner.has(owner)) latestByOwner.set(owner, pattern);
+    }
+    const current = requestPatterns.filter(pattern => {
+      const record = jsonRecord(pattern.patternJson);
+      const owner = `${String(record.sourceSystem ?? "")}:${pattern.profileId}`;
+      const latest = latestByOwner.get(owner)!;
+      const latestSourceVersionId = kernelString(jsonRecord(latest.patternJson).sourceVersionId);
+      return latestSourceVersionId
+        ? kernelString(record.sourceVersionId) === latestSourceVersionId
+        : pattern.updatedAt === latest.updatedAt;
+    });
     return uniqueRecordsById(current, 2048);
   }
 
@@ -1111,13 +1122,15 @@ export function createSurfaceLanguageRuntime(options: {
     const existing = surfaceProfileInFlight;
     if (existing) return existing;
     const pending = (async () => {
-      const [persistedProfiles, requestControlPatterns] = await Promise.all([
+      const [persistedProfiles, requestControlPatternGroups] = await Promise.all([
         deps.storage.model.listLanguageProfiles({
           limit: surfaceLanguageProfileLimit,
           referencedByLanguageMemory: true
         }),
-        deps.storage.languageMemory.listLanguagePatterns({ sourceSystem: "corrections", limit: 2048 })
+        Promise.all(["corrections", "dialogue"].map(sourceSystem =>
+          deps.storage.languageMemory.listLanguagePatterns({ sourceSystem, limit: 2048 })))
       ]);
+      const requestControlPatterns = requestControlPatternGroups.flat();
       const requestControlProfileIds = new Set(
         latestRequestRequirementPatterns(requestControlPatterns).map(pattern => pattern.profileId)
       );

@@ -1925,6 +1925,73 @@ describe("dialogue corpus training", () => {
     expect(turn.trace.some(row => row.stage === "mouth.conversational_act_binding.candidate" && row.support?.surface === turn.result.answer)).toBe(true);
   }, 120_000);
 
+  it("learns lowercase multilingual request authority only from declared turns and binds it to owned evidence", async () => {
+    const root = await tempDir("dialogue-authority-");
+    const fixture = memoryStorage();
+    fixture.storage.languageMemory.replaceRequestRequirementPatterns = async input => {
+      fixture.state.patterns = fixture.state.patterns.filter(pattern => !(pattern.profileId === input.profileId
+        && recordOf(pattern.patternJson).schema === input.schema
+        && recordOf(pattern.patternJson).sourceSystem === input.sourceSystem
+        && String(recordOf(pattern.patternJson).sourceVersionId) === String(input.sourceVersionId)));
+      fixture.state.patterns.push(...input.patterns);
+    };
+    fixture.storage.evidence.searchEvidence = async query => fixture.state.evidence
+      .filter(span => String(span.sourceVersionId) === String(query.sourceVersionId) && span.status === "promoted")
+      .map(span => ({ span, score: 1, reason: "exact owner source" }));
+    const utterances: Array<{ surface: string; authority?: "factual" | "creative" }> = [
+      { surface: "où est le port ancien", authority: "factual" },
+      { surface: "où se trouve le port ancien", authority: "factual" },
+      { surface: "où est le port ancien", authority: "factual" },
+      { surface: "imagine le port comme un jardin suspendu", authority: "creative" },
+      { surface: "imagine le port comme un jardin lumineux", authority: "creative" },
+      { surface: "imagine le port comme un jardin suspendu", authority: "creative" },
+      { surface: "cette phrase déclarée sans autorité ne sera pas apprise" }
+    ];
+    const surfaces = utterances.flatMap(({ surface }) => [surface, "noted"]);
+    const text = surfaces.join("\n");
+    let cursor = 0;
+    const turns = surfaces.map((surface, index) => {
+      const startCodePoint = cursor;
+      cursor += [...surface].length + 1;
+      const label = utterances[Math.floor(index / 2)]!;
+      return { index, speakerId: index % 2 ? "assistant" : "user", surface, startCodePoint, endCodePoint: cursor - 1,
+        ...(index % 2 === 0 && label.authority ? { requestAuthority: label.authority } : {}),
+        ...(index % 2 === 0 ? { sourceCategory: "declared-prompt" } : {}) };
+    });
+    const sourceMetadata = { dataset: "declared-dialogue-fixture", uri: "fixture://dialogue/authority", pinnedRevision: "rev-1", license: "CC BY" };
+    await writeFile(path.join(root, "authority.json"), JSON.stringify({ schema: "scce.dialogue_transcript.v1", text, turns, sourceMetadata }), "utf8");
+
+    const result = await trainDialogueCorpus({ storage: fixture.storage, rootPath: root, authorship: "human_authored", informationLabel: ownerLabel,
+      ngramMaxOrder: 2, ngramMaxCountersPerOrder: 32 });
+    const patterns = fixture.state.patterns.filter(pattern => recordOf(pattern.patternJson).schema === "scce.request_requirement_pattern.v1");
+    expect(result.requestAuthorities).toEqual({ examples: 6, evidenceBoundExamples: 6, patternsPersisted: patterns.length });
+    expect(patterns.length).toBeGreaterThan(0);
+    expect(patterns.some(pattern => recordOf(pattern.patternJson).sourceSystem === "dialogue")).toBe(true);
+    for (const pattern of patterns) {
+      const record = recordOf(pattern.patternJson);
+      expect(record.sourceMetadata).toEqual(sourceMetadata);
+      const ranges = record.sourceTurnRanges as Array<{ turnIndex: number; authority: string; startCodePoint: number; endCodePoint: number; evidenceIds: string[] }>;
+      expect(ranges).toHaveLength(6);
+      expect(ranges.every(range => range.authority === "factual" || range.authority === "creative")).toBe(true);
+      for (const range of ranges) {
+        const owners = fixture.state.evidence.filter(span => range.evidenceIds.includes(String(span.id)));
+        expect(owners.length).toBeGreaterThan(0);
+        expect(owners.every(span => String(span.sourceVersionId) === String(record.sourceVersionId)
+          && span.charStart <= range.startCodePoint && span.charEnd >= range.endCodePoint && span.status === "promoted")).toBe(true);
+      }
+    }
+    expect(allSourceSystems(fixture.state)).toEqual(new Set(["dialogue"]));
+
+    const revisedTurns = turns.map(turn => turn.requestAuthority ? { ...turn, requestAuthority: "factual" as const } : turn);
+    await writeFile(path.join(root, "authority.json"), JSON.stringify({ schema: "scce.dialogue_transcript.v1", text, turns: revisedTurns, sourceMetadata }), "utf8");
+    const revised = await trainDialogueCorpus({ storage: fixture.storage, rootPath: root, authorship: "human_authored", informationLabel: ownerLabel, actsOnly: true });
+    const revisedPatterns = fixture.state.patterns.filter(pattern => recordOf(pattern.patternJson).schema === "scce.request_requirement_pattern.v1");
+    expect(revised.requestAuthorities.examples).toBe(6);
+    expect(revisedPatterns.length).toBeGreaterThan(0);
+    expect(revisedPatterns.every(pattern => recordOf(pattern.patternJson).selectedAuthority === "factual"
+      && (recordOf(pattern.patternJson).sourceTurnRanges as Array<{ authority: string }>).every(range => range.authority === "factual"))).toBe(true);
+  }, 120_000);
+
   it("refuses to train on SCCE's own generations", async () => {
     const root = await tempDir("dialogue-selftrain-");
     await writeFile(path.join(root, "generated.txt"), "a surface this system produced", "utf8");

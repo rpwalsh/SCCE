@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { otsuThreshold } from "./language-identity.js";
+import type { JsonValue, RequestedAuthority } from "./types.js";
 import type { RequestCommunicativeActObservation } from "./request-communicative-act.js";
 import { unicodeLexicalSegments } from "./unicode-segmentation.js";
 
@@ -15,6 +16,9 @@ export interface TranscriptTurn {
   /** Source-declared reply and commitment scope; evidence remains optional for an external assertion. */
   replyToTurnIndex?: number;
   commitmentScope?: "conversation" | "external";
+  /** Explicit source annotation on request turns only; never inferred from the turn surface. */
+  requestAuthority?: RequestedAuthority;
+  sourceCategory?: string;
   /** Documentary support ranges cannot overlap speech. */
   supportingSourceRanges?: readonly { startCodePoint: number; endCodePoint: number; surface: string }[];
 }
@@ -24,6 +28,7 @@ export interface DeclaredTranscriptSource {
   schema: "scce.dialogue_transcript.v1";
   text: string;
   turns: readonly TranscriptTurn[];
+  sourceMetadata?: { [key: string]: JsonValue };
 }
 
 export type DialogueTranscriptSource = string | DeclaredTranscriptSource;
@@ -34,6 +39,8 @@ export function validateDeclaredTranscriptSource(value: unknown): DeclaredTransc
   const source = value as DeclaredTranscriptSource;
   if (source.schema !== "scce.dialogue_transcript.v1" || typeof source.text !== "string"
     || source.text !== source.text.normalize("NFC") || !Array.isArray(source.turns)) throw new Error("invalid declared transcript schema or text");
+  if (source.sourceMetadata !== undefined && (!jsonObject(source.sourceMetadata)
+    || !Object.values(source.sourceMetadata).every(isJsonValue))) throw new Error("invalid declared transcript source metadata");
   const points = [...source.text];
   let end = 0;
   for (const [index, turn] of source.turns.entries()) {
@@ -42,6 +49,8 @@ export function validateDeclaredTranscriptSource(value: unknown): DeclaredTransc
       || !Number.isInteger(turn.startCodePoint) || !Number.isInteger(turn.endCodePoint)
       || turn.startCodePoint < end || turn.endCodePoint <= turn.startCodePoint || turn.endCodePoint > points.length
       || points.slice(turn.startCodePoint, turn.endCodePoint).join("") !== turn.surface) throw new Error(`invalid declared transcript turn ${index}`);
+    if (turn.requestAuthority !== undefined && !["factual", "reasoned", "creative", "translation", "program", "action"].includes(turn.requestAuthority)) throw new Error(`invalid declared transcript request authority ${index}`);
+    if (turn.sourceCategory !== undefined && (typeof turn.sourceCategory !== "string" || !turn.sourceCategory.trim())) throw new Error(`invalid declared transcript category ${index}`);
     if (turn.replyToTurnIndex !== undefined && (!Number.isInteger(turn.replyToTurnIndex)
       || turn.replyToTurnIndex < 0 || turn.replyToTurnIndex !== index - 1
       || (turn.commitmentScope !== "conversation" && turn.commitmentScope !== "external"))) throw new Error(`invalid declared transcript reply ${index}`);
@@ -58,6 +67,17 @@ export function validateDeclaredTranscriptSource(value: unknown): DeclaredTransc
     end = turn.endCodePoint;
   }
   return source;
+}
+
+function jsonObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
+}
+
+function isJsonValue(value: unknown): value is JsonValue {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every(isJsonValue);
+  return jsonObject(value) && Object.values(value).every(isJsonValue);
 }
 
 export function transcriptSourceTurns(source: DialogueTranscriptSource): TranscriptTurnInduction {

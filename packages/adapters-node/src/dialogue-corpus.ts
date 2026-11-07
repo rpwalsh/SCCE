@@ -9,6 +9,11 @@ import {
   REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA,
   canonicalStringify,
   compileLanguageConstructionPattern,
+  compileRequestRequirementCorpus,
+  requestFeatures,
+  REQUEST_REQUIREMENT_PATTERN_COMPILER_FINGERPRINT,
+  REQUEST_REQUIREMENT_PATTERN_SCHEMA,
+  type CreativeEventConstructionCompiler,
   SOURCE_EXAMPLE_CONSTRUCTION_STORAGE,
   compileRequestCommunicativeActModel,
   corpusRoleIdForSourceSystem,
@@ -24,6 +29,7 @@ import {
   type DialogueTranscriptSource,
   type TranscriptTurn,
   type EvidenceSpan,
+  type EvidenceId,
   type InformationLabel,
   type JsonValue,
   type LanguagePatternRecord,
@@ -44,6 +50,7 @@ export interface DialogueCorpusTrainOptions {
   /** Dialogue is owner-private. The trainer refuses a public label so a transcript cannot be exported as corpus. */
   informationLabel: InformationLabel;
   authorship: DialogueCorpusAuthorship;
+  creativeEventCompiler?: CreativeEventConstructionCompiler;
   startFileIndex?: number;
   maxFilesPerRun?: number;
   maxFileBytes?: number;
@@ -70,6 +77,7 @@ export interface DialogueCorpusTrainReport {
   totals: DialogueCorpusTrainingTotals;
   reports: LanguageCorpusTrainingReport[];
   communicativeActs: DialogueCommunicativeActTrainingReport;
+  requestAuthorities: DialogueRequestAuthorityTrainingReport;
   conversationalConstructions: DialogueConversationalConstructionTrainingReport;
   stoppedByHeapSafetyBound: boolean;
   heapMiBAtExit: number;
@@ -118,6 +126,12 @@ export interface DialogueCorpusTrainingTotals {
   semanticFrames: number;
 }
 
+export interface DialogueRequestAuthorityTrainingReport {
+  examples: number;
+  evidenceBoundExamples: number;
+  patternsPersisted: number;
+}
+
 interface FoundFile {
   absolutePath: string;
   relativePath: string;
@@ -147,7 +161,7 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
   ).slice(startFileIndex, startFileIndex + maxFiles);
   const reports: LanguageCorpusTrainingReport[] = [];
   const transcripts: DialogueTranscriptSource[] = [];
-  const read: Array<{ sourceUri: string; text: string; transcriptTurns?: readonly TranscriptTurn[] }> = [];
+  const read: Array<{ sourceUri: string; text: string; transcriptTurns?: readonly TranscriptTurn[]; sourceMetadata?: Record<string, JsonValue> }> = [];
   const skipped: DialogueCorpusTrainReport["filesSkipped"] = [];
   const heapCheckpointMb = input.heapCheckpointMb !== undefined && input.heapCheckpointMb > 0
     ? Math.floor(input.heapCheckpointMb)
@@ -172,7 +186,7 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
     }
     transcripts.push(declared ?? text);
     read.push({ sourceUri: pathToFileURL(file.absolutePath).href, text,
-      ...(declared ? { transcriptTurns: declared.turns } : {}) });
+      ...(declared ? { transcriptTurns: declared.turns, ...(declared.sourceMetadata ? { sourceMetadata: declared.sourceMetadata } : {}) } : {}) });
     if (input.actsOnly) continue;
     // One pathological file costs that file, never the whole run.
     try {
@@ -191,13 +205,15 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
         ngramMaxCountersPerOrder: input.ngramMaxCountersPerOrder,
         ngramVocabularyLimit: input.ngramVocabularyLimit,
         languageAliases: input.languageAliases,
+        creativeEventCompiler: input.creativeEventCompiler,
         corpusMetadata: {
           title: documentTitleFromPath(file.relativePath),
           relativePath: normalizeRelative(file.relativePath),
           sourceHash: sha256(raw),
           corpusRole: corpusRoleIdForSourceSystem(CORPUS_SOURCE_SYSTEM_IDS.dialogue),
           authorship: input.authorship,
-          ...(declared ? { transcriptSchema: declared.schema, annotatedTurns: declared.turns.length } : {}),
+          ...(declared ? { transcriptSchema: declared.schema, annotatedTurns: declared.turns.length,
+            ...(declared.sourceMetadata ? { sourceMetadata: declared.sourceMetadata } : {}) } : {}),
           ...(input.languageAliases?.length ? { languageAliases: [...input.languageAliases] } : {})
         }
       }));
@@ -221,10 +237,81 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
     totals: sumReports(reports),
     reports,
     communicativeActs: await persistDialogueCommunicativeActs(input, transcripts, read.map(file => String(corpusSourceVersionIdFor(file)))),
+    requestAuthorities: await persistDialogueRequestAuthorities(input, read),
     conversationalConstructions: await persistConversationalConstructions(input, read),
     stoppedByHeapSafetyBound,
     heapMiBAtExit: heapMiB()
   };
+}
+
+/** Compiles source-declared request labels against the exact promoted evidence owned by each transcript. */
+async function persistDialogueRequestAuthorities(
+  input: DialogueCorpusTrainOptions,
+  read: ReadonlyArray<{ sourceUri: string; text: string; transcriptTurns?: readonly TranscriptTurn[]; sourceMetadata?: Record<string, JsonValue> }>
+): Promise<DialogueRequestAuthorityTrainingReport> {
+  const hasher = createHasher();
+  let examples = 0;
+  let evidenceBoundExamples = 0;
+  let patternsPersisted = 0;
+  for (const file of read) {
+    const turns = file.transcriptTurns?.filter(turn => turn.requestAuthority) ?? [];
+    if (!file.transcriptTurns) continue;
+    const sourceVersionId = corpusSourceVersionIdFor(file);
+    const profiles = await input.storage.model.listLanguageProfiles({ limit: 16, sourceVersionIds: [sourceVersionId] });
+    const profile = profiles.find(item => String(item.sourceVersionId) === String(sourceVersionId));
+    if (!profile) continue;
+    const found = await input.storage.evidence.searchEvidence({ sourceVersionId, status: "promoted", limit: 4096 });
+    const spans = found.map(row => row.span).filter(span => String(span.sourceVersionId) === String(sourceVersionId) && span.status === "promoted");
+    const bound = turns.flatMap(turn => {
+      const owning = spans.filter(span => span.charStart <= turn.startCodePoint && span.charEnd >= turn.endCodePoint);
+      if (!owning.length) return [];
+      evidenceBoundExamples++;
+      return [{ turn, evidenceIds: owning.map(span => String(span.id)) }];
+    });
+    examples += bound.length;
+    const compiled = compileRequestRequirementCorpus({
+      corpus: { schema: "scce.request_requirement_corpus.v1", language: "und", examples: bound.map(({ turn }) => ({ text: turn.surface, authority: turn.requestAuthority! })) },
+      profileId: profile.id,
+      sourceVersionId,
+      evidenceIds: [...new Set(bound.flatMap(row => row.evidenceIds))] as EvidenceId[],
+      sourceSystem: CORPUS_SOURCE_SYSTEM_IDS.dialogue,
+      updatedAt: Date.now(),
+      makeId: representation => `request_requirement_dialogue_${hasher.digestHex(canonicalStringify(representation))}`
+    });
+    const patterns = compiled.patterns.map(pattern => {
+      const record = pattern.patternJson as Record<string, JsonValue>;
+      const featureKey = `${String(record.anchor)}:${String(record.surface)}`;
+      const supportingTurns = bound.filter(({ turn }) => requestFeatures(turn.surface).some(feature => feature.key === featureKey));
+      const sourceTurnRanges = supportingTurns.map(({ turn, evidenceIds }) => ({
+        turnIndex: turn.index,
+        authority: turn.requestAuthority!,
+        sourceCategory: turn.sourceCategory ?? null,
+        startCodePoint: turn.startCodePoint,
+        endCodePoint: turn.endCodePoint,
+        evidenceIds
+      }));
+      const evidenceIds = [...new Set(supportingTurns.flatMap(row => row.evidenceIds))].slice(0, 64) as EvidenceId[];
+      return { ...pattern, evidenceIds,
+        patternJson: toJsonValue({ ...record, sourceTurnRanges,
+          sourceMetadata: file.sourceMetadata ?? null, trainingSourceUri: file.sourceUri }),
+        informationLabel: input.informationLabel };
+    });
+    if (input.storage.languageMemory.replaceRequestRequirementPatterns) {
+      await input.storage.languageMemory.replaceRequestRequirementPatterns({
+        profileId: profile.id,
+        sourceVersionId,
+        sourceSystem: CORPUS_SOURCE_SYSTEM_IDS.dialogue,
+        schema: REQUEST_REQUIREMENT_PATTERN_SCHEMA,
+        compilerFingerprint: REQUEST_REQUIREMENT_PATTERN_COMPILER_FINGERPRINT,
+        patterns
+      });
+    } else if (patterns.length) {
+      if (input.storage.languageMemory.putLanguagePatterns) await input.storage.languageMemory.putLanguagePatterns(patterns);
+      else for (const pattern of patterns) await input.storage.languageMemory.putLanguagePattern(pattern);
+    }
+    patternsPersisted += patterns.length;
+  }
+  return { examples, evidenceBoundExamples, patternsPersisted };
 }
 
 /**
