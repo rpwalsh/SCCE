@@ -12,6 +12,7 @@ const REPO_ROOT = path.resolve(process.cwd());
 const MODEL = 'qwen2.5:3b';
 const TOOL_NAMES = ['repo_read', 'repo_edit', 'test_run'];
 const MAX_STEPS = 12;
+const MODEL_OPTIONS = Object.freeze({ temperature: 0, seed: 20261107, num_ctx: 8192, num_predict: 512 });
 const require = createRequire(path.join(REPO_ROOT, 'tools/scce-dev-mcp/package.json'));
 const { Client } = await import(pathToFileURL(require.resolve('@modelcontextprotocol/sdk/client/index.js')).href);
 const { StdioClientTransport } = await import(pathToFileURL(require.resolve('@modelcontextprotocol/sdk/client/stdio.js')).href);
@@ -44,6 +45,9 @@ export async function runEvaluation() {
   const testHash = sha256(tests);
   const receipt = {
     schema: 'scce.local_mcp_jsonschema_coding_evaluation.v1',
+    protocol: 'json_schema_mcp_tool_choice',
+    modelOptions: MODEL_OPTIONS,
+    harnessSha256: sha256(await readFile(new URL(import.meta.url))),
     model: MODEL,
     root: scratchRoot,
     startedAt: new Date().toISOString(),
@@ -109,7 +113,7 @@ export async function runEvaluation() {
           format,
           stream: false,
           keep_alive: '2m',
-          options: { temperature: 0, seed: 20261107, num_ctx: 8192, num_predict: 512 }
+          options: MODEL_OPTIONS
         }),
         signal: AbortSignal.timeout(90_000)
       });
@@ -166,6 +170,10 @@ export async function runEvaluation() {
     process.exitCode = 1;
   } finally {
     if (connected) await client.close();
+    await fetch('http://127.0.0.1:11434/api/generate', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: MODEL, keep_alive: 0 }), signal: AbortSignal.timeout(10_000)
+    }).catch(error => { receipt.modelUnloadError = String(error.message ?? error); });
     receipt.elapsedMs = Math.round(performance.now() - started);
     await writeReceipt(receiptPath, receipt);
     console.log(JSON.stringify({ passed: receipt.passed, error: receipt.error, elapsedMs: receipt.elapsedMs, steps: receipt.steps.length, receipt: path.relative(REPO_ROOT, receiptPath), root: scratchRoot }));

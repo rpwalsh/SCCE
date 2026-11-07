@@ -60,7 +60,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: 'repo_shape',
-      description: 'Summarize repo structure, packages, scripts, and file counts.',
+      description: 'Compact repository map, file counts, and allowed build/test scripts. Includes a repo_read request for the full package.json script list.',
       inputSchema: { type: 'object', properties: {} },
     },
     {
@@ -105,7 +105,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'repo_symbol',
-      description: 'Ripgrep-based text search for likely symbol definitions/references. Not compiler-level: overloads, re-exports, and destructuring may be misclassified.',
+      description: 'Parse TypeScript/JavaScript declarations and syntax references. Returns exact positions and repo_read ranges, with implementations before imported bindings. Cross-file symbol identity is not resolved.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -117,7 +117,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'repo_callsites',
-      description: 'Ripgrep-based text search for call sites of a symbol; same non-compiler-level caveats as repo_symbol.',
+      description: 'Parse TypeScript/JavaScript call and new-expression sites for a symbol. Excludes comments and string mentions; syntax only, without cross-file symbol resolution.',
       inputSchema: {
         type: 'object',
         properties: {
