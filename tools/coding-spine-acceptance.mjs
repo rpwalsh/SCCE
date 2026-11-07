@@ -7,7 +7,7 @@
 //   node tools/coding-spine-acceptance.mjs [--out=artifacts/coding-spine.json]
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -28,6 +28,7 @@ async function turn(text, metadata = {}) {
   const started = Date.now();
   const response = await fetch(`${serverUrl}/api/turn`, {
     method: "POST", headers: { "content-type": "application/json" },
+    signal: AbortSignal.timeout(60_000),
     body: JSON.stringify({ text, sessionId: `coding-spine-${Date.now()}`, metadata })
   });
   const body = await response.json();
@@ -66,14 +67,15 @@ function judgeRepair(run) {
   return { checks, passed: Object.values(checks).every(Boolean) };
 }
 
-function artifactChecks(run) {
+export function artifactChecks(run) {
   const artifacts = run.programArtifacts;
   const checks = { artifactsPresent: Array.isArray(artifacts) && artifacts.length > 0, uniquePaths: true, contentHashes: true, sourcePresent: false, testPresent: false };
   if (!Array.isArray(artifacts)) return { checks: { ...checks, uniquePaths: false, contentHashes: false }, passed: false };
   const seen = new Set();
   for (const artifact of artifacts) {
     const path = artifact?.path;
-    if (typeof path !== "string" || !path || isAbsolute(path) || path.split(/[\\/]/u).some(part => part === ".." || part === "")) {
+    if (typeof path !== "string" || !path || isAbsolute(path) || path.startsWith("//") || path.startsWith("\\\\")
+      || /^[a-z]:/iu.test(path) || path.split(/[\\/]/u).some(part => part === ".." || part === "")) {
       checks.uniquePaths = false;
       continue;
     }
@@ -89,7 +91,9 @@ function artifactChecks(run) {
   return { checks, passed: Object.values(checks).every(Boolean) };
 }
 
-async function executeHeldOut(run) {
+export async function executeHeldOut(run) {
+  const integrity = artifactChecks(run);
+  if (!integrity.passed) return { passed: false, error: "artifact integrity/path checks failed", checks: integrity.checks };
   const source = run.programArtifacts.find(artifact => artifact.role === "source");
   const root = await mkdtemp(join(tmpdir(), "scce-coding-heldout-"));
   try {
@@ -109,24 +113,34 @@ async function executeHeldOut(run) {
   }
 }
 
-const clean = await turn(TASK);
-const cleanVerdict = judgeClean(clean);
-const cleanArtifacts = artifactChecks(clean);
-const cleanHeldOut = cleanArtifacts.passed ? await executeHeldOut(clean) : { passed: false, error: "artifact integrity/path checks failed" };
-console.log(`A clean JS application behavior: ${cleanVerdict.passed && cleanArtifacts.passed && cleanHeldOut.passed ? "PASS" : "FAIL"} ${JSON.stringify({ events: cleanVerdict.checks, artifacts: cleanArtifacts.checks, heldOut: cleanHeldOut })} in ${(clean.elapsedMs / 1000).toFixed(1)}s`);
+export async function runAcceptance(outputPath = outPath) {
+  const clean = await turn(TASK);
+  const cleanVerdict = judgeClean(clean);
+  const cleanArtifacts = artifactChecks(clean);
+  const cleanHeldOut = await executeHeldOut(clean);
+  console.log(`A clean JS application behavior: ${cleanVerdict.passed && cleanArtifacts.passed && cleanHeldOut.passed ? "PASS" : "FAIL"} ${JSON.stringify({ events: cleanVerdict.checks, artifacts: cleanArtifacts.checks, heldOut: cleanHeldOut })} in ${(clean.elapsedMs / 1000).toFixed(1)}s`);
 
-const repair = await turn(TASK, { buildTest: { faultInjection: "unbalanced-brace" } });
-const repairVerdict = judgeRepair(repair);
-const repairArtifacts = artifactChecks(repair);
-const repairHeldOut = repairArtifacts.passed ? await executeHeldOut(repair) : { passed: false, error: "artifact integrity/path checks failed" };
-console.log(`B injected-failure repair: ${repairVerdict.passed && repairArtifacts.passed && repairHeldOut.passed ? "PASS" : "FAIL"} ${JSON.stringify({ events: repairVerdict.checks, artifacts: repairArtifacts.checks, heldOut: repairHeldOut })} in ${(repair.elapsedMs / 1000).toFixed(1)}s`);
+  const repair = await turn(TASK, { buildTest: { faultInjection: "unbalanced-brace" } });
+  const repairVerdict = judgeRepair(repair);
+  const repairArtifacts = artifactChecks(repair);
+  const repairHeldOut = await executeHeldOut(repair);
+  console.log(`B injected-failure repair: ${repairVerdict.passed && repairArtifacts.passed && repairHeldOut.passed ? "PASS" : "FAIL"} ${JSON.stringify({ events: repairVerdict.checks, artifacts: repairArtifacts.checks, heldOut: repairHeldOut })} in ${(repair.elapsedMs / 1000).toFixed(1)}s`);
 
-await import("node:fs/promises").then(({ mkdir, writeFile }) => mkdir(dirname(outPath), { recursive: true }).then(() => writeFile(outPath, JSON.stringify({
-  schema: "scce.coding_spine_acceptance.v2", generatedAt: new Date().toISOString(), task: TASK,
-  scope: { language: "javascript", lanes: ["programming", "debugging"], excluded: ["chat", "creative", "factual", "proof"] },
-  clean: { ...clean, eventVerdict: cleanVerdict, artifactVerdict: cleanArtifacts, heldOut: cleanHeldOut },
-  repair: { ...repair, fault: "unbalanced-brace", eventVerdict: repairVerdict, artifactVerdict: repairArtifacts, heldOut: repairHeldOut }
-}, null, 2) + "\n", "utf8")));
-console.log(`wrote ${outPath}`);
-process.exit(clean.status === 200 && repair.status === 200 && cleanVerdict.passed && repairVerdict.passed
-  && cleanArtifacts.passed && repairArtifacts.passed && cleanHeldOut.passed && repairHeldOut.passed ? 0 : 1);
+  await mkdir(dirname(outputPath), { recursive: true });
+  await writeFile(outputPath, JSON.stringify({
+    schema: "scce.coding_spine_acceptance.v2", generatedAt: new Date().toISOString(), task: TASK,
+    scope: { language: "javascript", lanes: ["programming", "debugging"], excluded: ["chat", "creative", "factual", "proof"] },
+    clean: { ...clean, eventVerdict: cleanVerdict, artifactVerdict: cleanArtifacts, heldOut: cleanHeldOut },
+    repair: { ...repair, fault: "unbalanced-brace", eventVerdict: repairVerdict, artifactVerdict: repairArtifacts, heldOut: repairHeldOut }
+  }, null, 2) + "\n", "utf8");
+  console.log(`wrote ${outputPath}`);
+  return clean.status === 200 && repair.status === 200 && cleanVerdict.passed && repairVerdict.passed
+    && cleanArtifacts.passed && repairArtifacts.passed && cleanHeldOut.passed && repairHeldOut.passed;
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  runAcceptance().then(passed => process.exit(passed ? 0 : 1)).catch(error => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  });
+}
