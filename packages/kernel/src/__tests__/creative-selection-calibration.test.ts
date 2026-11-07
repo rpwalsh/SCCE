@@ -155,9 +155,9 @@ describe("creative candidate selection and preference calibration", () => {
       repetition: 0,
       unsupportedFactualAssertion: 0
     };
-    const fallbackPreferred = creativePreferenceScore({ features: preferred }).score;
-    const fallbackRejected = creativePreferenceScore({ features: rejected }).score;
-    expect(fallbackPreferred).toBeLessThan(fallbackRejected);
+    const untrained = creativePreferenceScore({ features: preferred });
+    expect(untrained.source).toBe("untrained");
+    expect(untrained.score).toBeUndefined();
 
     const observations = Array.from({ length: 16 }, (_, index) => creativePreferenceObservationPair({
       pairId: `preference.${index}`,
@@ -167,6 +167,10 @@ describe("creative candidate selection and preference calibration", () => {
       sourceRecordId: `outcome.${index}`,
       createdAt: 100 + index
     })).flat();
+    expect(observations[0]?.rawScore).toBe(preferred.constraintCoverage);
+    expect(observations[1]?.rawScore).toBe(rejected.constraintCoverage);
+    expect(observations[0]?.outcome).toBe(true);
+    expect(observations[1]?.outcome).toBe(false);
     const modelSet = buildCalibrationModelSet({ observations, minPoints: 2, createdAt: 500 });
     const model = modelSet.creativePreferenceModels?.[CALIBRATION_TASK_CLASS_IDS.creativeGeneration];
     expect(model).toBeDefined();
@@ -279,7 +283,7 @@ describe("creative candidate selection and preference calibration", () => {
       creativeContinuationCandidates: restartedContinuationCandidates
     });
     const mass = (field: CandidateField, id: string) => field.surfaceMass.find(row => row.candidateId === id)?.mass ?? 0;
-    expect(mass(cold, preferredId)).toBeLessThan(mass(cold, rejectedId));
+    expect(mass(cold, preferredId)).toBeCloseTo(mass(cold, rejectedId), 12);
     expect(mass(warm, restartedPreferredId)).toBeGreaterThan(mass(warm, restartedRejectedId));
     const coldDecision = createJudge().select({
       field: cold,
@@ -294,10 +298,10 @@ describe("creative candidate selection and preference calibration", () => {
     // A fresh candidate set keeps new candidate ids but preserves the typed
     // structural ids. The durable preference must therefore change the
     // canonical judge winner, not only the surface probability audit.
-    expect(coldDecision.selected.id).toBe(rejectedId);
+    expect([preferredId, rejectedId]).toContain(coldDecision.selected.id);
     expect(warmDecision.selected.id).toBe(restartedPreferredId);
     const creativeRows = (warm.audit as Record<string, unknown>)?.candidateOperators as Array<Record<string, unknown>> | undefined;
-    expect(creativeRows?.find(row => row.candidateId === restartedPreferredId)?.selectionSource).toBe("pairwise_preference");
+    expect(creativeRows?.find(row => row.candidateId === restartedPreferredId)?.selectionSource).toBe("owner_observed_preference");
   });
 
   it("does not borrow a scalar calibration model from another task for creative generation", () => {
@@ -407,7 +411,7 @@ describe("creative candidate selection and preference calibration", () => {
     const beforeRejected = candidateMassFor(before, `creative:${rejectedConstruct.id}:1`);
     const afterPreferred = candidateMassFor(after, `creative:${preferredConstruct.id}:0`);
     const afterRejected = candidateMassFor(after, `creative:${rejectedConstruct.id}:1`);
-    expect(beforePreferred).toBeLessThan(beforeRejected);
+    expect(beforePreferred).toBeCloseTo(beforeRejected, 12);
     expect(afterPreferred).toBeGreaterThan(afterRejected);
   });
 
@@ -472,7 +476,10 @@ function invention(
     ...base,
     trace: toJsonValue({
       ...metrics,
-      bootstrapScore: creativePreferenceScore({ features: metrics }).score,
+      constraints: [
+        { id: "constraint.one", surface: "constraint one", weight: 1, satisfied: true },
+        { id: "constraint.two", surface: "constraint two", weight: 1, satisfied: false }
+      ],
       claimBasis: [
         { id: "claim.generated", kind: "invention", force: "invented", evidenceIds: nonFactualBasisIds },
         { id: "claim.premise", kind: "factual_premise", force: "observed", evidenceIds: basisEvidenceIds }

@@ -1,7 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { DIALOGUE_ACTION_IDS, type DialogueState } from "./dialogue-pragmatics.js";
-import { boltzmannDistribution } from "./equation-operators.js";
 import { kneserNeyProbability } from "./kneser-ney.js";
 import {
   creativeEventCompatibilityDecision,
@@ -341,6 +340,8 @@ interface LearnedStructuralSource {
 interface ScoredComposition extends DraftComposition {
   constraintCoverage: number;
   constraints: InventionConstraintTrace[];
+  constraintsSatisfied: number;
+  constraintsTotal: number;
   graphCoherence: number;
   novelty: number;
   languageRealizability: number;
@@ -348,12 +349,10 @@ interface ScoredComposition extends DraftComposition {
   risk: number;
   repetition: number;
   unsupportedFactualAssertion: number;
-  bootstrapScore: number;
   diversity: number;
   probability: number;
 }
 
-const CREATIVE_TEMPERATURE = 0.28;
 const MAX_STRUCTURAL_CREATIVE_EVENTS = 1_800;
 
 function productionStructuralCreativeBundles(
@@ -433,9 +432,8 @@ export function planInventions(input: PlanInventionsInput): InventionConstruct[]
   if (productionStructuralAuthority && drafts.length === 0) return [];
   const memorySurfaces = existingMemorySurfaces(input);
   const preliminary = drafts.map((draft, index) => scoreDraft(input, draft, constraints, memorySurfaces, drafts, index));
-  const temperature = boundedCreativeTemperature(input.temperature ?? CREATIVE_TEMPERATURE);
-  const probabilities = boltzmannDistribution({ energies: preliminary.map(candidate => -candidate.bootstrapScore), temperature });
-  const withProbabilities = preliminary.map((candidate, index) => ({ ...candidate, probability: probabilities[index] ?? 0 }));
+  const neutralProbability = preliminary.length ? 1 / preliminary.length : 0;
+  const withProbabilities = preliminary.map(candidate => ({ ...candidate, probability: neutralProbability }));
   const ranked = diversityRank(withProbabilities);
   return ranked.map((candidate, index) => {
     const basisEvidenceIds = uniqueStrings(candidate.claimBasis
@@ -457,6 +455,11 @@ export function planInventions(input: PlanInventionsInput): InventionConstruct[]
         lexicalRoutingUsed: false,
         surfaceTokensAffectAdmission: false,
         constraintCoverage: candidate.constraintCoverage,
+        requestConstraintCounts: {
+          satisfied: candidate.constraintsSatisfied,
+          total: candidate.constraintsTotal,
+          constraintIds: candidate.constraints.map(row => row.id).filter((id, index, all) => all.indexOf(id) === index).sort()
+        },
         graphCoherence: candidate.graphCoherence,
         novelty: candidate.novelty,
         languageRealizability: candidate.languageRealizability,
@@ -464,7 +467,6 @@ export function planInventions(input: PlanInventionsInput): InventionConstruct[]
         risk: candidate.risk,
         repetition: candidate.repetition,
         unsupportedFactualAssertion: candidate.unsupportedFactualAssertion,
-        bootstrapScore: candidate.bootstrapScore,
         constraints: candidate.constraints,
         claimBasis: candidate.claimBasis,
         untestedPerformanceClaim: candidate.untestedPerformanceClaim,
@@ -472,13 +474,12 @@ export function planInventions(input: PlanInventionsInput): InventionConstruct[]
         probability: candidate.probability,
         selectionCalibration: {
           calibrated: false,
-          status: "provisional_uncalibrated",
+          status: "preference_untrained",
           finalSelectionAuthority: "candidate_engine_and_judge"
         },
         rank: index + 1,
         plannerPreferred: index === 0,
         diversity: candidate.diversity,
-        temperature,
         samplingDisabled: input.samplingDisabled ?? true,
         selectedGraphNodeIds: candidate.selectedGraphNodeIds,
         selectedGraphEdgeIds: candidate.selectedEdges.map(edge => String(edge.id)),
@@ -508,24 +509,14 @@ export function planInventions(input: PlanInventionsInput): InventionConstruct[]
           syntheticCandidateCount: 0,
           mouthHandoffCandidateCount: productionStructuralAuthority ? 0 : mouthHandoffDrafts.length
         },
-        bootstrapCoefficients: {
-          constraintCoverage: 0.28,
-          graphCoherence: 0.22,
-          novelty: 0.2,
-          languageRealizability: 0.15,
-          usefulness: 0.15,
-          risk: -0.3,
-          repetition: -0.2,
-          unsupportedFactualAssertion: -0.5
-        },
         equations: {
-          constraintCoverage: "sum_j(w_j*I[satisfies_j])/sum_j(w_j)",
+          constraintCoverage: "count(satisfied request constraints)/count(request constraints)",
           graphCoherence: "mean_e(relationPotential(e))",
           novelty: "1-max_m(weightedJaccard(phi(g),phi(m)))",
           languageRealizability: "exp(mean_i(log(P_KN(token_i|history_i))))",
           usefulness: "mean(actionability,requestFit,completionPotential)",
           risk: "max(contradictionPressure,internalConflict,infeasibility)",
-          selection: "P(g_i)=exp(S_i/T)/sum_j(exp(S_j/T))"
+          selection: "direct request-constraint fraction; equal mass when preference evidence is absent"
         },
         generatedMaterialUsesEvidenceAsAuthority: false,
         copiesCompleteEvidenceSentence: copiesCompleteEvidenceSentence(candidate.proposalSurface, input.evidence)
@@ -571,11 +562,6 @@ function authoritySoftmaxLogits(logits: Record<RequestedAuthority, number>, temp
 function boundedAuthorityTemperature(value: number): number {
   if (!Number.isFinite(value)) throw new RangeError("requested-authority temperature must be finite");
   return Math.max(0.05, Math.min(2, value));
-}
-
-function boundedCreativeTemperature(value: number): number {
-  if (!Number.isFinite(value)) throw new RangeError("creative temperature must be finite");
-  return Math.max(0.05, Math.min(1.5, value));
 }
 
 function requestQuestionAuthoritySignal(text: string, structuredIds: ReadonlySet<string>): number {
@@ -1751,10 +1737,9 @@ function scoreDraft(input: PlanInventionsInput, draft: DraftComposition, constra
       : normalizeSurface(draft.proposalSurface).includes(normalizeSurface(constraint.surface))
         || weightedJaccard(proposalFeatures, featureSet(constraint.surface, 128)) >= 0.22
   }));
-  const constraintWeight = constraintRows.reduce((sum, row) => sum + row.weight, 0);
-  const constraintCoverage = constraintWeight > 0
-    ? constraintRows.reduce((sum, row) => sum + row.weight * Number(row.satisfied), 0) / constraintWeight
-    : 1;
+  const constraintsSatisfied = constraintRows.filter(row => row.satisfied).length;
+  const constraintsTotal = constraintRows.length;
+  const constraintCoverage = constraintsTotal ? constraintsSatisfied / constraintsTotal : 1;
   const graphCoherence = structuralPlanBound
     ? mean(structuralEvents.map(event => mean([
       event.graphFit,
@@ -1803,19 +1788,12 @@ function scoreDraft(input: PlanInventionsInput, draft: DraftComposition, constra
   const unsupportedFactualAssertion = clamp01(draft.claimBasis
     .filter(record => record.kind === "factual_premise" && record.evidenceIds.length === 0)
     .length / Math.max(1, draft.claimBasis.filter(record => record.kind === "factual_premise").length));
-  const bootstrapScore =
-    0.28 * constraintCoverage +
-    0.22 * graphCoherence +
-    0.2 * novelty +
-    0.15 * languageRealizability +
-    0.15 * usefulness -
-    0.3 * risk -
-    0.2 * repetition -
-    0.5 * unsupportedFactualAssertion;
   return {
     ...draft,
     constraintCoverage,
     constraints: constraintRows,
+    constraintsSatisfied,
+    constraintsTotal,
     graphCoherence,
     novelty,
     languageRealizability,
@@ -1823,7 +1801,6 @@ function scoreDraft(input: PlanInventionsInput, draft: DraftComposition, constra
     risk,
     repetition,
     unsupportedFactualAssertion,
-    bootstrapScore,
     diversity: 1,
     probability: 0
   };
@@ -1843,31 +1820,11 @@ function structuralCreativePlanSimilarity(
 }
 
 function diversityRank(candidates: readonly ScoredComposition[]): ScoredComposition[] {
-  const remaining = [...candidates];
-  const selected: ScoredComposition[] = [];
-  while (remaining.length) {
-    const ranked = remaining.map(candidate => {
-      const candidateStructuralEvents = candidate.proposalRealization.structuralEventPlan ?? [];
-      const maxSimilarity = Math.max(0, ...selected.map(prior => (
-        candidateStructuralEvents.length
-          ? structuralCreativePlanSimilarity(
-            candidateStructuralEvents,
-            prior.proposalRealization.structuralEventPlan ?? []
-          )
-          : weightedJaccard(featureSet(candidate.proposalSurface, 512), featureSet(prior.proposalSurface, 512))
-      )));
-      const diversity = 1 - maxSimilarity;
-      return { candidate, diversity, score: candidate.probability * (0.72 + 0.28 * diversity) };
-    }).sort((left, right) =>
-      right.score - left.score
-      || right.candidate.bootstrapScore - left.candidate.bootstrapScore
-      || draftCompositionIdentity(left.candidate).localeCompare(draftCompositionIdentity(right.candidate))
-    );
-    const next = ranked[0]!;
-    selected.push({ ...next.candidate, diversity: next.diversity });
-    remaining.splice(remaining.indexOf(next.candidate), 1);
-  }
-  return selected;
+  return [...candidates].sort((left, right) =>
+    right.constraintsSatisfied * Math.max(1, left.constraintsTotal)
+      - left.constraintsSatisfied * Math.max(1, right.constraintsTotal)
+    || draftCompositionIdentity(left).localeCompare(draftCompositionIdentity(right))
+  );
 }
 
 function edgeRelationPotential(edge: GraphEdge): number {

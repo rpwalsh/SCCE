@@ -27,7 +27,6 @@ import {
   CALIBRATION_IDS,
   CALIBRATION_TASK_CLASS_IDS,
   calibrateRuntimeScore,
-  creativeBootstrapScore,
   creativePreferenceScore,
   type CalibrationModelSet,
   type CreativePreferenceFeatureVector
@@ -43,6 +42,7 @@ import { typedRelationTraces } from "./typed-relation-trace.js";
 import {
   rankCreativeContinuations,
   type CreativeContinuationCandidate,
+  type CreativeContinuationScore,
   type CreativeContinuationPolicy,
   type CreativeContinuationState
 } from "./creative-continuation-learning.js";
@@ -174,10 +174,12 @@ export function createCandidateEngine() {
           : candidate.kind === "creative-candidate"
             ? creativeAuthorityScore(candidate, input.calibrationModels).score
             : undefined;
-        const ownerAdjustment = operator?.selectionAdjustment
-          ?? (typeof baseSelectionScore === "number" && Number.isFinite(baseSelectionScore)
-            ? selectionScore - baseSelectionScore
-            : 0);
+        const ownerAdjustment = operator?.selectionSource === "owner_observed_preference"
+          ? operator.selectionAdjustment
+            ?? (typeof baseSelectionScore === "number" && Number.isFinite(baseSelectionScore)
+              ? selectionScore - baseSelectionScore
+              : 0)
+          : 0;
         return {
           ...candidate,
           scores: {
@@ -1083,6 +1085,8 @@ function proposalCandidate(
   }
   const quality = candidateQualityFromProposal(input, proposal, answer);
   const constructIds = [...new Set(proposal.constructIds)];
+  const satisfiedRequirementIds = [...new Set(proposal.satisfiedRequirementIds)];
+  const missedRequirementIds = [...new Set(proposal.missedRequirementIds)];
   return {
     id: `proposal:${proposal.id}:${candidateIndex}`,
     kind,
@@ -1112,6 +1116,11 @@ function proposalCandidate(
     claimBases: proposal.claims.map(claim => claim.basis),
     satisfiedRequirementIds: [...proposal.satisfiedRequirementIds],
     missedRequirementIds: [...proposal.missedRequirementIds],
+    requestConstraintCounts: {
+      satisfied: satisfiedRequirementIds.length,
+      total: satisfiedRequirementIds.length + missedRequirementIds.length,
+      constraintIds: [...new Set([...satisfiedRequirementIds, ...missedRequirementIds])].sort()
+    },
     boundaries: [
       ...(quality.unsupportedFactRate > 0 ? ["unsupported-factual-claim"] : []),
       ...(quality.fakeFactualAuthority > 0 ? ["fake-factual-authority"] : []),
@@ -1325,6 +1334,11 @@ function creativeCandidate(input: {
     taskClass: CALIBRATION_TASK_CLASS_IDS.creativeGeneration
   });
   const trace = jsonRecord(construct.trace);
+  const requestConstraintCounts = constraintCountsFromTrace(trace.constraints);
+  const constraintFraction = requestConstraintCounts.total > 0
+    ? requestConstraintCounts.satisfied / requestConstraintCounts.total
+    : undefined;
+  const selectionScore = selection.score ?? constraintFraction;
   const factualClaimEvidenceIds = factualPremiseEvidenceIds(trace.claimBasis);
   const factualBasisIds = factualClaimEvidenceIds
     ? construct.basisEvidenceIds.filter(id => factualClaimEvidenceIds.has(String(id)))
@@ -1333,24 +1347,24 @@ function creativeCandidate(input: {
   const premiseEvidenceIds = [...new Set(factualBasisIds)]
     .map(id => knownEvidence.get(String(id)))
     .filter((id): id is EvidenceId => Boolean(id));
-  const plannerBootstrapScore = finiteNumber(trace.bootstrapScore) ?? creativeBootstrapScore(metrics);
   const scoreTrace = selection.source === "pairwise_preference"
     ? estimatorScore({
-        value: Math.max(-64, Math.min(64, selection.score)),
+        value: Math.max(-64, Math.min(64, selection.score!)),
         range: [-65, 65],
         meaning: "creative candidate pairwise preference score",
         inputs: [...creativeFeatureInputs(metrics), `modelHash:${selection.modelHash ?? "missing"}`],
         provenance: ["candidate.ts:creativeCandidate", selection.modelId ?? "creative.preference.model.missing"],
         failureModes: ["sparse_preference_pairs", "preference_distribution_shift"]
       })
-    : provisionalHeuristicScore({
-        value: Math.max(-1, Math.min(1, selection.score)),
-        range: [-1.01, 1.01],
-        meaning: "bootstrap creative candidate score",
-        inputs: creativeFeatureInputs(metrics),
-        provenance: ["candidate.ts:creativeCandidate", "SERIOUS_VERSION_MATH_APPENDIX.md:feedback"],
-        failureModes: ["bootstrap_coefficients_not_learned", "unobserved_creative_preferences"]
-      });
+    : constraintFraction === undefined
+      ? undefined
+      : featureScore({
+          value: constraintFraction,
+          range: [0, 1],
+          meaning: "fraction of actual request constraints satisfied",
+          inputs: [`requestConstraintsSatisfied:${requestConstraintCounts.satisfied}`, `requestConstraintsTotal:${requestConstraintCounts.total}`],
+          provenance: ["candidate.ts:creativeCandidate", "invention-planner.ts:constraintRows"]
+        });
   return {
     id: `creative:${construct.id}:${candidateIndex}${input.candidateRunId ? `:${input.candidateRunId}` : ""}`,
     kind: "creative-candidate",
@@ -1375,8 +1389,9 @@ function creativeCandidate(input: {
       risk: metrics.risk,
       repetition: metrics.repetition,
       unsupportedFactualAssertion: metrics.unsupportedFactualAssertion,
-      creativeSelectionScore: selection.score
+      ...(selectionScore === undefined ? {} : { creativeSelectionScore: selectionScore })
     },
+    requestConstraintCounts,
     boundaries: [
       "generated-material-not-evidence",
       ...(metrics.unsupportedFactualAssertion > 0 ? ["unsupported-factual-assertion-penalized"] : []),
@@ -1387,9 +1402,11 @@ function creativeCandidate(input: {
       constructId: construct.id,
       proofStatusId: construct.proofStatusId,
       creativeMetrics: metrics,
-      bootstrapScore: plannerBootstrapScore,
-      selectionScore: selection.score,
-      selectionSource: selection.source,
+      requestConstraintCounts,
+      selectionScore: selectionScore ?? null,
+      selectionSource: selection.source === "pairwise_preference"
+        ? selection.source
+        : constraintFraction === undefined ? "untrained_neutral" : "request_constraints",
       preferenceModelId: selection.modelId ?? null,
       preferenceModelHash: selection.modelHash ?? null,
       claimBasis: trace.claimBasis ?? null,
@@ -1401,7 +1418,7 @@ function creativeCandidate(input: {
       generatedMaterialRequiresEvidence: false,
       fakeCitationForbidden: true
     }),
-    scoreTrace: [scoreTrace]
+    scoreTrace: scoreTrace ? [scoreTrace] : []
   };
 }
 
@@ -1508,19 +1525,38 @@ function candidateOperatorRows(
     && creativeContinuationState
     && creativeContinuationPolicy
     && creativeContinuationCandidates
-    ? new Map(candidates.flatMap(candidate => {
-      const continuation = creativeContinuationCandidates.get(candidate.id);
-      if (!continuation) return [];
-      const ranked = rankCreativeContinuations({
+    ? new Map<string, CreativeContinuationScore>((() => {
+      const offered: CreativeContinuationCandidate[] = [];
+      const candidateByContinuationId = new Map<string, string>();
+      for (const candidate of candidates) {
+        const continuation = creativeContinuationCandidates.get(candidate.id);
+        if (!continuation) continue;
+        offered.push(continuation);
+        candidateByContinuationId.set(continuation.candidateId, candidate.id);
+      }
+      return rankCreativeContinuations({
         state: creativeContinuationState,
-        candidates: [continuation],
+        candidates: offered,
         policy: creativeContinuationPolicy
-      })[0];
-      return ranked ? [[candidate.id, ranked] as const] : [];
-    }))
+      }).flatMap(ranked => {
+        const candidateId = candidateByContinuationId.get(ranked.candidate.candidateId);
+        return candidateId ? [[candidateId, ranked] as const] : [];
+      });
+    })())
     : undefined;
+  const ownerPreferenceActive = [...(continuationScores?.values() ?? [])]
+    .some(row => row.source === "owner_observed_preference");
   const creativeSelections = requestedAuthority === "creative"
-    ? candidates.map(candidate => creativeAuthorityScore(candidate, calibrationModels, continuationScores?.get(candidate.id)?.score, continuationScores?.get(candidate.id)?.source))
+    ? candidates.map(candidate => {
+      const continuation = continuationScores?.get(candidate.id);
+      return creativeAuthorityScore(
+        candidate,
+        calibrationModels,
+        continuation?.score ?? (ownerPreferenceActive ? 0 : undefined),
+        continuation?.source ?? (ownerPreferenceActive ? "owner_observed_preference" : undefined),
+        hasCommonConstraintUniverse(candidates.filter(row => row.kind === "creative-candidate"))
+      );
+    })
     : undefined;
   const temperature = requirementField
     ? Math.max(0.08, Math.min(0.45, 0.24 + 0.14 * requirementField.noveltyDemand + 0.08 * requirementField.uncertaintyTolerance - 0.10 * requirementField.externalTruthAuthority - 0.10 * requirementField.actionCommitment))
@@ -1545,7 +1581,7 @@ function candidateOperatorRows(
   });
 }
 
-function creativeAuthorityScore(candidate: CandidateSurface, calibrationModels?: CalibrationModelSet, continuationScore?: number, continuationSource?: string): { score: number; source: string } {
+function creativeAuthorityScore(candidate: CandidateSurface, calibrationModels?: CalibrationModelSet, continuationScore?: number, continuationSource?: string, allowConstraintObjective = true): { score: number; source: string } {
   const features = creativeFeaturesFromCandidate(candidate);
   if (features) {
     const selection = creativePreferenceScore({
@@ -1554,15 +1590,13 @@ function creativeAuthorityScore(candidate: CandidateSurface, calibrationModels?:
       taskClass: CALIBRATION_TASK_CLASS_IDS.creativeGeneration
     });
     return {
-      score: continuationScore ?? selection.score,
-      source: continuationSource ?? selection.source
+      score: continuationScore ?? selection.score ?? (allowConstraintObjective ? requestConstraintFraction(candidate.requestConstraintCounts) : undefined) ?? 0,
+      source: continuationSource ?? (selection.source === "pairwise_preference"
+        ? selection.source
+        : allowConstraintObjective && candidate.requestConstraintCounts?.total ? "request_constraints" : "untrained_neutral")
     };
   }
-  const telemetryPenalty = looksStructuredTelemetry(candidate.answer) ? 0.48 : 0;
-  return {
-    score: -0.28 + 0.08 * candidate.scores.actionability + 0.06 * candidate.scores.realizability - 0.2 * candidate.scores.contradiction - telemetryPenalty,
-    source: "noncreative_authority_mismatch"
-  };
+  return { score: 0, source: "noncreative_authority_mismatch" };
 }
 
 function surfaceUnitCount(text: string): number {
@@ -1581,6 +1615,27 @@ function creativeMetricsFromConstruct(construct: InventionConstruct): CreativePr
     repetition: metric(trace.repetition, 0),
     unsupportedFactualAssertion: metric(trace.unsupportedFactualAssertion, 0)
   };
+}
+
+function constraintCountsFromTrace(value: JsonValue | undefined): { satisfied: number; total: number; constraintIds: string[] } {
+  if (!Array.isArray(value)) return { satisfied: 0, total: 0, constraintIds: [] };
+  const rows = value.filter((item): item is Record<string, JsonValue> => Boolean(item && typeof item === "object" && !Array.isArray(item)));
+  const byId = new Map(rows
+    .filter(row => typeof row.id === "string" && typeof row.satisfied === "boolean")
+    .map(row => [row.id as string, row.satisfied as boolean] as const));
+  return { satisfied: [...byId.values()].filter(Boolean).length, total: byId.size, constraintIds: [...byId.keys()].sort() };
+}
+
+function requestConstraintFraction(counts: CandidateSurface["requestConstraintCounts"]): number | undefined {
+  return counts && counts.total > 0 ? counts.satisfied / counts.total : undefined;
+}
+
+function hasCommonConstraintUniverse(candidates: readonly CandidateSurface[]): boolean {
+  if (!candidates.length) return false;
+  const first = candidates[0]?.requestConstraintCounts?.constraintIds;
+  if (!first?.length) return false;
+  const key = first.join("\u001f");
+  return candidates.every(candidate => candidate.requestConstraintCounts?.constraintIds.join("\u001f") === key);
 }
 
 function creativeFeaturesFromCandidate(candidate: CandidateSurface): CreativePreferenceFeatureVector | undefined {

@@ -51,6 +51,7 @@ export interface CreativeContinuationCandidate {
   continuationModeId: string;
   semanticOperatorId: string;
   features: CreativePreferenceFeatureVector;
+  requestConstraintCounts?: { satisfied: number; total: number; constraintIds: string[] };
   selectedOutputHash?: string;
 }
 
@@ -83,7 +84,7 @@ export interface CreativeContinuationScore {
   score: number;
   baseScore: number;
   ownerAdjustment: number;
-  source: "bootstrap" | "pairwise_preference";
+  source: "owner_observed_preference" | "pairwise_preference" | "request_constraints" | "untrained_neutral";
 }
 
 /** Projects the real invention construct into opaque structural identities.
@@ -122,6 +123,7 @@ export function creativeContinuationCandidateFromConstruct(input: {
   const proposalPath = typeof realization.path === "string" ? realization.path : null;
   const requestFrameId = typeof realization.requestFrameId === "string" ? realization.requestFrameId : null;
   const requestConstraintIds = stringArray(realization.requestConstraintIds);
+  const requestConstraintCounts = constraintCountsFromTrace(trace.constraints);
   const hasStructuralSignals = Boolean(
     structuralPlan.id
     || programGraphId
@@ -174,6 +176,7 @@ export function creativeContinuationCandidateFromConstruct(input: {
     continuationModeId,
     semanticOperatorId,
     features,
+    ...(requestConstraintCounts.total ? { requestConstraintCounts } : {}),
     selectedOutputHash: hashValue(input.construct.proposalSurface)
   };
 }
@@ -394,8 +397,7 @@ export function rankCreativeContinuations(input: {
   const stateKey = continuationStateKey(input.state);
   const support = input.policy?.statePreferences.get(stateKey);
   const contextSupport = input.policy?.statePreferences.get(continuationSemanticContextKey(input.state));
-  return input.candidates
-    .map(candidate => {
+  const scored = input.candidates.map(candidate => {
       validateCandidate(candidate);
       const base = creativePreferenceScore({
         features: candidate.features,
@@ -405,22 +407,53 @@ export function rankCreativeContinuations(input: {
       const structural = support?.get(structureKey(candidate)) ?? contextSupport?.get(structureKey(candidate));
       const mode = support?.get(modeKey(candidate)) ?? contextSupport?.get(modeKey(candidate));
       const operator = support?.get(operatorKey(candidate)) ?? contextSupport?.get(operatorKey(candidate));
-      const net = (structural?.preferred ?? 0) - (structural?.rejected ?? 0);
-      const modeNet = (mode?.preferred ?? 0) - (mode?.rejected ?? 0);
-      const operatorNet = (operator?.preferred ?? 0) - (operator?.rejected ?? 0);
-      // Explicit owner feedback is a bounded adjustment. It can change a
-      // continuation choice, while the learned feature model still supplies
-      // the cold-start and generalization score.
-      const ownerAdjustment = 0.8 * Math.tanh(net) + 0.3 * Math.tanh(modeNet) + 0.2 * Math.tanh(operatorNet);
+      const ownerPreference = netSupport(structural) || netSupport(mode) || netSupport(operator);
+      const constraintFraction = candidate.requestConstraintCounts && candidate.requestConstraintCounts.total > 0
+        ? candidate.requestConstraintCounts.satisfied / candidate.requestConstraintCounts.total
+        : undefined;
       return {
         candidate,
-        score: base.score + ownerAdjustment,
-        baseScore: base.score,
-        ownerAdjustment,
+        score: base.score ?? 0,
+        baseScore: base.score ?? 0,
+        ownerPreference,
+        constraintFraction,
         source: base.source
-      } satisfies CreativeContinuationScore;
-    })
-    .sort((left, right) => right.score - left.score || left.candidate.candidateId.localeCompare(right.candidate.candidateId));
+      };
+    });
+  const hasOwnerEvidence = scored.some(row => row.ownerPreference !== 0);
+  const hasPreferenceModel = scored.some(row => row.source === "pairwise_preference");
+  const hasCommonConstraintUniverse = sameConstraintUniverse(input.candidates);
+  const ranked: CreativeContinuationScore[] = scored.map(row => {
+    const ownerAdjustment = hasOwnerEvidence ? row.ownerPreference : 0;
+    const source: CreativeContinuationScore["source"] = hasOwnerEvidence
+      ? "owner_observed_preference"
+      : hasPreferenceModel
+        ? row.source === "pairwise_preference"
+          ? row.source
+          : hasCommonConstraintUniverse && row.candidate.requestConstraintCounts?.total ? "request_constraints" : "untrained_neutral"
+        : hasCommonConstraintUniverse && row.candidate.requestConstraintCounts?.total
+          ? "request_constraints"
+          : "untrained_neutral";
+    const score = hasOwnerEvidence ? ownerAdjustment
+      : hasPreferenceModel ? row.baseScore
+        : hasCommonConstraintUniverse ? row.constraintFraction ?? 0 : 0;
+    return { ...row, score, ownerAdjustment, source };
+  });
+  return ranked.sort((left, right) => compareCreativePreferenceRows(left, right));
+}
+
+function compareCreativePreferenceRows(
+  left: CreativeContinuationScore,
+  right: CreativeContinuationScore
+): number {
+  if (left.source === "request_constraints" && right.source === "request_constraints") {
+    const leftCounts = left.candidate.requestConstraintCounts ?? { satisfied: 0, total: 0, constraintIds: [] };
+    const rightCounts = right.candidate.requestConstraintCounts ?? { satisfied: 0, total: 0, constraintIds: [] };
+    return rightCounts.satisfied * Math.max(1, leftCounts.total)
+      - leftCounts.satisfied * Math.max(1, rightCounts.total)
+      || left.candidate.candidateId.localeCompare(right.candidate.candidateId);
+  }
+  return right.score - left.score || left.candidate.candidateId.localeCompare(right.candidate.candidateId);
 }
 
 function continuationPreferenceId(input: CreativeContinuationPreferenceInput): string {
@@ -520,6 +553,7 @@ function parseCandidate(value: JsonValue | undefined): CreativeContinuationCandi
     continuationModeId: row.continuationModeId as string,
     semanticOperatorId: row.semanticOperatorId as string,
     features: normalizeFeatures(featureRecord),
+    ...(parseConstraintCounts(row.requestConstraintCounts) ? { requestConstraintCounts: parseConstraintCounts(row.requestConstraintCounts)! } : {}),
     ...(typeof row.selectedOutputHash === "string" ? { selectedOutputHash: row.selectedOutputHash } : {})
   };
 }
@@ -535,6 +569,48 @@ function validateCandidate(candidate: CreativeContinuationCandidate): void {
   if (![candidate.candidateId, candidate.structureId, candidate.continuationModeId, candidate.semanticOperatorId].every(value => typeof value === "string" && value.length > 0)) {
     throw new Error("creative continuation candidate requires structural ids");
   }
+  if (candidate.requestConstraintCounts
+    && (!Number.isInteger(candidate.requestConstraintCounts.satisfied)
+      || !Number.isInteger(candidate.requestConstraintCounts.total)
+      || candidate.requestConstraintCounts.satisfied < 0
+      || candidate.requestConstraintCounts.total < candidate.requestConstraintCounts.satisfied
+      || candidate.requestConstraintCounts.constraintIds.length !== candidate.requestConstraintCounts.total
+      || new Set(candidate.requestConstraintCounts.constraintIds).size !== candidate.requestConstraintCounts.constraintIds.length)) {
+    throw new Error("creative continuation request constraint counts are invalid");
+  }
+}
+
+function netSupport(support: CreativeStructuralSupport | undefined): number {
+  return support ? support.preferred - support.rejected : 0;
+}
+
+function constraintCountsFromTrace(value: JsonValue | undefined): { satisfied: number; total: number; constraintIds: string[] } {
+  if (!Array.isArray(value)) return { satisfied: 0, total: 0, constraintIds: [] };
+  const rows = value.filter((item): item is Record<string, JsonValue> => Boolean(item && typeof item === "object" && !Array.isArray(item)));
+  const byId = new Map(rows
+    .filter(row => typeof row.id === "string" && typeof row.satisfied === "boolean")
+    .map(row => [row.id as string, row.satisfied as boolean] as const));
+  return { satisfied: [...byId.values()].filter(Boolean).length, total: byId.size, constraintIds: [...byId.keys()].sort() };
+}
+
+function sameConstraintUniverse(candidates: readonly CreativeContinuationCandidate[]): boolean {
+  if (!candidates.length) return false;
+  const first = candidates[0]?.requestConstraintCounts?.constraintIds;
+  if (!first?.length) return false;
+  const key = first.join("\u001f");
+  return candidates.every(candidate => candidate.requestConstraintCounts?.constraintIds.join("\u001f") === key);
+}
+
+function parseConstraintCounts(value: JsonValue | undefined): { satisfied: number; total: number; constraintIds: string[] } | undefined {
+  const row = record(value);
+  if (typeof row.satisfied !== "number" || !Number.isInteger(row.satisfied)
+    || typeof row.total !== "number" || !Number.isInteger(row.total)
+    || row.satisfied < 0 || row.total < row.satisfied
+    || !Array.isArray(row.constraintIds)
+    || row.constraintIds.some(id => typeof id !== "string")) return undefined;
+  const constraintIds = [...new Set(row.constraintIds as string[])].sort();
+  if (constraintIds.length !== row.total) return undefined;
+  return { satisfied: row.satisfied, total: row.total, constraintIds };
 }
 
 function normalizeFeatures(value: Record<string, JsonValue>): CreativePreferenceFeatureVector {

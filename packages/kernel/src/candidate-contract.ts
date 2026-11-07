@@ -43,6 +43,7 @@ export interface CandidateSurface {
     unsupportedFactualAssertion?: number;
     creativeSelectionScore?: number;
   };
+  requestConstraintCounts?: { satisfied: number; total: number; constraintIds: string[] };
   quality?: CandidateQuality;
   proposalId?: string;
   constructIds?: string[];

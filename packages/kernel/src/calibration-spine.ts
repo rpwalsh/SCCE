@@ -107,17 +107,6 @@ export interface CreativePreferenceFeatureVector {
   unsupportedFactualAssertion: number;
 }
 
-export const CREATIVE_BOOTSTRAP_COEFFICIENTS: Readonly<Record<CreativePreferenceFeatureId, number>> = {
-  constraintCoverage: 0.28,
-  graphCoherence: 0.22,
-  novelty: 0.20,
-  languageRealizability: 0.15,
-  usefulness: 0.15,
-  risk: -0.30,
-  repetition: -0.20,
-  unsupportedFactualAssertion: -0.50
-};
-
 export interface CreativePreferenceModel {
   schema: "scce.creative_preference_model.v1";
   id: string;
@@ -306,7 +295,7 @@ export function creativePreferenceObservationPair(input: {
   return [
     calibrationObservationRecord({
       ...common,
-      rawScore: normalizeCreativeScore(creativeBootstrapScore(preferredFeatures)),
+      rawScore: preferredFeatures.constraintCoverage,
       outcome: true,
       accepted: preferenceKind === "accepted_rejected" ? true : undefined,
       corrected: preferenceKind === "corrected_original" ? true : undefined,
@@ -323,7 +312,7 @@ export function creativePreferenceObservationPair(input: {
     }),
     calibrationObservationRecord({
       ...common,
-      rawScore: normalizeCreativeScore(creativeBootstrapScore(rejectedFeatures)),
+      rawScore: rejectedFeatures.constraintCoverage,
       outcome: false,
       rejected: true,
       selectedOutputHash: input.rejected.selectedOutputHash,
@@ -378,33 +367,26 @@ export function creativePreferenceModelSnapshotObservation(input: {
   });
 }
 
-export function creativeBootstrapScore(features: CreativePreferenceFeatureVector): number {
-  const normalized = normalizeCreativeFeatures(features);
-  return CREATIVE_PREFERENCE_FEATURE_SCHEMA.featureIds.reduce(
-    (sum, featureId) => sum + CREATIVE_BOOTSTRAP_COEFFICIENTS[featureId] * normalized[featureId],
-    0
-  );
-}
-
 export function creativePreferenceScore(input: {
   features: CreativePreferenceFeatureVector;
   modelSet?: CalibrationModelSet;
   taskClass?: string;
 }): {
-  score: number;
-  source: "bootstrap" | "pairwise_preference";
+  score?: number;
+  source: "untrained" | "pairwise_preference";
   modelId?: string;
   modelHash?: string;
-  coefficients: Record<CreativePreferenceFeatureId, number>;
+  coefficients?: Record<CreativePreferenceFeatureId, number>;
 } {
   const taskClass = input.taskClass ?? CALIBRATION_TASK_CLASS_IDS.creativeGeneration;
   const model = creativePreferenceModelFor({ modelSet: input.modelSet, taskClass });
-  const coefficients = model?.coefficients ?? { ...CREATIVE_BOOTSTRAP_COEFFICIENTS };
+  if (!model) return { source: "untrained" };
+  const coefficients = model.coefficients;
   return {
     score: creativeLinearScore(normalizeCreativeFeatures(input.features), coefficients),
-    source: model ? "pairwise_preference" : "bootstrap",
-    modelId: model?.id,
-    modelHash: model?.modelHash,
+    source: "pairwise_preference",
+    modelId: model.id,
+    modelHash: model.modelHash,
     coefficients: { ...coefficients }
   };
 }
@@ -1172,7 +1154,7 @@ export function buildCreativePreferenceModels(input: {
   const l2 = Math.max(0, input.l2 ?? 0.015);
   const iterations = Math.max(1, Math.min(2_000, Math.floor(input.iterations ?? 320)));
   const learningRate = Math.max(1e-4, Math.min(1, input.learningRate ?? 0.18));
-  const theta = CREATIVE_PREFERENCE_FEATURE_SCHEMA.featureIds.map(featureId => CREATIVE_BOOTSTRAP_COEFFICIENTS[featureId]);
+  const theta = CREATIVE_PREFERENCE_FEATURE_SCHEMA.featureIds.map(() => 0);
   const deltas = pairs.map(pair => CREATIVE_PREFERENCE_FEATURE_SCHEMA.featureIds.map(
     featureId => pair.preferred.features[featureId] - pair.rejected.features[featureId]
   ));
@@ -1510,10 +1492,6 @@ function creativeLinearScore(features: CreativePreferenceFeatureVector, coeffici
     (sum, featureId) => sum + finiteCoefficient(coefficients[featureId]) * features[featureId],
     0
   );
-}
-
-function normalizeCreativeScore(score: number): number {
-  return clamp01((score + 1) / 2);
 }
 
 function pairwisePreferenceLoss(input: { deltas: readonly (readonly number[])[]; theta: readonly number[]; l2: number }): number {

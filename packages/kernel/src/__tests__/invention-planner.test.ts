@@ -51,25 +51,22 @@ describe("invention planner", () => {
       expect(trace.risk).toEqual(expect.any(Number));
       expect(trace.repetition).toEqual(expect.any(Number));
       expect(trace.unsupportedFactualAssertion).toBe(0);
-      expect(trace.bootstrapScore).toEqual(expect.any(Number));
+      expect(trace.bootstrapScore).toBeUndefined();
+      const constraints = trace.constraints as Array<{ id: string; satisfied: boolean }>;
+      const counts = trace.requestConstraintCounts as { satisfied: number; total: number };
+      expect(counts).toEqual({
+        satisfied: constraints.filter(row => row.satisfied).length,
+        total: new Set(constraints.map(row => row.id)).size,
+        constraintIds: [...new Set(constraints.map(row => row.id))].sort()
+      });
       expect(trace.selectionProbability).toEqual(expect.any(Number));
       expect(trace.rank).toEqual(expect.any(Number));
       expect(trace.copiesCompleteEvidenceSentence).toBe(false);
       const claims = trace.claimBasis as Array<{ kind: string; force: string; evidenceIds: string[] }>;
       expect(claims.some(claim => claim.kind === "invention" && claim.force === "invented" && claim.evidenceIds.length === 0)).toBe(true);
     }
-    const top = traceRecord(first[0]!);
-    const expectedBootstrap =
-      0.28 * Number(top.constraintCoverage) +
-      0.22 * Number(top.graphCoherence) +
-      0.2 * Number(top.novelty) +
-      0.15 * Number(top.languageRealizability) +
-      0.15 * Number(top.usefulness) -
-      0.3 * Number(top.risk) -
-      0.2 * Number(top.repetition) -
-      0.5 * Number(top.unsupportedFactualAssertion);
-    expect(Number(top.bootstrapScore)).toBeCloseTo(expectedBootstrap, 12);
     expect(first.reduce((sum, item) => sum + Number(traceRecord(item).selectionProbability), 0)).toBeCloseTo(1, 12);
+    expect(first.every(item => Number(traceRecord(item).selectionProbability) === Number(traceRecord(first[0]!).selectionProbability))).toBe(true);
   });
 
   it("binds activated request spans in the non-creative learned structure lane", () => {

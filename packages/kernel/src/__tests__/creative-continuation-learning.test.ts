@@ -43,7 +43,8 @@ describe("creative continuation learning", () => {
     });
 
     const cold = rankCreativeContinuations({ state, candidates: [linear, branching] });
-    expect(cold[0]?.candidate.structureId).toBe("structure.linear");
+    expect(cold[0]?.candidate.structureId).toBe("structure.branching");
+    expect(cold.every(row => row.score === 0 && row.source === "untrained_neutral")).toBe(true);
 
     const rows = await persistCreativeContinuationPreference({
       store,
@@ -73,7 +74,7 @@ describe("creative continuation learning", () => {
     expect(warm[0]?.candidate.structureId).toBe("structure.branching");
     expect(warm[0]?.ownerAdjustment).toBeGreaterThan(0);
     expect(warm[1]?.ownerAdjustment).toBeLessThan(0);
-    expect(warm[0]?.source).toBe("pairwise_preference");
+    expect(warm[0]?.source).toBe("owner_observed_preference");
 
     const laterState = { ...state, turnId: "turn.3", discourseStateId: "discourse.state.new" };
     const later = rankCreativeContinuations({ state: laterState, candidates: [linear, branching], policy });
@@ -98,6 +99,29 @@ describe("creative continuation learning", () => {
     const rankedB = rankCreativeContinuations({ state: stateB, candidates: [candidate("candidate.linear.b", "structure.linear", "mode.extend", "operator.linear"), candidate("candidate.branching.b", "structure.branching", "mode.branch", "operator.branch")], policy: policyB });
     expect(policyB.observations).toBe(0);
     expect(rankedB.every(row => row.ownerAdjustment === 0)).toBe(true);
+  });
+
+  it("orders untrained candidates by exact request constraint fractions and leaves equal fractions tied", () => {
+    const state = continuationState("conversation.constraints", "turn.2");
+    const threeOfFour = candidate("candidate.a", "structure.a", "mode.a", "operator.a");
+    threeOfFour.requestConstraintCounts = { satisfied: 3, total: 4, constraintIds: ["a", "b", "c", "d"] };
+    const sameFraction = candidate("candidate.a2", "structure.a2", "mode.a2", "operator.a2");
+    sameFraction.requestConstraintCounts = { satisfied: 3, total: 4, constraintIds: ["a", "b", "c", "d"] };
+    const twoOfFour = candidate("candidate.b", "structure.b", "mode.b", "operator.b");
+    twoOfFour.requestConstraintCounts = { satisfied: 2, total: 4, constraintIds: ["a", "b", "c", "d"] };
+    const oneOfFour = candidate("candidate.c", "structure.c", "mode.c", "operator.c");
+    oneOfFour.requestConstraintCounts = { satisfied: 1, total: 4, constraintIds: ["a", "b", "c", "d"] };
+
+    const ranked = rankCreativeContinuations({ state, candidates: [oneOfFour, twoOfFour, sameFraction, threeOfFour] });
+
+    expect(ranked.map(row => row.candidate.candidateId)).toEqual(["candidate.a", "candidate.a2", "candidate.b", "candidate.c"]);
+    expect(ranked.map(row => row.score)).toEqual([0.75, 0.75, 0.5, 0.25]);
+    expect(ranked.map(row => row.source)).toEqual(["request_constraints", "request_constraints", "request_constraints", "request_constraints"]);
+
+    const candidateWithDifferentUniverse = candidate("candidate.z", "structure.z", "mode.z", "operator.z");
+    candidateWithDifferentUniverse.requestConstraintCounts = { satisfied: 5, total: 5, constraintIds: ["invented.1", "invented.2", "invented.3", "invented.4", "invented.5"] };
+    const incomparable = rankCreativeContinuations({ state, candidates: [threeOfFour, candidateWithDifferentUniverse] });
+    expect(incomparable.every(row => row.score === 0 && row.source === "untrained_neutral")).toBe(true);
   });
 
   it("projects structural identities and round trips only the offered typed candidates", async () => {
