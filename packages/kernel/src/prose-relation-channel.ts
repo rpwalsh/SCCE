@@ -67,7 +67,7 @@ export interface ProseRelation {
  * a support number, and the assumptions and transformations this extraction made, recorded so a reviewer can see
  * exactly what was assumed rather than inferring it from the output.
  */
-export function proseRelationMetadata(text: string, options: { maxRelations?: number } = {}): JsonValue {
+export function proseRelationMetadata(text: string, options: { maxRelations?: number; entitySurfaces?: readonly string[] } = {}): JsonValue {
   const relations = proseRelations(text, options);
   if (!relations.length) return [];
   return relations.map(relation => ({
@@ -94,12 +94,12 @@ export function proseRelationMetadata(text: string, options: { maxRelations?: nu
 }
 
 /** Every relation the prose of `text` observably states, ordered by the sentence they appear in. Pure. */
-export function proseRelations(text: string, options: { maxRelations?: number } = {}): ProseRelation[] {
+export function proseRelations(text: string, options: { maxRelations?: number; entitySurfaces?: readonly string[] } = {}): ProseRelation[] {
   const maxRelations = Math.max(1, Math.min(2_000, Math.floor(options.maxRelations ?? 400)));
   const out: ProseRelation[] = [];
   for (const sentence of splitSurfaceSentences(text)) {
     if (sentence.length > MAX_SENTENCE_CHARS) continue;
-    for (const relation of sentenceRelations(sentence)) {
+    for (const relation of sentenceRelations(sentence, options.entitySurfaces ?? [])) {
       out.push(relation);
       if (out.length >= maxRelations) return out;
     }
@@ -114,8 +114,8 @@ export function proseRelations(text: string, options: { maxRelations?: number } 
  * what keeps this from inventing structure: in "A worked with B on C", the observable claims are (A, B) and (B, C),
  * and asserting (A, C) would be a composition this layer has no basis for. Composition is the graph's job.
  */
-function sentenceRelations(sentence: string): ProseRelation[] {
-  const args = sentenceArguments(sentence);
+function sentenceRelations(sentence: string, entitySurfaces: readonly string[]): ProseRelation[] {
+  const args = sentenceArguments(sentence, entitySurfaces);
   if (args.length < 2) return [];
   const out: ProseRelation[] = [];
   for (let index = 0; index + 1 < args.length; index++) {
@@ -152,9 +152,9 @@ interface PositionedArgument extends ProseRelationArgument {
 }
 
 /** Entity runs and numeric values in the order they occur, non-overlapping, earliest first. Pure. */
-function sentenceArguments(sentence: string): PositionedArgument[] {
+function sentenceArguments(sentence: string, entitySurfaces: readonly string[]): PositionedArgument[] {
   const found: PositionedArgument[] = [];
-  for (const run of surfaceEntityRuns(sentence)) {
+  for (const run of surfaceEntityRuns(sentence, entitySurfaces)) {
     const at = sentence.indexOf(run);
     if (at < 0) continue;
     found.push({ surface: run, role: "entity", start: at, end: at + run.length });

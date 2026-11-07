@@ -26,6 +26,7 @@ import { extensionOf, sourceCodeFileFactsFromJson, sourceRepositoryFactsFromJson
 import { createEngineeringCorpusProjection, engineeringCorpusProjectionFromJson } from "./engineering-corpus.js";
 import { bayesUpdate, shannonEntropy } from "./equation-operators.js";
 import { proseRelationMetadata } from "./prose-relation-channel.js";
+import { declaredEntitySurfacesFromMetadata } from "./kernel-answer-primitives.js";
 import {
   semanticCandidatesByChannel,
   structuredSemanticCandidates,
@@ -99,6 +100,8 @@ export interface TypedIngestProjectorInput {
   observedAt: number;
   relationPromotionModel?: RelationPromotionModel;
   opaqueRoleModel?: OpaqueRoleModel;
+  /** Source-owned labels already observed in an entity argument slot or declared by this source. */
+  entitySurfaces?: readonly string[];
 }
 
 export function createTypedIngestProjector(options: { idFactory: IdFactory; hasher: Hasher }) {
@@ -2293,7 +2296,8 @@ function metadataWithProseRelations(input: TypedIngestProjectorInput, languageTe
     : {};
   const declared = metadata.weakFreeSurfaceRelations;
   if (Array.isArray(declared) && declared.length > 0) return input.metadata;
-  const relations = proseRelationMetadata(languageText);
+  const entitySurfaces = [...declaredEntitySurfacesFromMetadata(input.metadata), ...(input.entitySurfaces ?? [])];
+  const relations = proseRelationMetadata(languageText, { entitySurfaces });
   if (!Array.isArray(relations) || relations.length === 0) return input.metadata;
   return toJsonValue({ ...metadata, weakFreeSurfaceRelations: relations });
 }

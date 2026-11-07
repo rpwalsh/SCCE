@@ -219,6 +219,8 @@ export function createTranslationEngine(options: { idFactory: IdFactory; hasher:
       durableConstructions?: readonly TranslationConstruction[];
       /** Owner corrections loaded from durable memory. They only rerank admitted target evidence. */
       correctionPriors?: readonly TranslationCorrectionPrior[];
+      /** Entity labels from the current scoped language memory; no spelling heuristic is used for preservation. */
+      entitySurfaces?: readonly string[];
       /** Plan item 129: the shared, subsystem-agnostic fitted calibration model set (see calibration-spine.ts), already loaded once per turn by the caller. Absent (cold start / no fit yet) falls back honestly to the raw score. */
       calibrationModels?: CalibrationModelSet;
       createdAt: number;
@@ -301,7 +303,8 @@ export function createTranslationEngine(options: { idFactory: IdFactory; hasher:
         sourceFrames,
         alignments,
         emission,
-        targetEvidence: targetEvidence.map(row => row.span)
+        targetEvidence: targetEvidence.map(row => row.span),
+        entitySurfaces: input.entitySurfaces ?? []
       });
       // Plan item 125, closed 2026-08-16: preservationValidation.blockingMissing
       // (a real number/date/code-symbol genuinely dropped from the
@@ -1059,6 +1062,7 @@ function buildTranslationConstruct(input: {
   alignments: TranslationFrameAlignment[];
   emission: TranslationPlan["emission"];
   targetEvidence: EvidenceSpan[];
+  entitySurfaces: readonly string[];
 }): TranslationConstruct {
   // The real, original request text -- not `sourceFrames.map(f =>
   // f.text).join(" ")`. Real bug, confirmed live: `semanticWindows` splits
@@ -1075,7 +1079,7 @@ function buildTranslationConstruct(input: {
   // is what gets produced -- only the "what must be preserved" source side
   // needs the undamaged original.
   const translatedText = input.force === "unknown" ? "" : input.emission.text;
-  const preservationValidation = validatePreservation(input.sourceText, translatedText);
+  const preservationValidation = validatePreservation(input.sourceText, translatedText, input.entitySurfaces);
   const objective = translationObjective(input.alignments, preservationValidation);
   const missingAlignments = input.alignments
     .filter(alignment => !alignment.targetFrameId || alignment.force === "unknown")
@@ -1119,8 +1123,8 @@ function buildTranslationConstruct(input: {
   };
 }
 
-function validatePreservation(sourceText: string, translatedText: string): TranslationPreservationValidation {
-  const terms = protectedTermClasses(sourceText);
+function validatePreservation(sourceText: string, translatedText: string, entitySurfaces: readonly string[]): TranslationPreservationValidation {
+  const terms = protectedTermClasses(sourceText, entitySurfaces);
   const target = normalizeForPreservation(translatedText);
   const missingEntities = terms.entities.filter(term => !target.includes(normalizeForPreservation(term)));
   const missingNumbers = terms.numbers.filter(term => !target.includes(normalizeForPreservation(term)));
@@ -1176,7 +1180,7 @@ function translationObjective(alignments: readonly TranslationFrameAlignment[], 
   return terms;
 }
 
-function protectedTermClasses(text: string): { entities: string[]; numbers: string[]; dates: string[]; codesymbols: string[] } {
+function protectedTermClasses(text: string, entitySurfaces: readonly string[]): { entities: string[]; numbers: string[]; dates: string[]; codesymbols: string[] } {
   const numbers = text.match(/\p{Sc}?[+-]?\d+(?:[.,:/_-]\d+)*(?:[%‰])?/gu) ?? [];
   const dates = text.match(/\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}:\d{2}(?::\d{2})?/gu) ?? [];
   // The leading identifier segment requires >= 2 characters specifically to
@@ -1196,15 +1200,8 @@ function protectedTermClasses(text: string): { entities: string[]; numbers: stri
   // alternative catches dotfiles (".bashrc", ".gitignore", ".env") --
   // real, common code symbols with no identifier before the dot at all.
   const codesymbols = text.match(/\.[\p{Letter}_$][\p{Letter}\p{Number}_$-]{1,}|[\p{Letter}_$][\p{Letter}\p{Number}_$-]{1,}(?:\.[\p{Letter}_$][\p{Letter}\p{Number}_$-]*)+|[\p{Letter}\p{Number}_.-]+\/[\p{Letter}\p{Number}_.\/-]+/gu) ?? [];
-  // Script-aware named-entity detection (surfaceEntityRuns, already the
-  // production standard used by answer-emitter.ts/local-evidence-runtime.ts/
-  // runtime-graph-retrieval.ts): capitalization is only a signal for scripts
-  // that actually have case (Latin, Cyrillic, Greek...). Uncased scripts
-  // (Hangul, Han, Arabic, Thai, Devanagari...) are flagged via real script
-  // membership instead (hasUncasedNonLatinLetter), never via a Latin-only
-  // `[A-Z]` regex that would silently exempt every non-Latin entity name
-  // from the preservation gate.
-  const entities = surfaceEntityRuns(text);
+  // Entity labels come from this turn's scoped learned source memory; spelling alone never enters the preservation gate.
+  const entities = surfaceEntityRuns(text, entitySurfaces);
   const numberSet = new Set<string>(numbers as string[]);
   const dateSet = new Set<string>(dates as string[]);
   const codesymbolSet = new Set<string>(codesymbols as string[]);

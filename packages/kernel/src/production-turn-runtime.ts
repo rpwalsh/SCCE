@@ -14,7 +14,7 @@ import { candidateIsSafeNonExecutingPlan, candidateUsesNonFactualPlanSemantics, 
 import { createCandidateEngine, type CandidateField, type CandidateSurface } from "./candidate.js";
 import { candidateSurvivesRealizationContract, compileRealizationContract, requestRelationUnits, resolveRequestValueBinding, semanticAnswerConstructFacts, type SemanticAnswerConstructFact, type SemanticRealizationContract } from "./semantic-answer-construct.js";
 import { sourceConstructionRequestValueResolver } from "./source-construction-request-binding.js";
-import { namedSubjectAnchors } from "./kernel-answer-primitives.js";
+import { learnedEntitySurfacesFromLanguageMemory, namedSubjectAnchors } from "./kernel-answer-primitives.js";
 import { createPfaceEstimator } from "./causal-estimation.js";
 import { createCcrEngine } from "./ccr.js";
 import { cognitiveProposalComparisonReceipt, planCognitiveProposals, type CognitiveActionPlan } from "./cognitive-planner.js";
@@ -3198,6 +3198,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           durableSeeds,
           durableConstructions,
           correctionPriors: await translationCorrectionPriorsForTurn(canonicalTranslationTarget),
+          entitySurfaces: learnedEntitySurfacesFromLanguageMemory(authorityLanguage.state),
           calibrationModels,
           createdAt: clock.now()
         });

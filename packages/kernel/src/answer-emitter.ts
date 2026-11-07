@@ -8,7 +8,8 @@ import { clamp01, featureSet, sourceTextSurface, toJsonValue, weightedJaccard } 
 import { createSurfaceRealizer } from "./surface-realizer.js";
 import { containsUnresolvedSurfaceKey } from "./localization.js";
 import { detectCannedAnswerSpeech } from "./surface-quality.js";
-import { ensureSurfaceSentence, hasUncasedNonLatinLetter, hasUppercaseLetter, splitSurfaceSentences, surfaceWords } from "./surface-linguistics.js";
+import { ensureSurfaceSentence, splitSurfaceSentences } from "./surface-linguistics.js";
+import { learnedEntitySurfacesFromLanguageMemory, surfaceEntityRuns } from "./kernel-answer-primitives.js";
 import { extractTemporalAnswerFromEvidence } from "./semantic-obligations.js";
 import { answerCoversRequest, requestContentEvidenceUnits, requestSentenceSequences, surfaceRequestOrderedAdjacentPairFraction } from "./local-evidence-runtime.js";
 import { deriveClosedClassWords, requestClosedClassWords } from "./closed-class-words.js";
@@ -40,6 +41,7 @@ export function composeEvidenceGroundedAnswer(input: {
   maxSentences?: number;
   allowDirectSourceSurface?: boolean;
 }): EvidenceGroundedAnswer {
+  const entitySurfaces = input.languageMemory ? learnedEntitySurfacesFromLanguageMemory(input.languageMemory) : [];
   const maxSentences = Math.max(1, Math.min(12, input.maxSentences ?? 3));
   const claimFeatures = input.entailment.claim.features.length
     ? input.entailment.claim.features
@@ -50,7 +52,7 @@ export function composeEvidenceGroundedAnswer(input: {
 
   const candidates = [
     ...ccrCandidates(input.ccr, claimFeatures),
-    ...evidenceCandidates(input.evidence, claimFeatures, ppfMass, evidenceMass)
+    ...evidenceCandidates(input.evidence, claimFeatures, ppfMass, evidenceMass, entitySurfaces)
   ].sort((a, b) => b.score - a.score || b.lcb - a.lcb || a.textHash.localeCompare(b.textHash));
   const selected = selectDiverse(candidates, maxSentences);
   const selectedIds = selected.flatMap(item => item.evidenceId ? [item.evidenceId] : []);
@@ -72,7 +74,7 @@ export function composeEvidenceGroundedAnswer(input: {
   const evidenceIds = [...new Set([...referencedIds, ...realized.evidenceIds.map(String)])];
   const gateSpans = referencedEvidence.length ? referencedEvidence : input.evidence;
   const evidenceSurfaceRaw = input.allowDirectSourceSurface
-    ? evidenceAnswerSurface(input.requestText, gateSpans, maxSentences)
+    ? evidenceAnswerSurface(input.requestText, gateSpans, maxSentences, entitySurfaces)
     : "";
   const realizedSurfaceRaw = usableAnswerSurface(realized.text);
   // Real bug, confirmed live: this composer's realized/evidence surfaces were never checked against the same
@@ -147,7 +149,7 @@ function ccrCandidates(ccr: CcrResult | undefined, claimFeatures: readonly strin
   }).filter(item => item.textHash !== "0");
 }
 
-function evidenceCandidates(evidence: readonly EvidenceSpan[], claimFeatures: readonly string[], ppfMass: Map<string, number>, evidenceMass: Map<string, number>): EvidenceCandidate[] {
+function evidenceCandidates(evidence: readonly EvidenceSpan[], claimFeatures: readonly string[], ppfMass: Map<string, number>, evidenceMass: Map<string, number>, entitySurfaces: readonly string[]): EvidenceCandidate[] {
   const out: EvidenceCandidate[] = [];
   for (const span of evidence.slice(0, 48)) {
     const spanMass = Math.max(ppfMass.get(String(span.id)) ?? 0, evidenceMass.get(String(span.id)) ?? 0);
@@ -157,7 +159,7 @@ function evidenceCandidates(evidence: readonly EvidenceSpan[], claimFeatures: re
       const features = featureSet(text, 256);
       const lexical = weightedJaccard(claimFeatures, features);
       const trust = span.status === "promoted" ? 1 : 0.55;
-      const score = clamp01(0.22 * lexical + 0.2 * span.alpha + 0.16 * spanMass + 0.14 * trust + 0.16 * namedSurfaceMass(text) + 0.22 * collectionListSignal(text) - longSentencePenalty(text));
+      const score = clamp01(0.22 * lexical + 0.2 * span.alpha + 0.16 * spanMass + 0.14 * trust + 0.16 * namedSurfaceMass(text, entitySurfaces) + 0.22 * collectionListSignal(text, entitySurfaces) - longSentencePenalty(text));
       out.push({ evidenceId: String(span.id), source: "evidence", score, lcb: clamp01(0.55 * lexical + 0.45 * span.alpha), features, textHash: hashText(text) });
     }
   }
@@ -192,35 +194,35 @@ function cleanSentence(text: string): string {
   return text.replace(/\s+/g, " ").trim().slice(0, 900);
 }
 
-function namedSurfaceMass(text: string): number {
-  const runs = surfaceEntityRuns(text);
-  const parentheticalRuns = (text.match(/\([^)]{2,100}\)/gu) ?? []).filter(item => surfaceEntityRuns(item).length > 0).length;
+function namedSurfaceMass(text: string, entitySurfaces: readonly string[]): number {
+  const runs = surfaceEntityRuns(text, entitySurfaces);
+  const parentheticalRuns = (text.match(/\([^)]{2,100}\)/gu) ?? []).filter(item => surfaceEntityRuns(item, entitySurfaces).length > 0).length;
   return clamp01(Math.min(1, runs.length / 16) * 0.38 + Math.min(1, parentheticalRuns / 4) * 0.62);
 }
 
-function collectionListSignal(text: string): number {
+function collectionListSignal(text: string, entitySurfaces: readonly string[]): number {
   const compact = cleanSentence(text);
-  const parentheticals = (compact.match(/\([^)]{2,100}\)/gu) ?? []).filter(item => surfaceEntityRuns(item).length > 0).length;
-  const nameRuns = surfaceEntityRuns(compact);
+  const parentheticals = (compact.match(/\([^)]{2,100}\)/gu) ?? []).filter(item => surfaceEntityRuns(item, entitySurfaces).length > 0).length;
+  const nameRuns = surfaceEntityRuns(compact, entitySurfaces);
   const delimiters = (compact.match(/[,;:]/gu) ?? []).length;
   return clamp01(Math.min(1, nameRuns.length / 7) * 0.45 + Math.min(1, parentheticals / 4) * 0.35 + Math.min(1, delimiters / 8) * 0.2);
 }
 
-function compactMemberListSignal(text: string): number {
+function compactMemberListSignal(text: string, entitySurfaces: readonly string[]): number {
   const compact = cleanSentence(text);
-  const parentheticals = (compact.match(/\([^)]{2,100}\)/gu) ?? []).filter(item => surfaceEntityRuns(item).length > 0).length;
-  const nameRuns = surfaceEntityRuns(compact);
+  const parentheticals = (compact.match(/\([^)]{2,100}\)/gu) ?? []).filter(item => surfaceEntityRuns(item, entitySurfaces).length > 0).length;
+  const nameRuns = surfaceEntityRuns(compact, entitySurfaces);
   const separators = (compact.match(/[,;]/gu) ?? []).length;
   if (parentheticals < 2 || nameRuns.length < 3) return 0;
   return clamp01(0.5 + Math.min(0.3, parentheticals / 10) + Math.min(0.2, separators / 12));
 }
 
-function requestAnchorSignal(requestText: string, text: string): number {
+function requestAnchorSignal(requestText: string, text: string, entitySurfaces: readonly string[]): number {
   const surface = normalizeAnchorSurface(text);
   if (!surface) return 0;
   const surfaceUnits = surface.split(" ").filter(Boolean);
   let best = 0;
-  for (const anchor of namedSurfaceAnchors(requestText)) {
+  for (const anchor of namedSurfaceAnchors(requestText, entitySurfaces)) {
     const anchorUnits = anchor.split(" ").filter(Boolean);
     if (!anchorUnits.length || !anchorPhraseAppears(surfaceUnits, anchorUnits)) continue;
     best = Math.max(best, anchorPhraseAppears(surfaceUnits.slice(0, anchorUnits.length), anchorUnits) ? 1 : 0.78);
@@ -228,8 +230,8 @@ function requestAnchorSignal(requestText: string, text: string): number {
   return best;
 }
 
-function namedSurfaceAnchors(text: string): string[] {
-  const runs = surfaceEntityRuns(text);
+function namedSurfaceAnchors(text: string, entitySurfaces: readonly string[]): string[] {
+  const runs = surfaceEntityRuns(text, entitySurfaces);
   return [...new Set(runs.map(normalizeAnchorSurface).filter(anchor => anchor.split(" ").length >= 2))]
     .sort((left, right) => right.length - left.length)
     .slice(0, 8);
@@ -294,16 +296,16 @@ function citationSurfaceSignal(text: string): number {
   return folded.includes("http://") || folded.includes("https://") || folded.includes("www.") ? 1 : 0;
 }
 
-function evidenceAnswerSurface(requestText: string, evidence: readonly EvidenceSpan[], maxSentences: number): string {
+function evidenceAnswerSurface(requestText: string, evidence: readonly EvidenceSpan[], maxSentences: number, entitySurfaces: readonly string[]): string {
   const requestFeatures = featureSet(requestText, 256);
   const sentences = evidence
     .filter(span => span.status === "promoted")
     .flatMap(span => splitSentences(sourceTextSurface(span.text || span.textPreview, 24000)).slice(0, 80).map(text => ({
       text,
       evidenceId: String(span.id),
-      compactMemberList: compactMemberListSignal(text),
-      anchorSignal: requestAnchorSignal(requestText, text),
-      score: weightedJaccard(requestFeatures, featureSet(text, 128)) + span.alpha * 0.14 + namedSurfaceMass(text) * 0.26 + collectionListSignal(text) * 0.42 + compactMemberListSignal(text) * 0.36 + requestAnchorSignal(requestText, text) * 0.48 - longSentencePenalty(text) - citationSurfaceSignal(text) * 0.9
+      compactMemberList: compactMemberListSignal(text, entitySurfaces),
+      anchorSignal: requestAnchorSignal(requestText, text, entitySurfaces),
+      score: weightedJaccard(requestFeatures, featureSet(text, 128)) + span.alpha * 0.14 + namedSurfaceMass(text, entitySurfaces) * 0.26 + collectionListSignal(text, entitySurfaces) * 0.42 + compactMemberListSignal(text, entitySurfaces) * 0.36 + requestAnchorSignal(requestText, text, entitySurfaces) * 0.48 - longSentencePenalty(text) - citationSurfaceSignal(text) * 0.9
     })))
     .filter(row => cleanSentence(row.text))
     .sort((a, b) => b.score - a.score || a.evidenceId.localeCompare(b.evidenceId));
@@ -331,23 +333,4 @@ function evidenceAnswerSurface(requestText: string, evidence: readonly EvidenceS
 
 function ensureSentence(text: string): string {
   return ensureSurfaceSentence(cleanSentence(text));
-}
-
-function surfaceEntityRuns(text: string): string[] {
-  const out: string[] = [];
-  let current: string[] = [];
-  const flush = () => {
-    if (current.length >= 2 || current.some(hasUncasedNonLatinLetter)) out.push(current.join(" "));
-    current = [];
-  };
-  for (const word of surfaceWords(text)) {
-    const entityish = hasUppercaseLetter(word) || hasUncasedNonLatinLetter(word);
-    if (entityish) {
-      current.push(word);
-      continue;
-    }
-    flush();
-  }
-  flush();
-  return [...new Set(out)].slice(0, 32);
 }

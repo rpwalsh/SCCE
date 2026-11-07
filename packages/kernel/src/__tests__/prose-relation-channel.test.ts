@@ -45,7 +45,7 @@ describe("prose relation channel", () => {
     };
   }
 
-  function project(text: string) {
+  function project(text: string, entitySurfaces: readonly string[] = []) {
     const sourceId = "source.prose" as SourceId;
     const sourceVersionId = "version.prose" as SourceVersionId;
     const evidence = evidenceFor("fixture://prose", text, sourceId, sourceVersionId);
@@ -57,12 +57,13 @@ describe("prose relation channel", () => {
       text,
       metadata: toJsonValue({}),
       evidence: [evidence],
-      observedAt: 100
+      observedAt: 100,
+      entitySurfaces
     });
   }
 
   it("reads a measurement relation out of a sentence without naming a word of the language", () => {
-    const relations = proseRelations("The compound Xylor-7 decomposes at 417 degrees Celsius.");
+    const relations = proseRelations("The compound Xylor-7 decomposes at 417 degrees Celsius.", { entitySurfaces: ["Xylor-7"] });
 
     expect(relations).toHaveLength(1);
     expect(relations[0]!.subject.surface).toBe("Xylor-7");
@@ -72,7 +73,7 @@ describe("prose relation channel", () => {
   });
 
   it("takes a number's own digits, not the sentence punctuation that follows them", () => {
-    const relations = proseRelations("Alice Renner became chief executive of Halvern Dynamics in 2019.");
+    const relations = proseRelations("Alice Renner became chief executive of Halvern Dynamics in 2019.", { entitySurfaces: ["Alice Renner", "Halvern Dynamics"] });
 
     expect(relations.map(relation => relation.object.surface)).not.toContain("2019.");
   });
@@ -80,21 +81,21 @@ describe("prose relation channel", () => {
   it("refuses a predicate with no lexical content, because a comma between two names is a list", () => {
     // A range and a list both put two arguments beside each other with only punctuation between them. Admitting
     // those was measured to be the only thing that recurred across enough independent sources to promote.
-    expect(proseRelations("Delegates included Marda Feln, Alice Renner and Jon Halvik.")
+    expect(proseRelations("Delegates included Marda Feln, Alice Renner and Jon Halvik.", { entitySurfaces: ["Marda Feln", "Alice Renner", "Jon Halvik"] })
       .map(relation => relation.predicateSurface)).not.toContain(",");
-    expect(proseRelations("The Ostry tunnel operated 1997-2001 without incident.")
+    expect(proseRelations("The Ostry tunnel operated 1997-2001 without incident.", { entitySurfaces: ["Ostry tunnel"] })
       .every(relation => relation.predicateSurface.trim().length > 0)).toBe(true);
   });
 
   it("does not join two arguments across a clause boundary", () => {
-    const relations = proseRelations("Marda Feln retired. Alice Renner took over.");
+    const relations = proseRelations("Marda Feln retired. Alice Renner took over.", { entitySurfaces: ["Marda Feln", "Alice Renner"] });
 
     expect(relations.some(relation =>
       relation.subject.surface === "Marda Feln" && relation.object.surface === "Alice Renner")).toBe(false);
   });
 
   it("reaches the weak_free_surface channel as opaque induced relations through typed ingestion", () => {
-    const projection = project("The compound Xylor-7 decomposes at 417 degrees Celsius.");
+    const projection = project("The compound Xylor-7 decomposes at 417 degrees Celsius.", ["Xylor-7"]);
     const induced = projection.semanticCandidates.filter(candidate => candidate.kind === "opaque_induced_relation");
 
     expect(induced.length).toBeGreaterThan(0);
@@ -103,7 +104,7 @@ describe("prose relation channel", () => {
   });
 
   it("declares what kind of thing each argument is, so the promotion model has a signature that varies", () => {
-    const projection = project("The compound Xylor-7 decomposes at 417 degrees Celsius.");
+    const projection = project("The compound Xylor-7 decomposes at 417 degrees Celsius.", ["Xylor-7"]);
     const induced = projection.semanticCandidates.filter(candidate => candidate.kind === "opaque_induced_relation");
 
     expect(induced[0]!.participants.map(participant => participant.valueKind))
@@ -116,7 +117,7 @@ describe("prose relation channel", () => {
     const projection = project([
       "The compound Xylor-7 decomposes at 417 degrees Celsius.",
       "Marda Feln was born in the city of Halvik."
-    ].join(" "));
+    ].join(" "), ["Xylor-7", "Marda Feln", "Halvik"]);
     const seeds = new Set(projection.semanticCandidates
       .filter(candidate => candidate.kind === "opaque_induced_relation")
       .map(candidate => candidate.relationSeedId));
@@ -125,7 +126,7 @@ describe("prose relation channel", () => {
   });
 
   it("carries the sentence as an anchor so a promoted node can be read back as a proposition", () => {
-    const projection = project("The compound Xylor-7 decomposes at 417 degrees Celsius.");
+    const projection = project("The compound Xylor-7 decomposes at 417 degrees Celsius.", ["Xylor-7"]);
     const induced = projection.semanticCandidates.filter(candidate => candidate.kind === "opaque_induced_relation");
     const anchors = induced[0]!.provenance.anchors.map(anchor => JSON.stringify(anchor));
 
