@@ -21,11 +21,20 @@ interface ScopedLearnedForms {
   signature: string;
   forms: Map<string, Map<string, readonly LearnedFormWitness[]>>;
   attestedForms: Map<string, Set<string>>;
+  parallelRulePairs: Map<string, Map<string, readonly ParallelParadigmSupport[]>>;
 }
 
 export interface LearnedAnswerUnitSharedBaseWitness {
   base: string;
   profileId: string;
+  left: LearnedFormWitness;
+  right: LearnedFormWitness;
+  basis: "attested-base" | "parallel-paradigm";
+  corroborating?: { base: string; left: LearnedFormWitness; right: LearnedFormWitness };
+}
+
+interface ParallelParadigmSupport {
+  base: string;
   left: LearnedFormWitness;
   right: LearnedFormWitness;
 }
@@ -49,17 +58,21 @@ export function primeLearnedAnswerUnitForms(input: { deltas: readonly LanguageSt
   const learned = buildLearnedForms(owned);
   forms = learned.forms;
   attestedForms = learned.attestedForms;
+  parallelRulePairs = learned.parallelRulePairs;
   generation = allocateRequestLanguageFormGeneration();
 }
 
 let attestedForms = new Map<string, Set<string>>();
+let parallelRulePairs = new Map<string, Map<string, readonly ParallelParadigmSupport[]>>();
 
 function buildLearnedForms(owned: readonly LanguageStructuralDelta[]): {
   forms: Map<string, Map<string, readonly LearnedFormWitness[]>>;
   attestedForms: Map<string, Set<string>>;
+  parallelRulePairs: Map<string, Map<string, readonly ParallelParadigmSupport[]>>;
 } {
   const result = new Map<string, Map<string, readonly LearnedFormWitness[]>>();
   const observed = new Map<string, Set<string>>();
+  const directedByProfile = new Map<string, Map<string, LearnedFormWitness[]>>();
   for (const delta of owned) {
     const left = corpusIdentitySurface(delta.surface.from!);
     const right = corpusIdentitySurface(delta.surface.to!);
@@ -68,13 +81,40 @@ function buildLearnedForms(owned: readonly LanguageStructuralDelta[]): {
     if (!profileForms) { profileForms = new Set(); observed.set(delta.profileId, profileForms); }
     profileForms.add(right);
     const witness = Object.freeze({ patternId: delta.patternId, profileId: delta.profileId, ruleId: delta.grammatical.ruleId!, evidenceIds: Object.freeze([...delta.evidenceIds].map(String)), from: left, to: right });
+    let profileEdges = directedByProfile.get(delta.profileId);
+    if (!profileEdges) { profileEdges = new Map(); directedByProfile.set(delta.profileId, profileEdges); }
+    const baseEdges = profileEdges.get(left) ?? [];
+    baseEdges.push(witness);
+    profileEdges.set(left, baseEdges);
     for (const [from, to] of [[left, right], [right, left]] as const) {
       let targets = result.get(from);
       if (!targets) { targets = new Map(); result.set(from, targets); }
       targets.set(to, Object.freeze([...(targets.get(to) ?? []), witness]));
     }
   }
-  return { forms: result, attestedForms: observed };
+  const parallelRulePairs = new Map<string, Map<string, readonly ParallelParadigmSupport[]>>();
+  for (const [profileId, bases] of directedByProfile) {
+    const byPair = new Map<string, ParallelParadigmSupport[]>();
+    for (const [base, edges] of bases) {
+      for (let leftIndex = 0; leftIndex < edges.length; leftIndex++) {
+        for (let rightIndex = leftIndex + 1; rightIndex < edges.length; rightIndex++) {
+          const left = edges[leftIndex]!;
+          const right = edges[rightIndex]!;
+          if (left.to === right.to || !observed.get(profileId)?.has(left.to) || !observed.get(profileId)?.has(right.to)) continue;
+          const key = rulePairKey(left.ruleId, right.ruleId);
+          const support = byPair.get(key) ?? [];
+          support.push({ base, left, right });
+          byPair.set(key, support);
+        }
+      }
+    }
+    parallelRulePairs.set(profileId, byPair);
+  }
+  return { forms: result, attestedForms: observed, parallelRulePairs };
+}
+
+function rulePairKey(left: string, right: string): string {
+  return JSON.stringify([left, right].sort());
 }
 
 export function learnedAnswerUnitFormsGeneration(): number { return requestLanguageFormScopeValue(REQUEST_FORM_SCOPE_KEY).generation ?? generation; }
@@ -101,7 +141,8 @@ export function learnedAnswerUnitSharedBaseWitnesses(left: string, right: string
   const scoped = requestLanguageFormScopeValue<ScopedLearnedForms>(REQUEST_FORM_SCOPE_KEY);
   const visibleForms = scoped.active ? scoped.value?.forms : forms;
   const visibleAttested = scoped.active ? scoped.value?.attestedForms : attestedForms;
-  if (!visibleForms || !visibleAttested) return [];
+  const visibleParallel = scoped.active ? scoped.value?.parallelRulePairs : parallelRulePairs;
+  if (!visibleForms || !visibleAttested || !visibleParallel) return [];
   const out: LearnedAnswerUnitSharedBaseWitness[] = [];
   const leftTargets = visibleForms.get(leftSurface);
   if (!leftTargets) return [];
@@ -110,11 +151,19 @@ export function learnedAnswerUnitSharedBaseWitnesses(left: string, right: string
     const rightWitnesses = visibleForms.get(base)?.get(rightSurface) ?? [];
     if (!leftWitnesses.length || !rightWitnesses.length) continue;
     for (const leftWitness of leftWitnesses) {
-      if (leftWitness.from !== base || leftWitness.to !== leftSurface || !visibleAttested.get(leftWitness.profileId)?.has(base)) continue;
+      if (leftWitness.from !== base || leftWitness.to !== leftSurface) continue;
       for (const rightWitness of rightWitnesses) {
-        if (rightWitness.profileId === leftWitness.profileId && rightWitness.from === base && rightWitness.to === rightSurface) {
-          out.push({ base, profileId: leftWitness.profileId, left: leftWitness, right: rightWitness });
+        if (rightWitness.profileId !== leftWitness.profileId || rightWitness.from !== base || rightWitness.to !== rightSurface) continue;
+        if (visibleAttested.get(leftWitness.profileId)?.has(base)) {
+          out.push({ base, profileId: leftWitness.profileId, left: leftWitness, right: rightWitness, basis: "attested-base" });
+          continue;
         }
+        const supports = visibleParallel.get(leftWitness.profileId)?.get(rulePairKey(leftWitness.ruleId, rightWitness.ruleId)) ?? [];
+        const corroborating = supports.find(support => support.base !== base
+          && ((support.left.ruleId === leftWitness.ruleId && support.right.ruleId === rightWitness.ruleId)
+            || (support.left.ruleId === rightWitness.ruleId && support.right.ruleId === leftWitness.ruleId)));
+        if (corroborating) out.push({ base, profileId: leftWitness.profileId, left: leftWitness, right: rightWitness,
+          basis: "parallel-paradigm", corroborating: { base: corroborating.base, left: corroborating.left, right: corroborating.right } });
       }
     }
   }

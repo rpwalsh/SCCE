@@ -5,6 +5,7 @@ import { trainKneserNey } from "../kneser-ney.js";
 import { clearFreeFormLexicon, freeFormLexicon, freeFormLexiconGeneration, primeFreeFormLexicon, residentLanguageModels } from "../free-form-lexicon.js";
 import { learnedAnswerUnitFormVerdict, learnedAnswerUnitFormsGeneration, learnedAnswerUnitSharedBaseWitnesses, primeLearnedAnswerUnitForms } from "../learned-answer-unit-forms.js";
 import { withRequestLanguageFormScope } from "../request-language-form-scope.js";
+import { sourceOwnedAnswerUnitForms } from "./fixtures/source-owned-answer-unit-forms.js";
 import type { KneserNeyModel } from "../kneser-ney.js";
 import type { LanguageStructuralDelta } from "../language-state-delta.js";
 
@@ -92,11 +93,47 @@ describe("request language form scope", () => {
       expect(learnedAnswerUnitSharedBaseWitnesses("pluxity", "pluxer")).toEqual([]);
     });
   });
+
+  it("accepts a bound stem only when source-induced rule pairs recur on another stem", async () => {
+    const teaching = sourceOwnedAnswerUnitForms("contribute contributions operate operations rotate rotations expectation expectations.");
+    await withRequestLanguageFormScope(async () => {
+      teaching.prime();
+      const witnesses = learnedAnswerUnitSharedBaseWitnesses("contribute", "contributions");
+      expect(witnesses.length).toBeGreaterThan(0);
+      expect(witnesses[0]?.basis).toBe("parallel-paradigm");
+      expect(witnesses[0]?.corroborating?.base).not.toBe(witnesses[0]?.base);
+      expect(witnesses[0]?.corroborating?.left.evidenceIds.length).toBeGreaterThan(0);
+      expect(witnesses[0]?.corroborating?.right.evidenceIds.length).toBeGreaterThan(0);
+      expect(teaching.state.structuralDeltas?.some(delta => delta.kind === "morphology"
+        && delta.surface.from === "operat" && delta.surface.to === "operations")).toBe(true);
+      expect(learnedAnswerUnitSharedBaseWitnesses("unobservedbase", "unobservedsurface")).toEqual([]);
+    });
+  });
+
+  it("does not transfer a lone or cross-profile bound family by an unrelated rule pair", async () => {
+    await withRequestLanguageFormScope(async () => {
+      const deltas = [
+        learnedDelta("owner.a", "corpusroot", "corroborator", "rule.root"),
+        learnedDelta("owner.a", "corroborator", "corroboratedleft", "rule.left"),
+        learnedDelta("owner.a", "corroborator", "corroboratedright", "rule.right"),
+        learnedDelta("owner.a", "shadow", "shadowleft", "rule.left"),
+        learnedDelta("owner.a", "shadow", "shadowright", "rule.right"),
+        learnedDelta("owner.a", "lonely", "lonelyleft", "rule.lone.left"),
+        learnedDelta("owner.a", "lonely", "lonelyright", "rule.lone.right"),
+        learnedDelta("owner.a", "splitshadow", "splitleft", "rule.split.left"),
+        learnedDelta("owner.b", "othershadow", "splitright", "rule.split.right")
+      ];
+      primeLearnedAnswerUnitForms({ deltas, profileIds: new Set(["owner.a", "owner.b"]) });
+      expect(learnedAnswerUnitSharedBaseWitnesses("shadowleft", "shadowright")[0]?.corroborating?.base).toBe("corroborator");
+      expect(learnedAnswerUnitSharedBaseWitnesses("lonelyleft", "lonelyright")).toEqual([]);
+      expect(learnedAnswerUnitSharedBaseWitnesses("splitleft", "splitright")).toEqual([]);
+    });
+  });
 });
 
-function learnedDelta(profileId: string, from: string, to: string): LanguageStructuralDelta {
+function learnedDelta(profileId: string, from: string, to: string, ruleId = `rule.${profileId}`): LanguageStructuralDelta {
   return { id: `delta.${profileId}.${from}.${to}`, patternId: `pattern.${profileId}.${from}.${to}`, profileId, kind: "morphology",
-    surface: { from, to }, grammatical: { ruleId: `rule.${profileId}` }, semantic: {}, support: 1,
+    surface: { from, to }, grammatical: { ruleId }, semantic: {}, support: 1,
     evidenceIds: [`evidence.${profileId}`] as never[] };
 }
 
