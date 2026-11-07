@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { prepareInstructionDialogue } from "../../../../tools/prepare-instruction-dialogue.mjs";
@@ -50,6 +50,11 @@ describe("instruction dialogue preparation", () => {
       outputDir: join(root, "prepared"),
       metadata: metadata()
     });
+    const trainingRoot = join(root, "prepared", result.preparation.transcriptDirectory);
+    const trainingEntries = await readdir(trainingRoot, { withFileTypes: true });
+    expect(result.preparation.transcriptDirectory).toBe("transcripts");
+    expect(trainingEntries.every(entry => entry.isFile() && entry.name.endsWith(".json"))).toBe(true);
+    expect(trainingEntries.map(entry => `transcripts/${entry.name}`).sort()).toEqual(result.outputs.map(output => output.path).sort());
     const shard = JSON.parse(await readFile(join(root, "prepared", result.outputs[0]!.path), "utf8"));
     const validated = validateDeclaredTranscriptSource(shard);
     const points = [...validated.text];
@@ -69,6 +74,11 @@ describe("instruction dialogue preparation", () => {
     expect(result.source.shareAlikeNotice).toBe(metadata().shareAlikeNotice);
     expect(result.preparation.categoryCommitmentScopes).toEqual(metadata().categoryCommitmentScopes);
     expect("generatedAt" in result).toBe(false);
+    for (const entry of trainingEntries) {
+      const declared = validateDeclaredTranscriptSource(JSON.parse(await readFile(join(trainingRoot, entry.name), "utf8")));
+      expect(declared.schema).toBe("scce.dialogue_transcript.v1");
+    }
+    expect((await readdir(join(root, "prepared"))).sort()).toEqual(["manifest.json", "transcripts"]);
   });
 
   it("uses only the explicit category mapping, regardless of instruction wording", async () => {

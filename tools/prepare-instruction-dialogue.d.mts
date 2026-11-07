@@ -40,6 +40,7 @@ export function prepareInstructionDialogue(options: {
   };
   preparation: {
     transcriptSchema: "scce.dialogue_transcript.v1";
+    transcriptDirectory: "transcripts";
     categoryCommitmentScopes: Record<string, DialogueCommitmentScope>;
     recordsPrepared: number;
     blankLinesSkipped: number;

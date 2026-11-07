@@ -45,6 +45,7 @@ export async function prepareInstructionDialogue({ inputPath, outputDir, metadat
     if (error?.code !== "ENOENT") throw error;
   }
   const stageDir = await mkdtemp(join(parent, `.${basename(resolvedOutputDir)}.stage-`));
+  const transcriptDirectory = "transcripts";
   const sourceHash = createHash("sha256");
   let inputBytes = 0;
   let inputLineNumber = 0;
@@ -63,6 +64,7 @@ export async function prepareInstructionDialogue({ inputPath, outputDir, metadat
   });
 
   try {
+    await mkdir(join(stageDir, transcriptDirectory));
     const lines = createInterface({ input, crlfDelay: Infinity });
     for await (const line of lines) {
       inputLineNumber++;
@@ -117,6 +119,7 @@ export async function prepareInstructionDialogue({ inputPath, outputDir, metadat
       },
       preparation: {
         transcriptSchema: DECLARED_TRANSCRIPT_SCHEMA,
+        transcriptDirectory,
         categoryCommitmentScopes: sortedRecord(sourceMetadata.categoryCommitmentScopes),
         recordsPrepared,
         blankLinesSkipped,
@@ -157,11 +160,11 @@ export async function prepareInstructionDialogue({ inputPath, outputDir, metadat
     if (totalOutputBytes + bytes.byteLength > caps.maxOutputBytes) {
       throw new Error(`outputs exceed maxOutputBytes (${caps.maxOutputBytes})`);
     }
-    await writeFile(join(stageDir, name), bytes, { flag: "wx" });
+    await writeFile(join(stageDir, transcriptDirectory, name), bytes, { flag: "wx" });
     outputIndex++;
     totalOutputBytes += bytes.byteLength;
     outputs.push({
-      path: name,
+      path: `transcripts/${name}`,
       sha256: createHash("sha256").update(bytes).digest("hex"),
       bytes: bytes.byteLength,
       records: shard.records
@@ -328,7 +331,7 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
       console.log("Usage: node tools/prepare-instruction-dialogue.mjs --input <source.jsonl> --output-dir <fresh-dir> --metadata <source-metadata.json> [--max-file-bytes N] [--max-output-bytes N] [--max-files N]");
     } else {
       const result = await prepareInstructionDialogue(options);
-      console.log(JSON.stringify({ outputDir: resolve(options.outputDir), recordsPrepared: result.preparation.recordsPrepared, outputs: result.outputs.length, totalOutputBytes: result.totalOutputBytes }));
+      console.log(JSON.stringify({ trainingRoot: resolve(options.outputDir, result.preparation.transcriptDirectory), recordsPrepared: result.preparation.recordsPrepared, outputs: result.outputs.length, totalOutputBytes: result.totalOutputBytes }));
     }
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
