@@ -82,7 +82,7 @@ import { requestSubjectText } from "./turn-requirements.js";
 import { SOURCE_CONFLICT_FORCE_ID } from "./local-evidence-runtime.js";
 import { ANSWER_SLOT_IDS, QUESTION_TYPE_IDS, RELATION_ROLE_IDS } from "./question-routing-ids.js";
 import { collapseSurfaceWhitespace as collapsePromptWhitespace, surfaceUnits as promptSurfaceUnits } from "./surface-linguistics.js";
-import { answerCoversRequest, evidenceTitledForRequestSubject, requestContentEvidenceUnits, requestLeadingScaffoldingUnit } from "./local-evidence-runtime.js";
+import { answerCoversRequest, evidenceTitledForRequestSubject, learnedRequestScaffoldingUnits, requestContentEvidenceUnits } from "./local-evidence-runtime.js";
 import { requestClosedClassWords } from "./closed-class-words.js";
 import { candidateIsVerifiedBoundValue, candidateSurvivesRealizationContract, compileRealizationContract } from "./semantic-answer-construct.js";
 import { traceEvent } from "./debug/trace.js";
@@ -7493,11 +7493,8 @@ function mouthCoverageUnits(input: SpeakInput): string[] {
   // A translation carries the source, not the request; it is judged by preservation, not coverage.
   if (!input.requestText || sessionAssertionTurn(input) || input.requestedAuthority === "translation") return [];
   const closedClass = mouthClosedClass(input);
-  // The request's opening word is scaffolding by position and length (the same rule the answer proposers apply): a
-  // brain trained on a small corpus has no "what" in its learned closed class, and the full-system gate then
-  // rejected "The Kelvinge threshold is the point at which..." for not containing the word "what".
-  const leadingScaffolding = requestLeadingScaffoldingUnit(input.requestText);
-  return requestContentEvidenceUnits(input.requestText).filter(unit => !closedClass.has(unit) && unit !== leadingScaffolding);
+  const scaffolding = learnedRequestScaffoldingUnits(input.requestText, closedClass);
+  return requestContentEvidenceUnits(input.requestText).filter(unit => !scaffolding.has(unit));
 }
 
 /** The learned closed class the mouth judges coverage with: the role language's models plus the request scaffolding. Pure. */

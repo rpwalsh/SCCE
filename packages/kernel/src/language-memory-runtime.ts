@@ -2100,6 +2100,7 @@ function scopeLanguageMemoryStateWith(
   const importedObservations = state.importedObservations.filter(record => ownership.record(observationProfileId(record), recordSourceSystem(record.metadata)));
   const importedUnits = state.importedUnits.filter(record => ownership.profile(record.profileId));
   const importedPatterns = state.importedPatterns.filter(record => ownership.profile(record.profileId));
+  const structuralDeltas = (state.structuralDeltas ?? []).filter(delta => ownership.profile(delta.profileId));
   const importedSemanticFrames = state.importedSemanticFrames.filter(frame => ownership.frame(frame));
   const importedConstructionBundles = state.importedConstructionBundles.filter(bundle => ownership.bundle(bundle));
   const importedReversibleConstructions =
@@ -2185,6 +2186,7 @@ function scopeLanguageMemoryStateWith(
     importedPatterns,
     importedObservations,
     importedSemanticFrames,
+    structuralDeltas,
     importedConstructionBundles,
     importedReversibleConstructions,
     importedPairedAntiUnifiedConstructions,

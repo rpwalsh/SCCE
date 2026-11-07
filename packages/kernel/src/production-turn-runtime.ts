@@ -152,7 +152,7 @@ import {
   evidenceSpanProvenanceTitle,
   evidenceTitledForRequestSubject,
   isUnparsedMarkupText,
-  requestLeadingScaffoldingUnit,
+  learnedRequestScaffoldingUnits,
   spanContainsRequestNearDuplicateSentence,
   sourceBodyAnswersRequest,
   temporalCounterexampleExpected,
@@ -183,6 +183,7 @@ import { createProofCarryingAnswer } from "./proof-carrying-answer.js";
 import { repoCognitionForTurn } from "./repo-cognition.js";
 import { deriveClosedClassWords, requestClosedClassWords as requestClosedClassWordsFor } from "./closed-class-words.js";
 import { primeFreeFormLexicon } from "./free-form-lexicon.js";
+import { primeLearnedAnswerUnitForms } from "./learned-answer-unit-forms.js";
 import { documentGenerationRequestFromMetadata, syncDocumentGenerationRequestForTurn } from "./document-generation-turn-request.js";
 import { extendedGenerationDecision, extendedGenerationSessionForTurn, runExtendedGeneration } from "./extended-generation-turn.js";
 import { checkAntiCopyGuard } from "./voice-profile.js";
@@ -1426,6 +1427,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       let requestedAuthority = authorityProjection.requestedAuthority;
       // Which surfaces this corpus uses as free forms, so the unit matcher stops reading one extra letter as English.
       primeFreeFormLexicon(authorityLanguage.state.models ?? []);
+      primeLearnedAnswerUnitForms({ deltas: authorityLanguage.state.structuralDeltas ?? [],
+        profileIds: new Set(authorityLanguage.state.importedPatterns.map(pattern => pattern.profileId)) });
       // The learned closed class for this request: the language's function words plus the request scaffolding the
       // interaction corpus taught for this authority. What it leaves of the request is the subject and the relation.
       // The corpus's own function symbols, ranked by continuation count: "'" continues 1305 distinct contexts in
@@ -2767,7 +2770,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // that repeat the name most ("What is acupuncture?" selected the injection and licensing chunks over the
       // definition), so the titled opening block, when the pool holds one, leads the selection.
       const rankedForRequest = evidenceForRequest(input.text, evidenceSelectionPool, metadataEvidenceIds, explicitContextEvidenceIds, semanticFrameBoundEvidenceIds, requestClosedClassWords());
-      const subjectOnlyRequest = requestContentEvidenceUnits(input.text).filter(unit => unit !== requestLeadingScaffoldingUnit(input.text)).every(unit =>
+      const subjectOnlyRequest = requestContentEvidenceUnits(input.text).filter(unit => !learnedRequestScaffoldingUnits(input.text, requestClosedClassWords()).has(unit)).every(unit =>
         namedSubjectAnchors(input.text).some(anchor => anchor.toLocaleLowerCase().split(/\s+/u).includes(unit)));
       // Any request that names a titled subject keeps that source's opening block in the selection, not only a
       // subject-only one: the lead states the standing fact and relevance ranking dropped it for "Athens is the

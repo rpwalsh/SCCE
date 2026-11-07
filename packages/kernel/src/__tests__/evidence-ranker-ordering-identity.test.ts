@@ -7,6 +7,8 @@ import { describe, expect, it } from "vitest";
 import { localEvidenceAnswerClaimSurface, localEvidenceAnswerSurface, preferredLocalEvidenceAnswer, proposeSourceExactEvidenceAnswer } from "../local-evidence-runtime.js";
 import { resolveRequestValueBinding } from "../semantic-answer-construct.js";
 import { tidySurfaceText } from "../surface-linguistics.js";
+import { primeLearnedAnswerUnitForms } from "../learned-answer-unit-forms.js";
+import { sourceOwnedAnswerUnitForms } from "./fixtures/source-owned-answer-unit-forms.js";
 import type { EvidenceId, EvidenceSpan, SourceVersionId } from "../types.js";
 
 /**
@@ -93,9 +95,38 @@ describe("one source selection policy", () => {
     const historical = JSON.parse(readFileSync(snapshotPath, "utf8")) as Record<string, { proposal: unknown }>;
     expect(Object.keys(measured).sort()).toEqual(Object.keys(historical).sort());
     expect(CHANGED_CASE_KEYS.size).toBe(8);
-    const unchanged = (entries: Array<[string, unknown]>) => Object.fromEntries(entries.filter(([key]) => !CHANGED_CASE_KEYS.has(key)));
+    const strictFormScores = new Map([
+      ["When was Müjde Uzman born? :: pool", 8.15590361445783], ["When was Müjde Uzman born? :: span2", 8.15590361445783],
+      ["Who designed the Dolphin 15 Senior? :: pool", 8.138333333333334], ["Who designed the Dolphin 15 Senior? :: span0", 8.138333333333334]
+    ]);
+    for (const [key, score] of strictFormScores) {
+      const previous = historical[key]!.proposal as Record<string, unknown>;
+      expect(measured[key]).toEqual({ proposal: { ...previous, score } });
+    }
+    const untaught = new Set(["Where did David Mungoshi teach? :: pool", "Where did David Mungoshi teach? :: span4"]);
+    for (const key of untaught) {
+      expect(JSON.stringify(historical[key])).toContain("novelist, actor, poet and teacher");
+      expect(measured[key]).toEqual({ proposal: null });
+    }
+    const unchanged = (entries: Array<[string, unknown]>) => Object.fromEntries(entries.filter(([key]) => !CHANGED_CASE_KEYS.has(key) && !strictFormScores.has(key) && !untaught.has(key)));
     const recorded = Object.entries(historical).map(([key, row]): [string, unknown] => [key, { proposal: row.proposal }]);
     expect(unchanged(Object.entries(measured))).toEqual(unchanged(recorded));
+  });
+
+  it("answers Mungoshi's teaching location through morphology actually induced from its source", () => {
+    const owner = span(corpus.spans[4]!);
+    const teaching = sourceOwnedAnswerUnitForms(owner.text);
+    expect(teaching.state.structuralDeltas?.some(delta => delta.surface.from === "teach" && delta.surface.to === "teaching")).toBe(true);
+    teaching.prime();
+    try {
+      const selected = localEvidenceAnswerSurface({ requestText: "Where did David Mungoshi teach?", selectedEvidence: [owner], closedClassWords: CLOSED_CLASS, functionSymbols: CLOSED_CLASS });
+      expect(selected).toBeDefined();
+      const answer = localEvidenceAnswerClaimSurface(selected!);
+      expect(answer).toBe("Mungoshi was a teacher for most of his life, and taught at various institutions, including the University of Zimbabwe.");
+      expect(answer).not.toContain("novelist, actor, poet and teacher");
+      expect(selected!.evidence.map(row => row.id)).toEqual([owner.id]);
+      expect(tidySurfaceText(owner.text)).toContain(answer);
+    } finally { primeLearnedAnswerUnitForms({ deltas: [], profileIds: new Set() }); }
   });
 
   it.each(SEMANTIC_CASES.flatMap(test => ["pool", "owner"].map(pool => ({ ...test, pool }))))(

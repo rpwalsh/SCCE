@@ -2,12 +2,13 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { afterEach, describe, expect, it } from "vitest";
 import { clearCorpusIdentitySignals, primeCorpusIdentitySignals } from "../corpus-identity.js";
-import { clearFreeFormLexicon } from "../free-form-lexicon.js";
+import { primeLearnedAnswerUnitForms } from "../learned-answer-unit-forms.js";
+import { sourceOwnedAnswerUnitForms } from "./fixtures/source-owned-answer-unit-forms.js";
 import { answerCoversRequest, answerhoodMemoWorkStats, clearAnswerhoodWorkMemos, localEvidenceAnswerClaimSurface, localEvidenceAnswerSurface, requestUnitMatchesSurface, requestUnitSharesStem } from "../local-evidence-runtime.js";
 import type { EvidenceSpan } from "../types.js";
 
 const closed = new Set(["who", "what", "is", "did", "the", "of"]);
-afterEach(() => { clearCorpusIdentitySignals(); clearFreeFormLexicon(); clearAnswerhoodWorkMemos(); });
+afterEach(() => { clearCorpusIdentitySignals(); primeLearnedAnswerUnitForms({ deltas: [], profileIds: new Set() }); clearAnswerhoodWorkMemos(); });
 function source(text: string): EvidenceSpan {
   return { id: "evidence.memo", sourceVersionId: "source.memo", text, textPreview: text, status: "promoted", alpha: 1,
     charStart: 192444, charEnd: 192444 + text.length, features: [],
@@ -15,8 +16,10 @@ function source(text: string): EvidenceSpan {
 }
 
 describe("canonical answerhood repeated work", () => {
+  const teaching = sourceOwnedAnswerUnitForms();
   it("reuses exact Moby-Dick and Unicode comparison work without changing positive or unknown-role decisions", () => {
     clearAnswerhoodWorkMemos();
+    teaching.prime();
     primeCorpusIdentitySignals({ closedClass: closed, identities: new Set(["pequod"]), spread: new Map(), concentration: 0 });
     const fact = "But if you are speaking of Captain Ahab, of that ship there, the Pequod, then let me tell you, that I know all about the loss of his leg.";
     const span = source(`“Captain Ahab.” “What! the captain of our ship, the Pequod?” ${fact}`);
@@ -25,14 +28,15 @@ describe("canonical answerhood repeated work", () => {
       answerCoversRequest([fact], span, ["captain", "pequod"], "Who is the captain of the Pequod?", options),
       answerCoversRequest([fact], span, ["dentist", "pequod"], "Who is the dentist of the Pequod?", options),
       answerCoversRequest(["the captain of our ship, the Pequod?”"], span, ["captain", "pequod"], "Who is the captain of the Pequod?", options),
-      requestUnitSharesStem("調査航海船", "調査航海船団"),
-      requestUnitSharesStem("調査航海船", "異なる船舶")
+      requestUnitSharesStem("סירה", "סירהסירה"),
+      requestUnitSharesStem("調査航海船", "異なる船舶"),
+      requestUnitSharesStem("調査航海船", "調査航海船団")
     ];
-    expect(evaluate()).toEqual([true, false, false, true, false]);
+    expect(evaluate()).toEqual([true, false, false, true, false, false]);
     const initial = answerhoodMemoWorkStats();
     expect(initial.matchEvaluations).toBeGreaterThan(0);
     expect(initial.subjectEvaluations).toBe(2);
-    for (let index = 0; index < 80; index++) expect(evaluate()).toEqual([true, false, false, true, false]);
+    for (let index = 0; index < 80; index++) expect(evaluate()).toEqual([true, false, false, true, false, false]);
     const repeated = answerhoodMemoWorkStats();
     expect(repeated.matchEvaluations).toBe(initial.matchEvaluations);
     expect(repeated.stemEvaluations).toBe(initial.stemEvaluations);
@@ -44,17 +48,18 @@ describe("canonical answerhood repeated work", () => {
     expect(localEvidenceAnswerSurface({ requestText: "Who is the dentist of the Pequod?", selectedEvidence: [span], closedClassWords: closed, functionSymbols: closed })).toBeUndefined();
   });
 
-  it("reads the exact current learned function set and invalidates measured forms when the corpus changes", () => {
+  it("does not invent morphology from function material and invalidates forms when the learned corpus changes", () => {
     clearAnswerhoodWorkMemos();
     const functions = new Set(["尾詞"]);
-    expect(requestUnitMatchesSurface("船舶阿爾法", "船舶阿爾法尾詞", functions)).toBe(true);
+    expect(requestUnitMatchesSurface("船舶阿爾法", "船舶阿爾法尾詞", functions)).toBe(false);
     expect(requestUnitMatchesSurface("船舶阿爾法", "船舶阿爾法尾詞", new Set(["別詞"]))).toBe(false);
     functions.delete("尾詞"); functions.add("別詞");
     expect(requestUnitMatchesSurface("船舶阿爾法", "船舶阿爾法尾詞", functions)).toBe(false);
-    requestUnitSharesStem("調査航海船", "調査航海船団");
+    teaching.prime();
+    expect(requestUnitSharesStem("סירה", "סירהסירה")).toBe(true);
     const initial = answerhoodMemoWorkStats();
-    clearFreeFormLexicon();
-    expect(requestUnitSharesStem("調査航海船", "調査航海船団")).toBe(true);
+    primeLearnedAnswerUnitForms({ deltas: [], profileIds: new Set() });
+    expect(requestUnitSharesStem("סירה", "סירהסירה")).toBe(false);
     expect(answerhoodMemoWorkStats().stemEvaluations).toBe(initial.stemEvaluations + 1);
     primeCorpusIdentitySignals({ closedClass: closed, identities: new Set(["pequod"]), spread: new Map(), concentration: 0 });
     const span = source("The captain of the Pequod was Ahab.");
