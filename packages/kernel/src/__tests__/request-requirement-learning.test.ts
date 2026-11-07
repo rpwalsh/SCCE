@@ -11,9 +11,30 @@ import {
 import { deriveTurnRequirementField, requestSubjectSegments } from "../turn-requirements.js";
 import { extendedGenerationDecision } from "../extended-generation-turn.js";
 import { createHasher } from "../primitives.js";
+import { requestScaffoldingConstructions } from "../closed-class-words.js";
 import type { EvidenceId, JsonValue, SourceVersionId } from "../types.js";
 
 describe("source-backed response-form learning", () => {
+  it.each([
+    ["Who was ", ["Mira", "Vela", "Sora", "Mira"], " was an explorer."],
+    ["ποιος ήταν ", ["Μίρα", "Βέλα", "Σόρα", "Μίρα"], " ήταν εξερευνητής."]
+  ])("keeps factual subjects while learning question controls from paired replies: %s", (prefix, subjects, answerSuffix) => {
+    const examples = subjects.map(subject => ({ text: `${prefix}${subject}?`, responseText: `${subject}${answerSuffix}`, authority: "factual" as const }));
+    const compiled = compileRequestRequirementCorpus({
+      corpus: { schema: REQUEST_REQUIREMENT_CORPUS_SCHEMA, language: "und", examples },
+      profileId: "profile.factual.paired", sourceVersionId: "source-version.factual.paired" as SourceVersionId,
+      evidenceIds: ["evidence.factual.paired" as EvidenceId], sourceSystem: "dialogue", updatedAt: 1,
+      makeId: value => `pattern.${createHasher().digestHex(JSON.stringify(value))}`
+    });
+    const request = `${prefix}${subjects[0]}?`;
+    const field = deriveTurnRequirementField({ requestText: request, languageMemoryState: runtimeState(compiled.patterns) });
+    const subject = requestSubjectSegments(request, field).join(" ");
+    expect(subject).toContain(subjects[0]);
+    expect(subject).not.toContain(prefix.trim());
+    const scaffolding = requestScaffoldingConstructions(compiled.patterns, "factual").flatMap(row => row.parts.map(part => part.surface));
+    expect(scaffolding).not.toContain(subjects[0].toLocaleLowerCase());
+  });
+
   it("learns control and topic span roles from owned request-reply pairs", () => {
     const examples = ["toma", "ravi", "toma", "ravi"].map(subject => ({
       text: `nava sula ${subject}`, responseText: `${subject} miri.`, authority: "creative" as const

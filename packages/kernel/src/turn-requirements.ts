@@ -482,17 +482,19 @@ export function requestSubjectSegments(requestText: string, field: Pick<TurnRequ
   const activations = jsonRecord(field.trace).activations;
   const spans = (Array.isArray(activations) ? activations : [])
     .map(row => jsonRecord(row))
-    .filter(row => (row.kind === "pattern" || row.kind === "frame") && row.requestSpanRole === "control")
-    .map(row => jsonRecord(row.span))
-    .map(span => [Number(span.charStart), Number(span.charEnd)] as const)
-    .filter(([start, end]) => Number.isInteger(start) && Number.isInteger(end) && end > start && end - start < chars.length);
+    .filter(row => (row.kind === "pattern" || row.kind === "frame") && (row.requestSpanRole === "control" || row.requestSpanRole === "content"))
+    .map(row => ({ role: row.requestSpanRole, span: jsonRecord(row.span) }))
+    .map(({ role, span }) => ({ role, start: Number(span.charStart), end: Number(span.charEnd) }))
+    .filter(({ start, end }) => Number.isInteger(start) && Number.isInteger(end) && end > start && end - start < chars.length);
   if (!spans.length) return [requestText];
-  const keep = chars.map(() => true);
-  for (const [start, end] of spans) for (let index = Math.max(0, start); index < Math.min(chars.length, end); index++) keep[index] = false;
-  // Whole words only. A pattern span need not land on a word boundary, and masking by character cut letters out of
-  // the middle of words: "a sailor" became "a ailor" and "blacksmith" became "black mith", which then became the
-  // story's cast (live 2026-09-12). A word is dropped when the span covers any of it, and kept otherwise, so the
-  // remainder is always a sequence of the request's own words.
+  const votes = chars.map(() => ({ control: 0, content: 0 }));
+  for (const { role, start, end } of spans) for (let index = Math.max(0, start); index < Math.min(chars.length, end); index++) {
+    if (role === "control") votes[index]!.control++;
+    else votes[index]!.content++;
+  }
+  // Resolve overlapping source roles across a whole request word. A wider classifier can contain a narrower
+  // reply-backed topic span; neither its context nor a grapheme-sized control match may erase that topic.
+  // Keep whole words so a partial span cannot turn "sailor" into "ailor".
   let cursor = 0;
   const segments: string[] = [];
   let pending = "";
@@ -507,7 +509,11 @@ export function requestSubjectSegments(requestText: string, field: Pick<TurnRequ
       const start = cursor;
       cursor += [...token].length;
       if (!token.trim()) { pending += token; return; }
-      const covered = [...token].some((_, offset) => keep[start + offset] === false);
+      const roleVotes = votes.slice(start, cursor).reduce((sum, vote) => ({
+        control: sum.control + vote.control,
+        content: sum.content + vote.content
+      }), { control: 0, content: 0 });
+      const covered = roleVotes.control > roleVotes.content;
       if (covered) flush();
       else pending += token;
     });

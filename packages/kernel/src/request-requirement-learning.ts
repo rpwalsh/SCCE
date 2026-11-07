@@ -84,8 +84,9 @@ interface FeatureCounts {
   observation: FeatureObservation;
   examples: number;
   byAuthority: Record<RequestedAuthority, number>;
-  pairedExamples: number;
-  responseMatches: number;
+  pairedExamples: Record<RequestedAuthority, number>;
+  responseMatches: Record<RequestedAuthority, number>;
+  responseMixed: Record<RequestedAuthority, number>;
   requirementTargetTotals: Partial<Record<TurnRequirementDimension, number>>;
   requirementTargetCounts: Partial<Record<TurnRequirementDimension, number>>;
   requirementTargetBounds: Partial<Record<TurnRequirementDimension, { lower: number; upper: number }>>;
@@ -167,25 +168,28 @@ export function compileRequestRequirementCorpus(
 ): CompiledRequestRequirementCorpus {
   const classTotals = authorityRecord(0);
   const featureCounts = new Map<string, FeatureCounts>();
-  const requestTokenDocuments = new Map<string, number>();
+  const requestTokenDocuments = new Map<RequestedAuthority, Map<string, number>>();
   for (const example of input.corpus.examples) {
-    if (example.authority !== "creative" || !example.responseText) continue;
+    if (!example.responseText) continue;
+    const documents = requestTokenDocuments.get(example.authority) ?? new Map<string, number>();
     for (const token of new Set(unicodeTokens(example.text))) {
-      requestTokenDocuments.set(token, (requestTokenDocuments.get(token) ?? 0) + 1);
+      documents.set(token, (documents.get(token) ?? 0) + 1);
     }
+    requestTokenDocuments.set(example.authority, documents);
   }
-  const requestTokenFrequencyCut = otsuThreshold([...requestTokenDocuments.values()]);
+  const requestTokenFrequencyCuts = new Map([...requestTokenDocuments].map(([authority, documents]) =>
+    [authority, otsuThreshold([...documents.values()])] as const));
   for (const example of input.corpus.examples) {
     classTotals[example.authority] += 1;
-    const responseTokens = example.authority === "creative" && example.responseText
-      ? new Set(unicodeTokens(example.responseText)) : undefined;
+    const responseTokens = example.responseText ? new Set(unicodeTokens(example.responseText)) : undefined;
     for (const observation of uniqueFeatures(requestFeatures(example.text))) {
       const counts = featureCounts.get(observation.key) ?? {
         observation,
         examples: 0,
         byAuthority: authorityRecord(0),
-        pairedExamples: 0,
-        responseMatches: 0,
+        pairedExamples: authorityRecord(0),
+        responseMatches: authorityRecord(0),
+        responseMixed: authorityRecord(0),
         requirementTargetTotals: {},
         requirementTargetCounts: {},
         requirementTargetBounds: {},
@@ -196,9 +200,16 @@ export function compileRequestRequirementCorpus(
       counts.examples += 1;
       counts.byAuthority[example.authority] += 1;
       if (responseTokens) {
-        counts.pairedExamples++;
-        if (requestTokenFrequencyCut !== undefined && unicodeTokens(observation.surface).some(token =>
-          (requestTokenDocuments.get(token) ?? 0) < requestTokenFrequencyCut && responseTokens.has(token))) counts.responseMatches++;
+        counts.pairedExamples[example.authority]++;
+        const requestTokenFrequencyCut = requestTokenFrequencyCuts.get(example.authority);
+        const requestDocuments = requestTokenDocuments.get(example.authority);
+        if (requestTokenFrequencyCut !== undefined) {
+          const tokens = unicodeTokens(observation.surface);
+          const matched = tokens.filter(token =>
+            (requestDocuments?.get(token) ?? 0) < requestTokenFrequencyCut && responseTokens.has(token)).length;
+          if (matched === tokens.length) counts.responseMatches[example.authority]++;
+          else if (matched > 0) counts.responseMixed[example.authority]++;
+        }
       }
       for (const dimension of TURN_REQUIREMENT_DIMENSIONS) {
         const target = example.requirements?.[dimension];
@@ -235,9 +246,10 @@ export function compileRequestRequirementCorpus(
   const evidenceIds = [...new Set(input.evidenceIds.map(String))]
     .sort()
     .slice(0, 64) as EvidenceId[];
-  const responseMatchCut = otsuThreshold([...featureCounts.values()]
-    .filter(counts => counts.pairedExamples > 0)
-    .map(counts => counts.responseMatches / counts.pairedExamples));
+  const responseMatchCuts = new Map(REQUESTED_AUTHORITY_IDS.map(authority => [authority,
+    otsuThreshold([...featureCounts.values()]
+      .filter(counts => counts.pairedExamples[authority] > 0)
+      .map(counts => counts.responseMatches[authority] / counts.pairedExamples[authority]))] as const));
   const patterns = [...featureCounts.values()].flatMap(counts => {
     const ranked = REQUESTED_AUTHORITY_IDS
       .map(authority => ({ authority, count: counts.byAuthority[authority] }))
@@ -245,6 +257,9 @@ export function compileRequestRequirementCorpus(
     const winner = ranked[0];
     const runnerUp = ranked[1];
     if (!winner || winner.count < 2) return [];
+    const responseMatchCut = responseMatchCuts.get(winner.authority);
+    const pairedExamples = counts.pairedExamples[winner.authority];
+    const responseMatchRate = pairedExamples ? counts.responseMatches[winner.authority] / pairedExamples : 0;
     const posterior = winner.count / Math.max(1, counts.examples);
     const margin = (winner.count - (runnerUp?.count ?? 0)) / Math.max(1, counts.examples);
     if (posterior < 0.68 || margin < 0.34) return [];
@@ -266,11 +281,12 @@ export function compileRequestRequirementCorpus(
       anchor: counts.observation.anchor,
       matchMode: "unicode_token_ngram",
       semanticRoleId: "role.request.requirement.v1",
-      ...(responseMatchCut !== undefined && responseMatchCut > 0 && counts.pairedExamples === counts.examples ? {
-        requestSpanRole: counts.responseMatches / counts.pairedExamples < responseMatchCut ? "control" : "content",
-        responseMatchRate: counts.responseMatches / counts.pairedExamples,
+      ...(responseMatchCut !== undefined && responseMatchCut > 0 && pairedExamples === winner.count
+        && counts.responseMixed[winner.authority] === 0 ? {
+        requestSpanRole: responseMatchRate < responseMatchCut ? "control" : "content",
+        responseMatchRate,
         responseMatchCut,
-        pairedExamples: counts.pairedExamples
+        pairedExamples
       } : {}),
       learnedFrameOrPatternId: counts.observation.key,
       requirementCoefficients,
