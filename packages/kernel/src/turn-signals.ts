@@ -57,10 +57,22 @@ export interface TurnSignalsInput {
   identityClosedClassWords?: ReadonlySet<string>;
   /** Present when the selected language identity scopes these models; an empty class is unmeasured, not source-local language evidence. */
   languageIdentityProfileCount?: number;
+  /** Exact identity used by the canonical population query's profile-membership scope. */
+  languageIdentityId?: string;
   patterns: readonly LanguagePatternRecord[];
 }
 
 export function createTurnSignals(input: TurnSignalsInput): TurnSignals {
+  const identityScoped = input.languageIdentityId !== undefined || input.languageIdentityProfileCount !== undefined;
+  const matchingPopulation = input.continuationPopulation
+    && typeof input.languageIdentityId === "string" && input.languageIdentityId.length > 0
+    && input.languageIdentityId === input.continuationPopulation.languageId
+    && Number.isSafeInteger(input.continuationPopulation.modelCount)
+    && input.continuationPopulation.modelCount > 0
+    && deriveClosedClassWords({ continuationPopulation: input.continuationPopulation }).size > 0
+    ? input.continuationPopulation : undefined;
+  const scopedModels = identityScoped ? [] : input.models;
+  const scopedPopulation = identityScoped ? matchingPopulation : input.continuationPopulation;
   let subjectText: string | undefined;
   let anchors: readonly string[] | undefined;
   let namedSubjects: readonly string[] | undefined;
@@ -85,8 +97,8 @@ export function createTurnSignals(input: TurnSignalsInput): TurnSignals {
     get closedClassWords(): ReadonlySet<string> {
       return (closedClass ??= requestClosedClassWords({
         requestText: input.requestText,
-        models: input.languageIdentityProfileCount === undefined ? input.models : [],
-        continuationPopulation: input.languageIdentityProfileCount === undefined ? input.continuationPopulation : undefined,
+        models: scopedModels,
+        continuationPopulation: scopedPopulation,
         identityClosedClassWords: input.identityClosedClassWords,
         patterns: input.patterns,
         authority: input.authority
@@ -94,9 +106,9 @@ export function createTurnSignals(input: TurnSignalsInput): TurnSignals {
     },
     get functionSymbols(): ReadonlySet<string> {
       return (functionSymbols ??= deriveClosedClassWords({
-        ...(input.languageIdentityProfileCount === undefined
-          ? { models: input.models, continuationPopulation: input.continuationPopulation, identityClosedClassWords: input.identityClosedClassWords }
-          : { identityClosedClassWords: input.identityClosedClassWords })
+        models: scopedModels,
+        continuationPopulation: scopedPopulation,
+        identityClosedClassWords: input.identityClosedClassWords
       }));
     },
     quotesSource(evidence: readonly EvidenceSpan[]): boolean {

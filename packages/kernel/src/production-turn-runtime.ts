@@ -1464,6 +1464,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         continuationPopulation: authorityLanguage.state.continuationPopulation,
         identityClosedClassWords,
         languageIdentityProfileCount: requestLanguage?.identity.profileCount,
+        languageIdentityId: requestLanguage?.identity.id,
         // The request-language state is the complete learned control surface for
         // this turn.  Passing only the corrections store here silently discarded
         // request-frame constructions that were already admitted by the active
@@ -1480,6 +1481,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           continuationPopulation: authorityLanguage.state.continuationPopulation,
           identityClosedClassWords,
           languageIdentityProfileCount: requestLanguage?.identity.profileCount,
+          languageIdentityId: requestLanguage?.identity.id,
           patterns: requestRequirementLanguageState.importedPatterns
         });
       };

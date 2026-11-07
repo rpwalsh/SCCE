@@ -7,6 +7,8 @@ import { trainKneserNey } from "../kneser-ney.js";
 import { clearCorpusIdentitySignals, corpusNamedIdentities, primeCorpusIdentitySignals } from "../corpus-identity.js";
 import type { LanguagePatternRecord } from "../storage.js";
 import type { TurnRequirementField } from "../turn-requirements.js";
+import { readFileSync } from "node:fs";
+import { deriveClosedClassWords } from "../closed-class-words.js";
 
 afterEach(() => clearCorpusIdentitySignals());
 
@@ -41,6 +43,45 @@ function requirementField(): TurnRequirementField {
 }
 
 describe("turn language state", () => {
+  it("uses the selected language's measured canonical population while excluding unrelated style models", () => {
+    const text = readFileSync(new URL("./fixtures/pride-and-prejudice-context-excerpt.txt", import.meta.url), "utf8");
+    const model = trainKneserNey(text, { order: 3 });
+    const population = { languageId: "language.measured", modelCount: 1, continuationCounts: model.continuationCounts };
+    expect(deriveClosedClassWords({ continuationPopulation: population }).has("what")).toBe(true);
+    expect(deriveClosedClassWords({ continuationPopulation: population }).has("is")).toBe(true);
+    expect(deriveClosedClassWords({ continuationPopulation: population }).has("does")).toBe(false);
+    const signals = createTurnSignals({
+      requestText: "What is White Rabbit?", authority: "factual", requirementField: requirementField(),
+      models: [trainKneserNey("Animalia copies book. Animalia copies book.", { order: 3 })],
+      continuationPopulation: population,
+      languageIdentityId: population.languageId,
+      languageIdentityProfileCount: 1,
+      identityClosedClassWords: new Set(["a", "and", "in", "of", "the", "to"]), patterns: []
+    });
+    expect(signals.functionSymbols.has("what")).toBe(true);
+    expect(signals.functionSymbols.has("is")).toBe(true);
+    expect(signals.functionSymbols.has("does")).toBe(false);
+    expect(signals.closedClassWords.has("what")).toBe(true);
+    expect(signals.closedClassWords.has("rabbit")).toBe(false);
+    expect(signals.functionSymbols.has("animalia")).toBe(false);
+  });
+
+  it("does not accept a foreign or unbound population as the selected identity's function material", () => {
+    const text = readFileSync(new URL("./fixtures/pride-and-prejudice-context-excerpt.txt", import.meta.url), "utf8");
+    const model = trainKneserNey(text, { order: 3 });
+    for (const languageIdentityId of [undefined, "language.other"]) {
+      const signals = createTurnSignals({
+        requestText: "What does White Rabbit carry?", authority: "factual", requirementField: requirementField(),
+        models: [], continuationPopulation: { languageId: "language.measured", modelCount: 1, continuationCounts: model.continuationCounts },
+        languageIdentityId, languageIdentityProfileCount: 1,
+        identityClosedClassWords: new Set(["and"]), patterns: []
+      });
+      expect(signals.functionSymbols.has("and")).toBe(true);
+      expect(signals.functionSymbols.has("what")).toBe(false);
+      expect(signals.functionSymbols.has("does")).toBe(false);
+    }
+  });
+
   it("uses admitted request constructions when deriving the turn closed class", () => {
     const learnedOpener: LanguagePatternRecord = {
       id: "pattern.request.who",
