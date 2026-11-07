@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { ModuleKind, ScriptTarget, transpileModule } from "typescript";
 import {
   codeRequestSignal,
   COGNITIVE_OPERATOR_IDS,
@@ -288,6 +289,114 @@ describe("ProgramGraph runtime and artifact emission", () => {
     }
   });
 
+  it("carries selected owner behavior through a Node package entrypoint and cold-replays changed inputs", () => {
+    const request = [
+      "Create functions double(x), triple(x), and negativeScale(x).",
+      "double(3) => 6, double(7) => 14, double(-2) => -4, double(11) => 22.",
+      "triple(2) => 6, triple(4) => 12, triple(-3) => -9, triple(5) => 15.",
+      "negativeScale(2) => -6, negativeScale(4) => -12, negativeScale(-3) => 9, negativeScale(5) => -15."
+    ].join("\n");
+    const signal = codeRequestSignal(request);
+    const intent = required(programIntentForTurn({
+      requestedAuthority: "program",
+      activeOperatorIds: [COGNITIVE_OPERATOR_IDS.programPlanning],
+      codeSignal: signal,
+      evidence: []
+    }));
+    const nodeIntent: ProgramConstructIntent = {
+      ...intent,
+      languageId: "typescript",
+      packageManagerId: "npm",
+      runtimeTargetId: "runtime.package:npm",
+      entrypointPath: "src/index.ts"
+    };
+    expect(nodeIntent.behaviorRequirements?.map(requirement => requirement.callableId)).toContain("double");
+    expect(nodeIntent.behaviorRequirements?.map(requirement => requirement.callableId)).toContain("triple");
+    expect(nodeIntent.behaviorRequirements?.map(requirement => requirement.callableId)).toContain("negativeScale");
+
+    const probe = required(buildProgram(request, [], nodeIntent).program);
+    expect(probe.files.map(file => file.path)).toContain("source.program.json");
+    expect(probe.files.map(file => file.path)).toContain("src/program.mjs");
+    expect(probe.files.map(file => file.path)).toContain("test/program.test.mjs");
+    expect(probe.files.some(file => file.path === "src/domain.ts")).toBe(false);
+    expect(validateProgramHydrationContract(required(probe.hydration)).valid).toBe(true);
+
+    const probeTest = required(probe.files.find(file => file.path === "test/program.test.mjs"));
+    const root = mkdtempSync(join(tmpdir(), "scce-node-owner-program-"));
+    try {
+      mkdirSync(join(root, "src"));
+      mkdirSync(join(root, "test"));
+      for (const file of probe.files.filter(item => item.path.startsWith("src/") && item.path.endsWith(".mjs"))) {
+        writeFileSync(join(root, file.path), file.content, "utf8");
+      }
+      writeFileSync(join(root, "test", "program.test.mjs"), probeTest.content, "utf8");
+      const failing = spawnSync(process.execPath, probe.test.args, { cwd: root, encoding: "utf8" });
+      expect(failing.status).not.toBe(0);
+
+      const retry = replanOwnerBehaviorProgramIntent({
+        intent: nodeIntent,
+        program: probe,
+        failure: {
+          observationId: "owner.node-package.validation.failure",
+          programId: probe.id,
+          planHash: "owner-node-package-plan",
+          validatorId: "validator.owner.node",
+          checkId: "tests",
+          status: "failed",
+          ownerRequirementIds: nodeIntent.behaviorRequirements?.map(requirement => requirement.id) ?? [],
+          command: probe.test
+        },
+        hasher
+      });
+      const selectedProgram = required(buildProgram(request, [], retry.intent).program);
+      const selectedSource = required(selectedProgram.files.find(file => file.path === "src/program.mjs"));
+      const selectedTest = required(selectedProgram.files.find(file => file.path === "test/program.test.mjs"));
+      const selectedCallables = new Set(retry.selection.selectedTransformationIds.map(id =>
+        required(retry.intent.behaviorTransformationCandidates?.find(candidate => candidate.id === id)).callableId
+      ));
+      expect(selectedCallables).toEqual(new Set(["double", "triple", "negativeScale"]));
+      expect(selectedSource.content).not.toContain("expectedResult");
+      expect(selectedTest.content).toContain("expectedResult");
+      for (const file of selectedProgram.files.filter(item => item.path.startsWith("src/") && item.path.endsWith(".mjs"))) {
+        writeFileSync(join(root, file.path), file.content, "utf8");
+      }
+      writeFileSync(join(root, "test", "program.test.mjs"), selectedTest.content, "utf8");
+      const passing = spawnSync(process.execPath, selectedProgram.test.args, { cwd: root, encoding: "utf8" });
+      expect(passing.status, passing.stderr).toBe(0);
+      const changedInputs = spawnSync(process.execPath, ["--input-type=module", "-e", [
+        "import assert from 'node:assert/strict';",
+        "const program = await import('./src/program.mjs');",
+        "assert.equal(program.double(13), 26);",
+        "assert.equal(program.triple(-9), -27);",
+        "assert.equal(program.negativeScale(7), -21);",
+        "assert.equal(program.negativeScale(-8), 24);"
+      ].join("\n")], { cwd: root, encoding: "utf8" });
+      expect(changedInputs.status, changedInputs.stderr).toBe(0);
+
+      for (const file of selectedProgram.files.filter(item => item.path.startsWith("src/") && item.path.endsWith(".ts"))) {
+        const output = transpileModule(file.content, { compilerOptions: { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 } }).outputText;
+        writeFileSync(join(root, file.path.replace(/\.ts$/u, ".js")), output, "utf8");
+      }
+      for (const file of selectedProgram.files.filter(item => item.path.startsWith("src/") && item.path.endsWith(".mjs"))) {
+        writeFileSync(join(root, file.path), file.content, "utf8");
+      }
+      const packageJson = required(selectedProgram.files.find(file => file.path === "package.json"));
+      writeFileSync(join(root, "package.json"), packageJson.content, "utf8");
+      const packageInputs = spawnSync(process.execPath, ["--input-type=module", "-e", [
+        "import assert from 'node:assert/strict';",
+        "const program = await import('./src/index.js');",
+        "assert.equal(program.evaluate, undefined);",
+        "assert.equal(program.double(13), 26);",
+        "assert.equal(program.triple(-9), -27);",
+        "assert.equal(program.negativeScale(7), -21);",
+        "assert.equal(program.negativeScale(-8), 24);"
+      ].join("\n")], { cwd: root, encoding: "utf8" });
+      expect(packageInputs.status, packageInputs.stderr).toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("carries an opaque Unicode source relation from plain owner text into typed program intent", () => {
     const request = "κ(x); κ(1) ↦ 2, κ(3) ↦ 6, κ(-2) ↦ -4, κ(11) ↦ 22";
     const signal = codeRequestSignal(request);
@@ -421,7 +530,7 @@ describe("ProgramGraph runtime and artifact emission", () => {
   });
 
   it("realizes the same learned transformation through a requested Python runtime", () => {
-    const request = "Create a Python function double(x): double(3) => 6, double(7) => 14, double(-2) => -4, double(11) => 22.";
+    const request = "Create a Python function negativeScale(x): negativeScale(2) => -6, negativeScale(4) => -12, negativeScale(-3) => 9, negativeScale(5) => -15.";
     const signal = codeRequestSignal(request);
     expect(signal.language).toBe("python");
     const intent = required(programIntentForTurn({
@@ -465,7 +574,6 @@ describe("ProgramGraph runtime and artifact emission", () => {
       const repaired = required(buildProgram(request, [], retry.intent).program);
       const source = required(repaired.files.find(file => file.path === "src/program.py"));
       const test = required(repaired.files.find(file => file.path === "test/program_test.py"));
-      expect(source.content).toContain("return (args[0] + args[0])");
       expect(source.content).not.toContain("expectedResult");
       writeFileSync(join(root, source.path), source.content, "utf8");
       writeFileSync(join(root, test.path), test.content, "utf8");
@@ -473,6 +581,12 @@ describe("ProgramGraph runtime and artifact emission", () => {
       expect(syntax.status, `${syntax.stdout}\n${syntax.stderr}`).toBe(0);
       const passing = spawnSync(repaired.test.command, repaired.test.args, { cwd: root, encoding: "utf8" });
       expect(passing.status, `${passing.stdout}\n${passing.stderr}`).toBe(0);
+      const changedInputs = spawnSync(repaired.build.command, ["-c", [
+        "from src.program import negativeScale",
+        "assert negativeScale(7) == -21",
+        "assert negativeScale(-8) == 24"
+      ].join("\n")], { cwd: root, encoding: "utf8" });
+      expect(changedInputs.status, `${changedInputs.stdout}\n${changedInputs.stderr}`).toBe(0);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -635,7 +749,7 @@ describe("ProgramGraph runtime and artifact emission", () => {
       "bind(key, value); read(key); unbind(key)",
       "bind(\"a\", 4); read(\"a\") => 4",
       "bind(\"a\", 9); read(\"a\") => 9",
-      "unbind(\"a\"); read(\"a\") => null",
+      "bind(\"a\", 4); unbind(\"a\"); read(\"a\") => null",
       "bind(\"b\", {\"n\": 2}); read(\"b\") => {\"n\": 2}"
     ].join("\n");
     const signal = codeRequestSignal(request);
@@ -694,6 +808,97 @@ describe("ProgramGraph runtime and artifact emission", () => {
       const mutant = spawnSync(process.execPath, repairedProgram.test.args, { cwd: root, encoding: "utf8" });
       expect(mutant.status).not.toBe(0);
       expect(`${mutant.stdout}\n${mutant.stderr}`).toContain("stateful owner requirement");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("exports selected stateful owner behavior from a Node package and cold-replays isolated state", () => {
+    const request = [
+      "bind(key, value); read(key); unbind(key)",
+      "bind(\"a\", 4); read(\"a\") => 4",
+      "bind(\"a\", 9); read(\"a\") => 9",
+      "bind(\"a\", 4); unbind(\"a\"); read(\"a\") => null",
+      "bind(\"b\", {\"n\": 2}); read(\"b\") => {\"n\": 2}"
+    ].join("\n");
+    const signal = codeRequestSignal(request);
+    const intent = required(programIntentForTurn({
+      requestedAuthority: "program",
+      activeOperatorIds: [COGNITIVE_OPERATOR_IDS.programPlanning],
+      codeSignal: signal,
+      evidence: []
+    }));
+    const nodeIntent: ProgramConstructIntent = {
+      ...intent,
+      languageId: "typescript",
+      packageManagerId: "npm",
+      runtimeTargetId: "runtime.package:npm",
+      entrypointPath: "src/index.ts"
+    };
+    expect(nodeIntent.statefulBehaviorRequirements).toHaveLength(4);
+    const probe = required(buildProgram(request, [], nodeIntent).program);
+    const probeTest = required(probe.files.find(file => file.path === "test/program.test.mjs"));
+    const root = mkdtempSync(join(tmpdir(), "scce-node-owner-stateful-"));
+    try {
+      mkdirSync(join(root, "src"));
+      mkdirSync(join(root, "test"));
+      for (const file of probe.files.filter(item => item.path.startsWith("src/") && item.path.endsWith(".mjs"))) {
+        writeFileSync(join(root, file.path), file.content, "utf8");
+      }
+      writeFileSync(join(root, "test", "program.test.mjs"), probeTest.content, "utf8");
+      const failed = spawnSync(process.execPath, probe.test.args, { cwd: root, encoding: "utf8" });
+      expect(failed.status).not.toBe(0);
+
+      const retry = replanOwnerBehaviorProgramIntent({
+        intent: nodeIntent,
+        program: probe,
+        failure: {
+          observationId: "owner.node-package.stateful.validation.failure",
+          programId: probe.id,
+          planHash: "owner-node-package-stateful-plan",
+          validatorId: "validator.owner.node",
+          checkId: "tests",
+          status: "failed",
+          ownerRequirementIds: nodeIntent.statefulBehaviorRequirements?.map(requirement => requirement.id) ?? [],
+          command: probe.test
+        },
+        hasher
+      });
+      const selected = required(buildProgram(request, [], retry.intent).program);
+      const selectedTest = required(selected.files.find(file => file.path === "test/program.test.mjs"));
+      expect(retry.intent.behaviorImplementationPhase).toBe("selected");
+      expect(retry.selection.transformationId).toBe("program.transformation.state_transition_search.v1");
+      for (const file of selected.files.filter(item => item.path.startsWith("src/") && item.path.endsWith(".mjs"))) {
+        writeFileSync(join(root, file.path), file.content, "utf8");
+      }
+      writeFileSync(join(root, "test", "program.test.mjs"), selectedTest.content, "utf8");
+      const passed = spawnSync(process.execPath, selected.test.args, { cwd: root, encoding: "utf8" });
+      expect(passed.status, passed.stderr).toBe(0);
+
+      for (const file of selected.files.filter(item => item.path.startsWith("src/") && item.path.endsWith(".ts"))) {
+        const output = transpileModule(file.content, { compilerOptions: { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 } }).outputText;
+        writeFileSync(join(root, file.path.replace(/\.ts$/u, ".js")), output, "utf8");
+      }
+      for (const file of selected.files.filter(item => item.path.startsWith("src/") && item.path.endsWith(".mjs"))) {
+        writeFileSync(join(root, file.path), file.content, "utf8");
+      }
+      const packageJson = required(selected.files.find(file => file.path === "package.json"));
+      writeFileSync(join(root, "package.json"), packageJson.content, "utf8");
+      const packageBehavior = spawnSync(process.execPath, ["--input-type=module", "-e", [
+        "import assert from 'node:assert/strict';",
+        "const pkg = await import('./src/index.js');",
+        "assert.equal(pkg.evaluate, undefined);",
+        "const first = pkg.createStatefulProgram();",
+        "const isolated = pkg.createStatefulProgram();",
+        "first.bind('cold-key', 8);",
+        "assert.equal(first.read('cold-key'), 8);",
+        "assert.equal(isolated.read('cold-key'), null);",
+        "first.unbind('cold-key');",
+        "assert.equal(first.read('cold-key'), null);",
+        "first.bind('changed-key', { n: 3 });",
+        "assert.deepEqual(first.read('changed-key'), { n: 3 });"
+      ].join("\n")], { cwd: root, encoding: "utf8" });
+      expect(packageBehavior.status, packageBehavior.stderr).toBe(0);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

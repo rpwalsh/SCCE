@@ -183,7 +183,7 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
         input.programIntent?.selectedStatefulBehaviorTransformationIds ?? []
       );
       const files = withOwnerBehaviorCompositionFiles(
-        planFiles(shape, artifactConstruction),
+        planFiles(shape, artifactConstruction, ownerBehaviorRequirements, ownerStatefulBehaviorRequirements, options.hasher),
         shape,
         ownerBehaviorRequirements,
         ownerStatefulBehaviorRequirements,
@@ -1344,8 +1344,34 @@ function isSourceConstructionPath(path: string): boolean {
   return [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".css"].some(extension => path.endsWith(extension));
 }
 
-function planFiles(shape: ProgramShape, construction: ProgramConstructionSelection): ProgramFilePlan[] {
-  const canonical = canonicalPlanFiles(shape);
+function planFiles(
+  shape: ProgramShape,
+  construction: ProgramConstructionSelection,
+  ownerBehaviorRequirements: readonly ProgramBehaviorRequirement[],
+  ownerStatefulBehaviorRequirements: readonly ProgramStatefulBehaviorRequirement[],
+  hasher: Hasher
+): ProgramFilePlan[] {
+  const ownerComposition = ownerBehaviorCompositionPaths(shape, ownerBehaviorRequirements, hasher);
+  const ownerStatefulComposition = ownerStatefulBehaviorCompositionPaths(shape, ownerStatefulBehaviorRequirements, hasher);
+  const nodeOwnerMode = nodeRuntimeForShape(shape) && ownerCompositionRuntimeForShape(shape) && (ownerComposition || ownerStatefulComposition);
+  const canonical = canonicalPlanFiles(shape).filter(file => !(nodeOwnerMode && file.path === "src/domain.ts"));
+  if (nodeOwnerMode) {
+    const runtime = emittedRuntimeForShape(shape);
+    const applicationPath = ownerComposition?.applicationPath ?? ownerStatefulComposition?.applicationPath;
+    if (applicationPath) {
+      for (let index = 0; index < canonical.length; index += 1) {
+        const file = canonical[index]!;
+        if (file.path === "src/index.ts") canonical[index] = { ...file, purpose: "public owner behavior package entrypoint", dependsOn: [applicationPath] };
+        else if (file.path === "test/generated-artifact.test.ts") canonical[index] = { ...file, purpose: "public owner behavior package regression", dependsOn: ["src/index.ts"] };
+      }
+    }
+    canonical.push(
+      { path: "source.program.json", role: "config", mediaType: "application/json", purpose: "source-derived language target and typed owner behavior contract", dependsOn: ["source.memory.json"], invariants: ["language open", "runtime explicit", "held-out examples validation-only"] },
+      { path: runtime.sourcePath, role: "source", mediaType: runtime.mediaType, purpose: "selected source-neutral owner behavior program", dependsOn: ["source.program.json"], invariants: ["only selected transformations emitted", "owner expected values excluded from source"] },
+      { path: runtime.testPath, role: "test", mediaType: runtime.mediaType, purpose: "executable owner behavior validation", dependsOn: [runtime.sourcePath], invariants: ["executes changed inputs", "held-out examples remain checks"] },
+      { path: "BUILDING.md", role: "doc", mediaType: "text/markdown", purpose: "runtime-specific build notes", dependsOn: ["source.program.json"], invariants: ["does not claim unrun build", "lists learned commands"] }
+    );
+  }
   const selectedPaths = new Map<string, string>([
     [entrypointFor(shape), construction.paths.entrypoint]
   ]);
@@ -1513,11 +1539,37 @@ function withOwnerBehaviorCompositionFiles(
       }
     ]
     : [];
-  return [...files, ...scalarFiles, ...statefulFiles];
+  const compositionFiles = [...scalarFiles, ...statefulFiles];
+  const declarationFiles = nodeRuntimeForShape(shape) ? compositionFiles
+    .filter(file => file.path.endsWith(".mjs"))
+    .map(file => ({
+      path: file.path.replace(/\.mjs$/u, ".d.mts"),
+      role: "source" as const,
+      mediaType: "text/typescript",
+      purpose: "type declaration for selected owner behavior module",
+      dependsOn: [file.path],
+      invariants: ["describes emitted module exports", "contains no behavior implementation"]
+    })) : [];
+  const nodeOwnerMode = nodeRuntimeForShape(shape) && compositionFiles.some(file => file.path === composition?.applicationPath || file.path === statefulComposition?.applicationPath);
+  const applicationPath = composition?.applicationPath ?? statefulComposition?.applicationPath;
+  const applicationDeclarationPath = applicationPath?.endsWith(".mjs") ? applicationPath.replace(/\.mjs$/u, ".d.mts") : undefined;
+  const providerPaths = composition?.callables.map(item => item.path)
+    ?? (statefulComposition ? [statefulComposition.providerPath] : []);
+  const applicationDeclarationFiles = declarationFiles.map(file => file.path === applicationDeclarationPath
+    ? { ...file, dependsOn: [...providerPaths, ...providerPaths.map(path => path.replace(/\.mjs$/u, ".d.mts"))] }
+    : file);
+  const baseFiles = nodeOwnerMode && applicationPath
+    ? files.map(file => {
+      if (file.path === "src/index.ts") return { ...file, dependsOn: [applicationPath, ...(applicationDeclarationPath ? [applicationDeclarationPath] : [])] };
+      if (file.path === emittedRuntimeForShape(shape).sourcePath) return { ...file, dependsOn: ["source.program.json", applicationPath] };
+      return file;
+    })
+    : files;
+  return [...baseFiles, ...compositionFiles, ...applicationDeclarationFiles];
 }
 
 interface OwnerStatefulBehaviorCompositionPaths {
-  readonly runtime: EmittedProgramRuntime;
+  readonly runtime: BehaviorCompositionRuntime;
   readonly providerPath: string;
   readonly applicationPath: string;
   readonly providerModuleId: string;
@@ -1529,8 +1581,8 @@ function ownerStatefulBehaviorCompositionPaths(
   requirements: readonly ProgramStatefulBehaviorRequirement[],
   hasher: Hasher
 ): OwnerStatefulBehaviorCompositionPaths | undefined {
-  if (nodeRuntimeForShape(shape) || !requirements.some(requirement => requirement.verificationRole === "fit")) return undefined;
-  const runtime = emittedProgramRuntimeForLanguage(shape.target.language);
+  const runtime = ownerCompositionRuntimeForShape(shape);
+  if (!runtime || !requirements.some(requirement => requirement.verificationRole === "fit")) return undefined;
   const suffix = hasher.digestHex(canonicalStringify(requirements.map(requirement => requirement.id))).slice(0, 16);
   const modulePrefix = runtime.languageId === "python" ? "_stateful_provider_" : "stateful-provider-";
   const applicationPrefix = runtime.languageId === "python" ? "_stateful_application_" : "stateful-application-";
@@ -1544,21 +1596,27 @@ function ownerStatefulBehaviorCompositionPaths(
 }
 
 interface OwnerBehaviorCompositionPaths {
-  readonly runtime: EmittedProgramRuntime;
+  readonly runtime: BehaviorCompositionRuntime;
   readonly callables: readonly { readonly callableId: string; readonly path: string }[];
   readonly applicationPath: string;
   readonly applicationModuleId: string;
 }
+
+type BehaviorCompositionRuntime = {
+  readonly languageId: string;
+  readonly moduleExtension: string;
+  readonly mediaType: string;
+};
 
 function ownerBehaviorCompositionPaths(
   shape: ProgramShape,
   requirements: readonly ProgramBehaviorRequirement[],
   hasher: Hasher
 ): OwnerBehaviorCompositionPaths | undefined {
-  if (nodeRuntimeForShape(shape)) return undefined;
+  const runtime = ownerCompositionRuntimeForShape(shape);
+  if (!runtime) return undefined;
   const fitCallables = [...new Set(requirements.filter(requirement => requirement.verificationRole === "fit").map(requirement => requirement.callableId))].sort(compareCanonical);
-  if (fitCallables.length < 2) return undefined;
-  const runtime = emittedProgramRuntimeForLanguage(shape.target.language);
+  if (fitCallables.length < (nodeRuntimeForShape(shape) ? 1 : 2)) return undefined;
   const modulePrefix = runtime.languageId === "python" ? "_module_" : "module-";
   const applicationPrefix = runtime.languageId === "python" ? "_application_" : "application-";
   const callables = fitCallables.map(callableId => ({
@@ -1572,6 +1630,13 @@ function ownerBehaviorCompositionPaths(
     applicationPath: `src/${applicationPrefix}${compositionHash}${runtime.moduleExtension}`,
     applicationModuleId: `module:application:${compositionHash}`
   };
+}
+
+function ownerCompositionRuntimeForShape(shape: ProgramShape): BehaviorCompositionRuntime | undefined {
+  if (!nodeRuntimeForShape(shape)) return emittedProgramRuntimeForLanguage(shape.target.language);
+  const language = shape.target.language.toLocaleLowerCase();
+  if (!["javascript", "typescript", "js", "ts"].includes(language)) return undefined;
+  return EMITTED_PROGRAM_RUNTIME;
 }
 
 function emitFiles(plan: ProgramPlan, input: ProgramPlannerInput, idFactory: IdFactory, hasher: Hasher): FileArtifact[] {
@@ -1591,12 +1656,12 @@ function emitFiles(plan: ProgramPlan, input: ProgramPlannerInput, idFactory: IdF
   set("src/main.tsx", webMainTsx(plan));
   set("src/App.tsx", webAppTsx(plan, input, sourceMemory));
   set("src/styles.css", webStylesCss());
-  set("src/index.ts", libraryIndex(sourceMemory, plan));
+  set("src/index.ts", libraryIndex(sourceMemory, plan, hasher));
   set("src/domain.ts", libraryDomain(plan, sourceMemory));
   set("src/transform.ts", transformerModule(plan, sourceMemory));
   set("src/log-parser.ts", logParserModule(plan, sourceMemory));
   set("src/api-handler.ts", apiHandlerModule(plan, sourceMemory));
-  set("test/generated-artifact.test.ts", generatedArtifactTest(plan));
+  set("test/generated-artifact.test.ts", generatedArtifactTest(plan, hasher));
   set("schema.mapping.json", `${JSON.stringify(schemaMapping(plan), null, 2)}\n`);
   set("src/report.ts", reportModule(plan, sourceMemory));
   set("report.template.md", reportTemplate(plan));
@@ -1613,14 +1678,19 @@ function emitFiles(plan: ProgramPlan, input: ProgramPlannerInput, idFactory: IdF
     const statefulContracts = declaredStatefulCallContractsFromRequirements(plan.ownerStatefulBehaviorRequirements);
     byPath.set("source.program.json", `${JSON.stringify(sourceProgramContract(plan, input), null, 2)}\n`);
     const statefulComposition = ownerStatefulBehaviorCompositionPaths(plan.intent.shape, plan.ownerStatefulBehaviorRequirements, hasher);
-    if (emittedRuntime.languageId === "python") {
+    const composition = ownerBehaviorCompositionPaths(plan.intent.shape, plan.ownerBehaviorRequirements, hasher);
+    const nodeOwnerComposition = nodeRuntimeForShape(plan.intent.shape) && (composition || statefulComposition);
+    if (nodeOwnerComposition && (composition || statefulComposition)) {
+      const applicationPath = composition?.applicationPath ?? statefulComposition!.applicationPath;
+      byPath.set(emittedRuntime.sourcePath, `export * from ${JSON.stringify(moduleSpecifier(emittedRuntime.sourcePath, applicationPath))};\n`);
+      byPath.set(emittedRuntime.testPath, executableNodeOwnerBehaviorTest(plan));
+    } else if (emittedRuntime.languageId === "python") {
       byPath.set(emittedRuntime.sourcePath, executablePythonProgramModule(plan, contracts, statefulContracts));
       byPath.set(emittedRuntime.testPath, executablePythonProgramTest(plan));
     } else {
       byPath.set(emittedRuntime.sourcePath, executableProgramModule(plan, contracts, statefulContracts));
       byPath.set(emittedRuntime.testPath, executableProgramTest(plan, contracts));
     }
-    const composition = ownerBehaviorCompositionPaths(plan.intent.shape, plan.ownerBehaviorRequirements, hasher);
     if (composition) {
       const contractsByCallable = new Map<string, DeclaredCallContract>();
       for (const contract of contracts) contractsByCallable.set(contract.name, contract);
@@ -1635,17 +1705,25 @@ function emitFiles(plan: ProgramPlan, input: ProgramPlannerInput, idFactory: IdF
             ? `export function ${item.callableId}(...args) { return args.length === 1 ? args[0] : args; }\n`
             : executableBehaviorTransformationFunction(item.callableId, plan.ownerBehaviorTransformationCandidates, plan.selectedOwnerBehaviorTransformationIds);
         byPath.set(item.path, content);
+        if (item.path.endsWith(".mjs")) byPath.set(item.path.replace(/\.mjs$/u, ".d.mts"), `export declare function ${item.callableId}(...args: any[]): any;\n`);
       }
       const applicationImports = composition.callables.map(item => {
         const basename = item.path.slice(item.path.lastIndexOf("/") + 1);
         const stem = basename.slice(0, -composition.runtime.moduleExtension.length);
         return emittedRuntime.languageId === "python"
           ? `from ${stem} import ${item.callableId}`
-          : `export { ${item.callableId} } from ${JSON.stringify(`./${stem}${composition.runtime.moduleExtension}`)}`;
+          : `export { ${item.callableId} } from ${JSON.stringify(`./${stem}${composition.runtime.mediaType === "text/typescript" ? ".js" : composition.runtime.moduleExtension}`)}`;
       }).join("\n");
       byPath.set(composition.applicationPath, emittedRuntime.languageId === "python"
         ? `${applicationImports}\n`
         : `${applicationImports}\n`);
+      if (composition.applicationPath.endsWith(".mjs")) {
+        const declarations = composition.callables.map(item => {
+          const providerModule = item.path.slice(item.path.lastIndexOf("/") + 1);
+          return `export { ${item.callableId} } from ${JSON.stringify(`./${providerModule}`)};`;
+        }).join("\n");
+        byPath.set(composition.applicationPath.replace(/\.mjs$/u, ".d.mts"), `${declarations}\n`);
+      }
     }
     if (statefulComposition) {
       const provider = plan.ownerBehaviorImplementationPhase === "selected"
@@ -1660,7 +1738,11 @@ function emitFiles(plan: ProgramPlan, input: ProgramPlannerInput, idFactory: IdF
       byPath.set(statefulComposition.providerPath, provider);
       byPath.set(statefulComposition.applicationPath, emittedRuntime.languageId === "python"
         ? `from ${providerModule} import createStatefulProgram\n\n__all__ = ["createStatefulProgram"]\n`
-        : `export { createStatefulProgram } from ${JSON.stringify(`./${providerModule}${statefulComposition.runtime.moduleExtension}`)};\n`);
+        : `export { createStatefulProgram } from ${JSON.stringify(`./${providerModule}${statefulComposition.runtime.mediaType === "text/typescript" ? ".js" : statefulComposition.runtime.moduleExtension}`)};\n`);
+      if (statefulComposition.providerPath.endsWith(".mjs")) {
+        byPath.set(statefulComposition.providerPath.replace(/\.mjs$/u, ".d.mts"), "export declare function createStatefulProgram(): Readonly<Record<string, (...args: any[]) => any>>;\n");
+        byPath.set(statefulComposition.applicationPath.replace(/\.mjs$/u, ".d.mts"), `export { createStatefulProgram } from ${JSON.stringify(`./${providerModule}.mjs`)};\n`);
+      }
     }
     byPath.set("BUILDING.md", buildNotes(plan));
   }
@@ -1687,6 +1769,7 @@ function moduleSpecifier(fromPath: string, toPath: string): string {
   }
   const relative = `${"../".repeat(fromParts.length)}${toParts.join("/")}`;
   if (toPath.endsWith(".css")) return relative.startsWith(".") ? relative : `./${relative}`;
+  if (toPath.endsWith(".mjs")) return relative.startsWith(".") ? relative : `./${relative}`;
   const withoutExtension = relative.replace(/\.(tsx?|jsx?|mjs|cjs|py)$/u, "");
   return `${withoutExtension.startsWith(".") ? withoutExtension : `./${withoutExtension}`}.js`;
 }
@@ -2152,7 +2235,12 @@ button, input { font: inherit; }
 `;
 }
 
-function libraryIndex(memory: JsonValue, plan: ProgramPlan): string {
+function libraryIndex(memory: JsonValue, plan: ProgramPlan, hasher: Hasher): string {
+  const behaviorApplication = ownerBehaviorCompositionPaths(plan.intent.shape, plan.ownerBehaviorRequirements, hasher)?.applicationPath
+    ?? ownerStatefulBehaviorCompositionPaths(plan.intent.shape, plan.ownerStatefulBehaviorRequirements, hasher)?.applicationPath;
+  if (nodeRuntimeForShape(plan.intent.shape) && behaviorApplication) {
+    return `export * from ${JSON.stringify(moduleSpecifier(plannedArtifactPath(plan, "src/index.ts"), behaviorApplication))};\n`;
+  }
   const domainImport = moduleSpecifier(plannedArtifactPath(plan, "src/index.ts"), plannedArtifactPath(plan, "src/domain.ts"));
   return `export { evaluate, explainEvidence, type EvaluationInput, type EvaluationResult } from ${JSON.stringify(domainImport)};
 
@@ -2480,7 +2568,36 @@ export function validateRequest(request: SourceRequest): Array<{ severity: "info
 `;
 }
 
-function generatedArtifactTest(plan: ProgramPlan): string {
+function generatedArtifactTest(plan: ProgramPlan, hasher: Hasher): string {
+  const behaviorApplication = ownerBehaviorCompositionPaths(plan.intent.shape, plan.ownerBehaviorRequirements, hasher)?.applicationPath
+    ?? ownerStatefulBehaviorCompositionPaths(plan.intent.shape, plan.ownerStatefulBehaviorRequirements, hasher)?.applicationPath;
+  const behaviorImport = behaviorApplication ? moduleSpecifier("test/generated-artifact.test.ts", "src/index.ts") : undefined;
+  const behaviorAssertions = behaviorApplication ? `
+import * as ownerBehavior from ${JSON.stringify(behaviorImport)};
+
+const ownerBehaviorRequirements = ${JSON.stringify(plan.ownerBehaviorRequirements, null, 2)};
+const ownerStatefulBehaviorRequirements = ${JSON.stringify(plan.ownerStatefulBehaviorRequirements, null, 2)};
+
+function assertOwnerBehavior() {
+  for (const requirement of ownerBehaviorRequirements) {
+    const callable = (ownerBehavior as unknown as Record<string, unknown>)[requirement.callableId];
+    if (typeof callable !== "function") throw new Error("owner callable was not exported: " + requirement.callableId);
+    assert.deepEqual((callable as (...args: unknown[]) => unknown)(...requirement.arguments), requirement.expectedResult);
+  }
+  for (const requirement of ownerStatefulBehaviorRequirements) {
+    const createStatefulProgram = (ownerBehavior as unknown as Record<string, unknown>).createStatefulProgram;
+    if (typeof createStatefulProgram !== "function") throw new Error("stateful owner factory was not exported");
+    const statefulProgram = (createStatefulProgram as () => Record<string, (...args: unknown[]) => unknown>)();
+    let result: unknown;
+    for (const invocation of requirement.invocations) {
+      const operation = statefulProgram[invocation.callableId];
+      if (typeof operation !== "function") throw new Error("stateful owner operation was not emitted: " + invocation.callableId);
+      result = operation(...invocation.arguments);
+    }
+    assert.deepEqual(result, requirement.expectedResult);
+  }
+}
+` : "";
   const descriptor = `const programDescriptor = ${JSON.stringify({
     planId: plan.id,
     entrypoint: plan.sourceEmission.entrypoint,
@@ -2502,24 +2619,43 @@ export function generatedArtifactSelfCheck() {
   };
 }
 `;
-  if (!hasCapability(plan.intent.shape.target, "capability:pure-call")) return descriptor;
   const framework = observedValidationFramework(plan.intent.shape.target);
-  const domainImport = moduleSpecifier("test/generated-artifact.test.ts", plannedArtifactPath(plan, "src/domain.ts"));
-  if (framework === "vitest") return `import { expect, test } from "vitest";
-import { evaluate } from ${JSON.stringify(domainImport)};
+  if (nodeRuntimeForShape(plan.intent.shape) && behaviorApplication) {
+    if (framework === "vitest") return `import { strict as assert } from "node:assert";
+import { test } from "vitest";
+${behaviorAssertions}
 
-test("evaluate returns a structured result for source-backed records", () => {
-  const result = evaluate({ records: [{ value: "observed" }] });
-  const invalid = evaluate({ records: null } as unknown as Parameters<typeof evaluate>[0]);
-  expect(result.recordCount).toBe(1);
-  expect(result.ok).toBe(true);
-  expect(Array.isArray(result.fieldCoverage)).toBe(true);
-  expect(invalid.recordCount).toBe(0);
+test("the package entrypoint satisfies selected owner behavior", () => {
+  assertOwnerBehavior();
 });
 
 ${descriptor}`;
-  if (framework === "jest") return `import { expect, test } from "@jest/globals";
+    if (framework === "jest") return `import { strict as assert } from "node:assert";
+import { test } from "@jest/globals";
+${behaviorAssertions}
+
+test("the package entrypoint satisfies selected owner behavior", () => {
+  assertOwnerBehavior();
+});
+
+${descriptor}`;
+    if (framework === "node-test") return `import { strict as assert } from "node:assert";
+import test from "node:test";
+${behaviorAssertions}
+
+test("the package entrypoint satisfies selected owner behavior", () => {
+  assertOwnerBehavior();
+});
+
+${descriptor}`;
+    return descriptor;
+  }
+  if (!hasCapability(plan.intent.shape.target, "capability:pure-call")) return descriptor;
+  const domainImport = moduleSpecifier("test/generated-artifact.test.ts", plannedArtifactPath(plan, "src/domain.ts"));
+  if (framework === "vitest") return `import { strict as assert } from "node:assert";
+import { expect, test } from "vitest";
 import { evaluate } from ${JSON.stringify(domainImport)};
+${behaviorAssertions}
 
 test("evaluate returns a structured result for source-backed records", () => {
   const result = evaluate({ records: [{ value: "observed" }] });
@@ -2529,11 +2665,29 @@ test("evaluate returns a structured result for source-backed records", () => {
   expect(Array.isArray(result.fieldCoverage)).toBe(true);
   expect(invalid.recordCount).toBe(0);
 });
+${behaviorApplication ? `\ntest("the package entrypoint exports selected owner behavior", () => {\n  assertOwnerBehavior();\n});\n` : ""}
+
+${descriptor}`;
+  if (framework === "jest") return `import { strict as assert } from "node:assert";
+import { expect, test } from "@jest/globals";
+import { evaluate } from ${JSON.stringify(domainImport)};
+${behaviorAssertions}
+
+test("evaluate returns a structured result for source-backed records", () => {
+  const result = evaluate({ records: [{ value: "observed" }] });
+  const invalid = evaluate({ records: null } as unknown as Parameters<typeof evaluate>[0]);
+  expect(result.recordCount).toBe(1);
+  expect(result.ok).toBe(true);
+  expect(Array.isArray(result.fieldCoverage)).toBe(true);
+  expect(invalid.recordCount).toBe(0);
+});
+${behaviorApplication ? `\ntest("the package entrypoint exports selected owner behavior", () => {\n  assertOwnerBehavior();\n});\n` : ""}
 
 ${descriptor}`;
   if (framework === "node-test") return `import { strict as assert } from "node:assert";
 import test from "node:test";
 import { evaluate } from ${JSON.stringify(domainImport)};
+${behaviorAssertions}
 
 test("evaluate returns a structured result for source-backed records", () => {
   const result = evaluate({ records: [{ value: "observed" }] });
@@ -2543,6 +2697,7 @@ test("evaluate returns a structured result for source-backed records", () => {
   assert.equal(Array.isArray(result.fieldCoverage), true);
   assert.equal(invalid.recordCount, 0);
 });
+${behaviorApplication ? `\ntest("the package entrypoint exports selected owner behavior", () => {\n  assertOwnerBehavior();\n});\n` : ""}
 
 ${descriptor}`;
   return descriptor;
@@ -3232,7 +3387,7 @@ function renderPythonProgramExpression(expression: ProgramExpression, elementBin
     return `__import__("functools").reduce(lambda ${nextAccumulator}, ${nextElement}: ${renderPythonProgramExpression(expression.reducer, nextElement, depth + 1, nextAccumulator)}, ${renderPythonProgramExpression(expression.source, elementBinding, depth, accumulatorBinding)}, ${renderPythonProgramExpression(expression.initial, elementBinding, depth, accumulatorBinding)})`;
   }
   if (expression.kind === "conditional") return `(${renderPythonProgramExpression(expression.whenTrue, elementBinding, depth, accumulatorBinding)} if ${renderPythonProgramExpression(expression.condition, elementBinding, depth, accumulatorBinding)} else ${renderPythonProgramExpression(expression.whenFalse, elementBinding, depth, accumulatorBinding)})`;
-  if (expression.kind === "unary") return `(-${renderPythonProgramExpression(expression.operand, elementBinding, depth, accumulatorBinding)})`;
+  if (expression.kind === "unary") return `(-(${renderPythonProgramExpression(expression.operand, elementBinding, depth, accumulatorBinding)}))`;
   if (expression.operator === "minimum") return `min(${renderPythonProgramExpression(expression.left, elementBinding, depth, accumulatorBinding)}, ${renderPythonProgramExpression(expression.right, elementBinding, depth, accumulatorBinding)})`;
   if (expression.operator === "maximum") return `max(${renderPythonProgramExpression(expression.left, elementBinding, depth, accumulatorBinding)}, ${renderPythonProgramExpression(expression.right, elementBinding, depth, accumulatorBinding)})`;
   const operator = expression.operator === "add" ? "+"
@@ -3341,6 +3496,34 @@ function renderStatefulLiteral(value: unknown): string {
   return rendered === undefined ? "undefined" : rendered;
 }
 
+function executableNodeOwnerBehaviorTest(plan: ProgramPlan): string {
+  return `import { strict as assert } from "node:assert";
+import { test } from "node:test";
+import * as ownerProgram from "../src/program.mjs";
+
+const ownerBehaviorRequirements = ${JSON.stringify(plan.ownerBehaviorRequirements, null, 2)};
+const ownerStatefulBehaviorRequirements = ${JSON.stringify(plan.ownerStatefulBehaviorRequirements, null, 2)};
+
+test("the emitted package entrypoint satisfies owner behavior", () => {
+  for (const requirement of ownerBehaviorRequirements) {
+    const callable = ownerProgram[requirement.callableId];
+    assert.equal(typeof callable, "function", "owner callable was not exported: " + requirement.callableId);
+    assert.deepEqual(callable(...requirement.arguments), requirement.expectedResult);
+  }
+  for (const requirement of ownerStatefulBehaviorRequirements) {
+    const statefulProgram = ownerProgram.createStatefulProgram();
+    let result;
+    for (const invocation of requirement.invocations) {
+      const operation = statefulProgram[invocation.callableId];
+      assert.equal(typeof operation, "function", "stateful owner operation was not emitted: " + invocation.callableId);
+      result = operation(...invocation.arguments);
+    }
+    assert.deepEqual(result, requirement.expectedResult);
+  }
+});
+`;
+}
+
 function renderProgramExpression(expression: ProgramExpression, elementBinding = "_programElement0", depth = 0, accumulatorBinding = "_programAccumulator0"): string {
   if (expression.kind === "argument") return `args[${expression.index}]`;
   if (expression.kind === "element") return elementBinding;
@@ -3366,7 +3549,7 @@ function renderProgramExpression(expression: ProgramExpression, elementBinding =
     return `${renderProgramExpression(expression.source, elementBinding, depth, accumulatorBinding)}.reduce((${nextAccumulator}, ${nextElement}) => ${renderProgramExpression(expression.reducer, nextElement, depth + 1, nextAccumulator)}, ${renderProgramExpression(expression.initial, elementBinding, depth, accumulatorBinding)})`;
   }
   if (expression.kind === "conditional") return `(${renderProgramExpression(expression.condition, elementBinding, depth, accumulatorBinding)} ? ${renderProgramExpression(expression.whenTrue, elementBinding, depth, accumulatorBinding)} : ${renderProgramExpression(expression.whenFalse, elementBinding, depth, accumulatorBinding)})`;
-  if (expression.kind === "unary") return `(-${renderProgramExpression(expression.operand, elementBinding, depth, accumulatorBinding)})`;
+  if (expression.kind === "unary") return `(-(${renderProgramExpression(expression.operand, elementBinding, depth, accumulatorBinding)}))`;
   const operator = expression.operator === "add" ? "+"
     : expression.operator === "subtract" ? "-"
       : expression.operator === "multiply" ? "*"
