@@ -32,6 +32,7 @@ function memoryStore(rows: LanguageProfileSignatureRow[]): LanguageIdentityStore
   const state = { identities: [] as LanguageIdentityRecord[], assignments: new Map<string, string>() };
   return {
     async putIdentities(records) { state.identities = [...records]; },
+    async replaceIdentities(records) { state.identities = [...records]; },
     async listIdentities() { return state.identities; },
     async assignProfileLanguages(assignments) { for (const item of assignments) state.assignments.set(item.profileId, item.languageId); },
     async listProfileLanguages() { return [...state.assignments].map(([profileId, languageId]) => ({ profileId, languageId })); },

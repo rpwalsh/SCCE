@@ -4,7 +4,7 @@ import { estimateRetainedProgramBytes } from "./retained-program-size.js";
 import { traceEvent } from "./debug/trace.js";
 import { canonicalDigestHex } from "./canonical-json-digest.js";
 import { deriveClosedClassWords } from "./closed-class-words.js";
-import { createCorpusRegistry, languageMemoryHydrationPlan, type CorpusRoleId } from "./corpus-registry.js";
+import { createCorpusRegistry, languageMemoryHydrationPlan, requestLanguageHydrationPlan, type CorpusRoleId } from "./corpus-registry.js";
 import { isCreativeEventCompatibilityPattern } from "./creative-event-compatibility.js";
 import { jsonRecord, kernelString, normalizePriorKey, splitPriorUnits } from "./kernel-answer-primitives.js";
 import { featureSetMemoStats } from "./primitives.js";
@@ -389,9 +389,11 @@ export function createSurfaceLanguageRuntime(options: {
     purpose?: "request_seed"
   ) {
     const boundedLimit = Math.max(1, Math.min(256, Math.floor(limit)));
+    // Request-seed uses typed natural-language roles below; the unsupervised surface cluster may be symbolic.
+    const selectionCluster = purpose === "request_seed" ? undefined : cluster;
     const hydrateHeapStart = process.memoryUsage().heapUsed;
     const hydrateStartedAt = Date.now();
-    const profileIds = preferredCorpusRoleId ? undefined : cluster?.profileIds;
+    const profileIds = preferredCorpusRoleId ? undefined : selectionCluster?.profileIds;
     const hydrationLimits = {
       ngramModels: Math.max(12, boundedLimit * Math.max(1, corpusRegistry.length)),
       ngramObservations: Math.max(1200, boundedLimit * 320),
@@ -429,7 +431,9 @@ export function createSurfaceLanguageRuntime(options: {
       semanticFrames: Math.min(Math.max(128, exactProfileOwnerCount * 128), hydrationLimits.semanticFrames)
     };
     // A role-scoped hydration may reach a population the unscoped fan-out must never sweep in.
-    const corpusPlan = languageMemoryHydrationPlan(corpusRegistry, hydrationLimits, preferredCorpusRoleId ? "role-scoped" : "unscoped");
+    const corpusPlan = purpose === "request_seed"
+      ? requestLanguageHydrationPlan(corpusRegistry, hydrationLimits, preferredCorpusRoleId ? "role-scoped" : "unscoped")
+      : languageMemoryHydrationPlan(corpusRegistry, hydrationLimits, preferredCorpusRoleId ? "role-scoped" : "unscoped");
     const [active, requestControlPatterns, continuationPopulation] = await Promise.all([
       deps.storage.brainImports.active(),
       deps.storage.languageMemory.listLanguagePatterns({ sourceSystem: "corrections", limit: 2048 }),
@@ -440,7 +444,7 @@ export function createSurfaceLanguageRuntime(options: {
       && deriveClosedClassWords({ continuationPopulation }).size > 0;
     const requestControlCompatibilityPatterns = requestControlPatterns
       .filter(isCreativeEventCompatibilityPattern);
-    if (!cluster && !preferredCorpusRoleId && !languageId) {
+    if (!selectionCluster && !preferredCorpusRoleId && !languageId) {
       const hydrated = languageMemoryRuntime.hydrateFromImportedBrain({
         importRunId: active.activeImportRunIds[0],
         models: [],
@@ -598,18 +602,18 @@ export function createSurfaceLanguageRuntime(options: {
           state: languageScopedState,
           surfaceProfile: (languageScopedProfiles.length
             ? selectLanguageProfileForSurface(languageScopedProfiles, surface) ?? languageScopedProfiles[0]
-            : cluster ? selectLanguageProfileForSurface(cluster.members, surface) ?? cluster.members[0] : undefined) as LanguageProfile | undefined
+            : selectionCluster ? selectLanguageProfileForSurface(selectionCluster.members, surface) ?? selectionCluster.members[0] : undefined) as LanguageProfile | undefined
         };
       }
       const roleCluster = preferredCorpusRoleId
         ? corpusRoleLanguageCluster({
           roleId: preferredCorpusRoleId,
-          target: cluster,
+          target: selectionCluster,
           profiles: roleProfiles,
           surface
         })
         : undefined;
-      const effectiveCluster = roleCluster ?? cluster;
+      const effectiveCluster = roleCluster ?? selectionCluster;
       return {
         state: effectiveCluster
           ? scopeLanguageMemoryStateToCluster(hydrated, effectiveCluster, { admitUnprofiled: Boolean(preferredCorpusRoleId) })
@@ -633,7 +637,7 @@ export function createSurfaceLanguageRuntime(options: {
       state: scoped.state,
       retainedProgramState: hydrated,
       surfaceProfile: scoped.surfaceProfile,
-      clusterMembers: (cluster?.members ?? []) as LanguageProfile[],
+      clusterMembers: (selectionCluster?.members ?? []) as LanguageProfile[],
       active,
       corpusPlan,
       rescopeForSurface: scopeForSurface,

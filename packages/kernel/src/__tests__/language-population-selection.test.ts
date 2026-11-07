@@ -5,7 +5,8 @@ import {
   CORPUS_ROLE_IDS,
   createCorpusRegistry,
   languageMemoryEligibleCorpora,
-  languageMemoryHydrationPlan
+  languageMemoryHydrationPlan,
+  requestLanguageHydrationPlan
 } from "../corpus-registry.js";
 import {
   measureLanguagePopulationSupport,
@@ -54,6 +55,14 @@ describe("one database, two populations", () => {
     const plan = languageMemoryHydrationPlan(registry, {}, "role-scoped")
       .filter(item => registry.some(entry => entry.sourceSystemId === item.sourceSystemId && entry.corpusRoleId === CORPUS_ROLE_IDS.dialogue));
     expect(plan.map(item => item.sourceSystem)).toEqual(["dialogue"]);
+  });
+
+  it("keeps symbolic models out of request interpretation while retaining natural OSS docs and code-role hydration", () => {
+    const requestPlan = requestLanguageHydrationPlan(registry).map(entry => entry.sourceSystem);
+    const rolePlan = languageMemoryHydrationPlan(registry, {}, "role-scoped").map(entry => entry.sourceSystem);
+    expect(requestPlan).toContain("oss_docs");
+    expect(requestPlan).not.toContain("oss_code");
+    expect(rolePlan).toContain("oss_code");
   });
 });
 

@@ -25,7 +25,7 @@ import type { Hasher, InformationLabel, JsonValue, LanguageProfile } from "./typ
  * Provenance (source versions, evidence ids) is never consulted here and never becomes an admission condition.
  */
 
-export const LANGUAGE_IDENTITY_SCHEMA = "scce.language_identity.v1" as const;
+export const LANGUAGE_IDENTITY_SCHEMA = "scce.language_identity.v2" as const;
 
 export interface LanguageIdentityRecord {
   schema: typeof LANGUAGE_IDENTITY_SCHEMA;
@@ -41,6 +41,8 @@ export interface LanguageIdentityRecord {
     closedClass?: Array<{ word: string; documentShare: number }>;
     evidence?: LanguageIdentityEvidence;
   }>;
+  /** Exact corpus roles represented by the identity, counted independently of family grouping. */
+  corpusRoles: Array<{ corpusRoleId: string; count: number }>;
   profileCount: number;
   evidence?: LanguageIdentityEvidence;
   /** The document-level presence cut below which a document of this script is not this language. */
@@ -55,6 +57,8 @@ export interface LanguageProfileSignature {
   sourceVersionId?: string;
   /** Corpus family the document came from: a corpus label or a URI scheme. A prior for assignment, never a gate. */
   family: string;
+  /** Authoritative corpus role from source provenance; never inferred from language symbols. */
+  corpusRoleId?: string;
   scripts: ReadonlyArray<{ script: string; mass: number }>;
   direction: string;
   /** Most-continued word symbols with their continuation counts, from the profile's compact Kneser-Ney summary. */
@@ -364,9 +368,11 @@ export function discoverLanguageIdentities(input: {
       if (!members.length) return;
       const familyCounts = new Map<string, number>();
       const familyMembers = new Map<string, LanguageProfileSignature[]>();
+      const corpusRoleCounts = new Map<string, number>();
       const directions = new Map<string, number>();
       for (const member of members) {
         familyCounts.set(member.family, (familyCounts.get(member.family) ?? 0) + 1);
+        if (member.corpusRoleId) corpusRoleCounts.set(member.corpusRoleId, (corpusRoleCounts.get(member.corpusRoleId) ?? 0) + 1);
         const bucket = familyMembers.get(member.family);
         if (bucket) bucket.push(member); else familyMembers.set(member.family, [member]);
         directions.set(member.direction, (directions.get(member.direction) ?? 0) + 1);
@@ -399,6 +405,8 @@ export function discoverLanguageIdentities(input: {
           });
           return { family, count, ...(closedClass.length ? { closedClass } : {}), evidence };
         }).sort((a, b) => b.count - a.count),
+        corpusRoles: [...corpusRoleCounts].map(([corpusRoleId, count]) => ({ corpusRoleId, count }))
+          .sort((a, b) => b.count - a.count || a.corpusRoleId.localeCompare(b.corpusRoleId)),
         profileCount: members.length,
         evidence: identityEvidence({
           documents: members,
@@ -447,13 +455,23 @@ export function closedClassForFamilies(identity: LanguageIdentityRecord, familie
  */
 export function selectLanguageIdentityForSurface(
   identities: readonly LanguageIdentityRecord[],
-  surface: string
+  surface: string,
+  options: { excludeCorpusRoleIds?: readonly string[] } = {}
 ): { identity: LanguageIdentityRecord; coverage: number } | undefined {
   const words = surface.normalize("NFC").toLocaleLowerCase().split(/[^\p{L}\p{M}'’-]+/u).filter(Boolean);
   if (!identities.length) return undefined;
   const script = surfaceDominantScript(surface);
-  const candidates = identities.filter(identity => !script || identity.script === script);
-  const pool = candidates.length ? candidates : identities;
+  const excludedRoles = new Set(options.excludeCorpusRoleIds ?? []);
+  const roleEligible = (identity: LanguageIdentityRecord) => {
+    const roles = identity.corpusRoles ?? [];
+    // An identity can be spoken naturally if any observed role carrying it is not excluded. Unknown roles remain
+    // eligible: the source has supplied no typed evidence that it is symbolic.
+    return !roles.length || roles.some(role => !excludedRoles.has(role.corpusRoleId));
+  };
+  const eligible = identities.filter(roleEligible);
+  if (!eligible.length) return undefined;
+  const candidates = eligible.filter(identity => !script || identity.script === script);
+  const pool = candidates.length ? candidates : eligible;
   let best: { identity: LanguageIdentityRecord; coverage: number } | undefined;
   let bestObserved: { identity: LanguageIdentityRecord; coverage: number } | undefined;
   let tiedObserved = false;

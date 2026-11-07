@@ -3,11 +3,12 @@
 import {
   discoverLanguageIdentities,
   selectLanguageIdentityForSurface,
+  LANGUAGE_IDENTITY_SCHEMA,
   type LanguageIdentityRecord,
   type LanguageProfileSignature
 } from "./language-identity.js";
 import { isLanguageWordSymbol } from "./language-identity.js";
-import { createCorpusRegistry, type CorpusRegistryEntry } from "./corpus-registry.js";
+import { CORPUS_ROLE_IDS, createCorpusRegistry, corpusRoleIdForSourceSystem, type CorpusRegistryEntry } from "./corpus-registry.js";
 import type { LanguageIdentityStore, LanguageProfileSignatureRow } from "./storage.js";
 import type { Hasher, InformationLabel } from "./types.js";
 
@@ -23,7 +24,7 @@ export interface LanguageIdentityRuntime {
   identities(): readonly LanguageIdentityRecord[];
   resolver(): LanguageResolver | undefined;
   /** The identity a request surface is written in, once identities are loaded. */
-  selectForSurface(surface: string): { identity: LanguageIdentityRecord; coverage: number } | undefined;
+  selectForSurface(surface: string, options?: { excludeCorpusRoleIds?: readonly string[] }): { identity: LanguageIdentityRecord; coverage: number } | undefined;
   /** The identity most of a corpus family's documents belong to. */
   identityForFamily(family: string): LanguageIdentityRecord | undefined;
 }
@@ -81,11 +82,18 @@ export function corpusFamilyForSource(
   return registered ? corpusFamilyForSourceSystem(registered.sourceSystem) : corpusFamilyForSourceUri(source.sourceUri);
 }
 
+/** Formal-code generation reads the symbolic population by its typed corpus role, independent of request language. */
+export function roleHydrationLanguageIdentityId(roleId: string | undefined, requestLanguageId: string | undefined): string | undefined {
+  return roleId === CORPUS_ROLE_IDS.softwareSymbolic ? undefined : requestLanguageId;
+}
+
 function signatureFromRow(row: LanguageProfileSignatureRow, registry: readonly CorpusRegistryEntry[]): LanguageProfileSignature {
+  const registered = registry.find(entry => entry.sourceSystemId === row.sourceSystem || entry.sourceSystem === row.sourceSystem);
   return {
     id: row.id,
     sourceVersionId: row.sourceVersionId,
     family: corpusFamilyForSource(row, registry),
+    ...(row.sourceSystem ? { corpusRoleId: registered?.corpusRoleId ?? corpusRoleIdForSourceSystem(row.sourceSystem) } : {}),
     scripts: row.scripts,
     direction: row.direction,
     topContinuation: row.topContinuation.filter(([symbol]) => isLanguageWordSymbol(symbol))
@@ -129,7 +137,8 @@ export function createLanguageIdentityRuntime(options: {
       afterId = page[page.length - 1]!.id;
     }
     const discovery = discoverLanguageIdentities({ signatures, hasher: options.hasher, now: options.now(), informationLabel: options.informationLabel });
-    await store.putIdentities(discovery.identities);
+    if (store.replaceIdentities) await store.replaceIdentities(discovery.identities);
+    else await store.putIdentities(discovery.identities);
     const assignments = [...discovery.assignments].map(([profileId, languageId]) => ({ profileId, languageId }));
     await store.assignProfileLanguages(assignments);
     return { identities: discovery.identities, assigned: assignments.length };
@@ -144,7 +153,8 @@ export function createLanguageIdentityRuntime(options: {
         let identities = input.rebuild ? [] : await options.store.listIdentities();
         let discovered = false;
         let assigned = 0;
-        if (!identities.length) {
+        // V1 rows lack typed corpus roles; reindex their compact signatures without retraining models.
+        if (!identities.length || identities.some(identity => identity.schema !== LANGUAGE_IDENTITY_SCHEMA || !Array.isArray(identity.corpusRoles))) {
           const result = await discover();
           identities = result.identities;
           assigned = result.assigned;
@@ -165,7 +175,10 @@ export function createLanguageIdentityRuntime(options: {
         corpus: sourceSystem => (sourceSystem ? familyLanguage.get(corpusFamilyForSourceSystem(sourceSystem)) : undefined)
       }
       : undefined,
-    selectForSurface: surface => selectLanguageIdentityForSurface(loaded, surface),
+    selectForSurface: (surface, selection = {}) => selectLanguageIdentityForSurface(loaded, surface, {
+      ...selection,
+      excludeCorpusRoleIds: [...new Set([CORPUS_ROLE_IDS.softwareSymbolic, ...(selection.excludeCorpusRoleIds ?? [])])]
+    }),
     identityForFamily: family => loaded.find(identity => identity.id === familyLanguage.get(family))
   };
 }

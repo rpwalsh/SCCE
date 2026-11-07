@@ -2852,16 +2852,26 @@ function sourceSystemFromCorpusNamespace(namespace: string | null): string {
 }
 
 function createLanguageIdentityStore(storage: PostgresStorageAdapter): LanguageIdentityStore {
+  const writeIdentities = async (records: readonly LanguageIdentityRecord[]) => {
+    for (const record of records) {
+      await storage.query(
+        `INSERT INTO ${storage.table("language_identities")}(id,identity_json,created_at,information_label)
+         VALUES($1,$2::jsonb,TO_TIMESTAMP($3/1000.0),$4::jsonb)
+         ON CONFLICT(id) DO UPDATE SET identity_json=EXCLUDED.identity_json, information_label=EXCLUDED.information_label`,
+        [record.id, JSON.stringify(record), record.createdAt, JSON.stringify(storage.requireWritableInformationLabel(record.informationLabel))]
+      );
+    }
+  };
   return {
     async putIdentities(records) {
-      for (const record of records) {
-        await storage.query(
-          `INSERT INTO ${storage.table("language_identities")}(id,identity_json,created_at,information_label)
-           VALUES($1,$2::jsonb,TO_TIMESTAMP($3/1000.0),$4::jsonb)
-           ON CONFLICT(id) DO UPDATE SET identity_json=EXCLUDED.identity_json, information_label=EXCLUDED.information_label`,
-          [record.id, JSON.stringify(record), record.createdAt, JSON.stringify(storage.requireWritableInformationLabel(record.informationLabel))]
-        );
-      }
+      await writeIdentities(records);
+    },
+    async replaceIdentities(records) {
+      await writeIdentities(records);
+      await storage.query(
+        `DELETE FROM ${storage.table("language_identities")} WHERE NOT (id = ANY($1::text[]))`,
+        [records.map(record => record.id)]
+      );
     },
     async listIdentities() {
       const rows = await storage.query<{ identity_json: LanguageIdentityRecord }>(`SELECT identity_json FROM ${storage.table("language_identities")} ORDER BY id`);
@@ -2908,8 +2918,9 @@ function createLanguageIdentityStore(storage: PostgresStorageAdapter): LanguageI
     async listProfileSignatures(query) {
       // Trained shard profiles and page signatures are one discovery population. Unioned rather than replaced:
       // a brain ingested before page signatures existed still has only shard profiles, and must still discover.
-      const rows = await storage.query<{ id: string; source_version_id: string; source_uri: string | null; namespace: string | null; scripts: JsonValue; direction: string | null; top: JsonValue }>(
+      const rows = await storage.query<{ id: string; source_version_id: string; source_uri: string | null; namespace: string | null; model_source_system: string | null; scripts: JsonValue; direction: string | null; top: JsonValue }>(
         `SELECT src.id, src.source_version_id, s.canonical_uri AS source_uri, s.namespace AS namespace,
+                ngram_source.source_system AS model_source_system,
                 src.scripts AS scripts, src.direction AS direction, src.top AS top
          FROM (
            SELECT lp.id, lp.source_version_id,
@@ -2922,13 +2933,22 @@ function createLanguageIdentityStore(storage: PostgresStorageAdapter): LanguageI
          ) src
          LEFT JOIN ${storage.table("source_versions")} sv ON sv.id = src.source_version_id
          LEFT JOIN ${storage.table("sources")} s ON s.id = sv.source_id
+         LEFT JOIN LATERAL (
+           SELECT m.model_json->>'sourceSystem' AS source_system
+           FROM ${storage.table("ngram_models")} m
+           WHERE (s.namespace IS NULL OR s.namespace NOT LIKE 'corpus:%')
+             AND m.model_json->>'profileId' = src.id
+             AND NULLIF(m.model_json->>'sourceSystem', '') IS NOT NULL
+           ORDER BY m.updated_at DESC, m.id
+           LIMIT 1
+         ) ngram_source ON TRUE
          WHERE src.id > $1 ORDER BY src.id LIMIT $2`,
         [query.afterId ?? "", Math.max(1, Math.min(10000, Math.floor(query.limit)))]
       );
       return rows.map(row => ({
         id: row.id,
         sourceVersionId: row.source_version_id as SourceVersionId,
-        sourceSystem: sourceSystemFromCorpusNamespace(row.namespace),
+        sourceSystem: sourceSystemFromCorpusNamespace(row.namespace) || row.model_source_system || "",
         sourceUri: row.source_uri ?? "",
         scripts: Array.isArray(row.scripts) ? (row.scripts as Array<{ script: string; mass: number }>) : [],
         direction: row.direction ?? "unknown",

@@ -115,8 +115,8 @@ function createFixture(options: { activeAtStart?: boolean; competingBrainWinsAtA
   let activeBrainVersion = options.activeAtStart ? "other-brain" : undefined;
   let activationCalls = 0;
   const identity = {
-    schema: "scce.language_identity.v1", id: "identity-one", script: "script:Latin", directions: [], closedClass: [],
-    families: [{ family: "files", count: 1 }], profileCount: 1, membershipCut: 0, createdAt: 1
+    schema: "scce.language_identity.v2", id: "identity-one", script: "script:Latin", directions: [], closedClass: [],
+    families: [{ family: "files", count: 1 }], corpusRoles: [], profileCount: 1, membershipCut: 0, createdAt: 1
   };
   const storage = {
     brainImports: {

@@ -1,7 +1,8 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
-import { corpusFamilyForSourceSystem, corpusFamilyForSourceUri, createLanguageIdentityRuntime } from "../language-identity-runtime.js";
+import { corpusFamilyForSourceSystem, corpusFamilyForSourceUri, createLanguageIdentityRuntime, roleHydrationLanguageIdentityId } from "../language-identity-runtime.js";
+import { CORPUS_ROLE_IDS } from "../corpus-registry.js";
 import { createHasher } from "../primitives.js";
 import type { LanguageIdentityStore, LanguageProfileSignatureRow } from "../storage.js";
 import type { LanguageIdentityRecord, SourceVersionId } from "../index.js";
@@ -9,12 +10,12 @@ import type { LanguageIdentityRecord, SourceVersionId } from "../index.js";
 const ENGLISH = ["the", "of", "and", "in", "to", "a", "was", "is", "as", "for", "on", "by"];
 const CODE = ["const", "import", "type", "return", "export", "function", "string", "number"];
 
-function row(id: string, uri: string, words: readonly string[]): LanguageProfileSignatureRow {
+function row(id: string, uri: string, words: readonly string[], sourceSystem = ""): LanguageProfileSignatureRow {
   return {
     id,
     sourceVersionId: `${id}:v1` as SourceVersionId,
     // No registered source system: this case is the URI fallback, which is what these rows exist to cover.
-    sourceSystem: "",
+    sourceSystem,
     sourceUri: uri,
     scripts: [{ script: "script:Latn", mass: 1 }],
     direction: "ltr",
@@ -22,11 +23,12 @@ function row(id: string, uri: string, words: readonly string[]): LanguageProfile
   };
 }
 
-function memoryStore(rows: LanguageProfileSignatureRow[]): LanguageIdentityStore & { identities: LanguageIdentityRecord[]; assignments: Map<string, string> } {
-  const state = { identities: [] as LanguageIdentityRecord[], assignments: new Map<string, string>() };
+function memoryStore(rows: LanguageProfileSignatureRow[], initialIdentities: LanguageIdentityRecord[] = []): LanguageIdentityStore & { identities: LanguageIdentityRecord[]; assignments: Map<string, string> } {
+  const state = { identities: initialIdentities, assignments: new Map<string, string>() };
   return {
     ...state,
     async putIdentities(records) { state.identities = [...records]; },
+    async replaceIdentities(records) { state.identities = [...records]; },
     async listIdentities() { return state.identities; },
     async assignProfileLanguages(assignments) { for (const item of assignments) state.assignments.set(item.profileId, item.languageId); },
     async listProfileLanguages() { return [...state.assignments].map(([profileId, languageId]) => ({ profileId, languageId })); },
@@ -91,5 +93,42 @@ describe("language identity runtime", () => {
     expect(identity.evidence?.status).toBe("source_observed");
     expect(identity.evidence?.observedSymbols.map(item => item.symbol)).toContain("azurite");
     expect(runtime.selectForSurface("azurite crystal")?.identity.id).toBe(identity.id);
+  });
+
+  it("reindexes legacy identities with source-role metadata and leaves formal code models role-scoped", async () => {
+    const observedProseClass = ENGLISH.filter(word => word !== "for");
+    const observedCodeClass = ["const", "for", "string", "return", "from", "number", "type", "import", "export", "function"];
+    const rows = [
+      ...Array.from({ length: 12 }, (_, index) => row(`wiki-role:${index}`, `wikipedia://enwiki/${index}`, [...observedProseClass, "rabbit", "carry"], "wikipedia")),
+      ...Array.from({ length: 8 }, (_, index) => row(`code-role:${index}`, `file:///repo/${index}.ts`, [...observedCodeClass, "rabbit", "carry"], "oss_code")),
+      ...Array.from({ length: 5 }, (_, index) => row(`docs-role:${index}`, `file:///repo/docs/${index}.md`, [...observedProseClass, "rabbit", "carry"], "oss_docs")),
+      ...Array.from({ length: 4 }, (_, index) => row(`book-role:${index}`, `file:///corpus/gutenberg/${index}.txt`, [...observedProseClass, "rabbit", "carry"], "gutenberg")),
+      ...Array.from({ length: 4 }, (_, index) => row(`dialogue-role:${index}`, `file:///corpus/dialogue/${index}.txt`, [...observedProseClass, "rabbit", "carry"], "dialogue"))
+    ];
+    const stale = [{
+      schema: "scce.language_identity.v1", id: "old", script: "script:Latn", directions: [], closedClass: [],
+      families: [{ family: "files", count: 13 }], profileCount: 13, membershipCut: 0, createdAt: 1
+    }] as unknown as LanguageIdentityRecord[];
+    const store = memoryStore(rows, stale);
+    const runtime = createLanguageIdentityRuntime({ store, hasher: createHasher(), now: () => 2 });
+    const refreshed = await runtime.ensure();
+    const code = refreshed.identities.find(identity => identity.corpusRoles.some(role => role.corpusRoleId === CORPUS_ROLE_IDS.softwareSymbolic))!;
+    const natural = refreshed.identities.find(identity => identity.corpusRoles.some(role => role.corpusRoleId === CORPUS_ROLE_IDS.softwareDocumentation))!;
+
+    expect(refreshed.discovered).toBe(true);
+    expect(code).toBeDefined();
+    expect(natural).toBeDefined();
+    // Family independence remains intact: code and natural documentation still share the existing files family.
+    expect(code.families.map(family => family.family)).toContain("files");
+    expect(natural.families.map(family => family.family)).toContain("files");
+    expect(natural.corpusRoles.map(role => role.corpusRoleId)).toEqual(expect.arrayContaining([
+      CORPUS_ROLE_IDS.encyclopedic,
+      CORPUS_ROLE_IDS.publicDomainProse,
+      CORPUS_ROLE_IDS.dialogue,
+      CORPUS_ROLE_IDS.softwareDocumentation
+    ]));
+    expect(runtime.selectForSurface("What does White Rabbit carry for?")?.identity).toBe(natural);
+    expect(roleHydrationLanguageIdentityId(CORPUS_ROLE_IDS.softwareSymbolic, natural.id)).toBeUndefined();
+    expect(roleHydrationLanguageIdentityId(CORPUS_ROLE_IDS.encyclopedic, natural.id)).toBe(natural.id);
   });
 });

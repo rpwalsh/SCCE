@@ -22,7 +22,7 @@ import { createConnectorGovernance, defaultConnectorConfigs } from "./connector-
 import { createConstructSubstratePlanner } from "./construct-substrate.js";
 import { CORPUS_ROLE_IDS, CORPUS_SOURCE_SYSTEM_IDS, corpusSourceAlias, type CorpusRoleId } from "./corpus-registry.js";
 import { closedClassForFamilies } from "./language-identity.js";
-import { corpusFamiliesForRole } from "./language-identity-runtime.js";
+import { corpusFamiliesForRole, roleHydrationLanguageIdentityId } from "./language-identity-runtime.js";
 import {
   languagePopulationSelectionTrace,
   measureLanguagePopulationSupport,
@@ -3108,13 +3108,19 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // while the cognition itself took under a second. The miss is served from the resident language this turn
       // already has, and the durable hydration runs off the path so the next turn finds it resident. The creative
       // lane keeps paying durably, for the reason stated above.
+      // A program uses its symbolic role's population, independent of the natural-language request identity.
+      const roleLanguageCluster = preferredSurfaceCorpusRole === CORPUS_ROLE_IDS.softwareSymbolic
+        ? undefined
+        : selectedSurfaceCluster;
       const roleHydrationOptions = preferredSurfaceCorpusRole === CORPUS_ROLE_IDS.publicDomainProse
-        ? { residentOnly: false, languageId: requestLanguageId }
-        : { residentOnly: true, languageId: requestLanguageId };
+        ? { residentOnly: false, languageId: roleHydrationLanguageIdentityId(preferredSurfaceCorpusRole, requestLanguageId) }
+        : preferredSurfaceCorpusRole === CORPUS_ROLE_IDS.softwareSymbolic
+          ? { residentOnly: false }
+          : { residentOnly: true, languageId: roleHydrationLanguageIdentityId(preferredSurfaceCorpusRole, requestLanguageId) };
       const roleOutputLanguage = preferredSurfaceCorpusRole && !exactCreativeAuthorityReady
         ? await hydrateSurfaceLanguageMemoryCached(
           12,
-          selectedSurfaceCluster,
+          roleLanguageCluster,
           "role-output-language-unresolved",
           preferredSurfaceCorpusRole,
           input.text,
@@ -3123,7 +3129,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           if (roleHydrationOptions.residentOnly !== true || !isResidentRuntimeNotWarmError(error)) throw error;
           warmSurfaceLanguageMemory(
             12,
-            selectedSurfaceCluster,
+            roleLanguageCluster,
             "role-output-language-unresolved",
             preferredSurfaceCorpusRole,
             input.text,

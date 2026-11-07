@@ -209,8 +209,8 @@ describe("cross-lingual translation against PostgreSQL", () => {
       };
       await adapter.model.putLanguageProfiles!([sourceProfile, targetProfile]);
       const identity = (id: string, script: string, closedWord: string, profileCount: number): LanguageIdentityRecord => ({
-        schema: "scce.language_identity.v1", id, script, directions: [{ direction: "ltr", count: profileCount }],
-        closedClass: [{ word: closedWord, documentShare: 1 }], families: [], profileCount, membershipCut: 0, createdAt: 1, informationLabel: label
+        schema: "scce.language_identity.v2", id, script, directions: [{ direction: "ltr", count: profileCount }],
+        closedClass: [{ word: closedWord, documentShare: 1 }], families: [], corpusRoles: [], profileCount, membershipCut: 0, createdAt: 1, informationLabel: label
       });
       await adapter.languageIdentities.putIdentities([identity(sourceIdentityId, "script:Latin", "a", 1), identity(targetIdentityId, "script:Latin", "x", 1)]);
       await adapter.languageIdentities.assignProfileLanguages([

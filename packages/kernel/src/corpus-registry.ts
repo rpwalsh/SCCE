@@ -264,6 +264,19 @@ export function languageMemoryHydrationPlan(
   }));
 }
 
+/** Request interpretation reads natural-language populations; formal code remains available through symbolic-role hydration. */
+export function requestLanguageHydrationPlan(
+  registry: readonly CorpusRegistryEntry[],
+  totals: Partial<CorpusHydrationLimits> = {},
+  scope: CorpusHydrationScope = "unscoped"
+): CorpusHydrationPlanEntry[] {
+  const symbolicSources = new Set(registry
+    .filter(entry => entry.corpusRoleId === CORPUS_ROLE_IDS.softwareSymbolic)
+    .map(entry => entry.sourceSystemId));
+  return languageMemoryHydrationPlan(registry, totals, scope)
+    .filter(item => !symbolicSources.has(item.sourceSystemId));
+}
+
 export function corpusNgramSettings(registry: readonly CorpusRegistryEntry[], sourceSystem: CorpusSourceSystemId): CorpusNgramSettings {
   const canonical = canonicalCorpusSourceSystemId(sourceSystem);
   return registry.find(item => item.sourceSystemId === canonical)?.ngram ?? DEFAULT_NGRAM_SETTINGS;

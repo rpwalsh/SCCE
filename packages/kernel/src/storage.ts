@@ -1222,6 +1222,8 @@ export interface LanguageProfileSignatureRow {
 
 export interface LanguageIdentityStore {
   putIdentities(records: readonly import("./language-identity.js").LanguageIdentityRecord[]): Promise<void>;
+  /** Replace the discovered identity index after a schema/metadata reindex, removing stale identity rows. */
+  replaceIdentities?(records: readonly import("./language-identity.js").LanguageIdentityRecord[]): Promise<void>;
   listIdentities(): Promise<import("./language-identity.js").LanguageIdentityRecord[]>;
   /** Replace the assignment of the named profiles; profiles not named keep theirs. */
   assignProfileLanguages(assignments: ReadonlyArray<{ profileId: string; languageId: string }>): Promise<void>;

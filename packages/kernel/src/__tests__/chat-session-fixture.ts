@@ -82,12 +82,13 @@ export function chatSession() {
     updatedAt: 10
   }));
   const identityRecord = {
-    schema: "scce.language_identity.v1",
+    schema: "scce.language_identity.v2",
     id: "language.fixture",
     script: "Latn",
     directions: [{ direction: "ltr", count: 1 }],
     closedClass: [...deriveClosedClassWords({ models: [trained] })].map(word => ({ word, documentShare: 1 })),
     families: [{ family: "fixture", count: 1 }],
+    corpusRoles: [],
     profileCount: 1,
     membershipCut: 0.1,
     createdAt: 1

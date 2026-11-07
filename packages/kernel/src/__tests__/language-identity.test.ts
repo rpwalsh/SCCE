@@ -11,6 +11,7 @@ import {
   type LanguageProfileSignature
 } from "../language-identity.js";
 import { createHasher } from "../primitives.js";
+import { CORPUS_ROLE_IDS } from "../corpus-registry.js";
 import type { LanguageProfile } from "../types.js";
 
 /** Documents of one language share their function words whatever they are about; a different language shares none of them. */
@@ -18,19 +19,20 @@ const ENGLISH = ["the", "of", "and", "in", "to", "a", "was", "is", "as", "for", 
 const CODE = ["const", "import", "type", "return", "export", "function", "string", "number", "id", "from"];
 const FRENCH = ["le", "la", "de", "et", "les", "des", "en", "un", "une", "est", "pour", "dans", "par", "qui", "que"];
 
-function document(id: string, family: string, functionWords: readonly string[], topic: readonly string[], keep = functionWords.length): LanguageProfileSignature {
+function document(id: string, family: string, functionWords: readonly string[], topic: readonly string[], keep = functionWords.length, corpusRoleId?: string): LanguageProfileSignature {
   const words = [...functionWords.slice(0, keep), ...topic];
   return {
     id,
     family,
+    ...(corpusRoleId ? { corpusRoleId } : {}),
     scripts: [{ script: "script:Latn", mass: 1 }],
     direction: "ltr",
     topContinuation: words.map((word, index) => [word, 1000 - index] as const)
   };
 }
 
-function corpus(family: string, count: number, functionWords: readonly string[], topics: readonly string[][], keep?: number, prefix = family): LanguageProfileSignature[] {
-  return Array.from({ length: count }, (_, index) => document(`${prefix}:${index}`, family, functionWords, topics[index % topics.length]!, keep));
+function corpus(family: string, count: number, functionWords: readonly string[], topics: readonly string[][], keep?: number, prefix = family, corpusRoleId?: string): LanguageProfileSignature[] {
+  return Array.from({ length: count }, (_, index) => document(`${prefix}:${index}`, family, functionWords, topics[index % topics.length]!, keep, corpusRoleId));
 }
 
 describe("language identity discovery", () => {
@@ -86,6 +88,40 @@ describe("language identity discovery", () => {
     expect(selectLanguageIdentityForSurface(identities, "Quelle est la capitale de la France?")?.identity).toBe(frenchIdentity);
     // No learned symbol distinguishes these identities, so retain uncertainty rather than choosing the largest.
     expect(selectLanguageIdentityForSurface(identities, "Apollo 11 commander")).toBeUndefined();
+  });
+
+  it("routes natural-language questions away from a better-matching symbolic identity without losing code identity access", () => {
+    const observedProseClass = ENGLISH.filter(word => word !== "for");
+    const observedCodeClass = ["const", "for", "string", "return", "from", "number", "type", "import", "export", "function"];
+    const prose = corpus("wikipedia", 20, observedProseClass, [["rabbit", "carry", "white"], ["captain", "ship", "pequod"]], undefined, "prose", CORPUS_ROLE_IDS.encyclopedic);
+    const symbolic = corpus("files", 12, observedCodeClass, [["rabbit", "carry", "white"], ["captain", "ship", "pequod"]], undefined, "code", CORPUS_ROLE_IDS.softwareSymbolic);
+    const identities = discoverLanguageIdentities({ signatures: [...prose, ...symbolic], hasher, now: 1 }).identities;
+    const request = "What does White Rabbit carry for?";
+    const codeIdentity = identities.find(identity => identity.corpusRoles.some(role => role.corpusRoleId === CORPUS_ROLE_IDS.softwareSymbolic))!;
+    const proseIdentity = identities.find(identity => identity.corpusRoles.some(role => role.corpusRoleId === CORPUS_ROLE_IDS.encyclopedic))!;
+
+    // The observed overlap that caused the live route: `for` is code closed-class material while the English
+    // closed class has zero coverage. The general selector still recognizes the code surface when requested.
+    expect(selectLanguageIdentityForSurface(identities, request)?.identity).toBe(codeIdentity);
+    // Request-language eligibility excludes only the typed symbolic population; with one natural identity for this
+    // observed script, the existing singleton contract resolves even when its closed-class coverage is zero.
+    expect(selectLanguageIdentityForSurface(identities, request, {
+      excludeCorpusRoleIds: [CORPUS_ROLE_IDS.softwareSymbolic]
+    })?.identity).toBe(proseIdentity);
+    expect(selectLanguageIdentityForSurface([codeIdentity], request, {
+      excludeCorpusRoleIds: [CORPUS_ROLE_IDS.softwareSymbolic]
+    })).toBeUndefined();
+    expect(selectLanguageIdentityForSurface(identities, "export const kernel: string")?.identity).toBe(codeIdentity);
+  });
+
+  it("does not guess among multiple natural languages with zero closed-class coverage", () => {
+    const prose = corpus("wikipedia", 20, ENGLISH.filter(word => word !== "for"), [["river", "county"], ["school", "senate"]], undefined, "prose", CORPUS_ROLE_IDS.encyclopedic);
+    const codeRows = corpus("files", 12, CODE, [["rabbit", "carry", "white"]], undefined, "code", CORPUS_ROLE_IDS.softwareSymbolic);
+    const frenchRows = corpus("frwiki", 12, FRENCH, [["lapin", "porter", "blanc"]], undefined, "french", CORPUS_ROLE_IDS.encyclopedic);
+    const identities = discoverLanguageIdentities({ signatures: [...prose, ...codeRows, ...frenchRows], hasher, now: 1 }).identities;
+    expect(selectLanguageIdentityForSurface(identities, "What does White Rabbit carry for?", {
+      excludeCorpusRoleIds: [CORPUS_ROLE_IDS.softwareSymbolic]
+    })).toBeUndefined();
   });
 
   it("reads a signature from a profile's compact Kneser-Ney summary and drops apparatus symbols", () => {
