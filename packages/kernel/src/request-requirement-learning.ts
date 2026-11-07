@@ -167,6 +167,14 @@ export function compileRequestRequirementCorpus(
 ): CompiledRequestRequirementCorpus {
   const classTotals = authorityRecord(0);
   const featureCounts = new Map<string, FeatureCounts>();
+  const requestTokenDocuments = new Map<string, number>();
+  for (const example of input.corpus.examples) {
+    if (example.authority !== "creative" || !example.responseText) continue;
+    for (const token of new Set(unicodeTokens(example.text))) {
+      requestTokenDocuments.set(token, (requestTokenDocuments.get(token) ?? 0) + 1);
+    }
+  }
+  const requestTokenFrequencyCut = otsuThreshold([...requestTokenDocuments.values()]);
   for (const example of input.corpus.examples) {
     classTotals[example.authority] += 1;
     const responseTokens = example.authority === "creative" && example.responseText
@@ -189,7 +197,8 @@ export function compileRequestRequirementCorpus(
       counts.byAuthority[example.authority] += 1;
       if (responseTokens) {
         counts.pairedExamples++;
-        if (unicodeTokens(observation.surface).some(token => responseTokens.has(token))) counts.responseMatches++;
+        if (requestTokenFrequencyCut !== undefined && unicodeTokens(observation.surface).some(token =>
+          (requestTokenDocuments.get(token) ?? 0) < requestTokenFrequencyCut && responseTokens.has(token))) counts.responseMatches++;
       }
       for (const dimension of TURN_REQUIREMENT_DIMENSIONS) {
         const target = example.requirements?.[dimension];

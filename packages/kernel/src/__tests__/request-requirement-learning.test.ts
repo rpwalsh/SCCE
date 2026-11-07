@@ -48,6 +48,18 @@ describe("source-backed response-form learning", () => {
     const singlePattern = single.patterns.find(pattern => pattern.id === singleId)!;
     const singleField = deriveTurnRequirementField({ requestText: "a sailor", languageMemoryState: runtimeState([singlePattern]) });
     expect(singleField.activationsUsed?.filter(row => row.id === singleId).map(row => row.span)).toEqual([expect.objectContaining({ charStart: 0, charEnd: 1 })]);
+    const natural = compileRequestRequirementCorpus({
+      corpus: { schema: REQUEST_REQUIREMENT_CORPUS_SCHEMA, language: "und", examples: ["sailor", "clockmaker", "gardener", "sailor"]
+        .map(subject => ({ text: `Write a short scene about a ${subject}.`, responseText: `The ${subject} crossed the harbor.`, authority: "creative" as const })) },
+      profileId: "profile.natural", sourceVersionId: "source-version.natural" as SourceVersionId,
+      evidenceIds: ["evidence.natural" as EvidenceId], sourceSystem: "dialogue", updatedAt: 1,
+      makeId: value => `pattern.${createHasher().digestHex(JSON.stringify(value))}`
+    });
+    const naturalField = deriveTurnRequirementField({ requestText: "Write a short scene about a sailor.", languageMemoryState: runtimeState(natural.patterns) });
+    const subject = requestSubjectSegments("Write a short scene about a sailor.", naturalField).join(" ");
+    expect(subject).toContain("sailor");
+    expect(subject).not.toContain("Write");
+    expect(subject).not.toContain("short");
   });
 
   it("does not hydrate request patterns compiled with stale semantics", () => {
