@@ -74,7 +74,7 @@ describe("Wikipedia shard graph dependency validation", () => {
               dependencyGroupIds: [`source.${index}`], estimate: 1 }, producer: { modelId: "fixture", snapshotId: "fixture.snapshot" },
             admissionState: "proposed", normalizationContractId: "fixture.normalization", participantIdentityIds: [] }
         } as any;
-        return { sourceVersionId, title: `Fixture ${index}`, text: evidence.text, evidence: [evidence], languageAliases: [],
+        return { uri: `wikipedia://fixture/page/${index}`, sourceVersionId, title: `Fixture ${index}`, text: evidence.text, evidence: [evidence], languageAliases: [],
           semanticCandidates: [candidate], createdAt: index + 1 };
       });
       for (let index = 0; index < 2; index++) graphRows.hyperedges.set(`prior.${index}`, {
