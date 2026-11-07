@@ -782,7 +782,8 @@ async function dispatch(
     if (!id || !decision) throw new HttpError(400, "id and decision (promoted|rejected) are required");
     const reason = typeof body.reason === "string" && body.reason.trim() ? body.reason.trim().slice(0, 500) : undefined;
     try {
-      return json({ schema: "scce.learning.review.v1", review: await reviewHeldSource(context.runtime.storage, { id, decision, reason, reviewer: "owner" }) });
+      const review = await reviewHeldSource(context.runtime.storage, { id, decision, reason, reviewer: "owner" }, context.runtime.kernel);
+      return json({ schema: "scce.learning.review.v1", review });
     } catch (error) {
       throw new HttpError(/not found/u.test(String(error)) ? 404 : 409, error instanceof Error ? error.message : String(error));
     }

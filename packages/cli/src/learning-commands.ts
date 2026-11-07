@@ -52,7 +52,7 @@ export async function negotiateLearning<T extends TurnLike>(runtime: Runtime, tu
     try {
       for (const source of motion.heldSources) {
         const answer = (await rl.question(`Is ${source.uri} true? keep it [y/N] `)).trim().toLowerCase();
-        const review = await reviewHeldSource(runtime.storage, { id: source.id, decision: answer === "y" || answer === "yes" ? "promoted" : "rejected", reviewer: "owner" });
+        const review = await reviewHeldSource(runtime.storage, { id: source.id, decision: answer === "y" || answer === "yes" ? "promoted" : "rejected", reviewer: "owner" }, runtime.kernel);
         if (review.decision === "promoted") promoted += review.promotedEvidence;
       }
     } finally { rl.close(); }
@@ -70,7 +70,7 @@ export async function runLearnCommand(runtime: Runtime, args: string[]): Promise
     return;
   }
   if ((sub === "confirm" || sub === "reject") && args[1]) {
-    const review = await reviewHeldSource(runtime.storage, { id: args[1], decision: sub === "confirm" ? "promoted" : "rejected", reviewer: "owner" });
+    const review = await reviewHeldSource(runtime.storage, { id: args[1], decision: sub === "confirm" ? "promoted" : "rejected", reviewer: "owner" }, runtime.kernel);
     process.stdout.write(`${review.decision} ${review.uri} (${review.promotedEvidence} evidence spans promoted)\n`);
     return;
   }

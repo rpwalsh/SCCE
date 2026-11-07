@@ -715,6 +715,7 @@ export interface EvidenceStore {
    */
   openingEvidenceForSourceVersions?(sourceVersionIds: readonly SourceVersionId[]): Promise<EvidenceSpan[]>;
   sourceVersionsForEvidence(ids: EvidenceId[]): Promise<SourceVersion[]>;
+  sourceVersionById?(id: SourceVersionId): Promise<SourceVersion | null>;
   /**
    * Resolve source versions whose stored content hash matches one of the
    * given hashes. Powers sealed-corpus evaluation: the harness derives the

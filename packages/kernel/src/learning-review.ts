@@ -2,7 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { toJsonValue } from "./primitives.js";
 import type { PromotionDecision, ScceStorage } from "./storage.js";
-import type { CapabilityPlan, JsonValue } from "./types.js";
+import type { CapabilityPlan, IngestInput, IngestResult, JsonValue, SourceAdmissionContext } from "./types.js";
 
 /** The approval-session fingerprint for consent to search the web about one query; the kernel and every surface build it here. */
 export function learningConsentInput(query: string, hasher: { digestHex(input: string): string }): JsonValue {
@@ -66,7 +66,7 @@ export async function listHeldSources(storage: ReviewStorage, limit = 20): Promi
   return held;
 }
 
-export async function reviewHeldSource(storage: ReviewStorage, input: { id: string; decision: "promoted" | "rejected"; reason?: string; reviewer?: string; now?: number }): Promise<HeldSourceReview> {
+export async function reviewHeldSource(storage: ReviewStorage & Partial<Pick<ScceStorage, "blobs">>, input: { id: string; decision: "promoted" | "rejected"; reason?: string; reviewer?: string; now?: number }, activation?: { ingest(input: IngestInput): Promise<IngestResult> }): Promise<HeldSourceReview> {
   const item = await storage.quarantine.get(input.id);
   if (!item) throw new Error(`held source not found: ${input.id}`);
   if (item.decision !== "pending") throw new Error(`held source already ${item.decision}: ${input.id}`);
@@ -76,11 +76,37 @@ export async function reviewHeldSource(storage: ReviewStorage, input: { id: stri
     reason: input.reason ?? (input.decision === "promoted" ? "owner confirmed the material as truthful" : "owner rejected the material"),
     ...(input.reviewer ? { reviewer: input.reviewer } : {})
   };
-  await storage.quarantine.markDecision(input.id, decision);
   let promotedEvidence = 0;
   if (input.decision === "promoted") {
-    const spans = await storage.evidence.searchEvidence({ sourceVersionId: item.sourceVersionId, status: "quarantined", limit: 1000 });
-    if (spans.length) promotedEvidence = await storage.evidence.promoteEvidence(spans.map(result => result.span.id), decision.reason);
+    if (!activation || !storage.blobs || !storage.evidence.sourceVersionById) throw new Error("held-source promotion requires canonical ingestion and owned source storage");
+    const source = await storage.evidence.sourceVersionById(item.sourceVersionId);
+    if (!source || source.sourceId !== item.sourceId) throw new Error(`held source version not found: ${item.sourceVersionId}`);
+    const original = source.derivation ? await storage.evidence.sourceVersionById(source.derivation.derivedFromSourceVersionId) : source;
+    if (!original || original.sourceId !== source.sourceId) throw new Error("held source original ownership is unavailable");
+    const permission = recordOf(item.permissionVector);
+    const context = recordOf(permission.sourceAdmission) as unknown as SourceAdmissionContext;
+    if (!context.sourceClass || !context.intendedUse) throw new Error("held source admission context is unavailable");
+    const derivativeBytes = source.derivation ? await storage.blobs.get(source.contentHash) : undefined;
+    const replay = await activation.ingest({
+      uri: original.canonicalUri, namespace: original.namespace, mediaType: original.mediaType,
+      content: await storage.blobs.get(original.contentHash), metadata: original.metadata,
+      sourceTrust: original.sourceTrust, informationLabel: original.informationLabel,
+      sourceAdmission: { ...context, intendedUse: context.intendedUse === "quarantine_only" ? "direct_evidence" : context.intendedUse, promotionAuthority: "owner" },
+      ...(source.derivation && derivativeBytes ? { evidenceDerivative: {
+        bytes: derivativeBytes, text: Buffer.from(derivativeBytes).toString("utf8"),
+        kind: source.derivation.kind, transformId: source.derivation.transformId,
+        originalCoordinateSpace: source.derivation.originalCoordinateSpace, redactionMap: source.derivation.redactionMap
+      } } : {})
+    });
+    if (!replay.events.some(event => event.typeId === "SourcePromoted" && recordOf(event.payload).sourceVersionId === item.sourceVersionId)) {
+      throw new Error("owner-reviewed source did not pass canonical admission");
+    }
+    promotedEvidence = replay.evidence;
   }
+  await storage.quarantine.markDecision(input.id, decision);
   return { id: input.id, uri: item.uri, decision: input.decision, promotedEvidence };
+}
+
+function recordOf(value: unknown): Record<string, JsonValue> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, JsonValue> : {};
 }

@@ -11,6 +11,15 @@ afterEach(async () => {
 });
 
 describe("Postgres language-memory ownership queries", () => {
+  it("resolves a held source version by exact identity under information access", async () => {
+    const { adapter, calls } = fixture();
+    expect(await adapter.evidence.sourceVersionById?.("source-version.held" as SourceVersionId)).toBeNull();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.sql).toContain("WHERE sv.id=$1 AND");
+    expect(calls[0]!.sql).toContain("sv.information_label");
+    expect(calls[0]!.params[0]).toBe("source-version.held");
+  });
+
   it("publishes the exact callable learning result, including empty recompiles, before retrieval budgets", async () => {
     const { adapter, calls } = fixture();
     adapter.transaction = async operation => operation();
