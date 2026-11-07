@@ -1169,6 +1169,9 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
       return rows.map(row => Number(row.sources ?? 0)).filter(value => value > 0);
     },
     async searchEvidence(query: EvidenceQuery) {
+      if (query.sourceSampleSeed !== undefined && (!query.sourceVersionId || query.text || query.features?.length)) {
+        throw new Error("evidence source sampling requires an exact source version without retrieval features");
+      }
       const features = evidenceQueryFeatures(query.features ?? []);
       const openingBlockPrior = query.openingBlockPrior !== false;
       if (features.length && features.every(isEvidenceAnchorFeature) && !query.sourceId && !query.sourceVersionId) {
@@ -1393,8 +1396,10 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
       const access = storage.informationAccessPredicate("ev", params.length + 1);
       where.push(access.sql);
       params.push(...access.params);
-      params.push(query.deprioritizeSourceKinds ?? []);
-      const sourceKindRank = sourceKindDeprioritized(evidenceSourceKindExpression("ev"), params.length);
+      const sourceKindRank = query.sourceSampleSeed === undefined
+        ? sourceKindDeprioritized(evidenceSourceKindExpression("ev"), params.push(query.deprioritizeSourceKinds ?? [])) : "0::int";
+      const sampleOrder = query.sourceSampleSeed !== undefined
+        ? `md5(ev.id || $${params.push(query.sourceSampleSeed)}) ASC, ev.id ASC` : undefined;
       params.push(query.limit ?? 80);
       // A bare integer literal in ORDER BY is a positional column reference
       // in Postgres, not a constant -- "ORDER BY 0" is invalid (positions
@@ -1405,7 +1410,7 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
       const overlap = featureParamIndex > 0
         ? `(SELECT COUNT(*) FROM unnest(ev.features) AS f(feature) WHERE f.feature = ANY($${featureParamIndex}::text[]))`
         : "0::int";
-      const rows = await storage.query<EvidenceRow>(`SELECT ev.* FROM ${storage.table("evidence_spans")} ev WHERE ${where.join(" AND ")} ORDER BY ${sourceKindRank} ASC, ${overlap} DESC, CASE WHEN ev.status='promoted' THEN 0 WHEN ev.status='pending' THEN 1 ELSE 2 END ASC, ev.alpha DESC, ev.observed_at DESC LIMIT $${params.length}`, params);
+      const rows = await storage.query<EvidenceRow>(`SELECT ev.* FROM ${storage.table("evidence_spans")} ev WHERE ${where.join(" AND ")} ORDER BY ${sampleOrder ?? `${sourceKindRank} ASC, ${overlap} DESC, CASE WHEN ev.status='promoted' THEN 0 WHEN ev.status='pending' THEN 1 ELSE 2 END ASC, ev.alpha DESC, ev.observed_at DESC`} LIMIT $${params.length}`, params);
       return rows.map(row => ({ span: rowToEvidence(row), score: Number(row.alpha), reason: "postgres feature/source bounded evidence search" }));
     },
     async sourceVersionsForEvidence(ids) {

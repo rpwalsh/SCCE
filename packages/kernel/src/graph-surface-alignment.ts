@@ -123,14 +123,38 @@ export function sourceLanguageInductionDocuments(evidence: readonly EvidenceSpan
   }));
 }
 
-const preparedConstructionInductions = new WeakMap<PreparedConstructionInduction, ReturnType<typeof compileSourceInductionWindows>>();
+const preparedConstructionInductions = new WeakMap<PreparedConstructionInduction, {
+  views: Map<string, ReturnType<typeof compileSourceInductionWindows>>;
+  modelCache: NonNullable<Parameters<typeof compileSourceInductionWindows>[0]["modelCache"]>;
+  contextDigest: string;
+}>();
 
 export function prepareConstructionInduction(input: {
   documents: readonly LanguageInductionDocument[];
   hasher: Hasher;
+  additionalDocumentSets?: readonly (readonly LanguageInductionDocument[])[];
+  contextDocuments?: readonly LanguageInductionDocument[];
+  prepared?: PreparedConstructionInduction;
 }): PreparedConstructionInduction {
-  const prepared = Object.freeze({ inputDigest: sourceInductionInputDigest(input.documents, input.hasher) });
-  preparedConstructionInductions.set(prepared, compileSourceInductionWindows(input));
+  const original = input.prepared ? preparedConstructionInductions.get(input.prepared) : undefined;
+  const sourceDigest = sourceInductionInputDigest(input.documents, input.hasher);
+  if (input.prepared && (!original || !original.views.has(sourceDigest))) throw new Error("construction induction inputs changed; prepare again");
+  const contextDigest = sourceInductionInputDigest(input.contextDocuments ?? [], input.hasher);
+  if (input.prepared && original?.contextDigest === contextDigest
+    && (input.additionalDocumentSets ?? []).every(documents => original.views.has(sourceInductionInputDigest(documents, input.hasher)))) return input.prepared;
+  const views = new Map<string, ReturnType<typeof compileSourceInductionWindows>>();
+  if (original) views.set(sourceDigest, original.views.get(sourceDigest)!);
+  const modelCache = new Map(original?.modelCache);
+  for (const documents of [input.documents, ...(input.additionalDocumentSets ?? [])]) {
+    const key = sourceInductionInputDigest(documents, input.hasher);
+    if (!views.has(key)) {
+      const products = compileSourceInductionWindows({ documents, hasher: input.hasher, modelCache });
+      views.set(key, key === sourceDigest ? products : Object.freeze({ models: products.models, coverage: products.coverage }));
+    }
+  }
+  const prepared = Object.freeze({ inputDigest: input.hasher.digestHex(canonicalStringify({ sourceDigest,
+    viewDigests: [...views.keys()].sort(), contextDigest })) });
+  preparedConstructionInductions.set(prepared, { views, modelCache, contextDigest });
   return prepared;
 }
 
@@ -150,10 +174,11 @@ export function preparedLanguageInductionProducts(input: {
   prepared?: PreparedConstructionInduction;
 }): ReturnType<typeof compileSourceInductionWindows> {
   const prepared = input.prepared ?? prepareConstructionInduction(input);
-  if (!preparedConstructionInductions.has(prepared) || prepared.inputDigest !== sourceInductionInputDigest(input.documents, input.hasher)) {
+  const products = preparedConstructionInductions.get(prepared)?.views.get(sourceInductionInputDigest(input.documents, input.hasher));
+  if (!products) {
     throw new Error("construction induction inputs changed; prepare again");
   }
-  return preparedConstructionInductions.get(prepared)!;
+  return products;
 }
 
 function constructionInductionFor(input: {

@@ -59,6 +59,10 @@ export function* sourceInductionBatches(documents: readonly LanguageInductionDoc
   let used = 0;
   for (const document of documents) {
     const text = document.text;
+    const ownerDocumentId = document.sourceWindow?.ownerDocumentId ?? document.id;
+    const ownerBase = document.sourceWindow?.startUtf16 ?? 0;
+    if (document.sourceWindow && (!ownerDocumentId || !Number.isSafeInteger(ownerBase) || ownerBase < 0
+      || document.sourceWindow.endUtf16 - ownerBase !== text.length)) throw new Error("source induction window has inconsistent owner ranges");
     const graphemeOffsets = [...canonicalGraphemeSegmenter().segment(text)].map(segment => segment.index);
     graphemeOffsets.push(text.length);
     let startGrapheme = 0;
@@ -81,14 +85,14 @@ export function* sourceInductionBatches(documents: readonly LanguageInductionDoc
       const content = text.slice(start, end);
       const contentDigest = hasher.digestHex(content);
       const id = start === 0 && end === text.length ? document.id : `source_window.${hasher.digestHex(canonicalStringify([
-        SOURCE_WINDOW_INDUCTION_RECIPE_ID, document.id, document.sourceVersionId ?? null, start, end, contentDigest
+        SOURCE_WINDOW_INDUCTION_RECIPE_ID, ownerDocumentId, document.sourceVersionId ?? null, ownerBase + start, ownerBase + end, contentDigest
       ]))}`;
       batch.push({ ...document, id, text: content, sourceFamilyId: document.sourceFamilyId ?? String(document.sourceVersionId ?? document.id),
-        sourceWindow: { ownerDocumentId: document.id, startUtf16: start, endUtf16: end },
+        sourceWindow: { ownerDocumentId, startUtf16: ownerBase + start, endUtf16: ownerBase + end },
         ...(document.boundaryAnchors ? { boundaryAnchors: document.boundaryAnchors.filter(anchor => anchor.positionGrapheme >= startGrapheme && anchor.positionGrapheme < endGrapheme)
           .map(anchor => ({ ...anchor, positionGrapheme: anchor.positionGrapheme - startGrapheme })) } : {}) });
-      windows.push({ documentId: id, ownerDocumentId: document.id, sourceVersionId: document.sourceVersionId ? String(document.sourceVersionId) : null,
-        evidenceIds: (document.evidenceIds ?? []).map(String), startUtf16: start, endUtf16: end, contentDigest });
+      windows.push({ documentId: id, ownerDocumentId, sourceVersionId: document.sourceVersionId ? String(document.sourceVersionId) : null,
+        evidenceIds: (document.evidenceIds ?? []).map(String), startUtf16: ownerBase + start, endUtf16: ownerBase + end, contentDigest });
       used += end - start;
       start = end;
       startGrapheme = endGrapheme;
@@ -97,7 +101,8 @@ export function* sourceInductionBatches(documents: readonly LanguageInductionDoc
   if (batch.length) yield { documents: batch, windows };
 }
 
-export function compileSourceInductionWindows(input: { documents: readonly LanguageInductionDocument[]; hasher: Hasher }): {
+export function compileSourceInductionWindows(input: { documents: readonly LanguageInductionDocument[]; hasher: Hasher;
+  modelCache?: Map<string, InducedLanguageMemoryModel> }): {
   models: readonly InducedLanguageMemoryModel[];
   fullModel?: InducedLanguageModel;
   coverage: SourceInductionCoverage;
@@ -108,18 +113,23 @@ export function compileSourceInductionWindows(input: { documents: readonly Langu
   for (const batch of sourceInductionBatches(input.documents, input.hasher)) {
     windows.push(...batch.windows);
     if (!batch.documents.some(document => document.text.trim())) continue;
+    const batchKey = sourceInductionInputDigest(batch.documents, input.hasher);
+    const cached = input.modelCache?.get(batchKey);
+    if (cached) { first = undefined; models.push(cached); continue; }
     if (models.length) first = undefined;
     const model = createLanguageInductionEngine({ hasher: input.hasher }).induce({ documents: batch.documents });
     if (!models.length) first = model;
     else first = undefined;
     const { id, audit, morphology, morphologyClassBindings, syntaxTemplates, boundarySignals, joinProgram,
       semanticFrames, graphBoundConstructions, lexicalClasses, relationHypothesisModel, translationSeeds } = model;
-    models.push({ id, audit, morphology, morphologyClassBindings, syntaxTemplates, boundarySignals,
+    const compact = freezeProducts({ id, audit, morphology, morphologyClassBindings, syntaxTemplates, boundarySignals,
       joinProgram: joinProgramMixtureStorageForm(joinProgram),
       semanticFrames, graphBoundConstructions: graphBoundConstructions.map(construction => ({ ...construction,
         sourceWindows: batch.windows.filter(window => window.evidenceIds.some(id => construction.evidenceIds.includes(id as typeof construction.evidenceIds[number])))
           .map(({ ownerDocumentId, startUtf16, endUtf16 }) => ({ ownerDocumentId, startUtf16, endUtf16 }))
       })), lexicalClasses, relationHypothesisModel, translationSeeds });
+    models.push(compact);
+    input.modelCache?.set(batchKey, compact);
   }
   const inputUtf16Length = input.documents.reduce((total, document) => total + document.text.length, 0);
   const coveredUtf16Length = windows.reduce((total, window) => total + window.endUtf16 - window.startUtf16, 0);

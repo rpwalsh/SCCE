@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
@@ -744,7 +745,7 @@ describe("multi-corpus training", () => {
     expect(reports[0]!.totals.oss_docs.constructionAcquisition?.sourceObserved).toBeGreaterThan(0);
     expect(reports[0]!.totals.oss_docs.constructionAcquisition?.documentHeldOutQualified).toBe(0);
     expect(reports.at(-1)!.totals.oss_docs.constructionAcquisition?.documentHeldOutQualified).toBeGreaterThan(0);
-    expect(queries.every(query => query?.sourceSystem === "oss_docs" && query?.includeUriPrefixes?.[0] === "scce://owned-pool" && query?.maxByteLength === inductionCharBudget())).toBe(true);
+    expect(queries.every(query => query?.sourceSystem === "oss_docs" && query?.includeUriPrefixes?.[0] === "scce://owned-pool" && query?.maxByteLength === undefined)).toBe(true);
     const pools = fixture.state.events.filter(event => event.typeId === "SymbolPatternLearned").map(event => (event.payload as { constructionPool: { evidenceIds: string[]; utf16Length: number } }).constructionPool);
     expect(pools.at(-1)!.evidenceIds.length).toBeGreaterThan(0);
     expect(pools.every(pool => pool.utf16Length <= inductionCharBudget())).toBe(true);
@@ -777,6 +778,53 @@ describe("multi-corpus training", () => {
     else fixture.state.profiles[0]!.charNgrams[0]!.count++;
     await expect(commitLanguageCorpusTraining(input, prepared)).rejects.toThrow(dependency === "evidence" ? "construction evidence changed" : "construction language profiles changed");
     expect(fixture.state.patterns).toHaveLength(patternsBefore);
+  });
+
+  it("uses an owned distributed window from a real book larger than the construction budget", async () => {
+    const fixture = memoryStorage();
+    const queries = installDurableConstructionPool(fixture);
+    const prior = (await readFile(new URL("../../../kernel/src/__tests__/fixtures/alice-acquisition-excerpt.txt", import.meta.url), "utf8")).replace(/\r\n/gu, "\n");
+    const current = await readFile(new URL("../../../kernel/src/__tests__/fixtures/pride-and-prejudice-context-excerpt.txt", import.meta.url), "utf8");
+    expect(Buffer.byteLength(prior)).toBeGreaterThan(inductionCharBudget());
+    await trainLanguageCorpusText({ storage: fixture.storage, sourceSystem: "gutenberg", sourceUri: "scce://book-context/alice.txt",
+      streamUri: "gutenberg:alice", text: prior, languageOnly: true, skipNgramObservationPersistence: true,
+      ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64 });
+    const modelsBefore = fixture.state.models.map(model => model.id);
+    const patternsBefore = new Set(fixture.state.patterns.map(pattern => pattern.id));
+    const poolOwners = new Set(fixture.state.evidence.map(span => String(span.sourceVersionId)));
+    const input = { storage: fixture.storage, sourceSystem: "gutenberg", sourceUri: "scce://book-context/austen.txt", streamUri: "gutenberg:austen",
+      constructionPoolUriPrefix: "scce://book-context/", text: current, skipNgramObservationPersistence: true, ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64 };
+    const prepared = await prepareLanguageCorpusTraining(input);
+    await commitLanguageCorpusTraining(input, prepared);
+    const contextEvent = fixture.state.events.filter(event => event.typeId === "SymbolPatternLearned").at(-1)!;
+    const context = (contextEvent.payload as { constructionPool: { utf16Length: number; byteLength: number; windows: Array<{ ownerDocumentId: string; startUtf16: number; endUtf16: number }> } }).constructionPool;
+    expect(context.utf16Length).toBeLessThanOrEqual(inductionCharBudget());
+    expect(context.byteLength).toBeLessThanOrEqual(inductionCharBudget());
+    expect(context.windows.some(window => window.startUtf16 > 0)).toBe(true);
+    for (const window of context.windows) {
+      const owner = fixture.state.evidence.find(span => String(span.id) === window.ownerDocumentId)!;
+      expect(owner).toBeDefined();
+      expect(window.endUtf16).toBeLessThanOrEqual(owner.text.length);
+    }
+    expect(queries.every(query => query?.maxByteLength === undefined)).toBe(true);
+    expect(fixture.state.models.filter(model => modelsBefore.includes(model.id)).map(model => model.id)).toEqual(modelsBefore);
+    expect(fixture.state.patterns.filter(pattern => !patternsBefore.has(pattern.id)).filter(isConstructionBundle).every(pattern =>
+      !(recordOf(pattern.patternJson).sourceVersionIds as string[] | undefined)?.some(id => poolOwners.has(id)))).toBe(true);
+  });
+
+  it("excludes an older version of the current source from independent construction context", async () => {
+    const fixture = memoryStorage();
+    installDurableConstructionPool(fixture);
+    const common = { storage: fixture.storage, sourceSystem: "oss_docs", sourceUri: "scce://same-book/source.md", streamUri: "oss_docs:source",
+      informationLabel: { tenantId: "context.fixture", principals: ["context.owner"], compartments: [], exportClass: "restricted" as const },
+      constructionPoolUriPrefix: "scce://same-book/", ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64, skipNgramObservationPersistence: true };
+    await trainLanguageCorpusText({ ...common, text: "The source describes a small pump. The pump carries water.", languageOnly: true });
+    const oldVersions = fixture.state.sourceVersions.map(version => String(version.sourceVersionId));
+    await trainLanguageCorpusText({ ...common, text: "The source describes a large pump. The pump carries oil." });
+    const context = (fixture.state.events.filter(event => event.typeId === "SymbolPatternLearned").at(-1)!.payload as {
+      constructionPool: { sourceVersionIds: string[]; languageCompatibility: unknown[] } }).constructionPool;
+    expect(context.sourceVersionIds.some(id => oldVersions.includes(id))).toBe(false);
+    expect(context.languageCompatibility).toEqual([]);
   });
 
   it.each(["different_distribution", "declared_identity_conflict", "profile_absent", "distribution_absent"])("does not relabel pooled source grammar when language compatibility is %s", async reason => {
@@ -815,7 +863,7 @@ describe("multi-corpus training", () => {
     expect(pool.languageCompatibility).toMatchObject([{ status: reason === "different" ? "incompatible" : "unmeasured", basis: "declared_formal_language" }]);
   });
 
-  it.each(["other_root", "other_system", "other_label", "oversized"])("excludes %s evidence from the construction replay pool", async reason => {
+  it.each(["other_root", "other_system", "other_label", "inventory_size_mismatch"])("excludes %s evidence from the construction replay pool", async reason => {
     const root = await tempDir("oss-pool-scope-");
     await writeFile(path.join(root, "first.md"), "cat chased mouse. dog chased mouse. cat chased ball. dog chased ball.", "utf8");
     const fixture = memoryStorage();
@@ -824,7 +872,7 @@ describe("multi-corpus training", () => {
     const list = fixture.storage.evidence.listEvidenceBackedSourceVersions!;
     fixture.storage.evidence.listEvidenceBackedSourceVersions = async query => (await list(query)).map(row => ({ ...row,
       ...(reason === "other_root" ? { canonicalUri: "scce://foreign-pool#path=first.md" } : {}),
-      ...(reason === "oversized" ? { byteLength: inductionCharBudget() + 1 } : {})
+      ...(reason === "inventory_size_mismatch" ? { byteLength: inductionCharBudget() + 1 } : {})
     }));
     const informationLabel = structuredClone(fixture.state.evidence[0]!.informationLabel!);
     if (reason === "other_system") fixture.state.evidence[0]!.provenance = { sourceSystem: "oss_code" };
@@ -2345,8 +2393,13 @@ function installDurableConstructionPool(fixture: ReturnType<typeof memoryStorage
     });
   };
   fixture.storage.evidence.searchEvidence = async query => fixture.state.evidence.filter(span => span.sourceVersionId === query.sourceVersionId && span.status === "promoted")
+    .sort((left, right) => query.sourceSampleSeed === undefined ? String(left.id).localeCompare(String(right.id))
+      : createHash("md5").update(String(left.id) + query.sourceSampleSeed).digest("hex").localeCompare(createHash("md5").update(String(right.id) + query.sourceSampleSeed).digest("hex")))
+    .slice(0, query.limit)
     .map(span => ({ span, score: 1, reason: "owned source" }));
   fixture.storage.evidence.getEvidenceBatch = async ids => fixture.state.evidence.filter(span => ids.includes(span.id));
+  fixture.storage.evidence.sourceVersionsForEvidence = async ids => fixture.state.sourceVersions.filter(version =>
+    fixture.state.evidence.some(span => ids.includes(span.id) && span.sourceVersionId === version.sourceVersionId));
   fixture.storage.model.listLanguageProfiles = async query => fixture.state.profiles.filter(profile => typeof query !== "object" || !query.sourceVersionIds || query.sourceVersionIds.includes(profile.sourceVersionId));
   return queries;
 }

@@ -94,6 +94,9 @@ import {
 } from "./optional-null-realization.js";
 import type { LanguageMemoryRuntime } from "./language-memory-runtime.js";
 import { canonicalStringify, createClock, toJsonValue } from "./primitives.js";
+import { canonicalGraphemeSegmenter } from "./normalization-contract.js";
+import { sourceInductionBatches } from "./source-window-induction.js";
+import { inductionCharBudget } from "./training-orchestrator.js";
 import { createIdFactory } from "./ids.js";
 import { languageMemoryPatternsFromInducedLanguageModel } from "./language-induction-memory.js";
 import type { PooledLanguageProfileBinding } from "./pooled-language-profile-binding.js";
@@ -154,6 +157,7 @@ export interface LanguageTrainingBatch {
   profileBinding?: PooledLanguageProfileBinding;
   /** Owned durable evidence for construction learning; n-grams and graph alignment still use this document's evidence. */
   constructionEvidence?: readonly EvidenceSpan[];
+  constructionContextDocuments?: readonly import("./language-induction.js").LanguageInductionDocument[];
   additionalPatterns?: readonly LanguagePatternRecord[];
   graphSnapshot?: GraphSnapshot;
   maxAlignmentCandidateDegree?: number;
@@ -199,6 +203,7 @@ export interface LanguageTrainingConstructionPromotionReport {
   failedInducedConstructionSets: number;
   trainDocumentIds: string[];
   heldOutDocumentIds: string[];
+  qualificationSample?: JsonValue;
   thresholds: {
     minHeldOutOccurrences: number;
     minPrePredicateCoverage: number;
@@ -282,9 +287,12 @@ export function compileLanguageTrainingBatch(input: {
     retainSemanticFrames: index === 0
   }));
   const ownedConstructionEvidence = batch.constructionEvidence ?? batch.evidence;
-  const constructionSplit = splitConstructionEvidence(formalCode ? [] : ownedConstructionEvidence, input.hasher);
   const constructionEvidence = induceNaturalLanguage ? batch.evidence.filter(span => span.status === "promoted") : [];
-  const preparedInduction = batch.preparedInduction ?? prepareConstructionInduction({ documents: sourceLanguageInductionDocuments(constructionEvidence), hasher: input.hasher });
+  const induction = prepareLanguageTrainingInduction({ evidence: constructionEvidence, constructionEvidence: induceNaturalLanguage ? ownedConstructionEvidence : [],
+    constructionContextDocuments: induceNaturalLanguage ? batch.constructionContextDocuments : [], hasher: input.hasher,
+    prepared: induceNaturalLanguage ? batch.preparedInduction : undefined });
+  const preparedInduction = induction.prepared;
+  const constructionSplit = induceNaturalLanguage ? induction.split : splitConstructionEvidence(formalCode ? [] : ownedConstructionEvidence, input.hasher);
   const inducedLanguageProducts = induceNaturalLanguage
     ? preparedLanguageInductionProducts({ documents: sourceLanguageInductionDocuments(constructionEvidence), hasher: input.hasher, prepared: preparedInduction })
     : undefined;
@@ -571,10 +579,9 @@ export function compileLanguageTrainingBatch(input: {
     suppliedSets: batch.constructionSets ?? [],
     inducedSets,
     split: constructionSplit,
-    preparedInduction: !induceNaturalLanguage ? undefined
-      : constructionSplit.heldOut.length
-        ? prepareConstructionInduction({ documents: evidenceDocuments(constructionSplit.train), hasher: input.hasher })
-        : preparedInduction,
+    preparedInduction: !induceNaturalLanguage ? undefined : preparedInduction,
+    qualificationDocuments: induction.qualificationDocuments,
+    qualificationSample: induction.qualificationSample,
     languageOnly: !induceNaturalLanguage
   });
   const sets = uniqueConstructionSets([...(batch.constructionSets ?? []), ...inducedSets]);
@@ -928,6 +935,8 @@ function evaluateConstructionPromotion(input: {
   split?: { train: EvidenceSpan[]; heldOut: EvidenceSpan[] };
   preparedInduction?: PreparedConstructionInduction;
   languageOnly?: boolean;
+  qualificationDocuments?: { train: readonly import("./language-induction.js").LanguageInductionDocument[]; heldOut: readonly import("./language-induction.js").LanguageInductionDocument[] };
+  qualificationSample?: JsonValue;
 }): { promotedInducedBindingIds: ReadonlySet<string>; report: LanguageTrainingConstructionPromotionReport } {
   // Cold-start calibration (2026-08-17): the prior defaults (2 held-out
   // occurrences, 0.5/0.5 coverage) rejected ~97% of induced constructions
@@ -948,8 +957,8 @@ function evaluateConstructionPromotion(input: {
   const split = input.split ?? splitConstructionEvidence(input.evidence, input.hasher);
   const coverage = !input.languageOnly && split.heldOut.length
     ? evaluateHeldOutConstructionCoverage({
-      trainDocuments: evidenceDocuments(split.train),
-      heldOutDocuments: evidenceDocuments(split.heldOut),
+      trainDocuments: input.qualificationDocuments?.train ?? evidenceDocuments(split.train),
+      heldOutDocuments: input.qualificationDocuments?.heldOut ?? evidenceDocuments(split.heldOut),
       profileId: input.profileId,
       hasher: input.hasher,
       preparedInduction: input.preparedInduction
@@ -1014,11 +1023,86 @@ function evaluateConstructionPromotion(input: {
       failedInducedConstructionSets: 0,
       trainDocumentIds: [...new Set(split.train.map(evidenceSourceFamilyId))].sort(),
       heldOutDocumentIds: [...new Set(split.heldOut.map(evidenceSourceFamilyId))].sort(),
+      ...(input.qualificationSample ? { qualificationSample: input.qualificationSample } : {}),
       thresholds,
       heldOutCoverage: coverage,
       rejections
     }
   };
+}
+
+export const SOURCE_CONSTRUCTION_CONTEXT_RECIPE_ID = "kernel.source_owned_construction_context.v1" as const;
+
+function qualificationWindowSample(documents: readonly import("./language-induction.js").LanguageInductionDocument[], hasher: Hasher) {
+  const budget = inductionCharBudget();
+  if (documents.reduce((total, document) => total + Buffer.byteLength(document.text), 0) <= budget) return [...documents];
+  const candidates = [...sourceInductionBatches(documents, hasher)].flatMap(batch => batch.documents)
+    .map(document => ({ document, bytes: Buffer.byteLength(document.text), rank: hasher.digestHex(document.id) }))
+    .sort((left, right) => left.rank.localeCompare(right.rank) || left.document.id.localeCompare(right.document.id));
+  let used = 0;
+  return candidates.filter(candidate => {
+    if (used + candidate.bytes > budget) return false;
+    used += candidate.bytes; return true;
+  }).map(candidate => candidate.document);
+}
+
+export function prepareLanguageTrainingInduction(input: {
+  evidence: readonly EvidenceSpan[];
+  constructionEvidence?: readonly EvidenceSpan[];
+  constructionContextDocuments?: readonly import("./language-induction.js").LanguageInductionDocument[];
+  hasher: Hasher;
+  prepared?: PreparedConstructionInduction;
+}) {
+  const documents = sourceLanguageInductionDocuments(input.evidence);
+  const owned = [...new Map([...(input.constructionEvidence ?? []), ...input.evidence].map(span => [String(span.id), span])).values()];
+  const currentIds = new Set(input.evidence.map(span => String(span.id)));
+  const parents = new Map(owned.map(span => [String(span.id), span]));
+  const boundaries = new Map<string, Set<number>>();
+  const context = input.constructionContextDocuments ?? sourceLanguageInductionDocuments(owned.filter(span => !currentIds.has(String(span.id))));
+  for (const document of context) {
+    const owner = document.sourceWindow?.ownerDocumentId ?? document.id;
+    const parent = parents.get(owner);
+    const start = document.sourceWindow?.startUtf16 ?? 0;
+    const end = document.sourceWindow?.endUtf16 ?? document.text.length;
+    if (!parent || parent.status !== "promoted" || document.sourceVersionId !== parent.sourceVersionId
+      || !document.evidenceIds?.length || document.evidenceIds.some(id => String(id) !== String(parent.id))
+      || String(parent.contentHash).replace(/^sha256_/u, "") !== input.hasher.digestHex(parent.text)
+      || !Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end <= start || end > parent.text.length
+      || parent.text.slice(start, end) !== document.text
+      || document.sourceFamilyId !== undefined && document.sourceFamilyId !== evidenceSourceFamilyId(parent)) throw new Error("construction context window is not source-owned");
+    let points = boundaries.get(owner);
+    if (!points) {
+      points = new Set([...canonicalGraphemeSegmenter().segment(parent.text)].map(segment => segment.index));
+      points.add(parent.text.length); boundaries.set(owner, points);
+    }
+    if (!points.has(start) || !points.has(end)) throw new Error("construction context window splits an owned grapheme");
+  }
+  const sourceContext = context.map(document => ({ ...document, sourceFamilyId: evidenceSourceFamilyId(parents.get(document.sourceWindow?.ownerDocumentId ?? document.id)!) }));
+  const sampledContext = qualificationWindowSample(sourceContext, input.hasher);
+  const sampledOwners = new Set([...currentIds, ...sampledContext.flatMap(document => document.evidenceIds ?? []).map(String)]);
+  const split = splitConstructionEvidence(owned.filter(span => sampledOwners.has(String(span.id))), input.hasher);
+  const fit = new Set(split.train.map(span => String(span.id)));
+  const heldOut = new Set(split.heldOut.map(span => String(span.id)));
+  const sampledCurrent = qualificationWindowSample(documents.map(document => ({ ...document,
+    sourceFamilyId: evidenceSourceFamilyId(parents.get(document.id)!) })), input.hasher);
+  const all = [...sampledCurrent, ...sampledContext];
+  const qualificationDocuments = {
+    train: all.filter(document => document.evidenceIds?.every(id => fit.has(String(id)))),
+    heldOut: all.filter(document => document.evidenceIds?.every(id => heldOut.has(String(id))))
+  };
+  const heldFamilies = new Set(split.heldOut.map(evidenceSourceFamilyId));
+  if (split.train.some(span => heldFamilies.has(evidenceSourceFamilyId(span)))) throw new Error("construction qualification families overlap");
+  const describe = (selected: typeof documents) => ({ utf16Length: selected.reduce((total, document) => total + document.text.length, 0),
+    byteLength: selected.reduce((total, document) => total + Buffer.byteLength(document.text), 0), windows: selected.map(document => ({
+      ownerDocumentId: document.sourceWindow?.ownerDocumentId ?? document.id, startUtf16: document.sourceWindow?.startUtf16 ?? 0,
+      endUtf16: document.sourceWindow?.endUtf16 ?? document.text.length, sourceVersionId: document.sourceVersionId,
+      evidenceIds: document.evidenceIds, sourceFamilyId: document.sourceFamilyId ?? evidenceSourceFamilyId(parents.get(document.sourceWindow?.ownerDocumentId ?? document.id)!) })) });
+  const qualificationSample = toJsonValue({ schema: "scce.construction_qualification_sample.v1", completeSourceProof: false,
+    current: describe(sampledCurrent), prior: describe(sampledContext), fitFamilies: [...new Set(split.train.map(evidenceSourceFamilyId))].sort(),
+    heldOutFamilies: [...heldFamilies].sort() });
+  const prepared = prepareConstructionInduction({ documents, hasher: input.hasher, contextDocuments: sampledContext,
+    additionalDocumentSets: split.heldOut.length ? [qualificationDocuments.train] : [], ...(input.prepared ? { prepared: input.prepared } : {}) });
+  return { prepared, qualificationDocuments, qualificationSample, split };
 }
 
 function splitConstructionEvidence(evidence: readonly EvidenceSpan[], hasher: Hasher): { train: EvidenceSpan[]; heldOut: EvidenceSpan[] } {

@@ -55,6 +55,8 @@ export interface EventRangeQuery {
 }
 
 export interface EvidenceQuery {
+  /** Deterministic bounded source sampling for offline language context; requires one source version. */
+  sourceSampleSeed?: string;
   text?: string;
   sourceId?: SourceId;
   sourceVersionId?: SourceVersionId;
