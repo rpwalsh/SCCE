@@ -54,29 +54,51 @@ describe("a binding mark is orthography, not identity", () => {
     expect(identities).toEqual([]);
   });
 
-  it("measures each sampled spread with a bounded parameterized index query", async () => {
+  it("measures sampled spreads with bounded index queries and restores the transaction-local planner setting", async () => {
     const adapter = createPostgresStorageAdapter({
       url: "postgres://fixture/fixture",
       schema: "fixture",
       informationAccess: { tenantId: "fixture", principalId: "owner", compartments: ["test"], maximumExportClass: "restricted" }
     });
-    const reads: Array<{ sql: string; params?: unknown[] }> = [];
+    const reads: Array<{ sql: string; params?: unknown[]; inTransaction: boolean; seqscan: string }> = [];
+    let transactionActive = false;
+    let enableSeqscan = "on";
     Object.defineProperty(adapter, "query", {
       value: async (sql: string, params?: unknown[]) => {
-        reads.push({ sql, params });
+        reads.push({ sql, params, inTransaction: transactionActive, seqscan: enableSeqscan });
         if (/source_title/u.test(sql)) return [{ unit: "alpha" }, { unit: "beta" }, { unit: "quiet" }];
+        if (/current_setting\('enable_seqscan'\)/u.test(sql)) return [{ enabled: enableSeqscan }];
+        if (sql === "SET LOCAL enable_seqscan = off") { enableSeqscan = "off"; return []; }
+        if (/set_config\('enable_seqscan'/u.test(sql)) { enableSeqscan = String(params?.[0]); return []; }
         return [{ sources: 3 }, { sources: 0 }, { sources: 2 }];
+      },
+      writable: true
+    });
+    Object.defineProperty(adapter, "transaction", {
+      value: async <T>(operation: () => Promise<T>) => {
+        expect(transactionActive).toBe(false);
+        transactionActive = true;
+        try { return await operation(); }
+        finally { transactionActive = false; }
       },
       writable: true
     });
 
     const measured = await adapter.evidence.sourceSpreadDistribution!(400);
 
-    expect(reads).toHaveLength(2);
+    expect(reads).toHaveLength(5);
+    expect(reads.map(read => read.inTransaction)).toEqual([false, true, true, true, true]);
     expect(reads[0]?.params).toEqual([400]);
-    expect(reads[1]?.params).toEqual(["alpha", "sym:alpha", "beta", "sym:beta", "quiet", "sym:quiet"]);
-    expect(reads[1]?.sql.match(/features @> ARRAY\[\$\d+\]::text\[\] LIMIT 1500/gu)).toHaveLength(3);
-    expect(reads[1]?.sql).toContain("count(DISTINCT source_id)::int AS sources");
+    expect(reads[1]?.sql).toMatch(/current_setting\('enable_seqscan'\)/u);
+    expect(reads[2]?.sql).toBe("SET LOCAL enable_seqscan = off");
+    expect(reads[3]?.params).toEqual(["alpha", "sym:alpha", "beta", "sym:beta", "quiet", "sym:quiet"]);
+    expect(reads[3]?.seqscan).toBe("off");
+    expect(reads[3]?.sql.match(/features @> ARRAY\[\$\d+\]::text\[\] LIMIT 1500/gu)).toHaveLength(3);
+    expect(reads[3]?.sql).toContain("count(DISTINCT source_id)::int AS sources");
+    expect(reads[4]?.sql).toMatch(/set_config\('enable_seqscan'/u);
+    expect(reads[4]?.params).toEqual(["on"]);
+    expect(transactionActive).toBe(false);
+    expect(enableSeqscan).toBe("on");
     expect(measured).toEqual([3, 2]);
   });
 });
