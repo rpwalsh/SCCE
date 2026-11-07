@@ -129,6 +129,10 @@ async function ingestFixtureText(depsOverrides: Partial<ScceKernelDeps>, content
         },
         putEvidenceSpans: async (spans: EvidenceSpan[]) => {
           evidence.push(...spans);
+        },
+        getEvidenceBatch: async (ids: EvidenceSpan["id"][]) => {
+          const requestedIds = new Set(ids.map(String));
+          return evidence.filter(span => requestedIds.has(String(span.id)));
         }
       },
       quarantine: {
