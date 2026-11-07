@@ -4877,7 +4877,7 @@ function activeLanguagePatternProjectionKey(input: {
   patternSchema: string;
   tenantId: string;
 }): string {
-  if (input.patternSchema === SOURCE_CODE_FUNCTION_PATTERN_SCHEMA) {
+  if (input.patternSchema === SOURCE_CODE_FUNCTION_PATTERN_SCHEMA || input.patternSchema === "scce.source_owned_test_contract.v1") {
     return `active_language_pattern_projection:${JSON.stringify([
       "source-owned", input.tenantId, input.sourceSystem, input.sourceId, input.patternSchema
     ])}`;

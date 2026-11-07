@@ -44,6 +44,8 @@ export interface CodeIntent {
    * vocabulary of the code it is about.
    */
   symbols: string[];
+  /** Names occurring in the request itself; documentation-contributed names remain separately visible in `symbols`. */
+  requestSymbols?: string[];
   /** The files the request is about, best first. */
   references: CodeIntentReference[];
   audit: JsonValue;
@@ -94,11 +96,12 @@ export function codeIntentFromDocumentation(input: {
   const requested = codeIdentifierTokens(codeSurfaceTokens(input.requestText), symbolLimit * 2);
   const known = input.knownSymbols;
   const symbols: string[] = [];
+  const requestSymbols: string[] = [];
   const admit = (symbol: string): void => {
     if (!symbol || symbols.includes(symbol) || symbols.length >= symbolLimit) return;
     symbols.push(symbol);
   };
-  for (const symbol of requested) if (!known || known.has(symbol)) admit(symbol);
+  for (const symbol of requested) if (!known || known.has(symbol)) { admit(symbol); if (!requestSymbols.includes(symbol)) requestSymbols.push(symbol); }
   for (const span of input.documentation.slice(0, referenceLimit)) {
     for (const symbol of codeIdentifierTokens(codeSurfaceTokens(span.text || span.textPreview || ""), symbolLimit)) {
       if (known && !known.has(symbol)) continue;
@@ -110,6 +113,7 @@ export function codeIntentFromDocumentation(input: {
   return {
     ...(languageId ? { languageId } : {}),
     symbols,
+    requestSymbols,
     references,
     audit: toJsonValue({
       source: "code-intent.codeIntentFromDocumentation",
@@ -127,6 +131,8 @@ export function sourceOwnedBehaviorRequirementsFromDocumentation(input: {
   readonly requestText: string;
   readonly intent: CodeIntent;
   readonly patterns: readonly { readonly patternJson: JsonValue }[];
+  /** Formal caller-declared callable IDs from the already parsed request signal. */
+  readonly ownerCallableIds?: readonly string[];
 }): ProgramBehaviorRequirement[] {
   const references = new Set(input.intent.references.filter(row => row.sourceFamily && row.sourceHash)
     .map(row => `${row.sourceFamily}\u0000${row.relativePath}\u0000${row.sourceHash}`));
@@ -154,26 +160,36 @@ export function sourceOwnedBehaviorRequirementsFromDocumentation(input: {
     }
     grouped.set(key, cases);
   }
-  // Multiple independent target symbols/families are ambiguous. No caller wording is used to pick one.
-  if (grouped.size !== 1) return [];
-  const [familyKey, rows] = [...grouped.entries()][0]!;
+  if (!grouped.size) return [];
+  const requestSymbols = new Set(input.intent.requestSymbols ?? []);
+  const ownerCallableIds = [...new Set(input.ownerCallableIds ?? [])];
+  const requestedSourceGroups = [...grouped.entries()].filter(([, rows]) => {
+    const sourceName = String(rows[0]?.targetName);
+    return requestSymbols.has(sourceName) || ownerCallableIds.includes(sourceName);
+  });
+  const selectedGroups = requestedSourceGroups.length === 1 ? requestedSourceGroups : grouped.size === 1 ? [...grouped.entries()] : [];
+  // Multiple independent source symbols/families are ambiguous without a formal caller name that selects one.
+  if (selectedGroups.length !== 1) return [];
+  const [familyKey, rows] = selectedGroups[0]!;
   const ordered = rows.sort((a, b) => spanStart(a.assertionSpan) - spanStart(b.assertionSpan));
   if (ordered.length < 2) return [];
   const [family, sourcePath, sourceVersionId, targetSymbolId] = familyKey.split("\u0000");
-  const targetName = ordered[0]!.targetName;
-  if (typeof targetName !== "string" || typeof sourcePath !== "string" || typeof sourceVersionId !== "string" || typeof targetSymbolId !== "string" || typeof family !== "string") return [];
-  if (ordered.some(row => row.targetName !== targetName)) return [];
+  const sourceTargetName = ordered[0]!.targetName;
+  if (typeof sourceTargetName !== "string" || typeof sourcePath !== "string" || typeof sourceVersionId !== "string" || typeof targetSymbolId !== "string" || typeof family !== "string") return [];
+  if (ordered.some(row => row.targetName !== sourceTargetName)) return [];
+  const callableId = ownerCallableIds.length === 1 ? ownerCallableIds[0]! : sourceTargetName;
+  if (ownerCallableIds.length > 1 && !ownerCallableIds.includes(sourceTargetName)) return [];
   const requestHash = `sha256:${createHasher().digestHex(input.requestText)}`;
-  const sourceSpan = (value: JsonValue): { charStart: number; charEnd: number } => ({ charStart: spanStart(value), charEnd: spanEnd(value) });
+  const requestSpan = { charStart: 0, charEnd: [...input.requestText].length };
   return ordered.map((row, index) => ({
     id: `source_assertion.${createHasher().digestHex(canonicalStringify([family, sourcePath, sourceVersionId, targetSymbolId, row.testSourceVersionId, row.assertionSpan])).slice(0, 40)}`,
     requestHash,
-    callableId: targetName,
+    callableId,
     arguments: row.arguments as JsonValue[],
     expectedResult: row.expectedResult,
     verificationRole: index === ordered.length - 1 ? "held_out" : "fit",
     relationSurface: "source-owned-assertion",
-    sourceSpan: sourceSpan(row.assertionSpan),
+    sourceSpan: requestSpan,
     sourceContract: {
       targetSymbolId, sourcePath, sourceVersionId,
       sourceHash: String(row.sourceHash), testPath: String(row.testPath),
@@ -195,7 +211,6 @@ function validSpan(value: JsonValue | undefined): boolean {
 }
 function validContentHash(value: JsonValue): boolean { return typeof value === "string" && /^(?:sha256:|sha256_)?[0-9a-f]{64}$/iu.test(value); }
 function spanStart(value: JsonValue | undefined): number { return objectRecord(value ?? null).start as number; }
-function spanEnd(value: JsonValue | undefined): number { return objectRecord(value ?? null).end as number; }
 
 /** The path a documentation surface was trained from, as the corpus lane recorded it. */
 function documentedPath(span: EvidenceSpan): string | undefined {

@@ -18,10 +18,11 @@ import {
   validateConfig,
   type ScceRuntimeConfig
 } from "../index.js";
-import { canonicalCorpusSourceSystemId, createClock, createHasher, createIdFactory, createLanguageAcquisitionEngine, createLanguageMemoryRuntime, inductionCharBudget, resolveEvidenceSourceIdentity, CORPUS_ROLE_IDS, hydrateLanguageConstructionPatterns, isLanguageConstructionPattern, requestCommunicativeActModelFromPatterns, classifyRequestCommunicativeAct, codeModelsFromRecords, generateLearnedCodeRepairs, createMouth, createCorrectionMemory, createSemanticEntailmentEngine, codeRequestSignal, featureSet, createScceKernel, withSurfaceContract, toJsonValue, DEFAULT_NGRAM_SETTINGS, type FieldState } from "@scce/kernel";
+import { canonicalCorpusSourceSystemId, createClock, createHasher, createIdFactory, createLanguageAcquisitionEngine, createLanguageMemoryRuntime, inductionCharBudget, resolveEvidenceSourceIdentity, CORPUS_ROLE_IDS, COGNITIVE_OPERATOR_IDS, hydrateLanguageConstructionPatterns, isLanguageConstructionPattern, requestCommunicativeActModelFromPatterns, classifyRequestCommunicativeAct, codeModelsFromRecords, generateLearnedCodeRepairs, createMouth, createCorrectionMemory, createSemanticEntailmentEngine, codeIntentFromDocumentation, sourceOwnedBehaviorRequirementsFromDocumentation, programIntentForTurn, codeRequestSignal, evaluateProgramExpression, featureSet, searchProgramTransformations, createScceKernel, withSurfaceContract, toJsonValue, DEFAULT_NGRAM_SETTINGS, type FieldState } from "@scce/kernel";
 import { compilationArtifactIds } from "../../../kernel/src/__tests__/owned-source-fixture.js";
 import { storageFixtureForEvaluation } from "../../../kernel/src/__tests__/evidence-promotion-evaluation-fixture.js";
 import { compileSourceCodeFunctions } from "../source-code-function-learning.js";
+import { NodeBuildTestAdapter } from "../process.js";
 import { SOURCE_CONSTRUCTION_CONTEXT_RECIPE_ID } from "@scce/kernel";
 import { SURFACE_REALIZATION_STRATEGY_IDS } from "../../../kernel/src/surface-contract.js";
 import { prepareLanguageCorpusTraining, commitLanguageCorpusTraining, corpusSourceVersionIdFor, LANGUAGE_CORPUS_TRAINING_RECIPE_ID, LANGUAGE_CODE_CORPUS_TRAINING_RECIPE_ID, languageCorpusTrainingRecipeId } from "../language-corpus-trainer.js";
@@ -466,6 +467,101 @@ describe("learned rows carry the shard's provenance once", () => {
     exposeCodePatterns = false;
     const ablated = await boot().kernel.turn(request);
     expect(ablated.answer).not.toContain("function freshPulse(");
+  });
+
+  it("binds persisted source assertions from documentation through program planning and held-out execution", async () => {
+    const root = await tempDir("oss-source-owned-contract-");
+    await mkdir(path.join(root, "src"), { recursive: true });
+    await mkdir(path.join(root, "spec"), { recursive: true });
+    const sourceText = "/** Increment a value by one. */\nexport function add_one(value: number): number { return value + 1; }\n";
+    const testText = [
+      "import { test } from 'node:test';",
+      "import assert from 'node:assert/strict';",
+      "import { add_one } from '../src/add-one.js';",
+      "test('increments values', () => {",
+      "  assert.strictEqual(add_one(1), 2);",
+      "  assert.strictEqual(add_one(2), 3);",
+      "  assert.strictEqual(add_one(5), 6);",
+      "});"
+    ].join("\n");
+    await writeFile(path.join(root, "tsconfig.json"), JSON.stringify({ compilerOptions: { target: "ES2022", module: "NodeNext", moduleResolution: "NodeNext", strict: true, noEmit: true }, include: ["src/**/*.ts", "spec/**/*.ts"] }));
+    await writeFile(path.join(root, "src", "add-one.ts"), sourceText);
+    await writeFile(path.join(root, "spec", "add-one.spec.ts"), testText);
+    const fixture = memoryStorage();
+    const contractProjectionWrites: Parameters<NonNullable<ScceStorage["languageMemory"]["replaceLanguagePatternProjection"]>>[0][] = [];
+    const activeContractsBySource = new Map<string, string[]>();
+    fixture.storage.languageMemory.replaceLanguagePatternProjection = async input => {
+      if (input.projection.patternSchema === "scce.source_owned_test_contract.v1") {
+        contractProjectionWrites.push(structuredClone(input));
+        const oldIds = new Set(activeContractsBySource.get(input.projection.sourceId) ?? []);
+        for (let index = fixture.state.patterns.length - 1; index >= 0; index--) if (oldIds.has(fixture.state.patterns[index]!.id)) fixture.state.patterns.splice(index, 1);
+        const ids = input.patterns.map(pattern => pattern.id);
+        fixture.state.patterns.push(...input.patterns);
+        activeContractsBySource.set(input.projection.sourceId, ids);
+        return;
+      }
+      const upsert = <T extends { id: string }>(target: T[], rows: readonly T[]) => {
+        const byId = new Map(target.map(row => [row.id, row])); for (const row of rows) byId.set(row.id, row);
+        target.splice(0, target.length, ...byId.values());
+      };
+      upsert(fixture.state.patterns, input.patterns);
+    };
+    const report = await trainOssCorpus({ storage: fixture.storage, rootPath: root, sourceUriBase: "scce://assertion-fixture", maxFiles: 20,
+      maxFilesPerRun: 20, ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64 });
+    const persisted = fixture.state.patterns.filter(pattern => pattern.patternKind === "source_code_assertion_contract");
+    expect(persisted).toHaveLength(1);
+    const contract = recordOf(persisted[0]!.patternJson);
+    expect(contract).toMatchObject({ schema: "scce.source_owned_test_contract.v1", repositoryFamily: report.sourceUriBase,
+      sourcePath: "src/add-one.ts", formalLanguage: "typescript", sourceHash: blobContentHash(Buffer.from(sourceText)) });
+    const docs = fixture.state.evidence.filter(span => recordOf(span.provenance).relativePath === "src/add-one.ts"
+      && recordOf(span.provenance).sourceSystem === "oss_docs");
+    expect(docs.length).toBeGreaterThan(0);
+    const requestText = "Implement the source behavior in src/add-one.ts.";
+    const codeIntent = codeIntentFromDocumentation({ requestText, documentation: docs });
+    expect(codeIntent.references[0]).toMatchObject({ relativePath: "src/add-one.ts", sourceFamily: report.sourceUriBase,
+      sourceHash: blobContentHash(Buffer.from(sourceText)) });
+    const requirements = sourceOwnedBehaviorRequirementsFromDocumentation({ requestText, intent: codeIntent, patterns: persisted });
+    expect(requirements).toHaveLength(3);
+    expect(requirements.map(row => row.verificationRole)).toEqual(["fit", "fit", "held_out"]);
+    expect(requirements[0]!.sourceSpan).toEqual({ charStart: 0, charEnd: [...requestText].length });
+    expect(requirements[0]!.sourceContract?.assertionSpan.start).toBeGreaterThan(0);
+    const signal = codeRequestSignal(requestText, { typedBehavior: { behaviorRequirements: requirements, statefulBehaviorRequirements: [] } });
+    const intent = programIntentForTurn({ requestedAuthority: "program", activeOperatorIds: [COGNITIVE_OPERATOR_IDS.programPlanning],
+      codeSignal: signal, evidence: docs });
+    expect(intent?.behaviorRequirements).toEqual(requirements);
+    const search = searchProgramTransformations(requirements);
+    expect(search.selected).toHaveLength(1);
+    expect(search.selected[0]!.callableId).toBe("add_one");
+    expect(evaluateProgramExpression(search.selected[0]!.producedIr, requirements.at(-1)!.arguments)).toBe(6);
+
+    const clock = createClock({ fixedTime: 99000, stepMs: 1 });
+    const recorded = storageFixtureForEvaluation({ evidence: fixture.state.evidence, clockNow: () => clock.now() });
+    const runtimeStorage: ScceStorage = { ...recorded.storage,
+      model: { ...fixture.storage.model, readModel: async () => ({ languageProfiles: fixture.state.profiles, latentConcepts: [], learnedProgramPatterns: [], learningGoals: [], trainingSteps: 1 }) },
+      userModelClaims: { putClaim: async () => undefined, listClaims: async () => [] },
+      taskResumption: { putSnapshot: async () => undefined, getLatestSnapshot: async () => null },
+      documentGeneration: { putSession: async () => undefined, getSession: async () => null, compareAndPutSession: async () => ({ stored: true, currentUpdatedAt: null }) },
+      languageMemory: fixture.storage.languageMemory };
+    const runtime = createScceKernel({ storage: runtimeStorage, clock, idFactory: createIdFactory({ clock, hasher: createHasher(), deterministicReplay: true }),
+      deterministicReplay: true, files: { streamPath: async function* () {} },
+      buildTest: new NodeBuildTestAdapter({ runtime: { tempRoot: root } } as ScceRuntimeConfig) });
+    const turn = await runtime.turn({ text: "Implement a TypeScript function add_one(value: number): number." });
+    expect(turn.answer).toContain("function add_one(");
+    expect(recorded.events.some(event => event.typeId === "ProgramGraphBuilt")).toBe(true);
+    expect(recorded.events.some(event => event.typeId === "TestExecuted" && recordOf(event.payload).passed === true)).toBe(true);
+    const ownedProjection = contractProjectionWrites.find(write => write.projection.patternIds.length === 1);
+    expect(ownedProjection).toBeDefined();
+    expect(fixture.state.sourceVersions.some(source => Object.hasOwn(recordOf(source.metadata), "sourceOwnedTestContracts"))).toBe(false);
+
+    await writeFile(path.join(root, "spec", "add-one.spec.ts"), [
+      "import { test } from 'node:test';",
+      "import { add_one } from '../src/add-one.js';",
+      "test('keeps the import live', () => { void add_one; });"
+    ].join("\n"));
+    await trainOssCorpus({ storage: fixture.storage, rootPath: root, sourceUriBase: "scce://assertion-fixture", maxFiles: 20,
+      maxFilesPerRun: 20, ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64 });
+    expect(contractProjectionWrites.findLast(write => write.projection.sourceId === ownedProjection!.projection.sourceId)?.projection.patternIds).toEqual([]);
+    expect(fixture.state.patterns.filter(pattern => pattern.patternKind === "source_code_assertion_contract")).toEqual([]);
   });
 
   it("replays actual OSS training into the learned code producer", async () => {

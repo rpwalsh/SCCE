@@ -145,8 +145,18 @@ async function ingestSourceOwnedTestContracts(input: {
   const chosenTests = testCandidates.sort((a, b) => a.path.localeCompare(b.path)).slice(0, 32);
   const sourceTargets = [...new Set(chosenTests.flatMap(test => test.imports).filter(importPath => availableByPath.has(importPath)))].sort().slice(0, 95);
   const selectedPaths = [...chosenTests.map(test => test.path), ...sourceTargets].slice(0, 127);
-  const candidates = selectedPaths.map(selectedPath => availableByPath.get(selectedPath)!).filter(Boolean);
   const configRelative = "tsconfig.json";
+  const configSize = configBytes.byteLength;
+  const maxSnapshotBytes = 8 * 1024 * 1024;
+  if (configSize > maxSnapshotBytes) return result;
+  const candidates: typeof available = [];
+  let totalSnapshotBytes = configSize;
+  for (const selectedPath of selectedPaths) {
+    const file = availableByPath.get(selectedPath);
+    if (!file || totalSnapshotBytes + file.byteLength > maxSnapshotBytes) continue;
+    candidates.push(file);
+    totalSnapshotBytes += file.byteLength;
+  }
   const workspacePaths = [...candidates.map(file => normalizeRelative(file.path)), configRelative].sort();
   if (workspacePaths.length < 3) return result;
   const sourceTexts = new Map<string, string>();
@@ -173,7 +183,6 @@ async function ingestSourceOwnedTestContracts(input: {
     } else sourceVersions.set(relativePath, { sourceVersionId: String(fileVersion), sourceHash });
   }
   if (!testPaths.length || sourceVersions.size === 0) return result;
-  const configSize = configBytes.byteLength;
   if (configSize > input.maxFileBytes) return result;
   const program = await buildTypeScriptSemanticProgramIndex({
     workspaceRoot: input.root,
@@ -184,11 +193,12 @@ async function ingestSourceOwnedTestContracts(input: {
       observedTestPaths: testPaths,
       maxFiles: workspacePaths.length,
       maxFileBytes: input.maxFileBytes,
-      maxTotalBytes: candidates.reduce((sum, file) => sum + file.byteLength, configSize)
+      maxTotalBytes: maxSnapshotBytes
     }
   });
   const cases = sourceOwnedTestCases({ program, sourceVersions, testVersions, sourceTexts });
   const grouped = new Map<string, typeof cases>();
+  for (const sourcePath of sourceVersions.keys()) result.set(sourcePath, []);
   for (const item of cases) grouped.set(item.sourcePath, [...(grouped.get(item.sourcePath) ?? []), item]);
   for (const [sourcePath, values] of grouped) {
     if (values.length < 2) continue;
@@ -424,7 +434,8 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
           formalLanguage: codeLanguageForPath(file.path) ?? null,
           ...(projected.sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.ossCode ? { codeFunctionConstructions: await compileSourceCodeFunctionsAsync({
             text: raw, path: file.path, languageId: codeLanguageForPath(file.path), sourceHash
-          }), ...(sourceOwnedContractsByPath.get(relativePath)?.length ? { sourceOwnedTestContracts: sourceOwnedContractsByPath.get(relativePath) } : {}) } : {}),
+          }), sourceOwnedTestContracts: sourceOwnedContractsByPath.get(relativePath) ?? [],
+            sourceOwnedTestContractInputHash: hasher.digestHex(canonicalStringify(sourceOwnedContractsByPath.get(relativePath) ?? [])) } : {}),
           artifactRole,
           license,
           repository: repositoryIdentity,

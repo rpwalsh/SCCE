@@ -395,6 +395,8 @@ function corpusComponentRecipes(input: LanguageCorpusTrainingInput): Record<stri
   if (canonicalCorpusSourceSystemId(input.sourceSystem) === CORPUS_SOURCE_SYSTEM_IDS.ossCode) {
     components.sourceCodeFunctions = SOURCE_CODE_FUNCTION_PROJECTION_RECIPE_ID;
     components.sourceCodeFunctionCompiler = SOURCE_CODE_FUNCTION_COMPILER_RECIPE_ID;
+    const contractInputHash = jsonRecord(input.corpusMetadata).sourceOwnedTestContractInputHash;
+    components.sourceOwnedTestContracts = `scce.source_owned_test_contract_compiler.v1:${typeof contractInputHash === "string" ? contractInputHash : "absent"}`;
   }
   if (graphProjectionEnabled) {
     components.sourceEntityGraph = SOURCE_ENTITY_GRAPH_COMPONENT_RECIPE_ID;
@@ -488,7 +490,7 @@ function needsConstructionContext(input: LanguageCorpusTrainingInput): boolean {
 function checkpointBinding(input: LanguageCorpusTrainingInput): string {
   const { acquisitionProvenance: _acquisition, ...material } = input;
   if (canonicalCorpusSourceSystemId(input.sourceSystem) === CORPUS_SOURCE_SYSTEM_IDS.ossCode) {
-    const { codeFunctionConstructions: _derived, ...sourceMetadata } = jsonRecord(input.corpusMetadata);
+    const { codeFunctionConstructions: _derived, sourceOwnedTestContracts: _derivedContracts, sourceOwnedTestContractInputHash: _contractInputHash, ...sourceMetadata } = jsonRecord(input.corpusMetadata);
     return trainingInputBinding({ ...material, corpusMetadata: sourceMetadata });
   }
   return trainingInputBinding(material);
@@ -811,7 +813,8 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
     ...(input.profile ?? language.acquire({ sourceVersionId, text, createdAt })),
     informationLabel: sourceInformationLabel
   };
-  const { codeFunctionConstructions: sourceCodeFunctions, ...sourceMetadata } = jsonRecord(input.corpusMetadata);
+  const { codeFunctionConstructions: sourceCodeFunctions, sourceOwnedTestContracts: derivedAssertionContracts,
+    sourceOwnedTestContractInputHash: _contractInputHash, ...sourceMetadata } = jsonRecord(input.corpusMetadata);
   const metadata = toJsonValue({
     ...sourceMetadata,
     ...(input.languageAliases?.length ? { languageAliases: [...input.languageAliases] } : {}),
@@ -1064,7 +1067,7 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
     ...compactSourceCodeFunctionPatterns({ constructions: sourceCodeFunctions, metadata, sourceSystem, profileId: profile.id, sourceVersionId,
       originalSourceVersionId: originalSourceVersionId ?? sourceVersionId, text: originalBytes ? Buffer.from(originalBytes).toString("utf8") : input.text,
       evidence, hasher, updatedAt: createdAt }),
-    ...sourceOwnedAssertionPatterns({ metadata, sourceSystem, profileId: profile.id, sourceVersionId,
+    ...sourceOwnedAssertionPatterns({ contracts: derivedAssertionContracts, metadata, sourceSystem, profileId: profile.id, sourceVersionId,
       originalSourceVersionId: originalSourceVersionId ?? sourceVersionId, evidence, hasher, updatedAt: createdAt })
   ]
     .map(item => ({ ...stampPattern(item, sourceSystem, sourceSystemId, rowMetadata), informationLabel }));
@@ -1168,12 +1171,12 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
 }
 
 function sourceOwnedAssertionPatterns(input: {
-  metadata: JsonValue; sourceSystem: string; profileId: string; sourceVersionId: SourceVersionId;
+  contracts: JsonValue | undefined; metadata: JsonValue; sourceSystem: string; profileId: string; sourceVersionId: SourceVersionId;
   originalSourceVersionId: SourceVersionId; evidence: readonly EvidenceSpan[]; hasher: ReturnType<typeof createHasher>; updatedAt: number;
 }): LanguagePatternRecord[] {
   if (input.sourceSystem !== "oss_code") return [];
   const metadata = jsonRecord(input.metadata);
-  const contracts = metadata.sourceOwnedTestContracts;
+  const contracts = input.contracts;
   const evidenceIds = input.evidence.filter(span => span.status === "promoted" && span.sourceVersionId === input.sourceVersionId).map(span => span.id);
   if (!Array.isArray(contracts) || !evidenceIds.length) return [];
   const patterns: LanguagePatternRecord[] = [];
@@ -1296,8 +1299,12 @@ async function commitLanguageCorpusTrainingInternal(input: LanguageCorpusTrainin
         informationLabel: prepared.informationLabel
       }
     });
+  } else if (input.storage.languageMemory.putLanguagePatterns) await input.storage.languageMemory.putLanguagePatterns(prepared.patterns);
+  else for (const pattern of prepared.patterns) await input.storage.languageMemory.putLanguagePattern(pattern);
+  if (canonicalCorpusSourceSystemId(input.sourceSystem) === CORPUS_SOURCE_SYSTEM_IDS.ossCode
+    && input.storage.languageMemory.replaceLanguagePatternProjection) {
     const assertionPatterns = prepared.patterns.filter(pattern => pattern.patternKind === "source_code_assertion_contract");
-    if (assertionPatterns.length) await input.storage.languageMemory.replaceLanguagePatternProjection({
+    await input.storage.languageMemory.replaceLanguagePatternProjection({
       patterns: assertionPatterns,
       projection: {
         profileId: String(prepared.profile.id), sourceId: prepared.sourceId, sourceVersionId: prepared.sourceVersionId,
@@ -1306,8 +1313,7 @@ async function commitLanguageCorpusTrainingInternal(input: LanguageCorpusTrainin
         patternIds: assertionPatterns.map(pattern => pattern.id).sort(), informationLabel: prepared.informationLabel
       }
     });
-  } else if (input.storage.languageMemory.putLanguagePatterns) await input.storage.languageMemory.putLanguagePatterns(prepared.patterns);
-  else for (const pattern of prepared.patterns) await input.storage.languageMemory.putLanguagePattern(pattern);
+  }
   if (input.storage.languageMemory.putSemanticFrames) await input.storage.languageMemory.putSemanticFrames(prepared.frames);
   else for (const frame of prepared.frames) await input.storage.languageMemory.putSemanticFrame(frame);
   await input.storage.events.append(prepared.learned);

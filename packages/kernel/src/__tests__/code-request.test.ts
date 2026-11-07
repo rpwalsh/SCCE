@@ -56,6 +56,21 @@ describe("code request structure", () => {
     expect(codeRequestRequirements("Who created Star Trek?", codeRequestSignal("Who created Star Trek?"))).toEqual([]);
   });
 
+  it("uses the existing structural artifact-demand contract for code edits and explicitly framed code requests", () => {
+    const edit = "Fix the off-by-one in packages/kernel/src/mouth.ts please";
+    const editSignal = codeRequestSignal(edit);
+    expect(codeRequestRequirements(edit, editSignal).find(row => row.dimension === "executableArtifactDemand")?.value).toBe(0.92);
+    expect(codeRequestObservedRequirements(edit, editSignal).length).toBeGreaterThan(0);
+    const editField = deriveTurnRequirementField({ requestText: edit, explicitRequirements: [...codeRequestRequirements(edit, editSignal), ...codeRequestObservedRequirements(edit, editSignal)] });
+    const editProjection = projectRequestAuthority({ requirementField: editField });
+    expect(editProjection.requestedAuthority).toBe("program");
+    expect(activateCognitiveOperators({ requirementField: editField }).some(row => row.operatorId === COGNITIVE_OPERATOR_IDS.programPlanning && row.active)).toBe(true);
+
+    const explicitRequest = "Can you implement the operation in packages/kernel/src/mouth.ts?";
+    const explicitRequestSignal = codeRequestSignal(explicitRequest);
+    expect(codeRequestRequirements(explicitRequest, explicitRequestSignal).find(row => row.dimension === "executableArtifactDemand")?.value).toBe(0.92);
+  });
+
   it("keeps structural corroboration typed and independent of relation vocabulary", () => {
     const signal = codeRequestSignal("Crea una función doble(x) => 2x en TypeScript.");
     expect(signal.observations.map(observation => observation.kind)).toEqual([

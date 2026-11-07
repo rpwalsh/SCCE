@@ -222,7 +222,7 @@ import { createRuntimeAcquisition } from "./runtime-acquisition.js";
 import { admissionTierDiagnostics, answerCoversRequest, localEvidenceAnswerIsQuotationRecall, preferredLocalEvidenceAnswer, requestContentEvidenceUnits, requestUnitSharesStem, sourceEvidenceAnchorsForRequest } from "./local-evidence-runtime.js";
 import { isStructuralResidueSurface } from "./structural-residue.js";
 import { normalizePriorKey, splitPriorUnits } from "./kernel-answer-primitives.js";
-import { codeLanguageForRequirementState, codeRequestObservedRequirements, codeRequestSignal, typedProgramBehaviorFromMetadata } from "./code-request.js";
+import { codeLanguageForRequirementState, codeRequestObservedRequirements, codeRequestRequirements, codeRequestSignal, typedProgramBehaviorFromMetadata } from "./code-request.js";
 import { codeIntentFromDocumentation, sourceOwnedBehaviorRequirementsFromDocumentation } from "./code-intent.js";
 import { attachLearnedGraphPriorConstruct } from "./learned-graph-prior-runtime.js";
 import { runGraphRefinement } from "./graph-refinement.js";
@@ -1368,6 +1368,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         explicitRequirements: [
           ...explicitTurnRequirementsFromInput(input, explicitAuthority),
           ...workspacePlanContext.explicitRequirements,
+          ...codeRequestRequirements(input.text, codeSignal),
           ...codeRequestObservedRequirements(input.text, codeSignal)
         ],
         dialogueState: authorityDialogueState,
@@ -3472,17 +3473,32 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // One structured intent per turn: derived from the projected authority and the structural code signal, read by
       // both builds and the planner, so a program-authority turn cannot end with no ProgramGraph.
       const documentationCodeIntent = codeIntentFromDocumentation({ requestText: input.text, documentation: selectedEvidence });
-      const sourceOwnedContractPatterns = documentationCodeIntent.languageId
+      const sourceContractPlanningAllowed = requestedAuthority === "program" && authorityProjection.requestedAuthority === "program";
+      const sourceOwnedContractPatterns = sourceContractPlanningAllowed && documentationCodeIntent.languageId
         ? await deps.storage.languageMemory.listLanguagePatterns({ sourceSystem: corpusSourceAlias(CORPUS_SOURCE_SYSTEM_IDS.ossCode),
           patternKind: "source_code_assertion_contract", formalLanguage: documentationCodeIntent.languageId, limit: 4096 })
         : [];
       const sourceOwnedRequirements = sourceOwnedBehaviorRequirementsFromDocumentation({ requestText: input.text,
-        intent: documentationCodeIntent, patterns: sourceOwnedContractPatterns });
+        intent: documentationCodeIntent, patterns: sourceOwnedContractPatterns,
+        ownerCallableIds: codeSignal.behaviorRequirements.map(requirement => requirement.callableId) });
       const programCodeSignal = sourceOwnedRequirements.length ? {
         ...codeSignal,
         language: codeSignal.language ?? documentationCodeIntent.languageId,
         behaviorRequirements: [...codeSignal.behaviorRequirements, ...sourceOwnedRequirements]
       } : codeSignal;
+      if (sourceOwnedRequirements.length && sourceContractPlanningAllowed) {
+        const sourceOwnedRequirementIds = [
+          ...typedProgramBehaviorRequirementIds,
+          ...sourceOwnedRequirements.map(requirement => requirement.id)
+        ];
+        operatorActivations = activateCognitiveOperators({
+          model: operatorModel,
+          requirementField,
+          typedProgramBehaviorRequirementIds: sourceOwnedRequirementIds,
+          dialogueSupport: requestOperatorDialogueSupport(requirementField),
+          outcomeSupport: { ...durableOperatorOutcomeSupport, ...operatorOutcomeSupport(input.metadata) }
+        });
+      }
       const programIntent = programIntentForTurn({
         requestedAuthority,
         activeOperatorIds: activeRequestOperatorIds(operatorActivations),
