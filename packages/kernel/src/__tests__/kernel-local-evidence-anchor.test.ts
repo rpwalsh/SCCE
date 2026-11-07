@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { QuarantineSource } from "../storage.js";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createClock,
   createHasher,
@@ -62,6 +62,9 @@ import { surfaceEchoesPrompt } from "../creative-section-realization.js";
 import { sourceOwnedAnswerhoodLanguage } from "./fixtures/source-owned-answerhood-language.js";
 import { withRequestLanguageFormScope } from "../request-language-form-scope.js";
 import { primeFreeFormLexicon } from "../free-form-lexicon.js";
+
+// Let worker event updates drain between synchronous corpus compiles.
+afterEach(() => new Promise<void>(resolve => setImmediate(resolve)));
 
 const proofEngineCalls = vi.hoisted(() => ({
   ablatedSupport: 0,
