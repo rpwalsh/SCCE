@@ -9,6 +9,9 @@ import {
   evidenceSourceDeclaredLicense,
   isLicenseDeclared,
   resolveSourceDeclaredLicense,
+  type GraphEdge,
+  type GraphNode,
+  type Hyperedge,
   type EvidenceSpan,
   type JsonValue,
   type LanguagePatternRecord,
@@ -151,6 +154,17 @@ describe("the declared licence survives to the evidence it licenses", () => {
     for (const span of fixture.state.evidence) {
       expect(evidenceSourceDeclaredLicense(span).license).toBe(DECLARED_LICENSE);
     }
+    expect(fixture.state.graphNodes.length).toBeGreaterThan(0);
+    expect(new Set(fixture.state.graphNodes.map(node => String(node.id))).size).toBe(fixture.state.graphNodes.length);
+    const evidenceById = new Map(fixture.state.evidence.map(span => [String(span.id), span]));
+    for (const node of fixture.state.graphNodes) {
+      expect(node.evidenceIds.length).toBeGreaterThan(0);
+      for (const evidenceId of node.evidenceIds) {
+        const span = evidenceById.get(String(evidenceId));
+        expect(span).toBeDefined();
+        expect(evidenceSourceDeclaredLicense(span!).license).toBe(DECLARED_LICENSE);
+      }
+    }
     // The repository snapshot's own identity carries it too, next to the commit and snapshot hash.
     const repository = recordOf(recordOf(fixture.state.sourceVersions[0]!.metadata as JsonValue).repository);
     expect(resolveSourceDeclaredLicense({ license: repository.license } as JsonValue).license).toBe(DECLARED_LICENSE);
@@ -216,10 +230,13 @@ interface MemoryState {
   units: LanguageUnitRecord[];
   patterns: LanguagePatternRecord[];
   frames: SemanticFrameRecord[];
+  graphNodes: GraphNode[];
+  graphEdges: GraphEdge[];
+  graphHyperedges: Hyperedge[];
 }
 
 function memoryStorage(): { storage: ScceStorage; state: MemoryState } {
-  const state: MemoryState = { events: [], sourceVersions: [], evidence: [], profiles: [], observations: [], models: [], units: [], patterns: [], frames: [] };
+  const state: MemoryState = { events: [], sourceVersions: [], evidence: [], profiles: [], observations: [], models: [], units: [], patterns: [], frames: [], graphNodes: [], graphEdges: [], graphHyperedges: [] };
   const storage = {
     events: {
       append: async (event: ScceEvent) => { state.events.push(event); },
@@ -234,7 +251,10 @@ function memoryStorage(): { storage: ScceStorage; state: MemoryState } {
       putEvidenceSpans: async (spans: readonly EvidenceSpan[]) => { state.evidence.push(...spans); },
       promoteEvidence: async (ids: EvidenceSpan["id"][]) => ids.length,
       getEvidence: async () => null,
-      getEvidenceBatch: async () => [],
+      getEvidenceBatch: async (ids: EvidenceSpan["id"][]) => {
+        const requested = new Set(ids.map(String));
+        return state.evidence.filter(span => requested.has(String(span.id)));
+      },
       searchEvidence: async () => [],
       sourceVersionsForEvidence: async () => []
     },
@@ -271,7 +291,12 @@ function memoryStorage(): { storage: ScceStorage; state: MemoryState } {
     close: async () => undefined,
     conversation: unusedStore(),
     ingestion: unusedStore(),
-    graph: { getSlice: async () => ({ nodes: [], edges: [], hyperedges: [], bounded: true, query: {} }) },
+    graph: {
+      getSlice: async () => ({ nodes: [], edges: [], hyperedges: [], bounded: true, query: {} }),
+      upsertNodes: async (rows: readonly GraphNode[]) => upsertById(state.graphNodes, rows),
+      upsertEdges: async (rows: readonly GraphEdge[]) => upsertById(state.graphEdges, rows),
+      upsertHyperedges: async (rows: readonly Hyperedge[]) => upsertById(state.graphHyperedges, rows)
+    },
     blobs: { put: async (bytes: Uint8Array) => blobContentHash(bytes) },
     quarantine: unusedStore(),
     proofs: unusedStore(),
@@ -288,6 +313,14 @@ function memoryStorage(): { storage: ScceStorage; state: MemoryState } {
     dialogueMemory: unusedStore()
   } as unknown as ScceStorage;
   return { storage, state };
+}
+
+function upsertById<T extends { id: string }>(target: T[], rows: readonly T[]): void {
+  for (const row of rows) {
+    const index = target.findIndex(existing => String(existing.id) === String(row.id));
+    if (index < 0) target.push(row);
+    else target[index] = row;
+  }
 }
 
 function unusedStore(): Record<string, (...args: never[]) => Promise<unknown>> {
