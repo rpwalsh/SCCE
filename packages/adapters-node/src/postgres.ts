@@ -1093,6 +1093,7 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
       });
       const rows = await storage.transaction(async () => {
         const [planner] = await storage.query<{ enabled: string }>("SELECT current_setting('enable_seqscan') AS enabled");
+        if (!planner) throw new Error("PostgreSQL planner setting is unavailable");
         await storage.query("SET LOCAL enable_seqscan = off");
         const measured = await storage.query<{ unit: string; sources: number }>(measurements.join("\nUNION ALL\n"), params);
         await storage.query("SELECT set_config('enable_seqscan', $1, true)", [planner.enabled]);
