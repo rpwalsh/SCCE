@@ -96,6 +96,9 @@ describe("cold ordinary owner program execution", () => {
     expect(programResponseReadiness({ program: result.constructGraph.program, buildTest: result.buildTest }))
       .toMatchObject({ status: "ready", reasonId: "program.readiness.verified" });
     const program = result.constructGraph.program!;
+    expect(program.language).toBe(namedLanguage ? "typescript" : "javascript");
+    expect(program.entrypoint).toBe(namedLanguage ? "src/program.ts" : "src/program.mjs");
+    expect(program.files.find(file => file.path === program.entrypoint)?.mediaType).toBe(namedLanguage ? "text/typescript" : "text/javascript");
     const hasher = createHasher();
     const proofScope = { canonicalProgram: program, requestedAuthority: "program" as const,
       requestRequirementIds: codeRequestSignal(text).behaviorRequirements.map(requirement => requirement.id), hasher };

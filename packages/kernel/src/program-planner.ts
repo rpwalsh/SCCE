@@ -149,12 +149,14 @@ export interface ProgramPlannerInput {
 export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Hasher }) {
   return {
     plan(input: ProgramPlannerInput): ProgramPlan {
+      if (input.programIntent?.languageId) emittedProgramRuntimeForLanguage(input.programIntent.languageId, { requireNativeBackend: true });
       const code = createCodeLearningEngine({ hasher: options.hasher });
       const codeGraph = code.learn(input);
       const shape = inferProgramShape(input.requestText, input.entailment, input.evidence, options.hasher, codeGraph, input.programIntent);
       const emittedRuntime = emittedRuntimeForShape(shape);
       const intent = intentFromShape(shape);
-      const blueprint = code.blueprint({ target: shape.target.id, requestText: input.requestText, graph: codeGraph, entailment: input.entailment });
+      const blueprint = code.blueprint({ target: shape.target.id, requestText: input.requestText, graph: codeGraph, entailment: input.entailment,
+        ...(input.programIntent?.languageId ? { languageId: input.programIntent.languageId } : {}) });
       const artifactConstruction = selectArtifactConstruction({
         shape,
         codeGraph,
@@ -510,11 +512,13 @@ function profileFromProgramIntent(intent: ProgramConstructIntent, input: {
   const language = intent.languageId
     ?? preferredLanguageForCapabilities(input.sourceLanguages, capabilities, input.codeGraph)
     ?? input.primaryLanguage;
+  const ownerRuntime = intent.languageId && !intent.packageManagerId && !intent.runtimeTargetId && !intent.entrypointPath
+    ? emittedProgramRuntimeForLanguage(intent.languageId, { requireNativeBackend: true }) : undefined;
   const packageManager = intent.packageManagerId
-    ?? input.packageManagers[0]
+    ?? ownerRuntime?.commandName ?? input.packageManagers[0]
     ?? packageManagerForProfile(language, input.codeGraph);
   const runtimeTarget = intent.runtimeTargetId ?? runtimeTargetFor(language, capabilities, packageManager);
-  const entrypoint = intent.entrypointPath ?? entrypointForProfile(language, capabilities, input.codeGraph);
+  const entrypoint = intent.entrypointPath ?? ownerRuntime?.sourcePath ?? entrypointForProfile(language, capabilities, input.codeGraph);
   return profile({
     seed: { programIntent: intent, language, capabilities, runtimeTarget, packageManager, entrypoint },
     language,
@@ -538,7 +542,7 @@ function profileFromProgramIntent(intent: ProgramConstructIntent, input: {
       capabilityIds: intent.capabilityIds,
       provenanceEvidenceIds: intent.provenanceEvidenceIds ?? [],
       constructMetadata: intent.metadata ?? {},
-      commandHints: input.commandHints
+      commandHints: ownerRuntime ? [] : input.commandHints
     }),
     hasher: input.hasher
   });
@@ -1368,7 +1372,7 @@ function planFiles(
     canonical.push(
       { path: "source.program.json", role: "config", mediaType: "application/json", purpose: "source-derived language target and typed owner behavior contract", dependsOn: ["source.memory.json"], invariants: ["language open", "runtime explicit", "held-out examples validation-only"] },
       { path: runtime.sourcePath, role: "source", mediaType: runtime.mediaType, purpose: "selected source-neutral owner behavior program", dependsOn: ["source.program.json"], invariants: ["only selected transformations emitted", "owner expected values excluded from source"] },
-      { path: runtime.testPath, role: "test", mediaType: runtime.mediaType, purpose: "executable owner behavior validation", dependsOn: [runtime.sourcePath], invariants: ["executes changed inputs", "held-out examples remain checks"] },
+      { path: runtime.testPath, role: "test", mediaType: runtime.testMediaType, purpose: "executable owner behavior validation", dependsOn: [runtime.sourcePath], invariants: ["executes changed inputs", "held-out examples remain checks"] },
       { path: "BUILDING.md", role: "doc", mediaType: "text/markdown", purpose: "runtime-specific build notes", dependsOn: ["source.program.json"], invariants: ["does not claim unrun build", "lists learned commands"] }
     );
   }
@@ -1476,7 +1480,7 @@ function canonicalPlanFiles(shape: ProgramShape): ProgramFilePlan[] {
     ...common,
     { path: "source.program.json", role: "config", mediaType: "application/json", purpose: "source-derived language target and idiom memory", dependsOn: ["source.memory.json"], invariants: ["language open", "runtime explicit", "source evidence retained"] },
     { path: emittedRuntimeForShape(shape).sourcePath, role: "source", mediaType: emittedRuntimeForShape(shape).mediaType, purpose: "request-declared call contracts over the planned operation", dependsOn: ["source.program.json"], invariants: ["standard library only", "declared contracts checked", "no network access"] },
-    { path: emittedRuntimeForShape(shape).testPath, role: "test", mediaType: emittedRuntimeForShape(shape).mediaType, purpose: "executable check of the emitted program", dependsOn: [emittedRuntimeForShape(shape).sourcePath], invariants: ["imports the emitted program", "asserts declared contracts", "exits nonzero on failure"] },
+    { path: emittedRuntimeForShape(shape).testPath, role: "test", mediaType: emittedRuntimeForShape(shape).testMediaType, purpose: "executable check of the emitted program", dependsOn: [emittedRuntimeForShape(shape).sourcePath], invariants: ["imports the emitted program", "asserts declared contracts", "exits nonzero on failure"] },
     { path: "BUILDING.md", role: "doc", mediaType: "text/markdown", purpose: "runtime-specific build notes", dependsOn: ["source.program.json"], invariants: ["does not claim unrun build", "lists learned commands"] }
   ];
   return [
@@ -1687,6 +1691,12 @@ function emitFiles(plan: ProgramPlan, input: ProgramPlannerInput, idFactory: IdF
     } else if (emittedRuntime.languageId === "python") {
       byPath.set(emittedRuntime.sourcePath, executablePythonProgramModule(plan, contracts, statefulContracts));
       byPath.set(emittedRuntime.testPath, executablePythonProgramTest(plan));
+    } else if (emittedRuntime.languageId === "typescript" && plan.ownerBehaviorRequirements.length) {
+      byPath.set(emittedRuntime.sourcePath, [...new Set(plan.ownerBehaviorRequirements.map(requirement => requirement.callableId))].map(callableId =>
+        plan.ownerBehaviorImplementationPhase === "selected"
+          ? executableBehaviorTransformationFunction(callableId, plan.ownerBehaviorTransformationCandidates, plan.selectedOwnerBehaviorTransformationIds, true)
+          : `export function ${callableId}(...args: any[]) { return args.length === 1 ? args[0] : args; }`).join("\n"));
+      byPath.set(emittedRuntime.testPath, executableNodeOwnerBehaviorTest(plan));
     } else {
       byPath.set(emittedRuntime.sourcePath, executableProgramModule(plan, contracts, statefulContracts));
       byPath.set(emittedRuntime.testPath, executableProgramTest(plan, contracts));
@@ -1702,8 +1712,8 @@ function emitFiles(plan: ProgramPlan, input: ProgramPlannerInput, idFactory: IdF
             ? `def ${item.callableId}(*args):\n    return args[0] if len(args) == 1 else list(args)\n`
             : pythonBehaviorTransformationBinding(item.callableId, 0, plan.ownerBehaviorImplementationPhase, plan.ownerBehaviorTransformationCandidates, plan.selectedOwnerBehaviorTransformationIds)
           : plan.ownerBehaviorImplementationPhase === "probe"
-            ? `export function ${item.callableId}(...args) { return args.length === 1 ? args[0] : args; }\n`
-            : executableBehaviorTransformationFunction(item.callableId, plan.ownerBehaviorTransformationCandidates, plan.selectedOwnerBehaviorTransformationIds);
+            ? `export function ${item.callableId}(...args${emittedRuntime.languageId === "typescript" ? ": any[]" : ""}) { return args.length === 1 ? args[0] : args; }\n`
+            : executableBehaviorTransformationFunction(item.callableId, plan.ownerBehaviorTransformationCandidates, plan.selectedOwnerBehaviorTransformationIds, emittedRuntime.languageId === "typescript");
         byPath.set(item.path, content);
         if (item.path.endsWith(".mjs")) byPath.set(item.path.replace(/\.mjs$/u, ".d.mts"), `export declare function ${item.callableId}(...args: any[]): any;\n`);
       }
@@ -1712,7 +1722,7 @@ function emitFiles(plan: ProgramPlan, input: ProgramPlannerInput, idFactory: IdF
         const stem = basename.slice(0, -composition.runtime.moduleExtension.length);
         return emittedRuntime.languageId === "python"
           ? `from ${stem} import ${item.callableId}`
-          : `export { ${item.callableId} } from ${JSON.stringify(`./${stem}${composition.runtime.mediaType === "text/typescript" ? ".js" : composition.runtime.moduleExtension}`)}`;
+          : `export { ${item.callableId} } from ${JSON.stringify(`./${stem}${composition.runtime.moduleExtension}`)}`;
       }).join("\n");
       byPath.set(composition.applicationPath, emittedRuntime.languageId === "python"
         ? `${applicationImports}\n`
@@ -1738,7 +1748,7 @@ function emitFiles(plan: ProgramPlan, input: ProgramPlannerInput, idFactory: IdF
       byPath.set(statefulComposition.providerPath, provider);
       byPath.set(statefulComposition.applicationPath, emittedRuntime.languageId === "python"
         ? `from ${providerModule} import createStatefulProgram\n\n__all__ = ["createStatefulProgram"]\n`
-        : `export { createStatefulProgram } from ${JSON.stringify(`./${providerModule}${statefulComposition.runtime.mediaType === "text/typescript" ? ".js" : statefulComposition.runtime.moduleExtension}`)};\n`);
+        : `export { createStatefulProgram } from ${JSON.stringify(`./${providerModule}${statefulComposition.runtime.moduleExtension}`)};\n`);
       if (statefulComposition.providerPath.endsWith(".mjs")) {
         byPath.set(statefulComposition.providerPath.replace(/\.mjs$/u, ".d.mts"), "export declare function createStatefulProgram(): Readonly<Record<string, (...args: any[]) => any>>;\n");
         byPath.set(statefulComposition.applicationPath.replace(/\.mjs$/u, ".d.mts"), `export { createStatefulProgram } from ${JSON.stringify(`./${providerModule}.mjs`)};\n`);
@@ -3182,9 +3192,10 @@ ${plan.ownerBehaviorRequirements.length
       ? executableBehaviorTransformationFunction(
         callableId,
         plan.ownerBehaviorTransformationCandidates,
-        plan.selectedOwnerBehaviorTransformationIds
+        plan.selectedOwnerBehaviorTransformationIds,
+        emittedRuntimeForShape(plan.intent.shape).languageId === "typescript"
       )
-      : `export function ${callableId}(...args) { return args.length === 1 ? args[0] : args; }`)
+      : `export function ${callableId}(...args${emittedRuntimeForShape(plan.intent.shape).languageId === "typescript" ? ": any[]" : ""}) { return args.length === 1 ? args[0] : args; }`)
     .join("\n")
   : ""}
 
@@ -3443,7 +3454,8 @@ if __name__ == "__main__":
 function executableBehaviorTransformationFunction(
   callableId: string,
   candidates: readonly ProgramTransformationCandidate[],
-  selectedIds: readonly string[]
+  selectedIds: readonly string[],
+  typescript = false
 ): string {
   const candidate = candidates.find(item => item.callableId === callableId && selectedIds.includes(item.id));
   if (!candidate) throw new Error(`selected owner behavior has no transformation for callable: ${callableId}`);
@@ -3455,10 +3467,17 @@ function executableBehaviorTransformationFunction(
   const numericGuard = numericArgumentIndexes.length
     ? ` || ![${numericArgumentIndexes.map(index => `args[${index}]`).join(", ")}].every(value => typeof value === "number" && Number.isFinite(value))`
     : "";
-  return `export function ${callableId}(...args) {
+  const parameterType = typescript ? `: [${Array.from({ length: argumentCount }, (_, index) => numericArgumentIndexes.includes(index) ? "number" : "any").join(", ")}]` : "";
+  const resultType = typescript ? numericExpressionResult(candidate.producedIr, new Set(numericArgumentIndexes)) ? ": number" : "" : "";
+  return `export function ${callableId}(...args${parameterType})${resultType} {
   if (args.length !== ${argumentCount}${numericGuard}) throw new TypeError(${JSON.stringify(`program.argument_contract:${callableId}:${argumentCount}`)});
   return ${renderProgramExpression(candidate.producedIr)};
 }`;
+}
+
+function numericExpressionResult(expression: ProgramExpression, numericArguments: ReadonlySet<number>): boolean {
+  if (expression.kind === "argument") return numericArguments.has(expression.index);
+  return expression.kind === "literal" || expression.kind === "unary" || expression.kind === "binary" || expression.kind === "cardinality";
 }
 
 function executableStatefulBehaviorFactory(
@@ -3499,7 +3518,7 @@ function renderStatefulLiteral(value: unknown): string {
 function executableNodeOwnerBehaviorTest(plan: ProgramPlan): string {
   return `import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import * as ownerProgram from "../src/program.mjs";
+import * as ownerProgram from "../${emittedRuntimeForShape(plan.intent.shape).sourcePath}";
 
 const ownerBehaviorRequirements = ${JSON.stringify(plan.ownerBehaviorRequirements, null, 2)};
 const ownerStatefulBehaviorRequirements = ${JSON.stringify(plan.ownerStatefulBehaviorRequirements, null, 2)};
@@ -3565,8 +3584,8 @@ function executableProgramTest(plan: ProgramPlan, contracts: readonly DeclaredCa
   const populated = Object.fromEntries(fields.map(field => [field, "observed"]));
   return `import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import * as ownerProgram from "../${EMITTED_PROGRAM_RUNTIME.sourcePath}";
-import { checkDeclaredCall, checkStatefulCall, describeShape, programContract, run, shapeSatisfies } from "../${EMITTED_PROGRAM_RUNTIME.sourcePath}";
+import * as ownerProgram from "../${emittedRuntimeForShape(plan.intent.shape).sourcePath}";
+import { checkDeclaredCall, checkStatefulCall, describeShape, programContract, run, shapeSatisfies } from "../${emittedRuntimeForShape(plan.intent.shape).sourcePath}";
 
 const ownerBehaviorRequirements = ${JSON.stringify(plan.ownerBehaviorRequirements, null, 2)};
 const ownerStatefulBehaviorRequirements = ${JSON.stringify(plan.ownerStatefulBehaviorRequirements, null, 2)};
@@ -3964,7 +3983,7 @@ function webAppModel(plan: ProgramPlan, input: ProgramPlannerInput): JsonValue {
 function buildCommand(shape: ProgramShape, files: readonly ProgramFilePlan[]): { command: string; args: string[]; cwd: string } {
   const observed = commandFromHints(shape, ["script.build", "script.validation"]);
   if (observed) return observed;
-  const source = emittedRuntimeFile(files, "source");
+  const source = emittedRuntimeFile(files, "source", emittedRuntimeForShape(shape));
   if (!source) return { command: "source-derived", args: ["op.build", shape.target.entrypoint], cwd: "." };
   const runtime = emittedRuntimeForShape(shape);
   return { command: runtime.commandName, args: [...runtime.syntaxCheckArgs, source], cwd: "." };
@@ -3973,14 +3992,16 @@ function buildCommand(shape: ProgramShape, files: readonly ProgramFilePlan[]): {
 function testCommand(shape: ProgramShape, files: readonly ProgramFilePlan[]): { command: string; args: string[]; cwd: string } {
   const observed = commandFromHints(shape, ["script.validation", "script.build"]);
   if (observed) return observed;
-  const test = emittedRuntimeFile(files, "test");
+  const test = emittedRuntimeFile(files, "test", emittedRuntimeForShape(shape));
   if (!test) return { command: "source-derived", args: ["op.validate", shape.target.entrypoint], cwd: "." };
   return { command: emittedRuntimeForShape(shape).commandName, args: [test], cwd: "." };
 }
 
 /** The planned artifact the emitted runtime can load, which is what its own command has to name. */
-function emittedRuntimeFile(files: readonly ProgramFilePlan[], role: ProgramFilePlan["role"]): string | undefined {
-  return files.find(file => file.role === role && [".mjs", ".py"].some(extension => file.path.endsWith(extension)))?.path;
+function emittedRuntimeFile(files: readonly ProgramFilePlan[], role: ProgramFilePlan["role"], runtime: EmittedProgramRuntime): string | undefined {
+  const expectedPath = role === "source" ? runtime.sourcePath : runtime.testPath;
+  return files.find(file => file.role === role && file.path === expectedPath)?.path
+    ?? files.find(file => file.role === role && [".mjs", ".py", ".ts"].some(extension => file.path.endsWith(extension)))?.path;
 }
 
 function commandFromHints(shape: ProgramShape, preferredKinds: readonly string[]): { command: string; args: string[]; cwd: string } | undefined {
@@ -4019,7 +4040,7 @@ function entrypointFor(shape: ProgramShape): string {
 }
 
 function emittedRuntimeForShape(shape: ProgramShape): EmittedProgramRuntime {
-  return emittedProgramRuntimeForLanguage(shape.target.language);
+  return nodeRuntimeForShape(shape) ? EMITTED_PROGRAM_RUNTIME : emittedProgramRuntimeForLanguage(shape.target.language);
 }
 
 function nodeRuntimeForShape(shape: ProgramShape): boolean {

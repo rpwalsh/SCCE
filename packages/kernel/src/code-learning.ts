@@ -225,8 +225,8 @@ export function createCodeLearningEngine(options: { hasher: Hasher }) {
       };
     },
 
-    blueprint(input: { target: string; requestText: string; graph: CodeKnowledgeGraph; entailment: SemanticEntailmentResult }): CodeImplementationBlueprint {
-      const primary = input.graph.languages[0]?.language ?? targetLanguage(input.target);
+    blueprint(input: { target: string; requestText: string; graph: CodeKnowledgeGraph; entailment: SemanticEntailmentResult; languageId?: string }): CodeImplementationBlueprint {
+      const primary = input.languageId ?? input.graph.languages[0]?.language ?? targetLanguage(input.target);
       const sourceCoupling = couplingFromGraph(input.graph);
       const risk = clamp01(0.72 - 0.42 * input.graph.confidence + 0.22 * input.entailment.contradiction + (input.graph.signals.length ? 0 : 0.35));
       const files = blueprintFiles({ target: input.target, language: primary, graph: input.graph, risk });
@@ -690,7 +690,8 @@ export const EMITTED_PROGRAM_RUNTIME = {
   moduleExtension: ".mjs",
   mediaType: "text/javascript",
   sourcePath: "src/program.mjs",
-  testPath: "test/program.test.mjs"
+  testPath: "test/program.test.mjs",
+  testMediaType: "text/javascript"
 } as const;
 
 export const PYTHON_EMITTED_PROGRAM_RUNTIME = {
@@ -701,19 +702,43 @@ export const PYTHON_EMITTED_PROGRAM_RUNTIME = {
   moduleExtension: ".py",
   mediaType: "text/x-python",
   sourcePath: "src/program.py",
-  testPath: "test/program_test.py"
+  testPath: "test/program_test.py",
+  testMediaType: "text/x-python"
 } as const;
 
-export type EmittedProgramRuntime = typeof EMITTED_PROGRAM_RUNTIME | typeof PYTHON_EMITTED_PROGRAM_RUNTIME;
+export const TYPESCRIPT_EMITTED_PROGRAM_RUNTIME = {
+  id: "program.runtime.node-typescript.v1",
+  languageId: "typescript",
+  commandName: "node",
+  syntaxCheckArgs: ["--experimental-strip-types", "--check"],
+  moduleExtension: ".ts",
+  mediaType: "text/typescript",
+  sourcePath: "src/program.ts",
+  testPath: "test/program.test.mjs",
+  testMediaType: "text/javascript"
+} as const;
+
+export class UnsupportedProgramLanguageError extends Error {
+  readonly code = "SCCE_PROGRAM_LANGUAGE_UNSUPPORTED";
+  readonly status = "unsupported";
+  constructor(readonly languageId: string) {
+    super(`program backend unavailable: ${languageId}`);
+    this.name = "UnsupportedProgramLanguageError";
+  }
+}
+
+export type EmittedProgramRuntime = typeof EMITTED_PROGRAM_RUNTIME | typeof PYTHON_EMITTED_PROGRAM_RUNTIME | typeof TYPESCRIPT_EMITTED_PROGRAM_RUNTIME;
 
 /**
  * Chooses a concrete emitter SCCE can execute without project dependencies.
- * The requested language remains in the target profile. When no native
- * emitter exists, the bytes are honestly identified as JavaScript rather than
- * being labelled with the requested language.
+ * Explicit owner targets require a supported backend; unbound source profiles use the host Node runtime.
  */
-export function emittedProgramRuntimeForLanguage(language: string): EmittedProgramRuntime {
-  return language.toLocaleLowerCase() === "python" ? PYTHON_EMITTED_PROGRAM_RUNTIME : EMITTED_PROGRAM_RUNTIME;
+export function emittedProgramRuntimeForLanguage(language: string, options: { requireNativeBackend?: boolean } = {}): EmittedProgramRuntime {
+  const identity = language.toLocaleLowerCase();
+  if (identity === "python") return PYTHON_EMITTED_PROGRAM_RUNTIME;
+  if (identity === "typescript") return TYPESCRIPT_EMITTED_PROGRAM_RUNTIME;
+  if (options.requireNativeBackend && identity !== "javascript") throw new UnsupportedProgramLanguageError(language);
+  return EMITTED_PROGRAM_RUNTIME;
 }
 
 function runtimeForBlueprint(language: CodeLanguage, target: string): CodeImplementationBlueprint["runtime"] {
