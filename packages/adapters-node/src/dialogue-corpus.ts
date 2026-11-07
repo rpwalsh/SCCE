@@ -264,7 +264,10 @@ async function persistDialogueRequestAuthorities(
     const spans = found.map(row => row.span).filter(span => String(span.sourceVersionId) === String(sourceVersionId) && span.status === "promoted");
     const replies = new Map(file.transcriptTurns
       .filter(turn => turn.replyToTurnIndex !== undefined)
-      .map(turn => [turn.replyToTurnIndex!, turn.surface] as const));
+      .flatMap(turn => {
+        const owning = spans.filter(span => span.charStart <= turn.startCodePoint && span.charEnd >= turn.endCodePoint);
+        return owning.length ? [[turn.replyToTurnIndex!, { turn, evidenceIds: owning.map(span => String(span.id)) }] as const] : [];
+      }));
     const bound = turns.flatMap(turn => {
       const owning = spans.filter(span => span.charStart <= turn.startCodePoint && span.charEnd >= turn.endCodePoint);
       if (!owning.length) return [];
@@ -280,7 +283,7 @@ async function persistDialogueRequestAuthorities(
     }
     const compiled = compileRequestRequirementCorpus({
       corpus: { schema: "scce.request_requirement_corpus.v1", language: "und", examples: bound.map(({ turn }) => ({
-        text: turn.surface, authority: turn.requestAuthority!, ...(replies.has(turn.index) ? { responseText: replies.get(turn.index)! } : {})
+        text: turn.surface, authority: turn.requestAuthority!, ...(replies.has(turn.index) ? { responseText: replies.get(turn.index)!.turn.surface } : {})
       })) },
       profileId: profile.id,
       sourceVersionId,
@@ -299,9 +302,16 @@ async function persistDialogueRequestAuthorities(
         sourceCategory: turn.sourceCategory ?? null,
         startCodePoint: turn.startCodePoint,
         endCodePoint: turn.endCodePoint,
-        evidenceIds
+        evidenceIds,
+        ...(replies.has(turn.index) ? { responseTurnRange: {
+          startCodePoint: replies.get(turn.index)!.turn.startCodePoint,
+          endCodePoint: replies.get(turn.index)!.turn.endCodePoint,
+          evidenceIds: replies.get(turn.index)!.evidenceIds
+        } } : {})
       }));
-      const evidenceIds = [...new Set(supportingTurns.flatMap(row => row.evidenceIds))].slice(0, 64) as EvidenceId[];
+      const evidenceIds = [...new Set(supportingTurns.flatMap(row => [
+        ...row.evidenceIds, ...(replies.get(row.turn.index)?.evidenceIds ?? [])
+      ]))].slice(0, 64) as EvidenceId[];
       return { ...pattern, evidenceIds,
         patternJson: toJsonValue({ ...record, sourceTurnRanges,
           sourceMetadata: file.sourceMetadata ?? null, trainingSourceUri: file.sourceUri }),

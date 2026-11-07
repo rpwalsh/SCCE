@@ -2159,7 +2159,8 @@ describe("dialogue corpus training", () => {
     for (const pattern of patterns) {
       const record = recordOf(pattern.patternJson);
       expect(record.sourceMetadata).toEqual(sourceMetadata);
-      const ranges = record.sourceTurnRanges as Array<{ turnIndex: number; authority: string; startCodePoint: number; endCodePoint: number; evidenceIds: string[] }>;
+      const ranges = record.sourceTurnRanges as Array<{ turnIndex: number; authority: string; startCodePoint: number; endCodePoint: number; evidenceIds: string[];
+        responseTurnRange?: { startCodePoint: number; endCodePoint: number; evidenceIds: string[] } }>;
       const featureKey = `${String(record.anchor)}:${String(record.surface)}`;
       const expectedOwners = turns.filter(turn => turn.requestAuthority
         && requestFeatures(turn.surface).some(feature => feature.key === featureKey));
@@ -2171,6 +2172,10 @@ describe("dialogue corpus training", () => {
         expect(owners.length).toBeGreaterThan(0);
         expect(owners.every(span => String(span.sourceVersionId) === String(record.sourceVersionId)
           && span.charStart <= range.startCodePoint && span.charEnd >= range.endCodePoint && span.status === "promoted")).toBe(true);
+        const replyOwners = fixture.state.evidence.filter(span => range.responseTurnRange?.evidenceIds.includes(String(span.id)));
+        expect(replyOwners.length).toBeGreaterThan(0);
+        expect(replyOwners.every(span => span.charStart <= range.responseTurnRange!.startCodePoint
+          && span.charEnd >= range.responseTurnRange!.endCodePoint && span.status === "promoted")).toBe(true);
       }
     }
     expect(allSourceSystems(fixture.state)).toEqual(new Set(["dialogue", CORPUS_SOURCE_SYSTEM_IDS.dialogue, REQUEST_COMMUNICATIVE_ACT_SOURCE_SYSTEM]));
