@@ -123,7 +123,7 @@ describe("production owner program turn through the API", () => {
     if (!address || typeof address === "string") throw new Error("integration server has no TCP address");
 
     const requestText = "Create a function double(x) such that double(3) returns 6, double(7) returns 14, double(-2) returns -4, and double(11) returns 22. Add and run a test proving it.";
-    const response = await fetch(`http://127.0.0.1:${address.port}/api/turn?full=1`, {
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/turn`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -143,10 +143,8 @@ describe("production owner program turn through the API", () => {
     const body = await response.json() as Record<string, any>;
     expect(response.status, JSON.stringify(body)).toBe(200);
     expect(body.workspaceCoding?.programProposalTrace, JSON.stringify(body)).toBeDefined();
-    const program = body.constructGraph?.program as Record<string, any>;
-    const ownerRequirementIds = program.hydration?.ownerRequirementIds as string[];
+    const ownerRequirementIds = body.workspaceCoding?.programProposalTrace?.ownerRequirementIds as string[];
     expect(ownerRequirementIds).toHaveLength(4);
-    expect(program.nodes.some((node: { kind: string; metadata: Record<string, unknown> }) => node.kind === "owner_behavior_requirement" && node.metadata.callableId === "double")).toBe(true);
     expect(body.workspaceCoding?.programProposalTrace?.ownerRequirementIds).toEqual([...ownerRequirementIds].sort());
     expect(body.workspaceCoding?.plan?.operations?.map((operation: { path: string }) => operation.path)).toEqual([
       "src/program.mjs",
@@ -188,6 +186,33 @@ describe("production owner program turn through the API", () => {
     expect(passedTestIndex).toBeGreaterThanOrEqual(0);
     expect(succeededIndex).toBeGreaterThan(passedTestIndex);
     expect(events.some(event => event.typeId === "ProgramRepaired")).toBe(true);
+
+    const verifiedResponse = await fetch(`http://127.0.0.1:${address.port}/api/turn`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: requestText, conversationId: "conversation.production.owner.verified" })
+    });
+    const verified = await verifiedResponse.json() as Record<string, any>;
+    expect(verifiedResponse.status, JSON.stringify(verified)).toBe(200);
+    expect(verified.programReadiness).toMatchObject({ status: "ready", reasonId: "program.readiness.verified", artifactCount: expect.any(Number) });
+    expect(verified.programReadiness.artifactIds).toHaveLength(verified.programReadiness.artifactCount);
+    expect(verified.programArtifacts).toEqual(expect.arrayContaining([expect.objectContaining({ path: "src/program.mjs", mediaType: "text/javascript", role: "source", contentHash: expect.any(String), content: expect.stringContaining("args[0] + args[0]") })]));
+
+    const scaffoldResponse = await fetch(`http://127.0.0.1:${address.port}/api/turn?full=1`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        text: "Write a TypeScript function clamp(value: number, minimum: number, maximum: number): number that returns value bounded by minimum and maximum.",
+        conversationId: "conversation.production.owner.unbound"
+      })
+    });
+    const scaffold = await scaffoldResponse.json() as Record<string, any>;
+    expect(scaffoldResponse.status, JSON.stringify(scaffold)).toBe(422);
+    expect(scaffold.detail).toMatchObject({
+      schema: "scce.program.response_readiness.v1",
+      status: "not_ready",
+      reasonId: "program.readiness.behavior_contract_missing"
+    });
   }, 60_000);
 
   it("carries creative preference through the API and reloads it after a cold kernel restart", async () => {

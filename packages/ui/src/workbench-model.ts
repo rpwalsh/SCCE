@@ -36,6 +36,15 @@ export interface WorkbenchTraceEvent {
   payload?: unknown;
 }
 
+export interface WorkbenchProgramArtifact {
+  artifactId: string;
+  path: string;
+  mediaType: string;
+  content: string;
+  contentHash: string;
+  role: "source" | "test" | "config" | "doc";
+}
+
 export interface CommandPaletteEntry {
   id: string;
   label: string;
@@ -212,6 +221,41 @@ export function withheldSurfaceView(payload: unknown): WithheldSurfaceViewModel 
   const reasonId = typeof record.reasonId === "string" ? record.reasonId : "";
   if (!reasonId) return undefined;
   return { reasonId, detail: record };
+}
+
+export function programArtifactsFromTurn(turn: unknown): WorkbenchProgramArtifact[] {
+  if (!turn || typeof turn !== "object" || Array.isArray(turn)) return [];
+  const value = turn as Record<string, unknown>;
+  const readiness = value.programReadiness;
+  if (!readiness || typeof readiness !== "object" || Array.isArray(readiness)) return [];
+  const ready = readiness as Record<string, unknown>;
+  if (ready.schema !== "scce.program.response_readiness.v1" || ready.status !== "ready") return [];
+  if (!Array.isArray(value.programArtifacts) || !Array.isArray(ready.artifactIds)) return [];
+  const artifacts = value.programArtifacts.filter((item): item is WorkbenchProgramArtifact => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+    const artifact = item as Record<string, unknown>;
+    const path = typeof artifact.path === "string" ? artifact.path.replaceAll("\\", "/") : "";
+    const role = artifact.role;
+    return typeof artifact.artifactId === "string"
+      && typeof artifact.contentHash === "string"
+      && artifact.contentHash.length > 0
+      && typeof artifact.mediaType === "string"
+      && typeof artifact.content === "string"
+      && /^(source|test|config|doc)$/u.test(String(role))
+      && path.length > 0
+      && !path.startsWith("/")
+      && !/^[A-Za-z]:/u.test(path)
+      && !path.split("/").some(part => !part || part === "." || part === "..");
+  });
+  const artifactIds = ready.artifactIds.filter((id): id is string => typeof id === "string");
+  if (ready.artifactCount !== artifacts.length || artifactIds.length !== artifacts.length) return [];
+  const receivedIds = new Set(artifacts.map(artifact => artifact.artifactId));
+  const declaredIds = new Set(artifactIds);
+  return receivedIds.size === artifacts.length
+    && declaredIds.size === artifactIds.length
+    && artifactIds.every(id => receivedIds.has(id))
+    ? artifacts
+    : [];
 }
 
 export function evidenceTreeFromTurn(turn: unknown): WorkbenchTreeItem[] {

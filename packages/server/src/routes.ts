@@ -19,6 +19,7 @@ import { createDeveloperSurfaceState, hydrateApprovals, hydrateSurfaceFromTurn, 
 import type { RuntimeStartupReadiness, RuntimeStartupReadinessSnapshot } from "./startup.js";
 import { turnTaskRegistryFor, type TurnTaskFrame } from "./turn-task-registry.js";
 import { createStaleWhileRevalidateCache, type StaleWhileRevalidateCache } from "./stale-while-revalidate.js";
+import { programResponseReadiness } from "./program-response-readiness.js";
 
 export interface ApiContext {
   /** Path of scce.config.json; settings routes write back through the shared schema. */
@@ -976,10 +977,20 @@ async function dispatch(
         } : {})
       });
       traceEvent(trace, { stage: "turn.kernel.returned", label: "api.turn", durationMs: Date.now() - turnStarted, counts: { evidence: result.evidence.length } });
-      // Program turns carry a proof-bearing executable proposal as their answer surface. The
-      // proposal is valid even when Mouth has no prose realization for an empty source workspace.
-      const programProposalTurn = Boolean(result.constructGraph.program
-        && (turn.requestedAuthority === "program" || workspaceCodingInput));
+      const programReadiness = (result.requestedAuthority === "program" || turn.requestedAuthority === "program") && !workspaceCodingInput
+        ? programResponseReadiness({ program: result.constructGraph.program, buildTest: result.buildTest })
+        : undefined;
+      if (programReadiness && programReadiness.status !== "ready") {
+        traceEvent(trace, {
+          stage: "turn.withheld",
+          label: "api.turn.program",
+          support: programReadiness
+        });
+        throw new HttpError(422, "runtime.declined.program_not_ready", toJsonValue(programReadiness));
+      }
+      // A verified program artifact can answer without a separate prose realization.
+      const programProposalTurn = programReadiness?.status === "ready"
+        || Boolean(result.constructGraph.program && workspaceCodingInput);
       // The decline carries the turn's own typed withholding record, so a surface renders a reason instead of "".
       if (!turnAnswerHasSpeech(result.answer) && !programProposalTurn) {
         const withheld = result.withheld ?? withheldSurfaceForTurn(result);
@@ -1159,6 +1170,10 @@ async function dispatch(
       });
       const baseResponse = {
         ...turnResponse,
+        ...(programReadiness ? {
+          programReadiness: toJsonValue(programReadiness),
+          programArtifacts: programReadiness.status === "ready" ? result.buildTest?.artifacts ?? [] : []
+        } : {}),
         dialogue: dialogueResponse,
         deadline: deadlineStatus,
         persistence: {

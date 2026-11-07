@@ -99,6 +99,10 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
     .details summary { cursor:pointer; font-size:12px; color:var(--muted); user-select:none; }
     .details summary:hover { color:var(--text); }
     .details pre { font-size:12px; max-height:220px; overflow:auto; background:rgba(0,0,0,0.28); padding:8px; border-radius:5px; margin-top:6px; }
+    .program-artifacts { margin-top:10px; border-top:1px solid var(--line); padding-top:6px; }
+    .program-artifact { margin:6px 0; }
+    .program-artifact a { color:var(--accent); font:12px Consolas, monospace; }
+    .program-artifact details { margin-top:4px; }
     .typing { display:flex; align-items:center; gap:6px; color:var(--muted); font-size:13px; }
     .typing .dots span { animation:blink 1.2s infinite; opacity:0.2; }
     .typing .dots span:nth-child(2) { animation-delay:0.2s; }
@@ -262,9 +266,11 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
     </form>
   </dialog>
   <script type="module">
-    import { createInitialWorkbenchState, reduceWorkbench, treeFromSnapshot, traceFromEvents, evidenceTreeFromTurn, withheldSurfaceView } from '${workbenchModelRoute}';
+    import { createInitialWorkbenchState, reduceWorkbench, treeFromSnapshot, traceFromEvents, evidenceTreeFromTurn, withheldSurfaceView, programArtifactsFromTurn } from '${workbenchModelRoute}';
     const STATIC_EXPORT = ${scriptLiteral(options.staticConnector === true)};
     const CONNECTOR_ENABLED = true;
+    const programArtifactUrls = new Set();
+    window.addEventListener('pagehide', () => { for (const url of programArtifactUrls) URL.revokeObjectURL(url); programArtifactUrls.clear(); });
     let workbench = createInitialWorkbenchState(${scriptLiteral(serverUrl)});
     if (STATIC_EXPORT) workbench = reduceWorkbench(workbench, { type: 'tree.replace', tree: [] });
     const apply = action => { workbench = reduceWorkbench(workbench, action); return workbench; };
@@ -392,6 +398,38 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
     }
     function turnDetail(r) {
       return { dialogue: r.dialogue || null, proof: r.entailment?.proof || null, actionGraph: r.actionGraph || null, evidence: evidenceRows(r) };
+    }
+    function renderProgramArtifacts(row, turn) {
+      const artifacts = programArtifactsFromTurn(turn);
+      const bubble = row && row.querySelector('.bubble');
+      if (!bubble || !artifacts.length || bubble.querySelector('.program-artifacts')) return;
+      const section = document.createElement('section');
+      section.className = 'program-artifacts';
+      for (const artifact of artifacts) {
+        const item = document.createElement('div');
+        item.className = 'program-artifact';
+        const link = document.createElement('a');
+        const url = URL.createObjectURL(new Blob([artifact.content], { type: artifact.mediaType }));
+        programArtifactUrls.add(url);
+        link.href = url;
+        link.download = artifact.path.replaceAll('\\\\', '/').split('/').pop() || 'artifact';
+        link.textContent = artifact.path;
+        link.setAttribute('aria-label', artifact.path);
+        link.addEventListener('click', () => setTimeout(() => { URL.revokeObjectURL(url); programArtifactUrls.delete(url); }, 1000), { once: true });
+        item.appendChild(link);
+        if (artifact.role === 'source' || artifact.role === 'test') {
+          const details = document.createElement('details');
+          const summary = document.createElement('summary');
+          summary.textContent = artifact.path;
+          const preview = document.createElement('pre');
+          preview.textContent = artifact.content;
+          details.appendChild(summary);
+          details.appendChild(preview);
+          item.appendChild(details);
+        }
+        section.appendChild(item);
+      }
+      bubble.appendChild(section);
     }
     function evidenceRows(r) {
       return (Array.isArray(r && r.evidence) ? r.evidence : []).slice(0, 12).map(span => {
@@ -554,7 +592,8 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
           if (typeof frame.answer === 'string' && answerHasSpeech(frame.answer)) showAnswerPreview(frame.answer);
         });
         hideTyping(); setSending(false);
-        add('scce', turnSurface(result), turnDetail(result), streamingAnswerRow);
+        const answerRow = add('scce', turnSurface(result), turnDetail(result), streamingAnswerRow);
+        renderProgramArtifacts(answerRow, result);
         streamingAnswerRow = null;
         addFeedbackControls(result.dialogue, String(state.promptText || ''));
         setInspector({ dialogue: result.dialogue, proof: result.entailment?.proof, actionGraph: result.actionGraph });
@@ -868,8 +907,10 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
           if (typeof frame.answer === 'string' && answerHasSpeech(frame.answer)) showAnswerPreview(frame.answer);
         });
         hideTyping(); setSending(false); runningTaskId = '';
-        // The runtime's own force decides how the surface reads: a non-assertive continuation is a notice, not an answer.
-        add(r.assistantForce === 'insufficient_support' && !(r.evidence || []).length ? 'notice' : 'scce', turnSurface(r), turnDetail(r), streamingAnswerRow);
+        const hasValidatedProgramArtifacts = programArtifactsFromTurn(r).length > 0;
+        // A source-tested program artifact is its own validated output even if unrelated factual evidence was inconclusive.
+        const answerRow = add(!hasValidatedProgramArtifacts && r.assistantForce === 'insufficient_support' && !(r.evidence || []).length ? 'notice' : 'scce', turnSurface(r), turnDetail(r), streamingAnswerRow);
+        renderProgramArtifacts(answerRow, r);
         streamingAnswerRow = null;
         renderEvidence(r);
         addLearningControls(r, text);
