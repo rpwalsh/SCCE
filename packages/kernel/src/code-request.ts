@@ -47,7 +47,7 @@ const CODE_EXTENSION_LANGUAGES: ReadonlyMap<string, string> = new Map([
  * corpus the generator can never reach.
  */
 export function codeLanguageForPath(value: string): string | undefined {
-  const extension = /\.([\p{L}\p{N}]{1,4})$/u.exec(value.trim())?.[1]?.toLocaleLowerCase();
+  const extension = /\.([\p{L}\p{N}]{1,12})$/u.exec(value.trim())?.[1]?.toLocaleLowerCase();
   return extension ? CODE_EXTENSION_LANGUAGES.get(extension) : undefined;
 }
 

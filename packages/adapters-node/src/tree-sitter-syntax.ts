@@ -29,15 +29,28 @@ import type {
   RepositorySyntaxNodeKind,
   RepositorySyntaxParseResult
 } from "@scce/kernel";
-import { validateRepositorySyntaxNodes } from "@scce/kernel";
+import { codeLanguageForPath, validateRepositorySyntaxNodes } from "@scce/kernel";
 
-export type TreeSitterLanguageId = "typescript" | "tsx" | "javascript" | "python";
+export type TreeSitterLanguageId =
+  | "typescript" | "tsx" | "javascript" | "python" | "rust" | "go" | "java" | "kotlin"
+  | "swift" | "c" | "cpp" | "csharp" | "ruby" | "php" | "shell";
 
 const GRAMMAR_WASM_MODULE_SPECIFIER: Record<TreeSitterLanguageId, string> = {
   typescript: "tree-sitter-wasms/out/tree-sitter-typescript.wasm",
   tsx: "tree-sitter-wasms/out/tree-sitter-tsx.wasm",
   javascript: "tree-sitter-wasms/out/tree-sitter-javascript.wasm",
-  python: "tree-sitter-wasms/out/tree-sitter-python.wasm"
+  python: "tree-sitter-wasms/out/tree-sitter-python.wasm",
+  rust: "tree-sitter-wasms/out/tree-sitter-rust.wasm",
+  go: "tree-sitter-wasms/out/tree-sitter-go.wasm",
+  java: "tree-sitter-wasms/out/tree-sitter-java.wasm",
+  kotlin: "tree-sitter-wasms/out/tree-sitter-kotlin.wasm",
+  swift: "tree-sitter-wasms/out/tree-sitter-swift.wasm",
+  c: "tree-sitter-wasms/out/tree-sitter-c.wasm",
+  cpp: "tree-sitter-wasms/out/tree-sitter-cpp.wasm",
+  csharp: "tree-sitter-wasms/out/tree-sitter-c_sharp.wasm",
+  ruby: "tree-sitter-wasms/out/tree-sitter-ruby.wasm",
+  php: "tree-sitter-wasms/out/tree-sitter-php.wasm",
+  shell: "tree-sitter-wasms/out/tree-sitter-bash.wasm"
 };
 
 let parserInitPromise: Promise<void> | undefined;
@@ -92,6 +105,51 @@ async function parserFor(languageId: TreeSitterLanguageId): Promise<Parser> {
   }
 }
 
+/**
+ * Synchronously inspect the real grammar tree without retaining a WASM allocation. The callback runs while the
+ * parsed tree is alive; `startIndex`/`endIndex` are the parser's UTF-16 code-unit coordinates, and the callback must
+ * not return a Promise or retain any syntax node after it returns. The persistent RepositorySyntaxNode contract
+ * converts these positions to UTF-8 byte offsets separately.
+ */
+export async function withRepositorySyntaxTree<T>(input: {
+  fileId: string;
+  languageId: TreeSitterLanguageId;
+  text: string;
+}, useRoot: (root: Parser.SyntaxNode) => T): Promise<T | undefined> {
+  const parser = await parserFor(input.languageId);
+  const tree = parser.parse(input.text);
+  if (!tree) return undefined;
+  try {
+    const result = useRoot(tree.rootNode);
+    if (result && typeof result === "object" && "then" in result && typeof result.then === "function") {
+      throw new Error("repository syntax tree callback must be synchronous");
+    }
+    return result;
+  } finally {
+    tree.delete();
+  }
+}
+
+function utf8ByteOffsets(text: string): Uint32Array {
+  const offsets = new Uint32Array(text.length + 1);
+  let utf16 = 0;
+  let bytes = 0;
+  while (utf16 < text.length) {
+    offsets[utf16] = bytes;
+    const codePoint = text.codePointAt(utf16)!;
+    const units = codePoint > 0xffff ? 2 : 1;
+    if (units === 2) offsets[utf16 + 1] = bytes;
+    bytes += codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4;
+    utf16 += units;
+    offsets[utf16] = bytes;
+  }
+  return offsets;
+}
+
+function byteOffset(offsets: Uint32Array, parserOffset: number): number {
+  return offsets[parserOffset] ?? offsets[offsets.length - 1] ?? 0;
+}
+
 function contentHash(text: string): string {
   return `sha256:${createHash("sha256").update(text, "utf8").digest("hex")}`;
 }
@@ -137,21 +195,46 @@ const DECLARATION_KIND_BY_NODE_TYPE: Partial<Record<string, RepositorySyntaxNode
   method_signature: "method",
   type_alias_declaration: "type",
   import_statement: "import",
+  import_declaration: "import",
+  import_header: "import",
   export_statement: "export",
   call_expression: "call",
+  method_invocation: "call",
   comment: "comment",
+  line_comment: "comment",
+  block_comment: "comment",
   // Python (tree-sitter-python): a different grammar, same RepositorySyntaxNodeKind vocabulary.
   class_definition: "class",
   function_definition: "function",
   import_from_statement: "import",
-  call: "call"
+  call: "call",
+  // These grammar node names normalize syntax only; they do not assert symbol identity.
+  function_item: "function",
+  method_declaration: "method",
+  struct_item: "class",
+  struct_specifier: "class",
+  class_specifier: "class",
+  trait_item: "interface",
+  protocol_declaration: "interface",
+  impl_item: "namespace",
+  mod_item: "module",
+  use_declaration: "import",
+  type_declaration: "type",
+  type_spec: "type",
+  enum_declaration: "type",
+  enum_item: "type",
+  formal_parameter: "parameter",
+  parameter_declaration: "parameter",
+  object_declaration: "class",
+  class: "class",
+  method: "method"
 };
 
 const PARAMETER_NODE_TYPES = new Set([
-  "required_parameter", "optional_parameter", "rest_parameter",
+  "required_parameter", "optional_parameter", "rest_parameter", "parameter",
   "typed_parameter", "default_parameter", "typed_default_parameter"
 ]);
-const NAME_FIELD_KIND_NODE_TYPES = new Set(["variable_declarator"]);
+const NAME_FIELD_KIND_NODE_TYPES = new Set(["variable_declarator", "property_declaration", "let_declaration", "variable_declaration", "var_declaration"]);
 const ASSIGNMENT_NODE_TYPES = new Set(["assignment"]);
 
 function nextNodeId(fileId: string, sequence: { value: number }): string {
@@ -170,6 +253,16 @@ function declarationName(node: Parser.SyntaxNode): string | undefined {
   }
   if (node.type === "typed_parameter") {
     return node.namedChild(0)?.text;
+  }
+  if (node.type === "parameter") {
+    return node.childForFieldName("pattern")?.text
+      ?? node.namedChildren.find(child => child.type === "simple_identifier" || child.type === "identifier")?.text
+      ?? node.namedChild(0)?.text;
+  }
+  if (node.type === "function_declaration") {
+    return node.namedChildren.find(child => child.type === "simple_identifier")?.text
+      ?? node.childForFieldName("name")?.text
+      ?? node.namedChild(0)?.text;
   }
   const named = node.childForFieldName("name");
   if (named) return named.text;
@@ -204,8 +297,8 @@ function classifyNode(node: Parser.SyntaxNode): RepositorySyntaxNodeKind | undef
  * Real recursive walk of the concrete syntax tree. Emits one
  * RepositorySyntaxNode per node this module knows how to classify
  * (module/namespace/class/interface/function/method/parameter/variable/
- * type/import/export/call/comment) with exact byte ranges from the parser
- * itself -- never a recomputed offset. Nodes this pass doesn't yet
+ * type/import/export/call/comment) with exact UTF-8 byte ranges mapped once
+ * from the parser's native UTF-16 positions. Nodes this pass doesn't yet
  * classify (bare identifiers, literals, arbitrary expressions) are walked
  * through but not emitted, rather than forced into a fabricated "unknown"
  * node for every leaf in the tree.
@@ -215,15 +308,16 @@ function walk(
   fileId: string,
   languageId: string,
   parentId: string | undefined,
+  byteOffsets: Uint32Array,
   nodes: RepositorySyntaxNode[],
   nodeById: Map<string, RepositorySyntaxNode>,
   sequence: { value: number },
   errors: RepositorySyntaxErrorSpan[]
 ): void {
   if (node.isError) {
-    errors.push({ fileId, kind: "error", byteStart: node.startIndex, byteEnd: node.endIndex, grammarNodeType: node.type });
+    errors.push({ fileId, kind: "error", byteStart: byteOffset(byteOffsets, node.startIndex), byteEnd: byteOffset(byteOffsets, node.endIndex), grammarNodeType: node.type });
   } else if (node.isMissing) {
-    errors.push({ fileId, kind: "missing", byteStart: node.startIndex, byteEnd: node.endIndex, grammarNodeType: node.type });
+    errors.push({ fileId, kind: "missing", byteStart: byteOffset(byteOffsets, node.startIndex), byteEnd: byteOffset(byteOffsets, node.endIndex), grammarNodeType: node.type });
   }
 
   const kind = node.isError ? undefined : classifyNode(node);
@@ -236,8 +330,8 @@ function walk(
       fileId,
       kind,
       name: declarationName(node),
-      byteStart: node.startIndex,
-      byteEnd: node.endIndex,
+      byteStart: byteOffset(byteOffsets, node.startIndex),
+      byteEnd: byteOffset(byteOffsets, node.endIndex),
       parentId,
       childIds: [],
       parseConfidence: node.hasError ? 0.5 : 1,
@@ -260,7 +354,7 @@ function walk(
   // "treat syntax errors as data" depends on.
   for (const child of node.children) {
     if (!child) continue;
-    walk(child, fileId, languageId, ownId, nodes, nodeById, sequence, errors);
+    walk(child, fileId, languageId, ownId, byteOffsets, nodes, nodeById, sequence, errors);
   }
 }
 
@@ -297,8 +391,9 @@ export async function parseRepositorySyntax(input: {
   const nodeById = new Map<string, RepositorySyntaxNode>();
   const sequence = { value: 0 };
   const errors: RepositorySyntaxErrorSpan[] = [];
+  const byteOffsets = utf8ByteOffsets(input.text);
   try {
-    walk(tree.rootNode, input.fileId, input.languageId, undefined, nodes, nodeById, sequence, errors);
+    walk(tree.rootNode, input.fileId, input.languageId, undefined, byteOffsets, nodes, nodeById, sequence, errors);
   } finally {
     // Cache the source-neutral result, not a live WASM tree. Keeping each tree
     // alive leaked linear WASM memory across file revisions in a warm server.
@@ -331,9 +426,11 @@ export async function parseRepositorySyntax(input: {
 }
 
 export function languageIdForFilePath(path: string): TreeSitterLanguageId | undefined {
-  if (path.endsWith(".tsx")) return "tsx";
-  if (path.endsWith(".ts") || path.endsWith(".mts") || path.endsWith(".cts")) return "typescript";
-  if (path.endsWith(".js") || path.endsWith(".mjs") || path.endsWith(".cjs") || path.endsWith(".jsx")) return "javascript";
-  if (path.endsWith(".py") || path.endsWith(".pyi")) return "python";
-  return undefined;
+  const extension = /\.([^.\\/]+)$/u.exec(path.trim())?.[1]?.toLocaleLowerCase();
+  if (extension === "tsx") return "tsx";
+  if (extension === "pyi") return "python";
+  const language = codeLanguageForPath(path);
+  return language && Object.hasOwn(GRAMMAR_WASM_MODULE_SPECIFIER, language)
+    ? language as TreeSitterLanguageId
+    : undefined;
 }

@@ -27,6 +27,30 @@ describe("bounded repo-file collection for repo cognition (Phase 15 live-turn wi
     expect(files[0]!.syntaxNodes?.some(node => node.kind === "function" && node.name === "render")).toBe(true);
   });
 
+  it("carries Rust, Kotlin, and Python declarations through requested-file ingestion with exact UTF-8 byte starts", async () => {
+    root = await mkdtemp(path.join(tmpdir(), "scce-repo-cognition-multilingual-"));
+    await mkdir(path.join(root, "src"), { recursive: true });
+    const rust = "// π🙂\npub fn caféΔ(值: i32) -> i32 { 值 + 1 }\n";
+    const kotlin = "// Δ🙂\nfun phoneIndex(value: String): String = value\n";
+    const python = "# λ🙂\ndef caféΔ(值):\n    return 值\n";
+    await Promise.all([
+      writeFile(path.join(root, "src", "lib.rs"), rust, "utf8"),
+      writeFile(path.join(root, "src", "Phone.kt"), kotlin, "utf8"),
+      writeFile(path.join(root, "src", "mod.py"), python, "utf8")
+    ]);
+
+    const files = await collectRepoFilesForCognition(root, ["src/lib.rs", "src/Phone.kt", "src/mod.py"]);
+    const rustFunction = files.find(file => file.path.endsWith("lib.rs"))?.syntaxNodes?.find(node => node.kind === "function");
+    const kotlinFunction = files.find(file => file.path.endsWith("Phone.kt"))?.syntaxNodes?.find(node => node.kind === "function");
+    const pythonFunction = files.find(file => file.path.endsWith("mod.py"))?.syntaxNodes?.find(node => node.kind === "function");
+    expect(rustFunction?.name).toBe("caféΔ");
+    expect(rustFunction?.byteStart).toBe(Buffer.byteLength(rust.slice(0, rust.indexOf("pub fn ")), "utf8"));
+    expect(kotlinFunction?.name).toBe("phoneIndex");
+    expect(kotlinFunction?.byteStart).toBe(Buffer.byteLength(kotlin.slice(0, kotlin.indexOf("fun ")), "utf8"));
+    expect(pythonFunction?.name).toBe("caféΔ");
+    expect(pythonFunction?.byteStart).toBe(Buffer.byteLength(python.slice(0, python.indexOf("def ")), "utf8"));
+  });
+
   it("attaches no syntaxNodes for a language without a wired grammar, but still returns the raw text", async () => {
     root = await mkdtemp(path.join(tmpdir(), "scce-repo-cognition-files-"));
     await writeFile(path.join(root, "notes.md"), "# real notes", "utf8");

@@ -2,7 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { validateRepositorySyntaxNodes } from "@scce/kernel";
 import { describe, expect, it } from "vitest";
-import { languageIdForFilePath, parseRepositorySyntax } from "../tree-sitter-syntax.js";
+import { languageIdForFilePath, parseRepositorySyntax, withRepositorySyntaxTree } from "../tree-sitter-syntax.js";
 
 describe("tree-sitter syntax substrate (Phase 15, 183-184)", () => {
   it("extracts real declarations, an import, and a call with exact byte ranges", async () => {
@@ -106,7 +106,46 @@ describe("tree-sitter syntax substrate (Phase 15, 183-184)", () => {
     expect(languageIdForFilePath("src/foo.ts")).toBe("typescript");
     expect(languageIdForFilePath("src/foo.tsx")).toBe("tsx");
     expect(languageIdForFilePath("src/foo.js")).toBe("javascript");
-    expect(languageIdForFilePath("src/foo.rs")).toBeUndefined();
+    expect(languageIdForFilePath("src/foo.rs")).toBe("rust");
+    expect(languageIdForFilePath("src/foo.go")).toBe("go");
+    expect(languageIdForFilePath("src/foo.java")).toBe("java");
+    expect(languageIdForFilePath("src/foo.kt")).toBe("kotlin");
+    expect(languageIdForFilePath("src/foo.swift")).toBe("swift");
+    expect(languageIdForFilePath("src/foo.c")).toBe("c");
+    expect(languageIdForFilePath("src/foo.cpp")).toBe("cpp");
+    expect(languageIdForFilePath("src/foo.cs")).toBe("csharp");
+    expect(languageIdForFilePath("src/foo.rb")).toBe("ruby");
+    expect(languageIdForFilePath("src/foo.php")).toBe("php");
+    expect(languageIdForFilePath("src/foo.sh")).toBe("shell");
+    expect(languageIdForFilePath("src/foo.RS")).toBe("rust");
+    expect(languageIdForFilePath("src/foo.sql")).toBeUndefined();
+  });
+
+  it("parses Rust function symbols with non-English identifiers and UTF-8 byte ranges", async () => {
+    const text = "// π🙂\nfn caféΔ(值: i32) -> i32 { 值 + 1 }\n";
+    const result = await parseRepositorySyntax({ fileId: "src/funk.rs", languageId: "rust", text });
+    const fn = result.nodes.find(node => node.kind === "function");
+    expect(result.errors).toEqual([]);
+    expect(fn?.name).toBe("caféΔ");
+    expect(fn?.byteStart).toBe(Buffer.byteLength(text.slice(0, text.indexOf("fn ")), "utf8"));
+    expect(fn?.byteEnd).toBe(Buffer.byteLength(text, "utf8") - 1);
+    expect(result.nodes.some(node => node.kind === "parameter" && node.name === "值")).toBe(true);
+    expect(validateRepositorySyntaxNodes(result.nodes)).toEqual([]);
+  });
+
+  it("parses Kotlin declarations and exposes real grammar ranges only for the synchronous callback scope", async () => {
+    const text = "// Δ🙂\nfun phoneIndex(value: String): String = value\n";
+    const result = await parseRepositorySyntax({ fileId: "src/phone.kt", languageId: "kotlin", text });
+    const fn = result.nodes.find(node => node.kind === "function");
+    expect(result.errors).toEqual([]);
+    expect(fn?.name).toBe("phoneIndex");
+    expect(fn?.byteStart).toBe(Buffer.byteLength(text.slice(0, text.indexOf("fun ")), "utf8"));
+    expect(result.nodes.some(node => node.kind === "parameter" && node.name === "value")).toBe(true);
+    const observed = await withRepositorySyntaxTree({ fileId: "src/phone.kt", languageId: "kotlin", text }, root => {
+      const visit = (node: typeof root): number | undefined => node.type === "function_declaration" ? node.startIndex : node.children.map(visit).find(value => value !== undefined);
+      return visit(root);
+    });
+    expect(observed).toBe(text.indexOf("fun "));
   });
 
   it("parses real JavaScript (no TypeScript-only syntax) through the javascript grammar", async () => {

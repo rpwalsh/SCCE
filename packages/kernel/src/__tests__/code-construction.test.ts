@@ -99,6 +99,7 @@ describe("code as a learnable surface", () => {
   it("names the formal language of a path from the same table the request signal reads", () => {
     expect(codeLanguageForPath("src/main.ts")).toBe("typescript");
     expect(codeLanguageForPath("lib/thing.py")).toBe("python");
+    expect(codeLanguageForPath("Sources/Phone.swift")).toBe("swift");
     expect(codeLanguageForPath("notes.md")).toBeUndefined();
   });
 });

@@ -5,9 +5,9 @@
  * repo-cognition.ts's live-turn wiring. Reads only caller-supplied
  * requestedPaths (never a directory walk -- an explicit, already-bounded
  * selection the client made, matching the existing workspace-coding
- * request's own requestedPaths field), parsing TS/TSX/JS files through
- * the real tree-sitter substrate so the kernel's issue localizer can use
- * real declarations instead of falling back to its regex extractor.
+ * request's own requestedPaths field), parsing registered source-language
+ * paths through the real tree-sitter substrate so the kernel's issue
+ * localizer can use grammar declarations instead of only raw text.
  *
  * Every failure mode (path escapes the workspace root, file missing, file
  * too large, parse error) is a silent skip, never a thrown error -- repo
