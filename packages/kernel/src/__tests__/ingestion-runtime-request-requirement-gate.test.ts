@@ -10,7 +10,8 @@ import { createLanguageMemoryRuntime } from "../language-memory-runtime.js";
 import { createLanguageAcquisitionEngine } from "../language.js";
 import { createClock, createHasher } from "../primitives.js";
 import { DEFAULT_NGRAM_SETTINGS } from "../corpus-registry.js";
-import type { LanguagePatternRecord, LanguageUnitRecord, NgramModelRecord, NgramObservation, QuarantineSource, ScceKernelDeps } from "../storage.js";
+import { filterEventRange } from "./event-range-fixture.js";
+import type { EventRangeQuery, LanguagePatternRecord, LanguageUnitRecord, NgramModelRecord, NgramObservation, QuarantineSource, ScceKernelDeps } from "../storage.js";
 import type { EvidenceSpan, ScceEvent, SourceVersion, LanguageProfile, JsonValue } from "../types.js";
 
 // A hand-authored English request/authority-routing corpus used to disguise a
@@ -116,6 +117,9 @@ async function ingestFixtureText(depsOverrides: Partial<ScceKernelDeps>, content
     sourceInformationLabel: informationLabel,
     ...depsOverrides,
     storage: {
+      events: {
+        readRange: async (query: EventRangeQuery) => filterEventRange(events, query)
+      },
       transaction: async <T>(operation: () => Promise<T>) => { transactionDepth++; try { return await operation(); } finally { transactionDepth--; } },
       blobs: {
         put: async (content: Uint8Array) => {
