@@ -34,6 +34,9 @@ import { primeLearnedAnswerUnitForms } from "../../../kernel/src/learned-answer-
 import { requestUnitMatchesSurface } from "../../../kernel/src/local-evidence-runtime.js";
 import { scopeLanguageMemoryStateToLanguage } from "../../../kernel/src/language-memory-runtime.js";
 import { conversationalSession } from "../../../kernel/src/__tests__/conversational-session-fixture.js";
+import { requestFeatures } from "../../../kernel/src/request-requirement-learning.js";
+import { CORPUS_SOURCE_SYSTEM_IDS } from "../../../kernel/src/corpus-registry.js";
+import { REQUEST_COMMUNICATIVE_ACT_SOURCE_SYSTEM } from "../../../kernel/src/request-communicative-act.js";
 import type {
   EvidenceSpan,
   InformationLabel,
@@ -1966,12 +1969,16 @@ describe("dialogue corpus training", () => {
     const patterns = fixture.state.patterns.filter(pattern => recordOf(pattern.patternJson).schema === "scce.request_requirement_pattern.v1");
     expect(result.requestAuthorities).toEqual({ examples: 6, evidenceBoundExamples: 6, patternsPersisted: patterns.length });
     expect(patterns.length).toBeGreaterThan(0);
-    expect(patterns.some(pattern => recordOf(pattern.patternJson).sourceSystem === "dialogue")).toBe(true);
+    expect(patterns.every(pattern => recordOf(pattern.patternJson).sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.dialogue)).toBe(true);
     for (const pattern of patterns) {
       const record = recordOf(pattern.patternJson);
       expect(record.sourceMetadata).toEqual(sourceMetadata);
       const ranges = record.sourceTurnRanges as Array<{ turnIndex: number; authority: string; startCodePoint: number; endCodePoint: number; evidenceIds: string[] }>;
-      expect(ranges).toHaveLength(6);
+      const featureKey = `${String(record.anchor)}:${String(record.surface)}`;
+      const expectedOwners = turns.filter(turn => turn.requestAuthority
+        && requestFeatures(turn.surface).some(feature => feature.key === featureKey));
+      expect(ranges.map(range => range.turnIndex)).toEqual(expectedOwners.map(turn => turn.index));
+      expect(ranges.length).toBeGreaterThanOrEqual(2);
       expect(ranges.every(range => range.authority === "factual" || range.authority === "creative")).toBe(true);
       for (const range of ranges) {
         const owners = fixture.state.evidence.filter(span => range.evidenceIds.includes(String(span.id)));
@@ -1980,8 +1987,9 @@ describe("dialogue corpus training", () => {
           && span.charStart <= range.startCodePoint && span.charEnd >= range.endCodePoint && span.status === "promoted")).toBe(true);
       }
     }
-    expect(allSourceSystems(fixture.state)).toEqual(new Set(["dialogue"]));
-
+    expect(allSourceSystems(fixture.state)).toEqual(new Set(["dialogue", CORPUS_SOURCE_SYSTEM_IDS.dialogue, REQUEST_COMMUNICATIVE_ACT_SOURCE_SYSTEM]));
+    const originalModelIds = fixture.state.models.map(model => model.id);
+    const originalVersionIds = fixture.state.sourceVersions.map(version => version.id);
     const revisedTurns = turns.map(turn => turn.requestAuthority ? { ...turn, requestAuthority: "factual" as const } : turn);
     await writeFile(path.join(root, "authority.json"), JSON.stringify({ schema: "scce.dialogue_transcript.v1", text, turns: revisedTurns, sourceMetadata }), "utf8");
     const revised = await trainDialogueCorpus({ storage: fixture.storage, rootPath: root, authorship: "human_authored", informationLabel: ownerLabel, actsOnly: true });
@@ -1990,6 +1998,13 @@ describe("dialogue corpus training", () => {
     expect(revisedPatterns.length).toBeGreaterThan(0);
     expect(revisedPatterns.every(pattern => recordOf(pattern.patternJson).selectedAuthority === "factual"
       && (recordOf(pattern.patternJson).sourceTurnRanges as Array<{ authority: string }>).every(range => range.authority === "factual"))).toBe(true);
+    const unlabeledTurns = turns.map(({ requestAuthority: _authority, ...turn }) => turn);
+    await writeFile(path.join(root, "authority.json"), JSON.stringify({ schema: "scce.dialogue_transcript.v1", text, turns: unlabeledTurns, sourceMetadata }), "utf8");
+    const removed = await trainDialogueCorpus({ storage: fixture.storage, rootPath: root, authorship: "human_authored", informationLabel: ownerLabel, actsOnly: true });
+    expect(removed.requestAuthorities).toEqual({ examples: 0, evidenceBoundExamples: 0, patternsPersisted: 0 });
+    expect(fixture.state.patterns.filter(pattern => recordOf(pattern.patternJson).schema === "scce.request_requirement_pattern.v1")).toEqual([]);
+    expect(fixture.state.models.map(model => model.id)).toEqual(originalModelIds);
+    expect(fixture.state.sourceVersions.map(version => version.id)).toEqual(originalVersionIds);
   }, 120_000);
 
   it("refuses to train on SCCE's own generations", async () => {

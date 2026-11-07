@@ -269,6 +269,12 @@ async function persistDialogueRequestAuthorities(
       return [{ turn, evidenceIds: owning.map(span => String(span.id)) }];
     });
     examples += bound.length;
+    const featureOwners = new Map<string, typeof bound>();
+    for (const row of bound) for (const key of new Set(requestFeatures(row.turn.surface).map(feature => feature.key))) {
+      const owners = featureOwners.get(key) ?? [];
+      owners.push(row);
+      featureOwners.set(key, owners);
+    }
     const compiled = compileRequestRequirementCorpus({
       corpus: { schema: "scce.request_requirement_corpus.v1", language: "und", examples: bound.map(({ turn }) => ({ text: turn.surface, authority: turn.requestAuthority! })) },
       profileId: profile.id,
@@ -281,7 +287,7 @@ async function persistDialogueRequestAuthorities(
     const patterns = compiled.patterns.map(pattern => {
       const record = pattern.patternJson as Record<string, JsonValue>;
       const featureKey = `${String(record.anchor)}:${String(record.surface)}`;
-      const supportingTurns = bound.filter(({ turn }) => requestFeatures(turn.surface).some(feature => feature.key === featureKey));
+      const supportingTurns = featureOwners.get(featureKey) ?? [];
       const sourceTurnRanges = supportingTurns.map(({ turn, evidenceIds }) => ({
         turnIndex: turn.index,
         authority: turn.requestAuthority!,

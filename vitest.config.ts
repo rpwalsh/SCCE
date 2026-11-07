@@ -1,9 +1,11 @@
 import { defineConfig } from "vitest/config";
+import { fileURLToPath } from "node:url";
 
 const testHeapMb = Number(process.env.SCCE_TEST_HEAP_MB ?? 8192);
 if (!Number.isSafeInteger(testHeapMb) || testHeapMb <= 0) throw new Error("SCCE_TEST_HEAP_MB must be a positive integer");
 
 export default defineConfig({
+  resolve: { alias: { "@scce/kernel": fileURLToPath(new URL("./packages/kernel/src/index.ts", import.meta.url)) } },
   test: {
     include: ["packages/**/*.test.ts"],
     testTimeout: 120000,
