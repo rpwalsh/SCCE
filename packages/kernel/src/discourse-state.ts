@@ -3,6 +3,7 @@
 import type { Hasher, JsonValue } from "./types.js";
 import { clamp01, createHasher, toJsonValue } from "./primitives.js";
 import { corpusIdentitySignals, corpusNamedIdentities } from "./corpus-identity.js";
+import type { RequestCorpusSubject } from "./corpus-identity-runtime.js";
 
 export const DISCOURSE_SIGNAL_IDS = {
   currentSurfaceSparse: "disc.signal.2b6c4a91",
@@ -39,6 +40,8 @@ export interface BuildDiscourseObjectStateInput {
   sessionId?: string;
   currentText: string;
   recentTurns: readonly JsonValue[];
+  /** Request-local corpus measurement; prevents reading an ambient or previous turn's identity. */
+  requestSubject?: RequestCorpusSubject;
   hasher?: Hasher;
   now?: number;
 }
@@ -68,7 +71,10 @@ export function buildDiscourseObjectState(input: BuildDiscourseObjectStateInput)
   // A dense surface is not enough to decide whether the user opened a new topic. Until the corpus has supplied
   // identity/continuation signals, keep the conservative boundary used by the cold-start path rather than
   // inheriting an evidence carrier on the basis of word shape alone.
-  if (!corpusIdentitySignals() && surface.specificityMass >= 0.72) return undefined;
+  const corpusIdentityAvailable = input.requestSubject
+    ? input.requestSubject.measured
+    : Boolean(corpusIdentitySignals());
+  if (!corpusIdentityAvailable && surface.specificityMass >= 0.72) return undefined;
   const newestIndex = turns.length - 1;
   const turnDistance = Math.max(0, newestIndex - carrierIndex);
   const recencyMass = clamp01(1 - turnDistance / 12);
@@ -85,7 +91,9 @@ export function buildDiscourseObjectState(input: BuildDiscourseObjectStateInput)
   // which is right for widening a search and wrong for this: "Explain relativity." offers the content run
   // "explain relativity" and names no subject the corpus is titled with, so it stays on the conversation's
   // subject instead of starting a new one about the imperative verb.
-  const namesOwnSubject = corpusNamedIdentities(input.currentText).length > 0;
+  const namesOwnSubject = input.requestSubject
+    ? input.requestSubject.identities.length > 0
+    : corpusNamedIdentities(input.currentText).length > 0;
   const bindingConfidence = clamp01(
     (namesOwnSubject ? sparseMass : Math.max(sparseMass, 0.78)) * 0.58 + recencyMass * 0.18 + evidenceMass * 0.22
   );

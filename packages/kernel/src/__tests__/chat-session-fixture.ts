@@ -22,6 +22,7 @@ import {
   type TurnResult
 } from "../index.js";
 import { corpusIdentitySurface } from "../corpus-identity.js";
+import { measureRequestCorpusSubject } from "../corpus-identity-runtime.js";
 import { deriveClosedClassWords } from "../closed-class-words.js";
 import { trainKneserNey } from "../kneser-ney.js";
 import { storageFixtureForEvaluation } from "./evidence-promotion-evaluation-fixture.js";
@@ -124,7 +125,8 @@ export function chatSession() {
   let index = 0;
   return {
     async turn(text: string): Promise<{ result: TurnResult; trace: TraceRow[] }> {
-      const discourse = buildDiscourseObjectState({ sessionId: "session.sparse-turn", currentText: text, recentTurns, now: 1 });
+      const requestSubject = await measureRequestCorpusSubject({ requestText: text, evidence: storage.evidence });
+      const discourse = buildDiscourseObjectState({ sessionId: "session.sparse-turn", currentText: text, recentTurns, requestSubject, now: 1 });
       const metadata: Record<string, JsonValue> = discourse
         ? {
           runtimeEvidenceIds: discourse.evidenceIds,

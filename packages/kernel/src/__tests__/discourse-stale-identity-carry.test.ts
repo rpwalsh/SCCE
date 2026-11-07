@@ -23,6 +23,7 @@ import {
   type TurnResult
 } from "../index.js";
 import { clearCorpusIdentitySignals, corpusIdentitySurface } from "../corpus-identity.js";
+import { measureRequestCorpusSubject, type RequestCorpusSubject } from "../corpus-identity-runtime.js";
 import { storageFixtureForEvaluation } from "./evidence-promotion-evaluation-fixture.js";
 
 // Shaped like evidence_span.7c0120c3...e8509c986e2b, the reference-list chunk a live chat probe served for five different turns.
@@ -107,10 +108,19 @@ function chatSession(input: { carrierEvidenceIds: string[]; residentMissesEinste
   ];
   const session = {
     lastDiscourseObjectBuilt: false,
+    previousRequestSubject: undefined as RequestCorpusSubject | undefined,
     async turn(text: string): Promise<{ result: TurnResult; trace: TraceRow[] }> {
-      // Built the way routes.ts builds it: before the kernel turn primes this request's corpus identity.
-      const discourse = buildDiscourseObjectState({ sessionId: "session.chat-carry", currentText: text, recentTurns, now: 1 });
+      const requestSubject = await measureRequestCorpusSubject({ requestText: text, evidence: storage.evidence });
+      // Deliberately build from the prior measurement to exercise rejection of a stale server-built object.
+      const discourse = buildDiscourseObjectState({
+        sessionId: "session.chat-carry",
+        currentText: text,
+        recentTurns,
+        requestSubject: session.previousRequestSubject ?? requestSubject,
+        now: 1
+      });
       session.lastDiscourseObjectBuilt = Boolean(discourse);
+      session.previousRequestSubject = requestSubject;
       const metadata: Record<string, JsonValue> = discourse
         ? {
           runtimeEvidenceIds: discourse.evidenceIds,

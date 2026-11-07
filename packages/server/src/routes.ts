@@ -917,7 +917,7 @@ async function dispatch(
         support: { measured: requestSubject.measured, identities: requestSubject.identities.slice(0, 4) }
       });
       const discourseObject = sessionId && !requestNamesOwnSubject
-        ? buildDiscourseObjectState({ sessionId, currentText: turn.text, recentTurns: recentTurnsForMetadata, now: Date.now() })
+        ? buildDiscourseObjectState({ sessionId, currentText: turn.text, recentTurns: recentTurnsForMetadata, requestSubject, now: Date.now() })
         : undefined;
       const sparseSessionFollowup = Boolean(discourseObject) && recentEvidenceIds.length > 0;
       const active = hydratedRuntime.marker;

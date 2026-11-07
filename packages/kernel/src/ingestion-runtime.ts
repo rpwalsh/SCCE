@@ -1028,14 +1028,18 @@ export function createIngestionRuntime(options: {
           ],
           informationLabel
         );
-        if (deps.storage.languageMemory.putLanguagePatterns) {
-          await deps.storage.languageMemory.putLanguagePatterns(
-            labeledReversiblePatterns
-          );
-        } else {
-          for (const pattern of labeledReversiblePatterns) {
-            await deps.storage.languageMemory.putLanguagePattern(pattern);
-          }
+        if (labeledReversiblePatterns.length) {
+          await deps.storage.transaction(async () => {
+            if (deps.storage.languageMemory.putLanguagePatterns) {
+              await deps.storage.languageMemory.putLanguagePatterns(
+                labeledReversiblePatterns
+              );
+            } else {
+              for (const pattern of labeledReversiblePatterns) {
+                await deps.storage.languageMemory.putLanguagePattern(pattern);
+              }
+            }
+          });
         }
         events.push(await append(eventFactory.create({
           episodeId,
