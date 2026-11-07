@@ -43,6 +43,11 @@ export function createCapabilityRegistry(configured: CapabilityConfig = {}) {
   };
 }
 
+/** Ephemeral validation of a canonical owner program is separate from general process mutation. */
+export function createProgramLocalValidationCapability(configured: boolean): Capability {
+  return capability("program.local_validation", "process", false, 0.5, false, configured);
+}
+
 export function createActionPlanner(options: { idFactory: IdFactory; policy: PolicyProfile }) {
   return {
     plan(input: { episodeId: EpisodeId; capability: Capability; payload: unknown; approved?: boolean; now: number }): CapabilityPlan {

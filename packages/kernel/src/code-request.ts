@@ -371,12 +371,61 @@ function declaredCallableIds(text: string): Set<string> {
     const call = readBalancedJson(text, cursor, "(", ")");
     if (!call) continue;
     cursor = call.end;
-    const parameters = call.inner.split(",").map(value => value.trim()).filter(Boolean);
-    if (parameters.length > 0 && parameters.every(value => readIdentifier(value, 0)?.end === value.length)) {
+    const parameters = splitParameterList(call.inner).map(declaredParameterName);
+    if (parameters.length > 0 && parameters.every((value): value is string => value !== undefined)) {
       result.add(identifier.value);
     }
   }
   return result;
+}
+
+function declaredParameterName(value: string): string | undefined {
+  let start = skipWhitespace(value, 0);
+  if (value.startsWith("...", start)) start = skipWhitespace(value, start + 3);
+  const parameter = readIdentifier(value, start);
+  if (!parameter) return undefined;
+  let cursor = skipWhitespace(value, parameter.end);
+  if (value[cursor] === "?") cursor = skipWhitespace(value, cursor + 1);
+  if (cursor === value.length) return parameter.value;
+  const suffix = value[cursor];
+  if ((suffix === ":" || suffix === "=") && skipWhitespace(value, cursor + 1) < value.length) return parameter.value;
+  return undefined;
+}
+
+function splitParameterList(value: string): string[] {
+  const parameters: string[] = [];
+  let start = 0;
+  let round = 0;
+  let square = 0;
+  let curly = 0;
+  let angle = 0;
+  let quote = "";
+  let escaped = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index]!;
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === quote) quote = "";
+      continue;
+    }
+    if (char === "\"" || char === "'" || char === "`") { quote = char; continue; }
+    if (char === "(") round += 1;
+    else if (char === ")") round = Math.max(0, round - 1);
+    else if (char === "[") square += 1;
+    else if (char === "]") square = Math.max(0, square - 1);
+    else if (char === "{") curly += 1;
+    else if (char === "}") curly = Math.max(0, curly - 1);
+    else if (char === "<") angle += 1;
+    else if (char === ">") angle = Math.max(0, angle - 1);
+    else if (char === "," && round === 0 && square === 0 && curly === 0 && angle === 0) {
+      parameters.push(value.slice(start, index).trim());
+      start = index + 1;
+    }
+  }
+  const last = value.slice(start).trim();
+  if (last) parameters.push(last);
+  return parameters;
 }
 
 function skipWhitespace(text: string, start: number): number {

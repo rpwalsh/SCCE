@@ -132,6 +132,22 @@ describe("code request structure", () => {
     expect(codeRequestSignal("double(3) returns 6.").behaviorRequirements).toEqual([]);
   });
 
+  it("recognizes typed declaration parameters as the owner of call/result examples", () => {
+    const request = "Create a function double(x: number): number such that double(3) returns 6, double(7) returns 14, double(-2) returns -4, and double(11) returns 22. Add and run a test proving it.";
+    const signal = codeRequestSignal(request);
+    const field = deriveTurnRequirementField({
+      requestText: request,
+      explicitRequirements: codeRequestObservedRequirements(request, signal)
+    });
+
+    expect(signal.behaviorRequirements).toHaveLength(4);
+    expect(signal.behaviorRequirements.map(requirement => requirement.callableId)).toEqual(["double", "double", "double", "double"]);
+    expect(projectRequestAuthority({
+      requirementField: field,
+      typedProgramBehaviorRequirementIds: signal.behaviorRequirements.map(requirement => requirement.id)
+    }).requestedAuthority).toBe("program");
+  });
+
   it("routes owner call/result contracts to program authority without a language-name or learned-score cue", () => {
     const request = "Create a function double(x) such that double(3) returns 6, double(7) returns 14, double(-2) returns -4, and double(11) returns 22. Add and run a test proving it.";
     const signal = codeRequestSignal(request);

@@ -192,6 +192,7 @@ import { checkAntiCopyGuard } from "./voice-profile.js";
 import { buildConstructionAlgebra, searchTargetConditionedDerivation, semanticTargetFromGraph } from "./generative-derivation-runtime.js";
 import { persistTaskGraphForTurn, syncTaskResumptionSnapshotForTurn } from "./task-resumption-turn-request.js";
 import { programIntentForTurn, replanOwnerBehaviorProgramIntent } from "./program-intent.js";
+import { validateOwnerProgramLocalValidation } from "./program-local-validation.js";
 import { learningEpisodesFromEvents, learningEpisodesFromVerifiedProgram } from "./program-transformation-learning.js";
 import { planObservedProgramRepairTransition } from "./observed-program-repair.js";
 import { completeTaskDecompositionNode, schedulableSubtasks, type TaskDecompositionGraph } from "./hierarchical-task-decomposition.js";
@@ -262,7 +263,7 @@ import {
 import { createRuntimeOrchestrator } from "./runtime-orchestrator.js";
 import { runtimeWorkspacePlanContext } from "./runtime-workspace-plan-context.js";
 import { createSafetyRailEngine } from "./safety-rail-engine.js";
-import { createActionPlanner, createCapabilityRegistry } from "./safety.js";
+import { createActionPlanner, createCapabilityRegistry, createProgramLocalValidationCapability } from "./safety.js";
 import { createFunctionalConsciousnessScore, createSpectralSelfDistillation } from "./self-distillation.js";
 import { createFunctionalSelfModel } from "./self.js";
 import { consolidateSemanticClaims, type SemanticClaimObservation } from "./semantic-memory-consolidation.js";
@@ -4478,12 +4479,39 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       let taskCompletion: ReturnType<typeof completeConditionsProvenByBuild> | undefined;
       if (construct.program) {
         const registry = createCapabilityRegistry({ process: true, network: Boolean(deps.connectors) });
-        const capability = registry.get("process.build_test");
+        const requestRequirementIds = [
+          ...codeSignal.behaviorRequirements.map(requirement => requirement.id),
+          ...codeSignal.statefulBehaviorRequirements.map(requirement => requirement.id)
+        ];
+        const localValidationProof = validateOwnerProgramLocalValidation({
+          program: construct.program,
+          canonicalProgram: candidateConstructSeed.program,
+          requestedAuthority,
+          requestRequirementIds,
+          hasher
+        });
+        const capability = localValidationProof
+          ? createProgramLocalValidationCapability(Boolean(deps.buildTest))
+          : registry.get("process.build_test");
         if (capability) {
-          const payload = toJsonValue({ program: construct.program.id, files: construct.program.files.map(file => ({ path: file.path, hash: file.contentHash })) });
+          const payload = toJsonValue({
+            program: construct.program.id,
+            files: construct.program.files.map(file => ({ path: file.path, hash: file.contentHash })),
+            ...(localValidationProof ? {
+              ownerRequirementIds: localValidationProof.ownerRequirementIds,
+              build: localValidationProof.build,
+              test: localValidationProof.test
+            } : {})
+          });
           const approved = deps.approvals?.isApproved({ capabilityId: capability.id, input: payload }) ?? false;
           const effectivePolicy = { ...policy, ...(deps.approvals?.policyPatch?.() ?? {}) };
-          const plan = createActionPlanner({ idFactory, policy: effectivePolicy }).plan({ episodeId, capability, payload, now: clock.now(), approved });
+          const plan = createActionPlanner({ idFactory, policy: effectivePolicy }).plan({
+            episodeId,
+            capability,
+            payload,
+            approved,
+            now: clock.now()
+          });
           await deps.storage.capabilities.putPlan(plan);
           capabilityPlans.push(plan);
           await deps.approvals?.observePending(plan);

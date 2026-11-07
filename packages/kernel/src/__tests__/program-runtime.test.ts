@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { validateOwnerProgramLocalValidation } from "../program-local-validation.js";
 import { createProgram as createTypeScriptProgram, flattenDiagnosticMessageText, getPreEmitDiagnostics, ModuleKind, parseJsonConfigFileContent, readConfigFile, ScriptTarget, sys as typeScriptSystem, transpileModule } from "typescript";
 import {
   codeRequestSignal,
@@ -19,6 +20,10 @@ import {
   createEmissionEngine,
   evaluateProgramExpression,
   createProgramGraphBuilder,
+  createActionPlanner,
+  createCapabilityRegistry,
+  createProgramLocalValidationCapability,
+  DEFAULT_POLICY,
   createWorkspaceRevisionSnapshot,
   generateWorkspacePatchPlanFromProgramGraph,
   programIntentForTurn,
@@ -45,6 +50,43 @@ describe("ProgramGraph runtime and artifact emission", () => {
   const clock = createClock({ fixedTime: 24000, stepMs: 1 });
   const hasher = createHasher();
   const ids = createIdFactory({ clock, hasher, deterministicReplay: true });
+
+  it("authorizes only the current canonical owner graph for local validation", () => {
+    const request = "Create a function double(x) such that double(3) returns 6, double(7) returns 14, double(-2) returns -4, and double(11) returns 22.";
+    const requirements = codeRequestSignal(request).behaviorRequirements;
+    const construct = buildProgram(request, [], {
+      artifactKindIds: ["program.artifact.library"],
+      capabilityIds: [],
+      languageId: "javascript",
+      behaviorRequirements: requirements
+    });
+    const program = required(construct.program);
+    const requestRequirementIds = requirements.map(requirement => requirement.id);
+
+    const proof = validateOwnerProgramLocalValidation({ program, canonicalProgram: program, requestedAuthority: "program", requestRequirementIds, hasher });
+    expect(proof?.programId).toBe(program.id);
+    expect(proof?.ownerRequirementIds).toEqual([...requestRequirementIds].sort());
+    expect(validateOwnerProgramLocalValidation({ program, canonicalProgram: program, requestedAuthority: "factual", requestRequirementIds, hasher })).toBeUndefined();
+    expect(validateOwnerProgramLocalValidation({ program, canonicalProgram: program, requestedAuthority: "program", requestRequirementIds: requestRequirementIds.slice(1), hasher })).toBeUndefined();
+    expect(validateOwnerProgramLocalValidation({ program, canonicalProgram: { ...program, test: { ...program.test, args: ["other.mjs"] } }, requestedAuthority: "program", requestRequirementIds, hasher })).toBeUndefined();
+    expect(validateOwnerProgramLocalValidation({ program: { ...program, test: { ...program.test, args: ["other.mjs"] } }, canonicalProgram: program, requestedAuthority: "program", requestRequirementIds, hasher })).toBeUndefined();
+  });
+
+  it("keeps local validation separate from general process mutation policy", () => {
+    const registry = createCapabilityRegistry({ process: true });
+    const planner = createActionPlanner({ idFactory: ids, policy: DEFAULT_POLICY });
+    const base = { episodeId: ids.episodeId(), payload: { program: "program.alpha" }, now: clock.now() };
+    const local = planner.plan({ ...base, capability: createProgramLocalValidationCapability(true) });
+    const general = planner.plan({ ...base, capability: required(registry.get("process.build_test")) });
+    const denied = planner.plan({ ...base, capability: createProgramLocalValidationCapability(false) });
+    const riskLimited = createActionPlanner({ idFactory: ids, policy: { ...DEFAULT_POLICY, alphaRiskCeiling: 0.4 } })
+      .plan({ ...base, capability: createProgramLocalValidationCapability(true) });
+
+    expect(local.permission).toMatchObject({ allowed: true, dryRun: false, reason: "read-only" });
+    expect(general.permission).toMatchObject({ allowed: true, dryRun: true, reason: "awaiting-operator-approval" });
+    expect(denied.permission).toMatchObject({ allowed: false, reason: "capability-not-configured" });
+    expect(riskLimited.permission).toMatchObject({ allowed: false, reason: "alpha-risk-ceiling" });
+  });
 
   it("uses synthetic package facts for build/test hints, emits CLI/API artifacts, and hydrates records", () => {
     const fixture = engineeringFixture();
