@@ -1989,7 +1989,7 @@ describe("dialogue corpus training", () => {
     }
     expect(allSourceSystems(fixture.state)).toEqual(new Set(["dialogue", CORPUS_SOURCE_SYSTEM_IDS.dialogue, REQUEST_COMMUNICATIVE_ACT_SOURCE_SYSTEM]));
     const originalModelIds = fixture.state.models.map(model => model.id);
-    const originalVersionIds = fixture.state.sourceVersions.map(version => version.id);
+    const originalVersionIds = fixture.state.sourceVersions.map(version => version.sourceVersionId);
     const revisedTurns = turns.map(turn => turn.requestAuthority ? { ...turn, requestAuthority: "factual" as const } : turn);
     await writeFile(path.join(root, "authority.json"), JSON.stringify({ schema: "scce.dialogue_transcript.v1", text, turns: revisedTurns, sourceMetadata }), "utf8");
     const revised = await trainDialogueCorpus({ storage: fixture.storage, rootPath: root, authorship: "human_authored", informationLabel: ownerLabel, actsOnly: true });
@@ -2004,7 +2004,7 @@ describe("dialogue corpus training", () => {
     expect(removed.requestAuthorities).toEqual({ examples: 0, evidenceBoundExamples: 0, patternsPersisted: 0 });
     expect(fixture.state.patterns.filter(pattern => recordOf(pattern.patternJson).schema === "scce.request_requirement_pattern.v1")).toEqual([]);
     expect(fixture.state.models.map(model => model.id)).toEqual(originalModelIds);
-    expect(fixture.state.sourceVersions.map(version => version.id)).toEqual(originalVersionIds);
+    expect(fixture.state.sourceVersions.map(version => version.sourceVersionId)).toEqual(originalVersionIds);
   }, 120_000);
 
   it("refuses to train on SCCE's own generations", async () => {
