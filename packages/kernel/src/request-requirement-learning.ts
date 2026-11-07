@@ -24,7 +24,7 @@ export const REQUEST_REQUIREMENT_PATTERN_SCHEMA = "scce.request_requirement_patt
  * so a recompile cannot leave an earlier semantic shape active.
  */
 export const REQUEST_REQUIREMENT_PATTERN_COMPILER_FINGERPRINT =
-  "scce.request_requirement_pattern.source_roles.v2";
+  "scce.request_requirement_pattern.class_conditional.v3";
 
 export interface RequestRequirementCorpusExample {
   text: string;
@@ -251,20 +251,16 @@ export function compileRequestRequirementCorpus(
       .filter(counts => counts.pairedExamples[authority] > 0)
       .map(counts => counts.responseMatches[authority] / counts.pairedExamples[authority]))] as const));
   const patterns = [...featureCounts.values()].flatMap(counts => {
-    const ranked = REQUESTED_AUTHORITY_IDS
-      .map(authority => ({ authority, count: counts.byAuthority[authority] }))
-      .sort((left, right) => right.count - left.count || left.authority.localeCompare(right.authority));
-    const winner = ranked[0];
-    const runnerUp = ranked[1];
-    if (!winner || winner.count < 2) return [];
+    const calibration = classConditionalAuthority(counts.byAuthority, classTotals);
+    if (!calibration) return [];
+    const { winner, posterior, margin, authorityProbabilities } = calibration;
+    if (counts.byAuthority[winner.authority] < 2) return [];
     const responseMatchCut = responseMatchCuts.get(winner.authority);
     const pairedExamples = counts.pairedExamples[winner.authority];
     const responseMatchRate = pairedExamples ? counts.responseMatches[winner.authority] / pairedExamples : 0;
-    const posterior = winner.count / Math.max(1, counts.examples);
-    const margin = (winner.count - (runnerUp?.count ?? 0)) / Math.max(1, counts.examples);
     if (posterior < 0.68 || margin < 0.34) return [];
-    const classCoverage = winner.count / Math.max(1, classTotals[winner.authority]);
-    const reliability = patternReliability(posterior, margin, winner.count);
+    const classCoverage = counts.byAuthority[winner.authority] / classTotals[winner.authority];
+    const reliability = patternReliability(posterior, margin, counts.byAuthority[winner.authority]);
     const requirementTargets: Partial<Record<TurnRequirementDimension, number>> = {};
     for (const dimension of TURN_REQUIREMENT_DIMENSIONS) {
       const targetCount = counts.requirementTargetCounts[dimension] ?? 0;
@@ -272,7 +268,7 @@ export function compileRequestRequirementCorpus(
       const bounds = counts.requirementTargetBounds[dimension]!;
       requirementTargets[dimension] = Math.max(bounds.lower, Math.min(bounds.upper, counts.requirementTargetTotals[dimension]! / targetCount));
     }
-    const requirementCoefficients = requirementCoefficientsFromAuthorityMass(counts.byAuthority, counts.examples, reliability, requirementTargets);
+    const requirementCoefficients = requirementCoefficientsFromAuthorityMass(authorityProbabilities, 1, reliability, requirementTargets);
     const responseForm = compiledResponseForm(counts, input.corpus.responseFormProfiles);
     const patternJson = toJsonValue({
       schema: REQUEST_REQUIREMENT_PATTERN_SCHEMA,
@@ -281,7 +277,7 @@ export function compileRequestRequirementCorpus(
       anchor: counts.observation.anchor,
       matchMode: "unicode_token_ngram",
       semanticRoleId: "role.request.requirement.v1",
-      ...(responseMatchCut !== undefined && responseMatchCut > 0 && pairedExamples === winner.count
+      ...(responseMatchCut !== undefined && responseMatchCut > 0 && pairedExamples === counts.byAuthority[winner.authority]
         && counts.responseMixed[winner.authority] === 0 ? {
         requestSpanRole: responseMatchRate < responseMatchCut ? "control" : "content",
         responseMatchRate,
@@ -293,6 +289,8 @@ export function compileRequestRequirementCorpus(
       requirementTargets,
       requirementTargetBounds: counts.requirementTargetBounds,
       authorityMass: counts.byAuthority,
+      sourceClassTotals: classTotals,
+      authorityProbabilities,
       selectedAuthority: winner.authority,
       posterior,
       margin,
@@ -325,7 +323,7 @@ export function compileRequestRequirementCorpus(
       profileId: input.profileId,
       patternKind: "semantic_role" as const,
       support: clamp01(0.58 + 0.28 * reliability + 0.14 * Math.min(1, classCoverage * 4)),
-      entropy: normalizedEntropy(counts.byAuthority, counts.examples),
+      entropy: normalizedEntropy(authorityProbabilities, 1),
       patternJson,
       evidenceIds,
       updatedAt: input.updatedAt
@@ -434,20 +432,15 @@ export function recompileRequestRequirementPattern(pattern: LanguagePatternRecor
   const sourceVersionId = typeof record.sourceVersionId === "string" ? record.sourceVersionId : "";
   const selectedAuthority = record.selectedAuthority;
   const exampleSupport = typeof record.exampleSupport === "number" ? record.exampleSupport : Number.NaN;
-  const posterior = typeof record.posterior === "number" ? record.posterior : Number.NaN;
-  const margin = typeof record.margin === "number" ? record.margin : Number.NaN;
   if (!surface || (anchor !== "start" && anchor !== "any" && anchor !== "end") || !sourceVersionId) return undefined;
   if (!isRequestedAuthority(selectedAuthority) || !Number.isFinite(exampleSupport) || exampleSupport < 2) return undefined;
-  if (!Number.isFinite(posterior) || !Number.isFinite(margin)) return undefined;
-  const mass = authorityRecord(0);
-  if (isRecord(record.authorityMass)) {
-    for (const authority of REQUESTED_AUTHORITY_IDS) {
-      const count = record.authorityMass[authority];
-      if (typeof count === "number" && Number.isFinite(count) && count >= 0) mass[authority] = count;
-    }
-  }
-  const massTotal = Object.values(mass).reduce((sum, count) => sum + count, 0);
-  if (massTotal <= 0) mass[selectedAuthority] = exampleSupport;
+  const mass = readAuthorityCounts(record.authorityMass);
+  const sourceClassTotals = readAuthorityCounts(record.sourceClassTotals);
+  if (!mass || !sourceClassTotals) return undefined;
+  const calibration = classConditionalAuthority(mass, sourceClassTotals);
+  if (!calibration || calibration.posterior < 0.68 || calibration.margin < 0.34) return undefined;
+  const { winner, posterior, margin, authorityProbabilities } = calibration;
+  if (mass[winner.authority] < 2) return undefined;
   const carriedTargets = isRecord(record.requirementTargets) ? requirementVector(record.requirementTargets) : {};
   const carriedBounds = isRecord(record.requirementTargetBounds) ? record.requirementTargetBounds : {};
   const requirementTargets: Partial<Record<TurnRequirementDimension, number>> = {};
@@ -463,8 +456,8 @@ export function recompileRequestRequirementPattern(pattern: LanguagePatternRecor
   }
   const carriedCoefficients = isRecord(record.requirementCoefficients) ? requirementVector(record.requirementCoefficients) : {};
   if (!Object.keys(carriedCoefficients).length && !Object.keys(requirementTargets).length) return undefined;
-  const reliability = patternReliability(clamp01(posterior), clamp01(margin), mass[selectedAuthority]);
-  const requirementCoefficients = requirementCoefficientsFromAuthorityMass(mass, Math.max(exampleSupport, massTotal), reliability, requirementTargets);
+  const reliability = patternReliability(posterior, margin, mass[winner.authority]);
+  const requirementCoefficients = requirementCoefficientsFromAuthorityMass(authorityProbabilities, 1, reliability, requirementTargets);
   const patternJson = toJsonValue({
     ...record,
     schema: REQUEST_REQUIREMENT_PATTERN_SCHEMA,
@@ -478,15 +471,58 @@ export function recompileRequestRequirementPattern(pattern: LanguagePatternRecor
     requirementTargets,
     requirementTargetBounds,
     authorityMass: mass,
-    selectedAuthority,
-    posterior: clamp01(posterior),
-    margin: clamp01(margin),
+    sourceClassTotals,
+    authorityProbabilities,
+    selectedAuthority: winner.authority,
+    posterior,
+    margin,
     exampleSupport,
     sourceVersionId,
     provenanceClass: "learned_language_prior",
     recompiledFrom: typeof record.compilerFingerprint === "string" ? record.compilerFingerprint : null
   });
-  return { ...pattern, patternJson };
+  const classCoverage = mass[winner.authority] / sourceClassTotals[winner.authority];
+  return {
+    ...pattern, patternJson,
+    support: clamp01(0.58 + 0.28 * reliability + 0.14 * Math.min(1, classCoverage * 4)),
+    entropy: normalizedEntropy(authorityProbabilities, 1)
+  };
+}
+
+function readAuthorityCounts(value: unknown): Record<RequestedAuthority, number> | undefined {
+  if (!isRecord(value)) return undefined;
+  const counts = authorityRecord(0);
+  for (const authority of REQUESTED_AUTHORITY_IDS) {
+    const count = value[authority];
+    if (typeof count !== "number" || !Number.isFinite(count) || count < 0) return undefined;
+    counts[authority] = count;
+  }
+  return counts;
+}
+
+function classConditionalAuthority(
+  mass: Record<RequestedAuthority, number>,
+  sourceClassTotals: Record<RequestedAuthority, number>
+): {
+  winner: { authority: RequestedAuthority; probability: number };
+  posterior: number;
+  margin: number;
+  authorityProbabilities: Record<RequestedAuthority, number>;
+} | undefined {
+  const rates = authorityRecord(0);
+  for (const authority of REQUESTED_AUTHORITY_IDS) {
+    if (mass[authority] > sourceClassTotals[authority]) return undefined;
+    rates[authority] = sourceClassTotals[authority] > 0 ? mass[authority] / sourceClassTotals[authority] : 0;
+  }
+  const totalRate = Object.values(rates).reduce((sum, rate) => sum + rate, 0);
+  if (totalRate <= 0) return undefined;
+  // Source class priors are sampling frequency, not evidence carried by a matched feature.
+  const authorityProbabilities = authorityRecord(0);
+  for (const authority of REQUESTED_AUTHORITY_IDS) authorityProbabilities[authority] = rates[authority] / totalRate;
+  const ranked = REQUESTED_AUTHORITY_IDS.map(authority => ({ authority, probability: authorityProbabilities[authority] }))
+    .sort((left, right) => right.probability - left.probability || left.authority.localeCompare(right.authority));
+  const winner = ranked[0]!;
+  return { winner, posterior: winner.probability, margin: winner.probability - ranked[1]!.probability, authorityProbabilities };
 }
 
 function requestRequirementPatternIdentity(pattern: LanguagePatternRecord): string {
@@ -629,7 +665,7 @@ function unicodeTokens(text: string): string[] {
 }
 
 function normalizedEntropy(counts: Record<RequestedAuthority, number>, total: number): number {
-  if (total <= 1) return 0;
+  if (total <= 0) return 0;
   let entropy = 0;
   let occupied = 0;
   for (const count of Object.values(counts)) {
