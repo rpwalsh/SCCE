@@ -30,7 +30,7 @@ export function preparePooledLanguageProfileBinding(input: {
     if (span.status !== "promoted" || !parents.includes(String(span.sourceVersionId))
       || String(span.contentHash).replace(/^sha256_/u, "") !== input.hasher.digestHex(span.text)) fail();
     const range = ranges.find(row => row.sourceVersionId === span.sourceVersionId && row.sourceFamilyId === evidenceSourceFamilyId(span));
-    if (!range) fail();
+    if (!range) return fail();
     let body = points.get(range);
     if (!body) { body = [...input.text.slice(range.start, range.end)]; points.set(range, body); }
     if (body.slice(span.charStart, span.charEnd).join("") !== span.text) fail();

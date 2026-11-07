@@ -26,7 +26,7 @@ describe("owned parent evidence binds one pooled language profile", () => {
       const sourceVersionId = ids.sourceVersionId(canonicalStringify({ sourceId, contentHash: ids.contentHash(text), role: "original" }));
       return extractor.extract({ sourceId, sourceVersionId, namespace: "fixture", uri: `fixture://page/${index}`, mediaType: "text/plain", text,
         languageProfile: language.acquire({ sourceVersionId, text, createdAt: 1 }), sourceTrust: { identity: 1, integrity: 1, parserReliability: 1, directness: 1, authority: 1,
-          freshness: 1, independenceGroup: `page-${index}`, accessScope: "fixture", licenseStatus: "fixture" }, observedAt: 1, metadata: {}, exactSourceText: true }).spans
+          freshness: 1, independenceGroup: `page-${index}`, accessScope: "fixture", licenseStatus: "fixture" }, observedAt: 1, metadata: {}, exactSourceText: true, maxChunkBytes: 65536 }).spans
         .map(span => ({ ...span, status: "promoted" as const, provenance: { ...span.provenance as object, sourceFamilyId: `page-${index}` } }));
     });
     const text = pages.join("\n\n");
