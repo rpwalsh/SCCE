@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { canonicalTemporalCoordinates } from "@scce/kernel";
+import { canonicalTemporalCoordinates, createHasher } from "@scce/kernel";
 import { createWikipediaInputManifest } from "../wikipedia-input-manifest.js";
 import { createWikipediaV3Ingestor } from "../wikipedia-v3-ingestor.js";
 import * as corpusTrainer from "../language-corpus-trainer.js";
@@ -57,7 +57,7 @@ describe("Wikipedia alignment target guard", () => {
         channel: "source_declared_structured",
         relationSeedId: "relation_seed.fixture",
         sourceId: "source.fixture",
-        sourceVersionId: "source_version.fixture",
+        sourceVersionId: "page.version",
         participants: [
           { portId: "subject", value: "subject.fixture", valueKind: "anchor_surface", realization: "observed" },
           { portId: "object", value: "object.fixture", valueKind: "target_ref", realization: "observed" }
@@ -94,32 +94,36 @@ describe("Wikipedia alignment target guard", () => {
         warnings: []
       } as any);
       process.env.SCCE_INGEST_TRACE = tracePath;
+      const sourceText = "A small fixture page.";
+      const byteLength = Buffer.byteLength(sourceText);
+      const codePointLength = [...sourceText].length;
       const evidence = {
         id: "evidence.fixture",
         sourceId: "source.fixture",
         sourceVersionId: "page.version",
         chunkId: "chunk.fixture",
-        contentHash: "sha256:fixture",
+        contentHash: createHasher().digestHex(sourceText),
         mediaType: "text/plain",
         byteStart: 0,
-        byteEnd: Buffer.byteLength("A small fixture page."),
+        byteEnd: byteLength,
         charStart: 0,
-        charEnd: "A small fixture page.".length,
-        text: "A small fixture page.",
-        textPreview: "A small fixture page.",
+        charEnd: codePointLength,
+        text: sourceText,
+        textPreview: sourceText,
         languageHints: {},
         scriptHints: {},
         trustVector: {},
-        provenance: {},
+        provenance: { sourceFamilyId: "wikimedia:wikipedia", sourceVersionId: "page.version", byteRange: [0, byteLength], charRange: [0, codePointLength] },
         features: [],
         status: "promoted",
         alpha: 0.9,
         observedAt: 1
       } as any;
       const result = await (ingestor as any).ingestLanguageShard([{
+        uri: "fixture://wikipedia/Fixture",
         sourceVersionId: "page.version",
         title: "Fixture",
-        text: "A small fixture page.",
+        text: sourceText,
         evidence: [evidence],
         languageAliases: [],
         semanticCandidates: [candidate],
