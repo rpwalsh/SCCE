@@ -285,6 +285,7 @@ export * from "./conversational-act-binding.js";
 export * from "./conversational-construction-induction.js";
 export * from "./code-request.js";
 export * from "./code-surface.js";
+export * from "./formal-identifiers.js";
 export * from "./graph-target-geometry.js";
 export * from "./code-intent.js";
 export * from "./code-construction-grammar.js";

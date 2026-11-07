@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { isFormalIdentifierContinue, isFormalIdentifierStart } from "./formal-identifiers.js";
 
 /**
  * Code as a surface the language memory can learn, rather than prose extracted from code.
@@ -28,8 +29,6 @@ const CLOSING_BRACKETS: ReadonlySet<string> = new Set([")", "]", "}"]);
 /** Punctuation that always stands alone: grouping and separation never fuse into a longer operator. */
 const SOLO_PUNCTUATION: ReadonlySet<string> = new Set(["(", ")", "[", "]", "{", "}", ",", ";"]);
 
-const IDENTIFIER_START = /[\p{ID_Start}_$\\]/u;
-const IDENTIFIER_PART = /[\p{ID_Continue}$]/u;
 const DIGIT = /\p{Number}/u;
 const OPERATOR_CHARACTER = /[!%&*+\-/:<=>?^|~.@#]/u;
 const QUOTES: ReadonlySet<string> = new Set(["\"", "'", "`"]);
@@ -64,9 +63,9 @@ export function codeSurfaceTokens(text: string, maxTokens = Number.POSITIVE_INFI
       index = literal.next;
       continue;
     }
-    if (IDENTIFIER_START.test(character)) {
+    if (isFormalIdentifierStart(character) || character === "\\") {
       let end = index + 1;
-      while (end < characters.length && IDENTIFIER_PART.test(characters[end]!)) end += 1;
+      while (end < characters.length && isFormalIdentifierContinue(characters[end]!)) end += 1;
       tokens.push(characters.slice(index, end).join(""));
       index = end;
       continue;
@@ -140,8 +139,8 @@ function codeTokenSeparator(left: string, right: string): string {
   const previous = left.slice(-1);
   if (CLOSING_BRACKETS.has(right) || right === "," || right === ";") return "";
   if (previous === "(" || previous === "[") return "";
-  if (right === "(" && (IDENTIFIER_PART.test(previous) || previous === ")" || previous === "]")) return "";
-  if (right === "[" && (IDENTIFIER_PART.test(previous) || previous === ")" || previous === "]")) return "";
+  if (right === "(" && (isFormalIdentifierContinue(previous) || previous === ")" || previous === "]")) return "";
+  if (right === "[" && (isFormalIdentifierContinue(previous) || previous === ")" || previous === "]")) return "";
   if (right === "." || previous === ".") return "";
   return " ";
 }
@@ -184,7 +183,7 @@ export function codeBracketBalance(tokens: readonly string[]): CodeBracketBalanc
 export function codeIdentifierTokens(tokens: readonly string[], limit = 256): string[] {
   const out: string[] = [];
   for (const token of tokens) {
-    if (codeTokenIsLayout(token) || !IDENTIFIER_START.test([...token][0] ?? "")) continue;
+    if (codeTokenIsLayout(token) || !isFormalIdentifierStart([...token][0] ?? "")) continue;
     if (out.includes(token)) continue;
     out.push(token);
     if (out.length >= limit) break;

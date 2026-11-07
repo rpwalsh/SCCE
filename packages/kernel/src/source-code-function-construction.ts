@@ -5,6 +5,7 @@ import { evaluateProgramExpressionBindings, type ProgramExpression } from "./pro
 import type { LanguagePatternRecord, NgramModelRecord } from "./storage.js";
 import type { JsonValue, ProgramBehaviorRequirement } from "./types.js";
 import { codeLanguageForModelRecord } from "./code-construction.js";
+import { isFormalIdentifier } from "./formal-identifiers.js";
 
 export const SOURCE_CODE_FUNCTION_PATTERN_SCHEMA = "scce.source_code_function_pattern.v1" as const;
 export const SOURCE_CODE_FUNCTION_PROJECTION_RECIPE_ID = "scce.source_code_function_projection.v1" as const;
@@ -54,7 +55,7 @@ export function realizeSourceCodeFunctions(input: {
       .map(pattern => ({ id: pattern.id, kind: "language_pattern" as const, metadata: object(pattern.patternJson), language: object(pattern.patternJson).formalLanguage }))
   ];
   for (const callableId of callables) {
-    if (!/^[\p{Letter}_$][\p{Letter}\p{Number}_$]*$/u.test(callableId)) continue;
+    if (!isFormalIdentifier(callableId)) continue;
     const fit = input.requirements.filter(row => row.callableId === callableId && row.verificationRole === "fit");
     const reserved = input.requirements.filter(row => row.callableId === callableId && row.verificationRole !== "fit");
     const candidates: RealizedSourceCodeFunction[] = [];

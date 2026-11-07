@@ -1,6 +1,7 @@
 import { canonicalStringify, createHasher } from "./primitives.js";
 import { readSymbolicProgramRelation } from "./program-behavior-syntax.js";
 import type { JsonValue } from "./types.js";
+import { isFormalIdentifier, readFormalIdentifier } from "./formal-identifiers.js";
 
 export interface StatefulBehaviorSourceSpan {
   readonly charStart: number;
@@ -125,9 +126,11 @@ function parseCall(statement: string, statementStart: number): ParsedCall | unde
   const leading = statement.search(/\S/u);
   if (leading < 0) return undefined;
   const text = statement.slice(leading).replace(/[,.。]+\s*$/u, "").trimEnd();
-  const match = /^([$\p{L}_][$\p{L}\p{N}_]*)\s*\(/u.exec(text);
-  if (!match) return undefined;
-  const open = match[0].length - 1;
+  const identifier = readFormalIdentifier(text);
+  if (!identifier) return undefined;
+  let open = identifier.end;
+  while (open < text.length && /\s/u.test(text[open]!)) open++;
+  if (text[open] !== "(") return undefined;
   const balancedCall = readBalancedCall(text, open);
   if (!balancedCall) return undefined;
   let args: JsonValue[] = [];
@@ -141,7 +144,7 @@ function parseCall(statement: string, statementStart: number): ParsedCall | unde
     if (!isDeclarationArguments(balancedCall.inner)) return undefined;
   }
   const start = statementStart + leading;
-  return { callableId: match[1]!, inner: balancedCall.inner, arguments: args, sourceSpan: { charStart: start, charEnd: start + balancedCall.end }, callEnd: start + balancedCall.end };
+  return { callableId: identifier.value, inner: balancedCall.inner, arguments: args, sourceSpan: { charStart: start, charEnd: start + balancedCall.end }, callEnd: start + balancedCall.end };
 }
 
 function parseAssertion(call: ParsedCall, declarations: ReadonlySet<string>, statement: string, statementStart: number): { invocation: StatefulBehaviorInvocation; result: JsonValue; relationSurface: string; resultEnd: number } | undefined {
@@ -163,7 +166,7 @@ function parseAssertion(call: ParsedCall, declarations: ReadonlySet<string>, sta
 
 function isDeclarationArguments(inner: string): boolean {
   const values = inner.split(",").map(value => value.trim()).filter(Boolean);
-  return values.length > 0 && values.every(value => /^[$\p{L}_][$\p{L}\p{N}_]*$/u.test(value));
+  return values.length > 0 && values.every(isFormalIdentifier);
 }
 
 function readBalancedCall(text: string, open: number): { inner: string; end: number } | undefined {

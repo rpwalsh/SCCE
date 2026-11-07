@@ -9,6 +9,7 @@ import { COGNITIVE_OPERATOR_IDS, type ActivatedOperator, type TurnRequirementFie
 import type { JsonValue, ProgramBehaviorRequirement, ProgramStatefulBehaviorRequirement } from "./types.js";
 import { calibrated } from "./calibrations/prod-calibrations.js";
 import type { CalibrationKey } from "./calibrations/public-calibrations.js";
+import { readFormalIdentifier as readIdentifier } from "./formal-identifiers.js";
 
 /**
  * Formal language identity, not natural-language vocabulary: these are the
@@ -145,7 +146,16 @@ export function codeRequestDemand(
 
 const FENCE = /```/u;
 const CAMEL_OR_SNAKE = /\b\p{Ll}[\p{L}\p{N}]*(?:\p{Lu}[\p{L}\p{N}]*|_[\p{L}\p{N}]+)/u;
-const CALL_SHAPE = /[\p{L}\p{N}_$]\([^)]*\)/u;
+function hasFormalCallShape(text: string): boolean {
+  const closing = text.lastIndexOf(")");
+  for (let cursor = 0; cursor < text.length;) {
+    const identifier = readIdentifier(text, cursor);
+    if (!identifier) { cursor++; continue; }
+    if (text[identifier.end] === "(" && closing > identifier.end) return true;
+    cursor = identifier.end;
+  }
+  return false;
+}
 const CODE_PUNCTUATION = /=>|::|\{\s*\}|<\p{Lu}[\p{L}\p{N}]*>/u;
 const PATH_SHAPE = /(?:[\p{L}\p{N}_$.@-]+\/)+[\p{L}\p{N}_$.-]+\.([\p{L}\p{N}]{1,4})\b|\b[\p{L}\p{N}_$-]+\.([\p{L}\p{N}]{1,4})\b/gu;
 
@@ -194,7 +204,7 @@ export function codeRequestSignal(requestText: string, options: CodeRequestSigna
   if (paths.length) observe("code_path");
 
   const identifierShape = CAMEL_OR_SNAKE.test(text);
-  const callShape = CALL_SHAPE.test(text);
+  const callShape = hasFormalCallShape(text);
   const codePunctuation = CODE_PUNCTUATION.test(text);
   if (identifierShape) observe("identifier_shape");
   if (callShape) observe("call_shape");
@@ -367,13 +377,6 @@ function declaredCallableIds(text: string): Set<string> {
     }
   }
   return result;
-}
-
-function readIdentifier(text: string, start: number): { value: string; end: number } | undefined {
-  if (!/^[$_\p{L}]$/u.test(text[start] ?? "")) return undefined;
-  let end = start + 1;
-  while (/^[$_\p{L}\p{N}]$/u.test(text[end] ?? "")) end += 1;
-  return { value: text.slice(start, end), end };
 }
 
 function skipWhitespace(text: string, start: number): number {
