@@ -3,6 +3,7 @@
 import { runProcess } from '../lib/run.js';
 import { limitLength } from '../lib/limit.js';
 import { resolveRepositoryRoot } from '../lib/repoRoot.js';
+import { handleSourceNavigation } from '../lib/sourceNavigation.js';
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { extname, join } from 'node:path';
 
@@ -78,42 +79,13 @@ export async function handleRepoSearch(args: { query: string; glob?: string; max
   return JSON.stringify({ query: args.query, matches: out, truncated: stdout.split(/\r?\n/).filter(Boolean).length > max });
 }
 
-/**
- * Ripgrep-based text search over TypeScript source. This is not a
- * TypeScript-aware symbol resolver — it heuristically flags a line as a
- * "definition" when it starts with a declaration keyword, and otherwise
- * calls it a "reference". Overloads, re-exports, and destructured bindings
- * can be misclassified.
- */
+/** Parse matching source files to distinguish syntax occurrences without claiming resolved symbol identity. */
 export async function handleRepoSymbol(args: { symbol: string; maxResults?: number }): Promise<string> {
-  const root = resolveRepositoryRoot();
-  const max = args.maxResults ?? 25;
-  const cmdArgs = ['--line-number', '--no-heading', '--max-columns', '300', '-m', String(max * 2), args.symbol, '--type', 'ts'];
-  const { stdout, exitCode, spawnError } = await runProcess({ commandId: 'rg.symbol', command: 'rg', args: cmdArgs, cwd: root, timeoutMs: RG_TIMEOUT_MS });
-  if (spawnError) return JSON.stringify({ error: 'ripgrep not available', message: spawnError });
-  if (exitCode !== 0 && exitCode !== 1) return JSON.stringify({ error: 'repo_symbol failed', exitCode });
-  const allLines = stdout.split(/\r?\n/).filter(Boolean);
-  const out = allLines.slice(0, max).map((line) => {
-    const parsed = parseRgLine(line);
-    const kind = /^\s*(export\s+)?(default\s+)?(async\s+)?(function|class|interface|type|enum|const|let)\b/.test(parsed.text) ? 'definition' : 'reference';
-    return { path: parsed.path, line: parsed.line, kind, text: limitLength(parsed.text.trim(), 140) };
-  });
-  return JSON.stringify({ symbol: args.symbol, matches: out, truncated: allLines.length > max, method: 'ripgrep-text-search' });
+  return handleSourceNavigation(args);
 }
 
 export async function handleRepoCallSites(args: { symbol: string; maxResults?: number }): Promise<string> {
-  const root = resolveRepositoryRoot();
-  const max = args.maxResults ?? 50;
-  const cmdArgs = ['--line-number', '--no-heading', '--max-columns', '300', '-m', String(max * 2), args.symbol, '--type', 'ts'];
-  const { stdout, exitCode, spawnError } = await runProcess({ commandId: 'rg.callsites', command: 'rg', args: cmdArgs, cwd: root, timeoutMs: RG_TIMEOUT_MS });
-  if (spawnError) return JSON.stringify({ error: 'ripgrep not available', message: spawnError });
-  if (exitCode !== 0 && exitCode !== 1) return JSON.stringify({ error: 'repo_callsites failed', exitCode });
-  const allLines = stdout.split(/\r?\n/).filter(Boolean);
-  const out = allLines.slice(0, max).map((line) => {
-    const parsed = parseRgLine(line);
-    return { path: parsed.path, line: parsed.line, text: limitLength(parsed.text.trim(), 160) };
-  });
-  return JSON.stringify({ symbol: args.symbol, matches: out, truncated: allLines.length > max, method: 'ripgrep-text-search' });
+  return handleSourceNavigation(args, true);
 }
 
 /**

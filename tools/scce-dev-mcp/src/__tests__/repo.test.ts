@@ -49,8 +49,16 @@ describe('handleRepoRoutes', () => {
 });
 
 describe('handleRepoSymbol', () => {
-  it('labels itself as text-based search, not compiler-level resolution', async () => {
+  it('puts the implementation before imported bindings when the result budget is one', async () => {
+    const out = JSON.parse(await handleRepoSymbol({ symbol: 'compileSourceCodeFunctions', maxResults: 1 }));
+    expect(out.matches).toHaveLength(1);
+    expect(out.matches[0]).toMatchObject({ path: 'packages/adapters-node/src/source-code-function-learning.ts', kind: 'definition', syntax: 'FunctionDeclaration' });
+  }, 20000);
+  it('finds parsed declarations with read spans while distinguishing syntax from symbol resolution', async () => {
     const out = JSON.parse(await handleRepoSymbol({ symbol: 'DEFAULT_POLICY' }));
-    expect(out.method).toBe('ripgrep-text-search');
+    expect(out.method).toBe('typescript-syntax-ast');
+    expect(out.semanticResolution).toBe(false);
+    expect(out.matches.some((row: { kind: string }) => row.kind === 'definition')).toBe(true);
+    expect(out.matches[0].read).toMatchObject({ path: expect.any(String), startLine: expect.any(Number), endLine: expect.any(Number) });
   }, 20000);
 });
