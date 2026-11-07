@@ -41,6 +41,8 @@ configured working directory as the repository root.
 - repo_shape
 - repo_files
 - repo_search
+- repo_read
+- repo_edit
 - repo_symbol
 - repo_callsites
 - repo_routes

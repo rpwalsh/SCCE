@@ -45,6 +45,17 @@ export const toolSchemas = {
     symbol: boundedString(300),
     maxResults: boundedInt(1, 200, 25)
   }).strict(),
+  repo_read: z.object({
+    path: repoRelativePath,
+    startLine: boundedInt(1, 10_000_000, 1).optional(),
+    endLine: boundedInt(1, 10_000_000, 200).optional(),
+    cursor: z.string().max(1000).optional()
+  }).strict(),
+  repo_edit: z.object({
+    path: repoRelativePath,
+    expectedSha256: z.string().regex(/^[a-f0-9]{64}$/i),
+    replacements: z.array(z.object({ before: z.string().min(1).max(20_000), after: z.string().max(20_000) }).strict()).min(1).max(20)
+  }).strict(),
   repo_callsites: z.object({
     symbol: boundedString(300),
     maxResults: boundedInt(1, 500, 50)

@@ -10,6 +10,7 @@ import { handleRepoShape } from './tools/repo.js';
 import { handleRepoFiles } from './tools/repo.js';
 import { handleRepoSearch } from './tools/repo.js';
 import { handleRepoSymbol } from './tools/repo.js';
+import { handleRepoRead, handleRepoEdit } from './tools/sourceFile.js';
 import { handleRepoCallSites } from './tools/repo.js';
 import { handleRepoRoutes } from './tools/repo.js';
 import { handleRepoDeps } from './tools/repo.js';
@@ -46,7 +47,7 @@ const server = new Server(
     version: '0.1.0',
   },
   {
-    instructions: "Start with repo_shape and git_changed. Use repo_symbol, repo_callsites, repo_search, and git_diff_summary before opening source files. repo_symbol/repo_callsites are ripgrep-based text search, not compiler-level TypeScript resolution. test_run/test_failures accept a fixed commandId (see repo_shape's scripts, or the tool descriptions) against a closed command registry, not an arbitrary shell string. Keep every result bounded. PostgreSQL tools run every statement in a session-level read-only transaction with a restricted search_path and statement/lock timeouts, plus a keyword/function blocklist -- real defense-in-depth, not a parsed-AST security boundary; genuine safety additionally requires the configured database credential to be a real least-privileged role scoped to the SCCE schema with no write grants, which this tool cannot verify. Trace tools report only events that exist and are containment-checked against the configured trace directory. This server exposes no arbitrary shell execution and no repository write, git-write, or package-install operation.",
+    instructions: "Start with repo_shape and git_changed. Use repo_symbol, repo_callsites, and repo_search to find code, then repo_read for bounded source lines. repo_symbol is syntax-based and is not full semantic resolution. Use repo_edit only with a current SHA-256 from repo_read and exact unique replacements; on content_changed, reread before retrying. test_run/test_failures accept a fixed commandId against a closed command registry, not an arbitrary shell string. Keep every result bounded. PostgreSQL tools use a restricted read-only session. Trace tools are containment-checked. This server exposes no arbitrary shell, git-write, or package-install operation.",
     capabilities: {
       tools: {},
     },
@@ -86,6 +87,16 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
         required: ['query'],
       },
+    },
+    {
+      name: 'repo_read',
+      description: 'Read at most 300 numbered source lines from a repository-relative UTF-8 file. Returns SHA-256 and a hash-bound continuation cursor. Secret-like paths and symlink paths are denied.',
+      inputSchema: { type: 'object', properties: { path: { type: 'string' }, startLine: { type: 'number' }, endLine: { type: 'number' }, cursor: { type: 'string' } }, required: ['path'] },
+    },
+    {
+      name: 'repo_edit',
+      description: 'Apply exact unique text replacements to one repository-relative UTF-8 file only when expectedSha256 matches. Mismatch/ambiguous text returns repo_read_again; secret-like and symlink paths are denied.',
+      inputSchema: { type: 'object', properties: { path: { type: 'string' }, expectedSha256: { type: 'string' }, replacements: { type: 'array', items: { type: 'object', properties: { before: { type: 'string' }, after: { type: 'string' } }, required: ['before', 'after'] } } }, required: ['path', 'expectedSha256', 'replacements'] },
     },
     {
       name: 'repo_symbol',
@@ -265,6 +276,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: await handleRepoFiles(validated as any) }] };
       case 'repo_search':
         return { content: [{ type: 'text', text: await handleRepoSearch(validated as any) }] };
+      case 'repo_read':
+        return { content: [{ type: 'text', text: await handleRepoRead(validated as any) }] };
+      case 'repo_edit':
+        return { content: [{ type: 'text', text: await handleRepoEdit(validated as any) }] };
       case 'repo_symbol':
         return { content: [{ type: 'text', text: await handleRepoSymbol(validated as any) }] };
       case 'repo_callsites':
