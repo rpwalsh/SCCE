@@ -207,7 +207,11 @@ describe("production owner program turn through the API", () => {
     const bundle = hydrateLanguageConstructionPatterns({ patterns: [compiled.pattern], evidence: [source], hasher: createHasher() }).bundles[0];
     if (!bundle?.creativeEvents?.length) throw new Error("creative API fixture has no events");
     const requestText = "Invent two alternative indexing algorithms for this graph, each with a distinct structural approach.";
-    const examples = bundle.creativeEvents.flatMap(event => ["train", "calibration", "calibration"].map(partition => ({ requestText, requestFrameId: "request.frame.indexing", requestCompilerId: "compiler.request.learned", eventCompilerId: event.compilerId, eventRelationId: event.relationId, partition: partition as "train" | "calibration", accepted: true, roleBindings: [{ requestRoleId: "scce.request.role.argument", eventRoleId: "scce.role.patient" as const, accepted: true }] })));
+    const graphTextStart = requestText.indexOf("this graph");
+    if (graphTextStart < 0) throw new Error("creative API fixture request lacks its annotated graph argument");
+    const graphStart = [...requestText.slice(0, graphTextStart)].length;
+    const graphEnd = graphStart + [..."this graph"].length;
+    const examples = bundle.creativeEvents.flatMap(event => ["train", "calibration", "calibration"].map(partition => ({ requestText, requestFrameId: "request.frame.indexing", requestCompilerId: "compiler.request.learned", eventCompilerId: event.compilerId, eventRelationId: event.relationId, partition: partition as "train" | "calibration", accepted: true, roleBindings: [{ requestRoleId: "scce.request.role.argument", eventRoleId: "scce.role.patient" as const, accepted: true, requestSpan: { charStart: graphStart, charEnd: graphEnd } }] })));
     const compatibility = compileCreativeEventCompatibilityCorpus({ corpus: { schema: "scce.creative_event_compatibility_corpus.v1", calibrationId: "calibration.creative.fixture", minimumAdmissiblePosterior: 0.72, minimumRolePosterior: 0.72, minimumTrainingSupport: 1, minimumCalibrationSupport: 1, examples }, profileId: profile.id, evidenceIds: [source.id], updatedAt: 102_000, makeId: value => `fixture:${createHasher().digestHex(JSON.stringify(value))}` });
     const storage = integrationStorage({ events, workspace, sources: [], constructionEvidence: [source], dialogueMemory, languageProfiles: [profile], languageModels: trainedLanguage.models, languagePatterns: [compiled.pattern, ...compatibility.patterns] });
     const createContext = () => {
@@ -264,7 +268,7 @@ function ownerValidationPolicy(): StructuredPatchValidationPolicy {
 }
 
 function creativeLanguageSource(): EvidenceSpan {
-  const text = "cat chased mouse. dog chased mouse. cat found ball. dog found ball. cat chased mouse. dog chased ball. cat found ball. dog found mouse.";
+  const text = "method indexes graph. routine indexes graph. process indexes graph. method indexes graph. method partitions graph. routine partitions graph. process partitions graph. routine partitions graph.";
   return { id: "evidence:production-creative-language", sourceId: "source:production-creative-language", sourceVersionId: "source:production-creative-language:v1", chunkId: "chunk:production-creative-language", contentHash: "hash:production-creative-language", mediaType: "text/plain", byteStart: 0, byteEnd: Buffer.byteLength(text), charStart: 0, charEnd: text.length, text, textPreview: text, languageHints: {}, scriptHints: {}, trustVector: {}, provenance: {}, features: [], status: "promoted", alpha: 0.9, observedAt: 102_000 } as unknown as EvidenceSpan;
 }
 
