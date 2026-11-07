@@ -38,11 +38,15 @@ import {
 } from "./request-requirement-learning.js";
 import {
   composeJoinProgramMixtures,
-  isJoinProgramMixture,
   renderJoinedSurface,
   type JoinProgramMixture,
   type JoinProgramTraceStep
 } from "./join-program.js";
+import { JOIN_PROGRAM_MIXTURE_STORAGE_SCHEMA, joinProgramMixtureFromStorage } from "./join-program-storage.js";
+import {
+  INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID,
+  INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA
+} from "./language-induction-memory.js";
 import {
   isReversibleConstructionPattern,
   reversibleConstructionsFromPatterns,
@@ -4994,12 +4998,35 @@ function joinProgramsFromPatterns(
   patterns: readonly LanguagePatternRecord[]
 ): JoinProgramMixture[] {
   const byId = new Map<string, JoinProgramMixture>();
+  const activeSourceScopes = new Set(patterns.flatMap(pattern => {
+    const row = jsonRecord(pattern.patternJson);
+    const scope = inducedSyntaxSourceScope(pattern.profileId, row);
+    return row.schema === INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA
+      && row.componentRecipe === INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID && scope ? [scope] : [];
+  }));
   for (const pattern of patterns) {
-    const candidate = jsonRecord(pattern.patternJson).joinProgram;
-    if (!isJoinProgramMixture(candidate) || byId.has(candidate.id)) continue;
-    byId.set(candidate.id, candidate);
+    const row = jsonRecord(pattern.patternJson);
+    const scope = inducedSyntaxSourceScope(pattern.profileId, row);
+    if (row.schema === INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA
+      && row.componentRecipe !== INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID && scope && activeSourceScopes.has(scope)) continue;
+    const candidate = row.joinProgram;
+    const candidateRow = jsonRecord(candidate);
+    const candidateId = candidateRow.schema === JOIN_PROGRAM_MIXTURE_STORAGE_SCHEMA
+      ? jsonRecord(candidateRow.mixture).id
+      : candidateRow.id;
+    if (typeof candidateId === "string" && byId.has(candidateId)) continue;
+    const mixture = joinProgramMixtureFromStorage(candidate);
+    if (!mixture || byId.has(mixture.id)) continue;
+    byId.set(mixture.id, mixture);
   }
   return [...byId.values()].sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function inducedSyntaxSourceScope(profileId: string, row: Record<string, JsonValue>): string | undefined {
+  return typeof row.sourceSystem === "string" && row.sourceSystem.length > 0
+    && typeof row.sourceVersionId === "string" && row.sourceVersionId.length > 0
+    ? JSON.stringify([profileId, row.sourceSystem, row.sourceVersionId])
+    : undefined;
 }
 
 function uniqueVocabularySize(models: readonly KneserNeyModel[]): number {

@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { afterEach, describe, expect, it } from "vitest";
-import { LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID, LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, POSTGRES_REQUIRED_TABLES, type SourceVersionId } from "@scce/kernel";
+import { INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID, INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA, LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID, LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, POSTGRES_REQUIRED_TABLES, type SourceVersionId } from "@scce/kernel";
 import { clearResidentNgramModelJson, createPostgresStorageAdapter, schemaStatements, type PostgresStorageAdapter } from "../postgres.js";
 
 const adapters: PostgresStorageAdapter[] = [];
@@ -93,6 +93,23 @@ describe("Postgres language-memory ownership queries", () => {
     expect(call.sql).toContain("active_projection.information_label->>'tenantId'");
     expect(call.params).toContain(LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA);
     expect(call.params).toContain(LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID);
+  });
+
+  it("supersedes legacy induced syntax rows only for a rebuilt source scope before row and byte limits", async () => {
+    const { adapter, calls } = fixture();
+    await adapter.languageMemory.listLanguagePatterns({ profileId: "profile.owned", maxTotalJsonBytes: 64_000_000, limit: 2048 });
+    const call = calls[0]!;
+    const activeSyntaxFilter = call.sql.indexOf("active_syntax.pattern_json->>'sourceVersionId'=pattern.pattern_json->>'sourceVersionId'");
+    expect(activeSyntaxFilter).toBeGreaterThanOrEqual(0);
+    expect(activeSyntaxFilter).toBeLessThan(call.sql.indexOf("ranked_pool AS"));
+    expect(activeSyntaxFilter).toBeLessThan(call.sql.indexOf("candidates AS MATERIALIZED"));
+    expect(activeSyntaxFilter).toBeLessThan(call.sql.lastIndexOf("LIMIT"));
+    expect(call.sql).toContain("active_syntax.profile_id=pattern.profile_id");
+    expect(call.sql).toContain("active_syntax.source_system=pattern.source_system");
+    expect(call.sql).toContain("active_syntax.pattern_json->>'componentRecipe'=");
+    expect(call.sql).toContain("active_syntax.information_label->>'tenantId'");
+    expect(call.params).toContain(INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA);
+    expect(call.params).toContain(INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID);
   });
 
   it("atomically publishes active construction IDs, including an empty replacement, without deleting history", async () => {

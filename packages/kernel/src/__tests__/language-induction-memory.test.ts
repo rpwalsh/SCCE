@@ -8,6 +8,9 @@ import {
   createLanguageInductionEngine,
   createLanguageMemoryRuntime,
   languageMemoryPatternsFromInducedLanguageModel,
+  toJsonValue,
+  INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID,
+  type JsonValue,
   type LanguageProfile
 } from "../index.js";
 
@@ -98,5 +101,38 @@ describe("induced language model memory projection", () => {
 
     expect(projection.patterns).toEqual([]);
     expect(projection.skippedReason).toBe("no_matching_profiles");
+  });
+
+  it("keeps a rebuilt syntax projection and other source scopes while ignoring same-scope legacy versions", () => {
+    const hasher = createHasher();
+    const idFactory = createIdFactory({ clock: createClock({ fixedTime: 172_000 }), hasher, deterministicReplay: true, namespace: "syntax-projection-revision" });
+    const sourceVersionId = idFactory.sourceVersionId("rebuilt-source");
+    const profile: LanguageProfile = {
+      id: "profile.rebuilt",
+      sourceVersionId,
+      scripts: [{ script: "script:Latn", mass: 1 }],
+      symbolShapes: [],
+      charNgrams: [],
+      direction: "ltr",
+      entropy: 0.5,
+      createdAt: 172_000
+    };
+    const engine = createLanguageInductionEngine({ hasher, vocabularyLimit: 512 });
+    const model = engine.induce({ documents: [{ id: "doc.current", sourceVersionId, text: "alpha beta alpha beta" }] });
+    const projection = languageMemoryPatternsFromInducedLanguageModel({ model, profiles: [profile], idFactory, updatedAt: 172_000, sourceSystem: "training" });
+    const syntax = projection.patterns.find(pattern => pattern.patternKind === "syntax");
+    expect(syntax).toBeDefined();
+    const oldSameScopeModel = engine.induce({ documents: [{ id: "doc.old", sourceVersionId, text: "red green red green" }] });
+    const oldOtherScopeModel = engine.induce({ documents: [{ id: "doc.other", sourceVersionId: "source-version.other" as never, text: "one two one two" }] });
+    const syntaxJson = syntax!.patternJson as Record<string, JsonValue>;
+    const legacySameScope = { ...syntax!, id: "syntax.legacy.same-scope", patternJson: toJsonValue({ ...syntaxJson,
+      componentRecipe: "kernel.induced_language_memory_projection.v2", joinProgram: oldSameScopeModel.joinProgram }) };
+    const legacyOtherScope = { ...syntax!, id: "syntax.legacy.other-scope", patternJson: toJsonValue({ ...syntaxJson,
+      sourceVersionId: "source-version.other", componentRecipe: "kernel.induced_language_memory_projection.v2", joinProgram: oldOtherScopeModel.joinProgram }) };
+    const state = createLanguageMemoryRuntime({ hasher, idFactory }).hydrate({
+      models: [], observations: [], units: [], patterns: [...projection.patterns, legacySameScope, legacyOtherScope], semanticFrames: []
+    });
+    expect(syntaxJson.componentRecipe).toBe(INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID);
+    expect(state.joinPrograms.map(item => item.id).sort()).toEqual([model.joinProgram.id, oldOtherScopeModel.joinProgram.id].sort());
   });
 });

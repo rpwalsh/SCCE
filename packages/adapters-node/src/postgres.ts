@@ -17,6 +17,8 @@ import {
   toJsonValue,
   LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID,
   LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA,
+  INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID,
+  INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA,
   type AlphaTraceRecord,
   type AlphaTrace,
   type BenchmarkStore,
@@ -4041,6 +4043,23 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         params.push(query.languageId);
         where.push(`EXISTS (SELECT 1 FROM ${storage.table("language_profiles")} lp WHERE lp.id=pattern.profile_id AND (lp.language_id=$${params.length} OR lp.language_id IS NULL))`);
       }
+      const inducedSyntaxSchemaParam = params.length + 1;
+      params.push(INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA);
+      const inducedSyntaxRecipeParam = params.length + 1;
+      params.push(INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID);
+      const activeSyntaxAccess = storage.informationAccessPredicate("active_syntax", params.length + 1);
+      params.push(...activeSyntaxAccess.params);
+      where.push(`(pattern.pattern_json->>'schema' IS DISTINCT FROM $${inducedSyntaxSchemaParam}
+        OR pattern.pattern_json->>'componentRecipe'=$${inducedSyntaxRecipeParam}
+        OR NOT EXISTS (
+          SELECT 1 FROM ${storage.table("language_patterns")} active_syntax
+          WHERE active_syntax.profile_id=pattern.profile_id
+            AND active_syntax.source_system=pattern.source_system
+            AND active_syntax.pattern_json->>'sourceVersionId'=pattern.pattern_json->>'sourceVersionId'
+            AND active_syntax.pattern_json->>'schema'=$${inducedSyntaxSchemaParam}
+            AND active_syntax.pattern_json->>'componentRecipe'=$${inducedSyntaxRecipeParam}
+            AND ${activeSyntaxAccess.sql}
+        ))`);
       const constructionSchemaParam = params.length + 1;
       params.push(LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA);
       const constructionRecipeParam = params.length + 1;

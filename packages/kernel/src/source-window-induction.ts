@@ -3,6 +3,7 @@
 import { createLanguageInductionEngine, type LanguageInductionDocument, type InducedLanguageModel } from "./language-induction.js";
 import type { InducedLanguageMemoryModel } from "./language-induction-memory.js";
 import { canonicalStringify } from "./primitives.js";
+import { joinProgramMixtureStorageForm } from "./join-program-storage.js";
 import { inductionCharBudget, inductionDocumentCharCap } from "./training-orchestrator.js";
 import { surfaceSentenceRanges } from "./surface-linguistics.js";
 import { canonicalGraphemeSegmenter } from "./normalization-contract.js";
@@ -113,7 +114,8 @@ export function compileSourceInductionWindows(input: { documents: readonly Langu
     else first = undefined;
     const { id, audit, morphology, morphologyClassBindings, syntaxTemplates, boundarySignals, joinProgram,
       semanticFrames, graphBoundConstructions, lexicalClasses, relationHypothesisModel, translationSeeds } = model;
-    models.push({ id, audit, morphology, morphologyClassBindings, syntaxTemplates, boundarySignals, joinProgram,
+    models.push({ id, audit, morphology, morphologyClassBindings, syntaxTemplates, boundarySignals,
+      joinProgram: joinProgramMixtureStorageForm(joinProgram),
       semanticFrames, graphBoundConstructions: graphBoundConstructions.map(construction => ({ ...construction,
         sourceWindows: batch.windows.filter(window => window.evidenceIds.some(id => construction.evidenceIds.includes(id as typeof construction.evidenceIds[number])))
           .map(({ ownerDocumentId, startUtf16, endUtf16 }) => ({ ownerDocumentId, startUtf16, endUtf16 }))

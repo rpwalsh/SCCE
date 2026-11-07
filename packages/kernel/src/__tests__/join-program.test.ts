@@ -10,6 +10,7 @@ import {
   renderJoinedSurface,
   renderJoinedSurfaceAlternatives
 } from "../index.js";
+import { joinProgramMixtureFromStorage, joinProgramMixtureStorageForm } from "../join-program-storage.js";
 
 function trainedMixture(documentId: string, text: string) {
   const hasher = createHasher();
@@ -40,6 +41,40 @@ function trainedMixture(documentId: string, text: string) {
 }
 
 describe("learned join programs", () => {
+  it("stores shared provenance once and restores the exact runtime indexes", () => {
+    const mixture = trainedMixture("repeated-provenance", "alpha beta ".repeat(24));
+    const stored = joinProgramMixtureStorageForm(mixture);
+    const restored = joinProgramMixtureFromStorage(stored);
+    expect(restored).toEqual(mixture);
+    expect(new TextEncoder().encode(JSON.stringify(stored)).length)
+      .toBeLessThan(new TextEncoder().encode(JSON.stringify(mixture)).length * 0.6);
+    expect(renderJoinedSurface(["alpha", "beta"], restored!))
+      .toEqual(renderJoinedSurface(["alpha", "beta"], mixture));
+  });
+
+  it("rejects compact provenance references outside their dictionaries", () => {
+    const stored = JSON.parse(JSON.stringify(joinProgramMixtureStorageForm(trainedMixture("invalid-provenance", "alpha beta")))) as {
+      mixture: { components: Array<{ program: { indexes: { exactIndex: Array<[string, Array<{ evidenceCoordinateRefs: number[] }>]> } } }> }
+    };
+    const exact = stored.mixture.components[0]!.program.indexes.exactIndex;
+    exact.find(([, choices]) => choices.length)![1][0]!.evidenceCoordinateRefs = [999];
+    expect(joinProgramMixtureFromStorage(stored)).toBeUndefined();
+  });
+
+  it("preserves special index keys and distinguishes absent from empty source-version IDs", () => {
+    const mixture = trainedMixture("edge-case-provenance", "alpha beta alpha beta");
+    const program = mixture.components[0]!.program;
+    const entries = Object.entries(program.exactIndex);
+    const [key, choices] = entries[0]!;
+    const first = choices[0]!;
+    const coordinate = first.evidenceCoordinates[0]!;
+    const changed = { ...first, evidenceCoordinates: [...first.evidenceCoordinates, { ...coordinate, sourceVersionId: "" }] };
+    program.exactIndex = Object.fromEntries([...entries, [key, [changed, ...choices.slice(1)]], ["__proto__", [changed]]]);
+    const restored = joinProgramMixtureFromStorage(joinProgramMixtureStorageForm(mixture));
+    expect(restored).toEqual(mixture);
+    expect(Object.prototype.hasOwnProperty.call(restored!.components[0]!.program.exactIndex, "__proto__")).toBe(true);
+  });
+
   it("recovers source-exact spaced and unspaced boundaries without a language fallback", () => {
     const spaced = trainedMixture("spaced", "alpha beta alpha beta");
     const unspaced = trainedMixture("unspaced", "猫追鼠猫追鼠");
