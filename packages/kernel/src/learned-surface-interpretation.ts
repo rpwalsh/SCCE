@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { LearnedConstruction } from "./language-construction.js";
-import { canonicalGraphemeSegmenter, normalizeCanonicalSurface } from "./normalization-contract.js";
+import { canonicalGraphemeSegmenter, canonicalNormalizationContract, normalizeCanonicalSurface } from "./normalization-contract.js";
 
 export interface InterpretedSurfaceRole {
   roleId: string;
@@ -17,7 +17,8 @@ export interface LearnedSurfaceInterpreter {
 
 /** Share one grapheme projection across the acquired programs tested against this exact surface. */
 export function createLearnedSurfaceInterpreter(surface: string, canonicalComparison = false): LearnedSurfaceInterpreter {
-  const normalize = canonicalComparison ? normalizeCanonicalSurface : (value: string) => value;
+  const contract = canonicalComparison ? canonicalNormalizationContract() : undefined;
+  const normalize = contract ? (value: string) => normalizeCanonicalSurface(value, contract) : (value: string) => value;
   const boundaries = new Map<number, { utf16: number; codePoint: number }>();
   let comparable = "";
   let points = 0;

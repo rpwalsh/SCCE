@@ -39,7 +39,7 @@ interface GraphemeSlice {
   codePointEnd: number;
 }
 
-const GRAPHEME_SEGMENTER = canonicalGraphemeSegmenter();
+let graphemeSegmenter: Intl.Segmenter | undefined;
 
 /**
  * Produces an exact, reversible source segmentation. Unicode grapheme
@@ -143,7 +143,7 @@ export function reconstructUnicodeSurface(segments: readonly UnicodeSurfaceSegme
 function graphemeSlices(text: string): GraphemeSlice[] {
   const out: GraphemeSlice[] = [];
   let codePointStart = 0;
-  for (const row of GRAPHEME_SEGMENTER.segment(text)) {
+  for (const row of (graphemeSegmenter ??= canonicalGraphemeSegmenter()).segment(text)) {
     const surface = row.segment;
     const codePointLength = [...surface].length;
     out.push({
