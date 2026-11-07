@@ -3628,7 +3628,18 @@ function generatedCandidatesFromFrames(
   // Chit-chat projects to the creative authority; the lane's own gate already skips a real invention construct.
   const actBound = conversationalActBindingCandidate(input, discoursePlan, hasher);
   const conversational = [...(actBound ? [actBound] : []), ...(conversationMemory ? [conversationMemory] : [])];
-  if (!discoursePlan.units.length) return uniqueSurfaceCandidates(conversational);
+  if (!discoursePlan.units.length) {
+    if (isCreativeRequested(input, plan)) {
+      traceCreativeCandidateReachability({
+        discoursePlan,
+        plan,
+        hasInvention: Boolean(inventionConstructState(input.construct)),
+        hasLearnedProposal: false,
+        rejectionReason: "empty_discourse_plan"
+      });
+    }
+    return uniqueSurfaceCandidates(conversational);
+  }
   const creativeRequested = isCreativeRequested(input, plan);
   const semanticAnswerState = creativeRequested ? undefined : semanticAnswerConstructState(input.construct);
   const isSemanticAnswer = Boolean(semanticAnswerState);
@@ -3913,10 +3924,26 @@ function creativeCandidatesFromFrames(
   const invention = inventionConstructState(input.construct);
   if (!invention) {
     const artifact = creativeArtifactCandidate(input, discoursePlan);
+    traceCreativeCandidateReachability({
+      discoursePlan,
+      plan,
+      hasInvention: false,
+      hasLearnedProposal: false,
+      rejectionReason: "no_invention"
+    });
     return artifact ? [artifact] : [];
   }
   const learnedProposal = learnedCreativeProposalCandidate(invention, plan, discoursePlan, input, priorPieces);
-  if (!plan.realizationFrames.length) return learnedProposal ? [learnedProposal] : [];
+  if (!plan.realizationFrames.length) {
+    traceCreativeCandidateReachability({
+      discoursePlan,
+      plan,
+      hasInvention: true,
+      hasLearnedProposal: Boolean(learnedProposal),
+      rejectionReason: learnedProposal ? undefined : learnedProposalRejectionReason(invention, input)
+    });
+    return learnedProposal ? [learnedProposal] : [];
+  }
   const frames = plan.realizationFrames;
   const constraintsFirst = [...frames].sort((left, right) =>
     right.requiredTerms.length - left.requiredTerms.length ||
@@ -4037,7 +4064,34 @@ function creativeCandidatesFromFrames(
       })) : anchoredAssembly.boundaryDecisions
     });
   }
+  traceCreativeCandidateReachability({
+    discoursePlan,
+    plan,
+    hasInvention: true,
+    hasLearnedProposal: Boolean(learnedProposal),
+    rejectionReason: out.length ? undefined : learnedProposalRejectionReason(invention, input)
+  });
   return out;
+}
+
+function traceCreativeCandidateReachability(input: {
+  plan: SurfacePlan;
+  discoursePlan: DiscoursePlan;
+  hasInvention: boolean;
+  hasLearnedProposal: boolean;
+  rejectionReason?: string;
+}): void {
+  traceEvent((globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace, {
+    stage: "mouth.creative_candidate.reachability",
+    label: "mouth.speak",
+    counts: {
+      discourseUnits: input.discoursePlan.units.length,
+      realizationFrames: input.plan.realizationFrames.length,
+      hasInvention: input.hasInvention ? 1 : 0,
+      hasLearnedProposal: input.hasLearnedProposal ? 1 : 0
+    },
+    support: { rejectionReason: input.rejectionReason ?? null }
+  });
 }
 
 /** Preserve the generated surface while exposing its discourse units to the trace and judge. */
@@ -4315,6 +4369,15 @@ function learnedCreativeProposalCandidate(
     discoursePlan,
     boundaryDecisions: []
   };
+}
+
+function learnedProposalRejectionReason(invention: InventionConstructState, input: SpeakInput): string | undefined {
+  const realizationPath = stringFrom(jsonRecord(jsonRecord(invention.trace).proposalRealization).path);
+  if (realizationPath !== "learned_continuation" && realizationPath !== "learned_structural_composition") return "no_learned_realization_path";
+  const text = tidySurface(invention.proposalSurface);
+  if (!text || !admissibleMouthSurface(text)) return "invalid_surface";
+  if (surfaceEchoesPrompt(text, mouthEchoQuestionText(input))) return "prompt_echo";
+  return undefined;
 }
 
 function selectedNonEventCreativeMouthHandoff(input: SpeakInput): boolean {
