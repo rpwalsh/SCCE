@@ -19,7 +19,7 @@ import { createDeveloperSurfaceState, hydrateApprovals, hydrateSurfaceFromTurn, 
 import type { RuntimeStartupReadiness, RuntimeStartupReadinessSnapshot } from "./startup.js";
 import { turnTaskRegistryFor, type TurnTaskFrame } from "./turn-task-registry.js";
 import { createStaleWhileRevalidateCache, type StaleWhileRevalidateCache } from "./stale-while-revalidate.js";
-import { programResponseReadiness } from "./program-response-readiness.js";
+import { programResponseReadiness, unsupportedProgramResponseReadiness } from "./program-response-readiness.js";
 
 export interface ApiContext {
   /** Path of scce.config.json; settings routes write back through the shared schema. */
@@ -249,6 +249,7 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
     send(res, response.status, response.body, response.contentType, { requestId, started });
     if (trace) traceEvent(trace, { stage: 'api.response', label: `${response.status} ${req.method} ${req.url}`, durationMs: Date.now() - started });
   } catch (error) {
+    error = domainHttpError(error);
     const status = error instanceof HttpError ? error.status : 500;
     const body = {
       ok: false,
@@ -4418,6 +4419,7 @@ async function streamTurnResponse(input: {
       value: toJsonValue(value)
     });
   } catch (error) {
+    error = domainHttpError(error);
     const current = await registry.get(task.taskId);
     if (current?.status !== "cancelled") {
       const status = error instanceof HttpError ? error.status : 500;
@@ -4615,6 +4617,11 @@ function send(res: http.ServerResponse, status: number, body: string, type: stri
     "x-runtime-ms": String(Date.now() - meta.started)
   });
   res.end(body);
+}
+
+function domainHttpError(error: unknown): unknown {
+  const readiness = unsupportedProgramResponseReadiness(error);
+  return readiness ? new HttpError(422, "runtime.declined.program_not_ready", toJsonValue(readiness)) : error;
 }
 
 class HttpError extends Error {

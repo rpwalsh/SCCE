@@ -6,6 +6,14 @@ export type ProgramResponseReadiness =
   | { schema: "scce.program.response_readiness.v1"; status: "not_ready"; reasonId: string }
   | { schema: "scce.program.response_readiness.v1"; status: "ready"; reasonId: "program.readiness.verified"; artifactIds: string[]; artifactCount: number };
 
+export function unsupportedProgramResponseReadiness(error: unknown): (ProgramResponseReadiness & { status: "not_ready"; languageId: string }) | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const failure = error as { code?: unknown; languageId?: unknown };
+  if (failure.code !== "SCCE_PROGRAM_LANGUAGE_UNSUPPORTED" || typeof failure.languageId !== "string" || !failure.languageId) return undefined;
+  return { schema: "scce.program.response_readiness.v1", status: "not_ready",
+    reasonId: "program.readiness.unsupported_language", languageId: failure.languageId };
+}
+
 /** Code output is ready only when an owner-bound behavior contract was actually built and tested. */
 export function programResponseReadiness(input: { program?: ProgramGraph; buildTest?: BuildTestResult }): ProgramResponseReadiness {
   const program = input.program;

@@ -24,6 +24,25 @@ afterEach(async () => {
 });
 
 describe("a withheld turn survives transport as typed data, not as an error string", () => {
+  it.each([false, true])("reports unsupported program languages without substituting a runtime, streaming=%s", async streaming => {
+    const failure = Object.assign(new Error("unsupported program language: rust"), {
+      code: "SCCE_PROGRAM_LANGUAGE_UNSUPPORTED", status: "unsupported", languageId: "rust"
+    });
+    const port = await fixtureServer(null, failure);
+    const response = await fetch(`http://127.0.0.1:${port}/api/turn${streaming ? "?stream=1" : ""}`, {
+      method: "POST", headers: { "content-type": "application/json", ...(streaming ? { accept: "application/x-ndjson" } : {}) },
+      body: JSON.stringify({ text: "Rust double(x): double(2)=4; double(3)=6", sessionId: "session.unsupported" })
+    });
+    const value = streaming
+      ? (await response.text()).split("\n").filter(line => line.trim()).map(line => JSON.parse(line) as Record<string, unknown>).reverse()
+        .find(frame => frame.type === "error" || frame.type === "result")!
+      : await response.json() as Record<string, unknown>;
+    expect(response.status).toBe(streaming ? 200 : 422);
+    expect(value.status).toBe(422);
+    expect(value.detail).toEqual({ schema: "scce.program.response_readiness.v1", status: "not_ready",
+      reasonId: "program.readiness.unsupported_language", languageId: "rust" });
+    expect(value.programArtifacts).toBeUndefined();
+  });
   it("returns 422 carrying the kernel's own withheld record on the non-streaming turn endpoint", async () => {
     const port = await fixtureServer(withheldTurn());
     const response = await fetch(`http://127.0.0.1:${port}/api/turn`, {
@@ -95,7 +114,7 @@ function withheldTurn(): TurnResult {
   return { ...result, withheld };
 }
 
-async function fixtureServer(result: TurnResult | null): Promise<number> {
+async function fixtureServer(result: TurnResult | null, failure?: Error): Promise<number> {
   const context = {
     maxBodyBytes: 1_000_000,
     runtime: {
@@ -106,6 +125,7 @@ async function fixtureServer(result: TurnResult | null): Promise<number> {
       },
       kernel: {
         turn: async () => {
+          if (failure) throw failure;
           if (!result) throw new Error("fixture runtime failure");
           return result;
         }
