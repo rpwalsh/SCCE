@@ -63,6 +63,7 @@ import {
 import { createRuntimeGraphRetrieval } from "./runtime-graph-retrieval.js";
 import { createRuntimeMemoryControl } from "./runtime-memory-control.js";
 import { createRuntimeOrchestrator } from "./runtime-orchestrator.js";
+import { createScopedEventWrites } from "./scoped-event-writes.js";
 import { createSafetyRailEngine } from "./safety-rail-engine.js";
 import { DEFAULT_POLICY } from "./safety.js";
 import { createFunctionalConsciousnessScore, createSpectralSelfDistillation } from "./self-distillation.js";
@@ -167,7 +168,11 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
     lastReasoningOperatorInductionAttemptAt: Number.NEGATIVE_INFINITY
   };
   const failures: string[] = [];
-  let bufferedEvents: ScceEvent[] | undefined;
+  const eventWrites = createScopedEventWrites({
+    append: event => deps.storage.events.append(event),
+    appendBatch: events => deps.storage.events.appendBatch(events),
+    failedFlushDuringRunFailure: error => failures.push(`event batch persistence failed: ${error instanceof Error ? error.message : String(error)}`)
+  });
   const turnProofEvidenceLimit = positiveRuntimeInt("SCCE_TURN_PROOF_EVIDENCE", 2);
   const surfaceLanguageMemoryCacheMs = positiveRuntimeInt("SCCE_SURFACE_LANGUAGE_CACHE_MS", 600_000);
 
@@ -196,12 +201,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
   }
 
   async function append(event: ScceEvent): Promise<ScceEvent> {
-    if (bufferedEvents) {
-      bufferedEvents.push(event);
-      return event;
-    }
-    await deps.storage.events.append(event);
-    return event;
+    return eventWrites.append(event);
   }
 
   const graphRetrieval = createRuntimeGraphRetrieval({
@@ -228,19 +228,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
   }
 
   async function withBufferedEventWrites<T>(run: () => Promise<T>): Promise<T> {
-    if (bufferedEvents) return run();
-    const buffer: ScceEvent[] = [];
-    bufferedEvents = buffer;
-    try {
-      const result = await run();
-      if (buffer.length) await deps.storage.events.appendBatch(buffer);
-      return result;
-    } catch (error) {
-      if (buffer.length) await deps.storage.events.appendBatch(buffer).catch(writeError => failures.push(`event batch persistence failed: ${writeError instanceof Error ? writeError.message : String(writeError)}`));
-      throw error;
-    } finally {
-      bufferedEvents = undefined;
-    }
+    return eventWrites.withBufferedWrites(run);
   }
 
   const ingestionRuntime = createIngestionRuntime({
