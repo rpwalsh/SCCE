@@ -104,19 +104,14 @@ export function proseRelationMetadata(text: string, options: ProseRelationOption
 export function proseRelations(text: string, options: ProseRelationOptions = {}): ProseRelation[] {
   const maxRelations = Math.max(1, Math.min(2_000, Math.floor(options.maxRelations ?? 400)));
   const out: ProseRelation[] = [];
+  const constructionIndex = indexObservedConstructions(options.entityConstructions ?? []);
   for (const sentence of splitSurfaceSentences(text)) {
     if (sentence.length > MAX_SENTENCE_CHARS) continue;
     const observed = sentenceRelations(sentence, options.entitySurfaces ?? []);
-    for (const construction of options.entityConstructions ?? []) {
-      const source = construction.slots.filter(slot => slot.semanticRole === "entity" && slot.relationDirection === "source").flatMap(slot => slot.observedFillers);
-      const target = construction.slots.filter(slot => slot.semanticRole === "entity" && slot.relationDirection === "target").flatMap(slot => slot.observedFillers);
-      if (!source.length || !target.length) continue;
-      const sourceSet = new Set(source.map(normalizePredicate));
-      const targetSet = new Set(target.map(normalizePredicate));
-      const predicate = normalizePredicate(construction.predicate);
-      for (const relation of sentenceRelations(sentence, [...source, ...target])) {
-        if (relation.predicateSurface === predicate && sourceSet.has(normalizePredicate(relation.subject.surface))
-          && targetSet.has(normalizePredicate(relation.object.surface))) observed.push(relation);
+    for (const construction of observedConstructionsInSentence(sentence, constructionIndex)) {
+      for (const relation of sentenceRelations(sentence, construction.entitySurfaces)) {
+        if (relation.predicateSurface === construction.predicate && construction.sourceSet.has(normalizePredicate(relation.subject.surface))
+          && construction.targetSet.has(normalizePredicate(relation.object.surface))) observed.push(relation);
       }
     }
     const unique = new Map(observed.map(relation => [JSON.stringify([relation.subject, relation.predicateSurface, relation.object]), relation]));
@@ -126,6 +121,54 @@ export function proseRelations(text: string, options: ProseRelationOptions = {})
     }
   }
   return out;
+}
+
+interface ObservedConstructionPlan {
+  readonly order: number;
+  readonly predicate: string;
+  readonly units: readonly string[];
+  readonly entitySurfaces: readonly string[];
+  readonly sourceSet: ReadonlySet<string>;
+  readonly targetSet: ReadonlySet<string>;
+}
+
+function predicateUnits(text: string): string[] {
+  return surfaceWords(text).map(unit => unit.toLocaleLowerCase());
+}
+
+function indexObservedConstructions(constructions: readonly GraphBoundConstruction[]): ReadonlyMap<string, readonly ObservedConstructionPlan[]> {
+  const index = new Map<string, ObservedConstructionPlan[]>();
+  for (const [order, construction] of constructions.entries()) {
+    const source: string[] = [];
+    const target: string[] = [];
+    for (const slot of construction.slots) {
+      if (slot.semanticRole !== "entity") continue;
+      (slot.relationDirection === "source" ? source : target).push(...slot.observedFillers);
+    }
+    const predicate = normalizePredicate(construction.predicate);
+    const units = predicateUnits(predicate);
+    if (!source.length || !target.length || !predicate || !units.length) continue;
+    const plan = Object.freeze({ order, predicate, units: Object.freeze(units), entitySurfaces: Object.freeze([...source, ...target]),
+      sourceSet: new Set(source.map(normalizePredicate)), targetSet: new Set(target.map(normalizePredicate)) });
+    const bucket = index.get(units[0]!) ?? [];
+    bucket.push(plan);
+    index.set(units[0]!, bucket);
+  }
+  for (const bucket of index.values()) Object.freeze(bucket);
+  return index;
+}
+
+function observedConstructionsInSentence(sentence: string, index: ReadonlyMap<string, readonly ObservedConstructionPlan[]>): ObservedConstructionPlan[] {
+  if (!index.size) return [];
+  const units = predicateUnits(sentence);
+  const active = new Set<ObservedConstructionPlan>();
+  for (let offset = 0; offset < units.length; offset++) {
+    for (const construction of index.get(units[offset]!) ?? []) {
+      if (construction.units.every((unit, index) => units[offset + index] === unit)) active.add(construction);
+    }
+  }
+  // Retain construction order: duplicate extraction and the bounded output cap have observable ordering.
+  return [...active].sort((left, right) => left.order - right.order);
 }
 
 /**
