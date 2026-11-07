@@ -40,8 +40,13 @@ export function composeEvidenceGroundedAnswer(input: {
   locale?: string;
   maxSentences?: number;
   allowDirectSourceSurface?: boolean;
+  /** Labels measured from the current request's source identities. */
+  entitySurfaces?: readonly string[];
 }): EvidenceGroundedAnswer {
-  const entitySurfaces = input.languageMemory ? learnedEntitySurfacesFromLanguageMemory(input.languageMemory) : [];
+  const learnedSurfaces = input.languageMemory ? learnedEntitySurfacesFromLanguageMemory(input.languageMemory) : undefined;
+  const entitySurfaces = learnedSurfaces || input.entitySurfaces
+    ? [...(learnedSurfaces ?? []), ...(input.entitySurfaces ?? [])]
+    : undefined;
   const maxSentences = Math.max(1, Math.min(12, input.maxSentences ?? 3));
   const claimFeatures = input.entailment.claim.features.length
     ? input.entailment.claim.features
@@ -149,7 +154,7 @@ function ccrCandidates(ccr: CcrResult | undefined, claimFeatures: readonly strin
   }).filter(item => item.textHash !== "0");
 }
 
-function evidenceCandidates(evidence: readonly EvidenceSpan[], claimFeatures: readonly string[], ppfMass: Map<string, number>, evidenceMass: Map<string, number>, entitySurfaces: readonly string[]): EvidenceCandidate[] {
+function evidenceCandidates(evidence: readonly EvidenceSpan[], claimFeatures: readonly string[], ppfMass: Map<string, number>, evidenceMass: Map<string, number>, entitySurfaces?: readonly string[]): EvidenceCandidate[] {
   const out: EvidenceCandidate[] = [];
   for (const span of evidence.slice(0, 48)) {
     const spanMass = Math.max(ppfMass.get(String(span.id)) ?? 0, evidenceMass.get(String(span.id)) ?? 0);
@@ -194,13 +199,13 @@ function cleanSentence(text: string): string {
   return text.replace(/\s+/g, " ").trim().slice(0, 900);
 }
 
-function namedSurfaceMass(text: string, entitySurfaces: readonly string[]): number {
+function namedSurfaceMass(text: string, entitySurfaces?: readonly string[]): number {
   const runs = surfaceEntityRuns(text, entitySurfaces);
   const parentheticalRuns = (text.match(/\([^)]{2,100}\)/gu) ?? []).filter(item => surfaceEntityRuns(item, entitySurfaces).length > 0).length;
   return clamp01(Math.min(1, runs.length / 16) * 0.38 + Math.min(1, parentheticalRuns / 4) * 0.62);
 }
 
-function collectionListSignal(text: string, entitySurfaces: readonly string[]): number {
+function collectionListSignal(text: string, entitySurfaces?: readonly string[]): number {
   const compact = cleanSentence(text);
   const parentheticals = (compact.match(/\([^)]{2,100}\)/gu) ?? []).filter(item => surfaceEntityRuns(item, entitySurfaces).length > 0).length;
   const nameRuns = surfaceEntityRuns(compact, entitySurfaces);
@@ -208,7 +213,7 @@ function collectionListSignal(text: string, entitySurfaces: readonly string[]): 
   return clamp01(Math.min(1, nameRuns.length / 7) * 0.45 + Math.min(1, parentheticals / 4) * 0.35 + Math.min(1, delimiters / 8) * 0.2);
 }
 
-function compactMemberListSignal(text: string, entitySurfaces: readonly string[]): number {
+function compactMemberListSignal(text: string, entitySurfaces?: readonly string[]): number {
   const compact = cleanSentence(text);
   const parentheticals = (compact.match(/\([^)]{2,100}\)/gu) ?? []).filter(item => surfaceEntityRuns(item, entitySurfaces).length > 0).length;
   const nameRuns = surfaceEntityRuns(compact, entitySurfaces);
@@ -217,7 +222,7 @@ function compactMemberListSignal(text: string, entitySurfaces: readonly string[]
   return clamp01(0.5 + Math.min(0.3, parentheticals / 10) + Math.min(0.2, separators / 12));
 }
 
-function requestAnchorSignal(requestText: string, text: string, entitySurfaces: readonly string[]): number {
+function requestAnchorSignal(requestText: string, text: string, entitySurfaces?: readonly string[]): number {
   const surface = normalizeAnchorSurface(text);
   if (!surface) return 0;
   const surfaceUnits = surface.split(" ").filter(Boolean);
@@ -230,7 +235,7 @@ function requestAnchorSignal(requestText: string, text: string, entitySurfaces: 
   return best;
 }
 
-function namedSurfaceAnchors(text: string, entitySurfaces: readonly string[]): string[] {
+function namedSurfaceAnchors(text: string, entitySurfaces?: readonly string[]): string[] {
   const runs = surfaceEntityRuns(text, entitySurfaces);
   return [...new Set(runs.map(normalizeAnchorSurface).filter(anchor => anchor.split(" ").length >= 2))]
     .sort((left, right) => right.length - left.length)
@@ -296,7 +301,7 @@ function citationSurfaceSignal(text: string): number {
   return folded.includes("http://") || folded.includes("https://") || folded.includes("www.") ? 1 : 0;
 }
 
-function evidenceAnswerSurface(requestText: string, evidence: readonly EvidenceSpan[], maxSentences: number, entitySurfaces: readonly string[]): string {
+function evidenceAnswerSurface(requestText: string, evidence: readonly EvidenceSpan[], maxSentences: number, entitySurfaces?: readonly string[]): string {
   const requestFeatures = featureSet(requestText, 256);
   const sentences = evidence
     .filter(span => span.status === "promoted")

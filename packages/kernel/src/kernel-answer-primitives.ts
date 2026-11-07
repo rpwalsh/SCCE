@@ -173,9 +173,8 @@ export function declaredEntitySurfacesFromMetadata(value: JsonValue): string[] {
   return [...surfaces].sort((left, right) => left.localeCompare(right));
 }
 
-export function surfaceEntityRuns(text: string, observedSurfaces: readonly string[] = []): string[] {
-  const surfaces = new Set<string>(observedSurfaces);
-  for (const identity of corpusIdentitySignals()?.identities ?? []) surfaces.add(identity);
+export function surfaceEntityRuns(text: string, observedSurfaces?: readonly string[]): string[] {
+  const surfaces = new Set<string>(observedSurfaces ?? corpusIdentitySignals()?.identities ?? []);
   const vocabulary = new Map<string, string[][]>();
   for (const surface of surfaces) {
     const units = corpusIdentityUnits(surface);
@@ -287,7 +286,7 @@ export function kernelClamp01(value: number): number {
 
 
 export function hasPriorAnchorSignal(value: string): boolean {
-  return hasUppercaseLetter(value) || hasUncasedNonLatinLetter(value);
+  return surfaceEntityRuns(value).length > 0;
 }
 
 

@@ -3198,7 +3198,10 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           durableSeeds,
           durableConstructions,
           correctionPriors: await translationCorrectionPriorsForTurn(canonicalTranslationTarget),
-          entitySurfaces: learnedEntitySurfacesFromLanguageMemory(authorityLanguage.state),
+          entitySurfaces: [
+            ...learnedEntitySurfacesFromLanguageMemory(authorityLanguage.state),
+            ...corpusNamedIdentities(input.text)
+          ],
           calibrationModels,
           createdAt: clock.now()
         });
@@ -3371,7 +3374,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             fakeEvidenceForbidden: true
           })
         }
-        : composeEvidenceGroundedAnswer({ requestText: input.text, entailment: answerEntailmentSeed, evidence: selectedEvidence, field, ccr: ccrResult, languageModels: surfaceLanguageModels, languageMemory: surfaceLanguageMemory, locale });
+        : composeEvidenceGroundedAnswer({ requestText: input.text, entailment: answerEntailmentSeed, evidence: selectedEvidence, field, ccr: ccrResult, languageModels: surfaceLanguageModels, languageMemory: surfaceLanguageMemory, entitySurfaces: corpusNamedIdentities(input.text), locale });
       // Real bug, confirmed live: for "when did Ada Lovelace die?", the
       // longPathBasisAnswer branch above (bypasses composeEvidenceGroundedAnswer
       // entirely) picked a sentence that merely scored well lexically --

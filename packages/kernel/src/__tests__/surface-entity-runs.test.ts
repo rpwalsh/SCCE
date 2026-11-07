@@ -11,7 +11,7 @@ import {
   proseRelationMetadata,
   type LanguageProfile
 } from "../index.js";
-import { declaredEntitySurfacesFromMetadata, learnedEntitySurfacesFromLanguageMemory, observedEntitySurfacesFromInducedLanguageModel, surfaceEntityRuns } from "../kernel-answer-primitives.js";
+import { declaredEntitySurfacesFromMetadata, hasPriorAnchorSignal, learnedEntitySurfacesFromLanguageMemory, observedEntitySurfacesFromInducedLanguageModel, surfaceEntityRuns } from "../kernel-answer-primitives.js";
 
 describe("surface entity spans use observed labels", () => {
   beforeEach(() => clearCorpusIdentitySignals());
@@ -89,13 +89,16 @@ describe("surface entity spans use observed labels", () => {
     clearCorpusIdentitySignals();
     primeCorpusIdentitySignals({
       closedClass: new Set(),
-      identities: new Set(["ada lovelace", "london"]),
+      identities: new Set(["ada", "ada lovelace", "london"]),
       spread: new Map(),
       concentration: 0
     });
     try {
       expect(surfaceEntityRuns("ada lovelace visited london.")).toEqual(["ada lovelace", "london"]);
       expect(surfaceEntityRuns("incidental words and Alice.")).toEqual([]);
+      expect(hasPriorAnchorSignal("ada")).toBe(true);
+      expect(hasPriorAnchorSignal("Ada")).toBe(true);
+      expect(hasPriorAnchorSignal("Unknown")).toBe(false);
     } finally {
       clearCorpusIdentitySignals();
     }

@@ -340,12 +340,10 @@ describe("translation target evidence admission", () => {
       targetLanguage: koreanTarget.id,
       evidence: [koreanEvidence],
       profiles: [koreanTarget],
+      entitySurfaces: ["세종대왕은"],
       createdAt: 1
     });
-    // A Latin-only `[A-Z]` regex would find zero entities in an all-Hangul
-    // source -- the real, production script-aware detector (the same
-    // hasUncasedNonLatinLetter signal answer-emitter.ts/local-evidence-
-    // runtime.ts already use live) must still flag the real named subject.
+    // The source label is observed in Hangul, with its attached particle, and survives without orthographic heuristics.
     expect(koreanPlan.construct.preservationValidation.requiredEntities.length).toBeGreaterThan(0);
     expect(koreanPlan.construct.preservationValidation.requiredEntities.some(term => term.includes("세종대왕"))).toBe(true);
   });

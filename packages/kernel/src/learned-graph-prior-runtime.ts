@@ -976,14 +976,7 @@ export function attachLearnedGraphPriorConstruct(input: {
 
 
 export function cognitiveTopicForRequest(text: string): string {
-  // A single-unit anchor that is the request's FIRST word carries no name
-  // signal when its only capitalization is positional: every language
-  // that capitalizes sentence starts capitalizes its question operators
-  // there too, so "What is the boiling point of tungsten?" was yielding
-  // topic "What" (verified live: the sealed-eval abstention surfaced the
-  // literal answer "What"). The anchor survives only if the same word
-  // recurs capitalized elsewhere in the request, where capitalization is
-  // a genuine choice. Structural, language-agnostic, no word lists.
+  // A first-word single-unit anchor survives only when the corpus measures it as a source identity in this request.
   const words = splitPriorSurfaceRunsForTopic(text);
   const firstWord = normalizePriorKey(words[0] ?? "");
   const named = namedSubjectAnchors(text).filter(anchor => {
