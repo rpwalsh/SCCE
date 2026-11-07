@@ -5,6 +5,8 @@ import { clamp01, toJsonValue } from "./primitives.js";
 import { segmentUnicodeSurfaceV2, type LexicalSegment } from "./unicode-segmentation-v2.js";
 import type { LanguagePatternRecord } from "./storage.js";
 import type { EvidenceId, Hasher, JsonValue } from "./types.js";
+import { induceLearnedConstructions, type AlignedSurfaceExample, type LearnedConstruction } from "./language-construction.js";
+import { createLearnedSurfaceInterpreter, type LearnedSurfaceInterpreter, type InterpretedSurfaceRole } from "./learned-surface-interpretation.js";
 
 export const CREATIVE_REQUEST_FRAME_SCHEMA = "scce.creative_request_frame.v1" as const;
 export const CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA =
@@ -35,6 +37,7 @@ export interface CreativeRequestFrameAnchor {
   acceptedSupport: number;
   rejectedSupport: number;
   exampleTextHashes: string[];
+  requestRoleExamples?: AlignedSurfaceExample[];
 }
 
 /**
@@ -103,6 +106,7 @@ export interface CreativeEventCompatibilityCorpusRoleBinding {
   requestRoleId: string;
   eventRoleId: "scce.role.patient" | "scce.role.complement";
   accepted: boolean;
+  requestSpan?: { charStart: number; charEnd: number };
 }
 
 export interface CreativeEventCompatibilityCorpusExample {
@@ -302,7 +306,7 @@ export function compileCreativeEventCompatibilityCorpus(
       minimumRolePosterior: input.corpus.minimumRolePosterior,
       eventCompatibilities,
       roleCompatibilities,
-      requestFrameAnchors: compileRequestFrameAnchors(examples, input.makeId)
+      requestFrameAnchors: compileRequestFrameAnchors(examples, input.evidenceIds, input.makeId)
     };
     const modelJson = toJsonValue({ ...model, id: undefined });
     model.id = input.makeId(modelJson);
@@ -341,7 +345,7 @@ export function creativeEventCompatibilityModelsFromPatterns(
   const models = patterns.flatMap(pattern => {
     const value = pattern.patternJson;
     if (!isRecord(value) || value.schema !== CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA) return [];
-    const model = compatibilityModelFromRecord(value);
+    const model = compatibilityModelFromRecord(value, pattern.evidenceIds);
     return model ? [model] : [];
   });
   return normalizeCreativeEventCompatibilityModels(models);
@@ -356,59 +360,42 @@ export function compileCreativeRequestFrameFromCompatibilityModels(input: {
   requestText: string;
   models: readonly CreativeEventCompatibilityModel[];
   hasher: Hasher;
-  minimumLexicalFit?: number;
 }): CreativeRequestFrame | undefined {
   const requestText = input.requestText;
-  if (!requestText.trim()) return undefined;
-  const requestSegments = requestLexicalSegments(requestText);
-  const requestKeys = new Set(requestSegments.map(segment => segment.normalized).filter(Boolean));
-  if (!requestKeys.size) return undefined;
-  const minimumLexicalFit = clamp01(input.minimumLexicalFit ?? 0.08);
+  if (!requestText.trim() || !input.models.length) return undefined;
+  const interpreter = createLearnedSurfaceInterpreter(requestText, true);
   const candidates = input.models
     .filter(model => model.reliability === "calibrated")
-    .flatMap(model => (model.requestFrameAnchors ?? []).map(anchor => {
-      const lexicalFit = lexicalKeyFit(requestKeys, anchor.lexicalKeys);
+    .flatMap(model => (model.requestFrameAnchors ?? []).flatMap(anchor => {
       const posterior = maxPosteriorForRequestFrame(model, anchor.requestFrameId);
-      const roleSupport = roleSupportForRequestFrame(model, anchor.requestFrameId);
-      const supportFit = clamp01(Math.log2(1 + anchor.support) / 8);
-      return {
-        model,
-        anchor,
-        lexicalFit,
-        posterior,
-        roleSupport,
-        score: clamp01(0.52 * lexicalFit + 0.34 * posterior + 0.14 * supportFit)
-      };
+      if (posterior < model.minimumAdmissiblePosterior) return [];
+      const roles = interpretedRequestRoles(anchor, interpreter, input.hasher);
+      if (!roles) return [];
+      const allowedRoles = new Set(model.roleCompatibilities
+        .filter(row => row.requestFrameId === anchor.requestFrameId && row.posterior >= model.minimumRolePosterior)
+        .map(row => row.requestRoleId));
+      if (roles.some(role => !allowedRoles.has(role.roleId))) return [];
+      return [{ model, anchor, posterior, roles }];
     }))
-    .filter(row => row.lexicalFit >= minimumLexicalFit && row.posterior >= row.model.minimumAdmissiblePosterior)
     .sort((left, right) => (
-      right.score - left.score
-      || right.lexicalFit - left.lexicalFit
-      || right.posterior - left.posterior
+      right.posterior - left.posterior
       || right.anchor.acceptedSupport - left.anchor.acceptedSupport
       || left.anchor.requestFrameId.localeCompare(right.anchor.requestFrameId)
     ));
   const selected = candidates[0];
   if (!selected) return undefined;
-  const roleIds = selected.anchor.requestRoleIds.length
-    ? selected.anchor.requestRoleIds
-    : [...new Set(selected.model.roleCompatibilities
-      .filter(row => row.requestFrameId === selected.anchor.requestFrameId)
-      .map(row => row.requestRoleId)
-      .filter(Boolean))]
-      .sort();
-  const argumentSegments = selectArgumentSegmentsForRoles(requestSegments, roleIds);
+  const roleIds = selected.roles.map(role => role.roleId);
   const frameSeed = {
     schema: CREATIVE_REQUEST_FRAME_SCHEMA,
     requestCompilerId: selected.model.requestCompilerId,
     requestFrameId: selected.anchor.requestFrameId,
     requestHash: input.hasher.digestHex(requestText),
     roleIds,
-    argumentSpans: argumentSegments.map(row => ({
+    argumentSpans: selected.roles.map(row => ({
       roleId: row.roleId,
-      textHash: input.hasher.digestHex(row.segment.surface),
-      start: row.segment.codePointStart,
-      end: row.segment.codePointEnd
+      textHash: input.hasher.digestHex(row.surface),
+      start: row.startCodePoint,
+      end: row.endCodePoint
     }))
   };
   const id = `creative.request.frame.${input.hasher.digestHex(JSON.stringify(frameSeed))}`;
@@ -421,14 +408,14 @@ export function compileCreativeRequestFrameFromCompatibilityModels(input: {
       roleId: "scce.request.role.focus",
       span: exactRequestSpan(requestText, requestText, 0, [...requestText].length)
     },
-    arguments: argumentSegments.map((row, index) => ({
+    arguments: selected.roles.map((row, index) => ({
       id: `${id}.argument.${index}`,
       roleId: row.roleId,
       span: exactRequestSpan(
         requestText,
-        row.segment.surface,
-        row.segment.codePointStart,
-        row.segment.codePointEnd
+        row.surface,
+        row.startCodePoint,
+        row.endCodePoint
       )
     })),
     explicitRelationId: selected.model.eventCompatibilities
@@ -447,6 +434,7 @@ export function compileCreativeRequestFrameFromCompatibilityModels(input: {
 
 function compileRequestFrameAnchors(
   examples: readonly CreativeEventCompatibilityCorpusExample[],
+  evidenceIds: readonly EvidenceId[],
   makeId: (representation: JsonValue) => string
 ): CreativeRequestFrameAnchor[] {
   const byFrame = groupExamples(examples, example => example.requestFrameId);
@@ -469,6 +457,7 @@ function compileRequestFrameAnchors(
       .filter(Boolean))]
       .sort()
       .slice(0, 16);
+    const requestRoleExamples = compileRequestRoleExamples(rows, evidenceIds, makeId);
     return {
       requestFrameId,
       requestCompilerId: first.requestCompilerId,
@@ -477,7 +466,8 @@ function compileRequestFrameAnchors(
       support: rows.length,
       acceptedSupport,
       rejectedSupport,
-      exampleTextHashes
+      exampleTextHashes,
+      ...(requestRoleExamples.length ? { requestRoleExamples } : {})
     };
   })
     .filter(validRequestFrameAnchor)
@@ -486,6 +476,55 @@ function compileRequestFrameAnchors(
       || right.support - left.support
       || left.requestFrameId.localeCompare(right.requestFrameId)
     ));
+}
+
+function compileRequestRoleExamples(
+  rows: readonly CreativeEventCompatibilityCorpusExample[],
+  evidenceIds: readonly EvidenceId[],
+  makeId: (representation: JsonValue) => string
+): AlignedSurfaceExample[] {
+  if (!evidenceIds.length) return [];
+  const examples = new Map<string, AlignedSurfaceExample>();
+  for (const row of rows) {
+    if (!row.accepted || row.requestText !== row.requestText.normalize("NFC")) continue;
+    const points = [...row.requestText];
+    const bindings = (row.roleBindings ?? []).filter(binding => binding.accepted);
+    if (bindings.some(binding => !validRoleRange(binding.requestSpan, points.length))) continue;
+    const roleSpans = bindings.map(binding => ({
+      roleId: binding.requestRoleId, occurrenceId: binding.requestRoleId,
+      start: binding.requestSpan!.charStart, end: binding.requestSpan!.charEnd,
+      surface: points.slice(binding.requestSpan!.charStart, binding.requestSpan!.charEnd).join(""),
+      evidenceIds: [...evidenceIds]
+    }));
+    const id = makeId(toJsonValue({ schema: "scce.creative_request_role_example.v1", requestFrameId: row.requestFrameId,
+      surface: row.requestText, roleSpans }));
+    examples.set(id, { id, profileKey: row.requestCompilerId, surface: row.requestText, evidenceIds: [...evidenceIds], roleSpans });
+  }
+  return [...examples.values()];
+}
+
+const requestConstructionMemo = new WeakMap<CreativeRequestFrameAnchor, readonly LearnedConstruction[]>();
+
+function interpretedRequestRoles(anchor: CreativeRequestFrameAnchor, interpreter: LearnedSurfaceInterpreter, hasher: Hasher): InterpretedSurfaceRole[] | undefined {
+  let constructions = requestConstructionMemo.get(anchor);
+  if (!constructions) {
+    constructions = induceLearnedConstructions({ examples: anchor.requestRoleExamples ?? [], hasher }).constructions;
+    requestConstructionMemo.set(anchor, constructions);
+  }
+  const interpretations = new Map<string, InterpretedSurfaceRole[]>();
+  for (const construction of constructions) {
+    const roles = interpreter.interpret(construction);
+    if (!roles || roles.some(role => !role.surface.trim())
+      || !anchor.requestRoleIds.every(id => roles.filter(role => role.roleId === id).length === 1)) continue;
+    const key = JSON.stringify(roles.map(role => [role.roleId, role.startCodePoint, role.endCodePoint]));
+    interpretations.set(key, roles);
+  }
+  return interpretations.size === 1 ? interpretations.values().next().value : undefined;
+}
+
+function validRoleRange(value: { charStart: number; charEnd: number } | undefined, length: number): boolean {
+  return value !== undefined && Number.isSafeInteger(value.charStart) && Number.isSafeInteger(value.charEnd)
+    && value.charStart >= 0 && value.charEnd > value.charStart && value.charEnd <= length;
 }
 
 function requestLexicalSegments(text: string): LexicalSegment[] {
@@ -500,14 +539,6 @@ function requestLexicalKeys(text: string): string[] {
     .sort();
 }
 
-function lexicalKeyFit(requestKeys: ReadonlySet<string>, anchorKeys: readonly string[]): number {
-  const anchor = new Set(anchorKeys.filter(Boolean));
-  if (!requestKeys.size || !anchor.size) return 0;
-  let intersection = 0;
-  for (const key of requestKeys) if (anchor.has(key)) intersection++;
-  return clamp01(intersection / Math.sqrt(requestKeys.size * anchor.size));
-}
-
 function maxPosteriorForRequestFrame(
   model: CreativeEventCompatibilityModel,
   requestFrameId: string
@@ -515,41 +546,6 @@ function maxPosteriorForRequestFrame(
   return Math.max(0, ...model.eventCompatibilities
     .filter(row => row.requestFrameId === requestFrameId)
     .map(row => row.posterior));
-}
-
-function roleSupportForRequestFrame(
-  model: CreativeEventCompatibilityModel,
-  requestFrameId: string
-): number {
-  return model.roleCompatibilities
-    .filter(row => row.requestFrameId === requestFrameId)
-    .reduce((sum, row) => sum + row.support, 0);
-}
-
-function selectArgumentSegmentsForRoles(
-  segments: readonly LexicalSegment[],
-  roleIds: readonly string[]
-): Array<{ roleId: string; segment: LexicalSegment }> {
-  if (!roleIds.length) return [];
-  const usable = [...segments]
-    .filter(segment => segment.surface.trim() && segment.normalized)
-    .sort((left, right) => (
-      right.normalized.length - left.normalized.length
-      || right.surface.length - left.surface.length
-      || right.codePointStart - left.codePointStart
-    ));
-  const selected: Array<{ roleId: string; segment: LexicalSegment }> = [];
-  const used = new Set<string>();
-  for (const roleId of roleIds.slice(0, 8)) {
-    const segment = usable.find(candidate => {
-      const key = `${candidate.codePointStart}:${candidate.codePointEnd}`;
-      return !used.has(key);
-    });
-    if (!segment) break;
-    used.add(`${segment.codePointStart}:${segment.codePointEnd}`);
-    selected.push({ roleId, segment });
-  }
-  return selected.sort((left, right) => left.segment.codePointStart - right.segment.codePointStart);
 }
 
 function exactRequestSpan(
@@ -664,7 +660,7 @@ function compatibilityOutcomeEntropy(
 }
 
 function compatibilityModelFromRecord(
-  value: Record<string, unknown>
+  value: Record<string, unknown>, evidenceIds: readonly EvidenceId[]
 ): CreativeEventCompatibilityModel | undefined {
   const eventCompatibilities = Array.isArray(value.eventCompatibilities)
     ? value.eventCompatibilities.flatMap(eventCompatibilityFromUnknown)
@@ -673,7 +669,7 @@ function compatibilityModelFromRecord(
     ? value.roleCompatibilities.flatMap(roleCompatibilityFromUnknown)
     : [];
   const requestFrameAnchors = Array.isArray(value.requestFrameAnchors)
-    ? value.requestFrameAnchors.flatMap(requestFrameAnchorFromUnknown)
+    ? value.requestFrameAnchors.flatMap(anchor => requestFrameAnchorFromUnknown(anchor, evidenceIds))
     : [];
   const model: CreativeEventCompatibilityModel = {
     schema: CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA,
@@ -725,7 +721,7 @@ function roleCompatibilityFromUnknown(value: unknown): CreativeEventRoleCompatib
   return validRoleCompatibility(row) ? [row] : [];
 }
 
-function requestFrameAnchorFromUnknown(value: unknown): CreativeRequestFrameAnchor[] {
+function requestFrameAnchorFromUnknown(value: unknown, evidenceIds: readonly EvidenceId[]): CreativeRequestFrameAnchor[] {
   if (!isRecord(value)) return [];
   const row: CreativeRequestFrameAnchor = {
     requestFrameId: stringValue(value.requestFrameId),
@@ -735,9 +731,34 @@ function requestFrameAnchorFromUnknown(value: unknown): CreativeRequestFrameAnch
     support: numberValue(value.support),
     acceptedSupport: numberValue(value.acceptedSupport),
     rejectedSupport: numberValue(value.rejectedSupport),
-    exampleTextHashes: stringArray(value.exampleTextHashes).slice(0, 16)
+    exampleTextHashes: stringArray(value.exampleTextHashes).slice(0, 16),
+    ...(Array.isArray(value.requestRoleExamples) ? {
+      requestRoleExamples: value.requestRoleExamples.flatMap(example => requestRoleExampleFromUnknown(example, evidenceIds))
+    } : {})
   };
   return validRequestFrameAnchor(row) ? [row] : [];
+}
+
+function requestRoleExampleFromUnknown(value: unknown, evidenceIds: readonly EvidenceId[]): AlignedSurfaceExample[] {
+  if (!isRecord(value) || !stringValue(value.id) || !stringValue(value.profileKey)
+    || typeof value.surface !== "string" || value.surface !== value.surface.normalize("NFC")
+    || !Array.isArray(value.roleSpans)) return [];
+  const owned = new Set<string>(evidenceIds);
+  const owners = stringArray(value.evidenceIds);
+  if (!owners.length || owners.some(id => !owned.has(id))) return [];
+  const points = [...value.surface];
+  const roles: AlignedSurfaceExample["roleSpans"][number][] = [];
+  for (const raw of value.roleSpans) {
+    if (!isRecord(raw) || !stringValue(raw.roleId) || !stringValue(raw.occurrenceId)
+      || typeof raw.start !== "number" || typeof raw.end !== "number" || typeof raw.surface !== "string"
+      || !validRoleRange({ charStart: raw.start, charEnd: raw.end }, points.length)
+      || points.slice(raw.start, raw.end).join("") !== raw.surface) return [];
+    const roleOwners = stringArray(raw.evidenceIds);
+    if (!roleOwners.length || roleOwners.some(id => !owners.includes(id))) return [];
+    roles.push({ roleId: stringValue(raw.roleId), occurrenceId: stringValue(raw.occurrenceId), start: raw.start, end: raw.end,
+      surface: raw.surface, evidenceIds: roleOwners });
+  }
+  return [{ id: value.id as string, profileKey: value.profileKey as string, surface: value.surface, evidenceIds: owners, roleSpans: roles }];
 }
 
 function parseCompatibilityCorpusExample(
@@ -781,7 +802,9 @@ function roleBindingFromUnknown(value: unknown): CreativeEventCompatibilityCorpu
   return [{
     requestRoleId: stringValue(value.requestRoleId),
     eventRoleId: value.eventRoleId,
-    accepted: value.accepted
+    accepted: value.accepted,
+    ...(isRecord(value.requestSpan) && typeof value.requestSpan.charStart === "number" && typeof value.requestSpan.charEnd === "number"
+      ? { requestSpan: { charStart: value.requestSpan.charStart, charEnd: value.requestSpan.charEnd } } : {})
   }];
 }
 

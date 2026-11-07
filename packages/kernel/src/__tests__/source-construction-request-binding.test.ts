@@ -91,6 +91,32 @@ function teach(input: { subjects: [string, string, string]; marker: string; valu
 }
 
 describe("acquired typed request construction transfer", () => {
+  it("matches lowercased learned request literals and subjects while preserving the source value", () => {
+    const fixture = teach({ subjects: ["Luma", "Vela", "Zora"], marker: "HAS TOKEN", value: "Bora", valueKind: "opaque.token" });
+    const state = createLanguageMemoryRuntime({ idFactory: ids, hasher }).hydrate({ models: [], patterns: fixture.patterns, constructionEvidence: [fixture.evidence] });
+    expect(state.rejectedConstructionPatterns).toEqual([]);
+    expect(state.importedConstructionBundles.length).toBeGreaterThan(0);
+    const binding = resolveRequestValueBinding({ requestText: fixture.requestText.toLowerCase(), evidence: [fixture.evidence],
+      resolvers: [sourceConstructionRequestValueResolver({ bundles: state.importedConstructionBundles, graph: fixture.graph })] });
+    expect(binding).toMatchObject({ value: "Bora", subject: "zora", evidenceIds: [String(fixture.evidence.id)] });
+  });
+
+  it("does not scan facts or source bodies when no acquired request form matches", () => {
+    const fixture = teach({ subjects: ["Luma", "Vela", "Zora"], marker: "HAS TOKEN", value: "Bora", valueKind: "opaque.token" });
+    const state = createLanguageMemoryRuntime({ idFactory: ids, hasher }).hydrate({ models: [], patterns: fixture.patterns, constructionEvidence: [fixture.evidence] });
+    let graphReads = 0;
+    let sourceReads = 0;
+    const graph = { get nodes() { graphReads++; return fixture.graph.nodes; }, get hyperedges() { graphReads++; return fixture.graph.hyperedges; } };
+    const evidence = { ...fixture.evidence, get text() { sourceReads++; return fixture.evidence.text; } };
+    const resolver = sourceConstructionRequestValueResolver({ bundles: state.importedConstructionBundles, graph });
+    expect(resolver.resolve("an unseen instruction", [evidence])).toBeUndefined();
+    expect(graphReads).toBe(0);
+    expect(sourceReads).toBe(0);
+    expect(resolver.resolve(fixture.requestText.toLowerCase(), [evidence])).toMatchObject({ value: "Bora" });
+    expect(graphReads).toBeGreaterThan(0);
+    expect(sourceReads).toBeGreaterThan(0);
+  });
+
   it.each([
     { subjects: ["Luma", "Vela", "Zora"], values: ["3-bit", "5-bit", "9-bit"], valueKind: "opaque.width",
       source: (subject: string, value: string) => `${subject} encodes each code-point as a ${value} integer.`,
