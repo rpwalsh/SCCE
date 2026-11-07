@@ -11,7 +11,7 @@ import { deriveClosedClassWords } from "../../closed-class-words.js";
 import { sourceOwnedAnswerUnitForms } from "./source-owned-answer-unit-forms.js";
 
 /** Actual source wording supplies scaffolding; separate raw examples supply observed name forms. */
-export function sourceOwnedAnswerhoodLanguage() {
+export function sourceOwnedAnswerhoodLanguage(rawFormsText = "einstein r0. einstein's r0. newton r0. newton's r0. curie r0. curie's r0.") {
   const hasher = createHasher();
   const clock = createClock({ fixedTime: 1 });
   const ids = createIdFactory({ hasher, clock, deterministicReplay: true });
@@ -28,6 +28,7 @@ export function sourceOwnedAnswerhoodLanguage() {
   const compiled = createNgramMemoryCompiler({ hasher, idFactory: ids }).compile({ streamId: uri, sourceSystem: "gutenberg", profile, sourceVersionId,
     text, evidence, createdAt: 1, maxOrder: 3, maxCountersPerOrder: 4096, vocabularyLimit: 2048, retainObservations: false });
   const state = createLanguageMemoryRuntime({ hasher, idFactory: ids }).hydrate({ models: compiled.models });
-  const forms = sourceOwnedAnswerUnitForms("einstein r0. einstein's r0. newton r0. newton's r0. curie r0. curie's r0.");
-  return { profile, evidence, compiled, state, closedClass: deriveClosedClassWords({ models: state.models }), forms };
+  const forms = sourceOwnedAnswerUnitForms(rawFormsText);
+  return { profile, profiles: [profile, forms.profile], evidence: [...evidence, ...forms.evidence], grammarEvidence: evidence,
+    models: compiled.models, patterns: forms.projection.patterns, compiled, state, closedClass: deriveClosedClassWords({ models: state.models }), forms };
 }
