@@ -2,9 +2,9 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 //
-// Live coding acceptance checks event reachability and independently executes returned JavaScript artifacts against
-// held-out behavior. It does not score factual, conversational, or creative capability.
-//   node tools/coding-spine-acceptance.mjs [--out=artifacts/coding-spine.json]
+// Live coding acceptance checks event reachability and independently executes returned JavaScript and TypeScript
+// artifacts against held-out behavior. It does not score factual, conversational, or creative capability.
+//   node tools/coding-spine-acceptance.mjs [--config=scce.config.json] [--out=artifacts/coding-spine.json]
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -14,8 +14,6 @@ import { pathToFileURL } from "node:url";
 
 const flag = (name, fallback) => (process.argv.find(a => a.startsWith(`--${name}=`)) ?? `--${name}=${fallback}`).split("=").slice(1).join("=");
 const outPath = flag("out", "artifacts/coding-spine.json");
-const serverUrl = process.env.SCCE_SERVER_URL ?? "http://127.0.0.1:3873";
-const TASK = "Implement a JavaScript function uniqueStrings(values) that returns unique strings in first-seen order. Add and run tests.";
 const HELD_OUT = `import assert from 'node:assert/strict';
 import { uniqueStrings } from ${JSON.stringify("ENTRYPOINT")};
 assert.deepEqual(uniqueStrings(['z', 'a', 'z', 'b', 'a']), ['z', 'a', 'b']);
@@ -24,10 +22,10 @@ assert.deepEqual(uniqueStrings(['', 'x', '', 'y', 'x']), ['', 'x', 'y']);
 assert.deepEqual(uniqueStrings(['__proto__', 'toString', '__proto__']), ['__proto__', 'toString']);
 `;
 
-async function turn(text, metadata = {}) {
+async function turn(text, metadata = {}, liveConfig) {
   const started = Date.now();
-  const response = await fetch(`${serverUrl}/api/turn`, {
-    method: "POST", headers: { "content-type": "application/json" },
+  const response = await fetch(`${liveConfig.serverUrl}/api/turn`, {
+    method: "POST", headers: { "content-type": "application/json", ...(liveConfig.token ? { authorization: `Bearer ${liveConfig.token}` } : {}) },
     signal: AbortSignal.timeout(60_000),
     body: JSON.stringify({ text, sessionId: `coding-spine-${Date.now()}`, metadata })
   });
@@ -35,7 +33,8 @@ async function turn(text, metadata = {}) {
   const result = body.turn ?? body.result ?? body;
   const events = (result.events ?? []).map(event => ({ typeId: event.typeId, payload: event.payload ?? {} }));
   return { status: response.status, elapsedMs: Date.now() - started, answer: String(result.answer ?? "").slice(0, 400), events,
-    taskReplanning: result.taskReplanning ?? null, programArtifacts: result.programArtifacts ?? result.buildTest?.artifacts ?? [], buildTest: result.buildTest ?? null };
+    taskReplanning: result.taskReplanning ?? null, programReadiness: result.programReadiness ?? null,
+    programArtifacts: result.programArtifacts ?? result.buildTest?.artifacts ?? [], buildTest: result.buildTest ?? null };
 }
 
 const count = (events, typeId, predicate = () => true) => events.filter(event => event.typeId === typeId && predicate(event.payload)).length;
@@ -67,11 +66,13 @@ function judgeRepair(run) {
   return { checks, passed: Object.values(checks).every(Boolean) };
 }
 
-export function artifactChecks(run) {
+export function artifactChecks(run, language = "javascript") {
   const artifacts = run.programArtifacts;
-  const checks = { artifactsPresent: Array.isArray(artifacts) && artifacts.length > 0, uniquePaths: true, contentHashes: true, sourcePresent: false, testPresent: false };
+  const checks = { artifactsPresent: Array.isArray(artifacts) && artifacts.length > 0, uniquePaths: true, contentHashes: true,
+    sourcePresent: false, testPresent: false, sourceUnambiguous: false, languageMatches: false, readinessVerified: run.programReadiness?.status === "ready" };
   if (!Array.isArray(artifacts)) return { checks: { ...checks, uniquePaths: false, contentHashes: false }, passed: false };
   const seen = new Set();
+  const sources = [];
   for (const artifact of artifacts) {
     const path = artifact?.path;
     if (typeof path !== "string" || !path || isAbsolute(path) || path.startsWith("//") || path.startsWith("\\\\")
@@ -81,61 +82,88 @@ export function artifactChecks(run) {
     }
     const normalized = resolve("artifact-root", path);
     const rel = relative(resolve("artifact-root"), normalized);
-    if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel) || seen.has(path)) checks.uniquePaths = false;
-    seen.add(path);
+    const canonical = path.replaceAll("\\", "/").split("/").filter(part => part && part !== ".").join("/").toLocaleLowerCase("en-US");
+    if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel) || seen.has(canonical)
+      || canonical === "__scce_acceptance_held_out__.mjs") checks.uniquePaths = false;
+    seen.add(canonical);
     checks.contentHashes &&= typeof artifact.content === "string"
       && artifact.contentHash === `sha256_${createHash("sha256").update(artifact.content).digest("hex")}`;
-    checks.sourcePresent ||= artifact.role === "source";
+    if (artifact.role === "source") sources.push(artifact);
     checks.testPresent ||= artifact.role === "test";
   }
+  checks.sourcePresent = sources.length > 0;
+  checks.sourceUnambiguous = sources.length === 1;
+  const sourcePath = sources[0]?.path ?? "";
+  checks.languageMatches = language === "typescript" ? /\.ts$/iu.test(sourcePath) : /\.(?:mjs|js)$/iu.test(sourcePath);
   return { checks, passed: Object.values(checks).every(Boolean) };
 }
 
-export async function executeHeldOut(run) {
-  const integrity = artifactChecks(run);
+export function isSafeHeldOutRoot(root, base = tmpdir()) {
+  const resolvedBase = resolve(base);
+  const resolvedRoot = resolve(root);
+  const rel = relative(resolvedBase, resolvedRoot);
+  return Boolean(rel && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)
+    && !rel.includes(sep) && rel.startsWith("scce-coding-heldout-"));
+}
+
+export async function executeHeldOut(run, language = "javascript") {
+  const integrity = artifactChecks(run, language);
   if (!integrity.passed) return { passed: false, error: "artifact integrity/path checks failed", checks: integrity.checks };
   const source = run.programArtifacts.find(artifact => artifact.role === "source");
   const root = await mkdtemp(join(tmpdir(), "scce-coding-heldout-"));
+  if (!isSafeHeldOutRoot(root)) throw new Error("held-out temporary directory is outside the expected temp root");
   try {
     for (const artifact of run.programArtifacts) {
-      const target = resolve(root, artifact.path);
+      const target = resolve(root, ...artifact.path.split(/[\\/]/u));
       const rel = relative(root, target);
       if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error(`artifact path escapes root: ${artifact.path}`);
       await mkdir(dirname(target), { recursive: true });
       await writeFile(target, artifact.content, { encoding: "utf8", flag: "wx" });
     }
-    const heldoutPath = join(root, "held-out.mjs");
-    await writeFile(heldoutPath, HELD_OUT.replace('"ENTRYPOINT"', JSON.stringify(pathToFileURL(resolve(root, source.path)).href)), "utf8");
-    const execution = spawnSync(process.execPath, [heldoutPath], { cwd: root, encoding: "utf8", timeout: 15_000, maxBuffer: 1024 * 1024 });
+    const heldoutPath = join(root, "__scce_acceptance_held_out__.mjs");
+    await writeFile(heldoutPath, HELD_OUT.replace('"ENTRYPOINT"', JSON.stringify(pathToFileURL(resolve(root, ...source.path.split(/[\\/]/u))).href)), "utf8");
+    const execution = spawnSync(process.execPath, ["--max-old-space-size=128", heldoutPath], { cwd: root, encoding: "utf8", timeout: 15_000, maxBuffer: 1024 * 1024 });
     return { passed: execution.status === 0, status: execution.status, signal: execution.signal, stderr: execution.stderr.slice(0, 2000), error: execution.error?.message };
   } finally {
-    await rm(root, { recursive: true, force: true });
+    if (isSafeHeldOutRoot(root)) await rm(root, { recursive: true, force: true });
   }
 }
 
-export async function runAcceptance(outputPath = outPath) {
-  const clean = await turn(TASK);
-  const cleanVerdict = judgeClean(clean);
-  const cleanArtifacts = artifactChecks(clean);
-  const cleanHeldOut = await executeHeldOut(clean);
-  console.log(`A clean JS application behavior: ${cleanVerdict.passed && cleanArtifacts.passed && cleanHeldOut.passed ? "PASS" : "FAIL"} ${JSON.stringify({ events: cleanVerdict.checks, artifacts: cleanArtifacts.checks, heldOut: cleanHeldOut })} in ${(clean.elapsedMs / 1000).toFixed(1)}s`);
+async function liveConfig() {
+  const adapters = await import("../packages/adapters-node/dist/index.js");
+  const config = await adapters.readScceRuntimeConfig(flag("config", process.env.SCCE_CONFIG ?? "scce.config.json"));
+  const configuredToken = config.security?.apiBearerToken;
+  const token = process.env.SCCE_API_BEARER_TOKEN?.trim() || (configuredToken?.startsWith("enc:v1:")
+    ? adapters.resolveSecret(configuredToken, config, "SCCE API bearer token") : configuredToken);
+  return { serverUrl: process.env.SCCE_SERVER_URL ?? config.server.url, token };
+}
 
-  const repair = await turn(TASK, { buildTest: { faultInjection: "unbalanced-brace" } });
-  const repairVerdict = judgeRepair(repair);
-  const repairArtifacts = artifactChecks(repair);
-  const repairHeldOut = await executeHeldOut(repair);
-  console.log(`B injected-failure repair: ${repairVerdict.passed && repairArtifacts.passed && repairHeldOut.passed ? "PASS" : "FAIL"} ${JSON.stringify({ events: repairVerdict.checks, artifacts: repairArtifacts.checks, heldOut: repairHeldOut })} in ${(repair.elapsedMs / 1000).toFixed(1)}s`);
+export async function runAcceptance(outputPath = outPath) {
+  const config = await liveConfig();
+  const scenarios = [
+    { id: "javascript.clean", language: "javascript", request: "Implement a JavaScript function uniqueStrings(values) that returns unique strings in first-seen order. Add and run tests.", fault: undefined },
+    { id: "typescript.clean", language: "typescript", request: "Implement a TypeScript function uniqueStrings(values: string[]): string[] that returns unique strings in first-seen order. Add and run tests.", fault: undefined },
+    { id: "typescript.repair", language: "typescript", request: "Implement a TypeScript function uniqueStrings(values: string[]): string[] that returns unique strings in first-seen order. Add and run tests.", fault: "unbalanced-brace" }
+  ];
+  const results = [];
+  for (const scenario of scenarios) {
+    const run = await turn(scenario.request, scenario.fault ? { buildTest: { faultInjection: scenario.fault } } : {}, config);
+    const eventVerdict = scenario.fault ? judgeRepair(run) : judgeClean(run);
+    const artifacts = artifactChecks(run, scenario.language);
+    const heldOut = await executeHeldOut(run, scenario.language);
+    const passed = run.status === 200 && eventVerdict.passed && artifacts.passed && heldOut.passed;
+    results.push({ ...scenario, run, eventVerdict, artifactVerdict: artifacts, heldOut, passed });
+    console.log(`${scenario.id}: ${passed ? "PASS" : "FAIL"} ${JSON.stringify({ events: eventVerdict.checks, artifacts: artifacts.checks, heldOut })} in ${(run.elapsedMs / 1000).toFixed(1)}s`);
+  }
 
   await mkdir(dirname(outputPath), { recursive: true });
   await writeFile(outputPath, JSON.stringify({
-    schema: "scce.coding_spine_acceptance.v2", generatedAt: new Date().toISOString(), task: TASK,
-    scope: { language: "javascript", lanes: ["programming", "debugging"], excluded: ["chat", "creative", "factual", "proof"] },
-    clean: { ...clean, eventVerdict: cleanVerdict, artifactVerdict: cleanArtifacts, heldOut: cleanHeldOut },
-    repair: { ...repair, fault: "unbalanced-brace", eventVerdict: repairVerdict, artifactVerdict: repairArtifacts, heldOut: repairHeldOut }
+    schema: "scce.coding_spine_acceptance.v3", generatedAt: new Date().toISOString(),
+    scope: { languages: ["javascript", "typescript"], lanes: ["programming", "debugging"], excluded: ["chat", "creative", "factual", "proof"] },
+    scenarios: results.map(({ run, ...scenario }) => ({ ...scenario, run }))
   }, null, 2) + "\n", "utf8");
   console.log(`wrote ${outputPath}`);
-  return clean.status === 200 && repair.status === 200 && cleanVerdict.passed && repairVerdict.passed
-    && cleanArtifacts.passed && repairArtifacts.passed && cleanHeldOut.passed && repairHeldOut.passed;
+  return results.every(result => result.passed);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

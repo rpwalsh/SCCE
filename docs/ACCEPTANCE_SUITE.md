@@ -113,9 +113,11 @@ bypassed.
 **Today:** partial. Patch transactions are content-addressed, authorization-gated and tested; the repair loop exists
 (`bounded-autonomous-debugging.ts`). `tools/coding-spine-acceptance.mjs` now checks the live clean and injected-failure
 programming turns against the event chain, returned artifact path/hash integrity, and held-out execution of the actual
-JavaScript source on unseen inputs. This is evidence for JavaScript programming/debugging only; it does not score
-general chat, creative work, factual answers, proof quality, or programming in other languages. The workspace mutation
-bypass attempt and independently judged coverage of those other lanes remain uncovered.
+JavaScript and TypeScript sources on unseen inputs. It checks that the returned source matches the requested language
+and requires a real passed build/test receipt; a mismatched or ambiguous artifact set fails. This is evidence for these
+two programming/debugging lanes only; it does not score general chat, creative work, factual answers, proof quality, or
+programming in other languages. The workspace mutation bypass attempt and independently judged coverage of those
+other lanes remain uncovered.
 
 ### 12. Determinism
 The same turn from the same persisted state, repeatedly.
