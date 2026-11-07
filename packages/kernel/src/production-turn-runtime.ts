@@ -4496,7 +4496,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         if (capability) {
           const payload = toJsonValue({
             program: construct.program.id,
-            files: construct.program.files.map(file => ({ path: file.path, hash: file.contentHash })),
+            files: localValidationProof?.files ?? construct.program.files.map(file => ({ path: file.path, hash: file.contentHash })),
             ...(localValidationProof ? {
               ownerRequirementIds: localValidationProof.ownerRequirementIds,
               build: localValidationProof.build,
@@ -4585,8 +4585,53 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
               && ownerRequirementIds.length > 0
               && buildTest.build.code === 0
               && buildTest.test.code !== 0;
+            const executeOwnerValidatedRetry = async (
+              candidate: ConstructGraph,
+              canonicalProgram: ProgramGraph | undefined
+            ): Promise<BuildTestResult | undefined> => {
+              const retryProgram = candidate.program;
+              if (!retryProgram) return undefined;
+              const proof = validateOwnerProgramLocalValidation({
+                program: retryProgram,
+                canonicalProgram,
+                requestedAuthority,
+                requestRequirementIds,
+                hasher
+              });
+              const retryCapability = proof
+                ? createProgramLocalValidationCapability(Boolean(deps.buildTest))
+                : registry.get("process.build_test");
+              if (!retryCapability) return undefined;
+              const retryPayload = toJsonValue(proof ? {
+                program: retryProgram.id,
+                files: proof.files,
+                ownerRequirementIds: proof.ownerRequirementIds,
+                build: proof.build,
+                test: proof.test
+              } : {
+                program: retryProgram.id,
+                files: retryProgram.files.map(file => ({ path: file.path, hash: file.contentHash }))
+              });
+              const retryApproved = deps.approvals?.isApproved({ capabilityId: retryCapability.id, input: retryPayload }) ?? false;
+              const retryPlan = createActionPlanner({ idFactory, policy: { ...policy, ...(deps.approvals?.policyPatch?.() ?? {}) } }).plan({
+                episodeId,
+                capability: retryCapability,
+                payload: retryPayload,
+                approved: retryApproved,
+                now: clock.now()
+              });
+              await deps.storage.capabilities.putPlan(retryPlan);
+              capabilityPlans.push(retryPlan);
+              await deps.approvals?.observePending(retryPlan);
+              events.push(await append(eventFactory.create({ episodeId, typeId: "CapabilityPlanned", payload: retryPlan })));
+              const retryPermission = retryPlan.permission as { allowed?: boolean; dryRun?: boolean };
+              if (!retryPermission.allowed || retryPermission.dryRun) return undefined;
+              events.push(await append(eventFactory.create({ episodeId, typeId: "CapabilityInvoked", payload: { capabilityId: retryCapability.id, planId: String(retryPlan.id) } })));
+              return deps.buildTest.executeProgram({ episodeId, construct: candidate });
+            };
             if (ownerProgramFailedToBuild) {
               const priorResult = buildTest;
+              const priorConstruct = construct;
               const transition = planObservedProgramRepairTransition({
                 program: priorProgram,
                 build: priorResult,
@@ -4617,34 +4662,40 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
                 // The named defect belongs only to the observed first attempt.
                 // Retrying it would manufacture an endless failure after a real
                 // selected repair had already changed the program.
-                const repairedResult = await deps.buildTest.executeProgram({ episodeId, construct });
-                const priorAttempt = { build: priorResult.build, test: priorResult.test, artifacts: priorResult.artifacts };
-                const repairedAttempts = repairedResult.attempts?.length
-                  ? repairedResult.attempts
-                  : [{ build: repairedResult.build, test: repairedResult.test, artifacts: repairedResult.artifacts }];
-                buildTest = {
-                  ...repairedResult,
-                  repairAttempted: true,
-                  repairApplied: true,
-                  attempts: [priorAttempt, ...repairedAttempts]
-                };
-                events.push(await append(eventFactory.create({
-                  episodeId,
-                  typeId: "ProgramRepaired",
-                  payload: toJsonValue({
-                    failureObservationId: transition.failureObservationId,
-                    selectionId: transition.selection.id,
-                    patchSetId: transition.selection.selectedPatchSetId,
-                    initialProgramId: priorProgram.id,
-                    observedProgramId: transition.observedProgram.id,
-                    repairedProgramId: transition.repairedProgram.id,
-                    changedPaths: transition.changedPaths,
-                    passed: repairedResult.passed
-                  })
-                })));
+                const repairedResult = await executeOwnerValidatedRetry(construct, transition.repairedProgram);
+                if (!repairedResult) {
+                  construct = priorConstruct;
+                  kernelTrace({ stage: "program.local_validation.retry_rejected", label: "kernel.turn", support: { programId: transition.repairedProgram.id, reason: "retry proof or capability plan rejected" } });
+                } else {
+                  const priorAttempt = { build: priorResult.build, test: priorResult.test, artifacts: priorResult.artifacts };
+                  const repairedAttempts = repairedResult.attempts?.length
+                    ? repairedResult.attempts
+                    : [{ build: repairedResult.build, test: repairedResult.test, artifacts: repairedResult.artifacts }];
+                  buildTest = {
+                    ...repairedResult,
+                    repairAttempted: true,
+                    repairApplied: true,
+                    attempts: [priorAttempt, ...repairedAttempts]
+                  };
+                  events.push(await append(eventFactory.create({
+                    episodeId,
+                    typeId: "ProgramRepaired",
+                    payload: toJsonValue({
+                      failureObservationId: transition.failureObservationId,
+                      selectionId: transition.selection.id,
+                      patchSetId: transition.selection.selectedPatchSetId,
+                      initialProgramId: priorProgram.id,
+                      observedProgramId: transition.observedProgram.id,
+                      repairedProgramId: transition.repairedProgram.id,
+                      changedPaths: transition.changedPaths,
+                      passed: repairedResult.passed
+                    })
+                  })));
+                }
               }
             } else if (ownerBehaviorFailed) {
               const priorResult = buildTest;
+              const priorConstruct = construct;
               const learnedProgramEpisodes = learningEpisodesFromEvents(await deps.storage.events.readRange({ typeId: "ProgramTransformationLearned", limit: 512 }));
               const replan = replanOwnerBehaviorProgramIntent({
                 intent: priorBehaviorIntent,
@@ -4671,29 +4722,35 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
                 createdAt: clock.now(),
                 programIntent: behaviorProgramIntent
               });
-              const repairedResult = await deps.buildTest.executeProgram({ episodeId, construct });
-              const priorAttempt = { build: priorResult.build, test: priorResult.test, artifacts: priorResult.artifacts };
-              const repairedAttempts = repairedResult.attempts?.length
-                ? repairedResult.attempts
-                : [{ build: repairedResult.build, test: repairedResult.test, artifacts: repairedResult.artifacts }];
-              buildTest = {
-                ...repairedResult,
-                repairAttempted: true,
-                repairApplied: true,
-                attempts: [priorAttempt, ...repairedAttempts]
-              };
-              events.push(await append(eventFactory.create({
-                episodeId,
-                typeId: "ProgramRepaired",
-                payload: toJsonValue({
-                  selectionId: replan.selection.id,
-                  transformationId: replan.selection.transformationId,
-                  selectedTransformationIds: replan.selection.selectedTransformationIds,
-                  initialProgramId: priorProgram.id,
-                  repairedProgramId: construct.program?.id ?? null,
-                  passed: repairedResult.passed
-                })
-              })));
+              const repairedResult = await executeOwnerValidatedRetry(construct, construct.program);
+              if (!repairedResult) {
+                construct = priorConstruct;
+                behaviorProgramIntent = priorBehaviorIntent;
+                kernelTrace({ stage: "program.local_validation.retry_rejected", label: "kernel.turn", support: { programId: priorProgram.id, reason: "retry proof or capability plan rejected" } });
+              } else {
+                const priorAttempt = { build: priorResult.build, test: priorResult.test, artifacts: priorResult.artifacts };
+                const repairedAttempts = repairedResult.attempts?.length
+                  ? repairedResult.attempts
+                  : [{ build: repairedResult.build, test: repairedResult.test, artifacts: repairedResult.artifacts }];
+                buildTest = {
+                  ...repairedResult,
+                  repairAttempted: true,
+                  repairApplied: true,
+                  attempts: [priorAttempt, ...repairedAttempts]
+                };
+                events.push(await append(eventFactory.create({
+                  episodeId,
+                  typeId: "ProgramRepaired",
+                  payload: toJsonValue({
+                    selectionId: replan.selection.id,
+                    transformationId: replan.selection.transformationId,
+                    selectedTransformationIds: replan.selection.selectedTransformationIds,
+                    initialProgramId: priorProgram.id,
+                    repairedProgramId: construct.program?.id ?? null,
+                    passed: repairedResult.passed
+                  })
+                })));
+              }
             }
             await deps.storage.constructs.putBuildTest(episodeId, construct.id, buildTest);
             // A selected typed construction becomes learnable only after the

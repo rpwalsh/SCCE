@@ -8,7 +8,7 @@ import { canonicalStringify } from "./primitives.js";
 export interface ProgramLocalValidationProof {
   readonly programId: string;
   readonly ownerRequirementIds: readonly string[];
-  readonly files: readonly { readonly path: string; readonly contentHash: string }[];
+  readonly files: readonly { readonly path: string; readonly hash: string }[];
   readonly build: { readonly command: string; readonly args: readonly string[]; readonly cwd: string };
   readonly test: { readonly command: string; readonly args: readonly string[]; readonly cwd: string };
 }
@@ -50,7 +50,7 @@ export function validateOwnerProgramLocalValidation(input: {
   return {
     programId: program.id,
     ownerRequirementIds: graphIds,
-    files: program.files.map(file => ({ path: file.path, contentHash: file.contentHash })).sort((left, right) => compare(left.path, right.path)),
+    files: program.files.map(file => ({ path: file.path, hash: file.contentHash })).sort((left, right) => compare(left.path, right.path)),
     build: expectedBuild,
     test: expectedTest
   };
