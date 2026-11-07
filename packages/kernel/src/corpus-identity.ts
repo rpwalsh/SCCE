@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { allocateRequestLanguageFormGeneration, requestLanguageFormScopeValue, setRequestLanguageFormScopeValue } from "./request-language-form-scope.js";
 
 /**
  * What a request names, decided by the corpus rather than by orthography.
@@ -42,25 +43,30 @@ const DASH_PUNCTUATION = /\p{Pd}/gu;
 
 let signals: CorpusIdentitySignals | undefined;
 let generation = 0;
+const CORPUS_IDENTITY_SCOPE_KEY = "corpus-identity-signals.v1";
 
 export function primeCorpusIdentitySignals(next: CorpusIdentitySignals): void {
+  if (setRequestLanguageFormScopeValue(CORPUS_IDENTITY_SCOPE_KEY, next)) return;
   signals = next;
-  generation += 1;
+  generation = allocateRequestLanguageFormGeneration();
 }
 
 export function corpusIdentitySignals(): CorpusIdentitySignals | undefined {
-  return signals;
+  const scoped = requestLanguageFormScopeValue<CorpusIdentitySignals>(CORPUS_IDENTITY_SCOPE_KEY);
+  return scoped.active ? scoped.value : signals;
 }
 
 /** Bumped whenever the corpus signal changes, so callers memoizing an answer derived from it can tell it is stale. */
 export function corpusIdentityGeneration(): number {
-  return generation;
+  const scoped = requestLanguageFormScopeValue(CORPUS_IDENTITY_SCOPE_KEY);
+  return scoped.active ? scoped.generation! : generation;
 }
 
 /** Test seam: forget what the corpus taught, so a unit test starts from no corpus knowledge. */
 export function clearCorpusIdentitySignals(): void {
+  if (setRequestLanguageFormScopeValue(CORPUS_IDENTITY_SCOPE_KEY, undefined)) return;
   signals = undefined;
-  generation += 1;
+  generation = allocateRequestLanguageFormGeneration();
 }
 
 export function corpusIdentityUnits(text: string): string[] {
@@ -126,7 +132,7 @@ export function contentRuns(text: string, closedClass: ReadonlySet<string>): str
  * dropped -- "moby dick" answers for "moby" and "dick".
  */
 export function corpusNamedRuns(text: string): string[] {
-  const state = signals;
+  const state = corpusIdentitySignals();
   // Nothing learned yet: the request's own content, whole. Weak, but it is what is true before the corpus has
   // spoken, and it is equally weak in every language rather than confidently wrong outside Latin script.
   if (!state) {
@@ -150,7 +156,7 @@ export function corpusNamedRuns(text: string): string[] {
  * anchoring on an extra content run only widens retrieval.
  */
 export function corpusNamedIdentities(text: string, measured?: CorpusIdentitySignals): string[] {
-  const state = measured ?? signals;
+  const state = measured ?? corpusIdentitySignals();
   if (!state) return [];
   // The identities are titles the corpus found inside this request, so they need not line up with a content run:
   // "the lord of the rings" is one title and its scaffolding words sit in the middle of it.
