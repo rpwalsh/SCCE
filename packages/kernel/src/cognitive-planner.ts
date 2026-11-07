@@ -1404,7 +1404,7 @@ function oneHopConstructDraft(input: CognitivePlannerInput): ProposalDraft[] {
     || !boundValues.length || boundValues.some(value => value.trim() !== object)
     || !owners.some(span => span && surfaceContainsBoundValue(String(span.text ?? span.textPreview ?? ""), object))) return [];
   const realizationAttempt = input.languageMemoryForRealization
-    ? attemptConstructRealization(input.realizationContract, {
+    ? attemptConstructRealization(contract, {
       ...input.languageMemoryForRealization,
       attestedSeedText: [fact.subject, fact.predicate, fact.object].filter(Boolean).join(" ")
     })
