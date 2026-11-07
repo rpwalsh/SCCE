@@ -2722,6 +2722,11 @@ export function sourceIdentityAdmissibleEvidenceForRequest(
       admitted.push(...bound.slice(0, 12).map(row => row.span));
     }
   }
+  // A semantic-frame prior cannot exclude a source-owned body that answers the measured request relation.
+  if (closedClassWords?.size && !admitted.some(span => evidenceIdentityBinding(span, requestText, closedClassWords, admissionAnchors) !== "none")) {
+    const admittedIds = new Set(admitted.map(span => String(span.id)));
+    admitted.push(...evidence.filter(span => !admittedIds.has(String(span.id)) && sourceBodyAnswersRequest(span, requestText, closedClassWords)));
+  }
   // Post-rechunk, 4KB children carry the same content; parents are graph linkage only.
   const passages = admitted.filter(span => [...String(span.text ?? "")].length <= 4096);
   const oversized = admitted.filter(span => [...String(span.text ?? "")].length > 4096);
