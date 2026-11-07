@@ -2,20 +2,20 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { compileOpaqueRoleModel, compileRelationPromotionModel, createTypedIngestProjector, graphFromStructuredSemanticCandidates,
   observedEntitySurfacesFromInducedLanguageModel, relationObservationsFromCandidates, relationPromotionNeedsPriors,
-  type EvidenceSpan, type GraphSnapshot, type Hasher, type IdFactory, type InducedLanguageModel, type InformationLabel,
-  type JsonValue, type ScceStorage, type SourceId, type SourceVersionId } from "@scce/kernel";
+  type EvidenceSpan, type GraphSnapshot, type Hasher, type IdFactory, type InformationLabel,
+  type JsonValue, type ScceStorage, type SourceId, type SourceVersionId, type InducedLanguageMemoryModel } from "@scce/kernel";
 
-export const SOURCE_ENTITY_GRAPH_COMPONENT_RECIPE_ID = "kernel.source_entity_graph_projection.v1" as const;
+export const SOURCE_ENTITY_GRAPH_COMPONENT_RECIPE_ID = "kernel.source_entity_graph_projection.v2" as const;
 
 /** Project the admitted source through the existing candidate, promotion, and typed graph producers. */
 export async function prepareCorpusSourceGraphProjection(input: {
   storage: ScceStorage; sourceId: SourceId; sourceVersionId: SourceVersionId; uri: string; mediaType: string; text: string;
-  metadata: JsonValue; evidence: EvidenceSpan[]; model?: InducedLanguageModel; informationLabel: InformationLabel;
+  metadata: JsonValue; evidence: EvidenceSpan[]; models?: readonly InducedLanguageMemoryModel[]; informationLabel: InformationLabel;
   ids: IdFactory; hasher: Hasher; observedAt: number;
 }) {
   const typed = createTypedIngestProjector({ idFactory: input.ids, hasher: input.hasher }).project({ ...input,
-    entityConstructions: input.model?.graphBoundConstructions,
-    entitySurfaces: input.model ? observedEntitySurfacesFromInducedLanguageModel(input.model, input.evidence.map(span => String(span.id))) : [] });
+    entityConstructions: input.models?.flatMap(model => model.graphBoundConstructions),
+    entitySurfaces: input.models?.flatMap(model => observedEntitySurfacesFromInducedLanguageModel(model, input.evidence.map(span => String(span.id)))) ?? [] });
   const candidates = typed.semanticCandidates;
   const batch = relationObservationsFromCandidates(candidates);
   const store = input.storage.relationObservations;

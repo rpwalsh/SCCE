@@ -10,7 +10,7 @@ import {
 } from "./language-construction.js";
 import { canonicalStringify } from "./primitives.js";
 import { type GraphBoundConstruction } from "./language-induction.js";
-import { preparedLanguageInductionModel, type PreparedConstructionInduction } from "./graph-surface-alignment.js";
+import { preparedLanguageInductionProducts, type PreparedConstructionInduction } from "./graph-surface-alignment.js";
 import { segmentUnicodeSurfaceV2, type LexicalSegment } from "./unicode-segmentation-v2.js";
 import type { LanguagePatternRecord } from "./storage.js";
 import type { SemanticRole } from "./semantic-graph.js";
@@ -429,16 +429,8 @@ export function compileUniversalCreativeEventConstructionPattern(
     .sort((left, right) => left.charStart - right.charStart || compareText(String(left.id), String(right.id)));
   if (!promotedEvidence.length) return rejected(LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.evidence);
 
-  // Third occurrence of the unbounded-induce() OOM class (the first two,
-  // in graph-surface-alignment.ts, were fixed the same way): a corpus
-  // trainer hands this compiler an entire novel's promoted spans, and
-  // induce()'s peak scales with total document text. Verified live -- the
-  // first production run of this compiler (15-novel Gutenberg training)
-  // OOM'd a 4GB heap mid-book. Reuses the one proven budget rather than
-  // inventing a second scheme; event extraction below still walks EVERY
-  // promoted span, only the induction model is fitted on the bounded
-  // subset.
-  const model = preparedLanguageInductionModel({ hasher: input.hasher, prepared: input.preparedInduction,
+  // Reuse the same bounded source-window products that feed graph and language acquisition.
+  const products = preparedLanguageInductionProducts({ hasher: input.hasher, prepared: input.preparedInduction,
     documents: (input.preparedInduction ? input.evidence.filter(span => span.status === "promoted") : promotedEvidence).map(span => ({
       id: String(span.id),
       text: span.text,
@@ -446,8 +438,14 @@ export function compileUniversalCreativeEventConstructionPattern(
       sourceVersionId: span.sourceVersionId
     }))
   });
-  if (!model?.graphBoundConstructions.length) return rejected(LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.induction);
-  const constructionsByPredicate = new Map(model.graphBoundConstructions.map(item => [item.predicate, item]));
+  const constructions = products.models.flatMap(model => model.graphBoundConstructions);
+  if (!constructions.length) return rejected(LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.induction);
+  const constructionsByPredicate = new Map<string, GraphBoundConstruction[]>();
+  for (const construction of constructions) {
+    const variants = constructionsByPredicate.get(construction.predicate) ?? [];
+    variants.push(construction);
+    constructionsByPredicate.set(construction.predicate, variants);
+  }
 
   const maxEvents = Math.max(1, Math.min(2048, Math.floor(input.maxEvents ?? 768)));
   const events: DurableCreativeEventConstruction[] = [];
@@ -475,8 +473,9 @@ export function compileUniversalCreativeEventConstructionPattern(
       const gap = codePoints.slice(previousEnd, segment.codePointStart).join("");
       if (containsSentenceTerminal(gap)) sentenceOrdinal += 1;
       previousEnd = segment.codePointEnd;
-      const construction = constructionsByPredicate.get(segment.normalized);
-      if (construction) {
+      for (const construction of constructionsByPredicate.get(segment.normalized) ?? []) {
+        if (construction.sourceWindows?.length && !construction.sourceWindows.some(window => window.ownerDocumentId === String(evidence.id)
+          && segment.utf16Start >= window.startUtf16 && segment.utf16Start < window.endUtf16)) continue;
         const compiled = compileUniversalCreativeEvent({
           profileId: input.profileId,
           evidence,
@@ -488,6 +487,7 @@ export function compileUniversalCreativeEventConstructionPattern(
         if (compiled) {
           events.push(compiled);
           eventSentenceKeys.push(`${evidence.id}#${sentenceOrdinal}`);
+          break;
         }
       }
     }

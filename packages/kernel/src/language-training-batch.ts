@@ -9,7 +9,7 @@ import {
   evaluateHeldOutConstructionCoverage,
   induceSourceBoundConstructionTrainingSets,
   prepareConstructionInduction,
-  preparedLanguageInductionModel,
+  preparedLanguageInductionProducts,
   sourceLanguageInductionDocuments,
   type PreparedConstructionInduction,
   type HeldOutConstructionCoverageReport
@@ -93,7 +93,7 @@ import {
   type OptionalNullRealizationModel
 } from "./optional-null-realization.js";
 import type { LanguageMemoryRuntime } from "./language-memory-runtime.js";
-import { createClock, toJsonValue } from "./primitives.js";
+import { canonicalStringify, createClock, toJsonValue } from "./primitives.js";
 import { createIdFactory } from "./ids.js";
 import { languageMemoryPatternsFromInducedLanguageModel } from "./language-induction-memory.js";
 import type { PooledLanguageProfileBinding } from "./pooled-language-profile-binding.js";
@@ -285,15 +285,21 @@ export function compileLanguageTrainingBatch(input: {
   const constructionSplit = splitConstructionEvidence(formalCode ? [] : ownedConstructionEvidence, input.hasher);
   const constructionEvidence = induceNaturalLanguage ? batch.evidence.filter(span => span.status === "promoted") : [];
   const preparedInduction = batch.preparedInduction ?? prepareConstructionInduction({ documents: sourceLanguageInductionDocuments(constructionEvidence), hasher: input.hasher });
-  const inducedLanguageModel = induceNaturalLanguage
-    ? preparedLanguageInductionModel({ documents: sourceLanguageInductionDocuments(constructionEvidence), hasher: input.hasher, prepared: preparedInduction })
+  const inducedLanguageProducts = induceNaturalLanguage
+    ? preparedLanguageInductionProducts({ documents: sourceLanguageInductionDocuments(constructionEvidence), hasher: input.hasher, prepared: preparedInduction })
     : undefined;
-  const inducedLanguagePatterns = inducedLanguageModel ? languageMemoryPatternsFromInducedLanguageModel({
-    model: inducedLanguageModel, profiles: [batch.profile],
+  const inducedLanguagePatterns = inducedLanguageProducts?.models.flatMap(model => languageMemoryPatternsFromInducedLanguageModel({
+    model, profiles: [batch.profile],
     idFactory: createIdFactory({ hasher: input.hasher, clock: createClock({ fixedTime: 0 }), namespace: "source-language-induction", deterministicReplay: true }),
     sourceSystem: batch.sourceSystem, updatedAt: batch.createdAt,
     ...(batch.profileBinding ? { profileBinding: batch.profileBinding } : {})
-  }).patterns : [];
+  }).patterns) ?? [];
+  if (inducedLanguageProducts) inducedLanguagePatterns.push({
+    id: `source_induction_coverage_${input.hasher.digestHex(canonicalStringify([batch.profile.id, inducedLanguageProducts.coverage]))}`,
+    profileId: batch.profile.id, patternKind: "source_compilation", support: 0, entropy: 0,
+    patternJson: toJsonValue({ ...inducedLanguageProducts.coverage, profileId: batch.profile.id, sourceVersionId: batch.sourceVersionId }),
+    evidenceIds: constructionEvidence.map(span => span.id), updatedAt: batch.createdAt
+  });
   const inducedSets = induceSourceBoundConstructionTrainingSets({
     evidence: constructionEvidence,
     profileId: batch.profile.id,
@@ -620,7 +626,7 @@ export function compileLanguageTrainingBatch(input: {
   const models = stamped?.models ?? rawModels;
   if (stamped) { units = stamped.units; patterns = stamped.patterns; semanticFrames = stamped.semanticFrames; }
   return {
-    ...(inducedLanguageModel ? { preparedInduction } : {}),
+    ...(inducedLanguageProducts ? { preparedInduction } : {}),
     observations: uniqueRecords(memories.flatMap(memory => memory.observations)),
     models, units, patterns, semanticFrames,
     constructionPatterns: constructionPatterns.map(record => patterns.find(item => item.id === record.id) ?? record),
@@ -664,6 +670,7 @@ export function compileLanguageTrainingBatch(input: {
       compiler: LANGUAGE_TRAINING_BATCH_RECIPE_ID,
       corpusRole: batch.sourceSystem ? corpusRoleIdForSourceSystem(batch.sourceSystem) : null,
       naturalLanguageInduction: induceNaturalLanguage,
+      sourceInductionCoverage: inducedLanguageProducts?.coverage ?? null,
       inputUtf16Length: batch.text.length,
       chunks: textChunks.length,
       chunkUtf16Lengths: textChunks.map(text => text.length),

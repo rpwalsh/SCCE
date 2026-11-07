@@ -11,7 +11,7 @@ import { canonicalCorpusSourceSystemId } from "../../corpus-registry.js";
 import type { ScceStorage } from "../../storage.js";
 import { compileLanguageTrainingBatch } from "../../language-training-batch.js";
 import { preparePooledLanguageProfileBinding } from "../../pooled-language-profile-binding.js";
-import { preparedLanguageInductionModel, sourceLanguageInductionDocuments } from "../../graph-surface-alignment.js";
+import { preparedLanguageInductionProducts, sourceLanguageInductionDocuments } from "../../graph-surface-alignment.js";
 import { primeLearnedAnswerUnitForms } from "../../learned-answer-unit-forms.js";
 
 /** Actual source wording supplies scaffolding; separate raw examples supply observed name forms. */
@@ -63,8 +63,8 @@ function buildSourceOwnedAnswerhoodLanguage(rawFormsText: string) {
     createdAt: 1, maxOrder: 3, maxCountersPerOrder: 4096, vocabularyLimit: 2048, retainNgramObservations: false, profileBinding } });
   const state = scopeLanguageMemoryStateToProfile(runtime.hydrate({ models: compiled.models, units: compiled.units, patterns: compiled.patterns,
     semanticFrames: compiled.semanticFrames, constructionEvidence: evidence }), profile);
-  const model = preparedLanguageInductionModel({ documents: sourceLanguageInductionDocuments(evidence), hasher, prepared: compiled.preparedInduction })!;
-  const forms = { profile, evidence, model, runtime, state, projection: { patterns: compiled.patterns },
+  const products = preparedLanguageInductionProducts({ documents: sourceLanguageInductionDocuments(evidence), hasher, prepared: compiled.preparedInduction });
+  const forms = { profile, evidence, models: products.models, runtime, state, projection: { patterns: compiled.patterns },
     prime: () => primeLearnedAnswerUnitForms({ deltas: state.structuralDeltas ?? [], profileIds: new Set([profile.id]) }) };
   const profiles = [profile];
   const sameSource = (actual: unknown, requested?: string) => !requested || typeof actual === "string"

@@ -15,10 +15,14 @@ export interface InducedLanguageModelMemoryProjection {
   skippedReason?: "no_matching_profiles";
 }
 
-export const INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID = "kernel.induced_language_memory_projection.v1" as const;
+export const INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID = "kernel.induced_language_memory_projection.v2" as const;
+
+export type InducedLanguageMemoryModel = Pick<InducedLanguageModel,
+  "id" | "audit" | "morphology" | "morphologyClassBindings" | "syntaxTemplates" | "boundarySignals" | "joinProgram"
+  | "semanticFrames" | "graphBoundConstructions" | "lexicalClasses" | "relationHypothesisModel" | "translationSeeds">;
 
 export function languageMemoryPatternsFromInducedLanguageModel(input: {
-  model: InducedLanguageModel;
+  model: InducedLanguageMemoryModel;
   profiles: readonly LanguageProfile[];
   idFactory: IdFactory;
   updatedAt: number;
@@ -62,7 +66,7 @@ export function languageMemoryPatternsFromInducedLanguageModel(input: {
 }
 
 function patternsForProfile(input: {
-  model: InducedLanguageModel;
+  model: InducedLanguageMemoryModel;
   profile: LanguageProfile;
   idFactory: IdFactory;
   updatedAt: number;

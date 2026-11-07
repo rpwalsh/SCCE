@@ -18,7 +18,7 @@ import {
   createSourceGraphBuilder,
   createTypedIngestProjector,
   prepareConstructionInduction,
-  preparedLanguageInductionModel,
+  preparedLanguageInductionProducts,
   sourceLanguageInductionDocuments,
   observedEntitySurfacesFromInducedLanguageModel,
   preparePooledLanguageProfileBinding,
@@ -1335,7 +1335,7 @@ export class WikipediaV3Ingestor {
     const evidence = boundedShard.evidence;
     const documents = sourceLanguageInductionDocuments(evidence);
     const preparedInduction = prepareConstructionInduction({ documents, hasher: this.hasher });
-    const inducedModel = preparedLanguageInductionModel({ documents, hasher: this.hasher, prepared: preparedInduction });
+    const inducedProducts = preparedLanguageInductionProducts({ documents, hasher: this.hasher, prepared: preparedInduction });
     const profileBinding = preparePooledLanguageProfileBinding({ profile, sourceVersionId, text, evidence,
       parentSourceVersionIds: boundedShard.sourceFamilyRanges.map(range => String(range.sourceVersionId)), sourceFamilyRanges: boundedShard.sourceFamilyRanges, hasher: this.hasher });
     const ngramMaxOrder = this.config.runtime.corpora?.wikipedia?.ngramMaxOrder ?? 4;
@@ -1374,12 +1374,12 @@ export class WikipediaV3Ingestor {
     };
     const semanticCandidates = samples.flatMap(sample => {
       const current = sample.evidence[0];
-      if (!current || !inducedModel) return sample.semanticCandidates;
+      if (!current) return sample.semanticCandidates;
       const projected = this.typedIngest.project({ sourceId: current.sourceId, sourceVersionId: sample.sourceVersionId,
         uri: sample.uri, mediaType: current.mediaType, text: sample.text, metadata: toJsonValue({ title: sample.title ?? "", sourceFamilyId: evidenceSourceFamilyId(current) }),
         evidence: sample.evidence, observedAt: sample.createdAt,
-        entityConstructions: inducedModel.graphBoundConstructions,
-        entitySurfaces: observedEntitySurfacesFromInducedLanguageModel(inducedModel, sample.evidence.map(span => String(span.id))) });
+        entityConstructions: inducedProducts.models.flatMap(model => model.graphBoundConstructions),
+        entitySurfaces: inducedProducts.models.flatMap(model => observedEntitySurfacesFromInducedLanguageModel(model, sample.evidence.map(span => String(span.id)))) });
       return [...sample.semanticCandidates.filter(candidate => candidate.channel !== "weak_free_surface"), ...projected.semanticCandidates.filter(candidate => candidate.channel === "weak_free_surface")];
     });
     // Independence is corpus-wide: sources seen in earlier runs count, or a shard at a time never promotes.

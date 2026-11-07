@@ -25,7 +25,7 @@ import {
   createSourceAdmissionController,
   compileLanguageTrainingBatch,
   prepareConstructionInduction,
-  preparedLanguageInductionModel,
+  preparedLanguageInductionProducts,
   sourceLanguageInductionDocuments,
   sourceLanguageTrainingStreamId,
   stampSourceLanguageCompilation,
@@ -939,11 +939,11 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
   const inductionDocuments = sourceLanguageInductionDocuments(evidence);
   const naturalInduction = !input.languageOnly && corpusRoleIdForSourceSystem(sourceSystem) !== CORPUS_ROLE_IDS.softwareSymbolic;
   const preparedInduction = naturalInduction ? input.preparedInduction ?? prepareConstructionInduction({ documents: inductionDocuments, hasher }) : undefined;
-  const inducedModel = preparedInduction ? preparedLanguageInductionModel({ documents: inductionDocuments, hasher, prepared: preparedInduction }) : undefined;
+  const inducedProducts = preparedInduction ? preparedLanguageInductionProducts({ documents: inductionDocuments, hasher, prepared: preparedInduction }) : undefined;
   const graphEligible = createCorpusRegistry(input.corpusRegistry ?? []).some(row => row.sourceSystemId === sourceSystemId && row.enabled && row.graphEvidenceEligible);
   const sourceProjection = source && input.persistSource !== false && graphEligible && naturalInduction
     ? await prepareCorpusSourceGraphProjection({ storage: input.storage, sourceId, sourceVersionId, uri: sourceUri, mediaType: input.mediaType ?? "text/plain",
-      text, metadata, evidence, model: inducedModel, informationLabel, ids, hasher, observedAt: createdAt }) : undefined;
+      text, metadata, evidence, models: inducedProducts?.models, informationLabel, ids, hasher, observedAt: createdAt }) : undefined;
   const snapshotSpan = trainTrace.span("train.graph-snapshot");
   const batchGraphSnapshot = needsConstructionContext(input)
     ? trainingGraphSnapshot(trainingGraphSnapshot(await graphSnapshotForEvidence(input.storage, evidence, input.graphSnapshotSourceVersionIds), input.graphSnapshotAdditions, evidence), sourceProjection?.graph, evidence) : undefined;

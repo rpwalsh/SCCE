@@ -13,7 +13,7 @@ import { createIdFactory } from "./ids.js";
 import { routeStoreCounts, sumRecord } from "./ingestion-diagnostics.js";
 import { inlineIngestStream } from "./inline-ingest-source.js";
 import { jsonRecord, kernelString, observedEntitySurfacesFromInducedLanguageModel } from "./kernel-answer-primitives.js";
-import { prepareConstructionInduction, preparedLanguageInductionModel, sourceLanguageInductionDocuments } from "./graph-surface-alignment.js";
+import { prepareConstructionInduction, preparedLanguageInductionProducts, sourceLanguageInductionDocuments } from "./graph-surface-alignment.js";
 import { createLanguageMemoryRuntime } from "./language-memory-runtime.js";
 import { sourceLanguageTrainingStreamId } from "./source-language-training-identity.js";
 import {
@@ -461,7 +461,7 @@ export function createIngestionRuntime(options: {
         const inductionDocuments = sourceLanguageInductionDocuments(admittedSpans);
         const preparedInduction = decision.activeInfluence.language && corpusRoleIdForSourceSystem(sourceSystem) !== CORPUS_ROLE_IDS.softwareSymbolic
           ? prepareConstructionInduction({ documents: inductionDocuments, hasher }) : undefined;
-        const inducedModel = preparedInduction ? preparedLanguageInductionModel({ documents: inductionDocuments, hasher, prepared: preparedInduction }) : undefined;
+        const inducedProducts = preparedInduction ? preparedLanguageInductionProducts({ documents: inductionDocuments, hasher, prepared: preparedInduction }) : undefined;
         const typedProjection = typedIngest.project({
           sourceId,
           sourceVersionId,
@@ -470,8 +470,8 @@ export function createIngestionRuntime(options: {
           text: sourceText,
           metadata: sourceMetadata,
           evidence: admittedSpans,
-          entitySurfaces: inducedModel ? observedEntitySurfacesFromInducedLanguageModel(inducedModel, admittedSpans.map(span => String(span.id))) : [],
-          entityConstructions: inducedModel?.graphBoundConstructions,
+          entitySurfaces: inducedProducts?.models.flatMap(model => observedEntitySurfacesFromInducedLanguageModel(model, admittedSpans.map(span => String(span.id)))) ?? [],
+          entityConstructions: inducedProducts?.models.flatMap(model => model.graphBoundConstructions),
           observedAt: now
         });
         for (const [kind, count] of Object.entries(typedProjection.observationCounts)) typedObservationCounts[kind] = (typedObservationCounts[kind] ?? 0) + count;

@@ -4,10 +4,10 @@ import { induceLearnedConstructions, type AlignedSurfaceExample } from "./langua
 import { SOURCE_CONSTRUCTION_PREDICATE_SLOT_INDEX } from "./language-construction-memory.js";
 import type { SourceBoundLanguageConstructionTrainingSet, SourceConstructionGraphBinding } from "./language-construction-memory.js";
 import { graphNodeSurface } from "./semantic-proof-adapter.js";
-import { createLanguageInductionEngine, type GraphBoundConstruction, type InducedLanguageModel, type LanguageInductionDocument } from "./language-induction.js";
+import { type GraphBoundConstruction, type InducedLanguageModel, type LanguageInductionDocument } from "./language-induction.js";
 import { buildSurfaceLattice, buildSourceAlignmentSurfaceLattice, validateSurfaceLattice, type SurfaceLattice, type SourceAlignmentSurfaceLattice, type SurfaceLatticeUnit } from "./surface-lattice.js";
 import { segmentUnicodeSurfaceV2, type LexicalSegment } from "./unicode-segmentation-v2.js";
-import { boundedInductionDocuments } from "./training-orchestrator.js";
+import { compileSourceInductionWindows, sourceInductionInputDigest, sourceInductionBatches } from "./source-window-induction.js";
 import { canonicalStringify, clamp01, toJsonValue } from "./primitives.js";
 import { UNRESOLVED_SEMANTIC_ROLE_ID_PREFIX } from "./opaque-role-induction.js";
 import { surfaceSentenceRanges } from "./surface-linguistics.js";
@@ -123,18 +123,14 @@ export function sourceLanguageInductionDocuments(evidence: readonly EvidenceSpan
   }));
 }
 
-const preparedConstructionInductions = new WeakMap<PreparedConstructionInduction, InducedLanguageModel | undefined>();
+const preparedConstructionInductions = new WeakMap<PreparedConstructionInduction, ReturnType<typeof compileSourceInductionWindows>>();
 
 export function prepareConstructionInduction(input: {
   documents: readonly LanguageInductionDocument[];
   hasher: Hasher;
 }): PreparedConstructionInduction {
-  const documents = boundedInductionDocuments(input.documents);
-  const prepared = Object.freeze({ inputDigest: input.hasher.digestHex(canonicalStringify(documents)) });
-  const model = documents.length
-    ? createLanguageInductionEngine({ hasher: input.hasher }).induce({ documents })
-    : undefined;
-  preparedConstructionInductions.set(prepared, model);
+  const prepared = Object.freeze({ inputDigest: sourceInductionInputDigest(input.documents, input.hasher) });
+  preparedConstructionInductions.set(prepared, compileSourceInductionWindows(input));
   return prepared;
 }
 
@@ -143,11 +139,21 @@ export function preparedLanguageInductionModel(input: {
   hasher: Hasher;
   prepared?: PreparedConstructionInduction;
 }): InducedLanguageModel | undefined {
+  const products = preparedLanguageInductionProducts(input);
+  if (products.models.length > 1) throw new Error("source induction has multiple window models; consume its complete products");
+  return products.fullModel;
+}
+
+export function preparedLanguageInductionProducts(input: {
+  documents: readonly LanguageInductionDocument[];
+  hasher: Hasher;
+  prepared?: PreparedConstructionInduction;
+}): ReturnType<typeof compileSourceInductionWindows> {
   const prepared = input.prepared ?? prepareConstructionInduction(input);
-  if (!preparedConstructionInductions.has(prepared) || prepared.inputDigest !== input.hasher.digestHex(canonicalStringify(boundedInductionDocuments(input.documents)))) {
+  if (!preparedConstructionInductions.has(prepared) || prepared.inputDigest !== sourceInductionInputDigest(input.documents, input.hasher)) {
     throw new Error("construction induction inputs changed; prepare again");
   }
-  return preparedConstructionInductions.get(prepared);
+  return preparedConstructionInductions.get(prepared)!;
 }
 
 function constructionInductionFor(input: {
@@ -155,7 +161,22 @@ function constructionInductionFor(input: {
   hasher: Hasher;
   prepared?: PreparedConstructionInduction;
 }): readonly GraphBoundConstruction[] {
-  return preparedLanguageInductionModel(input)?.graphBoundConstructions ?? [];
+  return preparedLanguageInductionProducts(input).models.flatMap(model => model.graphBoundConstructions);
+}
+
+function indexConstructionVariants(constructions: readonly GraphBoundConstruction[]): Map<string, GraphBoundConstruction[]> {
+  const index = new Map<string, GraphBoundConstruction[]>();
+  for (const construction of constructions) {
+    const variants = index.get(construction.predicate) ?? [];
+    variants.push(construction);
+    index.set(construction.predicate, variants);
+  }
+  return index;
+}
+
+function constructionOwnsOffset(construction: GraphBoundConstruction, documentId: string, offset: number): boolean {
+  return !construction.sourceWindows?.length || construction.sourceWindows.some(window =>
+    window.ownerDocumentId === documentId && offset >= window.startUtf16 && offset < window.endUtf16);
 }
 
 export function induceGraphSurfaceAlignments(input: {
@@ -166,7 +187,7 @@ export function induceGraphSurfaceAlignments(input: {
   maxObservationsPerConstruction?: number;
 }): GraphSurfaceAlignmentSet[] {
   const maxObservations = boundedConstructionObservationLimit(input.maxObservationsPerConstruction);
-  const constructionsByPredicate = new Map(input.constructions.map(item => [item.predicate, item]));
+  const constructionsByPredicate = indexConstructionVariants(input.constructions);
   const observationsByConstructionId = new Map<string, AlignedSurfaceExample[]>();
   const tracesByConstructionId = new Map<string, GraphSurfaceTransportTrace[]>();
   const summariesByConstructionId = new Map<string, GraphSurfaceLatticeSummary[]>();
@@ -177,8 +198,9 @@ export function induceGraphSurfaceAlignments(input: {
     const lexical = segmentUnicodeSurfaceV2(doc.text, input.hasher).lexicalSegments;
     const sentenceRanges = surfaceSentenceRanges(doc.text);
     if (!lexical.some(segment => {
-      const construction = constructionsByPredicate.get(segment.normalized);
-      return construction && (observationsByConstructionId.get(construction.id)?.length ?? 0) < maxObservations;
+      return (constructionsByPredicate.get(segment.normalized) ?? []).some(construction =>
+        constructionOwnsOffset(construction, doc.sourceWindow?.ownerDocumentId ?? doc.id, segment.utf16Start + (doc.sourceWindow?.startUtf16 ?? 0))
+        && (observationsByConstructionId.get(construction.id)?.length ?? 0) < maxObservations);
     })) continue;
     const lattice = buildSurfaceLattice({
       documentId: doc.id,
@@ -196,31 +218,32 @@ export function induceGraphSurfaceAlignments(input: {
     if (!latticeCheck.valid) continue;
     const latticeSummary = summarizeLattice(lattice);
     for (let index = 0; index < lexical.length; index++) {
-      const construction = constructionsByPredicate.get(lexical[index]!.normalized);
-      if (!construction) continue;
-      const existing = observationsByConstructionId.get(construction.id) ?? [];
-      if (existing.length >= maxObservations) continue;
-      const aligned = alignedExampleForOccurrence({
-        text: doc.text,
-        lexical,
-        lattice,
-        index,
-        construction,
-        profileId: input.profileId,
-        evidenceIds,
-        hasher: input.hasher,
-        sentenceRanges,
-        ordinal: existing.length
-      });
-      if (!aligned) continue;
-      existing.push(aligned.example);
-      observationsByConstructionId.set(construction.id, existing);
-      const traces = tracesByConstructionId.get(construction.id) ?? [];
-      traces.push(aligned.trace);
-      tracesByConstructionId.set(construction.id, traces);
-      const summaries = summariesByConstructionId.get(construction.id) ?? [];
-      if (!summaries.some(summary => summary.latticeId === latticeSummary.latticeId)) summaries.push(latticeSummary);
-      summariesByConstructionId.set(construction.id, summaries);
+      for (const construction of constructionsByPredicate.get(lexical[index]!.normalized) ?? []) {
+        if (!constructionOwnsOffset(construction, doc.sourceWindow?.ownerDocumentId ?? doc.id, lexical[index]!.utf16Start + (doc.sourceWindow?.startUtf16 ?? 0))) continue;
+        const existing = observationsByConstructionId.get(construction.id) ?? [];
+        if (existing.length >= maxObservations) continue;
+        const aligned = alignedExampleForOccurrence({
+          text: doc.text,
+          lexical,
+          lattice,
+          index,
+          construction,
+          profileId: input.profileId,
+          evidenceIds,
+          hasher: input.hasher,
+          sentenceRanges,
+          ordinal: existing.length
+        });
+        if (!aligned) continue;
+        existing.push(aligned.example);
+        observationsByConstructionId.set(construction.id, existing);
+        const traces = tracesByConstructionId.get(construction.id) ?? [];
+        traces.push(aligned.trace);
+        tracesByConstructionId.set(construction.id, traces);
+        const summaries = summariesByConstructionId.get(construction.id) ?? [];
+        if (!summaries.some(summary => summary.latticeId === latticeSummary.latticeId)) summaries.push(latticeSummary);
+        summariesByConstructionId.set(construction.id, summaries);
+      }
     }
   }
 
@@ -281,7 +304,7 @@ export function induceSourceBoundConstructionTrainingSets(input: {
   if (!constructions.length) return [];
 
   const maxObservations = boundedConstructionObservationLimit(input.maxObservationsPerConstruction);
-  const constructionsByPredicate = new Map(constructions.map(item => [item.predicate, item]));
+  const constructionsByPredicate = indexConstructionVariants(constructions);
   const bySlotOrdinal = new Map<string, number>();
   const setsByBindingId = new Map<string, SourceBoundLanguageConstructionTrainingSet>();
   const tracesByBindingId = new Map<string, GraphSurfaceTransportTrace[]>();
@@ -304,10 +327,9 @@ export function induceSourceBoundConstructionTrainingSets(input: {
     const lexical = segmentUnicodeSurfaceV2(span.text, input.hasher).lexicalSegments;
     const sentenceRanges = surfaceSentenceRanges(span.text);
     if (!lexical.some(segment => {
-      const construction = constructionsByPredicate.get(segment.normalized);
-      if (!construction) return false;
-      const bindingId = sourceRelationConstructionBindingId(input.hasher, input.profileId, construction.predicate);
-      return (bySlotOrdinal.get(bindingId) ?? 0) < maxObservations;
+      return (constructionsByPredicate.get(segment.normalized) ?? []).some(construction =>
+        constructionOwnsOffset(construction, String(span.id), segment.utf16Start)
+        && (bySlotOrdinal.get(sourceRelationConstructionBindingId(input.hasher, input.profileId, construction.predicate)) ?? 0) < maxObservations);
     })) continue;
     const lattice = buildSourceAlignmentSurfaceLattice({
       documentId: String(span.id),
@@ -318,33 +340,35 @@ export function induceSourceBoundConstructionTrainingSets(input: {
     });
     const latticeSummary = summarizeLattice(lattice);
     for (let index = 0; index < lexical.length; index++) {
-      const construction = constructionsByPredicate.get(lexical[index]!.normalized);
-      if (!construction) continue;
-      const bindingId = sourceRelationConstructionBindingId(input.hasher, input.profileId, construction.predicate);
-      const ordinal = bySlotOrdinal.get(bindingId) ?? 0;
-      if (ordinal >= maxObservations) continue;
-      const aligned = sourceBoundObservationForOccurrence({ span, lexical, lattice, index, construction, hasher: input.hasher, graphBindings, sentenceRanges });
-      if (!aligned) continue;
-      bySlotOrdinal.set(bindingId, ordinal + 1);
-      const set = setsByBindingId.get(bindingId) ?? { bindingId, observations: [] };
-      (set.observations as typeof set.observations[number][]).push(aligned.observation);
-      setsByBindingId.set(bindingId, set);
-      for (const role of aligned.observation.roles) {
-        if (!role.graphBinding) continue;
-        const declarations = slotGraphBindings.get(bindingId) ?? new Map<string, Map<string, SourceConstructionGraphBinding>>();
-        const key = `${role.slotIndex}\u0001${role.occurrenceIndex ?? 0}`;
-        const variants = declarations.get(key) ?? new Map<string, SourceConstructionGraphBinding>();
-        variants.set(canonicalStringify(role.graphBinding), role.graphBinding);
-        declarations.set(key, variants);
-        slotGraphBindings.set(bindingId, declarations);
+      for (const construction of constructionsByPredicate.get(lexical[index]!.normalized) ?? []) {
+        if (!constructionOwnsOffset(construction, String(span.id), lexical[index]!.utf16Start)) continue;
+        const bindingId = sourceRelationConstructionBindingId(input.hasher, input.profileId, construction.predicate);
+        const ordinal = bySlotOrdinal.get(bindingId) ?? 0;
+        if (ordinal >= maxObservations) continue;
+        const aligned = sourceBoundObservationForOccurrence({ span, lexical, lattice, index, construction, hasher: input.hasher, graphBindings, sentenceRanges });
+        if (!aligned) continue;
+        bySlotOrdinal.set(bindingId, ordinal + 1);
+        const set = setsByBindingId.get(bindingId) ?? { bindingId, observations: [] };
+        (set.observations as typeof set.observations[number][]).push(aligned.observation);
+        setsByBindingId.set(bindingId, set);
+        for (const role of aligned.observation.roles) {
+          if (!role.graphBinding) continue;
+          const declarations = slotGraphBindings.get(bindingId) ?? new Map<string, Map<string, SourceConstructionGraphBinding>>();
+          const key = `${role.slotIndex}\u0001${role.occurrenceIndex ?? 0}`;
+          const variants = declarations.get(key) ?? new Map<string, SourceConstructionGraphBinding>();
+          variants.set(canonicalStringify(role.graphBinding), role.graphBinding);
+          declarations.set(key, variants);
+          slotGraphBindings.set(bindingId, declarations);
+        }
+        if (aligned.nullRoleBindingContext) pendingNullRoleBindings.push({ bindingId, observation: aligned.observation, ...aligned.nullRoleBindingContext, trace: aligned.trace });
+        const traces = tracesByBindingId.get(bindingId) ?? [];
+        traces.push(aligned.trace);
+        tracesByBindingId.set(bindingId, traces);
+        const summaries = latticesByBindingId.get(bindingId) ?? [];
+        if (!summaries.some(summary => summary.latticeId === latticeSummary.latticeId)) summaries.push(latticeSummary);
+        latticesByBindingId.set(bindingId, summaries);
+        break;
       }
-      if (aligned.nullRoleBindingContext) pendingNullRoleBindings.push({ bindingId, observation: aligned.observation, ...aligned.nullRoleBindingContext, trace: aligned.trace });
-      const traces = tracesByBindingId.get(bindingId) ?? [];
-      traces.push(aligned.trace);
-      tracesByBindingId.set(bindingId, traces);
-      const summaries = latticesByBindingId.get(bindingId) ?? [];
-      if (!summaries.some(summary => summary.latticeId === latticeSummary.latticeId)) summaries.push(latticeSummary);
-      latticesByBindingId.set(bindingId, summaries);
     }
   }
 
@@ -419,12 +443,11 @@ export function evaluateHeldOutConstructionCoverage(input: {
   // above, reached via the same production compileLanguageTrainingBatch call
   // (evaluateConstructionPromotion, on every batch with held-out evidence) --
   // bounded the same way rather than adding a second scheme.
-  const boundedTrainDocuments = boundedInductionDocuments(input.trainDocuments);
-  const constructions = constructionInductionFor({ documents: boundedTrainDocuments, hasher: input.hasher, prepared: input.preparedInduction });
+  const constructions = constructionInductionFor({ documents: input.trainDocuments, hasher: input.hasher, prepared: input.preparedInduction });
   if (!constructions.length) return [];
 
   const alignments = induceGraphSurfaceAlignments({
-    documents: boundedTrainDocuments,
+    documents: [...sourceInductionBatches(input.trainDocuments, input.hasher)].flatMap(batch => batch.documents),
     constructions: [...constructions],
     profileId: input.profileId,
     hasher: input.hasher

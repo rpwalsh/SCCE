@@ -51,6 +51,7 @@ export interface LanguageInductionDocument {
   languageHint?: string;
   trust?: number;
   boundaryAnchors?: Array<Omit<BoundaryAnchor, "documentId">>;
+  sourceWindow?: { ownerDocumentId: string; startUtf16: number; endUtf16: number };
 }
 
 export interface InducedNgram {
@@ -170,6 +171,7 @@ export interface GraphBoundConstruction {
   slots: GraphBoundConstructionSlot[];
   support: number;
   evidenceIds: EvidenceId[];
+  sourceWindows?: Array<{ ownerDocumentId: string; startUtf16: number; endUtf16: number }>;
 }
 
 export interface TranslationSeed {
@@ -331,7 +333,7 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
       const lexicalStrings = lattices.flatMap(({ lattice }) => lexicalSurfaceSequence(lattice));
       const relationObservations = documents.flatMap(doc =>
         sentenceSegments(doc.text, hasher).map((sentence, sentenceIndex) => ({
-          sourceId: doc.id,
+          sourceId: doc.sourceFamilyId ?? doc.id,
           symbols: lexicalSurfaceSymbols(sentence, `${doc.id}.relation.${sentenceIndex}`, hasher)
             .filter(symbol => ![...symbol].every(char => /\p{Punctuation}/u.test(char))),
           evidenceIds: doc.evidenceIds

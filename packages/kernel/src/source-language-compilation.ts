@@ -24,6 +24,8 @@ export function stampSourceLanguageCompilation(input: {
 }): { models: NgramModelRecord[]; units: LanguageUnitRecord[]; patterns: LanguagePatternRecord[]; semanticFrames: SemanticFrameRecord[] } {
   if (input.models.length !== input.chunks.length) throw new Error("canonical source compiler must produce its complete chunk set");
   const sourceArtifacts = { ...input.artifacts, patterns: input.artifacts.patterns.filter(record => record.patternKind !== "source_compilation") };
+  const componentReceipts = input.artifacts.patterns.filter(record => record.patternKind === "source_compilation"
+    && jsonRecord(record.patternJson).schema !== "scce.source_language_compilation_receipt.v1");
   const artifacts = Object.fromEntries(Object.entries(sourceArtifacts).map(([kind, rows]) => [kind,
     { count: rows.length, identityDigest: canonicalDigestHex(rows.map(row => row.id).sort(), input.hasher) }]));
   const common = { schema: "scce.source_language_compilation.v1", compilerRecipe: LANGUAGE_TRAINING_BATCH_RECIPE_ID, ...input.owner,
@@ -35,7 +37,7 @@ export function stampSourceLanguageCompilation(input: {
   return { models: input.models.map((record, index) => ({ ...record, modelJson: toJsonValue({ ...jsonRecord(record.modelJson),
     sourceCompilation: { ...common, compilationId, chunk: chunks[index], modelDigest: canonicalDigestHex(modelMaterial(record), input.hasher) } }) })),
     units: input.artifacts.units.map(record => ({ ...record, metadata: toJsonValue({ ...jsonRecord(record.metadata), sourceCompilationId: compilationId }) })),
-    patterns: [...sourceArtifacts.patterns.map(record => ({ ...record, patternJson: toJsonValue({ ...jsonRecord(record.patternJson), sourceCompilationId: compilationId }) })),
+    patterns: [...sourceArtifacts.patterns.map(record => ({ ...record, patternJson: toJsonValue({ ...jsonRecord(record.patternJson), sourceCompilationId: compilationId }) })), ...componentReceipts,
       { id: `source.language.compilation.${compilationId}`, profileId: input.profileId, patternKind: "source_compilation", support: 1, entropy: 0,
         evidenceIds: [], updatedAt: input.models[0]!.updatedAt, patternJson: toJsonValue({ schema: "scce.source_language_compilation_receipt.v1", sourceSystem: common.sourceSystem,
           compilation: { ...common, compilationId, modelInventory: input.models.map((record, index) => ({ id: record.id, streamId: record.streamId,
