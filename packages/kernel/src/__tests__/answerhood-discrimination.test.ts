@@ -39,6 +39,15 @@ describe("answerhood discrimination", () => {
     expect(learnedAnswerUnitFormVerdict("einstein", "einstein's").status).toBe("unresolved");
   });
 
+  it.each([
+    { title: "Andorra", request: "Which city serves as Andorra's capital?", units: ["city", "serves", "andorra's", "capital"], sentence: "There are frequent bus services from Andorra to Toulouse, plus a tour from the former city." },
+    { title: "qzalpha", request: "qzalphav pfomega rvdelta?", units: ["qzalphav", "pfomega", "rvdelta"], sentence: "qzalpha pfomega zeta." },
+    { title: "נמלית", request: "נמליתק שירות תפקיד?", units: ["נמליתק", "שירות", "תפקיד"], sentence: "נמלית שירות רנה." }
+  ])("retains unresolved source identity and relation obligations for $title", row => {
+    const evidence = openingBlock("evidence:unresolved-source", row.title, row.sentence);
+    expect(answerCoversRequest([row.sentence], evidence, row.units, row.request, { relationRequired: true })).toBe(false);
+  });
+
   it("refuses a subject-only sentence when the request asks past what the source is about", () => {
     const einstein = openingBlock(
       "evidence:einstein-lead",

@@ -1154,11 +1154,9 @@ export function answerCoversRequest(
   // An obligation names what the ANSWER must carry, so the request's own opening scaffolding and the language's
   // closed class come off it here too: "When did the American Revolutionary War end?" reached the gate as
   // {what, year, american, revolutionary} and would otherwise have demanded that the answer restate "what".
-  const beyondSourceSubject = sourceSubjectUnits.length
-    ? answerContentUnits.filter(unit => !sourceSubjectUnits.includes(unit)
-      && !scaffolding.has(unit)
-      && !options.languageClosedClassWords?.has(unit))
-    : [];
+  const beyondSourceSubject = answerContentUnits.filter(unit => !sourceSubjectUnits.includes(unit)
+    && !scaffolding.has(unit)
+    && !options.languageClosedClassWords?.has(unit));
   const relationUnits = !sourceSubjectUnits.length && subtractedRelationUnits.length
     ? subtractedRelationUnits
     : beyondSourceSubject.length
