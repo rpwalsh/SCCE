@@ -409,13 +409,20 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
         const item = document.createElement('div');
         item.className = 'program-artifact';
         const link = document.createElement('a');
-        const url = URL.createObjectURL(new Blob([artifact.content], { type: artifact.mediaType }));
-        programArtifactUrls.add(url);
-        link.href = url;
+        link.href = '#';
         link.download = artifact.path.replaceAll('\\\\', '/').split('/').pop() || 'artifact';
         link.textContent = artifact.path;
         link.setAttribute('aria-label', artifact.path);
-        link.addEventListener('click', () => setTimeout(() => { URL.revokeObjectURL(url); programArtifactUrls.delete(url); }, 1000), { once: true });
+        link.addEventListener('click', () => {
+          const url = URL.createObjectURL(new Blob([artifact.content], { type: artifact.mediaType }));
+          link.href = url;
+          programArtifactUrls.add(url);
+          setTimeout(() => {
+            URL.revokeObjectURL(url);
+            programArtifactUrls.delete(url);
+            if (link.href === url) link.href = '#';
+          }, 1000);
+        });
         item.appendChild(link);
         if (artifact.role === 'source' || artifact.role === 'test') {
           const details = document.createElement('details');
