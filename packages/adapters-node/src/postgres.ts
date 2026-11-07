@@ -1014,7 +1014,11 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
         );
         const informationLabel = labels.get(source.sourceVersionId)!;
         await storage.query(`INSERT INTO ${storage.table("sources")}(id, namespace, canonical_uri, first_seen_at, last_seen_at) VALUES($1,$2,$3,TO_TIMESTAMP($4/1000.0),TO_TIMESTAMP($4/1000.0)) ON CONFLICT(id) DO UPDATE SET last_seen_at=EXCLUDED.last_seen_at`, [source.sourceId, source.namespace, source.canonicalUri, source.observedAt]);
-        await storage.query(`INSERT INTO ${storage.table("source_versions")}(id, source_id, content_hash, media_type, observed_at, byte_length, trust_vector, metadata_json, information_label) VALUES($1,$2,$3,$4,TO_TIMESTAMP($5/1000.0),$6,$7::jsonb,$8::jsonb,$9::jsonb) ON CONFLICT(id) DO UPDATE SET information_label=EXCLUDED.information_label`, [source.sourceVersionId, source.sourceId, source.contentHash, source.mediaType, source.observedAt, source.byteLength, JSON.stringify(source.sourceTrust), JSON.stringify(sourceVersionStorageMetadata(source)), JSON.stringify(informationLabel)]);
+        await storage.query(`INSERT INTO ${storage.table("source_versions")} AS stored(id, source_id, content_hash, media_type, observed_at, byte_length, trust_vector, metadata_json, information_label) VALUES($1,$2,$3,$4,TO_TIMESTAMP($5/1000.0),$6,$7::jsonb,$8::jsonb,$9::jsonb) ON CONFLICT(id) DO UPDATE SET information_label=EXCLUDED.information_label,
+          metadata_json=CASE WHEN stored.source_id=EXCLUDED.source_id AND stored.content_hash=EXCLUDED.content_hash
+            AND EXCLUDED.metadata_json->>'identityRecipe'='scce.gutenberg.source_identity.v2'
+            THEN stored.metadata_json || jsonb_build_object('title', EXCLUDED.metadata_json->'title', 'identity', EXCLUDED.metadata_json->'identity', 'identityRecipe', EXCLUDED.metadata_json->'identityRecipe')
+            ELSE stored.metadata_json END`, [source.sourceVersionId, source.sourceId, source.contentHash, source.mediaType, source.observedAt, source.byteLength, JSON.stringify(source.sourceTrust), JSON.stringify(sourceVersionStorageMetadata(source)), JSON.stringify(informationLabel)]);
       });
     },
     async putEvidenceVisual(input) {

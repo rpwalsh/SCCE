@@ -1522,6 +1522,45 @@ describe("multi-corpus training", () => {
     }
   });
 
+  it("replays Gutenberg identity projection without carrying the removed license into source or evidence identity", async () => {
+    const root = await tempDir("gutenberg-identity-replay-");
+    await writeFile(path.join(root, "captain-mira.txt"), [
+      "The Project Gutenberg eBook of Captain Mira",
+      "Copy this license and observe its restrictions when redistributing the ebook.",
+      "*** START OF THE PROJECT GUTENBERG EBOOK CAPTAIN MIRA ***",
+      "Captain Mira studied the stars above the harbor.",
+      "*** END OF THE PROJECT GUTENBERG EBOOK CAPTAIN MIRA ***"
+    ].join("\n"), "utf8");
+    const fixture = memoryStorage();
+    const checkpoints = new Map<string, IngestionCheckpoint>();
+    fixture.storage.ingestion = { put: async row => { checkpoints.set(row.id, structuredClone(row)); }, get: async id => checkpoints.get(id) ?? null,
+      list: async () => [...checkpoints.values()] } as ScceStorage["ingestion"];
+    const train = () => trainGutenbergCorpus({ storage: fixture.storage, rootPath: root, maxFilesPerRun: 1,
+      maxFileBytes: 100_000, ngramMaxOrder: 3, ngramMaxCountersPerOrder: 64 });
+    await train();
+    const first = fixture.state.sourceVersions.at(-1)!;
+    const identity = String(recordOf(first.metadata).identity);
+    expect(identity).toContain("captain mira");
+    expect(identity).toContain("stars");
+    expect(identity).not.toMatch(/license|restrictions|redistributing/iu);
+    expect(fixture.state.evidence.every(span => !String(resolveEvidenceSourceIdentity(span.provenance).identity).match(/license|restrictions|redistributing/iu))).toBe(true);
+
+    const current = [...checkpoints.values()][0]!;
+    checkpoints.delete(current.id);
+    const ids = createIdFactory({ clock: createClock(), hasher: createHasher(), namespace: "corpus-training-checkpoint", deterministicReplay: true });
+    const legacyId = ids.semanticId("corpus_training_checkpoint", { compilerRecipe: LANGUAGE_CORPUS_TRAINING_RECIPE_ID,
+      sourceSystem: canonicalCorpusSourceSystemId(String(recordOf(current.metadata).sourceSystem)),
+      rootUri: current.rootUri, itemUri: "captain-mira.txt", sourceEvidenceRecipe: "scce.language_corpus_source_evidence.v1" });
+    checkpoints.set(legacyId, { ...current, id: legacyId, itemUri: "captain-mira.txt",
+      metadata: { ...recordOf(current.metadata), itemUri: "captain-mira.txt" } });
+    const before = fixture.state.sourceVersions.length;
+    await train();
+    expect(checkpoints.size).toBe(2);
+    expect(fixture.state.sourceVersions.length).toBeGreaterThan(before);
+    expect(fixture.state.sourceVersions.at(-1)?.sourceVersionId).toBe(first.sourceVersionId);
+    expect(String(recordOf(fixture.state.sourceVersions.at(-1)?.metadata).identity)).toBe(identity);
+  });
+
   it("keeps the code corpus free of prose and the prose corpus free of syntax", async () => {
     const root = await tempDir("oss-projection-fixture-");
     await mkdir(path.join(root, "src"), { recursive: true });

@@ -80,6 +80,7 @@ interface FoundFile {
 const DEFAULT_MAX_FILES = 64;
 const DEFAULT_MAX_FILE_BYTES = 4_000_000;
 const DEFAULT_MAX_DEPTH = 8;
+const GUTENBERG_IDENTITY_RECIPE_ID = "scce.gutenberg.source_identity.v2";
 
 export async function trainGutenbergCorpus(input: GutenbergCorpusTrainOptions): Promise<GutenbergCorpusTrainReport> {
   const root = path.resolve(input.rootPath);
@@ -120,6 +121,8 @@ export async function trainGutenbergCorpus(input: GutenbergCorpusTrainOptions): 
       continue;
     }
     const languageAliases = sourceLanguageAliases(raw, input.languageAliases);
+    const relativePath = normalizeRelative(file.relativePath);
+    const title = sourceTitleFromUri(relativePath);
     // One pathological file must cost that file, never the whole
     // multi-file run: training runs fully in-process here (no child-process
     // boundary like the wikipedia lane's decompressor), so a per-file
@@ -129,11 +132,11 @@ export async function trainGutenbergCorpus(input: GutenbergCorpusTrainOptions): 
     const trainingInput: LanguageCorpusTrainingInput = {
         storage: input.storage,
         sourceSystem: CORPUS_SOURCE_SYSTEM_IDS.gutenberg,
-        streamUri: `${CORPUS_SOURCE_SYSTEM_IDS.gutenberg}:${normalizeRelative(file.relativePath)}`,
+        streamUri: `${CORPUS_SOURCE_SYSTEM_IDS.gutenberg}:${relativePath}`,
         sourceUri: pathToFileURL(file.absolutePath).href,
         corpusCheckpoint: {
           rootUri: pathToFileURL(root).href,
-          itemUri: normalizeRelative(file.relativePath),
+          itemUri: `${relativePath}#${GUTENBERG_IDENTITY_RECIPE_ID}`,
           contentHash: sha256Bytes(rawBytes),
           transformId: "scce.gutenberg.boilerplate-strip.v1",
           originalSourceUri: pathToFileURL(file.absolutePath).href,
@@ -160,10 +163,10 @@ export async function trainGutenbergCorpus(input: GutenbergCorpusTrainOptions): 
           // A text file's own name is the identity it declares. Without this the title was empty until a separate
           // backfill ran, so a freshly ingested document could not be named by any request: what a request names is
           // decided by asking which source titles appear in it, and an untitled source answers nothing.
-          title: sourceTitleFromUri(normalizeRelative(file.relativePath)),
-          // Read from the file as delivered: a Gutenberg text names itself in the header the boilerplate strip removes.
-          identity: openingIdentityUnits(raw).join(" "),
-          relativePath: normalizeRelative(file.relativePath),
+          title,
+          identity: [...new Set([...title.split(/\s+/u), ...openingIdentityUnits(text)])].join(" "),
+          identityRecipe: GUTENBERG_IDENTITY_RECIPE_ID,
+          relativePath,
           sourceHash: sha256Bytes(rawBytes),
           boilerplateStripped: text.length !== raw.trim().length,
           languageAliases
