@@ -1166,7 +1166,8 @@ export function answerCoversRequest(
         : [];
   const answeringText = sentences.join(" ");
   const sentenceUnits = answerhoodComparisonUnits(answeringText).map(stripOuterPriorSeparators);
-  const missingRelationUnits = relationUnits.filter(unit => !sentenceUnits.some(surfaceUnit => requestUnitSharesStem(unit, surfaceUnit)));
+  const relationSentenceUnits = answerhoodRelationComparisonUnits(answeringText);
+  const missingRelationUnits = relationUnits.filter(unit => !relationSentenceUnits.some(surfaceUnit => requestUnitSharesStem(unit, surfaceUnit)));
   // A sentence carrying a value this turn RESOLVED for the request's own relation answers it whether or not it
   // repeats the relation word: "10 December 1815" structurally cannot restate "born" and does not need to, which
   // is the reasoning candidateIsVerifiedBoundValue (semantic-answer-construct.ts) already applies one module away
@@ -1228,6 +1229,15 @@ export function answerCoversRequest(
 /** Reuse the corpus's dash/space comparison while preserving numeric designations and signs. */
 function answerhoodComparisonUnits(text: string): string[] {
   return answerhoodComparisonMemo(text);
+}
+
+/** Keep qualified identifiers atomic when judging a natural-language relation. */
+function answerhoodRelationComparisonUnits(text: string): string[] {
+  return splitPriorUnits(normalizePriorKey(text)).flatMap(raw => {
+    const unit = stripOuterPriorSeparators(raw);
+    return /[/\\_:`]/u.test(unit) || /[\p{L}\p{N}]\.[\p{L}\p{N}]/u.test(unit)
+      ? [unit] : answerhoodComparisonUnits(unit).map(stripOuterPriorSeparators);
+  });
 }
 
 /**
@@ -1300,7 +1310,7 @@ export function evidenceDiscriminatesAskedRelation(
 ): boolean {
   const relationUnits = requestRelationBeyondSourceIdentity(requestText, span, closedClassWords);
   if (!relationUnits.length) return true;
-  const surfaceUnits = memoizedSurfaceUnits(surface).map(stripOuterPriorSeparators);
+  const surfaceUnits = answerhoodRelationComparisonUnits(surface);
   return relationUnits.every(unit => surfaceUnits.some(surfaceUnit => requestUnitSharesStem(unit, surfaceUnit)));
 }
 
