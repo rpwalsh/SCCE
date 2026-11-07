@@ -262,6 +262,9 @@ async function persistDialogueRequestAuthorities(
     if (!profile) continue;
     const found = await input.storage.evidence.searchEvidence({ sourceVersionId, status: "promoted", limit: 4096 });
     const spans = found.map(row => row.span).filter(span => String(span.sourceVersionId) === String(sourceVersionId) && span.status === "promoted");
+    const replies = new Map(file.transcriptTurns
+      .filter(turn => turn.replyToTurnIndex !== undefined)
+      .map(turn => [turn.replyToTurnIndex!, turn.surface] as const));
     const bound = turns.flatMap(turn => {
       const owning = spans.filter(span => span.charStart <= turn.startCodePoint && span.charEnd >= turn.endCodePoint);
       if (!owning.length) return [];
@@ -276,7 +279,9 @@ async function persistDialogueRequestAuthorities(
       featureOwners.set(key, owners);
     }
     const compiled = compileRequestRequirementCorpus({
-      corpus: { schema: "scce.request_requirement_corpus.v1", language: "und", examples: bound.map(({ turn }) => ({ text: turn.surface, authority: turn.requestAuthority! })) },
+      corpus: { schema: "scce.request_requirement_corpus.v1", language: "und", examples: bound.map(({ turn }) => ({
+        text: turn.surface, authority: turn.requestAuthority!, ...(replies.has(turn.index) ? { responseText: replies.get(turn.index)! } : {})
+      })) },
       profileId: profile.id,
       sourceVersionId,
       evidenceIds: [...new Set(bound.flatMap(row => row.evidenceIds))] as EvidenceId[],

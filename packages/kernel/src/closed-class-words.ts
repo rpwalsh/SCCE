@@ -27,7 +27,7 @@ export function requestScaffoldingConstructions(
   return patterns
     .filter(isRequestRequirementPattern)
     .map(pattern => jsonRecord(pattern.patternJson))
-    .filter(record => typeof record.surface === "string" && (!authority || record.selectedAuthority === authority))
+    .filter(record => record.requestSpanRole === "control" && typeof record.surface === "string" && (!authority || record.selectedAuthority === authority))
     .flatMap(record => String(record.surface).split(/\s+/u).filter(Boolean)
       .map(surface => ({ parts: [{ kind: "literal" as const, surface }] })));
 }

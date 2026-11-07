@@ -6,13 +6,44 @@ import { sourceDerivedCasingHints } from "../surface-linguistics.js";
 import type { NarrativeConditioning } from "../document-generation-session.js";
 
 describe("creative section realization handoff", () => {
+  it("keeps classifying topic matches while removing only learned control syntax", () => {
+    const request = "Write a short scene about a sailor who befriends a clockmaker.";
+    const span = (surface: string) => ({ charStart: [...request.slice(0, request.indexOf(surface))].length,
+      charEnd: [...request.slice(0, request.indexOf(surface) + surface.length)].length });
+    const field = { trace: { activations: [
+      { kind: "pattern", requestSpanRole: "control", span: span("Write a short scene about") },
+      { kind: "pattern", requestSpanRole: "content", span: span("sailor") },
+      { kind: "pattern", requestSpanRole: null, span: span("clockmaker") }
+    ] } };
+    expect(creativeRequestContentSurface(request, field)).toBe("a sailor who befriends a clockmaker.");
+  });
+
+  it.each([
+    ["Write a short scene about a sailor who befriends a clockmaker.", "Write a short scene about", "sailor", "clockmaker"],
+    ["物語を書いて 船乗り と 時計職人", "物語を書いて", "船乗り", "時計職人"]
+  ])("uses learned request spans as the section's content role: %s", (requestText, control, first, second) => {
+    const runtime = createLanguageMemoryRuntime();
+    const state = runtime.hydrateFromImportedBrain({ importRunId: "creative.subject", models: [], observations: [], units: [], patterns: [], semanticFrames: [] });
+    const start = [...requestText.slice(0, requestText.indexOf(control))].length;
+    const field = { trace: { activations: [{ kind: "pattern", requestSpanRole: "control", span: { charStart: start, charEnd: start + [...control].length } }] } };
+    let generatedInput: LanguageGenerationInput | undefined;
+    const generate = runtime.generate.bind(runtime);
+    runtime.generate = input => { generatedInput = input; return generate(input); };
+    realizeCreativeSection({ languageMemory: runtime, state, requestText, sectionGoal: requestText, requirementField: field });
+    const lexicalInput = JSON.stringify({ context: generatedInput?.contextSymbols, atoms: generatedInput?.frames?.[0]?.propositionAtoms,
+      terms: generatedInput?.frames?.[0]?.requiredTerms });
+    expect(lexicalInput).toContain(first);
+    expect(lexicalInput).toContain(second);
+    expect(lexicalInput).not.toContain(control);
+  });
+
   it("preserves all contiguous content spans around learned control material", () => {
     const content = "κάλυ ρονά ζίμα τέλου";
     for (const [request, controlSpans] of [
       [`μήσα τάλι ${content}`, [[0, 4], [5, 9]]],
       [`${content} τάλι μήσα`, [[content.length + 1, content.length + 5], [content.length + 6, content.length + 10]]]
     ] as const) {
-      const field = { trace: { activations: controlSpans.map(([charStart, charEnd]) => ({ kind: "pattern", span: { charStart, charEnd } })) } };
+      const field = { trace: { activations: controlSpans.map(([charStart, charEnd]) => ({ kind: "pattern", requestSpanRole: "control", span: { charStart, charEnd } })) } };
       expect(creativeRequestContentSurface(request, field)).toBe(content);
     }
     const left = "κάλυ ρονά";
@@ -21,8 +52,8 @@ describe("creative section realization handoff", () => {
     const field = {
       trace: {
         activations: [
-          { kind: "pattern", span: { charStart: 0, charEnd: [..."μήσα"].length } },
-          { kind: "pattern", span: { charStart: [...`μήσα ${left} `].length, charEnd: [...`μήσα ${left} τάλι`].length } }
+          { kind: "pattern", requestSpanRole: "control", span: { charStart: 0, charEnd: [..."μήσα"].length } },
+          { kind: "pattern", requestSpanRole: "control", span: { charStart: [...`μήσα ${left} `].length, charEnd: [...`μήσα ${left} τάλι`].length } }
         ]
       }
     };

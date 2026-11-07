@@ -16,6 +16,7 @@ export interface CreativeSectionRealizationInput {
   targetLanguageProfile?: LanguageProfile;
   requestText: string;
   sectionGoal: string;
+  requirementField?: Pick<TurnRequirementField, "trace">;
   /** Prior realized prose supplies continuation context, never typed state IDs. */
   priorSurfaceTexts?: readonly string[];
   /** The committed narrative's exact typed state, kept separate from lexical context. */
@@ -62,6 +63,9 @@ export interface CreativeSectionRealization {
  */
 export function realizeCreativeSection(input: CreativeSectionRealizationInput): CreativeSectionRealization {
   const conditioning = (input.priorSurfaceTexts ?? []).filter(Boolean).slice(-6);
+  const sectionGoal = input.sectionGoal === input.requestText && input.requirementField
+    ? creativeRequestContentSurface(input.sectionGoal, input.requirementField)
+    : input.sectionGoal;
   // Corpus-named anchors only, not a ranking over every word by length.
   // contentUnits' length ranking had no way to tell a request's own
   // instruction words ("write", "paragraph", "three") from its actual
@@ -75,7 +79,7 @@ export function realizeCreativeSection(input: CreativeSectionRealizationInput): 
   const resolvedCast = (input.resolvedCastSubjectIds ?? []).slice(0, 3);
   const goalUnits = resolvedCast.length
     ? resolvedCast
-    : properNounEntityAnchors(input.sectionGoal).slice(0, 3);
+    : properNounEntityAnchors(sectionGoal).slice(0, 3);
   // One rotated unit per section owns the hard required-coverage
   // obligation (its opener varies instead of chanting every unit every
   // time) -- but the whole document's core entities (protagonist,
@@ -91,7 +95,7 @@ export function realizeCreativeSection(input: CreativeSectionRealizationInput): 
   // a caller that resolves no cast at all.
   const persistentEntities = resolvedCast.length
     ? resolvedCast
-    : properNounEntityAnchors(input.sectionGoal).slice(0, 3);
+    : properNounEntityAnchors(sectionGoal).slice(0, 3);
   const castTerms = [...new Set([...persistentEntities, ...sectionUnit])];
   const requiredTerms = [...new Set([...castTerms, ...(input.requiredContentTerms ?? [])])];
   // Evidence text is a casing source too, not just the request: a
@@ -112,7 +116,7 @@ export function realizeCreativeSection(input: CreativeSectionRealizationInput): 
     label: "kernel.creative",
     counts: { castTerms: castTerms.length, topicVocabulary: (input.topicVocabulary ?? []).length, conditioning: conditioning.length },
     support: {
-      sectionGoal: input.sectionGoal,
+      sectionGoal,
       goalUnits,
       castTerms,
       resolvedCastIn: input.resolvedCastSubjectIds ?? [],
@@ -124,7 +128,7 @@ export function realizeCreativeSection(input: CreativeSectionRealizationInput): 
   const generation = input.languageMemory.generate({
     state: input.state,
     targetLanguageProfile: input.targetLanguageProfile,
-    choiceSeed: `${input.sectionGoal}\u0001${Math.max(1, Math.floor(input.attempt ?? 1))}`,
+    choiceSeed: `${sectionGoal}\u0001${Math.max(1, Math.floor(input.attempt ?? 1))}`,
     // Unit symbols, not whole sentences: KN context matching is n-gram-sized.
     //
     // The raw goal used to lead this list, to make each attempt distinct. But contextSymbols IS the n-gram

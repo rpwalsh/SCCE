@@ -93,13 +93,18 @@ describe("turn language state", () => {
         schema: "scce.request_requirement_pattern.v1",
         surface: "please",
         anchor: "start",
-        selectedAuthority: "factual"
+        selectedAuthority: "factual",
+        requestSpanRole: "control"
       },
       evidenceIds: [],
       updatedAt: 1
     };
     const direct = requestClosedClassWords({ requestText: "", authority: "factual", patterns: [learnedOpener] });
     expect(requestScaffoldingConstructions([learnedOpener], "factual")).toEqual([{ parts: [{ kind: "literal", surface: "please" }] }]);
+    const classifierOnly = { ...learnedOpener, id: "pattern.request.topic", patternJson: {
+      ...learnedOpener.patternJson as Record<string, unknown>, surface: "sailor", requestSpanRole: "content"
+    } } as LanguagePatternRecord;
+    expect(requestScaffoldingConstructions([learnedOpener, classifierOnly], "factual")).toEqual([{ parts: [{ kind: "literal", surface: "please" }] }]);
     expect(direct.has("please")).toBe(true);
     const signals = createTurnSignals({
       requestText: "",

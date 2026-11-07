@@ -452,6 +452,7 @@ export function deriveTurnRequirementField(input: DeriveTurnRequirementFieldInpu
         activation: activation.activation,
         confidence: activation.confidence,
         learnedFrameOrPatternId: activation.learnedFrameOrPatternId ?? activation.id,
+        requestSpanRole: jsonString(jsonRecord(activation.trace).requestSpanRole) ?? null,
         span: spanFor(requestText, activation.span)
       })),
       dimensions: dimensionTrace,
@@ -481,7 +482,7 @@ export function requestSubjectSegments(requestText: string, field: Pick<TurnRequ
   const activations = jsonRecord(field.trace).activations;
   const spans = (Array.isArray(activations) ? activations : [])
     .map(row => jsonRecord(row))
-    .filter(row => row.kind === "pattern" || row.kind === "frame")
+    .filter(row => (row.kind === "pattern" || row.kind === "frame") && row.requestSpanRole === "control")
     .map(row => jsonRecord(row.span))
     .map(span => [Number(span.charStart), Number(span.charEnd)] as const)
     .filter(([start, end]) => Number.isInteger(start) && Number.isInteger(end) && end > start && end - start < chars.length);
@@ -594,6 +595,9 @@ function collectActivations(input: DeriveTurnRequirementFieldInput & { requestTe
     const context = other.span!;
     const anchor = jsonString(jsonRecord(row.trace).patternAnchor);
     const contextAnchor = jsonString(jsonRecord(other.trace).patternAnchor);
+    const role = jsonString(jsonRecord(row.trace).requestSpanRole);
+    const contextRole = jsonString(jsonRecord(other.trace).requestSpanRole);
+    if (role !== contextRole) return false;
     const anchored = anchor === "start" || anchor === "end" ? 1 : 0;
     const contextAnchored = contextAnchor === "start" || contextAnchor === "end" ? 1 : 0;
     return context.charStart <= span.charStart && context.charEnd >= span.charEnd
@@ -673,6 +677,7 @@ function collectLanguageActivations(requestText: string, state: LanguageMemoryRu
           profileId: pattern.profileId,
           patternKind: pattern.patternKind,
           patternAnchor: record.anchor ?? null,
+          requestSpanRole: record.requestSpanRole ?? null,
           sourceVersionId: record.sourceVersionId ?? null,
           evidenceIds: pattern.evidenceIds,
           responseExtent: record.responseExtent ?? null

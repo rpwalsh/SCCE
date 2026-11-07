@@ -8,12 +8,48 @@ import {
   compileRequestRequirementCorpus,
   parseRequestRequirementCorpus
 } from "../request-requirement-learning.js";
-import { deriveTurnRequirementField } from "../turn-requirements.js";
+import { deriveTurnRequirementField, requestSubjectSegments } from "../turn-requirements.js";
 import { extendedGenerationDecision } from "../extended-generation-turn.js";
 import { createHasher } from "../primitives.js";
 import type { EvidenceId, JsonValue, SourceVersionId } from "../types.js";
 
 describe("source-backed response-form learning", () => {
+  it("learns control and topic span roles from owned request-reply pairs", () => {
+    const examples = ["toma", "ravi", "toma", "ravi"].map(subject => ({
+      text: `nava sula ${subject}`, responseText: `${subject} miri.`, authority: "creative" as const
+    }));
+    const compiled = compileRequestRequirementCorpus({
+      corpus: { schema: REQUEST_REQUIREMENT_CORPUS_SCHEMA, language: "und", examples },
+      profileId: "profile.paired", sourceVersionId: "source-version.paired" as SourceVersionId,
+      evidenceIds: ["evidence.paired" as EvidenceId], sourceSystem: "dialogue", updatedAt: 1,
+      makeId: value => `pattern.${createHasher().digestHex(JSON.stringify(value))}`
+    });
+    const roles = compiled.patterns.map(pattern => pattern.patternJson as Record<string, unknown>);
+    expect(roles.some(row => row.surface === "nava sula" && row.requestSpanRole === "control")).toBe(true);
+    expect(roles.some(row => row.surface === "toma" && row.requestSpanRole === "content")).toBe(true);
+    const field = deriveTurnRequirementField({ requestText: "nava sula toma", languageMemoryState: runtimeState(compiled.patterns) });
+    expect(requestSubjectSegments("nava sula toma", field)).toEqual(["toma"]);
+    const unknown = compileRequestRequirementCorpus({
+      corpus: { schema: REQUEST_REQUIREMENT_CORPUS_SCHEMA, language: "und", examples: examples.map(({ responseText: _, ...row }) => row) },
+      profileId: "profile.paired", sourceVersionId: "source-version.paired" as SourceVersionId,
+      evidenceIds: ["evidence.paired" as EvidenceId], sourceSystem: "dialogue", updatedAt: 1,
+      makeId: value => `pattern.${createHasher().digestHex(JSON.stringify(value))}`
+    });
+    expect(unknown.patterns.every(pattern => !("requestSpanRole" in (pattern.patternJson as Record<string, unknown>)))).toBe(true);
+    const single = compileRequestRequirementCorpus({
+      corpus: { schema: REQUEST_REQUIREMENT_CORPUS_SCHEMA, language: "und", examples: ["sailor", "clockmaker", "gardener"]
+        .map(subject => ({ text: `a ${subject}`, authority: "creative" as const })) },
+      profileId: "profile.single", sourceVersionId: "source-version.single" as SourceVersionId,
+      evidenceIds: ["evidence.single" as EvidenceId], sourceSystem: "dialogue", updatedAt: 1,
+      makeId: value => `pattern.${createHasher().digestHex(JSON.stringify(value))}`
+    });
+    const singleId = single.patterns.find(pattern => (pattern.patternJson as Record<string, unknown>).surface === "a")?.id;
+    expect(singleId).toBeDefined();
+    const singlePattern = single.patterns.find(pattern => pattern.id === singleId)!;
+    const singleField = deriveTurnRequirementField({ requestText: "a sailor", languageMemoryState: runtimeState([singlePattern]) });
+    expect(singleField.activationsUsed?.filter(row => row.id === singleId).map(row => row.span)).toEqual([expect.objectContaining({ charStart: 0, charEnd: 1 })]);
+  });
+
   it("does not hydrate request patterns compiled with stale semantics", () => {
     const compiled = compileRequestRequirementCorpus({
       corpus: {

@@ -5129,8 +5129,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         // discourse object was bound. This falls back to that, not to a
         // heuristic: no cast at all is the honest result when neither
         // signal resolves.
-        const creativeSubjectText = creativeRequestFrame
-          ? [creativeRequestFrame.focus, ...creativeRequestFrame.arguments].map(binding => binding.span.text).join(" ")
+        const creativeSubjectText = creativeRequestFrame?.arguments.length
+          ? creativeRequestFrame.arguments.map(binding => binding.span.text).join(" ")
           : creativeRequestContentSurface(input.text, requirementField);
         // The cast comes from the SUBJECT, never the raw request. Measured 2026-09-12: the cast of
         // "Write a short story about a blacksmith who forgets his own name" was
@@ -5227,6 +5227,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
                 state: speakInput.languageMemory,
                 targetLanguageProfile: speakInput.languageProfile,
                 requestText: input.text,
+                requirementField,
                 sectionGoal: section.goal,
                 priorSurfaceTexts: priorSectionTexts.slice(-2),
                 narrativeConditioning: conditioning,

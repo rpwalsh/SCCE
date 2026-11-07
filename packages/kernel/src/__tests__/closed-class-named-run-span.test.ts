@@ -20,7 +20,8 @@ afterEach(() => clearCorpusIdentitySignals());
  * "mercury" ranks far outside it.
  */
 const population = fixturePopulation(["is", "what", "who"], ["mercury", "lovelace", "ada"]);
-const patterns = [requestPattern("what", "factual"), requestPattern("who", "factual"), requestPattern("ada", "factual"), requestPattern("lovelace", "factual")];
+const patterns = [requestPattern("what", "factual", "control"), requestPattern("who", "factual", "control"),
+  requestPattern("ada", "factual", "content"), requestPattern("lovelace", "factual", "content")];
 
 describe("a named run spanning the request does not delete the corpus closed class", () => {
   it("keeps the units the corpus ranks closed and still drops the subject it names", () => {
@@ -69,10 +70,10 @@ function fixturePopulation(closed: readonly string[], open: readonly string[]): 
   return { languageId: "language.corpus", modelCount: 457, continuationCounts };
 }
 
-function requestPattern(surface: string, selectedAuthority: string): LanguagePatternRecord {
+function requestPattern(surface: string, selectedAuthority: string, requestSpanRole: "control" | "content"): LanguagePatternRecord {
   return {
     id: `request_requirement_pattern_${surface}`,
     profileId: "profile.requests",
-    patternJson: { schema: "scce.request_requirement_pattern.v1", surface, selectedAuthority }
+    patternJson: { schema: "scce.request_requirement_pattern.v1", surface, selectedAuthority, requestSpanRole }
   } as unknown as LanguagePatternRecord;
 }

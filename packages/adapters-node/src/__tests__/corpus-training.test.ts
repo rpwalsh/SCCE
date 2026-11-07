@@ -2126,7 +2126,7 @@ describe("dialogue corpus training", () => {
       { surface: "imagine le port comme un jardin suspendu", authority: "creative" },
       { surface: "cette phrase déclarée sans autorité ne sera pas apprise" }
     ];
-    const surfaces = utterances.flatMap(({ surface }) => [surface, "noted"]);
+    const surfaces = utterances.flatMap(({ surface }) => [surface, surface.split(/\s+/u).at(-1)!]);
     const text = surfaces.join("\n");
     let cursor = 0;
     const turns = surfaces.map((surface, index) => {
@@ -2135,7 +2135,7 @@ describe("dialogue corpus training", () => {
       const label = utterances[Math.floor(index / 2)]!;
       return { index, speakerId: index % 2 ? "assistant" : "user", surface, startCodePoint, endCodePoint: cursor - 1,
         ...(index % 2 === 0 && label.authority ? { requestAuthority: label.authority } : {}),
-        ...(index % 2 === 0 ? { sourceCategory: "declared-prompt" } : {}) };
+        ...(index % 2 === 0 ? { sourceCategory: "declared-prompt" } : { replyToTurnIndex: index - 1, commitmentScope: "conversation" as const }) };
     });
     const sourceMetadata = { dataset: "declared-dialogue-fixture", uri: "fixture://dialogue/authority", pinnedRevision: "rev-1", license: "CC BY" };
     await writeFile(path.join(root, "authority.json"), JSON.stringify({ schema: "scce.dialogue_transcript.v1", text, turns, sourceMetadata }), "utf8");
@@ -2152,6 +2152,10 @@ describe("dialogue corpus training", () => {
     expect(result.requestAuthorities).toEqual({ examples: 6, evidenceBoundExamples: 6, patternsPersisted: patterns.length });
     expect(patterns.length).toBeGreaterThan(0);
     expect(patterns.every(pattern => recordOf(pattern.patternJson).sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.dialogue)).toBe(true);
+    expect(patterns.some(pattern => recordOf(pattern.patternJson).surface === "imagine"
+      && recordOf(pattern.patternJson).requestSpanRole === "control")).toBe(true);
+    expect(patterns.some(pattern => recordOf(pattern.patternJson).surface === "suspendu"
+      && recordOf(pattern.patternJson).requestSpanRole === "content")).toBe(true);
     for (const pattern of patterns) {
       const record = recordOf(pattern.patternJson);
       expect(record.sourceMetadata).toEqual(sourceMetadata);

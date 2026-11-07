@@ -12,7 +12,7 @@ import {
 import type { LanguageGenerationResult, LanguageMemoryRuntime, LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
 import { createInventionConstruct, type InventionConstruct } from "./prediction.js";
 import { canonicalStringify, clamp01, createHasher, featureSet, mean, symbolizeData, toJsonValue, weightedJaccard } from "./primitives.js";
-import { COGNITIVE_OPERATOR_IDS, type ActivatedOperator, type TurnRequirement, type TurnRequirementField } from "./turn-requirements.js";
+import { COGNITIVE_OPERATOR_IDS, requestSubjectSegments, type ActivatedOperator, type TurnRequirement, type TurnRequirementField } from "./turn-requirements.js";
 import type { ConstructGraph, EvidenceSpan, FieldState, GraphEdge, GraphNode, GraphSlice, JsonValue, RequestedAuthority } from "./types.js";
 import { REQUEST_AUTHORITY_ROUTING_CONTRACT, REQUESTED_AUTHORITY_IDS } from "./request-authority.js";
 
@@ -153,7 +153,7 @@ export interface PlanInventionsInput {
     | "activatedPatternIds"
     | "activatedPhraseUnitIds"
     | "activatedConstructIds"
-  > & Partial<Pick<TurnRequirementField, "requiredFeatures">>;
+  > & Partial<Pick<TurnRequirementField, "requiredFeatures" | "trace">>;
   /** Numeric operator state; learned IDs select the invention lane. */
   operatorActivations?: readonly ActivatedOperator[];
   /** Source-language adapter output. IDs are opaque to cognitive planning. */
@@ -400,7 +400,7 @@ export function planInventions(input: PlanInventionsInput): InventionConstruct[]
   const constraints = extractConstraints(input).slice(0, 16);
   const graphIngredients = graphCompositionIngredients(input).slice(0, 12);
   const languageIngredients = languageCompositionIngredients(input).slice(0, 18);
-  const requestIngredients = requestCompositionIngredients(input.requestText);
+  const requestIngredients = requestCompositionIngredients(creativeRequestSubject(input));
   const ingredients = uniqueIngredients([...graphIngredients, ...languageIngredients, ...requestIngredients]);
   const structuralMemoryAvailable = structuralBundles.length > 0;
   const structuralCandidateLimit = structuralMemoryAvailable
@@ -680,7 +680,9 @@ function requestOwnedCreativeRoleBindings(input: PlanInventionsInput): ProposalR
   const rows: ProposalRequestRoleBindingTrace[] = [];
   const frame = input.creativeRequestFrame;
   if (frame && validCreativeRequestFrame(input.requestText, frame)) {
-    for (const role of [frame.focus, ...frame.arguments]) {
+    const roles = frame.focus.span.text === input.requestText && frame.arguments.length
+      ? frame.arguments : [frame.focus, ...frame.arguments];
+    for (const role of roles) {
       rows.push({
         id: role.id,
         roleId: role.roleId,
@@ -730,7 +732,7 @@ function extractConstraints(input: PlanInventionsInput): ConstraintSeed[] {
   const activatedSlots = requestOwnedCreativeSlots(input)[0];
   const requestTerms = activatedSlots
     ? requestSurfaceUnits(activatedSlots.continuationSlot.text).slice(0, 10)
-    : requestSurfaceUnits(input.requestText).slice(0, 10);
+    : requestSurfaceUnits(creativeRequestSubject(input)).slice(0, 10);
   const requestOwned = requestOwnedCreativeConstraints(input);
   const rows: ConstraintSeed[] = requestOwned.map(constraint => ({
     id: constraint.id,
@@ -876,6 +878,11 @@ function requestCompositionIngredients(requestText: string): CompositionIngredie
     weight: 0.72,
     evidenceIds: []
   }));
+}
+
+function creativeRequestSubject(input: PlanInventionsInput): string {
+  if (input.requestedAuthority !== "creative" || !input.requirementField?.trace) return input.requestText;
+  return requestSubjectSegments(input.requestText, input.requirementField).join(" ").trim() || input.requestText;
 }
 
 function uniqueIngredients(rows: readonly CompositionIngredient[]): CompositionIngredient[] {
@@ -1242,7 +1249,7 @@ function buildDraft(
     ? buildStructuralCreativeEventPlan(input, variant, structuralBundles)
     : [];
   const deferSurfaceRealization = structuralEventPlan.length >= 4;
-  const requestTerms = requestSurfaceUnits(input.requestText);
+  const requestTerms = requestSurfaceUnits(creativeRequestSubject(input));
   const activatedSlots = requestOwnedCreativeSlots(input)[0];
   const requestRoleBindings = requestOwnedCreativeRoleBindings(input);
   const requestFrameId = requestRoleBindings.some(binding => binding.source === "creative_request_frame")

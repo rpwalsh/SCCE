@@ -4174,14 +4174,9 @@ function creativeRequestContentTerms(input: SpeakInput): SurfaceTerm[] {
     ? creativeRequestFrameContentTerms(input.creativeRequestFrame, input.requestText ?? mouthEchoQuestionText(input))
     : [];
   if (frameTerms.length) return frameTerms;
-  const controlSpans = (input.requirementField?.requiredFeatures ?? [])
-    .filter(requirement => requirement.origin.semanticRoleId === "role.request.requirement.v1")
-    .map(requirement => requirement.origin.requestSpan)
-    .filter(span => span.charEnd > span.charStart);
-  // The request, not the entailment claim (on a creative turn that is the retrieved passage), minus its learned instruction spans: the subject the invention must keep.
+  // The request's learned control spans leave its content role intact.
   const claimText = mouthEchoQuestionText(input);
   const requestText = creativeRequestContentSurface(claimText, input.requirementField);
-  const controlBoundary = requestText === claimText ? controlSpans.reduce((end, span) => Math.max(end, span.charEnd), 0) : 0;
   const tokens = [...requestText.matchAll(/[\p{Letter}\p{Mark}\p{Number}_]+/gu)].map(match => {
     const utf16Start = match.index ?? 0;
     const text = match[0];
@@ -4189,9 +4184,7 @@ function creativeRequestContentTerms(input: SpeakInput): SurfaceTerm[] {
     return { text, start, end: start + [...text].length };
   });
   const selected = tokens
-    .filter(token => token.start >= controlBoundary)
-    .filter(token => [...token.text].length >= 3 || [...token.text].every(char => /\p{Number}/u.test(char)))
-    .slice(-12);
+    .filter(token => [...token.text].length >= 3 || [...token.text].every(char => /\p{Number}/u.test(char)));
   const bySurface = new Map<string, SurfaceTerm>();
   for (const token of selected) {
     const key = token.text.normalize("NFKC").toLocaleLowerCase();
@@ -4212,7 +4205,9 @@ function creativeRequestContentTerms(input: SpeakInput): SurfaceTerm[] {
  * function only preserves the compiler's verified spans through realization.
  */
 export function creativeRequestFrameContentTerms(frame: CreativeRequestFrame, requestText: string): SurfaceTerm[] {
-  const roles = [frame.focus, ...frame.arguments];
+  const roles = frame.focus.span.text === requestText && frame.arguments.length
+    ? frame.arguments
+    : [frame.focus, ...frame.arguments];
   const bySurface = new Map<string, SurfaceTerm>();
   for (const role of roles) {
     const span = role.span;
@@ -4473,6 +4468,7 @@ function directCreativeSectionCandidate(
     state: input.languageMemory,
     targetLanguageProfile: input.languageProfile,
     requestText: mouthEchoQuestionText(input),
+    requirementField: input.requirementField,
     sectionGoal: input.requirementField
       ? creativeRequestContentSurface(mouthEchoQuestionText(input), input.requirementField)
       : input.entailment.claim.text,

@@ -426,6 +426,24 @@ describe("invention planner", () => {
     }
   });
 
+  it("plans from learned content spans without promoting request controls into story constraints", () => {
+    const requestText = "Write a short scene about a sailor who befriends a clockmaker.";
+    const fixture = plannerFixture(requestText);
+    const planned = planInventions({ ...fixture, requestedAuthority: "creative", samplingDisabled: true,
+      requirementField: { noveltyDemand: 1, activatedFrameIds: [], activatedPatternIds: [], activatedPhraseUnitIds: [], activatedConstructIds: [],
+        trace: { activations: [
+          { kind: "pattern", requestSpanRole: "control", span: { charStart: 0, charEnd: [..."Write a short scene about"].length } },
+          { kind: "pattern", requestSpanRole: "content", span: { charStart: [..."Write a short scene about a "].length,
+            charEnd: [..."Write a short scene about a sailor"].length } }
+        ] } } });
+    expect(planned.length).toBeGreaterThan(0);
+    const surfaces = (traceRecord(planned[0]!).constraints as Array<{ surface: string }>).map(row => row.surface.toLocaleLowerCase());
+    expect(surfaces).toContain("sailor");
+    expect(surfaces).toContain("clockmaker");
+    expect(surfaces).not.toContain("write");
+    expect(surfaces).not.toContain("short");
+  });
+
   it("rejects exact source reconstruction in the non-creative invention lane", () => {
     const requestText = "compose a violet pump";
     const sourceSentence = "violet pump hummed beside the empty canal.";

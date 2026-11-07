@@ -14,6 +14,7 @@ import {
 } from "./turn-requirements.js";
 import type { EvidenceId, JsonValue, RequestedAuthority, SourceVersionId } from "./types.js";
 import { unicodeLexicalSegments } from "./unicode-segmentation.js";
+import { otsuThreshold } from "./language-identity.js";
 
 export const REQUEST_REQUIREMENT_CORPUS_SCHEMA = "scce.request_requirement_corpus.v1";
 export const REQUEST_REQUIREMENT_PATTERN_SCHEMA = "scce.request_requirement_pattern.v1";
@@ -23,11 +24,12 @@ export const REQUEST_REQUIREMENT_PATTERN_SCHEMA = "scce.request_requirement_patt
  * so a recompile cannot leave an earlier semantic shape active.
  */
 export const REQUEST_REQUIREMENT_PATTERN_COMPILER_FINGERPRINT =
-  "scce.request_requirement_pattern.targets_and_ranges.v1";
+  "scce.request_requirement_pattern.source_roles.v2";
 
 export interface RequestRequirementCorpusExample {
   text: string;
   authority: RequestedAuthority;
+  responseText?: string;
   /** Bounded dimension targets, distinct from signed authority coefficients. */
   requirements?: Partial<Record<TurnRequirementDimension, number>>;
   /**
@@ -82,6 +84,8 @@ interface FeatureCounts {
   observation: FeatureObservation;
   examples: number;
   byAuthority: Record<RequestedAuthority, number>;
+  pairedExamples: number;
+  responseMatches: number;
   requirementTargetTotals: Partial<Record<TurnRequirementDimension, number>>;
   requirementTargetCounts: Partial<Record<TurnRequirementDimension, number>>;
   requirementTargetBounds: Partial<Record<TurnRequirementDimension, { lower: number; upper: number }>>;
@@ -118,6 +122,8 @@ export function parseRequestRequirementCorpus(text: string): RequestRequirementC
     examples.push({
       text: surface,
       authority: row.authority,
+      ...(typeof row.responseText === "string" && row.responseText.trim() && [...row.responseText].length <= 20_000
+        ? { responseText: row.responseText.trim() } : {}),
       ...(isRecord(row.requirements) ? { requirements: requirementVector(row.requirements) } : {}),
       ...(responseFormId(row.responseFormId) ? {
         responseFormId: responseFormId(row.responseFormId),
@@ -163,11 +169,15 @@ export function compileRequestRequirementCorpus(
   const featureCounts = new Map<string, FeatureCounts>();
   for (const example of input.corpus.examples) {
     classTotals[example.authority] += 1;
+    const responseTokens = example.authority === "creative" && example.responseText
+      ? new Set(unicodeTokens(example.responseText)) : undefined;
     for (const observation of uniqueFeatures(requestFeatures(example.text))) {
       const counts = featureCounts.get(observation.key) ?? {
         observation,
         examples: 0,
         byAuthority: authorityRecord(0),
+        pairedExamples: 0,
+        responseMatches: 0,
         requirementTargetTotals: {},
         requirementTargetCounts: {},
         requirementTargetBounds: {},
@@ -177,6 +187,10 @@ export function compileRequestRequirementCorpus(
       };
       counts.examples += 1;
       counts.byAuthority[example.authority] += 1;
+      if (responseTokens) {
+        counts.pairedExamples++;
+        if (unicodeTokens(observation.surface).some(token => responseTokens.has(token))) counts.responseMatches++;
+      }
       for (const dimension of TURN_REQUIREMENT_DIMENSIONS) {
         const target = example.requirements?.[dimension];
         if (target === undefined || !Number.isFinite(target)) continue;
@@ -212,6 +226,9 @@ export function compileRequestRequirementCorpus(
   const evidenceIds = [...new Set(input.evidenceIds.map(String))]
     .sort()
     .slice(0, 64) as EvidenceId[];
+  const responseMatchCut = otsuThreshold([...featureCounts.values()]
+    .filter(counts => counts.pairedExamples > 0)
+    .map(counts => counts.responseMatches / counts.pairedExamples));
   const patterns = [...featureCounts.values()].flatMap(counts => {
     const ranked = REQUESTED_AUTHORITY_IDS
       .map(authority => ({ authority, count: counts.byAuthority[authority] }))
@@ -240,6 +257,12 @@ export function compileRequestRequirementCorpus(
       anchor: counts.observation.anchor,
       matchMode: "unicode_token_ngram",
       semanticRoleId: "role.request.requirement.v1",
+      ...(responseMatchCut !== undefined && responseMatchCut > 0 && counts.pairedExamples === counts.examples ? {
+        requestSpanRole: counts.responseMatches / counts.pairedExamples < responseMatchCut ? "control" : "content",
+        responseMatchRate: counts.responseMatches / counts.pairedExamples,
+        responseMatchCut,
+        pairedExamples: counts.pairedExamples
+      } : {}),
       learnedFrameOrPatternId: counts.observation.key,
       requirementCoefficients,
       requirementTargets,

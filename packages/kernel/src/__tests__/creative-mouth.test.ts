@@ -55,6 +55,20 @@ describe("creative Mouth production boundary", () => {
     };
     expect(creativeRequestFrameContentTerms(frame, requestText).map(term => term.text)).toEqual(["fable", "river", "stones"]);
   });
+  it("does not turn a full-request frame focus into creative content", () => {
+    const requestText = "Write a short scene about a sailor who befriends a clockmaker.";
+    const start = requestText.indexOf("sailor");
+    const clockmaker = requestText.indexOf("clockmaker");
+    const span = (text: string, charStart: number) => ({ text, charStart, charEnd: charStart + [...text].length,
+      byteStart: Buffer.byteLength(requestText.slice(0, charStart)), byteEnd: Buffer.byteLength(requestText.slice(0, charStart) + text) });
+    const frame = { schema: "scce.creative_request_frame.v1" as const, id: "frame.source", compilerId: "compiler.source",
+      focus: { id: "focus", roleId: "scce.request.role.focus", span: span(requestText, 0) },
+      arguments: [
+        { id: "subject", roleId: "role.subject", span: span("sailor", start) },
+        { id: "companion", roleId: "role.companion", span: span("clockmaker", clockmaker) }
+      ], sourceActivationIds: ["source.pattern"] };
+    expect(creativeRequestFrameContentTerms(frame, requestText).map(term => term.text)).toEqual(["sailor", "clockmaker"]);
+  });
   it("keeps a generated multi-sentence surface as ordered discourse units", () => {
     const units = creativeSurfaceSentenceUnits("The premise stays bounded. The second move explains how updates remain reversible.");
 
