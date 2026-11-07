@@ -68,6 +68,27 @@ afterEach(async () => {
 });
 
 describe("learned rows carry the shard's provenance once", () => {
+  it("recompiles derived callable semantics on a component upgrade without rejecting unchanged source bytes", async () => {
+    const fixture = memoryStorage();
+    const checkpoints = new Map<string, IngestionCheckpoint>();
+    fixture.storage.ingestion = { put: async row => { checkpoints.set(row.id, structuredClone(row)); }, get: async id => checkpoints.get(id) ?? null,
+      list: async () => [...checkpoints.values()] } as ScceStorage["ingestion"];
+    const text = "export function observed(value: number) { return value + 1; }";
+    const sourceHash = createHasher().digestHex(text);
+    const metadata = { sourceHash, formalLanguage: "typescript" };
+    const input = { storage: fixture.storage, sourceSystem: "oss_code", sourceUri: "fixture://callable-component/source.ts", streamUri: "oss_code:source.ts", text,
+      informationLabel: publicCorpusInformationLabel, skipNgramObservationPersistence: true, ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64,
+      corpusCheckpoint: { rootUri: "fixture://callable-component", itemUri: "source.ts", contentHash: sourceHash, byteLength: Buffer.byteLength(text) } };
+    await trainLanguageCorpusText({ ...input, corpusMetadata: { ...metadata, codeFunctionConstructions: [] } });
+    const checkpoint = [...checkpoints.values()][0]!;
+    const oldMetadata = recordOf(checkpoint.metadata);
+    checkpoint.metadata = { ...oldMetadata, componentRecipes: { ...recordOf(oldMetadata.componentRecipes), sourceCodeFunctions: "retired.compiler" } };
+    const constructions = compileSourceCodeFunctions({ text, path: "source.ts", languageId: "typescript", sourceHash });
+    expect(constructions).toHaveLength(1);
+    await trainLanguageCorpusText({ ...input, corpusMetadata: toJsonValue({ ...metadata, codeFunctionConstructions: constructions }) });
+    expect(checkpoints.size).toBe(1);
+    expect(fixture.state.patterns.filter(row => row.patternKind === "source_code_function")).toHaveLength(1);
+  });
   it("publishes source callable replacements and retires the callable set when recompilation learns none", async () => {
     const root = await tempDir("oss-callable-projection-");
     const file = path.join(root, "source.ts");

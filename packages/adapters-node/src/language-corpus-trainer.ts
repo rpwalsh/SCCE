@@ -485,6 +485,10 @@ function needsConstructionContext(input: LanguageCorpusTrainingInput): boolean {
 
 function checkpointBinding(input: LanguageCorpusTrainingInput): string {
   const { acquisitionProvenance: _acquisition, ...material } = input;
+  if (canonicalCorpusSourceSystemId(input.sourceSystem) === CORPUS_SOURCE_SYSTEM_IDS.ossCode) {
+    const { codeFunctionConstructions: _derived, ...sourceMetadata } = jsonRecord(input.corpusMetadata);
+    return trainingInputBinding({ ...material, corpusMetadata: sourceMetadata });
+  }
   return trainingInputBinding(material);
 }
 
