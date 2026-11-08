@@ -105,7 +105,7 @@ describe("declared human creative source correspondence", () => {
     expect(events.length).toBeGreaterThanOrEqual(4);
     const first = events[0]!;
     const sourceEvent = scoped.importedConstructionBundles.find(bundle => bundle.id === first.bundleId)!.creativeEvents!.find(event => event.id === first.eventId)!;
-    expect(sourceEvent.sourceLabel).toBe("handful");
+    expect(sourceEvent.sourceLabel).toBe("run");
     const profile = createLanguageAcquisitionEngine({ idFactory: ids }).acquire({ sourceVersionId: evidence[0]!.sourceVersionId, text: humanPair.text, createdAt: 1 });
     const mouth = createMouth({ languageMemory: runtime, correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }), hashText: text => hasher.digestHex(text) });
     const spoken = await mouth.speak({ requestText: fresh, requestedAuthority: "creative", creativeRequestFrame: frame, field, entailment,

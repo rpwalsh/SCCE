@@ -4,12 +4,12 @@ import type { DurableCreativeEventConstruction } from "./language-construction-m
 import { canonicalStringify, clamp01, toJsonValue } from "./primitives.js";
 import { segmentUnicodeSurfaceV2, type LexicalSegment } from "./unicode-segmentation-v2.js";
 import type { LanguagePatternRecord } from "./storage.js";
-import { CREATIVE_SOURCE_UTTERANCE_RECIPE_ID, CREATIVE_SOURCE_REFERENCE_UTTERANCE_RECIPE_ID } from "./language-training-recipe.js";
+import { CREATIVE_SOURCE_UTTERANCE_RECIPE_ID, CREATIVE_SOURCE_REFERENCE_UTTERANCE_RECIPE_ID, CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID } from "./language-training-recipe.js";
 import type { OwnedSourceReferenceBindings } from "./source-reference-bindings.js";
 import type { EvidenceId, Hasher, JsonValue } from "./types.js";
 import { induceLearnedConstructions, type AlignedSurfaceExample, type LearnedConstruction } from "./language-construction.js";
 import { createLearnedSurfaceInterpreter, type LearnedSurfaceInterpreter, type InterpretedSurfaceRole } from "./learned-surface-interpretation.js";
-import { CREATIVE_SOURCE_CORRESPONDENCE_RECIPE, createCreativeSourceCorrespondenceVerifier, type CreativeSourceCorrespondence, type CreativeSourceCorrespondenceContext, type CreativeSourceCorrespondenceVerifier } from "./creative-source-correspondence.js";
+import { CREATIVE_SOURCE_CORRESPONDENCE_RECIPE, createCreativeSourceCorrespondenceVerifier, type CreativeSurfaceRoleBinding, type CreativeSourceCorrespondence, type CreativeSourceCorrespondenceContext, type CreativeSourceCorrespondenceVerifier } from "./creative-source-correspondence.js";
 
 export const CREATIVE_REQUEST_FRAME_SCHEMA = "scce.creative_request_frame.v1" as const;
 export const CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA =
@@ -120,6 +120,8 @@ export type CreativeEventCompatibilityModel = CreativeEventCompatibilityModelIde
   sourceObservations: CreativeSourceCorrespondence[];
   sourceReferencePatternIds?: readonly string[];
   sourceReferenceBindings?: readonly OwnedSourceReferenceBindings[];
+  surfaceBindingRecipe?: typeof CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID;
+  sourceSurfaceBindings?: ReadonlyMap<string, readonly CreativeSurfaceRoleBinding[]>;
   calibrationId?: never;
   minimumAdmissiblePosterior?: never;
   minimumRolePosterior?: never;
@@ -446,7 +448,7 @@ export function creativeRequestSourcePrerequisites(input: {
     const value = pattern.patternJson;
     if (!isRecord(value) || value.schema !== CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA || value.reliability !== "source_observed") return [];
     const prerequisites = value.sourceUtterancePrerequisites;
-    if (!isRecord(prerequisites) || ![CREATIVE_SOURCE_UTTERANCE_RECIPE_ID, CREATIVE_SOURCE_REFERENCE_UTTERANCE_RECIPE_ID].includes(prerequisites.recipe as typeof CREATIVE_SOURCE_UTTERANCE_RECIPE_ID)
+    if (!isRecord(prerequisites) || ![CREATIVE_SOURCE_UTTERANCE_RECIPE_ID, CREATIVE_SOURCE_REFERENCE_UTTERANCE_RECIPE_ID, CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID].includes(prerequisites.recipe as typeof CREATIVE_SOURCE_UTTERANCE_RECIPE_ID)
       || !Array.isArray(prerequisites.requests)) return [];
     const anchors = Array.isArray(value.requestFrameAnchors) ? value.requestFrameAnchors.flatMap(anchor => requestFrameAnchorFromUnknown(anchor, pattern.evidenceIds)) : [];
     const matching = new Set(anchors.filter(anchor => interpretedRequestRoles(anchor, interpreter, input.hasher)).map(anchor => anchor.requestFrameId));
@@ -786,9 +788,11 @@ function compatibilityModelFromRecord(
       schema: value.schema, version: value.version, requestCompilerId: value.requestCompilerId, eventCompilerId: value.eventCompilerId,
       reliability: value.reliability, eventCompatibilities: value.eventCompatibilities, roleCompatibilities: value.roleCompatibilities,
       sourceObservations: value.sourceObservations, requestFrameAnchors: value.requestFrameAnchors,
+      ...(value.surfaceBindingRecipe !== undefined ? { surfaceBindingRecipe: value.surfaceBindingRecipe } : {}),
       ...(value.sourceReferencePatternIds !== undefined ? { sourceReferencePatternIds: value.sourceReferencePatternIds } : {})
     })))}`)) return undefined;
   if (sourceObserved && (value.calibrationId !== undefined || value.minimumAdmissiblePosterior !== undefined || value.minimumRolePosterior !== undefined
+    || value.surfaceBindingRecipe !== undefined && value.surfaceBindingRecipe !== CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID
     || !Array.isArray(value.eventCompatibilities) || value.eventCompatibilities.length !== 0 || !Array.isArray(value.roleCompatibilities) || value.roleCompatibilities.length !== 0)) return undefined;
   const sourceObservations = sourceObserved && context && Array.isArray(value.sourceObservations)
     ? value.sourceObservations.filter((row): row is CreativeSourceCorrespondence => sourceVerification?.verify(row as CreativeSourceCorrespondence, evidenceIds) === true) : [];
@@ -805,6 +809,9 @@ function compatibilityModelFromRecord(
   };
   const sourceReferencePatternIds = stringArray(value.sourceReferencePatternIds);
   const model: CreativeEventCompatibilityModel = sourceObserved ? { ...identity, reliability: "source_observed", sourceObservations,
+    ...(value.surfaceBindingRecipe === CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID && context
+      ? { surfaceBindingRecipe: CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID,
+        sourceSurfaceBindings: sourceVerification!.acquireSurfaceBindings(sourceObservations) } : {}),
     ...(sourceReferencePatternIds.length ? { sourceReferencePatternIds,
       sourceReferenceBindings: context?.referenceBindings?.filter(reference => sourceReferencePatternIds.includes(reference.id)) ?? [] } : {}) }
     : { ...identity, reliability: value.reliability === "calibrated" ? "calibrated" : "uncalibrated", calibrationId: stringValue(value.calibrationId),

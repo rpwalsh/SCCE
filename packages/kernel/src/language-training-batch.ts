@@ -109,7 +109,7 @@ import { inductionCharBudget } from "./training-orchestrator.js";
 import { createIdFactory } from "./ids.js";
 import { languageMemoryPatternsFromInducedLanguageModel } from "./language-induction-memory.js";
 import type { PooledLanguageProfileBinding } from "./pooled-language-profile-binding.js";
-import { LANGUAGE_TRAINING_BATCH_RECIPE_ID, LANGUAGE_TRAINING_CHUNK_UTF16_LIMIT } from "./language-training-recipe.js";
+import { LANGUAGE_TRAINING_BATCH_RECIPE_ID, LANGUAGE_TRAINING_CHUNK_UTF16_LIMIT, CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID } from "./language-training-recipe.js";
 import { stampSourceLanguageCompilation } from "./source-language-compilation.js";
 import { CORPUS_ROLE_IDS, corpusRoleIdForSourceSystem } from "./corpus-registry.js";
 import { buildSurfaceLattice } from "./surface-lattice.js";
@@ -670,6 +670,14 @@ export function compileLanguageTrainingBatch(input: {
     ...memories.flatMap(memory => memory.patterns), ...inducedLanguagePatterns, ...constructionPatterns, ...reversibleConstructionPatterns,
     ...pairedAntiUnifiedConstructionPatterns, ...optionalNullRealizationPatterns, ...(batch.additionalPatterns ?? []), ...sourceCorrespondencePatterns,
     ...(sourceReferences?.pattern ? [sourceReferences.pattern] : []),
+    ...(sourceCorrespondencePatterns.length ? [{
+      id: `source_creative_surface_${input.hasher.digestHex(canonicalStringify([batch.profile.id, batch.sourceVersionId, CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID]))}`,
+      profileId: batch.profile.id, patternKind: "source_compilation" as const, support: sourceCorrespondencePatterns.length, entropy: 0,
+      evidenceIds: [...new Set(sourceCorrespondencePatterns.flatMap(pattern => pattern.evidenceIds))], updatedAt: batch.createdAt,
+      patternJson: toJsonValue({ schema: "scce.creative_source_surface_acquisition_receipt.v1", recipe: CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID,
+        profileId: batch.profile.id, sourceVersionId: batch.sourceVersionId, sourceTextHash: input.hasher.digestHex(batch.text),
+        modelPatternIds: sourceCorrespondencePatterns.map(pattern => pattern.id).sort() })
+    }] : []),
     ...ownedCreativePatterns.filter(pattern => !isLanguageConstructionPattern(pattern))
   ]);
   let semanticFrames = uniqueRecords(memories.flatMap(memory => memory.semanticFrames));
@@ -732,6 +740,7 @@ export function compileLanguageTrainingBatch(input: {
         patterns: sourceReferences?.pattern ? 1 : 0, occurrences: sourceReferences?.bindings?.occurrences.length ?? 0,
         completeProperties: sourceReferences?.bindings?.completeProperties.length ?? 0, issues: sourceReferences?.issues ?? [] },
       creativeEventCompilerId: creativeEventCompiler?.id ?? null,
+      creativeSurfaceAcquisitionRecipe: sourceCorrespondencePatterns.length ? CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID : null,
       creativeEventCompilation: creativeEventCompilation?.status ?? null,
       creativeEventSourceCoverage: creativeEventCompilation?.status === "compiled" ? creativeEventCompilation.coverage ?? null : null,
       sourceInductionCoverage: inducedLanguageProducts?.coverage ?? null,

@@ -10,6 +10,7 @@ import type { EvidenceSpan, Hasher } from "./types.js";
 import type { LanguagePatternRecord } from "./storage.js";
 import { createSourceTextPointCache, sourceTextPointLength, sourceTextPointSlice, type SourceTextPointCache } from "./source-text-points.js";
 import { sourceReferencePropertiesForSpan, sourceReferencePropertyByIdentity, type OwnedSourceReferenceBindings } from "./source-reference-bindings.js";
+import { CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID } from "./language-training-recipe.js";
 
 export const CREATIVE_SOURCE_CORRESPONDENCE_RECIPE = "kernel.creative_source_correspondence.v1" as const;
 
@@ -43,6 +44,62 @@ export interface CreativeSourceCorrespondenceContext {
   events: readonly DurableCreativeEventConstruction[];
   hasher: Hasher;
   referenceBindings?: readonly OwnedSourceReferenceBindings[];
+}
+
+export interface CreativeSurfaceRoleBinding {
+  requestRoleId: string;
+  requestStart: number;
+  requestEnd: number;
+  occurrences: Array<{ start: number; end: number }>;
+}
+
+export function creativeSourceSurfaceGroupKey(row: CreativeSourceCorrespondence): string {
+  return canonicalStringify([row.requestFrameId, row.sourceVersionId, row.request.evidenceId, row.request.start, row.request.end,
+    row.reply.evidenceId, row.reply.start, row.reply.end]);
+}
+
+/** Verified source roles seed complete lexical occurrence alignments for creative substitution. */
+function acquireCreativeSourceSurfaceBindings(rows: readonly CreativeSourceCorrespondence[], context: CreativeSourceCorrespondenceContext,
+  points: SourceTextPointCache): ReadonlyMap<string, readonly CreativeSurfaceRoleBinding[]> {
+  const groups = new Map<string, CreativeSourceCorrespondence[]>();
+  for (const row of rows) {
+    const key = creativeSourceSurfaceGroupKey(row);
+    const group = groups.get(key) ?? [];
+    group.push(row);
+    groups.set(key, group);
+  }
+  return new Map([...groups].map(([key, group]): [string, readonly CreativeSurfaceRoleBinding[]] => {
+    const row = group[0]!;
+    const requestOwner = context.evidence.find(span => String(span.id) === row.request.evidenceId);
+    const replyOwner = context.evidence.find(span => String(span.id) === row.reply.evidenceId);
+    if (!requestOwner || !replyOwner) return [key, []];
+    const request = segmentUnicodeSurfaceV2(row.request.surface).lexicalSegments;
+    const reply = segmentUnicodeSurfaceV2(sourceTextPointSlice(replyOwner.text, row.reply.start, row.reply.end, points)).lexicalSegments;
+    const matches = (segments: typeof request, units: readonly string[]) => segments.flatMap((segment, index) =>
+      units.every((unit, offset) => segments[index + offset]?.normalized === unit)
+        ? [{ start: segment.codePointStart, end: segments[index + units.length - 1]!.codePointEnd }] : []);
+    const bindings = group.flatMap(observation => observation.bindings);
+    const roles = [...new Map(bindings.map(binding => [binding.requestRoleId, binding])).values()];
+    const acquired = roles.flatMap((binding): CreativeSurfaceRoleBinding[] => {
+      const units = segmentUnicodeSurfaceV2(sourceTextPointSlice(row.request.surface, binding.requestStart, binding.requestEnd, points)).lexicalSegments.map(segment => segment.normalized);
+      if (!units.length) return [];
+      if (units.length === 1 && [...request, ...reply].some(segment => segment.normalized !== units[0]
+        && segment.normalized.includes(units[0]!))) return [];
+      const sourceMatches = matches(request, units);
+      if (sourceMatches.length !== 1 || sourceMatches[0]!.start !== binding.requestStart || sourceMatches[0]!.end !== binding.requestEnd) return [];
+      const declared = sourceReferencePropertiesForSpan({ documents: context.referenceBindings ?? [], sourceVersionId: row.sourceVersionId,
+        startCodePoint: requestOwner.charStart + row.request.start + binding.requestStart,
+        endCodePoint: requestOwner.charStart + row.request.start + binding.requestEnd });
+      if (declared.length) return [];
+      const occurrences = matches(reply, units).map(match => ({ start: row.reply.start + match.start, end: row.reply.start + match.end }));
+      if (!occurrences.length || !bindings.some(seed => seed.requestRoleId === binding.requestRoleId
+        && occurrences.some(occurrence => occurrence.start === seed.eventStart && occurrence.end === seed.eventEnd))) return [];
+      return [{ requestRoleId: binding.requestRoleId, requestStart: binding.requestStart, requestEnd: binding.requestEnd, occurrences }];
+    });
+    return [key, acquired.filter(role => !acquired.some(other => other !== role
+      && role.occurrences.some(left => other.occurrences.some(right => left.start < right.end && right.start < left.end))))
+      .sort((left, right) => left.requestStart - right.requestStart || left.requestEnd - right.requestEnd)];
+  }));
 }
 
 interface SourceEventOccurrence { event: DurableCreativeEventConstruction; ordinal: number; start: number; end: number }
@@ -184,6 +241,7 @@ export function compileCreativeSourceCorrespondences(input: CreativeSourceCorres
   return [...observationsByCompiler].map(([eventCompilerId, sourceObservations]) => {
     const material = { schema: "scce.creative_event_compatibility_model.v1" as const, version: CREATIVE_SOURCE_CORRESPONDENCE_RECIPE,
       requestCompilerId: compilerId, eventCompilerId, reliability: "source_observed" as const, eventCompatibilities: [], roleCompatibilities: [],
+      surfaceBindingRecipe: CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID,
       sourceObservations, requestFrameAnchors: [...anchors.values()].sort((a, b) => a.requestFrameId.localeCompare(b.requestFrameId)),
       ...((input.referenceBindings ?? []).some(reference => reference.profileId === input.profileId && sourceObservations.some(row => row.sourceId === reference.sourceId && row.sourceVersionId === reference.sourceVersionId))
         ? { sourceReferencePatternIds: (input.referenceBindings ?? []).filter(reference => reference.profileId === input.profileId
@@ -198,6 +256,7 @@ export function compileCreativeSourceCorrespondences(input: CreativeSourceCorres
 export interface CreativeSourceCorrespondenceVerifier {
   verify(row: CreativeSourceCorrespondence, owners: readonly string[]): boolean;
   eventHasProfile(eventId: string, profileId: string): boolean;
+  acquireSurfaceBindings(rows: readonly CreativeSourceCorrespondence[]): ReadonlyMap<string, readonly CreativeSurfaceRoleBinding[]>;
 }
 
 // Index immutable source premises for one synchronous model-verification pass.
@@ -213,6 +272,7 @@ export function createCreativeSourceCorrespondenceVerifier(context: CreativeSour
   }
   return {
     verify: (row, owners) => verifyCreativeSourceCorrespondenceIndexed(row, context, owners, points, evidenceById, eventsById),
+    acquireSurfaceBindings: rows => acquireCreativeSourceSurfaceBindings(rows, context, points),
     eventHasProfile: (eventId, profileId) => eventsById.get(eventId)?.some(event => event.id === eventId && event.profileId === profileId) ?? false
   };
 }

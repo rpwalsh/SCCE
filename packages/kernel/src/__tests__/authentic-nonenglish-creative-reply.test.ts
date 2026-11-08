@@ -28,7 +28,7 @@ const human = JSON.parse(readFileSync(new URL("./fixtures/oasst-human-russian-cr
 };
 
 describe("authentic whole Russian creative reply acquisition", () => {
-  it.each([false, true])("cold-restores a whole Russian human reply; fresh values require complete explicitly annotated properties (%s)", async annotated => {
+  it.each([false, true])("cold-restores a whole Russian human reply and substitutes complete source-owned properties (%s)", async annotated => {
     expect(human.sourceMetadata.messages.every(message => message.lang === "ru" && message.synthetic === false
       && message.model_name === null && message.review_result)).toBe(true);
     expect(human.sourceMetadata.messages[1]!.parent_id).toBe(human.sourceMetadata.messages[0]!.message_id);
@@ -77,11 +77,6 @@ describe("authentic whole Russian creative reply acquisition", () => {
       const mouth = createMouth({ languageMemory: runtime, correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }), hashText: value => hasher.digestHex(value) });
       const spoken = await mouth.speak({ requestText: text, requestedAuthority: "creative", creativeRequestFrame: frame, field, entailment, evidence: [], languageMemory: state,
         languageProfile: profile, construct: { ...base, nodes: [inventionConstructNode(invention)] }, selectedCandidate: selected });
-      if (text === heldout && !annotated) {
-        expect(spoken.realizationAvailability.status).toBe("realization_unavailable");
-        expect(spoken.text).not.toContain("Кварц");
-        continue;
-      }
       expect(spoken.realizationAvailability.status).toBe("realized");
       expect(spoken.evidenceRefs).toEqual([]);
       expect(/\p{Script=Latin}/u.test(spoken.text)).toBe(false);

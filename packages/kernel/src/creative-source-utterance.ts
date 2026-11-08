@@ -4,13 +4,13 @@ import { compileLanguageConstructionPatterns, SOURCE_EXAMPLE_CONSTRUCTION_STORAG
   type DurableLanguageConstructionBundle, type SourceBoundLanguageConstructionTrainingSet } from "./language-construction-memory.js";
 import { realizeLearnedSurface, CONVERSATION_INTERNAL_PROVENANCE_METHOD_ID,
   type ConversationTurnSurface, type LearnedRealization, type SurfaceMeaningPlan } from "./language-construction.js";
-import type { CreativeSourceCorrespondence } from "./creative-source-correspondence.js";
+import { creativeSourceSurfaceGroupKey, type CreativeSourceCorrespondence } from "./creative-source-correspondence.js";
 import { creativeEventCompatibilityModelsFromPatterns, type CreativeEventCompatibilityModel, type CreativeRequestFrame } from "./creative-event-compatibility.js";
 import { canonicalStringify } from "./primitives.js";
 import type { EvidenceSpan, Hasher } from "./types.js";
 import type { DurableCreativeEventConstruction } from "./language-construction-memory.js";
 import type { LanguagePatternRecord } from "./storage.js";
-import { CREATIVE_SOURCE_UTTERANCE_RECIPE_ID, CREATIVE_SOURCE_REFERENCE_UTTERANCE_RECIPE_ID } from "./language-training-recipe.js";
+import { CREATIVE_SOURCE_UTTERANCE_RECIPE_ID, CREATIVE_SOURCE_REFERENCE_UTTERANCE_RECIPE_ID, CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID } from "./language-training-recipe.js";
 import { sourceReferencePropertiesForSpan, type OwnedSourceReferenceBindings, type SourceReferenceProperty } from "./source-reference-bindings.js";
 import { normalizeCanonicalSurface } from "./normalization-contract.js";
 
@@ -33,7 +33,8 @@ export interface CreativeSourceUtterance {
   reply: CreativeSourceCorrespondence["reply"];
   eventIds: readonly string[];
   roles: readonly UtteranceRole[];
-  requestRoles: readonly { requestRoleId: string; startCodePoint: number; endCodePoint: number; reference?: SourceReferenceProperty }[];
+  requestRoles: readonly { requestRoleId: string; startCodePoint: number; endCodePoint: number; reference?: SourceReferenceProperty;
+    surfaceAcquisition?: { recipe: typeof CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID; occurrenceCount: number } }[];
   referencePatternIds: readonly string[];
 }
 
@@ -75,12 +76,22 @@ export function creativeSourceUtterances(model: CreativeEventCompatibilityModel,
     const requestRoles = [...new Map(ranges.map(range => [range.requestRoleId, range])).values()]
       .sort((a, b) => a.requestStart - b.requestStart || a.requestEnd - b.requestEnd || a.requestRoleId.localeCompare(b.requestRoleId));
     const roleBindings: CreativeSourceUtterance["requestRoles"][number][] = [];
+    const acquired = model.sourceSurfaceBindings?.get(creativeSourceSurfaceGroupKey(first)) ?? [];
     for (const role of requestRoles) {
       const properties = sourceReferencePropertiesForSpan({ documents: referenceDocuments, sourceVersionId: first.sourceVersionId,
         startCodePoint: requestOrigin + first.request.start + role.requestStart, endCodePoint: requestOrigin + first.request.start + role.requestEnd });
       if (properties.length > 1) ambiguous = true;
       const reference = properties.length === 1 && properties[0]!.complete ? properties[0] : undefined;
-      roleBindings.push({ requestRoleId: role.requestRoleId, startCodePoint: role.requestStart, endCodePoint: role.requestEnd, ...(reference ? { reference } : {}) });
+      const surfaceBinding = acquired.find(binding => binding.requestRoleId === role.requestRoleId
+        && binding.requestStart === role.requestStart && binding.requestEnd === role.requestEnd);
+      roleBindings.push({ requestRoleId: role.requestRoleId, startCodePoint: role.requestStart, endCodePoint: role.requestEnd,
+        ...(reference ? { reference } : surfaceBinding ? { surfaceAcquisition: { recipe: CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID,
+          occurrenceCount: surfaceBinding.occurrences.length } } : {}) });
+      if (!reference && surfaceBinding) {
+        ranges = ranges.filter(range => range.requestRoleId !== role.requestRoleId);
+        ranges.push(...surfaceBinding.occurrences.map(occurrence => ({ requestRoleId: role.requestRoleId,
+          requestStart: role.requestStart, requestEnd: role.requestEnd, start: occurrence.start, end: occurrence.end })));
+      }
       if (!reference) continue;
       const declared = reference.occurrences.filter(occurrence => occurrence.evidenceId === first.reply.evidenceId
         && occurrence.propertySpan!.start >= replyOrigin + first.reply.start && occurrence.propertySpan!.end <= replyOrigin + first.reply.end);
@@ -99,9 +110,11 @@ export function creativeSourceUtterances(model: CreativeEventCompatibilityModel,
       return { requestRoleId: range.requestRoleId, slotIndex: requestRoles.findIndex(role => role.requestRoleId === range.requestRoleId), occurrenceIndex,
         startCodePoint: range.start - first.reply.start, endCodePoint: range.end - first.reply.start };
     });
-    const material = { recipe: referencePatternIds.length ? CREATIVE_SOURCE_REFERENCE_UTTERANCE_RECIPE_ID : CREATIVE_SOURCE_UTTERANCE_RECIPE,
+    const surfaceAcquired = roleBindings.some(role => role.surfaceAcquisition);
+    const material = { recipe: surfaceAcquired ? CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID
+      : referencePatternIds.length ? CREATIVE_SOURCE_REFERENCE_UTTERANCE_RECIPE_ID : CREATIVE_SOURCE_UTTERANCE_RECIPE,
       profileId, requestFrameId: first.requestFrameId, sourceVersionId: first.sourceVersionId, request: first.request, reply: first.reply, roles,
-      ...(referencePatternIds.length ? { referencePatternIds, requestRoles: roleBindings.map(({ reference, ...role }) => ({ ...role,
+      ...(referencePatternIds.length || surfaceAcquired ? { referencePatternIds, requestRoles: roleBindings.map(({ reference, ...role }) => ({ ...role,
         ...(reference ? { reference: { patternId: reference.patternId, referentId: reference.referentId, propertyId: reference.propertyId, basis: reference.basis } } : {}) })) } : {}) };
     const utterance = { bindingId: `source.creative.utterance.${hasher.digestHex(canonicalStringify(material))}`, profileId,
       requestFrameId: first.requestFrameId, sourceVersionId: first.sourceVersionId, request: first.request, reply: first.reply,
@@ -122,7 +135,7 @@ export function compileCreativeSourceUtterancePatterns(input: {
   profileId: string; evidence: readonly EvidenceSpan[]; hasher: Hasher; updatedAt: number;
   referenceBindings?: readonly OwnedSourceReferenceBindings[];
 }): { patterns: LanguagePatternRecord[]; candidateCount: number; rejectionCodes: string[];
-  prerequisitesByModelId: ReadonlyMap<string, { recipe: typeof CREATIVE_SOURCE_UTTERANCE_RECIPE_ID | typeof CREATIVE_SOURCE_REFERENCE_UTTERANCE_RECIPE_ID; requests: Array<{ requestFrameId: string; patternIds: string[] }> }> } {
+  prerequisitesByModelId: ReadonlyMap<string, { recipe: typeof CREATIVE_SOURCE_UTTERANCE_RECIPE_ID | typeof CREATIVE_SOURCE_REFERENCE_UTTERANCE_RECIPE_ID | typeof CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID; requests: Array<{ requestFrameId: string; patternIds: string[] }> }> } {
   const models = creativeEventCompatibilityModelsFromPatterns(input.patterns, input);
   const sets: Array<SourceBoundLanguageConstructionTrainingSet & { acquisitionStatus: "source_observed" }> = models.flatMap(model => creativeSourceUtterances(model, input.profileId, input.hasher)
     .map(utterance => ({ bindingId: utterance.bindingId, acquisitionStatus: "source_observed" as const, observations: [{
@@ -137,7 +150,7 @@ export function compileCreativeSourceUtterancePatterns(input: {
   const rejectionCodes = results.flatMap(result => result.status === "rejected" ? result.issues.map(issue => issue.code) : []);
   const patternByBinding = new Map(compiled.map(result => [result.bundle.bindingId, result.pattern.id]));
   const eventPatternByEvent = new Map(input.eventBundles.flatMap(bundle => (bundle.creativeEvents ?? []).map(event => [event.id, bundle.id] as const)));
-  const prerequisitesByModelId = new Map<string, { recipe: typeof CREATIVE_SOURCE_UTTERANCE_RECIPE_ID | typeof CREATIVE_SOURCE_REFERENCE_UTTERANCE_RECIPE_ID; requests: Array<{ requestFrameId: string; patternIds: string[] }> }>();
+  const prerequisitesByModelId = new Map<string, { recipe: typeof CREATIVE_SOURCE_UTTERANCE_RECIPE_ID | typeof CREATIVE_SOURCE_REFERENCE_UTTERANCE_RECIPE_ID | typeof CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID; requests: Array<{ requestFrameId: string; patternIds: string[] }> }>();
   for (const model of models) {
     const byFrame = new Map<string, Set<string>>();
     for (const utterance of creativeSourceUtterances(model, input.profileId, input.hasher)) {
@@ -149,8 +162,9 @@ export function compileCreativeSourceUtterancePatterns(input: {
       for (const id of utterance.eventIds) { const page = eventPatternByEvent.get(id); if (page) ids.add(page); }
       byFrame.set(utterance.requestFrameId, ids);
     }
-    if (byFrame.size) prerequisitesByModelId.set(model.id, { recipe: model.reliability === "source_observed" && model.sourceReferencePatternIds?.length
-      ? CREATIVE_SOURCE_REFERENCE_UTTERANCE_RECIPE_ID : CREATIVE_SOURCE_UTTERANCE_RECIPE_ID,
+    if (byFrame.size) prerequisitesByModelId.set(model.id, { recipe: model.reliability === "source_observed" && model.surfaceBindingRecipe
+      ? CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID : model.reliability === "source_observed" && model.sourceReferencePatternIds?.length
+        ? CREATIVE_SOURCE_REFERENCE_UTTERANCE_RECIPE_ID : CREATIVE_SOURCE_UTTERANCE_RECIPE_ID,
       requests: [...byFrame].map(([requestFrameId, ids]) => ({ requestFrameId, patternIds: [...ids].sort() })).sort((a, b) => a.requestFrameId.localeCompare(b.requestFrameId)) });
   }
   return { patterns: compiled.map(result => result.pattern), candidateCount: sets.length, rejectionCodes, prerequisitesByModelId };
@@ -183,7 +197,7 @@ export function realizeCreativeSourceUtterance(input: {
     if (!binding) return undefined;
     const originalValue = [...utterance.request.surface].slice(binding.startCodePoint, binding.endCodePoint).join("");
     const changed = normalizeCanonicalSurface(originalValue) !== normalizeCanonicalSurface(argument.span.text);
-    if (changed && !binding.reference?.complete) return undefined;
+    if (changed && !binding.reference?.complete && !binding.surfaceAcquisition) return undefined;
     const id = `source.utterance.slot.${input.hasher.digestHex(canonicalStringify([input.semanticPlanId, example.id, role.occurrenceId, argument.id]))}`;
     slots.push({ roleId: role.roleId, occurrenceId: role.occurrenceId, variants: [changed ? { id, profileKey: bundle.targetProfileId, surface: argument.span.text, evidenceIds: [],
       conversationInternalLicence: { schema: CONVERSATION_INTERNAL_PROVENANCE_METHOD_ID, variantId: id, slotIndex, conversationId: "conversation.current",
