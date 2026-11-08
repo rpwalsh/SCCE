@@ -6,6 +6,24 @@ import { canonicalStringify, createHasher } from "../primitives.js";
 import * as surfaceLattice from "../surface-lattice.js";
 
 describe("induction bootstrap lexical reuse", () => {
+  it("partitions boundary observations without rescanning the complete list for each document", () => {
+    const collect = surfaceLattice.collectBoundaryTrainingObservations;
+    const scans: Array<{ mockRestore(): void }> = [];
+    const collecting = vi.spyOn(surfaceLattice, "collectBoundaryTrainingObservations").mockImplementation(input => {
+      const observations = collect(input);
+      scans.push(vi.spyOn(observations, "filter"));
+      return observations;
+    });
+    try {
+      const model = createLanguageInductionEngine().induce({ documents: [
+        { id: "partition.a", text: "猫が飛ぶ。犬が走る。猫が眠る。" },
+        { id: "partition.b", text: "Élan visite 東京. Élan visite Paris." }
+      ] });
+      expect(model.boundaryStatistics.sourceDocumentIds).toEqual(["partition.a", "partition.b"]);
+      expect(scans).toHaveLength(1);
+      for (const scan of scans) expect(scan).not.toHaveBeenCalled();
+    } finally { collecting.mockRestore(); for (const scan of scans) scan.mockRestore(); }
+  });
   it("preserves the complete learned artifact and deterministic replay while building each lattice only once", () => {
     const documents = [
       { id: "fixture.alpha", text: "the cat sat. the dog sat. the cat ran. the dog ran. the cat sat. the dog ran." },

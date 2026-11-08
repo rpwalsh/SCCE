@@ -174,10 +174,23 @@ export function compileBoundaryStatistics(input: {
     current.negativeMass = safeAdd(current.negativeMass, negative);
     rows.set(key, current);
   }
-  const ordered = [...rows.values()]
+  return finalizeBoundaryStatistics({ populationId: input.populationId, normalizationContractId, rows: rows.values(),
+    sourceDocumentIds: input.sourceDocumentIds ?? [], signalKinds, signalCount: signalIds.size }, hasher);
+}
+
+function finalizeBoundaryStatistics(input: {
+  populationId: string;
+  normalizationContractId: string;
+  rows: Iterable<BoundaryStatisticsRow>;
+  sourceDocumentIds: readonly string[];
+  signalKinds: ReadonlySet<BoundarySignalKind>;
+  signalCount: number;
+}, hasher: Hasher): BoundarySufficientStatistics {
+  const ordered = [...input.rows]
     .filter(row => row.positiveMass + row.negativeMass > 0)
     .sort((left, right) => left.key.localeCompare(right.key));
-  const sourceDocumentIds = [...new Set(input.sourceDocumentIds ?? [])].sort();
+  const sourceDocumentIds = [...new Set(input.sourceDocumentIds)].sort();
+  const normalizationContractId = input.normalizationContractId;
   const canonical = {
     schema: BOUNDARY_STATISTICS_SCHEMA,
     populationId: input.populationId,
@@ -206,8 +219,8 @@ export function compileBoundaryStatistics(input: {
       canonicalRowOrder: true,
       detectorDecisionsAcceptedAsLabels: false,
       rows: ordered.length,
-      signals: signalIds.size,
-      signalKinds: [...signalKinds].sort(),
+      signals: input.signalCount,
+      signalKinds: [...input.signalKinds].sort(),
       anchoredMass,
       latentMass,
       sourceDocuments: sourceDocumentIds.length
@@ -249,39 +262,48 @@ export function mergeBoundaryStatistics(
       rows.set(row.key, current);
     }
   }
-  const observations: BoundaryObservation[] = [];
+  const compiledRows = new Map<string, BoundaryStatisticsRow>();
+  const signalKinds = new Set<BoundarySignalKind>();
+  const sourceDocumentIds = statistics.flatMap(item => item.sourceDocumentIds);
+  const sourceDocumentId = sourceDocumentIds[0] ?? "document.merged";
+  let signalCount = 0;
   for (const row of [...rows.values()].sort((left, right) => left.key.localeCompare(right.key))) {
-    const features = featureRecord(row.featuresFixed.map(value => value / FIXED_SCALE));
+    const featuresFixed = FEATURE_ORDER.map((_, index) =>
+      Math.round(clamp01((row.featuresFixed[index] ?? 0) / FIXED_SCALE) * FIXED_SCALE));
+    const key = featuresFixed.join(":");
+    const current = compiledRows.get(key) ?? emptyStatisticsRow(key, featuresFixed);
     if (row.anchoredPositiveMass + row.anchoredNegativeMass > 0) {
-      observations.push({
-        sourceDocumentId: statistics.flatMap(item => item.sourceDocumentIds)[0] ?? "document.merged",
-        features,
-        positiveMass: row.anchoredPositiveMass / MASS_SCALE,
-        negativeMass: row.anchoredNegativeMass / MASS_SCALE,
-        supervision: "independent_anchor",
-        signalKind: "external_anchor",
-        signalId: `merged.anchor.${row.key}`
-      });
+      validateObservationIdentity(sourceDocumentId, `merged.anchor.${row.key}`);
+      const positive = fixedMass(row.anchoredPositiveMass / MASS_SCALE);
+      const negative = fixedMass(row.anchoredNegativeMass / MASS_SCALE);
+      current.anchoredPositiveMass = safeAdd(current.anchoredPositiveMass, positive);
+      current.anchoredNegativeMass = safeAdd(current.anchoredNegativeMass, negative);
+      current.positiveMass = safeAdd(current.positiveMass, positive);
+      current.negativeMass = safeAdd(current.negativeMass, negative);
+      signalKinds.add("external_anchor");
+      signalCount++;
     }
     if (row.latentPositiveMass + row.latentNegativeMass > 0) {
-      observations.push({
-        sourceDocumentId: statistics.flatMap(item => item.sourceDocumentIds)[0] ?? "document.merged",
-        features,
-        positiveMass: row.latentPositiveMass / MASS_SCALE,
-        negativeMass: row.latentNegativeMass / MASS_SCALE,
-        supervision: "latent_marginal",
-        signalKind: "packed_forest_marginal",
-        signalId: `merged.latent.${row.key}`
-      });
+      validateObservationIdentity(sourceDocumentId, `merged.latent.${row.key}`);
+      const positive = fixedMass(row.latentPositiveMass / MASS_SCALE);
+      const negative = fixedMass(row.latentNegativeMass / MASS_SCALE);
+      current.latentPositiveMass = safeAdd(current.latentPositiveMass, positive);
+      current.latentNegativeMass = safeAdd(current.latentNegativeMass, negative);
+      current.positiveMass = safeAdd(current.positiveMass, positive);
+      current.negativeMass = safeAdd(current.negativeMass, negative);
+      signalKinds.add("packed_forest_marginal");
+      signalCount++;
     }
+    compiledRows.set(key, current);
   }
-  return compileBoundaryStatistics({
+  return finalizeBoundaryStatistics({
     populationId: targetPopulationId ?? populationId,
-    observations,
-    sourceDocumentIds: statistics.flatMap(item => item.sourceDocumentIds),
-    normalizationContractId: statistics[0]!.normalizationContractId,
-    hasher
-  });
+    rows: compiledRows.values(),
+    sourceDocumentIds,
+    normalizationContractId: statistics[0]!.normalizationContractId ?? canonicalNormalizationContract(hasher).id,
+    signalKinds,
+    signalCount
+  }, hasher);
 }
 
 export function fitBoundaryEstimator(input: {
@@ -616,12 +638,7 @@ function rawBoundaryLogLoss(
 }
 
 function validateObservation(observation: BoundaryObservation): void {
-  if (!observation.sourceDocumentId.trim()) throw new Error("boundary observation requires sourceDocumentId");
-  if (!observation.signalId.trim()) throw new Error("boundary observation requires signalId");
-  if (observation.signalId.includes("candidate_detector")
-    || observation.signalId.includes("bootstrap_endpoint")) {
-    throw new Error("candidate detector decisions cannot supervise boundary learning");
-  }
+  validateObservationIdentity(observation.sourceDocumentId, observation.signalId);
   if (observation.supervision === "latent_marginal"
     && observation.signalKind !== "packed_forest_marginal") {
     throw new Error("latent boundary supervision must come from a packed-forest marginal");
@@ -629,6 +646,14 @@ function validateObservation(observation: BoundaryObservation): void {
   if (observation.supervision === "independent_anchor"
     && observation.signalKind === "packed_forest_marginal") {
     throw new Error("packed-forest marginals are not independent anchors");
+  }
+}
+
+function validateObservationIdentity(sourceDocumentId: string, signalId: string): void {
+  if (!sourceDocumentId.trim()) throw new Error("boundary observation requires sourceDocumentId");
+  if (!signalId.trim()) throw new Error("boundary observation requires signalId");
+  if (signalId.includes("candidate_detector") || signalId.includes("bootstrap_endpoint")) {
+    throw new Error("candidate detector decisions cannot supervise boundary learning");
   }
 }
 

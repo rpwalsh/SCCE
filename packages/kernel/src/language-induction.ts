@@ -8,6 +8,7 @@ import {
   fitBoundaryEstimator,
   mergeBoundaryStatistics,
   type BoundaryEstimatorModel,
+  type BoundaryObservation,
   type BoundarySufficientStatistics
 } from "./boundary-estimator.js";
 import { compactKneserNeyForProfile, continueBoundedProse, trainKneserNey, type KneserNeyModel } from "./kneser-ney.js";
@@ -231,7 +232,7 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
       const populationId = `surface_population.${hasher.digestHex(JSON.stringify(
         documents.map(document => [document.id, document.sourceVersionId ?? null]).sort()
       )).slice(0, 32)}`;
-      const boundaryObservations = collectBoundaryTrainingObservations({
+      let boundaryObservations = collectBoundaryTrainingObservations({
         lattices: initialLattices.map(row => row.lattice),
         anchors: initialLattices.flatMap(({ doc }) =>
           (doc.boundaryAnchors ?? []).map(anchor => ({ ...anchor, documentId: doc.id })))
@@ -240,17 +241,24 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
         lattices: initialLattices.map(row => row.lattice),
         hasher
       });
+      const observationsByDocument = new Map<string, BoundaryObservation[]>();
+      for (const observation of boundaryObservations) {
+        const observations = observationsByDocument.get(observation.sourceDocumentId);
+        if (observations) observations.push(observation);
+        else observationsByDocument.set(observation.sourceDocumentId, [observation]);
+      }
+      boundaryObservations = [];
       const documentBoundaryStatistics = initialLattices.map(({ doc }) => ({
         documentId: doc.id,
         sourceFamilyId: doc.sourceFamilyId ?? String(doc.sourceVersionId ?? doc.id),
         statistics: compileBoundaryStatistics({
           populationId,
-          observations: boundaryObservations.filter(observation =>
-            observation.sourceDocumentId === doc.id),
+          observations: observationsByDocument.get(doc.id) ?? [],
           sourceDocumentIds: [doc.id],
           hasher
         })
       }));
+      observationsByDocument.clear();
       // Release the bootstrap lattices the moment they are dead. They exist
       // only to derive boundary observations, the feature context, and
       // per-document statistics above; induce() then builds a SECOND,
