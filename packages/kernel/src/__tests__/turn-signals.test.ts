@@ -94,7 +94,10 @@ describe("turn language state", () => {
         surface: "please",
         anchor: "start",
         selectedAuthority: "factual",
-        requestSpanRole: "control"
+        requestSpanRole: "control",
+        requestUnitResponseCopyRecipe: "scce.request_unit_response_copy.v1",
+        requestUnitResponseCopyAuthority: "factual",
+        requestUnitResponseCopy: [{ unit: "please", supportedPairs: 2, copiedPairs: 0 }]
       },
       evidenceIds: [],
       updatedAt: 1

@@ -95,6 +95,8 @@ export interface MouthSemanticInput {
 export interface SpeakInput {
   /** Actual request for echo comparison; an absent request never makes selected factual content a question. */
   requestText?: string;
+  /** Source-owned request controls guide coverage and never enter generative memory. */
+  requestControlPatterns?: readonly LanguagePatternRecord[];
   programBehaviorRequirements?: readonly import("./types.js").ProgramBehaviorRequirement[];
   codeFunctionPatterns?: readonly LanguagePatternRecord[];
   construct: ConstructGraph;

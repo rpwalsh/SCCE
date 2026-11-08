@@ -7650,18 +7650,14 @@ function mouthClosedClass(input: SpeakInput): Set<string> {
     models: input.languageMemory?.models ?? [],
     continuationPopulation: input.languageMemory?.continuationPopulation,
     identityClosedClassWords: new Set(input.languageMemory?.closedClass ?? []),
-    patterns: input.languageMemory?.importedPatterns ?? [],
+    patterns: [...(input.requestControlPatterns ?? []), ...(input.languageMemory?.importedPatterns ?? [])],
     authority: input.requestedAuthority
   });
 }
 
-/** The language's own scaffolding, which is what separates the asked relation from the request's frame. Pure. */
+/** Content and relation checks share the same source-witnessed request scaffolding. */
 function mouthLanguageClosedClass(input: SpeakInput): Set<string> {
-  return deriveClosedClassWords({
-    models: input.languageMemory?.models ?? [],
-    continuationPopulation: input.languageMemory?.continuationPopulation,
-    identityClosedClassWords: new Set(input.languageMemory?.closedClass ?? [])
-  });
+  return mouthClosedClass(input);
 }
 
 /** Whether the relation asked about can be required of a surface: only a learned closed class can name it. Pure. */

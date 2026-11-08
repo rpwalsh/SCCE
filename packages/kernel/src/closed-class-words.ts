@@ -4,7 +4,8 @@ import { calibrated } from "./calibrations/prod-calibrations.js";
 import type { KneserNeyModel } from "./kneser-ney.js";
 import { jsonRecord, namedSubjectAnchors } from "./kernel-answer-primitives.js";
 import { requestContentAnchorUnits } from "./local-evidence-runtime.js";
-import { isRequestRequirementPattern } from "./request-requirement-learning.js";
+import { isRequestRequirementPattern, requestFeatures, REQUEST_UNIT_RESPONSE_COPY_RECIPE_ID } from "./request-requirement-learning.js";
+import { unicodeLexicalSegments } from "./unicode-segmentation.js";
 import type { LanguageContinuationPopulation, LanguagePatternRecord } from "./storage.js";
 
 const closedClassByPopulation = new WeakMap<object, Map<number, ReadonlySet<string> | null>>();
@@ -15,21 +16,38 @@ const closedClassByPopulation = new WeakMap<object, Map<number, ReadonlySet<stri
  * of the resident Kneser-Ney models plus single-token literal slots of learned
  * constructions. Language-agnostic by construction.
  */
-/**
- * Request scaffolding the interaction corpus taught for an authority ("who", "when" as learned request openers), as
- * literal construction parts for the derivation above. Multi-word surfaces contribute each of their words: "known for"
- * is scaffolding in "What was X known for?", and neither word is a relation the answer must restate. Pure.
- */
+/** Source-paired request form excludes any unit copied by an overlapping reply witness. */
 export function requestScaffoldingConstructions(
   patterns: readonly LanguagePatternRecord[],
-  authority?: string
+  authority?: string,
+  requestText?: string
 ): Array<{ parts: Array<{ kind: "literal"; surface: string }> }> {
-  return patterns
-    .filter(isRequestRequirementPattern)
-    .map(pattern => jsonRecord(pattern.patternJson))
-    .filter(record => record.requestSpanRole === "control" && typeof record.surface === "string" && (!authority || record.selectedAuthority === authority))
-    .flatMap(record => String(record.surface).split(/\s+/u).filter(Boolean)
-      .map(surface => ({ parts: [{ kind: "literal" as const, surface }] })));
+  const observed = requestText?.trim() ? new Set(requestFeatures(requestText).map(row => `${row.anchor}\u0000${row.surface}`)) : undefined;
+  const candidates = new Set<string>();
+  const copied = new Set<string>();
+  for (const pattern of patterns) {
+    if (!isRequestRequirementPattern(pattern)) continue;
+    const record = jsonRecord(pattern.patternJson);
+    if (typeof record.surface !== "string" || typeof record.selectedAuthority !== "string"
+      || (authority && record.selectedAuthority !== authority)
+      || (observed && !observed.has(`${record.anchor}\u0000${record.surface}`))
+      || record.requestUnitResponseCopyRecipe !== REQUEST_UNIT_RESPONSE_COPY_RECIPE_ID
+      || record.requestUnitResponseCopyAuthority !== record.selectedAuthority
+      || !Array.isArray(record.requestUnitResponseCopy)) continue;
+    const units = new Set(unicodeLexicalSegments(record.surface).map(row => row.normalized));
+    for (const value of record.requestUnitResponseCopy) {
+      const witness = jsonRecord(value);
+      const unit = witness.unit;
+      const supportedPairs = witness.supportedPairs;
+      const copiedPairs = witness.copiedPairs;
+      if (typeof unit !== "string" || !units.has(unit) || typeof supportedPairs !== "number" || typeof copiedPairs !== "number"
+        || !Number.isSafeInteger(supportedPairs) || supportedPairs <= 0
+        || !Number.isSafeInteger(copiedPairs) || copiedPairs < 0 || copiedPairs > supportedPairs) continue;
+      if (copiedPairs > 0) copied.add(unit);
+      else if (record.requestSpanRole === "control") candidates.add(unit);
+    }
+  }
+  return [...candidates].filter(unit => !copied.has(unit)).map(surface => ({ parts: [{ kind: "literal" as const, surface }] }));
 }
 
 /**
@@ -37,7 +55,7 @@ export function requestScaffoldingConstructions(
  * carries the relation asked about.
  *
  * Two learned sources, applied where each is valid. The interaction corpus's request patterns say which words open or
- * frame a request ("who", "what is", "list the") and apply anywhere. The role language's continuation counts say which
+ * frame a request ("who", "what is", "list the") and apply at matching source-observed features. The role language's continuation counts say which
  * words the corpus uses in the most contexts.
  *
  * The corpus signal was read off the request's first two words, so that a relation ranked into the closed class could
@@ -55,7 +73,7 @@ export function requestClosedClassWords(input: {
   authority?: string;
   limit?: number;
 }): Set<string> {
-  const scaffolding = deriveClosedClassWords({ constructions: requestScaffoldingConstructions(input.patterns ?? [], input.authority) });
+  const scaffolding = deriveClosedClassWords({ constructions: requestScaffoldingConstructions(input.patterns ?? [], input.authority, input.requestText) });
   const corpus = deriveClosedClassWords({
     models: input.models ?? [],
     continuationPopulation: input.continuationPopulation,

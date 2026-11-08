@@ -4957,6 +4957,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const codeFunctionPatterns = (await Promise.all(codePatternQueries.map(query => deps.storage.languageMemory.listLanguagePatterns(query)))).flat();
       const speakInput = {
         requestText: input.text,
+        requestControlPatterns: turnRequestControlPatterns,
         // Corroborated code shape, not a bare language name. "Java", "Ruby", "Swift" and "Python" are ordinary
         // words in encyclopedic prose, and a turn about the island should not reach a code lane at all -- which
         // was harmless only while that lane had no producer to reach.
