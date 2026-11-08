@@ -739,6 +739,7 @@ export function hydrateLanguageConstructionPatterns(input: {
   const duplicatePatternIds = duplicateValues(constructionPatterns.map(pattern => pattern.id));
   const evidenceById = uniqueEvidenceById(input.evidence.map(span => ({ ...span })));
   const evidencePointsById = new Map<string, string[]>();
+  const evidenceUtf16OffsetsById = new Map<string, number[]>();
   const bundles: DurableLanguageConstructionBundle[] = [];
   for (const pattern of constructionPatterns) {
     if (duplicatePatternIds.has(pattern.id)) {
@@ -750,7 +751,7 @@ export function hydrateLanguageConstructionPatterns(input: {
       continue;
     }
     const verified = isCreativeEventConstructionPattern(pattern)
-      ? verifyCreativeEventPattern(pattern, evidenceById, input.hasher)
+      ? verifyCreativeEventPattern(pattern, evidenceById, input.hasher, evidencePointsById, evidenceUtf16OffsetsById)
       : isObsoleteCreativeEventConstructionPatternV2(pattern)
         ? issue(pattern, LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.obsoleteCreativeV2)
         : verifyPersistedPattern(pattern, evidenceById, input.hasher, evidencePointsById);
@@ -945,7 +946,9 @@ const KNOWN_CREATIVE_EVENT_COMPILER_IDS: readonly string[] = [
 function verifyCreativeEventPattern(
   pattern: LanguagePatternRecord,
   evidenceById: ReadonlyMap<string, EvidenceSpan>,
-  hasher: Hasher
+  hasher: Hasher,
+  evidencePointsById: Map<string, string[]>,
+  evidenceUtf16OffsetsById: Map<string, number[]>
 ): { bundle: DurableLanguageConstructionBundle } | { issue: LanguageConstructionMemoryIssue } {
   const row = recordOf(pattern.patternJson);
   const rawBundle = recordOf(row.bundle);
@@ -961,7 +964,7 @@ function verifyCreativeEventPattern(
     return issue(pattern, LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.member);
   }
   const sourcePage = recordOf(rawBundle.sourcePage);
-  if (rawBundle.sourcePage !== undefined && (!validCreativeSourcePage(sourcePage, rawEvents, evidenceById, hasher))) {
+  if (rawBundle.sourcePage !== undefined && (!validCreativeSourcePage(sourcePage, rawEvents, evidenceById, hasher, evidencePointsById, evidenceUtf16OffsetsById))) {
     return issue(pattern, LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.ownership);
   }
   // Record integrity over the STORED bundle, independent of per-event
@@ -977,7 +980,7 @@ function verifyCreativeEventPattern(
   }
   const events: DurableCreativeEventConstruction[] = [];
   for (const rawEvent of rawEvents) {
-    const parsed = creativeEventFromPersisted(rawEvent, pattern.profileId, compilerId, evidenceById, hasher);
+    const parsed = creativeEventFromPersisted(rawEvent, pattern.profileId, compilerId, evidenceById, hasher, evidencePointsById);
     if (parsed) events.push(parsed);
   }
   if (events.length < 4) {
@@ -1008,14 +1011,14 @@ function verifyCreativeEventPattern(
   };
 }
 
-function validCreativeSourcePage(page: Record<string, JsonValue>, events: readonly Record<string, JsonValue>[], evidenceById: ReadonlyMap<string, EvidenceSpan>, hasher: Hasher): boolean {
+function validCreativeSourcePage(page: Record<string, JsonValue>, events: readonly Record<string, JsonValue>[], evidenceById: ReadonlyMap<string, EvidenceSpan>, hasher: Hasher,
+  evidencePointsById: Map<string, string[]>, offsetsByEvidence: Map<string, number[]>): boolean {
   const index = numberOf(page.index), count = numberOf(page.pageCount), bound = numberOf(page.maxEvents);
   if (page.recipe !== UNIVERSAL_CREATIVE_EVENT_COVERAGE_RECIPE_ID || page.qualification !== "source_observed" || !stringOf(page.compilationId)
     || !Number.isSafeInteger(index) || !Number.isSafeInteger(count) || index < 0 || index >= count || count < 1
     || !Number.isSafeInteger(bound) || bound < 4 || bound > 2048 || events.length > bound) return false;
   const windows = arrayOfRecords(page.windows);
   if (!windows.length) return false;
-  const offsetsByEvidence = new Map<string, number[]>();
   for (const window of windows) {
     const ownerDocumentId = stringOf(window.ownerDocumentId);
     if (!ownerDocumentId) return false;
@@ -1026,7 +1029,7 @@ function validCreativeSourcePage(page: Record<string, JsonValue>, events: readon
       || hasher.digestHex(evidence.text.slice(start, end)) !== stringOf(window.contentDigest)) return false;
     if (!offsetsByEvidence.has(String(evidence.id))) {
       const offsets = [0];
-      for (const point of evidence.text) offsets.push(offsets[offsets.length - 1]! + point.length);
+      for (const point of evidenceTextPoints(evidence, evidencePointsById)) offsets.push(offsets[offsets.length - 1]! + point.length);
       offsetsByEvidence.set(String(evidence.id), offsets);
     }
   }
@@ -1046,7 +1049,8 @@ function creativeEventFromPersisted(
   profileId: string,
   compilerId: string,
   evidenceById: ReadonlyMap<string, EvidenceSpan>,
-  hasher: Hasher
+  hasher: Hasher,
+  evidencePointsById: Map<string, string[]>
 ): DurableCreativeEventConstruction | undefined {
   const evidenceId = stringOf(raw.evidenceId);
   const sourceVersionId = stringOf(raw.sourceVersionId);
@@ -1072,16 +1076,17 @@ function creativeEventFromPersisted(
     || String(evidence.sourceVersionId) !== sourceVersionId
     || String(evidence.contentHash) !== evidenceContentHash
     || evidence.charStart !== evidenceCharStart
-    || evidence.charEnd !== evidenceCharEnd
-    || !validRange(labelStartCodePoint, labelEndCodePoint, [...evidence.text].length)
+    || evidence.charEnd !== evidenceCharEnd) return undefined;
+  const evidencePoints = evidenceTextPoints(evidence, evidencePointsById);
+  if (!validRange(labelStartCodePoint, labelEndCodePoint, evidencePoints.length)
     || !Number.isSafeInteger(sourceOrdinal)) return undefined;
-  const boundLabel = [...evidence.text].slice(labelStartCodePoint, labelEndCodePoint).join("");
+  const boundLabel = evidencePoints.slice(labelStartCodePoint, labelEndCodePoint).join("");
   // Compiler persists case-folded labels; the slice keeps source case.
   if (boundLabel.toLocaleLowerCase() !== sourceLabel.toLocaleLowerCase()
     || hasher.digestHex(sourceLabel) !== stringOf(raw.sourceLabelDigest)) return undefined;
   const argumentFrame = creativeArgumentFrameFromPersisted({
     raw: recordOf(raw.argumentFrame),
-    evidence,
+    evidencePoints,
     profileId,
     compilerId,
     relationId,
@@ -1157,7 +1162,7 @@ function creativeEventFromPersisted(
 
 function creativeArgumentFrameFromPersisted(input: {
   raw: Record<string, JsonValue>;
-  evidence: EvidenceSpan;
+  evidencePoints: readonly string[];
   profileId: string;
   compilerId: string;
   relationId: string;
@@ -1167,7 +1172,7 @@ function creativeArgumentFrameFromPersisted(input: {
 }): DurableCreativeEventArgumentFrame | undefined {
   const sourceSentenceStartCodePoint = numberOf(input.raw.sourceSentenceStartCodePoint);
   const sourceSentenceEndCodePoint = numberOf(input.raw.sourceSentenceEndCodePoint);
-  const evidencePoints = [...input.evidence.text];
+  const evidencePoints = input.evidencePoints;
   if (input.raw.schema !== CREATIVE_EVENT_ARGUMENT_FRAME_SCHEMA
     || input.raw.compilerId !== input.compilerId
     || !validRange(sourceSentenceStartCodePoint, sourceSentenceEndCodePoint, evidencePoints.length)
@@ -1244,7 +1249,7 @@ function creativeArgumentFrameFromPersisted(input: {
 
 function creativeClosedClassConnectorFromPersisted(input: {
   raw: Record<string, JsonValue>;
-  evidencePoints: string[];
+  evidencePoints: readonly string[];
   sourceSentenceStartCodePoint: number;
   sourceSentenceEndCodePoint: number;
   labelEndCodePoint: number;
@@ -1320,7 +1325,8 @@ function verifyPersistedPattern(
       bindingId,
       sourceProfileId,
       targetProfileId,
-      evidenceById
+      evidenceById,
+      evidencePointsById
     });
     if ("code" in parsed) return { issue: { ...parsed, patternId: pattern.id, profileId: pattern.profileId } };
     observations.push(parsed.observation);
@@ -1367,6 +1373,7 @@ function observationFromPersistedExample(
     sourceProfileId: string;
     targetProfileId: string;
     evidenceById: ReadonlyMap<string, EvidenceSpan>;
+    evidencePointsById: Map<string, string[]>;
   }
 ): { observation: SourceBoundConstructionObservation } | LanguageConstructionMemoryIssue {
   const evidenceId = stringOf(raw.evidenceId);
@@ -1409,7 +1416,7 @@ function observationFromPersistedExample(
       endCodePoint: numberOf(recordOf(raw.antecedent).endCodePoint)
     } } : {})
   };
-  const points = [...evidence.text];
+  const points = evidenceTextPoints(evidence, ownership.evidencePointsById);
   const surface = points.slice(observation.surfaceStartCodePoint, observation.surfaceEndCodePoint).join("");
   if (surface !== stringOf(raw.surface)
     || stringOf(raw.surfaceDigest) === undefined
@@ -1424,6 +1431,13 @@ function observationFromPersistedExample(
     return { code: LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.coordinates, evidenceId, sourceVersionId };
   }
   return { observation };
+}
+
+function evidenceTextPoints(evidence: EvidenceSpan, pointsById: Map<string, string[]>): string[] {
+  const id = String(evidence.id);
+  let points = pointsById.get(id);
+  if (!points) { points = [...evidence.text]; pointsById.set(id, points); }
+  return points;
 }
 
 function rejected(code: LanguageConstructionMemoryRejectionId): LanguageConstructionPatternCompilation {
