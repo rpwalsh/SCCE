@@ -1,6 +1,26 @@
 # Default local campaign: no handpicked cases required
 
-After installing the frozen repository dependencies/build and starting the configured local SCCE service with the pinned reference already installed, run:
+## Engineer prerequisites
+
+Start from a clean clone at the revision being evaluated, using Node.js `>=24.18.0 <25`, the repository's pinned pnpm version, and PostgreSQL. For example, before any freeze or secret selection:
+
+```powershell
+git clone https://github.com/rpwalsh/SCCE.git
+cd SCCE
+git checkout YOUR_EVALUATED_REVISION
+pnpm install --frozen-lockfile
+pnpm build
+```
+
+Follow the [quickstart](../../QUICKSTART.md) to create your local database and ignored `scce.config.local.json`; keep credentials local. Initialize or upgrade that configured schema with `pnpm scce db migrate`. Compile your declared public starter sources through the [normal corpus training commands](../../docs/CORPUS_TRAINING.md), inspect the completed active source-brain receipt, and use that same config/schema when serving. An empty database, incomplete source build, or unknown language identities does not meet campaign preparation's finalization contract. The parent [README](README.md) gives the metadata-only identity finalizer for an older brain. Record the initial brain and available public corpora; installing source files without compiling them is not training, and compiling them is not a task-success claim.
+
+Install the local Ollama runtime and `qwen2.5:3b` reference model before preparation, and make the Python, Rust and Go native checkers available through the existing verifier discovery. Node and the installed TypeScript dependency supply the other two formal-language checkers. Preparation records the actual resolved executables and model digest and checks schema/context controls; missing tools or failed checks remain blockers. The reference is an evaluation dependency, not an SCCE runtime dependency.
+
+Start SCCE with `pnpm server` using the same local configuration. A custom config must be passed consistently to CLI training, serving and the campaign's `--config FILE`; the configured local URL, authentication and schema must agree. The campaign output directory must fall inside the runtime's configured `allowedRoots`, since public code workspaces are ingested there. Do not change those frozen inputs during collection.
+
+## One-command locally custodied run
+
+With these prerequisites complete, run:
 
 ```powershell
 node tools/blind-comparison/campaign.mjs run --out .tmp/independent-campaign
@@ -37,6 +57,7 @@ The cells remain separate in reports; no overall average hides a losing language
 - Two-turn practical chat with a changed constraint, and two-turn creative scenes with continuity, motives and an unresolved choice. Quality stays ungraded until independent anonymous ballots are supplied.
 - Source facts drawn from fresh test-authored directories, using private selection among differently worded questions. Supported and unsupported questions share the **same public category and response contract**. Their positive/negative labels and grading values remain private until outputs are fixed.
 - Live source corrections followed by a second lookup in the same conversation. Earlier and updated source bytes reach both systems in the same step order. Future updates are not shown early.
+- Ordinary natural-language arithmetic in English, Russian, Spanish and Catalan, balancing single-operation and multistep tasks with fresh private integers and operations. Both systems receive the same number-only instruction through their ordinary turn path. Exact private integer grading rejects refusals, wrong values, prose, equations and extra numbers; no calculator representation or answer is supplied.
 - Native repair and generation in each declared formal language, with separate stateful-directory and piecewise-numeric cells. Both see the same source/specification/immutable driver/public checks. Private validation adds fresh keys, overwrites, deletion, key isolation, Unicode/prototype-shaped keys, missing values and unseen numeric boundaries. Public examples alone cannot satisfy the private checks by memorizing constants.
 - Autonomous inspect/aggregate/write/verify tasks under a bounded `workspace.read`, `workspace.write`, `public.check` policy. No plan is supplied. These remain distinct from execution of a supplied typed dependency-ordered local goal. A plan, prose claim or prewritten-goal execution does not certify autonomous planning.
 
@@ -55,6 +76,16 @@ node tools/blind-comparison/campaign.mjs custodian --prepared .tmp/external-camp
 ```
 
 The custodian command verifies every frozen artifact before generating the pool. It emits only custody paths/hashes, not the seed or gold. Preserve that receipt as `custody.json`, transfer only its `publicBundleRoot` into `OUT/public`, and run the normal collection command from the parent README using `bundleDigest`. Independently record the checkpoint digest. An external seed alone does not fabricate an independent-person attestation. The same frozen provider and seed regenerate case content; pin host tool identities too when reproducing native commands.
+
+**Current portability limitation:** the signed preparation and freeze contain absolute paths, including `prepared.out`, artifact files, interpreter/tool binaries and adapter arguments. `custodian` rehashes those files and requires `prepared.json` at its original signed location. A separate host therefore needs a byte-identical, path-preserving mirror of the frozen public implementation/build/artifacts and preparation directory, on a compatible host filesystem. Copying only `prepared.json` and `freeze.json` to a new root will fail. Do not rewrite signed paths or hashes to bypass this check. If a mirror is unavailable, prepare a new freeze at the intended paths before the custodian chooses a fresh seed. Configure any required local credentials independently; no credential transfer is required by this workflow.
+
+On the collection host, preserve `OUT` as the original absolute preparation directory, copy only the sealed public tree to `OUT/public`, and save the custodian's emitted metadata receipt as UTF-8 `OUT/custody.json`. The pool, seed, private key and private validators stay on the custodian host. Collect with:
+
+```powershell
+node tools/blind-comparison/cli.mjs collect --bundle OUT/public/bundle.json --bundle-digest BUNDLE_SHA --out OUT/run --checkpoint-out OUT/checkpoint.json
+```
+
+After collection, retain the printed checkpoint digest independently. Return `OUT/checkpoint.json` plus `OUT/run/run.json`, `OUT/run/journal-*.jsonl` and `OUT/run/receipts/` to the corresponding original paths on the custodian's frozen mirror. Preserve their bytes; include every collected shard. Run the `finish` command below **on that custodian host**, where the signed `custody.privateRoot` and `custody.privateKeyFile` still exist. `finish` makes its own receipts-only grading copy there. Anonymous ballots can leave that host for judges; return only their complete ratings file and independently recorded digest. The collection host does not need the private key or validators to collect or checkpoint.
 
 ## Resume, shards and final judging
 
