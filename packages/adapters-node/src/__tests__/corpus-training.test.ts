@@ -108,12 +108,16 @@ describe("learned rows carry the shard's provenance once", () => {
     await trainOssCorpus(options);
     await writeFile(file, "export function sideEffect(value: number) { console.log(value); return value; }");
     await trainOssCorpus(options);
-    expect(publications).toHaveLength(3);
-    expect(publications.map(row => row.projection.patternSchema)).toEqual(Array(3).fill("scce.source_code_function_pattern.v1"));
+    expect(publications).toHaveLength(6);
+    const callablePublications = publications.filter(row => row.projection.patternSchema === "scce.source_code_function_pattern.v1");
+    const assertionPublications = publications.filter(row => row.projection.patternSchema === "scce.source_owned_test_contract.v1");
+    expect(callablePublications).toHaveLength(3);
+    expect(assertionPublications).toHaveLength(3);
     expect(new Set(publications.map(row => row.projection.sourceId)).size).toBe(1);
     expect(new Set(publications.map(row => row.projection.sourceVersionId)).size).toBe(3);
-    expect(publications.map(row => row.projection.patternIds.length)).toEqual([1, 1, 0]);
-    for (const row of publications) expect(row.projection.patternIds).toEqual(row.patterns.filter(pattern => pattern.patternKind === "source_code_function").map(pattern => pattern.id).sort());
+    expect(callablePublications.map(row => row.projection.patternIds.length)).toEqual([1, 1, 0]);
+    expect(assertionPublications.map(row => row.projection.patternIds)).toEqual([[], [], []]);
+    for (const row of callablePublications) expect(row.projection.patternIds).toEqual(row.patterns.filter(pattern => pattern.patternKind === "source_code_function").map(pattern => pattern.id).sort());
   });
   it("projects real lowercase source relations using the canonical batch's one prepared model", async () => {
     const fixture = memoryStorage();
