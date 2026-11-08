@@ -843,8 +843,31 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
       if (!targetPath || !targetPath.trim()) return;
       const request = window.prompt('prompt.code_request');
       if (!request || !request.trim()) return;
+      const available = await get('/api/workspace/code/validation-policies');
+      if (!Array.isArray(available.policies)) throw new Error('Invalid server validation policy list');
+      const policies = available.policies.concat([{ label: 'Workspace build', checks: ['No project test policy'] }]);
+      const policyMenu = policies.map((policy, index) => (index + 1) + ') ' + (policy.id || policy.label) + ' [' + policy.checks.join(', ') + '] ' + available.provider).join('\\n');
+      const policyChoice = window.prompt('workspace.code.validation_policy' + '\\n' + policyMenu);
+      if (policyChoice === null) return;
+      const policy = policies[Number(policyChoice) - 1];
+      if (!policy) throw new Error('Select a server validation policy');
+      const validationPolicyId = policy.id;
+      async function edit(codeRequest) {
+        const input = { path: targetPath.trim(), request: codeRequest, ...(validationPolicyId ? { validationPolicyId } : {}) };
+        let edited = await post('/api/workspace/code', input);
+        if (edited && edited.pendingApproval) {
+          const pending = edited.pendingApproval;
+          if (pending.capabilityId !== 'workspace.code' || !pending.planId || !pending.fingerprint) throw new Error('Invalid code edit approval');
+          if (!window.confirm('Authorize code edit: ' + targetPath.trim() + ' / ' + (validationPolicyId || 'Workspace build') + ' / ' + pending.planId + ' / ' + pending.fingerprint)) return edited;
+          const approval = await post('/api/session/approve', { planId: pending.planId });
+          if (!approval.approved || approval.approved.planId !== pending.planId || approval.approved.capabilityId !== 'workspace.code') throw new Error('Code edit approval does not match the requested plan');
+          edited = await post('/api/workspace/code', input);
+          if (edited && edited.pendingApproval) throw new Error('Code edit requires renewed approval; retry the command');
+        }
+        return edited;
+      }
       log('POST /api/workspace/code ' + targetPath);
-      let result = await post('/api/workspace/code', { path: targetPath.trim(), request: request.trim() });
+      let result = await edit(request.trim());
       // The compiler owns several fixes here; the owner chooses rather than SCCE guessing.
       if (result && result.outcome === 'awaiting_selection' && Array.isArray(result.candidates) && result.candidates.length) {
         const menu = result.candidates.map((candidate, index) => (index + 1) + ') TS' + candidate.diagnosticCode + ' ' + candidate.fixName).join('\\n');
@@ -852,17 +875,17 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
         const index = Number(choice) - 1;
         const candidate = result.candidates[index];
         if (!candidate) { setInspector(result); toggleDevPanel(true); return; }
-        result = await post('/api/workspace/code', { path: targetPath.trim(), request: request.trim() + ' codeFixIdentity:' + candidate.codeFixIdentity });
+        result = await edit(request.trim() + ' codeFixIdentity:' + candidate.codeFixIdentity);
       }
       setInspector(result);
       toggleDevPanel(true);
-      add('scce', 'workspace.code.' + String(result && result.outcome) + ' ' + targetPath.trim(), result);
+      add('scce', 'workspace.code.' + String(result && (result.pendingApproval ? 'pending_approval' : result.outcome)) + ' ' + targetPath.trim(), result);
     }
     async function runCommand(id) {
       closePalette();
       try {
         if (id === 'kernel.turn') return sendButton.click();
-        if (id === 'workspace.code') return editCode();
+        if (id === 'workspace.code') return await editCode();
         if (id === 'kernel.codebase_ingest') { const p = window.prompt('prompt.codebase_path'); if (!p || !p.trim()) return; log('POST /api/codebase/ingest'); const r = await post('/api/codebase/ingest', { path: p.trim() }); setInspector(r); toggleDevPanel(true); return; }
         if (id === 'workspace.init') { const p = window.prompt('prompt.workspace_path'); if (!p || !p.trim()) return; log('POST /api/workspace/init'); const r = await post('/api/workspace/init', { path: p.trim() }); setInspector(r); toggleDevPanel(true); return; }
         if (id === 'workspace.ingest') { const p = window.prompt('prompt.workspace_path'); log('POST /api/workspace/ingest'); const r = await post('/api/workspace/ingest', p && p.trim() ? { path: p.trim() } : {}); setInspector(r); toggleDevPanel(true); return; }

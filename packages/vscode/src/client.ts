@@ -1,12 +1,12 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { parseCodeEditApproval, parseCodeEditAttempt, parseCodeValidationPolicies, type CodeEditAttempt } from "./code-edit-flow.js";
 import { normalizeLocalServerUrl, normalizeRequestTimeout, normalizeToken, type ScceConnectionConfig } from "./config.js";
 import {
   parseProjectSummaryResponse,
   parseReadyResponse,
   parseWorkspaceAnswerResponse,
   parseWorkspaceIngestResponse,
-  type CodeEditResult,
   type ProjectSummaryResponse,
   type ReadyResponse,
   type WorkspaceAnswerResponse,
@@ -349,9 +349,20 @@ export class ScceClient {
     return this.request("POST", "/api/models/remove", { modelId }, value => value as { removed: boolean });
   }
 
-  /** Edits a workspace file through the compile gate: only a patch the compiler accepted survives. */
-  async editCode(targetPath: string, request: string, attempts?: number): Promise<CodeEditResult> {
-    return this.request("POST", "/api/workspace/code", { path: targetPath, request, ...(attempts ? { attempts } : {}) }, value => value as CodeEditResult);
+  /** Edits through the workspace build gate and the selected server-owned policy. */
+  async editCode(targetPath: string, request: string, attempts?: number, validationPolicyId?: string): Promise<CodeEditAttempt> {
+    return this.request("POST", "/api/workspace/code", { path: targetPath, request,
+      ...(attempts === undefined ? {} : { attempts }),
+      ...(validationPolicyId === undefined ? {} : { validationPolicyId: requireNonEmpty(validationPolicyId, "validation policy id") })
+    }, parseCodeEditAttempt);
+  }
+
+  codeValidationPolicies() {
+    return this.request("GET", "/api/workspace/code/validation-policies", undefined, parseCodeValidationPolicies);
+  }
+
+  approveCodeEdit(planId: string): Promise<{ approved: { planId: string; capabilityId: string } }> {
+    return this.request("POST", "/api/session/approve", { planId: requireNonEmpty(planId, "approval plan id") }, parseCodeEditApproval);
   }
 
   private async request<T>(method: "GET" | "POST", route: string, body: unknown, parse: (value: unknown) => T): Promise<T> {

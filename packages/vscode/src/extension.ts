@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { editCodeWithSelection } from "./code-edit-flow.js";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import * as vscode from "vscode";
@@ -215,21 +216,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const request = await vscode.window.showInputBox({ prompt: "workspace.code.request" });
       if (!request) return;
       await run("workspace.code", "Edit " + targetPath, true, async activeClient => {
-        let result = await activeClient.editCode(targetPath, request);
-        // The compiler owns several fixes here; choosing one for the owner would be a guess, so it picks.
-        if (result.outcome === "awaiting_selection" && result.candidates?.length) {
-          const picked = await vscode.window.showQuickPick(
-            result.candidates.map(candidate => ({
-              label: candidate.fixName,
-              description: "TS" + candidate.diagnosticCode,
-              detail: candidate.codeFixIdentity,
-              identity: candidate.codeFixIdentity
-            })),
-            { title: "workspace.code.fix_candidates " + targetPath, placeHolder: "workspace.code.fix_choice" }
-          );
-          if (!picked) return result as unknown as Record<string, unknown>;
-          result = await activeClient.editCode(targetPath, request + " codeFixIdentity:" + picked.identity);
-        }
+        const available = await activeClient.codeValidationPolicies();
+        const choices: Array<{ label: string; description: string; detail: string; id: string | undefined }> = available.policies.map(policy => ({
+          label: policy.id, description: policy.checks.join(", "), detail: available.provider, id: policy.id
+        }));
+        choices.push({ label: "Workspace build", description: "No project test policy", detail: "Existing workspace build gate", id: undefined });
+        const policy = await vscode.window.showQuickPick(choices, { title: "workspace.code.validation_policy", placeHolder: "Select validation scope" });
+        if (!policy) return { cancelled: true };
+        const result = await editCodeWithSelection(activeClient, targetPath, request, policy.id, async pending =>
+          await vscode.window.showWarningMessage("Authorize code edit: " + targetPath, {
+            modal: true, detail: "workspace.code / " + (policy.id ?? "Workspace build") + " / " + pending.planId + " / " + pending.fingerprint
+          }, "Authorize and edit") === "Authorize and edit", async candidates => {
+          const picked = await vscode.window.showQuickPick(candidates.map(candidate => ({
+            label: candidate.fixName, description: "TS" + candidate.diagnosticCode,
+            detail: candidate.codeFixIdentity, identity: candidate.codeFixIdentity
+          })), { title: "workspace.code.fix_candidates " + targetPath, placeHolder: "workspace.code.fix_choice" });
+          return picked?.identity;
+        });
+        if ("pendingApproval" in result) return result as unknown as Record<string, unknown>;
         const summary = result.outcome === "resolved"
           ? "SCCE edited " + targetPath + " workspace.code.resolved attempts=" + result.attempts + " attempt(s)."
           : "workspace.code.unchanged " + targetPath + ": " + result.outcome + " rolled_back";

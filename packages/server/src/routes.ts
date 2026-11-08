@@ -160,6 +160,7 @@ export const ROUTES = [
   { method: "POST", path: "/api/workspace/patch/plan", label: "workspace patch plan", mutates: false, requiresDb: true },
   { method: "POST", path: "/api/workspace/patch/plan/request", label: "workspace coding request plan", mutates: true, requiresDb: true },
   { method: "POST", path: "/api/workspace/patch", label: "workspace patch transaction", mutates: true, requiresDb: true },
+  { method: "GET", path: "/api/workspace/code/validation-policies", label: "workspace code validation policies", mutates: false, requiresDb: false },
   { method: "POST", path: "/api/workspace/code", label: "workspace code edit", mutates: true, requiresDb: false },
   // These legacy GET handlers persist workspace/report records. The manifest
   // advertises that side effect so clients cannot mistake them for read-only.
@@ -651,6 +652,13 @@ async function dispatch(
       conversationId: typeof body.conversationId === "string" ? body.conversationId : undefined,
       promptText: typeof body.promptText === "string" ? body.promptText : undefined
     }, typeof body.path === "string" ? body.path : undefined, workspaceOptions(body)));
+  }
+  if (req.method === "GET" && url.pathname === "/api/workspace/code/validation-policies") {
+    const policies = (context.config.runtime.patchValidation?.policies ?? []).map(configured => {
+      const policy = resolveWorkspacePatchValidationPolicy(context, configured.id);
+      return { id: policy.id, checks: [...new Set(policy.commands.flatMap(command => command.checkIds ?? []))] };
+    });
+    return json({ policies, provider: context.config.runtime.patchValidation?.provider ?? "trusted-host" });
   }
   if (req.method === "POST" && url.pathname === "/api/workspace/code") {
     if (context.config.policy.allowMutation !== true) throw new HttpError(403, "code editing is disabled by config.policy.allowMutation");
