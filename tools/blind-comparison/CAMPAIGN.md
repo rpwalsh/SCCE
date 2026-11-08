@@ -98,10 +98,12 @@ Accepted receipts are reused and their journal hashes rechecked. The code and fr
 After independent reviewers return the complete rating file, calculate its SHA-256 externally and finish with the exact checkpoint printed by collection:
 
 ```powershell
-node tools/blind-comparison/campaign.mjs finish --prepared OUT/prepared.json --custody OUT/custody.json --checkpoint OUT/checkpoint.json --checkpoint-digest CHECKPOINT_SHA --ratings RATINGS.json --ratings-digest RATINGS_FILE_SHA
+node tools/blind-comparison/campaign.mjs finish --prepared OUT/prepared.json --custody OUT/custody.json --checkpoint OUT/checkpoint.json --checkpoint-digest CHECKPOINT_SHA --ratings RATINGS.json --ratings-digest RATINGS_FILE_SHA --require-pass
 ```
 
 `finish` emits every cell plus a private-family breakdown, showing positive refusal losses separately from correct negative abstentions, and keeps native/public failures visible. The registered judge ID defaults to `independent-judge`; see the parent rubric schema. Never generate or forge those ballots. Until they exist, broad superiority is not established even when objective constraints pass.
+
+For CI and final handoff, `--require-pass` returns exit status 0 only when the normal verified grading path computes `comparativeGatePassed: true`; a false or pending gate returns 1 after writing the report and printing its path/digest. It does not trust an edited prior report or change any threshold, cell or judge requirement. The flag also works on `run` and `resume`. Without it, generating a valid incomplete/failed report still exits 0, including the ordinary diagnostic workflow; protocol and infrastructure errors still fail.
 
 ## Experimental limits
 

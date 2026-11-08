@@ -204,6 +204,7 @@ export async function resumeCampaign(options) {
 async function main() {
   const command = process.argv[2], args = argsMap(process.argv.slice(3));
   if (!['run', 'resume', 'prepare', 'custodian', 'finish'].includes(command)) throw new Error('Commands: run --out NEW_DIR [--diagnostic]; resume --out EXISTING_DIR; prepare; custodian; finish. See CAMPAIGN.md.');
+  if (args.has('require-pass') && !['run', 'resume', 'finish'].includes(command)) throw new Error('--require-pass applies only to run, resume or finish');
   const need = key => { if (!args.get(key)) throw new Error(`Missing --${key}`); return args.get(key); };
   let result;
   if (command === 'custodian') result = await custodianCampaign({ preparedFile: need('prepared'), freezeDigest: need('freeze-digest'), privateRoot: need('private-root'), seedFile: args.get('seed-file') });
@@ -215,5 +216,9 @@ async function main() {
     result = command === 'run' ? await runCampaign(options) : (await prepareCampaign(options)).prepared;
   }
   process.stdout.write(`${canonical(result)}\n`);
+  if (args.has('require-pass') && result.comparativeGatePassed !== true) {
+    process.stderr.write('Required comparative gate did not pass; the verified report remains available.\n');
+    process.exitCode = 1;
+  }
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main().catch(e => { console.error(e.message); process.exitCode = 1; });
