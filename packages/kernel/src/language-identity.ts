@@ -161,6 +161,7 @@ interface Draft {
   families: Map<string, number>;
   members: LanguageProfileSignature[];
   seedFamily: string;
+  signatureSets: Set<string>;
 }
 
 function profileSignatureKey(signature: LanguageProfileSignature): string {
@@ -207,6 +208,38 @@ function measuredFamilyClass(documents: readonly LanguageProfileSignature[]): Ar
 
 function familySignatureSetKey(documents: readonly LanguageProfileSignature[]): string {
   return canonicalStringify(uniqueProfileSignatures(documents).map(profileSignatureKey).sort());
+}
+
+function measuredProfilePopulations(documents: readonly LanguageProfileSignature[]): LanguageProfileSignature[][] {
+  const samples = uniqueProfileSignatures(documents);
+  if (samples.length <= 1) return [[...documents]];
+  const symbols = new Map(samples.map(document => {
+    const cut = otsuThreshold(document.topContinuation.map(([, count]) => count));
+    return [document.id, new Set(document.topContinuation.filter(([, count]) => cut === undefined || count >= cut).map(([word]) => word))] as const;
+  }));
+  const distance = (a: LanguageProfileSignature, b: LanguageProfileSignature) => {
+    const left = symbols.get(a.id)!, right = symbols.get(b.id)!;
+    let shared = 0; for (const word of left) if (right.has(word)) shared++;
+    const union = left.size + right.size - shared;
+    return union ? 1 - shared / union : 0;
+  };
+  const keys = new Map(samples.map(document => [document.id, profileSignatureKey(document)]));
+  const ordered = [...samples].sort((a, b) => keys.get(a.id)!.localeCompare(keys.get(b.id)!) || a.id.localeCompare(b.id));
+  const first = ordered[0]!;
+  let second = first, farthest = 0;
+  for (const document of ordered) { const measured = distance(first, document); if (measured > farthest) { second = document; farthest = measured; } }
+  if (!distance(first, second)) return [[...documents]];
+  const groups: LanguageProfileSignature[][] = [[], []];
+  for (const document of samples) groups[distance(document, first) <= distance(document, second) ? 0 : 1]!.push(document);
+  const classes = groups.map(group => measuredFamilyClass(group));
+  if (classes.some(words => !words.length)) return [[...documents]];
+  const sets = classes.map(words => new Set(words.map(row => row.word)));
+  if (groups.some((group, index) => median(group.map(document => closedClassPresence(document, sets[index]!)
+    - closedClassPresence(document, sets[1 - index]!))) <= 0)) return [[...documents]];
+  const bySource = new Map(samples.map(document => [document.sourceVersionId ? `source:${document.sourceVersionId}` : `profile:${document.id}`, groups[0]!.includes(document) ? 0 : 1]));
+  const original = [[], []] as LanguageProfileSignature[][];
+  for (const document of documents) original[bySource.get(document.sourceVersionId ? `source:${document.sourceVersionId}` : `profile:${document.id}`)!]!.push(document);
+  return original.flatMap(group => measuredProfilePopulations(group));
 }
 
 function identityEvidence(input: {
@@ -277,7 +310,8 @@ export function discoverLanguageIdentities(input: {
       if (!byFamily.has(signature.family)) byFamily.set(signature.family, []);
       byFamily.get(signature.family)!.push(signature);
     }
-    const families = [...byFamily].sort((a, b) => b[1].length - a[1].length || (a[0] < b[0] ? -1 : 1));
+    const families = [...byFamily].flatMap(([family, documents]) => measuredProfilePopulations(documents).map(population => [family, population] as const))
+      .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]) || familySignatureSetKey(a[1]).localeCompare(familySignatureSetKey(b[1])));
     const drafts: Draft[] = [];
     const unresolvedFamilies: Array<[string, LanguageProfileSignature[]]> = [];
     for (const [family, documents] of families) {
@@ -292,9 +326,9 @@ export function discoverLanguageIdentities(input: {
       let joinedPresence = 0;
       const signatureSet = familySignatureSetKey(documents);
       for (const draft of drafts) {
-        const exactSignatureMatch = [...draft.families.keys()].some(draftFamily =>
-          familySignatureSetKey(byFamily.get(draftFamily) ?? []) === signatureSet);
+        const exactSignatureMatch = draft.signatureSets.has(signatureSet);
         if (exactSignatureMatch) { joined = draft; joinedPresence = 1; break; }
+        if (draft.families.has(family)) continue;
         const presence = median(documents.map(document => closedClassPresence(document, draft.closedSet)));
         const cut = otsuThreshold(uniqueProfileSignatures(pool)
           .map(document => closedClassPresence(document, draft.closedSet)));
@@ -304,10 +338,11 @@ export function discoverLanguageIdentities(input: {
       if (joined) {
         joined.members.push(...documents);
         joined.families.set(family, (joined.families.get(family) ?? 0) + documents.length);
+        joined.signatureSets.add(signatureSet);
         continue;
       }
       const closedSet = new Set(closedClass.map(row => row.word));
-      drafts.push({ script, closedClass, closedSet, families: new Map([[family, documents.length]]), members: [...documents], seedFamily: family });
+      drafts.push({ script, closedClass, closedSet, families: new Map([[family, documents.length]]), members: [...documents], seedFamily: family, signatureSets: new Set([signatureSet]) });
     }
     for (const [family, documents] of unresolvedFamilies) {
       // An unresolved family has no defensible language class of its own, but its documents can still carry a
@@ -317,8 +352,7 @@ export function discoverLanguageIdentities(input: {
       let joinedPresence = 0;
       const signatureSet = familySignatureSetKey(documents);
       for (const draft of drafts) {
-        const exactSignatureMatch = [...draft.families.keys()].some(draftFamily =>
-          familySignatureSetKey(byFamily.get(draftFamily) ?? []) === signatureSet);
+        const exactSignatureMatch = draft.signatureSets.has(signatureSet);
         if (exactSignatureMatch) { joined = draft; joinedPresence = 1; break; }
         if (!draft.closedSet.size) continue;
         const presence = median(documents.map(document => closedClassPresence(document, draft.closedSet)));
@@ -330,6 +364,7 @@ export function discoverLanguageIdentities(input: {
       if (joined) {
         joined.members.push(...documents);
         joined.families.set(family, (joined.families.get(family) ?? 0) + documents.length);
+        joined.signatureSets.add(signatureSet);
         continue;
       }
       drafts.push({
@@ -338,21 +373,22 @@ export function discoverLanguageIdentities(input: {
         closedSet: new Set(),
         families: new Map([[family, documents.length]]),
         members: [...documents],
-        seedFamily: family
+        seedFamily: family, signatureSets: new Set([signatureSet])
       });
     }
     if (!drafts.length) {
       // Word-less signatures still receive a script identity so their profiles remain addressable.
-      drafts.push({ script, closedClass: [], closedSet: new Set(), families: new Map(), members: [], seedFamily: "" });
+      drafts.push({ script, closedClass: [], closedSet: new Set(), families: new Map(), members: [], seedFamily: "", signatureSets: new Set() });
     }
     // Assign unresolved families to their own identity; measured families use closed-class presence.
     const familyOf = new Map<string, Draft>();
     for (const draft of drafts) for (const family of draft.families.keys()) familyOf.set(family, draft);
+    const ownerOf = new Map(drafts.flatMap(draft => draft.members.map(member => [member.id, draft] as const)));
     const membershipCuts = drafts.map(draft => otsuThreshold(uniqueProfileSignatures(pool)
       .map(document => closedClassPresence(document, draft.closedSet))) ?? 0);
     const assigned = new Map<Draft, LanguageProfileSignature[]>(drafts.map(draft => [draft, []]));
     for (const document of pool) {
-      const sourceOwned = familyOf.get(document.family);
+      const sourceOwned = ownerOf.get(document.id) ?? familyOf.get(document.family);
       if (sourceOwned && sourceOwned.closedClass.length === 0) {
         assigned.get(sourceOwned)!.push(document);
         continue;
@@ -361,9 +397,9 @@ export function discoverLanguageIdentities(input: {
       let bestPresence = -1;
       for (const draft of drafts) {
         const presence = closedClassPresence(document, draft.closedSet);
-        if (presence > bestPresence || (presence === bestPresence && familyOf.get(document.family) === draft)) { best = draft; bestPresence = presence; }
+        if (presence > bestPresence || (presence === bestPresence && sourceOwned === draft)) { best = draft; bestPresence = presence; }
       }
-      const home = bestPresence <= 0 ? (familyOf.get(document.family) ?? drafts[0]!) : best!;
+      const home = bestPresence <= 0 ? (sourceOwned ?? drafts[0]!) : best!;
       assigned.get(home)!.push(document);
     }
     drafts.forEach((draft, index) => {
