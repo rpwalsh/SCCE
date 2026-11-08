@@ -120,7 +120,7 @@ describe("learned rows carry the shard's provenance once", () => {
     expect(recordOf(current.patternJson).sourceVersionId).toBe(owner.sourceVersionId);
     const projection = await fixture.storage.languageMemory.getLanguagePatternProjection!({ profileId: current.profileId,
       sourceId: owner.sourceId, sourceVersionId: owner.sourceVersionId, sourceSystem: "dialogue", patternSchema: String(legacyJson.schema),
-      componentRecipe: "kernel.creative_source_surface_acquisition.v1", informationLabel: current.informationLabel! });
+      componentRecipe: kernel.CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID, informationLabel: current.informationLabel! });
     expect(projection).toBeDefined();
     await fixture.storage.languageMemory.replaceLanguagePatternProjection!({ patterns: [legacy], projection: { ...projection!, patternIds: [legacy.id] } });
     expect((await fixture.storage.languageMemory.listLanguagePatterns({ profileIds: [current.profileId], patternSchemas: [String(legacyJson.schema)] })).map(pattern => pattern.id)).toEqual([legacy.id]);
@@ -133,7 +133,7 @@ describe("learned rows carry the shard's provenance once", () => {
       expect(new Set(fixture.state.sourceVersions.map(source => source.canonicalUri))).toEqual(new Set([input.sourceUri]));
       expect(new Set(fixture.state.sourceVersions.map(source => String(source.sourceVersionId)))).toEqual(new Set([String(first.sourceVersionId)]));
       expect(checkpoints.size).toBe(1);
-      expect(recordOf(recordOf(checkpoints.get(checkpoint.id)!.metadata).componentRecipes).creativeSurfaceAcquisition).toBe("kernel.creative_source_surface_acquisition.v1");
+      expect(recordOf(recordOf(checkpoints.get(checkpoint.id)!.metadata).componentRecipes).creativeSurfaceAcquisition).toBe(kernel.CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID);
       expect(fixture.state.patterns.filter(pattern => recordOf(pattern.patternJson).schema === "scce.creative_source_surface_acquisition_receipt.v1")).toHaveLength(1);
       expect(fixture.state.patterns.some(pattern => pattern.id === legacy.id)).toBe(true);
       const active = await fixture.storage.languageMemory.listLanguagePatterns({ profileIds: [current.profileId] });
@@ -169,7 +169,7 @@ describe("learned rows carry the shard's provenance once", () => {
       await trainLanguageCorpusText(input);
       expect(fixture.state.patterns.some(pattern => recordOf(pattern.patternJson).schema === "scce.creative_event_compatibility_model.v1")).toBe(false);
       expect(recordOf(recordOf([...checkpoints.values()][0]!.metadata).componentRecipes).creativeSurfaceAcquisition)
-        .toBe(creative ? "kernel.creative_source_surface_acquisition.v1" : undefined);
+        .toBe(kernel.CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID);
       await trainLanguageCorpusText(input);
       await trainLanguageCorpusText(input);
       expect(compile).toHaveBeenCalledTimes(1);
@@ -2644,6 +2644,41 @@ describe("dialogue corpus training", () => {
     expect(utterance.roles.filter(role => role.requestRoleId === bound[0]!.requestRoleId)).toHaveLength(2);
     const prerequisites = recordOf(recordOf(patterns.find(pattern => pattern.id === model.id)!.patternJson).sourceUtterancePrerequisites);
     expect(JSON.stringify(prerequisites)).toContain(referencePattern.id);
+  });
+
+  it("trains unlabelled genuine human dialogue through persistence into creative composition without granting source authority", async () => {
+    const human = JSON.parse(readFileSync(new URL("../../../kernel/src/__tests__/fixtures/oasst-human-russian-creative-pair.json", import.meta.url), "utf8")) as { text:string;turns:TranscriptTurn[];sourceMetadata:JsonValue };
+    const raw={...human,turns:human.turns.map(({requestAuthority:_annotation,...turn})=>turn)};
+    const root=await tempDir("unlabelled-human-composition-");await writeFile(path.join(root,"human.json"),JSON.stringify(raw),"utf8");
+    const fixture=memoryStorage();exposeOwnedDialogueEvidence(fixture);const checkpoints=new Map<string,IngestionCheckpoint>();
+    fixture.storage.ingestion={put:async row=>{checkpoints.set(row.id,structuredClone(row));},get:async id=>checkpoints.get(id)??null,list:async()=>[...checkpoints.values()]} as ScceStorage["ingestion"];
+    const options={storage:fixture.storage,rootPath:root,authorship:"human_authored" as const,informationLabel:ownerLabel,ngramMaxOrder:3,ngramMaxCountersPerOrder:64,maxFilesPerRun:1};
+    const trained=await trainDialogueCorpus(options);expect(trained.filesSkipped).toEqual([]);expect(trained.filesTrained).toBe(1);
+    const models=fixture.state.patterns.filter(row=>recordOf(row.patternJson).schema==="scce.creative_event_compatibility_model.v1");
+    fixture.state.patterns=JSON.parse(JSON.stringify(fixture.state.patterns));
+    const fresh="Nuv\u00e9l",old="\u0421\u043f\u0430\u043d\u0447",requestText=human.turns[0]!.surface.replaceAll(old,fresh),expected=human.turns[1]!.surface.replaceAll(old,fresh);
+    expect(human.text).not.toContain(fresh);let revision="0",accessible=true;
+    fixture.storage.languageMemory.readRevision=async()=>revision;
+    const clock=createClock({fixedTime:5000,stepMs:1}),recorded=storageFixtureForEvaluation({evidence:[],clockNow:()=>clock.now()});
+    const storage:ScceStorage={...recorded.storage,model:{...fixture.storage.model,readModel:async()=>({languageProfiles:fixture.state.profiles,latentConcepts:[],learnedProgramPatterns:[],learningGoals:[],trainingSteps:1})},languageMemory:fixture.storage.languageMemory,
+      evidence:{...recorded.storage.evidence,getEvidenceBatch:async ids=>accessible?fixture.state.evidence.filter(span=>ids.includes(span.id)):[],searchEvidence:async()=>[],sourceVersionsForEvidence:async ids=>fixture.state.sourceVersions.filter(version=>fixture.state.evidence.some(span=>ids.includes(span.id)&&span.sourceVersionId===version.sourceVersionId))},
+      userModelClaims:{putClaim:async()=>undefined,listClaims:async()=>[]},taskResumption:{putSnapshot:async()=>undefined,getLatestSnapshot:async()=>null},documentGeneration:{putSession:async()=>undefined,getSession:async()=>null,compareAndPutSession:async()=>({stored:true,currentUpdatedAt:null})},dialogueMemory:kernel.createInMemoryDialogueMemoryStore()};
+    const runtime=createScceKernel({storage,clock,idFactory:createIdFactory({clock,hasher:createHasher(),deterministicReplay:true}),deterministicReplay:true,files:{streamPath:async function*(){}},buildTest:{executeProgram:async()=>{throw Error("Human creative composition must not execute a process");}}});
+    const result=await runtime.turn({text:requestText,requestedAuthority:"creative"});
+    expect(result.answer.replace(/\s+/gu," ")).toBe(expected.replace(/\s+/gu," "));expect(result.answer.split(fresh)).toHaveLength(7);expect(result.evidence).toEqual([]);
+    expect(models.length).toBeGreaterThan(0);expect(models.every(row=>(recordOf(row.patternJson).sourceObservations as Array<{request:{sourceAuthority:string}}>).every(observation=>observation.request.sourceAuthority==="unknown"))).toBe(true);
+    expect(JSON.stringify(result.mouth)).toContain("source");expect(JSON.stringify(result.mouth)).toContain("conversation_bound");
+    const factual=await runtime.turn({text:requestText,requestedAuthority:"factual"});expect(factual.answer).toBe("");expect(["insufficient_support","realization_unavailable"]).toContain(factual.assistantForce);
+    const unknown=await runtime.turn({text:requestText});expect(unknown.requestedAuthorityDecision).not.toMatchObject({selectionSource:"source_observed_request_construction"});
+    accessible=false;revision="1";const revoked=await runtime.turn({text:requestText,requestedAuthority:"creative"});expect(revoked.answer).not.toBe(expected);expect(revoked.answer).not.toContain(fresh);
+    const profiles=fixture.state.profiles.map(profile=>profile.id),versions=fixture.state.sourceVersions.map(source=>source.sourceVersionId),writes=fixture.state.patterns.length;
+    const replay=await trainDialogueCorpus(options);expect(replay.filesSkipped).toEqual([]);expect(fixture.state.profiles.map(profile=>profile.id)).toEqual(profiles);expect(fixture.state.sourceVersions.map(source=>source.sourceVersionId)).toEqual(versions);expect(fixture.state.patterns).toHaveLength(writes);
+    const checkpoint=[...checkpoints.values()].find(row=>recordOf(row.metadata).componentRecipes!==undefined)!,metadata=recordOf(checkpoint.metadata),recipes={...recordOf(metadata.componentRecipes)};delete recipes.creativeSurfaceAcquisition;checkpoint.metadata=toJsonValue({...metadata,componentRecipes:recipes});
+    const compile=vi.spyOn(kernel,"compileLanguageTrainingBatch");
+    try{await trainDialogueCorpus(options);expect(compile).toHaveBeenCalledTimes(1);await trainDialogueCorpus(options);expect(compile).toHaveBeenCalledTimes(1);
+      expect(new Set(fixture.state.profiles.map(profile=>profile.id))).toEqual(new Set(profiles));expect(new Set(fixture.state.sourceVersions.map(source=>source.sourceVersionId))).toEqual(new Set(versions));
+      expect(recordOf(recordOf(checkpoints.get(checkpoint.id)!.metadata).componentRecipes).creativeSurfaceAcquisition).toBe(kernel.CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID);
+    }finally{compile.mockRestore();}
   });
 
   it("acquires creative source events through ordinary human dialogue training without a caller compiler", async () => {

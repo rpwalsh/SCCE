@@ -103,7 +103,8 @@ describe("declared human creative source correspondence", () => {
     const semanticPlan = jsonRecord(jsonRecord(invention.trace).structuralSemanticPlan);
     const events = (Array.isArray(semanticPlan.events) ? semanticPlan.events : []).map(jsonRecord);
     expect(events.length).toBeGreaterThanOrEqual(4);
-    const first = events[0]!;
+    const first = events.find(row => scoped.importedConstructionBundles.find(bundle => bundle.id === row.bundleId)?.creativeEvents?.some(event => event.id === row.eventId && event.sourceLabel === "run"))!;
+    expect(first).toBeDefined();
     const sourceEvent = scoped.importedConstructionBundles.find(bundle => bundle.id === first.bundleId)!.creativeEvents!.find(event => event.id === first.eventId)!;
     expect(sourceEvent.sourceLabel).toBe("run");
     const profile = createLanguageAcquisitionEngine({ idFactory: ids }).acquire({ sourceVersionId: evidence[0]!.sourceVersionId, text: humanPair.text, createdAt: 1 });

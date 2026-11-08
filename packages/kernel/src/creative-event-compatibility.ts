@@ -32,6 +32,8 @@ export interface CreativeRequestRole {
 }
 
 export interface CreativeRequestFrameAnchor {
+  /** Retained source declaration, never an authority inferred from observing a reply. */
+  sourceAuthority?: "creative" | "unknown";
   requestFrameId: string;
   requestCompilerId: string;
   lexicalKeys: string[];
@@ -533,7 +535,7 @@ export function compileCreativeRequestFrameFromCompatibilityModels(input: {
         .slice(0, 16)
     ].filter((value, index, array) => Boolean(value) && array.indexOf(value) === index)
   };
-  if (selected.model.reliability === "source_observed") observedRequestAuthorities.set(frame, {
+  if (selected.model.reliability === "source_observed" && selected.anchor.sourceAuthority === "creative") observedRequestAuthorities.set(frame, {
     frameMaterial: canonicalStringify(frame), observation: Object.freeze({
       authority: "creative", qualification: "source_observed", modelId: selected.model.id,
       requestFrameId: selected.anchor.requestFrameId, sourceActivationIds: Object.freeze([...frame.sourceActivationIds])
@@ -857,6 +859,7 @@ function requestFrameAnchorFromUnknown(value: unknown, evidenceIds: readonly Evi
   if (!isRecord(value)) return [];
   const row: CreativeRequestFrameAnchor = {
     requestFrameId: stringValue(value.requestFrameId),
+    ...(value.sourceAuthority === "creative" || value.sourceAuthority === "unknown" ? {sourceAuthority:value.sourceAuthority}:{}),
     requestCompilerId: stringValue(value.requestCompilerId),
     lexicalKeys: stringArray(value.lexicalKeys).sort(),
     requestRoleIds: stringArray(value.requestRoleIds).sort(),
@@ -986,7 +989,9 @@ function validRequestFrameAnchor(row: CreativeRequestFrameAnchor): boolean {
 function sourceAnchorOwned(anchor: CreativeRequestFrameAnchor, observations: readonly CreativeSourceCorrespondence[]): boolean {
   const rows = observations.filter(row => row.requestFrameId === anchor.requestFrameId);
   const examples = anchor.requestRoleExamples ?? [];
-  return rows.length > 0 && examples.length > 0 && examples.every(example => rows.some(row => row.request.surface === example.surface
+  return rows.length > 0 && rows.every(row=>row.request.sourceAuthority===anchor.sourceAuthority)
+    && (anchor.sourceAuthority === "creative" || anchor.sourceAuthority === "unknown")
+    && examples.length > 0 && examples.every(example => rows.some(row => row.request.surface === example.surface
     && example.evidenceIds.includes(row.request.evidenceId)) && example.profileKey === anchor.requestCompilerId
     && example.roleSpans.every(role => rows.some(row => row.request.surface === example.surface
       && row.bindings.some(binding => binding.requestRoleId === role.roleId && binding.requestStart === role.start && binding.requestEnd === role.end))));

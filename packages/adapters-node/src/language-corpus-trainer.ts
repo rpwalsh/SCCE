@@ -399,10 +399,10 @@ function corpusComponentRecipes(input: LanguageCorpusTrainingInput): Record<stri
       sourceConstructionProjection: LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID,
       ...(hasGraphDependency ? { sourceConstructionBindings: SOURCE_CONSTRUCTION_BINDINGS_COMPONENT_RECIPE_ID } : {}) } : {};
   if (!input.languageOnly && needsConstructionContext(input)) components.constructionContext = SOURCE_CONSTRUCTION_CONTEXT_RECIPE_ID;
-  const creativeRequests = new Map((naturalSource ? input.transcriptTurns ?? [] : [])
-    .filter(turn => turn.requestAuthority === "creative").map(turn => [turn.index, turn]));
+  const conversationalRequests = new Map((naturalSource ? input.transcriptTurns ?? [] : [])
+    .filter(turn => turn.requestAuthority === undefined || turn.requestAuthority === "creative").map(turn => [turn.index, turn]));
   if (naturalSource && input.transcriptTurns?.some(reply => {
-    const request = creativeRequests.get(reply.replyToTurnIndex ?? -1);
+    const request = conversationalRequests.get(reply.replyToTurnIndex ?? -1);
     return request && reply.commitmentScope === "conversation" && request.index < reply.index && request.endCodePoint <= reply.startCodePoint;
   })) {
     components.creativeSurfaceAcquisition = CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID;

@@ -12,14 +12,14 @@ import { createSourceTextPointCache, sourceTextPointLength, sourceTextPointSlice
 import { sourceReferencePropertiesForSpan, sourceReferencePropertyByIdentity, type OwnedSourceReferenceBindings } from "./source-reference-bindings.js";
 import { CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID } from "./language-training-recipe.js";
 
-export const CREATIVE_SOURCE_CORRESPONDENCE_RECIPE = "kernel.creative_source_correspondence.v1" as const;
+export const CREATIVE_SOURCE_CORRESPONDENCE_RECIPE = "kernel.creative_source_correspondence.v2" as const;
 
 export interface CreativeSourceCorrespondence {
   id: string;
   requestFrameId: string;
   sourceId: string;
   sourceVersionId: string;
-  request: SourceTurnWitness & { surface: string };
+  request: SourceTurnWitness & { surface: string; sourceAuthority:"creative"|"unknown" };
   reply: SourceTurnWitness & { replyToTurnIndex: number; commitmentScope: "conversation" };
   eventId: string;
   eventRelationId: string;
@@ -155,7 +155,7 @@ export function compileCreativeSourceCorrespondences(input: CreativeSourceCorres
   let eventRanges: Map<string, SourceEventRangeIndex> | undefined;
   for (const reply of input.turns) {
     const request = byIndex.get(reply.replyToTurnIndex ?? -1);
-    if (!request || request.requestAuthority !== "creative" || reply.commitmentScope !== "conversation"
+    if (!request || (request.requestAuthority !== undefined && request.requestAuthority !== "creative") || reply.commitmentScope !== "conversation"
       || request.index >= reply.index || request.endCodePoint > reply.startCodePoint) continue;
     const requestOwner = evidence.find(span => ownsTurn(span, request));
     const replyOwner = evidence.find(span => ownsTurn(span, reply) && span.sourceId === requestOwner?.sourceId && span.sourceVersionId === requestOwner?.sourceVersionId);
@@ -197,9 +197,10 @@ export function compileCreativeSourceCorrespondences(input: CreativeSourceCorres
     let cursor = 0;
     const topology = roles.map(role => { const literal = points.slice(cursor, role.start).join("").normalize("NFKC").toLocaleLowerCase(); cursor = role.end; return literal; });
     topology.push(points.slice(cursor).join("").normalize("NFKC").toLocaleLowerCase());
-    const requestFrameId = digest(input.hasher, "creative.request.observed.frame", { compilerId, topology });
+    const sourceAuthority: CreativeSourceCorrespondence["request"]["sourceAuthority"] = request.requestAuthority === "creative" ? "creative" : "unknown";
+    const requestFrameId = digest(input.hasher, "creative.request.observed.frame", { compilerId, topology,sourceAuthority });
     const roleIds = roles.map((_, index) => `${requestFrameId}.role.${index}`);
-    const requestWitness = { ...turnWitness(requestOwner, request, input.hasher), surface: request.surface };
+    const requestWitness = { ...turnWitness(requestOwner, request, input.hasher), surface: request.surface,sourceAuthority };
     const replyWitness = { ...turnWitness(replyOwner, reply, input.hasher), replyToTurnIndex: request.index, commitmentScope: "conversation" as const };
     for (const { event, bindings } of eventMatches) {
       if (bindings.length !== event.argumentFrame.bindings.length) continue;
@@ -219,7 +220,7 @@ export function compileCreativeSourceCorrespondences(input: CreativeSourceCorres
         roleId: roleIds[index]!, occurrenceId: roleIds[index]!, start: role.start, end: role.end,
         surface: points.slice(role.start, role.end).join(""), evidenceIds: [String(requestOwner.id)] })) };
     const previous = anchors.get(requestFrameId);
-    anchors.set(requestFrameId, { requestFrameId, requestCompilerId: compilerId,
+    anchors.set(requestFrameId, { requestFrameId, requestCompilerId: compilerId,sourceAuthority,
       lexicalKeys: [...new Set(segments.map(row => row.normalized))].sort(), requestRoleIds: roleIds,
       support: (previous?.support ?? 0) + 1, observedSupport: (previous?.observedSupport ?? 0) + 1, acceptedSupport: 0, rejectedSupport: 0,
       exampleTextHashes: [...(previous?.exampleTextHashes ?? []), example.id], requestRoleExamples: [...(previous?.requestRoleExamples ?? []), example] });
@@ -284,6 +285,7 @@ export function verifyCreativeSourceCorrespondence(row: CreativeSourceCorrespond
 function verifyCreativeSourceCorrespondenceIndexed(row: CreativeSourceCorrespondence, context: CreativeSourceCorrespondenceContext, owners: readonly string[],
   points: SourceTextPointCache, evidenceById: ReadonlyMap<string, EvidenceSpan>, eventsById: ReadonlyMap<string, readonly DurableCreativeEventConstruction[]>): boolean {
   if (!row || typeof row !== "object" || !row.request || !row.reply || !Array.isArray(row.bindings)
+    || (row.request.sourceAuthority !== "creative" && row.request.sourceAuthority !== "unknown")
     || typeof row.request.surface !== "string" || typeof row.request.surfaceHash !== "string" || typeof row.reply.surfaceHash !== "string"
     || !Number.isSafeInteger(row.request.turnIndex) || !Number.isSafeInteger(row.reply.turnIndex)
     || row.bindings.some(binding => !binding || typeof binding !== "object" || typeof binding.requestRoleId !== "string"
