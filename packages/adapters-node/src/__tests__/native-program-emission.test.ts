@@ -153,8 +153,9 @@ func TestPrivateScalar(t *testing.T) { if f0(17)!=18||f0(-7)!=-6 {t.Fatal("unsee
     const item={...original,files:{"lib.rs":original.files["lib.rs"].replaceAll("f64","i64").replace(/([0-9]+)\.0/gu,"$1")}};
     const source=await acquired(item);
     const emitted=createProgramPlanner({idFactory:source.ids,hasher:source.hasher}).emitIfAvailable(source.input);
-    expect(emitted.availability).toEqual({status:"unavailable",languageId:"rust",reasonIds:["program.emission.rust.signature_unsupported"]});
-    expect(emitted.program).toBeUndefined();
+    expect(emitted.availability).toEqual({status:"available",languageId:"rust",reasonIds:[]});
+    expect(emitted.program!.files.find(file=>file.path.endsWith(".rs")&&file.role==="source")!.content).toContain("-> i64");
+    expect(emitted.program!.files.find(file=>file.path.endsWith(".rs")&&file.role==="source")!.content).not.toContain("f64");
   });
 
   it("retains source-observed Rust negative-zero float tags across persisted contracts",async()=>{

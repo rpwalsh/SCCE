@@ -8,6 +8,7 @@ import {bindNativeRuntimePath,relativeNativeSourcePath} from "./native-runtime-p
 import {programArtifactProofBinding} from "./program-artifact-proof.js";
 import { nativeGoProgram } from "./native-go-program.js";
 import { NativeProgramEmissionError } from "./native-owner-abis.js";
+import {hasOwnedRustScalarAbi,nativeRustProgram} from "./native-rust-program.js";
 import { nativeRustStatefulProgram } from "./native-rust-stateful-program.js";
 import { createEngineeringCorpusRuntime, packageManagerCommandName, plannerScriptKind } from "./engineering-corpus-runtime.js";
 import { createProgramHydrationContract, hydrationSummary } from "./program-runtime.js";
@@ -3625,13 +3626,13 @@ function rustOwnerRequirementIssue(plan: ProgramPlan, requestText?: string): Rus
 
 export function programPlanEmissionAvailability(plan: ProgramPlan, requestText: string): ProgramEmissionAvailability {
   const languageId = emittedRuntimeForShape(plan.intent.shape).languageId;
-  if (languageId === "go" || languageId === "rust" && plan.ownerStatefulBehaviorRequirements.length) {
-    try { if (languageId === "go") nativeGoProgram(plan); else nativeRustStatefulProgram(plan, emittedRuntimeForShape(plan.intent.shape)); } catch (error) {
+  if (languageId === "go" || languageId === "rust" && (plan.ownerStatefulBehaviorRequirements.length || hasOwnedRustScalarAbi(plan))) {
+    try { if (languageId === "go") nativeGoProgram(plan); else if(plan.ownerStatefulBehaviorRequirements.length) nativeRustStatefulProgram(plan, emittedRuntimeForShape(plan.intent.shape)); else nativeRustProgram(plan,emittedRuntimeForShape(plan.intent.shape)); } catch (error) {
       if (error instanceof NativeProgramEmissionError) return { status: "unavailable", languageId, reasonIds: [error.reasonId] };
       throw error;
     }
   }
-  const issue = languageId === "rust" && !plan.ownerStatefulBehaviorRequirements.length ? rustOwnerRequirementIssue(plan, requestText) : undefined;
+  const issue = languageId === "rust" && !plan.ownerStatefulBehaviorRequirements.length && !hasOwnedRustScalarAbi(plan) ? rustOwnerRequirementIssue(plan, requestText) : undefined;
   return { status: issue ? "unavailable" : "available", languageId, reasonIds: issue ? [issue.reasonId] : [] };
 }
 
@@ -3648,6 +3649,7 @@ function rustOwnerRequirements(plan: ProgramPlan): Map<string, ProgramBehaviorRe
 }
 
 function executableRustProgramModule(plan: ProgramPlan, requestText: string): string {
+  if(hasOwnedRustScalarAbi(plan))return nativeRustProgram(plan,emittedRuntimeForShape(plan.intent.shape)).source;
   const groups = rustOwnerRequirements(plan);
   const issue = rustOwnerRequirementIssue(plan, requestText);
   if (issue) throw new Error(issue.message);
@@ -3662,6 +3664,7 @@ function executableRustProgramModule(plan: ProgramPlan, requestText: string): st
 }
 
 function executableRustProgramTest(plan: ProgramPlan): string {
+  if(hasOwnedRustScalarAbi(plan))return nativeRustProgram(plan,emittedRuntimeForShape(plan.intent.shape)).test;
   rustOwnerRequirements(plan);
   const tests = plan.ownerBehaviorRequirements.map((requirement, index) => `#[test]\nfn owner_requirement_${index}() {\n    let actual = program::${rustCallableName(requirement.callableId)}(${requirement.arguments.map(value => rustF64Literal(value as number)).join(", ")});\n    let expected = ${rustF64Literal(requirement.expectedResult as number)};\n    assert!(actual.is_finite() && (actual - expected).abs() <= 1e-9_f64 * expected.abs().max(1.0_f64), "{} failed: actual={:?}, expected={:?}", ${JSON.stringify(requirement.id)}, actual, expected);\n}`);
   return `#[path = ${JSON.stringify(relativeNativeSourcePath(emittedRuntimeForShape(plan.intent.shape).testPath,emittedRuntimeForShape(plan.intent.shape).sourcePath))}]\nmod program;\n\n${tests.join("\n\n")}\n`;
