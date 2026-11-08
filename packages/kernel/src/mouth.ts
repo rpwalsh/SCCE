@@ -567,6 +567,7 @@ interface SelectedMouthProducerContract {
 }
 
 const selectedMouthProducerContracts = new WeakMap<SpeakInput, SelectedMouthProducerContract>();
+const mouthClosedClassScopes = new WeakMap<SpeakInput, { words?: ReadonlySet<string> }>();
 const selectedMouthProducerInvocationByToken = new WeakMap<object, {
   contract: SelectedMouthProducerContract;
   normalizedInput: SpeakInput;
@@ -1388,15 +1389,20 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
   return {
     async speak(input) {
       const realizationInput = withSelectedSourceContentPlan(withVerifiedEntailmentClaim(withSelectedEntailmentClaim({ ...input })));
-      const spoken = await learned.speak(realizationInput);
-      const producer = selectedMouthProducerContracts.get(realizationInput);
-      if (producer) {
-        const token = {};
-        selectedMouthProducerInvocationByToken.set(token, { contract: producer, normalizedInput: realizationInput, invocationInput: input });
-        // Private symbol data survives the production wrapper's shallow copy but is never serialized as trace or API data.
-        Object.defineProperty(spoken, SELECTED_MOUTH_PRODUCER_TOKEN, { value: token, enumerable: true });
+      mouthClosedClassScopes.set(realizationInput, {});
+      try {
+        const spoken = await learned.speak(realizationInput);
+        const producer = selectedMouthProducerContracts.get(realizationInput);
+        if (producer) {
+          const token = {};
+          selectedMouthProducerInvocationByToken.set(token, { contract: producer, normalizedInput: realizationInput, invocationInput: input });
+          // Private symbol data survives the production wrapper's shallow copy but is never serialized as trace or API data.
+          Object.defineProperty(spoken, SELECTED_MOUTH_PRODUCER_TOKEN, { value: token, enumerable: true });
+        }
+        return withSurfaceContract(realizationInput, spoken, SURFACE_REALIZATION_STRATEGY_IDS.learned);
+      } finally {
+        mouthClosedClassScopes.delete(realizationInput);
       }
-      return withSurfaceContract(realizationInput, spoken, SURFACE_REALIZATION_STRATEGY_IDS.learned);
     }
   };
 }
@@ -5581,6 +5587,9 @@ function rhetoricalLatticeCandidateFromFrames(
   priorPieces: readonly ImportedSurfacePiece[],
   generationWorkBudget: MouthGenerationWorkBudget
 ): SurfaceCandidate | undefined {
+  const state = semanticAnswerConstructState(input.construct);
+  if (state && learnedPriorRequiredFacts(state).some(fact => fact.forceClass === "direct_evidence"
+    && currentSourceBoundFactEvidenceOwners(state, fact, input.evidence).length === 0)) return undefined;
   const frames = plan.realizationFrames.filter(frame => semanticFactFromRealizationConstraints(frame.realizationConstraints));
   if (!frames.length) return undefined;
   const contextSymbols = uniqueStrings([
@@ -7526,7 +7535,7 @@ function speakConversationTurns(input: SpeakInput): ConversationTurnSurface[] {
 }
 
 function ownerConversationInput(input: SpeakInput): SpeakInput {
-  return { ...input, conversationTurns: speakConversationTurns(input).filter(turn => turn.roleId === "session.role.owner") };
+  return inheritMouthClosedClassScope(input, { ...input, conversationTurns: speakConversationTurns(input).filter(turn => turn.roleId === "session.role.owner") });
 }
 
 function speakCommitmentInventory(
@@ -7648,7 +7657,9 @@ function mouthCoverageUnits(input: SpeakInput): string[] {
 
 /** The learned closed class the mouth judges coverage with: the role language's models plus the request scaffolding. Pure. */
 function mouthClosedClass(input: SpeakInput): Set<string> {
-  return requestClosedClassWords({
+  const scope = mouthClosedClassScopes.get(input);
+  if (scope?.words) return new Set(scope.words);
+  const words = requestClosedClassWords({
     requestText: input.requestText ?? "",
     models: input.languageMemory?.models ?? [],
     continuationPopulation: input.languageMemory?.continuationPopulation,
@@ -7656,6 +7667,14 @@ function mouthClosedClass(input: SpeakInput): Set<string> {
     patterns: [...(input.requestControlPatterns ?? []), ...(input.languageMemory?.importedPatterns ?? [])],
     authority: input.requestedAuthority
   });
+  if (scope) scope.words = new Set(words);
+  return words;
+}
+
+function inheritMouthClosedClassScope(input: SpeakInput, derived: SpeakInput): SpeakInput {
+  const scope = mouthClosedClassScopes.get(input);
+  if (scope) mouthClosedClassScopes.set(derived, scope);
+  return derived;
 }
 
 /** Content and relation checks share the same source-witnessed request scaffolding. */
@@ -8384,11 +8403,11 @@ function factualProducerAuthorityHits(
       claim.evidenceIds.length === 0 || claim.evidenceIds.some(id => !ids.has(String(id)))
     )) return ["surface.reject.factual_claim_authority_mismatch"];
   }
-  const scopedInput: SpeakInput = {
+  const scopedInput: SpeakInput = inheritMouthClosedClassScope(input, {
     ...input,
     evidence: owners,
     claimBases: authority.kind === "evidence_bound_proposition" ? authority.claims : []
-  };
+  });
   const roleValue = currentSourceBoundRoleValueFact({ text, contract: input.realizationContract,
     facts: semanticAnswerConstructState(input.construct)?.selectedFacts ?? [], evidence: owners });
   const quotation = authority.kind === "source_excerpt";
