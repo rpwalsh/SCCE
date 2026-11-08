@@ -93,7 +93,7 @@ export async function reviewHeldSource(storage: ReviewStorage & Partial<Pick<Scc
       sourceTrust: original.sourceTrust, informationLabel: original.informationLabel,
       sourceAdmission: { ...context, intendedUse: context.intendedUse === "quarantine_only" ? "direct_evidence" : context.intendedUse, promotionAuthority: "owner" },
       ...(source.derivation && derivativeBytes ? { evidenceDerivative: {
-        bytes: derivativeBytes, text: Buffer.from(derivativeBytes).toString("utf8"),
+        bytes: derivativeBytes, text: new TextDecoder("utf-8", { ignoreBOM: true }).decode(derivativeBytes),
         kind: source.derivation.kind, transformId: source.derivation.transformId,
         originalCoordinateSpace: source.derivation.originalCoordinateSpace, redactionMap: source.derivation.redactionMap
       } } : {})

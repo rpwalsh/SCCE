@@ -1,14 +1,36 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createScceKernel } from "../kernel.js";
 import { createClock, createHasher, toJsonValue } from "../primitives.js";
 import { reviewHeldSource } from "../learning-review.js";
 import { storageFixtureForEvaluation } from "./evidence-promotion-evaluation-fixture.js";
 import type { QuarantineSource, ScceKernelDeps } from "../storage.js";
-import type { ContentHash, EvidenceSpan, GraphEdge, GraphNode, Hyperedge, SourceVersion } from "../types.js";
+import type { ContentHash, EvidenceSpan, GraphEdge, GraphNode, Hyperedge, IngestInput, IngestResult, SourceVersion } from "../types.js";
 
 describe("owner-reviewed knowledge activation", () => {
+  it("preserves owned UTF-8 derivative text without a Node Buffer global", async () => {
+    const text = "\uFEFF\u732B e\u0301 \u{1F680}";
+    const bytes = new TextEncoder().encode(text);
+    const original = { sourceId: "source:owned", sourceVersionId: "source:original", contentHash: "hash:original", canonicalUri: "fixture://owned", namespace: "fixture", mediaType: "application/pdf", metadata: {}, sourceTrust: {} };
+    const derivative = { ...original, sourceVersionId: "source:derivative", contentHash: "hash:derivative", mediaType: "text/plain", derivation: { derivedFromSourceVersionId: original.sourceVersionId, kind: "extracted-text", transformId: "fixture:extract", originalCoordinateSpace: "extracted-text-utf8", redactionMap: [] } };
+    const storage = {
+      quarantine: { get: async () => ({ sourceId: original.sourceId, sourceVersionId: derivative.sourceVersionId, uri: original.canonicalUri, decision: "pending", permissionVector: { sourceAdmission: { sourceClass: "runtime_web", intendedUse: "direct_evidence" } } }), markDecision: vi.fn() },
+      evidence: { sourceVersionById: async (id: string) => id === derivative.sourceVersionId ? derivative : original },
+      blobs: { get: async (hash: string) => hash === derivative.contentHash ? bytes : new Uint8Array([1, 2, 3]) }
+    } as unknown as Parameters<typeof reviewHeldSource>[0];
+    const ingest = vi.fn(async (input: IngestInput) => {
+      expect(input.evidenceDerivative?.text).toBe(text);
+      expect(input.evidenceDerivative?.bytes).toEqual(bytes);
+      return { evidence: 1, events: [{ typeId: "SourcePromoted", payload: { sourceVersionId: derivative.sourceVersionId } }] } as unknown as IngestResult;
+    });
+    vi.stubGlobal("Buffer", undefined);
+    try {
+      await reviewHeldSource(storage, { id: "held:owned", decision: "promoted" }, { ingest });
+      expect(ingest).toHaveBeenCalledOnce();
+    } finally { vi.unstubAllGlobals(); }
+  });
+
   it.each([false, true])("replays the canonical source into graph and subsequent retrieval without changing identity (derivative=%s)", async derivative => {
     const evidence: EvidenceSpan[] = [];
     const { storage } = storageFixtureForEvaluation({ evidence, clockNow: () => 100 });
