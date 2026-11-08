@@ -17,25 +17,41 @@ export interface StoredJoinProgramMixture {
 }
 export interface LegacyStoredJoinProgramMixture { schema: typeof JOIN_PROGRAM_MIXTURE_STORAGE_V1_SCHEMA; mixture: unknown }
 export type JoinProgramMixtureInput = JoinProgramMixture | StoredJoinProgramMixture | LegacyStoredJoinProgramMixture;
+const immutableStorageForms = new WeakSet<StoredJoinProgramMixture>();
 
 /** Intern repeated key atoms and complete choices without changing the public runtime indexes. */
-export function joinProgramMixtureStorageForm(input: JoinProgramMixtureInput): StoredJoinProgramMixture {
-  const mixture = joinProgramMixtureFromStorage(input);
+export function joinProgramMixtureStorageForm(input: JoinProgramMixtureInput, options: { immutable?: boolean } = {}): StoredJoinProgramMixture {
+  if (immutableStorageForms.has(input as StoredJoinProgramMixture)) return input as StoredJoinProgramMixture;
+  const mixture = decodeJoinProgramMixture(input, true);
   if (!mixture) throw new Error("invalid join-program mixture storage");
   const components = mixture.components.map(component => {
     const evidenceIds = new Set<string>();
     const coordinates = new Map<string, JoinEvidenceCoordinate>();
     const atoms = new Map<string, Atom>();
+    const coordinateKeys = new WeakMap<JoinEvidenceCoordinate, string>();
+    const coordinateIdentity = (coordinate: JoinEvidenceCoordinate): string => {
+      let key = coordinateKeys.get(coordinate);
+      if (key === undefined) { key = coordinateKey(coordinate); coordinateKeys.set(coordinate, key); }
+      return key;
+    };
+    const parsedKeys = new Map<string, Atom[] | undefined>();
+    const sourceChoices = new Set<JoinProgramChoice>();
     const entries = new Map<ProgramIndex, Array<[string, JoinProgramChoice[]]>>();
     for (const indexName of INDEXES) {
       const rows = Object.entries(component.program[indexName]).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
       entries.set(indexName, rows);
       for (const [key, choices] of rows) {
-        for (const atom of keyAtoms(key) ?? []) atoms.set(JSON.stringify(atom), atom);
+        if (!parsedKeys.has(key)) {
+          const parsed = keyAtoms(key);
+          parsedKeys.set(key, parsed);
+          for (const atom of parsed ?? []) atoms.set(JSON.stringify(atom), atom);
+        }
         for (const choice of choices) {
+          if (sourceChoices.has(choice)) continue;
+          sourceChoices.add(choice);
           atoms.set(JSON.stringify(choice.surface), choice.surface);
           for (const id of choice.evidenceIds) evidenceIds.add(id);
-          for (const coordinate of choice.evidenceCoordinates) coordinates.set(coordinateKey(coordinate), coordinate);
+          for (const coordinate of choice.evidenceCoordinates) coordinates.set(coordinateIdentity(coordinate), coordinate);
         }
       }
     }
@@ -43,30 +59,43 @@ export function joinProgramMixtureStorageForm(input: JoinProgramMixtureInput): S
     const evidenceCoordinateDictionary = [...coordinates].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([, value]) => value);
     const keyAtomDictionary = [...atoms].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([, value]) => value);
     const evidenceIndex = new Map(evidenceIdDictionary.map((id, index) => [id, index]));
-    const coordinateIndex = new Map(evidenceCoordinateDictionary.map((value, index) => [coordinateKey(value), index]));
-    const atomIndex = new Map(keyAtomDictionary.map((value, index) => [JSON.stringify(value), index]));
-    const compactChoice = (choice: JoinProgramChoice): StoredChoice => [atomIndex.get(JSON.stringify(choice.surface))!, choice.count, choice.probability,
-      choice.evidenceIds.map(id => evidenceIndex.get(id)!), choice.evidenceCoordinates.map(value => coordinateIndex.get(coordinateKey(value))!)];
+    const coordinateIndex = new Map(evidenceCoordinateDictionary.map((value, index) => [coordinateIdentity(value), index]));
+    const atomIndex = new Map(keyAtomDictionary.map((value, index) => [value, index]));
     const choices = new Map<string, StoredChoice>();
-    for (const rows of entries.values()) for (const [, values] of rows) for (const choice of values) {
-      const compact = compactChoice(choice);
-      choices.set(JSON.stringify(compact), compact);
+    const choiceKeys = new Map<JoinProgramChoice, string>();
+    for (const choice of sourceChoices) {
+      const compact: StoredChoice = [atomIndex.get(choice.surface)!, choice.count, choice.probability,
+        choice.evidenceIds.map(id => evidenceIndex.get(id)!), choice.evidenceCoordinates.map(value => coordinateIndex.get(coordinateIdentity(value))!)];
+      const key = JSON.stringify(compact);
+      choiceKeys.set(choice, key);
+      choices.set(key, compact);
     }
     const sortedChoices = [...choices].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
     const choiceDictionary = sortedChoices.map(([, value]) => value);
     const choiceIndex = new Map(sortedChoices.map(([key], index) => [key, index]));
     const indexes = Object.fromEntries(INDEXES.map(indexName => [indexName, entries.get(indexName)!.map(([key, values]) => {
-      const parsed = keyAtoms(key);
-      return [parsed ? parsed.map(atom => atomIndex.get(JSON.stringify(atom))!) : key, values.map(choice => choiceIndex.get(JSON.stringify(compactChoice(choice)))!)];
+      const parsed = parsedKeys.get(key);
+      return [parsed ? parsed.map(atom => atomIndex.get(atom)!) : key, values.map(choice => choiceIndex.get(choiceKeys.get(choice)!)!)];
     })])) as StoredProgram["indexes"];
     const { conditionedIndex: _conditioned, exactIndex: _exact, structuralIndex: _structural, classIndex: _class, localShapeIndex: _local, constructionIndex: _construction, ...header } = component.program;
-    return { ...component, program: { header, evidenceIdDictionary, evidenceCoordinateDictionary, keyAtomDictionary, choiceDictionary, indexes } };
+    const { program: _program, ...componentHeader } = component;
+    return sortedRecord({ ...losslessSorted(componentHeader), program: sortedRecord({
+      header: losslessSorted(header), evidenceIdDictionary, evidenceCoordinateDictionary: evidenceCoordinateDictionary.map(value => losslessSorted(value)),
+      keyAtomDictionary, choiceDictionary, indexes: sortedRecord(indexes)
+    }) });
   });
-  return losslessSorted<StoredJoinProgramMixture>({ schema: JOIN_PROGRAM_MIXTURE_STORAGE_SCHEMA, mixture: { ...mixture, components } });
+  const { components: _components, ...mixtureHeader } = mixture;
+  const stored = sortedRecord<StoredJoinProgramMixture>({ schema: JOIN_PROGRAM_MIXTURE_STORAGE_SCHEMA, mixture: sortedRecord({ ...losslessSorted(mixtureHeader), components }) });
+  if (options.immutable) { freezeProducts(stored); immutableStorageForms.add(stored); }
+  return stored;
 }
 
 /** Decode both storage versions into the single existing runtime representation. */
 export function joinProgramMixtureFromStorage(value: unknown): JoinProgramMixture | undefined {
+  return decodeJoinProgramMixture(value, false);
+}
+
+function decodeJoinProgramMixture(value: unknown, shareChoices: boolean): JoinProgramMixture | undefined {
   if (isJoinProgramMixture(value)) return value;
   const root = record(value);
   const version = root?.schema;
@@ -117,7 +146,10 @@ export function joinProgramMixtureFromStorage(value: unknown): JoinProgramMixtur
           else if (refs(entry[0], atoms.length)) key = JSON.stringify(entry[0].map(index => atoms[index]));
           else return undefined;
           if (!refs(entry[1], choices.length)) return undefined;
-          values = entry[1].map(index => { const choice = choices[index]!; return { ...choice, evidenceIds: [...choice.evidenceIds], evidenceCoordinates: [...choice.evidenceCoordinates] }; });
+          values = entry[1].map(index => {
+            const choice = choices[index]!;
+            return shareChoices ? choice : { ...choice, evidenceIds: [...choice.evidenceIds], evidenceCoordinates: [...choice.evidenceCoordinates] };
+          });
         } else {
           if (typeof entry[0] !== "string") return undefined;
           key = entry[0];
@@ -154,6 +186,15 @@ function ref(value: unknown, length: number): value is number { return typeof va
 function refs(value: unknown, length: number): value is number[] { return Array.isArray(value) && value.every(index => ref(index, length)); }
 function strings(value: unknown): value is string[] { return Array.isArray(value) && value.every(item => typeof item === "string"); }
 function unique(values: readonly string[]): boolean { return new Set(values).size === values.length; }
+function freezeProducts(value: unknown): void {
+  if (value && typeof value === "object") {
+    for (const child of Object.values(value)) freezeProducts(child);
+    Object.freeze(value);
+  }
+}
+function sortedRecord<T extends object>(value: T): T {
+  return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) as T;
+}
 function losslessSorted<T>(value: T): T {
   if (Array.isArray(value)) return value.map(item => losslessSorted(item)) as T;
   if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, item]) => [key, losslessSorted(item)])) as T;

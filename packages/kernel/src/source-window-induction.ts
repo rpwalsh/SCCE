@@ -123,7 +123,7 @@ export function compileSourceInductionWindows(input: { documents: readonly Langu
     const { id, audit, morphology, morphologyClassBindings, syntaxTemplates, boundarySignals, joinProgram,
       semanticFrames, graphBoundConstructions, lexicalClasses, relationHypothesisModel, translationSeeds } = model;
     const compact = freezeProducts({ id, audit, morphology, morphologyClassBindings, syntaxTemplates, boundarySignals,
-      joinProgram: joinProgramMixtureStorageForm(joinProgram),
+      joinProgram: joinProgramMixtureStorageForm(joinProgram, { immutable: true }),
       semanticFrames, graphBoundConstructions: graphBoundConstructions.map(construction => ({ ...construction,
         sourceWindows: batch.windows.filter(window => window.evidenceIds.some(id => construction.evidenceIds.includes(id as typeof construction.evidenceIds[number])))
           .map(({ ownerDocumentId, startUtf16, endUtf16 }) => ({ ownerDocumentId, startUtf16, endUtf16 }))

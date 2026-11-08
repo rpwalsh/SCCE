@@ -1,6 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { JOIN_PROGRAM_SCHEMA, JOIN_PROGRAM_MIXTURE_SCHEMA, renderJoinedSurface, type JoinProgramModel, type JoinProgramMixture } from "../join-program.js";
 import { joinProgramMixtureFromStorage, joinProgramMixtureStorageForm } from "../join-program-storage.js";
 
@@ -28,6 +28,29 @@ function legacy(mixture: JoinProgramMixture) {
 }
 
 describe("lossless join storage v2", () => {
+  it("compacts one shared choice once across repeated keys and all indexes", () => {
+    const mixture = fixture();
+    const choice = Object.values(mixture.components[0]!.program.exactIndex)[0]![0]!;
+    const evidenceRefs = vi.spyOn(choice.evidenceIds, "map");
+    try {
+      const stored = joinProgramMixtureStorageForm(mixture);
+      expect(evidenceRefs).toHaveBeenCalledTimes(1);
+      expect(stored.mixture.components[0]!.program.choiceDictionary).toHaveLength(1);
+      expect(joinProgramMixtureFromStorage(stored)).toEqual(mixture);
+    } finally { evidenceRefs.mockRestore(); }
+  });
+  it("reuses its immutable packed product while revalidating mutable copies", () => {
+    const mixture = fixture();
+    const stored = joinProgramMixtureStorageForm(mixture, { immutable: true });
+    expect(joinProgramMixtureStorageForm(stored)).toBe(stored);
+    expect(() => { stored.mixture.components[0]!.program.choiceDictionary[0]![3].push(99); }).toThrow();
+    expect(joinProgramMixtureFromStorage(stored)).toEqual(mixture);
+    const copy = structuredClone(stored);
+    expect(joinProgramMixtureStorageForm(copy)).not.toBe(copy);
+    expect(joinProgramMixtureStorageForm(copy)).toEqual(stored);
+    copy.mixture.components[0]!.program.choiceDictionary[0]![3].push(99);
+    expect(() => joinProgramMixtureStorageForm(copy)).toThrow("invalid");
+  });
   it("retains separate components even when their population identities coincide", () => {
     const mixture = fixture();
     mixture.components.push({ ...mixture.components[0]!, weight: 0.25 });
