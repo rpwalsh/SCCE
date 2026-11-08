@@ -8,6 +8,8 @@
 // so the folded match could never be reached.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { clearSourceTitleCache, createPostgresStorageAdapter } from "../postgres.js";
+import { anchorFeatureSet } from "@scce/kernel";
+import { corpusIdentitySurface } from "../../../kernel/src/corpus-identity.js";
 
 const CORPUS_TITLES = ["moby dick", "ship", "anglo-saxon", "star trek deep space nine"];
 
@@ -32,6 +34,35 @@ beforeEach(() => clearSourceTitleCache());
 afterEach(() => clearSourceTitleCache());
 
 describe("a binding mark is orthography, not identity", () => {
+  it.each(["Record_4d61a2", "Στοιχείο_αριθμός", "Record‿4d61a2"])("measures the indexed source units of %s and refuses an unknown compound", async subject => {
+    const adapter = createPostgresStorageAdapter({ url: "postgres://fixture/fixture", schema: "fixture",
+      informationAccess: { tenantId: "fixture", principalId: "owner", compartments: ["test"], maximumExportClass: "restricted" } });
+    const source = `${subject} σημείο 42.`;
+    const indexed = new Set(anchorFeatureSet(source));
+    const run = corpusIdentitySurface(subject);
+    const unknown = `${run} unobserved`;
+    let measured = false;
+    Object.defineProperty(adapter, "transaction", { value: async <T>(operation: () => Promise<T>) => operation() });
+    Object.defineProperty(adapter, "query", { value: async (sql: string, params?: unknown[]) => {
+      if (/source_title/u.test(sql)) return [];
+      if (/current_setting/u.test(sql)) return [{ enabled: "off" }];
+      if (sql === "SET LOCAL enable_seqscan = off" || /set_config/u.test(sql)) return [];
+      expect(sql).toContain("evidence_anchor_index");
+      expect(sql).toContain("evidence.status='promoted'");
+      expect(sql).toContain("evidence.information_label");
+      expect(params?.slice(1).length).toBeGreaterThan(0);
+      const requests = JSON.parse(String(params?.[0])) as Array<{ run: string; features: string[] }>;
+      expect(requests[0]?.features).toEqual(anchorFeatureSet(subject).filter(feature => feature.startsWith("anchor:sym:")));
+      expect(requests[0]?.features.length).toBeGreaterThan(0);
+      expect(requests[0]?.features.every(feature => indexed.has(feature))).toBe(true);
+      measured = true;
+      return requests.map(request => ({ run: request.run, sources: request.features.every(feature => indexed.has(feature)) ? 1 : 0 }));
+    }});
+    const result = await adapter.evidence.sourceIdentityArbitration!({ text: subject, runs: [run, unknown] });
+    expect(measured).toBe(true);
+    expect([...result.spread]).toEqual([[run, 1], [unknown, 0]]);
+  });
+
   it.each(["on", "off"])("measures request spreads through the same bounded index policy and preserves caller setting %s", async initialSetting => {
     const adapter = createPostgresStorageAdapter({
       url: "postgres://fixture/fixture",
@@ -54,7 +85,14 @@ describe("a binding mark is orthography, not identity", () => {
       if (sql === "SET LOCAL enable_seqscan = off") { seqscan = "off"; return []; }
       if (/set_config\('enable_seqscan'/u.test(sql)) { seqscan = String(params?.[0]); return []; }
       expect(seqscan).toBe("off");
-      expect(params).toEqual([["alpha beta", "quiet"]]);
+      expect(JSON.parse(String(params?.[0]))).toEqual([
+        { run: "alpha beta", features: ["anchor:sym:alpha", "anchor:sym:beta"] },
+        { run: "quiet", features: ["anchor:sym:quiet"] }
+      ]);
+      expect(sql).toContain("evidence_anchor_index");
+      expect(sql).toContain("evidence.status='promoted'");
+      expect(sql).toContain("evidence.information_label");
+      expect(params?.slice(1).length).toBeGreaterThan(0);
       measured = true;
       return [{ run: "alpha beta", sources: 3 }, { run: "quiet", sources: 0 }];
     }});
@@ -121,12 +159,16 @@ describe("a binding mark is orthography, not identity", () => {
 
     expect(reads).toHaveLength(5);
     expect(reads.map(read => read.inTransaction)).toEqual([false, true, true, true, true]);
-    expect(reads[0]?.params).toEqual([400]);
+    expect(reads[0]?.params?.[0]).toBe(400);
+    expect(reads[0]?.sql).toContain("evidence.status='promoted'");
+    expect(reads[0]?.sql).toContain("evidence.information_label");
     expect(reads[1]?.sql).toMatch(/current_setting\('enable_seqscan'\)/u);
     expect(reads[2]?.sql).toBe("SET LOCAL enable_seqscan = off");
-    expect(reads[3]?.params).toEqual(["alpha", "sym:alpha", "beta", "sym:beta", "quiet", "sym:quiet"]);
+    expect(reads[3]?.params?.slice(0, 6)).toEqual(["alpha", "anchor:sym:alpha", "beta", "anchor:sym:beta", "quiet", "anchor:sym:quiet"]);
     expect(reads[3]?.seqscan).toBe("off");
-    expect(reads[3]?.sql.match(/features @> ARRAY\[\$\d+\]::text\[\] LIMIT 1500/gu)).toHaveLength(3);
+    expect(reads[3]?.sql.match(/anchor_index.features @> ARRAY\[\$\d+\]::text\[\]/gu)).toHaveLength(3);
+    expect(reads[3]?.sql.match(/evidence.status='promoted'/gu)).toHaveLength(3);
+    expect(reads[3]?.sql).toContain("evidence.information_label");
     expect(reads[3]?.sql).toContain("count(DISTINCT source_id)::int AS sources");
     expect(reads[4]?.sql).toMatch(/set_config\('enable_seqscan'/u);
     expect(reads[4]?.params).toEqual(["on"]);

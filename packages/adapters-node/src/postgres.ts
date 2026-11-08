@@ -19,6 +19,7 @@ import {
   validateSourceLanguageCompilationHeader,
   validateSourceCompilationModelInventory,
   featureSet,
+  anchorSymbolUnits,
   informationLabelAllowsRead,
   joinInformationLabels,
   corpusIdentityMatchSurface,
@@ -1153,8 +1154,6 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
       return rows.map(rowToEvidence);
     },
     async sourceIdentityArbitration(input) {
-      // Two leading parameters below, so the access predicate's own placeholders start at the third.
-      const access = storage.informationAccessPredicate("evidence", 3);
       // Which of the corpus's own titles appear in this request. Asked in this direction it is one query whatever
       // the request's length, and it needs no segmentation: a title matches inside unspaced text the same way it
       // matches between spaces. Enumerating the request's sub-runs instead was quadratic -- 299 database
@@ -1186,21 +1185,20 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
         .filter(run => !named.has(run));
       const spread = new Map<string, number>();
       if (candidates.length) {
+        const spreadAccess = storage.informationAccessPredicate("evidence", 2);
         const spreadRows = await queryIndexedEvidence<{ run: string; sources: number }>(storage,
           `SELECT candidate.run AS run, measured.sources AS sources
-           FROM unnest($1::text[]) AS candidate(run)
+           FROM jsonb_to_recordset($1::jsonb) AS candidate(run text, features text[])
            CROSS JOIN LATERAL (
              SELECT count(DISTINCT source_id)::int AS sources FROM (
-               SELECT source_id FROM ${storage.table("evidence_spans")}
-               WHERE features @> (
-                 SELECT array_agg('sym:' || unit)
-                 FROM unnest(string_to_array(candidate.run, ' ')) AS unit
-                 WHERE unit <> ''
-               )
+               SELECT evidence.source_id FROM ${storage.table("evidence_anchor_index")} anchor_index
+               JOIN ${storage.table("evidence_spans")} evidence ON evidence.id=anchor_index.evidence_id
+               WHERE cardinality(candidate.features)>0 AND anchor_index.features @> candidate.features
+                 AND evidence.status='promoted' AND ${spreadAccess.sql}
                LIMIT ${SPREAD_SCAN_CAP}
              ) sampled
            ) measured`,
-          [candidates]
+          [JSON.stringify(candidates.map(run => ({ run, features: uniquePostgresStrings(anchorSymbolUnits(run).map(unit => `anchor:sym:${unit}`)) }))), ...spreadAccess.params]
         );
         for (const row of spreadRows) spread.set(row.run, Number(row.sources ?? 0));
       }
@@ -1209,27 +1207,35 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
     async sourceSpreadDistribution(sampleSize: number) {
       // The identity vocabulary sampled at random, then measured the same way a request's runs are, so the
       // threshold derived from it is on the same scale as what it will be compared against.
+      const vocabularyAccess = storage.informationAccessPredicate("evidence", 2);
+      const sampleLimit = Math.max(1, Math.trunc(sampleSize));
       const vocabulary = await storage.query<{ unit: string }>(
         `SELECT unit FROM (
            SELECT DISTINCT unnest(string_to_array(source_title, ' ')) AS unit
-           FROM ${storage.table("evidence_spans")} WHERE source_title <> ''
+           FROM ${storage.table("evidence_spans")} evidence WHERE source_title <> ''
+             AND evidence.status='promoted' AND ${vocabularyAccess.sql}
          ) units WHERE unit <> '' ORDER BY random() LIMIT $1`,
-        [Math.max(1, Math.trunc(sampleSize))]
+        [sampleLimit, ...vocabularyAccess.params]
       );
       if (!vocabulary.length) return [];
       const params: string[] = [];
-      const measurements = vocabulary.map((row, index) => {
+      const units = uniquePostgresStrings(vocabulary.flatMap(row => anchorSymbolUnits(row.unit))).slice(0, sampleLimit);
+      const measurementAccess = storage.informationAccessPredicate("evidence", units.length * 2 + 1);
+      const measurements = units.map((unit, index) => {
         const unitParameter = index * 2 + 1;
         const featureParameter = unitParameter + 1;
-        params.push(row.unit, `sym:${row.unit}`);
+        params.push(unit, `anchor:sym:${unit}`);
         return `SELECT $${unitParameter}::text AS unit, (
            SELECT count(DISTINCT source_id)::int AS sources FROM (
-             SELECT source_id FROM ${storage.table("evidence_spans")}
-             WHERE features @> ARRAY[$${featureParameter}]::text[] LIMIT ${SPREAD_SCAN_CAP}
+             SELECT evidence.source_id FROM ${storage.table("evidence_anchor_index")} anchor_index
+             JOIN ${storage.table("evidence_spans")} evidence ON evidence.id=anchor_index.evidence_id
+             WHERE anchor_index.features @> ARRAY[$${featureParameter}]::text[]
+               AND evidence.status='promoted' AND ${measurementAccess.sql} LIMIT ${SPREAD_SCAN_CAP}
            ) sampled
          ) AS sources`;
       });
-      const rows = await queryIndexedEvidence<{ unit: string; sources: number }>(storage, measurements.join("\nUNION ALL\n"), params);
+      if (!measurements.length) return [];
+      const rows = await queryIndexedEvidence<{ unit: string; sources: number }>(storage, measurements.join("\nUNION ALL\n"), [...params, ...measurementAccess.params]);
       return rows.map(row => Number(row.sources ?? 0)).filter(value => value > 0);
     },
     async searchEvidence(query: EvidenceQuery) {
