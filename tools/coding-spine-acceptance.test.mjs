@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
-import { artifactChecks, executeHeldOut, httpFailureDetail, isSafeHeldOutRoot } from "./coding-spine-acceptance.mjs";
+import { artifactChecks, executeHeldOut, httpFailureDetail, isSafeHeldOutRoot, turn } from "./coding-spine-acceptance.mjs";
 
 const artifact = (path, content, role = "source") => ({
   path, role, content, contentHash: `sha256_${createHash("sha256").update(content).digest("hex")}`
@@ -92,4 +92,19 @@ test("independently executes correct behavior and rejects semantically wrong cod
 test("independently executes returned TypeScript on held-out inputs", async () => {
   const source = `export function uniqueStrings(values: string[]): string[] { return [...new Set(values)]; }`;
   assert.equal((await executeHeldOut(program(source, "src/program.ts"), "typescript")).passed, true);
+});
+
+test("HTTP coding receipt restores probe-only attempt and capability artifacts before dropping the wire envelope",async t=>{
+  const {encodeProgramArtifactWire}=await import("../packages/kernel/dist/program-artifact-wire.js");
+  const final={...artifact("src/program.mjs",correct),artifactId:"artifact:final",mediaType:"text/javascript"};
+  const probe={...artifact("src/program.mjs","export const probe=null;"),artifactId:"artifact:probe",mediaType:"text/javascript"};
+  const original={answer:"native result",programArtifacts:[final],buildTest:{passed:true,artifacts:[final],attempts:[{artifacts:[probe]}],
+    testExecutionReceipt:{status:"executed",command:"node",args:["--test"],cwd:"."}},
+    events:[{typeId:"CapabilitySucceeded",payload:{ownerId:"owner:exact",result:{artifacts:[probe]}}}]};
+  const wire=encodeProgramArtifactWire(original);
+  assert.equal(Object.keys(wire.artifactContents.additional).length,1);
+  t.mock.method(globalThis,"fetch",async url=>{assert.equal(String(url),"http://fixture.invalid/api/turn");return new Response(JSON.stringify(wire),{status:200,headers:{"content-type":"application/json"}});});
+  const receipt=await turn("public source-owned program",{},{serverUrl:"http://fixture.invalid"});
+  assert.deepEqual(receipt.buildTest,original.buildTest);assert.deepEqual(receipt.programArtifacts,original.programArtifacts);
+  assert.deepEqual(receipt.events,original.events);assert.equal(JSON.stringify(receipt).includes('"contentRef"'),false);
 });

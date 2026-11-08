@@ -22,7 +22,7 @@ assert.deepEqual(uniqueStrings(['', 'x', '', 'y', 'x']), ['', 'x', 'y']);
 assert.deepEqual(uniqueStrings(['__proto__', 'toString', '__proto__']), ['__proto__', 'toString']);
 `;
 
-async function turn(text, metadata = {}, liveConfig) {
+export async function turn(text, metadata = {}, liveConfig) {
   const started = Date.now();
   const response = await fetch(`${liveConfig.serverUrl}/api/turn`, {
     method: "POST", headers: { "content-type": "application/json", ...(liveConfig.token ? { authorization: `Bearer ${liveConfig.token}` } : {}) },
@@ -32,7 +32,11 @@ async function turn(text, metadata = {}, liveConfig) {
   const responseText = await response.text();
   let body;
   try { body = JSON.parse(responseText); } catch { body = undefined; }
-  const result = body?.turn ?? body?.result ?? body ?? {};
+  const received = body?.turn ?? body?.result ?? body ?? {};
+  // Restore the original attempt/event payloads before the receipt projection
+  // drops the transport envelope and its probe-only content dictionary.
+  const { decodeProgramArtifactWire } = await import("../packages/kernel/dist/program-artifact-wire.js");
+  const result = decodeProgramArtifactWire(received);
   const events = (result.events ?? []).map(event => ({ typeId: event.typeId, payload: event.payload ?? {} }));
   return { status: response.status, elapsedMs: Date.now() - started, answer: String(result.answer ?? "").slice(0, 400), events,
     taskReplanning: result.taskReplanning ?? null, programReadiness: result.programReadiness ?? null,

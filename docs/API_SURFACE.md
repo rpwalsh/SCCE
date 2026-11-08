@@ -55,6 +55,56 @@ POST /api/turn/task/:id/cancel
 
 Accepted, phase-change, terminal, and cancellation frames are appended to the existing durable event ledger. Heartbeats are intentionally ephemeral. The initial frame reports persistence as pending until the append completes; the status endpoint reports whether all current frames are durable. After a server restart, completed tasks remain replayable. A task that had no terminal ledger frame is reported as interrupted rather than pretending execution resumed. Plain `POST /api/turn` remains a single JSON compatibility response and has no five-second completion claim.
 
+#### Versioned native artifact transport
+
+Default turn responses use a lossless content-reference envelope when file artifacts recur outside the final `programArtifacts` list. The final list remains ordinary `FileArtifact[]`, with exact `artifactId`, `path`, `mediaType`, `role`, `contentHash` and `content` fields. This is also the shape used by the workbench's program editor and downloads.
+
+Every other complete file-artifact occurrence, including `buildTest.artifacts`, ordered `buildTest.attempts[*].artifacts` and nested capability-event artifacts, keeps all its non-content fields. Its `content` member is replaced in the same position by:
+
+```json
+{
+  "contentRef": {
+    "schema": "scce.file_artifact_content_ref.v1",
+    "contentHash": "sha256_<UTF-8-content-SHA-256>",
+    "artifactIdentityHash": "sha256_<identity-tuple-SHA-256>"
+  }
+}
+```
+
+The identity checksum hashes the exact UTF-8 bytes of `JSON.stringify([artifactId, path, mediaType, role, contentHash])`, in that order. It checks that a reference is attached to the same file descriptor; source ownership, readiness and application authorization remain separate contracts.
+
+The response carries one envelope:
+
+```json
+{
+  "artifactContents": {
+    "schema": "scce.file_artifact_contents.v1",
+    "additional": {
+      "sha256_<content-SHA-256>": "exact content of an additional probe or attempt file"
+    }
+  }
+}
+```
+
+Resolve content hashes against the full top-level `programArtifacts` first, then `artifactContents.additional`. The additional dictionary contains only distinct contents absent from the final list, including nonfinal probe variants and attempt-only files. There is no previewing, normalization or clipping of file contents. Attempt order, commands, stdout/stderr, exit codes, timings, test-execution receipts, owner/proof fields and event hashes remain intact. Distinct data can still exceed a caller's response budget; this format does not change that budget.
+
+Node consumers that inspect nested artifacts use the shared `decodeProgramArtifactWire(response)` export from `@scce/kernel` before projecting, replaying or applying them. The decoder verifies content SHA-256 and descriptor identity, and rejects missing or dangling references, conflicting content/ref pairs, unknown owned-envelope/ref fields and inconsistent dictionaries. It reconstructs the original JSON, including member order, and removes only the validated transport envelope. Original ledger-event hashes refer to the restored original event payloads, not the intermediate reference-bearing payloads.
+
+`POST /api/turn?full=1` bypasses this envelope and retains the original diagnostic JSON. Streaming and reconnect terminal `result.value` carry the same response selected by `full`; accepted/progress/heartbeat frames are unchanged. Clients that only use the answer, readiness, event summaries or full top-level final artifacts do not need to resolve nested artifacts. Browser and VS Code stream clients do not import the Node decoder.
+
+The built consumers use the following boundaries:
+
+| Consumer | Artifact handling |
+| --- | --- |
+| Blind native code-generation adapter | Verifies and applies the unchanged final `programArtifacts` list. |
+| Blind native tool-operation adapter | Decodes before reading execution artifacts and capability-event payloads. |
+| Coding-spine acceptance | Decodes before saving its projected build/attempt/event receipt, retaining probe-only content. |
+| Workbench and VS Code streaming clients | Read answer/readiness, generic event summaries and final artifact bodies; do not materialize nested build artifacts. |
+| Turn-task stream/reconnect registry | Carries the complete response envelope in terminal `result.value`. |
+| CLI and sealed-eval JSONL integration | Call the kernel directly and receive ordinary internal `FileArtifact` values. |
+| Head-to-head, conversation, factual and latency probes | Read surfaces, evidence and scalar diagnostics, not nested artifact contents. |
+| Release, cognitive-state and runtime-load diagnostics | Explicitly request `full=1`. |
+
 `POST /api/workspace/patch/plan` is non-mutating: it accepts only the strict `scce.workspace-patch-plan-request.v1` body, verifies the latest durable workspace against exact current bytes, and returns an unauthorized, unexecuted review plan. The schema prefix is scce.*. `POST /api/workspace/patch/plan/request` is also strict and non-mutating. It supports the proven unused type-only import removal and official TypeScript LanguageService fixes when structured positive integer `diagnosticCodes` resolve to one action rooted at the sole requested existing target; request prose never selects a compiler candidate. The complete selected action may replace multiple exact snapshot files or create bounded TypeScript/JavaScript source files under existing directories, subject to the 32-file and 128-text-change limits. The LanguageService is bound to exact durable snapshot bytes and an exact project config resolved from the source-observed direct `tsc` invocation. Missing or unbound configs and requested files outside the parsed project are rejected. The route requires source-observed build/test commands; command-bearing actions and unsupported feature synthesis are rejected. Plans require compiler, typecheck, and test validation and do not authorize or execute it. A selected compiler action is additionally materialized through the kernel's own repair lane, which recomputes complete output bytes from the exact base artifacts and bounded, non-overlapping text spans rather than accepting the compiler's output bytes; the resulting `program_repair_full_file_materialization` lineage travels with the plan and is independently verifiable. `POST /api/workspace/patch` is the separate, disabled-by-default application boundary requiring mutation policy and capability approval. Project/report GET handlers persist records and are declared mutating in the manifest.
 
 ### Owner-model and learning routes
