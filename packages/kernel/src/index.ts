@@ -268,6 +268,7 @@ export {
   type RetrievalBindingContext
 } from "./retrieval-binding.js";
 export { measureRequestCorpusSubject, type RequestCorpusSubject } from "./corpus-identity-runtime.js";
+export { CONTEXTUAL_QA_CONSTRUCTION_RECIPE, CONTEXTUAL_QA_SOURCE_SYSTEM, type ContextualQaRequestForm, type ContextualQaWitness } from "./source-owned-contextual-qa.js";
 export * from "./dialogue-cognitive-memory.js";
 export * from "./conversation-plan-memory.js";
 export * from "./dialogue-cognitive-shadow.js";
