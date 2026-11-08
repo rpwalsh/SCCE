@@ -1,0 +1,37 @@
+{
+  "captureNote": "Exact typed syntax descriptor subset from canonical full Alice source export, 2026-11-08; large join program and templates omitted because this regression isolates counts-as-prose.",
+  "pattern": {
+    "id": "induced_language_memory_pattern_2f0ded3be724052033977243de944a5a007dc17bca506bacb2fa5807f6dade96",
+    "profileId": "language_profile_1416e40de34db3b64c6e07b992f1d3bb2c0035123353806d",
+    "patternKind": "syntax",
+    "support": 0.9461479447286155,
+    "entropy": 4.047778729743965,
+    "patternJson": {
+      "schema": "scce.induced_language_model.syntax_memory.v1",
+      "componentRecipe": "kernel.induced_language_memory_projection.v3",
+      "counts": {
+        "alnum latin-lower": 1,
+        "latin-lower alnum": 1,
+        "latin-lower latin-lower": 1,
+        "alnum latin-lower latin-lower": 1,
+        "latin-lower alnum latin-lower": 1
+      },
+      "title": "alice in wonderland",
+      "sourceVersionId": "source_version_9dfe5b2360651d54c914e88e5aeece51d40c312e01f2a3751271a93a",
+      "profileId": "language_profile_1416e40de34db3b64c6e07b992f1d3bb2c0035123353806d",
+      "sourceSystem": "gutenberg",
+      "sourceSystemId": "source.1c77c3b30228e865bc105c990fa79ec4898b9ebb7be0f4f9"
+    },
+    "evidenceIds": [
+      "evidence_span.7e003949a3c7b07f8cdd45849916a9ba82c71df39070a48a"
+    ],
+    "updatedAt": 1794096696564,
+    "informationLabel": {
+      "tenantId": "scce.public.corpus",
+      "principals": [],
+      "compartments": [],
+      "exportClass": "public",
+      "mergePolicy": "same_owner"
+    }
+  }
+}

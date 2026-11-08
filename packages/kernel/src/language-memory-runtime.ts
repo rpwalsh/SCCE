@@ -4758,6 +4758,7 @@ function patternKeyIsFeatureKey(key: string): boolean {
 
 function patternKeys(pattern: LanguagePatternRecord): string[] {
   const json = jsonRecord(pattern.patternJson);
+  if (json.schema === INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA) return [];
   const counts = jsonRecord(json.counts);
   const keys = Object.keys(counts).filter(key => !patternKeyIsFeatureKey(key));
   if (keys.length) return keys.slice(0, 64);

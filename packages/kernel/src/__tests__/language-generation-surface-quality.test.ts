@@ -11,8 +11,19 @@ import {
 import { resolveLearnedCreativeGenerationExtent } from "../mouth.js";
 import { trainKneserNey } from "../kneser-ney.js";
 import { surfaceContainsTerm } from "../surface-linguistics.js";
+import aliceSyntax from "./fixtures/alice-syntax-descriptor-live.json";
+import type { LanguagePatternRecord } from "../storage.js";
 
 describe("learned language generation surface quality", () => {
+  it("keeps actual Alice syntax descriptors available as structure without speaking their count keys or provenance", () => {
+    const runtime = createLanguageMemoryRuntime();
+    const pattern = aliceSyntax.pattern as unknown as LanguagePatternRecord;
+    const state = runtime.hydrate({ models: [], patterns: [pattern] });
+    expect(state.importedPatterns.map(row => row.id)).toContain(pattern.id);
+    const result = runtime.generate({ state, frames: [{ id: "creative", role: "answer", force: "creative" }], generationExtent: 64 });
+    expect(result.text).toBe("");
+    expect((runtime.score({ state, text: "alnum latin-lower" }).audit as { importedPhrasePatternIdsUsed?: string[] }).importedPhrasePatternIdsUsed ?? []).not.toContain(pattern.id);
+  });
   it("does not append an unrealized requested term as fabricated coverage", () => {
     const runtime = createLanguageMemoryRuntime();
     const state = runtime.hydrateFromImportedBrain({ importRunId: "missing.coverage", models: [], observations: [], units: [], patterns: [], semanticFrames: [] });
