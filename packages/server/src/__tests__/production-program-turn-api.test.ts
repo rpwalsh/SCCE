@@ -26,6 +26,7 @@ import {
   createScceKernel,
   createUniversalCreativeEventConstructionCompiler,
   compileCreativeEventCompatibilityCorpus,
+  compileLanguageTrainingBatch,
   hydrateLanguageConstructionPatterns,
   type PatchTransactionPlan,
   type ScceEvent,
@@ -226,7 +227,8 @@ describe("production owner program turn through the API", () => {
     const source = creativeLanguageSource();
     const fixtureIds = createIdFactory({ clock: createClock({ fixedTime: 102_000, stepMs: 1 }), hasher: createHasher(), deterministicReplay: true });
     const profile = createLanguageAcquisitionEngine({ idFactory: fixtureIds }).acquire({ sourceVersionId: source.sourceVersionId, text: source.text, createdAt: 102_000 });
-    const trainedLanguage = createLanguageMemoryRuntime({ idFactory: fixtureIds, hasher: createHasher() }).train({ streamId: "source:production-creative-language", sourceSystem: "gutenberg", profile, sourceVersionId: source.sourceVersionId, text: source.text, evidence: [source], createdAt: 102_000, maxOrder: 4, maxCountersPerOrder: 256 });
+    const trainedLanguage = compileLanguageTrainingBatch({ runtime: createLanguageMemoryRuntime({ idFactory: fixtureIds, hasher: createHasher() }), hasher: createHasher(),
+      batch: { streamId: "source:production-creative-language", sourceSystem: "gutenberg", profile, sourceVersionId: source.sourceVersionId, text: source.text, evidence: [source], createdAt: 102_000, maxOrder: 4, maxCountersPerOrder: 256 } });
     const compiled = createUniversalCreativeEventConstructionCompiler().compile({ profileId: profile.id, evidence: [source], hasher: createHasher(), updatedAt: 102_000 });
     if (compiled.status !== "compiled") throw new Error(`creative API fixture did not compile: ${JSON.stringify(compiled)}`);
     const bundle = hydrateLanguageConstructionPatterns({ patterns: [compiled.pattern], evidence: [source], hasher: createHasher() }).bundles[0];
@@ -236,9 +238,16 @@ describe("production owner program turn through the API", () => {
     if (graphTextStart < 0) throw new Error("creative API fixture request lacks its annotated graph argument");
     const graphStart = [...requestText.slice(0, graphTextStart)].length;
     const graphEnd = graphStart + [..."this graph"].length;
-    const examples = bundle.creativeEvents.flatMap(event => ["train", "calibration", "calibration"].map(partition => ({ requestText, requestFrameId: "request.frame.indexing", requestCompilerId: "compiler.request.learned", eventCompilerId: event.compilerId, eventRelationId: event.relationId, partition: partition as "train" | "calibration", accepted: true, roleBindings: [{ requestRoleId: "scce.request.role.argument", eventRoleId: "scce.role.patient" as const, accepted: true, requestSpan: { charStart: graphStart, charEnd: graphEnd } }] })));
+    // Test-authored semantic teaching: these source operations act on the declared graph argument.
+    const declaredOperations = new Set(["indexes", "partitions"]);
+    const taughtEvents = bundle.creativeEvents.filter(event => declaredOperations.has(event.sourceLabel)
+      && event.argumentFrame.bindings.some(port => port.roleId === "scce.role.patient" && port.surface === "graph"));
+    expect(new Set(taughtEvents.map(event => event.sourceLabel))).toEqual(declaredOperations);
+    const examples = taughtEvents.flatMap(event => ["train", "calibration", "calibration"].map(partition => ({ requestText, requestFrameId: "request.frame.indexing", requestCompilerId: "compiler.request.learned", eventCompilerId: event.compilerId, eventRelationId: event.relationId, eventArgumentFrameId: event.argumentFrame.id, partition: partition as "train" | "calibration", accepted: true, roleBindings: [{ requestRoleId: "scce.request.role.argument", eventRoleId: "scce.role.patient" as const, accepted: true, requestSpan: { charStart: graphStart, charEnd: graphEnd } }] })));
     const compatibility = compileCreativeEventCompatibilityCorpus({ corpus: { schema: "scce.creative_event_compatibility_corpus.v1", calibrationId: "calibration.creative.fixture", minimumAdmissiblePosterior: 0.72, minimumRolePosterior: 0.72, minimumTrainingSupport: 1, minimumCalibrationSupport: 1, examples }, profileId: profile.id, evidenceIds: [source.id], updatedAt: 102_000, makeId: value => `fixture:${createHasher().digestHex(JSON.stringify(value))}` });
-    const storage = integrationStorage({ events, workspace, sources: [], constructionEvidence: [source], dialogueMemory, languageProfiles: [profile], languageModels: trainedLanguage.models, languagePatterns: [compiled.pattern, ...compatibility.patterns] });
+    expect(trainedLanguage.constructionPatterns.length).toBeGreaterThan(0);
+    const languagePatterns = [...new Map([...trainedLanguage.patterns, compiled.pattern, ...compatibility.patterns].map(pattern => [pattern.id, pattern])).values()];
+    const storage = integrationStorage({ events, workspace, sources: [], constructionEvidence: [source], dialogueMemory, languageProfiles: [profile], languageModels: trainedLanguage.models, languagePatterns });
     const createContext = () => {
       const clock = createClock({ fixedTime: 102_000, stepMs: 1 });
       const kernel = createScceKernel({ storage, files: { streamPath: async function* () {} }, buildTest: { executeProgram: async () => { throw new Error("creative turn must not execute a program"); } }, approvals: { isApproved: () => true, observePending: () => undefined, policyPatch: () => ({ dryRunByDefault: false }) }, idFactory: createIdFactory({ clock, hasher: createHasher(), deterministicReplay: false }), clock, deterministicReplay: false, corpusRegistry: createCorpusRegistry([{ sourceSystem: "gutenberg" }]) });
@@ -255,6 +264,20 @@ describe("production owner program turn through the API", () => {
     const first = await firstResponse.json() as Record<string, any>;
     expect(firstResponse.status, JSON.stringify(first)).toBe(200);
     expect((first.answer as string).trim().length).toBeGreaterThan(0);
+    expect(first.answer).toContain("this graph");
+    for (const operation of declaredOperations) expect(first.answer).toContain(operation);
+    const speech = events.filter(event => event.typeId === "MouthSpoken").at(-1)!.payload as Record<string, any>;
+    expect(speech.evidenceRefs).toEqual([]);
+    expect(speech.trace.selected.surfaceRealizationId).toMatch(/^candidate:generated:creative:realizer:/u);
+    const speechAudit = speech.trace.selected.audit.candidateAudit ?? speech.trace.selected.audit;
+    expect(speechAudit.source).toBe("mouth.selected_event_source_construction");
+    expect(speechAudit.realizations.length).toBeGreaterThan(0);
+    const sourceSpeech = hydrateLanguageConstructionPatterns({ patterns: trainedLanguage.constructionPatterns, evidence: [source], hasher: createHasher() }).bundles;
+    for (const witness of speechAudit.realizations) {
+      expect(bundle.creativeEvents.some(event => event.id === witness.eventId && declaredOperations.has(event.sourceLabel))).toBe(true);
+      expect(sourceSpeech.some(bundle => bundle.constructions.some(construction => construction.id === witness.constructionId)
+        && bundle.sourceExamples.some(example => example.id === witness.exampleId))).toBe(true);
+    }
     const firstContinuation = first.creativeContinuation as { offered: Array<{ candidateId: string; structureId: string }>; selectedCandidateId: string } | undefined;
     expect(firstContinuation?.offered.length ?? 0).toBeGreaterThanOrEqual(2);
     const selectedFirst = firstContinuation?.offered.find(candidate => candidate.candidateId === firstContinuation.selectedCandidateId);
@@ -274,6 +297,20 @@ describe("production owner program turn through the API", () => {
     const selectedSecond = secondContinuation?.offered.find(candidate => candidate.candidateId === secondContinuation.selectedCandidateId);
     expect(selectedSecond?.candidateId).not.toBe(selectedFirst?.candidateId);
     expect(selectedSecond?.structureId).toBe(preferredAfterCorrection?.structureId);
+
+    const freshResponse = await fetch(`http://127.0.0.1:${address.port}/api/turn?full=1`, { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...request, text: requestText.replace("this graph", "Qzeta matrix"), conversationId: "conversation.production.creative.fresh" }) });
+    const fresh = await freshResponse.json() as Record<string, any>;
+    expect(freshResponse.status, JSON.stringify(fresh)).toBe(200);
+    expect(fresh.answer).toContain("Qzeta matrix");
+    expect(fresh.answer).not.toContain("this graph");
+    expect(source.text).not.toContain("Qzeta matrix");
+
+    const speechPatternIds = new Set(trainedLanguage.constructionPatterns.map(pattern => pattern.id));
+    languagePatterns.splice(0, languagePatterns.length, ...languagePatterns.filter(pattern => !speechPatternIds.has(pattern.id)));
+    context = createContext();
+    const missingSpeech = await fetch(`http://127.0.0.1:${address.port}/api/turn?full=1`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(request) });
+    expect(missingSpeech.status, JSON.stringify(await missingSpeech.json())).toBe(422);
   }, 60_000);
 });
 
@@ -293,7 +330,7 @@ function ownerValidationPolicy(): StructuredPatchValidationPolicy {
 }
 
 function creativeLanguageSource(): EvidenceSpan {
-  const text = "the method indexes the graph. the routine indexes the graph. the method indexes a bucket. the routine indexes a bucket. the method partitions the graph. the routine partitions the graph. the method partitions a bucket. the routine partitions a bucket.";
+  const text = "method indexes graph. routine indexes graph. method indexes bucket. routine indexes bucket. method partitions graph. routine partitions graph. method partitions bucket. routine partitions bucket.";
   return { id: "evidence:production-creative-language", sourceId: "source:production-creative-language", sourceVersionId: "source:production-creative-language:v1", chunkId: "chunk:production-creative-language", contentHash: "hash:production-creative-language", mediaType: "text/plain", byteStart: 0, byteEnd: Buffer.byteLength(text), charStart: 0, charEnd: text.length, text, textPreview: text, languageHints: {}, scriptHints: {}, trustVector: {}, provenance: {}, features: [], status: "promoted", alpha: 0.9, observedAt: 102_000 } as unknown as EvidenceSpan;
 }
 

@@ -74,7 +74,7 @@ import { mostLikelyHypothesis, normalizeHypothesisSet } from "./correlated-uncer
 import { evidenceDiscriminatesAskedRelation, localEvidenceAnswerClaimSurface, localEvidenceAnswerSurface, requestSentenceSequences, spanContainsRequestNearDuplicateSentence } from "./local-evidence-runtime.js";
 import { quotedSentenceGap } from "./quoted-gap.js";
 import { creativeRequestContentSurface, realizeCreativeSection, surfaceEchoesPrompt } from "./creative-section-realization.js";
-import type { CreativeRequestFrame } from "./creative-event-compatibility.js";
+import { creativeEventCompatibilityDecision, creativeEventRoleDecision, type CreativeRequestFrame } from "./creative-event-compatibility.js";
 import type { CandidateSurface } from "./candidate.js";
 import type { ClaimBasis, PlannedClaim } from "./cognitive-planner.js";
 import type { ConstructGraph, EvidenceId, EvidenceSpan, Hasher, JsonValue, LanguageProfile, SemanticEntailmentResult } from "./types.js";
@@ -167,6 +167,7 @@ import { kneserNeyPerplexity, type KneserNeyModel } from "./kneser-ney.js";
 import { CALIBRATION_TASK_CLASS_IDS } from "./calibration-spine.js";
 import {
   realizeLearnedSurface,
+  CONVERSATION_INTERNAL_PROVENANCE_METHOD_ID,
   type ConversationTurnSurface,
   type LearnedConstruction,
   type LearnedConstructionPart,
@@ -688,10 +689,10 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       const directCreativeCandidate = creativeRequested
         ? directCreativeSectionCandidate(input, discoursePlan, options.languageMemory, generationWorkBudget)
         : undefined;
-      const structuralCreativeCandidate = undefined;
+      const structuralCreativeCandidate = selectedStructuralCreativeCandidate(input, discoursePlan, constructionHasher);
       markMouthPhase("structural_creative_realization");
       const structuralCreativeBound = Boolean(structuralCreativeCandidate);
-      const structuralCreativeFailClosed = false;
+      const structuralCreativeFailClosed = inventionConstructState(input.construct)?.realizationPath === "mouth_realization_deferred" && !structuralCreativeCandidate;
       markMouthPhase("structural_admission");
       const priorPieces = structuralCreativeBound
         ? basePriorPieces
@@ -800,7 +801,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       // formal language this request names. Absent a trained corpus for that language this produces nothing and
       // the turn answers as it did before -- a language never shown to the system is one it declines to write.
       const learnedCodeCandidate = learnedCodeSurfaceCandidate(input);
-      const rawCandidatePool = [
+      const rawCandidatePool = structuralCreativeCandidate ? [structuralCreativeCandidate] : structuralCreativeFailClosed ? [] : [
         ...(directCreativeCandidate ? [directCreativeCandidate] : []),
         ...learnedPriorSurfaceCandidates(input, discoursePlan, priorPieces),
         ...(learnedCodeCandidate ? [learnedCodeCandidate] : []),
@@ -1290,8 +1291,8 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
             realization: realization.audit,
             selectedGeneration: selected?.generation?.audit ?? null,
             structuralCreative: {
-              selectionBound: false,
-              preflightAdmitted: false,
+              selectionBound: inventionConstructState(input.construct)?.realizationPath === "mouth_realization_deferred",
+              preflightAdmitted: Boolean(structuralCreativeCandidate),
               realizationAdmitted: Boolean(structuralCreativeCandidate),
               failClosed: structuralCreativeFailClosed,
               unavailableReasonId: structuralCreativeFailClosed
@@ -4397,6 +4398,93 @@ function learnedProposalRejectionReason(invention: InventionConstructState, inpu
   if (!text || !admissibleMouthSurface(text)) return "invalid_surface";
   if (surfaceEchoesPrompt(text, mouthEchoQuestionText(input))) return "prompt_echo";
   return undefined;
+}
+
+/** Selected event ports bind only source-aligned grammar slots; the shared realizer owns every emitted byte. */
+function selectedStructuralCreativeCandidate(input: SpeakInput, discoursePlan: DiscoursePlan, hasher: Hasher): SurfaceCandidate | undefined {
+  const invention = inventionConstructState(input.construct);
+  const frame = input.creativeRequestFrame;
+  const selected = input.selectedCandidate;
+  if (!invention || invention.realizationPath !== "mouth_realization_deferred" || !selected || selected.kind !== "creative-candidate" || !frame) return undefined;
+  const selectedAudit = jsonRecord(selected.audit);
+  const selectedConstructIds = new Set([...(selected.constructIds ?? []), ...stringArrayFromJson(selectedAudit.constructIds), stringFrom(selectedAudit.constructId)].filter(Boolean));
+  if (!selectedConstructIds.has(String(invention.nodeId))) return undefined;
+  const semanticPlan = jsonRecord(jsonRecord(invention.trace).structuralSemanticPlan);
+  if (semanticPlan.schema !== "scce.structural_semantic_plan.v2" || semanticPlan.id !== invention.semanticPlanId
+    || semanticPlan.selectionAuthority !== "candidate_engine_and_judge" || semanticPlan.surfaceRealizationCompetitive !== false) return undefined;
+  const events = arrayRecords(semanticPlan.events);
+  if (!events.length) return undefined;
+  const turns = speakConversationTurns(input);
+  const request = input.requestText ?? mouthEchoQuestionText(input);
+  const ownerTurn = turns.find(turn => turn.roleId === "session.role.owner" && turn.surface === request);
+  if (!ownerTurn) return undefined;
+  const requestPoints = [...request];
+  const surfaces: string[] = [];
+  const formLiterals: Array<{ id: string; text: string }> = [];
+  const realizations: JsonValue[] = [];
+  for (const [eventIndex, planned] of events.entries()) {
+    const sourceBundle = input.languageMemory.importedConstructionBundles.find(bundle => bundle.id === planned.bundleId);
+    const event = sourceBundle?.creativeEvents?.find(event => event.id === planned.eventId && event.constructionId === planned.constructionId
+      && event.sourceVersionId === planned.sourceVersionId && event.evidenceId === planned.evidenceId && event.relationId === planned.relationId);
+    if (!sourceBundle || !event || !stringArrayFromJson(semanticPlan.sourceBundleIds).includes(sourceBundle.id)) return undefined;
+    const compatibility = creativeEventCompatibilityDecision(input.languageMemory.creativeEventCompatibilityModels, frame, event);
+    if (!compatibility || compatibility.modelId !== planned.compatibilityModelId || compatibility.modelVersion !== planned.compatibilityModelVersion
+      || (compatibility.qualification !== "source_observed" && !(compatibility.posterior! >= compatibility.threshold!))) return undefined;
+    const replacements = arrayRecords(planned.requestRoleBindings).map(binding => {
+      const port = event.argumentFrame.bindings.find(port => port.roleId === binding.eventRoleId);
+      const argument = frame.arguments.find(argument => argument.id === binding.requestArgumentId && argument.roleId === binding.requestRoleId);
+      if (!port || !argument || binding.admissible !== true) return undefined;
+      const roleDecision = creativeEventRoleDecision(input.languageMemory.creativeEventCompatibilityModels, frame, argument.roleId, port.roleId, event);
+      if (!roleDecision || (roleDecision.qualification !== "source_observed" && !(roleDecision.posterior! >= roleDecision.threshold!))) return undefined;
+      const span = argument.span;
+      if (span.charStart < 0 || span.charEnd <= span.charStart || span.charEnd > requestPoints.length
+        || requestPoints.slice(span.charStart, span.charEnd).join("") !== span.text
+        || canonicalStringify(binding.requestSpan) !== canonicalStringify(span)) return undefined;
+      return { port, span };
+    });
+    if (replacements.some(row => !row)) return undefined;
+    const grammar = input.languageMemory.importedConstructionBundles.flatMap(bundle => bundle.sourceExamples.map(example => ({ bundle, example })))
+      .filter(({ bundle, example }) => bundle.targetProfileId === event.profileId && example.evidenceId === event.evidenceId
+        && example.sourceVersionId === event.sourceVersionId && example.evidenceContentHash === event.evidenceContentHash
+        && example.surfaceStartCodePoint === event.argumentFrame.sourceSentenceStartCodePoint && example.surfaceEndCodePoint === event.argumentFrame.sourceSentenceEndCodePoint
+        && example.roles.some(role => example.surfaceStartCodePoint + role.startCodePoint === event.labelStartCodePoint
+          && example.surfaceStartCodePoint + role.endCodePoint === event.labelEndCodePoint && role.surface === event.sourceLabel)
+        && event.argumentFrame.bindings.every(port => example.roles.some(role => example.surfaceStartCodePoint + role.startCodePoint === port.startCodePoint
+          && example.surfaceStartCodePoint + role.endCodePoint === port.endCodePoint && role.surface === port.surface)))
+      .sort((a, b) => a.bundle.id.localeCompare(b.bundle.id) || a.example.id.localeCompare(b.example.id));
+    let admitted: { text: string; constructionId: string; exampleId: string } | undefined;
+    for (const { bundle, example } of grammar) {
+      const slots: Array<SurfaceMeaningPlan["slots"][number]> = example.roles.map((role, slotIndex) => {
+        const replacement = replacements.find(row => row && example.surfaceStartCodePoint + role.startCodePoint === row.port.startCodePoint
+          && example.surfaceStartCodePoint + role.endCodePoint === row.port.endCodePoint);
+        const id = opaqueSurfaceId(hasher, "creative_slot", [invention.semanticPlanId, event.id, role.occurrenceId]);
+        return { roleId: role.roleId, occurrenceId: role.occurrenceId, variants: [{ id, profileKey: bundle.targetProfileId,
+          surface: replacement?.span.text ?? role.surface, evidenceIds: replacement ? [] : [example.evidenceId],
+          ...(replacement ? { conversationInternalLicence: { schema: CONVERSATION_INTERNAL_PROVENANCE_METHOD_ID, variantId: id, slotIndex,
+            conversationId: "conversation.current", sourceTurnId: ownerTurn.turnId, startCodePoint: replacement.span.charStart, endCodePoint: replacement.span.charEnd } } : {}) }] };
+      });
+      for (const role of example.nullRoles) slots.push({ roleId: role.roleId, occurrenceId: role.occurrenceId, realization: "null", variants: [], evidenceIds: [example.evidenceId] });
+      const realized = realizeLearnedSurface({ hasher, constructions: bundle.constructions, formClasses: bundle.formClasses, conversationTurns: turns,
+        cycleConsistencyByConstructionId: input.cycleConsistencyByConstructionId,
+        plan: { id: opaqueSurfaceId(hasher, "creative_plan", [invention.semanticPlanId, eventIndex, example.id]), profileKey: bundle.targetProfileId,
+          roleSignature: [...new Set(slots.map(slot => slot.roleId))], slots } });
+      if (realized.status !== "realized") continue;
+      admitted = { text: realized.realization.text, constructionId: realized.realization.constructionId, exampleId: example.id };
+      formLiterals.push({ id: `construction_form.${realized.realization.constructionId}.${example.sourceVersionId}`, text: example.surface });
+      break;
+    }
+    if (!admitted) return undefined;
+    if (!surfaces.includes(admitted.text)) surfaces.push(admitted.text);
+    realizations.push(toJsonValue({ eventId: event.id, ...admitted }));
+  }
+  const text = admissibleJoinedCandidateText(renderJoinedCandidateAlternatives({ derivations: [surfaces], joinProgram: activeJoinProgram(input.languageMemory) }));
+  if (!text || !admissibleMouthSurface(text)) return undefined;
+  const id = `candidate:generated:creative:realizer:${hasher.digestHex(canonicalStringify([invention.semanticPlanId, realizations, text]))}`;
+  return { id, style: "surface.path.generated.creative.source_construction", path: "generated", claimBasis: "invented", text,
+    evidenceIds: [], fit: invention.supportScore, importedPieceIds: stringArrayFromJson(semanticPlan.sourceBundleIds), discoursePlan,
+    inventionBinding: inventionSurfaceBinding(invention), constructionFormLiterals: formLiterals, exactSurface: true,
+    audit: toJsonValue({ source: "mouth.selected_event_source_construction", realizations,
+      selectionBinding: { semanticCandidateId: selected.id, semanticPlanId: invention.semanticPlanId, surfaceRealizationId: id } }) };
 }
 
 function selectedNonEventCreativeMouthHandoff(input: SpeakInput): boolean {
@@ -8015,6 +8103,9 @@ function mouthProducerAuthorityHits(
       : ["surface.reject.learned_prior_content_mismatch"];
   }
   if (authority.kind === "licensed_invention") {
+    if (jsonRecord(candidate.audit).source === "mouth.selected_event_source_construction" && text !== candidate.text) {
+      return ["surface.reject.creative_source_surface_changed"];
+    }
     const binding = licensedCreativeBinding(candidate, input);
     return binding && JSON.stringify(binding) === JSON.stringify(authority.binding)
       ? []
