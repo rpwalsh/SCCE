@@ -516,19 +516,20 @@ function compileKBest(
     depth: 0,
     pathKey: ""
   }];
+  const seen = new Set<string>();
   for (let position = 0; position <= graphemeCount; position += 1) {
     if (!kBest[position]!.length) continue;
     for (const arc of arcsByStart.get(position) ?? []) {
       const next = arc.unit.graphemeEnd;
       const retained = kBest[next]!;
       const worst = retained.length === pathLimit ? retained[retained.length - 1] : undefined;
-      const candidates = [...retained];
+      const retainedCount = retained.length;
       for (const node of kBest[position]!) {
         const energy = quantize(node.energy + arc.energy);
         const depth = node.depth + 1;
         // Retained paths are distinct; strict energy/depth domination cannot be rescued by the hash tie-breaker.
         if (worst && (energy > worst.energy || energy === worst.energy && depth > worst.depth)) continue;
-        candidates.push({
+        retained.push({
           parent: node,
           unitId: arc.unit.id,
           energy,
@@ -537,9 +538,19 @@ function compileKBest(
           pathKey: hasher.digestHex(`${node.pathKey}${arc.unit.id}`).slice(0, 24)
         });
       }
-      if (candidates.length === retained.length) continue;
-      candidates.sort(compareDpNodes);
-      kBest[next] = uniqueNodes(candidates).slice(0, pathLimit);
+      if (retained.length === retainedCount) continue;
+      // Preserve native stable-sort input order even when extreme costs make comparisons nonfinite.
+      retained.sort(compareDpNodes);
+      seen.clear();
+      let write = 0;
+      for (let read = 0; read < retained.length; read++) {
+        const node = retained[read]!;
+        if (seen.has(node.pathKey)) continue;
+        seen.add(node.pathKey);
+        retained[write++] = node;
+        if (write === pathLimit) break;
+      }
+      retained.length = write;
     }
   }
   return kBest[graphemeCount]!.map(materializePath);
@@ -647,17 +658,6 @@ function quantizeEnergy(energy: SegmentationEnergyComponents): SegmentationEnerg
     semanticContext: quantize(energy.semanticContext),
     total: quantize(energy.total)
   };
-}
-
-function uniqueNodes(nodes: readonly DpNode[]): DpNode[] {
-  const seen = new Set<string>();
-  const out: DpNode[] = [];
-  for (const node of nodes) {
-    if (seen.has(node.pathKey)) continue;
-    seen.add(node.pathKey);
-    out.push(node);
-  }
-  return out;
 }
 
 function uniqueArcs(arcs: readonly WeightedArc[]): WeightedArc[] {
