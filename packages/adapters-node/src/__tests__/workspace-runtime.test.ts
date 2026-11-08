@@ -338,6 +338,7 @@ function fakeRuntime(workspace: WorkspaceStore, dialogueMemory: DialogueMemorySt
   } : undefined;
   return {
     storage: { workspace, dialogueMemory, ...(evidenceStore ? { evidence: evidenceStore } : {}) } as unknown as NodeScceRuntime["storage"],
+    runExecutiveGoal: async () => { throw new Error("executive goals are outside this workspace fixture"); },
     kernel: (evidence?.ingest ? { ingest: evidence.ingest } : {}) as unknown as NodeScceRuntime["kernel"],
     connectors: {} as NodeScceRuntime["connectors"],
     approvals: {} as NodeScceRuntime["approvals"],

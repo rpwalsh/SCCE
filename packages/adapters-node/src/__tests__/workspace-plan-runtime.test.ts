@@ -218,6 +218,7 @@ class MemoryWorkspaceStore implements WorkspaceStore {
 
 function fakeRuntime(workspace: WorkspaceStore): NodeScceRuntime {
   return {
+    runExecutiveGoal: async () => { throw new Error("executive goals are outside this workspace fixture"); },
     storage: { workspace } as NodeScceRuntime["storage"],
     kernel: {} as NodeScceRuntime["kernel"],
     connectors: {} as NodeScceRuntime["connectors"],

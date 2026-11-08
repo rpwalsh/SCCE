@@ -474,6 +474,7 @@ class SpreadsheetWorkspaceStore implements WorkspaceStore {
 
 function recordingRuntime(workspace: WorkspaceStore, ingestCalls: IngestInput[]): NodeScceRuntime {
   return {
+    runExecutiveGoal: async () => { throw new Error("executive goals are outside this ingestion fixture"); },
     storage: { workspace } as NodeScceRuntime["storage"],
     kernel: {
       ingest: async (input: IngestInput) => {
