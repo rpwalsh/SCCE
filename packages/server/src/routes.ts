@@ -3973,6 +3973,9 @@ export function compactTurnResult(result: TurnResult): Record<string, unknown> {
     episodeId: result.episodeId,
     answer: result.answer,
     epistemicForce: result.epistemicForce,
+    responseView: { schema: "scce.turn_response.v1", detail: "receipt", fullQuery: "full=1" },
+    realizationAvailability: result.realizationAvailability,
+    withheld: result.withheld,
     ...(result.assistantForce === undefined ? {} : { assistantForce: result.assistantForce }),
     ...(result.requestedAuthority === undefined ? {} : { requestedAuthority: result.requestedAuthority }),
     ...(result.calibrationTaskClass === undefined ? {} : { calibrationTaskClass: result.calibrationTaskClass }),
@@ -3988,7 +3991,7 @@ export function compactTurnResult(result: TurnResult): Record<string, unknown> {
     calibrationStatus: result.calibrationStatus,
     calibration: compactJson(result.calibration, 2),
     timing: compactJson(result.timing, 2),
-    buildTest: compactJson(result.buildTest, 3),
+    buildTest: result.buildTest,
     runtimeMotion: compactJson(result.runtimeMotion, 3),
     languageAcquisition: compactJson(result.languageAcquisition, 2),
     translation: compactJson(result.translation, 2),
@@ -4101,13 +4104,18 @@ function compactEntailment(entailment: TurnResult["entailment"]): Record<string,
   };
 }
 
+const PUBLIC_TURN_OUTCOME_EVENTS: ReadonlySet<string> = new Set([
+  "CapabilityPlanned", "CapabilityInvoked", "CapabilitySucceeded", "CapabilityFailed",
+  "ActionCommitted", "ActionRolledBack", "ExecutiveCapabilityDispatched", "FailureObserved",
+  "SourceEmitted", "ProgramRepaired", "ProceduralSkillExecuted"
+]);
+
+/** Execution outcome receipts stay exact; cognitive event payloads remain explicit summaries. */
 function compactEvent(event: TurnResult["events"][number]): Record<string, unknown> {
+  if (PUBLIC_TURN_OUTCOME_EVENTS.has(String(event.typeId))) return { ...event };
   return {
-    id: event.id,
-    episodeId: event.episodeId,
-    typeId: event.typeId,
-    t: event.t,
-    parents: event.parents.slice(0, 32),
+    ...event,
+    payloadView: "summary",
     // Depth 1 keeps every scalar payload field; nesting is the cost bound, not the event count.
     payload: compactJson(event.payload, 1)
   };

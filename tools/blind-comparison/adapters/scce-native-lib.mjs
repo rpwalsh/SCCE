@@ -126,8 +126,7 @@ async function scceNativeOperation(input, config, dependencies) {
     if (workspaceProgramContext) body.metadata = { ...body.metadata, workspaceProgramContext };
   }
   else if (contract.operation === 'tool_use') body.requestedAuthority = 'action';
-  const turnRoute = ['code_generation','tool_use'].includes(contract.operation) ? '/api/turn?full=1' : '/api/turn';
-  const result = await call(turnRoute, body,contract.operation==='code_generation'&&contract.programMode==='verified_artifacts'?'process.build_test':undefined);
+  const result = await call('/api/turn', body,contract.operation==='code_generation'&&contract.programMode==='verified_artifacts'?'process.build_test':undefined);
   if (contract.answerMode === 'answer_or_abstain' && typedFactualAbstention(result)) {
     const outcome = { status: 'abstained', answer: null };
     const completed = await complete(canonical(outcome), {}, { rawResponseHash: result.rawResponseHash ?? hash(result.body), machineOutcome: outcome, machineOutcomeHash: hash(outcome) });

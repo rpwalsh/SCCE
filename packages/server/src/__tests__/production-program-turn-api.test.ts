@@ -31,6 +31,7 @@ import {
   hydrateLanguageConstructionPatterns,
   type PatchTransactionPlan,
   type ScceEvent,
+  type TurnResult,
   type ScceStorage,
   type EvidenceSpan,
   type LanguagePatternRecord,
@@ -99,6 +100,13 @@ describe("production owner program turn through the API", () => {
       clock,
       deterministicReplay: true
     });
+    const turnResults: TurnResult[] = [];
+    const nativeTurn = kernel.turn.bind(kernel);
+    kernel.turn = async input => {
+      const result = await nativeTurn(input);
+      turnResults.push(result);
+      return { ...result, workingMemory: { internalDiagnostic: "internal-only".repeat(300_000) } };
+    };
     const context = {
       runtime: {
         storage: { ...storage, dialogueMemory: createInMemoryDialogueMemoryStore() },
@@ -161,6 +169,8 @@ describe("production owner program turn through the API", () => {
     expect(attempts[0]?.source).toContain("args[0]");
     expect(attempts[1]?.source).toContain("args[0] + args[0]");
     expect(body.buildTest?.passed).toBe(true);
+    expect(body.buildTest).toEqual(turnResults[0]?.buildTest);
+    expect(JSON.stringify(body)).not.toContain("internal-only".repeat(1000));
 
     const plan = body.workspaceCoding.plan as PatchTransactionPlan;
     expect(await readFile(join(root, "src", "program.mjs")).catch(() => undefined)).toBeUndefined();
@@ -201,6 +211,9 @@ describe("production owner program turn through the API", () => {
     expect(verifiedResponse.status, JSON.stringify(verified)).toBe(200);
     expect(verified.programReadiness).toMatchObject({ status: "ready", reasonId: "program.readiness.verified", artifactCount: expect.any(Number) });
     expect(verified.programReadiness.artifactIds).toHaveLength(verified.programReadiness.artifactCount);
+    expect(verified.buildTest).toEqual(turnResults.at(-1)?.buildTest);
+    expect(verified.programArtifacts).toEqual(turnResults.at(-1)?.buildTest?.artifacts);
+    expect(Math.max(...verified.programArtifacts.map((artifact: { content: string }) => artifact.content.length))).toBeGreaterThan(500);
     expect(verified.programArtifacts).toEqual(expect.arrayContaining([expect.objectContaining({ path: "src/program.mjs", mediaType: "text/javascript", role: "source", contentHash: expect.any(String), content: expect.stringContaining("args[0] + args[0]") })]));
 
     const scaffoldResponse = await fetch(`http://127.0.0.1:${address.port}/api/turn?full=1`, {

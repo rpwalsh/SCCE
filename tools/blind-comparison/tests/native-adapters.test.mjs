@@ -107,6 +107,32 @@ test('ordinary native HTTP turns use the public receipt view without increasing 
   assert.deepEqual(calls,['/api/ingest','/api/turn']);assert.equal(input.budgets.outputBytes,131072);
  }finally{await new Promise(resolve=>server.close(resolve));}
 });
+
+for(const operation of ['code_generation','tool_use'])test(`${operation} uses ordinary compact HTTP with exact artifacts and outcome receipts`,async()=>{
+ const content=good+`\n/*${'λ'.repeat(900)}*/\n`;
+ const artifact={artifactId:'artifact:exact',path:'module.cjs',content,contentHash:`sha256_${sha256Text(content)}`,mediaType:'text/javascript',role:'source'};
+ const overrides={writablePaths:['module.cjs'],publicChecks:[{argv:['{node}','public-check.cjs']}],...(operation==='code_generation'?{prepareWorkspace:true,programMode:'verified_artifacts'}:{requiredCapabilityIds:['process.build_test']})};
+ const input=makeInput(operation,overrides),cwd=await workspace(input.steps[0].files),calls=[];
+ const server=createServer((request,response)=>{
+  let bytes='';request.setEncoding('utf8');request.on('data',chunk=>{bytes+=chunk;});request.on('end',()=>{
+   const body=JSON.parse(bytes);calls.push({route:request.url,body});response.setHeader('content-type','application/json');
+   if(request.url==='/api/workspace/ingest'){response.end(JSON.stringify({failed:0,workspace:{id:'workspace:exact-owner',updatedAt:42},responseView:{detail:'receipt'}}));return;}
+   const result={answer:'Verified native result.',programReadiness:{status:'ready',reasonId:'program.readiness.verified',artifactCount:1,artifactIds:[artifact.artifactId]},programArtifacts:[artifact],
+    buildTest:{artifacts:[artifact]},events:[{typeId:'CapabilitySucceeded',payload:{capabilityId:'process.build_test',planId:'approval:exact',sourceVersionId:'source:exact',witnessIds:Array.from({length:80},(_,index)=>`witness:${index}`)}}]};
+   response.end(JSON.stringify({...result,...(request.url.includes('full=1')?{internalDiagnostics:'x'.repeat(input.budgets.outputBytes+1)}:{})}));
+  });
+ });
+ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+ try{
+  const result=await runScceNative(input,{cwd,server:`http://127.0.0.1:${server.address().port}`});
+  assert.equal(result.identity.productOutcome,'completed');assert.equal(result.artifacts['module.cjs'],content);
+  assert.equal(await readFile(path.join(cwd,'module.cjs'),'utf8'),content);
+  assert.deepEqual(calls.map(call=>call.route),operation==='code_generation'?['/api/workspace/ingest','/api/turn']:['/api/turn']);
+  if(operation==='code_generation')assert.deepEqual(calls[1].body.metadata.workspaceProgramContext,{schema:'scce.workspace.program-context.v1',workspaceId:'workspace:exact-owner',expectedWorkspaceUpdatedAt:42});
+  else assert.equal(result.identity.trace.find(row=>row.capabilityEvents).capabilityEvents[0].payload.witnessIds.length,80);
+  assert.equal(input.budgets.outputBytes,131072);assert.equal(result.identity.trace.at(-1).publicChecks.passed,true);
+ }finally{await new Promise(resolve=>server.close(resolve));}
+});
 test('actual unsupported-language 422 remains a product failure without substituting an artifact or runtime', async () => {
   const input = makeInput('code_generation'), cwd = await workspace(input.steps[0].files);
   const result = await runScceNative(input, { cwd }, { request: async route => route === '/api/workspace/init' ? { status: 200, body: { id: 'workspace.actual', updatedAt: 42 } } : { status: 422, body: { detail: { schema: 'scce.program.response_readiness.v1', reasonId: 'program.readiness.unsupported_language', languageId: 'rust' } } } });
@@ -377,7 +403,7 @@ test('cold grading counts an explicit product refusal as a native loss even when
    return route==='/api/workspace/ingest'?{status:200,body:{failed:0,workspace:{id:'workspace.actual-owner',updatedAt:42}}}:{status:422,body:{}};
   }});
   assert.equal(result.identity.reason,'turn_http_422');
-  assert.deepEqual(calls.map(row=>row.route),['/api/workspace/ingest','/api/turn?full=1']);
+  assert.deepEqual(calls.map(row=>row.route),['/api/workspace/ingest','/api/turn']);
   assert.deepEqual(calls[1].body.metadata,{workspaceProgramContext:{schema:'scce.workspace.program-context.v1',workspaceId:'workspace.actual-owner',expectedWorkspaceUpdatedAt:42}});
   assert.equal(calls[1].body.requestedAuthority,'program');
   assert.equal(Object.hasOwn(calls[1].body,'workspaceCoding'),false);
@@ -396,10 +422,10 @@ test('verified program approval checks the frozen native scope and retries the e
  const result=await runScceNative(input,{cwd},{request:async(route,body)=>{
   calls.push({route,body});
   if(route==='/api/session/approve'){assert.deepEqual(body,{planId:pending.planId});return {status:200,body:{approved:pending}};}
-  assert.equal(route,'/api/turn?full=1');return turns++?{status:422,body:{}}:{status:202,body:{pendingApproval:pending}};
+  assert.equal(route,'/api/turn');return turns++?{status:422,body:{}}:{status:202,body:{pendingApproval:pending}};
  }});
  assert.equal(result.identity.reason,'turn_http_422');
- assert.deepEqual(calls.map(row=>row.route),['/api/turn?full=1','/api/session/approve','/api/turn?full=1']);
+ assert.deepEqual(calls.map(row=>row.route),['/api/turn','/api/session/approve','/api/turn']);
  assert.deepEqual(calls[0].body,calls[2].body);
  assert.equal(result.identity.trace.filter(row=>row.route==='/api/session/approve').length,1);
  assert.equal(result.identity.trace.some(row=>row.approvalRetry===true),true);

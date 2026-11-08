@@ -1,10 +1,31 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
-import type { TurnResult } from "@scce/kernel";
+import { createHasher, type BuildTestResult, type TurnResult } from "@scce/kernel";
 import { compactTurnResult } from "../routes.js";
 
 describe("compact turn result", () => {
+  it("retains complete build artifacts and capability outcome witnesses rather than previewing executable data", () => {
+    const content = `export const value = 31;\n/*${"λ".repeat(1400)}*/\n`;
+    const artifact = { artifactId: "artifact:owned", path: "src/module.mjs", mediaType: "text/javascript", content,
+      contentHash: `sha256_${createHasher().digestHex(content)}`, role: "source" } as BuildTestResult["artifacts"][number];
+    const witnessIds = Array.from({ length: 80 }, (_, index) => `evidence:owned:${index}`);
+    const output = "native output:" + "証".repeat(900);
+    const buildTest: BuildTestResult = { build: { code: 0, stdout: output, stderr: "", durationMs: 1 },
+      test: { code: 0, stdout: output, stderr: output, durationMs: 2 }, repairAttempted: true, repairApplied: true, passed: true,
+      artifacts: [artifact], attempts: [{ build: { code: 1, stdout: "", stderr: output, durationMs: 1 }, test: { code: null, stdout: "", stderr: output, durationMs: 0 }, artifacts: [artifact] }],
+      testExecutionReceipt: { command: "node", args: ["--test", "test/module.test.mjs"], cwd: "owner/workspace", status: "executed" } };
+    const events = ["CapabilitySucceeded", "CapabilityFailed"].map((typeId, index) => ({ id: `event:${index}`, episodeId: "episode:owner", typeId, t: index,
+      parents: witnessIds, hash: `complete-event:${index}`, payload: { capabilityId: "process.build_test", planId: "approval:exact", ownerId: "owner:exact",
+        sourceVersionId: "source:exact", inputHash: "sha256:approval-input", witnessIds, result: { artifacts: [artifact], error: output } } }));
+    const result = { ...baseResult(), buildTest, events, workingMemory: { internalDiagnostics: "x".repeat(3 * 1024 * 1024) } } as unknown as TurnResult;
+    const projected = compactTurnResult(result);
+    expect(projected.buildTest).toEqual(buildTest);
+    expect(projected.events).toEqual(events);
+    expect(projected).not.toHaveProperty("workingMemory");
+    expect(JSON.stringify(projected)).not.toContain("x".repeat(1000));
+    expect((projected.buildTest as BuildTestResult).artifacts[0]?.contentHash).toBe(`sha256_${createHasher().digestHex(content)}`);
+  });
   it("keeps the user surface and bounded proof while excluding internal working state", () => {
     const oversized = "x".repeat(250_000);
     const result = {
