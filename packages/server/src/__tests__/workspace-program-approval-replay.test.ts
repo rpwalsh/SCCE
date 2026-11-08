@@ -8,7 +8,8 @@ import {it,expect,vi} from "vitest";
 vi.mock("@scce/adapters-node",async original=>({...await original<typeof import("@scce/adapters-node")>(),assertHydratedRuntimeReady:vi.fn(async()=>({activeBrainVersion:"brain.owned-api-test",activeImportRunIds:[]}))}));
 import {ordinaryWorkspaceProgramFixture} from "../../../adapters-node/src/__tests__/fixtures/ordinary-workspace-program.js";
 import {handleRequest,type ApiContext} from "../routes.js";
-import type {TurnResult} from "@scce/kernel";
+import {createClock,createHasher,createIdFactory,createAlphaFieldEngine,createSemanticEntailmentEngine,createProgramPlanner,programIntentForTurn,codeRequestSignal,COGNITIVE_OPERATOR_IDS,programValidationApprovalInput,type TurnResult} from "@scce/kernel";
+import {createCausalDiscoveryEngine} from "../../../kernel/src/causal.js";
 it("retains exact native approval across cold and warm ordinary API requests with owned sources and dialogue memory",async()=>{
  const base=await mkdtemp(path.join(tmpdir(),"scce-api-program-approval-")),root=path.join(base,"nested \u0394 workspace");
  let server:ReturnType<typeof createServer>|undefined;
@@ -68,3 +69,27 @@ it("retains exact native approval across cold and warm ordinary API requests wit
   expect(currentApproval).toBeDefined();expect(fixture.approvals.isApproved(currentApproval)).toBe(false);
  }finally{if(server)await new Promise<void>(resolve=>server!.close(()=>resolve()));await rm(base,{recursive:true,force:true});}
 },60000);
+
+it("reuses an exact approval when only the clock-aged resident source graph diagnostic changes",async()=>{
+ const root=await mkdtemp(path.join(tmpdir(),"scce-resident-causal-approval-"));
+ try{
+  const text="JavaScript freshOpaqueDouble(2)=4; freshOpaqueDouble(-1)=-2; freshOpaqueDouble(4)=8";
+  await writeFile(path.join(root,"specification.txt"),text);
+  const fixture=ordinaryWorkspaceProgramFixture(root,{realClock:true,persistGraph:true});await fixture.runtime.ingest(root,{maxFiles:10,maxFileBytes:100000});
+  const graph=await fixture.storage.graph.getSlice({});expect(graph.edges.length).toBeGreaterThan(0);
+  let now=Math.max(...graph.edges.map(edge=>edge.updatedAt))+1;
+  const causal=createCausalDiscoveryEngine({now:()=>now});
+  const mass=()=>{const values=causal.discover({...graph,activeNodeIds:[]}).map(row=>row.mass);return values.reduce((sum,value)=>sum+value,0)/values.length;};
+  const firstMass=mass();now+=60000;const laterMass=mass();expect(laterMass).not.toBe(firstMass);
+  const clock=createClock({fixedTime:1,stepMs:1}),hasher=createHasher(),ids=createIdFactory({clock,hasher,deterministicReplay:true});
+  const field=createAlphaFieldEngine().activate({text,nodes:[],edges:[]});
+  const entailment=createSemanticEntailmentEngine({idFactory:ids,hasher}).check({text,evidence:[],nodes:[],field,createdAt:1});
+  const intent=programIntentForTurn({requestedAuthority:"program",activeOperatorIds:[COGNITIVE_OPERATOR_IDS.programPlanning],codeSignal:codeRequestSignal(text),evidence:[]})!;
+  const planner=createProgramPlanner({idFactory:ids,hasher});
+  const emit=(causalMass:number)=>planner.emit({episodeId:ids.episodeId(),requestText:text,evidence:[],programIntent:intent,entailment:{...entailment,confidence:{...entailment.confidence,causalMass}}});
+  const first=emit(firstMass),input=programValidationApprovalInput(first);
+  const pending=fixture.approvals.requestApproval({capabilityId:"process.build_test",input});fixture.approvals.approve(pending.planId);
+  const later=emit(laterMass);expect(fixture.approvals.isApproved({capabilityId:"process.build_test",input:programValidationApprovalInput(later)})).toBe(true);
+  expect(later.files).toEqual(first.files);
+ }finally{await rm(root,{recursive:true,force:true});}
+});
