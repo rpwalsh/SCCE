@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import {sourceComputationForRequest} from "./source-computation-runtime.js";
-import { contextualQaForRequest } from "./contextual-qa-runtime.js";
+import { contextualQaForRequest, contextualQaConstructionsForRequest, contextualQaBindingVerified } from "./contextual-qa-runtime.js";
 import { createTypedIngestProjector, type TypedIngestProjection } from "./typed-ingest.js";
 import { createActionGraphBuilder } from "./action-graph.js";
 import { createAlphaFieldPersistence } from "./alpha-field-persistence.js";
@@ -1331,6 +1331,24 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         ...codeSignal.behaviorRequirements.map(requirement => requirement.id),
         ...codeSignal.statefulBehaviorRequirements.map(requirement => requirement.id)
       ];
+      const contextualQaGeneration = surfaceLanguageRuntime.revisionGeneration();
+      const contextualQaAuthorityContext = Object.freeze({});
+      const contextualQaConstructions = !sourceComputation && !formalArithmetic && !formalExactComputation
+        && !typedProgramBehaviorRequirementIds.length && (!explicitAuthority || explicitAuthority === "factual")
+        && !deps.evaluationCondition?.flags.disableLanguageMemory && !deps.evaluationCondition?.flags.disableLearnedSemantics
+        && !deps.evaluationCondition?.flags.disableGraph
+        ? await contextualQaConstructionsForRequest({ storage: deps.storage, hasher, requestText: input.text, generation: contextualQaGeneration }) : undefined;
+      const contextualQaRetrieval = contextualQaConstructions ? await graphForText(input.text, {
+        allowSemanticFrameEvidence: true, evidenceFirst: true, sourceAnchoringRequired: true,
+        evidenceAccess: { sourceCodeEvidenceAllowed: false }, residentOnly: fastRuntimeBudget,
+        languageModels: authorityLanguage.state.models ?? [], continuationPopulation: authorityLanguage.state.continuationPopulation,
+        contextualQa: { constructions: contextualQaConstructions, generation: contextualQaGeneration,
+          sourceVersionAllowlist: input.runtimeControl?.evidenceSourceAllowlist }
+      }) : undefined;
+      const currentContextualQa = contextualQaRetrieval ? await contextualQaForRequest({ storage: deps.storage, hasher, requestText: input.text,
+        evidence: contextualQaRetrieval.evidence, constructions: contextualQaConstructions, generation: contextualQaGeneration,
+        authorityContext: contextualQaAuthorityContext,
+        sourceVersionAllowlist: input.runtimeControl?.evidenceSourceAllowlist }) : undefined;
       const observedSourceSpeech = !deps.evaluationCondition?.flags.disableLanguageMemory
         && !translationTarget && (!explicitAuthority || explicitAuthority === "creative")
         ? await surfaceLanguageRuntime.creativeSourceMemoryForRequest(input.text) : undefined;
@@ -1368,6 +1386,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const authorityProjection = projectRequestAuthority({
         requirementField,
         ...(sourceComputation?{verifiedComputation:{requestText:input.text,result:sourceComputation}}:{}),
+        ...(currentContextualQa && contextualQaRetrieval ? { verifiedContextualQa: { requestText: input.text, result: currentContextualQa,
+          evidence: contextualQaRetrieval.evidence, storage: deps.storage, generation: surfaceLanguageRuntime.revisionGeneration(), authorityContext: contextualQaAuthorityContext } } : {}),
         explicitAuthority,
         typedProgramBehaviorRequirementIds,
         sourceRequestFrame: observedSourceRequestFrame
@@ -1776,7 +1796,11 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           // query. Measured 2026-09-12: the graph slice took 10.3s of a 20.6s creative turn, the response
           // deadline then elapsed, the learned mouth was refused, and a fallback stitched twelve sections out of
           // the request text. sourceDependence is the learned quantity that says so, so it is what gates this.
-          () => authoredRequestNeedsNoRetrieval
+          () => contextualQaRetrieval && currentContextualQa && !discourseEvidenceBound
+            && contextualQaBindingVerified({ result: currentContextualQa, requestText: input.text, evidence: contextualQaRetrieval.evidence,
+              storage: deps.storage, hasher, generation: surfaceLanguageRuntime.revisionGeneration(), authorityContext: contextualQaAuthorityContext })
+            ? Promise.resolve(contextualQaRetrieval)
+            : authoredRequestNeedsNoRetrieval
             ? graphForEvidenceIds([])
             : discourseEvidenceBound
             ? graphForEvidenceIds([...metadataEvidenceIds])
@@ -2077,7 +2101,10 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         ])
       );
       const contextualQa = requestedAuthority === "creative" || deps.evaluationCondition?.flags.disableLanguageMemory
-        ? undefined : await contextualQaForRequest({ storage: deps.storage, hasher, requestText: input.text, evidence });
+        ? undefined : currentContextualQa && contextualQaBindingVerified({ result: currentContextualQa, requestText: input.text,
+          evidence, storage: deps.storage, hasher, generation: surfaceLanguageRuntime.revisionGeneration(), authorityContext: contextualQaAuthorityContext }) ? currentContextualQa
+          : await contextualQaForRequest({ storage: deps.storage, hasher, requestText: input.text, evidence,
+            constructions: contextualQaConstructions, generation: contextualQaGeneration, sourceVersionAllowlist: input.runtimeControl?.evidenceSourceAllowlist });
       for (const id of contextualQa?.binding.evidenceIds ?? []) semanticFrameBoundEvidenceIds.add(id);
       const calibrationModels = await calibrationModelsCached();
       // Only measured form is excluded; an unmeasured language class cannot erase the current turn's content.

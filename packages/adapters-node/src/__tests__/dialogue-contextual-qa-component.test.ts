@@ -5,14 +5,16 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { readFileSync } from "node:fs";
-import { createScceKernel, createClock, createHasher, createIdFactory, contextualQaRequestMatches, verifyContextualQaConstruction,
+import { createScceKernel, createClock, createHasher, createIdFactory, contextualQaRequestMatches, verifyContextualQaConstruction, toJsonValue,
   CONTEXTUAL_QA_CONSTRUCTION_RECIPE, type EvidenceSpan, type IngestionCheckpoint, type LanguagePatternRecord, type TranscriptTurn,
   type ContextualQaRequestForm } from "@scce/kernel";
 import { trainDialogueCorpus } from "../dialogue-corpus.js";
 import { storageFixtureForEvaluation } from "../../../kernel/src/__tests__/evidence-promotion-evaluation-fixture.js";
 import { requestSeedLanguagePattern } from "../../../kernel/src/request-language-hydration.js";
 import { jsonRecord } from "../../../kernel/src/kernel-answer-primitives.js";
-import { contextualQaForRequest } from "../../../kernel/src/contextual-qa-runtime.js";
+import { contextualQaForRequest, contextualQaConstructionsForRequest, type VerifiedContextualQaBinding } from "../../../kernel/src/contextual-qa-runtime.js";
+import { authorityRequirementCoefficients, projectRequestAuthority, REQUESTED_AUTHORITY_IDS } from "../../../kernel/src/request-authority.js";
+import { deriveTurnRequirementField } from "../../../kernel/src/turn-requirements.js";
 
 const roots: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
@@ -135,12 +137,53 @@ it("learns a genuine human extractive form across original articles and answers 
     sourceAdmission: { sourceClass: "owner_local", intendedUse: "direct_evidence", promotionAuthority: "owner" },
     sourceTrust: { identity: 1, integrity: 1, parserReliability: 1, directness: 1, authority: 1, freshness: 1, independenceGroup: "current-human-form-fact", accessScope: "owner_private", licenseStatus: "owner_authorized" } });
   const cold = f.kernel();
-  expect((await cold.turn({ text: "What type of stations route glyphs for Neralis_\u6e2f\ud83e\udded?" })).answer).toBe("V\u00eblora");
-  expect((await cold.turn({ text: "What type of stations route glyphs for Neralis_\u6e2f\ud83e\udded?", requestedAuthority: "factual" })).answer).toBe("V\u00eblora");
+  const requestText = "What type of stations route glyphs for Neralis_\u6e2f\ud83e\udded?", creativeContext = authorityRequirementCoefficients("creative");
+  const requirementField = deriveTurnRequirementField({ requestText, contextContribution: creativeContext });
+  expect(projectRequestAuthority({ requirementField }).requestedAuthority).toBe("creative");
+  const authorityContext = Object.freeze({});
+  const proof = await contextualQaForRequest({ storage: f.storage, hasher, requestText, evidence: f.evidence, generation: 0, authorityContext });
+  expect(proof).toBeDefined();
+  expect(await contextualQaForRequest({ storage: f.storage, hasher, requestText, evidence: f.evidence, generation: 0,
+    authorityContext, sourceVersionAllowlist: [] })).toBeUndefined();
+  const verified = { requestText, result: proof!, storage: f.storage, evidence: f.evidence, generation: 0, authorityContext };
+  expect(projectRequestAuthority({ requirementField, verifiedContextualQa: verified }).requestedAuthority).toBe("factual");
+  const headerOnly = await contextualQaConstructionsForRequest({ storage: f.storage, hasher, requestText, generation: 0 });
+  for (const invalid of [
+    { ...verified, result: structuredClone(proof!) }, { ...verified, result: headerOnly as VerifiedContextualQaBinding },
+    { ...verified, storage: { ...f.storage } }, { ...verified, generation: 1 }, { ...verified, authorityContext: {} }, { ...verified, requestText: requestText.replace("stations", "arrays") },
+    { ...verified, evidence: f.evidence.map(span => span.text === current ? { ...span, status: "quarantined" as const } : span) },
+    { ...verified, evidence: f.evidence.map(span => span.text === current ? { ...span, sourceVersionId: "source.changed" as typeof span.sourceVersionId } : span) }
+  ]) expect(projectRequestAuthority({ requirementField, verifiedContextualQa: invalid }).requestedAuthority).toBe("creative");
+  for (const explicitAuthority of REQUESTED_AUTHORITY_IDS)
+    expect(projectRequestAuthority({ requirementField, verifiedContextualQa: verified, explicitAuthority }).requestedAuthority).toBe(explicitAuthority);
+  const currentFactRead = vi.spyOn(f.storage.evidence, "searchEvidence"), bodyReads = vi.spyOn(f.storage.languageMemory, "listLanguagePatterns");
+  const adverse = await f.kernel().turn({ text: requestText, metadata: toJsonValue({ requirementContext: creativeContext }) });
+  expect(adverse.answer).toBe("V\u00eblora"); expect(adverse.requestedAuthority).toBe("factual");
+  expect(adverse.requestedAuthorityDecision).toMatchObject({ projectedAuthority: "creative", selectionSource: "source_owned_contextual_qa" });
+  const queriedBodies = bodyReads.mock.calls.filter(([query]) => query?.patternIds?.includes(qa[0]!.id) && query.view !== "request_seed");
+  expect(queriedBodies).toHaveLength(1);
+  expect(currentFactRead.mock.calls.filter(([query]) => !query.sourceVersionId).length).toBeGreaterThan(0);
+  expect((await cold.turn({ text: requestText })).answer).toBe("V\u00eblora");
+  expect((await cold.turn({ text: requestText, requestedAuthority: "factual" })).answer).toBe("V\u00eblora");
   expect((await cold.turn({ text: "What type of stations route glyphs for Foreign_\u661f?", requestedAuthority: "factual" })).answer).toBe("");
   expect((await cold.turn({ text: "What place receives glyphs from Neralis_\u6e2f\ud83e\udded?", requestedAuthority: "factual" })).answer).toBe("");
-  const source = f.evidence.find(span => span.text === current)!; source.status = "quarantined";
+  await cold.ingest({ uri: "fixture://same-title-owned-relation", content: current,
+    mediaType: "text/plain", namespace: "workspace", informationLabel: label, metadata: { title: "Neralis field record" },
+    sourceAdmission: { sourceClass: "owner_local", intendedUse: "direct_evidence", promotionAuthority: "owner" },
+    sourceTrust: { identity: 1, integrity: 1, parserReliability: 1, directness: 1, authority: 1, freshness: 1, independenceGroup: "same-title-owned-relation", accessScope: "owner_private", licenseStatus: "owner_authorized" } });
+  await cold.ingest({ uri: "fixture://same-title-different-relation", content: "V\u00eblora stations receive glyphs from Neralis_\u6e2f\ud83e\udded.",
+    mediaType: "text/plain", namespace: "workspace", informationLabel: label, metadata: { title: "Neralis field record" },
+    sourceAdmission: { sourceClass: "owner_local", intendedUse: "direct_evidence", promotionAuthority: "owner" },
+    sourceTrust: { identity: 1, integrity: 1, parserReliability: 1, directness: 1, authority: 1, freshness: 1, independenceGroup: "same-title-different-relation", accessScope: "owner_private", licenseStatus: "owner_authorized" } });
+  const source = f.evidence.find(span => span.text === current)!;
+  for (const span of f.evidence.filter(span => span.text === current)) span.status = "quarantined";
   expect((await f.kernel().turn({ text: "What type of stations route glyphs for Neralis_\u6e2f\ud83e\udded?", requestedAuthority: "factual" })).answer).toBe("");
+  source.status = "promoted";
+  await f.kernel().ingest({ uri: "fixture://current-conflicting-type", content: "Otherkind stations route glyphs for Neralis_\u6e2f\ud83e\udded.",
+    mediaType: "text/plain", namespace: "workspace", informationLabel: label,
+    sourceAdmission: { sourceClass: "owner_local", intendedUse: "direct_evidence", promotionAuthority: "owner" },
+    sourceTrust: { identity: 1, integrity: 1, parserReliability: 1, directness: 1, authority: 1, freshness: 1, independenceGroup: "current-conflicting-type", accessScope: "owner_private", licenseStatus: "owner_authorized" } });
+  expect(await contextualQaForRequest({ storage: f.storage, hasher, requestText, evidence: f.evidence, generation: 0, authorityContext })).toBeUndefined();
 });
 
 it("records unqualified contextual input once and skips unrelated dialogue components", async () => {

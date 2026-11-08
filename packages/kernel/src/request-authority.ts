@@ -20,6 +20,8 @@ import { evidenceSourceFamilyId } from "./source-family.js";
 import { calibrated } from "./calibrations/prod-calibrations.js";
 import type { CalibrationKey } from "./calibrations/public-calibrations.js";
 import { sourceObservedRequestAuthority, type CreativeRequestFrame } from "./creative-event-compatibility.js";
+import { contextualQaBindingVerified, type VerifiedContextualQaBinding } from "./contextual-qa-runtime.js";
+import type { ScceStorage } from "./storage.js";
 
 export const REQUESTED_AUTHORITY_IDS = [
   "factual",
@@ -70,6 +72,7 @@ export interface ProjectRequestAuthorityInput {
   requirementField: TurnRequirementField;
   explicitAuthority?: RequestedAuthority;
   verifiedComputation?: {requestText:string;result:VerifiedSourceComputationResult};
+  verifiedContextualQa?: { requestText: string; result: VerifiedContextualQaBinding; evidence: readonly EvidenceSpan[]; storage: ScceStorage; generation: number; authorityContext: object };
   /** Exact IDs of owner-declared executable behavior observations from CodeRequestSignal. */
   typedProgramBehaviorRequirementIds?: readonly string[];
   /** An internally compiled request, never a caller-declared source label. */
@@ -238,8 +241,10 @@ export function projectRequestAuthority(input: ProjectRequestAuthorityInput): Re
   const observedAuthority = sourceObservedRequestAuthority(input.sourceRequestFrame);
   const computation=input.verifiedComputation;
   const computationAuthority=computation&&sourceComputationResultVerified(computation.result,computation.requestText,createHasher())?"reasoned":undefined;
+  const qa = input.verifiedContextualQa;
+  const contextualQaAuthority = qa && contextualQaBindingVerified({ ...qa, hasher: createHasher() }) ? "factual" : undefined;
   const requestedAuthority = input.explicitAuthority
-    ?? (computationAuthority ?? (typedProgramBehaviorRequirementIds.length ? "program" : observedAuthority?.authority ?? projectedAuthority));
+    ?? (computationAuthority ?? (typedProgramBehaviorRequirementIds.length ? "program" : contextualQaAuthority ?? observedAuthority?.authority ?? projectedAuthority));
   const scoreMargin = neutralAuthorityApplied
     ? 0
     : clamp01((ranked[0]?.score ?? 0) - (ranked[1]?.score ?? 0));
@@ -256,9 +261,11 @@ export function projectRequestAuthority(input: ProjectRequestAuthorityInput): Re
         ? "source_owned_computation"
         : typedProgramBehaviorRequirementIds.length
         ? "typed_owner_behavior_contract"
+        : contextualQaAuthority ? "source_owned_contextual_qa"
         : observedAuthority ? "source_observed_request_construction" : "turn_requirement_field",
     sourceObservedRequestAuthority: observedAuthority ?? null,
     sourceComputationPatternIds: computationAuthority?computation!.result.patternIds:[],
+    contextualQaPatternIds: contextualQaAuthority ? qa!.result.patternIds : [],
     typedProgramBehaviorRequirementIds,
     lexicalRouterUsed: false,
     scoreReliability: "uncalibrated_bootstrap",

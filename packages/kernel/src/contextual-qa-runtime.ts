@@ -5,25 +5,53 @@ import { CONTEXTUAL_QA_CONSTRUCTION_RECIPE, CONTEXTUAL_QA_SOURCE_SYSTEM, type Co
 import { LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, type DurableLanguageConstructionBundle } from "./language-construction-memory.js";
 import { sourceConstructionRequestValueResolver } from "./source-construction-request-binding.js";
 import { jsonRecord } from "./kernel-answer-primitives.js";
+import { canonicalStringify } from "./primitives.js";
 import type { RequestValueBinding } from "./semantic-answer-construct.js";
 import type { ScceStorage } from "./storage.js";
 import type { EvidenceSpan, Hasher } from "./types.js";
 
-/** Grammar is source-supervised; only this turn's current direct evidence can supply an asserted value. */
-export async function contextualQaForRequest(input: {
-  storage: ScceStorage; hasher: Hasher; requestText: string; evidence: readonly EvidenceSpan[];
-}): Promise<{ binding: RequestValueBinding; bundles: DurableLanguageConstructionBundle[] } | undefined> {
-  const direct = input.evidence.filter(span => {
-    const admission = jsonRecord(jsonRecord(span.trustVector).admission);
-    return span.status === "promoted" && admission.disposition === "promote"
-      && jsonRecord(admission.context).intendedUse === "direct_evidence";
-  });
-  if (!direct.length) return undefined;
+export interface VerifiedContextualQaConstructions {
+  readonly requestDigest: string;
+  readonly bundles: DurableLanguageConstructionBundle[];
+  readonly patternIds: string[];
+}
+export interface VerifiedContextualQaBinding extends VerifiedContextualQaConstructions {
+  readonly binding: RequestValueBinding;
+}
+const constructionReceipts = new WeakMap<VerifiedContextualQaConstructions, { storage: ScceStorage; generation: number | undefined }>();
+const bindingReceipts = new WeakMap<VerifiedContextualQaBinding, { storage: ScceStorage; generation: number | undefined; authorityContext: object | undefined; sources: string }>();
+function freezeQaValue<T>(value: T): T {
+  if (value && typeof value === "object") { for (const child of Object.values(value)) freezeQaValue(child); Object.freeze(value); }
+  return value;
+}
+function directEvidence(span: EvidenceSpan): boolean {
+  const admission = jsonRecord(jsonRecord(span.trustVector).admission);
+  return span.status === "promoted" && admission.disposition === "promote" && jsonRecord(admission.context).intendedUse === "direct_evidence";
+}
+function sourceReceipts(evidence: readonly EvidenceSpan[]): string {
+  return canonicalStringify(evidence.map(span => [String(span.id), String(span.sourceId), String(span.sourceVersionId), String(span.contentHash),
+    span.charStart, span.charEnd, span.informationLabel ?? null]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))));
+}
+export function contextualQaBindingVerified(input: { result: VerifiedContextualQaBinding; storage: ScceStorage; requestText: string;
+  evidence: readonly EvidenceSpan[]; hasher: Hasher; generation: number; authorityContext: object }): boolean {
+  const result = input.result;
+  if (!result || typeof result !== "object") return false;
+  const receipt = bindingReceipts.get(result);
+  if (!receipt || receipt.storage !== input.storage || receipt.generation !== input.generation || receipt.authorityContext !== input.authorityContext
+    || result.requestDigest !== input.hasher.digestHex(input.requestText)) return false;
+  const ids = new Set(result.binding.evidenceIds), current = input.evidence.filter(span => ids.has(String(span.id)) && directEvidence(span));
+  return ids.size > 0 && current.length === ids.size && sourceReceipts(current) === receipt.sources;
+}
+
+/** Header matching is nongenerative; full body hydration still replays exact human supervision. */
+export async function contextualQaConstructionsForRequest(input: {
+  storage: ScceStorage; hasher: Hasher; requestText: string; generation?: number;
+}): Promise<VerifiedContextualQaConstructions | undefined> {
   const features = contextualQaRequestFeatures(input.requestText);
   if (!features.length) return undefined;
   const headers = await input.storage.languageMemory.listLanguagePatterns({ view: "request_seed",
     patternSchemas: [LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA], sourceSystem: CONTEXTUAL_QA_SOURCE_SYSTEM,
-    contextualQaRequestFeatures: features });
+    contextualQaRequestFeatures: features, limit: Number.MAX_SAFE_INTEGER });
   const matching = headers.filter(pattern => {
     const metadata = jsonRecord(pattern.patternJson);
     return metadata.componentRecipe === CONTEXTUAL_QA_CONSTRUCTION_RECIPE && Array.isArray(metadata.contextualQaRequestForm)
@@ -41,8 +69,30 @@ export async function contextualQaForRequest(input: {
     return bundle ? [bundle] : [];
   });
   if (bundles.length !== patterns.length) return undefined;
-  const resolver = sourceConstructionRequestValueResolver({ bundles, graph: { nodes: [], hyperedges: [] } });
+  const value = freezeQaValue({ requestDigest: input.hasher.digestHex(input.requestText), bundles, patternIds: ids });
+  constructionReceipts.set(value, { storage: input.storage, generation: input.generation }); return value;
+}
+
+/** Grammar is source-supervised; only this turn's current direct evidence can supply an asserted value. */
+export async function contextualQaForRequest(input: {
+  storage: ScceStorage; hasher: Hasher; requestText: string; evidence: readonly EvidenceSpan[]; generation?: number;
+  constructions?: VerifiedContextualQaConstructions; sourceVersionAllowlist?: readonly string[];
+  authorityContext?: object;
+}): Promise<VerifiedContextualQaBinding | undefined> {
+  const allowed = input.sourceVersionAllowlist ? new Set(input.sourceVersionAllowlist) : undefined;
+  const direct = input.evidence.filter(span => directEvidence(span) && (!allowed || allowed.has(String(span.sourceVersionId))));
+  if (!direct.length) return undefined;
+  const constructions = input.constructions ?? await contextualQaConstructionsForRequest(input);
+  if (!constructions) return undefined;
+  const receipt = constructionReceipts.get(constructions);
+  if (!receipt || receipt.storage !== input.storage || receipt.generation !== input.generation
+    || constructions.requestDigest !== input.hasher.digestHex(input.requestText)) return undefined;
+  const resolver = sourceConstructionRequestValueResolver({ bundles: constructions.bundles, graph: { nodes: [], hyperedges: [] } });
   const binding = resolver.resolve(input.requestText, direct);
-  return binding && typeof binding !== "string" && typeof binding.subject === "string"
-    ? { binding: { ...binding, subject: binding.subject, resolverId: resolver.id }, bundles } : undefined;
+  if (!binding || typeof binding === "string" || typeof binding.subject !== "string" || !binding.subject) return undefined;
+  const value = freezeQaValue({ ...constructions, binding: { ...binding, subject: binding.subject, resolverId: resolver.id } });
+  const ids = new Set(binding.evidenceIds);
+  bindingReceipts.set(value, { storage: input.storage, generation: input.generation, authorityContext: input.authorityContext,
+    sources: sourceReceipts(direct.filter(span => ids.has(String(span.id)))) });
+  return value;
 }

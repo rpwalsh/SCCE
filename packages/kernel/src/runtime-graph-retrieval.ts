@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { calibrated } from "./calibrations/prod-calibrations.js";
-import { contextualQaForRequest } from "./contextual-qa-runtime.js";
+import { contextualQaForRequest, type VerifiedContextualQaConstructions } from "./contextual-qa-runtime.js";
 import { corpusIdentitySignals } from "./corpus-identity.js";
 import { currentEvaluationCacheOwner, type EvaluationTraceRecorder } from "./evaluation-trace.js";
 import { createCandidateEngine } from "./candidate.js";
@@ -416,6 +416,7 @@ export function createRuntimeGraphRetrieval(options: {
      *  siblings actually observed in the corpus's own vocabulary (see learnedMorphologicalSiblings). */
     languageModels?: readonly KneserNeyModel[];
     continuationPopulation?: LanguageContinuationPopulation;
+    contextualQa?: { constructions: VerifiedContextualQaConstructions; generation: number; sourceVersionAllowlist?: readonly string[] };
     /** This turn's evaluation trace, so a slice served from cache records which condition owns the entry. */
     evaluation?: { trace: EvaluationTraceRecorder };
   } = {}) {
@@ -525,7 +526,7 @@ export function createRuntimeGraphRetrieval(options: {
       // above (residentOnly: true) before falling through here; retrying
       // it non-resident would both double the lookup and break the bounded
       // turn's residency contract, so only attempt it once per turn.
-      const anchoredSelection = await sourceAnchoredEvidenceForText(text, features, allowSemanticFrameEvidence && !residentOnly, options.requestScaffolding, languageModels, continuationPopulation, sourceCodeEvidenceAllowed);
+      const anchoredSelection = await sourceAnchoredEvidenceForText(text, features, allowSemanticFrameEvidence && !residentOnly, options.requestScaffolding, languageModels, continuationPopulation, sourceCodeEvidenceAllowed, options.contextualQa);
       kernelTrace({
         stage: "graph.resolve.anchor_evidence",
         label: "kernel.graphForText",
@@ -900,7 +901,8 @@ function sourceContentHash(text: string): string {
       .map(entry => entry.span);
   }
 
-async function sourceAnchoredEvidenceForText(text: string, features: readonly string[], allowSemanticFrameEvidence = true, requestScaffolding?: ReadonlySet<string>, languageModels: readonly KneserNeyModel[] = [], continuationPopulation?: LanguageContinuationPopulation, sourceCodeEvidenceAllowed = false): Promise<SourceAnchoredEvidenceSelection> {
+async function sourceAnchoredEvidenceForText(text: string, features: readonly string[], allowSemanticFrameEvidence = true, requestScaffolding?: ReadonlySet<string>, languageModels: readonly KneserNeyModel[] = [], continuationPopulation?: LanguageContinuationPopulation, sourceCodeEvidenceAllowed = false,
+    contextualQa?: { constructions: VerifiedContextualQaConstructions; generation: number; sourceVersionAllowlist?: readonly string[] }): Promise<SourceAnchoredEvidenceSelection> {
     // A group whose every unit is request scaffolding names no subject: "[which]" alone seeded the whole corpus's
     // postings of a question word (26s of one turn, measured) for nothing the article could answer with.
     const { groups: allGroups, quotedSentence } = sourceAnchorRetrievalFeatureGroups(text, languageModels, continuationPopulation);
@@ -1015,9 +1017,9 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
         && !isControlCorpusSpan(span)
         && !spanIsUnparsedMarkup(span)));
     const semanticFrameBoundEvidenceIds = new Set(semanticFrameEvidence.semanticFrameBoundEvidenceIds);
-    const contextualQa = allowSemanticFrameEvidence && deps.evaluationCondition?.flags.disableLanguageMemory !== true
-      ? await contextualQaForRequest({ storage: deps.storage, hasher, requestText: text, evidence: promoted }) : undefined;
-    for (const id of contextualQa?.binding.evidenceIds ?? []) semanticFrameBoundEvidenceIds.add(id);
+    const currentContextualQa = (allowSemanticFrameEvidence || contextualQa) && deps.evaluationCondition?.flags.disableLanguageMemory !== true
+      ? await contextualQaForRequest({ storage: deps.storage, hasher, requestText: text, evidence: promoted, ...contextualQa }) : undefined;
+    for (const id of currentContextualQa?.binding.evidenceIds ?? []) semanticFrameBoundEvidenceIds.add(id);
     const anchored = sourceIdentityAdmissibleEvidenceForRequest(
       text,
       promoted,
