@@ -108,16 +108,16 @@ export function walkConversationalFrames(pairs: readonly PreparedConversationalF
 }
 
 /** Exact copied roles shared by a request and its declared supporting surface. */
-export function copiedRequestRoleSpans(requestText: string, supportingText: string) {
+export function copiedRequestRoleSpans(requestText: string, supportingText: string, ambiguousCopies?: "literal") {
   const request = unicodeLexicalSegments(requestText), supporting = unicodeLexicalSegments(supportingText), positions = new Map<string, number[]>();
   for (const [index, segment] of request.entries()) {
     const group = positions.get(segment.normalized) ?? []; group.push(index); positions.set(segment.normalized, group);
   }
-  return copiedRequestRoles([...supportingText], supporting, [...requestText], request, positions);
+  return copiedRequestRoles([...supportingText], supporting, [...requestText], request, positions, ambiguousCopies);
 }
 
 /** Maximal copied runs have one source owner. Repeated reply uses share that owner's role. */
-function copiedRequestRoles(reply: readonly string[], segments: readonly UnicodeSurfaceSegment[], request: readonly string[], source: readonly UnicodeSurfaceSegment[], positions: ReadonlyMap<string, readonly number[]>) {
+function copiedRequestRoles(reply: readonly string[], segments: readonly UnicodeSurfaceSegment[], request: readonly string[], source: readonly UnicodeSurfaceSegment[], positions: ReadonlyMap<string, readonly number[]>, ambiguousCopies?: "literal") {
   const runs: Array<{ startCodePoint: number; endCodePoint: number; sourceStart: number; sourceEnd: number }> = [];
   for (let first = 0; first < segments.length;) {
     let longest = 0;
@@ -133,7 +133,7 @@ function copiedRequestRoles(reply: readonly string[], segments: readonly Unicode
     }
     if (!longest) { first++; continue; }
     // Ambiguous source occurrences are never assigned a position by a tie-break.
-    if (owners.length !== 1) return undefined;
+    if (owners.length !== 1) { if (ambiguousCopies === "literal") { first += longest; continue; } return undefined; }
     const start = owners[0]!;
     runs.push({ startCodePoint: segments[first]!.codePointStart, endCodePoint: segments[first + longest - 1]!.codePointEnd,
       sourceStart: source[start]!.codePointStart, sourceEnd: source[start + longest - 1]!.codePointEnd });

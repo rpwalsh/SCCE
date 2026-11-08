@@ -58,6 +58,8 @@ export interface SourceConstructionGraphBinding {
   relationId: string;
   roleId: string;
   valueKind: string;
+  /** Finite observed surface class; this port cannot consume an unseen source modifier. */
+  surfaceClass?: "observed";
   semanticRole?: SemanticRole;
   qualifiers?: JsonValue;
   modality?: JsonValue;
@@ -1470,6 +1472,7 @@ function validGraphBinding(binding: SourceConstructionGraphBinding | undefined):
     && typeof binding.relationId === "string" && nonempty(binding.relationId)
     && typeof binding.roleId === "string" && nonempty(binding.roleId)
     && typeof binding.valueKind === "string" && nonempty(binding.valueKind)
+    && (binding.surfaceClass === undefined || binding.surfaceClass === "observed")
     && (binding.semanticRole === undefined || ["entity", "predicate", "modifier", "quantity", "time", "location", "negation", "unknown"].includes(binding.semanticRole)));
 }
 

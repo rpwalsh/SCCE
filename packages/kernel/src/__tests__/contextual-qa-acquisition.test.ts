@@ -8,8 +8,8 @@ import type { EvidenceSpan } from "../types.js";
 import type { TranscriptTurn } from "../dialogue-communicative-act-learning.js";
 import { compileLanguageConstructionPattern, SOURCE_EXAMPLE_CONSTRUCTION_STORAGE } from "../language-construction-memory.js";
 const hasher = createHasher();
-function document(name: string, value: string, index: number, contextOverride?: string) {
-  const request = `⟡ ${name} ⊹?`, context = contextOverride ?? `${name} ꙮ ${value}.`, text = `${request}\n${value}\n${context}`;
+function document(name: string, value: string, index: number, contextOverride?: string, requestOverride?: string) {
+  const request = requestOverride ?? `⟡ ${name} ⊹?`, context = contextOverride ?? `${name} ꙮ ${value}.`, text = `${request}\n${value}\n${context}`;
   const digest = hasher.digestHex(text), sourceVersionId = `version.${digest}`, sourceId = `source.${index}`;
   const replyStart = [...request].length + 1, contextStart = replyStart + [...value].length + 1;
   const span = { id: `evidence.${digest}`, sourceId, sourceVersionId, contentHash: `sha256_${digest}`, text, charStart: 0, charEnd: [...text].length,
@@ -32,6 +32,30 @@ it("learns an owner-bound contextual question and declarative relation without s
   expect(resolver.resolve(`⟡ 新港🧭 ⊺?`, [current])).toBeUndefined();
   const metadata = pattern.patternJson as Record<string, unknown>;
   expect(contextualQaRequestMatches(metadata.contextualQaRequestForm as never, fresh.transcriptTurns[0]!.surface)).toBe(true);
+});
+it("leaves ambiguous shared copies literal while requiring unique ownership for every acquired role", () => {
+  const documents = [["Aster", "17"], ["Beryl", "29"], ["Cobalt", "41"], ["Dahlia", "53"]]
+    .map(([name, answer], index) => document(name!, answer!, index, `${name} ꙮ ${answer} a.`, `a ⟡ ${name} ⊹ a?`));
+  const learned = acquireContextualQaConstructions({ documents, authorship: "human_authored", hasher, updatedAt: 1 });
+  expect(learned.families, JSON.stringify(learned.rejected)).toHaveLength(1);
+  const bundle = verifyContextualQaConstruction({ pattern: learned.families[0]!.pattern, evidence: documents.flatMap(row => row.spans), hasher });
+  expect(bundle).toBeDefined();
+  expect(bundle!.sourceExamples.flatMap(example => example.roles).every(role => role.surface !== "a")).toBe(true);
+});
+it("enforces finite acquired source-only roles on new direct source interpretation", () => {
+  const documents = Array.from({ length: 8 }, (_, index) => document(`owner${index}`, String(101 + index), index,
+    `owner${index} z\u00f4r ${index % 2 ? "\u00f6pa" : "n\u00fcva"} v\u00f6 ${101 + index}.`));
+  const learned = acquireContextualQaConstructions({ documents, authorship: "human_authored", hasher, updatedAt: 1 });
+  expect(learned.families, JSON.stringify(learned.rejected)).toHaveLength(1);
+  const bundle = verifyContextualQaConstruction({ pattern: learned.families[0]!.pattern, evidence: documents.flatMap(row => row.spans), hasher });
+  expect(bundle).toBeDefined();
+  expect(bundle!.sourceExamples.flatMap(example => example.roles).some(role => role.graphBinding?.surfaceClass === "observed")).toBe(true);
+  const resolver = sourceConstructionRequestValueResolver({ bundles: [bundle!], graph: { nodes: [], hyperedges: [] } });
+  const fresh = document("\u65b0\u6e2f\ud83e\udded", "907", 99, "\u65b0\u6e2f\ud83e\udded z\u00f4r \u00f6pa v\u00f6 907.");
+  const span = { ...fresh.spans[0]!, text: fresh.transcriptTurns[1]!.supportingSourceRanges![0]!.surface };
+  expect(resolver.resolve(fresh.transcriptTurns[0]!.surface, [span])).toMatchObject({ value: "907" });
+  expect(resolver.resolve(fresh.transcriptTurns[0]!.surface, [{ ...span, text: span.text.replace("\u00f6pa", "not") }])).toBeUndefined();
+  expect(resolver.resolve(fresh.transcriptTurns[0]!.surface, [{ ...span, text: span.text.replace("z\u00f4r", "foreign") }])).toBeUndefined();
 });
 it("retains ambiguous or non-independent observations unqualified", () => {
   const duplicated = sources().map(doc => ({ ...doc, transcriptTurns: doc.transcriptTurns.map(turn => ({ ...turn, sourceRecordId: "same.original" })) }));

@@ -126,7 +126,7 @@ function interpretAcquiredSourceRoles(bundles: readonly DurableLanguageConstruct
       if (!boundRoles.every(role => scopeKey(role.graphBinding!) === scopeKey(scope))) continue;
       for (const { span, interpreter } of sentences) {
         const slots = invertSurface(construction, interpreter());
-        if (!slots || slots.size !== exemplar.roles.length || !rolesMatchSurface(exemplar.roles, slots)) continue;
+        if (!slots || slots.size !== exemplar.roles.length || !rolesMatchSurface(exemplar.roles, slots, group)) continue;
         const participantPorts: SourceRoleFact["participantPorts"] = [];
         for (const role of boundRoles) {
           const value = slots.get(role.occurrenceId);
@@ -146,10 +146,14 @@ function isStructuralPredicateRole(role: DurableSourceConstructionExample["roles
   return !role.graphBinding && role.slotIndex === SOURCE_CONSTRUCTION_PREDICATE_SLOT_INDEX;
 }
 
-function rolesMatchSurface(roles: readonly DurableSourceConstructionExample["roles"][number][], slots: ReadonlyMap<string, string>): boolean {
+function rolesMatchSurface(roles: readonly DurableSourceConstructionExample["roles"][number][], slots: ReadonlyMap<string, string>, examples: readonly DurableSourceConstructionExample[] = []): boolean {
   return roles.filter(isStructuralPredicateRole).every(role => {
     const surface = slots.get(role.occurrenceId);
     return Boolean(surface) && normalizeCanonicalSurface(surface!) === normalizeCanonicalSurface(role.surface);
+  }) && roles.filter(role => role.graphBinding?.surfaceClass === "observed").every(role => {
+    const surface = slots.get(role.occurrenceId);
+    return surface !== undefined && examples.some(example => example.roles.some(observed => observed.occurrenceId === role.occurrenceId
+      && canonicalStringify(observed.graphBinding) === canonicalStringify(role.graphBinding) && observed.surface === surface));
   });
 }
 

@@ -12,6 +12,7 @@ import { surfaceSentenceRanges, stripTerminalSentenceBoundary } from "./surface-
 import { CONTEXTUAL_QA_CONSTRUCTION_RECIPE as RECIPE, CONTEXTUAL_QA_SOURCE_SYSTEM as SYSTEM, type ContextualQaRequestForm } from "./source-owned-contextual-qa.js";
 import type { LanguagePatternProjection, LanguagePatternRecord } from "./storage.js";
 import type { EvidenceSpan, Hasher, JsonValue } from "./types.js";
+import { generalizeContextualQaSources, interpretContextualQaSourceGeneralization, type ContextualQaSourceSpan } from "./contextual-qa-source-generalization.js";
 
 type Copy = { slotIndex: number; startCodePoint: number; endCodePoint: number; requestStart: number; requestEnd: number; value: string };
 type Measured = { sourceId: string; partition: string; recordId: string; sourceFamilyId?: string; profileId: string; span: EvidenceSpan; request: string; reply: string; context: string;
@@ -51,8 +52,9 @@ export function acquireContextualQaConstructions(input: { documents: readonly Co
       const clauseRange = clauseRanges[0]!, clause = range.surface.slice(clauseRange.startUtf16, clauseRange.endUtf16);
       const clauseOffset = [...range.surface.slice(0, clauseRange.startUtf16)].length;
       const answerStart = answerOffset - clauseOffset, answerEnd = answerStart + [...answer].length;
-      const copied = copiedRequestRoleSpans(request.surface, clause);
-      if (!copied?.length || new Set(copied.map(role => role.slotIndex)).size !== copied.length) { rejected.push({ bindingId: "", reason: "copied_role_owner_ambiguous" }); continue; }
+      const candidates = copiedRequestRoleSpans(request.surface, clause, "literal");
+      const copied = candidates?.filter(role => candidates.filter(candidate => candidate.slotIndex === role.slotIndex).length === 1);
+      if (!copied?.length) { rejected.push({ bindingId: "", reason: "copied_role_owner_ambiguous" }); continue; }
       const copies: Copy[] = [];
       for (const role of copied) {
         if (role.startCodePoint < answerEnd && role.endCodePoint > answerStart) continue;
@@ -76,7 +78,7 @@ export function acquireContextualQaConstructions(input: { documents: readonly Co
         contextStart: range.startCodePoint - span.charStart, contextEnd: range.endCodePoint - span.charStart,
         clause, clauseStart: range.startCodePoint + clauseOffset - span.charStart,
         clauseEnd: range.startCodePoint + clauseOffset + [...clause].length - span.charStart, answerStart, answerEnd };
-      const key = canonicalStringify([questionForm, sourceForm]), group = groups.get(key) ?? []; group.push(measured); groups.set(key, group);
+      const key = canonicalStringify([questionForm, sourceForm.filter(part => typeof part !== "string")]), group = groups.get(key) ?? []; group.push(measured); groups.set(key, group);
     }
   }
   const families: AcquiredContextualQaFamily[] = [];
@@ -90,16 +92,32 @@ export function acquireContextualQaConstructions(input: { documents: readonly Co
     if (!fit.length || !held.length || !varying.length || new Set(fit.map(row => row.reply)).size < 2) { rejected.push({ bindingId, reason: "independent_role_contrast_missing" }); continue; }
     const variableMap = new Map(varying.map((index, slot) => [index, slot]));
     const qForm = foldedForm(fit[0]!.request, fit[0]!.copies.map(copy => ({ slotIndex: variableMap.get(copy.slotIndex), start: copy.requestStart, end: copy.requestEnd })));
-    const sForm = foldedForm(fit[0]!.clause, [...fit[0]!.copies.map(copy => ({ slotIndex: variableMap.get(copy.slotIndex), start: copy.startCodePoint, end: copy.endCodePoint })),
-      { slotIndex: varying.length, start: fit[0]!.answerStart, end: fit[0]!.answerEnd }]);
-    if (!qForm.some(part => typeof part === "string" && part.trim()) || !sForm.some(part => typeof part === "string" && part.trim())) { rejected.push({ bindingId, reason: "literal_relation_form_missing" }); continue; }
-    const relationId = `relation.contextual_qa.${input.hasher.digestHex(canonicalStringify(sForm))}`;
+    if (!qForm.some(part => typeof part === "string" && part.trim())) { rejected.push({ bindingId, reason: "literal_relation_form_missing" }); continue; }
+    const protectedSpans = (row: Measured): ContextualQaSourceSpan[] => [...row.copies.flatMap(copy => variableMap.has(copy.slotIndex)
+      ? [{ slotIndex: variableMap.get(copy.slotIndex)!, startCodePoint: copy.startCodePoint, endCodePoint: copy.endCodePoint }] : []),
+      { slotIndex: varying.length, startCodePoint: row.answerStart, endCodePoint: row.answerEnd }];
+    const identity = (row: Measured) => canonicalStringify([row.sourceId, row.span.sourceVersionId, row.span.id, row.requestStart, row.contextStart]);
+    const generalized = generalizeContextualQaSources({ fit: fit.map(row => ({ id: identity(row), surface: row.clause, protectedSpans: protectedSpans(row) })) });
+    if (!generalized) { rejected.push({ bindingId, reason: "source_generalization_unidentifiable" }); continue; }
+    const sourceOnly = new Map<Measured, readonly ContextualQaSourceSpan[]>();
+    for (const row of fit) sourceOnly.set(row, generalized.fit.find(example => example.id === identity(row))!.sourceOnlySpans);
+    for (const row of held) {
+      const interpreted = interpretContextualQaSourceGeneralization({ model: generalized, surface: row.clause, protectedSpans: protectedSpans(row) });
+      if (interpreted) sourceOnly.set(row, interpreted.sourceOnlySpans);
+    }
+    if (held.some(row => !sourceOnly.has(row))) { rejected.push({ bindingId, reason: "heldout_source_generalization_failed" }); continue; }
+    const relationId = `relation.contextual_qa.${input.hasher.digestHex(canonicalStringify(generalized.parts))}`;
     const basis = [fit[0]!];
     for (const index of varying) { const contrast = fit.find(row => row.copies[index]!.value !== fit[0]!.copies[index]!.value)!; if (!basis.includes(contrast)) basis.push(contrast); }
     const answerContrast = fit.find(row => row.reply !== fit[0]!.reply)!; if (!basis.includes(answerContrast)) basis.push(answerContrast);
+    for (const role of generalized.sourceOnlyRoles) for (const value of role.observedValues) {
+      const witness = fit.find(row => sourceOnly.get(row)!.some(span => span.slotIndex === role.slotIndex
+        && [...row.clause].slice(span.startCodePoint, span.endCodePoint).join("") === value))!;
+      if (!basis.includes(witness)) basis.push(witness);
+    }
     const compile = (rows: readonly Measured[]) => compileLanguageConstructionPattern({ bindingId, profileId: measured[0]!.profileId, hasher: input.hasher,
       updatedAt: input.updatedAt, evidence: [...new Map(rows.map(row => [String(row.span.id), row.span])).values()],
-      observations: rows.flatMap(row => observations(row, variableMap, relationId)), acquisitionStatus: "document_heldout_qualified", storageEncoding: SOURCE_EXAMPLE_CONSTRUCTION_STORAGE });
+      observations: rows.flatMap(row => observations(row, variableMap, relationId, sourceOnly.get(row)!)), acquisitionStatus: "document_heldout_qualified", storageEncoding: SOURCE_EXAMPLE_CONSTRUCTION_STORAGE });
     const trained = compile(basis);
     if (trained.status !== "compiled" || ![...fit, ...held].every(row => resolves(trained.bundle, row))) { rejected.push({ bindingId, reason: "heldout_relation_recovery_failed" }); continue; }
     const finalBasis = [...basis, held[0]!].sort((a, b) => measured.indexOf(a) - measured.indexOf(b));
@@ -121,7 +139,7 @@ export function acquireContextualQaConstructions(input: { documents: readonly Co
   return { families, pairs, rejected };
 }
 
-function observations(row: Measured, variables: ReadonlyMap<number, number>, relationId: string): SourceBoundConstructionObservation[] {
+function observations(row: Measured, variables: ReadonlyMap<number, number>, relationId: string, sourceOnly: readonly ContextualQaSourceSpan[]): SourceBoundConstructionObservation[] {
   const answerSlot = variables.size;
   const binding = (slot: number): SourceConstructionGraphBinding => ({ relationId, roleId: `${relationId}.role.${slot}`, valueKind: slot === answerSlot ? "opaque.contextual_qa.answer" : "opaque.contextual_qa.argument" });
   const common = { sourceVersionId: String(row.span.sourceVersionId), evidenceId: String(row.span.id) };
@@ -133,7 +151,8 @@ function observations(row: Measured, variables: ReadonlyMap<number, number>, rel
       replyStartCodePoint: row.replyStart, replyEndCodePoint: row.replyEnd, contextStartCodePoint: row.contextStart, contextEndCodePoint: row.contextEnd } },
   { ...common, surfaceStartCodePoint: row.clauseStart, surfaceEndCodePoint: row.clauseEnd,
     roles: [...row.copies.flatMap(copy => variables.has(copy.slotIndex) ? [{ slotIndex: variables.get(copy.slotIndex)!, startCodePoint: copy.startCodePoint, endCodePoint: copy.endCodePoint, graphBinding: binding(variables.get(copy.slotIndex)!) }] : []),
-      { slotIndex: answerSlot, startCodePoint: row.answerStart, endCodePoint: row.answerEnd, graphBinding: binding(answerSlot) }] }];
+      { slotIndex: answerSlot, startCodePoint: row.answerStart, endCodePoint: row.answerEnd, graphBinding: binding(answerSlot) },
+      ...sourceOnly.map(role => ({ ...role, graphBinding: { ...binding(role.slotIndex), valueKind: "opaque.contextual_qa.source_only", surfaceClass: "observed" as const } }))] }];
 }
 
 function resolves(bundle: DurableLanguageConstructionBundle, row: Measured): boolean {
