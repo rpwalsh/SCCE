@@ -73,6 +73,14 @@ describe("Postgres language-memory ownership queries", () => {
     expect(query.params).toContain(SOURCE_CODE_FUNCTION_PROJECTION_RECIPE_ID);
     expect(query.sql.indexOf("active_projection.value_json->'patternIds' ? pattern.id")).toBeLessThan(query.sql.indexOf("ranked_pool AS"));
   });
+  it("requires active publication for source-owned test contracts before spending retrieval budgets", async () => {
+    const { adapter, calls } = fixture();
+    await adapter.languageMemory.listLanguagePatterns({ sourceSystem: "oss_code", patternKind: "source_code_assertion_contract", limit: 1 });
+    const query = calls[0]!;
+    expect(query.params).toContain("scce.source_owned_test_contract.v1");
+    expect(query.params).toContain("scce.source_owned_test_contract_projection.v1");
+    expect(query.sql.indexOf("active_projection.value_json->'patternIds' ? pattern.id")).toBeLessThan(query.sql.indexOf("ranked_pool AS"));
+  });
   it("preserves original compilation membership on construction-only pattern updates", async () => {
     const { adapter, calls } = fixture();
     adapter.transaction = async operation => operation();

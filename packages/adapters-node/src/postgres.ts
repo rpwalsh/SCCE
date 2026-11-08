@@ -4114,7 +4114,8 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         ))`);
       for (const [patternSchema, componentRecipe] of [
         [LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID],
-        [SOURCE_CODE_FUNCTION_PATTERN_SCHEMA, SOURCE_CODE_FUNCTION_PROJECTION_RECIPE_ID]
+        [SOURCE_CODE_FUNCTION_PATTERN_SCHEMA, SOURCE_CODE_FUNCTION_PROJECTION_RECIPE_ID],
+        ["scce.source_owned_test_contract.v1", "scce.source_owned_test_contract_projection.v1"]
       ]) {
         const constructionSchemaParam = params.length + 1;
         params.push(patternSchema);
