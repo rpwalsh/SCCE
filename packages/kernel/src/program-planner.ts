@@ -3598,7 +3598,7 @@ function executableRustProgramModule(plan: ProgramPlan, requestText: string): st
 
 function executableRustProgramTest(plan: ProgramPlan): string {
   rustOwnerRequirements(plan);
-  const tests = plan.ownerBehaviorRequirements.map((requirement, index) => `#[test]\nfn owner_requirement_${index}() {\n    let actual = program::${rustCallableName(requirement.callableId)}(${requirement.arguments.map(value => rustF64Literal(value as number)).join(", ")});\n    let expected = ${rustF64Literal(requirement.expectedResult as number)};\n    assert!(actual.is_finite() && (actual - expected).abs() <= 1e-9_f64 * expected.abs().max(1.0_f64), "owner requirement ${index} failed: actual={:?}, expected={:?}", actual, expected);\n}`);
+  const tests = plan.ownerBehaviorRequirements.map((requirement, index) => `#[test]\nfn owner_requirement_${index}() {\n    let actual = program::${rustCallableName(requirement.callableId)}(${requirement.arguments.map(value => rustF64Literal(value as number)).join(", ")});\n    let expected = ${rustF64Literal(requirement.expectedResult as number)};\n    assert!(actual.is_finite() && (actual - expected).abs() <= 1e-9_f64 * expected.abs().max(1.0_f64), "{} failed: actual={:?}, expected={:?}", ${JSON.stringify(requirement.id)}, actual, expected);\n}`);
   return `#[path = "../src/program.rs"]\nmod program;\n\n${tests.join("\n\n")}\n`;
 }
 

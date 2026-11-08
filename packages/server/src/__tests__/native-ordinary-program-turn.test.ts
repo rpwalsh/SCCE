@@ -55,6 +55,7 @@ describe("cold ordinary owner program execution", () => {
     const result = await kernel.turn({ text });
     expect(result.requestedAuthority).toBe("program");
     expect(result.buildTest?.passed).toBe(true);
+    expect(programResponseReadiness({ program: result.constructGraph.program, buildTest: result.buildTest })).toMatchObject({ status: "ready", reasonId: "program.readiness.verified" });
     expect(attempts.some(attempt => attempt.build.code === 0 && attempt.test.code === 0)).toBe(true);
     const program = result.constructGraph.program!;
     expect(program.language).toBe("rust");
@@ -78,7 +79,11 @@ describe("cold ordinary owner program execution", () => {
     expect(compile.code, compile.stderr).toBe(0);
     const independent = await runProcess(path.join(checkRoot, "independent.exe"), [], { cwd: checkRoot, timeoutMs: 10_000 });
     expect(independent.code, independent.stderr).toBe(0);
+    const attemptsBeforeHttpRequest = attempts.length;
+    const httpRequest = await kernel.turn({ text: "Implement Rust fn double(value: f64) -> f64. double(2)=4; double(3)=6; double(4)=8." });
+    expect(programResponseReadiness({ program: httpRequest.constructGraph.program, buildTest: httpRequest.buildTest })).toMatchObject({ status: "ready", reasonId: "program.readiness.verified" });
     const attemptsBeforeUnsupported = attempts.length;
+    expect(attemptsBeforeUnsupported).toBeGreaterThan(attemptsBeforeHttpRequest);
     const unsupported = await kernel.turn({ text: "Create a Rust fn divide(x: i64, y: i64) -> i64 such that divide(8, 2) returns 4 and divide(9, 3) returns 3." });
     expect(unsupported.requestedAuthority).toBe("program");
     expect(unsupported.realizationAvailability).toMatchObject({ status: "realization_unavailable" });
