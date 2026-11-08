@@ -5,6 +5,9 @@ import { readFileSync } from "node:fs";
 import type { TranscriptTurn } from "../../../kernel/src/dialogue-communicative-act-learning.js";
 const humanCreativePair = JSON.parse(readFileSync(new URL("../../../kernel/src/__tests__/fixtures/dolly-human-creative-pair.json", import.meta.url), "utf8")) as { text: string; turns: TranscriptTurn[] };
 import { CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA } from "../../../kernel/src/language-construction-memory.js";
+import { creativeReferenceTestAnnotation } from "../../../kernel/src/__tests__/fixtures/creative-reference-test-annotations.js";
+import { sourceReferenceBindingsFromPatterns } from "../../../kernel/src/source-reference-bindings.js";
+import { creativeSourceUtterances } from "../../../kernel/src/creative-source-utterance.js";
 import { compileCreativeRequestFrameFromCompatibilityModels } from "../../../kernel/src/creative-event-compatibility.js";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
@@ -2291,6 +2294,35 @@ describe("dialogue corpus training", () => {
     exportClass: "restricted",
     mergePolicy: "isolated"
   };
+
+  it("carries explicitly annotated reference properties through ordinary source preparation and its canonical compilation inventory", async () => {
+    const root = await tempDir("dialogue-reference-properties-"), hasher = createHasher();
+    const declaration = creativeReferenceTestAnnotation("dolly-human-creative-pair.json", humanCreativePair.text, hasher);
+    await writeFile(path.join(root, "dialogue.json"), JSON.stringify({ ...humanCreativePair,
+      sourceMetadata: { ...recordOf(recordOf(humanCreativePair).sourceMetadata), sourceReferenceBindings: declaration } }), "utf8");
+    const fixture = memoryStorage();
+    const result = await trainDialogueCorpus({ storage: fixture.storage, rootPath: root, authorship: "human_authored", informationLabel: ownerLabel,
+      ngramMaxOrder: 3, ngramMaxCountersPerOrder: 64, maxFilesPerRun: 1 });
+    expect(result.filesSkipped).toEqual([]);
+    expect(result.filesTrained).toBe(1);
+    const patterns = JSON.parse(JSON.stringify(fixture.state.patterns)) as LanguagePatternRecord[];
+    const references = sourceReferenceBindingsFromPatterns({ patterns, evidence: fixture.state.evidence, hasher });
+    expect(references.issues).toEqual([]);
+    expect(references.bindings).toHaveLength(1);
+    expect(references.bindings[0]!.basis.kind).toBe("source_annotated");
+    const referencePattern = patterns.find(pattern => pattern.id === references.bindings[0]!.id)!;
+    expect(recordOf(referencePattern.patternJson).sourceCompilationId).toBeTruthy();
+    expect(informationLabelOf(referencePattern.informationLabel).exportClass).toBe("restricted");
+    const restored = createLanguageMemoryRuntime({ hasher }).hydrate({ models: [], patterns, constructionEvidence: fixture.state.evidence });
+    const model = restored.creativeEventCompatibilityModels.find(model => model.reliability === "source_observed")!;
+    expect(model.sourceReferencePatternIds).toEqual([referencePattern.id]);
+    const utterance = creativeSourceUtterances(model, referencePattern.profileId, hasher)[0]!;
+    const bound = utterance.requestRoles.filter(role => role.reference);
+    expect(bound).toHaveLength(1);
+    expect(utterance.roles.filter(role => role.requestRoleId === bound[0]!.requestRoleId)).toHaveLength(2);
+    const prerequisites = recordOf(recordOf(patterns.find(pattern => pattern.id === model.id)!.patternJson).sourceUtterancePrerequisites);
+    expect(JSON.stringify(prerequisites)).toContain(referencePattern.id);
+  });
 
   it("acquires creative source events through ordinary human dialogue training without a caller compiler", async () => {
     const root = await tempDir("dialogue-human-creative-");

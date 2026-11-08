@@ -4,7 +4,8 @@ import type { DurableCreativeEventConstruction } from "./language-construction-m
 import { canonicalStringify, clamp01, toJsonValue } from "./primitives.js";
 import { segmentUnicodeSurfaceV2, type LexicalSegment } from "./unicode-segmentation-v2.js";
 import type { LanguagePatternRecord } from "./storage.js";
-import { CREATIVE_SOURCE_UTTERANCE_RECIPE_ID } from "./language-training-recipe.js";
+import { CREATIVE_SOURCE_UTTERANCE_RECIPE_ID, CREATIVE_SOURCE_REFERENCE_UTTERANCE_RECIPE_ID } from "./language-training-recipe.js";
+import type { OwnedSourceReferenceBindings } from "./source-reference-bindings.js";
 import type { EvidenceId, Hasher, JsonValue } from "./types.js";
 import { induceLearnedConstructions, type AlignedSurfaceExample, type LearnedConstruction } from "./language-construction.js";
 import { createLearnedSurfaceInterpreter, type LearnedSurfaceInterpreter, type InterpretedSurfaceRole } from "./learned-surface-interpretation.js";
@@ -117,6 +118,8 @@ export type CreativeEventCompatibilityModel = CreativeEventCompatibilityModelIde
 } | {
   reliability: "source_observed";
   sourceObservations: CreativeSourceCorrespondence[];
+  sourceReferencePatternIds?: readonly string[];
+  sourceReferenceBindings?: readonly OwnedSourceReferenceBindings[];
   calibrationId?: never;
   minimumAdmissiblePosterior?: never;
   minimumRolePosterior?: never;
@@ -423,6 +426,7 @@ export function creativeEventCompatibilityModelsFromPatterns(
     const model = compatibilityModelFromRecord(value, pattern.evidenceIds, context, sourceVerification);
     if (model?.reliability === "source_observed" && pattern.id !== model.id) return [];
     if (model?.reliability === "source_observed" && model.sourceObservations?.some(row => !sourceVerification?.eventHasProfile(row.eventId, pattern.profileId))) return [];
+    if (model?.reliability === "source_observed" && model.sourceReferenceBindings?.some(reference => reference.profileId !== pattern.profileId)) return [];
     return model ? [model] : [];
   });
   return normalizeCreativeEventCompatibilityModels(models);
@@ -442,7 +446,8 @@ export function creativeRequestSourcePrerequisites(input: {
     const value = pattern.patternJson;
     if (!isRecord(value) || value.schema !== CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA || value.reliability !== "source_observed") return [];
     const prerequisites = value.sourceUtterancePrerequisites;
-    if (!isRecord(prerequisites) || prerequisites.recipe !== CREATIVE_SOURCE_UTTERANCE_RECIPE_ID || !Array.isArray(prerequisites.requests)) return [];
+    if (!isRecord(prerequisites) || ![CREATIVE_SOURCE_UTTERANCE_RECIPE_ID, CREATIVE_SOURCE_REFERENCE_UTTERANCE_RECIPE_ID].includes(prerequisites.recipe as typeof CREATIVE_SOURCE_UTTERANCE_RECIPE_ID)
+      || !Array.isArray(prerequisites.requests)) return [];
     const anchors = Array.isArray(value.requestFrameAnchors) ? value.requestFrameAnchors.flatMap(anchor => requestFrameAnchorFromUnknown(anchor, pattern.evidenceIds)) : [];
     const matching = new Set(anchors.filter(anchor => interpretedRequestRoles(anchor, interpreter, input.hasher)).map(anchor => anchor.requestFrameId));
     const patternIds = [...new Set(prerequisites.requests.flatMap(request => isRecord(request) && matching.has(stringValue(request.requestFrameId))
@@ -780,7 +785,8 @@ function compatibilityModelFromRecord(
     || value.id !== `creative.observed.compatibility.${context.hasher.digestHex(canonicalStringify(toJsonValue({
       schema: value.schema, version: value.version, requestCompilerId: value.requestCompilerId, eventCompilerId: value.eventCompilerId,
       reliability: value.reliability, eventCompatibilities: value.eventCompatibilities, roleCompatibilities: value.roleCompatibilities,
-      sourceObservations: value.sourceObservations, requestFrameAnchors: value.requestFrameAnchors
+      sourceObservations: value.sourceObservations, requestFrameAnchors: value.requestFrameAnchors,
+      ...(value.sourceReferencePatternIds !== undefined ? { sourceReferencePatternIds: value.sourceReferencePatternIds } : {})
     })))}`)) return undefined;
   if (sourceObserved && (value.calibrationId !== undefined || value.minimumAdmissiblePosterior !== undefined || value.minimumRolePosterior !== undefined
     || !Array.isArray(value.eventCompatibilities) || value.eventCompatibilities.length !== 0 || !Array.isArray(value.roleCompatibilities) || value.roleCompatibilities.length !== 0)) return undefined;
@@ -797,7 +803,10 @@ function compatibilityModelFromRecord(
     roleCompatibilities,
     ...(requestFrameAnchors.length ? { requestFrameAnchors } : {})
   };
-  const model: CreativeEventCompatibilityModel = sourceObserved ? { ...identity, reliability: "source_observed", sourceObservations }
+  const sourceReferencePatternIds = stringArray(value.sourceReferencePatternIds);
+  const model: CreativeEventCompatibilityModel = sourceObserved ? { ...identity, reliability: "source_observed", sourceObservations,
+    ...(sourceReferencePatternIds.length ? { sourceReferencePatternIds,
+      sourceReferenceBindings: context?.referenceBindings?.filter(reference => sourceReferencePatternIds.includes(reference.id)) ?? [] } : {}) }
     : { ...identity, reliability: value.reliability === "calibrated" ? "calibrated" : "uncalibrated", calibrationId: stringValue(value.calibrationId),
       minimumAdmissiblePosterior: numberValue(value.minimumAdmissiblePosterior), minimumRolePosterior: numberValue(value.minimumRolePosterior) };
   if (sourceObserved) verifiedObservedModels.add(model);

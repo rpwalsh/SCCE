@@ -26,6 +26,7 @@ import { jsonRecord } from "../kernel-answer-primitives.js";
 import { projectRequestAuthority } from "../request-authority.js";
 import { deriveTurnRequirementField } from "../turn-requirements.js";
 import type { ConstructGraph } from "../types.js";
+import { creativeReferenceTestAnnotation, replyWithReviewedProperty } from "./fixtures/creative-reference-test-annotations.js";
 const humanPair = JSON.parse(readFileSync(new URL("./fixtures/dolly-human-creative-pair.json", import.meta.url), "utf8")) as { text: string; turns: TranscriptTurn[] };
 
 const hasher = createHasher();
@@ -118,7 +119,7 @@ describe("declared human creative source correspondence", () => {
     expect(spoken.evidenceRefs).toEqual([]);
   });
 
-  it("realizes a complete attested human reply and fresh opaque request values after a cold restart", async () => {
+  it("realizes all and only annotated participant properties while preserving homonymous room senses after a cold restart", async () => {
     const request = humanPair.turns[0]!.surface;
     const reply = humanPair.turns[1]!.surface;
     const sourceFrame = compileCreativeRequestFrameFromCompatibilityModels({ requestText: request, models: restart().creativeEventCompatibilityModels, hasher })!;
@@ -128,9 +129,14 @@ describe("declared human creative source correspondence", () => {
     points.splice(room.span.charStart, room.span.charEnd - room.span.charStart, "κάλυ月");
     const fresh = points.join("");
     expect(humanPair.text).not.toContain("κάλυ月");
-    for (const text of [request, fresh]) {
+    const declaration = creativeReferenceTestAnnotation("dolly-human-creative-pair.json", humanPair.text, hasher);
+    const annotated = compileLanguageTrainingBatch({ runtime, hasher, batch: { streamId: "fixture://human", sourceSystem: "dialogue",
+      profile: createLanguageAcquisitionEngine({ idFactory: ids }).acquire({ sourceVersionId: evidence[0]!.sourceVersionId, text: humanPair.text, createdAt: 1 }),
+      sourceVersionId: evidence[0]!.sourceVersionId, text: humanPair.text, evidence, transcriptTurns: humanPair.turns, sourceReferenceBindings: declaration,
+      createdAt: 1, retainNgramObservations: false } }).patterns;
+    for (const [text, rows, available] of [[request, patterns, true], [fresh, annotated, true], [request, annotated, true], [fresh, patterns, false]] as const) {
       const cold = createLanguageMemoryRuntime({ hasher, idFactory: ids });
-      const restored = cold.hydrate({ models: [], patterns: JSON.parse(JSON.stringify(patterns)), constructionEvidence: evidence });
+      const restored = cold.hydrate({ models: [], patterns: JSON.parse(JSON.stringify(rows)), constructionEvidence: evidence });
       const frame = compileCreativeRequestFrameFromCompatibilityModels({ requestText: text, models: restored.creativeEventCompatibilityModels, hasher })!;
       const scoped = scopeLanguageMemoryStateToLanguage(restored, "language.observed", { profile: () => "language.observed", corpus: () => "language.observed" });
       const field = createAlphaFieldEngine().activate({ text, nodes: [], edges: [], hyperedges: [] });
@@ -147,13 +153,22 @@ describe("declared human creative source correspondence", () => {
       const mouth = createMouth({ languageMemory: cold, correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }), hashText: text => hasher.digestHex(text) });
       const spoken = await mouth.speak({ requestText: text, requestedAuthority: "creative", creativeRequestFrame: frame, field, entailment,
         evidence: [], languageMemory: scoped, languageProfile: profile, construct: { ...base, nodes: [inventionConstructNode(invention)] }, selectedCandidate: selected });
+      if (!available) { expect(spoken.realizationAvailability.status).toBe("realization_unavailable"); continue; }
       expect(spoken.realizationAvailability.status).toBe("realized");
       expect(spoken.text).toContain("It was going to be a long day.");
       expect(spoken.text).toContain("Time to call her brother-in-law to thank him for letting Stella visit.");
       expect(spoken.text.length).toBeGreaterThan(reply.length / 2);
       expect(spoken.text).not.toContain("Write a short story");
       expect(spoken.evidenceRefs).toEqual([]);
-      if (text === fresh) expect(spoken.text).toContain("κάλυ月");
+      if (text === fresh) {
+        const expected = replyWithReviewedProperty({ declaration, reply, replyStart: humanPair.turns[1]!.startCodePoint, value: "κάλυ月" });
+        expect(spoken.text.replace(/\s+/gu, " ")).toBe(expected.replace(/\s+/gu, " "));
+        expect(spoken.text.match(/κάλυ月/gu)).toHaveLength(2);
+        expect(spoken.text).toContain("laundry room");
+        expect(spoken.text).toContain("bedroom");
+        expect(spoken.text).not.toContain("small room");
+        expect(spoken.text).not.toContain("middle of the room");
+      }
       else expect(spoken.text.replace(/\s+/gu, " ")).toBe(reply.replace(/\s+/gu, " "));
     }
   });

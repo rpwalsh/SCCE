@@ -20,6 +20,7 @@ import { createMouth } from "../mouth.js";
 import { inventionConstructNode } from "../prediction.js";
 import { createClock, createHasher } from "../primitives.js";
 import type { ConstructGraph, EvidenceSpan } from "../types.js";
+import { creativeReferenceTestAnnotation, replyWithReviewedProperty } from "./fixtures/creative-reference-test-annotations.js";
 
 const human = JSON.parse(readFileSync(new URL("./fixtures/oasst-human-russian-creative-pair.json", import.meta.url), "utf8")) as {
   text: string; turns: TranscriptTurn[]; sourceMetadata: { messages: Array<{ message_id: string; parent_id?: string;
@@ -27,7 +28,7 @@ const human = JSON.parse(readFileSync(new URL("./fixtures/oasst-human-russian-cr
 };
 
 describe("authentic whole Russian creative reply acquisition", () => {
-  it("cold-restores a complete human Russian reply and binds a heldout Russian request value through the same shared realizer", async () => {
+  it.each([false, true])("cold-restores a whole Russian human reply; fresh values require complete explicitly annotated properties (%s)", async annotated => {
     expect(human.sourceMetadata.messages.every(message => message.lang === "ru" && message.synthetic === false
       && message.model_name === null && message.review_result)).toBe(true);
     expect(human.sourceMetadata.messages[1]!.parent_id).toBe(human.sourceMetadata.messages[0]!.message_id);
@@ -41,9 +42,11 @@ describe("authentic whole Russian creative reply acquisition", () => {
       mediaType: "text/plain", byteStart: 0, byteEnd: Buffer.byteLength(human.text), charStart: 0, charEnd: [...human.text].length,
       text: human.text, textPreview: human.text, languageHints: {}, scriptHints: {}, trustVector: {}, provenance: {}, features: [], status: "promoted", alpha: 1, observedAt: 1 };
     const profile = createLanguageAcquisitionEngine({ idFactory: ids }).acquire({ sourceVersionId, text: human.text, createdAt: 1 });
+    const references = creativeReferenceTestAnnotation("oasst-human-russian-creative-pair.json", human.text, hasher);
     const acquired = compileLanguageTrainingBatch({ runtime: createLanguageMemoryRuntime({ hasher, idFactory: ids }), hasher,
       batch: { streamId: "fixture://oasst1-human-russian", sourceSystem: "dialogue", canonicalSource: { sourceId, contentHash },
-        profile, sourceVersionId, text: human.text, evidence: [evidence], transcriptTurns: human.turns, createdAt: 1, retainNgramObservations: false } });
+        profile, sourceVersionId, text: human.text, evidence: [evidence], transcriptTurns: human.turns,
+        ...(annotated ? { sourceReferenceBindings: references } : {}), createdAt: 1, retainNgramObservations: false } });
     const patterns = JSON.parse(JSON.stringify(acquired.patterns)) as typeof acquired.patterns;
     const sourceState = createLanguageMemoryRuntime({ hasher }).hydrate({ models: [], patterns, constructionEvidence: [evidence] });
     const request = human.turns[0]!.surface;
@@ -74,13 +77,23 @@ describe("authentic whole Russian creative reply acquisition", () => {
       const mouth = createMouth({ languageMemory: runtime, correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }), hashText: value => hasher.digestHex(value) });
       const spoken = await mouth.speak({ requestText: text, requestedAuthority: "creative", creativeRequestFrame: frame, field, entailment, evidence: [], languageMemory: state,
         languageProfile: profile, construct: { ...base, nodes: [inventionConstructNode(invention)] }, selectedCandidate: selected });
+      if (text === heldout && !annotated) {
+        expect(spoken.realizationAvailability.status).toBe("realization_unavailable");
+        expect(spoken.text).not.toContain("Кварц");
+        continue;
+      }
       expect(spoken.realizationAvailability.status).toBe("realized");
       expect(spoken.evidenceRefs).toEqual([]);
       expect(/\p{Script=Latin}/u.test(spoken.text)).toBe(false);
       expect(spoken.text).toContain("маленькие зеленые мужички");
       expect(spoken.text).toContain("своими новыми друзьями");
       if (text === request) expect(spoken.text.replace(/\s+/gu, " ")).toBe(human.turns[1]!.surface.replace(/\s+/gu, " "));
-      else expect(spoken.text).toContain("Кварц");
+      else {
+        const expected = replyWithReviewedProperty({ declaration: references, reply: human.turns[1]!.surface, replyStart: human.turns[1]!.startCodePoint, value: "Кварц" });
+        expect(spoken.text.replace(/\s+/gu, " ")).toBe(expected.replace(/\s+/gu, " "));
+        expect(spoken.text.match(/Кварц/gu)).toHaveLength(6);
+        expect(spoken.text).not.toContain("Спанч");
+      }
     }
     const revoked = createLanguageMemoryRuntime({ hasher }).hydrate({ models: [], patterns, constructionEvidence: [] });
     expect(revoked.creativeEventCompatibilityModels).toEqual([]);

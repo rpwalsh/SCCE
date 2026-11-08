@@ -9,6 +9,7 @@ import { segmentUnicodeSurfaceV2 } from "./unicode-segmentation-v2.js";
 import type { EvidenceSpan, Hasher } from "./types.js";
 import type { LanguagePatternRecord } from "./storage.js";
 import { createSourceTextPointCache, sourceTextPointLength, sourceTextPointSlice, type SourceTextPointCache } from "./source-text-points.js";
+import { sourceReferencePropertiesForSpan, sourceReferencePropertyByIdentity, type OwnedSourceReferenceBindings } from "./source-reference-bindings.js";
 
 export const CREATIVE_SOURCE_CORRESPONDENCE_RECIPE = "kernel.creative_source_correspondence.v1" as const;
 
@@ -24,7 +25,8 @@ export interface CreativeSourceCorrespondence {
   eventConstructionId: string;
   eventArgumentFrameId: string;
   bindings: Array<{ requestRoleId: string; eventRoleId: "scce.role.patient" | "scce.role.complement";
-    requestStart: number; requestEnd: number; eventStart: number; eventEnd: number }>;
+    requestStart: number; requestEnd: number; eventStart: number; eventEnd: number;
+    sourceReference?: { patternId: string; referentId: string; propertyId: string } }>;
 }
 
 interface SourceTurnWitness {
@@ -40,6 +42,7 @@ export interface CreativeSourceCorrespondenceContext {
   evidence: readonly EvidenceSpan[];
   events: readonly DurableCreativeEventConstruction[];
   hasher: Hasher;
+  referenceBindings?: readonly OwnedSourceReferenceBindings[];
 }
 
 export function compileCreativeSourceCorrespondences(input: CreativeSourceCorrespondenceContext & {
@@ -69,6 +72,18 @@ export function compileCreativeSourceCorrespondences(input: CreativeSourceCorres
       if (!units.length) return [];
       const matches = segments.flatMap((segment, index) => units.every((unit, offset) => segments[index + offset]?.normalized === unit)
         ? [{ start: segment.codePointStart, end: segments[index + units.length - 1]!.codePointEnd }] : []);
+      const properties = sourceReferencePropertiesForSpan({ documents: input.referenceBindings ?? [], sourceVersionId: event.sourceVersionId,
+        startCodePoint: replyOwner.charStart + port.startCodePoint, endCodePoint: replyOwner.charStart + port.endCodePoint });
+      if (properties.length) {
+        const declared = properties.flatMap(property => property.occurrences.filter(occurrence => occurrence.evidenceId === String(requestOwner.id)
+          && occurrence.propertySpan!.start >= request.startCodePoint && occurrence.propertySpan!.end <= request.endCodePoint)
+          .map(occurrence => ({ start: occurrence.propertySpan!.start - request.startCodePoint, end: occurrence.propertySpan!.end - request.startCodePoint,
+            sourceReference: { patternId: property.patternId, referentId: property.referentId, propertyId: property.propertyId }, port })));
+        if (declared.length !== 1) return [];
+        const declaredMatch = declared[0]!;
+        return matches.length === 1 && matches[0]!.start === declaredMatch.start && matches[0]!.end === declaredMatch.end
+          ? [{ start: declaredMatch.start, end: declaredMatch.end, port }] : declared;
+      }
       if (matches.length !== 1) return [];
       const match = matches[0]!;
       spans.set(`${match.start}:${match.end}`, match);
@@ -94,9 +109,9 @@ export function compileCreativeSourceCorrespondences(input: CreativeSourceCorres
         requestFrameId, sourceId: String(requestOwner.sourceId), sourceVersionId: String(requestOwner.sourceVersionId),
         request: requestWitness, reply: replyWitness, eventId: event.id, eventRelationId: event.relationId,
         eventConstructionId: event.constructionId, eventArgumentFrameId: event.argumentFrame.id,
-        bindings: bindings.map(({ start, end, port }) => ({ requestRoleId: roleIds[roles.findIndex(role => role.start === start && role.end === end)]!,
+        bindings: bindings.map(({ start, end, port, ...declared }) => ({ requestRoleId: roleIds[roles.findIndex(role => role.start === start && role.end === end)]!,
           eventRoleId: port.roleId as "scce.role.patient" | "scce.role.complement", requestStart: start, requestEnd: end,
-          eventStart: port.startCodePoint, eventEnd: port.endCodePoint }))
+          eventStart: port.startCodePoint, eventEnd: port.endCodePoint, ...declared }))
       };
       observations.push({ ...material, id: digest(input.hasher, "creative.source.correspondence", material) });
     }
@@ -118,7 +133,10 @@ export function compileCreativeSourceCorrespondences(input: CreativeSourceCorres
     const sourceObservations = unique.filter(row => input.events.some(event => event.id === row.eventId && event.compilerId === eventCompilerId));
     const material = { schema: "scce.creative_event_compatibility_model.v1" as const, version: CREATIVE_SOURCE_CORRESPONDENCE_RECIPE,
       requestCompilerId: compilerId, eventCompilerId, reliability: "source_observed" as const, eventCompatibilities: [], roleCompatibilities: [],
-      sourceObservations, requestFrameAnchors: [...anchors.values()].sort((a, b) => a.requestFrameId.localeCompare(b.requestFrameId)) };
+      sourceObservations, requestFrameAnchors: [...anchors.values()].sort((a, b) => a.requestFrameId.localeCompare(b.requestFrameId)),
+      ...((input.referenceBindings ?? []).some(reference => reference.profileId === input.profileId && sourceObservations.some(row => row.sourceId === reference.sourceId && row.sourceVersionId === reference.sourceVersionId))
+        ? { sourceReferencePatternIds: (input.referenceBindings ?? []).filter(reference => reference.profileId === input.profileId
+          && sourceObservations.some(row => row.sourceId === reference.sourceId && row.sourceVersionId === reference.sourceVersionId)).map(reference => reference.id).sort() } : {}) };
     const id = digest(input.hasher, "creative.observed.compatibility", material);
     const model: CreativeEventCompatibilityModel = { ...material, id };
     return { id, profileId: input.profileId, patternKind: "semantic_role" as const, support: sourceObservations.length, entropy: 0,
@@ -179,8 +197,16 @@ function verifyCreativeSourceCorrespondenceIndexed(row: CreativeSourceCorrespond
     const port = event.argumentFrame.bindings.find(port => port.roleId === binding.eventRoleId
       && port.startCodePoint === binding.eventStart && port.endCodePoint === binding.eventEnd);
     const surface = sourceTextPointSlice(row.request.surface, binding.requestStart, binding.requestEnd, points);
-    return port && binding.requestStart >= 0 && binding.requestEnd > binding.requestStart && binding.requestEnd <= sourceTextPointLength(row.request.surface, points)
-      && lexicalKey(port.surface) === lexicalKey(surface);
+    if (!port || binding.requestStart < 0 || binding.requestEnd <= binding.requestStart || binding.requestEnd > sourceTextPointLength(row.request.surface, points)) return false;
+    if (binding.sourceReference) {
+      const property = sourceReferencePropertyByIdentity({ documents: context.referenceBindings ?? [], ...binding.sourceReference });
+      return property?.occurrences.some(occurrence => occurrence.evidenceId === String(request.id)
+        && occurrence.propertySpan?.start === request.charStart + row.request.start + binding.requestStart
+        && occurrence.propertySpan.end === request.charStart + row.request.start + binding.requestEnd) === true
+        && property.occurrences.some(occurrence => occurrence.evidenceId === String(reply.id)
+          && occurrence.propertySpan?.start === reply.charStart + binding.eventStart && occurrence.propertySpan.end === reply.charStart + binding.eventEnd);
+    }
+    return lexicalKey(port.surface) === lexicalKey(surface);
   });
 }
 

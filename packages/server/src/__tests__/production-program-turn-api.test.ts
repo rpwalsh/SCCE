@@ -46,6 +46,7 @@ import {
   type StructuredPatchValidationPolicy
 } from "@scce/adapters-node";
 import { handleRequest, WORKSPACE_CODING_TURN_REQUEST_SCHEMA, WORKSPACE_PATCH_REQUEST_SCHEMA, type ApiContext } from "../routes.js";
+import { creativeReferenceTestAnnotation, replyWithReviewedProperty } from "../../../kernel/src/__tests__/fixtures/creative-reference-test-annotations.js";
 
 const roots: string[] = [];
 const servers: ReturnType<typeof createServer>[] = [];
@@ -316,10 +317,12 @@ describe("production owner program turn through the API", () => {
   }, 60_000);
 
   it.each([
-    ["dolly-human-creative-pair.json", "room", "κάλυ月", true],
-    ["oasst-human-russian-creative-pair.json", "Спанч", "Кварц", true],
-    ["oasst-human-russian-creative-pair.json", "Спанч", "Кварц", false]
-  ] as const)("loads an ordinary attested human reply through exact source IDs: %s (case %#)", async (fixtureName, sourceValue, heldoutValue, seedIdentity) => {
+    ["dolly-human-creative-pair.json", "room", "κάλυ月", true, false],
+    ["oasst-human-russian-creative-pair.json", "Спанч", "Кварц", true, false],
+    ["oasst-human-russian-creative-pair.json", "Спанч", "Кварц", false, false],
+    ["dolly-human-creative-pair.json", "room", "κάλυ月", false, true],
+    ["oasst-human-russian-creative-pair.json", "Спанч", "Кварц", false, true]
+  ] as const)("loads ordinary human speech and enforces complete participant property provenance: %s (case %#)", async (fixtureName, sourceValue, heldoutValue, seedIdentity, annotated) => {
     const human = JSON.parse(await readFile(new URL(`../../../kernel/src/__tests__/fixtures/${fixtureName}`, import.meta.url), "utf8")) as {
       text: string; turns: NonNullable<Parameters<typeof compileLanguageTrainingBatch>[0]["batch"]["transcriptTurns"]>;
     };
@@ -337,9 +340,11 @@ describe("production owner program turn through the API", () => {
       text: human.text, textPreview: human.text, languageHints: {}, scriptHints: {}, trustVector: {}, provenance: { sourceSystem: "dialogue" },
       features: [], status: "promoted", alpha: 1, observedAt: 103_000 };
     const profile = createLanguageAcquisitionEngine({ idFactory: ids }).acquire({ sourceVersionId, text: human.text, createdAt: 103_000 });
+    const declaration = creativeReferenceTestAnnotation(fixtureName, human.text, hasher);
     const trained = compileLanguageTrainingBatch({ runtime: createLanguageMemoryRuntime({ hasher, idFactory: ids }), hasher,
       batch: { streamId: `fixture://human/${fixtureName}`, sourceSystem: "dialogue", profile, sourceVersionId, text: human.text,
-        evidence: [source], transcriptTurns: human.turns, createdAt: 103_000, retainNgramObservations: false } });
+        evidence: [source], transcriptTurns: human.turns, ...(annotated ? { sourceReferenceBindings: declaration } : {}),
+        createdAt: 103_000, retainNgramObservations: false } });
     const languagePatterns = trained.patterns.map(pattern => ({ ...pattern,
       patternJson: { ...(pattern.patternJson as Record<string, unknown>), sourceSystem: "dialogue" } as LanguagePatternRecord["patternJson"] }));
     const events: ScceEvent[] = [];
@@ -392,12 +397,25 @@ describe("production owner program turn through the API", () => {
       const response = await fetch(`http://127.0.0.1:${address.port}/api/turn?full=1`, { method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({ text, conversationId: `conversation.human.utterance.${index}` }) });
       const body = await response.json() as Record<string, any>;
+      if (index === 1 && !annotated) { expect(response.status, JSON.stringify(body)).toBe(422); continue; }
       expect(response.status, JSON.stringify(body)).toBe(200);
       expect(body.answer).not.toBe(text);
-      if (index === 1) expect(body.answer).toContain(heldoutValue);
+      if (index === 1) {
+        const expected = replyWithReviewedProperty({ declaration, reply: human.turns[1]!.surface, replyStart: human.turns[1]!.startCodePoint, value: heldoutValue });
+        expect(body.answer.replace(/\s+/gu, " ")).toBe(expected.replace(/\s+/gu, " "));
+        expect(body.answer.split(heldoutValue)).toHaveLength(fixtureName.startsWith("dolly") ? 3 : 7);
+        if (fixtureName.startsWith("dolly")) { expect(body.answer).toContain("laundry room"); expect(body.answer).toContain("bedroom"); }
+        else expect(body.answer).not.toContain(sourceValue);
+      }
       else expect(body.answer.replace(/\s+/gu, " ")).toBe(human.turns[1]!.surface.replace(/\s+/gu, " "));
     }
     if (seedIdentity) expect(queries.some(query => query?.sourceSystem && corpusSourceAlias(query.sourceSystem) === "gutenberg")).toBe(true);
+    context = await createContext();
+    const lowercase = await fetch(`http://127.0.0.1:${address.port}/api/turn?full=1`, { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: human.turns[0]!.surface.toLocaleLowerCase(), conversationId: "conversation.human.utterance.lowercase" }) });
+    const lowercaseBody = await lowercase.json() as { answer: string };
+    expect(lowercase.status, JSON.stringify(lowercaseBody)).toBe(200);
+    expect(lowercaseBody.answer.replace(/\s+/gu, " ")).toBe(human.turns[1]!.surface.replace(/\s+/gu, " "));
     const sourceReads = queries.filter(query => query?.patternIds?.length);
     expect(sourceReads.length).toBeGreaterThan(0);
     expect(sourceReads.every(query => query?.sourceSystem === undefined && query?.profileIds === undefined)).toBe(true);
@@ -405,6 +423,17 @@ describe("production owner program turn through the API", () => {
       body: JSON.stringify({ text: "7 - 10", conversationId: "conversation.human.utterance.arithmetic" }) });
     expect(arithmetic.status).toBe(200);
     expect((await arithmetic.json() as { answer: string }).answer).toBe("7 - 10 = -3.");
+    if (annotated) {
+      const referencePatterns = languagePatterns.filter(pattern => (pattern.patternJson as Record<string, unknown>).schema === "scce.source_reference_bindings.v1");
+      expect(referencePatterns).toHaveLength(1);
+      expect(queries.some(query => query?.patternIds?.includes(referencePatterns[0]!.id))).toBe(true);
+      languagePatterns.splice(0, languagePatterns.length, ...languagePatterns.filter(pattern => !referencePatterns.includes(pattern)));
+      context = await createContext();
+      const revoked = await fetch(`http://127.0.0.1:${address.port}/api/turn?full=1`, { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: human.turns[0]!.surface.replace(sourceValue, heldoutValue), conversationId: "conversation.human.utterance.revoked" }) });
+      expect(revoked.status, JSON.stringify(await revoked.json())).toBe(422);
+      languagePatterns.push(...referencePatterns);
+    }
     languagePatterns.splice(0, languagePatterns.length, ...languagePatterns.filter(pattern =>
       !String(((pattern.patternJson as Record<string, any>).bundle ?? {}).bindingId ?? "").startsWith("source.creative.utterance.")));
     context = await createContext();

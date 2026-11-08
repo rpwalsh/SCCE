@@ -41,6 +41,8 @@ export interface OwnedSourceReferenceOccurrence {
   sourceOccurrenceId: string;
   evidenceId: string;
   contentHash: string;
+  evidenceCharStart: number;
+  evidenceCharEnd: number;
   mention: DiscourseMentionV2;
   binding: DiscourseProvenanceBindingV2;
   propertyId?: string;
@@ -214,13 +216,14 @@ function materialize(input: {
       candidateReferentIds: [referentId], scopeIds: [...(raw.scopeIds ?? [])] };
     const binding = createDiscourseProvenanceBindingV2({ observationId: id, mentionId: mention.id, referentId, routeId: id,
       nodeIds: [nodeId], claimIds: [], evidenceIds: [String(span.id)], sourceVersionIds: [String(span.sourceVersionId)], contradictionIds: [] }, input.hasher);
-    return { sourceOccurrenceId: raw.id, evidenceId: String(span.id), contentHash: String(span.contentHash), mention, binding,
+    return { sourceOccurrenceId: raw.id, evidenceId: String(span.id), contentHash: String(span.contentHash), evidenceCharStart: span.charStart, evidenceCharEnd: span.charEnd, mention, binding,
       ...(raw.propertyId ? { propertyId: raw.propertyId, propertySpan: { start: raw.propertyStartCodePoint ?? raw.startCodePoint,
         end: raw.propertyEndCodePoint ?? raw.endCodePoint, surfaceHash: witness.propertySurfaceHash! } } : {}) };
   });
   const bindings: OwnedSourceReferenceBindings = { id, profileId: input.profileId, ...owner, sourceTextHash: value.sourceTextHash,
-    basis: value.basis, completeReferentIds: value.completeReferentIds.map(referent),
+    basis: { ...value.basis }, completeReferentIds: value.completeReferentIds.map(referent),
     completeProperties: completeProperties.map(row => ({ referentId: referent(row.referentId), propertyId: row.propertyId })), occurrences };
+  freezeOwned(bindings);
   ownedReferenceDocuments.add(bindings);
   return { bindings, material, issues: [] };
 }
@@ -229,3 +232,4 @@ function opaque(hasher: Hasher, prefix: string, value: unknown): string { return
 function nonempty(value: unknown): value is string { return typeof value === "string" && value.trim().length > 0; }
 function range(start: unknown, end: unknown): boolean { return Number.isSafeInteger(start) && Number.isSafeInteger(end) && Number(start) >= 0 && Number(end) > Number(start); }
 function object(value: unknown): Record<string, JsonValue> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, JsonValue> : {}; }
+function freezeOwned(value: object): void { for (const child of Object.values(value)) if (child && typeof child === "object") freezeOwned(child); Object.freeze(value); }

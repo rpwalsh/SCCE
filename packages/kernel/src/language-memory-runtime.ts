@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { IdFactory } from "./ids.js";
+import { sourceReferenceBindingsFromPatterns } from "./source-reference-bindings.js";
 import type { NarrativeConditioning } from "./document-generation-session.js";
 import { deriveClosedClassWords } from "./closed-class-words.js";
 import { calibrated } from "./calibrations/prod-calibrations.js";
@@ -636,7 +637,8 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
         const creativeEventCompatibilityModels = normalizeCreativeEventCompatibilityModels([
           ...(input.creativeEventCompatibilityModels ?? []).filter(model => model.reliability !== "source_observed"),
           ...creativeEventCompatibilityModelsFromPatterns(persistedPatterns, options.hasher ? {
-            hasher: options.hasher, evidence: input.constructionEvidence ?? [], events: constructionMemory.bundles.flatMap(bundle => bundle.creativeEvents ?? [])
+            hasher: options.hasher, evidence: input.constructionEvidence ?? [], events: constructionMemory.bundles.flatMap(bundle => bundle.creativeEvents ?? []),
+            referenceBindings: sourceReferenceBindingsFromPatterns({ patterns: persistedPatterns, evidence: input.constructionEvidence ?? [], hasher: options.hasher }).bindings
           } : undefined)
         ]);
         const importedLanguagePriorCount = importedUnits.length + importedPatterns.length + importedObservations.length + importedSemanticFrames.length + constructionMemory.bundles.length + importedReversibleConstructions.length + importedPairedAntiUnifiedConstructions.length + optionalNullRealizationModels.length + creativeEventCompatibilityModels.length + joinPrograms.length + priorModelCount;

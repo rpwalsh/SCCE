@@ -10,7 +10,9 @@ import { canonicalStringify } from "./primitives.js";
 import type { EvidenceSpan, Hasher } from "./types.js";
 import type { DurableCreativeEventConstruction } from "./language-construction-memory.js";
 import type { LanguagePatternRecord } from "./storage.js";
-import { CREATIVE_SOURCE_UTTERANCE_RECIPE_ID } from "./language-training-recipe.js";
+import { CREATIVE_SOURCE_UTTERANCE_RECIPE_ID, CREATIVE_SOURCE_REFERENCE_UTTERANCE_RECIPE_ID } from "./language-training-recipe.js";
+import { sourceReferencePropertiesForSpan, type OwnedSourceReferenceBindings, type SourceReferenceProperty } from "./source-reference-bindings.js";
+import { normalizeCanonicalSurface } from "./normalization-contract.js";
 
 export const CREATIVE_SOURCE_UTTERANCE_RECIPE = CREATIVE_SOURCE_UTTERANCE_RECIPE_ID;
 
@@ -31,9 +33,12 @@ export interface CreativeSourceUtterance {
   reply: CreativeSourceCorrespondence["reply"];
   eventIds: readonly string[];
   roles: readonly UtteranceRole[];
+  requestRoles: readonly { requestRoleId: string; startCodePoint: number; endCodePoint: number; reference?: SourceReferenceProperty }[];
+  referencePatternIds: readonly string[];
 }
 
 const utterancesByModel = new WeakMap<CreativeEventCompatibilityModel, Map<string, readonly CreativeSourceUtterance[]>>();
+const ownedUtterances = new WeakMap<CreativeSourceUtterance, string>();
 
 /** Declared human turn bounds and witnessed role occurrences supply the complete speech construction. */
 export function creativeSourceUtterances(model: CreativeEventCompatibilityModel, profileId: string, hasher: Hasher): readonly CreativeSourceUtterance[] {
@@ -60,11 +65,33 @@ export function creativeSourceUtterances(model: CreativeEventCompatibilityModel,
       byRange.set(key, { requestRoleId: binding.requestRoleId, requestStart: binding.requestStart, requestEnd: binding.requestEnd,
         start: binding.eventStart, end: binding.eventEnd });
     }
-    const ranges = [...byRange.values()].sort((a, b) => a.start - b.start || a.end - b.end);
-    if (ambiguous || !ranges.length || ranges.some((range, index) => range.start < first.reply.start || range.end > first.reply.end
-      || (index > 0 && range.start < ranges[index - 1]!.end))) continue;
+    let ranges = [...byRange.values()].sort((a, b) => a.start - b.start || a.end - b.end);
+    const referencePatternIds = model.sourceReferencePatternIds ?? [];
+    const referenceDocuments = (model.sourceReferenceBindings ?? []).filter(document => document.profileId === profileId
+      && document.sourceId === first.sourceId && document.sourceVersionId === first.sourceVersionId);
+    const referenceOccurrences = referenceDocuments.flatMap(document => document.occurrences);
+    const requestOrigin = referenceOccurrences.find(occurrence => occurrence.evidenceId === first.request.evidenceId)?.evidenceCharStart ?? 0;
+    const replyOrigin = referenceOccurrences.find(occurrence => occurrence.evidenceId === first.reply.evidenceId)?.evidenceCharStart ?? 0;
     const requestRoles = [...new Map(ranges.map(range => [range.requestRoleId, range])).values()]
       .sort((a, b) => a.requestStart - b.requestStart || a.requestEnd - b.requestEnd || a.requestRoleId.localeCompare(b.requestRoleId));
+    const roleBindings: CreativeSourceUtterance["requestRoles"][number][] = [];
+    for (const role of requestRoles) {
+      const properties = sourceReferencePropertiesForSpan({ documents: referenceDocuments, sourceVersionId: first.sourceVersionId,
+        startCodePoint: requestOrigin + first.request.start + role.requestStart, endCodePoint: requestOrigin + first.request.start + role.requestEnd });
+      if (properties.length > 1) ambiguous = true;
+      const reference = properties.length === 1 && properties[0]!.complete ? properties[0] : undefined;
+      roleBindings.push({ requestRoleId: role.requestRoleId, startCodePoint: role.requestStart, endCodePoint: role.requestEnd, ...(reference ? { reference } : {}) });
+      if (!reference) continue;
+      const declared = reference.occurrences.filter(occurrence => occurrence.evidenceId === first.reply.evidenceId
+        && occurrence.propertySpan!.start >= replyOrigin + first.reply.start && occurrence.propertySpan!.end <= replyOrigin + first.reply.end);
+      if (!declared.length) { ambiguous = true; continue; }
+      ranges = ranges.filter(range => range.requestRoleId !== role.requestRoleId);
+      ranges.push(...declared.map(occurrence => ({ requestRoleId: role.requestRoleId, requestStart: role.requestStart, requestEnd: role.requestEnd,
+        start: occurrence.propertySpan!.start - replyOrigin, end: occurrence.propertySpan!.end - replyOrigin })));
+    }
+    ranges.sort((a, b) => a.start - b.start || a.end - b.end);
+    if (ambiguous || !ranges.length || ranges.some((range, index) => range.start < first.reply.start || range.end > first.reply.end
+      || (index > 0 && range.start < ranges[index - 1]!.end))) continue;
     const occurrences = new Map<string, number>();
     const roles = ranges.map(range => {
       const occurrenceIndex = occurrences.get(range.requestRoleId) ?? 0;
@@ -72,11 +99,15 @@ export function creativeSourceUtterances(model: CreativeEventCompatibilityModel,
       return { requestRoleId: range.requestRoleId, slotIndex: requestRoles.findIndex(role => role.requestRoleId === range.requestRoleId), occurrenceIndex,
         startCodePoint: range.start - first.reply.start, endCodePoint: range.end - first.reply.start };
     });
-    const material = { recipe: CREATIVE_SOURCE_UTTERANCE_RECIPE, profileId, requestFrameId: first.requestFrameId,
-      sourceVersionId: first.sourceVersionId, request: first.request, reply: first.reply, roles };
-    utterances.push({ bindingId: `source.creative.utterance.${hasher.digestHex(canonicalStringify(material))}`, profileId,
+    const material = { recipe: referencePatternIds.length ? CREATIVE_SOURCE_REFERENCE_UTTERANCE_RECIPE_ID : CREATIVE_SOURCE_UTTERANCE_RECIPE,
+      profileId, requestFrameId: first.requestFrameId, sourceVersionId: first.sourceVersionId, request: first.request, reply: first.reply, roles,
+      ...(referencePatternIds.length ? { referencePatternIds, requestRoles: roleBindings.map(({ reference, ...role }) => ({ ...role,
+        ...(reference ? { reference: { patternId: reference.patternId, referentId: reference.referentId, propertyId: reference.propertyId, basis: reference.basis } } : {}) })) } : {}) };
+    const utterance = { bindingId: `source.creative.utterance.${hasher.digestHex(canonicalStringify(material))}`, profileId,
       requestFrameId: first.requestFrameId, sourceVersionId: first.sourceVersionId, request: first.request, reply: first.reply,
-      eventIds: [...new Set(rows.map(row => row.eventId))].sort(), roles });
+      eventIds: [...new Set(rows.map(row => row.eventId))].sort(), roles, requestRoles: roleBindings, referencePatternIds };
+    ownedUtterances.set(utterance, canonicalStringify(utterance));
+    utterances.push(utterance);
   }
   utterances.sort((a, b) => a.bindingId.localeCompare(b.bindingId));
   const byProfile = utterancesByModel.get(model) ?? new Map<string, readonly CreativeSourceUtterance[]>();
@@ -89,8 +120,9 @@ export function compileCreativeSourceUtterancePatterns(input: {
   patterns: readonly LanguagePatternRecord[]; events: readonly DurableCreativeEventConstruction[];
   eventBundles: readonly DurableLanguageConstructionBundle[];
   profileId: string; evidence: readonly EvidenceSpan[]; hasher: Hasher; updatedAt: number;
+  referenceBindings?: readonly OwnedSourceReferenceBindings[];
 }): { patterns: LanguagePatternRecord[]; candidateCount: number; rejectionCodes: string[];
-  prerequisitesByModelId: ReadonlyMap<string, { recipe: typeof CREATIVE_SOURCE_UTTERANCE_RECIPE_ID; requests: Array<{ requestFrameId: string; patternIds: string[] }> }> } {
+  prerequisitesByModelId: ReadonlyMap<string, { recipe: typeof CREATIVE_SOURCE_UTTERANCE_RECIPE_ID | typeof CREATIVE_SOURCE_REFERENCE_UTTERANCE_RECIPE_ID; requests: Array<{ requestFrameId: string; patternIds: string[] }> }> } {
   const models = creativeEventCompatibilityModelsFromPatterns(input.patterns, input);
   const sets: Array<SourceBoundLanguageConstructionTrainingSet & { acquisitionStatus: "source_observed" }> = models.flatMap(model => creativeSourceUtterances(model, input.profileId, input.hasher)
     .map(utterance => ({ bindingId: utterance.bindingId, acquisitionStatus: "source_observed" as const, observations: [{
@@ -105,7 +137,7 @@ export function compileCreativeSourceUtterancePatterns(input: {
   const rejectionCodes = results.flatMap(result => result.status === "rejected" ? result.issues.map(issue => issue.code) : []);
   const patternByBinding = new Map(compiled.map(result => [result.bundle.bindingId, result.pattern.id]));
   const eventPatternByEvent = new Map(input.eventBundles.flatMap(bundle => (bundle.creativeEvents ?? []).map(event => [event.id, bundle.id] as const)));
-  const prerequisitesByModelId = new Map<string, { recipe: typeof CREATIVE_SOURCE_UTTERANCE_RECIPE_ID; requests: Array<{ requestFrameId: string; patternIds: string[] }> }>();
+  const prerequisitesByModelId = new Map<string, { recipe: typeof CREATIVE_SOURCE_UTTERANCE_RECIPE_ID | typeof CREATIVE_SOURCE_REFERENCE_UTTERANCE_RECIPE_ID; requests: Array<{ requestFrameId: string; patternIds: string[] }> }>();
   for (const model of models) {
     const byFrame = new Map<string, Set<string>>();
     for (const utterance of creativeSourceUtterances(model, input.profileId, input.hasher)) {
@@ -113,10 +145,12 @@ export function compileCreativeSourceUtterancePatterns(input: {
       if (!patternId) continue;
       const ids = byFrame.get(utterance.requestFrameId) ?? new Set<string>();
       ids.add(patternId);
+      for (const id of utterance.referencePatternIds) ids.add(id);
       for (const id of utterance.eventIds) { const page = eventPatternByEvent.get(id); if (page) ids.add(page); }
       byFrame.set(utterance.requestFrameId, ids);
     }
-    if (byFrame.size) prerequisitesByModelId.set(model.id, { recipe: CREATIVE_SOURCE_UTTERANCE_RECIPE_ID,
+    if (byFrame.size) prerequisitesByModelId.set(model.id, { recipe: model.reliability === "source_observed" && model.sourceReferencePatternIds?.length
+      ? CREATIVE_SOURCE_REFERENCE_UTTERANCE_RECIPE_ID : CREATIVE_SOURCE_UTTERANCE_RECIPE_ID,
       requests: [...byFrame].map(([requestFrameId, ids]) => ({ requestFrameId, patternIds: [...ids].sort() })).sort((a, b) => a.requestFrameId.localeCompare(b.requestFrameId)) });
   }
   return { patterns: compiled.map(result => result.pattern), candidateCount: sets.length, rejectionCodes, prerequisitesByModelId };
@@ -128,6 +162,7 @@ export function realizeCreativeSourceUtterance(input: {
   cycleConsistencyByConstructionId?: ReadonlyMap<string, number>;
 }): { realization: LearnedRealization; bundle: DurableLanguageConstructionBundle; exampleId: string; sourceSurface: string } | undefined {
   const { utterance } = input;
+  if (!ownedUtterances.has(utterance) || ownedUtterances.get(utterance) !== canonicalStringify(utterance)) return undefined;
   const bundle = input.bundles.find(bundle => bundle.bindingId === utterance.bindingId && bundle.targetProfileId === utterance.profileId);
   if (!bundle || !input.frame.sourceActivationIds.includes(utterance.requestFrameId)) return undefined;
   const example = bundle.sourceExamples.find(example => example.sourceVersionId === utterance.sourceVersionId && example.evidenceId === utterance.reply.evidenceId
@@ -144,10 +179,16 @@ export function realizeCreativeSourceUtterance(input: {
     const argument = source ? input.frame.arguments.find(argument => argument.roleId === source.requestRoleId) : undefined;
     if (!source || !argument || argument.span.charStart < 0 || argument.span.charEnd > points.length
       || points.slice(argument.span.charStart, argument.span.charEnd).join("") !== argument.span.text) return undefined;
+    const binding = utterance.requestRoles.find(binding => binding.requestRoleId === source.requestRoleId);
+    if (!binding) return undefined;
+    const originalValue = [...utterance.request.surface].slice(binding.startCodePoint, binding.endCodePoint).join("");
+    const changed = normalizeCanonicalSurface(originalValue) !== normalizeCanonicalSurface(argument.span.text);
+    if (changed && !binding.reference?.complete) return undefined;
     const id = `source.utterance.slot.${input.hasher.digestHex(canonicalStringify([input.semanticPlanId, example.id, role.occurrenceId, argument.id]))}`;
-    slots.push({ roleId: role.roleId, occurrenceId: role.occurrenceId, variants: [{ id, profileKey: bundle.targetProfileId, surface: argument.span.text, evidenceIds: [],
+    slots.push({ roleId: role.roleId, occurrenceId: role.occurrenceId, variants: [changed ? { id, profileKey: bundle.targetProfileId, surface: argument.span.text, evidenceIds: [],
       conversationInternalLicence: { schema: CONVERSATION_INTERNAL_PROVENANCE_METHOD_ID, variantId: id, slotIndex, conversationId: "conversation.current",
-        sourceTurnId: input.ownerTurnId, startCodePoint: argument.span.charStart, endCodePoint: argument.span.charEnd } }] });
+        sourceTurnId: input.ownerTurnId, startCodePoint: argument.span.charStart, endCodePoint: argument.span.charEnd } }
+      : { id, profileKey: bundle.targetProfileId, surface: role.surface, evidenceIds: [example.evidenceId] }] });
     const occurrences = occurrencesByRequestRole.get(source.requestRoleId) ?? [];
     occurrences.push(role.occurrenceId);
     occurrencesByRequestRole.set(source.requestRoleId, occurrences);

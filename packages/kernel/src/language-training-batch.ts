@@ -12,6 +12,7 @@ import {
 } from "./language-construction-memory.js";
 import { compileCreativeSourceCorrespondences } from "./creative-source-correspondence.js";
 import { compileCreativeSourceUtterancePatterns } from "./creative-source-utterance.js";
+import { compileSourceReferenceBindingPattern, type SourceReferenceBindingDeclaration } from "./source-reference-bindings.js";
 import type { TranscriptTurn } from "./dialogue-communicative-act-learning.js";
 import {
   evaluateHeldOutConstructionCoverage,
@@ -152,6 +153,7 @@ export interface LanguageTrainingBatch {
   text: string;
   evidence: EvidenceSpan[];
   transcriptTurns?: readonly TranscriptTurn[];
+  sourceReferenceBindings?: SourceReferenceBindingDeclaration;
   createdAt: number;
   maxOrder?: number;
   maxCountersPerOrder?: number;
@@ -636,16 +638,22 @@ export function compileLanguageTrainingBatch(input: {
   if (creativeEventCompilation?.status === "rejected" && creativeEventCompilation.issues.some(issue => issue.code !== LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.induction)) {
     warnings.push(...creativeEventCompilation.issues.map(issue => issue.code));
   }
+  const sourceReferences = batch.sourceReferenceBindings
+    ? compileSourceReferenceBindingPattern({ declaration: batch.sourceReferenceBindings, text: batch.text, profileId: batch.profile.id,
+      evidence: batch.evidence, hasher: input.hasher, updatedAt: batch.createdAt }) : undefined;
+  warnings.push(...(sourceReferences?.issues.map(issue => issue.code) ?? []));
+  const referenceBindings = sourceReferences?.bindings ? [sourceReferences.bindings] : [];
   const sourceCorrespondencePatterns = batch.transcriptTurns && creativeEventCompilation?.status === "compiled"
     ? compileCreativeSourceCorrespondences({ turns: batch.transcriptTurns, profileId: batch.profile.id, updatedAt: batch.createdAt,
-      evidence: batch.evidence, events: (creativeEventCompilation.bundles ?? [creativeEventCompilation.bundle]).flatMap(bundle => bundle.creativeEvents ?? []), hasher: input.hasher }) : [];
+      evidence: batch.evidence, events: (creativeEventCompilation.bundles ?? [creativeEventCompilation.bundle]).flatMap(bundle => bundle.creativeEvents ?? []),
+      referenceBindings, hasher: input.hasher }) : [];
   let sourceUtteranceCandidates = 0;
   let compiledSourceUtterances = 0;
   if (sourceCorrespondencePatterns.length && creativeEventCompilation?.status === "compiled") {
     const eventBundles = creativeEventCompilation.bundles ?? [creativeEventCompilation.bundle];
     const utterances = compileCreativeSourceUtterancePatterns({ patterns: sourceCorrespondencePatterns,
       events: eventBundles.flatMap(bundle => bundle.creativeEvents ?? []), eventBundles,
-      profileId: batch.profile.id, evidence: batch.evidence, hasher: input.hasher, updatedAt: batch.createdAt });
+      profileId: batch.profile.id, evidence: batch.evidence, referenceBindings, hasher: input.hasher, updatedAt: batch.createdAt });
     constructionPatterns.push(...utterances.patterns);
     sourceUtteranceCandidates = utterances.candidateCount;
     compiledSourceUtterances = utterances.patterns.length;
@@ -661,6 +669,7 @@ export function compileLanguageTrainingBatch(input: {
   let patterns = uniquePatterns([
     ...memories.flatMap(memory => memory.patterns), ...inducedLanguagePatterns, ...constructionPatterns, ...reversibleConstructionPatterns,
     ...pairedAntiUnifiedConstructionPatterns, ...optionalNullRealizationPatterns, ...(batch.additionalPatterns ?? []), ...sourceCorrespondencePatterns,
+    ...(sourceReferences?.pattern ? [sourceReferences.pattern] : []),
     ...ownedCreativePatterns.filter(pattern => !isLanguageConstructionPattern(pattern))
   ]);
   let semanticFrames = uniqueRecords(memories.flatMap(memory => memory.semanticFrames));
@@ -719,6 +728,9 @@ export function compileLanguageTrainingBatch(input: {
       compiler: LANGUAGE_TRAINING_BATCH_RECIPE_ID,
       corpusRole: batch.sourceSystem ? corpusRoleIdForSourceSystem(batch.sourceSystem) : null,
       naturalLanguageInduction: induceNaturalLanguage,
+      sourceReferenceBindings: { basis: sourceReferences?.bindings?.basis ?? batch.sourceReferenceBindings?.basis ?? null,
+        patterns: sourceReferences?.pattern ? 1 : 0, occurrences: sourceReferences?.bindings?.occurrences.length ?? 0,
+        completeProperties: sourceReferences?.bindings?.completeProperties.length ?? 0, issues: sourceReferences?.issues ?? [] },
       creativeEventCompilerId: creativeEventCompiler?.id ?? null,
       creativeEventCompilation: creativeEventCompilation?.status ?? null,
       creativeEventSourceCoverage: creativeEventCompilation?.status === "compiled" ? creativeEventCompilation.coverage ?? null : null,

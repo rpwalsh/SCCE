@@ -4477,6 +4477,7 @@ function selectedStructuralCreativeCandidate(input: SpeakInput, discoursePlan: D
     .filter(utterance => frame.sourceActivationIds.includes(utterance.requestFrameId) && selectedEvents.every(row => utterance.eventIds.includes(row.event.id))) : [];
   if (utterances.length > 1) return reject("selected_source_utterance_ambiguous", { bindingIds: utterances.map(utterance => utterance.bindingId) });
   const utterance = utterances[0];
+  if (sourceModel?.reliability === "source_observed" && !utterance) return reject("selected_source_utterance_speech_grammar_refused", { modelId: sourceModel.id });
   const speechBundleIds: string[] = [];
   audit.selectedConstructionForm = utterance ? { kind: "declared_source_reply", bindingId: utterance.bindingId } : { kind: "source_event_frame" };
   if (utterance) {
@@ -4490,6 +4491,9 @@ function selectedStructuralCreativeCandidate(input: SpeakInput, discoursePlan: D
     for (const row of selectedEvents) realizations.push(toJsonValue({ eventId: row.event.id,
       constructionId: realized.realization.constructionId, exampleId: realized.exampleId, utteranceBindingId: utterance.bindingId }));
     audit.realizedEventCount = selectedEvents.length;
+    audit.referenceBindings = utterance.requestRoles.flatMap(role => role.reference ? [{ requestRoleId: role.requestRoleId,
+      patternId: role.reference.patternId, referentId: role.reference.referentId, propertyId: role.reference.propertyId,
+      basis: role.reference.basis, occurrenceIds: role.reference.occurrences.map(occurrence => occurrence.sourceOccurrenceId) }] : []);
     audit.utteranceBindingId = utterance.bindingId;
   } else for (const { event, sourceBundle, eventIndex, replacements } of selectedEvents) {
     const grammar = grammarIndex.forEvent(event);
@@ -4532,7 +4536,7 @@ function selectedStructuralCreativeCandidate(input: SpeakInput, discoursePlan: D
   return { id, style: "surface.path.generated.creative.source_construction", path: "generated", claimBasis: "invented", text,
     evidenceIds: [], fit: invention.supportScore, importedPieceIds: uniqueStrings([...stringArrayFromJson(semanticPlan.sourceBundleIds), ...speechBundleIds]), discoursePlan,
     inventionBinding: inventionSurfaceBinding(invention), constructionFormLiterals: formLiterals, exactSurface: true,
-    audit: toJsonValue({ source: "mouth.selected_event_source_construction", realizations,
+    audit: toJsonValue({ source: "mouth.selected_event_source_construction", realizations, referenceBindings: audit.referenceBindings ?? [],
       selectionBinding: { semanticCandidateId: selected.id, semanticPlanId: invention.semanticPlanId, surfaceRealizationId: id } }) };
 }
 

@@ -62,6 +62,7 @@ import {
   type JsonValue,
   type LanguagePatternRecord,
   type LanguageProfile,
+  type SourceReferenceBindingDeclaration,
   type LanguageInductionDocument,
   type LanguageUnitRecord,
   type NgramModelRecord,
@@ -1014,6 +1015,9 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
       text,
       evidence,
       ...(input.transcriptTurns ? { transcriptTurns: input.transcriptTurns } : {}),
+      ...(jsonRecord(jsonRecord(input.corpusMetadata).sourceMetadata).sourceReferenceBindings ? {
+        sourceReferenceBindings: jsonRecord(jsonRecord(input.corpusMetadata).sourceMetadata).sourceReferenceBindings as unknown as SourceReferenceBindingDeclaration
+      } : {}),
       ...(preparedInduction ? { preparedInduction } : {}),
       ...(input.profileBinding ? { profileBinding: input.profileBinding } : {}),
       ...(constructionPoolEvidence.length ? { constructionEvidence: [...evidence, ...constructionPoolEvidence] } : {}),
