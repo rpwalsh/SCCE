@@ -1125,7 +1125,7 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
         .filter(run => !named.has(run));
       const spread = new Map<string, number>();
       if (candidates.length) {
-        const spreadRows = await storage.query<{ run: string; sources: number }>(
+        const spreadRows = await queryEvidenceSpread<{ run: string; sources: number }>(storage,
           `SELECT candidate.run AS run, measured.sources AS sources
            FROM unnest($1::text[]) AS candidate(run)
            CROSS JOIN LATERAL (
@@ -1168,14 +1168,7 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
            ) sampled
          ) AS sources`;
       });
-      const rows = await storage.transaction(async () => {
-        const [planner] = await storage.query<{ enabled: string }>("SELECT current_setting('enable_seqscan') AS enabled");
-        if (!planner) throw new Error("PostgreSQL planner setting is unavailable");
-        await storage.query("SET LOCAL enable_seqscan = off");
-        const measured = await storage.query<{ unit: string; sources: number }>(measurements.join("\nUNION ALL\n"), params);
-        await storage.query("SELECT set_config('enable_seqscan', $1, true)", [planner.enabled]);
-        return measured;
-      });
+      const rows = await queryEvidenceSpread<{ unit: string; sources: number }>(storage, measurements.join("\nUNION ALL\n"), params);
       return rows.map(row => Number(row.sources ?? 0)).filter(value => value > 0);
     },
     async searchEvidence(query: EvidenceQuery) {
@@ -2017,6 +2010,18 @@ async function upsertGraphHyperedgesBatch(storage: PostgresStorageAdapter, edges
  * A unit the whole corpus uses saturates it, and saturation is the answer for such a unit.
  */
 const SPREAD_SCAN_CAP = 1500;
+
+async function queryEvidenceSpread<T>(storage: PostgresStorageAdapter, sql: string, params: unknown[]): Promise<T[]> {
+  return storage.transaction(async () => {
+    const [planner] = await storage.query<{ enabled: string }>("SELECT current_setting('enable_seqscan') AS enabled");
+    if (!planner) throw new Error("PostgreSQL planner setting is unavailable");
+    await storage.query("SET LOCAL enable_seqscan = off");
+    const rows = await storage.query<T>(sql, params);
+    await storage.query("SELECT set_config('enable_seqscan', $1, true)", [planner.enabled]);
+    return rows;
+  });
+}
+
 /** Unit separators the writing system supplies; a script that marks none yields a single unit. */
 const IDENTITY_UNIT_SEPARATOR = /[^\p{L}\p{M}\p{N}'’-]+/gu;
 /** Cost bound on the reversed identity scan; titles come back longest first, so the specific ones survive it. */
@@ -4317,7 +4322,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
            FROM ${storage.table("language_patterns")} pattern
            ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
          ),
-         category_counts AS (
+         category_counts AS MATERIALIZED (
            SELECT GREATEST(COUNT(DISTINCT support_category), 1) AS n FROM candidate_pool
          ),
          ranked_pool AS (

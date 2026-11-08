@@ -32,6 +32,39 @@ beforeEach(() => clearSourceTitleCache());
 afterEach(() => clearSourceTitleCache());
 
 describe("a binding mark is orthography, not identity", () => {
+  it.each(["on", "off"])("measures request spreads through the same bounded index policy and preserves caller setting %s", async initialSetting => {
+    const adapter = createPostgresStorageAdapter({
+      url: "postgres://fixture/fixture",
+      schema: "fixture",
+      informationAccess: { tenantId: "fixture", principalId: "owner", compartments: ["test"], maximumExportClass: "restricted" }
+    });
+    let inTransaction = false;
+    let seqscan = initialSetting;
+    let measured = false;
+    Object.defineProperty(adapter, "transaction", { value: async <T>(operation: () => Promise<T>) => {
+      expect(inTransaction).toBe(false);
+      inTransaction = true;
+      try { return await operation(); }
+      finally { inTransaction = false; }
+    }});
+    Object.defineProperty(adapter, "query", { value: async (sql: string, params?: unknown[]) => {
+      if (/source_title/u.test(sql)) return [];
+      expect(inTransaction).toBe(true);
+      if (/current_setting\('enable_seqscan'\)/u.test(sql)) return [{ enabled: seqscan }];
+      if (sql === "SET LOCAL enable_seqscan = off") { seqscan = "off"; return []; }
+      if (/set_config\('enable_seqscan'/u.test(sql)) { seqscan = String(params?.[0]); return []; }
+      expect(seqscan).toBe("off");
+      expect(params).toEqual([["alpha beta", "quiet"]]);
+      measured = true;
+      return [{ run: "alpha beta", sources: 3 }, { run: "quiet", sources: 0 }];
+    }});
+    const result = await adapter.evidence.sourceIdentityArbitration!({ text: "alpha beta", runs: ["alpha beta", "quiet"] });
+    expect(measured).toBe(true);
+    expect([...result.spread]).toEqual([["alpha beta", 3], ["quiet", 0]]);
+    expect(inTransaction).toBe(false);
+    expect(seqscan).toBe(initialSetting);
+  });
+
   it("names the corpus's own title when the request writes it with a dash", async () => {
     const identities = await arbiterOverTitles(CORPUS_TITLES)("Who narrates Moby-Dick?");
     expect(identities).toContain("moby dick");
