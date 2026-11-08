@@ -72,7 +72,7 @@ export function validateDeclaredTranscriptSource(value: unknown): DeclaredTransc
           || !points.slice(range.startCodePoint, range.endCodePoint).join("").trim()) throw new Error(`invalid declared transcript support ${index}`);
       }
     }
-    turns.push({ ...turn, ...(turn.supportingSourceRanges ? { supportingSourceRanges: turn.supportingSourceRanges.map(range => ({
+    turns.push({ ...turn, ...(turn.supportingSourceRanges ? { supportingSourceRanges: turn.supportingSourceRanges.map((range: NonNullable<TranscriptTurn["supportingSourceRanges"]>[number]) => ({
       ...range, surface: points.slice(range.startCodePoint, range.endCodePoint).join("")
     })) } : {}) });
     end = turn.endCodePoint;
