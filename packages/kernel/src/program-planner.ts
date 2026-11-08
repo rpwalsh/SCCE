@@ -1669,7 +1669,7 @@ function ownerBehaviorCompositionPaths(
 
 function ownerCompositionRuntimeForShape(shape: ProgramShape): BehaviorCompositionRuntime | undefined {
   if (!nodeRuntimeForShape(shape)) {
-    const runtime = emittedProgramRuntimeForLanguage(shape.target.language);
+    const runtime = emittedRuntimeForShape(shape);
     return runtime.languageId === "rust" || runtime.languageId === "go" ? undefined : runtime;
   }
   const language = shape.target.language.toLocaleLowerCase();
@@ -1736,11 +1736,8 @@ function emitFiles(plan: ProgramPlan, input: ProgramPlannerInput, idFactory: IdF
         byPath.set(emittedRuntime.sourcePath, executableRustProgramModule(plan, input.requestText));
         byPath.set(emittedRuntime.testPath, executableRustProgramTest(plan));
       }
-    } else if (emittedRuntime.languageId === "typescript" && plan.ownerBehaviorRequirements.length) {
-      byPath.set(emittedRuntime.sourcePath, [...new Set(plan.ownerBehaviorRequirements.map(requirement => requirement.callableId))].map(callableId =>
-        plan.ownerBehaviorImplementationPhase === "selected"
-          ? executableBehaviorTransformationFunction(callableId, plan.ownerBehaviorTransformationCandidates, plan.selectedOwnerBehaviorTransformationIds, true)
-          : `export function ${callableId}(...args: any[]) { return args.length === 1 ? args[0] : args; }`).join("\n"));
+    } else if (emittedRuntime.languageId === "typescript" && (plan.ownerBehaviorRequirements.length || plan.ownerStatefulBehaviorRequirements.length)) {
+      byPath.set(emittedRuntime.sourcePath, executableNamedOwnerModule(plan,true,false));
       byPath.set(emittedRuntime.testPath, executableNodeOwnerBehaviorTest(plan));
     } else {
       byPath.set(emittedRuntime.sourcePath, executableProgramModule(plan, contracts, statefulContracts));
@@ -1798,6 +1795,11 @@ function emitFiles(plan: ProgramPlan, input: ProgramPlannerInput, idFactory: IdF
         byPath.set(statefulComposition.providerPath.replace(/\.mjs$/u, ".d.mts"), "export declare function createStatefulProgram(): Readonly<Record<string, (...args: any[]) => any>>;\n");
         byPath.set(statefulComposition.applicationPath.replace(/\.mjs$/u, ".d.mts"), `export { createStatefulProgram } from ${JSON.stringify(`./${providerModule}.mjs`)};\n`);
       }
+    }
+    const ownerPath=plan.intent.shape.ownerEntrypointPath;
+    if(ownerPath && (plan.ownerBehaviorRequirements.length || plan.ownerStatefulBehaviorRequirements.length)) {
+      if(ownerPath.endsWith(".cjs")){byPath.set(ownerPath,executableNamedOwnerModule(plan,false,true));byPath.set(emittedRuntime.testPath,executableNodeOwnerBehaviorTest(plan));}
+      else if(ownerPath.endsWith(".ts") && plan.intent.shape.target.language==="typescript") byPath.set(ownerPath,executableNamedOwnerModule(plan,true,false));
     }
     byPath.set("BUILDING.md", buildNotes(plan));
   }
@@ -3337,6 +3339,8 @@ ${callables}
 
 ${stateful}
 
+${pythonStatefulOperationFacade(plan)}
+
 def run(input_value):
     records = input_value.get("records", []) if isinstance(input_value, dict) else []
     coverage = []
@@ -3639,7 +3643,8 @@ function executableBehaviorTransformationFunction(
   callableId: string,
   candidates: readonly ProgramTransformationCandidate[],
   selectedIds: readonly string[],
-  typescript = false
+  typescript = false,
+  exported = true
 ): string {
   const candidate = candidates.find(item => item.callableId === callableId && selectedIds.includes(item.id));
   if (!candidate) throw new Error(`selected owner behavior has no transformation for callable: ${callableId}`);
@@ -3653,7 +3658,7 @@ function executableBehaviorTransformationFunction(
     : "";
   const parameterType = typescript ? `: [${Array.from({ length: argumentCount }, (_, index) => numericArgumentIndexes.includes(index) ? "number" : "any").join(", ")}]` : "";
   const resultType = typescript ? numericExpressionResult(candidate.producedIr, new Set(numericArgumentIndexes)) ? ": number" : "" : "";
-  return `export function ${callableId}(...args${parameterType})${resultType} {
+  return `${exported?"export ":""}function ${callableId}(...args${parameterType})${resultType} {
   if (args.length !== ${argumentCount}${numericGuard}) throw new TypeError(${JSON.stringify(`program.argument_contract:${callableId}:${argumentCount}`)});
   return ${renderProgramExpression(candidate.producedIr)};
 }`;
@@ -3664,30 +3669,65 @@ function numericExpressionResult(expression: ProgramExpression, numericArguments
   return expression.kind === "literal" || expression.kind === "unary" || expression.kind === "binary" || expression.kind === "cardinality";
 }
 
+function ownerOperationIds(plan:ProgramPlan):string[] {
+ return [...new Set(plan.ownerStatefulBehaviorRequirements.flatMap(requirement=>requirement.invocations.map(invocation=>invocation.callableId)))].sort(compareCanonical);
+}
+function pythonStatefulOperationFacade(plan:ProgramPlan):string {
+ const operations=ownerOperationIds(plan);
+ if(!operations.length) return "";
+ if(operations.includes("createStatefulProgram")) throw new Error("program.emission.owner_operation_factory_collision");
+ return `_owner_default_state = createStatefulProgram()\n\n${operations.map(name=>`def ${name}(*args):\n    return _owner_default_state[${JSON.stringify(name)}](*args)`).join("\n\n")}`;
+}
+function executableNamedOwnerModule(plan:ProgramPlan,typescript:boolean,commonJs:boolean):string {
+ const operations=ownerOperationIds(plan),exported=!commonJs;
+ if(operations.includes("createStatefulProgram")) throw new Error("program.emission.owner_operation_factory_collision");
+ const scalar=[...new Set(plan.ownerBehaviorRequirements.map(requirement=>requirement.callableId))].sort(compareCanonical);
+ const definitions=scalar.map(name=>plan.ownerBehaviorImplementationPhase==="selected"
+  ?executableBehaviorTransformationFunction(name,plan.ownerBehaviorTransformationCandidates,plan.selectedOwnerBehaviorTransformationIds,typescript,exported)
+  :`${exported?"export ":""}function ${name}(...args${typescript?": any[]":""}) { return args.length===1?args[0]:args; }`);
+ if(operations.length){
+  definitions.push(plan.ownerBehaviorImplementationPhase==="selected"
+   ?executableStatefulBehaviorFactory(plan.ownerStatefulBehaviorTransformationCandidates,plan.selectedOwnerStatefulBehaviorTransformationIds,typescript,exported)
+   :`${exported?"export ":""}function createStatefulProgram()${typescript?": Readonly<Record<string,(...args:any[])=>any>>":""} { return Object.freeze({}); }`);
+  definitions.push(`const _ownerDefaultState=createStatefulProgram();`);
+  for(const name of operations) definitions.push(`${exported?"export ":""}function ${name}(...args${typescript?": any[]":""}) { return _ownerDefaultState[${JSON.stringify(name)}](...args); }`);
+ }
+ if(commonJs){
+  if(operations.length) definitions.push("exports.createStatefulProgram=createStatefulProgram;");
+  for(const name of [...scalar,...operations]) definitions.push(`Object.defineProperty(exports,${JSON.stringify(name)},{value:${name},enumerable:true});`);
+ }
+ return `${definitions.join("\n\n")}\n`;
+}
+
 function executableStatefulBehaviorFactory(
   candidates: readonly StateTransitionCandidate[],
-  selectedIds: readonly string[]
+  selectedIds: readonly string[],
+  typescript=false,
+  exported=true
 ): string {
   const candidate = candidates.find(item => selectedIds.includes(item.id));
   if (!candidate) throw new Error("selected stateful owner behavior has no transition transformation");
   const operations = candidate.transitionIr.map(instruction => {
-    const name = JSON.stringify(instruction.operationId);
-    if (instruction.kind === "associate") return `${name}: (...args) => {
+    const name = `[${JSON.stringify(instruction.operationId)}]`;
+    if (instruction.kind === "associate") return `${name}: (...args${typescript?": any[]":""}) => {
   if (args.length <= ${instruction.valueArgumentIndex}) throw new TypeError(${JSON.stringify(`${instruction.operationId} requires a key and value`)});
   state.set(statefulKey(args[${instruction.keyArgumentIndex}]), args[${instruction.valueArgumentIndex}]);
   return undefined;
 }`;
-    if (instruction.kind === "lookup") return `${name}: (...args) => state.has(statefulKey(args[${instruction.keyArgumentIndex}])) ? state.get(statefulKey(args[${instruction.keyArgumentIndex}])) : ${renderStatefulLiteral(candidate.absentValue)}`;
-    if (instruction.kind === "dissociate") return `${name}: (...args) => {
+    if (instruction.kind === "lookup") return `${name}: (...args${typescript?": any[]":""}) => state.has(statefulKey(args[${instruction.keyArgumentIndex}])) ? state.get(statefulKey(args[${instruction.keyArgumentIndex}])) : ${renderStatefulLiteral(candidate.absentValue)}`;
+    if (instruction.kind === "dissociate") return `${name}: (...args${typescript?": any[]":""}) => {
   const prior = state.get(statefulKey(args[${instruction.keyArgumentIndex}]));
   state.delete(statefulKey(args[${instruction.keyArgumentIndex}]));
   return prior;
 }`;
     return `${name}: () => undefined`;
   }).join(",\n");
-  return `function statefulKey(value) { return JSON.stringify(value); }
-export function createStatefulProgram() {
-  const state = new Map();
+  return `function statefulKey(value${typescript?": any":""}) {
+  const ordered = (item${typescript?": any":""})${typescript?": any":""} => Array.isArray(item) ? item.map(ordered) : item && typeof item === "object" ? Object.fromEntries(Object.keys(item).sort().map(key => [key, ordered(item[key])])) : item;
+  return JSON.stringify(ordered(value));
+}
+${exported?"export ":""}function createStatefulProgram()${typescript?": Readonly<Record<string,(...args:any[])=>any>>":""} {
+  const state = new Map${typescript?"<string | undefined, any>":""}();
   return Object.freeze({
 ${operations}
   });
@@ -3702,7 +3742,8 @@ function renderStatefulLiteral(value: unknown): string {
 function executableNodeOwnerBehaviorTest(plan: ProgramPlan): string {
   return `import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import * as ownerProgram from "../${emittedRuntimeForShape(plan.intent.shape).sourcePath}";
+import * as ownerModule from "../${emittedRuntimeForShape(plan.intent.shape).sourcePath}";
+const ownerProgram = ownerModule.default ?? ownerModule;
 
 const ownerBehaviorRequirements = ${JSON.stringify(plan.ownerBehaviorRequirements, null, 2)};
 const ownerStatefulBehaviorRequirements = ${JSON.stringify(plan.ownerStatefulBehaviorRequirements, null, 2)};
@@ -4237,7 +4278,7 @@ function entrypointFor(shape: ProgramShape): string {
 }
 
 function emittedRuntimeForShape(shape: ProgramShape): EmittedProgramRuntime {
-  const runtime=emittedProgramRuntimeForLanguage(shape.target.language);
+  const runtime=emittedProgramRuntimeForLanguage(shape.target.language==="source.unresolved"?"":shape.target.language);
   return nodeRuntimeForShape(shape) ? EMITTED_PROGRAM_RUNTIME : bindNativeRuntimePath(runtime,shape.ownerEntrypointPath);
 }
 

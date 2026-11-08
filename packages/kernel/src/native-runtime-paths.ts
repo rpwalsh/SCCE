@@ -1,10 +1,11 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import {codeLanguageForPath} from "./code-request.js";
 import type {EmittedProgramRuntime} from "./code-learning.js";
 
 export function bindNativeRuntimePath(runtime:EmittedProgramRuntime,requestedPath?:string):EmittedProgramRuntime {
-  if(!requestedPath || runtime.commandName==="node") return runtime;
-  if(!relativeNativePath(requestedPath) || !requestedPath.endsWith(runtime.moduleExtension)
+  if(!requestedPath) return runtime;
+  if(!relativeNativePath(requestedPath) || codeLanguageForPath(requestedPath)!==runtime.languageId
     || runtime.languageId==="go" && requestedPath.endsWith("_test.go")) throw new Error("program.emission.native_target_path_invalid");
   if(requestedPath===runtime.sourcePath) return runtime;
   const folder=requestedPath.split("/").slice(0,-1).join("/");

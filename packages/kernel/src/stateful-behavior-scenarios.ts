@@ -71,18 +71,18 @@ export function parseStatefulBehaviorScenarios(requestText: string): StatefulBeh
         relationSurface: relation.relationSurface,
         sourceSpan: { charStart: relation.invocation.sourceSpan.charStart, charEnd: relation.resultEnd }
       };
-      const sourceStart = pendingStart ?? assertion.sourceSpan.charStart;
+      pendingStart ??= assertion.sourceSpan.charStart;
+      pending.push(assertion.invocation);
+      const sourceStart = pendingStart;
       const sourceSpan = { charStart: sourceStart, charEnd: assertion.sourceSpan.charEnd };
       const sourceHash = `sha256:${hasher.digestHex(canonicalStringify({ requestHash, sourceSpan, pending, assertion }))}`;
       scenarios.push({
-        invocations: [...pending, assertion.invocation],
+        invocations: [...pending],
         assertion,
         sourceSpan,
         sourceHash,
         verificationRole: "fit"
       });
-      pending = [];
-      pendingStart = undefined;
       continue;
     }
     if (!isDeclarationArguments(parsed.inner) && declarations.has(parsed.callableId)) {

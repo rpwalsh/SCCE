@@ -41,4 +41,19 @@ describe("stateful behavior scenario parser", () => {
     expect(parsed?.scenarios.map(scenario => scenario.assertion.relationSurface)).toEqual(["↦", "↦", "↦", "↦"]);
     expect(parsed?.scenarios.map(scenario => scenario.verificationRole)).toEqual(["fit", "fit", "fit", "held_out"]);
   });
+  it("retains the complete invocation prefix across observations so deletion is tested against populated state",()=>{
+    const text=['f0(key,value); f1(key); f2(key)',
+      'f0("a",111); f1("a") => 111',
+      'f0("a",222); f1("a") => 222',
+      'f0("b",333); f2("a"); f1("a") => null',
+      'f1("b") => 333'].join("\n");
+    const parsed=parseStatefulBehaviorScenarios(text)!;
+    expect(parsed.scenarios.map(row=>row.invocations.length)).toEqual([2,4,7,8]);
+    expect(parsed.scenarios[2]!.invocations.map(row=>row.callableId)).toEqual(["f0","f1","f0","f1","f0","f2","f1"]);
+    expect(parsed.scenarios[2]!.invocations[0]!.arguments).toEqual(["a",111]);
+    expect(parsed.scenarios[3]!.invocations.at(-1)!.arguments).toEqual(["b"]);
+    expect(parsed.scenarios.map(row=>row.sourceSpan.charStart)).toEqual(Array(4).fill(text.indexOf('f0("a",111)')));
+    expect(parsed.scenarios[3]!.sourceSpan.charEnd).toBe(text.length);
+  });
+
 });

@@ -231,7 +231,7 @@ export function createCodeLearningEngine(options: { hasher: Hasher }) {
       const risk = clamp01(0.72 - 0.42 * input.graph.confidence + 0.22 * input.entailment.contradiction + (input.graph.signals.length ? 0 : 0.35));
       const files = blueprintFiles({ target: input.target, language: primary, graph: input.graph, risk });
       const operations = blueprintOperations({ files, graph: input.graph, target: input.target, risk, hasher: options.hasher });
-      const runtime = runtimeForBlueprint(primary, input.target);
+      const runtime = runtimeForBlueprint(input.languageId || input.graph.languages.length ? primary : "", input.target);
       const taskDecomposition = taskDecompositionForBlueprintOperations(
         `code_blueprint_task_decomposition_${options.hasher.digestHex(canonicalStringify({ target: input.target, operations })).slice(0, 40)}`,
         operations
@@ -710,7 +710,7 @@ export const TYPESCRIPT_EMITTED_PROGRAM_RUNTIME = {
   id: "program.runtime.node-typescript.v1",
   languageId: "typescript",
   commandName: "node",
-  syntaxCheckArgs: ["--experimental-strip-types", "--check"],
+  syntaxCheckArgs: ["--input-type=module", "-e", "import {readFileSync} from 'node:fs';import {stripTypeScriptTypes} from 'node:module';stripTypeScriptTypes(readFileSync(process.argv[1],'utf8'),{mode:'strip',sourceUrl:process.argv[1]});"],
   moduleExtension: ".ts",
   mediaType: "text/typescript",
   sourcePath: "src/program.ts",
