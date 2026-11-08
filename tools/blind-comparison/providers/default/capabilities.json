@@ -1,0 +1,8 @@
+{
+  "schema": "scce.blind-public-capabilities.v1",
+  "provenance": "Test-authored default campaign sources; this is not an inventory of every language in an arbitrary existing brain.",
+  "formalLanguages": ["typescript", "javascript", "python", "rust", "go"],
+  "naturalLanguages": ["en", "ru", "es", "ca"],
+  "categories": ["chat", "creative", "corpus_facts", "learning_updates", "code_repair_stateful", "code_generation_stateful", "code_repair_numeric", "code_generation_numeric", "agentic_autonomous", "agentic_given_plan"],
+  "coverageRule": "Union this declaration with all supplied admitted PUBLIC source inventories; never remove unavailable or unsupported cells."
+}

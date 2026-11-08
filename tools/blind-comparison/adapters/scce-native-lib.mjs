@@ -13,6 +13,7 @@ export async function runScceNative(input, config, dependencies = {}) {
 }
 async function scceNativeOperation(input, config, dependencies) {
   const contract = nativeContract(input), cwd = config.cwd ?? process.cwd();
+  if (contract.coverageBlocker) return { status: 'error', answer: '', artifacts: {}, identity: { coverageGap: contract.coverageBlocker } };
   const started = performance.now(), trace = [];
   const publicOwner = hash([config.runId ?? 'test-only-unscoped', input.caseId]);
   const remainingMs = () => Math.max(0, Math.floor(input.budgets.timeMs - (performance.now() - started)));
@@ -57,14 +58,18 @@ async function scceNativeOperation(input, config, dependencies) {
     return true;
   }
   async function complete(answer, artifacts, extra = {}) {
-    await ensurePublicFiles();
-    await validateArtifacts(artifacts, contract, input.budgets.artifactBytes);
+    try { await ensurePublicFiles(); await validateArtifacts(artifacts, contract, input.budgets.artifactBytes); }
+    catch (e) { return failure('product_public_scope_violation', trace, { ...extra, violation: e.message }); }
     const checks = await runPublicChecks(contract, input, { cwd, executeCommand, remainingMs });
     trace.push({ publicChecks: checks });
     if (!checks.passed) return failure(checks.reason, trace, extra);
     return { status: 'ok', answer, artifacts, identity: { ...extra, productOutcome: 'completed', operation: contract.operation, trace } };
   }
   if (!await ingestPublicSources()) return failure('public_source_ingestion_rejected', trace);
+  if (contract.prepareWorkspace === true) {
+    const prepared = await call('/api/workspace/ingest', { path: cwd });
+    if (prepared.status !== 200 || prepared.body?.failed > 0) return failure('public_workspace_ingestion_rejected', trace);
+  }
   const prompt = currentPrompt(input, contract);
   if (contract.operation === 'code_repair') {
     if (!config.cliPath || !config.configPath) throw new Error('Official CLI and config paths required for native repair');
@@ -93,6 +98,7 @@ async function scceNativeOperation(input, config, dependencies) {
     return complete(canonical({ disposition: result.body.disposition }), {}, { executiveReceiptHash: hash(result.body) });
   }
   const body = { text: prompt, conversationId, ...(contract.requestedAuthority ? { requestedAuthority: contract.requestedAuthority } : {}) };
+  if (contract.toolPolicy) body.metadata = { evaluationPublicWorkspace: { rootPath: cwd, toolPolicy: contract.toolPolicy, publicChecks: contract.publicChecks } };
   if (contract.operation === 'code_generation' && contract.programMode !== 'verified_artifacts') {
     const initialized = await call('/api/workspace/init', { path: cwd });
     if (initialized.status !== 200 || !initialized.body?.id || !Number.isFinite(initialized.body.updatedAt)) return failure('workspace_initialization_rejected', trace);
@@ -114,7 +120,8 @@ async function scceNativeOperation(input, config, dependencies) {
       if (turn.programReadiness.reasonId !== 'program.readiness.verified' || turn.programReadiness.artifactCount !== turn.programArtifacts.length || canonical(turn.programReadiness.artifactIds?.slice().sort()) !== canonical(turn.programArtifacts.map(a => a.artifactId).sort()) || new Set(turn.programArtifacts.map(a => a.path)).size !== turn.programArtifacts.length || turn.programArtifacts.some(a => typeof a.content !== 'string' || a.contentHash !== `sha256_${sha256Text(a.content)}`)) return failure('invalid_program_artifact_identity', trace);
       const artifacts = Object.fromEntries(turn.programArtifacts.map(a => [a.path, a.content]));
       const { applyArtifacts } = await import('./native-contract.mjs');
-      await applyArtifacts(cwd, artifacts, contract, input.budgets.artifactBytes);
+      try { await applyArtifacts(cwd, artifacts, contract, input.budgets.artifactBytes); }
+      catch (e) { return failure('product_artifact_scope_violation', trace, { violation: e.message }); }
       return complete(turn.answer ?? '', artifacts, { programReadiness: turn.programReadiness });
     }
     if (!body.workspaceCoding) return failure('program_has_no_verified_artifacts', trace);
@@ -130,7 +137,17 @@ async function scceNativeOperation(input, config, dependencies) {
     const succeeded = events.filter(e => e.typeId === 'CapabilitySucceeded');
     const failed = events.filter(e => e.typeId === 'CapabilityFailed');
     if (!succeeded.length || failed.length || contract.requiredCapabilityIds?.some(id => !succeeded.some(e => e.payload?.capabilityId === id))) return failure('no_successful_native_tool_receipt', trace);
+    if (contract.toolPolicy && succeeded.length + failed.length + contract.publicChecks.length > contract.toolPolicy.maxCalls) return failure('product_tool_call_budget_exceeded', trace);
     trace.push({ capabilityEvents: succeeded });
+    const emitted = turn.buildTest?.artifacts ?? [];
+    const artifacts = Object.fromEntries(emitted.map(a => [a.path, a.content]));
+    if (emitted.some(a => typeof a.content !== 'string' || a.contentHash !== `sha256_${sha256Text(a.content)}`)) return failure('invalid_tool_artifact_identity', trace);
+    if (emitted.length) {
+      const { applyArtifacts } = await import('./native-contract.mjs');
+      try { await applyArtifacts(cwd, artifacts, contract, input.budgets.artifactBytes); }
+      catch { return failure('tool_artifact_outside_public_scope', trace); }
+    }
+    return complete(canonical({ disposition: 'succeeded' }), artifacts, { rawAnswer: turn.answer ?? '', rawResponseHash: result.rawResponseHash ?? hash(turn) });
   }
   if (contract.answerMode === 'answer_or_abstain') {
     const outcome = { status: 'answered', answer: typeof turn.answer === 'string' ? turn.answer : '' };

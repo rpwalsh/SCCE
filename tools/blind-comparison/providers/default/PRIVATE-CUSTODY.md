@@ -1,0 +1,7 @@
+# Default campaign source and custody declaration
+
+All default documents and code fixtures are test-authored synthetic material. Directory names, contact names, desk identifiers, extensions, callable names, data keys and task variants are drawn after implementation freeze from the custodian seed. They describe no real people. A source's requested answer is necessarily present in the shared public document when supported; the private grading contract and unseen validation inputs are never supplied as sources.
+
+The case factory and validator code are frozen before the seed. The concrete generated public packets and the private grading key are committed by the later seal. A given seed is reproducible; an independent custodian can generate and seal the set on a separate host. Automatic custodian mode uses a cryptographically random seed on the operator's trusted host and records that it is automated, **not independent**. Neither mode claims that private files on the same unsandboxed OS are inaccessible.
+
+This default campaign covers its admitted public-source/capability inventory, not every language supported by a parser. Additional admitted public language declarations are unioned into the inventory. Missing providers or toolchains remain blocking coverage, never filtered out. Chat/creative quality requires anonymous independent human ballots. Autonomous planning is measured separately from execution of an already supplied typed goal. No prewritten-goal success stands in for general planning.

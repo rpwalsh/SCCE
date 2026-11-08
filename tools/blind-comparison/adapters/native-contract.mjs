@@ -11,7 +11,7 @@ export function publicContextReceipt(input) {
 export function nativeContract(input) {
   let contract;
   try { contract = JSON.parse(input.outputContract); } catch { throw new Error('Native adapter requires a public JSON task contract'); }
-  const fields = ['schema', 'operation', 'maxPublicAttempts', 'writablePaths', 'publicChecks', 'approvals', 'targetPaths', 'validationPolicyId', 'validationChecks', 'validationPolicy', 'programMode', 'sourceAdmission', 'sourceTrust', 'sourceMediaTypes', 'responseInstruction', 'requestedAuthority', 'executiveGoal', 'requiredCapabilityIds', 'answerMode'];
+  const fields = ['schema', 'operation', 'maxPublicAttempts', 'writablePaths', 'publicChecks', 'approvals', 'targetPaths', 'validationPolicyId', 'validationChecks', 'validationPolicy', 'programMode', 'sourceAdmission', 'sourceTrust', 'sourceMediaTypes', 'responseInstruction', 'requestedAuthority', 'executiveGoal', 'requiredCapabilityIds', 'answerMode', 'toolPolicy', 'prepareWorkspace', 'coverageBlocker'];
   if (!contract || typeof contract !== 'object' || Array.isArray(contract) || Object.keys(contract).some(k => !fields.includes(k))) throw new Error('Unknown public native contract field');
   if (contract.schema !== 'scce.blind-native-task.v1' || !['turn', 'code_repair', 'code_generation', 'learning_update', 'tool_use'].includes(contract.operation)) throw new Error('Invalid native task operation');
   if (!Number.isSafeInteger(contract.maxPublicAttempts) || contract.maxPublicAttempts < 1 || !Array.isArray(contract.writablePaths) || contract.writablePaths.some(p => !safeRelative(p)) || new Set(contract.writablePaths).size !== contract.writablePaths.length) throw new Error('Declare public attempts and exact writable paths');
@@ -30,6 +30,7 @@ export function nativeContract(input) {
   if (contract.operation === 'code_generation' && contract.programMode !== 'verified_artifacts' && (!contract.validationPolicyId || !Array.isArray(contract.targetPaths) || !Array.isArray(contract.validationChecks))) throw new Error('Workspace generation requires registered public policy and requested paths');
   if (contract.programMode !== undefined && !['verified_artifacts', 'workspace_plan'].includes(contract.programMode)) throw new Error('Invalid explicit program mode');
   if (contract.operation === 'tool_use' && contract.executiveGoal && contract.maxPublicAttempts !== 1) throw new Error('Explicit executive goals execute once');
+  if (contract.toolPolicy && (!Number.isSafeInteger(contract.toolPolicy.maxCalls) || contract.toolPolicy.maxCalls < 1 || !Array.isArray(contract.toolPolicy.tools) || contract.toolPolicy.tools.some(t => !['workspace.read', 'workspace.write', 'public.check'].includes(t)))) throw new Error('Invalid shared bounded workspace tool policy');
   if (contract.answerMode !== undefined && (contract.answerMode !== 'answer_or_abstain' || !['turn', 'learning_update'].includes(contract.operation) || contract.requestedAuthority !== 'factual')) throw new Error('Answer-or-abstain requires an explicit factual turn contract');
   return contract;
 }

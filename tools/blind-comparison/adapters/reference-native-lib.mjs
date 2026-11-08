@@ -4,6 +4,7 @@ import { canonical, hash } from '../protocol.mjs';
 import { execute } from '../runner.mjs';
 import { renderInput } from './text-input.mjs';
 import { nativeContract, failure, applyArtifacts, publicFilesGuard, runPublicChecks, parseReferenceArtifacts, parseAnswerOrAbstain, publicContextReceipt } from './native-contract.mjs';
+import { workspaceToolSession } from './public-workspace-tools.mjs';
 
 export async function executePublicGoal(goal, input, dependencies) {
   const { cwd, remainingMs, executeCommand = execute } = dependencies;
@@ -39,17 +40,33 @@ export async function runReferenceNative(input, config, dependencies) {
 }
 async function referenceNativeOperation(input, config, dependencies) {
   const contract = nativeContract(input), cwd = config.cwd ?? process.cwd();
+  if (contract.coverageBlocker) return { status: 'error', answer: '', artifacts: {}, identity: { coverageGap: contract.coverageBlocker } };
   const started = performance.now(), trace = [], feedback = [], submitted = Object.create(null);
   const remainingMs = () => Math.max(0, Math.floor(input.budgets.timeMs - (performance.now() - started)));
   const ensurePublicFiles = await publicFilesGuard(input, contract, cwd);
+  const autonomous = contract.operation === 'tool_use' && !contract.executiveGoal && contract.toolPolicy;
+  const session = autonomous ? workspaceToolSession(input, contract, { cwd, remainingMs, executeCommand: dependencies.executeCommand }) : null;
   let modelDigest;
   for (let attempt = 0; attempt < contract.maxPublicAttempts; attempt++) {
-    const prompt = `${renderInput(input)}\nPublic native response protocol:\n${canonical({ requiredResponse: contract.answerMode === 'answer_or_abstain' ? { oneOf: [{ status: 'answered', answer: 'actual answer text' }, { status: 'abstained', answer: null }] } : ['code_repair', 'code_generation', 'tool_use'].includes(contract.operation) ? { answer: 'string', artifacts: 'map of complete text files within writablePaths', ...(contract.executiveGoal ? { executiveGoal: 'the exact supplied public executiveGoal to execute' } : {}) } : 'Return the task answer exactly as requested.', publicFeedback: feedback })}`;
+    const prompt = `${renderInput(input)}\nPublic native response protocol:\n${canonical({ requiredResponse: autonomous ? { answer: 'string', artifacts: {}, toolCalls: 'ordered calls from toolPolicy; workspace.read {tool,path}, workspace.write {tool,path,content}, public.check {tool,index}', complete: 'boolean; true only after a successful final public.check' } : contract.answerMode === 'answer_or_abstain' ? { oneOf: [{ status: 'answered', answer: 'actual answer text' }, { status: 'abstained', answer: null }] } : ['code_repair', 'code_generation', 'tool_use'].includes(contract.operation) ? { answer: 'string', artifacts: 'map of complete text files within writablePaths', ...(contract.executiveGoal ? { executiveGoal: 'the exact supplied public executiveGoal to execute' } : {}) } : 'Return the task answer exactly as requested.', publicFeedback: feedback })}`;
     const result = await dependencies.ask(prompt, { remainingMs: remainingMs() });
     modelDigest ??= result.modelDigest;
     if (!result.modelDigest || result.modelDigest !== modelDigest || config.expectedModelDigest && modelDigest !== config.expectedModelDigest) throw new Error('Reference model identity changed');
     trace.push({ attempt, modelDigest, inference: result.inference ?? null, publicPromptHash: hash(prompt), rawResponse: result.answer });
     if (result.status === 'error') return failure('reference_generation_failed', trace, { modelDigest });
+    if (autonomous) {
+      let proposal;
+      try {
+        proposal = JSON.parse(result.answer);
+        if (!proposal || typeof proposal.answer !== 'string' || typeof proposal.complete !== 'boolean' || !proposal.artifacts || Object.keys(proposal.artifacts).length || Object.keys(proposal).some(k => !['answer', 'artifacts', 'toolCalls', 'complete'].includes(k))) throw new Error('Invalid autonomous machine response');
+        const executed = await session.execute(proposal.toolCalls);
+        await ensurePublicFiles();
+        feedback.push({ attempt, publicTools: executed.feedback });
+        trace.push({ attempt, publicToolReceipts: session.receipts.slice() });
+        if (proposal.complete && executed.lastCheckPassed) return { status: 'ok', answer: canonical({ disposition: 'succeeded' }), artifacts: session.artifacts, identity: { productOutcome: 'completed', modelDigest, trace } };
+      } catch (e) { feedback.push({ attempt, publicToolFailure: e.message }); }
+      continue;
+    }
     if (!['code_repair', 'code_generation', 'tool_use'].includes(contract.operation)) {
       const checks = await runPublicChecks(contract, input, { cwd, remainingMs, executeCommand: dependencies.executeCommand });
       await ensurePublicFiles();
