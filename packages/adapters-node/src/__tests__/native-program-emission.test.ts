@@ -122,7 +122,7 @@ func TestPrivateScalar(t *testing.T) { if f0(17)!=18||f0(-7)!=-6 {t.Fatal("unsee
       await writeFile(path.join(privateRoot, "src", "sealed_test.go"), `package opaque\nimport ("testing"${stateful ? ';"math"' : ""})\n${tests}\n`);
       const capability = await findCodeVerifierCapability("go"); expect(capability.status).toBe("available");
       if (capability.status !== "available") throw new Error(capability.reason);
-      await promisify(execFile)(capability.verifier.command, ["test", "./src"], { cwd: privateRoot, timeout: 60000 });
+      await promisify(execFile)(capability.verifier.command, ["test", "src/program.go", "src/program_test.go", "src/sealed_test.go"], { cwd: privateRoot, timeout: 60000 });
       expect(JSON.stringify(source.cases)).not.toContain("sealed-key");
       expect(JSON.stringify(source.cases)).not.toContain("9007199254740993");
     } finally { await rm(root, { recursive: true, force: true }); }
@@ -197,7 +197,7 @@ var _ func(string)*any=f1
 var _ func(string)=f2
 func TestSealedNullable(t *testing.T){ p,q:=CreateStatefulProgram(),CreateStatefulProgram();if p.f1("sealed")==nil {} else {t.Fatal("missing")};p.f0("sealed",nil);if p.f1("sealed")==nil||*p.f1("sealed")!=nil{t.Fatal("present null")};p.f0("sealed",float64(1));value:=*p.f1("sealed");if _,ok:=value.(float64);!ok{t.Fatal("numeric tag")};p.f2("sealed");if p.f1("sealed")!=nil{t.Fatal("delete")};q.f0("sealed",993);if p.f1("sealed")!=nil||*q.f1("sealed")!=993{t.Fatal("isolation")}}
 `);
-        await promisify(execFile)(capability.verifier.command,["test","./src"],{cwd:sealed,timeout:60000});
+        await promisify(execFile)(capability.verifier.command,["test","src/program.go","src/program_test.go","src/sealed_test.go"],{cwd:sealed,timeout:60000});
       }else{
         const validator=path.join(root,"sealed_nullable.rs"),executable=path.join(root,"sealed_nullable.exe");
         await writeFile(validator,`include!(${JSON.stringify(path.join(sealed,selected.program!.entrypoint).replaceAll("\\","/"))});

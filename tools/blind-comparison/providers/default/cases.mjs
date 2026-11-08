@@ -95,7 +95,7 @@ async function privateNative(privateRoot, id, vectors) {
   await writeFile(path.join(dir, 'check.mjs'), "import {checkVectors} from './native-runner.mjs';await checkVectors('.sealed-vectors.json');\n", { flag: 'wx' });
   return { kind: 'native', argv: ['{node}', '.sealed-check.mjs'], files: [{ path: `validators/${id}/check.mjs`, target: '.sealed-check.mjs' }, { path: `validators/${id}/vectors.json`, target: '.sealed-vectors.json' }] };
 }
-async function codeCase(cell, index, rng, options, id) {
+export async function codeCase(cell, index, rng, options, id) {
   const stateful = cell.category.endsWith('stateful'), repair = cell.category.startsWith('code_repair');
   const names = { write: identifier(rng, 'f'), read: identifier(rng, 'g'), remove: identifier(rng, 'h') }, fn = identifier(rng, 'q');
   const k = identifier(rng, 'public'), k2 = identifier(rng, 'public'), v = extension(rng), v2 = extension(rng);

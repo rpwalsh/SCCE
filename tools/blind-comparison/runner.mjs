@@ -8,7 +8,7 @@ import { startProcessMeasurement } from './process-resources.mjs';
 
 export function scrubEnvironment(keys = []) {
   const env = {};
-  for (const key of ['PATH', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', ...keys]) if (process.env[key] !== undefined) env[key] = process.env[key];
+  for (const key of ['PATH', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'LOCALAPPDATA', ...keys]) if (process.env[key] !== undefined) env[key] = process.env[key];
   return env;
 }
 export function materializeFiles(steps, outputs) {

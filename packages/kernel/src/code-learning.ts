@@ -749,7 +749,7 @@ export const RUST_EMITTED_PROGRAM_RUNTIME = {
 
 export const GO_EMITTED_PROGRAM_RUNTIME = {
   id: "program.runtime.go-stdlib.v1", languageId: "go", commandName: "go",
-  syntaxCheckArgs: ["test", "-run", "^$", "./src"], moduleExtension: ".go", mediaType: "text/x-go",
+  syntaxCheckArgs: ["test", "-run", "^$", "src/program.go", "src/program_test.go"], moduleExtension: ".go", mediaType: "text/x-go",
   sourcePath: "src/program.go", testPath: "src/program_test.go", testMediaType: "text/x-go"
 } as const;
 

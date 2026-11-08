@@ -1537,7 +1537,6 @@ function canonicalPlanFiles(shape: ProgramShape): ProgramFilePlan[] {
   if (!nodeRuntime) return [
     ...common,
     { path: "source.program.json", role: "config", mediaType: "application/json", purpose: "source-derived language target and idiom memory", dependsOn: ["source.memory.json"], invariants: ["language open", "runtime explicit", "source evidence retained"] },
-    ...(emittedRuntimeForShape(shape).languageId === "go" ? [{ path: "go.mod", role: "config" as const, mediaType: "text/plain", purpose: "standard-library native module identity", dependsOn: ["source.program.json"], invariants: ["no external dependencies"] }] : []),
     { path: emittedRuntimeForShape(shape).sourcePath, role: "source", mediaType: emittedRuntimeForShape(shape).mediaType, purpose: "request-declared call contracts over the planned operation", dependsOn: ["source.program.json"], invariants: ["standard library only", "declared contracts checked", "no network access"] },
     { path: emittedRuntimeForShape(shape).testPath, role: "test", mediaType: emittedRuntimeForShape(shape).testMediaType, purpose: "executable check of the emitted program", dependsOn: [emittedRuntimeForShape(shape).sourcePath], invariants: ["imports the emitted program", "asserts declared contracts", "exits nonzero on failure"] },
     { path: "BUILDING.md", role: "doc", mediaType: "text/markdown", purpose: "runtime-specific build notes", dependsOn: ["source.program.json"], invariants: ["does not claim unrun build", "lists learned commands"] }
@@ -1757,7 +1756,7 @@ function emitFiles(plan: ProgramPlan, input: ProgramPlannerInput, idFactory: IdF
       byPath.set(emittedRuntime.testPath, executablePythonProgramTest(plan));
     } else if (emittedRuntime.languageId === "go") {
       const native = nativeGoProgram(plan);
-      byPath.set(emittedRuntime.sourcePath, native.source); byPath.set(emittedRuntime.testPath, native.test); byPath.set("go.mod", native.module);
+      byPath.set(emittedRuntime.sourcePath, native.source); byPath.set(emittedRuntime.testPath, native.test);
     } else if (emittedRuntime.languageId === "rust") {
       if (plan.ownerStatefulBehaviorRequirements.length) {
         const native = nativeRustStatefulProgram(plan, emittedRuntimeForShape(plan.intent.shape));
@@ -4256,7 +4255,7 @@ function buildCommand(shape: ProgramShape, files: readonly ProgramFilePlan[]): {
 
 function testCommand(shape: ProgramShape, files: readonly ProgramFilePlan[]): { command: string; args: string[]; cwd: string } {
   if (emittedRuntimeForShape(shape).languageId === "rust") return { command: "./program_test.exe", args: [], cwd: "." };
-  if (emittedRuntimeForShape(shape).languageId === "go") return { command: "go", args: ["test", ...emittedRuntimeForShape(shape).syntaxCheckArgs.slice(-1)], cwd: "." };
+  if (emittedRuntimeForShape(shape).languageId === "go") return { command: "go", args: ["test", ...emittedRuntimeForShape(shape).syntaxCheckArgs.slice(-2)], cwd: "." };
   const observed = commandFromHints(shape, ["script.validation", "script.build"]);
   if (observed) return observed;
   const test = emittedRuntimeFile(files, "test", emittedRuntimeForShape(shape));

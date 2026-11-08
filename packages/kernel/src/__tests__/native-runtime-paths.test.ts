@@ -24,7 +24,7 @@ describe("native runtime owner path and truthful availability",()=>{
  });
  it("binds build and test to the same requested Go package and keeps Rust relative source coordinates",()=>{
   const runtime=bindNativeRuntimePath(emittedProgramRuntimeForLanguage("go"),"opaque/\u03bb.go");
-  expect(runtime.sourcePath).toBe("opaque/\u03bb.go");expect(runtime.testPath).toBe("opaque/program_test.go");expect(runtime.syntaxCheckArgs).toEqual(["test","-run","^$","./opaque"]);
+  expect(runtime.sourcePath).toBe("opaque/\u03bb.go");expect(runtime.testPath).toBe("opaque/program_test.go");expect(runtime.syntaxCheckArgs).toEqual(["test","-run","^$","opaque/\u03bb.go","opaque/program_test.go"]);
   expect(relativeNativeSourcePath("test/program_test.rs","opaque/\u03bb.rs")).toBe("../opaque/\u03bb.rs");
  });
  it("resolves actual source grammar labels through owned file identity without treating a repository envelope as a language",()=>{

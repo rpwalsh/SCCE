@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {canonical} from '../protocol.mjs';
+import {scrubEnvironment} from '../runner.mjs';
 import {nativeValidationPermission} from '../providers/default/native-validation-permission.mjs';
 import {nativeProgramApprovalAllowed} from '../adapters/native-program-approval.mjs';
 function fixture(){
@@ -21,4 +22,19 @@ test('native approval requires frozen commands, declared tool inventory and curr
  }
  const changed=structuredClone(value);changed.pending.input.files[0].hash=`sha256_${'c'.repeat(64)}`;
  assert.equal(nativeProgramApprovalAllowed(changed),false);fingerprint(changed);assert.equal(nativeProgramApprovalAllowed(changed),true);
+});
+
+test('Go native permission keeps explicit source and test in the requested target directory',()=>{
+ const value=nativeValidationPermission({language:'go',target:'opaque/\u03bb.go',tools:{go:{path:'/declared/go'}},protectedPaths:['go.mod'],maxFiles:8,maxBytes:4096});
+ assert.deepEqual(value.build.args,['test','-run','^$','opaque/\u03bb.go','opaque/program_test.go']);
+ assert.deepEqual(value.test.args,['test','opaque/\u03bb.go','opaque/program_test.go']);
+ assert.deepEqual(value.protectedPaths,['go.mod']);
+});
+
+test('shared native environment retains only OS cache location and continues scrubbing credentials and arbitrary Go cache overrides',()=>{
+ const before=Object.fromEntries(['LOCALAPPDATA','SCCE_TEST_CREDENTIAL','GOCACHE'].map(key=>[key,process.env[key]]));
+ try{
+  process.env.LOCALAPPDATA='C:/test_authored/local-cache';process.env.SCCE_TEST_CREDENTIAL='test_authored_not_a_credential';process.env.GOCACHE='C:/unregistered/cache';
+  const value=scrubEnvironment();assert.equal(value.LOCALAPPDATA,'C:/test_authored/local-cache');assert.equal(value.SCCE_TEST_CREDENTIAL,undefined);assert.equal(value.GOCACHE,undefined);
+ }finally{for(const [key,value]of Object.entries(before))if(value===undefined)delete process.env[key];else process.env[key]=value;}
 });

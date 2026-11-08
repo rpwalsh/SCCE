@@ -11,7 +11,7 @@ export function bindNativeRuntimePath(runtime:EmittedProgramRuntime,requestedPat
   const folder=requestedPath.split("/").slice(0,-1).join("/");
   const testPath=runtime.languageId==="go" ? `${folder?`${folder}/`:""}program_test.go` : runtime.testPath;
   if(requestedPath===testPath) throw new Error("program.emission.native_target_path_collision");
-  return {...runtime,sourcePath:requestedPath,testPath,...(runtime.languageId==="go"?{syntaxCheckArgs:["test","-run","^$",folder?`./${folder}`:"."]}:{})};
+  return {...runtime,sourcePath:requestedPath,testPath,...(runtime.languageId==="go"?{syntaxCheckArgs:["test","-run","^$",requestedPath,testPath]}:{})};
 }
 export function relativeNativeSourcePath(testPath:string,sourcePath:string):string {
  const from=testPath.split("/").slice(0,-1),to=sourcePath.split("/");
