@@ -1,0 +1,254 @@
+{
+  "schemaVersion": "1.0",
+  "evaluationId": "scce-capability-matrix-8fe3d60-v1",
+  "purpose": "Freeze a small pre-tuning matrix for chat, creative completion, corpus-grounded factual answers, and code repair. This is a development preregistration, not a readiness claim or an executed comparison.",
+  "categories": [
+    {
+      "id": "chat",
+      "count": 2,
+      "grading": "Existing BlindJudgment schema; owner-authored follow-up prompts over source-seen English Dolly and Russian OASST material."
+    },
+    {
+      "id": "creative",
+      "count": 4,
+      "grading": "Existing BlindJudgment schema for open outputs; two prior human-source examples plus two known decline regressions requiring completion."
+    },
+    {
+      "id": "factual",
+      "count": 6,
+      "grading": "Existing objective scorer and exact citation verifier; four answerable and two corpus-verified unanswerable controls."
+    },
+    {
+      "id": "repair",
+      "count": 2,
+      "grading": "Existing repair-integrity cases, configured compiler and native tests, exact source restoration and preserved behavior."
+    }
+  ],
+  "systems": [
+    {
+      "systemId": "scce",
+      "role": "product under evaluation",
+      "revision": "8fe3d60ea8ef220e6b6cf173fda03c20b66d5fbe",
+      "productModelDependency": false
+    },
+    {
+      "systemId": "qwen2.5:3b",
+      "role": "local measurement-only RAG comparator",
+      "condition": "sealed-eval reference-ollama --mode=rag",
+      "productModelDependency": false,
+      "scope": "chat/creative/factual questions only; not a code-repair adapter"
+    }
+  ],
+  "scoring": {
+    "questionFile": "tools/capability-evaluation/questions.jsonl",
+    "questionSchema": "tools/sealed-eval/schemas/question.schema.json",
+    "repairCaseFormat": "scce.repair_integrity_case.v1",
+    "blindJudgmentSchema": "tools/sealed-eval/schemas/judgment.schema.json",
+    "factual": {
+      "objective": "tools/sealed-eval/harness/lib/objective.mjs",
+      "citations": "tools/sealed-eval/harness/lib/citations.mjs",
+      "coverage": "Report answerable status=ok separately from objective correct answers; report wrong answered cases, declines on answerable cases, correct abstentions on verified-unanswerable cases, and unsupported answers on those cases as separate counts. Errors and timeouts are neither refusals nor correct answers.",
+      "absenceRule": "Do not score an unanswerable label unless the exact frozen corpus manifest has been checked and the absent attribute is not present anywhere in that corpus."
+    },
+    "chatAndCreative": {
+      "human": "Existing BlindJudgment dimensions: correctness, completeness, evidence, uncertainty, fluency (0-4); use overallPreferenceGroup for pairwise preference and notes for task-specific observations.",
+      "novelty": "No separate novelty score is added. Do not claim measured creativity from task completion or fluent wording alone.",
+      "declineRule": "All chat/creative cases require completion. A runtime decline, error, or timeout is zero coverage and a failed task; none is an abstention success."
+    },
+    "repair": {
+      "required": [
+        "intended behavior passes",
+        "preserved behavior passes",
+        "native build/test receipt executed",
+        "exact source restoration or approved patch hash recorded"
+      ],
+      "compilerOnly": "Reported separately and never counted as executed-test success.",
+      "testAuthorship": "Go and TS probes include manually introduced mutations and test-authored assertions; these are development repair controls, not blind evaluation of generated applications."
+    },
+    "corpusParity": "SCCE's isolated evaluation brain and Qwen RAG must use exactly the same frozen document bytes and source versions from one corpus manifest. No closed-book Qwen condition is scored in this matrix."
+  },
+  "stoppingRules": [
+    "Seal the corpus manifest, questions, preregistration, source tree, and repair case before tuning against the heldout prompts.",
+    "Stop and mark the factual comparison invalid if any expected article is absent from the manifest, any unsupported attribute is present, source hashes differ, or the SCCE brain contains undeclared documents.",
+    "Keep the known failure regressions in the report even if later runs decline them; declines remain failed task completions."
+  ],
+  "disqualificationRules": [
+    "Any system or operator sees objective gold fields or protectedMetadata during answer generation.",
+    "SCCE and Qwen receive different corpus bytes or source scope.",
+    "A missing source prerequisite is treated as a correct abstention or removed after results are observed.",
+    "The synthetic/test-authored six-language application suite is reported as human-source multilingual generation evidence."
+  ],
+  "caseMatrix": {
+    "status": "frozen_not_executed",
+    "sourceRevision": "8fe3d60ea8ef220e6b6cf173fda03c20b66d5fbe",
+    "artifactHashBasis": "SHA-256 of exact question JSONL bytes; case JSON hashes use UTF-8 text with CRLF normalized to LF.",
+    "questionCount": 12,
+    "repairCount": 2,
+    "caseCount": 14,
+    "questionFileSha256": "0590a6c9cd9f214008fce95aed85bb9300d39fcfe05dee32edfea092f7724562",
+    "questions": [
+      {
+        "id": "chat.en.dolly-story-followup.v1",
+        "sha256": "cdd9ea86552a6636be6414abd696ef3336c5d61abaa10c74d804471f4e4fb828",
+        "split": "heldout_prompt_owner_authored_source_seen",
+        "lane": "chat"
+      },
+      {
+        "id": "chat.ru.oasst-comic-followup.v1",
+        "sha256": "dbc488b8ade4cbcd90d3364d1abe284b4fc2c9558cea3d58c81ffab3f8a3274d",
+        "split": "heldout_prompt_owner_authored_source_seen",
+        "lane": "chat"
+      },
+      {
+        "id": "creative.en.dolly-hidden-room.v1",
+        "sha256": "1fcd913a6390e20b08a06cb7a0bc1b7839d473c570ff9531dceb83dda74c0f13",
+        "split": "development_seen_source_and_prompt",
+        "lane": "creative"
+      },
+      {
+        "id": "creative.ru.oasst-space-comic.v1",
+        "sha256": "2957ce696753b7a84a191c07a4a4e9bf792d3bfdf769b0861b287003dca47351",
+        "split": "development_seen_source_and_prompt",
+        "lane": "creative"
+      },
+      {
+        "id": "creative.en.fresh-sailor-clockmaker.v1",
+        "sha256": "e1ab57ac4311ce055d535b3f8fcbf70db3a4248aa6183995fff594ae7dbe1849",
+        "split": "development_known_failure_regression",
+        "lane": "creative"
+      },
+      {
+        "id": "creative.ru.fresh-kvartun-comic.v1",
+        "sha256": "1156e6083ddc586924840e861996e0ceb74c500ff3ed939c98809252e146669c",
+        "split": "development_known_failure_regression",
+        "lane": "creative"
+      },
+      {
+        "id": "factual.wiki.einstein-born.v1",
+        "sha256": "d03823ddf1c4b59ebb38f0f342c8ca7f57b35d69f9e2493902694d0efc3dedc0",
+        "split": "development_existing-labelled-set",
+        "lane": "factual"
+      },
+      {
+        "id": "factual.wiki.einstein-theory.v1",
+        "sha256": "a6bf5895151ab73d8b9d9786f751ae8b051ee8da5109fda39ed46e139bb640b3",
+        "split": "development_existing-labelled-set",
+        "lane": "factual"
+      },
+      {
+        "id": "factual.wiki.apollo-landed.v1",
+        "sha256": "9d3ea5c5751e017abda6c97b522370a16fbcdd4f501eb4b2cc1fb08c42e53c3d",
+        "split": "development_existing-labelled-set",
+        "lane": "factual"
+      },
+      {
+        "id": "factual.wiki.apollo-commander.v1",
+        "sha256": "a7619d6e05c29f9345c3dee5942dccdfe31a8fb64433ae733aaf0919b0dd5204",
+        "split": "development_existing-labelled-set",
+        "lane": "factual"
+      },
+      {
+        "id": "factual.wiki.einstein-shoe-unknown.v1",
+        "sha256": "832d0260ee935184413b0e60ad678d3afbd85600c3662aea23bf06bdd01f7491",
+        "split": "development_existing-labelled-set",
+        "lane": "factual"
+      },
+      {
+        "id": "factual.wiki.apollo-blood-unknown.v1",
+        "sha256": "90a20b98af82c070f98be29be5259e166b32803f7af775a5e7ec13e4717290c3",
+        "split": "development_existing-labelled-set",
+        "lane": "factual"
+      }
+    ],
+    "repairs": [
+      {
+        "id": "repair.go.human-fma.v1",
+        "artifact": "tools/repair-acceptance/cases/human-go-fma/case.json",
+        "sourceReceipt": "C:/Users/react/scce/.tmp/human-go-canonical-check.json",
+        "resultReceipt": "C:/Users/react/scce/.tmp/human-go-cli-repair.json",
+        "split": "development_seen_source_and_mutation",
+        "task": "Repair the one-identifier corruption; native Go tests must pass and the exact original hash must be restored.",
+        "artifactSha256": "c7e863349d2eed442b2d69d74b76ce4cfd2b2779023d581c85b1571159a7d609"
+      },
+      {
+        "id": "repair.typescript.repository-map-write-loss.v1",
+        "artifact": "tools/repair-acceptance/cases/map-write-loss/case.json",
+        "artifactSha256": "929ea1d90824a0435bdb0ca5609ebc3fc032267ba40ca26e669f3762f1ed9b78",
+        "sourceReceipt": "C:/Users/react/scce/.tmp/map-write-cli-verification.json",
+        "split": "development_seen_repository_source_and_mutation",
+        "task": "Repair the harmful Map.set-to-Map.get edit; preserve observed-family results and Holm behavior, pass tests, and restore the exact source hash."
+      }
+    ],
+    "outOfMatrixControls": [
+      {
+        "id": "test-authored-six-language-apps",
+        "artifact": "packages/server/src/__tests__/multilingual-workspace-code-api.test.ts",
+        "count": 24,
+        "languages": [
+          "Go",
+          "Java",
+          "Rust",
+          "C++",
+          "C#",
+          "Python"
+        ],
+        "use": "integration scaffolding only; excluded from capability score"
+      },
+      {
+        "id": "current-wikipedia-audit",
+        "artifact": "C:/Users/react/scce/.tmp/wikipedia-progress-audit.json",
+        "snapshot": "74 articles; 148 versions; 626 promoted evidence spans; 8,106,521 version bytes; 0 language models",
+        "use": "source inventory only; does not prove selected article membership or provide the sealed article manifest"
+      }
+    ],
+    "sourcePrerequisites": [
+      {
+        "id": "dolly-human",
+        "receipt": "C:/Users/react/scce/.tmp/full-dolly-v6-ingestion.json",
+        "sourceVersionId": "source_version_6a69b7cf375c1a664a803a68dc534b6851561cc5b74aa2054d2934b7",
+        "sourceContentHash": "sha256_3c104b41db0c682e3eafaf5ccd0d65e5bf36e9525de4e68ae95b0232e1c7d853",
+        "bytes": 848716,
+        "trainingTurns": 2152,
+        "role": "English instruction-response source; not a held-out source"
+      },
+      {
+        "id": "oasst-russian-human-pair",
+        "receipt": "C:/Users/react/scce/.tmp/original-russian-dialogue-ingestion.json",
+        "sourceVersionId": "source_version_6bdc3418aca71c88be0ec812535def105152feb90bc47855d1b8b06e",
+        "sourceContentHash": "sha256_f25bd40eb65b8fd555f95fda8474c551bd201d0bef6d222ae345191b887de5f8",
+        "bytes": 1730,
+        "role": "actual Russian dialogue source; narrow two-turn item, not a general fluency qualification"
+      },
+      {
+        "id": "wikipedia",
+        "receipt": "C:/Users/react/scce/.tmp/wikipedia-progress-audit.json",
+        "articleCount": 74,
+        "sourceVersions": 148,
+        "evidenceSpans": 626,
+        "modelCount": 0,
+        "role": "factual evidence only; exact per-article versions/hashes must be exported and verified before sealing"
+      },
+      {
+        "id": "human-go",
+        "receipt": "C:/Users/react/scce/.tmp/human-go-canonical-check.json",
+        "sourceVersionId": "source_version_b5f2ab06cc00eea1f7c0b786c7a0a8b4b12d19be5b80c2a3aaa3159a",
+        "sourceContentHash": "sha256_84bda257ed3ba19cde7754df0ba618a7dc8d027e8f5c9823aef5c98367dc64df",
+        "bytes": 602,
+        "role": "actual human-authored Go source, separate from test-authored Go application examples"
+      },
+      {
+        "id": "typescript-repository-source",
+        "receipt": "tools/repair-acceptance/cases/map-write-loss/case.json",
+        "sourceRevision": "4bc275b",
+        "sourceContentHash": "53fc4b0f46e31a55e0d1ed45f5bde54b4b5ef9b0fcae514043fa2d4205562f52",
+        "role": "actual SCCE TypeScript repository source, separate from test-authored apps"
+      }
+    ],
+    "limits": [
+      "No general chat set, independent human-heldout corpus, exact Wikipedia source manifest, or independent evaluator has been supplied; this matrix is not a readiness claim.",
+      "The current two-turn Russian source is genuinely Russian text and has an ingestion receipt, but it is too small to establish broad Russian competence.",
+      "The TypeScript and Go repair examples are previously observed development cases. Existing six-language application tests are test-authored, not held-out human-source code.",
+      "The sealed evaluation kit has no production coding adapter; repair cases stay on the existing repair-acceptance path and are not sent through the knowledge-question adapter."
+    ]
+  }
+}
