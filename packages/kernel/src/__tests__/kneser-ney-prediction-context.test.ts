@@ -48,7 +48,7 @@ it("prepares from the current model on every call without retaining stale model 
   const model: KneserNeyModel = trainKneserNey(symbols, { order: 4 });
   const context = ["a", "b", "c"];
   const before = predictKneserNey(model, context, 32);
-  model.contextCounts[context.join("\u0001")] *= 4;
+  model.contextCounts[context.join("\u0001")] = model.contextCounts[context.join("\u0001")]! * 4;
   model.backoffWeights[context.join("\u0001")] = 0.125;
   const after = predictKneserNey(model, context, 32);
   expect(after).not.toEqual(before);

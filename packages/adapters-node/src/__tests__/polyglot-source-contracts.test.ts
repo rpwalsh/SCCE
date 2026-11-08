@@ -131,7 +131,7 @@ describe("polyglot source-owned assertion contracts", () => {
       const source = await acquired(item), hasher = createHasher(), clock = createClock({ fixedTime: 1 });
       const ids = createIdFactory({ clock, hasher, deterministicReplay: true });
       const emitted = createProgramPlanner({ idFactory: ids, hasher }).emitIfAvailable({ episodeId: ids.episodeId(), requestText: source.requestText,
-        evidence: [], createdAt: 1, programIntent: source.programIntent, entailment: emptyEntailment(ids) });
+        evidence: [], programIntent: source.programIntent, entailment: emptyEntailment(ids) });
       expect(emitted.availability).toEqual({ status: "unavailable", languageId: item.languageId,
         reasonIds: [item.languageId === "go" ? "program.emission.native_backend_unavailable" : "program.emission.rust.stateful_behavior_unsupported"] });
       expect(emitted.program).toBeUndefined();
