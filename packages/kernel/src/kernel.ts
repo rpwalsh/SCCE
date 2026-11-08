@@ -17,6 +17,7 @@ import { createCcrEngine } from "./ccr.js";
 import { createConnectorGovernance } from "./connector-governance.js";
 import { createConstructSubstratePlanner } from "./construct-substrate.js";
 import { CORPUS_ROLE_IDS, createCorpusRegistry } from "./corpus-registry.js";
+import { invalidateCorpusIdentityMeasurements } from "./corpus-identity-runtime.js";
 import { createCorrectionMemory } from "./correction-memory.js";
 import { createCounterfactualCognition } from "./counterfactual-cognition.js";
 import { traceEvent } from "./debug/trace.js";
@@ -185,7 +186,10 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
     hasher,
     cacheMs: surfaceLanguageMemoryCacheMs,
     languageResolver: profileIds => languageIdentityRuntime.resolver(profileIds),
-    onDurableRevision: () => languageIdentityRuntime.ensure(),
+    onDurableRevision: () => {
+      invalidateCorpusIdentityMeasurements(deps.storage.evidence);
+      return languageIdentityRuntime.ensure();
+    },
     // A per-turn CPU cost, not a memory bound: the window is clustered on every request (measured: 2,048 profiles
     // put 10-15s of clustering into each turn's seed; 512 about 2s). The role hydration carries the language now,
     // so the window only has to name the request's cluster.
@@ -224,6 +228,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
   const runtimeMemory = createRuntimeMemoryControl({ deps, clock });
   const { activeBrainMarker, correctionRulesCached } = runtimeMemory;
   function invalidateRuntimeCaches(): void {
+    invalidateCorpusIdentityMeasurements(deps.storage.evidence);
     graphRetrieval.invalidate();
     surfaceLanguageRuntime.invalidate();
     runtimeMemory.invalidate();

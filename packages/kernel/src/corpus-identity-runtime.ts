@@ -6,7 +6,7 @@ import type { EvidenceStore } from "./storage.js";
 /**
  * Measures what the corpus knows about one request's candidate runs and primes the pure arbiter with it.
  *
- * Everything measured here is a property of the corpus, so it is cached for the life of the process and a repeated
+ * Everything measured here is a property of the corpus, so it is cached until that store changes and a repeated
  * run costs nothing. A request whose runs have all been seen before issues no query at all, which is what makes
  * this affordable inside a turn.
  */
@@ -21,6 +21,11 @@ interface CorpusIdentityMeasurements {
 
 let measurementsByEvidence = new WeakMap<object, CorpusIdentityMeasurements>();
 let measurementGeneration = 0;
+
+/** A source publication or activation invalidates only its evidence store's measurements. */
+export function invalidateCorpusIdentityMeasurements(evidence: object): void {
+  measurementsByEvidence.delete(evidence);
+}
 
 /** Sampling breadth for the spread distribution: wide enough for a stable Otsu split, paid once per store after success. */
 const DISTRIBUTION_SAMPLE = 400;
@@ -50,7 +55,7 @@ export async function primeCorpusIdentityForTurn(input: {
   const thresholdStarted = performance.now();
   await ensureThreshold(measurements, input.evidence, generation);
   const thresholdDurationMs = performance.now() - thresholdStarted;
-  if (generation !== measurementGeneration) return;
+  if (!measurementsAreCurrent(input.evidence, measurements, generation)) return;
   let preparationStarted = performance.now();
   let preparationDurationMs = 0;
   // The identity question is asked of the whole request, so it is cached per request rather than per run.
@@ -63,7 +68,7 @@ export async function primeCorpusIdentityForTurn(input: {
     const arbitrationStarted = performance.now();
     const arbitration = await input.evidence.sourceIdentityArbitration({ text: input.requestText, runs: unmeasured });
     arbitrationDurationMs = performance.now() - arbitrationStarted;
-    if (generation !== measurementGeneration) return;
+    if (!measurementsAreCurrent(input.evidence, measurements, generation)) return;
     preparationStarted = performance.now();
     identities = new Set(arbitration.identities);
     if (measurements.identitiesByText.size >= 512) measurements.identitiesByText.clear();
@@ -130,7 +135,7 @@ export async function measureRequestCorpusSubject(input: {
   let identities = measurements.identitiesByText.get(input.requestText);
   if (identities === undefined) {
     const arbitration = await arbitrate({ text: input.requestText, runs: [] });
-    if (generation !== measurementGeneration) return { identities: [], measured: false, contentRuns: runs };
+    if (!measurementsAreCurrent(input.evidence, measurements, generation)) return { identities: [], measured: false, contentRuns: runs };
     identities = new Set(arbitration.identities);
     if (measurements.identitiesByText.size >= 512) measurements.identitiesByText.clear();
     measurements.identitiesByText.set(input.requestText, identities);
@@ -142,6 +147,10 @@ export async function measureRequestCorpusSubject(input: {
     concentration: primed?.concentration ?? 0
   });
   return { identities: named, measured: true, contentRuns: runs };
+}
+
+function measurementsAreCurrent(evidence: object, measurements: CorpusIdentityMeasurements, generation: number): boolean {
+  return generation === measurementGeneration && measurementsByEvidence.get(evidence) === measurements;
 }
 
 function measurementsFor(evidence: object): CorpusIdentityMeasurements {
@@ -171,7 +180,7 @@ async function ensureThreshold(
   measurements.thresholdInFlight ??= (async () => {
     try {
       const distribution = await evidence.sourceSpreadDistribution!(DISTRIBUTION_SAMPLE);
-      if (generation !== measurementGeneration) return;
+      if (!measurementsAreCurrent(evidence, measurements, generation)) return;
       measurements.threshold = concentrationThreshold(distribution, Math.max(1, ...distribution));
     } catch {
       // A transient read failure leaves the threshold unmeasured so the next turn can retry it.
