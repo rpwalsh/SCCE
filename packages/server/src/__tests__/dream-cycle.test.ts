@@ -10,6 +10,74 @@ vi.mock("@scce/adapters-node", () => ({ trainStoredCorpusConstructions: train, L
 afterEach(() => { vi.useRealTimers(); vi.clearAllMocks(); });
 
 describe("idle construction learning activation", () => {
+  it("waits for every active response to finish and counts finish/close release only once", async () => {
+    vi.useFakeTimers();
+    const runtime = { storage: { ingestion: checkpointStore() }, kernel: { refreshAfterBrainActivation: vi.fn() } } as unknown as Parameters<typeof startDreamCycle>[0]["runtime"];
+    train.mockResolvedValue({ batchesTrained: 0, nextBatchIndex: 0, nextSourceVersionId: null, exhausted: true, articlesTrained: 0, bytesTrained: 0, reports: [], batchesFailed: [], stoppedByStorageFailure: false });
+    const cycle = startDreamCycle({ runtime, config: { idleMinutes: 1 }, log: vi.fn() });
+    try {
+      const finishFirst = cycle.beginActivity(), finishSecond = cycle.beginActivity();
+      await vi.advanceTimersByTimeAsync(180_000);
+      expect(train).not.toHaveBeenCalled();
+      finishFirst(); finishFirst();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(train).not.toHaveBeenCalled();
+      finishSecond();
+      await vi.advanceTimersByTimeAsync(59_999);
+      expect(train).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(train).toHaveBeenCalledOnce();
+    } finally { await cycle.stop(); }
+  });
+
+  it("interrupts an idle producer on activity and drains it exactly once before stop resolves", async () => {
+    vi.useFakeTimers();
+    const checkpoints = checkpointStore(), refreshAfterBrainActivation = vi.fn();
+    const runtime = { storage: { ingestion: checkpoints }, kernel: { refreshAfterBrainActivation } } as unknown as Parameters<typeof startDreamCycle>[0]["runtime"];
+    let signal: AbortSignal | undefined, release: (() => void) | undefined;
+    train.mockImplementationOnce((input: { signal: AbortSignal }) => new Promise(resolve => {
+      signal = input.signal;
+      release = () => resolve({ batchesTrained: 0, nextBatchIndex: 0, nextSourceVersionId: null, exhausted: false, sourcesConsidered: 0,
+        articlesTrained: 0, bytesTrained: 0, reports: [], batchesFailed: [], stoppedByStorageFailure: false, stoppedByInterruption: true });
+    }));
+    const cycle = startDreamCycle({ runtime, config: { idleMinutes: 1 }, log: vi.fn() });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(signal?.aborted).toBe(false);
+    cycle.recordActivity();
+    expect(signal?.aborted).toBe(true);
+    const stopped = cycle.stop();
+    expect(cycle.stop()).toBe(stopped);
+    let drained = false;
+    void stopped.then(() => { drained = true; });
+    await Promise.resolve();
+    expect(drained).toBe(false);
+    release!();
+    await stopped;
+    expect(drained).toBe(true);
+    expect(checkpoints.put).not.toHaveBeenCalled();
+    expect(refreshAfterBrainActivation).not.toHaveBeenCalled();
+  });
+
+  it("persists completed interrupted work and resumes it after restart", async () => {
+    vi.useFakeTimers();
+    const checkpoints = checkpointStore(), refreshAfterBrainActivation = vi.fn(), log = vi.fn();
+    const runtime = { storage: { ingestion: checkpoints }, kernel: { refreshAfterBrainActivation } } as unknown as Parameters<typeof startDreamCycle>[0]["runtime"];
+    train.mockResolvedValue({ batchesTrained: 1, nextBatchIndex: 1, nextSourceVersionId: "source.completed", exhausted: false, sourcesConsidered: 1,
+      articlesTrained: 1, bytesTrained: 128, reports: [{ languageConstructions: 2 }], batchesFailed: [], stoppedByStorageFailure: false, stoppedByInterruption: true });
+    const first = startDreamCycle({ runtime, config: { idleMinutes: 1 }, log });
+    await vi.advanceTimersByTimeAsync(60_000);
+    await first.stop();
+    expect(checkpoints.put).toHaveBeenCalledWith(expect.objectContaining({ metadata: expect.objectContaining({ nextSourceVersionId: "source.completed", interrupted: true }) }));
+    expect(refreshAfterBrainActivation).toHaveBeenCalledOnce();
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("interrupted after 1 completed sources"));
+    train.mockClear();
+    const restarted = startDreamCycle({ runtime, config: { idleMinutes: 1 }, log });
+    try {
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(train).toHaveBeenCalledWith(expect.objectContaining({ afterSourceVersionId: "source.completed" }));
+    } finally { await restarted.stop(); }
+  });
+
   it("advances past considered sources without interpreting zero trained batches as exhaustion", async () => {
     vi.useFakeTimers();
     const checkpoints = checkpointStore();

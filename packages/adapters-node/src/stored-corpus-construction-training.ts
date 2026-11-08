@@ -36,6 +36,7 @@ export interface StoredCorpusConstructionTrainingOptions {
   creativeEventCompiler?: CreativeEventConstructionCompiler;
   languageOnly?: boolean;
   includeUriPrefixes?: readonly string[];
+  signal?: AbortSignal;
 }
 
 export interface StoredCorpusConstructionTrainingReport {
@@ -63,6 +64,7 @@ export interface StoredCorpusConstructionTrainingReport {
   nextBatchIndex: number;
   stoppedByHeapSafetyBound: boolean;
   stoppedByStorageFailure: boolean;
+  stoppedByInterruption: boolean;
   storageFailure: { code: string; reason: string; sourceVersionId: string } | null;
   heapMiBAtExit: number;
   batchesFailed: Array<{ batchIndex: number; sourceVersionId?: string; reason: string }>;
@@ -103,7 +105,7 @@ export async function trainStoredCorpusConstructions(input: StoredCorpusConstruc
     minByteLength: minArticleBytes, maxByteLength: maxArticleBytes,
     orderBySourceVersionId: true, excludeTrainingDerived: true, limit: sourcePageSize
   };
-  const inventory = await input.storage.evidence.countEvidenceBackedSourceVersions?.(query) ?? null;
+  const inventory = input.signal?.aborted ? null : await input.storage.evidence.countEvidenceBackedSourceVersions?.(query) ?? null;
   const reports: LanguageCorpusTrainingReport[] = [];
   const batchesFailed: StoredCorpusConstructionTrainingReport["batchesFailed"] = [];
   const sourcesSkipped: StoredCorpusConstructionTrainingReport["sourcesSkipped"] = [];
@@ -113,6 +115,7 @@ export async function trainStoredCorpusConstructions(input: StoredCorpusConstruc
   let stoppedByHeapSafetyBound = false;
   let nextSourceVersionId = input.afterSourceVersionId ?? null;
   let exhausted = false;
+  let stoppedByInterruption = Boolean(input.signal?.aborted);
   let sourcesEnumerated = 0;
   let sourcesConsidered = 0;
   let sourcesAttempted = 0;
@@ -170,6 +173,7 @@ export async function trainStoredCorpusConstructions(input: StoredCorpusConstruc
   };
 
   pages: while (true) {
+    if (interrupted()) break;
     if (bytesScheduled >= maxTotalBytes || sourcesAttempted >= maxSourceAttempts) break;
     if (heapCheckpointMb !== undefined && heapMiB() >= heapCheckpointMb) { stoppedByHeapSafetyBound = true; break; }
     const versions = await list.call(input.storage.evidence, { ...query,
@@ -179,6 +183,7 @@ export async function trainStoredCorpusConstructions(input: StoredCorpusConstruc
     sourcesEnumerated += versions.length;
     let previous = nextSourceVersionId;
     for (const version of versions) {
+      if (interrupted()) break pages;
       const sourceId = String(version.sourceVersionId);
       if (previous !== null && Buffer.compare(Buffer.from(sourceId), Buffer.from(previous)) <= 0) throw new Error("storage replay page did not advance in source-version order");
       previous = sourceId;
@@ -189,7 +194,7 @@ export async function trainStoredCorpusConstructions(input: StoredCorpusConstruc
       } else {
         bytesScheduled += version.byteLength;
         sourcesAttempted++;
-        await loadAndTrain(version);
+        if (!await loadAndTrain(version)) break pages;
         if (storageFailure) break pages;
       }
       nextSourceVersionId = sourceId;
@@ -208,16 +213,23 @@ export async function trainStoredCorpusConstructions(input: StoredCorpusConstruc
     eligibleSourcesRemaining: inventory ? Math.max(0, inventory.eligibleSources - sourcesConsidered) : null,
     articleBounds: { minBytes: minArticleBytes, maxBytes: maxArticleBytes },
     batchesTrained, articlesTrained, bytesTrained, nextBatchIndex, stoppedByHeapSafetyBound,
-    heapMiBAtExit: heapMiB(), stoppedByStorageFailure: storageFailure !== null, storageFailure, batchesFailed, sourcesSkipped, reports };
+    heapMiBAtExit: heapMiB(), stoppedByStorageFailure: storageFailure !== null, stoppedByInterruption, storageFailure, batchesFailed, sourcesSkipped, reports };
 
-  async function loadAndTrain(version: Awaited<ReturnType<NonNullable<typeof list>>>[number]): Promise<void> {
+  function interrupted(): boolean {
+    if (input.signal?.aborted) stoppedByInterruption = true;
+    return stoppedByInterruption;
+  }
+
+  async function loadAndTrain(version: Awaited<ReturnType<NonNullable<typeof list>>>[number]): Promise<boolean> {
     try {
       const found = await input.storage.evidence.searchEvidence({ sourceVersionId: version.sourceVersionId, status: "promoted", limit: 4096 });
+      if (interrupted()) return false;
       const evidence = found.map(row => row.span).filter(span => String(span.sourceVersionId) === String(version.sourceVersionId) && span.status === "promoted")
         .sort((left, right) => left.charStart - right.charStart || String(left.id).localeCompare(String(right.id)));
       if (!evidence.length || evidence.some(span => !span.informationLabel)) throw new Error("promoted source evidence or information label is missing");
       if (version.promotedSpanCount > evidence.length) throw new Error("source evidence exceeds bounded replay read");
       const sources = await input.storage.evidence.sourceVersionsForEvidence(evidence.map(span => span.id));
+      if (interrupted()) return false;
       const source = sources.find(row => String(row.sourceVersionId) === String(version.sourceVersionId));
       if (!source) throw new Error("original source version is missing");
       const metadata = recordOf(source.metadata);
@@ -226,28 +238,32 @@ export async function trainStoredCorpusConstructions(input: StoredCorpusConstruc
         || metadata.lane === "stored-corpus-construction-training" || metadata.sourceClass === "generated"
         || recordOf(metadata.sourceAdmission ?? null).sourceClass === "generated") {
         sourcesSkipped.push({ sourceVersionId: String(version.sourceVersionId), reason: "derived_training_source" });
-        return;
+        return true;
       }
       const declaredSystem = metadata.sourceSystemId ?? metadata.sourceSystem;
       if (typeof declaredSystem !== "string" || canonicalCorpusSourceSystemId(declaredSystem) !== sourceSystem) {
         sourcesSkipped.push({ sourceVersionId: String(version.sourceVersionId), reason: "different_or_undeclared_source_system" });
-        return;
+        return true;
       }
       const profiles = await input.storage.model.listLanguageProfiles({ sourceVersionIds: [source.sourceVersionId], limit: 4096 });
+      if (interrupted()) return false;
       const profile = profiles.filter(row => String(row.sourceVersionId) === String(source.sourceVersionId))
         .sort((left, right) => (right.updatedAt ?? right.createdAt) - (left.updatedAt ?? left.createdAt) || left.id.localeCompare(right.id))[0];
       if (!profile) throw new Error("original language profile is missing");
       if (String(source.contentHash) !== String(version.contentHash) || source.byteLength !== version.byteLength) throw new Error("source content ownership changed during replay");
       const bytes = await input.storage.blobs.get(source.contentHash);
+      if (interrupted()) return false;
       const text = Buffer.from(bytes).toString("utf8");
       const points = [...text];
       if (bytes.byteLength !== source.byteLength || evidence.some(span => points.slice(span.charStart, span.charEnd).join("") !== span.text)) throw new Error("stored source/evidence coordinates do not match");
       if (!text.trim()) throw new Error("stored source is empty");
       await trainSource({ source, profile, evidence, text, bytes: bytes.byteLength });
+      interrupted();
     } catch (error) {
       if (markStorageFailure(error, String(version.sourceVersionId))) batchesFailed.push({ batchIndex, sourceVersionId: String(version.sourceVersionId), reason: errorText(error) });
       else sourcesSkipped.push({ sourceVersionId: String(version.sourceVersionId), reason: errorText(error) });
     }
+    return true;
   }
 
   function markStorageFailure(error: unknown, sourceVersionId: string): boolean {

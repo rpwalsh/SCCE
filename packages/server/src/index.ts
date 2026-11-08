@@ -66,7 +66,9 @@ async function main(): Promise<void> {
     config: (config.runtime as { dreamCycle?: import("./dream-cycle.js").DreamCycleConfig }).dreamCycle
   });
   const server = http.createServer((req, res) => {
-    dreamCycle.recordActivity();
+    const endActivity = dreamCycle.beginActivity();
+    res.once("finish", endActivity);
+    res.once("close", endActivity);
     handleRequest(req, res, { runtime, config, configPath, maxBodyBytes: config.runtime.maxFileBytes, patchValidation, startupReadiness }).catch(error => {
       res.writeHead(500, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
       res.end(JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }, null, 2));
@@ -122,8 +124,9 @@ async function main(): Promise<void> {
 
   let shutdownPromise: Promise<void> | undefined;
   const shutdown = (): Promise<void> => shutdownPromise ??= (async () => {
-    dreamCycle.stop();
+    const dreamStopped = dreamCycle.stop();
     await closeServer(server);
+    await dreamStopped;
     const drained = await drainDeferredDialoguePersistence();
     if (drained.drainedConversations > 0) {
       process.stdout.write(`scce.dialogue.deferred_persistence.drained conversations=${drained.drainedConversations}\n`);

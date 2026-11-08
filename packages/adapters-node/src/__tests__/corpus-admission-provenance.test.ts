@@ -489,3 +489,62 @@ function isObservationStoreTopologyNode(node: GraphNode): boolean {
     && typeof representation.store === "string"
     && node.features.includes(`store:${representation.store}`);
 }
+
+describe("stored replay cooperative interruption", () => {
+  async function seededSources() {
+    const fixture = memoryStorage();
+    for (const subject of ["resolver", "declaration"]) {
+      const uri = `wikipedia://enwiki/pages/yield/${subject}`;
+      await trainLanguageCorpusText({ storage: fixture.storage, sourceSystem: "wikipedia", streamUri: uri, sourceUri: uri,
+        text: corpusText(subject), mediaType: "text/plain", createdAt: 1, informationLabel: OSS_INFORMATION_LABEL,
+        ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64 });
+    }
+    return fixture;
+  }
+
+  it("yields after a canonical read without compiling or advancing the incomplete source", async () => {
+    const fixture = await seededSources();
+    const controller = new AbortController();
+    const { replayPages: _pages, ...before } = structuredClone(fixture.state);
+    const read = fixture.storage.blobs.get.bind(fixture.storage.blobs);
+    let reads = 0;
+    fixture.storage.blobs.get = async hash => { reads++; const bytes = await read(hash); controller.abort(); return bytes; };
+    const report = await trainStoredCorpusConstructions({ storage: fixture.storage, signal: controller.signal, maxTotalBytes: 65_536 });
+    expect(report).toMatchObject({ stoppedByInterruption: true, stoppedByStorageFailure: false, articlesTrained: 0,
+      sourcesConsidered: 0, nextSourceVersionId: null, exhausted: false, batchesFailed: [], sourcesSkipped: [] });
+    expect(reads).toBe(1);
+    const { replayPages: _laterPages, ...after } = fixture.state;
+    expect(structuredClone(after)).toEqual(before);
+    const pageCount = fixture.state.replayPages.length;
+    expect(await trainStoredCorpusConstructions({ storage: fixture.storage, signal: controller.signal }))
+      .toMatchObject({ stoppedByInterruption: true, sourcesAttempted: 0, sourcesEnumerated: 0, articlesTrained: 0 });
+    expect(fixture.state.replayPages).toHaveLength(pageCount);
+    fixture.storage.blobs.get = read;
+    const resumed = await trainStoredCorpusConstructions({ storage: fixture.storage, maxTotalBytes: 65_536 });
+    expect(resumed).toMatchObject({ stoppedByInterruption: false, articlesTrained: 2, exhausted: true, batchesFailed: [] });
+  });
+
+  it("keeps a committed source cursor and leaves the next source unread until a fresh idle run", async () => {
+    const fixture = await seededSources(), controller = new AbortController();
+    const original = structuredClone({ sourceVersions: fixture.state.sourceVersions, profiles: fixture.state.profiles, evidence: fixture.state.evidence });
+    const sourceIds = fixture.state.sourceVersions.map(source => String(source.sourceVersionId)).sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+    const put = fixture.storage.ingestion.put.bind(fixture.storage.ingestion);
+    fixture.storage.ingestion.put = async row => {
+      await put(row);
+      if (row.rootUri.startsWith("scce://stored-corpus-replay/") && row.status === "complete") controller.abort();
+    };
+    const read = fixture.storage.blobs.get.bind(fixture.storage.blobs), hashes: string[] = [];
+    fixture.storage.blobs.get = async hash => { hashes.push(String(hash)); return read(hash); };
+    const first = await trainStoredCorpusConstructions({ storage: fixture.storage, signal: controller.signal, maxTotalBytes: 65_536 });
+    expect(first).toMatchObject({ stoppedByInterruption: true, articlesTrained: 1, sourcesConsidered: 1, nextSourceVersionId: sourceIds[0], exhausted: false, batchesFailed: [] });
+    expect(hashes).toHaveLength(1);
+    const committed = [...fixture.state.checkpoints.values()].filter(row => row.rootUri.startsWith("scce://stored-corpus-replay/") && row.status === "complete");
+    expect(committed).toHaveLength(1);
+    fixture.storage.ingestion.put = put;
+    hashes.length = 0;
+    const next = await trainStoredCorpusConstructions({ storage: fixture.storage, afterSourceVersionId: first.nextSourceVersionId!, maxTotalBytes: 65_536 });
+    expect(next).toMatchObject({ stoppedByInterruption: false, articlesTrained: 1, sourcesConsidered: 1, nextSourceVersionId: sourceIds[1], exhausted: true });
+    expect(hashes).toHaveLength(1);
+    expect({ sourceVersions: fixture.state.sourceVersions, profiles: fixture.state.profiles, evidence: fixture.state.evidence }).toEqual(original);
+  });
+});
