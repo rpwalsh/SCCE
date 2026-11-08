@@ -11,7 +11,7 @@ const request = "Where is Neralis observatory located?";
 const location = "Neralis observatory is located on Pelora island.";
 const director = "Mira Venn directs Neralis observatory.";
 const span = { id: "field.notes", sourceVersionId: "field.notes.source", status: "promoted", text: `${director} ${location}`,
-  textPreview: `${director} ${location}`, provenance: { title: "Neralis observatory" } } as EvidenceSpan;
+  textPreview: `${director} ${location}`, provenance: { title: "Neralis observatory" } } as unknown as EvidenceSpan;
 const pattern = (surface: string, copies: Record<string, number>, anchor = "any"): LanguagePatternRecord => ({
   id: `${surface}:${anchor}`, profileId: "request.corpus", patternKind: "semantic_role", support: 1, entropy: 0,
   evidenceIds: ["request.corpus.evidence" as never], updatedAt: 1, patternJson: {
@@ -54,7 +54,7 @@ it("does not grant new erasure authority to legacy, foreign-class, unknown-recip
     { requestUnitResponseCopy: [{ unit: "where", supportedPairs: 6, copiedPairs: 7 }] },
     { requestUnitResponseCopy: [{ unit: "located", supportedPairs: 6, copiedPairs: 0 }] }
   ]) {
-    const row = { ...valid, patternJson: { ...metadata, ...patch } } as LanguagePatternRecord;
+    const row = { ...valid, patternJson: { ...metadata, ...patch } } as unknown as LanguagePatternRecord;
     expect(requestScaffoldingConstructions([row], "factual", request)).toEqual([]);
   }
   expect(requestScaffoldingConstructions([valid], "creative", request)).toEqual([]);
