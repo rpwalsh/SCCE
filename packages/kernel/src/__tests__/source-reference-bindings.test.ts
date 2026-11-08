@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { createHasher } from "../primitives.js";
 import { compileSourceReferenceBindingPattern, sourceReferenceBindingsFromPatterns, sourceReferencePropertiesForSpan,
-  type SourceReferenceBindingDeclaration } from "../source-reference-bindings.js";
+  sourceReferencePropertyByIdentity, type SourceReferenceBindingDeclaration } from "../source-reference-bindings.js";
 import type { EvidenceSpan } from "../types.js";
 
 const hasher = createHasher();
@@ -22,6 +22,44 @@ function fixture(text = "May speaks. In May, May answers.") {
 }
 
 describe("source-owned reference and property occurrences", () => {
+  it.each(["compiled", "cold_hydrated"])("does not let a live identity-only %s document acquire property rewrite authority", mode => {
+    const f = fixture();
+    const compiled = f.compile({ ...f.declaration, completeProperties: [],
+      occurrences: f.declaration.occurrences.map(({ propertyId: _property, ...occurrence }) => occurrence) });
+    const document = mode === "compiled" ? compiled.bindings! : sourceReferenceBindingsFromPatterns({
+      patterns: JSON.parse(JSON.stringify([compiled.pattern])), evidence: [f.evidence], hasher }).bindings[0]!;
+    const occurrence = document.occurrences[0]!, referentId = occurrence.binding.referentId;
+    const attempt = (mutate: () => unknown) => { try { mutate(); } catch (error) { if (!(error instanceof TypeError)) throw error; } };
+    attempt(() => Reflect.set(occurrence, "propertyId", "p.injected"));
+    attempt(() => Reflect.set(occurrence, "propertySpan", { start: 0, end: 3, surfaceHash: hasher.digestHex("May") }));
+    attempt(() => (document.completeProperties as Array<{ referentId: string; propertyId: string }>).push({ referentId, propertyId: "p.injected" }));
+    expect(sourceReferencePropertiesForSpan({ documents: [document], sourceVersionId: String(f.evidence.sourceVersionId), startCodePoint: 0, endCodePoint: 3 })).toEqual([]);
+    expect(sourceReferencePropertyByIdentity({ documents: [document], patternId: document.id, referentId, propertyId: "p.injected" })).toBeUndefined();
+    expect(Object.isFrozen(document)).toBe(true);
+    expect(Object.isFrozen(document.completeProperties)).toBe(true);
+    expect(Object.isFrozen(occurrence)).toBe(true);
+  });
+
+  it.each(["coordinates", "property_identity", "referent_identity", "completeness", "occurrence_inventory", "annotation_basis"])("preserves live owned %s after an attempted mutation", field => {
+    const f = fixture(), document = f.compile().bindings!;
+    const occurrence = document.occurrences[0]!, referentId = occurrence.binding.referentId;
+    const query = { documents: [document], sourceVersionId: String(f.evidence.sourceVersionId), startCodePoint: 0, endCodePoint: 3 };
+    const original = JSON.parse(JSON.stringify(sourceReferencePropertiesForSpan(query)));
+    try {
+      if (field === "coordinates") Object.assign(occurrence.propertySpan!, { start: f.starts[1], end: f.starts[1]! + 3 });
+      else if (field === "property_identity") Reflect.set(occurrence, "propertyId", "p.foreign");
+      else if (field === "referent_identity") Reflect.set(occurrence.binding, "referentId", document.occurrences[1]!.binding.referentId);
+      else if (field === "completeness") Reflect.set(document.completeProperties[0]!, "propertyId", "p.foreign");
+      else if (field === "occurrence_inventory") Reflect.set(document, "occurrences", [document.occurrences[1]]);
+      else Reflect.set(document.basis, "kind", "qualified_inference");
+    } catch (error) { if (!(error instanceof TypeError)) throw error; }
+    expect(sourceReferencePropertiesForSpan(query)).toEqual(original);
+    expect(sourceReferencePropertyByIdentity({ documents: [document], patternId: document.id, referentId, propertyId: "p.1" })).toEqual(original[0]);
+    const other = sourceReferencePropertiesForSpan({ ...query, startCodePoint: f.starts[1]!, endCodePoint: f.starts[1]! + 3 });
+    expect(other).toHaveLength(1);
+    expect(other[0]!.referentId).not.toBe(referentId);
+  });
+
   it("keeps equal spellings in distinct referents separate after persisted cold hydration", () => {
     const f = fixture(), compiled = f.compile();
     expect(compiled.issues).toEqual([]);
