@@ -170,6 +170,10 @@ describe("cold ordinary owner program execution", () => {
     expect(builds).toHaveLength(1);
     expect(builds[0]!.result).toEqual(result.buildTest);
     expect(constructs.get(builds[0]!.constructId)?.program).toEqual(result.constructGraph.program);
+    const repairedEvent=fixture.events.find(event=>event.typeId==="ProgramRepaired"&&typeof (event.payload as {selectionId?:unknown}).selectionId==="string")!;
+    const receiptSelectionId=(repairedEvent.payload as {selectionId:string}).selectionId;
+    expect(result.constructGraph.nodes.find(node=>node.kind==="program_execution_replan_receipt")?.metadata).toMatchObject({selectionId:receiptSelectionId});
+    expect(constructs.get(builds[0]!.constructId)?.nodes.find(node=>node.kind==="program_execution_replan_receipt")?.metadata).toMatchObject({selectionId:receiptSelectionId});
     expect(programResponseReadiness({ program: result.constructGraph.program, buildTest: result.buildTest }))
       .toMatchObject({ status: "ready", reasonId: "program.readiness.verified" });
     const program = result.constructGraph.program!;

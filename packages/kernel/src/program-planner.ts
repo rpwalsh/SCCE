@@ -5,6 +5,7 @@ import type { IdFactory } from "./ids.js";
 import { canonicalStringify, clamp01, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";
 import { createCodeLearningEngine, observedProgramFormalLanguages, emittedProgramRuntimeForLanguage, nativeProgramRuntimeForLanguage, EMITTED_PROGRAM_RUNTIME, type CodeImplementationBlueprint, type CodeKnowledgeGraph, type EmittedProgramRuntime, UnsupportedProgramLanguageError } from "./code-learning.js";
 import {bindNativeRuntimePath,relativeNativeSourcePath} from "./native-runtime-paths.js";
+import {programReplanExecutionReceipt} from "./program-replan-receipt.js";
 import {programArtifactProofBinding} from "./program-artifact-proof.js";
 import { nativeGoProgram } from "./native-go-program.js";
 import { NativeProgramEmissionError } from "./native-owner-abis.js";
@@ -378,22 +379,27 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
           ]
         }).graph
         : graphWithoutHydrationBase;
+      const receipt=programReplanExecutionReceipt({intent:input.programIntent,episodeId:input.episodeId,programId:graphWithoutHydration.id,
+        ownerRequirementIds:[...plan.ownerBehaviorRequirements,...plan.ownerStatefulBehaviorRequirements].map(requirement=>requirement.id),
+        selectedTransformationIds:[...plan.selectedOwnerBehaviorTransformationIds,...plan.selectedOwnerStatefulBehaviorTransformationIds]});
+      const executionGraph=receipt?{...graphWithoutHydration,nodes:[...graphWithoutHydration.nodes,receipt],
+        edges:[...graphWithoutHydration.edges,{source:receipt.id,target:plan.sourceEmission.id,relation:"records_materialization",weight:1}]}:graphWithoutHydration;
       const hydration = createProgramHydrationContract({
-        program: graphWithoutHydration,
+        program: executionGraph,
         sourcePlanId: plan.sourceEmission.id,
         evidenceIds: input.evidence.map(span => String(span.id)),
         ownerRequirementIds: [...plan.ownerBehaviorRequirements, ...plan.ownerStatefulBehaviorRequirements].map(requirement => requirement.id),
         risks: plan.sourceEmission.risks.map(risk => risk.id)
       });
       return {
-        ...graphWithoutHydration,
+        ...executionGraph,
         hydration,
         nodes: [
-          ...graphWithoutHydration.nodes,
+          ...executionGraph.nodes,
           { id: "program-hydration", kind: "program_hydration_contract", label: hydration.schema, metadata: hydrationSummary(hydration) }
         ],
         edges: [
-          ...graphWithoutHydration.edges,
+          ...executionGraph.edges,
           { source: plan.sourceEmission.id, target: "program-hydration", relation: "hydrates_as", weight: hydration.valid ? 1 : 0.35 }
         ]
       };
