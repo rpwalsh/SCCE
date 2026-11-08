@@ -47,10 +47,10 @@ export interface ConversationalConstructionInductionReport {
 
 /**
  * Induces conversational constructions from a dialogue corpus's own replies, keyed by the act the turn before
- * them was measured to be. The frame is anti-unification over what actually recurred: a line the corpus repeats
- * with one contiguous run of lexical units exchanged is form with a variable in it, and the exchanged run is the
- * variable. Requiring that run to be exactly one unit is what kept the frames to two symbols, because a whole
- * reply line only recurs verbatim when it is short. All three gates -- how much form the frame keeps outside its
+ * them was measured to be. The frame is anti-unification over what actually recurred: contiguous exchanged runs
+ * and complete declared replies with independently owned request roles use the same source-bound compiler.
+ * Repeated uses of one request span retain one role with separate occurrences; invariant copied symbols remain
+ * literal form. Exact reply coordinates include all line breaks and punctuation. All three gates -- how much form the frame keeps outside its
  * slot, how many distinct fillers it was observed with, and how many independent source versions it spans -- are
  * Otsu splits of the corpus's own observed distributions, never declared numbers; and a frame that keeps no
  * lexical unit outside its slot is not retained: with nothing left over it is the identity, not a construction.
@@ -130,10 +130,24 @@ export function induceConversationalActConstructionTrainingSets(input: {
       frames.set(occurrence.frameKey, frame);
     });
     counts.clear();
+    // A copied symbol that never changes across this frame is form, not an independent request variable.
+    // This matters for scripts whose reversible lexical units are graphemes rather than word runs.
+    for (const frame of frames.values()) {
+      if (!frame.occurrences.some(row => row.roles)) continue;
+      const values = new Map<number, Set<string>>();
+      for (const row of frame.occurrences) for (const role of row.roles ?? []) {
+        const observed = values.get(role.slotIndex) ?? new Set<string>();
+        observed.add(units[row.spanIndex]!.points.slice(row.lineStart + role.startCodePoint, row.lineStart + role.endCodePoint).join(""));
+        values.set(role.slotIndex, observed);
+      }
+      const variable = [...values].filter(([, observed]) => observed.size > 1).map(([index]) => index).sort((a, b) => a - b);
+      frame.occurrences = frame.occurrences.map(row => ({ ...row, roles: row.roles?.filter(role => variable.includes(role.slotIndex))
+        .map(role => ({ ...role, slotIndex: variable.indexOf(role.slotIndex) })) }));
+    }
     recurringFrames += frames.size;
 
     // A position the corpus never exchanged is literal, not a low-support slot: it is not a variable at all.
-    const varying = [...frames.entries()].filter(([, frame]) => frame.fillers.size > 1);
+    const varying = [...frames.entries()].filter(([, frame]) => frame.fillers.size > 1 && frame.occurrences.every(row => !row.roles || row.roles.length > 0));
     varyingFrames += varying.length;
     // How much form a frame keeps outside its slot is what separates a scrap of a turn from a whole move.
     const sourceAligned = pairs.every(pair => units[pair.documentIndex]?.transcriptTurns !== undefined);
@@ -181,7 +195,7 @@ export function induceConversationalActConstructionTrainingSets(input: {
         surfaceStartCodePoint: row.lineStart,
         surfaceEndCodePoint: row.lineEnd,
         ...(row.antecedent ? { antecedent: row.antecedent } : {}),
-        roles: [{ slotIndex: 0, occurrenceIndex: 0, startCodePoint: row.slotStartInLine, endCodePoint: row.slotEndInLine }]
+        roles: row.roles ? [...row.roles] : [{ slotIndex: 0, occurrenceIndex: 0, startCodePoint: row.slotStartInLine, endCodePoint: row.slotEndInLine }]
       } satisfies SourceBoundConstructionObservation))
     });
   }
@@ -224,7 +238,7 @@ function boundedObservations(
       const row = queue[round];
       if (!row) continue;
       advanced = true;
-      const key = `${row.evidenceId}${row.lineStart}${row.slotStartInLine}`;
+      const key = `${row.evidenceId}${row.lineStart}${row.slotStartInLine}${JSON.stringify(row.roles ?? [])}`;
       if (seen.has(key)) continue;
       seen.add(key);
       out.push(row);

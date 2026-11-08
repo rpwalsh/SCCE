@@ -5026,13 +5026,14 @@ function conversationalActBindingRow(input: {
   if (construction.profileKey !== input.bundle.targetProfileId) return "construction_not_bundle_local";
   const occurrences = construction.roleOccurrences;
   if (!occurrences.length || occurrences.some(occurrence => occurrence.realization !== "spoken")) return "unspoken_occurrence";
-  if (occurrences.length > input.contentSpans.length) return "not_enough_conversation_spans";
 
   // Slot order follows the construction's own occurrence order; the conversation's own recency orders the fillers.
   const chosen = [...input.contentSpans].slice(0, occurrences.length).reverse();
   const sourceAligned = input.bundle.sourceExamples.some(example => example.antecedent)
     ? sourceAlignedConversationalFillers({ bundle: input.bundle, construction, turn: input.currentTurn }) : undefined;
   if (input.bundle.sourceExamples.some(example => example.antecedent) && !sourceAligned) return "no_source_request_role_alignment";
+  const requiredTurnSpans = sourceAligned ? new Set(sourceAligned.fillers.map(filler => filler.sourceTurnId)).size : occurrences.length;
+  if (requiredTurnSpans > input.contentSpans.length) return "not_enough_conversation_spans";
   const slotParts = construction.sequence.filter((part): part is LearnedConstructionSlot => part.kind === "slot");
   const fillers: ConversationalSlotFiller[] = sourceAligned?.fillers ?? [];
   for (const [slotIndex, occurrence] of (sourceAligned ? [] : occurrences).entries()) {
@@ -5091,8 +5092,8 @@ function conversationalActBindingRow(input: {
   // The literal frame keeps the corpus evidence it was induced from as form provenance; a filler may carry none.
   if (realized.realization.trace.some(part => part.kind === "slot" && part.evidenceIds.length)) return "filler_carried_evidence";
 
-  const text = usableConversationMemoryText(realized.realization.text, mouthEchoQuestionText(input.input));
-  if (!text) return `unusable_surface:${realized.realization.text.slice(0, 64)}`;
+  if (!usableConversationMemoryText(realized.realization.text, mouthEchoQuestionText(input.input))) return `unusable_surface:${realized.realization.text.slice(0, 64)}`;
+  const text = realized.realization.text;
   const formLiterals = constructionFormLiterals(construction, input.bundle.sourceVersionIds);
   const inventory = speakCommitmentInventory(text, input.input, formLiterals);
   if (!candidateCommitmentsLicensed(inventory)) return `unlicensed:${inventory.unlicensedUnits.map(unit => unit.surface).join(",")}`;
@@ -5102,6 +5103,7 @@ function conversationalActBindingRow(input: {
     ...(formLiterals.length ? { constructionFormLiterals: formLiterals } : {}),
     id: `candidate:generated:conversational-act-binding:${hasher.digestHex(realized.realization.id).slice(0, 20)}`,
     style: "surface.path.generated.conversational_act_binding",
+    exactSurface: true,
     path: "generated",
     text,
     evidenceIds: [],

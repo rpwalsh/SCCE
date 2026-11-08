@@ -270,6 +270,13 @@ export function conversationalSurfaceMeaningPlan(input: {
   hasher: Hasher;
 }): ConversationalSurfacePlanResult {
   const fillers = [...input.binding.fillers].sort((left, right) => left.slotIndex - right.slotIndex);
+  const repetitions = new Map<string, string[]>();
+  for (const filler of fillers) {
+    const key = canonicalStringify([input.roleIdForSlot(filler.slotIndex), filler.sourceTurnId, filler.startCodePoint, filler.endCodePoint, filler.surface]);
+    const occurrences = repetitions.get(key) ?? [];
+    occurrences.push(input.occurrenceIdForSlot(filler.slotIndex));
+    repetitions.set(key, occurrences);
+  }
   const variantId = (filler: ConversationalSlotFiller): string =>
     `surface.conversational_variant.${input.hasher.digestHex(canonicalStringify([input.binding.id, filler.slotIndex, filler.surface]))}`;
   const licenceFor = (filler: ConversationalSlotFiller): ConversationInternalSpanLicence => ({
@@ -285,7 +292,9 @@ export function conversationalSurfaceMeaningPlan(input: {
     plan: {
       id: `surface.conversational_plan.${input.hasher.digestHex(canonicalStringify(["surface.conversational_plan", input.binding.id]))}`,
       profileKey: input.binding.profileKey,
-      roleSignature: fillers.map(filler => input.roleIdForSlot(filler.slotIndex)),
+      roleSignature: [...new Set(fillers.map(filler => input.roleIdForSlot(filler.slotIndex)))],
+      intentionalRepetitions: [...repetitions.entries()].filter(([, occurrenceIds]) => occurrenceIds.length > 1)
+        .map(([key, occurrenceIds]) => ({ id: `surface.conversational_repetition.${input.hasher.digestHex(key)}`, occurrenceIds })),
       slots: fillers.map(filler => {
         const formClassId = input.formClassIdForSlot?.(filler.slotIndex);
         return {

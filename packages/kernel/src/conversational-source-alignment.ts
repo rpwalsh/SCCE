@@ -11,6 +11,7 @@ export function sourceAlignedConversationalFillers(input: {
   construction: LearnedConstruction;
   turn: ConversationTurnSurface;
 }): { fillers: ConversationalSlotFiller[]; matchedContextUnits: number } | undefined {
+  if (input.construction.roleOccurrences.length > 1) return jointlyAlignedConversationalFillers(input);
   const live = unicodeLexicalSegments(input.turn.surface);
   const origins = new Set(input.construction.sequence.flatMap(part => part.kind === "literal" ? part.origins.map(origin => origin.sourceExampleId) : []));
   const rows: Array<{ fillers: ConversationalSlotFiller[]; matchedContextUnits: number }> = [];
@@ -45,4 +46,72 @@ export function sourceAlignedConversationalFillers(input: {
   }
   return rows.sort((left, right) => right.matchedContextUnits - left.matchedContextUnits
     || JSON.stringify(left.fillers).localeCompare(JSON.stringify(right.fillers)))[0];
+}
+
+/** Match all antecedent variables together; other variables are never treated as immutable context. */
+function jointlyAlignedConversationalFillers(input: Parameters<typeof sourceAlignedConversationalFillers>[0]) {
+  const origins = new Set(input.construction.sequence.flatMap(part => part.kind === "literal" ? part.origins.map(origin => origin.sourceExampleId) : []));
+  const accepted = new Map<string, { fillers: ConversationalSlotFiller[]; matchedContextUnits: number }>();
+  for (const example of input.bundle.sourceExamples) {
+    if (!origins.has(example.id) || !example.antecedent) continue;
+    const request = [...example.antecedent.surface];
+    const owners = new Map<string, { start: number; end: number; roleId: string }>();
+    let valid = true;
+    for (const occurrence of input.construction.roleOccurrences) {
+      const role = example.roles.find(row => row.roleId === occurrence.roleId && row.occurrenceId === occurrence.occurrenceId);
+      if (!role) { valid = false; break; }
+      const needle = [...role.surface], matches: number[] = [];
+      for (let index = 0; needle.length && index + needle.length <= request.length; index++) {
+        if (needle.every((point, offset) => request[index + offset] === point)) matches.push(index);
+      }
+      if (matches.length !== 1) { valid = false; break; }
+      const owner = { start: matches[0]!, end: matches[0]! + needle.length, roleId: occurrence.roleId };
+      const prior = owners.get(owner.roleId);
+      if (prior && (prior.start !== owner.start || prior.end !== owner.end)) { valid = false; break; }
+      owners.set(owner.roleId, owner);
+    }
+    if (!valid || !owners.size) continue;
+    const ordered = [...owners.values()].sort((a, b) => a.start - b.start);
+    if (ordered.some((owner, index) => index > 0 && owner.start <= ordered[index - 1]!.end)) continue;
+    const literals = ordered.map((owner, index) => request.slice(index ? ordered[index - 1]!.end : 0, owner.start).join(""));
+    literals.push(request.slice(ordered.at(-1)!.end).join(""));
+    if (!literals.some(literal => unicodeLexicalSegments(literal).length)) continue;
+    const live = input.turn.surface;
+    const bindings = new Map<string, { start: number; end: number }>();
+    const solutions: Array<Map<string, { start: number; end: number }>> = [];
+    const impossible = new Set<string>();
+    // Source anchors bound every search. A second distinct solution is proof of ambiguity, not a search budget.
+    const walk = (index: number, offset: number): void => {
+      const state = `${index}:${offset}`;
+      if (solutions.length > 1 || impossible.has(state) || !live.startsWith(literals[index]!, offset)) return;
+      const before = solutions.length;
+      const start = offset + literals[index]!.length;
+      if (index === ordered.length) { if (start === live.length) solutions.push(new Map(bindings)); return; }
+      const next = literals[index + 1]!;
+      if (!next && index + 1 < ordered.length) return;
+      for (let end = next ? live.indexOf(next, start + 1) : live.length; end >= start + 1 && end <= live.length; end = next ? live.indexOf(next, end + 1) : -1) {
+        // Source anchor punctuation stays literal; every code point inside the live variable keeps its turn owner.
+        const surface = live.slice(start, end), segments = unicodeLexicalSegments(surface);
+        if (!segments.length || !surface.trim()) continue;
+        bindings.set(ordered[index]!.roleId, { start: [...live.slice(0, start)].length, end: [...live.slice(0, end)].length });
+        walk(index + 1, end);
+        bindings.delete(ordered[index]!.roleId);
+        if (solutions.length > 1) return;
+      }
+      if (solutions.length === before) impossible.add(state);
+    };
+    walk(0, 0);
+    if (solutions.length > 1) return undefined;
+    if (!solutions.length) continue;
+    const resolved = solutions[0]!;
+    const fillers = input.construction.roleOccurrences.map((occurrence, slotIndex) => {
+      const range = resolved.get(occurrence.roleId)!;
+      return { slotIndex, sourceTurnId: input.turn.turnId, startCodePoint: range.start, endCodePoint: range.end,
+        surface: [...live].slice(range.start, range.end).join("") };
+    });
+    const key = JSON.stringify(fillers);
+    accepted.set(key, { fillers, matchedContextUnits: unicodeLexicalSegments(literals.join(" ")).length });
+    if (accepted.size > 1) return undefined;
+  }
+  return accepted.values().next().value;
 }
