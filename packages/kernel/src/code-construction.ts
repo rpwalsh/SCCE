@@ -62,6 +62,7 @@ export interface LearnedCodeRepairCandidate {
   content: string;
   /** Disjoint source lines when a hypothesis joins several independently attested sites. */
   replacementRanges?: readonly { startLine: number; endLine: number; content: string }[];
+  requireSyntaxErrorReduction?: boolean;
   surface: string;
   strategy: "span" | "line" | "tail";
   averageLogProbability: number;
@@ -98,6 +99,85 @@ export interface SourceCodeRepairSite {
   start: number;
   length: number;
   grammarNodeType: string;
+}
+
+/** Grammar recovery bounds insertion sites; every inserted token and its surrounding windows must have source counts. */
+export function generateLearnedSyntaxCodeInsertions(input: {
+  models: readonly KneserNeyModel[];
+  languageId: string;
+  targetPath: string;
+  targetText: string;
+  failureObservationId: string;
+  sites: readonly SourceCodeRepairSite[];
+  maxCandidates?: number;
+}): LearnedCodeRepairCandidate[] {
+  const models = selectCorpusMixture(input.models);
+  if (!models.length || !input.failureObservationId) return [];
+  const dependency = Math.max(...models.map(model => model.order)) - 1;
+  const limit = Math.max(1, Math.floor(input.maxCandidates ?? PREDICTION_POOL));
+  const tokens = codeSurfaceTokens(input.targetText);
+  const sites = new Map(input.sites.filter(site => site.length === 0).map(site => [site.start, site]));
+  const hasher = createHasher();
+  const targetHash = hasher.digestHex(input.targetText);
+  const probability = (context: readonly string[], symbol: string) => models.reduce((sum, model) => sum + kneserNeyProbability(model, context, symbol), 0) / models.length;
+  const candidates: LearnedCodeRepairCandidate[] = [];
+  let start = 0;
+  for (let index = 1; index <= tokens.length; index++) {
+    if (index > 1) start += renderCodeTokens([CODE_SOURCE_SYMBOL, tokens[index - 1]!]).length;
+    const site = sites.get(start);
+    if (!site) continue;
+    const prefix = tokens.slice(Math.max(0, index - dependency), index);
+    const suffix = [...tokens.slice(index, index + dependency), ...(tokens.length - index < dependency ? ["</s>"] : [])].slice(0, dependency);
+    const likelihood = (sequence: readonly string[]) => {
+      const context = [...prefix];
+      let score = 0;
+      for (const symbol of sequence) {
+        score += Math.log(Math.max(Number.MIN_VALUE, probability(context, symbol)));
+        context.push(symbol);
+      }
+      return score;
+    };
+    const originalLikelihood = likelihood(suffix);
+    const alternatives = new Set(models.flatMap(model => predictKneserNey(model, prefix, limit).map(prediction => prediction.symbol)));
+    for (const symbol of alternatives) {
+      if (codeTokenIsLayout(symbol) || symbol === CODE_SOURCE_SYMBOL || symbol === "<s>" || symbol === "</s>" || symbol === "<unk>") continue;
+      const supportingModels = models.filter(model => {
+        const length = tokens.length + 2;
+        if (model.order < 2 || length < model.order) return false;
+        for (let from = Math.max(0, index - model.order + 1); from <= Math.min(index, length - model.order); from++) {
+          const window = Array.from({ length: model.order }, (_, offset) => {
+            const position = from + offset;
+            if (position === index) return symbol;
+            return position < index ? tokens[position]! : tokens[position - 1] ?? "</s>";
+          });
+          if (!observedKneserNeySequenceCount(model, window)) return false;
+        }
+        return true;
+      });
+      if (!supportingModels.length) continue;
+      const inserted = renderCodeTokens([CODE_SOURCE_SYMBOL, symbol]);
+      if (!inserted || /[\r\n]/u.test(inserted)) continue;
+      const lineStart = input.targetText.lastIndexOf("\n", start - 1) + 1;
+      const followingNewline = input.targetText.indexOf("\n", start);
+      const lineEnd = followingNewline < 0 ? input.targetText.length : followingNewline - (input.targetText[followingNewline - 1] === "\r" ? 1 : 0);
+      if (start > lineEnd) continue;
+      const line = input.targetText.slice(0, start).split("\n").length;
+      const replacementLikelihood = likelihood([symbol, ...suffix]);
+      candidates.push({
+        id: `candidate:generated:syntax:${input.languageId}:${start}:${hasher.digestHex(inserted).slice(0, 16)}`,
+        languageId: input.languageId, startLine: line, endLine: line,
+        content: input.targetText.slice(lineStart, start) + inserted + input.targetText.slice(start, lineEnd),
+        surface: inserted, strategy: "span", requireSyntaxErrorReduction: true,
+        averageLogProbability: Math.log(probability(prefix, symbol)), score: replacementLikelihood - originalLikelihood,
+        holeLength: 0, coveredSymbols: [],
+        audit: toJsonValue({ source: "code-construction.generateLearnedSyntaxCodeInsertions", failureObservationId: input.failureObservationId,
+          targetPath: input.targetPath, targetHash, sourceModelKeys: supportingModels.map(model => model.sourceKey ?? null),
+          hypothesizedSpanStart: start, hypothesizedSpanLength: 0, grammarRecoveryNodeType: site.grammarNodeType,
+          inserted, originalLikelihood, replacementLikelihood, likelihoodGain: replacementLikelihood - originalLikelihood })
+      });
+    }
+  }
+  return candidates.sort((left, right) => right.score - left.score || left.id.localeCompare(right.id)).slice(0, limit);
 }
 
 /** A failed application contract licenses hypotheses; source statistics locate them without inventing diagnostics. */

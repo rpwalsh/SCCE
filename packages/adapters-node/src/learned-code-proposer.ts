@@ -14,6 +14,7 @@ import {
   toJsonValue,
   generateLearnedCodeRepairs,
   generateLearnedBehaviorCodeRepairs,
+  generateLearnedSyntaxCodeInsertions,
   learnedCodeRepairOperations,
   materializeKneserNey,
   type CodeConstruction,
@@ -31,7 +32,7 @@ import path from "node:path";
 import type { CodeMouthContext, CodeMouthProposal } from "./code-mouth.js";
 import { typeScriptProjectSnapshot } from "./code-mouth-compiler-proposer.js";
 import { typeScriptRepairSites } from "./typescript-code-actions.js";
-import { grammaticalTreeSitterRepairs, treeSitterBehaviorRepairSites, treeSitterRepairSpans } from "./tree-sitter-repair-spans.js";
+import { grammaticalTreeSitterRepairs, treeSitterBehaviorRepairSites, treeSitterRepairSpans, treeSitterSyntaxInsertionSites } from "./tree-sitter-repair-spans.js";
 
 /**
  * The proposer that writes code instead of transcribing a fix.
@@ -194,7 +195,12 @@ export function createLearnedCodeProposer(options: LearnedCodeProposerOptions): 
       // The admitted names bound each hole individually and are not folded into the global boost: a hole whose
       // vocabulary is the whole global scope would otherwise mark 128 names equally wanted, which is the same as
       // wanting none of them and drowns out the handful the request actually spelled.
-      const generated = context.behavioralFailure && !spans.length
+      const insertionSites = diagnostics.length ? await treeSitterSyntaxInsertionSites({ targetPath: context.targetPath, text: context.targetText }) : [];
+      const insertions = insertionSites.length ? await grammaticalTreeSitterRepairs({ targetPath: context.targetPath, text: context.targetText,
+        candidates: generateLearnedSyntaxCodeInsertions({ models, languageId, targetPath: context.targetPath, targetText: context.targetText,
+          sites: insertionSites, failureObservationId: `sha256:${hasher.digestHex(JSON.stringify({ sourceHash: hasher.digestHex(context.targetText), diagnostics }))}`,
+          ...(options.maxCandidates === undefined ? {} : { maxCandidates: options.maxCandidates }) }) }) : [];
+      const generated = insertions.length ? insertions : context.behavioralFailure && !spans.length
         ? generateLearnedBehaviorCodeRepairs({ models, languageId, targetPath: context.targetPath, targetText: context.targetText,
           failureObservationId: context.behavioralFailure.observationId,
           sites: await treeSitterBehaviorRepairSites({ targetPath: context.targetPath, text: context.targetText }),
@@ -211,7 +217,7 @@ export function createLearnedCodeProposer(options: LearnedCodeProposerOptions): 
         ...(options.maxCandidates !== undefined ? { maxCandidates: options.maxCandidates } : {}),
         ...(options.corpusWeight !== undefined ? { corpusWeight: options.corpusWeight } : {})
         });
-      const candidates = languageId === "typescript" ? generated : await grammaticalTreeSitterRepairs({ targetPath: context.targetPath, text: context.targetText, candidates: generated });
+      const candidates = insertions.length || languageId === "typescript" ? generated : await grammaticalTreeSitterRepairs({ targetPath: context.targetPath, text: context.targetText, candidates: generated });
       lastCandidates = candidates;
       const state = hasher.digestHex(JSON.stringify({ languageId, targetPath: context.targetPath, sourceHash: hasher.digestHex(context.targetText), request,
         diagnostics: diagnostics.map(diagnostic => `${diagnostic.patternId ?? diagnostic.class}:${diagnostic.message}`).sort(),

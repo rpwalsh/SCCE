@@ -126,7 +126,7 @@ def totals(source):
             raise ValueError("invalid entry")
         amount = int(cells[1])
         balances[cells[0]] = balances.get(cells[0], 0) + amount
-    return balances
+    return dict(balances)
 `;
 
 interface ApplicationCase {
@@ -137,6 +137,7 @@ interface ApplicationCase {
  broken: string;
  behaviorBroken: string;
  multipleBehaviorBroken: string;
+ syntaxBroken: string;
  files: Record<string, string>;
  commands: StructuredPatchValidationPolicy["commands"];
  prepare?: () => Promise<{ files: Record<string, string>; commands: StructuredPatchValidationPolicy["commands"] }>;
@@ -146,6 +147,7 @@ const applications: ApplicationCase[] = [{
  broken: goSource.replace("balances[cells[0]] += amount", "balnces[cells[0]] += amount"),
  behaviorBroken: goSource.replace("+= amount", "-= amount"),
  multipleBehaviorBroken: goSource.replace("cells[1]", "cells[0]").replace("+= amount", "-= amount"),
+ syntaxBroken: goSource.slice(0, -2) + "\n",
  files: {
   "go.mod": "module example.invalid/ledger\n\ngo 1.24\n",
   "main.go": `package main
@@ -168,6 +170,7 @@ func TestTotals(t *testing.T){ got,err:=totals("rent,19\\nrent,-7\\nfood,5"); if
  broken: javaSource.replace("balances.merge", "balnces.merge"),
  behaviorBroken: javaSource.replace("Integer::sum", "Integer::max"),
  multipleBehaviorBroken: javaSource.replace("cells[1]", "cells[0]").replace("Integer::sum", "Integer::max"),
+ syntaxBroken: javaSource.slice(0, -2) + "\n",
  files: {
   "Main.java": `import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -188,6 +191,7 @@ public class Main { public static void main(String[] args) { String input = new 
  broken: rustSource.replace("*balances.entry", "*balnces.entry"),
  behaviorBroken: rustSource.replace("+= amount", "-= amount"),
  multipleBehaviorBroken: rustSource.replace("initial = 0", "initial = 1").replace("+= amount", "-= amount"),
+ syntaxBroken: rustSource.slice(0, -2) + "\n",
  files: {
   "Cargo.toml": '[package]\nname = "ledger"\nversion = "0.1.0"\nedition = "2021"\n',
   "src/main.rs": `mod ledger;
@@ -209,6 +213,7 @@ fn main() { let mut input=String::new(); io::stdin().read_to_string(&mut input).
  broken: cppSource.replace("balances[label] += amount", "balnces[label] += amount"),
  behaviorBroken: cppSource.replace("+= amount", "-= amount"),
  multipleBehaviorBroken: cppSource.replace("line.substr(comma+1)", "line.substr(comma+0)").replace("+= amount", "-= amount"),
+ syntaxBroken: cppSource.slice(0, -2) + "\n",
  files: {
   "ledger.hpp": "#pragma once\n#include <map>\n#include <string>\nstd::map<std::string,int> totals(const std::string& input);\n",
   "main.cpp": '#include "ledger.hpp"\n#include <iostream>\n#include <iterator>\nint main(){std::string input((std::istreambuf_iterator<char>(std::cin)),{});for(const auto& row:totals(input))std::cout<<row.first<<"="<<row.second<<"\\n";}\n',
@@ -230,6 +235,7 @@ fn main() { let mut input=String::new(); io::stdin().read_to_string(&mut input).
  broken: csharpSource.replace("balances[cells[0]] =", "balnces[cells[0]] ="),
  behaviorBroken: csharpSource.replace("previous + amount", "previous - amount"),
  multipleBehaviorBroken: csharpSource.replace("cells[1]", "cells[0]").replace("previous + amount", "previous - amount"),
+ syntaxBroken: csharpSource.slice(0, -2) + "\n",
  files: {
   "Program.cs": 'using System;\npublic static class Program {public static void Main(){foreach(var row in Ledger.Totals(Console.In.ReadToEnd()))Console.WriteLine(row.Key+"="+row.Value);}}\n',
   "LedgerTest.cs": 'using System;\npublic static class LedgerTest {public static void Main(){var got=Ledger.Totals("rent,19\\nrent,-7\\nfood,5");if(got["rent"]!=12||got["food"]!=5)throw new Exception("grouping contract");bool rejected=false;try{Ledger.Totals("bad");}catch(FormatException){rejected=true;}if(!rejected)throw new Exception("invalid entry accepted");rejected=false;try{Ledger.Totals("rent,NaN");}catch(FormatException){rejected=true;}if(!rejected)throw new Exception("invalid amount accepted");}}\n',
@@ -266,6 +272,7 @@ fn main() { let mut input=String::new(); io::stdin().read_to_string(&mut input).
  broken: pythonSource.replace("balances[cells[0]] =", "balnces[cells[0]] ="),
  behaviorBroken: pythonSource.replace("0) + amount", "0) - amount"),
  multipleBehaviorBroken: pythonSource.replace("cells[1]", "cells[0]").replace("0) + amount", "0) - amount"),
+ syntaxBroken: pythonSource.replace("return dict(balances)", "return dict(balances"),
  files: {
   "main.py": "import sys\nfrom ledger import totals\nfor label,amount in sorted(totals(sys.stdin.read()).items()):\n    print(f'{label}={amount}')\n",
   "ledger_test.py": "import unittest\nfrom ledger import totals\nclass LedgerTest(unittest.TestCase):\n    def test_grouping(self):\n        self.assertEqual(totals('rent,19\\nrent,-7\\nfood,5'), {'rent':12,'food':5})\n    def test_invalid(self):\n        with self.assertRaises(ValueError): totals('bad')\n        with self.assertRaises(ValueError): totals('rent,NaN')\nif __name__ == '__main__': unittest.main()\n",
@@ -279,11 +286,11 @@ fn main() { let mut input=String::new(); io::stdin().read_to_string(&mut input).
 }];
 
 describe("test-authored reference applications through the production workspace HTTP seam", () => {
- for (const app of applications) for (const defect of ["binding", "behavior", "multiple-behavior"] as const) it.skipIf(!existsSync(app.executable))(`${app.language} learns the ${defect} repair from source and passes native application, unit and E2E gates`, async () => {
+ for (const app of applications) for (const defect of ["binding", "behavior", "multiple-behavior", "syntax"] as const) it.skipIf(!existsSync(app.executable))(`${app.language} learns the ${defect} repair from source and passes native application, unit and E2E gates`, async () => {
   const root = await mkdtemp(path.join(tmpdir(), "scce-native-application-"));
   roots.push(root);
   const prepared = await app.prepare?.();
-  const files = { ...app.files, ...(prepared?.files ?? {}), [app.target]: defect === "binding" ? app.broken : defect === "behavior" ? app.behaviorBroken : app.multipleBehaviorBroken };
+  const files = { ...app.files, ...(prepared?.files ?? {}), [app.target]: defect === "binding" ? app.broken : defect === "behavior" ? app.behaviorBroken : defect === "syntax" ? app.syntaxBroken : app.multipleBehaviorBroken };
   for (const [relative, content] of Object.entries(files)) {
    await mkdir(path.dirname(path.join(root, relative)), { recursive: true });
    await writeFile(path.join(root, relative), content);

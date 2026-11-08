@@ -1,7 +1,33 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { LearnedCodeRepairCandidate, LearnedCodeRepairSpan, ProgramDiagnostic, SourceCodeRepairSite } from "@scce/kernel";
+import { CODE_SOURCE_SYMBOL, codeSurfaceTokens, renderCodeTokens } from "@scce/kernel";
 import { languageIdForFilePath, parseRepositorySyntax, withRepositorySyntaxTree } from "./tree-sitter-syntax.js";
+
+/** Recovery regions admit lexical boundaries; missing nodes also own their adjacent layout boundaries. */
+export async function treeSitterSyntaxInsertionSites(input: { targetPath: string; text: string }): Promise<SourceCodeRepairSite[]> {
+  const languageId = languageIdForFilePath(input.targetPath);
+  if (!languageId) return [];
+  return await withRepositorySyntaxTree({ fileId: input.targetPath, languageId, text: input.text }, root => {
+    if (!root.hasError) return [];
+    const pending = [root];
+    const recoveries: Array<{ start: number; end: number; missing: boolean; type: string }> = [];
+    while (pending.length) {
+      const node = pending.pop()!;
+      if (node.isMissing || node.isError) recoveries.push({ start: node.startIndex, end: node.endIndex, missing: node.isMissing, type: node.type });
+      pending.push(...node.children);
+    }
+    const sites = new Map<number, SourceCodeRepairSite>();
+    let offset = 0;
+    for (const symbol of [...codeSurfaceTokens(input.text), ""]) {
+      const recovery = recoveries.find(recovery => recovery.start <= offset && offset <= recovery.end
+        || recovery.missing && /^\s*$/u.test(input.text.slice(Math.min(offset, recovery.start), Math.max(offset, recovery.end))));
+      if (recovery) sites.set(offset, { start: offset, length: 0, grammarNodeType: recovery.type });
+      offset += renderCodeTokens([CODE_SOURCE_SYMBOL, symbol]).length;
+    }
+    return [...sites.values()];
+  }) ?? [];
+}
 
 /** These are source-owned hypothesis sites, not locations asserted by a compiler or a test. */
 export async function treeSitterBehaviorRepairSites(input: { targetPath: string; text: string }): Promise<SourceCodeRepairSite[]> {
@@ -31,7 +57,7 @@ export async function grammaticalTreeSitterRepairs(input: { targetPath: string; 
     lines.splice(candidate.startLine - 1, candidate.endLine - candidate.startLine + 1, ...candidate.content.split(/\r?\n/u));
     const text = lines.join(input.text.includes("\r\n") ? "\r\n" : "\n");
     const parsed = await parseRepositorySyntax({ fileId: input.targetPath, languageId, text });
-    if (parsed.errors.length <= baseline.errors.length) out.push(candidate);
+    if (candidate.requireSyntaxErrorReduction ? parsed.errors.length < baseline.errors.length : parsed.errors.length <= baseline.errors.length) out.push(candidate);
   }
   return out;
 }

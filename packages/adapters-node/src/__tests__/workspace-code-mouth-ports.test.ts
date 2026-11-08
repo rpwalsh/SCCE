@@ -8,7 +8,7 @@ import type { ProgramDiagnostic, RepairOperation } from "@scce/kernel";
 import { codeSurfaceTokens, generateLearnedBehaviorCodeRepairs, learnedCodeRepairOperations, trainKneserNey } from "@scce/kernel";
 import { runCodeMouth } from "../code-mouth.js";
 import { createWorkspaceCodeMouthPorts } from "../workspace-code-mouth-ports.js";
-import { treeSitterRepairSpans } from "../tree-sitter-repair-spans.js";
+import { treeSitterRepairSpans, treeSitterSyntaxInsertionSites } from "../tree-sitter-repair-spans.js";
 import { checkerDiagnostics } from "../tree-sitter-code-mouth-ports.js";
 import { trustedHostPatchValidationProvider } from "../structured-patch-validation.js";
 
@@ -134,6 +134,22 @@ describe("shared workspace code ports", () => {
 });
 
 describe("compiler-located shared grammar holes", () => {
+  it.each([
+    { file: "ledger.go", source: "package main\nfunc total(value int) int { return value\n}\n", missing: "}" },
+    { file: "Ledger.java", source: "class Ledger { static int total(int value) { return value; }\n}\n", missing: "}" },
+    { file: "ledger.rs", source: "fn total(value: i32) -> i32 { value\n}\n", missing: "}" },
+    { file: "ledger.cpp", source: "int total(int value) { return value;\n}\n", missing: "}" },
+    { file: "Ledger.cs", source: "class Ledger { static int Total(int value) { return value; }\n}\n", missing: "}" },
+    { file: "ledger.py", source: "def total(value):\n    return int(value)\n", missing: ")" }
+  ])("retains lexical insertion boundaries inside real grammar recovery in $file", async ({ file, source, missing }) => {
+    const start = source.lastIndexOf(missing);
+    const text = source.slice(0, start) + source.slice(start + 1);
+    const sites = await treeSitterSyntaxInsertionSites({ targetPath: file, text });
+    expect(sites).toContainEqual(expect.objectContaining({ start, length: 0 }));
+    expect(sites.every(site => site.length === 0)).toBe(true);
+    expect(await treeSitterSyntaxInsertionSites({ targetPath: file, text: source })).toEqual([]);
+  });
+
   it.each([
     { file: "ledger.go", text: "// π🙂\npackage ledger\nfunc total() int { return balnces }\n" },
     { file: "Ledger.java", text: "// π🙂\nclass Ledger { int total() { return balnces; } }\n" },
