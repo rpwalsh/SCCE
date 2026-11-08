@@ -5,7 +5,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { prepareExtractiveQa } from "../../../../tools/prepare-extractive-qa.mjs";
+import { prepareExtractiveQa, type ExtractiveQaPreparedTranscript, type ExtractiveQaSourceMetadata } from "../../../../tools/prepare-extractive-qa.mjs";
 import { validateDeclaredTranscriptSource } from "../dialogue-communicative-act-learning.js";
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
@@ -20,7 +20,7 @@ async function fixture() {
   const source = { version: "v2.0", data: [{ title: "original.article.one", paragraphs: [paragraph("qa.1"), paragraph("qa.2")] },
     { title: "original.article.two", paragraphs: [paragraph("qa.3")] }] };
   const inputPath = join(root, "train.json");
-  const write = async () => { const bytes = JSON.stringify(source); await writeFile(inputPath, bytes); return {
+  const write = async (): Promise<ExtractiveQaSourceMetadata> => { const bytes = JSON.stringify(source); await writeFile(inputPath, bytes); return {
     dataset: "test-authored-extractive-fixture", source: "fixture://pinned-human-extractive-training", split: "train", authorship: "human_authored",
     sourceLicense: "fixture", sha256: createHash("sha256").update(bytes).digest("hex") }; };
   return { root, source, inputPath, context, write };
@@ -29,7 +29,7 @@ it("stores each paragraph once, verifies code-point answer offsets and preserves
   const f = await fixture(), metadata = await f.write();
   const prep = async (name: string, maxOutputFileBytes: number) => {
     const outputDir = join(f.root, name), result = await prepareExtractiveQa({ inputPath: f.inputPath, outputDir, metadata, limits: { maxOutputFileBytes } });
-    const raw = await Promise.all(result.outputs.map(async output => JSON.parse(await readFile(join(outputDir, output.path), "utf8"))));
+    const raw = await Promise.all(result.outputs.map(async output => JSON.parse(await readFile(join(outputDir, output.path), "utf8")) as ExtractiveQaPreparedTranscript));
     const docs = raw.map(validateDeclaredTranscriptSource);
     return { result, raw, docs, turns: docs.flatMap(doc => doc.turns) };
   };
@@ -40,10 +40,10 @@ it("stores each paragraph once, verifies code-point answer offsets and preserves
   expect(new Set(whole.turns.map(turn => turn.sourceRecordId))).toEqual(new Set(["qa.1", "qa.1.second", "qa.2", "qa.2.second", "qa.3", "qa.3.second"]));
   expect(whole.turns[0]!.sourceFamilyId).toBe(whole.turns[4]!.sourceFamilyId);
   expect(whole.turns[0]!.sourceFamilyId).not.toBe(whole.turns[8]!.sourceFamilyId);
-  expect(whole.raw[0].text.split(f.context)).toHaveLength(4);
-  expect(whole.raw[0].turns.filter(turn => turn.supportingSourceRanges).every(turn => turn.supportingSourceRanges.every(range => !Object.hasOwn(range, "surface")))).toBe(true);
+  expect(whole.raw[0]!.text.split(f.context)).toHaveLength(4);
+  expect(whole.raw[0]!.turns.filter(turn => turn.supportingSourceRanges).every(turn => turn.supportingSourceRanges!.every(range => !Object.hasOwn(range, "surface")))).toBe(true);
   expect(whole.turns.filter(turn => turn.supportingSourceRanges).every(turn => turn.supportingSourceRanges!.every(range => range.surface === f.context))).toBe(true);
-  const wrong = structuredClone(whole.raw[0]); wrong.turns[1].supportingSourceRanges[0].surface = "foreign context";
+  const wrong = structuredClone(whole.raw[0]!); Object.assign(wrong.turns[1]!.supportingSourceRanges![0]!, { surface: "foreign context" });
   expect(() => validateDeclaredTranscriptSource(wrong)).toThrow("invalid declared transcript support");
 });
 it("rejects changed hashes, invalid original offsets and duplicate original QA IDs without publishing partial output", async () => {
