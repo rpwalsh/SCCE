@@ -1,8 +1,9 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import {describe,it,expect} from "vitest";
+import {describe,it,expect,vi} from "vitest";
 import {acquireSourceComputationConstructions,verifySourceComputationConstruction,evaluateSourceComputationRequest,sourceComputationResultVerified,sourceComputationBindingIdForRequest} from "../source-computation-acquisition.js";
 import {createHasher,canonicalStringify,createClock,createIdFactory,createScceKernel,createInMemoryDialogueMemoryStore,createLanguageAcquisitionEngine,LANGUAGE_IDENTITY_SCHEMA,LANGUAGE_IDENTITY_DISCOVERY_RECIPE,type EvidenceSpan,type LanguagePatternRecord,type LanguageIdentityRecord,type TranscriptTurn} from "../index.js";
+import * as mouthModule from "../mouth.js";
 import {sourceComputationForRequest} from "../source-computation-runtime.js";
 import {storageFixtureForEvaluation} from "./evidence-promotion-evaluation-fixture.js";
 import {exactProgramForExpression,exactComputationForExpression} from "../exact-computation.js";
@@ -92,6 +93,22 @@ describe("source-owned arithmetic construction acquisition",()=>{
   const result=await sourceComputationForRequest(requestContext);
   expect(result?.evaluation.resultText).toBe("138");expect(queries).toHaveLength(1);
   expect(queries[0]).toEqual({patternSchemas:["scce.source_owned_computation_construction.v1"],sourceSystem:"dialogue",sourceComputationBindingId:sourceComputationBindingIdForRequest(locales[0].question(101,37),hasher)});
+ });
+ it("retains the verified computation and reports a typed surface withholding instead of an unrelated proof fallback",async()=>{
+  const data=acquired(locales[0]),clock=createClock({fixedTime:1,stepMs:1}),fixture=storageFixtureForEvaluation({evidence:data.evidence,clockNow:()=>clock.now()});
+  fixture.storage.languageMemory.listLanguagePatterns=async query=>query?.patternSchemas?.includes("scce.source_owned_computation_construction.v1")?data.compiled.families.map(row=>row.pattern):[];
+  fixture.storage.userModelClaims={putClaim:async()=>undefined,listClaims:async()=>[]};fixture.storage.taskResumption={putSnapshot:async()=>undefined,getLatestSnapshot:async()=>null};fixture.storage.documentGeneration={putSession:async()=>undefined,getSession:async()=>null,compareAndPutSession:async()=>({stored:true,currentUpdatedAt:null})};fixture.storage.dialogueMemory=createInMemoryDialogueMemoryStore();
+  const factory=mouthModule.createMouth,wrapped=vi.spyOn(mouthModule,"createMouth").mockImplementation(options=>{
+   const mouth=factory(options);return {...mouth,speak:async input=>{const spoken=await mouth.speak(input);return input.verifiedComputation?{...spoken,text:"",surfaceValid:false,realizationAvailability:{status:"realization_unavailable" as const,reasonId:"test_owned_surface_rejected",eligibleCandidateCount:0}}:spoken;}};
+  });
+  try{
+   const kernel=createScceKernel({storage:fixture.storage,files:{streamPath:async function*(){}},buildTest:{executeProgram:async()=>{throw Error("Computation must not execute a program process");}},clock,idFactory:createIdFactory({clock,hasher,deterministicReplay:true}),deterministicReplay:true});
+   const result=await kernel.turn({text:locales[0].question(101,37),requestedAuthority:"factual"});
+   expect(result.answer).toBe("");expect(result.assistantForce).toBe("insufficient_support");
+   expect(result.realizationAvailability).toMatchObject({status:"realization_unavailable"});
+   const evaluated=result.events.find(event=>event.typeId==="ComputationEvaluated");expect(evaluated?.payload).toMatchObject({resultText:"138",surfaceEmitted:false});
+   expect(result.events.filter(event=>event.typeId==="SemanticEntailmentChecked")).toHaveLength(1);
+  }finally{wrapped.mockRestore();}
  });
  it.each(locales)("answers an ordinary unseen $id question through real kernel/Mouth with trained numeric priors and refuses after source revocation",async locale=>{
   const data=acquired(locale),clock=createClock({fixedTime:1,stepMs:1}),fixture=storageFixtureForEvaluation({evidence:data.evidence,clockNow:()=>clock.now()});let active=true;

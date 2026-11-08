@@ -1655,7 +1655,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           proofCarryingAnswer: pcaReport.audit,
           languageAcquisition: toJsonValue({ skipped: true, reason: "kernel.turn.deterministic_arithmetic" }),
           mouth: computationSpoken ? toJsonValue(computationSpoken.realizationTrace) : toJsonValue({ skipped: true, reason: "kernel.turn.deterministic_arithmetic" }),
-          ...(computationSpoken?{realizationAvailability:toJsonValue(!computationSurfaceAccepted&&computationSpoken.realizationAvailability.status==="realized"?{status:"realization_unavailable",reasonId:"computation_surface_contract_mismatch",eligibleCandidateCount:0}:computationSpoken.realizationAvailability)}:{}),
+          ...(computationSpoken?{realizationAvailability:toJsonValue(!computationSurfaceAccepted?{status:"realization_unavailable",reasonId:"computation_surface_contract_rejected",eligibleCandidateCount:0}:computationSpoken.realizationAvailability)}:{}),
           corrections: correctionMemory.summarize(detectedCorrections),
           userModelStore: userModelStoreToJson(userModelStore),
           userModelProvenance: userModelStoreProvenanceSummary(userModelStore),
