@@ -1,0 +1,7 @@
+{
+  "arguments": [
+    { "kind": "finite_binary64" },
+    { "kind": "finite_binary64" },
+    { "kind": "finite_binary64" }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "kind": "binary",
+  "operator": "maximum",
+  "left": { "kind": "argument", "index": 1 },
+  "right": {
+    "kind": "binary",
+    "operator": "minimum",
+    "left": { "kind": "argument", "index": 0 },
+    "right": { "kind": "argument", "index": 2 }
+  }
+}
