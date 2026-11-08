@@ -114,7 +114,8 @@ export async function grade(options) {
     }
     cell[outcome]++;
     if (['wins', 'ties', 'losses'].includes(outcome)) cell.pairs++;
-    cell.cases.push({ id: row.id, outcome, details, systemErrors: receipts.map(r => r?.error ?? null) });
+    cell.cases.push({ id: row.id, outcome, details, systemErrors: receipts.map(r => r?.error ?? null),
+      measurements: receipts.map(r => r ? { elapsedMs: r.elapsedMs, measured: r.measured } : null) });
   }
   for (const cell of cells) {
     const decisive = cell.wins + cell.losses;

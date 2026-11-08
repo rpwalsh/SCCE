@@ -4,6 +4,7 @@ import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { counterbalancedOrder } from '../head-to-head/measure.mjs';
 import { hash, canonical, checkBundle, packetFor, signed, verified, readJson, writeJson, safeRelative, jsonLines } from './protocol.mjs';
+import { startProcessMeasurement } from './process-resources.mjs';
 
 export function scrubEnvironment(keys = []) {
   const env = {};
@@ -18,17 +19,24 @@ export function materializeFiles(steps, outputs) {
   }
   return files;
 }
-export async function execute(argv, { cwd, input, timeMs, outputBytes, environmentKeys = [] }) {
+export async function execute(argv, { cwd, input, timeMs, outputBytes, environmentKeys = [], processPolicy, systemId, processDependencies }) {
+  const executionStarted = performance.now();
+  let resourceStop;
+  const monitor = processPolicy ? await startProcessMeasurement({ policy: processPolicy, systemId, onExceeded: () => resourceStop?.('process-rss-budget') }, processDependencies) : undefined;
   return new Promise((resolve, reject) => {
     const child = spawn(argv[0], argv.slice(1), { cwd, env: scrubEnvironment(environmentKeys), shell: false, windowsHide: true, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] });
-    let stdout = '', stderr = '', bytes = 0, failure;
+    const childStarted = performance.now();
+    let stdout = '', stderr = '', bytes = 0, failure, spawnErrorCode, spawnError, closed = false;
     const decoders = { stdout: new StringDecoder('utf8'), stderr: new StringDecoder('utf8') };
     function stop(reason) {
       failure ??= reason;
+      if (closed) return;
       if (process.platform !== 'win32') { try { process.kill(-child.pid, 'SIGKILL'); } catch {} }
       else child.kill('SIGKILL');
     }
-    const timer = setTimeout(() => stop('time-budget'), timeMs);
+    resourceStop = stop;
+    const timer = setTimeout(() => stop('time-budget'), Math.max(0, timeMs - (performance.now() - executionStarted)));
+    child.once('spawn', () => monitor?.watch(child.pid));
     function consume(kind, chunk) {
       bytes += chunk.length;
       if (bytes > outputBytes) return stop('output-budget');
@@ -36,9 +44,13 @@ export async function execute(argv, { cwd, input, timeMs, outputBytes, environme
     }
     child.stdout.on('data', c => consume('stdout', c));
     child.stderr.on('data', c => consume('stderr', c));
-    child.on('error', error => { clearTimeout(timer); reject(error); });
+    child.on('error', error => { failure ??= 'adapter-spawn'; spawnError = error; spawnErrorCode = error.code ?? 'spawn-unavailable'; });
     child.stdin.on('error', () => {});
-    child.on('close', code => { clearTimeout(timer); stdout += decoders.stdout.end(); stderr += decoders.stderr.end(); resolve({ code, stdout, stderr, bytes, failure }); });
+    child.on('close', async code => { closed = true; clearTimeout(timer); const adapterWallMs = performance.now() - childStarted;
+      stdout += decoders.stdout.end(); stderr += decoders.stderr.end();
+      const resources = monitor ? await monitor.finish() : null;
+      const result = { code, stdout, stderr, bytes, failure, spawnErrorCode, adapterWallMs, resources };
+      if (spawnError) { spawnError.execution = result; reject(spawnError); } else resolve(result); });
     child.stdin.end(input);
   });
 }
@@ -113,6 +125,7 @@ export async function collect({ bundleFile, bundleDigest, out, shardIndex = 0, s
           const started = performance.now();
           const outputs = [];
           let status = 'ok', error = null, outputBytes = 0, submittedArtifactBytes = 0;
+          const processMeasurements = [];
           const workspace = path.resolve(out, 'work', hash([packet.id, system.id, Date.now(), Math.random()]));
           await mkdir(workspace, { recursive: true });
           try {
@@ -129,7 +142,9 @@ export async function collect({ bundleFile, bundleDigest, out, shardIndex = 0, s
               const input = { ...shared, history: outputs.map(o => o.response) };
               const executionRemaining = Math.floor(plan.budgets.timeMs - (performance.now() - started));
               if (executionRemaining <= 0 || outputBytes >= plan.budgets.outputBytes) throw new Error('case-budget');
-              const result = await execute(system.argv, { cwd: stepDir, input: `${canonical(input)}\n`, timeMs: executionRemaining, outputBytes: plan.budgets.outputBytes - outputBytes, environmentKeys: system.environmentKeys });
+              const result = await execute(system.argv, { cwd: stepDir, input: `${canonical(input)}\n`, timeMs: executionRemaining, outputBytes: plan.budgets.outputBytes - outputBytes, environmentKeys: system.environmentKeys,
+                processPolicy: plan.isolation.processMeasurement, systemId: system.id });
+              processMeasurements.push({ stepIndex, adapterWallMs: result.adapterWallMs, resources: result.resources });
               outputBytes += result.bytes;
               if (result.failure || result.code !== 0) throw new Error(result.failure ?? 'adapter-exit');
               const lines = result.stdout.trim().split(/\r?\n/u);
@@ -149,8 +164,9 @@ export async function collect({ bundleFile, bundleDigest, out, shardIndex = 0, s
               outputs.push({ publicInputHash: hash(shared), response: { status: 'ok', answer: response.answer, artifacts }, identity: response.identity ?? null });
               if (performance.now() - started > plan.budgets.timeMs) throw new Error('time-budget');
             }
-          } catch (e) { status = 'error'; error = e.message; }
-          receipt = signed({ schema: 'scce.blind-receipt.v1', bundleDigest, caseId: packet.id, systemId: system.id, packetHash: hash(packet), budgetsHash: hash(plan.budgets), systemHash: hash(system), status, error, outputs, elapsedMs: performance.now() - started, measured: { outputBytes, submittedArtifactBytes } });
+          } catch (e) { status = 'error'; error = e.message;
+            if (e.execution) processMeasurements.push({ stepIndex: outputs.length, adapterWallMs: e.execution.adapterWallMs, resources: e.execution.resources, spawnErrorCode: e.execution.spawnErrorCode }); }
+          receipt = signed({ schema: 'scce.blind-receipt.v1', bundleDigest, caseId: packet.id, systemId: system.id, packetHash: hash(packet), budgetsHash: hash(plan.budgets), systemHash: hash(system), status, error, outputs, elapsedMs: performance.now() - started, measured: { outputBytes, submittedArtifactBytes, processMeasurements } });
           await writeJson(path.join(out, 'receipts', name), receipt);
         }
         const event = signed({ bundleDigest, previous: state.previous, receipt: name, receiptDigest: receipt.digest });

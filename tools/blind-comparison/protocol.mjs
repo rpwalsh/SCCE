@@ -3,6 +3,7 @@ import { createReadStream } from 'node:fs';
 import { mkdir, readFile, writeFile, open, link, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { stableStringify, sha256Text } from '../sealed-eval/harness/lib/util.mjs';
+import { validateProcessPolicy } from './process-resources.mjs';
 
 export const hash = value => sha256Text(stableStringify(value));
 export const canonical = stableStringify;
@@ -61,6 +62,12 @@ export function validatePlan(plan) {
     const adapter = plan.artifacts.find(a => a.id === s.adapterArtifact);
     if (!path.isAbsolute(adapter.path) || !s.argv.includes(adapter.path)) throw new Error('Command must invoke the pinned absolute adapter path');
   }
+  if (plan.isolation.processMeasurement) {
+    const policy = validateProcessPolicy(plan.isolation.processMeasurement);
+    if (canonical(Object.keys(policy.systems).sort()) !== canonical(plan.systems.map(system => system.id).sort())) throw new Error('Process policy must declare both registered systems');
+    if (!plan.artifacts.some(artifact => artifact.id === 'process-policy' && artifact.role === 'isolation')
+      || !plan.artifacts.some(artifact => artifact.id === 'process-measurement-provider' && artifact.role === 'implementation')) throw new Error('Pin process policy and measurement provider before selection');
+  }
   if (!Array.isArray(plan.judges) || !plan.judges.length || new Set(plan.judges).size !== plan.judges.length || plan.judges.some(j => typeof j !== 'string' || plan.systems.some(s => s.id === j))) throw new Error('Register independent human judges');
   if (plan.purpose === 'heldout') {
     if (!plan.artifacts.some(a => a.role === 'model') || !/^[a-f0-9]{64}$/u.test(plan.systems[1].expectedModelDigest ?? '') || plan.systems[1].identity.model !== 'qwen2.5:3b') throw new Error('Heldout comparison requires the pinned local Qwen model manifest and digest');
@@ -79,6 +86,7 @@ export async function freeze(planFile, out) {
   const base = path.dirname(path.resolve(planFile));
   const artifacts = [];
   for (const a of plan.artifacts) artifacts.push({ ...a, path: path.resolve(base, a.path), sha256: await fileHash(path.resolve(base, a.path)) });
+  if (plan.isolation.processMeasurement && canonical(await readJson(artifacts.find(artifact => artifact.id === 'process-policy').path)) !== canonical(plan.isolation.processMeasurement)) throw new Error('Process policy artifact differs from frozen plan');
   if (plan.purpose === 'heldout') await checkCoverage({ ...plan, artifacts });
   const value = signed({ schema: 'scce.blind-freeze.v1', plan: { ...plan, artifacts }, createdAt: new Date().toISOString() });
   await writeJson(out, value);
