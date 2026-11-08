@@ -1,0 +1,54 @@
+{
+  "schema": "scce.branch_integration_review.v1",
+  "reviewedAt": "2026-11-08",
+  "repository": "rpwalsh/SCCE",
+  "workflow": {
+    "main": "Fast-forward pushes of checked changes; no deployment was performed.",
+    "devAtReview": "No local or remote dev branch existed.",
+    "extraLocalRefs": "Worker worktrees, original commits subsequently cherry-picked under new IDs, and historical review branches.",
+    "refDeletion": "None. Active worktree refs and unreconciled historical work are retained."
+  },
+  "remoteBranches": [
+    {
+      "ref": "main",
+      "headAtInitialAudit": "2280e62920c91f1f33ccf43c374bce24535c1fcf",
+      "verifiedPush": "b61f36d4",
+      "status": "Current integration branch; later local changes receive their own checks before another push."
+    },
+    {
+      "ref": "codex/wikipedia-http-streaming",
+      "headAtAudit": "e29ad22ec5587679fe8265094dbaca1157256d63",
+      "status": "Runtime, parser, descriptor and acquisition work selectively integrated after the verified main push.",
+      "integrationCommit": "8dea847f",
+      "preservedContracts": ["One ingestion/training/checkpoint pipeline for local and pinned HTTP input", "Bounded reads, exact ranges and source checksums", "Owner cancellation and safe incomplete checkpoints", "Local archive input unchanged"],
+      "excluded": ["Historical validation receipt from another build"]
+    },
+    {
+      "ref": "codex/scce-corpus-20261108",
+      "headAtAudit": "74a632d744dc039ad856ae6ffa7737e82de592d8",
+      "status": "Useful acquisition tools reconciled into the existing local tooling.",
+      "integrationCommit": "8dea847f",
+      "included": ["GitHub acquisition", "Tatoeba acquisition", "Pinned Wikipedia indexes and input descriptors", "Bounded source-block inspection"],
+      "excluded": ["Duplicate acquisition plan/release path", "Hosted mirrors", "Actions workflows", "Deployment automation"]
+    },
+    {
+      "ref": "fix/realization-proof-gate-20260921",
+      "headAtAudit": "9e378752ed337d874b2736d891105b2aff040855",
+      "status": "Disconnected historical source retained. Confirmed missing semantic mutation and translation-occurrence corrections were ported selectively.",
+      "integrationCommit": "0343afb8",
+      "preservedChecks": ["Quantity, year and question-force mutation rejection", "Repeated translated words and punctuation"]
+    },
+    {
+      "ref": "ingestion-rewrite-20260919",
+      "headAtAudit": "cd7a17a200bae0acdd2a870824505b0112765818",
+      "status": "Disconnected historical architecture/schema retained for reconciliation. No bulk merge or claim that all historical functionality is redundant."
+    },
+    {
+      "ref": "review/ingestion-graph-refinement",
+      "headAtAudit": "09718b7b888f23c99c4456edae9977b958c5ec0d",
+      "status": "Disconnected historical architecture/schema retained for reconciliation. No bulk merge or deletion of potentially required implementation."
+    }
+  ],
+  "auditMethod": ["Fetched all remote heads without pruning", "Compared ancestry and patch identity", "Reviewed unmatched postimage hunks and surviving behavior", "Selective integration with producer, ownership and native validation checks", "Preserved superseded or unverified work rather than inferring obsolescence from branch names"],
+  "limits": "Patch equivalence describes code history, not an independent capability qualification. This review does not certify universal model superiority or production release."
+}

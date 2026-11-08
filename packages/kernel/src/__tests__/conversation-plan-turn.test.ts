@@ -7,6 +7,7 @@ import { createClock, createHasher, createIdFactory, createLanguageAcquisitionEn
   CORPUS_SOURCE_SYSTEM_IDS, CORPUS_ROLE_IDS, toJsonValue,
   type EvidenceSpan, type ScceStorage, type TranscriptTurn } from "../index.js";
 import { storageFixtureForEvaluation } from "./evidence-promotion-evaluation-fixture.js";
+import { jsonRecord } from "../kernel-answer-primitives.js";
 
 it("persists a genuine human source-owned nonassertive plan on an ordinary turn without documentary proof", async () => {
   const human = JSON.parse(readFileSync(new URL("./fixtures/oasst-human-russian-creative-pair.json", import.meta.url), "utf8")) as { text: string; turns: TranscriptTurn[] };
@@ -46,7 +47,7 @@ it("persists a genuine human source-owned nonassertive plan on an ordinary turn 
   const metadata = (conversationId: string) => ({ dialogue: { conversationId }, session: { sessionId: conversationId, recentTurns: [] } });
   const out = await coldKernel().turn({ text: human.turns[0]!.surface, requestedAuthority: "creative", metadata: metadata(conversationId) });
   expect(out.answer.replace(/\s+/gu, " ")).toBe(human.turns[1]!.surface.replace(/\s+/gu, " "));
-  expect(out.evidence.every(span => span.trustVector.forceClass === "session_owner_turn_evidence")).toBe(true);
+  expect(out.evidence.every(span => jsonRecord(span.trustVector).forceClass === "session_owner_turn_evidence")).toBe(true);
   const memory = () => createConversationPlanMemory({ store: dialogueMemory, hasher });
   const saved = await memory().latest(conversationId);
   expect(saved).toBeDefined();
