@@ -226,6 +226,8 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
           hasher
         })
       }));
+      const lexicalClassDocuments = initialLattices.map(({ lattice }) => lexicalUnits(lattice)
+        .map(unit => ({ normalized: unit.normalized, scriptId: unit.scriptId })));
       const populationId = `surface_population.${hasher.digestHex(JSON.stringify(
         documents.map(document => [document.id, document.sourceVersionId ?? null]).sort()
       )).slice(0, 32)}`;
@@ -350,7 +352,7 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
       const scripts = induceScripts(corpusText);
       const morphology = induceMorphology(lexicalStrings, hasher).slice(0, 2048);
       const syntaxTemplates = induceSyntaxTemplates(documents, hasher).slice(0, 2048);
-      const lexicalClasses = induceLexicalClasses(documents, hasher, input.maxLexicalClasses ?? 1024);
+      const lexicalClasses = induceLexicalClasses(lexicalClassDocuments, hasher, input.maxLexicalClasses ?? 1024);
       const morphologyClassBindings = induceMorphologyClassBindings(morphology, lexicalClasses, hasher).slice(0, 2048);
       const semanticFrames = induceSemanticFrames(
         documents,
@@ -847,7 +849,7 @@ function induceSyntaxTemplates(documents: readonly LanguageInductionDocument[], 
  * real lexical class. This is additive and self-contained: it does not
  * change n-gram fluency induction.
  */
-function induceLexicalClasses(documents: readonly LanguageInductionDocument[], hasher: Hasher, maxClasses: number): LexicalClass[] {
+function induceLexicalClasses(documents: readonly (readonly { normalized: string; scriptId: string }[])[], hasher: Hasher, maxClasses: number): LexicalClass[] {
   const candidateLimit = 768;
   const contextLimitPerSymbol = 24;
   const minSymbolSupport = 3;
@@ -858,14 +860,7 @@ function induceLexicalClasses(documents: readonly LanguageInductionDocument[], h
   const symbolScripts = new Map<string, string>();
   const symbolContexts = new Map<string, Map<string, number>>();
 
-  for (const doc of documents) {
-    const lexical = lexicalUnits(buildSurfaceLattice({
-      documentId: doc.id,
-      text: doc.text,
-      sourceVersionId: doc.sourceVersionId,
-      evidenceIds: doc.evidenceIds,
-      hasher
-    }));
+  for (const lexical of documents) {
     for (let i = 0; i < lexical.length; i++) {
       const symbol = lexical[i]!.normalized;
       if (!symbol) continue;
