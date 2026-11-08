@@ -1178,7 +1178,7 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
         .filter(run => !named.has(run));
       const spread = new Map<string, number>();
       if (candidates.length) {
-        const spreadRows = await queryEvidenceSpread<{ run: string; sources: number }>(storage,
+        const spreadRows = await queryIndexedEvidence<{ run: string; sources: number }>(storage,
           `SELECT candidate.run AS run, measured.sources AS sources
            FROM unnest($1::text[]) AS candidate(run)
            CROSS JOIN LATERAL (
@@ -1221,7 +1221,7 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
            ) sampled
          ) AS sources`;
       });
-      const rows = await queryEvidenceSpread<{ unit: string; sources: number }>(storage, measurements.join("\nUNION ALL\n"), params);
+      const rows = await queryIndexedEvidence<{ unit: string; sources: number }>(storage, measurements.join("\nUNION ALL\n"), params);
       return rows.map(row => Number(row.sources ?? 0)).filter(value => value > 0);
     },
     async searchEvidence(query: EvidenceQuery) {
@@ -1250,7 +1250,7 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
         // the whole corpus: it needs no extra scan beyond the join already
         // being performed, and only the RELATIVE rarity of the query's own
         // features affects the ordering.
-        const rows = await storage.query<EvidenceRow>(
+        const rows = await queryIndexedEvidence<EvidenceRow>(storage,
           `WITH requested_features AS (
              SELECT feature, feature_ord
              FROM unnest($1::text[]) WITH ORDINALITY AS requested(feature, feature_ord)
@@ -2064,7 +2064,8 @@ async function upsertGraphHyperedgesBatch(storage: PostgresStorageAdapter, edges
  */
 const SPREAD_SCAN_CAP = 1500;
 
-async function queryEvidenceSpread<T>(storage: PostgresStorageAdapter, sql: string, params: unknown[]): Promise<T[]> {
+/** TOAST pointers understate array-membership cost; scope indexed retrieval to its transaction and restore the caller. */
+async function queryIndexedEvidence<T>(storage: PostgresStorageAdapter, sql: string, params: unknown[]): Promise<T[]> {
   return storage.transaction(async () => {
     const [planner] = await storage.query<{ enabled: string }>("SELECT current_setting('enable_seqscan') AS enabled");
     if (!planner) throw new Error("PostgreSQL planner setting is unavailable");

@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createPostgresStorageAdapter, type PostgresStorageAdapter } from "../postgres.js";
 
 type PlannerSetting = "on" | "off";
-type Method = "arbitration" | "distribution";
+type Method = "arbitration" | "distribution" | "anchor_search";
 interface Statement { sql: string; channel: "pool" | "client"; setting: PlannerSetting; active: boolean }
 const adapters: PostgresStorageAdapter[] = [];
 afterEach(async () => { for (const adapter of adapters.splice(0)) await adapter.close(); });
@@ -42,7 +42,6 @@ function fixture(method: Method, initial: PlannerSetting, failure?: { phase: "me
       local = undefined;
       return { rows: [] };
     }
-    if (sql.includes("source_title")) return { rows: sql.includes("ORDER BY random()") ? [{ unit: "alpha" }, { unit: "quiet" }] : [] };
     if (sql.includes("current_setting('enable_seqscan')")) return { rows: [{ enabled: setting() }] };
     if (sql === "SET LOCAL enable_seqscan = off") {
       if (!active || channel !== "client") throw new Error("SET LOCAL escaped the transaction client");
@@ -56,13 +55,14 @@ function fixture(method: Method, initial: PlannerSetting, failure?: { phase: "me
       local = params[0];
       return { rows: [] };
     }
-    if (sql.includes("count(DISTINCT source_id)::int AS sources")) {
+    if (sql.includes("count(DISTINCT source_id)::int AS sources") || method === "anchor_search" && sql.includes("WITH requested_features AS")) {
       measurements.push({ active, setting: setting() });
       if (!active || channel !== "client" || setting() !== "off") throw new Error("spread measurement escaped its bounded planner scope");
       if (failure?.phase === "measure") fail(failure.error);
       return { rows: method === "arbitration" ? [{ run: "alpha beta", sources: 3 }, { run: "quiet", sources: 0 }]
-        : [{ unit: "alpha", sources: 3 }, { unit: "quiet", sources: 0 }] };
+        : method === "distribution" ? [{ unit: "alpha", sources: 3 }, { unit: "quiet", sources: 0 }] : [] };
     }
+    if (sql.includes("source_title")) return { rows: sql.includes("ORDER BY random()") ? [{ unit: "alpha" }, { unit: "quiet" }] : [] };
     throw new Error("unexpected offline SQL");
   }
   const client = { query: (sql: string, params?: readonly unknown[]) => query("client", sql, params), release: () => { releases += 1; } };
@@ -73,14 +73,15 @@ function fixture(method: Method, initial: PlannerSetting, failure?: { phase: "me
     afterFailure: () => failureIndex === undefined ? [] : statements.slice(failureIndex + 1).map(row => row.sql),
     run: async () => method === "arbitration"
       ? [...(await adapter.evidence.sourceIdentityArbitration!({ text: "alpha beta", runs: ["alpha beta", "quiet"] })).spread]
-      : adapter.evidence.sourceSpreadDistribution!(2) };
+      : method === "distribution" ? adapter.evidence.sourceSpreadDistribution!(2)
+        : adapter.evidence.searchEvidence({ features: ["anchor:sym:alpha"], status: "promoted", openingBlockPrior: false, limit: 96 }) };
 }
 
-describe.each<Method>(["arbitration", "distribution"])("real adapter transaction ownership for source spread %s", method => {
+describe.each<Method>(["arbitration", "distribution", "anchor_search"])("real adapter transaction ownership for indexed evidence %s", method => {
   it.each<PlannerSetting>(["on", "off"])("restores the caller's %s setting before committing and releasing", async initial => {
     const state = fixture(method, initial);
     const result = await state.run();
-    expect(result).toEqual(method === "arbitration" ? [["alpha beta", 3], ["quiet", 0]] : [3]);
+    expect(result).toEqual(method === "arbitration" ? [["alpha beta", 3], ["quiet", 0]] : method === "distribution" ? [3] : []);
     expect(state.measurements).toEqual([{ active: true, setting: "off" }]);
     const commit = state.statements.find(row => row.sql === "COMMIT");
     expect(commit?.setting).toBe(initial);
