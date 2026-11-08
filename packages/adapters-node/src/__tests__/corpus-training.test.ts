@@ -2504,7 +2504,9 @@ describe("dialogue corpus training", () => {
       const emptyReceipt = savedCheckpoints.find(row => row.id.startsWith("dialogue_request_authority_compilation_"))!;
       expect(recordOf(emptyReceipt.metadata).report).toMatchObject({ examples: 1, evidenceBoundExamples: 1, patternsPersisted: 0 });
       expect(savedCheckpoints.filter(row => row.id.startsWith("dialogue_request_authority_compilation_"))).toHaveLength(1);
-      expect(savedCheckpoints.filter(row => !row.id.startsWith("dialogue_request_authority_compilation_"))).toHaveLength(1);
+      expect(savedCheckpoints.filter(row => row.id.startsWith("dialogue_request_act_compilation_"))).toHaveLength(1);
+      expect(savedCheckpoints.filter(row => row.id.startsWith("dialogue_conversational_compilation_"))).toHaveLength(1);
+      expect(savedCheckpoints.filter(row => !row.id.startsWith("dialogue_"))).toHaveLength(1);
       const replay = await trainDialogueCorpus(options);
       expect(replay.filesSkipped).toEqual([]);
       expect(replay.reports).toEqual(first.reports);
@@ -2515,7 +2517,7 @@ describe("dialogue corpus training", () => {
       expect(replay.conversationalConstructions.patternsPersisted).toBe(0);
       expect(checkpointWrite).toHaveBeenCalledTimes(checkpointWrites);
       expect(patternWrites).toHaveBeenCalledTimes(learnedPatternWrites);
-      expect(checkpoints.size).toBe(2);
+      expect(checkpoints.size).toBe(4);
       expect([...checkpoints.values()]).toEqual(savedCheckpoints);
     } finally { compile.mockRestore(); patternWrites.mockRestore(); }
   });
@@ -2562,7 +2564,7 @@ describe("dialogue corpus training", () => {
       const currentPatterns = structuredClone(requestPatterns()), current = currentPatterns[0]!;
       const sourceVersionId = recordOf(current.patternJson).sourceVersionId;
       const receipt = [...checkpoints.values()].find(row => row.id.startsWith("dialogue_request_authority_compilation_"))!;
-      const sourceCheckpoint = structuredClone([...checkpoints.values()].find(row => row.id !== receipt.id)!);
+      const sourceCheckpoint = structuredClone([...checkpoints.values()].find(row => !row.id.startsWith("dialogue_"))!);
       const legacyPatterns = legacy.patterns.map(row => {
         const metadata = recordOf(row.patternJson);
         const actual = currentPatterns.find(pattern => recordOf(pattern.patternJson).anchor === metadata.anchor && recordOf(pattern.patternJson).surface === metadata.surface)!;
@@ -2606,7 +2608,7 @@ describe("dialogue corpus training", () => {
       expect(requestCompile).toHaveBeenCalledTimes(1);
       expect(actCompile.mock.calls.every(call => call[0].length === 0)).toBe(true);
       expect(conversationCompile.mock.calls.every(call => call[0].documents.length === 0)).toBe(true);
-      expect(checkpoints.size).toBe(2);
+      expect(checkpoints.size).toBe(4);
     } finally { compile.mockRestore(); requestCompile.mockRestore(); actCompile.mockRestore(); conversationCompile.mockRestore(); }
   });
 
@@ -2616,6 +2618,7 @@ describe("dialogue corpus training", () => {
     await writeFile(path.join(root, "dialogue.json"), JSON.stringify({ ...humanCreativePair,
       sourceMetadata: { ...recordOf(recordOf(toJsonValue(humanCreativePair)).sourceMetadata), sourceReferenceBindings: declaration } }), "utf8");
     const fixture = memoryStorage();
+    exposeOwnedDialogueEvidence(fixture);
     const result = await trainDialogueCorpus({ storage: fixture.storage, rootPath: root, authorship: "human_authored", informationLabel: ownerLabel,
       ngramMaxOrder: 3, ngramMaxCountersPerOrder: 64, maxFilesPerRun: 1 });
     expect(result.filesSkipped).toEqual([]);
@@ -2643,6 +2646,7 @@ describe("dialogue corpus training", () => {
     const root = await tempDir("dialogue-human-creative-");
     await writeFile(path.join(root, "dialogue.json"), JSON.stringify(humanCreativePair), "utf8");
     const fixture = memoryStorage();
+    exposeOwnedDialogueEvidence(fixture);
     const result = await trainDialogueCorpus({ storage: fixture.storage, rootPath: root, authorship: "human_authored", informationLabel: ownerLabel,
       ngramMaxOrder: 3, ngramMaxCountersPerOrder: 64, maxFilesPerRun: 1 });
     expect(result.filesSkipped).toEqual([]);
@@ -2666,6 +2670,7 @@ describe("dialogue corpus training", () => {
       "yeah go on then."
     ].join("\n"), "utf8");
     const fixture = memoryStorage();
+    exposeOwnedDialogueEvidence(fixture);
 
     const result = await trainDialogueCorpus({
       storage: fixture.storage,
@@ -2979,6 +2984,13 @@ interface MemoryState {
   patterns: LanguagePatternRecord[];
   frames: SemanticFrameRecord[];
   blobs: Uint8Array[];
+}
+
+function exposeOwnedDialogueEvidence(fixture: { storage: ScceStorage; state: MemoryState }): void {
+  fixture.storage.evidence.searchEvidence = async query => fixture.state.evidence
+    .filter(span => query.sourceVersionId !== undefined && span.sourceVersionId === query.sourceVersionId
+      && (query.status === undefined || span.status === query.status))
+    .map(span => ({ span, score: 1, reason: "exact promoted source owner" }));
 }
 
 function memoryStorage(): { storage: ScceStorage; state: MemoryState } {

@@ -351,10 +351,10 @@ describe("Postgres language-memory ownership queries", () => {
     const { adapter, calls } = fixture();
     await adapter.languageMemory.listLanguagePatterns({ profileId: "profile.large-transcript", limit: 2048, maxTotalJsonBytes: 64_000_000 });
     const sql = calls.at(-1)!.sql;
-    expect(sql.match(/active_projection_ids_\d+ AS MATERIALIZED/gu)).toHaveLength(4);
-    expect(sql.match(/active_projection_ids_\d+_headers AS MATERIALIZED/gu)).toHaveLength(4);
-    expect(sql.match(/CROSS JOIN LATERAL jsonb_array_elements_text/gu)).toHaveLength(4);
-    expect(sql).toContain("SELECT header.profile_id,header.source_system,header.pattern_schema,member.pattern_id");
+    expect(sql.match(/active_projection_ids_\d+ AS MATERIALIZED/gu)).toHaveLength(5);
+    expect(sql.match(/active_projection_ids_\d+_headers AS MATERIALIZED/gu)).toHaveLength(5);
+    expect(sql.match(/END\) member\(pattern_id\)/gu)).toHaveLength(5);
+    expect(sql).toContain("SELECT header.profile_id,header.source_system,header.pattern_schema,header.projection_recipe,member.pattern_id");
     expect(sql).not.toContain("active_projection.value_json->'patternIds' ? pattern.id");
     expect(sql).toContain("pattern.profile_id,pattern.source_system,pattern.pattern_schema,pattern.id");
     expect(sql).toContain("active_projection.information_label->>'tenantId'");

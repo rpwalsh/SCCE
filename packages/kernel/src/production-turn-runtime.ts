@@ -44,6 +44,7 @@ import { compileCounterclaimSearchIntent, realizeCounterclaimSearchIntent } from
 import { traceEvent } from "./debug/trace.js";
 import { DEFAULT_USER_STYLE_PROFILE, dialogueTargetProfileId, updateDialogueState } from "./dialogue-pragmatics.js";
 import {
+  REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA,
   REQUEST_COMMUNICATIVE_ACT_SOURCE_SYSTEM,
   classifyRequestCommunicativeAct,
   type RequestCommunicativeActClassification,
@@ -712,17 +713,19 @@ export function createProductionTurnRuntime(options: {
     return surfaceLanguageRuntime.requestControlPatternsCached().catch(() => [] as LanguagePatternRecord[]);
   }
 
-  let requestCommunicativeActHydration: { model: RequestCommunicativeActModel | undefined } | undefined;
-  /** The request act classifier, hydrated once per process; a failed read is reported and retried, never cached as absent. */
+  let requestCommunicativeActHydration: { model: RequestCommunicativeActModel | undefined; generation: number } | undefined;
+  /** The request act classifier follows admitted source revisions; failed reads retry. */
   async function requestCommunicativeActModelCached(): Promise<{ model: RequestCommunicativeActModel | undefined; failed: boolean }> {
-    if (requestCommunicativeActHydration) return { ...requestCommunicativeActHydration, failed: false };
+    const generation = surfaceLanguageRuntime.revisionGeneration();
+    if (requestCommunicativeActHydration?.generation === generation) return { ...requestCommunicativeActHydration, failed: false };
     try {
-      const patterns = await deps.storage.languageMemory.listLanguagePatterns({ sourceSystem: REQUEST_COMMUNICATIVE_ACT_SOURCE_SYSTEM, limit: 2048 });
+      const patterns = await deps.storage.languageMemory.listLanguagePatterns({ sourceSystem: REQUEST_COMMUNICATIVE_ACT_SOURCE_SYSTEM,
+        patternSchemas: [REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA], limit: 2048 });
       const model = requestCommunicativeActModelFromPatterns(patterns);
       // An absent model is a not-yet-trained artifact, not a hydrated one: caching it would outlive the training.
       if (!model) return { model: undefined, failed: false };
-      requestCommunicativeActHydration = { model };
-      return { ...requestCommunicativeActHydration, failed: false };
+      if (generation === surfaceLanguageRuntime.revisionGeneration()) requestCommunicativeActHydration = { model, generation };
+      return { model: generation === surfaceLanguageRuntime.revisionGeneration() ? model : undefined, failed: false };
     } catch {
       return { model: undefined, failed: true };
     }

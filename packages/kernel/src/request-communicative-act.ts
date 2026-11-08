@@ -2,13 +2,14 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { calibrated } from "./calibrations/prod-calibrations.js";
 import { DEFAULT_USER_STYLE_PROFILE, DIALOGUE_ACT_IDS, type DialogueActId, type UserStyleProfile } from "./dialogue-pragmatics.js";
-import { canonicalStringify, clamp01, toJsonValue } from "./primitives.js";
+import { canonicalStringify, clamp01, createHasher, toJsonValue } from "./primitives.js";
 import { requestFeatures } from "./request-requirement-learning.js";
 import type { LanguagePatternRecord } from "./storage.js";
 import type { JsonValue } from "./types.js";
 
 export const REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA = "scce.request_communicative_act_pattern.v1";
 export const REQUEST_COMMUNICATIVE_ACT_SOURCE_SYSTEM = "request_communicative_act";
+export const REQUEST_COMMUNICATIVE_ACT_SOURCE_RECIPE = "kernel.dialogue_request_communicative_act.v2";
 
 /** Continuation axes a recorded conversation measures for a turn; a live outcome observation carries none. */
 export interface RequestCommunicativeActContinuation {
@@ -84,15 +85,27 @@ export function compileRequestCommunicativeActModel(observations: readonly Reque
 
 export function requestCommunicativeActPatterns(
   model: RequestCommunicativeActModel,
-  input: { profileId: string; updatedAt: number; makeId(representation: JsonValue): string }
+  input: { profileId: string; updatedAt: number; makeId(representation: JsonValue): string;
+    sourceOwner?: { sourceId: string; sourceVersionId: string; sourceSystem: string; evidenceIds: readonly string[] } }
 ): LanguagePatternRecord[] {
   const total = Object.values(model.classCounts).reduce((sum, count) => sum + count, 0);
-  return [...model.features.entries()]
+  const selected = [...model.features.entries()]
     .map(([key, row]) => ({ key, row, support: Object.values(row.counts).reduce((sum, count) => sum + count, 0) }))
     .sort((left, right) => right.support - left.support || left.key.localeCompare(right.key))
     // Cost bound on persisted rows, matching the request-control hydration limit.
-    .slice(0, 2048)
-    .map(({ key, row, support }) => ({
+    .slice(0, 2048);
+  if (input.sourceOwner) {
+    if (!total) return [];
+    const material = { schema: REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA, componentRecipe: REQUEST_COMMUNICATIVE_ACT_SOURCE_RECIPE,
+      profileId: input.profileId, sourceId: input.sourceOwner.sourceId, sourceVersionId: input.sourceOwner.sourceVersionId,
+      sourceSystem: input.sourceOwner.sourceSystem, classCounts: model.classCounts,
+      featureCounts: selected.map(({ key, row }) => ({ key, ...row })).sort((left, right) => left.key.localeCompare(right.key)) };
+    const modelDigest = createHasher().digestHex(canonicalStringify(material));
+    return [{ id: input.makeId(toJsonValue({ ...material, modelDigest })), profileId: input.profileId, patternKind: "discourse",
+      support: total, entropy: normalizedEntropy(Object.values(model.classCounts)), evidenceIds: [...input.sourceOwner.evidenceIds],
+      updatedAt: input.updatedAt, patternJson: toJsonValue({ ...material, modelDigest }) }];
+  }
+  return selected.map(({ key, row, support }) => ({
       id: input.makeId(toJsonValue({ schema: REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA, profileId: input.profileId, key })),
       profileId: input.profileId,
       patternKind: "discourse" as const,
@@ -116,6 +129,8 @@ export function requestCommunicativeActPatterns(
 /** A promoted artifact needs a contrast: at least two observed classes, one of them neutral. */
 export function requestCommunicativeActModelFromPatterns(patterns: readonly LanguagePatternRecord[]): RequestCommunicativeActModel | undefined {
   const rows = patterns.filter(pattern => record(pattern.patternJson).schema === REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA);
+  const owned = rows.filter(pattern => record(pattern.patternJson).componentRecipe === REQUEST_COMMUNICATIVE_ACT_SOURCE_RECIPE);
+  if (owned.length) return aggregateOwnedActModels(owned);
   const latest = rows.reduce((max, pattern) => Math.max(max, pattern.updatedAt), Number.NEGATIVE_INFINITY);
   const current = rows.filter(pattern => pattern.updatedAt === latest);
   if (!current.length) return undefined;
@@ -128,6 +143,48 @@ export function requestCommunicativeActModelFromPatterns(patterns: readonly Lang
     features.set(json.learnedFrameOrPatternId, { surface: json.surface, anchor: json.anchor, counts: countRecord(json.actCounts) });
   }
   return { schema: "scce.request_communicative_act_model.v1", classCounts, features };
+}
+
+function aggregateOwnedActModels(patterns: readonly LanguagePatternRecord[]): RequestCommunicativeActModel | undefined {
+  const owners = new Map<string, { digest: string; counts: Record<string, number>; features: RequestCommunicativeActModel["features"] }>();
+  const invalid = new Set<string>();
+  const hasher = createHasher();
+  for (const pattern of [...patterns].sort((left, right) => left.id.localeCompare(right.id))) {
+    const json = record(pattern.patternJson);
+    if (pattern.patternKind !== "discourse" || json.profileId !== pattern.profileId || !pattern.evidenceIds.length
+      || typeof json.sourceId !== "string" || !json.sourceId || typeof json.sourceVersionId !== "string" || !json.sourceVersionId
+      || json.sourceSystem !== REQUEST_COMMUNICATIVE_ACT_SOURCE_SYSTEM || !Array.isArray(json.featureCounts)) continue;
+    const { modelDigest, ...material } = json;
+    if (typeof modelDigest !== "string" || hasher.digestHex(canonicalStringify(material)) !== modelDigest) continue;
+    const counts = countRecord(json.classCounts);
+    if (!Object.keys(counts).length || Object.keys(counts).length !== Object.keys(record(json.classCounts)).length
+      || Object.values(counts).some(count => !Number.isSafeInteger(count))) continue;
+    const features: RequestCommunicativeActModel["features"] = new Map();
+    let valid = true;
+    for (const value of json.featureCounts) {
+      const row = record(value), values = countRecord(row.counts);
+      if (typeof row.key !== "string" || typeof row.surface !== "string" || typeof row.anchor !== "string" || features.has(row.key)
+        || !Object.keys(values).length || Object.keys(values).length !== Object.keys(record(row.counts)).length
+        || Object.entries(values).some(([act, count]) => !Number.isSafeInteger(count) || count > (counts[act] ?? 0))) { valid = false; break; }
+      features.set(row.key, { surface: row.surface, anchor: row.anchor, counts: values });
+    }
+    if (!valid || !features.size) continue;
+    const key = canonicalStringify([json.sourceSystem, json.sourceId]);
+    const previous = owners.get(key);
+    if (previous && previous.digest !== modelDigest) { invalid.add(key); owners.delete(key); continue; }
+    if (!invalid.has(key)) owners.set(key, { digest: modelDigest, counts, features });
+  }
+  const classCounts: Record<DialogueActId, number> = {}, features: RequestCommunicativeActModel["features"] = new Map();
+  for (const [, owner] of [...owners].sort(([left], [right]) => left.localeCompare(right))) {
+    for (const [act, count] of Object.entries(owner.counts)) classCounts[act] = (classCounts[act] ?? 0) + count;
+    for (const [key, row] of owner.features) {
+      const combined = features.get(key) ?? { surface: row.surface, anchor: row.anchor, counts: {} };
+      for (const [act, count] of Object.entries(row.counts)) combined.counts[act] = (combined.counts[act] ?? 0) + count;
+      features.set(key, combined);
+    }
+  }
+  return Object.keys(classCounts).length >= 2 && classCounts[DIALOGUE_ACT_IDS.neutral]
+    ? { schema: "scce.request_communicative_act_model.v1", classCounts, features } : undefined;
 }
 
 /** Bernoulli naive Bayes over the request's matched n-grams; O(request length) against a hydrated model. */

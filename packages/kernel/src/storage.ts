@@ -895,6 +895,8 @@ export interface LanguagePatternProjection {
   componentRecipe: string;
   patternIds: readonly string[];
   informationLabel: InformationLabel;
+  /** Exact pooled source support for an independently published conversational component. */
+  sourceDependencies?: readonly { sourceId: SourceId; sourceVersionId: SourceVersionId; evidenceIds: readonly EvidenceId[] }[];
 }
 
 export interface LanguageMemoryStore {

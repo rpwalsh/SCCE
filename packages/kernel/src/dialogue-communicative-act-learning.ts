@@ -161,7 +161,7 @@ export interface DialogueActObservationReport {
   documentsRejectedForNoAlternation: number;
   turns: number;
   adjacentPairs: number;
-  observations: readonly RequestCommunicativeActObservation[];
+  observations: ReadonlyArray<RequestCommunicativeActObservation & { documentIndex: number }>;
   speakerChangeFloor: number;
   turnReuseLiftFloor: number;
   continuationSurprisalFloor: number;
@@ -217,6 +217,7 @@ export function dialogueRequestActObservations(documents: readonly DialogueTrans
     const cell = `${pair.responseEvidenceCount > 0 ? "e1" : "e0"}.${pair.continuation.floorReturned ? "f1" : "f0"}.${pair.continuation.replyDrawsOnTurn ? "d1" : "d0"}`;
     signatureCells[cell] = (signatureCells[cell] ?? 0) + 1;
     return {
+      documentIndex: pair.documentIndex,
       requestText: pair.requestText,
       responseEvidenceCount: pair.responseEvidenceCount,
       ...(pair.externallyFactual !== undefined ? { responseExternallyFactual: pair.externallyFactual } : {}),

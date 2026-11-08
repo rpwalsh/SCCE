@@ -7,6 +7,9 @@ import { pathToFileURL } from "node:url";
 import {
   CORPUS_SOURCE_SYSTEM_IDS,
   REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA,
+  REQUEST_COMMUNICATIVE_ACT_SOURCE_RECIPE,
+  REQUEST_COMMUNICATIVE_ACT_SOURCE_SYSTEM,
+  DIALOGUE_ACT_IDS,
   canonicalStringify,
   compileLanguageConstructionPattern,
   compileRequestRequirementCorpus,
@@ -112,6 +115,7 @@ export interface DialogueConversationalConstructionTrainingReport {
 export interface DialogueCommunicativeActTrainingReport {
   schema: "scce.dialogueCommunicativeActTrainingReport.v1";
   profileId: string;
+  profileIds?: string[];
   updatedAt: number;
   induction: Omit<DialogueActObservationReport, "observations">;
   classCounts: Record<string, number>;
@@ -172,7 +176,6 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
     ? Math.floor(input.heapCheckpointMb)
     : undefined;
   let stoppedByHeapSafetyBound = false;
-  let sourceChanged = false;
   for (const file of files) {
     if (heapCheckpointMb !== undefined && heapMiB() >= heapCheckpointMb) {
       stoppedByHeapSafetyBound = true;
@@ -228,7 +231,6 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
       };
       const replay = await readCompletedCorpusCheckpoint(trainingInput);
       reports.push(replay ?? await trainLanguageCorpusText(trainingInput));
-      if (!replay) sourceChanged = true;
     } catch (error) {
       skipped.push({
         path: file.relativePath,
@@ -237,7 +239,6 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
       });
     }
   }
-  const refreshDialogue = input.actsOnly || sourceChanged;
   return {
     schema: "scce.dialogueCorpusTrainReport.v1",
     rootPath: root,
@@ -249,7 +250,7 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
     filesSkipped: skipped,
     totals: sumReports(reports),
     reports,
-    communicativeActs: await persistDialogueCommunicativeActs(input, refreshDialogue ? transcripts : [], refreshDialogue ? read.map(file => String(corpusSourceVersionIdFor(file))) : []),
+    communicativeActs: await persistDialogueCommunicativeActs(input, transcripts, read),
     requestAuthorities: await persistDialogueRequestAuthorities(input, read),
     conversationalConstructions: await runDialogueConversationalComponent({
       storage: input.storage, rootUri: pathToFileURL(root).href, informationLabel: input.informationLabel, authorship: input.authorship,
@@ -387,40 +388,89 @@ async function persistDialogueRequestAuthorities(
 async function persistDialogueCommunicativeActs(
   input: DialogueCorpusTrainOptions,
   transcripts: readonly DialogueTranscriptSource[],
-  sourceVersionIds: readonly string[]
+  files: readonly { sourceUri: string; text: string }[]
 ): Promise<DialogueCommunicativeActTrainingReport> {
   const hasher = createHasher();
-  const profileId = `language_profile_act_${hasher.digestHex(canonicalStringify([
-    REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA,
-    corpusRoleIdForSourceSystem(CORPUS_SOURCE_SYSTEM_IDS.dialogue)
-  ]))}`;
   const updatedAt = Date.now();
-  const { observations, ...induction } = dialogueRequestActObservations(transcripts);
-  const model = compileRequestCommunicativeActModel(observations);
-  const trainingSourceDigests = transcripts.map(source => hasher.digestHex(canonicalStringify(source)));
-  const patterns = requestCommunicativeActPatterns(model, {
-    profileId,
-    updatedAt,
-    makeId: (representation: JsonValue) => `request_communicative_act_pattern_${hasher.digestHex(canonicalStringify(representation))}`
-  }).map(pattern => ({ ...pattern,
-    patternJson: toJsonValue({ ...(pattern.patternJson as Record<string, JsonValue>),
-      trainingSourceVersionIds: [...sourceVersionIds],
-      trainingSourceDigests }),
-    informationLabel: input.informationLabel }));
-  if (patterns.length) {
-    if (input.storage.languageMemory.putLanguagePatterns) await input.storage.languageMemory.putLanguagePatterns(patterns);
-    else for (const pattern of patterns) await input.storage.languageMemory.putLanguagePattern(pattern);
+  const sourceDigests = transcripts.map(source => hasher.digestHex(canonicalStringify(source)));
+  const populationSourceVersionIds = files.map(file => String(corpusSourceVersionIdFor(file))).sort();
+  const population = new Set(populationSourceVersionIds);
+  const populationDigest = hasher.digestHex(canonicalStringify(files.map((file, index) => ({ sourceVersionId: corpusSourceVersionIdFor(file),
+    sourceDigest: sourceDigests[index] })).sort((a, b) => String(a.sourceVersionId).localeCompare(String(b.sourceVersionId)))));
+  const pending: Array<{ index: number; file: typeof files[number]; binding: string; checkpointId: string }> = [];
+  const classCounts: Record<string, number> = {};
+  let patternsPersisted = 0, featuresCompiled = 0;
+  const profileIds = new Set<string>();
+  for (const [index, file] of files.entries()) {
+    const sourceVersionId = corpusSourceVersionIdFor(file);
+    const binding = canonicalStringify({ recipe: REQUEST_COMMUNICATIVE_ACT_SOURCE_RECIPE, sourceVersionId,
+      sourceUri: file.sourceUri, sourceDigest: sourceDigests[index], informationLabel: input.informationLabel });
+    const checkpointId = `dialogue_request_act_compilation_${hasher.digestHex(binding)}`;
+    const previous = await input.storage.ingestion.get(checkpointId);
+    const metadata = previous?.metadata;
+    const previousJson = metadata && typeof metadata === "object" && !Array.isArray(metadata) ? metadata : {};
+    if (previous?.status === "complete" && previous.phase === "stored" && previousJson.binding === binding
+      && typeof previousJson.profileId === "string" && typeof previousJson.sourceId === "string"
+      && input.storage.languageMemory.getLanguagePatternProjection) {
+      const active = await input.storage.languageMemory.getLanguagePatternProjection({ profileId: previousJson.profileId,
+        sourceId: previousJson.sourceId as never, sourceVersionId, sourceSystem: REQUEST_COMMUNICATIVE_ACT_SOURCE_SYSTEM, patternSchema: REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA,
+        componentRecipe: REQUEST_COMMUNICATIVE_ACT_SOURCE_RECIPE, informationLabel: input.informationLabel });
+      if (active && canonicalStringify(active.patternIds) === canonicalStringify(previousJson.patternIds)
+        && (previousJson.populationDigest === populationDigest || (Array.isArray(previousJson.populationSourceVersionIds)
+          && previousJson.populationSourceVersionIds.some(id => typeof id === "string" && !population.has(id))))) {
+        profileIds.add(previousJson.profileId); continue;
+      }
+    }
+    pending.push({ index, file, binding, checkpointId });
   }
-  const classIds = Object.keys(model.classCounts);
+  const { observations, ...induction } = dialogueRequestActObservations(pending.length ? transcripts : []);
+  const observationsByDocument = new Map<number, typeof observations[number][]>();
+  for (const observation of observations) {
+    const held = observationsByDocument.get(observation.documentIndex) ?? [];
+    held.push(observation); observationsByDocument.set(observation.documentIndex, held);
+  }
+  for (const { index, file, binding, checkpointId } of pending) {
+    const sourceVersionId = corpusSourceVersionIdFor(file);
+    const profiles = await input.storage.model.listLanguageProfiles({ sourceVersionIds: [sourceVersionId], limit: 16 });
+    const profile = profiles.find(row => row.sourceVersionId === sourceVersionId);
+    if (!profile) continue;
+    profileIds.add(profile.id);
+    const found = await input.storage.evidence.searchEvidence({ sourceVersionId, status: "promoted", limit: 4096 });
+    const spans = found.map(row => row.span).filter(span => span.status === "promoted" && span.sourceVersionId === sourceVersionId);
+    const version = input.storage.evidence.sourceVersionById ? await input.storage.evidence.sourceVersionById(sourceVersionId)
+      : (await input.storage.evidence.sourceVersionsForEvidence(spans.map(span => span.id))).find(row => row.sourceVersionId === sourceVersionId);
+    const sourceId = version?.sourceId ?? spans[0]?.sourceId;
+    if (!sourceId || spans.some(span => span.sourceId !== sourceId)) continue;
+    const model = compileRequestCommunicativeActModel(observationsByDocument.get(index) ?? []);
+    const patterns = (spans.length ? requestCommunicativeActPatterns(model, { profileId: profile.id, updatedAt,
+      sourceOwner: { sourceId: String(sourceId), sourceVersionId: String(sourceVersionId), sourceSystem: REQUEST_COMMUNICATIVE_ACT_SOURCE_SYSTEM, evidenceIds: spans.map(span => String(span.id)) },
+      makeId: representation => `request_communicative_act_model_${hasher.digestHex(canonicalStringify(representation))}` }) : [])
+      .map(pattern => ({ ...pattern, informationLabel: input.informationLabel }));
+    if (!input.storage.languageMemory.replaceLanguagePatternProjection) throw new Error("dialogue request-act publication requires exact source projection support");
+    await input.storage.transaction(async () => {
+      await input.storage.languageMemory.replaceLanguagePatternProjection!({ patterns, projection: { profileId: profile.id,
+        sourceId, sourceVersionId, sourceSystem: REQUEST_COMMUNICATIVE_ACT_SOURCE_SYSTEM, patternSchema: REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA,
+        componentRecipe: REQUEST_COMMUNICATIVE_ACT_SOURCE_RECIPE, patternIds: patterns.map(pattern => pattern.id), informationLabel: input.informationLabel } });
+      await input.storage.ingestion.put({ id: checkpointId, rootUri: pathToFileURL(path.resolve(input.rootPath)).href, itemUri: file.sourceUri,
+        phase: "stored", status: "complete", offsetBytes: Buffer.byteLength(file.text), byteLength: Buffer.byteLength(file.text),
+        contentHash: sha256(file.text) as ContentHash, updatedAt,
+        metadata: toJsonValue({ schema: "scce.dialogue_request_act_compilation.v2", binding, profileId: profile.id,
+          sourceId, patternIds: patterns.map(pattern => pattern.id), populationDigest, populationSourceVersionIds }) });
+    });
+    patternsPersisted += patterns.length;
+    featuresCompiled += model.features.size;
+    for (const [act, count] of Object.entries(model.classCounts)) classCounts[act] = (classCounts[act] ?? 0) + count;
+  }
   return {
     schema: "scce.dialogueCommunicativeActTrainingReport.v1",
-    profileId,
+    profileId: [...profileIds].sort()[0] ?? "",
+    profileIds: [...profileIds].sort(),
     updatedAt,
     induction: toJsonValue(induction) as unknown as Omit<DialogueActObservationReport, "observations">,
-    classCounts: model.classCounts,
-    featuresCompiled: model.features.size,
-    patternsPersisted: patterns.length,
-    hydrationContrast: classIds.length >= 2 && patterns.length > 0
+    classCounts,
+    featuresCompiled,
+    patternsPersisted,
+    hydrationContrast: Object.keys(classCounts).length >= 2 && Boolean(classCounts[DIALOGUE_ACT_IDS.neutral])
   };
 }
 

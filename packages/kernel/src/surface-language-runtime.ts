@@ -1638,6 +1638,7 @@ export function createSurfaceLanguageRuntime(options: {
 
   return {
     corpusRegistry,
+    revisionGeneration: () => languageMemoryGeneration,
     synchronizeWithStorage,
     requestControlPatternsCached,
     languageMemorySummary,
