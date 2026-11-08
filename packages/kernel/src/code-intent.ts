@@ -186,7 +186,7 @@ export function sourceOwnedBehaviorRequirementsFromDocumentation(input: {
     requestHash,
     callableId,
     arguments: row.arguments as JsonValue[],
-    expectedResult: row.expectedResult,
+    expectedResult: row.expectedResult as JsonValue,
     verificationRole: index === ordered.length - 1 ? "held_out" : "fit",
     relationSurface: "source-owned-assertion",
     sourceSpan: requestSpan,

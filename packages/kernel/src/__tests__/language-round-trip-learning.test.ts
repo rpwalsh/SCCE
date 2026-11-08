@@ -135,8 +135,6 @@ describe("language round-trip learning", () => {
     });
     const persisted = new Map<string, LanguagePatternRecord>();
     await persistLanguageRoundTripDelta({
-      getLanguagePatternProjection: getFixtureLanguagePatternProjection,
-      replaceLanguagePatternProjection: replaceFixtureLanguagePatternProjection,
       putLanguagePattern: async pattern => { persisted.set(pattern.id, pattern); }
     }, { delta: outcome.languageDelta! });
     expect([...persisted.values()][0]).toMatchObject({
