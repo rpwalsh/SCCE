@@ -20,7 +20,7 @@ Export an actual compiler-owned source construction after the normal package bui
 ```powershell
 pnpm build
 node tools/solver-check/extract-source.mjs --file packages/kernel/src/functional-cognition.ts --language typescript --callable clamp --out .tmp/clamp-source.json
-.tmp/solver-tools/Scripts/python.exe tools/solver-check/verify.py --source-encoding .tmp/clamp-source.json --candidate tools/solver-check/examples/clamp-commuted.json --domain tools/solver-check/examples/finite-three.json
+.tmp/solver-tools/Scripts/python.exe tools/solver-check/verify.py --source-encoding .tmp/clamp-source.json --candidate tools/solver-check/examples/clamp-commuted.json --domain tools/solver-check/examples/finite-three.json --timeout-ms 5000 --rlimit 10000000
 ```
 
 The source input is the existing `SourceCodeFunctionConstruction` JSON. The candidate accepts an existing `ProgramExpression`, a `ProgramTransformationCandidate` with `producedIr`, or another construction with `expression` and optional `bindings`. The compiler-supplied source identity is recorded, not independently authenticated by the solver. Source-encoding, source-text, candidate/domain file hashes, query hash, solver version, Python binding and native package artifact hashes, pinned wheel hash, and requirements-lock hash are included in the JSON receipt.
