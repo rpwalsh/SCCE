@@ -2,6 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
+import { createReadStream } from "node:fs";
 import { chmod, copyFile, lstat, mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -62,6 +63,15 @@ export interface StructuredPatchValidationEvidence {
   readonly commands: readonly StructuredPatchValidationCommandResult[];
 }
 
+export interface StructuredWorkspaceValidationEvidence extends Omit<StructuredPatchValidationEvidence, "schemaVersion" | "planHash"> {
+  readonly schemaVersion: "scce.workspace-validation-evidence.v1";
+  readonly workspaceHash: `sha256:${string}`;
+}
+
+export interface StructuredWorkspaceValidationResult extends Omit<WorkspacePatchValidationResult, "evidence"> {
+  readonly evidence: StructuredWorkspaceValidationEvidence;
+}
+
 export type StructuredPatchValidationBoundary = "trusted-host" | "os-sandbox";
 
 export interface StructuredPatchValidationExecutionEvidence {
@@ -117,6 +127,28 @@ const GLOBAL_IGNORES = [".git", ".scce", ".scce-validation", "coverage", "dist",
  * this function returns.
  */
 export async function runStructuredPatchValidation(options: RunStructuredPatchValidationOptions): Promise<WorkspacePatchValidationResult> {
+  const staged = await validateStagedWorkspace(options, options.validationView);
+  const { workspaceHash: _workspaceHash, ...executionEvidence } = staged.evidence;
+  const evidence: StructuredPatchValidationEvidence = {
+    schemaVersion: STRUCTURED_PATCH_VALIDATION_EVIDENCE_SCHEMA,
+    policyId: options.policy.id,
+    planHash: options.validationView.plan.planHash,
+    ...executionEvidence
+  };
+  return deepFreeze({ ...staged.result, evidence });
+}
+
+/** The same bounded staging and execution boundary also verifies a complete existing application. */
+export async function runStructuredWorkspaceValidation(options: Omit<RunStructuredPatchValidationOptions, "validationView">): Promise<StructuredWorkspaceValidationResult> {
+  const staged = await validateStagedWorkspace(options);
+  return deepFreeze({ ...staged.result, evidence: {
+    schemaVersion: "scce.workspace-validation-evidence.v1" as const,
+    policyId: options.policy.id,
+    ...staged.evidence
+  } });
+}
+
+async function validateStagedWorkspace(options: Omit<RunStructuredPatchValidationOptions, "validationView">, validationView?: WorkspacePatchValidationView) {
   validatePolicy(options.policy);
   const workspaceRoot = await realpath(resolve(options.workspaceRoot));
   const stageRoot = await mkdtemp(join(tmpdir(), "scce-patch-validation-"));
@@ -130,16 +162,14 @@ export async function runStructuredPatchValidation(options: RunStructuredPatchVa
       maxFiles: options.policy.maxWorkspaceFiles,
       maxBytes: options.policy.maxWorkspaceBytes
     });
-    await applyPlanToStage(stageRoot, options.validationView.plan, options.validationView);
+    if (validationView) await applyPlanToStage(stageRoot, validationView.plan, validationView);
 
     const provider = options.provider ?? trustedHostPatchValidationProvider;
     const execution = await provider.execute({ stageRoot, policy: options.policy });
     validateProviderResult(provider, options.policy, execution);
 
-    const evidence: StructuredPatchValidationEvidence = {
-      schemaVersion: STRUCTURED_PATCH_VALIDATION_EVIDENCE_SCHEMA,
-      policyId: options.policy.id,
-      planHash: options.validationView.plan.planHash,
+    const evidence = {
+      workspaceHash: copied.contentHash,
       stagedFileCount: copied.files,
       stagedByteCount: copied.bytes,
       execution: execution.execution,
@@ -149,12 +179,8 @@ export async function runStructuredPatchValidation(options: RunStructuredPatchVa
     const ok = execution.ok
         && execution.commands.length === options.policy.commands.length
         && execution.commands.every(command => command.code === 0 && !command.timedOut && !command.outputLimitExceeded);
-    return deepFreeze({
-      ok,
-      validatorId: options.policy.id,
-      evidence,
-      executedChecks: ok ? executedCheckReceipts(execution.commands) : []
-    });
+    return { evidence, result: { ok, validatorId: options.policy.id,
+      executedChecks: ok ? executedCheckReceipts(execution.commands) : [] } };
   } finally {
     await rm(stageRoot, { recursive: true, force: true });
   }
@@ -195,9 +221,10 @@ interface CopySnapshotOptions {
   readonly maxBytes: number;
 }
 
-async function copyWorkspaceSnapshot(options: CopySnapshotOptions): Promise<{ files: number; bytes: number }> {
+async function copyWorkspaceSnapshot(options: CopySnapshotOptions): Promise<{ files: number; bytes: number; contentHash: `sha256:${string}` }> {
   let files = 0;
   let bytes = 0;
+  const snapshotHash = createHash("sha256");
   const visit = async (sourceDirectory: string, stageDirectory: string, depth: number): Promise<void> => {
     const entries = await readdir(sourceDirectory, { withFileTypes: true });
     entries.sort((a, b) => compareCanonical(a.name, b.name));
@@ -218,10 +245,13 @@ async function copyWorkspaceSnapshot(options: CopySnapshotOptions): Promise<{ fi
       if (files > options.maxFiles) throw new Error(`validation workspace exceeds policy file limit: ${options.maxFiles}`);
       if (bytes > options.maxBytes) throw new Error(`validation workspace exceeds policy byte limit: ${options.maxBytes}`);
       await copyFile(sourcePath, stagePath);
+      const fileHash = createHash("sha256");
+      for await (const chunk of createReadStream(stagePath)) fileHash.update(chunk);
+      snapshotHash.update(canonicalStringify({ path: normalizeRelative(relative(options.sourceRoot, sourcePath)), hash: fileHash.digest("hex") }));
     }
   };
   await visit(options.sourceRoot, options.stageRoot, 0);
-  return { files, bytes };
+  return { files, bytes, contentHash: `sha256:${snapshotHash.digest("hex")}` };
 }
 
 async function applyPlanToStage(stageRoot: string, plan: PatchTransactionPlan, view: WorkspacePatchValidationView): Promise<void> {
@@ -381,7 +411,7 @@ function executedCheckReceipts(commands: readonly StructuredPatchValidationComma
 
 function validationEnvironment(extra: Readonly<Record<string, string>> | undefined): NodeJS.ProcessEnv {
   const inheritedNames = process.platform === "win32"
-    ? ["PATH", "Path", "PATHEXT", "SystemRoot", "SYSTEMROOT", "TEMP", "TMP", "USERPROFILE"]
+    ? ["PATH", "Path", "PATHEXT", "SystemRoot", "SYSTEMROOT", "TEMP", "TMP", "USERPROFILE", "LOCALAPPDATA", "APPDATA"]
     : ["PATH", "HOME", "TMPDIR"];
   const env: NodeJS.ProcessEnv = {};
   for (const name of inheritedNames) if (process.env[name] !== undefined) env[name] = process.env[name];

@@ -27,6 +27,7 @@ import path from "node:path";
 import type { CodeMouthContext, CodeMouthProposal } from "./code-mouth.js";
 import { typeScriptProjectSnapshot } from "./code-mouth-compiler-proposer.js";
 import { typeScriptRepairSites } from "./typescript-code-actions.js";
+import { grammaticalTreeSitterRepairs, treeSitterRepairSpans } from "./tree-sitter-repair-spans.js";
 
 /**
  * The proposer that writes code instead of transcribing a fix.
@@ -170,35 +171,37 @@ export function createLearnedCodeProposer(options: LearnedCodeProposerOptions): 
         log(`no trained ${languageId} corpus; the learned lane has nothing to compose from`);
         return undefined;
       }
-      const spans = await repairSpans(options, languageId, context);
+      const spans = await repairSpans(options, languageId, context, diagnostics);
       const constructions = await projectConstructions(options, context, constructionsByWorkspace);
       if (constructions.length) log(`${constructions.length} shape(s) learned from this project`);
       // What the request is about, where the corpus has documentation that answers it. A repair is driven by
       // diagnostics and does not need this to work; where it lands, it says which names the request put in play
       // beyond the ones it happened to spell.
       const known = knownSymbols(context.targetText, models);
+      const holeSymbols = new Set(spans.flatMap(span => codeSurfaceTokens(context.targetText.slice(span.start, span.start + span.length))));
       const intent = await codeIntentForRequest({ storage: options.storage, requestText: request, knownSymbols: known, languageId });
       if (intent.references.length) {
         log(`the request matches documentation for ${intent.references.length} file(s): ${intent.references.slice(0, 3).map(reference => reference.relativePath).join(", ")}`);
       }
       if (spans.length) {
-        log(`${spans.length} candidate defect range(s); the type system admits ${spans[0]!.admissible?.length ?? 0} identifier(s) at the first`);
+        log(`${spans.length} parser- or compiler-located defect range(s); ${spans[0]!.admissible?.length ?? 0} checker-admitted identifier(s) at the first`);
       }
       // The admitted names bound each hole individually and are not folded into the global boost: a hole whose
       // vocabulary is the whole global scope would otherwise mark 128 names equally wanted, which is the same as
       // wanting none of them and drowns out the handful the request actually spelled.
-      const candidates = generateLearnedCodeRepairs({
+      const generated = generateLearnedCodeRepairs({
         models,
         languageId,
         targetPath: context.targetPath,
         targetText: context.targetText,
         diagnostics,
-        requiredSymbols: [...new Set([...requiredSymbols(request, known), ...intent.symbols])],
+        requiredSymbols: [...new Set([...requiredSymbols(request, known), ...intent.symbols])].filter(symbol => !holeSymbols.has(symbol)),
         ...(spans.length ? { spans } : {}),
         ...(constructions.length ? { constructions } : {}),
         ...(options.maxCandidates !== undefined ? { maxCandidates: options.maxCandidates } : {}),
         ...(options.corpusWeight !== undefined ? { corpusWeight: options.corpusWeight } : {})
       });
+      const candidates = languageId === "typescript" ? generated : await grammaticalTreeSitterRepairs({ targetPath: context.targetPath, text: context.targetText, candidates: generated });
       lastCandidates = candidates;
       const state = diagnostics.map(diagnostic => `${diagnostic.patternId ?? diagnostic.class}:${diagnostic.message}`).sort().join("");
       retry = state === lastState ? retry + 1 : 0;
@@ -300,19 +303,15 @@ async function siblingSources(
   return out;
 }
 
-/**
- * The exact defect ranges in this file, with what the type system admits at each.
- *
- * Bounded to TypeScript because that is the toolchain this package can ask for spans and a symbol table. Every
- * other language falls back to the line and column its compiler prints, which is the honest degradation: a
- * coarser hole, never a wrong answer asserted.
- */
+/** Compiler ranges carry semantic scope; other installed grammars bound leaves at compiler-reported positions. */
 async function repairSpans(
   options: LearnedCodeProposerOptions,
   languageId: string,
-  context: CodeMouthContext
+  context: CodeMouthContext,
+  diagnostics: readonly ProgramDiagnostic[]
 ): Promise<LearnedCodeRepairSpan[]> {
-  if (!options.workspaceRoot || languageId !== "typescript") return [];
+  if (languageId !== "typescript") return treeSitterRepairSpans({ targetPath: context.targetPath, text: context.targetText, diagnostics });
+  if (!options.workspaceRoot) return [];
   const snapshot = await typeScriptProjectSnapshot({
     workspaceRoot: options.workspaceRoot,
     targetPath: context.targetPath,

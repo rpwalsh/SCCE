@@ -6,7 +6,7 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { realpath, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { performance } from "node:perf_hooks";
-import { acquireAndTrainGithubOssRepository, assertHydratedRuntimeReady, automaticWebAcquisitionEnabled, completeInitialSourceBrainFromOssReport, publicNetworkAcquisitionEnabled, collectRepoFilesForCognition, createLearnedCodeProposer, createTypeScriptCodeMouthPorts, runCodeMouth, createDockerSandboxPatchValidationProvider, createNodeRuntime, createWorkspaceRuntime, diagnoseDocumentTools, executeWorkspacePatchTransaction, resolveSecret, runStructuredPatchValidation, trustedHostPatchValidationProvider, verifiedCompilerPlansForTurn, WorkspacePatchTransactionError, DEFAULT_WEB_REQUESTS_PER_MINUTE, type GithubOssAcquisitionOptions, type GithubOssAcquisitionReport, type readScceRuntimeConfig, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type WorkspaceCodingPatchPlanningInput, type WorkspacePatchPlanningInput, type WorkspaceRuntimeOptions, applySetting, settingsView, listLocalModels, downloadModel, removeLocalModel, formatBytes, validateGithubCommitSha, validateGithubPublicRepositoryUrl } from "@scce/adapters-node";
+import { acquireAndTrainGithubOssRepository, assertHydratedRuntimeReady, automaticWebAcquisitionEnabled, completeInitialSourceBrainFromOssReport, publicNetworkAcquisitionEnabled, collectRepoFilesForCognition, createLearnedCodeProposer, createWorkspaceCodeMouthPorts, runCodeMouth, createDockerSandboxPatchValidationProvider, createNodeRuntime, createWorkspaceRuntime, diagnoseDocumentTools, executeWorkspacePatchTransaction, resolveSecret, runStructuredPatchValidation, trustedHostPatchValidationProvider, verifiedCompilerPlansForTurn, WorkspacePatchTransactionError, DEFAULT_WEB_REQUESTS_PER_MINUTE, type GithubOssAcquisitionOptions, type GithubOssAcquisitionReport, type readScceRuntimeConfig, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type WorkspaceCodingPatchPlanningInput, type WorkspacePatchPlanningInput, type WorkspaceRuntimeOptions, applySetting, settingsView, listLocalModels, downloadModel, removeLocalModel, formatBytes, validateGithubCommitSha, validateGithubPublicRepositoryUrl } from "@scce/adapters-node";
 import type { BenchmarkInput, CausalAnalysisRequest, CausalDiscoveryRequest, CausalAssumptionDag, CausalAssumptionEdge, CausalObservation, ConversationTurnRecord, DialogueInterpretationCorrectionInput, EventLedger, GraphSlice, IdentificationDesign, IngestInput, InspectionTarget, JsonValue, NodeId, OwnerInput, PatchTransactionPlan, ProgramGraph, RequestedAuthority, SourceAdmissionContext, SourceTrust, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
 import {
   behaviorRoleExecutionGraphInputFromTaskConstraintGraph, createProgramBehaviorValidationLedger, PROGRAM_BEHAVIOR_VALIDATION_PLAN_BINDING_SCHEMA, curriculumItemFromPlan,
@@ -658,19 +658,26 @@ async function dispatch(
     const targetPath = typeof body.path === "string" ? body.path.trim() : "";
     const request = typeof body.request === "string" ? body.request.trim() : "";
     if (!targetPath || !request) throw new HttpError(400, "workspace code requires path and request");
-    const approvalInput = { path: targetPath, request };
+    const validationPolicyId = body.validationPolicyId === undefined ? undefined : boundedString(body.validationPolicyId, "validationPolicyId", 128);
+    const validationPolicy = validationPolicyId ? context.patchValidation?.resolvePolicy(validationPolicyId)
+      ?? serverPatchValidationPolicy(context.config, validationPolicyId) : undefined;
+    const validationProvider = context.patchValidation?.provider ?? trustedHostPatchValidationProvider;
+    const approvalInput = { path: targetPath, request, ...(validationPolicy ? { validationPolicyId,
+      validationBinding: workspacePatchValidationApprovalBinding(validationPolicy, validationProvider) } : {}) };
     if (!approved(context, "workspace.code", approvalInput)) return pendingApproval(context, "workspace.code", approvalInput);
     const attempts = Number.isFinite(Number(body.attempts)) ? Math.max(1, Math.min(5, Number(body.attempts))) : 3;
     // The compiler decides: the mouth keeps only a patch its gate accepted, and rolls back everything else.
+    const codePorts = createWorkspaceCodeMouthPorts({
+      workspaceRoot: context.config.runtime.workspaceRoot,
+      targetPath,
+      learnedProposer: createLearnedCodeProposer({ storage: context.runtime.storage, workspaceRoot: context.config.runtime.workspaceRoot }),
+      ...(validationPolicy ? { projectValidation: { policy: validationPolicy, provider: validationProvider } } : {})
+    });
     const codeResult = await runCodeMouth({
       request,
       targetPath,
       maxAttempts: attempts,
-      ports: createTypeScriptCodeMouthPorts({
-        workspaceRoot: context.config.runtime.workspaceRoot,
-        // Composed from this brain's own code corpus first; the compiler-owned fix answers when it composes nothing.
-        learnedProposer: createLearnedCodeProposer({ storage: context.runtime.storage, workspaceRoot: context.config.runtime.workspaceRoot })
-      })
+      ports: codePorts
     });
     // A repair that is forgotten cannot be learned from: every accepted patch enters the ledger with what
     // it answered and how it was proven, so the same request can be recognised again later.
@@ -688,12 +695,13 @@ async function dispatch(
           request,
           attempts: codeResult.attempts,
           provedBy: codeResult.reason,
+          ...(codePorts.projectVerification() ? { projectVerification: toJsonValue(codePorts.projectVerification()) } : {}),
           operations: codeResult.appliedOperations.map(operation => ({ kind: operation.kind, path: operation.path, reason: operation.reason })),
           remainingDiagnostics: codeResult.finalDiagnostics.length
         }
       })).catch(() => undefined);
     }
-    return json(codeResult as unknown as JsonValue);
+    return json({ ...codeResult, ...(codePorts.projectVerification() ? { projectVerification: codePorts.projectVerification() } : {}) } as unknown as JsonValue);
   }
   if (req.method === "POST" && url.pathname === "/api/workspace/patch/plan") {
     const request = parseWorkspacePatchPlanRequest(await readBody(req, context.maxBodyBytes));

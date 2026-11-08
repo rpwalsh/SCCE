@@ -38,6 +38,7 @@ export * from "./tree-sitter-syntax.js";
 export * from "./source-code-function-learning.js";
 export * from "./code-verifier-discovery.js";
 export * from "./tree-sitter-code-mouth-ports.js";
+export * from "./workspace-code-mouth-ports.js";
 export * from "./repo-cognition-files.js";
 export * from "./connectors.js";
 export * from "./connector-policy.js";

@@ -7,7 +7,7 @@ import { negotiateLearning, runLearnCommand } from "./learning-commands.js";
 import { parseLocalExecutiveGoal } from "@scce/adapters-node";
 import { wikiChildArgs, wikiContinueAfterConfiguredPageCap, wikiRunPaths } from "./wiki-process.js";
 import { resolveWikipediaCorpusTarget } from "@scce/adapters-node";
-import { createClangCodeMouthPorts, createLearnedCodeProposer, createTreeSitterCodeMouthPorts, createTypeScriptCodeMouthPorts, runCodeMouth } from "@scce/adapters-node";
+import { createLearnedCodeProposer, createWorkspaceCodeMouthPorts, runCodeMouth, type StructuredPatchValidationPolicy } from "@scce/adapters-node";
 import { codeLanguageForPath } from "@scce/kernel";
 import { describeRelationPotentialCapability, validateRelationPotentialAgainstIdentity } from "@scce/kernel";
 import { existsSync } from "node:fs";
@@ -188,7 +188,7 @@ async function main(): Promise<void> {
       case "code": {
         const target = parsed.args.find(arg => arg.startsWith("--path="))?.slice(7);
         const request = parsed.args.filter(arg => !arg.startsWith("--")).join(" ").trim();
-        if (!target || !request) return usage("scce code --path=<workspace-file> [--root=<dir>] <request>");
+        if (!target || !request) return usage("scce code --path=<workspace-file> [--root=<dir>] [--validation-policy=<json>] <request>");
         // Which project to repair. Without this the command always read config.runtime.workspaceRoot, so a caller
         // pointing it at another checkout got diagnostics for THIS repository and a target file the compiler had
         // never seen -- it declined every time, correctly, about a file it was never shown. The code-repair
@@ -199,7 +199,6 @@ async function main(): Promise<void> {
         // Which compiler owns the fixes for this file. The repair loop itself is language-neutral, so the language
         // only decides which ports it runs over; every other guarantee -- apply, verify, roll back what does not
         // build -- is the same whichever compiler is answering.
-        const clangSource = /\.(c|h|cc|cpp|cxx|hpp|m|mm)$/iu.test(target);
         // The learned lane reads this brain's code corpus. It leads; the compiler-owned fix is the fallback, and
         // a brain with no corpus for the language simply proposes nothing and the fallback answers as before.
         const learnedProposer = createLearnedCodeProposer({
@@ -219,11 +218,12 @@ async function main(): Promise<void> {
         // A language no verifier covers gets no repair, because an unverifiable edit is not one this
         // system makes.
         const log = (message: string) => process.stderr.write(`[code-mouth] ${message}\n`);
-        const ports = clangSource
-          ? createClangCodeMouthPorts({ workspaceRoot, learnedProposer, log })
-          : /\.(ts|tsx|mts|cts)$/iu.test(target)
-            ? createTypeScriptCodeMouthPorts({ workspaceRoot, learnedProposer, log })
-            : createTreeSitterCodeMouthPorts({ workspaceRoot, learnedProposer, log });
+        const validationPolicyPath = parsed.args.find(arg => arg.startsWith("--validation-policy="))?.slice(20);
+        const projectValidation = validationPolicyPath
+          ? { policy: JSON.parse(await readFile(path.resolve(validationPolicyPath), "utf8")) as StructuredPatchValidationPolicy }
+          : undefined;
+        const ports = createWorkspaceCodeMouthPorts({ workspaceRoot, targetPath: target, learnedProposer, log,
+          ...(projectValidation ? { projectValidation } : {}) });
         const result = await runCodeMouth({
           request,
           targetPath: target,
@@ -237,6 +237,7 @@ async function main(): Promise<void> {
         const composed = learnedProposer.lastCandidates();
         printJson({
           ...result,
+          ...(ports.projectVerification() ? { projectVerification: ports.projectVerification() } : {}),
           learned: {
             language: codeLanguage ?? null,
             modelsAvailable: availableModels,
@@ -1956,7 +1957,7 @@ function usage(error?: string): void {
     "  pnpm scce model list | download <org/name> [--clip] [--dtype=q8] | remove <org/name>",
     "  pnpm scce sensor run <id>",
     "  pnpm scce learn pending | confirm <id> | reject <id> | curriculum | pursue <planId>   (self-proposed learning waits for consent; fetched material stays quarantined until you confirm it is true)",
-    "  pnpm scce code --path=<workspace-file> [--attempts=3] <request>   (compile-gated patch loop; needs a realization provider)",
+    "  pnpm scce code --path=<workspace-file> [--attempts=3] [--validation-policy=<json>] <request>   (source-learned, compiler-gated patch loop)",
     `  pnpm ${WORKSPACE_CODE_USAGE}`,
     "    Alias: workspace code. Returns an unauthorized, unexecuted plan; it does not edit files or run checks.",
     "  pnpm scce eval gate <objective.jsonl> [--system=<id>] [--reference=<id>]   (release gate over a sealed run's objective records; exits 1 when the gate fails)",

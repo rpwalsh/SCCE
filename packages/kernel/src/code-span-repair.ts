@@ -42,7 +42,7 @@ export interface SpanFragment {
   /** The model's own average log probability per symbol. A reported statistic, not the ranking. */
   averageLogProbability: number;
   /**
-   * Total log probability of the whole filling under the models alone, which is what ranks it.
+   * Total log probability of the filling and its dependent suffix under the models alone, which ranks it.
    *
    * Not an average: fillings of a hole differ in length, and averaging let a fluent three-token run outrank the
    * one correct token. A total charges for every extra symbol, so the shortest adequate filling wins unless the
@@ -110,6 +110,8 @@ export interface SpanCompositionInput {
  */
 export function composeSpanFillings(input: SpanCompositionInput): SpanFragment[] {
   const prompt = codeSurfaceTokens(input.prefixText).slice(-CONTEXT_SYMBOLS);
+  const suffix = codeSurfaceTokens(input.suffixText).filter(symbol => symbol !== CODE_SOURCE_SYMBOL)
+    .slice(0, Math.max(input.localModel.order, ...input.corpusModels.map(model => model.order)) - 1);
   const originalTokens = codeSurfaceTokens(input.originalText);
   // A repair may rewrite what the diagnostic named. It may not say less than it did.
   //
@@ -202,7 +204,9 @@ export function composeSpanFillings(input: SpanCompositionInput): SpanFragment[]
   // total log probability of the tokens -- so there is no reason to prefer one by provenance, and doing so was
   // actively harmful: offering shapes first let them consume the whole limit and crowded out beam fillings that
   // had been repairing files. Merged and ranked, each wins where it is actually the more likely thing to write.
-  const pool: SpanFragment[] = constructionFillings(input, prompt);
+  const pool: SpanFragment[] = constructionFillings(input, prompt).map(fragment => ({
+    ...fragment, score: fragment.score + sequenceLogProbability(input, [...prompt, ...fragment.symbols], suffix)
+  }));
   for (const beam of complete) {
     const text = renderCodeTokens(beam.symbols);
     if (!text.trim()) continue;
@@ -211,7 +215,7 @@ export function composeSpanFillings(input: SpanCompositionInput): SpanFragment[]
       symbols: beam.symbols,
       text,
       averageLogProbability: beam.logProbability / length,
-      score: beam.logProbability
+      score: beam.logProbability + sequenceLogProbability(input, [...prompt, ...beam.symbols], suffix)
     });
   }
   const seen = new Set<string>();

@@ -164,14 +164,16 @@ const LOCATED_DIAGNOSTIC = new RegExp(
  * failure -- reported as one diagnostic rather than silently as success, because a checker that failed for a
  * reason this code cannot read has not approved anything.
  */
-function checkerDiagnostics(
+export function checkerDiagnostics(
   result: { code: number | null; stdout: string; stderr: string },
   targetPath: string,
-  languageId: string
+  languageId: string,
+  workspaceRoot?: string
 ): ProgramDiagnostic[] {
   const out: ProgramDiagnostic[] = [];
   const text = `${result.stdout}\n${result.stderr}`;
-  for (const line of text.split(/\r?\n/u)) {
+  const lines = text.split(/\r?\n/u);
+  for (const [index, line] of lines.entries()) {
     const trimmed = line.trim();
     if (!trimmed) continue;
     const quoted = QUOTED_PATH_DIAGNOSTIC.exec(trimmed);
@@ -192,16 +194,20 @@ function checkerDiagnostics(
     }
     const located = LOCATED_DIAGNOSTIC.exec(trimmed);
     if (!located) continue;
-    const message = (located[4] ?? "").trim();
+    const message = (located[4] ?? "").trim() || lines.slice(0, index).map(row => row.trim()).filter(Boolean).pop() || "";
     if (!message) continue;
+    const reported = (located[1] ?? "").trim().replace(/^-->\s*/u, "");
+    const diagnosticPath = workspaceRoot && reported ? path.resolve(workspaceRoot, reported) : targetPath;
+    const caret = lines[index + 2]?.indexOf("^");
+    const column = located[3] ? Number(located[3]) : caret !== undefined && caret >= 0 ? caret + 1 : undefined;
     out.push({
       // Line, column and message identify a diagnostic; the path is already the file being checked.
-      id: `${languageId}:${located[2]}:${located[3] ?? 0}:${message.slice(0, 48)}`,
+      id: `${languageId}:${diagnosticPath}:${located[2]}:${column ?? 0}:${message.slice(0, 48)}`,
       class: "syntax",
       patternId: `${languageId}.checker`,
-      path: targetPath,
+      path: diagnosticPath,
       line: Number(located[2]),
-      ...(located[3] ? { column: Number(located[3]) } : {}),
+      ...(column ? { column } : {}),
       message,
       raw: trimmed,
       confidence: 0.9,
