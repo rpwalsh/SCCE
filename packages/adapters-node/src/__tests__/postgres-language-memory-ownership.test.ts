@@ -83,14 +83,15 @@ describe("Postgres language-memory ownership queries", () => {
     expect(patternQuery.sql.indexOf('current_compilation."compilationId"=pattern.pattern_json')).toBeLessThan(patternQuery.sql.indexOf("running_stored_bytes"));
     expect(patternQuery.sql).toContain('current_compilation."sourceSystem"=pattern.source_system');
     expect(patternQuery.sql).toContain('current_compilation."sourceVersionId"=pattern.pattern_json');
-    for (const changed of [
+    const changedHeaders: typeof headers = [
       { ...header, source_id: "other.source" }, { ...header, source_version_id: "other.version" }, { ...header, content_hash: "other.hash" },
       { ...header, profile_id: "other.profile" }, { ...header, source_system: "other.system" }, { ...header, compilation_receipt: null },
       { ...header, id: "other.model" }, { ...header, stream_id: "other.stream" },
       { ...header, compilation_receipt: { ...(header.compilation_receipt as object), modelInventory: [] } },
       { ...header, model_metadata: { ...(header.model_metadata as object), sourceCompilation: { ...(header.model_metadata as { sourceCompilation: object }).sourceCompilation, compilationId: "tampered" } } },
       { ...header, compilation_receipt: { ...(header.compilation_receipt as object), sourceId: "other.source" } }
-    ]) {
+    ];
+    for (const changed of changedHeaders) {
       headers = [changed];
       expect((await read()).map(row => row.id)).toEqual(["imported.standalone"]);
     }
