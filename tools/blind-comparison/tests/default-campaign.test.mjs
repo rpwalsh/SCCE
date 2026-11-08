@@ -138,7 +138,7 @@ test('autonomous reference selects and executes bounded public read/write/check 
   assert.equal(noPlan.identity.productOutcome, 'failed');
   await rm(path.join(cwd, 'report.json'));
   const native = await runScceNative(input, { cwd }, { request: async route => {
-    if (route === '/api/workspace/ingest') return { status: 200, body: { failed: 0 } };
+    if (route === '/api/workspace/ingest') return { status: 200, body: { failed: 0, workspace: { id: 'workspace.autonomous.fixture', updatedAt: 1 } } };
     await writeFile(path.join(cwd, 'report.json'), canonical(report));
     const temporaryHelper = 'console.log("real executor helper");';
     return { status: 200, body: { answer: 'Actual native execution.', events: [{ typeId: 'CapabilitySucceeded', payload: { capabilityId: 'process.build_test' } }], buildTest: { artifacts: [{ artifactId: 'temporary.helper', path: 'main.mjs', content: temporaryHelper, contentHash: `sha256_${sha256Text(temporaryHelper)}` }] } } };

@@ -189,7 +189,8 @@ describe("Postgres language-memory ownership queries", () => {
     expect(call.sql).toContain("running_json_bytes <=");
     expect(call.sql).toContain("current_compilation");
     expect(call.sql).toContain("pattern.information_label");
-    expect(call.sql).toContain("SELECT profile_id,source_system,pattern_schema,pattern_id FROM active_projection_ids_0");
+    expect(call.sql).toContain("SELECT profile_id,source_system,pattern_schema,pattern_id,projection_recipe FROM active_projection_ids_0");
+    expect(call.sql).not.toContain("WHERE (pattern.component_recipe=");
   });
   it("reads exact accessible projection receipts and validates their owned compilation inventory including empty results", async () => {
     const { adapter, calls } = fixture();
@@ -341,7 +342,8 @@ describe("Postgres language-memory ownership queries", () => {
     expect(activeFilter).toBeLessThan(call.sql.indexOf("ranked_pool AS"));
     expect(activeFilter).toBeLessThan(call.sql.lastIndexOf("LIMIT"));
     expect(call.sql).toContain("pattern.pattern_schema IS DISTINCT FROM");
-    expect(call.sql).toContain("SELECT profile_id,source_system,pattern_schema,pattern_id FROM active_projection_ids_0");
+    expect(call.sql).toContain("SELECT profile_id,source_system,pattern_schema,pattern_id,projection_recipe FROM active_projection_ids_0");
+    expect(call.sql).not.toContain("WHERE (pattern.component_recipe=");
     expect(call.sql).toContain("active_projection.information_label->>'tenantId'");
     expect(call.params).toContain(LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA);
     expect(call.params).toContain(LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID);

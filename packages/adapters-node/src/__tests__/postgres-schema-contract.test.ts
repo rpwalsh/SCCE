@@ -78,21 +78,23 @@ const fixtures: Array<{ q: string; access?: InformationAccessContext; statementC
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
 describe("Postgres schema contract extraction", () => {
-  it.each(fixtures)("preserves exact ordered prior DDL apart from the explicit surface-key upgrade for $q with access $access", fixture => {
+  it.each(fixtures)("preserves exact ordered prior DDL apart from the explicit surface-key and source-history upgrades for $q with access $access", fixture => {
     const statements = schema.schemaStatements(fixture.q, fixture.access);
     const key = fixture.q.replaceAll('"', "");
     const addedColumn = `ALTER TABLE ${fixture.q}.semantic_frames ADD COLUMN IF NOT EXISTS normalized_surface_hash TEXT`;
     const retiredIndex = `DROP INDEX IF EXISTS ${fixture.q}.idx_${key}_semantic_frames_surface_rank`;
     const hashIndex = `CREATE INDEX IF NOT EXISTS idx_${key}_semantic_frames_normalized_surface_hash_rank ON ${fixture.q}.semantic_frames(normalized_surface_hash,alpha DESC,created_at DESC,id ASC)`;
     const oldIndex = `CREATE INDEX IF NOT EXISTS idx_${key}_semantic_frames_surface_rank ON ${fixture.q}.semantic_frames((frame_json->>'surface'),alpha DESC,created_at DESC,id ASC)`;
+    const historyIndex = `CREATE INDEX IF NOT EXISTS idx_${key}_source_versions_history ON ${fixture.q}.source_versions(source_id,observed_at DESC,id DESC)`;
     const headerStatements = statements.filter(sql => sql.startsWith(`ALTER TABLE ${fixture.q}.language_patterns`) && sql.includes("pattern_schema"));
     expect(headerStatements).toHaveLength(1);
     expect(statements).toContain(addedColumn);
     expect(statements).toContain(retiredIndex);
     expect(statements).toContain(hashIndex);
     expect(statements).not.toContain(oldIndex);
-    expect(statements).toHaveLength(fixture.statementCount + 3);
-    const prior = statements.filter(sql => sql !== addedColumn && sql !== retiredIndex && !headerStatements.includes(sql)).map(sql => sql === hashIndex ? oldIndex : sql);
+    expect(statements).toContain(historyIndex);
+    expect(statements).toHaveLength(fixture.statementCount + 4);
+    const prior = statements.filter(sql => sql !== addedColumn && sql !== retiredIndex && sql !== historyIndex && !headerStatements.includes(sql)).map(sql => sql === hashIndex ? oldIndex : sql);
     expect(digest(prior)).toBe(fixture.sha256);
     expect(postgres.schemaStatements(fixture.q, fixture.access)).toEqual(statements);
   });

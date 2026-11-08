@@ -1,0 +1,75 @@
+{
+  "schema": "scce.measured_runtime_corrections.v1",
+  "measuredAt": "2026-11-08",
+  "databaseSchemaVersion": 29,
+  "measurements": [
+    {
+      "operation": "Current source-owned construction admission",
+      "change": "Put recipe identity in the membership key so PostgreSQL can reuse the complete admission set.",
+      "beforeMs": 181826,
+      "afterMs": [2271, 2806],
+      "rows": 768,
+      "fullRowDigestBeforeAndAfter": "b06d0bb4d249d7cce44ae71385f0989cd49b753a1d81b4f7ae7e8ba9f2da3de3",
+      "guardsRetained": ["Source identity", "Current version", "Information access", "Promoted evidence", "Exact construction recipe"]
+    },
+    {
+      "operation": "Source-owned communicative-act admission",
+      "change": "Index source_versions by logical source and exact version order.",
+      "beforeMs": 6023,
+      "beforeExplainAnalyzeMs": 12768.874,
+      "afterMs": 244,
+      "rows": 515,
+      "fullRowDigestBeforeAndAfter": "2821a67d7e0aeea7a29093d9d9ba97036392af0fe1cc9e6bd370200e1c92c9c1"
+    },
+    {
+      "operation": "Unicode source-surface normalization",
+      "change": "Replace repeated string concatenation/indexing with a linear output buffer; retain the previous UTF16 boundary behavior.",
+      "inputUtf16Lengths": [63517, 64383],
+      "beforeMsRange": [234.6269, 293.0555],
+      "afterMsRange": [5.7495, 8.2163],
+      "alternatingPairedRuns": 6,
+      "allOutputByteHashesIdentical": true
+    },
+    {
+      "operation": "Disclosed director/location regression through actual PostgreSQL ingestion and kernel turns",
+      "source": "User-supplied fictional field notes, admitted inside a transaction and rolled back after verification.",
+      "directorAnswer": "Mira Venn directs Neralis observatory.",
+      "locationAnswer": "Neralis observatory is located on Pelora island.",
+      "supportedQuestions": 4,
+      "supportedCorrect": 4,
+      "unsupportedQuestions": 4,
+      "unsupportedCorrectlyWithheld": 4,
+      "sourceRetainedAfterRun": false,
+      "caseClass": "Disclosed development regression"
+    }
+  ],
+  "languageLifecycle": {
+    "humanConversationPairsTrainedPerLocale": {"ca":128,"ru":128,"es":128,"en":128},
+    "heapSafetyStops": 0,
+    "currentProfiles": 1061,
+    "assignedProfiles": 1061,
+    "identities": 18,
+    "servingCatalogMatchesPersistedCatalog": true,
+    "catalogDigest": "4050a4fed0ee9ace8be531e1bae00ceeee91bb6a816070ac1ba3fc276266b1f1",
+    "identityLabelsAreNotCapabilityScores": true
+  },
+  "nativeValidation": {
+    "ordinaryPublicPacketPath": ["Workspace ingestion", "Exact current source bytes", "Source-owned declarations and examples", "ProgramGraph", "Current-session artifact/command approval", "Native execution", "Immutable public driver"],
+    "publicGoAndRustStatefulChecksPassed": true,
+    "fabricatedLanguageProfiles": 0,
+    "privateValidationMaterialIngested": false,
+    "originalPublicModuleFilesPreserved": true
+  },
+  "independentComparison": {
+    "entryPoint": "tools/blind-comparison/campaign.mjs",
+    "instructions": "tools/blind-comparison/CAMPAIGN.md",
+    "extensions": "tools/blind-comparison/EXTENDING.md",
+    "resourceAccounting": "tools/blind-comparison/PROCESS-RESOURCES.md",
+    "registeredCells": 48,
+    "diagnosticCases": 96,
+    "defaultHeldoutCases": 576,
+    "reference": "qwen2.5:3b",
+    "referenceDigest": "357c53fb659c5076de1d65ccb0b397446227b71a42be9d1603d46168015c9e4b",
+    "qualification": "Requires a new frozen collection and the registered judging procedure; these engineering measurements are separate from comparative task scores."
+  }
+}
