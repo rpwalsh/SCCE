@@ -85,6 +85,7 @@ import { ANSWER_SLOT_IDS, QUESTION_TYPE_IDS, RELATION_ROLE_IDS } from "./questio
 import { collapseSurfaceWhitespace as collapsePromptWhitespace, surfaceUnits as promptSurfaceUnits } from "./surface-linguistics.js";
 import { answerCoversRequest, evidenceTitledForRequestSubject, learnedRequestScaffoldingUnits, requestContentEvidenceUnits } from "./local-evidence-runtime.js";
 import { requestClosedClassWords } from "./closed-class-words.js";
+import { createCreativeEventSpeechGrammarIndex } from "./creative-event-speech-grammar.js";
 import { candidateIsVerifiedBoundValue, candidateSurvivesRealizationContract, compileRealizationContract } from "./semantic-answer-construct.js";
 import { traceEvent } from "./debug/trace.js";
 import type { ContinueDecision } from "./learning-loop.js";
@@ -689,7 +690,8 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       const directCreativeCandidate = creativeRequested
         ? directCreativeSectionCandidate(input, discoursePlan, options.languageMemory, generationWorkBudget)
         : undefined;
-      const structuralCreativeCandidate = selectedStructuralCreativeCandidate(input, discoursePlan, constructionHasher);
+      const structuralCreativeDecision: Record<string, JsonValue> = {};
+      const structuralCreativeCandidate = selectedStructuralCreativeCandidate(input, discoursePlan, constructionHasher, structuralCreativeDecision);
       markMouthPhase("structural_creative_realization");
       const structuralCreativeBound = Boolean(structuralCreativeCandidate);
       const structuralCreativeFailClosed = inventionConstructState(input.construct)?.realizationPath === "mouth_realization_deferred" && !structuralCreativeCandidate;
@@ -1301,8 +1303,9 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
               languageProfileId: input.languageProfile.id,
               scope: input.languageMemory.scope,
               hydratedBundleIds: input.languageMemory.importedConstructionBundles.map(bundle => bundle.id),
-              selectedBundleIds: [],
-              selectedEventCount: 0
+              selectedBundleIds: structuralCreativeDecision.selectedBundleIds ?? [],
+              selectedEventCount: structuralCreativeDecision.selectedEventCount ?? 0,
+              decision: structuralCreativeDecision
             },
             mouthPerformance: {
               phaseMs: mouthPhaseMs,
@@ -4401,35 +4404,51 @@ function learnedProposalRejectionReason(invention: InventionConstructState, inpu
 }
 
 /** Selected event ports bind only source-aligned grammar slots; the shared realizer owns every emitted byte. */
-function selectedStructuralCreativeCandidate(input: SpeakInput, discoursePlan: DiscoursePlan, hasher: Hasher): SurfaceCandidate | undefined {
+function selectedStructuralCreativeCandidate(input: SpeakInput, discoursePlan: DiscoursePlan, hasher: Hasher, audit: Record<string, JsonValue>): SurfaceCandidate | undefined {
   const invention = inventionConstructState(input.construct);
   const frame = input.creativeRequestFrame;
   const selected = input.selectedCandidate;
-  if (!invention || invention.realizationPath !== "mouth_realization_deferred" || !selected || selected.kind !== "creative-candidate" || !frame) return undefined;
+  const reject = (reasonId: string, detail: Record<string, JsonValue> = {}): undefined => {
+    Object.assign(audit, { status: "rejected", reasonId, ...detail });
+    traceEvent((globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace, {
+      stage: "mouth.selected_creative_event.realization", label: "mouth.speak", support: audit
+    });
+    return undefined;
+  };
+  audit.schema = "scce.mouth.selected_creative_event_realization.v1";
+  if (!invention || invention.realizationPath !== "mouth_realization_deferred") {
+    Object.assign(audit, { status: "bypassed_not_applicable", reasonId: "no_selected_event_plan" });
+    return undefined;
+  }
+  if (!selected || selected.kind !== "creative-candidate" || !frame) return reject("selected_event_request_binding_missing");
   const selectedAudit = jsonRecord(selected.audit);
   const selectedConstructIds = new Set([...(selected.constructIds ?? []), ...stringArrayFromJson(selectedAudit.constructIds), stringFrom(selectedAudit.constructId)].filter(Boolean));
-  if (!selectedConstructIds.has(String(invention.nodeId))) return undefined;
+  if (!selectedConstructIds.has(String(invention.nodeId))) return reject("selected_event_construct_mismatch");
   const semanticPlan = jsonRecord(jsonRecord(invention.trace).structuralSemanticPlan);
   if (semanticPlan.schema !== "scce.structural_semantic_plan.v2" || semanticPlan.id !== invention.semanticPlanId
-    || semanticPlan.selectionAuthority !== "candidate_engine_and_judge" || semanticPlan.surfaceRealizationCompetitive !== false) return undefined;
+    || semanticPlan.selectionAuthority !== "candidate_engine_and_judge" || semanticPlan.surfaceRealizationCompetitive !== false) return reject("selected_event_semantic_plan_invalid");
   const events = arrayRecords(semanticPlan.events);
-  if (!events.length) return undefined;
+  audit.selectedBundleIds = semanticPlan.sourceBundleIds ?? [];
+  audit.selectedEventCount = events.length;
+  audit.realizedEventCount = 0;
+  if (!events.length) return reject("selected_event_plan_empty");
   const turns = speakConversationTurns(input);
   const request = input.requestText ?? mouthEchoQuestionText(input);
   const ownerTurn = turns.find(turn => turn.roleId === "session.role.owner" && turn.surface === request);
-  if (!ownerTurn) return undefined;
+  if (!ownerTurn) return reject("selected_event_owner_turn_missing");
   const requestPoints = [...request];
   const surfaces: string[] = [];
   const formLiterals: Array<{ id: string; text: string }> = [];
   const realizations: JsonValue[] = [];
+  const grammarIndex = createCreativeEventSpeechGrammarIndex(input.languageMemory.importedConstructionBundles);
   for (const [eventIndex, planned] of events.entries()) {
     const sourceBundle = input.languageMemory.importedConstructionBundles.find(bundle => bundle.id === planned.bundleId);
     const event = sourceBundle?.creativeEvents?.find(event => event.id === planned.eventId && event.constructionId === planned.constructionId
       && event.sourceVersionId === planned.sourceVersionId && event.evidenceId === planned.evidenceId && event.relationId === planned.relationId);
-    if (!sourceBundle || !event || !stringArrayFromJson(semanticPlan.sourceBundleIds).includes(sourceBundle.id)) return undefined;
+    if (!sourceBundle || !event || !stringArrayFromJson(semanticPlan.sourceBundleIds).includes(sourceBundle.id)) return reject("selected_event_source_witness_missing", { eventIndex, eventId: planned.eventId ?? null });
     const compatibility = creativeEventCompatibilityDecision(input.languageMemory.creativeEventCompatibilityModels, frame, event);
     if (!compatibility || compatibility.modelId !== planned.compatibilityModelId || compatibility.modelVersion !== planned.compatibilityModelVersion
-      || (compatibility.qualification !== "source_observed" && !(compatibility.posterior! >= compatibility.threshold!))) return undefined;
+      || (compatibility.qualification !== "source_observed" && !(compatibility.posterior! >= compatibility.threshold!))) return reject("selected_event_compatibility_refused", { eventIndex, eventId: event.id });
     const replacements = arrayRecords(planned.requestRoleBindings).map(binding => {
       const port = event.argumentFrame.bindings.find(port => port.roleId === binding.eventRoleId);
       const argument = frame.arguments.find(argument => argument.id === binding.requestArgumentId && argument.roleId === binding.requestRoleId);
@@ -4442,17 +4461,11 @@ function selectedStructuralCreativeCandidate(input: SpeakInput, discoursePlan: D
         || canonicalStringify(binding.requestSpan) !== canonicalStringify(span)) return undefined;
       return { port, span };
     });
-    if (replacements.some(row => !row)) return undefined;
-    const grammar = input.languageMemory.importedConstructionBundles.flatMap(bundle => bundle.sourceExamples.map(example => ({ bundle, example })))
-      .filter(({ bundle, example }) => bundle.targetProfileId === event.profileId && example.evidenceId === event.evidenceId
-        && example.sourceVersionId === event.sourceVersionId && example.evidenceContentHash === event.evidenceContentHash
-        && example.surfaceStartCodePoint === event.argumentFrame.sourceSentenceStartCodePoint && example.surfaceEndCodePoint === event.argumentFrame.sourceSentenceEndCodePoint
-        && example.roles.some(role => example.surfaceStartCodePoint + role.startCodePoint === event.labelStartCodePoint
-          && example.surfaceStartCodePoint + role.endCodePoint === event.labelEndCodePoint && role.surface === event.sourceLabel)
-        && event.argumentFrame.bindings.every(port => example.roles.some(role => example.surfaceStartCodePoint + role.startCodePoint === port.startCodePoint
-          && example.surfaceStartCodePoint + role.endCodePoint === port.endCodePoint && role.surface === port.surface)))
-      .sort((a, b) => a.bundle.id.localeCompare(b.bundle.id) || a.example.id.localeCompare(b.example.id));
+    if (replacements.some(row => !row)) return reject("selected_event_request_role_refused", { eventIndex, eventId: event.id });
+    const grammar = grammarIndex.forEvent(event);
+    if (!grammar.length) return reject("selected_event_source_speech_grammar_missing", { eventIndex, eventId: event.id, sourceBundleId: sourceBundle.id, sourceVersionId: event.sourceVersionId });
     let admitted: { text: string; constructionId: string; exampleId: string } | undefined;
+    const grammarRejections = new Set<string>();
     for (const { bundle, example } of grammar) {
       const slots: Array<SurfaceMeaningPlan["slots"][number]> = example.roles.map((role, slotIndex) => {
         const replacement = replacements.find(row => row && example.surfaceStartCodePoint + role.startCodePoint === row.port.startCodePoint
@@ -4468,18 +4481,23 @@ function selectedStructuralCreativeCandidate(input: SpeakInput, discoursePlan: D
         cycleConsistencyByConstructionId: input.cycleConsistencyByConstructionId,
         plan: { id: opaqueSurfaceId(hasher, "creative_plan", [invention.semanticPlanId, eventIndex, example.id]), profileKey: bundle.targetProfileId,
           roleSignature: [...new Set(slots.map(slot => slot.roleId))], slots } });
-      if (realized.status !== "realized") continue;
+      if (realized.status !== "realized") { grammarRejections.add(realized.rejection.code); continue; }
       admitted = { text: realized.realization.text, constructionId: realized.realization.constructionId, exampleId: example.id };
       formLiterals.push({ id: `construction_form.${realized.realization.constructionId}.${example.sourceVersionId}`, text: example.surface });
       break;
     }
-    if (!admitted) return undefined;
+    if (!admitted) return reject("selected_event_source_speech_grammar_refused", { eventIndex, eventId: event.id, grammarWitnesses: grammar.length, rejectionIds: [...grammarRejections].sort() });
     if (!surfaces.includes(admitted.text)) surfaces.push(admitted.text);
     realizations.push(toJsonValue({ eventId: event.id, ...admitted }));
+    audit.realizedEventCount = realizations.length;
   }
   const text = admissibleJoinedCandidateText(renderJoinedCandidateAlternatives({ derivations: [surfaces], joinProgram: activeJoinProgram(input.languageMemory) }));
-  if (!text || !admissibleMouthSurface(text)) return undefined;
+  if (!text || !admissibleMouthSurface(text)) return reject("selected_event_join_refused");
   const id = `candidate:generated:creative:realizer:${hasher.digestHex(canonicalStringify([invention.semanticPlanId, realizations, text]))}`;
+  Object.assign(audit, { status: "realized", reasonId: "selected_event_source_speech_grammar_realized", candidateId: id, realizations });
+  traceEvent((globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace, {
+    stage: "mouth.selected_creative_event.realization", label: "mouth.speak", support: audit
+  });
   return { id, style: "surface.path.generated.creative.source_construction", path: "generated", claimBasis: "invented", text,
     evidenceIds: [], fit: invention.supportScore, importedPieceIds: stringArrayFromJson(semanticPlan.sourceBundleIds), discoursePlan,
     inventionBinding: inventionSurfaceBinding(invention), constructionFormLiterals: formLiterals, exactSurface: true,

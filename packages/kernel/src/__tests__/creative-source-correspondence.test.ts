@@ -16,6 +16,14 @@ import { segmentUnicodeSurfaceV2 } from "../unicode-segmentation-v2.js";
 import type { EvidenceSpan } from "../types.js";
 import type { TranscriptTurn } from "../dialogue-communicative-act-learning.js";
 import type { CreativeEventCompatibilityModel } from "../creative-event-compatibility.js";
+import { createMouth } from "../mouth.js";
+import { createCorrectionMemory } from "../correction-memory.js";
+import { createSemanticEntailmentEngine } from "../entailment.js";
+import { inventionConstructNode } from "../prediction.js";
+import { createCandidateEngine } from "../candidate.js";
+import { createCcrEngine } from "../ccr.js";
+import { jsonRecord } from "../kernel-answer-primitives.js";
+import type { ConstructGraph } from "../types.js";
 const humanPair = JSON.parse(readFileSync(new URL("./fixtures/dolly-human-creative-pair.json", import.meta.url), "utf8")) as { text: string; turns: TranscriptTurn[] };
 
 const hasher = createHasher();
@@ -41,6 +49,44 @@ describe("declared human creative source correspondence", () => {
     const profile = createLanguageAcquisitionEngine({ idFactory: ids }).acquire({ sourceVersionId, text: humanPair.text, createdAt: 1 });
     patterns = compileLanguageTrainingBatch({ runtime, hasher, batch: { streamId: "fixture://human", sourceSystem: "dialogue", profile, sourceVersionId,
       text: humanPair.text, evidence, transcriptTurns: humanPair.turns as TranscriptTurn[], createdAt: 1, retainNgramObservations: false } }).patterns;
+  });
+
+  it("reports the exact missing speech grammar after the authentic human story's semantic plan is selected", async () => {
+    const state = restart();
+    const request = humanPair.turns[0]!.surface;
+    const sourceFrame = compileCreativeRequestFrameFromCompatibilityModels({ requestText: request, models: state.creativeEventCompatibilityModels, hasher })!;
+    const points = [...request];
+    for (const [index, argument] of [...sourceFrame.arguments.entries()].reverse()) points.splice(argument.span.charStart, argument.span.charEnd - argument.span.charStart, `qzeta${index}`);
+    const fresh = points.join("");
+    const frame = compileCreativeRequestFrameFromCompatibilityModels({ requestText: fresh, models: state.creativeEventCompatibilityModels, hasher })!;
+    const scoped = scopeLanguageMemoryStateToLanguage(state, "language.observed", { profile: () => "language.observed", corpus: () => "language.observed" });
+    const field = createAlphaFieldEngine().activate({ text: fresh, nodes: [], edges: [], hyperedges: [] });
+    const base: ConstructGraph = { id: "construct.source.observed" as ConstructGraph["id"], episodeId: "episode.source.observed" as ConstructGraph["episodeId"], forceVector: {}, nodes: [], edges: [], artifacts: [] };
+    const planned = planInventions({ requestText: fresh, requestedAuthority: "creative", samplingDisabled: true, creativeRequestFrame: frame,
+      languageMemory: runtime, languageMemoryState: scoped, evidence: [], dialogueState: updateDialogueState({ requestText: fresh }), field,
+      graph: { nodes: [], edges: [], hyperedges: [], bounded: true, query: {} }, construct: base });
+    const entailment = createSemanticEntailmentEngine({ idFactory: ids, hasher }).check({ text: fresh, evidence: [], nodes: [], field, createdAt: 1 });
+    const candidates = createCandidateEngine().generate({ requestText: fresh, requestedAuthority: "creative", field, entailment, evidence: [], inventionCandidates: planned,
+      proofAnswer: "", learningNeeds: [], ccr: createCcrEngine().run({ text: fresh, evidence: [], nodes: [], edges: [], field, entailment }) });
+    const selected = candidates.candidates.find(candidate => candidate.kind === "creative-candidate")!;
+    const invention = planned.find(construct => construct.id === jsonRecord(selected.audit).constructId)!;
+    const semanticPlan = jsonRecord(jsonRecord(invention.trace).structuralSemanticPlan);
+    const events = (Array.isArray(semanticPlan.events) ? semanticPlan.events : []).map(jsonRecord);
+    expect(events.length).toBeGreaterThanOrEqual(4);
+    const first = events[0]!;
+    const sourceEvent = scoped.importedConstructionBundles.find(bundle => bundle.id === first.bundleId)!.creativeEvents!.find(event => event.id === first.eventId)!;
+    expect(sourceEvent.sourceLabel).toBe("handful");
+    const profile = createLanguageAcquisitionEngine({ idFactory: ids }).acquire({ sourceVersionId: evidence[0]!.sourceVersionId, text: humanPair.text, createdAt: 1 });
+    const mouth = createMouth({ languageMemory: runtime, correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }), hashText: text => hasher.digestHex(text) });
+    const spoken = await mouth.speak({ requestText: fresh, requestedAuthority: "creative", creativeRequestFrame: frame, field, entailment,
+      evidence: [], languageMemory: scoped, languageProfile: profile, construct: { ...base, nodes: [inventionConstructNode(invention)] }, selectedCandidate: selected });
+    const structural = jsonRecord(jsonRecord(spoken.realizationTrace.languageMemory).structuralCreative);
+    expect(structural).toMatchObject({ failClosed: true, selectionBound: true, selectedEventCount: events.length,
+      selectedBundleIds: semanticPlan.sourceBundleIds,
+      decision: { status: "rejected", reasonId: "selected_event_source_speech_grammar_missing", eventIndex: 0,
+        eventId: first.eventId, sourceBundleId: first.bundleId, sourceVersionId: sourceEvent.sourceVersionId, realizedEventCount: 0 } });
+    expect(spoken.text).toBe("");
+    expect(spoken.evidenceRefs).toEqual([]);
   });
 
   it("learns an exact request template and binds fresh opaque fillers after source-owned restart", () => {
