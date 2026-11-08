@@ -253,6 +253,7 @@ export class PostgresStorageAdapter implements ScceStorage {
   readonly segmentationPopulations: SegmentationPopulationModelStore;
   readonly languageIdentities: LanguageIdentityStore;
   private readonly transactionContext = new AsyncLocalStorage<PoolClient>();
+  private readonly languageRevisionDirty = new WeakSet<PoolClient>();
 
   constructor(options: PostgresStorageOptions) {
     if (!/^postgres(?:ql)?:\/\//i.test(options.url)) throw new Error("SCCE v3 requires PostgreSQL; storage adapter received a non-Postgres URL.");
@@ -591,7 +592,24 @@ export class PostgresStorageAdapter implements ScceStorage {
   async transaction<T>(operation: () => Promise<T>): Promise<T> {
     const active = this.transactionContext.getStore();
     if (active) return operation();
-    return this.tx(client => this.transactionContext.run(client, operation));
+    return this.tx(async client => {
+      try {
+        const result = await this.transactionContext.run(client, operation);
+        if (this.languageRevisionDirty.has(client)) await client.query(languageMemoryRevisionIncrementSql(this));
+        return result;
+      } finally { this.languageRevisionDirty.delete(client); }
+    });
+  }
+
+  async mutateLanguageMemory(sql: string, params: unknown[] = []): Promise<boolean> {
+    return this.transaction(async () => {
+      const changed = await this.query(`${sql} RETURNING 1 AS language_memory_changed`, params);
+      if (!changed.length) return false;
+      const client = this.transactionContext.getStore();
+      if (client) this.languageRevisionDirty.add(client);
+      else await this.query(languageMemoryRevisionIncrementSql(this));
+      return true;
+    });
   }
 
   async tx<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
@@ -614,6 +632,14 @@ export class PostgresStorageAdapter implements ScceStorage {
 
 export function createPostgresStorageAdapter(options: PostgresStorageOptions): PostgresStorageAdapter {
   return new PostgresStorageAdapter(options);
+}
+
+export const LANGUAGE_MEMORY_REVISION_KEY = "language_memory.revision";
+
+function languageMemoryRevisionIncrementSql(storage: PostgresStorageAdapter): string {
+  return `INSERT INTO ${storage.table("storage_meta")} AS revision(key,value_json,updated_at)
+    VALUES('${LANGUAGE_MEMORY_REVISION_KEY}','1'::jsonb,NOW())
+    ON CONFLICT(key) DO UPDATE SET value_json=to_jsonb((revision.value_json #>> '{}')::numeric + 1),updated_at=NOW()`;
 }
 
 export async function deferredBulkLoadIndexes(storage: PostgresStorageAdapter): Promise<string[]> {
@@ -2862,7 +2888,7 @@ function rowToInducedLanguageModelRecord(row: InducedLanguageModelRow): InducedL
 function createInducedLanguageModelStore(storage: PostgresStorageAdapter): InducedLanguageModelStore {
   return {
     async putModel(record) {
-      await storage.query(
+      await storage.mutateLanguageMemory(
         `INSERT INTO ${storage.table("induced_language_models")}(id,training_plan_id,model_json,corpus_documents,vocabulary_size,information_label,created_at)
          VALUES($1,$2,$3::jsonb,$4,$5,$6::jsonb,TO_TIMESTAMP($7/1000.0))
          ON CONFLICT(id) DO NOTHING`,
@@ -2924,7 +2950,7 @@ function createSegmentationPopulationModelStore(
 ): SegmentationPopulationModelStore {
   return {
     async putModel(record) {
-      await storage.query(
+      await storage.mutateLanguageMemory(
         `INSERT INTO ${storage.table("segmentation_population_models")}(id,training_plan_id,model_json,profile_ids,source_version_ids,population_count,mdl_gain_nats,information_label,created_at)
          VALUES($1,$2,$3::jsonb,$4,$5,$6,$7,$8::jsonb,TO_TIMESTAMP($9/1000.0))
          ON CONFLICT(id) DO NOTHING`,
@@ -2971,24 +2997,27 @@ function sourceSystemFromCorpusNamespace(namespace: string | null): string {
 function createLanguageIdentityStore(storage: PostgresStorageAdapter): LanguageIdentityStore {
   const writeIdentities = async (records: readonly LanguageIdentityRecord[]) => {
     for (const record of records) {
-      await storage.query(
-        `INSERT INTO ${storage.table("language_identities")}(id,identity_json,created_at,information_label)
+      await storage.mutateLanguageMemory(
+        `INSERT INTO ${storage.table("language_identities")} AS identity(id,identity_json,created_at,information_label)
          VALUES($1,$2::jsonb,TO_TIMESTAMP($3/1000.0),$4::jsonb)
-         ON CONFLICT(id) DO UPDATE SET identity_json=EXCLUDED.identity_json, information_label=EXCLUDED.information_label`,
+         ON CONFLICT(id) DO UPDATE SET identity_json=EXCLUDED.identity_json, information_label=EXCLUDED.information_label
+         WHERE identity.identity_json IS DISTINCT FROM EXCLUDED.identity_json OR identity.information_label IS DISTINCT FROM EXCLUDED.information_label`,
         [record.id, JSON.stringify(record), record.createdAt, JSON.stringify(storage.requireWritableInformationLabel(record.informationLabel))]
       );
     }
   };
   return {
     async putIdentities(records) {
-      await writeIdentities(records);
+      await storage.transaction(() => writeIdentities(records));
     },
     async replaceIdentities(records) {
-      await writeIdentities(records);
-      await storage.query(
-        `DELETE FROM ${storage.table("language_identities")} WHERE NOT (id = ANY($1::text[]))`,
-        [records.map(record => record.id)]
-      );
+      await storage.transaction(async () => {
+        await writeIdentities(records);
+        await storage.mutateLanguageMemory(
+          `DELETE FROM ${storage.table("language_identities")} WHERE NOT (id = ANY($1::text[]))`,
+          [records.map(record => record.id)]
+        );
+      });
     },
     async listIdentities() {
       const access = storage.informationAccessPredicate("li", 1);
@@ -2999,10 +3028,10 @@ function createLanguageIdentityStore(storage: PostgresStorageAdapter): LanguageI
     async assignProfileLanguages(assignments) {
       for (let offset = 0; offset < assignments.length; offset += 5000) {
         const chunk = assignments.slice(offset, offset + 5000);
-        await storage.query(
+        await storage.mutateLanguageMemory(
           `UPDATE ${storage.table("language_profiles")} lp SET language_id = r.language_id
            FROM jsonb_to_recordset($1::jsonb) AS r(profile_id text, language_id text)
-           WHERE lp.id = r.profile_id`,
+           WHERE lp.id = r.profile_id AND lp.language_id IS DISTINCT FROM r.language_id`,
           [JSON.stringify(chunk.map(row => ({ profile_id: row.profileId, language_id: row.languageId })))]
         );
       }
@@ -3026,14 +3055,15 @@ function createLanguageIdentityStore(storage: PostgresStorageAdapter): LanguageI
     async putProfileSignatures({ rows, informationLabel }) {
       if (!rows.length) return;
       const label = storage.requireWritableInformationLabel(informationLabel);
-      await storage.query(
-        `INSERT INTO ${storage.table("language_profile_signatures")}(id, source_version_id, scripts, direction, top_continuation, created_at, information_label)
+      await storage.mutateLanguageMemory(
+        `INSERT INTO ${storage.table("language_profile_signatures")} AS signature(id, source_version_id, scripts, direction, top_continuation, created_at, information_label)
          SELECT r.id, r.source_version_id, r.scripts, r.direction, r.top_continuation, NOW(), $2::jsonb
          FROM jsonb_to_recordset($1::jsonb) AS r(
            id text, source_version_id text, scripts jsonb, direction text, top_continuation jsonb
          )
          ON CONFLICT(id) DO UPDATE
-         SET scripts=EXCLUDED.scripts, direction=EXCLUDED.direction, top_continuation=EXCLUDED.top_continuation`,
+         SET scripts=EXCLUDED.scripts, direction=EXCLUDED.direction, top_continuation=EXCLUDED.top_continuation
+         WHERE signature.scripts IS DISTINCT FROM EXCLUDED.scripts OR signature.direction IS DISTINCT FROM EXCLUDED.direction OR signature.top_continuation IS DISTINCT FROM EXCLUDED.top_continuation`,
         [
           JSON.stringify(rows.map(row => ({
             id: row.id,
@@ -3416,8 +3446,8 @@ async function putLanguageProfilesBatch(storage: PostgresStorageAdapter, profile
     }));
     const aliases = sourceOwnedLanguageAliasRows(labeledProfiles);
     for (const payloadChunk of serializedJsonRowBatches(payload, batchRowId)) {
-      await storage.query(
-        `INSERT INTO ${storage.table("language_profiles")}(id,source_version_id,profile_json,ngram_keys,created_at,information_label)
+      await storage.mutateLanguageMemory(
+        `INSERT INTO ${storage.table("language_profiles")} AS lp(id,source_version_id,profile_json,ngram_keys,created_at,information_label)
        SELECT r.id, r.source_version_id, r.profile_json, r.ngram_keys, TO_TIMESTAMP(r.created_at_ms/1000.0), r.information_label
        FROM jsonb_to_recordset($1::jsonb) AS r(
          id text,
@@ -3427,16 +3457,20 @@ async function putLanguageProfilesBatch(storage: PostgresStorageAdapter, profile
          created_at_ms double precision,
          information_label jsonb
        )
-       ON CONFLICT(id) DO UPDATE SET profile_json=EXCLUDED.profile_json, ngram_keys=EXCLUDED.ngram_keys, information_label=EXCLUDED.information_label`,
+       ON CONFLICT(id) DO UPDATE SET profile_json=EXCLUDED.profile_json, ngram_keys=EXCLUDED.ngram_keys, information_label=EXCLUDED.information_label
+       WHERE lp.profile_json IS DISTINCT FROM EXCLUDED.profile_json OR lp.ngram_keys IS DISTINCT FROM EXCLUDED.ngram_keys OR lp.information_label IS DISTINCT FROM EXCLUDED.information_label`,
         [payloadChunk]
       );
     }
-    await storage.query(
-      `DELETE FROM ${storage.table("language_profile_aliases")} WHERE profile_id=ANY($1)`,
-      [profiles.map(profile => profile.id)]
+    await storage.mutateLanguageMemory(
+      `DELETE FROM ${storage.table("language_profile_aliases")} alias WHERE profile_id=ANY($1) AND NOT EXISTS (
+        SELECT 1 FROM jsonb_to_recordset($2::jsonb) incoming(alias_key text,profile_id text)
+        WHERE incoming.alias_key=alias.alias_key AND incoming.profile_id=alias.profile_id
+      )`,
+      [profiles.map(profile => profile.id), JSON.stringify(aliases)]
     );
     if (aliases.length) {
-      await storage.query(
+      await storage.mutateLanguageMemory(
         `WITH rows AS (
            SELECT *
            FROM jsonb_to_recordset($1::jsonb) AS r(
@@ -3450,7 +3484,7 @@ async function putLanguageProfilesBatch(storage: PostgresStorageAdapter, profile
              updated_at_ms double precision
            )
          )
-         INSERT INTO ${storage.table("language_profile_aliases")}(
+         INSERT INTO ${storage.table("language_profile_aliases")} AS alias(
            alias_key,alias_surface,profile_id,source_version_id,evidence_refs,source_version_refs,confidence,updated_at
          )
          SELECT r.alias_key,r.alias_surface,r.profile_id,r.source_version_id,
@@ -3469,7 +3503,10 @@ async function putLanguageProfilesBatch(storage: PostgresStorageAdapter, profile
            evidence_refs=EXCLUDED.evidence_refs,
            source_version_refs=EXCLUDED.source_version_refs,
            confidence=EXCLUDED.confidence,
-           updated_at=EXCLUDED.updated_at`,
+           updated_at=EXCLUDED.updated_at
+         WHERE alias.alias_surface IS DISTINCT FROM EXCLUDED.alias_surface OR alias.source_version_id IS DISTINCT FROM EXCLUDED.source_version_id
+           OR alias.evidence_refs IS DISTINCT FROM EXCLUDED.evidence_refs OR alias.source_version_refs IS DISTINCT FROM EXCLUDED.source_version_refs
+           OR alias.confidence IS DISTINCT FROM EXCLUDED.confidence`,
         [JSON.stringify(aliases)]
       );
     }
@@ -3705,7 +3742,14 @@ async function currentLanguagePatternCompilations(storage: PostgresStorageAdapte
 }
 
 function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMemoryStore {
+  let observedRevision: string | undefined;
   return {
+    async readRevision() {
+      const [row] = await storage.query<{ revision: string }>(`SELECT value_json #>> '{}' AS revision FROM ${storage.table("storage_meta")} WHERE key=$1`, [LANGUAGE_MEMORY_REVISION_KEY]);
+      const revision = row?.revision ?? "0";
+      if (observedRevision !== revision) { clearResidentNgramModelJson(); observedRevision = revision; }
+      return revision;
+    },
     async putNgramObservation(observation) {
       await storage.transaction(async () => {
         const labels = await joinDurableRecordLabels(
@@ -3714,7 +3758,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
           [{ id: observation.id, informationLabel: observation.informationLabel }]
         );
         const informationLabel = labels.get(observation.id)!;
-        await storage.query(
+        await storage.mutateLanguageMemory(
         `INSERT INTO ${storage.table("ngram_observations")} AS n(id,stream_id,language_hint,order_n,history,symbol,count,field_weight,source_version_id,evidence_id,observed_at,metadata_json,information_label)
          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,TO_TIMESTAMP($11/1000.0),$12::jsonb,$13::jsonb)
          ON CONFLICT(id) DO UPDATE
@@ -3743,7 +3787,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
           informationLabel: labels.get(observation.id)!
         }));
         for (const payload of serializedNgramObservationBatches(labeledObservations)) {
-          await storage.query(
+          await storage.mutateLanguageMemory(
           `INSERT INTO ${storage.table("ngram_observations")} AS n(id,stream_id,language_hint,order_n,history,symbol,count,field_weight,source_version_id,evidence_id,observed_at,metadata_json,information_label)
          SELECT
            r.id,
@@ -3878,7 +3922,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       };
       await storage.transaction(async () => {
         await putLanguagePatternsBatch(storage, input.patterns);
-        await storage.query(
+        await storage.mutateLanguageMemory(
           `INSERT INTO ${storage.table("storage_meta")} AS metadata(key,value_json,updated_at)
            VALUES($1,$2::jsonb,NOW())
            ON CONFLICT(key) DO UPDATE SET value_json=EXCLUDED.value_json,updated_at=NOW()
@@ -3903,10 +3947,12 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
           "translation_alignments",
           [{ id: alignment.id, informationLabel: alignment.informationLabel }]
         );
-        await storage.query(
+        await storage.mutateLanguageMemory(
           `INSERT INTO ${storage.table("translation_alignments")} AS ta(id,source_frame_id,target_frame_id,source_language,target_language,force,loss_vector,alignment_json,evidence_ids,updated_at,information_label)
            VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9,TO_TIMESTAMP($10/1000.0),$11::jsonb)
-           ON CONFLICT(id) DO UPDATE SET force=EXCLUDED.force, loss_vector=EXCLUDED.loss_vector, alignment_json=EXCLUDED.alignment_json, evidence_ids=(SELECT ARRAY(SELECT DISTINCT unnest(ta.evidence_ids || EXCLUDED.evidence_ids))), updated_at=EXCLUDED.updated_at, information_label=EXCLUDED.information_label`,
+           ON CONFLICT(id) DO UPDATE SET force=EXCLUDED.force, loss_vector=EXCLUDED.loss_vector, alignment_json=EXCLUDED.alignment_json, evidence_ids=(SELECT ARRAY(SELECT DISTINCT unnest(ta.evidence_ids || EXCLUDED.evidence_ids))), updated_at=EXCLUDED.updated_at, information_label=EXCLUDED.information_label
+           WHERE ta.force IS DISTINCT FROM EXCLUDED.force OR ta.loss_vector IS DISTINCT FROM EXCLUDED.loss_vector OR ta.alignment_json IS DISTINCT FROM EXCLUDED.alignment_json
+             OR NOT (ta.evidence_ids @> EXCLUDED.evidence_ids) OR ta.information_label IS DISTINCT FROM EXCLUDED.information_label`,
           [alignment.id, alignment.sourceFrameId, alignment.targetFrameId, alignment.sourceLanguage, alignment.targetLanguage, alignment.force, JSON.stringify(alignment.lossVector), JSON.stringify(alignment.alignmentJson), alignment.evidenceIds, alignment.updatedAt, JSON.stringify(labels.get(alignment.id)!)]
         );
       });
@@ -4548,7 +4594,7 @@ async function putNgramModelsBatch(storage: PostgresStorageAdapter, models: read
       information_label: labels.get(model.id)!
     }));
     for (const payloadChunk of serializedJsonRowBatches(payload, batchRowId)) {
-      await storage.query(
+      await storage.mutateLanguageMemory(
         `INSERT INTO ${storage.table("ngram_models")} AS n(id,stream_id,language_hint,max_order,discount,model_json,updated_at,information_label)
      SELECT r.id, r.stream_id, r.language_hint, r.max_order, r.discount, r.model_json, TO_TIMESTAMP(r.updated_at_ms/1000.0), r.information_label
      FROM jsonb_to_recordset($1::jsonb) AS r(
@@ -4561,7 +4607,9 @@ async function putNgramModelsBatch(storage: PostgresStorageAdapter, models: read
        updated_at_ms double precision,
        information_label jsonb
      )
-     ON CONFLICT(id) DO UPDATE SET discount=EXCLUDED.discount, model_json=n.model_json || EXCLUDED.model_json, updated_at=EXCLUDED.updated_at, information_label=EXCLUDED.information_label`,
+     ON CONFLICT(id) DO UPDATE SET discount=EXCLUDED.discount, model_json=n.model_json || EXCLUDED.model_json, updated_at=EXCLUDED.updated_at, information_label=EXCLUDED.information_label
+     WHERE n.discount IS DISTINCT FROM EXCLUDED.discount OR n.model_json IS DISTINCT FROM (n.model_json || EXCLUDED.model_json)
+       OR n.information_label IS DISTINCT FROM EXCLUDED.information_label`,
         [payloadChunk]
       );
     }
@@ -4587,7 +4635,7 @@ async function putLanguageUnitsBatch(storage: PostgresStorageAdapter, units: rea
       information_label: labels.get(unit.id)!
     }));
     for (const payloadChunk of serializedJsonRowBatches(payload, batchRowId)) {
-      await storage.query(
+      await storage.mutateLanguageMemory(
         `INSERT INTO ${storage.table("language_units")} AS lu(id,profile_id,source_version_id,script,unit_kind,unit_text,features,competence_vector,alpha,evidence_ids,metadata_json,information_label)
      SELECT
        r.id,
@@ -4616,7 +4664,9 @@ async function putLanguageUnitsBatch(storage: PostgresStorageAdapter, units: rea
        metadata_json jsonb,
        information_label jsonb
      )
-     ON CONFLICT(id) DO UPDATE SET alpha=GREATEST(lu.alpha,EXCLUDED.alpha), evidence_ids=(SELECT ARRAY(SELECT DISTINCT unnest(lu.evidence_ids || EXCLUDED.evidence_ids))), metadata_json=lu.metadata_json || EXCLUDED.metadata_json, information_label=EXCLUDED.information_label`,
+     ON CONFLICT(id) DO UPDATE SET alpha=GREATEST(lu.alpha,EXCLUDED.alpha), evidence_ids=(SELECT ARRAY(SELECT DISTINCT unnest(lu.evidence_ids || EXCLUDED.evidence_ids))), metadata_json=lu.metadata_json || EXCLUDED.metadata_json, information_label=EXCLUDED.information_label
+     WHERE lu.alpha IS DISTINCT FROM GREATEST(lu.alpha,EXCLUDED.alpha) OR NOT (lu.evidence_ids @> EXCLUDED.evidence_ids)
+       OR lu.metadata_json IS DISTINCT FROM (lu.metadata_json || EXCLUDED.metadata_json) OR lu.information_label IS DISTINCT FROM EXCLUDED.information_label`,
         [payloadChunk]
       );
     }
@@ -4639,7 +4689,7 @@ async function putLanguagePatternsBatch(storage: PostgresStorageAdapter, pattern
       information_label: labels.get(pattern.id)!
     }));
     for (const payloadChunk of serializedJsonRowBatches(payload, batchRowId)) {
-      await storage.query(
+      await storage.mutateLanguageMemory(
         `INSERT INTO ${storage.table("language_patterns")} AS lp(id,profile_id,pattern_kind,support,entropy,pattern_json,evidence_ids,updated_at,information_label)
      SELECT
        r.id,
@@ -4662,7 +4712,10 @@ async function putLanguagePatternsBatch(storage: PostgresStorageAdapter, pattern
        updated_at_ms double precision,
        information_label jsonb
      )
-     ON CONFLICT(id) DO UPDATE SET support=GREATEST(lp.support,EXCLUDED.support), entropy=EXCLUDED.entropy, pattern_json=jsonb_strip_nulls(jsonb_build_object('sourceCompilationId',lp.pattern_json->'sourceCompilationId')) || EXCLUDED.pattern_json, evidence_ids=(SELECT ARRAY(SELECT DISTINCT unnest(lp.evidence_ids || EXCLUDED.evidence_ids))), updated_at=EXCLUDED.updated_at, information_label=EXCLUDED.information_label`,
+     ON CONFLICT(id) DO UPDATE SET support=GREATEST(lp.support,EXCLUDED.support), entropy=EXCLUDED.entropy, pattern_json=jsonb_strip_nulls(jsonb_build_object('sourceCompilationId',lp.pattern_json->'sourceCompilationId')) || EXCLUDED.pattern_json, evidence_ids=(SELECT ARRAY(SELECT DISTINCT unnest(lp.evidence_ids || EXCLUDED.evidence_ids))), updated_at=EXCLUDED.updated_at, information_label=EXCLUDED.information_label
+     WHERE lp.support IS DISTINCT FROM GREATEST(lp.support,EXCLUDED.support) OR lp.entropy IS DISTINCT FROM EXCLUDED.entropy
+       OR lp.pattern_json IS DISTINCT FROM (jsonb_strip_nulls(jsonb_build_object('sourceCompilationId',lp.pattern_json->'sourceCompilationId')) || EXCLUDED.pattern_json)
+       OR NOT (lp.evidence_ids @> EXCLUDED.evidence_ids) OR lp.information_label IS DISTINCT FROM EXCLUDED.information_label`,
         [payloadChunk]
       );
     }
@@ -4683,7 +4736,7 @@ async function putSemanticFramesBatch(storage: PostgresStorageAdapter, frames: r
       information_label: labels.get(frame.id)!
     }));
     for (const payloadChunk of serializedJsonRowBatches(payload, batchRowId)) {
-      await storage.query(
+      await storage.mutateLanguageMemory(
         `INSERT INTO ${storage.table("semantic_frames")} AS sf(id,frame_json,embedding,evidence_ids,alpha,created_at,information_label)
      SELECT
        r.id,
@@ -4702,7 +4755,9 @@ async function putSemanticFramesBatch(storage: PostgresStorageAdapter, frames: r
        created_at_ms double precision,
        information_label jsonb
      )
-     ON CONFLICT(id) DO UPDATE SET alpha=GREATEST(sf.alpha,EXCLUDED.alpha), frame_json=EXCLUDED.frame_json, evidence_ids=(SELECT ARRAY(SELECT DISTINCT unnest(sf.evidence_ids || EXCLUDED.evidence_ids))), information_label=EXCLUDED.information_label`,
+     ON CONFLICT(id) DO UPDATE SET alpha=GREATEST(sf.alpha,EXCLUDED.alpha), frame_json=EXCLUDED.frame_json, evidence_ids=(SELECT ARRAY(SELECT DISTINCT unnest(sf.evidence_ids || EXCLUDED.evidence_ids))), information_label=EXCLUDED.information_label
+     WHERE sf.alpha IS DISTINCT FROM GREATEST(sf.alpha,EXCLUDED.alpha) OR sf.frame_json IS DISTINCT FROM EXCLUDED.frame_json
+       OR NOT (sf.evidence_ids @> EXCLUDED.evidence_ids) OR sf.information_label IS DISTINCT FROM EXCLUDED.information_label`,
         [payloadChunk]
       );
     }
@@ -4808,7 +4863,7 @@ function createBrainImportStore(storage: PostgresStorageAdapter): BrainImportSto
       throw new Error(`brain lifecycle compare-and-set failed for ${input.importRunId}: expected ${input.expectedState}, found ${current.state}`);
     },
     async activateReady(input) {
-      return storage.tx(async client => {
+      return storage.transaction(() => storage.tx(async client => {
         await client.query(`SELECT pg_advisory_xact_lock(hashtext('scce2.active_brain'))`);
         const targetRows = await client.query<BrainLifecycleRow>(
           `SELECT * FROM ${storage.table("brain_import_lifecycle")} WHERE import_run_id=$1 FOR UPDATE`,
@@ -4860,13 +4915,13 @@ function createBrainImportStore(storage: PostgresStorageAdapter): BrainImportSto
         // ACTIVE row to READY, so the public active marker must not continue
         // advertising rollback candidates as active imports.
         const activeImportRunIds = [input.importRunId];
-        await client.query(
+        await storage.mutateLanguageMemory(
           `INSERT INTO ${storage.table("model_state")}(id,model_json,updated_at) VALUES('scce2.active_brain',$1::jsonb,TO_TIMESTAMP($2/1000.0))
            ON CONFLICT(id) DO UPDATE SET model_json=EXCLUDED.model_json, updated_at=EXCLUDED.updated_at`,
           [JSON.stringify({ activeBrainVersion: input.brainVersion, activeImportRunIds, updatedAt: input.updatedAt }), input.updatedAt]
         );
         return { activeBrainVersion: input.brainVersion, activeImportRunIds };
-      });
+      }));
     },
     async active() {
       const rows = await storage.query<{ model_json: JsonValue }>(`SELECT model_json FROM ${storage.table("model_state")} WHERE id='scce2.active_brain'`);
@@ -5031,7 +5086,7 @@ function createTranslationSeedStore(storage: PostgresStorageAdapter): Translatio
         // Only ever raises the durably-held score for (targetLanguage,
         // sourceSymbol) -- a weaker request-scoped induction than what is
         // already on file must never regress a stronger prior finding.
-        await storage.query(
+        await storage.mutateLanguageMemory(
           `INSERT INTO ${storage.table("translation_seeds")} (target_language,source_symbol,source_language,target_symbol,score,basis,evidence_ids,observed_at)
            VALUES($1,$2,$3,$4,$5,$6,$7,TO_TIMESTAMP($8/1000.0))
            ON CONFLICT(target_language,source_symbol) DO UPDATE SET
@@ -5091,7 +5146,7 @@ function createTranslationConstructionStore(storage: PostgresStorageAdapter): Tr
             sourceSymbols: [construction.sourceSymbols[1], construction.sourceSymbols[0]] as [string, string],
             targetSymbols: [construction.targetSymbols[1], construction.targetSymbols[0]] as [string, string]
           };
-        await storage.query(
+        await storage.mutateLanguageMemory(
           `INSERT INTO ${storage.table("translation_constructions")} (target_language,source_symbol_a,source_symbol_b,target_symbol_a,target_symbol_b,score,evidence_ids,observed_at)
            VALUES($1,$2,$3,$4,$5,$6,$7,TO_TIMESTAMP($8/1000.0))
            ON CONFLICT(target_language,source_symbol_a,source_symbol_b) DO UPDATE SET
@@ -5135,11 +5190,10 @@ async function replaceRequestRequirementPatterns(
       "pattern.pattern_json->>'sourceSystem'=$4"
     ];
     appendInformationAccess(storage, "pattern", params, where);
-    // Delete the entire compiler scope before reinserting the freshly compiled
-    // set. That removes old rows without a fingerprint and obsolete features
-    // that are absent from a later compile, while an empty compile remains a
-    // valid replacement.
-    await storage.query(
+    params.push(input.patterns.map(pattern => pattern.id));
+    where.push(`NOT (pattern.id=ANY($${params.length}::text[]))`);
+    // Retained identities update in place; only obsolete members leave the compiler scope.
+    await storage.mutateLanguageMemory(
       `DELETE FROM ${storage.table("language_patterns")} AS pattern WHERE ${where.join(" AND ")}`,
       params
     );
@@ -5533,10 +5587,11 @@ function createDialogueMemoryStore(storage: PostgresStorageAdapter): DialogueMem
       );
     },
     async putTargetProfilePattern(record) {
-      await storage.query(
-        `INSERT INTO ${storage.table("target_profile_patterns")}(id,target_profile_id,pattern_family_id,pattern_json,evidence_ids,alpha,created_at,updated_at)
+      await storage.mutateLanguageMemory(
+        `INSERT INTO ${storage.table("target_profile_patterns")} AS target(id,target_profile_id,pattern_family_id,pattern_json,evidence_ids,alpha,created_at,updated_at)
          VALUES($1,$2,$3,$4::jsonb,$5,$6,TO_TIMESTAMP($7/1000.0),TO_TIMESTAMP($8/1000.0))
-         ON CONFLICT(id) DO UPDATE SET pattern_json=EXCLUDED.pattern_json, evidence_ids=EXCLUDED.evidence_ids, alpha=GREATEST(${storage.table("target_profile_patterns")}.alpha,EXCLUDED.alpha), updated_at=EXCLUDED.updated_at`,
+         ON CONFLICT(id) DO UPDATE SET pattern_json=EXCLUDED.pattern_json, evidence_ids=EXCLUDED.evidence_ids, alpha=GREATEST(target.alpha,EXCLUDED.alpha), updated_at=EXCLUDED.updated_at
+         WHERE target.pattern_json IS DISTINCT FROM EXCLUDED.pattern_json OR target.evidence_ids IS DISTINCT FROM EXCLUDED.evidence_ids OR target.alpha IS DISTINCT FROM GREATEST(target.alpha,EXCLUDED.alpha)`,
         [record.id, record.targetProfileId, record.patternFamilyId, JSON.stringify(record.patternJson), record.evidenceIds, record.alpha, record.createdAt, record.updatedAt]
       );
     },
