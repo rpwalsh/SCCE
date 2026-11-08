@@ -237,14 +237,15 @@ export function trainLexicalAlignment(
 }
 
 export function realizeTargetSurface(plan: MultilingualTranslationPlan, lexicalAlignments: LexicalAlignmentRecord[]): MultilingualTranslationPlan {
-  const sourceTokens = tokenizeForAlignment(plan.sourceText);
-  const replacement = sourceTokens.map((token) => {
+  const sourceTokens: string[] = [];
+  const replacement = plan.sourceText.replace(ALIGNMENT_TOKEN_PATTERN, (token) => {
+    sourceTokens.push(token);
     if (looksProtectedAnchor(token)) return token;
     const candidate = findBestAlignment(token, lexicalAlignments);
     if (!candidate) return token;
     if (!isReliableAlignment(token, candidate.target, candidate.score)) return token;
     return candidate.target;
-  }).join(" ");
+  });
   const uncertainTerms = sourceTokens.filter((token) => {
     if (looksProtectedAnchor(token)) return false;
     const candidate = findBestAlignment(token, lexicalAlignments);
@@ -405,8 +406,10 @@ function toJsonValue(value: Record<string, JsonValue>): JsonValue {
   return value as JsonValue;
 }
 
+const ALIGNMENT_TOKEN_PATTERN = /https?:\/\/\S+|\d{1,4}[\/\-]\d{1,2}[\/\-]\d{1,4}|\p{L}[\p{L}\p{N}_-]*/gu;
+
 function tokenizeForAlignment(text: string): string[] {
-  return Array.from(new Set(text.match(/https?:\/\/\S+|\d{1,4}[\/\-]\d{1,2}[\/\-]\d{1,4}|\p{L}[\p{L}\p{N}_-]*/gu) || [])).slice(0, 128);
+  return Array.from(new Set(text.match(ALIGNMENT_TOKEN_PATTERN) || [])).slice(0, 128);
 }
 
 function extractPositions(text: string, pattern: RegExp) {

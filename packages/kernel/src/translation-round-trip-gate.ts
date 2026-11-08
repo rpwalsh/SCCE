@@ -66,6 +66,7 @@ export function validateTranslationRoundTrip(input: {
   const gate = factualRoundTripGate({
     intendedText: input.sourceText,
     realizedText: interpretedPlan.targetText,
+    requireComplete: true,
     ...(input.hasher ? { hasher: input.hasher } : {})
   });
   return {
