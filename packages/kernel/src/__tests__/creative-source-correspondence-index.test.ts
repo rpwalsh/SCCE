@@ -1,8 +1,10 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { expect, it } from "vitest";
-import { compileCreativeSourceCorrespondences } from "../creative-source-correspondence.js";
-import { createClock, createHasher } from "../primitives.js";
+import { compileCreativeSourceCorrespondences, creativeSourceSurfaceGroupKey, createCreativeSourceCorrespondenceVerifier, type CreativeSourceCorrespondence } from "../creative-source-correspondence.js";
+import { canonicalStringify, createClock, createHasher, toJsonValue } from "../primitives.js";
+import { CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID } from "../language-training-recipe.js";
+import type { LanguagePatternRecord } from "../storage.js";
 import { createIdFactory } from "../ids.js";
 import type { DurableCreativeEventConstruction } from "../language-construction-memory.js";
 import type { TranscriptTurn } from "../dialogue-communicative-act-learning.js";
@@ -11,6 +13,30 @@ import type { EvidenceSpan } from "../types.js";
 const hasher = createHasher();
 const ids = createIdFactory({ hasher, clock: createClock({ fixedTime: 1 }), deterministicReplay: true, namespace: "correspondence-index-control" });
 const legacyOutputDigest = "1c83d67fa11893058293b7010d1865587a1e977629e4b9a15719d292fb5e2f4f";
+
+function assertLegacyBytesAndAcquiredWitnesses(patterns: LanguagePatternRecord[], input: ReturnType<typeof fixture>) {
+  const verifier = createCreativeSourceCorrespondenceVerifier(input);
+  const legacy = patterns.map(pattern => {
+    const { id: _id, surfaceBindingRecipe, ...material } = pattern.patternJson as Record<string, unknown>;
+    expect(surfaceBindingRecipe).toBe(CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID);
+    const rows = material.sourceObservations as CreativeSourceCorrespondence[];
+    for (const row of rows) expect(verifier.verify(row, input.evidence.map(span => String(span.id)))).toBe(true);
+    const acquired = verifier.acquireSurfaceBindings(rows);
+    expect([...acquired.keys()].sort()).toEqual([...new Set(rows.map(creativeSourceSurfaceGroupKey))].sort());
+    for (const [key, roles] of acquired) {
+      const owned = rows.filter(row => creativeSourceSurfaceGroupKey(row) === key);
+      expect(roles.map(role => role.requestRoleId).sort()).toEqual([...new Set(owned.flatMap(row => row.bindings.map(binding => binding.requestRoleId)))].sort());
+      for (const role of roles) {
+        expect(role.occurrences).toHaveLength(1);
+        const seed = owned.flatMap(row => row.bindings).find(binding => binding.requestRoleId === role.requestRoleId)!;
+        expect(role.occurrences[0]).toEqual({ start: seed.eventStart, end: seed.eventEnd });
+      }
+    }
+    const id = `creative.observed.compatibility.${hasher.digestHex(canonicalStringify(toJsonValue(material)))}`;
+    return { ...pattern, id, patternJson: toJsonValue({ ...material, id }) };
+  });
+  expect(hasher.digestHex(JSON.stringify(legacy))).toBe(legacyOutputDigest);
+}
 
 // Opaque development fixtures isolate event occurrence identity, compiler scope, and range selection.
 function fixture(pairCount = 12) {
@@ -61,7 +87,7 @@ function fixture(pairCount = 12) {
 it("preserves complete output bytes and every compiler scope of repeated event IDs", () => {
   const input = fixture();
   const patterns = compileCreativeSourceCorrespondences(input);
-  expect(hasher.digestHex(JSON.stringify(patterns))).toBe(legacyOutputDigest);
+  assertLegacyBytesAndAcquiredWitnesses(patterns, input);
   const models = patterns.map(pattern => pattern.patternJson as { eventCompilerId: string; sourceObservations: Array<{ eventId: string; eventConstructionId: string }> });
   expect(models.map(model => model.eventCompilerId)).toEqual(["compiler.foreign", "compiler.2", "compiler.1", "compiler.0"]);
   for (const model of models) {
@@ -80,7 +106,7 @@ it("visits a full evidence group once rather than scanning it for every reply or
     id: { enumerable: true, get: () => { identityReads++; return event.id; } }
   }));
   const patterns = compileCreativeSourceCorrespondences({ ...input, events });
-  expect(hasher.digestHex(JSON.stringify(patterns))).toBe(legacyOutputDigest);
+  assertLegacyBytesAndAcquiredWitnesses(patterns, input);
   expect(rangeReads).toBeLessThanOrEqual(events.length * 2);
   expect(identityReads).toBeLessThanOrEqual(events.length + input.turns.length * 3);
 });

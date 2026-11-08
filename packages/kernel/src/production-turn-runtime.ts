@@ -4267,7 +4267,30 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           expiresAt: turnStarted + 15 * 60 * 1000
         });
       }
-      const judged = judge.select({
+      // A missing creative selection carries no claims or surface into Mouth.
+      const judged: ReturnType<typeof judge.select> = authorityCandidateField.candidates.length === 0 && requestedAuthority === "creative"
+        ? {
+          selected: {
+            id: `unavailable:${episodeId}`,
+            kind: "dialogue-continuation" as const,
+            answer: "",
+            force: "unknown" as const,
+            evidenceIds: [],
+            constructIds: [],
+            claimBases: [],
+            scores: { support: 0, contradiction: 0, faithfulness: 0, alphaPressure: 0, actionability: 0,
+              evidenceCoverage: 0, novelty: 0, realizability: 0 },
+            boundaries: ["realization-content-unavailable"],
+            audit: toJsonValue({ schema: "scce.candidate_selection_unavailable.v1", requestedAuthority,
+              reasonId: "no_compatible_candidate", generatedCandidateIds: candidateField.candidates.map(candidate => candidate.id) })
+          },
+          rejected: [],
+          scores: [],
+          guardTrace: [],
+          audit: toJsonValue({ schema: "scce.candidate_selection_unavailable.v1", requestedAuthority,
+            reasonId: "no_compatible_candidate", authorityAdmission: authorityCandidateField.authorityAdmission })
+        }
+        : judge.select({
         field: authorityCandidateField,
         policy,
         requestedAuthority,
@@ -4308,7 +4331,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const revivedPriorHypothesis = inheritedRuntimeMotion
         ? reviveMatchingPriorRejectedHypothesis(judged.selected, inheritedRuntimeMotion.priorRejectedHypotheses, hasher)
         : undefined;
-      candidateWorkingMemory = promoteWorkingMemoryEntry(candidateWorkingMemory, `wm.${episodeId}.${judged.selected.id}`, {
+      if (authorityCandidateField.candidates.length > 0) candidateWorkingMemory = promoteWorkingMemoryEntry(candidateWorkingMemory, `wm.${episodeId}.${judged.selected.id}`, {
         derivation: toJsonValue({
           judge: judged.audit,
           candidateAudit: judged.selected.audit,

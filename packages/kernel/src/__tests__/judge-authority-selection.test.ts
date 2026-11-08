@@ -21,6 +21,23 @@ const calibrationModelSet: CalibrationModelSet = { schema: "scce.calibration.mod
   models: {}, judgeRequirementModels: captured.judgeRequirementModels, observationCount: 83, createdAt: 0 };
 
 describe("canonical candidate authority selection", () => {
+  it("does not substitute factual premises when creative content is unavailable", () => {
+    const generated = structuredClone(captured.field);
+    generated.candidates = generated.candidates.filter(row => row.kind !== "creative-candidate");
+    generated.surfaceMass = generated.surfaceMass.filter(row => generated.candidates.some(candidate => candidate.id === row.candidateId));
+    expect(generated.candidates.length).toBeGreaterThan(0);
+    const admitted = admitCandidatesForAuthority(generated, "creative");
+    expect(admitted.candidates).toEqual([]);
+    expect(admitted.surfaceMass).toEqual([]);
+    expect(admitted.audit).toMatchObject({ authorityAdmission: {
+      generatedCandidateCount: generated.candidates.length, authorityUnavailable: true, fallbackToGeneratedField: false
+    } });
+    const stale = { ...generated, authorityAdmission: admitted.authorityAdmission };
+    expect(() => createJudge().select({ field: stale, policy: DEFAULT_POLICY, requestedAuthority: "creative",
+      requirementField: captured.requirementField, deterministicReplay: true }))
+      .toThrow("judge received no admissible candidates");
+  });
+
   it("consumes the live creative field's existing admission instead of independently selecting a reasoned hypothesis", () => {
     const field = admitCandidatesForAuthority(structuredClone(captured.field), "creative");
     expect(field.candidates).toHaveLength(5);

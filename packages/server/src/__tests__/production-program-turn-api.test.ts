@@ -47,6 +47,7 @@ import {
 } from "@scce/adapters-node";
 import { handleRequest, WORKSPACE_CODING_TURN_REQUEST_SCHEMA, WORKSPACE_PATCH_REQUEST_SCHEMA, type ApiContext } from "../routes.js";
 import { creativeReferenceTestAnnotation, replyWithReviewedProperty } from "../../../kernel/src/__tests__/fixtures/creative-reference-test-annotations.js";
+import { creativeSourceUtterances } from "../../../kernel/src/creative-source-utterance.js";
 
 const roots: string[] = [];
 const servers: ReturnType<typeof createServer>[] = [];
@@ -317,12 +318,12 @@ describe("production owner program turn through the API", () => {
   }, 60_000);
 
   it.each([
-    ["dolly-human-creative-pair.json", "room", "κάλυ月", true, false],
-    ["oasst-human-russian-creative-pair.json", "Спанч", "Кварц", true, false],
-    ["oasst-human-russian-creative-pair.json", "Спанч", "Кварц", false, false],
-    ["dolly-human-creative-pair.json", "room", "κάλυ月", false, true],
-    ["oasst-human-russian-creative-pair.json", "Спанч", "Кварц", false, true]
-  ] as const)("loads ordinary human speech and enforces complete participant property provenance: %s (case %#)", async (fixtureName, sourceValue, heldoutValue, seedIdentity, annotated) => {
+    ["dolly-human-creative-pair.json", "room", "κάλυ月", true, false, false],
+    ["oasst-human-russian-creative-pair.json", "Спанч", "Кварц", true, false, true],
+    ["oasst-human-russian-creative-pair.json", "Спанч", "Кварц", false, false, true],
+    ["dolly-human-creative-pair.json", "room", "κάλυ月", false, true, true],
+    ["oasst-human-russian-creative-pair.json", "Спанч", "Кварц", false, true, true]
+  ] as const)("loads ordinary human speech and enforces complete participant property provenance: %s (case %#)", async (fixtureName, sourceValue, heldoutValue, seedIdentity, annotated, freshRoleLicensed) => {
     const human = JSON.parse(await readFile(new URL(`../../../kernel/src/__tests__/fixtures/${fixtureName}`, import.meta.url), "utf8")) as {
       text: string; turns: NonNullable<Parameters<typeof compileLanguageTrainingBatch>[0]["batch"]["transcriptTurns"]>;
     };
@@ -347,6 +348,13 @@ describe("production owner program turn through the API", () => {
         createdAt: 103_000, retainNgramObservations: false } });
     const languagePatterns = trained.patterns.map(pattern => ({ ...pattern,
       patternJson: { ...(pattern.patternJson as Record<string, unknown>), sourceSystem: "dialogue" } as LanguagePatternRecord["patternJson"] }));
+    if (!annotated && freshRoleLicensed) {
+      const state = createLanguageMemoryRuntime({ hasher }).hydrate({ models: [], patterns: languagePatterns, constructionEvidence: [source] });
+      const role = state.creativeEventCompatibilityModels.flatMap(model => creativeSourceUtterances(model, profile.id, hasher))
+        .flatMap(utterance => utterance.requestRoles.map(role => ({ role, surface: [...utterance.request.surface].slice(role.startCodePoint, role.endCodePoint).join("") })))
+        .find(row => row.surface === sourceValue)?.role;
+      expect(role?.surfaceAcquisition).toEqual({ recipe: "kernel.creative_source_surface_acquisition.v1", occurrenceCount: 6 });
+    }
     const events: ScceEvent[] = [];
     const storage = integrationStorage({ events, workspace, sources: [], constructionEvidence: [source], languageProfiles: [profile],
       languageModels: trained.models, languagePatterns });
@@ -397,7 +405,7 @@ describe("production owner program turn through the API", () => {
       const response = await fetch(`http://127.0.0.1:${address.port}/api/turn?full=1`, { method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({ text, conversationId: `conversation.human.utterance.${index}` }) });
       const body = await response.json() as Record<string, any>;
-      if (index === 1 && !annotated) { expect(response.status, JSON.stringify(body)).toBe(422); continue; }
+      if (index === 1 && !freshRoleLicensed) { expect(response.status, JSON.stringify(body)).toBe(422); continue; }
       expect(response.status, JSON.stringify(body)).toBe(200);
       expect(body.answer).not.toBe(text);
       if (index === 1) {

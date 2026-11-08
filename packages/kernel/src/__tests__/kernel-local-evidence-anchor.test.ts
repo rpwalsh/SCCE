@@ -12,6 +12,10 @@ import {
   createLanguageAcquisitionEngine,
   createEvidenceExtractor,
   createNgramMemoryCompiler,
+  compileLanguageTrainingBatch,
+  CORPUS_SOURCE_SYSTEM_IDS,
+  CORPUS_ROLE_IDS,
+  toJsonValue,
   createLanguageMemoryRuntime,
   deriveClosedClassWords,
   canonicalCorpusSourceSystemId,
@@ -2165,31 +2169,10 @@ describe("kernel local evidence source anchoring", () => {
   it("creates and speaks an invention construct from an ordinary creative request", async () => {
     const clock = createClock({ fixedTime: 9_000, stepMs: 1 });
     const hasher = createHasher();
-    const ids = createIdFactory({ clock, hasher, deterministicReplay: true });
-    const source = evidenceSpan({
-      id: "evidence:creative-construction-without-compatibility",
-      sourceVersionId: "source:creative-construction-without-compatibility:v1" as SourceVersionId,
-      title: "Creative construction source",
-      uri: "fixture://creative-construction-source",
-      text: "He considered the impossible bargain. She attributed the signal to a damaged instrument. I searched through the ruined laboratory. He carried the heavy lantern. They opened the narrow gate. We crossed the silent valley.",
-      alpha: 0.9
-    });
-    const profile = createLanguageAcquisitionEngine({ idFactory: ids }).acquire({
-      sourceVersionId: source.sourceVersionId,
-      text: source.text,
-      createdAt: clock.now()
-    });
-    const compiled = createUniversalCreativeEventConstructionCompiler().compile({
-      profileId: profile.id,
-      evidence: [source],
-      hasher,
-      updatedAt: clock.now()
-    });
-    if (compiled.status !== "compiled") throw new Error("creative construction fixture did not compile");
+    const human = qualifiedHumanCreativeSource(clock, hasher);
     const fixture = storageFixture({
-      evidence: [source],
-      languageProfiles: [profile],
-      languagePatterns: [compiled.pattern]
+      evidence: [], constructionEvidence: [human.source], languageProfiles: [human.profile],
+      languagePatterns: human.patterns, languageModels: human.models
     });
     const kernel = createScceKernel({
       storage: fixture.storage,
@@ -2200,7 +2183,7 @@ describe("kernel local evidence source anchoring", () => {
       deterministicReplay: true
     });
 
-    const result = await kernel.turn({ text: "Invent a new indexing algorithm for this graph", requestedAuthority: "creative" });
+    const result = await kernel.turn({ text: human.requestText, requestedAuthority: "creative" });
     const inventionNode = result.constructGraph.nodes.find(node => node.kind === "construct:invention");
 
     expect(result.requestedAuthority).toBe("creative");
@@ -2214,7 +2197,8 @@ describe("kernel local evidence source anchoring", () => {
     // Never an echo: the request restated is not a creative answer. With
     // this fixture's minimal corpus the honest surface may be empty; any
     // non-empty surface must be real prose, not the prompt.
-    expect(surfaceEchoesPrompt(result.answer, "Invent a new indexing algorithm for this graph"), result.answer).toBe(false);
+    expect(surfaceEchoesPrompt(result.answer, human.requestText), result.answer).toBe(false);
+    expect(result.answer.replace(/\s+/gu, " ")).toBe(human.reply.replace(/\s+/gu, " "));
     if (result.answer.trim().length > 0) {
       expect(result.assistantForce).toBe("creative_answer");
       expect(result.realizationAvailability).toMatchObject({ status: "realized" });
@@ -2224,6 +2208,21 @@ describe("kernel local evidence source anchoring", () => {
       expect(result.assistantForce).toBe("realization_unavailable");
       expect(result.realizationAvailability).toMatchObject({ status: "realization_unavailable", reasonId: "no_eligible_candidate" });
     }
+  });
+
+  it("does not promote a creative request into invented content when no source plan exists", async () => {
+    const clock = createClock({ fixedTime: 9_100, stepMs: 1 }), hasher = createHasher(), fixture = storageFixture({ evidence: [] });
+    const kernel = createScceKernel({ storage: fixture.storage, files: { streamPath: async function* () {} },
+      buildTest: { executeProgram: async () => { throw new Error("an unavailable creative plan cannot execute a program"); } },
+      idFactory: createIdFactory({ clock, hasher, deterministicReplay: true }), clock, deterministicReplay: true });
+    const result = await kernel.turn({ text: "Ω-17 amber lattice two exits", requestedAuthority: "creative" });
+    expect(result.requestedAuthority).toBe("creative");
+    expect(result.answer).toBe("");
+    expect(result.selectedCandidate.kind).toBe("dialogue-continuation");
+    expect(result.selectedCandidate.audit).toMatchObject({ schema: "scce.candidate_selection_unavailable.v1", reasonId: "no_compatible_candidate" });
+    expect(result.candidateField.candidates.some(candidate => candidate.kind === "creative-candidate")).toBe(false);
+    expect(result.epistemicForce).not.toBe("invented");
+    expect(result.emissionGraph.evidenceIds).toEqual([]);
   });
 
   it("routes an extended-generation creative request through the real multi-section document machinery, via the public turn path (plan items 221-228 live routing)", async () => {
@@ -2375,7 +2374,9 @@ describe("kernel local evidence source anchoring", () => {
       text: "Ada Lovelace wrote notes about Charles Babbage's Analytical Engine.",
       alpha: 0.94
     });
-    const fixture = storageFixture({ evidence: [premise] });
+    const human = qualifiedHumanCreativeSource(clock, hasher);
+    const fixture = storageFixture({ evidence: [premise], constructionEvidence: [human.source],
+      languageProfiles: [human.profile], languagePatterns: human.patterns, languageModels: human.models });
     const kernel = createScceKernel({
       storage: fixture.storage,
       files: { streamPath: async function* () { /* unused */ } },
@@ -2385,14 +2386,14 @@ describe("kernel local evidence source anchoring", () => {
       deterministicReplay: true
     });
 
-    const result = await kernel.turn({ text: "Invent a source-inspired graph index using Ada Lovelace's Analytical Engine notes", requestedAuthority: "creative" });
+    const result = await kernel.turn({ text: human.requestText.replace("Спанч Боба", "Ada Lovelace"), requestedAuthority: "creative" });
 
     expect(result.requestedAuthority).toBe("creative");
     expect(result.epistemicForce).toBe("invented");
     const inventionNode = result.constructGraph.nodes.find(node => node.kind === "construct:invention");
     expect(inventionNode).toBeDefined();
     expect(JSON.stringify(inventionNode?.metadata)).toContain(premise.id);
-    expect(result.emissionGraph.evidenceIds).toEqual(result.answer.trim() ? [premise.id] : []);
+    expect(result.emissionGraph.evidenceIds).toEqual([]);
     expect(result.events.some(event => event.typeId === "InventionPlanned")).toBe(true);
     if (result.answer.trim()) {
       expect(result.assistantForce).toBe("creative_answer");
@@ -2402,10 +2403,7 @@ describe("kernel local evidence source anchoring", () => {
       expect(result.realizationAvailability).toMatchObject({ status: "realization_unavailable", reasonId: "no_eligible_candidate" });
     }
 
-    // The invention's factual premise remains a separate typed claim with
-    // its exact source evidence. Its presence does not itself license a
-    // spoken surface: an empty, unrealized turn must not be reported as an
-    // answer or emit the premise's evidence as if it had been spoken.
+    // The contextual premise remains source-qualified; the fiction does not speak or certify that premise.
     const selectedEvent = result.events.find(event => event.typeId === "CandidateSelected");
     const trace = selectedEvent?.payload as { assistantForceTrace?: { claimBasis?: Array<{ basis: string; force: string }>; unsupportedClaimIds?: string[] } } | undefined;
     expect(trace?.assistantForceTrace?.unsupportedClaimIds).toEqual([]);
@@ -2418,7 +2416,8 @@ describe("kernel local evidence source anchoring", () => {
   it("uses a learned opaque frame to create an invention without an English command router", async () => {
     const clock = createClock({ fixedTime: 9_800, stepMs: 1 });
     const hasher = createHasher();
-    const requestText = "Ω-17 amber lattice two exits review artifact";
+    const human = qualifiedHumanCreativeSource(clock, hasher);
+    const requestText = human.requestText.replace("Спанч", "κάλυ月");
     const semanticFrame: SemanticFrameRecord = {
       id: "frame.fixture.opaque.invention.17",
       frameJson: {
@@ -2436,7 +2435,8 @@ describe("kernel local evidence source anchoring", () => {
       alpha: 0.98,
       createdAt: 1
     };
-    const fixture = storageFixture({ evidence: [], semanticFrames: [semanticFrame] });
+    const fixture = storageFixture({ evidence: [], semanticFrames: [semanticFrame], constructionEvidence: [human.source],
+      languageProfiles: [human.profile], languagePatterns: human.patterns, languageModels: human.models });
     const kernel = createScceKernel({
       storage: fixture.storage,
       files: { streamPath: async function* () { /* unused */ } },
@@ -2454,7 +2454,10 @@ describe("kernel local evidence source anchoring", () => {
     expect(result.constructGraph.nodes.some(node => node.kind === "construct:invention")).toBe(true);
     expect(JSON.stringify(result.operatorActivations)).toContain("operator.cognition.invention.v1");
     expect(JSON.stringify(result.cognitiveProposals)).toContain('"basis":"invented"');
-    expect(JSON.stringify(result.answerRevision)).toContain("scce.answer_revision.result.v1");
+    const selectedInvention = result.constructGraph.nodes.find(node => node.kind === "construct:invention")!;
+    expect(((selectedInvention.metadata as Record<string, JsonValue>).trace as Record<string, JsonValue>).structuralSemanticPlan).toMatchObject({ schema: "scce.structural_semantic_plan.v2" });
+    expect(result.selectedCandidate.kind).toBe("creative-candidate");
+    expect(result.answerRevision).toBeUndefined();
     expect(JSON.stringify(result.requestedAuthorityDecision)).toContain('"lexicalRouterUsed":false');
 
     const inspection = await kernel.inspect("last");
@@ -2464,7 +2467,7 @@ describe("kernel local evidence source anchoring", () => {
     expect(inspectionText).toContain("operator.cognition.invention.v1");
     expect(inspectionText).toContain("CognitiveProposalsBuilt");
     expect(inspectionText).toContain("creative-candidate");
-    expect(inspectionText).toContain("scce.answer_revision.result.v1");
+    expect(inspectionText).toContain("scce.structural_semantic_plan.v2");
     expect(inspectionText).toContain('"timing":{');
   });
 });
@@ -2778,8 +2781,30 @@ function evidenceSpan(input: { id: string; sourceVersionId: SourceVersionId; tit
   };
 }
 
+function qualifiedHumanCreativeSource(clock: ReturnType<typeof createClock>, hasher: ReturnType<typeof createHasher>) {
+  const human = JSON.parse(readFileSync(new URL("./fixtures/oasst-human-russian-creative-pair.json", import.meta.url), "utf8")) as {
+    text: string; turns: import("../dialogue-communicative-act-learning.js").TranscriptTurn[];
+    sourceMetadata: { messages: Array<{ synthetic: boolean; model_name: string | null; review_result: boolean }> } };
+  expect(human.sourceMetadata.messages.every(message => !message.synthetic && message.model_name === null && message.review_result)).toBe(true);
+  const ids = createIdFactory({ clock, hasher, deterministicReplay: true, namespace: "qualified-human-language" });
+  const source = evidenceSpan({ id: "language:human-creative", sourceVersionId: ids.sourceVersionId(human.text),
+    title: "Reviewed human creative source", uri: "fixture://oasst1-human-creative", text: human.text, alpha: 1 });
+  source.contentHash = ids.contentHash(human.text);
+  const profile = createLanguageAcquisitionEngine({ idFactory: ids }).acquire({ sourceVersionId: source.sourceVersionId, text: human.text, createdAt: clock.now() });
+  const compiled = compileLanguageTrainingBatch({ runtime: createLanguageMemoryRuntime({ hasher, idFactory: ids }), hasher, batch: {
+    streamId: "fixture://oasst1-human-creative", sourceSystem: "dialogue", canonicalSource: { sourceId: source.sourceId, contentHash: source.contentHash },
+    profile, sourceVersionId: source.sourceVersionId, text: human.text, evidence: [source], transcriptTurns: human.turns, createdAt: clock.now(), retainNgramObservations: false } });
+  const provenance = { sourceSystem: "dialogue", sourceSystemId: CORPUS_SOURCE_SYSTEM_IDS.dialogue, corpusRole: CORPUS_ROLE_IDS.dialogue,
+    provenanceClass: "learned_language_prior", forceClass: "learned_language_prior" };
+  return { source, profile, requestText: human.turns[0]!.surface, reply: human.turns[1]!.surface,
+    patterns: compiled.patterns.map(pattern => ({ ...pattern, patternJson: toJsonValue({ ...(pattern.patternJson as object), ...provenance }) })),
+    models: compiled.models.map(model => ({ ...model, modelJson: toJsonValue({ ...(model.modelJson as object), ...provenance }) })) };
+}
+
 function storageFixture(input: {
   evidence: EvidenceSpan[];
+  constructionEvidence?: EvidenceSpan[];
+  languageModels?: import("../storage.js").NgramModelRecord[];
   graph?: GraphSlice;
   semanticFrames?: SemanticFrameRecord[];
   languageProfiles?: LanguageProfile[];
@@ -2790,7 +2815,7 @@ function storageFixture(input: {
   const quarantined = new Map<string, QuarantineSource>();
   const metrics = { graphReads: 0, languageMemoryReads: 0 };
   const currentGraph = () => input.graph ?? graphSlice(input.evidence);
-  const ownedEvidence = () => [...input.evidence, ...(input.answerLanguage?.evidence ?? [])];
+  const ownedEvidence = () => [...input.evidence, ...(input.constructionEvidence ?? []), ...(input.answerLanguage?.evidence ?? [])];
   const storage = {
     // Real pass-through, not a no-op stub: the connector-ingestion test
     // exercises the actual ingestion pipeline (ingestion-runtime.ts), which
@@ -2855,7 +2880,7 @@ function storageFixture(input: {
       putLanguagePattern: async () => undefined,
       putSemanticFrame: async () => undefined,
       putTranslationAlignment: async () => undefined,
-      listNgramModels: async (query?: Parameters<ScceStorage["languageMemory"]["listNgramModels"]>[0]) => { metrics.languageMemoryReads++; return await input.answerLanguage?.readModels(query) ?? []; },
+      listNgramModels: async (query?: Parameters<ScceStorage["languageMemory"]["listNgramModels"]>[0]) => { metrics.languageMemoryReads++; return [...(input.languageModels ?? []), ...(await input.answerLanguage?.readModels(query) ?? [])]; },
       listNgramObservations: async () => { metrics.languageMemoryReads++; return []; },
       listLanguageUnits: async () => { metrics.languageMemoryReads++; return []; },
       listLanguagePatterns: async (query?: Parameters<ScceStorage["languageMemory"]["listLanguagePatterns"]>[0]) => { metrics.languageMemoryReads++; return [...(input.languagePatterns ?? []), ...(await input.answerLanguage?.readPatterns(query) ?? [])]; },

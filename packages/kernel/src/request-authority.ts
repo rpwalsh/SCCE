@@ -128,8 +128,9 @@ export function admitCandidatesForAuthority(
       .filter(row => row.failures.length > 0)
     : [];
   const rejectedIds = new Set(rejectedForFactualProof.map(row => row.candidate.id));
-  const admittedCandidates = field.candidates.filter(candidate => !rejectedIds.has(candidate.id));
-  const admittedMassRows = field.surfaceMass.filter(row => !rejectedIds.has(row.candidateId));
+  const creativeUnavailable = authority === "creative" && compatible.length === 0;
+  const admittedCandidates = creativeUnavailable ? [] : field.candidates.filter(candidate => !rejectedIds.has(candidate.id));
+  const admittedMassRows = creativeUnavailable ? [] : field.surfaceMass.filter(row => !rejectedIds.has(row.candidateId));
   const admittedMassTotal = admittedMassRows.reduce((sum, row) => sum + row.mass, 0);
   const surfaceMass = admittedMassRows.map(row => ({
     ...row,

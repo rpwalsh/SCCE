@@ -43,7 +43,7 @@ function candidateGuardTrace(candidateId: string, failures: readonly string[], b
 
 function authoritySelectionFailures(field: CandidateField, candidateId: string): string[] {
   const admission = field.authorityAdmission;
-  if (!admission || !admission.compatibleCandidateIds.length) return [];
+  if (!admission || (!admission.compatibleCandidateIds.length && admission.authority !== "creative")) return [];
   return admission.admittedCandidateIds.includes(candidateId) && admission.compatibleCandidateIds.includes(candidateId)
     ? [] : ["authority_selection_mismatch"];
 }
