@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { beforeAll, describe, expect, it } from "vitest";
-import humanPair from "./fixtures/dolly-human-creative-pair.json";
+import { readFileSync } from "node:fs";
 import { compileLanguageTrainingBatch } from "../language-training-batch.js";
 import { createLanguageMemoryRuntime, scopeLanguageMemoryStateToLanguage } from "../language-memory-runtime.js";
 import { compileCreativeRequestFrameFromCompatibilityModels, creativeEventCompatibilityDecision, creativeEventRoleDecision } from "../creative-event-compatibility.js";
@@ -16,6 +16,7 @@ import { segmentUnicodeSurfaceV2 } from "../unicode-segmentation-v2.js";
 import type { EvidenceSpan } from "../types.js";
 import type { TranscriptTurn } from "../dialogue-communicative-act-learning.js";
 import type { CreativeEventCompatibilityModel } from "../creative-event-compatibility.js";
+const humanPair = JSON.parse(readFileSync(new URL("./fixtures/dolly-human-creative-pair.json", import.meta.url), "utf8")) as { text: string; turns: TranscriptTurn[] };
 
 const hasher = createHasher();
 const ids = createIdFactory({ hasher, clock: createClock({ fixedTime: 1 }), deterministicReplay: true, namespace: "human-source-correspondence" });

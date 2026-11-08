@@ -203,7 +203,7 @@ export function normalizeCreativeEventCompatibilityModels(
 }
 
 export function scopeCreativeEventCompatibilityModels(models: readonly CreativeEventCompatibilityModel[], eventIds: ReadonlySet<string>): CreativeEventCompatibilityModel[] {
-  return normalizeCreativeEventCompatibilityModels(models.flatMap(model => {
+  return normalizeCreativeEventCompatibilityModels(models.flatMap<CreativeEventCompatibilityModel>(model => {
     if (model.reliability !== "source_observed") return [model];
     const sourceObservations = model.sourceObservations?.filter(row => eventIds.has(row.eventId)) ?? [];
     const scoped = { ...model, sourceObservations, requestFrameAnchors: model.requestFrameAnchors?.filter(anchor => sourceAnchorOwned(anchor, sourceObservations)) };
