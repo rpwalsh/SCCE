@@ -1,0 +1,30 @@
+{
+  "schema": "scce.repair_integrity_case.v1",
+  "id": "repository-map-write-loss.v1",
+  "source": {
+    "origin": "unchanged repository source snapshot",
+    "revision": "4bc275b",
+    "path": "packages/kernel/src/paired-evaluation-statistics.ts",
+    "snapshotPath": "src/paired-evaluation-statistics.ts",
+    "capturedBytes": 5511,
+    "capturedSha256": "53fc4b0f46e31a55e0d1ed45f5bde54b4b5ef9b0fcae514043fa2d4205562f52",
+    "canonicalLfSha256": "560e402aa69f69b664726b3e3e0b762833be6ea02a40197f5f31150391d812d0",
+    "gitBlobSha1": "b105f78f4ff09a88e2141d5583b069ea530bd892"
+  },
+  "mutation": {
+    "authorship": "manually-crafted verifier negative control; not SCCE generation",
+    "from": "byFamily.set(record.taskFamilyId, bucket)",
+    "harmfulTo": "byFamily.get(record.taskFamilyId)",
+    "diagnosticDefectTo": "byFamily.set(record.taskFamilyId)"
+  },
+  "intendedBehavior": [
+    "emit every observed family",
+    "retain family sample counts and signed means"
+  ],
+  "preservedBehavior": [
+    "do not mutate input records",
+    "reject invalid signed results",
+    "retain Holm correction behavior"
+  ],
+  "testAuthorship": "test-authored unit, CLI wrapper and held-out E2E assertions; not production ingestion or a learned corpus"
+}
