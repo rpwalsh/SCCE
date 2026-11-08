@@ -2169,6 +2169,7 @@ describe("kernel local evidence source anchoring", () => {
   it("creates and speaks an invention construct from an ordinary creative request", async () => {
     const clock = createClock({ fixedTime: 9_000, stepMs: 1 });
     const hasher = createHasher();
+    const ids = createIdFactory({ clock, hasher, deterministicReplay: true });
     const human = qualifiedHumanCreativeSource(clock, hasher);
     const fixture = storageFixture({
       evidence: [], constructionEvidence: [human.source], languageProfiles: [human.profile],
@@ -2218,9 +2219,11 @@ describe("kernel local evidence source anchoring", () => {
     const result = await kernel.turn({ text: "Ω-17 amber lattice two exits", requestedAuthority: "creative" });
     expect(result.requestedAuthority).toBe("creative");
     expect(result.answer).toBe("");
-    expect(result.selectedCandidate.kind).toBe("dialogue-continuation");
-    expect(result.selectedCandidate.audit).toMatchObject({ schema: "scce.candidate_selection_unavailable.v1", reasonId: "no_compatible_candidate" });
-    expect(result.candidateField.candidates.some(candidate => candidate.kind === "creative-candidate")).toBe(false);
+    expect(result.selectedCandidate).toMatchObject({ kind: "dialogue-continuation",
+      audit: { schema: "scce.candidate_selection_unavailable.v1", reasonId: "no_compatible_candidate" } });
+    const candidates = (result.candidateField as unknown as { candidates: CandidateSurface[] }).candidates;
+    expect(Array.isArray(candidates)).toBe(true);
+    expect(candidates.some(candidate => candidate.kind === "creative-candidate")).toBe(false);
     expect(result.epistemicForce).not.toBe("invented");
     expect(result.emissionGraph.evidenceIds).toEqual([]);
   });
@@ -2456,7 +2459,7 @@ describe("kernel local evidence source anchoring", () => {
     expect(JSON.stringify(result.cognitiveProposals)).toContain('"basis":"invented"');
     const selectedInvention = result.constructGraph.nodes.find(node => node.kind === "construct:invention")!;
     expect(((selectedInvention.metadata as Record<string, JsonValue>).trace as Record<string, JsonValue>).structuralSemanticPlan).toMatchObject({ schema: "scce.structural_semantic_plan.v2" });
-    expect(result.selectedCandidate.kind).toBe("creative-candidate");
+    expect(result.selectedCandidate).toMatchObject({ kind: "creative-candidate" });
     expect(result.answerRevision).toBeUndefined();
     expect(JSON.stringify(result.requestedAuthorityDecision)).toContain('"lexicalRouterUsed":false');
 

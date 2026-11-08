@@ -18,7 +18,7 @@ export function workspaceContractOwnerIsCurrent(value:WorkspaceContractOwner,cur
  return canonicalStringify(value)===canonicalStringify(current);
 }
 
-export interface WorkspaceProgramContext {readonly schema:"scce.workspace.program-context.v1";readonly workspaceId:string;readonly expectedWorkspaceUpdatedAt:number}
+export interface WorkspaceCodeContractScope {readonly schema:"scce.workspace.program-context.v1";readonly workspaceId:string;readonly expectedWorkspaceUpdatedAt:number}
 export type WorkspaceContractReadResult={readonly status:"available";readonly contracts:readonly {readonly patternJson:JsonValue}[];readonly evidence:readonly EvidenceSpan[];readonly sourceVersionIds:readonly string[]}
  |{readonly status:"unavailable";readonly reasonId:string};
 export async function readWorkspaceOwnedProgramContracts(input:{storage:ScceStorage;context:unknown;informationAccess:InformationAccessContext|undefined;sourceVersionAllowlist?:readonly string[]}):Promise<WorkspaceContractReadResult>{

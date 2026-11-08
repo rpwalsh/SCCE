@@ -3494,7 +3494,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         evidence: selectedEvidence
       });
       const programIntent=derivedProgramIntent&&workspaceContracts?.status==="unavailable"
-        ?{...derivedProgramIntent,constraints:[...derivedProgramIntent.constraints,"program.constraint.workspace_source_scope_unavailable"]}:derivedProgramIntent;
+        ?{...derivedProgramIntent,constraints:[...(derivedProgramIntent.constraints ?? []),"program.constraint.workspace_source_scope_unavailable"]}:derivedProgramIntent;
       kernelTrace({ stage: "runtime.program.contract", label: "kernel.turn", support: {
         producer: sourceCodeRealizationOnly ? "source_code_realization" : programIntent ? "program_graph" : "none",
         declaredCallableIds: programCodeSignal.declaredCallableIds ?? [], sourceOwnedRequirementIds: sourceOwnedRequirements.map(requirement => requirement.id)

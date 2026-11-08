@@ -11,7 +11,11 @@ it.each(["missing", "quarantined", "wrong_version", "foreign_evidence", "current
   const hasher = createHasher(), clock = createClock({ fixedTime: 1 }), ids = createIdFactory({ hasher, clock, deterministicReplay: true });
   const text = "α connects β.", sourceVersionId = ids.sourceVersionId(text);
   const identity = { sourceVersionId, byteStart: 0, byteEnd: Buffer.byteLength(text), spanHash: ids.contentHash(text) };
-  const owner = { id: ids.evidenceId(identity), sourceVersionId, status: "promoted", text, alpha: 1, features: [], provenance: {}, trustVector: {} } as EvidenceSpan;
+  const owner: EvidenceSpan = { id: ids.evidenceId(identity), sourceId: ids.sourceId("fixture", "fixture://mouth-source-owner"),
+    sourceVersionId, chunkId: ids.chunkId({ ...identity, chunkHash: identity.spanHash }), contentHash: ids.contentHash(text), mediaType: "text/plain",
+    byteStart: 0, byteEnd: Buffer.byteLength(text), charStart: 0, charEnd: [...text].length,
+    textPreview: text, languageHints: [], scriptHints: [], observedAt: 1,
+    status: "promoted", text, alpha: 1, features: [], provenance: {}, trustVector: {} };
   const profile = createLanguageAcquisitionEngine({ idFactory: ids }).acquire({ sourceVersionId, text, createdAt: 1 });
   const runtime = createLanguageMemoryRuntime({ hasher, idFactory: ids });
   let generations = 0;

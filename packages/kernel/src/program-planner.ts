@@ -160,7 +160,7 @@ export interface ProgramEmissionAvailability {
 export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Hasher }) {
   return {
     plan(input: ProgramPlannerInput): ProgramPlan {
-      if(input.programIntent?.constraints.includes("program.constraint.workspace_source_scope_unavailable")) throw new NativeProgramEmissionError("program.emission.workspace_source_scope_unavailable","The requested current workspace source scope is unavailable");
+      if(input.programIntent?.constraints?.includes("program.constraint.workspace_source_scope_unavailable")) throw new NativeProgramEmissionError("program.emission.workspace_source_scope_unavailable","The requested current workspace source scope is unavailable");
       if (input.programIntent?.languageId) emittedProgramRuntimeForLanguage(input.programIntent.languageId, { requireNativeBackend: true });
       const code = createCodeLearningEngine({ hasher: options.hasher });
       const codeGraph = code.learn(input);
