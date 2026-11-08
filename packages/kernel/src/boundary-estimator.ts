@@ -306,7 +306,7 @@ export function mergeBoundaryStatistics(
   }, hasher);
 }
 
-export function fitBoundaryEstimator(input: {
+export interface BoundaryEstimatorFitInput {
   statistics: BoundarySufficientStatistics;
   calibrationStatistics?: BoundarySufficientStatistics;
   calibrationShards?: readonly BoundarySufficientStatistics[];
@@ -314,7 +314,30 @@ export function fitBoundaryEstimator(input: {
   learningRate?: number;
   l2?: number;
   hasher?: Hasher;
-}): BoundaryEstimatorModel {
+}
+
+interface BoundaryFitSettings { iterations: number; learningRate: number; l2: number }
+interface BoundaryFitNumerics {
+  weights: number[];
+  intercept: number;
+  trainingLogLoss: number;
+  calibration: Omit<BoundaryCalibrationReport, "heldoutStatisticsId" | "heldoutSourceDocumentIds">;
+}
+
+let numericalFitComputations = 0;
+export function boundaryEstimatorNumericalFitCount(): number { return numericalFitComputations; }
+
+/** Numerical reuse is private to one fitter; source validation and model identity are rebuilt on every request. */
+export function createBoundaryEstimatorNumericalFitter(hasher: Hasher = createHasher()): (input: Omit<BoundaryEstimatorFitInput, "hasher">) => BoundaryEstimatorModel {
+  const numerics = new Map<string, BoundaryFitNumerics>();
+  return input => fitBoundaryEstimatorInternal({ ...input, hasher }, numerics);
+}
+
+export function fitBoundaryEstimator(input: BoundaryEstimatorFitInput): BoundaryEstimatorModel {
+  return fitBoundaryEstimatorInternal(input);
+}
+
+function fitBoundaryEstimatorInternal(input: BoundaryEstimatorFitInput, numericalFits?: Map<string, BoundaryFitNumerics>): BoundaryEstimatorModel {
   const hasher = input.hasher ?? createHasher();
   validateSourceDisjoint(input.statistics, input.calibrationStatistics);
   for (const shard of input.calibrationShards ?? []) {
@@ -323,6 +346,72 @@ export function fitBoundaryEstimator(input: {
   const iterations = Math.max(1, Math.min(512, Math.floor(input.iterations ?? 96)));
   const learningRate = Math.max(1e-5, Math.min(1, input.learningRate ?? 0.18));
   const l2 = Math.max(0, Math.min(10, input.l2 ?? 0.02));
+  const settings = { iterations, learningRate, l2 };
+  const key = numericalFits ? numericalFitKey(input, settings, hasher) : undefined;
+  let numerical = key === undefined ? undefined : numericalFits?.get(key);
+  if (!numerical) {
+    numerical = computeBoundaryFitNumerics(input, settings);
+    if (key !== undefined) numericalFits?.set(key, numerical);
+  }
+  const weights = [...numerical.weights];
+  const intercept = numerical.intercept;
+  const totalPositive = input.statistics.positiveMass / MASS_SCALE;
+  const totalNegative = input.statistics.negativeMass / MASS_SCALE;
+  const { method, slope, intercept: calibrationIntercept, ...metrics } = numerical.calibration;
+  const calibration: BoundaryCalibrationReport = { method, slope, intercept: calibrationIntercept,
+    ...(method === "platt_heldout" ? { heldoutStatisticsId: input.calibrationStatistics!.id } : {}),
+    heldoutSourceDocumentIds: method === "platt_heldout" ? [...input.calibrationStatistics!.sourceDocumentIds] : [], ...metrics };
+  const canonical = {
+    schema: BOUNDARY_ESTIMATOR_SCHEMA,
+    populationId: input.statistics.populationId,
+    featureOrder: FEATURE_ORDER,
+    weights,
+    intercept,
+    trainingStatisticsId: input.statistics.id,
+    iterations,
+    l2,
+    training: {
+      examples: input.statistics.rows.length,
+      positiveMass: totalPositive,
+      negativeMass: totalNegative,
+      logLoss: numerical.trainingLogLoss
+    },
+    calibration
+  };
+  return {
+    ...canonical,
+    id: `boundary_estimator.${hasher.digestHex(JSON.stringify(canonical)).slice(0, 40)}`,
+    audit: toJsonValue({
+      trainer: "kernel.boundary_estimator.logistic_platt.v2",
+      deterministicCanonicalRows: true,
+      quantizedParameters: true,
+      learnedFinalCoefficientsOnly: true,
+      latentMarginalsAccepted: input.statistics.latentMass > 0,
+      heldoutCalibration: calibration.method === "platt_heldout",
+      sourceDisjointCalibration: true,
+      learningRate
+    })
+  };
+}
+
+function numericalFitKey(input: BoundaryEstimatorFitInput, settings: BoundaryFitSettings, hasher: Hasher): string | undefined {
+  const material = (statistics: BoundarySufficientStatistics | undefined) => {
+    if (!statistics) return undefined;
+    const { id: _id, populationId: _population, audit: _audit, ...values } = statistics;
+    return values;
+  };
+  let finite = true;
+  const key = JSON.stringify({ statistics: material(input.statistics), calibrationStatistics: material(input.calibrationStatistics),
+    calibrationShards: (input.calibrationShards ?? []).map(material), settings }, (_key, value: unknown) => {
+    if (typeof value === "number" && (!Number.isFinite(value) || Object.is(value, -0))) finite = false;
+    return value;
+  });
+  return finite ? hasher.digestHex(key) : undefined;
+}
+
+function computeBoundaryFitNumerics(input: BoundaryEstimatorFitInput, settings: BoundaryFitSettings): BoundaryFitNumerics {
+  numericalFitComputations++;
+  const { iterations, learningRate, l2 } = settings;
   const weights = new Array<number>(FEATURE_ORDER.length).fill(0);
   const totalPositive = input.statistics.positiveMass / MASS_SCALE;
   const totalNegative = input.statistics.negativeMass / MASS_SCALE;
@@ -381,37 +470,8 @@ export function fitBoundaryEstimator(input: {
     weights,
     intercept
   });
-  const canonical = {
-    schema: BOUNDARY_ESTIMATOR_SCHEMA,
-    populationId: input.statistics.populationId,
-    featureOrder: FEATURE_ORDER,
-    weights,
-    intercept,
-    trainingStatisticsId: input.statistics.id,
-    iterations,
-    l2,
-    training: {
-      examples: input.statistics.rows.length,
-      positiveMass: totalPositive,
-      negativeMass: totalNegative,
-      logLoss: trainingLogLoss
-    },
-    calibration
-  };
-  return {
-    ...canonical,
-    id: `boundary_estimator.${hasher.digestHex(JSON.stringify(canonical)).slice(0, 40)}`,
-    audit: toJsonValue({
-      trainer: "kernel.boundary_estimator.logistic_platt.v2",
-      deterministicCanonicalRows: true,
-      quantizedParameters: true,
-      learnedFinalCoefficientsOnly: true,
-      latentMarginalsAccepted: input.statistics.latentMass > 0,
-      heldoutCalibration: calibration.method === "platt_heldout",
-      sourceDisjointCalibration: true,
-      learningRate
-    })
-  };
+  const { heldoutStatisticsId: _heldoutId, heldoutSourceDocumentIds: _sources, ...values } = calibration;
+  return { weights, intercept, trainingLogLoss, calibration: values };
 }
 
 export function scoreBoundary(

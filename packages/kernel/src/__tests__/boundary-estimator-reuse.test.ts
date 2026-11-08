@@ -11,20 +11,18 @@ import { createHasher } from "../primitives.js";
 describe("boundary fitting repeated-work equivalence", () => {
   it("reuses exact immutable fit results only within one pass and rejects stale input identities", () => {
     const statistics = boundary.compileBoundaryStatistics({ populationId: "reuse", sourceDocumentIds: ["owned"], observations: [] });
-    const compute = vi.spyOn(boundary, "fitBoundaryEstimator");
-    try {
-      const fit = reuse.createBoundaryEstimatorFitter();
-      const first = fit({ statistics, iterations: 2 });
-      expect(fit({ statistics: structuredClone(statistics), iterations: 2 })).toBe(first);
-      expect(compute).toHaveBeenCalledTimes(1);
-      expect(() => { first.weights[0] = 99; }).toThrow();
-      const changed = { ...statistics, positiveMass: 1024 };
-      expect(fit({ statistics: changed, iterations: 2 })).not.toBe(first);
-      expect(fit({ statistics, iterations: 3 })).not.toBe(first);
-      expect(reuse.createBoundaryEstimatorFitter()({ statistics, iterations: 2 })).toEqual(first);
-      expect(compute).toHaveBeenCalledTimes(4);
-      expect(() => fit({ statistics, calibrationStatistics: statistics })).toThrow("overlap");
-    } finally { compute.mockRestore(); }
+    const computations = boundary.boundaryEstimatorNumericalFitCount();
+    const fit = reuse.createBoundaryEstimatorFitter();
+    const first = fit({ statistics, iterations: 2 });
+    expect(fit({ statistics: structuredClone(statistics), iterations: 2 })).toBe(first);
+    expect(boundary.boundaryEstimatorNumericalFitCount() - computations).toBe(1);
+    expect(() => { first.weights[0] = 99; }).toThrow();
+    const changed = { ...statistics, positiveMass: 1024 };
+    expect(fit({ statistics: changed, iterations: 2 })).not.toBe(first);
+    expect(fit({ statistics, iterations: 3 })).not.toBe(first);
+    expect(reuse.createBoundaryEstimatorFitter()({ statistics, iterations: 2 })).toEqual(first);
+    expect(boundary.boundaryEstimatorNumericalFitCount() - computations).toBe(4);
+    expect(() => fit({ statistics, calibrationStatistics: statistics })).toThrow("overlap");
   });
   it("does not rebuild descent views or fixed calibration logits on every iteration", () => {
     const order = boundary.compileBoundaryStatistics({ populationId: "work", observations: [] }).featureOrder;
@@ -80,25 +78,25 @@ describe("boundary fitting repeated-work equivalence", () => {
     const fit = boundary.fitBoundaryEstimator;
     const createFitter = reuse.createBoundaryEstimatorFitter;
     const fitted: boundary.BoundaryEstimatorModel[] = [];
-    let computedFits = 0;
+    const computationStart = boundary.boundaryEstimatorNumericalFitCount();
     let scopedDepth = 0;
     let fittingMs = 0;
     const factorySpy = vi.spyOn(reuse, "createBoundaryEstimatorFitter").mockImplementation(hasher => {
       const scoped = createFitter(hasher);
       return input => {
+        const start = performance.now();
         scopedDepth++;
         try {
           const model = scoped(input);
           fitted.push(model);
           return model;
-        } finally { scopedDepth--; }
+        } finally { scopedDepth--; fittingMs += performance.now() - start; }
       };
     });
     const spy = vi.spyOn(boundary, "fitBoundaryEstimator").mockImplementation(input => {
       const start = performance.now();
       const model = fit(input);
       fittingMs += performance.now() - start;
-      computedFits++;
       if (!scopedDepth) fitted.push(model);
       return model;
     });
@@ -112,6 +110,7 @@ describe("boundary fitting repeated-work equivalence", () => {
           frameIds: model.semanticFrames.map(frame => frame.id), constructionIds: model.graphBoundConstructions.map(construction => construction.id) };
       });
       const elapsedMs = performance.now() - start;
+      const computedFits = boundary.boundaryEstimatorNumericalFitCount() - computationStart;
       const result = { inputDigest: hasher.digestHex(text), outputs, fitted };
       const reference = JSON.parse(readFileSync(new URL("./fixtures/boundary-alice-19k-reference.json", import.meta.url), "utf8"));
       expect(result.inputDigest).toBe(reference.inputDigest);
@@ -125,6 +124,7 @@ describe("boundary fitting repeated-work equivalence", () => {
       expect(outputs.length).toBeGreaterThan(1);
       expect(fitted.length).toBeGreaterThan(1);
       expect(computedFits).toBeLessThan(fitted.length);
+      expect(computedFits).toBeLessThan(36);
     } finally { spy.mockRestore(); factorySpy.mockRestore(); }
   });
 });
