@@ -1,10 +1,10 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { compileLanguageTrainingBatch } from "../language-training-batch.js";
 import { createLanguageMemoryRuntime, scopeLanguageMemoryStateToLanguage } from "../language-memory-runtime.js";
-import { compileCreativeRequestFrameFromCompatibilityModels, creativeEventCompatibilityDecision, creativeEventRoleDecision } from "../creative-event-compatibility.js";
+import { compileCreativeRequestFrameFromCompatibilityModels, creativeEventCompatibilityDecision, creativeEventRoleDecision, creativeEventCompatibilityModelsFromPatterns } from "../creative-event-compatibility.js";
 import { createLanguageAcquisitionEngine } from "../language.js";
 import { createClock, createHasher } from "../primitives.js";
 import { createIdFactory } from "../ids.js";
@@ -49,6 +49,33 @@ describe("declared human creative source correspondence", () => {
     const profile = createLanguageAcquisitionEngine({ idFactory: ids }).acquire({ sourceVersionId, text: humanPair.text, createdAt: 1 });
     patterns = compileLanguageTrainingBatch({ runtime, hasher, batch: { streamId: "fixture://human", sourceSystem: "dialogue", profile, sourceVersionId,
       text: humanPair.text, evidence, transcriptTurns: humanPair.turns as TranscriptTurn[], createdAt: 1, retainNgramObservations: false } }).patterns;
+  });
+
+  it("reads each source once for all correspondence witnesses and rechecks changed source text", () => {
+    const state = restart();
+    const expected = state.creativeEventCompatibilityModels;
+    const events = state.importedConstructionBundles.flatMap(bundle => bundle.creativeEvents ?? []);
+    const observed = patterns.filter(pattern => (pattern.patternJson as { reliability?: string }).reliability === "source_observed");
+    expect(expected.length).toBeGreaterThan(0);
+    const iterate = String.prototype[Symbol.iterator];
+    let sourceScans = 0;
+    const eventFind = vi.spyOn(events, "find");
+    const eventSome = vi.spyOn(events, "some");
+    const iterator = vi.spyOn(String.prototype, Symbol.iterator).mockImplementation(function(this: string) {
+      if (String(this) === humanPair.text) sourceScans++;
+      return iterate.call(this);
+    });
+    try {
+      expect(creativeEventCompatibilityModelsFromPatterns(observed, { evidence, events, hasher })).toEqual(expected);
+      expect(sourceScans).toBe(1);
+      expect(eventFind).not.toHaveBeenCalled();
+      expect(eventSome).not.toHaveBeenCalled();
+    } finally { iterator.mockRestore(); eventFind.mockRestore(); eventSome.mockRestore(); }
+    expect(creativeEventCompatibilityModelsFromPatterns(observed, { evidence: evidence.map(span => ({ ...span, text: `#${span.text.slice(1)}` })), events, hasher })).toEqual([]);
+    const eventId = expected.flatMap(model => model.sourceObservations ?? [])[0]!.eventId;
+    const event = events.find(row => row.id === eventId)!;
+    expect(creativeEventCompatibilityModelsFromPatterns(observed, { evidence, events: [{ ...event, evidenceId: "evidence.foreign" }, ...events], hasher })).toEqual(expected);
+    expect(creativeEventCompatibilityModelsFromPatterns(observed, { evidence: [{ ...evidence[0]!, sourceId: "source.foreign" as never }, ...evidence], events, hasher })).toEqual([]);
   });
 
   it("refuses a selected declared human reply when its speech grammar is missing", async () => {

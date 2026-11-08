@@ -8,6 +8,7 @@ import { canonicalStringify, toJsonValue } from "./primitives.js";
 import { segmentUnicodeSurfaceV2 } from "./unicode-segmentation-v2.js";
 import type { EvidenceSpan, Hasher } from "./types.js";
 import type { LanguagePatternRecord } from "./storage.js";
+import { createSourceTextPointCache, sourceTextPointLength, sourceTextPointSlice, type SourceTextPointCache } from "./source-text-points.js";
 
 export const CREATIVE_SOURCE_CORRESPONDENCE_RECIPE = "kernel.creative_source_correspondence.v1" as const;
 
@@ -125,7 +126,34 @@ export function compileCreativeSourceCorrespondences(input: CreativeSourceCorres
   });
 }
 
+export interface CreativeSourceCorrespondenceVerifier {
+  verify(row: CreativeSourceCorrespondence, owners: readonly string[]): boolean;
+  eventHasProfile(eventId: string, profileId: string): boolean;
+}
+
+// Index immutable source premises for one synchronous model-verification pass.
+export function createCreativeSourceCorrespondenceVerifier(context: CreativeSourceCorrespondenceContext): CreativeSourceCorrespondenceVerifier {
+  const points = createSourceTextPointCache();
+  const evidenceById = new Map<string, EvidenceSpan>();
+  for (const span of context.evidence) if (!evidenceById.has(String(span.id))) evidenceById.set(String(span.id), span);
+  const eventsById = new Map<string, DurableCreativeEventConstruction[]>();
+  for (const event of context.events) {
+    const matches = eventsById.get(event.id);
+    if (matches) matches.push(event);
+    else eventsById.set(event.id, [event]);
+  }
+  return {
+    verify: (row, owners) => verifyCreativeSourceCorrespondenceIndexed(row, context, owners, points, evidenceById, eventsById),
+    eventHasProfile: (eventId, profileId) => eventsById.get(eventId)?.some(event => event.id === eventId && event.profileId === profileId) ?? false
+  };
+}
+
 export function verifyCreativeSourceCorrespondence(row: CreativeSourceCorrespondence, context: CreativeSourceCorrespondenceContext, owners: readonly string[]): boolean {
+  return createCreativeSourceCorrespondenceVerifier(context).verify(row, owners);
+}
+
+function verifyCreativeSourceCorrespondenceIndexed(row: CreativeSourceCorrespondence, context: CreativeSourceCorrespondenceContext, owners: readonly string[],
+  points: SourceTextPointCache, evidenceById: ReadonlyMap<string, EvidenceSpan>, eventsById: ReadonlyMap<string, readonly DurableCreativeEventConstruction[]>): boolean {
   if (!row || typeof row !== "object" || !row.request || !row.reply || !Array.isArray(row.bindings)
     || typeof row.request.surface !== "string" || typeof row.request.surfaceHash !== "string" || typeof row.reply.surfaceHash !== "string"
     || !Number.isSafeInteger(row.request.turnIndex) || !Number.isSafeInteger(row.reply.turnIndex)
@@ -135,13 +163,14 @@ export function verifyCreativeSourceCorrespondence(row: CreativeSourceCorrespond
   const { id, ...material } = row;
   if (id !== digest(context.hasher, "creative.source.correspondence", material) || row.reply.commitmentScope !== "conversation"
     || row.reply.replyToTurnIndex !== row.request.turnIndex || row.request.turnIndex >= row.reply.turnIndex) return false;
-  const request = context.evidence.find(span => String(span.id) === row.request.evidenceId);
-  const reply = context.evidence.find(span => String(span.id) === row.reply.evidenceId);
-  if (!request || !reply || !owners.includes(String(request.id)) || !owners.includes(String(reply.id))
-    || !validWitness(request, row.request, row, context.hasher) || !validWitness(reply, row.reply, row, context.hasher)
-    || [...request.text].slice(row.request.start, row.request.end).join("") !== row.request.surface
+  const request = evidenceById.get(row.request.evidenceId);
+  const reply = evidenceById.get(row.reply.evidenceId);
+  if (!request || !reply || String(request.id) !== row.request.evidenceId || String(reply.id) !== row.reply.evidenceId
+    || !owners.includes(String(request.id)) || !owners.includes(String(reply.id))
+    || !validWitness(request, row.request, row, context.hasher, points) || !validWitness(reply, row.reply, row, context.hasher, points)
+    || sourceTextPointSlice(request.text, row.request.start, row.request.end, points) !== row.request.surface
     || request.charStart + row.request.end > reply.charStart + row.reply.start) return false;
-  const event = context.events.find(event => event.id === row.eventId && event.evidenceId === String(reply.id)
+  const event = eventsById.get(row.eventId)?.find(event => event.id === row.eventId && event.evidenceId === String(reply.id)
     && event.sourceVersionId === row.sourceVersionId && event.relationId === row.eventRelationId
     && event.constructionId === row.eventConstructionId && event.argumentFrame.id === row.eventArgumentFrameId);
   if (!event || event.labelStartCodePoint < row.reply.start || event.labelEndCodePoint > row.reply.end
@@ -149,8 +178,8 @@ export function verifyCreativeSourceCorrespondence(row: CreativeSourceCorrespond
   return row.bindings.every(binding => {
     const port = event.argumentFrame.bindings.find(port => port.roleId === binding.eventRoleId
       && port.startCodePoint === binding.eventStart && port.endCodePoint === binding.eventEnd);
-    const surface = [...row.request.surface].slice(binding.requestStart, binding.requestEnd).join("");
-    return port && binding.requestStart >= 0 && binding.requestEnd > binding.requestStart && binding.requestEnd <= [...row.request.surface].length
+    const surface = sourceTextPointSlice(row.request.surface, binding.requestStart, binding.requestEnd, points);
+    return port && binding.requestStart >= 0 && binding.requestEnd > binding.requestStart && binding.requestEnd <= sourceTextPointLength(row.request.surface, points)
       && lexicalKey(port.surface) === lexicalKey(surface);
   });
 }
@@ -165,9 +194,9 @@ function turnWitness(span: EvidenceSpan, turn: TranscriptTurn, hasher: Hasher): 
   return { turnIndex: turn.index, evidenceId: String(span.id), contentHash: String(span.contentHash),
     start: turn.startCodePoint - span.charStart, end: turn.endCodePoint - span.charStart, surfaceHash: hasher.digestHex(turn.surface) };
 }
-function validWitness(span: EvidenceSpan, witness: SourceTurnWitness, row: CreativeSourceCorrespondence, hasher: Hasher): boolean {
+function validWitness(span: EvidenceSpan, witness: SourceTurnWitness, row: CreativeSourceCorrespondence, hasher: Hasher, points: SourceTextPointCache): boolean {
   return span.status === "promoted" && String(span.sourceId) === row.sourceId && String(span.sourceVersionId) === row.sourceVersionId
     && String(span.contentHash) === witness.contentHash && Number.isSafeInteger(witness.start) && Number.isSafeInteger(witness.end)
-    && witness.start >= 0 && witness.end > witness.start && witness.end <= [...span.text].length
-    && hasher.digestHex([...span.text].slice(witness.start, witness.end).join("")) === witness.surfaceHash;
+    && witness.start >= 0 && witness.end > witness.start && witness.end <= sourceTextPointLength(span.text, points)
+    && hasher.digestHex(sourceTextPointSlice(span.text, witness.start, witness.end, points)) === witness.surfaceHash;
 }

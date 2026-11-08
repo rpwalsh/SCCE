@@ -8,7 +8,7 @@ import { CREATIVE_SOURCE_UTTERANCE_RECIPE_ID } from "./language-training-recipe.
 import type { EvidenceId, Hasher, JsonValue } from "./types.js";
 import { induceLearnedConstructions, type AlignedSurfaceExample, type LearnedConstruction } from "./language-construction.js";
 import { createLearnedSurfaceInterpreter, type LearnedSurfaceInterpreter, type InterpretedSurfaceRole } from "./learned-surface-interpretation.js";
-import { CREATIVE_SOURCE_CORRESPONDENCE_RECIPE, verifyCreativeSourceCorrespondence, type CreativeSourceCorrespondence, type CreativeSourceCorrespondenceContext } from "./creative-source-correspondence.js";
+import { CREATIVE_SOURCE_CORRESPONDENCE_RECIPE, createCreativeSourceCorrespondenceVerifier, type CreativeSourceCorrespondence, type CreativeSourceCorrespondenceContext, type CreativeSourceCorrespondenceVerifier } from "./creative-source-correspondence.js";
 
 export const CREATIVE_REQUEST_FRAME_SCHEMA = "scce.creative_request_frame.v1" as const;
 export const CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA =
@@ -399,12 +399,14 @@ export function compileCreativeEventCompatibilityCorpus(
 export function creativeEventCompatibilityModelsFromPatterns(
   patterns: readonly LanguagePatternRecord[], context?: CreativeSourceCorrespondenceContext
 ): CreativeEventCompatibilityModel[] {
+  let sourceVerification: CreativeSourceCorrespondenceVerifier | undefined;
   const models = patterns.flatMap(pattern => {
     const value = pattern.patternJson;
     if (!isRecord(value) || value.schema !== CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA) return [];
-    const model = compatibilityModelFromRecord(value, pattern.evidenceIds, context);
+    if (value.reliability === "source_observed" && context) sourceVerification ??= createCreativeSourceCorrespondenceVerifier(context);
+    const model = compatibilityModelFromRecord(value, pattern.evidenceIds, context, sourceVerification);
     if (model?.reliability === "source_observed" && pattern.id !== model.id) return [];
-    if (model?.reliability === "source_observed" && model.sourceObservations?.some(row => !context?.events.some(event => event.id === row.eventId && event.profileId === pattern.profileId))) return [];
+    if (model?.reliability === "source_observed" && model.sourceObservations?.some(row => !sourceVerification?.eventHasProfile(row.eventId, pattern.profileId))) return [];
     return model ? [model] : [];
   });
   return normalizeCreativeEventCompatibilityModels(models);
@@ -738,7 +740,7 @@ function compatibilityOutcomeEntropy(
 }
 
 function compatibilityModelFromRecord(
-  value: Record<string, unknown>, evidenceIds: readonly EvidenceId[], context?: CreativeSourceCorrespondenceContext
+  value: Record<string, unknown>, evidenceIds: readonly EvidenceId[], context?: CreativeSourceCorrespondenceContext, sourceVerification?: CreativeSourceCorrespondenceVerifier
 ): CreativeEventCompatibilityModel | undefined {
   const eventCompatibilities = Array.isArray(value.eventCompatibilities)
     ? value.eventCompatibilities.flatMap(eventCompatibilityFromUnknown)
@@ -760,7 +762,7 @@ function compatibilityModelFromRecord(
   if (sourceObserved && (value.calibrationId !== undefined || value.minimumAdmissiblePosterior !== undefined || value.minimumRolePosterior !== undefined
     || !Array.isArray(value.eventCompatibilities) || value.eventCompatibilities.length !== 0 || !Array.isArray(value.roleCompatibilities) || value.roleCompatibilities.length !== 0)) return undefined;
   const sourceObservations = sourceObserved && context && Array.isArray(value.sourceObservations)
-    ? value.sourceObservations.filter((row): row is CreativeSourceCorrespondence => verifyCreativeSourceCorrespondence(row as CreativeSourceCorrespondence, context, evidenceIds)) : [];
+    ? value.sourceObservations.filter((row): row is CreativeSourceCorrespondence => sourceVerification?.verify(row as CreativeSourceCorrespondence, evidenceIds) === true) : [];
   if (sourceObserved) requestFrameAnchors = requestFrameAnchors.filter(anchor => anchor.requestCompilerId === value.requestCompilerId && sourceAnchorOwned(anchor, sourceObservations));
   const identity: CreativeEventCompatibilityModelIdentity = {
     schema: CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA,
