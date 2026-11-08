@@ -220,13 +220,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         const choices: Array<{ label: string; description: string; detail: string; id: string | undefined }> = available.policies.map(policy => ({
           label: policy.id, description: policy.checks.join(", "), detail: available.provider, id: policy.id
         }));
-        choices.push({ label: "Workspace build", description: "No project test policy", detail: "Existing workspace build gate", id: undefined });
-        const policy = await vscode.window.showQuickPick(choices, { title: "workspace.code.validation_policy", placeHolder: "Select validation scope" });
+        choices.push({ label: "workspace.build", description: "workspace.code.validation_policy.none", detail: "workspace.build", id: undefined });
+        const policy = await vscode.window.showQuickPick(choices, { title: "workspace.code.validation_policy", placeHolder: "workspace.code.validation_policy.required" });
         if (!policy) return { cancelled: true };
         const result = await editCodeWithSelection(activeClient, targetPath, request, policy.id, async pending =>
-          await vscode.window.showWarningMessage("Authorize code edit: " + targetPath, {
-            modal: true, detail: "workspace.code / " + (policy.id ?? "Workspace build") + " / " + pending.planId + " / " + pending.fingerprint
-          }, "Authorize and edit") === "Authorize and edit", async candidates => {
+          await vscode.window.showWarningMessage("workspace.code.approve: " + targetPath, {
+            modal: true, detail: "workspace.code / " + (policy.id ?? "workspace.build") + " / " + pending.planId + " / " + pending.fingerprint
+          }, "workspace.code.approve") === "workspace.code.approve", async candidates => {
           const picked = await vscode.window.showQuickPick(candidates.map(candidate => ({
             label: candidate.fixName, description: "TS" + candidate.diagnosticCode,
             detail: candidate.codeFixIdentity, identity: candidate.codeFixIdentity

@@ -844,25 +844,25 @@ export function renderWorkbench(serverUrl: string, options: WorkbenchRenderOptio
       const request = window.prompt('prompt.code_request');
       if (!request || !request.trim()) return;
       const available = await get('/api/workspace/code/validation-policies');
-      if (!Array.isArray(available.policies)) throw new Error('Invalid server validation policy list');
-      const policies = available.policies.concat([{ label: 'Workspace build', checks: ['No project test policy'] }]);
+      if (!Array.isArray(available.policies)) throw new Error('workspace.code.validation_policies.invalid');
+      const policies = available.policies.concat([{ label: 'workspace.build', checks: ['workspace.code.validation_policy.none'] }]);
       const policyMenu = policies.map((policy, index) => (index + 1) + ') ' + (policy.id || policy.label) + ' [' + policy.checks.join(', ') + '] ' + available.provider).join('\\n');
       const policyChoice = window.prompt('workspace.code.validation_policy' + '\\n' + policyMenu);
       if (policyChoice === null) return;
       const policy = policies[Number(policyChoice) - 1];
-      if (!policy) throw new Error('Select a server validation policy');
+      if (!policy) throw new Error('workspace.code.validation_policy.required');
       const validationPolicyId = policy.id;
       async function edit(codeRequest) {
         const input = { path: targetPath.trim(), request: codeRequest, ...(validationPolicyId ? { validationPolicyId } : {}) };
         let edited = await post('/api/workspace/code', input);
         if (edited && edited.pendingApproval) {
           const pending = edited.pendingApproval;
-          if (pending.capabilityId !== 'workspace.code' || !pending.planId || !pending.fingerprint) throw new Error('Invalid code edit approval');
-          if (!window.confirm('Authorize code edit: ' + targetPath.trim() + ' / ' + (validationPolicyId || 'Workspace build') + ' / ' + pending.planId + ' / ' + pending.fingerprint)) return edited;
+          if (pending.capabilityId !== 'workspace.code' || !pending.planId || !pending.fingerprint) throw new Error('workspace.code.approval.invalid');
+          if (!window.confirm('workspace.code.approve: ' + targetPath.trim() + ' / ' + (validationPolicyId || 'workspace.build') + ' / ' + pending.planId + ' / ' + pending.fingerprint)) return edited;
           const approval = await post('/api/session/approve', { planId: pending.planId });
-          if (!approval.approved || approval.approved.planId !== pending.planId || approval.approved.capabilityId !== 'workspace.code') throw new Error('Code edit approval does not match the requested plan');
+          if (!approval.approved || approval.approved.planId !== pending.planId || approval.approved.capabilityId !== 'workspace.code') throw new Error('workspace.code.approval.plan_mismatch');
           edited = await post('/api/workspace/code', input);
-          if (edited && edited.pendingApproval) throw new Error('Code edit requires renewed approval; retry the command');
+          if (edited && edited.pendingApproval) throw new Error('workspace.code.approval.renewal_required');
         }
         return edited;
       }
