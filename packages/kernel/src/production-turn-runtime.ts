@@ -1305,6 +1305,11 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const inheritedRuntimeMotion = acquisitionContinuation
         ?? runtimeReplanMotionFromMetadata(input.metadata, hasher.digestHex(input.text));
       const explicitAuthority = requestedAuthorityFromTurnInput(input, translationTarget);
+      const formalArithmetic = arithmeticAnswerForText(input.text);
+      const formalExactComputation = exactComputationForText(input.text);
+      const sourceComputation = !formalArithmetic && !formalExactComputation && /[0-9]/u.test(input.text) && !deps.evaluationCondition?.flags.disableLanguageMemory && (!explicitAuthority || explicitAuthority === "factual" || explicitAuthority === "reasoned")
+        ? await sourceComputationForRequest({ storage: deps.storage, hasher, requestText: input.text,
+          generation: surfaceLanguageRuntime.revisionGeneration(), sourceVersionAllowlist: input.runtimeControl?.evidenceSourceAllowlist }) : undefined;
       const workspacePlanContext = runtimeWorkspacePlanContext(input.metadata, input.text);
       // Routing control first, and from its own cache when hydration did not carry it.
       const turnRequestControlPatterns = deps.evaluationCondition?.flags.disableLanguageMemory
@@ -1361,6 +1366,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       });
       const authorityProjection = projectRequestAuthority({
         requirementField,
+        ...(sourceComputation?{verifiedComputation:{requestText:input.text,result:sourceComputation}}:{}),
         explicitAuthority,
         typedProgramBehaviorRequirementIds,
         sourceRequestFrame: observedSourceRequestFrame
@@ -1571,11 +1577,6 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // real, exact rational rendering throughout -- so no precision is
       // lost in what the user is ever shown, even for a value this float
       // conversion itself could not represent exactly.
-      const formalArithmetic = arithmeticAnswerForText(input.text);
-      const formalExactComputation = exactComputationForText(input.text);
-      const sourceComputation = !formalArithmetic && !formalExactComputation && /[0-9]/u.test(input.text) && !deps.evaluationCondition?.flags.disableLanguageMemory && (requestedAuthority === "factual" || requestedAuthority === "reasoned")
-        ? await sourceComputationForRequest({ storage: deps.storage, hasher, requestText: input.text,
-          generation: surfaceLanguageRuntime.revisionGeneration(), sourceVersionAllowlist: input.runtimeControl?.evidenceSourceAllowlist }) : undefined;
       const exactComputation = sourceComputation?.evaluation ?? formalExactComputation;
       // The exact result and the text SCCE is about to speak must be the same number: a formatter that drifts from
       // the computed quantity turns an exact answer into a claim nothing checked.

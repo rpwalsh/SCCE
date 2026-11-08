@@ -3,6 +3,8 @@
 import {describe,it,expect,vi} from "vitest";
 import {acquireSourceComputationConstructions,verifySourceComputationConstruction,evaluateSourceComputationRequest,sourceComputationResultVerified,sourceComputationBindingIdForRequest} from "../source-computation-acquisition.js";
 import {createHasher,canonicalStringify,createClock,createIdFactory,createScceKernel,createInMemoryDialogueMemoryStore,createLanguageAcquisitionEngine,LANGUAGE_IDENTITY_SCHEMA,LANGUAGE_IDENTITY_DISCOVERY_RECIPE,type EvidenceSpan,type LanguagePatternRecord,type LanguageIdentityRecord,type TranscriptTurn} from "../index.js";
+import {deriveTurnRequirementField} from "../turn-requirements.js";
+import {projectRequestAuthority,explicitAuthorityRequirements} from "../request-authority.js";
 import * as mouthModule from "../mouth.js";
 import {sourceComputationForRequest} from "../source-computation-runtime.js";
 import {storageFixtureForEvaluation} from "./evidence-promotion-evaluation-fixture.js";
@@ -94,6 +96,18 @@ describe("source-owned arithmetic construction acquisition",()=>{
   expect(result?.evaluation.resultText).toBe("138");expect(queries).toHaveLength(1);
   expect(queries[0]).toEqual({patternSchemas:["scce.source_owned_computation_construction.v1"],sourceSystem:"dialogue",sourceComputationBindingId:sourceComputationBindingIdForRequest(locales[0].question(101,37),hasher)});
  });
+ it("admits exact Catalan computation semantics over a statistical creative projection while preserving every explicit authority",()=>{
+  const data=acquired(locales[3]),verified=verifySourceComputationConstruction({pattern:data.compiled.families[0]!.pattern,evidence:data.evidence,hasher}),requestText=locales[3].question(101,37);
+  const result=evaluateSourceComputationRequest({requestText,constructions:[verified!],hasher})!;
+  const requirementField=deriveTurnRequirementField({requestText,explicitRequirements:explicitAuthorityRequirements({requestText,authority:"creative",sourceId:"test_authored.statistical_projection"})});
+  expect(projectRequestAuthority({requirementField}).requestedAuthority).toBe("creative");
+  const input={requirementField,verifiedComputation:{requestText,result}},projection=projectRequestAuthority(input);
+  expect(projection.requestedAuthority).toBe("reasoned");expect(projection.projectedAuthority).toBe("creative");expect(projection.explicitOverride).toBe(false);
+  expect(projection.trace).toMatchObject({selectionSource:"source_owned_computation",sourceComputationPatternIds:result.patternIds});
+  for(const explicitAuthority of ["factual","reasoned","creative","translation","program","action"] as const)expect(projectRequestAuthority({...input,explicitAuthority}).requestedAuthority).toBe(explicitAuthority);
+  expect(projectRequestAuthority({...input,verifiedComputation:{requestText,result:{...result}}}).requestedAuthority).toBe("creative");
+  expect(projectRequestAuthority({...input,verifiedComputation:{requestText:"unbound request",result}}).requestedAuthority).toBe("creative");
+ });
  it("retains the verified computation and reports a typed surface withholding instead of an unrelated proof fallback",async()=>{
   const data=acquired(locales[0]),clock=createClock({fixedTime:1,stepMs:1}),fixture=storageFixtureForEvaluation({evidence:data.evidence,clockNow:()=>clock.now()});
   fixture.storage.languageMemory.listLanguagePatterns=async query=>query?.patternSchemas?.includes("scce.source_owned_computation_construction.v1")?data.compiled.families.map(row=>row.pattern):[];
@@ -120,7 +134,8 @@ describe("source-owned arithmetic construction acquisition",()=>{
   fixture.storage.languageMemory.listLanguageUnits=async()=>[{id:"unit.public.unrelated.numeric",profileId:data.documents[0]!.profileId,sourceVersionId:data.evidence[0]!.sourceVersionId,script:"Latn",unitKind:"symbol",text:"101",features:[],competenceVector:[],alpha:1,evidenceIds:[data.evidence[0]!.id],metadata:{schema:"test_authored.unrelated_prior.v1"}}];
   fixture.storage.userModelClaims={putClaim:async()=>undefined,listClaims:async()=>[]};fixture.storage.taskResumption={putSnapshot:async()=>undefined,getLatestSnapshot:async()=>null};fixture.storage.documentGeneration={putSession:async()=>undefined,getSession:async()=>null,compareAndPutSession:async()=>({stored:true,currentUpdatedAt:null})};fixture.storage.dialogueMemory=createInMemoryDialogueMemoryStore();
   const kernel=createScceKernel({storage:fixture.storage,files:{streamPath:async function*(){}},buildTest:{executeProgram:async()=>{throw Error("Computation must not execute a program process");}},clock,idFactory:createIdFactory({clock,hasher,deterministicReplay:true}),deterministicReplay:true});
-  const requestText=locale.question(101,37),result=await kernel.turn({text:requestText,requestedAuthority:"factual"});
+  const requestText=locale.question(101,37),result=await kernel.turn({text:requestText});
+  expect(result.requestedAuthority).toBe("reasoned");
   expect(result.events.some(event=>event.typeId==="ComputationEvaluated"),result.answer).toBe(true);
   expect(result.events.some(event=>event.typeId==="MouthSpoken"),JSON.stringify(result.mouth)).toBe(true);
   expect(JSON.stringify(result.mouth)).toContain("verified_computation");expect(result.answer).toContain(locale.id==="en"?"138":locale.id==="ru"?"3737":locale.id==="es"?"-64":"101/37");

@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { clamp01, mean, toJsonValue } from "./primitives.js";
+import { sourceComputationResultVerified, type VerifiedSourceComputationResult } from "./source-computation-acquisition.js";
+import { clamp01, mean, toJsonValue, createHasher } from "./primitives.js";
 import {
   COGNITIVE_OPERATOR_IDS,
   TURN_REQUIREMENT_DIMENSIONS,
@@ -68,6 +69,7 @@ export type NeutralAuthorityReasonId =
 export interface ProjectRequestAuthorityInput {
   requirementField: TurnRequirementField;
   explicitAuthority?: RequestedAuthority;
+  verifiedComputation?: {requestText:string;result:VerifiedSourceComputationResult};
   /** Exact IDs of owner-declared executable behavior observations from CodeRequestSignal. */
   typedProgramBehaviorRequirementIds?: readonly string[];
   /** An internally compiled request, never a caller-declared source label. */
@@ -234,8 +236,10 @@ export function projectRequestAuthority(input: ProjectRequestAuthorityInput): Re
   const projectedAuthority = neutralAuthorityApplied ? "factual" : (ranked[0]?.authority ?? "factual");
   const typedProgramBehaviorRequirementIds = [...new Set((input.typedProgramBehaviorRequirementIds ?? []).filter(id => typeof id === "string" && id.trim()))];
   const observedAuthority = sourceObservedRequestAuthority(input.sourceRequestFrame);
+  const computation=input.verifiedComputation;
+  const computationAuthority=computation&&sourceComputationResultVerified(computation.result,computation.requestText,createHasher())?"reasoned":undefined;
   const requestedAuthority = input.explicitAuthority
-    ?? (typedProgramBehaviorRequirementIds.length ? "program" : observedAuthority?.authority ?? projectedAuthority);
+    ?? (computationAuthority ?? (typedProgramBehaviorRequirementIds.length ? "program" : observedAuthority?.authority ?? projectedAuthority));
   const scoreMargin = neutralAuthorityApplied
     ? 0
     : clamp01((ranked[0]?.score ?? 0) - (ranked[1]?.score ?? 0));
@@ -248,10 +252,13 @@ export function projectRequestAuthority(input: ProjectRequestAuthorityInput): Re
     source: "turn_requirement_field",
     selectionSource: input.explicitAuthority
       ? "explicit_authority"
-      : typedProgramBehaviorRequirementIds.length
+      : computationAuthority
+        ? "source_owned_computation"
+        : typedProgramBehaviorRequirementIds.length
         ? "typed_owner_behavior_contract"
         : observedAuthority ? "source_observed_request_construction" : "turn_requirement_field",
     sourceObservedRequestAuthority: observedAuthority ?? null,
+    sourceComputationPatternIds: computationAuthority?computation!.result.patternIds:[],
     typedProgramBehaviorRequirementIds,
     lexicalRouterUsed: false,
     scoreReliability: "uncalibrated_bootstrap",
