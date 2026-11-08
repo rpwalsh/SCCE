@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import http from "node:http";
+import {pendingProgramValidationApproval} from "./program-validation-approval.js";
 import path from "node:path";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { realpath, readFile, writeFile } from "node:fs/promises";
@@ -1014,6 +1015,9 @@ async function dispatch(
         ? programResponseReadiness({ program: result.constructGraph.program, buildTest: result.buildTest })
         : undefined;
       if (programReadiness && programReadiness.status !== "ready") {
+        const session=context.runtime.approvals?.snapshot();
+        const pending=session?pendingProgramValidationApproval({events:result.events??[],pending:session.pending}):undefined;
+        if(pending)return json({ok:false,pendingApproval:pending,programReadiness,session},202);
         traceEvent(trace, {
           stage: "turn.withheld",
           label: "api.turn.program",

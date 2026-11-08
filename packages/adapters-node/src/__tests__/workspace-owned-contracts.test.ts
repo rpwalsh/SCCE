@@ -8,6 +8,7 @@ import {createHash} from "node:crypto";
 import {readWorkspaceOwnedProgramContracts,createScceKernel,createClock,createHasher,createIdFactory,createInMemoryDialogueMemoryStore,type EvidenceSpan,type SourceVersion,type WorkspaceRecord,type WorkspaceSourceFileRecord,type WorkspaceReportRecord,type ScceStorage,type InformationLabel} from "@scce/kernel";
 import {storageFixtureForEvaluation} from "../../../kernel/src/__tests__/evidence-promotion-evaluation-fixture.js";
 import {createWorkspaceRuntime} from "../workspace-runtime.js";
+import {createApprovalSession} from "../approval-session.js";
 import {NodeBuildTestAdapter} from "../process.js";
 import {NodeFileIngestAdapter} from "../files.js";
 import type {NodeScceRuntime} from "../runtime.js";
@@ -35,8 +36,10 @@ it("ordinary workspace ingestion publishes owned Python assertions without profi
   storage.documentGeneration={putSession:async()=>undefined,getSession:async()=>null,compareAndPutSession:async()=>({stored:true,currentUpdatedAt:null})};
   const label:InformationLabel={tenantId:"workspace-contract-test",principals:["owner"],compartments:[],exportClass:"confidential",mergePolicy:"same_owner"};
   const config={runtime:{workspaceRoot:root,tempRoot:root,maxFileBytes:100000,maxChunkBytes:64000,allowedRoots:[root],excludedPaths:[],tools:{}},connectors:{},policy:{allowMutation:false,requireTwoPhaseCommit:true,dryRunByDefault:true,maxNetworkRequests:0,maxToolCalls:0,maxSpendCents:0,alphaRiskCeiling:0.5,encryptSecretsAtRest:true}} as unknown as ScceRuntimeConfig;
-  const adapter=new NodeFileIngestAdapter(config),kernel=createScceKernel({storage,clock,idFactory:createIdFactory({clock,hasher,deterministicReplay:true}),deterministicReplay:true,policy:{allowMutation:true,dryRunByDefault:false,requireTwoPhaseCommit:false,maxToolCalls:20},
-   approvals:{isApproved:row=>row.capabilityId==="process.build_test",observePending:()=>{},policyPatch:()=>({dryRunByDefault:false})},
+  const approvals=createApprovalSession(),ids=createIdFactory({clock,hasher,deterministicReplay:true});
+  const planIdentity=vi.spyOn(ids,"semanticId");
+  const adapter=new NodeFileIngestAdapter(config),kernel=createScceKernel({storage,clock,idFactory:ids,deterministicReplay:true,policy:{allowMutation:true,dryRunByDefault:false,requireTwoPhaseCommit:false,maxToolCalls:20},
+   approvals,
    sourceInformationLabel:label,informationAccess:{tenantId:label.tenantId,principalId:"owner",compartments:[],maximumExportClass:"restricted"},files:{streamPath:async function*(name,options){for await(const item of adapter.streamPath(name,options))yield item.type==="file"?{...item,file:{...item.file,namespace:"custom-owner-code"}}:item;}},
    buildTest:new NodeBuildTestAdapter(config)});
   const ingest=vi.spyOn(kernel,"ingest"),publication=vi.spyOn(storage.blobs,"put"),blobRead=vi.spyOn(storage.blobs,"get");
@@ -58,11 +61,24 @@ it("ordinary workspace ingestion publishes owned Python assertions without profi
   expect(await read()).toMatchObject({status:"unavailable"});spans[0]!.status=saved;
   const original=blobs.get(receipt.blobHash)!;blobs.set(receipt.blobHash,new TextEncoder().encode("{}"));
   expect(await read()).toMatchObject({status:"unavailable",reasonId:"workspace.contracts.projection_hash_mismatch"});blobs.set(receipt.blobHash,original);
-  const turn=await kernel.turn({text:"Python f0 f1",requestedAuthority:"program",metadata:{workspaceProgramContext:context}});
+  const input={text:"Python f0 f1",requestedAuthority:"program" as const,metadata:{workspaceProgramContext:context}};
+  const pending=await kernel.turn(input);
+  expect(pending.buildTest).toBeUndefined();
+  const firstPlan=approvals.snapshot().pending.find(row=>row.capabilityId==="process.build_test")!;
+  expect(firstPlan.input).toMatchObject({schema:"scce.program.native_validation_approval.v1",provider:{id:"program.runtime.python-stdlib.v1"},build:{command:"python"},test:{command:"python"}});
+  approvals.approve(firstPlan.planId);
+  const failed=await kernel.turn(input);
+  expect(failed.buildTest?.passed,JSON.stringify({pending:approvals.snapshot().pending.map(row=>({planId:row.planId,fingerprint:row.fingerprint}))})).toBe(false);
+  const retryPlan=approvals.snapshot().pending.find(row=>row.capabilityId==="process.build_test")!;
+  expect(retryPlan.fingerprint).not.toBe(firstPlan.fingerprint);
+  approvals.approve(retryPlan.planId);
+  const turn=await kernel.turn(input);
+  const selectedPlans=planIdentity.mock.calls.filter(row=>row[0]==="program_plan").map(row=>row[1] as {implementation?:{phase?:string}}).filter(row=>row.implementation?.phase==="selected");
+  expect(selectedPlans).toHaveLength(2);expect(selectedPlans[1]).toEqual(selectedPlans[0]);
   expect(turn.constructGraph.program?.language,JSON.stringify({construct:turn.constructGraph,build:turn.buildTest})).toBe("python");
   expect(turn.constructGraph.program!.hydration!.ownerRequirementIds).toHaveLength(2);
   expect(turn.constructGraph.program!.hydration!.ownerRequirementIds!.every(id=>id.startsWith("source_assertion."))).toBe(true);
-  expect(turn.buildTest?.passed,JSON.stringify({events:recorded.events.filter(row=>row.typeId==="CapabilityPlanned").map(row=>row.payload),build:turn.buildTest})).toBe(true);
+  expect(turn.buildTest?.passed,JSON.stringify({pending:approvals.snapshot().pending.map(row=>({planId:row.planId,fingerprint:row.fingerprint})),build:turn.buildTest&&{passed:turn.buildTest.passed,build:turn.buildTest.build.code,test:turn.buildTest.test.code}})).toBe(true);
   const staleTurn=await kernel.turn({text:"Python q(1)=2; q(2)=4; q(3)=6",requestedAuthority:"program",metadata:{workspaceProgramContext:{...context,expectedWorkspaceUpdatedAt:-1}}});
   expect(staleTurn.constructGraph.program).toBeUndefined();
   expect(staleTurn.buildTest).toBeUndefined();

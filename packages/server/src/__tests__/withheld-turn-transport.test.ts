@@ -15,6 +15,8 @@ vi.mock("@scce/adapters-node", async importOriginal => {
 });
 
 import { RUNTIME_WITHHELD_REASON_IDS, RUNTIME_WITHHELD_SURFACE_SCHEMA, withheldSurfaceForTurn, type TurnResult } from "@scce/kernel";
+import {createApprovalSession} from "../../../adapters-node/src/approval-session.js";
+import {programValidationApprovalInput,type CapabilityPlan,type ProgramGraph,type ScceEvent} from "@scce/kernel";
 import { handleRequest, type ApiContext } from "../routes.js";
 
 const servers: ReturnType<typeof createServer>[] = [];
@@ -24,6 +26,21 @@ afterEach(async () => {
 });
 
 describe("a withheld turn survives transport as typed data, not as an error string", () => {
+  it.each([false,true])("surfaces this session exact pending native validation plan, streaming=%s",async streaming=>{
+    const program={id:"program.owned",language:"python",build:{command:"python",args:["-m","py_compile","module.py"],cwd:"."},test:{command:"python",args:["test/program_test.py"],cwd:"."},
+      hydration:{valid:true,ownerRequirementIds:["source_assertion.1"]},files:[{path:"module.py",content:"pass",contentHash:`sha256_${"a".repeat(64)}`,role:"source"},{path:"test/program_test.py",content:"source_assertion.1",contentHash:`sha256_${"b".repeat(64)}`,role:"test"}]} as unknown as ProgramGraph;
+    const approvals=createApprovalSession(),input=programValidationApprovalInput(program);
+    const plan={id:"plan.session.current",capabilityId:"process.build_test",input,permission:{allowed:false,dryRun:true},createdAt:1} as unknown as CapabilityPlan;
+    approvals.observePending(plan);
+    const result={...withheldTurn(),requestedAuthority:"program" as const,constructGraph:{...withheldTurn().constructGraph,program},events:[{typeId:"CapabilityPlanned",payload:plan} as unknown as ScceEvent]};
+    const port=await fixtureServer(result,undefined,approvals);
+    const response=await fetch(`http://127.0.0.1:${port}/api/turn${streaming?"?stream=1":""}`,{method:"POST",headers:{"content-type":"application/json",...(streaming?{accept:"application/x-ndjson"}:{})},body:JSON.stringify({text:"Python q(1)=2; q(2)=4",requestedAuthority:"program"})});
+    const body=streaming?(await response.text()).split("\n").filter(line=>line.trim()).map(line=>JSON.parse(line)).reverse().find(row=>row.type==="result"):await response.json();
+    expect(response.status).toBe(streaming?200:202);
+    const value=streaming?body.value:body;
+    expect(value.pendingApproval).toMatchObject({planId:plan.id,capabilityId:"process.build_test",input});
+  });
+
   it.each([false, true])("reports unsupported program languages without substituting a runtime, streaming=%s", async streaming => {
     const failure = Object.assign(new Error("unsupported program language: rust"), {
       code: "SCCE_PROGRAM_LANGUAGE_UNSUPPORTED", status: "unsupported", languageId: "rust"
@@ -114,10 +131,11 @@ function withheldTurn(): TurnResult {
   return { ...result, withheld };
 }
 
-async function fixtureServer(result: TurnResult | null, failure?: Error): Promise<number> {
+async function fixtureServer(result: TurnResult | null, failure?: Error, approvals?:ReturnType<typeof createApprovalSession>): Promise<number> {
   const context = {
     maxBodyBytes: 1_000_000,
     runtime: {
+      ...(approvals?{approvals}:{}),
       storage: {
         evidence: { sourceIdentityArbitration: async () => ({ identities: [], spread: new Map<string, number>() }) },
         conversation: { listTurns: async () => [] },

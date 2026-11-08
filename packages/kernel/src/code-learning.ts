@@ -186,7 +186,7 @@ export const CODE_CONSTRAINT = {
 
 export function createCodeLearningEngine(options: { hasher: Hasher }) {
   return {
-    learn(input: { requestText: string; evidence: EvidenceSpan[]; entailment: SemanticEntailmentResult }): CodeKnowledgeGraph {
+    learn(input: { requestText: string; evidence: EvidenceSpan[]; entailment: SemanticEntailmentResult; artifactProofBinding?:JsonValue }): CodeKnowledgeGraph {
       const signals = input.evidence.flatMap(span => signalsFromEvidence(span, options.hasher));
       const engineeringCorpora = engineeringCorporaFromEvidence(input.evidence, options.hasher);
       const languages = languageWeights(signals, input.evidence);
@@ -196,7 +196,7 @@ export function createCodeLearningEngine(options: { hasher: Hasher }) {
       const signalFeatures = signals.flatMap(signal => signal.features.slice(0, 32));
       const evidenceFeatures = input.evidence.flatMap(span => span.features.slice(0, 32));
       const sourceCoupling = signalFeatures.length && evidenceFeatures.length ? weightedJaccard(signalFeatures, evidenceFeatures) : mean(signals.map(signal => signal.confidence));
-      const editPriors = inferEditPriors({ evidence: input.evidence, signals, repositoryShape, entailment: input.entailment, hasher: options.hasher });
+      const editPriors = inferEditPriors({ evidence: input.evidence, signals, repositoryShape, entailment: input.entailment, artifactProofBinding:input.artifactProofBinding, hasher: options.hasher });
       const confidence = clamp01(0.22 + 0.28 * input.entailment.support + 0.22 * sourceCoupling + 0.18 * mean(signals.map(signal => signal.confidence)) + 0.1 * Math.min(1, input.evidence.length / 12) - 0.25 * input.entailment.contradiction);
       const id = `code_knowledge_${options.hasher.digestHex(canonicalStringify({ signals: signals.map(signal => signal.id), languages, sourceCoupling })).slice(0, 40)}`;
       return {
@@ -521,6 +521,7 @@ function inferEditPriors(input: {
   signals: CodeSignal[];
   repositoryShape: CodeKnowledgeGraph["repositoryShape"];
   entailment: SemanticEntailmentResult;
+  artifactProofBinding?:JsonValue;
   hasher: Hasher;
 }): CodeEditOperation[] {
   const wantsUi = input.repositoryShape.hasUiSurface;
@@ -542,7 +543,7 @@ function inferEditPriors(input: {
     const support = supportForIntent(intent, input.signals, input.evidence);
     const risk = clamp01(0.42 + input.entailment.contradiction * 0.25 + (support < 0.25 ? 0.24 : 0) - input.entailment.support * 0.16);
     return {
-      id: `code_edit_${input.hasher.digestHex(`${intent}:${path}:${index}:${input.entailment.proof.id}`).slice(0, 40)}`,
+      id: `code_edit_${input.hasher.digestHex(`${intent}:${path}:${index}:${input.artifactProofBinding===undefined?input.entailment.proof.id:canonicalStringify(input.artifactProofBinding)}`).slice(0, 40)}`,
       kind: input.repositoryShape.files.some(file => samePathFamily(file.pathHint, path)) ? "modify" : "create",
       path,
       language,

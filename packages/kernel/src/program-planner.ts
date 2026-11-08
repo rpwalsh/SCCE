@@ -5,6 +5,7 @@ import type { IdFactory } from "./ids.js";
 import { canonicalStringify, clamp01, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";
 import { createCodeLearningEngine, observedProgramFormalLanguages, emittedProgramRuntimeForLanguage, nativeProgramRuntimeForLanguage, EMITTED_PROGRAM_RUNTIME, type CodeImplementationBlueprint, type CodeKnowledgeGraph, type EmittedProgramRuntime, UnsupportedProgramLanguageError } from "./code-learning.js";
 import {bindNativeRuntimePath,relativeNativeSourcePath} from "./native-runtime-paths.js";
+import {programArtifactProofBinding} from "./program-artifact-proof.js";
 import { nativeGoProgram } from "./native-go-program.js";
 import { NativeProgramEmissionError } from "./native-owner-abis.js";
 import { nativeRustStatefulProgram } from "./native-rust-stateful-program.js";
@@ -121,6 +122,7 @@ export interface SourceEmissionPlan {
 
 export interface ProgramPlan {
   nativeDeclarations?: import("./program-native-abi.js").ProgramNativeCallableAbi[];
+  artifactProofBinding?:JsonValue;
   id: string;
   intent: ProgramIntent;
   codeGraph: CodeKnowledgeGraph;
@@ -164,7 +166,9 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
       if(input.programIntent?.constraints?.includes("program.constraint.workspace_source_scope_unavailable")) throw new NativeProgramEmissionError("program.emission.workspace_source_scope_unavailable","The requested current workspace source scope is unavailable");
       if (input.programIntent?.languageId) emittedProgramRuntimeForLanguage(input.programIntent.languageId, { requireNativeBackend: true });
       const code = createCodeLearningEngine({ hasher: options.hasher });
-      const codeGraph = code.learn(input);
+      const artifactProofBinding=programArtifactProofBinding({requestText:input.requestText,entailment:input.entailment,evidence:input.evidence,
+        requirements:[...input.programIntent?.behaviorRequirements??[],...input.programIntent?.statefulBehaviorRequirements??[]],ownerScope:programArtifactMetadata(input.programIntent?.metadata)});
+      const codeGraph = code.learn({...input,artifactProofBinding});
       const shape = inferProgramShape(input.requestText, input.entailment, input.evidence, options.hasher, codeGraph, input.programIntent);
       const emittedRuntime = emittedRuntimeForShape(shape);
       const intent = intentFromShape(shape);
@@ -206,7 +210,12 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
       );
       const build = buildCommand(shape, files);
       const test = testCommand(shape, files);
-      const planId = options.idFactory.semanticId("program_plan", { episodeId: input.episodeId, shape, files });
+      const planId = options.idFactory.semanticId("program_plan", { shape, files, build, test,
+        ownerBehaviorRequirements, ownerStatefulBehaviorRequirements, artifactConstruction,
+        nativeDeclarations:input.programIntent&&"nativeDeclarations" in input.programIntent?toJsonValue(input.programIntent.nativeDeclarations):[],
+        ownerScope: programArtifactMetadata(input.programIntent?.metadata),
+        implementation:{phase:ownerBehaviorImplementationPhase,scalar:ownerBehaviorTransformations,stateful:ownerStatefulBehaviorTransformations},
+        sourceOwners: input.evidence.map(span=>({sourceVersionId:span.sourceVersionId,informationLabel:span.informationLabel??null})) });
       const sourceEmission = sourceEmissionPlan({
         planId,
         shape,
@@ -286,6 +295,7 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
       ];
       return {
         id: planId,
+        artifactProofBinding,
         intent,
         codeGraph,
         blueprint,
@@ -340,7 +350,7 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
       const baseNodes = plan.graph.nodes.filter(node => !compositionPaths.has(node.id));
       const baseEdges = plan.graph.edges.filter(edge => !compositionPaths.has(edge.source) && !compositionPaths.has(edge.target));
       const graphWithoutHydrationBase = {
-        id: options.idFactory.semanticId("program_graph", { episodeId: input.episodeId, planId: plan.id, files: files.map(file => file.contentHash) }),
+        id: options.idFactory.semanticId("program_graph", { planId: plan.id, files: files.map(file => file.contentHash) }),
         language: usesFallbackRuntime ? emittedRuntime.languageId : plan.intent.shape.target.language,
         packageManager: usesFallbackRuntime ? emittedRuntime.commandName : plan.intent.shape.target.packageManager,
         entrypoint: plan.sourceEmission.entrypoint,
@@ -388,6 +398,20 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
       };
     }
   };
+}
+
+/** Execution receipt IDs remain in turn events; artifact content describes the selected construction. */
+function programArtifactMetadata(value:JsonValue|undefined):JsonValue {
+  if(!value||typeof value!=="object"||Array.isArray(value))return value??null;
+  const result={...value},replan=jsonRecord(value.replan);
+  if(typeof replan.selectionId==="string"&&typeof replan.failureObservationId==="string"&&Array.isArray(replan.selectedTransformationIds)
+    &&(replan.transformationId==="program.transformation.expression_search.v1"||replan.transformationId==="program.transformation.state_transition_search.v1")) {
+    const construction={...replan};
+    delete construction.selectionId;delete construction.failureObservationId;
+    result.replan=construction;
+    result.prior=programArtifactMetadata(value.prior);
+  }
+  return result;
 }
 
 function inferProgramShape(text: string, entailment: SemanticEntailmentResult, evidence: EvidenceSpan[], hasher: Hasher, codeGraph: CodeKnowledgeGraph, programIntent?: ProgramConstructIntent): ProgramShape {
@@ -552,7 +576,7 @@ function profileFromProgramIntent(intent: ProgramConstructIntent, input: {
   const runtimeTarget = intent.runtimeTargetId ?? runtimeTargetFor(language, capabilities, packageManager);
   const entrypoint = intent.entrypointPath ?? ownerRuntime?.sourcePath ?? entrypointForProfile(language, capabilities, input.codeGraph);
   return profile({
-    seed: { programIntent: intent, language, capabilities, runtimeTarget, packageManager, entrypoint },
+    seed: { programIntent: {...intent,metadata:programArtifactMetadata(intent.metadata)}, language, capabilities, runtimeTarget, packageManager, entrypoint },
     language,
     label: "construct-derived program target",
     capabilities,
@@ -573,7 +597,7 @@ function profileFromProgramIntent(intent: ProgramConstructIntent, input: {
       artifactKindIds: intent.artifactKindIds,
       capabilityIds: intent.capabilityIds,
       provenanceEvidenceIds: intent.provenanceEvidenceIds ?? [],
-      constructMetadata: intent.metadata ?? {},
+      constructMetadata: programArtifactMetadata(intent.metadata),
       commandHints: ownerRuntime ? [] : input.commandHints
     }),
     hasher: input.hasher
@@ -1681,13 +1705,15 @@ function ownerCompositionRuntimeForShape(shape: ProgramShape): BehaviorCompositi
 }
 
 function emitFiles(plan: ProgramPlan, input: ProgramPlannerInput, idFactory: IdFactory, hasher: Hasher): FileArtifact[] {
-  const manifest = programGraphManifest(plan, input);
-  const sourceMemory = sourceMemoryFor(input, plan);
+  const proofBinding=plan.artifactProofBinding??programArtifactProofBinding({requestText:input.requestText,entailment:input.entailment,evidence:input.evidence,
+    requirements:[...plan.ownerBehaviorRequirements,...plan.ownerStatefulBehaviorRequirements],ownerScope:programArtifactMetadata(input.programIntent?.metadata)});
+  const manifest = programGraphManifest(plan, input,proofBinding);
+  const sourceMemory = sourceMemoryFor(input, plan,proofBinding);
   const emittedRuntime = emittedRuntimeForShape(plan.intent.shape);
   const byPath = new Map<string, string>();
   const set = (canonicalPath: string, content: string): void => { byPath.set(plannedArtifactPath(plan, canonicalPath), content); };
   set("program.graph.json", `${JSON.stringify(manifest, null, 2)}\n`);
-  set("implementation.plan.json", `${JSON.stringify(implementationPlan(plan, input), null, 2)}\n`);
+  set("implementation.plan.json", `${JSON.stringify(implementationPlan(plan, input,proofBinding), null, 2)}\n`);
   set("source.memory.json", `${JSON.stringify(sourceMemory, null, 2)}\n`);
   set("package.json", packageJson(plan));
   set("tsconfig.json", tsconfigJson(plan));
@@ -1717,7 +1743,7 @@ function emitFiles(plan: ProgramPlan, input: ProgramPlannerInput, idFactory: IdF
       ? declaredCallContractsFromRequirements(plan.ownerBehaviorRequirements)
       : declaredCallContracts(input.requestText);
     const statefulContracts = declaredStatefulCallContractsFromRequirements(plan.ownerStatefulBehaviorRequirements);
-    byPath.set("source.program.json", `${JSON.stringify(sourceProgramContract(plan, input), null, 2)}\n`);
+    byPath.set("source.program.json", `${JSON.stringify(sourceProgramContract(plan, input,proofBinding), null, 2)}\n`);
     const statefulComposition = ownerStatefulBehaviorCompositionPaths(plan.intent.shape, plan.ownerStatefulBehaviorRequirements, hasher);
     const composition = ownerBehaviorCompositionPaths(plan.intent.shape, plan.ownerBehaviorRequirements, hasher);
     const nodeOwnerComposition = nodeRuntimeForShape(plan.intent.shape) && (composition || statefulComposition);
@@ -1938,11 +1964,10 @@ function uniqueBehaviorPorts(requirements: readonly ProgramBehaviorRequirement[]
   return ports;
 }
 
-function programGraphManifest(plan: ProgramPlan, input: ProgramPlannerInput): JsonValue {
+function programGraphManifest(plan: ProgramPlan, input: ProgramPlannerInput,proofBinding:JsonValue): JsonValue {
   return toJsonValue({
     kind: "program_graph",
     version: 4,
-    episodeId: input.episodeId,
     planId: plan.id,
     shape: plan.intent.shape,
     graph: plan.graph,
@@ -1950,7 +1975,7 @@ function programGraphManifest(plan: ProgramPlan, input: ProgramPlannerInput): Js
     codeGraph: plan.codeGraph.audit,
     blueprint: plan.blueprint.audit,
     proof: {
-      id: input.entailment.proof.id,
+      binding:proofBinding,
       force: input.entailment.force,
       semanticVerdict: input.entailment.semanticVerdict,
       obligations: input.entailment.obligations.map(item => ({ id: item.id, kind: item.kind, status: item.status, evidenceIds: item.evidenceIds, sourceVersionIds: item.sourceVersionIds }))
@@ -1959,13 +1984,13 @@ function programGraphManifest(plan: ProgramPlan, input: ProgramPlannerInput): Js
   });
 }
 
-function implementationPlan(plan: ProgramPlan, input: ProgramPlannerInput): JsonValue {
+function implementationPlan(plan: ProgramPlan, input: ProgramPlannerInput,proofBinding:JsonValue): JsonValue {
   return toJsonValue({
     target: plan.intent.shape.target,
     energy: plan.intent.shape.energy,
     models: domainModels(plan.intent.shape),
     operations: operationsFor(plan.intent.shape),
-    operationContracts: operationContracts(plan, input),
+    operationContracts: operationContracts(plan, input,proofBinding),
     interfaces: interfacesFor(plan.intent.shape, plan.sourceEmission.entrypoint),
     dependencies: dependenciesFor(plan.intent.shape, plan.codeGraph),
     sourceEmission: plan.sourceEmission,
@@ -1974,7 +1999,7 @@ function implementationPlan(plan: ProgramPlan, input: ProgramPlannerInput): Json
   });
 }
 
-function operationContracts(plan: ProgramPlan, input: ProgramPlannerInput): JsonValue {
+function operationContracts(plan: ProgramPlan, input: ProgramPlannerInput,proofBinding:JsonValue): JsonValue {
   return toJsonValue(plan.blueprint.operations.map(operation => ({
     id: operation.id,
     kind: operation.kind,
@@ -1989,7 +2014,7 @@ function operationContracts(plan: ProgramPlan, input: ProgramPlannerInput): Json
     risk: operation.risk,
     validation: plan.blueprint.validation.filter(item => item.evidenceIds.some(id => operation.evidenceIds.includes(id))).map(item => item.id),
     admission: {
-      proofId: input.entailment.proof.id,
+      proofBinding,
       semanticVerdict: input.entailment.semanticVerdict,
       force: input.entailment.force,
       allowedToEmit: input.entailment.semanticVerdict !== "contradicted" && operation.risk < 0.82
@@ -1997,10 +2022,10 @@ function operationContracts(plan: ProgramPlan, input: ProgramPlannerInput): Json
   })));
 }
 
-function sourceMemoryFor(input: ProgramPlannerInput, plan: ProgramPlan): JsonValue {
+function sourceMemoryFor(input: ProgramPlannerInput, plan: ProgramPlan,proofBinding:JsonValue): JsonValue {
   return toJsonValue({
     requestHash: hashText(input.requestText),
-    proofId: input.entailment.proof.id,
+    proofBinding,
     semanticVerdict: input.entailment.semanticVerdict,
     force: input.entailment.force,
     confidence: input.entailment.confidence,
@@ -2045,7 +2070,7 @@ function sourceMemoryFor(input: ProgramPlannerInput, plan: ProgramPlan): JsonVal
       validation: plan.blueprint.validation,
       repairPolicy: plan.blueprint.repairPolicy
     },
-    operationContracts: operationContracts(plan, input),
+    operationContracts: operationContracts(plan, input,proofBinding),
     sourceEmission: plan.sourceEmission
   });
 }
@@ -2903,7 +2928,7 @@ function safeJson(text) {
 `;
 }
 
-function sourceProgramContract(plan: ProgramPlan, input: ProgramPlannerInput): JsonValue {
+function sourceProgramContract(plan: ProgramPlan, input: ProgramPlannerInput,proofBinding:JsonValue): JsonValue {
   return toJsonValue({
     target: plan.intent.shape.target,
     requestHash: hashText(input.requestText),
@@ -2935,7 +2960,7 @@ function sourceProgramContract(plan: ProgramPlan, input: ProgramPlannerInput): J
     build: plan.build,
     test: plan.test,
     admission: {
-      proofId: input.entailment.proof.id,
+      proofBinding,
       semanticVerdict: input.entailment.semanticVerdict,
       sourceCoupling: plan.blueprint.sourceCoupling,
       unbackedSynthesisRisk: plan.blueprint.unbackedSynthesisRisk
@@ -4089,8 +4114,6 @@ Validation: \`${plan.test.command} ${plan.test.args.join(" ")}\`
 
 function readme(plan: ProgramPlan, input: ProgramPlannerInput): string {
   return `# ${artifactTitle(plan.intent.shape.target)}
-
-Episode: ${input.episodeId}
 
 Plan: ${plan.id}
 

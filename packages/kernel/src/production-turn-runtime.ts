@@ -225,6 +225,7 @@ import { admissionTierDiagnostics, answerCoversRequest, localEvidenceAnswerIsQuo
 import { isStructuralResidueSurface } from "./structural-residue.js";
 import { normalizePriorKey, splitPriorUnits } from "./kernel-answer-primitives.js";
 import { codeLanguageForRequirementState, codeRequestObservedRequirements, codeRequestRequirements, codeRequestSignal, typedProgramBehaviorFromMetadata } from "./code-request.js";
+import {programValidationApprovalInput} from "./program-validation-approval.js";
 import {readWorkspaceOwnedProgramContracts} from "./workspace-code-contracts.js";
 import { codeIntentFromDocumentation, sourceOwnedProgramBehaviorFromDocumentation, projectSourceOwnedProgramBehavior } from "./code-intent.js";
 import { attachLearnedGraphPriorConstruct } from "./learned-graph-prior-runtime.js";
@@ -3493,8 +3494,11 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         codeSignal: programCodeSignal,
         evidence: selectedEvidence
       });
-      const programIntent=derivedProgramIntent&&workspaceContracts?.status==="unavailable"
-        ?{...derivedProgramIntent,constraints:[...(derivedProgramIntent.constraints ?? []),"program.constraint.workspace_source_scope_unavailable"]}:derivedProgramIntent;
+      const scopedProgramIntent=derivedProgramIntent?{...derivedProgramIntent,metadata:toJsonValue({...jsonRecord(derivedProgramIntent.metadata),
+        sourceOwnerScope:deps.sourceInformationLabel??deps.informationAccess??null,
+        sourceVersionIds:workspaceContracts?.status==="available"?workspaceContracts.sourceVersionIds:[]})}:undefined;
+      const programIntent=scopedProgramIntent&&workspaceContracts?.status==="unavailable"
+        ?{...scopedProgramIntent,constraints:[...(scopedProgramIntent.constraints??[]),"program.constraint.workspace_source_scope_unavailable"]}:scopedProgramIntent;
       kernelTrace({ stage: "runtime.program.contract", label: "kernel.turn", support: {
         producer: sourceCodeRealizationOnly ? "source_code_realization" : programIntent ? "program_graph" : "none",
         declaredCallableIds: programCodeSignal.declaredCallableIds ?? [], sourceOwnedRequirementIds: sourceOwnedRequirements.map(requirement => requirement.id)
@@ -4553,15 +4557,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           ? createProgramLocalValidationCapability(Boolean(deps.buildTest))
           : registry.get("process.build_test");
         if (capability) {
-          const payload = toJsonValue({
-            program: construct.program.id,
-            files: localValidationProof?.files ?? construct.program.files.map(file => ({ path: file.path, hash: file.contentHash })),
-            ...(localValidationProof ? {
-              ownerRequirementIds: localValidationProof.ownerRequirementIds,
-              build: localValidationProof.build,
-              test: localValidationProof.test
-            } : {})
-          });
+          const payload = programValidationApprovalInput(construct.program);
           const approved = deps.approvals?.isApproved({ capabilityId: capability.id, input: payload }) ?? false;
           const effectivePolicy = { ...policy, ...(deps.approvals?.policyPatch?.() ?? {}) };
           const plan = createActionPlanner({ idFactory, policy: effectivePolicy }).plan({
@@ -4661,16 +4657,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
                 ? createProgramLocalValidationCapability(Boolean(deps.buildTest))
                 : registry.get("process.build_test");
               if (!retryCapability) return undefined;
-              const retryPayload = toJsonValue(proof ? {
-                program: retryProgram.id,
-                files: proof.files,
-                ownerRequirementIds: proof.ownerRequirementIds,
-                build: proof.build,
-                test: proof.test
-              } : {
-                program: retryProgram.id,
-                files: retryProgram.files.map(file => ({ path: file.path, hash: file.contentHash }))
-              });
+              const retryPayload = programValidationApprovalInput(retryProgram);
               const retryApproved = deps.approvals?.isApproved({ capabilityId: retryCapability.id, input: retryPayload }) ?? false;
               const retryPlan = createActionPlanner({ idFactory, policy: { ...policy, ...(deps.approvals?.policyPatch?.() ?? {}) } }).plan({
                 episodeId,
