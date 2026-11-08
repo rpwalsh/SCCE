@@ -1,7 +1,7 @@
 # Demo runbook
 
 How to run SCCE in front of an audience, what to ask it, and how to reproduce every number shown.
-Everything here runs against the real `scce3_runtime` brain over the product's own HTTP API; nothing is staged.
+Commands use the configured local PostgreSQL brain through the product's HTTP API.
 
 ## Before the room
 
@@ -13,8 +13,9 @@ Everything here runs against the real `scce3_runtime` brain over the product's o
    curl -s http://127.0.0.1:3873/api/ready # {"ok":true,...} when it is ready to answer
    ```
 
-   `/api/ready` answers instantly during warmup (503 with the warmup phase) and never runs a table scan on the
-   request path; the exact table counts it reports are refreshed in the background every ten minutes.
+   `/api/ready` returns 503 while warmup is running. Its default database check reads schema and active-import
+   metadata without counting table rows. Launch checks use `?detail=population&population=launch`, whose capped
+   probes preserve the existing population thresholds. Full table counts require explicit `?detail=exact` inspection.
 
 2. Smoke the chat surface from the terminal before opening a browser:
 

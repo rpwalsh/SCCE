@@ -13,6 +13,7 @@ The current package and command boundary. Package manifests, `package.json`, and
 - `pnpm cognition:gate` runs the focused cognition checks and the hydrated authority matrix; a missing PostgreSQL prerequisite is reported separately from an internal check failure.
 - `pnpm vscode:package` creates the local VSIX artifact; `pnpm vscode:test:host` installs that VSIX into an isolated profile and runs the bounded extension-host smoke test.
 - `pnpm scce`, `pnpm server`, and `pnpm scce:server` start the built CLI or server surfaces. Normal server startup binds before background warmup; `GET /api/ready` reports database readiness. `SCCE_STARTUP_WARMUP_STRICT=1` restores a pre-listen warmup gate.
+- `GET /api/ready` defaults to schema and active-import metadata. `?detail=population&population=launch` or `population=questions` returns capped population probes for the corresponding gate; `?detail=exact` explicitly requests full table counts. Sampled lower bounds are reported separately from exact totals.
 - `pnpm mcp:build` and `pnpm mcp:start` build or run the bounded developer MCP server.
 - `pnpm repo:shape`, `repo:search`, `repo:deps`, `repo:cruise`, `repo:dead`, `repo:exports`, and `repo:docs` are developer inspection commands.
 

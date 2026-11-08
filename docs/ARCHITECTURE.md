@@ -44,7 +44,7 @@ Petabyte-scale operation has not been validated.
 
 | Layer | Responsibility | Current boundary |
 | --- | --- | --- |
-| Durable state | PostgreSQL transactions, ownership, versions, receipts and source identities | Canonical today; corpus-wide inventories and operational counts still need bounded serving contracts. |
+| Durable state | PostgreSQL transactions, ownership, versions, receipts and source identities | Canonical today; exact artifact reads scope inventories to requested owners, and default readiness reads metadata without row counts. Broad inventory searches remain corpus-dependent. |
 | Compiled artifacts | Bounded, immutable source, graph, language and index segments with exact offsets | Archive range reads and compressed artifact pages exist; a production disk-backed graph/semantic segment pager is unfinished. |
 | Candidate discovery | Disk-backed, partitioned lexical and learned semantic postings that select relevant owners and segments | BM25 and task-local PowerWalk/PPMI are wired; a durable corpus-wide learned semantic index is unfinished. |
 | Active cognition | Load a budgeted neighborhood and perform graph operations in memory | Bounded graph retrieval, adjacency maps and CSR activation exist; startup and language-model discovery still contain corpus-dependent work. |
