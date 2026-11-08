@@ -6,6 +6,17 @@ import type { TypeScriptSemanticProgramIndex, TypeScriptSemanticCall, TypeScript
 
 export const SOURCE_OWNED_TEST_CONTRACT_SCHEMA = "scce.source_owned_test_contract.v1" as const;
 
+export interface SourceOwnedInvocation {
+  readonly targetSymbolId: string;
+  readonly targetName: string;
+  readonly sourcePath: string;
+  readonly sourceHash: string;
+  readonly sourceVersionId: string;
+  readonly arguments: readonly unknown[];
+  readonly inputSpan: { readonly start: number; readonly end: number; readonly textHash: string };
+  readonly callSpan: { readonly start: number; readonly end: number; readonly textHash: string };
+}
+
 export interface SourceOwnedTestCase {
   readonly targetSymbolId: string;
   readonly targetName: string;
@@ -18,8 +29,10 @@ export interface SourceOwnedTestCase {
   readonly testSourceVersionId: string;
   readonly arguments: readonly unknown[];
   readonly expectedResult: unknown;
+  readonly invocations?: readonly SourceOwnedInvocation[];
   readonly inputSpan: { readonly start: number; readonly end: number; readonly textHash: string };
   readonly expectedSpan: { readonly start: number; readonly end: number; readonly textHash: string };
+  readonly callSpan: { readonly start: number; readonly end: number; readonly textHash: string };
   readonly assertionSpan: { readonly start: number; readonly end: number; readonly textHash: string };
 }
 
@@ -72,17 +85,21 @@ export function sourceOwnedTestCases(input: {
         const args = subject.arguments.map(argument => literalValue(argument, sourceFile));
         const result = literalValue(expected, sourceFile);
         if (!args.every(value => value.ok) || !result.ok) continue;
-        const inputStart = subject.arguments[0]?.getStart(sourceFile);
-        const inputEnd = subject.arguments.at(-1)?.end;
-        if (inputStart === undefined || inputEnd === undefined) continue;
+        const trace = ownedInvocationTrace({ subject, assertion: node, sourceFile, text, importedBindings,
+          targetCalls, program: input.program, files, sourceVersions: input.sourceVersions });
+        if (!trace) continue;
+        const inputStart = subject.arguments[0]?.getStart(sourceFile) ?? subject.getStart(sourceFile);
+        const inputEnd = subject.arguments.at(-1)?.end ?? subject.end;
         const contract = {
           targetSymbolId,
           targetName,
-          languageId: targetFile.path.toLowerCase().endsWith(".ts") || targetFile.path.toLowerCase().endsWith(".tsx") ? "typescript" as const : "javascript" as const,
+          languageId: targetFile.syntaxKind === ts.ScriptKind.TS || targetFile.syntaxKind === ts.ScriptKind.TSX ? "typescript" as const : "javascript" as const,
           sourcePath: targetFile.path, sourceHash: sourceVersion.sourceHash, sourceVersionId: sourceVersion.sourceVersionId,
           testPath: testFile.path, testHash: testVersion.sourceHash, testSourceVersionId: testVersion.sourceVersionId,
           arguments: args.map(value => value.value), expectedResult: result.value,
+          ...(trace.stateful ? { invocations: trace.invocations } : {}),
           inputSpan: exactSpan(text, inputStart, inputEnd), expectedSpan: exactSpan(text, expected.getStart(sourceFile), expected.end),
+          callSpan: exactSpan(text, subject.getStart(sourceFile), subject.end),
           assertionSpan: exactSpan(text, node.getStart(sourceFile), node.end)
         } satisfies SourceOwnedTestCase;
         const key = `${testFile.path}:${node.getStart(sourceFile)}:${targetSymbolId}`;
@@ -93,6 +110,52 @@ export function sourceOwnedTestCases(input: {
   }
   return out.sort((a, b) => a.sourcePath.localeCompare(b.sourcePath) || a.testPath.localeCompare(b.testPath) || a.assertionSpan.start - b.assertionSpan.start);
 }
+function ownedInvocationTrace(input: {
+  subject: ts.CallExpression; assertion: ts.CallExpression; sourceFile: ts.SourceFile; text: string;
+  importedBindings: { test: ReadonlySet<string>; assert: ReadonlySet<string> };
+  targetCalls: readonly TypeScriptSemanticCall[]; program: TypeScriptSemanticProgramIndex;
+  files: ReadonlyMap<string, TypeScriptSemanticFile>;
+  sourceVersions: ReadonlyMap<string, { sourceVersionId: string; sourceHash: string }>;
+}): { invocations: SourceOwnedInvocation[]; stateful: boolean } | undefined {
+  let callback: ts.ArrowFunction | ts.FunctionExpression | undefined;
+  for (let parent: ts.Node | undefined = input.assertion.parent; parent; parent = parent.parent) {
+    if (!(ts.isArrowFunction(parent) || ts.isFunctionExpression(parent)) || !ts.isBlock(parent.body)) continue;
+    const owner = parent.parent;
+    if (ts.isCallExpression(owner) && ts.isIdentifier(owner.expression) && input.importedBindings.test.has(owner.expression.text)) { callback = parent; break; }
+  }
+  if (!callback || !ts.isBlock(callback.body)) return undefined;
+  const invocations: SourceOwnedInvocation[] = [];
+  let reached = false, stateful = false;
+  for (const statement of callback.body.statements) {
+    if (ts.isEmptyStatement(statement)) continue;
+    if (!ts.isExpressionStatement(statement) || !ts.isCallExpression(statement.expression)) return undefined;
+    const expression = statement.expression;
+    const assertion = isCanonicalAssertCall(expression, input.importedBindings.assert);
+    const subject = assertion ? expression.arguments[0] : expression;
+    if (!subject || !ts.isCallExpression(subject) || assertion && !literalValue(expression.arguments[1]!, input.sourceFile).ok) return undefined;
+    const call = input.targetCalls.find(row => row.span.start === subject.getStart(input.sourceFile) && row.span.end === subject.end);
+    const declarations = call ? input.program.declarations.filter(row => row.symbolId === call.targetSymbolId) : [];
+    const owners = declarations.flatMap(row => {
+      const file = input.files.get(row.fileId), version = file && input.sourceVersions.get(file.path);
+      return file && version && sameContentHash(version.sourceHash, file.contentHash) ? [{ file, version }] : [];
+    });
+    if (!call || !owners.length || new Set(owners.map(row => row.file.path)).size !== 1) return undefined;
+    const targetName = input.program.symbols.find(row => row.id === call.targetSymbolId)?.nameEvidence;
+    const args = subject.arguments.map(argument => literalValue(argument, input.sourceFile));
+    if (!targetName || !args.every(row => row.ok)) return undefined;
+    stateful ||= !assertion;
+    if (!reached) {
+      const { file, version } = owners[0]!;
+      invocations.push({ targetSymbolId: call.targetSymbolId, targetName, sourcePath: file.path,
+        sourceHash: version.sourceHash, sourceVersionId: version.sourceVersionId, arguments: args.map(row => row.value),
+        inputSpan: exactSpan(input.text, subject.arguments[0]?.getStart(input.sourceFile) ?? subject.getStart(input.sourceFile), subject.arguments.at(-1)?.end ?? subject.end),
+        callSpan: exactSpan(input.text, subject.getStart(input.sourceFile), subject.end) });
+    }
+    if (expression === input.assertion && subject === input.subject) reached = true;
+  }
+  return reached ? { invocations, stateful } : undefined;
+}
+
 function sameContentHash(left: string, right: string): boolean { return left.replace(/^sha256[:_]/u, "").toLowerCase() === right.replace(/^sha256[:_]/u, "").toLowerCase(); }
 
 function nodeTestAndAssertBindings(sourceFile: ts.SourceFile): { test: Set<string>; assert: Set<string> } {

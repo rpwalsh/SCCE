@@ -704,6 +704,17 @@ export interface ProgramStatefulBehaviorRequirement {
     readonly arguments: JsonValue[];
     readonly sourceSpan: { readonly charStart: number; readonly charEnd: number };
   }>;
+  readonly sourceContract?: NonNullable<ProgramBehaviorRequirement["sourceContract"]> & {
+    readonly invocations: ReadonlyArray<{
+      readonly targetSymbolId: string;
+      readonly targetName: string;
+      readonly sourcePath: string;
+      readonly sourceVersionId: string;
+      readonly sourceHash: string;
+      readonly inputSpan: { readonly start: number; readonly end: number; readonly textHash: string };
+      readonly callSpan: { readonly start: number; readonly end: number; readonly textHash: string };
+    }>;
+  };
   readonly expectedResult: JsonValue;
   readonly verificationRole: "fit" | "held_out";
   readonly relationSurface: string;

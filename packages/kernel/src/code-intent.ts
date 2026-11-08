@@ -1,9 +1,9 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { codeIdentifierTokens, codeSurfaceTokens } from "./code-surface.js";
-import { codeLanguageForPath } from "./code-request.js";
+import { codeLanguageForPath, type CodeRequestSignal } from "./code-request.js";
 import { canonicalStringify, createHasher, toJsonValue } from "./primitives.js";
-import type { EvidenceSpan, JsonValue, ProgramBehaviorRequirement } from "./types.js";
+import type { EvidenceSpan, JsonValue, ProgramBehaviorRequirement, ProgramStatefulBehaviorRequirement } from "./types.js";
 
 /**
  * What a request written in a human language has to do with code.
@@ -127,13 +127,14 @@ export function codeIntentFromDocumentation(input: {
 }
 
 /** Convert only persisted, exact-source assertion cases whose target file was selected by documentation retrieval. */
-export function sourceOwnedBehaviorRequirementsFromDocumentation(input: {
+export function sourceOwnedProgramBehaviorFromDocumentation(input: {
   readonly requestText: string;
   readonly intent: CodeIntent;
   readonly patterns: readonly { readonly patternJson: JsonValue }[];
   /** Formal caller-declared callable IDs from the already parsed request signal. */
   readonly ownerCallableIds?: readonly string[];
-}): ProgramBehaviorRequirement[] {
+}): { behaviorRequirements: ProgramBehaviorRequirement[]; statefulBehaviorRequirements: ProgramStatefulBehaviorRequirement[] } {
+  const empty = { behaviorRequirements: [], statefulBehaviorRequirements: [] };
   const references = new Set(input.intent.references.filter(row => row.sourceFamily && row.sourceHash)
     .map(row => `${row.sourceFamily}\u0000${row.relativePath}\u0000${row.sourceHash}`));
   const grouped = new Map<string, Array<Record<string, JsonValue>>>();
@@ -146,21 +147,21 @@ export function sourceOwnedBehaviorRequirementsFromDocumentation(input: {
       || typeof body.sourceHash !== "string" || !validContentHash(body.sourceHash) || typeof body.sourceVersionId !== "string"
       || typeof body.repositoryFamily !== "string" || !Array.isArray(body.cases)) continue;
     const key = `${body.repositoryFamily}\u0000${body.sourcePath}\u0000${body.sourceVersionId}\u0000${body.targetSymbolId}`;
-    if (matchedKeys.has(key)) return [];
+    if (matchedKeys.has(key)) return empty;
     matchedKeys.add(key);
     const cases = grouped.get(key) ?? [];
     for (const value of body.cases) {
       if (!value || typeof value !== "object" || Array.isArray(value)) continue;
       const row = value as Record<string, JsonValue>;
       if (row.targetSymbolId !== body.targetSymbolId || !Array.isArray(row.arguments) || !isJsonValue(row.expectedResult)
-        || typeof row.testSourceVersionId !== "string" || typeof row.testHash !== "string" || !validContentHash(row.testHash)
+        || typeof row.testPath !== "string" || !row.testPath || typeof row.testSourceVersionId !== "string" || typeof row.testHash !== "string" || !validContentHash(row.testHash)
         || !validSpan(row.inputSpan) || !validSpan(row.expectedSpan) || !validSpan(row.assertionSpan)) continue;
       cases.push({ ...row, sourceHash: body.sourceHash, sourcePath: body.sourcePath, sourceVersionId: body.sourceVersionId,
         targetName: body.targetName, targetSymbolId: body.targetSymbolId, repositoryFamily: body.repositoryFamily });
     }
     grouped.set(key, cases);
   }
-  if (!grouped.size) return [];
+  if (!grouped.size) return empty;
   const requestSymbols = new Set(input.intent.requestSymbols ?? []);
   const ownerCallableIds = [...new Set(input.ownerCallableIds ?? [])];
   const requestedSourceGroups = [...grouped.entries()].filter(([, rows]) => {
@@ -169,19 +170,19 @@ export function sourceOwnedBehaviorRequirementsFromDocumentation(input: {
   });
   const selectedGroups = requestedSourceGroups.length === 1 ? requestedSourceGroups : grouped.size === 1 ? [...grouped.entries()] : [];
   // Multiple independent source symbols/families are ambiguous without a formal caller name that selects one.
-  if (selectedGroups.length !== 1) return [];
+  if (selectedGroups.length !== 1) return empty;
   const [familyKey, rows] = selectedGroups[0]!;
   const ordered = rows.sort((a, b) => spanStart(a.assertionSpan) - spanStart(b.assertionSpan));
-  if (ordered.length < 2) return [];
+  if (ordered.length < 2) return empty;
   const [family, sourcePath, sourceVersionId, targetSymbolId] = familyKey.split("\u0000");
   const sourceTargetName = ordered[0]!.targetName;
-  if (typeof sourceTargetName !== "string" || typeof sourcePath !== "string" || typeof sourceVersionId !== "string" || typeof targetSymbolId !== "string" || typeof family !== "string") return [];
-  if (ordered.some(row => row.targetName !== sourceTargetName)) return [];
+  if (typeof sourceTargetName !== "string" || typeof sourcePath !== "string" || typeof sourceVersionId !== "string" || typeof targetSymbolId !== "string" || typeof family !== "string") return empty;
+  if (ordered.some(row => row.targetName !== sourceTargetName)) return empty;
   const callableId = ownerCallableIds.length === 1 ? ownerCallableIds[0]! : sourceTargetName;
-  if (ownerCallableIds.length > 1 && !ownerCallableIds.includes(sourceTargetName)) return [];
+  if (ownerCallableIds.length > 1 && !ownerCallableIds.includes(sourceTargetName)) return empty;
   const requestHash = `sha256:${createHasher().digestHex(input.requestText)}`;
   const requestSpan = { charStart: 0, charEnd: [...input.requestText].length };
-  return ordered.map((row, index) => ({
+  const behaviorRequirements: ProgramBehaviorRequirement[] = ordered.map((row, index) => ({
     id: `source_assertion.${createHasher().digestHex(canonicalStringify([family, sourcePath, sourceVersionId, targetSymbolId, row.testSourceVersionId, row.assertionSpan])).slice(0, 40)}`,
     requestHash,
     callableId,
@@ -199,6 +200,68 @@ export function sourceOwnedBehaviorRequirementsFromDocumentation(input: {
       assertionSpan: row.assertionSpan as unknown as NonNullable<ProgramBehaviorRequirement["sourceContract"]>["assertionSpan"]
     }
   }));
+  return sourceOwnedStatefulRequirements({ ordered, behaviorRequirements, references, family, sourcePath, sourceVersionId, targetSymbolId, sourceTargetName, ownerCallableIds });
+}
+
+function sourceOwnedStatefulRequirements(input: {
+  ordered: Array<Record<string, JsonValue>>; behaviorRequirements: ProgramBehaviorRequirement[];
+  references: ReadonlySet<string>; family: string; sourcePath: string; sourceVersionId: string;
+  targetSymbolId: string; sourceTargetName: string; ownerCallableIds: readonly string[];
+}): ReturnType<typeof sourceOwnedProgramBehaviorFromDocumentation> {
+  const { ordered, behaviorRequirements, references, family, sourcePath, sourceVersionId, targetSymbolId, sourceTargetName, ownerCallableIds } = input;
+  const empty = { behaviorRequirements: [], statefulBehaviorRequirements: [] };
+  if (!ordered.some(row => row.invocations !== undefined)) return { behaviorRequirements, statefulBehaviorRequirements: [] };
+  const statefulBehaviorRequirements: ProgramStatefulBehaviorRequirement[] = [];
+  for (const [index, row] of ordered.entries()) {
+    const observed = row.invocations === undefined ? [{ targetSymbolId, targetName: sourceTargetName, sourcePath, sourceVersionId,
+      sourceHash: row.sourceHash, arguments: row.arguments, inputSpan: row.inputSpan, callSpan: row.callSpan }] : row.invocations;
+    if (!Array.isArray(observed) || !observed.length) return empty;
+    const bindings: Array<NonNullable<ProgramStatefulBehaviorRequirement["sourceContract"]>["invocations"][number]> = [];
+    const invocations: ProgramStatefulBehaviorRequirement["invocations"] = [];
+    let previousEnd = -1;
+    for (const value of observed) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return empty;
+      const invocation = value as Record<string, JsonValue>;
+      if (typeof invocation.targetSymbolId !== "string" || typeof invocation.targetName !== "string" || typeof invocation.sourcePath !== "string"
+        || typeof invocation.sourceVersionId !== "string" || typeof invocation.sourceHash !== "string" || !validContentHash(invocation.sourceHash)
+        || !references.has(`${family}\u0000${invocation.sourcePath}\u0000${invocation.sourceHash}`)
+        || !Array.isArray(invocation.arguments) || !validSpan(invocation.inputSpan) || !validSpan(invocation.callSpan)) return empty;
+      if (invocation.sourcePath === sourcePath && (invocation.sourceVersionId !== sourceVersionId || invocation.sourceHash !== row.sourceHash)) return empty;
+      const callSpan = objectRecord(invocation.callSpan), inputSpan = objectRecord(invocation.inputSpan);
+      if (Number(callSpan.start) < previousEnd || Number(inputSpan.start) < Number(callSpan.start) || Number(inputSpan.end) > Number(callSpan.end)) return empty;
+      previousEnd = Number(callSpan.end);
+      invocations.push({ callableId: invocation.targetName, arguments: invocation.arguments as JsonValue[], sourceSpan: behaviorRequirements[index]!.sourceSpan });
+      bindings.push({ targetSymbolId: invocation.targetSymbolId, targetName: invocation.targetName,
+        sourcePath: invocation.sourcePath, sourceVersionId: invocation.sourceVersionId, sourceHash: invocation.sourceHash,
+        inputSpan: invocation.inputSpan as unknown as NonNullable<ProgramBehaviorRequirement["sourceContract"]>["inputSpan"],
+        callSpan: invocation.callSpan as unknown as NonNullable<ProgramBehaviorRequirement["sourceContract"]>["assertionSpan"] });
+    }
+    const last = bindings.at(-1)!;
+    if (last.targetSymbolId !== targetSymbolId || last.sourcePath !== sourcePath || last.sourceVersionId !== sourceVersionId
+      || invocations.at(-1)!.callableId !== sourceTargetName
+      || last.callSpan.start < Number(objectRecord(row.assertionSpan).start) || last.callSpan.end > Number(objectRecord(row.assertionSpan).end)
+      || canonicalStringify(invocations.at(-1)!.arguments) !== canonicalStringify(row.arguments)) return empty;
+    if (ownerCallableIds.length && invocations.some(invocation => !ownerCallableIds.includes(invocation.callableId))) return empty;
+    const scalar = behaviorRequirements[index]!;
+    statefulBehaviorRequirements.push({ id: scalar.id, requestHash: scalar.requestHash, invocations, expectedResult: scalar.expectedResult,
+      verificationRole: scalar.verificationRole, relationSurface: scalar.relationSurface, sourceSpan: scalar.sourceSpan,
+      sourceContract: { ...scalar.sourceContract!, invocations: bindings } });
+  }
+  return { behaviorRequirements: [], statefulBehaviorRequirements };
+}
+
+export function sourceOwnedBehaviorRequirementsFromDocumentation(input: Parameters<typeof sourceOwnedProgramBehaviorFromDocumentation>[0]): ProgramBehaviorRequirement[] {
+  return sourceOwnedProgramBehaviorFromDocumentation(input).behaviorRequirements;
+}
+
+export function projectSourceOwnedProgramBehavior(input: {
+  codeSignal: CodeRequestSignal; intent: CodeIntent;
+  sourceBehavior: ReturnType<typeof sourceOwnedProgramBehaviorFromDocumentation>;
+}): CodeRequestSignal {
+  const language = input.codeSignal.language ?? input.intent.languageId;
+  return { ...input.codeSignal, ...(language ? { language } : {}),
+    behaviorRequirements: [...input.codeSignal.behaviorRequirements, ...input.sourceBehavior.behaviorRequirements],
+    statefulBehaviorRequirements: [...input.codeSignal.statefulBehaviorRequirements, ...input.sourceBehavior.statefulBehaviorRequirements] };
 }
 
 function objectRecord(value: JsonValue): Record<string, JsonValue> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, JsonValue> : {}; }

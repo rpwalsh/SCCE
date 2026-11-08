@@ -224,7 +224,7 @@ import { admissionTierDiagnostics, answerCoversRequest, localEvidenceAnswerIsQuo
 import { isStructuralResidueSurface } from "./structural-residue.js";
 import { normalizePriorKey, splitPriorUnits } from "./kernel-answer-primitives.js";
 import { codeLanguageForRequirementState, codeRequestObservedRequirements, codeRequestRequirements, codeRequestSignal, typedProgramBehaviorFromMetadata } from "./code-request.js";
-import { codeIntentFromDocumentation, sourceOwnedBehaviorRequirementsFromDocumentation } from "./code-intent.js";
+import { codeIntentFromDocumentation, sourceOwnedProgramBehaviorFromDocumentation, projectSourceOwnedProgramBehavior } from "./code-intent.js";
 import { attachLearnedGraphPriorConstruct } from "./learned-graph-prior-runtime.js";
 import { runGraphRefinement } from "./graph-refinement.js";
 import { decideRuntimeCoherence } from "./runtime-coherence.js";
@@ -3442,14 +3442,12 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         ? await deps.storage.languageMemory.listLanguagePatterns({ sourceSystem: corpusSourceAlias(CORPUS_SOURCE_SYSTEM_IDS.ossCode),
           patternKind: "source_code_assertion_contract", formalLanguage: documentationCodeIntent.languageId, limit: 4096 })
         : [];
-      const sourceOwnedRequirements = sourceOwnedBehaviorRequirementsFromDocumentation({ requestText: input.text,
+      const sourceOwnedBehavior = sourceOwnedProgramBehaviorFromDocumentation({ requestText: input.text,
         intent: documentationCodeIntent, patterns: sourceOwnedContractPatterns,
-        ownerCallableIds: codeSignal.behaviorRequirements.map(requirement => requirement.callableId) });
-      const programCodeSignal = sourceOwnedRequirements.length ? {
-        ...codeSignal,
-        language: codeSignal.language ?? documentationCodeIntent.languageId,
-        behaviorRequirements: [...codeSignal.behaviorRequirements, ...sourceOwnedRequirements]
-      } : codeSignal;
+        ownerCallableIds: [...codeSignal.behaviorRequirements.map(requirement => requirement.callableId),
+          ...codeSignal.statefulBehaviorRequirements.flatMap(requirement => requirement.invocations.map(invocation => invocation.callableId))] });
+      const sourceOwnedRequirements = [...sourceOwnedBehavior.behaviorRequirements, ...sourceOwnedBehavior.statefulBehaviorRequirements];
+      const programCodeSignal = projectSourceOwnedProgramBehavior({ codeSignal, intent: documentationCodeIntent, sourceBehavior: sourceOwnedBehavior });
       if (sourceOwnedRequirements.length && sourceContractPlanningAllowed) {
         const sourceOwnedRequirementIds = [
           ...typedProgramBehaviorRequirementIds,
