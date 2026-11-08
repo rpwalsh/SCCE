@@ -1,4 +1,6 @@
-// Test-authored native process check; no proposer or generated-code success is simulated.
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+// Test-authored native process check; no proposer is simulated.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 const records = [

@@ -105,6 +105,8 @@ Bigrams cost 1.71× the perplexity of the minimum, so the code corpus trains at 
 
 ## Measured behaviour
 
+The tables in this section are historical compiler-only measurements. Current workspace repair can also execute an explicitly selected project validation policy with native unit and E2E tests. The [frozen map-write integrity case](../tools/repair-acceptance/README.md) reproduces the documented write-dropping mutation against the current transaction and verifier paths: compiler-only validation accepts it; unit and E2E policies reject it and preserve original bytes. This is a manually crafted verifier negative control, not a current generation score. The current compiler-owned proposer makes no proposal for the frozen dropped-argument case without a learned corpus proposer.
+
 Two harnesses, both decided by the TypeScript compiler, both re-runnable.
 
 **Seeded defects** (`tools/code-repair-benchmark.mjs`) — seven modules with one planted defect each, against a locally hosted model for comparison:

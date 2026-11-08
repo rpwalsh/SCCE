@@ -1,4 +1,6 @@
-// Test-authored behavior assertions; the implementation is an unchanged repository source snapshot.
+// SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
+// Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+// Test-authored assertions over an unchanged repository source snapshot.
 import assert from "node:assert/strict";
 import { estimateClassEffectLCB, holmBonferroniCorrection, isValidPairedResult } from "../src/paired-evaluation-statistics.ts";
 const records = [
