@@ -197,6 +197,7 @@ export function createIngestionRuntime(options: {
       let graphEdges = 0;
       let graphHyperedges = 0;
       let languageProfiles = 0;
+      let languagePersistenceAllowed = false;
       const typedObservationCounts: Record<string, number> = {};
       const observationRouteCounts: Record<string, number> = {};
       const relationCandidates: StructuredSemanticCandidate[] = [];
@@ -450,6 +451,7 @@ export function createIngestionRuntime(options: {
           return;
         }
         if (decision.activeInfluence.language) {
+          languagePersistenceAllowed = true;
           if (deps.storage.model.putLanguageProfiles) await deps.storage.model.putLanguageProfiles([profile]);
           else await deps.storage.model.putLanguageProfile(profile);
           events.push(await append(eventFactory.create({
@@ -460,7 +462,7 @@ export function createIngestionRuntime(options: {
           languageProfiles++;
         }
         const inductionDocuments = sourceLanguageInductionDocuments(admittedSpans);
-        const preparedInduction = decision.activeInfluence.language && corpusRoleIdForSourceSystem(sourceSystem) !== CORPUS_ROLE_IDS.softwareSymbolic
+        const preparedInduction = (decision.activeInfluence.language || decision.activeInfluence.graph) && corpusRoleIdForSourceSystem(sourceSystem) !== CORPUS_ROLE_IDS.softwareSymbolic
           ? prepareConstructionInduction({ documents: inductionDocuments, hasher }) : undefined;
         const inducedProducts = preparedInduction ? preparedLanguageInductionProducts({ documents: inductionDocuments, hasher, prepared: preparedInduction }) : undefined;
         const typedProjection = typedIngest.project({
@@ -1030,7 +1032,7 @@ export function createIngestionRuntime(options: {
           ],
           informationLabel
         );
-        if (labeledReversiblePatterns.length) {
+        if (languagePersistenceAllowed && labeledReversiblePatterns.length) {
           await deps.storage.transaction(async () => {
             if (deps.storage.languageMemory.putLanguagePatterns) {
               await deps.storage.languageMemory.putLanguagePatterns(
