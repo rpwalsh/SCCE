@@ -520,17 +520,24 @@ function compileKBest(
     if (!kBest[position]!.length) continue;
     for (const arc of arcsByStart.get(position) ?? []) {
       const next = arc.unit.graphemeEnd;
-      const candidates = [
-        ...kBest[next]!,
-        ...kBest[position]!.map((node): DpNode => ({
+      const retained = kBest[next]!;
+      const worst = retained.length === pathLimit ? retained[retained.length - 1] : undefined;
+      const candidates = [...retained];
+      for (const node of kBest[position]!) {
+        const energy = quantize(node.energy + arc.energy);
+        const depth = node.depth + 1;
+        // Retained paths are distinct; strict energy/depth domination cannot be rescued by the hash tie-breaker.
+        if (worst && (energy > worst.energy || energy === worst.energy && depth > worst.depth)) continue;
+        candidates.push({
           parent: node,
           unitId: arc.unit.id,
-          energy: quantize(node.energy + arc.energy),
+          energy,
           energyTrace: addEnergy(node.energyTrace, arc.energyTrace),
-          depth: node.depth + 1,
+          depth,
           pathKey: hasher.digestHex(`${node.pathKey}${arc.unit.id}`).slice(0, 24)
-        }))
-      ];
+        });
+      }
+      if (candidates.length === retained.length) continue;
       candidates.sort(compareDpNodes);
       kBest[next] = uniqueNodes(candidates).slice(0, pathLimit);
     }
