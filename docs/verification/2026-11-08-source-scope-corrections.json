@@ -1,0 +1,35 @@
+{
+  "schema": "scce.measured_source_scope_corrections.v1",
+  "measuredAt": "2026-11-08",
+  "databaseSchemaVersion": 30,
+  "sourceSpreadMeasurement": {
+    "scope": "The same 400 captured canonical units over one repeatable-read PostgreSQL snapshot",
+    "beforeImplementation": "6f4ca329",
+    "afterImplementation": "b444c872",
+    "beforeMs": 88289.6138,
+    "afterMs": 226.9796,
+    "beforeSqlBytes": 360681,
+    "afterSqlBytes": 1134,
+    "completeResultCount": 400,
+    "completeResultDigestBeforeAndAfter": "db665b29f07667a43b3f0c8a0e6f9c3645c777defc4b39db7b87209e644b0f59",
+    "mismatches": 0,
+    "retainedGuards": ["Promoted evidence", "Caller information access", "Source distinctness", "Existing scan cap", "Canonical source/query feature production"],
+    "planningChange": "One requested-feature batch drives the anchor index; exact evidence-ID lookups apply admission before the existing cap. Repeated wide ACL joins are excluded by the correlated lookup boundary.",
+    "samplingChange": "Vocabulary selection uses deterministic hash order instead of random order. The paired timing above uses the identical captured unit set.",
+    "qualification": "An engineering measurement of this operation; separate task comparisons determine capability."
+  },
+  "comparisonIntegrity": {
+    "reference": "qwen2.5:3b",
+    "pinnedModelDigest": "357c53fb659c5076de1d65ccb0b397446227b71a42be9d1603d46168015c9e4b",
+    "publicTaskInterface": "Uses the existing reference runner with explicit task framing, exact raw-text preservation and unchanged legacy QA defaults.",
+    "nativeValidation": "Private expected results stay in the supervising grader. Submitted code receives operations only; immutable public files are independently checked.",
+    "harnessAndLegacyRunnerTestsPassed": 109,
+    "rejectedDevelopmentRun": {
+      "freezeDigest": "99d0d3e39f3d1c986cc90b1029583a07942d4099364ebdba05c72911f9196e94",
+      "bundleDigest": "80fcf08f9bd2dbb37ea8b27ac1480014ebb6143de6f29fb70f92808b001a26f9",
+      "checkpointDigest": "c0f2945663cf91ad0a1e3de338f29731170d94f9e1f39557d62fab3ebcc32e37",
+      "disposition": "Partial diagnostic retained after reference-interface contamination was confirmed; never used as superiority evidence or reused as fresh cases.",
+      "comparativeGatePassed": false
+    }
+  }
+}
