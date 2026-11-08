@@ -1,6 +1,46 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { canonicalStringify, createHasher } from "./primitives.js";
+import type { JsonValue } from "./types.js";
+
+export type ProgramNativeLiteral = { readonly kind: "value"; readonly value: JsonValue; readonly nativeNumberKind?: "integer" | "float"; readonly nativeNegativeZero?: true }
+  | { readonly kind: "none" } | { readonly kind: "some"; readonly value: ProgramNativeLiteral };
+export function nativeLiteralJson(value: ProgramNativeLiteral): JsonValue {
+  return value.kind === "none" ? null : value.kind === "some" ? nativeLiteralJson(value.value) : value.value;
+}
+export function ownedNativeLiteral(value: unknown, expected: JsonValue): ProgramNativeLiteral | undefined {
+  const read = (value: unknown): ProgramNativeLiteral | undefined => {
+    const row = record(value);
+    if (row.kind === "none") return { kind: "none" };
+    if (row.kind === "some") { const inner = read(row.value); return inner ? { kind: "some", value: inner } : undefined; }
+    if (row.kind === "value") {
+      try {
+        if(!finiteJson(row.value)) return undefined;
+        const parsed = JSON.parse(JSON.stringify(row.value)) as JsonValue;
+        if(row.nativeNegativeZero!==undefined && (row.nativeNegativeZero!==true || row.nativeNumberKind!=="float" || parsed!==0)) return undefined;
+        if (row.nativeNumberKind !== undefined && (typeof parsed !== "number" || !["integer", "float"].includes(String(row.nativeNumberKind)))) return undefined;
+        if (row.nativeNumberKind === "integer" && !Number.isSafeInteger(parsed)) return undefined;
+        return { kind: "value", value: parsed, ...(row.nativeNumberKind === "integer" || row.nativeNumberKind === "float" ? { nativeNumberKind: row.nativeNumberKind } : {}),...(row.nativeNegativeZero===true?{nativeNegativeZero:true as const}:{}) };
+      } catch { return undefined; }
+    }
+    return undefined;
+  };
+  const literal = read(value);
+  return literal && canonicalStringify(nativeLiteralJson(literal)) === canonicalStringify(expected) ? literal : undefined;
+}
+function finiteJson(value:unknown):value is JsonValue {
+  if(value===null || typeof value==="string" || typeof value==="boolean") return true;
+  if(typeof value==="number") return Number.isFinite(value);
+  if(Array.isArray(value)) return value.every(finiteJson);
+  return typeof value==="object" && (Object.getPrototypeOf(value)===Object.prototype || Object.getPrototypeOf(value)===null)
+    && Object.values(value).every(finiteJson);
+}
+
+export function ownedNativeArguments(value: unknown, expected: readonly JsonValue[]): readonly ProgramNativeLiteral[] | undefined {
+  if (!Array.isArray(value) || value.length !== expected.length) return undefined;
+  const arguments_ = value.map((literal, index) => ownedNativeLiteral(literal, expected[index]!));
+  return arguments_.every((literal): literal is ProgramNativeLiteral => Boolean(literal)) ? arguments_ : undefined;
+}
 
 export interface NativeSourceSpan { readonly start: number; readonly end: number; readonly textHash: string }
 export interface ProgramNativeTypeEvidence {

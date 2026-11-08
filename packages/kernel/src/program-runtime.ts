@@ -16,6 +16,7 @@ import type {
   ProgramValidationRecord
 } from "./types.js";
 import { canonicalStringify, clamp01, toJsonValue } from "./primitives.js";
+import { GO_PROGRAM_STANDARD_LIBRARY } from "./native-runtime-dependencies.js";
 
 export interface ProgramHydrationInput {
   program: Omit<ProgramGraph, "hydration">;
@@ -31,7 +32,7 @@ export function createProgramHydrationContract(input: ProgramHydrationInput): Pr
   const packageDeps = packageDependencies(input.program.files);
   const fileRecords = input.program.files.map(file => fileRecord(input.program, file, evidenceIds));
   const symbolRecords = fileRecords.flatMap(file => file.symbols.map(symbol => symbolRecord(input.program.id, file.path, symbol, file.exports.includes(symbol), evidenceIds)));
-  const dependencies = dependencyRecords(input.program.id, fileRecords, packageDeps, evidenceIds);
+  const dependencies = dependencyRecords(input.program.id, fileRecords, packageDeps, evidenceIds, input.program.language);
   const missing = dependencies.filter(dep => dep.missing).map(dep => dep.packageName);
   const validations = validationRecords(input.program, evidenceIds, input.risks ?? [], missing);
   const emissions = input.program.files.map(file => emissionRecord(input.program.id, file, input.sourcePlanId, evidenceIds));
@@ -253,7 +254,7 @@ function programRecord(program: Omit<ProgramGraph, "hydration">, evidenceIds: re
 }
 
 function fileRecord(program: Omit<ProgramGraph, "hydration">, file: FileArtifact, evidenceIds: readonly string[]): ProgramFileRecord {
-  const imports = importsFromSource(file.content);
+  const imports = program.language === "go" && file.path.endsWith(".go") ? goImportsFromSource(file.content) : importsFromSource(file.content);
   const exports = exportsFromSource(file.content);
   const symbols = symbolsFromSource(file.content);
   return {
@@ -283,11 +284,12 @@ function symbolRecord(programId: string, filePath: string, symbol: string, expor
   };
 }
 
-function dependencyRecords(programId: string, files: readonly ProgramFileRecord[], packageDeps: ReadonlySet<string>, evidenceIds: readonly string[]): ProgramDependencyRecord[] {
+function dependencyRecords(programId: string, files: readonly ProgramFileRecord[], packageDeps: ReadonlySet<string>, evidenceIds: readonly string[], languageId: string): ProgramDependencyRecord[] {
   const groups = new Map<string, string[]>();
+  const stdlib = new Set<string>(languageId === "go" ? [...GO_PROGRAM_STANDARD_LIBRARY.source, ...GO_PROGRAM_STANDARD_LIBRARY.test] : []);
   for (const file of files) {
     for (const imported of file.imports) {
-      const packageName = packageNameFromImport(imported);
+      const packageName = languageId === "go" && file.path.endsWith(".go") ? imported : packageNameFromImport(imported);
       if (!packageName || packageName.startsWith(".") || packageName.startsWith("/") || packageName.startsWith("node:")) continue;
       groups.set(packageName, [...(groups.get(packageName) ?? []), file.path]);
     }
@@ -296,11 +298,12 @@ function dependencyRecords(programId: string, files: readonly ProgramFileRecord[
     .map(([packageName, importedBy]) => ({
       programId,
       packageName,
-      dependencyKind: packageDeps.has(packageName) ? "program.dependency.declared" : "program.dependency.missing",
+      dependencyKind: stdlib.has(packageName) && importedBy.every(path => path.endsWith(".go")) ? "program.dependency.native_standard_library"
+        : packageDeps.has(packageName) ? "program.dependency.declared" : "program.dependency.missing",
       importedBy: [...new Set(importedBy)],
       evidenceIds: [...evidenceIds],
-      missing: !packageDeps.has(packageName),
-      risk: packageDeps.has(packageName) ? 0.08 : 0.62
+      missing: !packageDeps.has(packageName) && !(stdlib.has(packageName) && importedBy.every(path => path.endsWith(".go"))),
+      risk: packageDeps.has(packageName) || stdlib.has(packageName) && importedBy.every(path => path.endsWith(".go")) ? 0.08 : 0.62
     }))
     .sort((a, b) => Number(b.missing) - Number(a.missing) || a.packageName.localeCompare(b.packageName));
 }
@@ -401,6 +404,56 @@ function importsFromSource(source: string): string[] {
     }
   }
   return [...imports].sort();
+}
+
+function goImportsFromSource(source: string): string[] {
+  const tokens: Array<{ kind: "identifier" | "string" | "punctuation"; text: string }> = [];
+  for (let index = 0; index < source.length;) {
+    const point = source[index]!;
+    if (/\s/u.test(point)) { index++; continue; }
+    if (source.startsWith("//", index)) { const end = source.indexOf("\n", index + 2); index = end < 0 ? source.length : end + 1; continue; }
+    if (source.startsWith("/*", index)) { const end = source.indexOf("*/", index + 2); index = end < 0 ? source.length : end + 2; continue; }
+    if (point === '"' || point === "`" || point === "'") {
+      const start = index++;
+      while (index < source.length) { if (point !== "`" && source[index] === "\\") { index += 2; continue; } if (source[index++] === point) break; }
+      const literal = source.slice(start, index);
+      if (point !== "'") {
+        let text: string | undefined;
+        if (point === "`") text = literal.slice(1, -1);
+        else text = goImportString(literal);
+        if (text !== undefined) tokens.push({ kind: "string", text });
+      }
+      continue;
+    }
+    if (/[\p{L}_]/u.test(point)) {
+      const start = index++;
+      while (index < source.length && /[\p{L}\p{N}_]/u.test(source[index]!)) index++;
+      tokens.push({ kind: "identifier", text: source.slice(start, index) }); continue;
+    }
+    tokens.push({ kind: "punctuation", text: point }); index++;
+  }
+  const imports = new Set<string>();
+  for (let index = 0; index < tokens.length; index++) {
+    if (tokens[index]!.kind !== "identifier" || tokens[index]!.text !== "import") continue;
+    if (tokens[index + 1]?.text === "(") { for (index += 2; index < tokens.length && tokens[index]!.text !== ")"; index++) if (tokens[index]!.kind === "string") imports.add(tokens[index]!.text); }
+    else {
+      const next = tokens[index + 1], candidate = next?.kind === "string" ? next : tokens[index + 2];
+      if (candidate?.kind === "string") imports.add(candidate.text);
+    }
+  }
+  return [...imports].sort();
+}
+
+/** Go import literals use Go escapes, including hexadecimal and three-digit octal bytes. */
+function goImportString(literal: string): string {
+  const escapes: Record<string,string> = {a:"\u0007",b:"\b",f:"\f",n:"\n",r:"\r",t:"\t",v:"\u000b", "\\":"\\", '\"':'\"'};
+  try {
+    return literal.slice(1,-1).replace(/\\(x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|[0-7]{3}|[abfnrtv\\"])/gu,(_,escape:string)=>{
+      if(escape in escapes) return escapes[escape]!;
+      const code=parseInt(escape.slice(escape.startsWith("x")||escape.startsWith("u")||escape.startsWith("U")?1:0),/^[xuU]/u.test(escape)?16:8);
+      return String.fromCodePoint(code);
+    });
+  } catch { return literal; } // Malformed source stays unresolved until the native compiler rejects it.
 }
 
 function exportsFromSource(source: string): string[] {

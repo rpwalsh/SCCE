@@ -124,6 +124,8 @@ export interface OssCorpusTrainingTotals {
 
 async function ingestSourceOwnedTestContracts(input: {
   root: string;
+  knownPaths: readonly string[];
+  snapshotComplete: boolean;
   window: readonly { path: string; absolutePath: string; byteLength: number; contentHash?: string }[];
   sourceUriBase: string;
   ids: ReturnType<typeof createIdFactory>;
@@ -146,7 +148,7 @@ async function ingestSourceOwnedTestContracts(input: {
     totalBytes += raw.byteLength;
     result.set(relativePath, []);
   }
-  const cases = await grammarSourceOwnedTestCases(files);
+  const cases = await grammarSourceOwnedTestCases(files, {knownPaths: input.knownPaths, complete: input.snapshotComplete});
   for (const [sourcePath, contracts] of sourceOwnedTestContractProjections(cases, input.sourceUriBase)) result.set(sourcePath, contracts);
   return result;
 }
@@ -325,7 +327,7 @@ export async function trainOssCorpus(input: OssCorpusTrainOptions): Promise<OssC
   const licenses = createProjectLicenseIndex({ stopAt: root });
   const hasher = createHasher();
   const ids = createIdFactory({ clock: createClock(), hasher });
-  const sourceOwnedContractsByPath = await ingestSourceOwnedTestContracts({ root, window, sourceUriBase, ids, hasher, maxFileBytes: input.maxFileBytes ?? 1_000_000 });
+  const sourceOwnedContractsByPath = await ingestSourceOwnedTestContracts({ root, window, knownPaths: importable.map(file=>normalizeRelative(file.path)), snapshotComplete: !inspectionTruncated, sourceUriBase, ids, hasher, maxFileBytes: input.maxFileBytes ?? 1_000_000 });
 
   for (const file of window) {
     if (heapMiB() >= heapCheckpointMb) {

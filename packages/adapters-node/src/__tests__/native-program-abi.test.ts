@@ -43,4 +43,21 @@ describe("owned native program ABI provenance", () => {
         patterns: badPatterns })).toEqual({ behaviorRequirements: [], statefulBehaviorRequirements: [] });
     }
   });
+  it.each([statefulSourceContractFixtures[1],statefulSourceContractFixtures[2]])("withholds a native ABI when $languageId source shadows its apparent builtin type",async item=>{
+    const files=Object.entries(item.files).filter(([name])=>/\.(?:go|rs)$/u.test(name)).map(([name,original])=>{
+      const text=name===item.sourcePath ? original+(item.languageId==="go"?"\ntype int = int32\n":"\ntype i64 = i32;\n"):original;
+      return {path:name,text,languageId:item.languageId,sourceHash:hash(text),sourceVersionId:`source_version_${hash(text).slice(7)}`};
+    });
+    const cases=await grammarSourceOwnedTestCases(files);
+    expect(cases).toHaveLength(2);
+    expect(cases.every(row=>row.nativeAbi===undefined)).toBe(true);
+    expect(cases.flatMap(row=>row.invocations??[]).every(row=>row.nativeAbi===undefined)).toBe(true);
+  });
+  it("does not bind implicit Go package calls from an incomplete source snapshot",async()=>{
+    const item=statefulSourceContractFixtures[1];
+    const files=Object.entries(item.files).filter(([name])=>name.endsWith(".go")).map(([name,text])=>({path:name,text,languageId:item.languageId,sourceHash:hash(text),sourceVersionId:"source_version_snapshot"}));
+    expect(await grammarSourceOwnedTestCases(files,{knownPaths:[...files.map(file=>file.path),"unread.go"],complete:true})).toEqual([]);
+    expect(await grammarSourceOwnedTestCases(files,{knownPaths:files.map(file=>file.path),complete:false})).toEqual([]);
+  });
+
 });

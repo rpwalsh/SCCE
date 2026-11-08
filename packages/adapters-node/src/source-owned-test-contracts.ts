@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import ts from "typescript";
-import { toJsonValue, type JsonValue, type ProgramNativeCallableAbi } from "@scce/kernel";
+import { toJsonValue, type JsonValue, type ProgramNativeCallableAbi, type ProgramNativeLiteral } from "@scce/kernel";
 import { createHash } from "node:crypto";
 import type { TypeScriptSemanticProgramIndex, TypeScriptSemanticCall, TypeScriptSemanticFile } from "./typescript-semantic-program-index.js";
 
@@ -9,6 +9,7 @@ export const SOURCE_OWNED_TEST_CONTRACT_SCHEMA = "scce.source_owned_test_contrac
 
 export interface SourceOwnedInvocation {
   readonly nativeAbi?: ProgramNativeCallableAbi;
+  readonly nativeArguments?: readonly ProgramNativeLiteral[];
   readonly targetSymbolId: string;
   readonly targetName: string;
   readonly sourcePath: string;
@@ -21,6 +22,9 @@ export interface SourceOwnedInvocation {
 
 export interface SourceOwnedTestCase {
   readonly nativeAbi?: ProgramNativeCallableAbi;
+  readonly nativeExpected?: ProgramNativeLiteral;
+  readonly nativeArguments?: readonly ProgramNativeLiteral[];
+  readonly nativeResultProjection?: "dereference";
   readonly targetSymbolId: string;
   readonly targetName: string;
   readonly languageId: "typescript" | "javascript" | "python" | "go" | "rust";
@@ -247,7 +251,7 @@ export function sourceOwnedTestContractProjections(cases: readonly SourceOwnedTe
         targetName: symbolCases[0]!.targetName,
         bindingResolverIds: [...new Set(symbolCases.map(row => row.bindingResolverId).filter(Boolean))],
         ...(symbolCases.some(row => row.nativeAbi || row.invocations?.some(invocation => invocation.nativeAbi))
-          ? { nativeAbiRecipe: "scce.source_owned_native_abi.v1" } : {}),
+          ? { nativeAbiRecipe: "scce.source_owned_native_abi.v2" } : {}),
         cases: symbolCases
       }));
     }

@@ -654,7 +654,7 @@ describe("learned rows carry the shard's provenance once", () => {
     await trainOssCorpus(options);
     const current = await fixture.storage.languageMemory.listLanguagePatterns(query);
     expect(current).toHaveLength(1);
-    expect(recordOf(current[0]!.patternJson).nativeAbiRecipe).toBe("scce.source_owned_native_abi.v1");
+    expect(recordOf(current[0]!.patternJson).nativeAbiRecipe).toBe("scce.source_owned_native_abi.v2");
     expect(current[0]!.id).not.toBe(old[0]!.id);
     expect(replace.mock.calls.filter(([input]) => input.projection.patternSchema === "scce.source_owned_test_contract.v1")).toHaveLength(1);
     expect(new Set(fixture.state.sourceVersions.map(row => String(row.sourceVersionId)))).toEqual(owners);

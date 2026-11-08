@@ -3,7 +3,7 @@
 import { codeIdentifierTokens, codeSurfaceTokens } from "./code-surface.js";
 import { codeLanguageForPath, type CodeRequestSignal } from "./code-request.js";
 import { canonicalStringify, createHasher, toJsonValue } from "./primitives.js";
-import { ownedNativeCallableAbi } from "./program-native-abi.js";
+import { ownedNativeArguments, ownedNativeCallableAbi, ownedNativeLiteral } from "./program-native-abi.js";
 import type { EvidenceSpan, JsonValue, ProgramBehaviorRequirement, ProgramStatefulBehaviorRequirement } from "./types.js";
 
 /**
@@ -159,6 +159,9 @@ export function sourceOwnedProgramBehaviorFromDocumentation(input: {
         || !validSpan(row.inputSpan) || !validSpan(row.expectedSpan) || !validSpan(row.assertionSpan)) continue;
       if (row.nativeAbi !== undefined && !ownedNativeCallableAbi(row.nativeAbi, { targetSymbolId: body.targetSymbolId, callableName: body.targetName,
         sourcePath: body.sourcePath, sourceHash: body.sourceHash, sourceVersionId: body.sourceVersionId, languageId: String(body.formalLanguage) })) return empty;
+      if (row.nativeExpected !== undefined && (body.formalLanguage !== "rust" && body.formalLanguage !== "go" || !ownedNativeLiteral(row.nativeExpected, row.expectedResult))) return empty;
+      if (row.nativeArguments !== undefined && !ownedNativeArguments(row.nativeArguments, row.arguments)) return empty;
+      if (row.nativeResultProjection !== undefined && (body.formalLanguage !== "go" || row.nativeResultProjection !== "dereference")) return empty;
       cases.push({ ...row, sourceHash: body.sourceHash, sourcePath: body.sourcePath, sourceVersionId: body.sourceVersionId,
         targetName: body.targetName, targetSymbolId: body.targetSymbolId, repositoryFamily: body.repositoryFamily });
     }
@@ -197,6 +200,9 @@ export function sourceOwnedProgramBehaviorFromDocumentation(input: {
     sourceContract: {
       ...(row.nativeAbi !== undefined ? { nativeAbi: ownedNativeCallableAbi(row.nativeAbi, { targetSymbolId, callableName: sourceTargetName,
         sourcePath, sourceVersionId, sourceHash: String(row.sourceHash), languageId: input.intent.languageId ?? "" })! } : {}),
+      ...(row.nativeExpected !== undefined ? { nativeExpected: ownedNativeLiteral(row.nativeExpected, row.expectedResult!)! } : {}),
+      ...(row.nativeArguments !== undefined ? { nativeArguments: ownedNativeArguments(row.nativeArguments, row.arguments as JsonValue[])! } : {}),
+      ...(row.nativeResultProjection === "dereference" ? { nativeResultProjection: "dereference" as const } : {}),
       targetSymbolId, sourcePath, sourceVersionId,
       sourceHash: String(row.sourceHash), testPath: String(row.testPath),
       testSourceVersionId: String(row.testSourceVersionId), testHash: String(row.testHash),
@@ -221,7 +227,9 @@ function sourceOwnedStatefulRequirements(input: {
   const statefulBehaviorRequirements: ProgramStatefulBehaviorRequirement[] = [];
   for (const [index, row] of ordered.entries()) {
     const observed = row.invocations === undefined ? [{ targetSymbolId, targetName: sourceTargetName, sourcePath, sourceVersionId,
-      sourceHash: row.sourceHash, arguments: row.arguments, inputSpan: row.inputSpan, callSpan: row.callSpan }] : row.invocations;
+      sourceHash: row.sourceHash, arguments: row.arguments, inputSpan: row.inputSpan, callSpan: row.callSpan,
+      ...(row.nativeAbi !== undefined ? { nativeAbi: row.nativeAbi } : {}),
+      ...(row.nativeArguments !== undefined ? { nativeArguments: row.nativeArguments } : {}) }] : row.invocations;
     if (!Array.isArray(observed) || !observed.length) return empty;
     const bindings: Array<NonNullable<ProgramStatefulBehaviorRequirement["sourceContract"]>["invocations"][number]> = [];
     const invocations: ProgramStatefulBehaviorRequirement["invocations"] = [];
@@ -238,12 +246,15 @@ function sourceOwnedStatefulRequirements(input: {
         targetSymbolId: invocation.targetSymbolId, callableName: invocation.targetName, sourcePath: invocation.sourcePath,
         sourceVersionId: invocation.sourceVersionId, sourceHash: invocation.sourceHash, languageId: input.languageId });
       if (invocation.nativeAbi !== undefined && !nativeAbi) return empty;
+      const nativeArguments = invocation.nativeArguments === undefined ? undefined : ownedNativeArguments(invocation.nativeArguments, invocation.arguments as JsonValue[]);
+      if (invocation.nativeArguments !== undefined && !nativeArguments) return empty;
       const callSpan = objectRecord(invocation.callSpan), inputSpan = objectRecord(invocation.inputSpan);
       if (Number(callSpan.start) < previousEnd || Number(inputSpan.start) < Number(callSpan.start) || Number(inputSpan.end) > Number(callSpan.end)) return empty;
       previousEnd = Number(callSpan.end);
       invocations.push({ callableId: invocation.targetName, arguments: invocation.arguments as JsonValue[], sourceSpan: behaviorRequirements[index]!.sourceSpan });
       bindings.push({ targetSymbolId: invocation.targetSymbolId, targetName: invocation.targetName,
         ...(nativeAbi ? { nativeAbi } : {}),
+        ...(nativeArguments ? { nativeArguments } : {}),
         sourcePath: invocation.sourcePath, sourceVersionId: invocation.sourceVersionId, sourceHash: invocation.sourceHash,
         inputSpan: invocation.inputSpan as unknown as NonNullable<ProgramBehaviorRequirement["sourceContract"]>["inputSpan"],
         callSpan: invocation.callSpan as unknown as NonNullable<ProgramBehaviorRequirement["sourceContract"]>["assertionSpan"] });

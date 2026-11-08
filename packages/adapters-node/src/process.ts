@@ -125,9 +125,9 @@ async function writeArtifacts(root: string, artifacts: FileArtifact[]): Promise<
 
 async function runExpanded(command: string, args: string[], cwd: string) {
   const expandedArgs = args.flatMap(arg => arg.includes("*") ? expandGlob(arg, cwd) : [arg]);
-  if (command === "rustc") {
-    const capability = await findCodeVerifierCapability("rust");
-    if (capability.status !== "available") throw new Error(`Rust native validation unavailable: ${capability.reason}`);
+  if (command === "rustc" || command === "go") {
+    const capability = await findCodeVerifierCapability(command === "go" ? "go" : "rust");
+    if (capability.status !== "available") throw new Error(`Native validation unavailable: ${capability.reason}`);
     return runProcess(capability.verifier.command, expandedArgs, { cwd, timeoutMs: 120000 });
   }
   return runProcess(command, expandedArgs, { cwd, timeoutMs: 120000 });

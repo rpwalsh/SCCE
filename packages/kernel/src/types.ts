@@ -683,6 +683,9 @@ export interface ProgramBehaviorRequirement {
   /** Exact persisted source-owned assertion identity when this came from an admitted repository contract. */
   readonly sourceContract?: {
     readonly nativeAbi?: import("./program-native-abi.js").ProgramNativeCallableAbi;
+    readonly nativeExpected?: import("./program-native-abi.js").ProgramNativeLiteral;
+    readonly nativeArguments?: readonly import("./program-native-abi.js").ProgramNativeLiteral[];
+    readonly nativeResultProjection?: "dereference";
     readonly targetSymbolId: string;
     readonly sourcePath: string;
     readonly sourceVersionId: string;
@@ -708,6 +711,7 @@ export interface ProgramStatefulBehaviorRequirement {
   readonly sourceContract?: NonNullable<ProgramBehaviorRequirement["sourceContract"]> & {
     readonly invocations: ReadonlyArray<{
       readonly nativeAbi?: import("./program-native-abi.js").ProgramNativeCallableAbi;
+      readonly nativeArguments?: readonly import("./program-native-abi.js").ProgramNativeLiteral[];
       readonly targetSymbolId: string;
       readonly targetName: string;
       readonly sourcePath: string;

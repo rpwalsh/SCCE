@@ -126,14 +126,15 @@ describe("polyglot source-owned assertion contracts", () => {
     expect(cases[1]!.callSpan.textHash).toBe(hash(entries[item.testPath]!.slice(cases[1]!.callSpan.start, cases[1]!.callSpan.end)));
   });
 
-  it("reports Go native emission and Rust stateful emission as unavailable instead of running a host-language substitute", async () => {
+  it("reports unresolved native source types as unavailable instead of running a host-language substitute", async () => {
     for (const item of [statefulSourceContractFixtures[1], statefulSourceContractFixtures[2]]) {
-      const source = await acquired(item), hasher = createHasher(), clock = createClock({ fixedTime: 1 });
+      const entries:Record<string,string>={...item.files};
+      entries[item.sourcePath]=entries[item.sourcePath]!+(item.languageId==="go"?"\ntype int = int32\n":"\ntype i64 = i32;\n");
+      const source = await acquired(item,entries), hasher = createHasher(), clock = createClock({ fixedTime: 1 });
       const ids = createIdFactory({ clock, hasher, deterministicReplay: true });
       const emitted = createProgramPlanner({ idFactory: ids, hasher }).emitIfAvailable({ episodeId: ids.episodeId(), requestText: source.requestText,
         evidence: [], programIntent: source.programIntent, entailment: emptyEntailment(ids) });
-      expect(emitted.availability).toEqual({ status: "unavailable", languageId: item.languageId,
-        reasonIds: [item.languageId === "go" ? "program.emission.native_backend_unavailable" : "program.emission.rust.stateful_behavior_unsupported"] });
+      expect(emitted.availability).toEqual({ status: "unavailable", languageId: item.languageId,reasonIds: ["program.emission.native_abi_missing"] });
       expect(emitted.program).toBeUndefined();
     }
   });

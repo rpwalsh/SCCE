@@ -5,14 +5,15 @@ import path from "node:path";
 import type Parser from "web-tree-sitter";
 import { withRepositorySyntaxTree } from "./tree-sitter-syntax.js";
 import type { SourceOwnedInvocation, SourceOwnedTestCase } from "./source-owned-test-contracts.js";
-import { nativeCallableAbiId, nativeTypeEvidenceId, type ProgramNativeCallableAbi, type ProgramNativeTypeEvidence } from "@scce/kernel";
+import { nativeCallableAbiId, nativeTypeEvidenceId, type ProgramNativeCallableAbi, type ProgramNativeTypeEvidence, type ProgramNativeLiteral, type JsonValue } from "@scce/kernel";
 
 type Node = Parser.SyntaxNode;
 type Language = "python" | "go" | "rust";
 export interface GrammarContractFile { path: string; text: string; languageId: Language; sourceHash: string; sourceVersionId: string }
 interface Declaration { name: string; start: number; end: number; nativeSignature?: Pick<ProgramNativeCallableAbi, "parameters" | "returnType" | "signatureSpan" | "signatureText" | "declarationSpan" | "packageName"> }
-interface Call { name: string; arguments: unknown[]; start: number; end: number; inputStart: number; inputEnd: number }
-interface Step { call: Call; assertion?: { expected: unknown; start: number; end: number; assertionStart: number; assertionEnd: number } }
+interface Call { name: string; arguments: unknown[]; nativeArguments: ProgramNativeLiteral[]; start: number; end: number; inputStart: number; inputEnd: number }
+interface Step { call: Call; assertion?: { expected: unknown; nativeExpected?: ProgramNativeLiteral; nativeResultProjection?: "dereference";
+  start: number; end: number; assertionStart: number; assertionEnd: number } }
 interface RustScope { root: boolean; imports: Array<{ local: string; name: string }>; localNames: Set<string> }
 interface Parsed { file: GrammarContractFile; declarations: Declaration[]; imports: Array<{ local: string; module: string; name?: string }>;
   bindings: Map<string, number>; packageName?: string; traces: Step[][]; rustScopes: Map<Step[], RustScope>;
@@ -21,13 +22,23 @@ const hash = (text: string) => `sha256:${createHash("sha256").update(text, "utf8
 const span = (text: string, start: number, end: number) => ({ start, end, textHash: hash(text.slice(start, end)) });
 
 /** Only explicit imports or one package/module declaration bind calls; syntax similarity never supplies a target. */
-export async function grammarSourceOwnedTestCases(files: readonly GrammarContractFile[]): Promise<SourceOwnedTestCase[]> {
+export async function grammarSourceOwnedTestCases(files: readonly GrammarContractFile[],
+  snapshot: {knownPaths: readonly string[]; complete: boolean} = {knownPaths: files.map(file=>file.path),complete:true}): Promise<SourceOwnedTestCase[]> {
   const parsed: Parsed[] = [];
   const invalidRustTraces = new Set<Step[]>();
   for (const file of files) {
     if (hash(file.text).replace(/^sha256:/u, "") !== file.sourceHash.replace(/^sha256[:_]/u, "")) continue;
     const item = await withRepositorySyntaxTree({ fileId: file.path, languageId: file.languageId, text: file.text }, root => parseFile(file, root));
     if (item) parsed.push(item);
+  }
+  // A native type spelling is not a builtin witness when its lexical scope rebinds it.
+  for (const item of parsed) for (const declaration of item.declarations) {
+    const signature=declaration.nativeSignature;
+    if (!signature) continue;
+    const scope=item.file.languageId==="go" ? parsed.filter(other=>other.file.languageId==="go" && other.packageName===item.packageName
+      && path.posix.dirname(other.file.path)===path.posix.dirname(item.file.path)) : [item];
+    const types=[...signature.parameters.map(parameter=>parameter.type),...(signature.returnType?[signature.returnType]:[])];
+    if (types.some(type=>(type.text.match(/[\p{L}_][\p{L}\p{M}\p{N}_]*/gu)??[]).some(name=>scope.some(owner=>owner.bindings.has(name))))) declaration.nativeSignature=undefined;
   }
   for (const item of parsed) for (const macro of item.rustMacros) {
     const prefix = "fn __scce_literal_arguments() { let __scce_values = (";
@@ -38,6 +49,7 @@ export async function grammarSourceOwnedTestCases(files: readonly GrammarContrac
       if (values?.length !== 2) return undefined;
       const call = parseCall(values[0]!, macro.start - prefix.length), expected = literal(values[1]!);
       return call && expected.ok ? { call, assertion: { expected: expected.value,
+        ...(expected.nativeExpected ? { nativeExpected: expected.nativeExpected } : {}),
         start: values[1]!.startIndex + macro.start - prefix.length, end: values[1]!.endIndex + macro.start - prefix.length,
         assertionStart: macro.assertionStart, assertionEnd: macro.assertionEnd } } : undefined;
     });
@@ -49,7 +61,7 @@ export async function grammarSourceOwnedTestCases(files: readonly GrammarContrac
     const bound: Array<{ step: Step; owner: Parsed; declaration: Declaration }> = [];
     let valid = true;
     for (const step of trace.sort((a, b) => a.call.start - b.call.start)) {
-      const target = resolve(item, step.call.name, parsed, item.rustScopes.get(trace));
+      const target = resolve(item, step.call.name, parsed, item.rustScopes.get(trace), snapshot);
       if (!target) { valid = false; break; }
       bound.push({ step, ...target });
     }
@@ -65,10 +77,13 @@ export async function grammarSourceOwnedTestCases(files: readonly GrammarContrac
         sourceHash: owner.file.sourceHash, sourceVersionId: owner.file.sourceVersionId, arguments: step.call.arguments,
         inputSpan: span(item.file.text, step.call.inputStart, step.call.inputEnd), callSpan: span(item.file.text, step.call.start, step.call.end),
         ...(nativeAbi ? { nativeAbi } : {}) };
+      if (owner.file.languageId === "go" || owner.file.languageId === "rust") Object.assign(invocation, { nativeArguments: step.call.nativeArguments });
       invocations.push(invocation);
       if (!step.assertion) continue;
       out.push({ ...invocation, languageId: owner.file.languageId, bindingResolverId: "scce.source_contract.grammar_static_scope.v1", testPath: item.file.path, testHash: item.file.sourceHash,
         testSourceVersionId: item.file.sourceVersionId, expectedResult: step.assertion.expected,
+        ...(step.assertion.nativeExpected ? { nativeExpected: step.assertion.nativeExpected } : {}),
+        ...(step.assertion.nativeResultProjection ? { nativeResultProjection: step.assertion.nativeResultProjection } : {}),
         ...(stateful ? { invocations: [...invocations] } : {}),
         expectedSpan: span(item.file.text, step.assertion.start, step.assertion.end),
         assertionSpan: span(item.file.text, step.assertion.assertionStart, step.assertion.assertionEnd) });
@@ -109,7 +124,7 @@ function nativeSignature(file: GrammarContractFile, node: Node, packageName?: st
     declarationSpan: span(file.text, node.startIndex, node.endIndex) };
 }
 
-function resolve(item: Parsed, name: string, files: readonly Parsed[], rustScope?: RustScope): { owner: Parsed; declaration: Declaration } | undefined {
+function resolve(item: Parsed, name: string, files: readonly Parsed[], rustScope?: RustScope, snapshot?: {knownPaths:readonly string[];complete:boolean}): { owner: Parsed; declaration: Declaration } | undefined {
   const parts = name.split(".");
   if (item.file.languageId === "rust") {
     if (!rustScope) return undefined;
@@ -122,7 +137,8 @@ function resolve(item: Parsed, name: string, files: readonly Parsed[], rustScope
     return declarations.length === 1 ? { owner: item, declaration: declarations[0]! } : undefined;
   }
   if (item.file.languageId === "go") {
-    if (parts.length !== 1) return undefined;
+    if (parts.length !== 1 || !snapshot?.complete || snapshot.knownPaths.some(name=>name.endsWith(".go")
+      && path.posix.dirname(name)===path.posix.dirname(item.file.path) && !files.some(owner=>owner.file.path===name))) return undefined;
     const packageFiles = files.filter(file => file.file.languageId === "go" && file.packageName === item.packageName
       && path.posix.dirname(file.file.path) === path.posix.dirname(item.file.path));
     if (packageFiles.reduce((sum, file) => sum + (file.bindings.get(name) ?? 0), 0) !== 1) return undefined;
@@ -136,6 +152,7 @@ function resolve(item: Parsed, name: string, files: readonly Parsed[], rustScope
     const targetName = binding.name ?? parts[1];
     if (!targetName || parts.length !== (binding.name ? 1 : 2)) return undefined;
     const targetPaths = item.file.languageId === "python" ? pythonModulePaths(item.file.path, binding.module) : [item.file.path];
+    if (!snapshot?.complete || snapshot.knownPaths.some(name=>targetPaths.includes(name) && !files.some(owner=>owner.file.path===name))) return undefined;
     const matches = files.filter(owner => targetPaths.includes(owner.file.path) && owner.file.languageId === item.file.languageId)
       .flatMap(owner => owner.declarations.filter(declaration => declaration.name === targetName && owner.bindings.get(targetName) === 1).map(declaration => ({ owner, declaration })));
     return matches.length === 1 ? matches[0] : undefined;
@@ -201,6 +218,9 @@ function parseFile(file: GrammarContractFile, root: Node): Parsed | undefined {
         if (binding) for (const name of descendants(binding).filter(part => part.type === "identifier")) bind(name.text);
         if (node.type === "delete_statement" && nested.type === "identifier") bind(nested.text);
       }
+    }
+    if (file.languageId === "go" && node.type === "type_declaration") for (const spec of descendants(node).filter(child=>child.type === "type_spec" || child.type === "type_alias")) {
+      const name=spec.childForFieldName("name"); if(name) bind(name.text);
     }
     if (file.languageId === "go" && (node.type === "var_declaration" || node.type === "const_declaration")) for (const spec of descendants(node).filter(child => child.type === "var_spec" || child.type === "const_spec")) {
       const name = spec.childForFieldName("name"); if (name) bind(name.text);
@@ -300,8 +320,11 @@ function goStep(node: Node, tester: string): Step | undefined {
   const failure = block.namedChildren[0]!.namedChildren[0], selector = failure?.childForFieldName("function");
   if (failure?.type !== "call_expression" || selector?.type !== "selector_expression" || selector.childForFieldName("operand")?.text !== tester
     || !["Fatal", "Fatalf", "Error", "Errorf"].includes(selector.childForFieldName("field")?.text ?? "")) return undefined;
-  const call = parseCall(condition.childForFieldName("left")!), expected = condition.childForFieldName("right"), value = literal(expected);
+  const actual = condition.childForFieldName("left"), dereference = actual?.type === "unary_expression" && actual.children[0]?.text === "*";
+  const call = actual && parseCall(dereference ? actual.namedChildren[0]! : actual), expected = condition.childForFieldName("right"), value = literal(expected);
   return call && expected && value.ok ? { call, assertion: { expected: value.value, start: expected.startIndex, end: expected.endIndex,
+    ...(value.nativeExpected ? { nativeExpected: value.nativeExpected } : {}),
+    ...(dereference ? { nativeResultProjection: "dereference" as const } : {}),
     assertionStart: node.startIndex, assertionEnd: node.endIndex } } : undefined;
 }
 
@@ -311,22 +334,31 @@ function parseCall(node: Node, offset = 0): Call | undefined {
   if (!callee || !args || !["identifier", "attribute", "selector_expression", "scoped_identifier"].includes(callee.type)) return undefined;
   const values = args.namedChildren.map(literal);
   if (!values.every(value => value.ok)) return undefined;
-  return { name: callee.text.replaceAll("::", "."), arguments: values.map(value => value.value), start: node.startIndex + offset, end: node.endIndex + offset,
+  return { name: callee.text.replaceAll("::", "."), arguments: values.map(value => value.value),
+    nativeArguments: values.map(value => value.nativeExpected ?? { kind: "value", value: value.value as JsonValue }), start: node.startIndex + offset, end: node.endIndex + offset,
     inputStart: (args.namedChildren[0]?.startIndex ?? node.startIndex) + offset,
     inputEnd: (args.namedChildren.at(-1)?.endIndex ?? node.endIndex) + offset };
 }
 
-function literal(node: Node | null | undefined): { ok: true; value: unknown } | { ok: false } {
+function literal(node: Node | null | undefined): { ok: true; value: unknown; nativeExpected?: ProgramNativeLiteral } | { ok: false } {
   if (!node) return { ok: false };
+  if (node.type === "scoped_identifier" && node.text === "::std::option::Option::None") return { ok: true, value: null, nativeExpected: { kind: "none" } };
+  if (node.type === "call_expression" && node.childForFieldName("function")?.text === "::std::option::Option::Some") {
+    const args = node.childForFieldName("arguments")?.namedChildren;
+    const inner = args?.length === 1 ? literal(args[0]) : undefined;
+    return inner?.ok ? { ok: true, value: inner.value, nativeExpected: { kind: "some", value: inner.nativeExpected ?? { kind: "value", value: inner.value as JsonValue } } } : { ok: false };
+  }
   if (["integer", "int_literal", "integer_literal", "float", "float_literal"].includes(node.type)) {
     const text = node.text.replaceAll("_", "");
     if (node.type === "integer" && /^0[0-9]+$/u.test(text) && /[1-9]/u.test(text)) return { ok: false };
     const value = node.type === "int_literal" && /^0[0-7]+$/u.test(text) ? Number.parseInt(text, 8) : Number(text);
     return Number.isFinite(value) && (!["integer", "int_literal", "integer_literal"].includes(node.type) || Number.isSafeInteger(value))
-      ? { ok: true, value } : { ok: false };
+      ? { ok: true, value, nativeExpected: { kind: "value", value, nativeNumberKind: ["integer", "int_literal", "integer_literal"].includes(node.type) ? "integer" : "float" } } : { ok: false };
   }
   if (["unary_expression", "unary_operator"].includes(node.type) && node.children[0]?.text === "-") {
-    const value = literal(node.namedChildren[0]); return value.ok && typeof value.value === "number" ? { ok: true, value: -value.value } : { ok: false };
+    const value = literal(node.namedChildren[0]); return value.ok && typeof value.value === "number" ? { ok: true, value: -value.value,
+      nativeExpected: { kind: "value", value: -value.value, ...(value.nativeExpected?.kind === "value" ? { nativeNumberKind: value.nativeExpected.nativeNumberKind,
+        ...(value.value===0 && value.nativeExpected.nativeNumberKind==="float" ? {nativeNegativeZero:true as const}: {}) } : {}) } } : { ok: false };
   }
   if (["true", "false", "boolean_literal"].includes(node.type)) return { ok: true, value: node.text === "true" || node.text === "True" };
   if (["none", "nil"].includes(node.type)) return { ok: true, value: null };
