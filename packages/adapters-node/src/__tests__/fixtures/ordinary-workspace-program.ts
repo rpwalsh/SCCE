@@ -11,8 +11,8 @@ import {NodeFileIngestAdapter} from "../../files.js";
 import type {NodeScceRuntime} from "../../runtime.js";
 import type {ScceRuntimeConfig} from "../../config.js";
 
-export function ordinaryWorkspaceProgramFixture(root:string,options:{runtimeWorkspaceRoot?:string}={}){
-  const clock=createClock({fixedTime:1000,stepMs:1}),hasher=createHasher(),spans:EvidenceSpan[]=[],versions:SourceVersion[]=[],blobs=new Map<string,Uint8Array>();
+export function ordinaryWorkspaceProgramFixture(root:string,options:{runtimeWorkspaceRoot?:string;realClock?:boolean}={}){
+  const clock=createClock(options.realClock?{}:{fixedTime:1000,stepMs:1}),hasher=createHasher(),spans:EvidenceSpan[]=[],versions:SourceVersion[]=[],blobs=new Map<string,Uint8Array>();
   const recorded=storageFixtureForEvaluation({evidence:spans,clockNow:()=>clock.now()}),storage=recorded.storage;
   storage.evidence.putSourceVersion=async row=>{const index=versions.findIndex(old=>old.sourceVersionId===row.sourceVersionId);if(index<0)versions.push(row);else versions[index]=row;};
   storage.evidence.putEvidenceSpan=async row=>{const index=spans.findIndex(old=>old.id===row.id);if(index<0)spans.push(row);else spans[index]=row;};
