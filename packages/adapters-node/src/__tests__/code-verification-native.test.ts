@@ -10,6 +10,9 @@ import { findCodeVerifierCapability } from "../code-verifier-discovery.js";
 import { createTreeSitterCodeMouthPorts } from "../tree-sitter-code-mouth-ports.js";
 
 const probes = [
+  { language: "python", executable: "C:/Python314/python.exe", file: "probe.py",
+    good: "def double_value(value):\n    return value + value\n",
+    bad: "def missing(value)\n    return value + value\n" },
   { language: "go", executable: "C:/Users/react/toolchains/go/bin/go.exe", file: "probe.go",
     good: "package probe\nfunc doubleValue(value float64) float64 { return value + value }",
     bad: "package probe\nfunc doubleValue(value float64) float64 { return missing }" },
@@ -29,7 +32,7 @@ const probes = [
 
 describe("installed native compiler verification", () => {
   for (const probe of probes) {
-    it.skipIf(process.platform !== "win32" || !existsSync(probe.executable))(`${probe.language} discovers the installed compiler, type-checks source, and isolates workspace products`, async () => {
+    it.skipIf(process.platform !== "win32" || !existsSync(probe.executable))(`${probe.language} discovers the installed compiler, checks valid and invalid source, and isolates workspace products`, async () => {
       const capability = await findCodeVerifierCapability(probe.language);
       expect(capability.status).toBe("available");
       if (capability.status !== "available") throw new Error(capability.reason);

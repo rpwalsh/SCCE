@@ -41,7 +41,7 @@ const ARTIFACT = "{artifact}";
 export const DEFAULT_LANGUAGE_CHECKS: Readonly<Record<string, LanguageCheckCommand>> = Object.freeze({
   typescript: { command: "", args: [], extension: "ts" },
   javascript: { command: "", args: [], extension: "js" },
-  python: { command: "python", args: ["-m", "py_compile", ARTIFACT], extension: "py" },
+  python: { command: "python", args: ["-X", "pycache_prefix={output}", "-m", "py_compile", ARTIFACT], extension: "py" },
   ruby: { command: "ruby", args: ["-c", ARTIFACT], extension: "rb" },
   php: { command: "php", args: ["-l", ARTIFACT], extension: "php" },
   shell: { command: "sh", args: ["-n", ARTIFACT], extension: "sh" },
