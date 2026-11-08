@@ -115,9 +115,12 @@ describe("boundary fitting repeated-work equivalence", () => {
       const result = { inputDigest: hasher.digestHex(text), outputs, fitted };
       const reference = JSON.parse(readFileSync(new URL("./fixtures/boundary-alice-19k-reference.json", import.meta.url), "utf8"));
       expect(result.inputDigest).toBe(reference.inputDigest);
-      expect(fitted.length).toBe(reference.fits);
+      expect(fitted.length).toBe(reference.convergedPopulationReuse.fits);
+      expect(fitted.length).toBeLessThan(reference.fits);
       expect(outputs.length).toBe(reference.outputModels);
-      expect(hasher.digestHex(JSON.stringify(result))).toBe(reference.resultDigest);
+      expect(hasher.digestHex(JSON.stringify(outputs))).toBe(reference.outputDigest);
+      expect(hasher.digestHex(JSON.stringify([...new Set(fitted.map(model => JSON.stringify(model)))].sort()))).toBe(reference.uniqueFittedDigest);
+      expect(hasher.digestHex(JSON.stringify(result))).toBe(reference.convergedPopulationReuse.resultDigest);
       process.stdout.write(`\nAlice 19k total=${elapsedMs.toFixed(1)}ms boundary-fit=${fittingMs.toFixed(1)}ms requested=${fitted.length} computed=${computedFits}\n`);
       expect(outputs.length).toBeGreaterThan(1);
       expect(fitted.length).toBeGreaterThan(1);

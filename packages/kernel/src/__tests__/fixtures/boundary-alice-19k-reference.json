@@ -3,5 +3,11 @@
   "inputDigest": "71e95514ebe39d8031268192cd07e50aa8bd63f2b18fa5673a26ef65876a331d",
   "resultDigest": "16f595cb9e6e98dda0ca69e4fd35d24ac953b6d85f87e50a5e788541af036e94",
   "fits": 167,
-  "outputModels": 2
+  "outputModels": 2,
+  "outputDigest": "d8e16c379741b2b8592637def12a58761805ac2449ba939903906fcd96529df8",
+  "uniqueFittedDigest": "9f0ff731ec7e82dc673386a0adb60aef69e13bce36f8095d8090177ea79f3fee",
+  "convergedPopulationReuse": {
+    "fits": 109,
+    "resultDigest": "9013c2225b758d672337fcd55dc3cdb52136ec1b8748627259b5937f7bb8562a"
+  }
 }

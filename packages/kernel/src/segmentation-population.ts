@@ -163,7 +163,9 @@ export function learnSegmentationPopulations(input: {
     ...partitions.modelSelection,
     ...partitions.mergeGuard
   ].sort((left, right) => left.documentId.localeCompare(right.documentId));
-  const finalFit = fitPopulationCandidate({
+  const sameFinalTrainingSet = finalTrainingDocuments.length === fit.length
+    && finalTrainingDocuments.every((document, index) => document === fit[index]);
+  const finalFit = sameFinalTrainingSet ? selected : fitPopulationCandidate({
     rootPopulationId: input.rootPopulationId,
     fit: finalTrainingDocuments,
     holdout: [],
@@ -378,6 +380,7 @@ function fitPopulationCandidate(input: {
     return { ...emptyCandidate(), populationCount: input.populationCount, collapsed: input.populationCount > 1 };
   }
   let assignments = initialAssignments(input.fit, input.populationCount);
+  let fittedAssignments: readonly number[] | undefined;
   let estimators: BoundaryEstimatorModel[] = [];
   let priors: number[] = [];
   for (let iteration = 0; iteration < 12; iteration += 1) {
@@ -394,6 +397,7 @@ function fitPopulationCandidate(input: {
       )
     }));
     priors = groups.map(group => group.length / input.fit.length);
+    fittedAssignments = assignments;
     const costs = input.fit.map(document => estimators.map(estimator =>
       boundaryNegativeLogLikelihood(estimator, document.statistics).averageLogLoss));
     const next = repairCollapsedAssignments(
@@ -406,15 +410,17 @@ function fitPopulationCandidate(input: {
     if (next.every((value, index) => value === assignments[index])) break;
     assignments = next;
   }
-  const finalGroups = groupDocuments(input.fit, assignments, input.populationCount);
-  estimators = finalGroups.map((group, index) => input.fitEstimator({
-    statistics: mergeBoundaryStatistics(
-      group.map(document => document.statistics),
-      input.hasher,
-      `${input.rootPopulationId}.candidate.${input.populationCount}.${index}`
-    )
-  }));
-  priors = finalGroups.map(group => group.length / input.fit.length);
+  if (assignments !== fittedAssignments) {
+    const finalGroups = groupDocuments(input.fit, assignments, input.populationCount);
+    estimators = finalGroups.map((group, index) => input.fitEstimator({
+      statistics: mergeBoundaryStatistics(
+        group.map(document => document.statistics),
+        input.hasher,
+        `${input.rootPopulationId}.candidate.${input.populationCount}.${index}`
+      )
+    }));
+    priors = finalGroups.map(group => group.length / input.fit.length);
+  }
   const heldoutDataNats = quantize(input.holdout.reduce((sum, document) =>
     sum + mixtureNegativeLogLikelihood(document.statistics, estimators, priors), 0));
   const mass = input.fit.reduce((sum, document) =>
