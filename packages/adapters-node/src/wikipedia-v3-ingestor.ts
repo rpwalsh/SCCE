@@ -338,6 +338,7 @@ export class WikipediaV3Ingestor {
         alignmentLatticesPerShard: wikiConfig?.alignmentLatticesPerShard ?? 48
       }
     });
+    corpus.remoteSource = inputManifest.inputs.remoteDump;
     const shardCharBudget = effectiveNgramShardChars(wikiConfig?.ngramShardChars);
     const assertInputUnchanged = async (): Promise<void> => {
       if (!await wikipediaInputSourcesStillMatch(inputManifest)) throw new Error("Wikipedia input changed during ingestion; no further checkpoint or activation is permitted");
