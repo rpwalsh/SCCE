@@ -1,0 +1,1358 @@
+{
+  "generatedFromRevision": "478e65f",
+  "source": {
+    "schema": "scce.dialogue_transcript.v1",
+    "text": "Where is station0 located?\nstation0 is located on island0.\nWhere is station1 located?\nstation1 is located on island1.\nWhere is station2 located?\nstation2 is located on island2.\nWhere is station3 located?\nstation3 is located on island3.\nWhere is station4 located?\nstation4 is located on island4.\nWhere is station5 located?\nstation5 is located on island5.\nImagine station0 as lanterns.\nstation0 glows like lanterns.\nImagine station1 as lanterns.\nstation1 glows like lanterns.\nImagine station2 as lanterns.\nstation2 glows like lanterns.\nImagine station3 as lanterns.\nstation3 glows like lanterns.\nImagine station4 as lanterns.\nstation4 glows like lanterns.\nImagine station5 as lanterns.\nstation5 glows like lanterns.",
+    "turns": [
+      {
+        "index": 0,
+        "speakerId": "owner",
+        "surface": "Where is station0 located?",
+        "startCodePoint": 0,
+        "endCodePoint": 26,
+        "requestAuthority": "factual",
+        "sourceCategory": "human-test"
+      },
+      {
+        "index": 1,
+        "speakerId": "reply",
+        "surface": "station0 is located on island0.",
+        "startCodePoint": 27,
+        "endCodePoint": 58,
+        "replyToTurnIndex": 0,
+        "commitmentScope": "conversation"
+      },
+      {
+        "index": 2,
+        "speakerId": "owner",
+        "surface": "Where is station1 located?",
+        "startCodePoint": 59,
+        "endCodePoint": 85,
+        "requestAuthority": "factual",
+        "sourceCategory": "human-test"
+      },
+      {
+        "index": 3,
+        "speakerId": "reply",
+        "surface": "station1 is located on island1.",
+        "startCodePoint": 86,
+        "endCodePoint": 117,
+        "replyToTurnIndex": 2,
+        "commitmentScope": "conversation"
+      },
+      {
+        "index": 4,
+        "speakerId": "owner",
+        "surface": "Where is station2 located?",
+        "startCodePoint": 118,
+        "endCodePoint": 144,
+        "requestAuthority": "factual",
+        "sourceCategory": "human-test"
+      },
+      {
+        "index": 5,
+        "speakerId": "reply",
+        "surface": "station2 is located on island2.",
+        "startCodePoint": 145,
+        "endCodePoint": 176,
+        "replyToTurnIndex": 4,
+        "commitmentScope": "conversation"
+      },
+      {
+        "index": 6,
+        "speakerId": "owner",
+        "surface": "Where is station3 located?",
+        "startCodePoint": 177,
+        "endCodePoint": 203,
+        "requestAuthority": "factual",
+        "sourceCategory": "human-test"
+      },
+      {
+        "index": 7,
+        "speakerId": "reply",
+        "surface": "station3 is located on island3.",
+        "startCodePoint": 204,
+        "endCodePoint": 235,
+        "replyToTurnIndex": 6,
+        "commitmentScope": "conversation"
+      },
+      {
+        "index": 8,
+        "speakerId": "owner",
+        "surface": "Where is station4 located?",
+        "startCodePoint": 236,
+        "endCodePoint": 262,
+        "requestAuthority": "factual",
+        "sourceCategory": "human-test"
+      },
+      {
+        "index": 9,
+        "speakerId": "reply",
+        "surface": "station4 is located on island4.",
+        "startCodePoint": 263,
+        "endCodePoint": 294,
+        "replyToTurnIndex": 8,
+        "commitmentScope": "conversation"
+      },
+      {
+        "index": 10,
+        "speakerId": "owner",
+        "surface": "Where is station5 located?",
+        "startCodePoint": 295,
+        "endCodePoint": 321,
+        "requestAuthority": "factual",
+        "sourceCategory": "human-test"
+      },
+      {
+        "index": 11,
+        "speakerId": "reply",
+        "surface": "station5 is located on island5.",
+        "startCodePoint": 322,
+        "endCodePoint": 353,
+        "replyToTurnIndex": 10,
+        "commitmentScope": "conversation"
+      },
+      {
+        "index": 12,
+        "speakerId": "owner",
+        "surface": "Imagine station0 as lanterns.",
+        "startCodePoint": 354,
+        "endCodePoint": 383,
+        "requestAuthority": "creative",
+        "sourceCategory": "human-test"
+      },
+      {
+        "index": 13,
+        "speakerId": "reply",
+        "surface": "station0 glows like lanterns.",
+        "startCodePoint": 384,
+        "endCodePoint": 413,
+        "replyToTurnIndex": 12,
+        "commitmentScope": "conversation"
+      },
+      {
+        "index": 14,
+        "speakerId": "owner",
+        "surface": "Imagine station1 as lanterns.",
+        "startCodePoint": 414,
+        "endCodePoint": 443,
+        "requestAuthority": "creative",
+        "sourceCategory": "human-test"
+      },
+      {
+        "index": 15,
+        "speakerId": "reply",
+        "surface": "station1 glows like lanterns.",
+        "startCodePoint": 444,
+        "endCodePoint": 473,
+        "replyToTurnIndex": 14,
+        "commitmentScope": "conversation"
+      },
+      {
+        "index": 16,
+        "speakerId": "owner",
+        "surface": "Imagine station2 as lanterns.",
+        "startCodePoint": 474,
+        "endCodePoint": 503,
+        "requestAuthority": "creative",
+        "sourceCategory": "human-test"
+      },
+      {
+        "index": 17,
+        "speakerId": "reply",
+        "surface": "station2 glows like lanterns.",
+        "startCodePoint": 504,
+        "endCodePoint": 533,
+        "replyToTurnIndex": 16,
+        "commitmentScope": "conversation"
+      },
+      {
+        "index": 18,
+        "speakerId": "owner",
+        "surface": "Imagine station3 as lanterns.",
+        "startCodePoint": 534,
+        "endCodePoint": 563,
+        "requestAuthority": "creative",
+        "sourceCategory": "human-test"
+      },
+      {
+        "index": 19,
+        "speakerId": "reply",
+        "surface": "station3 glows like lanterns.",
+        "startCodePoint": 564,
+        "endCodePoint": 593,
+        "replyToTurnIndex": 18,
+        "commitmentScope": "conversation"
+      },
+      {
+        "index": 20,
+        "speakerId": "owner",
+        "surface": "Imagine station4 as lanterns.",
+        "startCodePoint": 594,
+        "endCodePoint": 623,
+        "requestAuthority": "creative",
+        "sourceCategory": "human-test"
+      },
+      {
+        "index": 21,
+        "speakerId": "reply",
+        "surface": "station4 glows like lanterns.",
+        "startCodePoint": 624,
+        "endCodePoint": 653,
+        "replyToTurnIndex": 20,
+        "commitmentScope": "conversation"
+      },
+      {
+        "index": 22,
+        "speakerId": "owner",
+        "surface": "Imagine station5 as lanterns.",
+        "startCodePoint": 654,
+        "endCodePoint": 683,
+        "requestAuthority": "creative",
+        "sourceCategory": "human-test"
+      },
+      {
+        "index": 23,
+        "speakerId": "reply",
+        "surface": "station5 glows like lanterns.",
+        "startCodePoint": 684,
+        "endCodePoint": 713,
+        "replyToTurnIndex": 22,
+        "commitmentScope": "conversation"
+      }
+    ]
+  },
+  "patterns": [
+    {
+      "id": "request_requirement_dialogue_084323701dd94bb7d6352a23407e6bddb0f1870dca278073de3e80534846e548",
+      "profileId": "legacy-profile",
+      "patternKind": "semantic_role",
+      "support": 0.9860000000000001,
+      "entropy": 0,
+      "patternJson": {
+        "anchor": "any",
+        "authorityMass": {
+          "action": 0,
+          "creative": 0,
+          "factual": 6,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 0,
+          "factual": 1,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.source_background.v4",
+        "exampleSupport": 6,
+        "learnedFrameOrPatternId": "any:located",
+        "margin": 1,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 6,
+        "posterior": 1,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "control",
+        "requirementCoefficients": {
+          "actionCommitment": -0.2542000000000002,
+          "counterfactualDemand": -0.57195,
+          "executableArtifactDemand": -0.38129999999999975,
+          "externalTruthAuthority": 5.465299999999999,
+          "inferentialDepth": -1.271,
+          "noveltyDemand": -5.211099999999999,
+          "sourceDependence": 4.5120499999999995,
+          "uncertaintyTolerance": -2.0336
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 1,
+        "responseMatchRate": 0,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "factual",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceAuthorityBackground": {
+          "actionCommitment": -2,
+          "counterfactualDemand": 0.45,
+          "executableArtifactDemand": -2.1,
+          "externalTruthAuthority": 0.2999999999999998,
+          "inferentialDepth": 0.19999999999999996,
+          "noveltyDemand": 0.7,
+          "sourceDependence": 0.15000000000000013,
+          "uncertaintyTolerance": 0.4
+        },
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 6,
+          "factual": 6,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "source.3f7bf8c1b052d2646fa9a934d65f6b33caa055c1650aed89",
+        "sourceVersionId": "legacy-source",
+        "surface": "located"
+      },
+      "evidenceIds": [
+        "legacy-evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "request_requirement_dialogue_15fcee19d802c6ac42049a36773f7e8db6103b48fbc01bc1fa8ece2b74135596",
+      "profileId": "legacy-profile",
+      "patternKind": "semantic_role",
+      "support": 0.9860000000000001,
+      "entropy": 0,
+      "patternJson": {
+        "anchor": "start",
+        "authorityMass": {
+          "action": 0,
+          "creative": 0,
+          "factual": 6,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 0,
+          "factual": 1,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.source_background.v4",
+        "exampleSupport": 6,
+        "learnedFrameOrPatternId": "start:where is",
+        "margin": 1,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 6,
+        "posterior": 1,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "control",
+        "requirementCoefficients": {
+          "actionCommitment": -0.2542000000000002,
+          "counterfactualDemand": -0.57195,
+          "executableArtifactDemand": -0.38129999999999975,
+          "externalTruthAuthority": 5.465299999999999,
+          "inferentialDepth": -1.271,
+          "noveltyDemand": -5.211099999999999,
+          "sourceDependence": 4.5120499999999995,
+          "uncertaintyTolerance": -2.0336
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 1,
+        "responseMatchRate": 0,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "factual",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceAuthorityBackground": {
+          "actionCommitment": -2,
+          "counterfactualDemand": 0.45,
+          "executableArtifactDemand": -2.1,
+          "externalTruthAuthority": 0.2999999999999998,
+          "inferentialDepth": 0.19999999999999996,
+          "noveltyDemand": 0.7,
+          "sourceDependence": 0.15000000000000013,
+          "uncertaintyTolerance": 0.4
+        },
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 6,
+          "factual": 6,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "source.3f7bf8c1b052d2646fa9a934d65f6b33caa055c1650aed89",
+        "sourceVersionId": "legacy-source",
+        "surface": "where is"
+      },
+      "evidenceIds": [
+        "legacy-evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "request_requirement_dialogue_1a6e1a19c8a922184001fb77f3d589eb8e22aa0d9941044321637b0892a91bff",
+      "profileId": "legacy-profile",
+      "patternKind": "semantic_role",
+      "support": 0.9860000000000001,
+      "entropy": 0,
+      "patternJson": {
+        "anchor": "end",
+        "authorityMass": {
+          "action": 0,
+          "creative": 0,
+          "factual": 6,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 0,
+          "factual": 1,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.source_background.v4",
+        "exampleSupport": 6,
+        "learnedFrameOrPatternId": "end:located",
+        "margin": 1,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 6,
+        "posterior": 1,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "control",
+        "requirementCoefficients": {
+          "actionCommitment": -0.2542000000000002,
+          "counterfactualDemand": -0.57195,
+          "executableArtifactDemand": -0.38129999999999975,
+          "externalTruthAuthority": 5.465299999999999,
+          "inferentialDepth": -1.271,
+          "noveltyDemand": -5.211099999999999,
+          "sourceDependence": 4.5120499999999995,
+          "uncertaintyTolerance": -2.0336
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 1,
+        "responseMatchRate": 0,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "factual",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceAuthorityBackground": {
+          "actionCommitment": -2,
+          "counterfactualDemand": 0.45,
+          "executableArtifactDemand": -2.1,
+          "externalTruthAuthority": 0.2999999999999998,
+          "inferentialDepth": 0.19999999999999996,
+          "noveltyDemand": 0.7,
+          "sourceDependence": 0.15000000000000013,
+          "uncertaintyTolerance": 0.4
+        },
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 6,
+          "factual": 6,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "source.3f7bf8c1b052d2646fa9a934d65f6b33caa055c1650aed89",
+        "sourceVersionId": "legacy-source",
+        "surface": "located"
+      },
+      "evidenceIds": [
+        "legacy-evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "request_requirement_dialogue_20192b85e13a293b137bbfbf5dfce9969f97fd883795e789e4c7d021fe987fdb",
+      "profileId": "legacy-profile",
+      "patternKind": "semantic_role",
+      "support": 0.9860000000000001,
+      "entropy": 0,
+      "patternJson": {
+        "anchor": "any",
+        "authorityMass": {
+          "action": 0,
+          "creative": 6,
+          "factual": 0,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 1,
+          "factual": 0,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.source_background.v4",
+        "exampleSupport": 6,
+        "learnedFrameOrPatternId": "any:as lanterns",
+        "margin": 1,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 6,
+        "posterior": 1,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "control",
+        "requirementCoefficients": {
+          "actionCommitment": 0.2541999999999999,
+          "counterfactualDemand": 0.57195,
+          "executableArtifactDemand": 0.38130000000000003,
+          "externalTruthAuthority": -5.465299999999999,
+          "inferentialDepth": 1.271,
+          "noveltyDemand": 5.211099999999999,
+          "sourceDependence": -4.5120499999999995,
+          "uncertaintyTolerance": 2.0336
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 1,
+        "responseMatchRate": 0,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "creative",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceAuthorityBackground": {
+          "actionCommitment": -2,
+          "counterfactualDemand": 0.45,
+          "executableArtifactDemand": -2.1,
+          "externalTruthAuthority": 0.2999999999999998,
+          "inferentialDepth": 0.19999999999999996,
+          "noveltyDemand": 0.7,
+          "sourceDependence": 0.15000000000000013,
+          "uncertaintyTolerance": 0.4
+        },
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 6,
+          "factual": 6,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "source.3f7bf8c1b052d2646fa9a934d65f6b33caa055c1650aed89",
+        "sourceVersionId": "legacy-source",
+        "surface": "as lanterns"
+      },
+      "evidenceIds": [
+        "legacy-evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "request_requirement_dialogue_25748819396cbdabd4d9e2b848d0466d64865f072b9d37bc56157a9870de1187",
+      "profileId": "legacy-profile",
+      "patternKind": "semantic_role",
+      "support": 0.9860000000000001,
+      "entropy": 0,
+      "patternJson": {
+        "anchor": "any",
+        "authorityMass": {
+          "action": 0,
+          "creative": 0,
+          "factual": 6,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 0,
+          "factual": 1,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.source_background.v4",
+        "exampleSupport": 6,
+        "learnedFrameOrPatternId": "any:is",
+        "margin": 1,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 6,
+        "posterior": 1,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "control",
+        "requirementCoefficients": {
+          "actionCommitment": -0.2542000000000002,
+          "counterfactualDemand": -0.57195,
+          "executableArtifactDemand": -0.38129999999999975,
+          "externalTruthAuthority": 5.465299999999999,
+          "inferentialDepth": -1.271,
+          "noveltyDemand": -5.211099999999999,
+          "sourceDependence": 4.5120499999999995,
+          "uncertaintyTolerance": -2.0336
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 1,
+        "responseMatchRate": 0,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "factual",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceAuthorityBackground": {
+          "actionCommitment": -2,
+          "counterfactualDemand": 0.45,
+          "executableArtifactDemand": -2.1,
+          "externalTruthAuthority": 0.2999999999999998,
+          "inferentialDepth": 0.19999999999999996,
+          "noveltyDemand": 0.7,
+          "sourceDependence": 0.15000000000000013,
+          "uncertaintyTolerance": 0.4
+        },
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 6,
+          "factual": 6,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "source.3f7bf8c1b052d2646fa9a934d65f6b33caa055c1650aed89",
+        "sourceVersionId": "legacy-source",
+        "surface": "is"
+      },
+      "evidenceIds": [
+        "legacy-evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "request_requirement_dialogue_2ea1ed3c87b6338cb9f262dc66595a49531b74d972e1f29bc265232d56e8e99c",
+      "profileId": "legacy-profile",
+      "patternKind": "semantic_role",
+      "support": 0.9860000000000001,
+      "entropy": 0,
+      "patternJson": {
+        "anchor": "start",
+        "authorityMass": {
+          "action": 0,
+          "creative": 0,
+          "factual": 6,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 0,
+          "factual": 1,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.source_background.v4",
+        "exampleSupport": 6,
+        "learnedFrameOrPatternId": "start:where",
+        "margin": 1,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 6,
+        "posterior": 1,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "control",
+        "requirementCoefficients": {
+          "actionCommitment": -0.2542000000000002,
+          "counterfactualDemand": -0.57195,
+          "executableArtifactDemand": -0.38129999999999975,
+          "externalTruthAuthority": 5.465299999999999,
+          "inferentialDepth": -1.271,
+          "noveltyDemand": -5.211099999999999,
+          "sourceDependence": 4.5120499999999995,
+          "uncertaintyTolerance": -2.0336
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 1,
+        "responseMatchRate": 0,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "factual",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceAuthorityBackground": {
+          "actionCommitment": -2,
+          "counterfactualDemand": 0.45,
+          "executableArtifactDemand": -2.1,
+          "externalTruthAuthority": 0.2999999999999998,
+          "inferentialDepth": 0.19999999999999996,
+          "noveltyDemand": 0.7,
+          "sourceDependence": 0.15000000000000013,
+          "uncertaintyTolerance": 0.4
+        },
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 6,
+          "factual": 6,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "source.3f7bf8c1b052d2646fa9a934d65f6b33caa055c1650aed89",
+        "sourceVersionId": "legacy-source",
+        "surface": "where"
+      },
+      "evidenceIds": [
+        "legacy-evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "request_requirement_dialogue_3b7b391435aa5b8a645e2066bfd530cd954780f0f245cf69cf4d255dfac948e0",
+      "profileId": "legacy-profile",
+      "patternKind": "semantic_role",
+      "support": 0.9860000000000001,
+      "entropy": 0,
+      "patternJson": {
+        "anchor": "any",
+        "authorityMass": {
+          "action": 0,
+          "creative": 0,
+          "factual": 6,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 0,
+          "factual": 1,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.source_background.v4",
+        "exampleSupport": 6,
+        "learnedFrameOrPatternId": "any:where",
+        "margin": 1,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 6,
+        "posterior": 1,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "control",
+        "requirementCoefficients": {
+          "actionCommitment": -0.2542000000000002,
+          "counterfactualDemand": -0.57195,
+          "executableArtifactDemand": -0.38129999999999975,
+          "externalTruthAuthority": 5.465299999999999,
+          "inferentialDepth": -1.271,
+          "noveltyDemand": -5.211099999999999,
+          "sourceDependence": 4.5120499999999995,
+          "uncertaintyTolerance": -2.0336
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 1,
+        "responseMatchRate": 0,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "factual",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceAuthorityBackground": {
+          "actionCommitment": -2,
+          "counterfactualDemand": 0.45,
+          "executableArtifactDemand": -2.1,
+          "externalTruthAuthority": 0.2999999999999998,
+          "inferentialDepth": 0.19999999999999996,
+          "noveltyDemand": 0.7,
+          "sourceDependence": 0.15000000000000013,
+          "uncertaintyTolerance": 0.4
+        },
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 6,
+          "factual": 6,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "source.3f7bf8c1b052d2646fa9a934d65f6b33caa055c1650aed89",
+        "sourceVersionId": "legacy-source",
+        "surface": "where"
+      },
+      "evidenceIds": [
+        "legacy-evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "request_requirement_dialogue_a180e0708e1e2997c4dbed08c1c652b8c7215e4422f8618e766f89124b7a894f",
+      "profileId": "legacy-profile",
+      "patternKind": "semantic_role",
+      "support": 0.9860000000000001,
+      "entropy": 0,
+      "patternJson": {
+        "anchor": "any",
+        "authorityMass": {
+          "action": 0,
+          "creative": 6,
+          "factual": 0,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 1,
+          "factual": 0,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.source_background.v4",
+        "exampleSupport": 6,
+        "learnedFrameOrPatternId": "any:as",
+        "margin": 1,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 6,
+        "posterior": 1,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "control",
+        "requirementCoefficients": {
+          "actionCommitment": 0.2541999999999999,
+          "counterfactualDemand": 0.57195,
+          "executableArtifactDemand": 0.38130000000000003,
+          "externalTruthAuthority": -5.465299999999999,
+          "inferentialDepth": 1.271,
+          "noveltyDemand": 5.211099999999999,
+          "sourceDependence": -4.5120499999999995,
+          "uncertaintyTolerance": 2.0336
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 1,
+        "responseMatchRate": 0,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "creative",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceAuthorityBackground": {
+          "actionCommitment": -2,
+          "counterfactualDemand": 0.45,
+          "executableArtifactDemand": -2.1,
+          "externalTruthAuthority": 0.2999999999999998,
+          "inferentialDepth": 0.19999999999999996,
+          "noveltyDemand": 0.7,
+          "sourceDependence": 0.15000000000000013,
+          "uncertaintyTolerance": 0.4
+        },
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 6,
+          "factual": 6,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "source.3f7bf8c1b052d2646fa9a934d65f6b33caa055c1650aed89",
+        "sourceVersionId": "legacy-source",
+        "surface": "as"
+      },
+      "evidenceIds": [
+        "legacy-evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "request_requirement_dialogue_b109ad1b82e77c8874538155b79102c4e0e930049346c21c887cfed5fb8c136e",
+      "profileId": "legacy-profile",
+      "patternKind": "semantic_role",
+      "support": 0.9860000000000001,
+      "entropy": 0,
+      "patternJson": {
+        "anchor": "start",
+        "authorityMass": {
+          "action": 0,
+          "creative": 6,
+          "factual": 0,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 1,
+          "factual": 0,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.source_background.v4",
+        "exampleSupport": 6,
+        "learnedFrameOrPatternId": "start:imagine",
+        "margin": 1,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 6,
+        "posterior": 1,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "control",
+        "requirementCoefficients": {
+          "actionCommitment": 0.2541999999999999,
+          "counterfactualDemand": 0.57195,
+          "executableArtifactDemand": 0.38130000000000003,
+          "externalTruthAuthority": -5.465299999999999,
+          "inferentialDepth": 1.271,
+          "noveltyDemand": 5.211099999999999,
+          "sourceDependence": -4.5120499999999995,
+          "uncertaintyTolerance": 2.0336
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 1,
+        "responseMatchRate": 0,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "creative",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceAuthorityBackground": {
+          "actionCommitment": -2,
+          "counterfactualDemand": 0.45,
+          "executableArtifactDemand": -2.1,
+          "externalTruthAuthority": 0.2999999999999998,
+          "inferentialDepth": 0.19999999999999996,
+          "noveltyDemand": 0.7,
+          "sourceDependence": 0.15000000000000013,
+          "uncertaintyTolerance": 0.4
+        },
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 6,
+          "factual": 6,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "source.3f7bf8c1b052d2646fa9a934d65f6b33caa055c1650aed89",
+        "sourceVersionId": "legacy-source",
+        "surface": "imagine"
+      },
+      "evidenceIds": [
+        "legacy-evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "request_requirement_dialogue_b557504ee0d93894ded9de36a5513ad4ceda9e729cbee8fa3fee98451d483d76",
+      "profileId": "legacy-profile",
+      "patternKind": "semantic_role",
+      "support": 0.9860000000000001,
+      "entropy": 0,
+      "patternJson": {
+        "anchor": "end",
+        "authorityMass": {
+          "action": 0,
+          "creative": 6,
+          "factual": 0,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 1,
+          "factual": 0,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.source_background.v4",
+        "exampleSupport": 6,
+        "learnedFrameOrPatternId": "end:lanterns",
+        "margin": 1,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 6,
+        "posterior": 1,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "control",
+        "requirementCoefficients": {
+          "actionCommitment": 0.2541999999999999,
+          "counterfactualDemand": 0.57195,
+          "executableArtifactDemand": 0.38130000000000003,
+          "externalTruthAuthority": -5.465299999999999,
+          "inferentialDepth": 1.271,
+          "noveltyDemand": 5.211099999999999,
+          "sourceDependence": -4.5120499999999995,
+          "uncertaintyTolerance": 2.0336
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 1,
+        "responseMatchRate": 0,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "creative",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceAuthorityBackground": {
+          "actionCommitment": -2,
+          "counterfactualDemand": 0.45,
+          "executableArtifactDemand": -2.1,
+          "externalTruthAuthority": 0.2999999999999998,
+          "inferentialDepth": 0.19999999999999996,
+          "noveltyDemand": 0.7,
+          "sourceDependence": 0.15000000000000013,
+          "uncertaintyTolerance": 0.4
+        },
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 6,
+          "factual": 6,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "source.3f7bf8c1b052d2646fa9a934d65f6b33caa055c1650aed89",
+        "sourceVersionId": "legacy-source",
+        "surface": "lanterns"
+      },
+      "evidenceIds": [
+        "legacy-evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "request_requirement_dialogue_c19559bd66198f20cb8eb4091d5fbf733b941a72b75e9c9f084f1e7ae971f31e",
+      "profileId": "legacy-profile",
+      "patternKind": "semantic_role",
+      "support": 0.9860000000000001,
+      "entropy": 0,
+      "patternJson": {
+        "anchor": "any",
+        "authorityMass": {
+          "action": 0,
+          "creative": 6,
+          "factual": 0,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 1,
+          "factual": 0,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.source_background.v4",
+        "exampleSupport": 6,
+        "learnedFrameOrPatternId": "any:imagine",
+        "margin": 1,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 6,
+        "posterior": 1,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "control",
+        "requirementCoefficients": {
+          "actionCommitment": 0.2541999999999999,
+          "counterfactualDemand": 0.57195,
+          "executableArtifactDemand": 0.38130000000000003,
+          "externalTruthAuthority": -5.465299999999999,
+          "inferentialDepth": 1.271,
+          "noveltyDemand": 5.211099999999999,
+          "sourceDependence": -4.5120499999999995,
+          "uncertaintyTolerance": 2.0336
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 1,
+        "responseMatchRate": 0,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "creative",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceAuthorityBackground": {
+          "actionCommitment": -2,
+          "counterfactualDemand": 0.45,
+          "executableArtifactDemand": -2.1,
+          "externalTruthAuthority": 0.2999999999999998,
+          "inferentialDepth": 0.19999999999999996,
+          "noveltyDemand": 0.7,
+          "sourceDependence": 0.15000000000000013,
+          "uncertaintyTolerance": 0.4
+        },
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 6,
+          "factual": 6,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "source.3f7bf8c1b052d2646fa9a934d65f6b33caa055c1650aed89",
+        "sourceVersionId": "legacy-source",
+        "surface": "imagine"
+      },
+      "evidenceIds": [
+        "legacy-evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "request_requirement_dialogue_c772d0831f88efb38e6a69994a762df9dd0fdc12577c3d84455aec1d7e5d7476",
+      "profileId": "legacy-profile",
+      "patternKind": "semantic_role",
+      "support": 0.9860000000000001,
+      "entropy": 0,
+      "patternJson": {
+        "anchor": "any",
+        "authorityMass": {
+          "action": 0,
+          "creative": 0,
+          "factual": 6,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 0,
+          "factual": 1,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.source_background.v4",
+        "exampleSupport": 6,
+        "learnedFrameOrPatternId": "any:where is",
+        "margin": 1,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 6,
+        "posterior": 1,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "control",
+        "requirementCoefficients": {
+          "actionCommitment": -0.2542000000000002,
+          "counterfactualDemand": -0.57195,
+          "executableArtifactDemand": -0.38129999999999975,
+          "externalTruthAuthority": 5.465299999999999,
+          "inferentialDepth": -1.271,
+          "noveltyDemand": -5.211099999999999,
+          "sourceDependence": 4.5120499999999995,
+          "uncertaintyTolerance": -2.0336
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 1,
+        "responseMatchRate": 0,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "factual",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceAuthorityBackground": {
+          "actionCommitment": -2,
+          "counterfactualDemand": 0.45,
+          "executableArtifactDemand": -2.1,
+          "externalTruthAuthority": 0.2999999999999998,
+          "inferentialDepth": 0.19999999999999996,
+          "noveltyDemand": 0.7,
+          "sourceDependence": 0.15000000000000013,
+          "uncertaintyTolerance": 0.4
+        },
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 6,
+          "factual": 6,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "source.3f7bf8c1b052d2646fa9a934d65f6b33caa055c1650aed89",
+        "sourceVersionId": "legacy-source",
+        "surface": "where is"
+      },
+      "evidenceIds": [
+        "legacy-evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "request_requirement_dialogue_d0e655d6f4e5719c797a081ee9df51888b118b0c38251cde47f9ead04b515bc8",
+      "profileId": "legacy-profile",
+      "patternKind": "semantic_role",
+      "support": 0.9860000000000001,
+      "entropy": 0,
+      "patternJson": {
+        "anchor": "end",
+        "authorityMass": {
+          "action": 0,
+          "creative": 6,
+          "factual": 0,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 1,
+          "factual": 0,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.source_background.v4",
+        "exampleSupport": 6,
+        "learnedFrameOrPatternId": "end:as lanterns",
+        "margin": 1,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 6,
+        "posterior": 1,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "control",
+        "requirementCoefficients": {
+          "actionCommitment": 0.2541999999999999,
+          "counterfactualDemand": 0.57195,
+          "executableArtifactDemand": 0.38130000000000003,
+          "externalTruthAuthority": -5.465299999999999,
+          "inferentialDepth": 1.271,
+          "noveltyDemand": 5.211099999999999,
+          "sourceDependence": -4.5120499999999995,
+          "uncertaintyTolerance": 2.0336
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 1,
+        "responseMatchRate": 0,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "creative",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceAuthorityBackground": {
+          "actionCommitment": -2,
+          "counterfactualDemand": 0.45,
+          "executableArtifactDemand": -2.1,
+          "externalTruthAuthority": 0.2999999999999998,
+          "inferentialDepth": 0.19999999999999996,
+          "noveltyDemand": 0.7,
+          "sourceDependence": 0.15000000000000013,
+          "uncertaintyTolerance": 0.4
+        },
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 6,
+          "factual": 6,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "source.3f7bf8c1b052d2646fa9a934d65f6b33caa055c1650aed89",
+        "sourceVersionId": "legacy-source",
+        "surface": "as lanterns"
+      },
+      "evidenceIds": [
+        "legacy-evidence"
+      ],
+      "updatedAt": 1
+    },
+    {
+      "id": "request_requirement_dialogue_d883da1c897fb3bedfe1aa30970631dcc57940c6fade04e1769736fab6520a35",
+      "profileId": "legacy-profile",
+      "patternKind": "semantic_role",
+      "support": 0.9860000000000001,
+      "entropy": 0,
+      "patternJson": {
+        "anchor": "any",
+        "authorityMass": {
+          "action": 0,
+          "creative": 6,
+          "factual": 0,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "authorityProbabilities": {
+          "action": 0,
+          "creative": 1,
+          "factual": 0,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "compilerFingerprint": "scce.request_requirement_pattern.source_background.v4",
+        "exampleSupport": 6,
+        "learnedFrameOrPatternId": "any:lanterns",
+        "margin": 1,
+        "matchMode": "unicode_token_ngram",
+        "pairedExamples": 6,
+        "posterior": 1,
+        "provenanceClass": "learned_language_prior",
+        "requestSpanRole": "control",
+        "requirementCoefficients": {
+          "actionCommitment": 0.2541999999999999,
+          "counterfactualDemand": 0.57195,
+          "executableArtifactDemand": 0.38130000000000003,
+          "externalTruthAuthority": -5.465299999999999,
+          "inferentialDepth": 1.271,
+          "noveltyDemand": 5.211099999999999,
+          "sourceDependence": -4.5120499999999995,
+          "uncertaintyTolerance": 2.0336
+        },
+        "requirementTargetBounds": {},
+        "requirementTargets": {},
+        "responseMatchCut": 1,
+        "responseMatchRate": 0,
+        "schema": "scce.request_requirement_pattern.v1",
+        "selectedAuthority": "creative",
+        "semanticRoleId": "role.request.requirement.v1",
+        "sourceAuthorityBackground": {
+          "actionCommitment": -2,
+          "counterfactualDemand": 0.45,
+          "executableArtifactDemand": -2.1,
+          "externalTruthAuthority": 0.2999999999999998,
+          "inferentialDepth": 0.19999999999999996,
+          "noveltyDemand": 0.7,
+          "sourceDependence": 0.15000000000000013,
+          "uncertaintyTolerance": 0.4
+        },
+        "sourceClassTotals": {
+          "action": 0,
+          "creative": 6,
+          "factual": 6,
+          "program": 0,
+          "reasoned": 0,
+          "translation": 0
+        },
+        "sourceSystem": "source.3f7bf8c1b052d2646fa9a934d65f6b33caa055c1650aed89",
+        "sourceVersionId": "legacy-source",
+        "surface": "lanterns"
+      },
+      "evidenceIds": [
+        "legacy-evidence"
+      ],
+      "updatedAt": 1
+    }
+  ],
+  "audit": {
+    "classTotals": {
+      "action": 0,
+      "creative": 6,
+      "factual": 6,
+      "program": 0,
+      "reasoned": 0,
+      "translation": 0
+    },
+    "compilerFingerprint": "scce.request_requirement_pattern.source_background.v4",
+    "corpusRevision": null,
+    "corpusSchema": "scce.request_requirement_corpus.v1",
+    "evidenceIds": [
+      "legacy-evidence"
+    ],
+    "examples": 12,
+    "featureCandidates": 104,
+    "hiddenWeights": false,
+    "language": "und",
+    "learnedPatterns": 14,
+    "patternSchema": "scce.request_requirement_pattern.v1",
+    "responseFormAnnotatedExamples": 0,
+    "responseFormProfileIds": [],
+    "responseFormTotals": {},
+    "schema": "scce.request_requirement_learning_report.v1",
+    "sourceAuthorityBackground": {
+      "actionCommitment": -2,
+      "counterfactualDemand": 0.45,
+      "executableArtifactDemand": -2.1,
+      "externalTruthAuthority": 0.2999999999999998,
+      "inferentialDepth": 0.19999999999999996,
+      "noveltyDemand": 0.7,
+      "sourceDependence": 0.15000000000000013,
+      "uncertaintyTolerance": 0.4
+    },
+    "sourceSystem": "source.3f7bf8c1b052d2646fa9a934d65f6b33caa055c1650aed89",
+    "sourceVersionId": "legacy-source",
+    "transparentSparsePatterns": true
+  },
+  "authorship": "test_authored",
+  "sourceSha256": "c227c6b6cfab493f5fca00e5de437e43e15cf1812359edd2a855ff34f2f73981",
+  "compilerInput": {
+    "corpusSchema": "scce.request_requirement_corpus.v1",
+    "language": "und",
+    "sourceVersionId": "legacy-source",
+    "sourceSystem": "source.3f7bf8c1b052d2646fa9a934d65f6b33caa055c1650aed89",
+    "compilerFingerprint": "scce.request_requirement_pattern.source_background.v4",
+    "profileId": "legacy-profile",
+    "evidenceIds": [
+      "legacy-evidence"
+    ],
+    "updatedAt": 1
+  }
+}

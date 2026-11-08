@@ -2395,6 +2395,9 @@ describe("dialogue corpus training", () => {
     const checkpointWrite = vi.fn(async (row: IngestionCheckpoint) => { checkpoints.set(row.id, structuredClone(row)); });
     fixture.storage.ingestion = { put: checkpointWrite, get: async id => checkpoints.get(id) ?? null,
       list: async () => [...checkpoints.values()] } as ScceStorage["ingestion"];
+    fixture.storage.evidence.searchEvidence = async query => fixture.state.evidence
+      .filter(span => String(span.sourceVersionId) === String(query.sourceVersionId) && span.status === "promoted")
+      .map(span => ({ span, score: 1, reason: "owned transcript" }));
     const options = { storage: fixture.storage, rootPath: root, authorship: "human_authored" as const, informationLabel: ownerLabel,
       ngramMaxOrder: 3, ngramMaxCountersPerOrder: 64, maxFilesPerRun: 1 };
     const compile = vi.spyOn(kernel, "compileLanguageTrainingBatch");
@@ -2408,6 +2411,11 @@ describe("dialogue corpus training", () => {
       const writes = Object.fromEntries(Object.entries(fixture.state).map(([key, rows]) => [key, rows.length]));
       const checkpointWrites = checkpointWrite.mock.calls.length;
       const learnedPatternWrites = patternWrites.mock.calls.length;
+      const savedCheckpoints = structuredClone([...checkpoints.values()]);
+      const emptyReceipt = savedCheckpoints.find(row => row.id.startsWith("dialogue_request_authority_compilation_"))!;
+      expect(recordOf(emptyReceipt.metadata).report).toMatchObject({ examples: 1, evidenceBoundExamples: 1, patternsPersisted: 0 });
+      expect(savedCheckpoints.filter(row => row.id.startsWith("dialogue_request_authority_compilation_"))).toHaveLength(1);
+      expect(savedCheckpoints.filter(row => !row.id.startsWith("dialogue_request_authority_compilation_"))).toHaveLength(1);
       const replay = await trainDialogueCorpus(options);
       expect(replay.filesSkipped).toEqual([]);
       expect(replay.reports).toEqual(first.reports);
@@ -2418,8 +2426,99 @@ describe("dialogue corpus training", () => {
       expect(replay.conversationalConstructions.patternsPersisted).toBe(0);
       expect(checkpointWrite).toHaveBeenCalledTimes(checkpointWrites);
       expect(patternWrites).toHaveBeenCalledTimes(learnedPatternWrites);
-      expect(checkpoints.size).toBe(1);
+      expect(checkpoints.size).toBe(2);
+      expect([...checkpoints.values()]).toEqual(savedCheckpoints);
     } finally { compile.mockRestore(); patternWrites.mockRestore(); }
+  });
+
+  it.each(["old receipt", "missing receipt"])("upgrades cached source request roles from genuine v4 output once without source recompilation: %s", async receiptMode => {
+    const legacy = JSON.parse(readFileSync(new URL("./fixtures/dialogue-request-authority-v4.json", import.meta.url), "utf8")) as {
+      generatedFromRevision: string; authorship: string; sourceSha256: string;
+      source: { schema: string; text: string; turns: TranscriptTurn[] }; patterns: LanguagePatternRecord[];
+      audit: { compilerFingerprint: string };
+    };
+    expect(legacy.generatedFromRevision).toBe("478e65f");
+    expect(legacy.authorship).toBe("test_authored");
+    expect(createHash("sha256").update(legacy.source.text).digest("hex")).toBe(legacy.sourceSha256);
+    expect(legacy.audit.compilerFingerprint).toBe("scce.request_requirement_pattern.source_background.v4");
+    const legacyLocated = legacy.patterns.filter(row => recordOf(row.patternJson).surface === "located");
+    expect(legacyLocated.length).toBeGreaterThan(0);
+    expect(legacyLocated.every(row => recordOf(row.patternJson).requestSpanRole === "control" && recordOf(row.patternJson).responseMatchRate === 0)).toBe(true);
+    const root = await tempDir("dialogue-request-upgrade-");
+    await writeFile(path.join(root, "human.json"), JSON.stringify(legacy.source), "utf8");
+    const fixture = memoryStorage(), checkpoints = new Map<string, IngestionCheckpoint>();
+    const checkpointWrite = vi.fn(async (row: IngestionCheckpoint) => { checkpoints.set(row.id, structuredClone(row)); });
+    fixture.storage.ingestion = { put: checkpointWrite, get: async id => checkpoints.get(id) ?? null,
+      list: async () => [...checkpoints.values()] } as ScceStorage["ingestion"];
+    const evidenceRead = vi.fn(async (query: Parameters<ScceStorage["evidence"]["searchEvidence"]>[0]) => fixture.state.evidence
+      .filter(span => String(span.sourceVersionId) === String(query.sourceVersionId) && span.status === "promoted")
+      .map(span => ({ span, score: 1, reason: "owned source" })));
+    fixture.storage.evidence.searchEvidence = evidenceRead;
+    const replace = vi.fn(async (input: Parameters<NonNullable<ScceStorage["languageMemory"]["replaceRequestRequirementPatterns"]>>[0]) => {
+      fixture.state.patterns = fixture.state.patterns.filter(row => !(row.profileId === input.profileId && recordOf(row.patternJson).schema === input.schema
+        && recordOf(row.patternJson).sourceVersionId === input.sourceVersionId && recordOf(row.patternJson).sourceSystem === input.sourceSystem));
+      await fixture.storage.languageMemory.putLanguagePatterns!(input.patterns);
+    });
+    fixture.storage.languageMemory.replaceRequestRequirementPatterns = replace;
+    const options = { storage: fixture.storage, rootPath: root, authorship: "human_authored" as const, informationLabel: ownerLabel,
+      ngramMaxOrder: 2, ngramMaxCountersPerOrder: 32, maxFilesPerRun: 1 };
+    const compile = vi.spyOn(kernel, "compileLanguageTrainingBatch");
+    const requestCompile = vi.spyOn(kernel, "compileRequestRequirementCorpus");
+    const actCompile = vi.spyOn(kernel, "compileRequestCommunicativeActModel");
+    const conversationCompile = vi.spyOn(kernel, "induceConversationalActConstructionTrainingSets");
+    try {
+      const first = await trainDialogueCorpus(options);
+      const requestPatterns = () => fixture.state.patterns.filter(row => recordOf(row.patternJson).schema === kernel.REQUEST_REQUIREMENT_PATTERN_SCHEMA);
+      expect(first.requestAuthorities.patternsPersisted).toBeGreaterThan(0);
+      const currentPatterns = structuredClone(requestPatterns()), current = currentPatterns[0]!;
+      const sourceVersionId = recordOf(current.patternJson).sourceVersionId;
+      const receipt = [...checkpoints.values()].find(row => row.id.startsWith("dialogue_request_authority_compilation_"))!;
+      const sourceCheckpoint = structuredClone([...checkpoints.values()].find(row => row.id !== receipt.id)!);
+      const legacyPatterns = legacy.patterns.map(row => {
+        const metadata = recordOf(row.patternJson);
+        const actual = currentPatterns.find(pattern => recordOf(pattern.patternJson).anchor === metadata.anchor && recordOf(pattern.patternJson).surface === metadata.surface)!;
+        const id = "request_requirement_dialogue_" + createHasher().digestHex(kernel.canonicalStringify({
+          schema: "scce.request_requirement_pattern.identity.v1", compilerFingerprint: legacy.audit.compilerFingerprint,
+          profileId: current.profileId, sourceVersionId, sourceSystem: CORPUS_SOURCE_SYSTEM_IDS.dialogue, learnedFrameOrPatternId: metadata.learnedFrameOrPatternId
+        }));
+        return { ...row, id, profileId: current.profileId, evidenceIds: actual.evidenceIds, informationLabel: ownerLabel,
+          patternJson: toJsonValue({ ...metadata, sourceVersionId, trainingSourceUri: recordOf(actual.patternJson).trainingSourceUri,
+            sourceTurnRanges: recordOf(actual.patternJson).sourceTurnRanges, sourceMetadata: null }) };
+      });
+      fixture.state.patterns = fixture.state.patterns.filter(row => !requestPatterns().includes(row)).concat(legacyPatterns);
+      if (receiptMode === "old receipt") checkpoints.set(receipt.id, { ...receipt, metadata: { ...recordOf(receipt.metadata), compilerFingerprint: legacy.audit.compilerFingerprint } });
+      else checkpoints.delete(receipt.id);
+      const sourceWrites = { profiles: fixture.state.profiles.length, evidence: fixture.state.evidence.length, units: fixture.state.units.length,
+        models: fixture.state.models.length, frames: fixture.state.frames.length };
+      replace.mockClear(); checkpointWrite.mockClear(); compile.mockClear(); requestCompile.mockClear(); actCompile.mockClear(); conversationCompile.mockClear(); evidenceRead.mockClear();
+      const upgraded = await trainDialogueCorpus(options);
+      expect(upgraded.reports).toEqual(first.reports);
+      expect(upgraded.communicativeActs.patternsPersisted).toBe(0);
+      expect(upgraded.conversationalConstructions.patternsPersisted).toBe(0);
+      expect(replace).toHaveBeenCalledTimes(1);
+      expect(checkpointWrite).toHaveBeenCalledTimes(1);
+      expect(requestPatterns()).toHaveLength(currentPatterns.length);
+      expect(requestPatterns().every(row => recordOf(row.patternJson).compilerFingerprint === kernel.REQUEST_REQUIREMENT_PATTERN_COMPILER_FINGERPRINT)).toBe(true);
+      const located = requestPatterns().filter(row => recordOf(row.patternJson).surface === "located");
+      expect(located.length).toBeGreaterThan(0);
+      expect(located.every(row => (recordOf(row.patternJson).requestUnitResponseCopy as Array<{ unit: string; copiedPairs: number }>).some(unit => unit.unit === "located" && unit.copiedPairs === 6))).toBe(true);
+      expect(checkpoints.get(sourceCheckpoint.id)).toEqual(sourceCheckpoint);
+      expect({ profiles: fixture.state.profiles.length, evidence: fixture.state.evidence.length, units: fixture.state.units.length,
+        models: fixture.state.models.length, frames: fixture.state.frames.length }).toEqual(sourceWrites);
+      const persisted = structuredClone(fixture.state.patterns);
+      evidenceRead.mockClear();
+      const replay = await trainDialogueCorpus(options);
+      expect(replay.requestAuthorities.patternsPersisted).toBe(0);
+      expect(evidenceRead).not.toHaveBeenCalled();
+      expect(replace).toHaveBeenCalledTimes(1);
+      expect(checkpointWrite).toHaveBeenCalledTimes(1);
+      expect(fixture.state.patterns).toEqual(persisted);
+      expect(compile).not.toHaveBeenCalled();
+      expect(requestCompile).toHaveBeenCalledTimes(1);
+      expect(actCompile.mock.calls.every(call => call[0].length === 0)).toBe(true);
+      expect(conversationCompile.mock.calls.every(call => call[0].documents.length === 0)).toBe(true);
+      expect(checkpoints.size).toBe(2);
+    } finally { compile.mockRestore(); requestCompile.mockRestore(); actCompile.mockRestore(); conversationCompile.mockRestore(); }
   });
 
   it("carries explicitly annotated reference properties through ordinary source preparation and its canonical compilation inventory", async () => {

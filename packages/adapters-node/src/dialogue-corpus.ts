@@ -28,6 +28,7 @@ import {
   type DialogueActObservationReport,
   type DialogueTranscriptSource,
   type TranscriptTurn,
+  type ContentHash,
   type EvidenceSpan,
   type EvidenceId,
   type InformationLabel,
@@ -245,7 +246,7 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
     totals: sumReports(reports),
     reports,
     communicativeActs: await persistDialogueCommunicativeActs(input, refreshDialogue ? transcripts : [], refreshDialogue ? read.map(file => String(corpusSourceVersionIdFor(file))) : []),
-    requestAuthorities: await persistDialogueRequestAuthorities(input, refreshDialogue ? read : []),
+    requestAuthorities: await persistDialogueRequestAuthorities(input, read),
     conversationalConstructions: await persistConversationalConstructions(input, refreshDialogue ? read : []),
     stoppedByHeapSafetyBound,
     heapMiBAtExit: heapMiB()
@@ -268,6 +269,23 @@ async function persistDialogueRequestAuthorities(
     const profiles = await input.storage.model.listLanguageProfiles({ limit: 16, sourceVersionIds: [sourceVersionId] });
     const profile = profiles.find(item => String(item.sourceVersionId) === String(sourceVersionId));
     if (!profile) continue;
+    const rootUri = pathToFileURL(path.resolve(input.rootPath)).href;
+    const contentHash = sha256(file.text) as ContentHash;
+    const byteLength = Buffer.byteLength(file.text, "utf8");
+    const binding = canonicalStringify({ sourceSystem: CORPUS_SOURCE_SYSTEM_IDS.dialogue, sourceVersionId, profileId: profile.id,
+      rootUri, sourceUri: file.sourceUri, informationLabel: input.informationLabel,
+      inputHash: hasher.digestHex(canonicalStringify({ transcriptTurns: file.transcriptTurns, sourceMetadata: file.sourceMetadata ?? null, authorship: input.authorship })) });
+    const checkpointId = `dialogue_request_authority_compilation_${hasher.digestHex(binding)}`;
+    const currentReceipt = async () => {
+      const receipt = await input.storage.ingestion.get(checkpointId);
+      const metadata = receipt?.metadata;
+      return receipt?.status === "complete" && receipt.phase === "stored" && receipt.rootUri === rootUri
+        && receipt.itemUri === file.sourceUri && receipt.contentHash === contentHash && receipt.byteLength === byteLength
+        && metadata && typeof metadata === "object" && !Array.isArray(metadata)
+        && metadata.schema === "scce.dialogue_request_authority_compilation.v1" && metadata.binding === binding
+        && metadata.compilerFingerprint === REQUEST_REQUIREMENT_PATTERN_COMPILER_FINGERPRINT;
+    };
+    if (await currentReceipt()) continue;
     const found = await input.storage.evidence.searchEvidence({ sourceVersionId, status: "promoted", limit: 4096 });
     const spans = found.map(row => row.span).filter(span => String(span.sourceVersionId) === String(sourceVersionId) && span.status === "promoted");
     const replies = new Map(file.transcriptTurns
@@ -325,20 +343,29 @@ async function persistDialogueRequestAuthorities(
           sourceMetadata: file.sourceMetadata ?? null, trainingSourceUri: file.sourceUri }),
         informationLabel: input.informationLabel };
     });
-    if (input.storage.languageMemory.replaceRequestRequirementPatterns) {
-      await input.storage.languageMemory.replaceRequestRequirementPatterns({
-        profileId: profile.id,
-        sourceVersionId,
-        sourceSystem: CORPUS_SOURCE_SYSTEM_IDS.dialogue,
-        schema: REQUEST_REQUIREMENT_PATTERN_SCHEMA,
-        compilerFingerprint: REQUEST_REQUIREMENT_PATTERN_COMPILER_FINGERPRINT,
-        patterns
-      });
-    } else if (patterns.length) {
-      if (input.storage.languageMemory.putLanguagePatterns) await input.storage.languageMemory.putLanguagePatterns(patterns);
-      else for (const pattern of patterns) await input.storage.languageMemory.putLanguagePattern(pattern);
-    }
-    patternsPersisted += patterns.length;
+    await input.storage.transaction(async () => {
+      if (await currentReceipt()) return;
+      if (input.storage.languageMemory.replaceRequestRequirementPatterns) {
+        await input.storage.languageMemory.replaceRequestRequirementPatterns({
+          profileId: profile.id,
+          sourceVersionId,
+          sourceSystem: CORPUS_SOURCE_SYSTEM_IDS.dialogue,
+          schema: REQUEST_REQUIREMENT_PATTERN_SCHEMA,
+          compilerFingerprint: REQUEST_REQUIREMENT_PATTERN_COMPILER_FINGERPRINT,
+          patterns
+        });
+      } else if (patterns.length) {
+        if (input.storage.languageMemory.putLanguagePatterns) await input.storage.languageMemory.putLanguagePatterns(patterns);
+        else for (const pattern of patterns) await input.storage.languageMemory.putLanguagePattern(pattern);
+      }
+      await input.storage.ingestion.put({ id: checkpointId, rootUri, itemUri: file.sourceUri, phase: "stored", status: "complete",
+        offsetBytes: byteLength, contentHash, byteLength, updatedAt: Date.now(), metadata: toJsonValue({
+          schema: "scce.dialogue_request_authority_compilation.v1", binding,
+          compilerFingerprint: REQUEST_REQUIREMENT_PATTERN_COMPILER_FINGERPRINT,
+          report: { examples: bound.length, evidenceBoundExamples: bound.length, patternsPersisted: patterns.length }
+        }) });
+      patternsPersisted += patterns.length;
+    });
   }
   return { examples, evidenceBoundExamples, patternsPersisted };
 }
