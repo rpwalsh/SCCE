@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { codeSurfaceTokens, trainKneserNey, toJsonValue } from "@scce/kernel";
-import { findCodeVerifierCapability, trustedHostPatchValidationProvider, type StructuredPatchValidationPolicy } from "@scce/adapters-node";
+import { findCodeVerifierCapability, type StructuredPatchValidationPolicy } from "@scce/adapters-node";
 import { handleRequest, type ApiContext } from "../routes.js";
 
 const roots: string[] = [];
@@ -291,8 +291,7 @@ describe("test-authored reference applications through the production workspace 
   const context = { runtime: {
    storage: { languageMemory: { listNgramModels: async () => [record] }, evidence: { searchEvidence: async () => [] }, events: { append: async (event: { typeId: string; payload: unknown }) => { events.push(event); } } },
    approvals: { isApproved: () => true }
-  }, config: { server: { url: "http://127.0.0.1:0" }, runtime: { workspaceRoot: root }, policy: { allowMutation: true }, security: {} },
-   patchValidation: { provider: trustedHostPatchValidationProvider, resolvePolicy: (id: string) => { if(id !== policy.id) throw Error("unregistered policy"); return policy; } }
+  }, config: { server: { url: "http://127.0.0.1:0" }, runtime: { workspaceRoot: root, patchValidation: { provider: "trusted-host", policies: [policy] } }, policy: { allowMutation: true }, security: {} }
   } as unknown as ApiContext;
   const response = await post(context, { path: app.target, request: "balnces", attempts: 5, validationPolicyId: policy.id });
   expect(response.status).toBe(200);

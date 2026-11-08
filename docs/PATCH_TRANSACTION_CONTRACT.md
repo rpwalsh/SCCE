@@ -60,14 +60,67 @@ to the server process. The policy name intentionally exposes that limitation;
 use the optional isolated provider for code that is not trusted with that host
 authority.
 
+### Local project policies
+
+Register project build and test commands in `runtime.patchValidation.policies`,
+usually in the untracked `scce.config.local.json` overlay. The normal server
+startup and HTTP routes resolve these policies by their exact IDs. IDs must be
+unique and cannot replace the built-in policy IDs. Configuration validates the
+same command, working-directory, resource and check declarations used by staged
+execution; unknown configuration fields are rejected.
+
+For example, a local Go project can register:
+
+```json
+{
+  "runtime": {
+    "patchValidation": {
+      "provider": "trusted-host",
+      "policies": [{
+        "schemaVersion": "scce.patch-validation-policy.v1",
+        "id": "local-go-project.v1",
+        "commands": [
+          { "executable": "go", "argv": ["build", "-o", "application.exe", "."], "checkIds": ["compiler"] },
+          { "executable": "go", "argv": ["test", "-count=1", "./..."], "checkIds": ["tests"] }
+        ],
+        "timeoutMs": 120000,
+        "maxOutputBytes": 1000000,
+        "maxWorkspaceFiles": 1000,
+        "maxWorkspaceBytes": 10000000,
+        "environment": { "GOTOOLCHAIN": "local", "GOPROXY": "off" }
+      }]
+    }
+  }
+}
+```
+
+Use an absolute executable path when the compiler is outside the server's PATH.
+The commands run in the private staged project. Compiler outputs stay there.
+Each check ID belongs to one command; additional commands can run E2E checks
+without repeating a check ID. Their exit status still gates the whole result.
+
+`POST /api/workspace/code` accepts `path`, `request`, optional `attempts`, and an
+optional registered `validationPolicyId`. The patch and turn planning selectors
+also accept configured policy IDs. Requests cannot supply command lines,
+environment, providers or roots. Unknown IDs are rejected. The existing approval
+binding includes the complete resolved policy, so changing arguments under the
+same ID does not reuse approval for the old commands.
+
+The code repair response and `CodePatchApplied` event retain attempted source
+construction audits and model identities. Project verification records the
+staged source hash, commands, actual exit statuses and output hashes. An absent
+suite remains `testsRun: false`. The CLI can use the same policy JSON with
+`scce code --path=<file> --root=<project> --validation-policy=<policy.json> <request>`.
+
 ### Optional Docker isolation
 
 The server can select `runtime.patchValidation.provider="docker"` at startup.
 This is server-owned configuration; the patch request cannot select or modify
 the provider, image, executable, network, resource limits, dependency inputs,
 or command arguments. The default remains `trusted-host`.
-Docker mode registers only `docker-pnpm-validate.v1`; trusted-host mode registers
-only `trusted-host-pnpm-validate.v1`. The distinct ID is included in the
+Docker mode registers `docker-pnpm-validate.v1`; trusted-host mode registers
+`trusted-host-pnpm-validate.v1`. Configured project policies are also available
+through the selected provider. The distinct ID is included in the
 approval tuple and receipt. The approval binding covers the exact command policy,
 provider, digest-pinned image, resource bounds, and materialization configuration;
 the receipt evidence hash additionally binds the observed backend and results.

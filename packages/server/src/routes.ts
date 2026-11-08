@@ -6,7 +6,7 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { realpath, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { performance } from "node:perf_hooks";
-import { acquireAndTrainGithubOssRepository, assertHydratedRuntimeReady, automaticWebAcquisitionEnabled, completeInitialSourceBrainFromOssReport, publicNetworkAcquisitionEnabled, collectRepoFilesForCognition, createLearnedCodeProposer, createWorkspaceCodeMouthPorts, runCodeMouth, createDockerSandboxPatchValidationProvider, createNodeRuntime, createWorkspaceRuntime, diagnoseDocumentTools, executeWorkspacePatchTransaction, resolveSecret, runStructuredPatchValidation, trustedHostPatchValidationProvider, verifiedCompilerPlansForTurn, WorkspacePatchTransactionError, DEFAULT_WEB_REQUESTS_PER_MINUTE, type GithubOssAcquisitionOptions, type GithubOssAcquisitionReport, type readScceRuntimeConfig, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type WorkspaceCodingPatchPlanningInput, type WorkspacePatchPlanningInput, type WorkspaceRuntimeOptions, applySetting, settingsView, listLocalModels, downloadModel, removeLocalModel, formatBytes, validateGithubCommitSha, validateGithubPublicRepositoryUrl } from "@scce/adapters-node";
+import { acquireAndTrainGithubOssRepository, assertHydratedRuntimeReady, automaticWebAcquisitionEnabled, completeInitialSourceBrainFromOssReport, publicNetworkAcquisitionEnabled, collectRepoFilesForCognition, createLearnedCodeProposer, createWorkspaceCodeMouthPorts, runCodeMouth, createDockerSandboxPatchValidationProvider, createNodeRuntime, createWorkspaceRuntime, diagnoseDocumentTools, executeWorkspacePatchTransaction, resolveSecret, runStructuredPatchValidation, trustedHostPatchValidationProvider, DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID, DOCKER_WORKSPACE_PATCH_VALIDATION_POLICY_ID, validateStructuredPatchValidationPolicy, verifiedCompilerPlansForTurn, WorkspacePatchTransactionError, DEFAULT_WEB_REQUESTS_PER_MINUTE, type GithubOssAcquisitionOptions, type GithubOssAcquisitionReport, type readScceRuntimeConfig, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type WorkspaceCodingPatchPlanningInput, type WorkspacePatchPlanningInput, type WorkspaceRuntimeOptions, applySetting, settingsView, listLocalModels, downloadModel, removeLocalModel, formatBytes, validateGithubCommitSha, validateGithubPublicRepositoryUrl } from "@scce/adapters-node";
 import type { BenchmarkInput, CausalAnalysisRequest, CausalDiscoveryRequest, CausalAssumptionDag, CausalAssumptionEdge, CausalObservation, ConversationTurnRecord, DialogueInterpretationCorrectionInput, EventLedger, GraphSlice, IdentificationDesign, IngestInput, InspectionTarget, JsonValue, NodeId, OwnerInput, PatchTransactionPlan, ProgramGraph, RequestedAuthority, SourceAdmissionContext, SourceTrust, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
 import {
   behaviorRoleExecutionGraphInputFromTaskConstraintGraph, createProgramBehaviorValidationLedger, PROGRAM_BEHAVIOR_VALIDATION_PLAN_BINDING_SCHEMA, curriculumItemFromPlan,
@@ -654,13 +654,12 @@ async function dispatch(
   }
   if (req.method === "POST" && url.pathname === "/api/workspace/code") {
     if (context.config.policy.allowMutation !== true) throw new HttpError(403, "code editing is disabled by config.policy.allowMutation");
-    const body = requireFields(await readBody(req, context.maxBodyBytes), ["path", "request"]) as Record<string, unknown>;
+    const body = exactRecordWithOptional(await readBody(req, context.maxBodyBytes), "workspace code request", ["path", "request"], ["attempts", "validationPolicyId"]);
     const targetPath = typeof body.path === "string" ? body.path.trim() : "";
     const request = typeof body.request === "string" ? body.request.trim() : "";
     if (!targetPath || !request) throw new HttpError(400, "workspace code requires path and request");
     const validationPolicyId = body.validationPolicyId === undefined ? undefined : boundedString(body.validationPolicyId, "validationPolicyId", 128);
-    const validationPolicy = validationPolicyId ? context.patchValidation?.resolvePolicy(validationPolicyId)
-      ?? serverPatchValidationPolicy(context.config, validationPolicyId) : undefined;
+    const validationPolicy = validationPolicyId ? resolveWorkspacePatchValidationPolicy(context, validationPolicyId) : undefined;
     const validationProvider = context.patchValidation?.provider ?? trustedHostPatchValidationProvider;
     const approvalInput = { path: targetPath, request, ...(validationPolicy ? { validationPolicyId,
       validationBinding: workspacePatchValidationApprovalBinding(validationPolicy, validationProvider) } : {}) };
@@ -705,11 +704,11 @@ async function dispatch(
     return json({ ...codeResult, ...(codePorts.projectVerification() ? { projectVerification: codePorts.projectVerification() } : {}) } as unknown as JsonValue);
   }
   if (req.method === "POST" && url.pathname === "/api/workspace/patch/plan") {
-    const request = parseWorkspacePatchPlanRequest(await readBody(req, context.maxBodyBytes));
+    const request = parseWorkspacePatchPlanRequest(await readBody(req, context.maxBodyBytes), { resolveValidationPolicy: id => resolveWorkspacePatchValidationPolicy(context, id) });
     return json(await planWorkspacePatchApiRequest(context, request));
   }
   if (req.method === "POST" && url.pathname === "/api/workspace/patch/plan/request") {
-    const request = parseWorkspaceCodingPatchPlanRequest(await readBody(req, context.maxBodyBytes));
+    const request = parseWorkspaceCodingPatchPlanRequest(await readBody(req, context.maxBodyBytes), { resolveValidationPolicy: id => resolveWorkspacePatchValidationPolicy(context, id) });
     return json(await planWorkspaceCodingPatchApiRequest(context, request));
   }
   if (req.method === "POST" && url.pathname === "/api/workspace/patch") {
@@ -718,8 +717,7 @@ async function dispatch(
     const workspace = await context.runtime.storage.workspace.latestWorkspace();
     if (!workspace) throw new HttpError(409, "workspace patch requires an initialized workspace");
     if (workspace.id !== request.workspaceId) throw new HttpError(409, "workspaceId does not identify the latest initialized workspace");
-    const policy = context.patchValidation?.resolvePolicy(request.validationPolicyId)
-      ?? serverPatchValidationPolicy(context.config, request.validationPolicyId);
+    const policy = resolveWorkspacePatchValidationPolicy(context, request.validationPolicyId);
     const provider = context.patchValidation?.provider ?? trustedHostPatchValidationProvider;
     const approvalInput = {
       workspaceId: request.workspaceId,
@@ -862,7 +860,8 @@ async function dispatch(
       const productionDeadlineRuntime = productionTurnDeadlineMetadata(productionDeadline);
       const workspaceCodingInput = parseTurnWorkspaceCodingRequest(
         isRecord(body) ? body.workspaceCoding : undefined,
-        turn.text
+        turn.text,
+        { resolveValidationPolicy: id => resolveWorkspacePatchValidationPolicy(context, id) }
       );
       const sessionId = conversationSessionId(body);
       const conversationId = dialogueConversationId(body, sessionId);
@@ -2360,8 +2359,7 @@ export const WORKSPACE_CODING_PATCH_PLAN_REQUEST_SCHEMA = "scce.workspace-coding
 export const WORKSPACE_CODING_TURN_REQUEST_SCHEMA = "scce.workspace-coding-turn-request.v1" as const;
 export const WORKSPACE_PATCH_REQUEST_SCHEMA = "scce.workspace-patch-request.v1" as const;
 export const WORKSPACE_PATCH_RESPONSE_SCHEMA = "scce.workspace-patch-response.v1" as const;
-export const DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID = "trusted-host-pnpm-validate.v1" as const;
-export const DOCKER_WORKSPACE_PATCH_VALIDATION_POLICY_ID = "docker-pnpm-validate.v1" as const;
+export { DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID, DOCKER_WORKSPACE_PATCH_VALIDATION_POLICY_ID };
 
 /** Stable approval identity for the complete server-owned validation lane. */
 export function workspacePatchValidationApprovalBinding(
@@ -2407,6 +2405,10 @@ export interface WorkspaceCodingPatchPlanApiRequest {
   readonly input: WorkspaceCodingPatchPlanningInput;
 }
 
+export interface WorkspaceValidationPolicySelection {
+  readonly resolveValidationPolicy?: (policyId: string) => StructuredPatchValidationPolicy;
+}
+
 /**
  * Parses the optional chat-side compiler selector. The turn text is supplied
  * by the server and cannot be replaced by the nested request. The selector is
@@ -2414,7 +2416,8 @@ export interface WorkspaceCodingPatchPlanApiRequest {
  */
 export function parseTurnWorkspaceCodingRequest(
   value: unknown,
-  requestText: string
+  requestText: string,
+  options: WorkspaceValidationPolicySelection = {}
 ): WorkspaceCodingPatchPlanningInput | undefined {
   if (value === undefined) return undefined;
   const body = exactRecord(value, "workspace coding turn request", [
@@ -2433,7 +2436,7 @@ export function parseTurnWorkspaceCodingRequest(
     ...body,
     schemaVersion: WORKSPACE_CODING_PATCH_PLAN_REQUEST_SCHEMA,
     requestText
-  }, { allowEmptyRequestedPaths: true }).input;
+  }, { ...options, allowEmptyRequestedPaths: true }).input;
 }
 
 export async function awaitDialoguePersistence(conversationId: string): Promise<void> {
@@ -2522,7 +2525,7 @@ export function workspaceCodingInputForProgramGraph(
 
 export function parseWorkspaceCodingPatchPlanRequest(
   value: unknown,
-  options: { readonly allowEmptyRequestedPaths?: boolean } = {}
+  options: WorkspaceValidationPolicySelection & { readonly allowEmptyRequestedPaths?: boolean } = {}
 ): WorkspaceCodingPatchPlanApiRequest {
   const body = exactRecordWithOptional(value, "workspace coding patch plan request", [
     "schemaVersion",
@@ -2554,12 +2557,12 @@ export function parseWorkspaceCodingPatchPlanRequest(
       requestText: boundedUtf8Content(body.requestText, "requestText", 20_000),
       requestedPaths,
       ...(diagnosticCodes.length ? { diagnosticCodes } : {}),
-      validationPlan: parseWorkspaceValidationPlan(body.validationPlan)
+      validationPlan: parseWorkspaceValidationPlan(body.validationPlan, options)
     }
   };
 }
 
-export function parseWorkspacePatchPlanRequest(value: unknown): WorkspacePatchPlanApiRequest {
+export function parseWorkspacePatchPlanRequest(value: unknown, options: WorkspaceValidationPolicySelection = {}): WorkspacePatchPlanApiRequest {
   const body = exactRecordWithOptional(
     value,
     "workspace patch plan request",
@@ -2605,7 +2608,7 @@ export function parseWorkspacePatchPlanRequest(value: unknown): WorkspacePatchPl
     fabricatedBehavior: strictUnitNumber(assessmentBody.fabricatedBehavior, "assessment.fabricatedBehavior")
   };
 
-  const validationPlan = parseWorkspaceValidationPlan(body.validationPlan);
+  const validationPlan = parseWorkspaceValidationPlan(body.validationPlan, options);
 
   const totalContentBytes = proposedFiles.reduce((total, item) => total + Buffer.byteLength(item.content, "utf8"), 0);
   if (totalContentBytes > 8 * 1024 * 1024) throw new HttpError(400, "proposed file content exceeds the 8388608-byte aggregate bound");
@@ -2636,8 +2639,7 @@ export async function planWorkspaceCodingPatchApiRequest(context: ApiContext, re
   try {
     const result = await createWorkspaceRuntime(context).planCodingPatch(request.input);
     if ("constraintGraph" in result && "plan" in result && result.plan) {
-      const validationPolicy = context.patchValidation?.resolvePolicy(result.validationPlan.validatorId)
-        ?? serverPatchValidationPolicy(context.config, result.validationPlan.validatorId);
+      const validationPolicy = resolveWorkspacePatchValidationPolicy(context, result.validationPlan.validatorId);
       const graph = behaviorRoleExecutionGraphInputFromTaskConstraintGraph(
         result.constraintGraph,
         validationPolicy.commands.flatMap((command, commandIndex) =>
@@ -2662,10 +2664,11 @@ export async function planWorkspaceCodingPatchApiRequest(context: ApiContext, re
   }
 }
 
-function parseWorkspaceValidationPlan(value: unknown): WorkspaceCodingPatchPlanningInput["validationPlan"] {
+function parseWorkspaceValidationPlan(value: unknown, options: WorkspaceValidationPolicySelection): WorkspaceCodingPatchPlanningInput["validationPlan"] {
   const validationBody = exactRecord(value, "validationPlan", ["validatorId", "checks"]);
   const validatorId = boundedString(validationBody.validatorId, "validationPlan.validatorId", 128);
-  if (validatorId !== DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID && validatorId !== DOCKER_WORKSPACE_PATCH_VALIDATION_POLICY_ID) {
+  if (options.resolveValidationPolicy) options.resolveValidationPolicy(validatorId);
+  else if (validatorId !== DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID && validatorId !== DOCKER_WORKSPACE_PATCH_VALIDATION_POLICY_ID) {
     throw new HttpError(400, `unknown workspace patch validation policy: ${validatorId}`);
   }
   const checks = boundedArray(validationBody.checks, "validationPlan.checks", 3).map((item, index) => {
@@ -3636,6 +3639,8 @@ export async function executeWorkspacePatchApiRequest(input: {
 }
 
 export function serverPatchValidationPolicy(config: LoadedConfig, policyId: string): StructuredPatchValidationPolicy {
+  const configured = configuredPatchValidationPolicy(config, policyId);
+  if (configured) return configured;
   if (policyId !== DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID) throw new HttpError(400, `unknown workspace patch validation policy: ${policyId}`);
   const command = serverPnpmValidationCommand(config.runtime.tools.pnpm ?? "pnpm");
   return {
@@ -3659,11 +3664,30 @@ export function serverPatchValidationPolicy(config: LoadedConfig, policyId: stri
   };
 }
 
+function configuredPatchValidationPolicy(config: LoadedConfig, policyId: string): StructuredPatchValidationPolicy | undefined {
+  const matches = (config.runtime.patchValidation?.policies ?? []).filter(policy => policy.id === policyId);
+  if (matches.length > 1) throw new Error(`duplicate configured workspace validation policy: ${policyId}`);
+  const policy = matches[0];
+  if (!policy) return undefined;
+  if (policy.id === DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID || policy.id === DOCKER_WORKSPACE_PATCH_VALIDATION_POLICY_ID) throw new Error(`configured workspace validation policy id is reserved: ${policy.id}`);
+  validateStructuredPatchValidationPolicy(policy);
+  return policy;
+}
+
+function resolveWorkspacePatchValidationPolicy(context: ApiContext, policyId: string): StructuredPatchValidationPolicy {
+  const policy = context.patchValidation?.resolvePolicy(policyId) ?? serverPatchValidationPolicy(context.config, policyId);
+  if (policy.id !== policyId) throw new HttpError(400, `workspace validation policy did not resolve the requested id: ${policyId}`);
+  validateStructuredPatchValidationPolicy(policy);
+  return policy;
+}
+
 /** Resolves the server-owned execution provider once at startup. Request data
  * can select neither the provider nor its image, executable, network, or argv. */
 export function serverPatchValidationRuntime(config: LoadedConfig): ApiContext["patchValidation"] | undefined {
   const selected = config.runtime.patchValidation?.provider ?? "trusted-host";
-  if (selected === "trusted-host") return undefined;
+  if (selected === "trusted-host") return config.runtime.patchValidation?.policies?.length
+    ? { provider: trustedHostPatchValidationProvider, resolvePolicy: policyId => serverPatchValidationPolicy(config, policyId) }
+    : undefined;
   const docker = config.runtime.patchValidation?.docker;
   if (!docker) throw new Error("runtime.patchValidation.docker is required when the Docker validation provider is selected");
   const image = docker.image?.trim() || process.env.SCCE_PATCH_VALIDATION_DOCKER_IMAGE?.trim();
@@ -3691,6 +3715,8 @@ export function serverPatchValidationRuntime(config: LoadedConfig): ApiContext["
   return {
     provider,
     resolvePolicy(policyId) {
+      const configured = configuredPatchValidationPolicy(config, policyId);
+      if (configured) return configured;
       if (policyId !== DOCKER_WORKSPACE_PATCH_VALIDATION_POLICY_ID) throw new HttpError(400, `unknown Docker workspace patch validation policy: ${policyId}`);
       return {
         schemaVersion: "scce.patch-validation-policy.v1",

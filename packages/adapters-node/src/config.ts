@@ -19,6 +19,7 @@ import type {
 } from "@scce/kernel";
 import { normalizeSpreadsheetExtractionLimits, type SpreadsheetExtractionLimitOverrides } from "./spreadsheet-contract.js";
 import { assertOcrProfileId } from "./ocr-profile.js";
+import { DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID, DOCKER_WORKSPACE_PATCH_VALIDATION_POLICY_ID, validateStructuredPatchValidationPolicy, type StructuredPatchValidationPolicy } from "./structured-patch-validation.js";
 
 /**
  * Public-web acquisition is deliberately paced as a shared provider budget.
@@ -141,6 +142,7 @@ export interface DockerPatchValidationRuntimeConfig {
 export interface PatchValidationRuntimeConfig {
   provider?: "trusted-host" | "docker";
   docker?: DockerPatchValidationRuntimeConfig;
+  policies?: readonly StructuredPatchValidationPolicy[];
 }
 
 export interface ScceRuntimeConfig {
@@ -375,6 +377,22 @@ export function validateConfig(config: ScceRuntimeConfig, source = "config"): vo
 }
 
 function validatePatchValidationConfig(config: PatchValidationRuntimeConfig | undefined, source: string): void {
+  if (config !== undefined) {
+    if (!config || typeof config !== "object" || Array.isArray(config)) throw new Error(`${source}: runtime.patchValidation must be an object`);
+    const unexpected = Object.keys(config).filter(key => !["provider", "docker", "policies"].includes(key));
+    if (unexpected.length) throw new Error(`${source}: runtime.patchValidation has unexpected fields: ${unexpected.join(", ")}`);
+  }
+  if (config?.policies !== undefined) {
+    if (!Array.isArray(config.policies)) throw new Error(`${source}: runtime.patchValidation.policies must be an array`);
+    const ids = new Set<string>();
+    for (const policy of config.policies) {
+      try { validateStructuredPatchValidationPolicy(policy); }
+      catch (error) { throw new Error(`${source}: runtime.patchValidation.policies: ${error instanceof Error ? error.message : String(error)}`); }
+      if (policy.id === DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID || policy.id === DOCKER_WORKSPACE_PATCH_VALIDATION_POLICY_ID) throw new Error(`${source}: runtime.patchValidation.policies uses a reserved policy id: ${policy.id}`);
+      if (ids.has(policy.id)) throw new Error(`${source}: runtime.patchValidation.policies contains a duplicate policy id: ${policy.id}`);
+      ids.add(policy.id);
+    }
+  }
   const provider = config?.provider ?? "trusted-host";
   if (provider !== "trusted-host" && provider !== "docker") throw new Error(`${source}: runtime.patchValidation.provider must be trusted-host or docker`);
   if (provider === "trusted-host") return;

@@ -12,6 +12,8 @@ import type { WorkspacePatchValidationResult, WorkspacePatchValidationView } fro
 export const STRUCTURED_PATCH_VALIDATION_POLICY_SCHEMA = "scce.patch-validation-policy.v1" as const;
 export const STRUCTURED_PATCH_VALIDATION_EVIDENCE_SCHEMA = "scce.patch-validation-evidence.v2" as const;
 export const TRUSTED_HOST_PATCH_VALIDATION_PROVIDER_ID = "trusted-host-process.v1" as const;
+export const DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID = "trusted-host-pnpm-validate.v1" as const;
+export const DOCKER_WORKSPACE_PATCH_VALIDATION_POLICY_ID = "docker-pnpm-validate.v1" as const;
 
 export interface StructuredPatchValidationCommand {
   /** Server-owned executable. It is never read from the patch request. */
@@ -149,7 +151,7 @@ export async function runStructuredWorkspaceValidation(options: Omit<RunStructur
 }
 
 async function validateStagedWorkspace(options: Omit<RunStructuredPatchValidationOptions, "validationView">, validationView?: WorkspacePatchValidationView) {
-  validatePolicy(options.policy);
+  validateStructuredPatchValidationPolicy(options.policy);
   const workspaceRoot = await realpath(resolve(options.workspaceRoot));
   const stageRoot = await mkdtemp(join(tmpdir(), "scce-patch-validation-"));
   await chmod(stageRoot, 0o700);
@@ -348,7 +350,8 @@ async function runStructuredCommand(input: {
   });
 }
 
-function validatePolicy(policy: StructuredPatchValidationPolicy): void {
+export function validateStructuredPatchValidationPolicy(policy: StructuredPatchValidationPolicy): void {
+  exactPolicyKeys(policy, ["schemaVersion", "id", "commands", "timeoutMs", "maxOutputBytes", "maxWorkspaceFiles", "maxWorkspaceBytes", "ignoredTopLevelNames", "environment"], "validation policy");
   if (policy.schemaVersion !== STRUCTURED_PATCH_VALIDATION_POLICY_SCHEMA) throw new Error(`unsupported patch validation policy schema: ${policy.schemaVersion}`);
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(policy.id)) throw new Error("patch validation policy id is invalid");
   if (!Array.isArray(policy.commands) || policy.commands.length < 1 || policy.commands.length > 16) throw new Error("patch validation policy requires 1 through 16 commands");
@@ -357,10 +360,12 @@ function validatePolicy(policy: StructuredPatchValidationPolicy): void {
   boundedInteger(policy.maxWorkspaceFiles, "maxWorkspaceFiles", 1, 100_000);
   boundedInteger(policy.maxWorkspaceBytes, "maxWorkspaceBytes", 1, 4 * 1024 * 1024 * 1024);
   for (const [index, command] of policy.commands.entries()) {
-    if (!command.executable || command.executable.includes("\u0000")) throw new Error(`validation command ${index} executable is invalid`);
+    exactPolicyKeys(command, ["executable", "argv", "cwd", "checkIds"], `validation command ${index}`);
+    if (typeof command.executable !== "string" || !command.executable || command.executable.includes("\u0000")) throw new Error(`validation command ${index} executable is invalid`);
     if (!Array.isArray(command.argv) || command.argv.length > 128 || command.argv.some((arg: unknown) => typeof arg !== "string" || arg.includes("\u0000") || arg.length > 4096)) {
       throw new Error(`validation command ${index} argv is invalid`);
     }
+    if (command.cwd !== undefined && typeof command.cwd !== "string") throw new Error(`validation command ${index} cwd must be a string`);
     resolveContained("C:\\validation-root", command.cwd ?? ".", `validation command ${index} cwd`);
     const commandCheckIds: readonly PatchValidationCheckReceipt["checkId"][] = command.checkIds ?? [];
     if (!Array.isArray(commandCheckIds) || commandCheckIds.some(checkId => checkId !== "compiler" && checkId !== "typecheck" && checkId !== "tests")) {
@@ -369,6 +374,20 @@ function validatePolicy(policy: StructuredPatchValidationPolicy): void {
   }
   const checkIds = policy.commands.flatMap(command => command.checkIds ?? []);
   if (new Set(checkIds).size !== checkIds.length) throw new Error("validation policy check ids must be unique");
+  if (policy.ignoredTopLevelNames !== undefined && (!Array.isArray(policy.ignoredTopLevelNames) || policy.ignoredTopLevelNames.some(value =>
+    typeof value !== "string" || !value || value === "." || value === ".." || /[\\/\u0000]/u.test(value)))) throw new Error("validation ignoredTopLevelNames must contain directory names");
+  if (policy.environment !== undefined) {
+    if (!policy.environment || typeof policy.environment !== "object" || Array.isArray(policy.environment)) throw new Error("validation environment must be an object");
+    for (const [name, value] of Object.entries(policy.environment)) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name) || typeof value !== "string" || value.includes("\u0000")) throw new Error(`validation environment entry is invalid: ${name}`);
+    }
+  }
+}
+
+function exactPolicyKeys(value: unknown, allowed: readonly string[], label: string): void {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
+  const unexpected = Object.keys(value).filter(key => !allowed.includes(key));
+  if (unexpected.length) throw new Error(`${label} has unexpected fields: ${unexpected.join(", ")}`);
 }
 
 function validateProviderResult(
