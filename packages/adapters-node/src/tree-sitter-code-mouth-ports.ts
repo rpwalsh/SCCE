@@ -8,7 +8,7 @@ import { languageIdForFilePath, parseRepositorySyntax, type TreeSitterLanguageId
 import type { CodeMouthContext, CodeMouthPorts, CodeMouthProposal, CodeMouthVerification } from "./code-mouth.js";
 import type { LearnedCodeProposer } from "./learned-code-proposer.js";
 import { findCodeVerifierCapabilityForPath } from "./code-verifier-discovery.js";
-import { runProcess } from "./document.js";
+import { runLanguageCheck } from "./code-verification.js";
 
 /**
  * The repair contract over a parser instead of a compiler.
@@ -81,8 +81,7 @@ export function createTreeSitterCodeMouthPorts(options: {
       if (capability.status === "available") {
         const checker = capability.verifier;
         const file = absolute(targetPath);
-        const args = checker.check.args.map(argument => argument.split("{artifact}").join(file));
-        const result = await runProcess(checker.command, args, { cwd: root, timeoutMs: 120_000 });
+        const result = await runLanguageCheck(checker.check, file, { cwd: root, timeoutMs: 120_000 });
         const diagnostics = checkerDiagnostics(result, targetPath, checker.languageId);
         options.log?.(`${checker.languageId} checked by ${checker.command} (${diagnostics.length} diagnostic(s))`);
         return { testsRun: false, buildSucceeded: result.code === 0 && !diagnostics.length, testsSucceeded: true, diagnostics };

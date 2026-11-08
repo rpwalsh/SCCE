@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { existsSync } from "node:fs";
+import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { codeLanguageForPath } from "@scce/kernel";
@@ -24,7 +25,10 @@ import { runProcess } from "./document.js";
 /** Where a language's toolchain installs itself when it does not install onto PATH. `~` is expanded. */
 const SEARCH_PATHS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   rust: ["~/.cargo/bin"],
-  go: ["~/go/bin", "/usr/local/go/bin"],
+  go: ["~/go/bin", "~/toolchains/go/bin", "/usr/local/go/bin"],
+  c: ["~/toolchains/mingw64/bin", path.join(process.env.ProgramFiles ?? "C:/Program Files", "LLVM/bin")],
+  cpp: ["~/toolchains/mingw64/bin", path.join(process.env.ProgramFiles ?? "C:/Program Files", "LLVM/bin")],
+  csharp: [path.join(process.env.ProgramFiles ?? "C:/Program Files", "dotnet"), "/usr/share/dotnet", "~/.dotnet"],
   python: ["~/.pyenv/shims", "~/AppData/Local/Programs/Python"],
   ruby: ["~/.rbenv/shims"],
   java: ["~/.sdkman/candidates/java/current/bin"],
@@ -114,9 +118,12 @@ async function probe(languageId: string): Promise<CodeVerifierCapability> {
     };
   }
   const versionArgs = VERSION_ARGS[languageId] ?? ["--version"];
-  for (const command of [check.command, ...installedElsewhere(languageId, check.command)]) {
+  const commands = [...new Set([check.command, ...(check.commandAlternatives ?? [])].flatMap(command => [command, ...installedElsewhere(languageId, command)]))];
+  for (const command of commands) {
     const result = await runProcess(command, [...versionArgs], { timeoutMs: 10_000 }).catch(() => undefined);
     if (!result || result.code !== 0) continue;
+    const resolvedCheck = check.compilerDriver === "dotnet-csharp" ? await csharpCompilerCheck(command, check) : { ...check, command };
+    if (!resolvedCheck) continue;
     return {
       status: "available",
       languageId,
@@ -124,15 +131,44 @@ async function probe(languageId: string): Promise<CodeVerifierCapability> {
         languageId,
         command,
         version: `${result.stdout}${result.stderr}`.split(/\r?\n/u)[0]?.trim() ?? "",
-        check: { ...check, command }
+        check: resolvedCheck
       }
     };
   }
   return {
     languageId,
     status: "unavailable",
-    reason: `${languageId} checker was not found; tried ${[check.command, ...installedElsewhere(languageId, check.command)].join(", ")}`
+    reason: `${languageId} checker was not found; tried ${commands.join(", ")}`
   };
+}
+
+/** Resolve the installed Roslyn compiler and SDK reference pack, without restore, projects, or build hooks. */
+async function csharpCompilerCheck(command: string, check: LanguageCheckCommand): Promise<LanguageCheckCommand | undefined> {
+  const result = await runProcess(command, ["--list-sdks"], { timeoutMs: 10_000 });
+  if (result.code !== 0) return undefined;
+  const sdks = result.stdout.split(/\r?\n/u).flatMap(line => {
+    const match = /^(\S+) \[(.+)\]$/u.exec(line.trim());
+    return match ? [{ version: match[1]!, directory: match[2]! }] : [];
+  }).sort((a, b) => b.version.localeCompare(a.version, "en", { numeric: true }));
+  for (const sdk of sdks) {
+    const compiler = path.join(sdk.directory, sdk.version, "Roslyn/bincore/csc.dll");
+    if (!existsSync(compiler)) continue;
+    const packRoot = path.join(path.dirname(sdk.directory), "packs/Microsoft.NETCore.App.Ref");
+    const versions = (await readdir(packRoot).catch(() => [])).filter(version => Number(version.split(".")[0]) <= Number(sdk.version.split(".")[0]))
+      .sort((a, b) => b.localeCompare(a, "en", { numeric: true }));
+    for (const version of versions) {
+      const referenceRoot = path.join(packRoot, version, "ref");
+      for (const framework of (await readdir(referenceRoot).catch(() => [])).sort().reverse()) {
+        const directory = path.join(referenceRoot, framework);
+        const assemblies = (await readdir(directory).catch(() => [])).filter(name => name.endsWith(".dll")).sort();
+        if (!assemblies.length) continue;
+        const { compilerDriver: _driver, ...resolved } = check;
+        return { ...resolved, command, args: ["exec", compiler, "-nologo", "-noconfig", "-nostdlib+", "-target:library", "-out:{output}.dll",
+          ...assemblies.map(name => `-reference:${path.join(directory, name)}`), "{artifact}"] };
+      }
+    }
+  }
+  return undefined;
 }
 
 /** The same executable under each search path that exists, so a toolchain outside PATH is still found. */
