@@ -2,7 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { isLanguageConstructionPattern, LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA } from "./language-construction-memory.js";
 import { REQUEST_REQUIREMENT_PATTERN_SCHEMA } from "./request-requirement-learning.js";
-import type { LanguagePatternRecord } from "./storage.js";
+import type { LanguagePatternRecord, SemanticFrameRecord } from "./storage.js";
 import type { JsonValue } from "./types.js";
 
 export const REQUEST_SEED_PATTERN_JSON_FIELDS = [
@@ -12,6 +12,22 @@ export const REQUEST_SEED_PATTERN_JSON_FIELDS = [
   "requirementTargetBounds", "responseForm", "responseExtent", "requestSpanRole", "structuralDelta",
   "rules", "classBindings", "boundarySignals", "counts", "requestConstructionCandidate", "sourceConstructionCandidate"
 ] as const;
+
+export const REQUEST_SEED_FRAME_JSON_FIELDS = [
+  "schema", "profileId", "sourceId", "sourceVersionId", "parentSourceVersionIds", "profileBindingDigest",
+  "sourceSystem", "corpusRoleId", "languageId", "componentRecipe", "compilerRecipe", "sourceCompilationId",
+  "surface", "semanticRoleId", "requirementCoefficients"
+] as const;
+
+export function requestSeedSemanticFrame(frame: SemanticFrameRecord): SemanticFrameRecord | undefined {
+  const row = record(frame.frameJson);
+  const coefficients = row.requirementCoefficients;
+  if (typeof row.surface !== "string" || !row.surface.trim()
+    || !coefficients || typeof coefficients !== "object" || Array.isArray(coefficients)) return undefined;
+  const projected: Record<string, JsonValue> = {};
+  for (const key of REQUEST_SEED_FRAME_JSON_FIELDS) if (row[key] !== undefined) projected[key] = row[key]!;
+  return { ...frame, frameJson: projected, embedding: [] };
+}
 
 function record(value: JsonValue | undefined): Record<string, JsonValue> {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};

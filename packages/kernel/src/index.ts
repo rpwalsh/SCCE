@@ -343,4 +343,4 @@ export { stampSourceLanguageCompilation, validateSourceLanguageCompilationHeader
 export * from "./language-pattern-publication.js";
 export * from "./source-reference-bindings.js";
 export { CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID } from "./language-training-recipe.js";
-export { REQUEST_SEED_PATTERN_JSON_FIELDS, requestSeedLanguagePattern } from "./request-language-hydration.js";
+export { REQUEST_SEED_PATTERN_JSON_FIELDS, requestSeedLanguagePattern, REQUEST_SEED_FRAME_JSON_FIELDS, requestSeedSemanticFrame } from "./request-language-hydration.js";
