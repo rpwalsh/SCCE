@@ -2398,7 +2398,10 @@ describe("dialogue corpus training", () => {
     const options = { storage: fixture.storage, rootPath: root, authorship: "human_authored" as const, informationLabel: ownerLabel,
       ngramMaxOrder: 3, ngramMaxCountersPerOrder: 64, maxFilesPerRun: 1 };
     const compile = vi.spyOn(kernel, "compileLanguageTrainingBatch");
-    const patternWrites = vi.spyOn(fixture.storage.languageMemory, "putLanguagePatterns");
+    const patternWriter = fixture.storage.languageMemory as ScceStorage["languageMemory"] & {
+      putLanguagePatterns: NonNullable<ScceStorage["languageMemory"]["putLanguagePatterns"]>;
+    };
+    const patternWrites = vi.spyOn(patternWriter, "putLanguagePatterns");
     try {
       const first = await trainDialogueCorpus(options);
       expect(first.filesSkipped).toEqual([]);

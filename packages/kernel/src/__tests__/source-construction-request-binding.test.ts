@@ -221,6 +221,7 @@ describe("acquired typed request construction transfer", () => {
       nodes: lesson.graph.nodes.map(node => ({ ...node, typeId: "entity" as GraphNode["typeId"], features: [], alpha: 1, createdAt: 140_000, updatedAt: 140_000 })), edges: [], hyperedges: lesson.graph.hyperedges });
     const turnClock = createClock({ fixedTime: 141_000, stepMs: 1 });
     const kernel = createScceKernel({ storage: fixture.storage, files: { streamPath: async function* () {} },
+      buildTest: { executeProgram: async () => { throw new Error("A factual turn must not execute a program"); } },
       idFactory: createIdFactory({ clock: turnClock, hasher, deterministicReplay: true, namespace: "role-only-cold-turn" }), clock: turnClock, deterministicReplay: true });
     const traceGlobal = globalThis as unknown as { __sccTrace?: unknown };
     const previousTrace = traceGlobal.__sccTrace;

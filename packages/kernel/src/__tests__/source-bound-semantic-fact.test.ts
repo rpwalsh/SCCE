@@ -11,7 +11,7 @@ import type { ConstructGraph, EvidenceSpan } from "../types.js";
 const source = { id: "evidence.notes", sourceVersionId: "source.notes", status: "promoted", text: "Mira Venn directs Neralis observatory. Neralis observatory is located on Pelora island." } as EvidenceSpan;
 const binding: RequestValueBinding = { subject: "Neralis observatory", value: "Pelora island", relationId: "relation.location",
   requestedRoleId: "role.place", resolverId: "resolver.acquired_source_construction", evidenceIds: [String(source.id)] };
-const construct = { id: "construct.empty", episodeId: "episode.test", nodes: [], edges: [], artifacts: [], forceVector: {} } as ConstructGraph;
+const construct = { id: "construct.empty", episodeId: "episode.test", nodes: [], edges: [], artifacts: [], forceVector: {} } as unknown as ConstructGraph;
 const hasher = createHasher();
 
 it("preserves a typed role-only projection through attachment, both readers and the exact bound-value contract", () => {
