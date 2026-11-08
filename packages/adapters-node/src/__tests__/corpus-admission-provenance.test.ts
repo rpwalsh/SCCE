@@ -253,6 +253,8 @@ describe("corpus trainer admission and provenance", () => {
       (pattern.patternJson as Record<string, JsonValue>).schema === "scce.source_language_compilation_receipt.v1");
     const originalInductionCoverage = originalCompilationMetadata.filter(pattern =>
       (pattern.patternJson as Record<string, JsonValue>).schema === "scce.source_induction_coverage.v1");
+    const originalCreativeCoverage = originalCompilationMetadata.filter(pattern =>
+      (pattern.patternJson as Record<string, JsonValue>).schema === "scce.creative_event_source_coverage.v1");
     const originalGraphIds = {
       nodes: fixture.state.graph.nodes.map(row => row.id).sort(),
       edges: fixture.state.graph.edges.map(row => row.id).sort(),
@@ -260,6 +262,7 @@ describe("corpus trainer admission and provenance", () => {
     };
     expect(originalCompilations).toHaveLength(parents.length);
     expect(originalInductionCoverage).toHaveLength(parents.length);
+    expect(originalCreativeCoverage).toHaveLength(parents.length);
     const eventStart = fixture.state.events.length;
     const report = await trainStoredCorpusConstructions({ storage: fixture.storage, sourcePageSize: 1,
       maxTotalBytes: 1024 * 1024, batchBytes: 1024 * 1024 });
@@ -286,6 +289,9 @@ describe("corpus trainer admission and provenance", () => {
       return { ...pattern, patternJson: metadata };
     };
     expect(currentInductionCoverage.map(withoutReplayMetadata)).toEqual(originalInductionCoverage.map(withoutReplayMetadata));
+    const currentCreativeCoverage = fixture.state.patterns.filter(pattern => pattern.patternKind === "source_compilation"
+      && (pattern.patternJson as Record<string, JsonValue>).schema === "scce.creative_event_source_coverage.v1");
+    expect(currentCreativeCoverage.map(withoutReplayMetadata)).toEqual(originalCreativeCoverage.map(withoutReplayMetadata));
     expect(currentInductionCoverage.every(pattern => {
       const metadata = pattern.patternJson as Record<string, JsonValue>;
       return metadata.lane === "stored-corpus-construction-replay" && metadata.replayRecipeId === LANGUAGE_CORPUS_TRAINING_RECIPE_ID;
@@ -327,9 +333,18 @@ describe("corpus trainer admission and provenance", () => {
         continue;
       }
       if (pattern.patternKind === "source_compilation") {
-        expect(metadata.schema).toBe("scce.source_induction_coverage.v1");
+        expect(["scce.source_induction_coverage.v1", "scce.creative_event_source_coverage.v1"]).toContain(metadata.schema);
         expect(metadata.complete).toBe(true);
-        expect(metadata.coveredUtf16Length).toBe(metadata.inputUtf16Length);
+        if (metadata.schema === "scce.source_induction_coverage.v1") expect(metadata.coveredUtf16Length).toBe(metadata.inputUtf16Length);
+        else {
+          const induction = metadata.sourceInduction as Record<string, JsonValue>;
+          expect(induction.complete).toBe(true);
+          expect(induction.coveredUtf16Length).toBe(induction.inputUtf16Length);
+          const pages = metadata.pages as Array<{ id: string; observedEvents: number }>;
+          expect(pages.length).toBeGreaterThan(0);
+          expect(pages.reduce((sum, page) => sum + page.observedEvents, 0)).toBe(metadata.observedEvents);
+          expect(pages.every(page => fixture.state.patterns.some(row => row.id === page.id && row.profileId === pattern.profileId))).toBe(true);
+        }
         expect(pattern.evidenceIds.length).toBeGreaterThan(0);
       }
       expect(metadata.forceClass).toBe("learned_language_prior");
