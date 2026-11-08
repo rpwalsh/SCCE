@@ -15,6 +15,14 @@ export function compactIngestResult(result: IngestResult): Record<string, unknow
   };
 }
 
+export function compactWorkspaceIngestResult<T extends { kernelResults: IngestResult[] }>(result: T): Record<string, unknown> {
+  return {
+    ...result,
+    responseView: { schema: "scce.workspace.ingest_response.v1", detail: "receipt", fullQuery: "full=1" },
+    kernelResults: result.kernelResults.map(compactIngestResult)
+  };
+}
+
 function ingestEventReceipt(typeId: string, payload: JsonValue): Record<string, JsonValue> {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return {};
   const fields = typeId === "SourceObserved" ? ["sourceId", "uri", "namespace"]

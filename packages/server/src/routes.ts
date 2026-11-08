@@ -21,7 +21,7 @@ import type { RuntimeStartupReadiness, RuntimeStartupReadinessSnapshot } from ".
 import { turnTaskRegistryFor, type TurnTaskFrame } from "./turn-task-registry.js";
 import { parseLocalExecutiveGoal } from "@scce/adapters-node";
 import { createStaleWhileRevalidateCache, type StaleWhileRevalidateCache } from "./stale-while-revalidate.js";
-import { compactIngestResult } from "./ingestion-response.js";
+import { compactIngestResult, compactWorkspaceIngestResult } from "./ingestion-response.js";
 import { programResponseReadiness, unsupportedProgramResponseReadiness } from "./program-response-readiness.js";
 
 export interface ApiContext {
@@ -639,7 +639,8 @@ async function dispatch(
   if (req.method === "POST" && url.pathname === "/api/workspace/ingest") {
     const body = await readBody(req, context.maxBodyBytes);
     if (!isRecord(body)) throw new HttpError(400, "workspace ingest body must be an object");
-    return json(await createWorkspaceRuntime(context).ingest(typeof body.path === "string" ? body.path : undefined, workspaceOptions(body)));
+    const result = await createWorkspaceRuntime(context).ingest(typeof body.path === "string" ? body.path : undefined, workspaceOptions(body));
+    return json(url.searchParams.get("full") === "1" ? result : compactWorkspaceIngestResult(result));
   }
   if (req.method === "GET" && url.pathname === "/api/workspace/sources") {
     const workspace = await context.runtime.storage.workspace.latestWorkspace();
