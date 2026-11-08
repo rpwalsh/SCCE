@@ -3446,10 +3446,13 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // One structured intent per turn: derived from the projected authority and the structural code signal, read by
       // both builds and the planner, so a program-authority turn cannot end with no ProgramGraph.
       const sourceContractPlanningAllowed = requestedAuthority === "program" && authorityProjection.requestedAuthority === "program";
+      const programPlanningActive = operatorActivations.some(operator => operator.active && operator.operatorId === COGNITIVE_OPERATOR_IDS.programPlanning);
       const workspaceContext=jsonRecord(input.metadata).workspaceProgramContext;
       const workspaceContracts=sourceContractPlanningAllowed&&workspaceContext!==undefined
         ?await readWorkspaceOwnedProgramContracts({storage:deps.storage,context:workspaceContext,informationAccess:deps.informationAccess,sourceVersionAllowlist:input.runtimeControl?.evidenceSourceAllowlist}):undefined;
-      const documentationCodeIntent = codeIntentFromDocumentation({ requestText: input.text, documentation: workspaceContracts?.status==="available"?[...workspaceContracts.evidence,...selectedEvidence]:selectedEvidence,
+      const documentationCodeIntent = codeIntentFromDocumentation({ requestText: input.text,
+        documentation: programPlanningActive || sourceContractPlanningAllowed
+          ? workspaceContracts?.status==="available"?[...workspaceContracts.evidence,...selectedEvidence]:selectedEvidence : [],
         ...(codeSignal.language?{languageId:codeSignal.language}:{}) });
       const sourceOwnedContractPatterns = workspaceContracts
         ?workspaceContracts.status==="available"?workspaceContracts.contracts:[]

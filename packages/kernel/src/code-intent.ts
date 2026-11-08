@@ -104,6 +104,7 @@ export function codeIntentFromDocumentation(input: {
   };
   for (const symbol of requested) if (!known || known.has(symbol)) { admit(symbol); if (!requestSymbols.includes(symbol)) requestSymbols.push(symbol); }
   for (const span of input.documentation.slice(0, referenceLimit)) {
+    if (!documentedPath(span)) continue;
     for (const symbol of codeIdentifierTokens(codeSurfaceTokens(span.text || span.textPreview || ""), symbolLimit)) {
       if (known && !known.has(symbol)) continue;
       admit(symbol);
