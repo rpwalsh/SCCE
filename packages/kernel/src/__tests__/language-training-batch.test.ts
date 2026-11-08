@@ -1,13 +1,14 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import * as induction from "../language-induction.js";
 import { preparedLanguageInductionModel } from "../graph-surface-alignment.js";
 import { compileUniversalCreativeEventConstructionPattern, CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA } from "../language-construction-memory.js";
 import { scopeLanguageMemoryStateToLanguage } from "../language-memory-runtime.js";
 import { primeLearnedAnswerUnitForms } from "../learned-answer-unit-forms.js";
 import { requestUnitMatchesSurface } from "../local-evidence-runtime.js";
-import humanCreativePair from "./fixtures/dolly-human-creative-pair.json";
+const humanCreativePair = JSON.parse(readFileSync(new URL("./fixtures/dolly-human-creative-pair.json", import.meta.url), "utf8")) as { text: string };
 import {
   compileLanguageTrainingBatch,
   CORPUS_SOURCE_SYSTEM_IDS,
