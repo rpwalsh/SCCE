@@ -66,7 +66,11 @@ describe("boundary fitting repeated-work equivalence", () => {
       mass += positive + negative;
     }
     const quantize = (value: number) => Math.round(value * 1e12) / 1e12;
-    expect(boundary.boundaryNegativeLogLikelihood(model, statistics)).toEqual({ negativeLogLikelihood: quantize(loss), mass: quantize(mass), averageLogLoss: quantize(loss / Math.max(1, mass)) });
+    const maps = statistics.rows.map(row => vi.spyOn(row.featuresFixed, "map"));
+    try {
+      expect(boundary.boundaryNegativeLogLikelihood(model, statistics)).toEqual({ negativeLogLikelihood: quantize(loss), mass: quantize(mass), averageLogLoss: quantize(loss / Math.max(1, mass)) });
+      expect(maps.reduce((total, map) => total + map.mock.calls.length, 0)).toBe(0);
+    } finally { for (const map of maps) map.mockRestore(); }
   });
 
   it("preserves the actual Alice estimator, heldout calibration and downstream model identities", () => {

@@ -450,8 +450,7 @@ export function boundaryNegativeLogLikelihood(
   for (const row of statistics.rows) {
     const positive = row.positiveMass / MASS_SCALE;
     const negative = row.negativeMass / MASS_SCALE;
-    const features = featureRecord(row.featuresFixed.map(value => value / FIXED_SCALE));
-    const rawLogit = model.intercept + dotFeatureRecord(model.weights, features);
+    const rawLogit = model.intercept + dotFixedFeatureRow(model.weights, row.featuresFixed);
     const predicted = clampProbability(clamp01(sigmoid(model.calibration.slope * rawLogit + model.calibration.intercept)));
     negativeLogLikelihood += -positive * Math.log(predicted) - negative * Math.log(1 - predicted);
     mass += positive + negative;
@@ -697,23 +696,6 @@ function featureArray(features: BoundaryFeatureVector): number[] {
   return FEATURE_ORDER.map(key => features[key]);
 }
 
-function featureRecord(values: readonly number[]): BoundaryFeatureVector {
-  return {
-    whitespaceAdjacent: values[0] ?? 0,
-    punctuationAdjacent: values[1] ?? 0,
-    lineBreakAdjacent: values[2] ?? 0,
-    scriptTransition: values[3] ?? 0,
-    structuralBoundary: values[4] ?? 0,
-    localTransitionEntropy: values[5] ?? 0,
-    repeatedContextSupport: values[6] ?? 0,
-    crossDocumentRecurrence: values[7] ?? 0,
-    predictiveCompressionGain: values[8] ?? 0,
-    stableSubstitutionSupport: values[9] ?? 0,
-    exactPhraseRecurrence: values[10] ?? 0,
-    constructionReuse: values[11] ?? 0
-  };
-}
-
 function dot(left: ArrayLike<number>, right: ArrayLike<number>, offset = 0, length = right.length): number {
   let sum = 0;
   let compensation = 0;
@@ -732,6 +714,20 @@ function dotFeatureRecord(weights: readonly number[], features: BoundaryFeatureV
   let compensation = 0;
   for (let index = 0; index < FEATURE_ORDER.length; index++) {
     const product = (weights[index] ?? 0) * (features[FEATURE_ORDER[index]!] ?? 0);
+    const adjusted = product - compensation;
+    const next = sum + adjusted;
+    compensation = (next - sum) - adjusted;
+    sum = next;
+  }
+  return sum;
+}
+
+function dotFixedFeatureRow(weights: readonly number[], featuresFixed: readonly number[]): number {
+  let sum = 0;
+  let compensation = 0;
+  for (let index = 0; index < FEATURE_ORDER.length; index++) {
+    const scaled = index < featuresFixed.length && index in featuresFixed ? featuresFixed[index]! / FIXED_SCALE : 0;
+    const product = (weights[index] ?? 0) * scaled;
     const adjusted = product - compensation;
     const next = sum + adjusted;
     compensation = (next - sum) - adjusted;
