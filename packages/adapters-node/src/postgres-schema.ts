@@ -1,6 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import type { InformationAccessContext } from "@scce/kernel";
+import { SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA, type InformationAccessContext } from "@scce/kernel";
 import { LANGUAGE_PATTERN_SELECTION_HEADERS, languagePatternSelectionHeaderStatement } from "./postgres-language-pattern-headers.js";
 
 export type InformationLabeledTable =
@@ -615,6 +615,7 @@ export function schemaStatements(q: string, informationAccess?: InformationAcces
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_patterns_source_system_stored_rank ON ${q}.language_patterns(source_system, support DESC, updated_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_language_patterns_profile_rank ON ${q}.language_patterns(profile_id,support DESC,updated_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_source_code_function_lookup ON ${q}.language_patterns(source_system,(pattern_json->>'formalLanguage'),(pattern_json->>'parameterCount'),support DESC,updated_at DESC,id) WHERE pattern_kind='source_code_function'`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_source_computation_binding_lookup ON ${q}.language_patterns(source_system,(pattern_json->>'bindingId'),support DESC,updated_at DESC,id) WHERE pattern_json->>'schema'='${SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA}'`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_semantic_frames_source_system_rank ON ${q}.semantic_frames((frame_json->>'sourceSystem'), alpha DESC, created_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_semantic_frames_profile_rank ON ${q}.semantic_frames((frame_json->>'profileId'),alpha DESC,created_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_semantic_frames_source_version_rank ON ${q}.semantic_frames((frame_json->>'sourceVersionId'),alpha DESC,created_at DESC)`,

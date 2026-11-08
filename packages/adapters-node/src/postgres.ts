@@ -4466,6 +4466,15 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       const projectionScope: string[] = [];
       const scopeWhere: string[] = query.patternKind ? [] : ["pattern.pattern_kind<>'source_compilation'"];
       const where: string[] = [];
+      if (query.sourceComputationBindingId !== undefined) {
+        if (typeof query.sourceComputationBindingId !== "string" || !query.sourceComputationBindingId) throw new Error("source computation binding must be a nonempty opaque ID");
+        if ((query.sourceSystem !== undefined && query.sourceSystem !== SOURCE_COMPUTATION_SOURCE_SYSTEM)
+          || (query.patternSchemas && !query.patternSchemas.includes(SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA))
+          || (query.patternKind !== undefined && query.patternKind !== "semantic_role")) return [];
+        params.push(query.sourceComputationBindingId);
+        scopeWhere.push(`pattern.pattern_json->>'schema'='${SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA}'`,
+          `pattern.source_system='${SOURCE_COMPUTATION_SOURCE_SYSTEM}'`, `pattern.pattern_json->>'bindingId'=$${params.length}`);
+      }
       if (query.patternIds) {
         if (!query.patternIds.length) return [];
         params.push([...new Set(query.patternIds)]);

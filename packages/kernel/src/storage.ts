@@ -949,7 +949,7 @@ export interface LanguageMemoryStore {
   listNgramObservations(query?: { streamId?: string; languageHint?: string; profileIds?: readonly string[]; sourceSystem?: string; limit?: number }): Promise<NgramObservation[]>;
   listLanguageUnits(query?: { profileId?: string; profileIds?: readonly string[]; script?: string; sourceSystem?: string; limit?: number; maxTotalJsonBytes?: number }): Promise<LanguageUnitRecord[]>;
   /** Request-seed views retain interpretation fields and omit generative syntax join programs. */
-  listLanguagePatterns(query?: { view?: "request_seed"; patternIds?: readonly string[]; profileId?: string; profileIds?: readonly string[]; sourceSystem?: string; patternSchemas?: readonly string[]; languageId?: string; patternKind?: LanguagePatternRecord["patternKind"]; formalLanguage?: string; parameterCount?: number; limit?: number; maxTotalJsonBytes?: number }): Promise<LanguagePatternRecord[]>;
+  listLanguagePatterns(query?: { view?: "request_seed"; patternIds?: readonly string[]; profileId?: string; profileIds?: readonly string[]; sourceSystem?: string; patternSchemas?: readonly string[]; languageId?: string; patternKind?: LanguagePatternRecord["patternKind"]; formalLanguage?: string; parameterCount?: number; sourceComputationBindingId?: string; limit?: number; maxTotalJsonBytes?: number }): Promise<LanguagePatternRecord[]>;
   listSemanticFrames(query?: { view?: "request_seed"; profileIds?: readonly string[]; sourceSystem?: string; surface?: string; requestSurface?: string; limit?: number }): Promise<SemanticFrameRecord[]>;
   listTranslationAlignments(query?: { sourceLanguage?: string; targetLanguage?: string; limit?: number }): Promise<TranslationAlignmentRecord[]>;
 }
@@ -1351,7 +1351,7 @@ export interface KernelRuntimePorts {
 // independently bumped to 23 for its own new tables. Both are real,
 // distinct structural additions from the same base, so the merged
 // schema is one past the higher of the two, not either original value.
-export const POSTGRES_SCHEMA_VERSION = 29;
+export const POSTGRES_SCHEMA_VERSION = 30;
 
 export const POSTGRES_REQUIRED_TABLES = [
   "storage_meta",

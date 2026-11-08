@@ -2,7 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import type { InformationAccessContext } from "@scce/kernel";
+import { SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA, type InformationAccessContext } from "@scce/kernel";
 import * as postgres from "../postgres.js";
 import * as schema from "../postgres-schema.js";
 
@@ -78,7 +78,7 @@ const fixtures: Array<{ q: string; access?: InformationAccessContext; statementC
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
 describe("Postgres schema contract extraction", () => {
-  it.each(fixtures)("preserves exact ordered prior DDL apart from the explicit surface-key and source-history upgrades for $q with access $access", fixture => {
+  it.each(fixtures)("preserves exact ordered prior DDL apart from explicit surface-key, source-history and computation-lookup upgrades for $q with access $access", fixture => {
     const statements = schema.schemaStatements(fixture.q, fixture.access);
     const key = fixture.q.replaceAll('"', "");
     const addedColumn = `ALTER TABLE ${fixture.q}.semantic_frames ADD COLUMN IF NOT EXISTS normalized_surface_hash TEXT`;
@@ -86,6 +86,7 @@ describe("Postgres schema contract extraction", () => {
     const hashIndex = `CREATE INDEX IF NOT EXISTS idx_${key}_semantic_frames_normalized_surface_hash_rank ON ${fixture.q}.semantic_frames(normalized_surface_hash,alpha DESC,created_at DESC,id ASC)`;
     const oldIndex = `CREATE INDEX IF NOT EXISTS idx_${key}_semantic_frames_surface_rank ON ${fixture.q}.semantic_frames((frame_json->>'surface'),alpha DESC,created_at DESC,id ASC)`;
     const historyIndex = `CREATE INDEX IF NOT EXISTS idx_${key}_source_versions_history ON ${fixture.q}.source_versions(source_id,observed_at DESC,id DESC)`;
+    const computationIndex = `CREATE INDEX IF NOT EXISTS idx_${key}_source_computation_binding_lookup ON ${fixture.q}.language_patterns(source_system,(pattern_json->>'bindingId'),support DESC,updated_at DESC,id) WHERE pattern_json->>'schema'='${SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA}'`;
     const headerStatements = statements.filter(sql => sql.startsWith(`ALTER TABLE ${fixture.q}.language_patterns`) && sql.includes("pattern_schema"));
     expect(headerStatements).toHaveLength(1);
     expect(statements).toContain(addedColumn);
@@ -93,8 +94,9 @@ describe("Postgres schema contract extraction", () => {
     expect(statements).toContain(hashIndex);
     expect(statements).not.toContain(oldIndex);
     expect(statements).toContain(historyIndex);
-    expect(statements).toHaveLength(fixture.statementCount + 4);
-    const prior = statements.filter(sql => sql !== addedColumn && sql !== retiredIndex && sql !== historyIndex && !headerStatements.includes(sql)).map(sql => sql === hashIndex ? oldIndex : sql);
+    expect(statements).toContain(computationIndex);
+    expect(statements).toHaveLength(fixture.statementCount + 5);
+    const prior = statements.filter(sql => sql !== addedColumn && sql !== retiredIndex && sql !== historyIndex && sql !== computationIndex && !headerStatements.includes(sql)).map(sql => sql === hashIndex ? oldIndex : sql);
     expect(digest(prior)).toBe(fixture.sha256);
     expect(postgres.schemaStatements(fixture.q, fixture.access)).toEqual(statements);
   });
