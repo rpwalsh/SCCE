@@ -43,10 +43,11 @@ export function acquireSourceComputationConstructions(input:{documents:readonly 
  for(const [frame,measured_] of [...groups].sort(([a],[b])=>a.localeCompare(b))){
   const bindingId=`request.computation.${input.hasher.digestHex(frame)}`;
   const measured=[...new Map(measured_.map(row=>[canonicalStringify([row.witness.sourceVersionId,row.witness.request]),row])).values()].sort((a,b)=>a.witness.sourceId.localeCompare(b.witness.sourceId)||a.witness.request.startCodePoint-b.witness.request.startCodePoint||a.witness.sourceVersionId.localeCompare(b.witness.sourceVersionId));
-  const independent=[...new Map(measured.map(row=>[row.witness.sourceId,row])).values()];
-  // Two independent fit owners and a separate source-held-out owner distinguish an induced relation from a copied example.
-  if(independent.length<3){rejected.push({bindingId,reason:"independent_source_contrast_missing"});continue;}
-  const heldOut=independent.at(-1)!;measured.forEach(row=>row.witness.verificationRole=row.witness.sourceId===heldOut.witness.sourceId?"held_out":"fit");
+  const assignment=(row:Measured)=>canonicalStringify(row.ports.map(port=>Number(port.surface.replace("\u2212","-"))));
+  const independent=[...new Set(measured.map(assignment))].sort((a,b)=>input.hasher.digestHex(a).localeCompare(input.hasher.digestHex(b))||a.localeCompare(b));
+  // Two distinct fit assignments and a fresh held-out assignment earn contrast regardless of source packaging.
+  if(independent.length<3){rejected.push({bindingId,reason:"independent_assignment_contrast_missing"});continue;}
+  const heldOut=independent.at(-1)!;measured.forEach(row=>row.witness.verificationRole=assignment(row)===heldOut?"held_out":"fit");
   const fit=measured.filter(row=>row.witness.verificationRole==="fit");
   if(fit[0]!.ports.some((_,index)=>new Set(fit.map(row=>row.ports[index]!.surface)).size<2)){rejected.push({bindingId,reason:"numeric_role_variation_missing"});continue;}
   const selection=selectExpression(measured,bindingId,input.hasher);

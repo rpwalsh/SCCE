@@ -49,8 +49,30 @@ describe("source-owned arithmetic construction acquisition",()=>{
   const verified=verifySourceComputationConstruction({pattern:compiled.families[0]!.pattern,evidence:documents.flatMap(doc=>doc.spans),hasher});
   expect(evaluateSourceComputationRequest({requestText:"mav 101 tor 37 vel 2?",constructions:[verified!],hasher})?.evaluation.resultText).toBe("276");
  });
- it("uses an independent source-held-out equation only to reject, never to choose the operator",()=>{
-  const documents=corpus(locales[0]),last=documents[3]!;documents[3]=document(last.transcriptTurns[0]!.surface,"23*17=391","en.3");
+ it("earns the same assignment contrast in one transcript as separate containers and executes fresh exact BigInt lexemes",async()=>{
+  const separated=corpus(locales[0]),texts=separated.map(doc=>doc.spans[0]!.text),text=texts.join("\n"),combined=document(texts[0]!,texts.slice(1).join("\n"),"one.container");let offset=0;
+  const turns:TranscriptTurn[]=[];
+  for(const doc of separated){const base=turns.length;for(const turn of doc.transcriptTurns){turns.push({...turn,index:base+turn.index,replyToTurnIndex:turn.replyToTurnIndex===undefined?undefined:base+turn.replyToTurnIndex,startCodePoint:offset+turn.startCodePoint,endCodePoint:offset+turn.endCodePoint});}offset += [...doc.spans[0]!.text].length+1;}
+  const one={...combined,transcriptTurns:turns};
+  expect(one.spans[0]!.text).toBe(text);
+  const compact=acquireSourceComputationConstructions({documents:[one],hasher,updatedAt:1}),split=acquireSourceComputationConstructions({documents:separated,hasher,updatedAt:1});
+  expect(compact.families,JSON.stringify(compact.rejected)).toHaveLength(1);expect((compact.families[0]!.pattern.patternJson as any).expression).toEqual((split.families[0]!.pattern.patternJson as any).expression);
+  const verified=verifySourceComputationConstruction({pattern:compact.families[0]!.pattern,evidence:one.spans,hasher})!;
+  const requestText=locales[0].question(101,37).replace("101","9007199254740993").replace("37","9007199254740995");
+  expect(evaluateSourceComputationRequest({requestText,constructions:[verified],hasher})?.evaluation.resultText).toBe("18014398509481988");
+  expect(sourceComputationBindingIdForRequest(requestText,hasher)).toBe(sourceComputationBindingIdForRequest(locales[0].question(101,37),hasher));
+ });
+ it("does not retain empty binding maps for unknown numeric forms",async()=>{
+  const fixture=storageFixtureForEvaluation({evidence:[],clockNow:()=>1});fixture.storage.languageMemory.listLanguagePatterns=async()=>[];
+  const set=vi.spyOn(Map.prototype,"set");
+  try{for(let index=0;index<20;index++)expect(await sourceComputationForRequest({storage:fixture.storage,requestText:`unknown${String.fromCharCode(97+index)} 7 and 3?`,hasher,generation:0})).toBeUndefined();
+   expect(set.mock.calls.filter(([key])=>typeof key==="string"&&key.startsWith("request.computation."))).toEqual([]);
+  }finally{set.mockRestore();}
+ });
+ it("uses an independent held-out assignment only to reject, never to choose the operator",()=>{
+  const data=acquired(locales[0]),documents=data.documents,heldOut=(data.compiled.families[0]!.pattern.patternJson as any).witnesses.find((row:any)=>row.verificationRole==="held_out");
+  const index=documents.findIndex(doc=>doc.sourceVersionId===heldOut.sourceVersionId),last=documents[index]!,[a,b]=locales[0].values[index]!;
+  documents[index]=document(last.transcriptTurns[0]!.surface,`${a}*${b}=${a*b}`,`en.${index}`);
   expect(acquireSourceComputationConstructions({documents,hasher,updatedAt:1}).families).toEqual([]);
  });
  it("does not turn numeric world-fact correlations or unsupported question forms into executable arithmetic",()=>{
@@ -64,7 +86,7 @@ describe("source-owned arithmetic construction acquisition",()=>{
   const changed=JSON.parse(JSON.stringify(pattern)) as LanguagePatternRecord;(changed.patternJson as any).expression={kind:"binary",operator:"multiply",left:{kind:"argument",index:0},right:{kind:"argument",index:1}};
   expect(verifySourceComputationConstruction({pattern:changed,evidence:data.evidence,hasher})).toBeUndefined();
   expect(verifySourceComputationConstruction({pattern:{...pattern,patternJson:{...(pattern.patternJson as any),witnesses:[null]}},evidence:data.evidence,hasher})).toBeUndefined();
-  const copied=data.documents.map(doc=>({...doc,spans:doc.spans.map(span=>({...span,sourceId:data.evidence[0]!.sourceId}))}));
+  const copied=data.documents.map((_,index)=>document(locales[0].question(7,3),"7+3=10",`copy.${index}`));
   expect(acquireSourceComputationConstructions({documents:copied,hasher,updatedAt:1}).families).toEqual([]);
   const wrong=corpus(locales[0]).map((doc,i)=>i?doc:document(doc.transcriptTurns[0]!.surface,"7+3=999","en.0"));
   expect(acquireSourceComputationConstructions({documents:wrong.slice(0,3),hasher,updatedAt:1}).families).toEqual([]);

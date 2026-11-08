@@ -4,7 +4,7 @@ import type {DurableLanguageConstructionBundle} from "./language-construction-me
 import type {ProgramExpression} from "./program-transformation-search.js";
 
 export const SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA="scce.source_owned_computation_construction.v1" as const;
-export const SOURCE_COMPUTATION_CONSTRUCTION_RECIPE="kernel.dialogue_computation_construction.v1" as const;
+export const SOURCE_COMPUTATION_CONSTRUCTION_RECIPE="kernel.dialogue_computation_construction.v2" as const;
 export const SOURCE_COMPUTATION_SOURCE_SYSTEM="dialogue" as const;
 
 export interface SourceComputationSpan {

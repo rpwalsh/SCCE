@@ -34,4 +34,11 @@ it("ordinary source auxiliary publication is atomic, survives cold JSON, skips u
  expect(await persistDialogueComputationComponent(input)).toMatchObject({patternsPersisted:1,unchanged:false});expect(writes).toBe(2);
  const withheld=evidence[0]!;accessible.delete(String(withheld.id));expect(await sourceComputationForRequest({storage,requestText:"mav 101 tor 37?",hasher})).toBeUndefined();accessible.add(String(withheld.id));
  currentVersions.delete(String(withheld.sourceVersionId));expect(await sourceComputationForRequest({storage,requestText:"mav 101 tor 37?",hasher})).toBeUndefined();
+ currentVersions.add(String(withheld.sourceVersionId));
+ const oldReceipt=[...checkpoints.values()][0]!;oldReceipt.metadata.compilerFingerprint="kernel.dialogue_computation_construction.v1";oldReceipt.metadata.projections=[];
+ const beforeUpgrade=writes;getEvidence.mockClear();
+ expect(await persistDialogueComputationComponent(input)).toMatchObject({patternsPersisted:1,unchanged:false});expect(writes).toBe(beforeUpgrade+1);expect(getEvidence).toHaveBeenCalledTimes(sources.length);
+ getEvidence.mockClear();expect(await persistDialogueComputationComponent(input)).toMatchObject({unchanged:true});expect(writes).toBe(beforeUpgrade+1);expect(getEvidence).not.toHaveBeenCalled();
+ expect(profiles.map(profile=>profile.id)).toEqual(originalProfileIds);expect(evidence.map(span=>span.sourceVersionId)).toEqual(originalVersions);
+
 });

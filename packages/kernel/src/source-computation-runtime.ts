@@ -13,10 +13,10 @@ export async function sourceComputationForRequest(input:{storage:ScceStorage;has
  const current=await input.storage.languageMemory.listLanguagePatterns({patternSchemas:[SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA],sourceSystem:SOURCE_COMPUTATION_SOURCE_SYSTEM,sourceComputationBindingId:bindingId});
  const patterns=current.filter(pattern=>sourceComputationPatternMatchesQuestion(pattern,input.requestText));
  let cache=input.generation===undefined?undefined:coldCaches.get(input.storage);
+ if(!patterns.length){if(cache?.generation!==input.generation)coldCaches.delete(input.storage);else cache?.bindings.delete(bindingId);return undefined;}
  if(input.generation!==undefined&&cache?.generation!==input.generation){cache={generation:input.generation,bindings:new Map()};coldCaches.set(input.storage,cache);}
  const entries=cache?.bindings.get(bindingId)??new Map<string,VerifiedSourceComputation>();if(cache)cache.bindings.set(bindingId,entries);
  const currentIds=new Set(current.map(pattern=>pattern.id));for(const id of entries.keys())if(!currentIds.has(id))entries.delete(id);
- if(!patterns.length)return undefined;
  const cold=patterns.filter(pattern=>!entries.has(pattern.id));
  const evidenceIds=[...new Set(cold.flatMap(pattern=>pattern.evidenceIds))],evidence=evidenceIds.length?await input.storage.evidence.getEvidenceBatch(evidenceIds):[];
  const allowed=input.sourceVersionAllowlist?new Set(input.sourceVersionAllowlist):undefined;
