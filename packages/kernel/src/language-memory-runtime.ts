@@ -42,7 +42,7 @@ import {
   type JoinProgramMixture,
   type JoinProgramTraceStep
 } from "./join-program.js";
-import { JOIN_PROGRAM_MIXTURE_STORAGE_SCHEMA, joinProgramMixtureFromStorage } from "./join-program-storage.js";
+import { JOIN_PROGRAM_MIXTURE_STORAGE_SCHEMA, JOIN_PROGRAM_MIXTURE_STORAGE_V1_SCHEMA, joinProgramMixtureFromStorage } from "./join-program-storage.js";
 import {
   INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID,
   INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA
@@ -5011,7 +5011,7 @@ function joinProgramsFromPatterns(
       && row.componentRecipe !== INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID && scope && activeSourceScopes.has(scope)) continue;
     const candidate = row.joinProgram;
     const candidateRow = jsonRecord(candidate);
-    const candidateId = candidateRow.schema === JOIN_PROGRAM_MIXTURE_STORAGE_SCHEMA
+    const candidateId = candidateRow.schema === JOIN_PROGRAM_MIXTURE_STORAGE_SCHEMA || candidateRow.schema === JOIN_PROGRAM_MIXTURE_STORAGE_V1_SCHEMA
       ? jsonRecord(candidateRow.mixture).id
       : candidateRow.id;
     if (typeof candidateId === "string" && byId.has(candidateId)) continue;

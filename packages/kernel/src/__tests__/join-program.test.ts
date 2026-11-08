@@ -53,11 +53,8 @@ describe("learned join programs", () => {
   });
 
   it("rejects compact provenance references outside their dictionaries", () => {
-    const stored = JSON.parse(JSON.stringify(joinProgramMixtureStorageForm(trainedMixture("invalid-provenance", "alpha beta")))) as {
-      mixture: { components: Array<{ program: { indexes: { exactIndex: Array<[string, Array<{ evidenceCoordinateRefs: number[] }>]> } } }> }
-    };
-    const exact = stored.mixture.components[0]!.program.indexes.exactIndex;
-    exact.find(([, choices]) => choices.length)![1][0]!.evidenceCoordinateRefs = [999];
+    const stored = structuredClone(joinProgramMixtureStorageForm(trainedMixture("invalid-provenance", "alpha beta")));
+    stored.mixture.components[0]!.program.choiceDictionary[0]![4] = [999];
     expect(joinProgramMixtureFromStorage(stored)).toBeUndefined();
   });
 
