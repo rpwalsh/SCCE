@@ -6,7 +6,7 @@ import { runModelCommand, runSensorCommand, runSettingsCommand } from "./setting
 import { runCodeCommand } from "./code-command.js";
 import { negotiateLearning, runLearnCommand } from "./learning-commands.js";
 import { parseLocalExecutiveGoal } from "@scce/adapters-node";
-import { wikiChildArgs, wikiContinueAfterConfiguredPageCap, wikiRunPaths } from "./wiki-process.js";
+import { wikiChildArgs, wikiContinueAfterConfiguredPageCap, wikiRunPaths, withWikiIngestCancellation } from "./wiki-process.js";
 import { resolveWikipediaCorpusTarget } from "@scce/adapters-node";
 import type { StructuredPatchValidationPolicy } from "@scce/adapters-node";
 import { describeRelationPotentialCapability, validateRelationPotentialAgainstIdentity } from "@scce/kernel";
@@ -419,11 +419,12 @@ async function ingestWiki(configPath: string, config: Awaited<ReturnType<typeof 
   })}\n`);
   const ingestor = createWikipediaV3Ingestor({ storage: runtime.storage, config });
   if (options.statusPath) await mkdir(path.dirname(options.statusPath), { recursive: true });
-  const result = await ingestor.ingest({
+  const result = await withWikiIngestCancellation(signal => ingestor.ingest({
     dumpPath: path.resolve(target),
     ...options,
+    signal,
     onStatus: options.statusPath ? status => writeJsonReplacing(options.statusPath!, status) : undefined
-  });
+  }));
   printJson(result);
   // Reading blocks and storing nothing is a failure that used to exit 0: a dump configured as its own index
   // decoded garbage at every offset, and 62 seconds of "success" left a clean brain empty. Blocks read with no

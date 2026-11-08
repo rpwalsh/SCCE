@@ -92,6 +92,20 @@ function mockPipeline(config: any) {
 }
 
 describe("Wikipedia recovery boundaries", () => {
+  it("records caller cancellation as an owner stop and resumes through the same journal", async () => {
+    const f = await fixture();
+    try {
+      const pipeline = mockPipeline(f.config), controller = new AbortController();
+      controller.abort(new Error("owner-stop"));
+      const stopped = await pipeline.ingestor.ingest({ dumpPath: f.dumpPath, signal: controller.signal });
+      expect(stopped).toMatchObject({ stoppedByOwner: true, stopReason: "owner-abort", pages: 0 });
+      expect(pipeline.page).not.toHaveBeenCalled();
+      expect(pipeline.train).not.toHaveBeenCalled();
+      expect(pipeline.activate).not.toHaveBeenCalled();
+      expect((await pipeline.ingestor.ingest({ dumpPath: f.dumpPath, resume: true })).pages).toBe(2);
+      expect(pipeline.activate).toHaveBeenLastCalledWith(expect.objectContaining({ fullTrainingComplete: true }));
+    } finally { vi.restoreAllMocks(); await f.close(); }
+  });
   it.each(["aggregate", "rows"])("propagates a failed relation-prior %s read instead of treating it as no evidence", async failedRead => {
     const unavailable = async () => { throw new Error("prior storage unavailable"); };
     const ingestor = createWikipediaV3Ingestor({ config: { runtime: {} } as any, storage: {

@@ -5,9 +5,28 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { wikiChildArgs, wikiContinueAfterConfiguredPageCap, wikiRunPaths } from "../wiki-process.js";
+import { EventEmitter } from "node:events";
+import { wikiChildArgs, wikiContinueAfterConfiguredPageCap, wikiRunPaths, withWikiIngestCancellation } from "../wiki-process.js";
 
 describe("Wikipedia supervisor isolation", () => {
+  it.each(["SIGINT", "SIGTERM"])("passes %s to the existing ingestion and removes its listeners", async event => {
+    const events = new EventEmitter();
+    const result = await withWikiIngestCancellation(async signal => {
+      expect(signal.aborted).toBe(false);
+      events.emit(event);
+      expect(signal.aborted).toBe(true);
+      expect(signal.reason.name).toBe("AbortError");
+      return "owner-stopped";
+    }, events);
+    expect(result).toBe("owner-stopped");
+    expect(events.listenerCount("SIGINT")).toBe(0);
+    expect(events.listenerCount("SIGTERM")).toBe(0);
+  });
+  it("removes cancellation listeners after a failed ingestion", async () => {
+    const events = new EventEmitter();
+    await expect(withWikiIngestCancellation(async () => { throw Error("invalid source"); }, events)).rejects.toThrow("invalid source");
+    expect(events.eventNames()).toEqual([]);
+  });
   it("continues a default segment cap, honors explicit bounds, and rejects a resume loop", () => {
     const status = { stopReason: "maxPagesPerRun", lastCheckpointOffset: 500, resumedFromOffset: 100 };
     expect(wikiContinueAfterConfiguredPageCap(status, {})).toBe(true);

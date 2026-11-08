@@ -38,3 +38,12 @@ export function wikiContinueAfterConfiguredPageCap(status: {
   }
   return true;
 }
+
+export async function withWikiIngestCancellation<T>(run: (signal: AbortSignal) => Promise<T>, events: { once(event: "SIGINT" | "SIGTERM", listener: () => void): unknown; off(event: "SIGINT" | "SIGTERM", listener: () => void): unknown } = process): Promise<T> {
+  const controller = new AbortController();
+  const abort = () => controller.abort(new DOMException("Wikipedia ingestion interrupted by owner", "AbortError"));
+  events.once("SIGINT", abort);
+  events.once("SIGTERM", abort);
+  try { return await run(controller.signal); }
+  finally { events.off("SIGINT", abort); events.off("SIGTERM", abort); }
+}

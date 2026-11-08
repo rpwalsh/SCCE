@@ -9,6 +9,7 @@ import path from "node:path";
 import { redactSecretsWithMap, stripApparatusLines, type ContentHash, type IngestedSourceFile, type IngestionCheckpoint, type JsonValue } from "@scce/kernel";
 import { effectiveMaxArticleChars, type ScceRuntimeConfig } from "./config.js";
 import { decodeWikiEntities, renderWikiLinks, renderWikiTemplates, WIKIPEDIA_SURFACE_TRANSFORM, type WikiNormalizationDiagnostics } from "./wikipedia-markup.js";
+import { createRemoteWikipediaReader, readRemoteWikipediaSource, type RemoteWikipediaSource } from "./wikipedia-remote-source.js";
 
 type IngestStreamItem =
   | { type: "checkpoint"; checkpoint: IngestionCheckpoint }
@@ -29,9 +30,11 @@ export interface ResolvedWikipediaCorpus {
   checkpointEveryPages: number;
   skipRedirects: boolean;
   allowedNamespaces: number[];
+  remoteSource?: RemoteWikipediaSource;
 }
 
 export interface WikipediaStreamOptions {
+  signal?: AbortSignal;
   resumeOffset?: number;
   /** Absolute ordinal of the cursor block, persisted alongside its compressed offset. */
   resumeBlockOrdinal?: number;
@@ -52,6 +55,7 @@ interface WikiCompressedBlock {
   compressedEnd?: number;
   blockOrdinal: number;
   entries: WikiIndexEntry[];
+  compressedSha256?: string;
 }
 
 interface ParsedWikiPage {
@@ -142,7 +146,7 @@ export function resolveWikipediaCorpusTarget(config: ScceRuntimeConfig, absolute
 
 function wikipediaDumpCode(fileName: string): string | undefined {
   // Whole dumps, dated dumps, and numbered multistream parts (…multistream1.xml-p1p41242.bz2) all name their wiki.
-  const match = fileName.match(/^([a-z][a-z0-9_-]*wiki)-(?:latest|\d{8})-pages-articles(?:-multistream\d*)?(?:-index\d*\.txt)?(?:\.xml)?(?:-p\d+p\d+)?(?:\.bz2)?$/i);
+  const match = fileName.replace(/\.remote\.json$/u, "").match(/^([a-z][a-z0-9_-]*wiki)-(?:latest|\d{8})-pages-articles(?:-multistream\d*)?(?:-index\d*\.txt)?(?:\.xml)?(?:-p\d+p\d+)?(?:\.bz2)?$/i);
   return match?.[1]?.toLocaleLowerCase();
 }
 
@@ -156,9 +160,13 @@ export async function detectWikipediaIndexPath(dumpPath: string): Promise<string
 }
 
 export async function* streamWikipediaMultistream(corpus: ResolvedWikipediaCorpus, options: WikipediaStreamOptions = {}): AsyncIterable<IngestStreamItem> {
-  const info = await stat(corpus.dumpPath);
+  const remoteSource = corpus.remoteSource ?? (await readRemoteWikipediaSource(corpus.dumpPath))?.source;
+  if (remoteSource) corpus = { ...corpus, remoteSource };
+  const info = remoteSource ? { size: remoteSource.byteLength } : await stat(corpus.dumpPath);
   const rootUri = wikipediaRootUri(corpus);
   const indexPath = corpus.indexPath ?? (options.discoverIndex === false ? undefined : await detectWikipediaIndexPath(corpus.dumpPath));
+  if (remoteSource && !indexPath) throw new Error("Remote Wikipedia streaming requires its pinned local index");
+  const remoteReader = remoteSource ? createRemoteWikipediaReader(remoteSource, undefined, options) : undefined;
   yield { type: "checkpoint", checkpoint: checkpoint(rootUri, corpus.dumpPath, "discovered", "pending", 0, { compressedBytes: info.size, indexPath: indexPath ?? null, indexMode: indexPath ? "index" : "bz2-magic-scan", memorySafetyBoundMb: corpus.memorySafetyBoundMb }) };
 
   let emitted = 0;
@@ -185,8 +193,16 @@ export async function* streamWikipediaMultistream(corpus: ResolvedWikipediaCorpu
     yield { type: "checkpoint", checkpoint: blockCheckpoint(rootUri, corpus, block, "extracting", "running", { entries: block.entries.length }) };
     let xml = "";
     try {
-      xml = await readCompressedBlock(corpus.dumpPath, block.compressedOffset, block.compressedEnd, corpus.python, corpus.maxBlockBytes);
+      const compressedBytes = remoteReader ? await remoteReader.block(block.compressedOffset, block.compressedEnd ?? info.size, corpus.maxBlockBytes) : undefined;
+      if (compressedBytes) block.compressedSha256 = sha256(compressedBytes);
+      xml = await readCompressedBlock(corpus.dumpPath, block.compressedOffset, block.compressedEnd, corpus.python, corpus.maxBlockBytes,
+        compressedBytes, options.signal);
     } catch (error) {
+      if (options.signal?.aborted) {
+        yield { type: "checkpoint", checkpoint: checkpoint(rootUri, corpus.dumpPath, "stored", "complete", lastOffset,
+          { emitted, skipped, blockCount, pageOrdinal, reachedEnd: false, stoppedAt: "owner-abort" }) };
+        return;
+      }
       yield { type: "checkpoint", checkpoint: blockCheckpoint(rootUri, corpus, block, "failed", "failed", { reason: messageOf(error) }, messageOf(error)) };
       throw new Error(`Wikipedia block at ${block.compressedOffset} failed: ${messageOf(error)}`);
     }
@@ -201,7 +217,7 @@ export async function* streamWikipediaMultistream(corpus: ResolvedWikipediaCorpu
       if (indexPath) {
         const expected = block.entries[indexedPages++];
         const head = pageBlock.slice(0, pageBlock.indexOf("<revision>"));
-        if (!expected || tagText(head, "id") !== expected.pageId || decodeXml(tagText(head, "title")) !== expected.title) {
+        if (!expected || tagText(head, "id") !== expected.pageId || decodeXml(tagText(head, "title")) !== decodeXml(expected.title)) {
           throw new Error(`Wikipedia index/dump page identity mismatch in block ${block.compressedOffset}`);
         }
       }
@@ -226,7 +242,16 @@ export async function* streamWikipediaMultistream(corpus: ResolvedWikipediaCorpu
     xml = "";
   }
 
-  yield { type: "checkpoint", checkpoint: checkpoint(rootUri, corpus.dumpPath, "stored", "complete", lastOffset, { emitted, skipped, blockCount, pageOrdinal, reachedEnd: true }) };
+  let remoteIntegrity;
+  try { remoteIntegrity = remoteReader ? await remoteReader.verifyWholeSource() : undefined; }
+  catch (error) {
+    if (!options.signal?.aborted) throw error;
+    yield { type: "checkpoint", checkpoint: checkpoint(rootUri, corpus.dumpPath, "stored", "complete", lastOffset,
+      { emitted, skipped, blockCount, pageOrdinal, reachedEnd: false, stoppedAt: "owner-abort" }) };
+    return;
+  }
+  yield { type: "checkpoint", checkpoint: checkpoint(rootUri, corpus.dumpPath, "stored", "complete", lastOffset, { emitted, skipped, blockCount, pageOrdinal, reachedEnd: true,
+    ...(remoteIntegrity ? { remoteIntegrity } : {}) }) };
 }
 
 async function* streamWikiBlocksFromDump(dumpPath: string, dumpSize: number, resumeOffset: number, resumeAfterBlock = false): AsyncIterable<WikiCompressedBlock> {
@@ -428,8 +453,8 @@ function parseIndexLine(line: string): WikiIndexEntry | undefined {
   return { compressedOffset, pageId, title };
 }
 
-async function readCompressedBlock(dumpPath: string, offset: number, end: number | undefined, python: string, maxBlockBytes: number): Promise<string> {
-  const limit = end && end > offset ? end - offset : 0;
+async function readCompressedBlock(dumpPath: string, offset: number, end: number | undefined, python: string, maxBlockBytes: number, compressedBytes?: Buffer, signal?: AbortSignal): Promise<string> {
+  const limit = compressedBytes?.byteLength ?? (end && end > offset ? end - offset : 0);
   const script = [
     "import bz2,sys",
     "path=sys.argv[1]",
@@ -440,8 +465,8 @@ async function readCompressedBlock(dumpPath: string, offset: number, end: number
     "out=[]",
     "total=0",
     "read=0",
-    "with open(path,'rb') as f:",
-    "    f.seek(off)",
+    "with (sys.stdin.buffer if path=='-' else open(path,'rb')) as f:",
+    "    if path!='-': f.seek(off)",
     "    while True:",
     "        chunk=b''",
     "        if d.needs_input:",
@@ -462,7 +487,10 @@ async function readCompressedBlock(dumpPath: string, offset: number, end: number
     "if not d.eof: raise RuntimeError('truncated bzip2 stream')",
     "sys.stdout.buffer.write(b''.join(out))"
   ].join("\n");
-  const child = spawn(python, ["-c", script, dumpPath, String(offset), String(limit), String(maxBlockBytes)], { windowsHide: true, shell: false });
+  const child = spawn(python, ["-c", script, compressedBytes ? "-" : dumpPath, String(offset), String(limit), String(maxBlockBytes)], { windowsHide: true, shell: false, ...(signal ? { signal } : {}) });
+  child.stdin.on("error", () => undefined);
+  if (compressedBytes) child.stdin.end(compressedBytes);
+  else child.stdin.end();
   const chunks: Buffer[] = [];
   const errors: Buffer[] = [];
   const finished = new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
@@ -544,10 +572,13 @@ function wikiPageFile(page: ParsedWikiPage, corpus: ResolvedWikipediaCorpus, pag
       corpus: path.basename(corpus.dumpPath),
       wikiCode: corpus.wikiCode,
       dumpPath: corpus.dumpPath,
+      ...(corpus.remoteSource ? { sourceUrl: corpus.remoteSource.url, sourceETag: corpus.remoteSource.etag,
+        expectedDumpSha1: corpus.remoteSource.expectedSha1, dumpTransport: "http-range" } : {}),
       indexPath: corpus.indexPath ?? null,
       pageOrdinal,
       blockOrdinal: block.blockOrdinal,
       blockOffset: block.compressedOffset,
+      ...(block.compressedSha256 ? { blockCompressedSha256: block.compressedSha256, blockCompressedEnd: block.compressedEnd ?? null } : {}),
       title: page.title,
       pageId: page.pageId,
       revisionId: page.revisionId,
@@ -769,6 +800,7 @@ function indexOfIgnoreCase(input: string, needle: string, start: number): number
 }
 
 function candidateIndexPaths(dumpPath: string): string[] {
+  dumpPath = dumpPath.replace(/\.remote\.json$/u, "");
   const out: string[] = [];
   if (dumpPath.endsWith(".xml.bz2")) {
     out.push(`${dumpPath.slice(0, -".xml.bz2".length)}-index.txt.bz2`);

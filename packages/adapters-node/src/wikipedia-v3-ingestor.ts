@@ -79,6 +79,7 @@ const WIKIPEDIA_INFORMATION_LABEL: InformationLabel = {
 };
 
 export interface WikipediaV3IngestOptions {
+  signal?: AbortSignal;
   dumpPath: string;
   indexPath?: string;
   maxPages?: number;
@@ -338,6 +339,7 @@ export class WikipediaV3Ingestor {
         alignmentLatticesPerShard: wikiConfig?.alignmentLatticesPerShard ?? 48
       }
     });
+    corpus.remoteSource = inputManifest.inputs.remoteDump;
     const shardCharBudget = effectiveNgramShardChars(wikiConfig?.ngramShardChars);
     const assertInputUnchanged = async (): Promise<void> => {
       if (!await wikipediaInputSourcesStillMatch(inputManifest)) throw new Error("Wikipedia input changed during ingestion; no further checkpoint or activation is permitted");
@@ -572,7 +574,8 @@ export class WikipediaV3Ingestor {
           resumeOffset: resumedFromOffset,
           resumeBlockOrdinal: resumedBlockOrdinal || undefined,
           resumeAfterBlock: resumeAfterBlock,
-          discoverIndex: false
+          discoverIndex: false,
+          signal: input.signal
         });
       }
       if (stream) for await (const item of stream) {
@@ -1784,6 +1787,7 @@ function isBlockCheckpoint(checkpoint: IngestionCheckpoint): boolean {
 }
 
 function stopDecision(input: WikipediaV3IngestOptions, result: WikipediaV3IngestResult): { kind: "heap" | "owner"; reason: string } | undefined {
+  if (input.signal?.aborted) return { kind: "owner", reason: "owner-abort" };
   if (input.stopFile && existsSync(input.stopFile)) return { kind: "owner", reason: `owner stop file present at ${input.stopFile}` };
   const heapLimit = input.heapCheckpointMb;
   const current = heapMiB();
