@@ -336,3 +336,4 @@ export * from "./learning-review.js";
 export { sourceLanguageTrainingStreamId } from "./source-language-training-identity.js";
 
 export { stampSourceLanguageCompilation } from "./source-language-compilation.js";
+export * from "./language-pattern-publication.js";

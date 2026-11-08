@@ -875,6 +875,17 @@ export interface LanguageContinuationPopulation {
   readonly continuationCounts: Readonly<Record<string, number>>;
 }
 
+export interface LanguagePatternProjection {
+  profileId: string;
+  sourceId: SourceId;
+  sourceVersionId: SourceVersionId;
+  sourceSystem: string;
+  patternSchema: string;
+  componentRecipe: string;
+  patternIds: readonly string[];
+  informationLabel: InformationLabel;
+}
+
 export interface LanguageMemoryStore {
   putNgramObservation(observation: NgramObservation): Promise<void>;
   putNgramObservationsBatch(observations: readonly NgramObservation[]): Promise<void>;
@@ -900,17 +911,10 @@ export interface LanguageMemoryStore {
   /** Writes patterns and atomically publishes the active content-addressed projection for one source scope. */
   replaceLanguagePatternProjection?(input: {
     patterns: readonly LanguagePatternRecord[];
-    projection: {
-      profileId: string;
-      sourceId: SourceId;
-      sourceVersionId: SourceVersionId;
-      sourceSystem: string;
-      patternSchema: string;
-      componentRecipe: string;
-      patternIds: readonly string[];
-      informationLabel: InformationLabel;
-    };
+    projection: LanguagePatternProjection;
   }): Promise<void>;
+  /** Reads an exact accessible active projection and optionally verifies its canonical compilation inventory. */
+  getLanguagePatternProjection?(query: Omit<LanguagePatternProjection, "patternIds"> & { sourceCompilationId?: string }): Promise<LanguagePatternProjection | undefined>;
   putSemanticFrame(frame: SemanticFrameRecord): Promise<void>;
   putSemanticFrames?(frames: readonly SemanticFrameRecord[]): Promise<void>;
   putTranslationAlignment(alignment: TranslationAlignmentRecord): Promise<void>;

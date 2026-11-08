@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { getFixtureLanguagePatternProjection, installFixtureLanguagePatternProjection, replaceFixtureLanguagePatternProjection } from "./language-pattern-projection-fixture.js";
 import { describe, expect, it } from "vitest";
 
 import { createEventFactory } from "../events.js";
@@ -10,6 +11,7 @@ import { createLanguageMemoryRuntime } from "../language-memory-runtime.js";
 import { createLanguageAcquisitionEngine } from "../language.js";
 import { createClock, createHasher } from "../primitives.js";
 import { DEFAULT_NGRAM_SETTINGS } from "../corpus-registry.js";
+import { hydrateLanguageConstructionPatterns } from "../language-construction-memory.js";
 import { filterEventRange } from "./event-range-fixture.js";
 import type { EventRangeQuery, LanguagePatternRecord, LanguageUnitRecord, NgramModelRecord, NgramObservation, QuarantineSource, ScceKernelDeps } from "../storage.js";
 import type { EvidenceSpan, ScceEvent, SourceVersion, LanguageProfile, JsonValue } from "../types.js";
@@ -30,6 +32,26 @@ const REQUEST_REQUIREMENT_CORPUS_TEXT = JSON.stringify({
 });
 
 describe("request-requirement corpus ingestion gate", () => {
+  it("publishes ingested constructions through the active projection before hydration and retires an empty replacement", async () => {
+    const text = ["cat chased mouse.", "dog chased mouse.", "cat chased ball.", "dog chased ball.",
+      "cat chased mouse.", "dog chased ball.", "cat chased ball.", "dog chased mouse."].join(" ");
+    const fixture = await ingestFixtureText({}, text);
+    const schema = "scce.language_construction_pattern.v1";
+    const stored = fixture.learnedPatterns.filter(pattern => (pattern.patternJson as { schema?: string }).schema === schema);
+    expect(stored.length).toBeGreaterThan(0);
+    const active = await fixture.store.listLanguagePatterns({ patternSchemas: [schema] });
+    expect(active.map(row => row.id)).toEqual(stored.map(row => row.id));
+    const hydrated = hydrateLanguageConstructionPatterns({ patterns: active, evidence: fixture.evidence, hasher: fixture.hasher });
+    expect(hydrated.rejected).toEqual([]);
+    expect(hydrated.constructions.length).toBeGreaterThan(0);
+    expect(hydrated.bundles.every(bundle => bundle.acquisitionStatus === "source_observed")).toBe(true);
+    await fixture.ingest(text);
+    expect((await fixture.store.listLanguagePatterns({ patternSchemas: [schema] })).map(row => row.id)).toEqual(active.map(row => row.id));
+    await fixture.ingest("A single observation.");
+    expect(fixture.publications.at(-1)!.projection.patternIds).toEqual([]);
+    expect(await fixture.store.listLanguagePatterns({ patternSchemas: [schema] })).toEqual([]);
+    expect(fixture.learnedPatterns.filter(pattern => (pattern.patternJson as { schema?: string }).schema === schema).map(row => row.id)).toEqual(stored.map(row => row.id));
+  });
   it("persists ordinary upload models and forms atomically without raw count duplicates", async () => {
     const text = "Zephyr valve pressure remains stable. Measurements follow the recorded calibration.";
     const fixture = await ingestFixtureText({}, text);
@@ -99,6 +121,7 @@ async function ingestFixtureText(depsOverrides: Partial<ScceKernelDeps>, content
   let transactionDepth = 0;
   const events: ScceEvent[] = [];
   const symbolPatternLearnedPayloads: unknown[] = [];
+  const publications: Parameters<NonNullable<ScceKernelDeps["storage"]["languageMemory"]["replaceLanguagePatternProjection"]>>[0][] = [];
   const informationLabel = {
     tenantId: "fixture.tenant",
     principals: ["fixture.owner"],
@@ -132,7 +155,10 @@ async function ingestFixtureText(depsOverrides: Partial<ScceKernelDeps>, content
           sourceVersions.push(source);
         },
         putEvidenceSpans: async (spans: EvidenceSpan[]) => {
-          evidence.push(...spans);
+          for (const span of spans) {
+            const prior = evidence.findIndex(row => row.id === span.id);
+            if (prior < 0) evidence.push(span); else evidence[prior] = span;
+          }
         },
         getEvidenceBatch: async (ids: EvidenceSpan["id"][]) => {
           const requestedIds = new Set(ids.map(String));
@@ -159,14 +185,21 @@ async function ingestFixtureText(depsOverrides: Partial<ScceKernelDeps>, content
         putNgramObservationsBatch: async (rows: NgramObservation[]) => { rawObservationCalls++; rawObservationWrites += rows.length; },
         putNgramModels: async (rows: NgramModelRecord[]) => { languageWriteDepths.push(transactionDepth); learnedModels.push(...rows); },
         putLanguageUnits: async (rows: LanguageUnitRecord[]) => { languageWriteDepths.push(transactionDepth); learnedUnits.push(...rows); },
+        getLanguagePatternProjection: getFixtureLanguagePatternProjection,
+        replaceLanguagePatternProjection: async function(this: ScceKernelDeps["storage"]["languageMemory"], input: (typeof publications)[number]) { publications.push(input); await replaceFixtureLanguagePatternProjection.call(this, input); },
+        listLanguagePatterns: async (query: Parameters<ScceKernelDeps["storage"]["languageMemory"]["listLanguagePatterns"]>[0]) => learnedPatterns.filter(row => !query?.patternSchemas || query.patternSchemas.includes(String((row.patternJson as { schema?: string }).schema))),
         putLanguagePatterns: async (patterns: LanguagePatternRecord[]) => {
           languageWriteDepths.push(transactionDepth);
-          learnedPatterns.push(...patterns);
+          for (const pattern of patterns) {
+            const prior = learnedPatterns.findIndex(row => row.id === pattern.id);
+            if (prior < 0) learnedPatterns.push(pattern); else learnedPatterns[prior] = pattern;
+          }
         },
         putSemanticFrames: async () => undefined
       }
     }
   } as unknown as ScceKernelDeps;
+  installFixtureLanguagePatternProjection(deps.storage.languageMemory);
 
   const runtime = createIngestionRuntime({
     deps,
@@ -184,7 +217,7 @@ async function ingestFixtureText(depsOverrides: Partial<ScceKernelDeps>, content
     onKernelStateMutation: () => undefined
   });
 
-  await runtime.ingest({
+  const ingest = (content: string) => runtime.ingest({
     uri: "inline://request-requirement-gate-fixture",
     namespace: "fixture",
     mediaType: "application/json",
@@ -206,10 +239,12 @@ async function ingestFixtureText(depsOverrides: Partial<ScceKernelDeps>, content
       licenseStatus: "owner_authorized"
     }
   });
+  await ingest(content);
 
   expect(sourceVersions.length).toBeGreaterThan(0);
   expect(evidence.length).toBeGreaterThan(0);
   expect(quarantined.length).toBeGreaterThan(0);
 
-  return { learnedPatterns, symbolPatternLearnedPayloads, learnedModels, learnedUnits, profiles, evidence, idFactory, hasher, languageWriteDepths, rawObservationWrites, rawObservationCalls };
+  return { learnedPatterns, symbolPatternLearnedPayloads, learnedModels, learnedUnits, profiles, evidence, idFactory, hasher, languageWriteDepths, rawObservationWrites, rawObservationCalls,
+    store: deps.storage.languageMemory, publications, ingest };
 }

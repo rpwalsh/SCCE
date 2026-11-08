@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { getFixtureLanguagePatternProjection, replaceFixtureLanguagePatternProjection } from "../../../kernel/src/__tests__/language-pattern-projection-fixture.js";
 import { describe, expect, it } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -41,6 +42,8 @@ describe("Wikipedia shard graph dependency validation", () => {
         },
         languageMemory: {
           putNgramObservationsBatch: async () => {}, putNgramModels: async () => {}, putLanguageUnits: async () => {},
+          getLanguagePatternProjection: getFixtureLanguagePatternProjection,
+          replaceLanguagePatternProjection: replaceFixtureLanguagePatternProjection,
           putLanguagePatterns: async () => {}, putSemanticFrames: async () => {}
         }
       } as any;

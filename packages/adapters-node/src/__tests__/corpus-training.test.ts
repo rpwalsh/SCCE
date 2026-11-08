@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { getFixtureLanguagePatternProjection, replaceFixtureLanguagePatternProjection } from "../../../kernel/src/__tests__/language-pattern-projection-fixture.js";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import os from "node:os";
@@ -98,7 +99,7 @@ describe("learned rows carry the shard's provenance once", () => {
     const publications: Parameters<NonNullable<ScceStorage["languageMemory"]["replaceLanguagePatternProjection"]>>[0][] = [];
     fixture.storage.languageMemory.replaceLanguagePatternProjection = async input => {
       publications.push(structuredClone(input));
-      fixture.state.patterns.push(...input.patterns);
+      await replaceFixtureLanguagePatternProjection.call(fixture.storage.languageMemory, input);
     };
     const options = { storage: fixture.storage, rootPath: root, maxFiles: 2, includeDocs: false, ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64 };
     await writeFile(file, "export function original(value: number) { return value + 1; }");
@@ -152,7 +153,7 @@ describe("learned rows carry the shard's provenance once", () => {
     fixture.storage.languageMemory.putLanguagePatterns = async rows => { upsert(fixture.state.patterns, rows); };
     fixture.storage.languageMemory.replaceLanguagePatternProjection = async input => {
       activeProjectionWrites.push(structuredClone(input));
-      upsert(fixture.state.patterns, input.patterns);
+      await replaceFixtureLanguagePatternProjection.call(fixture.storage.languageMemory, input);
     };
     fixture.storage.languageMemory.putSemanticFrames = async rows => { upsert(fixture.state.frames, rows); };
     const checkpoints = new Map<string, IngestionCheckpoint>();
@@ -2247,7 +2248,7 @@ describe("dialogue corpus training", () => {
         && recordOf(pattern.patternJson).schema === input.schema
         && recordOf(pattern.patternJson).sourceSystem === input.sourceSystem
         && String(recordOf(pattern.patternJson).sourceVersionId) === String(input.sourceVersionId)));
-      fixture.state.patterns.push(...input.patterns);
+      await replaceFixtureLanguagePatternProjection.call(fixture.storage.languageMemory, input);
     };
     fixture.storage.evidence.searchEvidence = async query => fixture.state.evidence
       .filter(span => String(span.sourceVersionId) === String(query.sourceVersionId) && span.status === "promoted")
@@ -2527,8 +2528,10 @@ function memoryStorage(): { storage: ScceStorage; state: MemoryState } {
       putNgramModels: async (rows: readonly NgramModelRecord[]) => { state.models.push(...rows); },
       putLanguageUnit: async (row: LanguageUnitRecord) => { state.units.push(row); },
       putLanguageUnits: async (rows: readonly LanguageUnitRecord[]) => { state.units.push(...rows); },
-      putLanguagePattern: async (row: LanguagePatternRecord) => { state.patterns.push(row); },
-      putLanguagePatterns: async (rows: readonly LanguagePatternRecord[]) => { state.patterns.push(...rows); },
+      getLanguagePatternProjection: getFixtureLanguagePatternProjection,
+      replaceLanguagePatternProjection: replaceFixtureLanguagePatternProjection,
+      putLanguagePattern: async (row: LanguagePatternRecord) => { const index = state.patterns.findIndex(pattern => pattern.id === row.id); if (index < 0) state.patterns.push(row); else state.patterns[index] = row; },
+      putLanguagePatterns: async (rows: readonly LanguagePatternRecord[]) => { for (const row of rows) { const index = state.patterns.findIndex(pattern => pattern.id === row.id); if (index < 0) state.patterns.push(row); else state.patterns[index] = row; } },
       putSemanticFrame: async (row: SemanticFrameRecord) => { state.frames.push(row); },
       putSemanticFrames: async (rows: readonly SemanticFrameRecord[]) => { state.frames.push(...rows); },
       putTranslationAlignment: async () => undefined,

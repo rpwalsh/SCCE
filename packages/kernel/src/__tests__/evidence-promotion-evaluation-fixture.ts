@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { getFixtureLanguagePatternProjection, replaceFixtureLanguagePatternProjection } from "./language-pattern-projection-fixture.js";
 import type {
   AlphaTrace,
   EvidenceId,
@@ -81,6 +82,8 @@ export function storageFixtureForEvaluation(input: { evidence: EvidenceSpan[]; c
       putNgramObservationsBatch: async () => undefined,
       putNgramModel: async (row: import("../storage.js").NgramModelRecord) => { const prior = artifacts.models.findIndex(item => item.id === row.id); if (prior >= 0) artifacts.models[prior] = row; else artifacts.models.push(row); },
       putLanguageUnit: async (row: import("../storage.js").LanguageUnitRecord) => { const prior = artifacts.units.findIndex(item => item.id === row.id); if (prior >= 0) artifacts.units[prior] = row; else artifacts.units.push(row); },
+      getLanguagePatternProjection: getFixtureLanguagePatternProjection,
+      replaceLanguagePatternProjection: replaceFixtureLanguagePatternProjection,
       putLanguagePattern: async (row: import("../storage.js").LanguagePatternRecord) => { const prior = artifacts.patterns.findIndex(item => item.id === row.id); if (prior >= 0) artifacts.patterns[prior] = row; else artifacts.patterns.push(row); },
       putSemanticFrame: async (row: import("../storage.js").SemanticFrameRecord) => { const prior = artifacts.semanticFrames.findIndex(item => item.id === row.id); if (prior >= 0) artifacts.semanticFrames[prior] = row; else artifacts.semanticFrames.push(row); },
       putTranslationAlignment: async () => undefined,

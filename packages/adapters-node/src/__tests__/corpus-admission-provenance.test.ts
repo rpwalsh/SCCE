@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { getFixtureLanguagePatternProjection, replaceFixtureLanguagePatternProjection } from "../../../kernel/src/__tests__/language-pattern-projection-fixture.js";
 import { describe, expect, it } from "vitest";
 import { LANGUAGE_CORPUS_TRAINING_RECIPE_ID, trainLanguageCorpusText } from "../language-corpus-trainer.js";
 import { trainStoredCorpusConstructions } from "../stored-corpus-construction-training.js";
@@ -421,6 +422,8 @@ function memoryStorage(): { storage: ScceStorage; state: MemoryState } {
       putNgramModels: async (rows: readonly NgramModelRecord[]) => { for (const row of rows) put(state.models, row); },
       putLanguageUnit: async (_row: LanguageUnitRecord) => undefined,
       putLanguageUnits: async (_rows: readonly LanguageUnitRecord[]) => undefined,
+      getLanguagePatternProjection: getFixtureLanguagePatternProjection,
+      replaceLanguagePatternProjection: replaceFixtureLanguagePatternProjection,
       putLanguagePattern: async (row: LanguagePatternRecord) => { put(state.patterns, row); },
       putLanguagePatterns: async (rows: readonly LanguagePatternRecord[]) => { for (const row of rows) put(state.patterns, row); },
       putSemanticFrame: async (_row: SemanticFrameRecord) => undefined,

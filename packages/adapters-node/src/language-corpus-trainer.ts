@@ -29,6 +29,7 @@ import {
   sourceCodeFunctionConstructionId,
   createSourceAdmissionController,
   compileLanguageTrainingBatch,
+  publishCompiledLanguagePatterns,
   prepareLanguageTrainingInduction,
   SOURCE_CONSTRUCTION_CONTEXT_RECIPE_ID,
   preparedLanguageInductionProducts,
@@ -1285,35 +1286,14 @@ async function commitLanguageCorpusTrainingInternal(input: LanguageCorpusTrainin
   const componentRecipes = corpusComponentRecipes(input);
   const patternProjectionRecipe = componentRecipes.sourceCodeFunctions ?? componentRecipes.sourceConstructionProjection;
   const patternSchema = componentRecipes.sourceCodeFunctions ? SOURCE_CODE_FUNCTION_PATTERN_SCHEMA : LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA;
-  if (patternProjectionRecipe && input.storage.languageMemory.replaceLanguagePatternProjection) {
-    await input.storage.languageMemory.replaceLanguagePatternProjection({
-      patterns: prepared.patterns,
-      projection: {
-        profileId: String(prepared.profile.id),
-        sourceId: prepared.sourceId,
-        sourceVersionId: prepared.sourceVersionId,
-        sourceSystem: prepared.sourceSystem,
-        patternSchema,
-        componentRecipe: patternProjectionRecipe,
-        patternIds: prepared.patterns.filter(pattern => jsonRecord(pattern.patternJson).schema === patternSchema).map(pattern => pattern.id).sort(),
-        informationLabel: prepared.informationLabel
-      }
-    });
-  } else if (input.storage.languageMemory.putLanguagePatterns) await input.storage.languageMemory.putLanguagePatterns(prepared.patterns);
-  else for (const pattern of prepared.patterns) await input.storage.languageMemory.putLanguagePattern(pattern);
-  if (canonicalCorpusSourceSystemId(input.sourceSystem) === CORPUS_SOURCE_SYSTEM_IDS.ossCode
-    && input.storage.languageMemory.replaceLanguagePatternProjection) {
-    const assertionPatterns = prepared.patterns.filter(pattern => pattern.patternKind === "source_code_assertion_contract");
-    await input.storage.languageMemory.replaceLanguagePatternProjection({
-      patterns: assertionPatterns,
-      projection: {
-        profileId: String(prepared.profile.id), sourceId: prepared.sourceId, sourceVersionId: prepared.sourceVersionId,
-        sourceSystem: prepared.sourceSystem, patternSchema: "scce.source_owned_test_contract.v1",
-        componentRecipe: "scce.source_owned_test_contract_projection.v1",
-        patternIds: assertionPatterns.map(pattern => pattern.id).sort(), informationLabel: prepared.informationLabel
-      }
-    });
-  }
+  await publishCompiledLanguagePatterns({ store: input.storage.languageMemory,
+    owner: { sourceId: prepared.sourceId, sourceVersionId: prepared.sourceVersionId, contentHash: blobContentHash(prepared.bytes) },
+    profileId: String(prepared.profile.id), sourceSystem: prepared.sourceSystem, informationLabel: prepared.informationLabel,
+    patterns: prepared.patterns, projections: [
+      ...(patternProjectionRecipe ? [{ patternSchema, componentRecipe: patternProjectionRecipe }] : []),
+      ...(canonicalCorpusSourceSystemId(input.sourceSystem) === CORPUS_SOURCE_SYSTEM_IDS.ossCode
+        ? [{ patternSchema: "scce.source_owned_test_contract.v1", componentRecipe: "scce.source_owned_test_contract_projection.v1" }] : [])
+    ] });
   if (input.storage.languageMemory.putSemanticFrames) await input.storage.languageMemory.putSemanticFrames(prepared.frames);
   else for (const frame of prepared.frames) await input.storage.languageMemory.putSemanticFrame(frame);
   await input.storage.events.append(prepared.learned);

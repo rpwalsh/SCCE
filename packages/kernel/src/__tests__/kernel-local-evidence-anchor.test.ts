@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { getFixtureLanguagePatternProjection, replaceFixtureLanguagePatternProjection } from "./language-pattern-projection-fixture.js";
 import type { QuarantineSource } from "../storage.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -2773,6 +2774,8 @@ function storageFixture(input: {
       putNgramObservationsBatch: async () => undefined,
       putNgramModel: async () => undefined,
       putLanguageUnit: async () => undefined,
+      getLanguagePatternProjection: getFixtureLanguagePatternProjection,
+      replaceLanguagePatternProjection: replaceFixtureLanguagePatternProjection,
       putLanguagePattern: async () => undefined,
       putSemanticFrame: async () => undefined,
       putTranslationAlignment: async () => undefined,

@@ -3692,6 +3692,34 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
     async putLanguagePatterns(patterns) {
       await putLanguagePatternsBatch(storage, patterns);
     },
+    async getLanguagePatternProjection(query) {
+      const informationLabel = normalizeInformationLabel(query.informationLabel);
+      if (!informationLabelAllowsRead(informationLabel, storage.requireInformationAccess())) return undefined;
+      const key = activeLanguagePatternProjectionKey({ ...query, tenantId: informationLabel.tenantId });
+      const found = await storage.query<{ value_json: JsonValue }>(
+        `SELECT value_json FROM ${storage.table("storage_meta")} WHERE key=$1`, [key]);
+      const value = found[0]?.value_json;
+      if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+      if (value.schema !== "scce.language_pattern_active_projection.v1"
+        || value.profileId !== query.profileId || value.sourceId !== query.sourceId || value.sourceVersionId !== query.sourceVersionId
+        || value.sourceSystem !== query.sourceSystem || value.patternSchema !== query.patternSchema || value.componentRecipe !== query.componentRecipe
+        || canonicalStringify(value.informationLabel) !== canonicalStringify(informationLabel)
+        || !Array.isArray(value.patternIds) || value.patternIds.some(id => typeof id !== "string")
+        || new Set(value.patternIds).size !== value.patternIds.length) return undefined;
+      const patternIds = [...value.patternIds as string[]].sort();
+      if (query.sourceCompilationId) {
+        const params: unknown[] = [query.profileId, query.patternSchema, query.sourceCompilationId];
+        const access = storage.informationAccessPredicate("pattern", params.length + 1);
+        params.push(...access.params);
+        const inventory = await storage.query<{ id: string }>(
+          `SELECT pattern.id FROM ${storage.table("language_patterns")} pattern
+           WHERE pattern.profile_id=$1 AND pattern.pattern_json->>'schema'=$2
+             AND pattern.pattern_json->>'sourceCompilationId'=$3 AND ${access.sql} ORDER BY pattern.id`, params);
+        if (canonicalStringify(inventory.map(row => row.id)) !== canonicalStringify(patternIds)) return undefined;
+      }
+      return { profileId: query.profileId, sourceId: query.sourceId, sourceVersionId: query.sourceVersionId, sourceSystem: query.sourceSystem,
+        patternSchema: query.patternSchema, componentRecipe: query.componentRecipe, informationLabel, patternIds };
+    },
     async replaceLanguagePatternProjection(input) {
       const projection = input.projection;
       const patternIds = [...new Set(projection.patternIds)].sort();

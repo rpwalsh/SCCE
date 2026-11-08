@@ -5,6 +5,7 @@ import { createAlphaFieldEngine } from "./field.js";
 import { createIdFactory } from "./ids.js";
 import { createLanguageMemoryRuntime } from "./language-memory-runtime.js";
 import { sourceLanguageTrainingStreamId } from "./source-language-training-identity.js";
+import { LANGUAGE_CONSTRUCTION_PUBLICATION, publishCompiledLanguagePatterns } from "./language-pattern-publication.js";
 import { sourceCompilationChunkCount, validateSourceCompilationArtifactInventory, validateSourceCompilationReceipt, validateSourceLanguageCompilation } from "./source-language-compilation.js";
 import {
   compileLanguageTrainingBatch,
@@ -229,7 +230,11 @@ export function createTrainingRuntime(options: {
         if (receipt) validateSourceCompilationReceipt(receipt, current, hasher);
         const reused = validateSourceLanguageCompilation({ owner: { sourceId: source.sourceId, sourceVersionId, contentHash: source.contentHash },
           profileId: existingProfile.id, sourceSystem, models: current, hasher });
-        if (reused) {
+        const activeConstructionProjection = reused && deps.storage.languageMemory.getLanguagePatternProjection
+          ? await deps.storage.languageMemory.getLanguagePatternProjection({ ...LANGUAGE_CONSTRUCTION_PUBLICATION,
+            profileId: existingProfile.id, sourceId: source.sourceId, sourceVersionId, sourceSystem, informationLabel,
+            sourceCompilationId: reused.compilationId }) : undefined;
+        if (reused && activeConstructionProjection) {
           if (jsonRecord(receipt).compilationId !== reused.compilationId) throw new Error("canonical source compilation receipt does not own its models");
           const listArtifacts = deps.storage.languageMemory.listSourceCompilationArtifactIds;
           if (!listArtifacts) throw new Error("canonical language replay requires its durable artifact inventory");
@@ -309,7 +314,9 @@ export function createTrainingRuntime(options: {
         });
         for (const model of memory.models) await deps.storage.languageMemory.putNgramModel({ ...model, informationLabel });
         for (const unit of memory.units) await deps.storage.languageMemory.putLanguageUnit({ ...unit, informationLabel });
-        for (const pattern of memory.patterns) await deps.storage.languageMemory.putLanguagePattern({ ...pattern, informationLabel });
+        await publishCompiledLanguagePatterns({ store: deps.storage.languageMemory,
+          owner: { sourceId: source.sourceId, sourceVersionId, contentHash: source.contentHash }, profileId: groupProfile.id,
+          sourceSystem, informationLabel, patterns: memory.patterns, projections: [LANGUAGE_CONSTRUCTION_PUBLICATION] });
         for (const frame of memory.semanticFrames) await deps.storage.languageMemory.putSemanticFrame({ ...frame, informationLabel });
       });
       if (!profileBySourceVersion.has(String(sourceVersionId))) {

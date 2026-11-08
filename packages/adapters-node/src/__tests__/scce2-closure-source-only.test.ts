@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { getFixtureLanguagePatternProjection, replaceFixtureLanguagePatternProjection } from "../../../kernel/src/__tests__/language-pattern-projection-fixture.js";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -827,6 +828,8 @@ class MemoryScceStorage implements ScceStorage {
     },
     putNgramModel: async model => { this.upsert(this.ngramModels, model, row => row.id); },
     putLanguageUnit: async unit => { this.upsert(this.languageUnits, unit, row => row.id); },
+    getLanguagePatternProjection: getFixtureLanguagePatternProjection,
+    replaceLanguagePatternProjection: replaceFixtureLanguagePatternProjection,
     putLanguagePattern: async pattern => { this.upsert(this.languagePatterns, pattern, row => row.id); },
     putSemanticFrame: async frame => { this.upsert(this.semanticFrames, frame, row => row.id); },
     putTranslationAlignment: async alignment => { this.upsert(this.translationAlignments, alignment, row => row.id); },

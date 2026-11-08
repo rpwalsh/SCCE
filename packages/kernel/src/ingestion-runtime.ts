@@ -16,6 +16,7 @@ import { jsonRecord, kernelString, observedEntitySurfacesFromInducedLanguageMode
 import { prepareConstructionInduction, preparedLanguageInductionProducts, sourceLanguageInductionDocuments } from "./graph-surface-alignment.js";
 import { createLanguageMemoryRuntime } from "./language-memory-runtime.js";
 import { sourceLanguageTrainingStreamId } from "./source-language-training-identity.js";
+import { LANGUAGE_CONSTRUCTION_PUBLICATION, publishCompiledLanguagePatterns } from "./language-pattern-publication.js";
 import {
   compileLanguageTrainingBatch,
   observeLanguageTrainingSegmentation
@@ -626,8 +627,9 @@ export function createIngestionRuntime(options: {
         const patternsToPersist = requestRequirementLearning && deps.storage.languageMemory.replaceRequestRequirementPatterns
           ? otherLearnedPatterns
           : learnedPatterns;
-        if (deps.storage.languageMemory.putLanguagePatterns) await deps.storage.languageMemory.putLanguagePatterns(patternsToPersist);
-        else for (const pattern of patternsToPersist) await deps.storage.languageMemory.putLanguagePattern(pattern);
+        await publishCompiledLanguagePatterns({ store: deps.storage.languageMemory,
+          owner: { sourceId, sourceVersionId, contentHash: source.contentHash }, profileId: profile.id, sourceSystem, informationLabel,
+          patterns: patternsToPersist, projections: [LANGUAGE_CONSTRUCTION_PUBLICATION] });
         if (deps.storage.languageMemory.putSemanticFrames) await deps.storage.languageMemory.putSemanticFrames(semanticFrames);
         else for (const frame of semanticFrames) await deps.storage.languageMemory.putSemanticFrame(frame);
         events.push(await append(eventFactory.create({

@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { getFixtureLanguagePatternProjection, installFixtureLanguagePatternProjection, removeFixtureLanguagePatternProjections, replaceFixtureLanguagePatternProjection } from "./language-pattern-projection-fixture.js";
 import { describe, expect, it } from "vitest";
 import {
   createClock,
@@ -7,6 +8,7 @@ import {
   createIdFactory,
   createScceKernel,
   createLanguageMemoryRuntime,
+  hydrateLanguageConstructionPatterns,
   DEFAULT_NGRAM_SETTINGS,
   type NgramModelRecord,
   type LanguagePatternRecord,
@@ -39,6 +41,44 @@ import { compilationArtifactIds, ownedSourceFixture } from "./owned-source-fixtu
 import { sessionOwnerObservationSurface } from "../kernel.js";
 
 describe("kernel training", () => {
+  it("publishes source-observed constructions into the active PostgreSQL hydration contract and replays them", async () => {
+    const clock = createClock({ fixedTime: 800, stepMs: 1 });
+    const hasher = createHasher();
+    const ids = createIdFactory({ clock, hasher, deterministicReplay: true });
+    const text = ["cat chased mouse.", "dog chased mouse.", "cat chased ball.", "dog chased ball.",
+      "cat chased mouse.", "dog chased ball.", "cat chased ball.", "dog chased mouse."].join(" ");
+    const span = evidenceSpan({ id: "evidence:active-construction", sourceVersionId: "source:active-construction" as SourceVersionId,
+      text, trust: 1, alpha: 1, status: "promoted" });
+    span.contentHash = ids.contentHash(text);
+    const fixture = storageFixture({ evidence: [span], clockNow: () => clock.now() });
+    installFixtureLanguagePatternProjection(fixture.storage.languageMemory);
+    const kernel = createScceKernel({ storage: fixture.storage, files: { streamPath: async function* () {} },
+      buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(), repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) },
+      idFactory: ids, clock, deterministicReplay: true });
+    const train = () => kernel.train({ config: { learningGoals: ["cat dog chased mouse ball"], promotion: { minTrust: 0.45 } } });
+    await train();
+    const stored = fixture.learned.patterns.filter(pattern => (pattern.patternJson as { schema?: string }).schema === "scce.language_construction_pattern.v1");
+    expect(stored.length).toBeGreaterThan(0);
+    const active = await fixture.storage.languageMemory.listLanguagePatterns({ patternSchemas: ["scce.language_construction_pattern.v1"] });
+    expect(active.map(row => row.id)).toEqual(stored.map(row => row.id));
+    const hydrated = hydrateLanguageConstructionPatterns({ patterns: active, evidence: [span], hasher });
+    expect(hydrated.rejected).toEqual([]);
+    expect(hydrated.constructions.length).toBeGreaterThan(0);
+    expect(hydrated.bundles.every(bundle => bundle.acquisitionStatus === "source_observed")).toBe(true);
+    expect(active.every(row => (row.patternJson as { constructionQualification?: string }).constructionQualification === "unqualified")).toBe(true);
+    const modelWrites = fixture.languageWrites.models;
+    await train();
+    expect(fixture.languageWrites.models).toBe(modelWrites);
+    expect((await fixture.storage.languageMemory.listLanguagePatterns({ patternSchemas: ["scce.language_construction_pattern.v1"] })).map(row => row.id)).toEqual(active.map(row => row.id));
+    removeFixtureLanguagePatternProjections(fixture.storage.languageMemory);
+    expect(await fixture.storage.languageMemory.listLanguagePatterns({ patternSchemas: ["scce.language_construction_pattern.v1"] })).toEqual([]);
+    await train();
+    expect(fixture.languageWrites.models).toBeGreaterThan(modelWrites);
+    expect((await fixture.storage.languageMemory.listLanguagePatterns({ patternSchemas: ["scce.language_construction_pattern.v1"] })).map(row => row.id)).toEqual(active.map(row => row.id));
+    const repairedWrites = fixture.languageWrites.models;
+    await train();
+    expect(fixture.languageWrites.models).toBe(repairedWrites);
+  });
   it("rolls back compiled language models and a new profile when a source-group form write fails", async () => {
     const clock = createClock({ fixedTime: 900, stepMs: 1 });
     const hasher = createHasher();
@@ -603,9 +643,11 @@ function storageFixture(input: { evidence: EvidenceSpan[]; clockNow: () => numbe
       putNgramObservation: async () => { languageWrites.observations++; },
       putNgramObservationsBatch: async (observations: readonly unknown[]) => { languageWrites.observations += observations.length; },
       putNgramModel: async (row: NgramModelRecord) => { languageWriteDepths.push(transactionDepth); const prior = learned.models.findIndex(model => model.id === row.id); if (prior >= 0) learned.models[prior] = row; else learned.models.push(row); languageWrites.models++; },
-      putLanguageUnit: async (row: LanguageUnitRecord) => { languageWriteDepths.push(transactionDepth); learned.units.push(row); languageWrites.units++; },
-      putLanguagePattern: async (row: LanguagePatternRecord) => { languageWriteDepths.push(transactionDepth); learned.patterns.push(row); languageWrites.patterns++; },
-      putSemanticFrame: async (row: SemanticFrameRecord) => { languageWriteDepths.push(transactionDepth); learned.frames.push(row); languageWrites.semanticFrames++; },
+      putLanguageUnit: async (row: LanguageUnitRecord) => { languageWriteDepths.push(transactionDepth); const prior = learned.units.findIndex(unit => unit.id === row.id); if (prior >= 0) learned.units[prior] = row; else learned.units.push(row); languageWrites.units++; },
+      getLanguagePatternProjection: getFixtureLanguagePatternProjection,
+      replaceLanguagePatternProjection: replaceFixtureLanguagePatternProjection,
+      putLanguagePattern: async (row: LanguagePatternRecord) => { languageWriteDepths.push(transactionDepth); const prior = learned.patterns.findIndex(pattern => pattern.id === row.id); if (prior >= 0) learned.patterns[prior] = row; else learned.patterns.push(row); languageWrites.patterns++; },
+      putSemanticFrame: async (row: SemanticFrameRecord) => { languageWriteDepths.push(transactionDepth); const prior = learned.frames.findIndex(frame => frame.id === row.id); if (prior >= 0) learned.frames[prior] = row; else learned.frames.push(row); languageWrites.semanticFrames++; },
       putTranslationAlignment: async () => undefined,
       listNgramModels: async (query: Parameters<ScceStorage["languageMemory"]["listNgramModels"]>[0]) => learned.models.filter(row => (!query?.sourceSystem || (row.modelJson as { sourceSystem?: string }).sourceSystem === query.sourceSystem) && (!query?.profileIds?.length || query.profileIds.includes((row.modelJson as { profileId: string }).profileId))),
       listNgramObservations: async () => [],

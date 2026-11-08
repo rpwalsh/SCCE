@@ -11,6 +11,36 @@ afterEach(async () => {
 });
 
 describe("Postgres language-memory ownership queries", () => {
+  it("reads exact accessible projection receipts and validates their owned compilation inventory including empty results", async () => {
+    const { adapter, calls } = fixture();
+    const informationLabel = { tenantId: "tenant.fixture", principals: ["principal.fixture"], compartments: [], exportClass: "restricted" as const, mergePolicy: "isolated" as const };
+    const query = { profileId: "profile.owned", sourceId: "source.owned" as never, sourceVersionId: "version.owned" as SourceVersionId,
+      sourceSystem: "workspace", patternSchema: LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, componentRecipe: LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID,
+      informationLabel, sourceCompilationId: "compile.owned" };
+    let patternIds = ["construction.owned"];
+    let inventory = [...patternIds];
+    let manifest: Record<string, unknown> = { schema: "scce.language_pattern_active_projection.v1", ...query, patternIds };
+    adapter.query = async <T>(sql: string, params: unknown[] = []): Promise<T[]> => {
+      calls.push({ sql, params });
+      return (sql.includes("storage_meta") ? [{ value_json: manifest }] : inventory.map(id => ({ id }))) as T[];
+    };
+    expect((await adapter.languageMemory.getLanguagePatternProjection!(query))?.patternIds).toEqual(patternIds);
+    expect(calls.at(-1)!.sql).toContain("sourceCompilationId");
+    expect(calls.at(-1)!.sql).toContain("pattern.information_label");
+    inventory = [];
+    expect(await adapter.languageMemory.getLanguagePatternProjection!(query)).toBeUndefined();
+    patternIds = [];
+    manifest = { ...manifest, patternIds };
+    expect((await adapter.languageMemory.getLanguagePatternProjection!(query))?.patternIds).toEqual([]);
+    for (const change of [{ profileId: "profile.other" }, { sourceId: "source.other" }, { sourceVersionId: "version.other" },
+      { sourceSystem: "other" }, { componentRecipe: "retired.recipe" }, { informationLabel: { ...informationLabel, tenantId: "other" } }]) {
+      const original = manifest;
+      manifest = { ...manifest, ...change };
+      expect(await adapter.languageMemory.getLanguagePatternProjection!(query)).toBeUndefined();
+      manifest = original;
+    }
+    expect(await adapter.languageMemory.getLanguagePatternProjection!({ ...query, informationLabel: { ...informationLabel, tenantId: "other" } })).toBeUndefined();
+  });
   it("resolves a held source version by exact identity under information access", async () => {
     const { adapter, calls } = fixture();
     expect(await adapter.evidence.sourceVersionById?.("source-version.held" as SourceVersionId)).toBeNull();

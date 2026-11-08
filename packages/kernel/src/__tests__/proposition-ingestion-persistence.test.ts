@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { getFixtureLanguagePatternProjection, replaceFixtureLanguagePatternProjection } from "./language-pattern-projection-fixture.js";
 import { describe, expect, it, vi } from "vitest";
 import * as induction from "../language-induction.js";
 
@@ -66,6 +67,8 @@ describe("propositions reach storage through ingestion", () => {
           putNgramObservationsBatch: async () => undefined,
           putNgramModels: async () => undefined,
           putLanguageUnits: async () => undefined,
+          getLanguagePatternProjection: getFixtureLanguagePatternProjection,
+          replaceLanguagePatternProjection: replaceFixtureLanguagePatternProjection,
           putLanguagePatterns: async () => undefined,
           putSemanticFrames: async () => undefined
         }
