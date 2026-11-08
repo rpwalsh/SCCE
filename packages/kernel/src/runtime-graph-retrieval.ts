@@ -1354,7 +1354,7 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
         unit,
         ...learnedMorphologicalSiblings(unit, languageModels)
       ]);
-      const conceptFeatures = forms.map(form => `anchor:sym:${form}`);
+      const conceptFeatures = uniqueKernelStrings(forms.flatMap(form => anchorFeatureSet(form, 64)));
       if (!groups.some(group => conceptFeatures.every(feature => group.includes(feature)))) groups.push(conceptFeatures);
     }
     // One extra group carrying the sentence the request quotes, whole. The sequence lane is activated by an

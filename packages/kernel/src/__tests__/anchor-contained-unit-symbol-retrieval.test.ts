@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createRuntimeGraphRetrieval } from "../runtime-graph-retrieval.js";
-import { createClock, createHasher } from "../primitives.js";
+import { anchorFeatureSet, createClock, createHasher } from "../primitives.js";
 import { clearCorpusIdentitySignals, primeCorpusIdentitySignals } from "../corpus-identity.js";
 import type { EvidenceSearchResult, ScceKernelDeps } from "../storage.js";
 import type { GraphSlice, GraphSliceQuery } from "../types.js";
@@ -39,6 +39,19 @@ async function anchorFeatureGroups(text: string): Promise<string[][]> {
 
 describe("a concentrated unit swallowed by its containing run still reaches a query", () => {
   afterEach(() => clearCorpusIdentitySignals());
+
+  it.each(["Record_4d61a2", "Στοιχείο_αριθμός", "Record‿4d61a2"])("uses indexed anchor units for a connector-bearing concept %s", async subject => {
+    const request = `Segons el directori, a quina extensió es pot trobar ${subject}?`;
+    const groups = await anchorFeatureGroups(request);
+    const indexed = new Set(anchorFeatureSet(request, 256).filter(feature => feature.startsWith("anchor:sym:")));
+    expect(groups.length).toBeGreaterThan(0);
+    const querySymbols = groups.flat().flatMap(feature => feature.startsWith("anchor:bi:")
+      ? feature.slice("anchor:bi:".length).split("|").map(unit => `anchor:sym:${unit}`)
+      : [feature]);
+    expect(querySymbols.filter(feature => !indexed.has(feature))).toEqual([]);
+    const subjectFeatures = new Set(anchorFeatureSet(subject));
+    expect(groups.some(group => group.some(feature => subjectFeatures.has(feature)))).toBe(true);
+  });
 
   it("searches the identifier's own symbol when the named run contains it", async () => {
     // Measured on the live corpus 2026-09-16. "file defines bestevidencesentences" is carried by one source, so it
