@@ -32,6 +32,9 @@ import {
   INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA,
   CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA,
   CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID,
+  REQUEST_SEED_PATTERN_JSON_FIELDS,
+  REQUEST_SEED_FRAME_JSON_FIELDS,
+  requestSeedSemanticFrame,
   type AlphaTraceRecord,
   type AlphaTrace,
   type BenchmarkStore,
@@ -3741,6 +3744,61 @@ async function currentLanguagePatternCompilations(storage: PostgresStorageAdapte
     sourceSystem: row.source_system, sourceVersionId: row.source_version_id, compilationId }));
 }
 
+function jsonbArraySql(value: string): string {
+  return `CASE WHEN jsonb_typeof(${value})='array' THEN ${value} ELSE '[]'::jsonb END`;
+}
+
+function jsonbFieldsSql(value: string, fields: readonly string[]): string {
+  const keys = fields.map(field => `'${field.replaceAll("'", "''")}'`).join(",");
+  return `(SELECT COALESCE(jsonb_object_agg(seed_field.key,seed_field.value),'{}'::jsonb)
+    FROM jsonb_each(CASE WHEN jsonb_typeof(${value})='object' THEN ${value} ELSE '{}'::jsonb END) seed_field
+    WHERE seed_field.key=ANY(ARRAY[${keys}]::text[]))`;
+}
+
+function requestSeedPatternJsonSql(value: string, schema: string): string {
+  const declared = (roles: string, flag: string) => `(${value}->'${flag}'='true'::jsonb OR EXISTS (
+    SELECT 1 FROM jsonb_array_elements(${jsonbArraySql(`${value}#>'{bundle,sourceExamples}'`)}) seed_example(value)
+    CROSS JOIN LATERAL jsonb_array_elements(${jsonbArraySql(`seed_example.value->'${roles}'`)}) seed_role(value)
+    WHERE jsonb_typeof(seed_role.value->'graphBinding')='object'))`;
+  const entities = `(WITH seed_entity_constructions AS MATERIALIZED (
+      SELECT construction.ordinality, jsonb_build_object(
+        'evidenceIds',COALESCE(NULLIF(construction.value->'evidenceIds','null'::jsonb),'[]'::jsonb),
+        'slots',entity_slots.value) AS value
+      FROM jsonb_array_elements(${jsonbArraySql(`${value}->'graphBoundConstructions'`)}) WITH ORDINALITY construction(value,ordinality)
+      CROSS JOIN LATERAL (
+        SELECT jsonb_agg(jsonb_build_object('semanticRole','entity',
+          'observedFillers',COALESCE(NULLIF(slot.value->'observedFillers','null'::jsonb),'[]'::jsonb),
+          'lexicalClassId',COALESCE(slot.value->'lexicalClassId','null'::jsonb)) ORDER BY slot.ordinality) AS value
+        FROM jsonb_array_elements(${jsonbArraySql("construction.value->'slots'")}) WITH ORDINALITY slot(value,ordinality)
+        WHERE slot.value->>'semanticRole'='entity'
+      ) entity_slots WHERE entity_slots.value IS NOT NULL
+    ), seed_entity_classes AS MATERIALIZED (
+      SELECT DISTINCT slot.value->>'lexicalClassId' AS id FROM seed_entity_constructions construction
+      CROSS JOIN LATERAL jsonb_array_elements(construction.value->'slots') slot(value)
+      WHERE jsonb_typeof(slot.value->'lexicalClassId')='string'
+    ) SELECT jsonb_build_object(
+      'graphBoundConstructions',(SELECT COALESCE(jsonb_agg(value ORDER BY ordinality),'[]'::jsonb) FROM seed_entity_constructions),
+      'lexicalClasses',(SELECT COALESCE(jsonb_agg(jsonb_build_object('id',lexical.value->'id',
+        'members',(SELECT COALESCE(jsonb_agg(jsonb_build_object('symbol',COALESCE(member.value->'symbol','null'::jsonb)) ORDER BY member.ordinality),'[]'::jsonb)
+          FROM jsonb_array_elements(${jsonbArraySql("lexical.value->'members'")}) WITH ORDINALITY member(value,ordinality))) ORDER BY lexical.ordinality),'[]'::jsonb)
+        FROM jsonb_array_elements(${jsonbArraySql(`${value}->'lexicalClasses'`)}) WITH ORDINALITY lexical(value,ordinality)
+        WHERE jsonb_typeof(lexical.value->'id')='string' AND lexical.value->>'id' IN (SELECT id FROM seed_entity_classes))))`;
+  return `(CASE WHEN ${schema}='scce.request_requirement_pattern.v1' THEN ${value}
+    ELSE ${jsonbFieldsSql(value, REQUEST_SEED_PATTERN_JSON_FIELDS)} || CASE
+      WHEN ${schema}='${LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA}' OR left(${schema},length('scce.creative_event_construction_pattern.'))='scce.creative_event_construction_pattern.'
+        THEN jsonb_build_object('requestConstructionCandidate',CASE WHEN ${schema}='${LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA}'
+          THEN COALESCE(${declared("nullRoles", "requestConstructionCandidate")},FALSE) ELSE FALSE END,
+          'sourceConstructionCandidate',CASE WHEN ${schema}='${LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA}'
+          THEN COALESCE(${declared("roles", "sourceConstructionCandidate")},FALSE) ELSE FALSE END)
+      WHEN ${schema}='${INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA}' THEN jsonb_build_object('templates','[]'::jsonb)
+      WHEN ${schema}='scce.induced_language_model.semantic_memory.v1' THEN ${entities}
+      ELSE '{}'::jsonb END END)`;
+}
+
+function requestSurfaceSql(value: string): string {
+  return `btrim(regexp_replace(lower(${value}),E'[ \\t\\n\\r]+',' ','g'),' ')`;
+}
+
 function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMemoryStore {
   let observedRevision: string | undefined;
   return {
@@ -4417,15 +4475,14 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       END`;
       const narrow = "decoded_jsonb_bytes,id,profile_id,pattern_kind,support,entropy,evidence_ids,updated_at,information_label,pattern_schema,pattern_language,source_system";
       const byteLedger = `metadata."${DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY}"`;
-      const decodedJsonbBytes = `CASE WHEN ${byteLedger}->>'schema'='${DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA}'
+      const decodedJsonbBytes = query.view === "request_seed" ? "NULL::numeric" : `CASE WHEN ${byteLedger}->>'schema'='${DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA}'
         AND jsonb_typeof(${byteLedger}->'decodedJsonbBytes')='number'
-        THEN (${byteLedger}->>'decodedJsonbBytes')::numeric${query.view === "request_seed" ? ` - CASE
-          WHEN metadata."schema"='${INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA}' AND jsonb_typeof(${byteLedger}->'joinProgramMemberJsonbBytes')='number'
-          THEN (${byteLedger}->>'joinProgramMemberJsonbBytes')::numeric ELSE 0 END` : ""} ELSE NULL END`;
+        THEN (${byteLedger}->>'decodedJsonbBytes')::numeric ELSE NULL END`;
       // Exact prerequisites share one budget; category quotas apply only to searches.
       const partition = (alias: string) => query.patternIds ? "" : `PARTITION BY ${category(alias)} `;
       const byteAllowance = query.patternIds ? `$${params.length}` : `CEIL($${params.length}::numeric / category_counts.n)`;
-      const admitted = byteBudget
+      // Seed admission measures projected metadata after the bounded candidate selection.
+      const admitted = byteBudget && query.view !== "request_seed"
         ? `SELECT ${narrow} FROM (
              SELECT candidate.*,
                SUM(candidate.stored_bytes) OVER (${partition("candidate")}ORDER BY ${order("candidate")} ROWS UNBOUNDED PRECEDING) AS running_stored_bytes,
@@ -4509,9 +4566,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
            SELECT
              admitted.id, admitted.profile_id, admitted.pattern_kind, admitted.support, admitted.entropy, admitted.evidence_ids, admitted.updated_at, admitted.information_label,
              ${query.view === "request_seed"
-               ? `(CASE WHEN admitted.pattern_schema='${INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA}' THEN pattern.pattern_json - 'joinProgram' ELSE pattern.pattern_json END)
-                 - CASE WHEN admitted.pattern_schema='${INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA}' AND admitted.decoded_jsonb_bytes IS NOT NULL
-                   THEN ARRAY['${DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY}'] ELSE ARRAY[]::text[] END`
+               ? requestSeedPatternJsonSql("pattern.pattern_json", "admitted.pattern_schema")
                : "pattern.pattern_json"} AS pattern_json,
              admitted.pattern_schema,
              admitted.decoded_jsonb_bytes,
@@ -4558,6 +4613,16 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       const where: string[] = [];
       if (query.sourceSystem) { params.push(query.sourceSystem); where.push(`frame.frame_json->>'sourceSystem'=$${params.length}`); }
       if (query.surface) { params.push(query.surface); where.push(`frame.frame_json->>'surface'=$${params.length}`); }
+      if (query.requestSurface !== undefined) {
+        params.push(query.requestSurface);
+        where.push("jsonb_typeof(frame.frame_json->'surface')='string'",
+          `${requestSurfaceSql("frame.frame_json->>'surface'")}=${requestSurfaceSql(`$${params.length}::text`)}`);
+      }
+      if (query.view === "request_seed") {
+        where.push("jsonb_typeof(frame.frame_json->'surface')='string'",
+          `${requestSurfaceSql("frame.frame_json->>'surface'")}<>''`,
+          "jsonb_typeof(frame.frame_json->'requirementCoefficients')='object'");
+      }
       if (query.profileIds) {
         if (!query.profileIds.length) return [];
         params.push([...query.profileIds]);
@@ -4565,7 +4630,8 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       }
       appendInformationAccess(storage, "frame", params, where, "bounded_by_order_and_limit");
       params.push(query.limit ?? 500);
-      return (await storage.query<SemanticFrameRow>(`SELECT id, frame_json, embedding::text AS embedding, evidence_ids, alpha, created_at, information_label FROM ${storage.table("semantic_frames")} frame WHERE ${where.join(" AND ")} ORDER BY alpha DESC, created_at DESC, id ASC LIMIT $${params.length}`, params)).map(rowToSemanticFrame);
+      const frames = (await storage.query<SemanticFrameRow>(`SELECT id, ${query.view === "request_seed" ? `${jsonbFieldsSql("frame.frame_json", REQUEST_SEED_FRAME_JSON_FIELDS)} AS frame_json, '[]'::text AS embedding` : "frame_json, embedding::text AS embedding"}, evidence_ids, alpha, created_at, information_label FROM ${storage.table("semantic_frames")} frame WHERE ${where.join(" AND ")} ORDER BY alpha DESC, created_at DESC, id ASC LIMIT $${params.length}`, params)).map(rowToSemanticFrame);
+      return query.view === "request_seed" ? frames.flatMap(frame => requestSeedSemanticFrame(frame) ?? []) : frames;
     },
     async listTranslationAlignments(query = {}) {
       const params: unknown[] = [];

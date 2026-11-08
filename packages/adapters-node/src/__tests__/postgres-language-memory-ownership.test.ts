@@ -160,11 +160,17 @@ describe("Postgres language-memory ownership queries", () => {
     expect(await adapter.languageMemory.listLanguagePatterns({ patternIds: [] })).toEqual([]);
     expect(calls).toHaveLength(count);
   });
-  it("projects only generative join programs out of an explicitly requested interpretation read", async () => {
+  it("projects nongenerative metadata and declared construction headers for an interpretation read", async () => {
     const { adapter, calls } = fixture();
     await adapter.languageMemory.listLanguagePatterns({ view: "request_seed", profileIds: ["profile.owned"], sourceSystem: "wikipedia", limit: 8 });
-    expect(calls.at(-1)!.sql).toContain("THEN pattern.pattern_json - 'joinProgram' ELSE pattern.pattern_json END");
-    expect(calls.at(-1)!.sql).toContain("THEN ARRAY['_scceJoinProgramStorage'] ELSE ARRAY[]::text[] END AS pattern_json");
+    expect(calls.at(-1)!.sql).toContain("jsonb_object_agg(seed_field.key,seed_field.value)");
+    expect(calls.at(-1)!.sql).toContain("'requestConstructionCandidate'");
+    expect(calls.at(-1)!.sql).toContain("'sourceConstructionCandidate'");
+    expect(calls.at(-1)!.sql).toContain("jsonb_typeof(seed_role.value->'graphBinding')='object'");
+    expect(calls.at(-1)!.sql).toContain("NULL::numeric AS decoded_jsonb_bytes");
+    expect(calls.at(-1)!.sql).not.toContain("ELSE pattern.pattern_json END AS pattern_json");
+    expect(calls.at(-1)!.sql).not.toContain("running_stored_bytes");
+    expect(calls.at(-1)!.sql).toContain("jsonb_build_object('templates','[]'::jsonb)");
     expect(calls.at(-1)!.sql).toContain("pattern.information_label");
     expect(calls.at(-1)!.sql).toContain("pattern.pattern_schema,pattern.id) IN (");
     expect(calls.at(-1)!.params).toContainEqual(["profile.owned"]);
