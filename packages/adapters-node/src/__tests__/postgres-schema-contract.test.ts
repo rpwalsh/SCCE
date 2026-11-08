@@ -98,7 +98,7 @@ describe("Postgres schema contract extraction", () => {
   it("preserves the fresh-schema indexes and required hydration column contract", () => {
     const columns = schema.requiredHydrationColumns();
     expect(columns.semantic_frames).toContain("normalized_surface_hash");
-    expect(digest({ ...columns, semantic_frames: columns.semantic_frames.filter(column => column !== "normalized_surface_hash") })).toBe("6cb43753bb07de0a5bdb96e1b27459d8861bf292b5f9ba6f9b31b50770df0f22");
+    expect(digest({ ...columns, semantic_frames: columns.semantic_frames!.filter(column => column !== "normalized_surface_hash") })).toBe("6cb43753bb07de0a5bdb96e1b27459d8861bf292b5f9ba6f9b31b50770df0f22");
     expect(digest(schema.freshSchemaIndexStatements("fixture"))).toBe("b9869ea350648b3a938f9f7e210ce2f01c038626a72cdf7f663dd276fb4f4ffd");
     expect(digest(schema.freshSchemaIndexStatements("\"fixture\""))).toBe("99d5d211dbddc3ac3eb50d88e2d08a178e1115a04b7068a75cf9c78ca2f5b8f5");
   });

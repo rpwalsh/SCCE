@@ -1124,7 +1124,10 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         "language-memory",
         "authority.language-memory.hydrate",
         hydrateAuthorityLanguage,
-        () => Promise.resolve(emptySurfaceLanguageMemory())
+        () => {
+          const empty = emptySurfaceLanguageMemory();
+          return Promise.resolve({ ...empty, retainedProgramState: empty.state });
+        }
       );
       kernelTrace({
         stage: "runtime.seed.language",

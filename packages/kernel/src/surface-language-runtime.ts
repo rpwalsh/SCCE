@@ -478,6 +478,7 @@ export function createSurfaceLanguageRuntime(options: {
         state: markLanguageMemoryStateUnscoped(hydrated, unscopedReason),
         surfaceProfile: undefined as LanguageProfile | undefined,
         clusterMembers: [] as LanguageProfile[],
+        measuredHeapBytes: Math.max(0, process.memoryUsage().heapUsed - hydrateHeapStart),
         active,
         corpusPlan,
         // Nothing here depends on the surface; rescoping returns the same

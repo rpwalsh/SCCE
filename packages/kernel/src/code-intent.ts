@@ -264,7 +264,7 @@ export function projectSourceOwnedProgramBehavior(input: {
     statefulBehaviorRequirements: [...input.codeSignal.statefulBehaviorRequirements, ...input.sourceBehavior.statefulBehaviorRequirements] };
 }
 
-function objectRecord(value: JsonValue): Record<string, JsonValue> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, JsonValue> : {}; }
+function objectRecord(value: JsonValue | undefined): Record<string, JsonValue> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, JsonValue> : {}; }
 function isJsonValue(value: JsonValue | undefined): value is JsonValue { return value !== undefined; }
 function validSpan(value: JsonValue | undefined): boolean {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;

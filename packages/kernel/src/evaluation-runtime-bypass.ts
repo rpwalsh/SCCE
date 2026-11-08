@@ -39,6 +39,7 @@ export function emptySurfaceLanguageMemory(): {
   constructionEvidence: never[];
   requestControlPatterns: never[];
   surfaceProfile: LanguageProfile | undefined;
+  clusterMembers: LanguageProfile[];
   state: LanguageMemoryRuntimeState;
   active: { activeImportRunIds: never[] };
   corpusPlan: never[];
@@ -69,6 +70,7 @@ export function emptySurfaceLanguageMemory(): {
     constructionEvidence: [],
     requestControlPatterns: [],
     surfaceProfile: undefined,
+    clusterMembers: [],
     state: {
       models: [],
       modelPopulations: [],

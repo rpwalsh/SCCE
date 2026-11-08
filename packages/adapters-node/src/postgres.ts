@@ -3812,7 +3812,7 @@ function semanticFrameSurface(frameJson: JsonValue): string | undefined {
 async function backfillSemanticFrameSurfaceHashes(storage: PostgresStorageAdapter, client: PoolClient): Promise<void> {
   let afterId: string | null = null;
   for (;;) {
-    const { rows } = await client.query<{ id: string; surface: string }>(
+    const { rows }: { rows: Array<{ id: string; surface: string }> } = await client.query<{ id: string; surface: string }>(
       `SELECT id,frame_json->>'surface' AS surface FROM ${storage.table("semantic_frames")}
        WHERE normalized_surface_hash IS NULL AND jsonb_typeof(frame_json->'surface')='string'
          AND ($1::text IS NULL OR id>$1) ORDER BY id ASC LIMIT $2`, [afterId, SEMANTIC_FRAME_SURFACE_BACKFILL_PAGE_ROWS]);
