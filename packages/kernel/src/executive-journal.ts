@@ -39,6 +39,7 @@ export interface ExecutiveEventJournal {
 export interface DurableExecutiveEpisode {
   load(episodeId: ExecutiveEpisodeId): Promise<ExecutiveEpisodeState>;
   dispatch(command: ExecutiveCommand): Promise<ExecutiveEpisodeState>;
+  dispatchClaim(command: ExecutiveCommand): Promise<{ state: ExecutiveEpisodeState; applied: boolean }>;
 }
 
 export function createDurableExecutiveEpisode(input: {
@@ -59,25 +60,25 @@ export function createDurableExecutiveEpisode(input: {
     return state;
   };
 
-  const dispatch = async (command: ExecutiveCommand): Promise<ExecutiveEpisodeState> => {
+  const dispatchClaim = async (command: ExecutiveCommand): Promise<{ state: ExecutiveEpisodeState; applied: boolean }> => {
     for (let conflict = 0; conflict <= input.maxConflictRetries; conflict += 1) {
       const snapshot = await input.journal.read(command.episodeId);
       if (snapshot.episodeId !== command.episodeId) throw new Error("executive journal returned a different episode");
       if (snapshot.revision !== snapshot.events.length) throw new Error("executive journal revision does not match its event count");
       const state = input.machine.replay(command.episodeId, snapshot.events);
-      if (state.appliedCommandIds[command.commandId]) return state;
+      if (state.appliedCommandIds[command.commandId]) return { state, applied: false };
       const events = input.machine.decide(state, command);
-      if (events.length === 0) return state;
+      if (events.length === 0) return { state, applied: false };
       const result = await input.journal.append({
         episodeId: command.episodeId,
         commandId: command.commandId,
         expectedRevision: state.revision,
         events
       });
-      if (result.status === "appended" || result.status === "duplicate") return load(command.episodeId);
+      if (result.status === "appended" || result.status === "duplicate") return { state: await load(command.episodeId), applied: result.status === "appended" };
     }
     throw new Error("executive journal conflict retry limit exhausted");
   };
 
-  return { load, dispatch };
+  return { load, dispatchClaim, dispatch: async command => (await dispatchClaim(command)).state };
 }

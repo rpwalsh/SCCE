@@ -332,7 +332,7 @@ export async function dispatchCapabilityTask(
   if (dispatchReadiness !== "ready") return { disposition: "not_ready", state, attemptId, blockedStatus: dispatchReadiness };
 
   const dispatchEvidenceRef = `dispatch_${deps.hasher.digestHex(attempt.invocation.idempotencyKey).slice(0, 32)}`;
-  state = await deps.executive.dispatch({
+  const dispatchClaim = await deps.executive.dispatchClaim({
     type: "record_dispatch",
     episodeId: input.episodeId,
     commandId: commandId("record_dispatch"),
@@ -341,6 +341,8 @@ export async function dispatchCapabilityTask(
     executorId: executor.descriptor.capabilityId,
     dispatchEvidenceRef
   });
+  state = dispatchClaim.state;
+  if (!dispatchClaim.applied) return { disposition: "indeterminate", state, attemptId };
 
   let result: CapabilityExecutionResult;
   const startedAt = deps.now();
@@ -663,7 +665,7 @@ export async function dispatchRollbackAttempt(
   if (!attempt) throw new Error("executive rollback attempt preparation lost its own attempt record");
 
   const dispatchEvidenceRef = `dispatch_rollback_${deps.hasher.digestHex(attempt.invocation.idempotencyKey).slice(0, 32)}`;
-  state = await deps.executive.dispatch({
+  const rollbackClaim = await deps.executive.dispatchClaim({
     type: "record_dispatch",
     episodeId: input.episodeId,
     commandId: commandId("record_dispatch"),
@@ -672,6 +674,8 @@ export async function dispatchRollbackAttempt(
     executorId: executor.descriptor.capabilityId,
     dispatchEvidenceRef
   });
+  state = rollbackClaim.state;
+  if (!rollbackClaim.applied) return { disposition: "not_ready", state, attemptId, blockedStatus: state.tasks[task.id]!.status };
 
   let result: CapabilityExecutionResult;
   const startedAt = deps.now();

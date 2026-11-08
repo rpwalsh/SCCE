@@ -25,6 +25,13 @@ afterEach(async () => {
 });
 
 describe("NodeBuildTestAdapter execution authority", () => {
+  it("refuses an explicit execution identity that escapes its configured temporary root", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "scce-build-identity-"));
+    roots.push(tempRoot);
+    const adapter = new NodeBuildTestAdapter({ runtime: { tempRoot } } as ScceRuntimeConfig);
+    await expect(adapter.executeProgram({ episodeId: "../../outside" as EpisodeId, construct: { id: "construct.local", program: {}, artifacts: [] } as unknown as ConstructGraph })).rejects.toThrow("execution identity escapes");
+  });
+
   it("reports an injected compiler failure without applying an adapter-owned repair", async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), "scce-build-observer-"));
     roots.push(tempRoot);

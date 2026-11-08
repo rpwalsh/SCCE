@@ -345,7 +345,8 @@ import type {
   ScceEvent,
   TurnResult
 } from "./types.js";
-import { createCapabilityExecutorRegistry, dispatchCapabilityTask, type CapabilityExecutor } from "./capability-dispatcher.js";
+import { createCapabilityExecutorRegistry, dispatchCapabilityTask } from "./capability-dispatcher.js";
+import { createBuildTestCapabilityExecutor } from "./build-test-capability.js";
 
 export interface ProductionTurnRuntimeState {
   lastEpisodeId?: EpisodeId;
@@ -6212,30 +6213,7 @@ async function dispatchBuildTestThroughExecutive(input: {
   if (!executive) return undefined;
 
   let capturedResult: BuildTestResult | undefined;
-  const executor: CapabilityExecutor = {
-    descriptor: { capabilityId: input.capabilityId, idempotency: "non-repeatable", rollback: "unavailable" },
-    execute: async request => {
-      const payload = request.payload as unknown as { episodeId: EpisodeId; construct: ConstructGraph };
-      const result = await input.deps.buildTest.executeProgram({ episodeId: payload.episodeId, construct: payload.construct });
-      capturedResult = result;
-      return {
-        status: result.passed ? "succeeded" : "failed",
-        outputRefs: result.artifacts.map(artifact => artifact.path),
-        evidenceRefs: [
-          `build_test.build.code.${result.build.code ?? "null"}`,
-          `build_test.test.code.${result.test.code ?? "null"}`
-        ],
-        attestationRef: `build_test.${request.invocation.idempotencyKey}`,
-        actualDelta: toJsonValue({
-          programId: payload.construct.program?.id ?? null,
-          buildCode: result.build.code,
-          testCode: result.test.code,
-          passed: result.passed,
-          artifacts: result.artifacts.map(artifact => ({ path: artifact.path, contentHash: artifact.contentHash }))
-        })
-      };
-    }
-  };
+  const executor = createBuildTestCapabilityExecutor({ buildTest: input.deps.buildTest, capabilityId: input.capabilityId, onResult: result => { capturedResult = result; } });
 
   const ownerId = input.deps.informationAccess?.principalId ?? "scce-runtime";
   const policyVersionId = `policy_${input.hasher.digestHex(JSON.stringify(input.deps.policy ?? {})).slice(0, 32)}`;

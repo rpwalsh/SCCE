@@ -18,6 +18,7 @@ import {
 import { createDeveloperSurfaceState, hydrateApprovals, hydrateSurfaceFromTurn, renderWorkbench, routeForCommand, workbenchModelModulePath, WORKBENCH_MODEL_ROUTE } from "@scce/ui";
 import type { RuntimeStartupReadiness, RuntimeStartupReadinessSnapshot } from "./startup.js";
 import { turnTaskRegistryFor, type TurnTaskFrame } from "./turn-task-registry.js";
+import { parseLocalExecutiveGoal } from "@scce/adapters-node";
 import { createStaleWhileRevalidateCache, type StaleWhileRevalidateCache } from "./stale-while-revalidate.js";
 import { programResponseReadiness, unsupportedProgramResponseReadiness } from "./program-response-readiness.js";
 
@@ -123,6 +124,7 @@ export const ROUTES = [
   { method: "POST", path: "/api/db/init", label: "database initialize", mutates: true, requiresDb: true },
   { method: "POST", path: "/api/db/migrate", label: "database migrate", mutates: true, requiresDb: true },
   { method: "GET", path: "/api/executive/resume", label: "executive resume plan", mutates: false, requiresDb: true },
+  { method: "POST", path: "/api/executive/run", label: "run or resume an approved local task goal", mutates: true, requiresDb: true },
   { method: "GET", path: "/api/db/verify", label: "database verify", mutates: false, requiresDb: true },
   { method: "GET", path: "/api/db/stats", label: "database stats", mutates: false, requiresDb: true },
   { method: "GET", path: "/api/tools", label: "tool diagnostics", mutates: false, requiresDb: false },
@@ -435,6 +437,14 @@ async function dispatch(
   if (req.method === "POST" && url.pathname === "/api/db/migrate") {
     await context.runtime.storage.migrate();
     return json({ ok: true });
+  }
+  if (req.method === "POST" && url.pathname === "/api/executive/run") {
+    let request;
+    try { request = parseLocalExecutiveGoal(await readBody(req, context.maxBodyBytes)); }
+    catch (error) { throw new HttpError(400, error instanceof Error ? error.message : String(error)); }
+    const result = await context.runtime.runExecutiveGoal(request);
+    if (result.disposition === "not_ready" && !approved(context, "process.build_test", request)) return pendingApproval(context, "process.build_test", request);
+    return json(result);
   }
   if (req.method === "GET" && url.pathname === "/api/executive/resume") {
     // What a restart would have to pick up for one episode: invocations still in flight, attempts awaiting an

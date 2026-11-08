@@ -7,6 +7,7 @@ import {
   createExecutiveEpisodeMachine,
   createHasher,
   createScceKernel,
+  toJsonValue,
   type Clock,
   type DurableExecutiveEpisode,
   type EvaluationConditionConfig,
@@ -21,6 +22,7 @@ import { automaticWebAcquisitionEnabled, type ScceRuntimeConfig } from "./config
 import { createExecutiveEventJournal, createPostgresStorageAdapter } from "./postgres.js";
 import { NodeFileIngestAdapter } from "./files.js";
 import { NodeBuildTestAdapter } from "./process.js";
+import { runLocalExecutiveGoal, type LocalExecutiveGoalRequest } from "./local-executive-goal.js";
 import { ConfiguredConnectorAdapter } from "./connectors.js";
 import { createClipVisualEmbedder, registerVisualEmbedder } from "./visual-ingest.js";
 import { createApprovalSession, type ApprovalSession } from "./approval-session.js";
@@ -34,6 +36,7 @@ export interface NodeScceRuntime {
   approvals: ApprovalSession;
   /** Durable, crash-recoverable executive episode coordinator backed by Postgres. */
   executive: DurableExecutiveEpisode;
+  runExecutiveGoal(request: LocalExecutiveGoalRequest): ReturnType<typeof runLocalExecutiveGoal>;
   /** Promoted relation-potential artifact resolution: await `hydrated` before claiming the component is active. */
   relationPotential: {
     hydrated: Promise<void>;
@@ -168,5 +171,8 @@ export function createNodeRuntime(config: ScceRuntimeConfig, options: NodeScceRu
   };
   const productionTurn = kernel.turn.bind(kernel);
   kernel.turn = input => connectors.withRequestBudget(() => productionTurn(input), input.runtimeControl?.signal);
-  return { storage, kernel, connectors, approvals, executive, relationPotential, close: () => storage.close() };
+  return { storage, kernel, connectors, approvals, executive, relationPotential,
+    runExecutiveGoal: request => runLocalExecutiveGoal({ request, executive, buildTest, ownerId: informationAccess.principalId, policy: config.policy,
+      approved: approvals.isApproved({ capabilityId: "process.build_test", input: toJsonValue(request) }) }),
+    close: () => storage.close() };
 }

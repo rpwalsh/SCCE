@@ -14,6 +14,8 @@ export class NodeBuildTestAdapter implements BuildTestPort {
   async executeProgram(input: { episodeId: EpisodeId; construct: ConstructGraph; faultInjection?: string }): Promise<BuildTestResult> {
     if (!input.construct.program) throw new Error("construct has no ProgramGraph to build");
     const executionBase = path.join(this.config.runtime.tempRoot, String(input.episodeId), String(input.construct.id));
+    const relativeExecutionBase = path.relative(path.resolve(this.config.runtime.tempRoot), path.resolve(executionBase));
+    if (relativeExecutionBase === ".." || relativeExecutionBase.startsWith(`..${path.sep}`) || path.isAbsolute(relativeExecutionBase)) throw new Error("program execution identity escapes the temporary workspace");
     let root: string | undefined;
     try {
       root = await withExecutionBaseLock(executionBase, async () => {

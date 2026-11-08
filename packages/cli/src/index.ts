@@ -4,6 +4,7 @@
 import { spawn } from "node:child_process";
 import { runModelCommand, runSensorCommand, runSettingsCommand } from "./settings-commands.js";
 import { negotiateLearning, runLearnCommand } from "./learning-commands.js";
+import { parseLocalExecutiveGoal } from "@scce/adapters-node";
 import { wikiChildArgs, wikiContinueAfterConfiguredPageCap, wikiRunPaths } from "./wiki-process.js";
 import { resolveWikipediaCorpusTarget } from "@scce/adapters-node";
 import { createClangCodeMouthPorts, createLearnedCodeProposer, createTreeSitterCodeMouthPorts, createTypeScriptCodeMouthPorts, runCodeMouth } from "@scce/adapters-node";
@@ -250,6 +251,16 @@ async function main(): Promise<void> {
         // A caller scripting an edit needs the outcome in the exit code, not only in the report.
         if (result.outcome !== "resolved") process.exitCode = 1;
         break;
+      }
+      case "executive": {
+        if (parsed.args[0] !== "run" || !parsed.args[1]) throw new Error("executive run requires a typed goal JSON path");
+        const request = parseLocalExecutiveGoal(JSON.parse(await readFile(parsed.args[1], "utf8")));
+        const approval = runtime.approvals.requestApproval({ capabilityId: "process.build_test", input: toJsonValue(request), reason: "owner invoked the explicit local task goal" });
+        runtime.approvals.approve(approval.planId);
+        const result = await runtime.runExecutiveGoal(request);
+        printJson(result);
+        if (result.disposition !== "succeeded") process.exitCode = 1;
+        return;
       }
       case "learn":
         await runLearnCommand(runtime, parsed.args);
@@ -2004,6 +2015,7 @@ function usage(error?: string): void {
     "  pnpm scce scce2 import <v2-path> --summary-only",
     "  pnpm scce scce2 import <v2-path> --heap-checkpoint-mb=<n> --status=<path> --stop-file=<path>",
     "  pnpm scce replay <episodeId>",
+    "  pnpm scce executive run <typed-goal.json>   (run or resume an explicitly authorized local task DAG)",
     "  pnpm scce benchmark <config>",
     "",
     "Config defaults to scce.config.json. SCCE_DATABASE_URL may override the complete PostgreSQL connection URL; other config values are read from the file."

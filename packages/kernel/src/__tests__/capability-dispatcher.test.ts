@@ -155,6 +155,25 @@ function baseInput(overrides: { controls: ExecutiveControlState }) {
 }
 
 describe("capability dispatcher", () => {
+  it("invokes a concurrently claimed prepared task only for the durable dispatch winner", async () => {
+    let calls = 0;
+    let started!: () => void;
+    let finish!: () => void;
+    const firstStarted = new Promise<void>(resolve => { started = resolve; });
+    const finished = new Promise<void>(resolve => { finish = resolve; });
+    const executor = fakeExecutor("process.build_test", async () => { calls++; started(); await finished; return { status: "succeeded", outputRefs: [], evidenceRefs: ["execution.local"], attestationRef: "local.attestation" }; });
+    const deps = dispatcherFixture([executor]);
+    const input = baseInput({ controls: ungovernedControls() });
+    const first = dispatchCapabilityTask(deps, input);
+    const second = dispatchCapabilityTask(deps, input);
+    await firstStarted;
+    await new Promise<void>(resolve => setImmediate(resolve));
+    finish();
+    await Promise.all([first, second]);
+    expect(calls).toBe(1);
+    expect(Object.values((await deps.executive.load(input.episodeId)).outcomes)).toHaveLength(1);
+  });
+
   it.each(["succeeded", "failed"] as const)("resumes a three-stage local dependency chain after the second %s receipt survives a restart", async expected => {
     const directory = await mkdtemp(join(tmpdir(), "scce-executive-chain-"));
     const journalPath = join(directory, "journal.json");
