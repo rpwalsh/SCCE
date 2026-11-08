@@ -111,7 +111,7 @@ describe("shared workspace code ports", () => {
     expect(ports.projectVerification()).toBeUndefined();
   });
 
-  it.each(["unavailable", "deadline"] as const)("restores actual source when the bare native verification boundary is %s", async (failure, context) => {
+  it.for(["unavailable", "deadline"] as const)("restores actual source when the bare native verification boundary is %s", async (failure, context) => {
     if ((await findCodeVerifierCapability("go")).status !== "available") context.skip();
     const source = "package application\nvar Value = 1\n";
     const root = await fixture({ "application.go": source });
