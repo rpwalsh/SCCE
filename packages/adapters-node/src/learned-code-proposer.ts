@@ -152,6 +152,7 @@ export function createLearnedCodeProposer(options: LearnedCodeProposerOptions): 
   // progress resets it, because the question has changed.
   let lastState: string | undefined;
   let retry = 0;
+  let preparation: { state: string; loading: Promise<{ models: KneserNeyModel[]; candidates: LearnedCodeRepairCandidate[] }> } | undefined;
   // Shapes induced from the project being repaired, not from the corpus at large.
   //
   // A repair should read like the code around it, and the strongest evidence for how this code is written is
@@ -188,10 +189,13 @@ export function createLearnedCodeProposer(options: LearnedCodeProposerOptions): 
       lastCandidates = [];
       const languageId = context.language || codeLanguageForPath(context.targetPath);
       if (!languageId) return undefined;
+      const state = hasher.digestHex(JSON.stringify({ languageId, request,
+        context: { ...context, targetText: hasher.digestHex(context.targetText) }, diagnostics }));
+      if (preparation?.state !== state) preparation = { state, loading: (async () => {
       const models = await modelsFor(languageId, context);
       if (!models.length) {
         log(`no usable ${languageId} models in the requested corpus slice; the learned lane has nothing to compose from`);
-        return undefined;
+        return { models, candidates: [] };
       }
       const spans = await repairSpans(options, languageId, context, diagnostics);
       const constructions = await projectConstructions(options, context, constructionsByWorkspace);
@@ -234,10 +238,14 @@ export function createLearnedCodeProposer(options: LearnedCodeProposerOptions): 
         ...(options.corpusWeight !== undefined ? { corpusWeight: options.corpusWeight } : {})
         });
       const candidates = insertions.length || languageId === "typescript" ? generated : await grammaticalTreeSitterRepairs({ targetPath: context.targetPath, text: context.targetText, candidates: generated });
+      return { models, candidates };
+      })() };
+      const pending = preparation;
+      let prepared: Awaited<typeof pending.loading>;
+      try { prepared = await pending.loading; }
+      catch (error) { if (preparation === pending) preparation = undefined; throw error; }
+      const { models, candidates } = prepared;
       lastCandidates = candidates;
-      const state = hasher.digestHex(JSON.stringify({ languageId, targetPath: context.targetPath, sourceHash: hasher.digestHex(context.targetText), request,
-        diagnostics: diagnostics.map(diagnostic => `${diagnostic.patternId ?? diagnostic.class}:${diagnostic.message}`).sort(),
-        behavioralFailureObservationId: context.behavioralFailure?.observationId ?? null }));
       retry = state === lastState ? retry + 1 : 0;
       lastState = state;
       // One attempt, one candidate: the loop is what tries the next one, and it only gets there by watching this

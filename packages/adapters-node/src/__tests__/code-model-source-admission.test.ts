@@ -1,6 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { anchorFeatureSet, codeSurfaceTokens, createClock, createEvidenceExtractor, createHasher, createIdFactory,
   createLanguageAcquisitionEngine, toJsonValue, trainKneserNey,
   type EvidenceQuery, type LanguageProfileQuery, type NgramModelQuery, type NgramModelRecord, type SourceVersionId } from "@scce/kernel";
@@ -9,8 +9,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { createTypeScriptCodeMouthPorts } from "../code-mouth.js";
 import { createLearnedCodeProposer } from "../learned-code-proposer.js";
+import * as treeSitterRepair from "../tree-sitter-repair-spans.js";
+
+afterEach(() => vi.restoreAllMocks());
 
 it("admits a retrieved source and every tied source before higher-mass lower-coverage source candidates", async () => {
+  const repairPreparation = vi.spyOn(treeSitterRepair, "treeSitterRepairSpans");
   const source = "package ledger\nfunc total(amount float64) float64 {\n balances := amount\n return balances\n}\n";
   const targetText = source.replace("return balances", "return balnces");
   const clock = createClock({ fixedTime: 1 }), hasher = createHasher();
@@ -89,6 +93,9 @@ it("admits a retrieved source and every tied source before higher-mass lower-cov
   expect(modelQueries).toHaveLength(2);
   expect(profileQueries).toHaveLength(2);
   expect(evidenceQueries.filter(query => query.openingBlockPrior === false)).toHaveLength(1);
+  expect(repairPreparation).toHaveBeenCalledTimes(1);
+  await proposer.propose({ ...input, context: { ...input.context, targetText: targetText + "\n" }, attempt: 4 });
+  expect(repairPreparation).toHaveBeenCalledTimes(2);
   expect(proposer.corpusAvailability("python")).toMatchObject({ status: "unqueried", modelsAvailable: null });
 });
 
