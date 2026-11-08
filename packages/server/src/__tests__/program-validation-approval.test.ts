@@ -18,7 +18,7 @@ it("surfaces only the current session exact command and artifact-bound native pl
  expect(read([{...event,payload:{...plan,id:"capability.other"} as unknown as JsonValue}])).toBeUndefined();
  approvals.approve("capability.exact");
  expect(approvals.isApproved({capabilityId:"process.build_test",input:payload})).toBe(true);
- for(const changed of [{...program,build:{...program.build,args:["-c","unsafe()"]}},{...program,files:program.files.map((file,index)=>index===0?{...file,contentHash:`sha256_${"c".repeat(64)}`}:file)}]) {
+ for(const changed of [{...program,build:{...program.build,args:["-c","unsafe()"]}},{...program,files:program.files.map((file,index)=>index===0?{...file,contentHash:`sha256_${"c".repeat(64)}` as typeof file.contentHash}:file)}]) {
   const next=programValidationApprovalInput(changed);
   expect(approvals.isApproved({capabilityId:"process.build_test",input:next})).toBe(false);
   expect(createHash("sha256").update(canonicalStringify(next)).digest("hex")).not.toBe(createHash("sha256").update(canonicalStringify(payload)).digest("hex"));

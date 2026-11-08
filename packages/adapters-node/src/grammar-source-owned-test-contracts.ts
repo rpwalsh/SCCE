@@ -382,7 +382,7 @@ export async function grammarSourceOwnedNativeDeclarations(file: Omit<GrammarCon
   for(const languageId of ["go","rust"] as const){
     const matches=[...file.text.matchAll(/^```(go|rust)[ \t]*\r?\n([\s\S]*?)^```[ \t]*(?:\r?\n|$)/gmu)].filter(match=>match[1]===languageId);
     if(!matches.length)continue;
-    const chars=file.text.split("").map(char=>char==="\n"||char==="\r"?char:" ");
+    const chars: string[] = file.text.split("").map(char=>char==="\n"||char==="\r"?char:" ");
     for(const match of matches){const start=match.index!+match[0].indexOf("\n")+1;for(let i=0;i<match[2]!.length;i++)chars[start+i]=match[2]![i]!;}
     const masked=chars.join("");
     const declarations=await withRepositorySyntaxTree({fileId:file.path,languageId,text:masked},root=>{
@@ -407,7 +407,7 @@ export async function grammarSourceOwnedNativeDeclarations(file: Omit<GrammarCon
       });
       return invalid?[]:owned;
     });
-    out.push(...declarations);
+    out.push(...(declarations ?? []));
   }
   return out;
 }

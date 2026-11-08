@@ -3494,7 +3494,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         codeSignal: programCodeSignal,
         evidence: selectedEvidence
       });
-      const scopedProgramIntent=derivedProgramIntent?{...derivedProgramIntent,metadata:toJsonValue({...jsonRecord(derivedProgramIntent.metadata),
+      const scopedProgramIntent: import("./types.js").ProgramConstructIntent | undefined = derivedProgramIntent?{...derivedProgramIntent,metadata:toJsonValue({...jsonRecord(derivedProgramIntent.metadata),
         sourceOwnerScope:deps.sourceInformationLabel??deps.informationAccess??null,
         sourceVersionIds:workspaceContracts?.status==="available"?workspaceContracts.sourceVersionIds:[]})}:undefined;
       const programIntent=scopedProgramIntent&&workspaceContracts?.status==="unavailable"
