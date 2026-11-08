@@ -1,16 +1,20 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildSurfaceLattice,
   compileJoinProgram,
   compileJoinProgramMixture,
   createHasher,
+  createLanguageMemoryRuntime,
   derivationShape,
   renderJoinedSurface,
-  renderJoinedSurfaceAlternatives
+  renderJoinedSurfaceAlternatives,
+  scopeLanguageMemoryStateToLanguage,
+  toJsonValue
 } from "../index.js";
 import { joinProgramMixtureFromStorage, joinProgramMixtureStorageForm } from "../join-program-storage.js";
+import * as joinStorage from "../join-program-storage.js";
 
 function trainedMixture(documentId: string, text: string) {
   const hasher = createHasher();
@@ -41,6 +45,29 @@ function trainedMixture(documentId: string, text: string) {
 }
 
 describe("learned join programs", () => {
+  it("scopes already decoded joins without unpacking them again or admitting another profile's program", () => {
+    const own = trainedMixture("owned", "alpha beta alpha gamma alpha beta.");
+    const foreign = trainedMixture("foreign", "delta epsilon delta zeta delta epsilon.");
+    const patterns = [own, foreign].map((mixture, index) => ({ id: `syntax.${index}`, profileId: index ? "profile.foreign" : "profile.own",
+      patternKind: "syntax" as const, support: 1, entropy: 0, evidenceIds: [], updatedAt: 1,
+      patternJson: toJsonValue({ schema: "scce.induced_language_model.syntax_memory.v1", componentRecipe: "kernel.induced_language_memory_projection.v3",
+        sourceSystem: "gutenberg", sourceVersionId: `version.${index}`, joinProgram: joinProgramMixtureStorageForm(mixture) }) }));
+    const decode = vi.spyOn(joinStorage, "joinProgramMixtureFromStorage");
+    try {
+      const state = createLanguageMemoryRuntime().hydrate({ models: [], patterns });
+      expect(decode).toHaveBeenCalledTimes(2);
+      const original = structuredClone(state.joinPrograms);
+      const scoped = scopeLanguageMemoryStateToLanguage(state, "language.own", {
+        profile: id => id === "profile.own" ? "language.own" : "language.foreign", corpus: () => undefined
+      });
+      expect(scoped.joinPrograms).toEqual(original.filter(mixture => mixture.id === own.id));
+      expect(scoped.joinPrograms[0]).toBe(state.joinPrograms.find(mixture => mixture.id === own.id));
+      expect(scoped.joinPrograms.some(mixture => mixture.id === foreign.id)).toBe(false);
+      expect(decode).toHaveBeenCalledTimes(2);
+    } finally {
+      decode.mockRestore();
+    }
+  });
   it("stores shared provenance once and restores the exact runtime indexes", () => {
     const mixture = trainedMixture("repeated-provenance", "alpha beta ".repeat(24));
     const stored = joinProgramMixtureStorageForm(mixture);

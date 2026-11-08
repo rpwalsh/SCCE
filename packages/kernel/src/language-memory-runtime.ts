@@ -2149,7 +2149,7 @@ function scopeLanguageMemoryStateWith(
     ...importedObservations.map(record => record.languageHint)
   ]).sort(compareCodePoint);
   const ordinaryPatterns = importedPatterns.filter(pattern => !isLanguageConstructionPattern(pattern));
-  const joinPrograms = joinProgramsFromPatterns(ordinaryPatterns);
+  const joinPrograms = joinProgramsFromPatterns(ordinaryPatterns, state.joinPrograms);
   const importedLanguagePriorCount = importedUnits.length
     + ordinaryPatterns.length
     + importedObservations.length
@@ -4996,9 +4996,11 @@ function jsonRecord(value: JsonValue | undefined): Record<string, JsonValue> {
 }
 
 function joinProgramsFromPatterns(
-  patterns: readonly LanguagePatternRecord[]
+  patterns: readonly LanguagePatternRecord[],
+  compiled: readonly JoinProgramMixture[] = []
 ): JoinProgramMixture[] {
   const byId = new Map<string, JoinProgramMixture>();
+  const available = new Map(compiled.map(program => [program.id, program]));
   const activeSourceScopes = new Set(patterns.flatMap(pattern => {
     const row = jsonRecord(pattern.patternJson);
     const scope = inducedSyntaxSourceScope(pattern.profileId, row);
@@ -5016,7 +5018,8 @@ function joinProgramsFromPatterns(
       ? jsonRecord(candidateRow.mixture).id
       : candidateRow.id;
     if (typeof candidateId === "string" && byId.has(candidateId)) continue;
-    const mixture = joinProgramMixtureFromStorage(candidate);
+    const mixture = (typeof candidateId === "string" ? available.get(candidateId) : undefined)
+      ?? joinProgramMixtureFromStorage(candidate);
     if (!mixture || byId.has(mixture.id)) continue;
     byId.set(mixture.id, mixture);
   }
