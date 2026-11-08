@@ -3,6 +3,7 @@
 import {
   compileLanguageConstructionPatterns,
   createUniversalCreativeEventConstructionCompiler,
+  isCreativeEventConstructionPattern,
   isLanguageConstructionPattern,
   LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS,
   SOURCE_EXAMPLE_CONSTRUCTION_STORAGE,
@@ -631,6 +632,7 @@ export function compileLanguageTrainingBatch(input: {
   const creativePatterns = creativeEventCompilation?.status === "compiled" ? creativeEventCompilation.patterns ?? [creativeEventCompilation.pattern] : [];
   const ownedCreativePatterns = input.creativeEventCompiler ? creativePatterns.map(pattern => structuredClone(pattern)) : creativePatterns;
   constructionPatterns.push(...ownedCreativePatterns.filter(isLanguageConstructionPattern));
+  promotion.report.sourceObservedInducedConstructionSets += ownedCreativePatterns.filter(isCreativeEventConstructionPattern).length;
   if (creativeEventCompilation?.status === "rejected" && creativeEventCompilation.issues.some(issue => issue.code !== LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.induction)) {
     warnings.push(...creativeEventCompilation.issues.map(issue => issue.code));
   }
@@ -647,6 +649,7 @@ export function compileLanguageTrainingBatch(input: {
     constructionPatterns.push(...utterances.patterns);
     sourceUtteranceCandidates = utterances.candidateCount;
     compiledSourceUtterances = utterances.patterns.length;
+    promotion.report.sourceObservedInducedConstructionSets += compiledSourceUtterances;
     warnings.push(...utterances.rejectionCodes);
     for (const pattern of sourceCorrespondencePatterns) {
       const prerequisites = utterances.prerequisitesByModelId.get(pattern.id);
