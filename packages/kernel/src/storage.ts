@@ -948,7 +948,7 @@ export interface LanguageMemoryStore {
   listLanguageUnits(query?: { profileId?: string; profileIds?: readonly string[]; script?: string; sourceSystem?: string; limit?: number; maxTotalJsonBytes?: number }): Promise<LanguageUnitRecord[]>;
   /** Request-seed views retain interpretation fields and omit generative syntax join programs. */
   listLanguagePatterns(query?: { view?: "request_seed"; patternIds?: readonly string[]; profileId?: string; profileIds?: readonly string[]; sourceSystem?: string; patternSchemas?: readonly string[]; languageId?: string; patternKind?: LanguagePatternRecord["patternKind"]; formalLanguage?: string; parameterCount?: number; limit?: number; maxTotalJsonBytes?: number }): Promise<LanguagePatternRecord[]>;
-  listSemanticFrames(query?: { profileIds?: readonly string[]; sourceSystem?: string; surface?: string; limit?: number }): Promise<SemanticFrameRecord[]>;
+  listSemanticFrames(query?: { profileIds?: readonly string[]; sourceSystem?: string; surface?: string; requestSurface?: string; limit?: number }): Promise<SemanticFrameRecord[]>;
   listTranslationAlignments(query?: { sourceLanguage?: string; targetLanguage?: string; limit?: number }): Promise<TranslationAlignmentRecord[]>;
 }
 
