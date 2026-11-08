@@ -57,20 +57,46 @@ describe("surface language resident-only cache", () => {
       return [];
     };
     await expect(fixture.runtime.requestControlPatternsCached()).rejects.toThrow("temporary pattern-store failure");
-    expect(queries).toHaveLength(2);
+    expect(queries).toHaveLength(4);
     fail = false;
     expect(await fixture.runtime.requestControlPatternsCached()).toEqual([]);
-    expect(queries).toHaveLength(4);
+    expect(queries).toHaveLength(8);
     expect(await fixture.runtime.requestControlPatternsCached()).toEqual([]);
-    expect(queries).toHaveLength(4);
-    expect(queries.slice(2).map(query => query.sourceSystem).sort()).toEqual([
+    expect(queries).toHaveLength(8);
+    expect(queries.slice(4).map(query => query.sourceSystem).sort()).toEqual([
       CORPUS_SOURCE_SYSTEM_IDS.dialogue,
-      CORPUS_SOURCE_SYSTEM_IDS.corrections
+      CORPUS_SOURCE_SYSTEM_IDS.corrections,
+      "dialogue",
+      "corrections"
     ].sort());
-    expect(queries.slice(2).every(query => query.patternSchemas?.includes("scce.request_requirement_pattern.v1"))).toBe(true);
+    expect(queries.slice(4).every(query => query.patternSchemas?.includes("scce.request_requirement_pattern.v1"))).toBe(true);
     fixture.runtime.invalidate();
     await fixture.runtime.requestControlPatternsCached();
-    expect(queries).toHaveLength(6);
+    expect(queries).toHaveLength(12);
+  });
+
+  it("reads stored source labels verbatim and keeps correction controls out of general language profiles", async () => {
+    const fixture = runtimeFixture({ cacheMs: 100_000 });
+    const spoken = { ...fixture.profile, id: "profile.dialogue" };
+    fixture.storage.model.listLanguageProfiles = async () => [fixture.profile, spoken];
+    const control = { id: "request_requirement_pattern_correction", profileId: fixture.profile.id, patternKind: "syntax" as const,
+      support: 1, entropy: 0, evidenceIds: [], updatedAt: 1,
+      patternJson: { schema: "scce.request_requirement_pattern.v1", sourceSystem: "corrections", surface: "fixture control" } };
+    fixture.storage.languageMemory.listLanguagePatterns = async query => query?.sourceSystem === "corrections" ? [control] : [];
+    expect(await fixture.runtime.requestControlPatternsCached()).toEqual([control]);
+    expect((await fixture.runtime.surfaceLanguageProfilesCached()).profiles.map(profile => profile.id)).toEqual([spoken.id]);
+  });
+
+  it("loads opaque-key request roles alongside label-key speech models without normalizing the stored query", async () => {
+    const fixture = runtimeFixture({ cacheMs: 100_000 });
+    const role = { id: "request_requirement_pattern_opaque", profileId: fixture.profile.id, patternKind: "syntax" as const,
+      support: 1, entropy: 0, evidenceIds: [], updatedAt: 1,
+      patternJson: { schema: "scce.request_requirement_pattern.v1", sourceSystem: CORPUS_SOURCE_SYSTEM_IDS.dialogue } };
+    const speech = { ...role, id: "creative.observed.compatibility.label", patternKind: "semantic_role" as const,
+      patternJson: { schema: "scce.creative_event_compatibility_model.v1", sourceSystem: "dialogue" } };
+    fixture.storage.languageMemory.listLanguagePatterns = async query => query?.sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.dialogue ? [role]
+      : query?.sourceSystem === "dialogue" ? [speech] : [];
+    expect((await fixture.runtime.requestControlPatternsCached()).map(pattern => pattern.id).sort()).toEqual([role.id, speech.id].sort());
   });
 
   it("seeds request interpretation from canonical population statistics without reading or compiling full histories", async () => {

@@ -357,7 +357,7 @@ describe("production owner program turn through the API", () => {
       queries.push(query);
       return languagePatterns.filter(pattern => {
         const value = pattern.patternJson as Record<string, unknown>;
-        return (!query?.sourceSystem || corpusSourceAlias(query.sourceSystem) === value.sourceSystem)
+        return (!query?.sourceSystem || query.sourceSystem === value.sourceSystem)
           && (!query?.profileId || query.profileId === pattern.profileId)
           && (!query?.profileIds || query.profileIds.includes(pattern.profileId))
           && (!query?.patternSchemas || query.patternSchemas.includes(String(value.schema)))
@@ -365,7 +365,7 @@ describe("production owner program turn through the API", () => {
       }).slice(0, query?.limit);
     };
     storage.languageMemory.listNgramModels = async query => trained.models.filter(model => !query?.sourceSystem
-      || (model.modelJson as Record<string, unknown>).sourceSystem === corpusSourceAlias(query.sourceSystem));
+      || (model.modelJson as Record<string, unknown>).sourceSystem === query.sourceSystem);
     const createContext = async () => {
       const kernelClock = createClock({ fixedTime: 103_000, stepMs: 1 });
       const kernel = createScceKernel({ storage, files: { streamPath: async function* () {} },

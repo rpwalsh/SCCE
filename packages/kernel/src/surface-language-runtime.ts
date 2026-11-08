@@ -4,7 +4,7 @@ import { estimateRetainedProgramBytes } from "./retained-program-size.js";
 import { traceEvent } from "./debug/trace.js";
 import { canonicalDigestHex, canonicalJsonByteLength } from "./canonical-json-digest.js";
 import { deriveClosedClassWords } from "./closed-class-words.js";
-import { CORPUS_SOURCE_SYSTEM_IDS, createCorpusRegistry, languageMemoryHydrationPlan, requestLanguageHydrationPlan, type CorpusRoleId } from "./corpus-registry.js";
+import { CORPUS_SOURCE_SYSTEM_IDS, corpusSourceAlias, createCorpusRegistry, languageMemoryHydrationPlan, requestLanguageHydrationPlan, type CorpusRoleId } from "./corpus-registry.js";
 import { CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA, isCreativeEventCompatibilityPattern, creativeRequestSourcePrerequisites,
   compileCreativeRequestFrameFromCompatibilityModels } from "./creative-event-compatibility.js";
 import { creativeSourceUtterances } from "./creative-source-utterance.js";
@@ -249,13 +249,17 @@ export function createSurfaceLanguageRuntime(options: {
     if (requestControlPatternCache && now - requestControlPatternCache.loadedAt < surfaceLanguageMemoryCacheMs) return requestControlPatternCache.value;
     if (requestControlPatternInFlight) return requestControlPatternInFlight;
     const generation = languageMemoryGeneration;
-    const pending = Promise.all([CORPUS_SOURCE_SYSTEM_IDS.corrections, CORPUS_SOURCE_SYSTEM_IDS.dialogue].map(sourceSystem =>
+    // Historical request controls use opaque corpus keys; canonical speech models use registry labels.
+    const sourceSystems = [...new Set([CORPUS_SOURCE_SYSTEM_IDS.corrections, CORPUS_SOURCE_SYSTEM_IDS.dialogue]
+      .flatMap(sourceSystem => [sourceSystem, corpusSourceAlias(sourceSystem)]))];
+    const pending = Promise.all(sourceSystems.map(sourceSystem =>
       deps.storage.languageMemory.listLanguagePatterns({
         sourceSystem,
         patternSchemas: [REQUEST_REQUIREMENT_PATTERN_SCHEMA, CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA],
         limit: 2048
       }))).then(groups => {
-      const value = groups.flat();
+      const records = groups.flat();
+      const value = uniqueRecordsById(records, records.length);
       if (generation === languageMemoryGeneration) requestControlPatternCache = { loadedAt: clock.now(), value };
       return value;
     });
@@ -1116,7 +1120,7 @@ export function createSurfaceLanguageRuntime(options: {
       ]);
       const requestControlProfileIds = new Set(
         latestRequestRequirementPatterns(requestControlPatterns)
-          .filter(pattern => jsonRecord(pattern.patternJson).sourceSystem === CORPUS_SOURCE_SYSTEM_IDS.corrections)
+          .filter(pattern => corpusSourceAlias(kernelString(jsonRecord(pattern.patternJson).sourceSystem) ?? "") === corpusSourceAlias(CORPUS_SOURCE_SYSTEM_IDS.corrections))
           .map(pattern => pattern.profileId)
       );
       const profiles = persistedProfiles
