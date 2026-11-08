@@ -44,6 +44,11 @@
       "productReachable": false
     },
     {
+      "file": "tools/sealed-eval/harness/tests/reference-ollama.test.mjs",
+      "purpose": "Mocked HTTP tests of the declared evaluation reference, including exact output-budget and task-framing controls. Never product inference.",
+      "productReachable": false
+    },
+    {
       "file": "tools/sealed-eval/harness/lib/host-configuration.mjs",
       "purpose": "Captures version, model inventory, and pre-run residency for the declared local reference system. Measurement only; it does not generate answers.",
       "endpoint": "127.0.0.1:11434",

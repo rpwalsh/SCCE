@@ -107,6 +107,7 @@ async function scanSource(file) {
   const source = await readFile(file, "utf8");
   const moduleSpecifiers = [
     ...source.matchAll(/\bfrom\s*["']([^"']+)["']/gu),
+    ...source.matchAll(/\bimport\s*["']([^"']+)["']/gu),
     ...source.matchAll(/\bimport\s*\(\s*["']([^"']+)["']\s*\)/gu),
     ...source.matchAll(/\brequire\s*\(\s*["']([^"']+)["']\s*\)/gu)
   ].map(match => match[1]?.toLowerCase()).filter(Boolean);
