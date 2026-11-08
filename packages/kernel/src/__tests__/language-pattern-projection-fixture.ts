@@ -23,6 +23,7 @@ export function installFixtureLanguagePatternProjection(store: LanguageMemorySto
     if (list) store.listLanguagePatterns = async query => {
       const rows = await list(query ? { ...query, limit: undefined } : undefined);
       return rows.filter(row => {
+        if (query?.patternIds && !query.patternIds.includes(row.id)) return false;
         const metadata = jsonRecord(row.patternJson);
         if (metadata.schema !== "scce.language_construction_pattern.v1" && metadata.schema !== "scce.source_code_function_pattern.v1"
           && metadata.schema !== "scce.source_owned_test_contract.v1") return true;

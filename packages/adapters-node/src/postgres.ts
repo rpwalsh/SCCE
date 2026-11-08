@@ -4067,6 +4067,11 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
     async listLanguagePatterns(query = {}) {
       const params: unknown[] = [];
       const where: string[] = query.patternKind ? [] : ["pattern.pattern_kind<>'source_compilation'"];
+      if (query.patternIds) {
+        if (!query.patternIds.length) return [];
+        params.push([...new Set(query.patternIds)]);
+        where.push(`pattern.id=ANY($${params.length}::text[])`);
+      }
       if (query.profileIds) {
         if (!query.profileIds.length) return [];
         params.push([...query.profileIds]);

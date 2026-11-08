@@ -11,6 +11,30 @@ import type { ContentHash, Hasher, JsonValue, SourceId, SourceVersionId } from "
 
 export interface SourceCompilationOwner { sourceId: SourceId; sourceVersionId: SourceVersionId; contentHash: ContentHash }
 
+export function sourceLanguageCompilationReceiptId(compilationId: string): string {
+  return `source.language.compilation.${compilationId}`;
+}
+
+export function sourceCompilationModelReadLimit(sourceUtf16Length: number): number {
+  return Math.max(1, Math.ceil(sourceUtf16Length / LANGUAGE_TRAINING_MIN_CHUNK_UTF16_LENGTH)) + 1;
+}
+
+export function sourceLanguageCompilationReceiptIdForModels(input: {
+  owner: SourceCompilationOwner; profileId: string; sourceSystem: string; models: readonly NgramModelRecord[]; hasher: Hasher;
+}): string | undefined {
+  const record = input.models[0];
+  if (!record) return undefined;
+  const model = jsonRecord(record.modelJson);
+  const { compilationId, chunk: _chunk, modelDigest: _modelDigest, ...header } = jsonRecord(model.sourceCompilation);
+  if (header.schema !== "scce.source_language_compilation.v1" || header.compilerRecipe !== LANGUAGE_TRAINING_BATCH_RECIPE_ID
+    || header.sourceId !== input.owner.sourceId || header.sourceVersionId !== input.owner.sourceVersionId || header.contentHash !== input.owner.contentHash
+    || header.profileId !== input.profileId || header.sourceSystem !== corpusSourceAlias(input.sourceSystem)
+    || model.profileId !== input.profileId || model.sourceVersionId !== input.owner.sourceVersionId
+    || header.parentStreamId !== sourceLanguageTrainingStreamId({ ...input.owner, sourceSystem: input.sourceSystem, hasher: input.hasher })
+    || compilationId !== canonicalDigestHex(header, input.hasher)) throw new Error("canonical source compilation header is incomplete or changed");
+  return sourceLanguageCompilationReceiptId(String(compilationId));
+}
+
 function modelMaterial(record: NgramModelRecord): JsonValue {
   const row = jsonRecord(record.modelJson);
   return toJsonValue({ id: record.id, streamId: record.streamId, languageHint: record.languageHint, maxOrder: record.maxOrder, discount: record.discount,
@@ -38,7 +62,7 @@ export function stampSourceLanguageCompilation(input: {
     sourceCompilation: { ...common, compilationId, chunk: chunks[index], modelDigest: canonicalDigestHex(modelMaterial(record), input.hasher) } }) })),
     units: input.artifacts.units.map(record => ({ ...record, metadata: toJsonValue({ ...jsonRecord(record.metadata), sourceCompilationId: compilationId }) })),
     patterns: [...sourceArtifacts.patterns.map(record => ({ ...record, patternJson: toJsonValue({ ...jsonRecord(record.patternJson), sourceCompilationId: compilationId }) })), ...componentReceipts,
-      { id: `source.language.compilation.${compilationId}`, profileId: input.profileId, patternKind: "source_compilation", support: 1, entropy: 0,
+      { id: sourceLanguageCompilationReceiptId(compilationId), profileId: input.profileId, patternKind: "source_compilation", support: 1, entropy: 0,
         evidenceIds: [], updatedAt: input.models[0]!.updatedAt, patternJson: toJsonValue({ schema: "scce.source_language_compilation_receipt.v1", sourceSystem: common.sourceSystem,
           compilation: { ...common, compilationId, modelInventory: input.models.map((record, index) => ({ id: record.id, streamId: record.streamId,
             chunk: chunks[index], modelDigest: canonicalDigestHex(modelMaterial(record), input.hasher) })) } }) }],

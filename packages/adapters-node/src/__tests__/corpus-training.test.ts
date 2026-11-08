@@ -30,7 +30,8 @@ import { compileSourceCodeFunctions } from "../source-code-function-learning.js"
 import { NodeBuildTestAdapter } from "../process.js";
 import { SOURCE_CONSTRUCTION_CONTEXT_RECIPE_ID } from "@scce/kernel";
 import { SURFACE_REALIZATION_STRATEGY_IDS } from "../../../kernel/src/surface-contract.js";
-import { prepareLanguageCorpusTraining, commitLanguageCorpusTraining, corpusSourceVersionIdFor, LANGUAGE_CORPUS_TRAINING_RECIPE_ID, LANGUAGE_CODE_CORPUS_TRAINING_RECIPE_ID, languageCorpusTrainingRecipeId } from "../language-corpus-trainer.js";
+import { prepareLanguageCorpusTraining, commitLanguageCorpusTraining, readCompletedCorpusCheckpoint, corpusSourceVersionIdFor, LANGUAGE_CORPUS_TRAINING_RECIPE_ID, LANGUAGE_CODE_CORPUS_TRAINING_RECIPE_ID, languageCorpusTrainingRecipeId, type LanguageCorpusTrainingInput } from "../language-corpus-trainer.js";
+import { LANGUAGE_TRAINING_BATCH_RECIPE_ID } from "../../../kernel/src/language-training-recipe.js";
 import { blobContentHash } from "../postgres.js";
 import { createWikipediaV3Ingestor } from "../wikipedia-v3-ingestor.js";
 import * as corpusTrainer from "../language-corpus-trainer.js";
@@ -877,6 +878,81 @@ describe("prepared corpus training", () => {
 });
 
 describe("multi-corpus training", () => {
+  it("upgrades an actual v3 source checkpoint to v4 without changing owned inputs or duplicating canonical identities", async () => {
+    const legacy = JSON.parse(readFileSync(new URL("./fixtures/legacy-language-batch-v3-checkpoint.json", import.meta.url), "utf8")) as {
+      input: Omit<LanguageCorpusTrainingInput, "storage">; checkpoint: IngestionCheckpoint;
+      canonical: Pick<MemoryState, "models" | "patterns" | "units" | "frames" | "profiles" | "evidence"> & { sources: SourceVersion[] };
+      artifactIds: Record<"sourceVersions" | "models" | "profiles" | "evidence", string[]>;
+    };
+    expect(recordOf(legacy.checkpoint.metadata).batchRecipe).toBe("kernel.language_training_batch.v3");
+    const fixture = memoryStorage();
+    const state = fixture.state;
+    state.models.push(...legacy.canonical.models);
+    state.patterns.push(...legacy.canonical.patterns);
+    state.units.push(...legacy.canonical.units);
+    state.frames.push(...legacy.canonical.frames);
+    state.profiles.push(...legacy.canonical.profiles);
+    state.evidence.push(...legacy.canonical.evidence);
+    state.sourceVersions.push(...legacy.canonical.sources);
+    state.blobs.push(new Uint8Array(Buffer.from(legacy.input.text)));
+    fixture.storage.blobs.put = async bytes => { const hash = blobContentHash(bytes); if (!state.blobs.some(row => blobContentHash(row) === hash)) state.blobs.push(new Uint8Array(bytes)); return hash; };
+    const upsert = <T extends { id: unknown }>(rows: T[], incoming: readonly T[]) => {
+      for (const row of incoming) { const index = rows.findIndex(previous => previous.id === row.id); if (index < 0) rows.push(row); else rows[index] = row; }
+    };
+    fixture.storage.evidence.putSourceVersion = async row => { const index = state.sourceVersions.findIndex(source => source.sourceVersionId === row.sourceVersionId); if (index < 0) state.sourceVersions.push(row); else state.sourceVersions[index] = row; };
+    fixture.storage.evidence.putEvidenceSpans = async rows => { upsert(state.evidence, rows); };
+    fixture.storage.model.putLanguageProfile = async row => { upsert(state.profiles, [row]); };
+    fixture.storage.languageMemory.putNgramModels = async rows => { upsert(state.models, rows); };
+    fixture.storage.languageMemory.putLanguageUnits = async rows => { upsert(state.units, rows); };
+    fixture.storage.languageMemory.putSemanticFrames = async rows => { upsert(state.frames, rows); };
+    const checkpoints = new Map([[legacy.checkpoint.id, structuredClone(legacy.checkpoint)]]);
+    fixture.storage.ingestion = { put: async row => { checkpoints.set(row.id, structuredClone(row)); },
+      get: async id => checkpoints.get(id) ?? null, list: async () => [...checkpoints.values()] } as ScceStorage["ingestion"];
+    const input = { ...legacy.input, storage: fixture.storage };
+    const before = structuredClone(state);
+    for (const changed of [
+      { ...input, text: `${input.text} changed` }, { ...input, ngramMaxOrder: 3 },
+      { ...input, informationLabel: { ...input.informationLabel!, principals: ["different-owner"] } },
+      { ...input, corpusMetadata: { declaredLicense: "different-license" } }
+    ]) {
+      await expect(readCompletedCorpusCheckpoint(changed)).rejects.toThrow("checkpoint binding mismatch");
+      await expect(trainLanguageCorpusText(changed)).rejects.toThrow("checkpoint binding mismatch");
+    }
+    expect(state).toEqual(before);
+    expect(await readCompletedCorpusCheckpoint(input)).toBeUndefined();
+    expect(checkpoints.get(legacy.checkpoint.id)).toEqual(legacy.checkpoint);
+    const upgraded = await trainLanguageCorpusText(input);
+    expect(checkpoints.size).toBe(1);
+    expect(recordOf(checkpoints.get(legacy.checkpoint.id)!.metadata).batchRecipe).toBe(LANGUAGE_TRAINING_BATCH_RECIPE_ID);
+    expect(upgraded.admission).toEqual(recordOf(recordOf(legacy.checkpoint.metadata).report).admission);
+    expect(state.sourceVersions.map(row => row.sourceVersionId)).toEqual(legacy.artifactIds.sourceVersions);
+    expect(state.sourceVersions).toEqual(legacy.canonical.sources);
+    expect(state.evidence.map(row => row.id)).toEqual(legacy.artifactIds.evidence);
+    expect(state.profiles.map(row => row.id)).toEqual(legacy.artifactIds.profiles);
+    expect(state.models.map(row => row.id)).toEqual(legacy.artifactIds.models);
+    expect(state.blobs).toHaveLength(1);
+    expect(state.models.every(row => recordOf(recordOf(row.modelJson).sourceCompilation).compilerRecipe === LANGUAGE_TRAINING_BATCH_RECIPE_ID)).toBe(true);
+    expect(state.patterns.filter(row => recordOf(row.patternJson).schema === "scce.source_language_compilation_receipt.v1")).toHaveLength(2);
+    const completed = structuredClone(state);
+    expect(await trainLanguageCorpusText(input)).toEqual(upgraded);
+    expect(state).toEqual(completed);
+    const clock = createClock({ fixedTime: 150000, stepMs: 1 });
+    const hasher = createHasher();
+    const recorded = storageFixtureForEvaluation({ evidence: state.evidence, clockNow: () => clock.now() });
+    const storage: ScceStorage = { ...recorded.storage, languageMemory: fixture.storage.languageMemory, transaction: fixture.storage.transaction,
+      evidence: { ...recorded.storage.evidence, sourceVersionsForEvidence: async ids => state.sourceVersions.filter(source => state.evidence.some(span => ids.includes(span.id) && span.sourceVersionId === source.sourceVersionId)) },
+      blobs: { ...fixture.storage.blobs, get: async hash => { const bytes = state.blobs.find(bytes => blobContentHash(bytes) === hash); if (!bytes) throw new Error("owned upgrade source missing"); return bytes; } },
+      model: { ...fixture.storage.model, readModel: async () => ({ languageProfiles: state.profiles, latentConcepts: [], learnedProgramPatterns: [], learningGoals: [], trainingSteps: 0 }) } };
+    storage.languageMemory.putNgramModel = async () => { throw new Error("canonical V4 replay must not rewrite models"); };
+    const kernel = createScceKernel({ storage, clock, idFactory: createIdFactory({ clock, hasher, deterministicReplay: true }), deterministicReplay: true,
+      sourceInformationLabel: input.informationLabel, files: { streamPath: async function* () {} },
+      buildTest: { executeProgram: async () => { throw new Error("canonical source replay has no alternate producer"); } } });
+    const replay = await kernel.train({ config: { learningGoals: [], promotion: { minTrust: 0.45 } } });
+    expect(replay.promotedEvidence).toBeGreaterThan(0);
+    const promoted = recorded.events.filter(event => event.typeId === "LearningPromoted").at(-1);
+    expect(recordOf(recordOf(promoted?.payload).trainingLanguage).reusedModels).toBe(state.models.length);
+    expect(state).toEqual(completed);
+  });
   it("qualifies durable ordinary OSS observations across separate document training calls", async () => {
     const root = await tempDir("oss-durable-construction-pool-");
     const texts = [
@@ -2564,7 +2640,7 @@ function memoryStorage(): { storage: ScceStorage; state: MemoryState } {
       listNgramModels: async (query: Parameters<ScceStorage["languageMemory"]["listNgramModels"]>[0]) => state.models.filter(row => (!query?.sourceSystem || recordOf(row.modelJson).sourceSystem === query.sourceSystem) && (!query?.profileIds || query.profileIds.includes(String(recordOf(row.modelJson).profileId)))).slice(0, query?.limit ?? state.models.length),
       listNgramObservations: async () => state.observations,
       listLanguageUnits: async () => state.units,
-      listLanguagePatterns: async (query: Parameters<ScceStorage["languageMemory"]["listLanguagePatterns"]>[0]) => state.patterns.filter(row => (query?.patternKind ? row.patternKind === query.patternKind : row.patternKind !== "source_compilation") && (!query?.profileIds || query.profileIds.includes(row.profileId)) && (!query?.sourceSystem || recordOf(row.patternJson).sourceSystem === query.sourceSystem) && (!query?.patternSchemas || query.patternSchemas.includes(String(recordOf(row.patternJson).schema)))).slice(0, query?.limit ?? state.patterns.length),
+      listLanguagePatterns: async (query: Parameters<ScceStorage["languageMemory"]["listLanguagePatterns"]>[0]) => state.patterns.filter(row => (!query?.patternIds || query.patternIds.includes(row.id)) && (query?.patternKind ? row.patternKind === query.patternKind : row.patternKind !== "source_compilation") && (!query?.profileIds || query.profileIds.includes(row.profileId)) && (!query?.sourceSystem || recordOf(row.patternJson).sourceSystem === query.sourceSystem) && (!query?.patternSchemas || query.patternSchemas.includes(String(recordOf(row.patternJson).schema)))).slice(0, query?.limit ?? state.patterns.length),
       listSemanticFrames: async () => state.frames,
       listTranslationAlignments: async () => []
     },

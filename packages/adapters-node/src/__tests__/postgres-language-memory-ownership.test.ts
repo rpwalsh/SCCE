@@ -11,6 +11,19 @@ afterEach(async () => {
 });
 
 describe("Postgres language-memory ownership queries", () => {
+  it("filters exact compiler-owned receipt IDs before ranking or limiting historical rows", async () => {
+    const { adapter, calls } = fixture();
+    await adapter.languageMemory.listLanguagePatterns({ patternIds: ["receipt.current"], profileIds: ["profile.owned"],
+      sourceSystem: "gutenberg", patternKind: "source_compilation", patternSchemas: ["scce.source_language_compilation_receipt.v1"], limit: 1 });
+    const query = calls[0]!;
+    expect(query.sql).toContain("pattern.id=ANY($1::text[])");
+    expect(query.params[0]).toEqual(["receipt.current"]);
+    expect(query.sql.indexOf("pattern.id=ANY")).toBeLessThan(query.sql.indexOf("ranked_pool AS"));
+    expect(query.sql).toContain("pattern.information_label");
+    const count = calls.length;
+    expect(await adapter.languageMemory.listLanguagePatterns({ patternIds: [] })).toEqual([]);
+    expect(calls).toHaveLength(count);
+  });
   it("projects only generative join programs out of an explicitly requested interpretation read", async () => {
     const { adapter, calls } = fixture();
     await adapter.languageMemory.listLanguagePatterns({ view: "request_seed", profileIds: ["profile.owned"], sourceSystem: "wikipedia", limit: 8 });

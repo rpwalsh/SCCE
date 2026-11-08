@@ -1,14 +1,16 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { canonicalCorpusSourceSystemId } from "./corpus-registry.js";
-import { LANGUAGE_TRAINING_BATCH_RECIPE_ID } from "./language-training-recipe.js";
 import { canonicalStringify } from "./primitives.js";
 import type { Hasher, SourceId, SourceVersionId } from "./types.js";
+
+// Stream identity survives upgrades of derived construction compilers.
+const SOURCE_LANGUAGE_TRAINING_IDENTITY_RECIPE_ID = "kernel.language_training_batch.v3" as const;
 
 export function sourceLanguageTrainingStreamId(input: { sourceId: SourceId; sourceVersionId: SourceVersionId; sourceSystem: string; hasher: Hasher }): string {
   return `source.language.training.${input.hasher.digestHex(canonicalStringify({
     schema: "scce.source_language_training_identity.v1", sourceId: input.sourceId, sourceVersionId: input.sourceVersionId,
-    sourceSystem: canonicalCorpusSourceSystemId(input.sourceSystem), compilerRecipe: LANGUAGE_TRAINING_BATCH_RECIPE_ID
+    sourceSystem: canonicalCorpusSourceSystemId(input.sourceSystem), compilerRecipe: SOURCE_LANGUAGE_TRAINING_IDENTITY_RECIPE_ID
   }))}`;
 }
 

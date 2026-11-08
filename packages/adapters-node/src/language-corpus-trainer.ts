@@ -407,19 +407,23 @@ function corpusComponentRecipes(input: LanguageCorpusTrainingInput): Record<stri
   return components;
 }
 
-function checkpointReport(row: IngestionCheckpoint, binding: string, compilerRecipe: string, componentRecipes: Record<string, string>): LanguageCorpusTrainingReport | undefined {
-  if (row.status !== "complete") return undefined;
+function checkpointReport(row: IngestionCheckpoint, input: LanguageCorpusTrainingInput, binding: string): LanguageCorpusTrainingReport | undefined {
   const metadata = jsonRecord(row.metadata);
-  if (metadata.schema !== CORPUS_CHECKPOINT_SCHEMA || metadata.binding !== binding
-    || metadata.compilerRecipe !== compilerRecipe
-    || metadata.batchRecipe !== LANGUAGE_TRAINING_BATCH_RECIPE_ID) {
+  const batchRecipe = metadata.batchRecipe;
+  const expectedBinding = typeof batchRecipe === "string" && batchRecipe !== LANGUAGE_TRAINING_BATCH_RECIPE_ID
+    ? checkpointBinding(input, batchRecipe) : binding;
+  if (metadata.schema !== CORPUS_CHECKPOINT_SCHEMA || metadata.binding !== expectedBinding
+    || metadata.compilerRecipe !== languageCorpusTrainingRecipeId(input.sourceSystem)
+    || typeof batchRecipe !== "string" || !batchRecipe.trim()) {
     throw new CorpusCheckpointConflictError(`corpus checkpoint binding mismatch for ${row.itemUri}; refusing replay`);
   }
+  if (row.status !== "complete") return undefined;
   const report = metadata.report;
   if (!report || typeof report !== "object" || Array.isArray(report) || (report as Record<string, JsonValue>).schema !== "scce.languageCorpusTrainingReport.v1") {
     throw new CorpusCheckpointConflictError(`corpus checkpoint ${row.id} is complete but has no valid training report`);
   }
-  return canonicalStringify(metadata.componentRecipes ?? {}) === canonicalStringify(componentRecipes)
+  return batchRecipe === LANGUAGE_TRAINING_BATCH_RECIPE_ID
+    && canonicalStringify(metadata.componentRecipes ?? {}) === canonicalStringify(corpusComponentRecipes(input))
     ? report as unknown as LanguageCorpusTrainingReport : undefined;
 }
 
@@ -431,13 +435,7 @@ async function prepareCorpusCheckpoint(input: LanguageCorpusTrainingInput, bindi
     if (existing.rootUri !== input.corpusCheckpoint!.rootUri || existing.itemUri !== input.corpusCheckpoint!.itemUri) {
       throw new CorpusCheckpointConflictError(`corpus checkpoint identity mismatch for ${id}; refusing replay`);
     }
-    const metadata = jsonRecord(existing.metadata);
-    if (metadata.schema !== CORPUS_CHECKPOINT_SCHEMA || metadata.binding !== binding
-      || metadata.compilerRecipe !== languageCorpusTrainingRecipeId(input.sourceSystem)
-      || metadata.batchRecipe !== LANGUAGE_TRAINING_BATCH_RECIPE_ID) {
-      throw new CorpusCheckpointConflictError(`corpus checkpoint binding mismatch for ${existing.itemUri}; refusing replay`);
-    }
-    const report = checkpointReport(existing, binding, languageCorpusTrainingRecipeId(input.sourceSystem), corpusComponentRecipes(input));
+    const report = checkpointReport(existing, input, binding);
     if (report) return report;
   }
   await input.storage.ingestion.put(checkpointRecord(input, binding));
@@ -454,7 +452,7 @@ export async function readCompletedCorpusCheckpoint(input: LanguageCorpusTrainin
   if (!id) return undefined;
   const existing = await input.storage.ingestion.get(id);
   return existing?.status === "complete"
-    ? checkpointReport(existing, checkpointBinding(input), languageCorpusTrainingRecipeId(input.sourceSystem), corpusComponentRecipes(input))
+    ? checkpointReport(existing, input, checkpointBinding(input))
     : undefined;
 }
 
@@ -490,16 +488,16 @@ function needsConstructionContext(input: LanguageCorpusTrainingInput): boolean {
   return corpusRoleIdForSourceSystem(input.sourceSystem) !== CORPUS_ROLE_IDS.softwareSymbolic || Boolean(input.constructionSets?.length) || Boolean(input.graphSnapshotAdditions);
 }
 
-function checkpointBinding(input: LanguageCorpusTrainingInput): string {
+function checkpointBinding(input: LanguageCorpusTrainingInput, batchRecipe: string = LANGUAGE_TRAINING_BATCH_RECIPE_ID): string {
   const { acquisitionProvenance: _acquisition, ...material } = input;
   if (canonicalCorpusSourceSystemId(input.sourceSystem) === CORPUS_SOURCE_SYSTEM_IDS.ossCode) {
     const { codeFunctionConstructions: _derived, sourceOwnedTestContracts: _derivedContracts, sourceOwnedTestContractInputHash: _contractInputHash, ...sourceMetadata } = jsonRecord(input.corpusMetadata);
-    return trainingInputBinding({ ...material, corpusMetadata: sourceMetadata });
+    return trainingInputBinding({ ...material, corpusMetadata: sourceMetadata }, batchRecipe);
   }
-  return trainingInputBinding(material);
+  return trainingInputBinding(material, batchRecipe);
 }
 
-function trainingInputBinding(input: LanguageCorpusTrainingInput): string {
+function trainingInputBinding(input: LanguageCorpusTrainingInput, batchRecipe: string = LANGUAGE_TRAINING_BATCH_RECIPE_ID): string {
   // These service objects are used only in preparation; actual output IDs/times are captured in the payload.
   const { storage: _storage, clock: _clock, idFactory: _ids, creativeEventCompiler: _compiler, ...semantic } = input;
   // Bind the exact raw source without copying the bytes into checkpoint metadata. The transform and digest are
@@ -520,7 +518,7 @@ function trainingInputBinding(input: LanguageCorpusTrainingInput): string {
   };
   return createHasher().digestHex(canonicalStringify(toJsonValue({
     compilerRecipe: languageCorpusTrainingRecipeId(input.sourceSystem),
-    batchRecipe: LANGUAGE_TRAINING_BATCH_RECIPE_ID,
+    batchRecipe,
     ...(sourceEvidenceRecipeId(input) ? { sourceEvidenceRecipe: sourceEvidenceRecipeId(input) } : {}),
     input: semanticBinding
   })));

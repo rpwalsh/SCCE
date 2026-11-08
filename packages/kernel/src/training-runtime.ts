@@ -6,7 +6,7 @@ import { createIdFactory } from "./ids.js";
 import { createLanguageMemoryRuntime } from "./language-memory-runtime.js";
 import { sourceLanguageTrainingStreamId } from "./source-language-training-identity.js";
 import { LANGUAGE_CONSTRUCTION_PUBLICATION, publishCompiledLanguagePatterns } from "./language-pattern-publication.js";
-import { sourceCompilationChunkCount, validateSourceCompilationArtifactInventory, validateSourceCompilationReceipt, validateSourceLanguageCompilation } from "./source-language-compilation.js";
+import { sourceCompilationChunkCount, sourceCompilationModelReadLimit, sourceLanguageCompilationReceiptIdForModels, validateSourceCompilationArtifactInventory, validateSourceCompilationReceipt, validateSourceLanguageCompilation } from "./source-language-compilation.js";
 import {
   compileLanguageTrainingBatch,
   observeLanguageTrainingSegmentation
@@ -213,21 +213,27 @@ export function createTrainingRuntime(options: {
         if (Buffer.from(bytes).subarray(span.byteStart, span.byteEnd).toString("utf8") !== span.text) throw new Error(`training evidence ${span.id} does not bind its canonical source bytes`);
       }
       if (existingProfile) {
+        const current = await deps.storage.languageMemory.listNgramModels({ profileIds: [existingProfile.id], sourceSystem,
+          limit: sourceCompilationModelReadLimit(text.length) });
+        const receiptId = sourceLanguageCompilationReceiptIdForModels({ owner: { sourceId: source.sourceId, sourceVersionId, contentHash: source.contentHash },
+          profileId: existingProfile.id, sourceSystem, models: current, hasher });
         const receipts = await deps.storage.languageMemory.listLanguagePatterns({ profileIds: [existingProfile.id], sourceSystem,
-          patternKind: "source_compilation", patternSchemas: ["scce.source_language_compilation_receipt.v1"], limit: 2 });
-        if (receipts.length > 1) throw new Error("canonical source compilation has ambiguous receipts");
+          patternKind: "source_compilation", patternSchemas: ["scce.source_language_compilation_receipt.v1"],
+          patternIds: receiptId ? [receiptId] : [], limit: 1 });
         const receipt = receipts[0] ? jsonRecord(receipts[0].patternJson).compilation : undefined;
-        const current = receipt ? await deps.storage.languageMemory.listNgramModels({ profileIds: [existingProfile.id], sourceSystem,
-          limit: sourceCompilationChunkCount(receipt, bytes.byteLength) + 1 }) : await deps.storage.languageMemory.listNgramModels({ profileIds: [existingProfile.id], sourceSystem, limit: 1 });
         if (!receipt) {
           const existingArtifacts = await Promise.all([
             deps.storage.languageMemory.listLanguageUnits({ profileIds: [existingProfile.id], limit: 1 }),
             deps.storage.languageMemory.listLanguagePatterns({ profileIds: [existingProfile.id], limit: 1 }),
             deps.storage.languageMemory.listSemanticFrames({ profileIds: [existingProfile.id], limit: 1 })
           ]);
-          if (current.length || existingArtifacts.some(rows => rows.length)) throw new Error("canonical source compilation is missing its receipt");
+          if (!current.length && existingArtifacts.some(rows => rows.length)) throw new Error("canonical source compilation model inventory is incomplete");
+          if (current.length) throw new Error("canonical source compilation is missing its receipt");
         }
-        if (receipt) validateSourceCompilationReceipt(receipt, current, hasher);
+        if (receipt) {
+          sourceCompilationChunkCount(receipt, bytes.byteLength);
+          validateSourceCompilationReceipt(receipt, current, hasher);
+        }
         const reused = validateSourceLanguageCompilation({ owner: { sourceId: source.sourceId, sourceVersionId, contentHash: source.contentHash },
           profileId: existingProfile.id, sourceSystem, models: current, hasher });
         const requiresConstructionProjection = reused && jsonRecord(reused.options).languageOnly !== true

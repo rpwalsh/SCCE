@@ -652,7 +652,7 @@ function storageFixture(input: { evidence: EvidenceSpan[]; clockNow: () => numbe
       listNgramModels: async (query: Parameters<ScceStorage["languageMemory"]["listNgramModels"]>[0]) => learned.models.filter(row => (!query?.sourceSystem || (row.modelJson as { sourceSystem?: string }).sourceSystem === query.sourceSystem) && (!query?.profileIds?.length || query.profileIds.includes((row.modelJson as { profileId: string }).profileId))),
       listNgramObservations: async () => [],
       listLanguageUnits: async () => [],
-      listLanguagePatterns: async (query: Parameters<ScceStorage["languageMemory"]["listLanguagePatterns"]>[0]) => learned.patterns.filter(row => (query?.patternKind ? row.patternKind === query.patternKind : row.patternKind !== "source_compilation") && (!query?.profileIds || query.profileIds.includes(row.profileId)) && (!query?.patternSchemas || query.patternSchemas.includes(String((row.patternJson as { schema?: unknown }).schema)))).slice(0, query?.limit ?? learned.patterns.length),
+      listLanguagePatterns: async (query: Parameters<ScceStorage["languageMemory"]["listLanguagePatterns"]>[0]) => learned.patterns.filter(row => (!query?.patternIds || query.patternIds.includes(row.id)) && (query?.patternKind ? row.patternKind === query.patternKind : row.patternKind !== "source_compilation") && (!query?.profileIds || query.profileIds.includes(row.profileId)) && (!query?.patternSchemas || query.patternSchemas.includes(String((row.patternJson as { schema?: unknown }).schema)))).slice(0, query?.limit ?? learned.patterns.length),
       listSemanticFrames: async () => [],
       listTranslationAlignments: async () => []
     },
