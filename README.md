@@ -1,42 +1,79 @@
 # SCCE — Self-Contained Cognitive Engine
 
-SCCE is a local cognitive engine for material selected by its operator. It takes source material through ingestion and learning into persistent evidence, a cognitive graph, and language memory. At runtime it interprets requests, reasons over the available state, plans governed actions, realizes responses, and can learn from recorded outcomes.
+**Build a brain from your knowledge. Run it on your own machine. Keep what it learns.**
+
+SCCE turns documents, conversations, books, and source code into persistent cognitive structure. It learns language and program patterns, connects knowledge in a graph, and brings reasoning, planning, response composition, and local actions into one runtime.
+
+Your material becomes persistent memory the engine can work with. Add sources, ask questions, explore connections, work on a project, and carry the learned state into the next session.
+
+The engine runs on your CPU, with PostgreSQL holding durable memory. Local operation has no per-token inference bill and requires no external model API or GPU.
+
+## Your knowledge, working together
+
+| Bring to SCCE | Put it to work |
+|---|---|
+| Documents, reference material, and books | Ask about their contents, follow relationships, and inspect the supporting passages. |
+| Conversations and language examples | Build language memory and reusable structures for interpreting requests and composing responses. |
+| Source code, documentation, and examples | Inspect workspaces, propose source-derived repairs, and validate changes through compilers and configured tests. |
+| Corrections and recorded outcomes | Retain feedback and execution history alongside the knowledge that informed the work. |
+
+Use the browser workbench, command line, local HTTP API, or VS Code integration against the same PostgreSQL-backed brain.
+
+## How SCCE works
+
+SCCE learns and operates on an explicit cognitive structure. Ingestion preserves source identity and builds evidence, graph relationships, language profiles, and learned patterns. A request activates relevant knowledge; the runtime reasons over it, selects meaning or an action plan, and composes a response through the shared language system.
 
 ```mermaid
 flowchart LR
-  S[Operator-selected sources] --> I[Ingest and learn]
-  I --> P[(Persistent evidence, graph and language memory)]
-  Q[Request and context] --> R[Interpret, reason and plan]
-  P --> R
-  R --> A[Governed action or selected meaning]
-  A --> O[Observe outcome]
-  O --> L[Learn and update]
-  L --> P
-  A --> M[Realize response]
+  S[Documents, conversations, books, code] --> L[Ingest and learn]
+  L --> B[(Your persistent brain)]
+  Q[Request and context] --> R[Interpret, reason, and plan]
+  B --> R
+  R --> C[Compose a response]
+  R --> A[Execute an approved action]
+  A --> O[Record outcomes and corrections]
+  O --> B
 ```
 
-PostgreSQL is the canonical local store. Source identity and evidence spans are retained alongside learned structures. Language memory is learned from the selected source material; language coverage and output quality depend on the trained data and require separate evaluation. SCCE is not based on English-only hand-authored conversational rules.
+**Language and knowledge develop together.** A shared Unicode-based learning pipeline captures forms and structures from the material you provide. Language profiles, relationships, and program patterns remain connected to their sources.
 
-Evidence and proof are distinct. Source-backed factual claims require admissible evidence; proof or certification metadata is attached where the relevant operation produces it. Proof is not a blanket precondition for every conversational or creative response, and language memory does not establish factual truth.
+**Memory survives the session.** Sources, learned structures, conversation state, and recorded outcomes live in the local store. Restarting the runtime reopens that brain.
+
+**Reasoning follows relationships.** The runtime activates relevant graph neighborhoods and learned artifacts to connect a request with the knowledge and actions it needs.
+
+**Actions close the loop.** Planning, reviewed workspace changes, validation, and recorded outcomes connect the engine's decisions with what happened afterward.
+
+## Inspect the work when you need to
+
+The workbench lets you explore sources, evidence, traces, settings, and action approvals. For code changes, verification receipts show which compiler and project checks ran. Source links and proof metadata accompany the operations that produce them; conversation and creative composition use their own learned structures.
 
 ## Start locally
 
-[QUICKSTART.md](QUICKSTART.md) describes local setup, PostgreSQL configuration, a bounded first corpus, and running the local runtime. [Corpus training](docs/CORPUS_TRAINING.md) documents supported inputs, bounds, lifecycle behavior, and the detailed compilation pipeline. The CLI and server operate on the same local PostgreSQL-backed brain; source acquisition, ingestion, training, and turn processing are not hosted services.
+You need Node.js 24.18 or later within the 24.x line, pnpm, and PostgreSQL.
 
-Hosting is deferred. The current product path is local operation, with the operator choosing material and approving governed actions. No hosted per-turn compute or prebuilt giant brain is part of this release boundary.
+```sh
+pnpm install
+pnpm build
+```
 
-## Qualification status
+Follow the [quickstart](QUICKSTART.md) to configure your local database, teach the engine your first collection, and start the workbench at `http://127.0.0.1:3873/`.
 
-SCCE's architecture and available checks do not establish general commercial readiness. The useful user-built initial brain within an 8 GB whole-machine limit, restartable serving, multilingual quality, and learned-speech quality remain open qualification work. The [build plan](docs/INGESTION_BRAIN_BUILD_PLAN.md) defines the acceptance scope; the [recovery audit](docs/INGESTION_RECOVERY_AUDIT.md) records measured results and limits. The [acceptance suite](docs/ACCEPTANCE_SUITE.md), [ablation report](docs/ABLATION.md), and [evaluation index](docs/README.md#evidence-and-evaluation) link capability-specific evidence and its revision scope.
+- [User guide](docs/USER_GUIDE.md) — work with the brain, inspect answers, and manage local operations.
+- [Corpus training](docs/CORPUS_TRAINING.md) — bring in documents, books, conversations, and code.
+- [Workspace runtime](docs/WORKSPACE_RUNTIME.md) — inspect projects and use reviewed local actions.
+- [Code lane](docs/CODE_LANE.md) — learned repair, compiler integration, and project validation.
+- [Architecture](docs/ARCHITECTURE.md) — the cognitive pipeline, package boundaries, and persistence model.
+- [Engineering and evaluation](docs/README.md) — implementation references, reproducible checks, benchmarks, and development plans.
 
-## Repository
+## Explore the repository
 
-- `packages/kernel` — local reasoning, evidence admission, planning, realization, and learning
-- `packages/adapters-node` — PostgreSQL persistence and local source/runtime adapters
-- `packages/server` — local HTTP API and workbench runtime
-- `packages/ui` — browser workbench
-- `packages/cli` — command-line ingestion, training, and operations
-- `packages/vscode` — reviewed local workspace actions
-- `docs/` — operating contracts, architecture, qualification plans, and evidence indexes
+| Package | Responsibility |
+|---|---|
+| `packages/kernel` | Reasoning, learning, planning, language, and cognitive contracts |
+| `packages/adapters-node` | PostgreSQL persistence, ingestion, and local runtime adapters |
+| `packages/server` | Local HTTP API and workbench server |
+| `packages/ui` | Browser workbench |
+| `packages/cli` | Ingestion, training, inspection, and operations |
+| `packages/vscode` | Reviewed workspace integration |
 
-The source repository is available for inspection. Commercial use requires a separate agreement; see [COMMERCIAL.md](COMMERCIAL.md) and [LICENSE](LICENSE).
+[Commercial licensing](COMMERCIAL.md) · [Source terms](LICENSE) · [Security](SECURITY.md)
