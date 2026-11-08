@@ -5,6 +5,7 @@ import { createReadStream } from "node:fs";
 import { mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { canonicalStringify } from "@scce/kernel";
+import { readRemoteWikipediaSource, type RemoteWikipediaSource } from "./wikipedia-remote-source.js";
 
 const MANIFEST_SCHEMA_VERSION = 1 as const;
 const FILE_CACHE_SCHEMA_VERSION = 1 as const;
@@ -35,6 +36,7 @@ export interface WikipediaInputManifest {
   readonly inputs: {
     readonly dump: WikipediaInputSourceFile;
     readonly index?: WikipediaInputSourceFile;
+    readonly remoteDump?: RemoteWikipediaSource;
   };
   readonly semantics: {
     readonly normalizationIdentity: string;
@@ -97,6 +99,9 @@ export async function createWikipediaInputManifest(options: WikipediaInputManife
   await mkdir(cacheDir, { recursive: true });
   const dump = await resolveSourceFile(dumpPath, cacheDir, chunkSize, hashFile);
   const index = indexPath === undefined ? undefined : await resolveSourceFile(indexPath, cacheDir, chunkSize, hashFile);
+  const remote = await readRemoteWikipediaSource(dumpPath);
+  if (remote && dump.sha256 !== `sha256:${remote.descriptorSha256}`) throw new Error("Remote Wikipedia descriptor changed while its input identity was prepared");
+  if (remote && (!index || index.sha256 !== `sha256:${remote.source.indexSha256}`)) throw new Error("Remote Wikipedia index checksum differs from its pinned descriptor");
   const semantics = {
     normalizationIdentity: options.normalizationIdentity,
     compilerIdentity: options.compilerIdentity,
@@ -107,7 +112,8 @@ export async function createWikipediaInputManifest(options: WikipediaInputManife
     kind: "wikipedia-input-manifest" as const,
     inputs: {
       dump: { sha256: dump.sha256, byteLength: dump.byteLength },
-      ...(index === undefined ? {} : { index: { sha256: index.sha256, byteLength: index.byteLength } })
+      ...(index === undefined ? {} : { index: { sha256: index.sha256, byteLength: index.byteLength } }),
+      ...(remote === undefined ? {} : { remoteDump: remote.source })
     },
     semantics
   };
@@ -116,7 +122,7 @@ export async function createWikipediaInputManifest(options: WikipediaInputManife
     schemaVersion: MANIFEST_SCHEMA_VERSION,
     kind: "wikipedia-input-manifest",
     identity,
-    inputs: { dump, ...(index === undefined ? {} : { index }) },
+    inputs: { dump, ...(index === undefined ? {} : { index }), ...(remote === undefined ? {} : { remoteDump: remote.source }) },
     semantics
   });
 }
