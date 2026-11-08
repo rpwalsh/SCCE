@@ -166,6 +166,13 @@ export function compileJoinProgram(input: {
   hasher?: Hasher;
 }): JoinProgramModel {
   const hasher = input.hasher ?? createHasher();
+  // Join events own these coordinates; the cache ends with this compilation.
+  const coordinateKeys = new WeakMap<JoinEvidenceCoordinate, string>();
+  const coordinateKey: typeof evidenceCoordinateKey = coordinate => {
+    let key = coordinateKeys.get(coordinate);
+    if (key === undefined) { key = evidenceCoordinateKey(coordinate); coordinateKeys.set(coordinate, key); }
+    return key;
+  };
   const documents = [...input.documents].sort((left, right) =>
     left.documentId.localeCompare(right.documentId));
   const split = sourceFamilyDisjointSplit(documents, hasher);
@@ -178,13 +185,13 @@ export function compileJoinProgram(input: {
   let observations = 0;
   for (const document of split.training) {
     for (const event of joinEvents(document)) {
-      addCount(conditioned, event.conditionedKey, event.join, event.evidenceIds, event.evidenceCoordinates, event.weight);
-      addCount(exact, event.exactKey, event.join, event.evidenceIds, event.evidenceCoordinates, event.weight);
-      addCount(structural, event.structuralKey, event.join, event.evidenceIds, event.evidenceCoordinates, event.weight);
-      addCount(classes, event.classKey, event.join, event.evidenceIds, event.evidenceCoordinates, event.weight);
-      addCount(localShapes, event.localShapeKey, event.join, event.evidenceIds, event.evidenceCoordinates, event.weight);
+      addCount(conditioned, event.conditionedKey, event.join, event.evidenceIds, event.evidenceCoordinates, event.weight, coordinateKey);
+      addCount(exact, event.exactKey, event.join, event.evidenceIds, event.evidenceCoordinates, event.weight, coordinateKey);
+      addCount(structural, event.structuralKey, event.join, event.evidenceIds, event.evidenceCoordinates, event.weight, coordinateKey);
+      addCount(classes, event.classKey, event.join, event.evidenceIds, event.evidenceCoordinates, event.weight, coordinateKey);
+      addCount(localShapes, event.localShapeKey, event.join, event.evidenceIds, event.evidenceCoordinates, event.weight, coordinateKey);
       if (event.constructionKey) {
-        addCount(constructions, event.constructionKey, event.join, event.evidenceIds, event.evidenceCoordinates, event.weight);
+        addCount(constructions, event.constructionKey, event.join, event.evidenceIds, event.evidenceCoordinates, event.weight, coordinateKey);
       }
       observations += event.weight;
     }
@@ -1040,7 +1047,8 @@ function addCount(
   surface: string,
   evidenceIds: readonly string[],
   evidenceCoordinates: readonly JoinEvidenceCoordinate[],
-  weight: number
+  weight: number,
+  coordinateKey: typeof evidenceCoordinateKey
 ): void {
   const bucket = index.get(key) ?? new Map<string, JoinCount>();
   const row = bucket.get(surface) ?? {
@@ -1052,7 +1060,7 @@ function addCount(
   row.count += weight;
   for (const id of evidenceIds) row.evidenceIds.add(id);
   for (const coordinate of evidenceCoordinates) {
-    row.evidenceCoordinates.set(evidenceCoordinateKey(coordinate), coordinate);
+    row.evidenceCoordinates.set(coordinateKey(coordinate), coordinate);
   }
   bucket.set(surface, row);
   index.set(key, bucket);
@@ -1089,12 +1097,16 @@ function choices(rows: ReadonlyMap<string, JoinCount>): JoinProgramChoice[] {
       count: quantize(row.count),
       probability: quantize(total > 0 ? row.count / total : 0),
       evidenceIds: [...row.evidenceIds].sort(),
-      evidenceCoordinates: [...row.evidenceCoordinates.values()]
-        .sort(compareEvidenceCoordinates)
+      evidenceCoordinates: sortedEvidenceCoordinates(row.evidenceCoordinates)
     }))
     .sort((left, right) =>
       right.count - left.count
       || left.surface.localeCompare(right.surface));
+}
+
+function sortedEvidenceCoordinates(coordinates: ReadonlyMap<string, JoinEvidenceCoordinate>): JoinEvidenceCoordinate[] {
+  if (coordinates.size < 2) return [...coordinates.values()];
+  return [...coordinates].sort(([left], [right]) => left.localeCompare(right)).map(([, coordinate]) => coordinate);
 }
 
 function evidenceCoordinateKey(value: JoinEvidenceCoordinate): string {
