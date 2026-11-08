@@ -85,6 +85,60 @@ afterEach(async () => {
 });
 
 describe("learned rows carry the shard's provenance once", () => {
+  it("stores large unit source metadata once on the exact canonical owner without changing learned units", async () => {
+    const fixture = memoryStorage();
+    fixture.storage.evidence.sourceVersionsForEvidence = async ids => {
+      const versions = new Set(fixture.state.evidence.filter(span => ids.includes(span.id)).map(span => span.sourceVersionId));
+      return fixture.state.sourceVersions.filter(source => versions.has(source.sourceVersionId));
+    };
+    const sourceMetadata = { authorship: "test_authored", license: "owner_authorized", transcript: "owned transcript metadata ".repeat(800) };
+    const snapshot = JSON.parse(JSON.stringify(sourceMetadata)) as JsonValue;
+    const input = { storage: fixture.storage, sourceSystem: "dialogue", sourceUri: "fixture://unit-provenance/owned", streamUri: "dialogue:unit-provenance",
+      text: "alpha links beta. alpha links gamma. delta links beta. delta links gamma.", createdAt: 1700000000000,
+      corpusMetadata: { sourceMetadata }, informationLabel: publicCorpusInformationLabel, ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64,
+      skipNgramObservationPersistence: true };
+    const report = await trainLanguageCorpusText(input);
+    expect(fixture.state.units.length).toBeGreaterThan(0);
+    expect(Math.max(...fixture.state.units.map(unit => Buffer.byteLength(JSON.stringify(unit.metadata))))).toBeLessThan(2048);
+    const owner = fixture.state.sourceVersions.find(source => source.sourceVersionId === report.sourceVersionId)!;
+    expect(recordOf(owner.metadata).sourceMetadata).toEqual(snapshot);
+    expect(recordOf(owner.metadata).sourceMetadataBinding).toEqual({ schema: "scce.source_metadata_binding.v1", sourceVersionId: report.sourceVersionId,
+      valueHash: `sha256_${createHasher().digestHex(kernel.canonicalStringify(snapshot))}` });
+    for (const unit of fixture.state.units) {
+      expect(recordOf(unit.metadata)).not.toHaveProperty("sourceMetadata");
+      expect(recordOf(unit.metadata).sourceMetadataRef).toEqual({ schema: "scce.source_metadata_ref.v1", sourceVersionId: report.sourceVersionId,
+        valueHash: recordOf(recordOf(owner.metadata).sourceMetadataBinding).valueHash, sourceCompilationId: recordOf(unit.metadata).sourceCompilationId });
+    }
+    const borrowed = memoryStorage();
+    borrowed.storage.evidence.sourceVersionsForEvidence = async () => [owner];
+    await trainLanguageCorpusText({ ...input, storage: borrowed.storage, persistSource: false, evidence: fixture.state.evidence });
+    expect(borrowed.state.sourceVersions).toHaveLength(0);
+    expect(borrowed.state.units.every(unit => recordOf(unit.metadata).sourceMetadataRef === undefined && JSON.stringify(recordOf(unit.metadata).sourceMetadata) === JSON.stringify(snapshot))).toBe(true);
+    const material = (unit: LanguageUnitRecord) => {
+      const { sourceMetadata: _inline, sourceMetadataRef: _reference, ...metadata } = recordOf(unit.metadata);
+      return { ...unit, metadata };
+    };
+    expect(fixture.state.units.map(material)).toEqual(borrowed.state.units.map(material));
+    sourceMetadata.transcript = "mutated caller value";
+    expect(recordOf(owner.metadata).sourceMetadata).toEqual(snapshot);
+  });
+
+  it.each(["absent", "metadata_mismatch", "label_mismatch"])("retains inline unit provenance when the stored canonical owner is %s", async mismatch => {
+    const fixture = memoryStorage();
+    fixture.storage.evidence.sourceVersionsForEvidence = async () => mismatch === "absent" ? [] : fixture.state.sourceVersions.map(source => ({ ...source,
+      ...(mismatch === "metadata_mismatch" ? { metadata: { ...recordOf(source.metadata), sourceMetadata: { different: true } } } : {}),
+      ...(mismatch === "label_mismatch" ? { informationLabel: { ...publicCorpusInformationLabel, principals: ["different-owner"] } } : {}) }));
+    const sourceMetadata = { transcript: "exact source metadata ".repeat(800) };
+    await trainLanguageCorpusText({ storage: fixture.storage, sourceSystem: "dialogue", sourceUri: "fixture://unit-provenance/mismatch", streamUri: "dialogue:mismatch",
+      text: "alpha links beta. delta links gamma.", corpusMetadata: { sourceMetadata }, informationLabel: publicCorpusInformationLabel,
+      ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64, skipNgramObservationPersistence: true });
+    expect(fixture.state.units.length).toBeGreaterThan(0);
+    for (const unit of fixture.state.units) {
+      expect(recordOf(unit.metadata).sourceMetadata).toEqual(sourceMetadata);
+      expect(recordOf(unit.metadata)).not.toHaveProperty("sourceMetadataRef");
+    }
+  });
+
   it("upgrades a complete creative checkpoint missing its surface component without changing source ownership", async () => {
     const fixture = memoryStorage(), checkpoints = new Map<string, IngestionCheckpoint>();
     const putSpans = async (spans: readonly EvidenceSpan[]) => {

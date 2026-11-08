@@ -2,6 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { Pool, type PoolClient } from "pg";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { languageUnitMetadataMergeSql, SOURCE_METADATA_BINDING_SCHEMA } from "./unit-source-metadata.js";
 import { decodeDurableJoinPrograms, encodeDurableJoinPrograms } from "./durable-join-program-storage.js";
 import { DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID } from "./dialogue-conversational-checkpoint.js";
 import {
@@ -1086,7 +1087,16 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
           metadata_json=CASE WHEN stored.source_id=EXCLUDED.source_id AND stored.content_hash=EXCLUDED.content_hash
             AND EXCLUDED.metadata_json->>'identityRecipe'='scce.gutenberg.source_identity.v2'
             THEN stored.metadata_json || jsonb_build_object('title', EXCLUDED.metadata_json->'title', 'identity', EXCLUDED.metadata_json->'identity', 'identityRecipe', EXCLUDED.metadata_json->'identityRecipe')
-            ELSE stored.metadata_json END`, [source.sourceVersionId, source.sourceId, source.contentHash, source.mediaType, source.observedAt, source.byteLength, JSON.stringify(source.sourceTrust), JSON.stringify(sourceVersionStorageMetadata(source)), JSON.stringify(informationLabel)]);
+            ELSE stored.metadata_json END
+          || CASE WHEN stored.source_id=EXCLUDED.source_id AND stored.content_hash=EXCLUDED.content_hash
+            AND stored.information_label=EXCLUDED.information_label
+            AND stored.metadata_json ? 'sourceMetadata'
+            AND stored.metadata_json->'sourceMetadata'=EXCLUDED.metadata_json->'sourceMetadata'
+            AND EXCLUDED.metadata_json->'sourceMetadataBinding'->>'schema'='${SOURCE_METADATA_BINDING_SCHEMA}'
+            AND EXCLUDED.metadata_json->'sourceMetadataBinding'->>'sourceVersionId'=stored.id
+            AND (NOT (stored.metadata_json ? 'sourceMetadataBinding')
+              OR stored.metadata_json->'sourceMetadataBinding'=EXCLUDED.metadata_json->'sourceMetadataBinding')
+            THEN jsonb_build_object('sourceMetadataBinding', EXCLUDED.metadata_json->'sourceMetadataBinding') ELSE '{}'::jsonb END`, [source.sourceVersionId, source.sourceId, source.contentHash, source.mediaType, source.observedAt, source.byteLength, JSON.stringify(source.sourceTrust), JSON.stringify(sourceVersionStorageMetadata(source)), JSON.stringify(informationLabel)]);
       });
     },
     async putEvidenceVisual(input) {
@@ -4920,6 +4930,7 @@ async function putNgramModelsBatch(storage: PostgresStorageAdapter, models: read
 
 async function putLanguageUnitsBatch(storage: PostgresStorageAdapter, units: readonly LanguageUnitRecord[]): Promise<void> {
   if (!units.length) return;
+  const mergedMetadata = languageUnitMetadataMergeSql(storage.table("source_versions"));
   await storage.transaction(async () => {
     const labels = await joinDurableRecordLabels(storage, "language_units", units.map(unit => ({ id: unit.id, informationLabel: unit.informationLabel })));
     const payload = units.map(unit => ({
@@ -4966,9 +4977,9 @@ async function putLanguageUnitsBatch(storage: PostgresStorageAdapter, units: rea
        metadata_json jsonb,
        information_label jsonb
      )
-     ON CONFLICT(id) DO UPDATE SET alpha=GREATEST(lu.alpha,EXCLUDED.alpha), evidence_ids=(SELECT ARRAY(SELECT DISTINCT unnest(lu.evidence_ids || EXCLUDED.evidence_ids))), metadata_json=lu.metadata_json || EXCLUDED.metadata_json, information_label=EXCLUDED.information_label
+     ON CONFLICT(id) DO UPDATE SET alpha=GREATEST(lu.alpha,EXCLUDED.alpha), evidence_ids=(SELECT ARRAY(SELECT DISTINCT unnest(lu.evidence_ids || EXCLUDED.evidence_ids))), metadata_json=${mergedMetadata}, information_label=EXCLUDED.information_label
      WHERE lu.alpha IS DISTINCT FROM GREATEST(lu.alpha,EXCLUDED.alpha) OR NOT (lu.evidence_ids @> EXCLUDED.evidence_ids)
-       OR lu.metadata_json IS DISTINCT FROM (lu.metadata_json || EXCLUDED.metadata_json) OR lu.information_label IS DISTINCT FROM EXCLUDED.information_label`,
+       OR lu.metadata_json IS DISTINCT FROM (${mergedMetadata}) OR lu.information_label IS DISTINCT FROM EXCLUDED.information_label`,
         [payloadChunk]
       );
     }

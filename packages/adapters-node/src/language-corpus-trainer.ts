@@ -5,6 +5,7 @@ import {sourceOwnedAssertionPatterns} from "./source-owned-test-contracts.js";
 import { ingestStageTracer } from "./ingest-stage-trace-sink.js";
 import { blobContentHash } from "./postgres.js";
 import { prepareCorpusSourceGraphProjection, SOURCE_ENTITY_GRAPH_COMPONENT_RECIPE_ID } from "./corpus-source-graph-projection.js";
+import { sourceMetadataBoundOwner, unitSourceMetadataNormalizer } from "./unit-source-metadata.js";
 import { SOURCE_CODE_FUNCTION_COMPILER_RECIPE_ID } from "./source-code-function-learning.js";
 import {
   createClock,
@@ -1089,6 +1090,11 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
     patterns = stamped.patterns.map(row => ({ ...row, informationLabel }));
     frames = stamped.semanticFrames.map(row => ({ ...row, informationLabel }));
   }
+  if (source && units.length) {
+    const owner = sourceMetadataBoundOwner(source, hasher);
+    const normalize = unitSourceMetadataNormalizer(owner, hasher);
+    if (units.some(unit => normalize(unit) !== unit)) source = owner;
+  }
   const activeImportVersionValue = jsonRecord(input.corpusMetadata).activeImportVersion;
   const segmentation = constructionOnly ? undefined : prepareLanguageTrainingSegmentation({
     batch: { text, createdAt },
@@ -1272,8 +1278,19 @@ async function commitLanguageCorpusTrainingInternal(input: LanguageCorpusTrainin
   await input.storage.languageMemory.putNgramObservationsBatch(prepared.observations);
   if (input.storage.languageMemory.putNgramModels) await input.storage.languageMemory.putNgramModels(prepared.models);
   else for (const model of prepared.models) await input.storage.languageMemory.putNgramModel(model);
-  if (input.storage.languageMemory.putLanguageUnits) await input.storage.languageMemory.putLanguageUnits(prepared.units);
-  else for (const unit of prepared.units) await input.storage.languageMemory.putLanguageUnit(unit);
+  let units = prepared.units;
+  if (prepared.source && prepared.evidence.length && jsonRecord(prepared.source.metadata).sourceMetadataBinding) {
+    const owners = await input.storage.evidence.sourceVersionsForEvidence([prepared.evidence[0]!.id]);
+    const owner = owners.length === 1 ? owners[0] : undefined;
+    if (owner?.sourceVersionId === prepared.source.sourceVersionId && owner.sourceId === prepared.source.sourceId
+      && owner.contentHash === prepared.source.contentHash
+      && canonicalStringify(jsonRecord(owner.metadata).sourceMetadataBinding ?? null)
+        === canonicalStringify(jsonRecord(prepared.source.metadata).sourceMetadataBinding ?? null)) {
+      units = prepared.units.map(unitSourceMetadataNormalizer(owner, createHasher()));
+    }
+  }
+  if (input.storage.languageMemory.putLanguageUnits) await input.storage.languageMemory.putLanguageUnits(units);
+  else for (const unit of units) await input.storage.languageMemory.putLanguageUnit(unit);
   const componentRecipes = corpusComponentRecipes(input);
   const patternProjectionRecipe = componentRecipes.sourceCodeFunctions ?? componentRecipes.sourceConstructionProjection;
   const patternSchema = componentRecipes.sourceCodeFunctions ? SOURCE_CODE_FUNCTION_PATTERN_SCHEMA : LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA;
