@@ -575,6 +575,7 @@ export function schemaStatements(q: string, informationAccess?: InformationAcces
      ON CONFLICT(id) DO UPDATE SET model_json=EXCLUDED.model_json, updated_at=EXCLUDED.updated_at`,
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_${clean(q)}_brain_lifecycle_single_active ON ${q}.brain_import_lifecycle(state) WHERE state='ACTIVE'`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_brain_lifecycle_state_updated ON ${q}.brain_import_lifecycle(state,updated_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_source_versions_history ON ${q}.source_versions(source_id,observed_at DESC,id DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_edges_source_rank ON ${q}.graph_edges(source_node_id, alpha DESC, updated_at DESC, id)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_edges_target_rank ON ${q}.graph_edges(target_node_id, alpha DESC, updated_at DESC, id)`,
     `CREATE INDEX IF NOT EXISTS idx_${clean(q)}_edges_evidence ON ${q}.graph_edges USING GIN(evidence_ids)`,

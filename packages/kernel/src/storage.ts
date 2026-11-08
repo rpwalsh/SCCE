@@ -1351,7 +1351,7 @@ export interface KernelRuntimePorts {
 // independently bumped to 23 for its own new tables. Both are real,
 // distinct structural additions from the same base, so the merged
 // schema is one past the higher of the two, not either original value.
-export const POSTGRES_SCHEMA_VERSION = 28;
+export const POSTGRES_SCHEMA_VERSION = 29;
 
 export const POSTGRES_REQUIRED_TABLES = [
   "storage_meta",
