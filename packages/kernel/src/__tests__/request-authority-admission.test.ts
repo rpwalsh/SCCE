@@ -92,12 +92,8 @@ describe("requested-authority candidate admission", () => {
     }
   });
 
-  it("keeps every candidate kind eligible for translation, recording compatibility only in the audit", () => {
-    // There is no such thing as a "translation turn" that other candidate
-    // kinds are barred from -- admitCandidatesForAuthority no longer drops
-    // anything. The projected authority's compatibility is still computed
-    // and recorded for observability/judge-signal purposes, it just isn't
-    // a hard filter anymore.
+  it("retains translation hypotheses while carrying compatible IDs into final selection", () => {
+    // Incompatible hypotheses remain available for inspection and backtracking.
     const translated = candidate("translated", "translation", ["translated"]);
     const genericTransformation = candidate("generic", "transformation", ["learned_prior"]);
     const unlicensedTranslation = candidate("unlicensed", "translation", ["learned_prior"]);
@@ -126,10 +122,7 @@ describe("requested-authority candidate admission", () => {
     expect(admitted.surfaceMass).toEqual(mixed.surfaceMass);
     expect(JSON.stringify(admitted.audit)).toContain(`"compatibleCandidateIds":["${program.id}","${workspace.id}"]`);
 
-    // A generated candidate is never dropped just because it doesn't match
-    // the projected authority -- it can still win in the judge on its own
-    // merits. authorityUnavailable now means literally zero candidates
-    // were generated at all, not "zero candidates matched this authority."
+    // An unmatched field retains its existing fallback contract.
     const withoutProgramFamily = candidateField([proof]);
     const stillPresent = admitCandidatesForAuthority(withoutProgramFamily, "program");
     expect(stillPresent.candidates).toEqual([proof]);

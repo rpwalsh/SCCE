@@ -41,6 +41,13 @@ function candidateGuardTrace(candidateId: string, failures: readonly string[], b
   });
 }
 
+function authoritySelectionFailures(field: CandidateField, candidateId: string): string[] {
+  const admission = field.authorityAdmission;
+  if (!admission || !admission.compatibleCandidateIds.length) return [];
+  return admission.admittedCandidateIds.includes(candidateId) && admission.compatibleCandidateIds.includes(candidateId)
+    ? [] : ["authority_selection_mismatch"];
+}
+
 export interface JudgeOptions {
   /** Unit-interval entropy source. Inject a deterministic sequence in tests. */
   random?: () => number;
@@ -67,7 +74,8 @@ export function createJudge(options: JudgeOptions = {}) {
       if (input.requirementField) return selectForRequirementField({ ...input, requirementField: input.requirementField, random });
       const massByCandidate = new Map(input.field.surfaceMass.map(item => [item.candidateId, item.mass]));
       const scored = input.field.candidates.map(candidate => {
-        const functionalFailures = functionalCandidateGateFailures(candidate.kind, input.functionalGate);
+        const functionalFailures = [...functionalCandidateGateFailures(candidate.kind, input.functionalGate),
+          ...authoritySelectionFailures(input.field, candidate.id)];
         const reasons: string[] = functionalFailures.map(failure => `hard-failure:${failure}`);
         const score = functionalFailures.length
           ? -1_000_000 - functionalFailures.length
@@ -83,6 +91,7 @@ export function createJudge(options: JudgeOptions = {}) {
         guardTrace: scored.map(item => candidateGuardTrace(item.candidate.id, item.functionalFailures, "judge.select")),
         audit: toJsonValue({
           requestedAuthority: input.requestedAuthority ?? null,
+          authorityAdmission: input.field.authorityAdmission ?? null,
           selected: selected.candidate.id,
           functionalGate: input.functionalGate ?? null,
           scores: scored.map(item => ({ id: item.candidate.id, kind: item.candidate.kind, score: item.score, reasons: item.reasons }))
@@ -161,6 +170,7 @@ function selectForRequirementField(input: {
     const quality = normalizedQuality(candidate);
     const hardFailures = [
       ...candidateHardFailures(candidate, quality, input.requirementField, input.validation),
+      ...authoritySelectionFailures(input.field, candidate.id),
       ...functionalCandidateGateFailures(candidate.kind, input.functionalGate)
     ];
     const positive = POSITIVE_QUALITY_KEYS.reduce((sum, key) => sum + weights[key] * quality[key], 0);
@@ -233,6 +243,7 @@ function selectForRequirementField(input: {
       randomDraw: sampled.draw,
       selected: selected.candidate.id,
       requestedAuthority: input.requestedAuthority ?? null,
+      authorityAdmission: input.field.authorityAdmission ?? null,
       functionalGate: input.functionalGate ?? null,
       temperature,
       temperatureBounds: [0.08, 0.45],

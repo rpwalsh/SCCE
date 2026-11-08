@@ -1,0 +1,4057 @@
+{
+  "schema": "scce.captured_candidate_authority_selection.v1",
+  "traceId": "trace_mw73eqra_kzabhu",
+  "episodeId": "episode_00mw73f3t1_dcb5f562bcc8_04e138c4a0",
+  "captureNote": "Exact canonical score, quality, requirement, mass and admission records. Candidate answer surfaces were not recorded; empty strings preserve the no-degenerate-surface guard outcome shown by the captured judge rows.",
+  "requestedAuthority": "creative",
+  "requirementField": {
+    "trace": {
+      "schema": "scce.turn_requirement.field_trace.v1",
+      "request": {
+        "bytes": 62,
+        "characters": 62
+      },
+      "equation": "sigmoid(intercept + frame + pattern + phrase + dialogue + construct + context)",
+      "confidence": 0.5853798980116975,
+      "dimensions": {
+        "noveltyDemand": {
+          "logit": 0.09783367353497452,
+          "terms": [
+            {
+              "kind": "pattern",
+              "activation": 0.8447272727272728,
+              "coefficient": 1.6973999999999996,
+              "activationId": "request_requirement_dialogue_2c33957cc67144d91cf8b1455614dfd0183d8bed2926d36f00c4292169fd5814",
+              "contribution": 1.4338400727272724,
+              "sourceNormalization": 0.3333333333333333,
+              "occurrenceNormalization": 1
+            },
+            {
+              "kind": "pattern",
+              "activation": 0.5946117334682324,
+              "coefficient": 0.5970938775510205,
+              "activationId": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde",
+              "contribution": 0.1775195127869404,
+              "sourceNormalization": 0.3333333333333333,
+              "occurrenceNormalization": 0.5
+            },
+            {
+              "kind": "pattern",
+              "activation": 0.5946117334682324,
+              "coefficient": 0.5970938775510205,
+              "activationId": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde",
+              "contribution": 0.1775195127869404,
+              "sourceNormalization": 0.3333333333333333,
+              "occurrenceNormalization": 0.5
+            },
+            {
+              "kind": "pattern",
+              "activation": 0.526698609489327,
+              "coefficient": -0.5525843803695796,
+              "activationId": "request_requirement_dialogue_dd0774761d438669196b566360d5b4ad412d481c2c52e62a2e099b84e0472b21",
+              "contribution": -0.29104542476617895,
+              "sourceNormalization": 0.3333333333333333,
+              "occurrenceNormalization": 1
+            }
+          ],
+          "value": 0.5244389285395393,
+          "intercept": -1.4,
+          "contextContribution": 0,
+          "explicitContribution": 0,
+          "activationContribution": 1.4978336735349744,
+          "contributionByActivationKind": {
+            "frame": 0,
+            "pattern": 1.4978336735349744,
+            "construct": 0,
+            "phraseUnit": 0,
+            "dialogueMove": 0
+          }
+        },
+        "actionCommitment": {
+          "logit": -1.3269349427543915,
+          "terms": [
+            {
+              "kind": "pattern",
+              "activation": 0.8447272727272728,
+              "coefficient": 0.08279999999999998,
+              "activationId": "request_requirement_dialogue_2c33957cc67144d91cf8b1455614dfd0183d8bed2926d36f00c4292169fd5814",
+              "contribution": 0.06994341818181818,
+              "sourceNormalization": 0.3333333333333333,
+              "occurrenceNormalization": 1
+            },
+            {
+              "kind": "pattern",
+              "activation": 0.5946117334682324,
+              "coefficient": 0.029126530612244822,
+              "activationId": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde",
+              "contribution": 0.008659488428631214,
+              "sourceNormalization": 0.3333333333333333,
+              "occurrenceNormalization": 0.5
+            },
+            {
+              "kind": "pattern",
+              "activation": 0.5946117334682324,
+              "coefficient": 0.029126530612244822,
+              "activationId": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde",
+              "contribution": 0.008659488428631214,
+              "sourceNormalization": 0.3333333333333333,
+              "occurrenceNormalization": 0.5
+            },
+            {
+              "kind": "pattern",
+              "activation": 0.526698609489327,
+              "coefficient": -0.026955335627784325,
+              "activationId": "request_requirement_dialogue_dd0774761d438669196b566360d5b4ad412d481c2c52e62a2e099b84e0472b21",
+              "contribution": -0.014197337793472119,
+              "sourceNormalization": 0.3333333333333333,
+              "occurrenceNormalization": 1
+            }
+          ],
+          "value": 0.20966681358388872,
+          "intercept": -1.4,
+          "contextContribution": 0,
+          "explicitContribution": 0,
+          "activationContribution": 0.07306505724560847,
+          "contributionByActivationKind": {
+            "frame": 0,
+            "pattern": 0.07306505724560847,
+            "construct": 0,
+            "phraseUnit": 0,
+            "dialogueMove": 0
+          }
+        },
+        "inferentialDepth": {
+          "logit": -1.0346747137719574,
+          "terms": [
+            {
+              "kind": "pattern",
+              "activation": 0.8447272727272728,
+              "coefficient": 0.414,
+              "activationId": "request_requirement_dialogue_2c33957cc67144d91cf8b1455614dfd0183d8bed2926d36f00c4292169fd5814",
+              "contribution": 0.3497170909090909,
+              "sourceNormalization": 0.3333333333333333,
+              "occurrenceNormalization": 1
+            },
+            {
+              "kind": "pattern",
+              "activation": 0.5946117334682324,
+              "coefficient": 0.1456326530612245,
+              "activationId": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde",
+              "contribution": 0.04329744214315619,
+              "sourceNormalization": 0.3333333333333333,
+              "occurrenceNormalization": 0.5
+            },
+            {
+              "kind": "pattern",
+              "activation": 0.5946117334682324,
+              "coefficient": 0.1456326530612245,
+              "activationId": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde",
+              "contribution": 0.04329744214315619,
+              "sourceNormalization": 0.3333333333333333,
+              "occurrenceNormalization": 0.5
+            },
+            {
+              "kind": "pattern",
+              "activation": 0.526698609489327,
+              "coefficient": -0.13477667813892183,
+              "activationId": "request_requirement_dialogue_dd0774761d438669196b566360d5b4ad412d481c2c52e62a2e099b84e0472b21",
+              "contribution": -0.07098668896736071,
+              "sourceNormalization": 0.3333333333333333,
+              "occurrenceNormalization": 1
+            }
+          ],
+          "value": 0.26217881766137396,
+          "intercept": -1.4,
+          "contextContribution": 0,
+          "explicitContribution": 0,
+          "activationContribution": 0.36532528622804256,
+          "contributionByActivationKind": {
+            "frame": 0,
+            "pattern": 0.36532528622804256,
+            "construct": 0,
+            "phraseUnit": 0,
+            "dialogueMove": 0
+          }
+        },
+        "sourceDependence": {
+          "logit": -2.696904766109551,
+          "terms": [
+            {
+              "kind": "pattern",
+              "activation": 0.8447272727272728,
+              "coefficient": -1.4696999999999998,
+              "activationId": "request_requirement_dialogue_2c33957cc67144d91cf8b1455614dfd0183d8bed2926d36f00c4292169fd5814",
+              "contribution": -1.2414956727272726,
+              "sourceNormalization": 0.3333333333333333,
+              "occurrenceNormalization": 1
+            },
+            {
+              "kind": "pattern",
+              "activation": 0.5946117334682324,
+              "coefficient": -0.5169959183673469,
+              "activationId": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde",
+              "contribution": -0.15370591960820446,
+              "sourceNormalization": 0.3333333333333333,
+              "occurrenceNormalization": 0.5
+            },
+            {
+              "kind": "pattern",
+              "activation": 0.5946117334682324,
+              "coefficient": -0.5169959183673469,
+              "activationId": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde",
+              "contribution": -0.15370591960820446,
+              "sourceNormalization": 0.3333333333333333,
+              "occurrenceNormalization": 0.5
+            },
+            {
+              "kind": "pattern",
+              "activation": 0.526698609489327,
+              "coefficient": 0.47845720739317255,
+              "activationId": "request_requirement_dialogue_dd0774761d438669196b566360d5b4ad412d481c2c52e62a2e099b84e0472b21",
+              "contribution": 0.2520027458341305,
+              "sourceNormalization": 0.3333333333333333,
+              "occurrenceNormalization": 1
+            }
+          ],
+          "value": 0.06315624597759724,
+          "intercept": -1.4,
+          "contextContribution": 0,
+          "explicitContribution": 0,
+          "activationContribution": -1.296904766109551,
+          "contributionByActivationKind": {
+            "frame": 0,
+            "pattern": -1.296904766109551,
+            "construct": 0,
+            "phraseUnit": 0,
+            "dialogueMove": 0
+          }
+        },
+        "audienceAdaptation": {
+          "logit": -1.4,
+          "terms": [],
+          "value": 0.19781611144141825,
+          "intercept": -1.4,
+          "contextContribution": 0,
+          "explicitContribution": 0,
+          "activationContribution": 0,
+          "contributionByActivationKind": {
+            "frame": 0,
+            "pattern": 0,
+            "construct": 0,
+            "phraseUnit": 0,
+            "dialogueMove": 0
+          }
+        },
+        "dialogueDependence": {
+          "logit": 5.02310375258396,
+          "terms": [
+            {
+              "kind": "dialogue_move",
+              "activation": 1,
+              "coefficient": 6.2491037525839594,
+              "activationId": "actshape.cb0810e5",
+              "contribution": 6.2491037525839594,
+              "sourceNormalization": 1,
+              "occurrenceNormalization": 1
+            },
+            {
+              "kind": "dialogue_move",
+              "activation": 0.58,
+              "coefficient": 0.3,
+              "activationId": "intent.09f1dc42",
+              "contribution": 0.174,
+              "sourceNormalization": 1,
+              "occurrenceNormalization": 1
+            }
+          ],
+          "value": 0.9934590066195096,
+          "intercept": -1.4,
+          "contextContribution": 0,
+          "explicitContribution": 0,
+          "activationContribution": 6.42310375258396,
+          "contributionByActivationKind": {
+            "frame": 0,
+            "pattern": 0,
+            "construct": 0,
+            "phraseUnit": 0,
+            "dialogueMove": 6.42310375258396
+          }
+        },
+        "brevityDetailBalance": {
+          "logit": 0,
+          "terms": [],
+          "value": 0.5,
+          "intercept": 0,
+          "contextContribution": 0,
+          "explicitContribution": 0,
+          "activationContribution": 0,
+          "contributionByActivationKind": {
+            "frame": 0,
+            "pattern": 0,
+            "construct": 0,
+            "phraseUnit": 0,
+            "dialogueMove": 0
+          }
+        },
+        "counterfactualDemand": {
+          "logit": -1.2356036211973807,
+          "terms": [
+            {
+              "kind": "pattern",
+              "activation": 0.8447272727272728,
+              "coefficient": 0.18630000000000002,
+              "activationId": "request_requirement_dialogue_2c33957cc67144d91cf8b1455614dfd0183d8bed2926d36f00c4292169fd5814",
+              "contribution": 0.15737269090909092,
+              "sourceNormalization": 0.3333333333333333,
+              "occurrenceNormalization": 1
+            },
+            {
+              "kind": "pattern",
+              "activation": 0.5946117334682324,
+              "coefficient": 0.06553469387755102,
+              "activationId": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde",
+              "contribution": 0.019483848964420285,
+              "sourceNormalization": 0.3333333333333333,
+              "occurrenceNormalization": 0.5
+            },
+            {
+              "kind": "pattern",
+              "activation": 0.5946117334682324,
+              "coefficient": 0.06553469387755102,
+              "activationId": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde",
+              "contribution": 0.019483848964420285,
+              "sourceNormalization": 0.3333333333333333,
+              "occurrenceNormalization": 0.5
+            },
+            {
+              "kind": "pattern",
+              "activation": 0.526698609489327,
+              "coefficient": -0.060649505162514834,
+              "activationId": "request_requirement_dialogue_dd0774761d438669196b566360d5b4ad412d481c2c52e62a2e099b84e0472b21",
+              "contribution": -0.031944010035312324,
+              "sourceNormalization": 0.3333333333333333,
+              "occurrenceNormalization": 1
+            }
+          ],
+          "value": 0.22520216607588356,
+          "intercept": -1.4,
+          "contextContribution": 0,
+          "explicitContribution": 0,
+          "activationContribution": 0.16439637880261918,
+          "contributionByActivationKind": {
+            "frame": 0,
+            "pattern": 0.16439637880261918,
+            "construct": 0,
+            "phraseUnit": 0,
+            "dialogueMove": 0
+          }
+        },
+        "semanticPreservation": {
+          "logit": -1.4,
+          "terms": [],
+          "value": 0.19781611144141825,
+          "intercept": -1.4,
+          "contextContribution": 0,
+          "explicitContribution": 0,
+          "activationContribution": 0,
+          "contributionByActivationKind": {
+            "frame": 0,
+            "pattern": 0,
+            "construct": 0,
+            "phraseUnit": 0,
+            "dialogueMove": 0
+          }
+        },
+        "uncertaintyTolerance": {
+          "logit": 0.5845204579648681,
+          "terms": [
+            {
+              "kind": "pattern",
+              "activation": 0.8447272727272728,
+              "coefficient": 0.6624,
+              "activationId": "request_requirement_dialogue_2c33957cc67144d91cf8b1455614dfd0183d8bed2926d36f00c4292169fd5814",
+              "contribution": 0.5595473454545454,
+              "sourceNormalization": 0.3333333333333333,
+              "occurrenceNormalization": 1
+            },
+            {
+              "kind": "pattern",
+              "activation": 0.5946117334682324,
+              "coefficient": 0.23301224489795916,
+              "activationId": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde",
+              "contribution": 0.06927590742904989,
+              "sourceNormalization": 0.3333333333333333,
+              "occurrenceNormalization": 0.5
+            },
+            {
+              "kind": "pattern",
+              "activation": 0.5946117334682324,
+              "coefficient": 0.23301224489795916,
+              "activationId": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde",
+              "contribution": 0.06927590742904989,
+              "sourceNormalization": 0.3333333333333333,
+              "occurrenceNormalization": 0.5
+            },
+            {
+              "kind": "pattern",
+              "activation": 0.526698609489327,
+              "coefficient": -0.21564268502227496,
+              "activationId": "request_requirement_dialogue_dd0774761d438669196b566360d5b4ad412d481c2c52e62a2e099b84e0472b21",
+              "contribution": -0.11357870234777714,
+              "sourceNormalization": 0.3333333333333333,
+              "occurrenceNormalization": 1
+            }
+          ],
+          "value": 0.6421068990097145,
+          "intercept": 0,
+          "contextContribution": 0,
+          "explicitContribution": 0,
+          "activationContribution": 0.5845204579648681,
+          "contributionByActivationKind": {
+            "frame": 0,
+            "pattern": 0.5845204579648681,
+            "construct": 0,
+            "phraseUnit": 0,
+            "dialogueMove": 0
+          }
+        },
+        "causalReasoningDemand": {
+          "logit": -1.4,
+          "terms": [],
+          "value": 0.19781611144141825,
+          "intercept": -1.4,
+          "contextContribution": 0,
+          "explicitContribution": 0,
+          "activationContribution": 0,
+          "contributionByActivationKind": {
+            "frame": 0,
+            "pattern": 0,
+            "construct": 0,
+            "phraseUnit": 0,
+            "dialogueMove": 0
+          }
+        },
+        "surfaceTransformation": {
+          "logit": -1.4,
+          "terms": [],
+          "value": 0.19781611144141825,
+          "intercept": -1.4,
+          "contextContribution": 0,
+          "explicitContribution": 0,
+          "activationContribution": 0,
+          "contributionByActivationKind": {
+            "frame": 0,
+            "pattern": 0,
+            "construct": 0,
+            "phraseUnit": 0,
+            "dialogueMove": 0
+          }
+        },
+        "externalTruthAuthority": {
+          "logit": -2.9708987307805828,
+          "terms": [
+            {
+              "kind": "pattern",
+              "activation": 0.8447272727272728,
+              "coefficient": -1.7801999999999998,
+              "activationId": "request_requirement_dialogue_2c33957cc67144d91cf8b1455614dfd0183d8bed2926d36f00c4292169fd5814",
+              "contribution": -1.5037834909090908,
+              "sourceNormalization": 0.3333333333333333,
+              "occurrenceNormalization": 1
+            },
+            {
+              "kind": "pattern",
+              "activation": 0.5946117334682324,
+              "coefficient": -0.6262204081632652,
+              "activationId": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde",
+              "contribution": -0.18617900121557157,
+              "sourceNormalization": 0.3333333333333333,
+              "occurrenceNormalization": 0.5
+            },
+            {
+              "kind": "pattern",
+              "activation": 0.5946117334682324,
+              "coefficient": -0.6262204081632652,
+              "activationId": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde",
+              "contribution": -0.18617900121557157,
+              "sourceNormalization": 0.3333333333333333,
+              "occurrenceNormalization": 0.5
+            },
+            {
+              "kind": "pattern",
+              "activation": 0.526698609489327,
+              "coefficient": 0.5795397159973639,
+              "activationId": "request_requirement_dialogue_dd0774761d438669196b566360d5b4ad412d481c2c52e62a2e099b84e0472b21",
+              "contribution": 0.30524276255965105,
+              "sourceNormalization": 0.3333333333333333,
+              "occurrenceNormalization": 1
+            }
+          ],
+          "value": 0.048758022347526686,
+          "intercept": -1.4,
+          "contextContribution": 0,
+          "explicitContribution": 0,
+          "activationContribution": -1.5708987307805828,
+          "contributionByActivationKind": {
+            "frame": 0,
+            "pattern": -1.5708987307805828,
+            "construct": 0,
+            "phraseUnit": 0,
+            "dialogueMove": 0
+          }
+        },
+        "temporalReasoningDemand": {
+          "logit": -1.4,
+          "terms": [],
+          "value": 0.19781611144141825,
+          "intercept": -1.4,
+          "contextContribution": 0,
+          "explicitContribution": 0,
+          "activationContribution": 0,
+          "contributionByActivationKind": {
+            "frame": 0,
+            "pattern": 0,
+            "construct": 0,
+            "phraseUnit": 0,
+            "dialogueMove": 0
+          }
+        },
+        "executableArtifactDemand": {
+          "logit": -1.290402414131587,
+          "terms": [
+            {
+              "kind": "pattern",
+              "activation": 0.8447272727272728,
+              "coefficient": 0.1242,
+              "activationId": "request_requirement_dialogue_2c33957cc67144d91cf8b1455614dfd0183d8bed2926d36f00c4292169fd5814",
+              "contribution": 0.10491512727272728,
+              "sourceNormalization": 0.3333333333333333,
+              "occurrenceNormalization": 1
+            },
+            {
+              "kind": "pattern",
+              "activation": 0.5946117334682324,
+              "coefficient": 0.04368979591836739,
+              "activationId": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde",
+              "contribution": 0.01298923264294687,
+              "sourceNormalization": 0.3333333333333333,
+              "occurrenceNormalization": 0.5
+            },
+            {
+              "kind": "pattern",
+              "activation": 0.5946117334682324,
+              "coefficient": 0.04368979591836739,
+              "activationId": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde",
+              "contribution": 0.01298923264294687,
+              "sourceNormalization": 0.3333333333333333,
+              "occurrenceNormalization": 0.5
+            },
+            {
+              "kind": "pattern",
+              "activation": 0.526698609489327,
+              "coefficient": -0.04043300344167649,
+              "activationId": "request_requirement_dialogue_dd0774761d438669196b566360d5b4ad412d481c2c52e62a2e099b84e0472b21",
+              "contribution": -0.02129600669020818,
+              "sourceNormalization": 0.3333333333333333,
+              "occurrenceNormalization": 1
+            }
+          ],
+          "value": 0.21578470584411635,
+          "intercept": -1.4,
+          "contextContribution": 0,
+          "explicitContribution": 0,
+          "activationContribution": 0.10959758586841284,
+          "contributionByActivationKind": {
+            "frame": 0,
+            "pattern": 0.10959758586841284,
+            "construct": 0,
+            "phraseUnit": 0,
+            "dialogueMove": 0
+          }
+        },
+        "formatConstraintStrength": {
+          "logit": -1.4,
+          "terms": [],
+          "value": 0.19781611144141825,
+          "intercept": -1.4,
+          "contextContribution": 0,
+          "explicitContribution": 0,
+          "activationContribution": 0,
+          "contributionByActivationKind": {
+            "frame": 0,
+            "pattern": 0,
+            "construct": 0,
+            "phraseUnit": 0,
+            "dialogueMove": 0
+          }
+        }
+      },
+      "activations": [
+        {
+          "id": "actshape.cb0810e5",
+          "kind": "dialogue_move",
+          "span": {
+            "text": "Write a short scene about a sailor who befriends a clockmaker.",
+            "byteEnd": 62,
+            "charEnd": 62,
+            "byteStart": 0,
+            "charStart": 0
+          },
+          "activation": 1,
+          "confidence": 0.9980715410632593,
+          "requestSpanRole": null,
+          "learnedFrameOrPatternId": "actshape.cb0810e5"
+        },
+        {
+          "id": "request_requirement_dialogue_2c33957cc67144d91cf8b1455614dfd0183d8bed2926d36f00c4292169fd5814",
+          "kind": "pattern",
+          "span": {
+            "text": "Write a short",
+            "byteEnd": 13,
+            "charEnd": 13,
+            "byteStart": 0,
+            "charStart": 0
+          },
+          "activation": 0.8447272727272728,
+          "confidence": 0.8447272727272728,
+          "requestSpanRole": "control",
+          "learnedFrameOrPatternId": "request_requirement_dialogue_2c33957cc67144d91cf8b1455614dfd0183d8bed2926d36f00c4292169fd5814"
+        },
+        {
+          "id": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde",
+          "kind": "pattern",
+          "span": {
+            "text": "a",
+            "byteEnd": 27,
+            "charEnd": 27,
+            "byteStart": 26,
+            "charStart": 26
+          },
+          "activation": 0.5946117334682324,
+          "confidence": 0.903,
+          "requestSpanRole": "control",
+          "learnedFrameOrPatternId": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde"
+        },
+        {
+          "id": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde",
+          "kind": "pattern",
+          "span": {
+            "text": "a",
+            "byteEnd": 50,
+            "charEnd": 50,
+            "byteStart": 49,
+            "charStart": 49
+          },
+          "activation": 0.5946117334682324,
+          "confidence": 0.903,
+          "requestSpanRole": "control",
+          "learnedFrameOrPatternId": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde"
+        },
+        {
+          "id": "intent.09f1dc42",
+          "kind": "dialogue_move",
+          "span": {
+            "text": "Write a short scene about a sailor who befriends a clockmaker.",
+            "byteEnd": 62,
+            "charEnd": 62,
+            "byteStart": 0,
+            "charStart": 0
+          },
+          "activation": 0.58,
+          "confidence": 0.52,
+          "requestSpanRole": null,
+          "learnedFrameOrPatternId": "intent.09f1dc42"
+        },
+        {
+          "id": "request_requirement_dialogue_dd0774761d438669196b566360d5b4ad412d481c2c52e62a2e099b84e0472b21",
+          "kind": "pattern",
+          "span": {
+            "text": "who",
+            "byteEnd": 38,
+            "charEnd": 38,
+            "byteStart": 35,
+            "charStart": 35
+          },
+          "activation": 0.526698609489327,
+          "confidence": 0.8072451368084681,
+          "requestSpanRole": "control",
+          "learnedFrameOrPatternId": "request_requirement_dialogue_dd0774761d438669196b566360d5b4ad412d481c2c52e62a2e099b84e0472b21"
+        }
+      ],
+      "responseForm": null,
+      "coefficientModel": {
+        "id": "coeff.turn_requirement.bootstrap.v1",
+        "version": 1,
+        "reliability": "uncalibrated_bootstrap"
+      },
+      "confidenceReliability": "uncalibrated_bootstrap",
+      "requestPatternSelection": "maximal_source_context_then_anchor_then_support"
+    },
+    "confidence": 0.5853798980116975,
+    "noveltyDemand": 0.5244389285395393,
+    "activationsUsed": [
+      {
+        "id": "actshape.cb0810e5",
+        "kind": "dialogue_move",
+        "span": {
+          "charEnd": 62,
+          "charStart": 0
+        },
+        "trace": {
+          "source": "dialogue_communicative_act",
+          "actWeight": 0.9980715410632593,
+          "displacement": 6.2491037525839594,
+          "neutralWeight": 0.5
+        },
+        "status": "inferred",
+        "polarity": "required",
+        "activation": 1,
+        "confidence": 0.9980715410632593,
+        "semanticRoleId": "role.dialogue.communicative_act.v1",
+        "requirementTargets": {},
+        "dialogueReferenceId": "turn.6b634958",
+        "learnedFrameOrPatternId": "actshape.cb0810e5",
+        "requirementCoefficients": {
+          "dialogueDependence": 6.2491037525839594
+        },
+        "requirementTargetBounds": {}
+      },
+      {
+        "id": "request_requirement_dialogue_2c33957cc67144d91cf8b1455614dfd0183d8bed2926d36f00c4292169fd5814",
+        "kind": "pattern",
+        "span": {
+          "charEnd": 13,
+          "charStart": 0
+        },
+        "trace": {
+          "source": "language_pattern",
+          "profileId": "language_profile_11b8877888ad166b775fcef65875d68ec0fa5af07808ef4b",
+          "evidenceIds": [
+            "evidence_span.50a6ee52b694dfd8cbc8901c40a26c3b0baca0efc26c32c4",
+            "evidence_span.7d4aeed1791811f9bb8179f7c6da1018ff82f2181fedd8a8",
+            "evidence_span.f47f4dbceb1962f4b231e227782588146ca0a1d3e0427c04"
+          ],
+          "patternKind": "semantic_role",
+          "patternAnchor": "start",
+          "responseExtent": null,
+          "requestSpanRole": "control",
+          "sourceVersionId": "source_version_6a69b7cf375c1a664a803a68dc534b6851561cc5b74aa2054d2934b7"
+        },
+        "status": "inferred",
+        "polarity": "required",
+        "activation": 0.8447272727272728,
+        "confidence": 0.8447272727272728,
+        "semanticRoleId": "role.request.requirement.v1",
+        "requirementTargets": {},
+        "requirementSourceId": "source_version_6a69b7cf375c1a664a803a68dc534b6851561cc5b74aa2054d2934b7",
+        "learnedFrameOrPatternId": "request_requirement_dialogue_2c33957cc67144d91cf8b1455614dfd0183d8bed2926d36f00c4292169fd5814",
+        "requirementCoefficients": {
+          "noveltyDemand": 5.092199999999999,
+          "actionCommitment": 0.24839999999999995,
+          "inferentialDepth": 1.242,
+          "sourceDependence": -4.4091,
+          "counterfactualDemand": 0.5589000000000001,
+          "uncertaintyTolerance": 1.9872,
+          "externalTruthAuthority": -5.340599999999999,
+          "executableArtifactDemand": 0.37260000000000004
+        },
+        "requirementTargetBounds": {}
+      },
+      {
+        "id": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde",
+        "kind": "pattern",
+        "span": {
+          "charEnd": 27,
+          "charStart": 26
+        },
+        "trace": {
+          "source": "language_pattern",
+          "profileId": "language_profile_11b8877888ad166b775fcef65875d68ec0fa5af07808ef4b",
+          "evidenceIds": [
+            "evidence_span.50a6ee52b694dfd8cbc8901c40a26c3b0baca0efc26c32c4",
+            "evidence_span.7d4aeed1791811f9bb8179f7c6da1018ff82f2181fedd8a8",
+            "evidence_span.a8fdd5b1ed87387b9c405027799d62d78e118062f498dc12",
+            "evidence_span.559d0825965ee9d5466335f2f7b44eff15025af83f3d5d12",
+            "evidence_span.ddbce3931a29fb4445ca22c743c174e6b403d0c8cbe420ba",
+            "evidence_span.77d5f4da0063a95875a52da5708bf4a7f95c647a1271f6db",
+            "evidence_span.07787afb09f60ba4abf2df60e9da3ed517b40971213002fa",
+            "evidence_span.ffe39bdb76f53ed2b168401735cf65c57ac59ed7362e2b63",
+            "evidence_span.691b8e14a7bc4357858f885d743046bcfbe6a98853e2499f",
+            "evidence_span.f47f4dbceb1962f4b231e227782588146ca0a1d3e0427c04",
+            "evidence_span.585151f958aad58d54e7fc28adbbf6ec5409a1cb033102bd",
+            "evidence_span.a53c313e915bf3b80775c0663eb10efdcc59bae3e25d749d",
+            "evidence_span.1bb5f892a9ea9dc635cb981171455e4a4b7ff690a94c570f",
+            "evidence_span.246a5870ea80e347af79c91ab63c3434df2035af0932647e"
+          ],
+          "patternKind": "semantic_role",
+          "patternAnchor": "any",
+          "responseExtent": null,
+          "requestSpanRole": "control",
+          "sourceVersionId": "source_version_6a69b7cf375c1a664a803a68dc534b6851561cc5b74aa2054d2934b7"
+        },
+        "status": "inferred",
+        "polarity": "required",
+        "activation": 0.5946117334682324,
+        "confidence": 0.903,
+        "semanticRoleId": "role.request.requirement.v1",
+        "requirementTargets": {},
+        "requirementSourceId": "source_version_6a69b7cf375c1a664a803a68dc534b6851561cc5b74aa2054d2934b7",
+        "learnedFrameOrPatternId": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde",
+        "requirementCoefficients": {
+          "noveltyDemand": 1.7912816326530616,
+          "actionCommitment": 0.08737959183673447,
+          "inferentialDepth": 0.4368979591836735,
+          "sourceDependence": -1.5509877551020408,
+          "counterfactualDemand": 0.19660408163265308,
+          "uncertaintyTolerance": 0.6990367346938775,
+          "externalTruthAuthority": -1.8786612244897958,
+          "executableArtifactDemand": 0.13106938775510218
+        },
+        "requirementTargetBounds": {}
+      },
+      {
+        "id": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde",
+        "kind": "pattern",
+        "span": {
+          "charEnd": 50,
+          "charStart": 49
+        },
+        "trace": {
+          "source": "language_pattern",
+          "profileId": "language_profile_11b8877888ad166b775fcef65875d68ec0fa5af07808ef4b",
+          "evidenceIds": [
+            "evidence_span.50a6ee52b694dfd8cbc8901c40a26c3b0baca0efc26c32c4",
+            "evidence_span.7d4aeed1791811f9bb8179f7c6da1018ff82f2181fedd8a8",
+            "evidence_span.a8fdd5b1ed87387b9c405027799d62d78e118062f498dc12",
+            "evidence_span.559d0825965ee9d5466335f2f7b44eff15025af83f3d5d12",
+            "evidence_span.ddbce3931a29fb4445ca22c743c174e6b403d0c8cbe420ba",
+            "evidence_span.77d5f4da0063a95875a52da5708bf4a7f95c647a1271f6db",
+            "evidence_span.07787afb09f60ba4abf2df60e9da3ed517b40971213002fa",
+            "evidence_span.ffe39bdb76f53ed2b168401735cf65c57ac59ed7362e2b63",
+            "evidence_span.691b8e14a7bc4357858f885d743046bcfbe6a98853e2499f",
+            "evidence_span.f47f4dbceb1962f4b231e227782588146ca0a1d3e0427c04",
+            "evidence_span.585151f958aad58d54e7fc28adbbf6ec5409a1cb033102bd",
+            "evidence_span.a53c313e915bf3b80775c0663eb10efdcc59bae3e25d749d",
+            "evidence_span.1bb5f892a9ea9dc635cb981171455e4a4b7ff690a94c570f",
+            "evidence_span.246a5870ea80e347af79c91ab63c3434df2035af0932647e"
+          ],
+          "patternKind": "semantic_role",
+          "patternAnchor": "any",
+          "responseExtent": null,
+          "requestSpanRole": "control",
+          "sourceVersionId": "source_version_6a69b7cf375c1a664a803a68dc534b6851561cc5b74aa2054d2934b7"
+        },
+        "status": "inferred",
+        "polarity": "required",
+        "activation": 0.5946117334682324,
+        "confidence": 0.903,
+        "semanticRoleId": "role.request.requirement.v1",
+        "requirementTargets": {},
+        "requirementSourceId": "source_version_6a69b7cf375c1a664a803a68dc534b6851561cc5b74aa2054d2934b7",
+        "learnedFrameOrPatternId": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde",
+        "requirementCoefficients": {
+          "noveltyDemand": 1.7912816326530616,
+          "actionCommitment": 0.08737959183673447,
+          "inferentialDepth": 0.4368979591836735,
+          "sourceDependence": -1.5509877551020408,
+          "counterfactualDemand": 0.19660408163265308,
+          "uncertaintyTolerance": 0.6990367346938775,
+          "externalTruthAuthority": -1.8786612244897958,
+          "executableArtifactDemand": 0.13106938775510218
+        },
+        "requirementTargetBounds": {}
+      },
+      {
+        "id": "intent.09f1dc42",
+        "kind": "dialogue_move",
+        "span": {
+          "charEnd": 62,
+          "charStart": 0
+        },
+        "trace": {
+          "source": "dialogue_state",
+          "conversationId": "local-diagnostic:creative-sailor:095adfee-308e-4444-9915-c6e0ba727039",
+          "continuityLinkCount": 0
+        },
+        "status": "inferred",
+        "polarity": "required",
+        "activation": 0.58,
+        "confidence": 0.52,
+        "semanticRoleId": "role.dialogue.current.v1",
+        "requirementTargets": {},
+        "dialogueReferenceId": "turn.6b634958",
+        "learnedFrameOrPatternId": "intent.09f1dc42",
+        "requirementCoefficients": {
+          "dialogueDependence": 0.3
+        },
+        "requirementTargetBounds": {}
+      },
+      {
+        "id": "request_requirement_dialogue_dd0774761d438669196b566360d5b4ad412d481c2c52e62a2e099b84e0472b21",
+        "kind": "pattern",
+        "span": {
+          "charEnd": 38,
+          "charStart": 35
+        },
+        "trace": {
+          "source": "language_pattern",
+          "profileId": "language_profile_11b8877888ad166b775fcef65875d68ec0fa5af07808ef4b",
+          "evidenceIds": [
+            "evidence_span.50a6ee52b694dfd8cbc8901c40a26c3b0baca0efc26c32c4",
+            "evidence_span.7d4aeed1791811f9bb8179f7c6da1018ff82f2181fedd8a8",
+            "evidence_span.a8fdd5b1ed87387b9c405027799d62d78e118062f498dc12",
+            "evidence_span.559d0825965ee9d5466335f2f7b44eff15025af83f3d5d12",
+            "evidence_span.ddbce3931a29fb4445ca22c743c174e6b403d0c8cbe420ba",
+            "evidence_span.77d5f4da0063a95875a52da5708bf4a7f95c647a1271f6db",
+            "evidence_span.07787afb09f60ba4abf2df60e9da3ed517b40971213002fa",
+            "evidence_span.ffe39bdb76f53ed2b168401735cf65c57ac59ed7362e2b63",
+            "evidence_span.691b8e14a7bc4357858f885d743046bcfbe6a98853e2499f",
+            "evidence_span.f47f4dbceb1962f4b231e227782588146ca0a1d3e0427c04",
+            "evidence_span.585151f958aad58d54e7fc28adbbf6ec5409a1cb033102bd",
+            "evidence_span.a53c313e915bf3b80775c0663eb10efdcc59bae3e25d749d",
+            "evidence_span.1bb5f892a9ea9dc635cb981171455e4a4b7ff690a94c570f",
+            "evidence_span.246a5870ea80e347af79c91ab63c3434df2035af0932647e"
+          ],
+          "patternKind": "semantic_role",
+          "patternAnchor": "any",
+          "responseExtent": null,
+          "requestSpanRole": "control",
+          "sourceVersionId": "source_version_6a69b7cf375c1a664a803a68dc534b6851561cc5b74aa2054d2934b7"
+        },
+        "status": "inferred",
+        "polarity": "required",
+        "activation": 0.526698609489327,
+        "confidence": 0.8072451368084681,
+        "semanticRoleId": "role.request.requirement.v1",
+        "requirementTargets": {},
+        "requirementSourceId": "source_version_6a69b7cf375c1a664a803a68dc534b6851561cc5b74aa2054d2934b7",
+        "learnedFrameOrPatternId": "request_requirement_dialogue_dd0774761d438669196b566360d5b4ad412d481c2c52e62a2e099b84e0472b21",
+        "requirementCoefficients": {
+          "noveltyDemand": -1.6577531411087387,
+          "actionCommitment": -0.08086600688335298,
+          "inferentialDepth": -0.4043300344167655,
+          "sourceDependence": 1.4353716221795176,
+          "counterfactualDemand": -0.1819485154875445,
+          "uncertaintyTolerance": -0.6469280550668249,
+          "externalTruthAuthority": 1.7386191479920918,
+          "executableArtifactDemand": -0.12129901032502947
+        },
+        "requirementTargetBounds": {}
+      }
+    ],
+    "actionCommitment": 0.20966681358388872,
+    "inferentialDepth": 0.8608549217384832,
+    "requiredFeatures": [
+      {
+        "id": "requirement.1c30ef81",
+        "trace": {
+          "source": "learned_activation",
+          "activation": 1,
+          "contribution": 6.2491037525839594,
+          "activationKind": "dialogue_move",
+          "activationTrace": {
+            "source": "dialogue_communicative_act",
+            "actWeight": 0.9980715410632593,
+            "displacement": 6.2491037525839594,
+            "neutralWeight": 0.5
+          }
+        },
+        "value": 0.9922255192843431,
+        "origin": {
+          "requestSpan": {
+            "text": "Write a short scene about a sailor who befriends a clockmaker.",
+            "byteEnd": 62,
+            "charEnd": 62,
+            "byteStart": 0,
+            "charStart": 0
+          },
+          "semanticRoleId": "role.dialogue.communicative_act.v1",
+          "dialogueReferenceId": "turn.6b634958",
+          "learnedFrameOrPatternId": "actshape.cb0810e5"
+        },
+        "status": "inferred",
+        "dimension": "dialogueDependence",
+        "confidence": 0.9961430821265187,
+        "sourceActivationId": "actshape.cb0810e5"
+      },
+      {
+        "id": "requirement.7fcbd7fa",
+        "trace": {
+          "source": "learned_activation",
+          "activation": 0.8447272727272728,
+          "contribution": 1.4338400727272724,
+          "activationKind": "pattern",
+          "activationTrace": {
+            "source": "language_pattern",
+            "profileId": "language_profile_11b8877888ad166b775fcef65875d68ec0fa5af07808ef4b",
+            "evidenceIds": [
+              "evidence_span.50a6ee52b694dfd8cbc8901c40a26c3b0baca0efc26c32c4",
+              "evidence_span.7d4aeed1791811f9bb8179f7c6da1018ff82f2181fedd8a8",
+              "evidence_span.f47f4dbceb1962f4b231e227782588146ca0a1d3e0427c04"
+            ],
+            "patternKind": "semantic_role",
+            "patternAnchor": "start",
+            "responseExtent": null,
+            "requestSpanRole": "control",
+            "sourceVersionId": "source_version_6a69b7cf375c1a664a803a68dc534b6851561cc5b74aa2054d2934b7"
+          }
+        },
+        "value": 0.508459210941406,
+        "origin": {
+          "requestSpan": {
+            "text": "Write a short",
+            "byteEnd": 13,
+            "charEnd": 13,
+            "byteStart": 0,
+            "charStart": 0
+          },
+          "semanticRoleId": "role.request.requirement.v1",
+          "learnedFrameOrPatternId": "request_requirement_dialogue_2c33957cc67144d91cf8b1455614dfd0183d8bed2926d36f00c4292169fd5814"
+        },
+        "status": "inferred",
+        "dimension": "noveltyDemand",
+        "confidence": 0.6433512846044019,
+        "sourceActivationId": "request_requirement_dialogue_2c33957cc67144d91cf8b1455614dfd0183d8bed2926d36f00c4292169fd5814"
+      },
+      {
+        "id": "requirement.2fc65c95",
+        "trace": {
+          "source": "learned_activation",
+          "activation": 0.8447272727272728,
+          "contribution": 0.5595473454545454,
+          "activationKind": "pattern",
+          "activationTrace": {
+            "source": "language_pattern",
+            "profileId": "language_profile_11b8877888ad166b775fcef65875d68ec0fa5af07808ef4b",
+            "evidenceIds": [
+              "evidence_span.50a6ee52b694dfd8cbc8901c40a26c3b0baca0efc26c32c4",
+              "evidence_span.7d4aeed1791811f9bb8179f7c6da1018ff82f2181fedd8a8",
+              "evidence_span.f47f4dbceb1962f4b231e227782588146ca0a1d3e0427c04"
+            ],
+            "patternKind": "semantic_role",
+            "patternAnchor": "start",
+            "responseExtent": null,
+            "requestSpanRole": "control",
+            "sourceVersionId": "source_version_6a69b7cf375c1a664a803a68dc534b6851561cc5b74aa2054d2934b7"
+          }
+        },
+        "value": 0.6363477982863656,
+        "origin": {
+          "requestSpan": {
+            "text": "Write a short",
+            "byteEnd": 13,
+            "charEnd": 13,
+            "byteStart": 0,
+            "charStart": 0
+          },
+          "semanticRoleId": "role.request.requirement.v1",
+          "learnedFrameOrPatternId": "request_requirement_dialogue_2c33957cc67144d91cf8b1455614dfd0183d8bed2926d36f00c4292169fd5814"
+        },
+        "status": "inferred",
+        "dimension": "uncertaintyTolerance",
+        "confidence": 0.361992935620966,
+        "sourceActivationId": "request_requirement_dialogue_2c33957cc67144d91cf8b1455614dfd0183d8bed2926d36f00c4292169fd5814"
+      },
+      {
+        "id": "requirement.734c319c",
+        "trace": {
+          "source": "learned_activation",
+          "activation": 0.5946117334682324,
+          "contribution": 0.3550390255738808,
+          "activationKind": "pattern",
+          "activationTrace": {
+            "source": "language_pattern",
+            "profileId": "language_profile_11b8877888ad166b775fcef65875d68ec0fa5af07808ef4b",
+            "evidenceIds": [
+              "evidence_span.50a6ee52b694dfd8cbc8901c40a26c3b0baca0efc26c32c4",
+              "evidence_span.7d4aeed1791811f9bb8179f7c6da1018ff82f2181fedd8a8",
+              "evidence_span.a8fdd5b1ed87387b9c405027799d62d78e118062f498dc12",
+              "evidence_span.559d0825965ee9d5466335f2f7b44eff15025af83f3d5d12",
+              "evidence_span.ddbce3931a29fb4445ca22c743c174e6b403d0c8cbe420ba",
+              "evidence_span.77d5f4da0063a95875a52da5708bf4a7f95c647a1271f6db",
+              "evidence_span.07787afb09f60ba4abf2df60e9da3ed517b40971213002fa",
+              "evidence_span.ffe39bdb76f53ed2b168401735cf65c57ac59ed7362e2b63",
+              "evidence_span.691b8e14a7bc4357858f885d743046bcfbe6a98853e2499f",
+              "evidence_span.f47f4dbceb1962f4b231e227782588146ca0a1d3e0427c04",
+              "evidence_span.585151f958aad58d54e7fc28adbbf6ec5409a1cb033102bd",
+              "evidence_span.a53c313e915bf3b80775c0663eb10efdcc59bae3e25d749d",
+              "evidence_span.1bb5f892a9ea9dc635cb981171455e4a4b7ff690a94c570f",
+              "evidence_span.246a5870ea80e347af79c91ab63c3434df2035af0932647e"
+            ],
+            "patternKind": "semantic_role",
+            "patternAnchor": "any",
+            "responseExtent": null,
+            "requestSpanRole": "control",
+            "sourceVersionId": "source_version_6a69b7cf375c1a664a803a68dc534b6851561cc5b74aa2054d2934b7"
+          }
+        },
+        "value": 0.26019390541124576,
+        "origin": {
+          "requestSpan": {
+            "text": "a",
+            "byteEnd": 27,
+            "charEnd": 27,
+            "byteStart": 26,
+            "charStart": 26
+          },
+          "semanticRoleId": "role.request.requirement.v1",
+          "learnedFrameOrPatternId": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde"
+        },
+        "status": "inferred",
+        "dimension": "noveltyDemand",
+        "confidence": 0.2698650897180139,
+        "sourceActivationId": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde"
+      },
+      {
+        "id": "requirement.a813afb7",
+        "trace": {
+          "source": "learned_activation",
+          "activation": 0.5946117334682324,
+          "contribution": 0.3550390255738808,
+          "activationKind": "pattern",
+          "activationTrace": {
+            "source": "language_pattern",
+            "profileId": "language_profile_11b8877888ad166b775fcef65875d68ec0fa5af07808ef4b",
+            "evidenceIds": [
+              "evidence_span.50a6ee52b694dfd8cbc8901c40a26c3b0baca0efc26c32c4",
+              "evidence_span.7d4aeed1791811f9bb8179f7c6da1018ff82f2181fedd8a8",
+              "evidence_span.a8fdd5b1ed87387b9c405027799d62d78e118062f498dc12",
+              "evidence_span.559d0825965ee9d5466335f2f7b44eff15025af83f3d5d12",
+              "evidence_span.ddbce3931a29fb4445ca22c743c174e6b403d0c8cbe420ba",
+              "evidence_span.77d5f4da0063a95875a52da5708bf4a7f95c647a1271f6db",
+              "evidence_span.07787afb09f60ba4abf2df60e9da3ed517b40971213002fa",
+              "evidence_span.ffe39bdb76f53ed2b168401735cf65c57ac59ed7362e2b63",
+              "evidence_span.691b8e14a7bc4357858f885d743046bcfbe6a98853e2499f",
+              "evidence_span.f47f4dbceb1962f4b231e227782588146ca0a1d3e0427c04",
+              "evidence_span.585151f958aad58d54e7fc28adbbf6ec5409a1cb033102bd",
+              "evidence_span.a53c313e915bf3b80775c0663eb10efdcc59bae3e25d749d",
+              "evidence_span.1bb5f892a9ea9dc635cb981171455e4a4b7ff690a94c570f",
+              "evidence_span.246a5870ea80e347af79c91ab63c3434df2035af0932647e"
+            ],
+            "patternKind": "semantic_role",
+            "patternAnchor": "any",
+            "responseExtent": null,
+            "requestSpanRole": "control",
+            "sourceVersionId": "source_version_6a69b7cf375c1a664a803a68dc534b6851561cc5b74aa2054d2934b7"
+          }
+        },
+        "value": 0.26019390541124576,
+        "origin": {
+          "requestSpan": {
+            "text": "a",
+            "byteEnd": 50,
+            "charEnd": 50,
+            "byteStart": 49,
+            "charStart": 49
+          },
+          "semanticRoleId": "role.request.requirement.v1",
+          "learnedFrameOrPatternId": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde"
+        },
+        "status": "inferred",
+        "dimension": "noveltyDemand",
+        "confidence": 0.2698650897180139,
+        "sourceActivationId": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde"
+      },
+      {
+        "id": "requirement.32f2d8e6",
+        "trace": {
+          "source": "learned_activation",
+          "activation": 0.8447272727272728,
+          "contribution": 0.3497170909090909,
+          "activationKind": "pattern",
+          "activationTrace": {
+            "source": "language_pattern",
+            "profileId": "language_profile_11b8877888ad166b775fcef65875d68ec0fa5af07808ef4b",
+            "evidenceIds": [
+              "evidence_span.50a6ee52b694dfd8cbc8901c40a26c3b0baca0efc26c32c4",
+              "evidence_span.7d4aeed1791811f9bb8179f7c6da1018ff82f2181fedd8a8",
+              "evidence_span.f47f4dbceb1962f4b231e227782588146ca0a1d3e0427c04"
+            ],
+            "patternKind": "semantic_role",
+            "patternAnchor": "start",
+            "responseExtent": null,
+            "requestSpanRole": "control",
+            "sourceVersionId": "source_version_6a69b7cf375c1a664a803a68dc534b6851561cc5b74aa2054d2934b7"
+          }
+        },
+        "value": 0.25917077820780204,
+        "origin": {
+          "requestSpan": {
+            "text": "Write a short",
+            "byteEnd": 13,
+            "charEnd": 13,
+            "byteStart": 0,
+            "charStart": 0
+          },
+          "semanticRoleId": "role.request.requirement.v1",
+          "learnedFrameOrPatternId": "request_requirement_dialogue_2c33957cc67144d91cf8b1455614dfd0183d8bed2926d36f00c4292169fd5814"
+        },
+        "status": "inferred",
+        "dimension": "inferentialDepth",
+        "confidence": 0.24928959366975775,
+        "sourceActivationId": "request_requirement_dialogue_2c33957cc67144d91cf8b1455614dfd0183d8bed2926d36f00c4292169fd5814"
+      },
+      {
+        "id": "requirement.fa902949",
+        "trace": {
+          "source": "learned_activation",
+          "activation": 0.526698609489327,
+          "contribution": 0.30524276255965105,
+          "activationKind": "pattern",
+          "activationTrace": {
+            "source": "language_pattern",
+            "profileId": "language_profile_11b8877888ad166b775fcef65875d68ec0fa5af07808ef4b",
+            "evidenceIds": [
+              "evidence_span.50a6ee52b694dfd8cbc8901c40a26c3b0baca0efc26c32c4",
+              "evidence_span.7d4aeed1791811f9bb8179f7c6da1018ff82f2181fedd8a8",
+              "evidence_span.a8fdd5b1ed87387b9c405027799d62d78e118062f498dc12",
+              "evidence_span.559d0825965ee9d5466335f2f7b44eff15025af83f3d5d12",
+              "evidence_span.ddbce3931a29fb4445ca22c743c174e6b403d0c8cbe420ba",
+              "evidence_span.77d5f4da0063a95875a52da5708bf4a7f95c647a1271f6db",
+              "evidence_span.07787afb09f60ba4abf2df60e9da3ed517b40971213002fa",
+              "evidence_span.ffe39bdb76f53ed2b168401735cf65c57ac59ed7362e2b63",
+              "evidence_span.691b8e14a7bc4357858f885d743046bcfbe6a98853e2499f",
+              "evidence_span.f47f4dbceb1962f4b231e227782588146ca0a1d3e0427c04",
+              "evidence_span.585151f958aad58d54e7fc28adbbf6ec5409a1cb033102bd",
+              "evidence_span.a53c313e915bf3b80775c0663eb10efdcc59bae3e25d749d",
+              "evidence_span.1bb5f892a9ea9dc635cb981171455e4a4b7ff690a94c570f",
+              "evidence_span.246a5870ea80e347af79c91ab63c3434df2035af0932647e"
+            ],
+            "patternKind": "semantic_role",
+            "patternAnchor": "any",
+            "responseExtent": null,
+            "requestSpanRole": "control",
+            "sourceVersionId": "source_version_6a69b7cf375c1a664a803a68dc534b6851561cc5b74aa2054d2934b7"
+          }
+        },
+        "value": 0.2507235185093921,
+        "origin": {
+          "requestSpan": {
+            "text": "who",
+            "byteEnd": 38,
+            "charEnd": 38,
+            "byteStart": 35,
+            "charStart": 35
+          },
+          "semanticRoleId": "role.request.requirement.v1",
+          "learnedFrameOrPatternId": "request_requirement_dialogue_dd0774761d438669196b566360d5b4ad412d481c2c52e62a2e099b84e0472b21"
+        },
+        "status": "inferred",
+        "dimension": "externalTruthAuthority",
+        "confidence": 0.21235031332413454,
+        "sourceActivationId": "request_requirement_dialogue_dd0774761d438669196b566360d5b4ad412d481c2c52e62a2e099b84e0472b21"
+      },
+      {
+        "id": "requirement.74b6d9fc",
+        "trace": {
+          "source": "learned_activation",
+          "activation": 0.526698609489327,
+          "contribution": 0.2520027458341305,
+          "activationKind": "pattern",
+          "activationTrace": {
+            "source": "language_pattern",
+            "profileId": "language_profile_11b8877888ad166b775fcef65875d68ec0fa5af07808ef4b",
+            "evidenceIds": [
+              "evidence_span.50a6ee52b694dfd8cbc8901c40a26c3b0baca0efc26c32c4",
+              "evidence_span.7d4aeed1791811f9bb8179f7c6da1018ff82f2181fedd8a8",
+              "evidence_span.a8fdd5b1ed87387b9c405027799d62d78e118062f498dc12",
+              "evidence_span.559d0825965ee9d5466335f2f7b44eff15025af83f3d5d12",
+              "evidence_span.ddbce3931a29fb4445ca22c743c174e6b403d0c8cbe420ba",
+              "evidence_span.77d5f4da0063a95875a52da5708bf4a7f95c647a1271f6db",
+              "evidence_span.07787afb09f60ba4abf2df60e9da3ed517b40971213002fa",
+              "evidence_span.ffe39bdb76f53ed2b168401735cf65c57ac59ed7362e2b63",
+              "evidence_span.691b8e14a7bc4357858f885d743046bcfbe6a98853e2499f",
+              "evidence_span.f47f4dbceb1962f4b231e227782588146ca0a1d3e0427c04",
+              "evidence_span.585151f958aad58d54e7fc28adbbf6ec5409a1cb033102bd",
+              "evidence_span.a53c313e915bf3b80775c0663eb10efdcc59bae3e25d749d",
+              "evidence_span.1bb5f892a9ea9dc635cb981171455e4a4b7ff690a94c570f",
+              "evidence_span.246a5870ea80e347af79c91ab63c3434df2035af0932647e"
+            ],
+            "patternKind": "semantic_role",
+            "patternAnchor": "any",
+            "responseExtent": null,
+            "requestSpanRole": "control",
+            "sourceVersionId": "source_version_6a69b7cf375c1a664a803a68dc534b6851561cc5b74aa2054d2934b7"
+          }
+        },
+        "value": 0.24085508285703267,
+        "origin": {
+          "requestSpan": {
+            "text": "who",
+            "byteEnd": 38,
+            "charEnd": 38,
+            "byteStart": 35,
+            "charStart": 35
+          },
+          "semanticRoleId": "role.request.requirement.v1",
+          "learnedFrameOrPatternId": "request_requirement_dialogue_dd0774761d438669196b566360d5b4ad412d481c2c52e62a2e099b84e0472b21"
+        },
+        "status": "inferred",
+        "dimension": "sourceDependence",
+        "confidence": 0.17981982470054136,
+        "sourceActivationId": "request_requirement_dialogue_dd0774761d438669196b566360d5b4ad412d481c2c52e62a2e099b84e0472b21"
+      },
+      {
+        "id": "requirement.c6b561a1",
+        "trace": {
+          "source": "learned_activation",
+          "activation": 0.8447272727272728,
+          "contribution": 0.15737269090909092,
+          "activationKind": "pattern",
+          "activationTrace": {
+            "source": "language_pattern",
+            "profileId": "language_profile_11b8877888ad166b775fcef65875d68ec0fa5af07808ef4b",
+            "evidenceIds": [
+              "evidence_span.50a6ee52b694dfd8cbc8901c40a26c3b0baca0efc26c32c4",
+              "evidence_span.7d4aeed1791811f9bb8179f7c6da1018ff82f2181fedd8a8",
+              "evidence_span.f47f4dbceb1962f4b231e227782588146ca0a1d3e0427c04"
+            ],
+            "patternKind": "semantic_role",
+            "patternAnchor": "start",
+            "responseExtent": null,
+            "requestSpanRole": "control",
+            "sourceVersionId": "source_version_6a69b7cf375c1a664a803a68dc534b6851561cc5b74aa2054d2934b7"
+          }
+        },
+        "value": 0.22397899567582205,
+        "origin": {
+          "requestSpan": {
+            "text": "Write a short",
+            "byteEnd": 13,
+            "charEnd": 13,
+            "byteStart": 0,
+            "charStart": 0
+          },
+          "semanticRoleId": "role.request.requirement.v1",
+          "learnedFrameOrPatternId": "request_requirement_dialogue_2c33957cc67144d91cf8b1455614dfd0183d8bed2926d36f00c4292169fd5814"
+        },
+        "status": "inferred",
+        "dimension": "counterfactualDemand",
+        "confidence": 0.12300447378866668,
+        "sourceActivationId": "request_requirement_dialogue_2c33957cc67144d91cf8b1455614dfd0183d8bed2926d36f00c4292169fd5814"
+      },
+      {
+        "id": "requirement.055729c3",
+        "trace": {
+          "source": "learned_activation",
+          "activation": 0.5946117334682324,
+          "contribution": 0.13855181485809978,
+          "activationKind": "pattern",
+          "activationTrace": {
+            "source": "language_pattern",
+            "profileId": "language_profile_11b8877888ad166b775fcef65875d68ec0fa5af07808ef4b",
+            "evidenceIds": [
+              "evidence_span.50a6ee52b694dfd8cbc8901c40a26c3b0baca0efc26c32c4",
+              "evidence_span.7d4aeed1791811f9bb8179f7c6da1018ff82f2181fedd8a8",
+              "evidence_span.a8fdd5b1ed87387b9c405027799d62d78e118062f498dc12",
+              "evidence_span.559d0825965ee9d5466335f2f7b44eff15025af83f3d5d12",
+              "evidence_span.ddbce3931a29fb4445ca22c743c174e6b403d0c8cbe420ba",
+              "evidence_span.77d5f4da0063a95875a52da5708bf4a7f95c647a1271f6db",
+              "evidence_span.07787afb09f60ba4abf2df60e9da3ed517b40971213002fa",
+              "evidence_span.ffe39bdb76f53ed2b168401735cf65c57ac59ed7362e2b63",
+              "evidence_span.691b8e14a7bc4357858f885d743046bcfbe6a98853e2499f",
+              "evidence_span.f47f4dbceb1962f4b231e227782588146ca0a1d3e0427c04",
+              "evidence_span.585151f958aad58d54e7fc28adbbf6ec5409a1cb033102bd",
+              "evidence_span.a53c313e915bf3b80775c0663eb10efdcc59bae3e25d749d",
+              "evidence_span.1bb5f892a9ea9dc635cb981171455e4a4b7ff690a94c570f",
+              "evidence_span.246a5870ea80e347af79c91ab63c3434df2035af0932647e"
+            ],
+            "patternKind": "semantic_role",
+            "patternAnchor": "any",
+            "responseExtent": null,
+            "requestSpanRole": "control",
+            "sourceVersionId": "source_version_6a69b7cf375c1a664a803a68dc534b6851561cc5b74aa2054d2934b7"
+          }
+        },
+        "value": 0.5345826489510266,
+        "origin": {
+          "requestSpan": {
+            "text": "a",
+            "byteEnd": 27,
+            "charEnd": 27,
+            "byteStart": 26,
+            "charStart": 26
+          },
+          "semanticRoleId": "role.request.requirement.v1",
+          "learnedFrameOrPatternId": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde"
+        },
+        "status": "inferred",
+        "dimension": "uncertaintyTolerance",
+        "confidence": 0.11683182035202132,
+        "sourceActivationId": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde"
+      },
+      {
+        "id": "requirement.6bbcc580",
+        "trace": {
+          "source": "learned_activation",
+          "activation": 0.5946117334682324,
+          "contribution": 0.13855181485809978,
+          "activationKind": "pattern",
+          "activationTrace": {
+            "source": "language_pattern",
+            "profileId": "language_profile_11b8877888ad166b775fcef65875d68ec0fa5af07808ef4b",
+            "evidenceIds": [
+              "evidence_span.50a6ee52b694dfd8cbc8901c40a26c3b0baca0efc26c32c4",
+              "evidence_span.7d4aeed1791811f9bb8179f7c6da1018ff82f2181fedd8a8",
+              "evidence_span.a8fdd5b1ed87387b9c405027799d62d78e118062f498dc12",
+              "evidence_span.559d0825965ee9d5466335f2f7b44eff15025af83f3d5d12",
+              "evidence_span.ddbce3931a29fb4445ca22c743c174e6b403d0c8cbe420ba",
+              "evidence_span.77d5f4da0063a95875a52da5708bf4a7f95c647a1271f6db",
+              "evidence_span.07787afb09f60ba4abf2df60e9da3ed517b40971213002fa",
+              "evidence_span.ffe39bdb76f53ed2b168401735cf65c57ac59ed7362e2b63",
+              "evidence_span.691b8e14a7bc4357858f885d743046bcfbe6a98853e2499f",
+              "evidence_span.f47f4dbceb1962f4b231e227782588146ca0a1d3e0427c04",
+              "evidence_span.585151f958aad58d54e7fc28adbbf6ec5409a1cb033102bd",
+              "evidence_span.a53c313e915bf3b80775c0663eb10efdcc59bae3e25d749d",
+              "evidence_span.1bb5f892a9ea9dc635cb981171455e4a4b7ff690a94c570f",
+              "evidence_span.246a5870ea80e347af79c91ab63c3434df2035af0932647e"
+            ],
+            "patternKind": "semantic_role",
+            "patternAnchor": "any",
+            "responseExtent": null,
+            "requestSpanRole": "control",
+            "sourceVersionId": "source_version_6a69b7cf375c1a664a803a68dc534b6851561cc5b74aa2054d2934b7"
+          }
+        },
+        "value": 0.5345826489510266,
+        "origin": {
+          "requestSpan": {
+            "text": "a",
+            "byteEnd": 50,
+            "charEnd": 50,
+            "byteStart": 49,
+            "charStart": 49
+          },
+          "semanticRoleId": "role.request.requirement.v1",
+          "learnedFrameOrPatternId": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde"
+        },
+        "status": "inferred",
+        "dimension": "uncertaintyTolerance",
+        "confidence": 0.11683182035202132,
+        "sourceActivationId": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde"
+      },
+      {
+        "id": "requirement.d815a7e7",
+        "trace": {
+          "source": "learned_activation",
+          "activation": 0.8447272727272728,
+          "contribution": 0.10491512727272728,
+          "activationKind": "pattern",
+          "activationTrace": {
+            "source": "language_pattern",
+            "profileId": "language_profile_11b8877888ad166b775fcef65875d68ec0fa5af07808ef4b",
+            "evidenceIds": [
+              "evidence_span.50a6ee52b694dfd8cbc8901c40a26c3b0baca0efc26c32c4",
+              "evidence_span.7d4aeed1791811f9bb8179f7c6da1018ff82f2181fedd8a8",
+              "evidence_span.f47f4dbceb1962f4b231e227782588146ca0a1d3e0427c04"
+            ],
+            "patternKind": "semantic_role",
+            "patternAnchor": "start",
+            "responseExtent": null,
+            "requestSpanRole": "control",
+            "sourceVersionId": "source_version_6a69b7cf375c1a664a803a68dc534b6851561cc5b74aa2054d2934b7"
+          }
+        },
+        "value": 0.21499338695078418,
+        "origin": {
+          "requestSpan": {
+            "text": "Write a short",
+            "byteEnd": 13,
+            "charEnd": 13,
+            "byteStart": 0,
+            "charStart": 0
+          },
+          "semanticRoleId": "role.request.requirement.v1",
+          "learnedFrameOrPatternId": "request_requirement_dialogue_2c33957cc67144d91cf8b1455614dfd0183d8bed2926d36f00c4292169fd5814"
+        },
+        "status": "inferred",
+        "dimension": "executableArtifactDemand",
+        "confidence": 0.08413404331111042,
+        "sourceActivationId": "request_requirement_dialogue_2c33957cc67144d91cf8b1455614dfd0183d8bed2926d36f00c4292169fd5814"
+      },
+      {
+        "id": "requirement.92da550b",
+        "trace": {
+          "source": "learned_activation",
+          "activation": 0.58,
+          "contribution": 0.174,
+          "activationKind": "dialogue_move",
+          "activationTrace": {
+            "source": "dialogue_state",
+            "conversationId": "local-diagnostic:creative-sailor:095adfee-308e-4444-9915-c6e0ba727039",
+            "continuityLinkCount": 0
+          }
+        },
+        "value": 0.22688228598382754,
+        "origin": {
+          "requestSpan": {
+            "text": "Write a short scene about a sailor who befriends a clockmaker.",
+            "byteEnd": 62,
+            "charEnd": 62,
+            "byteStart": 0,
+            "charStart": 0
+          },
+          "semanticRoleId": "role.dialogue.current.v1",
+          "dialogueReferenceId": "turn.6b634958",
+          "learnedFrameOrPatternId": "intent.09f1dc42"
+        },
+        "status": "inferred",
+        "dimension": "dialogueDependence",
+        "confidence": 0.08304561321761561,
+        "sourceActivationId": "intent.09f1dc42"
+      },
+      {
+        "id": "requirement.47a7e46e",
+        "trace": {
+          "source": "learned_activation",
+          "activation": 0.5946117334682324,
+          "contribution": 0.08659488428631237,
+          "activationKind": "pattern",
+          "activationTrace": {
+            "source": "language_pattern",
+            "profileId": "language_profile_11b8877888ad166b775fcef65875d68ec0fa5af07808ef4b",
+            "evidenceIds": [
+              "evidence_span.50a6ee52b694dfd8cbc8901c40a26c3b0baca0efc26c32c4",
+              "evidence_span.7d4aeed1791811f9bb8179f7c6da1018ff82f2181fedd8a8",
+              "evidence_span.a8fdd5b1ed87387b9c405027799d62d78e118062f498dc12",
+              "evidence_span.559d0825965ee9d5466335f2f7b44eff15025af83f3d5d12",
+              "evidence_span.ddbce3931a29fb4445ca22c743c174e6b403d0c8cbe420ba",
+              "evidence_span.77d5f4da0063a95875a52da5708bf4a7f95c647a1271f6db",
+              "evidence_span.07787afb09f60ba4abf2df60e9da3ed517b40971213002fa",
+              "evidence_span.ffe39bdb76f53ed2b168401735cf65c57ac59ed7362e2b63",
+              "evidence_span.691b8e14a7bc4357858f885d743046bcfbe6a98853e2499f",
+              "evidence_span.f47f4dbceb1962f4b231e227782588146ca0a1d3e0427c04",
+              "evidence_span.585151f958aad58d54e7fc28adbbf6ec5409a1cb033102bd",
+              "evidence_span.a53c313e915bf3b80775c0663eb10efdcc59bae3e25d749d",
+              "evidence_span.1bb5f892a9ea9dc635cb981171455e4a4b7ff690a94c570f",
+              "evidence_span.246a5870ea80e347af79c91ab63c3434df2035af0932647e"
+            ],
+            "patternKind": "semantic_role",
+            "patternAnchor": "any",
+            "responseExtent": null,
+            "requestSpanRole": "control",
+            "sourceVersionId": "source_version_6a69b7cf375c1a664a803a68dc534b6851561cc5b74aa2054d2934b7"
+          }
+        },
+        "value": 0.2119176028948975,
+        "origin": {
+          "requestSpan": {
+            "text": "a",
+            "byteEnd": 27,
+            "charEnd": 27,
+            "byteStart": 26,
+            "charStart": 26
+          },
+          "semanticRoleId": "role.request.requirement.v1",
+          "learnedFrameOrPatternId": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde"
+        },
+        "status": "inferred",
+        "dimension": "inferentialDepth",
+        "confidence": 0.07490517636154899,
+        "sourceActivationId": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde"
+      },
+      {
+        "id": "requirement.516f1ae1",
+        "trace": {
+          "source": "learned_activation",
+          "activation": 0.5946117334682324,
+          "contribution": 0.08659488428631237,
+          "activationKind": "pattern",
+          "activationTrace": {
+            "source": "language_pattern",
+            "profileId": "language_profile_11b8877888ad166b775fcef65875d68ec0fa5af07808ef4b",
+            "evidenceIds": [
+              "evidence_span.50a6ee52b694dfd8cbc8901c40a26c3b0baca0efc26c32c4",
+              "evidence_span.7d4aeed1791811f9bb8179f7c6da1018ff82f2181fedd8a8",
+              "evidence_span.a8fdd5b1ed87387b9c405027799d62d78e118062f498dc12",
+              "evidence_span.559d0825965ee9d5466335f2f7b44eff15025af83f3d5d12",
+              "evidence_span.ddbce3931a29fb4445ca22c743c174e6b403d0c8cbe420ba",
+              "evidence_span.77d5f4da0063a95875a52da5708bf4a7f95c647a1271f6db",
+              "evidence_span.07787afb09f60ba4abf2df60e9da3ed517b40971213002fa",
+              "evidence_span.ffe39bdb76f53ed2b168401735cf65c57ac59ed7362e2b63",
+              "evidence_span.691b8e14a7bc4357858f885d743046bcfbe6a98853e2499f",
+              "evidence_span.f47f4dbceb1962f4b231e227782588146ca0a1d3e0427c04",
+              "evidence_span.585151f958aad58d54e7fc28adbbf6ec5409a1cb033102bd",
+              "evidence_span.a53c313e915bf3b80775c0663eb10efdcc59bae3e25d749d",
+              "evidence_span.1bb5f892a9ea9dc635cb981171455e4a4b7ff690a94c570f",
+              "evidence_span.246a5870ea80e347af79c91ab63c3434df2035af0932647e"
+            ],
+            "patternKind": "semantic_role",
+            "patternAnchor": "any",
+            "responseExtent": null,
+            "requestSpanRole": "control",
+            "sourceVersionId": "source_version_6a69b7cf375c1a664a803a68dc534b6851561cc5b74aa2054d2934b7"
+          }
+        },
+        "value": 0.2119176028948975,
+        "origin": {
+          "requestSpan": {
+            "text": "a",
+            "byteEnd": 50,
+            "charEnd": 50,
+            "byteStart": 49,
+            "charStart": 49
+          },
+          "semanticRoleId": "role.request.requirement.v1",
+          "learnedFrameOrPatternId": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde"
+        },
+        "status": "inferred",
+        "dimension": "inferentialDepth",
+        "confidence": 0.07490517636154899,
+        "sourceActivationId": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde"
+      }
+    ],
+    "sourceDependence": 0.06315624597759724,
+    "activatedFrameIds": [],
+    "audienceAdaptation": 0.19781611144141825,
+    "dialogueDependence": 0.9934590066195096,
+    "prohibitedFeatures": [
+      {
+        "id": "requirement.47ca1a5b",
+        "trace": {
+          "source": "learned_activation",
+          "activation": 0.8447272727272728,
+          "contribution": -1.5037834909090908,
+          "activationKind": "pattern",
+          "activationTrace": {
+            "source": "language_pattern",
+            "profileId": "language_profile_11b8877888ad166b775fcef65875d68ec0fa5af07808ef4b",
+            "evidenceIds": [
+              "evidence_span.50a6ee52b694dfd8cbc8901c40a26c3b0baca0efc26c32c4",
+              "evidence_span.7d4aeed1791811f9bb8179f7c6da1018ff82f2181fedd8a8",
+              "evidence_span.f47f4dbceb1962f4b231e227782588146ca0a1d3e0427c04"
+            ],
+            "patternKind": "semantic_role",
+            "patternAnchor": "start",
+            "responseExtent": null,
+            "requestSpanRole": "control",
+            "sourceVersionId": "source_version_6a69b7cf375c1a664a803a68dc534b6851561cc5b74aa2054d2934b7"
+          }
+        },
+        "value": 0.05196684821641638,
+        "origin": {
+          "requestSpan": {
+            "text": "Write a short",
+            "byteEnd": 13,
+            "charEnd": 13,
+            "byteStart": 0,
+            "charStart": 0
+          },
+          "semanticRoleId": "role.request.requirement.v1",
+          "learnedFrameOrPatternId": "request_requirement_dialogue_2c33957cc67144d91cf8b1455614dfd0183d8bed2926d36f00c4292169fd5814"
+        },
+        "status": "inferred",
+        "dimension": "externalTruthAuthority",
+        "confidence": 0.6569549217236016,
+        "sourceActivationId": "request_requirement_dialogue_2c33957cc67144d91cf8b1455614dfd0183d8bed2926d36f00c4292169fd5814"
+      },
+      {
+        "id": "requirement.d186adf8",
+        "trace": {
+          "source": "learned_activation",
+          "activation": 0.8447272727272728,
+          "contribution": -1.2414956727272726,
+          "activationKind": "pattern",
+          "activationTrace": {
+            "source": "language_pattern",
+            "profileId": "language_profile_11b8877888ad166b775fcef65875d68ec0fa5af07808ef4b",
+            "evidenceIds": [
+              "evidence_span.50a6ee52b694dfd8cbc8901c40a26c3b0baca0efc26c32c4",
+              "evidence_span.7d4aeed1791811f9bb8179f7c6da1018ff82f2181fedd8a8",
+              "evidence_span.f47f4dbceb1962f4b231e227782588146ca0a1d3e0427c04"
+            ],
+            "patternKind": "semantic_role",
+            "patternAnchor": "start",
+            "responseExtent": null,
+            "requestSpanRole": "control",
+            "sourceVersionId": "source_version_6a69b7cf375c1a664a803a68dc534b6851561cc5b74aa2054d2934b7"
+          }
+        },
+        "value": 0.06651510775426131,
+        "origin": {
+          "requestSpan": {
+            "text": "Write a short",
+            "byteEnd": 13,
+            "charEnd": 13,
+            "byteStart": 0,
+            "charStart": 0
+          },
+          "semanticRoleId": "role.request.requirement.v1",
+          "learnedFrameOrPatternId": "request_requirement_dialogue_2c33957cc67144d91cf8b1455614dfd0183d8bed2926d36f00c4292169fd5814"
+        },
+        "status": "inferred",
+        "dimension": "sourceDependence",
+        "confidence": 0.6006418765576642,
+        "sourceActivationId": "request_requirement_dialogue_2c33957cc67144d91cf8b1455614dfd0183d8bed2926d36f00c4292169fd5814"
+      },
+      {
+        "id": "requirement.494d61fd",
+        "trace": {
+          "source": "learned_activation",
+          "activation": 0.5946117334682324,
+          "contribution": -0.37235800243114314,
+          "activationKind": "pattern",
+          "activationTrace": {
+            "source": "language_pattern",
+            "profileId": "language_profile_11b8877888ad166b775fcef65875d68ec0fa5af07808ef4b",
+            "evidenceIds": [
+              "evidence_span.50a6ee52b694dfd8cbc8901c40a26c3b0baca0efc26c32c4",
+              "evidence_span.7d4aeed1791811f9bb8179f7c6da1018ff82f2181fedd8a8",
+              "evidence_span.a8fdd5b1ed87387b9c405027799d62d78e118062f498dc12",
+              "evidence_span.559d0825965ee9d5466335f2f7b44eff15025af83f3d5d12",
+              "evidence_span.ddbce3931a29fb4445ca22c743c174e6b403d0c8cbe420ba",
+              "evidence_span.77d5f4da0063a95875a52da5708bf4a7f95c647a1271f6db",
+              "evidence_span.07787afb09f60ba4abf2df60e9da3ed517b40971213002fa",
+              "evidence_span.ffe39bdb76f53ed2b168401735cf65c57ac59ed7362e2b63",
+              "evidence_span.691b8e14a7bc4357858f885d743046bcfbe6a98853e2499f",
+              "evidence_span.f47f4dbceb1962f4b231e227782588146ca0a1d3e0427c04",
+              "evidence_span.585151f958aad58d54e7fc28adbbf6ec5409a1cb033102bd",
+              "evidence_span.a53c313e915bf3b80775c0663eb10efdcc59bae3e25d749d",
+              "evidence_span.1bb5f892a9ea9dc635cb981171455e4a4b7ff690a94c570f",
+              "evidence_span.246a5870ea80e347af79c91ab63c3434df2035af0932647e"
+            ],
+            "patternKind": "semantic_role",
+            "patternAnchor": "any",
+            "responseExtent": null,
+            "requestSpanRole": "control",
+            "sourceVersionId": "source_version_6a69b7cf375c1a664a803a68dc534b6851561cc5b74aa2054d2934b7"
+          }
+        },
+        "value": 0.14524933334690948,
+        "origin": {
+          "requestSpan": {
+            "text": "a",
+            "byteEnd": 27,
+            "charEnd": 27,
+            "byteStart": 26,
+            "charStart": 26
+          },
+          "semanticRoleId": "role.request.requirement.v1",
+          "learnedFrameOrPatternId": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde"
+        },
+        "status": "inferred",
+        "dimension": "externalTruthAuthority",
+        "confidence": 0.2807359309313935,
+        "sourceActivationId": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde"
+      },
+      {
+        "id": "requirement.716799e2",
+        "trace": {
+          "source": "learned_activation",
+          "activation": 0.5946117334682324,
+          "contribution": -0.37235800243114314,
+          "activationKind": "pattern",
+          "activationTrace": {
+            "source": "language_pattern",
+            "profileId": "language_profile_11b8877888ad166b775fcef65875d68ec0fa5af07808ef4b",
+            "evidenceIds": [
+              "evidence_span.50a6ee52b694dfd8cbc8901c40a26c3b0baca0efc26c32c4",
+              "evidence_span.7d4aeed1791811f9bb8179f7c6da1018ff82f2181fedd8a8",
+              "evidence_span.a8fdd5b1ed87387b9c405027799d62d78e118062f498dc12",
+              "evidence_span.559d0825965ee9d5466335f2f7b44eff15025af83f3d5d12",
+              "evidence_span.ddbce3931a29fb4445ca22c743c174e6b403d0c8cbe420ba",
+              "evidence_span.77d5f4da0063a95875a52da5708bf4a7f95c647a1271f6db",
+              "evidence_span.07787afb09f60ba4abf2df60e9da3ed517b40971213002fa",
+              "evidence_span.ffe39bdb76f53ed2b168401735cf65c57ac59ed7362e2b63",
+              "evidence_span.691b8e14a7bc4357858f885d743046bcfbe6a98853e2499f",
+              "evidence_span.f47f4dbceb1962f4b231e227782588146ca0a1d3e0427c04",
+              "evidence_span.585151f958aad58d54e7fc28adbbf6ec5409a1cb033102bd",
+              "evidence_span.a53c313e915bf3b80775c0663eb10efdcc59bae3e25d749d",
+              "evidence_span.1bb5f892a9ea9dc635cb981171455e4a4b7ff690a94c570f",
+              "evidence_span.246a5870ea80e347af79c91ab63c3434df2035af0932647e"
+            ],
+            "patternKind": "semantic_role",
+            "patternAnchor": "any",
+            "responseExtent": null,
+            "requestSpanRole": "control",
+            "sourceVersionId": "source_version_6a69b7cf375c1a664a803a68dc534b6851561cc5b74aa2054d2934b7"
+          }
+        },
+        "value": 0.14524933334690948,
+        "origin": {
+          "requestSpan": {
+            "text": "a",
+            "byteEnd": 50,
+            "charEnd": 50,
+            "byteStart": 49,
+            "charStart": 49
+          },
+          "semanticRoleId": "role.request.requirement.v1",
+          "learnedFrameOrPatternId": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde"
+        },
+        "status": "inferred",
+        "dimension": "externalTruthAuthority",
+        "confidence": 0.2807359309313935,
+        "sourceActivationId": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde"
+      },
+      {
+        "id": "requirement.13b4ebaf",
+        "trace": {
+          "source": "learned_activation",
+          "activation": 0.5946117334682324,
+          "contribution": -0.3074118392164089,
+          "activationKind": "pattern",
+          "activationTrace": {
+            "source": "language_pattern",
+            "profileId": "language_profile_11b8877888ad166b775fcef65875d68ec0fa5af07808ef4b",
+            "evidenceIds": [
+              "evidence_span.50a6ee52b694dfd8cbc8901c40a26c3b0baca0efc26c32c4",
+              "evidence_span.7d4aeed1791811f9bb8179f7c6da1018ff82f2181fedd8a8",
+              "evidence_span.a8fdd5b1ed87387b9c405027799d62d78e118062f498dc12",
+              "evidence_span.559d0825965ee9d5466335f2f7b44eff15025af83f3d5d12",
+              "evidence_span.ddbce3931a29fb4445ca22c743c174e6b403d0c8cbe420ba",
+              "evidence_span.77d5f4da0063a95875a52da5708bf4a7f95c647a1271f6db",
+              "evidence_span.07787afb09f60ba4abf2df60e9da3ed517b40971213002fa",
+              "evidence_span.ffe39bdb76f53ed2b168401735cf65c57ac59ed7362e2b63",
+              "evidence_span.691b8e14a7bc4357858f885d743046bcfbe6a98853e2499f",
+              "evidence_span.f47f4dbceb1962f4b231e227782588146ca0a1d3e0427c04",
+              "evidence_span.585151f958aad58d54e7fc28adbbf6ec5409a1cb033102bd",
+              "evidence_span.a53c313e915bf3b80775c0663eb10efdcc59bae3e25d749d",
+              "evidence_span.1bb5f892a9ea9dc635cb981171455e4a4b7ff690a94c570f",
+              "evidence_span.246a5870ea80e347af79c91ab63c3434df2035af0932647e"
+            ],
+            "patternKind": "semantic_role",
+            "patternAnchor": "any",
+            "responseExtent": null,
+            "requestSpanRole": "control",
+            "sourceVersionId": "source_version_6a69b7cf375c1a664a803a68dc534b6851561cc5b74aa2054d2934b7"
+          }
+        },
+        "value": 0.1534997135302984,
+        "origin": {
+          "requestSpan": {
+            "text": "a",
+            "byteEnd": 50,
+            "charEnd": 50,
+            "byteStart": 49,
+            "charStart": 49
+          },
+          "semanticRoleId": "role.request.requirement.v1",
+          "learnedFrameOrPatternId": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde"
+        },
+        "status": "inferred",
+        "dimension": "sourceDependence",
+        "confidence": 0.23898103275227345,
+        "sourceActivationId": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde"
+      },
+      {
+        "id": "requirement.ca084764",
+        "trace": {
+          "source": "learned_activation",
+          "activation": 0.5946117334682324,
+          "contribution": -0.3074118392164089,
+          "activationKind": "pattern",
+          "activationTrace": {
+            "source": "language_pattern",
+            "profileId": "language_profile_11b8877888ad166b775fcef65875d68ec0fa5af07808ef4b",
+            "evidenceIds": [
+              "evidence_span.50a6ee52b694dfd8cbc8901c40a26c3b0baca0efc26c32c4",
+              "evidence_span.7d4aeed1791811f9bb8179f7c6da1018ff82f2181fedd8a8",
+              "evidence_span.a8fdd5b1ed87387b9c405027799d62d78e118062f498dc12",
+              "evidence_span.559d0825965ee9d5466335f2f7b44eff15025af83f3d5d12",
+              "evidence_span.ddbce3931a29fb4445ca22c743c174e6b403d0c8cbe420ba",
+              "evidence_span.77d5f4da0063a95875a52da5708bf4a7f95c647a1271f6db",
+              "evidence_span.07787afb09f60ba4abf2df60e9da3ed517b40971213002fa",
+              "evidence_span.ffe39bdb76f53ed2b168401735cf65c57ac59ed7362e2b63",
+              "evidence_span.691b8e14a7bc4357858f885d743046bcfbe6a98853e2499f",
+              "evidence_span.f47f4dbceb1962f4b231e227782588146ca0a1d3e0427c04",
+              "evidence_span.585151f958aad58d54e7fc28adbbf6ec5409a1cb033102bd",
+              "evidence_span.a53c313e915bf3b80775c0663eb10efdcc59bae3e25d749d",
+              "evidence_span.1bb5f892a9ea9dc635cb981171455e4a4b7ff690a94c570f",
+              "evidence_span.246a5870ea80e347af79c91ab63c3434df2035af0932647e"
+            ],
+            "patternKind": "semantic_role",
+            "patternAnchor": "any",
+            "responseExtent": null,
+            "requestSpanRole": "control",
+            "sourceVersionId": "source_version_6a69b7cf375c1a664a803a68dc534b6851561cc5b74aa2054d2934b7"
+          }
+        },
+        "value": 0.1534997135302984,
+        "origin": {
+          "requestSpan": {
+            "text": "a",
+            "byteEnd": 27,
+            "charEnd": 27,
+            "byteStart": 26,
+            "charStart": 26
+          },
+          "semanticRoleId": "role.request.requirement.v1",
+          "learnedFrameOrPatternId": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde"
+        },
+        "status": "inferred",
+        "dimension": "sourceDependence",
+        "confidence": 0.23898103275227345,
+        "sourceActivationId": "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde"
+      },
+      {
+        "id": "requirement.711bb3e4",
+        "trace": {
+          "source": "learned_activation",
+          "activation": 0.526698609489327,
+          "contribution": -0.29104542476617895,
+          "activationKind": "pattern",
+          "activationTrace": {
+            "source": "language_pattern",
+            "profileId": "language_profile_11b8877888ad166b775fcef65875d68ec0fa5af07808ef4b",
+            "evidenceIds": [
+              "evidence_span.50a6ee52b694dfd8cbc8901c40a26c3b0baca0efc26c32c4",
+              "evidence_span.7d4aeed1791811f9bb8179f7c6da1018ff82f2181fedd8a8",
+              "evidence_span.a8fdd5b1ed87387b9c405027799d62d78e118062f498dc12",
+              "evidence_span.559d0825965ee9d5466335f2f7b44eff15025af83f3d5d12",
+              "evidence_span.ddbce3931a29fb4445ca22c743c174e6b403d0c8cbe420ba",
+              "evidence_span.77d5f4da0063a95875a52da5708bf4a7f95c647a1271f6db",
+              "evidence_span.07787afb09f60ba4abf2df60e9da3ed517b40971213002fa",
+              "evidence_span.ffe39bdb76f53ed2b168401735cf65c57ac59ed7362e2b63",
+              "evidence_span.691b8e14a7bc4357858f885d743046bcfbe6a98853e2499f",
+              "evidence_span.f47f4dbceb1962f4b231e227782588146ca0a1d3e0427c04",
+              "evidence_span.585151f958aad58d54e7fc28adbbf6ec5409a1cb033102bd",
+              "evidence_span.a53c313e915bf3b80775c0663eb10efdcc59bae3e25d749d",
+              "evidence_span.1bb5f892a9ea9dc635cb981171455e4a4b7ff690a94c570f",
+              "evidence_span.246a5870ea80e347af79c91ab63c3434df2035af0932647e"
+            ],
+            "patternKind": "semantic_role",
+            "patternAnchor": "any",
+            "responseExtent": null,
+            "requestSpanRole": "control",
+            "sourceVersionId": "source_version_6a69b7cf375c1a664a803a68dc534b6851561cc5b74aa2054d2934b7"
+          }
+        },
+        "value": 0.1556384060669564,
+        "origin": {
+          "requestSpan": {
+            "text": "who",
+            "byteEnd": 38,
+            "charEnd": 38,
+            "byteStart": 35,
+            "charStart": 35
+          },
+          "semanticRoleId": "role.request.requirement.v1",
+          "learnedFrameOrPatternId": "request_requirement_dialogue_dd0774761d438669196b566360d5b4ad412d481c2c52e62a2e099b84e0472b21"
+        },
+        "status": "inferred",
+        "dimension": "noveltyDemand",
+        "confidence": 0.20384415101151243,
+        "sourceActivationId": "request_requirement_dialogue_dd0774761d438669196b566360d5b4ad412d481c2c52e62a2e099b84e0472b21"
+      },
+      {
+        "id": "requirement.bcb23427",
+        "trace": {
+          "source": "learned_activation",
+          "activation": 0.526698609489327,
+          "contribution": -0.11357870234777714,
+          "activationKind": "pattern",
+          "activationTrace": {
+            "source": "language_pattern",
+            "profileId": "language_profile_11b8877888ad166b775fcef65875d68ec0fa5af07808ef4b",
+            "evidenceIds": [
+              "evidence_span.50a6ee52b694dfd8cbc8901c40a26c3b0baca0efc26c32c4",
+              "evidence_span.7d4aeed1791811f9bb8179f7c6da1018ff82f2181fedd8a8",
+              "evidence_span.a8fdd5b1ed87387b9c405027799d62d78e118062f498dc12",
+              "evidence_span.559d0825965ee9d5466335f2f7b44eff15025af83f3d5d12",
+              "evidence_span.ddbce3931a29fb4445ca22c743c174e6b403d0c8cbe420ba",
+              "evidence_span.77d5f4da0063a95875a52da5708bf4a7f95c647a1271f6db",
+              "evidence_span.07787afb09f60ba4abf2df60e9da3ed517b40971213002fa",
+              "evidence_span.ffe39bdb76f53ed2b168401735cf65c57ac59ed7362e2b63",
+              "evidence_span.691b8e14a7bc4357858f885d743046bcfbe6a98853e2499f",
+              "evidence_span.f47f4dbceb1962f4b231e227782588146ca0a1d3e0427c04",
+              "evidence_span.585151f958aad58d54e7fc28adbbf6ec5409a1cb033102bd",
+              "evidence_span.a53c313e915bf3b80775c0663eb10efdcc59bae3e25d749d",
+              "evidence_span.1bb5f892a9ea9dc635cb981171455e4a4b7ff690a94c570f",
+              "evidence_span.246a5870ea80e347af79c91ab63c3434df2035af0932647e"
+            ],
+            "patternKind": "semantic_role",
+            "patternAnchor": "any",
+            "responseExtent": null,
+            "requestSpanRole": "control",
+            "sourceVersionId": "source_version_6a69b7cf375c1a664a803a68dc534b6851561cc5b74aa2054d2934b7"
+          }
+        },
+        "value": 0.47163580965138396,
+        "origin": {
+          "requestSpan": {
+            "text": "who",
+            "byteEnd": 38,
+            "charEnd": 38,
+            "byteStart": 35,
+            "charStart": 35
+          },
+          "semanticRoleId": "role.request.requirement.v1",
+          "learnedFrameOrPatternId": "request_requirement_dialogue_dd0774761d438669196b566360d5b4ad412d481c2c52e62a2e099b84e0472b21"
+        },
+        "status": "inferred",
+        "dimension": "uncertaintyTolerance",
+        "confidence": 0.08667072877638661,
+        "sourceActivationId": "request_requirement_dialogue_dd0774761d438669196b566360d5b4ad412d481c2c52e62a2e099b84e0472b21"
+      }
+    ],
+    "activatedPatternIds": [
+      "request_requirement_dialogue_2c33957cc67144d91cf8b1455614dfd0183d8bed2926d36f00c4292169fd5814",
+      "request_requirement_dialogue_30dfa1c0d9099c9de3c59f1dd90b26f33dd40effe16d6924ffb1fa74bf8e6dde",
+      "request_requirement_dialogue_dd0774761d438669196b566360d5b4ad412d481c2c52e62a2e099b84e0472b21"
+    ],
+    "brevityDetailBalance": 0.5,
+    "counterfactualDemand": 0.22520216607588356,
+    "semanticPreservation": 0.19781611144141825,
+    "uncertaintyTolerance": 0.6421068990097145,
+    "activatedConstructIds": [],
+    "causalReasoningDemand": 0.19781611144141825,
+    "contributedDimensions": [
+      "externalTruthAuthority",
+      "sourceDependence",
+      "noveltyDemand",
+      "inferentialDepth",
+      "executableArtifactDemand",
+      "actionCommitment",
+      "dialogueDependence",
+      "uncertaintyTolerance",
+      "counterfactualDemand"
+    ],
+    "surfaceTransformation": 0.19781611144141825,
+    "activatedPhraseUnitIds": [],
+    "externalTruthAuthority": 0.048758022347526686,
+    "temporalReasoningDemand": 0.3251353408542684,
+    "activatedDialogueMoveIds": [
+      "actshape.cb0810e5",
+      "intent.09f1dc42"
+    ],
+    "executableArtifactDemand": 0.21578470584411635,
+    "formatConstraintStrength": 0.19781611144141825
+  },
+  "field": {
+    "candidates": [
+      {
+        "boundaries": [],
+        "evidenceIds": [],
+        "force": "unknown",
+        "id": "proposal:cognitive_proposal:26c95d6a71357e0ef48a617df68a314f:0",
+        "kind": "reasoned-synthesis",
+        "scores": {
+          "actionability": 0.16666666666666666,
+          "alphaPressure": 0,
+          "constraintCoverage": 0.6666666666666666,
+          "contradiction": 0,
+          "evidenceCoverage": 0,
+          "faithfulness": 0,
+          "graphCoherence": 1,
+          "languageRealizability": 0.74,
+          "novelty": 0.38,
+          "realizability": 0.74,
+          "repetition": 0,
+          "risk": 0,
+          "support": 0,
+          "unsupportedFactualAssertion": 0,
+          "usefulness": 0.16666666666666666
+        },
+        "answer": "",
+        "quality": {
+          "novelty": 0.38,
+          "styleFit": 0.7,
+          "coherence": 1,
+          "formatFit": 0.6666666666666666,
+          "structure": 0.68,
+          "directness": 0.82,
+          "repetition": 0,
+          "usefulness": 0.16666666666666666,
+          "truthSupport": 0,
+          "contradiction": 0,
+          "telemetryLeak": 0,
+          "testWeakening": 0,
+          "sourceFidelity": 0,
+          "languageQuality": 0.74,
+          "staleSourceRisk": 0,
+          "explanatoryPower": 0,
+          "dialogueContinuity": 0.28660383002357853,
+          "requirementCoverage": 0.6666666666666666,
+          "unsupportedFactRate": 0,
+          "fakeFactualAuthority": 0,
+          "semanticPreservation": 0.76,
+          "inferentialContinuity": 1,
+          "transformationQuality": 0.6666666666666666,
+          "executableCompleteness": 0.7842152941558836,
+          "uncertaintyCalibration": 1
+        },
+        "audit": {
+          "source": "cognitive-proposal",
+          "quality": {
+            "novelty": 0.38,
+            "styleFit": 0.7,
+            "coherence": 1,
+            "formatFit": 0.6666666666666666,
+            "structure": 0.68,
+            "directness": 0.82,
+            "repetition": 0,
+            "usefulness": 0.16666666666666666,
+            "truthSupport": 0,
+            "contradiction": 0,
+            "telemetryLeak": 0,
+            "testWeakening": 0,
+            "sourceFidelity": 0,
+            "languageQuality": 0.74,
+            "staleSourceRisk": 0,
+            "explanatoryPower": 0,
+            "dialogueContinuity": 0.28660383002357853,
+            "requirementCoverage": 0.6666666666666666,
+            "unsupportedFactRate": 0,
+            "fakeFactualAuthority": 0,
+            "semanticPreservation": 0.76,
+            "inferentialContinuity": 1,
+            "transformationQuality": 0.6666666666666666,
+            "executableCompleteness": 0.7842152941558836,
+            "uncertaintyCalibration": 1
+          },
+          "claimBases": [
+            {
+              "basis": "learned_prior",
+              "trace": {
+                "kind": "construct:answer",
+                "source": "construct.node"
+              },
+              "claimId": "planned_claim:6466aafbe62d40a47aa50276fc6ffe52",
+              "evidenceIds": [],
+              "actionReceiptId": null,
+              "externallyFactual": false
+            }
+          ],
+          "proposalId": "cognitive_proposal:26c95d6a71357e0ef48a617df68a314f",
+          "operatorIds": [
+            "operator.cognition.dialogue_continuation.v1",
+            "operator.cognition.relation_composition.v1",
+            "operator.cognition.graph_propagation.v1"
+          ],
+          "constructIds": [
+            "family:answer"
+          ],
+          "proposalTrace": {
+            "kind": "reasoning",
+            "rank": 1,
+            "family": "reasoning",
+            "schema": "scce.cognitive_proposal.trace.v1",
+            "source": "cognitive-planner.plan",
+            "quality": {
+              "mmr": 0.8539125638299665,
+              "diversity": 1,
+              "invention": null,
+              "reasoning": {
+                "score": 0.7291666666666666,
+                "simplicity": 1,
+                "usefulness": 0.16666666666666666,
+                "premiseValidity": 1,
+                "explanatoryPower": 0,
+                "relationContinuity": 1,
+                "requirementCoverage": 0.6666666666666666,
+                "temporalConsistency": 1,
+                "unsupportedLeapRate": 0,
+                "contradictionHandling": 1,
+                "internalContradiction": 0
+              },
+              "baseQuality": 0.7291666666666666
+            },
+            "equations": {
+              "mmr": "MMR(g)=sqrt(quality(g)*diversity(g,S))",
+              "novelty": "N=mean(N_memory,N_sibling)",
+              "diversity": "diversity(g,S)=1-max_h(weightedJaccard(phi(g),phi(h)))",
+              "invention": "Q=mean(X,C,N,F,U,L,styleFit)*(1-R)*(1-repetition)*(1-H)",
+              "reasoning": "Q=mean(P,C,X,E,K,T,S,U)*(1-L)*(1-I)"
+            },
+            "claimBases": [
+              {
+                "basis": "learned_prior",
+                "claimId": "planned_claim:6466aafbe62d40a47aa50276fc6ffe52",
+                "evidenceIds": []
+              }
+            ],
+            "composition": {
+              "schema": "scce.cognitive_proposal.composition.v1",
+              "version": "cognitive-proposal.composition.2026-09-18.v1",
+              "selection": "geometric_mean_of_quality_and_diversity",
+              "supporting": {
+                "invention": [
+                  "requirementSatisfaction",
+                  "relationCoherence",
+                  "novelty",
+                  "fit",
+                  "usefulness",
+                  "languageRealizability",
+                  "styleFit"
+                ],
+                "reasoning": [
+                  "premiseValidity",
+                  "relationContinuity",
+                  "requirementCoverage",
+                  "explanatoryPower",
+                  "contradictionHandling",
+                  "temporalConsistency",
+                  "simplicity",
+                  "usefulness"
+                ]
+              },
+              "failureRates": {
+                "invention": [
+                  "risk",
+                  "repetition",
+                  "unsupportedExternallyFactualRate"
+                ],
+                "reasoning": [
+                  "unsupportedLeapRate",
+                  "internalContradiction"
+                ]
+              },
+              "featureSchemaId": "scce.cognitive_proposal.preference_features.v1",
+              "calibrationScopeId": "candidate.cognitive_proposal_preference"
+            },
+            "operatorMpc": {
+              "steps": 2,
+              "schema": "scce.cognitive_mpc.run.v1",
+              "status": "completed",
+              "operatorIds": [
+                "operator.cognition.dialogue_continuation.v1",
+                "operator.cognition.relation_composition.v1"
+              ],
+              "transitions": [
+                {
+                  "outcome": true,
+                  "operatorId": "operator.cognition.dialogue_continuation.v1",
+                  "actualDelta": {
+                    "delta": {
+                      "cost": 0.14,
+                      "progressDelta": 0.5445833333333333,
+                      "uncertaintyDelta": -0.159375,
+                      "contradictionDelta": -0.04,
+                      "unresolvedReduction": 0.5675
+                    },
+                    "schema": "scce.cognitive_mpc.proposal_observation.v1",
+                    "quality": 0.7291666666666666,
+                    "operatorId": "operator.cognition.dialogue_continuation.v1",
+                    "bestDraftId": "cognitive_proposal:26c95d6a71357e0ef48a617df68a314f",
+                    "failureRate": 0,
+                    "viableDraftCount": 3,
+                    "generatedDraftCount": 3,
+                    "requirementCoverage": 0.6666666666666666,
+                    "contradictionPressure": 0
+                  },
+                  "energyAfter": 0.2841838244771926,
+                  "energyBefore": 0.5795088244771927,
+                  "predictedDelta": {
+                    "cost": 0.16404182697570088,
+                    "schema": "scce.cognitive_mpc.delta.v1",
+                    "operatorId": "operator.cognition.dialogue_continuation.v1",
+                    "progressDelta": 0.2696632393741872,
+                    "uncertaintyDelta": -0.039379995888703126,
+                    "contradictionDelta": -0.01974166495362631,
+                    "unresolvedReduction": 0.24269691543676847
+                  }
+                },
+                {
+                  "outcome": true,
+                  "operatorId": "operator.cognition.relation_composition.v1",
+                  "actualDelta": {
+                    "delta": {
+                      "cost": 0.16,
+                      "progressDelta": 0.6892916666666666,
+                      "uncertaintyDelta": -0.14218750000000002,
+                      "contradictionDelta": -0.04,
+                      "unresolvedReduction": 0.7457499999999999
+                    },
+                    "schema": "scce.cognitive_mpc.proposal_observation.v1",
+                    "quality": 0.6145833333333334,
+                    "operatorId": "operator.cognition.relation_composition.v1",
+                    "bestDraftId": "cognitive_proposal:6e956a9b2f357ec169d6d49b05f06fea",
+                    "failureRate": 0,
+                    "viableDraftCount": 4,
+                    "generatedDraftCount": 4,
+                    "requirementCoverage": 0.9333333333333333,
+                    "contradictionPressure": 0
+                  },
+                  "energyAfter": 0.051133824477192585,
+                  "energyBefore": 0.2841838244771926,
+                  "predictedDelta": {
+                    "cost": 0.17531966433458535,
+                    "schema": "scce.cognitive_mpc.delta.v1",
+                    "operatorId": "operator.cognition.relation_composition.v1",
+                    "progressDelta": 0.24224310423832976,
+                    "uncertaintyDelta": -0.02432193967762547,
+                    "contradictionDelta": -0.013467474865677287,
+                    "unresolvedReduction": 0.2180187938144968
+                  }
+                }
+              ],
+              "energyHistory": [
+                0.5795088244771927,
+                0.2841838244771926,
+                0.051133824477192585
+              ],
+              "worseningGuard": 2
+            },
+            "hardFailures": [],
+            "calibrationStatus": "no_coefficients"
+          },
+          "semanticFrame": {
+            "frameId": "semantic.cognitive_proposal.v1",
+            "stepIds": [],
+            "claimIds": [
+              "planned_claim:6466aafbe62d40a47aa50276fc6ffe52"
+            ],
+            "proposalId": "cognitive_proposal:26c95d6a71357e0ef48a617df68a314f",
+            "artifactIds": [],
+            "relationIds": [],
+            "candidateKindId": "reasoned-synthesis",
+            "surfaceOriginId": null,
+            "semanticFrameIds": [],
+            "surfaceEvidenceIds": []
+          }
+        }
+      },
+      {
+        "boundaries": [],
+        "evidenceIds": [
+          "evidence_session_7c4bdef072a902a7bc959ff052a8c5e0c4aef16bbd260c05"
+        ],
+        "force": "inferred",
+        "id": "proposal:cognitive_proposal:6e956a9b2f357ec169d6d49b05f06fea:1",
+        "kind": "reasoned-synthesis",
+        "scores": {
+          "actionability": 0.48333333333333334,
+          "alphaPressure": 0,
+          "constraintCoverage": 0.9333333333333333,
+          "contradiction": 0,
+          "evidenceCoverage": 0,
+          "faithfulness": 0,
+          "graphCoherence": 1,
+          "languageRealizability": 0.74,
+          "novelty": 0.38,
+          "realizability": 0.74,
+          "repetition": 0.18181818181818177,
+          "risk": 0,
+          "support": 0,
+          "unsupportedFactualAssertion": 0,
+          "usefulness": 0.48333333333333334
+        },
+        "answer": "",
+        "quality": {
+          "novelty": 0.38,
+          "styleFit": 0.7,
+          "coherence": 1,
+          "formatFit": 0.9333333333333333,
+          "structure": 0.86,
+          "directness": 0.76,
+          "repetition": 0.18181818181818177,
+          "usefulness": 0.48333333333333334,
+          "truthSupport": 0,
+          "contradiction": 0,
+          "telemetryLeak": 0,
+          "testWeakening": 0,
+          "sourceFidelity": 0,
+          "languageQuality": 0.74,
+          "staleSourceRisk": 0,
+          "explanatoryPower": 0.5,
+          "dialogueContinuity": 0.4199371633569119,
+          "requirementCoverage": 0.9333333333333333,
+          "unsupportedFactRate": 0,
+          "fakeFactualAuthority": 0,
+          "semanticPreservation": 0.76,
+          "inferentialContinuity": 0,
+          "transformationQuality": 0.9333333333333333,
+          "executableCompleteness": 0.7842152941558836,
+          "uncertaintyCalibration": 1
+        },
+        "audit": {
+          "source": "cognitive-proposal",
+          "quality": {
+            "novelty": 0.38,
+            "styleFit": 0.7,
+            "coherence": 1,
+            "formatFit": 0.9333333333333333,
+            "structure": 0.86,
+            "directness": 0.76,
+            "repetition": 0.18181818181818177,
+            "usefulness": 0.48333333333333334,
+            "truthSupport": 0,
+            "contradiction": 0,
+            "telemetryLeak": 0,
+            "testWeakening": 0,
+            "sourceFidelity": 0,
+            "languageQuality": 0.74,
+            "staleSourceRisk": 0,
+            "explanatoryPower": 0.5,
+            "dialogueContinuity": 0.4199371633569119,
+            "requirementCoverage": 0.9333333333333333,
+            "unsupportedFactRate": 0,
+            "fakeFactualAuthority": 0,
+            "semanticPreservation": 0.76,
+            "inferentialContinuity": 0,
+            "transformationQuality": 0.9333333333333333,
+            "executableCompleteness": 0.7842152941558836,
+            "uncertaintyCalibration": 1
+          },
+          "claimBases": [
+            {
+              "basis": "reasoned_inference",
+              "trace": {
+                "family": "procedure_composition",
+                "source": "construct.ordered_structure",
+                "structureId": "construction.080f483aab0ddb329077bed9ffe7c43839460b25fcb4f455",
+                "orderedNodeIds": [
+                  "request",
+                  "proof",
+                  "family:answer"
+                ],
+                "mathematicalStructure": false
+              },
+              "claimId": "planned_claim:b59f43f09c12d16b0c43c27e6e438e43",
+              "evidenceIds": [],
+              "actionReceiptId": null,
+              "externallyFactual": false
+            }
+          ],
+          "proposalId": "cognitive_proposal:6e956a9b2f357ec169d6d49b05f06fea",
+          "operatorIds": [
+            "operator.cognition.relation_composition.v1"
+          ],
+          "constructIds": [
+            "construction.080f483aab0ddb329077bed9ffe7c43839460b25fcb4f455"
+          ],
+          "proposalTrace": {
+            "kind": "reasoning",
+            "rank": 2,
+            "family": "procedure_composition",
+            "schema": "scce.cognitive_proposal.trace.v1",
+            "source": "cognitive-planner.plan",
+            "quality": {
+              "mmr": 0.6685579234215215,
+              "diversity": 0.7272727272727273,
+              "invention": null,
+              "reasoning": {
+                "score": 0.6145833333333334,
+                "simplicity": 1,
+                "usefulness": 0.48333333333333334,
+                "premiseValidity": 0,
+                "explanatoryPower": 0.5,
+                "relationContinuity": 0,
+                "requirementCoverage": 0.9333333333333333,
+                "temporalConsistency": 1,
+                "unsupportedLeapRate": 0,
+                "contradictionHandling": 1,
+                "internalContradiction": 0
+              },
+              "baseQuality": 0.6145833333333334
+            },
+            "equations": {
+              "mmr": "MMR(g)=sqrt(quality(g)*diversity(g,S))",
+              "novelty": "N=mean(N_memory,N_sibling)",
+              "diversity": "diversity(g,S)=1-max_h(weightedJaccard(phi(g),phi(h)))",
+              "invention": "Q=mean(X,C,N,F,U,L,styleFit)*(1-R)*(1-repetition)*(1-H)",
+              "reasoning": "Q=mean(P,C,X,E,K,T,S,U)*(1-L)*(1-I)"
+            },
+            "claimBases": [
+              {
+                "basis": "reasoned_inference",
+                "claimId": "planned_claim:b59f43f09c12d16b0c43c27e6e438e43",
+                "evidenceIds": []
+              }
+            ],
+            "composition": {
+              "schema": "scce.cognitive_proposal.composition.v1",
+              "version": "cognitive-proposal.composition.2026-09-18.v1",
+              "selection": "geometric_mean_of_quality_and_diversity",
+              "supporting": {
+                "invention": [
+                  "requirementSatisfaction",
+                  "relationCoherence",
+                  "novelty",
+                  "fit",
+                  "usefulness",
+                  "languageRealizability",
+                  "styleFit"
+                ],
+                "reasoning": [
+                  "premiseValidity",
+                  "relationContinuity",
+                  "requirementCoverage",
+                  "explanatoryPower",
+                  "contradictionHandling",
+                  "temporalConsistency",
+                  "simplicity",
+                  "usefulness"
+                ]
+              },
+              "failureRates": {
+                "invention": [
+                  "risk",
+                  "repetition",
+                  "unsupportedExternallyFactualRate"
+                ],
+                "reasoning": [
+                  "unsupportedLeapRate",
+                  "internalContradiction"
+                ]
+              },
+              "featureSchemaId": "scce.cognitive_proposal.preference_features.v1",
+              "calibrationScopeId": "candidate.cognitive_proposal_preference"
+            },
+            "operatorMpc": {
+              "steps": 2,
+              "schema": "scce.cognitive_mpc.run.v1",
+              "status": "completed",
+              "operatorIds": [
+                "operator.cognition.dialogue_continuation.v1",
+                "operator.cognition.relation_composition.v1"
+              ],
+              "transitions": [
+                {
+                  "outcome": true,
+                  "operatorId": "operator.cognition.dialogue_continuation.v1",
+                  "actualDelta": {
+                    "delta": {
+                      "cost": 0.14,
+                      "progressDelta": 0.5445833333333333,
+                      "uncertaintyDelta": -0.159375,
+                      "contradictionDelta": -0.04,
+                      "unresolvedReduction": 0.5675
+                    },
+                    "schema": "scce.cognitive_mpc.proposal_observation.v1",
+                    "quality": 0.7291666666666666,
+                    "operatorId": "operator.cognition.dialogue_continuation.v1",
+                    "bestDraftId": "cognitive_proposal:26c95d6a71357e0ef48a617df68a314f",
+                    "failureRate": 0,
+                    "viableDraftCount": 3,
+                    "generatedDraftCount": 3,
+                    "requirementCoverage": 0.6666666666666666,
+                    "contradictionPressure": 0
+                  },
+                  "energyAfter": 0.2841838244771926,
+                  "energyBefore": 0.5795088244771927,
+                  "predictedDelta": {
+                    "cost": 0.16404182697570088,
+                    "schema": "scce.cognitive_mpc.delta.v1",
+                    "operatorId": "operator.cognition.dialogue_continuation.v1",
+                    "progressDelta": 0.2696632393741872,
+                    "uncertaintyDelta": -0.039379995888703126,
+                    "contradictionDelta": -0.01974166495362631,
+                    "unresolvedReduction": 0.24269691543676847
+                  }
+                },
+                {
+                  "outcome": true,
+                  "operatorId": "operator.cognition.relation_composition.v1",
+                  "actualDelta": {
+                    "delta": {
+                      "cost": 0.16,
+                      "progressDelta": 0.6892916666666666,
+                      "uncertaintyDelta": -0.14218750000000002,
+                      "contradictionDelta": -0.04,
+                      "unresolvedReduction": 0.7457499999999999
+                    },
+                    "schema": "scce.cognitive_mpc.proposal_observation.v1",
+                    "quality": 0.6145833333333334,
+                    "operatorId": "operator.cognition.relation_composition.v1",
+                    "bestDraftId": "cognitive_proposal:6e956a9b2f357ec169d6d49b05f06fea",
+                    "failureRate": 0,
+                    "viableDraftCount": 4,
+                    "generatedDraftCount": 4,
+                    "requirementCoverage": 0.9333333333333333,
+                    "contradictionPressure": 0
+                  },
+                  "energyAfter": 0.051133824477192585,
+                  "energyBefore": 0.2841838244771926,
+                  "predictedDelta": {
+                    "cost": 0.17531966433458535,
+                    "schema": "scce.cognitive_mpc.delta.v1",
+                    "operatorId": "operator.cognition.relation_composition.v1",
+                    "progressDelta": 0.24224310423832976,
+                    "uncertaintyDelta": -0.02432193967762547,
+                    "contradictionDelta": -0.013467474865677287,
+                    "unresolvedReduction": 0.2180187938144968
+                  }
+                }
+              ],
+              "energyHistory": [
+                0.5795088244771927,
+                0.2841838244771926,
+                0.051133824477192585
+              ],
+              "worseningGuard": 2
+            },
+            "hardFailures": [],
+            "calibrationStatus": "no_coefficients"
+          },
+          "semanticFrame": {
+            "frameId": "semantic.cognitive_proposal.v1",
+            "stepIds": [
+              "planned_step:d05a17b6b4cc7fb93c147222041f92ab",
+              "planned_step:539f34ac107cbe994c3f1d092739bb6c",
+              "planned_step:457731eed3668766c0206d5a06e41312"
+            ],
+            "claimIds": [
+              "planned_claim:b59f43f09c12d16b0c43c27e6e438e43"
+            ],
+            "proposalId": "cognitive_proposal:6e956a9b2f357ec169d6d49b05f06fea",
+            "artifactIds": [],
+            "relationIds": [],
+            "candidateKindId": "reasoned-synthesis",
+            "surfaceOriginId": "surface.cognitive_proposal.bound_selected_evidence.v1",
+            "semanticFrameIds": [],
+            "surfaceEvidenceIds": [
+              "evidence_session_7c4bdef072a902a7bc959ff052a8c5e0c4aef16bbd260c05"
+            ]
+          }
+        }
+      },
+      {
+        "boundaries": [],
+        "evidenceIds": [],
+        "force": "unknown",
+        "id": "proposal:cognitive_proposal:981e3749c518414d80be6c5e9824a931:2",
+        "kind": "reasoned-synthesis",
+        "scores": {
+          "actionability": 0.16666666666666666,
+          "alphaPressure": 0,
+          "constraintCoverage": 0.6666666666666666,
+          "contradiction": 0,
+          "evidenceCoverage": 0,
+          "faithfulness": 0,
+          "graphCoherence": 1,
+          "languageRealizability": 0.74,
+          "novelty": 0.38,
+          "realizability": 0.74,
+          "repetition": 0,
+          "risk": 0,
+          "support": 0,
+          "unsupportedFactualAssertion": 0,
+          "usefulness": 0.16666666666666666
+        },
+        "answer": "",
+        "quality": {
+          "novelty": 0.38,
+          "styleFit": 0.7,
+          "coherence": 1,
+          "formatFit": 0.6666666666666666,
+          "structure": 0.68,
+          "directness": 0.82,
+          "repetition": 0,
+          "usefulness": 0.16666666666666666,
+          "truthSupport": 0,
+          "contradiction": 0,
+          "telemetryLeak": 0,
+          "testWeakening": 0,
+          "sourceFidelity": 0,
+          "languageQuality": 0.74,
+          "staleSourceRisk": 0,
+          "explanatoryPower": 0,
+          "dialogueContinuity": 0.28660383002357853,
+          "requirementCoverage": 0.6666666666666666,
+          "unsupportedFactRate": 0,
+          "fakeFactualAuthority": 0,
+          "semanticPreservation": 0.76,
+          "inferentialContinuity": 1,
+          "transformationQuality": 0.6666666666666666,
+          "executableCompleteness": 0.7842152941558836,
+          "uncertaintyCalibration": 1
+        },
+        "audit": {
+          "source": "cognitive-proposal",
+          "quality": {
+            "novelty": 0.38,
+            "styleFit": 0.7,
+            "coherence": 1,
+            "formatFit": 0.6666666666666666,
+            "structure": 0.68,
+            "directness": 0.82,
+            "repetition": 0,
+            "usefulness": 0.16666666666666666,
+            "truthSupport": 0,
+            "contradiction": 0,
+            "telemetryLeak": 0,
+            "testWeakening": 0,
+            "sourceFidelity": 0,
+            "languageQuality": 0.74,
+            "staleSourceRisk": 0,
+            "explanatoryPower": 0,
+            "dialogueContinuity": 0.28660383002357853,
+            "requirementCoverage": 0.6666666666666666,
+            "unsupportedFactRate": 0,
+            "fakeFactualAuthority": 0,
+            "semanticPreservation": 0.76,
+            "inferentialContinuity": 1,
+            "transformationQuality": 0.6666666666666666,
+            "executableCompleteness": 0.7842152941558836,
+            "uncertaintyCalibration": 1
+          },
+          "claimBases": [
+            {
+              "basis": "learned_prior",
+              "trace": {
+                "kind": "semantic_proof",
+                "source": "construct.node"
+              },
+              "claimId": "planned_claim:15ecc484ab3ec638ef24b519cb3aa2f8",
+              "evidenceIds": [],
+              "actionReceiptId": null,
+              "externallyFactual": false
+            }
+          ],
+          "proposalId": "cognitive_proposal:981e3749c518414d80be6c5e9824a931",
+          "operatorIds": [
+            "operator.cognition.dialogue_continuation.v1",
+            "operator.cognition.relation_composition.v1",
+            "operator.cognition.graph_propagation.v1"
+          ],
+          "constructIds": [
+            "proof"
+          ],
+          "proposalTrace": {
+            "kind": "reasoning",
+            "rank": 3,
+            "family": "reasoning",
+            "schema": "scce.cognitive_proposal.trace.v1",
+            "source": "cognitive-planner.plan",
+            "quality": {
+              "mmr": 0.5653624529417806,
+              "diversity": 0.43835616438356173,
+              "invention": null,
+              "reasoning": {
+                "score": 0.7291666666666666,
+                "simplicity": 1,
+                "usefulness": 0.16666666666666666,
+                "premiseValidity": 1,
+                "explanatoryPower": 0,
+                "relationContinuity": 1,
+                "requirementCoverage": 0.6666666666666666,
+                "temporalConsistency": 1,
+                "unsupportedLeapRate": 0,
+                "contradictionHandling": 1,
+                "internalContradiction": 0
+              },
+              "baseQuality": 0.7291666666666666
+            },
+            "equations": {
+              "mmr": "MMR(g)=sqrt(quality(g)*diversity(g,S))",
+              "novelty": "N=mean(N_memory,N_sibling)",
+              "diversity": "diversity(g,S)=1-max_h(weightedJaccard(phi(g),phi(h)))",
+              "invention": "Q=mean(X,C,N,F,U,L,styleFit)*(1-R)*(1-repetition)*(1-H)",
+              "reasoning": "Q=mean(P,C,X,E,K,T,S,U)*(1-L)*(1-I)"
+            },
+            "claimBases": [
+              {
+                "basis": "learned_prior",
+                "claimId": "planned_claim:15ecc484ab3ec638ef24b519cb3aa2f8",
+                "evidenceIds": []
+              }
+            ],
+            "composition": {
+              "schema": "scce.cognitive_proposal.composition.v1",
+              "version": "cognitive-proposal.composition.2026-09-18.v1",
+              "selection": "geometric_mean_of_quality_and_diversity",
+              "supporting": {
+                "invention": [
+                  "requirementSatisfaction",
+                  "relationCoherence",
+                  "novelty",
+                  "fit",
+                  "usefulness",
+                  "languageRealizability",
+                  "styleFit"
+                ],
+                "reasoning": [
+                  "premiseValidity",
+                  "relationContinuity",
+                  "requirementCoverage",
+                  "explanatoryPower",
+                  "contradictionHandling",
+                  "temporalConsistency",
+                  "simplicity",
+                  "usefulness"
+                ]
+              },
+              "failureRates": {
+                "invention": [
+                  "risk",
+                  "repetition",
+                  "unsupportedExternallyFactualRate"
+                ],
+                "reasoning": [
+                  "unsupportedLeapRate",
+                  "internalContradiction"
+                ]
+              },
+              "featureSchemaId": "scce.cognitive_proposal.preference_features.v1",
+              "calibrationScopeId": "candidate.cognitive_proposal_preference"
+            },
+            "operatorMpc": {
+              "steps": 2,
+              "schema": "scce.cognitive_mpc.run.v1",
+              "status": "completed",
+              "operatorIds": [
+                "operator.cognition.dialogue_continuation.v1",
+                "operator.cognition.relation_composition.v1"
+              ],
+              "transitions": [
+                {
+                  "outcome": true,
+                  "operatorId": "operator.cognition.dialogue_continuation.v1",
+                  "actualDelta": {
+                    "delta": {
+                      "cost": 0.14,
+                      "progressDelta": 0.5445833333333333,
+                      "uncertaintyDelta": -0.159375,
+                      "contradictionDelta": -0.04,
+                      "unresolvedReduction": 0.5675
+                    },
+                    "schema": "scce.cognitive_mpc.proposal_observation.v1",
+                    "quality": 0.7291666666666666,
+                    "operatorId": "operator.cognition.dialogue_continuation.v1",
+                    "bestDraftId": "cognitive_proposal:26c95d6a71357e0ef48a617df68a314f",
+                    "failureRate": 0,
+                    "viableDraftCount": 3,
+                    "generatedDraftCount": 3,
+                    "requirementCoverage": 0.6666666666666666,
+                    "contradictionPressure": 0
+                  },
+                  "energyAfter": 0.2841838244771926,
+                  "energyBefore": 0.5795088244771927,
+                  "predictedDelta": {
+                    "cost": 0.16404182697570088,
+                    "schema": "scce.cognitive_mpc.delta.v1",
+                    "operatorId": "operator.cognition.dialogue_continuation.v1",
+                    "progressDelta": 0.2696632393741872,
+                    "uncertaintyDelta": -0.039379995888703126,
+                    "contradictionDelta": -0.01974166495362631,
+                    "unresolvedReduction": 0.24269691543676847
+                  }
+                },
+                {
+                  "outcome": true,
+                  "operatorId": "operator.cognition.relation_composition.v1",
+                  "actualDelta": {
+                    "delta": {
+                      "cost": 0.16,
+                      "progressDelta": 0.6892916666666666,
+                      "uncertaintyDelta": -0.14218750000000002,
+                      "contradictionDelta": -0.04,
+                      "unresolvedReduction": 0.7457499999999999
+                    },
+                    "schema": "scce.cognitive_mpc.proposal_observation.v1",
+                    "quality": 0.6145833333333334,
+                    "operatorId": "operator.cognition.relation_composition.v1",
+                    "bestDraftId": "cognitive_proposal:6e956a9b2f357ec169d6d49b05f06fea",
+                    "failureRate": 0,
+                    "viableDraftCount": 4,
+                    "generatedDraftCount": 4,
+                    "requirementCoverage": 0.9333333333333333,
+                    "contradictionPressure": 0
+                  },
+                  "energyAfter": 0.051133824477192585,
+                  "energyBefore": 0.2841838244771926,
+                  "predictedDelta": {
+                    "cost": 0.17531966433458535,
+                    "schema": "scce.cognitive_mpc.delta.v1",
+                    "operatorId": "operator.cognition.relation_composition.v1",
+                    "progressDelta": 0.24224310423832976,
+                    "uncertaintyDelta": -0.02432193967762547,
+                    "contradictionDelta": -0.013467474865677287,
+                    "unresolvedReduction": 0.2180187938144968
+                  }
+                }
+              ],
+              "energyHistory": [
+                0.5795088244771927,
+                0.2841838244771926,
+                0.051133824477192585
+              ],
+              "worseningGuard": 2
+            },
+            "hardFailures": [],
+            "calibrationStatus": "no_coefficients"
+          },
+          "semanticFrame": {
+            "frameId": "semantic.cognitive_proposal.v1",
+            "stepIds": [],
+            "claimIds": [
+              "planned_claim:15ecc484ab3ec638ef24b519cb3aa2f8"
+            ],
+            "proposalId": "cognitive_proposal:981e3749c518414d80be6c5e9824a931",
+            "artifactIds": [],
+            "relationIds": [],
+            "candidateKindId": "reasoned-synthesis",
+            "surfaceOriginId": null,
+            "semanticFrameIds": [],
+            "surfaceEvidenceIds": []
+          }
+        }
+      },
+      {
+        "boundaries": [],
+        "evidenceIds": [],
+        "force": "unknown",
+        "id": "proposal:cognitive_proposal:d452efb2009acb50472193f0eaae411f:3",
+        "kind": "reasoned-synthesis",
+        "scores": {
+          "actionability": 0.16666666666666666,
+          "alphaPressure": 0,
+          "constraintCoverage": 0.6666666666666666,
+          "contradiction": 0,
+          "evidenceCoverage": 0,
+          "faithfulness": 0,
+          "graphCoherence": 1,
+          "languageRealizability": 0.74,
+          "novelty": 0.38,
+          "realizability": 0.74,
+          "repetition": 0,
+          "risk": 0,
+          "support": 0,
+          "unsupportedFactualAssertion": 0,
+          "usefulness": 0.16666666666666666
+        },
+        "answer": "",
+        "quality": {
+          "novelty": 0.38,
+          "styleFit": 0.7,
+          "coherence": 1,
+          "formatFit": 0.6666666666666666,
+          "structure": 0.68,
+          "directness": 0.82,
+          "repetition": 0,
+          "usefulness": 0.16666666666666666,
+          "truthSupport": 0,
+          "contradiction": 0,
+          "telemetryLeak": 0,
+          "testWeakening": 0,
+          "sourceFidelity": 0,
+          "languageQuality": 0.74,
+          "staleSourceRisk": 0,
+          "explanatoryPower": 0,
+          "dialogueContinuity": 0.28660383002357853,
+          "requirementCoverage": 0.6666666666666666,
+          "unsupportedFactRate": 0,
+          "fakeFactualAuthority": 0,
+          "semanticPreservation": 0.76,
+          "inferentialContinuity": 1,
+          "transformationQuality": 0.6666666666666666,
+          "executableCompleteness": 0.7842152941558836,
+          "uncertaintyCalibration": 1
+        },
+        "audit": {
+          "source": "cognitive-proposal",
+          "quality": {
+            "novelty": 0.38,
+            "styleFit": 0.7,
+            "coherence": 1,
+            "formatFit": 0.6666666666666666,
+            "structure": 0.68,
+            "directness": 0.82,
+            "repetition": 0,
+            "usefulness": 0.16666666666666666,
+            "truthSupport": 0,
+            "contradiction": 0,
+            "telemetryLeak": 0,
+            "testWeakening": 0,
+            "sourceFidelity": 0,
+            "languageQuality": 0.74,
+            "staleSourceRisk": 0,
+            "explanatoryPower": 0,
+            "dialogueContinuity": 0.28660383002357853,
+            "requirementCoverage": 0.6666666666666666,
+            "unsupportedFactRate": 0,
+            "fakeFactualAuthority": 0,
+            "semanticPreservation": 0.76,
+            "inferentialContinuity": 1,
+            "transformationQuality": 0.6666666666666666,
+            "executableCompleteness": 0.7842152941558836,
+            "uncertaintyCalibration": 1
+          },
+          "claimBases": [
+            {
+              "basis": "learned_prior",
+              "trace": {
+                "kind": "owner_input",
+                "source": "construct.node"
+              },
+              "claimId": "planned_claim:792a3745974aeedd72b3ca043cdd07b5",
+              "evidenceIds": [],
+              "actionReceiptId": null,
+              "externallyFactual": false
+            }
+          ],
+          "proposalId": "cognitive_proposal:d452efb2009acb50472193f0eaae411f",
+          "operatorIds": [
+            "operator.cognition.dialogue_continuation.v1",
+            "operator.cognition.relation_composition.v1",
+            "operator.cognition.graph_propagation.v1"
+          ],
+          "constructIds": [
+            "request"
+          ],
+          "proposalTrace": {
+            "kind": "reasoning",
+            "rank": 4,
+            "family": "reasoning",
+            "schema": "scce.cognitive_proposal.trace.v1",
+            "source": "cognitive-planner.plan",
+            "quality": {
+              "mmr": 0.47930933949003596,
+              "diversity": 0.3150684931506851,
+              "invention": null,
+              "reasoning": {
+                "score": 0.7291666666666666,
+                "simplicity": 1,
+                "usefulness": 0.16666666666666666,
+                "premiseValidity": 1,
+                "explanatoryPower": 0,
+                "relationContinuity": 1,
+                "requirementCoverage": 0.6666666666666666,
+                "temporalConsistency": 1,
+                "unsupportedLeapRate": 0,
+                "contradictionHandling": 1,
+                "internalContradiction": 0
+              },
+              "baseQuality": 0.7291666666666666
+            },
+            "equations": {
+              "mmr": "MMR(g)=sqrt(quality(g)*diversity(g,S))",
+              "novelty": "N=mean(N_memory,N_sibling)",
+              "diversity": "diversity(g,S)=1-max_h(weightedJaccard(phi(g),phi(h)))",
+              "invention": "Q=mean(X,C,N,F,U,L,styleFit)*(1-R)*(1-repetition)*(1-H)",
+              "reasoning": "Q=mean(P,C,X,E,K,T,S,U)*(1-L)*(1-I)"
+            },
+            "claimBases": [
+              {
+                "basis": "learned_prior",
+                "claimId": "planned_claim:792a3745974aeedd72b3ca043cdd07b5",
+                "evidenceIds": []
+              }
+            ],
+            "composition": {
+              "schema": "scce.cognitive_proposal.composition.v1",
+              "version": "cognitive-proposal.composition.2026-09-18.v1",
+              "selection": "geometric_mean_of_quality_and_diversity",
+              "supporting": {
+                "invention": [
+                  "requirementSatisfaction",
+                  "relationCoherence",
+                  "novelty",
+                  "fit",
+                  "usefulness",
+                  "languageRealizability",
+                  "styleFit"
+                ],
+                "reasoning": [
+                  "premiseValidity",
+                  "relationContinuity",
+                  "requirementCoverage",
+                  "explanatoryPower",
+                  "contradictionHandling",
+                  "temporalConsistency",
+                  "simplicity",
+                  "usefulness"
+                ]
+              },
+              "failureRates": {
+                "invention": [
+                  "risk",
+                  "repetition",
+                  "unsupportedExternallyFactualRate"
+                ],
+                "reasoning": [
+                  "unsupportedLeapRate",
+                  "internalContradiction"
+                ]
+              },
+              "featureSchemaId": "scce.cognitive_proposal.preference_features.v1",
+              "calibrationScopeId": "candidate.cognitive_proposal_preference"
+            },
+            "operatorMpc": {
+              "steps": 2,
+              "schema": "scce.cognitive_mpc.run.v1",
+              "status": "completed",
+              "operatorIds": [
+                "operator.cognition.dialogue_continuation.v1",
+                "operator.cognition.relation_composition.v1"
+              ],
+              "transitions": [
+                {
+                  "outcome": true,
+                  "operatorId": "operator.cognition.dialogue_continuation.v1",
+                  "actualDelta": {
+                    "delta": {
+                      "cost": 0.14,
+                      "progressDelta": 0.5445833333333333,
+                      "uncertaintyDelta": -0.159375,
+                      "contradictionDelta": -0.04,
+                      "unresolvedReduction": 0.5675
+                    },
+                    "schema": "scce.cognitive_mpc.proposal_observation.v1",
+                    "quality": 0.7291666666666666,
+                    "operatorId": "operator.cognition.dialogue_continuation.v1",
+                    "bestDraftId": "cognitive_proposal:26c95d6a71357e0ef48a617df68a314f",
+                    "failureRate": 0,
+                    "viableDraftCount": 3,
+                    "generatedDraftCount": 3,
+                    "requirementCoverage": 0.6666666666666666,
+                    "contradictionPressure": 0
+                  },
+                  "energyAfter": 0.2841838244771926,
+                  "energyBefore": 0.5795088244771927,
+                  "predictedDelta": {
+                    "cost": 0.16404182697570088,
+                    "schema": "scce.cognitive_mpc.delta.v1",
+                    "operatorId": "operator.cognition.dialogue_continuation.v1",
+                    "progressDelta": 0.2696632393741872,
+                    "uncertaintyDelta": -0.039379995888703126,
+                    "contradictionDelta": -0.01974166495362631,
+                    "unresolvedReduction": 0.24269691543676847
+                  }
+                },
+                {
+                  "outcome": true,
+                  "operatorId": "operator.cognition.relation_composition.v1",
+                  "actualDelta": {
+                    "delta": {
+                      "cost": 0.16,
+                      "progressDelta": 0.6892916666666666,
+                      "uncertaintyDelta": -0.14218750000000002,
+                      "contradictionDelta": -0.04,
+                      "unresolvedReduction": 0.7457499999999999
+                    },
+                    "schema": "scce.cognitive_mpc.proposal_observation.v1",
+                    "quality": 0.6145833333333334,
+                    "operatorId": "operator.cognition.relation_composition.v1",
+                    "bestDraftId": "cognitive_proposal:6e956a9b2f357ec169d6d49b05f06fea",
+                    "failureRate": 0,
+                    "viableDraftCount": 4,
+                    "generatedDraftCount": 4,
+                    "requirementCoverage": 0.9333333333333333,
+                    "contradictionPressure": 0
+                  },
+                  "energyAfter": 0.051133824477192585,
+                  "energyBefore": 0.2841838244771926,
+                  "predictedDelta": {
+                    "cost": 0.17531966433458535,
+                    "schema": "scce.cognitive_mpc.delta.v1",
+                    "operatorId": "operator.cognition.relation_composition.v1",
+                    "progressDelta": 0.24224310423832976,
+                    "uncertaintyDelta": -0.02432193967762547,
+                    "contradictionDelta": -0.013467474865677287,
+                    "unresolvedReduction": 0.2180187938144968
+                  }
+                }
+              ],
+              "energyHistory": [
+                0.5795088244771927,
+                0.2841838244771926,
+                0.051133824477192585
+              ],
+              "worseningGuard": 2
+            },
+            "hardFailures": [],
+            "calibrationStatus": "no_coefficients"
+          },
+          "semanticFrame": {
+            "frameId": "semantic.cognitive_proposal.v1",
+            "stepIds": [],
+            "claimIds": [
+              "planned_claim:792a3745974aeedd72b3ca043cdd07b5"
+            ],
+            "proposalId": "cognitive_proposal:d452efb2009acb50472193f0eaae411f",
+            "artifactIds": [],
+            "relationIds": [],
+            "candidateKindId": "reasoned-synthesis",
+            "surfaceOriginId": null,
+            "semanticFrameIds": [],
+            "surfaceEvidenceIds": []
+          }
+        }
+      },
+      {
+        "boundaries": [
+          "generated-material-not-evidence"
+        ],
+        "evidenceIds": [
+          "evidence_session_7c4bdef072a902a7bc959ff052a8c5e0c4aef16bbd260c05"
+        ],
+        "force": "invented",
+        "id": "creative:invention_construct_0033de310036266d:0:episode_00mw73f3t1_dcb5f562bcc8_04e138c4a0",
+        "kind": "creative-candidate",
+        "scores": {
+          "actionability": 0.5575757575757576,
+          "alphaPressure": 0,
+          "constraintCoverage": 1,
+          "contradiction": 0,
+          "creativeSelectionScore": 1,
+          "evidenceCoverage": 1,
+          "faithfulness": 0.52,
+          "graphCoherence": 0.52,
+          "languageRealizability": 9.133686584019382e-05,
+          "novelty": 0.7234042553191489,
+          "realizability": 9.133686584019382e-05,
+          "repetition": 0,
+          "risk": 0,
+          "support": 0.5194167736103994,
+          "unsupportedFactualAssertion": 0,
+          "usefulness": 0.5575757575757576
+        },
+        "answer": "",
+        "quality": {
+          "novelty": 0.7234042553191489,
+          "styleFit": 9.133686584019382e-05,
+          "coherence": 0.52,
+          "formatFit": 9.133686584019382e-05,
+          "structure": 9.133686584019382e-05,
+          "directness": 9.133686584019382e-05,
+          "repetition": 0,
+          "usefulness": 0.5575757575757576,
+          "truthSupport": 1,
+          "contradiction": 0,
+          "telemetryLeak": 0,
+          "testWeakening": 0,
+          "sourceFidelity": 0.52,
+          "languageQuality": 9.133686584019382e-05,
+          "staleSourceRisk": 0,
+          "explanatoryPower": 0.5575757575757576,
+          "dialogueContinuity": 0.5,
+          "requirementCoverage": 1,
+          "unsupportedFactRate": 0,
+          "fakeFactualAuthority": 0,
+          "semanticPreservation": 0.52,
+          "inferentialContinuity": 0.52,
+          "transformationQuality": 9.133686584019382e-05,
+          "executableCompleteness": 0.5575757575757576,
+          "uncertaintyCalibration": 1
+        },
+        "audit": {
+          "source": "invention.construct",
+          "claimBasis": [
+            {
+              "id": "claim.premise.9377468c186e8664bc19",
+              "kind": "factual_premise",
+              "force": "observed",
+              "surface": "clockmaker",
+              "evidenceIds": [
+                "evidence_session_7c4bdef072a902a7bc959ff052a8c5e0c4aef16bbd260c05"
+              ]
+            },
+            {
+              "id": "claim.deduction.9f629184c6c0f2e34876",
+              "kind": "deduction",
+              "force": "inferred",
+              "evidenceIds": [
+                "evidence_session_7c4bdef072a902a7bc959ff052a8c5e0c4aef16bbd260c05"
+              ]
+            },
+            {
+              "id": "claim.deduction.e9aa1483131e3fa88344",
+              "kind": "deduction",
+              "force": "inferred",
+              "evidenceIds": [
+                "evidence_session_7c4bdef072a902a7bc959ff052a8c5e0c4aef16bbd260c05"
+              ]
+            },
+            {
+              "id": "claim.invention.a730023e70013153c913",
+              "kind": "invention",
+              "force": "invented",
+              "surface": "Write a short scene about sailor who befriends clockmaker",
+              "evidenceIds": []
+            }
+          ],
+          "constructId": "invention_construct_0033de310036266d",
+          "proofStatusId": "proof.status.generated_not_evidence",
+          "selectionScore": 1,
+          "creativeMetrics": {
+            "risk": 0,
+            "novelty": 0.7234042553191489,
+            "repetition": 0,
+            "usefulness": 0.5575757575757576,
+            "graphCoherence": 0.52,
+            "constraintCoverage": 1,
+            "languageRealizability": 9.133686584019382e-05,
+            "unsupportedFactualAssertion": 0
+          },
+          "ownerAdjustment": 0,
+          "selectionSource": "request_constraints",
+          "preferenceModelId": null,
+          "preferenceModelHash": null,
+          "selectionAdjustment": 0,
+          "fakeCitationForbidden": true,
+          "requestConstraintCounts": {
+            "total": 10,
+            "satisfied": 10,
+            "constraintIds": [
+              "constraint.request.2c897f67632df21d564b",
+              "constraint.request.6db0041f4a84ab44ca0c",
+              "constraint.request.7adfe20c54ad5c14530b",
+              "constraint.request.9e4499699578c10182b4",
+              "constraint.request.a0e44ca8a0661d5a72b1",
+              "constraint.request.cc5ffc720bcde4fc116b",
+              "constraint.request.eab9f7fdc4aa79b6676a",
+              "requirement.055729c3",
+              "requirement.7fcbd7fa",
+              "requirement.fa902949"
+            ]
+          },
+          "continuationPolicyApplied": true,
+          "factualPremiseEvidenceIds": [
+            "evidence_session_7c4bdef072a902a7bc959ff052a8c5e0c4aef16bbd260c05"
+          ],
+          "droppedUnknownBasisEvidenceIds": [],
+          "droppedNonFactualBasisEvidenceIds": [],
+          "generatedMaterialRequiresEvidence": false
+        }
+      }
+    ],
+    "surfaceMass": [
+      {
+        "candidateId": "creative:invention_construct_0033de310036266d:0:episode_00mw73f3t1_dcb5f562bcc8_04e138c4a0",
+        "mass": 1,
+        "rawMass": 0.8989065924070967,
+        "calibrated": false,
+        "reason": "force=invented support=0.519 faith=0.520 alpha=0.000 contradiction=0.000 creativeSelection=1.000 temperature=0.280"
+      },
+      {
+        "candidateId": "proposal:cognitive_proposal:26c95d6a71357e0ef48a617df68a314f:0",
+        "mass": 0,
+        "rawMass": 0.02527335189822583,
+        "calibrated": true,
+        "calibrationId": "calibration.model.b9faecb0",
+        "reason": "force=unknown support=0.000 faith=0.000 alpha=0.000 contradiction=0.000 creativeSelection=0.000 temperature=0.280"
+      },
+      {
+        "candidateId": "proposal:cognitive_proposal:6e956a9b2f357ec169d6d49b05f06fea:1",
+        "mass": 0,
+        "rawMass": 0.02527335189822583,
+        "calibrated": true,
+        "calibrationId": "calibration.model.b9faecb0",
+        "reason": "force=inferred support=0.000 faith=0.000 alpha=0.000 contradiction=0.000 creativeSelection=0.000 temperature=0.280"
+      },
+      {
+        "candidateId": "proposal:cognitive_proposal:981e3749c518414d80be6c5e9824a931:2",
+        "mass": 0,
+        "rawMass": 0.02527335189822583,
+        "calibrated": true,
+        "calibrationId": "calibration.model.b9faecb0",
+        "reason": "force=unknown support=0.000 faith=0.000 alpha=0.000 contradiction=0.000 creativeSelection=0.000 temperature=0.280"
+      },
+      {
+        "candidateId": "proposal:cognitive_proposal:d452efb2009acb50472193f0eaae411f:3",
+        "mass": 0,
+        "rawMass": 0.02527335189822583,
+        "calibrated": true,
+        "calibrationId": "calibration.model.b9faecb0",
+        "reason": "force=unknown support=0.000 faith=0.000 alpha=0.000 contradiction=0.000 creativeSelection=0.000 temperature=0.280"
+      }
+    ],
+    "audit": {
+      "authorityAdmission": {
+        "admittedCandidateIds": [
+          "proposal:cognitive_proposal:26c95d6a71357e0ef48a617df68a314f:0",
+          "proposal:cognitive_proposal:6e956a9b2f357ec169d6d49b05f06fea:1",
+          "proposal:cognitive_proposal:981e3749c518414d80be6c5e9824a931:2",
+          "proposal:cognitive_proposal:d452efb2009acb50472193f0eaae411f:3",
+          "creative:invention_construct_0033de310036266d:0:episode_00mw73f3t1_dcb5f562bcc8_04e138c4a0"
+        ],
+        "admittedCandidateKinds": [
+          "reasoned-synthesis",
+          "reasoned-synthesis",
+          "reasoned-synthesis",
+          "reasoned-synthesis",
+          "creative-candidate"
+        ],
+        "authority": "creative",
+        "authorityUnavailable": false,
+        "compatibleCandidateIds": [
+          "creative:invention_construct_0033de310036266d:0:episode_00mw73f3t1_dcb5f562bcc8_04e138c4a0"
+        ],
+        "fallbackToGeneratedField": false,
+        "generatedCandidateCount": 5,
+        "lexicalRouterUsed": false,
+        "rejectedFactualProofCandidates": [],
+        "schema": "scce.requested_authority.candidate_admission.v2",
+        "source": "requested_authority_projection"
+      },
+      "candidateOperators": [
+        {
+          "boltzmannProbability": 0.025273351898225827,
+          "candidateId": "proposal:cognitive_proposal:26c95d6a71357e0ef48a617df68a314f:0",
+          "freeEnergy": 0.39436666666666664,
+          "leastActionCost": 0.39436666666666664,
+          "leastActionReachable": true,
+          "selectionAdjustment": null,
+          "selectionScore": 0,
+          "selectionSource": "noncreative_authority_mismatch"
+        },
+        {
+          "boltzmannProbability": 0.025273351898225827,
+          "candidateId": "proposal:cognitive_proposal:6e956a9b2f357ec169d6d49b05f06fea:1",
+          "freeEnergy": 0.4347576241729188,
+          "leastActionCost": 0.4347576241729188,
+          "leastActionReachable": true,
+          "selectionAdjustment": null,
+          "selectionScore": 0,
+          "selectionSource": "noncreative_authority_mismatch"
+        },
+        {
+          "boltzmannProbability": 0.025273351898225827,
+          "candidateId": "proposal:cognitive_proposal:981e3749c518414d80be6c5e9824a931:2",
+          "freeEnergy": 0.39436666666666664,
+          "leastActionCost": 0.39436666666666664,
+          "leastActionReachable": true,
+          "selectionAdjustment": null,
+          "selectionScore": 0,
+          "selectionSource": "noncreative_authority_mismatch"
+        },
+        {
+          "boltzmannProbability": 0.025273351898225827,
+          "candidateId": "proposal:cognitive_proposal:d452efb2009acb50472193f0eaae411f:3",
+          "freeEnergy": 0.39436666666666664,
+          "leastActionCost": 0.39436666666666664,
+          "leastActionReachable": true,
+          "selectionAdjustment": null,
+          "selectionScore": 0,
+          "selectionSource": "noncreative_authority_mismatch"
+        },
+        {
+          "boltzmannProbability": 0.8989065924070966,
+          "candidateId": "creative:invention_construct_0033de310036266d:0:episode_00mw73f3t1_dcb5f562bcc8_04e138c4a0",
+          "freeEnergy": 0.2406251405466147,
+          "leastActionCost": 0.2406251405466147,
+          "leastActionReachable": true,
+          "selectionAdjustment": 0,
+          "selectionScore": 1,
+          "selectionSource": "request_constraints"
+        }
+      ],
+      "candidates": [
+        {
+          "boundaries": [],
+          "evidenceIds": [],
+          "force": "unknown",
+          "id": "proposal:cognitive_proposal:26c95d6a71357e0ef48a617df68a314f:0",
+          "kind": "reasoned-synthesis",
+          "scores": {
+            "actionability": 0.16666666666666666,
+            "alphaPressure": 0,
+            "constraintCoverage": 0.6666666666666666,
+            "contradiction": 0,
+            "evidenceCoverage": 0,
+            "faithfulness": 0,
+            "graphCoherence": 1,
+            "languageRealizability": 0.74,
+            "novelty": 0.38,
+            "realizability": 0.74,
+            "repetition": 0,
+            "risk": 0,
+            "support": 0,
+            "unsupportedFactualAssertion": 0,
+            "usefulness": 0.16666666666666666
+          }
+        },
+        {
+          "boundaries": [],
+          "evidenceIds": [
+            "evidence_session_7c4bdef072a902a7bc959ff052a8c5e0c4aef16bbd260c05"
+          ],
+          "force": "inferred",
+          "id": "proposal:cognitive_proposal:6e956a9b2f357ec169d6d49b05f06fea:1",
+          "kind": "reasoned-synthesis",
+          "scores": {
+            "actionability": 0.48333333333333334,
+            "alphaPressure": 0,
+            "constraintCoverage": 0.9333333333333333,
+            "contradiction": 0,
+            "evidenceCoverage": 0,
+            "faithfulness": 0,
+            "graphCoherence": 1,
+            "languageRealizability": 0.74,
+            "novelty": 0.38,
+            "realizability": 0.74,
+            "repetition": 0.18181818181818177,
+            "risk": 0,
+            "support": 0,
+            "unsupportedFactualAssertion": 0,
+            "usefulness": 0.48333333333333334
+          }
+        },
+        {
+          "boundaries": [],
+          "evidenceIds": [],
+          "force": "unknown",
+          "id": "proposal:cognitive_proposal:981e3749c518414d80be6c5e9824a931:2",
+          "kind": "reasoned-synthesis",
+          "scores": {
+            "actionability": 0.16666666666666666,
+            "alphaPressure": 0,
+            "constraintCoverage": 0.6666666666666666,
+            "contradiction": 0,
+            "evidenceCoverage": 0,
+            "faithfulness": 0,
+            "graphCoherence": 1,
+            "languageRealizability": 0.74,
+            "novelty": 0.38,
+            "realizability": 0.74,
+            "repetition": 0,
+            "risk": 0,
+            "support": 0,
+            "unsupportedFactualAssertion": 0,
+            "usefulness": 0.16666666666666666
+          }
+        },
+        {
+          "boundaries": [],
+          "evidenceIds": [],
+          "force": "unknown",
+          "id": "proposal:cognitive_proposal:d452efb2009acb50472193f0eaae411f:3",
+          "kind": "reasoned-synthesis",
+          "scores": {
+            "actionability": 0.16666666666666666,
+            "alphaPressure": 0,
+            "constraintCoverage": 0.6666666666666666,
+            "contradiction": 0,
+            "evidenceCoverage": 0,
+            "faithfulness": 0,
+            "graphCoherence": 1,
+            "languageRealizability": 0.74,
+            "novelty": 0.38,
+            "realizability": 0.74,
+            "repetition": 0,
+            "risk": 0,
+            "support": 0,
+            "unsupportedFactualAssertion": 0,
+            "usefulness": 0.16666666666666666
+          }
+        },
+        {
+          "boundaries": [
+            "generated-material-not-evidence"
+          ],
+          "evidenceIds": [
+            "evidence_session_7c4bdef072a902a7bc959ff052a8c5e0c4aef16bbd260c05"
+          ],
+          "force": "invented",
+          "id": "creative:invention_construct_0033de310036266d:0:episode_00mw73f3t1_dcb5f562bcc8_04e138c4a0",
+          "kind": "creative-candidate",
+          "scores": {
+            "actionability": 0.5575757575757576,
+            "alphaPressure": 0,
+            "constraintCoverage": 1,
+            "contradiction": 0,
+            "creativeSelectionScore": 1,
+            "evidenceCoverage": 1,
+            "faithfulness": 0.52,
+            "graphCoherence": 0.52,
+            "languageRealizability": 9.133686584019382e-05,
+            "novelty": 0.7234042553191489,
+            "realizability": 9.133686584019382e-05,
+            "repetition": 0,
+            "risk": 0,
+            "support": 0.5194167736103994,
+            "unsupportedFactualAssertion": 0,
+            "usefulness": 0.5575757575757576
+          }
+        }
+      ],
+      "functionalGate": {
+        "efc": false,
+        "fc": false,
+        "gov": false
+      },
+      "functionalGateRejected": [],
+      "operatorRoutingRecovery": false,
+      "rawMass": [
+        {
+          "candidateId": "proposal:cognitive_proposal:26c95d6a71357e0ef48a617df68a314f:0",
+          "mass": 0.02527335189822583,
+          "reason": "force=unknown support=0.000 faith=0.000 alpha=0.000 contradiction=0.000 creativeSelection=0.000 temperature=0.280"
+        },
+        {
+          "candidateId": "proposal:cognitive_proposal:6e956a9b2f357ec169d6d49b05f06fea:1",
+          "mass": 0.02527335189822583,
+          "reason": "force=inferred support=0.000 faith=0.000 alpha=0.000 contradiction=0.000 creativeSelection=0.000 temperature=0.280"
+        },
+        {
+          "candidateId": "proposal:cognitive_proposal:981e3749c518414d80be6c5e9824a931:2",
+          "mass": 0.02527335189822583,
+          "reason": "force=unknown support=0.000 faith=0.000 alpha=0.000 contradiction=0.000 creativeSelection=0.000 temperature=0.280"
+        },
+        {
+          "candidateId": "proposal:cognitive_proposal:d452efb2009acb50472193f0eaae411f:3",
+          "mass": 0.02527335189822583,
+          "reason": "force=unknown support=0.000 faith=0.000 alpha=0.000 contradiction=0.000 creativeSelection=0.000 temperature=0.280"
+        },
+        {
+          "candidateId": "creative:invention_construct_0033de310036266d:0:episode_00mw73f3t1_dcb5f562bcc8_04e138c4a0",
+          "mass": 0.8989065924070967,
+          "reason": "force=invented support=0.519 faith=0.520 alpha=0.000 contradiction=0.000 creativeSelection=1.000 temperature=0.280"
+        }
+      ],
+      "scoreTrace": [
+        {
+          "calibrated": false,
+          "calibrationId": null,
+          "failureModes": [],
+          "id": "score:feature:3545739d",
+          "inputs": [
+            "requestConstraintsSatisfied:10",
+            "requestConstraintsTotal:10"
+          ],
+          "kind": "feature",
+          "meaning": "fraction of actual request constraints satisfied",
+          "provenance": [
+            "candidate.ts:creativeCandidate",
+            "invention-planner.ts:constraintRows"
+          ],
+          "range": [
+            0,
+            1
+          ],
+          "value": 1
+        },
+        {
+          "calibrated": true,
+          "calibrationId": "calibration.model.b9faecb0",
+          "failureModes": [],
+          "id": "score:calibrated_probability:c70db835",
+          "inputs": [
+            "surfaceMass",
+            "forceWeight",
+            "support",
+            "faithfulness",
+            "proposal:cognitive_proposal:26c95d6a71357e0ef48a617df68a314f:0",
+            "calibrationId:candidate.mass",
+            "taskClass:task.general_cognition"
+          ],
+          "kind": "calibrated_probability",
+          "meaning": "calibrated candidate mass (proposal:cognitive_proposal:26c95d6a71357e0ef48a617df68a314f:0)",
+          "provenance": [
+            "candidate.ts:generate"
+          ],
+          "range": [
+            0,
+            1
+          ],
+          "value": 0
+        },
+        {
+          "calibrated": true,
+          "calibrationId": "calibration.model.b9faecb0",
+          "failureModes": [],
+          "id": "score:calibrated_probability:1219c79d",
+          "inputs": [
+            "surfaceMass",
+            "forceWeight",
+            "support",
+            "faithfulness",
+            "proposal:cognitive_proposal:6e956a9b2f357ec169d6d49b05f06fea:1",
+            "calibrationId:candidate.mass",
+            "taskClass:task.general_cognition"
+          ],
+          "kind": "calibrated_probability",
+          "meaning": "calibrated candidate mass (proposal:cognitive_proposal:6e956a9b2f357ec169d6d49b05f06fea:1)",
+          "provenance": [
+            "candidate.ts:generate"
+          ],
+          "range": [
+            0,
+            1
+          ],
+          "value": 0
+        },
+        {
+          "calibrated": true,
+          "calibrationId": "calibration.model.b9faecb0",
+          "failureModes": [],
+          "id": "score:calibrated_probability:cbc04d19",
+          "inputs": [
+            "surfaceMass",
+            "forceWeight",
+            "support",
+            "faithfulness",
+            "proposal:cognitive_proposal:981e3749c518414d80be6c5e9824a931:2",
+            "calibrationId:candidate.mass",
+            "taskClass:task.general_cognition"
+          ],
+          "kind": "calibrated_probability",
+          "meaning": "calibrated candidate mass (proposal:cognitive_proposal:981e3749c518414d80be6c5e9824a931:2)",
+          "provenance": [
+            "candidate.ts:generate"
+          ],
+          "range": [
+            0,
+            1
+          ],
+          "value": 0
+        },
+        {
+          "calibrated": true,
+          "calibrationId": "calibration.model.b9faecb0",
+          "failureModes": [],
+          "id": "score:calibrated_probability:719acd55",
+          "inputs": [
+            "surfaceMass",
+            "forceWeight",
+            "support",
+            "faithfulness",
+            "proposal:cognitive_proposal:d452efb2009acb50472193f0eaae411f:3",
+            "calibrationId:candidate.mass",
+            "taskClass:task.general_cognition"
+          ],
+          "kind": "calibrated_probability",
+          "meaning": "calibrated candidate mass (proposal:cognitive_proposal:d452efb2009acb50472193f0eaae411f:3)",
+          "provenance": [
+            "candidate.ts:generate"
+          ],
+          "range": [
+            0,
+            1
+          ],
+          "value": 0
+        }
+      ],
+      "surfaceMass": [
+        {
+          "calibrated": false,
+          "calibrationId": null,
+          "candidateId": "creative:invention_construct_0033de310036266d:0:episode_00mw73f3t1_dcb5f562bcc8_04e138c4a0",
+          "mass": 1,
+          "rawMass": 0.8989065924070967,
+          "reason": "force=invented support=0.519 faith=0.520 alpha=0.000 contradiction=0.000 creativeSelection=1.000 temperature=0.280"
+        },
+        {
+          "calibrated": true,
+          "calibrationId": "calibration.model.b9faecb0",
+          "candidateId": "proposal:cognitive_proposal:26c95d6a71357e0ef48a617df68a314f:0",
+          "mass": 0,
+          "rawMass": 0.02527335189822583,
+          "reason": "force=unknown support=0.000 faith=0.000 alpha=0.000 contradiction=0.000 creativeSelection=0.000 temperature=0.280"
+        },
+        {
+          "calibrated": true,
+          "calibrationId": "calibration.model.b9faecb0",
+          "candidateId": "proposal:cognitive_proposal:6e956a9b2f357ec169d6d49b05f06fea:1",
+          "mass": 0,
+          "rawMass": 0.02527335189822583,
+          "reason": "force=inferred support=0.000 faith=0.000 alpha=0.000 contradiction=0.000 creativeSelection=0.000 temperature=0.280"
+        },
+        {
+          "calibrated": true,
+          "calibrationId": "calibration.model.b9faecb0",
+          "candidateId": "proposal:cognitive_proposal:981e3749c518414d80be6c5e9824a931:2",
+          "mass": 0,
+          "rawMass": 0.02527335189822583,
+          "reason": "force=unknown support=0.000 faith=0.000 alpha=0.000 contradiction=0.000 creativeSelection=0.000 temperature=0.280"
+        },
+        {
+          "calibrated": true,
+          "calibrationId": "calibration.model.b9faecb0",
+          "candidateId": "proposal:cognitive_proposal:d452efb2009acb50472193f0eaae411f:3",
+          "mass": 0,
+          "rawMass": 0.02527335189822583,
+          "reason": "force=unknown support=0.000 faith=0.000 alpha=0.000 contradiction=0.000 creativeSelection=0.000 temperature=0.280"
+        }
+      ]
+    },
+    "scoreTrace": []
+  },
+  "capturedJudge": {
+    "rows": [
+      {
+        "kind": "reasoned-synthesis",
+        "score": 0.5423247200948825,
+        "quality": {
+          "novelty": 0.38,
+          "styleFit": 0.7,
+          "coherence": 1,
+          "formatFit": 0.6666666666666666,
+          "structure": 0.68,
+          "directness": 0.82,
+          "repetition": 0,
+          "usefulness": 0.16666666666666666,
+          "truthSupport": 0,
+          "contradiction": 0,
+          "telemetryLeak": 0,
+          "testWeakening": 0,
+          "sourceFidelity": 0,
+          "languageQuality": 0.74,
+          "staleSourceRisk": 0,
+          "explanatoryPower": 0,
+          "dialogueContinuity": 0.28660383002357853,
+          "requirementCoverage": 0.6666666666666666,
+          "unsupportedFactRate": 0,
+          "fakeFactualAuthority": 0,
+          "semanticPreservation": 0.76,
+          "inferentialContinuity": 1,
+          "transformationQuality": 0.6666666666666666,
+          "executableCompleteness": 0.7842152941558836,
+          "uncertaintyCalibration": 1
+        },
+        "negative": 0,
+        "positive": 0.5423247200948825,
+        "rawScore": 0.5423247200948825,
+        "candidateId": "proposal:cognitive_proposal:26c95d6a71357e0ef48a617df68a314f:0",
+        "hardFailures": [],
+        "boltzmannProbability": 0.21350177538197818
+      },
+      {
+        "kind": "reasoned-synthesis",
+        "score": 0.5423247200948825,
+        "quality": {
+          "novelty": 0.38,
+          "styleFit": 0.7,
+          "coherence": 1,
+          "formatFit": 0.6666666666666666,
+          "structure": 0.68,
+          "directness": 0.82,
+          "repetition": 0,
+          "usefulness": 0.16666666666666666,
+          "truthSupport": 0,
+          "contradiction": 0,
+          "telemetryLeak": 0,
+          "testWeakening": 0,
+          "sourceFidelity": 0,
+          "languageQuality": 0.74,
+          "staleSourceRisk": 0,
+          "explanatoryPower": 0,
+          "dialogueContinuity": 0.28660383002357853,
+          "requirementCoverage": 0.6666666666666666,
+          "unsupportedFactRate": 0,
+          "fakeFactualAuthority": 0,
+          "semanticPreservation": 0.76,
+          "inferentialContinuity": 1,
+          "transformationQuality": 0.6666666666666666,
+          "executableCompleteness": 0.7842152941558836,
+          "uncertaintyCalibration": 1
+        },
+        "negative": 0,
+        "positive": 0.5423247200948825,
+        "rawScore": 0.5423247200948825,
+        "candidateId": "proposal:cognitive_proposal:981e3749c518414d80be6c5e9824a931:2",
+        "hardFailures": [],
+        "boltzmannProbability": 0.21350177538197818
+      },
+      {
+        "kind": "reasoned-synthesis",
+        "score": 0.5423247200948825,
+        "quality": {
+          "novelty": 0.38,
+          "styleFit": 0.7,
+          "coherence": 1,
+          "formatFit": 0.6666666666666666,
+          "structure": 0.68,
+          "directness": 0.82,
+          "repetition": 0,
+          "usefulness": 0.16666666666666666,
+          "truthSupport": 0,
+          "contradiction": 0,
+          "telemetryLeak": 0,
+          "testWeakening": 0,
+          "sourceFidelity": 0,
+          "languageQuality": 0.74,
+          "staleSourceRisk": 0,
+          "explanatoryPower": 0,
+          "dialogueContinuity": 0.28660383002357853,
+          "requirementCoverage": 0.6666666666666666,
+          "unsupportedFactRate": 0,
+          "fakeFactualAuthority": 0,
+          "semanticPreservation": 0.76,
+          "inferentialContinuity": 1,
+          "transformationQuality": 0.6666666666666666,
+          "executableCompleteness": 0.7842152941558836,
+          "uncertaintyCalibration": 1
+        },
+        "negative": 0,
+        "positive": 0.5423247200948825,
+        "rawScore": 0.5423247200948825,
+        "candidateId": "proposal:cognitive_proposal:d452efb2009acb50472193f0eaae411f:3",
+        "hardFailures": [],
+        "boltzmannProbability": 0.21350177538197818
+      },
+      {
+        "kind": "reasoned-synthesis",
+        "score": 0.4912708164264644,
+        "quality": {
+          "novelty": 0.38,
+          "styleFit": 0.7,
+          "coherence": 1,
+          "formatFit": 0.9333333333333333,
+          "structure": 0.86,
+          "directness": 0.76,
+          "repetition": 0.18181818181818177,
+          "usefulness": 0.48333333333333334,
+          "truthSupport": 0,
+          "contradiction": 0,
+          "telemetryLeak": 0,
+          "testWeakening": 0,
+          "sourceFidelity": 0,
+          "languageQuality": 0.74,
+          "staleSourceRisk": 0,
+          "explanatoryPower": 0.5,
+          "dialogueContinuity": 0.4199371633569119,
+          "requirementCoverage": 0.9333333333333333,
+          "unsupportedFactRate": 0,
+          "fakeFactualAuthority": 0,
+          "semanticPreservation": 0.76,
+          "inferentialContinuity": 0,
+          "transformationQuality": 0.9333333333333333,
+          "executableCompleteness": 0.7842152941558836,
+          "uncertaintyCalibration": 1
+        },
+        "negative": 0.04625436493402127,
+        "positive": 0.5375251813604857,
+        "rawScore": 0.4912708164264644,
+        "candidateId": "proposal:cognitive_proposal:6e956a9b2f357ec169d6d49b05f06fea:1",
+        "hardFailures": [],
+        "boltzmannProbability": 0.18120938223879432
+      },
+      {
+        "kind": "creative-candidate",
+        "score": 0.48620622643044814,
+        "quality": {
+          "novelty": 0.7234042553191489,
+          "styleFit": 9.133686584019382e-05,
+          "coherence": 0.52,
+          "formatFit": 9.133686584019382e-05,
+          "structure": 9.133686584019382e-05,
+          "directness": 9.133686584019382e-05,
+          "repetition": 0,
+          "usefulness": 0.5575757575757576,
+          "truthSupport": 1,
+          "contradiction": 0,
+          "telemetryLeak": 0,
+          "testWeakening": 0,
+          "sourceFidelity": 0.52,
+          "languageQuality": 9.133686584019382e-05,
+          "staleSourceRisk": 0,
+          "explanatoryPower": 0.5575757575757576,
+          "dialogueContinuity": 0.5,
+          "requirementCoverage": 1,
+          "unsupportedFactRate": 0,
+          "fakeFactualAuthority": 0,
+          "semanticPreservation": 0.52,
+          "inferentialContinuity": 0.52,
+          "transformationQuality": 9.133686584019382e-05,
+          "executableCompleteness": 0.5575757575757576,
+          "uncertaintyCalibration": 1
+        },
+        "negative": 0,
+        "positive": 0.48620622643044814,
+        "rawScore": 0.48620622643044814,
+        "candidateId": "creative:invention_construct_0033de310036266d:0:episode_00mw73f3t1_dcb5f562bcc8_04e138c4a0",
+        "hardFailures": [],
+        "boltzmannProbability": 0.1782852916152712
+      }
+    ],
+    "schema": "scce.requirement_aware_judge.v1",
+    "equation": "Q(a|r)=softmax(Wr+b)^T q_positive(a)-rho(r)^T q_negative(a)",
+    "selected": "proposal:cognitive_proposal:26c95d6a71357e0ef48a617df68a314f:0",
+    "selection": "deterministic_max",
+    "randomDraw": null,
+    "temperature": 0.3113195194773712,
+    "functionalGate": {
+      "fc": false,
+      "efc": false,
+      "gov": false
+    },
+    "penaltyWeights": {
+      "repetition": 0.25439900713711705,
+      "contradiction": 0.44406611954582176,
+      "telemetryLeak": 0.84,
+      "testWeakening": 1,
+      "staleSourceRisk": 0.3760508625531881,
+      "unsupportedFactRate": 0.4041243479705379,
+      "fakeFactualAuthority": 1
+    },
+    "positiveWeights": {
+      "novelty": 0.07206288597666158,
+      "styleFit": 0.030148767061540977,
+      "coherence": 0.06166667048438689,
+      "formatFit": 0.03356670761122459,
+      "structure": 0.034707294511606375,
+      "directness": 0.03789839005976862,
+      "usefulness": 0.04603494614587309,
+      "truthSupport": 0.03350156738709999,
+      "sourceFidelity": 0.02559880624542372,
+      "languageQuality": 0.032980456360172494,
+      "explanatoryPower": 0.08926142230013459,
+      "dialogueContinuity": 0.18841057587146134,
+      "requirementCoverage": 0.04931411832699235,
+      "semanticPreservation": 0.03479806540495566,
+      "inferentialContinuity": 0.124162348320685,
+      "transformationQuality": 0.03359247068176976,
+      "executableCompleteness": 0.042343571892370556,
+      "uncertaintyCalibration": 0.029950935357872348
+    },
+    "coefficientModel": "judge.requirement.bootstrap.2026-07-12.v1",
+    "temperatureBounds": [
+      0.08,
+      0.45
+    ],
+    "requestedAuthority": "creative",
+    "learnedCoefficients": {
+      "blend": 0.415,
+      "active": true,
+      "modelId": "judge.requirement.model.710f7139",
+      "sampleCount": 83
+    }
+  },
+  "expectedCandidateId": "creative:invention_construct_0033de310036266d:0:episode_00mw73f3t1_dcb5f562bcc8_04e138c4a0",
+  "judgeRequirementModels": {
+    "task.general_cognition": {
+      "schema": "scce.judge_requirement_model.v1",
+      "id": "judge.requirement.model.710f7139",
+      "taskClass": "task.general_cognition",
+      "coefficients": {
+        "truthSupport.base": 0.5836618056291348,
+        "truthSupport.externalTruthAuthority": 2.552479704245992,
+        "sourceFidelity.base": -0.017229661753503257,
+        "sourceFidelity.sourceDependence": 1.3624093133401987,
+        "sourceFidelity.externalTruthAuthority": 0.6572896578580713,
+        "requirementCoverage.base": 0.23063343593092686,
+        "requirementCoverage.averageRequirement": 1.43460207660481,
+        "novelty.base": 0.07891134357130461,
+        "novelty.noveltyDemand": 2.1110581039844916,
+        "semanticPreservation.base": 0.02142031210833534,
+        "semanticPreservation.semanticPreservation": 2.094346477275065,
+        "transformationQuality.base": -0.012132350371588413,
+        "transformationQuality.surfaceTransformation": 1.4377092200547752,
+        "transformationQuality.semanticPreservation": 0.5377092200547768,
+        "inferentialContinuity.base": 0.01701876182853609,
+        "inferentialContinuity.inferentialDepth": 1.8965015937644965,
+        "explanatoryPower.base": 0.20588141721218872,
+        "explanatoryPower.inferentialDepth": 1.4801165035146628,
+        "explanatoryPower.causalReasoningDemand": 0.3808358557988924,
+        "executableCompleteness.base": 0.11388594091042259,
+        "executableCompleteness.executableArtifactDemand": 2.2349977080109116,
+        "executableCompleteness.actionCommitment": 0.45713494429982293,
+        "dialogueContinuity.base": 0.05794960341391984,
+        "dialogueContinuity.dialogueDependence": 2.1062768351842966,
+        "languageQuality.base": 0.278303573374914,
+        "languageQuality.audienceAdaptation": 0.5457080972528509,
+        "usefulness.base": 0.2765871536885201,
+        "usefulness.noveltyDemand": 0.6214383775890958,
+        "usefulness.executableArtifactDemand": 0.7169283388176796,
+        "coherence.base": 0.44182578969076985,
+        "coherence.inferentialDepth": 0.6216100325672967,
+        "uncertaintyCalibration.base": -0.06831221683238302,
+        "uncertaintyCalibration.externalTruthAuthority": 1.2910612233359053,
+        "uncertaintyCalibration.uncertaintyTolerance": 0.2829885280264691,
+        "formatFit.base": -0.015550666882709337,
+        "formatFit.formatConstraintStrength": 1.983352999146186,
+        "styleFit.base": 0.03574810230624858,
+        "styleFit.audienceAdaptation": 1.187289939445489,
+        "directness.base": 0.12951515018736715,
+        "directness.inverseBrevityDetailBalance": 0.7147575750936838,
+        "structure.base": 0.14188250598759694,
+        "structure.formatConstraintStrength": 0.7853909846631594,
+        "structure.executableArtifactDemand": 0.5372789705857444
+      },
+      "sampleCount": 83,
+      "trainingLoss": 0.7967384282252751,
+      "modelHash": "710f7139",
+      "createdAt": 1794097149676
+    }
+  },
+  "modelProvenance": {
+    "source": "Canonical buildJudgeRequirementModels over real calibration_observations created no later than 2026-11-08T00:28:22.430Z",
+    "modelHashVerified": "710f7139",
+    "sampleCount": 83
+  },
+  "requirementProvenance": "TurnRequirementsBuilt.field with exact later GraphUpdated.graphRefinement.requirements.refined values consumed by the judge"
+}

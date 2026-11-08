@@ -2,7 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { ClaimBasis } from "./cognitive-planner.js";
 import type { ScoreTrace } from "./scoring/score-trace.js";
-import type { EpistemicForce, EvidenceId, JsonValue } from "./types.js";
+import type { EpistemicForce, EvidenceId, JsonValue, RequestedAuthority } from "./types.js";
 import type { TypedRelationTrace } from "./typed-relation-trace.js";
 
 export interface CandidateSurface {
@@ -87,7 +87,15 @@ export interface CandidateQuality {
   telemetryLeak: number;
 }
 
+/** Final selection consumes canonical admission without recomputing authority. */
+export interface CandidateAuthorityAdmission {
+  authority: RequestedAuthority;
+  compatibleCandidateIds: readonly string[];
+  admittedCandidateIds: readonly string[];
+}
+
 export interface CandidateField {
+  authorityAdmission?: CandidateAuthorityAdmission;
   candidates: CandidateSurface[];
   surfaceMass: Array<{
     candidateId: string;

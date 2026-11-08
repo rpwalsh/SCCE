@@ -111,33 +111,7 @@ export function scoreRequestAuthority(
   return clamp01(calibrated("request_authority.projection_bias") + logit / calibrated("request_authority.projection_scale"));
 }
 
-/**
- * There is no such thing as a "creative turn" or a "factual turn" that the
- * judge is confined to -- every candidate the turn actually generated stays
- * eligible, regardless of kind. The projected authority is real information
- * (which kind of answer this request most likely calls for) but it is a
- * *signal*, not a partition: judge.ts's requirement-aware scoring path
- * (selectForRequirementField) already judges any candidate kind uniformly
- * on its own quality/support/coverage, keyed off the turn's real
- * requirement dimensions -- it never branched on requestedAuthority for
- * scoring or admission, only for its audit trace. Physically dropping
- * incompatible candidates here meant a well-supported factual candidate
- * could never win a turn the projector happened to call "creative" (or
- * vice versa), and a thin/wrong-authority pool forced a full-turn replan
- * instead of just letting the actually-best candidate answer. Kept as a
- * real function (not deleted) so the compatibility signal stays visible in
- * the audit trace for observability.
- *
- * One exception is not authority routing at all: for factual authority, a
- * candidate whose own proof/requirement signals say it has not established
- * the requested answer is not an answer candidate. Keeping those candidates
- * in the field allowed the judge to select a source-grounded surface that
- * was merely about the subject (for example an Apollo 11 launch sentence
- * for "Who commanded Apollo 11?") even though the trace already exposed
- * severe underdetermination. This gate consumes only candidate-internal
- * semantic/proof signals; it does not parse request language or add a second
- * lexical router.
- */
+/** Retains generated hypotheses while carrying canonical authority admission to final selection. */
 export function admitCandidatesForAuthority(
   field: CandidateField,
   authority: RequestedAuthority
@@ -167,6 +141,8 @@ export function admitCandidatesForAuthority(
   return {
     ...field,
     candidates: admittedCandidates,
+    authorityAdmission: { authority, compatibleCandidateIds: compatible.map(candidate => candidate.id),
+      admittedCandidateIds: admittedCandidates.map(candidate => candidate.id) },
     surfaceMass,
     audit: toJsonValue({
       ...existingAudit,
