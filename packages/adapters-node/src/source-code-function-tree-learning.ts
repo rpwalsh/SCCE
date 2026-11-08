@@ -20,7 +20,12 @@ interface SyntaxNode {
 const TREE_LANGUAGE_BY_FORMAL_LANGUAGE: Readonly<Record<string, TreeSitterLanguageId | undefined>> = {
   python: "python",
   rust: "rust",
-  kotlin: "kotlin"
+  kotlin: "kotlin",
+  go: "go",
+  c: "c",
+  cpp: "cpp",
+  java: "java",
+  csharp: "csharp"
 };
 
 /** Lowers only pure callable bodies whose observed numeric behavior matches the shared IR. */
@@ -40,11 +45,11 @@ export async function compileTreeSitterSourceCodeFunctions(input: {
 
 function lowerRoot(input: { root: SyntaxNode; text: string; path: string; languageId: string; sourceHash: string }): SourceCodeFunctionConstruction[] {
   const out: SourceCodeFunctionConstruction[] = [];
-  for (const node of input.root.namedChildren) {
-    if (!callableNode(node.type, input.languageId)) continue;
+  for (const node of sourceCallables(input.root, input.languageId)) {
     if (containsParseRecovery(node)) continue;
-    const name = node.childForFieldName("name") ?? (input.languageId === "kotlin" ? node.namedChildren.find(child => child.type === "simple_identifier") : undefined);
-    const parametersNode = node.childForFieldName("parameters") ?? node.childForFieldName("function_value_parameters")
+    const declarator = node.childForFieldName("declarator");
+    const name = node.childForFieldName("name") ?? declarator?.childForFieldName("declarator") ?? (input.languageId === "kotlin" ? node.namedChildren.find(child => child.type === "simple_identifier") : undefined);
+    const parametersNode = node.childForFieldName("parameters") ?? declarator?.childForFieldName("parameters") ?? node.childForFieldName("function_value_parameters")
       ?? (input.languageId === "kotlin" ? node.namedChildren.find(child => child.type === "function_value_parameters") : undefined);
     const body = node.childForFieldName("body") ?? (input.languageId === "kotlin" ? node.namedChildren.find(child => child.type === "function_body") : undefined);
     if (!name || !parametersNode || !body) continue;
@@ -95,29 +100,46 @@ function lowerRoot(input: { root: SyntaxNode; text: string; path: string; langua
 function callableNode(type: string, languageId: string): boolean {
   return (languageId === "python" && type === "function_definition")
     || (languageId === "rust" && type === "function_item")
-    || (languageId === "kotlin" && type === "function_declaration");
+    || ((languageId === "kotlin" || languageId === "go") && type === "function_declaration")
+    || ((languageId === "c" || languageId === "cpp") && type === "function_definition")
+    || ((languageId === "java" || languageId === "csharp") && type === "method_declaration");
+}
+
+function* sourceCallables(node: SyntaxNode, languageId: string): Iterable<SyntaxNode> {
+  if (callableNode(node.type, languageId)) {
+    if ((languageId === "java" || languageId === "csharp") && !node.children.some(child =>
+      (child.type === "modifiers" ? child.children : [child]).some(modifier => modifier.text === "static"))) return;
+    yield node;
+    return;
+  }
+  if (!["module", "source_file", "program", "compilation_unit", "translation_unit", "namespace_definition", "namespace_declaration", "class_declaration", "class_body", "declaration_list"].includes(node.type)) return;
+  for (const child of node.namedChildren) yield* sourceCallables(child, languageId);
 }
 
 function callableParameters(node: SyntaxNode, languageId: string): Array<{ name: string; node: SyntaxNode; identifierType: string; declaredType?: string }> | undefined {
   const allowed = languageId === "python"
     ? new Set(["identifier", "typed_parameter"])
     : languageId === "rust" ? new Set(["parameter"])
-      : new Set(["parameter", "function_value_parameter"]);
+      : new Set(["parameter", "function_value_parameter", "parameter_declaration", "formal_parameter"]);
   const parameters: Array<{ name: string; node: SyntaxNode; identifierType: string; declaredType?: string }> = [];
   for (const parameter of node.namedChildren) {
     if (!allowed.has(parameter.type)) return undefined;
     const name = parameter.type === "identifier" ? parameter : parameter.childForFieldName("name")
-      ?? parameter.childForFieldName("pattern") ?? parameter.namedChildren[0];
+      ?? parameter.childForFieldName("pattern") ?? parameter.childForFieldName("declarator") ?? parameter.namedChildren[0];
     if (!name || (name.type !== "identifier" && name.type !== "simple_identifier")) return undefined;
     const type = parameter.childForFieldName("type") ?? (languageId === "kotlin" ? parameter.namedChildren.find(child => child !== name) : undefined);
-    parameters.push({ name: name.text, node: name, identifierType: name.type, ...(type ? { declaredType: type.text } : {}) });
+    const names = languageId === "go" ? parameter.namedChildren.filter(child => child.type === "identifier") : [name];
+    if (!names.length) return undefined;
+    for (const identifier of names) parameters.push({ name: identifier.text, node: identifier, identifierType: identifier.type, ...(type ? { declaredType: type.text } : {}) });
   }
   return parameters;
 }
 
 function nativeFloatingArithmeticSupported(callable: SyntaxNode, body: SyntaxNode, parameters: readonly { name: string; declaredType?: string }[], languageId: string): boolean {
   const environment = new Map<string, "floating" | "integer" | "unknown">();
-  const floatingType = languageId === "rust" ? "f64" : "Double";
+  const floatingType = languageId === "rust" ? "f64" : languageId === "kotlin" ? "Double" : languageId === "go" ? "float64" : "double";
+  if (!["rust", "kotlin"].includes(languageId)
+    && (parameters.some(parameter => parameter.declaredType !== floatingType) || returnType(callable, languageId) !== floatingType)) return false;
   for (const parameter of parameters) environment.set(parameter.name, parameter.declaredType === floatingType ? "floating" : "unknown");
   let hasArithmetic = false;
   const inspect = (node: SyntaxNode): boolean => {
@@ -150,6 +172,8 @@ function nativeFloatingArithmeticSupported(callable: SyntaxNode, body: SyntaxNod
 
 function returnType(callable: SyntaxNode, languageId: string): string | undefined {
   if (languageId === "rust") return callable.childForFieldName("return_type")?.text;
+  if (languageId === "go") return callable.childForFieldName("result")?.text;
+  if (languageId !== "kotlin") return callable.childForFieldName("type")?.text;
   const parameters = callable.namedChildren.find(child => child.type === "function_value_parameters");
   const body = callable.namedChildren.find(child => child.type === "function_body");
   return callable.namedChildren.find(child => child !== parameters && child !== body && child.type !== "simple_identifier")?.text;
@@ -168,6 +192,8 @@ function terminalExpression(body: SyntaxNode, languageId: string): SyntaxNode | 
     const terminal = content.namedChildren.at(-1);
     if (terminal?.type === "jump_expression" && terminal.children.some(child => child.type === "return")) return terminal.namedChildren.at(-1);
   }
+  const terminal = body.namedChildren.at(-1);
+  if (terminal) return returnedExpression(terminal, languageId);
   return undefined;
 }
 
@@ -215,9 +241,10 @@ function arithmeticOperands(node: SyntaxNode): SyntaxNode[] {
 
 function numericType(node: SyntaxNode, environment: ReadonlyMap<string, "floating" | "integer" | "unknown">, languageId: string): "floating" | "integer" | "unknown" {
   if (["identifier", "simple_identifier"].includes(node.type)) return environment.get(node.text) ?? "unknown";
-  if (["float", "float_literal", "real_literal"].includes(node.type)) return "floating";
+  if (["float", "float_literal", "real_literal", "decimal_floating_point_literal"].includes(node.type)) return "floating";
+  if (node.type === "number_literal") return node.text.includes(".") && Number.isFinite(Number(node.text)) ? "floating" : "integer";
   if (["integer", "integer_literal", "decimal_integer_literal"].includes(node.type)) return "integer";
-  if (["parenthesized_expression", "parenthesized", "expression"].includes(node.type) && node.namedChildren.length === 1) {
+  if (["parenthesized_expression", "parenthesized", "expression", "expression_list"].includes(node.type) && node.namedChildren.length === 1) {
     return numericType(node.namedChildren[0]!, environment, languageId);
   }
   if (["unary_operator", "unary_expression"].includes(node.type)) {
@@ -317,6 +344,7 @@ function assignmentParts(statement: SyntaxNode, languageId: string): { name: str
 }
 
 function returnedExpression(statement: SyntaxNode, languageId: string): SyntaxNode | undefined {
+  if (statement.type === "return_statement") return statement.namedChildren[0];
   const returnTypes = languageId === "python" ? new Set(["return_statement"])
     : languageId === "rust" ? new Set(["return_expression"])
       : new Set(["return_expression"]);
@@ -331,7 +359,7 @@ function returnedExpression(statement: SyntaxNode, languageId: string): SyntaxNo
 }
 
 function expressionFromNode(node: SyntaxNode, parameters: readonly string[], bindings: ReadonlyMap<string, ProgramExpression>, languageId: string): ProgramExpression | undefined {
-  if (["parenthesized_expression", "parenthesized", "expression", "value_expression"].includes(node.type) && node.namedChildren.length === 1) {
+  if (["parenthesized_expression", "parenthesized", "expression", "value_expression", "expression_list"].includes(node.type) && node.namedChildren.length === 1) {
     return expressionFromNode(node.namedChildren[0]!, parameters, bindings, languageId);
   }
   if (["identifier", "simple_identifier"].includes(node.type)) {
@@ -340,7 +368,7 @@ function expressionFromNode(node: SyntaxNode, parameters: readonly string[], bin
     const index = parameters.indexOf(node.text);
     return index >= 0 ? { kind: "argument", index } : undefined;
   }
-  if (["integer", "float", "integer_literal", "float_literal", "decimal_integer_literal", "real_literal"].includes(node.type)) {
+  if (["integer", "float", "integer_literal", "float_literal", "decimal_integer_literal", "real_literal", "number_literal", "decimal_floating_point_literal"].includes(node.type)) {
     const value = Number(node.text);
     return Number.isFinite(value) && (!Number.isInteger(value) || Number.isSafeInteger(value)) ? { kind: "literal", value } : undefined;
   }
