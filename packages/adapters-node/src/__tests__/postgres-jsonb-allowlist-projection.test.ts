@@ -23,7 +23,7 @@ it.each(["pattern", "frame"] as const)("projects %s values from typed JSONB colu
   const sql = await capture(kind);
   const fields = kind === "pattern" ? REQUEST_SEED_PATTERN_JSON_FIELDS : REQUEST_SEED_FRAME_JSON_FIELDS;
   const value = kind === "pattern" ? "pattern.pattern_json" : "frame.frame_json";
-  const columns = /AS seed_record\(([^)]+)\)/u.exec(sql)?.[1].split(",");
+  const columns = /AS seed_record\(([^)]+)\)/u.exec(sql)?.[1]?.split(",");
   expect(columns).toEqual(fields.map(field => `"${field}" jsonb`));
   expect(sql).toContain(`jsonb_to_record(CASE WHEN jsonb_typeof(${value})='object' THEN ${value} ELSE '{}'::jsonb END)`);
   expect(sql).toContain(`jsonb_object_keys(CASE WHEN jsonb_typeof(${value})='object' THEN ${value} ELSE '{}'::jsonb END)`);

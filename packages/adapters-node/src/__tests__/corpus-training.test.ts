@@ -644,12 +644,13 @@ describe("learned rows carry the shard's provenance once", () => {
       maxFilesPerRun: 20, ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64 };
     const producer = vi.spyOn(grammarContracts, "grammarSourceOwnedTestCases").mockImplementation(async () => structuredClone(legacy.cases));
     try { await trainOssCorpus(options); } finally { producer.mockRestore(); }
-    const query = { patternKind: "source_code_assertion_contract", patternSchemas: ["scce.source_owned_test_contract.v1"] };
+    const query = { patternKind: "source_code_assertion_contract" as const, patternSchemas: ["scce.source_owned_test_contract.v1"] };
     const old = await fixture.storage.languageMemory.listLanguagePatterns(query);
     expect(old).toHaveLength(1);
     expect(recordOf(old[0]!.patternJson).nativeAbiRecipe).toBeUndefined();
     const owners = new Set(fixture.state.sourceVersions.map(row => String(row.sourceVersionId)));
-    const replace = vi.spyOn(fixture.storage.languageMemory, "replaceLanguagePatternProjection");
+    const replace = vi.fn(fixture.storage.languageMemory.replaceLanguagePatternProjection!.bind(fixture.storage.languageMemory));
+    fixture.storage.languageMemory.replaceLanguagePatternProjection = replace;
     await trainOssCorpus(options);
     const current = await fixture.storage.languageMemory.listLanguagePatterns(query);
     expect(current).toHaveLength(1);
