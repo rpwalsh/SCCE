@@ -157,6 +157,7 @@ export interface SurfaceLatticeBuildOptions {
   boundaryEstimator?: BoundaryEstimatorState;
   boundaryFeatureContext?: CompiledBoundaryFeatureContext;
   normalizationContract?: NormalizationContract;
+  preparationContext?: SurfaceLatticePreparationContext;
 }
 
 export interface CompiledBoundaryFeatureContext {
@@ -288,37 +289,82 @@ export function buildNgramSurfaceProjection(options: {
   };
 }
 
-export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): SurfaceLattice {
-  return buildSurfaceLatticeInternal(options, false);
+
+interface SurfaceLatticeTextPreparation {
+  model: ReturnType<typeof segmentUnicodeSurfaceV2>;
+  coordinates: SurfaceCoordinateIndex;
+  transitionEntropyByPosition: ReadonlyMap<number, number>;
+  normalizedSurfaceFor(surface: string): string;
+  scriptForSurface(surface: string): string;
+  normalizedFormIdentityFor(surface: string): CanonicalIdentity;
+  surfaceFormClassIdentityFor(identity: CanonicalIdentity, script: string): CanonicalIdentity;
+  codePoints: readonly string[];
+  normalizedCounts: ReadonlyMap<string, number>;
+  candidates: readonly QuotientedCandidateUnit[];
+  baseCandidates: readonly QuotientedCandidateUnit[];
+  higherCandidates: readonly QuotientedCandidateUnit[];
+  orderedCandidates: readonly QuotientedCandidateUnit[];
+  rawBaseCandidateCount: number;
+  rawHigherCandidateCount: number;
 }
 
-export function buildSourceAlignmentSurfaceLattice(options: SurfaceLatticeBuildOptions): SourceAlignmentSurfaceLattice {
-  return buildSurfaceLatticeInternal(options, true);
+export interface SurfaceLatticePreparationContext {
+  clear(): void;
+  stats(): { preparations: number; hits: number; retainedDocuments: number; retainedSourceBytes: number };
 }
+interface SurfaceLatticePreparationState {
+  defaultHasher: Hasher;
+  maximumDocuments: number;
+  maximumSourceBytes: number;
+  preparations: number;
+  hits: number;
+  retainedDocuments: number;
+  retainedSourceBytes: number;
+  values: Map<Hasher, Map<string, Map<string, SurfaceLatticeTextPreparation>>>;
+}
+const surfaceLatticePreparations = new WeakMap<SurfaceLatticePreparationContext, SurfaceLatticePreparationState>();
 
-function buildSurfaceLatticeInternal(options: SurfaceLatticeBuildOptions, lexicalProjection: false): SurfaceLattice;
-function buildSurfaceLatticeInternal(options: SurfaceLatticeBuildOptions, lexicalProjection: true): SourceAlignmentSurfaceLattice;
-function buildSurfaceLatticeInternal(options: SurfaceLatticeBuildOptions, lexicalProjection: boolean): SurfaceLattice | SourceAlignmentSurfaceLattice {
-  const hasher = options.hasher ?? createHasher();
-  const normalizationContract = options.normalizationContract ?? canonicalNormalizationContract(hasher);
-  const maxUnits = Math.max(64, Math.floor(options.maxUnits ?? DEFAULT_SURFACE_LATTICE_MAX_UNITS));
-  const maxEdges = Math.max(64, Math.floor(options.maxEdges ?? 8192));
-  const text = options.text;
-  const model = segmentUnicodeSurfaceV2(text, hasher);
-  const evidenceIds = (options.evidenceIds ?? []).map(String).sort();
-  const sourceVersionId = options.sourceVersionId === undefined ? undefined : String(options.sourceVersionId);
-  const occurrenceSourceVersionId = sourceVersionId
-    ?? `source_version.content.${hasher.digestHex(text).slice(0, 48)}`;
-  const estimatorId = options.boundaryEstimator?.id ?? UNTRAINED_BOUNDARY_ESTIMATOR_ID;
-  const latticeId = canonicalSurfaceLatticeId({
-    documentId: options.documentId,
-    sourceVersionId,
-    evidenceIds,
-    text,
-    hasher,
-    estimatorId,
-    normalizationContract
+/** The caller's bounded document batch owns this preparation; no lattice or forest is retained. */
+export function createSurfaceLatticePreparationContext(input: { maximumDocuments: number; maximumSourceBytes: number }): SurfaceLatticePreparationContext {
+  if (![input.maximumDocuments, input.maximumSourceBytes].every(value => Number.isSafeInteger(value) && value >= 0)) throw new Error("surface lattice preparation requires finite nonnegative batch bounds");
+  const state: SurfaceLatticePreparationState = { ...input, defaultHasher: createHasher(), preparations: 0, hits: 0,
+    retainedDocuments: 0, retainedSourceBytes: 0, values: new Map() };
+  const context = Object.freeze({
+    clear() { state.values.clear(); state.retainedDocuments = 0; state.retainedSourceBytes = 0; },
+    stats() { return { preparations: state.preparations, hits: state.hits, retainedDocuments: state.retainedDocuments, retainedSourceBytes: state.retainedSourceBytes }; }
   });
+  surfaceLatticePreparations.set(context, state);
+  return context;
+}
+
+function preparationState(context: SurfaceLatticePreparationContext): SurfaceLatticePreparationState {
+  const state = surfaceLatticePreparations.get(context);
+  if (!state) throw new Error("surface lattice preparation context is not owned by this compiler");
+  return state;
+}
+
+function preparedSurfaceLatticeText(text: string, normalizationContract: NormalizationContract, hasher: Hasher,
+  context: SurfaceLatticePreparationContext | undefined): SurfaceLatticeTextPreparation {
+  const state = context ? preparationState(context) : undefined;
+  const ownedContract = Object.freeze({ ...normalizationContract });
+  const key = JSON.stringify(Object.keys(ownedContract).sort().map(key => [key, ownedContract[key as keyof NormalizationContract]]));
+  const cached = state?.values.get(hasher)?.get(text)?.get(key);
+  if (cached) { state!.hits++; return cached; }
+  const prepared = prepareSurfaceLatticeText(text, ownedContract, hasher);
+  if (state) {
+    state.preparations++;
+    const sourceBytes = Buffer.byteLength(text, "utf8");
+    if (state.retainedDocuments < state.maximumDocuments && sourceBytes <= state.maximumSourceBytes - state.retainedSourceBytes) {
+      let byText = state.values.get(hasher); if (!byText) state.values.set(hasher, byText = new Map());
+      let byContract = byText.get(text); if (!byContract) byText.set(text, byContract = new Map());
+      byContract.set(key, prepared); state.retainedDocuments++; state.retainedSourceBytes += sourceBytes;
+    }
+  }
+  return prepared;
+}
+
+function prepareSurfaceLatticeText(text: string, normalizationContract: NormalizationContract, hasher: Hasher): SurfaceLatticeTextPreparation {
+  const model = segmentUnicodeSurfaceV2(text, hasher);
   const coordinates = buildSurfaceCoordinateIndex(text);
   const codePointIndexByUtf16 = coordinates.utf16ToCodePoint;
   const transitionEntropyByPosition = localTransitionEntropyByPosition(text);
@@ -407,6 +453,59 @@ function buildSurfaceLatticeInternal(options: SurfaceLatticeBuildOptions, lexica
     candidate.proposalSources.includes("grapheme"));
   const higherCandidates = candidates.filter(candidate =>
     !candidate.proposalSources.includes("grapheme"));
+  for (const candidate of candidates) {
+    const key = recurrenceKey(candidate, normalizedSurfaceFor);
+    normalizedCounts.set(key, (normalizedCounts.get(key) ?? 0) + 1);
+  }
+
+  const orderedCandidates = [
+    ...[...baseCandidates].sort(compareCandidateUnits),
+    ...[...higherCandidates].sort(compareCandidateUnits)
+  ];
+
+  for (const candidate of candidates) { Object.freeze(candidate.proposalSources); Object.freeze(candidate); }
+  for (const rows of [candidates, baseCandidates, higherCandidates, orderedCandidates, codePoints, ...Object.values(coordinates)]) Object.freeze(rows);
+  for (const rows of [model.surfaceSegments, model.lexicalSegments, model.boundarySignals]) { for (const row of rows) Object.freeze(row); Object.freeze(rows); }
+  Object.freeze(coordinates); Object.freeze(model);
+  return Object.freeze({ model, coordinates, transitionEntropyByPosition, normalizedSurfaceFor, scriptForSurface,
+    normalizedFormIdentityFor, surfaceFormClassIdentityFor, codePoints, normalizedCounts, candidates,
+    baseCandidates, higherCandidates, orderedCandidates, rawBaseCandidateCount: rawBaseCandidates.length, rawHigherCandidateCount: rawHigherCandidates.length });
+}
+
+export function buildSurfaceLattice(options: SurfaceLatticeBuildOptions): SurfaceLattice {
+  return buildSurfaceLatticeInternal(options, false);
+}
+
+export function buildSourceAlignmentSurfaceLattice(options: SurfaceLatticeBuildOptions): SourceAlignmentSurfaceLattice {
+  return buildSurfaceLatticeInternal(options, true);
+}
+
+function buildSurfaceLatticeInternal(options: SurfaceLatticeBuildOptions, lexicalProjection: false): SurfaceLattice;
+function buildSurfaceLatticeInternal(options: SurfaceLatticeBuildOptions, lexicalProjection: true): SourceAlignmentSurfaceLattice;
+function buildSurfaceLatticeInternal(options: SurfaceLatticeBuildOptions, lexicalProjection: boolean): SurfaceLattice | SourceAlignmentSurfaceLattice {
+  const hasher = options.hasher ?? (options.preparationContext ? preparationState(options.preparationContext).defaultHasher : createHasher());
+  const normalizationContract = options.normalizationContract ?? canonicalNormalizationContract(hasher);
+  const maxUnits = Math.max(64, Math.floor(options.maxUnits ?? DEFAULT_SURFACE_LATTICE_MAX_UNITS));
+  const maxEdges = Math.max(64, Math.floor(options.maxEdges ?? 8192));
+  const text = options.text;
+  const evidenceIds = (options.evidenceIds ?? []).map(String).sort();
+  const sourceVersionId = options.sourceVersionId === undefined ? undefined : String(options.sourceVersionId);
+  const occurrenceSourceVersionId = sourceVersionId
+    ?? `source_version.content.${hasher.digestHex(text).slice(0, 48)}`;
+  const estimatorId = options.boundaryEstimator?.id ?? UNTRAINED_BOUNDARY_ESTIMATOR_ID;
+  const latticeId = canonicalSurfaceLatticeId({
+    documentId: options.documentId,
+    sourceVersionId,
+    evidenceIds,
+    text,
+    hasher,
+    estimatorId,
+    normalizationContract
+  });
+  const prepared = preparedSurfaceLatticeText(text, normalizationContract, hasher, options.preparationContext);
+  const { model, coordinates, transitionEntropyByPosition, normalizedSurfaceFor, scriptForSurface,
+    normalizedFormIdentityFor, surfaceFormClassIdentityFor, codePoints, normalizedCounts,
+    candidates, baseCandidates, higherCandidates, orderedCandidates } = prepared;
   const corpusFeaturesByPosition = corpusBoundaryFeaturesByPosition({
     candidates: higherCandidates,
     model,
@@ -418,17 +517,8 @@ function buildSurfaceLatticeInternal(options: SurfaceLatticeBuildOptions, lexica
     scriptForSurface
   });
 
-  for (const candidate of candidates) {
-    const key = recurrenceKey(candidate, normalizedSurfaceFor);
-    normalizedCounts.set(key, (normalizedCounts.get(key) ?? 0) + 1);
-  }
-
   const units: SurfaceLatticeUnit[] = [];
   const seen = new Set<string>();
-  const orderedCandidates = [
-    ...baseCandidates.sort(compareCandidateUnits),
-    ...higherCandidates.sort(compareCandidateUnits)
-  ];
   const effectiveMaxUnits = Math.max(maxUnits, baseCandidates.length);
   let retainedCandidateCount = 0;
   for (const candidate of orderedCandidates) {
@@ -496,7 +586,7 @@ function buildSurfaceLatticeInternal(options: SurfaceLatticeBuildOptions, lexica
         normalizedForm: normalizedFormIdentity,
         surfaceFormClass: surfaceFormClassIdentity
       },
-      proposalSources: candidate.proposalSources,
+      proposalSources: [...candidate.proposalSources],
       kind: candidate.kind,
       overlapClass: overlapClassFor(candidate.kind),
       surface: candidate.surface,
@@ -578,10 +668,10 @@ function buildSurfaceLatticeInternal(options: SurfaceLatticeBuildOptions, lexica
       inputUtf16Length: text.length,
       inputBytes: Buffer.byteLength(text, "utf8"),
       inputCodePoints: [...text].length,
-      inputGraphemes: rawBaseCandidates.length,
-      detectorProposals: rawBaseCandidates.length + rawHigherCandidates.length,
+      inputGraphemes: prepared.rawBaseCandidateCount,
+      detectorProposals: prepared.rawBaseCandidateCount + prepared.rawHigherCandidateCount,
       canonicalCandidateUnits: candidates.length,
-      duplicateProposalsCollapsed: rawBaseCandidates.length + rawHigherCandidates.length - candidates.length,
+      duplicateProposalsCollapsed: prepared.rawBaseCandidateCount + prepared.rawHigherCandidateCount - candidates.length,
       candidateUnits: candidates.length,
       persistedUnits: units.length,
       persistedEdges: edges.length,

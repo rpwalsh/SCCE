@@ -14,6 +14,7 @@ import {
 import { compactKneserNeyForProfile, continueBoundedProse, trainKneserNey, type KneserNeyModel } from "./kneser-ney.js";
 import {
   buildSurfaceLattice,
+  createSurfaceLatticePreparationContext,
   canonicalSurfaceSequence,
   collectBoundaryTrainingObservations,
   compileBoundaryFeatureContext,
@@ -216,215 +217,222 @@ export function createLanguageInductionEngine(options: { hasher?: Hasher; vocabu
   return {
     induce(input: { documents: LanguageInductionDocument[]; order?: NgramOrder; maxNgrams?: number; maxFrames?: number; maxLexicalClasses?: number }): InducedLanguageModel {
       const documents = input.documents.filter(doc => doc.text.trim().length > 0);
-      const corpusText = documents.map(doc => doc.text).join("\n");
-      let initialLattices = documents.map(doc => ({
-        doc,
-        lattice: buildSurfaceLattice({
+      const preparationContext = createSurfaceLatticePreparationContext({ maximumDocuments: documents.length,
+        maximumSourceBytes: documents.reduce((total, document) => total + Buffer.byteLength(document.text, "utf8"), 0) });
+      try {
+        const corpusText = documents.map(doc => doc.text).join("\n");
+        let initialLattices = documents.map(doc => ({
+          doc,
+          lattice: buildSurfaceLattice({
+            documentId: doc.id,
+            text: doc.text,
+            sourceVersionId: doc.sourceVersionId,
+            evidenceIds: doc.evidenceIds,
+            hasher,
+            preparationContext
+          })
+        }));
+        const lexicalClassDocuments = initialLattices.map(({ lattice }) => lexicalUnits(lattice)
+          .map(unit => ({ normalized: unit.normalized, scriptId: unit.scriptId })));
+        const populationId = `surface_population.${hasher.digestHex(JSON.stringify(
+          documents.map(document => [document.id, document.sourceVersionId ?? null]).sort()
+        )).slice(0, 32)}`;
+        let boundaryObservations = collectBoundaryTrainingObservations({
+          lattices: initialLattices.map(row => row.lattice),
+          anchors: initialLattices.flatMap(({ doc }) =>
+            (doc.boundaryAnchors ?? []).map(anchor => ({ ...anchor, documentId: doc.id })))
+        });
+        const boundaryFeatureContext = compileBoundaryFeatureContext({
+          lattices: initialLattices.map(row => row.lattice),
+          hasher
+        });
+        const observationsByDocument = new Map<string, BoundaryObservation[]>();
+        for (const observation of boundaryObservations) {
+          const observations = observationsByDocument.get(observation.sourceDocumentId);
+          if (observations) observations.push(observation);
+          else observationsByDocument.set(observation.sourceDocumentId, [observation]);
+        }
+        boundaryObservations = [];
+        const documentBoundaryStatistics = initialLattices.map(({ doc }) => ({
           documentId: doc.id,
-          text: doc.text,
-          sourceVersionId: doc.sourceVersionId,
-          evidenceIds: doc.evidenceIds,
-          hasher
-        })
-      }));
-      const lexicalClassDocuments = initialLattices.map(({ lattice }) => lexicalUnits(lattice)
-        .map(unit => ({ normalized: unit.normalized, scriptId: unit.scriptId })));
-      const populationId = `surface_population.${hasher.digestHex(JSON.stringify(
-        documents.map(document => [document.id, document.sourceVersionId ?? null]).sort()
-      )).slice(0, 32)}`;
-      let boundaryObservations = collectBoundaryTrainingObservations({
-        lattices: initialLattices.map(row => row.lattice),
-        anchors: initialLattices.flatMap(({ doc }) =>
-          (doc.boundaryAnchors ?? []).map(anchor => ({ ...anchor, documentId: doc.id })))
-      });
-      const boundaryFeatureContext = compileBoundaryFeatureContext({
-        lattices: initialLattices.map(row => row.lattice),
-        hasher
-      });
-      const observationsByDocument = new Map<string, BoundaryObservation[]>();
-      for (const observation of boundaryObservations) {
-        const observations = observationsByDocument.get(observation.sourceDocumentId);
-        if (observations) observations.push(observation);
-        else observationsByDocument.set(observation.sourceDocumentId, [observation]);
-      }
-      boundaryObservations = [];
-      const documentBoundaryStatistics = initialLattices.map(({ doc }) => ({
-        documentId: doc.id,
-        sourceFamilyId: doc.sourceFamilyId ?? String(doc.sourceVersionId ?? doc.id),
-        statistics: compileBoundaryStatistics({
-          populationId,
-          observations: observationsByDocument.get(doc.id) ?? [],
-          sourceDocumentIds: [doc.id],
-          hasher
-        })
-      }));
-      observationsByDocument.clear();
-      // Release the bootstrap lattices the moment they are dead. They exist
-      // only to derive boundary observations, the feature context, and
-      // per-document statistics above; induce() then builds a SECOND,
-      // estimator-fitted lattice set below. Holding both alive doubled the
-      // peak for no benefit -- measured at ~650MB for 92KB of input, so
-      // this is the single largest reclaim available here. Everything
-      // downstream reads the fitted set, never this one.
-      initialLattices = [];
-      const boundaryStatistics = mergeBoundaryStatistics(
-        documentBoundaryStatistics.map(document => document.statistics),
-        hasher,
-        populationId
-      );
-      const boundarySplit = splitBoundaryCalibrationDocuments(documentBoundaryStatistics, hasher);
-      const trainingBoundaryStatistics = mergeBoundaryStatistics(
-        boundarySplit.training.map(document => document.statistics),
-        hasher,
-        populationId
-      );
-      const heldoutBoundaryStatistics = boundarySplit.heldout.length
-        ? mergeBoundaryStatistics(
-          boundarySplit.heldout.map(document => document.statistics),
-          hasher,
-          populationId
-        )
-        : undefined;
-      const boundaryEstimator = fitBoundaryEstimator({
-        statistics: trainingBoundaryStatistics,
-        calibrationStatistics: heldoutBoundaryStatistics,
-        calibrationShards: boundarySplit.heldout.map(document => document.statistics),
-        hasher
-      });
-      const segmentationPopulations = learnSegmentationPopulations({
-        rootPopulationId: populationId,
-        documents: documentBoundaryStatistics,
-        hasher
-      });
-      const lattices = documents.map(doc => ({
-        doc,
-        lattice: buildSurfaceLattice({
-          documentId: doc.id,
-          text: doc.text,
-          sourceVersionId: doc.sourceVersionId,
-          evidenceIds: doc.evidenceIds,
-          boundaryEstimator: boundaryMixtureForDocument(segmentationPopulations, doc.id, hasher),
-          boundaryFeatureContext,
-          hasher
-        })
-      }));
-      const selectedPopulationByDocument = new Map(
-        segmentationPopulations.assignments.map(assignment => [
-          assignment.documentId,
-          assignment.selectedPopulationId
-        ])
-      );
-      const defaultPopulationId = segmentationPopulations.populations[0]!.id;
-      const joinProgram = compileJoinProgramMixture({
-        populationModelId: segmentationPopulations.id,
-        components: segmentationPopulations.populations.map(population => ({
-          populationId: population.id,
-          weight: population.prior,
-          program: compileJoinProgram({
-            populationId: population.id,
-            documents: lattices
-              .filter(({ doc }) =>
-                (selectedPopulationByDocument.get(doc.id) ?? defaultPopulationId) === population.id)
-              .map(({ doc, lattice }) => ({
-                documentId: doc.id,
-                sourceFamilyId: doc.sourceFamilyId ?? String(doc.sourceVersionId ?? doc.id),
-                text: doc.text,
-                lattice
-              })),
+          sourceFamilyId: doc.sourceFamilyId ?? String(doc.sourceVersionId ?? doc.id),
+          statistics: compileBoundaryStatistics({
+            populationId,
+            observations: observationsByDocument.get(doc.id) ?? [],
+            sourceDocumentIds: [doc.id],
             hasher
           })
-        })),
-        hasher
-      });
-      const symbols = lattices.flatMap(({ doc, lattice }) =>
-        canonicalSurfaceSequence(lattice).map(unit => ({ symbol: unit.surface, doc }))
-      );
-      const symbolStrings = symbols.map(item => item.symbol);
-      const lexicalStrings = lattices.flatMap(({ lattice }) => lexicalSurfaceSequence(lattice));
-      const relationObservations = documents.flatMap(doc =>
-        sentenceSegments(doc.text, hasher).map((sentence, sentenceIndex) => ({
-          sourceId: doc.sourceFamilyId ?? doc.id,
-          symbols: lexicalSurfaceSymbols(sentence, `${doc.id}.relation.${sentenceIndex}`, hasher)
-            .filter(symbol => ![...symbol].every(char => /\p{Punctuation}/u.test(char))),
-          evidenceIds: doc.evidenceIds
-        })));
-      const relationHypothesisModel = compileRelationHypothesisModel({
-        observations: relationObservations,
-        hasher
-      });
-      const order = clampOrder(input.order ?? 6);
-      const counts = countNgrams(symbolStrings, order, vocabularyLimit);
-      const ngrams = inducedNgrams(counts, order, input.maxNgrams ?? 4096);
-      const kn = trainKneserNey(symbolStrings, { order, vocabularyLimit });
-      const boundarySignals = induceBoundariesFromLattices(lattices.map(({ lattice }) => lattice), hasher).slice(0, 2048);
-      const scripts = induceScripts(corpusText);
-      const morphology = induceMorphology(lexicalStrings, hasher).slice(0, 2048);
-      const syntaxTemplates = induceSyntaxTemplates(documents, hasher).slice(0, 2048);
-      const lexicalClasses = induceLexicalClasses(lexicalClassDocuments, hasher, input.maxLexicalClasses ?? 1024);
-      const morphologyClassBindings = induceMorphologyClassBindings(morphology, lexicalClasses, hasher).slice(0, 2048);
-      const semanticFrames = induceSemanticFrames(
-        documents,
-        relationHypothesisModel,
-        hasher,
-        input.maxFrames ?? 2048
-      );
-      const graphBoundConstructions = induceGraphBoundConstructions(semanticFrames, lexicalClasses, hasher).slice(0, 2048);
-      const translationSeeds = induceTranslationSeeds(documents, semanticFrames, hasher).slice(0, 2048);
-      const proseDiagnostics = proseDiagnostic(kn, symbolStrings, joinProgram);
-      const id = `language_model_${hasher.digestHex(JSON.stringify({
-        docs: documents.map(d => d.id),
-        symbols: symbolStrings.length,
-        order,
-        boundaryEstimatorId: boundaryEstimator.id,
-        segmentationPopulationModelId: segmentationPopulations.id,
-        joinProgramId: joinProgram.id,
-        relationHypothesisModelId: relationHypothesisModel.id
-      })).slice(0, 32)}`;
-      return {
-        id,
-        corpusDocuments: documents.length,
-        symbolCount: symbolStrings.length,
-        vocabularySize: new Set(symbolStrings).size,
-        scripts,
-        ngrams,
-        kneserNey: compactKneserNeyForProfile(kn, corpusText.slice(0, 200000)),
-        boundaryStatistics,
-        boundaryEstimator,
-        boundaryFeatureContext,
-        segmentationPopulations,
-        joinProgram,
-        relationHypothesisModel,
-        boundarySignals,
-        morphology,
-        syntaxTemplates,
-        lexicalClasses,
-        morphologyClassBindings,
-        semanticFrames,
-        graphBoundConstructions,
-        translationSeeds,
-        proseDiagnostics,
-        audit: toJsonValue({
+        }));
+        observationsByDocument.clear();
+        // Release the bootstrap lattices the moment they are dead. They exist
+        // only to derive boundary observations, the feature context, and
+        // per-document statistics above; induce() then builds a SECOND,
+        // estimator-fitted lattice set below. Holding both alive doubled the
+        // peak for no benefit -- measured at ~650MB for 92KB of input, so
+        // this is the single largest reclaim available here. Everything
+        // downstream reads the fitted set, never this one.
+        initialLattices = [];
+        const boundaryStatistics = mergeBoundaryStatistics(
+          documentBoundaryStatistics.map(document => document.statistics),
+          hasher,
+          populationId
+        );
+        const boundarySplit = splitBoundaryCalibrationDocuments(documentBoundaryStatistics, hasher);
+        const trainingBoundaryStatistics = mergeBoundaryStatistics(
+          boundarySplit.training.map(document => document.statistics),
+          hasher,
+          populationId
+        );
+        const heldoutBoundaryStatistics = boundarySplit.heldout.length
+          ? mergeBoundaryStatistics(
+            boundarySplit.heldout.map(document => document.statistics),
+            hasher,
+            populationId
+          )
+          : undefined;
+        const boundaryEstimator = fitBoundaryEstimator({
+          statistics: trainingBoundaryStatistics,
+          calibrationStatistics: heldoutBoundaryStatistics,
+          calibrationShards: boundarySplit.heldout.map(document => document.statistics),
+          hasher
+        });
+        const segmentationPopulations = learnSegmentationPopulations({
+          rootPopulationId: populationId,
+          documents: documentBoundaryStatistics,
+          hasher
+        });
+        const lattices = documents.map(doc => ({
+          doc,
+          lattice: buildSurfaceLattice({
+            documentId: doc.id,
+            text: doc.text,
+            sourceVersionId: doc.sourceVersionId,
+            evidenceIds: doc.evidenceIds,
+            boundaryEstimator: boundaryMixtureForDocument(segmentationPopulations, doc.id, hasher),
+            boundaryFeatureContext,
+            hasher,
+            preparationContext
+          })
+        }));
+        preparationContext.clear();
+        const selectedPopulationByDocument = new Map(
+          segmentationPopulations.assignments.map(assignment => [
+            assignment.documentId,
+            assignment.selectedPopulationId
+          ])
+        );
+        const defaultPopulationId = segmentationPopulations.populations[0]!.id;
+        const joinProgram = compileJoinProgramMixture({
+          populationModelId: segmentationPopulations.id,
+          components: segmentationPopulations.populations.map(population => ({
+            populationId: population.id,
+            weight: population.prior,
+            program: compileJoinProgram({
+              populationId: population.id,
+              documents: lattices
+                .filter(({ doc }) =>
+                  (selectedPopulationByDocument.get(doc.id) ?? defaultPopulationId) === population.id)
+                .map(({ doc, lattice }) => ({
+                  documentId: doc.id,
+                  sourceFamilyId: doc.sourceFamilyId ?? String(doc.sourceVersionId ?? doc.id),
+                  text: doc.text,
+                  lattice
+                })),
+              hasher
+            })
+          })),
+          hasher
+        });
+        const symbols = lattices.flatMap(({ doc, lattice }) =>
+          canonicalSurfaceSequence(lattice).map(unit => ({ symbol: unit.surface, doc }))
+        );
+        const symbolStrings = symbols.map(item => item.symbol);
+        const lexicalStrings = lattices.flatMap(({ lattice }) => lexicalSurfaceSequence(lattice));
+        const relationObservations = documents.flatMap(doc =>
+          sentenceSegments(doc.text, hasher).map((sentence, sentenceIndex) => ({
+            sourceId: doc.sourceFamilyId ?? doc.id,
+            symbols: lexicalSurfaceSymbols(sentence, `${doc.id}.relation.${sentenceIndex}`, hasher)
+              .filter(symbol => ![...symbol].every(char => /\p{Punctuation}/u.test(char))),
+            evidenceIds: doc.evidenceIds
+          })));
+        const relationHypothesisModel = compileRelationHypothesisModel({
+          observations: relationObservations,
+          hasher
+        });
+        const order = clampOrder(input.order ?? 6);
+        const counts = countNgrams(symbolStrings, order, vocabularyLimit);
+        const ngrams = inducedNgrams(counts, order, input.maxNgrams ?? 4096);
+        const kn = trainKneserNey(symbolStrings, { order, vocabularyLimit });
+        const boundarySignals = induceBoundariesFromLattices(lattices.map(({ lattice }) => lattice), hasher).slice(0, 2048);
+        const scripts = induceScripts(corpusText);
+        const morphology = induceMorphology(lexicalStrings, hasher).slice(0, 2048);
+        const syntaxTemplates = induceSyntaxTemplates(documents, hasher).slice(0, 2048);
+        const lexicalClasses = induceLexicalClasses(lexicalClassDocuments, hasher, input.maxLexicalClasses ?? 1024);
+        const morphologyClassBindings = induceMorphologyClassBindings(morphology, lexicalClasses, hasher).slice(0, 2048);
+        const semanticFrames = induceSemanticFrames(
+          documents,
+          relationHypothesisModel,
+          hasher,
+          input.maxFrames ?? 2048
+        );
+        const graphBoundConstructions = induceGraphBoundConstructions(semanticFrames, lexicalClasses, hasher).slice(0, 2048);
+        const translationSeeds = induceTranslationSeeds(documents, semanticFrames, hasher).slice(0, 2048);
+        const proseDiagnostics = proseDiagnostic(kn, symbolStrings, joinProgram);
+        const id = `language_model_${hasher.digestHex(JSON.stringify({
+          docs: documents.map(d => d.id),
+          symbols: symbolStrings.length,
           order,
-          vocabularyLimit,
-          sourceVersionIds: documents.map(doc => doc.sourceVersionId).filter(Boolean),
-          evidenceIds: [...new Set(documents.flatMap(doc => doc.evidenceIds ?? []))],
-          surfaceLatticeSchema: SURFACE_LATTICE_SCHEMA,
-          surfaceLatticeIds: lattices.map(({ lattice }) => lattice.id),
-          segmentationForestIds: lattices.map(({ lattice }) => lattice.segmentationForest.id),
-          retainedSegmentationPosteriorMass: lattices.map(({ lattice }) => lattice.segmentationForest.retainedPosteriorMass),
-          boundaryStatisticsId: boundaryStatistics.id,
           boundaryEstimatorId: boundaryEstimator.id,
-          boundaryEstimatorPopulationId: populationId,
           segmentationPopulationModelId: segmentationPopulations.id,
-          segmentationPopulationCount: segmentationPopulations.populations.length,
-          segmentationPopulationMdlGainNats: segmentationPopulations.selection.mdlGainNats,
           joinProgramId: joinProgram.id,
-          joinProgramComponentIds: joinProgram.components.map(component => component.program.id),
-          relationHypothesisModelId: relationHypothesisModel.id,
-          trustMean: documents.length ? mean(documents.map(doc => doc.trust ?? 0.5)) : 0,
-          corpusHash: hasher.digestHex(corpusText)
-        })
-      };
+          relationHypothesisModelId: relationHypothesisModel.id
+        })).slice(0, 32)}`;
+        return {
+          id,
+          corpusDocuments: documents.length,
+          symbolCount: symbolStrings.length,
+          vocabularySize: new Set(symbolStrings).size,
+          scripts,
+          ngrams,
+          kneserNey: compactKneserNeyForProfile(kn, corpusText.slice(0, 200000)),
+          boundaryStatistics,
+          boundaryEstimator,
+          boundaryFeatureContext,
+          segmentationPopulations,
+          joinProgram,
+          relationHypothesisModel,
+          boundarySignals,
+          morphology,
+          syntaxTemplates,
+          lexicalClasses,
+          morphologyClassBindings,
+          semanticFrames,
+          graphBoundConstructions,
+          translationSeeds,
+          proseDiagnostics,
+          audit: toJsonValue({
+            order,
+            vocabularyLimit,
+            sourceVersionIds: documents.map(doc => doc.sourceVersionId).filter(Boolean),
+            evidenceIds: [...new Set(documents.flatMap(doc => doc.evidenceIds ?? []))],
+            surfaceLatticeSchema: SURFACE_LATTICE_SCHEMA,
+            surfaceLatticeIds: lattices.map(({ lattice }) => lattice.id),
+            segmentationForestIds: lattices.map(({ lattice }) => lattice.segmentationForest.id),
+            retainedSegmentationPosteriorMass: lattices.map(({ lattice }) => lattice.segmentationForest.retainedPosteriorMass),
+            boundaryStatisticsId: boundaryStatistics.id,
+            boundaryEstimatorId: boundaryEstimator.id,
+            boundaryEstimatorPopulationId: populationId,
+            segmentationPopulationModelId: segmentationPopulations.id,
+            segmentationPopulationCount: segmentationPopulations.populations.length,
+            segmentationPopulationMdlGainNats: segmentationPopulations.selection.mdlGainNats,
+            joinProgramId: joinProgram.id,
+            joinProgramComponentIds: joinProgram.components.map(component => component.program.id),
+            relationHypothesisModelId: relationHypothesisModel.id,
+            trustMean: documents.length ? mean(documents.map(doc => doc.trust ?? 0.5)) : 0,
+            corpusHash: hasher.digestHex(corpusText)
+          })
+        };
+      } finally { preparationContext.clear(); }
     },
 
     scoreContinuation(input: {
