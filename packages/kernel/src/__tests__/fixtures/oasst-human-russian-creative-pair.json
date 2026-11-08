@@ -1,0 +1,56 @@
+{
+  "schema": "scce.dialogue_transcript.v1",
+  "sourceMetadata": {
+    "dataset": "OpenAssistant/oasst1",
+    "uri": "https://huggingface.co/datasets/OpenAssistant/oasst1",
+    "pinnedRevision": "fdf72ae0827c1cda404aff25b6603abec9e3399b",
+    "sourceFile": "2023-04-12_oasst_ready.messages.jsonl.gz",
+    "license": "Apache-2.0",
+    "attribution": "OpenAssistant Contributors (2023); original Russian human conversation from the human-generated, human-annotated OASST1 release.",
+    "messages": [
+      {
+        "message_id": "5f1a8a60-ee1f-4c01-b646-e68e7a5ece82",
+        "role": "prompter",
+        "lang": "ru",
+        "synthetic": false,
+        "model_name": null,
+        "review_result": true,
+        "deleted": false
+      },
+      {
+        "message_id": "c2b9d7b8-4dd2-4458-9d29-743b9e26eff0",
+        "parent_id": "5f1a8a60-ee1f-4c01-b646-e68e7a5ece82",
+        "role": "assistant",
+        "lang": "ru",
+        "synthetic": false,
+        "model_name": null,
+        "review_result": true,
+        "rank": 0,
+        "deleted": false
+      }
+    ],
+    "changeNotice": "Message text is preserved with NFC normalization. Exact request/reply coordinates, conversation commitment, and the creative-writing label for this selected fiction request are declared by this fixture preparation. They are training annotations, not runtime language rules. No translation or synthetic replacement is used in the source text."
+  },
+  "text": "Напиши сценарий короткого комикса, картинок на 7-10, про Спанч Боба в космосе.\nКонечно! Вот сценарий короткого комикса про Спанч Боба в космосе:\n\n1. Спанч Боб находится в космическом корабле и готовится к выходу в открытый космос.\n\n2. Он выходит в открытый космос и начинает плавать в невесомости.\n\n3. Он замечает, что его космический корабль улетел далеко и он остался один в космосе.\n\n4. Спанч Боб начинает паниковать и пытается вернуться на корабль, но не может найти его.\n\n5. Вдруг он замечает, что на небольшом астероиде есть жизнь! Там живут маленькие зеленые мужички.\n\n6. Спанч Боб радостно плывет к астероиду и знакомится с маленькими зелеными мужичками.\n\n7. Они проводят время вместе и узнают много интересного друг о друге.\n\n8. В конце комикса Спанч Боб находит способ вернуться на Землю и прощается со своими новыми друзьями. \n\nНадеюсь, что тебе понравится этот сценарий! Если ты хочешь узнать больше о Спанч Бобе или о космосе, то я могу помочь тебе с этим.",
+  "turns": [
+    {
+      "index": 0,
+      "speakerId": "prompter",
+      "surface": "Напиши сценарий короткого комикса, картинок на 7-10, про Спанч Боба в космосе.",
+      "startCodePoint": 0,
+      "endCodePoint": 78,
+      "requestAuthority": "creative",
+      "sourceCategory": "creative_writing"
+    },
+    {
+      "index": 1,
+      "speakerId": "assistant",
+      "surface": "Конечно! Вот сценарий короткого комикса про Спанч Боба в космосе:\n\n1. Спанч Боб находится в космическом корабле и готовится к выходу в открытый космос.\n\n2. Он выходит в открытый космос и начинает плавать в невесомости.\n\n3. Он замечает, что его космический корабль улетел далеко и он остался один в космосе.\n\n4. Спанч Боб начинает паниковать и пытается вернуться на корабль, но не может найти его.\n\n5. Вдруг он замечает, что на небольшом астероиде есть жизнь! Там живут маленькие зеленые мужички.\n\n6. Спанч Боб радостно плывет к астероиду и знакомится с маленькими зелеными мужичками.\n\n7. Они проводят время вместе и узнают много интересного друг о друге.\n\n8. В конце комикса Спанч Боб находит способ вернуться на Землю и прощается со своими новыми друзьями. \n\nНадеюсь, что тебе понравится этот сценарий! Если ты хочешь узнать больше о Спанч Бобе или о космосе, то я могу помочь тебе с этим.",
+      "startCodePoint": 79,
+      "endCodePoint": 969,
+      "replyToTurnIndex": 0,
+      "commitmentScope": "conversation",
+      "sourceCategory": "creative_writing"
+    }
+  ]
+}

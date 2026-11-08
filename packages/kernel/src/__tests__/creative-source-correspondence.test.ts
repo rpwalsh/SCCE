@@ -243,7 +243,7 @@ describe("declared human creative source correspondence", () => {
     }
   });
 
-  it("retains correspondence under a bijective non-Latin renaming of the authentic source", () => {
+  it("preserves opaque-role controls under a synthetic bijective non-Latin renaming", () => {
     const vocabulary = new Map<string, string>();
     const rename = (text: string) => {
       const points = [...text];

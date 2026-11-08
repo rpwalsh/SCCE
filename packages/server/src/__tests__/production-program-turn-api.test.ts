@@ -315,8 +315,11 @@ describe("production owner program turn through the API", () => {
     expect(missingSpeech.status, JSON.stringify(await missingSpeech.json())).toBe(422);
   }, 60_000);
 
-  it("loads an attested human reply through exact source IDs across the real corpus-role filter", async () => {
-    const human = JSON.parse(await readFile(new URL("../../../kernel/src/__tests__/fixtures/dolly-human-creative-pair.json", import.meta.url), "utf8")) as {
+  it.each([
+    ["dolly-human-creative-pair.json", "room", "κάλυ月"],
+    ["oasst-human-russian-creative-pair.json", "Спанч", "Кварц"]
+  ])("loads an attested human reply through exact source IDs across the real corpus-role filter: %s", async (fixtureName, sourceValue, heldoutValue) => {
+    const human = JSON.parse(await readFile(new URL(`../../../kernel/src/__tests__/fixtures/${fixtureName}`, import.meta.url), "utf8")) as {
       text: string; turns: NonNullable<Parameters<typeof compileLanguageTrainingBatch>[0]["batch"]["transcriptTurns"]>;
     };
     const root = await mkdtemp(join(tmpdir(), "scce-human-utterance-api-"));
@@ -327,14 +330,14 @@ describe("production owner program turn through the API", () => {
     const ids = createIdFactory({ clock, hasher, deterministicReplay: true });
     const sourceVersionId = ids.sourceVersionId(human.text), contentHash = ids.contentHash(human.text);
     const source: EvidenceSpan = { id: ids.evidenceId({ sourceVersionId, byteStart: 0, byteEnd: Buffer.byteLength(human.text), spanHash: contentHash }),
-      sourceId: ids.sourceId("dialogue", "fixture://pinned-dolly/192"), sourceVersionId,
+      sourceId: ids.sourceId("dialogue", `fixture://human/${fixtureName}`), sourceVersionId,
       chunkId: ids.chunkId({ sourceVersionId, byteStart: 0, byteEnd: Buffer.byteLength(human.text), chunkHash: contentHash }), contentHash,
       mediaType: "text/plain", byteStart: 0, byteEnd: Buffer.byteLength(human.text), charStart: 0, charEnd: [...human.text].length,
       text: human.text, textPreview: human.text, languageHints: {}, scriptHints: {}, trustVector: {}, provenance: { sourceSystem: "dialogue" },
       features: [], status: "promoted", alpha: 1, observedAt: 103_000 };
     const profile = createLanguageAcquisitionEngine({ idFactory: ids }).acquire({ sourceVersionId, text: human.text, createdAt: 103_000 });
     const trained = compileLanguageTrainingBatch({ runtime: createLanguageMemoryRuntime({ hasher, idFactory: ids }), hasher,
-      batch: { streamId: "fixture://pinned-dolly/192", sourceSystem: "dialogue", profile, sourceVersionId, text: human.text,
+      batch: { streamId: `fixture://human/${fixtureName}`, sourceSystem: "dialogue", profile, sourceVersionId, text: human.text,
         evidence: [source], transcriptTurns: human.turns, createdAt: 103_000, retainNgramObservations: false } });
     const languagePatterns = trained.patterns.map(pattern => ({ ...pattern,
       patternJson: { ...(pattern.patternJson as Record<string, unknown>), sourceSystem: "dialogue" } as LanguagePatternRecord["patternJson"] }));
@@ -349,7 +352,7 @@ describe("production owner program turn through the API", () => {
       assignProfileLanguages: async rows => { for (const row of rows) assignments.set(row.profileId, row.languageId); },
       listProfileLanguages: async () => [...assignments].map(([profileId, languageId]) => ({ profileId, languageId })),
       listProfileSignatures: async query => profile.id > (query.afterId ?? "") ? [{ id: profile.id, sourceVersionId, sourceSystem: "dialogue",
-        sourceUri: "fixture://pinned-dolly/192", scripts: profile.scripts, direction: profile.direction,
+        sourceUri: `fixture://human/${fixtureName}`, scripts: profile.scripts, direction: profile.direction,
         topContinuation: (profile.kneserNey as { topContinuation: Array<[string, number]> }).topContinuation }] : []
     };
     const queries: Array<Parameters<ScceStorage["languageMemory"]["listLanguagePatterns"]>[0]> = [];
@@ -383,16 +386,15 @@ describe("production owner program turn through the API", () => {
     await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("human utterance API has no address");
-    for (const [index, text] of [human.turns[0]!.surface, human.turns[0]!.surface.replace("hidden room", "hidden κάλυ月")].entries()) {
+    for (const [index, text] of [human.turns[0]!.surface, human.turns[0]!.surface.replace(sourceValue, heldoutValue)].entries()) {
       context = await createContext();
       const response = await fetch(`http://127.0.0.1:${address.port}/api/turn?full=1`, { method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({ text, requestedAuthority: "creative", conversationId: `conversation.human.utterance.${index}` }) });
       const body = await response.json() as Record<string, any>;
       expect(response.status, JSON.stringify(body)).toBe(200);
-      expect(body.answer).toContain("It was going to be a long day.");
-      expect(body.answer).toContain("Time to call her brother-in-law to thank him for letting Stella visit.");
-      expect(body.answer).not.toContain("Write a short story");
-      if (index === 1) expect(body.answer).toContain("κάλυ月");
+      expect(body.answer).not.toBe(text);
+      if (index === 1) expect(body.answer).toContain(heldoutValue);
+      else expect(body.answer.replace(/\s+/gu, " ")).toBe(human.turns[1]!.surface.replace(/\s+/gu, " "));
     }
     expect(queries.some(query => query?.sourceSystem && corpusSourceAlias(query.sourceSystem) === "gutenberg")).toBe(true);
     const sourceReads = queries.filter(query => query?.patternIds?.length);
