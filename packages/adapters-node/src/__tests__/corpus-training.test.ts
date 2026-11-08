@@ -46,6 +46,7 @@ import { INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID } from "../../../kernel/src
 import { LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID, LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA } from "../../../kernel/src/language-construction-memory.js";
 import { SOURCE_CONSTRUCTION_BINDINGS_COMPONENT_RECIPE_ID } from "../../../kernel/src/language-construction-memory.js";
 import { SOURCE_ENTITY_GRAPH_COMPONENT_RECIPE_ID } from "../corpus-source-graph-projection.js";
+import { scalarSourceContractFixtures, statefulSourceContractFixtures } from "./fixtures/polyglot-source-contracts.js";
 import * as languageInduction from "../../../kernel/src/language-induction.js";
 import * as kernelPrimitives from "../../../kernel/src/primitives.js";
 import { primeLearnedAnswerUnitForms } from "../../../kernel/src/learned-answer-unit-forms.js";
@@ -576,6 +577,51 @@ describe("learned rows carry the shard's provenance once", () => {
     exposeCodePatterns = false;
     const ablated = await boot().kernel.turn(request);
     expect(ablated.answer).not.toContain("function freshPulse(");
+  });
+
+  it.each(scalarSourceContractFixtures)("ingests public $languageId source assertions through ordinary OSS contracts without tsconfig", async item => {
+    const root = await tempDir("oss-polyglot-contract-");
+    for (const [name, text] of Object.entries(item.files)) await writeFile(path.join(root, name), text);
+    const fixture = memoryStorage();
+    await trainOssCorpus({ storage: fixture.storage, rootPath: root, sourceUriBase: "scce://polyglot-assertions", maxFiles: 20,
+      maxFilesPerRun: 20, ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64 });
+    const persisted = fixture.state.patterns.filter(pattern => pattern.patternKind === "source_code_assertion_contract");
+    expect(persisted).toHaveLength(1);
+    const body = recordOf(persisted[0]!.patternJson);
+    expect(body).toMatchObject({ sourcePath: item.sourcePath, formalLanguage: item.languageId,
+      sourceHash: blobContentHash(Buffer.from(Object.entries(item.files).find(([name]) => name === item.sourcePath)![1])) });
+    const cases = body.cases as Array<Record<string, JsonValue>>;
+    expect(cases.map(row => row.arguments)).toEqual([[1], [2], [5]]);
+    expect(cases.map(row => row.expectedResult)).toEqual([2, 3, 6]);
+    const requestText = `Implement the documented callable f0 from ${item.sourcePath}.`;
+    const intent = { languageId: item.languageId, symbols: [], references: [{ sourceFamily: "scce://polyglot-assertions", relativePath: item.sourcePath,
+      sourceHash: body.sourceHash as string, score: 1 }], audit: null };
+    const requirements = sourceOwnedBehaviorRequirementsFromDocumentation({ requestText, intent, patterns: persisted });
+    expect(requirements).toHaveLength(3);
+    expect(requirements.map(row => row.verificationRole)).toEqual(["fit", "fit", "held_out"]);
+    const selected = searchProgramTransformations(requirements).selected;
+    expect(selected).toHaveLength(1);
+    expect(evaluateProgramExpression(selected[0]!.producedIr, [5])).toBe(6);
+  });
+
+  it.each(statefulSourceContractFixtures)("ingests public $languageId ordered read-after-write assertions into the existing stateful IR", async item => {
+    const root = await tempDir("oss-polyglot-stateful-");
+    for (const [name, text] of Object.entries(item.files)) await writeFile(path.join(root, name), text);
+    const fixture = memoryStorage();
+    await trainOssCorpus({ storage: fixture.storage, rootPath: root, sourceUriBase: "scce://polyglot-stateful", maxFiles: 20,
+      maxFilesPerRun: 20, ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64 });
+    const persisted = fixture.state.patterns.filter(pattern => pattern.patternKind === "source_code_assertion_contract");
+    expect(persisted).toHaveLength(1);
+    const body = recordOf(persisted[0]!.patternJson);
+    const intent = { languageId: item.languageId, symbols: [], references: [{ sourceFamily: "scce://polyglot-stateful", relativePath: item.sourcePath,
+      sourceHash: body.sourceHash as string, score: 1 }], audit: null };
+    const behavior = kernel.sourceOwnedProgramBehaviorFromDocumentation({ requestText: "Create the documented public module.", intent, patterns: persisted });
+    expect(behavior.behaviorRequirements).toEqual([]);
+    expect(behavior.statefulBehaviorRequirements).toHaveLength(2);
+    expect(behavior.statefulBehaviorRequirements.map(row => row.invocations.map(call => call.callableId))).toEqual([["f0", "f1"], ["f0", "f1", "f0", "f1"]]);
+    expect(behavior.statefulBehaviorRequirements.map(row => row.expectedResult)).toEqual([111, 222]);
+    expect(behavior.statefulBehaviorRequirements.map(row => row.invocations.at(-1)!.arguments)).toEqual([["a"], ["a"]]);
+    expect(behavior.statefulBehaviorRequirements.map(row => row.verificationRole)).toEqual(["fit", "held_out"]);
   });
 
   it("binds persisted source assertions from documentation through program planning and held-out execution", async () => {

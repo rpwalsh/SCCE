@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import ts from "typescript";
+import { toJsonValue, type JsonValue } from "@scce/kernel";
 import { createHash } from "node:crypto";
 import type { TypeScriptSemanticProgramIndex, TypeScriptSemanticCall, TypeScriptSemanticFile } from "./typescript-semantic-program-index.js";
 
@@ -20,7 +21,8 @@ export interface SourceOwnedInvocation {
 export interface SourceOwnedTestCase {
   readonly targetSymbolId: string;
   readonly targetName: string;
-  readonly languageId: "typescript" | "javascript";
+  readonly languageId: "typescript" | "javascript" | "python" | "go" | "rust";
+  readonly bindingResolverId?: string;
   readonly sourcePath: string;
   readonly sourceHash: string;
   readonly sourceVersionId: string;
@@ -93,6 +95,7 @@ export function sourceOwnedTestCases(input: {
         const contract = {
           targetSymbolId,
           targetName,
+          bindingResolverId: "scce.source_contract.typescript_checker.v1",
           languageId: targetFile.syntaxKind === ts.ScriptKind.TS || targetFile.syntaxKind === ts.ScriptKind.TSX ? "typescript" as const : "javascript" as const,
           sourcePath: targetFile.path, sourceHash: sourceVersion.sourceHash, sourceVersionId: sourceVersion.sourceVersionId,
           testPath: testFile.path, testHash: testVersion.sourceHash, testSourceVersionId: testVersion.sourceVersionId,
@@ -220,3 +223,31 @@ function literalValue(node: ts.Expression, sourceFile: ts.SourceFile): { ok: tru
 }
 function visit(node: ts.Node, fn: (node: ts.Node) => void): void { fn(node); node.forEachChild(child => visit(child, fn)); }
 function exactSpan(text: string, start: number, end: number) { return { start, end, textHash: `sha256:${createHash("sha256").update(text.slice(start, end), "utf8").digest("hex")}` }; }
+
+export function sourceOwnedTestContractProjections(cases: readonly SourceOwnedTestCase[], sourceUriBase: string): Map<string, JsonValue[]> {
+  const result = new Map<string, JsonValue[]>(), grouped = new Map<string, SourceOwnedTestCase[]>();
+  for (const item of cases) grouped.set(item.sourcePath, [...(grouped.get(item.sourcePath) ?? []), item]);
+  for (const [sourcePath, values] of grouped) {
+    if (values.length < 2) continue;
+    const bySymbol = new Map<string, typeof values>();
+    for (const value of values) bySymbol.set(value.targetSymbolId, [...(bySymbol.get(value.targetSymbolId) ?? []), value]);
+    const contracts: JsonValue[] = [];
+    for (const [targetSymbolId, symbolCases] of bySymbol) {
+      if (symbolCases.length < 2) continue;
+      contracts.push(toJsonValue({
+        schema: "scce.source_owned_test_contract.v1",
+        repositoryFamily: sourceUriBase,
+        sourcePath,
+        sourceHash: symbolCases[0]!.sourceHash,
+        sourceVersionId: symbolCases[0]!.sourceVersionId,
+        formalLanguage: symbolCases[0]!.languageId,
+        targetSymbolId,
+        targetName: symbolCases[0]!.targetName,
+        bindingResolverIds: [...new Set(symbolCases.map(row => row.bindingResolverId).filter(Boolean))],
+        cases: symbolCases
+      }));
+    }
+    if (contracts.length) result.set(sourcePath, contracts);
+  }
+  return result;
+}

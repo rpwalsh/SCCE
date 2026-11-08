@@ -30,7 +30,8 @@ import { createProjectDeclarationIndex, createProjectLicenseIndex, readDeclaredL
 import { compileSourceCodeFunctionsAsync } from "./source-code-function-learning.js";
 import { sourceBrainBuildReceipt, type SourceBrainBuildReceipt, type SourceBrainBuildResult } from "./source-brain-build.js";
 import { buildTypeScriptSemanticProgramIndex } from "./typescript-semantic-program-index.js";
-import { sourceOwnedTestCases } from "./source-owned-test-contracts.js";
+import { sourceOwnedTestCases, sourceOwnedTestContractProjections } from "./source-owned-test-contracts.js";
+import { grammarSourceOwnedTestCases, type GrammarContractFile } from "./grammar-source-owned-test-contracts.js";
 
 export const DEFAULT_OSS_FILES_PER_RUN = 2000;
 export const DEFAULT_OSS_FILES_PER_REPOSITORY = 100000;
@@ -129,6 +130,35 @@ async function ingestSourceOwnedTestContracts(input: {
   hasher: ReturnType<typeof createHasher>;
   maxFileBytes: number;
 }): Promise<Map<string, JsonValue[]>> {
+  const result = await ingestTypeScriptSourceOwnedTestContracts(input);
+  const files: GrammarContractFile[] = [];
+  let totalBytes = 0;
+  for (const file of input.window) {
+    const languageId = codeLanguageForPath(file.path);
+    if (languageId !== "python" && languageId !== "go" && languageId !== "rust" || file.byteLength > input.maxFileBytes) continue;
+    if (files.length >= 127 || totalBytes + file.byteLength > 8 * 1024 * 1024) break;
+    const raw = await readFile(file.absolutePath), text = raw.toString("utf8");
+    const sourceHash = file.contentHash ?? sha256Bytes(raw), relativePath = normalizeRelative(file.path);
+    const sourceVersionId = String(input.ids.sourceVersionId(canonicalStringify({ contract: "scce.oss-projection-source-version.v1",
+      sourceUri: `${input.sourceUriBase}#path=${encodeURIComponent(relativePath)}`, sourceHash,
+      transformId: `${CODE_SURFACE_RECIPE_ID}:code_surface_tokens`, projectedTextHash: input.hasher.digestHex(codeTrainingSurface(text)) })));
+    files.push({ path: relativePath, text, languageId, sourceHash, sourceVersionId });
+    totalBytes += raw.byteLength;
+    result.set(relativePath, []);
+  }
+  const cases = await grammarSourceOwnedTestCases(files);
+  for (const [sourcePath, contracts] of sourceOwnedTestContractProjections(cases, input.sourceUriBase)) result.set(sourcePath, contracts);
+  return result;
+}
+
+async function ingestTypeScriptSourceOwnedTestContracts(input: {
+  root: string;
+  window: readonly { path: string; absolutePath: string; byteLength: number; contentHash?: string }[];
+  sourceUriBase: string;
+  ids: ReturnType<typeof createIdFactory>;
+  hasher: ReturnType<typeof createHasher>;
+  maxFileBytes: number;
+}): Promise<Map<string, JsonValue[]>> {
   const result = new Map<string, JsonValue[]>();
   const configPath = path.join(input.root, "tsconfig.json");
   let configBytes: Buffer;
@@ -197,35 +227,11 @@ async function ingestSourceOwnedTestContracts(input: {
     }
   });
   const cases = sourceOwnedTestCases({ program, sourceVersions, testVersions, sourceTexts });
-  const grouped = new Map<string, typeof cases>();
   for (const sourcePath of sourceVersions.keys()) result.set(sourcePath, []);
-  for (const item of cases) grouped.set(item.sourcePath, [...(grouped.get(item.sourcePath) ?? []), item]);
-  for (const [sourcePath, values] of grouped) {
-    if (values.length < 2) continue;
-    const sourceFile = program.files.find(file => file.path === sourcePath);
-    const sourceVersion = sourceVersions.get(sourcePath);
-    if (!sourceFile || !sourceVersion) continue;
-    const bySymbol = new Map<string, typeof values>();
-    for (const value of values) bySymbol.set(value.targetSymbolId, [...(bySymbol.get(value.targetSymbolId) ?? []), value]);
-    const contracts: JsonValue[] = [];
-    for (const [targetSymbolId, symbolCases] of bySymbol) {
-      if (symbolCases.length < 2) continue;
-      contracts.push(toJsonValue({
-        schema: "scce.source_owned_test_contract.v1",
-        repositoryFamily: input.sourceUriBase,
-        sourcePath,
-        sourceHash: sourceVersion.sourceHash,
-        sourceVersionId: sourceVersion.sourceVersionId,
-        formalLanguage: codeLanguageForPath(sourcePath),
-        targetSymbolId,
-        targetName: symbolCases[0]!.targetName,
-        cases: symbolCases
-      }));
-    }
-    if (contracts.length) result.set(sourcePath, contracts);
-  }
+  for (const [sourcePath, contracts] of sourceOwnedTestContractProjections(cases, input.sourceUriBase)) result.set(sourcePath, contracts);
   return result;
 }
+
 
 function importsNodeTest(text: string, fileName: string): boolean {
   const source = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true);
