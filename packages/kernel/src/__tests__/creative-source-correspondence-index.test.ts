@@ -12,11 +12,11 @@ import type { EvidenceSpan } from "../types.js";
 
 const hasher = createHasher();
 const ids = createIdFactory({ hasher, clock: createClock({ fixedTime: 1 }), deterministicReplay: true, namespace: "correspondence-index-control" });
-const legacyOutputDigest = "1c83d67fa11893058293b7010d1865587a1e977629e4b9a15719d292fb5e2f4f";
+const v2CoreOutputDigest = "74c6f986fbd2c22db731f0a3dadcf644a5f46dc58a3ca712d9c48c64dfd63e44";
 
-function assertLegacyBytesAndAcquiredWitnesses(patterns: LanguagePatternRecord[], input: ReturnType<typeof fixture>) {
+function assertVersionedBytesAndAcquiredWitnesses(patterns: LanguagePatternRecord[], input: ReturnType<typeof fixture>) {
   const verifier = createCreativeSourceCorrespondenceVerifier(input);
-  const legacy = patterns.map(pattern => {
+  const versioned = patterns.map(pattern => {
     const { id: _id, surfaceBindingRecipe, ...material } = pattern.patternJson as Record<string, unknown>;
     expect(surfaceBindingRecipe).toBe(CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID);
     const rows = material.sourceObservations as CreativeSourceCorrespondence[];
@@ -35,7 +35,7 @@ function assertLegacyBytesAndAcquiredWitnesses(patterns: LanguagePatternRecord[]
     const id = `creative.observed.compatibility.${hasher.digestHex(canonicalStringify(toJsonValue(material)))}`;
     return { ...pattern, id, patternJson: toJsonValue({ ...material, id }) };
   });
-  expect(hasher.digestHex(JSON.stringify(legacy))).toBe(legacyOutputDigest);
+  expect(hasher.digestHex(JSON.stringify(versioned))).toBe(v2CoreOutputDigest);
 }
 
 // Opaque development fixtures isolate event occurrence identity, compiler scope, and range selection.
@@ -87,7 +87,7 @@ function fixture(pairCount = 12) {
 it("preserves complete output bytes and every compiler scope of repeated event IDs", () => {
   const input = fixture();
   const patterns = compileCreativeSourceCorrespondences(input);
-  assertLegacyBytesAndAcquiredWitnesses(patterns, input);
+  assertVersionedBytesAndAcquiredWitnesses(patterns, input);
   const models = patterns.map(pattern => pattern.patternJson as { eventCompilerId: string; sourceObservations: Array<{ eventId: string; eventConstructionId: string }> });
   expect(models.map(model => model.eventCompilerId)).toEqual(["compiler.foreign", "compiler.2", "compiler.1", "compiler.0"]);
   for (const model of models) {
@@ -106,7 +106,7 @@ it("visits a full evidence group once rather than scanning it for every reply or
     id: { enumerable: true, get: () => { identityReads++; return event.id; } }
   }));
   const patterns = compileCreativeSourceCorrespondences({ ...input, events });
-  assertLegacyBytesAndAcquiredWitnesses(patterns, input);
+  assertVersionedBytesAndAcquiredWitnesses(patterns, input);
   expect(rangeReads).toBeLessThanOrEqual(events.length * 2);
   expect(identityReads).toBeLessThanOrEqual(events.length + input.turns.length * 3);
 });
