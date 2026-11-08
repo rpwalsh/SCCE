@@ -6,7 +6,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { codeSurfaceTokens, trainKneserNey, toJsonValue } from "@scce/kernel";
+import { codeSurfaceTokens, persistedKneserNey, trainKneserNey, toJsonValue } from "@scce/kernel";
 import { findCodeVerifierCapability, type StructuredPatchValidationPolicy } from "@scce/adapters-node";
 import { handleRequest, type ApiContext } from "../routes.js";
 
@@ -294,7 +294,7 @@ describe("test-authored reference applications through the production workspace 
    environment: { RUSTC: "C:/Users/react/.cargo/bin/rustc.exe" } };
   const model = trainKneserNey(codeSurfaceTokens(app.source), { order: 5, discount: 0.75, vocabularyLimit: 8192 });
   const record = { id: `test-authored-training-reference:ledger:${app.language}`, streamId: `oss_code:${app.target}`, languageHint: "opaque.source-language-hint", maxOrder: model.order, discount: model.discount, updatedAt: 1,
-   modelJson: toJsonValue({ sourceSystem: "oss_code", formalLanguage: app.language, sourceOrigin: "test-authored-training-reference", model }) };
+   modelJson: toJsonValue({ sourceSystem: "oss_code", formalLanguage: app.language, sourceOrigin: "test-authored-training-reference", model: persistedKneserNey(model) }) };
   const events: Array<{ typeId: string; payload: unknown }> = [];
   const context = { runtime: {
    storage: { languageMemory: { listNgramModels: async () => [record] }, evidence: { searchEvidence: async () => [] }, events: { append: async (event: { typeId: string; payload: unknown }) => { events.push(event); } } },

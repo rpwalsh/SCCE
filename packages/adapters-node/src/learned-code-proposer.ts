@@ -15,6 +15,7 @@ import {
   generateLearnedCodeRepairs,
   generateLearnedBehaviorCodeRepairs,
   learnedCodeRepairOperations,
+  materializeKneserNey,
   type CodeConstruction,
   type CodeIntent,
   type KneserNeyModel,
@@ -372,7 +373,10 @@ async function loadCodeModels(storage: ScceStorage, languageId: string, limit: n
   for (const record of records) {
     if (modelLanguage(record) !== languageId) continue;
     const model = kneserNeyModelFromRecord(record);
-    if (model) models.push({ ...model, sourceKey: model.sourceKey ?? record.id });
+    if (model) {
+      model.sourceKey ??= record.id;
+      models.push(model);
+    }
   }
   return models;
 }
@@ -384,9 +388,11 @@ function modelLanguage(record: NgramModelRecord): string | undefined {
 /** A stored model back into the runtime shape, or nothing when the record does not carry one. */
 function kneserNeyModelFromRecord(record: NgramModelRecord): KneserNeyModel | undefined {
   const stored = jsonRecord(record.modelJson).model;
-  if (!stored || typeof stored !== "object" || Array.isArray(stored)) return undefined;
-  const model = stored as unknown as KneserNeyModel;
-  return Number.isInteger(model.order) && model.order >= 1 && model.counts ? model : undefined;
+  const model = materializeKneserNey(stored);
+  if (!model || !Number.isInteger(model.order) || model.order < 1) return undefined;
+  const sourceKey = jsonRecord(stored).sourceKey;
+  if (typeof sourceKey === "string") model.sourceKey = sourceKey;
+  return model;
 }
 
 function jsonRecord(value: JsonValue | undefined): Record<string, JsonValue> {
