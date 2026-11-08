@@ -128,6 +128,22 @@ describe("Postgres language-memory ownership queries", () => {
     await adapter.languageMemory.listLanguagePatterns({ profileIds: ["profile.owned"], sourceSystem: "wikipedia", limit: 8 });
     expect(calls.at(-1)!.sql).not.toContain("pattern.pattern_json - 'joinProgram'");
   });
+
+  it("reads exact mixed-kind prerequisites without dropping required pages to category quotas", async () => {
+    const { adapter, calls } = fixture();
+    const patternIds = ["surface.construction.bundle.reply", ...Array.from({ length: 5 }, (_, index) => `surface.creative_event.bundle.${index}`)];
+    await adapter.languageMemory.listLanguagePatterns({ patternIds, profileId: "profile.owned", limit: patternIds.length, maxTotalJsonBytes: 32 * 1024 * 1024 });
+    const call = calls.at(-1)!;
+    expect(call.params).toContainEqual(patternIds);
+    expect(call.sql).toContain("pattern.id=ANY(");
+    expect(call.sql).not.toContain("ranked.category_rank <= CEIL");
+    expect(call.sql).not.toContain("SUM(candidate.stored_bytes) OVER (PARTITION BY");
+    expect(call.sql).not.toContain("SUM(octet_length(eligible.pattern_json::text)) OVER (PARTITION BY");
+    expect(call.sql).toContain("running_json_bytes <=");
+    expect(call.sql).toContain("current_compilation");
+    expect(call.sql).toContain("pattern.information_label");
+    expect(call.sql).toContain("SELECT profile_id,source_system,pattern_schema,pattern_id FROM active_projection_ids_0");
+  });
   it("reads exact accessible projection receipts and validates their owned compilation inventory including empty results", async () => {
     const { adapter, calls } = fixture();
     const informationLabel = { tenantId: "tenant.fixture", principals: ["principal.fixture"], compartments: [], exportClass: "restricted" as const, mergePolicy: "isolated" as const };

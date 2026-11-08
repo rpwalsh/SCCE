@@ -4250,24 +4250,27 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         ELSE 'other'
       END`;
       const narrow = "id,profile_id,pattern_kind,support,entropy,evidence_ids,updated_at,information_label";
+      // Exact prerequisites share one budget; category quotas apply only to searches.
+      const partition = (alias: string) => query.patternIds ? "" : `PARTITION BY ${category(alias)} `;
+      const byteAllowance = query.patternIds ? `$${params.length}` : `CEIL($${params.length}::numeric / category_counts.n)`;
       const admitted = byteBudget
         ? `SELECT ${narrow} FROM (
              SELECT candidate.*,
-               SUM(candidate.stored_bytes) OVER (PARTITION BY ${category("candidate")} ORDER BY ${order("candidate")} ROWS UNBOUNDED PRECEDING) AS running_stored_bytes,
-               ROW_NUMBER() OVER (PARTITION BY ${category("candidate")} ORDER BY ${order("candidate")}) AS category_relevance_rank
+               SUM(candidate.stored_bytes) OVER (${partition("candidate")}ORDER BY ${order("candidate")} ROWS UNBOUNDED PRECEDING) AS running_stored_bytes,
+               ROW_NUMBER() OVER (${partition("candidate")}ORDER BY ${order("candidate")}) AS category_relevance_rank
              FROM candidates candidate
            ) sized CROSS JOIN category_counts
-           WHERE sized.running_stored_bytes <= CEIL($${params.length}::numeric / category_counts.n) OR sized.category_relevance_rank = 1`
+           WHERE sized.running_stored_bytes <= ${byteAllowance} OR sized.category_relevance_rank = 1`
         : `SELECT ${narrow} FROM candidates`;
       const finalSelect = byteBudget
         ? `SELECT ranked.id,ranked.profile_id,ranked.pattern_kind,ranked.support,ranked.entropy,ranked.pattern_json,ranked.evidence_ids,ranked.updated_at,ranked.information_label
            FROM (
              SELECT eligible.*,
-               SUM(octet_length(eligible.pattern_json::text)) OVER (PARTITION BY ${category("eligible")} ORDER BY ${order("eligible")} ROWS UNBOUNDED PRECEDING) AS running_json_bytes,
-               ROW_NUMBER() OVER (PARTITION BY ${category("eligible")} ORDER BY ${order("eligible")}) AS category_relevance_rank
+               SUM(octet_length(eligible.pattern_json::text)) OVER (${partition("eligible")}ORDER BY ${order("eligible")} ROWS UNBOUNDED PRECEDING) AS running_json_bytes,
+               ROW_NUMBER() OVER (${partition("eligible")}ORDER BY ${order("eligible")}) AS category_relevance_rank
              FROM eligible_patterns eligible
            ) ranked CROSS JOIN category_counts
-           WHERE ranked.running_json_bytes <= CEIL($${params.length}::numeric / category_counts.n) OR ranked.category_relevance_rank = 1
+           WHERE ranked.running_json_bytes <= ${byteAllowance} OR ranked.category_relevance_rank = 1
            ORDER BY ${order("ranked")} LIMIT $${limitParam}`
         : `SELECT * FROM eligible_patterns eligible ORDER BY ${order("eligible")} LIMIT $${limitParam}`;
       return (await storage.query<LanguagePatternRow>(
@@ -4301,7 +4304,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
            FROM ranked_pool ranked CROSS JOIN category_counts
            -- Each pattern kind gets an even share of the row budget, ranked by its own support within that share --
            -- fair representation across kinds, not a hardcoded per-kind quota.
-           WHERE ranked.category_rank <= CEIL($${limitParam}::numeric / category_counts.n)
+           WHERE ${query.patternIds ? "TRUE" : `ranked.category_rank <= CEIL($${limitParam}::numeric / category_counts.n)`}
            ORDER BY ${order("ranked")}
            LIMIT $${limitParam}
          ),
