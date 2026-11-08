@@ -153,6 +153,7 @@ export interface ExecutiveAttempt {
   status: ExecutiveAttemptStatus;
   invocation: CapabilityInvocationEnvelope;
   preparedAt: number;
+  payloadHash?: string;
   dispatchedAt?: number;
   executorId?: string;
   dispatchEvidenceRef?: string;
@@ -172,6 +173,7 @@ export interface ExecutiveCapabilityReceipt {
   outputRefs: string[];
   evidenceRefs: string[];
   attestationRef: string;
+  operatorObservation?: ExecutiveOperatorOutcomeObservation;
 }
 
 /** Typed state transition observed around an operator-backed capability action. */
@@ -274,6 +276,7 @@ export type ExecutiveCommand =
       type: "prepare_attempt";
       taskId: ExecutiveTaskId;
       kind: ExecutiveAttemptKind;
+      payloadHash?: string;
     })
   | (ExecutiveCommandBase & {
       type: "record_dispatch";
@@ -487,6 +490,7 @@ export function createExecutiveEpisodeMachine(hasher: Hasher): ExecutiveEpisodeM
         break;
       }
       case "prepare_attempt": {
+        if (command.payloadHash !== undefined) assertIdentifier(command.payloadHash, "payloadHash");
         const task = requireTask(state, command.taskId);
         const readiness = taskReadiness(state, task, command.kind, command.occurredAt);
         if (readiness !== "ready") throw new Error(`executive ${command.kind} attempt is not ready: ${readiness}`);
@@ -525,7 +529,8 @@ export function createExecutiveEpisodeMachine(hasher: Hasher): ExecutiveEpisodeM
             approvalDecisionId: controls.approvalDecision?.decisionId,
             rollbackPlanId: command.kind === "rollback" && task.rollback.mode === "capability" ? task.rollback.planId : undefined
           },
-          preparedAt: command.occurredAt
+          preparedAt: command.occurredAt,
+          ...(command.payloadHash !== undefined ? { payloadHash: command.payloadHash } : {})
         };
         emit({ type: "attempt_prepared", attempt });
         break;
@@ -533,6 +538,8 @@ export function createExecutiveEpisodeMachine(hasher: Hasher): ExecutiveEpisodeM
       case "record_dispatch": {
         const attempt = requireAttempt(state, command.attemptId);
         if (attempt.status !== "prepared") throw new Error("only a prepared attempt can be dispatched");
+        const readiness = executiveAttemptDispatchReadiness(state, attempt.id, command.occurredAt);
+        if (readiness !== "ready") throw new Error(`executive prepared attempt is not ready: ${readiness}`);
         assertIdentifier(command.executorId, "executorId");
         assertIdentifier(command.dispatchEvidenceRef, "dispatchEvidenceRef");
         emit({
@@ -798,6 +805,14 @@ export function executiveResumePlan(state: ExecutiveEpisodeState): ExecutiveResu
       .map(task => task.id)
       .sort()
   };
+}
+
+export function executiveAttemptDispatchReadiness(state: ExecutiveEpisodeState, attemptId: ExecutiveAttemptId, at: number): ReturnType<typeof controlReadiness> | "blocked" {
+  const attempt = requireAttempt(state, attemptId);
+  const task = requireTask(state, attempt.taskId);
+  if (attempt.status !== "prepared" || task.activeAttemptId !== attempt.id) return "blocked";
+  if (attempt.kind === "execution" && task.dependencyTaskIds.some(id => state.tasks[id]?.status !== "succeeded")) return "blocked";
+  return controlReadiness(controlsFor(task, attempt.kind), at);
 }
 
 function controlsFor(task: ExecutiveTask, kind: ExecutiveAttemptKind): ExecutiveControlState {

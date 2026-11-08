@@ -1,6 +1,9 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
+import { mkdtemp, readFile, writeFile, unlink, rmdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   createCapabilityExecutorRegistry,
   dispatchCapabilityTask,
@@ -152,6 +155,125 @@ function baseInput(overrides: { controls: ExecutiveControlState }) {
 }
 
 describe("capability dispatcher", () => {
+  it.each(["succeeded", "failed"] as const)("resumes a three-stage local dependency chain after the second %s receipt survives a restart", async expected => {
+    const directory = await mkdtemp(join(tmpdir(), "scce-executive-chain-"));
+    const journalPath = join(directory, "journal.json");
+    const inputPath = join(directory, "input.txt");
+    const verifiedPath = join(directory, "verified.txt");
+    const finalPath = join(directory, "final.txt");
+    const invocations = [0, 0, 0];
+    let interruptOutcome = false;
+    const journal = (): ExecutiveEventJournal => ({
+      read: async episodeId => {
+        const events = await readFile(journalPath, "utf8").then(text => JSON.parse(text) as ExecutiveEvent[]).catch(error => { if (error.code === "ENOENT") return []; throw error; });
+        return { episodeId, events, revision: events.length };
+      },
+      append: async command => {
+        const snapshot = await journal().read(command.episodeId);
+        if (snapshot.events.some(event => event.commandId === command.commandId)) return { status: "duplicate", revision: snapshot.revision };
+        if (snapshot.revision !== command.expectedRevision) return { status: "conflict", revision: snapshot.revision };
+        if (interruptOutcome && command.events.some(event => event.type === "outcome_recorded")) { interruptOutcome = false; throw new Error("stage-two outcome storage interrupted"); }
+        const events = [...snapshot.events, ...command.events];
+        await writeFile(journalPath, JSON.stringify(events));
+        return { status: "appended", revision: events.length };
+      }
+    });
+    const executors = [0, 1, 2].map(index => fakeExecutor(`local.stage.${index}`, async () => {
+      invocations[index]!++;
+      if (index === 0) await writeFile(inputPath, expected === "succeeded" ? "owned" : "invalid");
+      const valid = index === 0 || await readFile(index === 1 ? inputPath : verifiedPath, "utf8") === "owned";
+      if (index === 1 && valid) await writeFile(verifiedPath, "owned");
+      if (index === 2 && valid) await writeFile(finalPath, "owned");
+      const artifact = index === 0 ? inputPath : index === 1 ? inputPath : finalPath;
+      return { status: valid ? "succeeded" : "failed", outputRefs: valid ? [artifact] : [], evidenceRefs: [artifact], attestationRef: createHasher().digestHex(await readFile(artifact)) };
+    }));
+    const restart = () => ({ executive: createDurableExecutiveEpisode({ machine: createExecutiveEpisodeMachine(createHasher()), journal: journal(), maxConflictRetries: 1 }), executors: createCapabilityExecutorRegistry(executors), hasher: createHasher(), now: () => 1000 });
+    const stage = (index: number) => {
+      const input = baseInput({ controls: index === 2 ? governedControls() : ungovernedControls() });
+      return { ...input, task: { ...input.task, id: `task.stage.${index}`, capabilityId: `local.stage.${index}`, dependencyTaskIds: index ? [`task.stage.${index - 1}`] : [] }, payload: { directory } };
+    };
+    try {
+      expect((await dispatchCapabilityTask(restart(), stage(0))).disposition).toBe("succeeded");
+      interruptOutcome = true;
+      await expect(dispatchCapabilityTask(restart(), stage(1))).rejects.toThrow("stage-two outcome storage interrupted");
+      expect((await dispatchCapabilityTask(restart(), stage(2))).blockedStatus).toBe("blocked");
+      const recovered = await dispatchCapabilityTask(restart(), stage(1));
+      expect(recovered.disposition).toBe(expected);
+      expect(invocations).toEqual([1, 1, 0]);
+      const waiting = await dispatchCapabilityTask(restart(), stage(2));
+      expect(waiting.blockedStatus).toBe(expected === "succeeded" ? "awaiting_approval" : "blocked");
+      if (expected === "succeeded") {
+        const approved = { ...stage(2), approvalDecision: { decisionId: "approval.local.final", decision: "approved" as const, policyId: "approval.policy.build", decidedBy: "owner", evidenceRefs: [verifiedPath] } };
+        expect((await dispatchCapabilityTask(restart(), approved)).disposition).toBe("succeeded");
+        expect((await dispatchCapabilityTask(restart(), approved)).disposition).toBe("succeeded");
+        expect(await readFile(finalPath, "utf8")).toBe("owned");
+        expect(invocations).toEqual([1, 1, 1]);
+      }
+      const replayed = await restart().executive.load("episode.dispatch");
+      expect(Object.values(replayed.outcomes)).toHaveLength(expected === "succeeded" ? 3 : 2);
+      expect(Object.values(replayed.receipts)).toHaveLength(expected === "succeeded" ? 3 : 2);
+      const conclusion = { type: "conclude_goal" as const, episodeId: "episode.dispatch", commandId: "goal.conclusion", occurredAt: 1000, goalId: "goal.build", disposition: "satisfied" as const, outcomeIds: Object.keys(replayed.outcomes), evidenceRefs: [finalPath] };
+      if (expected === "succeeded") expect((await restart().executive.dispatch(conclusion)).goals["goal.build"]!.status).toBe("satisfied");
+      else await expect(restart().executive.dispatch(conclusion)).rejects.toThrow("goal has non-terminal tasks");
+    } finally {
+      for (const path of [journalPath, inputPath, verifiedPath, finalPath]) await unlink(path).catch(error => { if (error.code !== "ENOENT") throw error; });
+      await rmdir(directory);
+    }
+  });
+
+  it("resumes an undispatched prepared invocation once and refuses a changed payload or expired approval", async () => {
+    for (const variation of ["same", "changed", "expired"] as const) {
+      const journal = new MemoryExecutiveJournal();
+      const append = journal.append.bind(journal);
+      let interruptDispatch = true;
+      journal.append = async command => {
+        if (interruptDispatch && command.events.some(event => event.type === "attempt_dispatched")) { interruptDispatch = false; throw new Error("interrupted before dispatch"); }
+        return append(command);
+      };
+      let calls = 0;
+      const executor = fakeExecutor("process.build_test", () => { calls++; return { status: "succeeded", outputRefs: [], evidenceRefs: ["local.receipt"], attestationRef: "attestation.local" }; });
+      let now = 1000;
+      const restart = () => ({ executive: createDurableExecutiveEpisode({ machine: createExecutiveEpisodeMachine(createHasher()), journal, maxConflictRetries: 1 }), executors: createCapabilityExecutorRegistry([executor]), hasher: createHasher(), now: () => now });
+      const input = { ...baseInput({ controls: governedControls() }), approvalDecision: { decisionId: "approval.original", decision: "approved" as const, policyId: "approval.policy.build", decidedBy: "approver.class.build", evidenceRefs: ["approval.evidence"], expiresAt: 2000 } };
+      await expect(dispatchCapabilityTask(restart(), input)).rejects.toThrow("interrupted before dispatch");
+      expect(calls).toBe(0);
+      if (variation === "expired") now = 3000;
+      const resumed = await dispatchCapabilityTask(restart(), variation === "changed" ? { ...input, payload: { program: "other.program" } } : input);
+      expect(resumed.disposition).toBe(variation === "same" ? "succeeded" : "not_ready");
+      expect(calls).toBe(variation === "same" ? 1 : 0);
+      if (variation === "expired") {
+        expect(resumed.blockedStatus).toBe("awaiting_approval");
+        await expect(restart().executive.dispatch({ type: "record_dispatch", episodeId: input.episodeId, commandId: "bypass.expired", occurredAt: now, attemptId: resumed.state.tasks[input.task.id]!.activeAttemptId!, executorId: "process.build_test", dispatchEvidenceRef: "dispatch.expired" })).rejects.toThrow(/awaiting_approval/);
+      }
+    }
+  });
+
+  it.each(["succeeded", "failed"] as const)("finishes a durable %s receipt after a crash before its outcome without executing twice", async status => {
+    const journal = new MemoryExecutiveJournal();
+    const append = journal.append.bind(journal);
+    let interruptOutcome = true;
+    journal.append = async command => {
+      if (interruptOutcome && command.events.some(event => event.type === "outcome_recorded")) {
+        interruptOutcome = false;
+        throw new Error("interrupted before durable outcome");
+      }
+      return append(command);
+    };
+    let calls = 0;
+    const executor = fakeExecutor("process.build_test", () => { calls++; return { status, outputRefs: ["artifact.local"], evidenceRefs: ["local.receipt"], attestationRef: "attestation.local", actualDelta: { completed: status === "succeeded" } }; });
+    const restart = () => ({ executive: createDurableExecutiveEpisode({ machine: createExecutiveEpisodeMachine(createHasher()), journal, maxConflictRetries: 1 }), executors: createCapabilityExecutorRegistry([executor]), hasher: createHasher(), now: () => 1000 });
+    const input = { ...baseInput({ controls: ungovernedControls() }), operatorOutcome: { conversationId: "conversation.crash", operatorIds: [COGNITIVE_OPERATOR_IDS.actionPlanning], typedInputState: { completed: false }, predictedDelta: { completed: true } } };
+    await expect(dispatchCapabilityTask(restart(), input)).rejects.toThrow("interrupted before durable outcome");
+    const resumed = await dispatchCapabilityTask(restart(), input);
+    expect(resumed.disposition).toBe(status);
+    expect(resumed.outcome?.operatorObservation?.actualDelta).toEqual({ completed: status === "succeeded" });
+    expect(calls).toBe(1);
+    const repeated = await dispatchCapabilityTask(restart(), input);
+    expect(repeated.outcome?.id).toBe(resumed.outcome?.id);
+    expect(Object.values(repeated.state.outcomes)).toHaveLength(1);
+    expect(calls).toBe(1);
+  });
+
   it("fails closed on an unsupported capability without touching the executive journal", async () => {
     const deps = dispatcherFixture([]);
     const result = await dispatchCapabilityTask(deps, baseInput({ controls: ungovernedControls() }));

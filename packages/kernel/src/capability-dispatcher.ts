@@ -7,6 +7,7 @@ import type { DialogueMemoryStore } from "./storage.js";
 import { persistOperatorOutcome } from "./operator-outcome-loop.js";
 import type { CognitiveOperatorId } from "./turn-requirements.js";
 import { verifyExecutionAuthorized, type PlanSimulationRecord } from "./plan-simulation.js";
+import { executiveAttemptDispatchReadiness } from "./executive-episode.js";
 import type {
   CapabilityInvocationEnvelope,
   ExecutiveApprovalDecision,
@@ -274,10 +275,21 @@ export async function dispatchCapabilityTask(
   if (task.status === "awaiting_outcome") {
     const attempt = latestExecutionAttempt(state, task.id);
     const receipt = attempt?.receiptId ? state.receipts[attempt.receiptId] : undefined;
+    if (receipt && receipt.status !== "indeterminate") {
+      return recordDispatchedCapabilityOutcome(deps, input, receipt, commandId("record_outcome"));
+    }
     return { disposition: "indeterminate", state, attemptId: attempt?.id, receipt };
   }
 
-  if (task.status !== "ready") {
+  const payloadHash = deps.hasher.digestHex(canonicalStringify(input.payload));
+  const existingAttempt = task.activeAttemptId ? state.attempts[task.activeAttemptId] : undefined;
+  const resumePrepared = task.status === "prepared" && existingAttempt?.status === "prepared" && existingAttempt.kind === "execution";
+  if (resumePrepared && (existingAttempt.payloadHash !== payloadHash || task.capabilityId !== executor.descriptor.capabilityId
+    || task.inputRef !== input.task.inputRef || task.policyVersionId !== input.policyVersionId || task.goalId !== input.goal.id
+    || state.ownerId !== input.ownerId)) {
+    return { disposition: "not_ready", state, blockedStatus: task.status };
+  }
+  if (task.status !== "ready" && !resumePrepared) {
     return { disposition: "not_ready", state, blockedStatus: task.status };
   }
 
@@ -298,19 +310,26 @@ export async function dispatchCapabilityTask(
     }
   }
 
-  state = await deps.executive.dispatch({
+  if (!resumePrepared) state = await deps.executive.dispatch({
     type: "prepare_attempt",
     episodeId: input.episodeId,
     commandId: commandId("prepare_attempt"),
     occurredAt: deps.now(),
     taskId: task.id,
-    kind: "execution"
+    kind: "execution",
+    payloadHash
   });
   task = requireTask(state, input.task.id);
   const attemptId = task.activeAttemptId;
   if (!attemptId) throw new Error("executive attempt preparation did not activate an attempt");
   const attempt = state.attempts[attemptId];
   if (!attempt) throw new Error("executive attempt preparation lost its own attempt record");
+  if (attempt.payloadHash !== payloadHash || attempt.invocation.capabilityId !== executor.descriptor.capabilityId
+    || attempt.invocation.inputRef !== input.task.inputRef || attempt.invocation.policyVersionId !== input.policyVersionId) {
+    return { disposition: "not_ready", state, attemptId, blockedStatus: task.status };
+  }
+  const dispatchReadiness = executiveAttemptDispatchReadiness(state, attempt.id, deps.now());
+  if (dispatchReadiness !== "ready") return { disposition: "not_ready", state, attemptId, blockedStatus: dispatchReadiness };
 
   const dispatchEvidenceRef = `dispatch_${deps.hasher.digestHex(attempt.invocation.idempotencyKey).slice(0, 32)}`;
   state = await deps.executive.dispatch({
@@ -348,7 +367,15 @@ export async function dispatchCapabilityTask(
     completedAt: deps.now(),
     outputRefs: result.outputRefs,
     evidenceRefs: result.evidenceRefs.length > 0 ? result.evidenceRefs : [dispatchEvidenceRef],
-    attestationRef: result.attestationRef
+    attestationRef: result.attestationRef,
+    ...(input.operatorOutcome ? { operatorObservation: {
+      schema: "scce.operator.outcome_observation.v1" as const,
+      conversationId: input.operatorOutcome.conversationId,
+      operatorIds: [...input.operatorOutcome.operatorIds],
+      typedInputState: input.operatorOutcome.typedInputState,
+      predictedDelta: input.operatorOutcome.predictedDelta,
+      actualDelta: result.actualDelta ?? null
+    } } : {})
   };
   state = await deps.executive.dispatch({
     type: "observe_receipt",
@@ -362,37 +389,40 @@ export async function dispatchCapabilityTask(
     return { disposition: "indeterminate", state, attemptId, receipt };
   }
 
+  return recordDispatchedCapabilityOutcome(deps, input, receipt, commandId("record_outcome"));
+}
+
+async function recordDispatchedCapabilityOutcome(
+  deps: CapabilityDispatcherDeps,
+  input: CapabilityDispatchInput,
+  receipt: ExecutiveCapabilityReceipt,
+  commandId: string
+): Promise<CapabilityDispatchResult> {
+  if (receipt.status === "indeterminate") throw new Error("indeterminate receipt has no known outcome");
+  const attemptId = receipt.attemptId;
+  const receiptId = receipt.id;
   const outcomeId = `outcome_${deps.hasher.digestHex(canonicalStringify({ attemptId, receiptId })).slice(0, 40)}`;
   const outcome: Omit<ExecutiveOutcome, "recordedAt"> = {
     id: outcomeId,
     attemptId,
-    disposition: result.status === "succeeded" ? "accepted" : "rejected",
+    disposition: receipt.status === "succeeded" ? "accepted" : "rejected",
     evidenceRefs: input.outcomeEvidenceRefs.length > 0 ? input.outcomeEvidenceRefs : receipt.evidenceRefs,
     testEvidenceRefs: [],
     correctionRefs: [],
     scoreTraceRefs: [],
-    ...(input.operatorOutcome ? {
-      operatorObservation: {
-        schema: "scce.operator.outcome_observation.v1" as const,
-        conversationId: input.operatorOutcome.conversationId,
-        operatorIds: [...input.operatorOutcome.operatorIds],
-        typedInputState: input.operatorOutcome.typedInputState,
-        predictedDelta: input.operatorOutcome.predictedDelta,
-        actualDelta: result.actualDelta ?? null
-      }
-    } : {})
+    ...(receipt.operatorObservation ? { operatorObservation: receipt.operatorObservation } : {})
   };
-  state = await deps.executive.dispatch({
+  const state = await deps.executive.dispatch({
     type: "record_outcome",
     episodeId: input.episodeId,
-    commandId: commandId("record_outcome"),
+    commandId,
     occurredAt: deps.now(),
     outcome
   });
-  await persistDispatchedOperatorOutcome({ deps, input, outcomeId, receipt, result });
+  await persistDispatchedOperatorOutcome({ deps, input, outcomeId, receipt });
 
   return {
-    disposition: result.status === "succeeded" ? "succeeded" : "failed",
+    disposition: receipt.status === "succeeded" ? "succeeded" : "failed",
     state,
     attemptId,
     receipt,
@@ -405,9 +435,8 @@ async function persistDispatchedOperatorOutcome(input: {
   input: CapabilityDispatchInput;
   outcomeId: string;
   receipt: ExecutiveCapabilityReceipt;
-  result: CapabilityExecutionResult;
 }): Promise<void> {
-  const observation = input.input.operatorOutcome;
+  const observation = input.receipt.operatorObservation;
   if (!observation) return;
   await persistOperatorOutcome(input.deps.dialogueMemory, {
     conversationId: observation.conversationId,
@@ -416,9 +445,9 @@ async function persistDispatchedOperatorOutcome(input: {
     operatorIds: observation.operatorIds,
     typedInputState: observation.typedInputState,
     predictedDelta: observation.predictedDelta,
-    actualDelta: input.result.actualDelta ?? null,
-    outcome: input.result.status === "succeeded",
-    rawScore: input.result.status === "succeeded" ? 1 : 0,
+    actualDelta: observation.actualDelta,
+    outcome: input.receipt.status === "succeeded",
+    rawScore: input.receipt.status === "succeeded" ? 1 : 0,
     sourceTraceId: input.receipt.id,
     createdAt: input.deps.now()
   });
