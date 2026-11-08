@@ -3327,54 +3327,30 @@ export function evidenceSourceAnchorSurface(span: EvidenceSpan): string {
 }
 
 
+/** The early calculator owns only a complete formal request, not an expression found inside prose. */
 export function arithmeticAnswerForText(text: string): ArithmeticEvaluation | undefined {
-  for (const candidate of arithmeticCandidateSegments(text)) {
-    const parsed = parseArithmeticExpression(candidate);
-    if (!parsed) continue;
-    const valueText = formatArithmeticNumber(parsed.value);
-    const expression = formatArithmeticExpression(parsed.normalizedExpression);
-    return {
-      expression,
-      normalizedExpression: parsed.normalizedExpression,
-      value: parsed.value,
-      valueText,
-      answer: `${expression} = ${valueText}.`,
-      audit: toJsonValue({
-        source: "kernel.turn.deterministic_arithmetic",
-        expressionHash: hashTextForLocalProof(parsed.normalizedExpression),
-        operatorCount: parsed.operatorCount,
-        numberCount: parsed.numberCount,
-        valueText
-      })
-    };
-  }
-  return undefined;
+  const candidate = text.trim().replace(/[?\uFF1F\u061F]$/u, "").trim();
+  if (!plausibleArithmeticSegment(candidate)) return undefined;
+  const parsed = parseArithmeticExpression(candidate);
+  if (!parsed) return undefined;
+  const valueText = formatArithmeticNumber(parsed.value);
+  const expression = formatArithmeticExpression(parsed.normalizedExpression);
+  return {
+    expression,
+    normalizedExpression: parsed.normalizedExpression,
+    value: parsed.value,
+    valueText,
+    answer: `${expression} = ${valueText}.`,
+    audit: toJsonValue({
+      source: "kernel.turn.deterministic_arithmetic",
+      expressionHash: hashTextForLocalProof(parsed.normalizedExpression),
+      operatorCount: parsed.operatorCount,
+      numberCount: parsed.numberCount,
+      valueText
+    })
+  };
 }
 
-
- function arithmeticCandidateSegments(text: string): string[] {
-  const segments: string[] = [];
-  let current = "";
-  for (const char of text) {
-    if (arithmeticCandidateChar(char)) {
-      current += char;
-      continue;
-    }
-    if (current.trim()) segments.push(current.trim());
-    current = "";
-  }
-  if (current.trim()) segments.push(current.trim());
-  return segments
-    .map(segment => segment.slice(0, 160))
-    .filter(plausibleArithmeticSegment)
-    .sort((left, right) => right.length - left.length);
-}
-
-
- function arithmeticCandidateChar(char: string): boolean {
-  const code = char.codePointAt(0);
-  return (char >= "0" && char <= "9") || char === "." || char === " " || char === "\t" || char === "\r" || char === "\n" || "+-*/^()[]{}".includes(char) || code === 0xd7 || code === 0xf7 || code === 0x2212;
-}
 
 
  function plausibleArithmeticSegment(segment: string): boolean {
@@ -3451,7 +3427,8 @@ export function arithmeticAnswerForText(text: string): ArithmeticEvaluation | un
     if (token.kind === "number" && token.numeric !== undefined) return bounded(token.numeric);
     if (token.kind === "left") {
       const value = parseExpression();
-      if (peek()?.kind !== "right") fail();
+      const closing=token.value==="("?")":token.value==="["?"]":"}";
+      if (peek()?.kind !== "right" || peek()?.value!==closing) fail();
       consume();
       return bounded(value);
     }
