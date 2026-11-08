@@ -1,0 +1,70 @@
+{
+  "schema": "scce.wikipedia.http_streaming_validation.v1",
+  "sourceCodeCommit": "e729f28bd3f6a62970871e30011f9ea5d2a62d1c",
+  "baseCommit": "df3bc84e7737520e851138f5e2993a88231a01f8",
+  "usesActions": false,
+  "build": "passed",
+  "focusedTests": {
+    "files": 8,
+    "passed": 82
+  },
+  "escapedTitleRegressionBeforeFix": {
+    "failed": 3,
+    "passed": 1
+  },
+  "liveSourceParser": {
+    "schema": "scce.live_remote_parser_proof.v1",
+    "edition": "htwiki",
+    "source": {
+      "schema": "scce.wikipedia.remote_multistream.v1",
+      "url": "https://dumps.wikimedia.org/htwiki/20261101/htwiki-20261101-pages-articles-multistream.xml.bz2",
+      "byteLength": 30567950,
+      "expectedSha1": "d59d42c70d5f88c231829e2a41c5e6a835a5b912",
+      "indexSha256": "a2f4e02255d182745768bbe3150d4f5d31f75985360088c809ea2f5e21627ee1",
+      "etag": "\"6ae73a11-1d26e0e\""
+    },
+    "inputManifestId": "sha256:2a398fca72df36bb460643c17546ef9202a6bf36682071c5e8803dc104d30164",
+    "documents": 59533,
+    "skipped": 30050,
+    "blocks": 896,
+    "sourceTextBytes": 110503912,
+    "truncatedPages": 0,
+    "firstTitles": [
+      "Paj Prensipal",
+      "Kreyòl ayisyen",
+      "Lang kreyòl",
+      "Ayiti",
+      "Frans"
+    ],
+    "xmlFileWritten": false,
+    "trained": false,
+    "complete": true,
+    "remoteIntegrity": {
+      "expectedSha1": "d59d42c70d5f88c231829e2a41c5e6a835a5b912",
+      "actualSha1": "d59d42c70d5f88c231829e2a41c5e6a835a5b912",
+      "verified": true,
+      "bytesFetched": 30567950
+    },
+    "sourceTextDigest": "bfc7375552b49a16dbd3ea8e96d2c6322c3c07c228b4f563788565508a921014",
+    "descriptorBytes": 369,
+    "seconds": 109.57561473599999
+  },
+  "databaseProof": {
+    "passed": true,
+    "backend": "PostgreSQL18.6/PGlite0.5.15",
+    "nativePostgres": false,
+    "wikiSourceVersionsBefore": 0,
+    "wikiSourceVersionsAfter": 8,
+    "pagesPerBoundedRun": [
+      2,
+      2
+    ],
+    "resumeOffsets": [
+      0,
+      570
+    ],
+    "storedCheckpointRecords": 9
+  },
+  "fullTrainingComplete": false,
+  "chatCodeTranslationQualified": false
+}
