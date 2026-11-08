@@ -4517,11 +4517,12 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       }
       appendInformationAccess(storage, "pattern", params, scopeWhere);
       let requestedOwners: LanguagePatternOwner[] | undefined;
-      if (query.patternIds) {
+      if (query.patternIds || query.sourceComputationBindingId !== undefined) {
         const owners = await storage.query<{ profile_id: string; source_system: string | null }>(
           `SELECT DISTINCT pattern.profile_id,pattern.source_system FROM ${storage.table("language_patterns")} pattern
            WHERE ${scopeWhere.join(" AND ")} ORDER BY pattern.profile_id,pattern.source_system`, [...params]);
         requestedOwners = owners.map(row => ({ profileId: row.profile_id, sourceSystem: row.source_system }));
+        if (query.sourceComputationBindingId !== undefined && !requestedOwners.length) return [];
         params.push(canonicalStringify(requestedOwners));
         projectionScope.push(`EXISTS (
               SELECT 1 FROM jsonb_to_recordset($${params.length}::jsonb) AS requested_projection_owner("profileId" text,"sourceSystem" text)

@@ -12,7 +12,8 @@ function fixture() {
     tenantId: "tenant.owned", principalId: "principal.owned", compartments: [], maximumExportClass: "restricted"
   } }); adapters.push(adapter);
   const calls: Array<{ sql: string; params: unknown[] }> = [];
-  adapter.query = async <T>(sql: string, params: unknown[] = []): Promise<T[]> => { calls.push({ sql, params }); return []; };
+  adapter.query = async <T>(sql: string, params: unknown[] = []): Promise<T[]> => { calls.push({ sql, params });
+    return sql.startsWith("SELECT DISTINCT pattern.profile_id,pattern.source_system") ? [{ profile_id: "profile.owned", source_system: "dialogue" }] as T[] : []; };
   return { adapter, calls };
 }
 
@@ -58,4 +59,50 @@ it("declares schema30 with one idempotent partial full-form lookup index and no 
   const statements = schemaStatements('"fixture"'), lookup = statements.filter(sql => sql.includes("_source_computation_binding_lookup"));
   expect(lookup).toEqual([`CREATE INDEX IF NOT EXISTS idx_fixture_source_computation_binding_lookup ON "fixture".language_patterns(source_system,(pattern_json->>'bindingId'),support DESC,updated_at DESC,id) WHERE pattern_json->>'schema'='${schema}'`]);
   expect(statements.some(sql => /UPDATE\s+\S*language_patterns\s+SET\s+pattern_json/iu.test(sql))).toBe(false);
+});
+
+it.each([0, 1, 1007])("scopes compilation inventories to all %i exact indexed candidate owners before metadata extraction", async count => {
+  const { adapter, calls } = fixture();
+  const owners = Array.from({ length: count }, (_, i) => ({ profile_id: `profile.candidate.${i}`, source_system: "dialogue" }));
+  adapter.query = async <T>(sql: string, params: unknown[] = []): Promise<T[]> => { calls.push({ sql, params });
+    return sql.startsWith("SELECT DISTINCT pattern.profile_id,pattern.source_system") ? owners as T[] : []; };
+  expect(await adapter.languageMemory.listLanguagePatterns({ sourceComputationBindingId: "binding.exact", patternSchemas: [schema], sourceSystem: "dialogue", limit: 1 })).toEqual([]);
+  const probe = calls[0]!;
+  expect(probe.sql).toMatch(/^SELECT DISTINCT pattern\.profile_id,pattern\.source_system/u);
+  expect(probe.sql).toContain("pattern.pattern_json->>'bindingId'=$1");
+  expect(probe.sql).toContain("pattern.information_label->>'tenantId'");
+  expect(probe.sql).not.toContain("LIMIT");
+  expect(probe.sql).not.toContain("SELECT pattern.pattern_json");
+  if (!count) { expect(calls).toHaveLength(1); return; }
+  const inventory = calls.find(call => call.sql.includes("AS model_metadata"))!;
+  expect(inventory.sql).toContain('model.profile_id=requested_owner."profileId"');
+  expect(inventory.sql).toContain('model.source_system IS NOT DISTINCT FROM requested_owner."sourceSystem"');
+  expect(JSON.parse(String(inventory.params[0]))).toEqual(owners.map(owner => ({ profileId: owner.profile_id, sourceSystem: owner.source_system })));
+  expect(inventory.sql).not.toContain("LIMIT");
+  for (const alias of ["model", "profile", "version", "receipt"]) expect(inventory.sql).toContain(`${alias}.information_label`);
+  const body = calls.at(-1)!;
+  const ownerBindings = body.params.filter(value => typeof value === "string" && value.startsWith('[{"profileId"'));
+  expect(ownerBindings).toHaveLength(1);
+  expect(JSON.parse(String(ownerBindings[0]))).toHaveLength(count);
+  expect(body.sql).toContain('requested_projection_owner."profileId"=active_projection.value_json->>\'profileId\'');
+  expect(body.sql).toContain("dependency_evidence.status='promoted'");
+  expect(calls).toHaveLength(3);
+});
+
+it("keeps exact row/profile/language/source and access constraints on an empty candidate probe", async () => {
+  const { adapter, calls } = fixture();
+  adapter.query = async <T>(sql: string, params: unknown[] = []): Promise<T[]> => { calls.push({ sql, params }); return []; };
+  expect(await adapter.languageMemory.listLanguagePatterns({ sourceComputationBindingId: "binding.exact", patternIds: ["pattern.exact"],
+    profileIds: ["profile.exact"], languageId: "language.explicit", sourceSystem: "dialogue", patternSchemas: [schema], patternKind: "semantic_role" })).toEqual([]);
+  expect(calls).toHaveLength(1);
+  for (const marker of ["pattern.id=ANY(", "pattern.profile_id=ANY(", "pattern.source_system=", "lp.language_id=", "pattern.pattern_kind=", "pattern.information_label->>'tenantId'"])
+    expect(calls[0]!.sql).toContain(marker);
+});
+
+it("does not replace a failed exact-owner probe with a global inventory query", async () => {
+  const { adapter, calls } = fixture();
+  adapter.query = async <T>(sql: string, params: unknown[] = []): Promise<T[]> => { calls.push({ sql, params }); throw new Error("candidate metadata unavailable"); };
+  await expect(adapter.languageMemory.listLanguagePatterns({ sourceComputationBindingId: "binding.exact" })).rejects.toThrow("candidate metadata unavailable");
+  expect(calls).toHaveLength(1);
+  expect(calls[0]!.sql).toMatch(/^SELECT DISTINCT pattern\.profile_id,pattern\.source_system/u);
 });
