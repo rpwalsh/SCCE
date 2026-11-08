@@ -1,6 +1,13 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import path from "node:path";
+import type { WikipediaV3IngestStatus } from "@scce/adapters-node";
+
+export function wikiChildFailureStatus(status: Partial<WikipediaV3IngestStatus> | null | undefined, exitCode: number, now: number): Partial<WikipediaV3IngestStatus> | undefined {
+  if (!status) return undefined;
+  return { ...status, state: "failed", fullTrainingComplete: false, updatedAt: now, finishedAt: now,
+    stopReason: `ingest child exited ${exitCode} before publishing a successful completion` };
+}
 
 export function wikiChildArgs(input: {
   cliPath: string;
