@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { ContentHash, EpisodeId, EvidenceSpan, FileArtifact, Hasher, JsonValue, ProgramBehaviorRequirement, ProgramConstructIntent, ProgramGraph, ProgramStatefulBehaviorRequirement, SemanticEntailmentResult } from "./types.js";
+import {traceEvent} from "./debug/trace.js";
 import type { IdFactory } from "./ids.js";
 import { canonicalStringify, clamp01, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";
 import { createCodeLearningEngine, observedProgramFormalLanguages, emittedProgramRuntimeForLanguage, nativeProgramRuntimeForLanguage, EMITTED_PROGRAM_RUNTIME, type CodeImplementationBlueprint, type CodeKnowledgeGraph, type EmittedProgramRuntime, UnsupportedProgramLanguageError } from "./code-learning.js";
@@ -1720,7 +1721,13 @@ function emitFiles(plan: ProgramPlan, input: ProgramPlannerInput, idFactory: IdF
   const set = (canonicalPath: string, content: string): void => { byPath.set(plannedArtifactPath(plan, canonicalPath), content); };
   set("program.graph.json", `${JSON.stringify(manifest, null, 2)}\n`);
   set("implementation.plan.json", `${JSON.stringify(implementationPlan(plan, input,proofBinding), null, 2)}\n`);
-  set("source.memory.json", `${JSON.stringify(sourceMemory, null, 2)}\n`);
+  const sourceMemoryContent = `${JSON.stringify(sourceMemory, null, 2)}\n`;
+  set("source.memory.json", sourceMemoryContent);
+  const trace=(globalThis as {__sccTrace?:Parameters<typeof traceEvent>[0]}).__sccTrace;
+  if(trace)traceEvent(trace,{stage:"program.source_memory.diagnostics",label:"program.emit",support:{
+    planId:plan.id,artifactHash:`sha256_${hasher.digestHex(sourceMemoryContent)}`,
+    confidence:toJsonValue(input.entailment.confidence),
+    evidence:input.evidence.slice(0,12).map(span=>({evidenceId:String(span.id),sourceVersionId:String(span.sourceVersionId),alpha:Number(span.alpha.toFixed(4))}))}});
   set("package.json", packageJson(plan));
   set("tsconfig.json", tsconfigJson(plan));
   set("README.md", readme(plan, input));
