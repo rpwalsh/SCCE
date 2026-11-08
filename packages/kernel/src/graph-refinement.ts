@@ -184,7 +184,8 @@ function refineRequirements(initial: TurnRequirementField, context: GraphRefinem
     if (value !== initial[dimension]) contributed.add(dimension);
   }
   refined.contributedDimensions = [...contributed];
-  refined.trace = toJsonValue({ previous: initial.trace, graphRefinement: {
+  const sourceTrace = initial.trace && typeof initial.trace === "object" && !Array.isArray(initial.trace) ? initial.trace : {};
+  refined.trace = toJsonValue({ ...sourceTrace, previous: initial.trace, graphRefinement: {
     schema: "scce.graphRefinement.refinement.v1", calibration: "uncalibrated_structural_applicability",
     maxLogitShift: normalization.maxLogitShift, graphObjectIds: context.activatedObjectIds,
     evidenceIds: context.activatedEvidenceIds, activeNodeIds: context.activatedNodeIds,

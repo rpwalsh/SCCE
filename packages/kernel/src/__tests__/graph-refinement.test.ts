@@ -6,6 +6,8 @@ import { clearProdCalibrations, installProdCalibrations } from "../calibrations/
 import { createClock, createHasher } from "../primitives.js";
 import { createIdFactory } from "../ids.js";
 import { runGraphRefinement, type GraphRefinementSeedPrior } from "../graph-refinement.js";
+import { requestSubjectSegments, turnRequirementNeutralValue } from "../turn-requirements.js";
+import liveCreative from "./fixtures/creative-authority-selection-live.json";
 import type { EvidenceSpan, FieldState, GraphNode, GraphSlice, TurnRequirementField } from "../index.js";
 
 const evidence = [{ id: "evidence.one", provenance: { sourceFamilyId: "family.one" } }] as unknown as EvidenceSpan[];
@@ -74,6 +76,15 @@ function run(overrides: Partial<Parameters<typeof runGraphRefinement>[0]> = {}) 
 
 describe("bounded structural refinement", () => {
   afterEach(() => clearProdCalibrations());
+  it("preserves the live creative request's learned roles and neutral calibration through graph refinement", () => {
+    const initial = liveCreative.requirementField as unknown as TurnRequirementField;
+    const request = "Write a short scene about a sailor who befriends a clockmaker.";
+    const refined = run({ initialRequirements: initial }).result.refinedRequirements;
+    expect(requestSubjectSegments(request, initial)).toEqual(["scene about", "sailor", "befriends", "clockmaker."]);
+    expect(requestSubjectSegments(request, refined)).toEqual(requestSubjectSegments(request, initial));
+    expect(turnRequirementNeutralValue("noveltyDemand", refined)).toBe(turnRequirementNeutralValue("noveltyDemand", initial));
+    expect((refined.trace as { activations?: unknown }).activations).toEqual((initial.trace as { activations?: unknown }).activations);
+  });
   it("is deterministic and calls exactly one second pass", () => {
     const first = run();
     const second = run();
