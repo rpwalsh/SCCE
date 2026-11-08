@@ -52,6 +52,8 @@ are available to licensees and to evaluators under a signed agreement; see [COMM
 - [Engineering guide](ENGINEERING_GUIDE.md) — the mathematical spine, runtime boundaries, important files, and the
   order to diagnose in.
 - [Source map](SCCE_MAP.md) — package and source-file map.
+- [Development solver checks](../tools/solver-check/README.md) — bounded Z3 equivalence and counterexample checks
+  for the existing scalar program IR, with native compiler and test validation retained.
 
 ## Safety and review contracts
 
