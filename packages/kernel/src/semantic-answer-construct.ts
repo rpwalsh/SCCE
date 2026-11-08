@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { hasSourceBoundSemanticRelation } from "./source-bound-semantic-fact.js";
 import type { ConstructGraph, EvidenceId, EvidenceSpan, Hasher, JsonValue } from "./types.js";
 import type { SemanticAtom } from "./semantic-proof-types.js";
 import { atomizeText } from "./semantic-proof-system.js";
@@ -186,7 +187,7 @@ export function compileRealizationContract(
 ): SemanticRealizationContract {
   const evidenceIds = fact.evidenceIds ?? [];
   const factText = [fact.subject, fact.predicate, fact.object].filter(Boolean).join(" ").trim();
-  const requiredAtoms = factText
+  const requiredAtoms = factText && !(fact.predicate === "" && hasSourceBoundSemanticRelation(fact))
     ? atomizeText({ text: factText, source: SEMANTIC_SOURCE.CLAIM, evidenceIds: evidenceIds as EvidenceId[] })
     : [];
   const relationUnits = requestRelationUnits(requestText, closedClassWords);
@@ -308,7 +309,7 @@ function factFromJson(value: JsonValue): SemanticAnswerConstructFact | undefined
   const subject = stringField(record.subject);
   const predicate = stringField(record.predicate);
   const object = stringField(record.object);
-  if (!subject || !predicate || !object) return undefined;
+  if (!subject || !object || !hasSourceBoundSemanticRelation({ ...record, predicate })) return undefined;
   return {
     subject,
     predicate,
@@ -324,6 +325,7 @@ function factFromJson(value: JsonValue): SemanticAnswerConstructFact | undefined
     contradiction: record.contradiction ? numberField(record.contradiction) : undefined,
     sourceVersionId: record.sourceVersionId ? stringField(record.sourceVersionId) : undefined,
     evidenceIds: record.evidenceIds ? stringArrayField(record.evidenceIds) : undefined,
+    relationRoleId: record.relationRoleId ? stringField(record.relationRoleId) : undefined,
     requestedSlotId: record.requestedSlotId ? stringField(record.requestedSlotId) : undefined,
     questionSlotId: record.questionSlotId ? stringField(record.questionSlotId) : undefined,
     questionSlotImportance: record.questionSlotImportance ? stringField(record.questionSlotImportance) : undefined

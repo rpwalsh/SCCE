@@ -12,7 +12,8 @@ import { assistantForceClass, assistantForceDecision, unresolvedObligationCount 
 import { assistantForceProposalFromCandidateClaimBasis, attachCognitiveProposal, attachInventionConstruct, cognitiveProposalForCandidate, selectedInventionForCandidate } from "./candidate-construct-binding.js";
 import { candidateIsSafeNonExecutingPlan, candidateUsesNonFactualPlanSemantics, selectedCandidateEntailment } from "./candidate-proof-policy.js";
 import { createCandidateEngine, type CandidateField, type CandidateSurface } from "./candidate.js";
-import { candidateSurvivesRealizationContract, compileRealizationContract, resolveRequestValueBinding, semanticAnswerConstructFacts, type SemanticAnswerConstructFact, type SemanticRealizationContract } from "./semantic-answer-construct.js";
+import { requestValueBindingConstructFact } from "./source-bound-semantic-fact.js";
+import { candidateIsVerifiedBoundValue, candidateSurvivesRealizationContract, compileRealizationContract, resolveRequestValueBinding, semanticAnswerConstructFacts, type SemanticAnswerConstructFact, type SemanticRealizationContract } from "./semantic-answer-construct.js";
 import { sourceConstructionRequestValueResolver } from "./source-construction-request-binding.js";
 import { learnedEntitySurfacesFromLanguageMemory, namedSubjectAnchors } from "./kernel-answer-primitives.js";
 import { createPfaceEstimator } from "./causal-estimation.js";
@@ -3434,41 +3435,9 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // the same value or there is no single answer for the contract to verify against what was selected.
       const temporalAnswerValue = requestValueBinding?.value;
       const proofAnswer = temporalAnswerValue || answerSurface.answer;
-      const temporalAnswerSubject = requestValueBinding?.subject || undefined;
-      const temporalRelationPredicate = requestValueBinding?.relation;
       const temporalBoundEvidence = requestValueBinding
         ? admissibleEvidence.filter(span => span.status === "promoted" && requestValueBinding.evidenceIds.includes(String(span.id))) : [];
-      const temporalConstructFact: SemanticAnswerConstructFact | undefined = temporalAnswerValue && temporalAnswerSubject && temporalRelationPredicate && temporalBoundEvidence.length > 0
-        ? {
-          subject: temporalAnswerSubject,
-          predicate: temporalRelationPredicate,
-          object: temporalAnswerValue,
-          sourceNodeId: "",
-          targetNodeId: "",
-          // Preserve the typed port identity without speaking it as a predicate.
-          relationId: requestValueBinding?.relationId ?? `local:temporal:relation:${temporalRelationPredicate}`,
-          forceClass: "direct_evidence",
-          score: 1,
-          activation: 1,
-          overlap: 1,
-          support: 1,
-          evidenceIds: temporalBoundEvidence.map(span => String(span.id)),
-          sourceVersionId: temporalBoundEvidence[0]?.sourceVersionId ? String(temporalBoundEvidence[0].sourceVersionId) : undefined,
-          relationRoleId: requestValueBinding?.requestedRoleId,
-          questionSlotImportance: "core",
-          // Same gate as localEvidenceSemanticFact's (local-evidence-runtime.ts) -- mouth.ts's
-          // learnedFactRouteAdmissible requires all five, real bug confirmed live via candidate.field.generate's
-          // empty_generation trace, then via mouth.learned_construction.reject's route_inadmissible (missing
-          // questionSlotScore specifically). This value is already fully verified (subject-context-checked,
-          // non-citation), so reusing the same 1 already asserted on score/activation/overlap/support above is
-          // honest, not a new number.
-          answerGrade: true,
-          finalQuestionFit: 1,
-          certificationPower: 1,
-          semanticQuality: 1,
-          questionSlotScore: 1
-        }
-        : undefined;
+      const temporalConstructFact = requestValueBindingConstructFact(requestValueBinding, temporalBoundEvidence);
       // One structured intent per turn: derived from the projected authority and the structural code signal, read by
       // both builds and the planner, so a program-authority turn cannot end with no ProgramGraph.
       const documentationCodeIntent = codeIntentFromDocumentation({ requestText: input.text, documentation: selectedEvidence });
@@ -5443,7 +5412,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // candidate gate uses -- not just non-emptiness.
       if (judged.selected) {
         const contractSatisfied = realizationContract
-          ? candidateSurvivesRealizationContract(answer, realizationContract, hasher).survives
+          ? candidateIsVerifiedBoundValue(certifiedClaimAnswer, realizationContract)
+            || candidateSurvivesRealizationContract(answer, realizationContract, hasher).survives
           : true;
         const documentCompleted = !extendedGenerationRun || extendedGenerationRun.sections.every(section => section.accepted)
           && Object.values(extendedGenerationRun.session.plan.nodes).filter(node => node.kind === "section").every(node => node.completed);

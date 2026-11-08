@@ -6,6 +6,10 @@ import { createLanguageMemoryRuntime } from "../language-memory-runtime.js";
 import { createLanguageAcquisitionEngine } from "../language.js";
 import { createClock, createHasher } from "../primitives.js";
 import { createIdFactory } from "../ids.js";
+import { requestValueBindingConstructFact } from "../source-bound-semantic-fact.js";
+import { semanticAnswerConstructFacts } from "../semantic-answer-construct.js";
+import { semanticAnswerConstructState } from "../mouth-source-facts.js";
+import { attachSourceBoundAnswerConstruct } from "../local-evidence-runtime.js";
 import { resolveRequestValueBinding } from "../semantic-answer-construct.js";
 import { sourceConstructionRequestValueResolver } from "../source-construction-request-binding.js";
 import { createSurfaceLanguageRuntime } from "../surface-language-runtime.js";
@@ -43,8 +47,9 @@ function evidenceSpan(text: string): EvidenceSpan {
   return { ...span, status: "promoted", alpha: 1 };
 }
 
-function teach(input: { subjects: [string, string, string]; marker: string; value: string; valueKind: string; statement?: string; semanticRole?: "entity" | "quantity" }) {
-  const questions = input.subjects.slice(0, 2).map(subject => `${subject} ${input.marker}？`);
+function teach(input: { subjects: [string, string, string]; marker: string; value: string; valueKind: string; statement?: string; semanticRole?: "entity" | "quantity"; question?: (subject: string) => string }) {
+  const questionFor = input.question ?? ((subject: string) => `${subject} ${input.marker}\uFF1F`);
+  const questions = input.subjects.slice(0, 2).map(questionFor);
   const text = `${questions.join("\n")}\n${input.statement ?? `${input.subjects[2]} ${input.value}。`}`;
   const evidence = evidenceSpan(text);
   const sourceVersionId = evidence.sourceVersionId;
@@ -55,7 +60,7 @@ function teach(input: { subjects: [string, string, string]; marker: string; valu
     const observation: SourceBoundConstructionObservation = {
       sourceVersionId: String(sourceVersionId), evidenceId: String(evidence.id),
       surfaceStartCodePoint: start, surfaceEndCodePoint: start + [...question].length,
-      roles: [{ slotIndex: 0, startCodePoint: 0, endCodePoint: [...input.subjects[index]!].length, graphBinding: subjectBinding }],
+      roles: [{ slotIndex: 0, startCodePoint: [...question.slice(0, question.indexOf(input.subjects[index]!))].length, endCodePoint: [...question.slice(0, question.indexOf(input.subjects[index]!))].length + [...input.subjects[index]!].length, graphBinding: subjectBinding }],
       nullRoles: [{ slotIndex: 1, graphBinding: answerBinding }]
     };
     start += [...question].length + 1;
@@ -90,7 +95,7 @@ function teach(input: { subjects: [string, string, string]; marker: string; valu
   const bundle = restarted.importedConstructionBundles.find(bundle => bundle.bindingId === "request.opaque");
   expect(bundle).toBeDefined();
   expect(bundle!.sourceExamples[0]!.nullRoles[0]!.graphBinding).toEqual(answerBinding);
-  const requestText = `${input.subjects[2]} ${input.marker}？`;
+  const requestText = questionFor(input.subjects[2]);
   const resolve = (candidateGraph = graph, spans: EvidenceSpan[] = [evidence], request = requestText) => resolveRequestValueBinding({
     requestText: request, evidence: spans,
     resolvers: [sourceConstructionRequestValueResolver({ bundles: restarted.importedConstructionBundles, graph: candidateGraph })]
@@ -190,6 +195,55 @@ describe("acquired typed request construction transfer", () => {
     expect(binding).toMatchObject({ value: "Bora", subject: "zora", evidenceIds: [String(fixture.evidence.id)] });
     expect(binding?.requestedRoleId).toBe("role.answer");
     expect(binding?.relation).toBeUndefined();
+  });
+
+
+  it("projects a learned role-only binding through the actual cold factual turn and owned answer readers", async () => {
+    const lesson = teach({ subjects: ["Luma", "Vela", "Zora"], marker: "", value: "Bora", valueKind: "entity.place",
+      statement: "Zora is located in Bora.", question: subject => `Where is ${subject} located?` });
+    const binding = lesson.resolve();
+    expect(binding).toMatchObject({ subject: "Zora", value: "Bora", requestedRoleId: "role.answer" });
+    expect(binding?.relation).toBeUndefined();
+    const resident = sourceOwnedAnswerhoodLanguage();
+    const fixture = storageFixtureForEvaluation({ evidence: [lesson.evidence, ...resident.evidence], clockNow: () => 140_000 });
+    fixture.storage.userModelClaims = { putClaim: async () => undefined, listClaims: async () => [] };
+    fixture.storage.taskResumption = { putSnapshot: async () => undefined, getLatestSnapshot: async () => null };
+    fixture.storage.model.listLanguageProfiles = async query => {
+      const profiles = [lesson.profile, ...resident.profiles];
+      return typeof query === "number" ? profiles.slice(0, query)
+        : profiles.filter(row => !query?.sourceVersionIds || query.sourceVersionIds.includes(row.sourceVersionId)).slice(0, query?.limit);
+    };
+    fixture.storage.languageMemory.listNgramModels = async query => resident.models.filter(model =>
+      !query?.profileIds || query.profileIds.includes(String((model.modelJson as { profileId: string }).profileId)));
+    fixture.storage.languageMemory.listLanguagePatterns = async query => [...lesson.patterns, ...resident.patterns].filter(pattern =>
+      (!query?.profileIds || query.profileIds.includes(pattern.profileId)) && (!query?.patternKind || query.patternKind === pattern.patternKind));
+    fixture.storage.graph.getSlice = async query => ({ bounded: true, query: query as GraphSlice["query"],
+      nodes: lesson.graph.nodes.map(node => ({ ...node, typeId: "entity" as GraphNode["typeId"], features: [], alpha: 1, createdAt: 140_000, updatedAt: 140_000 })), edges: [], hyperedges: lesson.graph.hyperedges });
+    const turnClock = createClock({ fixedTime: 141_000, stepMs: 1 });
+    const kernel = createScceKernel({ storage: fixture.storage, files: { streamPath: async function* () {} },
+      idFactory: createIdFactory({ clock: turnClock, hasher, deterministicReplay: true, namespace: "role-only-cold-turn" }), clock: turnClock, deterministicReplay: true });
+    const traceGlobal = globalThis as unknown as { __sccTrace?: unknown };
+    const previousTrace = traceGlobal.__sccTrace;
+    traceGlobal.__sccTrace = createTrace("role-only-cold-turn");
+    const turned = await kernel.turn({ text: lesson.requestText, requestedAuthority: "factual" });
+    traceGlobal.__sccTrace = previousTrace;
+    const fact = requestValueBindingConstructFact(binding, [lesson.evidence]);
+    expect(fact).toMatchObject({ predicate: "", relationId: "relation.opaque", relationRoleId: "role.answer", requestedSlotId: "role.answer" });
+    const attached = attachSourceBoundAnswerConstruct({ construct: { ...turned.constructGraph, nodes: [], edges: [] },
+      requestText: lesson.requestText, brainMarker: {}, hasher, facts: [fact!], evidence: [lesson.evidence] });
+    expect(semanticAnswerConstructFacts(attached)?.facts).toEqual(expect.arrayContaining([expect.objectContaining({ predicate: "", relationRoleId: "role.answer" })]));
+    expect(semanticAnswerConstructState(attached)?.selectedFacts).toEqual(expect.arrayContaining([expect.objectContaining({ predicate: "", relationRoleId: "role.answer" })]));
+    expect(semanticAnswerConstructFacts(turned.constructGraph)?.facts).toEqual(expect.arrayContaining([expect.objectContaining({
+      subject: "Zora", predicate: "", object: "Bora", relationId: "relation.opaque", relationRoleId: "role.answer",
+      evidenceIds: [String(lesson.evidence.id)], sourceVersionId: String(lesson.evidence.sourceVersionId)
+    })]));
+    expect(turned.answer).toBe("Bora");
+    expect(turned.withheld).toBeUndefined();
+    const authority = jsonRecord(jsonRecord(jsonRecord(jsonRecord(turned.mouth).trace).selected).audit).producerAuthority;
+    expect(authority).toMatchObject({ kind: "evidence_bound_proposition", evidenceIds: [String(lesson.evidence.id)], claims: [{
+      text: "Bora", graphNodeIds: [], trace: { schema: "scce.mouth.typed_bound_value.v1", subject: "Zora", relationId: "relation.opaque",
+        relationRoleId: "role.answer", requestedSlotId: "role.answer", sourceVersionId: String(lesson.evidence.sourceVersionId), evidenceIds: [String(lesson.evidence.id)] }
+    }] });
   });
 
   it("does not scan facts or source bodies when no acquired request form matches", () => {

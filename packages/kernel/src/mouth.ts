@@ -87,6 +87,7 @@ import { answerCoversRequest, evidenceTitledForRequestSubject, learnedRequestSca
 import { requestClosedClassWords } from "./closed-class-words.js";
 import { createCreativeEventSpeechGrammarIndex } from "./creative-event-speech-grammar.js";
 import { creativeSourceUtterances, realizeCreativeSourceUtterance } from "./creative-source-utterance.js";
+import { currentSourceBoundRoleValueFact } from "./source-bound-semantic-fact.js";
 import { candidateIsVerifiedBoundValue, candidateSurvivesRealizationContract, compileRealizationContract } from "./semantic-answer-construct.js";
 import { traceEvent } from "./debug/trace.js";
 import type { ContinueDecision } from "./learning-loop.js";
@@ -2409,6 +2410,13 @@ function surfaceCandidateFromKernelCandidate(candidate: CandidateSurface, discou
     .filter(claim => claim.basis === "invented" && invention?.claimBasis.some(row => row.id === stringFrom(claim.claimId) && row.kind === "invention"))
     .map(claim => stringFrom(claim.claimId)).filter(Boolean);
   const selectedText = collapseRepeatedOwnedClaimRun(candidate.answer, candidate, input);
+  const roleFact = currentSourceBoundRoleValueFact({ text: selectedText, contract: input.realizationContract,
+    facts: semanticAnswerConstructState(input.construct)?.selectedFacts ?? [], evidence: input.evidence });
+  const roleClaim = roleFact ? sourceClaimForRealizedFact(roleFact, selectedText, roleFact.evidenceIds ?? [], [], toJsonValue({
+    schema: "scce.mouth.typed_bound_value.v1", subject: roleFact.subject, relationId: roleFact.relationId,
+    relationRoleId: roleFact.relationRoleId, requestedSlotId: roleFact.requestedSlotId, sourceVersionId: roleFact.sourceVersionId,
+    evidenceIds: roleFact.evidenceIds
+  })) : undefined;
   const typedInventionBinding = invention && (candidate.constructIds ?? []).map(String).includes(String(invention.nodeId))
     && candidateInventionClaims.length
     ? inventionSurfaceBinding(invention)
@@ -2442,6 +2450,7 @@ function surfaceCandidateFromKernelCandidate(candidate: CandidateSurface, discou
       candidateAudit: candidate.audit
     }),
     ...(typedInventionBinding ? { inventionBinding: typedInventionBinding } : {}),
+    ...(roleClaim ? { plannedClaims: [roleClaim] } : {}),
     exactSurface: kernelCandidateCarriesExactBoundSourceSurface(candidate, input)
       || kernelCandidateCarriesVerifiedSourceExcerptSurface(candidate, input)
   };
@@ -7700,7 +7709,7 @@ function sourceClaimForRealizedFact(fact: SemanticAnswerFact, text: string, evid
   return {
     id: semanticFactKey(fact), text, basis: "direct_evidence",
     evidenceIds: evidenceIds.map(id => id as EvidenceId), priorIds,
-    graphNodeIds: [fact.sourceNodeId, fact.targetNodeId], graphEdgeIds: [],
+    graphNodeIds: [fact.sourceNodeId, fact.targetNodeId].filter(Boolean), graphEdgeIds: [],
     externallyFactual: true, hypothetical: false, trace
   };
 }
@@ -8375,6 +8384,8 @@ function factualProducerAuthorityHits(
     evidence: owners,
     claimBases: authority.kind === "evidence_bound_proposition" ? authority.claims : []
   };
+  const roleValue = currentSourceBoundRoleValueFact({ text, contract: input.realizationContract,
+    facts: semanticAnswerConstructState(input.construct)?.selectedFacts ?? [], evidence: owners });
   const quotation = authority.kind === "source_excerpt";
   const discourseBound = quotation && authority.contentPlan.discourseEvidenceIds?.length === 1
     && discourseOwnsSourceExcerpt(input, text, authority.contentPlan.discourseEvidenceIds[0]!);
@@ -8395,10 +8406,10 @@ function factualProducerAuthorityHits(
     })();
   return uniqueStrings([
     ...(candidate.plannedClaims?.length || discourseBound || verifiedExactClaimExcerpt ? [] : requestCoverageHits(text, candidate, scopedInput, false)),
-    ...(authority.kind === "evidence_bound_proposition" ? semanticAnswerDriftHits(text, scopedInput, priorPieces) : []),
+    ...(authority.kind === "evidence_bound_proposition" && !roleValue ? semanticAnswerDriftHits(text, scopedInput, priorPieces) : []),
     ...(verifiedExactClaimExcerpt ? [] : questionEchoHits(text, mouthEchoQuestionText(input))),
     ...unlicensedCommitmentHits(text, scopedInput, candidate.constructionFormLiterals),
-    ...(input.realizationContract && !candidateSurvivesRealizationContract(text, input.realizationContract).survives
+    ...(input.realizationContract && !roleValue && !candidateSurvivesRealizationContract(text, input.realizationContract).survives
       ? ["surface.reject.realization_contract"]
       : []),
     ...(quotation && !exactSourceExcerptOwners(text, owners).length ? ["surface.reject.source_excerpt_owner"] : [])

@@ -14,6 +14,7 @@ import { calibrated } from "./calibrations/prod-calibrations.js";
 import { createStringMemo } from "./pure-memo.js";
 import { anchorSymbolUnits, codeBearingLines, featureSet, mean, sourceTextSurface, toJsonValue, weightedJaccard } from "./primitives.js";
 import { evidenceRetrievalSurface, evidenceWindowText } from "./evidence-retrieval-surface.js";
+import { hasSourceBoundSemanticRelation } from "./source-bound-semantic-fact.js";
 import type { SemanticAnswerConstructFact } from "./semantic-answer-construct.js";
 import { collapseSurfaceWhitespace, ensureSurfaceSentence as ensureUnicodeSurfaceSentence, hasUncasedNonLatinLetter, hasUppercaseLetter, splitSurfaceClauses, splitSurfaceSentences, surfaceContainsBoundValue, surfaceWords, tidySurfaceText } from "./surface-linguistics.js";
 import type {
@@ -4322,7 +4323,7 @@ export function attachSourceBoundAnswerConstruct(input: {
   const owners = new Map(input.evidence.filter(span => span.status === "promoted").map(span => [String(span.id), span] as const));
   const facts = input.facts.flatMap(fact => {
     const evidenceIds = uniqueKernelStrings(fact.evidenceIds ?? []);
-    if (!fact.subject || !fact.predicate || !fact.object || !evidenceIds.length || evidenceIds.some(id => !owners.has(id))) return [];
+    if (!fact.subject || !hasSourceBoundSemanticRelation(fact) || !fact.object || !evidenceIds.length || evidenceIds.some(id => !owners.has(id))) return [];
     const sourceVersionIds = uniqueKernelStrings(evidenceIds.map(id => String(owners.get(id)?.sourceVersionId ?? "")));
     if (fact.sourceVersionId && !sourceVersionIds.includes(fact.sourceVersionId)) return [];
     if (!fact.sourceVersionId && sourceVersionIds.length !== 1) return [];

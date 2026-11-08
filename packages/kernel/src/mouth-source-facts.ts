@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { hasSourceBoundSemanticRelation } from "./source-bound-semantic-fact.js";
 import type { SpeakInput } from "./mouth-contracts.js";
 import {
   collapseWhitespace,
@@ -402,7 +403,7 @@ function semanticAnswerFactFromJson(value: Record<string, JsonValue>): SemanticA
   const subject = stringFromJson(value.subject);
   const predicate = stringFromJson(value.predicate);
   const object = stringFromJson(value.object);
-  if (!subject || !predicate || !object) return undefined;
+  if (!subject || !object || !hasSourceBoundSemanticRelation({ ...value, predicate })) return undefined;
   return {
     subject,
     predicate,
