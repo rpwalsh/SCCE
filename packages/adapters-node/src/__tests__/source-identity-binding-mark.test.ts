@@ -164,10 +164,16 @@ describe("a binding mark is orthography, not identity", () => {
     expect(reads[0]?.sql).toContain("evidence.information_label");
     expect(reads[1]?.sql).toMatch(/current_setting\('enable_seqscan'\)/u);
     expect(reads[2]?.sql).toBe("SET LOCAL enable_seqscan = off");
-    expect(reads[3]?.params?.slice(0, 6)).toEqual(["alpha", "anchor:sym:alpha", "beta", "anchor:sym:beta", "quiet", "anchor:sym:quiet"]);
+    expect(JSON.parse(String(reads[3]?.params?.[0]))).toEqual([
+      { run: "alpha", features: ["anchor:sym:alpha"] },
+      { run: "beta", features: ["anchor:sym:beta"] },
+      { run: "quiet", features: ["anchor:sym:quiet"] }
+    ]);
     expect(reads[3]?.seqscan).toBe("off");
-    expect(reads[3]?.sql.match(/anchor_index.features @> ARRAY\[\$\d+\]::text\[\]/gu)).toHaveLength(3);
-    expect(reads[3]?.sql.match(/evidence.status='promoted'/gu)).toHaveLength(3);
+    expect(reads[3]?.sql).toContain("anchor_index.features @> candidate.features");
+    expect(reads[3]?.sql).toContain("evidence.id=anchor_index.evidence_id");
+    expect(reads[3]?.sql).toContain("OFFSET 0");
+    expect(reads[3]?.sql.match(/evidence.status='promoted'/gu)).toHaveLength(1);
     expect(reads[3]?.sql).toContain("evidence.information_label");
     expect(reads[3]?.sql).toContain("count(DISTINCT source_id)::int AS sources");
     expect(reads[4]?.sql).toMatch(/set_config\('enable_seqscan'/u);
@@ -175,5 +181,35 @@ describe("a binding mark is orthography, not identity", () => {
     expect(transactionActive).toBe(false);
     expect(enableSeqscan).toBe("on");
     expect(measured).toEqual([3, 2]);
+  });
+
+  it("uses one fixed-size anchor-first query and deterministic vocabulary selection for repeated large samples", async () => {
+    const adapter = createPostgresStorageAdapter({ url: "postgres://fixture/fixture", schema: "fixture",
+      informationAccess: { tenantId: "fixture", principalId: "owner", compartments: ["test"], maximumExportClass: "restricted" } });
+    const reads: Array<{ sql: string; params: unknown[] }> = [];
+    const vocabularies: string[] = [];
+    Object.defineProperty(adapter, "transaction", { value: async <T>(operation: () => Promise<T>) => operation() });
+    Object.defineProperty(adapter, "query", { value: async (sql: string, params: unknown[] = []) => {
+      if (/source_title/u.test(sql)) {
+        expect(sql).toContain("ORDER BY md5(unit), unit");
+        expect(sql).not.toContain("random()");
+        vocabularies.push(sql);
+        return Array.from({ length: Number(params[0]) }, (_, index) => ({ unit: `symbol${index}` }));
+      }
+      if (/current_setting/u.test(sql)) return [{ enabled: "off" }];
+      if (sql === "SET LOCAL enable_seqscan = off" || /set_config/u.test(sql)) return [];
+      reads.push({ sql, params });
+      return (JSON.parse(String(params[0])) as Array<{ run: string }>).map(({ run }) => ({ run, sources: 1 }));
+    }});
+    expect(await adapter.evidence.sourceSpreadDistribution!(1)).toEqual([1]);
+    const first = await adapter.evidence.sourceSpreadDistribution!(400);
+    expect(first).toHaveLength(400);
+    expect(await adapter.evidence.sourceSpreadDistribution!(400)).toEqual(first);
+    expect(new Set(vocabularies).size).toBe(1);
+    expect(reads[1]).toEqual(reads[2]);
+    expect(reads[0]?.sql).toBe(reads[1]?.sql);
+    expect(reads[1]?.sql).not.toContain("UNION ALL");
+    expect(reads[1]?.sql).toContain("OFFSET 0");
+    expect(reads[1]?.sql).toContain("LIMIT 1500");
   });
 });

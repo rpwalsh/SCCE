@@ -62,7 +62,7 @@ function fixture(method: Method, initial: PlannerSetting, failure?: { phase: "me
       return { rows: method === "arbitration" ? [{ run: "alpha beta", sources: 3 }, { run: "quiet", sources: 0 }]
         : method === "distribution" ? [{ unit: "alpha", sources: 3 }, { unit: "quiet", sources: 0 }] : [] };
     }
-    if (sql.includes("source_title")) return { rows: sql.includes("ORDER BY random()") ? [{ unit: "alpha" }, { unit: "quiet" }] : [] };
+    if (sql.includes("source_title")) return { rows: sql.includes("ORDER BY md5(unit), unit") ? [{ unit: "alpha" }, { unit: "quiet" }] : [] };
     throw new Error("unexpected offline SQL");
   }
   const client = { query: (sql: string, params?: readonly unknown[]) => query("client", sql, params), release: () => { releases += 1; } };

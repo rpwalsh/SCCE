@@ -1185,21 +1185,7 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
         .filter(run => !named.has(run));
       const spread = new Map<string, number>();
       if (candidates.length) {
-        const spreadAccess = storage.informationAccessPredicate("evidence", 2);
-        const spreadRows = await queryIndexedEvidence<{ run: string; sources: number }>(storage,
-          `SELECT candidate.run AS run, measured.sources AS sources
-           FROM jsonb_to_recordset($1::jsonb) AS candidate(run text, features text[])
-           CROSS JOIN LATERAL (
-             SELECT count(DISTINCT source_id)::int AS sources FROM (
-               SELECT evidence.source_id FROM ${storage.table("evidence_anchor_index")} anchor_index
-               JOIN ${storage.table("evidence_spans")} evidence ON evidence.id=anchor_index.evidence_id
-               WHERE cardinality(candidate.features)>0 AND anchor_index.features @> candidate.features
-                 AND evidence.status='promoted' AND ${spreadAccess.sql}
-               LIMIT ${SPREAD_SCAN_CAP}
-             ) sampled
-           ) measured`,
-          [JSON.stringify(candidates.map(run => ({ run, features: uniquePostgresStrings(anchorSymbolUnits(run).map(unit => `anchor:sym:${unit}`)) }))), ...spreadAccess.params]
-        );
+        const spreadRows = await measureCanonicalSourceSpreads(storage, candidates);
         for (const row of spreadRows) spread.set(row.run, Number(row.sources ?? 0));
       }
       return { identities: [...named], spread };
@@ -1214,28 +1200,12 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
            SELECT DISTINCT unnest(string_to_array(source_title, ' ')) AS unit
            FROM ${storage.table("evidence_spans")} evidence WHERE source_title <> ''
              AND evidence.status='promoted' AND ${vocabularyAccess.sql}
-         ) units WHERE unit <> '' ORDER BY random() LIMIT $1`,
+         ) units WHERE unit <> '' ORDER BY md5(unit), unit LIMIT $1`,
         [sampleLimit, ...vocabularyAccess.params]
       );
       if (!vocabulary.length) return [];
-      const params: string[] = [];
       const units = uniquePostgresStrings(vocabulary.flatMap(row => anchorSymbolUnits(row.unit))).slice(0, sampleLimit);
-      const measurementAccess = storage.informationAccessPredicate("evidence", units.length * 2 + 1);
-      const measurements = units.map((unit, index) => {
-        const unitParameter = index * 2 + 1;
-        const featureParameter = unitParameter + 1;
-        params.push(unit, `anchor:sym:${unit}`);
-        return `SELECT $${unitParameter}::text AS unit, (
-           SELECT count(DISTINCT source_id)::int AS sources FROM (
-             SELECT evidence.source_id FROM ${storage.table("evidence_anchor_index")} anchor_index
-             JOIN ${storage.table("evidence_spans")} evidence ON evidence.id=anchor_index.evidence_id
-             WHERE anchor_index.features @> ARRAY[$${featureParameter}]::text[]
-               AND evidence.status='promoted' AND ${measurementAccess.sql} LIMIT ${SPREAD_SCAN_CAP}
-           ) sampled
-         ) AS sources`;
-      });
-      if (!measurements.length) return [];
-      const rows = await queryIndexedEvidence<{ unit: string; sources: number }>(storage, measurements.join("\nUNION ALL\n"), [...params, ...measurementAccess.params]);
+      const rows = await measureCanonicalSourceSpreads(storage, units);
       return rows.map(row => Number(row.sources ?? 0)).filter(value => value > 0);
     },
     async searchEvidence(query: EvidenceQuery) {
@@ -2077,6 +2047,29 @@ async function upsertGraphHyperedgesBatch(storage: PostgresStorageAdapter, edges
  * A unit the whole corpus uses saturates it, and saturation is the answer for such a unit.
  */
 const SPREAD_SCAN_CAP = 1500;
+
+/** Anchor postings lead; accessibility is checked by exact evidence id before the shared sampling bound. */
+async function measureCanonicalSourceSpreads(storage: PostgresStorageAdapter, runs: readonly string[]): Promise<Array<{ run: string; sources: number }>> {
+  if (!runs.length) return [];
+  const access = storage.informationAccessPredicate("evidence", 2);
+  return queryIndexedEvidence<{ run: string; sources: number }>(storage,
+    `SELECT candidate.run AS run, measured.sources AS sources
+     FROM jsonb_to_recordset($1::jsonb) AS candidate(run text, features text[])
+     CROSS JOIN LATERAL (
+       SELECT count(DISTINCT source_id)::int AS sources FROM (
+         SELECT admitted.source_id FROM ${storage.table("evidence_anchor_index")} anchor_index
+         CROSS JOIN LATERAL (
+           SELECT evidence.source_id FROM ${storage.table("evidence_spans")} evidence
+           WHERE evidence.id=anchor_index.evidence_id AND evidence.status='promoted' AND ${access.sql}
+           OFFSET 0
+         ) admitted
+         WHERE cardinality(candidate.features)>0 AND anchor_index.features @> candidate.features
+         LIMIT ${SPREAD_SCAN_CAP}
+       ) sampled
+     ) measured`,
+    [JSON.stringify(runs.map(run => ({ run, features: uniquePostgresStrings(anchorSymbolUnits(run).map(unit => `anchor:sym:${unit}`)) }))), ...access.params]
+  );
+}
 
 /** TOAST pointers understate array-membership cost; scope indexed retrieval to its transaction and restore the caller. */
 async function queryIndexedEvidence<T>(storage: PostgresStorageAdapter, sql: string, params: unknown[]): Promise<T[]> {
