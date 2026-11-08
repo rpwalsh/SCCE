@@ -53,6 +53,29 @@ export interface CodeMouthVerification {
   diagnostics: ProgramDiagnostic[];
 }
 
+export interface CodeMouthVerificationReceipt {
+  schema: "scce.code_mouth_verification.v1";
+  scope: "compiler_only" | "executed_tests" | "unknown";
+  status: "passed" | "failed" | "unknown";
+  buildSucceeded: boolean | null;
+  testsRun: boolean | null;
+  /** Null when test execution was absent or not recorded, regardless of a legacy verifier's gate sentinel. */
+  testsSucceeded: boolean | null;
+}
+
+function verificationReceipt(verification: CodeMouthVerification | undefined): CodeMouthVerificationReceipt {
+  const testsRun = verification?.testsRun ?? null;
+  const buildSucceeded = verification?.buildSucceeded ?? null;
+  const testsSucceeded = testsRun === true ? verification!.testsSucceeded : null;
+  return {
+    schema: "scce.code_mouth_verification.v1",
+    scope: testsRun === true ? "executed_tests" : testsRun === false ? "compiler_only" : "unknown",
+    status: buildSucceeded === false || testsSucceeded === false ? "failed"
+      : buildSucceeded === true && (testsRun === false || testsSucceeded === true) ? "passed" : "unknown",
+    buildSucceeded, testsRun, testsSucceeded
+  };
+}
+
 /**
  * How a proposal was arrived at, so a caller never has to infer it from the patch.
  *
@@ -77,6 +100,8 @@ export interface CodeMouthResult {
   appliedOperations: RepairOperation[];
   decision?: DebugLoopDecision;
   reason: string;
+  /** Last verification observation; outcome and appliedOperations identify whether its attempted edit survived. */
+  verification: CodeMouthVerificationReceipt;
   /** Fixes the compiler owns for this file when more than one answers the request; the caller chooses. */
   candidates?: Array<{ diagnosticCode: number; fixName: string; codeFixIdentity: string }>;
   /** Where each attempted proposal came from, in attempt order. An empty list means nothing was ever proposed. */
@@ -109,7 +134,9 @@ export async function runCodeMouth(input: {
   const maxWallClockMs = input.maxWallClockMs ?? 180_000;
   let context = await input.ports.retrieve(input.targetPath);
   const offered = () => (input.ports.offeredCandidates?.() ?? []);
-  const startingDiagnostics = (await input.ports.verify(input.targetPath)).diagnostics;
+  const startingVerification = await input.ports.verify(input.targetPath);
+  let receipt = verificationReceipt(startingVerification);
+  const startingDiagnostics = startingVerification.diagnostics;
   let diagnostics: ProgramDiagnostic[] = startingDiagnostics;
   // Roughly one hypothesis per diagnostic per candidate the proposer holds, which is what the search can try
   // before it has nothing further to say. A caller may set its own. Neither is a price.
@@ -140,6 +167,7 @@ export async function runCodeMouth(input: {
     appliedOperations: applied,
     decision,
     proposalSources,
+    verification: receipt,
     ...(planningSelections.length ? { planningSelections } : {}),
     ...(proposalAudits.length ? { proposalAudits } : {}),
     reason: applied.length && outcome !== "resolved"
@@ -177,6 +205,7 @@ export async function runCodeMouth(input: {
     let recorded: ReturnType<typeof recordDebugAttempt>;
     try {
       verification = await input.ports.verify(input.targetPath);
+      receipt = verificationReceipt(verification);
       recorded = recordDebugAttempt(session, {
         now: Date.now(),
         diagnosticsBefore: diagnostics,
@@ -188,6 +217,7 @@ export async function runCodeMouth(input: {
         hasher
       });
     } catch (failure) {
+      receipt = verificationReceipt(undefined);
       const message = failure instanceof Error ? failure.message : String(failure);
       try { await rollback(); }
       catch (rollbackFailure) {
@@ -202,9 +232,12 @@ export async function runCodeMouth(input: {
     if (patchResolvedTarget({ before: diagnostics, after: verification.diagnostics, targetPath: input.targetPath, mutatedPaths }) && verification.testsSucceeded) {
       applied = [...applied, ...proposal.operations];
       diagnostics = verification.diagnostics;
-      return finish("resolved", verification.testsRun === false
+      const reason = verification.testsRun === false
         ? "the compiler accepted the patch; no test suite was run"
-        : "the compiler accepted the patch and the tests passed");
+        : verification.testsRun === true ? "the compiler accepted the patch and the tests passed"
+          : "the compiler accepted the patch; test execution was not recorded";
+      if (verification.testsRun !== true) decision = { ...decision, reason };
+      return finish("resolved", reason);
     }
     // Not finished, but strictly better: keep it and carry on from there. This is the only way a file with more
     // than one defect is repairable at all, because every step of a convergent sequence looks like a failure to

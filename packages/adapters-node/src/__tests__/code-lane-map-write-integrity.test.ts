@@ -138,4 +138,31 @@ describe("frozen CODE_LANE map-write loss acceptance", () => {
       finalDiagnostics: final.diagnostics.map(diagnostic => ({ class: diagnostic.class, message: diagnostic.message })) });
     expect((await readdir(f.root)).some(name => name.startsWith(".scce-"))).toBe(false);
   });
+
+  it.each(["compiler", "all"] as const)("carries a typed %s verification receipt from an actual TS2551 repair", async mode => {
+    const f = await fixture();
+    const broken = f.original.replace("byFamily.set(record.taskFamilyId, bucket)", "byFamily.set(record.taskFamliyId, bucket)");
+    await writeFile(join(f.root, target), broken);
+    const ports = createWorkspaceCodeMouthPorts({ workspaceRoot: f.root, targetPath: target,
+      ...(mode === "all" ? { projectValidation: { policy: policy("all") } } : {}) });
+    const before = await ports.verify(target);
+    expect(before.diagnostics.some(diagnostic => diagnostic.raw?.includes("TS2551"))).toBe(true);
+    const result = await runCodeMouth({ request: "TS2551 fixName:spelling", targetPath: target, ports, maxAttempts: 1, maxWallClockMs: 30000 });
+    expect(result.outcome, JSON.stringify(result)).toBe("resolved");
+    expect(result.proposalSources).toEqual(["compiler_owned"]);
+    expect(await readFile(join(f.root, target), "utf8")).toBe(f.original);
+    const preserved = await runStructuredWorkspaceValidation({ workspaceRoot: f.root, policy: policy("all") });
+    expect(preserved.ok).toBe(true);
+    expect(preserved.evidence.commands[1]!.stdout).toContain("end-to-end behavior preserved");
+    expect(result).toMatchObject({ verification: { schema: "scce.code_mouth_verification.v1", scope: mode === "all" ? "executed_tests" : "compiler_only",
+      status: "passed", buildSucceeded: true, testsRun: mode === "all", testsSucceeded: mode === "all" ? true : null } });
+    if (mode === "compiler") {
+      expect(result.reason).toContain("no test suite was run");
+      expect(result.decision?.reason).toBe(result.reason);
+      expect(result.decision?.reason).not.toContain("tests succeeded");
+    }
+    observations.push({ case: `actual-TS2551-${mode}`, originalSha256: f.originalHash, brokenSha256: digest(broken),
+      afterSha256: digest(await readFile(join(f.root, target))), exactOriginalRestored: true, independentPreservedBehavior: true,
+      result, externalCommands: commandSummary(preserved.evidence) });
+  });
 });

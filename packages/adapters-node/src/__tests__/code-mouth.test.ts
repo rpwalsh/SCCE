@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
-import { parseTscDiagnostics, runCodeMouth, type CodeMouthPorts } from "../code-mouth.js";
+import { parseTscDiagnostics, runCodeMouth, type CodeMouthPorts, type CodeMouthVerification } from "../code-mouth.js";
 
 function ports(script: Array<{ diagnostics: string[] }>): { ports: CodeMouthPorts; applied: string[]; rolledBack: number } {
   const state = { applied: [] as string[], rolledBack: 0, verifyCalls: 0 };
@@ -18,6 +18,48 @@ function ports(script: Array<{ diagnostics: string[] }>): { ports: CodeMouthPort
 }
 
 describe("code mouth loop", () => {
+  it.each([
+    { testsRun: false, testsSucceeded: true, scope: "compiler_only", status: "passed", recordedTests: null },
+    { testsRun: true, testsSucceeded: true, scope: "executed_tests", status: "passed", recordedTests: true },
+    { testsRun: undefined, testsSucceeded: true, scope: "unknown", status: "unknown", recordedTests: null },
+    { testsRun: true, testsSucceeded: false, scope: "executed_tests", status: "failed", recordedTests: false }
+  ])("records verification scope without inferring test execution: $scope / $status", async row => {
+    const fixture = ports([{ diagnostics: ["TS1 initial"] }]);
+    const propose = fixture.ports.propose;
+    fixture.ports.propose = input => input.attempt === 1 ? propose(input) : Promise.resolve(undefined);
+    let calls = 0;
+    fixture.ports.verify = async () => ++calls === 1
+      ? { buildSucceeded: false, testsSucceeded: true, testsRun: false,
+        diagnostics: [{ id: "initial", class: "type", confidence: 1, message: "TS1 initial" }] }
+      : { buildSucceeded: true, testsSucceeded: row.testsSucceeded, testsRun: row.testsRun,
+        diagnostics: row.testsSucceeded ? [] : [{ id: "tests.failed", class: "runtime", path: "x.ts", confidence: 1, message: "configured test failed" }] };
+    const result = await runCodeMouth({ request: "explicit test proposal", targetPath: "x.ts", ports: fixture.ports, maxAttempts: 1 });
+    expect(result.verification).toMatchObject({ scope: row.scope, status: row.status, testsRun: row.testsRun ?? null,
+      buildSucceeded: true, testsSucceeded: row.recordedTests });
+    if (row.testsRun !== true) expect(result.decision?.reason).not.toContain("tests succeeded");
+    if (!row.testsSucceeded) {
+      expect(result.outcome).not.toBe("resolved");
+      expect(fixture.applied).toEqual(["op:1"]);
+      expect(fixture.rolledBack).toBe(1);
+      expect(result.appliedOperations).toEqual([]);
+    }
+  });
+
+  it("does not reuse passed verification when the next verification cannot finish", async () => {
+    const fixture = ports([{ diagnostics: [] }]);
+    let calls = 0;
+    fixture.ports.verify = async (): Promise<CodeMouthVerification> => {
+      if (++calls > 1) throw new Error("verifier timed out");
+      return { buildSucceeded: true, testsRun: true, testsSucceeded: true, diagnostics: [] };
+    };
+    const result = await runCodeMouth({ request: "explicit test proposal", targetPath: "x.ts", ports: fixture.ports, maxAttempts: 1 });
+    expect(result.outcome).toBe("stopped");
+    expect(result.verification).toEqual({ schema: "scce.code_mouth_verification.v1", scope: "unknown", status: "unknown",
+      buildSucceeded: null, testsRun: null, testsSucceeded: null });
+    expect(fixture.rolledBack).toBe(1);
+    expect(result.appliedOperations).toEqual([]);
+  });
+
   it("keeps only a patch that passes the gate and rolls back the ones that do not", async () => {
     const fixture = ports([{ diagnostics: ["TS2304 baseline"] }, { diagnostics: ["TS2304 still"] }, { diagnostics: [] }]);
     const result = await runCodeMouth({ request: "add reverse", targetPath: "x.ts", ports: fixture.ports, maxAttempts: 3 });

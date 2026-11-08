@@ -26,6 +26,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { classifyVerificationReceipt } from "./repair-acceptance/verification-receipt.mjs";
 
 const args = new Map(process.argv.slice(2).filter(a => a.startsWith("--")).map(a => {
   const at = a.indexOf("=");
@@ -188,7 +189,10 @@ for (const testCase of CASES.filter(row => !only || row.id === only)) {
           offeredCandidates: outcome.offeredCandidates,
           proposalSources: outcome.proposalSources,
           selectedPlanApplied,
-          closedLoopRepair
+          closedLoopRepair,
+          verification: outcome.verification ?? null,
+          verificationClass: classifyVerificationReceipt(outcome.verification),
+          executedTestsRepair: closedLoopRepair && classifyVerificationReceipt(outcome.verification) === "executed_tests"
         } : {}),
         // The states that matter, decided by the compiler and by what the file still declares -- never by
         // reading the patch.
@@ -253,6 +257,7 @@ async function runScce(root, testCase) {
   return {
     outcome: String(payload.outcome ?? "failed"),
     reason: String(payload.reason ?? firstLine(result.stderr)),
+    verification: payload.verification,
     planningSelections: Array.isArray(payload.planningSelections)
       ? payload.planningSelections.map(recordSelection).filter(Boolean)
       : [],

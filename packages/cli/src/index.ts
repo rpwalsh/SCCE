@@ -3,6 +3,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { spawn } from "node:child_process";
 import { runModelCommand, runSensorCommand, runSettingsCommand } from "./settings-commands.js";
+import { codeCommandReport } from "./code-command-report.js";
 import { negotiateLearning, runLearnCommand } from "./learning-commands.js";
 import { parseLocalExecutiveGoal } from "@scce/adapters-node";
 import { wikiChildArgs, wikiContinueAfterConfiguredPageCap, wikiRunPaths } from "./wiki-process.js";
@@ -235,20 +236,8 @@ async function main(): Promise<void> {
         // informative thing this command produces -- it is what the corpus made likely, and reading it is how
         // an operator sees whether the corpus is thin or the gate is strict.
         const composed = learnedProposer.lastCandidates();
-        printJson({
-          ...result,
-          ...(ports.projectVerification() ? { projectVerification: ports.projectVerification() } : {}),
-          learned: {
-            language: codeLanguage ?? null,
-            modelsAvailable: availableModels,
-            composed: composed.map(candidate => ({
-              strategy: candidate.strategy,
-              line: candidate.startLine,
-              content: candidate.content,
-              averageLogProbability: candidate.averageLogProbability
-            }))
-          }
-        });
+        printJson(codeCommandReport({ result, projectVerification: ports.projectVerification(),
+          language: codeLanguage, modelsAvailable: availableModels, composed }));
         // A caller scripting an edit needs the outcome in the exit code, not only in the report.
         if (result.outcome !== "resolved") process.exitCode = 1;
         break;

@@ -19,6 +19,7 @@ import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { classifyVerificationReceipt } from "./repair-acceptance/verification-receipt.mjs";
 
 const adapters = await import(pathToFileURL(path.resolve("packages/adapters-node/dist/index.js")).href);
 const { createLearnedCodeProposer, createTypeScriptCodeMouthPorts, readScceRuntimeConfig, createNodeRuntime, runCodeMouth, diagnosticsForTarget } = adapters;
@@ -202,6 +203,9 @@ for (const file of files) {
         detail: mutated.detail,
         outcome: result.outcome,
         proposalSources: result.proposalSources ?? [],
+        verification: result.verification ?? null,
+        verificationClass: classifyVerificationReceipt(result.verification),
+        executedTestsRepair: result.outcome === "resolved" && diagnostics.length === 0 && classifyVerificationReceipt(result.verification) === "executed_tests",
         diagnosticsBefore: before.diagnostics.length,
         diagnosticsAfter: diagnostics.length,
         // Four states, because the loop keeps partial progress and "changed but still has diagnostics" is what
