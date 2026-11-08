@@ -13,6 +13,8 @@ import { execFileSync } from "node:child_process";
 import path from "node:path";
 import ts from "typescript";
 import { runInNewContext } from "node:vm";
+import { Session } from "node:inspector/promises";
+import * as kernel from "@scce/kernel";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   corpusRegistryEntriesFromConfig,
@@ -699,6 +701,52 @@ describe("learned rows carry the shard's provenance once", () => {
 });
 
 describe("prepared corpus training", () => {
+  it("releases compiler artifacts while retaining the exact prepared commit and rollback retry", async () => {
+    const fixture = memoryStorage();
+    const makeInput = (storage: ScceStorage) => {
+      const clock = createClock({ fixedTime: 1700000000000 });
+      return { storage, sourceSystem: "dialogue", streamUri: "fixture://retained-human-source", sourceUri: "fixture://retained-human-source",
+        text: humanCreativePair.text, transcriptTurns: humanCreativePair.turns, createdAt: clock.now(), clock,
+        idFactory: createIdFactory({ clock, hasher: createHasher(), namespace: "prepared-retention", deterministicReplay: true }),
+        informationLabel: { ...publicCorpusInformationLabel, principals: ["principal.fixture"], exportClass: "restricted" as const }, skipNgramObservationPersistence: true,
+        ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64 };
+    };
+    const input = makeInput(fixture.storage);
+    const compile = kernel.compileLanguageTrainingBatch;
+    let compiledReference: WeakRef<ReturnType<typeof compile>> | undefined;
+    let preparationReference: WeakRef<NonNullable<ReturnType<typeof compile>["preparedInduction"]>> | undefined;
+    const spy = vi.spyOn(kernel, "compileLanguageTrainingBatch").mockImplementation(args => {
+      const compiled = compile(args);
+      compiledReference = new WeakRef(compiled);
+      if (compiled.preparedInduction) preparationReference = new WeakRef(compiled.preparedInduction);
+      return compiled;
+    });
+    try {
+      const prepared = await prepareLanguageCorpusTraining(input);
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(preparationReference).toBeDefined();
+      spy.mockClear();
+      await new Promise(resolve => setTimeout(resolve, 0));
+      const inspector = new Session();
+      inspector.connect();
+      try { await inspector.post("HeapProfiler.collectGarbage"); } finally { inspector.disconnect(); }
+      if (process.env.SCCE_CORPUS_RETENTION_REPORT === "1") console.log(JSON.stringify({ sourceBytes: Buffer.byteLength(input.text), compilerRetained: compiledReference?.deref() !== undefined, ...process.memoryUsage() }));
+      expect(compiledReference?.deref() === undefined).toBe(true);
+      expect(preparationReference?.deref() === undefined).toBe(true);
+      const put = fixture.storage.languageMemory.putNgramModels;
+      fixture.storage.languageMemory.putNgramModels = async () => { throw new Error("retained commit retry"); };
+      await expect(commitLanguageCorpusTraining(input, prepared)).rejects.toThrow("retained commit retry");
+      fixture.storage.languageMemory.putNgramModels = put;
+      const report = await commitLanguageCorpusTraining(input, prepared);
+      expect(report.languageConstructions).toBeGreaterThan(0);
+      expect(fixture.state.patterns.length).toBe(report.languagePatterns);
+      expect(fixture.state.events).toHaveLength(1);
+      const replay = memoryStorage();
+      const repeated = await trainLanguageCorpusText(makeInput(replay.storage));
+      expect(repeated).toEqual(report);
+      expect(replay.state).toEqual(fixture.state);
+    } finally { spy.mockRestore(); }
+  });
   it("separates acquisition replay provenance while binding prepared and semantic inputs exactly", async () => {
     const fixture = memoryStorage();
     const checkpoints = new Map<string, IngestionCheckpoint>();

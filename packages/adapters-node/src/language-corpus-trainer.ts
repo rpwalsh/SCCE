@@ -51,7 +51,6 @@ import {
   normalizeInformationLabel,
   toJsonValue,
   type Clock,
-  type CompiledLanguageTrainingBatch,
   type PreparedConstructionInduction,
   type PooledLanguageProfileBinding,
   type SourceLanguageFamilyRange,
@@ -270,7 +269,8 @@ interface PreparedLanguageCorpusPayload {
   graphSnapshotDigest: string;
   constructionPoolEvidence: EvidenceSpan[];
   constructionPoolProfiles: LanguageProfile[];
-  compiledBatch: CompiledLanguageTrainingBatch;
+  compilation: Required<Pick<LanguageCorpusTrainingReport, "alignmentPromotionObservations" | "alignmentCalibrationObservations"
+    | "constructionCandidates" | "constructionAcquisition" | "graphSurfaceAlignments" | "rejectedLanguageConstructions">>;
   observations: NgramObservation[];
   models: NgramModelRecord[];
   units: LanguageUnitRecord[];
@@ -1144,7 +1144,18 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
     graphSnapshotDigest: graphSnapshotDigest(batchGraphSnapshot),
     constructionPoolEvidence,
     constructionPoolProfiles: constructionPool.profiles,
-    compiledBatch,
+    compilation: {
+      alignmentPromotionObservations: compiledBatch.alignmentHeldoutEvaluation.promotionObservations,
+      alignmentCalibrationObservations: compiledBatch.alignmentHeldoutEvaluation.calibrationObservations,
+      constructionCandidates: compiledBatch.constructionCandidates,
+      constructionAcquisition: {
+        sourceObserved: compiledBatch.constructionPromotion.sourceObservedInducedConstructionSets,
+        documentHeldOutQualified: compiledBatch.constructionPromotion.promotedInducedConstructionSets,
+        rejectedQualification: compiledBatch.constructionPromotion.rejectedInducedConstructionSets
+      },
+      graphSurfaceAlignments: compiledBatch.graphSurfaceAlignmentSummaries.length,
+      rejectedLanguageConstructions: compiledBatch.rejectedConstructionCandidates
+    },
     observations,
     models,
     units,
@@ -1312,20 +1323,16 @@ async function commitLanguageCorpusTrainingInternal(input: LanguageCorpusTrainin
     languagePatterns: prepared.patterns.length,
     semanticFrames: prepared.frames.length,
     admission: prepared.admission,
-    alignmentPromotionObservations: [...prepared.compiledBatch.alignmentHeldoutEvaluation.promotionObservations],
-    alignmentCalibrationObservations: [...prepared.compiledBatch.alignmentHeldoutEvaluation.calibrationObservations],
-    constructionCandidates: prepared.compiledBatch.constructionCandidates,
+    alignmentPromotionObservations: [...prepared.compilation.alignmentPromotionObservations],
+    alignmentCalibrationObservations: [...prepared.compilation.alignmentCalibrationObservations],
+    constructionCandidates: prepared.compilation.constructionCandidates,
     languageConstructions: prepared.languageConstructions,
     compilerRecipe: languageCorpusTrainingRecipeId(prepared.sourceSystem),
     sourceCodeFunctionPatterns: prepared.patterns.filter(pattern => pattern.patternKind === "source_code_function").length,
     graphSnapshotDigest: prepared.graphSnapshotDigest,
-    constructionAcquisition: {
-      sourceObserved: prepared.compiledBatch.constructionPromotion.sourceObservedInducedConstructionSets,
-      documentHeldOutQualified: prepared.compiledBatch.constructionPromotion.promotedInducedConstructionSets,
-      rejectedQualification: prepared.compiledBatch.constructionPromotion.rejectedInducedConstructionSets
-    },
-    graphSurfaceAlignments: prepared.compiledBatch.graphSurfaceAlignmentSummaries.length,
-    rejectedLanguageConstructions: prepared.compiledBatch.rejectedConstructionCandidates,
+    constructionAcquisition: { ...prepared.compilation.constructionAcquisition },
+    graphSurfaceAlignments: prepared.compilation.graphSurfaceAlignments,
+    rejectedLanguageConstructions: prepared.compilation.rejectedLanguageConstructions,
     eventId: String(prepared.learned.id),
     warnings: [...new Set(prepared.constructionWarnings)].sort()
   };
