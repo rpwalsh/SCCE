@@ -32,8 +32,9 @@ it.each([false, true])("returns and records exact TS2551 verification with confi
     ], timeoutMs: 30000, maxOutputBytes: 128 * 1024, maxWorkspaceFiles: 32, maxWorkspaceBytes: 1024 * 1024,
     environment: { NODE_OPTIONS: "--max-old-space-size=512" } };
   const events: Array<{ typeId: string; payload: unknown }> = [];
+  let corpusReads = 0;
   const context = { runtime: { storage: {
-    languageMemory: { listNgramModels: async () => [] }, evidence: { searchEvidence: async () => [] },
+    languageMemory: { listNgramModels: async () => { corpusReads++; return []; } }, evidence: { searchEvidence: async () => [] },
     events: { append: async (event: { typeId: string; payload: unknown }) => { events.push(event); } }
   }, approvals: { isApproved: () => true } }, config: {
     server: { url: "http://127.0.0.1:0" }, runtime: { workspaceRoot: root, patchValidation: { provider: "trusted-host", policies: [policy] } },
@@ -54,7 +55,10 @@ it.each([false, true])("returns and records exact TS2551 verification with confi
     buildSucceeded: true, testsRun: withTests, testsSucceeded: withTests ? true : null
   } });
   expect(await readFile(join(root, target), "utf8")).toBe(original);
+  expect(corpusReads).toBe(0);
+  expect(payload.corpusAvailability).toMatchObject({ status: "unqueried", modelsAvailable: null, countSemantics: "admitted_run_models", languageId: "typescript" });
   expect(events.find(event => event.typeId === "CodePatchApplied")?.payload).toMatchObject({ verification: payload.verification });
+  expect(events.find(event => event.typeId === "CodePatchApplied")?.payload).toMatchObject({ corpusAvailability: payload.corpusAvailability });
   if (!withTests) expect(payload.decision.reason).toBe(payload.reason);
   const external = await runStructuredWorkspaceValidation({ workspaceRoot: root, policy });
   expect(external.ok).toBe(true);

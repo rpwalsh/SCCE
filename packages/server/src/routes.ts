@@ -695,6 +695,7 @@ async function dispatch(
           attempts: codeResult.attempts,
           provedBy: codeResult.reason,
           verification: toJsonValue(codeResult.verification),
+          corpusAvailability: toJsonValue(codePorts.corpusAvailability() ?? null),
           ...(codeResult.proposalAudits ? { proposalAudits: toJsonValue(codeResult.proposalAudits) } : {}),
           ...(codePorts.projectVerification() ? { projectVerification: toJsonValue(codePorts.projectVerification()) } : {}),
           operations: codeResult.appliedOperations.map(operation => ({ kind: operation.kind, path: operation.path, reason: operation.reason })),
@@ -702,7 +703,8 @@ async function dispatch(
         }
       })).catch(() => undefined);
     }
-    return json({ ...codeResult, ...(codePorts.projectVerification() ? { projectVerification: codePorts.projectVerification() } : {}) } as unknown as JsonValue);
+    return json({ ...codeResult, corpusAvailability: codePorts.corpusAvailability() ?? null,
+      ...(codePorts.projectVerification() ? { projectVerification: codePorts.projectVerification() } : {}) } as unknown as JsonValue);
   }
   if (req.method === "POST" && url.pathname === "/api/workspace/patch/plan") {
     const request = parseWorkspacePatchPlanRequest(await readBody(req, context.maxBodyBytes), { resolveValidationPolicy: id => resolveWorkspacePatchValidationPolicy(context, id) });

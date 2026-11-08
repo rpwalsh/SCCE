@@ -5,7 +5,7 @@ import path from "node:path";
 import { canonicalStringify, codeLanguageForPath, createPatchTransactionPlan, hashPatchContent, type ProgramDiagnostic, type RepairOperation } from "@scce/kernel";
 import { createClangCodeMouthPorts } from "./clang-code-mouth-ports.js";
 import { createTypeScriptCodeMouthPorts, type CodeMouthPorts, type CodeMouthVerification } from "./code-mouth.js";
-import type { LearnedCodeProposer } from "./learned-code-proposer.js";
+import type { LearnedCodeProposer, LearnedCodeCorpusAvailability } from "./learned-code-proposer.js";
 import { checkerDiagnostics, createTreeSitterCodeMouthPorts } from "./tree-sitter-code-mouth-ports.js";
 import { runStructuredWorkspaceValidation, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type StructuredWorkspaceValidationEvidence } from "./structured-patch-validation.js";
 import { executeWorkspacePatchTransaction } from "./workspace-patch-transaction.js";
@@ -21,6 +21,7 @@ export interface WorkspaceCodeMouthOptions {
 
 export interface WorkspaceCodeMouthPorts extends CodeMouthPorts {
   projectVerification(): WorkspaceApplicationVerification | undefined;
+  corpusAvailability(): LearnedCodeCorpusAvailability | undefined;
 }
 
 /** CLI and HTTP select the same language ports and optional complete-application gate. */
@@ -41,6 +42,7 @@ export function createWorkspaceCodeMouthPorts(options: WorkspaceCodeMouthOptions
       return ports.propose({ ...input, context: { ...input.context, ...(behavioralFailure ? { behavioralFailure } : {}) } });
     },
     projectVerification: () => projectVerification,
+    corpusAvailability: () => language ? options.learnedProposer?.corpusAvailability?.(language) : undefined,
     apply: async operations => {
       const rollback = await applyWorkspaceRepairOperations(options.workspaceRoot, operations);
       const previousFailure = behavioralFailure;

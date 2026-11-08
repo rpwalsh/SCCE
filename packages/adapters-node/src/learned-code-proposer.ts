@@ -94,6 +94,12 @@ function documentationCorpusSpan(span: { provenance?: unknown }): boolean {
   return (provenance as Record<string, unknown>).sourceSystem === corpusSourceAlias(CORPUS_SOURCE_SYSTEM_IDS.ossDocs);
 }
 
+export type LearnedCodeCorpusAvailability = {
+  languageId: string;
+  modelLimit: number;
+  countSemantics: "admitted_run_models";
+} & ({ status: "unqueried" | "loading" | "failed"; modelsAvailable: null } | { status: "loaded"; modelsAvailable: number });
+
 export interface LearnedCodeProposer {
   propose(input: {
     request: string;
@@ -103,13 +109,10 @@ export interface LearnedCodeProposer {
   }): Promise<CodeMouthProposal | undefined>;
   /** What the last call composed, best first: the audit trail behind whatever the gate then accepted or rejected. */
   lastCandidates(): readonly LearnedCodeRepairCandidate[];
-  /**
-   * Models hydrated for a language, bounded by `modelLimit` -- not the corpus total.
-   *
-   * Zero is the answer that matters: a language this brain was never shown is one it cannot write, and saying so
-   * is different from a repair loop declining.
-   */
+  /** Explicitly loads the admitted run models; reporting uses the non-loading snapshot. */
   availableModelCount(languageId: string): Promise<number>;
+  /** A detached observation of this run's admitted models; never starts a corpus read. */
+  corpusAvailability?(languageId: string): LearnedCodeCorpusAvailability;
 }
 
 export interface LearnedCodeProposerOptions {
@@ -131,10 +134,13 @@ export interface LearnedCodeProposerOptions {
   log?: (message: string) => void;
 }
 
-export function createLearnedCodeProposer(options: LearnedCodeProposerOptions): LearnedCodeProposer {
+export function createLearnedCodeProposer(options: LearnedCodeProposerOptions): LearnedCodeProposer & {
+  corpusAvailability(languageId: string): LearnedCodeCorpusAvailability;
+} {
   const modelLimit = Math.max(1, Math.min(256, Math.floor(options.modelLimit ?? 96)));
   const log = options.log ?? (() => {});
   const byLanguage = new Map<string, Promise<KneserNeyModel[]>>();
+  const availabilityByLanguage = new Map<string, LearnedCodeCorpusAvailability>();
   const hasher = createHasher();
   let lastCandidates: LearnedCodeRepairCandidate[] = [];
   // Which candidate to offer, and what state it was chosen against.
@@ -156,13 +162,22 @@ export function createLearnedCodeProposer(options: LearnedCodeProposerOptions): 
   const modelsFor = (languageId: string): Promise<KneserNeyModel[]> => {
     const cached = byLanguage.get(languageId);
     if (cached) return cached;
-    const loading = loadCodeModels(options.storage, languageId, modelLimit);
+    availabilityByLanguage.set(languageId, { languageId, modelLimit, countSemantics: "admitted_run_models", status: "loading", modelsAvailable: null });
+    const loading = loadCodeModels(options.storage, languageId, modelLimit).then(models => {
+      availabilityByLanguage.set(languageId, { languageId, modelLimit, countSemantics: "admitted_run_models", status: "loaded", modelsAvailable: models.length });
+      return models;
+    }, error => {
+      availabilityByLanguage.set(languageId, { languageId, modelLimit, countSemantics: "admitted_run_models", status: "failed", modelsAvailable: null });
+      throw error;
+    });
     byLanguage.set(languageId, loading);
     return loading;
   };
 
   return {
     lastCandidates: () => lastCandidates,
+    corpusAvailability: languageId => ({ ...(availabilityByLanguage.get(languageId)
+      ?? { languageId, modelLimit, countSemantics: "admitted_run_models", status: "unqueried", modelsAvailable: null }) }),
 
     async availableModelCount(languageId) {
       return (await modelsFor(languageId)).length;
@@ -174,7 +189,7 @@ export function createLearnedCodeProposer(options: LearnedCodeProposerOptions): 
       if (!languageId) return undefined;
       const models = await modelsFor(languageId);
       if (!models.length) {
-        log(`no trained ${languageId} corpus; the learned lane has nothing to compose from`);
+        log(`no usable ${languageId} models in the requested corpus slice; the learned lane has nothing to compose from`);
         return undefined;
       }
       const spans = await repairSpans(options, languageId, context, diagnostics);

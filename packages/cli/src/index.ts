@@ -3,13 +3,12 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { spawn } from "node:child_process";
 import { runModelCommand, runSensorCommand, runSettingsCommand } from "./settings-commands.js";
-import { codeCommandReport } from "./code-command-report.js";
+import { runCodeCommand } from "./code-command.js";
 import { negotiateLearning, runLearnCommand } from "./learning-commands.js";
 import { parseLocalExecutiveGoal } from "@scce/adapters-node";
 import { wikiChildArgs, wikiContinueAfterConfiguredPageCap, wikiRunPaths } from "./wiki-process.js";
 import { resolveWikipediaCorpusTarget } from "@scce/adapters-node";
-import { createLearnedCodeProposer, createWorkspaceCodeMouthPorts, runCodeMouth, type StructuredPatchValidationPolicy } from "@scce/adapters-node";
-import { codeLanguageForPath } from "@scce/kernel";
+import type { StructuredPatchValidationPolicy } from "@scce/adapters-node";
 import { describeRelationPotentialCapability, validateRelationPotentialAgainstIdentity } from "@scce/kernel";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
@@ -197,49 +196,17 @@ async function main(): Promise<void> {
         // ignored argument rather than of the repair engine.
         const workspaceRoot = parsed.args.find(arg => arg.startsWith("--root="))?.slice(7)
           ?? config.runtime.workspaceRoot;
-        // Which compiler owns the fixes for this file. The repair loop itself is language-neutral, so the language
-        // only decides which ports it runs over; every other guarantee -- apply, verify, roll back what does not
-        // build -- is the same whichever compiler is answering.
-        // The learned lane reads this brain's code corpus. It leads; the compiler-owned fix is the fallback, and
-        // a brain with no corpus for the language simply proposes nothing and the fallback answers as before.
-        const learnedProposer = createLearnedCodeProposer({
-          storage: runtime.storage,
-          workspaceRoot,
-          log: message => process.stderr.write(`[code-mouth] ${message}\n`)
-        });
-        // Said once, before any attempt: a language this brain has never been shown is one it cannot write,
-        // and that is a fact about the corpus rather than a failure of the repair loop.
-        const codeLanguage = codeLanguageForPath(target);
-        const availableModels = codeLanguage ? await learnedProposer.availableModelCount(codeLanguage) : 0;
-        if (codeLanguage && !availableModels) {
-          process.stderr.write(`[code-mouth] no ${codeLanguage} corpus is trained; only compiler-owned fixes are available\n`);
-        }
-        // Which verifier owns this file. A compiler where one is ported, and otherwise the grammar, which
-        // answers a strictly weaker question -- whether the file still parses -- with nothing installed.
-        // A language no verifier covers gets no repair, because an unverifiable edit is not one this
-        // system makes.
         const log = (message: string) => process.stderr.write(`[code-mouth] ${message}\n`);
         const validationPolicyPath = parsed.args.find(arg => arg.startsWith("--validation-policy="))?.slice(20);
         const projectValidation = validationPolicyPath
           ? { policy: JSON.parse(await readFile(path.resolve(validationPolicyPath), "utf8")) as StructuredPatchValidationPolicy }
           : undefined;
-        const ports = createWorkspaceCodeMouthPorts({ workspaceRoot, targetPath: target, learnedProposer, log,
+        const report = await runCodeCommand({ storage: runtime.storage, workspaceRoot, targetPath: target, request,
+          maxAttempts: Number(parsed.args.find(arg => arg.startsWith("--attempts="))?.slice(11) ?? 3), log,
           ...(projectValidation ? { projectValidation } : {}) });
-        const result = await runCodeMouth({
-          request,
-          targetPath: target,
-          maxAttempts: Number(parsed.args.find(arg => arg.startsWith("--attempts="))?.slice(11) ?? 3),
-          log: message => process.stderr.write(`[code-mouth] ${message}\n`),
-          ports
-        });
-        // What the learned lane composed, whichever way the gate went. A rejected composition is the most
-        // informative thing this command produces -- it is what the corpus made likely, and reading it is how
-        // an operator sees whether the corpus is thin or the gate is strict.
-        const composed = learnedProposer.lastCandidates();
-        printJson(codeCommandReport({ result, projectVerification: ports.projectVerification(),
-          language: codeLanguage, modelsAvailable: availableModels, composed }));
+        printJson(report);
         // A caller scripting an edit needs the outcome in the exit code, not only in the report.
-        if (result.outcome !== "resolved") process.exitCode = 1;
+        if (report.outcome !== "resolved") process.exitCode = 1;
         break;
       }
       case "executive": {

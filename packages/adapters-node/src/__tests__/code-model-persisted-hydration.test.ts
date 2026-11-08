@@ -21,15 +21,25 @@ it("hydrates the canonical persisted compiler output before source-repair infere
   const stored = (records[0]!.modelJson as Record<string, JsonValue>).model as Record<string, JsonValue>;
   expect(stored.counts).toBeTruthy();
   for (const key of ["contextCounts", "contextContinuationTypes", "successorIndex", "successorOverflowCounts", "backoffWeights", "baseContinuations"]) expect(stored[key]).toBeUndefined();
-  const proposer = createLearnedCodeProposer({ storage: { languageMemory: { listNgramModels: async () => records }, evidence: { searchEvidence: async () => [] } } as never });
+  let reads = 0;
+  const proposer = createLearnedCodeProposer({ storage: { languageMemory: { listNgramModels: async () => { reads++; return records; } }, evidence: { searchEvidence: async () => [] } } as never });
   const before = kneserNeyMaterializationCounts();
-  expect(await proposer.availableModelCount("go")).toBe(1);
+  expect(proposer.corpusAvailability("go")).toMatchObject({ status: "unqueried", modelsAvailable: null, countSemantics: "admitted_run_models" });
+  expect(proposer.corpusAvailability("go")).toMatchObject({ status: "unqueried", modelsAvailable: null });
+  expect(reads).toBe(0);
   expect(kneserNeyMaterializationCounts()).toEqual(before);
   const lines = targetText.slice(0, targetText.indexOf("balnces")).split("\n");
-  const proposal = await proposer.propose({ request: "balnces", context: { targetPath: "ledger.go", targetText, language: "go", imports: [], symbols: [] },
-    diagnostics: [{ id: "actual.checker.fixture", class: "type", path: "ledger.go", line: lines.length, column: lines.at(-1)!.length + 1,
-      message: "undefined: balnces", raw: "ledger.go:4:9: undefined: balnces", confidence: 1 }], attempt: 1 });
+  const proposalInput = { request: "balnces", context: { targetPath: "ledger.go", targetText, language: "go", imports: [], symbols: [] },
+    diagnostics: [{ id: "actual.checker.fixture", class: "type" as const, path: "ledger.go", line: lines.length, column: lines.at(-1)!.length + 1,
+      message: "undefined: balnces", raw: "ledger.go:4:9: undefined: balnces", confidence: 1 }], attempt: 1 };
+  const proposal = await proposer.propose(proposalInput);
   expect(proposal).toMatchObject({ operations: [{ kind: "replace", startLine: 4, endLine: 4, content: " return balances" }],
     audit: { sourceModelKeys: [records[0]!.id] } });
+  expect(kneserNeyMaterializationCounts()).toEqual({ contextTables: before.contextTables + 1, runtimeIndexes: before.runtimeIndexes + 1 });
+  expect(reads).toBe(1);
+  expect(proposer.corpusAvailability("go")).toMatchObject({ status: "loaded", modelsAvailable: 1, countSemantics: "admitted_run_models" });
+  expect(await proposer.availableModelCount("go")).toBe(1);
+  await proposer.propose({ ...proposalInput, attempt: 2 });
+  expect(reads).toBe(1);
   expect(kneserNeyMaterializationCounts()).toEqual({ contextTables: before.contextTables + 1, runtimeIndexes: before.runtimeIndexes + 1 });
 });
