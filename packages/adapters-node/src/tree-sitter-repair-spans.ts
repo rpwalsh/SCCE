@@ -34,17 +34,24 @@ export async function treeSitterBehaviorRepairSites(input: { targetPath: string;
   const languageId = languageIdForFilePath(input.targetPath);
   if (!languageId) return [];
   return await withRepositorySyntaxTree({ fileId: input.targetPath, languageId, text: input.text }, root => {
-    const pending = [root];
+    const pending = [{ node: root, visited: false }];
+    const bodyOwners = new Set<number>();
     const sites = new Map<string, SourceCodeRepairSite>();
     const add = (node: typeof root) => {
-      if (node === root || node.hasError || node.isError || node.isMissing || node.endIndex <= node.startIndex) return;
+      if (node === root || bodyOwners.has(node.id) || node.hasError || node.isError || node.isMissing || node.endIndex <= node.startIndex) return;
       sites.set(`${node.startIndex}:${node.endIndex}`, { start: node.startIndex, length: node.endIndex - node.startIndex, grammarNodeType: node.type });
     };
     while (pending.length) {
-      const node = pending.pop()!;
+      const { node, visited } = pending.pop()!;
       if (node.hasError || node.isError || node.isMissing) continue;
       if (node.childCount) {
-        pending.push(...node.children);
+        const children = node.children;
+        if (!visited) {
+          pending.push({ node, visited: true }, ...children.map(node => ({ node, visited: false })));
+          continue;
+        }
+        // A region may not carry a nested grammar-owned body across its binding boundary.
+        if (node.childForFieldName("body") || children.some(child => bodyOwners.has(child.id))) bodyOwners.add(node.id);
         const argumentsNode = node.childForFieldName("arguments");
         if (argumentsNode) {
           // Grammar fields bound the invocation, its argument list, and individual argument expressions.

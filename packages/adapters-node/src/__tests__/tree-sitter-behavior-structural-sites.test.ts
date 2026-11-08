@@ -61,6 +61,24 @@ describe("parser-owned structural behavioral repair sites", () => {
     expect(new Set(sites.map(site => `${site.start}:${site.length}`)).size).toBe(sites.length);
   });
 
+  it.each([
+    ["callback.ts", "consume((value) => { inspect(value); }, context);", "(value) => { inspect(value); }"],
+    ["callback.ts", "consume((value) => inspect(value), context);", "(value) => inspect(value)"],
+    ["callback.py", "consume(lambda value: inspect(value), context)\n", "lambda value: inspect(value)"],
+    ["callback.go", "package sample\nfunc run() { consume(func(value int) { inspect(value) }, context) }", "func(value int) { inspect(value) }"],
+    ["callback.rs", "fn run() { consume(|value| { inspect(value); }, context); }", "|value| { inspect(value); }"],
+  ])("keeps callback binding scopes out of structural regions in %s", async (targetPath, text, callback) => {
+    const parsed = await parseRepositorySyntax({ fileId: targetPath, languageId: languageIdForFilePath(targetPath)!, text });
+    expect(parsed.errors).toEqual([]);
+    const sites = await treeSitterBehaviorRepairSites({ targetPath, text });
+    const callbackStart = text.indexOf(callback);
+    expect(sites.some(site => site.start <= callbackStart && site.start + site.length >= callbackStart + callback.length)).toBe(false);
+    for (const region of ["inspect(value)", "(value)", "context"]) {
+      const start = region === "(value)" ? text.lastIndexOf(region) : text.indexOf(region);
+      expect(sites.some(site => site.start === start && site.length === region.length)).toBe(true);
+    }
+  });
+
   it("keeps syntax recovery and unsupported-language sites separate", async () => {
     const text = "consume(value";
     expect(await treeSitterBehaviorRepairSites({ targetPath: "broken.ts", text })).toEqual([]);
