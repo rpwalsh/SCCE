@@ -6,8 +6,9 @@ import { nativeFiles, expectedReads, NATIVE_LANGUAGES, nativePublicDeclarations 
 import { numericFiles, numericExpected, nativePublicDeclarations as numericPublicDeclarations } from './numeric-fixtures.mjs';
 import { nativeValidationPermission } from './native-validation-permission.mjs';
 import { sha256Text } from '../../../sealed-eval/harness/lib/util.mjs';
+import { arithmeticCase } from './arithmetic-cases.mjs';
 
-export const CATEGORY_GROUPS = { chat: 'chat', creative: 'creative', corpus_facts: 'corpus_facts', learning_updates: 'learning_updates', code_repair_stateful: 'code', code_generation_stateful: 'code', code_repair_numeric: 'code', code_generation_numeric: 'code', agentic_autonomous: 'agentic', agentic_given_plan: 'agentic' };
+export const CATEGORY_GROUPS = { chat: 'chat', creative: 'creative', corpus_facts: 'corpus_facts', learning_updates: 'learning_updates', code_repair_stateful: 'code', code_generation_stateful: 'code', code_repair_numeric: 'code', code_generation_numeric: 'code', agentic_autonomous: 'agentic', agentic_given_plan: 'agentic', math_reasoning: 'math_reasoning' };
 export function randomStream(seed, domain) {
   let counter = 0;
   return { hex: () => createHmac('sha256', seed).update(`${domain}\0${counter++}`).digest('hex'), integer(limit) { return Number(BigInt(`0x${this.hex().slice(0, 12)}`) % BigInt(limit)); } };
@@ -26,7 +27,7 @@ export function defaultInventory(capabilities, admitted = []) {
     }
   }
   const cells = [];
-  for (const language of [...natural].sort()) for (const category of ['chat', 'creative', 'corpus_facts', 'learning_updates', 'agentic_autonomous', 'agentic_given_plan']) cells.push({ category, language, grading: ['chat', 'creative'].includes(category) ? 'human' : category === 'agentic_autonomous' ? 'native' : 'semantic' });
+  for (const language of [...natural].sort()) for (const category of ['chat', 'creative', 'corpus_facts', 'learning_updates', 'agentic_autonomous', 'agentic_given_plan', 'math_reasoning']) cells.push({ category, language, grading: ['chat', 'creative'].includes(category) ? 'human' : category === 'agentic_autonomous' ? 'native' : 'semantic' });
   for (const language of [...formal].sort()) for (const category of ['code_repair_stateful', 'code_generation_stateful', 'code_repair_numeric', 'code_generation_numeric']) cells.push({ category, language, grading: 'native' });
   const priorFormalAdmission = [...formal].sort().map(language => ({ language, reportedCanonicalModels: admitted.flatMap(m => m.formal ?? []).filter(row => row.language === language).reduce((sum, row) => sum + Number(row.models ?? 0), 0), status: admitted.some(m => (m.formal ?? []).some(row => row.language === language && row.models > 0)) ? 'reported_admitted_models_not_proven_task_capability' : 'no_prior_canonical_admission_reported_campaign_source_preparation_still_required' }));
   return { schema: 'scce.blind-default-inventory.v1', formalLanguages: [...formal].sort(), naturalLanguages: [...natural].sort(), priorFormalAdmission, categoryGroups: CATEGORY_GROUPS, admittedSourceCoverage: admitted.map(m => ({ schema: m.schema, formal: m.formal ?? [], naturalScriptIdentities: m.natural ?? [], sourceLocales: m.sourceLocales ?? [] })), capabilityEvidence: 'Task capability is unproven until private validation or independent ballots; source/script identity alone proves no task capability or locale.', cells };
@@ -125,6 +126,7 @@ export async function codeCase(cell, index, rng, options, id) {
   return { public: { outputContract: canonical(contract), steps: [{ prompt: `${repair ? locales[requestLocale].repair(cell.language, fixture.target) : locales[requestLocale].generation(cell.language, fixture.target)}\n${spec}`, sources: [], files: { ...fixture.files, 'specification.txt': spec } }] }, private: { ...await privateNative(options.privateRoot, id, vectors), family: stateful ? `stateful_${repair ? defect : 'generation'}` : 'numeric_piecewise', requestLocale, hiddenKeyCount: stateful ? vectors.length * 2 : 0 } };
 }
 async function naturalCase(cell, index, rng, options, id) {
+  if (cell.category === 'math_reasoning') return arithmeticCase(cell, index, rng, options);
   const locale = locales[cell.language];
   if (!locale) throw new Error(`Missing locale provider: ${cell.language}`);
   const name = identifier(rng, 'Person'), absent = identifier(rng, 'Person'), desk = identifier(rng, 'Desk'), city = identifier(rng, 'Place'), old = extension(rng), updated = extension(rng), sourceId = identifier(rng, 'source');

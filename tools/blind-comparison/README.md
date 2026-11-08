@@ -2,6 +2,8 @@
 
 This is an evaluation tool, outside SCCE. It does not generate product behavior. A passing report describes only its preregistered finite coverage; it cannot prove superiority on every possible task or language. No production SCCE/Qwen result is supplied here.
 
+The default inventory includes `math_reasoning` in EN/RU/ES/CA, bringing its declared cells from 44 to 48. This uses ordinary natural-language turns for both systems, with no source teaching, calculator API, forced arithmetic representation, or reference JSON/schema constraint. Each unchanged even per-cell count balances single-operation and multistep families; the seed chooses fresh integers and operations. Families and exact results remain private. The translated public contract requests one signed base-ten integer; private grading rejects refusals, wrong values, prose, equations and extra numeric answers. Existing code-numeric vectors and all other cells and acceptance thresholds remain unchanged. These cells measure capability; their presence does not imply SCCE passes them.
+
 Run the complete offline protocol rehearsal from a clean output directory:
 
 ```powershell

@@ -59,12 +59,24 @@ async function nativeCheck(row, packet, receipt, options, budgets) {
   const result = await execute(argv, { cwd: dir, input: '', timeMs: budgets.timeMs, outputBytes: budgets.outputBytes });
   return { pass: result.code === 0 && !result.failure, reason: result.failure ?? (result.code === 0 ? null : 'native-check-failed'), exitCode: result.code, transcriptHash: hash([result.stdout, result.stderr]) };
 }
-export function semanticCheck(expected, outputs) {
+export function semanticCheck(expected, outputs, answerType) {
+  if (answerType === 'exact_integer') return exactIntegerCheck(expected, outputs);
+  if (answerType !== undefined) throw new Error('Unknown private semantic answer type');
   if (outputs.length !== expected.length) return { pass: false, reason: 'incomplete-steps' };
   for (let i = 0; i < expected.length; i++) {
     let actual;
     try { actual = JSON.parse(outputs[i].response.answer); } catch { return { pass: false, reason: 'invalid-semantic-json' }; }
     if (canonical(actual) !== canonical(expected[i])) return { pass: false, reason: 'semantic-contract-mismatch', step: i };
+  }
+  return { pass: true, reason: null };
+}
+export function exactIntegerCheck(expected, outputs) {
+  if (!Array.isArray(expected) || expected.some(value => typeof value !== 'string' || !/^-?(?:0|[1-9][0-9]*)$/u.test(value))) throw new Error('Invalid private exact-integer gold');
+  if (outputs.length !== expected.length) return { pass: false, reason: 'incomplete-steps' };
+  for (let step = 0; step < expected.length; step++) {
+    const answer = outputs[step].response.answer;
+    if (typeof answer !== 'string' || !/^[+-]?[0-9]+$/u.test(answer.trim())) return { pass: false, reason: 'not-one-integer', step };
+    if (BigInt(answer.trim()) !== BigInt(expected[step])) return { pass: false, reason: 'incorrect-integer', step };
   }
   return { pass: true, reason: null };
 }
@@ -107,7 +119,7 @@ export async function grade(options) {
       for (const r of receipts) {
         try { details.push(r.outputs.some(o => o.identity?.productOutcome === 'failed')
           ? { pass: false, reason: 'product-failed', productReasons: r.outputs.filter(o => o.identity?.productOutcome === 'failed').map(o => o.identity.reason ?? null) }
-          : row.grading === 'semantic' ? semanticCheck(row.private.expected, r.outputs) : await nativeCheck(row, packet, r, options, bundle.plan.budgets)); }
+          : row.grading === 'semantic' ? semanticCheck(row.private.expected, r.outputs, row.private.answerType) : await nativeCheck(row, packet, r, options, bundle.plan.budgets)); }
         catch (e) { details.push({ pass: false, infrastructureError: true, reason: e.message }); }
       }
       outcome = details.some(v => v.infrastructureError) ? 'errors' : details[0].pass === details[1].pass ? 'ties' : details[0].pass ? 'wins' : 'losses';

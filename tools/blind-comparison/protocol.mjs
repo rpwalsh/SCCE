@@ -117,6 +117,9 @@ export function validateCase(row, plan) {
   }
   if (!row.private || row.private.kind !== row.grading) throw new Error('Private grader must match preregistration');
   if (row.grading === 'semantic' && (!Array.isArray(row.private.expected) || row.private.expected.length !== row.public.steps.length)) throw new Error('Exact semantic result required for every step');
+  if (row.category === 'math_reasoning' && (row.grading !== 'semantic' || row.private.answerType !== 'exact_integer')) throw new Error('Arithmetic requires private exact-integer grading');
+  if (row.private.answerType !== undefined && (row.private.answerType !== 'exact_integer' || row.grading !== 'semantic'
+    || row.private.expected.some(value => typeof value !== 'string' || !/^-?(?:0|[1-9][0-9]*)$/u.test(value)))) throw new Error('Invalid private exact-integer gold');
   if (row.grading === 'human' && (!Array.isArray(row.private.dimensions) || !row.private.dimensions.length || !row.private.rubric)) throw new Error('Private human rubric required');
   if (row.grading === 'native' && (!Array.isArray(row.private.argv) || !row.private.argv.length || !Array.isArray(row.private.files) || !row.private.files.length)) throw new Error('Pinned native checks required');
 }

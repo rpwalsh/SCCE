@@ -32,6 +32,8 @@ export function nativeContract(input) {
   if (contract.operation === 'tool_use' && contract.executiveGoal && contract.maxPublicAttempts !== 1) throw new Error('Explicit executive goals execute once');
   if (contract.toolPolicy && (!Number.isSafeInteger(contract.toolPolicy.maxCalls) || contract.toolPolicy.maxCalls < 1 || !Array.isArray(contract.toolPolicy.tools) || contract.toolPolicy.tools.some(t => !['workspace.read', 'workspace.write', 'public.check'].includes(t)))) throw new Error('Invalid shared bounded workspace tool policy');
   if (contract.answerMode !== undefined && (contract.answerMode !== 'answer_or_abstain' || !['turn', 'learning_update'].includes(contract.operation) || contract.requestedAuthority !== 'factual')) throw new Error('Answer-or-abstain requires an explicit factual turn contract');
+  if (input.category === 'math_reasoning' && (contract.operation !== 'turn' || contract.requestedAuthority !== undefined || contract.answerMode !== undefined
+    || contract.publicChecks.length || contract.writablePaths.length || contract.approvals.length || input.steps.some(step => step.sources.length || Object.keys(step.files).length))) throw new Error('Arithmetic comparison requires an ordinary source-free turn');
   contract.publicReadonlyFiles = Object.fromEntries(input.steps.flatMap(step => Object.entries(step.files)).filter(([name]) => !contract.writablePaths.includes(name)));
   return contract;
 }
