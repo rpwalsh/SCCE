@@ -25,6 +25,7 @@ import {
   type JsonValue,
   type NgramModelRecord,
   type ProgramDiagnostic,
+  type SourceVersionId,
   type ScceStorage
 } from "@scce/kernel";
 import { readdir, readFile } from "node:fs/promises";
@@ -379,31 +380,33 @@ async function repairSpans(
 async function loadCodeModels(storage: ScceStorage, languageId: string, limit: number, context?: CodeMouthContext): Promise<KneserNeyModel[]> {
   const profileIds = context && storage.evidence && storage.model
     ? await sourceProfilesForCode(storage, languageId, limit, context) : [];
-  const selected = profileIds.length ? await storage.languageMemory.listNgramModels({
-    sourceSystem: corpusSourceAlias(CORPUS_SOURCE_SYSTEM_IDS.ossCode),
-    formalLanguage: languageId,
-    profileIds,
-    limit
-  }) : [];
-  const remaining = Math.max(0, limit - selected.length);
-  // Storage indexes language-memory rows by the corpus *label*, not by the opaque source-system identity, so
-  // the query has to name it the same way the trainer stamped it.
-  const prior = remaining ? await storage.languageMemory.listNgramModels({
-    sourceSystem: corpusSourceAlias(CORPUS_SOURCE_SYSTEM_IDS.ossCode),
-    formalLanguage: languageId,
-    limit: remaining
-  }) : [];
-  const records = [...new Map([...selected, ...prior].map(record => [record.id, record])).values()].slice(0, limit);
-  const models: KneserNeyModel[] = [];
-  for (const record of records) {
-    if (modelLanguage(record) !== languageId) continue;
-    const model = kneserNeyModelFromRecord(record);
-    if (model) {
-      model.sourceKey ??= record.id;
-      models.push(model);
+  const models = new Map<string, KneserNeyModel>();
+  const admit = (records: readonly NgramModelRecord[]) => {
+    for (const record of records) {
+      if (models.size >= limit) break;
+      if (models.has(record.id) || modelLanguage(record) !== languageId) continue;
+      const model = kneserNeyModelFromRecord(record);
+      if (model) {
+        model.sourceKey ??= record.id;
+        models.set(record.id, model);
+      }
     }
+  };
+  for (const profileId of profileIds) {
+    if (models.size >= limit) break;
+    admit(await storage.languageMemory.listNgramModels({
+      sourceSystem: corpusSourceAlias(CORPUS_SOURCE_SYSTEM_IDS.ossCode),
+      formalLanguage: languageId,
+      profileIds: [profileId],
+      limit: limit - models.size
+    }));
   }
-  return models;
+  if (!models.size) admit(await storage.languageMemory.listNgramModels({
+    sourceSystem: corpusSourceAlias(CORPUS_SOURCE_SYSTEM_IDS.ossCode),
+    formalLanguage: languageId,
+    limit
+  }));
+  return [...models.values()];
 }
 
 /** Source evidence owns the profile filter before the storage model budgets apply. */
@@ -412,16 +415,29 @@ async function sourceProfilesForCode(storage: ScceStorage, languageId: string, l
   const features = anchorFeatureSet(codeSurfaceTokens(context.targetText).join(" "));
   if (!features.length) return [];
   const found = await storage.evidence.searchEvidence({ features, status: "promoted", openingBlockPrior: false, limit });
-  const sourceVersionIds = [...new Set(found.filter(({ span }) => {
+  const queryFeatures = new Set(features);
+  const coverageBySource = new Map<SourceVersionId, number>();
+  for (const { span } of found) {
     const provenance = jsonRecord(span.provenance);
-    return span.status === "promoted"
-      && provenance.sourceSystem === corpusSourceAlias(CORPUS_SOURCE_SYSTEM_IDS.ossCode)
-      && provenance.formalLanguage === languageId;
-  }).map(({ span }) => span.sourceVersionId))];
-  if (!sourceVersionIds.length) return [];
-  const profiles = await storage.model.listLanguageProfiles({ sourceVersionIds, referencedByLanguageMemory: true, limit });
-  const admittedSources = new Set(sourceVersionIds);
-  return [...new Set(profiles.filter(profile => admittedSources.has(profile.sourceVersionId)).map(profile => profile.id))];
+    if (span.status !== "promoted"
+      || provenance.sourceSystem !== corpusSourceAlias(CORPUS_SOURCE_SYSTEM_IDS.ossCode)
+      || provenance.formalLanguage !== languageId) continue;
+    const coverage = new Set(span.features.filter(feature => queryFeatures.has(feature))).size;
+    coverageBySource.set(span.sourceVersionId, Math.max(coverageBySource.get(span.sourceVersionId) ?? 0, coverage));
+  }
+  const maximumCoverage = Math.max(0, ...coverageBySource.values());
+  if (!maximumCoverage) return [];
+  const profileIds: string[] = [];
+  for (const [sourceVersionId, coverage] of coverageBySource) {
+    if (coverage !== maximumCoverage || profileIds.length >= limit) continue;
+    const profiles = await storage.model.listLanguageProfiles({
+      sourceVersionIds: [sourceVersionId], referencedByLanguageMemory: true, limit: limit - profileIds.length
+    });
+    for (const profile of profiles) {
+      if (profile.sourceVersionId === sourceVersionId && !profileIds.includes(profile.id)) profileIds.push(profile.id);
+    }
+  }
+  return profileIds;
 }
 
 function modelLanguage(record: NgramModelRecord): string | undefined {
