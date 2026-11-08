@@ -3,10 +3,11 @@
 import { describe, expect, it, vi } from "vitest";
 import * as induction from "../language-induction.js";
 import { preparedLanguageInductionModel } from "../graph-surface-alignment.js";
-import { compileUniversalCreativeEventConstructionPattern } from "../language-construction-memory.js";
+import { compileUniversalCreativeEventConstructionPattern, CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA } from "../language-construction-memory.js";
 import { scopeLanguageMemoryStateToLanguage } from "../language-memory-runtime.js";
 import { primeLearnedAnswerUnitForms } from "../learned-answer-unit-forms.js";
 import { requestUnitMatchesSurface } from "../local-evidence-runtime.js";
+import humanCreativePair from "./fixtures/dolly-human-creative-pair.json";
 import {
   compileLanguageTrainingBatch,
   CORPUS_SOURCE_SYSTEM_IDS,
@@ -42,6 +43,7 @@ describe("shared language training batch", () => {
       const compiled = compileLanguageTrainingBatch({ runtime, hasher, batch: { streamId: "fixture://shared-induced", sourceSystem: "gutenberg", profile,
         sourceVersionId, text, evidence, createdAt: 140_000, retainNgramObservations: false } });
       expect(engine).toHaveBeenCalledTimes(1);
+      expect(compiled.constructionPatterns.some(pattern => (pattern.patternJson as { schema?: string }).schema === CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA)).toBe(true);
       const patterns = compiled.patterns.filter(pattern => (pattern.patternJson as { schema?: string }).schema === "scce.induced_language_model.morphology_memory.v1");
       expect(patterns).toHaveLength(1);
       expect(patterns[0]!.evidenceIds).toEqual([evidence[0]!.id]);
@@ -57,6 +59,28 @@ describe("shared language training batch", () => {
       expect(() => preparedLanguageInductionModel({ documents: documents.map(doc => ({ ...doc, text: doc.text + " changed" })), hasher, prepared: compiled.preparedInduction })).toThrow("inputs changed");
       expect(() => preparedLanguageInductionModel({ documents, hasher, prepared: { ...compiled.preparedInduction! } })).toThrow("inputs changed");
     } finally { engine.mockRestore(); primeLearnedAnswerUnitForms({ deltas: [], profileIds: new Set() }); }
+  });
+
+  it("persists and rehydrates source-owned creative events from an authentic declared human reply", () => {
+    const text = humanCreativePair.text;
+    const sourceVersionId = ids.sourceVersionId(text);
+    const profile = language.acquire({ sourceVersionId, text, createdAt: 140_000 });
+    const evidence = [evidenceSpan(text, sourceVersionId)];
+    const compiled = compileLanguageTrainingBatch({ runtime, hasher, batch: { streamId: "fixture://human-creative-pair", sourceSystem: "dialogue",
+      profile, sourceVersionId, text, evidence, createdAt: 140_000, retainNgramObservations: false } });
+    const stored = JSON.parse(JSON.stringify(compiled.constructionPatterns));
+    const creative = stored.filter((pattern: { patternJson: { schema?: string } }) => pattern.patternJson.schema === CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA);
+    expect(creative).toHaveLength(1);
+    const restarted = createLanguageMemoryRuntime({ hasher }).hydrate({ models: [], patterns: stored, constructionEvidence: evidence });
+    const events = restarted.importedConstructionBundles.flatMap(bundle => bundle.creativeEvents ?? []);
+    expect(events.length).toBeGreaterThan(0);
+    for (const event of events) {
+      expect(event.sourceVersionId).toBe(String(sourceVersionId));
+      expect(event.evidenceId).toBe(String(evidence[0]!.id));
+      expect([...text].slice(event.labelStartCodePoint, event.labelEndCodePoint).join("").toLocaleLowerCase()).toBe(event.sourceLabel.toLocaleLowerCase());
+    }
+    const withoutPremise = createLanguageMemoryRuntime({ hasher }).hydrate({ models: [], patterns: stored, constructionEvidence: [] });
+    expect(withoutPremise.importedConstructionBundles.flatMap(bundle => bundle.creativeEvents ?? [])).toEqual([]);
   });
 
   it("dispatches formal source roles to token models without natural grammar induction", () => {

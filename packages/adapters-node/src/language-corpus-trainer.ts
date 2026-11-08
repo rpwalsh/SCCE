@@ -1003,6 +1003,7 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
   const compiledBatch = compileLanguageTrainingBatch({
     runtime: languageMemory,
     hasher,
+    ...(input.creativeEventCompiler ? { creativeEventCompiler: input.creativeEventCompiler } : {}),
     batch: {
       streamId: sourceLanguageTrainingStreamId({ sourceId: canonicalSource?.sourceId ?? sourceId, sourceVersionId, sourceSystem, hasher }),
       ...(batchGraphSnapshot ? { graphSnapshot: batchGraphSnapshot } : {}),
@@ -1045,23 +1046,6 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
   let units = compiledBatch.units.map(item => ({ ...stampUnit(item, sourceSystem, sourceSystemId, rowMetadata), informationLabel }));
   const compiledConstructionPatterns: LanguagePatternRecord[] = [...compiledBatch.constructionPatterns];
   const constructionWarnings: string[] = [...compiledBatch.warnings];
-  if (input.creativeEventCompiler && !input.languageOnly && corpusRoleIdForSourceSystem(sourceSystem) !== CORPUS_ROLE_IDS.softwareSymbolic) {
-    const creativeEventCompilation = input.creativeEventCompiler.compile({
-      profileId: profile.id,
-      evidence,
-      hasher,
-      updatedAt: createdAt,
-      ...(compiledBatch.preparedInduction ? { preparedInduction: compiledBatch.preparedInduction } : {})
-    });
-    if (creativeEventCompilation.status === "compiled") {
-      // The compiler is an adapter-owned service and may return a mutable pattern object. Detach just this
-      // small result; cloning the entire compiled batch here was the memory-retention regression this path avoids.
-      compiledConstructionPatterns.push(structuredClone(creativeEventCompilation.pattern));
-    } else if (creativeEventCompilation.issues.some(issue =>
-      issue.code !== "surface.construction_memory.reject.induction")) {
-      constructionWarnings.push(...creativeEventCompilation.issues.map(issue => issue.code));
-    }
-  }
   let patterns = [
     ...compiledBatch.patterns.filter(pattern => !compiledConstructionPatterns.some(item => item.id === pattern.id)),
     ...compiledConstructionPatterns,

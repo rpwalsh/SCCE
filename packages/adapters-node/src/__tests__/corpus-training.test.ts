@@ -1,6 +1,8 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { getFixtureLanguagePatternProjection, replaceFixtureLanguagePatternProjection } from "../../../kernel/src/__tests__/language-pattern-projection-fixture.js";
+import humanCreativePair from "../../../kernel/src/__tests__/fixtures/dolly-human-creative-pair.json";
+import { CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA } from "../../../kernel/src/language-construction-memory.js";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import os from "node:os";
@@ -2162,6 +2164,21 @@ describe("dialogue corpus training", () => {
     exportClass: "restricted",
     mergePolicy: "isolated"
   };
+
+  it("acquires creative source events through ordinary human dialogue training without a caller compiler", async () => {
+    const root = await tempDir("dialogue-human-creative-");
+    await writeFile(path.join(root, "dialogue.json"), JSON.stringify(humanCreativePair), "utf8");
+    const fixture = memoryStorage();
+    const result = await trainDialogueCorpus({ storage: fixture.storage, rootPath: root, authorship: "human_authored", informationLabel: ownerLabel,
+      ngramMaxOrder: 3, ngramMaxCountersPerOrder: 64, maxFilesPerRun: 1 });
+    expect(result.filesSkipped).toEqual([]);
+    expect(result.filesTrained).toBe(1);
+    const patterns = fixture.state.patterns.filter(pattern => (pattern.patternJson as { schema?: string }).schema === CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA);
+    expect(patterns).toHaveLength(1);
+    const restarted = createLanguageMemoryRuntime({ hasher: createHasher() }).hydrate({ models: [], patterns: JSON.parse(JSON.stringify(patterns)), constructionEvidence: fixture.state.evidence });
+    expect(restarted.importedConstructionBundles.flatMap(bundle => bundle.creativeEvents ?? []).length).toBeGreaterThan(0);
+    expect(patterns.every(pattern => informationLabelOf(pattern.informationLabel).exportClass === "restricted")).toBe(true);
+  });
 
   it("trains human-authored dialogue as its own source system, never as corrections or gutenberg", async () => {
     const root = await tempDir("dialogue-fixture-");

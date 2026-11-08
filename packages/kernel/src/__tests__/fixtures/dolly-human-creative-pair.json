@@ -1,0 +1,35 @@
+{
+  "schema": "scce.dialogue_transcript.v1",
+  "sourceMetadata": {
+    "dataset": "databricks/databricks-dolly-15k",
+    "uri": "https://huggingface.co/datasets/databricks/databricks-dolly-15k/tree/bdd27f4d94b9c1f951818a7da7fd7aeea5dbff1a",
+    "pinnedRevision": "bdd27f4d94b9c1f951818a7da7fd7aeea5dbff1a",
+    "license": "CC-BY-SA-3.0",
+    "attribution": "Databricks, Inc. (2023); instruction records were authored by Databricks employees. Some source contexts are Wikipedia excerpts as documented by the dataset card.",
+    "shareAlikeNotice": "This preparation is adapted from material licensed CC BY-SA 3.0. Retain attribution and license notices; distribute adaptations under the same license.",
+    "changeNotice": "Instructions and responses are represented as NFC-normalized speech turns; source context is retained only through non-speech supportingSourceRanges. The source category is mapped explicitly to commitmentScope and requestAuthority and copied as sourceCategory on each pair of turns; no scope or authority is inferred from prompt wording.",
+    "captureNote": "Exact pair 192/193 from pinned first shard; source coordinate window 81337..83683"
+  },
+  "text": "Write a short story about a person who discovers a hidden room in their house. The story should include a plot twist and a clear resolution at the end.\nIt was going to be a long day.  With her brother-in-law out of town, Lisa had agreed to watch her niece Stella for the afternoon and the little girl was known to be a bit of a handful. Her plan had been to spend the afternoon at the park to let Stella run and climb, to wear her out a bit.  Unfortunately, this outing was foiled by the constant downpour of rain so Lisa resigned herself to a day inside with the tiny tyrant. Stella arrived early and excited to play.  Lisa decided to begin with a game of hide and seek, after all this could take up a good part of the morning without too much trouble.  Stella ran off to hide and Lisa sat quietly drinking coffee while calling out to the little girl, pretending to seek. Eventually she set off to find the little girl but soon she realized that something was wrong.  No matter where she looked, Stella was nowhere to be found. The house wasn't that large, making her disappearance even more perplexing.  Lisa had only recently moved into the home that she bought from her great aunt shortly before her death and she hasn't even moved out all of the existing furniture. Maybe Stella had gotten stuck somewhere behind the large wardrobe in the bedroom or she had climbed up into a cupboard in the laundry room.  Panic was starting to settle in as she moved the wardrobe further from the wall, where only a small child could have hidden before.  Suddenly, saw a small crack in the wall, and then realized it was a small door that she never knew was there.  The door was slightly ajar and she eventually moved the wardrobe enough to open the door and climb inside. What was this place?  The entrance opened up to reveal a small room that Lisa never knew existed!  It was full of treasure, gold bars and jewels.  Stella sat in the middle of the room quietly playing with the treasure, unaware of the immense value she was surrounded by.  Lisa had known her aunt was a secretive woman but this was an incredible find and would change her life forever.  Stella's visit was the good luck charm she needed to unlock this bounty and she would be forever grateful to the little girl!  Time to call her brother-in-law to thank him for letting Stella visit.",
+  "turns": [
+    {
+      "index": 0,
+      "speakerId": "user",
+      "surface": "Write a short story about a person who discovers a hidden room in their house. The story should include a plot twist and a clear resolution at the end.",
+      "startCodePoint": 0,
+      "endCodePoint": 151,
+      "sourceCategory": "creative_writing",
+      "requestAuthority": "creative"
+    },
+    {
+      "index": 1,
+      "speakerId": "assistant",
+      "surface": "It was going to be a long day.  With her brother-in-law out of town, Lisa had agreed to watch her niece Stella for the afternoon and the little girl was known to be a bit of a handful. Her plan had been to spend the afternoon at the park to let Stella run and climb, to wear her out a bit.  Unfortunately, this outing was foiled by the constant downpour of rain so Lisa resigned herself to a day inside with the tiny tyrant. Stella arrived early and excited to play.  Lisa decided to begin with a game of hide and seek, after all this could take up a good part of the morning without too much trouble.  Stella ran off to hide and Lisa sat quietly drinking coffee while calling out to the little girl, pretending to seek. Eventually she set off to find the little girl but soon she realized that something was wrong.  No matter where she looked, Stella was nowhere to be found. The house wasn't that large, making her disappearance even more perplexing.  Lisa had only recently moved into the home that she bought from her great aunt shortly before her death and she hasn't even moved out all of the existing furniture. Maybe Stella had gotten stuck somewhere behind the large wardrobe in the bedroom or she had climbed up into a cupboard in the laundry room.  Panic was starting to settle in as she moved the wardrobe further from the wall, where only a small child could have hidden before.  Suddenly, saw a small crack in the wall, and then realized it was a small door that she never knew was there.  The door was slightly ajar and she eventually moved the wardrobe enough to open the door and climb inside. What was this place?  The entrance opened up to reveal a small room that Lisa never knew existed!  It was full of treasure, gold bars and jewels.  Stella sat in the middle of the room quietly playing with the treasure, unaware of the immense value she was surrounded by.  Lisa had known her aunt was a secretive woman but this was an incredible find and would change her life forever.  Stella's visit was the good luck charm she needed to unlock this bounty and she would be forever grateful to the little girl!  Time to call her brother-in-law to thank him for letting Stella visit.",
+      "startCodePoint": 152,
+      "endCodePoint": 2346,
+      "replyToTurnIndex": 0,
+      "commitmentScope": "conversation",
+      "sourceCategory": "creative_writing"
+    }
+  ]
+}

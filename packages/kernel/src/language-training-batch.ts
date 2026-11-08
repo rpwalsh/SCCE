@@ -2,7 +2,10 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import {
   compileLanguageConstructionPatterns,
+  createUniversalCreativeEventConstructionCompiler,
+  LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS,
   SOURCE_EXAMPLE_CONSTRUCTION_STORAGE,
+  type CreativeEventConstructionCompiler,
   type SourceBoundLanguageConstructionTrainingSet
 } from "./language-construction-memory.js";
 import {
@@ -265,6 +268,7 @@ export function compileLanguageTrainingBatch(input: {
   batch: LanguageTrainingBatch;
   runtime: LanguageMemoryRuntime;
   hasher: Hasher;
+  creativeEventCompiler?: CreativeEventConstructionCompiler;
 }): CompiledLanguageTrainingBatch {
   const { batch } = input;
   const formalCode = Boolean(batch.sourceSystem && corpusRoleIdForSourceSystem(batch.sourceSystem) === CORPUS_ROLE_IDS.softwareSymbolic);
@@ -616,6 +620,14 @@ export function compileLanguageTrainingBatch(input: {
     }
   }
 
+  const creativeEventCompiler = induceNaturalLanguage ? input.creativeEventCompiler ?? createUniversalCreativeEventConstructionCompiler() : undefined;
+  const creativeEventCompilation = creativeEventCompiler?.compile({ profileId: batch.profile.id, evidence: batch.evidence,
+    hasher: input.hasher, updatedAt: batch.createdAt, preparedInduction });
+  if (creativeEventCompilation?.status === "compiled") constructionPatterns.push(structuredClone(creativeEventCompilation.pattern));
+  else if (creativeEventCompilation?.issues.some(issue => issue.code !== LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.induction)) {
+    warnings.push(...creativeEventCompilation.issues.map(issue => issue.code));
+  }
+
   let units = uniqueRecords(memories.flatMap(memory => memory.units));
   let patterns = uniquePatterns([
     ...memories.flatMap(memory => memory.patterns), ...inducedLanguagePatterns, ...constructionPatterns, ...reversibleConstructionPatterns,
@@ -677,6 +689,8 @@ export function compileLanguageTrainingBatch(input: {
       compiler: LANGUAGE_TRAINING_BATCH_RECIPE_ID,
       corpusRole: batch.sourceSystem ? corpusRoleIdForSourceSystem(batch.sourceSystem) : null,
       naturalLanguageInduction: induceNaturalLanguage,
+      creativeEventCompilerId: creativeEventCompiler?.id ?? null,
+      creativeEventCompilation: creativeEventCompilation?.status ?? null,
       sourceInductionCoverage: inducedLanguageProducts?.coverage ?? null,
       inputUtf16Length: batch.text.length,
       chunks: textChunks.length,
