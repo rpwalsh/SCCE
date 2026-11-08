@@ -124,7 +124,7 @@ export async function collect({ bundleFile, bundleDigest, out, shardIndex = 0, s
         if (!receipt) {
           const started = performance.now();
           const outputs = [];
-          let status = 'ok', error = null, outputBytes = 0, submittedArtifactBytes = 0;
+          let status = 'ok', error = null, outputBytes = 0, submittedArtifactBytes = 0, adapterFailure;
           const processMeasurements = [];
           const workspace = path.resolve(out, 'work', hash([packet.id, system.id, Date.now(), Math.random()]));
           await mkdir(workspace, { recursive: true });
@@ -151,7 +151,10 @@ export async function collect({ bundleFile, bundleDigest, out, shardIndex = 0, s
               if (lines.length !== 1) throw new Error('Adapter must return exactly one JSON object');
               const response = JSON.parse(lines[0]);
               if (!response || typeof response.answer !== 'string' || !['ok', 'unsupported', 'error'].includes(response.status)) throw new Error('Invalid adapter response');
-              if (response.status !== 'ok') throw new Error(response.status);
+              if (response.status !== 'ok') {
+                adapterFailure = { stepIndex, status: response.status, answer: response.answer, identity: response.identity ?? null };
+                throw new Error(response.status);
+              }
               if (system.expectedModelDigest && response.identity?.modelDigest !== system.expectedModelDigest) throw new Error('Model identity changed');
               const artifacts = response.artifacts ?? {};
               if (typeof artifacts !== 'object' || Array.isArray(artifacts)) throw new Error('Invalid artifact map');
@@ -166,7 +169,7 @@ export async function collect({ bundleFile, bundleDigest, out, shardIndex = 0, s
             }
           } catch (e) { status = 'error'; error = e.message;
             if (e.execution) processMeasurements.push({ stepIndex: outputs.length, adapterWallMs: e.execution.adapterWallMs, resources: e.execution.resources, spawnErrorCode: e.execution.spawnErrorCode }); }
-          receipt = signed({ schema: 'scce.blind-receipt.v1', bundleDigest, caseId: packet.id, systemId: system.id, packetHash: hash(packet), budgetsHash: hash(plan.budgets), systemHash: hash(system), status, error, outputs, elapsedMs: performance.now() - started, measured: { outputBytes, submittedArtifactBytes, processMeasurements } });
+          receipt = signed({ schema: 'scce.blind-receipt.v1', bundleDigest, caseId: packet.id, systemId: system.id, packetHash: hash(packet), budgetsHash: hash(plan.budgets), systemHash: hash(system), status, error, outputs, ...(adapterFailure ? { adapterFailure } : {}), elapsedMs: performance.now() - started, measured: { outputBytes, submittedArtifactBytes, processMeasurements } });
           await writeJson(path.join(out, 'receipts', name), receipt);
         }
         const event = signed({ bundleDigest, previous: state.previous, receipt: name, receiptDigest: receipt.digest });

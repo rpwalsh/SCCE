@@ -1,6 +1,6 @@
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, cp, readFile, writeFile, rm, readdir } from 'node:fs/promises';
+import { mkdtemp, mkdir, cp, readFile, writeFile, rm, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { smoke } from '../smoke.mjs';
@@ -167,6 +167,35 @@ test('process provider strips undeclared secrets and bounds output and wall time
     const time = await execute([process.execPath, '-e', 'setTimeout(()=>{},10000)'], { cwd: root, input: '', timeMs: 20, outputBytes: 100 });
     assert.equal(time.failure, 'time-budget');
   } finally { delete process.env.SCCE_PRIVATE_EVAL_CANARY; }
+});
+
+test('accepted adapter errors retain their bounded diagnostic identity without becoming successful outputs', async () => {
+  const dir = path.join(root, 'failed-adapter');
+  await mkdir(dir);
+  const adapter = path.join(dir, 'adapter.mjs');
+  const diagnostic = { adapterError: 'public-source-revision-rejected', trace: [{ route: '/api/ingest', status: 409 }] };
+  await writeFile(adapter, `process.stdout.write(JSON.stringify(${JSON.stringify({ status: 'error', answer: '', identity: diagnostic })}));`);
+  const plan = await readJson(path.join(base, 'plan.json'));
+  plan.cells = plan.cells.filter(cell => cell.category === 'chat');
+  plan.artifacts.push({ id: 'failed-adapter', role: 'adapter', path: adapter });
+  plan.systems[0].adapterArtifact = 'failed-adapter';
+  plan.systems[0].argv = [process.execPath, adapter];
+  await writeJson(path.join(dir, 'plan.json'), plan);
+  const frozen = await freeze(path.join(dir, 'plan.json'), path.join(dir, 'freeze.json'));
+  const chat = (await readFile(path.join(base, 'pool.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse).find(row => row.id === 'chat');
+  await writeFile(path.join(dir, 'pool.jsonl'), `${JSON.stringify(chat)}\n`);
+  const sealed = await seal({ freezeFile: path.join(dir, 'freeze.json'), freezeDigest: frozen.digest, poolFile: path.join(dir, 'pool.jsonl'), seedFile: path.join(base, 'seed.txt'), outDir: path.join(dir, 'sealed') });
+  const run = { bundleFile: path.join(dir, 'sealed/public/bundle.json'), bundleDigest: sealed.digest, out: path.join(dir, 'run') };
+  await collect(run);
+  const receipt = await readReceipt(run.out, 'chat', plan.systems[0].id);
+  assert.equal(receipt.status, 'error');
+  assert.equal(receipt.error, 'error');
+  assert.deepEqual(receipt.outputs, []);
+  assert.deepEqual(receipt.adapterFailure, { stepIndex: 0, status: 'error', answer: '', identity: diagnostic });
+  const point = await checkpoint({ ...run, checkpointFile: path.join(dir, 'checkpoint.json') });
+  const report = await grade({ ...run, checkpointFile: path.join(dir, 'checkpoint.json'), checkpointDigest: point.digest, keyFile: path.join(dir, 'sealed/private/key.json'), reportFile: path.join(dir, 'report.json') });
+  assert.equal(report.cells[0].errors, 1);
+  assert.equal(report.comparativeGatePassed, false);
 });
 test('bounded streaming parser rejects oversized rows and seal rejects duplicate or unsorted provider IDs', async () => {
   const file = path.join(root, 'oversized.jsonl');
