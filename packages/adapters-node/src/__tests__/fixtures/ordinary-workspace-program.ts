@@ -11,7 +11,7 @@ import {NodeFileIngestAdapter} from "../../files.js";
 import type {NodeScceRuntime} from "../../runtime.js";
 import type {ScceRuntimeConfig} from "../../config.js";
 
-export function ordinaryWorkspaceProgramFixture(root:string){
+export function ordinaryWorkspaceProgramFixture(root:string,options:{runtimeWorkspaceRoot?:string}={}){
   const clock=createClock({fixedTime:1000,stepMs:1}),hasher=createHasher(),spans:EvidenceSpan[]=[],versions:SourceVersion[]=[],blobs=new Map<string,Uint8Array>();
   const recorded=storageFixtureForEvaluation({evidence:spans,clockNow:()=>clock.now()}),storage=recorded.storage;
   storage.evidence.putSourceVersion=async row=>{const index=versions.findIndex(old=>old.sourceVersionId===row.sourceVersionId);if(index<0)versions.push(row);else versions[index]=row;};
@@ -28,7 +28,7 @@ export function ordinaryWorkspaceProgramFixture(root:string){
   storage.taskResumption={putSnapshot:async()=>undefined,getLatestSnapshot:async()=>null};
   storage.documentGeneration={putSession:async()=>undefined,getSession:async()=>null,compareAndPutSession:async()=>({stored:true,currentUpdatedAt:null})};
   const label:InformationLabel={tenantId:"workspace-contract-test",principals:["owner"],compartments:[],exportClass:"confidential",mergePolicy:"same_owner"};
-  const config={runtime:{workspaceRoot:root,tempRoot:root,maxFileBytes:1000000,maxChunkBytes:64000,allowedRoots:[root],excludedPaths:[],tools:{}},connectors:{},policy:{allowMutation:false,requireTwoPhaseCommit:true,dryRunByDefault:true,maxNetworkRequests:0,maxToolCalls:0,maxSpendCents:0,alphaRiskCeiling:0.5,encryptSecretsAtRest:true}} as unknown as ScceRuntimeConfig;
+  const config={runtime:{workspaceRoot:options.runtimeWorkspaceRoot??root,tempRoot:root,maxFileBytes:1000000,maxChunkBytes:64000,allowedRoots:[root],excludedPaths:[],tools:{}},connectors:{},policy:{allowMutation:false,requireTwoPhaseCommit:true,dryRunByDefault:true,maxNetworkRequests:0,maxToolCalls:0,maxSpendCents:0,alphaRiskCeiling:0.5,encryptSecretsAtRest:true}} as unknown as ScceRuntimeConfig;
   const approvals=createApprovalSession(),ids=createIdFactory({clock,hasher,deterministicReplay:true});
   const adapter=new NodeFileIngestAdapter(config),kernel=createScceKernel({storage,clock,idFactory:ids,deterministicReplay:true,policy:{allowMutation:true,dryRunByDefault:false,requireTwoPhaseCommit:false,maxToolCalls:20},
    approvals,

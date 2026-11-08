@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { lstat, open, readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   answerFromWorkspaceCoreContext,
   buildWorkspaceTaskConstraintGraph,
@@ -434,7 +435,7 @@ export function createWorkspaceRuntime(input: { runtime: NodeScceRuntime; config
       const workspace = await persistWorkspaceRecord(input.runtime,workspaceRecord(root,now,normalizedOptions));
       const importBatchId = `workspace_batch_${hashParts(workspace.id, String(now)).slice(0, 24)}`;
       const previous = await input.runtime.storage.workspace.listSourceFiles({ workspaceId: workspace.id, limit: normalizedOptions.maxFiles * 2 });
-      const previousBindings = await exactWorkspaceSourceVersionBindings(input.runtime, previous);
+      const previousBindings = await exactWorkspaceSourceVersionBindings(input.runtime,input.config.runtime.workspaceRoot, previous);
       const project = await analyzeWorkspaceProject(root, normalizedOptions, previousBindings);
       const previousByPath = new Map(previous.map(file => [file.path, file]));
       const currentPaths = new Set(project.sources.map(source => source.path));
@@ -506,7 +507,7 @@ export function createWorkspaceRuntime(input: { runtime: NodeScceRuntime; config
         }
       }
 
-      const ingestedBindings = await exactWorkspaceSourceVersionBindings(input.runtime, pendingIngested.map(item => ({
+      const ingestedBindings = await exactWorkspaceSourceVersionBindings(input.runtime,input.config.runtime.workspaceRoot, pendingIngested.map(item => ({
         ...item.source,
         sourceVersionId: undefined,
         evidenceIds: item.evidenceIds as never[]
@@ -531,7 +532,7 @@ export function createWorkspaceRuntime(input: { runtime: NodeScceRuntime; config
       }
 
       const persisted = await input.runtime.storage.workspace.listSourceFiles({ workspaceId: workspace.id, limit: normalizedOptions.maxFiles * 2 });
-      const finalBindings=await exactWorkspaceSourceVersionBindings(input.runtime,persisted);
+      const finalBindings=await exactWorkspaceSourceVersionBindings(input.runtime,input.config.runtime.workspaceRoot,persisted);
       const refreshed = await analyzeWorkspaceProject(root, normalizedOptions, finalBindings);
       const sourceContracts=await publishWorkspaceOwnedContracts({storage:input.runtime.storage,workspace,root,records:persisted,bindings:finalBindings,
         complete:!refreshed.inspection.skipped.some(row=>row.reason==="max_files"||row.reason==="max_depth"),maxFileBytes:normalizedOptions.maxFileBytes});
@@ -542,7 +543,7 @@ export function createWorkspaceRuntime(input: { runtime: NodeScceRuntime; config
       const root = rootPath ? resolveAllowedRoot(rootPath, input.config) : await latestWorkspaceRoot(input.runtime, input.config);
       const workspace = workspaceRecord(root, Date.now(), options);
       const persisted = await input.runtime.storage.workspace.listSourceFiles({ workspaceId: workspace.id, limit: normalizeOptions(options).maxFiles * 2 });
-      const project = await analyzeWorkspaceProject(root, options, await exactWorkspaceSourceVersionBindings(input.runtime, persisted));
+      const project = await analyzeWorkspaceProject(root, options, await exactWorkspaceSourceVersionBindings(input.runtime,input.config.runtime.workspaceRoot, persisted));
       await persistWorkspaceRecord(input.runtime,project.workspace);
       await persistProjectReports(input.runtime, project);
       return project;
@@ -561,7 +562,7 @@ export function createWorkspaceRuntime(input: { runtime: NodeScceRuntime; config
       const normalizedOptions = normalizeOptions(options);
       const workspace = workspaceRecord(root, Date.now(), normalizedOptions);
       const persisted = await input.runtime.storage.workspace.listSourceFiles({ workspaceId: workspace.id, limit: normalizedOptions.maxFiles * 2 });
-      const project = await analyzeWorkspaceProject(root, normalizedOptions, await exactWorkspaceSourceVersionBindings(input.runtime, persisted));
+      const project = await analyzeWorkspaceProject(root, normalizedOptions, await exactWorkspaceSourceVersionBindings(input.runtime,input.config.runtime.workspaceRoot, persisted));
       await persistWorkspaceRecord(input.runtime,project.workspace);
       const adapterBaseline = answerWorkspaceQuestion(project, question);
       if (!normalizedOptions.useKernelAnswer) {
@@ -716,7 +717,7 @@ export function createWorkspaceRuntime(input: { runtime: NodeScceRuntime; config
       const root = rootPath ? resolveAllowedRoot(rootPath, input.config) : await latestWorkspaceRoot(input.runtime, input.config);
       const workspace = workspaceRecord(root, Date.now(), options);
       const persisted = await input.runtime.storage.workspace.listSourceFiles({ workspaceId: workspace.id, limit: normalizeOptions(options).maxFiles * 2 });
-      const project = await analyzeWorkspaceProject(root, options, await exactWorkspaceSourceVersionBindings(input.runtime, persisted));
+      const project = await analyzeWorkspaceProject(root, options, await exactWorkspaceSourceVersionBindings(input.runtime,input.config.runtime.workspaceRoot, persisted));
       await persistWorkspaceRecord(input.runtime,project.workspace);
       const body = reportBody(project, kind);
       const record = workspaceReportRecord(project.workspace, kind, reportTitle(kind), body, project as unknown as JsonValue, reportRefs(project, kind));
@@ -1595,6 +1596,7 @@ function evidenceIdsFromPayload(payload: JsonValue): string[] {
  */
 async function exactWorkspaceSourceVersionBindings(
   runtime: NodeScceRuntime,
+  sourceUriBase: string,
   records: readonly WorkspaceSourceFileRecord[]
 ): Promise<ReadonlyMap<string, WorkspaceSourceVersionBinding>> {
   const evidence = runtime.storage.evidence;
@@ -1615,7 +1617,7 @@ async function exactWorkspaceSourceVersionBindings(
         const version = versionById.get(String(span.sourceVersionId));
         if (!version || String(version.contentHash) !== String(record.contentHash)) return false;
         if (record.sourceVersionId && String(version.sourceVersionId) !== String(record.sourceVersionId)) return false;
-        return workspaceSourceVersionPathMatches(record, version.canonicalUri);
+        return workspaceSourceVersionPathMatches(record, version.canonicalUri, sourceUriBase);
       });
     const sourceVersionIds = [...new Set(matches.map(span => String(span.sourceVersionId)))];
     // A record with competing durable versions is ambiguous.  Do not choose a
@@ -1631,9 +1633,26 @@ async function exactWorkspaceSourceVersionBindings(
   return bindings;
 }
 
-function workspaceSourceVersionPathMatches(record: WorkspaceSourceFileRecord, canonicalUri: string): boolean {
-  const canonical = normalizePath(canonicalUri.replace(/^file:\/\//u, ""));
-  return canonical === normalizePath(record.path) || canonical === normalizePath(record.absolutePath);
+function workspaceSourceVersionPathMatches(record: WorkspaceSourceFileRecord, canonicalUri: string, sourceUriBase: string): boolean {
+  // File ingestion records plain relative paths against the configured runtime
+  // root, which can differ from the nested workspace being analyzed. URL
+  // decoding belongs only to actual file URLs, not percent-bearing file names.
+  let sourcePath: string;
+  try {
+    if (path.isAbsolute(canonicalUri)) sourcePath = canonicalUri;
+    else if (/^file:/iu.test(canonicalUri)) sourcePath = fileURLToPath(canonicalUri);
+    else {
+      if (/^[a-z][a-z0-9+.-]*:/iu.test(canonicalUri)) return false;
+      sourcePath = path.resolve(sourceUriBase, canonicalUri);
+    }
+  } catch {
+    return false;
+  }
+  const comparable = (value: string): string => {
+    const resolved = path.normalize(path.resolve(value));
+    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  };
+  return comparable(sourcePath) === comparable(record.absolutePath);
 }
 
 async function latestWorkspaceRoot(runtime: NodeScceRuntime, config: ScceRuntimeConfig): Promise<string> {
