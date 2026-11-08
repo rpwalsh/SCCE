@@ -30,8 +30,8 @@ import { createProjectDeclarationIndex, createProjectLicenseIndex, readDeclaredL
 import { compileSourceCodeFunctionsAsync } from "./source-code-function-learning.js";
 import { sourceBrainBuildReceipt, type SourceBrainBuildReceipt, type SourceBrainBuildResult } from "./source-brain-build.js";
 import { buildTypeScriptSemanticProgramIndex } from "./typescript-semantic-program-index.js";
-import { sourceOwnedTestCases, sourceOwnedTestContractProjections } from "./source-owned-test-contracts.js";
-import { grammarSourceOwnedTestCases, type GrammarContractFile } from "./grammar-source-owned-test-contracts.js";
+import {compileSourceOwnedContracts} from "./source-owned-contract-compiler.js";
+import { type GrammarContractFile } from "./grammar-source-owned-test-contracts.js";
 
 export const DEFAULT_OSS_FILES_PER_RUN = 2000;
 export const DEFAULT_OSS_FILES_PER_REPOSITORY = 100000;
@@ -148,8 +148,9 @@ async function ingestSourceOwnedTestContracts(input: {
     totalBytes += raw.byteLength;
     result.set(relativePath, []);
   }
-  const cases = await grammarSourceOwnedTestCases(files, {knownPaths: input.knownPaths, complete: input.snapshotComplete});
-  for (const [sourcePath, contracts] of sourceOwnedTestContractProjections(cases, input.sourceUriBase)) result.set(sourcePath, contracts);
+  const compiled=await compileSourceOwnedContracts({root:input.root,files:files.map(file=>({...file,bytes:Buffer.from(file.text,"utf8")})),sourceUriBase:input.sourceUriBase,
+    knownPaths:input.knownPaths,complete:input.snapshotComplete,maxFileBytes:input.maxFileBytes,maxTotalBytes:8*1024*1024});
+  for (const [sourcePath, contracts] of compiled) result.set(sourcePath, contracts);
   return result;
 }
 
@@ -228,9 +229,11 @@ async function ingestTypeScriptSourceOwnedTestContracts(input: {
       maxTotalBytes: maxSnapshotBytes
     }
   });
-  const cases = sourceOwnedTestCases({ program, sourceVersions, testVersions, sourceTexts });
+  const compiled=await compileSourceOwnedContracts({root:input.root,files:[...sourceTexts].map(([path,text])=>({path,bytes:Buffer.from(text,"utf8"),
+    sourceHash:(sourceVersions.get(path)??testVersions.get(path))!.sourceHash,sourceVersionId:(sourceVersions.get(path)??testVersions.get(path))!.sourceVersionId})),sourceUriBase:input.sourceUriBase,
+    knownPaths:workspacePaths,complete:true,maxFileBytes:input.maxFileBytes,maxTotalBytes:maxSnapshotBytes,semanticProgram:program});
   for (const sourcePath of sourceVersions.keys()) result.set(sourcePath, []);
-  for (const [sourcePath, contracts] of sourceOwnedTestContractProjections(cases, input.sourceUriBase)) result.set(sourcePath, contracts);
+  for (const [sourcePath, contracts] of compiled) result.set(sourcePath, contracts);
   return result;
 }
 

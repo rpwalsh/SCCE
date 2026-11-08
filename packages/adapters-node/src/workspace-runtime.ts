@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import {publishWorkspaceOwnedContracts,type WorkspaceContractCompilation,type WorkspaceContractBinding} from "./workspace-owned-contracts.js";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { lstat, open, readdir, readFile, stat } from "node:fs/promises";
@@ -211,6 +212,7 @@ export interface WorkspaceIngestReport {
   kernelResults: IngestResult[];
   sources: WorkspaceSourceFileRecord[];
   project: WorkspaceProjectReport;
+  sourceContracts: WorkspaceContractCompilation;
 }
 
 export interface WorkspaceRuntime {
@@ -395,7 +397,7 @@ interface CallSite {
   line: number;
 }
 
-interface WorkspaceSourceVersionBinding {
+interface WorkspaceSourceVersionBinding extends WorkspaceContractBinding {
   sourceVersionId: string;
   evidenceIds: string[];
 }
@@ -423,16 +425,13 @@ export function createWorkspaceRuntime(input: { runtime: NodeScceRuntime; config
     async init(rootPath, options = {}) {
       const root = resolveAllowedRoot(rootPath, input.config);
       const now = Date.now();
-      const workspace = workspaceRecord(root, now, options);
-      await input.runtime.storage.workspace.putWorkspace(workspace);
-      return workspace;
+      return await persistWorkspaceRecord(input.runtime,workspaceRecord(root,now,options));
     },
     async ingest(rootPath, options = {}) {
       const root = rootPath ? resolveAllowedRoot(rootPath, input.config) : await latestWorkspaceRoot(input.runtime, input.config);
       const normalizedOptions = normalizeOptions(options);
       const now = Date.now();
-      const workspace = workspaceRecord(root, now, normalizedOptions);
-      await input.runtime.storage.workspace.putWorkspace(workspace);
+      const workspace = await persistWorkspaceRecord(input.runtime,workspaceRecord(root,now,normalizedOptions));
       const importBatchId = `workspace_batch_${hashParts(workspace.id, String(now)).slice(0, 24)}`;
       const previous = await input.runtime.storage.workspace.listSourceFiles({ workspaceId: workspace.id, limit: normalizedOptions.maxFiles * 2 });
       const previousBindings = await exactWorkspaceSourceVersionBindings(input.runtime, previous);
@@ -453,7 +452,8 @@ export function createWorkspaceRuntime(input: { runtime: NodeScceRuntime; config
           await input.runtime.storage.workspace.putSourceFile({ ...source, ingestionStatus: "skipped", importBatchId, updatedAt: Date.now() });
           continue;
         }
-        if (before?.contentHash === source.contentHash && before.ingestionStatus === "ingested") {
+        if (before?.contentHash === source.contentHash && (before.ingestionStatus === "ingested"
+          || before.ingestionStatus === "skipped" && jsonRecord(before.metadata).skipReason === "unchanged")) {
           unchanged++;
           await input.runtime.storage.workspace.putSourceFile({ ...source, ingestionStatus: "skipped", importBatchId, updatedAt: Date.now(), metadata: mergeMetadata(source.metadata, { skipReason: "unchanged" }) });
           continue;
@@ -531,16 +531,19 @@ export function createWorkspaceRuntime(input: { runtime: NodeScceRuntime; config
       }
 
       const persisted = await input.runtime.storage.workspace.listSourceFiles({ workspaceId: workspace.id, limit: normalizedOptions.maxFiles * 2 });
-      const refreshed = await analyzeWorkspaceProject(root, normalizedOptions, await exactWorkspaceSourceVersionBindings(input.runtime, persisted));
+      const finalBindings=await exactWorkspaceSourceVersionBindings(input.runtime,persisted);
+      const refreshed = await analyzeWorkspaceProject(root, normalizedOptions, finalBindings);
+      const sourceContracts=await publishWorkspaceOwnedContracts({storage:input.runtime.storage,workspace,root,records:persisted,bindings:finalBindings,
+        complete:!refreshed.inspection.skipped.some(row=>row.reason==="max_files"||row.reason==="max_depth"),maxFileBytes:normalizedOptions.maxFileBytes});
       await persistProjectReports(input.runtime, refreshed);
-      return { schema: "scce.workspace.ingest.v1", workspace, importBatchId, ingested, unchanged, changed, missing, failed, unsupported, kernelResults, sources: refreshed.sources, project: refreshed };
+      return { schema: "scce.workspace.ingest.v1", workspace, importBatchId, ingested, unchanged, changed, missing, failed, unsupported, kernelResults, sources: refreshed.sources, project: refreshed,sourceContracts };
     },
     async project(rootPath, options = {}) {
       const root = rootPath ? resolveAllowedRoot(rootPath, input.config) : await latestWorkspaceRoot(input.runtime, input.config);
       const workspace = workspaceRecord(root, Date.now(), options);
       const persisted = await input.runtime.storage.workspace.listSourceFiles({ workspaceId: workspace.id, limit: normalizeOptions(options).maxFiles * 2 });
       const project = await analyzeWorkspaceProject(root, options, await exactWorkspaceSourceVersionBindings(input.runtime, persisted));
-      await input.runtime.storage.workspace.putWorkspace(project.workspace);
+      await persistWorkspaceRecord(input.runtime,project.workspace);
       await persistProjectReports(input.runtime, project);
       return project;
     },
@@ -559,7 +562,7 @@ export function createWorkspaceRuntime(input: { runtime: NodeScceRuntime; config
       const workspace = workspaceRecord(root, Date.now(), normalizedOptions);
       const persisted = await input.runtime.storage.workspace.listSourceFiles({ workspaceId: workspace.id, limit: normalizedOptions.maxFiles * 2 });
       const project = await analyzeWorkspaceProject(root, normalizedOptions, await exactWorkspaceSourceVersionBindings(input.runtime, persisted));
-      await input.runtime.storage.workspace.putWorkspace(project.workspace);
+      await persistWorkspaceRecord(input.runtime,project.workspace);
       const adapterBaseline = answerWorkspaceQuestion(project, question);
       if (!normalizedOptions.useKernelAnswer) {
         const report = workspaceReportRecord(project.workspace, "answer", `Answer: ${question.slice(0, 80)}`, adapterBaseline.answer, toJsonValue(adapterBaseline), adapterBaseline.sourceRefs);
@@ -714,7 +717,7 @@ export function createWorkspaceRuntime(input: { runtime: NodeScceRuntime; config
       const workspace = workspaceRecord(root, Date.now(), options);
       const persisted = await input.runtime.storage.workspace.listSourceFiles({ workspaceId: workspace.id, limit: normalizeOptions(options).maxFiles * 2 });
       const project = await analyzeWorkspaceProject(root, options, await exactWorkspaceSourceVersionBindings(input.runtime, persisted));
-      await input.runtime.storage.workspace.putWorkspace(project.workspace);
+      await persistWorkspaceRecord(input.runtime,project.workspace);
       const body = reportBody(project, kind);
       const record = workspaceReportRecord(project.workspace, kind, reportTitle(kind), body, project as unknown as JsonValue, reportRefs(project, kind));
       await input.runtime.storage.workspace.putReport(record);
@@ -1620,6 +1623,8 @@ async function exactWorkspaceSourceVersionBindings(
     if (sourceVersionIds.length !== 1) continue;
     bindings.set(normalizePath(record.path), {
       sourceVersionId: sourceVersionIds[0]!,
+      sourceVersion:versionById.get(sourceVersionIds[0]!),
+      evidence:matches,
       evidenceIds: matches.map(span => String(span.id))
     });
   }
@@ -2833,4 +2838,11 @@ async function listFiles(root: string): Promise<string[]> {
 export async function workspaceFixtureFileList(rootPath: string): Promise<string[]> {
   const root = path.resolve(rootPath);
   return (await listFiles(root)).map(file => normalizePath(path.relative(root, file))).sort();
+}
+
+async function persistWorkspaceRecord(runtime:NodeScceRuntime,next:WorkspaceRecord):Promise<WorkspaceRecord>{
+ const previous=await runtime.storage.workspace.getWorkspace(next.id);
+ const record={...next,...(previous?{createdAt:previous.createdAt}:{}),metadata:mergeMetadata(previous?.metadata??{},next.metadata)};
+ await runtime.storage.workspace.putWorkspace(record);
+ return record;
 }

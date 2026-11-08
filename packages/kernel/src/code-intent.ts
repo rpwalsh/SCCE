@@ -302,7 +302,7 @@ function spanStart(value: JsonValue | undefined): number { return objectRecord(v
 function documentedPath(span: EvidenceSpan): string | undefined {
   const provenance = span.provenance;
   if (!provenance || typeof provenance !== "object" || Array.isArray(provenance)) return undefined;
-  const value = (provenance as Record<string, JsonValue>).relativePath;
+  const value = (provenance as Record<string, JsonValue>).relativePath ?? objectRecord(objectRecord((provenance as Record<string, JsonValue>).metadata).workspaceFile).path;
   return typeof value === "string" && value.trim() ? value : undefined;
 }
 
@@ -310,7 +310,10 @@ function documentedRepositoryFamily(span: EvidenceSpan): string | undefined {
   const provenance = span.provenance;
   if (!provenance || typeof provenance !== "object" || Array.isArray(provenance)) return undefined;
   const repository = (provenance as Record<string, JsonValue>).repository;
-  if (!repository || typeof repository !== "object" || Array.isArray(repository)) return undefined;
+  if (!repository || typeof repository !== "object" || Array.isArray(repository)) {
+    const workspaceId=objectRecord(objectRecord((provenance as Record<string,JsonValue>).metadata).workspace).id;
+    return typeof workspaceId==="string"&&workspaceId?`scce://workspace/${encodeURIComponent(workspaceId)}`:undefined;
+  }
   const ownerUri = (repository as Record<string, JsonValue>).ownerUri;
   return typeof ownerUri === "string" && ownerUri.trim() ? ownerUri : undefined;
 }
@@ -318,7 +321,7 @@ function documentedRepositoryFamily(span: EvidenceSpan): string | undefined {
 function documentedSourceHash(span: EvidenceSpan): string | undefined {
   const provenance = span.provenance;
   if (!provenance || typeof provenance !== "object" || Array.isArray(provenance)) return undefined;
-  const value = (provenance as Record<string, JsonValue>).sourceHash;
+  const value = (provenance as Record<string, JsonValue>).sourceHash ?? objectRecord(objectRecord((provenance as Record<string, JsonValue>).metadata).workspaceFile).contentHash;
   return typeof value === "string" && value.trim() ? value : undefined;
 }
 

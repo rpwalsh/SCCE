@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import ts from "typescript";
-import { toJsonValue, type JsonValue, type ProgramNativeCallableAbi, type ProgramNativeLiteral } from "@scce/kernel";
+import { toJsonValue, type JsonValue, type ProgramNativeCallableAbi, type ProgramNativeLiteral, type SourceVersionId, type EvidenceSpan, type LanguagePatternRecord, createHasher, canonicalStringify } from "@scce/kernel";
 import { createHash } from "node:crypto";
 import type { TypeScriptSemanticProgramIndex, TypeScriptSemanticCall, TypeScriptSemanticFile } from "./typescript-semantic-program-index.js";
 
@@ -259,3 +259,28 @@ export function sourceOwnedTestContractProjections(cases: readonly SourceOwnedTe
   }
   return result;
 }
+
+export function sourceOwnedAssertionPatterns(input: {
+  contracts: JsonValue | undefined; metadata: JsonValue; sourceSystem: string; profileId: string; sourceVersionId: SourceVersionId;
+  originalSourceVersionId: SourceVersionId; evidence: readonly EvidenceSpan[]; hasher: ReturnType<typeof createHasher>; updatedAt: number;
+}): LanguagePatternRecord[] {
+  const metadata = jsonRecord(input.metadata);
+  const contracts = input.contracts;
+  const evidenceIds = input.evidence.filter(span => span.status === "promoted" && span.sourceVersionId === input.sourceVersionId).map(span => span.id);
+  if (!Array.isArray(contracts) || !evidenceIds.length) return [];
+  const patterns: LanguagePatternRecord[] = [];
+  for (const value of contracts) {
+    const row = jsonRecord(value);
+    if (row.schema !== "scce.source_owned_test_contract.v1" || row.sourceVersionId !== input.sourceVersionId
+      || row.sourceHash !== metadata.sourceHash || typeof row.sourcePath !== "string" || typeof row.formalLanguage !== "string"
+      || typeof row.repositoryFamily !== "string" || typeof row.targetSymbolId !== "string" || !Array.isArray(row.cases) || row.cases.length < 2) continue;
+    const material = { ...row, sourceSystem: input.sourceSystem };
+    const id = `source.code.assertion.pattern.${input.hasher.digestHex(canonicalStringify({ profileId: input.profileId, sourceVersionId: input.sourceVersionId, material })).slice(0, 40)}`;
+    patterns.push({ id, profileId: input.profileId, patternKind: "source_code_assertion_contract", support: row.cases.length, entropy: 0,
+      patternJson: material, evidenceIds, updatedAt: input.updatedAt });
+  }
+  return patterns;
+}
+
+
+function jsonRecord(value:JsonValue|undefined):Record<string,JsonValue>{return value && typeof value==="object" && !Array.isArray(value)?value as Record<string,JsonValue>:{};}

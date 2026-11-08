@@ -26,6 +26,8 @@ export interface TypeScriptSemanticProgramIndexInput {
   readonly bounds: TypeScriptSemanticProgramBounds;
   /** Ingestion may compile only the explicit source snapshot while retaining options from its observed tsconfig. */
   readonly compileOnlyBoundedFiles?: boolean;
+  /** Canonical already-ingested bytes; the same bounds and source hashes are verified before compiler admission. */
+  readonly sourceSnapshot?: readonly {readonly path:string;readonly bytes:Uint8Array;readonly contentHash:TypeScriptSemanticHash}[];
 }
 
 export interface TypeScriptExactSourceSpan {
@@ -564,14 +566,17 @@ async function readExactSnapshot(input: TypeScriptSemanticProgramIndexInput): Pr
   let totalBytes = 0;
   for (const workspacePath of [...normalizedPaths].sort(compareCanonical)) {
     const absolutePath = workspaceAbsolutePath(rootPath, workspacePath);
-    const stat = await lstat(absolutePath);
+    const supplied=input.sourceSnapshot?.find(file=>normalizeWorkspacePath(file.path)===workspacePath);
+    if(input.sourceSnapshot && (!supplied || input.sourceSnapshot.length!==normalizedPaths.length)) throw new Error("typescript semantic index supplied snapshot differs from bounded paths");
+    const stat = supplied ? {size:supplied.bytes.byteLength,isSymbolicLink:()=>false,isFile:()=>true} : await lstat(absolutePath);
     if (stat.isSymbolicLink() || !stat.isFile()) throw new Error(`bounded workspace path is not a regular non-symbolic file: ${workspacePath}`);
-    const canonicalPath = await realpath(absolutePath);
+    const canonicalPath = supplied ? absolutePath : await realpath(absolutePath);
     if (!isWithinDirectory(canonicalPath, rootPath)) throw new Error(`bounded workspace path resolves outside the workspace: ${workspacePath}`);
     if (stat.size > input.bounds.maxFileBytes) throw new Error(`bounded workspace file exceeds maxFileBytes: ${workspacePath}`);
     totalBytes += stat.size;
     if (totalBytes > input.bounds.maxTotalBytes) throw new Error("typescript semantic index snapshot exceeds maxTotalBytes");
-    const bytes = new Uint8Array(await readFile(canonicalPath));
+    const bytes = new Uint8Array(supplied ? supplied.bytes : await readFile(canonicalPath));
+    if(supplied && sha256Bytes(bytes)!==supplied.contentHash) throw new Error(`supplied source hash differs from canonical bytes: ${workspacePath}`);
     if (bytes.byteLength !== stat.size) throw new Error(`bounded workspace file changed while being read: ${workspacePath}`);
     const content = Buffer.from(bytes).toString("utf8");
     let sourceFile: ts.SourceFile | undefined;

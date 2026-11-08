@@ -225,6 +225,7 @@ import { admissionTierDiagnostics, answerCoversRequest, localEvidenceAnswerIsQuo
 import { isStructuralResidueSurface } from "./structural-residue.js";
 import { normalizePriorKey, splitPriorUnits } from "./kernel-answer-primitives.js";
 import { codeLanguageForRequirementState, codeRequestObservedRequirements, codeRequestRequirements, codeRequestSignal, typedProgramBehaviorFromMetadata } from "./code-request.js";
+import {readWorkspaceOwnedProgramContracts} from "./workspace-code-contracts.js";
 import { codeIntentFromDocumentation, sourceOwnedProgramBehaviorFromDocumentation, projectSourceOwnedProgramBehavior } from "./code-intent.js";
 import { attachLearnedGraphPriorConstruct } from "./learned-graph-prior-runtime.js";
 import { runGraphRefinement } from "./graph-refinement.js";
@@ -3444,12 +3445,17 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const temporalConstructFact = requestValueBindingConstructFact(requestValueBinding, temporalBoundEvidence);
       // One structured intent per turn: derived from the projected authority and the structural code signal, read by
       // both builds and the planner, so a program-authority turn cannot end with no ProgramGraph.
-      const documentationCodeIntent = codeIntentFromDocumentation({ requestText: input.text, documentation: selectedEvidence });
       const sourceContractPlanningAllowed = requestedAuthority === "program" && authorityProjection.requestedAuthority === "program";
-      const sourceOwnedContractPatterns = sourceContractPlanningAllowed && documentationCodeIntent.languageId
-        ? await deps.storage.languageMemory.listLanguagePatterns({ sourceSystem: corpusSourceAlias(CORPUS_SOURCE_SYSTEM_IDS.ossCode),
-          patternKind: "source_code_assertion_contract", formalLanguage: documentationCodeIntent.languageId, limit: 4096 })
-        : [];
+      const workspaceContext=jsonRecord(input.metadata).workspaceProgramContext;
+      const workspaceContracts=sourceContractPlanningAllowed&&workspaceContext!==undefined
+        ?await readWorkspaceOwnedProgramContracts({storage:deps.storage,context:workspaceContext,informationAccess:deps.informationAccess,sourceVersionAllowlist:input.runtimeControl?.evidenceSourceAllowlist}):undefined;
+      const documentationCodeIntent = codeIntentFromDocumentation({ requestText: input.text, documentation: workspaceContracts?.status==="available"?[...workspaceContracts.evidence,...selectedEvidence]:selectedEvidence,
+        ...(codeSignal.language?{languageId:codeSignal.language}:{}) });
+      const sourceOwnedContractPatterns = workspaceContracts
+        ?workspaceContracts.status==="available"?workspaceContracts.contracts:[]
+        :sourceContractPlanningAllowed && documentationCodeIntent.languageId
+          ? await deps.storage.languageMemory.listLanguagePatterns({ sourceSystem: corpusSourceAlias(CORPUS_SOURCE_SYSTEM_IDS.ossCode),
+            patternKind: "source_code_assertion_contract", formalLanguage: documentationCodeIntent.languageId, limit: 4096 }):[];
       const sourceOwnedBehavior = sourceOwnedProgramBehaviorFromDocumentation({ requestText: input.text,
         intent: documentationCodeIntent, patterns: sourceOwnedContractPatterns,
         ownerCallableIds: [...codeSignal.behaviorRequirements.map(requirement => requirement.callableId),
@@ -3478,12 +3484,14 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         && typedProgramBehavior.statefulBehaviorRequirements.length === 0
         && sourceOwnedRequirements.length === 0
         && explicitAuthority !== "program";
-      const programIntent = sourceCodeRealizationOnly ? undefined : programIntentForTurn({
+      const derivedProgramIntent = sourceCodeRealizationOnly ? undefined : programIntentForTurn({
         requestedAuthority,
         activeOperatorIds: activeRequestOperatorIds(operatorActivations),
         codeSignal: programCodeSignal,
         evidence: selectedEvidence
       });
+      const programIntent=derivedProgramIntent&&workspaceContracts?.status==="unavailable"
+        ?{...derivedProgramIntent,constraints:[...derivedProgramIntent.constraints,"program.constraint.workspace_source_scope_unavailable"]}:derivedProgramIntent;
       kernelTrace({ stage: "runtime.program.contract", label: "kernel.turn", support: {
         producer: sourceCodeRealizationOnly ? "source_code_realization" : programIntent ? "program_graph" : "none",
         declaredCallableIds: programCodeSignal.declaredCallableIds ?? [], sourceOwnedRequirementIds: sourceOwnedRequirements.map(requirement => requirement.id)
