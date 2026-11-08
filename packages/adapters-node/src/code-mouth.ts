@@ -128,6 +128,9 @@ export async function runCodeMouth(input: {
   maxWallClockMs?: number;
   log?: (message: string) => void;
 }): Promise<CodeMouthResult> {
+  if (input.maxAttempts !== undefined && (!Number.isSafeInteger(input.maxAttempts) || input.maxAttempts <= 0)) {
+    throw new RangeError("maxAttempts must be a positive safe integer");
+  }
   const log = input.log ?? (() => undefined);
   const hasher = createHasher();
   const startedAt = Date.now();
@@ -140,7 +143,7 @@ export async function runCodeMouth(input: {
   let diagnostics: ProgramDiagnostic[] = startingDiagnostics;
   // Roughly one hypothesis per diagnostic per candidate the proposer holds, which is what the search can try
   // before it has nothing further to say. A caller may set its own. Neither is a price.
-  const iterationCeiling = Math.max(4, input.maxAttempts ?? startingDiagnostics.length * 8);
+  const iterationCeiling = input.maxAttempts ?? Math.max(4, startingDiagnostics.length * 8);
   let session: BoundedDebugSession = createBoundedDebugSession(
     { maxAttempts: iterationCeiling, maxWallClockMs, maxMutatedFiles: 4 },
     startedAt

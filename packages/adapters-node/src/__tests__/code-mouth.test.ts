@@ -18,6 +18,22 @@ function ports(script: Array<{ diagnostics: string[] }>): { ports: CodeMouthPort
 }
 
 describe("code mouth loop", () => {
+  it.each([1, 2])("honors an explicit attempt ceiling of %i after rejected hypotheses", async maxAttempts => {
+    const fixture = ports([{ diagnostics: ["TS2304 unchanged failure"] }]);
+    const result = await runCodeMouth({ request: "repair the observed failure", targetPath: "x.ts", ports: fixture.ports, maxAttempts });
+    expect(result.attempts).toBe(maxAttempts);
+    expect(fixture.applied).toHaveLength(maxAttempts);
+    expect(fixture.rolledBack).toBe(maxAttempts);
+    expect(result.appliedOperations).toEqual([]);
+    expect(result.outcome).toBe("stopped");
+  });
+
+  it.each([0, -1, 1.5, NaN, Infinity])("rejects an invalid explicit attempt ceiling %s before applying a patch", async maxAttempts => {
+    const fixture = ports([{ diagnostics: ["TS2304 unchanged failure"] }]);
+    await expect(runCodeMouth({ request: "repair", targetPath: "x.ts", ports: fixture.ports, maxAttempts })).rejects.toThrow("maxAttempts");
+    expect(fixture.applied).toEqual([]);
+  });
+
   it.each([
     { testsRun: false, testsSucceeded: true, scope: "compiler_only", status: "passed", recordedTests: null },
     { testsRun: true, testsSucceeded: true, scope: "executed_tests", status: "passed", recordedTests: true },
