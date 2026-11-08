@@ -1,7 +1,9 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { afterEach, describe, expect, it } from "vitest";
-import { createHasher, stampSourceLanguageCompilation, INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID, INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA, LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID, LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, SOURCE_CODE_FUNCTION_PATTERN_SCHEMA, SOURCE_CODE_FUNCTION_PROJECTION_RECIPE_ID, POSTGRES_REQUIRED_TABLES, type JsonValue, type SourceVersionId } from "@scce/kernel";
+import { createHasher, stampSourceLanguageCompilation, validateSourceLanguageCompilationHeader, INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID, INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA, LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID, LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, SOURCE_CODE_FUNCTION_PATTERN_SCHEMA, SOURCE_CODE_FUNCTION_PROJECTION_RECIPE_ID, POSTGRES_REQUIRED_TABLES, type JsonValue, type SourceVersionId } from "@scce/kernel";
+import { canonicalDigestHex } from "../../../kernel/src/canonical-json-digest.js";
+import { LANGUAGE_TRAINING_BATCH_RECIPE_ID } from "../../../kernel/src/language-training-recipe.js";
 import { sourceLanguageTrainingStreamId } from "../../../kernel/src/source-language-training-identity.js";
 import { clearResidentNgramModelJson, createPostgresStorageAdapter, schemaStatements, type PostgresStorageAdapter } from "../postgres.js";
 
@@ -12,6 +14,39 @@ afterEach(async () => {
 });
 
 describe("Postgres language-memory ownership queries", () => {
+  it.each([
+    ["kernel.language_training_batch.v3", undefined],
+    ["kernel.language_training_batch.v4", undefined],
+    ["kernel.language_training_batch.v4", "kernel.language_training_batch.v4"]
+  ])("reads the exact current stored %s generation with identity recipe %s while training still requires recompilation", async (recipe, identityRecipe) => {
+    const { adapter } = fixture();
+    const stored = compilationHeaderFixture(recipe!, identityRecipe);
+    const newer = compilationHeaderFixture();
+    const compilationId = (row: typeof stored) => (row.model_metadata as { sourceCompilation: { compilationId: string } }).sourceCompilation.compilationId;
+    let header = stored;
+    const rows = [{ id: "foreign.v5-looking", compilationId: compilationId(newer) }, { id: "stored.current", compilationId: compilationId(stored) }];
+    adapter.query = async <T>(sql: string, params: unknown[] = []): Promise<T[]> => {
+      if (sql.includes("AS model_metadata")) return [header] as T[];
+      const ownerParam = params.find(value => typeof value === "string" && value.startsWith("[{\"compilationId\""));
+      const owners = typeof ownerParam === "string" ? JSON.parse(ownerParam) as Array<{ compilationId: string }> : [];
+      return rows.filter(row => owners.some(owner => owner.compilationId === row.compilationId)).slice(0, 1).map(row => ({ id: row.id, profile_id: stored.profile_id,
+        pattern_kind: "semantic_role", support: "100", entropy: "0", pattern_json: { sourceCompilationId: row.compilationId }, evidence_ids: [], updated_at: new Date(1),
+        information_label: { tenantId: "tenant.fixture", principals: ["principal.fixture"], compartments: [], exportClass: "restricted", mergePolicy: "isolated" } })) as T[];
+    };
+    const read = () => adapter.languageMemory.listLanguagePatterns({ profileId: stored.profile_id, sourceSystem: stored.source_system, limit: 1, maxTotalJsonBytes: 1000 });
+    expect((await read()).map(row => row.id)).toEqual(["stored.current"]);
+    const validation = { owner: { sourceId: stored.source_id as never, sourceVersionId: stored.source_version_id as SourceVersionId, contentHash: stored.content_hash as never },
+      profileId: stored.profile_id, sourceSystem: stored.source_system, modelJson: stored.model_metadata, compilationReceipt: stored.compilation_receipt, hasher: createHasher() };
+    expect(() => validateSourceLanguageCompilationHeader(validation)).toThrow("canonical source compilation header");
+    expect(validateSourceLanguageCompilationHeader({ ...validation, validationPolicy: "read_stored" })).toBe(compilationId(stored));
+    header = compilationHeaderFixture("kernel.language_training_batch.v999");
+    expect(await read()).toEqual([]);
+    header = { ...stored, compilation_receipt: { ...(stored.compilation_receipt as object), modelInventory: [] } };
+    expect(await read()).toEqual([]);
+    header = newer;
+    expect((await read()).map(row => row.id)).toEqual(["foreign.v5-looking"]);
+    expect(rows).toHaveLength(2);
+  });
   it("admits only the validated current source generation before any pattern row or byte budget", async () => {
     const { adapter, calls } = fixture();
     const header = compilationHeaderFixture();
@@ -602,17 +637,23 @@ function modelFixture(models: ReadonlyArray<{ id: string; storedBytes: number; j
   return { adapter, calls };
 }
 
-function compilationHeaderFixture(): { id: string; stream_id: string; profile_id: string; source_system: string; source_id: string; source_version_id: string; content_hash: string; model_metadata: JsonValue; compilation_receipt: JsonValue } {
+function compilationHeaderFixture(compilerRecipe: string = LANGUAGE_TRAINING_BATCH_RECIPE_ID, identityRecipe?: string): { id: string; stream_id: string; profile_id: string; source_system: string; source_id: string; source_version_id: string; content_hash: string; model_metadata: JsonValue; compilation_receipt: JsonValue } {
   const hasher = createHasher();
   const owner = { sourceId: "source.owned" as never, sourceVersionId: "version.owned" as SourceVersionId, contentHash: "sha256.owned" as never };
-  const streamId = sourceLanguageTrainingStreamId({ ...owner, sourceSystem: "gutenberg", hasher });
+  const streamId = sourceLanguageTrainingStreamId({ ...owner, sourceSystem: "gutenberg", hasher, identityRecipe });
   const compiled = stampSourceLanguageCompilation({ owner, profileId: "profile.owned", sourceSystem: "gutenberg", streamId, text: "abc", chunks: ["abc"], hasher,
     models: [{ id: "model.owned", streamId, languageHint: "und", maxOrder: 2, discount: 0.75, updatedAt: 1,
       modelJson: { profileId: "profile.owned", sourceVersionId: owner.sourceVersionId, sourceSystem: "gutenberg", model: { totalUnigramCount: 3 } } }],
     options: { maxOrder: 2, maxCountersPerOrder: 64, vocabularyLimit: 64, languageOnly: false, retainNgramObservations: false },
     artifacts: { units: [], patterns: [], semanticFrames: [] } });
+  const model = compiled.models[0]!.modelJson as Record<string, JsonValue>;
+  const { compilationId: _oldId, chunk, modelDigest, ...common } = model.sourceCompilation as Record<string, JsonValue>;
+  const header = { ...common, compilerRecipe };
+  const compilationId = canonicalDigestHex(header, hasher);
+  const receipt = (compiled.patterns[0]!.patternJson as { compilation: Record<string, JsonValue> }).compilation;
   return { id: compiled.models[0]!.id, stream_id: streamId, profile_id: "profile.owned", source_system: "gutenberg", source_id: owner.sourceId, source_version_id: owner.sourceVersionId, content_hash: owner.contentHash,
-    model_metadata: compiled.models[0]!.modelJson, compilation_receipt: (compiled.patterns[0]!.patternJson as { compilation: JsonValue }).compilation };
+    model_metadata: { ...model, sourceCompilation: { ...header, compilationId, chunk: chunk!, modelDigest: modelDigest! } },
+    compilation_receipt: { ...receipt, ...header, compilationId } };
 }
 
 function fixture(): {

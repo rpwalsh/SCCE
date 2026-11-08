@@ -11,6 +11,8 @@ import type { ContentHash, Hasher, JsonValue, SourceId, SourceVersionId } from "
 
 export interface SourceCompilationOwner { sourceId: SourceId; sourceVersionId: SourceVersionId; contentHash: ContentHash }
 
+const READABLE_SOURCE_COMPILATION_RECIPES = new Set(["kernel.language_training_batch.v3", "kernel.language_training_batch.v4", "kernel.language_training_batch.v5"]);
+
 export function sourceLanguageCompilationReceiptId(compilationId: string): string {
   return `source.language.compilation.${compilationId}`;
 }
@@ -29,14 +31,21 @@ export function sourceLanguageCompilationReceiptIdForModels(input: {
 
 export function validateSourceLanguageCompilationHeader(input: {
   owner: SourceCompilationOwner; profileId: string; sourceSystem: string; modelJson: JsonValue; hasher: Hasher; compilationReceipt?: JsonValue;
+  validationPolicy?: "recompile" | "read_stored";
 }): string {
   const model = jsonRecord(input.modelJson);
   const { compilationId, chunk: _chunk, modelDigest: _modelDigest, ...header } = jsonRecord(model.sourceCompilation);
-  if (header.schema !== "scce.source_language_compilation.v1" || header.compilerRecipe !== LANGUAGE_TRAINING_BATCH_RECIPE_ID
+  const readStored = input.validationPolicy === "read_stored";
+  const recipe = typeof header.compilerRecipe === "string" ? header.compilerRecipe : "";
+  const recipeAllowed = readStored ? READABLE_SOURCE_COMPILATION_RECIPES.has(recipe) : recipe === LANGUAGE_TRAINING_BATCH_RECIPE_ID;
+  const streamInput = { ...input.owner, sourceSystem: input.sourceSystem, hasher: input.hasher };
+  const streamAllowed = header.parentStreamId === sourceLanguageTrainingStreamId(streamInput)
+    || readStored && recipeAllowed && header.parentStreamId === sourceLanguageTrainingStreamId({ ...streamInput, identityRecipe: recipe });
+  if (header.schema !== "scce.source_language_compilation.v1" || !recipeAllowed
     || header.sourceId !== input.owner.sourceId || header.sourceVersionId !== input.owner.sourceVersionId || header.contentHash !== input.owner.contentHash
     || header.profileId !== input.profileId || header.sourceSystem !== corpusSourceAlias(input.sourceSystem)
     || model.profileId !== input.profileId || model.sourceVersionId !== input.owner.sourceVersionId
-    || header.parentStreamId !== sourceLanguageTrainingStreamId({ ...input.owner, sourceSystem: input.sourceSystem, hasher: input.hasher })
+    || !streamAllowed
     || compilationId !== canonicalDigestHex(header, input.hasher)) throw new Error("canonical source compilation header is incomplete or changed");
   if (input.compilationReceipt !== undefined) {
     const { compilationId: receiptId, modelInventory, ...receiptHeader } = jsonRecord(input.compilationReceipt);

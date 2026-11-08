@@ -3627,7 +3627,7 @@ async function currentLanguagePatternCompilations(storage: PostgresStorageAdapte
     try {
       compilationId = validateSourceLanguageCompilationHeader({ owner: { sourceId: row.source_id as SourceId, sourceVersionId: row.source_version_id as SourceVersionId,
         contentHash: row.content_hash as ContentHash }, profileId: row.profile_id, sourceSystem: row.source_system, modelJson: row.model_metadata,
-        compilationReceipt: row.compilation_receipt, hasher });
+        compilationReceipt: row.compilation_receipt, validationPolicy: "read_stored", hasher });
     } catch { /* Invalid compiler ownership never authorizes owned artifacts. */ }
     const modelRows = previous?.rows ?? [];
     modelRows.push(row);
