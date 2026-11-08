@@ -35,14 +35,26 @@ export async function treeSitterBehaviorRepairSites(input: { targetPath: string;
   if (!languageId) return [];
   return await withRepositorySyntaxTree({ fileId: input.targetPath, languageId, text: input.text }, root => {
     const pending = [root];
-    const sites: SourceCodeRepairSite[] = [];
+    const sites = new Map<string, SourceCodeRepairSite>();
+    const add = (node: typeof root) => {
+      if (node === root || node.hasError || node.isError || node.isMissing || node.endIndex <= node.startIndex) return;
+      sites.set(`${node.startIndex}:${node.endIndex}`, { start: node.startIndex, length: node.endIndex - node.startIndex, grammarNodeType: node.type });
+    };
     while (pending.length) {
       const node = pending.pop()!;
       if (node.hasError || node.isError || node.isMissing) continue;
-      if (node.childCount) pending.push(...node.children);
-      else if (node.endIndex > node.startIndex) sites.push({ start: node.startIndex, length: node.endIndex - node.startIndex, grammarNodeType: node.type });
+      if (node.childCount) {
+        pending.push(...node.children);
+        const argumentsNode = node.childForFieldName("arguments");
+        if (argumentsNode) {
+          // Grammar fields bound the invocation, its argument list, and individual argument expressions.
+          add(node);
+          add(argumentsNode);
+          for (const argument of argumentsNode.namedChildren) add(argument);
+        }
+      } else add(node);
     }
-    return sites.sort((left, right) => left.start - right.start);
+    return [...sites.values()].sort((left, right) => left.start - right.start || left.length - right.length);
   }) ?? [];
 }
 
