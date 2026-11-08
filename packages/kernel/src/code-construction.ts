@@ -99,6 +99,91 @@ export interface SourceCodeRepairSite {
   start: number;
   length: number;
   grammarNodeType: string;
+  /** Parser-owned expression ranges admit changes in token count. */
+  kind?: "terminal" | "structure";
+  /** Identifier vocabulary admitted by the toolchain at this expression. */
+  admissibleIdentifiers?: readonly string[];
+  /** Existing bound references that a structural replacement must retain. */
+  requiredIdentifiers?: readonly string[];
+}
+
+/** A structural hole is composed independently and must join source-attested windows on both sides. */
+function composeBehaviorStructures(input: {
+  models: readonly KneserNeyModel[]; languageId: string; targetPath: string; targetText: string;
+  failureObservationId: string; sites: readonly SourceCodeRepairSite[]; maxCandidates?: number;
+}): LearnedCodeRepairCandidate[] {
+  const hasher = createHasher();
+  const targetHash = hasher.digestHex(input.targetText);
+  const candidates: LearnedCodeRepairCandidate[] = [];
+  for (const site of input.sites) {
+    if (site.kind === "terminal" || site.length <= 0 || site.start < 0 || site.start + site.length > input.targetText.length) continue;
+    const prefixText = input.targetText.slice(0, site.start);
+    const originalText = input.targetText.slice(site.start, site.start + site.length);
+    const suffixText = input.targetText.slice(site.start + site.length);
+    if (/[\r\n]/u.test(originalText)) continue;
+    const original = codeSurfaceTokens(originalText).slice(1);
+    if (original.filter(symbol => !codeTokenIsLayout(symbol)).length < 2) continue;
+    const prefix = codeSurfaceTokens(prefixText);
+    const suffix = codeSurfaceTokens(suffixText).slice(1);
+    const windows = (model: KneserNeyModel, filling: readonly string[]) => {
+      const left = prefix.slice(1 - model.order);
+      const sequence = [...left, ...filling, ...suffix.slice(0, model.order - 1)];
+      const counts: number[] = [];
+      for (let start = 0; start + model.order <= sequence.length; start++) {
+        if (start >= left.length + filling.length || start + model.order <= left.length) continue;
+        counts.push(observedKneserNeySequenceCount(model, sequence.slice(start, start + model.order)));
+      }
+      return counts;
+    };
+    const ranked = input.models.filter(model => model.order > 1).map(model => ({ model, counts: windows(model, original) }))
+      .sort((left, right) => right.counts.filter(Boolean).length - left.counts.filter(Boolean).length
+        || right.model.order - left.model.order || (left.model.sourceKey ?? "").localeCompare(right.model.sourceKey ?? ""));
+    if (!ranked.length || ranked.some(item => item.counts.length && item.counts.every(Boolean))) continue;
+    const models = ranked.slice(0, CORPUS_MODEL_MIXTURE_LIMIT).map(item => item.model);
+    const head = original.find(symbol => !codeTokenIsLayout(symbol));
+    const fillings = composeSpanFillings({ corpusModels: models, localModel: models[0]!, corpusWeight: 1,
+      boost: new Map(), beamWidth: PREDICTION_POOL, prefixText, suffixText, originalText,
+      ...(head && identifierLikeSymbol(head) ? { admissible: new Set([head]) } : {}), limit: 8 });
+    for (const filling of fillings) {
+      if (filling.text === originalText) continue;
+      const identifiers = codeIdentifierTokens(codeSurfaceTokens(filling.text));
+      if (site.admissibleIdentifiers && identifiers.some(identifier => !site.admissibleIdentifiers!.includes(identifier))) continue;
+      if (site.requiredIdentifiers?.some(identifier => !identifiers.includes(identifier))) continue;
+      const symbols = codeSurfaceTokens(filling.text).slice(1);
+      const supporting = models.filter(model => {
+        const counts = windows(model, symbols);
+        return counts.length > 0 && counts.every(Boolean);
+      });
+      if (!supporting.length) continue;
+      const likelihood = (model: KneserNeyModel, sequence: readonly string[]) => {
+        const context = prefix.slice(1 - model.order);
+        let score = 0;
+        for (const symbol of [...sequence, ...suffix.slice(0, model.order - 1)]) {
+          score += Math.log(Math.max(Number.MIN_VALUE, kneserNeyProbability(model, context, symbol)));
+          context.push(symbol);
+        }
+        return score;
+      };
+      const originalLikelihood = supporting.reduce((sum, model) => sum + likelihood(model, original), 0) / supporting.length;
+      const replacementLikelihood = supporting.reduce((sum, model) => sum + likelihood(model, symbols), 0) / supporting.length;
+      const score = replacementLikelihood - originalLikelihood;
+      if (!(score > 0)) continue;
+      const lineStart = input.targetText.lastIndexOf("\n", site.start - 1) + 1;
+      const nextLine = input.targetText.indexOf("\n", site.start + site.length);
+      const lineEnd = nextLine < 0 ? input.targetText.length : nextLine - (input.targetText[nextLine - 1] === "\r" ? 1 : 0);
+      const line = countLines(prefixText);
+      candidates.push({ id: `candidate:generated:behavior:${input.languageId}:${site.start}:${hasher.digestHex(filling.text).slice(0, 16)}`,
+        languageId: input.languageId, startLine: line, endLine: line,
+        content: input.targetText.slice(lineStart, site.start) + filling.text + input.targetText.slice(site.start + site.length, lineEnd),
+        surface: filling.text, strategy: "span", averageLogProbability: filling.averageLogProbability, score,
+        holeLength: site.length, coveredSymbols: [],
+        audit: toJsonValue({ source: "code-construction.generateLearnedBehaviorCodeRepairs", failureObservationId: input.failureObservationId,
+          targetPath: input.targetPath, targetHash, sourceModelKeys: supporting.map(model => model.sourceKey ?? null),
+          hypothesizedSpanStart: site.start, hypothesizedSpanLength: site.length, grammarNodeType: site.grammarNodeType,
+          originalText, replacement: filling.text, originalLikelihood, replacementLikelihood, likelihoodGain: score }) });
+    }
+  }
+  return dedupedByContent(candidates.sort((left, right) => right.score - left.score || (left.holeLength ?? 0) - (right.holeLength ?? 0) || left.id.localeCompare(right.id)));
 }
 
 /** Grammar recovery bounds insertion sites; every inserted token and its surrounding windows must have source counts. */
@@ -280,7 +365,7 @@ export function generateLearnedBehaviorCodeRepairs(input: {
     }
     beam = next.sort(compare).slice(0, limit);
   }
-  return beam.map(reconstruction => {
+  const terminalCandidates = beam.map(reconstruction => {
     const { hypotheses, originalLikelihood, replacementLikelihood, score } = reconstruction;
     const first = hypotheses[0]!;
     const last = hypotheses.at(-1)!;
@@ -313,6 +398,8 @@ export function generateLearnedBehaviorCodeRepairs(input: {
         originalLikelihood, replacementLikelihood, likelihoodGain: score })
     };
   });
+  const structuralCandidates = composeBehaviorStructures(input);
+  return [...structuralCandidates, ...terminalCandidates].slice(0, limit);
 }
 
 export interface LearnedCodeGenerationInput {
