@@ -5,8 +5,8 @@
   "usesActions": false,
   "build": "passed",
   "focusedTests": {
-    "files": 8,
-    "passed": 82
+    "files": 9,
+    "passed": 87
   },
   "escapedTitleRegressionBeforeFix": {
     "failed": 3,
@@ -66,5 +66,125 @@
     "storedCheckpointRecords": 9
   },
   "fullTrainingComplete": false,
-  "chatCodeTranslationQualified": false
+  "chatCodeTranslationQualified": false,
+  "hardeningCodeCommit": "1f668847ee470a883949b64af8cb0f6fe0926ccf",
+  "ownerStopRegressionBeforeFix": {
+    "failed": 1,
+    "passed": 0
+  },
+  "hardening": {
+    "ownerStopBeforePreparation": true,
+    "ownerStopAfterPreparationBeforeLearnedTransaction": true,
+    "pendingBatchResumeRegressionPassed": true,
+    "reportsPreparationAndCommitStages": true,
+    "nonzeroChildExitPublishesFailedStatus": true,
+    "preparationStillSynchronous": true,
+    "heapFailureFixed": false
+  },
+  "liveFullBatchFailure": {
+    "edition": "htwiki",
+    "workerExitCode": 1,
+    "workerHeapLimitMiB": 3072,
+    "error": "V8 JavaScript heap out of memory",
+    "lastReportedPages": 1519,
+    "articlesDurablyStoredAtAudit": 1527,
+    "wikipediaSourceVersions": 3054,
+    "wikipediaSourceAndDerivativeBytes": 3670393,
+    "newLearnedLanguageRows": 0,
+    "ownerStopRequestedBeforeCrash": true,
+    "ownerStopAcknowledged": false,
+    "fullTrainingComplete": false
+  },
+  "postFailureIntegrityAudit": {
+    "blobsChecked": 3609,
+    "blobHashMismatches": 0,
+    "sourceLengthMismatches": 0,
+    "newLanguageRows": [
+      {
+        "table": "language_patterns",
+        "rows": 248201,
+        "baselineRows": 248201,
+        "delta": 0
+      },
+      {
+        "table": "language_profiles",
+        "rows": 377,
+        "baselineRows": 377,
+        "delta": 0
+      },
+      {
+        "table": "language_units",
+        "rows": 75190,
+        "baselineRows": 75190,
+        "delta": 0
+      },
+      {
+        "table": "ngram_models",
+        "rows": 377,
+        "baselineRows": 377,
+        "delta": 0
+      }
+    ],
+    "backend": "PostgreSQL18.6/PGlite0.5.15",
+    "nativePostgres": false
+  },
+  "postFailureStorageAudit": {
+    "relations": [
+      {
+        "relname": "graph_edges",
+        "table_bytes": "103940096",
+        "index_bytes": "95215616",
+        "total_bytes": "199155712",
+        "n_live_tup": "0",
+        "n_dead_tup": "0"
+      },
+      {
+        "relname": "graph_nodes",
+        "table_bytes": "1389969408",
+        "index_bytes": "92930048",
+        "total_bytes": "1482899456",
+        "n_live_tup": "0",
+        "n_dead_tup": "0"
+      },
+      {
+        "relname": "ingestion_checkpoints",
+        "table_bytes": "5423104",
+        "index_bytes": "524288",
+        "total_bytes": "5947392",
+        "n_live_tup": "0",
+        "n_dead_tup": "0"
+      },
+      {
+        "relname": "language_patterns",
+        "table_bytes": "2348761088",
+        "index_bytes": "111747072",
+        "total_bytes": "2460508160",
+        "n_live_tup": "0",
+        "n_dead_tup": "0"
+      }
+    ],
+    "notes": [
+      "Physical table/index sizes include storage history and are not raw corpus sizes. PostgreSQL statistics in this backend report zero live/dead tuples and do not establish absence of bloat.",
+      "The 1527 Wikipedia articles account for 3670393 bytes of original-plus-derivative source versions. Large physical graph storage still requires explanation and qualification."
+    ],
+    "journal": [
+      {
+        "offset_bytes": 570,
+        "state": "open",
+        "pending_chars": "68361",
+        "pending_samples": 4,
+        "metadata_bytes": 1411137
+      }
+    ]
+  },
+  "currentState": {
+    "activeIngestion": false,
+    "nextEdition": "enwiki",
+    "fullRunHeldFor": [
+      "Bounded-memory language preparation",
+      "Storage growth accounting and qualification",
+      "Actual interrupted-worker resume verification",
+      "Functional regression improvement after language training"
+    ]
+  }
 }
