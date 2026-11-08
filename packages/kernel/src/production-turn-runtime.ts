@@ -3521,9 +3521,23 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         ?{...scopedProgramIntent,constraints:[...(scopedProgramIntent.constraints??[]),"program.constraint.workspace_source_scope_unavailable"]}:scopedProgramIntent;
       kernelTrace({ stage: "runtime.program.contract", label: "kernel.turn", support: {
         producer: sourceCodeRealizationOnly ? "source_code_realization" : programIntent ? "program_graph" : "none",
-        declaredCallableIds: programCodeSignal.declaredCallableIds ?? [], sourceOwnedRequirementIds: sourceOwnedRequirements.map(requirement => requirement.id)
+        declaredCallableIds: programCodeSignal.declaredCallableIds ?? [], sourceOwnedRequirementIds: sourceOwnedRequirements.map(requirement => requirement.id),
+        requestedAuthority, projectedAuthority: authorityProjection.requestedAuthority, explicitAuthority:explicitAuthority??null,
+        languageId:programCodeSignal.language??null, targetPaths:programCodeSignal.paths,
+        requestBehaviorRequirementCount:codeSignal.behaviorRequirements.length,requestStatefulRequirementCount:codeSignal.statefulBehaviorRequirements.length,
+        programBehaviorRequirementCount:programCodeSignal.behaviorRequirements.length,programStatefulRequirementCount:programCodeSignal.statefulBehaviorRequirements.length,
+        programOperator:operatorActivations.filter(operator=>operator.operatorId===COGNITIVE_OPERATOR_IDS.programPlanning).map(operator=>({active:operator.active,activation:operator.activation,trace:operator.trace})),
+        workspace: {contextPresent:workspaceContext!==undefined,workspaceId:jsonRecord(workspaceContext).workspaceId??null,
+          expectedWorkspaceUpdatedAt:jsonRecord(workspaceContext).expectedWorkspaceUpdatedAt??null,informationAccessPresent:Boolean(deps.informationAccess),
+          status:workspaceContracts?.status??"not_requested",reasonId:workspaceContracts?.status==="unavailable"?workspaceContracts.reasonId:null,
+          contractCount:workspaceContracts?.status==="available"?workspaceContracts.contracts.length:null,
+          evidenceCount:workspaceContracts?.status==="available"?workspaceContracts.evidence.length:null,
+          sourceVersionCount:workspaceContracts?.status==="available"?workspaceContracts.sourceVersionIds.length:null}
       } });
       const candidateConstructSeed = programBuilder.build({ episodeId, text: input.text, entailment: answerEntailmentSeed, evidence: selectedEvidence, createdAt: clock.now(), programIntent });
+      kernelTrace({stage:"runtime.program.emission",label:"kernel.turn",support:{programPresent:Boolean(candidateConstructSeed.program),
+        availability:candidateConstructSeed.nodes.filter(node=>node.kind==="program_emission_unavailable").map(node=>{const value=jsonRecord(node.metadata);return {status:value.status??null,languageId:value.languageId??null,reasonIds:value.reasonIds??[]};})}});
+
       // Compiled once from whatever proof/graph fact this turn already bound, so proofAnswer() (and, downstream,
       // cognitive-planner.ts's one-hop draft) can attempt real generation, verified against what the request
       // actually asked, before reaching for source-exact text. Two independent sources, tried in order: the
