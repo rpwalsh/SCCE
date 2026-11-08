@@ -13,6 +13,7 @@ import { type GraphBoundConstruction } from "./language-induction.js";
 import { preparedLanguageInductionProducts, type PreparedConstructionInduction } from "./graph-surface-alignment.js";
 import { segmentUnicodeSurfaceV2, type LexicalSegment } from "./unicode-segmentation-v2.js";
 import type { LanguagePatternRecord } from "./storage.js";
+import type { ContextualQaSupervision } from "./source-owned-contextual-qa.js";
 import type { SemanticRole } from "./semantic-graph.js";
 import type { EvidenceSpan, Hasher, JsonValue } from "./types.js";
 
@@ -91,6 +92,7 @@ export interface SourceBoundConstructionObservation {
   nullRoles?: readonly SourceBoundConstructionNullRole[];
   /** Preceding source turn, in code points relative to this observation's evidence. */
   antecedent?: { startCodePoint: number; endCodePoint: number };
+  contextualQaSupervision?: ContextualQaSupervision;
 }
 
 export interface SourceBoundLanguageConstructionTrainingSet {
@@ -114,6 +116,7 @@ export interface DurableSourceConstructionExample {
   surface: string;
   surfaceDigest: string;
   antecedent?: { startCodePoint: number; endCodePoint: number; surface: string; surfaceDigest: string };
+  contextualQaSupervision?: ContextualQaSupervision;
   roles: Array<{
     slotIndex: number;
     occurrenceIndex: number;
@@ -396,7 +399,8 @@ function sourceExampleStorageBundle(bundle: DurableLanguageConstructionBundle): 
       startCodePoint: role.startCodePoint, endCodePoint: role.endCodePoint, ...(role.graphBinding ? { graphBinding: role.graphBinding } : {}) })),
     ...(example.nullRoles.length ? { nullRoles: example.nullRoles.map(role => ({ slotIndex: role.slotIndex, occurrenceIndex: role.occurrenceIndex,
       ...(role.graphBinding ? { graphBinding: role.graphBinding } : {}) })) } : {}),
-    ...(example.antecedent ? { antecedent: { startCodePoint: example.antecedent.startCodePoint, endCodePoint: example.antecedent.endCodePoint } } : {})
+    ...(example.antecedent ? { antecedent: { startCodePoint: example.antecedent.startCodePoint, endCodePoint: example.antecedent.endCodePoint } } : {}),
+    ...(example.contextualQaSupervision ? { contextualQaSupervision: example.contextualQaSupervision } : {})
   })) };
 }
 
@@ -828,6 +832,18 @@ function prepareObservation(input: {
   if (!surface || surface !== surface.normalize("NFC")) {
     return { issue: { code: LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.coordinates, evidenceId: observation.evidenceId } };
   }
+  const supervision = observation.contextualQaSupervision;
+  if (supervision && (!nonempty(supervision.sourceRecordId) || !nonempty(supervision.sourceId) || !nonempty(supervision.profileId)
+    || (supervision.sourceFamilyId !== undefined && !nonempty(supervision.sourceFamilyId))
+    || supervision.sourceId !== String(evidence.sourceId)
+    || !validRange(supervision.replyStartCodePoint, supervision.replyEndCodePoint, evidencePoints.length)
+    || !validRange(supervision.contextStartCodePoint, supervision.contextEndCodePoint, evidencePoints.length)
+    || supervision.replyStartCodePoint === supervision.replyEndCodePoint || supervision.contextStartCodePoint === supervision.contextEndCodePoint
+    || rangesOverlap(observation.surfaceStartCodePoint, observation.surfaceEndCodePoint, supervision.replyStartCodePoint, supervision.replyEndCodePoint)
+    || rangesOverlap(observation.surfaceStartCodePoint, observation.surfaceEndCodePoint, supervision.contextStartCodePoint, supervision.contextEndCodePoint)
+    || rangesOverlap(supervision.replyStartCodePoint, supervision.replyEndCodePoint, supervision.contextStartCodePoint, supervision.contextEndCodePoint))) {
+    return { issue: { code: LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.coordinates, evidenceId: observation.evidenceId } };
+  }
   const antecedentRange = observation.antecedent;
   if (antecedentRange && (!validRange(antecedentRange.startCodePoint, antecedentRange.endCodePoint, evidencePoints.length)
     || antecedentRange.startCodePoint === antecedentRange.endCodePoint
@@ -916,7 +932,8 @@ function prepareObservation(input: {
     surfaceDigest,
     roles: durableRoles,
     nullRoles: durableNullRoles,
-    ...(antecedent ? { antecedent } : {})
+    ...(antecedent ? { antecedent } : {}),
+    ...(supervision ? { contextualQaSupervision: { ...supervision } } : {})
   };
   const aligned: AlignedSurfaceExample = {
     id,
@@ -1319,7 +1336,8 @@ function verifyPersistedPattern(
           ...(role.graphBinding !== undefined ? { graphBinding: role.graphBinding as unknown as SourceConstructionGraphBinding } : {}) })),
         nullRoles: arrayOfRecords(raw.nullRoles).map(role => ({ slotIndex: numberOf(role.slotIndex), occurrenceIndex: numberOf(role.occurrenceIndex),
           ...(role.graphBinding !== undefined ? { graphBinding: role.graphBinding as unknown as SourceConstructionGraphBinding } : {}) })),
-        ...(raw.antecedent !== undefined ? { antecedent: { startCodePoint: numberOf(recordOf(raw.antecedent).startCodePoint), endCodePoint: numberOf(recordOf(raw.antecedent).endCodePoint) } } : {})
+        ...(raw.antecedent !== undefined ? { antecedent: { startCodePoint: numberOf(recordOf(raw.antecedent).startCodePoint), endCodePoint: numberOf(recordOf(raw.antecedent).endCodePoint) } } : {}),
+        ...(raw.contextualQaSupervision !== undefined ? { contextualQaSupervision: raw.contextualQaSupervision as unknown as ContextualQaSupervision } : {})
       });
       continue;
     }
@@ -1413,6 +1431,7 @@ function observationFromPersistedExample(
     surfaceEndCodePoint: numberOf(raw.surfaceEndCodePoint),
     roles,
     nullRoles,
+    ...(raw.contextualQaSupervision !== undefined ? { contextualQaSupervision: raw.contextualQaSupervision as unknown as ContextualQaSupervision } : {}),
     ...(raw.antecedent !== undefined ? { antecedent: {
       startCodePoint: numberOf(recordOf(raw.antecedent).startCodePoint),
       endCodePoint: numberOf(recordOf(raw.antecedent).endCodePoint)
@@ -1485,6 +1504,10 @@ function validRange(start: number, end: number, length: number): boolean {
     && start >= 0
     && end >= start
     && end <= length;
+}
+
+function rangesOverlap(start: number, end: number, otherStart: number, otherEnd: number): boolean {
+  return start < otherEnd && end > otherStart;
 }
 
 function utf16OffsetAtCodePoint(surface: string, offset: number): number {

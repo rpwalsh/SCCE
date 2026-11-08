@@ -4,8 +4,10 @@ import { canonicalStringify } from "../primitives.js";
 import { jsonRecord } from "../kernel-answer-primitives.js";
 import type { LanguageMemoryStore } from "../storage.js";
 import { REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA } from "../request-communicative-act.js";
+import { CONTEXTUAL_QA_CONSTRUCTION_RECIPE } from "../source-owned-contextual-qa.js";
 
 const DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID = "scce.dialogue_conversational_construction.v2";
+const independentConstructionRecipes = new Set<string>([DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID, CONTEXTUAL_QA_CONSTRUCTION_RECIPE]);
 
 type Publication = Parameters<NonNullable<LanguageMemoryStore["replaceLanguagePatternProjection"]>>[0];
 const manifests = new WeakMap<LanguageMemoryStore, Map<string, Publication["projection"]>>();
@@ -28,6 +30,8 @@ export function installFixtureLanguagePatternProjection(store: LanguageMemorySto
       return rows.filter(row => {
         if (query?.patternIds && !query.patternIds.includes(row.id)) return false;
         const metadata = jsonRecord(row.patternJson);
+        if (query?.contextualQaRequestFeatures && (!Array.isArray(metadata.contextualQaRequestFeatures)
+          || !metadata.contextualQaRequestFeatures.some(feature => typeof feature === "string" && query.contextualQaRequestFeatures!.includes(feature)))) return false;
         if (metadata.schema === "scce.creative_event_compatibility_model.v1") {
           const sourceId = metadata.sourceId ?? jsonRecord(Array.isArray(metadata.sourceObservations) ? metadata.sourceObservations[0] : undefined).sourceId;
           const owned = [...scopes.values()].filter(scope => scope.patternSchema === metadata.schema && scope.profileId === row.profileId
@@ -39,7 +43,7 @@ export function installFixtureLanguagePatternProjection(store: LanguageMemorySto
           && metadata.schema !== "scce.source_owned_test_contract.v1" && metadata.schema !== REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA) return true;
         return [...scopes.values()].some(scope => scope.patternSchema === metadata.schema && scope.profileId === row.profileId
           && scope.sourceSystem === metadata.sourceSystem && scope.patternIds.includes(row.id)
-          && (metadata.componentRecipe !== DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID || scope.componentRecipe === DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID)
+          && (!independentConstructionRecipes.has(String(metadata.componentRecipe)) || scope.componentRecipe === metadata.componentRecipe)
           && canonicalStringify(scope.informationLabel) === canonicalStringify(row.informationLabel));
       }).slice(0, query?.limit ?? rows.length);
     };
@@ -72,5 +76,5 @@ export async function replaceFixtureLanguagePatternProjection(this: LanguageMemo
   if (this.putLanguagePatterns) await this.putLanguagePatterns(input.patterns);
   else for (const pattern of input.patterns) await this.putLanguagePattern(pattern);
   active.set(canonicalStringify([input.projection.informationLabel.tenantId, input.projection.sourceId, input.projection.sourceSystem,
-    input.projection.patternSchema, ...(input.projection.componentRecipe === DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID ? [input.projection.componentRecipe] : [])]), structuredClone(input.projection));
+    input.projection.patternSchema, ...(independentConstructionRecipes.has(input.projection.componentRecipe) ? [input.projection.componentRecipe] : [])]), structuredClone(input.projection));
 }

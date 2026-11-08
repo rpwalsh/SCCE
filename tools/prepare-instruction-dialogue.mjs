@@ -82,11 +82,12 @@ export async function prepareInstructionDialogue({ inputPath, outputDir, metadat
       const category = validateInstructionRow(row, inputLineNumber, sourceMetadata.categoryCommitmentScopes, sourceMetadata.categoryRequestAuthorities);
       const commitmentScope = sourceMetadata.categoryCommitmentScopes[category];
       const requestAuthority = sourceMetadata.categoryRequestAuthorities[category];
-      let entry = makeTranscriptEntry(row, category, commitmentScope, requestAuthority, shard);
+      const sourceRecordId = `source.record.${createHash("sha256").update(JSON.stringify([sourceMetadata.uri, sourceMetadata.pinnedRevision, inputLineNumber])).digest("hex")}`;
+      let entry = makeTranscriptEntry(row, category, commitmentScope, requestAuthority, shard, sourceRecordId);
       let candidateBytes = shardDocumentByteLength(shard, entry);
       if (candidateBytes > caps.maxOutputFileBytes && shard.records > 0) {
         await flushShard();
-        entry = makeTranscriptEntry(row, category, commitmentScope, requestAuthority, shard);
+        entry = makeTranscriptEntry(row, category, commitmentScope, requestAuthority, shard, sourceRecordId);
         candidateBytes = shardDocumentByteLength(shard, entry);
       }
       if (candidateBytes > caps.maxOutputFileBytes) {
@@ -220,11 +221,12 @@ function validateInstructionRow(row, lineNumber, categoryScopes, categoryAuthori
   return row.category;
 }
 
-function makeTranscriptEntry(row, category, commitmentScope, requestAuthority, currentShard) {
+function makeTranscriptEntry(row, category, commitmentScope, requestAuthority, currentShard, sourceRecordId) {
   const instruction = row.instruction.normalize("NFC");
   const response = row.response.normalize("NFC");
   const context = row.context.normalize("NFC");
   const includeContext = Boolean(context.trim());
+  const sourceFamilyId = includeContext ? `source.context.${createHash("sha256").update(context).digest("hex")}` : undefined;
   const fragment = `${instruction}\n${response}${includeContext ? `\n${context}` : ""}`;
   const separator = currentShard.records ? "\n" : "";
   const codePointBase = currentShard.codePoints + [...separator].length;
@@ -238,6 +240,8 @@ function makeTranscriptEntry(row, category, commitmentScope, requestAuthority, c
     startCodePoint: codePointBase,
     endCodePoint: codePointBase + instructionLength,
     sourceCategory: category,
+    sourceRecordId,
+    ...(sourceFamilyId ? { sourceFamilyId } : {}),
     requestAuthority
   };
   const responseStart = codePointBase + instructionLength + 1;
@@ -250,6 +254,8 @@ function makeTranscriptEntry(row, category, commitmentScope, requestAuthority, c
     replyToTurnIndex: instructionIndex,
     commitmentScope,
     sourceCategory: category,
+    sourceRecordId,
+    ...(sourceFamilyId ? { sourceFamilyId } : {}),
     ...(includeContext ? {
       supportingSourceRanges: [{
         startCodePoint: responseStart + responseLength + 1,

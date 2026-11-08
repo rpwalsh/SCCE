@@ -6,6 +6,17 @@ export const CONTEXTUAL_QA_SOURCE_SYSTEM = "dialogue" as const;
 /** Parsing metadata only; answer text and declarative programs remain in the owned construction bundle. */
 export type ContextualQaRequestForm = readonly (string | { slotIndex: number })[];
 
+export interface ContextualQaSupervision {
+  sourceRecordId: string;
+  sourceFamilyId?: string;
+  sourceId: string;
+  profileId: string;
+  replyStartCodePoint: number;
+  replyEndCodePoint: number;
+  contextStartCodePoint: number;
+  contextEndCodePoint: number;
+}
+
 export interface ContextualQaWitness {
   sourceId: string;
   sourceVersionId: string;

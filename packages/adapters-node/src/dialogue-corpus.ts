@@ -46,6 +46,7 @@ import {
 } from "@scce/kernel";
 import { corpusSourceVersionIdFor, readCompletedCorpusCheckpoint, stampPattern, trainLanguageCorpusText, type LanguageCorpusTrainingInput, type LanguageCorpusTrainingReport } from "./language-corpus-trainer.js";
 import {persistDialogueComputationComponent,type DialogueComputationReport} from "./dialogue-computation-component.js";
+import { persistDialogueContextualQaComponent, type DialogueContextualQaReport } from "./dialogue-contextual-qa-component.js";
 import { DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID, runDialogueConversationalComponent } from "./dialogue-conversational-checkpoint.js";
 
 /**
@@ -90,6 +91,7 @@ export interface DialogueCorpusTrainReport {
   requestAuthorities: DialogueRequestAuthorityTrainingReport;
   conversationalConstructions: DialogueConversationalConstructionTrainingReport;
   computationConstructions?: DialogueComputationReport;
+  contextualQaConstructions?: DialogueContextualQaReport;
   stoppedByHeapSafetyBound: boolean;
   heapMiBAtExit: number;
 }
@@ -262,6 +264,7 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
       compile: () => persistConversationalConstructions(input, read), unchanged: emptyConversationalConstructionReport
     }),
     computationConstructions: await persistDialogueComputationComponent({storage:input.storage,rootUri:pathToFileURL(root).href,informationLabel:input.informationLabel,authorship:input.authorship,sources:read}),
+    contextualQaConstructions: await persistDialogueContextualQaComponent({storage:input.storage,rootUri:pathToFileURL(root).href,informationLabel:input.informationLabel,authorship:input.authorship,sources:read}),
     stoppedByHeapSafetyBound,
     heapMiBAtExit: heapMiB()
   };

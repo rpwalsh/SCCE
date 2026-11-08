@@ -19,6 +19,10 @@ export interface TranscriptTurn {
   /** Explicit source annotation on request turns only; never inferred from the turn surface. */
   requestAuthority?: RequestedAuthority;
   sourceCategory?: string;
+  /** Stable original record identity, independent of transcript output shards. */
+  sourceRecordId?: string;
+  /** Original shared context family used for independent acquisition partitions. */
+  sourceFamilyId?: string;
   /** Documentary support ranges cannot overlap speech. */
   supportingSourceRanges?: readonly { startCodePoint: number; endCodePoint: number; surface: string }[];
 }
@@ -42,6 +46,7 @@ export function validateDeclaredTranscriptSource(value: unknown): DeclaredTransc
   if (source.sourceMetadata !== undefined && (!jsonObject(source.sourceMetadata)
     || !Object.values(source.sourceMetadata).every(isJsonValue))) throw new Error("invalid declared transcript source metadata");
   const points = [...source.text];
+  const turns: TranscriptTurn[] = [];
   let end = 0;
   for (const [index, turn] of source.turns.entries()) {
     if (!turn || turn.index !== index || typeof turn.speakerId !== "string" || !turn.speakerId.trim()
@@ -51,6 +56,8 @@ export function validateDeclaredTranscriptSource(value: unknown): DeclaredTransc
       || points.slice(turn.startCodePoint, turn.endCodePoint).join("") !== turn.surface) throw new Error(`invalid declared transcript turn ${index}`);
     if (turn.requestAuthority !== undefined && !["factual", "reasoned", "creative", "translation", "program", "action"].includes(turn.requestAuthority)) throw new Error(`invalid declared transcript request authority ${index}`);
     if (turn.sourceCategory !== undefined && (typeof turn.sourceCategory !== "string" || !turn.sourceCategory.trim())) throw new Error(`invalid declared transcript category ${index}`);
+    if (turn.sourceRecordId !== undefined && (typeof turn.sourceRecordId !== "string" || !turn.sourceRecordId.trim())) throw new Error(`invalid original transcript record ${index}`);
+    if (turn.sourceFamilyId !== undefined && (typeof turn.sourceFamilyId !== "string" || !turn.sourceFamilyId.trim())) throw new Error(`invalid original transcript family ${index}`);
     if (turn.replyToTurnIndex !== undefined && (!Number.isInteger(turn.replyToTurnIndex)
       || turn.replyToTurnIndex < 0 || turn.replyToTurnIndex !== index - 1
       || (turn.commitmentScope !== "conversation" && turn.commitmentScope !== "external"))) throw new Error(`invalid declared transcript reply ${index}`);
@@ -60,13 +67,17 @@ export function validateDeclaredTranscriptSource(value: unknown): DeclaredTransc
         if (!range || !Number.isInteger(range.startCodePoint) || !Number.isInteger(range.endCodePoint)
           || range.startCodePoint < 0 || range.endCodePoint <= range.startCodePoint || range.endCodePoint > points.length
           || source.turns.some(speech => range.startCodePoint < speech.endCodePoint && range.endCodePoint > speech.startCodePoint)
-          || typeof range.surface !== "string" || !range.surface.trim()
-          || points.slice(range.startCodePoint, range.endCodePoint).join("") !== range.surface) throw new Error(`invalid declared transcript support ${index}`);
+          || (range.surface !== undefined && (typeof range.surface !== "string" || !range.surface.trim()
+            || points.slice(range.startCodePoint, range.endCodePoint).join("") !== range.surface))
+          || !points.slice(range.startCodePoint, range.endCodePoint).join("").trim()) throw new Error(`invalid declared transcript support ${index}`);
       }
     }
+    turns.push({ ...turn, ...(turn.supportingSourceRanges ? { supportingSourceRanges: turn.supportingSourceRanges.map(range => ({
+      ...range, surface: points.slice(range.startCodePoint, range.endCodePoint).join("")
+    })) } : {}) });
     end = turn.endCodePoint;
   }
-  return source;
+  return { ...source, turns };
 }
 
 function jsonObject(value: unknown): value is Record<string, unknown> {

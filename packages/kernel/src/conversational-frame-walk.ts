@@ -107,6 +107,15 @@ export function walkConversationalFrames(pairs: readonly PreparedConversationalF
   }
 }
 
+/** Exact copied roles shared by a request and its declared supporting surface. */
+export function copiedRequestRoleSpans(requestText: string, supportingText: string) {
+  const request = unicodeLexicalSegments(requestText), supporting = unicodeLexicalSegments(supportingText), positions = new Map<string, number[]>();
+  for (const [index, segment] of request.entries()) {
+    const group = positions.get(segment.normalized) ?? []; group.push(index); positions.set(segment.normalized, group);
+  }
+  return copiedRequestRoles([...supportingText], supporting, [...requestText], request, positions);
+}
+
 /** Maximal copied runs have one source owner. Repeated reply uses share that owner's role. */
 function copiedRequestRoles(reply: readonly string[], segments: readonly UnicodeSurfaceSegment[], request: readonly string[], source: readonly UnicodeSurfaceSegment[], positions: ReadonlyMap<string, readonly number[]>) {
   const runs: Array<{ startCodePoint: number; endCodePoint: number; sourceStart: number; sourceEnd: number }> = [];

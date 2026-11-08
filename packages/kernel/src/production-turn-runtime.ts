@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import {sourceComputationForRequest} from "./source-computation-runtime.js";
+import { contextualQaForRequest } from "./contextual-qa-runtime.js";
 import { createTypedIngestProjector, type TypedIngestProjection } from "./typed-ingest.js";
 import { createActionGraphBuilder } from "./action-graph.js";
 import { createAlphaFieldPersistence } from "./alpha-field-persistence.js";
@@ -2075,6 +2076,9 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           ...graphSlice.evidence.map(span => String(span.id))
         ])
       );
+      const contextualQa = requestedAuthority === "creative" || deps.evaluationCondition?.flags.disableLanguageMemory
+        ? undefined : await contextualQaForRequest({ storage: deps.storage, hasher, requestText: input.text, evidence });
+      for (const id of contextualQa?.binding.evidenceIds ?? []) semanticFrameBoundEvidenceIds.add(id);
       const calibrationModels = await calibrationModelsCached();
       // Only measured form is excluded; an unmeasured language class cannot erase the current turn's content.
       const carriedRequestUnits = discourseEvidenceBound
@@ -2440,7 +2444,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         evidence: admissibleEvidence,
         resolvers: [
           sourceConstructionRequestValueResolver({ bundles: uniqueRecordsById([
-            ...authorityLanguage.state.importedConstructionBundles, ...acquiredRequestConstructionBundles, ...sourceOwnedConstructionBundles
+            ...authorityLanguage.state.importedConstructionBundles, ...acquiredRequestConstructionBundles, ...sourceOwnedConstructionBundles,
+            ...(contextualQa?.bundles ?? [])
           ], 1024), graph }),
           { id: "resolver.evidence_temporal", resolve: extractTemporalAnswerFromEvidence }
         ]

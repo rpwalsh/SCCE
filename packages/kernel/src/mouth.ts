@@ -3432,6 +3432,9 @@ function kernelCandidateDirectSurfaceAllowed(candidate: CandidateSurface, input:
   if (isTerminalNonAssertiveRuntimeMotionCandidate(candidate)) return true;
   if (candidate.kind === "translation" || candidate.kind === "transformation") return true;
   if (candidate.kind === "creative-candidate" && candidate.force === "invented" && candidate.claimBases?.includes("invented") === true) return true;
+  if ((candidate.kind === "proof-answer" || candidate.kind === "ccr-extractive")
+    && currentSourceBoundRoleValueFact({ text: candidate.answer, contract: input.realizationContract,
+      facts: semanticAnswerConstructState(input.construct)?.selectedFacts ?? [], evidence: input.evidence })) return true;
   if (kernelCandidateCarriesExactBoundSourceSurface(candidate, input)) return true;
   if (kernelCandidateCarriesVerifiedSourceExcerptSurface(candidate, input)) return true;
   if ((candidate.kind === "proof-answer" || candidate.kind === "ccr-extractive") && candidate.evidenceIds.length > 0) {

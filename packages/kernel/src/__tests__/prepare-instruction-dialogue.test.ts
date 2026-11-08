@@ -42,6 +42,21 @@ async function fixtureDirectory() {
 }
 
 describe("instruction dialogue preparation", () => {
+  it("preserves original record partition identities across different output shards", async () => {
+    const root = await fixtureDirectory(), inputPath = join(root, "records.jsonl");
+    const rows = Array.from({ length: 4 }, (_, index) => ({ instruction: `opaque ${index}`, response: "answer", context: "source context", category: "open_qa" }));
+    await writeFile(inputPath, rows.map(row => JSON.stringify(row)).join("\n"));
+    const readIds = async (name: string, maxOutputFileBytes: number) => {
+      const outputDir = join(root, name), prepared = await prepareInstructionDialogue({ inputPath, outputDir, metadata: metadata(), limits: { maxOutputFileBytes } });
+      const turns = (await Promise.all(prepared.outputs.map(async output => validateDeclaredTranscriptSource(JSON.parse(await readFile(join(outputDir, output.path), "utf8"))).turns))).flat();
+      return { files: prepared.outputs.length, ids: turns.map(turn => turn.sourceRecordId) };
+    };
+    const whole = await readIds("whole", 100000), sharded = await readIds("sharded", 1600);
+    expect(sharded.files).toBeGreaterThan(whole.files);
+    expect(sharded.ids).toEqual(whole.ids);
+    expect(new Set(whole.ids).size).toBe(rows.length);
+    expect(whole.ids.every((id, index) => typeof id === "string" && id === whole.ids[index - index % 2])).toBe(true);
+  });
   it("writes NFC speech spans and keeps context only as non-speech support ranges", async () => {
     const root = await fixtureDirectory();
     const inputPath = join(root, "opaque.jsonl");

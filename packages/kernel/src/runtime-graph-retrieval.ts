@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { calibrated } from "./calibrations/prod-calibrations.js";
+import { contextualQaForRequest } from "./contextual-qa-runtime.js";
 import { corpusIdentitySignals } from "./corpus-identity.js";
 import { currentEvaluationCacheOwner, type EvaluationTraceRecorder } from "./evaluation-trace.js";
 import { createCandidateEngine } from "./candidate.js";
@@ -1014,6 +1015,9 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
         && !isControlCorpusSpan(span)
         && !spanIsUnparsedMarkup(span)));
     const semanticFrameBoundEvidenceIds = new Set(semanticFrameEvidence.semanticFrameBoundEvidenceIds);
+    const contextualQa = allowSemanticFrameEvidence && deps.evaluationCondition?.flags.disableLanguageMemory !== true
+      ? await contextualQaForRequest({ storage: deps.storage, hasher, requestText: text, evidence: promoted }) : undefined;
+    for (const id of contextualQa?.binding.evidenceIds ?? []) semanticFrameBoundEvidenceIds.add(id);
     const anchored = sourceIdentityAdmissibleEvidenceForRequest(
       text,
       promoted,
@@ -1062,7 +1066,7 @@ async function sourceAnchoredEvidenceForText(text: string, features: readonly st
     const admittedIds = new Set(evidence.map(span => String(span.id)));
     return {
       evidence,
-      semanticFrameBoundEvidenceIds: semanticFrameEvidence.semanticFrameBoundEvidenceIds.filter(id => admittedIds.has(id))
+      semanticFrameBoundEvidenceIds: [...semanticFrameBoundEvidenceIds].filter(id => admittedIds.has(id))
     };
   }
 
