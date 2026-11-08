@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { afterEach, describe, expect, it } from "vitest";
-import { createHasher, LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, stampSourceLanguageCompilation, type JsonValue, type SourceVersionId } from "@scce/kernel";
+import { createHasher, LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, stampSourceLanguageCompilation, type ContentHash, type JsonValue, type SourceId, type SourceVersionId } from "@scce/kernel";
 import { sourceLanguageTrainingStreamId } from "../../../kernel/src/source-language-training-identity.js";
 import { createPostgresStorageAdapter, type PostgresStorageAdapter } from "../postgres.js";
 
@@ -11,8 +11,8 @@ const label = { tenantId: "tenant.fixture", principals: ["principal.fixture"], c
 const hasher = createHasher();
 
 function sourceOwner(profileId: string, sourceSystem: string, modelCount = 1) {
-  const owner = { sourceId: `source.${profileId}.${sourceSystem}` as never, sourceVersionId: `version.${profileId}.${sourceSystem}` as SourceVersionId,
-    contentHash: `sha256_${hasher.digestHex(profileId + sourceSystem)}` as never };
+  const owner = { sourceId: `source.${profileId}.${sourceSystem}` as SourceId, sourceVersionId: `version.${profileId}.${sourceSystem}` as SourceVersionId,
+    contentHash: `sha256_${hasher.digestHex(profileId + sourceSystem)}` as ContentHash };
   const streamId = sourceLanguageTrainingStreamId({ ...owner, sourceSystem, hasher });
   const chunks = Array.from({ length: modelCount }, (_, index) => `chunk${index}`);
   const models = chunks.map((text, index) => ({ id: `model.${profileId}.${sourceSystem}.${index}`, streamId, languageHint: "und", maxOrder: 2,
@@ -129,7 +129,7 @@ describe("exact pattern reads scale with their actual requested owners", () => {
     expect(await f.adapter.languageMemory.listLanguagePatterns(query)).toEqual([]);
     entry.headers.splice(0, entry.headers.length, ...original, original[0]!);
     expect(await f.adapter.languageMemory.listLanguagePatterns(query)).toEqual([]);
-    entry.headers.splice(0, entry.headers.length, ...original.map(row => ({ ...row, source_id: "foreign.source" })));
+    entry.headers.splice(0, entry.headers.length, ...original.map(row => ({ ...row, source_id: "foreign.source" as SourceId })));
     expect(await f.adapter.languageMemory.listLanguagePatterns(query)).toEqual([]);
     entry.headers.splice(0, entry.headers.length, ...original);
     entry.pattern.pattern_json.sourceVersionId = "foreign.version" as SourceVersionId;
