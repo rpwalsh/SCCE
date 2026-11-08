@@ -72,6 +72,8 @@ export interface StructuredWorkspaceValidationEvidence extends Omit<StructuredPa
 
 export interface StructuredWorkspaceValidationResult extends Omit<WorkspacePatchValidationResult, "evidence"> {
   readonly evidence: StructuredWorkspaceValidationEvidence;
+  /** Transient mapping context for diagnostics; never included in persisted evidence. */
+  readonly locationContext: { readonly stageRoot: string; readonly workspaceRoot: string };
 }
 
 export type StructuredPatchValidationBoundary = "trusted-host" | "os-sandbox";
@@ -147,7 +149,7 @@ export async function runStructuredWorkspaceValidation(options: Omit<RunStructur
     schemaVersion: "scce.workspace-validation-evidence.v1" as const,
     policyId: options.policy.id,
     ...staged.evidence
-  } });
+  }, locationContext: staged.locationContext });
 }
 
 async function validateStagedWorkspace(options: Omit<RunStructuredPatchValidationOptions, "validationView">, validationView?: WorkspacePatchValidationView) {
@@ -181,7 +183,7 @@ async function validateStagedWorkspace(options: Omit<RunStructuredPatchValidatio
     const ok = execution.ok
         && execution.commands.length === options.policy.commands.length
         && execution.commands.every(command => command.code === 0 && !command.timedOut && !command.outputLimitExceeded);
-    return { evidence, result: { ok, validatorId: options.policy.id,
+    return { evidence, locationContext: { stageRoot, workspaceRoot }, result: { ok, validatorId: options.policy.id,
       executedChecks: ok ? executedCheckReceipts(execution.commands) : [] } };
   } finally {
     await rm(stageRoot, { recursive: true, force: true });

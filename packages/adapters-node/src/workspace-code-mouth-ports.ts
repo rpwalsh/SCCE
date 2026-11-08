@@ -79,7 +79,7 @@ async function verifyWorkspaceApplication(options: WorkspaceCodeMouthOptions, ta
   const tests = commands.filter(command => command.checkIds.includes("tests"));
   const testsExpected = validation.policy.commands.some(command => command.checkIds?.includes("tests"));
   const failures: ProgramDiagnostic[] = commands.filter(command => !passed(command)).flatMap(command =>
-    checkerDiagnostics(command, targetPath, codeLanguageForPath(targetPath) ?? "unknown", options.workspaceRoot).map(diagnostic => ({
+    checkerDiagnostics(command, targetPath, codeLanguageForPath(targetPath) ?? "unknown", options.workspaceRoot, result.locationContext).map(diagnostic => ({
       ...diagnostic,
       class: command.checkIds.includes("tests") ? "runtime" as const : diagnostic.class,
       patternId: `workspace.command.${command.index}.${diagnostic.patternId ?? diagnostic.class}`

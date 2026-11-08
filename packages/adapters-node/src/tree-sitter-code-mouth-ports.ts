@@ -156,6 +156,8 @@ const LOCATED_DIAGNOSTIC = new RegExp(
   "u"
 );
 
+const NODE_STACK_FRAME = /^\s*at\s+(?:async\s+)?(?:[^()]+\s+\()?((?:file:\/\/\/|[A-Za-z]:[\\/]|\/)[^():]+):(\d+):(\d+)\)?\s*$/u;
+
 /**
  * A discovered checker's output as diagnostics.
  *
@@ -168,7 +170,8 @@ export function checkerDiagnostics(
   result: { code: number | null; stdout: string; stderr: string },
   targetPath: string,
   languageId: string,
-  workspaceRoot?: string
+  workspaceRoot?: string,
+  locationContext?: { readonly stageRoot: string; readonly workspaceRoot: string }
 ): ProgramDiagnostic[] {
   const out: ProgramDiagnostic[] = [];
   const text = `${result.stdout}\n${result.stderr}`;
@@ -176,10 +179,29 @@ export function checkerDiagnostics(
   for (const [index, line] of lines.entries()) {
     const trimmed = line.trim();
     if (!trimmed) continue;
+    const frame = NODE_STACK_FRAME.exec(line);
+    if (frame) {
+      const decoded = checkerReportedPath(frame[1]!);
+      if (!decoded) continue;
+      const diagnosticPath = resolveCheckerPath(decoded, workspaceRoot, locationContext);
+      out.push({
+        id: `${languageId}:${diagnosticPath}:${frame[2]}:${frame[3]}:runtime`,
+        class: "runtime",
+        patternId: `${languageId}.checker`,
+        path: diagnosticPath,
+        line: Number(frame[2]),
+        column: Number(frame[3]),
+        message: trimmed,
+        raw: trimmed,
+        confidence: 0.9,
+        confidenceStatus: "compiler-observation-identity-not-patch-success-probability"
+      });
+      continue;
+    }
     const quoted = QUOTED_PATH_DIAGNOSTIC.exec(trimmed);
     if (quoted) {
       const complaint = text.split(/\r?\n/u).map(row => row.trim()).filter(Boolean).pop() ?? trimmed;
-      const diagnosticPath = workspaceRoot ? path.resolve(workspaceRoot, quoted[1]!) : targetPath;
+      const diagnosticPath = resolveCheckerPath(quoted[1]!, workspaceRoot, locationContext) ?? targetPath;
       out.push({
         id: `${languageId}:${diagnosticPath}:${quoted[2]}:${complaint.slice(0, 48)}`,
         class: "syntax",
@@ -210,7 +232,7 @@ export function checkerDiagnostics(
     }
     if (lineNumber < 1) continue;
     if (!message) continue;
-    const diagnosticPath = workspaceRoot && reported ? path.resolve(workspaceRoot, reported) : targetPath;
+    const diagnosticPath = reported ? resolveCheckerPath(reported, workspaceRoot, locationContext) ?? targetPath : targetPath;
     const caret = lines[index + 2]?.indexOf("^");
     const column = columnText ? Number(columnText) : caret !== undefined && caret >= 0 ? caret + 1 : undefined;
     out.push({
@@ -238,6 +260,35 @@ export function checkerDiagnostics(
     });
   }
   return out;
+}
+
+function checkerReportedPath(value: string): string | undefined {
+  if (value.startsWith("file://")) {
+    try {
+      const url = new URL(value);
+      const decoded = decodeURIComponent(url.pathname).replace(/^\/([A-Za-z]:\/)/u, "$1");
+      return url.host && url.host !== "localhost" ? `//${url.host}${decoded}` : decoded;
+    }
+    catch { return undefined; }
+  }
+  if (/^[A-Za-z]:[\\/]|^\//u.test(value)) return value;
+  return codeLanguageForPath(value) ? value : undefined;
+}
+
+function resolveCheckerPath(
+  reported: string,
+  workspaceRoot?: string,
+  locationContext?: { readonly stageRoot: string; readonly workspaceRoot: string }
+): string | undefined {
+  const absolute = path.isAbsolute(reported) || /^[A-Za-z]:[\\/]/u.test(reported);
+  if (!absolute) return workspaceRoot ? path.resolve(workspaceRoot, reported) : reported;
+  if (locationContext) {
+    const relative = path.relative(path.resolve(locationContext.stageRoot), path.resolve(reported));
+    if (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)) {
+      return path.resolve(locationContext.workspaceRoot, relative);
+    }
+  }
+  return reported;
 }
 
 /** A byte offset as the line and column a repair site is expressed in. */

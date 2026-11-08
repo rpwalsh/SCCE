@@ -3,6 +3,7 @@
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProgramDiagnostic, RepairOperation } from "@scce/kernel";
 import { codeSurfaceTokens, generateLearnedBehaviorCodeRepairs, learnedCodeRepairOperations, trainKneserNey } from "@scce/kernel";
@@ -231,5 +232,22 @@ describe("compiler-located shared grammar holes", () => {
     expect(rustTest).toMatchObject([{ path: path.join(root, "tests/ledger.rs"), line: 2, column: 93 }]);
     const pythonTest = checkerDiagnostics({ code: 1, stdout: "", stderr: '  File "ledger_test.py", line 3, in test_grouping\n    assert False\nAssertionError\n' }, "ledger.py", "python", root);
     expect(pythonTest).toMatchObject([{ path: path.join(root, "ledger_test.py"), line: 3 }]);
+  });
+
+  it("maps Node file URL stack frames from an explicitly owned validation stage", () => {
+    const workspaceRoot = path.join(tmpdir(), "scce workspace");
+    const stageRoot = path.join(tmpdir(), "scce-patch-validation-a1b2");
+    const output = [
+      "AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:",
+      `    at ${pathToFileURL(path.join(stageRoot, "test", "unit.mjs"))}:15:8`,
+      `    at async ${pathToFileURL(path.join(stageRoot, "test", "all.mjs"))}:4:1`
+    ].join("\n");
+    const diagnostics = checkerDiagnostics({ code: 1, stdout: output, stderr: "" }, "src/map.js", "javascript", workspaceRoot, { stageRoot, workspaceRoot });
+    expect(diagnostics).toHaveLength(2);
+    expect(diagnostics).toMatchObject([
+      { path: path.join(workspaceRoot, "test", "unit.mjs"), line: 15, column: 8, class: "runtime" },
+      { path: path.join(workspaceRoot, "test", "all.mjs"), line: 4, column: 1, class: "runtime" }
+    ]);
+    expect(diagnostics.every(diagnostic => diagnostic.path !== "src/map.js")).toBe(true);
   });
 });
