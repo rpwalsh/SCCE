@@ -3009,14 +3009,14 @@ function createLanguageIdentityStore(storage: PostgresStorageAdapter): LanguageI
       if (profileIds && !profileIds.length) return [];
       const params: unknown[] = profileIds ? [profileIds] : [];
       const profileAccess = storage.informationAccessPredicate("lp", params.length + 1); params.push(...profileAccess.params);
+      // Source access belongs to the labeled version; sources stores only identity metadata.
       const versionAccess = storage.informationAccessPredicate("sv", params.length + 1); params.push(...versionAccess.params);
-      const sourceAccess = storage.informationAccessPredicate("s", params.length + 1); params.push(...sourceAccess.params);
       const rows = await storage.query<{ id: string; language_id: string }>(
         `SELECT lp.id, lp.language_id FROM ${storage.table("language_profiles")} lp
          JOIN ${storage.table("source_versions")} sv ON sv.id=lp.source_version_id
          JOIN ${storage.table("sources")} s ON s.id=sv.source_id
          WHERE ${profileIds ? "lp.id=ANY($1::text[]) AND" : ""} lp.language_id IS NOT NULL
-           AND ${profileAccess.sql} AND ${versionAccess.sql} AND ${sourceAccess.sql}
+           AND ${profileAccess.sql} AND ${versionAccess.sql}
          ORDER BY lp.id`, params);
       return rows.map(row => ({ profileId: row.id, languageId: row.language_id }));
     },
