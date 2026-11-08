@@ -8,6 +8,8 @@ import {
   type CreativeEventConstructionCompiler,
   type SourceBoundLanguageConstructionTrainingSet
 } from "./language-construction-memory.js";
+import { compileCreativeSourceCorrespondences } from "./creative-source-correspondence.js";
+import type { TranscriptTurn } from "./dialogue-communicative-act-learning.js";
 import {
   evaluateHeldOutConstructionCoverage,
   induceSourceBoundConstructionTrainingSets,
@@ -146,6 +148,7 @@ export interface LanguageTrainingBatch {
   canonicalSource?: { sourceId: SourceId; contentHash: ContentHash };
   text: string;
   evidence: EvidenceSpan[];
+  transcriptTurns?: readonly TranscriptTurn[];
   createdAt: number;
   maxOrder?: number;
   maxCountersPerOrder?: number;
@@ -627,11 +630,14 @@ export function compileLanguageTrainingBatch(input: {
   else if (creativeEventCompilation?.issues.some(issue => issue.code !== LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.induction)) {
     warnings.push(...creativeEventCompilation.issues.map(issue => issue.code));
   }
+  const sourceCorrespondencePatterns = batch.transcriptTurns && creativeEventCompilation?.status === "compiled"
+    ? compileCreativeSourceCorrespondences({ turns: batch.transcriptTurns, profileId: batch.profile.id, updatedAt: batch.createdAt,
+      evidence: batch.evidence, events: creativeEventCompilation.bundle.creativeEvents ?? [], hasher: input.hasher }) : [];
 
   let units = uniqueRecords(memories.flatMap(memory => memory.units));
   let patterns = uniquePatterns([
     ...memories.flatMap(memory => memory.patterns), ...inducedLanguagePatterns, ...constructionPatterns, ...reversibleConstructionPatterns,
-    ...pairedAntiUnifiedConstructionPatterns, ...optionalNullRealizationPatterns, ...(batch.additionalPatterns ?? [])
+    ...pairedAntiUnifiedConstructionPatterns, ...optionalNullRealizationPatterns, ...(batch.additionalPatterns ?? []), ...sourceCorrespondencePatterns
   ]);
   let semanticFrames = uniqueRecords(memories.flatMap(memory => memory.semanticFrames));
   const rawModels = uniqueRecords(memories.flatMap(memory => memory.models));

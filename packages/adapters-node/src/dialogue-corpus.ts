@@ -196,6 +196,7 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
         streamUri: `${CORPUS_SOURCE_SYSTEM_IDS.dialogue}:${normalizeRelative(file.relativePath)}`,
         sourceUri: pathToFileURL(file.absolutePath).href,
         text,
+        ...(declared ? { transcriptTurns: declared.turns } : {}),
         mediaType: "text/plain",
         namespace: `corpus:${CORPUS_SOURCE_SYSTEM_IDS.dialogue}`,
         informationLabel: input.informationLabel,

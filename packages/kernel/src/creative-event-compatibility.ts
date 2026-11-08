@@ -1,12 +1,13 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { DurableCreativeEventConstruction } from "./language-construction-memory.js";
-import { clamp01, toJsonValue } from "./primitives.js";
+import { canonicalStringify, clamp01, toJsonValue } from "./primitives.js";
 import { segmentUnicodeSurfaceV2, type LexicalSegment } from "./unicode-segmentation-v2.js";
 import type { LanguagePatternRecord } from "./storage.js";
 import type { EvidenceId, Hasher, JsonValue } from "./types.js";
 import { induceLearnedConstructions, type AlignedSurfaceExample, type LearnedConstruction } from "./language-construction.js";
 import { createLearnedSurfaceInterpreter, type LearnedSurfaceInterpreter, type InterpretedSurfaceRole } from "./learned-surface-interpretation.js";
+import { CREATIVE_SOURCE_CORRESPONDENCE_RECIPE, verifyCreativeSourceCorrespondence, type CreativeSourceCorrespondence, type CreativeSourceCorrespondenceContext } from "./creative-source-correspondence.js";
 
 export const CREATIVE_REQUEST_FRAME_SCHEMA = "scce.creative_request_frame.v1" as const;
 export const CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA =
@@ -36,6 +37,7 @@ export interface CreativeRequestFrameAnchor {
   support: number;
   acceptedSupport: number;
   rejectedSupport: number;
+  observedSupport?: number;
   exampleTextHashes: string[];
   requestRoleExamples?: AlignedSurfaceExample[];
 }
@@ -78,29 +80,45 @@ export interface CreativeEventRoleCompatibility {
  * produced by any transparent estimator; runtime admission does not inspect
  * source-language words or infer missing rows.
  */
-export interface CreativeEventCompatibilityModel {
+interface CreativeEventCompatibilityModelIdentity {
   schema: typeof CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA;
   id: string;
   version: string;
   requestCompilerId: string;
   eventCompilerId: string;
-  calibrationId: string;
-  reliability: "calibrated" | "uncalibrated";
-  minimumAdmissiblePosterior: number;
-  minimumRolePosterior: number;
   eventCompatibilities: CreativeEventCompatibility[];
   roleCompatibilities: CreativeEventRoleCompatibility[];
   requestFrameAnchors?: CreativeRequestFrameAnchor[];
 }
 
-export interface CreativeEventCompatibilityDecision {
+export type CreativeEventCompatibilityModel = CreativeEventCompatibilityModelIdentity & ({
+  reliability: "calibrated" | "uncalibrated";
+  calibrationId: string;
+  minimumAdmissiblePosterior: number;
+  minimumRolePosterior: number;
+  sourceObservations?: never;
+} | {
+  reliability: "source_observed";
+  sourceObservations: CreativeSourceCorrespondence[];
+  calibrationId?: never;
+  minimumAdmissiblePosterior?: never;
+  minimumRolePosterior?: never;
+});
+
+interface CreativeCompatibilityIdentity {
   modelId: string;
   modelVersion: string;
+  sourceActivationIds: string[];
+}
+export type CreativeEventCompatibilityDecision = CreativeCompatibilityIdentity & ({
+  qualification?: "calibrated";
   calibrationId: string;
   posterior: number;
   threshold: number;
-  sourceActivationIds: string[];
-}
+} | { qualification: "source_observed"; observationIds: string[]; support: number });
+
+export type CreativeRoleCompatibilityDecision = { posterior: number; threshold: number; qualification?: "calibrated" }
+  | { qualification: "source_observed"; observationIds: string[]; support: number };
 
 export interface CreativeEventCompatibilityCorpusRoleBinding {
   requestRoleId: string;
@@ -140,12 +158,15 @@ export interface CompileCreativeEventCompatibilityCorpusInput {
   makeId(representation: JsonValue): string;
 }
 
+const verifiedObservedModels = new WeakSet<CreativeEventCompatibilityModel>();
+
 export function normalizeCreativeEventCompatibilityModels(
   models: readonly CreativeEventCompatibilityModel[]
 ): CreativeEventCompatibilityModel[] {
   return models
     .filter(validCreativeEventCompatibilityModel)
-    .map(model => ({
+    .map(model => {
+      const normalized: CreativeEventCompatibilityModel = {
       ...model,
       eventCompatibilities: [...model.eventCompatibilities]
         .filter(validEventCompatibility)
@@ -169,13 +190,26 @@ export function normalizeCreativeEventCompatibilityModels(
           || right.acceptedSupport - left.acceptedSupport
           || right.support - left.support
         ))
-    }))
+      };
+      if (verifiedObservedModels.has(model)) verifiedObservedModels.add(normalized);
+      return normalized;
+    })
     .sort((left, right) => (
       left.requestCompilerId.localeCompare(right.requestCompilerId)
       || left.eventCompilerId.localeCompare(right.eventCompilerId)
       || left.id.localeCompare(right.id)
       || left.version.localeCompare(right.version)
     ));
+}
+
+export function scopeCreativeEventCompatibilityModels(models: readonly CreativeEventCompatibilityModel[], eventIds: ReadonlySet<string>): CreativeEventCompatibilityModel[] {
+  return normalizeCreativeEventCompatibilityModels(models.flatMap(model => {
+    if (model.reliability !== "source_observed") return [model];
+    const sourceObservations = model.sourceObservations?.filter(row => eventIds.has(row.eventId)) ?? [];
+    const scoped = { ...model, sourceObservations, requestFrameAnchors: model.requestFrameAnchors?.filter(anchor => sourceAnchorOwned(anchor, sourceObservations)) };
+    if (verifiedObservedModels.has(model)) verifiedObservedModels.add(scoped);
+    return [scoped];
+  }));
 }
 
 export function creativeEventCompatibilityDecision(
@@ -188,7 +222,14 @@ export function creativeEventCompatibilityDecision(
     && candidate.requestCompilerId === frame.compilerId
     && candidate.eventCompilerId === event.compilerId
   ));
-  if (!model) return undefined;
+  if (!model) {
+    const observed = models.find(candidate => candidate.reliability === "source_observed" && verifiedObservedModels.has(candidate)
+      && candidate.requestCompilerId === frame.compilerId && candidate.eventCompilerId === event.compilerId
+      && (candidate.sourceObservations ?? []).some(row => observedFrameMatches(frame, row) && row.eventId === event.id));
+    const rows = observed?.sourceObservations?.filter(row => observedFrameMatches(frame, row) && row.eventId === event.id) ?? [];
+    return observed && rows.length ? { modelId: observed.id, modelVersion: observed.version, qualification: "source_observed",
+      observationIds: rows.map(row => row.id), support: rows.length, sourceActivationIds: [...new Set(rows.map(row => row.requestFrameId))] } : undefined;
+  }
   const candidates = model.eventCompatibilities
     .filter(row => (
       (row.requestFrameId === frame.id || frame.sourceActivationIds.includes(row.requestFrameId))
@@ -206,9 +247,9 @@ export function creativeEventCompatibilityDecision(
   return {
     modelId: model.id,
     modelVersion: model.version,
-    calibrationId: model.calibrationId,
+    calibrationId: model.calibrationId!,
     posterior: selected.posterior,
-    threshold: model.minimumAdmissiblePosterior,
+    threshold: model.minimumAdmissiblePosterior!,
     sourceActivationIds: [...selected.sourceActivationIds]
   };
 }
@@ -232,8 +273,23 @@ export function creativeEventRolePosterior(
     ))
     .sort((left, right) => right.posterior - left.posterior || right.support - left.support)[0];
   return selected
-    ? { posterior: selected.posterior, threshold: model.minimumRolePosterior }
+    ? { posterior: selected.posterior, threshold: model.minimumRolePosterior! }
     : undefined;
+}
+
+export function creativeEventRoleDecision(models: readonly CreativeEventCompatibilityModel[], frame: CreativeRequestFrame,
+  requestRoleId: string, eventRoleId: "scce.role.patient" | "scce.role.complement", event: DurableCreativeEventConstruction): CreativeRoleCompatibilityDecision | undefined {
+  if (models.some(model => model.reliability === "calibrated" && model.requestCompilerId === frame.compilerId)) {
+    return creativeEventRolePosterior(models, frame, requestRoleId, eventRoleId);
+  }
+  const rows = models.filter(model => model.reliability === "source_observed" && verifiedObservedModels.has(model) && model.requestCompilerId === frame.compilerId && model.eventCompilerId === event.compilerId)
+    .flatMap(model => model.sourceObservations ?? []).filter(row => observedFrameMatches(frame, row) && row.eventId === event.id
+      && row.bindings.some(binding => binding.requestRoleId === requestRoleId && binding.eventRoleId === eventRoleId));
+  return rows.length ? { qualification: "source_observed", observationIds: rows.map(row => row.id), support: rows.length } : undefined;
+}
+
+function observedFrameMatches(frame: CreativeRequestFrame, row: CreativeSourceCorrespondence): boolean {
+  return row.requestFrameId === frame.id || frame.sourceActivationIds.includes(row.requestFrameId);
 }
 
 export function parseCreativeEventCompatibilityCorpus(
@@ -340,12 +396,14 @@ export function compileCreativeEventCompatibilityCorpus(
 }
 
 export function creativeEventCompatibilityModelsFromPatterns(
-  patterns: readonly LanguagePatternRecord[]
+  patterns: readonly LanguagePatternRecord[], context?: CreativeSourceCorrespondenceContext
 ): CreativeEventCompatibilityModel[] {
   const models = patterns.flatMap(pattern => {
     const value = pattern.patternJson;
     if (!isRecord(value) || value.schema !== CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA) return [];
-    const model = compatibilityModelFromRecord(value, pattern.evidenceIds);
+    const model = compatibilityModelFromRecord(value, pattern.evidenceIds, context);
+    if (model?.reliability === "source_observed" && pattern.id !== model.id) return [];
+    if (model?.reliability === "source_observed" && model.sourceObservations?.some(row => !context?.events.some(event => event.id === row.eventId && event.profileId === pattern.profileId))) return [];
     return model ? [model] : [];
   });
   return normalizeCreativeEventCompatibilityModels(models);
@@ -365,20 +423,21 @@ export function compileCreativeRequestFrameFromCompatibilityModels(input: {
   if (!requestText.trim() || !input.models.length) return undefined;
   const interpreter = createLearnedSurfaceInterpreter(requestText, true);
   const candidates = input.models
-    .filter(model => model.reliability === "calibrated")
+    .filter(model => model.reliability === "calibrated" || (model.reliability === "source_observed" && verifiedObservedModels.has(model) && model.sourceObservations?.length))
     .flatMap(model => (model.requestFrameAnchors ?? []).flatMap(anchor => {
       const posterior = maxPosteriorForRequestFrame(model, anchor.requestFrameId);
-      if (posterior < model.minimumAdmissiblePosterior) return [];
+      if (model.reliability === "calibrated" && posterior < model.minimumAdmissiblePosterior!) return [];
       const roles = interpretedRequestRoles(anchor, interpreter, input.hasher);
       if (!roles) return [];
-      const allowedRoles = new Set(model.roleCompatibilities
-        .filter(row => row.requestFrameId === anchor.requestFrameId && row.posterior >= model.minimumRolePosterior)
-        .map(row => row.requestRoleId));
+      const allowedRoles = new Set(model.reliability === "source_observed"
+        ? model.sourceObservations?.filter(row => row.requestFrameId === anchor.requestFrameId).flatMap(row => row.bindings.map(binding => binding.requestRoleId))
+        : model.roleCompatibilities.filter(row => row.requestFrameId === anchor.requestFrameId && row.posterior >= model.minimumRolePosterior!).map(row => row.requestRoleId));
       if (roles.some(role => !allowedRoles.has(role.roleId))) return [];
       return [{ model, anchor, posterior, roles }];
     }))
     .sort((left, right) => (
-      right.posterior - left.posterior
+      Number(right.model.reliability === "calibrated") - Number(left.model.reliability === "calibrated")
+      || right.posterior - left.posterior
       || right.anchor.acceptedSupport - left.anchor.acceptedSupport
       || left.anchor.requestFrameId.localeCompare(right.anchor.requestFrameId)
     ));
@@ -660,7 +719,7 @@ function compatibilityOutcomeEntropy(
 }
 
 function compatibilityModelFromRecord(
-  value: Record<string, unknown>, evidenceIds: readonly EvidenceId[]
+  value: Record<string, unknown>, evidenceIds: readonly EvidenceId[], context?: CreativeSourceCorrespondenceContext
 ): CreativeEventCompatibilityModel | undefined {
   const eventCompatibilities = Array.isArray(value.eventCompatibilities)
     ? value.eventCompatibilities.flatMap(eventCompatibilityFromUnknown)
@@ -668,23 +727,36 @@ function compatibilityModelFromRecord(
   const roleCompatibilities = Array.isArray(value.roleCompatibilities)
     ? value.roleCompatibilities.flatMap(roleCompatibilityFromUnknown)
     : [];
-  const requestFrameAnchors = Array.isArray(value.requestFrameAnchors)
+  let requestFrameAnchors = Array.isArray(value.requestFrameAnchors)
     ? value.requestFrameAnchors.flatMap(anchor => requestFrameAnchorFromUnknown(anchor, evidenceIds))
     : [];
-  const model: CreativeEventCompatibilityModel = {
+  const sourceObserved = value.reliability === "source_observed";
+  if (!sourceObserved && value.sourceObservations !== undefined) return undefined;
+  if (sourceObserved && (!context || value.version !== CREATIVE_SOURCE_CORRESPONDENCE_RECIPE || value.requestCompilerId !== CREATIVE_SOURCE_CORRESPONDENCE_RECIPE
+    || value.id !== `creative.observed.compatibility.${context.hasher.digestHex(canonicalStringify(toJsonValue({
+      schema: value.schema, version: value.version, requestCompilerId: value.requestCompilerId, eventCompilerId: value.eventCompilerId,
+      reliability: value.reliability, eventCompatibilities: value.eventCompatibilities, roleCompatibilities: value.roleCompatibilities,
+      sourceObservations: value.sourceObservations, requestFrameAnchors: value.requestFrameAnchors
+    })))}`)) return undefined;
+  if (sourceObserved && (value.calibrationId !== undefined || value.minimumAdmissiblePosterior !== undefined || value.minimumRolePosterior !== undefined
+    || !Array.isArray(value.eventCompatibilities) || value.eventCompatibilities.length !== 0 || !Array.isArray(value.roleCompatibilities) || value.roleCompatibilities.length !== 0)) return undefined;
+  const sourceObservations = sourceObserved && context && Array.isArray(value.sourceObservations)
+    ? value.sourceObservations.filter((row): row is CreativeSourceCorrespondence => verifyCreativeSourceCorrespondence(row as CreativeSourceCorrespondence, context, evidenceIds)) : [];
+  if (sourceObserved) requestFrameAnchors = requestFrameAnchors.filter(anchor => anchor.requestCompilerId === value.requestCompilerId && sourceAnchorOwned(anchor, sourceObservations));
+  const identity: CreativeEventCompatibilityModelIdentity = {
     schema: CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA,
     id: stringValue(value.id),
     version: stringValue(value.version),
     requestCompilerId: stringValue(value.requestCompilerId),
     eventCompilerId: stringValue(value.eventCompilerId),
-    calibrationId: stringValue(value.calibrationId),
-    reliability: value.reliability === "calibrated" ? "calibrated" : "uncalibrated",
-    minimumAdmissiblePosterior: numberValue(value.minimumAdmissiblePosterior),
-    minimumRolePosterior: numberValue(value.minimumRolePosterior),
     eventCompatibilities,
     roleCompatibilities,
     ...(requestFrameAnchors.length ? { requestFrameAnchors } : {})
   };
+  const model: CreativeEventCompatibilityModel = sourceObserved ? { ...identity, reliability: "source_observed", sourceObservations }
+    : { ...identity, reliability: value.reliability === "calibrated" ? "calibrated" : "uncalibrated", calibrationId: stringValue(value.calibrationId),
+      minimumAdmissiblePosterior: numberValue(value.minimumAdmissiblePosterior), minimumRolePosterior: numberValue(value.minimumRolePosterior) };
+  if (sourceObserved) verifiedObservedModels.add(model);
   return validCreativeEventCompatibilityModel(model) ? model : undefined;
 }
 
@@ -731,6 +803,7 @@ function requestFrameAnchorFromUnknown(value: unknown, evidenceIds: readonly Evi
     support: numberValue(value.support),
     acceptedSupport: numberValue(value.acceptedSupport),
     rejectedSupport: numberValue(value.rejectedSupport),
+    ...(typeof value.observedSupport === "number" ? { observedSupport: value.observedSupport } : {}),
     exampleTextHashes: stringArray(value.exampleTextHashes).slice(0, 16),
     ...(Array.isArray(value.requestRoleExamples) ? {
       requestRoleExamples: value.requestRoleExamples.flatMap(example => requestRoleExampleFromUnknown(example, evidenceIds))
@@ -821,11 +894,13 @@ function validCreativeEventCompatibilityModel(
       && model.version
       && model.requestCompilerId
       && model.eventCompilerId
-      && model.calibrationId
     )
-    && (model.reliability === "calibrated" || model.reliability === "uncalibrated")
-    && unitInterval(model.minimumAdmissiblePosterior)
-    && unitInterval(model.minimumRolePosterior)
+    && (model.reliability === "source_observed"
+      ? verifiedObservedModels.has(model) && Boolean(model.sourceObservations?.length && model.requestFrameAnchors?.length) && model.calibrationId === undefined
+        && model.minimumAdmissiblePosterior === undefined && model.minimumRolePosterior === undefined
+        && model.eventCompatibilities.length === 0 && model.roleCompatibilities.length === 0
+      : Boolean(model.calibrationId) && (model.reliability === "calibrated" || model.reliability === "uncalibrated")
+        && unitInterval(model.minimumAdmissiblePosterior!) && unitInterval(model.minimumRolePosterior!))
     && Array.isArray(model.eventCompatibilities)
     && Array.isArray(model.roleCompatibilities);
 }
@@ -843,8 +918,18 @@ function validRequestFrameAnchor(row: CreativeRequestFrameAnchor): boolean {
     && row.acceptedSupport >= 0
     && Number.isSafeInteger(row.rejectedSupport)
     && row.rejectedSupport >= 0
-    && row.acceptedSupport + row.rejectedSupport === row.support
+    && (row.observedSupport === undefined || (Number.isSafeInteger(row.observedSupport) && row.observedSupport >= 0))
+    && row.acceptedSupport + row.rejectedSupport + (row.observedSupport ?? 0) === row.support
     && Array.isArray(row.exampleTextHashes);
+}
+
+function sourceAnchorOwned(anchor: CreativeRequestFrameAnchor, observations: readonly CreativeSourceCorrespondence[]): boolean {
+  const rows = observations.filter(row => row.requestFrameId === anchor.requestFrameId);
+  const examples = anchor.requestRoleExamples ?? [];
+  return rows.length > 0 && examples.length > 0 && examples.every(example => rows.some(row => row.request.surface === example.surface
+    && example.evidenceIds.includes(row.request.evidenceId)) && example.profileKey === anchor.requestCompilerId
+    && example.roleSpans.every(role => rows.some(row => row.request.surface === example.surface
+      && row.bindings.some(binding => binding.requestRoleId === role.roleId && binding.requestStart === role.start && binding.requestEnd === role.end))));
 }
 
 function validEventCompatibility(row: CreativeEventCompatibility): boolean {

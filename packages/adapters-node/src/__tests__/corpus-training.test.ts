@@ -4,6 +4,7 @@ import { getFixtureLanguagePatternProjection, replaceFixtureLanguagePatternProje
 import { readFileSync } from "node:fs";
 const humanCreativePair = JSON.parse(readFileSync(new URL("../../../kernel/src/__tests__/fixtures/dolly-human-creative-pair.json", import.meta.url), "utf8")) as { text: string };
 import { CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA } from "../../../kernel/src/language-construction-memory.js";
+import { compileCreativeRequestFrameFromCompatibilityModels } from "../../../kernel/src/creative-event-compatibility.js";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import os from "node:os";
@@ -2176,8 +2177,11 @@ describe("dialogue corpus training", () => {
     expect(result.filesTrained).toBe(1);
     const patterns = fixture.state.patterns.filter(pattern => (pattern.patternJson as { schema?: string }).schema === CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA);
     expect(patterns).toHaveLength(1);
-    const restarted = createLanguageMemoryRuntime({ hasher: createHasher() }).hydrate({ models: [], patterns: JSON.parse(JSON.stringify(patterns)), constructionEvidence: fixture.state.evidence });
+    const restarted = createLanguageMemoryRuntime({ hasher: createHasher() }).hydrate({ models: [], patterns: JSON.parse(JSON.stringify(fixture.state.patterns)), constructionEvidence: fixture.state.evidence });
     expect(restarted.importedConstructionBundles.flatMap(bundle => bundle.creativeEvents ?? []).length).toBeGreaterThan(0);
+    expect(restarted.creativeEventCompatibilityModels.some(model => model.reliability === "source_observed")).toBe(true);
+    expect(compileCreativeRequestFrameFromCompatibilityModels({ requestText: humanCreativePair.turns[0]!.surface,
+      models: restarted.creativeEventCompatibilityModels, hasher: createHasher() })?.arguments.length).toBeGreaterThan(0);
     expect(patterns.every(pattern => informationLabelOf(pattern.informationLabel).exportClass === "restricted")).toBe(true);
   });
 

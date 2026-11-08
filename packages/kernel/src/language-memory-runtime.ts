@@ -21,6 +21,7 @@ import {
   creativeEventCompatibilityModelsFromPatterns,
   isCreativeEventCompatibilityPattern,
   normalizeCreativeEventCompatibilityModels,
+  scopeCreativeEventCompatibilityModels,
   type CreativeEventCompatibilityModel
 } from "./creative-event-compatibility.js";
 import { SENTENCE_BOUNDARY_SYMBOLS, collapseSurfaceWhitespace, ensureSurfaceSentence as ensureUnicodeSurfaceSentence, isSentenceBoundarySymbol as isUnicodeSentenceBoundarySymbol, sourceDerivedCasingHints, splitSurfaceSentences, stripTerminalSentenceBoundary, surfaceContainsTerm, surfaceWords } from "./surface-linguistics.js";
@@ -628,16 +629,16 @@ export function createLanguageMemoryRuntime(options: { idFactory?: IdFactory; ha
       const constructionInput = constructionPatterns.length ? structuredClone({
         patterns: constructionPatterns, evidence: input.constructionEvidence ?? []
       }) : undefined;
-      const creativeEventCompatibilityModels = normalizeCreativeEventCompatibilityModels(
-        [
-          ...(input.creativeEventCompatibilityModels ?? []),
-          ...creativeEventCompatibilityModelsFromPatterns(persistedPatterns)
-        ]
-      );
       const joinPrograms = joinProgramsFromPatterns(importedPatterns);
       const vocabularySize = uniqueVocabularySize(models) + uniqueUnitVocabularySize(importedUnits);
       const priorModelCount = input.models.filter(isImportedLanguagePriorModel).length;
       const finish = (constructionMemory: ReturnType<typeof hydrateLanguageConstructionPatterns>): LanguageMemoryRuntimeState => {
+        const creativeEventCompatibilityModels = normalizeCreativeEventCompatibilityModels([
+          ...(input.creativeEventCompatibilityModels ?? []).filter(model => model.reliability !== "source_observed"),
+          ...creativeEventCompatibilityModelsFromPatterns(persistedPatterns, options.hasher ? {
+            hasher: options.hasher, evidence: input.constructionEvidence ?? [], events: constructionMemory.bundles.flatMap(bundle => bundle.creativeEvents ?? [])
+          } : undefined)
+        ]);
         const importedLanguagePriorCount = importedUnits.length + importedPatterns.length + importedObservations.length + importedSemanticFrames.length + constructionMemory.bundles.length + importedReversibleConstructions.length + importedPairedAntiUnifiedConstructions.length + optionalNullRealizationModels.length + creativeEventCompatibilityModels.length + joinPrograms.length + priorModelCount;
         const competenceVector = competenceFromRuntime({ models, observedSymbolCount, vocabularySize, languageHints, importedUnits, importedPatterns, importedObservations, importedSemanticFrames, importedConstructionBundles: constructionMemory.bundles });
         return {
@@ -2124,9 +2125,9 @@ function scopeLanguageMemoryStateWith(
   const retainedCreativeCompilerIds = new Set(importedConstructionBundles.flatMap(bundle => (
     (bundle.creativeEvents ?? []).map(event => event.compilerId)
   )));
-  const creativeEventCompatibilityModels = state.creativeEventCompatibilityModels.filter(model => (
+  const creativeEventCompatibilityModels = scopeCreativeEventCompatibilityModels(state.creativeEventCompatibilityModels.filter(model => (
     retainedCreativeCompilerIds.has(model.eventCompilerId)
-  ));
+  )), new Set(importedConstructionBundles.flatMap(bundle => (bundle.creativeEvents ?? []).map(event => event.id))));
   const rejectedConstructionPatterns = state.rejectedConstructionPatterns.filter(issue => (
     issue.profileId ? ownership.profile(issue.profileId) : false
   ));

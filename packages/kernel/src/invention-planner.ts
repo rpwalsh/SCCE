@@ -4,7 +4,7 @@ import { DIALOGUE_ACTION_IDS, type DialogueState } from "./dialogue-pragmatics.j
 import { kneserNeyProbability } from "./kneser-ney.js";
 import {
   creativeEventCompatibilityDecision,
-  creativeEventRolePosterior,
+  creativeEventRoleDecision,
   type CreativeEventCompatibilityDecision,
   type CreativeRequestFrame,
   type CreativeRequestSpan
@@ -280,14 +280,18 @@ interface StructuralCreativeEventPlanRecord {
     requestArgumentId: string;
     requestRoleId: string;
     requestSpan: CreativeRequestSpan;
-    rolePosterior: number;
-    roleThreshold: number;
+    rolePosterior?: number;
+    roleThreshold?: number;
+    qualification?: "source_observed";
+    observationIds?: string[];
     admissible: true;
   }>;
   compatibilityModelId: string;
   compatibilityModelVersion: string;
-  compatibilityCalibrationId: string;
-  compatibilityThreshold: number;
+  compatibilityCalibrationId?: string;
+  compatibilityThreshold?: number;
+  compatibilityQualification?: "source_observed";
+  observedCorrespondenceIds?: string[];
   requestFit: number;
   graphFit: number;
   routeFit: number;
@@ -905,7 +909,7 @@ function buildStructuralCreativeEventPlan(
   if (!requestFrame || !validCreativeRequestFrame(input.requestText, requestFrame)) return [];
   const compatibilityModels = input.languageMemoryState.creativeEventCompatibilityModels;
   if (!compatibilityModels.some(model => (
-    model.reliability === "calibrated"
+    (model.reliability === "calibrated" || model.reliability === "source_observed")
     && model.requestCompilerId === requestFrame.compilerId
   ))) return [];
   const structuralEventLimit = structuralCreativeEventLimit(input);
@@ -920,7 +924,7 @@ function buildStructuralCreativeEventPlan(
           requestFrame,
           event
         );
-        if (!compatibility || compatibility.posterior < compatibility.threshold) return [];
+        if (!compatibility || (compatibility.qualification !== "source_observed" && compatibility.posterior < compatibility.threshold)) return [];
         const requestRoleBindings = creativeRequestRoleBindings(
           compatibilityModels,
           requestFrame,
@@ -930,16 +934,18 @@ function buildStructuralCreativeEventPlan(
         const routeIndex = routeIndexByEventId.get(event.id);
         if (routeIndex === undefined) return [];
         const graphFit = structuralCreativeEventGraphFit(input, event);
+        const requestFit = compatibility.qualification === "source_observed"
+          ? requestRoleBindings.length / Math.max(1, requestFrame.arguments.length) : compatibility.posterior;
         return [{
           bundleId: bundle.id,
           event,
           routeIndex,
           requestRoleBindings,
           compatibility,
-          requestFit: compatibility.posterior,
+          requestFit,
           graphFit,
           routeFit: clamp01(
-            1 - (1 - compatibility.posterior) * (1 - graphFit)
+            1 - (1 - requestFit) * (1 - graphFit)
           )
         }];
       });
@@ -1017,8 +1023,9 @@ function buildStructuralCreativeEventPlan(
       requestRoleBindings: row.requestRoleBindings,
       compatibilityModelId: row.compatibility.modelId,
       compatibilityModelVersion: row.compatibility.modelVersion,
-      compatibilityCalibrationId: row.compatibility.calibrationId,
-      compatibilityThreshold: row.compatibility.threshold,
+      ...(row.compatibility.qualification === "source_observed"
+        ? { compatibilityQualification: "source_observed" as const, observedCorrespondenceIds: row.compatibility.observationIds }
+        : { compatibilityCalibrationId: row.compatibility.calibrationId, compatibilityThreshold: row.compatibility.threshold }),
       requestFit: row.requestFit,
       graphFit: row.graphFit,
       routeFit: row.routeFit,
@@ -1043,10 +1050,14 @@ function compareCompatibleCreativeEvents(
     event: DurableCreativeEvent;
   }
 ): number {
-  return right.compatibility.posterior - left.compatibility.posterior
+  return compatibilityRank(right.compatibility) - compatibilityRank(left.compatibility)
     || right.graphFit - left.graphFit
     || left.event.sourceOrdinal - right.event.sourceOrdinal
     || left.event.id.localeCompare(right.event.id);
+}
+
+function compatibilityRank(value: CreativeEventCompatibilityDecision | ReturnType<typeof creativeEventRoleDecision>): number {
+  return value && value.qualification !== "source_observed" ? value.posterior : 0;
 }
 
 function creativeRequestRoleBindings(
@@ -1070,18 +1081,19 @@ function creativeRequestRoleBindings(
     const candidates = frame.arguments
       .filter(argument => !usedArguments.has(argument.id))
       .flatMap(argument => {
-        const compatibility = creativeEventRolePosterior(
+        const compatibility = creativeEventRoleDecision(
           models,
           frame,
           argument.roleId,
-          binding.roleId
+          binding.roleId,
+          event
         );
-        return compatibility && compatibility.posterior >= compatibility.threshold
+        return compatibility && (compatibility.qualification === "source_observed" || compatibility.posterior >= compatibility.threshold)
           ? [{ argument, compatibility }]
           : [];
       })
       .sort((left, right) => (
-        right.compatibility.posterior - left.compatibility.posterior
+        compatibilityRank(right.compatibility) - compatibilityRank(left.compatibility)
         || left.argument.id.localeCompare(right.argument.id)
       ));
     const selected = candidates[0];
@@ -1096,8 +1108,9 @@ function creativeRequestRoleBindings(
         requestArgumentId: candidate.argument.id,
         requestRoleId: candidate.argument.roleId,
         requestSpan: { ...candidate.argument.span },
-        rolePosterior: candidate.compatibility.posterior,
-        roleThreshold: candidate.compatibility.threshold,
+        ...(candidate.compatibility.qualification === "source_observed"
+          ? { qualification: "source_observed" as const, observationIds: candidate.compatibility.observationIds }
+          : { rolePosterior: candidate.compatibility.posterior, roleThreshold: candidate.compatibility.threshold }),
         admissible: true
       }, ...remaining];
     }

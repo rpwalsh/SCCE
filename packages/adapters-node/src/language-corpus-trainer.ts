@@ -82,12 +82,14 @@ import {
   type ScceEvent,
   type PreparedLanguageTrainingSegmentation
 } from "@scce/kernel";
+import type { TranscriptTurn } from "@scce/kernel";
 
 export interface LanguageCorpusTrainingInput {
   storage: ScceStorage;
   sourceSystem: string;
   streamUri: string;
   text: string;
+  transcriptTurns?: readonly TranscriptTurn[];
   sourceUri?: string;
   sourceVersionId?: SourceVersionId;
   evidence?: readonly EvidenceSpan[];
@@ -1013,6 +1015,7 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
       ...(canonicalSource ? { canonicalSource: { sourceId: canonicalSource.sourceId, contentHash: canonicalSource.contentHash } } : {}),
       text,
       evidence,
+      ...(input.transcriptTurns ? { transcriptTurns: input.transcriptTurns } : {}),
       ...(preparedInduction ? { preparedInduction } : {}),
       ...(input.profileBinding ? { profileBinding: input.profileBinding } : {}),
       ...(constructionPoolEvidence.length ? { constructionEvidence: [...evidence, ...constructionPoolEvidence] } : {}),
