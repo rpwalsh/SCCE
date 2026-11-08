@@ -14,6 +14,12 @@ Three parties, none doing another's job:
 
 **The build decides.** Every proposal is applied, verified, and rolled back if it fails. A wrong composition costs one iteration and leaves nothing behind, which is why generating freely is safe here in a way it is not for a writer with no gate.
 
+Repair results carry a typed verification receipt through the CLI, HTTP response and applied-patch event.
+`compiler_only` records a build check with no executed tests; `executed_tests` records the configured tests, not
+universal behavioral correctness. Unrun or unknown test success is `null`. A failing verifier with no diagnostic
+cannot resolve a repair or justify retaining it as progress. The [frozen write-loss acceptance case](../tools/repair-acceptance/README.md)
+reproduces a compiling harmful edit and checks native rejection, rollback, exact source restoration and receipt scope.
+
 ## What may be written
 
 A compiler is a one-sided criterion. It bounds what is *wrong* with a program and says nothing about what the program still has to *be*, so a gate resting on it alone is satisfiable by deleting the code that failed. A search over a learned distribution finds that solution immediately, because it is cheap and always available.
