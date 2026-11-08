@@ -30,25 +30,23 @@ async function executable(name) {
   return null;
 }
 export async function discoverNativeTools(budgets, dependencies = {}) {
-  const find = dependencies.executable ?? executable, run = dependencies.exec ?? exec;
+  const find = dependencies.executable ?? executable;
+  const resolveVerifier = dependencies.findVerifierCapability ?? (async language => {
+    const adapter = await import(new URL('../../packages/adapters-node/dist/index.js', import.meta.url).href);
+    return adapter.findCodeVerifierCapability(language);
+  });
   const tools = { node: { available: true, path: process.execPath, version: process.version, sha256: await fileHash(process.execPath) }, javascript: { available: true, path: process.execPath, version: process.version, budget: { timeMs: budgets.timeMs, outputBytes: budgets.outputBytes } } };
   const require = createRequire(import.meta.url);
   try {
     const compilerPath = require.resolve('typescript/bin/tsc');
     tools.typescript = { available: true, compilerPath, version: JSON.parse(await readFile(require.resolve('typescript/package.json'), 'utf8')).version, sha256: await fileHash(compilerPath), budget: { timeMs: budgets.timeMs, outputBytes: budgets.outputBytes } };
   } catch { tools.typescript = { available: false, reason: 'Install the frozen repository TypeScript dependency.' }; }
-  for (const [language, commands] of [['python', ['python', 'python3']], ['rust', ['rustc']], ['go', ['go']]]) {
-    let found;
-    for (const command of commands) {
-      const resolved = await find(command); if (!resolved) continue;
-      try {
-        const args = language === 'go' ? ['version'] : ['--version'];
-        const result = await run(resolved, args, { timeout: budgets.timeMs, maxBuffer: budgets.outputBytes, windowsHide: true });
-        found = { available: true, path: resolved, version: `${result.stdout}${result.stderr}`.trim(), sha256: await fileHash(resolved), budget: { timeMs: budgets.timeMs, outputBytes: budgets.outputBytes } };
-        break;
-      } catch {}
-    }
-    tools[language] = found ?? { available: false, reason: `No working native ${language} compiler/runtime was found on PATH.` };
+  for (const language of ['python', 'rust', 'go']) {
+    const capability = await resolveVerifier(language);
+    if (capability.status !== 'available') { tools[language] = { available: false, reason: capability.reason }; continue; }
+    const resolved = await find(capability.verifier.command);
+    tools[language] = resolved ? { available: true, path: resolved, version: capability.verifier.version, sha256: await fileHash(resolved), discovery: 'canonical_findCodeVerifierCapability', budget: { timeMs: budgets.timeMs, outputBytes: budgets.outputBytes } }
+      : { available: false, reason: `Canonical ${language} checker was found but its executable could not be resolved for hashing: ${capability.verifier.command}` };
   }
   return tools;
 }
