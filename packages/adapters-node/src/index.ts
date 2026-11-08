@@ -13,6 +13,7 @@ export * from "./wikipedia-v3-ingestor.js";
 export * from "./alignment-event-artifacts.js";
 export * from "./language-corpus-trainer.js";
 export * from "./dialogue-corpus.js";
+export * from "./corefud-source-reader.js";
 export * from "./gutenberg-corpus.js";
 export * from "./oss-corpus.js";
 export * from "./github-oss-acquisition.js";

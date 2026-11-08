@@ -1,0 +1,32 @@
+{
+  "schema": "scce.coreference-source-catalog.v1",
+  "scope": "bounded human-annotated source projection; raw-text inference unavailable",
+  "sources": [
+    {
+      "language": "es",
+      "repository": "UniversalDependencies/UD_Spanish-AnCora",
+      "commit": "20adddbfcdd773c6dc97ba48ea11ca9364e74185",
+      "declaredLicense": "CC-BY-4.0",
+      "shareAlike": false,
+      "attribution": "AnCora / AnCora-CO, Recasens and Marti (2010), Universal Dependencies Spanish AnCora contributors; see pinned README.md",
+      "files": [
+        { "file": "LICENSE.txt", "bytes": 189, "gitBlobSha1": "349a65a17a7259bf4897226bcc11ea74de399582", "sha256": "653702c7fdee69f7d7a439c9ba4c178c26e745479f6e6d2943bed1a9b9c7bf67", "role": "license" },
+        { "file": "README.md", "bytes": 6140, "gitBlobSha1": "20984b16102e20e8bedd0fb2f0cfe73eab44b748", "sha256": "695eeb9e89e7da50f08a9831c5e95063d124f873d8e47ded77c461790af467e2", "role": "attribution" },
+        { "file": "es_ancora-ud-dev.conllu", "bytes": 5121417, "gitBlobSha1": "ad5d02ae2226d39897ab93a8eeaad44b29fd1562", "sha256": "1a132068062edf2654fb45b41cd4c59ba7e5c18e7c5f642ed5a9cc351fd9f0fe", "role": "annotations" }
+      ]
+    },
+    {
+      "language": "ca",
+      "repository": "UniversalDependencies/UD_Catalan-AnCora",
+      "commit": "7f3d23e85abc0656e8e88535d28174b030eb4d20",
+      "declaredLicense": "CC-BY-4.0",
+      "shareAlike": false,
+      "attribution": "AnCora / AnCora-CO, Recasens and Marti (2010), Universal Dependencies Catalan AnCora contributors; see pinned README.md",
+      "files": [
+        { "file": "LICENSE.txt", "bytes": 189, "gitBlobSha1": "349a65a17a7259bf4897226bcc11ea74de399582", "sha256": "653702c7fdee69f7d7a439c9ba4c178c26e745479f6e6d2943bed1a9b9c7bf67", "role": "license" },
+        { "file": "README.md", "bytes": 5156, "gitBlobSha1": "91c33698a6e485da73c1ac1bda5187dc41472b5b", "sha256": "7b39b4ef5752471bef5beb14b036ca959924dcb8e3ffd961b87abd196deca5ee", "role": "attribution" },
+        { "file": "ca_ancora-ud-dev.conllu", "bytes": 5441926, "gitBlobSha1": "2415bd6113e1e0bf75a4dce4ecf32ceae09d3e95", "sha256": "29fe512fdd86724d2c9f24604001f2ca021dd64b06c9fd0a9ad9ee7a7de05e01", "role": "annotations" }
+      ]
+    }
+  ]
+}
