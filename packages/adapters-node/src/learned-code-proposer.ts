@@ -133,13 +133,30 @@ export interface LearnedCodeProposerOptions {
   maxCandidates?: number;
   corpusWeight?: number;
   log?: (message: string) => void;
+  /** Emit numeric phase receipts through log; also enabled by SCCE_CODE_REPAIR_PHASE_TIMINGS=1. */
+  phaseTimings?: boolean;
 }
+
+type RepairPhase = <T>(name: string, operation: () => T | Promise<T>, count?: (result: T) => number) => Promise<T>;
 
 export function createLearnedCodeProposer(options: LearnedCodeProposerOptions): LearnedCodeProposer & {
   corpusAvailability(languageId: string): LearnedCodeCorpusAvailability;
 } {
   const modelLimit = Math.max(1, Math.min(256, Math.floor(options.modelLimit ?? 96)));
   const log = options.log ?? (() => {});
+  const phase: RepairPhase = async (name, operation, count) => {
+    if (!(options.phaseTimings ?? process.env.SCCE_CODE_REPAIR_PHASE_TIMINGS === "1")) return operation();
+    const started = performance.now();
+    try {
+      const result = await operation();
+      log(`[repair-phase] ${JSON.stringify({ phase: name, elapsedMs: performance.now() - started, status: "completed",
+        ...(count ? { count: count(result) } : {}) })}`);
+      return result;
+    } catch (error) {
+      log(`[repair-phase] ${JSON.stringify({ phase: name, elapsedMs: performance.now() - started, status: "failed" })}`);
+      throw error;
+    }
+  };
   const byLanguage = new Map<string, Promise<KneserNeyModel[]>>();
   const availabilityByLanguage = new Map<string, LearnedCodeCorpusAvailability>();
   const hasher = createHasher();
@@ -165,7 +182,7 @@ export function createLearnedCodeProposer(options: LearnedCodeProposerOptions): 
     const cached = byLanguage.get(languageId);
     if (cached) return cached;
     availabilityByLanguage.set(languageId, { languageId, modelLimit, countSemantics: "admitted_run_models", status: "loading", modelsAvailable: null });
-    const loading = loadCodeModels(options.storage, languageId, modelLimit, context).then(models => {
+    const loading = phase("models", () => loadCodeModels(options.storage, languageId, modelLimit, context, phase), rows => rows.length).then(models => {
       availabilityByLanguage.set(languageId, { languageId, modelLimit, countSemantics: "admitted_run_models", status: "loaded", modelsAvailable: models.length });
       return models;
     }, error => {
@@ -197,15 +214,15 @@ export function createLearnedCodeProposer(options: LearnedCodeProposerOptions): 
         log(`no usable ${languageId} models in the requested corpus slice; the learned lane has nothing to compose from`);
         return { models, candidates: [] };
       }
-      const spans = await repairSpans(options, languageId, context, diagnostics);
-      const constructions = await projectConstructions(options, context, constructionsByWorkspace);
+      const spans = await phase("repair_spans", () => repairSpans(options, languageId, context, diagnostics), rows => rows.length);
+      const constructions = await phase("project_constructions", () => projectConstructions(options, context, constructionsByWorkspace), rows => rows.length);
       if (constructions.length) log(`${constructions.length} shape(s) learned from this project`);
       // What the request is about, where the corpus has documentation that answers it. A repair is driven by
       // diagnostics and does not need this to work; where it lands, it says which names the request put in play
       // beyond the ones it happened to spell.
       const known = knownSymbols(context.targetText, models);
       const holeSymbols = new Set(spans.flatMap(span => codeSurfaceTokens(context.targetText.slice(span.start, span.start + span.length))));
-      const intent = await codeIntentForRequest({ storage: options.storage, requestText: request, knownSymbols: known, languageId });
+      const intent = await phase("documentation_intent", () => codeIntentForRequest({ storage: options.storage, requestText: request, knownSymbols: known, languageId }), result => result.references.length);
       if (intent.references.length) {
         log(`the request matches documentation for ${intent.references.length} file(s): ${intent.references.slice(0, 3).map(reference => reference.relativePath).join(", ")}`);
       }
@@ -220,10 +237,12 @@ export function createLearnedCodeProposer(options: LearnedCodeProposerOptions): 
         candidates: generateLearnedSyntaxCodeInsertions({ models, languageId, targetPath: context.targetPath, targetText: context.targetText,
           sites: insertionSites, failureObservationId: `sha256:${hasher.digestHex(JSON.stringify({ sourceHash: hasher.digestHex(context.targetText), diagnostics }))}`,
           ...(options.maxCandidates === undefined ? {} : { maxCandidates: options.maxCandidates }) }) }) : [];
-      const generated = insertions.length ? insertions : context.behavioralFailure && !spans.length
+      const behaviorSites = !insertions.length && context.behavioralFailure && !spans.length
+        ? await phase("behavior_sites", () => treeSitterBehaviorRepairSites({ targetPath: context.targetPath, text: context.targetText }), rows => rows.length) : [];
+      const generated = await phase("generate_candidates", () => insertions.length ? insertions : context.behavioralFailure && !spans.length
         ? generateLearnedBehaviorCodeRepairs({ models, languageId, targetPath: context.targetPath, targetText: context.targetText,
           failureObservationId: context.behavioralFailure.observationId,
-          sites: await treeSitterBehaviorRepairSites({ targetPath: context.targetPath, text: context.targetText }),
+          sites: behaviorSites,
           ...(options.maxCandidates === undefined ? {} : { maxCandidates: options.maxCandidates }) })
         : generateLearnedCodeRepairs({
         models,
@@ -236,7 +255,7 @@ export function createLearnedCodeProposer(options: LearnedCodeProposerOptions): 
         ...(constructions.length ? { constructions } : {}),
         ...(options.maxCandidates !== undefined ? { maxCandidates: options.maxCandidates } : {}),
         ...(options.corpusWeight !== undefined ? { corpusWeight: options.corpusWeight } : {})
-        });
+        }), rows => rows.length);
       const candidates = insertions.length || languageId === "typescript" ? generated : await grammaticalTreeSitterRepairs({ targetPath: context.targetPath, text: context.targetText, candidates: generated });
       return { models, candidates };
       })() };
@@ -385,9 +404,9 @@ async function repairSpans(
 }
 
 /** Retrieved source profiles take admission priority over the bounded formal-language prior. */
-async function loadCodeModels(storage: ScceStorage, languageId: string, limit: number, context?: CodeMouthContext): Promise<KneserNeyModel[]> {
+async function loadCodeModels(storage: ScceStorage, languageId: string, limit: number, context: CodeMouthContext | undefined, phase: RepairPhase): Promise<KneserNeyModel[]> {
   const profileIds = context && storage.evidence && storage.model
-    ? await sourceProfilesForCode(storage, languageId, limit, context) : [];
+    ? await sourceProfilesForCode(storage, languageId, limit, context, phase) : [];
   const models = new Map<string, KneserNeyModel>();
   const admit = (records: readonly NgramModelRecord[]) => {
     for (const record of records) {
@@ -402,27 +421,27 @@ async function loadCodeModels(storage: ScceStorage, languageId: string, limit: n
   };
   for (const profileId of profileIds) {
     if (models.size >= limit) break;
-    admit(await storage.languageMemory.listNgramModels({
+    admit(await phase("profile_models", () => storage.languageMemory.listNgramModels({
       sourceSystem: corpusSourceAlias(CORPUS_SOURCE_SYSTEM_IDS.ossCode),
       formalLanguage: languageId,
       profileIds: [profileId],
       limit: limit - models.size
-    }));
+    }), rows => rows.length));
   }
-  if (!models.size) admit(await storage.languageMemory.listNgramModels({
+  if (!models.size) admit(await phase("language_models", () => storage.languageMemory.listNgramModels({
     sourceSystem: corpusSourceAlias(CORPUS_SOURCE_SYSTEM_IDS.ossCode),
     formalLanguage: languageId,
     limit
-  }));
+  }), rows => rows.length));
   return [...models.values()];
 }
 
 /** Source evidence owns the profile filter before the storage model budgets apply. */
-async function sourceProfilesForCode(storage: ScceStorage, languageId: string, limit: number, context?: CodeMouthContext): Promise<string[]> {
+async function sourceProfilesForCode(storage: ScceStorage, languageId: string, limit: number, context: CodeMouthContext | undefined, phase: RepairPhase): Promise<string[]> {
   if (!context || !storage.evidence || !storage.model) return [];
   const features = anchorFeatureSet(codeSurfaceTokens(context.targetText).join(" "));
   if (!features.length) return [];
-  const found = await storage.evidence.searchEvidence({ features, status: "promoted", openingBlockPrior: false, limit });
+  const found = await phase("source_profile_evidence", () => storage.evidence.searchEvidence({ features, status: "promoted", openingBlockPrior: false, limit }), rows => rows.length);
   const queryFeatures = new Set(features);
   const coverageBySource = new Map<SourceVersionId, number>();
   for (const { span } of found) {
@@ -438,9 +457,9 @@ async function sourceProfilesForCode(storage: ScceStorage, languageId: string, l
   const profileIds: string[] = [];
   for (const [sourceVersionId, coverage] of coverageBySource) {
     if (coverage !== maximumCoverage || profileIds.length >= limit) continue;
-    const profiles = await storage.model.listLanguageProfiles({
+    const profiles = await phase("source_profiles", () => storage.model.listLanguageProfiles({
       sourceVersionIds: [sourceVersionId], referencedByLanguageMemory: true, limit: limit - profileIds.length
-    });
+    }), rows => rows.length);
     for (const profile of profiles) {
       if (profile.sourceVersionId === sourceVersionId && !profileIds.includes(profile.id)) profileIds.push(profile.id);
     }
