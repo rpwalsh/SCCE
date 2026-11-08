@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { InformationAccessContext } from "@scce/kernel";
+import { LANGUAGE_PATTERN_SELECTION_HEADERS, languagePatternSelectionHeaderStatement } from "./postgres-language-pattern-headers.js";
 
 export type InformationLabeledTable =
   | "source_versions"
@@ -378,6 +379,7 @@ export function schemaStatements(q: string, informationAccess?: InformationAcces
     `CREATE TABLE IF NOT EXISTS ${q}.language_patterns (id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, pattern_kind TEXT NOT NULL, support DOUBLE PRECISION NOT NULL, entropy DOUBLE PRECISION NOT NULL, pattern_json JSONB NOT NULL, evidence_ids TEXT[] NOT NULL, updated_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
     // candidate_pool's scope filter reads this instead of detoasting pattern_json (5.4GB) per row.
     `ALTER TABLE ${q}.language_patterns ADD COLUMN IF NOT EXISTS source_system TEXT GENERATED ALWAYS AS (pattern_json->>'sourceSystem') STORED`,
+    languagePatternSelectionHeaderStatement(q),
     `CREATE TABLE IF NOT EXISTS ${q}.semantic_frames (id TEXT PRIMARY KEY, frame_json JSONB NOT NULL, embedding VECTOR(64) NOT NULL, evidence_ids TEXT[] NOT NULL, alpha DOUBLE PRECISION NOT NULL, created_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
     `ALTER TABLE ${q}.semantic_frames ADD COLUMN IF NOT EXISTS normalized_surface_hash TEXT`,
     `CREATE TABLE IF NOT EXISTS ${q}.translation_alignments (id TEXT PRIMARY KEY, source_frame_id TEXT NOT NULL, target_frame_id TEXT NOT NULL, source_language TEXT NOT NULL, target_language TEXT NOT NULL, force TEXT NOT NULL, loss_vector JSONB NOT NULL, alignment_json JSONB NOT NULL, evidence_ids TEXT[] NOT NULL, updated_at TIMESTAMPTZ NOT NULL, information_label JSONB NOT NULL)`,
@@ -680,7 +682,7 @@ export function requiredHydrationColumns(): Record<string, string[]> {
     ngram_observations: ["id", "stream_id", "language_hint", "order_n", "history", "symbol", "count", "metadata_json", "information_label"],
     ngram_models: ["id", "stream_id", "language_hint", "max_order", "discount", "model_json", "information_label"],
     language_units: ["id", "profile_id", "source_version_id", "script", "unit_kind", "unit_text", "features", "competence_vector", "alpha", "evidence_ids", "metadata_json", "information_label"],
-    language_patterns: ["id", "profile_id", "pattern_kind", "support", "entropy", "pattern_json", "evidence_ids", "information_label"],
+    language_patterns: ["id", "profile_id", "pattern_kind", "support", "entropy", "pattern_json", "evidence_ids", "information_label", ...LANGUAGE_PATTERN_SELECTION_HEADERS],
     semantic_frames: ["id", "frame_json", "normalized_surface_hash", "embedding", "evidence_ids", "alpha", "information_label"],
     translation_alignments: ["id", "source_frame_id", "target_frame_id", "source_language", "target_language", "force", "alignment_json", "evidence_ids", "information_label"],
     scce2_import_ledger: ["id", "import_run_id", "brain_version", "root_path", "section_id", "section_kind", "force_class", "row_counts_json", "warnings", "metadata_json"],

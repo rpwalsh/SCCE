@@ -85,12 +85,14 @@ describe("Postgres schema contract extraction", () => {
     const retiredIndex = `DROP INDEX IF EXISTS ${fixture.q}.idx_${key}_semantic_frames_surface_rank`;
     const hashIndex = `CREATE INDEX IF NOT EXISTS idx_${key}_semantic_frames_normalized_surface_hash_rank ON ${fixture.q}.semantic_frames(normalized_surface_hash,alpha DESC,created_at DESC,id ASC)`;
     const oldIndex = `CREATE INDEX IF NOT EXISTS idx_${key}_semantic_frames_surface_rank ON ${fixture.q}.semantic_frames((frame_json->>'surface'),alpha DESC,created_at DESC,id ASC)`;
+    const headerStatements = statements.filter(sql => sql.startsWith(`ALTER TABLE ${fixture.q}.language_patterns`) && sql.includes("pattern_schema"));
+    expect(headerStatements).toHaveLength(1);
     expect(statements).toContain(addedColumn);
     expect(statements).toContain(retiredIndex);
     expect(statements).toContain(hashIndex);
     expect(statements).not.toContain(oldIndex);
-    expect(statements).toHaveLength(fixture.statementCount + 2);
-    const prior = statements.filter(sql => sql !== addedColumn && sql !== retiredIndex).map(sql => sql === hashIndex ? oldIndex : sql);
+    expect(statements).toHaveLength(fixture.statementCount + 3);
+    const prior = statements.filter(sql => sql !== addedColumn && sql !== retiredIndex && !headerStatements.includes(sql)).map(sql => sql === hashIndex ? oldIndex : sql);
     expect(digest(prior)).toBe(fixture.sha256);
     expect(postgres.schemaStatements(fixture.q, fixture.access)).toEqual(statements);
   });
@@ -98,7 +100,9 @@ describe("Postgres schema contract extraction", () => {
   it("preserves the fresh-schema indexes and required hydration column contract", () => {
     const columns = schema.requiredHydrationColumns();
     expect(columns.semantic_frames).toContain("normalized_surface_hash");
-    expect(digest({ ...columns, semantic_frames: columns.semantic_frames!.filter(column => column !== "normalized_surface_hash") })).toBe("6cb43753bb07de0a5bdb96e1b27459d8861bf292b5f9ba6f9b31b50770df0f22");
+    const headers = ["pattern_schema", "component_recipe", "source_compilation_id", "owned_source_version_id", "pattern_language", "has_source_compilation", "has_source_version", "decoded_jsonb_bytes"];
+    expect(digest({ ...columns, semantic_frames: columns.semantic_frames!.filter(column => column !== "normalized_surface_hash"),
+      language_patterns: columns.language_patterns!.filter(column => !headers.includes(column)) })).toBe("6cb43753bb07de0a5bdb96e1b27459d8861bf292b5f9ba6f9b31b50770df0f22");
     expect(digest(schema.freshSchemaIndexStatements("fixture"))).toBe("b9869ea350648b3a938f9f7e210ce2f01c038626a72cdf7f663dd276fb4f4ffd");
     expect(digest(schema.freshSchemaIndexStatements("\"fixture\""))).toBe("99d5d211dbddc3ac3eb50d88e2d08a178e1115a04b7068a75cf9c78ca2f5b8f5");
   });

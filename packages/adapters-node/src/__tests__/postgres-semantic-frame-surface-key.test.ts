@@ -21,7 +21,7 @@ function adapterFixture() {
 }
 
 it("adds schema27's bounded hash index and retires only the raw long-surface index", () => {
-  expect(POSTGRES_SCHEMA_VERSION).toBe(27);
+  expect(POSTGRES_SCHEMA_VERSION).toBe(28);
   const statements = schemaStatements('"surface_key"');
   expect(statements).toContain('ALTER TABLE "surface_key".semantic_frames ADD COLUMN IF NOT EXISTS normalized_surface_hash TEXT');
   expect(statements).toContain('DROP INDEX IF EXISTS "surface_key".idx_surface_key_semantic_frames_surface_rank');
@@ -144,7 +144,7 @@ it.each([false, true])("backfills only missing string-surface hashes in database
   const publish = f.calls.findIndex(call => call.sql.includes("VALUES('schema_version'"));
   expect(publish).toBeGreaterThan(write);
   expect(f.calls[write]!.sql).toContain("frame.frame_json->>'surface'=observed.surface");
-  expect(f.calls[publish]!.params[0]).toContain('"version":27');
+  expect(f.calls[publish]!.params[0]).toContain('"version":28');
   const start = f.calls.length;
   await f.adapter.migrate();
   const repeat = f.calls.slice(start);

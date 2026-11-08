@@ -2,7 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { Pool, type PoolClient } from "pg";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { decodeDurableJoinPrograms, encodeDurableJoinPrograms, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA } from "./durable-join-program-storage.js";
+import { decodeDurableJoinPrograms, encodeDurableJoinPrograms } from "./durable-join-program-storage.js";
 import {
   POSTGRES_REQUIRED_TABLES,
   STORAGE_STATUS_POPULATION_LIMITS,
@@ -4376,7 +4376,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       if (query.patternSchemas) {
         if (!query.patternSchemas.length) return [];
         params.push([...new Set(query.patternSchemas)]);
-        scopeWhere.push(`pattern.pattern_json->>'schema'=ANY($${params.length}::text[])`);
+        scopeWhere.push(`pattern.pattern_schema=ANY($${params.length}::text[])`);
       }
       if (query.patternKind) { params.push(query.patternKind); scopeWhere.push(`pattern.pattern_kind=$${params.length}`); }
       if (query.formalLanguage !== undefined) { params.push(query.formalLanguage); scopeWhere.push(`pattern.pattern_json->>'formalLanguage'=$${params.length}`); }
@@ -4431,9 +4431,9 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
             SELECT 1 FROM ${storage.table("language_patterns")} active_syntax
             WHERE active_syntax.profile_id=pattern.profile_id
               AND active_syntax.source_system=pattern.source_system
-              AND active_syntax.pattern_json->>'sourceVersionId'=pattern.owned_source_version_id
-              AND active_syntax.pattern_json->>'schema'=$${inducedSyntaxSchemaParam}
-              AND active_syntax.pattern_json->>'componentRecipe'=$${inducedSyntaxRecipeParam}
+              AND active_syntax.owned_source_version_id=pattern.owned_source_version_id
+              AND active_syntax.pattern_schema=$${inducedSyntaxSchemaParam}
+              AND active_syntax.component_recipe=$${inducedSyntaxRecipeParam}
               AND ${activeSyntaxAccess.sql}
           ))`);
       }
@@ -4510,10 +4510,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         ELSE 'other'
       END`;
       const narrow = "decoded_jsonb_bytes,id,profile_id,pattern_kind,support,entropy,evidence_ids,updated_at,information_label,pattern_schema,pattern_language,source_system";
-      const byteLedger = `metadata."${DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY}"`;
-      const decodedJsonbBytes = query.view === "request_seed" ? "NULL::numeric" : `CASE WHEN ${byteLedger}->>'schema'='${DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA}'
-        AND jsonb_typeof(${byteLedger}->'decodedJsonbBytes')='number'
-        THEN (${byteLedger}->>'decodedJsonbBytes')::numeric ELSE NULL END`;
+      const decodedJsonbBytes = query.view === "request_seed" ? "NULL::numeric" : "pattern.decoded_jsonb_bytes";
       // Exact prerequisites share one budget; category quotas apply only to searches.
       const partition = (alias: string) => query.patternIds ? "" : `PARTITION BY ${category(alias)} `;
       const byteAllowance = query.patternIds ? `$${params.length}` : `CEIL($${params.length}::numeric / category_counts.n)`;
@@ -4546,21 +4543,14 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
              pattern.evidence_ids, pattern.updated_at, pattern.information_label, pattern.source_system,
              pg_column_size(pattern.pattern_json) AS stored_bytes,
              ${decodedJsonbBytes} AS decoded_jsonb_bytes,
-             metadata."schema" AS pattern_schema,
-             metadata."componentRecipe" AS component_recipe,
-             metadata."sourceCompilationId" AS source_compilation_id,
-             metadata."sourceVersionId" AS owned_source_version_id,
-             metadata."language" AS pattern_language,
-             CASE WHEN metadata."sourceCompilationId" IS NOT NULL THEN TRUE
-               ELSE pattern.pattern_json ? 'sourceCompilationId' END AS has_source_compilation,
-             CASE WHEN metadata."sourceVersionId" IS NOT NULL THEN TRUE
-               ELSE pattern.pattern_json ? 'sourceVersionId' END AS has_source_version
+             pattern.pattern_schema,
+             pattern.component_recipe,
+             pattern.source_compilation_id,
+             pattern.owned_source_version_id,
+             pattern.pattern_language,
+             pattern.has_source_compilation,
+             pattern.has_source_version
            FROM ${storage.table("language_patterns")} pattern
-           CROSS JOIN LATERAL jsonb_to_record(CASE
-             WHEN jsonb_typeof(pattern.pattern_json)='object' THEN pattern.pattern_json
-             ELSE '{}'::jsonb END) AS metadata(
-               "schema" text,"componentRecipe" text,"sourceCompilationId" text,"sourceVersionId" text,"language" text,"${DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY}" jsonb
-             )
            ${scopeWhere.length ? `WHERE ${scopeWhere.join(" AND ")}` : ""}
          ),
          candidate_pool AS MATERIALIZED (

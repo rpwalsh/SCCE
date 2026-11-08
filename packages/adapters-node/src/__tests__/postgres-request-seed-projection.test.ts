@@ -106,7 +106,7 @@ it("budgets projected metadata rather than full physical pages or decoded-progra
   expect(sql).toContain("octet_length(eligible.pattern_json::text)");
   expect((await adapter.languageMemory.listLanguagePatterns({ limit: 8, maxTotalJsonBytes: 2048 }))).toEqual([pages[0]]);
   expect(calls.at(-1)!.sql).toContain("running_stored_bytes");
-  expect(calls.at(-1)!.sql).toContain("metadata.\"_scceJoinProgramStorage\"");
+  expect(calls.at(-1)!.sql).toContain("pattern.decoded_jsonb_bytes AS decoded_jsonb_bytes");
 });
 
 it("keeps source-conditioned requirements intact and projects only entity classes and syntax metadata", async () => {
