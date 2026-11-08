@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { createScceKernel, createInMemoryDialogueMemoryStore, createHasher, codeRequestSignal, type BuildTestResult, type CapabilityPlan, type ConstructGraph, type EpisodeId,
+import { createScceKernel, createInMemoryDialogueMemoryStore, createHasher, codeRequestSignal, programValidationApprovalInput, type ProgramGraph, type BuildTestResult, type CapabilityPlan, type ConstructGraph, type EpisodeId,
   type UserModelClaimRecord, type TaskResumptionSnapshotRecord } from "@scce/kernel";
 import { storageFixtureForEvaluation } from "../../../kernel/src/__tests__/evidence-promotion-evaluation-fixture.js";
 import { validateOwnerProgramLocalValidation } from "../../../kernel/src/program-local-validation.js";
@@ -132,6 +132,7 @@ describe("cold ordinary owner program execution", () => {
     expect(approvals.snapshot().operatorGrant).toBe(false);
     const native = new NodeBuildTestAdapter({ runtime: { tempRoot: executionRoot } } as ScceRuntimeConfig);
     const attempts: BuildTestResult[] = [];
+    const attemptedPrograms: ProgramGraph[] = [];
     const kernel = createScceKernel({
       storage: fixture.storage,
       files: { streamPath: async function* () {} },
@@ -140,6 +141,7 @@ describe("cold ordinary owner program execution", () => {
       functionalCognitionAuthorizeCapabilities: true,
       policy: { allowMutation: false, dryRunByDefault: true, requireTwoPhaseCommit: true },
       buildTest: { executeProgram: async input => {
+        attemptedPrograms.push(input.construct.program!);
         const result = await native.executeProgram(input);
         attempts.push(result);
         return result;
@@ -203,14 +205,17 @@ describe("cold ordinary owner program execution", () => {
     expect(localPlans).toHaveLength(attempts.length);
     for (const [index, plan] of localPlans.entries()) {
       const payload = plan.input as unknown as {
-        files: Array<{ path: string; hash: string }>;
+        files: Array<{ path: string; hash: string; byteLength: number }>;
         ownerRequirementIds: string[];
         build: { command: string; args: string[]; cwd: string };
         test: { command: string; args: string[]; cwd: string };
       };
       expect(payload.ownerRequirementIds).toEqual([...program.hydration!.ownerRequirementIds!].sort());
-      expect(payload.files).toEqual(attempts[index]!.artifacts.map(artifact => ({ path: artifact.path, hash: artifact.contentHash }))
-        .sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
+      expect(plan.input).toEqual(programValidationApprovalInput(attemptedPrograms[index]!));
+      const expectedFiles = attempts[index]!.artifacts.map(artifact => ({ path: artifact.path, hash: artifact.contentHash, byteLength: Buffer.byteLength(artifact.content, "utf8") }));
+      const descriptor = programValidationApprovalInput(attemptedPrograms[index]!) as { files: typeof expectedFiles };
+      expect(payload.files).toEqual(descriptor.files);
+      expect(new Map(payload.files.map(file => [file.path, file]))).toEqual(new Map(expectedFiles.map(file => [file.path, file])));
       expect(payload.build.cwd).toBe(".");
       expect(payload.test.cwd).toBe(".");
     }
