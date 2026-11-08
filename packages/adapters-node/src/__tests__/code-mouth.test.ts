@@ -30,9 +30,9 @@ describe("code mouth loop", () => {
     let calls = 0;
     fixture.ports.verify = async () => ++calls === 1
       ? { buildSucceeded: false, testsSucceeded: true, testsRun: false,
-        diagnostics: [{ id: "initial", class: "type", confidence: 1, message: "TS1 initial" }] }
+        diagnostics: [{ id: "initial", raw: "TS1 initial", class: "type", confidence: 1, message: "TS1 initial" }] }
       : { buildSucceeded: true, testsSucceeded: row.testsSucceeded, testsRun: row.testsRun,
-        diagnostics: row.testsSucceeded ? [] : [{ id: "tests.failed", class: "runtime", path: "x.ts", confidence: 1, message: "configured test failed" }] };
+        diagnostics: row.testsSucceeded ? [] : [{ id: "tests.failed", raw: "configured test failed", class: "runtime", path: "x.ts", confidence: 1, message: "configured test failed" }] };
     const result = await runCodeMouth({ request: "explicit test proposal", targetPath: "x.ts", ports: fixture.ports, maxAttempts: 1 });
     expect(result.verification).toMatchObject({ scope: row.scope, status: row.status, testsRun: row.testsRun ?? null,
       buildSucceeded: true, testsSucceeded: row.recordedTests });
