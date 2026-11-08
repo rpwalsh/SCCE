@@ -8,9 +8,9 @@ import {verifySourceComputationConstruction,evaluateSourceComputationRequest,sou
 const coldCaches=new WeakMap<ScceStorage,{generation:number;bindings:Map<string,Map<string,VerifiedSourceComputation>>}>();
 
 /** Durable admission owns ACL/current-source guards; the cold verifier independently owns exact source bytes and the learned program. */
-export async function sourceComputationForRequest(input:{storage:ScceStorage;hasher:Hasher;requestText:string;languageId?:string;sourceVersionAllowlist?:readonly string[];generation?:number}):Promise<VerifiedSourceComputationResult|undefined>{
+export async function sourceComputationForRequest(input:{storage:ScceStorage;hasher:Hasher;requestText:string;sourceVersionAllowlist?:readonly string[];generation?:number}):Promise<VerifiedSourceComputationResult|undefined>{
  const bindingId=sourceComputationBindingIdForRequest(input.requestText,input.hasher);if(!bindingId)return undefined;
- const current=await input.storage.languageMemory.listLanguagePatterns({patternSchemas:[SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA],sourceSystem:SOURCE_COMPUTATION_SOURCE_SYSTEM,sourceComputationBindingId:bindingId,...(input.languageId?{languageId:input.languageId}:{})});
+ const current=await input.storage.languageMemory.listLanguagePatterns({patternSchemas:[SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA],sourceSystem:SOURCE_COMPUTATION_SOURCE_SYSTEM,sourceComputationBindingId:bindingId});
  const patterns=current.filter(pattern=>sourceComputationPatternMatchesQuestion(pattern,input.requestText));
  let cache=input.generation===undefined?undefined:coldCaches.get(input.storage);
  if(input.generation!==undefined&&cache?.generation!==input.generation){cache={generation:input.generation,bindings:new Map()};coldCaches.set(input.storage,cache);}

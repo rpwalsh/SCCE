@@ -3,6 +3,7 @@
 import {describe,it,expect} from "vitest";
 import {acquireSourceComputationConstructions,verifySourceComputationConstruction,evaluateSourceComputationRequest,sourceComputationResultVerified,sourceComputationBindingIdForRequest} from "../source-computation-acquisition.js";
 import {createHasher,canonicalStringify,createClock,createIdFactory,createScceKernel,createInMemoryDialogueMemoryStore,type EvidenceSpan,type LanguagePatternRecord,type TranscriptTurn} from "../index.js";
+import {sourceComputationForRequest} from "../source-computation-runtime.js";
 import {storageFixtureForEvaluation} from "./evidence-promotion-evaluation-fixture.js";
 import {exactProgramForExpression,exactComputationForExpression} from "../exact-computation.js";
 const hasher=createHasher();
@@ -75,6 +76,22 @@ describe("source-owned arithmetic construction acquisition",()=>{
   const locale={...locales[0],question:(a:number,b:number)=>`\u{1fab6} \u03b6 ${a} \u03c8 ${b}\uFF1F`},data=acquired(locale),verified=verifySourceComputationConstruction({pattern:data.compiled.families[0]!.pattern,evidence:data.evidence,hasher});
   const requestText=locale.question(103,41),result=evaluateSourceComputationRequest({requestText,constructions:[verified!],hasher});expect(result?.evaluation.resultText).toBe("144");
   expect(evaluateSourceComputationRequest({requestText:"Escriu 7-10 frases.",constructions:[verified!],hasher})).toBeUndefined();
+ });
+ it("uses one exact owned-question query when the measured language identity differs from the source owner",async()=>{
+  const data=acquired(locales[0]),fixture=storageFixtureForEvaluation({evidence:data.evidence,clockNow:()=>1});
+  const ownerLanguageId="language.fixture.owner",statisticalLanguageId="language.fixture.question",queries:unknown[]=[];
+  fixture.storage.languageMemory.listLanguagePatterns=async query=>{
+   queries.push(query);
+   // Mirrors canonical PG's lp.language_id=$n OR NULL predicate rather than ignoring language scope.
+   if(query?.languageId&&query.languageId!==ownerLanguageId)return [];
+   return query?.sourceComputationBindingId===sourceComputationBindingIdForRequest(locales[0].question(101,37),hasher)?data.compiled.families.map(row=>row.pattern):[];
+  };
+  expect(await fixture.storage.languageMemory.listLanguagePatterns({languageId:statisticalLanguageId,sourceComputationBindingId:sourceComputationBindingIdForRequest(locales[0].question(101,37),hasher)})).toEqual([]);
+  queries.length=0;
+  const requestContext={storage:fixture.storage,hasher,requestText:locales[0].question(101,37),languageId:statisticalLanguageId};
+  const result=await sourceComputationForRequest(requestContext);
+  expect(result?.evaluation.resultText).toBe("138");expect(queries).toHaveLength(1);
+  expect(queries[0]).toEqual({patternSchemas:["scce.source_owned_computation_construction.v1"],sourceSystem:"dialogue",sourceComputationBindingId:sourceComputationBindingIdForRequest(locales[0].question(101,37),hasher)});
  });
  it.each(locales)("answers an ordinary unseen $id question through real kernel/Mouth computation authority and refuses after source revocation",async locale=>{
   const data=acquired(locale),clock=createClock({fixedTime:1,stepMs:1}),fixture=storageFixtureForEvaluation({evidence:data.evidence,clockNow:()=>clock.now()});let active=true;

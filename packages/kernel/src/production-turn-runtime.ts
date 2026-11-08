@@ -1575,7 +1575,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const formalExactComputation = exactComputationForText(input.text);
       const sourceComputation = !formalArithmetic && !formalExactComputation && /[0-9]/u.test(input.text) && !deps.evaluationCondition?.flags.disableLanguageMemory && (requestedAuthority === "factual" || requestedAuthority === "reasoned")
         ? await sourceComputationForRequest({ storage: deps.storage, hasher, requestText: input.text,
-          generation: surfaceLanguageRuntime.revisionGeneration(), languageId: authorityLanguage.state.scope.languageId, sourceVersionAllowlist: input.runtimeControl?.evidenceSourceAllowlist }) : undefined;
+          generation: surfaceLanguageRuntime.revisionGeneration(), sourceVersionAllowlist: input.runtimeControl?.evidenceSourceAllowlist }) : undefined;
       const exactComputation = sourceComputation?.evaluation ?? formalExactComputation;
       // The exact result and the text SCCE is about to speak must be the same number: a formatter that drifts from
       // the computed quantity turns an exact answer into a claim nothing checked.
