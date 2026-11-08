@@ -444,3 +444,16 @@ test('plain reference task prompt preserves public context and exact current req
  for(const text of ['TRANSPORT_CASE_ID_NOT_TASK','TRANSPORT_PROVIDER_NOT_TASK','requiredResponse','Return the task answer exactly as requested.','caseBytes','maxSteps'])assert.equal(captured.includes(text),false,text);
  assert.equal(result.answer,reply);assert.equal(result.identity.publicContextHash,hash({steps:input.steps,outputContract:input.outputContract}));
 });
+
+for(const corrupt of [false,true])test(`tool operation resolves shared artifact contents before applying bytes (corrupt=${corrupt})`,async()=>{
+ const {encodeProgramArtifactWire}=await import('../../../packages/kernel/dist/program-artifact-wire.js');
+ const input=makeInput('tool_use',{publicChecks:[],requiredCapabilityIds:['process.build_test']}),cwd=await workspace(input.steps[0].files);
+ const artifact={artifactId:'artifact:wire',path:'module.cjs',content:good,contentHash:`sha256_${sha256Text(good)}`,mediaType:'text/javascript',role:'source'};
+ const original={answer:'native result',programArtifacts:[artifact],buildTest:{artifacts:[artifact],attempts:[{artifacts:[{...artifact,content:bad,contentHash:`sha256_${sha256Text(bad)}`}]}]},events:[{typeId:'CapabilitySucceeded',payload:{capabilityId:'process.build_test',ownerId:'owner:wire'}}]};
+ const wire=JSON.parse(JSON.stringify(encodeProgramArtifactWire(original)));
+ if(corrupt)wire.buildTest.artifacts[0].contentRef.contentHash=`sha256_${sha256Text('foreign')}`;
+ const result=await runScceNative(input,{cwd},{request:async()=>({status:200,body:wire})});
+ assert.equal(result.identity.productOutcome,corrupt?'failed':'completed');
+ assert.equal(await readFile(path.join(cwd,'module.cjs'),'utf8'),corrupt?bad:good);
+ if(corrupt)assert.equal(result.identity.reason,'invalid_tool_artifact_reference');
+});

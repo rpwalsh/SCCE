@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import http from "node:http";
+import {encodeProgramArtifactWire} from "@scce/kernel";
 import {pendingProgramValidationApproval} from "./program-validation-approval.js";
 import path from "node:path";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
@@ -1240,7 +1241,8 @@ async function dispatch(
         },
         ...(completedWorkspaceCoding ? { workspaceCoding: toJsonValue(completedWorkspaceCoding) } : {})
       };
-      return json(webLearning ? { ...baseResponse, webLearning } : baseResponse);
+      const response=webLearning ? { ...baseResponse, webLearning } : baseResponse;
+      return json(url.searchParams.get("full")==="1"?response:encodeProgramArtifactWire(response));
     } catch (error) {
       traceEvent(trace, { stage: "turn.error", label: "api.turn", durationMs: Date.now() - turnStarted, warnings: [String(error)] });
       throw error;

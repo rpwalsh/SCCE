@@ -153,13 +153,16 @@ async function scceNativeOperation(input, config, dependencies) {
     return complete(turn.answer ?? '', artifacts, { patchReceiptHash: hash(applied.body.receipt) });
   }
   if (contract.operation === 'tool_use') {
-    const events = turn.events ?? [];
+    let resolvedTurn;
+    try { const { decodeProgramArtifactWire } = await import('../../../packages/kernel/dist/program-artifact-wire.js'); resolvedTurn = decodeProgramArtifactWire(turn); }
+    catch (error) { return failure('invalid_tool_artifact_reference', trace, { violation: error.message }); }
+    const events = resolvedTurn.events ?? [];
     const succeeded = events.filter(e => e.typeId === 'CapabilitySucceeded');
     const failed = events.filter(e => e.typeId === 'CapabilityFailed');
     if (!succeeded.length || failed.length || contract.requiredCapabilityIds?.some(id => !succeeded.some(e => e.payload?.capabilityId === id))) return failure('no_successful_native_tool_receipt', trace);
     if (contract.toolPolicy && succeeded.length + failed.length + contract.publicChecks.length > contract.toolPolicy.maxCalls) return failure('product_tool_call_budget_exceeded', trace);
     trace.push({ capabilityEvents: succeeded });
-    const executionArtifacts = turn.buildTest?.artifacts ?? [];
+    const executionArtifacts = resolvedTurn.buildTest?.artifacts ?? [];
     const emitted = executionArtifacts.filter(a => contract.writablePaths.includes(a.path));
     const artifacts = Object.fromEntries(emitted.map(a => [a.path, a.content]));
     if (emitted.some(a => typeof a.content !== 'string' || a.contentHash !== `sha256_${sha256Text(a.content)}`)) return failure('invalid_tool_artifact_identity', trace);

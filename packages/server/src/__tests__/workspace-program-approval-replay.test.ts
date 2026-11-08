@@ -8,7 +8,7 @@ import {it,expect,vi} from "vitest";
 vi.mock("@scce/adapters-node",async original=>({...await original<typeof import("@scce/adapters-node")>(),assertHydratedRuntimeReady:vi.fn(async()=>({activeBrainVersion:"brain.owned-api-test",activeImportRunIds:[]}))}));
 import {ordinaryWorkspaceProgramFixture} from "../../../adapters-node/src/__tests__/fixtures/ordinary-workspace-program.js";
 import {handleRequest,type ApiContext} from "../routes.js";
-import {createClock,createHasher,createIdFactory,createAlphaFieldEngine,createSemanticEntailmentEngine,createProgramPlanner,programIntentForTurn,codeRequestSignal,COGNITIVE_OPERATOR_IDS,programValidationApprovalInput,type TurnResult} from "@scce/kernel";
+import {createClock,createHasher,createIdFactory,createAlphaFieldEngine,createSemanticEntailmentEngine,createProgramPlanner,programIntentForTurn,codeRequestSignal,COGNITIVE_OPERATOR_IDS,programValidationApprovalInput,decodeProgramArtifactWire,type TurnResult} from "@scce/kernel";
 import {createCausalDiscoveryEngine} from "../../../kernel/src/causal.js";
 it("retains exact native approval across cold and warm ordinary API requests with owned sources and dialogue memory",async()=>{
  const base=await mkdtemp(path.join(tmpdir(),"scce-api-program-approval-")),root=path.join(base,"nested \u0394 workspace");
@@ -52,6 +52,13 @@ it("retains exact native approval across cold and warm ordinary API requests wit
   if(selected){expect(selected.fingerprint).not.toBe(first.fingerprint);expect((await post("/api/session/approve",{planId:selected.planId})).status).toBe(200);
    const completed=await post("/api/turn",request);expect(completed.status,JSON.stringify(await completed.json())).toBe(200);}
   expect(results.at(-1)!.buildTest?.passed).toBe(true);
+  const receipt=await post("/api/turn",request),receiptBody=await receipt.json() as Record<string,unknown>;
+  expect(receipt.status).toBe(200);expect(receiptBody.artifactContents).toBeDefined();
+  expect(decodeProgramArtifactWire(receiptBody).buildTest).toEqual(JSON.parse(JSON.stringify(results.at(-1)!.buildTest)));
+  expect(receiptBody.programArtifacts).toEqual(JSON.parse(JSON.stringify(results.at(-1)!.buildTest!.artifacts)));
+  const full=await post("/api/turn?full=1",request),fullBody=await full.json() as Record<string,unknown>;
+  expect(full.status).toBe(200);expect(fullBody).not.toHaveProperty("artifactContents");
+  expect(fullBody.buildTest).toEqual(JSON.parse(JSON.stringify(results.at(-1)!.buildTest)));
   expect(fixture.approvals.snapshot().pending.filter(row=>row.capabilityId==="process.build_test"&&!fixture.approvals.isApproved(row))).toHaveLength(0);
   const changed=await post("/api/turn",{...request,text:"javascript fresh-cargo.cjs\nfreshOpaqueDouble(2)=6; freshOpaqueDouble(-1)=-3; freshOpaqueDouble(4)=12"});
   expect(changed.status,JSON.stringify(await changed.json())).toBe(202);
