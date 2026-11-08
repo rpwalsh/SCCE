@@ -5,17 +5,21 @@ import {mkdtemp,mkdir,writeFile,readFile,access,rm} from "node:fs/promises";
 import path from "node:path";
 import {tmpdir} from "node:os";
 import {pathToFileURL} from "node:url";
-import {ordinaryWorkspaceProgramFixture} from "./fixtures/ordinary-workspace-program.js";
-import {pendingProgramValidationApproval} from "../../../server/src/program-validation-approval.js";
+import {ordinaryWorkspaceProgramFixture} from "../../../adapters-node/src/__tests__/fixtures/ordinary-workspace-program.js";
+import {findCodeVerifierCapability} from "../../../adapters-node/src/index.js";
+import {pendingProgramValidationApproval} from "../program-validation-approval.js";
 import {readWorkspaceOwnedProgramContracts} from "@scce/kernel";
 
 it.each(["go","rust"])("executes the exact default public %s stateful generation packet through ordinary workspace ownership",async language=>{
+ const capabilities=await Promise.all([findCodeVerifierCapability("go"),findCodeVerifierCapability("rust")]);
+ if(capabilities.some(row=>row.status!=="available"))throw Error("Default native comparison requires the declared Go and Rust compilers");
+ const nativeTool=(index:number)=>{const row=capabilities[index]!;if(row.status!=="available")throw Error("Native compiler unavailable");return{available:true,path:row.verifier.command,version:row.verifier.version,budget:{timeMs:120000,outputBytes:2000000}};};
  const base=await mkdtemp(path.join(tmpdir(),"scce-default-public-native-")),root=path.join(base,"public"),privateRoot=path.join(base,"not-ingested-empty-validator");
  await mkdir(root);await mkdir(privateRoot);
  try{
   const module=async(name:string)=>import(pathToFileURL(path.resolve("tools/blind-comparison",name)).href);
   const {codeCase,randomStream}=await module("providers/default/cases.mjs"),{nativeContract,applyArtifacts,runPublicChecks}=await module("adapters/native-contract.mjs"),{nativeProgramApprovalAllowed}=await module("adapters/native-program-approval.mjs"),{execute}=await module("runner.mjs");
-  const tools={node:{available:true,path:process.execPath,version:process.version,budget:{timeMs:120000,outputBytes:2000000}},go:{available:true,path:"C:/Users/react/toolchains/go/bin/go.exe",budget:{timeMs:120000,outputBytes:2000000}},rust:{available:true,path:"C:/Users/react/.cargo/bin/rustc.exe",budget:{timeMs:120000,outputBytes:2000000}}};
+  const tools={node:{available:true,path:process.execPath,version:process.version,budget:{timeMs:120000,outputBytes:2000000}},go:nativeTool(0),rust:nativeTool(1)};
   const budgets={timeMs:120000,outputBytes:2000000,caseBytes:4000000,artifactBytes:2000000,maxSteps:4};
   const generated=await codeCase({category:"code_generation_stateful",language,grading:"native"},0,randomStream("test_authored.public_only","native-packet"),{tools,attempts:2,hiddenVectors:0,privateRoot,budgets},"test_authored_public_case");
   const packet=generated.public,input={...packet,caseId:"test_authored_public_case",category:"code_generation_stateful",language,budgets,history:[],isolation:{mode:"trusted-host"}};
