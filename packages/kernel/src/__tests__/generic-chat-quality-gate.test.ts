@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   createClock,
   deriveTurnRequirementField,
+  requestSubjectText,
   createCorrectionMemory,
   createEngineeringCorpusProjection,
   createHasher,
@@ -100,6 +101,13 @@ describe("Phase 10 generic chat quality gate", () => {
     assertLearnedPriorsNotCited(result.spoken, result.learnedPriorEvidenceIds ?? []);
     for (const id of result.directEvidenceIds ?? []) expect(result.spoken.evidenceRefs.map(String)).toContain(id);
     if (result.verdict) assertProofVerdictObeyed(result.spoken, result.verdict);
+  });
+
+  it("keeps an untyped learned activation's span as content", () => {
+    const requestText = "Opaque control-shaped content: the reading-room lights dim to 40%.";
+    const field = deriveTurnRequirementField({ requestText, activations: [{ id: "pattern:untyped", kind: "pattern", activation: 0.9,
+      span: { charStart: 0, charEnd: [..."Opaque control-shaped content:"].length } }] });
+    expect(requestSubjectText(requestText, field)).toBe(requestText);
   });
 
   it.each([
@@ -332,6 +340,7 @@ describe("Phase 10 generic chat quality gate", () => {
         id: "pattern:phase10-instruction",
         kind: "pattern",
         activation: 0.9,
+        trace: { requestSpanRole: "control" },
         span: { charStart: 0, charEnd: [...instruction].length }
       }]
     });
