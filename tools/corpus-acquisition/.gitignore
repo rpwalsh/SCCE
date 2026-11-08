@@ -1,0 +1,3 @@
+corpus-build/
+__pycache__/
+*.pyc
