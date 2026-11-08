@@ -173,17 +173,29 @@ export async function runCodeMouth(input: {
     iterations = attempt;
     log(`attempt ${attempt}: ${proposal.operations.map(operation => `${operation.kind} ${path.basename(operation.path)}`).join(", ")}`);
     const rollback = await input.ports.apply(proposal.operations);
-    const verification = await input.ports.verify(input.targetPath);
-    const recorded = recordDebugAttempt(session, {
-      now: Date.now(),
-      diagnosticsBefore: diagnostics,
-      operations: proposal.operations,
-      mutatedPaths: [...new Set(proposal.operations.map(operation => operation.path))],
-      buildSucceeded: verification.buildSucceeded,
-      testsSucceeded: verification.testsSucceeded,
-      diagnosticsAfter: verification.diagnostics,
-      hasher
-    });
+    let verification: CodeMouthVerification;
+    let recorded: ReturnType<typeof recordDebugAttempt>;
+    try {
+      verification = await input.ports.verify(input.targetPath);
+      recorded = recordDebugAttempt(session, {
+        now: Date.now(),
+        diagnosticsBefore: diagnostics,
+        operations: proposal.operations,
+        mutatedPaths: [...new Set(proposal.operations.map(operation => operation.path))],
+        buildSucceeded: verification.buildSucceeded,
+        testsSucceeded: verification.testsSucceeded,
+        diagnosticsAfter: verification.diagnostics,
+        hasher
+      });
+    } catch (failure) {
+      const message = failure instanceof Error ? failure.message : String(failure);
+      try { await rollback(); }
+      catch (rollbackFailure) {
+        throw new AggregateError([failure, rollbackFailure], `repair verification failed (${message}) and rollback could not complete`);
+      }
+      log(`attempt ${attempt} rolled back: verification could not finish (${message})`);
+      return finish("stopped", `pending repair rolled back because verification could not finish: ${message}`);
+    }
     session = recorded.session;
     decision = recorded.decision;
     const mutatedPaths = proposal.operations.map(operation => operation.path);

@@ -3,7 +3,7 @@
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProgramDiagnostic, RepairOperation } from "@scce/kernel";
 import { codeSurfaceTokens, generateLearnedBehaviorCodeRepairs, learnedCodeRepairOperations, trainKneserNey } from "@scce/kernel";
 import { runCodeMouth } from "../code-mouth.js";
@@ -11,6 +11,7 @@ import { createWorkspaceCodeMouthPorts } from "../workspace-code-mouth-ports.js"
 import { treeSitterRepairSpans, treeSitterSyntaxInsertionSites } from "../tree-sitter-repair-spans.js";
 import { checkerDiagnostics } from "../tree-sitter-code-mouth-ports.js";
 import { trustedHostPatchValidationProvider } from "../structured-patch-validation.js";
+import { findCodeVerifierCapability } from "../code-verifier-discovery.js";
 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) {
@@ -108,6 +109,58 @@ describe("shared workspace code ports", () => {
     expect(result.appliedOperations).toEqual([]);
     expect(await readFile(path.join(root, "application.cjs"), "utf8")).toBe("exports.value = 1;\n");
     expect(ports.projectVerification()).toBeUndefined();
+  });
+
+  it.each(["unavailable", "deadline"] as const)("restores actual source when the bare native verification boundary is %s", async (failure, context) => {
+    if ((await findCodeVerifierCapability("go")).status !== "available") context.skip();
+    const source = "package application\nvar Value = 1\n";
+    const root = await fixture({ "application.go": source });
+    const ports = createWorkspaceCodeMouthPorts({ workspaceRoot: root, targetPath: "application.go", learnedProposer: {
+      availableModelCount: async () => 1, lastCandidates: () => [],
+      propose: async () => ({ surface: "var Value = 2", operations: [{ id: "pending-native-proof", kind: "replace", path: "application.go",
+        startLine: 2, endLine: 2, content: "var Value = 2", reason: "candidate awaiting native proof", risk: 0 }] })
+    } });
+    const nativeVerify = ports.verify;
+    let verifications = 0;
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    try {
+      ports.verify = async target => {
+        if (verifications++) {
+          if (failure === "unavailable") throw Error("native verifier unavailable after application");
+          now.mockReturnValue(4_000);
+        }
+        const verified = await nativeVerify(target);
+        expect(verified.buildSucceeded).toBe(true);
+        return verified;
+      };
+      const result = await runCodeMouth({ request: "repair", targetPath: "application.go", ports, maxWallClockMs: 1_000 });
+      expect(result).toMatchObject({ outcome: "stopped", appliedOperations: [] });
+      expect(result.reason).toContain("rolled back");
+      expect(result.reason).toContain(failure === "deadline" ? "wall-clock" : "native verifier unavailable");
+      expect(await readFile(path.join(root, "application.go"), "utf8")).toBe(source);
+    } finally { now.mockRestore(); }
+  });
+
+  it("surfaces both failures when an interrupted verifier cannot roll back over a concurrent source edit", async () => {
+    const root = await fixture({ "application.cjs": "exports.value = 1;\n" });
+    const ports = createWorkspaceCodeMouthPorts({ workspaceRoot: root, targetPath: "application.cjs", learnedProposer: {
+      availableModelCount: async () => 1, lastCandidates: () => [],
+      propose: async () => ({ surface: "exports.value = 2;", operations: [{ id: "pending-candidate", kind: "replace", path: "application.cjs",
+        startLine: 1, endLine: 1, content: "exports.value = 2;", reason: "candidate awaiting proof", risk: 0 }] })
+    } });
+    let verifications = 0;
+    const verify = ports.verify;
+    ports.verify = async target => {
+      if (!verifications++) return verify(target);
+      await writeFile(path.join(root, "application.cjs"), "exports.value = 9; // concurrent owner edit\n");
+      throw Error("checker disconnected");
+    };
+    const failure = await runCodeMouth({ request: "repair", targetPath: "application.cjs", ports }).catch(error => error);
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect(failure.message).toContain("rollback could not complete");
+    expect(failure.errors).toHaveLength(2);
+    expect(failure.errors[0].message).toBe("checker disconnected");
+    expect(await readFile(path.join(root, "application.cjs"), "utf8")).toBe("exports.value = 9; // concurrent owner edit\n");
   });
 
   it("keeps the actual source revision's failed-test receipt across rejected behavioral hypotheses", async () => {
