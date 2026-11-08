@@ -8,7 +8,7 @@ import {
   type LearnedConstruction,
   type LearnedFormClass
 } from "./language-construction.js";
-import { canonicalStringify } from "./primitives.js";
+import { canonicalStringify, toJsonValue } from "./primitives.js";
 import { type GraphBoundConstruction } from "./language-induction.js";
 import { preparedLanguageInductionProducts, type PreparedConstructionInduction } from "./graph-surface-alignment.js";
 import { segmentUnicodeSurfaceV2, type LexicalSegment } from "./unicode-segmentation-v2.js";
@@ -31,6 +31,7 @@ export const CREATIVE_EVENT_ARGUMENT_FRAME_SCHEMA = "scce.creative_event_argumen
  * path for every script/corpus.
  */
 export const UNIVERSAL_CREATIVE_EVENT_COMPILER_ID = "surface.compiler.universal.induced.v1" as const;
+export const UNIVERSAL_CREATIVE_EVENT_COVERAGE_RECIPE_ID = "kernel.creative_event_source_pages.v1" as const;
 
 export const LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS = {
   input: "surface.construction_memory.reject.input",
@@ -223,6 +224,9 @@ export type LanguageConstructionPatternCompilation =
       pattern: LanguagePatternRecord;
       bundle: DurableLanguageConstructionBundle;
       mdl?: ConstructionGrammarMdlScore;
+      patterns?: LanguagePatternRecord[];
+      bundles?: DurableLanguageConstructionBundle[];
+      coverage?: JsonValue;
     }
   | {
       status: "rejected";
@@ -399,7 +403,7 @@ function sourceExampleStorageBundle(bundle: DurableLanguageConstructionBundle): 
 export function createUniversalCreativeEventConstructionCompiler(): CreativeEventConstructionCompiler {
   return {
     id: UNIVERSAL_CREATIVE_EVENT_COMPILER_ID,
-    compile: compileUniversalCreativeEventConstructionPattern
+    compile: input => compileUniversalCreativeEventPatterns(input, true)
   };
 }
 
@@ -421,6 +425,10 @@ export function createUniversalCreativeEventConstructionCompiler(): CreativeEven
 export function compileUniversalCreativeEventConstructionPattern(
   input: CreativeEventConstructionCompilerInput
 ): LanguageConstructionPatternCompilation {
+  return compileUniversalCreativeEventPatterns(input, false);
+}
+
+function compileUniversalCreativeEventPatterns(input: CreativeEventConstructionCompilerInput, completeSource: boolean): LanguageConstructionPatternCompilation {
   if (!nonempty(input.profileId) || !Number.isFinite(input.updatedAt)) {
     return rejected(LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.input);
   }
@@ -448,7 +456,11 @@ export function compileUniversalCreativeEventConstructionPattern(
   }
 
   const maxEvents = Math.max(1, Math.min(2048, Math.floor(input.maxEvents ?? 768)));
+  if (completeSource && maxEvents < 4) return rejected(LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.input);
   const events: DurableCreativeEventConstruction[] = [];
+  const windowsByEvidence = new Map(promotedEvidence.map(evidence => [String(evidence.id), products.coverage.windows
+    .filter(window => window.ownerDocumentId === String(evidence.id)).sort((left, right) => left.startUtf16 - right.startUtf16)]));
+  const eventWindowIds = new Map<string, string>();
   // Real cross-sentence recurrence requirement: a single degenerate
   // sentence (no repeated corpus structure at all) can still spuriously
   // classify several of its own words as candidate predicates, each
@@ -460,7 +472,7 @@ export function compileUniversalCreativeEventConstructionPattern(
   // words of the same lone one.
   const eventSentenceKeys: string[] = [];
   for (const evidence of promotedEvidence) {
-    if (events.length >= maxEvents) break;
+    if (!completeSource && events.length >= maxEvents) break;
     const lexical = segmentUnicodeSurfaceV2(evidence.text, input.hasher).lexicalSegments;
     // segmentUnicodeSurfaceV2's lexical segments are word-like units --
     // punctuation is not itself a segment, so sentence-terminal marks only
@@ -468,8 +480,11 @@ export function compileUniversalCreativeEventConstructionPattern(
     const codePoints = [...evidence.text];
     let sentenceOrdinal = 0;
     let previousEnd = 0;
-    for (let index = 0; index < lexical.length && events.length < maxEvents; index++) {
+    const windows = windowsByEvidence.get(String(evidence.id)) ?? [];
+    let windowIndex = 0;
+    for (let index = 0; index < lexical.length && (completeSource || events.length < maxEvents); index++) {
       const segment = lexical[index]!;
+      while (windowIndex < windows.length && segment.utf16Start >= windows[windowIndex]!.endUtf16) windowIndex++;
       const gap = codePoints.slice(previousEnd, segment.codePointStart).join("");
       if (containsSentenceTerminal(gap)) sentenceOrdinal += 1;
       previousEnd = segment.codePointEnd;
@@ -486,6 +501,7 @@ export function compileUniversalCreativeEventConstructionPattern(
         });
         if (compiled) {
           events.push(compiled);
+          if (windows[windowIndex]) eventWindowIds.set(compiled.id, windows[windowIndex]!.documentId);
           eventSentenceKeys.push(`${evidence.id}#${sentenceOrdinal}`);
           break;
         }
@@ -496,8 +512,34 @@ export function compileUniversalCreativeEventConstructionPattern(
   if (new Set(eventSentenceKeys).size < 2) return rejected(LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.induction);
 
   const orderedEvents = events
-    .sort((left, right) => left.sourceOrdinal - right.sourceOrdinal || compareText(left.id, right.id))
-    .slice(0, maxEvents);
+    .sort((left, right) => left.sourceOrdinal - right.sourceOrdinal || compareText(left.id, right.id));
+  if (!completeSource) return creativeEventPattern(input, orderedEvents);
+  if (eventWindowIds.size !== orderedEvents.length) return rejected(LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.ownership);
+  const compilationId = input.hasher.digestHex(canonicalStringify({ recipe: UNIVERSAL_CREATIVE_EVENT_COVERAGE_RECIPE_ID,
+    profileId: input.profileId, sourceInputDigest: products.coverage.inputDigest, maxEvents, eventIds: orderedEvents.map(event => event.id) }));
+  const pageCount = Math.ceil(orderedEvents.length / maxEvents);
+  const pageSize = Math.ceil(orderedEvents.length / pageCount);
+  const pages = Array.from({ length: pageCount }, (_, index) => {
+    const pageEvents = orderedEvents.slice(index * pageSize, (index + 1) * pageSize);
+    const windowIds = new Set(pageEvents.map(event => eventWindowIds.get(event.id)));
+    return creativeEventPattern(input, pageEvents, { recipe: UNIVERSAL_CREATIVE_EVENT_COVERAGE_RECIPE_ID, compilationId, index, pageCount,
+      maxEvents, qualification: "source_observed", windows: products.coverage.windows.filter(window => windowIds.has(window.documentId)) });
+  });
+  const compiled = pages.filter((page): page is Extract<LanguageConstructionPatternCompilation, { status: "compiled" }> => page.status === "compiled");
+  if (compiled.length !== pageCount) return rejected(LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.induction);
+  const counts = new Map<string, number>();
+  for (const id of eventWindowIds.values()) counts.set(id, (counts.get(id) ?? 0) + 1);
+  const coverage = toJsonValue({ schema: "scce.creative_event_source_coverage.v1", recipe: UNIVERSAL_CREATIVE_EVENT_COVERAGE_RECIPE_ID,
+    compilationId, sourceInduction: products.coverage, complete: true, observedEvents: orderedEvents.length,
+    windows: products.coverage.windows.map(window => ({ ...window, observedEvents: counts.get(window.documentId) ?? 0 })),
+    pages: compiled.map((page, index) => ({ index, id: page.pattern.id, observedEvents: page.bundle.creativeEvents?.length ?? 0 })) });
+  const receipt: LanguagePatternRecord = { id: `creative.source.coverage.${compilationId}`, profileId: input.profileId, patternKind: "source_compilation",
+    support: 0, entropy: 0, patternJson: coverage, evidenceIds: promotedEvidence.map(span => span.id), updatedAt: input.updatedAt };
+  return { ...compiled[0]!, patterns: [...compiled.map(page => page.pattern), receipt], bundles: compiled.map(page => page.bundle), coverage };
+}
+
+function creativeEventPattern(input: CreativeEventConstructionCompilerInput, orderedEvents: DurableCreativeEventConstruction[], sourcePage?: Record<string, unknown>): LanguageConstructionPatternCompilation {
+  if (orderedEvents.length < 4 || orderedEvents.length > 2048) return rejected(LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.induction);
   const sourceVersionIds = uniqueSorted(orderedEvents.map(event => event.sourceVersionId));
   const evidenceIds = uniqueSorted(orderedEvents.map(event => event.evidenceId));
   const evidenceContentHashes = uniqueSorted(orderedEvents.map(event => event.evidenceContentHash));
@@ -508,7 +550,8 @@ export function compileUniversalCreativeEventConstructionPattern(
     sourceVersionIds,
     evidenceIds,
     evidenceContentHashes,
-    events: orderedEvents
+    events: orderedEvents,
+    ...(sourcePage ? { sourcePage } : {})
   };
   const contentDigest = input.hasher.digestHex(canonicalStringify(persistedContent));
   const id = `surface.creative_event.bundle.${contentDigest}`;
@@ -917,6 +960,10 @@ function verifyCreativeEventPattern(
   if (rawEvents.length < 4 || rawEvents.length > 2048) {
     return issue(pattern, LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.member);
   }
+  const sourcePage = recordOf(rawBundle.sourcePage);
+  if (rawBundle.sourcePage !== undefined && (!validCreativeSourcePage(sourcePage, rawEvents, evidenceById, hasher))) {
+    return issue(pattern, LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.ownership);
+  }
   // Record integrity over the STORED bundle, independent of per-event
   // usability: one stale event must never erase 767 good ones.
   const contentDigest = hasher.digestHex(canonicalStringify(rawBundle));
@@ -959,6 +1006,33 @@ function verifyCreativeEventPattern(
       creativeEvents: orderedEvents
     }
   };
+}
+
+function validCreativeSourcePage(page: Record<string, JsonValue>, events: readonly Record<string, JsonValue>[], evidenceById: ReadonlyMap<string, EvidenceSpan>, hasher: Hasher): boolean {
+  const index = numberOf(page.index), count = numberOf(page.pageCount), bound = numberOf(page.maxEvents);
+  if (page.recipe !== UNIVERSAL_CREATIVE_EVENT_COVERAGE_RECIPE_ID || page.qualification !== "source_observed" || !stringOf(page.compilationId)
+    || !Number.isSafeInteger(index) || !Number.isSafeInteger(count) || index < 0 || index >= count || count < 1
+    || !Number.isSafeInteger(bound) || bound < 4 || bound > 2048 || events.length > bound) return false;
+  const windows = arrayOfRecords(page.windows);
+  if (!windows.length) return false;
+  const offsetsByEvidence = new Map<string, number[]>();
+  for (const window of windows) {
+    const evidence = evidenceById.get(stringOf(window.ownerDocumentId));
+    const start = numberOf(window.startUtf16), end = numberOf(window.endUtf16);
+    if (!evidence || evidence.status !== "promoted" || String(evidence.sourceVersionId) !== stringOf(window.sourceVersionId)
+      || !Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end <= start || end > evidence.text.length
+      || hasher.digestHex(evidence.text.slice(start, end)) !== stringOf(window.contentDigest)) return false;
+    if (!offsetsByEvidence.has(String(evidence.id))) {
+      const offsets = [0];
+      for (const point of evidence.text) offsets.push(offsets[offsets.length - 1]! + point.length);
+      offsetsByEvidence.set(String(evidence.id), offsets);
+    }
+  }
+  return events.every(event => windows.some(window => window.ownerDocumentId === event.evidenceId && (() => {
+    const start = numberOf(event.labelStartCodePoint);
+    const offset = Number.isSafeInteger(start) ? offsetsByEvidence.get(stringOf(event.evidenceId))?.[start] ?? -1 : -1;
+    return offset >= numberOf(window.startUtf16) && offset < numberOf(window.endUtf16);
+  })()));
 }
 
 function creativeEventFromPersisted(

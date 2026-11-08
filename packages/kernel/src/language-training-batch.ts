@@ -3,6 +3,7 @@
 import {
   compileLanguageConstructionPatterns,
   createUniversalCreativeEventConstructionCompiler,
+  isLanguageConstructionPattern,
   LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS,
   SOURCE_EXAMPLE_CONSTRUCTION_STORAGE,
   type CreativeEventConstructionCompiler,
@@ -626,18 +627,21 @@ export function compileLanguageTrainingBatch(input: {
   const creativeEventCompiler = induceNaturalLanguage ? input.creativeEventCompiler ?? createUniversalCreativeEventConstructionCompiler() : undefined;
   const creativeEventCompilation = creativeEventCompiler?.compile({ profileId: batch.profile.id, evidence: batch.evidence,
     hasher: input.hasher, updatedAt: batch.createdAt, preparedInduction });
-  if (creativeEventCompilation?.status === "compiled") constructionPatterns.push(structuredClone(creativeEventCompilation.pattern));
-  else if (creativeEventCompilation?.issues.some(issue => issue.code !== LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.induction)) {
+  const creativePatterns = creativeEventCompilation?.status === "compiled" ? creativeEventCompilation.patterns ?? [creativeEventCompilation.pattern] : [];
+  const ownedCreativePatterns = input.creativeEventCompiler ? creativePatterns.map(pattern => structuredClone(pattern)) : creativePatterns;
+  constructionPatterns.push(...ownedCreativePatterns.filter(isLanguageConstructionPattern));
+  if (creativeEventCompilation?.status === "rejected" && creativeEventCompilation.issues.some(issue => issue.code !== LANGUAGE_CONSTRUCTION_MEMORY_REJECTION_IDS.induction)) {
     warnings.push(...creativeEventCompilation.issues.map(issue => issue.code));
   }
   const sourceCorrespondencePatterns = batch.transcriptTurns && creativeEventCompilation?.status === "compiled"
     ? compileCreativeSourceCorrespondences({ turns: batch.transcriptTurns, profileId: batch.profile.id, updatedAt: batch.createdAt,
-      evidence: batch.evidence, events: creativeEventCompilation.bundle.creativeEvents ?? [], hasher: input.hasher }) : [];
+      evidence: batch.evidence, events: (creativeEventCompilation.bundles ?? [creativeEventCompilation.bundle]).flatMap(bundle => bundle.creativeEvents ?? []), hasher: input.hasher }) : [];
 
   let units = uniqueRecords(memories.flatMap(memory => memory.units));
   let patterns = uniquePatterns([
     ...memories.flatMap(memory => memory.patterns), ...inducedLanguagePatterns, ...constructionPatterns, ...reversibleConstructionPatterns,
-    ...pairedAntiUnifiedConstructionPatterns, ...optionalNullRealizationPatterns, ...(batch.additionalPatterns ?? []), ...sourceCorrespondencePatterns
+    ...pairedAntiUnifiedConstructionPatterns, ...optionalNullRealizationPatterns, ...(batch.additionalPatterns ?? []), ...sourceCorrespondencePatterns,
+    ...ownedCreativePatterns.filter(pattern => !isLanguageConstructionPattern(pattern))
   ]);
   let semanticFrames = uniqueRecords(memories.flatMap(memory => memory.semanticFrames));
   const rawModels = uniqueRecords(memories.flatMap(memory => memory.models));
@@ -697,6 +701,7 @@ export function compileLanguageTrainingBatch(input: {
       naturalLanguageInduction: induceNaturalLanguage,
       creativeEventCompilerId: creativeEventCompiler?.id ?? null,
       creativeEventCompilation: creativeEventCompilation?.status ?? null,
+      creativeEventSourceCoverage: creativeEventCompilation?.status === "compiled" ? creativeEventCompilation.coverage ?? null : null,
       sourceInductionCoverage: inducedLanguageProducts?.coverage ?? null,
       inputUtf16Length: batch.text.length,
       chunks: textChunks.length,

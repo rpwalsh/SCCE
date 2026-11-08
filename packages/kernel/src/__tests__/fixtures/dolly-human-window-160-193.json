@@ -1,0 +1,367 @@
+{
+  "schema": "scce.dialogue_transcript.v1",
+  "sourceMetadata": {
+    "dataset": "databricks/databricks-dolly-15k",
+    "uri": "https://huggingface.co/datasets/databricks/databricks-dolly-15k/tree/bdd27f4d94b9c1f951818a7da7fd7aeea5dbff1a",
+    "pinnedRevision": "bdd27f4d94b9c1f951818a7da7fd7aeea5dbff1a",
+    "license": "CC-BY-SA-3.0",
+    "attribution": "Databricks, Inc. (2023); instruction records were authored by Databricks employees. Some source contexts are Wikipedia excerpts as documented by the dataset card.",
+    "shareAlikeNotice": "This preparation is adapted from material licensed CC BY-SA 3.0. Retain attribution and license notices; distribute adaptations under the same license.",
+    "changeNotice": "Instructions and responses are represented as NFC-normalized speech turns; source context is retained only through non-speech supportingSourceRanges. The source category is mapped explicitly to commitmentScope and requestAuthority and copied as sourceCategory on each pair of turns; no scope or authority is inferred from prompt wording.",
+    "captureNote": "Exact pinned first-shard owned source window 74469..83683 (turns160..193), with source-local code-point coordinates; all content in this window retained."
+  },
+  "text": "What are some kinds of embroidery stitches for writing letters?\nSome embroidery stitches that can be used to embroider letters are the back stitch, the split stitch, the stem stitch, the chain stitch, the couching stitch, and the satin stitch.\nWhat are the most common injuries in rowing?\nThe most common injuries in rowing are inflammation of the knees, spine and forearms. Oher common injuries also include hand blisters and track bites.\nRowing is a low-impact sport with movement only in defined ranges, so that twist and sprain injuries are rare. However, the repetitive rowing action can put strain on knee joints, the spine and the tendons of the forearm, and inflammation of these are the most common rowing injuries. If one rows with poor technique, especially rowing with a curved rather than straight back, other injuries may surface, including back pains and wrist injuries. Blisters occur for almost all rowers, especially in the beginning of one's rowing career, as every stroke puts pressure on the hands, though rowing frequently tends to harden hands and generate protective calluses. Holding the oars too tightly or making adjustments to technique may cause recurring or new blisters, as it is common to feather the blade. Another common injury is getting \"track bites\", thin cuts on the back of one's calf or thigh caused by contact with the seat tracks at either end of the stroke.\nWhat is a kite?\nA kite is a toy that can be be purchased in a store or a specialty shop.  It is a craft that is lighter an air that is tied to a string that you can fly on wind currents.  The kite has wings that react against the air to create lift enabling it to fly.  You can fly a kite at a park or an open area, and you will want to make sure there are no power lines nearby to be safe when flying the kite.\nClassify each of the following pieces of equipment according to the sport they are used for, either basketball, football, or soccer: shin guards, shooting sleeve, penalty flag, corner flag, kicking tee, and goalie gloves.\nThe classification is as follows:\n- Soccer: goalie gloves, corner flag\n- Basketball: shooting sleeve\n- Football: penalty flag, kicking tee\nGiven this paragraph about Billie Eilish, tell me who produced her debut single, also tell me what is her chart-topping single?\nHer brother Finneas O'Connell produced her debut single \"Ocean Eyes\", and her chart topping single is \"Bad Guy\"\nBillie Eilish Pirate Baird O'Connell (/ˈaɪlɪʃ/ EYE-lish; born December 18, 2001) is an American singer and songwriter. She first gained public attention in 2015 with her debut single \"Ocean Eyes\", written and produced by her brother Finneas O'Connell, with whom she collaborates on music and live shows. In 2017, she released her debut extended play (EP), titled Don't Smile at Me. Commercially successful, it reached the top 15 of record charts in numerous countries, including the US, UK, Canada, and Australia.\n\nEilish's first studio album, When We All Fall Asleep, Where Do We Go? (2019), debuted atop the US Billboard 200 and UK Albums Chart. It was one of the best-selling albums of the year, buoyed by the success of its fifth single \"Bad Guy\", Eilish's first number-one on the US Billboard Hot 100. This made her the first artist born in the 21st century to release a chart-topping single. The following year, Eilish performed the theme song \"No Time to Die\" for the James Bond film of the same name, which topped the UK Singles Chart and won the Academy Award for Best Original Song in 2022. Her subsequent singles \"Everything I Wanted\", \"My Future\", \"Therefore I Am\", and \"Your Power\" peaked in the top 10 in the US and UK. Her second studio album, Happier Than Ever (2021), topped charts in 25 countries.\nWhat is a good way to get around without a car?\nIf you live in a city you can access public transport such as buses and trains. You can also walk, use a bicycle, or electric scooter to get around.\nIdentify which animal species is alive or extinct: Palaeophis, Giant Tortoise\nGiant Tortoise is alive, Palaeophis is extinct.\nWhy is Santa Cruz, California a great place to live?\nSanta Cruz, California has one of the best climates in the continental U.S. – being close to the Pacific Ocean, temperatures stay warmer in the winters and cooler in the summers, but without the dreaded fog that nearby cities like San Francisco or Monterey experience. The small city is world-famous for surfing, and the relaxed vibe that comes with it. Natural beauty is abundant, with the mountains and beach only a few miles apart.\nGive me some ideas to manage my manager.\n1. Be honest\n2. Communicate\n3. Understand goals\n4. Stay calm\n5. Solve problems\n6. Be positive\n7. Share your knowledge\n8. Be caring\n9. Practice positive reinforcement\n10. Be a strong performer\nWho was boxer John Baldwin\nBorn in Detroit, John Baldwin was a professional US boxer.  He fought in the Light-Middleweight category and won a bronze medal in the 1968 Olympics.   He turned pro in 1970, and lost a decision to Marvin Hagler in 1975.  He retired in 1979\nKnown as \"The Mad\" Baldwin, he turned pro in 1970 and lost a decision to Marvin Hagler in 1975. In 1977 he took on Rocky Mosley Jr in the ill-fated U.S. Championship Tournament, but lost via K.O. In 1978 he lost a decision to Marvin Johnson, and retired a year later.\nIdentify which instrument is string or percussion: Samphor, Viola toeria\nViola toeria is string, Samphor is percussion.\nIf we were playing a game where we had to identify things that can be found inside a house, which of these would we call out: car, chair, table, park, cloud, microwave.\nInside a house you can find a chair, a table and a microwave. Cars, clouds and parks are found outside of houses.\nClassify the following as either dark-colored beers or light colored beers: porter, pilsner, stout, amber, lager\nDark-colored beers: porter, stout, amber\nLight-colored beers: pilsner, lager\nGive me a bulleted list of the 5 highest mountains in the world and their respective heights in meters\n* Mount Everest. Height: 8,849 meters\n* K2. Height: 8,611 meters\n* Kangchenjunga. Height: 8,586 meters\n* Lhotse. Height: 8,516 meters\n* Makalu. Height: 8,485 meters\nExtract all of the dates mentioned in this paragraph and list them using bullets in the format {Date} - {Description}\n• November 16, 1813 - This is when Daniel Leavitt was born\n• 1838 - This is when Daniel Leavitt married his wife Ruth Jeannette Ball.\nDaniel Leavitt was born November 16, 1813, at Rye, New Hampshire, the son of Benning Leavitt, influential businessman, state senator, county commissioner and later Chicopee Selectman, and his wife Olive (Jenness) Leavitt. Daniel Leavitt married in 1838 at West Springfield, Massachusetts, Ruth Jeannette Ball. They had three children.\nWhich products apple sell?\nApple sells variety of products. including watches, phones, laptops and computers.\nWrite a short story about a person who discovers a hidden room in their house. The story should include a plot twist and a clear resolution at the end.\nIt was going to be a long day.  With her brother-in-law out of town, Lisa had agreed to watch her niece Stella for the afternoon and the little girl was known to be a bit of a handful. Her plan had been to spend the afternoon at the park to let Stella run and climb, to wear her out a bit.  Unfortunately, this outing was foiled by the constant downpour of rain so Lisa resigned herself to a day inside with the tiny tyrant. Stella arrived early and excited to play.  Lisa decided to begin with a game of hide and seek, after all this could take up a good part of the morning without too much trouble.  Stella ran off to hide and Lisa sat quietly drinking coffee while calling out to the little girl, pretending to seek. Eventually she set off to find the little girl but soon she realized that something was wrong.  No matter where she looked, Stella was nowhere to be found. The house wasn't that large, making her disappearance even more perplexing.  Lisa had only recently moved into the home that she bought from her great aunt shortly before her death and she hasn't even moved out all of the existing furniture. Maybe Stella had gotten stuck somewhere behind the large wardrobe in the bedroom or she had climbed up into a cupboard in the laundry room.  Panic was starting to settle in as she moved the wardrobe further from the wall, where only a small child could have hidden before.  Suddenly, saw a small crack in the wall, and then realized it was a small door that she never knew was there.  The door was slightly ajar and she eventually moved the wardrobe enough to open the door and climb inside. What was this place?  The entrance opened up to reveal a small room that Lisa never knew existed!  It was full of treasure, gold bars and jewels.  Stella sat in the middle of the room quietly playing with the treasure, unaware of the immense value she was surrounded by.  Lisa had known her aunt was a secretive woman but this was an incredible find and would change her life forever.  Stella's visit was the good luck charm she needed to unlock this bounty and she would be forever grateful to the little girl!  Time to call her brother-in-law to thank him for letting Stella visit.",
+  "turns": [
+    {
+      "index": 0,
+      "speakerId": "user",
+      "surface": "What are some kinds of embroidery stitches for writing letters?",
+      "startCodePoint": 0,
+      "endCodePoint": 63,
+      "sourceCategory": "brainstorming",
+      "requestAuthority": "creative"
+    },
+    {
+      "index": 1,
+      "speakerId": "assistant",
+      "surface": "Some embroidery stitches that can be used to embroider letters are the back stitch, the split stitch, the stem stitch, the chain stitch, the couching stitch, and the satin stitch.",
+      "startCodePoint": 64,
+      "endCodePoint": 243,
+      "replyToTurnIndex": 0,
+      "commitmentScope": "conversation",
+      "sourceCategory": "brainstorming"
+    },
+    {
+      "index": 2,
+      "speakerId": "user",
+      "surface": "What are the most common injuries in rowing?",
+      "startCodePoint": 244,
+      "endCodePoint": 288,
+      "sourceCategory": "summarization",
+      "requestAuthority": "factual"
+    },
+    {
+      "index": 3,
+      "speakerId": "assistant",
+      "surface": "The most common injuries in rowing are inflammation of the knees, spine and forearms. Oher common injuries also include hand blisters and track bites.",
+      "startCodePoint": 289,
+      "endCodePoint": 439,
+      "replyToTurnIndex": 2,
+      "commitmentScope": "external",
+      "sourceCategory": "summarization",
+      "supportingSourceRanges": [
+        {
+          "startCodePoint": 440,
+          "endCodePoint": 1400,
+          "surface": "Rowing is a low-impact sport with movement only in defined ranges, so that twist and sprain injuries are rare. However, the repetitive rowing action can put strain on knee joints, the spine and the tendons of the forearm, and inflammation of these are the most common rowing injuries. If one rows with poor technique, especially rowing with a curved rather than straight back, other injuries may surface, including back pains and wrist injuries. Blisters occur for almost all rowers, especially in the beginning of one's rowing career, as every stroke puts pressure on the hands, though rowing frequently tends to harden hands and generate protective calluses. Holding the oars too tightly or making adjustments to technique may cause recurring or new blisters, as it is common to feather the blade. Another common injury is getting \"track bites\", thin cuts on the back of one's calf or thigh caused by contact with the seat tracks at either end of the stroke."
+        }
+      ]
+    },
+    {
+      "index": 4,
+      "speakerId": "user",
+      "surface": "What is a kite?",
+      "startCodePoint": 1401,
+      "endCodePoint": 1416,
+      "sourceCategory": "open_qa",
+      "requestAuthority": "factual"
+    },
+    {
+      "index": 5,
+      "speakerId": "assistant",
+      "surface": "A kite is a toy that can be be purchased in a store or a specialty shop.  It is a craft that is lighter an air that is tied to a string that you can fly on wind currents.  The kite has wings that react against the air to create lift enabling it to fly.  You can fly a kite at a park or an open area, and you will want to make sure there are no power lines nearby to be safe when flying the kite.",
+      "startCodePoint": 1417,
+      "endCodePoint": 1812,
+      "replyToTurnIndex": 4,
+      "commitmentScope": "external",
+      "sourceCategory": "open_qa"
+    },
+    {
+      "index": 6,
+      "speakerId": "user",
+      "surface": "Classify each of the following pieces of equipment according to the sport they are used for, either basketball, football, or soccer: shin guards, shooting sleeve, penalty flag, corner flag, kicking tee, and goalie gloves.",
+      "startCodePoint": 1813,
+      "endCodePoint": 2034,
+      "sourceCategory": "classification",
+      "requestAuthority": "factual"
+    },
+    {
+      "index": 7,
+      "speakerId": "assistant",
+      "surface": "The classification is as follows:\n- Soccer: goalie gloves, corner flag\n- Basketball: shooting sleeve\n- Football: penalty flag, kicking tee",
+      "startCodePoint": 2035,
+      "endCodePoint": 2173,
+      "replyToTurnIndex": 6,
+      "commitmentScope": "conversation",
+      "sourceCategory": "classification"
+    },
+    {
+      "index": 8,
+      "speakerId": "user",
+      "surface": "Given this paragraph about Billie Eilish, tell me who produced her debut single, also tell me what is her chart-topping single?",
+      "startCodePoint": 2174,
+      "endCodePoint": 2301,
+      "sourceCategory": "closed_qa",
+      "requestAuthority": "factual"
+    },
+    {
+      "index": 9,
+      "speakerId": "assistant",
+      "surface": "Her brother Finneas O'Connell produced her debut single \"Ocean Eyes\", and her chart topping single is \"Bad Guy\"",
+      "startCodePoint": 2302,
+      "endCodePoint": 2413,
+      "replyToTurnIndex": 8,
+      "commitmentScope": "external",
+      "sourceCategory": "closed_qa",
+      "supportingSourceRanges": [
+        {
+          "startCodePoint": 2414,
+          "endCodePoint": 3729,
+          "surface": "Billie Eilish Pirate Baird O'Connell (/ˈaɪlɪʃ/ EYE-lish; born December 18, 2001) is an American singer and songwriter. She first gained public attention in 2015 with her debut single \"Ocean Eyes\", written and produced by her brother Finneas O'Connell, with whom she collaborates on music and live shows. In 2017, she released her debut extended play (EP), titled Don't Smile at Me. Commercially successful, it reached the top 15 of record charts in numerous countries, including the US, UK, Canada, and Australia.\n\nEilish's first studio album, When We All Fall Asleep, Where Do We Go? (2019), debuted atop the US Billboard 200 and UK Albums Chart. It was one of the best-selling albums of the year, buoyed by the success of its fifth single \"Bad Guy\", Eilish's first number-one on the US Billboard Hot 100. This made her the first artist born in the 21st century to release a chart-topping single. The following year, Eilish performed the theme song \"No Time to Die\" for the James Bond film of the same name, which topped the UK Singles Chart and won the Academy Award for Best Original Song in 2022. Her subsequent singles \"Everything I Wanted\", \"My Future\", \"Therefore I Am\", and \"Your Power\" peaked in the top 10 in the US and UK. Her second studio album, Happier Than Ever (2021), topped charts in 25 countries."
+        }
+      ]
+    },
+    {
+      "index": 10,
+      "speakerId": "user",
+      "surface": "What is a good way to get around without a car?",
+      "startCodePoint": 3730,
+      "endCodePoint": 3777,
+      "sourceCategory": "brainstorming",
+      "requestAuthority": "creative"
+    },
+    {
+      "index": 11,
+      "speakerId": "assistant",
+      "surface": "If you live in a city you can access public transport such as buses and trains. You can also walk, use a bicycle, or electric scooter to get around.",
+      "startCodePoint": 3778,
+      "endCodePoint": 3926,
+      "replyToTurnIndex": 10,
+      "commitmentScope": "conversation",
+      "sourceCategory": "brainstorming"
+    },
+    {
+      "index": 12,
+      "speakerId": "user",
+      "surface": "Identify which animal species is alive or extinct: Palaeophis, Giant Tortoise",
+      "startCodePoint": 3927,
+      "endCodePoint": 4004,
+      "sourceCategory": "classification",
+      "requestAuthority": "factual"
+    },
+    {
+      "index": 13,
+      "speakerId": "assistant",
+      "surface": "Giant Tortoise is alive, Palaeophis is extinct.",
+      "startCodePoint": 4005,
+      "endCodePoint": 4052,
+      "replyToTurnIndex": 12,
+      "commitmentScope": "conversation",
+      "sourceCategory": "classification"
+    },
+    {
+      "index": 14,
+      "speakerId": "user",
+      "surface": "Why is Santa Cruz, California a great place to live?",
+      "startCodePoint": 4053,
+      "endCodePoint": 4105,
+      "sourceCategory": "general_qa",
+      "requestAuthority": "factual"
+    },
+    {
+      "index": 15,
+      "speakerId": "assistant",
+      "surface": "Santa Cruz, California has one of the best climates in the continental U.S. – being close to the Pacific Ocean, temperatures stay warmer in the winters and cooler in the summers, but without the dreaded fog that nearby cities like San Francisco or Monterey experience. The small city is world-famous for surfing, and the relaxed vibe that comes with it. Natural beauty is abundant, with the mountains and beach only a few miles apart.",
+      "startCodePoint": 4106,
+      "endCodePoint": 4540,
+      "replyToTurnIndex": 14,
+      "commitmentScope": "external",
+      "sourceCategory": "general_qa"
+    },
+    {
+      "index": 16,
+      "speakerId": "user",
+      "surface": "Give me some ideas to manage my manager.",
+      "startCodePoint": 4541,
+      "endCodePoint": 4581,
+      "sourceCategory": "brainstorming",
+      "requestAuthority": "creative"
+    },
+    {
+      "index": 17,
+      "speakerId": "assistant",
+      "surface": "1. Be honest\n2. Communicate\n3. Understand goals\n4. Stay calm\n5. Solve problems\n6. Be positive\n7. Share your knowledge\n8. Be caring\n9. Practice positive reinforcement\n10. Be a strong performer",
+      "startCodePoint": 4582,
+      "endCodePoint": 4773,
+      "replyToTurnIndex": 16,
+      "commitmentScope": "conversation",
+      "sourceCategory": "brainstorming"
+    },
+    {
+      "index": 18,
+      "speakerId": "user",
+      "surface": "Who was boxer John Baldwin",
+      "startCodePoint": 4774,
+      "endCodePoint": 4800,
+      "sourceCategory": "information_extraction",
+      "requestAuthority": "factual"
+    },
+    {
+      "index": 19,
+      "speakerId": "assistant",
+      "surface": "Born in Detroit, John Baldwin was a professional US boxer.  He fought in the Light-Middleweight category and won a bronze medal in the 1968 Olympics.   He turned pro in 1970, and lost a decision to Marvin Hagler in 1975.  He retired in 1979",
+      "startCodePoint": 4801,
+      "endCodePoint": 5041,
+      "replyToTurnIndex": 18,
+      "commitmentScope": "external",
+      "sourceCategory": "information_extraction",
+      "supportingSourceRanges": [
+        {
+          "startCodePoint": 5042,
+          "endCodePoint": 5309,
+          "surface": "Known as \"The Mad\" Baldwin, he turned pro in 1970 and lost a decision to Marvin Hagler in 1975. In 1977 he took on Rocky Mosley Jr in the ill-fated U.S. Championship Tournament, but lost via K.O. In 1978 he lost a decision to Marvin Johnson, and retired a year later."
+        }
+      ]
+    },
+    {
+      "index": 20,
+      "speakerId": "user",
+      "surface": "Identify which instrument is string or percussion: Samphor, Viola toeria",
+      "startCodePoint": 5310,
+      "endCodePoint": 5382,
+      "sourceCategory": "classification",
+      "requestAuthority": "factual"
+    },
+    {
+      "index": 21,
+      "speakerId": "assistant",
+      "surface": "Viola toeria is string, Samphor is percussion.",
+      "startCodePoint": 5383,
+      "endCodePoint": 5429,
+      "replyToTurnIndex": 20,
+      "commitmentScope": "conversation",
+      "sourceCategory": "classification"
+    },
+    {
+      "index": 22,
+      "speakerId": "user",
+      "surface": "If we were playing a game where we had to identify things that can be found inside a house, which of these would we call out: car, chair, table, park, cloud, microwave.",
+      "startCodePoint": 5430,
+      "endCodePoint": 5598,
+      "sourceCategory": "classification",
+      "requestAuthority": "factual"
+    },
+    {
+      "index": 23,
+      "speakerId": "assistant",
+      "surface": "Inside a house you can find a chair, a table and a microwave. Cars, clouds and parks are found outside of houses.",
+      "startCodePoint": 5599,
+      "endCodePoint": 5712,
+      "replyToTurnIndex": 22,
+      "commitmentScope": "conversation",
+      "sourceCategory": "classification"
+    },
+    {
+      "index": 24,
+      "speakerId": "user",
+      "surface": "Classify the following as either dark-colored beers or light colored beers: porter, pilsner, stout, amber, lager",
+      "startCodePoint": 5713,
+      "endCodePoint": 5825,
+      "sourceCategory": "classification",
+      "requestAuthority": "factual"
+    },
+    {
+      "index": 25,
+      "speakerId": "assistant",
+      "surface": "Dark-colored beers: porter, stout, amber\nLight-colored beers: pilsner, lager",
+      "startCodePoint": 5826,
+      "endCodePoint": 5902,
+      "replyToTurnIndex": 24,
+      "commitmentScope": "conversation",
+      "sourceCategory": "classification"
+    },
+    {
+      "index": 26,
+      "speakerId": "user",
+      "surface": "Give me a bulleted list of the 5 highest mountains in the world and their respective heights in meters",
+      "startCodePoint": 5903,
+      "endCodePoint": 6005,
+      "sourceCategory": "brainstorming",
+      "requestAuthority": "creative"
+    },
+    {
+      "index": 27,
+      "speakerId": "assistant",
+      "surface": "* Mount Everest. Height: 8,849 meters\n* K2. Height: 8,611 meters\n* Kangchenjunga. Height: 8,586 meters\n* Lhotse. Height: 8,516 meters\n* Makalu. Height: 8,485 meters",
+      "startCodePoint": 6006,
+      "endCodePoint": 6170,
+      "replyToTurnIndex": 26,
+      "commitmentScope": "conversation",
+      "sourceCategory": "brainstorming"
+    },
+    {
+      "index": 28,
+      "speakerId": "user",
+      "surface": "Extract all of the dates mentioned in this paragraph and list them using bullets in the format {Date} - {Description}",
+      "startCodePoint": 6171,
+      "endCodePoint": 6288,
+      "sourceCategory": "information_extraction",
+      "requestAuthority": "factual"
+    },
+    {
+      "index": 29,
+      "speakerId": "assistant",
+      "surface": "• November 16, 1813 - This is when Daniel Leavitt was born\n• 1838 - This is when Daniel Leavitt married his wife Ruth Jeannette Ball.",
+      "startCodePoint": 6289,
+      "endCodePoint": 6422,
+      "replyToTurnIndex": 28,
+      "commitmentScope": "external",
+      "sourceCategory": "information_extraction",
+      "supportingSourceRanges": [
+        {
+          "startCodePoint": 6423,
+          "endCodePoint": 6757,
+          "surface": "Daniel Leavitt was born November 16, 1813, at Rye, New Hampshire, the son of Benning Leavitt, influential businessman, state senator, county commissioner and later Chicopee Selectman, and his wife Olive (Jenness) Leavitt. Daniel Leavitt married in 1838 at West Springfield, Massachusetts, Ruth Jeannette Ball. They had three children."
+        }
+      ]
+    },
+    {
+      "index": 30,
+      "speakerId": "user",
+      "surface": "Which products apple sell?",
+      "startCodePoint": 6758,
+      "endCodePoint": 6784,
+      "sourceCategory": "general_qa",
+      "requestAuthority": "factual"
+    },
+    {
+      "index": 31,
+      "speakerId": "assistant",
+      "surface": "Apple sells variety of products. including watches, phones, laptops and computers.",
+      "startCodePoint": 6785,
+      "endCodePoint": 6867,
+      "replyToTurnIndex": 30,
+      "commitmentScope": "external",
+      "sourceCategory": "general_qa"
+    },
+    {
+      "index": 32,
+      "speakerId": "user",
+      "surface": "Write a short story about a person who discovers a hidden room in their house. The story should include a plot twist and a clear resolution at the end.",
+      "startCodePoint": 6868,
+      "endCodePoint": 7019,
+      "sourceCategory": "creative_writing",
+      "requestAuthority": "creative"
+    },
+    {
+      "index": 33,
+      "speakerId": "assistant",
+      "surface": "It was going to be a long day.  With her brother-in-law out of town, Lisa had agreed to watch her niece Stella for the afternoon and the little girl was known to be a bit of a handful. Her plan had been to spend the afternoon at the park to let Stella run and climb, to wear her out a bit.  Unfortunately, this outing was foiled by the constant downpour of rain so Lisa resigned herself to a day inside with the tiny tyrant. Stella arrived early and excited to play.  Lisa decided to begin with a game of hide and seek, after all this could take up a good part of the morning without too much trouble.  Stella ran off to hide and Lisa sat quietly drinking coffee while calling out to the little girl, pretending to seek. Eventually she set off to find the little girl but soon she realized that something was wrong.  No matter where she looked, Stella was nowhere to be found. The house wasn't that large, making her disappearance even more perplexing.  Lisa had only recently moved into the home that she bought from her great aunt shortly before her death and she hasn't even moved out all of the existing furniture. Maybe Stella had gotten stuck somewhere behind the large wardrobe in the bedroom or she had climbed up into a cupboard in the laundry room.  Panic was starting to settle in as she moved the wardrobe further from the wall, where only a small child could have hidden before.  Suddenly, saw a small crack in the wall, and then realized it was a small door that she never knew was there.  The door was slightly ajar and she eventually moved the wardrobe enough to open the door and climb inside. What was this place?  The entrance opened up to reveal a small room that Lisa never knew existed!  It was full of treasure, gold bars and jewels.  Stella sat in the middle of the room quietly playing with the treasure, unaware of the immense value she was surrounded by.  Lisa had known her aunt was a secretive woman but this was an incredible find and would change her life forever.  Stella's visit was the good luck charm she needed to unlock this bounty and she would be forever grateful to the little girl!  Time to call her brother-in-law to thank him for letting Stella visit.",
+      "startCodePoint": 7020,
+      "endCodePoint": 9214,
+      "replyToTurnIndex": 32,
+      "commitmentScope": "conversation",
+      "sourceCategory": "creative_writing"
+    }
+  ]
+}
