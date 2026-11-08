@@ -3,7 +3,8 @@
 import type { ContentHash, EpisodeId, EvidenceSpan, FileArtifact, Hasher, JsonValue, ProgramBehaviorRequirement, ProgramConstructIntent, ProgramGraph, ProgramStatefulBehaviorRequirement, SemanticEntailmentResult } from "./types.js";
 import type { IdFactory } from "./ids.js";
 import { canonicalStringify, clamp01, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";
-import { createCodeLearningEngine, emittedProgramRuntimeForLanguage, nativeProgramRuntimeForLanguage, EMITTED_PROGRAM_RUNTIME, type CodeImplementationBlueprint, type CodeKnowledgeGraph, type EmittedProgramRuntime } from "./code-learning.js";
+import { createCodeLearningEngine, emittedProgramRuntimeForLanguage, nativeProgramRuntimeForLanguage, EMITTED_PROGRAM_RUNTIME, type CodeImplementationBlueprint, type CodeKnowledgeGraph, type EmittedProgramRuntime, UnsupportedProgramLanguageError } from "./code-learning.js";
+import {bindNativeRuntimePath,relativeNativeSourcePath} from "./native-runtime-paths.js";
 import { nativeGoProgram } from "./native-go-program.js";
 import { NativeProgramEmissionError } from "./native-owner-abis.js";
 import { nativeRustStatefulProgram } from "./native-rust-stateful-program.js";
@@ -30,6 +31,7 @@ export interface ProgramTargetProfile {
 }
 
 export interface ProgramShape {
+  readonly ownerEntrypointPath?:string;
   target: ProgramTargetProfile;
   confidence: number;
   requiredInputs: Array<{ id: string; mediaType: string; source: string; required: boolean }>;
@@ -311,7 +313,11 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
       if (languageId && !nativeProgramRuntimeForLanguage(languageId)) {
         return { availability: { status: "unavailable", languageId, reasonIds: ["program.emission.native_backend_unavailable"] } };
       }
-      const plan = this.plan(input);
+      let plan:ProgramPlan;
+      try{plan=this.plan(input);}catch(error){
+        if(error instanceof UnsupportedProgramLanguageError) return {availability:{status:"unavailable",languageId:error.languageId,reasonIds:["program.emission.native_backend_unavailable"]}};
+        throw error;
+      }
       const availability = programPlanEmissionAvailability(plan, input.requestText);
       return availability.status === "available" ? { availability, program: this.emitPlanned(plan, input) } : { availability };
     },
@@ -403,6 +409,7 @@ function inferProgramShape(text: string, entailment: SemanticEntailmentResult, e
     ...structural.fields.slice(0, 32).map(field => `field:${field}`)
   ];
   return {
+    ...(programIntent?.entrypointPath?{ownerEntrypointPath:programIntent.entrypointPath}:{}),
     target: selected.target,
     confidence: clamp01(0.25 + 0.35 * selected.score + 0.2 * support + 0.2 * coupling),
     requiredInputs: selected.target.requiredInputs,
@@ -1333,7 +1340,7 @@ function selectArtifactConstruction(input: {
   const canonicalEntrypoint = entrypointFor(input.shape);
   const occupiedCanonicalPaths = new Set(canonicalPlanFiles(input.shape).map(file => file.path));
   const canReplaceEntrypoint = (path: string): boolean => path === canonicalEntrypoint || !occupiedCanonicalPaths.has(path);
-  const explicitEntry = input.explicitEntrypoint && isRelativeConstructionPath(input.explicitEntrypoint) && isSourceConstructionPath(input.explicitEntrypoint)
+  const explicitEntry = input.explicitEntrypoint && isRelativeConstructionPath(input.explicitEntrypoint) && isSourceConstructionPath(input.explicitEntrypoint, emittedRuntimeForShape(input.shape))
     ? { path: input.explicitEntrypoint, confidence: 1, evidenceIds: [...new Set(input.explicitEvidenceIds)].slice(0, 64) }
     : undefined;
   if (explicitEntry && !canReplaceEntrypoint(explicitEntry.path)) {
@@ -1366,7 +1373,8 @@ function isRelativeConstructionPath(path: string): boolean {
   return Boolean(path) && !path.includes("://") && !path.startsWith("/") && !path.split("/").includes("..");
 }
 
-function isSourceConstructionPath(path: string): boolean {
+function isSourceConstructionPath(path: string,runtime:EmittedProgramRuntime): boolean {
+  if(runtime.commandName!=="node") return path===runtime.sourcePath;
   return [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".css"].some(extension => path.endsWith(extension));
 }
 
@@ -1722,7 +1730,7 @@ function emitFiles(plan: ProgramPlan, input: ProgramPlannerInput, idFactory: IdF
       byPath.set(emittedRuntime.sourcePath, native.source); byPath.set(emittedRuntime.testPath, native.test); byPath.set("go.mod", native.module);
     } else if (emittedRuntime.languageId === "rust") {
       if (plan.ownerStatefulBehaviorRequirements.length) {
-        const native = nativeRustStatefulProgram(plan);
+        const native = nativeRustStatefulProgram(plan, emittedRuntimeForShape(plan.intent.shape));
         byPath.set(emittedRuntime.sourcePath, native.source); byPath.set(emittedRuntime.testPath, native.test);
       } else {
         byPath.set(emittedRuntime.sourcePath, executableRustProgramModule(plan, input.requestText));
@@ -3459,8 +3467,12 @@ import pathlib
 import sys
 import unittest
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
-import program as owner_program
+import importlib.util
+_owner_path = pathlib.Path(__file__).resolve().parent / ${JSON.stringify(relativeNativeSourcePath(emittedRuntimeForShape(plan.intent.shape).testPath,emittedRuntimeForShape(plan.intent.shape).sourcePath))}
+sys.path.insert(0, str(_owner_path.parent))
+_owner_spec = importlib.util.spec_from_file_location("owner_program", _owner_path)
+owner_program = importlib.util.module_from_spec(_owner_spec)
+_owner_spec.loader.exec_module(owner_program)
 
 OWNER_BEHAVIOR_REQUIREMENTS = json.loads(${JSON.stringify(JSON.stringify(plan.ownerBehaviorRequirements))})
 OWNER_STATEFUL_REQUIREMENTS = json.loads(${JSON.stringify(JSON.stringify(plan.ownerStatefulBehaviorRequirements))})
@@ -3582,7 +3594,7 @@ function rustOwnerRequirementIssue(plan: ProgramPlan, requestText?: string): Rus
 export function programPlanEmissionAvailability(plan: ProgramPlan, requestText: string): ProgramEmissionAvailability {
   const languageId = emittedRuntimeForShape(plan.intent.shape).languageId;
   if (languageId === "go" || languageId === "rust" && plan.ownerStatefulBehaviorRequirements.length) {
-    try { if (languageId === "go") nativeGoProgram(plan); else nativeRustStatefulProgram(plan); } catch (error) {
+    try { if (languageId === "go") nativeGoProgram(plan); else nativeRustStatefulProgram(plan, emittedRuntimeForShape(plan.intent.shape)); } catch (error) {
       if (error instanceof NativeProgramEmissionError) return { status: "unavailable", languageId, reasonIds: [error.reasonId] };
       throw error;
     }
@@ -3620,7 +3632,7 @@ function executableRustProgramModule(plan: ProgramPlan, requestText: string): st
 function executableRustProgramTest(plan: ProgramPlan): string {
   rustOwnerRequirements(plan);
   const tests = plan.ownerBehaviorRequirements.map((requirement, index) => `#[test]\nfn owner_requirement_${index}() {\n    let actual = program::${rustCallableName(requirement.callableId)}(${requirement.arguments.map(value => rustF64Literal(value as number)).join(", ")});\n    let expected = ${rustF64Literal(requirement.expectedResult as number)};\n    assert!(actual.is_finite() && (actual - expected).abs() <= 1e-9_f64 * expected.abs().max(1.0_f64), "{} failed: actual={:?}, expected={:?}", ${JSON.stringify(requirement.id)}, actual, expected);\n}`);
-  return `#[path = "../src/program.rs"]\nmod program;\n\n${tests.join("\n\n")}\n`;
+  return `#[path = ${JSON.stringify(relativeNativeSourcePath(emittedRuntimeForShape(plan.intent.shape).testPath,emittedRuntimeForShape(plan.intent.shape).sourcePath))}]\nmod program;\n\n${tests.join("\n\n")}\n`;
 }
 
 function executableBehaviorTransformationFunction(
@@ -4174,7 +4186,7 @@ function buildCommand(shape: ProgramShape, files: readonly ProgramFilePlan[]): {
 
 function testCommand(shape: ProgramShape, files: readonly ProgramFilePlan[]): { command: string; args: string[]; cwd: string } {
   if (emittedRuntimeForShape(shape).languageId === "rust") return { command: "./program_test.exe", args: [], cwd: "." };
-  if (emittedRuntimeForShape(shape).languageId === "go") return { command: "go", args: ["test", "./src"], cwd: "." };
+  if (emittedRuntimeForShape(shape).languageId === "go") return { command: "go", args: ["test", ...emittedRuntimeForShape(shape).syntaxCheckArgs.slice(-1)], cwd: "." };
   const observed = commandFromHints(shape, ["script.validation", "script.build"]);
   if (observed) return observed;
   const test = emittedRuntimeFile(files, "test", emittedRuntimeForShape(shape));
@@ -4225,10 +4237,13 @@ function entrypointFor(shape: ProgramShape): string {
 }
 
 function emittedRuntimeForShape(shape: ProgramShape): EmittedProgramRuntime {
-  return nodeRuntimeForShape(shape) ? EMITTED_PROGRAM_RUNTIME : emittedProgramRuntimeForLanguage(shape.target.language);
+  const runtime=emittedProgramRuntimeForLanguage(shape.target.language);
+  return nodeRuntimeForShape(shape) ? EMITTED_PROGRAM_RUNTIME : bindNativeRuntimePath(runtime,shape.ownerEntrypointPath);
 }
 
 function nodeRuntimeForShape(shape: ProgramShape): boolean {
+  const native=nativeProgramRuntimeForLanguage(shape.target.language);
+  if(native && native.commandName!=="node") return false;
   if (shape.runtimeTarget === "runtime.browser" || shape.runtimeTarget === "runtime.node") return true;
   if (!shape.runtimeTarget.startsWith("runtime.package:")) return false;
   const manager = packageManagerCommandName(shape.target.packageManager);

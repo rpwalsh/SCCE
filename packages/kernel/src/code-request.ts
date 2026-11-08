@@ -182,8 +182,10 @@ export function codeRequestSignal(requestText: string, options: CodeRequestSigna
   const fenced = FENCE.test(text);
   if (fenced) observe("fenced_block");
 
+  const fenceLanguage=/```([^\s`]+)[ \t]*(?:\r?\n|$)/u.exec(text)?.[1]?.toLocaleLowerCase();
+  if(fenceLanguage){language=DISTINCTIVE_LANGUAGE_IDS.get(fenceLanguage)??ALIAS_LANGUAGE_IDS.get(fenceLanguage)??fenceLanguage;distinctiveLanguage=true;observe("formal_language");}
   const requestUnits = splitPriorUnits(normalizePriorKey(text)).map(unit => unit.replace(/^[^\p{L}\p{N}+#]+|[^\p{L}\p{N}+#]+$/gu, ""));
-  for (const unit of requestUnits) {
+  for (const unit of language ? [] : requestUnits) {
     const distinctive = DISTINCTIVE_LANGUAGE_IDS.get(unit);
     if (distinctive) { language ??= distinctive; distinctiveLanguage = true; observe("formal_language"); break; }
   }

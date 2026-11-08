@@ -745,11 +745,12 @@ export class UnsupportedProgramLanguageError extends Error {
   }
 }
 
-export type EmittedProgramRuntime = typeof EMITTED_PROGRAM_RUNTIME | typeof PYTHON_EMITTED_PROGRAM_RUNTIME | typeof TYPESCRIPT_EMITTED_PROGRAM_RUNTIME | typeof RUST_EMITTED_PROGRAM_RUNTIME | typeof GO_EMITTED_PROGRAM_RUNTIME;
+export type EmittedProgramRuntime = Omit<typeof EMITTED_PROGRAM_RUNTIME | typeof PYTHON_EMITTED_PROGRAM_RUNTIME | typeof TYPESCRIPT_EMITTED_PROGRAM_RUNTIME | typeof RUST_EMITTED_PROGRAM_RUNTIME | typeof GO_EMITTED_PROGRAM_RUNTIME,
+  "sourcePath" | "testPath" | "syntaxCheckArgs"> & {readonly sourcePath:string;readonly testPath:string;readonly syntaxCheckArgs:readonly string[]};
 
 /**
  * Chooses a concrete emitter SCCE can execute without project dependencies.
- * Explicit owner targets require a supported backend; unbound source profiles use the host Node runtime.
+ * Every named formal target requires its backend; an absent language retains the host Node default.
  */
 export function nativeProgramRuntimeForLanguage(language: string): EmittedProgramRuntime | undefined {
   return [EMITTED_PROGRAM_RUNTIME, PYTHON_EMITTED_PROGRAM_RUNTIME, TYPESCRIPT_EMITTED_PROGRAM_RUNTIME, RUST_EMITTED_PROGRAM_RUNTIME, GO_EMITTED_PROGRAM_RUNTIME]
@@ -759,7 +760,8 @@ export function nativeProgramRuntimeForLanguage(language: string): EmittedProgra
 export function emittedProgramRuntimeForLanguage(language: string, options: { requireNativeBackend?: boolean } = {}): EmittedProgramRuntime {
   const runtime = nativeProgramRuntimeForLanguage(language);
   if (runtime) return runtime;
-  if (options.requireNativeBackend) throw new UnsupportedProgramLanguageError(language);
+  void options;
+  if (language) throw new UnsupportedProgramLanguageError(language);
   return EMITTED_PROGRAM_RUNTIME;
 }
 

@@ -1,12 +1,13 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import {relativeNativeSourcePath} from "./native-runtime-paths.js";
 import type { JsonValue } from "./types.js";
 import type { ProgramPlan } from "./program-planner.js";
 import { nativeOwnerAbis, NativeProgramEmissionError, type NativeOwnerAbi } from "./native-owner-abis.js";
 import type { NativeProgramType } from "./native-program-types.js";
 import { nativeLiteralJson, type ProgramNativeLiteral } from "./program-native-abi.js";
 
-export function nativeRustStatefulProgram(plan: ProgramPlan): { source: string; test: string } {
+export function nativeRustStatefulProgram(plan: ProgramPlan, paths:{sourcePath:string;testPath:string}): { source: string; test: string } {
   const abis = nativeOwnerAbis(plan, "rust"), byName = new Map(abis.map(abi => [abi.name, abi]));
   const selected = plan.ownerBehaviorImplementationPhase === "selected";
   const candidate = plan.ownerStatefulBehaviorTransformationCandidates.find(row => plan.selectedOwnerStatefulBehaviorTransformationIds.includes(row.id));
@@ -62,7 +63,7 @@ ${methods.map(row => row.global).join("\n")}
     }).join("\n");
     return `#[test]\nfn owner_requirement_${index}() { let mut p=program::create_stateful_program(); ${calls} }`;
   });
-  return { source, test: `#[path="../src/program.rs"]\nmod program;\n${tests.join("\n\n")}\n` };
+  return { source, test: `#[path=${JSON.stringify(relativeNativeSourcePath(paths.testPath,paths.sourcePath))}]\nmod program;\n${tests.join("\n\n")}\n` };
 }
 
 function rustParameters(abi: NativeOwnerAbi): string { return abi.parameters.map((type, index) => `_arg${index}: ${type.text}`).join(", "); }

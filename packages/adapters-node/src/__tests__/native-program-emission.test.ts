@@ -19,12 +19,12 @@ import type { ScceRuntimeConfig } from "../config.js";
 
 const hash = (text: string) => `sha256:${createHash("sha256").update(text).digest("hex")}`;
 const fixtures = [scalarSourceContractFixtures[1], statefulSourceContractFixtures[1], statefulSourceContractFixtures[2]];
-async function acquired(item: { languageId: "go" | "rust"; sourcePath: string; files: Readonly<Record<string, string>> }) {
+async function acquired(item: { languageId: "go" | "rust"; sourcePath: string; files: Readonly<Record<string, string>> },requestedPath?:string) {
   const files = Object.entries(item.files).filter(([name]) => /\.(?:go|rs)$/u.test(name)).map(([name, text]) => ({
     path: name, text, languageId: item.languageId, sourceHash: hash(text), sourceVersionId: `source_version_${hash(text).slice(7)}` }));
   const cases = await grammarSourceOwnedTestCases(files), source = files.find(file => file.path === item.sourcePath)!;
   const patterns = [...sourceOwnedTestContractProjections(cases, "fixture://native-backends").values()].flat().map(patternJson => ({ patternJson }));
-  const requestText = "Create the documented public module.";
+  const requestText = `Create the documented public module.${requestedPath?` ${requestedPath}`:""}`;
   const intent = { languageId: item.languageId, symbols: [], references: [{ sourceFamily: "fixture://native-backends", relativePath: source.path, sourceHash: source.sourceHash, score: 1 }], audit: null };
   const behavior = sourceOwnedProgramBehaviorFromDocumentation({ requestText, intent, patterns });
   const codeSignal = projectSourceOwnedProgramBehavior({ codeSignal: codeRequestSignal(requestText), intent, sourceBehavior: behavior });
@@ -126,6 +126,26 @@ func TestPrivateScalar(t *testing.T) { if f0(17)!=18||f0(-7)!=-6 {t.Fatal("unsee
       expect(JSON.stringify(source.cases)).not.toContain("sealed-key");
       expect(JSON.stringify(source.cases)).not.toContain("9007199254740993");
     } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it.each([{item:scalarSourceContractFixtures[1],target:"lib/opaque.go"},{item:statefulSourceContractFixtures[2],target:"lib/opaque.rs"}])("executes native output at the requested $target with the same verifier and retry",async({item,target})=>{
+    const source=await acquired(item,target),root=await mkdtemp(path.join(tmpdir(),"scce-native-requested-path-"));
+    try{
+      expect(source.programIntent.entrypointPath).toBe(target);
+      const builder=createProgramGraphBuilder({idFactory:source.ids,hasher:source.hasher});
+      const build=(programIntent:typeof source.programIntent)=>builder.build({episodeId:source.ids.episodeId(),text:source.input.requestText,createdAt:1,evidence:[],entailment:source.input.entailment,programIntent});
+      const probe=build(source.programIntent),native=new NodeBuildTestAdapter({runtime:{tempRoot:root}} as ScceRuntimeConfig);
+      expect(probe.program!.entrypoint).toBe(target);
+      expect(validateProgramGraphHydration(probe.program!)).toEqual({valid:true,diagnostics:[]});
+      const failed=await native.executeProgram({episodeId:probe.episodeId,construct:probe});
+      expect(failed.build.code,failed.build.stderr).toBe(0);expect(failed.passed).toBe(false);
+      const retry=replanOwnerBehaviorProgramIntent({intent:source.programIntent,program:probe.program!,hasher:source.hasher,
+       failure:{observationId:"native-requested-path-failure",programId:probe.program!.id,planHash:source.hasher.digestHex(JSON.stringify(probe.program!.files)),validatorId:"validator.actual-native",checkId:"tests",status:"failed",
+        ownerRequirementIds:[...source.behavior.behaviorRequirements,...source.behavior.statefulBehaviorRequirements].map(row=>row.id),command:probe.program!.test}});
+      const selected=build(retry.intent),passed=await native.executeProgram({episodeId:selected.episodeId,construct:selected});
+      expect(selected.program!.files.some(file=>file.path===target&&file.content.length>0)).toBe(true);
+      expect(passed.passed,`${passed.build.stderr}\n${passed.test.stderr}`).toBe(true);
+    }finally{await rm(root,{recursive:true,force:true});}
   });
 
   it("does not substitute f64 wrappers for a source-declared Rust integer ABI",async()=>{
