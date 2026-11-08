@@ -45,6 +45,47 @@ export interface CreativeSourceCorrespondenceContext {
   referenceBindings?: readonly OwnedSourceReferenceBindings[];
 }
 
+interface SourceEventOccurrence { event: DurableCreativeEventConstruction; ordinal: number; start: number; end: number }
+interface SourceEventRangeIndex { occurrences: SourceEventOccurrence[]; minimumEnds: Float64Array; leafCount: number }
+
+function indexSourceEventRanges(events: readonly DurableCreativeEventConstruction[]): Map<string, SourceEventRangeIndex> {
+  const byEvidence = new Map<string, SourceEventOccurrence[]>();
+  for (const [ordinal, event] of events.entries()) {
+    const start = event.labelStartCodePoint, end = event.labelEndCodePoint;
+    if (Number.isNaN(start) || Number.isNaN(end)) continue;
+    const occurrences = byEvidence.get(event.evidenceId) ?? [];
+    occurrences.push({ event, ordinal, start, end });
+    byEvidence.set(event.evidenceId, occurrences);
+  }
+  return new Map([...byEvidence].map(([evidenceId, occurrences]) => {
+    occurrences.sort((a, b) => a.start < b.start ? -1 : a.start > b.start ? 1 : a.ordinal - b.ordinal);
+    let leafCount = 1;
+    while (leafCount < occurrences.length) leafCount *= 2;
+    const minimumEnds = new Float64Array(leafCount * 2).fill(Infinity);
+    for (const [index, occurrence] of occurrences.entries()) minimumEnds[leafCount + index] = occurrence.end;
+    for (let index = leafCount - 1; index > 0; index--) minimumEnds[index] = Math.min(minimumEnds[index * 2]!, minimumEnds[index * 2 + 1]!);
+    return [evidenceId, { occurrences, minimumEnds, leafCount }];
+  }));
+}
+
+function sourceEventsWithinReply(index: ReadonlyMap<string, SourceEventRangeIndex>, owner: EvidenceSpan, reply: TranscriptTurn): DurableCreativeEventConstruction[] {
+  const group = index.get(String(owner.id));
+  if (!group) return [];
+  const { occurrences, minimumEnds, leafCount } = group;
+  const selected: SourceEventOccurrence[] = [];
+  const visit = (node: number, start: number, end: number): void => {
+    if (start >= occurrences.length || !(owner.charStart + occurrences[Math.min(end, occurrences.length) - 1]!.start >= reply.startCodePoint)
+      || !(owner.charStart + minimumEnds[node]! <= reply.endCodePoint)) return;
+    if (end - start === 1) { selected.push(occurrences[start]!); return; }
+    const middle = (start + end) / 2;
+    visit(node * 2, start, middle);
+    visit(node * 2 + 1, middle, end);
+  };
+  visit(1, 0, leafCount);
+  // Range pruning changes traversal order; source occurrences keep their original order and multiplicity.
+  return selected.sort((a, b) => a.ordinal - b.ordinal).map(occurrence => occurrence.event);
+}
+
 export function compileCreativeSourceCorrespondences(input: CreativeSourceCorrespondenceContext & {
   turns: readonly TranscriptTurn[]; profileId: string; updatedAt: number;
 }): LanguagePatternRecord[] {
@@ -54,6 +95,7 @@ export function compileCreativeSourceCorrespondences(input: CreativeSourceCorres
   const observations: CreativeSourceCorrespondence[] = [];
   const anchors = new Map<string, CreativeRequestFrameAnchor>();
   const compilerId = CREATIVE_SOURCE_CORRESPONDENCE_RECIPE;
+  let eventRanges: Map<string, SourceEventRangeIndex> | undefined;
   for (const reply of input.turns) {
     const request = byIndex.get(reply.replyToTurnIndex ?? -1);
     if (!request || request.requestAuthority !== "creative" || reply.commitmentScope !== "conversation"
@@ -61,9 +103,8 @@ export function compileCreativeSourceCorrespondences(input: CreativeSourceCorres
     const requestOwner = evidence.find(span => ownsTurn(span, request));
     const replyOwner = evidence.find(span => ownsTurn(span, reply) && span.sourceId === requestOwner?.sourceId && span.sourceVersionId === requestOwner?.sourceVersionId);
     if (!requestOwner || !replyOwner) continue;
-    const responseEvents = input.events.filter(event => event.evidenceId === String(replyOwner.id)
-      && replyOwner.charStart + event.labelStartCodePoint >= reply.startCodePoint
-      && replyOwner.charStart + event.labelEndCodePoint <= reply.endCodePoint);
+    eventRanges ??= indexSourceEventRanges(input.events);
+    const responseEvents = sourceEventsWithinReply(eventRanges, replyOwner, reply);
     const segments = segmentUnicodeSurfaceV2(request.surface).lexicalSegments;
     const spans = new Map<string, { start: number; end: number }>();
     const eventMatches = responseEvents.map(event => ({ event, bindings: event.argumentFrame.bindings.flatMap(port => {
@@ -128,9 +169,19 @@ export function compileCreativeSourceCorrespondences(input: CreativeSourceCorres
   }
   if (!observations.length) return [];
   const unique = [...new Map(observations.map(row => [row.id, row])).values()].sort((a, b) => a.id.localeCompare(b.id));
-  const eventCompilers = [...new Set(input.events.filter(event => unique.some(row => row.eventId === event.id)).map(event => event.compilerId))];
-  return eventCompilers.map(eventCompilerId => {
-    const sourceObservations = unique.filter(row => input.events.some(event => event.id === row.eventId && event.compilerId === eventCompilerId));
+  const observedEventIds = new Set(unique.map(row => row.eventId));
+  const compilersByEventId = new Map<string, Set<string>>();
+  const observationsByCompiler = new Map<string, CreativeSourceCorrespondence[]>();
+  for (const event of input.events) {
+    const eventId = event.id;
+    if (!observedEventIds.has(eventId)) continue;
+    const compilers = compilersByEventId.get(eventId) ?? new Set<string>();
+    compilers.add(event.compilerId);
+    compilersByEventId.set(eventId, compilers);
+    if (!observationsByCompiler.has(event.compilerId)) observationsByCompiler.set(event.compilerId, []);
+  }
+  for (const row of unique) for (const compiler of compilersByEventId.get(row.eventId) ?? []) observationsByCompiler.get(compiler)!.push(row);
+  return [...observationsByCompiler].map(([eventCompilerId, sourceObservations]) => {
     const material = { schema: "scce.creative_event_compatibility_model.v1" as const, version: CREATIVE_SOURCE_CORRESPONDENCE_RECIPE,
       requestCompilerId: compilerId, eventCompilerId, reliability: "source_observed" as const, eventCompatibilities: [], roleCompatibilities: [],
       sourceObservations, requestFrameAnchors: [...anchors.values()].sort((a, b) => a.requestFrameId.localeCompare(b.requestFrameId)),
