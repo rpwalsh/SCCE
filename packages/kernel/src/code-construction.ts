@@ -530,7 +530,7 @@ export function codeModelsFromRecords(
 }
 
 /** Formal-language ownership survives source chunks and older rows through their persisted source paths. */
-export function codeLanguageForModelRecord(record: NgramModelRecord): string | undefined {
+export function codeLanguageForModelRecord(record: Pick<NgramModelRecord, "streamId" | "modelJson">): string | undefined {
   const stored = record.modelJson && typeof record.modelJson === "object" && !Array.isArray(record.modelJson)
     ? record.modelJson as Record<string, JsonValue>
     : {};

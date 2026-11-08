@@ -119,6 +119,17 @@ export interface NgramModelRecord {
   informationLabel?: InformationLabel;
 }
 
+export interface NgramModelQuery {
+  streamId?: string;
+  languageHint?: string;
+  /** Source-owned formal identity, applied before count and JSON byte budgets. */
+  formalLanguage?: string;
+  profileIds?: readonly string[];
+  sourceSystem?: string;
+  limit?: number;
+  maxTotalJsonBytes?: number;
+}
+
 export interface LanguageUnitRecord {
   id: string;
   profileId: string;
@@ -928,7 +939,7 @@ export interface LanguageMemoryStore {
    * 4GB server heap at warmup (verified live).
    */
   listSourceCompilationArtifactIds?(query: { compilationId: string; profileId: string; family: "units" | "patterns" | "semanticFrames"; afterId?: string; limit: number }): Promise<string[]>;
-  listNgramModels(query?: { streamId?: string; languageHint?: string; profileIds?: readonly string[]; sourceSystem?: string; limit?: number; maxTotalJsonBytes?: number }): Promise<NgramModelRecord[]>;
+  listNgramModels(query?: NgramModelQuery): Promise<NgramModelRecord[]>;
   /** Complete continuation statistics of accessible models belonging to one learned language identity. */
   continuationPopulation?(query: { languageId: string }): Promise<LanguageContinuationPopulation | undefined>;
   listNgramObservations(query?: { streamId?: string; languageHint?: string; profileIds?: readonly string[]; sourceSystem?: string; limit?: number }): Promise<NgramObservation[]>;

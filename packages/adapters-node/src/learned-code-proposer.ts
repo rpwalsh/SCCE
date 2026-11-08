@@ -365,6 +365,7 @@ async function loadCodeModels(storage: ScceStorage, languageId: string, limit: n
   // the query has to name it the same way the trainer stamped it.
   const records = await storage.languageMemory.listNgramModels({
     sourceSystem: corpusSourceAlias(CORPUS_SOURCE_SYSTEM_IDS.ossCode),
+    formalLanguage: languageId,
     limit
   });
   const models: KneserNeyModel[] = [];

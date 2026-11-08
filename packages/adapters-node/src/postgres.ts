@@ -8,6 +8,7 @@ import {
   assertCanonicalHyperedge,
   createAlphaLayer,
   canonicalStringify,
+  codeLanguageForModelRecord,
   createHasher,
   validateSourceLanguageCompilationHeader,
   validateSourceCompilationModelInventory,
@@ -3911,6 +3912,29 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         where.push(`${ngramModelProfileIdExpression("model")}=ANY($${params.length}::text[])`);
       }
       if (query.sourceSystem) { params.push(query.sourceSystem); where.push(`${ngramModelSourceSystemExpression("model")}=$${params.length}`); }
+      if (query.formalLanguage !== undefined) {
+        if (!query.formalLanguage.trim()) return [];
+        const legacyParams = [...params];
+        const legacyWhere = [...where, `(jsonb_typeof(model.model_json->'formalLanguage') IS DISTINCT FROM 'string'
+          OR NULLIF(BTRIM(model.model_json->>'formalLanguage'), '') IS NULL)`];
+        appendInformationAccess(storage, "model", legacyParams, legacyWhere);
+        const legacy = await storage.query<{ id: string; stream_id: string; source_identity_json: JsonValue }>(
+          `SELECT model.id, model.stream_id, jsonb_build_object(
+             'formalLanguage', model.model_json->'formalLanguage',
+             'relativePath', model.model_json->'relativePath',
+             'streamUri', model.model_json->'streamUri') AS source_identity_json
+           FROM ${storage.table("ngram_models")} model WHERE ${legacyWhere.join(" AND ")}`,
+          legacyParams
+        );
+        const legacyIds = legacy.filter(row => codeLanguageForModelRecord({ streamId: row.stream_id, modelJson: row.source_identity_json }) === query.formalLanguage)
+          .map(row => row.id).sort();
+        params.push(query.formalLanguage);
+        const declared = `(jsonb_typeof(model.model_json->'formalLanguage')='string' AND model.model_json->>'formalLanguage'=$${params.length})`;
+        if (legacyIds.length) {
+          params.push(legacyIds);
+          where.push(`(${declared} OR model.id=ANY($${params.length}::text[]))`);
+        } else where.push(declared);
+      }
       appendInformationAccess(storage, "model", params, where, "bounded_by_order_and_limit");
       params.push(query.limit ?? 100);
       const limitParam = params.length;
@@ -3996,9 +4020,11 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
           const held = jsonById.get(row.id);
           if (!held) return [];
           return [candidateToNgramModel({ ...row, updated_at: new Date(held.updatedAtMs) }, held.json)];
-        }).slice(0, Number(params[limitParam - 1]));
+        }).filter(record => query.formalLanguage === undefined || codeLanguageForModelRecord(record) === query.formalLanguage)
+          .slice(0, Number(params[limitParam - 1]));
       }
-      return (await storage.query<NgramModelRow>(`SELECT * FROM ${storage.table("ngram_models")} model WHERE ${where.join(" AND ")} ORDER BY ${trainedMass} DESC, model.updated_at DESC, model.id ASC LIMIT $${limitParam}`, params)).map(rowToNgramModel);
+      return (await storage.query<NgramModelRow>(`SELECT * FROM ${storage.table("ngram_models")} model WHERE ${where.join(" AND ")} ORDER BY ${trainedMass} DESC, model.updated_at DESC, model.id ASC LIMIT $${limitParam}`, params)).map(rowToNgramModel)
+        .filter(record => query.formalLanguage === undefined || codeLanguageForModelRecord(record) === query.formalLanguage);
     },
     async listNgramObservations(query = {}) {
       const profileIds = query.profileIds?.length ? [...query.profileIds] : undefined;
