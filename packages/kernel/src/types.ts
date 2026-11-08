@@ -1551,6 +1551,7 @@ export interface ScceKernel {
   /** Temporal causal discovery over caller-supplied series. Typed input only, never inferred from prose. */
   discoverCausalStructure(request: import("./causal-analysis-runtime.js").CausalDiscoveryRequest): Promise<import("./causal-analysis-runtime.js").CausalDiscoveryResult>;
   /** Explicit catalog initialization/inspection; serving warmup never invokes corpus discovery. */
+  languageIdentityManifest(): Promise<import("./language-identity-finalization.js").LanguageIdentityFinalizationManifest>;
   languageIdentities(input?: { rebuild?: boolean }): Promise<import("./language-identity-runtime.js").LanguageIdentityLoadResult & {
     schema: "scce.language_identities.v1";
   }>;

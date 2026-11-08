@@ -7,6 +7,7 @@ import { createLanguageMemoryRuntime } from "../language-memory-runtime.js";
 import { createClock, createHasher } from "../primitives.js";
 import type { LanguageIdentityRecord } from "../language-identity.js";
 import type { LanguageIdentityStore, LanguageProfileSignatureRow, ScceKernelDeps } from "../storage.js";
+import { inspectLanguageIdentityFinalization } from "../language-identity-finalization.js";
 
 const hasher = createHasher();
 function fixture() {
@@ -17,7 +18,8 @@ function fixture() {
   const replace = vi.fn(async (next: readonly LanguageIdentityRecord[]) => { catalog = [...next]; });
   const store: LanguageIdentityStore = { putIdentities: replace, replaceIdentities: replace, listIdentities: async () => catalog,
     listProfileSignatures: signatures, assignProfileLanguages: async next => { for (const row of next) assignments.set(row.profileId, row.languageId); },
-    listProfileLanguages: async query => [...assignments].filter(([id]) => !query || query.profileIds.includes(id)).map(([profileId, languageId]) => ({ profileId, languageId })) };
+    listProfileLanguages: async query => [...assignments].filter(([id]) => !query || query.profileIds.includes(id)).map(([profileId, languageId]) => ({ profileId, languageId })),
+    profileAssignments: async () => rows.map(row => ({ profileId: row.id, sourceVersionId: row.sourceVersionId, languageId: assignments.get(row.id) ?? null })) };
   const add = (id: string, words: string[]) => rows.push({ id, sourceVersionId: `${id}:version` as never, sourceSystem: "dialogue", sourceUri: `file:///opaque/${id}`,
     scripts: [{ script: "script:Latn", mass: 1 }], direction: "ltr", topContinuation: [...words, id].map(word => [word, 1]) });
   return { store, rows, assignments, signatures, replace, add, catalog: () => catalog };
@@ -58,5 +60,27 @@ describe("off-turn identity finalization and serving revision", () => {
     await surface.synchronizeWithStorage();
     expect(identities.identities().map(row => row.id)).toEqual(external.identities().map(row => row.id));
     expect(f.signatures).toHaveBeenCalledTimes(reads);
+  });
+
+  it("inspects actual assignment/loaded-catalog consistency without certifying task or locale competence", async () => {
+    const f = fixture(); for (let i = 0; i < 3; i++) f.add(`a${i}`, ["the", "and", "of"]);
+    const runtime = createLanguageIdentityRuntime({ store: f.store, hasher, now: () => 1 });
+    await runtime.ensure({ initializeIfMissing: true });
+    const options = { store: f.store, runtime, hasher, readRevision: async () => "1", synchronize: async () => undefined,
+      activeBrain: async () => ({ activeBrainVersion: "actual.brain", activeImportRunIds: ["actual.import"] }) };
+    expect(await inspectLanguageIdentityFinalization(options)).toMatchObject({ ready: true, profileCount: 3, assignedProfileCount: 3, competenceVerified: false });
+    const assigned = f.assignments.get("a0")!;
+    f.assignments.delete("a0");
+    expect(await inspectLanguageIdentityFinalization(options)).toMatchObject({ ready: false, missingProfileCount: 1 });
+    f.assignments.set("a0", "unknown.identity");
+    expect(await inspectLanguageIdentityFinalization(options)).toMatchObject({ ready: false, unknownIdentityCount: 1 });
+    f.assignments.set("a0", assigned);
+    let revision = 0;
+    expect(await inspectLanguageIdentityFinalization({ ...options, readRevision: async () => String(++revision) })).toMatchObject({ ready: false, stable: false });
+    for (let i = 0; i < 3; i++) f.add(`b${i}`, ["els", "amb", "dels"]);
+    await createLanguageIdentityRuntime({ store: f.store, hasher, now: () => 2 }).ensure({ finalize: true, initializeIfMissing: true });
+    const stale = await inspectLanguageIdentityFinalization(options);
+    expect(stale.ready).toBe(false);
+    expect(stale.loadedCatalogDigest).not.toBe(stale.persistedCatalogDigest);
   });
 });

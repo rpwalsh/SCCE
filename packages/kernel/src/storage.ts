@@ -1286,6 +1286,7 @@ export interface LanguageIdentityStore {
   assignProfileLanguages(assignments: ReadonlyArray<{ profileId: string; languageId: string }>): Promise<void>;
   /** Exact owner lookup for serving; omission is an explicit maintenance enumeration. */
   listProfileLanguages(query?: { profileIds: readonly string[] }): Promise<Array<{ profileId: string; languageId: string }>>;
+  profileAssignments?(): Promise<Array<{ profileId: string; sourceVersionId: SourceVersionId; languageId: string | null }>>;
   /** Page through every profile's discovery signature in id order, without loading whole profiles. */
   listProfileSignatures(query: { afterId?: string; limit: number }): Promise<LanguageProfileSignatureRow[]>;
   /**

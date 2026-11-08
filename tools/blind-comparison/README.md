@@ -11,6 +11,14 @@ node --test tools/blind-comparison/tests/*.test.mjs
 
 The rehearsal has chat, creative writing, source facts including an unsupported negative, JavaScript repair with native hidden assertions, a multistep source task, and a source correction. Its two deterministic fixture adapters are **neither SCCE nor Qwen**. The agentic fixture exercises the multistep contract; it does not demonstrate autonomous tool use. Chat/creative ballots are deliberately ungraded. `comparativeGatePassed` remains false even if all rehearsal ballots are supplied.
 
+Ordinary dialogue training now finalizes its exact trained profile assignments after source publication. For a brain prepared by an older build, run the existing metadata-only finalizer against the same config/schema before preparing a new campaign:
+
+```powershell
+node packages/cli/dist/index.js --config scce.config.json --schema YOUR_BRAIN language identities --rebuild
+```
+
+This reads stored profile signatures and assigns learned identities; it does not reingest or recompile source files. The serving kernel reloads the persisted catalog on the durable language-memory revision. Campaign preparation calls the authenticated read-only `/api/language/finalization` endpoint and freezes its receipt: every accessible current profile must have a known identity, the loaded and durable catalog digests must match, the read must span one stable revision, and an actual brain activation must exist. Missing assignments or a stale server block setup. `preparation/candidate-finalization.json` preserves counts/digests and the actual active-brain marker. It is an identity-finalization check, not a task-capability or locale-coverage certificate; shared script and supplied language aliases never count as proof of competence. Existing coverage gaps and failed cases remain visible.
+
 ## Roles and custody
 
 1. Implementer freezes the implementation, adapters, scorer, public corpora, resource provider and preregistration. Save the printed freeze digest outside the working directory. Freeze all transitive adapter dependencies, binaries, build/brain manifests and public training snapshots as artifact files; pin a tree by listing every file or a verified immutable archive. A git commit string alone does not pin uncommitted files or a build. Pinned files are streamed through SHA-256 again before collection and grading.

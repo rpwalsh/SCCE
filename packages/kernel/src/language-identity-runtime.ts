@@ -217,6 +217,12 @@ export function createLanguageIdentityRuntime(options: {
           assignedCount = result.assigned;
           discovered = true;
           readiness = identities.length ? "ready" : "missing";
+          if (required.length) {
+            const current = await options.store.listProfileLanguages({ profileIds: required });
+            const valid = new Set(identities.map(identity => identity.id));
+            if (required.some(id => !current.some(row => row.profileId === id && valid.has(row.languageId))))
+              throw new Error("language identity finalization lacks current source profile assignments");
+          }
         }
         loaded = readiness === "ready" ? identities : [];
         index();

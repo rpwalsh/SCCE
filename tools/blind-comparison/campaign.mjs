@@ -10,6 +10,7 @@ import { collect, checkpoint, execute, readReceipt } from './runner.mjs';
 import { blind, grade } from './grading.mjs';
 import { discoverCampaign, discoverConfig, implementationFiles, REPOSITORY_ROOT } from './campaign-discovery.mjs';
 import { admitReference } from './campaign-reference-admission.mjs';
+import { verifyCandidateFinalization } from './candidate-finalization.mjs';
 import { defaultInventory, coverageGaps, createDefaultPool, CATEGORY_GROUPS } from './providers/default/cases.mjs';
 
 const here = fileURLToPath(new URL('./', import.meta.url));
@@ -28,6 +29,7 @@ export async function prepareCampaign(raw, dependencies = {}) {
   if (!out || out === REPOSITORY_ROOT) throw new Error('Choose a new campaign output directory');
   await mkdir(out, { recursive: true });
   const discovery = await (dependencies.discover ?? discoverCampaign)(options);
+  const candidateFinalization = verifyCandidateFinalization(discovery.finalization);
   if (discovery.config.allowedRoots?.length && !discovery.config.allowedRoots.some(root => inside(root, out))) throw new Error('Public output must be inside a configured allowed workspace root for native product routes');
   const capabilities = await readJson(path.join(providerDir, 'capabilities.json'));
   const admittedFiles = [...(options.admittedManifests ?? [])];
@@ -44,6 +46,8 @@ export async function prepareCampaign(raw, dependencies = {}) {
   const publicPins = path.join(out, 'preparation');
   await mkdir(publicPins, { recursive: true });
   await writeJson(path.join(publicPins, 'discovery.json'), discovery.publicSnapshot);
+  await writeJson(path.join(publicPins, 'candidate-finalization.json'), signed({ schema: 'scce.blind-candidate-finalization.v1',
+    receipt: candidateFinalization.receipt, finalizationDigest: candidateFinalization.digest }));
   await writeJson(path.join(publicPins, 'model.json'), discovery.model);
   await writeJson(path.join(publicPins, 'inventory.json'), inventory);
   await writeJson(path.join(publicPins, 'settings.json'), settings);
@@ -79,6 +83,7 @@ export async function prepareCampaign(raw, dependencies = {}) {
   add('model', 'model', path.join(publicPins, 'model.json'));
   add('isolation', 'isolation', path.join(publicPins, 'discovery.json'));
   add('candidate-preparation', 'preparation', path.join(publicPins, 'candidate-preparation.json'));
+  add('candidate-finalization', 'preparation', path.join(publicPins, 'candidate-finalization.json'));
   add('reference-preparation', 'preparation', path.join(publicPins, 'reference-preparation.json'));
   for (const [i, file] of admittedSnapshots.entries()) add(`admitted-public-manifest-${i}`, 'corpus', file);
   for (const [language, tool] of Object.entries(discovery.tools)) if (tool.available) {

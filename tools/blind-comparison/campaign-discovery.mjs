@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import os from 'node:os';
 import { captureHostConfiguration } from '../sealed-eval/harness/lib/host-configuration.mjs';
 import { fileHash, hash } from './protocol.mjs';
+import { verifyCandidateFinalization } from './candidate-finalization.mjs';
 
 export const REPOSITORY_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const exec = promisify(execFile);
@@ -61,8 +62,14 @@ export async function discoverCampaign(options, dependencies = {}) {
     return response.json();
   });
   const ready = await request();
+  const finalization = await (dependencies.finalization ?? (async () => {
+    const response = await fetch(new URL('/api/language/finalization', config.server), { headers: config.token ? { authorization: `Bearer ${config.token}` } : {}, signal: AbortSignal.timeout(options.budgets.timeMs) });
+    if (!response.ok) throw new Error(`Candidate finalization inspection returned HTTP ${response.status}`);
+    return response.json();
+  }))();
+  verifyCandidateFinalization(finalization);
   const tools = await (dependencies.tools ?? discoverNativeTools)(options.budgets);
-  return { config, model, tools, publicSnapshot: { schema: 'scce.blind-local-discovery.v1', model, referenceRuntime: { version: host.ollama?.version ?? null }, host: { node: host.node, os: host.os }, candidate: { server: config.server, schema: config.schema, publicConfigHash: config.publicConfigHash, readinessHash: hash(ready) }, hardwarePolicy: { requestedDevice: options.device, threads: options.threads ?? os.availableParallelism() }, limitations: 'Trusted-host process collection; no automatic OS, network, CPU/RAM/GPU isolation or source-admission equivalence certification.' } };
+  return { config, model, tools, finalization, publicSnapshot: { schema: 'scce.blind-local-discovery.v1', model, referenceRuntime: { version: host.ollama?.version ?? null }, host: { node: host.node, os: host.os }, candidate: { server: config.server, schema: config.schema, publicConfigHash: config.publicConfigHash, readinessHash: hash(ready), finalizationDigest: hash(finalization) }, hardwarePolicy: { requestedDevice: options.device, threads: options.threads ?? os.availableParallelism() }, limitations: 'Trusted-host process collection; no automatic OS, network, CPU/RAM/GPU isolation or source-admission equivalence certification.' } };
 }
 export async function implementationFiles(root = REPOSITORY_ROOT) {
   const { stdout } = await exec('git', ['ls-files', '-z'], { cwd: root, maxBuffer: 16 * 1024 * 1024, windowsHide: true });

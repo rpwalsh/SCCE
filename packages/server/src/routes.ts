@@ -120,6 +120,7 @@ export const ROUTES = [
   { method: "POST", path: "/api/models/download", label: "model download (explicit)", mutates: true, requiresDb: false },
   { method: "POST", path: "/api/models/remove", label: "model remove", mutates: true, requiresDb: false },
   { method: "GET", path: "/api/brain/status", label: "brain status", mutates: false, requiresDb: true },
+  { method: "GET", path: "/api/language/finalization", label: "language identity finalization", mutates: false, requiresDb: true },
   { method: "GET", path: "/api/ready", label: "readiness", mutates: false, requiresDb: true },
   { method: "POST", path: "/api/db/init", label: "database initialize", mutates: true, requiresDb: true },
   { method: "POST", path: "/api/db/migrate", label: "database migrate", mutates: true, requiresDb: true },
@@ -395,6 +396,7 @@ async function dispatch(
     return json({ routes: ROUTES, serverUrl: context.config.server.url, programRepairFamilies: SUPPORTED_PROGRAM_REPAIR_FAMILIES });
   }
   if (req.method === "GET" && url.pathname === "/api/brain/status") return json(await context.runtime.kernel.inspect("brain"));
+  if (req.method === "GET" && url.pathname === "/api/language/finalization") return json(await context.runtime.kernel.languageIdentityManifest());
   if (req.method === "GET" && url.pathname === "/api/ready") {
     const options = postgresStatusOptions(url);
     const warmup = context.startupReadiness.snapshot();

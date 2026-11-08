@@ -33,6 +33,7 @@ import { createJudge } from "./judge.js";
 import { jsonRecord, uniqueKernelStrings } from "./kernel-answer-primitives.js";
 import { createLanguageMemoryRuntime } from "./language-memory-runtime.js";
 import { createLanguageIdentityRuntime } from "./language-identity-runtime.js";
+import { inspectLanguageIdentityFinalization } from "./language-identity-finalization.js";
 import type { LanguageIdentityRecord } from "./language-identity.js";
 import {
   aggregateLanguageProfileCluster,
@@ -293,6 +294,11 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
     }
   });
   const kernel: ScceKernel = {
+    async languageIdentityManifest() {
+      return inspectLanguageIdentityFinalization({ store: deps.storage.languageIdentities, runtime: languageIdentityRuntime, hasher,
+        readRevision: deps.storage.languageMemory.readRevision?.bind(deps.storage.languageMemory), synchronize: () => surfaceLanguageRuntime.synchronizeWithStorage(),
+        activeBrain: () => deps.storage.brainImports.active() });
+    },
     async languageIdentities(input = {}) {
       const result = await deps.storage.transaction(() => languageIdentityRuntime.ensure({ ...input, finalize: true, initializeIfMissing: true }));
       if (result.discovered) invalidateRuntimeCaches();
