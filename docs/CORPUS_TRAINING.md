@@ -87,6 +87,8 @@ pnpm scce ingest wiki data/wiki/enwiki-latest-pages-articles-multistream.xml.bz2
 
 The kernel builds a bounded hydration plan from the corpus registry and asks the language-memory store for each enabled language-eligible source system. Per-corpus limits keep laptop memory bounded, and the runtime language-memory compiler still caps usable models internally.
 
+Serving loads language assignments for the exact profile owners present in that bounded work, including request controls and a selected translation profile. It reads the compact identity catalog without enumerating every profile assignment. Discovery runs through explicit initialization/rebuild and initial-brain completion. Kernel warmup reports catalog readiness; `assigned: null` means the global assignment count was not queried. Discovery and continuation-population compilation still have corpus-wide work.
+
 ## Activation and evidence limits
 
 - PostgreSQL schema v25 enforces at most one ACTIVE lifecycle row, retains the lifecycle repair, stores durable segmentation-population models, and persists arbitrary-arity hyperedge ports, qualifiers, modality and evidence.

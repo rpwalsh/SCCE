@@ -20,6 +20,8 @@ universal behavioral correctness. Unrun or unknown test success is `null`. A fai
 cannot resolve a repair or justify retaining it as progress. The [frozen write-loss acceptance case](../tools/repair-acceptance/README.md)
 reproduces a compiling harmful edit and checks native rejection, rollback, exact source restoration and receipt scope.
 
+Code-corpus loading begins when learned proposal work needs it. A compiler-owned repair can finish without loading corpus models. CLI and HTTP report `corpusAvailability` as a detached observation: `unqueried`, `loading` and `failed` have a null count; `loaded` counts only the admitted models for that run. Reporting does not trigger a read or change proposal ordering.
+
 ## What may be written
 
 A compiler is a one-sided criterion. It bounds what is *wrong* with a program and says nothing about what the program still has to *be*, so a gate resting on it alone is satisfiable by deleting the code that failed. A search over a learned distribution finds that solution immediately, because it is cheap and always available.
