@@ -2,6 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { Pool, type PoolClient } from "pg";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { decodeDurableJoinPrograms, encodeDurableJoinPrograms } from "./durable-join-program-storage.js";
 import {
   POSTGRES_REQUIRED_TABLES,
   STORAGE_STATUS_POPULATION_LIMITS,
@@ -833,7 +834,7 @@ function createEventLedger(storage: PostgresStorageAdapter): EventLedger {
           const rows = fresh.map(event => {
             const ledgerHash = sha256(`${prev}\u001f${event.hash}`);
             prev = ledgerHash;
-            return [event.id, event.episodeId, event.typeId, event.t, JSON.stringify(event.payload), event.parents, event.hash, ledgerHash];
+            return [event.id, event.episodeId, event.typeId, event.t, JSON.stringify(encodeDurableJoinPrograms(event.payload)), event.parents, event.hash, ledgerHash];
           });
           for (let start = 0; start < rows.length; start += EVENT_INSERT_MAX_ROWS_PER_STATEMENT) {
             const params: unknown[] = [];
@@ -2848,7 +2849,7 @@ interface InducedLanguageModelRow {
 function rowToInducedLanguageModelRecord(row: InducedLanguageModelRow): InducedLanguageModelRecord {
   return {
     id: row.id,
-    model: row.model_json,
+    model: decodeDurableJoinPrograms<InducedLanguageModel>(row.model_json),
     trainingPlanId: row.training_plan_id,
     createdAt: row.created_at.getTime(),
     informationLabel: normalizeInformationLabel(row.information_label as never)
@@ -2866,7 +2867,7 @@ function createInducedLanguageModelStore(storage: PostgresStorageAdapter): Induc
         [
           record.id,
           record.trainingPlanId,
-          JSON.stringify(record.model),
+          JSON.stringify(encodeDurableJoinPrograms(record.model)),
           record.model.corpusDocuments,
           record.model.vocabularySize,
           JSON.stringify(record.informationLabel),
@@ -4606,7 +4607,7 @@ async function putLanguagePatternsBatch(storage: PostgresStorageAdapter, pattern
     pattern_kind: pattern.patternKind,
     support: pattern.support,
     entropy: pattern.entropy,
-    pattern_json: pattern.patternJson,
+    pattern_json: encodeDurableJoinPrograms(pattern.patternJson),
     evidence_ids_json: pattern.evidenceIds,
       updated_at_ms: pattern.updatedAt,
       information_label: labels.get(pattern.id)!
@@ -5953,7 +5954,7 @@ function rowToCalibrationObservation(row: CalibrationObservationRow): Calibratio
 }
 
 interface EventRow { id: string; episode_id: string; type_id: string; t: string; payload_json: JsonValue; parents: string[]; hash: string }
-function rowToEvent(row: EventRow): ScceEvent { return { id: row.id as never, episodeId: row.episode_id as never, typeId: row.type_id as never, t: Number(row.t), payload: row.payload_json, parents: row.parents as never[], hash: row.hash }; }
+function rowToEvent(row: EventRow): ScceEvent { return { id: row.id as never, episodeId: row.episode_id as never, typeId: row.type_id as never, t: Number(row.t), payload: decodeDurableJoinPrograms<JsonValue>(row.payload_json), parents: row.parents as never[], hash: row.hash }; }
 
 interface ConversationTurnRow { id: string; session_id: string; episode_id: string; turn_index: string; role_id: string; text: string; evidence_ids: string[]; metadata_json: JsonValue; created_at: Date }
 function rowToConversationTurn(row: ConversationTurnRow): ConversationTurnRecord {
@@ -6380,7 +6381,7 @@ interface LanguageUnitRow { id: string; profile_id: string; source_version_id: s
 function rowToLanguageUnit(row: LanguageUnitRow): LanguageUnitRecord { return { id: row.id, profileId: row.profile_id, sourceVersionId: row.source_version_id as SourceVersionId, script: row.script, unitKind: row.unit_kind, text: row.unit_text, features: row.features, competenceVector: row.competence_vector.map(Number), alpha: Number(row.alpha), evidenceIds: row.evidence_ids as EvidenceId[], metadata: row.metadata_json, informationLabel: normalizeInformationLabel(row.information_label) }; }
 
 interface LanguagePatternRow { id: string; profile_id: string; pattern_kind: LanguagePatternRecord["patternKind"]; support: string; entropy: string; pattern_json: JsonValue; evidence_ids: string[]; updated_at: Date; information_label: InformationLabel }
-function rowToLanguagePattern(row: LanguagePatternRow): LanguagePatternRecord { return { id: row.id, profileId: row.profile_id, patternKind: row.pattern_kind, support: Number(row.support), entropy: Number(row.entropy), patternJson: row.pattern_json, evidenceIds: row.evidence_ids as EvidenceId[], updatedAt: row.updated_at.getTime(), informationLabel: normalizeInformationLabel(row.information_label) }; }
+function rowToLanguagePattern(row: LanguagePatternRow): LanguagePatternRecord { return { id: row.id, profileId: row.profile_id, patternKind: row.pattern_kind, support: Number(row.support), entropy: Number(row.entropy), patternJson: decodeDurableJoinPrograms<JsonValue>(row.pattern_json), evidenceIds: row.evidence_ids as EvidenceId[], updatedAt: row.updated_at.getTime(), informationLabel: normalizeInformationLabel(row.information_label) }; }
 
 interface SemanticFrameRow { id: string; frame_json: JsonValue; embedding: string; evidence_ids: string[]; alpha: string; created_at: Date; information_label: InformationLabel }
 function rowToSemanticFrame(row: SemanticFrameRow): SemanticFrameRecord { return { id: row.id, frameJson: row.frame_json, embedding: parseVectorText(row.embedding, 64), evidenceIds: row.evidence_ids as EvidenceId[], alpha: Number(row.alpha), createdAt: row.created_at.getTime(), informationLabel: normalizeInformationLabel(row.information_label) }; }
