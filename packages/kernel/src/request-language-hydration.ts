@@ -10,7 +10,8 @@ export const REQUEST_SEED_PATTERN_JSON_FIELDS = [
   "sourceSystem", "corpusRoleId", "languageId", "componentRecipe", "compilerRecipe", "sourceCompilationId", "contentDigest",
   "surface", "anchor", "matchMode", "semanticRoleId", "requirementCoefficients", "requirementTargets",
   "requirementTargetBounds", "responseForm", "responseExtent", "requestSpanRole", "structuralDelta",
-  "rules", "classBindings", "boundarySignals", "counts", "requestConstructionCandidate", "sourceConstructionCandidate", "conversationalBindingId", "bindingId"
+  "rules", "classBindings", "boundarySignals", "counts", "requestConstructionCandidate", "sourceConstructionCandidate", "conversationalBindingId", "bindingId",
+  "contextualQaRequestForm", "contextualQaRequestFeatures"
 ] as const;
 
 export const REQUEST_SEED_FRAME_JSON_FIELDS = [

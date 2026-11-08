@@ -21,7 +21,7 @@ function adapterFixture() {
 }
 
 it("adds schema27's bounded hash index and retires only the raw long-surface index", () => {
-  expect(POSTGRES_SCHEMA_VERSION).toBe(30);
+  expect(POSTGRES_SCHEMA_VERSION).toBe(31);
   const statements = schemaStatements('"surface_key"');
   expect(statements).toContain('ALTER TABLE "surface_key".semantic_frames ADD COLUMN IF NOT EXISTS normalized_surface_hash TEXT');
   expect(statements).toContain('DROP INDEX IF EXISTS "surface_key".idx_surface_key_semantic_frames_surface_rank');

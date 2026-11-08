@@ -43,6 +43,8 @@ import {
   SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA,
   SOURCE_COMPUTATION_CONSTRUCTION_RECIPE,
   SOURCE_COMPUTATION_SOURCE_SYSTEM,
+  CONTEXTUAL_QA_CONSTRUCTION_RECIPE,
+  CONTEXTUAL_QA_SOURCE_SYSTEM,
   requestSeedSemanticFrame,
   type AlphaTraceRecord,
   type AlphaTrace,
@@ -3994,18 +3996,21 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       await putLanguagePatternsBatch(storage, patterns);
     },
     async getLanguagePatternProjection(query) {
+      const contextualQa = query.componentRecipe === CONTEXTUAL_QA_CONSTRUCTION_RECIPE;
+      if (contextualQa && (query.patternSchema !== LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA || query.sourceSystem !== CONTEXTUAL_QA_SOURCE_SYSTEM)) return undefined;
       if (query.patternSchema === SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA
         && (query.componentRecipe !== SOURCE_COMPUTATION_CONSTRUCTION_RECIPE || query.sourceSystem !== SOURCE_COMPUTATION_SOURCE_SYSTEM)) return undefined;
       const informationLabel = normalizeInformationLabel(query.informationLabel);
       if (!informationLabelAllowsRead(informationLabel, storage.requireInformationAccess())) return undefined;
       const key = activeLanguagePatternProjectionKey({ ...query, tenantId: informationLabel.tenantId });
       const computation = query.patternSchema === SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA;
+      const strictAuxiliary = computation || contextualQa;
       const projectionParams: unknown[] = [key];
-      const projectionAccess = computation ? storage.informationAccessPredicate("active_projection", projectionParams.length + 1) : undefined;
+      const projectionAccess = strictAuxiliary ? storage.informationAccessPredicate("active_projection", projectionParams.length + 1) : undefined;
       if (projectionAccess) projectionParams.push(...projectionAccess.params);
-      const dependencyGuard = computation ? conversationalProjectionEligibilitySql(storage, projectionParams) : undefined;
+      const dependencyGuard = strictAuxiliary ? conversationalProjectionEligibilitySql(storage, projectionParams) : undefined;
       const found = await storage.query<{ value_json: JsonValue }>(
-        computation ? `SELECT value_json FROM (SELECT value_json,value_json->'informationLabel' AS information_label
+        strictAuxiliary ? `SELECT value_json FROM (SELECT value_json,value_json->'informationLabel' AS information_label
           FROM ${storage.table("storage_meta")} WHERE key=$1) active_projection
           WHERE ${projectionAccess!.sql} AND ${dependencyGuard}`
           : `SELECT value_json FROM ${storage.table("storage_meta")} WHERE key=$1`, projectionParams);
@@ -4018,19 +4023,19 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         || !Array.isArray(value.patternIds) || value.patternIds.some(id => typeof id !== "string")
         || new Set(value.patternIds).size !== value.patternIds.length) return undefined;
       const patternIds = [...value.patternIds as string[]].sort();
-      if ((query.componentRecipe === DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID || computation)
+      if ((query.componentRecipe === DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID || strictAuxiliary)
         && (!Array.isArray(value.sourceDependencies) || (query.sourceDependencies !== undefined
           && canonicalStringify(query.sourceDependencies) !== canonicalStringify(value.sourceDependencies)))) return undefined;
-      if (query.componentRecipe === DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID || computation || query.componentRecipe === REQUEST_COMMUNICATIVE_ACT_SOURCE_RECIPE) {
+      if (query.componentRecipe === DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID || strictAuxiliary || query.componentRecipe === REQUEST_COMMUNICATIVE_ACT_SOURCE_RECIPE) {
         const params: unknown[] = [patternIds, query.profileId, query.sourceVersionId, query.sourceSystem, query.patternSchema, query.componentRecipe];
-        if (computation) params.push([...new Set((Array.isArray(value.sourceDependencies) ? value.sourceDependencies : []).flatMap(dependency =>
+        if (strictAuxiliary) params.push([...new Set((Array.isArray(value.sourceDependencies) ? value.sourceDependencies : []).flatMap(dependency =>
           dependency && typeof dependency === "object" && !Array.isArray(dependency) && Array.isArray(dependency.evidenceIds)
             ? dependency.evidenceIds.filter((id): id is string => typeof id === "string") : []))]);
         const access = storage.informationAccessPredicate("pattern", params.length + 1); params.push(...access.params);
         const held = await storage.query<{ id: string }>(`SELECT pattern.id FROM ${storage.table("language_patterns")} pattern
           WHERE pattern.id=ANY($1::text[]) AND pattern.profile_id=$2 AND pattern.owned_source_version_id=$3 AND pattern.source_system=$4
             AND pattern.pattern_schema=$5 AND pattern.component_recipe=$6
-            ${computation ? "AND pattern.pattern_kind='semantic_role' AND COALESCE(array_length(pattern.evidence_ids,1),0)>0 AND pattern.evidence_ids <@ $7::text[]" : ""}
+            ${strictAuxiliary ? "AND pattern.pattern_kind='semantic_role' AND COALESCE(array_length(pattern.evidence_ids,1),0)>0 AND pattern.evidence_ids <@ $7::text[]" : ""}
             AND ${access.sql} ORDER BY pattern.id`, params);
         if (canonicalStringify(held.map(row => row.id)) !== canonicalStringify(patternIds)) return undefined;
       }
@@ -4053,7 +4058,8 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       const patternIds = [...new Set(projection.patternIds)].sort();
       if (!projection.profileId.trim() || !projection.sourceId || !projection.sourceVersionId || !projection.sourceSystem.trim()
         || !((projection.patternSchema === LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA && (projection.componentRecipe === LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID
-            || projection.componentRecipe === DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID))
+            || projection.componentRecipe === DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID
+            || (projection.componentRecipe === CONTEXTUAL_QA_CONSTRUCTION_RECIPE && projection.sourceSystem === CONTEXTUAL_QA_SOURCE_SYSTEM)))
           || (projection.patternSchema === SOURCE_CODE_FUNCTION_PATTERN_SCHEMA && projection.componentRecipe === SOURCE_CODE_FUNCTION_PROJECTION_RECIPE_ID)
           || (projection.patternSchema === "scce.source_owned_test_contract.v1" && projection.componentRecipe === "scce.source_owned_test_contract_projection.v1")
           || (projection.patternSchema === CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA && projection.componentRecipe === CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID)
@@ -4067,7 +4073,8 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       const rows = new Map(input.patterns.map(pattern => [pattern.id, pattern]));
       const conversational = projection.componentRecipe === DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID;
       const computation = projection.patternSchema === SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA;
-      const sourceDependent = conversational || computation;
+      const contextualQa = projection.componentRecipe === CONTEXTUAL_QA_CONSTRUCTION_RECIPE;
+      const sourceDependent = conversational || computation || contextualQa;
       const dependencies = projection.sourceDependencies;
       if (sourceDependent && (projection.sourceSystem !== "dialogue" || !Array.isArray(dependencies)
         || (patternIds.length > 0 && dependencies.length === 0)
@@ -4082,7 +4089,8 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
           : {};
         return !row || row.profileId !== projection.profileId || metadata.schema !== projection.patternSchema
           || metadata.sourceSystem !== projection.sourceSystem
-          || (projection.componentRecipe === LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID && metadata.componentRecipe === DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID)
+          || (projection.componentRecipe === LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID
+            && (metadata.componentRecipe === DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID || metadata.componentRecipe === CONTEXTUAL_QA_CONSTRUCTION_RECIPE))
           || (projection.patternSchema === SOURCE_CODE_FUNCTION_PATTERN_SCHEMA
             && (row.patternKind !== "source_code_function" || metadata.sourceVersionId !== projection.sourceVersionId))
           || (projection.patternSchema === "scce.source_owned_test_contract.v1"
@@ -4093,7 +4101,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
             && (row.patternKind !== "discourse" || metadata.profileId !== projection.profileId || metadata.sourceId !== projection.sourceId
               || metadata.sourceVersionId !== projection.sourceVersionId || metadata.componentRecipe !== REQUEST_COMMUNICATIVE_ACT_SOURCE_RECIPE || !row.evidenceIds.length))
           || (sourceDependent && (row.patternKind !== "semantic_role" || metadata.sourceId !== projection.sourceId || metadata.sourceVersionId !== projection.sourceVersionId
-            || (computation && metadata.profileId !== projection.profileId)
+            || ((computation || contextualQa) && metadata.profileId !== projection.profileId)
             || metadata.componentRecipe !== projection.componentRecipe || !row.evidenceIds.length
             || row.evidenceIds.some(id => !dependencies!.some(dependency => dependency.evidenceIds.includes(id)))));
       })) throw new Error("active language-pattern IDs must name rows in the replacement batch");
@@ -4127,7 +4135,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
            VALUES($1,$2::jsonb,NOW())
            ON CONFLICT(key) DO UPDATE SET value_json=EXCLUDED.value_json,updated_at=NOW()
            WHERE metadata.value_json IS DISTINCT FROM EXCLUDED.value_json
-           ${projection.patternSchema === REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA || computation ? `AND NOT EXISTS (
+           ${projection.patternSchema === REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA || computation || contextualQa ? `AND NOT EXISTS (
              SELECT 1 FROM ${storage.table("source_versions")} previous_version, ${storage.table("source_versions")} incoming_version
              WHERE previous_version.id=metadata.value_json->>'sourceVersionId' AND incoming_version.id=EXCLUDED.value_json->>'sourceVersionId'
                AND previous_version.source_id=incoming_version.source_id
@@ -4466,6 +4474,17 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       const projectionScope: string[] = [];
       const scopeWhere: string[] = query.patternKind ? [] : ["pattern.pattern_kind<>'source_compilation'"];
       const where: string[] = [];
+      if (query.contextualQaRequestFeatures !== undefined) {
+        if (!Array.isArray(query.contextualQaRequestFeatures) || query.contextualQaRequestFeatures.some(value => typeof value !== "string" || !value)) throw new Error("contextual QA features must be nonempty strings");
+        if (!query.contextualQaRequestFeatures.length || query.sourceComputationBindingId !== undefined
+          || (query.sourceSystem !== undefined && query.sourceSystem !== CONTEXTUAL_QA_SOURCE_SYSTEM)
+          || (query.patternSchemas && !query.patternSchemas.includes(LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA))
+          || (query.patternKind !== undefined && query.patternKind !== "semantic_role")) return [];
+        params.push([...new Set(query.contextualQaRequestFeatures)]);
+        scopeWhere.push(`pattern.pattern_kind='semantic_role'`, `pattern.pattern_json->>'schema'='${LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA}'`,
+          `pattern.pattern_json->>'componentRecipe'='${CONTEXTUAL_QA_CONSTRUCTION_RECIPE}'`, `pattern.source_system='${CONTEXTUAL_QA_SOURCE_SYSTEM}'`,
+          `pattern.pattern_json->'contextualQaRequestFeatures' ?| $${params.length}::text[]`);
+      }
       if (query.sourceComputationBindingId !== undefined) {
         if (typeof query.sourceComputationBindingId !== "string" || !query.sourceComputationBindingId) throw new Error("source computation binding must be a nonempty opaque ID");
         if ((query.sourceSystem !== undefined && query.sourceSystem !== SOURCE_COMPUTATION_SOURCE_SYSTEM)
@@ -4517,12 +4536,12 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       }
       appendInformationAccess(storage, "pattern", params, scopeWhere);
       let requestedOwners: LanguagePatternOwner[] | undefined;
-      if (query.patternIds || query.sourceComputationBindingId !== undefined) {
+      if (query.patternIds || query.sourceComputationBindingId !== undefined || query.contextualQaRequestFeatures !== undefined) {
         const owners = await storage.query<{ profile_id: string; source_system: string | null }>(
           `SELECT DISTINCT pattern.profile_id,pattern.source_system FROM ${storage.table("language_patterns")} pattern
            WHERE ${scopeWhere.join(" AND ")} ORDER BY pattern.profile_id,pattern.source_system`, [...params]);
         requestedOwners = owners.map(row => ({ profileId: row.profile_id, sourceSystem: row.source_system }));
-        if (query.sourceComputationBindingId !== undefined && !requestedOwners.length) return [];
+        if ((query.sourceComputationBindingId !== undefined || query.contextualQaRequestFeatures !== undefined) && !requestedOwners.length) return [];
         params.push(canonicalStringify(requestedOwners));
         projectionScope.push(`EXISTS (
               SELECT 1 FROM jsonb_to_recordset($${params.length}::jsonb) AS requested_projection_owner("profileId" text,"sourceSystem" text)
@@ -4598,7 +4617,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
             active_projection.value_json->>'sourceSystem' AS source_system,
             active_projection.value_json->>'patternSchema' AS pattern_schema,
             active_projection.value_json->>'componentRecipe' AS projection_recipe,
-            active_projection.value_json->'patternIds' AS pattern_ids${computation ? `,active_projection.value_json->>'sourceVersionId' AS source_version_id,
+            active_projection.value_json->'patternIds' AS pattern_ids${computation || conversationalGuard ? `,active_projection.value_json->>'sourceVersionId' AS source_version_id,
             ARRAY(SELECT DISTINCT requested.evidence_id FROM jsonb_array_elements(CASE
               WHEN jsonb_typeof(active_projection.value_json->'sourceDependencies')='array' THEN active_projection.value_json->'sourceDependencies' ELSE '[]'::jsonb END) dependency(value)
               CROSS JOIN LATERAL jsonb_array_elements_text(CASE WHEN jsonb_typeof(dependency.value->'evidenceIds')='array'
@@ -4607,8 +4626,8 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
           WHERE ${projectionAccess.sql}
             AND active_projection.value_json->>'schema'='scce.language_pattern_active_projection.v1'
             AND active_projection.value_json->>'patternSchema'=$${constructionSchemaParam}
-            AND (active_projection.value_json->>'componentRecipe'=$${constructionRecipeParam}${conversationalGuard ? ` OR active_projection.value_json->>'componentRecipe'='${DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID}'` : ""})
-            ${conversationalGuard ? `AND (active_projection.value_json->>'componentRecipe'<>'${DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID}' OR (${conversationalGuard}))` : ""}
+            AND (active_projection.value_json->>'componentRecipe'=$${constructionRecipeParam}${conversationalGuard ? ` OR active_projection.value_json->>'componentRecipe' IN ('${DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID}','${CONTEXTUAL_QA_CONSTRUCTION_RECIPE}')` : ""})
+            ${conversationalGuard ? `AND (active_projection.value_json->>'componentRecipe' NOT IN ('${DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID}','${CONTEXTUAL_QA_CONSTRUCTION_RECIPE}') OR (${conversationalGuard}))` : ""}
             ${computationGuard ? `AND active_projection.value_json->>'sourceSystem'='${SOURCE_COMPUTATION_SOURCE_SYSTEM}' AND (${computationGuard})` : ""}
             ${patternSchema === CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA || ownedAct ? `AND EXISTS (
               SELECT 1 FROM ${storage.table("language_profiles")} projection_profile
@@ -4639,7 +4658,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
             AND COALESCE(array_length(computation_member.evidence_ids,1),0)>0 AND computation_member.evidence_ids <@ header.dependency_evidence_ids` : ""}
         )`);
         const recipeKey = patternSchema === LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA
-          ? `,CASE WHEN pattern.component_recipe='${DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID}' THEN '${DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID}' ELSE $${constructionRecipeParam} END`
+          ? `,CASE WHEN pattern.component_recipe IN ('${DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID}','${CONTEXTUAL_QA_CONSTRUCTION_RECIPE}') THEN pattern.component_recipe ELSE $${constructionRecipeParam} END`
           : computation ? ",pattern.component_recipe,pattern.owned_source_version_id" : "";
         where.push(`(pattern.pattern_schema IS DISTINCT FROM $${constructionSchemaParam}
         OR (pattern.profile_id,pattern.source_system,pattern.pattern_schema,pattern.id${recipeKey}) IN (
@@ -4648,6 +4667,13 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
           SELECT 1 FROM ${projectionSet}_headers published
           WHERE published.profile_id=pattern.profile_id AND published.source_system=pattern.source_system AND published.pattern_schema=pattern.pattern_schema
         )` : ""})`);
+        if (conversationalGuard) where.push(`(pattern.component_recipe IS DISTINCT FROM '${CONTEXTUAL_QA_CONSTRUCTION_RECIPE}' OR (
+          pattern.pattern_kind='semantic_role' AND COALESCE(array_length(pattern.evidence_ids,1),0)>0
+          AND EXISTS (SELECT 1 FROM ${projectionSet}_headers qa_header
+            WHERE qa_header.profile_id=pattern.profile_id AND qa_header.source_system=pattern.source_system
+              AND qa_header.pattern_schema=pattern.pattern_schema AND qa_header.projection_recipe=pattern.component_recipe
+              AND qa_header.source_version_id=pattern.owned_source_version_id
+              AND pattern.evidence_ids <@ qa_header.dependency_evidence_ids)))`);
         if (computation) where.push(`(pattern.pattern_schema IS DISTINCT FROM $${constructionSchemaParam} OR (
           pattern.pattern_kind='semantic_role' AND COALESCE(array_length(pattern.evidence_ids,1),0)>0))`);
         if (ownedAct) where.push(`(pattern.pattern_schema IS DISTINCT FROM $${constructionSchemaParam} OR (
@@ -5487,6 +5513,7 @@ function activeLanguagePatternProjectionKey(input: {
   componentRecipe?: string;
 }): string {
   if (input.componentRecipe === DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID
+    || (input.patternSchema === LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA && input.componentRecipe === CONTEXTUAL_QA_CONSTRUCTION_RECIPE)
     || (input.patternSchema === SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA && input.componentRecipe === SOURCE_COMPUTATION_CONSTRUCTION_RECIPE)) return `active_language_pattern_projection:${JSON.stringify([
     "source-owned", input.tenantId, input.sourceSystem, input.sourceId, input.patternSchema, input.componentRecipe
   ])}`;
