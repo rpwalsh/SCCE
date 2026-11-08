@@ -272,7 +272,9 @@ export function conversationalSession(options?: { corpus?: string; learned?: { p
     languageMemory: {
       ...base.languageMemory,
       listNgramModels: async () => [modelRecord],
-      listLanguagePatterns: async (query?: { sourceSystem?: string; profileIds?: string[] }) => {
+      listLanguagePatterns: async (query?: { sourceSystem?: string; profileIds?: string[]; patternIds?: readonly string[] }) => {
+        if (query?.patternIds) return (options?.learned?.patterns ?? [...REQUEST_ACT_PATTERNS, ...DIALOGUE_ACT_CONSTRUCTION_PATTERNS])
+          .filter(pattern => query.patternIds!.includes(pattern.id));
         if (options?.learned) return options.learned.patterns.filter(pattern => {
           const row = pattern.patternJson as Record<string, JsonValue>;
           return query?.sourceSystem === REQUEST_COMMUNICATIVE_ACT_SOURCE_SYSTEM

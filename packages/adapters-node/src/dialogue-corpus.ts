@@ -15,8 +15,10 @@ import {
   REQUEST_REQUIREMENT_PATTERN_SCHEMA,
   type CreativeEventConstructionCompiler,
   SOURCE_EXAMPLE_CONSTRUCTION_STORAGE,
+  LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA,
   compileRequestCommunicativeActModel,
   corpusRoleIdForSourceSystem,
+  corpusSourceAlias,
   createHasher,
   dialogueRequestActObservations,
   validateDeclaredTranscriptSource,
@@ -34,10 +36,12 @@ import {
   type InformationLabel,
   type JsonValue,
   type LanguagePatternRecord,
+  type LanguagePatternProjection,
   type ScceStorage,
   type SourceVersionId
 } from "@scce/kernel";
 import { corpusSourceVersionIdFor, readCompletedCorpusCheckpoint, stampPattern, trainLanguageCorpusText, type LanguageCorpusTrainingInput, type LanguageCorpusTrainingReport } from "./language-corpus-trainer.js";
+import { DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID, runDialogueConversationalComponent } from "./dialogue-conversational-checkpoint.js";
 
 /**
  * Who wrote the text. Training on SCCE's own generations is self-training: the model would be fitted to its
@@ -247,7 +251,12 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
     reports,
     communicativeActs: await persistDialogueCommunicativeActs(input, refreshDialogue ? transcripts : [], refreshDialogue ? read.map(file => String(corpusSourceVersionIdFor(file))) : []),
     requestAuthorities: await persistDialogueRequestAuthorities(input, read),
-    conversationalConstructions: await persistConversationalConstructions(input, refreshDialogue ? read : []),
+    conversationalConstructions: await runDialogueConversationalComponent({
+      storage: input.storage, rootUri: pathToFileURL(root).href, informationLabel: input.informationLabel, authorship: input.authorship,
+      sources: read.map(file => ({ sourceUri: file.sourceUri, sourceVersionId: String(corpusSourceVersionIdFor(file)), contentHash: sha256(file.text),
+        byteLength: Buffer.byteLength(file.text, "utf8"), ...(file.transcriptTurns ? { transcriptTurns: file.transcriptTurns } : {}) })),
+      compile: () => persistConversationalConstructions(input, read), unchanged: emptyConversationalConstructionReport
+    }),
     stoppedByHeapSafetyBound,
     heapMiBAtExit: heapMiB()
   };
@@ -427,7 +436,7 @@ async function persistDialogueCommunicativeActs(
 async function persistConversationalConstructions(
   input: DialogueCorpusTrainOptions,
   read: ReadonlyArray<{ sourceUri: string; text: string; transcriptTurns?: readonly TranscriptTurn[] }>
-): Promise<DialogueConversationalConstructionTrainingReport> {
+): Promise<{ report: DialogueConversationalConstructionTrainingReport; projections: LanguagePatternProjection[] }> {
   const hasher = createHasher();
   const updatedAt = Date.now();
   const sourceVersionIds = read.map(file => corpusSourceVersionIdFor(file));
@@ -451,15 +460,19 @@ async function persistConversationalConstructions(
     evidence.push(...spans);
     documents.push({ sourceVersionId: String(sourceVersionId), profileId, spans, transcriptTurns: turnsBySource.get(String(sourceVersionId)) });
   }
+  if (documents.length !== new Set(sourceVersionIds).size) throw new Error("Conversational compilation requires every pooled source's promoted owner evidence");
 
   const { sets, ...induction } = induceConversationalActConstructionTrainingSets({ documents, hasher });
   const sourceSystemId = CORPUS_SOURCE_SYSTEM_IDS.dialogue;
+  const sourceSystem = corpusSourceAlias(sourceSystemId);
   const metadata = toJsonValue({
     corpusRole: corpusRoleIdForSourceSystem(sourceSystemId),
     authorship: input.authorship,
     provenanceClass: "learned_language_prior"
   });
   const patterns: LanguagePatternRecord[] = [];
+  const projections: LanguagePatternProjection[] = [];
+  const dependenciesByProfile = new Map<string, Map<string, { sourceId: EvidenceSpan["sourceId"]; sourceVersionId: SourceVersionId; evidenceIds: EvidenceId[] }>>();
   const bundles: DialogueConversationalConstructionTrainingReport["bundles"] = [];
   const rejected: DialogueConversationalConstructionTrainingReport["rejected"] = [];
   for (const set of sets) {
@@ -476,10 +489,24 @@ async function persistConversationalConstructions(
       rejected.push({ bindingId: set.bindingId, issues: [...new Set(compiled.issues.map(issue => issue.code))].sort() });
       continue;
     }
-    patterns.push({
-      ...stampPattern(compiled.pattern, "dialogue", sourceSystemId, metadata),
-      informationLabel: input.informationLabel
-    });
+    const owner = documents.find(document => document.profileId === set.profileId);
+    const ownerSpan = owner?.spans[0];
+    if (!owner || !ownerSpan) throw new Error("Conversational projection has no exact promoted source owner");
+    const stamped = stampPattern(compiled.pattern, sourceSystem, sourceSystemId, metadata);
+    patterns.push({ ...stamped, informationLabel: input.informationLabel, patternJson: toJsonValue({
+      ...(stamped.patternJson as Record<string, JsonValue>), componentRecipe: DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID,
+      sourceId: ownerSpan.sourceId, sourceVersionId: owner.sourceVersionId, conversationalBindingId: compiled.bundle.bindingId
+    }) });
+    const dependencies = dependenciesByProfile.get(set.profileId) ?? new Map();
+    for (const example of compiled.bundle.sourceExamples) {
+      const span = evidence.find(span => String(span.id) === example.evidenceId && String(span.sourceVersionId) === example.sourceVersionId && span.status === "promoted");
+      if (!span) throw new Error("Conversational projection dependency is not exact promoted source evidence");
+      const dependency = dependencies.get(example.sourceVersionId) ?? { sourceId: span.sourceId, sourceVersionId: span.sourceVersionId, evidenceIds: [] };
+      if (dependency.sourceId !== span.sourceId) throw new Error("Conversational source version has conflicting source ownership");
+      dependency.evidenceIds = [...new Set([...dependency.evidenceIds, span.id])].sort();
+      dependencies.set(example.sourceVersionId, dependency);
+    }
+    dependenciesByProfile.set(set.profileId, dependencies);
     bundles.push({
       bindingId: set.bindingId,
       actId: set.actId,
@@ -491,19 +518,49 @@ async function persistConversationalConstructions(
       sourceVersionIds: compiled.bundle.sourceVersionIds.length
     });
   }
-  if (patterns.length) {
+  let patternsPersisted = 0;
+  if (input.storage.languageMemory.replaceLanguagePatternProjection) {
+      type ConversationProjection = LanguagePatternProjection & { sourceDependencies?: readonly { sourceVersionId: SourceVersionId }[] };
+      const pooledVersions = new Set(documents.map(document => document.sourceVersionId));
+      for (const owner of [...new Map(documents.map(document => [document.profileId, document])).values()].sort((a, b) => a.profileId.localeCompare(b.profileId))) {
+        const profileId = owner.profileId, dependencies = dependenciesByProfile.get(profileId) ?? new Map();
+        const ownedPatterns = patterns.filter(pattern => pattern.profileId === profileId);
+        const ownerKey = { profileId, sourceId: owner.spans[0]!.sourceId, sourceVersionId: owner.sourceVersionId as SourceVersionId,
+          sourceSystem, patternSchema: LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, componentRecipe: DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID,
+          informationLabel: input.informationLabel };
+        const previous: ConversationProjection | undefined = await input.storage.languageMemory.getLanguagePatternProjection?.(ownerKey);
+        // A bounded shard cannot replace a recurrence family whose other source owners it did not read.
+        if (previous && (!previous.sourceDependencies || previous.sourceDependencies.some(dependency => !pooledVersions.has(String(dependency.sourceVersionId))))) {
+          projections.push(previous); continue;
+        }
+        if (!ownedPatterns.length && !previous) continue;
+        const projection = { ...ownerKey, patternIds: ownedPatterns.map(pattern => pattern.id).sort(),
+          sourceDependencies: [...dependencies.values()].sort((a, b) => String(a.sourceVersionId).localeCompare(String(b.sourceVersionId))) };
+        await input.storage.languageMemory.replaceLanguagePatternProjection({ patterns: ownedPatterns, projection });
+        projections.push(projection);
+        patternsPersisted += ownedPatterns.length;
+      }
+  } else if (patterns.length) {
     if (input.storage.languageMemory.putLanguagePatterns) await input.storage.languageMemory.putLanguagePatterns(patterns);
     else for (const pattern of patterns) await input.storage.languageMemory.putLanguagePattern(pattern);
+    patternsPersisted = patterns.length;
   }
-  return {
+  return { projections, report: {
     schema: "scce.dialogueConversationalConstructionTrainingReport.v1",
     updatedAt,
     documentsWithEvidence: documents.length,
     induction,
     bundles,
     rejected,
-    patternsPersisted: patterns.length
-  };
+    patternsPersisted
+  } };
+}
+
+function emptyConversationalConstructionReport(): DialogueConversationalConstructionTrainingReport {
+  return { schema: "scce.dialogueConversationalConstructionTrainingReport.v1", updatedAt: 0, documentsWithEvidence: 0,
+    induction: { schema: "scce.conversational_construction_induction.v1", documentsRead: 0, spansRead: 0, spansSegmented: 0, adjacentPairs: 0,
+      neutralPairs: 0, recurringFrames: 0, varyingFrames: 0, literalFormFloor: 0, bodiedFrames: 0, fillerDiversityFloor: 0, sourceFamilyFloor: 0, keptFrames: 0, observations: 0 },
+    bundles: [], rejected: [], patternsPersisted: 0 };
 }
 
 function heapMiB(): number {

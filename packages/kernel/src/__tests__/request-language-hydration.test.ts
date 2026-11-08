@@ -15,6 +15,9 @@ import { resolveRequestValueBinding } from "../semantic-answer-construct.js";
 import { learnedEntitySurfacesFromLanguageMemory } from "../kernel-answer-primitives.js";
 import type { EvidenceSpan, LanguageProfile, RequestedAuthority, SourceVersionId } from "../types.js";
 import type { LanguagePatternRecord, ScceKernelDeps, SemanticFrameRecord } from "../storage.js";
+import { conversationalActBindingId } from "../conversational-act-binding.js";
+import { requestCommunicativeActIdForSignature } from "../request-communicative-act.js";
+import { DIALOGUE_ACT_IDS } from "../dialogue-pragmatics.js";
 
 const hasher = createHasher();
 const clock = createClock({ fixedTime: 1 });
@@ -143,6 +146,40 @@ function span(text: string, version = "version.seed"): EvidenceSpan {
     contentHash, charStart: 0, charEnd: [...text].length, byteStart: 0, byteEnd: Buffer.byteLength(text), text, textPreview: text,
     status: "promoted", alpha: 1 } as EvidenceSpan;
 }
+
+it("loads only exact active-act conversation header IDs, preserving source/owner/evidence checks and nongenerative seeding", async () => {
+  const actId = requestCommunicativeActIdForSignature({ accepted: true, evidenceBearing: false });
+  const texts = ["qa «Luma»", "ra Luma.", "qa «Vela»", "ra Vela."], evidence = span(texts.join("\n"));
+  const observations: SourceBoundConstructionObservation[] = [];
+  let offset = 0;
+  for (let index = 0; index < texts.length; index += 2) {
+    const request = texts[index]!, reply = texts[index + 1]!, replyStart = offset + [...request].length + 1;
+    observations.push({ sourceVersionId: String(evidence.sourceVersionId), evidenceId: String(evidence.id),
+      antecedent: { startCodePoint: offset, endCodePoint: offset + [...request].length }, surfaceStartCodePoint: replyStart,
+      surfaceEndCodePoint: replyStart + [...reply].length, roles: [{ slotIndex: 0, startCodePoint: 3, endCodePoint: 7 }] });
+    offset = replyStart + [...reply].length + 1;
+  }
+  const compiled = compileLanguageConstructionPattern({ bindingId: conversationalActBindingId(hasher, profile.id, actId), profileId: profile.id,
+    observations, evidence: [evidence], hasher, updatedAt: 1 });
+  if (compiled.status !== "compiled") throw new Error(JSON.stringify(compiled));
+  const f = fixture([compiled.pattern], [evidence]);
+  const seed = await f.runtime.hydrateSurfaceLanguageMemoryCached(12, cluster, "seed", undefined, "", { purpose: "request_seed" });
+  expect(seed.patterns[0]!.patternJson).toHaveProperty("conversationalBindingId", compiled.bundle.bindingId);
+  expect(seed.patterns[0]!.patternJson).not.toHaveProperty("bundle");
+  expect(f.calls.evidence).toBe(0);
+  const before = f.calls.patterns.length;
+  expect(await f.runtime.conversationalConstructionBundles(seed.patterns, seed.state.scope, DIALOGUE_ACT_IDS.neutral)).toEqual([]);
+  expect(await f.runtime.conversationalConstructionBundles(seed.patterns, { ...seed.state.scope, profileIds: ["profile.foreign"] }, actId)).toEqual([]);
+  expect(f.calls.patterns).toHaveLength(before);
+  const bundles = await f.runtime.conversationalConstructionBundles(seed.patterns, seed.state.scope, actId);
+  expect(bundles).toHaveLength(1);
+  expect(f.calls.patterns.at(-1)).toMatchObject({ patternIds: [compiled.pattern.id], limit: 1 });
+  expect(await f.runtime.conversationalConstructionBundles(seed.patterns, { ...seed.state.scope, sourceVersionIds: ["version.foreign"] }, actId)).toEqual([]);
+  for (const invalid of [{ ...evidence, status: "quarantined" as const }, { ...evidence, text: evidence.text.replace("Luma", "Mira") }]) {
+    const broken = fixture([compiled.pattern], [invalid]);
+    expect(await broken.runtime.conversationalConstructionBundles(seed.patterns, seed.state.scope, actId)).toEqual([]);
+  }
+});
 
 it.each([
   { request: (name: string) => `Where is ${name} located?`, source: (name: string, value: string) => `${name} r9 ${value}.` },

@@ -1,0 +1,89 @@
+{
+  "generatedFromRevision": "bac281aa",
+  "authorship": "test_authored",
+  "sources": [
+    {
+      "schema": "scce.dialogue_transcript.v1",
+      "text": "?rba ?nuv?l ??; pl?n ?br?sa ??.\n\n?mbit: nuv?l ?.\nSeg?ent: br?sa ?; recorda nuv?l ?!",
+      "turns": [
+        {
+          "index": 0,
+          "speakerId": "a",
+          "surface": "?rba ?nuv?l ??; pl?n ?br?sa ??.",
+          "startCodePoint": 0,
+          "endCodePoint": 31
+        },
+        {
+          "index": 1,
+          "speakerId": "b",
+          "surface": "?mbit: nuv?l ?.\nSeg?ent: br?sa ?; recorda nuv?l ?!",
+          "startCodePoint": 33,
+          "endCodePoint": 83,
+          "replyToTurnIndex": 0,
+          "commitmentScope": "conversation"
+        }
+      ]
+    },
+    {
+      "schema": "scce.dialogue_transcript.v1",
+      "text": "?rba ??lber ??; pl?n ?roure ??.\n\n?mbit: ?lber ?.\nSeg?ent: roure ?; recorda ?lber ?!",
+      "turns": [
+        {
+          "index": 0,
+          "speakerId": "a",
+          "surface": "?rba ??lber ??; pl?n ?roure ??.",
+          "startCodePoint": 0,
+          "endCodePoint": 31
+        },
+        {
+          "index": 1,
+          "speakerId": "b",
+          "surface": "?mbit: ?lber ?.\nSeg?ent: roure ?; recorda ?lber ?!",
+          "startCodePoint": 33,
+          "endCodePoint": 83,
+          "replyToTurnIndex": 0,
+          "commitmentScope": "conversation"
+        }
+      ]
+    },
+    {
+      "schema": "scce.dialogue_transcript.v1",
+      "text": "?rba ?n?vol ??; pl?n ?pedra ??.\n\n?mbit: n?vol ?.\nSeg?ent: pedra ?; recorda n?vol ?!",
+      "turns": [
+        {
+          "index": 0,
+          "speakerId": "a",
+          "surface": "?rba ?n?vol ??; pl?n ?pedra ??.",
+          "startCodePoint": 0,
+          "endCodePoint": 31
+        },
+        {
+          "index": 1,
+          "speakerId": "b",
+          "surface": "?mbit: n?vol ?.\nSeg?ent: pedra ?; recorda n?vol ?!",
+          "startCodePoint": 33,
+          "endCodePoint": 83,
+          "replyToTurnIndex": 0,
+          "commitmentScope": "conversation"
+        }
+      ]
+    }
+  ],
+  "capturedInduction": {
+    "schema": "scce.conversational_construction_induction.v1",
+    "documentsRead": 3,
+    "spansRead": 3,
+    "spansSegmented": 3,
+    "adjacentPairs": 3,
+    "neutralPairs": 0,
+    "recurringFrames": 0,
+    "varyingFrames": 0,
+    "literalFormFloor": 0,
+    "bodiedFrames": 0,
+    "fillerDiversityFloor": 0,
+    "sourceFamilyFloor": 0,
+    "keptFrames": 0,
+    "observations": 0,
+    "sets": []
+  }
+}

@@ -4,7 +4,9 @@ import { estimateRetainedProgramBytes } from "./retained-program-size.js";
 import { traceEvent } from "./debug/trace.js";
 import { canonicalDigestHex, canonicalJsonByteLength } from "./canonical-json-digest.js";
 import { deriveClosedClassWords } from "./closed-class-words.js";
-import { requestConstructionCandidate, requestSeedLanguagePattern, requestSeedSemanticFrame, sourceConstructionCandidate } from "./request-language-hydration.js";
+import { conversationalConstructionBinding, requestConstructionCandidate, requestSeedLanguagePattern, requestSeedSemanticFrame, sourceConstructionCandidate } from "./request-language-hydration.js";
+import { conversationalActBindingId } from "./conversational-act-binding.js";
+import { DIALOGUE_ACT_IDS, type DialogueActId } from "./dialogue-pragmatics.js";
 import { CORPUS_SOURCE_SYSTEM_IDS, corpusSourceAlias, createCorpusRegistry, languageMemoryHydrationPlan, requestLanguageHydrationPlan, type CorpusRoleId } from "./corpus-registry.js";
 import { CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA, isCreativeEventCompatibilityPattern, creativeRequestSourcePrerequisites,
   compileCreativeRequestFrameFromCompatibilityModels } from "./creative-event-compatibility.js";
@@ -1318,6 +1320,36 @@ export function createSurfaceLanguageRuntime(options: {
   }
 
   /** Acquired request ports and their source interpreters load only after evidence admission. */
+  async function conversationalConstructionBundles(patternHeaders: readonly LanguagePatternRecord[], scope: LanguageMemoryRuntimeState["scope"], actId: DialogueActId): Promise<DurableLanguageConstructionBundle[]> {
+    if (scope.mode === "unscoped" || actId === DIALOGUE_ACT_IDS.neutral) return [];
+    if (durableLanguageRevision === undefined && deps.storage.languageMemory.readRevision) await synchronizeWithStorage();
+    const candidates = patternHeaders.filter(pattern => conversationalConstructionBinding(pattern) === conversationalActBindingId(hasher, pattern.profileId, actId));
+    const resolver = scope.mode === "language" && scope.languageId ? await options.languageResolver?.(candidates.map(pattern => pattern.profileId)) : undefined;
+    const headers = candidates.filter(pattern => scope.mode === "language" ? Boolean(resolver) && (() => {
+      const identity = resolver!.profile(pattern.profileId) ?? resolver!.corpus(kernelString(jsonRecord(pattern.patternJson).sourceSystem));
+      return identity === undefined || identity === scope.languageId;
+    })() : scope.profileIds.includes(pattern.profileId));
+    const patternIds = [...new Set(headers.map(pattern => pattern.id))].sort();
+    if (!patternIds.length) return [];
+    const key = `conversation${UNIT_SEPARATOR}${canonicalDigestHex({ actId, mode: scope.mode, languageId: scope.languageId ?? null,
+      profileIds: [...scope.profileIds].sort(), sourceVersionIds: [...scope.sourceVersionIds].sort(), patternIds }, hasher)}`;
+    const cached = sourceOwnedConstructionCache.get(key), resident = cached?.bundles.deref();
+    if (resident && clock.now() - cached!.loadedAt < surfaceLanguageMemoryCacheMs) return resident;
+    const generation = languageMemoryGeneration;
+    const patterns = (await deps.storage.languageMemory.listLanguagePatterns({ patternIds, limit: patternIds.length, maxTotalJsonBytes: 8 * 1024 * 1024 }))
+      .filter(pattern => headers.some(header => header.id === pattern.id && header.profileId === pattern.profileId)
+        && conversationalConstructionBinding(pattern) === conversationalActBindingId(hasher, pattern.profileId, actId));
+    const evidenceIds = [...new Set(patterns.filter(isLanguageConstructionPattern).flatMap(pattern => pattern.evidenceIds))];
+    const evidence = evidenceIds.length ? await deps.storage.evidence.getEvidenceBatch(evidenceIds) : [];
+    const memory = hydrateLanguageConstructionPatterns({ patterns, evidence, hasher });
+    const bundles = await constructionBundlesForScope(memory.bundles.filter(bundle => bundle.bindingId === conversationalActBindingId(hasher, bundle.targetProfileId, actId)
+      && bundle.sourceExamples.length > 0 && bundle.sourceExamples.every(example => example.antecedent)), scope);
+    if (generation === languageMemoryGeneration) boundedCacheSet(sourceOwnedConstructionCache, key,
+      { loadedAt: clock.now(), bundles: new WeakRef(bundles) }, surfaceCandidateProfileCacheMaxEntries);
+    return bundles;
+  }
+
+  /** Acquired request ports and their source interpreters load only after evidence admission. */
   async function requestConstructionBundles(patternHeaders: readonly LanguagePatternRecord[], scope: LanguageMemoryRuntimeState["scope"]): Promise<DurableLanguageConstructionBundle[]> {
     if (durableLanguageRevision === undefined && deps.storage.languageMemory.readRevision) await synchronizeWithStorage();
     if (scope.mode === "unscoped") return [];
@@ -1621,6 +1653,7 @@ export function createSurfaceLanguageRuntime(options: {
     evidenceOwnedLanguageProfilesCached,
     sourceOwnedConstructionsForEvidence,
     requestConstructionBundles,
+    conversationalConstructionBundles,
     constructionBundlesForScope,
     creativeSourceMemoryForRequest,
     evidenceOwnedLanguageClusterCached,

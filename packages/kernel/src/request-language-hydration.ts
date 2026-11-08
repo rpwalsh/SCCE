@@ -10,7 +10,7 @@ export const REQUEST_SEED_PATTERN_JSON_FIELDS = [
   "sourceSystem", "corpusRoleId", "languageId", "componentRecipe", "compilerRecipe", "sourceCompilationId", "contentDigest",
   "surface", "anchor", "matchMode", "semanticRoleId", "requirementCoefficients", "requirementTargets",
   "requirementTargetBounds", "responseForm", "responseExtent", "requestSpanRole", "structuralDelta",
-  "rules", "classBindings", "boundarySignals", "counts", "requestConstructionCandidate", "sourceConstructionCandidate"
+  "rules", "classBindings", "boundarySignals", "counts", "requestConstructionCandidate", "sourceConstructionCandidate", "conversationalBindingId"
 ] as const;
 
 export const REQUEST_SEED_FRAME_JSON_FIELDS = [
@@ -31,6 +31,17 @@ export function requestSeedSemanticFrame(frame: SemanticFrameRecord): SemanticFr
 
 function record(value: JsonValue | undefined): Record<string, JsonValue> {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+/** Opaque source-learned binding header; it carries no reply text or role fillers. */
+export function conversationalConstructionBinding(pattern: LanguagePatternRecord): string | undefined {
+  const row = record(pattern.patternJson);
+  if (row.schema !== LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA) return undefined;
+  if (typeof row.conversationalBindingId === "string") return row.conversationalBindingId;
+  const bundle = record(row.bundle);
+  return typeof bundle.bindingId === "string" && bundle.bindingId.startsWith("surface.conversational_act.binding.")
+    && Array.isArray(bundle.sourceExamples) && bundle.sourceExamples.some(example => typeof record(example).antecedent === "object")
+    ? bundle.bindingId : undefined;
 }
 
 /** Only explicit graph-port declarations select a later source program read. */
@@ -69,6 +80,8 @@ export function requestSeedLanguagePattern(pattern: LanguagePatternRecord): Lang
   const projected: Record<string, JsonValue> = {};
   for (const key of REQUEST_SEED_PATTERN_JSON_FIELDS) if (row[key] !== undefined) projected[key] = row[key]!;
   if (isLanguageConstructionPattern(pattern)) {
+    const conversationalBindingId = conversationalConstructionBinding(pattern);
+    if (conversationalBindingId) projected.conversationalBindingId = conversationalBindingId;
     projected.requestConstructionCandidate = requestConstructionCandidate(pattern);
     projected.sourceConstructionCandidate = sourceConstructionCandidate(pattern);
   } else if (row.schema === "scce.induced_language_model.syntax_memory.v1") {

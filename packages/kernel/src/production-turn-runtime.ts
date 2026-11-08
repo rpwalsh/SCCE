@@ -772,7 +772,7 @@ export function createProductionTurnRuntime(options: {
   } = graphRetrieval;
   const {
     evidenceOwnedLanguageClusterCached, hydrateSurfaceLanguageMemoryCached, requestSemanticFrames, warmSurfaceLanguageMemory,
-    sourceOwnedConstructionsForEvidence, requestConstructionBundles, constructionBundlesForScope,
+    sourceOwnedConstructionsForEvidence, requestConstructionBundles, conversationalConstructionBundles, constructionBundlesForScope,
     sourceOwnedLanguageClusterForAlias, sourceOwnedLanguageProfilesCached, surfaceLanguageClusterCached,
     surfaceLanguageProfilesCached, targetProfilePatternsCached, warmTargetProfilePatterns, uniqueRecordsById
   } = surfaceLanguageRuntime;
@@ -2407,6 +2407,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const acquiredRequestConstructionBundles = deps.evaluationCondition?.flags.disableLanguageMemory
         || !admissibleEvidence.some(span => span.status === "promoted") ? []
         : await requestConstructionBundles(authorityLanguage.patterns, authorityLanguage.state.scope);
+      const acquiredConversationalConstructionBundles = deps.evaluationCondition?.flags.disableLanguageMemory || requestAct.status !== "active"
+        ? [] : await conversationalConstructionBundles(authorityLanguage.patterns, authorityLanguage.state.scope, requestAct.actId);
       const rankedSupportEvidence = evidenceForRequest(input.text, admissibleEvidence.filter(span => span.status === "promoted"), metadataEvidenceIds, explicitContextEvidenceIds, semanticFrameBoundEvidenceIds, requestClosedClassWords());
       const requestValueBinding = resolveRequestValueBinding({
         requestText: input.text,
@@ -3190,7 +3192,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             ? evidenceOutputLanguage
             : authorityLanguage;
       const admittedSourcePrograms = surfaceLanguage === authorityLanguage
-        ? await constructionBundlesForScope([...acquiredRequestConstructionBundles, ...sourceOwnedConstructionBundles], authorityLanguage.state.scope) : [];
+        ? await constructionBundlesForScope([...acquiredRequestConstructionBundles, ...sourceOwnedConstructionBundles, ...acquiredConversationalConstructionBundles], authorityLanguage.state.scope) : [];
       if (admittedSourcePrograms.length) {
         const bundles = uniqueRecordsById([...surfaceLanguage.state.importedConstructionBundles, ...admittedSourcePrograms], 1024);
         surfaceLanguage = { ...surfaceLanguage, state: cloneLanguageMemoryRuntimeState(surfaceLanguage.state, {
