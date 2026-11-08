@@ -7,7 +7,7 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { writeJson } from "../lib/util.mjs";
+import { writeJson, sha256Text, stableStringify } from "../lib/util.mjs";
 
 async function runBaseline(device, sizeVram, options = {}) {
   const requests = [];
@@ -20,7 +20,9 @@ async function runBaseline(device, sizeVram, options = {}) {
     else if (req.url === "/api/tags" || req.url === "/api/ps") response = { models: [model] };
     else if (req.url === "/api/generate") {
       requests.push(JSON.parse(text));
-      response = { response: options.reply ?? "Aster", eval_count: 2, eval_duration: 1e9, load_duration: 3e9, total_duration: 4e9 };
+      res.statusCode = options.httpStatus ?? 200;
+      response = options.generationError ? { error: options.generationError }
+        : { response: options.reply ?? "Aster", eval_count: 2, eval_duration: 1e9, load_duration: 3e9, total_duration: 4e9, ...options.inference };
     }
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify(response));
@@ -31,17 +33,25 @@ async function runBaseline(device, sizeVram, options = {}) {
   try {
     dir = await mkdtemp(path.join(os.tmpdir(), "scce-ollama-test-"));
     const manifest = path.join(dir, "corpus.json");
+    const formatSchemaPath = path.join(dir, "response.schema.json");
+    if (options.formatSchema !== undefined) await writeJson(formatSchemaPath, options.formatSchema);
     if (options.text) await writeFile(path.join(dir, "document.txt"), options.text);
     await writeJson(manifest, { documents: options.text ? [{ documentId: "fixture", path: "document.txt" }] : [] });
     const adapter = fileURLToPath(new URL("../adapters/reference-ollama.mjs", import.meta.url));
-    const child = spawn(process.execPath, [adapter, `--corpus-manifest=${manifest}`, `--endpoint=http://127.0.0.1:${server.address().port}`, `--device=${device}`, "--threads=4", ...(options.answerStyle ? [`--answer-style=${options.answerStyle}`] : []), ...(options.mode ? [`--mode=${options.mode}`] : [])], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    const child = spawn(process.execPath, [adapter, `--corpus-manifest=${manifest}`, `--endpoint=http://127.0.0.1:${server.address().port}`, `--device=${device}`, "--threads=4", ...(options.answerStyle ? [`--answer-style=${options.answerStyle}`] : []), ...(options.mode ? [`--mode=${options.mode}`] : []), ...(options.formatSchema !== undefined ? [`--format-schema=${formatSchemaPath}`] : []), ...(options.argv ?? [])], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
     let stdout = "", stderr = "";
     child.stdout.on("data", data => stdout += data);
     child.stderr.on("data", data => stderr += data);
-    child.stdin.end(JSON.stringify({ questionId: "q", prompt: options.prompt ?? "Choose." }) + "\n");
+    child.stdin.end(JSON.stringify({ questionId: "q", prompt: options.prompt ?? "Choose.", ...options.question }) + "\n");
     const [code] = await once(child, "close");
+    if (options.startupError) {
+      assert.notEqual(code, 0);
+      assert.match(stderr, options.startupError);
+      assert.equal(requests.length, 0);
+      return;
+    }
     assert.equal(code, 0, stderr);
-    return { answer: JSON.parse(stdout), request: requests[0] };
+    return { answer: JSON.parse(stdout), request: requests[0], requests };
   } finally {
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
@@ -59,6 +69,84 @@ test("CPU requests explicitly disable GPU and preserve model, decoding and timin
   assert.equal(answer.metadata.digest, "test-digest");
   assert.equal(answer.metadata.residency.observedDevice, "cpu");
   assert.equal(answer.metadata.inference.eval_count, 2);
+});
+
+test("plain replies omit structured format and disable input truncation and context shifting", async () => {
+  const { answer, request } = await runBaseline("cpu", 0);
+  assert.equal(Object.hasOwn(request, "format"), false);
+  assert.equal(request.truncate, false);
+  assert.equal(request.shift, false);
+  assert.equal(answer.metadata.outputFormat, "text");
+});
+
+test("explicit JSON mode forwards the native format without cleaning the model reply", async () => {
+  const reply = '```json\n{"answer":"Aster"}\n```';
+  for (const options of [{ argv: ["--format=json"] }, { question: { format: "json" } }]) {
+    const { answer, request } = await runBaseline("cpu", 0, { ...options, reply });
+    assert.equal(request.format, "json");
+    assert.equal(answer.answer, reply);
+    assert.equal(answer.metadata.outputFormat, "json");
+  }
+});
+
+test("schema-file and per-question formats preserve the exact schema and record its identity", async () => {
+  const schema = { type: "object", required: ["answer", "artifacts"], additionalProperties: false,
+    properties: { answer: { type: "string" }, artifacts: { type: "object", additionalProperties: { type: "string" } } } };
+  const reply = '{"answer":"字","artifacts":{"src/main.ts":"return 1;\\n"}}';
+  for (const options of [{ formatSchema: schema }, { question: { format: schema } }]) {
+    const { answer, request } = await runBaseline("cpu", 0, { ...options, reply });
+    assert.deepEqual(request.format, schema);
+    assert.equal(answer.answer, reply);
+    assert.equal(answer.metadata.outputFormat, "json_schema");
+    assert.equal(answer.metadata.outputSchemaSha256, sha256Text(stableStringify(schema)));
+  }
+});
+
+test("invalid and conflicting format declarations fail before generation", async () => {
+  for (const options of [
+    { argv: ["--format=xml"] },
+    { formatSchema: "json" },
+    { formatSchema: null },
+    { formatSchema: [], argv: [] },
+    { formatSchema: {}, argv: ["--format=json"] }
+  ]) await runBaseline("cpu", 0, { ...options, startupError: /format/u });
+  for (const format of [null, false, [], "xml"]) {
+    const { answer, requests } = await runBaseline("cpu", 0, { question: { format } });
+    assert.equal(answer.status, "error");
+    assert.match(answer.metadata.error, /format/u);
+    assert.equal(requests.length, 0);
+  }
+  const { answer, requests } = await runBaseline("cpu", 0, { argv: ["--format=json"], question: { format: {} } });
+  assert.equal(answer.status, "error");
+  assert.match(answer.metadata.error, /format/u);
+  assert.equal(requests.length, 0);
+});
+
+test("a reported output limit remains a failed generation with raw response and timing evidence", async () => {
+  const reply = '{"answer":"unfinished';
+  const { answer } = await runBaseline("cpu", 0, { reply, inference: { done: true, done_reason: "length" } });
+  assert.equal(answer.status, "error");
+  assert.equal(answer.answer, "");
+  assert.match(answer.metadata.error, /output.*limit/u);
+  assert.equal(answer.metadata.inference.done_reason, "length");
+  assert.equal(answer.metadata.rawReply, reply);
+});
+
+test("unsupported native options and context overflow remain visible errors without downgrade or retry", async () => {
+  for (const options of [
+    { httpStatus: 400, generationError: "unsupported format" },
+    { httpStatus: 500, generationError: "input length exceeds context length" },
+    { generationError: "context limit reached" }
+  ]) {
+    const { answer, requests } = await runBaseline("cpu", 0, { ...options, question: { format: "json" } });
+    assert.equal(answer.status, "error");
+    assert.equal(answer.answer, "");
+    assert.ok(answer.metadata.error.includes(options.generationError));
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].format, "json");
+    assert.equal(requests[0].truncate, false);
+    assert.equal(requests[0].shift, false);
+  }
 });
 
 test("a requested GPU condition cannot silently count CPU fallback as GPU work", async () => {

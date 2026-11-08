@@ -22,7 +22,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { availableParallelism } from "node:os";
-import { argsMap, readJson, sha256Bytes } from "../lib/util.mjs";
+import { argsMap, readJson, sha256Bytes, sha256Text, stableStringify } from "../lib/util.mjs";
 
 const args = argsMap();
 const manifestPath = args.get("corpus-manifest") ?? process.env.SCCE_EVAL_CORPUS_MANIFEST;
@@ -31,6 +31,10 @@ const mode = args.get("mode") ?? "rag";
 if (mode !== "rag" && mode !== "closed_book") throw new Error(`unsupported mode: ${mode}`);
 const answerStyle = args.get("answer-style") ?? "extractive";
 if (!["extractive", "natural"].includes(answerStyle)) throw new Error(`unsupported answer style: ${answerStyle}`);
+if (args.has("format") && args.has("format-schema")) throw new Error("Conflicting --format and --format-schema");
+const declaredFormat = args.has("format-schema") ? validateFormat(await readJson(args.get("format-schema")))
+  : args.has("format") ? validateFormat(args.get("format")) : undefined;
+if (args.has("format-schema") && declaredFormat === "json") throw new Error("--format-schema requires a JSON schema object");
 const model = args.get("model") ?? process.env.SCCE_EVAL_OLLAMA_MODEL ?? "qwen2.5:3b";
 const endpoint = args.get("endpoint") ?? process.env.SCCE_EVAL_OLLAMA_URL ?? "http://127.0.0.1:11434";
 if (!["127.0.0.1", "localhost", "[::1]"].includes(new URL(endpoint).hostname)) throw new Error("The local baseline requires a loopback Ollama endpoint");
@@ -56,7 +60,8 @@ if (!modelIdentity?.digest) throw new Error(`Requested model is not installed lo
 const runtimeMetadata = {
   baseline: `ollama-${mode}`, model, digest: modelIdentity.digest, details: modelIdentity.details,
   ollamaVersion: version.version, requestedDevice: device, options, keepAlive, endpoint, answerStyle,
-  citationSelection: answerStyle === "natural" ? "model-referenced-context" : "retrieved-context"
+  citationSelection: answerStyle === "natural" ? "model-referenced-context" : "retrieved-context",
+  contextPolicy: { truncate: false, shift: false }
 };
 
 const manifest = await readJson(manifestPath);
@@ -97,9 +102,13 @@ const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
 for await (const line of rl) {
   if (!line.trim()) continue;
   const question = JSON.parse(line);
+  let requestMetadata = { ...runtimeMetadata, ...formatMetadata(declaredFormat) };
   try {
+    if (Object.hasOwn(question, "format") && declaredFormat !== undefined) throw new Error("Conflicting question.format and declared format");
+    const format = Object.hasOwn(question, "format") ? validateFormat(question.format) : declaredFormat;
+    requestMetadata = { ...runtimeMetadata, ...formatMetadata(format) };
     const retrieved = mode === "rag" ? retrieve(question.prompt) : [];
-    const generated = await ask(question.prompt, retrieved);
+    const generated = await ask(question.prompt, retrieved, format);
     const answer = generated.answer;
     // The model's own refusal, recognised structurally: a reply whose entire content is a declination. Nothing else
     // in the reply is interpreted, and a declination buried inside an answer is still an answer.
@@ -112,14 +121,15 @@ for await (const line of rl) {
       status: declined ? "abstained" : "ok",
       answer: declined ? "" : answer,
       citations: declined ? [] : cited.map(row => row.citation),
-      metadata: { ...runtimeMetadata, passages: retrieved.length, rawReply: answer.slice(0, 400), inference: generated.inference, residency: generated.residency }
+      metadata: { ...requestMetadata, passages: retrieved.length, rawReply: answer.slice(0, 400), inference: generated.inference, residency: generated.residency }
     })}\n`);
   } catch (error) {
     process.stdout.write(`${JSON.stringify({
       status: "error",
       answer: "",
       citations: [],
-      metadata: { ...runtimeMetadata, error: String(error && error.message ? error.message : error).slice(0, 300) }
+      metadata: { ...requestMetadata, error: String(error && error.message ? error.message : error).slice(0, 300),
+        ...(error.inference ? { inference: error.inference, rawReply: error.rawReply } : {}) }
     })}\n`);
   }
 }
@@ -181,7 +191,7 @@ function retrieve(prompt) {
     });
 }
 
-async function ask(prompt, retrieved) {
+async function ask(prompt, retrieved, format) {
   const material = retrieved.length
     ? `Material:\n${retrieved.map((row, index) => `[${index + 1}] ${row.passage}`).join("\n\n")}\n\n`
     : "";
@@ -195,14 +205,25 @@ async function ask(prompt, retrieved) {
         model,
         prompt: `${INSTRUCTIONS}\n\n${material}Question: ${prompt}\nAnswer:`,
         stream: false,
+        ...(format === undefined ? {} : { format }),
+        truncate: false,
+        shift: false,
         keep_alive: keepAlive,
         // Deterministic decoding: a reference system that answers differently on a re-run cannot be re-measured.
         options
       }),
       signal: controller.signal
     });
-    if (!response.ok) throw new Error(`ollama ${response.status}`);
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error(`ollama ${response.status}: ${detail.slice(0, 200)}`);
+    }
     const body = await response.json();
+    if (body.error) throw new Error(`ollama generation error: ${body.error}`);
+    const inference = Object.fromEntries(["total_duration", "load_duration", "prompt_eval_count", "prompt_eval_duration", "eval_count", "eval_duration", "done_reason"].map(key => [key, body[key] ?? null]));
+    if (body.done_reason === "length") {
+      throw Object.assign(new Error("Ollama output token limit reached"), { inference, rawReply: String(body.response ?? "") });
+    }
     const running = await ollamaJson("/api/ps");
     const residency = running.models?.find(row => row.name === model || row.model === model);
     if (!residency || residency.digest !== modelIdentity.digest) throw new Error("Running model identity does not match the pinned local model");
@@ -211,12 +232,22 @@ async function ask(prompt, retrieved) {
     if (device === "gpu" && residency.size_vram <= 0) throw new Error("GPU condition fell back to CPU");
     return {
       answer: String(body.response ?? "").trim(),
-      inference: Object.fromEntries(["total_duration", "load_duration", "prompt_eval_count", "prompt_eval_duration", "eval_count", "eval_duration", "done_reason"].map(key => [key, body[key] ?? null])),
+      inference,
       residency: { digest: residency.digest, size: residency.size, size_vram: residency.size_vram, context_length: residency.context_length, observedDevice: residency.size_vram > 0 ? "gpu-or-mixed" : "cpu" }
     };
   } finally {
     clearTimeout(timer);
   }
+}
+
+function validateFormat(value) {
+  if (value === "json" || value && typeof value === "object" && !Array.isArray(value)) return value;
+  throw new Error("Invalid format: expected json or a JSON schema object");
+}
+
+function formatMetadata(format) {
+  return format === undefined ? { outputFormat: "text" } : format === "json" ? { outputFormat: "json" }
+    : { outputFormat: "json_schema", outputSchemaSha256: sha256Text(stableStringify(format)) };
 }
 
 async function ollamaJson(route) {
