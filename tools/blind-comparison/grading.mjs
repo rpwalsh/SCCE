@@ -105,7 +105,9 @@ export async function grade(options) {
       }
     } else {
       for (const r of receipts) {
-        try { details.push(row.grading === 'semantic' ? semanticCheck(row.private.expected, r.outputs) : await nativeCheck(row, packet, r, options, bundle.plan.budgets)); }
+        try { details.push(r.outputs.some(o => o.identity?.productOutcome === 'failed')
+          ? { pass: false, reason: 'product-failed', productReasons: r.outputs.filter(o => o.identity?.productOutcome === 'failed').map(o => o.identity.reason ?? null) }
+          : row.grading === 'semantic' ? semanticCheck(row.private.expected, r.outputs) : await nativeCheck(row, packet, r, options, bundle.plan.budgets)); }
         catch (e) { details.push({ pass: false, infrastructureError: true, reason: e.message }); }
       }
       outcome = details.some(v => v.infrastructureError) ? 'errors' : details[0].pass === details[1].pass ? 'ties' : details[0].pass ? 'wins' : 'losses';
