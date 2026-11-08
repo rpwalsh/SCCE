@@ -485,6 +485,7 @@ function integrationStorage(input: {
   const graph = { bounded: true, query: {}, nodes: [], edges: [], hyperedges: [] } as any;
   const emptyStore = new Proxy({}, { get: () => async () => undefined });
   const storage = {
+    transaction: async <T>(operation: () => Promise<T>): Promise<T> => operation(),
     events: {
       append: async (event: ScceEvent) => { input.events.push(event); },
       appendBatch: async (events: ScceEvent[]) => { input.events.push(...events); },
