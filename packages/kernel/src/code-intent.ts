@@ -3,6 +3,7 @@
 import { codeIdentifierTokens, codeSurfaceTokens } from "./code-surface.js";
 import { codeLanguageForPath, type CodeRequestSignal } from "./code-request.js";
 import { canonicalStringify, createHasher, toJsonValue } from "./primitives.js";
+import { ownedNativeCallableAbi } from "./program-native-abi.js";
 import type { EvidenceSpan, JsonValue, ProgramBehaviorRequirement, ProgramStatefulBehaviorRequirement } from "./types.js";
 
 /**
@@ -156,6 +157,8 @@ export function sourceOwnedProgramBehaviorFromDocumentation(input: {
       if (row.targetSymbolId !== body.targetSymbolId || !Array.isArray(row.arguments) || !isJsonValue(row.expectedResult)
         || typeof row.testPath !== "string" || !row.testPath || typeof row.testSourceVersionId !== "string" || typeof row.testHash !== "string" || !validContentHash(row.testHash)
         || !validSpan(row.inputSpan) || !validSpan(row.expectedSpan) || !validSpan(row.assertionSpan)) continue;
+      if (row.nativeAbi !== undefined && !ownedNativeCallableAbi(row.nativeAbi, { targetSymbolId: body.targetSymbolId, callableName: body.targetName,
+        sourcePath: body.sourcePath, sourceHash: body.sourceHash, sourceVersionId: body.sourceVersionId, languageId: String(body.formalLanguage) })) return empty;
       cases.push({ ...row, sourceHash: body.sourceHash, sourcePath: body.sourcePath, sourceVersionId: body.sourceVersionId,
         targetName: body.targetName, targetSymbolId: body.targetSymbolId, repositoryFamily: body.repositoryFamily });
     }
@@ -192,6 +195,8 @@ export function sourceOwnedProgramBehaviorFromDocumentation(input: {
     relationSurface: "source-owned-assertion",
     sourceSpan: requestSpan,
     sourceContract: {
+      ...(row.nativeAbi !== undefined ? { nativeAbi: ownedNativeCallableAbi(row.nativeAbi, { targetSymbolId, callableName: sourceTargetName,
+        sourcePath, sourceVersionId, sourceHash: String(row.sourceHash), languageId: input.intent.languageId ?? "" })! } : {}),
       targetSymbolId, sourcePath, sourceVersionId,
       sourceHash: String(row.sourceHash), testPath: String(row.testPath),
       testSourceVersionId: String(row.testSourceVersionId), testHash: String(row.testHash),
@@ -200,13 +205,15 @@ export function sourceOwnedProgramBehaviorFromDocumentation(input: {
       assertionSpan: row.assertionSpan as unknown as NonNullable<ProgramBehaviorRequirement["sourceContract"]>["assertionSpan"]
     }
   }));
-  return sourceOwnedStatefulRequirements({ ordered, behaviorRequirements, references, family, sourcePath, sourceVersionId, targetSymbolId, sourceTargetName, ownerCallableIds });
+  return sourceOwnedStatefulRequirements({ ordered, behaviorRequirements, references, family, sourcePath, sourceVersionId, targetSymbolId, sourceTargetName, ownerCallableIds,
+    languageId: input.intent.languageId ?? "" });
 }
 
 function sourceOwnedStatefulRequirements(input: {
   ordered: Array<Record<string, JsonValue>>; behaviorRequirements: ProgramBehaviorRequirement[];
   references: ReadonlySet<string>; family: string; sourcePath: string; sourceVersionId: string;
   targetSymbolId: string; sourceTargetName: string; ownerCallableIds: readonly string[];
+  languageId: string;
 }): ReturnType<typeof sourceOwnedProgramBehaviorFromDocumentation> {
   const { ordered, behaviorRequirements, references, family, sourcePath, sourceVersionId, targetSymbolId, sourceTargetName, ownerCallableIds } = input;
   const empty = { behaviorRequirements: [], statefulBehaviorRequirements: [] };
@@ -227,11 +234,16 @@ function sourceOwnedStatefulRequirements(input: {
         || !references.has(`${family}\u0000${invocation.sourcePath}\u0000${invocation.sourceHash}`)
         || !Array.isArray(invocation.arguments) || !validSpan(invocation.inputSpan) || !validSpan(invocation.callSpan)) return empty;
       if (invocation.sourcePath === sourcePath && (invocation.sourceVersionId !== sourceVersionId || invocation.sourceHash !== row.sourceHash)) return empty;
+      const nativeAbi = invocation.nativeAbi === undefined ? undefined : ownedNativeCallableAbi(invocation.nativeAbi, {
+        targetSymbolId: invocation.targetSymbolId, callableName: invocation.targetName, sourcePath: invocation.sourcePath,
+        sourceVersionId: invocation.sourceVersionId, sourceHash: invocation.sourceHash, languageId: input.languageId });
+      if (invocation.nativeAbi !== undefined && !nativeAbi) return empty;
       const callSpan = objectRecord(invocation.callSpan), inputSpan = objectRecord(invocation.inputSpan);
       if (Number(callSpan.start) < previousEnd || Number(inputSpan.start) < Number(callSpan.start) || Number(inputSpan.end) > Number(callSpan.end)) return empty;
       previousEnd = Number(callSpan.end);
       invocations.push({ callableId: invocation.targetName, arguments: invocation.arguments as JsonValue[], sourceSpan: behaviorRequirements[index]!.sourceSpan });
       bindings.push({ targetSymbolId: invocation.targetSymbolId, targetName: invocation.targetName,
+        ...(nativeAbi ? { nativeAbi } : {}),
         sourcePath: invocation.sourcePath, sourceVersionId: invocation.sourceVersionId, sourceHash: invocation.sourceHash,
         inputSpan: invocation.inputSpan as unknown as NonNullable<ProgramBehaviorRequirement["sourceContract"]>["inputSpan"],
         callSpan: invocation.callSpan as unknown as NonNullable<ProgramBehaviorRequirement["sourceContract"]>["assertionSpan"] });

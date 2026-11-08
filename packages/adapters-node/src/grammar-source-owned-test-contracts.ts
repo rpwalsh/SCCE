@@ -5,11 +5,12 @@ import path from "node:path";
 import type Parser from "web-tree-sitter";
 import { withRepositorySyntaxTree } from "./tree-sitter-syntax.js";
 import type { SourceOwnedInvocation, SourceOwnedTestCase } from "./source-owned-test-contracts.js";
+import { nativeCallableAbiId, nativeTypeEvidenceId, type ProgramNativeCallableAbi, type ProgramNativeTypeEvidence } from "@scce/kernel";
 
 type Node = Parser.SyntaxNode;
 type Language = "python" | "go" | "rust";
 export interface GrammarContractFile { path: string; text: string; languageId: Language; sourceHash: string; sourceVersionId: string }
-interface Declaration { name: string; start: number; end: number }
+interface Declaration { name: string; start: number; end: number; nativeSignature?: Pick<ProgramNativeCallableAbi, "parameters" | "returnType" | "signatureSpan" | "signatureText" | "declarationSpan" | "packageName"> }
 interface Call { name: string; arguments: unknown[]; start: number; end: number; inputStart: number; inputEnd: number }
 interface Step { call: Call; assertion?: { expected: unknown; start: number; end: number; assertionStart: number; assertionEnd: number } }
 interface RustScope { root: boolean; imports: Array<{ local: string; name: string }>; localNames: Set<string> }
@@ -58,9 +59,12 @@ export async function grammarSourceOwnedTestCases(files: readonly GrammarContrac
     for (const { step, owner, declaration } of bound) {
       stateful ||= !step.assertion;
       const targetSymbolId = symbolId(owner.file, declaration);
+      const nativeAbi = declaration.nativeSignature && (owner.file.languageId === "go" || owner.file.languageId === "rust")
+        ? nativeAbiFor(owner.file, declaration, targetSymbolId) : undefined;
       const invocation: SourceOwnedInvocation = { targetSymbolId, targetName: declaration.name, sourcePath: owner.file.path,
         sourceHash: owner.file.sourceHash, sourceVersionId: owner.file.sourceVersionId, arguments: step.call.arguments,
-        inputSpan: span(item.file.text, step.call.inputStart, step.call.inputEnd), callSpan: span(item.file.text, step.call.start, step.call.end) };
+        inputSpan: span(item.file.text, step.call.inputStart, step.call.inputEnd), callSpan: span(item.file.text, step.call.start, step.call.end),
+        ...(nativeAbi ? { nativeAbi } : {}) };
       invocations.push(invocation);
       if (!step.assertion) continue;
       out.push({ ...invocation, languageId: owner.file.languageId, bindingResolverId: "scce.source_contract.grammar_static_scope.v1", testPath: item.file.path, testHash: item.file.sourceHash,
@@ -75,6 +79,34 @@ export async function grammarSourceOwnedTestCases(files: readonly GrammarContrac
 
 function symbolId(file: GrammarContractFile, declaration: Declaration): string {
   return `source.symbol.${createHash("sha256").update(JSON.stringify([file.languageId, file.path, file.sourceHash, declaration.start, declaration.end])).digest("hex")}`;
+}
+
+function nativeAbiFor(file: GrammarContractFile, declaration: Declaration, targetSymbolId: string): ProgramNativeCallableAbi | undefined {
+  if (!declaration.nativeSignature || file.languageId !== "go" && file.languageId !== "rust") return undefined;
+  const content: Omit<ProgramNativeCallableAbi, "id"> = { schema: "scce.program.native_callable_abi.v1", languageId: file.languageId,
+    callableName: declaration.name, owner: { targetSymbolId, sourcePath: file.path, sourceHash: file.sourceHash, sourceVersionId: file.sourceVersionId },
+    ...declaration.nativeSignature };
+  return { ...content, id: nativeCallableAbiId(content) };
+}
+
+function nativeSignature(file: GrammarContractFile, node: Node, packageName?: string): Declaration["nativeSignature"] {
+  if (file.languageId !== "go" && file.languageId !== "rust" || node.childForFieldName("type_parameters")) return undefined;
+  const body = node.childForFieldName("body"), params = node.childForFieldName("parameters");
+  if (!body || !params) return undefined;
+  const evidence = (type: Node): ProgramNativeTypeEvidence => ({ id: nativeTypeEvidenceId(file.languageId, type.type, type.text),
+    nodeKind: type.type, text: type.text, span: span(file.text, type.startIndex, type.endIndex) });
+  const parameters: Array<ProgramNativeCallableAbi["parameters"][number]> = [];
+  for (const parameter of params.namedChildren) {
+    const name = parameter.childForFieldName(file.languageId === "go" ? "name" : "pattern"), type = parameter.childForFieldName("type");
+    if (!name || name.type !== "identifier" || !type || !["parameter", "parameter_declaration"].includes(parameter.type)
+      || parameter.namedChildren.filter(child => child.id !== type.id).length !== 1) return undefined;
+    parameters.push({ name: name.text, type: evidence(type) });
+  }
+  const result = node.childForFieldName(file.languageId === "go" ? "result" : "return_type");
+  return { parameters, ...(result ? { returnType: evidence(result) } : {}),
+    ...(file.languageId === "go" && packageName ? { packageName } : {}),
+    signatureText: file.text.slice(node.startIndex, body.startIndex), signatureSpan: span(file.text, node.startIndex, body.startIndex),
+    declarationSpan: span(file.text, node.startIndex, node.endIndex) };
 }
 
 function resolve(item: Parsed, name: string, files: readonly Parsed[], rustScope?: RustScope): { owner: Parsed; declaration: Declaration } | undefined {
@@ -130,7 +162,8 @@ function parseFile(file: GrammarContractFile, root: Node): Parsed | undefined {
   if (file.languageId === "python" && descendants(root).some(node => node.type === "wildcard_import")) return item;
   const functionType = file.languageId === "python" ? "function_definition" : file.languageId === "go" ? "function_declaration" : "function_item";
   for (const node of root.namedChildren) {
-    if (node.type === functionType) { const name = node.childForFieldName("name"); if (name) { bind(name.text); item.declarations.push({ name: name.text, start: node.startIndex, end: node.endIndex }); } }
+    if (node.type === functionType) { const name = node.childForFieldName("name"); if (name) { bind(name.text); item.declarations.push({ name: name.text, start: node.startIndex, end: node.endIndex,
+      nativeSignature: nativeSignature(file, node, item.packageName) }); } }
     if (node.type === "package_clause") item.packageName = node.namedChildren[0]?.text;
     if (file.languageId === "rust" && ["const_item", "static_item", "struct_item", "enum_item", "type_item"].includes(node.type)) {
       const name = node.childForFieldName("name"); if (name) bind(name.text);

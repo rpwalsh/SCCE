@@ -1,0 +1,428 @@
+{
+  "compilerCommit": "459314ab",
+  "authorship": "test_authored",
+  "sourceUriBase": "scce://native-abi-upgrade",
+  "files": {
+    "go.mod": "module example.org/opaque\n\ngo 1.20\n",
+    "provider.go": "package opaque\n// Keep public key values across ordered invocations.\nvar state = map[string]int{}\nfunc f0(key string, value int) { state[key] = value }\nfunc f1(key string) int { return state[key] }\n",
+    "provider_test.go": "package opaque\nimport \"testing\"\nfunc TestSequence(t *testing.T) {\n f0(\"a\", 111)\n if f1(\"a\") != 111 { t.Fatal(\"case\") }\n f0(\"a\", 222)\n if f1(\"a\") != 222 { t.Fatal(\"case\") }\n}\n"
+  },
+  "cases": [
+    {
+      "targetSymbolId": "source.symbol.8714e573b476390d488b45d65487eb9f67cc3202e24c3a966808a73b15b07bc9",
+      "targetName": "f1",
+      "sourcePath": "provider.go",
+      "sourceHash": "sha256_22dcaabf199ffab4a84f288c1ee7f64823f883327daf18c25d8ca338b614c85b",
+      "sourceVersionId": "source_version_8c9755a7828a655ec1897e2dccae5c221ce8908e601979fc7f81ad3c",
+      "arguments": [
+        "a"
+      ],
+      "inputSpan": {
+        "start": 87,
+        "end": 90,
+        "textHash": "sha256:ac8d8342bbb2362d13f0a559a3621bb407011368895164b628a54f7fc33fc43c"
+      },
+      "callSpan": {
+        "start": 84,
+        "end": 91,
+        "textHash": "sha256:b26d2b3abc24be6b6f34dd79a08c13417fb383df3ef7ebcac8dfc12076a44c0d"
+      },
+      "languageId": "go",
+      "bindingResolverId": "scce.source_contract.grammar_static_scope.v1",
+      "testPath": "provider_test.go",
+      "testHash": "sha256_a55dc12a5bc0c57913b677f4bd54c19099f2c7e263890254e18d016a57927ea5",
+      "testSourceVersionId": "source_version_36a27812e353f1a76b1b3825f17976255f6b6942ea8d47b99e56691a",
+      "expectedResult": 111,
+      "invocations": [
+        {
+          "targetSymbolId": "source.symbol.94be1ad9e0d088e1cc162f7dfd48a9390066b7a3e5d59056783a147291966c99",
+          "targetName": "f0",
+          "sourcePath": "provider.go",
+          "sourceHash": "sha256_22dcaabf199ffab4a84f288c1ee7f64823f883327daf18c25d8ca338b614c85b",
+          "sourceVersionId": "source_version_8c9755a7828a655ec1897e2dccae5c221ce8908e601979fc7f81ad3c",
+          "arguments": [
+            "a",
+            111
+          ],
+          "inputSpan": {
+            "start": 70,
+            "end": 78,
+            "textHash": "sha256:cca570a1b10ed0306043e015ffcac017b0dd3cb49f7dfe7a467196f79ac43119"
+          },
+          "callSpan": {
+            "start": 67,
+            "end": 79,
+            "textHash": "sha256:ce6b99304cafe56879f767ea847c01a8f6d29c5b96de1f1377012ea933c5da3c"
+          }
+        },
+        {
+          "targetSymbolId": "source.symbol.8714e573b476390d488b45d65487eb9f67cc3202e24c3a966808a73b15b07bc9",
+          "targetName": "f1",
+          "sourcePath": "provider.go",
+          "sourceHash": "sha256_22dcaabf199ffab4a84f288c1ee7f64823f883327daf18c25d8ca338b614c85b",
+          "sourceVersionId": "source_version_8c9755a7828a655ec1897e2dccae5c221ce8908e601979fc7f81ad3c",
+          "arguments": [
+            "a"
+          ],
+          "inputSpan": {
+            "start": 87,
+            "end": 90,
+            "textHash": "sha256:ac8d8342bbb2362d13f0a559a3621bb407011368895164b628a54f7fc33fc43c"
+          },
+          "callSpan": {
+            "start": 84,
+            "end": 91,
+            "textHash": "sha256:b26d2b3abc24be6b6f34dd79a08c13417fb383df3ef7ebcac8dfc12076a44c0d"
+          }
+        }
+      ],
+      "expectedSpan": {
+        "start": 95,
+        "end": 98,
+        "textHash": "sha256:f6e0a1e2ac41945a9aa7ff8a8aaa0cebc12a3bcc981a929ad5cf810a090e11ae"
+      },
+      "assertionSpan": {
+        "start": 81,
+        "end": 118,
+        "textHash": "sha256:4afcbc2fb74822ec0c0723af72c287df7e6222ebbebdff6aaec89f14a88f666e"
+      }
+    },
+    {
+      "targetSymbolId": "source.symbol.8714e573b476390d488b45d65487eb9f67cc3202e24c3a966808a73b15b07bc9",
+      "targetName": "f1",
+      "sourcePath": "provider.go",
+      "sourceHash": "sha256_22dcaabf199ffab4a84f288c1ee7f64823f883327daf18c25d8ca338b614c85b",
+      "sourceVersionId": "source_version_8c9755a7828a655ec1897e2dccae5c221ce8908e601979fc7f81ad3c",
+      "arguments": [
+        "a"
+      ],
+      "inputSpan": {
+        "start": 140,
+        "end": 143,
+        "textHash": "sha256:ac8d8342bbb2362d13f0a559a3621bb407011368895164b628a54f7fc33fc43c"
+      },
+      "callSpan": {
+        "start": 137,
+        "end": 144,
+        "textHash": "sha256:b26d2b3abc24be6b6f34dd79a08c13417fb383df3ef7ebcac8dfc12076a44c0d"
+      },
+      "languageId": "go",
+      "bindingResolverId": "scce.source_contract.grammar_static_scope.v1",
+      "testPath": "provider_test.go",
+      "testHash": "sha256_a55dc12a5bc0c57913b677f4bd54c19099f2c7e263890254e18d016a57927ea5",
+      "testSourceVersionId": "source_version_36a27812e353f1a76b1b3825f17976255f6b6942ea8d47b99e56691a",
+      "expectedResult": 222,
+      "invocations": [
+        {
+          "targetSymbolId": "source.symbol.94be1ad9e0d088e1cc162f7dfd48a9390066b7a3e5d59056783a147291966c99",
+          "targetName": "f0",
+          "sourcePath": "provider.go",
+          "sourceHash": "sha256_22dcaabf199ffab4a84f288c1ee7f64823f883327daf18c25d8ca338b614c85b",
+          "sourceVersionId": "source_version_8c9755a7828a655ec1897e2dccae5c221ce8908e601979fc7f81ad3c",
+          "arguments": [
+            "a",
+            111
+          ],
+          "inputSpan": {
+            "start": 70,
+            "end": 78,
+            "textHash": "sha256:cca570a1b10ed0306043e015ffcac017b0dd3cb49f7dfe7a467196f79ac43119"
+          },
+          "callSpan": {
+            "start": 67,
+            "end": 79,
+            "textHash": "sha256:ce6b99304cafe56879f767ea847c01a8f6d29c5b96de1f1377012ea933c5da3c"
+          }
+        },
+        {
+          "targetSymbolId": "source.symbol.8714e573b476390d488b45d65487eb9f67cc3202e24c3a966808a73b15b07bc9",
+          "targetName": "f1",
+          "sourcePath": "provider.go",
+          "sourceHash": "sha256_22dcaabf199ffab4a84f288c1ee7f64823f883327daf18c25d8ca338b614c85b",
+          "sourceVersionId": "source_version_8c9755a7828a655ec1897e2dccae5c221ce8908e601979fc7f81ad3c",
+          "arguments": [
+            "a"
+          ],
+          "inputSpan": {
+            "start": 87,
+            "end": 90,
+            "textHash": "sha256:ac8d8342bbb2362d13f0a559a3621bb407011368895164b628a54f7fc33fc43c"
+          },
+          "callSpan": {
+            "start": 84,
+            "end": 91,
+            "textHash": "sha256:b26d2b3abc24be6b6f34dd79a08c13417fb383df3ef7ebcac8dfc12076a44c0d"
+          }
+        },
+        {
+          "targetSymbolId": "source.symbol.94be1ad9e0d088e1cc162f7dfd48a9390066b7a3e5d59056783a147291966c99",
+          "targetName": "f0",
+          "sourcePath": "provider.go",
+          "sourceHash": "sha256_22dcaabf199ffab4a84f288c1ee7f64823f883327daf18c25d8ca338b614c85b",
+          "sourceVersionId": "source_version_8c9755a7828a655ec1897e2dccae5c221ce8908e601979fc7f81ad3c",
+          "arguments": [
+            "a",
+            222
+          ],
+          "inputSpan": {
+            "start": 123,
+            "end": 131,
+            "textHash": "sha256:9330f6b76348fe85a202d175bed7bfc282a29e70db262bfa1f8675e0346ff5d1"
+          },
+          "callSpan": {
+            "start": 120,
+            "end": 132,
+            "textHash": "sha256:cd2584ac79a5edef11713c1643a737b4d92daafc09897980f8ef1bd72e7afc12"
+          }
+        },
+        {
+          "targetSymbolId": "source.symbol.8714e573b476390d488b45d65487eb9f67cc3202e24c3a966808a73b15b07bc9",
+          "targetName": "f1",
+          "sourcePath": "provider.go",
+          "sourceHash": "sha256_22dcaabf199ffab4a84f288c1ee7f64823f883327daf18c25d8ca338b614c85b",
+          "sourceVersionId": "source_version_8c9755a7828a655ec1897e2dccae5c221ce8908e601979fc7f81ad3c",
+          "arguments": [
+            "a"
+          ],
+          "inputSpan": {
+            "start": 140,
+            "end": 143,
+            "textHash": "sha256:ac8d8342bbb2362d13f0a559a3621bb407011368895164b628a54f7fc33fc43c"
+          },
+          "callSpan": {
+            "start": 137,
+            "end": 144,
+            "textHash": "sha256:b26d2b3abc24be6b6f34dd79a08c13417fb383df3ef7ebcac8dfc12076a44c0d"
+          }
+        }
+      ],
+      "expectedSpan": {
+        "start": 148,
+        "end": 151,
+        "textHash": "sha256:9b871512327c09ce91dd649b3f96a63b7408ef267c8cc5710114e629730cb61f"
+      },
+      "assertionSpan": {
+        "start": 134,
+        "end": 171,
+        "textHash": "sha256:4af67465ea9f45ace4c8dff1a59102d34c3c3fda7626a9da2f108b6ca31ec47e"
+      }
+    }
+  ],
+  "contracts": [
+    {
+      "bindingResolverIds": [
+        "scce.source_contract.grammar_static_scope.v1"
+      ],
+      "cases": [
+        {
+          "arguments": [
+            "a"
+          ],
+          "assertionSpan": {
+            "end": 118,
+            "start": 81,
+            "textHash": "sha256:4afcbc2fb74822ec0c0723af72c287df7e6222ebbebdff6aaec89f14a88f666e"
+          },
+          "bindingResolverId": "scce.source_contract.grammar_static_scope.v1",
+          "callSpan": {
+            "end": 91,
+            "start": 84,
+            "textHash": "sha256:b26d2b3abc24be6b6f34dd79a08c13417fb383df3ef7ebcac8dfc12076a44c0d"
+          },
+          "expectedResult": 111,
+          "expectedSpan": {
+            "end": 98,
+            "start": 95,
+            "textHash": "sha256:f6e0a1e2ac41945a9aa7ff8a8aaa0cebc12a3bcc981a929ad5cf810a090e11ae"
+          },
+          "inputSpan": {
+            "end": 90,
+            "start": 87,
+            "textHash": "sha256:ac8d8342bbb2362d13f0a559a3621bb407011368895164b628a54f7fc33fc43c"
+          },
+          "invocations": [
+            {
+              "arguments": [
+                "a",
+                111
+              ],
+              "callSpan": {
+                "end": 79,
+                "start": 67,
+                "textHash": "sha256:ce6b99304cafe56879f767ea847c01a8f6d29c5b96de1f1377012ea933c5da3c"
+              },
+              "inputSpan": {
+                "end": 78,
+                "start": 70,
+                "textHash": "sha256:cca570a1b10ed0306043e015ffcac017b0dd3cb49f7dfe7a467196f79ac43119"
+              },
+              "sourceHash": "sha256_22dcaabf199ffab4a84f288c1ee7f64823f883327daf18c25d8ca338b614c85b",
+              "sourcePath": "provider.go",
+              "sourceVersionId": "source_version_8c9755a7828a655ec1897e2dccae5c221ce8908e601979fc7f81ad3c",
+              "targetName": "f0",
+              "targetSymbolId": "source.symbol.94be1ad9e0d088e1cc162f7dfd48a9390066b7a3e5d59056783a147291966c99"
+            },
+            {
+              "arguments": [
+                "a"
+              ],
+              "callSpan": {
+                "end": 91,
+                "start": 84,
+                "textHash": "sha256:b26d2b3abc24be6b6f34dd79a08c13417fb383df3ef7ebcac8dfc12076a44c0d"
+              },
+              "inputSpan": {
+                "end": 90,
+                "start": 87,
+                "textHash": "sha256:ac8d8342bbb2362d13f0a559a3621bb407011368895164b628a54f7fc33fc43c"
+              },
+              "sourceHash": "sha256_22dcaabf199ffab4a84f288c1ee7f64823f883327daf18c25d8ca338b614c85b",
+              "sourcePath": "provider.go",
+              "sourceVersionId": "source_version_8c9755a7828a655ec1897e2dccae5c221ce8908e601979fc7f81ad3c",
+              "targetName": "f1",
+              "targetSymbolId": "source.symbol.8714e573b476390d488b45d65487eb9f67cc3202e24c3a966808a73b15b07bc9"
+            }
+          ],
+          "languageId": "go",
+          "sourceHash": "sha256_22dcaabf199ffab4a84f288c1ee7f64823f883327daf18c25d8ca338b614c85b",
+          "sourcePath": "provider.go",
+          "sourceVersionId": "source_version_8c9755a7828a655ec1897e2dccae5c221ce8908e601979fc7f81ad3c",
+          "targetName": "f1",
+          "targetSymbolId": "source.symbol.8714e573b476390d488b45d65487eb9f67cc3202e24c3a966808a73b15b07bc9",
+          "testHash": "sha256_a55dc12a5bc0c57913b677f4bd54c19099f2c7e263890254e18d016a57927ea5",
+          "testPath": "provider_test.go",
+          "testSourceVersionId": "source_version_36a27812e353f1a76b1b3825f17976255f6b6942ea8d47b99e56691a"
+        },
+        {
+          "arguments": [
+            "a"
+          ],
+          "assertionSpan": {
+            "end": 171,
+            "start": 134,
+            "textHash": "sha256:4af67465ea9f45ace4c8dff1a59102d34c3c3fda7626a9da2f108b6ca31ec47e"
+          },
+          "bindingResolverId": "scce.source_contract.grammar_static_scope.v1",
+          "callSpan": {
+            "end": 144,
+            "start": 137,
+            "textHash": "sha256:b26d2b3abc24be6b6f34dd79a08c13417fb383df3ef7ebcac8dfc12076a44c0d"
+          },
+          "expectedResult": 222,
+          "expectedSpan": {
+            "end": 151,
+            "start": 148,
+            "textHash": "sha256:9b871512327c09ce91dd649b3f96a63b7408ef267c8cc5710114e629730cb61f"
+          },
+          "inputSpan": {
+            "end": 143,
+            "start": 140,
+            "textHash": "sha256:ac8d8342bbb2362d13f0a559a3621bb407011368895164b628a54f7fc33fc43c"
+          },
+          "invocations": [
+            {
+              "arguments": [
+                "a",
+                111
+              ],
+              "callSpan": {
+                "end": 79,
+                "start": 67,
+                "textHash": "sha256:ce6b99304cafe56879f767ea847c01a8f6d29c5b96de1f1377012ea933c5da3c"
+              },
+              "inputSpan": {
+                "end": 78,
+                "start": 70,
+                "textHash": "sha256:cca570a1b10ed0306043e015ffcac017b0dd3cb49f7dfe7a467196f79ac43119"
+              },
+              "sourceHash": "sha256_22dcaabf199ffab4a84f288c1ee7f64823f883327daf18c25d8ca338b614c85b",
+              "sourcePath": "provider.go",
+              "sourceVersionId": "source_version_8c9755a7828a655ec1897e2dccae5c221ce8908e601979fc7f81ad3c",
+              "targetName": "f0",
+              "targetSymbolId": "source.symbol.94be1ad9e0d088e1cc162f7dfd48a9390066b7a3e5d59056783a147291966c99"
+            },
+            {
+              "arguments": [
+                "a"
+              ],
+              "callSpan": {
+                "end": 91,
+                "start": 84,
+                "textHash": "sha256:b26d2b3abc24be6b6f34dd79a08c13417fb383df3ef7ebcac8dfc12076a44c0d"
+              },
+              "inputSpan": {
+                "end": 90,
+                "start": 87,
+                "textHash": "sha256:ac8d8342bbb2362d13f0a559a3621bb407011368895164b628a54f7fc33fc43c"
+              },
+              "sourceHash": "sha256_22dcaabf199ffab4a84f288c1ee7f64823f883327daf18c25d8ca338b614c85b",
+              "sourcePath": "provider.go",
+              "sourceVersionId": "source_version_8c9755a7828a655ec1897e2dccae5c221ce8908e601979fc7f81ad3c",
+              "targetName": "f1",
+              "targetSymbolId": "source.symbol.8714e573b476390d488b45d65487eb9f67cc3202e24c3a966808a73b15b07bc9"
+            },
+            {
+              "arguments": [
+                "a",
+                222
+              ],
+              "callSpan": {
+                "end": 132,
+                "start": 120,
+                "textHash": "sha256:cd2584ac79a5edef11713c1643a737b4d92daafc09897980f8ef1bd72e7afc12"
+              },
+              "inputSpan": {
+                "end": 131,
+                "start": 123,
+                "textHash": "sha256:9330f6b76348fe85a202d175bed7bfc282a29e70db262bfa1f8675e0346ff5d1"
+              },
+              "sourceHash": "sha256_22dcaabf199ffab4a84f288c1ee7f64823f883327daf18c25d8ca338b614c85b",
+              "sourcePath": "provider.go",
+              "sourceVersionId": "source_version_8c9755a7828a655ec1897e2dccae5c221ce8908e601979fc7f81ad3c",
+              "targetName": "f0",
+              "targetSymbolId": "source.symbol.94be1ad9e0d088e1cc162f7dfd48a9390066b7a3e5d59056783a147291966c99"
+            },
+            {
+              "arguments": [
+                "a"
+              ],
+              "callSpan": {
+                "end": 144,
+                "start": 137,
+                "textHash": "sha256:b26d2b3abc24be6b6f34dd79a08c13417fb383df3ef7ebcac8dfc12076a44c0d"
+              },
+              "inputSpan": {
+                "end": 143,
+                "start": 140,
+                "textHash": "sha256:ac8d8342bbb2362d13f0a559a3621bb407011368895164b628a54f7fc33fc43c"
+              },
+              "sourceHash": "sha256_22dcaabf199ffab4a84f288c1ee7f64823f883327daf18c25d8ca338b614c85b",
+              "sourcePath": "provider.go",
+              "sourceVersionId": "source_version_8c9755a7828a655ec1897e2dccae5c221ce8908e601979fc7f81ad3c",
+              "targetName": "f1",
+              "targetSymbolId": "source.symbol.8714e573b476390d488b45d65487eb9f67cc3202e24c3a966808a73b15b07bc9"
+            }
+          ],
+          "languageId": "go",
+          "sourceHash": "sha256_22dcaabf199ffab4a84f288c1ee7f64823f883327daf18c25d8ca338b614c85b",
+          "sourcePath": "provider.go",
+          "sourceVersionId": "source_version_8c9755a7828a655ec1897e2dccae5c221ce8908e601979fc7f81ad3c",
+          "targetName": "f1",
+          "targetSymbolId": "source.symbol.8714e573b476390d488b45d65487eb9f67cc3202e24c3a966808a73b15b07bc9",
+          "testHash": "sha256_a55dc12a5bc0c57913b677f4bd54c19099f2c7e263890254e18d016a57927ea5",
+          "testPath": "provider_test.go",
+          "testSourceVersionId": "source_version_36a27812e353f1a76b1b3825f17976255f6b6942ea8d47b99e56691a"
+        }
+      ],
+      "formalLanguage": "go",
+      "repositoryFamily": "scce://native-abi-upgrade",
+      "schema": "scce.source_owned_test_contract.v1",
+      "sourceHash": "sha256_22dcaabf199ffab4a84f288c1ee7f64823f883327daf18c25d8ca338b614c85b",
+      "sourcePath": "provider.go",
+      "sourceVersionId": "source_version_8c9755a7828a655ec1897e2dccae5c221ce8908e601979fc7f81ad3c",
+      "targetName": "f1",
+      "targetSymbolId": "source.symbol.8714e573b476390d488b45d65487eb9f67cc3202e24c3a966808a73b15b07bc9"
+    }
+  ],
+  "payloadSha256": "4d830d5478d8a4d5d3d2ff8206668ed43a0f8ac28e95e0126f5bb9905559bc06"
+}

@@ -47,6 +47,8 @@ import { LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID, LANGUAGE_CONSTRUCTIO
 import { SOURCE_CONSTRUCTION_BINDINGS_COMPONENT_RECIPE_ID } from "../../../kernel/src/language-construction-memory.js";
 import { SOURCE_ENTITY_GRAPH_COMPONENT_RECIPE_ID } from "../corpus-source-graph-projection.js";
 import { scalarSourceContractFixtures, statefulSourceContractFixtures } from "./fixtures/polyglot-source-contracts.js";
+import * as grammarContracts from "../grammar-source-owned-test-contracts.js";
+import type { SourceOwnedTestCase } from "../source-owned-test-contracts.js";
 import * as languageInduction from "../../../kernel/src/language-induction.js";
 import * as kernelPrimitives from "../../../kernel/src/primitives.js";
 import { primeLearnedAnswerUnitForms } from "../../../kernel/src/learned-answer-unit-forms.js";
@@ -622,6 +624,46 @@ describe("learned rows carry the shard's provenance once", () => {
     expect(behavior.statefulBehaviorRequirements.map(row => row.expectedResult)).toEqual([111, 222]);
     expect(behavior.statefulBehaviorRequirements.map(row => row.invocations.at(-1)!.arguments)).toEqual([["a"], ["a"]]);
     expect(behavior.statefulBehaviorRequirements.map(row => row.verificationRole)).toEqual(["fit", "held_out"]);
+  });
+
+  it("upgrades ABI-free cached OSS contracts from genuine legacy output once without changing source ownership", async () => {
+    const legacy = JSON.parse(readFileSync(new URL("./fixtures/native-abi-legacy-v1.json", import.meta.url), "utf8")) as {
+      compilerCommit: string; authorship: string; sourceUriBase: string; files: Record<string, string>; cases: SourceOwnedTestCase[];
+      contracts: JsonValue[]; payloadSha256: string;
+    };
+    const { payloadSha256, ...payload } = legacy;
+    expect(createHash("sha256").update(JSON.stringify(payload)).digest("hex")).toBe(payloadSha256);
+    expect(legacy.compilerCommit).toBe("459314ab");
+    expect(legacy.cases.every(row => row.nativeAbi === undefined)).toBe(true);
+    const root = await tempDir("oss-native-abi-upgrade-");
+    for (const [name, text] of Object.entries(legacy.files)) await writeFile(path.join(root, name), text);
+    const fixture = memoryStorage(), checkpoints = new Map<string, IngestionCheckpoint>();
+    const checkpointWrite = vi.fn(async (row: IngestionCheckpoint) => { checkpoints.set(row.id, structuredClone(row)); });
+    fixture.storage.ingestion = { put: checkpointWrite, get: async id => checkpoints.get(id) ?? null, list: async () => [...checkpoints.values()] } as ScceStorage["ingestion"];
+    const options = { storage: fixture.storage, rootPath: root, sourceUriBase: legacy.sourceUriBase, maxFiles: 20,
+      maxFilesPerRun: 20, ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64 };
+    const producer = vi.spyOn(grammarContracts, "grammarSourceOwnedTestCases").mockImplementation(async () => structuredClone(legacy.cases));
+    try { await trainOssCorpus(options); } finally { producer.mockRestore(); }
+    const query = { patternKind: "source_code_assertion_contract", patternSchemas: ["scce.source_owned_test_contract.v1"] };
+    const old = await fixture.storage.languageMemory.listLanguagePatterns(query);
+    expect(old).toHaveLength(1);
+    expect(recordOf(old[0]!.patternJson).nativeAbiRecipe).toBeUndefined();
+    const owners = new Set(fixture.state.sourceVersions.map(row => String(row.sourceVersionId)));
+    const replace = vi.spyOn(fixture.storage.languageMemory, "replaceLanguagePatternProjection");
+    await trainOssCorpus(options);
+    const current = await fixture.storage.languageMemory.listLanguagePatterns(query);
+    expect(current).toHaveLength(1);
+    expect(recordOf(current[0]!.patternJson).nativeAbiRecipe).toBe("scce.source_owned_native_abi.v1");
+    expect(current[0]!.id).not.toBe(old[0]!.id);
+    expect(replace.mock.calls.filter(([input]) => input.projection.patternSchema === "scce.source_owned_test_contract.v1")).toHaveLength(1);
+    expect(new Set(fixture.state.sourceVersions.map(row => String(row.sourceVersionId)))).toEqual(owners);
+    replace.mockClear(); checkpointWrite.mockClear();
+    const sourceWrite = vi.spyOn(fixture.storage.evidence, "putSourceVersion"), modelWrite = vi.spyOn(fixture.storage.languageMemory, "putNgramModels");
+    const eventWrite = vi.spyOn(fixture.storage.events, "append");
+    await trainOssCorpus(options);
+    expect(replace).not.toHaveBeenCalled(); expect(checkpointWrite).not.toHaveBeenCalled();
+    expect(sourceWrite).not.toHaveBeenCalled(); expect(modelWrite).not.toHaveBeenCalled(); expect(eventWrite).not.toHaveBeenCalled();
+    expect((await fixture.storage.languageMemory.listLanguagePatterns(query)).map(row => row.id)).toEqual(current.map(row => row.id));
   });
 
   it("binds persisted source assertions from documentation through program planning and held-out execution", async () => {
