@@ -1017,7 +1017,9 @@ function validCreativeSourcePage(page: Record<string, JsonValue>, events: readon
   if (!windows.length) return false;
   const offsetsByEvidence = new Map<string, number[]>();
   for (const window of windows) {
-    const evidence = evidenceById.get(stringOf(window.ownerDocumentId));
+    const ownerDocumentId = stringOf(window.ownerDocumentId);
+    if (!ownerDocumentId) return false;
+    const evidence = evidenceById.get(ownerDocumentId);
     const start = numberOf(window.startUtf16), end = numberOf(window.endUtf16);
     if (!evidence || evidence.status !== "promoted" || String(evidence.sourceVersionId) !== stringOf(window.sourceVersionId)
       || !Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end <= start || end > evidence.text.length
@@ -1028,11 +1030,15 @@ function validCreativeSourcePage(page: Record<string, JsonValue>, events: readon
       offsetsByEvidence.set(String(evidence.id), offsets);
     }
   }
-  return events.every(event => windows.some(window => window.ownerDocumentId === event.evidenceId && (() => {
-    const start = numberOf(event.labelStartCodePoint);
-    const offset = Number.isSafeInteger(start) ? offsetsByEvidence.get(stringOf(event.evidenceId))?.[start] ?? -1 : -1;
-    return offset >= numberOf(window.startUtf16) && offset < numberOf(window.endUtf16);
-  })()));
+  return events.every(event => {
+    const eventEvidenceId = stringOf(event.evidenceId);
+    if (!eventEvidenceId) return false;
+    return windows.some(window => window.ownerDocumentId === eventEvidenceId && (() => {
+      const start = numberOf(event.labelStartCodePoint);
+      const offset = Number.isSafeInteger(start) ? offsetsByEvidence.get(eventEvidenceId)?.[start] ?? -1 : -1;
+      return offset >= numberOf(window.startUtf16) && offset < numberOf(window.endUtf16);
+    })());
+  });
 }
 
 function creativeEventFromPersisted(
