@@ -39,8 +39,8 @@ function fixture() {
     return { span, subject, target, edge, construct, observations };
   }
   function persist(observations: ReturnType<typeof semanticClaimObservationsFromConstruct>) {
-    events.push({ id: `event.${events.length}`, episodeId: `episode.${events.length}`, t: 12,
-      typeId: "SemanticClaimsConsolidated", payload: toJsonValue(consolidateSemanticClaims(observations)), parents: [], hash: "fixture" } as ScceEvent);
+    events.push({ id: `event.${events.length}` as ScceEvent["id"], episodeId: `episode.${events.length}` as ScceEvent["episodeId"], t: 12,
+      typeId: "SemanticClaimsConsolidated" as ScceEvent["typeId"], payload: toJsonValue(consolidateSemanticClaims(observations)), parents: [], hash: "fixture" });
   }
   const storage = { events: { readRange: async () => events }, evidence: {
     getEvidenceBatch: async (ids: string[]) => evidence.filter(span => ids.includes(String(span.id)))

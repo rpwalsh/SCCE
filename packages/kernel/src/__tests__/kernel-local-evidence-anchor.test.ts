@@ -345,7 +345,7 @@ describe("kernel local evidence source anchoring", () => {
     fixture.storage.graph.getSlice = async query => query.evidenceIds?.includes(ada.id)
       ? canonicalGraph : { nodes: [], edges: [], hyperedges: [], bounded: true, query };
     fixture.events.push({ id: "event:canonical:semantic-memory" as ScceEvent["id"], episodeId: "episode:prior:semantic-memory" as EpisodeId,
-      typeId: "SemanticClaimsConsolidated", t: 100,
+      typeId: "SemanticClaimsConsolidated" as ScceEvent["typeId"], t: 100,
       payload: JSON.parse(JSON.stringify(consolidateSemanticClaims(semanticClaimObservationsFromConstruct({ construct,
         graph: canonicalGraph, evidence: [ada], hasher, observedAt: 99 })))) as JsonValue, parents: [], hash: "fixture:prior" });
     const create = () => createScceKernel({ storage: fixture.storage, files: { streamPath: async function* () {} },
