@@ -129,7 +129,10 @@ for await (const line of rl) {
       answer: "",
       citations: [],
       metadata: { ...requestMetadata, error: String(error && error.message ? error.message : error).slice(0, 300),
-        ...(error.inference ? { inference: error.inference, rawReply: error.rawReply } : {}) }
+        ...(error.inference ? { inference: error.inference, rawReply: error.rawReply } : {}),
+        ...(error.generationHttpStatus !== undefined ? { generationHttpStatus: error.generationHttpStatus,
+          generationErrorSha256: error.generationErrorSha256,
+          ...(error.generationError ? { generationError: error.generationError } : {}) } : {}) }
     })}\n`);
   }
 }
@@ -214,12 +217,11 @@ async function ask(prompt, retrieved, format) {
       }),
       signal: controller.signal
     });
-    if (!response.ok) {
-      const detail = await response.text();
-      throw new Error(`ollama ${response.status}: ${detail.slice(0, 200)}`);
-    }
-    const body = await response.json();
-    if (body.error) throw new Error(`ollama generation error: ${body.error}`);
+    const responseBytes = Buffer.from(await response.arrayBuffer());
+    const detail = new TextDecoder().decode(responseBytes);
+    if (!response.ok) throw generationError(`ollama ${response.status}: ${detail.slice(0, 200)}`, response.status, responseBytes, detail);
+    const body = JSON.parse(detail);
+    if (body.error) throw generationError(`ollama generation error: ${body.error}`, response.status, responseBytes, detail);
     const inference = Object.fromEntries(["total_duration", "load_duration", "prompt_eval_count", "prompt_eval_duration", "eval_count", "eval_duration", "done_reason"].map(key => [key, body[key] ?? null]));
     if (body.done_reason === "length") {
       throw Object.assign(new Error("Ollama output token limit reached"), { inference, rawReply: String(body.response ?? "") });
@@ -238,6 +240,16 @@ async function ask(prompt, retrieved, format) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+function generationError(message, status, bytes, detail) {
+  let parsed;
+  try {
+    const value = JSON.parse(detail);
+    if (value && typeof value === "object" && !Array.isArray(value)) parsed = value;
+  } catch { /* Non-JSON failures retain their HTTP status and exact byte digest. */ }
+  return Object.assign(new Error(message), { generationHttpStatus: status, generationErrorSha256: sha256Bytes(bytes),
+    ...(parsed ? { generationError: parsed } : {}) });
 }
 
 function validateFormat(value) {

@@ -7,7 +7,7 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { writeJson, sha256Text, stableStringify } from "../lib/util.mjs";
+import { writeJson, sha256Bytes, sha256Text, stableStringify } from "../lib/util.mjs";
 
 async function runBaseline(device, sizeVram, options = {}) {
   const requests = [];
@@ -25,7 +25,7 @@ async function runBaseline(device, sizeVram, options = {}) {
         : { response: options.reply ?? "Aster", eval_count: 2, eval_duration: 1e9, load_duration: 3e9, total_duration: 4e9, ...options.inference };
     }
     res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify(response));
+    res.end(req.url === "/api/generate" && options.rawGenerationBody !== undefined ? options.rawGenerationBody : JSON.stringify(response));
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
@@ -147,6 +147,29 @@ test("unsupported native options and context overflow remain visible errors with
     assert.equal(requests[0].truncate, false);
     assert.equal(requests[0].shift, false);
   }
+});
+
+test("preserves machine-readable HTTP errors and the exact raw-body digest without a generation retry", async () => {
+  const response = { error: JSON.stringify({ error: { type: "exceed_context_size_error", code: "context_length_exceeded",
+    n_ctx: 1024, n_prompt_tokens: 9001 } }) };
+  const raw = JSON.stringify(response);
+  const { answer, requests } = await runBaseline("cpu", 0, { httpStatus: 400, rawGenerationBody: raw });
+  assert.equal(answer.status, "error");
+  assert.equal(answer.metadata.generationHttpStatus, 400);
+  assert.deepEqual(answer.metadata.generationError, response);
+  assert.equal(answer.metadata.generationErrorSha256, sha256Bytes(Buffer.from(raw)));
+  assert.equal(requests.length, 1);
+  assert.match(answer.metadata.error, /^ollama 400:/u);
+});
+
+test("non-JSON HTTP failures expose only status and exact byte digest as machine fields", async () => {
+  const raw = Buffer.from([0xff, 0x0a, 0xc3, 0xa9]);
+  const { answer, requests } = await runBaseline("cpu", 0, { httpStatus: 502, rawGenerationBody: raw });
+  assert.equal(answer.status, "error");
+  assert.equal(answer.metadata.generationHttpStatus, 502);
+  assert.equal(Object.hasOwn(answer.metadata, "generationError"), false);
+  assert.equal(answer.metadata.generationErrorSha256, sha256Bytes(raw));
+  assert.equal(requests.length, 1);
 });
 
 test("a requested GPU condition cannot silently count CPU fallback as GPU work", async () => {
