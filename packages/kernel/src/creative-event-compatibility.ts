@@ -57,6 +57,22 @@ export interface CreativeRequestFrame {
   sourceActivationIds: string[];
 }
 
+interface SourceObservedRequestAuthority {
+  authority: "creative";
+  qualification: "source_observed";
+  modelId: string;
+  requestFrameId: string;
+  sourceActivationIds: readonly string[];
+}
+
+const observedRequestAuthorities = new WeakMap<CreativeRequestFrame, { observation: SourceObservedRequestAuthority; frameMaterial: string }>();
+
+/** Only the source-verified request compiler can supply an observed authority. */
+export function sourceObservedRequestAuthority(frame: CreativeRequestFrame | undefined): SourceObservedRequestAuthority | undefined {
+  const owned = frame ? observedRequestAuthorities.get(frame) : undefined;
+  return owned && canonicalStringify(frame) === owned.frameMaterial ? owned.observation : undefined;
+}
+
 export interface CreativeEventCompatibility {
   requestFrameId: string;
   eventRelationId: string;
@@ -479,7 +495,7 @@ export function compileCreativeRequestFrameFromCompatibilityModels(input: {
     }))
   };
   const id = `creative.request.frame.${input.hasher.digestHex(JSON.stringify(frameSeed))}`;
-  return {
+  const frame: CreativeRequestFrame = {
     schema: CREATIVE_REQUEST_FRAME_SCHEMA,
     id,
     compilerId: selected.model.requestCompilerId,
@@ -510,6 +526,13 @@ export function compileCreativeRequestFrameFromCompatibilityModels(input: {
         .slice(0, 16)
     ].filter((value, index, array) => Boolean(value) && array.indexOf(value) === index)
   };
+  if (selected.model.reliability === "source_observed") observedRequestAuthorities.set(frame, {
+    frameMaterial: canonicalStringify(frame), observation: Object.freeze({
+      authority: "creative", qualification: "source_observed", modelId: selected.model.id,
+      requestFrameId: selected.anchor.requestFrameId, sourceActivationIds: Object.freeze([...frame.sourceActivationIds])
+    })
+  });
+  return frame;
 }
 
 function compileRequestFrameAnchors(

@@ -7,7 +7,6 @@ import { deriveClosedClassWords } from "./closed-class-words.js";
 import { CORPUS_SOURCE_SYSTEM_IDS, corpusSourceAlias, createCorpusRegistry, languageMemoryHydrationPlan, requestLanguageHydrationPlan, type CorpusRoleId } from "./corpus-registry.js";
 import { CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA, isCreativeEventCompatibilityPattern, creativeRequestSourcePrerequisites,
   compileCreativeRequestFrameFromCompatibilityModels } from "./creative-event-compatibility.js";
-import { creativeSourceUtterances } from "./creative-source-utterance.js";
 import { jsonRecord, kernelString, normalizePriorKey, splitPriorUnits } from "./kernel-answer-primitives.js";
 import { featureSetMemoStats } from "./primitives.js";
 import { tidySurfaceTextMemoStats } from "./surface-linguistics.js";
@@ -1331,9 +1330,9 @@ export function createSurfaceLanguageRuntime(options: {
       const sourceProfiles = owned.profiles.filter(profile => state.scope.profileIds.includes(profile.id));
       const profile = selectLanguageProfileForSurface(sourceProfiles, requestText) ?? sourceProfiles[0];
       const frame = compileCreativeRequestFrameFromCompatibilityModels({ requestText, models: state.creativeEventCompatibilityModels, hasher });
-      const learned = frame && state.creativeEventCompatibilityModels.some(model => candidates.some(candidate => candidate.modelPattern.id === model.id
-        && creativeSourceUtterances(model, candidate.profileId, hasher).some(utterance => frame.sourceActivationIds.includes(utterance.requestFrameId)
-          && state.importedConstructionBundles.some(bundle => bundle.bindingId === utterance.bindingId))));
+      const learned = frame && state.creativeEventCompatibilityModels.some(model => model.reliability === "source_observed"
+        && candidates.some(candidate => candidate.modelPattern.id === model.id)
+        && model.sourceObservations.some(row => frame.sourceActivationIds.includes(row.requestFrameId)));
       traceEvent((globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace, {
         stage: "language.creative_source_request", label: "kernel.language.hydrate", counts: { requestedPatterns: patternIds.length, patterns: sourcePatterns.length, evidence: evidence.length },
         support: { admitted: Boolean(profile && frame && learned), sourceProfileIds: candidates.map(candidate => candidate.profileId), frameId: frame?.id ?? null }

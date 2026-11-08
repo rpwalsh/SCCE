@@ -23,6 +23,8 @@ import { inventionConstructNode } from "../prediction.js";
 import { createCandidateEngine } from "../candidate.js";
 import { createCcrEngine } from "../ccr.js";
 import { jsonRecord } from "../kernel-answer-primitives.js";
+import { projectRequestAuthority } from "../request-authority.js";
+import { deriveTurnRequirementField } from "../turn-requirements.js";
 import type { ConstructGraph } from "../types.js";
 const humanPair = JSON.parse(readFileSync(new URL("./fixtures/dolly-human-creative-pair.json", import.meta.url), "utf8")) as { text: string; turns: TranscriptTurn[] };
 
@@ -191,6 +193,22 @@ describe("declared human creative source correspondence", () => {
     expect(structural.some(event => event.requestRoleBindings.some((binding: any) => replacements.some(row => row.value === binding.requestSpan.text)))).toBe(true);
     expect(structural.every(event => event.compatibilityQualification === "source_observed" && event.compatibilityCalibrationId === undefined && event.compatibilityThreshold === undefined)).toBe(true);
     expect(planned.every(construct => construct.proofStatusId === "proof.status.generated_not_evidence" && construct.basisEvidenceIds.length === 0)).toBe(true);
+  });
+
+  it("carries observed source intent without trusting cloned or changed request frames or overriding the owner", () => {
+    const state = restart();
+    const request = humanPair.turns[0]!.surface;
+    const frame = compileCreativeRequestFrameFromCompatibilityModels({ requestText: request, models: state.creativeEventCompatibilityModels, hasher })!;
+    const requirementField = deriveTurnRequirementField({ requestText: request });
+    const baseline = projectRequestAuthority({ requirementField });
+    const observed = projectRequestAuthority({ requirementField, sourceRequestFrame: frame });
+    expect(observed.requestedAuthority).toBe("creative");
+    expect(jsonRecord(observed.trace).selectionSource).toBe("source_observed_request_construction");
+    expect(projectRequestAuthority({ requirementField, sourceRequestFrame: frame, explicitAuthority: "factual" }).requestedAuthority).toBe("factual");
+    expect(projectRequestAuthority({ requirementField, sourceRequestFrame: frame, typedProgramBehaviorRequirementIds: ["owner.behavior"] }).requestedAuthority).toBe("program");
+    expect(projectRequestAuthority({ requirementField, sourceRequestFrame: JSON.parse(JSON.stringify(frame)) }).requestedAuthority).toBe(baseline.requestedAuthority);
+    frame.arguments[0]!.roleId = "role.foreign";
+    expect(projectRequestAuthority({ requirementField, sourceRequestFrame: frame }).requestedAuthority).toBe(baseline.requestedAuthority);
   });
 
   it("refuses ambiguous source links, repeated request values and fabricated calibration metadata", () => {

@@ -316,9 +316,10 @@ describe("production owner program turn through the API", () => {
   }, 60_000);
 
   it.each([
-    ["dolly-human-creative-pair.json", "room", "κάλυ月"],
-    ["oasst-human-russian-creative-pair.json", "Спанч", "Кварц"]
-  ])("loads an attested human reply through exact source IDs across the real corpus-role filter: %s", async (fixtureName, sourceValue, heldoutValue) => {
+    ["dolly-human-creative-pair.json", "room", "κάλυ月", true],
+    ["oasst-human-russian-creative-pair.json", "Спанч", "Кварц", true],
+    ["oasst-human-russian-creative-pair.json", "Спанч", "Кварц", false]
+  ] as const)("loads an ordinary attested human reply through exact source IDs: %s (case %#)", async (fixtureName, sourceValue, heldoutValue, seedIdentity) => {
     const human = JSON.parse(await readFile(new URL(`../../../kernel/src/__tests__/fixtures/${fixtureName}`, import.meta.url), "utf8")) as {
       text: string; turns: NonNullable<Parameters<typeof compileLanguageTrainingBatch>[0]["batch"]["transcriptTurns"]>;
     };
@@ -375,7 +376,7 @@ describe("production owner program turn through the API", () => {
         buildTest: { executeProgram: async () => { throw new Error("human creative turn must not execute a program"); } },
         idFactory: createIdFactory({ clock: kernelClock, hasher, deterministicReplay: false }), clock: kernelClock,
         deterministicReplay: false, corpusRegistry: createCorpusRegistry([{ sourceSystem: "dialogue" }, { sourceSystem: "gutenberg" }]) });
-      await kernel.languageIdentities();
+      if (seedIdentity) await kernel.languageIdentities();
       return { runtime: { storage, kernel, approvals: { isApproved: () => true, requestApproval: () => undefined, snapshot: () => ({ operatorGrant: false, pending: [] }) } },
         config: { server: { url: "http://127.0.0.1" }, runtime: { workspaceRoot: root, allowedRoots: [root], tempRoot: root, tools: { pnpm: "pnpm" } }, policy: { allowMutation: false } },
         startupReadiness: { snapshot: () => ({ phase: "running", ok: true, complete: true }) } } as unknown as ApiContext;
@@ -389,22 +390,26 @@ describe("production owner program turn through the API", () => {
     for (const [index, text] of [human.turns[0]!.surface, human.turns[0]!.surface.replace(sourceValue, heldoutValue)].entries()) {
       context = await createContext();
       const response = await fetch(`http://127.0.0.1:${address.port}/api/turn?full=1`, { method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text, requestedAuthority: "creative", conversationId: `conversation.human.utterance.${index}` }) });
+        body: JSON.stringify({ text, conversationId: `conversation.human.utterance.${index}` }) });
       const body = await response.json() as Record<string, any>;
       expect(response.status, JSON.stringify(body)).toBe(200);
       expect(body.answer).not.toBe(text);
       if (index === 1) expect(body.answer).toContain(heldoutValue);
       else expect(body.answer.replace(/\s+/gu, " ")).toBe(human.turns[1]!.surface.replace(/\s+/gu, " "));
     }
-    expect(queries.some(query => query?.sourceSystem && corpusSourceAlias(query.sourceSystem) === "gutenberg")).toBe(true);
+    if (seedIdentity) expect(queries.some(query => query?.sourceSystem && corpusSourceAlias(query.sourceSystem) === "gutenberg")).toBe(true);
     const sourceReads = queries.filter(query => query?.patternIds?.length);
     expect(sourceReads.length).toBeGreaterThan(0);
     expect(sourceReads.every(query => query?.sourceSystem === undefined && query?.profileIds === undefined)).toBe(true);
+    const arithmetic = await fetch(`http://127.0.0.1:${address.port}/api/turn?full=1`, { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "7 - 10", conversationId: "conversation.human.utterance.arithmetic" }) });
+    expect(arithmetic.status).toBe(200);
+    expect((await arithmetic.json() as { answer: string }).answer).toBe("7 - 10 = -3.");
     languagePatterns.splice(0, languagePatterns.length, ...languagePatterns.filter(pattern =>
       !String(((pattern.patternJson as Record<string, any>).bundle ?? {}).bindingId ?? "").startsWith("source.creative.utterance.")));
     context = await createContext();
     const missing = await fetch(`http://127.0.0.1:${address.port}/api/turn?full=1`, { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text: human.turns[0]!.surface, requestedAuthority: "creative", conversationId: "conversation.human.utterance.missing" }) });
+      body: JSON.stringify({ text: human.turns[0]!.surface, conversationId: "conversation.human.utterance.missing" }) });
     expect(missing.status, JSON.stringify(await missing.json())).toBe(422);
   }, 60_000);
 });

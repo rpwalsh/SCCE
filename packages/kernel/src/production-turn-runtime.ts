@@ -1331,6 +1331,12 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         ...codeSignal.behaviorRequirements.map(requirement => requirement.id),
         ...codeSignal.statefulBehaviorRequirements.map(requirement => requirement.id)
       ];
+      const observedSourceSpeech = !deps.evaluationCondition?.flags.disableLanguageMemory
+        && !translationTarget && (!explicitAuthority || explicitAuthority === "creative")
+        ? await surfaceLanguageRuntime.creativeSourceMemoryForRequest(input.text) : undefined;
+      const observedSourceRequestFrame = observedSourceSpeech ? compileCreativeRequestFrameFromCompatibilityModels({
+        requestText: input.text, models: observedSourceSpeech.state.creativeEventCompatibilityModels, hasher
+      }) : undefined;
       let requirementField = deriveTurnRequirementField({
         requestText: input.text,
         explicitRequirements: [
@@ -1362,7 +1368,8 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const authorityProjection = projectRequestAuthority({
         requirementField,
         explicitAuthority,
-        typedProgramBehaviorRequirementIds
+        typedProgramBehaviorRequirementIds,
+        sourceRequestFrame: observedSourceRequestFrame
       });
       // Why the turn is routed where it is. The requirement field decides the authority, the authority decides
       // which lane answers, and nothing recorded whether the routing patterns that carry the requirement
@@ -1491,7 +1498,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         evidence: deps.storage.evidence,
         onTrace: record => kernelTrace({ stage: "turn.corpus_identity", ...record })
       });
-      let creativeRequestFrame: CreativeRequestFrame | undefined = undefined;
+      let creativeRequestFrame: CreativeRequestFrame | undefined = observedSourceRequestFrame;
       // Routing fitted from this instance's own episodes, off the same 120s model cache the judge weights use.
       const operatorModel = operatorRoutingActivationModel({ modelSet: await calibrationModelsCached() });
       let operatorActivations = activateCognitiveOperators({
@@ -3292,7 +3299,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         }
       }
       const sourceSpeech = requestedAuthority === "creative"
-        ? await surfaceLanguageRuntime.creativeSourceMemoryForRequest(input.text, requestLanguageId) : undefined;
+        ? observedSourceSpeech : undefined;
       const realizationLanguage = sourceSpeech ? { ...surfaceLanguage, state: sourceSpeech.state, surfaceProfile: sourceSpeech.profile,
         models: [], observations: [], units: [], patterns: sourceSpeech.patterns, semanticFrames: [] } : surfaceLanguage;
       const surfaceLanguageModels = realizationLanguage.models;

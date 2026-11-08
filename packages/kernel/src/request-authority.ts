@@ -18,6 +18,7 @@ import { graphTemporalScope, isTypedParticipantIncidenceEdge } from "./typed-inc
 import { evidenceSourceFamilyId } from "./source-family.js";
 import { calibrated } from "./calibrations/prod-calibrations.js";
 import type { CalibrationKey } from "./calibrations/public-calibrations.js";
+import { sourceObservedRequestAuthority, type CreativeRequestFrame } from "./creative-event-compatibility.js";
 
 export const REQUESTED_AUTHORITY_IDS = [
   "factual",
@@ -69,6 +70,8 @@ export interface ProjectRequestAuthorityInput {
   explicitAuthority?: RequestedAuthority;
   /** Exact IDs of owner-declared executable behavior observations from CodeRequestSignal. */
   typedProgramBehaviorRequirementIds?: readonly string[];
+  /** An internally compiled request, never a caller-declared source label. */
+  sourceRequestFrame?: CreativeRequestFrame;
 }
 
 const AUTHORITY_COEFFICIENT_KEYS: Record<RequestedAuthority, Partial<Record<TurnRequirementDimension, CalibrationKey>>> = {
@@ -229,8 +232,9 @@ export function projectRequestAuthority(input: ProjectRequestAuthorityInput): Re
   const neutralAuthorityApplied = neutralAuthorityReasonId !== null;
   const projectedAuthority = neutralAuthorityApplied ? "factual" : (ranked[0]?.authority ?? "factual");
   const typedProgramBehaviorRequirementIds = [...new Set((input.typedProgramBehaviorRequirementIds ?? []).filter(id => typeof id === "string" && id.trim()))];
+  const observedAuthority = sourceObservedRequestAuthority(input.sourceRequestFrame);
   const requestedAuthority = input.explicitAuthority
-    ?? (typedProgramBehaviorRequirementIds.length ? "program" : projectedAuthority);
+    ?? (typedProgramBehaviorRequirementIds.length ? "program" : observedAuthority?.authority ?? projectedAuthority);
   const scoreMargin = neutralAuthorityApplied
     ? 0
     : clamp01((ranked[0]?.score ?? 0) - (ranked[1]?.score ?? 0));
@@ -245,7 +249,8 @@ export function projectRequestAuthority(input: ProjectRequestAuthorityInput): Re
       ? "explicit_authority"
       : typedProgramBehaviorRequirementIds.length
         ? "typed_owner_behavior_contract"
-        : "turn_requirement_field",
+        : observedAuthority ? "source_observed_request_construction" : "turn_requirement_field",
+    sourceObservedRequestAuthority: observedAuthority ?? null,
     typedProgramBehaviorRequirementIds,
     lexicalRouterUsed: false,
     scoreReliability: "uncalibrated_bootstrap",
