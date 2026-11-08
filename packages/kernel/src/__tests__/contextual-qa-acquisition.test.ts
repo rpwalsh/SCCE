@@ -57,6 +57,26 @@ it("enforces finite acquired source-only roles on new direct source interpretati
   expect(resolver.resolve(fresh.transcriptTurns[0]!.surface, [{ ...span, text: span.text.replace("\u00f6pa", "not") }])).toBeUndefined();
   expect(resolver.resolve(fresh.transcriptTurns[0]!.surface, [{ ...span, text: span.text.replace("z\u00f4r", "foreign") }])).toBeUndefined();
 });
+it("jointly identifies multiword current arguments and refuses ambiguous or incomplete joins", () => {
+  const names = ["Aster harbour", "Beryl cove", "Cobalt strand", "Dahlia haven", "Ember quay", "Fennel inlet", "Garnet port", "Hazel bay"];
+  const documents = names.map((name, index) => document(name, String(101 + index), index,
+    `${name} ${index % 2 ? "ki" : "lo"} ${101 + index}.`, `q ${index % 2 ? "ki" : "lo"} ${name}?`));
+  const learned = acquireContextualQaConstructions({ documents, authorship: "human_authored", hasher, updatedAt: 1 });
+  expect(learned.families, JSON.stringify(learned.rejected)).toHaveLength(1);
+  const bundle = verifyContextualQaConstruction({ pattern: learned.families[0]!.pattern, evidence: documents.flatMap(row => row.spans), hasher });
+  expect(bundle).toBeDefined();
+  const resolver = sourceConstructionRequestValueResolver({ bundles: [bundle!], graph: { nodes: [], hyperedges: [] } });
+  const fresh = document("\u65b0\u6e2f\ud83e\udded harbour", "907", 99, "\u65b0\u6e2f\ud83e\udded harbour ki 907.", "q ki \u65b0\u6e2f\ud83e\udded harbour?");
+  const current = { ...fresh.spans[0]!, text: fresh.transcriptTurns[1]!.supportingSourceRanges![0]!.surface };
+  expect(resolver.inspect(fresh.transcriptTurns[0]!.surface, [current])).toMatchObject({ status: "bound", binding: { value: "907", subject: "\u65b0\u6e2f\ud83e\udded harbour ki" } });
+  expect(resolver.resolve(fresh.transcriptTurns[0]!.surface, [{ ...current, text: current.text.replace("ki", "lo") }])).toBeUndefined();
+  const ambiguous = { ...current, text: "a a a 907." };
+  expect(resolver.inspect("q a a a?", [ambiguous]).status).toBe("ambiguous");
+  expect(resolver.resolve("q a a a?", [ambiguous])).toBeUndefined();
+  const bounded = sourceConstructionRequestValueResolver({ bundles: [bundle!], graph: { nodes: [], hyperedges: [] }, maxTransitions: 1 });
+  expect(bounded.inspect(fresh.transcriptTurns[0]!.surface, [current])).toEqual({ status: "incomplete", visited: 1 });
+  expect(bounded.resolve(fresh.transcriptTurns[0]!.surface, [current])).toBeUndefined();
+});
 it("retains ambiguous or non-independent observations unqualified", () => {
   const duplicated = sources().map(doc => ({ ...doc, transcriptTurns: doc.transcriptTurns.map(turn => ({ ...turn, sourceRecordId: "same.original" })) }));
   expect(acquireContextualQaConstructions({ documents: duplicated, authorship: "human_authored", hasher, updatedAt: 1 }).families).toEqual([]);

@@ -14,6 +14,7 @@ export interface DialogueContextualQaReport {
   pairs: number;
   patternsPersisted: number;
   qualifiedFamilies: number;
+  familyApplicability: readonly { fitBindings: number; heldOutBindings: number; outOfApplicability: number }[];
   rejected: readonly { bindingId: string; reason: string }[];
   unchanged: boolean;
 }
@@ -23,7 +24,7 @@ export async function persistDialogueContextualQaComponent(input: {
   sources: readonly { sourceUri: string; text: string; transcriptTurns?: readonly TranscriptTurn[] }[];
 }): Promise<DialogueContextualQaReport> {
   const unchanged = (): DialogueContextualQaReport => ({ schema: "scce.dialogue_contextual_qa_report.v1", pairs: 0,
-    patternsPersisted: 0, qualifiedFamilies: 0, rejected: [], unchanged: true });
+    patternsPersisted: 0, qualifiedFamilies: 0, familyApplicability: [], rejected: [], unchanged: true });
   const hasher = createHasher();
   const eligible = input.sources.filter(source => source.transcriptTurns?.some(turn => turn.commitmentScope === "external" && turn.supportingSourceRanges?.length));
   if (input.authorship !== "human_authored" || !eligible.length) return unchanged();
@@ -74,6 +75,6 @@ export async function persistDialogueContextualQaComponent(input: {
         persisted += patterns.length; projections.push(projection);
       }
       return { projections, report: { schema: "scce.dialogue_contextual_qa_report.v1" as const, pairs: acquired.pairs,
-        patternsPersisted: persisted, qualifiedFamilies: acquired.families.length, rejected: acquired.rejected, unchanged: false } };
+        patternsPersisted: persisted, qualifiedFamilies: acquired.families.length, familyApplicability: acquired.families.map(family => family.applicability), rejected: acquired.rejected, unchanged: false } };
     } });
 }

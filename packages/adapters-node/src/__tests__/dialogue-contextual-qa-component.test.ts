@@ -4,6 +4,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { readFileSync } from "node:fs";
 import { createScceKernel, createClock, createHasher, createIdFactory, contextualQaRequestMatches, verifyContextualQaConstruction,
   CONTEXTUAL_QA_CONSTRUCTION_RECIPE, type EvidenceSpan, type IngestionCheckpoint, type LanguagePatternRecord, type TranscriptTurn,
   type ContextualQaRequestForm } from "@scce/kernel";
@@ -30,9 +31,9 @@ function corpus() {
   return { schema: "scce.dialogue_transcript.v1", text, turns };
 }
 
-async function fixture() {
+async function fixture(source = corpus()) {
   const root = await mkdtemp(path.join(tmpdir(), "scce-contextual-qa-")); roots.push(root);
-  await writeFile(path.join(root, "human.json"), JSON.stringify(corpus()));
+  await writeFile(path.join(root, "human.json"), JSON.stringify(source));
   const clock = createClock({ fixedTime: 1000, stepMs: 1 }), hasher = createHasher(), evidence: EvidenceSpan[] = [];
   const ids = createIdFactory({ clock, hasher, deterministicReplay: true, namespace: "qa.fixture" });
   const { storage } = storageFixtureForEvaluation({ evidence, clockNow: () => clock.now() });
@@ -82,12 +83,12 @@ it("normal source training publishes contextual roles, cold hydrates and answers
   const semantic = result.constructGraph.nodes.find(node => node.kind === "construct:semantic_answer")!;
   expect(jsonRecord(jsonRecord(semantic.metadata).certificationBoundary).externalFactCertification).toBe(false);
   const negative = await f.kernel().turn({ text: "\u27e1 \u65b0\u6e2f\ud83e\udded \u22ba?", requestedAuthority: "factual" });
-  expect(negative.answer).not.toContain("907");
+  expect(negative.answer).toBe("");
   const requestText = "\u27e1 \u65b0\u6e2f\ud83e\udded \u22b9?";
   const owner = f.evidence.find(span => qa[0]!.evidenceIds.includes(span.id))!;
   const ownerStatus = owner.status; owner.status = "quarantined";
   expect(await contextualQaForRequest({ storage: f.storage, hasher: f.hasher, requestText, evidence: f.evidence })).toBeUndefined();
-  expect((await f.kernel().turn({ text: requestText, requestedAuthority: "factual" })).answer).not.toBe("907");
+  expect((await f.kernel().turn({ text: requestText, requestedAuthority: "factual" })).answer).toBe("");
   owner.status = ownerStatus;
   const version = owner.sourceVersionId; owner.sourceVersionId = "source.version.superseded" as typeof version;
   expect(await contextualQaForRequest({ storage: f.storage, hasher: f.hasher, requestText, evidence: f.evidence })).toBeUndefined();
@@ -97,6 +98,49 @@ it("normal source training publishes contextual roles, cold hydrates and answers
   expect(await contextualQaForRequest({ storage: f.storage, hasher: f.hasher, requestText, evidence: f.evidence })).toBeUndefined();
   f.storage.evidence.getEvidenceBatch = getEvidence;
   expect(await contextualQaForRequest({ storage: f.storage, hasher: f.hasher, requestText, evidence: f.evidence.filter(span => span.id !== result.evidence[0]!.id) })).toBeUndefined();
+});
+
+it("learns a genuine human extractive form across original articles and answers a novel current source after cold training", async () => {
+  const human = JSON.parse(readFileSync(new URL("../../../kernel/src/__tests__/fixtures/squad-contextual-qa-family.json", import.meta.url), "utf8")) as {
+    dataset: string; split: string; source: string; sourceLicense: string; sha256: string;
+    records: Array<{ articleTitle: string; context: string; qa: { id: string; question: string; is_impossible: boolean; answers: Array<{ text: string; answer_start: number }> } }>;
+  };
+  expect(human.sha256).toBe("68dcfbb971bd3e96d5b46c7177b16c1a4e7d4bdef19fb204502738552dede002");
+  expect(human.records).toHaveLength(5);
+  const hasher = createHasher(), turns: TranscriptTurn[] = []; let text = "";
+  for (const record of human.records) {
+    expect(record.qa.answers).toHaveLength(1); expect(record.qa.is_impossible).toBe(false);
+    const answer = record.qa.answers[0]!;
+    expect([...record.context].slice(answer.answer_start, answer.answer_start + [...answer.text].length).join("")).toBe(answer.text);
+    const question = record.qa.question.normalize("NFC"), reply = answer.text.normalize("NFC"), context = record.context.normalize("NFC");
+    const sourceRecordId = record.qa.id, sourceFamilyId = `source.article.${hasher.digestHex(JSON.stringify([human.sha256, record.articleTitle]))}`;
+    const start = [...text].length, replyStart = start + [...question].length + 1, contextStart = replyStart + [...reply].length + 1;
+    text += `${question}\n${reply}\n${context}\n`;
+    turns.push({ index: turns.length, speakerId: "human.question", sourceRecordId, sourceFamilyId, surface: question,
+      startCodePoint: start, endCodePoint: replyStart - 1 });
+    turns.push({ index: turns.length, speakerId: "human.answer", sourceRecordId, sourceFamilyId, surface: reply, startCodePoint: replyStart,
+      endCodePoint: contextStart - 1, replyToTurnIndex: turns.length - 1, commitmentScope: "external",
+      supportingSourceRanges: [{ startCodePoint: contextStart, endCodePoint: [...text].length - 1, surface: context }] });
+  }
+  expect(new Set(turns.map(turn => turn.sourceFamilyId)).size).toBe(4);
+  const f = await fixture({ schema: "scce.dialogue_transcript.v1", text, turns });
+  const trained = await f.train();
+  expect(trained.contextualQaConstructions).toMatchObject({ pairs: 5, qualifiedFamilies: 1, patternsPersisted: 1, unchanged: false,
+    familyApplicability: [{ fitBindings: 2, heldOutBindings: 1, outOfApplicability: 2 }] });
+  const qa = (await f.storage.languageMemory.listLanguagePatterns()).filter(pattern => jsonRecord(pattern.patternJson).componentRecipe === CONTEXTUAL_QA_CONSTRUCTION_RECIPE);
+  expect(qa).toHaveLength(1);
+  const current = "V\u00eblora stations route glyphs for Neralis_\u6e2f\ud83e\udded.";
+  const kernel = f.kernel();
+  await kernel.ingest({ uri: "fixture://current-human-form-fact", content: current, mediaType: "text/plain", namespace: "workspace", informationLabel: label,
+    sourceAdmission: { sourceClass: "owner_local", intendedUse: "direct_evidence", promotionAuthority: "owner" },
+    sourceTrust: { identity: 1, integrity: 1, parserReliability: 1, directness: 1, authority: 1, freshness: 1, independenceGroup: "current-human-form-fact", accessScope: "owner_private", licenseStatus: "owner_authorized" } });
+  const cold = f.kernel();
+  expect((await cold.turn({ text: "What type of stations route glyphs for Neralis_\u6e2f\ud83e\udded?" })).answer).toBe("V\u00eblora");
+  expect((await cold.turn({ text: "What type of stations route glyphs for Neralis_\u6e2f\ud83e\udded?", requestedAuthority: "factual" })).answer).toBe("V\u00eblora");
+  expect((await cold.turn({ text: "What type of stations route glyphs for Foreign_\u661f?", requestedAuthority: "factual" })).answer).toBe("");
+  expect((await cold.turn({ text: "What place receives glyphs from Neralis_\u6e2f\ud83e\udded?", requestedAuthority: "factual" })).answer).toBe("");
+  const source = f.evidence.find(span => span.text === current)!; source.status = "quarantined";
+  expect((await f.kernel().turn({ text: "What type of stations route glyphs for Neralis_\u6e2f\ud83e\udded?", requestedAuthority: "factual" })).answer).toBe("");
 });
 
 it("records unqualified contextual input once and skips unrelated dialogue components", async () => {
