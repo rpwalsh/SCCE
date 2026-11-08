@@ -2988,7 +2988,9 @@ function createLanguageIdentityStore(storage: PostgresStorageAdapter): LanguageI
       );
     },
     async listIdentities() {
-      const rows = await storage.query<{ identity_json: LanguageIdentityRecord }>(`SELECT identity_json FROM ${storage.table("language_identities")} ORDER BY id`);
+      const access = storage.informationAccessPredicate("li", 1);
+      const rows = await storage.query<{ identity_json: LanguageIdentityRecord }>(
+        `SELECT li.identity_json FROM ${storage.table("language_identities")} li WHERE ${access.sql} ORDER BY li.id`, access.params);
       return rows.map(row => row.identity_json);
     },
     async assignProfileLanguages(assignments) {
@@ -3002,8 +3004,20 @@ function createLanguageIdentityStore(storage: PostgresStorageAdapter): LanguageI
         );
       }
     },
-    async listProfileLanguages() {
-      const rows = await storage.query<{ id: string; language_id: string }>(`SELECT id, language_id FROM ${storage.table("language_profiles")} WHERE language_id IS NOT NULL ORDER BY id`);
+    async listProfileLanguages(query) {
+      const profileIds = query ? [...new Set(query.profileIds.filter(Boolean))].sort() : undefined;
+      if (profileIds && !profileIds.length) return [];
+      const params: unknown[] = profileIds ? [profileIds] : [];
+      const profileAccess = storage.informationAccessPredicate("lp", params.length + 1); params.push(...profileAccess.params);
+      const versionAccess = storage.informationAccessPredicate("sv", params.length + 1); params.push(...versionAccess.params);
+      const sourceAccess = storage.informationAccessPredicate("s", params.length + 1); params.push(...sourceAccess.params);
+      const rows = await storage.query<{ id: string; language_id: string }>(
+        `SELECT lp.id, lp.language_id FROM ${storage.table("language_profiles")} lp
+         JOIN ${storage.table("source_versions")} sv ON sv.id=lp.source_version_id
+         JOIN ${storage.table("sources")} s ON s.id=sv.source_id
+         WHERE ${profileIds ? "lp.id=ANY($1::text[]) AND" : ""} lp.language_id IS NOT NULL
+           AND ${profileAccess.sql} AND ${versionAccess.sql} AND ${sourceAccess.sql}
+         ORDER BY lp.id`, params);
       return rows.map(row => ({ profileId: row.id, languageId: row.language_id }));
     },
     async putProfileSignatures({ rows, informationLabel }) {

@@ -354,11 +354,11 @@ export async function completeInitialSourceBrainBuild(input: SourceBrainBuildInp
     now: () => now,
     informationLabel: input.informationLabel
   });
-  let identityResult = await identityRuntime.ensure();
-  let assignments = input.storage.languageIdentities ? await input.storage.languageIdentities.listProfileLanguages() : [];
+  let identityResult = await identityRuntime.ensure({ initializeIfMissing: true });
+  let assignments = input.storage.languageIdentities ? await input.storage.languageIdentities.listProfileLanguages({ profileIds }) : [];
   if (input.storage.languageIdentities && profileIds.some(id => !assignments.some(item => item.profileId === id))) {
     identityResult = await identityRuntime.ensure({ rebuild: true });
-    assignments = await input.storage.languageIdentities.listProfileLanguages();
+    assignments = await input.storage.languageIdentities.listProfileLanguages({ profileIds });
   }
   const assignedProfiles = new Set(assignments.map(item => item.profileId));
   const persistedIdentities = input.storage.languageIdentities ? await input.storage.languageIdentities.listIdentities() : [];
@@ -369,7 +369,7 @@ export async function completeInitialSourceBrainBuild(input: SourceBrainBuildInp
     && profileIds.every(id => assignedProfiles.has(id))
     && selectedAssignments.length === profileIds.length
     && selectedAssignments.every(item => persistedIdentityIds.has(item.languageId))
-    && identityResult.assigned > 0;
+    && identityResult.readiness === "ready";
 
   const content = {
     graphShardCount: 0,

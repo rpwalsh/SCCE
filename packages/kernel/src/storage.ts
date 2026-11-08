@@ -1280,7 +1280,8 @@ export interface LanguageIdentityStore {
   listIdentities(): Promise<import("./language-identity.js").LanguageIdentityRecord[]>;
   /** Replace the assignment of the named profiles; profiles not named keep theirs. */
   assignProfileLanguages(assignments: ReadonlyArray<{ profileId: string; languageId: string }>): Promise<void>;
-  listProfileLanguages(): Promise<Array<{ profileId: string; languageId: string }>>;
+  /** Exact owner lookup for serving; omission is an explicit maintenance enumeration. */
+  listProfileLanguages(query?: { profileIds: readonly string[] }): Promise<Array<{ profileId: string; languageId: string }>>;
   /** Page through every profile's discovery signature in id order, without loading whole profiles. */
   listProfileSignatures(query: { afterId?: string; limit: number }): Promise<LanguageProfileSignatureRow[]>;
   /**

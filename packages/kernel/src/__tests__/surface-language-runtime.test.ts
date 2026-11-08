@@ -9,11 +9,39 @@ import { createIdFactory } from "../ids.js";
 import { createClock, createHasher } from "../primitives.js";
 import { createSurfaceLanguageRuntime } from "../surface-language-runtime.js";
 import { CORPUS_SOURCE_SYSTEM_IDS } from "../corpus-registry.js";
-import type { LanguageContinuationPopulation, ScceKernelDeps, SemanticFrameRecord } from "../storage.js";
+import type { LanguageContinuationPopulation, LanguagePatternRecord, LanguageUnitRecord, ScceKernelDeps, SemanticFrameRecord } from "../storage.js";
 import type { SegmentationPopulationModelRecord } from "../segmentation-population-persistence.js";
 import type { LanguageProfile } from "../types.js";
 
 describe("surface language resident-only cache", () => {
+  it("snapshots every bounded artifact owner and reuses that snapshot for warm rescoping", async () => {
+    const snapshots: string[][] = [];
+    const fixture = runtimeFixture({ cacheMs: 100000, languageResolver: async profileIds => {
+      snapshots.push([...profileIds]);
+      return { profile: id => id === "profile.foreign" ? "language.foreign"
+        : id === "profile.unassigned" ? undefined : "language.fixture", corpus: () => undefined };
+    } });
+    const hasher = createHasher();
+    const compiled = createNgramMemoryCompiler({ hasher, idFactory: createIdFactory({ hasher, clock: createClock(), deterministicReplay: true }) }).compile({
+      streamId: "stream.snapshot", sourceSystem: "wikipedia", profile: fixture.profile, sourceVersionId: fixture.profile.sourceVersionId,
+      text: "alpha beta alpha gamma", evidence: [], createdAt: 1, retainObservations: false });
+    fixture.storage.languageMemory.listNgramModels = async () => compiled.models;
+    const control: LanguagePatternRecord = { id: "request.control", profileId: "profile.request-control", patternKind: "syntax", support: 1, entropy: 0,
+      patternJson: { schema: "scce.request_requirement_pattern.v1", sourceSystem: "dialogue" }, evidenceIds: [], updatedAt: 1 };
+    fixture.storage.languageMemory.listLanguagePatterns = async query => query?.patternSchemas ? [control] : [];
+    const units: LanguageUnitRecord[] = [fixture.profile.id, "profile.foreign", "profile.unassigned"].map(profileId => ({
+      id: `unit:${profileId}`, profileId, sourceVersionId: fixture.profile.sourceVersionId, script: "script:Latn", unitKind: "phrase", text: profileId,
+      features: [], competenceVector: [], alpha: 1, evidenceIds: [], metadata: {} }));
+    fixture.storage.languageMemory.listLanguageUnits = async () => units;
+    fixture.storage.languageMemory.listSemanticFrames = async () => [{ ...fixture.frame, frameJson: { profileId: "profile.frame", surface: "owned frame" } }];
+    const hydrated = await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "bounded-language-snapshot", undefined, "first", { languageId: "language.fixture" });
+    expect(snapshots).toEqual([["profile.fixture", "profile.foreign", "profile.frame", "profile.request-control", "profile.unassigned"]]);
+    expect(hydrated.state.importedUnits.map(unit => unit.profileId)).toEqual([fixture.profile.id, "profile.unassigned"]);
+    expect(hydrated.state.importedObservations).toEqual([]);
+    const warm = await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "bounded-language-snapshot", undefined, "second", { languageId: "language.fixture" });
+    expect(warm.state).toBe(hydrated.state);
+    expect(snapshots).toHaveLength(1);
+  });
   it("keeps a cluster request seed distinct from realization and omits only generative join payloads", async () => {
     const fixture = runtimeFixture({ cacheMs: 100000 });
     const hasher = createHasher();
@@ -486,7 +514,7 @@ describe("surface language resident-only cache", () => {
   });
 });
 
-function runtimeFixture(cacheOverrides: { cacheMs?: number; surfaceLanguageMemoryCacheMaxEntries?: number; surfaceCandidateProfileCacheMaxEntries?: number; surfaceLanguageMemoryCacheMaxEstimatedBytes?: number; languageResolver?: () => { profile: (profileId: string) => string | undefined; corpus: (sourceSystem: string | undefined) => string | undefined } } = {}) {
+function runtimeFixture(cacheOverrides: { cacheMs?: number; surfaceLanguageMemoryCacheMaxEntries?: number; surfaceCandidateProfileCacheMaxEntries?: number; surfaceLanguageMemoryCacheMaxEstimatedBytes?: number; languageResolver?: Parameters<typeof createSurfaceLanguageRuntime>[0]["languageResolver"] } = {}) {
   const calls = {
     active: 0,
     evidence: 0,

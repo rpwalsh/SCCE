@@ -294,12 +294,14 @@ export function conversationalSession(options?: { corpus?: string; learned?: { p
     }
   } as unknown as ScceStorage;
   const kernel = bootKernel(storage);
+  const identityInitialization = kernel.languageIdentities();
   const sessionId = "session.conversational";
   const recentTurns: JsonValue[] = [];
   let index = 0;
   return {
     recentTurns,
     async turn(text: string): Promise<{ result: TurnResult; trace: TraceRow[] }> {
+      await identityInitialization;
       // The session shape routes.ts sends: the conversation's own turns, in their own namespace.
       const metadata: Record<string, JsonValue> = { session: { sessionId, recentTurns: [...recentTurns] } };
       const out = await tracedTurn(kernel, text, metadata);

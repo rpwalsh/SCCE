@@ -183,7 +183,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
     clock,
     hasher,
     cacheMs: surfaceLanguageMemoryCacheMs,
-    languageResolver: () => languageIdentityRuntime.resolver(),
+    languageResolver: profileIds => languageIdentityRuntime.resolver(profileIds),
     // A per-turn CPU cost, not a memory bound: the window is clustered on every request (measured: 2,048 profiles
     // put 10-15s of clustering into each turn's seed; 512 about 2s). The role hydration carries the language now,
     // so the window only has to name the request's cluster.
@@ -293,13 +293,14 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
   });
   const kernel: ScceKernel = {
     async languageIdentities(input = {}) {
-      const result = await languageIdentityRuntime.ensure(input);
+      const result = await languageIdentityRuntime.ensure({ ...input, initializeIfMissing: true });
+      if (result.discovered) invalidateRuntimeCaches();
       return { schema: "scce.language_identities.v1" as const, ...result };
     },
     async refreshAfterBrainActivation() {
       invalidateRuntimeCaches();
-      const result = await languageIdentityRuntime.ensure();
-      return { languageIdentities: result.identities.length, assignedProfiles: result.assigned };
+      const result = await languageIdentityRuntime.ensure({ initializeIfMissing: true });
+      return { languageIdentities: result.identities.length, assignedProfiles: result.assigned, readiness: result.readiness };
     },
     async warmup(input: RuntimeWarmupInput = {}): Promise<RuntimeWarmupResult> {
       const started = clock.now();
@@ -320,7 +321,9 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
         })
         : undefined;
       if (identityWarmup) {
-        kernelTrace({ stage: "runtime.start.language_identities", label: "kernel.warmup", durationMs: identityWarmup.elapsedMs, counts: { identities: identityWarmup.identities.length, assigned: identityWarmup.assigned }, support: { discovered: identityWarmup.discovered, identities: identityWarmup.identities.map(identity => ({ id: identity.id, script: identity.script, profiles: identity.profileCount, closedClass: identity.closedClass.slice(0, 8).map(row => row.word), families: identity.families.slice(0, 4) })) } });
+        result.languageIdentities = { readiness: identityWarmup.readiness, identities: identityWarmup.identities.length, assigned: identityWarmup.assigned };
+        kernelTrace({ stage: "runtime.start.language_identities", label: "kernel.warmup", durationMs: identityWarmup.elapsedMs, counts: { identities: identityWarmup.identities.length,
+          ...(identityWarmup.assigned !== null ? { assigned: identityWarmup.assigned } : {}) }, support: { readiness: identityWarmup.readiness, discovered: identityWarmup.discovered, identities: identityWarmup.identities.map(identity => ({ id: identity.id, script: identity.script, profiles: identity.profileCount, closedClass: identity.closedClass.slice(0, 8).map(row => row.word), families: identity.families.slice(0, 4) })) } });
       }
 
       if (input.graph ?? true) {

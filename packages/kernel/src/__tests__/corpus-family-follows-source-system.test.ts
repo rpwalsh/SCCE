@@ -62,7 +62,7 @@ describe("a document's corpus family follows its source system, not its URI sche
         row(`talk:${String(index).padStart(3, "0")}`, CORPUS_SOURCE_SYSTEM_IDS.dialogue, `file:///C:/scce/corpus/dialogue/pg100${index}.txt`, DIALOGUE))
     ];
     const runtime = createLanguageIdentityRuntime({ store: memoryStore(rows), hasher: createHasher(), now: () => 1, corpusRegistry: REGISTRY });
-    const { identities } = await runtime.ensure();
+    const { identities } = await runtime.ensure({ initializeIfMissing: true });
     const identity = identities.find(record => record.profileCount === rows.length)!;
     expect(identity).toBeDefined();
     expect(identity.families.map(family => family.family)).toContain("dialogue");

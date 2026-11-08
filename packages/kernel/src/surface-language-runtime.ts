@@ -12,7 +12,7 @@ import { featureSetMemoStats } from "./primitives.js";
 import { tidySurfaceTextMemoStats } from "./surface-linguistics.js";
 import { hydrateLanguageConstructionPatterns, isLanguageConstructionPattern, LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, type DurableLanguageConstructionBundle } from "./language-construction-memory.js";
 import { cloneLanguageMemoryRuntimeState, createLanguageMemoryRuntime, markLanguageMemoryStateUnscoped, onLanguageMemoryConstructionHydrated, peekLanguageMemoryConstructionState, scopeLanguageMemoryStateToCluster, scopeLanguageMemoryStateToLanguage } from "./language-memory-runtime.js";
-import type { LanguageResolver } from "./language-identity-runtime.js";
+import { languageIdentityProfileIdsForArtifacts, type LanguageResolver } from "./language-identity-runtime.js";
 import type { LanguageMemoryRuntimeState } from "./language-memory-runtime.js";
 import {
   buildLanguageProfileClusters,
@@ -178,7 +178,7 @@ export function createSurfaceLanguageRuntime(options: {
   cacheMs: number;
   profileLimit: number;
   /** Resolves artifact languages once identities are loaded; absent until then, when cluster scoping applies. */
-  languageResolver?: () => LanguageResolver | undefined;
+  languageResolver?: (profileIds: readonly string[]) => LanguageResolver | undefined | Promise<LanguageResolver | undefined>;
   /** Test/tuning hook; production callers should rely on the defaults. */
   surfaceLanguageMemoryCacheMaxEntries?: number;
   surfaceCandidateProfileCacheMaxEntries?: number;
@@ -554,6 +554,9 @@ export function createSurfaceLanguageRuntime(options: {
       }).filter(Boolean)
     ]);
     const roleProfiles = persistedProfiles.filter(profile => roleProfileIds.has(profile.id));
+    const assignmentProfileIds = languageIdentityProfileIdsForArtifacts({ ...hydrationInput, profiles: roleProfiles,
+      patterns: [...hydrationInput.patterns, ...learnedRequestControlPatterns] });
+    const resolver = languageId ? await options.languageResolver?.(assignmentProfileIds) : undefined;
     // The ONLY thing the request surface influences in this whole function:
     // which role cluster scopes the already-hydrated payload. Everything
     // above -- the 64MB model read, unit/pattern/frame loads, trie build --
@@ -573,7 +576,6 @@ export function createSurfaceLanguageRuntime(options: {
       : undefined;
     const scopeForSurface = (surface: string) => {
       // A language identity scopes by what each artifact is, not by which document it came from.
-      const resolver = languageId ? options.languageResolver?.() : undefined;
       if (languageId && resolver) {
         languageScopedState ??= (languageScopeKey ? languageScopeCache.get(languageScopeKey)?.deref() : undefined)
           ?? scopeLanguageMemoryStateToLanguage(hydrated, languageId, resolver);
@@ -1319,7 +1321,7 @@ export function createSurfaceLanguageRuntime(options: {
       const patterns = uniqueRecordsById([...sourcePatterns, ...candidates.map(candidate => candidate.modelPattern)], sourcePatterns.length + candidates.length);
       const hydrated = languageMemoryRuntime.hydrate({ models: [], patterns, constructionEvidence: evidence });
       const owned = await evidenceOwnedLanguageProfilesCached([...new Set(evidence.map(span => span.sourceVersionId))]);
-      const resolver = options.languageResolver?.();
+      const resolver = languageId ? await options.languageResolver?.(languageIdentityProfileIdsForArtifacts({ patterns, profiles: owned.profiles })) : undefined;
       let state: LanguageMemoryRuntimeState;
       if (languageId && resolver) state = scopeLanguageMemoryStateToLanguage(hydrated, languageId, resolver);
       else {

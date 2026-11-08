@@ -10,7 +10,7 @@ import {
 import { isLanguageWordSymbol } from "./language-identity.js";
 import { CORPUS_ROLE_IDS, createCorpusRegistry, corpusRoleIdForSourceSystem, type CorpusRegistryEntry } from "./corpus-registry.js";
 import type { LanguageIdentityStore, LanguageProfileSignatureRow } from "./storage.js";
-import type { Hasher, InformationLabel } from "./types.js";
+import type { Hasher, InformationLabel, JsonValue } from "./types.js";
 
 /** Resolves an artifact's language from what the artifact says about itself: its profile, or failing that its corpus. */
 export interface LanguageResolver {
@@ -18,11 +18,43 @@ export interface LanguageResolver {
   corpus(sourceSystem: string | undefined): string | undefined;
 }
 
+export function languageIdentityProfileIdsForArtifacts(input: {
+  profiles?: readonly { id: string }[];
+  units?: readonly { profileId: string }[];
+  patterns?: readonly { profileId: string }[];
+  models?: readonly { modelJson: JsonValue }[];
+  observations?: readonly { metadata: JsonValue }[];
+  semanticFrames?: readonly { frameJson: JsonValue }[];
+}): string[] {
+  const jsonOwner = (value: JsonValue): string | undefined => value && typeof value === "object" && !Array.isArray(value)
+    && typeof value.profileId === "string" ? value.profileId : undefined;
+  return [...new Set([
+    ...(input.profiles ?? []).map(profile => profile.id),
+    ...(input.units ?? []).map(unit => unit.profileId),
+    ...(input.patterns ?? []).map(pattern => pattern.profileId),
+    ...(input.models ?? []).map(model => jsonOwner(model.modelJson)),
+    ...(input.observations ?? []).map(observation => jsonOwner(observation.metadata)),
+    ...(input.semanticFrames ?? []).map(frame => jsonOwner(frame.frameJson))
+  ].filter((id): id is string => typeof id === "string" && Boolean(id)))].sort();
+}
+
+export type LanguageIdentityReadiness = "not_loaded" | "ready" | "missing" | "requires_rebuild" | "unavailable";
+export interface LanguageIdentityLoadResult {
+  identities: LanguageIdentityRecord[];
+  /** Null when serving did not enumerate the global assignment population. */
+  assigned: number | null;
+  discovered: boolean;
+  readiness: LanguageIdentityReadiness;
+  elapsedMs: number;
+}
+
 export interface LanguageIdentityRuntime {
-  /** Load the persisted identities and assignments; discover and persist them first when none exist or on rebuild. */
-  ensure(input?: { rebuild?: boolean }): Promise<{ identities: LanguageIdentityRecord[]; assigned: number; discovered: boolean; elapsedMs: number }>;
+  /** Serving reads the catalog; discovery requires an explicit initialization or rebuild. */
+  ensure(input?: { rebuild?: boolean; initializeIfMissing?: boolean }): Promise<LanguageIdentityLoadResult>;
   identities(): readonly LanguageIdentityRecord[];
-  resolver(): LanguageResolver | undefined;
+  readiness(): LanguageIdentityReadiness;
+  /** Immutable assignment snapshot for precisely the owners present in bounded work. */
+  resolver(profileIds: readonly string[]): Promise<LanguageResolver | undefined>;
   /** The identity a request surface is written in, once identities are loaded. */
   selectForSurface(surface: string, options?: { excludeCorpusRoleIds?: readonly string[] }): { identity: LanguageIdentityRecord; coverage: number } | undefined;
   /** The identity most of a corpus family's documents belong to. */
@@ -111,9 +143,9 @@ export function createLanguageIdentityRuntime(options: {
 }): LanguageIdentityRuntime {
   const corpusRegistry = options.corpusRegistry ?? createCorpusRegistry();
   let loaded: LanguageIdentityRecord[] = [];
-  let profileLanguage = new Map<string, string>();
   let familyLanguage = new Map<string, string>();
-  let ensuring: Promise<{ identities: LanguageIdentityRecord[]; assigned: number; discovered: boolean; elapsedMs: number }> | undefined;
+  let readiness: LanguageIdentityReadiness = "not_loaded";
+  let ensuring: Promise<LanguageIdentityLoadResult> | undefined;
 
   const index = () => {
     familyLanguage = new Map();
@@ -146,35 +178,50 @@ export function createLanguageIdentityRuntime(options: {
 
   return {
     async ensure(input = {}) {
-      if (ensuring) return ensuring;
+      if (ensuring) {
+        const current = await ensuring;
+        if (!input.rebuild && !(input.initializeIfMissing && current.readiness !== "ready")) return current;
+      }
       ensuring = (async () => {
         const started = Date.now();
-        if (!options.store) return { identities: [], assigned: 0, discovered: false, elapsedMs: 0 };
+        if (!options.store) {
+          readiness = "unavailable";
+          return { identities: [], assigned: null, discovered: false, readiness, elapsedMs: 0 };
+        }
         let identities = input.rebuild ? [] : await options.store.listIdentities();
         let discovered = false;
-        let assigned = 0;
-        // V1 rows lack typed corpus roles; reindex their compact signatures without retraining models.
-        if (!identities.length || identities.some(identity => identity.schema !== LANGUAGE_IDENTITY_SCHEMA || !Array.isArray(identity.corpusRoles))) {
+        let assigned: number | null = null;
+        const stale = identities.some(identity => identity.schema !== LANGUAGE_IDENTITY_SCHEMA || !Array.isArray(identity.corpusRoles));
+        readiness = stale ? "requires_rebuild" : identities.length ? "ready" : "missing";
+        if (input.rebuild || (input.initializeIfMissing && readiness !== "ready")) {
           const result = await discover();
           identities = result.identities;
           assigned = result.assigned;
           discovered = true;
+          readiness = identities.length ? "ready" : "missing";
         }
-        loaded = identities;
-        profileLanguage = new Map((await options.store.listProfileLanguages()).map(row => [row.profileId, row.languageId]));
-        if (!discovered) assigned = profileLanguage.size;
+        loaded = readiness === "ready" ? identities : [];
         index();
-        return { identities, assigned, discovered, elapsedMs: Date.now() - started };
+        return { identities: loaded, assigned, discovered, readiness, elapsedMs: Date.now() - started };
       })();
-      try { return await ensuring; } finally { ensuring = undefined; }
+      try { return await ensuring; }
+      catch (error) { loaded = []; index(); readiness = "unavailable"; throw error; }
+      finally { ensuring = undefined; }
     },
     identities: () => loaded,
-    resolver: () => loaded.length
-      ? {
+    readiness: () => readiness,
+    resolver: async requestedIds => {
+      if (!loaded.length || !options.store) return undefined;
+      const profileIds = [...new Set(requestedIds.filter(Boolean))].sort();
+      const requested = new Set(profileIds);
+      const assignments = profileIds.length ? await options.store.listProfileLanguages({ profileIds }) : [];
+      const profileLanguage = new Map(assignments.filter(row => requested.has(row.profileId)).map(row => [row.profileId, row.languageId]));
+      const families = new Map(familyLanguage);
+      return {
         profile: profileId => profileLanguage.get(profileId),
-        corpus: sourceSystem => (sourceSystem ? familyLanguage.get(corpusFamilyForSourceSystem(sourceSystem)) : undefined)
-      }
-      : undefined,
+        corpus: sourceSystem => (sourceSystem ? families.get(corpusFamilyForSourceSystem(sourceSystem)) : undefined)
+      };
+    },
     selectForSurface: (surface, selection = {}) => selectLanguageIdentityForSurface(loaded, surface, {
       ...selection,
       excludeCorpusRoleIds: [...new Set([CORPUS_ROLE_IDS.softwareSymbolic, ...(selection.excludeCorpusRoleIds ?? [])])]

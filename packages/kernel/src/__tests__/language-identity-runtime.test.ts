@@ -59,11 +59,11 @@ describe("language identity runtime", () => {
     ];
     const store = memoryStore(rows);
     const runtime = createLanguageIdentityRuntime({ store, hasher: createHasher(), now: () => 1 });
-    const first = await runtime.ensure();
+    const first = await runtime.ensure({ initializeIfMissing: true });
     expect(first.discovered).toBe(true);
     expect(first.identities.length).toBe(2);
     expect(first.assigned).toBe(rows.length);
-    const resolver = runtime.resolver()!;
+    const resolver = (await runtime.resolver(["wiki:0", "batch:3", "code:2"]))!;
     const english = resolver.profile("wiki:0")!;
     expect(resolver.profile("batch:3")).toBe(english);
     expect(resolver.profile("code:2")).not.toBe(english);
@@ -81,12 +81,13 @@ describe("language identity runtime", () => {
     const singleton = row("solo:wiki", "wikipedia://enwiki/pages/1", [...ENGLISH, "azurite", "crystal"]);
     const store = memoryStore([singleton]);
     const runtime = createLanguageIdentityRuntime({ store, hasher: createHasher(), now: () => 1 });
-    const result = await runtime.ensure();
+    const result = await runtime.ensure({ initializeIfMissing: true });
     const identity = result.identities[0]!;
 
     expect(result.assigned).toBe(1);
-    expect(runtime.resolver()?.profile(singleton.id)).toBe(identity.id);
-    expect(runtime.resolver()?.corpus("wikipedia")).toBe(identity.id);
+    const resolver = await runtime.resolver([singleton.id]);
+    expect(resolver?.profile(singleton.id)).toBe(identity.id);
+    expect(resolver?.corpus("wikipedia")).toBe(identity.id);
     expect(identity.families.map(item => item.family)).toContain("wikipedia");
     expect(identity.closedClass).toEqual([]);
     expect(identity.evidence?.sampleCount).toBe(1);
@@ -111,7 +112,7 @@ describe("language identity runtime", () => {
     }] as unknown as LanguageIdentityRecord[];
     const store = memoryStore(rows, stale);
     const runtime = createLanguageIdentityRuntime({ store, hasher: createHasher(), now: () => 2 });
-    const refreshed = await runtime.ensure();
+    const refreshed = await runtime.ensure({ rebuild: true });
     const code = refreshed.identities.find(identity => identity.corpusRoles.some(role => role.corpusRoleId === CORPUS_ROLE_IDS.softwareSymbolic))!;
     const natural = refreshed.identities.find(identity => identity.corpusRoles.some(role => role.corpusRoleId === CORPUS_ROLE_IDS.softwareDocumentation))!;
 

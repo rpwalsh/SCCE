@@ -1108,7 +1108,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         stage: "runtime.seed.language_identity",
         label: "kernel.turn",
         counts: { identities: languageIdentityRuntime.identities().length, coverage: requestLanguage?.coverage ?? 0 },
-        support: { languageId: requestLanguageId ?? null, script: requestLanguage?.identity.script ?? null, closedClass: requestLanguage?.identity.closedClass.slice(0, 6).map(row => row.word) ?? [] }
+        support: { readiness: languageIdentityRuntime.readiness(), languageId: requestLanguageId ?? null, script: requestLanguage?.identity.script ?? null, closedClass: requestLanguage?.identity.closedClass.slice(0, 6).map(row => row.word) ?? [] }
       });
       // Before first visibility, reserve room for realization. Once the stream
       // has emitted its accepted frame, this is no longer a response cutoff:
@@ -3243,7 +3243,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           createdAt: clock.now()
         });
         realizationLanguageIdentityId = productionTranslationPlan.targetProfile
-          ? languageIdentityRuntime.resolver()?.profile(productionTranslationPlan.targetProfile.id)
+          ? (await languageIdentityRuntime.resolver([productionTranslationPlan.targetProfile.id]))?.profile(productionTranslationPlan.targetProfile.id)
           : undefined;
         if (deps.storage.translationSeeds && productionTranslationPlan.inducedSeeds.length) {
           await deps.storage.translationSeeds.putSeeds({

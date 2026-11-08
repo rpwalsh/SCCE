@@ -17,7 +17,10 @@ vi.mock("@scce/kernel", () => {
     },
     createLanguageIdentityRuntime: (options: { informationLabel?: { tenantId: string } }) => {
       if (options.informationLabel?.tenantId !== "tenant.owner") throw new Error("identity discovery lost its durable information label");
-      return { ensure: async () => ({ assigned: 1, identities: [], discovered: false, elapsedMs: 0 }) };
+      return { ensure: async (input: { initializeIfMissing?: boolean; rebuild?: boolean }) => {
+        if (!input.initializeIfMissing && !input.rebuild) throw new Error("initial brain identity discovery requires explicit maintenance");
+        return { assigned: 1, identities: [], discovered: false, readiness: "ready", elapsedMs: 0 };
+      } };
     },
     toJsonValue: (value: unknown) => value,
     validateBrainManifestContract: () => [],
