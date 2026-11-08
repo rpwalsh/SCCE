@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import type { EvidenceSpan, JsonValue, LanguageProfile } from "./types.js";
-import { clamp01, entropy, featureSet, mean, symbolizeData, toJsonValue } from "./primitives.js";
+import { clamp01, entropy, featureSet, mean, symbolizeData, toJsonValue, weightedJaccardFromSets } from "./primitives.js";
 
 export const LANGUAGE_ACQUISITION_ACTION_IDS = {
   answer: "lang.acq.action.0d5e7b41",
@@ -165,19 +165,11 @@ function prepareAlignment(profile: LanguageProfile): PreparedAlignment {
     continuations: new Set(continuations(profile)) };
 }
 
-function preparedJaccard(left: ReadonlySet<string>, right: ReadonlySet<string>): number {
-  if (left.size === 0 && right.size === 0) return 1;
-  let intersection = 0;
-  for (const item of left) if (right.has(item)) intersection++;
-  const union = left.size + right.size - intersection;
-  return union === 0 ? 0 : intersection / union;
-}
-
 function align(left: PreparedAlignment, right: PreparedAlignment): AlignmentPair {
-  const scriptOverlap = preparedJaccard(left.scripts, right.scripts);
-  const shapeOverlap = preparedJaccard(left.shapes, right.shapes);
-  const charNgramOverlap = preparedJaccard(left.ngrams, right.ngrams);
-  const continuationOverlap = preparedJaccard(left.continuations, right.continuations);
+  const scriptOverlap = weightedJaccardFromSets(left.scripts, right.scripts);
+  const shapeOverlap = weightedJaccardFromSets(left.shapes, right.shapes);
+  const charNgramOverlap = weightedJaccardFromSets(left.ngrams, right.ngrams);
+  const continuationOverlap = weightedJaccardFromSets(left.continuations, right.continuations);
   const alignment = clamp01(0.28 * scriptOverlap + 0.22 * shapeOverlap + 0.32 * charNgramOverlap + 0.18 * continuationOverlap);
   return { leftProfileId: left.id, rightProfileId: right.id, scriptOverlap, shapeOverlap, charNgramOverlap, continuationOverlap, alignment };
 }

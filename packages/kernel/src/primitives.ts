@@ -109,12 +109,14 @@ export function cosineSimilarity(a: readonly number[], b: readonly number[]): nu
 }
 
 export function weightedJaccard(left: readonly string[], right: readonly string[]): number {
-  const a = new Set(left);
-  const b = new Set(right);
-  if (a.size === 0 && b.size === 0) return 1;
+  return weightedJaccardFromSets(new Set(left), new Set(right));
+}
+
+export function weightedJaccardFromSets(left: ReadonlySet<string>, right: ReadonlySet<string>): number {
+  if (left.size === 0 && right.size === 0) return 1;
   let intersection = 0;
-  for (const item of a) if (b.has(item)) intersection++;
-  const union = a.size + b.size - intersection;
+  for (const item of left) if (right.has(item)) intersection++;
+  const union = left.size + right.size - intersection;
   return union === 0 ? 0 : intersection / union;
 }
 
