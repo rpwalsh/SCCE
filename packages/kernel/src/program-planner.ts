@@ -3,7 +3,7 @@
 import type { ContentHash, EpisodeId, EvidenceSpan, FileArtifact, Hasher, JsonValue, ProgramBehaviorRequirement, ProgramConstructIntent, ProgramGraph, ProgramStatefulBehaviorRequirement, SemanticEntailmentResult } from "./types.js";
 import type { IdFactory } from "./ids.js";
 import { canonicalStringify, clamp01, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";
-import { createCodeLearningEngine, emittedProgramRuntimeForLanguage, EMITTED_PROGRAM_RUNTIME, type CodeImplementationBlueprint, type CodeKnowledgeGraph, type EmittedProgramRuntime } from "./code-learning.js";
+import { createCodeLearningEngine, emittedProgramRuntimeForLanguage, nativeProgramRuntimeForLanguage, EMITTED_PROGRAM_RUNTIME, type CodeImplementationBlueprint, type CodeKnowledgeGraph, type EmittedProgramRuntime } from "./code-learning.js";
 import { createEngineeringCorpusRuntime, packageManagerCommandName, plannerScriptKind } from "./engineering-corpus-runtime.js";
 import { createProgramHydrationContract, hydrationSummary } from "./program-runtime.js";
 import { composeProgramGraphFromBehavior, jsonValueTypeId, type ProgramModulePort, type ProgramModuleSpec } from "./program-composition.js";
@@ -144,6 +144,12 @@ export interface ProgramPlannerInput {
   entailment: SemanticEntailmentResult;
   evidence: EvidenceSpan[];
   programIntent?: ProgramConstructIntent;
+}
+
+export interface ProgramEmissionAvailability {
+  status: "available" | "unavailable";
+  languageId: string;
+  reasonIds: string[];
 }
 
 export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Hasher }) {
@@ -297,8 +303,21 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
       };
     },
 
-    emit(input: ProgramPlannerInput): ProgramGraph {
+    emitIfAvailable(input: ProgramPlannerInput): { availability: ProgramEmissionAvailability; program?: ProgramGraph } {
+      const languageId = input.programIntent?.languageId;
+      if (languageId && !nativeProgramRuntimeForLanguage(languageId)) {
+        return { availability: { status: "unavailable", languageId, reasonIds: ["program.emission.native_backend_unavailable"] } };
+      }
       const plan = this.plan(input);
+      const availability = programPlanEmissionAvailability(plan, input.requestText);
+      return availability.status === "available" ? { availability, program: this.emitPlanned(plan, input) } : { availability };
+    },
+
+    emit(input: ProgramPlannerInput): ProgramGraph {
+      return this.emitPlanned(this.plan(input), input);
+    },
+
+    emitPlanned(plan: ProgramPlan, input: ProgramPlannerInput): ProgramGraph {
       const files = emitFiles(plan, input, options.idFactory, options.hasher);
       const emittedRuntime = emittedRuntimeForShape(plan.intent.shape);
       const usesFallbackRuntime = !nodeRuntimeForShape(plan.intent.shape);
@@ -3468,8 +3487,12 @@ function rustF64Literal(value: number): string {
   return Number.isInteger(value) && !/[eE]/u.test(surface) ? `${surface}.0` : surface;
 }
 
+function validRustCallableName(name: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/u.test(name) && !["_", "self", "Self", "super", "crate"].includes(name);
+}
+
 function rustCallableName(name: string): string {
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name) || ["_", "self", "Self", "super", "crate"].includes(name)) {
+  if (!validRustCallableName(name)) {
     throw new Error(`Rust native program has an invalid callable identifier: ${name}`);
   }
   return `r#${name}`;
@@ -3509,20 +3532,50 @@ function renderRustF64Expression(expression: ProgramExpression, arity: number): 
   throw new Error(`Rust native program cannot emit expression kind: ${expression.kind}`);
 }
 
-function rustOwnerRequirements(plan: ProgramPlan): Map<string, ProgramBehaviorRequirement[]> {
-  if (plan.ownerStatefulBehaviorRequirements.length || !plan.ownerBehaviorRequirements.length) {
-    throw new Error("Rust native program requires pure scalar owner behavior");
-  }
-  const groups = new Map<string, ProgramBehaviorRequirement[]>();
+interface RustEmissionIssue { reasonId: string; message: string }
+
+function rustOwnerRequirementIssue(plan: ProgramPlan, requestText?: string): RustEmissionIssue | undefined {
+  if (plan.ownerStatefulBehaviorRequirements.length) return { reasonId: "program.emission.rust.stateful_behavior_unsupported", message: "Rust native program requires pure scalar owner behavior" };
+  if (!plan.ownerBehaviorRequirements.length) return { reasonId: "program.emission.rust.owner_behavior_missing", message: "Rust native program requires pure scalar owner behavior" };
+  const arities = new Map<string, number>();
   for (const requirement of plan.ownerBehaviorRequirements) {
     if (!requirement.arguments.length || requirement.arguments.length > 3
       || requirement.arguments.some(value => typeof value !== "number" || !Number.isFinite(value))
       || typeof requirement.expectedResult !== "number" || !Number.isFinite(requirement.expectedResult)) {
-      throw new Error("Rust native program requires finite f64 owner examples");
+      return { reasonId: "program.emission.rust.behavior_type_unsupported", message: "Rust native program requires finite f64 owner examples" };
     }
-    rustCallableName(requirement.callableId);
+    if (!validRustCallableName(requirement.callableId)) return { reasonId: "program.emission.rust.callable_unsupported", message: `Rust native program has an invalid callable identifier: ${requirement.callableId}` };
+    const arity = arities.get(requirement.callableId);
+    if (arity !== undefined && arity !== requirement.arguments.length) return { reasonId: "program.emission.rust.arity_inconsistent", message: "Rust native callable arity differs across examples" };
+    arities.set(requirement.callableId, requirement.arguments.length);
+  }
+  if (requestText !== undefined) for (const [name, arity] of arities) {
+    const declaration = new RegExp(`\\bfn\\s+${name}\\s*\\(([^)]*)\\)\\s*->\\s*([A-Za-z_][A-Za-z0-9_]*)`, "u").exec(requestText);
+    if (!declaration) {
+      if (new RegExp(`\\bfn\\s+${name}\\s*\\(`, "u").test(requestText)) return { reasonId: "program.emission.rust.signature_unsupported", message: `Rust native callable lacks a typed f64 declaration: ${name}` };
+      continue;
+    }
+    const parameters = declaration[1]!.split(",").map(value => value.trim()).filter(Boolean);
+    if (declaration[2] !== "f64" || parameters.length !== arity
+      || parameters.some(parameter => !/^[A-Za-z_][A-Za-z0-9_]*\s*:\s*f64$/u.test(parameter))) {
+      return { reasonId: "program.emission.rust.signature_unsupported", message: `Rust native callable requires f64 parameters and return: ${name}` };
+    }
+  }
+  return undefined;
+}
+
+export function programPlanEmissionAvailability(plan: ProgramPlan, requestText: string): ProgramEmissionAvailability {
+  const languageId = emittedRuntimeForShape(plan.intent.shape).languageId;
+  const issue = languageId === "rust" ? rustOwnerRequirementIssue(plan, requestText) : undefined;
+  return { status: issue ? "unavailable" : "available", languageId, reasonIds: issue ? [issue.reasonId] : [] };
+}
+
+function rustOwnerRequirements(plan: ProgramPlan): Map<string, ProgramBehaviorRequirement[]> {
+  const issue = rustOwnerRequirementIssue(plan);
+  if (issue) throw new Error(issue.message);
+  const groups = new Map<string, ProgramBehaviorRequirement[]>();
+  for (const requirement of plan.ownerBehaviorRequirements) {
     const group = groups.get(requirement.callableId) ?? [];
-    if (group.length && group[0]!.arguments.length !== requirement.arguments.length) throw new Error("Rust native callable arity differs across examples");
     group.push(requirement);
     groups.set(requirement.callableId, group);
   }
@@ -3531,18 +3584,8 @@ function rustOwnerRequirements(plan: ProgramPlan): Map<string, ProgramBehaviorRe
 
 function executableRustProgramModule(plan: ProgramPlan, requestText: string): string {
   const groups = rustOwnerRequirements(plan);
-  for (const [name, requirements] of groups) {
-    const declaration = new RegExp(`\\bfn\\s+${name}\\s*\\(([^)]*)\\)\\s*->\\s*([A-Za-z_][A-Za-z0-9_]*)`, "u").exec(requestText);
-    if (!declaration) {
-      if (new RegExp(`\\bfn\\s+${name}\\s*\\(`, "u").test(requestText)) throw new Error(`Rust native callable lacks a typed f64 declaration: ${name}`);
-      continue;
-    }
-    const parameters = declaration[1]!.split(",").map(value => value.trim()).filter(Boolean);
-    if (declaration[2] !== "f64" || parameters.length !== requirements[0]!.arguments.length
-      || parameters.some(parameter => !/^[A-Za-z_][A-Za-z0-9_]*\s*:\s*f64$/u.test(parameter))) {
-      throw new Error(`Rust native callable requires f64 parameters and return: ${name}`);
-    }
-  }
+  const issue = rustOwnerRequirementIssue(plan, requestText);
+  if (issue) throw new Error(issue.message);
   return [...groups].map(([name, requirements]) => {
     const arity = requirements[0]!.arguments.length;
     const candidate = plan.ownerBehaviorTransformationCandidates.find(item => item.callableId === name && plan.selectedOwnerBehaviorTransformationIds.includes(item.id));

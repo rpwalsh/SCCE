@@ -319,6 +319,38 @@ describe("kernel local evidence source anchoring", () => {
     expect(adaSubject!.claims[0]!.sourceVersionIds).toEqual([String(ada.sourceVersionId)]);
   });
 
+  it.each([
+    { text: "Fix the off-by-one error in src/main.rs.", reasonId: "program.emission.rust.owner_behavior_missing" },
+    { text: "Create a Rust fn divide(x: i64, y: i64) -> i64 such that divide(8, 2) returns 4 and divide(9, 3) returns 3.", reasonId: "program.emission.rust.signature_unsupported" },
+    { text: "Create a Rust fn size(xs: Vec<f64>) -> f64 such that size([1, 2]) returns 2 and size([3, 4, 5]) returns 3.", reasonId: "program.emission.rust.behavior_type_unsupported" },
+    { text: "Create a Swift function double(x) such that double(3) returns 6 and double(7) returns 14.", reasonId: "program.emission.native_backend_unavailable" }
+  ])("keeps an unsupported ordinary program turn unavailable without emitting or executing: $reasonId", async ({ text, reasonId }) => {
+    const clock = createClock({ fixedTime: 6_150, stepMs: 1 });
+    const hasher = createHasher();
+    const ids = createIdFactory({ clock, hasher, deterministicReplay: true });
+    const fixture = storageFixture({ evidence: [] });
+    let executions = 0;
+    const kernel = createScceKernel({ storage: fixture.storage, files: { streamPath: async function* () {} },
+      buildTest: { executeProgram: async (): Promise<BuildTestResult> => { executions++; return { build: emptyCommandResult(), test: emptyCommandResult(),
+        repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }; } }, idFactory: ids, clock, deterministicReplay: true });
+    const result = await kernel.turn({ text });
+    expect(result.requestedAuthority).toBe("program");
+    expect(result.constructGraph.program).toBeUndefined();
+    expect(result.constructGraph.artifacts).toEqual([]);
+    expect(result.buildTest).toBeUndefined();
+    expect(executions).toBe(0);
+    expect(result.realizationAvailability).toMatchObject({ status: "realization_unavailable" });
+    expect(result.constructGraph.nodes.find(node => node.kind === "program_emission_unavailable")?.metadata).toMatchObject({ status: "unavailable", reasonIds: [reasonId] });
+    if (reasonId === "program.emission.rust.signature_unsupported") {
+      const { createProgramPlanner } = await import("../program-planner.js");
+      const { codeRequestSignal } = await import("../code-request.js");
+      expect(() => createProgramPlanner({ idFactory: ids, hasher }).emit({ episodeId: result.episodeId, requestText: text,
+        entailment: result.entailment, evidence: [], programIntent: { languageId: "rust", artifactKindIds: ["program.artifact.library"],
+          capabilityIds: [], behaviorRequirements: codeRequestSignal(text).behaviorRequirements } }))
+        .toThrow(/Rust native callable requires f64 parameters and return/u);
+    }
+  });
+
   it("recovers consolidated canonical source dependencies on a restarted next turn without lexical rediscovery", async () => {
     const clock = createClock({ fixedTime: 6_150, stepMs: 1 });
     const hasher = createHasher();

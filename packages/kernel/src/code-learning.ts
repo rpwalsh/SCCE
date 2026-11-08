@@ -745,12 +745,15 @@ export type EmittedProgramRuntime = typeof EMITTED_PROGRAM_RUNTIME | typeof PYTH
  * Chooses a concrete emitter SCCE can execute without project dependencies.
  * Explicit owner targets require a supported backend; unbound source profiles use the host Node runtime.
  */
+export function nativeProgramRuntimeForLanguage(language: string): EmittedProgramRuntime | undefined {
+  return [EMITTED_PROGRAM_RUNTIME, PYTHON_EMITTED_PROGRAM_RUNTIME, TYPESCRIPT_EMITTED_PROGRAM_RUNTIME, RUST_EMITTED_PROGRAM_RUNTIME]
+    .find(runtime => runtime.languageId === language.toLocaleLowerCase());
+}
+
 export function emittedProgramRuntimeForLanguage(language: string, options: { requireNativeBackend?: boolean } = {}): EmittedProgramRuntime {
-  const identity = language.toLocaleLowerCase();
-  if (identity === "python") return PYTHON_EMITTED_PROGRAM_RUNTIME;
-  if (identity === "typescript") return TYPESCRIPT_EMITTED_PROGRAM_RUNTIME;
-  if (identity === "rust") return RUST_EMITTED_PROGRAM_RUNTIME;
-  if (options.requireNativeBackend && identity !== "javascript") throw new UnsupportedProgramLanguageError(language);
+  const runtime = nativeProgramRuntimeForLanguage(language);
+  if (runtime) return runtime;
+  if (options.requireNativeBackend) throw new UnsupportedProgramLanguageError(language);
   return EMITTED_PROGRAM_RUNTIME;
 }
 

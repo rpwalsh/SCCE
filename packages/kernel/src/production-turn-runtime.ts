@@ -4862,6 +4862,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         semanticProof,
         toolPlan,
         program: construct.program,
+        programDiagnostics: construct.nodes.filter(node => node.kind === "program_emission_unavailable"),
         artifacts: construct.artifacts
       });
       // Real bug, confirmed live: gating this attachment on an exact-match check between the local-evidence

@@ -3,7 +3,7 @@
 import type { BuildTestResult, ConstructGraph, EmissionGraph, EpisodeId, EvidenceSpan, FileArtifact, Hasher, JsonValue, ProgramConstructIntent, ProgramGraph, SemanticEntailmentResult, ValidationGraph } from "./types.js";
 import type { IdFactory } from "./ids.js";
 import { featureSet, toJsonValue, weightedJaccard } from "./primitives.js";
-import { createProgramPlanner } from "./program-planner.js";
+import { createProgramPlanner, type ProgramEmissionAvailability } from "./program-planner.js";
 import { validationMessageKey } from "./localization.js";
 import type { SpokenOutput } from "./mouth.js";
 
@@ -27,21 +27,27 @@ export function createProgramGraphBuilder(options: { idFactory: IdFactory; hashe
       const activation = programActivation(input.text, input.entailment, input.evidence, input.programIntent);
       const shouldEmitProgram = activation.activate;
       const artifacts: FileArtifact[] = [];
-      let program: ProgramGraph | undefined;
-      if (shouldEmitProgram || input.program) {
-        program = input.program ?? synthesizeProgramGraph(input, options.idFactory, options.hasher);
-        artifacts.push(...program.files);
+      let program: ProgramGraph | undefined = input.program;
+      let emissionAvailability: ProgramEmissionAvailability | undefined;
+      if (shouldEmitProgram && !program) {
+        const emission = createProgramPlanner(options).emitIfAvailable({ episodeId: input.episodeId, requestText: input.text,
+          entailment: input.entailment, evidence: input.evidence, programIntent: input.programIntent });
+        program = emission.program;
+        emissionAvailability = emission.availability;
       }
+      if (program) artifacts.push(...program.files);
       const families = constructFamilies(input, activation);
       const constructId = options.idFactory.constructId({ episodeId: input.episodeId, proofId: input.entailment.proof.id, artifactHashes: artifacts.map(a => a.contentHash) });
       return {
         id: constructId,
         episodeId: input.episodeId,
-        forceVector: toJsonValue({ force: input.entailment.force, support: input.entailment.support, contradiction: input.entailment.contradiction, artifactCount: artifacts.length, constructFamilies: families.map(family => family.kind), programActivation: activation }),
+        forceVector: toJsonValue({ force: input.entailment.force, support: input.entailment.support, contradiction: input.entailment.contradiction, artifactCount: artifacts.length, constructFamilies: families.map(family => family.kind), programActivation: activation, programEmissionAvailability: emissionAvailability }),
         nodes: [
           { id: "request", kind: "owner_input", label: validationMessageKey("construct.node.owner_request"), metadata: { textHash: options.hasher.digestHex(input.text) } },
           { id: "proof", kind: "semantic_proof", label: String(input.entailment.proof.id), metadata: { force: input.entailment.force } },
           ...families,
+          ...(emissionAvailability?.status === "unavailable" ? [{ id: "program-emission-unavailable", kind: "program_emission_unavailable",
+            label: "program.emission.unavailable", metadata: toJsonValue({ ...emissionAvailability, programIntent: input.programIntent ?? null }) }] : []),
           ...(program ? program.nodes : [])
         ],
         edges: [
@@ -207,9 +213,6 @@ function programActivation(text: string, entailment: SemanticEntailmentResult, e
   };
 }
 
-function synthesizeProgramGraph(input: { episodeId: EpisodeId; text: string; entailment: SemanticEntailmentResult; evidence: EvidenceSpan[]; programIntent?: ProgramConstructIntent }, idFactory: IdFactory, hasher: Hasher): ProgramGraph {
-  return createProgramPlanner({ idFactory, hasher }).emit({ episodeId: input.episodeId, requestText: input.text, entailment: input.entailment, evidence: input.evidence, programIntent: input.programIntent });
-}
 
 function hasDrivePrefix(path: string): boolean {
   if (path.length < 2 || path[1] !== ":") return false;

@@ -78,8 +78,15 @@ describe("cold ordinary owner program execution", () => {
     expect(compile.code, compile.stderr).toBe(0);
     const independent = await runProcess(path.join(checkRoot, "independent.exe"), [], { cwd: checkRoot, timeoutMs: 10_000 });
     expect(independent.code, independent.stderr).toBe(0);
-    await expect(kernel.turn({ text: "Create a Rust fn divide(x: i64, y: i64) -> i64 such that divide(8, 2) returns 4 and divide(9, 3) returns 3." }))
-      .rejects.toThrow(/Rust native callable requires f64 parameters and return/u);
+    const attemptsBeforeUnsupported = attempts.length;
+    const unsupported = await kernel.turn({ text: "Create a Rust fn divide(x: i64, y: i64) -> i64 such that divide(8, 2) returns 4 and divide(9, 3) returns 3." });
+    expect(unsupported.requestedAuthority).toBe("program");
+    expect(unsupported.realizationAvailability).toMatchObject({ status: "realization_unavailable" });
+    expect(unsupported.constructGraph.program).toBeUndefined();
+    expect(unsupported.constructGraph.artifacts).toEqual([]);
+    expect(attempts).toHaveLength(attemptsBeforeUnsupported);
+    expect(unsupported.constructGraph.nodes.find(node => node.kind === "program_emission_unavailable")?.metadata)
+      .toMatchObject({ status: "unavailable", languageId: "rust", reasonIds: ["program.emission.rust.signature_unsupported"] });
   }, 90_000);
   it.each([
     { namedLanguage: false, factual: false },

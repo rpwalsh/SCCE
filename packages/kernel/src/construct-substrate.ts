@@ -82,6 +82,7 @@ export function createConstructSubstratePlanner(options: { idFactory: IdFactory;
       toolPlan?: ToolCognitionPlan;
       languageModel?: InducedLanguageModel;
       program?: ProgramGraph;
+      programDiagnostics?: ConstructGraph["nodes"];
       artifacts?: FileArtifact[];
     }): ConstructAssembly {
       const responsibilities = responsibilitiesFor(input, hasher);
@@ -352,10 +353,12 @@ function projectConstructGraph(input: {
   eventFlow: ConstructAssembly["eventFlow"];
   validation: ConstructAssembly["validation"];
   program?: ProgramGraph;
+  programDiagnostics?: ConstructGraph["nodes"];
   artifacts?: FileArtifact[];
 }, idFactory: IdFactory, hasher: Hasher): ConstructGraph {
   const artifacts = [...(input.artifacts ?? []), ...(input.program?.files ?? [])];
   const nodes = [
+    ...(input.programDiagnostics ?? []),
     ...input.responsibilities.map(resp => ({ id: resp.id, kind: `responsibility:${resp.layer}`, label: resp.label, metadata: toJsonValue(resp) })),
     ...input.boundaries.map(boundary => ({ id: boundary.id, kind: "layer_boundary", label: `${boundary.from}->${boundary.to}`, metadata: toJsonValue(boundary) })),
     ...input.routes.map(route => ({ id: `route:${route.method}:${route.path}`, kind: `route:${route.layer}`, label: `${route.method} ${route.path}`, metadata: toJsonValue(route) })),
