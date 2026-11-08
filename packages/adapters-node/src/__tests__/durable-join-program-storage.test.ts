@@ -3,7 +3,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { readFile } from "node:fs/promises";
 import { canonicalDigestHex, canonicalStringify, createHasher, hashEvent, joinProgramMixtureStorageForm, type JoinProgramMixture, type JsonValue, type ScceEvent } from "@scce/kernel";
-import { decodeDurableJoinPrograms, DURABLE_JOIN_PROGRAM_STORAGE_SCHEMA, encodeDurableJoinPrograms } from "../durable-join-program-storage.js";
+import { decodeDurableJoinPrograms, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA, DURABLE_JOIN_PROGRAM_STORAGE_SCHEMA,
+  durableJoinProgramJsonByteLengths, encodeDurableJoinPrograms } from "../durable-join-program-storage.js";
 import { PostgresStorageAdapter } from "../postgres.js";
 
 function fixture(): JoinProgramMixture {
@@ -58,6 +59,26 @@ describe("durable JOIN representation", () => {
     expect(() => decodeDurableJoinPrograms({ schema: DURABLE_JOIN_PROGRAM_STORAGE_SCHEMA, mixture: fixture() })).toThrow();
   });
 
+  it("accounts for JSONB separator spaces, exponent expansion, Unicode and prototype-like keys", () => {
+    const value = JSON.parse('{"__proto__":"owned","values":[1e-7,1e21,-1e-7,"雪"]}');
+    const jsonb = '{"__proto__": "owned", "values": [0.0000001, 1000000000000000000000, -0.0000001, "雪"]}';
+    expect(durableJoinProgramJsonByteLengths(value)).toEqual({ decodedJsonBytes: bytes(value), decodedJsonbBytes: Buffer.byteLength(jsonb) });
+    expect(durableJoinProgramJsonByteLengths(Number.MIN_VALUE).decodedJsonbBytes).toBe(326);
+    expect(durableJoinProgramJsonByteLengths(Number.MAX_VALUE).decodedJsonbBytes).toBe(309);
+  });
+
+  it("records decoded size outside arbitrary nested mixtures and preserves caller ledger collisions", () => {
+    const value = { schema: "arbitrary.schema", nested: [{ mixture: fixture() }] };
+    const encoded = encodeDurableJoinPrograms(value) as Record<string, unknown>;
+    const ledger = encoded[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY] as Record<string, unknown>;
+    expect(ledger).toEqual({ schema: DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA, ...durableJoinProgramJsonByteLengths(value) });
+    expect(Number(ledger.decodedJsonbBytes)).toBeGreaterThan(bytes(encoded));
+    expect(decodeDurableJoinPrograms(cold(encoded))).toEqual(value);
+    const collision = { ...value, [DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY]: { retainedCallerData: true } };
+    expect(encodeDurableJoinPrograms(collision)).toBe(collision);
+    expect(decodeDurableJoinPrograms(cold(collision))).toEqual(collision);
+  });
+
   it.runIf(Boolean(process.env.SCCE_JOIN_STORAGE_SAMPLE))("normalizes the captured large syntax artifact without changing its canonical hash", async () => {
     const row = JSON.parse(await readFile(process.env.SCCE_JOIN_STORAGE_SAMPLE!, "utf8")) as { pattern_json: JsonValue };
     const original = row.pattern_json;
@@ -67,7 +88,7 @@ describe("durable JOIN representation", () => {
     expect(encodedBytes).toBeLessThan(beforeBytes / 2);
     const decoded = decodeDurableJoinPrograms(cold(encoded));
     expect(canonicalDigestHex(decoded, createHasher())).toBe(hash);
-    console.log(JSON.stringify({ schema: "scce.join_storage_sample_roundtrip.v1", beforeBytes, encodedBytes, canonicalHashPreserved: true }));
+    console.log(JSON.stringify({ schema: "scce.join_storage_sample_roundtrip.v1", beforeBytes, encodedBytes, ...durableJoinProgramJsonByteLengths(original), canonicalHashPreserved: true }));
   });
 });
 
@@ -77,9 +98,11 @@ afterEach(async () => { await Promise.all(adapters.splice(0).map(adapter => adap
 function offlineStorage() {
   const rows = { patterns: [] as Record<string, unknown>[], models: [] as Record<string, unknown>[], events: [] as Record<string, unknown>[] };
   let head: unknown;
+  const calls: string[] = [];
   const adapter = new PostgresStorageAdapter({ url: "postgres://offline.invalid/none", schema: "offline_join", informationAccess: { tenantId: "tenant.owned", principalId: "principal.owned", compartments: [], maximumExportClass: "restricted" } });
   adapters.push(adapter);
   const client = { async query(sql: string, params: readonly unknown[] = []) {
+    calls.push(sql);
     if (sql.includes("INSERT INTO") && sql.includes('"language_patterns"')) {
       rows.patterns = JSON.parse(String(params[0])).map((row: Record<string, unknown>) => ({ ...row, evidence_ids: row.evidence_ids_json, updated_at: new Date(Number(row.updated_at_ms)) }));
     } else if (sql.includes("INSERT INTO") && sql.includes('"induced_language_models"')) {
@@ -98,7 +121,7 @@ function offlineStorage() {
   }, release() {} };
   (adapter.pool as unknown as { connect: () => Promise<unknown> }).connect = async () => client;
   (adapter.pool as unknown as { query: typeof client.query }).query = client.query;
-  return { adapter, rows };
+  return { adapter, rows, calls };
 }
 
 describe("Postgres JOIN storage boundaries", () => {
@@ -138,5 +161,27 @@ describe("Postgres JOIN storage boundaries", () => {
     expect(hashEvent(decoded, [], createHasher())).toBe(original.hash);
     await adapter.events.append(original);
     expect(rows.events).toHaveLength(1);
+  });
+
+  it("uses decoded bytes in the fair category budget while request seeds exclude the JOIN member", async () => {
+    const { adapter, calls } = offlineStorage();
+    const original = { schema: "scce.induced_language_model.syntax_memory.v1", joinProgram: fixture(), retained: { other: fixture() } };
+    const encoded = encodeDurableJoinPrograms(original) as Record<string, unknown>;
+    const ledger = encoded[DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY] as Record<string, number>;
+    const { joinProgram: _join, ...seed } = original;
+    expect(ledger.decodedJsonbBytes! - ledger.joinProgramMemberJsonbBytes!).toBe(durableJoinProgramJsonByteLengths(seed).decodedJsonbBytes);
+    await adapter.languageMemory.listLanguagePatterns({ maxTotalJsonBytes: bytes(encoded) * 2 });
+    const fullSql = calls.at(-1)!;
+    expect(fullSql).toContain(`"${DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY}" jsonb`);
+    expect(fullSql).toContain("SUM(COALESCE(eligible.decoded_jsonb_bytes, octet_length(eligible.pattern_json::text))) OVER (PARTITION BY CASE");
+    expect(fullSql).toContain("CEIL(");
+    expect(fullSql).toContain("OR ranked.category_relevance_rank = 1");
+    await adapter.languageMemory.listLanguagePatterns({ view: "request_seed", maxTotalJsonBytes: bytes(encoded) * 2 });
+    const seedSql = calls.at(-1)!;
+    expect(seedSql).toContain("joinProgramMemberJsonbBytes");
+    expect(seedSql).toContain("THEN pattern.pattern_json - 'joinProgram' ELSE pattern.pattern_json END");
+    expect(seedSql).toContain(`THEN ARRAY['${DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY}'] ELSE ARRAY[]::text[] END`);
+    await adapter.languageMemory.listLanguagePatterns({ patternIds: ["pattern.owned"], maxTotalJsonBytes: bytes(encoded) * 2 });
+    expect(calls.at(-1)!).toContain("SUM(COALESCE(eligible.decoded_jsonb_bytes, octet_length(eligible.pattern_json::text))) OVER (ORDER BY");
   });
 });

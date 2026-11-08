@@ -2,7 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { Pool, type PoolClient } from "pg";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { decodeDurableJoinPrograms, encodeDurableJoinPrograms } from "./durable-join-program-storage.js";
+import { decodeDurableJoinPrograms, encodeDurableJoinPrograms, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY, DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA } from "./durable-join-program-storage.js";
 import {
   POSTGRES_REQUIRED_TABLES,
   STORAGE_STATUS_POPULATION_LIMITS,
@@ -30,6 +30,8 @@ import {
   SOURCE_CODE_FUNCTION_PROJECTION_RECIPE_ID,
   INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID,
   INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA,
+  CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA,
+  CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID,
   type AlphaTraceRecord,
   type AlphaTrace,
   type BenchmarkStore,
@@ -3841,7 +3843,8 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       if (!projection.profileId.trim() || !projection.sourceId || !projection.sourceVersionId || !projection.sourceSystem.trim()
         || !((projection.patternSchema === LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA && projection.componentRecipe === LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID)
           || (projection.patternSchema === SOURCE_CODE_FUNCTION_PATTERN_SCHEMA && projection.componentRecipe === SOURCE_CODE_FUNCTION_PROJECTION_RECIPE_ID)
-          || (projection.patternSchema === "scce.source_owned_test_contract.v1" && projection.componentRecipe === "scce.source_owned_test_contract_projection.v1"))
+          || (projection.patternSchema === "scce.source_owned_test_contract.v1" && projection.componentRecipe === "scce.source_owned_test_contract_projection.v1")
+          || (projection.patternSchema === CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA && projection.componentRecipe === CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID))
         || patternIds.length !== projection.patternIds.length) {
         throw new Error("invalid active language-pattern projection scope");
       }
@@ -3856,7 +3859,9 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
           || (projection.patternSchema === SOURCE_CODE_FUNCTION_PATTERN_SCHEMA
             && (row.patternKind !== "source_code_function" || metadata.sourceVersionId !== projection.sourceVersionId))
           || (projection.patternSchema === "scce.source_owned_test_contract.v1"
-            && (row.patternKind !== "source_code_assertion_contract" || metadata.sourceVersionId !== projection.sourceVersionId));
+            && (row.patternKind !== "source_code_assertion_contract" || metadata.sourceVersionId !== projection.sourceVersionId))
+          || (projection.patternSchema === CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA
+            && (row.patternKind !== "semantic_role" || metadata.sourceId !== projection.sourceId || metadata.sourceVersionId !== projection.sourceVersionId));
       })) throw new Error("active language-pattern IDs must name rows in the replacement batch");
       const informationLabel = storage.requireWritableInformationLabel(projection.informationLabel);
       const key = activeLanguagePatternProjectionKey({ ...projection, tenantId: informationLabel.tenantId });
@@ -4295,7 +4300,8 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       for (const [patternSchema, componentRecipe] of [
         [LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID],
         [SOURCE_CODE_FUNCTION_PATTERN_SCHEMA, SOURCE_CODE_FUNCTION_PROJECTION_RECIPE_ID],
-        ["scce.source_owned_test_contract.v1", "scce.source_owned_test_contract_projection.v1"]
+        ["scce.source_owned_test_contract.v1", "scce.source_owned_test_contract_projection.v1"],
+        [CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA, CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID]
       ] as const) {
         if (query.patternSchemas && !query.patternSchemas.includes(patternSchema)) continue;
         const constructionSchemaParam = params.length + 1;
@@ -4315,6 +4321,13 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
             AND active_projection.value_json->>'schema'='scce.language_pattern_active_projection.v1'
             AND active_projection.value_json->>'patternSchema'=$${constructionSchemaParam}
             AND active_projection.value_json->>'componentRecipe'=$${constructionRecipeParam}
+            ${patternSchema === CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA ? `AND EXISTS (
+              SELECT 1 FROM ${storage.table("language_profiles")} projection_profile
+              JOIN ${storage.table("source_versions")} projection_version ON projection_version.id=projection_profile.source_version_id
+              WHERE projection_profile.id=active_projection.value_json->>'profileId'
+                AND projection_profile.source_version_id=active_projection.value_json->>'sourceVersionId'
+                AND projection_version.source_id=active_projection.value_json->>'sourceId'
+            )` : ""}
             ${projectionScope.map(scope => `AND ${scope}`).join("\n            ")}
         ), ${projectionSet} AS MATERIALIZED (
           SELECT header.profile_id,header.source_system,header.pattern_schema,member.pattern_id
@@ -4326,7 +4339,10 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         where.push(`(pattern.pattern_schema IS DISTINCT FROM $${constructionSchemaParam}
         OR (pattern.profile_id,pattern.source_system,pattern.pattern_schema,pattern.id) IN (
           SELECT profile_id,source_system,pattern_schema,pattern_id FROM ${projectionSet}
-        ))`);
+        )${patternSchema === CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA ? ` OR NOT EXISTS (
+          SELECT 1 FROM ${projectionSet}_headers published
+          WHERE published.profile_id=pattern.profile_id AND published.source_system=pattern.source_system AND published.pattern_schema=pattern.pattern_schema
+        )` : ""})`);
       }
       params.push(query.limit ?? 1000);
       const limitParam = params.length;
@@ -4353,7 +4369,13 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         WHEN ${alias}.id LIKE 'optional_null_realization_pattern.%' THEN 'optional_null'
         ELSE 'other'
       END`;
-      const narrow = "id,profile_id,pattern_kind,support,entropy,evidence_ids,updated_at,information_label,pattern_schema,pattern_language,source_system";
+      const narrow = "decoded_jsonb_bytes,id,profile_id,pattern_kind,support,entropy,evidence_ids,updated_at,information_label,pattern_schema,pattern_language,source_system";
+      const byteLedger = `metadata."${DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY}"`;
+      const decodedJsonbBytes = `CASE WHEN ${byteLedger}->>'schema'='${DURABLE_JOIN_PROGRAM_BYTE_LEDGER_SCHEMA}'
+        AND jsonb_typeof(${byteLedger}->'decodedJsonbBytes')='number'
+        THEN (${byteLedger}->>'decodedJsonbBytes')::numeric${query.view === "request_seed" ? ` - CASE
+          WHEN metadata."schema"='${INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA}' AND jsonb_typeof(${byteLedger}->'joinProgramMemberJsonbBytes')='number'
+          THEN (${byteLedger}->>'joinProgramMemberJsonbBytes')::numeric ELSE 0 END` : ""} ELSE NULL END`;
       // Exact prerequisites share one budget; category quotas apply only to searches.
       const partition = (alias: string) => query.patternIds ? "" : `PARTITION BY ${category(alias)} `;
       const byteAllowance = query.patternIds ? `$${params.length}` : `CEIL($${params.length}::numeric / category_counts.n)`;
@@ -4370,7 +4392,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         ? `SELECT ranked.id,ranked.profile_id,ranked.pattern_kind,ranked.support,ranked.entropy,ranked.pattern_json,ranked.evidence_ids,ranked.updated_at,ranked.information_label
            FROM (
              SELECT eligible.*,
-               SUM(octet_length(eligible.pattern_json::text)) OVER (${partition("eligible")}ORDER BY ${order("eligible")} ROWS UNBOUNDED PRECEDING) AS running_json_bytes,
+               SUM(COALESCE(eligible.decoded_jsonb_bytes, octet_length(eligible.pattern_json::text))) OVER (${partition("eligible")}ORDER BY ${order("eligible")} ROWS UNBOUNDED PRECEDING) AS running_json_bytes,
                ROW_NUMBER() OVER (${partition("eligible")}ORDER BY ${order("eligible")}) AS category_relevance_rank
              FROM eligible_patterns eligible
            ) ranked CROSS JOIN category_counts
@@ -4384,6 +4406,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
            SELECT pattern.id, pattern.profile_id, pattern.pattern_kind, pattern.support, pattern.entropy,
              pattern.evidence_ids, pattern.updated_at, pattern.information_label, pattern.source_system,
              pg_column_size(pattern.pattern_json) AS stored_bytes,
+             ${decodedJsonbBytes} AS decoded_jsonb_bytes,
              metadata."schema" AS pattern_schema,
              metadata."componentRecipe" AS component_recipe,
              metadata."sourceCompilationId" AS source_compilation_id,
@@ -4397,13 +4420,13 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
            CROSS JOIN LATERAL jsonb_to_record(CASE
              WHEN jsonb_typeof(pattern.pattern_json)='object' THEN pattern.pattern_json
              ELSE '{}'::jsonb END) AS metadata(
-               "schema" text,"componentRecipe" text,"sourceCompilationId" text,"sourceVersionId" text,"language" text
+               "schema" text,"componentRecipe" text,"sourceCompilationId" text,"sourceVersionId" text,"language" text,"${DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY}" jsonb
              )
            ${scopeWhere.length ? `WHERE ${scopeWhere.join(" AND ")}` : ""}
          ),
          candidate_pool AS MATERIALIZED (
            SELECT pattern.id, pattern.profile_id, pattern.pattern_kind, pattern.support, pattern.entropy, pattern.evidence_ids, pattern.updated_at, pattern.information_label,
-                  pattern.pattern_schema, pattern.pattern_language, pattern.source_system, pattern.stored_bytes,
+                  pattern.pattern_schema, pattern.pattern_language, pattern.source_system, pattern.stored_bytes, pattern.decoded_jsonb_bytes,
                   -- A flat "ORDER BY support DESC, capped to the row budget" ranked every pattern kind on one
                   -- scale, but the scales are not comparable: measured live, a construction-bundle pattern's support tops out at ~1.0
                   -- while a creative-event bundle's routinely runs into the hundreds (avg 667 of 169 rows, against
@@ -4427,7 +4450,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
          ),
          candidates AS MATERIALIZED (
            SELECT ranked.id, ranked.profile_id, ranked.pattern_kind, ranked.support, ranked.entropy, ranked.evidence_ids, ranked.updated_at, ranked.information_label,
-             ranked.pattern_schema, ranked.pattern_language, ranked.source_system, ranked.stored_bytes
+             ranked.pattern_schema, ranked.pattern_language, ranked.source_system, ranked.stored_bytes, ranked.decoded_jsonb_bytes
            FROM ranked_pool ranked CROSS JOIN category_counts
            -- Each pattern kind gets an even share of the row budget, ranked by its own support within that share --
            -- fair representation across kinds, not a hardcoded per-kind quota.
@@ -4440,9 +4463,12 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
            SELECT
              admitted.id, admitted.profile_id, admitted.pattern_kind, admitted.support, admitted.entropy, admitted.evidence_ids, admitted.updated_at, admitted.information_label,
              ${query.view === "request_seed"
-               ? `CASE WHEN admitted.pattern_schema='${INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA}' THEN pattern.pattern_json - 'joinProgram' ELSE pattern.pattern_json END`
+               ? `(CASE WHEN admitted.pattern_schema='${INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA}' THEN pattern.pattern_json - 'joinProgram' ELSE pattern.pattern_json END)
+                 - CASE WHEN admitted.pattern_schema='${INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA}' AND admitted.decoded_jsonb_bytes IS NOT NULL
+                   THEN ARRAY['${DURABLE_JOIN_PROGRAM_BYTE_LEDGER_KEY}'] ELSE ARRAY[]::text[] END`
                : "pattern.pattern_json"} AS pattern_json,
              admitted.pattern_schema,
+             admitted.decoded_jsonb_bytes,
              profile.source_version_id,
              version.source_id,
              version.observed_at AS source_observed_at,
@@ -4469,11 +4495,11 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
            WHERE scoped.pattern_schema='scce.request_requirement_pattern.v1'
          ),
          eligible_patterns AS (
-           SELECT id,profile_id,pattern_kind,support,entropy,pattern_json,evidence_ids,updated_at,information_label
+           SELECT decoded_jsonb_bytes,id,profile_id,pattern_kind,support,entropy,pattern_json,evidence_ids,updated_at,information_label
            FROM scoped_patterns
            WHERE pattern_schema IS DISTINCT FROM 'scce.request_requirement_pattern.v1'
            UNION ALL
-           SELECT id,profile_id,pattern_kind,support,entropy,pattern_json,evidence_ids,updated_at,information_label
+           SELECT decoded_jsonb_bytes,id,profile_id,pattern_kind,support,entropy,pattern_json,evidence_ids,updated_at,information_label
            FROM ranked_request_patterns
            WHERE source_version_rank=1
          )

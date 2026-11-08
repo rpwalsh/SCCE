@@ -163,7 +163,8 @@ describe("Postgres language-memory ownership queries", () => {
   it("projects only generative join programs out of an explicitly requested interpretation read", async () => {
     const { adapter, calls } = fixture();
     await adapter.languageMemory.listLanguagePatterns({ view: "request_seed", profileIds: ["profile.owned"], sourceSystem: "wikipedia", limit: 8 });
-    expect(calls.at(-1)!.sql).toContain("THEN pattern.pattern_json - 'joinProgram' ELSE pattern.pattern_json END AS pattern_json");
+    expect(calls.at(-1)!.sql).toContain("THEN pattern.pattern_json - 'joinProgram' ELSE pattern.pattern_json END");
+    expect(calls.at(-1)!.sql).toContain("THEN ARRAY['_scceJoinProgramStorage'] ELSE ARRAY[]::text[] END AS pattern_json");
     expect(calls.at(-1)!.sql).toContain("pattern.information_label");
     expect(calls.at(-1)!.sql).toContain("pattern.pattern_schema,pattern.id) IN (");
     expect(calls.at(-1)!.params).toContainEqual(["profile.owned"]);
@@ -346,9 +347,9 @@ describe("Postgres language-memory ownership queries", () => {
     const { adapter, calls } = fixture();
     await adapter.languageMemory.listLanguagePatterns({ profileId: "profile.large-transcript", limit: 2048, maxTotalJsonBytes: 64_000_000 });
     const sql = calls.at(-1)!.sql;
-    expect(sql.match(/active_projection_ids_\d+ AS MATERIALIZED/gu)).toHaveLength(3);
-    expect(sql.match(/active_projection_ids_\d+_headers AS MATERIALIZED/gu)).toHaveLength(3);
-    expect(sql.match(/CROSS JOIN LATERAL jsonb_array_elements_text/gu)).toHaveLength(3);
+    expect(sql.match(/active_projection_ids_\d+ AS MATERIALIZED/gu)).toHaveLength(4);
+    expect(sql.match(/active_projection_ids_\d+_headers AS MATERIALIZED/gu)).toHaveLength(4);
+    expect(sql.match(/CROSS JOIN LATERAL jsonb_array_elements_text/gu)).toHaveLength(4);
     expect(sql).toContain("SELECT header.profile_id,header.source_system,header.pattern_schema,member.pattern_id");
     expect(sql).not.toContain("active_projection.value_json->'patternIds' ? pattern.id");
     expect(sql).toContain("pattern.profile_id,pattern.source_system,pattern.pattern_schema,pattern.id");
