@@ -74,10 +74,11 @@ public class Ledger {
 const rustSource = `use std::collections::BTreeMap;
 pub fn totals(input: &str) -> Result<BTreeMap<String, i64>, String> {
  let mut balances = BTreeMap::new();
+ let initial = 0;
  for line in input.lines().filter(|line| !line.is_empty()) {
   let (label, amount) = line.split_once(',').ok_or("invalid entry")?;
   let amount: i64 = amount.parse().map_err(|error| format!("{}", error))?;
-  *balances.entry(label.to_owned()).or_insert(0) += amount;
+  *balances.entry(label.to_owned()).or_insert(initial) += amount;
  }
  Ok(balances)
 }
@@ -135,6 +136,7 @@ interface ApplicationCase {
  source: string;
  broken: string;
  behaviorBroken: string;
+ multipleBehaviorBroken: string;
  files: Record<string, string>;
  commands: StructuredPatchValidationPolicy["commands"];
  prepare?: () => Promise<{ files: Record<string, string>; commands: StructuredPatchValidationPolicy["commands"] }>;
@@ -143,6 +145,7 @@ const applications: ApplicationCase[] = [{
  language: "go", executable: go, target: "ledger.go", source: goSource,
  broken: goSource.replace("balances[cells[0]] += amount", "balnces[cells[0]] += amount"),
  behaviorBroken: goSource.replace("+= amount", "-= amount"),
+ multipleBehaviorBroken: goSource.replace("cells[1]", "cells[0]").replace("+= amount", "-= amount"),
  files: {
   "go.mod": "module example.invalid/ledger\n\ngo 1.24\n",
   "main.go": `package main
@@ -164,6 +167,7 @@ func TestTotals(t *testing.T){ got,err:=totals("rent,19\\nrent,-7\\nfood,5"); if
  language: "java", executable: javac, target: "Ledger.java", source: javaSource,
  broken: javaSource.replace("balances.merge", "balnces.merge"),
  behaviorBroken: javaSource.replace("Integer::sum", "Integer::max"),
+ multipleBehaviorBroken: javaSource.replace("cells[1]", "cells[0]").replace("Integer::sum", "Integer::max"),
  files: {
   "Main.java": `import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -183,6 +187,7 @@ public class Main { public static void main(String[] args) { String input = new 
  language: "rust", executable: cargo, target: "src/ledger.rs", source: rustSource,
  broken: rustSource.replace("*balances.entry", "*balnces.entry"),
  behaviorBroken: rustSource.replace("+= amount", "-= amount"),
+ multipleBehaviorBroken: rustSource.replace("initial = 0", "initial = 1").replace("+= amount", "-= amount"),
  files: {
   "Cargo.toml": '[package]\nname = "ledger"\nversion = "0.1.0"\nedition = "2021"\n',
   "src/main.rs": `mod ledger;
@@ -203,6 +208,7 @@ fn main() { let mut input=String::new(); io::stdin().read_to_string(&mut input).
  language: "cpp", executable: cpp, target: "ledger.cxx", source: cppSource,
  broken: cppSource.replace("balances[label] += amount", "balnces[label] += amount"),
  behaviorBroken: cppSource.replace("+= amount", "-= amount"),
+ multipleBehaviorBroken: cppSource.replace("line.substr(comma+1)", "line.substr(comma+0)").replace("+= amount", "-= amount"),
  files: {
   "ledger.hpp": "#pragma once\n#include <map>\n#include <string>\nstd::map<std::string,int> totals(const std::string& input);\n",
   "main.cpp": '#include "ledger.hpp"\n#include <iostream>\n#include <iterator>\nint main(){std::string input((std::istreambuf_iterator<char>(std::cin)),{});for(const auto& row:totals(input))std::cout<<row.first<<"="<<row.second<<"\\n";}\n',
@@ -223,6 +229,7 @@ fn main() { let mut input=String::new(); io::stdin().read_to_string(&mut input).
  language: "csharp", executable: dotnet, target: "Ledger.cs", source: csharpSource,
  broken: csharpSource.replace("balances[cells[0]] =", "balnces[cells[0]] ="),
  behaviorBroken: csharpSource.replace("previous + amount", "previous - amount"),
+ multipleBehaviorBroken: csharpSource.replace("cells[1]", "cells[0]").replace("previous + amount", "previous - amount"),
  files: {
   "Program.cs": 'using System;\npublic static class Program {public static void Main(){foreach(var row in Ledger.Totals(Console.In.ReadToEnd()))Console.WriteLine(row.Key+"="+row.Value);}}\n',
   "LedgerTest.cs": 'using System;\npublic static class LedgerTest {public static void Main(){var got=Ledger.Totals("rent,19\\nrent,-7\\nfood,5");if(got["rent"]!=12||got["food"]!=5)throw new Exception("grouping contract");bool rejected=false;try{Ledger.Totals("bad");}catch(FormatException){rejected=true;}if(!rejected)throw new Exception("invalid entry accepted");rejected=false;try{Ledger.Totals("rent,NaN");}catch(FormatException){rejected=true;}if(!rejected)throw new Exception("invalid amount accepted");}}\n',
@@ -258,6 +265,7 @@ fn main() { let mut input=String::new(); io::stdin().read_to_string(&mut input).
  language: "python", executable: python, target: "ledger.py", source: pythonSource,
  broken: pythonSource.replace("balances[cells[0]] =", "balnces[cells[0]] ="),
  behaviorBroken: pythonSource.replace("0) + amount", "0) - amount"),
+ multipleBehaviorBroken: pythonSource.replace("cells[1]", "cells[0]").replace("0) + amount", "0) - amount"),
  files: {
   "main.py": "import sys\nfrom ledger import totals\nfor label,amount in sorted(totals(sys.stdin.read()).items()):\n    print(f'{label}={amount}')\n",
   "ledger_test.py": "import unittest\nfrom ledger import totals\nclass LedgerTest(unittest.TestCase):\n    def test_grouping(self):\n        self.assertEqual(totals('rent,19\\nrent,-7\\nfood,5'), {'rent':12,'food':5})\n    def test_invalid(self):\n        with self.assertRaises(ValueError): totals('bad')\n        with self.assertRaises(ValueError): totals('rent,NaN')\nif __name__ == '__main__': unittest.main()\n",
@@ -271,11 +279,11 @@ fn main() { let mut input=String::new(); io::stdin().read_to_string(&mut input).
 }];
 
 describe("test-authored reference applications through the production workspace HTTP seam", () => {
- for (const app of applications) for (const defect of ["binding", "behavior"] as const) it.skipIf(!existsSync(app.executable))(`${app.language} learns the ${defect} repair from source and passes native application, unit and E2E gates`, async () => {
+ for (const app of applications) for (const defect of ["binding", "behavior", "multiple-behavior"] as const) it.skipIf(!existsSync(app.executable))(`${app.language} learns the ${defect} repair from source and passes native application, unit and E2E gates`, async () => {
   const root = await mkdtemp(path.join(tmpdir(), "scce-native-application-"));
   roots.push(root);
   const prepared = await app.prepare?.();
-  const files = { ...app.files, ...(prepared?.files ?? {}), [app.target]: defect === "binding" ? app.broken : app.behaviorBroken };
+  const files = { ...app.files, ...(prepared?.files ?? {}), [app.target]: defect === "binding" ? app.broken : defect === "behavior" ? app.behaviorBroken : app.multipleBehaviorBroken };
   for (const [relative, content] of Object.entries(files)) {
    await mkdir(path.dirname(path.join(root, relative)), { recursive: true });
    await writeFile(path.join(root, relative), content);
@@ -285,7 +293,7 @@ describe("test-authored reference applications through the production workspace 
    timeoutMs: 120_000, maxOutputBytes: 1_000_000, maxWorkspaceFiles: 64, maxWorkspaceBytes: 1_000_000,
    environment: { RUSTC: "C:/Users/react/.cargo/bin/rustc.exe" } };
   const model = trainKneserNey(codeSurfaceTokens(app.source), { order: 5, discount: 0.75, vocabularyLimit: 8192 });
-  const record = { id: `test-authored-training-reference:ledger:${app.language}`, streamId: `oss_code:${app.target}`, languageHint: app.language, maxOrder: model.order, discount: model.discount, updatedAt: 1,
+  const record = { id: `test-authored-training-reference:ledger:${app.language}`, streamId: `oss_code:${app.target}`, languageHint: "opaque.source-language-hint", maxOrder: model.order, discount: model.discount, updatedAt: 1,
    modelJson: toJsonValue({ sourceSystem: "oss_code", formalLanguage: app.language, sourceOrigin: "test-authored-training-reference", model }) };
   const events: Array<{ typeId: string; payload: unknown }> = [];
   const context = { runtime: {

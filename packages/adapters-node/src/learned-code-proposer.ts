@@ -14,7 +14,7 @@ import {
   toJsonValue,
   generateLearnedCodeRepairs,
   generateLearnedBehaviorCodeRepairs,
-  learnedCodeRepairOperation,
+  learnedCodeRepairOperations,
   type CodeConstruction,
   type CodeIntent,
   type KneserNeyModel,
@@ -223,7 +223,7 @@ export function createLearnedCodeProposer(options: LearnedCodeProposerOptions): 
       if (!candidate) return undefined;
       log(`attempt ${attempt} (offer ${retry + 1} of ${candidates.length}): composed ${languageId} from ${models.length} trained models (${candidate.strategy}, avg log p ${candidate.averageLogProbability.toFixed(3)})`);
       return {
-        operations: [learnedCodeRepairOperation(candidate, context.targetPath)],
+        operations: learnedCodeRepairOperations(candidate, context.targetPath),
         surface: candidate.surface,
         source: "learned_construction",
         audit: toJsonValue({ ...jsonRecord(candidate.audit), targetHash: hasher.digestHex(context.targetText),

@@ -60,6 +60,8 @@ export interface LearnedCodeRepairCandidate {
   startLine: number;
   endLine: number;
   content: string;
+  /** Disjoint source lines when a hypothesis joins several independently attested sites. */
+  replacementRanges?: readonly { startLine: number; endLine: number; content: string }[];
   surface: string;
   strategy: "span" | "line" | "tail";
   averageLogProbability: number;
@@ -117,7 +119,21 @@ export function generateLearnedBehaviorCodeRepairs(input: {
   const targetHash = hasher.digestHex(input.targetText);
   const sites = new Map(input.sites.map(site => [`${site.start}:${site.length}`, site]));
   const probability = (context: readonly string[], symbol: string) => models.reduce((sum, model) => sum + kneserNeyProbability(model, context, symbol), 0) / models.length;
-  const out: LearnedCodeRepairCandidate[] = [];
+  interface Hypothesis {
+    index: number; start: number; length: number; originalText: string; replacement: string; symbol: string;
+    grammarNodeType: string; originalLikelihood: number; replacementLikelihood: number; score: number;
+  }
+  interface Reconstruction { hypotheses: Hypothesis[]; originalLikelihood: number; replacementLikelihood: number; score: number }
+  const groups: Hypothesis[][] = [];
+  const observedNeighborhood = (index: number, replacement: string, joined?: ReadonlyMap<number, string>) => models.some(model => {
+    if (model.order < 2 || tokens.length < model.order) return false;
+    for (let from = Math.max(0, index - model.order + 1); from <= Math.min(index, tokens.length - model.order); from++) {
+      const window = Array.from({ length: model.order }, (_, offset) => joined?.get(from + offset) ?? tokens[from + offset]!);
+      window[index - from] = replacement;
+      if (!observedKneserNeySequenceCount(model, window)) return false;
+    }
+    return true;
+  });
   let offset = 0;
   for (const [index, original] of tokens.entries()) {
     const originalText = renderCodeTokens([CODE_SOURCE_SYMBOL, original]);
@@ -125,16 +141,7 @@ export function generateLearnedBehaviorCodeRepairs(input: {
     const start = offset;
     offset += originalText.length;
     if (!site || codeTokenIsLayout(original)) continue;
-    const observedNeighborhood = (replacement: string) => models.some(model => {
-      if (model.order < 2 || tokens.length < model.order) return false;
-      for (let from = Math.max(0, index - model.order + 1); from <= Math.min(index, tokens.length - model.order); from++) {
-        const window = tokens.slice(from, from + model.order);
-        window[index - from] = replacement;
-        if (!observedKneserNeySequenceCount(model, window)) return false;
-      }
-      return true;
-    });
-    if (observedNeighborhood(original)) continue;
+    if (observedNeighborhood(index, original)) continue;
     const prefix = tokens.slice(Math.max(0, index - dependency), index);
     const suffix = tokens.slice(index + 1, index + 1 + dependency);
     const likelihood = (replacement: string) => {
@@ -147,33 +154,85 @@ export function generateLearnedBehaviorCodeRepairs(input: {
       return score;
     };
     const originalLikelihood = likelihood(original);
-    const lineStart = input.targetText.lastIndexOf("\n", start - 1) + 1;
-    const followingNewline = input.targetText.indexOf("\n", offset);
-    const lineEnd = followingNewline < 0 ? input.targetText.length : followingNewline - (input.targetText[followingNewline - 1] === "\r" ? 1 : 0);
-    const line = input.targetText.slice(0, start).split("\n").length;
+    const group: Hypothesis[] = [];
     const alternatives = new Set(models.flatMap(model => predictKneserNey(model, prefix, limit).map(prediction => prediction.symbol)));
     for (const symbol of alternatives) {
       if (symbol === original || codeTokenIsLayout(symbol) || symbol === "<s>" || symbol === "</s>" || symbol === "<unk>") continue;
-      if (!observedNeighborhood(symbol)) continue;
+      if (!observedNeighborhood(index, symbol)) continue;
       const replacement = renderCodeTokens([CODE_SOURCE_SYMBOL, symbol]);
       if (!replacement || /[\r\n]/u.test(replacement)) continue;
       const replacementLikelihood = likelihood(symbol);
       const gain = replacementLikelihood - originalLikelihood;
       if (!(gain > 0)) continue;
-      out.push({
-        id: `candidate:generated:behavior:${input.languageId}:${start}:${hasher.digestHex(replacement).slice(0, 16)}`,
-        languageId: input.languageId, startLine: line, endLine: line,
-        content: input.targetText.slice(lineStart, start) + replacement + input.targetText.slice(offset, lineEnd),
-        surface: replacement, strategy: "span", averageLogProbability: Math.log(probability(prefix, symbol)), score: gain,
-        holeLength: originalText.length, coveredSymbols: [],
-        audit: toJsonValue({ source: "code-construction.generateLearnedBehaviorCodeRepairs", failureObservationId: input.failureObservationId,
-          targetPath: input.targetPath, targetHash, sourceModelKeys: models.map(model => model.sourceKey ?? null),
-          hypothesizedSpanStart: start, hypothesizedSpanLength: originalText.length, grammarNodeType: site.grammarNodeType,
-          originalText, replacement, originalLikelihood, replacementLikelihood, likelihoodGain: gain })
-      });
+      group.push({ index, start, length: originalText.length, originalText, replacement, symbol, grammarNodeType: site.grammarNodeType,
+        originalLikelihood, replacementLikelihood, score: gain });
     }
+    if (group.length) groups.push(group);
   }
-  return out.sort((left, right) => right.score - left.score || left.id.localeCompare(right.id)).slice(0, limit);
+  const identity = (reconstruction: Reconstruction) => reconstruction.hypotheses.map(hypothesis => [hypothesis.start, hypothesis.symbol]);
+  const compare = (left: Reconstruction, right: Reconstruction) => right.score - left.score
+    || left.hypotheses.length - right.hypotheses.length || JSON.stringify(identity(left)).localeCompare(JSON.stringify(identity(right)));
+  let beam: Reconstruction[] = [];
+  for (const group of groups) {
+    const next = [...beam];
+    for (const hypothesis of group) {
+      next.push({ hypotheses: [hypothesis], originalLikelihood: hypothesis.originalLikelihood, replacementLikelihood: hypothesis.replacementLikelihood, score: hypothesis.score });
+      for (const previous of beam) {
+        const hypotheses = [...previous.hypotheses, hypothesis];
+        let originalLikelihood = previous.originalLikelihood + hypothesis.originalLikelihood;
+        let replacementLikelihood = previous.replacementLikelihood + hypothesis.replacementLikelihood;
+        if (hypothesis.index - previous.hypotheses.at(-1)!.index <= dependency) {
+          const joined = new Map(hypotheses.map(item => [item.index, item.symbol]));
+          if (!hypotheses.every(item => observedNeighborhood(item.index, item.symbol, joined))) continue;
+          const affected = new Set(hypotheses.flatMap(item => Array.from({ length: Math.min(dependency + 1, tokens.length - item.index) }, (_, offset) => item.index + offset)));
+          originalLikelihood = 0;
+          replacementLikelihood = 0;
+          for (const index of affected) {
+            const prefix = tokens.slice(Math.max(0, index - dependency), index);
+            originalLikelihood += Math.log(Math.max(Number.MIN_VALUE, probability(prefix, tokens[index]!)));
+            const revisedPrefix = prefix.map((symbol, offset) => joined.get(Math.max(0, index - dependency) + offset) ?? symbol);
+            replacementLikelihood += Math.log(Math.max(Number.MIN_VALUE, probability(revisedPrefix, joined.get(index) ?? tokens[index]!)));
+          }
+        }
+        const score = replacementLikelihood - originalLikelihood;
+        if (score > 0) next.push({ hypotheses, originalLikelihood, replacementLikelihood, score });
+      }
+    }
+    beam = next.sort(compare).slice(0, limit);
+  }
+  return beam.map(reconstruction => {
+    const { hypotheses, originalLikelihood, replacementLikelihood, score } = reconstruction;
+    const first = hypotheses[0]!;
+    const last = hypotheses.at(-1)!;
+    const lineStart = input.targetText.lastIndexOf("\n", first.start - 1) + 1;
+    const followingNewline = input.targetText.indexOf("\n", last.start + last.length);
+    const lineEnd = followingNewline < 0 ? input.targetText.length : followingNewline - (input.targetText[followingNewline - 1] === "\r" ? 1 : 0);
+    let content = input.targetText.slice(lineStart, lineEnd);
+    for (const hypothesis of [...hypotheses].reverse()) {
+      const start = hypothesis.start - lineStart;
+      content = content.slice(0, start) + hypothesis.replacement + content.slice(start + hypothesis.length);
+    }
+    const startLine = input.targetText.slice(0, first.start).split("\n").length;
+    const endLine = input.targetText.slice(0, last.start).split("\n").length;
+    const changedLines = new Set(hypotheses.map(hypothesis => input.targetText.slice(0, hypothesis.start).split("\n").length));
+    const lines = content.split(/\r?\n/u);
+    const replacementRanges = [...changedLines].map(line => ({ startLine: line, endLine: line, content: lines[line - startLine]! }));
+    const single = hypotheses.length === 1 ? { hypothesizedSpanStart: first.start, hypothesizedSpanLength: first.length,
+      grammarNodeType: first.grammarNodeType, originalText: first.originalText, replacement: first.replacement } : {};
+    return {
+      id: `candidate:generated:behavior:${input.languageId}:${hasher.digestHex(JSON.stringify(identity(reconstruction))).slice(0, 16)}`,
+      languageId: input.languageId, startLine, endLine, content,
+      ...(replacementRanges.length > 1 ? { replacementRanges } : {}),
+      surface: hypotheses.map(hypothesis => hypothesis.replacement).join(" "), strategy: "span" as const,
+      averageLogProbability: hypotheses.reduce((sum, hypothesis) => sum + Math.log(probability(tokens.slice(Math.max(0, hypothesis.index - dependency), hypothesis.index), hypothesis.symbol)), 0) / hypotheses.length,
+      score, holeLength: hypotheses.reduce((sum, hypothesis) => sum + hypothesis.length, 0), coveredSymbols: [],
+      audit: toJsonValue({ source: "code-construction.generateLearnedBehaviorCodeRepairs", failureObservationId: input.failureObservationId,
+        targetPath: input.targetPath, targetHash, sourceModelKeys: models.map(model => model.sourceKey ?? null), ...single,
+        hypothesizedSpans: hypotheses.map(hypothesis => ({ start: hypothesis.start, length: hypothesis.length,
+          grammarNodeType: hypothesis.grammarNodeType, originalText: hypothesis.originalText, replacement: hypothesis.replacement })),
+        originalLikelihood, replacementLikelihood, likelihoodGain: score })
+    };
+  });
 }
 
 export interface LearnedCodeGenerationInput {
@@ -650,7 +709,12 @@ const REPAIR_ID_FACTORY = createIdFactory({
   namespace: "learned-code-repair"
 });
 
-/** One learned candidate as the repair operation the code mouth applies, verifies, and rolls back. */
+/** Preserve disjoint line boundaries when one hypothesis needs several coordinated edits. */
+export function learnedCodeRepairOperations(candidate: LearnedCodeRepairCandidate, targetPath: string): RepairOperation[] {
+  return (candidate.replacementRanges ?? [candidate]).map(range => learnedCodeRepairOperation({ ...candidate, ...range }, targetPath));
+}
+
+/** One contiguous candidate range as the repair operation the code mouth applies, verifies, and rolls back. */
 export function learnedCodeRepairOperation(
   candidate: LearnedCodeRepairCandidate,
   targetPath: string

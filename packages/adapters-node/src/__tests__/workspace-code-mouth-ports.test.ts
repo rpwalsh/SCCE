@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ProgramDiagnostic, RepairOperation } from "@scce/kernel";
+import { codeSurfaceTokens, generateLearnedBehaviorCodeRepairs, learnedCodeRepairOperations, trainKneserNey } from "@scce/kernel";
 import { runCodeMouth } from "../code-mouth.js";
 import { createWorkspaceCodeMouthPorts } from "../workspace-code-mouth-ports.js";
 import { treeSitterRepairSpans } from "../tree-sitter-repair-spans.js";
@@ -70,6 +71,20 @@ describe("shared workspace code ports", () => {
     expect(result.appliedOperations).toEqual([]);
     expect(await readFile(path.join(root, "application.cjs"), "utf8")).toBe("exports.value = 1;\n");
     expect(ports.projectVerification()).toBeUndefined();
+  });
+
+  it("applies joined corpus hypotheses without rewriting untouched mixed line endings", async () => {
+    const source = "initial = 0\r\n# unchanged\nvalues = {}\r\nvalues[key] += amount\n";
+    const targetText = source.replace("initial = 0", "initial = 1").replace("+=", "-=");
+    const root = await fixture({ "source.py": targetText });
+    const ports = createWorkspaceCodeMouthPorts({ workspaceRoot: root, targetPath: "source.py" });
+    const candidates = generateLearnedBehaviorCodeRepairs({ models: [trainKneserNey(codeSurfaceTokens(source), { order: 5, discount: 0.75 })],
+      languageId: "python", targetPath: "source.py", targetText, failureObservationId: "actual.fixture.failed-contract",
+      sites: [{ start: targetText.indexOf("1\r"), length: 1, grammarNodeType: "integer" }, { start: targetText.indexOf("-="), length: 2, grammarNodeType: "-=" }] });
+    const rollback = await ports.apply(learnedCodeRepairOperations(candidates[0]!, "source.py"));
+    expect(await readFile(path.join(root, "source.py"), "utf8")).toBe(source);
+    await rollback();
+    expect(await readFile(path.join(root, "source.py"), "utf8")).toBe(targetText);
   });
 
   it("rolls back when the configured project verifier becomes unavailable after application", async () => {
