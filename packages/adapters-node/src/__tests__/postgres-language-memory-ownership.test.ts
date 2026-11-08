@@ -15,6 +15,47 @@ afterEach(async () => {
 
 describe("Postgres language-memory ownership queries", () => {
   it.each([
+    { maxTotalJsonBytes: undefined, view: undefined, patternIds: undefined },
+    { maxTotalJsonBytes: 1_000_000, view: "request_seed" as const, patternIds: undefined },
+    { maxTotalJsonBytes: undefined, view: "request_seed" as const, patternIds: ["pattern.current"] },
+    { maxTotalJsonBytes: 1_000_000, view: undefined, patternIds: ["pattern.current"] }
+  ])("carries narrow checked headers through admission without rescanning or retaining large bodies: %j", async options => {
+    const { adapter, calls } = fixture();
+    await adapter.languageMemory.listLanguagePatterns({ ...options, profileIds: ["profile.owned"], sourceSystem: "oss_code",
+      languageId: "language.owned", formalLanguage: "typescript", parameterCount: 0, limit: 12 });
+    const sql = calls.at(-1)!.sql;
+    const headers = sql.slice(sql.indexOf("pattern_headers AS MATERIALIZED ("), sql.indexOf("candidate_pool AS MATERIALIZED ("));
+    expect(headers).toContain("CROSS JOIN LATERAL jsonb_to_record(CASE");
+    expect(headers).toContain("WHEN jsonb_typeof(pattern.pattern_json)='object' THEN pattern.pattern_json");
+    expect(headers).toContain("ELSE '{}'::jsonb END)");
+    expect(headers).toContain('CASE WHEN metadata."sourceCompilationId" IS NOT NULL THEN TRUE');
+    expect(headers).toContain("ELSE pattern.pattern_json ? 'sourceCompilationId' END AS has_source_compilation");
+    expect(headers).toContain('CASE WHEN metadata."sourceVersionId" IS NOT NULL THEN TRUE');
+    expect(headers).toContain("ELSE pattern.pattern_json ? 'sourceVersionId' END AS has_source_version");
+    for (const filter of ["pattern.profile_id=ANY(", "pattern.source_system=", "pattern.pattern_json->>'formalLanguage'=",
+      "pattern.pattern_json->>'parameterCount'=", "lp.language_id=", "pattern.information_label->>'tenantId'"]) expect(headers).toContain(filter);
+    expect(headers).not.toMatch(/pattern\.pattern_json\s+AS\s+pattern_json|SELECT\s+pattern\.\*/u);
+    const pool = sql.slice(sql.indexOf("candidate_pool AS MATERIALIZED ("), sql.indexOf("category_counts AS MATERIALIZED ("));
+    expect(pool).toContain("FROM pattern_headers pattern");
+    expect(pool).toContain("pattern.has_source_compilation");
+    expect(pool).toContain("pattern.has_source_version");
+    expect(pool).toContain('current_compilation."sourceVersionId"=pattern.owned_source_version_id');
+    expect(pool).not.toContain("pattern.pattern_json");
+    for (const field of ["pattern_schema", "pattern_language", "source_system"]) {
+      expect(sql).toContain(`ranked.${field}`);
+      expect(sql).toContain(`admitted.${field}`);
+    }
+    expect(sql).toContain("information_label,pattern_schema,pattern_language,source_system FROM");
+    expect(sql).not.toContain("JOIN pattern_headers");
+    expect(sql.indexOf('JOIN "fixture"."language_patterns" pattern ON pattern.id=admitted.id')).toBeGreaterThan(sql.indexOf("admitted AS ("));
+    expect(sql).toContain("WHERE scoped.pattern_schema='scce.request_requirement_pattern.v1'");
+    expect(sql).toContain("WHERE pattern_schema IS DISTINCT FROM 'scce.request_requirement_pattern.v1'");
+    expect(calls.at(-1)!.params).toContainEqual(["profile.owned"]);
+    expect(calls.at(-1)!.params).toContain("typescript");
+    expect(calls.at(-1)!.params).toContain("0");
+  });
+
+  it.each([
     ["kernel.language_training_batch.v3", undefined],
     ["kernel.language_training_batch.v4", undefined],
     ["kernel.language_training_batch.v4", "kernel.language_training_batch.v4"],
@@ -81,10 +122,11 @@ describe("Postgres language-memory ownership queries", () => {
     expect(headerQuery.sql).toContain("version.id=profile.source_version_id");
     expect(headerQuery.sql).toContain("receipt.id='source.language.compilation.'");
     const patternQuery = calls.at(-1)!;
-    expect(patternQuery.sql.indexOf('current_compilation."compilationId"=pattern.pattern_json')).toBeLessThan(patternQuery.sql.indexOf("ranked_pool AS"));
-    expect(patternQuery.sql.indexOf('current_compilation."compilationId"=pattern.pattern_json')).toBeLessThan(patternQuery.sql.indexOf("running_stored_bytes"));
+    expect(patternQuery.sql.indexOf('current_compilation."compilationId"=pattern.source_compilation_id')).toBeGreaterThanOrEqual(0);
+    expect(patternQuery.sql.indexOf('current_compilation."compilationId"=pattern.source_compilation_id')).toBeLessThan(patternQuery.sql.indexOf("ranked_pool AS"));
+    expect(patternQuery.sql.indexOf('current_compilation."compilationId"=pattern.source_compilation_id')).toBeLessThan(patternQuery.sql.indexOf("running_stored_bytes"));
     expect(patternQuery.sql).toContain('current_compilation."sourceSystem"=pattern.source_system');
-    expect(patternQuery.sql).toContain('current_compilation."sourceVersionId"=pattern.pattern_json');
+    expect(patternQuery.sql).toContain('current_compilation."sourceVersionId"=pattern.owned_source_version_id');
     const changedHeaders: typeof headers = [
       { ...header, source_id: "other.source" }, { ...header, source_version_id: "other.version" }, { ...header, content_hash: "other.hash" },
       { ...header, profile_id: "other.profile" }, { ...header, source_system: "other.system" }, { ...header, compilation_receipt: null },
@@ -123,7 +165,7 @@ describe("Postgres language-memory ownership queries", () => {
     await adapter.languageMemory.listLanguagePatterns({ view: "request_seed", profileIds: ["profile.owned"], sourceSystem: "wikipedia", limit: 8 });
     expect(calls.at(-1)!.sql).toContain("THEN pattern.pattern_json - 'joinProgram' ELSE pattern.pattern_json END AS pattern_json");
     expect(calls.at(-1)!.sql).toContain("pattern.information_label");
-    expect(calls.at(-1)!.sql).toContain("pattern.pattern_json->>'schema',pattern.id) IN (");
+    expect(calls.at(-1)!.sql).toContain("pattern.pattern_schema,pattern.id) IN (");
     expect(calls.at(-1)!.params).toContainEqual(["profile.owned"]);
     await adapter.languageMemory.listLanguagePatterns({ profileIds: ["profile.owned"], sourceSystem: "wikipedia", limit: 8 });
     expect(calls.at(-1)!.sql).not.toContain("pattern.pattern_json - 'joinProgram'");
@@ -204,7 +246,8 @@ describe("Postgres language-memory ownership queries", () => {
     const query = calls.at(-1)!;
     expect(query.params).toContain(SOURCE_CODE_FUNCTION_PATTERN_SCHEMA);
     expect(query.params).toContain(SOURCE_CODE_FUNCTION_PROJECTION_RECIPE_ID);
-    expect(query.sql.indexOf("pattern.pattern_json->>'schema',pattern.id) IN (")).toBeLessThan(query.sql.indexOf("ranked_pool AS"));
+    expect(query.sql.indexOf("pattern.pattern_schema,pattern.id) IN (")).toBeGreaterThanOrEqual(0);
+    expect(query.sql.indexOf("pattern.pattern_schema,pattern.id) IN (")).toBeLessThan(query.sql.indexOf("ranked_pool AS"));
   });
   it("requires active publication for source-owned test contracts before spending retrieval budgets", async () => {
     const { adapter, calls } = fixture();
@@ -212,7 +255,8 @@ describe("Postgres language-memory ownership queries", () => {
     const query = calls.at(-1)!;
     expect(query.params).toContain("scce.source_owned_test_contract.v1");
     expect(query.params).toContain("scce.source_owned_test_contract_projection.v1");
-    expect(query.sql.indexOf("pattern.pattern_json->>'schema',pattern.id) IN (")).toBeLessThan(query.sql.indexOf("ranked_pool AS"));
+    expect(query.sql.indexOf("pattern.pattern_schema,pattern.id) IN (")).toBeGreaterThanOrEqual(0);
+    expect(query.sql.indexOf("pattern.pattern_schema,pattern.id) IN (")).toBeLessThan(query.sql.indexOf("ranked_pool AS"));
   });
   it("preserves original compilation membership on construction-only pattern updates", async () => {
     const { adapter, calls } = fixture();
@@ -287,11 +331,11 @@ describe("Postgres language-memory ownership queries", () => {
     const { adapter, calls } = fixture();
     await adapter.languageMemory.listLanguagePatterns({ profileId: "profile.owned", sourceSystem: "wikipedia", limit: 32 });
     const call = calls.at(-1)!;
-    const activeFilter = call.sql.indexOf("pattern.pattern_json->>'schema',pattern.id) IN (");
+    const activeFilter = call.sql.indexOf("pattern.pattern_schema,pattern.id) IN (");
     expect(activeFilter).toBeGreaterThanOrEqual(0);
     expect(activeFilter).toBeLessThan(call.sql.indexOf("ranked_pool AS"));
     expect(activeFilter).toBeLessThan(call.sql.lastIndexOf("LIMIT"));
-    expect(call.sql).toContain("pattern.pattern_json->>'schema' IS DISTINCT FROM");
+    expect(call.sql).toContain("pattern.pattern_schema IS DISTINCT FROM");
     expect(call.sql).toContain("SELECT profile_id,source_system,pattern_schema,pattern_id FROM active_projection_ids_0");
     expect(call.sql).toContain("active_projection.information_label->>'tenantId'");
     expect(call.params).toContain(LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA);
@@ -307,7 +351,7 @@ describe("Postgres language-memory ownership queries", () => {
     expect(sql.match(/CROSS JOIN LATERAL jsonb_array_elements_text/gu)).toHaveLength(3);
     expect(sql).toContain("SELECT header.profile_id,header.source_system,header.pattern_schema,member.pattern_id");
     expect(sql).not.toContain("active_projection.value_json->'patternIds' ? pattern.id");
-    expect(sql).toContain("pattern.profile_id,pattern.source_system,pattern.pattern_json->>'schema',pattern.id");
+    expect(sql).toContain("pattern.profile_id,pattern.source_system,pattern.pattern_schema,pattern.id");
     expect(sql).toContain("active_projection.information_label->>'tenantId'");
     expect(sql.indexOf("pattern.id) IN (")).toBeLessThan(sql.indexOf("ranked_pool AS"));
     expect(sql.indexOf("pattern.id) IN (")).toBeLessThan(sql.indexOf("running_json_bytes"));
@@ -317,7 +361,7 @@ describe("Postgres language-memory ownership queries", () => {
     const { adapter, calls } = fixture();
     await adapter.languageMemory.listLanguagePatterns({ profileId: "profile.owned", maxTotalJsonBytes: 64_000_000, limit: 2048 });
     const call = calls.at(-1)!;
-    const activeSyntaxFilter = call.sql.indexOf("active_syntax.pattern_json->>'sourceVersionId'=pattern.pattern_json->>'sourceVersionId'");
+    const activeSyntaxFilter = call.sql.indexOf("active_syntax.pattern_json->>'sourceVersionId'=pattern.owned_source_version_id");
     expect(activeSyntaxFilter).toBeGreaterThanOrEqual(0);
     expect(activeSyntaxFilter).toBeLessThan(call.sql.indexOf("ranked_pool AS"));
     expect(activeSyntaxFilter).toBeLessThan(call.sql.indexOf("candidates AS MATERIALIZED"));
