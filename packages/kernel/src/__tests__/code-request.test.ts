@@ -9,6 +9,15 @@ import { COGNITIVE_OPERATOR_IDS, DEFAULT_COGNITIVE_OPERATOR_MODEL, activateCogni
 const recognized = (text: string) => codeRequestRecognized(codeRequestSignal(text));
 
 describe("code request structure", () => {
+  it("distinguishes concrete source-realization examples from declared callable binders", () => {
+    const examples = codeRequestSignal("TypeScript combinePulse(2,3)=5; combinePulse(-5,8)=3");
+    const declared = codeRequestSignal("TypeScript combinePulse(left: number, right: number); combinePulse(2,3)=5; combinePulse(-5,8)=3");
+    expect(examples.declaredCallableIds).toEqual([]);
+    expect(examples.behaviorRequirements).toHaveLength(2);
+    expect(declared.declaredCallableIds).toEqual(["combinePulse"]);
+    expect(declared.behaviorRequirements).toHaveLength(2);
+  });
+
   it("recognizes a named language corroborated by code shape", () => {
     const signal = codeRequestSignal("Write a TypeScript function named longestCommonPrefix that takes an array of strings.");
     expect(codeRequestRecognized(signal)).toBe(true);

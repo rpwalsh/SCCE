@@ -3487,12 +3487,25 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           outcomeSupport: { ...durableOperatorOutcomeSupport, ...operatorOutcomeSupport(input.metadata) }
         });
       }
-      const programIntent = programIntentForTurn({
+      const sourceCodeRealizationOnly = Boolean(programCodeSignal.language)
+        && programCodeSignal.behaviorRequirements.length > 0
+        && programCodeSignal.statefulBehaviorRequirements.length === 0
+        && !programCodeSignal.declaredCallableIds?.length
+        && programCodeSignal.paths.length === 0
+        && typedProgramBehavior.behaviorRequirements.length === 0
+        && typedProgramBehavior.statefulBehaviorRequirements.length === 0
+        && sourceOwnedRequirements.length === 0
+        && explicitAuthority !== "program";
+      const programIntent = sourceCodeRealizationOnly ? undefined : programIntentForTurn({
         requestedAuthority,
         activeOperatorIds: activeRequestOperatorIds(operatorActivations),
         codeSignal: programCodeSignal,
         evidence: selectedEvidence
       });
+      kernelTrace({ stage: "runtime.program.contract", label: "kernel.turn", support: {
+        producer: sourceCodeRealizationOnly ? "source_code_realization" : programIntent ? "program_graph" : "none",
+        declaredCallableIds: programCodeSignal.declaredCallableIds ?? [], sourceOwnedRequirementIds: sourceOwnedRequirements.map(requirement => requirement.id)
+      } });
       const candidateConstructSeed = programBuilder.build({ episodeId, text: input.text, entailment: answerEntailmentSeed, evidence: selectedEvidence, createdAt: clock.now(), programIntent });
       // Compiled once from whatever proof/graph fact this turn already bound, so proofAnswer() (and, downstream,
       // cognitive-planner.ts's one-hop draft) can attempt real generation, verified against what the request

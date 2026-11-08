@@ -53,6 +53,8 @@ export function codeLanguageForPath(value: string): string | undefined {
 }
 
 export interface CodeRequestSignal {
+  /** Opaque callable binders declared by the request, distinct from concrete calls. */
+  declaredCallableIds?: readonly string[];
   /** The formal language the request names or implies, when one is identifiable. */
   language?: string;
   /** Bounded structural evidence that this request concerns executable artifacts. */
@@ -227,7 +229,7 @@ export function codeRequestSignal(requestText: string, options: CodeRequestSigna
     observe("owner_stateful_behavior_example");
   }
 
-  return { ...(language ? { language } : {}), demand: codeRequestDemand(observations, options.demandModel), paths: paths.slice(0, 8), signals, observations, behaviorRequirements, statefulBehaviorRequirements };
+  return { ...(language ? { language } : {}), declaredCallableIds: [...declaredCallableIds(text)], demand: codeRequestDemand(observations, options.demandModel), paths: paths.slice(0, 8), signals, observations, behaviorRequirements, statefulBehaviorRequirements };
 }
 
 /**
