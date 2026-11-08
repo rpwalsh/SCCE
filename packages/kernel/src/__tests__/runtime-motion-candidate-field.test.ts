@@ -4,6 +4,9 @@ import { describe, expect, it } from "vitest";
 import { runtimeMotionCandidateField, type RuntimeReplanMotion } from "../runtime-motion.js";
 import { createHasher } from "../primitives.js";
 import type { CandidateField, CandidateSurface } from "../candidate-contract.js";
+import { admitCandidatesForAuthority } from "../request-authority.js";
+import { createJudge } from "../judge.js";
+import { DEFAULT_POLICY } from "../safety.js";
 
 describe("runtimeMotionCandidateField (plan item: kernel-training sessionBound investigation)", () => {
   it("adds the runtime-motion continuation alongside the base field's candidates instead of discarding them", () => {
@@ -27,12 +30,13 @@ describe("runtimeMotionCandidateField (plan item: kernel-training sessionBound i
       boundaries: [],
       audit: { source: "fixture" }
     };
-    const base: CandidateField = {
-      candidates: [realAnswer],
+    const unrelated: CandidateSurface = { ...realAnswer, id: "candidate:unlicensed-continuation", kind: "dialogue-continuation", force: "unknown", evidenceIds: [] };
+    const base: CandidateField = admitCandidatesForAuthority({
+      candidates: [realAnswer, unrelated],
       surfaceMass: [{ candidateId: realAnswer.id, mass: 0.8, reason: "fixture" }],
       audit: { source: "fixture-base" },
       scoreTrace: []
-    };
+    }, "factual");
     const motion: RuntimeReplanMotion = {
       schema: "scce.runtime_motion.learn_hydrate_replan.v1",
       motionId: "motion.learn_hydrate_replan",
@@ -69,6 +73,12 @@ describe("runtimeMotionCandidateField (plan item: kernel-training sessionBound i
     expect(result.candidates.length).toBe(base.candidates.length + 1);
     expect(result.candidates.some(candidate => candidate.kind === "dialogue-continuation")).toBe(true);
     expect(result.surfaceMass.map(row => row.candidateId)).toContain(realAnswer.id);
+    const continuation = result.candidates.find(candidate => candidate.id.startsWith("runtime-motion:"))!;
+    expect(result.authorityAdmission?.compatibleCandidateIds).toEqual([realAnswer.id, continuation.id]);
+    expect(result.authorityAdmission?.admittedCandidateIds).toContain(continuation.id);
+    const decision = createJudge().select({ field: result, policy: DEFAULT_POLICY, requestedAuthority: "factual", deterministicReplay: true });
+    expect(decision.scores.find(row => row.candidateId === continuation.id)?.reasons).not.toContain("hard-failure:authority_selection_mismatch");
+    expect(decision.rejected.find(row => row.candidate.id === unrelated.id)?.reasons).toContain("hard-failure:authority_selection_mismatch");
   });
 
   it("never turns search lead titles, snippets, or URIs into the terminal motion surface", () => {

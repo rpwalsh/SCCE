@@ -595,6 +595,11 @@ export function runtimeMotionCandidateField(input: {
     })
   };
   const priorAudit = jsonRecord(input.base.audit);
+  const authorityAdmission = input.base.authorityAdmission ? {
+    ...input.base.authorityAdmission,
+    compatibleCandidateIds: uniqueKernelStrings([...input.base.authorityAdmission.compatibleCandidateIds, candidate.id]),
+    admittedCandidateIds: uniqueKernelStrings([...input.base.authorityAdmission.admittedCandidateIds, candidate.id])
+  } : undefined;
   return {
     ...input.base,
     // Add the runtime-motion continuation as one more option for the judge
@@ -606,6 +611,7 @@ export function runtimeMotionCandidateField(input: {
     // candidates:[candidate] replacement this replaced did not actually do
     // (judge.select only ever saw this returned field, never the base one).
     candidates: [...input.base.candidates, candidate],
+    ...(authorityAdmission ? { authorityAdmission } : {}),
     surfaceMass: [...input.base.surfaceMass, { candidateId: candidate.id, mass: 1, reason: "runtime motion continuation" }],
     audit: toJsonValue({
       ...priorAudit,
@@ -615,7 +621,8 @@ export function runtimeMotionCandidateField(input: {
         schema: "scce.requested_authority.candidate_admission.v1",
         authority: input.authority,
         authorityUnavailable: input.base.candidates.length === 0,
-        admittedCandidateIds: input.base.candidates.map(row => row.id),
+        admittedCandidateIds: authorityAdmission?.admittedCandidateIds ?? [...input.base.candidates.map(row => row.id), candidate.id],
+        ...(authorityAdmission ? { compatibleCandidateIds: authorityAdmission.compatibleCandidateIds } : {}),
         continuationCandidateIds: [candidate.id],
         fallbackToGeneratedField: false,
         unrelatedAuthorityFallback: false
