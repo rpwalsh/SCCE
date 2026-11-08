@@ -3601,8 +3601,24 @@ interface CurrentCompilationHeaderRow {
   profile_id: string; source_system: string; source_id: string; source_version_id: string; content_hash: string; model_metadata: JsonValue; compilation_receipt: JsonValue;
 }
 
-async function currentLanguagePatternCompilations(storage: PostgresStorageAdapter, query: Parameters<LanguageMemoryStore["listLanguagePatterns"]>[0]) {
+interface LanguagePatternOwner { profileId: string; sourceSystem: string | null }
+
+async function currentLanguagePatternCompilations(storage: PostgresStorageAdapter, query: Parameters<LanguageMemoryStore["listLanguagePatterns"]>[0], requestedOwners?: readonly LanguagePatternOwner[]) {
+  if (requestedOwners && !requestedOwners.length) return [];
   const params: unknown[] = [];
+  let models = `${storage.table("ngram_models")} model`;
+  if (requestedOwners) {
+    params.push(canonicalStringify(requestedOwners));
+    // Keep each indexed owner lookup ahead of model JSON extraction.
+    models = `jsonb_to_recordset($${params.length}::jsonb) AS requested_owner("profileId" text,"sourceSystem" text)
+     CROSS JOIN LATERAL (
+       SELECT model.id,model.stream_id,model.profile_id,model.source_system,model.model_json,model.information_label
+       FROM ${storage.table("ngram_models")} model
+       WHERE model.profile_id=requested_owner."profileId"
+         AND model.source_system IS NOT DISTINCT FROM requested_owner."sourceSystem"
+       OFFSET 0
+     ) model`;
+  }
   const where: string[] = ['metadata."sourceCompilation" IS NOT NULL'];
   const profileIds = query?.profileIds ?? (query?.profileId ? [query.profileId] : undefined);
   if (profileIds) { params.push([...profileIds]); where.push(`model.profile_id=ANY($${params.length}::text[])`); }
@@ -3615,7 +3631,7 @@ async function currentLanguagePatternCompilations(storage: PostgresStorageAdapte
     `SELECT model.id,model.stream_id,model.profile_id,model.source_system,version.source_id,version.id AS source_version_id,version.content_hash,
        jsonb_build_object('profileId',metadata."profileId",'sourceVersionId',metadata."sourceVersionId",'sourceSystem',metadata."sourceSystem",'sourceCompilation',metadata."sourceCompilation") AS model_metadata,
        receipt.pattern_json->'compilation' AS compilation_receipt
-     FROM ${storage.table("ngram_models")} model
+     FROM ${models}
      JOIN ${storage.table("language_profiles")} profile ON profile.id=model.profile_id
      JOIN ${storage.table("source_versions")} version ON version.id=profile.source_version_id
      CROSS JOIN LATERAL jsonb_to_record(model.model_json) AS metadata("sourceCompilation" jsonb,"profileId" text,"sourceVersionId" text,"sourceSystem" text)
@@ -4157,6 +4173,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
     async listLanguagePatterns(query = {}) {
       const params: unknown[] = [];
       const projectionSets: string[] = [];
+      const projectionScope: string[] = [];
       const scopeWhere: string[] = query.patternKind ? [] : ["pattern.pattern_kind<>'source_compilation'"];
       const where: string[] = [];
       if (query.patternIds) {
@@ -4168,8 +4185,15 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         if (!query.profileIds.length) return [];
         params.push([...query.profileIds]);
         scopeWhere.push(`pattern.profile_id=ANY($${params.length}::text[])`);
-      } else if (query.profileId) { params.push(query.profileId); scopeWhere.push(`pattern.profile_id=$${params.length}`); }
-      if (query.sourceSystem) { params.push(query.sourceSystem); scopeWhere.push(`${languagePatternSourceSystemExpression("pattern")}=$${params.length}`); }
+        projectionScope.push(`active_projection.value_json->>'profileId'=ANY($${params.length}::text[])`);
+      } else if (query.profileId) {
+        params.push(query.profileId); scopeWhere.push(`pattern.profile_id=$${params.length}`);
+        projectionScope.push(`active_projection.value_json->>'profileId'=$${params.length}`);
+      }
+      if (query.sourceSystem) {
+        params.push(query.sourceSystem); scopeWhere.push(`${languagePatternSourceSystemExpression("pattern")}=$${params.length}`);
+        projectionScope.push(`active_projection.value_json->>'sourceSystem'=$${params.length}`);
+      }
       if (query.patternSchemas) {
         if (!query.patternSchemas.length) return [];
         params.push([...new Set(query.patternSchemas)]);
@@ -4192,8 +4216,22 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         params.push(query.languageId);
         scopeWhere.push(`EXISTS (SELECT 1 FROM ${storage.table("language_profiles")} lp WHERE lp.id=pattern.profile_id AND (lp.language_id=$${params.length} OR lp.language_id IS NULL))`);
       }
+      appendInformationAccess(storage, "pattern", params, scopeWhere);
+      let requestedOwners: LanguagePatternOwner[] | undefined;
+      if (query.patternIds) {
+        const owners = await storage.query<{ profile_id: string; source_system: string | null }>(
+          `SELECT DISTINCT pattern.profile_id,pattern.source_system FROM ${storage.table("language_patterns")} pattern
+           WHERE ${scopeWhere.join(" AND ")} ORDER BY pattern.profile_id,pattern.source_system`, [...params]);
+        requestedOwners = owners.map(row => ({ profileId: row.profile_id, sourceSystem: row.source_system }));
+        params.push(canonicalStringify(requestedOwners));
+        projectionScope.push(`EXISTS (
+              SELECT 1 FROM jsonb_to_recordset($${params.length}::jsonb) AS requested_projection_owner("profileId" text,"sourceSystem" text)
+              WHERE requested_projection_owner."profileId"=active_projection.value_json->>'profileId'
+                AND requested_projection_owner."sourceSystem" IS NOT DISTINCT FROM active_projection.value_json->>'sourceSystem'
+            )`);
+      }
       if (query.patternKind !== "source_compilation") {
-        params.push(canonicalStringify(await currentLanguagePatternCompilations(storage, query)));
+        params.push(canonicalStringify(await currentLanguagePatternCompilations(storage, query, requestedOwners)));
         where.push(`(NOT (pattern.has_source_compilation) OR EXISTS (
           SELECT 1 FROM jsonb_to_recordset($${params.length}::jsonb) AS current_compilation("profileId" text,"sourceSystem" text,"sourceVersionId" text,"compilationId" text)
           WHERE current_compilation."profileId"=pattern.profile_id AND current_compilation."sourceSystem"=pattern.source_system
@@ -4243,6 +4281,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
             AND active_projection.value_json->>'schema'='scce.language_pattern_active_projection.v1'
             AND active_projection.value_json->>'patternSchema'=$${constructionSchemaParam}
             AND active_projection.value_json->>'componentRecipe'=$${constructionRecipeParam}
+            ${projectionScope.map(scope => `AND ${scope}`).join("\n            ")}
         ), ${projectionSet} AS MATERIALIZED (
           SELECT header.profile_id,header.source_system,header.pattern_schema,member.pattern_id
           FROM ${projectionSet}_headers header
@@ -4255,7 +4294,6 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
           SELECT profile_id,source_system,pattern_schema,pattern_id FROM ${projectionSet}
         ))`);
       }
-      appendInformationAccess(storage, "pattern", params, scopeWhere);
       params.push(query.limit ?? 1000);
       const limitParam = params.length;
       // Ranked on the narrow indexed columns first. The previous shape materialised pattern_json for every
