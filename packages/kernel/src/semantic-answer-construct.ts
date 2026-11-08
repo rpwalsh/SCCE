@@ -145,7 +145,7 @@ export function resolveRequestValueBinding(input: {
     const requestedRoleId = typeof resolved === "string" ? undefined : resolved.requestedRoleId;
     return {
       subject: (typeof resolved === "string" ? undefined : resolved.subject) ?? namedSubjectAnchors(input.requestText)[0] ?? "",
-      ...(relation ? { relation } : requestedRoleId ? {} : { relation: requestRelationUnits(input.requestText).join(" ") || "is" }),
+      ...(relation ? { relation } : requestedRoleId ? {} : { relation: requestRelationUnits(input.requestText).join(" ") }),
       ...(requestedRoleId ? { requestedRoleId } : {}),
       ...(typeof resolved !== "string" && resolved.relationId ? { relationId: resolved.relationId } : {}),
       value,

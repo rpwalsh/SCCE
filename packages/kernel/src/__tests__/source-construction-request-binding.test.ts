@@ -104,6 +104,15 @@ function teach(input: { subjects: [string, string, string]; marker: string; valu
 }
 
 describe("acquired typed request construction transfer", () => {
+  it("projects a date only through its acquired source-owned request role", () => {
+    const lesson = teach({ subjects: ["Άλφα", "Бета", "Neralis observatory"], marker: "⏱", value: "31 August 2000", valueKind: "opaque.date" });
+    const binding = lesson.resolve();
+    expect(binding).toMatchObject({ subject: "Neralis observatory", value: "31 August 2000", relationId: "relation.opaque", requestedRoleId: "role.answer" });
+    expect(requestValueBindingConstructFact(binding, [lesson.evidence])).toMatchObject({ subject: "Neralis observatory", predicate: "", object: "31 August 2000",
+      relationId: "relation.opaque", relationRoleId: "role.answer", requestedSlotId: "role.answer", sourceVersionId: String(lesson.evidence.sourceVersionId), evidenceIds: [String(lesson.evidence.id)] });
+    expect(lesson.resolve(lesson.graph, [{ ...lesson.evidence, status: "quarantined" }])).toBeUndefined();
+  });
+
   it("hydrates admitted source constructions for factual binding despite a separate wording corpus", async () => {
     const fixture = teach({ subjects: ["Luma", "Vela", "Zora"], marker: "HAS TOKEN", value: "Bora", valueKind: "opaque.token" });
     const gutenbergPatterns = fixture.patterns.map(pattern => ({ ...pattern,

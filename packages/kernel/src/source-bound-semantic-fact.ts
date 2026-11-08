@@ -19,7 +19,7 @@ export function hasSourceBoundSemanticRelation(fact: {
 
 /** Project the turn's resolved value through its current promoted source owners. */
 export function requestValueBindingConstructFact(binding: RequestValueBinding | undefined, evidence: readonly EvidenceSpan[]): SemanticAnswerConstructFact | undefined {
-  if (!binding?.value || !binding.subject) return undefined;
+  if (!binding?.value || !binding.subject || !binding.relationId || !binding.requestedRoleId) return undefined;
   const ids = new Set(binding.evidenceIds);
   const owners = evidence.filter(span => ids.has(String(span.id)) && span.status === "promoted");
   if (!ids.size || owners.length !== ids.size || !owners.every(span => surfaceContainsBoundValue(span.text, binding.value))) return undefined;

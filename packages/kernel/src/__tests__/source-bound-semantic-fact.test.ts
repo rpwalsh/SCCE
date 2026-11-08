@@ -3,7 +3,8 @@
 import { expect, it } from "vitest";
 import { createHasher } from "../primitives.js";
 import { attachSourceBoundAnswerConstruct } from "../local-evidence-runtime.js";
-import { compileRealizationContract, semanticAnswerConstructFacts, candidateIsVerifiedBoundValue, type RequestValueBinding } from "../semantic-answer-construct.js";
+import { compileRealizationContract, semanticAnswerConstructFacts, candidateIsVerifiedBoundValue, resolveRequestValueBinding, type RequestValueBinding } from "../semantic-answer-construct.js";
+import { extractTemporalAnswerFromEvidence } from "../semantic-obligations.js";
 import { semanticAnswerConstructState } from "../mouth-source-facts.js";
 import { currentSourceBoundRoleValueFact, requestValueBindingConstructFact } from "../source-bound-semantic-fact.js";
 import type { ConstructGraph, EvidenceSpan } from "../types.js";
@@ -49,4 +50,18 @@ it("keeps ordinary predicate projections and rejects unowned or incomplete typed
     expect(requestValueBindingConstructFact(invalid, [source])).toBeUndefined();
   }
   expect(requestValueBindingConstructFact(binding, [{ ...source, status: "quarantined" }])).toBeUndefined();
+});
+
+it("does not turn an untyped transcript date into a source-owned founding fact", () => {
+  const transcript = { ...source, text: "When did Virgin Australia start operating?\nVirgin Australia commenced services on 31 August 2000 as Virgin Blue, with two aircraft on a single route." };
+  const untyped: RequestValueBinding = { subject: "observatory", relation: "is", value: "31 August 2000",
+    resolverId: "resolver.evidence_temporal", evidenceIds: [String(transcript.id)] };
+  expect(requestValueBindingConstructFact(untyped, [transcript])).toBeUndefined();
+  expect(requestValueBindingConstructFact({ ...untyped, relationId: "relation.founding" }, [transcript])).toBeUndefined();
+  expect(requestValueBindingConstructFact({ ...untyped, requestedRoleId: "role.date" }, [transcript])).toBeUndefined();
+  const raw = resolveRequestValueBinding({ requestText: "When was Neralis observatory founded?", evidence: [transcript],
+    resolvers: [{ id: "resolver.evidence_temporal", resolve: extractTemporalAnswerFromEvidence }] });
+  expect(raw).toMatchObject({ value: "31 August 2000", resolverId: "resolver.evidence_temporal", evidenceIds: [String(transcript.id)] });
+  expect(raw?.relation).not.toBe("is");
+  expect(requestValueBindingConstructFact(raw, [transcript])).toBeUndefined();
 });
