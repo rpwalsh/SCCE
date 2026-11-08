@@ -173,6 +173,7 @@ export function predictKneserNey(model: KneserNeyModel, context: readonly string
   const index = runtimeIndex(model);
   const normalizedContext = context.slice(-(model.order - 1));
   const candidates = activeSuccessors(model, normalizedContext, Math.max(64, boundedLimit * 8));
+  const prepared = prepareProbabilityContext(model, normalizedContext, model.order);
   const best: KneserNeyPrediction[] = [];
   for (const symbol of candidates) {
       // Candidate generation scores many symbols per context. Keep the public
@@ -180,7 +181,7 @@ export function predictKneserNey(model: KneserNeyModel, context: readonly string
       // context normalization once per prediction call instead of once per
       // candidate in this hot loop.
       const normalizedSymbol = index.vocabulary.has(symbol) || symbol === "</s>" ? symbol : "<unk>";
-      const probability = recursiveProbability(model, normalizedContext, normalizedSymbol, model.order);
+      const probability = preparedProbability(model, prepared, normalizedSymbol);
       insertPrediction(best, {
         symbol,
         probability,
@@ -502,6 +503,41 @@ function recursiveProbability(model: KneserNeyModel, rawContext: readonly string
   const lambda = ownCount(model.backoffWeights, contextKey)
     ?? (model.discount * continuationTypes) / contextCount;
   return Math.max(1e-12, discounted + lambda * recursiveProbability(model, context.slice(1), symbol, order - 1));
+}
+
+interface ProbabilityContext {
+  gramPrefix: string;
+  count: number;
+  lambda: number;
+}
+
+/** Prediction candidates share one backoff chain; only their joint n-gram counts vary. */
+function prepareProbabilityContext(model: KneserNeyModel, rawContext: readonly string[], order: number): ProbabilityContext[] {
+  const out: ProbabilityContext[] = [];
+  while (!(order <= 1 || rawContext.length === 0)) {
+    const context = rawContext.slice(-(order - 1));
+    const key = gramKey(context);
+    const count = ownCount(model.contextCounts, key) ?? 0;
+    if (count > 0) {
+      const continuationTypes = ownCount(model.contextContinuationTypes, key) ?? 0;
+      out.push({ gramPrefix: `${key}\u0001`, count,
+        lambda: ownCount(model.backoffWeights, key) ?? (model.discount * continuationTypes) / count });
+    }
+    rawContext = context.slice(1);
+    order -= 1;
+  }
+  return out;
+}
+
+function preparedProbability(model: KneserNeyModel, context: readonly ProbabilityContext[], symbol: string): number {
+  let probability = baseProbability(model, symbol);
+  for (let index = context.length - 1; index >= 0; index--) {
+    const step = context[index]!;
+    const count = ownCount(model.counts, step.gramPrefix + symbol) ?? 0;
+    const discounted = Math.max(count - model.discount, 0) / step.count;
+    probability = Math.max(1e-12, discounted + step.lambda * probability);
+  }
+  return probability;
 }
 
 export function compileKneserNeyRuntimeIndexes(input: {
