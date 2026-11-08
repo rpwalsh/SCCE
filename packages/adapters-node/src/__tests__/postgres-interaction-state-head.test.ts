@@ -34,7 +34,7 @@ describe("Postgres dialogue-state head contract", () => {
         }
         if (sql.includes("information_schema.columns")) {
           const identifiers = [...new Set(statements
-            .filter(statement => statement.startsWith("CREATE TABLE"))
+            .filter(statement => /^(CREATE TABLE|ALTER TABLE)/u.test(statement))
             .flatMap(statement => statement.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []))];
           return {
             rows: POSTGRES_REQUIRED_TABLES.flatMap(table_name => identifiers.map(column_name => ({ table_name, column_name })))

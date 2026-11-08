@@ -136,6 +136,7 @@ function record(patch: Partial<InducedLanguageModelRecord> = {}): InducedLanguag
 function fixture(rows: Array<Record<string, unknown>>) {
   const adapter = createPostgresStorageAdapter({ url: "postgres://fixture:fixture@127.0.0.1/fixture", schema: "fixture" });
   adapters.push(adapter);
+  adapter.transaction = async operation => operation();
   const calls: Array<{ sql: string; params: unknown[] }> = [];
   adapter.query = async <T>(sql: string, params: unknown[] = []): Promise<T[]> => {
     calls.push({ sql, params });

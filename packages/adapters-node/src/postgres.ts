@@ -3024,9 +3024,10 @@ function createLanguageIdentityStore(storage: PostgresStorageAdapter): LanguageI
     async replaceIdentities(records) {
       await storage.transaction(async () => {
         await writeIdentities(records);
+        const access = storage.informationAccessPredicate("identity", 2);
         await storage.mutateLanguageMemory(
-          `DELETE FROM ${storage.table("language_identities")} WHERE NOT (id = ANY($1::text[]))`,
-          [records.map(record => record.id)]
+          `DELETE FROM ${storage.table("language_identities")} identity WHERE NOT (identity.id = ANY($1::text[])) AND ${access.sql}`,
+          [records.map(record => record.id), ...access.params]
         );
       });
     },
@@ -3063,6 +3064,24 @@ function createLanguageIdentityStore(storage: PostgresStorageAdapter): LanguageI
          ORDER BY lp.id`, params);
       return rows.map(row => ({ profileId: row.id, languageId: row.language_id }));
     },
+    async profileAssignments() {
+      const params: unknown[] = [];
+      const profileAccess = storage.informationAccessPredicate("lp", params.length + 1); params.push(...profileAccess.params);
+      const versionAccess = storage.informationAccessPredicate("sv", params.length + 1); params.push(...versionAccess.params);
+      const newerAccess = storage.informationAccessPredicate("newer_version", params.length + 1); params.push(...newerAccess.params);
+      const evidenceAccess = storage.informationAccessPredicate("newer_evidence", params.length + 1); params.push(...evidenceAccess.params);
+      const rows = await storage.query<{ id: string; source_version_id: string; language_id: string | null }>(
+        `SELECT lp.id,lp.source_version_id,lp.language_id FROM ${storage.table("language_profiles")} lp
+         JOIN ${storage.table("source_versions")} sv ON sv.id=lp.source_version_id
+         WHERE ${profileAccess.sql} AND ${versionAccess.sql}
+           AND NOT EXISTS (SELECT 1 FROM ${storage.table("source_versions")} newer_version
+             WHERE newer_version.source_id=sv.source_id AND (newer_version.observed_at,newer_version.id)>(sv.observed_at,sv.id)
+               AND ${newerAccess.sql} AND EXISTS (SELECT 1 FROM ${storage.table("evidence_spans")} newer_evidence
+                 WHERE newer_evidence.source_version_id=newer_version.id AND newer_evidence.source_id=newer_version.source_id
+                   AND newer_evidence.status='promoted' AND ${evidenceAccess.sql}))
+         ORDER BY lp.id`, params);
+      return rows.map(row => ({ profileId: row.id, sourceVersionId: row.source_version_id as SourceVersionId, languageId: row.language_id }));
+    },
     async putProfileSignatures({ rows, informationLabel }) {
       if (!rows.length) return;
       const label = storage.requireWritableInformationLabel(informationLabel);
@@ -3088,6 +3107,11 @@ function createLanguageIdentityStore(storage: PostgresStorageAdapter): LanguageI
       );
     },
     async listProfileSignatures(query) {
+      const params: unknown[] = [query.afterId ?? "", Math.max(1, Math.min(10000, Math.floor(query.limit)))];
+      const profileAccess = storage.informationAccessPredicate("src", params.length + 1); params.push(...profileAccess.params);
+      const versionAccess = storage.informationAccessPredicate("sv", params.length + 1); params.push(...versionAccess.params);
+      const newerAccess = storage.informationAccessPredicate("newer_version", params.length + 1); params.push(...newerAccess.params);
+      const evidenceAccess = storage.informationAccessPredicate("newer_evidence", params.length + 1); params.push(...evidenceAccess.params);
       // Trained shard profiles and page signatures are one discovery population. Unioned rather than replaced:
       // a brain ingested before page signatures existed still has only shard profiles, and must still discover.
       const rows = await storage.query<{ id: string; source_version_id: string; source_uri: string | null; namespace: string | null; model_source_system: string | null; scripts: JsonValue; direction: string | null; top: JsonValue }>(
@@ -3095,15 +3119,15 @@ function createLanguageIdentityStore(storage: PostgresStorageAdapter): LanguageI
                 ngram_source.source_system AS model_source_system,
                 src.scripts AS scripts, src.direction AS direction, src.top AS top
          FROM (
-           SELECT lp.id, lp.source_version_id,
+           SELECT lp.id, lp.source_version_id, lp.information_label,
                   lp.profile_json->'scripts' AS scripts, lp.profile_json->>'direction' AS direction,
                   lp.profile_json->'kneserNey'->'topContinuation' AS top
            FROM ${storage.table("language_profiles")} lp
            UNION ALL
-           SELECT ps.id, ps.source_version_id, ps.scripts, ps.direction, ps.top_continuation
+           SELECT ps.id, ps.source_version_id, ps.information_label, ps.scripts, ps.direction, ps.top_continuation
            FROM ${storage.table("language_profile_signatures")} ps
          ) src
-         LEFT JOIN ${storage.table("source_versions")} sv ON sv.id = src.source_version_id
+         JOIN ${storage.table("source_versions")} sv ON sv.id = src.source_version_id
          LEFT JOIN ${storage.table("sources")} s ON s.id = sv.source_id
          LEFT JOIN LATERAL (
            SELECT m.model_json->>'sourceSystem' AS source_system
@@ -3114,8 +3138,13 @@ function createLanguageIdentityStore(storage: PostgresStorageAdapter): LanguageI
            ORDER BY m.updated_at DESC, m.id
            LIMIT 1
          ) ngram_source ON TRUE
-         WHERE src.id > $1 ORDER BY src.id LIMIT $2`,
-        [query.afterId ?? "", Math.max(1, Math.min(10000, Math.floor(query.limit)))]
+         WHERE src.id > $1 AND ${profileAccess.sql} AND ${versionAccess.sql}
+           AND NOT EXISTS (SELECT 1 FROM ${storage.table("source_versions")} newer_version
+             WHERE newer_version.source_id=sv.source_id AND (newer_version.observed_at,newer_version.id)>(sv.observed_at,sv.id)
+               AND ${newerAccess.sql} AND EXISTS (SELECT 1 FROM ${storage.table("evidence_spans")} newer_evidence
+                 WHERE newer_evidence.source_version_id=newer_version.id AND newer_evidence.source_id=newer_version.source_id
+                   AND newer_evidence.status='promoted' AND ${evidenceAccess.sql}))
+         ORDER BY src.id LIMIT $2`, params
       );
       return rows.map(row => ({
         id: row.id,
@@ -4559,11 +4588,11 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
             WHEN jsonb_typeof(header.pattern_ids)='array' THEN header.pattern_ids
             ELSE '[]'::jsonb END) member(pattern_id)
         )`);
+        const recipeKey = patternSchema === LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA
+          ? `,CASE WHEN pattern.component_recipe='${DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID}' THEN '${DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID}' ELSE $${constructionRecipeParam} END` : "";
         where.push(`(pattern.pattern_schema IS DISTINCT FROM $${constructionSchemaParam}
-        OR (pattern.profile_id,pattern.source_system,pattern.pattern_schema,pattern.id) IN (
-          SELECT profile_id,source_system,pattern_schema,pattern_id FROM ${projectionSet}
-          ${patternSchema === LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA ? `WHERE (pattern.component_recipe='${DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID}' AND projection_recipe='${DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID}')
-            OR (pattern.component_recipe IS DISTINCT FROM '${DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID}' AND projection_recipe=$${constructionRecipeParam})` : ""}
+        OR (pattern.profile_id,pattern.source_system,pattern.pattern_schema,pattern.id${recipeKey}) IN (
+          SELECT profile_id,source_system,pattern_schema,pattern_id${recipeKey ? ",projection_recipe" : ""} FROM ${projectionSet}
         )${patternSchema === CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA ? ` OR NOT EXISTS (
           SELECT 1 FROM ${projectionSet}_headers published
           WHERE published.profile_id=pattern.profile_id AND published.source_system=pattern.source_system AND published.pattern_schema=pattern.pattern_schema

@@ -3,7 +3,9 @@ import { PostgresStorageAdapter } from "../postgres.js";
 
 describe("postgres language identity role source projection", () => {
   it("prefers source namespace metadata and reads the model source only when durable source metadata is missing", async () => {
-    const adapter = new PostgresStorageAdapter({ url: "postgres://offline.invalid/none", schema: "identity_role_source" });
+    const adapter = new PostgresStorageAdapter({ url: "postgres://offline.invalid/none", schema: "identity_role_source", informationAccess: {
+      tenantId: "tenant.fixture", principalId: "principal.fixture", compartments: [], maximumExportClass: "restricted"
+    } });
     let sql = "";
     (adapter.pool as unknown as { query: (text: string, params?: readonly unknown[]) => Promise<{ rows: unknown[] }> }).query = async text => {
       sql = text;

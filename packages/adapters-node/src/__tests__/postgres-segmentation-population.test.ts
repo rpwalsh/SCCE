@@ -73,6 +73,7 @@ function fixture(rows: Array<Record<string, unknown>>) {
     schema: "fixture"
   });
   adapters.push(adapter);
+  adapter.transaction = async operation => operation();
   const calls: Array<{ sql: string; params: unknown[] }> = [];
   adapter.query = async <T>(sql: string, params: unknown[] = []): Promise<T[]> => {
     calls.push({ sql, params });

@@ -121,6 +121,17 @@ it("does not let a base projection bypass conversational dependency admission", 
   expect(calls).toEqual([]);
 });
 
+it("keeps construction recipe identity in an uncorrelated admission key", async () => {
+  const { adapter, calls } = fixture();
+  await adapter.languageMemory.listLanguagePatterns({ patternSchemas: [LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA] });
+  const sql = calls.at(-1)!.sql;
+  expect(sql).toContain(`pattern.id,CASE WHEN pattern.component_recipe='${conversationRecipe}'`);
+  expect(sql).toContain("SELECT profile_id,source_system,pattern_schema,pattern_id,projection_recipe FROM active_projection_ids_0");
+  expect(sql).not.toContain("WHERE (pattern.component_recipe=");
+  expect(sql).toContain("dependency_evidence.status='promoted'");
+  expect(sql).toContain("WHERE dependency_evidence.id IS NULL");
+});
+
 it.each([undefined, [], [{ sourceId: "source.foreign", sourceVersionId: "version.foreign", evidenceIds: ["evidence.owned"] }],
   [{ sourceId: "source.owned", sourceVersionId: "version.owned", evidenceIds: ["evidence.foreign"] }]])("rejects missing, foreign or incomplete pooled dependencies %j", async dependencies => {
   const { adapter, calls } = fixture(), input = publication(true);
