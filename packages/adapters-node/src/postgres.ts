@@ -4125,6 +4125,7 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
     },
     async listLanguagePatterns(query = {}) {
       const params: unknown[] = [];
+      const projectionSets: string[] = [];
       const where: string[] = query.patternKind ? [] : ["pattern.pattern_kind<>'source_compilation'"];
       if (query.patternIds) {
         if (!query.patternIds.length) return [];
@@ -4168,44 +4169,58 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
             AND (NOT (pattern.pattern_json ? 'sourceVersionId') OR current_compilation."sourceVersionId"=pattern.pattern_json->>'sourceVersionId')
         ))`);
       }
-      const inducedSyntaxSchemaParam = params.length + 1;
-      params.push(INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA);
-      const inducedSyntaxRecipeParam = params.length + 1;
-      params.push(INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID);
-      const activeSyntaxAccess = storage.informationAccessPredicate("active_syntax", params.length + 1);
-      params.push(...activeSyntaxAccess.params);
-      where.push(`(pattern.pattern_json->>'schema' IS DISTINCT FROM $${inducedSyntaxSchemaParam}
-        OR pattern.pattern_json->>'componentRecipe'=$${inducedSyntaxRecipeParam}
-        OR NOT EXISTS (
-          SELECT 1 FROM ${storage.table("language_patterns")} active_syntax
-          WHERE active_syntax.profile_id=pattern.profile_id
-            AND active_syntax.source_system=pattern.source_system
-            AND active_syntax.pattern_json->>'sourceVersionId'=pattern.pattern_json->>'sourceVersionId'
-            AND active_syntax.pattern_json->>'schema'=$${inducedSyntaxSchemaParam}
-            AND active_syntax.pattern_json->>'componentRecipe'=$${inducedSyntaxRecipeParam}
-            AND ${activeSyntaxAccess.sql}
-        ))`);
+      if (!query.patternSchemas || query.patternSchemas.includes(INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA)) {
+        const inducedSyntaxSchemaParam = params.length + 1;
+        params.push(INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA);
+        const inducedSyntaxRecipeParam = params.length + 1;
+        params.push(INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID);
+        const activeSyntaxAccess = storage.informationAccessPredicate("active_syntax", params.length + 1);
+        params.push(...activeSyntaxAccess.params);
+        where.push(`(pattern.pattern_json->>'schema' IS DISTINCT FROM $${inducedSyntaxSchemaParam}
+          OR pattern.pattern_json->>'componentRecipe'=$${inducedSyntaxRecipeParam}
+          OR NOT EXISTS (
+            SELECT 1 FROM ${storage.table("language_patterns")} active_syntax
+            WHERE active_syntax.profile_id=pattern.profile_id
+              AND active_syntax.source_system=pattern.source_system
+              AND active_syntax.pattern_json->>'sourceVersionId'=pattern.pattern_json->>'sourceVersionId'
+              AND active_syntax.pattern_json->>'schema'=$${inducedSyntaxSchemaParam}
+              AND active_syntax.pattern_json->>'componentRecipe'=$${inducedSyntaxRecipeParam}
+              AND ${activeSyntaxAccess.sql}
+          ))`);
+      }
       for (const [patternSchema, componentRecipe] of [
         [LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID],
         [SOURCE_CODE_FUNCTION_PATTERN_SCHEMA, SOURCE_CODE_FUNCTION_PROJECTION_RECIPE_ID],
         ["scce.source_owned_test_contract.v1", "scce.source_owned_test_contract_projection.v1"]
-      ]) {
+      ] as const) {
+        if (query.patternSchemas && !query.patternSchemas.includes(patternSchema)) continue;
         const constructionSchemaParam = params.length + 1;
         params.push(patternSchema);
         const constructionRecipeParam = params.length + 1;
         params.push(componentRecipe);
         const projectionAccess = storage.informationAccessPredicate("active_projection", params.length + 1);
         params.push(...projectionAccess.params);
-        where.push(`(pattern.pattern_json->>'schema' IS DISTINCT FROM $${constructionSchemaParam}
-        OR EXISTS (
-          SELECT 1 FROM (SELECT value_json,value_json->'informationLabel' AS information_label FROM ${storage.table("storage_meta")}) active_projection
+        const projectionSet = `active_projection_ids_${projectionSets.length}`;
+        projectionSets.push(`${projectionSet}_headers AS MATERIALIZED (
+          SELECT active_projection.value_json->>'profileId' AS profile_id,
+            active_projection.value_json->>'sourceSystem' AS source_system,
+            active_projection.value_json->>'patternSchema' AS pattern_schema,
+            active_projection.value_json->'patternIds' AS pattern_ids
+          FROM (SELECT value_json,value_json->'informationLabel' AS information_label FROM ${storage.table("storage_meta")}) active_projection
           WHERE ${projectionAccess.sql}
             AND active_projection.value_json->>'schema'='scce.language_pattern_active_projection.v1'
-            AND active_projection.value_json->>'profileId'=pattern.profile_id
-            AND active_projection.value_json->>'sourceSystem'=pattern.source_system
-            AND active_projection.value_json->>'patternSchema'=pattern.pattern_json->>'schema'
+            AND active_projection.value_json->>'patternSchema'=$${constructionSchemaParam}
             AND active_projection.value_json->>'componentRecipe'=$${constructionRecipeParam}
-            AND active_projection.value_json->'patternIds' ? pattern.id
+        ), ${projectionSet} AS MATERIALIZED (
+          SELECT header.profile_id,header.source_system,header.pattern_schema,member.pattern_id
+          FROM ${projectionSet}_headers header
+          CROSS JOIN LATERAL jsonb_array_elements_text(CASE
+            WHEN jsonb_typeof(header.pattern_ids)='array' THEN header.pattern_ids
+            ELSE '[]'::jsonb END) member(pattern_id)
+        )`);
+        where.push(`(pattern.pattern_json->>'schema' IS DISTINCT FROM $${constructionSchemaParam}
+        OR (pattern.profile_id,pattern.source_system,pattern.pattern_json->>'schema',pattern.id) IN (
+          SELECT profile_id,source_system,pattern_schema,pattern_id FROM ${projectionSet}
         ))`);
       }
       appendInformationAccess(storage, "pattern", params, where);
@@ -4256,7 +4271,8 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
            ORDER BY ${order("ranked")} LIMIT $${limitParam}`
         : `SELECT * FROM eligible_patterns eligible ORDER BY ${order("eligible")} LIMIT $${limitParam}`;
       return (await storage.query<LanguagePatternRow>(
-        `WITH candidate_pool AS MATERIALIZED (
+        `WITH ${projectionSets.length ? `${projectionSets.join(",\n")},` : ""}
+         candidate_pool AS MATERIALIZED (
            SELECT pattern.id, pattern.profile_id, pattern.pattern_kind, pattern.support, pattern.entropy, pattern.evidence_ids, pattern.updated_at, pattern.information_label,
                   pg_column_size(pattern.pattern_json) AS stored_bytes,
                   -- A flat "ORDER BY support DESC, capped to the row budget" ranked every pattern kind on one

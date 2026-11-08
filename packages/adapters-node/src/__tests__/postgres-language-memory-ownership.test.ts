@@ -121,7 +121,7 @@ describe("Postgres language-memory ownership queries", () => {
     await adapter.languageMemory.listLanguagePatterns({ view: "request_seed", profileIds: ["profile.owned"], sourceSystem: "wikipedia", limit: 8 });
     expect(calls.at(-1)!.sql).toContain("THEN pattern.pattern_json - 'joinProgram' ELSE pattern.pattern_json END AS pattern_json");
     expect(calls.at(-1)!.sql).toContain("pattern.information_label");
-    expect(calls.at(-1)!.sql).toContain("active_projection.value_json->'patternIds' ? pattern.id");
+    expect(calls.at(-1)!.sql).toContain("pattern.pattern_json->>'schema',pattern.id) IN (");
     expect(calls.at(-1)!.params).toContainEqual(["profile.owned"]);
     await adapter.languageMemory.listLanguagePatterns({ profileIds: ["profile.owned"], sourceSystem: "wikipedia", limit: 8 });
     expect(calls.at(-1)!.sql).not.toContain("pattern.pattern_json - 'joinProgram'");
@@ -186,7 +186,7 @@ describe("Postgres language-memory ownership queries", () => {
     const query = calls.at(-1)!;
     expect(query.params).toContain(SOURCE_CODE_FUNCTION_PATTERN_SCHEMA);
     expect(query.params).toContain(SOURCE_CODE_FUNCTION_PROJECTION_RECIPE_ID);
-    expect(query.sql.indexOf("active_projection.value_json->'patternIds' ? pattern.id")).toBeLessThan(query.sql.indexOf("ranked_pool AS"));
+    expect(query.sql.indexOf("pattern.pattern_json->>'schema',pattern.id) IN (")).toBeLessThan(query.sql.indexOf("ranked_pool AS"));
   });
   it("requires active publication for source-owned test contracts before spending retrieval budgets", async () => {
     const { adapter, calls } = fixture();
@@ -194,7 +194,7 @@ describe("Postgres language-memory ownership queries", () => {
     const query = calls.at(-1)!;
     expect(query.params).toContain("scce.source_owned_test_contract.v1");
     expect(query.params).toContain("scce.source_owned_test_contract_projection.v1");
-    expect(query.sql.indexOf("active_projection.value_json->'patternIds' ? pattern.id")).toBeLessThan(query.sql.indexOf("ranked_pool AS"));
+    expect(query.sql.indexOf("pattern.pattern_json->>'schema',pattern.id) IN (")).toBeLessThan(query.sql.indexOf("ranked_pool AS"));
   });
   it("preserves original compilation membership on construction-only pattern updates", async () => {
     const { adapter, calls } = fixture();
@@ -269,15 +269,30 @@ describe("Postgres language-memory ownership queries", () => {
     const { adapter, calls } = fixture();
     await adapter.languageMemory.listLanguagePatterns({ profileId: "profile.owned", sourceSystem: "wikipedia", limit: 32 });
     const call = calls.at(-1)!;
-    const activeFilter = call.sql.indexOf("active_projection.value_json->'patternIds' ? pattern.id");
+    const activeFilter = call.sql.indexOf("pattern.pattern_json->>'schema',pattern.id) IN (");
     expect(activeFilter).toBeGreaterThanOrEqual(0);
     expect(activeFilter).toBeLessThan(call.sql.indexOf("ranked_pool AS"));
     expect(activeFilter).toBeLessThan(call.sql.lastIndexOf("LIMIT"));
     expect(call.sql).toContain("pattern.pattern_json->>'schema' IS DISTINCT FROM");
-    expect(call.sql).toContain("active_projection.value_json->>'sourceSystem'=pattern.source_system");
+    expect(call.sql).toContain("SELECT profile_id,source_system,pattern_schema,pattern_id FROM active_projection_ids_0");
     expect(call.sql).toContain("active_projection.information_label->>'tenantId'");
     expect(call.params).toContain(LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA);
     expect(call.params).toContain(LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID);
+  });
+
+  it("expands each accessible active projection once before matching exact source-owned pattern IDs", async () => {
+    const { adapter, calls } = fixture();
+    await adapter.languageMemory.listLanguagePatterns({ profileId: "profile.large-transcript", limit: 2048, maxTotalJsonBytes: 64_000_000 });
+    const sql = calls.at(-1)!.sql;
+    expect(sql.match(/active_projection_ids_\d+ AS MATERIALIZED/gu)).toHaveLength(3);
+    expect(sql.match(/active_projection_ids_\d+_headers AS MATERIALIZED/gu)).toHaveLength(3);
+    expect(sql.match(/CROSS JOIN LATERAL jsonb_array_elements_text/gu)).toHaveLength(3);
+    expect(sql).toContain("SELECT header.profile_id,header.source_system,header.pattern_schema,member.pattern_id");
+    expect(sql).not.toContain("active_projection.value_json->'patternIds' ? pattern.id");
+    expect(sql).toContain("pattern.profile_id,pattern.source_system,pattern.pattern_json->>'schema',pattern.id");
+    expect(sql).toContain("active_projection.information_label->>'tenantId'");
+    expect(sql.indexOf("pattern.id) IN (")).toBeLessThan(sql.indexOf("ranked_pool AS"));
+    expect(sql.indexOf("pattern.id) IN (")).toBeLessThan(sql.indexOf("running_json_bytes"));
   });
 
   it("supersedes legacy induced syntax rows only for a rebuilt source scope before row and byte limits", async () => {
