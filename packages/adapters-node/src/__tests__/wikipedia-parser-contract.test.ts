@@ -37,6 +37,29 @@ async function dumpFixture(xml: Uint8Array, maxArticleChars = 160000) {
 }
 
 describe("Wikipedia source and surface contract", () => {
+  it.each([
+    ["Ertha &amp; Ernst Trouillot", "Ertha & Ernst Trouillot"],
+    ["Literal &amp;amp; title", "Literal &amp; title"],
+    ["Unicode &#x1F642; title", "Unicode 🙂 title"]
+  ])("decodes XML-escaped index titles exactly once: %s", async (storedTitle, expectedTitle) => {
+    const xml = pageXml("Source text retained for escaped title identity validation. ".repeat(4)).replace("<title>Parser fixture</title>", `<title>${storedTitle}</title>`);
+    const f = await dumpFixture(Buffer.from(xml));
+    try {
+      await writeFile(f.corpus.indexPath!, `0:42:${storedTitle}\n`);
+      const item = (await collect(streamWikipediaMultistream(f.corpus))).find(row => row.type === "file");
+      expect(item?.type === "file" && item.file.metadata).toMatchObject({ title: expectedTitle, pageId: "42" });
+    } finally { await f.close(); }
+  });
+
+  it("rejects index titles that differ by an extra entity-encoding layer", async () => {
+    const xml = pageXml("Source text retained for escaped title identity validation. ".repeat(4)).replace("<title>Parser fixture</title>", "<title>Ertha &amp; Ernst Trouillot</title>");
+    const f = await dumpFixture(Buffer.from(xml));
+    try {
+      await writeFile(f.corpus.indexPath!, "0:42:Ertha &amp;amp; Ernst Trouillot\n");
+      await expect(collect(streamWikipediaMultistream(f.corpus))).rejects.toThrow("identity mismatch");
+    } finally { await f.close(); }
+  });
+
   it("separates source ownership and coordinate roles even when all source bytes are identical", async () => {
     const raw = "The source and normalized surface have the same bytes. ".repeat(4).trim();
     const f = await dumpFixture(Buffer.from(pageXml(raw)));
