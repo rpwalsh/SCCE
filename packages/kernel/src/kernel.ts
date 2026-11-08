@@ -184,6 +184,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
     hasher,
     cacheMs: surfaceLanguageMemoryCacheMs,
     languageResolver: profileIds => languageIdentityRuntime.resolver(profileIds),
+    onDurableRevision: () => languageIdentityRuntime.ensure(),
     // A per-turn CPU cost, not a memory bound: the window is clustered on every request (measured: 2,048 profiles
     // put 10-15s of clustering into each turn's seed; 512 about 2s). The role hydration carries the language now,
     // so the window only has to name the request's cluster.
@@ -293,7 +294,7 @@ export function createScceKernel(deps: ScceKernelDeps): ScceKernel {
   });
   const kernel: ScceKernel = {
     async languageIdentities(input = {}) {
-      const result = await languageIdentityRuntime.ensure({ ...input, initializeIfMissing: true });
+      const result = await deps.storage.transaction(() => languageIdentityRuntime.ensure({ ...input, finalize: true, initializeIfMissing: true }));
       if (result.discovered) invalidateRuntimeCaches();
       return { schema: "scce.language_identities.v1" as const, ...result };
     },

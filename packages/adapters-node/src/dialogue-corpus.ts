@@ -23,6 +23,7 @@ import {
   corpusRoleIdForSourceSystem,
   corpusSourceAlias,
   createHasher,
+  createLanguageIdentityRuntime,
   dialogueRequestActObservations,
   validateDeclaredTranscriptSource,
   induceConversationalActConstructionTrainingSets,
@@ -239,7 +240,7 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
       });
     }
   }
-  return {
+  const result: DialogueCorpusTrainReport = {
     schema: "scce.dialogueCorpusTrainReport.v1",
     rootPath: root,
     sourceSystem: CORPUS_SOURCE_SYSTEM_IDS.dialogue,
@@ -261,6 +262,17 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
     stoppedByHeapSafetyBound,
     heapMiBAtExit: heapMiB()
   };
+  if (input.storage.languageIdentities) {
+    const profileIds = reports.map(report => report.artifacts.languageProfileId);
+    if (!profileIds.length && read.length) {
+      const versions = read.map(file => corpusSourceVersionIdFor(file));
+      const profiles = await input.storage.model.listLanguageProfiles({ sourceVersionIds: versions, limit: versions.length });
+      profileIds.push(...profiles.filter(profile => versions.includes(profile.sourceVersionId)).map(profile => profile.id));
+    }
+    const identities = createLanguageIdentityRuntime({ store: input.storage.languageIdentities, hasher: createHasher(), now: Date.now, informationLabel: input.informationLabel });
+    await input.storage.transaction(() => identities.ensure({ requiredProfileIds: profileIds, initializeIfMissing: true }));
+  }
+  return result;
 }
 
 /** Compiles source-declared request labels against the exact promoted evidence owned by each transcript. */

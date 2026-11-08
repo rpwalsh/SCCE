@@ -26,6 +26,7 @@ import type { Hasher, InformationLabel, JsonValue, LanguageProfile } from "./typ
  */
 
 export const LANGUAGE_IDENTITY_SCHEMA = "scce.language_identity.v2" as const;
+export const LANGUAGE_IDENTITY_DISCOVERY_RECIPE = "scce.language_identity_discovery.v3";
 
 export interface LanguageIdentityRecord {
   schema: typeof LANGUAGE_IDENTITY_SCHEMA;
@@ -49,6 +50,8 @@ export interface LanguageIdentityRecord {
   membershipCut: number;
   createdAt: number;
   informationLabel?: InformationLabel;
+  discoveryRecipe?: string;
+  discoveryInputDigest?: string;
 }
 
 export interface LanguageProfileSignature {

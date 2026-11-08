@@ -4,6 +4,7 @@ import {
   discoverLanguageIdentities,
   selectLanguageIdentityForSurface,
   LANGUAGE_IDENTITY_SCHEMA,
+  LANGUAGE_IDENTITY_DISCOVERY_RECIPE,
   type LanguageIdentityRecord,
   type LanguageProfileSignature
 } from "./language-identity.js";
@@ -11,6 +12,7 @@ import { isLanguageWordSymbol } from "./language-identity.js";
 import { CORPUS_ROLE_IDS, createCorpusRegistry, corpusRoleIdForSourceSystem, type CorpusRegistryEntry } from "./corpus-registry.js";
 import type { LanguageIdentityStore, LanguageProfileSignatureRow } from "./storage.js";
 import type { Hasher, InformationLabel, JsonValue } from "./types.js";
+import { canonicalStringify } from "./primitives.js";
 
 /** Resolves an artifact's language from what the artifact says about itself: its profile, or failing that its corpus. */
 export interface LanguageResolver {
@@ -50,7 +52,7 @@ export interface LanguageIdentityLoadResult {
 
 export interface LanguageIdentityRuntime {
   /** Serving reads the catalog; discovery requires an explicit initialization or rebuild. */
-  ensure(input?: { rebuild?: boolean; initializeIfMissing?: boolean }): Promise<LanguageIdentityLoadResult>;
+  ensure(input?: { rebuild?: boolean; initializeIfMissing?: boolean; finalize?: boolean; requiredProfileIds?: readonly string[] }): Promise<LanguageIdentityLoadResult>;
   identities(): readonly LanguageIdentityRecord[];
   readiness(): LanguageIdentityReadiness;
   /** Immutable assignment snapshot for precisely the owners present in bounded work. */
@@ -158,7 +160,7 @@ export function createLanguageIdentityRuntime(options: {
     }
   };
 
-  async function discover(): Promise<{ identities: LanguageIdentityRecord[]; assigned: number }> {
+  async function signaturesForDiscovery(): Promise<LanguageProfileSignature[]> {
     const store = options.store!;
     const signatures: LanguageProfileSignature[] = [];
     let afterId = "";
@@ -168,7 +170,15 @@ export function createLanguageIdentityRuntime(options: {
       for (const row of page) signatures.push(signatureFromRow(row, corpusRegistry));
       afterId = page[page.length - 1]!.id;
     }
+    return signatures;
+  }
+  const inputDigest = (signatures: readonly LanguageProfileSignature[]) => options.hasher.digestHex(canonicalStringify([...signatures]
+    .sort((a, b) => a.id.localeCompare(b.id) || canonicalStringify(a).localeCompare(canonicalStringify(b)))));
+  async function discover(signatures: LanguageProfileSignature[]): Promise<{ identities: LanguageIdentityRecord[]; assigned: number }> {
+    const store = options.store!;
     const discovery = discoverLanguageIdentities({ signatures, hasher: options.hasher, now: options.now(), informationLabel: options.informationLabel });
+    const digest = inputDigest(signatures);
+    discovery.identities = discovery.identities.map(identity => ({ ...identity, discoveryRecipe: LANGUAGE_IDENTITY_DISCOVERY_RECIPE, discoveryInputDigest: digest }));
     if (store.replaceIdentities) await store.replaceIdentities(discovery.identities);
     else await store.putIdentities(discovery.identities);
     const assignments = [...discovery.assignments].map(([profileId, languageId]) => ({ profileId, languageId }));
@@ -180,7 +190,7 @@ export function createLanguageIdentityRuntime(options: {
     async ensure(input = {}) {
       if (ensuring) {
         const current = await ensuring;
-        if (!input.rebuild && !(input.initializeIfMissing && current.readiness !== "ready")) return current;
+        if (!input.rebuild && !input.finalize && !input.requiredProfileIds?.length && !(input.initializeIfMissing && current.readiness !== "ready")) return current;
       }
       ensuring = (async () => {
         const started = Date.now();
@@ -190,19 +200,27 @@ export function createLanguageIdentityRuntime(options: {
         }
         let identities = input.rebuild ? [] : await options.store.listIdentities();
         let discovered = false;
-        let assigned: number | null = null;
+        let assignedCount: number | null = null;
         const stale = identities.some(identity => identity.schema !== LANGUAGE_IDENTITY_SCHEMA || !Array.isArray(identity.corpusRoles));
         readiness = stale ? "requires_rebuild" : identities.length ? "ready" : "missing";
-        if (input.rebuild || (input.initializeIfMissing && readiness !== "ready")) {
-          const result = await discover();
+        const required = [...new Set(input.requiredProfileIds ?? [])].sort();
+        const assignments = required.length ? await options.store.listProfileLanguages({ profileIds: required }) : [];
+        const assigned = new Map(assignments.map(row => [row.profileId, row.languageId]));
+        const catalogIds = new Set(identities.map(identity => identity.id));
+        const missingOwners = required.some(id => !catalogIds.has(assigned.get(id) ?? ""));
+        const recipeStale = (input.finalize || required.length > 0) && identities.some(identity => identity.discoveryRecipe !== LANGUAGE_IDENTITY_DISCOVERY_RECIPE);
+        const signatures = input.finalize ? await signaturesForDiscovery() : undefined;
+        const changedPopulation = signatures !== undefined && identities.some(identity => identity.discoveryInputDigest !== inputDigest(signatures));
+        if (input.rebuild || missingOwners || recipeStale || changedPopulation || (input.initializeIfMissing && readiness !== "ready")) {
+          const result = await discover(signatures ?? await signaturesForDiscovery());
           identities = result.identities;
-          assigned = result.assigned;
+          assignedCount = result.assigned;
           discovered = true;
           readiness = identities.length ? "ready" : "missing";
         }
         loaded = readiness === "ready" ? identities : [];
         index();
-        return { identities: loaded, assigned, discovered, readiness, elapsedMs: Date.now() - started };
+        return { identities: loaded, assigned: assignedCount, discovered, readiness, elapsedMs: Date.now() - started };
       })();
       try { return await ensuring; }
       catch (error) { loaded = []; index(); readiness = "unavailable"; throw error; }

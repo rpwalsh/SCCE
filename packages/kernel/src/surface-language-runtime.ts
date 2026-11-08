@@ -182,6 +182,7 @@ export function createSurfaceLanguageRuntime(options: {
   profileLimit: number;
   /** Resolves artifact languages once identities are loaded; absent until then, when cluster scoping applies. */
   languageResolver?: (profileIds: readonly string[]) => LanguageResolver | undefined | Promise<LanguageResolver | undefined>;
+  onDurableRevision?: () => Promise<unknown>;
   /** Test/tuning hook; production callers should rely on the defaults. */
   surfaceLanguageMemoryCacheMaxEntries?: number;
   surfaceCandidateProfileCacheMaxEntries?: number;
@@ -255,6 +256,7 @@ export function createSurfaceLanguageRuntime(options: {
       const revision = await deps.storage.languageMemory.readRevision!();
       if (typeof revision !== "string" || !revision) throw new Error("language-memory revision must be a nonempty opaque string");
       const previous = durableLanguageRevision;
+      if (previous !== revision) await options.onDurableRevision?.();
       if (previous !== undefined && previous !== revision) invalidateLanguageMemory();
       durableLanguageRevision = revision;
       if (previous !== revision) traceEvent((globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace, {

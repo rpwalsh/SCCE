@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import * as kernel from "@scce/kernel";
-import type { EvidenceSpan, InformationLabel, IngestionCheckpoint, LanguagePatternProjection, ScceStorage, SourceVersion } from "@scce/kernel";
+import type { EvidenceSpan, InformationLabel, IngestionCheckpoint, LanguagePatternProjection, ScceStorage, SourceVersion, LanguageIdentityRecord, LanguageProfileSignatureRow } from "@scce/kernel";
 import { storageFixtureForEvaluation } from "../../../kernel/src/__tests__/evidence-promotion-evaluation-fixture.js";
 import { requestSeedLanguagePattern } from "../../../kernel/src/request-language-hydration.js";
 import { trainDialogueCorpus } from "../dialogue-corpus.js";
@@ -18,6 +18,13 @@ const object = (value: unknown): Record<string, unknown> => value && typeof valu
 function fixture() {
   const evidence: EvidenceSpan[] = [], versions: SourceVersion[] = [], checkpoints = new Map<string, IngestionCheckpoint>();
   const base = storageFixtureForEvaluation({ evidence, clockNow: () => 0 }), storage = base.storage;
+  let identities: LanguageIdentityRecord[] = [];
+  const signatures = new Map<string, LanguageProfileSignatureRow>(), assignments = new Map<string, string>();
+  const discover = vi.fn(async ({ afterId = "", limit }: { afterId?: string; limit: number }) => [...signatures.values()].filter(row => row.id > afterId).sort((a, b) => a.id.localeCompare(b.id)).slice(0, limit));
+  storage.languageIdentities = { putIdentities: async rows => { identities = [...rows]; }, replaceIdentities: async rows => { identities = [...rows]; },
+    listIdentities: async () => identities, putProfileSignatures: async input => { for (const row of input.rows) signatures.set(row.id, row); }, listProfileSignatures: discover,
+    assignProfileLanguages: async rows => { for (const row of rows) assignments.set(row.profileId, row.languageId); },
+    listProfileLanguages: async query => [...assignments].filter(([id]) => !query || query.profileIds.includes(id)).map(([profileId, languageId]) => ({ profileId, languageId })) };
   const projections = new Map<string, LanguagePatternProjection>();
   const key = (p: Omit<LanguagePatternProjection, "patternIds">) => kernel.canonicalStringify([p.informationLabel, p.sourceId, p.sourceSystem, p.patternSchema, p.componentRecipe]);
   const putSpan = async (span: EvidenceSpan) => { const index = evidence.findIndex(row => row.id === span.id); if (index < 0) evidence.push(span); else evidence[index] = span; };
@@ -47,7 +54,7 @@ function fixture() {
   };
   const list = storage.languageMemory.listLanguagePatterns.bind(storage.languageMemory);
   storage.languageMemory.listLanguagePatterns = async query => (await list(query)).map(pattern => query?.view === "request_seed" ? requestSeedLanguagePattern(pattern) : pattern);
-  return { ...base, storage, evidence, versions, checkpoints, projections };
+  return { ...base, storage, evidence, versions, checkpoints, projections, assignments, discover };
 }
 
 describe("cached-source conversational component replay", () => {
@@ -67,6 +74,8 @@ describe("cached-source conversational component replay", () => {
     try {
       const first = await trainDialogueCorpus(options);
       expect(first.filesSkipped).toEqual([]);
+      expect(f.assignments.size).toBe(3);
+      const discoveryReads = f.discover.mock.calls.length;
       expect(first.conversationalConstructions.bundles.some(bundle => bundle.constructions > bundle.oneSlotConstructions)).toBe(true);
       const receipt = [...f.checkpoints.values()].find(row => row.id.startsWith("dialogue_conversational_compilation_"))!;
       expect(receipt).toBeDefined();
@@ -84,6 +93,7 @@ describe("cached-source conversational component replay", () => {
       expect(upgraded.reports).toEqual(first.reports);
       expect(upgraded.conversationalConstructions.patternsPersisted).toBeGreaterThan(0);
       expect(compiler).not.toHaveBeenCalled(); expect(induce).toHaveBeenCalledTimes(1);
+      expect(f.discover).toHaveBeenCalledTimes(discoveryReads);
       expect(publish).toHaveBeenCalled();
       const auxiliary = [...f.projections.values()].filter(row => row.componentRecipe === DIALOGUE_CONVERSATIONAL_CONSTRUCTION_RECIPE_ID);
       expect(auxiliary).toHaveLength(1);
