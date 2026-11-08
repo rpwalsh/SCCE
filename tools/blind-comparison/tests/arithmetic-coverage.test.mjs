@@ -86,7 +86,7 @@ test('both native adapters keep arithmetic on their ordinary text turn without n
   const candidate = await runScceNative(input, { cwd }, { request: async (route, body) => {
     calls.push({ route, body }); return { status: 200, body: { answer, episodeId: 'ordinary.turn' } };
   } });
-  assert.equal(calls.length, 1); assert.equal(calls[0].route, '/api/turn?full=1');
+  assert.equal(calls.length, 1); assert.equal(calls[0].route, '/api/turn');
   assert.equal(calls[0].body.requestedAuthority, undefined);
   assert.ok(calls[0].body.text.includes(input.steps[0].prompt));
   const reference = await runReferenceNative(input, { cwd }, { ask: async (prompt, options) => {

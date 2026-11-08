@@ -1,5 +1,6 @@
 import test, { after } from 'node:test';
 import {createHash} from 'node:crypto';
+import {createServer} from 'node:http';
 import {nativeValidationPermission} from '../providers/default/native-validation-permission.mjs';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
@@ -84,8 +85,27 @@ test('only current public source bytes enter the official ingestion producer; ac
   assert.equal(calls[0].body.content, 'Corrected public source.');
   assert.deepEqual(calls[0].body.sourceAdmission, admission);
   assert.equal(calls[1].body.text, 'Current question.');
+  assert.equal(calls[1].route, '/api/turn');
   assert.equal(Object.hasOwn(calls[1].body, 'gold'), false);
   assert.equal(calls.length, 2);
+});
+
+test('ordinary native HTTP turns use the public receipt view without increasing the byte budget',async()=>{
+ const admission={sourceClass:'owner_local',intendedUse:'direct_evidence',promotionAuthority:'owner'};
+ const trust={identity:1,integrity:1,parserReliability:1,directness:1,authority:1,freshness:1,independenceGroup:'public-receipt-test',accessScope:'owner_private',licenseStatus:'owner_authorized'};
+ const input=makeInput('turn',{writablePaths:[],publicChecks:[],sourceAdmission:admission,sourceTrust:trust});
+ input.steps=[{prompt:'Use the supplied public source.',sources:[{id:'record',text:'The public value is 31.'}],files:{}}];
+ const calls=[];const server=createServer((request,response)=>{
+  calls.push(request.url);request.resume();response.setHeader('content-type','application/json');
+  response.end(JSON.stringify(request.url==='/api/ingest'?{sources:1,skipped:[],promotedEvidenceIds:['evidence:public'],responseView:{detail:'receipt'}}
+   :{answer:'31',episodeId:'episode:public',...(request.url.includes('full=1')?{diagnostics:'x'.repeat(input.budgets.outputBytes+1)}:{})}));
+ });
+ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+ try{
+  const cwd=await workspace();const result=await runScceNative(input,{cwd,server:`http://127.0.0.1:${server.address().port}`});
+  assert.equal(result.answer,'31');assert.equal(result.identity.productOutcome,'completed');
+  assert.deepEqual(calls,['/api/ingest','/api/turn']);assert.equal(input.budgets.outputBytes,131072);
+ }finally{await new Promise(resolve=>server.close(resolve));}
 });
 test('actual unsupported-language 422 remains a product failure without substituting an artifact or runtime', async () => {
   const input = makeInput('code_generation'), cwd = await workspace(input.steps[0].files);

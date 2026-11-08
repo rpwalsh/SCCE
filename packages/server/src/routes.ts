@@ -21,6 +21,7 @@ import type { RuntimeStartupReadiness, RuntimeStartupReadinessSnapshot } from ".
 import { turnTaskRegistryFor, type TurnTaskFrame } from "./turn-task-registry.js";
 import { parseLocalExecutiveGoal } from "@scce/adapters-node";
 import { createStaleWhileRevalidateCache, type StaleWhileRevalidateCache } from "./stale-while-revalidate.js";
+import { compactIngestResult } from "./ingestion-response.js";
 import { programResponseReadiness, unsupportedProgramResponseReadiness } from "./program-response-readiness.js";
 
 export interface ApiContext {
@@ -586,7 +587,10 @@ async function dispatch(
     return json(result);
   }
   if (req.method === "GET" && url.pathname === "/api/config/public") return json(publicConfig(context.config));
-  if (req.method === "POST" && url.pathname === "/api/ingest") return json(await context.runtime.kernel.ingest(validateIngest(await readBody(req, context.maxBodyBytes))));
+  if (req.method === "POST" && url.pathname === "/api/ingest") {
+    const result = await context.runtime.kernel.ingest(validateIngest(await readBody(req, context.maxBodyBytes)));
+    return json(url.searchParams.get("full") === "1" ? result : compactIngestResult(result));
+  }
   if (req.method === "POST" && url.pathname === "/api/ingest/github") {
     requirePublicNetworkAcquisition();
     const request = parseGithubOssIngestRequest(preloadedBody ?? await readBody(req, context.maxBodyBytes));
@@ -624,7 +628,10 @@ async function dispatch(
     if (!isRecord(body) || typeof body.planId !== "string" || !body.planId.trim()) throw new HttpError(400, "session rejection requires planId");
     return json({ rejected: context.runtime.approvals.reject(body.planId), session: context.runtime.approvals.snapshot() });
   }
-  if (req.method === "POST" && url.pathname === "/api/codebase/ingest") return json(await context.runtime.kernel.ingest(validateCodebaseIngest(await readBody(req, context.maxBodyBytes))));
+  if (req.method === "POST" && url.pathname === "/api/codebase/ingest") {
+    const result = await context.runtime.kernel.ingest(validateCodebaseIngest(await readBody(req, context.maxBodyBytes)));
+    return json(url.searchParams.get("full") === "1" ? result : compactIngestResult(result));
+  }
   if (req.method === "POST" && url.pathname === "/api/workspace/init") {
     const body = requireFields(await readBody(req, context.maxBodyBytes), ["path"]);
     return json(await createWorkspaceRuntime(context).init(String(body.path), workspaceOptions(body)));
