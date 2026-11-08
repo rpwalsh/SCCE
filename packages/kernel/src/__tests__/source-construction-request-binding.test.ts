@@ -132,6 +132,44 @@ describe("acquired typed request construction transfer", () => {
     expect(await runtime.sourceOwnedConstructionsForEvidence([fixture.evidence])).toBe(bundles);
     expect(queries.filter(query => query.profileIds?.includes(fixture.profile.id))).toHaveLength(1);
   });
+
+  it("does not repopulate the owned semantic cache with a read invalidated during source recompilation", async () => {
+    const fixture = teach({ subjects: ["Luma", "Vela", "Zora"], marker: "HAS TOKEN", value: "Bora", valueKind: "opaque.token" });
+    let release!: () => void;
+    let started!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    const reading = new Promise<void>(resolve => { started = resolve; });
+    let patternReads = 0;
+    const storage = {
+      model: { listLanguageProfiles: async () => [fixture.profile] },
+      languageMemory: { listLanguagePatterns: async () => {
+        patternReads++;
+        if (patternReads !== 1) return [];
+        const rows = fixture.patterns;
+        started();
+        await pending;
+        return rows;
+      } },
+      evidence: { getEvidenceBatch: async () => [fixture.evidence] }
+    } as unknown as ScceKernelDeps["storage"];
+    const runtime = createSurfaceLanguageRuntime({ deps: { storage, corpusRegistry: [] },
+      languageMemoryRuntime: createLanguageMemoryRuntime({ hasher }), clock, hasher, cacheMs: 100_000, profileLimit: 32 });
+    const obsoleteRead = runtime.sourceOwnedConstructionsForEvidence([fixture.evidence]);
+    await reading;
+    runtime.invalidate();
+    release();
+    const obsolete = await obsoleteRead;
+    expect(obsolete.length).toBeGreaterThan(0);
+    const bind = (bundles: typeof obsolete) => sourceConstructionRequestValueResolver({ bundles, graph: fixture.graph }).resolve(fixture.requestText, [fixture.evidence]);
+    expect(bind(obsolete)).toMatchObject({ value: "Bora" });
+    const current = await runtime.sourceOwnedConstructionsForEvidence([fixture.evidence]);
+    expect(current).toEqual([]);
+    expect(bind(current)).toBeUndefined();
+    expect(patternReads).toBe(2);
+    expect(await runtime.sourceOwnedConstructionsForEvidence([fixture.evidence])).toBe(current);
+    expect(patternReads).toBe(2);
+  });
+
   it("keeps exact Unicode sentence ranges through astral and combining code points", () => {
     const prefix = "\u{1f9f6}e\u0301: ";
     const text = `${prefix}ada visited london\u3002${prefix}ada visited paris\u3002`;

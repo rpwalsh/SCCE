@@ -1269,6 +1269,7 @@ export function createSurfaceLanguageRuntime(options: {
     const cached = sourceOwnedConstructionCache.get(key);
     const resident = cached?.bundles.deref();
     if (resident && clock.now() - cached!.loadedAt < surfaceLanguageMemoryCacheMs) return resident;
+    const generation = languageMemoryGeneration;
     const owned = await evidenceOwnedLanguageProfilesCached(versionIds as SourceVersionId[]);
     const profileIds = owned.profiles.filter(profile => versionIds.includes(String(profile.sourceVersionId)))
       .map(profile => profile.id).sort().slice(0, 32);
@@ -1287,7 +1288,7 @@ export function createSurfaceLanguageRuntime(options: {
       && bundle.sourceVersionIds.every(id => admittedVersions.has(String(id))));
     hydrateHeapTrace("language.source_constructions", { profiles: profileIds.length, patterns: patterns.length,
       evidence: constructionEvidence.length, bundles: bundles.length, rejected: memory.rejected.length });
-    boundedCacheSet(sourceOwnedConstructionCache, key, { loadedAt: clock.now(), bundles: new WeakRef(bundles) }, surfaceCandidateProfileCacheMaxEntries);
+    if (generation === languageMemoryGeneration) boundedCacheSet(sourceOwnedConstructionCache, key, { loadedAt: clock.now(), bundles: new WeakRef(bundles) }, surfaceCandidateProfileCacheMaxEntries);
     return bundles;
   }
 
