@@ -2,7 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 
 import {createHash} from "node:crypto";
-import {createScceKernel,createClock,createHasher,createIdFactory,createInMemoryDialogueMemoryStore,type EvidenceSpan,type SourceVersion,type WorkspaceRecord,type WorkspaceSourceFileRecord,type WorkspaceReportRecord,type ScceStorage,type InformationLabel} from "@scce/kernel";
+import {createScceKernel,createClock,createHasher,createIdFactory,createInMemoryDialogueMemoryStore,type EvidenceSpan,type SourceVersion,type WorkspaceRecord,type WorkspaceSourceFileRecord,type WorkspaceReportRecord,type ScceStorage,type InformationLabel,type GraphNode,type GraphEdge,type Hyperedge} from "@scce/kernel";
 import {storageFixtureForEvaluation} from "../../../../kernel/src/__tests__/evidence-promotion-evaluation-fixture.js";
 import {createWorkspaceRuntime} from "../../workspace-runtime.js";
 import {createApprovalSession} from "../../approval-session.js";
@@ -11,7 +11,7 @@ import {NodeFileIngestAdapter} from "../../files.js";
 import type {NodeScceRuntime} from "../../runtime.js";
 import type {ScceRuntimeConfig} from "../../config.js";
 
-export function ordinaryWorkspaceProgramFixture(root:string,options:{runtimeWorkspaceRoot?:string;realClock?:boolean}={}){
+export function ordinaryWorkspaceProgramFixture(root:string,options:{runtimeWorkspaceRoot?:string;realClock?:boolean;persistGraph?:boolean}={}){
   const clock=createClock(options.realClock?{}:{fixedTime:1000,stepMs:1}),hasher=createHasher(),spans:EvidenceSpan[]=[],versions:SourceVersion[]=[],blobs=new Map<string,Uint8Array>();
   const recorded=storageFixtureForEvaluation({evidence:spans,clockNow:()=>clock.now()}),storage=recorded.storage;
   storage.evidence.putSourceVersion=async row=>{const index=versions.findIndex(old=>old.sourceVersionId===row.sourceVersionId);if(index<0)versions.push(row);else versions[index]=row;};
@@ -23,6 +23,15 @@ export function ordinaryWorkspaceProgramFixture(root:string,options:{runtimeWork
   storage.workspace={putWorkspace:async row=>{workspaces.splice(0,workspaces.length,row);},getWorkspace:async id=>workspaces.find(row=>row.id===id)??null,latestWorkspace:async()=>workspaces.at(-1)??null,
    putSourceFile:async row=>{const index=files.findIndex(old=>old.workspaceId===row.workspaceId&&old.path===row.path);if(index<0)files.push(row);else files[index]=row;},listSourceFiles:async query=>files.filter(row=>!query?.workspaceId||row.workspaceId===query.workspaceId),
    putReport:async row=>{reports.push(row);},listReports:async()=>reports} as ScceStorage["workspace"];
+  if(options.persistGraph){
+   const nodes=new Map<string,GraphNode>(),edges=new Map<string,GraphEdge>(),hyperedges=new Map<string,Hyperedge>();
+   storage.graph.upsertNode=async row=>{nodes.set(String(row.id),JSON.parse(JSON.stringify(row)) as GraphNode);};
+   storage.graph.upsertEdge=async row=>{edges.set(String(row.id),JSON.parse(JSON.stringify(row)) as GraphEdge);};
+   storage.graph.upsertHyperedge=async row=>{hyperedges.set(String(row.id),JSON.parse(JSON.stringify(row)) as Hyperedge);};
+   const read=storage.graph.getSlice.bind(storage.graph),temporal=storage.graph.getTemporalSlice.bind(storage.graph);
+   storage.graph.getSlice=async query=>({...await read(query),nodes:[...nodes.values()],edges:[...edges.values()],hyperedges:[...hyperedges.values()]});
+   storage.graph.getTemporalSlice=async query=>({...await temporal(query),nodes:[...nodes.values()],edges:[...edges.values()],hyperedges:[...hyperedges.values()]});
+  }
   storage.dialogueMemory=createInMemoryDialogueMemoryStore();
   storage.userModelClaims={putClaim:async()=>undefined,listClaims:async()=>[]};
   storage.taskResumption={putSnapshot:async()=>undefined,getLatestSnapshot:async()=>null};

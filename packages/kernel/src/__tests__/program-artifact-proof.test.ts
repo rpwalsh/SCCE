@@ -44,3 +44,16 @@ it("retains actual replan receipt references without changing semantic program i
  const foreign=planner.emit({...base,programIntent:{...a.intent,metadata:{...metadata,replan:{...receiptMetadata,ownerRequirementIds:["foreign.owner"]}}}});
  expect(foreign.nodes.some(row=>row.kind==="program_execution_replan_receipt")).toBe(false);
 });
+
+it("keeps elapsed causal diagnostics in the execution receipt rather than changing an owned program approval",()=>{
+ const clock=createClock({fixedTime:1,stepMs:1}),hasher=createHasher(),ids=createIdFactory({clock,hasher,deterministicReplay:true});
+ const text="JavaScript q(1)=2; q(2)=4; q(3)=6",field=createAlphaFieldEngine().activate({text,nodes:[],edges:[]});
+ const entailment=createSemanticEntailmentEngine({idFactory:ids,hasher}).check({text,evidence:[],nodes:[],field,createdAt:1});
+ const intent=programIntentForTurn({requestedAuthority:"program",activeOperatorIds:[COGNITIVE_OPERATOR_IDS.programPlanning],codeSignal:codeRequestSignal(text),evidence:[]})!;
+ const planner=createProgramPlanner({idFactory:ids,hasher}),base={episodeId:ids.episodeId(),requestText:text,entailment,evidence:[],programIntent:intent};
+ const later={...entailment,confidence:{...entailment.confidence,causalMass:entailment.confidence.causalMass+Number.EPSILON}};
+ expect(programArtifactProofBinding({requestText:text,entailment,evidence:[],requirements:[],ownerScope:{}})).toEqual(programArtifactProofBinding({requestText:text,entailment:later,evidence:[],requirements:[],ownerScope:{}}));
+ const first=planner.emit(base),second=planner.emit({...base,episodeId:ids.episodeId(),entailment:later});
+ expect(second.files).toEqual(first.files);expect(programValidationApprovalInput(second)).toEqual(programValidationApprovalInput(first));
+ expect(later.confidence.causalMass).not.toBe(entailment.confidence.causalMass);
+});

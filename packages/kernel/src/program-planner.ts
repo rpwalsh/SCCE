@@ -2036,12 +2036,17 @@ function operationContracts(plan: ProgramPlan, input: ProgramPlannerInput,proofB
 }
 
 function sourceMemoryFor(input: ProgramPlannerInput, plan: ProgramPlan,proofBinding:JsonValue): JsonValue {
+  // Causal mass ages with the observation clock even when source contracts,
+  // proof semantics and executable bytes are unchanged. It remains on the
+  // actual episode entailment/trace, rather than changing a reviewed artifact.
+  const artifactConfidence: Partial<SemanticEntailmentResult["confidence"]> = {...input.entailment.confidence};
+  delete artifactConfidence.causalMass;
   return toJsonValue({
     requestHash: hashText(input.requestText),
     proofBinding,
     semanticVerdict: input.entailment.semanticVerdict,
     force: input.entailment.force,
-    confidence: input.entailment.confidence,
+    confidence: artifactConfidence,
     evidence: input.evidence.slice(0, 12).map(span => ({
       evidenceId: span.id,
       sourceVersionId: span.sourceVersionId,

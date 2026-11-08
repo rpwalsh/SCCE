@@ -18,15 +18,11 @@ it("retains exact native approval across cold and warm ordinary API requests wit
   await writeFile(path.join(root,"specification.txt"),spec);
   await writeFile(path.join(root,"driver.cjs"),'const m=require("./fresh-cargo.cjs");const p=JSON.parse(process.argv[2]);console.log(m.freshOpaqueDouble(...p));');
   await writeFile(path.join(root,"package.json"),JSON.stringify({private:true,type:"commonjs"}));
-  const fixture=ordinaryWorkspaceProgramFixture(root,{runtimeWorkspaceRoot:base,realClock:true});
+  const fixture=ordinaryWorkspaceProgramFixture(root,{runtimeWorkspaceRoot:base,realClock:true,persistGraph:true});
   const ingested=await fixture.runtime.ingest(root,{maxFiles:10,maxFileBytes:100000});expect(ingested.sourceContracts?.status).toBe("compiled");
-  // A nonempty resident graph exercises ordinary time-sensitive causal field
-  // diagnostics, which the empty-graph approval fixtures could not observe.
-  const graphRead=fixture.storage.graph.getSlice.bind(fixture.storage.graph),temporalRead=fixture.storage.graph.getTemporalSlice.bind(fixture.storage.graph),edgeTime=Date.now()-100000;
-  fixture.storage.graph.getSlice=async query=>{const graph=await graphRead(query);if(graph.nodes.length<2)return graph;
-   return {...graph,edges:[{id:"edge.owned-workspace-context" as never,source:graph.nodes[0]!.id,target:graph.nodes[1]!.id,relationId:"relation.workspace-context" as never,
-    alpha:0.2,weight:0.3,temporalScope:{status:"atemporal"},evidenceIds:fixture.spans.map(span=>span.id),createdAt:edgeTime,updatedAt:edgeTime,metadata:{}}]};};
-  fixture.storage.graph.getTemporalSlice=async query=>({...await temporalRead(query),...await fixture.storage.graph.getSlice(query)});
+  // Persist the actual source-induced graph, including its original edge
+  // timestamps, instead of using the default empty graph evaluation fixture.
+  expect((await fixture.storage.graph.getSlice({})).edges.length).toBeGreaterThan(0);
   // Source ownership is read by exact IDs. A code specification is not a
   // documentary world-fact answer to the requested generation task.
   fixture.storage.evidence.searchEvidence=async()=>[];
@@ -60,5 +56,15 @@ it("retains exact native approval across cold and warm ordinary API requests wit
   expect(changed.status,JSON.stringify(await changed.json())).toBe(202);
   expect(results.at(-1)!.buildTest).toBeUndefined();
   expect(fixture.approvals.snapshot().pending.some(row=>row.capabilityId==="process.build_test"&&!fixture.approvals.isApproved(row))).toBe(true);
+  await writeFile(path.join(root,"specification.txt"),`${spec}\n`);
+  const updated=await fixture.runtime.ingest(root,{maxFiles:10,maxFileBytes:100000});
+  const stale=await post("/api/turn",request);expect(stale.status,JSON.stringify(await stale.json())).toBe(422);
+  expect(results.at(-1)!.constructGraph.program).toBeUndefined();expect(results.at(-1)!.buildTest).toBeUndefined();
+  const current={...request,metadata:{workspaceProgramContext:{...request.metadata.workspaceProgramContext,expectedWorkspaceUpdatedAt:updated.workspace.updatedAt}}};
+  const revision=await post("/api/turn",current);expect(revision.status,JSON.stringify(await revision.json())).toBe(202);
+  expect(results.at(-1)!.buildTest).toBeUndefined();
+  const currentProgram=results.at(-1)!.constructGraph.program!;
+  const currentApproval=fixture.approvals.snapshot().pending.find(row=>(row.input as {program?:string}).program===currentProgram.id)!;
+  expect(currentApproval).toBeDefined();expect(fixture.approvals.isApproved(currentApproval)).toBe(false);
  }finally{if(server)await new Promise<void>(resolve=>server!.close(()=>resolve()));await rm(base,{recursive:true,force:true});}
 },60000);
