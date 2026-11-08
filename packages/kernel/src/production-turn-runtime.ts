@@ -878,6 +878,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
 
       return withRequestLanguageFormScope(() => withBufferedEventWrites(async () => {
       const turnStarted = Date.now();
+      await surfaceLanguageRuntime.synchronizeWithStorage();
       // A recovery motion that ran but did not justify a replan still has to
       // be reported: result.runtimeMotion previously came only from
       // inheritedRuntimeMotion, which exists solely on a second pass, so

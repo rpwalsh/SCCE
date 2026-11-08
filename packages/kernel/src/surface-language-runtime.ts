@@ -242,8 +242,29 @@ export function createSurfaceLanguageRuntime(options: {
   let languageMemoryGeneration = 0;
   let requestControlPatternCache: { loadedAt: number; value: LanguagePatternRecord[] } | undefined;
   let requestControlPatternInFlight: Promise<LanguagePatternRecord[]> | undefined;
+  let durableLanguageRevision: string | undefined;
+  let revisionReadInFlight: Promise<void> | undefined;
+
+  async function synchronizeWithStorage(): Promise<void> {
+    if (!deps.storage.languageMemory.readRevision) return;
+    if (revisionReadInFlight) return revisionReadInFlight;
+    const pending = (async () => {
+      const revision = await deps.storage.languageMemory.readRevision!();
+      if (typeof revision !== "string" || !revision) throw new Error("language-memory revision must be a nonempty opaque string");
+      const previous = durableLanguageRevision;
+      if (previous !== undefined && previous !== revision) invalidateLanguageMemory();
+      durableLanguageRevision = revision;
+      if (previous !== revision) traceEvent((globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace, {
+        stage: "language.cache.revision", label: "kernel.language.hydrate", support: { previous: previous ?? null, revision, invalidated: previous !== undefined }
+      });
+    })();
+    revisionReadInFlight = pending;
+    try { await pending; }
+    finally { if (revisionReadInFlight === pending) revisionReadInFlight = undefined; }
+  }
 
   async function requestControlPatternsCached(): Promise<LanguagePatternRecord[]> {
+    if (durableLanguageRevision === undefined && deps.storage.languageMemory.readRevision) await synchronizeWithStorage();
     const now = clock.now();
     if (requestControlPatternCache && now - requestControlPatternCache.loadedAt < surfaceLanguageMemoryCacheMs) return requestControlPatternCache.value;
     if (requestControlPatternInFlight) return requestControlPatternInFlight;
@@ -268,6 +289,7 @@ export function createSurfaceLanguageRuntime(options: {
   }
 
   async function continuationPopulationCached(languageId: string): Promise<LanguageContinuationPopulation | undefined> {
+    if (durableLanguageRevision === undefined && deps.storage.languageMemory.readRevision) await synchronizeWithStorage();
     if (!deps.storage.languageMemory.continuationPopulation) return undefined;
     const cached = continuationPopulationCache.get(languageId);
     const value = cached?.value.deref();
@@ -775,6 +797,7 @@ export function createSurfaceLanguageRuntime(options: {
     preferredSurface = "",
     hydrationOptions: ResidentOnlyOptions = {}
   ) {
+    if (durableLanguageRevision === undefined && deps.storage.languageMemory.readRevision) await synchronizeWithStorage();
     const now = clock.now();
     const generation = languageMemoryGeneration;
     const languageId = hydrationOptions.languageId;
@@ -959,6 +982,7 @@ export function createSurfaceLanguageRuntime(options: {
     patternFamilyId?: string,
     residentOnly = false
   ): Promise<TargetProfilePatternRecord[]> {
+    if (durableLanguageRevision === undefined && deps.storage.languageMemory.readRevision) await synchronizeWithStorage();
     if (!deps.storage.dialogueMemory?.listTargetProfilePatterns) return [];
     const cacheKey = `${targetProfileId ?? "*"}\u001f${patternFamilyId ?? "*"}`;
     const now = clock.now();
@@ -1103,6 +1127,7 @@ export function createSurfaceLanguageRuntime(options: {
   async function surfaceLanguageProfilesCached(
     residentOnly = false
   ): Promise<{ profiles: LanguageProfile[]; clusters: LanguageProfileCluster[] }> {
+    if (durableLanguageRevision === undefined && deps.storage.languageMemory.readRevision) await synchronizeWithStorage();
     const now = clock.now();
     const generation = languageMemoryGeneration;
     if (surfaceProfileCache && (residentOnly || now - surfaceProfileCache.loadedAt < surfaceLanguageMemoryCacheMs)) {
@@ -1143,6 +1168,7 @@ export function createSurfaceLanguageRuntime(options: {
     aliases: readonly string[],
     cacheOptions: ResidentOnlyOptions = {}
   ): Promise<{ profiles: LanguageProfile[]; clusters: LanguageProfileCluster[] }> {
+    if (durableLanguageRevision === undefined && deps.storage.languageMemory.readRevision) await synchronizeWithStorage();
     const aliasKeys = [...new Set(aliases.map(normalizeSourceLanguageAlias).filter(Boolean))].sort();
     if (!aliasKeys.length) return { profiles: [], clusters: [] };
     const cacheKey = aliasKeys.join("\u001f");
@@ -1235,6 +1261,7 @@ export function createSurfaceLanguageRuntime(options: {
     sourceVersionIds: readonly SourceVersionId[],
     cacheOptions: ResidentOnlyOptions = {}
   ): Promise<{ profiles: LanguageProfile[]; clusters: LanguageProfileCluster[] }> {
+    if (durableLanguageRevision === undefined && deps.storage.languageMemory.readRevision) await synchronizeWithStorage();
     const byKey = new Map<string, SourceVersionId>();
     for (const sourceVersionId of sourceVersionIds) {
       const key = String(sourceVersionId);
@@ -1272,6 +1299,7 @@ export function createSurfaceLanguageRuntime(options: {
 
   /** Source semantics follow the admitted source versions, independently of the corpus chosen to word the answer. */
   async function sourceOwnedConstructionsForEvidence(evidence: readonly EvidenceSpan[]): Promise<DurableLanguageConstructionBundle[]> {
+    if (durableLanguageRevision === undefined && deps.storage.languageMemory.readRevision) await synchronizeWithStorage();
     const versionIds = [...new Set(evidence.filter(span => span.status === "promoted").map(span => String(span.sourceVersionId)).filter(Boolean))].sort();
     if (!versionIds.length) return [];
     const key = versionIds.join(UNIT_SEPARATOR);
@@ -1302,6 +1330,7 @@ export function createSurfaceLanguageRuntime(options: {
   }
 
   async function creativeSourceMemoryForRequest(requestText: string, languageId?: string): Promise<{ state: LanguageMemoryRuntimeState; profile: LanguageProfile; patterns: LanguagePatternRecord[] } | undefined> {
+    if (durableLanguageRevision === undefined && deps.storage.languageMemory.readRevision) await synchronizeWithStorage();
     const candidates = creativeRequestSourcePrerequisites({ requestText, patterns: await requestControlPatternsCached(), hasher });
     const patternIds = [...new Set(candidates.flatMap(candidate => candidate.patternIds))].sort();
     if (!patternIds.length) return undefined;
@@ -1404,6 +1433,7 @@ export function createSurfaceLanguageRuntime(options: {
 
 
   async function surfaceLanguageClusterCached(surface: string, residentOnly = false): Promise<LanguageProfileCluster | undefined> {
+    if (durableLanguageRevision === undefined && deps.storage.languageMemory.readRevision) await synchronizeWithStorage();
     if (!surface.trim()) return undefined;
     const surfaceKey = hasher.digestHex(surface.normalize("NFC"));
     const cached = surfaceCandidateProfileCache.get(surfaceKey);
@@ -1461,6 +1491,7 @@ export function createSurfaceLanguageRuntime(options: {
   async function sourceAnchorSemanticFramesCached(
     cacheOptions: ResidentOnlyOptions = {}
   ): Promise<Array<{ frame: SemanticFrameRecord; surface: string; surfaceUnits: string[] }>> {
+    if (durableLanguageRevision === undefined && deps.storage.languageMemory.readRevision) await synchronizeWithStorage();
     const now = clock.now();
     const generation = languageMemoryGeneration;
     if (sourceAnchorSemanticFrameCache
@@ -1490,8 +1521,33 @@ export function createSurfaceLanguageRuntime(options: {
     return value;
   }
 
+  function invalidateLanguageMemory() {
+    surfaceLanguageMemoryCache.clear();
+    requestControlPatternCache = undefined;
+    requestControlPatternInFlight = undefined;
+    languageScopeCache.clear();
+    languageMemoryGeneration += 1;
+    surfaceLanguageMemoryInFlight.clear();
+    continuationPopulationCache.clear();
+    continuationPopulationInFlight.clear();
+    sourceOwnedAliasProfileCache.clear();
+    sourceOwnedAliasProfileInFlight.clear();
+    surfaceCandidateProfileCache.clear();
+    evidenceOwnedProfileCache.clear();
+    sourceOwnedConstructionCache.clear();
+    creativeSourceCache.clear();
+    creativeSourceInFlight.clear();
+    surfaceProfileCache = undefined;
+    surfaceProfileInFlight = undefined;
+    sourceAnchorSemanticFrameCache = undefined;
+    targetProfilePatternCache.clear();
+    targetProfilePatternInFlight.clear();
+    deferredLanguageWarmups.clear();
+  }
+
   return {
     corpusRegistry,
+    synchronizeWithStorage,
     requestControlPatternsCached,
     languageMemorySummary,
     targetProfilePatternsCached,
@@ -1541,28 +1597,6 @@ export function createSurfaceLanguageRuntime(options: {
         tidySurfaceTextMemo: tidySurfaceTextMemoStats()
       };
     },
-    invalidate() {
-      surfaceLanguageMemoryCache.clear();
-      requestControlPatternCache = undefined;
-      requestControlPatternInFlight = undefined;
-      languageScopeCache.clear();
-      languageMemoryGeneration += 1;
-      surfaceLanguageMemoryInFlight.clear();
-      continuationPopulationCache.clear();
-      continuationPopulationInFlight.clear();
-      sourceOwnedAliasProfileCache.clear();
-      sourceOwnedAliasProfileInFlight.clear();
-      surfaceCandidateProfileCache.clear();
-      evidenceOwnedProfileCache.clear();
-      sourceOwnedConstructionCache.clear();
-      creativeSourceCache.clear();
-      creativeSourceInFlight.clear();
-      surfaceProfileCache = undefined;
-      surfaceProfileInFlight = undefined;
-      sourceAnchorSemanticFrameCache = undefined;
-      targetProfilePatternCache.clear();
-      targetProfilePatternInFlight.clear();
-      deferredLanguageWarmups.clear();
-    }
+    invalidate: invalidateLanguageMemory
   };
 }

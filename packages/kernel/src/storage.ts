@@ -898,6 +898,8 @@ export interface LanguagePatternProjection {
 }
 
 export interface LanguageMemoryStore {
+  /** Opaque committed revision for language artifacts; external publications invalidate resident snapshots. */
+  readRevision?(): Promise<string>;
   putNgramObservation(observation: NgramObservation): Promise<void>;
   putNgramObservationsBatch(observations: readonly NgramObservation[]): Promise<void>;
   putNgramModel(model: NgramModelRecord): Promise<void>;
