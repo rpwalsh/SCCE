@@ -1,14 +1,15 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { afterEach, describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { createAlphaFieldEngine } from "../field.js";
 import { clearProdCalibrations, installProdCalibrations } from "../calibrations/prod-calibrations.js";
 import { createClock, createHasher } from "../primitives.js";
 import { createIdFactory } from "../ids.js";
 import { runGraphRefinement, type GraphRefinementSeedPrior } from "../graph-refinement.js";
 import { requestSubjectSegments, turnRequirementNeutralValue } from "../turn-requirements.js";
-import liveCreative from "./fixtures/creative-authority-selection-live.json";
 import type { EvidenceSpan, FieldState, GraphNode, GraphSlice, TurnRequirementField } from "../index.js";
+const liveCreative = JSON.parse(readFileSync(new URL("./fixtures/creative-authority-selection-live.json", import.meta.url), "utf8")) as { requirementField: TurnRequirementField };
 
 const evidence = [{ id: "evidence.one", provenance: { sourceFamilyId: "family.one" } }] as unknown as EvidenceSpan[];
 

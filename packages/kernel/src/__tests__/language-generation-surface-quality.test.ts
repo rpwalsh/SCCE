@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 
 import {
   languageGenerationSurfaceAdequate,
@@ -11,8 +12,8 @@ import {
 import { resolveLearnedCreativeGenerationExtent } from "../mouth.js";
 import { trainKneserNey } from "../kneser-ney.js";
 import { surfaceContainsTerm } from "../surface-linguistics.js";
-import aliceSyntax from "./fixtures/alice-syntax-descriptor-live.json";
 import type { LanguagePatternRecord } from "../storage.js";
+const aliceSyntax = JSON.parse(readFileSync(new URL("./fixtures/alice-syntax-descriptor-live.json", import.meta.url), "utf8")) as { pattern: LanguagePatternRecord };
 
 describe("learned language generation surface quality", () => {
   it("keeps actual Alice syntax descriptors available as structure without speaking their count keys or provenance", () => {
