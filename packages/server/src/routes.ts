@@ -2667,9 +2667,9 @@ export async function planWorkspaceCodingPatchApiRequest(context: ApiContext, re
 function parseWorkspaceValidationPlan(value: unknown, options: WorkspaceValidationPolicySelection): WorkspaceCodingPatchPlanningInput["validationPlan"] {
   const validationBody = exactRecord(value, "validationPlan", ["validatorId", "checks"]);
   const validatorId = boundedString(validationBody.validatorId, "validationPlan.validatorId", 128);
-  if (options.resolveValidationPolicy) options.resolveValidationPolicy(validatorId);
-  else if (validatorId !== DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID && validatorId !== DOCKER_WORKSPACE_PATCH_VALIDATION_POLICY_ID) {
-    throw new HttpError(400, `unknown workspace patch validation policy: ${validatorId}`);
+  if (validatorId !== DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID && validatorId !== DOCKER_WORKSPACE_PATCH_VALIDATION_POLICY_ID) {
+    if (options.resolveValidationPolicy) options.resolveValidationPolicy(validatorId);
+    else throw new HttpError(400, `unknown workspace patch validation policy: ${validatorId}`);
   }
   const checks = boundedArray(validationBody.checks, "validationPlan.checks", 3).map((item, index) => {
     if (item !== "compiler" && item !== "typecheck" && item !== "tests") {
@@ -3675,7 +3675,17 @@ function configuredPatchValidationPolicy(config: LoadedConfig, policyId: string)
 }
 
 function resolveWorkspacePatchValidationPolicy(context: ApiContext, policyId: string): StructuredPatchValidationPolicy {
-  const policy = context.patchValidation?.resolvePolicy(policyId) ?? serverPatchValidationPolicy(context.config, policyId);
+  let policy: StructuredPatchValidationPolicy;
+  if (policyId === DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID) policy = serverPatchValidationPolicy(context.config, policyId);
+  else if (policyId === DOCKER_WORKSPACE_PATCH_VALIDATION_POLICY_ID) {
+    if (context.config.runtime.patchValidation?.provider !== "docker") throw new HttpError(400, "Docker workspace validation policy requires the configured Docker provider");
+    policy = serverPatchValidationRuntime(context.config)!.resolvePolicy(policyId);
+  } else {
+    const configured = configuredPatchValidationPolicy(context.config, policyId);
+    if (configured) policy = configured;
+    else if (context.patchValidation) policy = context.patchValidation.resolvePolicy(policyId);
+    else throw new HttpError(400, `unknown workspace patch validation policy: ${policyId}`);
+  }
   if (policy.id !== policyId) throw new HttpError(400, `workspace validation policy did not resolve the requested id: ${policyId}`);
   validateStructuredPatchValidationPolicy(policy);
   return policy;

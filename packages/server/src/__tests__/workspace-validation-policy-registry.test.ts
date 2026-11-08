@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { afterEach, expect, it } from "vitest";
 import { trustedHostPatchValidationProvider, type StructuredPatchValidationPolicy } from "@scce/adapters-node";
 import { handleRequest, parseTurnWorkspaceCodingRequest, parseWorkspaceCodingPatchPlanRequest, serverPatchValidationPolicy, serverPatchValidationRuntime, workspacePatchValidationApprovalBinding,
+  DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID, DOCKER_WORKSPACE_PATCH_VALIDATION_POLICY_ID,
   WORKSPACE_CODING_PATCH_PLAN_REQUEST_SCHEMA, WORKSPACE_CODING_TURN_REQUEST_SCHEMA, type ApiContext } from "../routes.js";
 
 const roots: string[] = [];
@@ -51,6 +52,49 @@ it("lets patch and turn selectors name a registered id through the server resolv
   const { requestText: _requestText, ...selector } = request;
   expect(parseTurnWorkspaceCodingRequest({ ...selector, schemaVersion: WORKSPACE_CODING_TURN_REQUEST_SCHEMA }, "owned turn", { resolveValidationPolicy: runtime.resolvePolicy })?.validationPlan.validatorId).toBe(projectPolicy.id);
   expect(() => parseWorkspaceCodingPatchPlanRequest({ ...request, validationPlan: { ...request.validationPlan, validatorId: "unregistered.v1" } }, { resolveValidationPolicy: runtime.resolvePolicy })).toThrow(/unknown workspace patch validation policy/u);
+});
+
+it("keeps reserved planning IDs outside a custom resolver's declared policy ownership", () => {
+  const calls: string[] = [];
+  const projectPolicy = policy();
+  const resolveValidationPolicy = (id: string) => { calls.push(id); if (id === projectPolicy.id) return projectPolicy; throw Error(`foreign policy: ${id}`); };
+  const request = { schemaVersion: WORKSPACE_CODING_PATCH_PLAN_REQUEST_SCHEMA, workspaceId: "workspace.owned", expectedWorkspaceUpdatedAt: 1, requestId: "request.owned",
+    requestText: "repair", requestedPaths: ["src/ledger.go"], diagnosticCodes: [], validationPlan: { validatorId: DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID, checks: ["compiler", "tests"] } };
+  for (const validatorId of [DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID, DOCKER_WORKSPACE_PATCH_VALIDATION_POLICY_ID]) {
+    expect(parseWorkspaceCodingPatchPlanRequest({ ...request, validationPlan: { ...request.validationPlan, validatorId } }, { resolveValidationPolicy }).input.validationPlan.validatorId).toBe(validatorId);
+    const { requestText: _requestText, ...selector } = request;
+    expect(parseTurnWorkspaceCodingRequest({ ...selector, schemaVersion: WORKSPACE_CODING_TURN_REQUEST_SCHEMA, validationPlan: { ...request.validationPlan, validatorId } }, "owned turn", { resolveValidationPolicy })?.validationPlan.validatorId).toBe(validatorId);
+  }
+  expect(calls).toEqual([]);
+  expect(parseWorkspaceCodingPatchPlanRequest({ ...request, validationPlan: { ...request.validationPlan, validatorId: projectPolicy.id } }, { resolveValidationPolicy }).input.validationPlan.validatorId).toBe(projectPolicy.id);
+  expect(calls).toEqual([projectPolicy.id]);
+});
+
+it("resolves policy IDs through their exact built-in, configured or delegated owner without masking owner failures", async () => {
+  const projectPolicy = policy();
+  const base = config(projectPolicy);
+  const seen: string[] = [];
+  const context = { config: { ...base, runtime: { ...base.runtime, tools: { pnpm: process.execPath } } },
+    patchValidation: { provider: trustedHostPatchValidationProvider, resolvePolicy: (id: string) => {
+      seen.push(id);
+      if (id === "owner-only.v1") return { ...projectPolicy, id };
+      if (id === "wrong-id.v1") return projectPolicy;
+      throw Error(`owner resolution failed: ${id}`);
+    } }, runtime: { approvals: { isApproved: () => false, requestApproval: () => ({ id: "pending.policy-owner" }), snapshot: () => ({ operatorGrant: false, pending: [] }) } }
+  } as unknown as ApiContext;
+  const request = { path: "application.cjs", request: "repair" };
+  for (const validationPolicyId of [DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID, projectPolicy.id]) {
+    expect((await post(context, { ...request, validationPolicyId })).status).toBe(202);
+  }
+  expect(seen).toEqual([]);
+  expect((await post(context, { ...request, validationPolicyId: "owner-only.v1" })).status).toBe(202);
+  expect(seen).toEqual(["owner-only.v1"]);
+  const broken = await post(context, { ...request, validationPolicyId: "broken-owner.v1" });
+  expect(broken.status).toBe(500);
+  expect(await broken.text()).toContain("owner resolution failed: broken-owner.v1");
+  expect((await post(context, { ...request, validationPolicyId: "wrong-id.v1" })).status).toBe(400);
+  expect((await post(context, { ...request, validationPolicyId: DOCKER_WORKSPACE_PATCH_VALIDATION_POLICY_ID })).status).toBe(400);
+  expect(seen).toEqual(["owner-only.v1", "broken-owner.v1", "wrong-id.v1"]);
 });
 
 it("binds code approval to configured command contents and rejects request commands and unregistered ids before execution", async () => {
