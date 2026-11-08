@@ -2,6 +2,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 /**
  * vitest.config.ts deliberately forces `singleFork: true` (see its own
@@ -33,7 +34,15 @@ import { spawn } from "node:child_process";
 // process's sequential lifetime. This has NOT been re-verified end to end
 // at 20 shards -- a real residual risk on this specific file cluster,
 // not silently declared fixed.
-const SHARD_COUNT = Number.parseInt(process.env.SCCE_TEST_SHARDS ?? "20", 10);
+function positiveInteger(name, fallback) {
+  const value = process.env[name] ?? String(fallback);
+  const number = Number(value);
+  if (!/^[1-9][0-9]*$/u.test(value) || !Number.isSafeInteger(number)) throw new Error(`${name} must be a positive integer`);
+  return number;
+}
+const SHARD_COUNT = positiveInteger("SCCE_TEST_SHARDS", 20);
+const CONCURRENCY = Math.min(SHARD_COUNT, positiveInteger("SCCE_TEST_CONCURRENCY", 1));
+const vitest = fileURLToPath(new URL("../node_modules/vitest/vitest.mjs", import.meta.url));
 const extraArgs = process.argv.slice(2);
 
 // A filtered/targeted run (e.g. `pnpm test:unit some-file-pattern`, the
@@ -42,7 +51,7 @@ const extraArgs = process.argv.slice(2);
 // add startup overhead, not help. Sharding only pays off for the real
 // full, unfiltered suite.
 if (extraArgs.length > 0) {
-  const child = spawn("pnpm", ["exec", "vitest", "run", ...extraArgs], { stdio: "inherit", shell: true });
+  const child = spawn(process.execPath, [vitest, "run", ...extraArgs], { stdio: "inherit", shell: false, windowsHide: true });
   child.on("error", error => { throw error; });
   child.on("exit", code => process.exit(code ?? 1));
 } else {
@@ -51,21 +60,24 @@ if (extraArgs.length > 0) {
 
 async function runFullSuiteSharded() {
   let failed = false;
-  for (let index = 1; index <= SHARD_COUNT; index++) {
-    const code = await runShard(index);
-    if (code !== 0) {
-      failed = true;
-      console.error(`\nshard ${index}/${SHARD_COUNT} failed with exit code ${code}\n`);
+  let next = 1;
+  async function worker() {
+    while (next <= SHARD_COUNT) {
+      const index = next++;
+      const code = await runShard(index);
+      console.log(`[unit-shard ${index}/${SHARD_COUNT}] exit=${code}`);
+      if (code !== 0) failed = true;
     }
   }
+  await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()));
   process.exit(failed ? 1 : 0);
 }
 
 function runShard(index) {
   return new Promise((resolve, reject) => {
-    const args = ["vitest", "run", `--shard=${index}/${SHARD_COUNT}`];
-    console.log(`\n--- shard ${index}/${SHARD_COUNT}: pnpm exec ${args.join(" ")} ---\n`);
-    const child = spawn("pnpm", ["exec", ...args], { stdio: "inherit", shell: true });
+    const args = [vitest, "run", `--shard=${index}/${SHARD_COUNT}`, "--maxWorkers=1", "--minWorkers=1"];
+    console.log(`[unit-shard ${index}/${SHARD_COUNT}] started`);
+    const child = spawn(process.execPath, args, { stdio: "inherit", shell: false, windowsHide: true });
     child.on("error", reject);
     child.on("exit", code => resolve(code ?? 1));
   });
