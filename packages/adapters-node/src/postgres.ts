@@ -4220,7 +4220,9 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
          scoped_patterns AS MATERIALIZED (
            SELECT
              admitted.id, admitted.profile_id, admitted.pattern_kind, admitted.support, admitted.entropy, admitted.evidence_ids, admitted.updated_at, admitted.information_label,
-             pattern.pattern_json,
+             ${query.view === "request_seed"
+               ? `CASE WHEN pattern.pattern_json->>'schema'='${INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA}' THEN pattern.pattern_json - 'joinProgram' ELSE pattern.pattern_json END`
+               : "pattern.pattern_json"} AS pattern_json,
              profile.source_version_id,
              version.source_id,
              version.observed_at AS source_observed_at,

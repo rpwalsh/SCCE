@@ -411,7 +411,7 @@ export function createSurfaceLanguageRuntime(options: {
   ) {
     const boundedLimit = Math.max(1, Math.min(256, Math.floor(limit)));
     // Request-seed uses typed natural-language roles below; the unsupervised surface cluster may be symbolic.
-    const selectionCluster = purpose === "request_seed" ? undefined : cluster;
+    const selectionCluster = purpose === "request_seed" && languageId ? undefined : cluster;
     const hydrateHeapStart = process.memoryUsage().heapUsed;
     const hydrateStartedAt = Date.now();
     const profileIds = preferredCorpusRoleId ? undefined : selectionCluster?.profileIds;
@@ -525,7 +525,7 @@ export function createSurfaceLanguageRuntime(options: {
     ] = await Promise.all([
       (populationSeed ? Promise.resolve([]) : Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listNgramModels({ sourceSystem: item.sourceSystem, profileIds: item.profileIds, limit: Math.min(limit, item.limits.ngramModels), maxTotalJsonBytes: hydrationShare(hydrationByteBudgets.ngramModelJsonBytes, hydrationQueries.length) })))).then(rows => { hydrateHeapTrace("language.hydrate.part", { elapsedMs: Date.now() - hydrateStartedAt, part: "listNgramModels", rows: rows.flat().length } as unknown as Record<string, number>); return rows; }),
       Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listLanguageUnits({ profileIds: item.profileIds, sourceSystem: item.sourceSystem, limit: item.limits.languageUnits, maxTotalJsonBytes: hydrationShare(hydrationByteBudgets.languageUnitJsonBytes, hydrationQueries.length) }))).then(rows => { hydrateHeapTrace("language.hydrate.part", { elapsedMs: Date.now() - hydrateStartedAt, part: "listLanguageUnits", rows: rows.flat().length } as unknown as Record<string, number>); return rows; }),
-      Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listLanguagePatterns({ profileIds: item.profileIds, sourceSystem: item.sourceSystem, languageId: item.profileIds ? undefined : languageId, limit: item.limits.languagePatterns, maxTotalJsonBytes: hydrationShare(hydrationByteBudgets.languagePatternJsonBytes, hydrationQueries.length) }))).then(rows => { hydrateHeapTrace("language.hydrate.part", { elapsedMs: Date.now() - hydrateStartedAt, part: "listLanguagePatterns", rows: rows.flat().length } as unknown as Record<string, number>); return rows; }),
+      Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listLanguagePatterns({ ...(purpose ? { view: purpose } : {}), profileIds: item.profileIds, sourceSystem: item.sourceSystem, languageId: item.profileIds ? undefined : languageId, limit: item.limits.languagePatterns, maxTotalJsonBytes: hydrationShare(hydrationByteBudgets.languagePatternJsonBytes, hydrationQueries.length) }))).then(rows => { hydrateHeapTrace("language.hydrate.part", { elapsedMs: Date.now() - hydrateStartedAt, part: "listLanguagePatterns", rows: rows.flat().length } as unknown as Record<string, number>); return rows; }),
       Promise.all(hydrationQueries.map(item => deps.storage.languageMemory.listSemanticFrames({ profileIds: item.profileIds, sourceSystem: item.sourceSystem, limit: item.limits.semanticFrames }))).then(rows => { hydrateHeapTrace("language.hydrate.part", { elapsedMs: Date.now() - hydrateStartedAt, part: "listSemanticFrames", rows: rows.flat().length } as unknown as Record<string, number>); return rows; }),
       preferredCorpusRoleId
         ? surfaceProfileCache
@@ -896,7 +896,7 @@ export function createSurfaceLanguageRuntime(options: {
     // creative turn) for every new question. The residentRoleMatch branch
     // above already established that cross-surface reuse of a role-scoped
     // hydration is sound; this makes the fallback key agree with it.
-    const cacheKey = `${languageProfileClusterCacheKey(cluster)}\u001f${cluster ? "scoped" : unscopedReason}\u001f${preferredCorpusRoleId ?? "corpus-role:any"}`;
+    const cacheKey = `${languageProfileClusterCacheKey(cluster)}\u001f${cluster ? "scoped" : unscopedReason}\u001f${preferredCorpusRoleId ?? "corpus-role:any"}${hydrationOptions.purpose ? `\u001f${hydrationOptions.purpose}` : ""}`;
     const cached = surfaceLanguageMemoryCache.get(cacheKey);
     if (cached
       && cached.limit >= limit
@@ -906,7 +906,7 @@ export function createSurfaceLanguageRuntime(options: {
         ? { ...cached.value, ...cached.value.rescopeForSurface(preferredSurface) }
         : cached.value;
     }
-    const superset = cluster && !preferredCorpusRoleId ? residentSupersetLanguageMemory(cluster, preferredSurface) : undefined;
+    const superset = cluster && !preferredCorpusRoleId && !hydrationOptions.purpose ? residentSupersetLanguageMemory(cluster, preferredSurface) : undefined;
     if (superset) { lookup("hit-superset"); return superset; }
     lookup(hydrationOptions.residentOnly ? "miss-resident" : "miss-durable", {
       roleEntries: preferredCorpusRoleId ? [...surfaceLanguageMemoryCache.keys()].filter(key => key.endsWith(`\u001f${preferredCorpusRoleId}`)).length : 0,
@@ -940,7 +940,7 @@ export function createSurfaceLanguageRuntime(options: {
     // selected profile.
     let pending = surfaceLanguageMemoryInFlight.get(cacheKey);
     if (!pending) {
-      pending = admitHydration(() => hydrateSurfaceLanguageMemory(limit, cluster, unscopedReason, preferredCorpusRoleId, "", undefined, generation));
+      pending = admitHydration(() => hydrateSurfaceLanguageMemory(limit, cluster, unscopedReason, preferredCorpusRoleId, "", undefined, generation, hydrationOptions.purpose));
       void pending.then(value => {
         // An explicit unscoped decision is reusable; missing data for a
         // selected language must remain retryable.
@@ -1033,7 +1033,7 @@ export function createSurfaceLanguageRuntime(options: {
   ): void {
     const warmKey = hydrationOptions.languageId
       ? `language:${hydrationOptions.languageId}\u001f${preferredCorpusRoleId ?? "corpus-role:any"}${hydrationOptions.purpose ? `\u001f${hydrationOptions.purpose}` : ""}`
-      : `cluster:${languageProfileClusterCacheKey(cluster)}\u001f${preferredCorpusRoleId ?? "corpus-role:any"}\u001f${cluster ? "" : unscopedReason}`;
+      : `cluster:${languageProfileClusterCacheKey(cluster)}\u001f${preferredCorpusRoleId ?? "corpus-role:any"}\u001f${cluster ? "" : unscopedReason}${hydrationOptions.purpose ? `\u001f${hydrationOptions.purpose}` : ""}`;
     if (deferredLanguageWarmups.has(warmKey)) return;
     deferredLanguageWarmups.add(warmKey);
     const durableOptions = { ...hydrationOptions, residentOnly: false, deferDurable: false };
@@ -1101,7 +1101,7 @@ export function createSurfaceLanguageRuntime(options: {
     const prefix = `${languageProfileClusterCacheKey(cluster)}\u001fscoped\u001f`;
     const roleMarker = preferredCorpusRoleId ? `\u001f${preferredCorpusRoleId}` : undefined;
     return [...surfaceLanguageMemoryCache.entries()]
-      .filter(([key]) => key.startsWith(prefix) && (!roleMarker || key.endsWith(roleMarker)))
+      .filter(([key]) => key.startsWith(prefix) && !key.endsWith("\u001frequest_seed") && (!roleMarker || key.endsWith(roleMarker)))
       .map(([, entry]) => entry)
       .sort((left, right) => right.loadedAt - left.loadedAt)[0]?.value;
   }

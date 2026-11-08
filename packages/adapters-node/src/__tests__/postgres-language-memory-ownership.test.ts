@@ -11,6 +11,16 @@ afterEach(async () => {
 });
 
 describe("Postgres language-memory ownership queries", () => {
+  it("projects only generative join programs out of an explicitly requested interpretation read", async () => {
+    const { adapter, calls } = fixture();
+    await adapter.languageMemory.listLanguagePatterns({ view: "request_seed", profileIds: ["profile.owned"], sourceSystem: "wikipedia", limit: 8 });
+    expect(calls[0]!.sql).toContain("THEN pattern.pattern_json - 'joinProgram' ELSE pattern.pattern_json END AS pattern_json");
+    expect(calls[0]!.sql).toContain("pattern.information_label");
+    expect(calls[0]!.sql).toContain("active_projection.value_json->'patternIds' ? pattern.id");
+    expect(calls[0]!.params).toContainEqual(["profile.owned"]);
+    await adapter.languageMemory.listLanguagePatterns({ profileIds: ["profile.owned"], sourceSystem: "wikipedia", limit: 8 });
+    expect(calls[1]!.sql).not.toContain("pattern.pattern_json - 'joinProgram'");
+  });
   it("reads exact accessible projection receipts and validates their owned compilation inventory including empty results", async () => {
     const { adapter, calls } = fixture();
     const informationLabel = { tenantId: "tenant.fixture", principals: ["principal.fixture"], compartments: [], exportClass: "restricted" as const, mergePolicy: "isolated" as const };
