@@ -267,7 +267,8 @@ import { createSafetyRailEngine } from "./safety-rail-engine.js";
 import { createActionPlanner, createCapabilityRegistry, createProgramLocalValidationCapability } from "./safety.js";
 import { createFunctionalConsciousnessScore, createSpectralSelfDistillation } from "./self-distillation.js";
 import { createFunctionalSelfModel } from "./self.js";
-import { consolidateSemanticClaims, type SemanticClaimObservation } from "./semantic-memory-consolidation.js";
+import { consolidateSemanticClaims } from "./semantic-memory-consolidation.js";
+import { semanticClaimObservationsFromConstruct, readSemanticConsolidationGraph, emptySemanticConsolidationReadback } from "./semantic-consolidation-readback.js";
 import { createSemanticMemoryIndex } from "./semantic-memory-index.js";
 import { createSemanticProofSystem } from "./semantic-proof-system.js";
 import { typedProofScope, typedProofTrace } from "./typed-proof-scope.js";
@@ -423,40 +424,6 @@ function presentationGuardInputFromTurn(input: {
       reorderPriority: input.userStyleProfile.preferredVocabulary
     }
   };
-}
-
-// Plan items 213-214: reads a construct:semantic_answer node's real
-// selectedFacts (attachLocalEvidenceAnswerConstruct's output, subject/
-// predicate/object/sourceVersionId/evidenceIds) and maps each fact into a
-// SemanticClaimObservation. Returns [] (not fabricated placeholder claims)
-// for any turn whose winning candidate carries no such construct.
-function semanticClaimObservationsFromConstruct(
-  construct: ConstructGraph,
-  hasher: ReturnType<typeof createHasher>,
-  observedAt: number
-): SemanticClaimObservation[] {
-  const node = construct.nodes.find(candidate => candidate.kind === "construct:semantic_answer");
-  if (!node) return [];
-  const metadata = jsonRecord(node.metadata);
-  const rawFacts = Array.isArray(metadata.selectedFacts) ? metadata.selectedFacts : [];
-  const observations: SemanticClaimObservation[] = [];
-  rawFacts.forEach((rawFact, index) => {
-    const fact = jsonRecord(rawFact as JsonValue);
-    const subjectId = kernelString(fact.subject);
-    const predicate = kernelString(fact.predicate);
-    const object = kernelString(fact.object) ?? "";
-    if (!subjectId || !predicate) return;
-    const sourceId = kernelString(fact.sourceVersionId) ?? "";
-    observations.push({
-      id: `semantic_claim_observation_${hasher.digestHex(JSON.stringify({ subjectId, predicate, object, sourceId, index })).slice(0, 32)}`,
-      subjectId,
-      canonicalValue: { predicate, object },
-      sourceId,
-      observedAt,
-      evidenceIds: kernelStringArray(fact.evidenceIds)
-    });
-  });
-  return observations;
 }
 
 /** A passing build proves the code-task conditions the plan claimed; the nodes that claimed them are completed, and any
@@ -1016,7 +983,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // is right. Absent (not just empty), never fabricated, when the turn's
       // construct carries no semantic-answer facts at all.
       const consolidateCurrentSemanticClaims = async (constructGraph: ConstructGraph): Promise<JsonValue | undefined> => {
-        const observations = semanticClaimObservationsFromConstruct(constructGraph, hasher, clock.now());
+        const observations = semanticClaimObservationsFromConstruct({ construct: constructGraph, graph, evidence: selectedEvidence, hasher, observedAt: clock.now() });
         if (!observations.length) return undefined;
         const consolidated = consolidateSemanticClaims(observations);
         events.push(await append(eventFactory.create({ episodeId, typeId: "SemanticClaimsConsolidated", payload: toJsonValue(consolidated) })));
@@ -1990,6 +1957,26 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           support: { guardId: acquisitionContinuation!.guardId }
         });
       }
+      const semanticReadback = !authoredRequestNeedsNoRetrieval && deps.evaluationCondition?.flags.disableLearnedSemantics !== true
+        ? await evaluationComponent("graph", "graph.resolve.semantic_consolidation",
+          () => readSemanticConsolidationGraph({ storage: deps.storage, requestText: input.text, beforeT: clock.now(), hasher,
+            ...(discourseEvidenceBound ? { evidenceOwnerIds: explicitContextEvidenceIds } : {}),
+            ...(input.runtimeControl?.evidenceSourceAllowlist ? { sourceVersionAllowlist: new Set(input.runtimeControl.evidenceSourceAllowlist.map(String)) } : {}) }),
+          async () => emptySemanticConsolidationReadback())
+        : emptySemanticConsolidationReadback();
+      if (semanticReadback.evidence.length) {
+        graphSlice = { ...graphSlice,
+          evidence: mergeEvidenceSpans([...semanticReadback.evidence, ...graphSlice.evidence]),
+          graph: { ...graphSlice.graph,
+            nodes: uniqueRecordsById([...semanticReadback.graph.nodes, ...graphSlice.graph.nodes], graphSlice.graph.nodes.length + semanticReadback.graph.nodes.length),
+            edges: uniqueRecordsById([...semanticReadback.graph.edges, ...graphSlice.graph.edges], graphSlice.graph.edges.length + semanticReadback.graph.edges.length),
+            hyperedges: uniqueRecordsById([...semanticReadback.graph.hyperedges, ...graphSlice.graph.hyperedges], graphSlice.graph.hyperedges.length + semanticReadback.graph.hyperedges.length) }
+        };
+      }
+      kernelTrace({ stage: "graph.resolve.semantic_consolidation", label: "kernel.turn.graph_slice",
+        counts: { events: semanticReadback.eventsRead, matched: semanticReadback.matchedObservations,
+          recovered: semanticReadback.recoveredObservations, evidence: semanticReadback.evidence.length },
+        support: { authoritySource: "current_canonical_graph", proofStatusUpgraded: false } });
       // Kicked off here (not awaited) so it can resolve concurrently with
       // the rest of turn processing; only awaited later, right where this
       // turn's proof/certification outcome becomes known (Part A finding

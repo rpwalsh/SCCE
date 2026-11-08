@@ -55,7 +55,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { filterEpisodeEvents, filterEventRange } from "./event-range-fixture.js";
 import { verifyConsolidatedEpisodeRecoverable, type ConsolidatedEpisode } from "../episodic-memory-consolidation.js";
-import type { SemanticConsolidationResult } from "../semantic-memory-consolidation.js";
+import { consolidateSemanticClaims, type SemanticConsolidationResult } from "../semantic-memory-consolidation.js";
+import { semanticClaimObservationsFromConstruct } from "../semantic-consolidation-readback.js";
+import { ownedSourceFixture } from "./owned-source-fixture.js";
+import type { ConstructGraph } from "../types.js";
 import { metadataWithRuntimeReplanMotion, priorRejectedHypothesesFromCandidates, type RuntimeReplanMotion } from "../runtime-motion.js";
 import type { CandidateSurface } from "../candidate-contract.js";
 import { tidySurfaceText } from "../surface-linguistics.js";
@@ -312,7 +315,48 @@ describe("kernel local evidence source anchoring", () => {
     expect(presentationGuard).toBeTruthy();
     expect([...presentationGuard.presentationOrder].sort()).toEqual([...presentationGuard.includedDisclosureIds].sort());
     expect(presentationGuard.executableCapabilityIds).toEqual([]);
-    expect(adaSubject!.claims[0]!.sourceIds).toEqual([String(ada.sourceVersionId)]);
+    expect(adaSubject!.claims[0]!.sourceIds).toEqual([String(ada.sourceId)]);
+    expect(adaSubject!.claims[0]!.sourceVersionIds).toEqual([String(ada.sourceVersionId)]);
+  });
+
+  it("recovers consolidated canonical source dependencies on a restarted next turn without lexical rediscovery", async () => {
+    const clock = createClock({ fixedTime: 6_150, stepMs: 1 });
+    const hasher = createHasher();
+    const ids = createIdFactory({ clock, hasher, deterministicReplay: true });
+    const ada = evidenceSpan({ id: "evidence:semantic-memory-ada", sourceVersionId: "source:semantic-memory-ada:v1" as SourceVersionId,
+      title: "Ada Lovelace", uri: "fixture://wiki/Ada_Lovelace", alpha: 0.9,
+      text: "Ada Lovelace was a mathematician who wrote notes about Charles Babbage's Analytical Engine." });
+    ada.contentHash = ids.contentHash(ada.text);
+    const canonicalGraph = graphSlice([ada]);
+    const subject = { ...canonicalGraph.nodes[0]!, id: "node:canonical:ada" as GraphNode["id"], representation: { label: "Ada Lovelace" } };
+    const target = { ...canonicalGraph.nodes[0]!, id: "node:canonical:ada:work" as GraphNode["id"], representation: { text: ada.text } };
+    canonicalGraph.nodes = [subject, target];
+    canonicalGraph.edges = [{ id: "edge:canonical:ada:work" as GraphSlice["edges"][number]["id"], source: subject.id, target: target.id,
+      relationId: "relation:canonical:work" as GraphSlice["edges"][number]["relationId"], evidenceIds: [ada.id],
+      alpha: 0.9, weight: 0.9, temporalScope: { status: "atemporal" }, metadata: {}, createdAt: 1, updatedAt: 1 }];
+    const construct = { nodes: [{ kind: "construct:semantic_answer", metadata: { selectedFacts: [{ subject: "Ada Lovelace",
+      predicate: "was", object: "a mathematician", sourceNodeId: subject.id, targetNodeId: target.id,
+      relationId: canonicalGraph.edges[0]!.relationId, evidenceIds: [ada.id], sourceVersionId: ada.sourceVersionId }] } }] } as unknown as ConstructGraph;
+    const fixture = storageFixture({ evidence: [ada], graph: canonicalGraph });
+    const owned = ownedSourceFixture([ada]);
+    fixture.storage.evidence.sourceVersionsForEvidence = owned.sourcesForEvidence;
+    fixture.storage.blobs = { ...fixture.storage.blobs, ...owned.blobs };
+    fixture.storage.evidence.searchEvidence = async () => [];
+    fixture.storage.graph.getSlice = async query => query.evidenceIds?.includes(ada.id)
+      ? canonicalGraph : { nodes: [], edges: [], hyperedges: [], bounded: true, query };
+    fixture.events.push({ id: "event:canonical:semantic-memory" as ScceEvent["id"], episodeId: "episode:prior:semantic-memory" as EpisodeId,
+      typeId: "SemanticClaimsConsolidated", t: 100,
+      payload: JSON.parse(JSON.stringify(consolidateSemanticClaims(semanticClaimObservationsFromConstruct({ construct,
+        graph: canonicalGraph, evidence: [ada], hasher, observedAt: 99 })))) as JsonValue, parents: [], hash: "fixture:prior" });
+    const create = () => createScceKernel({ storage: fixture.storage, files: { streamPath: async function* () {} },
+      buildTest: { executeProgram: async (): Promise<BuildTestResult> => ({ build: emptyCommandResult(), test: emptyCommandResult(),
+        repairAttempted: false, repairApplied: false, passed: true, artifacts: [] }) }, idFactory: ids, clock, deterministicReplay: true });
+    for (let restart = 0; restart < 2; restart++) {
+      const result = await create().turn({ text: "Who was Ada Lovelace?" });
+      expect(result.answer).toContain("Analytical Engine");
+      expect(result.evidence.map(span => String(span.id))).toEqual([String(ada.id)]);
+      expect(result.guardFlags.sourceBacked).toBe(true);
+    }
   });
 
   it("surfaces real repo-cognition (issue localization + affected-test prediction) on TurnResult when metadata.repoFiles is supplied (plan items 183-186, 189-190)", async () => {
