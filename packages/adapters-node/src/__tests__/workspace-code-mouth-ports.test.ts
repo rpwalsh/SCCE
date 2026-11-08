@@ -240,13 +240,15 @@ describe("compiler-located shared grammar holes", () => {
     const output = [
       "AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:",
       `    at ${pathToFileURL(path.join(stageRoot, "test", "unit.mjs"))}:15:8`,
-      `    at async ${pathToFileURL(path.join(stageRoot, "test", "all.mjs"))}:4:1`
+      `    at async ${pathToFileURL(path.join(stageRoot, "test", "all.mjs"))}:4:1`,
+      `    at Object.load (${pathToFileURL(path.join(tmpdir(), "external test.mjs"))}:9:2)`
     ].join("\n");
     const diagnostics = checkerDiagnostics({ code: 1, stdout: output, stderr: "" }, "src/map.js", "javascript", workspaceRoot, { stageRoot, workspaceRoot });
-    expect(diagnostics).toHaveLength(2);
+    expect(diagnostics).toHaveLength(3);
     expect(diagnostics).toMatchObject([
       { path: path.join(workspaceRoot, "test", "unit.mjs"), line: 15, column: 8, class: "runtime" },
-      { path: path.join(workspaceRoot, "test", "all.mjs"), line: 4, column: 1, class: "runtime" }
+      { path: path.join(workspaceRoot, "test", "all.mjs"), line: 4, column: 1, class: "runtime" },
+      { path: path.join(tmpdir(), "external test.mjs"), line: 9, column: 2, class: "runtime" }
     ]);
     expect(diagnostics.every(diagnostic => diagnostic.path !== "src/map.js")).toBe(true);
   });

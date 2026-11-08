@@ -156,7 +156,20 @@ const LOCATED_DIAGNOSTIC = new RegExp(
   "u"
 );
 
-const NODE_STACK_FRAME = /^\s*at\s+(?:async\s+)?(?:[^()]+\s+\()?((?:file:\/\/\/|[A-Za-z]:[\\/]|\/)[^():]+):(\d+):(\d+)\)?\s*$/u;
+function parseNodeStackFrame(line: string): { path: string; line: number; column: number } | undefined {
+  let frame = line.trim();
+  if (!frame.startsWith("at ")) return undefined;
+  frame = frame.slice(3);
+  if (frame.startsWith("async ")) frame = frame.slice(6);
+  if (!/^(?:file:\/\/|[A-Za-z]:[\\/]|\/)/u.test(frame)) {
+    const wrapped = frame.indexOf(" (");
+    if (wrapped >= 0) frame = frame.slice(wrapped + 2);
+  }
+  if (frame.endsWith(")")) frame = frame.slice(0, -1);
+  const located = /^(.*):(\d+):(\d+)$/u.exec(frame);
+  if (!located || !located[1]) return undefined;
+  return { path: located[1], line: Number(located[2]), column: Number(located[3]) };
+}
 
 /**
  * A discovered checker's output as diagnostics.
@@ -179,18 +192,18 @@ export function checkerDiagnostics(
   for (const [index, line] of lines.entries()) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    const frame = NODE_STACK_FRAME.exec(line);
+    const frame = parseNodeStackFrame(line);
     if (frame) {
-      const decoded = checkerReportedPath(frame[1]!);
+      const decoded = checkerReportedPath(frame.path);
       if (!decoded) continue;
       const diagnosticPath = resolveCheckerPath(decoded, workspaceRoot, locationContext);
       out.push({
-        id: `${languageId}:${diagnosticPath}:${frame[2]}:${frame[3]}:runtime`,
+        id: `${languageId}:${diagnosticPath}:${frame.line}:${frame.column}:runtime`,
         class: "runtime",
         patternId: `${languageId}.checker`,
         path: diagnosticPath,
-        line: Number(frame[2]),
-        column: Number(frame[3]),
+        line: frame.line,
+        column: frame.column,
         message: trimmed,
         raw: trimmed,
         confidence: 0.9,
@@ -288,7 +301,7 @@ function resolveCheckerPath(
       return path.resolve(locationContext.workspaceRoot, relative);
     }
   }
-  return reported;
+  return path.normalize(reported);
 }
 
 /** A byte offset as the line and column a repair site is expressed in. */
