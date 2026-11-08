@@ -26,24 +26,34 @@ describe("surface language cache entry sizing", () => {
     expect(await fixture.resident("language.alpha")).toBe(value);
     expect(fixture.hydrations).toBe(1);
   });
-  it("keeps request-seed setup lazy and reweighs the cache when canonical programs are first used", async () => {
+  it("retains only request headers and never expands source programs when seed bundles are read", async () => {
     const fixture = await runtimeFixture({ modelSymbolCount: 8, compactGrammar: true, cacheBudgetBytes: 8 * 1024 * 1024 });
     const seed = await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "request-seed", undefined, "", { languageId: "language.alpha", purpose: "request_seed" });
-    expect(peekLanguageMemoryConstructionState(seed.state).bundles).toBeUndefined();
+    expect(peekLanguageMemoryConstructionState(seed.state).bundles).toEqual([]);
+    for (const pattern of seed.patterns) {
+      expect(pattern.patternJson).not.toHaveProperty("bundle");
+      expect(pattern.patternJson).not.toHaveProperty("sourceExamples");
+      expect(pattern.patternJson).not.toHaveProperty("constructions");
+      expect(pattern.patternJson).not.toHaveProperty("creativeEvents");
+    }
     const deferredBytes = fixture.runtime.cacheOccupancy().languageMemoryEstimatedBytes;
     expect(deferredBytes).toBeGreaterThan(0);
     const bundles = seed.state.importedConstructionBundles;
-    expect(bundles).toHaveLength(1);
+    expect(bundles).toHaveLength(0);
     const expandedBytes = fixture.runtime.cacheOccupancy().languageMemoryEstimatedBytes;
-    expect(expandedBytes).toBeGreaterThan(deferredBytes);
+    expect(expandedBytes).toBe(deferredBytes);
     expect(seed.state.importedConstructionBundles).toBe(bundles);
     const resident = await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "request-seed", undefined, "", { languageId: "language.alpha", purpose: "request_seed", residentOnly: true });
     expect(resident).toBe(seed);
-    const pressure = await runtimeFixture({ modelSymbolCount: 8, compactGrammar: true, cacheBudgetBytes: Math.floor((deferredBytes + expandedBytes) / 2) });
+    const realized = await fixture.hydrate("language.alpha");
+    expect(realized.state.importedConstructionBundles).toHaveLength(1);
+    const realizationBytes = fixture.runtime.cacheOccupancy().languageMemoryEstimatedBytes;
+    expect(realizationBytes).toBeGreaterThan(expandedBytes);
+    const pressure = await runtimeFixture({ modelSymbolCount: 8, compactGrammar: true, cacheBudgetBytes: Math.floor((deferredBytes + realizationBytes) / 2) });
     const cold = await pressure.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "request-seed", undefined, "", { languageId: "language.alpha", purpose: "request_seed" });
     expect(pressure.runtime.cacheOccupancy().languageMemoryEntries).toBe(1);
     expect(cold.state.importedConstructionBundles).toEqual(bundles);
-    expect(pressure.runtime.cacheOccupancy().languageMemoryEntries).toBe(0);
+    expect(pressure.runtime.cacheOccupancy().languageMemoryEntries).toBe(1);
   });
   it("counts expanded source-example programs against the allowance even when compact storage fits", async () => {
     const generous = await runtimeFixture({ modelSymbolCount: 8, compactGrammar: true, cacheBudgetBytes: 8 * 1024 * 1024 });

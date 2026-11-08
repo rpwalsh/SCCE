@@ -772,7 +772,7 @@ export function createProductionTurnRuntime(options: {
   } = graphRetrieval;
   const {
     evidenceOwnedLanguageClusterCached, hydrateSurfaceLanguageMemoryCached, requestSemanticFrames, warmSurfaceLanguageMemory,
-    sourceOwnedConstructionsForEvidence,
+    sourceOwnedConstructionsForEvidence, requestConstructionBundles, constructionBundlesForScope,
     sourceOwnedLanguageClusterForAlias, sourceOwnedLanguageProfilesCached, surfaceLanguageClusterCached,
     surfaceLanguageProfilesCached, targetProfilePatternsCached, warmTargetProfilePatterns, uniqueRecordsById
   } = surfaceLanguageRuntime;
@@ -1112,15 +1112,6 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         counts: { identities: languageIdentityRuntime.identities().length, coverage: requestLanguage?.coverage ?? 0 },
         support: { readiness: languageIdentityRuntime.readiness(), languageId: requestLanguageId ?? null, script: requestLanguage?.identity.script ?? null, closedClass: requestLanguage?.identity.closedClass.slice(0, 6).map(row => row.word) ?? [] }
       });
-      // Before first visibility, reserve room for realization. Once the stream
-      // has emitted its accepted frame, this is no longer a response cutoff:
-      // the user sees progress while the same turn builds its language state.
-      const languageHydrationBudgetMs = Math.min(
-        LANGUAGE_MEMORY_DURABLE_ESCALATION_MS,
-        initialResponseAlreadyVisible
-          ? LANGUAGE_MEMORY_DURABLE_ESCALATION_MS
-          : Math.max(0, runtimeDeadline?.computeRemainingMs() ?? LANGUAGE_MEMORY_DURABLE_ESCALATION_MS)
-      );
       const hydrateAuthorityLanguage = () => hydrateSurfaceLanguageMemoryResidentOrDurable(
         12,
         selectedSurfaceCluster,
@@ -1132,20 +1123,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       const baseAuthorityLanguage = await evaluationComponent(
         "language-memory",
         "authority.language-memory.hydrate",
-        () => initialResponseAlreadyVisible
-          ? hydrateAuthorityLanguage()
-          : withStageBudget(
-            hydrateAuthorityLanguage,
-            languageHydrationBudgetMs,
-            () => hydrateSurfaceLanguageMemoryCached(12, selectedSurfaceCluster, unscopedLanguageReason, undefined, "", { residentOnly: true, languageId: requestLanguageId, purpose: "request_seed" })
-              .catch(() => emptySurfaceLanguageMemory()),
-            overrun => kernelTrace({
-              stage: "runtime.seed.language.budget_exceeded",
-              label: "kernel.turn",
-              durationMs: overrun,
-              support: { budgetMs: LANGUAGE_MEMORY_DURABLE_ESCALATION_MS, cluster: selectedSurfaceCluster?.id ?? null }
-            })
-          ),
+        hydrateAuthorityLanguage,
         () => Promise.resolve(emptySurfaceLanguageMemory())
       );
       kernelTrace({
@@ -2423,13 +2401,16 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         : undefined;
       const sourceOwnedConstructionBundles = deps.evaluationCondition?.flags.disableLanguageMemory
         ? [] : await sourceOwnedConstructionsForEvidence(admissibleEvidence);
+      const acquiredRequestConstructionBundles = deps.evaluationCondition?.flags.disableLanguageMemory
+        || !admissibleEvidence.some(span => span.status === "promoted") ? []
+        : await requestConstructionBundles(authorityLanguage.patterns, authorityLanguage.state.scope);
       const rankedSupportEvidence = evidenceForRequest(input.text, admissibleEvidence.filter(span => span.status === "promoted"), metadataEvidenceIds, explicitContextEvidenceIds, semanticFrameBoundEvidenceIds, requestClosedClassWords());
       const requestValueBinding = resolveRequestValueBinding({
         requestText: input.text,
         evidence: admissibleEvidence,
         resolvers: [
           sourceConstructionRequestValueResolver({ bundles: uniqueRecordsById([
-            ...authorityLanguage.state.importedConstructionBundles, ...sourceOwnedConstructionBundles
+            ...authorityLanguage.state.importedConstructionBundles, ...acquiredRequestConstructionBundles, ...sourceOwnedConstructionBundles
           ], 1024), graph }),
           { id: "resolver.evidence_temporal", resolve: extractTemporalAnswerFromEvidence }
         ]
@@ -3205,6 +3186,20 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           : evidenceOutputLanguage
             ? evidenceOutputLanguage
             : authorityLanguage;
+      const admittedSourcePrograms = surfaceLanguage === authorityLanguage
+        ? await constructionBundlesForScope([...acquiredRequestConstructionBundles, ...sourceOwnedConstructionBundles], authorityLanguage.state.scope) : [];
+      if (admittedSourcePrograms.length) {
+        const bundles = uniqueRecordsById([...surfaceLanguage.state.importedConstructionBundles, ...admittedSourcePrograms], 1024);
+        surfaceLanguage = { ...surfaceLanguage, state: cloneLanguageMemoryRuntimeState(surfaceLanguage.state, {
+          importedConstructionBundles: bundles,
+          importedLanguagePriorCount: surfaceLanguage.state.importedLanguagePriorCount
+            + bundles.length - surfaceLanguage.state.importedConstructionBundles.length,
+          scope: { ...surfaceLanguage.state.scope,
+            profileIds: [...new Set([...surfaceLanguage.state.scope.profileIds, ...bundles.flatMap(bundle => [bundle.sourceProfileId, bundle.targetProfileId])])].sort(),
+            sourceVersionIds: [...new Set([...surfaceLanguage.state.scope.sourceVersionIds, ...bundles.flatMap(bundle => bundle.sourceVersionIds)])].sort(),
+            degraded: false }
+        }) };
+      }
       const productionTranslationProfiles = translationTarget
         ? (await sourceOwnedLanguageProfilesCached(
           [translationTarget],
@@ -6672,21 +6667,6 @@ function evidenceInSubjectCommunity(
 
 /** What the language cluster escalation must be able to spend before the deadline guard refuses it. */
 const LANGUAGE_CLUSTER_ESCALATION_MS = 900;
-/**
- * What a durable language-memory hydration is allowed to cost before the turn proceeds on resident memory instead.
- *
- * At 1.5s the scan was abandoned after doing the work: the trace shows 402 semantic frames, 768 patterns and 1,536
- * units read from a brain holding 388,149 units, the budget expiring, and the turn continuing with models=0,
- * patterns=0, frames=0 because the resident fallback was cold. A turn that hydrates nothing cannot know which
- * words of a request are its subject and which are asking the question, so every stage below it falls back to
- * shape rules -- a four-character minimum admitted "what" and "does" as content units, and a heading reading
- * "## What SlopBlocker is" outranked the line naming the licence.
- *
- * Five seconds sits inside the 10s turn ceiling and leaves the rest of the pipeline its share. It does not make
- * the scan free: a genuinely cold durable hydration has been measured at 30s, and the fallback still exists for
- * that case. What it buys is that a hydration this brain can actually finish is not thrown away half-done.
- */
-const LANGUAGE_MEMORY_DURABLE_ESCALATION_MS = 5_000;
 /** What a cold semantic-frame fallback must be able to spend before it is admitted. */
 const REQUEST_SEMANTIC_FRAME_ESCALATION_MS = 900;
 
@@ -7018,27 +6998,6 @@ function turnCapabilityManifest(input: {
     }
   ];
   return toJsonValue(buildCognitiveCapabilityManifest(capabilities) as unknown as JsonValue);
-}
-
-function withStageBudget<T>(work: () => Promise<T>, budgetMs: number, fallback: () => Promise<T>, onOverrun?: (elapsedMs: number) => void): Promise<T> {
-  // A zero remaining budget must be an admission decision, not a race that starts
-  // durable work after the turn has already committed to its resident fallback.
-  if (budgetMs <= 0) return fallback();
-  const started = Date.now();
-  let settled = false;
-  const pending = work();
-  pending.then(() => { settled = true; }, () => { settled = true; });
-  return Promise.race([
-    pending,
-    new Promise<T>(resolve => {
-      const timer = setTimeout(() => {
-        if (settled) return;
-        onOverrun?.(Date.now() - started);
-        resolve(fallback());
-      }, budgetMs);
-      if (typeof timer.unref === "function") timer.unref();
-    })
-  ]);
 }
 
 /**
