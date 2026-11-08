@@ -3,7 +3,7 @@
 import type { ContentHash, EpisodeId, EvidenceSpan, FileArtifact, Hasher, JsonValue, ProgramBehaviorRequirement, ProgramConstructIntent, ProgramGraph, ProgramStatefulBehaviorRequirement, SemanticEntailmentResult } from "./types.js";
 import type { IdFactory } from "./ids.js";
 import { canonicalStringify, clamp01, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";
-import { createCodeLearningEngine, emittedProgramRuntimeForLanguage, nativeProgramRuntimeForLanguage, EMITTED_PROGRAM_RUNTIME, type CodeImplementationBlueprint, type CodeKnowledgeGraph, type EmittedProgramRuntime, UnsupportedProgramLanguageError } from "./code-learning.js";
+import { createCodeLearningEngine, observedProgramFormalLanguages, emittedProgramRuntimeForLanguage, nativeProgramRuntimeForLanguage, EMITTED_PROGRAM_RUNTIME, type CodeImplementationBlueprint, type CodeKnowledgeGraph, type EmittedProgramRuntime, UnsupportedProgramLanguageError } from "./code-learning.js";
 import {bindNativeRuntimePath,relativeNativeSourcePath} from "./native-runtime-paths.js";
 import { nativeGoProgram } from "./native-go-program.js";
 import { NativeProgramEmissionError } from "./native-owner-abis.js";
@@ -449,9 +449,8 @@ function targetProfiles(input: {
   hasher: Hasher;
   programIntent?: ProgramConstructIntent;
 }): ProgramTargetProfile[] {
-  const sourceLanguages = input.codeGraph.languages.length
-    ? input.codeGraph.languages
-    : [{ language: "source.unresolved", weight: 0.12, evidenceIds: [] }];
+  const formalSources=observedProgramFormalLanguages(input.codeGraph);
+  const sourceLanguages = formalSources.length ? formalSources : [{ language: "source.unresolved", weight: 0.12, evidenceIds: [] }];
   const primaryLanguage = sourceLanguages[0]?.language ?? "source.unresolved";
   const packageManagers = packageManagersFromGraph(input.codeGraph);
   const commandHints = commandHintsFromGraph(input.codeGraph);

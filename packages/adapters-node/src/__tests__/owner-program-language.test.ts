@@ -61,7 +61,9 @@ describe("explicit owner program language", () => {
     expect(selected.program!.language).toBe(row.id);
     expect(passed.artifacts.find(file => file.path === `src/program.${row.extension}`)?.mediaType).toBe(row.mediaType);
     if (row.id === "typescript") {
-      expect(selected.program!.build.args).toEqual(["--experimental-strip-types", "--check", "src/program.ts"]);
+      expect(selected.program!.build.args.slice(0,2)).toEqual(["--input-type=module","-e"]);
+      expect(selected.program!.build.args[2]).toContain("stripTypeScriptTypes");
+      expect(selected.program!.build.args.at(-1)).toBe("src/program.ts");
       const content = passed.artifacts.find(file => file.path === "src/program.ts")!.content;
       expect(content).toContain("...args: [number]): number");
       expect(passed.artifacts.find(file => file.role === "test")!.content).toContain("src/program.ts");
@@ -79,23 +81,23 @@ describe("explicit owner program language", () => {
   });
 
   it("reports an unsupported explicit backend instead of emitting another language", async () => {
-    const text = "Golang double(3)=6; double(7)=14; double(-2)=-4; double(11)=22";
+    const text = "```cobol\ndouble(x)\n```\ndouble(3)=6; double(7)=14; double(-2)=-4; double(11)=22";
     const programIntent = programIntentForTurn({ requestedAuthority: "program", activeOperatorIds: [COGNITIVE_OPERATOR_IDS.programPlanning], codeSignal: codeRequestSignal(text), evidence: [] })!;
-    expect(programIntent.languageId).toBe("go");
+    expect(programIntent.languageId).toBe("cobol");
     const episodeId = ids.episodeId();
     const planner = createProgramPlanner({ idFactory: ids, hasher });
     const plannerInput = { episodeId, requestText: text, programIntent, entailment, evidence: [] };
     expect(() => planner.emit(plannerInput))
       .toThrow(UnsupportedProgramLanguageError);
     try { planner.emit(plannerInput); }
-    catch (error) { expect(error).toMatchObject({ code: "SCCE_PROGRAM_LANGUAGE_UNSUPPORTED", status: "unsupported", languageId: "go" }); }
-    const availability = { status: "unavailable", languageId: "go", reasonIds: ["program.emission.native_backend_unavailable"] };
+    catch (error) { expect(error).toMatchObject({ code: "SCCE_PROGRAM_LANGUAGE_UNSUPPORTED", status: "unsupported", languageId: "cobol" }); }
+    const availability = { status: "unavailable", languageId: "cobol", reasonIds: ["program.emission.native_backend_unavailable"] };
     expect(planner.emitIfAvailable(plannerInput)).toEqual({ availability });
     const construct = createProgramGraphBuilder({ idFactory: ids, hasher }).build({ episodeId, text, programIntent, entailment, evidence: [], createdAt: 1 });
     expect(construct.program).toBeUndefined();
     expect(construct.artifacts).toEqual([]);
     expect(construct.forceVector).toMatchObject({ programEmissionAvailability: availability });
-    expect(construct.nodes.find(node => node.kind === "program_emission_unavailable")?.metadata).toMatchObject({ ...availability, programIntent: { languageId: "go" } });
+    expect(construct.nodes.find(node => node.kind === "program_emission_unavailable")?.metadata).toMatchObject({ ...availability, programIntent: { languageId: "cobol" } });
     const root = await mkdtemp(path.join(tmpdir(), "scce-unavailable-owner-language-")); roots.push(root);
     const native = new NodeBuildTestAdapter({ runtime: { tempRoot: root } } as ScceRuntimeConfig);
     await expect(native.executeProgram({ episodeId, construct })).rejects.toThrow("construct has no ProgramGraph to build");

@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import {codeLanguageForPath} from "./code-request.js";
 import type { EvidenceId, EvidenceSpan, Hasher, JsonValue, SemanticEntailmentResult } from "./types.js";
 import { canonicalStringify, clamp01, mean, toJsonValue, weightedJaccard } from "./primitives.js";
 import { extensionOf, normalizePath, sourceCodeFileFactsFromJson, sourceRepositoryFactsFromJson, type SourceCodeFileFacts, type SourceRepositoryFacts } from "./source-code-graph.js";
@@ -81,6 +82,21 @@ export interface CodeKnowledgeGraph {
   };
   confidence: number;
   audit: JsonValue;
+}
+
+/** Repository envelopes and input media formats do not declare a formal implementation language. */
+export function observedProgramFormalLanguages(graph:Pick<CodeKnowledgeGraph,"languages"|"repositoryShape"> & {signals?:readonly Pick<CodeSignal,"kind"|"language"|"text">[]}):CodeKnowledgeGraph["languages"] {
+ const rows:CodeKnowledgeGraph["languages"]=[];
+ for(const row of graph.languages){
+  if(["source.repository","source.unresolved","source.capability","source.command","source.dependency","und"].includes(row.language))continue;
+  const directPaths=graph.repositoryShape.files.filter(file=>file.language===row.language);
+  const paths=directPaths.length?directPaths:graph.repositoryShape.files.filter(file=>file.evidenceIds.some(id=>row.evidenceIds.includes(id)));
+  const identities=[...new Set([...paths.map(file=>file.pathHint),...(graph.signals??[]).filter(signal=>signal.kind==="file"&&signal.language===row.language).map(signal=>signal.text)].map(path=>codeLanguageForPath(path)).filter((value):value is string=>Boolean(value)))];
+  const direct=nativeProgramRuntimeForLanguage(row.language)?row.language:undefined;
+  const formal=direct??(identities.length===1?identities[0]:row.language.startsWith("explicit:")?row.language.slice("explicit:".length):row.language.startsWith("parser:")?row.language:row.language&&!row.language.includes(":")&&!["source.repository","source.unresolved","source.capability","source.command","source.dependency","und"].includes(row.language)?row.language:undefined);
+  if(formal) rows.push({...row,language:formal});
+ }
+ return rows;
 }
 
 export interface CodeBlueprintFile {
@@ -231,7 +247,7 @@ export function createCodeLearningEngine(options: { hasher: Hasher }) {
       const risk = clamp01(0.72 - 0.42 * input.graph.confidence + 0.22 * input.entailment.contradiction + (input.graph.signals.length ? 0 : 0.35));
       const files = blueprintFiles({ target: input.target, language: primary, graph: input.graph, risk });
       const operations = blueprintOperations({ files, graph: input.graph, target: input.target, risk, hasher: options.hasher });
-      const runtime = runtimeForBlueprint(input.languageId || input.graph.languages.length ? primary : "", input.target);
+      const runtime = runtimeForBlueprint(input.languageId ?? observedProgramFormalLanguages(input.graph)[0]?.language ?? "", input.target);
       const taskDecomposition = taskDecompositionForBlueprintOperations(
         `code_blueprint_task_decomposition_${options.hasher.digestHex(canonicalStringify({ target: input.target, operations })).slice(0, 40)}`,
         operations
