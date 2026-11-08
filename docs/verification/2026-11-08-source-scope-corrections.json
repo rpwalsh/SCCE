@@ -31,5 +31,37 @@
       "disposition": "Partial diagnostic retained after reference-interface contamination was confirmed; never used as superiority evidence or reused as fresh cases.",
       "comparativeGatePassed": false
     }
+  },
+  "sourceOwnedComputationIntegration": {
+    "implementation": "8842c946",
+    "componentRecipe": "kernel.dialogue_computation_construction.v2",
+    "scope": "Test-authored PostgreSQL integration using three witnessed arithmetic assignments in one transcript per question form; no forced authority or language override.",
+    "questionFormsVerified": ["en", "ru", "es", "ca"],
+    "sourceFiles": 4,
+    "freshOperands": ["9007199254740993", "2"],
+    "expectedExactResult": "9007199254740995",
+    "correctOrdinaryKernelAndMouthAnswers": 4,
+    "exactBindingIndexUsed": true,
+    "nodeProcessPeakRssMiB": 671,
+    "memoryScope": "Node process maximum RSS; not a total-product or hard-OS memory bound.",
+    "testSourcesRolledBack": true,
+    "actualHumanCorpusReplay": {
+      "reviewedPinnedOasstDocuments": 512,
+      "documentsPerLocale": 128,
+      "skippedDocuments": 0,
+      "qualifyingEquationPairs": 0,
+      "mathPatternsPublished": 0,
+      "nodeProcessPeakRssMiB": 275,
+      "meaning": "The mechanism passed controlled integration; this human corpus does not supply its required equation witnesses. These fixtures are not training or comparative evidence."
+    }
+  },
+  "validation": {
+    "unitTestsPassedAfterCorrection": 4950,
+    "unitTestsSkipped": 16,
+    "method": "Complete 20-shard sweep: 19 passed and one stale checkpoint expectation failed. The test-only correction retained ownership, byte-equality and no-op replay assertions; the entire affected shard then passed all 243 tests. Original nonzero sweep result is retained.",
+    "blindHarnessAndReferenceTestsPassed": 110,
+    "mcpTestsPassed": 104,
+    "sealedEvaluationTestsPassed": 55,
+    "commercialCapabilityQualification": "Requires the registered comparative gate; unit and integration checks are separate evidence."
   }
 }
