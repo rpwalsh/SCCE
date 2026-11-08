@@ -2517,7 +2517,9 @@ describe("dialogue corpus training", () => {
       expect(replay.conversationalConstructions.patternsPersisted).toBe(0);
       expect(checkpointWrite).toHaveBeenCalledTimes(checkpointWrites);
       expect(patternWrites).toHaveBeenCalledTimes(learnedPatternWrites);
-      expect(checkpoints.size).toBe(4);
+      expect(savedCheckpoints.filter(row => row.id.startsWith("dialogue_computation_compilation_"))).toHaveLength(1);
+      expect(replay.computationConstructions?.unchanged).toBe(true);
+      expect(checkpoints.size).toBe(5);
       expect([...checkpoints.values()]).toEqual(savedCheckpoints);
     } finally { compile.mockRestore(); patternWrites.mockRestore(); }
   });
@@ -2608,7 +2610,9 @@ describe("dialogue corpus training", () => {
       expect(requestCompile).toHaveBeenCalledTimes(1);
       expect(actCompile.mock.calls.every(call => call[0].length === 0)).toBe(true);
       expect(conversationCompile.mock.calls.every(call => call[0].documents.length === 0)).toBe(true);
-      expect(checkpoints.size).toBe(4);
+      expect([...checkpoints.values()].filter(row => row.id.startsWith("dialogue_computation_compilation_"))).toHaveLength(1);
+      expect(replay.computationConstructions?.unchanged).toBe(true);
+      expect(checkpoints.size).toBe(5);
     } finally { compile.mockRestore(); requestCompile.mockRestore(); actCompile.mockRestore(); conversationCompile.mockRestore(); }
   });
 

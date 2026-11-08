@@ -93,6 +93,7 @@ export interface MouthSemanticInput {
 }
 
 export interface SpeakInput {
+  verifiedComputation?: import("./source-computation-acquisition.js").VerifiedSourceComputationResult;
   conversationId?: string;
   requestTurnId?: string;
   previousConversationPlan?: import("./conversation-plan-memory.js").ConversationPlanState;

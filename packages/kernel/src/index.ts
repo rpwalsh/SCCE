@@ -352,3 +352,5 @@ export * from "./workspace-code-contracts.js";
 export * from "./program-validation-approval.js";
 
 export * from "./source-owned-computation.js";
+export * from "./source-computation-acquisition.js";
+export * from "./source-computation-runtime.js";

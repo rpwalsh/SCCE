@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import {sourceComputationForRequest} from "./source-computation-runtime.js";
 import { createTypedIngestProjector, type TypedIngestProjection } from "./typed-ingest.js";
 import { createActionGraphBuilder } from "./action-graph.js";
 import { createAlphaFieldPersistence } from "./alpha-field-persistence.js";
@@ -1570,7 +1571,12 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // real, exact rational rendering throughout -- so no precision is
       // lost in what the user is ever shown, even for a value this float
       // conversion itself could not represent exactly.
-      const exactComputation = exactComputationForText(input.text);
+      const formalArithmetic = arithmeticAnswerForText(input.text);
+      const formalExactComputation = exactComputationForText(input.text);
+      const sourceComputation = !formalArithmetic && !formalExactComputation && /[0-9]/u.test(input.text) && !deps.evaluationCondition?.flags.disableLanguageMemory && (requestedAuthority === "factual" || requestedAuthority === "reasoned")
+        ? await sourceComputationForRequest({ storage: deps.storage, hasher, requestText: input.text,
+          generation: surfaceLanguageRuntime.revisionGeneration(), languageId: authorityLanguage.state.scope.languageId, sourceVersionAllowlist: input.runtimeControl?.evidenceSourceAllowlist }) : undefined;
+      const exactComputation = sourceComputation?.evaluation ?? formalExactComputation;
       // The exact result and the text SCCE is about to speak must be the same number: a formatter that drifts from
       // the computed quantity turns an exact answer into a claim nothing checked.
       const exactComputationVerified = exactComputation
@@ -1588,16 +1594,21 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           answer: exactComputation.answer,
           audit: exactComputation.audit
         }
-        : arithmeticAnswerForText(input.text);
+        : formalArithmetic;
       if (arithmetic && requestedAuthority !== "creative" && requestedAuthority !== "translation") {
         markTiming("graphSliceMs");
         const graph: GraphSlice = { nodes: [], edges: [], hyperedges: [], bounded: true, query: {} };
         const field = fieldEngine.activate({ text: input.text, nodes: [], edges: [], previous: runtimeState.lastField, evaluation: fieldEvaluation });
         runtimeState.lastField = field;
-        const entailment = createArithmeticEntailment({ requestText: input.text, arithmetic, field, idFactory, createdAt: clock.now() });
+        const entailment = createArithmeticEntailment({ requestText: sourceComputation ? arithmetic.answer : input.text, arithmetic, field, idFactory, createdAt: clock.now() });
         markTiming("proofMs");
-        const answer = arithmetic.answer;
         const construct = programBuilder.build({ episodeId, text: input.text, entailment, evidence: [], createdAt: clock.now() });
+        const computationSpoken = sourceComputation ? await mouth.speak({ requestText: input.text, verifiedComputation: sourceComputation,
+          construct, field, entailment, evidence: [], requestedAuthority, languageMemory: authorityLanguage.state,
+          languageProfile: selectedSurfaceProfile ?? runtimeLanguageProfile(clock.now()) }) : undefined;
+        if (sourceComputation) kernelTrace({stage:"turn.source_computation",label:"kernel.turn",counts:{sourcePatterns:sourceComputation.patternIds.length},support:{patternIds:sourceComputation.patternIds,realizationAvailability:computationSpoken?.realizationAvailability,surfaceValid:computationSpoken?.surfaceValid,selected:computationSpoken?.realizationTrace.selected,surfaceContract:computationSpoken?.realizationTrace.surfaceContract}});
+        if (!sourceComputation || computationSpoken?.surfaceValid && computationSpoken.realizationAvailability.status === "realized" && computationSpoken.text === arithmetic.answer) {
+        const answer = computationSpoken?.text ?? arithmetic.answer;
         const pcaReport = pca.certify({ answer, evidence: [], force: entailment.force });
         const validation = validationBuilder.build({ construct, entailment, pca: pcaReport as unknown as JsonValue });
         const rawEmission = emissionEngine.emit({ construct, validation, entailment, answer, pca: pcaReport as unknown as JsonValue });
@@ -1612,7 +1623,9 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         timingParts.maintenanceMs = 0;
         runtimeState.lastEpisodeId = episodeId;
         runtimeState.lastOutput = emission.answer;
-        events.push(await append(eventFactory.create({ episodeId, typeId: "ComputationEvaluated", payload: arithmetic.audit })));
+        events.push(await append(eventFactory.create({ episodeId, typeId: "ComputationEvaluated", payload: sourceComputation
+          ? toJsonValue({ ...jsonRecord(arithmetic.audit), sourcePatternIds: sourceComputation.patternIds, roleBindings: sourceComputation.roleBindings }) : arithmetic.audit })));
+        if (computationSpoken) events.push(await append(eventFactory.create({ episodeId, typeId: "MouthSpoken", payload: { text: computationSpoken.text, evidenceRefs: computationSpoken.evidenceRefs, trace: toJsonValue(computationSpoken.realizationTrace) } })));
         events.push(await append(eventFactory.create({ episodeId, typeId: "SemanticEntailmentChecked", payload: { proofId: entailment.proof.id, force: entailment.force, assistantForce: emission.assistantForce, support: entailment.support, contradiction: entailment.contradiction, deterministicArithmetic: true } })));
         events.push(await append(eventFactory.create({ episodeId, typeId: "EmissionGraphBuilt", payload: emission })));
         const timing = buildTiming("deferred");
@@ -1641,7 +1654,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           actionGraph: toJsonValue({ deterministicArithmetic: arithmetic.audit, runtime: runtimeDag.audit, safety: safetyDecision.audit, maintenanceDeferred: true }),
           proofCarryingAnswer: pcaReport.audit,
           languageAcquisition: toJsonValue({ skipped: true, reason: "kernel.turn.deterministic_arithmetic" }),
-          mouth: toJsonValue({ skipped: true, reason: "kernel.turn.deterministic_arithmetic" }),
+          mouth: computationSpoken ? toJsonValue(computationSpoken.realizationTrace) : toJsonValue({ skipped: true, reason: "kernel.turn.deterministic_arithmetic" }),
           corrections: correctionMemory.summarize(detectedCorrections),
           userModelStore: userModelStoreToJson(userModelStore),
           userModelProvenance: userModelStoreProvenanceSummary(userModelStore),
@@ -1673,6 +1686,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           }),
           events
         };
+        }
       }
       const routedDiscourseObject = discourseObjectStateFromMetadata(input.metadata);
       // The server builds the object before this turn measures what the request names, so it read the previous request's identities.

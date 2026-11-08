@@ -1,5 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import {exactComputationForExpression} from "./exact-computation.js";
+import {sourceComputationResultVerified} from "./source-computation-acquisition.js";
 import { conversationPlanReceiptIsCurrent, type ConversationPlanReceipt } from "./conversation-plan-memory.js";
 import {
   type InsufficientSupportConstructState,
@@ -154,7 +156,7 @@ import {
   type ConstructForceInferenceResult,
   type DetailProfilePolicy
 } from "./control-plane-profiles.js";
-import { canonicalStringify, clamp01, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";
+import { canonicalStringify, createHasher, clamp01, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";
 import { evaluateConstructionCycleConsistency, type ConstructionCycleConsistencyOutcome } from "./construction-cycle-consistency.js";
 import { sourceRelationConstructionBindingId } from "./graph-surface-alignment.js";
 import { sourceBoundFactSurfaceWitness } from "./mouth-source-realization-witness.js";
@@ -817,7 +819,9 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
       // formal language this request names. Absent a trained corpus for that language this produces nothing and
       // the turn answers as it did before -- a language never shown to the system is one it declines to write.
       const learnedCodeCandidate = learnedCodeSurfaceCandidate(input);
-      const rawCandidatePool = structuralCreativeCandidate ? [structuralCreativeCandidate] : structuralCreativeFailClosed ? [] : [
+      const computedCandidate = verifiedComputationCandidate(input, constructionHasher);
+      if(input.verifiedComputation) traceEvent((globalThis as {__sccTrace?:Parameters<typeof traceEvent>[0]}).__sccTrace,{stage:"mouth.computation.candidate",label:"mouth.speak",counts:{present:computedCandidate?1:0},support:{certificateValid:sourceComputationResultVerified(input.verifiedComputation,input.requestText??"",constructionHasher)}});
+      const rawCandidatePool = computedCandidate ? [computedCandidate] : structuralCreativeCandidate ? [structuralCreativeCandidate] : structuralCreativeFailClosed ? [] : [
         ...(directCreativeCandidate ? [directCreativeCandidate] : []),
         ...learnedPriorSurfaceCandidates(input, discoursePlan, priorPieces),
         ...(learnedCodeCandidate ? [learnedCodeCandidate] : []),
@@ -842,7 +846,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
         let rejectionReason: string | undefined;
         if (codeCandidate ? !candidate.text.trim().length : !admissibleMouthSurface(candidate.text)) {
           rejectionReason = "inadmissible_surface";
-        } else if (!nearDuplicatePreservation && !sessionAssertionTurn(input) && !codeCandidate && surfaceRepeatsPrompt(candidate.text, input.requestText ?? "")) {
+        } else if (!nearDuplicatePreservation && !sessionAssertionTurn(input) && !codeCandidate && candidate.producerAuthority?.kind !== "verified_computation" && surfaceRepeatsPrompt(candidate.text, input.requestText ?? "")) {
           // An echo of the request is never an answer, grounded or not; a quotation the corpus holds is recall, not an echo.
           rejectionReason = "surface_repeats_prompt";
         } else if (candidate.evidenceIds.length === 0 && isEntitySaladSurface(candidate.text)) {
@@ -862,9 +866,9 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
           || creativeRequested)) {
           rejectionReason = "unlicensed_commitments";
         }
-        if (rejectionReason && candidate.id.startsWith("candidate:generated:creative:")) {
+        if (rejectionReason && (candidate === computedCandidate || candidate.id.startsWith("candidate:generated:creative:"))) {
           traceEvent((globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace, {
-            stage: "mouth.creative_candidate.filtered",
+            stage: candidate === computedCandidate ? "mouth.computation_candidate.filtered" : "mouth.creative_candidate.filtered",
             label: "mouth.speak",
             counts: { candidates: 1 },
             support: {
@@ -982,7 +986,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
           : uniqueStrings([
             ...forbiddenSurfaceHits(bounded, plan),
             ...semanticAnswerDriftHits(bounded, input, priorPieces),
-            ...questionEchoHits(bounded, mouthEchoQuestionText(input)),
+            ...(candidate.producerAuthority?.kind === "verified_computation" ? [] : questionEchoHits(bounded, mouthEchoQuestionText(input))),
             ...languagePriorLeakageHits(bounded, input, priorPieces),
             ...unanchoredImportedPriorHits(candidate, input),
             // Factual producer validation owns request and selected-plan coverage.
@@ -1219,7 +1223,9 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
             ? { conversationPlan: { receipt: selected.conversationPlan, surface: outputSurfaceText } } : {}),
           ownerEvidenceIds,
           constructionFormLiterals: (selected.constructionFormLiterals ?? []).map(row => ({ id: row.id, text: row.text })),
-          producerOwnedSlotValues: authority.kind === "construct_artifact_creative"
+          producerOwnedSlotValues: authority.kind === "verified_computation"
+            ? [{id:`computation:${input.entailment.proof.id}`,text:selected.text}]
+            : authority.kind === "construct_artifact_creative"
             ? [{ id: authority.binding.artifacts.map(artifact => artifact.artifactId).join("\u0000"), text: selected.text }]
             : authority.kind === "learned_code"
               ? [{ id: selected.id, text: selected.text }]
@@ -1227,7 +1233,8 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
           commitmentsWereChecked: selected.style === "surface.path.generated.conversational_act_binding"
             || Boolean(selected.contentPlan)
             || authority.kind === "construct_artifact_creative"
-            || authority.kind === "learned_code",
+            || authority.kind === "learned_code"
+            || authority.kind === "verified_computation",
           validateSurface: text => mouthProducerAuthorityHits(selected, text, input, priorPieces, options.hashText)
         });
       }
@@ -7594,6 +7601,8 @@ function speakCommitmentInventory(
     evidenceTexts: input.evidence.map(commitmentEvidenceText),
     conversationTurns: speakConversationTurns(input),
     claimBases: input.claimBases ?? [],
+    slotValues: sourceComputationResultVerified(input.verifiedComputation,input.requestText??"",createHasher())
+      ? [{id:`computation:${input.entailment.proof.id}`,text:input.verifiedComputation!.evaluation.answer}] : [],
     ...(constructionFormLiterals?.length ? { constructionFormLiterals } : {}),
     ...(input.languageMemory.closedClass ? { closedClass: input.languageMemory.closedClass } : {})
   });
@@ -7778,6 +7787,14 @@ function sourceClaimForRealizedFact(fact: SemanticAnswerFact, text: string, evid
   };
 }
 
+function verifiedComputationCandidate(input:SpeakInput,hasher:Hasher):SurfaceCandidate|undefined{
+ const result=input.verifiedComputation;
+ if(input.requestedAuthority==="creative"||input.requestedAuthority==="translation"||!sourceComputationResultVerified(result,input.requestText??"",hasher))return undefined;
+ const candidate:SurfaceCandidate={id:`candidate:verified_computation:${hasher.digestHex(result!.evaluation.answer)}`,style:"surface.path.generated.verified_computation",path:"generated",text:result!.evaluation.answer,evidenceIds:[],fit:1,importedPieceIds:[],exactSurface:true,
+  audit:toJsonValue({source:"mouth.source_owned_computation",sourcePatternIds:result!.patternIds,roleBindings:result!.roleBindings})};
+ const authority=factualProducerAuthority(candidate,input);return authority?.kind==="verified_computation"?{...candidate,producerAuthority:authority}:undefined;
+}
+
 function factualProducerAuthority(candidate: SurfaceCandidate, input: SpeakInput): FactualProducerAuthority | undefined {
   const proofGraph = input.entailment.proof.proofGraph;
   const computationBoundary = proofGraph.nodes.find(node => node.kind === "boundary" && node.label === "proof.boundary.deterministic_computation");
@@ -7787,10 +7804,12 @@ function factualProducerAuthority(candidate: SurfaceCandidate, input: SpeakInput
   const expression = stringFromJson(computationAudit.expression);
   const exactResult = stringFromJson(computationAudit.resultText);
   const validatorVersion = stringFromJson(boundaryMetadata.validatorVersion);
+  const independentlyComputed = expression ? exactComputationForExpression(expression) : undefined;
   if (boundaryMetadata.sourceEvidenceRequired === false
     && validatorVersion === "scce-deterministic-arithmetic-v1"
     && computationAudit.source === "kernel.turn.deterministic_exact_computation"
-    && expression && exactResult
+    && expression && exactResult && independentlyComputed?.resultText === exactResult
+    && (!input.verifiedComputation || sourceComputationResultVerified(input.verifiedComputation,input.requestText??"",createHasher()))
     && candidate.text.trim() === `${expression} = ${exactResult}.`) {
     return {
       schema: "scce.mouth.factual_producer_authority.v1",

@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import type {ProgramExpression} from "./program-transformation-search.js";
 /**
  * Plan items 171-172. Arbitrary-precision, unit-aware exact computation
  * dispatch through a typed executable operator -- additive, not a
@@ -187,6 +188,17 @@ export function exactComputationForText(text: string): ExactComputationEvaluatio
   return undefined;
 }
 
+/** Executes one complete typed expression; prose scanning remains the separate unit-bearing entry point. */
+export function exactComputationForExpression(text: string): ExactComputationEvaluation | undefined {
+  const expression = text.trim().replace(/\u2212/gu,"-").replace(/\u00d7/gu,"*").replace(/\u00f7/gu,"/");
+  if (!expression || expression.length > 160) return undefined;
+  const parsed = parseExactExpression(expression, false);
+  if (!parsed) return undefined;
+  const resultText = formatExactQuantity(parsed.value);
+  return { expression, result: parsed.value, resultText, answer: `${expression} = ${resultText}.`,
+    audit: { source: "kernel.turn.deterministic_exact_computation", expression, resultText, unit: { ...parsed.value.unit } } };
+}
+
 // Matches a "term" (an optionally-signed number with an optional unit
 // suffix, e.g. "5kg", "-3.5m", optionally in a single non-nested paren
 // pair) followed by one or more (operator, term) groups. A real regex
@@ -263,9 +275,19 @@ function exactQuantityFromDecimalLiteral(literal: string, unit: UnitVector): Exa
   return exactQuantity(numerator, denominator, unit);
 }
 
-function parseExactExpression(raw: string): { value: ExactQuantity; hasUnit: boolean } | undefined {
+/** Full formal syntax only; program literals must remain exactly representable by the search IR. */
+export function exactProgramForExpression(text:string):ProgramExpression|undefined{
+ const expression=text.trim().replace(/\u2212/gu,"-").replace(/\u00d7/gu,"*").replace(/\u00f7/gu,"/");
+ if(!expression||expression.length>160)return undefined;
+ const parsed=parseExactExpression(expression,false,true);return parsed&&!parsed.hasUnit?parsed.program:undefined;
+}
+
+function parseExactExpression(raw: string, requireBinary = true, captureProgram = false): { value: ExactQuantity; hasUnit: boolean; program?:ProgramExpression } | undefined {
   const tokens = tokenizeExactExpression(raw);
   if (!tokens?.length) return undefined;
+  const programs=captureProgram?new WeakMap<ExactQuantity,ProgramExpression>():undefined;
+  const attach=(value:ExactQuantity,program:ProgramExpression|undefined):ExactQuantity=>{if(program)programs?.set(value,program);return value;};
+  const binary=(value:ExactQuantity,left:ExactQuantity,right:ExactQuantity,operator:"add"|"subtract"|"multiply"|"divide"):ExactQuantity=>{const l=programs?.get(left),r=programs?.get(right);return attach(value,l&&r?{kind:"binary",operator,left:l,right:r}:undefined);};
   let position = 0;
   let operatorCount = 0;
   let numberCount = 0;
@@ -286,7 +308,7 @@ function parseExactExpression(raw: string): { value: ExactQuantity; hasUnit: boo
       const right = parseMultiplicative();
       operatorCount++;
       try {
-        left = operator === "+" ? addExact(left, right) : subtractExact(left, right);
+        left = binary(operator === "+" ? addExact(left, right) : subtractExact(left, right),left,right,operator === "+" ? "add" : "subtract");
       } catch {
         fail();
       }
@@ -299,7 +321,7 @@ function parseExactExpression(raw: string): { value: ExactQuantity; hasUnit: boo
       const operator = consume().value;
       const right = parseUnary();
       operatorCount++;
-      left = operator === "*" ? multiplyExact(left, right) : divideExact(left, right);
+      left = binary(operator === "*" ? multiplyExact(left, right) : divideExact(left, right),left,right,operator === "*" ? "multiply" : "divide");
     }
     return left;
   };
@@ -307,7 +329,8 @@ function parseExactExpression(raw: string): { value: ExactQuantity; hasUnit: boo
     if (peek()?.kind === "operator" && (peek()?.value === "+" || peek()?.value === "-")) {
       const operator = consume().value;
       const value = parseUnary();
-      return operator === "-" ? exactQuantity(-value.numerator, value.denominator, value.unit) : value;
+      const program=programs?.get(value);
+      return operator === "-" ? attach(exactQuantity(-value.numerator, value.denominator, value.unit),program?(program.kind==="literal"&&typeof program.value==="number"?{kind:"literal",value:-program.value}:{kind:"unary",operator:"negate",operand:program}):undefined) : value;
     }
     return parsePrimary();
   };
@@ -321,7 +344,8 @@ function parseExactExpression(raw: string): { value: ExactQuantity; hasUnit: boo
         sawUnit = true;
         unit = { [consume().value]: 1 };
       }
-      return exactQuantityFromDecimalLiteral(token.value, unit);
+      const value=exactQuantityFromDecimalLiteral(token.value, unit),numeric=Number(token.value);
+      return attach(value,Number.isSafeInteger(numeric)?{kind:"literal",value:numeric}:undefined);
     }
     if (token.kind === "left") {
       const value = parseExpression();
@@ -333,8 +357,8 @@ function parseExactExpression(raw: string): { value: ExactQuantity; hasUnit: boo
   };
   try {
     const value = parseExpression();
-    if (position !== tokens.length || operatorCount < 1 || numberCount < 2) return undefined;
-    return { value, hasUnit: sawUnit };
+    if (position !== tokens.length || (requireBinary ? operatorCount < 1 || numberCount < 2 : numberCount < 1)) return undefined;
+    return { value, hasUnit: sawUnit, ...(programs?.get(value)?{program:programs.get(value)}:{}) };
   } catch {
     return undefined;
   }
