@@ -3752,10 +3752,19 @@ function jsonbArraySql(value: string): string {
 }
 
 function jsonbFieldsSql(value: string, fields: readonly string[]): string {
+  if (!fields.length) return "'{}'::jsonb";
   const keys = fields.map(field => `'${field.replaceAll("'", "''")}'`).join(",");
-  return `(SELECT COALESCE(jsonb_object_agg(seed_field.key,seed_field.value),'{}'::jsonb)
-    FROM jsonb_each(CASE WHEN jsonb_typeof(${value})='object' THEN ${value} ELSE '{}'::jsonb END) seed_field
-    WHERE seed_field.key=ANY(ARRAY[${keys}]::text[]))`;
+  const columns = fields.map(field => `"${field.replaceAll('"', '""')}" jsonb`).join(",");
+  const object = `CASE WHEN jsonb_typeof(${value})='object' THEN ${value} ELSE '{}'::jsonb END`;
+  // Unselected bodies never enter a tuplestore; original keys distinguish missing fields from JSON null.
+  return `(WITH seed_original_keys AS MATERIALIZED (
+      SELECT key FROM jsonb_object_keys(${object}) seed_key(key)
+      WHERE seed_key.key=ANY(ARRAY[${keys}]::text[])
+    ), seed_selected_fields AS MATERIALIZED (
+      SELECT to_jsonb(seed_record) AS value FROM jsonb_to_record(${object}) AS seed_record(${columns})
+    ) SELECT COALESCE(jsonb_object_agg(seed_field.key,seed_field.value),'{}'::jsonb)
+    FROM seed_original_keys seed_key CROSS JOIN seed_selected_fields seed_selected
+    CROSS JOIN LATERAL (SELECT seed_key.key AS key,seed_selected.value->seed_key.key AS value) seed_field)`;
 }
 
 function requestSeedPatternJsonSql(value: string, schema: string): string {
