@@ -1,6 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   deriveKneserNeyContextTables,
   kneserNeyMaterializationCounts,
@@ -29,6 +29,32 @@ function corpus(): string {
 }
 
 describe("a persisted Kneser-Ney model carries its sufficient statistics only", () => {
+  it("copies core statistics without allocating entry-pair lists and preserves own prototype-named counts", () => {
+    const trained = trainKneserNey(["constructor", "toString", "valueOf", "constructor"], { order: 3 });
+    const stored = JSON.parse(JSON.stringify(persistedKneserNey(trained)));
+    Object.defineProperty(stored.counts, "__proto__", { value: 7, enumerable: true });
+    stored.counts.invalid = "untrusted numeric text";
+    stored.counts.nonfinite = Infinity;
+    stored.counts.negativeZero = -0;
+    const expected = Object.fromEntries(Object.entries(stored.counts).map(([key, raw]) => [key,
+      typeof raw === "number" && Number.isFinite(raw) ? raw : 0]));
+    const statistics = new Set([stored.counts, stored.continuationCounts, stored.unigramCounts]);
+    const entries = Object.entries;
+    const guarded = vi.spyOn(Object, "entries").mockImplementation(value => {
+      if (statistics.has(value)) throw Error("allocated an entry-pair list for canonical model statistics");
+      return entries(value);
+    });
+    try {
+      const model = materializeKneserNey(stored)!;
+      expect(model.counts).toEqual(expected);
+      expect(Object.getPrototypeOf(model.counts)).toBe(Object.prototype);
+      expect(Object.getOwnPropertyDescriptor(model.counts, "__proto__")).toEqual({ value: 7, writable: true, enumerable: true, configurable: true });
+      expect(Object.is(model.counts.negativeZero, -0)).toBe(true);
+      stored.counts.constructor = 999;
+      expect(model.counts.constructor).toBe(trained.counts.constructor);
+    } finally { guarded.mockRestore(); }
+  });
+
   it.each([2, 3, 4])("defers order %i derived tables until inference and preserves every probability exactly", order => {
     const trained = trainKneserNey(`${corpus()} 船長 は 海 を 見る。 船長 は 船 を 見る。`, { order, vocabularyLimit: 4000 });
     const stored = JSON.parse(JSON.stringify(persistedKneserNey(trained)));

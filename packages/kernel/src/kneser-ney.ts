@@ -630,7 +630,13 @@ function jsonRecordOf(value: JsonValue | undefined): value is Record<string, Jso
 
 function numberRecordOf(value: JsonValue | undefined): Record<string, number> {
   if (!jsonRecordOf(value)) return {};
-  return Object.fromEntries(Object.entries(value).map(([key, raw]) => [key, finiteNumberOf(raw)]));
+  const counts: Record<string, number> = {};
+  for (const key of Object.keys(value)) {
+    const count = finiteNumberOf(value[key]);
+    if (key === "__proto__") Object.defineProperty(counts, key, { value: count, enumerable: true, configurable: true, writable: true });
+    else counts[key] = count;
+  }
+  return counts;
 }
 
 function finiteNumberOf(value: JsonValue | undefined): number {
