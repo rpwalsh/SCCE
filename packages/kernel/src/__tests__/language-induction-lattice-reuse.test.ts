@@ -1,15 +1,16 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { describe, expect, it, vi } from "vitest";
-import { createLanguageInductionEngine } from "../language-induction.js";
+import { createLanguageInductionEngine, type LanguageInductionDocument } from "../language-induction.js";
 import { canonicalStringify, createHasher } from "../primitives.js";
+import type { EvidenceId, SourceVersionId } from "../types.js";
 import * as surfaceLattice from "../surface-lattice.js";
 
 describe("induction bootstrap lexical reuse", () => {
   it("does not repeat source coordinate and candidate traversals for estimator-fitted lattices", () => {
-    const documents = [
-      { id: "preparation.mixed.a", text: "\u00c9lan visits \u6771\u4eac. \u00c9lan visits Paris. \u041a\u043e\u0442 \u0438\u0434\u0451\u0442. e\u0301 \ud83d\udc69\u200d\ud83d\udcbb.", sourceVersionId: "source.preparation.a", evidenceIds: ["evidence.a" as never] },
-      { id: "preparation.mixed.b", text: "\u0642\u0637 \u064a\u0645\u0634\u064a. \u732b\u304c\u98db\u3076\u3002 \u0915\u093f\u0924\u093e\u092c \u0e41\u0e21\u0e27. 7 + 3 = 10.", sourceVersionId: "source.preparation.b", evidenceIds: ["evidence.b" as never] }
+    const documents: LanguageInductionDocument[] = [
+      { id: "preparation.mixed.a", text: "\u00c9lan visits \u6771\u4eac. \u00c9lan visits Paris. \u041a\u043e\u0442 \u0438\u0434\u0451\u0442. e\u0301 \ud83d\udc69\u200d\ud83d\udcbb.", sourceVersionId: "source.preparation.a" as SourceVersionId, evidenceIds: ["evidence.a" as EvidenceId] },
+      { id: "preparation.mixed.b", text: "\u0642\u0637 \u064a\u0645\u0634\u064a. \u732b\u304c\u98db\u3076\u3002 \u0915\u093f\u0924\u093e\u092c \u0e41\u0e21\u0e27. 7 + 3 = 10.", sourceVersionId: "source.preparation.b" as SourceVersionId, evidenceIds: ["evidence.b" as EvidenceId] }
     ];
     const sourceTexts = new Set(documents.map(document => document.text));
     const traversals = new Map<string, number>();
