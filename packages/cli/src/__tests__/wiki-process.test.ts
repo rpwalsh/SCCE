@@ -5,9 +5,18 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { wikiChildArgs, wikiContinueAfterConfiguredPageCap, wikiRunPaths } from "../wiki-process.js";
+import { wikiChildArgs, wikiChildFailureStatus, wikiContinueAfterConfiguredPageCap, wikiRunPaths } from "../wiki-process.js";
 
 describe("Wikipedia supervisor isolation", () => {
+  it("marks a crashed child failed while retaining its last reported counts", () => {
+    const status = { state: "running" as const, fullTrainingComplete: false, pages: 1519, lastCheckpointOffset: 570, updatedAt: 1 };
+    expect(wikiChildFailureStatus(status, 1, 2)).toMatchObject({ state: "failed", pages: 1519, lastCheckpointOffset: 570,
+      fullTrainingComplete: false, updatedAt: 2, finishedAt: 2, stopReason: "ingest child exited 1 before publishing a successful completion" });
+    expect(status.state).toBe("running");
+    expect(wikiChildFailureStatus({ ...status, fullTrainingComplete: true }, 1, 2)?.fullTrainingComplete).toBe(false);
+    expect(wikiChildFailureStatus(undefined, 1, 2)).toBeUndefined();
+  });
+
   it("continues a default segment cap, honors explicit bounds, and rejects a resume loop", () => {
     const status = { stopReason: "maxPagesPerRun", lastCheckpointOffset: 500, resumedFromOffset: 100 };
     expect(wikiContinueAfterConfiguredPageCap(status, {})).toBe(true);
