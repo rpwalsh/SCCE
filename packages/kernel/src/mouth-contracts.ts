@@ -93,6 +93,9 @@ export interface MouthSemanticInput {
 }
 
 export interface SpeakInput {
+  conversationId?: string;
+  requestTurnId?: string;
+  previousConversationPlan?: import("./conversation-plan-memory.js").ConversationPlanState;
   /** Actual request for echo comparison; an absent request never makes selected factual content a question. */
   requestText?: string;
   /** Source-owned request controls guide coverage and never enter generative memory. */

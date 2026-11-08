@@ -269,6 +269,7 @@ export {
 } from "./retrieval-binding.js";
 export { measureRequestCorpusSubject, type RequestCorpusSubject } from "./corpus-identity-runtime.js";
 export * from "./dialogue-cognitive-memory.js";
+export * from "./conversation-plan-memory.js";
 export * from "./dialogue-cognitive-shadow.js";
 export * from "./prediction.js";
 export * from "./invention-planner.js";

@@ -65,6 +65,7 @@ import {
   type DiscourseTurnObservationV2
 } from "./discourse-state.js";
 import { createDialogueCognitiveMemoryV2, isDialogueCognitiveStateV2, preferDialogueCognitiveStateV2 } from "./dialogue-cognitive-memory.js";
+import { createConversationPlanMemory } from "./conversation-plan-memory.js";
 import { projectProofBearingDialogueTurnV2 } from "./dialogue-cognitive-shadow.js";
 import { createSemanticEntailmentEngine } from "./entailment.js";
 import { consolidateEpisode } from "./episodic-memory-consolidation.js";
@@ -168,6 +169,7 @@ import {
   createMouth,
   surfaceCarriesInternalFeatureKeys,
   withSurfaceContract,
+  selectedConversationPlanForOutput,
   type MouthSemanticInput,
   type SpeakInput,
   type SpokenOutput
@@ -539,6 +541,8 @@ export function createProductionTurnRuntime(options: {
     })
     : undefined;
   const residentDialogueCognitiveStates = new Map<string, import("./discourse-state.js").DialogueCognitiveStateV2>();
+  const conversationPlanMemory = dialogueCognitiveMemory
+    ? createConversationPlanMemory({ store: dialogueMemoryStore as Pick<DialogueMemoryStore, "compareAndPutInteractionState" | "listInteractionStates">, hasher }) : undefined;
   const dialogueCognitiveStateLoads = new Map<string, Promise<void>>();
   // Consolidated lessons are a bounded, process-local read model. Adjacent turns used to issue the same durable
   // corpus read before candidate generation; single-flight it and expire it briefly, invalidating on local writes.
@@ -1211,13 +1215,14 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // selection; relying on the previous state's copied adjustments made a
       // restart forget an owner correction until another turn happened to
       // persist it into the state projection.
-      const [durableCognitiveState, durableDialogueInterpretationAdjustments] = await Promise.all([
+      const [durableCognitiveState, durableDialogueInterpretationAdjustments, previousConversationPlan] = await Promise.all([
         residentCognitiveState || !dialogueCognitiveMemory
           ? Promise.resolve(undefined)
           : dialogueCognitiveMemory.latest(dialogueConversationId).catch(() => undefined),
         dialogueMemoryStore
           ? dialogueInterpretationAdjustmentsForConversation(dialogueMemoryStore as DialogueMemoryStore, dialogueConversationId).catch(() => [])
-          : Promise.resolve([])
+          : Promise.resolve([]),
+        requestedConversationId && conversationPlanMemory ? conversationPlanMemory.latest(dialogueConversationId).catch(() => undefined) : Promise.resolve(undefined)
       ]);
       const restoredCognitiveState = residentCognitiveState ?? durableCognitiveState;
       if (restoredCognitiveState) residentDialogueCognitiveStates.set(dialogueConversationId, restoredCognitiveState);
@@ -5029,6 +5034,9 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           unresolvedSlots: authorityDialogueState.unresolvedSlots
         },
         conversationTurns: conversationTurnSurfacesFromMetadata(input.metadata),
+        conversationId: dialogueConversationId,
+        requestTurnId: String(episodeId),
+        previousConversationPlan,
         requestCommunicativeAct: requestAct,
         dialoguePlanningHandoff: createDiscoursePlanningHandoffV2({
           state: previousDialogueCognitiveState,
@@ -5844,6 +5852,15 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         deps.storage.constructs.putConstruct(construct),
         deps.storage.constructs.putConstruct(spokenConstructGraph)
       ]);
+      const selectedConversationPlan = selectedConversationPlanForOutput(speakInput, spoken);
+      if (selectedConversationPlan && conversationPlanMemory && requestedConversationId) {
+        const persisted = await conversationPlanMemory.persist({ conversationId: dialogueConversationId, turnId: String(episodeId),
+          receipt: selectedConversationPlan, previous: previousConversationPlan, createdAt: clock.now() });
+        kernelTrace({ stage: "dialogue.conversation_plan", label: "kernel.turn", counts: { stored: persisted.result.stored ? 1 : 0,
+          realizationSteps: selectedConversationPlan.realizationSteps.length, roles: selectedConversationPlan.roles.length },
+          support: { stateId: persisted.state.id, previousStateId: previousConversationPlan?.id ?? null,
+            authority: selectedConversationPlan.authority, externallyFactual: false, persistence: persisted.result } });
+      }
       // The response is visible before this durable cognitive transition
       // begins. The projection itself only admits proof-selected graph
       // identities, so a fluent surface can never become a dialogue fact.

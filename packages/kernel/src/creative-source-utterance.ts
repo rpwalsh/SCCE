@@ -174,7 +174,7 @@ export function realizeCreativeSourceUtterance(input: {
   utterance: CreativeSourceUtterance; bundles: readonly DurableLanguageConstructionBundle[]; frame: CreativeRequestFrame;
   requestText: string; ownerTurnId: string; turns: readonly ConversationTurnSurface[]; semanticPlanId: string; hasher: Hasher;
   cycleConsistencyByConstructionId?: ReadonlyMap<string, number>;
-}): { realization: LearnedRealization; bundle: DurableLanguageConstructionBundle; exampleId: string; sourceSurface: string } | undefined {
+}): { realization: LearnedRealization; plan: SurfaceMeaningPlan; bundle: DurableLanguageConstructionBundle; exampleId: string; sourceSurface: string } | undefined {
   const { utterance } = input;
   if (!ownedUtterances.has(utterance) || ownedUtterances.get(utterance) !== canonicalStringify(utterance)) return undefined;
   const bundle = input.bundles.find(bundle => bundle.bindingId === utterance.bindingId && bundle.targetProfileId === utterance.profileId);
@@ -210,10 +210,11 @@ export function realizeCreativeSourceUtterance(input: {
   if (input.frame.arguments.some(argument => !occurrencesByRequestRole.has(argument.roleId))) return undefined;
   const intentionalRepetitions = [...occurrencesByRequestRole.entries()].filter(([, occurrenceIds]) => occurrenceIds.length > 1)
     .map(([requestRoleId, occurrenceIds]) => ({ id: `source.utterance.repetition.${input.hasher.digestHex(canonicalStringify([example.id, requestRoleId, occurrenceIds]))}`, occurrenceIds }));
+  const plan: SurfaceMeaningPlan = { id: `source.utterance.realization.${input.hasher.digestHex(canonicalStringify([input.semanticPlanId, example.id]))}`,
+    profileKey: bundle.targetProfileId, roleSignature: [...new Set(slots.map(slot => slot.roleId))], slots, intentionalRepetitions };
   const result = realizeLearnedSurface({ hasher: input.hasher, conversationTurns: input.turns,
     constructions: bundle.constructions.filter(construction => construction.sourceExampleIds.includes(example.id)), formClasses: bundle.formClasses,
     cycleConsistencyByConstructionId: input.cycleConsistencyByConstructionId,
-    plan: { id: `source.utterance.realization.${input.hasher.digestHex(canonicalStringify([input.semanticPlanId, example.id]))}`,
-      profileKey: bundle.targetProfileId, roleSignature: [...new Set(slots.map(slot => slot.roleId))], slots, intentionalRepetitions } });
-  return result.status === "realized" ? { realization: result.realization, bundle, exampleId: example.id, sourceSurface: example.surface } : undefined;
+    plan });
+  return result.status === "realized" ? { realization: result.realization, plan, bundle, exampleId: example.id, sourceSurface: example.surface } : undefined;
 }

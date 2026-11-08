@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { conversationPlanReceiptIsCurrent, type ConversationPlanReceipt } from "./conversation-plan-memory.js";
 import {
   type InsufficientSupportConstructState,
   type SemanticAnswerConstructState,
@@ -314,6 +315,7 @@ interface ForceAwareSurface {
 }
 
 interface SurfaceCandidate {
+  conversationPlan?: ConversationPlanReceipt;
   id: string;
   style: string;
   path: SurfaceCandidatePath;
@@ -558,6 +560,7 @@ function claimMouthGenerationWork(budget: MouthGenerationWorkBudget, requestedEx
 
 /** The turn's own licensing material, read off the speak input every strategy already receives. */
 interface SelectedMouthProducerContract {
+  conversationPlan?: { receipt: ConversationPlanReceipt; surface: string };
   ownerEvidenceIds: readonly string[];
   constructionFormLiterals: readonly { id: string; text: string }[];
   /** Exact typed output content owned by the selected construct artifact producer, not documentary evidence. */
@@ -584,6 +587,12 @@ function selectedMouthProducerFor(input: SpeakInput, spoken: SpokenOutput): Sele
   // This fallback is only for the normalized invocation object and its
   // private candidate map; outer wrappers must carry the output's own token.
   return selectedMouthProducerContracts.get(input);
+}
+
+export function selectedConversationPlanForOutput(input: SpeakInput, spoken: SpokenOutput): ConversationPlanReceipt | undefined {
+  const plan = selectedMouthProducerFor(input, spoken)?.conversationPlan;
+  return plan && spoken.surfaceValid && spoken.realizationAvailability.status === "realized" && spoken.text === plan.surface
+    ? structuredClone(plan.receipt) : undefined;
 }
 
 function surfaceContractMaterial(input: SpeakInput, producer?: SelectedMouthProducerContract): SurfaceContractMaterial {
@@ -1205,6 +1214,9 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
           ? authority.evidenceIds.map(String)
           : selected.evidenceIds.map(String);
         selectedMouthProducerContracts.set(input, {
+          ...(selected.conversationPlan && selected.text === outputSurfaceText
+            && selected.conversationPlan.surfaceHash === constructionHasher.digestHex(outputSurfaceText)
+            ? { conversationPlan: { receipt: selected.conversationPlan, surface: outputSurfaceText } } : {}),
           ownerEvidenceIds,
           constructionFormLiterals: (selected.constructionFormLiterals ?? []).map(row => ({ id: row.id, text: row.text })),
           producerOwnedSlotValues: authority.kind === "construct_artifact_creative"
@@ -4495,12 +4507,28 @@ function selectedStructuralCreativeCandidate(input: SpeakInput, discoursePlan: D
   const utterance = utterances[0];
   if (sourceModel?.reliability === "source_observed" && !utterance) return reject("selected_source_utterance_speech_grammar_refused", { modelId: sourceModel.id });
   const speechBundleIds: string[] = [];
+  let conversationPlan: ConversationPlanReceipt | undefined;
   audit.selectedConstructionForm = utterance ? { kind: "declared_source_reply", bindingId: utterance.bindingId } : { kind: "source_event_frame" };
   if (utterance) {
     const realized = realizeCreativeSourceUtterance({ utterance, bundles: input.languageMemory.importedConstructionBundles,
       frame, requestText: request, ownerTurnId: ownerTurn.turnId, turns, semanticPlanId: invention.semanticPlanId!, hasher,
       cycleConsistencyByConstructionId: input.cycleConsistencyByConstructionId });
     if (!realized) return reject("selected_source_utterance_speech_grammar_refused", { utteranceBindingId: utterance.bindingId });
+    const sourceExample = realized.bundle.sourceExamples.find(example => example.id === realized.exampleId)!;
+    const roles = sourceExample.roles.map(role => {
+      const source = utterance.roles.find(source => source.slotIndex === role.slotIndex && source.occurrenceIndex === role.occurrenceIndex);
+      const argument = source && frame.arguments.find(argument => argument.roleId === source.requestRoleId);
+      return argument ? { roleId: role.roleId, occurrenceId: role.occurrenceId, sourceTurnId: ownerTurn.turnId,
+        startCodePoint: argument.span.charStart, endCodePoint: argument.span.charEnd } : undefined;
+    });
+    if (roles.some(role => !role)) return reject("selected_source_utterance_role_receipt_missing");
+    conversationPlan = { schema: "scce.conversation_plan_receipt.v1", authority: "conversation_bound", externallyFactual: false, evidenceIds: [],
+      planId: realized.plan.id, continuationKey: utterance.requestFrameId, bundleId: realized.bundle.id, constructionId: realized.realization.constructionId,
+      realizationId: realized.realization.id, profileId: realized.bundle.targetProfileId, sourceVersionIds: [...realized.bundle.sourceVersionIds],
+      surfaceHash: hasher.digestHex(realized.realization.text), roles: roles.filter((role): role is NonNullable<typeof role> => Boolean(role)),
+      realizationSteps: realized.realization.trace.filter(part => part.outputEnd > part.outputStart).map((part, order) => ({
+        id: `part.${order}`, order, kind: part.kind,
+        startCodePoint: codePointOffsetAtUtf16(realized.realization.text, part.outputStart), endCodePoint: codePointOffsetAtUtf16(realized.realization.text, part.outputEnd) })) };
     surfaces.push(realized.realization.text);
     speechBundleIds.push(realized.bundle.id);
     formLiterals.push({ id: `construction_form.${realized.realization.constructionId}.${utterance.sourceVersionId}`, text: realized.sourceSurface });
@@ -4549,7 +4577,7 @@ function selectedStructuralCreativeCandidate(input: SpeakInput, discoursePlan: D
   traceEvent((globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace, {
     stage: "mouth.selected_creative_event.realization", label: "mouth.speak", support: audit
   });
-  return { id, style: "surface.path.generated.creative.source_construction", path: "generated", claimBasis: "invented", text,
+  return { id, ...(conversationPlan ? { conversationPlan } : {}), style: "surface.path.generated.creative.source_construction", path: "generated", claimBasis: "invented", text,
     evidenceIds: [], fit: invention.supportScore, importedPieceIds: uniqueStrings([...stringArrayFromJson(semanticPlan.sourceBundleIds), ...speechBundleIds]), discoursePlan,
     inventionBinding: inventionSurfaceBinding(invention), constructionFormLiterals: formLiterals, exactSurface: true,
     audit: toJsonValue({ source: "mouth.selected_event_source_construction", realizations, referenceBindings: audit.referenceBindings ?? [],
@@ -4934,7 +4962,7 @@ function conversationalActBindingCandidate(
     .sort((left, right) => right.turn.turnIndex - left.turn.turnIndex);
   if (!contentSpans.length) return skip("no_conversation_content_span");
   const currentTurn = turns.reduce((latest, turn) => (turn.turnIndex > latest.turnIndex ? turn : latest), turns[0]!);
-  const conversationId = `conversation.${hasher.digestHex(canonicalStringify(turns.map(turn => turn.turnId)))}`;
+  const conversationId = input.conversationId ?? `conversation.${hasher.digestHex(canonicalStringify(turns.map(turn => turn.turnId)))}`;
 
   const hydrated = input.languageMemory.importedConstructionBundles
     .filter(bundle => profileInHydratedScope(bundle.sourceProfileId, input.languageProfile, input.languageMemory)
@@ -4943,7 +4971,10 @@ function conversationalActBindingCandidate(
   const scoped = hydrated
     .filter(bundle => bundle.bindingId === conversationalActBindingId(hasher, bundle.targetProfileId, classification.actId))
     .sort((left, right) => compareSurfaceText(left.id, right.id));
-  const rows: Array<{ candidate: SurfaceCandidate; bundleId: string; constructionId: string; cost: number; literalInvariance: LiteralInvarianceEvidence }> = [];
+  const previousPlan = input.previousConversationPlan;
+  const continuation = previousPlan && previousPlan.conversationId === conversationId && previousPlan.receipt.continuationKey === classification.actId
+    && conversationPlanReceiptIsCurrent(previousPlan.receipt, hydrated) ? previousPlan : undefined;
+  const rows: Array<{ candidate: SurfaceCandidate; bundleId: string; constructionId: string; cost: number; continues: boolean; literalInvariance: LiteralInvarianceEvidence }> = [];
   const refusals: string[] = [];
   for (const bundle of scoped) {
     for (const construction of bundle.constructions) {
@@ -4977,6 +5008,7 @@ function conversationalActBindingCandidate(
           bundleId: bundle.id,
           constructionId: construction.id,
           cost: residentSurfaceCost(produced.text, input.languageMemory.models),
+          continues: continuation?.receipt.bundleId === bundle.id && continuation.receipt.constructionId === construction.id,
           literalInvariance
         });
       }
@@ -4986,6 +5018,7 @@ function conversationalActBindingCandidate(
   // language's own cost for the realized surface does, instead of the bundle id ordering that decided it before.
   const winner = rows.sort((left, right) => (
     right.candidate.fit - left.candidate.fit
+    || Number(right.continues) - Number(left.continues)
     || left.cost - right.cost
     || compareSurfaceText(left.bundleId, right.bundleId)
     || compareSurfaceText(left.constructionId, right.constructionId)
@@ -5000,6 +5033,7 @@ function conversationalActBindingCandidate(
       surface: winner?.candidate.text ?? null,
       bundleId: winner?.bundleId ?? null,
       constructionId: winner?.constructionId ?? null,
+      continuationOf: winner?.continues ? continuation?.id ?? null : null,
       literalInvariance: winner?.literalInvariance ?? null,
       refusals: refusalCountsByReason(refusals)
     }
@@ -5105,7 +5139,19 @@ function conversationalActBindingRow(input: {
   if (!candidateCommitmentsLicensed(inventory)) return `unlicensed:${inventory.unlicensedUnits.map(unit => unit.surface).join(",")}`;
   if (candidateMayAssertAsKnown(inventory)) return "asserts_as_known";
 
+  const conversationPlan: ConversationPlanReceipt = {
+    schema: "scce.conversation_plan_receipt.v1", authority: "conversation_bound", externallyFactual: false, evidenceIds: [],
+    planId: plan.id, continuationKey: admission.move.actId, bundleId: input.bundle.id, constructionId: construction.id,
+    realizationId: realized.realization.id, profileId: construction.profileKey, sourceVersionIds: [...input.bundle.sourceVersionIds],
+    surfaceHash: hasher.digestHex(text), roles: fillers.map((filler, index) => ({ roleId: occurrences[index]!.roleId,
+      occurrenceId: occurrences[index]!.occurrenceId, sourceTurnId: filler.sourceTurnId, startCodePoint: filler.startCodePoint, endCodePoint: filler.endCodePoint })),
+    realizationSteps: realized.realization.trace.filter(part => part.outputEnd > part.outputStart).map((part, order) => ({
+      id: `part.${order}`, order, kind: part.kind, startCodePoint: codePointOffsetAtUtf16(text, part.outputStart),
+      endCodePoint: codePointOffsetAtUtf16(text, part.outputEnd) }))
+  };
+
   return {
+    conversationPlan,
     ...(formLiterals.length ? { constructionFormLiterals: formLiterals } : {}),
     id: `candidate:generated:conversational-act-binding:${hasher.digestHex(realized.realization.id).slice(0, 20)}`,
     style: "surface.path.generated.conversational_act_binding",
@@ -7528,8 +7574,8 @@ function speakConversationTurns(input: SpeakInput): ConversationTurnSurface[] {
   const supplied = [...(input.conversationTurns ?? [])];
   const requestText = input.requestText ?? mouthEchoQuestionText(input);
   const highest = supplied.reduce((index, turn) => Math.max(index, turn.turnIndex), -1);
-  if (requestText.trim() && !supplied.some(turn => turn.surface === requestText && turn.roleId === "session.role.owner")) {
-    supplied.push({ turnId: "conversation.turn.request", turnIndex: highest + 1, surface: requestText, roleId: "session.role.owner" });
+  if (requestText.trim() && !supplied.some(turn => input.requestTurnId ? turn.turnId === input.requestTurnId : turn.surface === requestText && turn.roleId === "session.role.owner")) {
+    supplied.push({ turnId: input.requestTurnId ?? "conversation.turn.request", turnIndex: highest + 1, surface: requestText, roleId: "session.role.owner" });
   }
   return supplied;
 }
