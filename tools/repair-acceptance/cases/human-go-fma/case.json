@@ -4,13 +4,15 @@
   "source": {
     "origin": "installed Go Authors BSD source; exact human-authored source captured by the canonical ingestion receipt",
     "revision": "canonical-receipt-human-go-canonical-check.json",
-    "path": "math/fma.go",
+    "path": "cmd/compile/internal/ssa/testdata/fma.go",
     "capturedBytes": 602,
     "capturedSha256": "84bda257ed3ba19cde7754df0ba618a7dc8d027e8f5c9823aef5c98367dc64df",
     "sourceSystemId": "source.4048b119375a01224217e06e18ea4429299282a04731256d",
     "sourceVersionId": "source_version_b5f2ab06cc00eea1f7c0b786c7a0a8b4b12d19be5b80c2a3aaa3159a",
     "languageProfileId": "language_profile_55234169888c05b93727fa655a0656d2133c769fd0fabccb",
-    "ngramModelId": "ngram_model_e39ed85b8d0f538c3ef9857445e70f874c7dda97b0d9639f3e2b8e65aa5ace0c"
+    "ngramModelId": "ngram_model_e39ed85b8d0f538c3ef9857445e70f874c7dda97b0d9639f3e2b8e65aa5ace0c",
+    "stagedTargetPath": "fma.go",
+    "pathBasis": "Installed source path verified from the canonical CLI-repair script; staged repair target is the workspace-relative fma.go."
   },
   "mutation": {
     "authorship": "manually introduced identifier corruption for development repair evaluation; expected tests and outputs are verification-only and were not ingested",

@@ -6,7 +6,7 @@
     {
       "id": "chat",
       "count": 2,
-      "grading": "Existing BlindJudgment schema; owner-authored follow-up prompts over source-seen English Dolly and Russian OASST material."
+      "grading": "Existing BlindJudgment schema; AI/test-authored development follow-up prompts over source-seen English Dolly and Russian OASST material; not independent holdout cases."
     },
     {
       "id": "creative",
@@ -68,7 +68,7 @@
     "corpusParity": "SCCE's isolated evaluation brain and Qwen RAG must use exactly the same frozen document bytes and source versions from one corpus manifest. No closed-book Qwen condition is scored in this matrix."
   },
   "stoppingRules": [
-    "Seal the corpus manifest, questions, preregistration, source tree, and repair case before tuning against the heldout prompts.",
+    "Freeze corpus manifests, questions, preregistration, source tree, and repair cases before tuning; these two AI/test-authored chat follow-ups are development prompts, not independent held-out prompts.",
     "Stop and mark the factual comparison invalid if any expected article is absent from the manifest, any unsupported attribute is present, source hashes differ, or the SCCE brain contains undeclared documents.",
     "Keep the known failure regressions in the report even if later runs decline them; declines remain failed task completions."
   ],
@@ -85,18 +85,18 @@
     "questionCount": 12,
     "repairCount": 2,
     "caseCount": 14,
-    "questionFileSha256": "0590a6c9cd9f214008fce95aed85bb9300d39fcfe05dee32edfea092f7724562",
+    "questionFileSha256": "2d5684017a376e6c1d1fb52a1b2153d6fe0d3506f7bae654d831d3066430af9c",
     "questions": [
       {
         "id": "chat.en.dolly-story-followup.v1",
-        "sha256": "cdd9ea86552a6636be6414abd696ef3336c5d61abaa10c74d804471f4e4fb828",
-        "split": "heldout_prompt_owner_authored_source_seen",
+        "sha256": "46ce77a3324aec50406f605e97d59d4d6e64d31c641b488cfb933782871277b0",
+        "split": "development_ai_test_authored_prompt_source_seen",
         "lane": "chat"
       },
       {
         "id": "chat.ru.oasst-comic-followup.v1",
-        "sha256": "dbc488b8ade4cbcd90d3364d1abe284b4fc2c9558cea3d58c81ffab3f8a3274d",
-        "split": "heldout_prompt_owner_authored_source_seen",
+        "sha256": "523576b840019e746580c5b1db8d3b3e34da6df704ec025e152bfbe0ad004697",
+        "split": "development_ai_test_authored_prompt_source_seen",
         "lane": "chat"
       },
       {
@@ -168,7 +168,7 @@
         "resultReceipt": "C:/Users/react/scce/.tmp/human-go-cli-repair.json",
         "split": "development_seen_source_and_mutation",
         "task": "Repair the one-identifier corruption; native Go tests must pass and the exact original hash must be restored.",
-        "artifactSha256": "c7e863349d2eed442b2d69d74b76ce4cfd2b2779023d581c85b1571159a7d609"
+        "artifactSha256": "f4def3ec1eeb33afa985d7c9856a09fbecbf4461e9bbc55e353fe9f74623000f"
       },
       {
         "id": "repair.typescript.repository-map-write-loss.v1",

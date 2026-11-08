@@ -61,11 +61,27 @@ test("known creative declines remain required-completion failures, never abstent
   }
 });
 
+test("chat follow-ups are AI/test-authored development prompts over source-seen material, not independent holdouts", () => {
+  const chat = questions.filter(row => row.category === "chat");
+  assert.equal(chat.length, 2);
+  for (const row of chat) {
+    assert.equal(row.protectedMetadata.split, "development_ai_test_authored_prompt_source_seen");
+    assert.match(row.protectedMetadata.promptAuthorship, /AI\/test-authored development follow-up prompt/u);
+    assert.match(row.protectedMetadata.promptAuthorship, /not an independent holdout/u);
+    assert.match(row.protectedMetadata.grading, /AI\/test-authored development prompt/u);
+    assert.doesNotMatch(row.protectedMetadata.split, /heldout/iu);
+  }
+  assert.match(prereg.categories.find(row => row.id === "chat").grading, /not independent holdout cases/u);
+});
+
 test("Go repair case follows the existing repair-integrity case shape and pins real source bytes", () => {
   const c = JSON.parse(readFileSync(new URL("../repair-acceptance/cases/human-go-fma/case.json", import.meta.url), "utf8"));
   assert.equal(c.schema, "scce.repair_integrity_case.v1");
   assert.equal(c.source.languageProfileId, "language_profile_55234169888c05b93727fa655a0656d2133c769fd0fabccb");
   assert.equal(c.source.capturedBytes, 602);
+  assert.equal(c.source.path, "cmd/compile/internal/ssa/testdata/fma.go");
+  assert.equal(c.source.stagedTargetPath, "fma.go");
+  assert.match(c.source.pathBasis, /Installed source path verified/u);
   assert.match(c.source.capturedSha256, /^[0-9a-f]{64}$/u);
   assert.equal(c.mutation.from, "inlineFma");
   assert.equal(c.mutation.to, "inlineFmaa");
