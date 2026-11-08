@@ -11,6 +11,7 @@ import { blind, grade } from './grading.mjs';
 import { discoverCampaign, discoverConfig, implementationFiles, REPOSITORY_ROOT } from './campaign-discovery.mjs';
 import { admitReference } from './campaign-reference-admission.mjs';
 import { verifyCandidateFinalization } from './candidate-finalization.mjs';
+import { resolveProcessPolicy } from './process-resources.mjs';
 import { defaultInventory, coverageGaps, createDefaultPool, CATEGORY_GROUPS } from './providers/default/cases.mjs';
 
 const here = fileURLToPath(new URL('./', import.meta.url));
@@ -30,6 +31,7 @@ export async function prepareCampaign(raw, dependencies = {}) {
   await mkdir(out, { recursive: true });
   const discovery = await (dependencies.discover ?? discoverCampaign)(options);
   const candidateFinalization = verifyCandidateFinalization(discovery.finalization);
+  const processPolicy = options.processPolicyFile ? await (dependencies.processPolicy ?? resolveProcessPolicy)(await readJson(options.processPolicyFile)) : null;
   if (discovery.config.allowedRoots?.length && !discovery.config.allowedRoots.some(root => inside(root, out))) throw new Error('Public output must be inside a configured allowed workspace root for native product routes');
   const capabilities = await readJson(path.join(providerDir, 'capabilities.json'));
   const admittedFiles = [...(options.admittedManifests ?? [])];
@@ -48,6 +50,7 @@ export async function prepareCampaign(raw, dependencies = {}) {
   await writeJson(path.join(publicPins, 'discovery.json'), discovery.publicSnapshot);
   await writeJson(path.join(publicPins, 'candidate-finalization.json'), signed({ schema: 'scce.blind-candidate-finalization.v1',
     receipt: candidateFinalization.receipt, finalizationDigest: candidateFinalization.digest }));
+  if (processPolicy) await writeJson(path.join(publicPins, 'process-policy.json'), processPolicy);
   await writeJson(path.join(publicPins, 'model.json'), discovery.model);
   await writeJson(path.join(publicPins, 'inventory.json'), inventory);
   await writeJson(path.join(publicPins, 'settings.json'), settings);
@@ -84,6 +87,10 @@ export async function prepareCampaign(raw, dependencies = {}) {
   add('isolation', 'isolation', path.join(publicPins, 'discovery.json'));
   add('candidate-preparation', 'preparation', path.join(publicPins, 'candidate-preparation.json'));
   add('candidate-finalization', 'preparation', path.join(publicPins, 'candidate-finalization.json'));
+  if (processPolicy) {
+    add('process-policy', 'isolation', path.join(publicPins, 'process-policy.json'));
+    add('process-measurement-provider', 'implementation', path.join(here, 'process-resources.mjs'));
+  }
   add('reference-preparation', 'preparation', path.join(publicPins, 'reference-preparation.json'));
   for (const [i, file] of admittedSnapshots.entries()) add(`admitted-public-manifest-${i}`, 'corpus', file);
   for (const [language, tool] of Object.entries(discovery.tools)) if (tool.available) {
@@ -100,6 +107,11 @@ export async function prepareCampaign(raw, dependencies = {}) {
     { id: 'scce', adapterArtifact: 'candidate-adapter', argv: candidateArgv, environmentKeys: ['SCCE_API_BEARER_TOKEN'], identity: { implementationFileListHash: hash(sourceFiles), initialReadiness: discovery.publicSnapshot.candidate.readinessHash }, preparation: { publicCorpusArtifacts: corpusIds, receiptArtifact: 'candidate-preparation' }, resourceIdentity: discovery.publicSnapshot.hardwarePolicy, capabilities: categories },
     { id: 'local-reference', adapterArtifact: 'reference-adapter', argv: [process.execPath, path.join(here, 'adapters/reference-native.mjs'), '--runner', referenceRunner, '--runner-args', canonical(runnerArgs), '--model-digest', discovery.model.digest], environmentKeys: [], identity: { model: 'qwen2.5:3b', digest: discovery.model.digest, admissionDigest: referenceAdmission.digest }, expectedModelDigest: discovery.model.digest, preparation: { publicCorpusArtifacts: corpusIds, receiptArtifact: 'reference-preparation' }, resourceIdentity: { ...discovery.publicSnapshot.hardwarePolicy, reportedModelAllocationAtAdmission: referenceAdmission.reportedResidency }, capabilities: categories }
   ], judges: options.judges ?? ['independent-judge'], acceptance: { minimumPairsPerCell: options.diagnostic ? 1 : options.count, maxLossesPerCell: 0, requireStrictWinPerCell: true, maximumOneSidedPPerCell: 0.05 } };
+  if (processPolicy) {
+    plan.isolation.processMeasurement = processPolicy;
+    for (const system of plan.systems) system.resourceIdentity = { ...system.resourceIdentity,
+      processMeasurement: { provider: processPolicy.provider, policyArtifact: 'process-policy', sharedDaemons: processPolicy.systems[system.id]?.sharedDaemons ?? [], rssBudgetBytes: processPolicy.rssBudgetBytes } };
+  }
   const planFile = path.join(out, 'plan.json'), freezeFile = path.join(out, 'freeze.json');
   await writeJson(planFile, plan);
   const frozen = await freeze(planFile, freezeFile);
@@ -199,7 +211,7 @@ async function main() {
   else if (command === 'resume') result = await resumeCampaign({ out: need('out'), shardCount: Number(args.get('shard-count') ?? 1), shardIndex: Number(args.get('shard-index') ?? 0) });
   else {
     const resourceOptions = Object.fromEntries([['threads', 'threads'], ['max-reference-model-bytes', 'maxReferenceModelBytes'], ['context-tokens', 'contextTokens'], ['output-tokens', 'outputTokens']].filter(([flag]) => args.has(flag)).map(([flag, name]) => [name, Number(args.get(flag))]));
-    const options = campaignOptions({ out: need('out'), diagnostic: args.has('diagnostic'), configFile: args.get('config'), admittedManifests: args.has('admitted-public-manifest') ? [args.get('admitted-public-manifest')] : [], seedFile: args.get('seed-file'), privateRoot: args.get('private-root'), ...(args.has('count') ? { count: Number(args.get('count')) } : {}), ...(args.has('device') ? { device: args.get('device') } : {}), ...resourceOptions, ...(args.has('shard-count') ? { shardCount: Number(args.get('shard-count')), shardIndex: Number(args.get('shard-index') ?? 0) } : {}) });
+    const options = campaignOptions({ out: need('out'), diagnostic: args.has('diagnostic'), configFile: args.get('config'), processPolicyFile: args.get('process-policy'), admittedManifests: args.has('admitted-public-manifest') ? [args.get('admitted-public-manifest')] : [], seedFile: args.get('seed-file'), privateRoot: args.get('private-root'), ...(args.has('count') ? { count: Number(args.get('count')) } : {}), ...(args.has('device') ? { device: args.get('device') } : {}), ...resourceOptions, ...(args.has('shard-count') ? { shardCount: Number(args.get('shard-count')), shardIndex: Number(args.get('shard-index') ?? 0) } : {}) });
     result = command === 'run' ? await runCampaign(options) : (await prepareCampaign(options)).prepared;
   }
   process.stdout.write(`${canonical(result)}\n`);
