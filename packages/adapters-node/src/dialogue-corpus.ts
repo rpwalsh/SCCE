@@ -36,7 +36,7 @@ import {
   type ScceStorage,
   type SourceVersionId
 } from "@scce/kernel";
-import { corpusSourceVersionIdFor, stampPattern, trainLanguageCorpusText, type LanguageCorpusTrainingReport } from "./language-corpus-trainer.js";
+import { corpusSourceVersionIdFor, readCompletedCorpusCheckpoint, stampPattern, trainLanguageCorpusText, type LanguageCorpusTrainingInput, type LanguageCorpusTrainingReport } from "./language-corpus-trainer.js";
 
 /**
  * Who wrote the text. Training on SCCE's own generations is self-training: the model would be fitted to its
@@ -167,6 +167,7 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
     ? Math.floor(input.heapCheckpointMb)
     : undefined;
   let stoppedByHeapSafetyBound = false;
+  let sourceChanged = false;
   for (const file of files) {
     if (heapCheckpointMb !== undefined && heapMiB() >= heapCheckpointMb) {
       stoppedByHeapSafetyBound = true;
@@ -190,7 +191,7 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
     if (input.actsOnly) continue;
     // One pathological file costs that file, never the whole run.
     try {
-      reports.push(await trainLanguageCorpusText({
+      const trainingInput: LanguageCorpusTrainingInput = {
         storage: input.storage,
         sourceSystem: CORPUS_SOURCE_SYSTEM_IDS.dialogue,
         streamUri: `${CORPUS_SOURCE_SYSTEM_IDS.dialogue}:${normalizeRelative(file.relativePath)}`,
@@ -207,6 +208,8 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
         ngramVocabularyLimit: input.ngramVocabularyLimit,
         languageAliases: input.languageAliases,
         creativeEventCompiler: input.creativeEventCompiler,
+        corpusCheckpoint: { rootUri: pathToFileURL(root).href, itemUri: pathToFileURL(file.absolutePath).href,
+          contentHash: sha256(text), byteLength: Buffer.byteLength(text, "utf8") },
         corpusMetadata: {
           title: documentTitleFromPath(file.relativePath),
           relativePath: normalizeRelative(file.relativePath),
@@ -217,7 +220,10 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
             ...(declared.sourceMetadata ? { sourceMetadata: declared.sourceMetadata } : {}) } : {}),
           ...(input.languageAliases?.length ? { languageAliases: [...input.languageAliases] } : {})
         }
-      }));
+      };
+      const replay = await readCompletedCorpusCheckpoint(trainingInput);
+      reports.push(replay ?? await trainLanguageCorpusText(trainingInput));
+      if (!replay) sourceChanged = true;
     } catch (error) {
       skipped.push({
         path: file.relativePath,
@@ -226,6 +232,7 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
       });
     }
   }
+  const refreshDialogue = input.actsOnly || sourceChanged;
   return {
     schema: "scce.dialogueCorpusTrainReport.v1",
     rootPath: root,
@@ -237,9 +244,9 @@ export async function trainDialogueCorpus(input: DialogueCorpusTrainOptions): Pr
     filesSkipped: skipped,
     totals: sumReports(reports),
     reports,
-    communicativeActs: await persistDialogueCommunicativeActs(input, transcripts, read.map(file => String(corpusSourceVersionIdFor(file)))),
-    requestAuthorities: await persistDialogueRequestAuthorities(input, read),
-    conversationalConstructions: await persistConversationalConstructions(input, read),
+    communicativeActs: await persistDialogueCommunicativeActs(input, refreshDialogue ? transcripts : [], refreshDialogue ? read.map(file => String(corpusSourceVersionIdFor(file))) : []),
+    requestAuthorities: await persistDialogueRequestAuthorities(input, refreshDialogue ? read : []),
+    conversationalConstructions: await persistConversationalConstructions(input, refreshDialogue ? read : []),
     stoppedByHeapSafetyBound,
     heapMiBAtExit: heapMiB()
   };

@@ -20,10 +20,12 @@ import {
   evidenceSourceFamilyId,
   languageProfileCompatibility,
   LANGUAGE_TRAINING_BATCH_RECIPE_ID,
+  CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID,
   INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID,
   SOURCE_CONSTRUCTION_BINDINGS_COMPONENT_RECIPE_ID,
   LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID,
   LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA,
+  CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA,
   SOURCE_CODE_FUNCTION_PATTERN_SCHEMA,
   SOURCE_CODE_FUNCTION_PROJECTION_RECIPE_ID,
   sourceCodeFunctionConstructionId,
@@ -396,6 +398,14 @@ function corpusComponentRecipes(input: LanguageCorpusTrainingInput): Record<stri
       sourceConstructionProjection: LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID,
       ...(hasGraphDependency ? { sourceConstructionBindings: SOURCE_CONSTRUCTION_BINDINGS_COMPONENT_RECIPE_ID } : {}) } : {};
   if (!input.languageOnly && needsConstructionContext(input)) components.constructionContext = SOURCE_CONSTRUCTION_CONTEXT_RECIPE_ID;
+  const creativeRequests = new Map((naturalSource ? input.transcriptTurns ?? [] : [])
+    .filter(turn => turn.requestAuthority === "creative").map(turn => [turn.index, turn]));
+  if (naturalSource && input.transcriptTurns?.some(reply => {
+    const request = creativeRequests.get(reply.replyToTurnIndex ?? -1);
+    return request && reply.commitmentScope === "conversation" && request.index < reply.index && request.endCodePoint <= reply.startCodePoint;
+  })) {
+    components.creativeSurfaceAcquisition = CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID;
+  }
   if (canonicalCorpusSourceSystemId(input.sourceSystem) === CORPUS_SOURCE_SYSTEM_IDS.ossCode) {
     components.sourceCodeFunctions = SOURCE_CODE_FUNCTION_PROJECTION_RECIPE_ID;
     components.sourceCodeFunctionCompiler = SOURCE_CODE_FUNCTION_COMPILER_RECIPE_ID;
@@ -1060,7 +1070,9 @@ async function prepareLanguageCorpusTrainingInternal(input: LanguageCorpusTraini
     ...sourceOwnedAssertionPatterns({ contracts: derivedAssertionContracts, metadata, sourceSystem, profileId: profile.id, sourceVersionId,
       originalSourceVersionId: originalSourceVersionId ?? sourceVersionId, evidence, hasher, updatedAt: createdAt })
   ]
-    .map(item => ({ ...stampPattern(item, sourceSystem, sourceSystemId, rowMetadata), informationLabel }));
+    .map(item => ({ ...stampPattern(item, sourceSystem, sourceSystemId, rowMetadata), informationLabel }))
+    .map(item => jsonRecord(item.patternJson).schema === CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA
+      ? { ...item, patternJson: toJsonValue({ ...jsonRecord(item.patternJson), sourceId, sourceVersionId }) } : item);
   let frames = compiledBatch.semanticFrames.map(item => ({ ...stampFrame(item, sourceSystem, sourceSystemId, rowMetadata), informationLabel }));
 
   if (canonicalSource && models.length) {
@@ -1291,6 +1303,8 @@ async function commitLanguageCorpusTrainingInternal(input: LanguageCorpusTrainin
     profileId: String(prepared.profile.id), sourceSystem: prepared.sourceSystem, informationLabel: prepared.informationLabel,
     patterns: prepared.patterns, projections: [
       ...(patternProjectionRecipe ? [{ patternSchema, componentRecipe: patternProjectionRecipe }] : []),
+      ...(!input.languageOnly && prepared.models.length && componentRecipes.sourceConstructionProjection
+        ? [{ patternSchema: CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA, componentRecipe: CREATIVE_SOURCE_SURFACE_ACQUISITION_RECIPE_ID }] : []),
       ...(canonicalCorpusSourceSystemId(input.sourceSystem) === CORPUS_SOURCE_SYSTEM_IDS.ossCode
         ? [{ patternSchema: "scce.source_owned_test_contract.v1", componentRecipe: "scce.source_owned_test_contract_projection.v1" }] : [])
     ] });

@@ -25,6 +25,13 @@ export function installFixtureLanguagePatternProjection(store: LanguageMemorySto
       return rows.filter(row => {
         if (query?.patternIds && !query.patternIds.includes(row.id)) return false;
         const metadata = jsonRecord(row.patternJson);
+        if (metadata.schema === "scce.creative_event_compatibility_model.v1") {
+          const sourceId = metadata.sourceId ?? jsonRecord(Array.isArray(metadata.sourceObservations) ? metadata.sourceObservations[0] : undefined).sourceId;
+          const owned = [...scopes.values()].filter(scope => scope.patternSchema === metadata.schema && scope.profileId === row.profileId
+            && scope.sourceSystem === metadata.sourceSystem && scope.sourceId === sourceId);
+          return !owned.length || owned.some(scope => scope.patternIds.includes(row.id)
+            && canonicalStringify(scope.informationLabel) === canonicalStringify(row.informationLabel));
+        }
         if (metadata.schema !== "scce.language_construction_pattern.v1" && metadata.schema !== "scce.source_code_function_pattern.v1"
           && metadata.schema !== "scce.source_owned_test_contract.v1") return true;
         return [...scopes.values()].some(scope => scope.patternSchema === metadata.schema && scope.profileId === row.profileId

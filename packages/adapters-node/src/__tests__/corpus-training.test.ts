@@ -7,7 +7,7 @@ const humanCreativePair = JSON.parse(readFileSync(new URL("../../../kernel/src/_
 import { CREATIVE_EVENT_CONSTRUCTION_PATTERN_SCHEMA } from "../../../kernel/src/language-construction-memory.js";
 import { creativeReferenceTestAnnotation } from "../../../kernel/src/__tests__/fixtures/creative-reference-test-annotations.js";
 import { sourceReferenceBindingsFromPatterns } from "../../../kernel/src/source-reference-bindings.js";
-import { creativeSourceUtterances } from "../../../kernel/src/creative-source-utterance.js";
+import { creativeSourceUtterances, realizeCreativeSourceUtterance } from "../../../kernel/src/creative-source-utterance.js";
 import { compileCreativeRequestFrameFromCompatibilityModels } from "../../../kernel/src/creative-event-compatibility.js";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
@@ -82,6 +82,97 @@ afterEach(async () => {
 });
 
 describe("learned rows carry the shard's provenance once", () => {
+  it("upgrades a complete creative checkpoint missing its surface component without changing source ownership", async () => {
+    const fixture = memoryStorage(), checkpoints = new Map<string, IngestionCheckpoint>();
+    const putSpans = async (spans: readonly EvidenceSpan[]) => {
+      for (const span of spans) {
+        const index = fixture.state.evidence.findIndex(prior => prior.id === span.id);
+        if (index < 0) fixture.state.evidence.push(span); else fixture.state.evidence[index] = span;
+      }
+    };
+    fixture.storage.evidence.putEvidenceSpan = async span => putSpans([span]);
+    fixture.storage.evidence.putEvidenceSpans = putSpans;
+    fixture.storage.ingestion = { put: async row => { checkpoints.set(row.id, structuredClone(row)); }, get: async id => checkpoints.get(id) ?? null,
+      list: async () => [...checkpoints.values()] } as ScceStorage["ingestion"];
+    const human = JSON.parse(readFileSync(new URL("../../../kernel/src/__tests__/fixtures/oasst-human-russian-creative-pair.json", import.meta.url), "utf8")) as { text: string; turns: TranscriptTurn[] };
+    const input = { storage: fixture.storage, sourceSystem: "dialogue", sourceUri: "fixture://creative-upgrade/human.json", streamUri: "dialogue:human.json",
+      text: human.text, transcriptTurns: human.turns, informationLabel: publicCorpusInformationLabel, skipNgramObservationPersistence: true,
+      ngramMaxOrder: 3, ngramMaxCountersPerOrder: 64,
+      corpusCheckpoint: { rootUri: "fixture://creative-upgrade", itemUri: "human.json", contentHash: blobContentHash(Buffer.from(human.text)), byteLength: Buffer.byteLength(human.text) } };
+    const first = await trainLanguageCorpusText(input);
+    const checkpoint = [...checkpoints.values()][0]!, metadata = recordOf(checkpoint.metadata);
+    const recipes = { ...recordOf(metadata.componentRecipes) };
+    delete recipes.creativeSurfaceAcquisition;
+    checkpoint.metadata = { ...metadata, componentRecipes: recipes };
+    fixture.state.patterns.splice(0, fixture.state.patterns.length, ...fixture.state.patterns.filter(pattern => recordOf(pattern.patternJson).schema !== "scce.creative_source_surface_acquisition_receipt.v1"));
+    const current = fixture.state.patterns.find(pattern => recordOf(pattern.patternJson).schema === "scce.creative_event_compatibility_model.v1")!;
+    const { surfaceBindingRecipe: _surfaceRecipe, sourceUtterancePrerequisites: _speech, ...legacyJson } = recordOf(current.patternJson);
+    const legacyIdentity = { schema: legacyJson.schema, version: legacyJson.version, requestCompilerId: legacyJson.requestCompilerId,
+      eventCompilerId: legacyJson.eventCompilerId, reliability: legacyJson.reliability, eventCompatibilities: legacyJson.eventCompatibilities,
+      roleCompatibilities: legacyJson.roleCompatibilities, sourceObservations: legacyJson.sourceObservations, requestFrameAnchors: legacyJson.requestFrameAnchors };
+    legacyJson.id = `creative.observed.compatibility.${createHasher().digestHex(kernel.canonicalStringify(legacyIdentity))}`;
+    const legacy = { ...current, id: String(legacyJson.id), patternJson: legacyJson };
+    const owner = fixture.state.sourceVersions[0]!;
+    expect(recordOf(current.patternJson).sourceId).toBe(owner.sourceId);
+    expect(recordOf(current.patternJson).sourceVersionId).toBe(owner.sourceVersionId);
+    const projection = await fixture.storage.languageMemory.getLanguagePatternProjection!({ profileId: current.profileId,
+      sourceId: owner.sourceId, sourceVersionId: owner.sourceVersionId, sourceSystem: "dialogue", patternSchema: String(legacyJson.schema),
+      componentRecipe: "kernel.creative_source_surface_acquisition.v1", informationLabel: current.informationLabel! });
+    expect(projection).toBeDefined();
+    await fixture.storage.languageMemory.replaceLanguagePatternProjection!({ patterns: [legacy], projection: { ...projection!, patternIds: [legacy.id] } });
+    expect((await fixture.storage.languageMemory.listLanguagePatterns({ profileIds: [current.profileId], patternSchemas: [String(legacyJson.schema)] })).map(pattern => pattern.id)).toEqual([legacy.id]);
+    const compile = vi.spyOn(kernel, "compileLanguageTrainingBatch");
+    try {
+      const upgraded = await trainLanguageCorpusText(input);
+      expect(compile).toHaveBeenCalledTimes(1);
+      expect(upgraded.sourceVersionId).toBe(first.sourceVersionId);
+      expect(upgraded.sourceContentHash).toBe(first.sourceContentHash);
+      expect(new Set(fixture.state.sourceVersions.map(source => source.canonicalUri))).toEqual(new Set([input.sourceUri]));
+      expect(new Set(fixture.state.sourceVersions.map(source => String(source.sourceVersionId)))).toEqual(new Set([String(first.sourceVersionId)]));
+      expect(checkpoints.size).toBe(1);
+      expect(recordOf(recordOf(checkpoints.get(checkpoint.id)!.metadata).componentRecipes).creativeSurfaceAcquisition).toBe("kernel.creative_source_surface_acquisition.v1");
+      expect(fixture.state.patterns.filter(pattern => recordOf(pattern.patternJson).schema === "scce.creative_source_surface_acquisition_receipt.v1")).toHaveLength(1);
+      expect(fixture.state.patterns.some(pattern => pattern.id === legacy.id)).toBe(true);
+      const active = await fixture.storage.languageMemory.listLanguagePatterns({ profileIds: [current.profileId] });
+      expect(active.filter(pattern => recordOf(pattern.patternJson).schema === legacyJson.schema).map(pattern => pattern.id)).toEqual([current.id]);
+      const state = createLanguageMemoryRuntime({ hasher: createHasher() }).hydrate({ models: [], patterns: JSON.parse(JSON.stringify(active)), constructionEvidence: fixture.state.evidence });
+      const fresh = human.turns[0]!.surface.replace("Спанч", "Квартун");
+      const frame = compileCreativeRequestFrameFromCompatibilityModels({ requestText: fresh, models: state.creativeEventCompatibilityModels, hasher: createHasher() })!;
+      expect(state.creativeEventCompatibilityModels.map(model => model.id)).toEqual([current.id]);
+      const utterance = creativeSourceUtterances(state.creativeEventCompatibilityModels[0]!, current.profileId, createHasher())[0]!;
+      const realized = realizeCreativeSourceUtterance({ utterance, bundles: state.importedConstructionBundles, frame, requestText: fresh,
+        ownerTurnId: "owner.current", turns: [{ turnId: "owner.current", turnIndex: 0, roleId: "session.role.owner", surface: fresh }], semanticPlanId: "plan.current", hasher: createHasher() });
+      expect(realized?.realization.text.replace(/\s+/gu, " ")).toBe(human.turns[1]!.surface.replaceAll("Спанч", "Квартун").replace(/\s+/gu, " "));
+      const writes = Object.fromEntries(Object.entries(fixture.state).map(([key, rows]) => [key, rows.length]));
+      await trainLanguageCorpusText(input);
+      expect(compile).toHaveBeenCalledTimes(1);
+      expect(Object.fromEntries(Object.entries(fixture.state).map(([key, rows]) => [key, rows.length]))).toEqual(writes);
+      await expect(trainLanguageCorpusText({ ...input, graphSnapshotAdditions: { nodes: [], edges: [], hyperedges: [] } })).rejects.toThrow("checkpoint binding mismatch");
+    } finally { compile.mockRestore(); }
+  });
+
+  it.each([false, true])("completes component eligibility once for a source with no observed creative model (%s)", async creative => {
+    const fixture = memoryStorage(), checkpoints = new Map<string, IngestionCheckpoint>();
+    fixture.storage.ingestion = { put: async row => { checkpoints.set(row.id, structuredClone(row)); }, get: async id => checkpoints.get(id) ?? null,
+      list: async () => [...checkpoints.values()] } as ScceStorage["ingestion"];
+    const turns: TranscriptTurn[] = [{ index: 0, speakerId: "owner", surface: "q", startCodePoint: 0, endCodePoint: 1,
+      ...(creative ? { requestAuthority: "creative" as const } : {}) },
+      { index: 1, speakerId: "assistant", surface: "r", startCodePoint: 2, endCodePoint: 3, replyToTurnIndex: 0, commitmentScope: "conversation" }];
+    const input = { storage: fixture.storage, sourceSystem: "dialogue", sourceUri: "fixture://no-source-model", streamUri: "dialogue:no-source-model", text: "q\nr",
+      transcriptTurns: turns, informationLabel: publicCorpusInformationLabel, skipNgramObservationPersistence: true, ngramMaxOrder: 2,
+      corpusCheckpoint: { rootUri: "fixture://no-source-model", itemUri: "dialogue", contentHash: blobContentHash(Buffer.from("q\nr")), byteLength: 3 } };
+    const compile = vi.spyOn(kernel, "compileLanguageTrainingBatch");
+    try {
+      await trainLanguageCorpusText(input);
+      expect(fixture.state.patterns.some(pattern => recordOf(pattern.patternJson).schema === "scce.creative_event_compatibility_model.v1")).toBe(false);
+      expect(recordOf(recordOf([...checkpoints.values()][0]!.metadata).componentRecipes).creativeSurfaceAcquisition)
+        .toBe(creative ? "kernel.creative_source_surface_acquisition.v1" : undefined);
+      await trainLanguageCorpusText(input);
+      await trainLanguageCorpusText(input);
+      expect(compile).toHaveBeenCalledTimes(1);
+    } finally { compile.mockRestore(); }
+  });
+
   it("recompiles derived callable semantics on a component upgrade without rejecting unchanged source bytes", async () => {
     const fixture = memoryStorage();
     const checkpoints = new Map<string, IngestionCheckpoint>();
@@ -206,7 +297,9 @@ describe("learned rows carry the shard's provenance once", () => {
       sourceVersionId: evidence.sourceVersionId, evidence: [evidence], profile, graphSnapshotAdditions,
       corpusCheckpoint: { rootUri: "fixture://raw-forms", itemUri: "forms.txt", contentHash: blobContentHash(Buffer.from(text)), byteLength: Buffer.byteLength(text) } };
     await trainLanguageCorpusText(input);
-    expect(activeProjectionWrites).toHaveLength(1);
+    expect(activeProjectionWrites).toHaveLength(2);
+    expect(activeProjectionWrites[1]!.projection.patternSchema).toBe("scce.creative_event_compatibility_model.v1");
+    expect(activeProjectionWrites[1]!.projection.patternIds).toEqual([]);
     expect(activeProjectionWrites[0]!.projection.componentRecipe).toBe(LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID);
     expect(activeProjectionWrites[0]!.projection.patternIds).toEqual(fixture.state.patterns
       .filter(row => recordOf(row.patternJson).schema === LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA).map(row => row.id).sort());
@@ -242,8 +335,8 @@ describe("learned rows carry the shard's provenance once", () => {
     checkpoints.set(checkpoint.id, { ...checkpoint, metadata });
     const writesBeforeUpgrade = fixture.state.events.length;
     const upgraded = await trainLanguageCorpusText(input);
-    expect(activeProjectionWrites).toHaveLength(2);
-    expect(activeProjectionWrites[1]!.projection.sourceId).toBe(activeProjectionWrites[0]!.projection.sourceId);
+    expect(activeProjectionWrites).toHaveLength(4);
+    expect(activeProjectionWrites[2]!.projection.sourceId).toBe(activeProjectionWrites[0]!.projection.sourceId);
     expect(upgraded.artifacts.ngramModelIds).toEqual(before.models.map(row => row.id));
     expect(fixture.state.events.length).toBeGreaterThan(writesBeforeUpgrade);
     expect(fixture.state.models).toEqual(before.models);
@@ -265,7 +358,7 @@ describe("learned rows carry the shard's provenance once", () => {
       constructionContext: SOURCE_CONSTRUCTION_CONTEXT_RECIPE_ID });
     const writes = fixture.state.events.length;
     await trainLanguageCorpusText(input);
-    expect(activeProjectionWrites).toHaveLength(2);
+    expect(activeProjectionWrites).toHaveLength(4);
     expect(fixture.state.events).toHaveLength(writes);
     expect(fixture.state.models.map(row => row.id)).toEqual(before.models.map(row => row.id));
   });
@@ -2294,6 +2387,37 @@ describe("dialogue corpus training", () => {
     exportClass: "restricted",
     mergePolicy: "isolated"
   };
+
+  it("replays an unchanged dialogue file without preparing or writing its source or auxiliary learned rows again", async () => {
+    const root = await tempDir("dialogue-stable-checkpoint-");
+    await writeFile(path.join(root, "human.json"), JSON.stringify(humanCreativePair), "utf8");
+    const fixture = memoryStorage(), checkpoints = new Map<string, IngestionCheckpoint>();
+    const checkpointWrite = vi.fn(async (row: IngestionCheckpoint) => { checkpoints.set(row.id, structuredClone(row)); });
+    fixture.storage.ingestion = { put: checkpointWrite, get: async id => checkpoints.get(id) ?? null,
+      list: async () => [...checkpoints.values()] } as ScceStorage["ingestion"];
+    const options = { storage: fixture.storage, rootPath: root, authorship: "human_authored" as const, informationLabel: ownerLabel,
+      ngramMaxOrder: 3, ngramMaxCountersPerOrder: 64, maxFilesPerRun: 1 };
+    const compile = vi.spyOn(kernel, "compileLanguageTrainingBatch");
+    const patternWrites = vi.spyOn(fixture.storage.languageMemory, "putLanguagePatterns");
+    try {
+      const first = await trainDialogueCorpus(options);
+      expect(first.filesSkipped).toEqual([]);
+      const writes = Object.fromEntries(Object.entries(fixture.state).map(([key, rows]) => [key, rows.length]));
+      const checkpointWrites = checkpointWrite.mock.calls.length;
+      const learnedPatternWrites = patternWrites.mock.calls.length;
+      const replay = await trainDialogueCorpus(options);
+      expect(replay.filesSkipped).toEqual([]);
+      expect(replay.reports).toEqual(first.reports);
+      expect(compile).toHaveBeenCalledTimes(1);
+      expect(Object.fromEntries(Object.entries(fixture.state).map(([key, rows]) => [key, rows.length]))).toEqual(writes);
+      expect(replay.requestAuthorities.patternsPersisted).toBe(0);
+      expect(replay.communicativeActs.patternsPersisted).toBe(0);
+      expect(replay.conversationalConstructions.patternsPersisted).toBe(0);
+      expect(checkpointWrite).toHaveBeenCalledTimes(checkpointWrites);
+      expect(patternWrites).toHaveBeenCalledTimes(learnedPatternWrites);
+      expect(checkpoints.size).toBe(1);
+    } finally { compile.mockRestore(); patternWrites.mockRestore(); }
+  });
 
   it("carries explicitly annotated reference properties through ordinary source preparation and its canonical compilation inventory", async () => {
     const root = await tempDir("dialogue-reference-properties-"), hasher = createHasher();
