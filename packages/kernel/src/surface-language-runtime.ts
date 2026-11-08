@@ -5,7 +5,9 @@ import { traceEvent } from "./debug/trace.js";
 import { canonicalDigestHex, canonicalJsonByteLength } from "./canonical-json-digest.js";
 import { deriveClosedClassWords } from "./closed-class-words.js";
 import { CORPUS_SOURCE_SYSTEM_IDS, createCorpusRegistry, languageMemoryHydrationPlan, requestLanguageHydrationPlan, type CorpusRoleId } from "./corpus-registry.js";
-import { CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA, isCreativeEventCompatibilityPattern } from "./creative-event-compatibility.js";
+import { CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA, isCreativeEventCompatibilityPattern, creativeRequestSourcePrerequisites,
+  compileCreativeRequestFrameFromCompatibilityModels } from "./creative-event-compatibility.js";
+import { creativeSourceUtterances } from "./creative-source-utterance.js";
 import { jsonRecord, kernelString, normalizePriorKey, splitPriorUnits } from "./kernel-answer-primitives.js";
 import { featureSetMemoStats } from "./primitives.js";
 import { tidySurfaceTextMemoStats } from "./surface-linguistics.js";
@@ -235,6 +237,8 @@ export function createSurfaceLanguageRuntime(options: {
   }
   const continuationPopulationCache = new Map<string, { loadedAt: number; value: WeakRef<LanguageContinuationPopulation> }>();
   const sourceOwnedConstructionCache = new Map<string, { loadedAt: number; bundles: WeakRef<DurableLanguageConstructionBundle[]> }>();
+  const creativeSourceCache = new Map<string, { loadedAt: number; state: WeakRef<LanguageMemoryRuntimeState>; profile: LanguageProfile; patterns: WeakRef<LanguagePatternRecord[]> }>();
+  const creativeSourceInFlight = new Map<string, Promise<{ state: LanguageMemoryRuntimeState; profile: LanguageProfile; patterns: LanguagePatternRecord[] } | undefined>>();
   const continuationPopulationInFlight = new Map<string, Promise<LanguageContinuationPopulation | undefined>>();
   let languageMemoryGeneration = 0;
   let requestControlPatternCache: { loadedAt: number; value: LanguagePatternRecord[] } | undefined;
@@ -1292,6 +1296,53 @@ export function createSurfaceLanguageRuntime(options: {
     return bundles;
   }
 
+  async function creativeSourceMemoryForRequest(requestText: string, languageId?: string): Promise<{ state: LanguageMemoryRuntimeState; profile: LanguageProfile; patterns: LanguagePatternRecord[] } | undefined> {
+    const candidates = creativeRequestSourcePrerequisites({ requestText, patterns: await requestControlPatternsCached(), hasher });
+    const patternIds = [...new Set(candidates.flatMap(candidate => candidate.patternIds))].sort();
+    if (!patternIds.length) return undefined;
+    const key = canonicalDigestHex({ patternIds, models: candidates.map(candidate => candidate.modelPattern.id).sort(), languageId: languageId ?? null }, hasher);
+    const cached = creativeSourceCache.get(key);
+    const resident = cached?.state.deref();
+    const residentPatterns = cached?.patterns.deref();
+    if (resident && residentPatterns && clock.now() - cached!.loadedAt < surfaceLanguageMemoryCacheMs) return { state: resident, profile: cached!.profile, patterns: residentPatterns };
+    const inFlight = creativeSourceInFlight.get(key);
+    if (inFlight) return inFlight;
+    const generation = languageMemoryGeneration;
+    const pending = (async () => {
+      const sourcePatterns = await deps.storage.languageMemory.listLanguagePatterns({ patternIds, limit: patternIds.length,
+        maxTotalJsonBytes: (Number(process.env.SCCE_LANGUAGE_HYDRATE_PATTERNS_MB) || 32) * 1024 * 1024 });
+      const evidenceIds = [...new Set(sourcePatterns.flatMap(pattern => pattern.evidenceIds))];
+      const evidence = evidenceIds.length ? await deps.storage.evidence.getEvidenceBatch(evidenceIds) : [];
+      const patterns = uniqueRecordsById([...sourcePatterns, ...candidates.map(candidate => candidate.modelPattern)], sourcePatterns.length + candidates.length);
+      const hydrated = languageMemoryRuntime.hydrate({ models: [], patterns, constructionEvidence: evidence });
+      const owned = await evidenceOwnedLanguageProfilesCached([...new Set(evidence.map(span => span.sourceVersionId))]);
+      const resolver = options.languageResolver?.();
+      let state: LanguageMemoryRuntimeState;
+      if (languageId && resolver) state = scopeLanguageMemoryStateToLanguage(hydrated, languageId, resolver);
+      else {
+        const cluster = selectLanguageProfileClusterForSurface(owned.clusters, requestText)?.cluster ?? selectDominantLanguageProfileCluster(owned.clusters);
+        if (!cluster) return undefined;
+        state = scopeLanguageMemoryStateToCluster(hydrated, cluster);
+      }
+      const sourceProfiles = owned.profiles.filter(profile => state.scope.profileIds.includes(profile.id));
+      const profile = selectLanguageProfileForSurface(sourceProfiles, requestText) ?? sourceProfiles[0];
+      const frame = compileCreativeRequestFrameFromCompatibilityModels({ requestText, models: state.creativeEventCompatibilityModels, hasher });
+      const learned = frame && state.creativeEventCompatibilityModels.some(model => candidates.some(candidate => candidate.modelPattern.id === model.id
+        && creativeSourceUtterances(model, candidate.profileId, hasher).some(utterance => frame.sourceActivationIds.includes(utterance.requestFrameId)
+          && state.importedConstructionBundles.some(bundle => bundle.bindingId === utterance.bindingId))));
+      traceEvent((globalThis as { __sccTrace?: Parameters<typeof traceEvent>[0] }).__sccTrace, {
+        stage: "language.creative_source_request", label: "kernel.language.hydrate", counts: { requestedPatterns: patternIds.length, patterns: sourcePatterns.length, evidence: evidence.length },
+        support: { admitted: Boolean(profile && frame && learned), sourceProfileIds: candidates.map(candidate => candidate.profileId), frameId: frame?.id ?? null }
+      });
+      if (!profile || !frame || !learned) return undefined;
+      if (generation === languageMemoryGeneration) boundedCacheSet(creativeSourceCache, key, { loadedAt: clock.now(), state: new WeakRef(state), profile, patterns: new WeakRef(patterns) }, surfaceCandidateProfileCacheMaxEntries);
+      return { state, profile, patterns };
+    })();
+    creativeSourceInFlight.set(key, pending);
+    try { return await pending; }
+    finally { if (creativeSourceInFlight.get(key) === pending) creativeSourceInFlight.delete(key); }
+  }
+
 
   /**
    * The cluster the admitted evidence speaks in, resolved from its own profiles rather than from the global window.
@@ -1449,6 +1500,7 @@ export function createSurfaceLanguageRuntime(options: {
     sourceOwnedLanguageClustersForWarmup,
     evidenceOwnedLanguageProfilesCached,
     sourceOwnedConstructionsForEvidence,
+    creativeSourceMemoryForRequest,
     evidenceOwnedLanguageClusterCached,
     surfaceLanguageClusterCached,
     requestSemanticFrames,
@@ -1498,6 +1550,8 @@ export function createSurfaceLanguageRuntime(options: {
       surfaceCandidateProfileCache.clear();
       evidenceOwnedProfileCache.clear();
       sourceOwnedConstructionCache.clear();
+      creativeSourceCache.clear();
+      creativeSourceInFlight.clear();
       surfaceProfileCache = undefined;
       surfaceProfileInFlight = undefined;
       sourceAnchorSemanticFrameCache = undefined;

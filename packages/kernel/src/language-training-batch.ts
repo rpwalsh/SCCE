@@ -10,6 +10,7 @@ import {
   type SourceBoundLanguageConstructionTrainingSet
 } from "./language-construction-memory.js";
 import { compileCreativeSourceCorrespondences } from "./creative-source-correspondence.js";
+import { compileCreativeSourceUtterancePatterns } from "./creative-source-utterance.js";
 import type { TranscriptTurn } from "./dialogue-communicative-act-learning.js";
 import {
   evaluateHeldOutConstructionCoverage,
@@ -636,6 +637,22 @@ export function compileLanguageTrainingBatch(input: {
   const sourceCorrespondencePatterns = batch.transcriptTurns && creativeEventCompilation?.status === "compiled"
     ? compileCreativeSourceCorrespondences({ turns: batch.transcriptTurns, profileId: batch.profile.id, updatedAt: batch.createdAt,
       evidence: batch.evidence, events: (creativeEventCompilation.bundles ?? [creativeEventCompilation.bundle]).flatMap(bundle => bundle.creativeEvents ?? []), hasher: input.hasher }) : [];
+  let sourceUtteranceCandidates = 0;
+  let compiledSourceUtterances = 0;
+  if (sourceCorrespondencePatterns.length && creativeEventCompilation?.status === "compiled") {
+    const eventBundles = creativeEventCompilation.bundles ?? [creativeEventCompilation.bundle];
+    const utterances = compileCreativeSourceUtterancePatterns({ patterns: sourceCorrespondencePatterns,
+      events: eventBundles.flatMap(bundle => bundle.creativeEvents ?? []), eventBundles,
+      profileId: batch.profile.id, evidence: batch.evidence, hasher: input.hasher, updatedAt: batch.createdAt });
+    constructionPatterns.push(...utterances.patterns);
+    sourceUtteranceCandidates = utterances.candidateCount;
+    compiledSourceUtterances = utterances.patterns.length;
+    warnings.push(...utterances.rejectionCodes);
+    for (const pattern of sourceCorrespondencePatterns) {
+      const prerequisites = utterances.prerequisitesByModelId.get(pattern.id);
+      if (prerequisites) pattern.patternJson = toJsonValue({ ...jsonObject(pattern.patternJson), sourceUtterancePrerequisites: prerequisites });
+    }
+  }
 
   let units = uniqueRecords(memories.flatMap(memory => memory.units));
   let patterns = uniquePatterns([
@@ -821,6 +838,8 @@ export function compileLanguageTrainingBatch(input: {
           alternativeTransportEvidenceAllocations.length
       },
       compiledConstructions: constructionPatterns.length,
+      sourceUtteranceConstructions: { candidates: sourceUtteranceCandidates, compiled: compiledSourceUtterances,
+        rejected: sourceUtteranceCandidates - compiledSourceUtterances },
       compiledReversibleConstructions: reversibleConstructionPatterns.length,
       compiledPairedAntiUnifiedConstructions:
         pairedAntiUnifiedCompilation.constructions.length,

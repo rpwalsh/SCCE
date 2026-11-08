@@ -11,7 +11,7 @@ import type { ContentHash, Hasher, JsonValue, SourceId, SourceVersionId } from "
 
 export interface SourceCompilationOwner { sourceId: SourceId; sourceVersionId: SourceVersionId; contentHash: ContentHash }
 
-const READABLE_SOURCE_COMPILATION_RECIPES = new Set(["kernel.language_training_batch.v3", "kernel.language_training_batch.v4", "kernel.language_training_batch.v5"]);
+const READABLE_SOURCE_COMPILATION_RECIPES = new Set(["kernel.language_training_batch.v3", "kernel.language_training_batch.v4", "kernel.language_training_batch.v5", "kernel.language_training_batch.v6"]);
 
 export function sourceLanguageCompilationReceiptId(compilationId: string): string {
   return `source.language.compilation.${compilationId}`;

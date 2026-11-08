@@ -3291,7 +3291,11 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             );
         }
       }
-      const surfaceLanguageModels = surfaceLanguage.models;
+      const sourceSpeech = requestedAuthority === "creative"
+        ? await surfaceLanguageRuntime.creativeSourceMemoryForRequest(input.text, requestLanguageId) : undefined;
+      const realizationLanguage = sourceSpeech ? { ...surfaceLanguage, state: sourceSpeech.state, surfaceProfile: sourceSpeech.profile,
+        models: [], observations: [], units: [], patterns: sourceSpeech.patterns, semanticFrames: [] } : surfaceLanguage;
+      const surfaceLanguageModels = realizationLanguage.models;
       // A translation speaks the target language, so its language memory is scoped to the target profile rather than to
       // the cluster the request surface selected.
       // Request-requirement patterns route a turn; they are never spoken.
@@ -3303,10 +3307,10 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
       // "story about", "page story about", "page") spoken as prose. The closed-class derivation that wanted them
       // receives them directly instead, so a control pattern stays out of the material a sentence is built from.
       const scopedSurfaceLanguageMemory = translationTarget && productionTranslationPlan?.targetProfile
-        ? scopeLanguageMemoryStateToProfile(surfaceLanguage.state, productionTranslationPlan.targetProfile)
+        ? scopeLanguageMemoryStateToProfile(realizationLanguage.state, productionTranslationPlan.targetProfile)
         : {
-          ...surfaceLanguage.state,
-          importedPatterns: surfaceLanguage.state.importedPatterns.filter(pattern => !isRequestRequirementPattern(pattern))
+          ...realizationLanguage.state,
+          importedPatterns: realizationLanguage.state.importedPatterns.filter(pattern => !isRequestRequirementPattern(pattern))
         };
       // What this turn may treat as form: the learned closed class of its language, read for the corpus role it
       // speaks in. The role's own families first, the identity's own class otherwise; never a union of families.
@@ -3332,9 +3336,9 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         durationMs: Date.now() - candidateLanguageStarted,
         counts: {
           models: surfaceLanguageModels.length,
-          patterns: surfaceLanguage.patterns.length,
-          units: surfaceLanguage.units.length,
-          semanticFrames: surfaceLanguage.semanticFrames.length
+          patterns: realizationLanguage.patterns.length,
+          units: realizationLanguage.units.length,
+          semanticFrames: realizationLanguage.semanticFrames.length
         },
         support: {
           requestedAuthority,
@@ -4120,7 +4124,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             originalQuerySurface: input.text,
             languageMemory: languageMemoryRuntime,
             state: surfaceLanguageMemory,
-            targetLanguageProfile: surfaceLanguage.surfaceProfile ?? selectedSurfaceProfile,
+            targetLanguageProfile: realizationLanguage.surfaceProfile ?? selectedSurfaceProfile,
             targetLanguageId: surfaceLanguageMemory.scope.languageId ?? locale,
             interpretSurface: surface => semanticProofSystem.atomizeClaim(surface),
             hasher
@@ -4989,7 +4993,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         field,
         languageProfile: translationTarget
           ? productionTranslationPlan?.targetProfile ?? runtimeLanguageProfile(clock.now())
-          : surfaceLanguage.surfaceProfile ?? selectedSurfaceProfile ?? runtimeLanguageProfile(clock.now()),
+          : realizationLanguage.surfaceProfile ?? selectedSurfaceProfile ?? runtimeLanguageProfile(clock.now()),
         evidence: selectedEvidence,
         entailment: answerEntailment,
         languageMemory: surfaceLanguageMemory,

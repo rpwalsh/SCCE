@@ -17,7 +17,9 @@ describe("Postgres language-memory ownership queries", () => {
   it.each([
     ["kernel.language_training_batch.v3", undefined],
     ["kernel.language_training_batch.v4", undefined],
-    ["kernel.language_training_batch.v4", "kernel.language_training_batch.v4"]
+    ["kernel.language_training_batch.v4", "kernel.language_training_batch.v4"],
+    ["kernel.language_training_batch.v5", undefined],
+    ["kernel.language_training_batch.v5", "kernel.language_training_batch.v5"]
   ])("reads the exact current stored %s generation with identity recipe %s while training still requires recompilation", async (recipe, identityRecipe) => {
     const { adapter } = fixture();
     const stored = compilationHeaderFixture(recipe!, identityRecipe);

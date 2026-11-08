@@ -51,8 +51,8 @@ describe("declared human creative source correspondence", () => {
       text: humanPair.text, evidence, transcriptTurns: humanPair.turns as TranscriptTurn[], createdAt: 1, retainNgramObservations: false } }).patterns;
   });
 
-  it("reports the exact missing speech grammar after the authentic human story's semantic plan is selected", async () => {
-    const state = restart();
+  it("refuses a selected declared human reply when its speech grammar is missing", async () => {
+    const state = restart(evidence, patterns.filter(pattern => !String(jsonRecord(jsonRecord(pattern.patternJson).bundle).bindingId ?? "").startsWith("source.creative.utterance.")));
     const request = humanPair.turns[0]!.surface;
     const sourceFrame = compileCreativeRequestFrameFromCompatibilityModels({ requestText: request, models: state.creativeEventCompatibilityModels, hasher })!;
     const points = [...request];
@@ -83,10 +83,50 @@ describe("declared human creative source correspondence", () => {
     const structural = jsonRecord(jsonRecord(spoken.realizationTrace.languageMemory).structuralCreative);
     expect(structural).toMatchObject({ failClosed: true, selectionBound: true, selectedEventCount: events.length,
       selectedBundleIds: semanticPlan.sourceBundleIds,
-      decision: { status: "rejected", reasonId: "selected_event_source_speech_grammar_missing", eventIndex: 0,
-        eventId: first.eventId, sourceBundleId: first.bundleId, sourceVersionId: sourceEvent.sourceVersionId, realizedEventCount: 0 } });
+      decision: { status: "rejected", reasonId: "selected_source_utterance_speech_grammar_refused",
+        selectedConstructionForm: { kind: "declared_source_reply" }, realizedEventCount: 0 } });
     expect(spoken.text).toBe("");
     expect(spoken.evidenceRefs).toEqual([]);
+  });
+
+  it("realizes a complete attested human reply and fresh opaque request values after a cold restart", async () => {
+    const request = humanPair.turns[0]!.surface;
+    const reply = humanPair.turns[1]!.surface;
+    const sourceFrame = compileCreativeRequestFrameFromCompatibilityModels({ requestText: request, models: restart().creativeEventCompatibilityModels, hasher })!;
+    const room = sourceFrame.arguments.find(argument => argument.span.text === "room")!;
+    expect(room).toBeDefined();
+    const points = [...request];
+    points.splice(room.span.charStart, room.span.charEnd - room.span.charStart, "κάλυ月");
+    const fresh = points.join("");
+    expect(humanPair.text).not.toContain("κάλυ月");
+    for (const text of [request, fresh]) {
+      const cold = createLanguageMemoryRuntime({ hasher, idFactory: ids });
+      const restored = cold.hydrate({ models: [], patterns: JSON.parse(JSON.stringify(patterns)), constructionEvidence: evidence });
+      const frame = compileCreativeRequestFrameFromCompatibilityModels({ requestText: text, models: restored.creativeEventCompatibilityModels, hasher })!;
+      const scoped = scopeLanguageMemoryStateToLanguage(restored, "language.observed", { profile: () => "language.observed", corpus: () => "language.observed" });
+      const field = createAlphaFieldEngine().activate({ text, nodes: [], edges: [], hyperedges: [] });
+      const base: ConstructGraph = { id: "construct.source.utterance" as ConstructGraph["id"], episodeId: "episode.source.utterance" as ConstructGraph["episodeId"], forceVector: {}, nodes: [], edges: [], artifacts: [] };
+      const planned = planInventions({ requestText: text, requestedAuthority: "creative", samplingDisabled: true, creativeRequestFrame: frame,
+        languageMemory: cold, languageMemoryState: scoped, evidence: [], dialogueState: updateDialogueState({ requestText: text }), field,
+        graph: { nodes: [], edges: [], hyperedges: [], bounded: true, query: {} }, construct: base });
+      const entailment = createSemanticEntailmentEngine({ idFactory: ids, hasher }).check({ text, evidence: [], nodes: [], field, createdAt: 1 });
+      const candidates = createCandidateEngine().generate({ requestText: text, requestedAuthority: "creative", field, entailment, evidence: [], inventionCandidates: planned,
+        proofAnswer: "", learningNeeds: [], ccr: createCcrEngine().run({ text, evidence: [], nodes: [], edges: [], field, entailment }) });
+      const selected = candidates.candidates.find(candidate => candidate.kind === "creative-candidate")!;
+      const invention = planned.find(construct => construct.id === jsonRecord(selected.audit).constructId)!;
+      const profile = createLanguageAcquisitionEngine({ idFactory: ids }).acquire({ sourceVersionId: evidence[0]!.sourceVersionId, text: humanPair.text, createdAt: 1 });
+      const mouth = createMouth({ languageMemory: cold, correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }), hashText: text => hasher.digestHex(text) });
+      const spoken = await mouth.speak({ requestText: text, requestedAuthority: "creative", creativeRequestFrame: frame, field, entailment,
+        evidence: [], languageMemory: scoped, languageProfile: profile, construct: { ...base, nodes: [inventionConstructNode(invention)] }, selectedCandidate: selected });
+      expect(spoken.realizationAvailability.status).toBe("realized");
+      expect(spoken.text).toContain("It was going to be a long day.");
+      expect(spoken.text).toContain("Time to call her brother-in-law to thank him for letting Stella visit.");
+      expect(spoken.text.length).toBeGreaterThan(reply.length / 2);
+      expect(spoken.text).not.toContain("Write a short story");
+      expect(spoken.evidenceRefs).toEqual([]);
+      if (text === fresh) expect(spoken.text).toContain("κάλυ月");
+      else expect(spoken.text.replace(/\s+/gu, " ")).toBe(reply.replace(/\s+/gu, " "));
+    }
   });
 
   it("learns an exact request template and binds fresh opaque fillers after source-owned restart", () => {

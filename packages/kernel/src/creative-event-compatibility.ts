@@ -4,6 +4,7 @@ import type { DurableCreativeEventConstruction } from "./language-construction-m
 import { canonicalStringify, clamp01, toJsonValue } from "./primitives.js";
 import { segmentUnicodeSurfaceV2, type LexicalSegment } from "./unicode-segmentation-v2.js";
 import type { LanguagePatternRecord } from "./storage.js";
+import { CREATIVE_SOURCE_UTTERANCE_RECIPE_ID } from "./language-training-recipe.js";
 import type { EvidenceId, Hasher, JsonValue } from "./types.js";
 import { induceLearnedConstructions, type AlignedSurfaceExample, type LearnedConstruction } from "./language-construction.js";
 import { createLearnedSurfaceInterpreter, type LearnedSurfaceInterpreter, type InterpretedSurfaceRole } from "./learned-surface-interpretation.js";
@@ -412,6 +413,24 @@ export function creativeEventCompatibilityModelsFromPatterns(
 export function isCreativeEventCompatibilityPattern(pattern: LanguagePatternRecord): boolean {
   return isRecord(pattern.patternJson)
     && pattern.patternJson.schema === CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA;
+}
+
+/** Template matches select source records to read; only normal source hydration can license their meaning. */
+export function creativeRequestSourcePrerequisites(input: {
+  requestText: string; patterns: readonly LanguagePatternRecord[]; hasher: Hasher;
+}): Array<{ modelPattern: LanguagePatternRecord; profileId: string; patternIds: string[] }> {
+  const interpreter = createLearnedSurfaceInterpreter(input.requestText, true);
+  return input.patterns.flatMap(pattern => {
+    const value = pattern.patternJson;
+    if (!isRecord(value) || value.schema !== CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA || value.reliability !== "source_observed") return [];
+    const prerequisites = value.sourceUtterancePrerequisites;
+    if (!isRecord(prerequisites) || prerequisites.recipe !== CREATIVE_SOURCE_UTTERANCE_RECIPE_ID || !Array.isArray(prerequisites.requests)) return [];
+    const anchors = Array.isArray(value.requestFrameAnchors) ? value.requestFrameAnchors.flatMap(anchor => requestFrameAnchorFromUnknown(anchor, pattern.evidenceIds)) : [];
+    const matching = new Set(anchors.filter(anchor => interpretedRequestRoles(anchor, interpreter, input.hasher)).map(anchor => anchor.requestFrameId));
+    const patternIds = [...new Set(prerequisites.requests.flatMap(request => isRecord(request) && matching.has(stringValue(request.requestFrameId))
+      ? stringArray(request.patternIds) : []))].sort();
+    return patternIds.length ? [{ modelPattern: pattern, profileId: pattern.profileId, patternIds }] : [];
+  });
 }
 
 export function compileCreativeRequestFrameFromCompatibilityModels(input: {

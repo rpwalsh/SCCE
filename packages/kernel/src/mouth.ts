@@ -86,6 +86,7 @@ import { collapseSurfaceWhitespace as collapsePromptWhitespace, surfaceUnits as 
 import { answerCoversRequest, evidenceTitledForRequestSubject, learnedRequestScaffoldingUnits, requestContentEvidenceUnits } from "./local-evidence-runtime.js";
 import { requestClosedClassWords } from "./closed-class-words.js";
 import { createCreativeEventSpeechGrammarIndex } from "./creative-event-speech-grammar.js";
+import { creativeSourceUtterances, realizeCreativeSourceUtterance } from "./creative-source-utterance.js";
 import { candidateIsVerifiedBoundValue, candidateSurvivesRealizationContract, compileRealizationContract } from "./semantic-answer-construct.js";
 import { traceEvent } from "./debug/trace.js";
 import type { ContinueDecision } from "./learning-loop.js";
@@ -198,7 +199,8 @@ import type { RequestCommunicativeActClassification } from "./request-communicat
 import {
   languageConstructionOccurrenceId,
   languageConstructionRoleId,
-  type DurableLanguageConstructionBundle
+  type DurableLanguageConstructionBundle,
+  type DurableCreativeEventConstruction
 } from "./language-construction-memory.js";
 import { learnedScriptIdForCharacter, rankLanguageProfilesForSurface } from "./language.js";
 import {
@@ -4441,6 +4443,9 @@ function selectedStructuralCreativeCandidate(input: SpeakInput, discoursePlan: D
   const formLiterals: Array<{ id: string; text: string }> = [];
   const realizations: JsonValue[] = [];
   const grammarIndex = createCreativeEventSpeechGrammarIndex(input.languageMemory.importedConstructionBundles);
+  const selectedEvents: Array<{ event: DurableCreativeEventConstruction; sourceBundle: DurableLanguageConstructionBundle; eventIndex: number;
+    modelId: string; sourceObserved: boolean;
+    replacements: Array<{ port: DurableCreativeEventConstruction["argumentFrame"]["bindings"][number]; span: CreativeRequestFrame["arguments"][number]["span"] }> }> = [];
   for (const [eventIndex, planned] of events.entries()) {
     const sourceBundle = input.languageMemory.importedConstructionBundles.find(bundle => bundle.id === planned.bundleId);
     const event = sourceBundle?.creativeEvents?.find(event => event.id === planned.eventId && event.constructionId === planned.constructionId
@@ -4462,6 +4467,31 @@ function selectedStructuralCreativeCandidate(input: SpeakInput, discoursePlan: D
       return { port, span };
     });
     if (replacements.some(row => !row)) return reject("selected_event_request_role_refused", { eventIndex, eventId: event.id });
+    selectedEvents.push({ event, sourceBundle, eventIndex, modelId: compatibility.modelId, sourceObserved: compatibility.qualification === "source_observed",
+      replacements: replacements.filter((row): row is NonNullable<typeof row> => Boolean(row)) });
+  }
+  const firstEvent = selectedEvents[0]!;
+  const sourceModel = selectedEvents.every(row => row.sourceObserved && row.modelId === firstEvent.modelId && row.event.profileId === firstEvent.event.profileId)
+    ? input.languageMemory.creativeEventCompatibilityModels.find(model => model.id === firstEvent.modelId) : undefined;
+  const utterances = sourceModel ? creativeSourceUtterances(sourceModel, firstEvent.event.profileId, hasher)
+    .filter(utterance => frame.sourceActivationIds.includes(utterance.requestFrameId) && selectedEvents.every(row => utterance.eventIds.includes(row.event.id))) : [];
+  if (utterances.length > 1) return reject("selected_source_utterance_ambiguous", { bindingIds: utterances.map(utterance => utterance.bindingId) });
+  const utterance = utterances[0];
+  const speechBundleIds: string[] = [];
+  audit.selectedConstructionForm = utterance ? { kind: "declared_source_reply", bindingId: utterance.bindingId } : { kind: "source_event_frame" };
+  if (utterance) {
+    const realized = realizeCreativeSourceUtterance({ utterance, bundles: input.languageMemory.importedConstructionBundles,
+      frame, requestText: request, ownerTurnId: ownerTurn.turnId, turns, semanticPlanId: invention.semanticPlanId!, hasher,
+      cycleConsistencyByConstructionId: input.cycleConsistencyByConstructionId });
+    if (!realized) return reject("selected_source_utterance_speech_grammar_refused", { utteranceBindingId: utterance.bindingId });
+    surfaces.push(realized.realization.text);
+    speechBundleIds.push(realized.bundle.id);
+    formLiterals.push({ id: `construction_form.${realized.realization.constructionId}.${utterance.sourceVersionId}`, text: realized.sourceSurface });
+    for (const row of selectedEvents) realizations.push(toJsonValue({ eventId: row.event.id,
+      constructionId: realized.realization.constructionId, exampleId: realized.exampleId, utteranceBindingId: utterance.bindingId }));
+    audit.realizedEventCount = selectedEvents.length;
+    audit.utteranceBindingId = utterance.bindingId;
+  } else for (const { event, sourceBundle, eventIndex, replacements } of selectedEvents) {
     const grammar = grammarIndex.forEvent(event);
     if (!grammar.length) return reject("selected_event_source_speech_grammar_missing", { eventIndex, eventId: event.id, sourceBundleId: sourceBundle.id, sourceVersionId: event.sourceVersionId });
     let admitted: { text: string; constructionId: string; exampleId: string } | undefined;
@@ -4483,6 +4513,7 @@ function selectedStructuralCreativeCandidate(input: SpeakInput, discoursePlan: D
           roleSignature: [...new Set(slots.map(slot => slot.roleId))], slots } });
       if (realized.status !== "realized") { grammarRejections.add(realized.rejection.code); continue; }
       admitted = { text: realized.realization.text, constructionId: realized.realization.constructionId, exampleId: example.id };
+      speechBundleIds.push(bundle.id);
       formLiterals.push({ id: `construction_form.${realized.realization.constructionId}.${example.sourceVersionId}`, text: example.surface });
       break;
     }
@@ -4499,7 +4530,7 @@ function selectedStructuralCreativeCandidate(input: SpeakInput, discoursePlan: D
     stage: "mouth.selected_creative_event.realization", label: "mouth.speak", support: audit
   });
   return { id, style: "surface.path.generated.creative.source_construction", path: "generated", claimBasis: "invented", text,
-    evidenceIds: [], fit: invention.supportScore, importedPieceIds: stringArrayFromJson(semanticPlan.sourceBundleIds), discoursePlan,
+    evidenceIds: [], fit: invention.supportScore, importedPieceIds: uniqueStrings([...stringArrayFromJson(semanticPlan.sourceBundleIds), ...speechBundleIds]), discoursePlan,
     inventionBinding: inventionSurfaceBinding(invention), constructionFormLiterals: formLiterals, exactSurface: true,
     audit: toJsonValue({ source: "mouth.selected_event_source_construction", realizations,
       selectionBinding: { semanticCandidateId: selected.id, semanticPlanId: invention.semanticPlanId, surfaceRealizationId: id } }) };
