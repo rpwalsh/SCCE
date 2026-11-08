@@ -1,10 +1,10 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import { kneserNeyProbability, materializeKneserNey, predictKneserNey, trainKneserNey, type KneserNeyModel } from "./kneser-ney.js";
+import { kneserNeyProbability, observedKneserNeySequenceCount, materializeKneserNey, predictKneserNey, trainKneserNey, type KneserNeyModel } from "./kneser-ney.js";
 import { CORPUS_SOURCE_SYSTEM_IDS, corpusSourceAlias } from "./corpus-registry.js";
 import { codeLanguageForPath } from "./code-request.js";
 import type { NgramModelRecord } from "./storage.js";
-import { CODE_LINE_SYMBOL, CODE_SOURCE_SYMBOL, codeBracketBalance, codeIdentifierTokens, codeSurfaceTokens, renderCodeTokens } from "./code-surface.js";
+import { CODE_LINE_SYMBOL, CODE_SOURCE_SYMBOL, codeBracketBalance, codeIdentifierTokens, codeSurfaceTokens, codeTokenIsLayout, renderCodeTokens } from "./code-surface.js";
 import { composeSpanFillings } from "./code-span-repair.js";
 import type { CodeConstruction } from "./code-construction-grammar.js";
 import type { ProgramDiagnostic, RepairOperation } from "./program-repair-kernel.js";
@@ -63,7 +63,7 @@ export interface LearnedCodeRepairCandidate {
   surface: string;
   strategy: "span" | "line" | "tail";
   averageLogProbability: number;
-  /** Ranking objective: the above with required-symbol boosts applied. Never read as a probability. */
+  /** Search ranking statistic; never a patch-success probability. */
   score: number;
   /**
    * Width of the hole this filled, when it filled one.
@@ -90,6 +90,90 @@ export interface LearnedCodeRepairSpan {
   admissibleInside?: readonly string[];
   /** Primitive types a call here still expects an argument of, when a signature says so. */
   expectedLiteralKinds?: readonly string[];
+}
+
+export interface SourceCodeRepairSite {
+  start: number;
+  length: number;
+  grammarNodeType: string;
+}
+
+/** A failed application contract licenses hypotheses; source statistics locate them without inventing diagnostics. */
+export function generateLearnedBehaviorCodeRepairs(input: {
+  models: readonly KneserNeyModel[];
+  languageId: string;
+  targetPath: string;
+  targetText: string;
+  failureObservationId: string;
+  sites: readonly SourceCodeRepairSite[];
+  maxCandidates?: number;
+}): LearnedCodeRepairCandidate[] {
+  const models = selectCorpusMixture(input.models);
+  if (!models.length || !input.failureObservationId) return [];
+  const dependency = Math.max(...models.map(model => model.order)) - 1;
+  const limit = Math.max(1, Math.floor(input.maxCandidates ?? PREDICTION_POOL));
+  const tokens = codeSurfaceTokens(input.targetText);
+  const hasher = createHasher();
+  const targetHash = hasher.digestHex(input.targetText);
+  const sites = new Map(input.sites.map(site => [`${site.start}:${site.length}`, site]));
+  const probability = (context: readonly string[], symbol: string) => models.reduce((sum, model) => sum + kneserNeyProbability(model, context, symbol), 0) / models.length;
+  const out: LearnedCodeRepairCandidate[] = [];
+  let offset = 0;
+  for (const [index, original] of tokens.entries()) {
+    const originalText = renderCodeTokens([CODE_SOURCE_SYMBOL, original]);
+    const site = sites.get(`${offset}:${originalText.length}`);
+    const start = offset;
+    offset += originalText.length;
+    if (!site || codeTokenIsLayout(original)) continue;
+    const observedNeighborhood = (replacement: string) => models.some(model => {
+      if (model.order < 2 || tokens.length < model.order) return false;
+      for (let from = Math.max(0, index - model.order + 1); from <= Math.min(index, tokens.length - model.order); from++) {
+        const window = tokens.slice(from, from + model.order);
+        window[index - from] = replacement;
+        if (!observedKneserNeySequenceCount(model, window)) return false;
+      }
+      return true;
+    });
+    if (observedNeighborhood(original)) continue;
+    const prefix = tokens.slice(Math.max(0, index - dependency), index);
+    const suffix = tokens.slice(index + 1, index + 1 + dependency);
+    const likelihood = (replacement: string) => {
+      const context = [...prefix];
+      let score = 0;
+      for (const symbol of [replacement, ...suffix]) {
+        score += Math.log(Math.max(Number.MIN_VALUE, probability(context, symbol)));
+        context.push(symbol);
+      }
+      return score;
+    };
+    const originalLikelihood = likelihood(original);
+    const lineStart = input.targetText.lastIndexOf("\n", start - 1) + 1;
+    const followingNewline = input.targetText.indexOf("\n", offset);
+    const lineEnd = followingNewline < 0 ? input.targetText.length : followingNewline - (input.targetText[followingNewline - 1] === "\r" ? 1 : 0);
+    const line = input.targetText.slice(0, start).split("\n").length;
+    const alternatives = new Set(models.flatMap(model => predictKneserNey(model, prefix, limit).map(prediction => prediction.symbol)));
+    for (const symbol of alternatives) {
+      if (symbol === original || codeTokenIsLayout(symbol) || symbol === "<s>" || symbol === "</s>" || symbol === "<unk>") continue;
+      if (!observedNeighborhood(symbol)) continue;
+      const replacement = renderCodeTokens([CODE_SOURCE_SYMBOL, symbol]);
+      if (!replacement || /[\r\n]/u.test(replacement)) continue;
+      const replacementLikelihood = likelihood(symbol);
+      const gain = replacementLikelihood - originalLikelihood;
+      if (!(gain > 0)) continue;
+      out.push({
+        id: `candidate:generated:behavior:${input.languageId}:${start}:${hasher.digestHex(replacement).slice(0, 16)}`,
+        languageId: input.languageId, startLine: line, endLine: line,
+        content: input.targetText.slice(lineStart, start) + replacement + input.targetText.slice(offset, lineEnd),
+        surface: replacement, strategy: "span", averageLogProbability: Math.log(probability(prefix, symbol)), score: gain,
+        holeLength: originalText.length, coveredSymbols: [],
+        audit: toJsonValue({ source: "code-construction.generateLearnedBehaviorCodeRepairs", failureObservationId: input.failureObservationId,
+          targetPath: input.targetPath, targetHash, sourceModelKeys: models.map(model => model.sourceKey ?? null),
+          hypothesizedSpanStart: start, hypothesizedSpanLength: originalText.length, grammarNodeType: site.grammarNodeType,
+          originalText, replacement, originalLikelihood, replacementLikelihood, likelihoodGain: gain })
+      });
+    }
+  }
+  return out.sort((left, right) => right.score - left.score || left.id.localeCompare(right.id)).slice(0, limit);
 }
 
 export interface LearnedCodeGenerationInput {

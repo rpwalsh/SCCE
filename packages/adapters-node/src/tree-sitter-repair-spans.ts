@@ -1,7 +1,24 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
-import type { LearnedCodeRepairCandidate, LearnedCodeRepairSpan, ProgramDiagnostic } from "@scce/kernel";
+import type { LearnedCodeRepairCandidate, LearnedCodeRepairSpan, ProgramDiagnostic, SourceCodeRepairSite } from "@scce/kernel";
 import { languageIdForFilePath, parseRepositorySyntax, withRepositorySyntaxTree } from "./tree-sitter-syntax.js";
+
+/** These are source-owned hypothesis sites, not locations asserted by a compiler or a test. */
+export async function treeSitterBehaviorRepairSites(input: { targetPath: string; text: string }): Promise<SourceCodeRepairSite[]> {
+  const languageId = languageIdForFilePath(input.targetPath);
+  if (!languageId) return [];
+  return await withRepositorySyntaxTree({ fileId: input.targetPath, languageId, text: input.text }, root => {
+    const pending = [root];
+    const sites: SourceCodeRepairSite[] = [];
+    while (pending.length) {
+      const node = pending.pop()!;
+      if (node.hasError || node.isError || node.isMissing) continue;
+      if (node.childCount) pending.push(...node.children);
+      else if (node.endIndex > node.startIndex) sites.push({ start: node.startIndex, length: node.endIndex - node.startIndex, grammarNodeType: node.type });
+    }
+    return sites.sort((left, right) => left.start - right.start);
+  }) ?? [];
+}
 
 /** A grammar rejects malformed compositions before the full application spends a compiler attempt on them. */
 export async function grammaticalTreeSitterRepairs(input: { targetPath: string; text: string; candidates: readonly LearnedCodeRepairCandidate[] }): Promise<LearnedCodeRepairCandidate[]> {

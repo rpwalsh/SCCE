@@ -2,7 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { codeLanguageForPath, createPatchTransactionPlan, hashPatchContent, type ProgramDiagnostic, type RepairOperation } from "@scce/kernel";
+import { canonicalStringify, codeLanguageForPath, createPatchTransactionPlan, hashPatchContent, type ProgramDiagnostic, type RepairOperation } from "@scce/kernel";
 import { createClangCodeMouthPorts } from "./clang-code-mouth-ports.js";
 import { createTypeScriptCodeMouthPorts, type CodeMouthPorts, type CodeMouthVerification } from "./code-mouth.js";
 import type { LearnedCodeProposer } from "./learned-code-proposer.js";
@@ -28,6 +28,7 @@ export function createWorkspaceCodeMouthPorts(options: WorkspaceCodeMouthOptions
   containedPath(options.workspaceRoot, options.targetPath);
   if (options.projectValidation && !options.projectValidation.policy.commands.some(command => command.checkIds?.some(check => check === "compiler" || check === "typecheck"))) throw new Error("workspace code validation requires a compiler or typecheck command");
   let projectVerification: WorkspaceApplicationVerification | undefined;
+  let behavioralFailure: { observationId: string } | undefined;
   const language = codeLanguageForPath(options.targetPath);
   const ports = language === "typescript"
     ? createTypeScriptCodeMouthPorts(options)
@@ -36,11 +37,16 @@ export function createWorkspaceCodeMouthPorts(options: WorkspaceCodeMouthOptions
       : createTreeSitterCodeMouthPorts(options);
   return {
     ...ports,
+    propose: input => {
+      return ports.propose({ ...input, context: { ...input.context, ...(behavioralFailure ? { behavioralFailure } : {}) } });
+    },
     projectVerification: () => projectVerification,
     apply: async operations => {
       const rollback = await applyWorkspaceRepairOperations(options.workspaceRoot, operations);
+      const previousFailure = behavioralFailure;
       projectVerification = undefined;
-      return async () => { await rollback(); projectVerification = undefined; };
+      behavioralFailure = undefined;
+      return async () => { await rollback(); projectVerification = undefined; behavioralFailure = previousFailure; };
     },
     ...(options.projectValidation ? { verify: async (targetPath?: string) => {
       const target = targetPath ?? options.targetPath;
@@ -51,6 +57,8 @@ export function createWorkspaceCodeMouthPorts(options: WorkspaceCodeMouthOptions
           id: "workspace.validation.unavailable", class: "unknown", path: target, message, raw: message, confidence: 1
         }] };
       }
+      behavioralFailure = projectVerification.buildSucceeded && projectVerification.testsRun && !projectVerification.testsSucceeded && projectVerification.projectEvidence
+        ? { observationId: hashPatchContent(canonicalStringify(projectVerification.projectEvidence)) } : undefined;
       return projectVerification;
     } } : {})
   };

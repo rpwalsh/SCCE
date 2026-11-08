@@ -33,6 +33,7 @@ export interface CodeMouthContext {
   symbols: string[];
   imports: string[];
   language: string;
+  behavioralFailure?: { observationId: string };
 }
 
 export interface CodeMouthProposal {

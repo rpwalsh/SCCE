@@ -194,19 +194,31 @@ export function checkerDiagnostics(
     }
     const located = LOCATED_DIAGNOSTIC.exec(trimmed);
     if (!located) continue;
-    const message = (located[4] ?? "").trim() || lines.slice(0, index).map(row => row.trim()).filter(Boolean).pop() || "";
+    let reported = (located[1] ?? "").trim().replace(/^-->\s*/u, "");
+    reported = reported.slice(reported.lastIndexOf("(") + 1);
+    let lineNumber = Number(located[2]);
+    let columnText = located[3];
+    let message = (located[4] ?? "").trim() || lines.slice(0, index).map(row => row.trim()).filter(Boolean).pop() || "";
+    if (!codeLanguageForPath(reported) || lineNumber < 1) {
+      const embedded = /(?:^|\s)([^\s()]+\.[\p{L}\p{N}_]+):(\d+):(\d+):?(?:\s|$)/u.exec(trimmed);
+      if (!embedded || !codeLanguageForPath(embedded[1]!)) continue;
+      reported = embedded[1]!;
+      lineNumber = Number(embedded[2]);
+      columnText = embedded[3];
+      message = trimmed;
+    }
+    if (lineNumber < 1) continue;
     if (!message) continue;
-    const reported = (located[1] ?? "").trim().replace(/^-->\s*/u, "");
     const diagnosticPath = workspaceRoot && reported ? path.resolve(workspaceRoot, reported) : targetPath;
     const caret = lines[index + 2]?.indexOf("^");
-    const column = located[3] ? Number(located[3]) : caret !== undefined && caret >= 0 ? caret + 1 : undefined;
+    const column = columnText ? Number(columnText) : caret !== undefined && caret >= 0 ? caret + 1 : undefined;
     out.push({
       // Line, column and message identify a diagnostic; the path is already the file being checked.
-      id: `${languageId}:${diagnosticPath}:${located[2]}:${column ?? 0}:${message.slice(0, 48)}`,
+      id: `${languageId}:${diagnosticPath}:${lineNumber}:${column ?? 0}:${message.slice(0, 48)}`,
       class: "syntax",
       patternId: `${languageId}.checker`,
       path: diagnosticPath,
-      line: Number(located[2]),
+      line: lineNumber,
       ...(column ? { column } : {}),
       message,
       raw: trimmed,

@@ -162,6 +162,11 @@ export function kneserNeyProbability(model: KneserNeyModel, context: readonly st
   return recursiveProbability(model, context.slice(-(model.order - 1)), normalizedSymbol, model.order);
 }
 
+/** Exact corpus support, separate from probability assigned by smoothing to an unseen sequence. */
+export function observedKneserNeySequenceCount(model: KneserNeyModel, symbols: readonly string[]): number {
+  return symbols.length > 0 && symbols.length <= model.order ? ownCount(model.counts, gramKey(symbols)) ?? 0 : 0;
+}
+
 export function predictKneserNey(model: KneserNeyModel, context: readonly string[], limit = 16): KneserNeyPrediction[] {
   assertCompiledKneserNey(model);
   const boundedLimit = Math.max(1, Math.floor(limit));

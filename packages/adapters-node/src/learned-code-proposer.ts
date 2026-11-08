@@ -10,7 +10,9 @@ import {
   induceCodeConstructions,
   codeSurfaceTokens,
   codeIdentifierTokens,
+  createHasher,
   generateLearnedCodeRepairs,
+  generateLearnedBehaviorCodeRepairs,
   learnedCodeRepairOperation,
   type CodeConstruction,
   type CodeIntent,
@@ -27,7 +29,7 @@ import path from "node:path";
 import type { CodeMouthContext, CodeMouthProposal } from "./code-mouth.js";
 import { typeScriptProjectSnapshot } from "./code-mouth-compiler-proposer.js";
 import { typeScriptRepairSites } from "./typescript-code-actions.js";
-import { grammaticalTreeSitterRepairs, treeSitterRepairSpans } from "./tree-sitter-repair-spans.js";
+import { grammaticalTreeSitterRepairs, treeSitterBehaviorRepairSites, treeSitterRepairSpans } from "./tree-sitter-repair-spans.js";
 
 /**
  * The proposer that writes code instead of transcribing a fix.
@@ -130,6 +132,7 @@ export function createLearnedCodeProposer(options: LearnedCodeProposerOptions): 
   const modelLimit = Math.max(1, Math.min(256, Math.floor(options.modelLimit ?? 96)));
   const log = options.log ?? (() => {});
   const byLanguage = new Map<string, Promise<KneserNeyModel[]>>();
+  const hasher = createHasher();
   let lastCandidates: LearnedCodeRepairCandidate[] = [];
   // Which candidate to offer, and what state it was chosen against.
   //
@@ -137,7 +140,7 @@ export function createLearnedCodeProposer(options: LearnedCodeProposerOptions): 
   // on. Indexing candidates by it meant that after a step was kept the next state was offered this proposer's
   // *second* choice for it, and its first was never tried at all. Retrying is what advances the index; making
   // progress resets it, because the question has changed.
-  let lastState = "";
+  let lastState: string | undefined;
   let retry = 0;
   // Shapes induced from the project being repaired, not from the corpus at large.
   //
@@ -189,7 +192,12 @@ export function createLearnedCodeProposer(options: LearnedCodeProposerOptions): 
       // The admitted names bound each hole individually and are not folded into the global boost: a hole whose
       // vocabulary is the whole global scope would otherwise mark 128 names equally wanted, which is the same as
       // wanting none of them and drowns out the handful the request actually spelled.
-      const generated = generateLearnedCodeRepairs({
+      const generated = context.behavioralFailure && !spans.length
+        ? generateLearnedBehaviorCodeRepairs({ models, languageId, targetPath: context.targetPath, targetText: context.targetText,
+          failureObservationId: context.behavioralFailure.observationId,
+          sites: await treeSitterBehaviorRepairSites({ targetPath: context.targetPath, text: context.targetText }),
+          ...(options.maxCandidates === undefined ? {} : { maxCandidates: options.maxCandidates }) })
+        : generateLearnedCodeRepairs({
         models,
         languageId,
         targetPath: context.targetPath,
@@ -200,10 +208,12 @@ export function createLearnedCodeProposer(options: LearnedCodeProposerOptions): 
         ...(constructions.length ? { constructions } : {}),
         ...(options.maxCandidates !== undefined ? { maxCandidates: options.maxCandidates } : {}),
         ...(options.corpusWeight !== undefined ? { corpusWeight: options.corpusWeight } : {})
-      });
+        });
       const candidates = languageId === "typescript" ? generated : await grammaticalTreeSitterRepairs({ targetPath: context.targetPath, text: context.targetText, candidates: generated });
       lastCandidates = candidates;
-      const state = diagnostics.map(diagnostic => `${diagnostic.patternId ?? diagnostic.class}:${diagnostic.message}`).sort().join("");
+      const state = hasher.digestHex(JSON.stringify({ languageId, targetPath: context.targetPath, sourceHash: hasher.digestHex(context.targetText), request,
+        diagnostics: diagnostics.map(diagnostic => `${diagnostic.patternId ?? diagnostic.class}:${diagnostic.message}`).sort(),
+        behavioralFailureObservationId: context.behavioralFailure?.observationId ?? null }));
       retry = state === lastState ? retry + 1 : 0;
       lastState = state;
       // One attempt, one candidate: the loop is what tries the next one, and it only gets there by watching this
@@ -358,7 +368,7 @@ async function loadCodeModels(storage: ScceStorage, languageId: string, limit: n
   for (const record of records) {
     if (modelLanguage(record) !== languageId) continue;
     const model = kneserNeyModelFromRecord(record);
-    if (model) models.push(model);
+    if (model) models.push({ ...model, sourceKey: model.sourceKey ?? record.id });
   }
   return models;
 }

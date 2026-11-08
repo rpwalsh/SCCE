@@ -76,12 +76,14 @@ interface ApplicationCase {
  target: string;
  source: string;
  broken: string;
+ behaviorBroken: string;
  files: Record<string, string>;
  commands: StructuredPatchValidationPolicy["commands"];
 }
 const applications: ApplicationCase[] = [{
  language: "go", executable: go, target: "ledger.go", source: goSource,
  broken: goSource.replace("balances[cells[0]] += amount", "balnces[cells[0]] += amount"),
+ behaviorBroken: goSource.replace("+= amount", "-= amount"),
  files: {
   "go.mod": "module example.invalid/ledger\n\ngo 1.24\n",
   "main.go": `package main
@@ -102,6 +104,7 @@ func TestTotals(t *testing.T){ got,err:=totals("rent,19\\nrent,-7\\nfood,5"); if
 }, {
  language: "java", executable: javac, target: "Ledger.java", source: javaSource,
  broken: javaSource.replace("balances.merge", "balnces.merge"),
+ behaviorBroken: javaSource.replace("Integer::sum", "Integer::max"),
  files: {
   "Main.java": `import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -120,6 +123,7 @@ public class Main { public static void main(String[] args) { String input = new 
 }, {
  language: "rust", executable: cargo, target: "src/ledger.rs", source: rustSource,
  broken: rustSource.replace("*balances.entry", "*balnces.entry"),
+ behaviorBroken: rustSource.replace("+= amount", "-= amount"),
  files: {
   "Cargo.toml": '[package]\nname = "ledger"\nversion = "0.1.0"\nedition = "2021"\n',
   "src/main.rs": `mod ledger;
@@ -139,10 +143,10 @@ fn main() { let mut input=String::new(); io::stdin().read_to_string(&mut input).
 }];
 
 describe("multilingual application repair through the production workspace HTTP seam", () => {
- for (const app of applications) it.skipIf(!existsSync(app.executable))(`${app.language} learns the repair token from source and passes native application, unit and E2E gates`, async () => {
+ for (const app of applications) for (const defect of ["compiler", "behavior"] as const) it.skipIf(!existsSync(app.executable))(`${app.language} learns the ${defect} repair from source and passes native application, unit and E2E gates`, async () => {
   const root = await mkdtemp(path.join(tmpdir(), "scce-native-application-"));
   roots.push(root);
-  const files = { ...app.files, [app.target]: app.broken };
+  const files = { ...app.files, [app.target]: defect === "compiler" ? app.broken : app.behaviorBroken };
   for (const [relative, content] of Object.entries(files)) {
    await mkdir(path.dirname(path.join(root, relative)), { recursive: true });
    await writeFile(path.join(root, relative), content);

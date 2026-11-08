@@ -92,6 +92,28 @@ describe("shared workspace code ports", () => {
     expect(await readFile(path.join(root, "application.cjs"), "utf8")).toBe("exports.value = 1;\n");
     expect(ports.projectVerification()).toBeUndefined();
   });
+
+  it("keeps the actual source revision's failed-test receipt across rejected behavioral hypotheses", async () => {
+    const root = await fixture({ "application.cjs": "exports.value = 1;\n", "contract.cjs": "if(require('./application.cjs').value!==2)throw Error('behavior contract');\n" });
+    const observations: Array<string | undefined> = [];
+    let offers = 0;
+    const ports = createWorkspaceCodeMouthPorts({ workspaceRoot: root, targetPath: "application.cjs", learnedProposer: {
+      availableModelCount: async () => 1, lastCandidates: () => [],
+      propose: async ({ context, diagnostics }) => {
+        observations.push(context.behavioralFailure?.observationId);
+        expect(diagnostics).toEqual([]);
+        const value = offers++ ? 2 : 3;
+        return { surface: `exports.value = ${value};`, source: "learned_construction", operations: [{ id: `candidate.${value}`, kind: "replace", path: "application.cjs", startLine: 1, endLine: 1, content: `exports.value = ${value};`, reason: "candidate under test", risk: 0 }] };
+      }
+    }, projectValidation: { policy: { schemaVersion: "scce.patch-validation-policy.v1", id: "behavior-search.v1", timeoutMs: 10_000,
+      maxOutputBytes: 10_000, maxWorkspaceBytes: 10_000, maxWorkspaceFiles: 8, commands: [
+        { executable: process.execPath, argv: ["--check", "application.cjs"], checkIds: ["compiler"] },
+        { executable: process.execPath, argv: ["contract.cjs"], checkIds: ["tests"] }
+      ] } } });
+    expect(await runCodeMouth({ request: "repair", targetPath: "application.cjs", ports })).toMatchObject({ outcome: "resolved", attempts: 2 });
+    expect(observations).toEqual([expect.stringMatching(/^sha256:/u), observations[0]]);
+    expect(await readFile(path.join(root, "application.cjs"), "utf8")).toBe("exports.value = 2;\n");
+  });
 });
 
 describe("compiler-located shared grammar holes", () => {
@@ -114,5 +136,12 @@ describe("compiler-located shared grammar holes", () => {
     expect(java).toMatchObject([{ path: path.join(root, "Ledger.java"), line: 10, column: 4 }]);
     const rust = checkerDiagnostics({ code: 1, stdout: "", stderr: "error[E0425]: cannot find value\n --> src/ledger.rs:7:4\n  |\n" }, "src/main.rs", "rust", root);
     expect(rust).toMatchObject([{ path: path.join(root, "src/ledger.rs"), line: 7, column: 4, message: "error[E0425]: cannot find value" }]);
+    const goTest = checkerDiagnostics({ code: 1, stdout: "--- FAIL: TestTotals (0.00s)\n ledger_test.go:3: wrong result\n", stderr: "" }, "ledger.go", "go", root);
+    expect(goTest).toMatchObject([{ path: path.join(root, "ledger_test.go"), line: 3 }]);
+    expect(goTest).toHaveLength(1);
+    const javaTest = checkerDiagnostics({ code: 1, stdout: "", stderr: "Exception in thread main\n at LedgerTest.main(LedgerTest.java:1)\n" }, "Ledger.java", "java", root);
+    expect(javaTest).toMatchObject([{ path: path.join(root, "LedgerTest.java"), line: 1 }]);
+    const rustTest = checkerDiagnostics({ code: 1, stdout: "thread 'grouped_entries' (35116) panicked at tests\\ledger.rs:2:93:\n", stderr: "" }, "src/ledger.rs", "rust", root);
+    expect(rustTest).toMatchObject([{ path: path.join(root, "tests/ledger.rs"), line: 2, column: 93 }]);
   });
 });
