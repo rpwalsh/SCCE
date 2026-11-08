@@ -347,3 +347,16 @@ test('cold grading counts an explicit product refusal as a native loss even when
   assert.equal(factReport.cells[0].cases.find(c => c.id === 'facts-negative').details[0].pass, true);
   assert.equal(factReport.cells[0].cases.find(c => c.id === 'facts-positive').details[0].pass, false);
 });
+
+ test('verified code generation carries only the ordinary ingested workspace identity into the turn', async () => {
+  const input=makeInput('code_generation',{prepareWorkspace:true,programMode:'verified_artifacts'}),cwd=await workspace(input.steps[0].files),calls=[];
+  const result=await runScceNative(input,{cwd},{request:async(route,body)=>{
+   calls.push({route,body});
+   return route==='/api/workspace/ingest'?{status:200,body:{failed:0,workspace:{id:'workspace.actual-owner',updatedAt:42}}}:{status:422,body:{}};
+  }});
+  assert.equal(result.identity.reason,'turn_http_422');
+  assert.deepEqual(calls.map(row=>row.route),['/api/workspace/ingest','/api/turn?full=1']);
+  assert.deepEqual(calls[1].body.metadata,{workspaceProgramContext:{schema:'scce.workspace.program-context.v1',workspaceId:'workspace.actual-owner',expectedWorkspaceUpdatedAt:42}});
+  assert.equal(calls[1].body.requestedAuthority,'program');
+  assert.equal(Object.hasOwn(calls[1].body,'workspaceCoding'),false);
+ });

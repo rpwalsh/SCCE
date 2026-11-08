@@ -66,9 +66,13 @@ async function scceNativeOperation(input, config, dependencies) {
     return { status: 'ok', answer, artifacts, identity: { ...extra, productOutcome: 'completed', operation: contract.operation, trace } };
   }
   if (!await ingestPublicSources()) return failure('public_source_ingestion_rejected', trace);
+  let workspaceProgramContext;
   if (contract.prepareWorkspace === true) {
     const prepared = await call('/api/workspace/ingest', { path: cwd });
     if (prepared.status !== 200 || prepared.body?.failed > 0) return failure('public_workspace_ingestion_rejected', trace);
+    const workspace = prepared.body?.workspace;
+    if (!workspace?.id || !Number.isFinite(workspace.updatedAt)) return failure('public_workspace_identity_unavailable', trace);
+    workspaceProgramContext = { schema: 'scce.workspace.program-context.v1', workspaceId: workspace.id, expectedWorkspaceUpdatedAt: workspace.updatedAt };
   }
   const prompt = currentPrompt(input, contract);
   if (contract.operation === 'code_repair') {
@@ -104,7 +108,10 @@ async function scceNativeOperation(input, config, dependencies) {
     if (initialized.status !== 200 || !initialized.body?.id || !Number.isFinite(initialized.body.updatedAt)) return failure('workspace_initialization_rejected', trace);
     body.requestedAuthority = 'program';
     body.workspaceCoding = { schemaVersion: 'scce.workspace-coding-turn-request.v1', workspaceId: initialized.body.id, expectedWorkspaceUpdatedAt: initialized.body.updatedAt, requestId: `blind.request.${hash([input.caseId, input.steps.length])}`, requestedPaths: contract.targetPaths, diagnosticCodes: [], validationPlan: { validatorId: contract.validationPolicyId, checks: contract.validationChecks } };
-  } else if (contract.operation === 'code_generation') body.requestedAuthority = 'program';
+  } else if (contract.operation === 'code_generation') {
+    body.requestedAuthority = 'program';
+    if (workspaceProgramContext) body.metadata = { ...body.metadata, workspaceProgramContext };
+  }
   else if (contract.operation === 'tool_use') body.requestedAuthority = 'action';
   const result = await call('/api/turn?full=1', body);
   if (contract.answerMode === 'answer_or_abstain' && typedFactualAbstention(result)) {
