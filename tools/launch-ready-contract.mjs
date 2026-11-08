@@ -1,5 +1,6 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
+import { storagePopulationMeasurement } from "./storage-population-contract.mjs";
 export const HYDRATION_REQUIREMENTS = Object.freeze({
   source_versions: 10000,
   evidence_spans: 10000,
@@ -10,7 +11,7 @@ export const HYDRATION_REQUIREMENTS = Object.freeze({
   semantic_frames: 10000
 });
 
-export function exactHydrationSummary(readiness) {
+export function hydrationSummary(readiness) {
   const failures = [];
   const warmup = record(readiness?.warmup);
   if (warmup?.ok !== true || warmup?.phase !== "ready" || warmup?.complete !== true) {
@@ -18,35 +19,39 @@ export function exactHydrationSummary(readiness) {
   }
 
   const postgres = record(readiness?.postgres);
-  if (postgres?.countSemantics !== "postgres_exact_table_counts") {
-    failures.push(`readiness counts are not exact (semantics=${String(postgres?.countSemantics ?? "missing")})`);
+  if (!["postgres_exact_table_counts", "postgres_bounded_population"].includes(postgres?.countSemantics)) {
+    failures.push(`readiness population is not measured (semantics=${String(postgres?.countSemantics ?? "missing")})`);
   }
-  const tableCounts = record(postgres?.tableCounts);
-  if (!tableCounts) failures.push("readiness did not provide exact tableCounts");
 
   const rows = {};
+  const measurements = {};
   for (const [table, minimum] of Object.entries(HYDRATION_REQUIREMENTS)) {
-    const value = tableCounts?.[table];
-    const actual = typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+    const measurement = storagePopulationMeasurement(postgres, table);
+    measurements[table] = measurement ?? null;
+    const actual = measurement?.sampledRows;
     rows[table] = actual ?? null;
-    if (actual === undefined) failures.push(`hydration table ${table} has no exact count`);
+    if (actual === undefined) failures.push(`hydration table ${table} has no valid population measurement`);
     else if (actual < minimum) failures.push(`hydration table ${table} has ${actual}, expected at least ${minimum}`);
   }
 
-  const observations = tableCounts?.ngram_observations;
-  const exactObservations = typeof observations === "number" && Number.isSafeInteger(observations) && observations >= 0;
-  rows.ngram_observations = exactObservations ? observations : null;
-  if (!exactObservations) failures.push("hydration table ngram_observations has no exact count");
+  const observationMeasurement = storagePopulationMeasurement(postgres, "ngram_observations");
+  const observations = observationMeasurement?.sampledRows;
+  measurements.ngram_observations = observationMeasurement ?? null;
+  rows.ngram_observations = observations ?? null;
+  if (observations === undefined || (observations === 0 && !observationMeasurement.exact)) failures.push("hydration table ngram_observations has no exact emptiness measurement");
   else if (observations !== 0) failures.push(`hydration table ngram_observations has ${observations}, expected 0`);
 
   return {
     ok: failures.length === 0,
     countSemantics: postgres?.countSemantics ?? null,
     rows,
+    measurements,
     required: { ...HYDRATION_REQUIREMENTS, ngram_observations: 0 },
     failures
   };
 }
+
+export const exactHydrationSummary = hydrationSummary;
 
 function record(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : undefined;

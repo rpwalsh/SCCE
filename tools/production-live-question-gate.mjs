@@ -151,7 +151,7 @@ process.stdout.write(`${JSON.stringify({
 if (report.summary.status !== "passed") process.exitCode = 1;
 
 async function readHydratedReadiness(serverUrl, headers, timeoutMs) {
-  const response = await fetchText(new URL("/api/ready", serverUrl), {
+  const response = await fetchText(new URL("/api/ready?detail=population&population=questions", serverUrl), {
     method: "GET",
     headers,
     timeoutMs
@@ -543,7 +543,8 @@ function readinessSummary(body) {
     schemaVersion: body.postgres.schemaVersion,
     tableCount: body.postgres.tableCount,
     countSemantics: body.postgres.countSemantics,
-    hydratedCounts: {
+    hydratedPopulation: body.postgres.tablePopulation ?? null,
+    hydratedCounts: counts ? {
       sources: counts.sources,
       evidenceSpans: counts.evidence_spans,
       graphNodes: counts.graph_nodes,
@@ -552,7 +553,7 @@ function readinessSummary(body) {
       languagePatterns: counts.language_patterns,
       ngramModels: counts.ngram_models,
       ngramObservations: counts.ngram_observations
-    },
+    } : null,
     activeBrain: body.postgres.activeBrain
   };
 }

@@ -45,3 +45,15 @@ test("environment authentication avoids reading a config and rejects unauthorize
   await assert.rejects(client.ready(), /HTTP 401/u);
   assert.equal((await client.ask("test")).httpStatus, 401);
 });
+
+test("requests exact population only for explicit corpus inspection", async t => {
+  const paths = [];
+  const server = createServer((request, response) => { paths.push(request.url); response.end(JSON.stringify({ ok: true })); });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const client = await createScceMeasurementClient({ serverUrl: `http://127.0.0.1:${server.address().port}`, requestTimeoutMs: 2000,
+    environment: { SCCE_API_BEARER_TOKEN: "fixture" } });
+  await client.ready();
+  await client.ready({ detail: "exact" });
+  assert.deepEqual(paths, ["/api/ready", "/api/ready?detail=exact"]);
+});

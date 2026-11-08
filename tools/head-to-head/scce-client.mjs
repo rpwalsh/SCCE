@@ -16,8 +16,10 @@ export async function createScceMeasurementClient({ serverUrl, requestTimeoutMs,
   const base = new URL(serverUrl);
   if (base.username || base.password) throw new Error("SCCE measurement URL must not contain credentials");
   return {
-    async ready() {
-      const response = await fetch(new URL("/api/ready", base), { headers, signal: AbortSignal.timeout(requestTimeoutMs) });
+    async ready(options = {}) {
+      const url = new URL("/api/ready", base);
+      for (const key of ["detail", "population"]) if (options[key] !== undefined) url.searchParams.set(key, options[key]);
+      const response = await fetch(url, { headers, signal: AbortSignal.timeout(requestTimeoutMs) });
       if (!response.ok) throw new Error(`SCCE readiness returned HTTP ${response.status}`);
       return response.json();
     },

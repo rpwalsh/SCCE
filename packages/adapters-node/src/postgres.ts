@@ -4,6 +4,10 @@ import { Pool, type PoolClient } from "pg";
 import { AsyncLocalStorage } from "node:async_hooks";
 import {
   POSTGRES_REQUIRED_TABLES,
+  STORAGE_STATUS_POPULATION_LIMITS,
+  type StorageStatusOptions,
+  type StorageStatusDetail,
+  type StoragePopulationKind,
   POSTGRES_SCHEMA_VERSION,
   assertCanonicalHyperedge,
   createAlphaLayer,
@@ -417,43 +421,57 @@ export class PostgresStorageAdapter implements ScceStorage {
     return { ok: errors.length === 0, tables, errors };
   }
 
-  async status(): Promise<JsonValue> {
+  private readonly statusInFlight = new Map<string, Promise<JsonValue>>();
+
+  status(options: StorageStatusOptions = {}): Promise<JsonValue> {
+    const detail = options.detail ?? "readiness", population = options.population ?? "launch";
+    if (!["readiness", "population", "exact"].includes(detail) || !["launch", "questions"].includes(population)
+      || (detail !== "population" && options.population !== undefined)) return Promise.reject(new Error("invalid storage status detail"));
+    const key = detail === "population" ? `${detail}:${population}` : detail;
+    const pending = this.statusInFlight.get(key);
+    if (pending) return pending;
+    const load = this.loadStatus(detail, population).finally(() => this.statusInFlight.delete(key));
+    this.statusInFlight.set(key, load);
+    return load;
+  }
+
+  private async loadStatus(detail: StorageStatusDetail, population: StoragePopulationKind): Promise<JsonValue> {
+    const countSemantics = detail === "exact" ? "postgres_exact_table_counts"
+      : detail === "population" ? "postgres_bounded_population" : "postgres_schema_readiness";
     try {
       const verify = await this.verify();
       const [meta, active] = await Promise.all([
         this.query<{ value_json: JsonValue; updated_at: Date }>(
           `SELECT value_json, updated_at FROM ${this.table("storage_meta")} WHERE key='schema_version'`
-        ).catch(() => []),
-        this.brainImports.active().catch(() => ({ activeImportRunIds: [] }))
+        ),
+        this.brainImports.active()
       ]);
       const counts: Record<string, number> = {};
+      const probes: Record<string, JsonValue> = {};
       const countErrors: string[] = [];
-      // Sequential on purpose: ~40 exact scans launched at once (one is a 34GB table) took the whole connection
-      // pool and queued every turn query behind them. Status is a background refresh; it must never own the pool.
-      const countResults: Array<{ table: string; count?: number; error?: string }> = [];
-      for (const table of POSTGRES_REQUIRED_TABLES) {
-        if (!verify.tables.includes(table)) {
-          countResults.push({ table });
-          continue;
-        }
+      const limits: Readonly<Record<string, number>> = STORAGE_STATUS_POPULATION_LIMITS[population];
+      const tables = detail === "exact" ? POSTGRES_REQUIRED_TABLES : detail === "population" ? Object.keys(limits) : [];
+      for (const table of tables) {
+        if (!verify.tables.includes(table)) continue;
         try {
-          const rows = await this.query<{ count: string }>(`SELECT COUNT(*)::text AS count FROM ${this.table(table)}`);
+          const cap = limits[table]!;
+          const rows = detail === "exact"
+            ? await this.query<{ count: string }>(`SELECT COUNT(*)::text AS count FROM ${this.table(table)}`)
+            : await this.query<{ count: string }>(`SELECT COUNT(*)::text AS count FROM (SELECT 1 FROM ${this.table(table)} LIMIT $1) AS population_probe`, [cap]);
           const count = Number(rows[0]?.count);
-          if (!Number.isSafeInteger(count) || count < 0) throw new Error("invalid exact row count");
-          countResults.push({ table, count });
+          if (!Number.isSafeInteger(count) || count < 0 || (detail === "population" && count > cap)) throw new Error("invalid row measurement");
+          if (detail === "exact") counts[table] = count;
+          else probes[table] = { sampledRows: count, cap, exact: count < cap, capReached: count === cap };
         } catch (error) {
-          countResults.push({ table, error: `exact count failed for ${table}: ${error instanceof Error ? error.message : String(error)}` });
+          countErrors.push(`${detail === "exact" ? "exact count" : "population probe"} failed for ${table}: ${error instanceof Error ? error.message : String(error)}`);
         }
-      }
-      for (const result of countResults) {
-        if (result.count !== undefined) counts[result.table] = result.count;
-        if (result.error) countErrors.push(result.error);
       }
       const schemaVersion = meta[0]?.value_json && typeof meta[0].value_json === "object" && !Array.isArray(meta[0].value_json)
         ? (meta[0].value_json as Record<string, JsonValue>).version
         : undefined;
       return {
         schema: "scce.postgres.status.v1",
+        detail,
         ok: verify.ok && countErrors.length === 0,
         connected: true,
         database: { schema: this.schema, urlConfigured: true },
@@ -461,8 +479,8 @@ export class PostgresStorageAdapter implements ScceStorage {
         expectedSchemaVersion: POSTGRES_SCHEMA_VERSION,
         tableCount: verify.tables.length,
         requiredTableCount: POSTGRES_REQUIRED_TABLES.length,
-        countSemantics: "postgres_exact_table_counts",
-        tableCounts: counts,
+        countSemantics,
+        ...(detail === "exact" ? { tableCounts: counts } : detail === "population" ? { population, tablePopulation: probes } : {}),
         health: verify.ok && countErrors.length === 0 ? "ready" : "needs_migration",
         activeBrain: active,
         errors: [...verify.errors, ...countErrors]
@@ -470,13 +488,14 @@ export class PostgresStorageAdapter implements ScceStorage {
     } catch (error) {
       return {
         schema: "scce.postgres.status.v1",
+        detail,
         ok: false,
         connected: false,
         database: { schema: this.schema, urlConfigured: true },
         schemaVersion: null,
         expectedSchemaVersion: POSTGRES_SCHEMA_VERSION,
-        countSemantics: "postgres_exact_table_counts",
-        tableCounts: {},
+        countSemantics,
+        ...(detail === "exact" ? { tableCounts: {} } : detail === "population" ? { population, tablePopulation: {} } : {}),
         health: "unreachable",
         activeBrain: { activeImportRunIds: [] },
         errors: [error instanceof Error ? error.message : String(error)]

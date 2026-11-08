@@ -1129,6 +1129,25 @@ export interface DialogueMemoryStore {
   listCalibrationObservations(query?: { calibrationId?: string; subsystemId?: string; taskClass?: string; sourceRecordId?: string; limit?: number }): Promise<CalibrationObservationRecord[]>;
 }
 
+export type StorageStatusDetail = "readiness" | "population" | "exact";
+export type StoragePopulationKind = "launch" | "questions";
+export interface StorageStatusOptions {
+  detail?: StorageStatusDetail;
+  population?: StoragePopulationKind;
+}
+export interface StoragePopulationProbe {
+  sampledRows: number;
+  cap: number;
+  exact: boolean;
+  capReached: boolean;
+}
+export const STORAGE_STATUS_POPULATION_LIMITS = Object.freeze({
+  launch: Object.freeze({ source_versions: 10000, evidence_spans: 10000, graph_nodes: 250000, graph_edges: 250000,
+    language_units: 25000, semantic_frames: 10000, ngram_models: 1, ngram_observations: 1 }),
+  questions: Object.freeze({ sources: 1, evidence_spans: 1, graph_nodes: 1, graph_edges: 1, language_profiles: 1,
+    language_patterns: 1, ngram_models: 1, ngram_observations: 1 })
+});
+
 export interface StorageAdmin {
   init(): Promise<void>;
   migrate(): Promise<void>;
@@ -1138,7 +1157,8 @@ export interface StorageAdmin {
    * transaction. Nested calls participate in the existing transaction.
    */
   transaction<T>(operation: () => Promise<T>): Promise<T>;
-  status?(): Promise<JsonValue>;
+  /** Default readiness reads metadata; population and exact row measurements are explicit. */
+  status?(options?: StorageStatusOptions): Promise<JsonValue>;
   resetLocalDevOnly?(input: { confirmLocalDevOnly: boolean }): Promise<JsonValue>;
   stats(): Promise<JsonValue>;
   close(): Promise<void>;

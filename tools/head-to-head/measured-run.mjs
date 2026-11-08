@@ -111,7 +111,7 @@ async function runTurn(system, item, position) {
 // ---- bindings ----------------------------------------------------------------------------------------------------
 async function corpusSnapshot() {
   try {
-    const body = await scceClient.ready();
+    const body = await scceClient.ready({ detail: "exact" });
     const pg = body?.postgres ?? {};
     return {
       schemaVersion: pg.schemaVersion ?? null, schema: pg.database?.schema ?? null,

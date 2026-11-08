@@ -7,7 +7,7 @@ import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
-import { exactHydrationSummary } from "./launch-ready-contract.mjs";
+import { hydrationSummary } from "./launch-ready-contract.mjs";
 
 const root = process.cwd();
 const serverUrl = argValue("--server-url") ?? process.env.SCCE_LIVE_SERVER_URL ?? "http://127.0.0.1:3873";
@@ -21,9 +21,9 @@ const steps = [];
 if (!skipBuild) await runStep("build", pnpmCommand(), ["build"]);
 if (!skipHygiene) await runStep("language-control", pnpmCommand(), ["hygiene:language-control"]);
 
-const ready = await fetchJson(`${serverUrl}/api/ready`, "ready");
+const ready = await fetchJson(`${serverUrl}/api/ready?detail=population&population=launch`, "ready");
 if (!ready.ok) failures.push(`ready endpoint failed: ${boundedFailureDetail(ready)}`);
-const hydration = exactHydrationSummary(ready.value);
+const hydration = hydrationSummary(ready.value);
 for (const failure of hydration.failures) failures.push(failure);
 
 const stats = await fetchJson(`${serverUrl}/api/db/stats`, "db-stats");

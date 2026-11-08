@@ -7,7 +7,7 @@ import { realpath, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 import { acquireAndTrainGithubOssRepository, assertHydratedRuntimeReady, automaticWebAcquisitionEnabled, completeInitialSourceBrainFromOssReport, publicNetworkAcquisitionEnabled, collectRepoFilesForCognition, createLearnedCodeProposer, createWorkspaceCodeMouthPorts, runCodeMouth, createDockerSandboxPatchValidationProvider, createNodeRuntime, createWorkspaceRuntime, diagnoseDocumentTools, executeWorkspacePatchTransaction, resolveSecret, runStructuredPatchValidation, trustedHostPatchValidationProvider, DEFAULT_WORKSPACE_PATCH_VALIDATION_POLICY_ID, DOCKER_WORKSPACE_PATCH_VALIDATION_POLICY_ID, validateStructuredPatchValidationPolicy, verifiedCompilerPlansForTurn, WorkspacePatchTransactionError, DEFAULT_WEB_REQUESTS_PER_MINUTE, type GithubOssAcquisitionOptions, type GithubOssAcquisitionReport, type readScceRuntimeConfig, type StructuredPatchValidationPolicy, type StructuredPatchValidationProvider, type WorkspaceCodingPatchPlanningInput, type WorkspacePatchPlanningInput, type WorkspaceRuntimeOptions, applySetting, settingsView, listLocalModels, downloadModel, removeLocalModel, formatBytes, validateGithubCommitSha, validateGithubPublicRepositoryUrl } from "@scce/adapters-node";
-import type { BenchmarkInput, CausalAnalysisRequest, CausalDiscoveryRequest, CausalAssumptionDag, CausalAssumptionEdge, CausalObservation, ConversationTurnRecord, DialogueInterpretationCorrectionInput, EventLedger, GraphSlice, IdentificationDesign, IngestInput, InspectionTarget, JsonValue, NodeId, OwnerInput, PatchTransactionPlan, ProgramGraph, RequestedAuthority, SourceAdmissionContext, SourceTrust, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
+import type { BenchmarkInput, CausalAnalysisRequest, CausalDiscoveryRequest, CausalAssumptionDag, CausalAssumptionEdge, CausalObservation, ConversationTurnRecord, DialogueInterpretationCorrectionInput, EventLedger, GraphSlice, IdentificationDesign, IngestInput, InspectionTarget, JsonValue, NodeId, OwnerInput, PatchTransactionPlan, ProgramGraph, RequestedAuthority, SourceAdmissionContext, SourceTrust, StorageStatusOptions, TrainInput, TurnDialogueBridge, TurnResult } from "@scce/kernel";
 import {
   behaviorRoleExecutionGraphInputFromTaskConstraintGraph, createProgramBehaviorValidationLedger, PROGRAM_BEHAVIOR_VALIDATION_PLAN_BINDING_SCHEMA, curriculumItemFromPlan,
   buildCognitiveCreditRecord, cognitiveCreditObservations, withGradedOutcome, type CognitiveCreditRecord, type CreditGradedVerdict,
@@ -395,6 +395,7 @@ async function dispatch(
   }
   if (req.method === "GET" && url.pathname === "/api/brain/status") return json(await context.runtime.kernel.inspect("brain"));
   if (req.method === "GET" && url.pathname === "/api/ready") {
+    const options = postgresStatusOptions(url);
     const warmup = context.startupReadiness.snapshot();
     // Warmup itself already answers "not ready" from in-memory state --
     // no DB round trip needed to know that, and warmup is exactly when
@@ -405,12 +406,11 @@ async function dispatch(
     // when a caller most needs a fast answer.
     if (!warmupSatisfied(warmup)) {
       invalidateHydratedRuntimeReadiness(context);
-      if (warmup.phase === "running") void primePostgresStatus(context.runtime).catch(() => undefined);
       return json({ ok: false, warmup, postgres: undefined, exactCounts: false, serverUrl: context.config.server.url, manifest: ROUTES.length }, 503);
     }
-    const postgres = await cachedPostgresStatus(context);
+    const postgres = await loadPostgresStatus(context.runtime, options);
     const exactCounts = hasExactPostgresCounts(postgres);
-    const ok = healthOk(postgres) && exactCounts;
+    const ok = healthOk(postgres) && hasRequestedPostgresDetail(postgres, options);
     if (ok) rememberHydratedRuntimeMarker(context, postgres);
     else invalidateHydratedRuntimeReadiness(context);
     return json({ ok, warmup, postgres, exactCounts, serverUrl: context.config.server.url, manifest: ROUTES.length }, ok ? 200 : 503);
@@ -4147,77 +4147,45 @@ function warmupSatisfied(warmup: RuntimeStartupReadinessSnapshot): boolean {
   return warmup.phase === "ready" || warmup.phase === "disabled";
 }
 
-// storage.status() runs an exact COUNT(*) per required table -- a real
-// Postgres scan with no index shortcut, live-measured at ~11s once the
-// ngram tables hold a real corpus. Readiness is meant to answer "is it
-// up" quickly and gets polled in bursts (a status bar, a health check
-// loop); every call re-running that scan is what made the endpoint whose
-// whole job is answering fast look like it "always fails". The exact
-// counts stay exact -- this only avoids recomputing them on every poll
-// within a short window.
-// Longer than the operation it caches, which a TTL has to be to mean
-// anything: the exact-count scan itself takes ~10-13s against a real
-// corpus, so a 15s TTL expired almost as soon as it was written and
-// every poll paid the full scan again (measured live -- it looked like
-// the cache was broken when it was simply always stale). Table counts
-// and schema version do not change on a 60s timescale in a running
-// server; a mutation route that could change them invalidates the
-// readiness marker explicitly.
-// Live-measured 2026-09-10 against scce3_runtime: ngram_observations alone is 15.1M rows / 34GB, so one exact
-// scan takes minutes, not seconds. Anything refreshed on the request path at that cost starves every turn query
-// behind it; the counts are served stale and refreshed off the request path (see cachedPostgresStatus).
-const POSTGRES_STATUS_CACHE_MS = 10 * 60_000;
-const POSTGRES_STATUS_FAILED_RETRY_MS = 5_000;
-// Keyed by context.runtime, not the ApiContext object itself: index.ts's
-// http.createServer callback builds a FRESH ApiContext object literal on
-// every single request (runtime/config/startupReadiness are captured
-// once by closure and reused, but the wrapping object is not) -- keying
-// on ApiContext meant the cache could never hit in production at all,
-// live-verified (every /api/ready call still took ~10s after this fix
-// first landed). context.runtime is the one thing actually constructed
-// once per server process and reused for every request; it is also
-// constructed once per test fixture, so cache isolation across tests
-// that build their own runtime still holds.
-const postgresStatusCacheByRuntime = new WeakMap<ApiContext["runtime"], { loadedAt: number; ttlMs: number; value: JsonValue }>();
-// Single-flight: pg_stat_activity showed 17 concurrent COUNT(*) scans of the 34GB table, one per readiness poll
-// that arrived while the first scan was still running, because the cache was only written after it finished.
-const postgresStatusInFlightByRuntime = new WeakMap<ApiContext["runtime"], Promise<JsonValue>>();
+const postgresStatusInFlightByRuntime = new WeakMap<ApiContext["runtime"], Map<string, Promise<JsonValue>>>();
 
-function loadPostgresStatus(runtime: ApiContext["runtime"]): Promise<JsonValue> {
-  const inFlight = postgresStatusInFlightByRuntime.get(runtime);
-  if (inFlight) return inFlight;
-  const startedAt = Date.now();
-  const load = (runtime.storage.status
-    ? runtime.storage.status()
-    : runtime.storage.verify().then(verify => ({ ...verify, countSemantics: "unavailable", tableCounts: {} } as JsonValue)))
-    .then(value => {
-      postgresStatusCacheByRuntime.set(runtime, {
-        loadedAt: startedAt,
-        ttlMs: healthOk(value) ? POSTGRES_STATUS_CACHE_MS : POSTGRES_STATUS_FAILED_RETRY_MS,
-        value
-      });
-      return value;
-    })
-    .finally(() => postgresStatusInFlightByRuntime.delete(runtime));
-  postgresStatusInFlightByRuntime.set(runtime, load);
+function postgresStatusOptions(url: URL): StorageStatusOptions {
+  if (url.searchParams.getAll("detail").length > 1 || url.searchParams.getAll("population").length > 1) throw new HttpError(400, "ambiguous status detail");
+  const detail = url.searchParams.get("detail") ?? "readiness";
+  const population = url.searchParams.get("population") ?? undefined;
+  if (detail !== "readiness" && detail !== "population" && detail !== "exact") throw new HttpError(400, "invalid status detail");
+  if ((population !== undefined && population !== "launch" && population !== "questions")
+    || (population !== undefined && detail !== "population")) throw new HttpError(400, "invalid population detail");
+  return { detail, ...(detail === "population" ? { population: population ?? "launch" } : {}) };
+}
+
+function loadPostgresStatus(runtime: ApiContext["runtime"], options: StorageStatusOptions = { detail: "readiness" }): Promise<JsonValue> {
+  const key = options.detail === "population" ? `population:${options.population ?? "launch"}` : options.detail ?? "readiness";
+  let pending = postgresStatusInFlightByRuntime.get(runtime);
+  if (!pending) { pending = new Map(); postgresStatusInFlightByRuntime.set(runtime, pending); }
+  const active = pending;
+  const existing = pending.get(key);
+  if (existing) return existing;
+  const load = (runtime.storage.status ? runtime.storage.status(options)
+    : options.detail === "readiness" ? Promise.all([runtime.storage.verify(), runtime.storage.brainImports?.active() ?? Promise.resolve({ activeImportRunIds: [] })])
+      .then(([verify, activeBrain]) => ({ ...verify, schema: "scce.postgres.status.v1", detail: "readiness", connected: true,
+        countSemantics: "postgres_schema_readiness", activeBrain } as JsonValue))
+      : Promise.resolve({ ok: false, detail: options.detail ?? "readiness", countSemantics: "unavailable", errors: ["storage status inspection unavailable"] } as JsonValue))
+    .finally(() => { active.delete(key); if (!active.size) postgresStatusInFlightByRuntime.delete(runtime); });
+  pending.set(key, load);
   return load;
 }
 
-/** Start the exact-count scan while warmup is still running so the first readiness answer after warmup is served
- *  from cache instead of paying the scan on the request path. Single-flight keeps this to one scan per process. */
+/** Startup uses the same current metadata check as ordinary readiness. */
 export async function primePostgresStatus(runtime: ApiContext["runtime"]): Promise<void> {
-  if (postgresStatusCacheByRuntime.has(runtime)) return;
-  await loadPostgresStatus(runtime);
+  await loadPostgresStatus(runtime, { detail: "readiness" });
 }
 
-async function cachedPostgresStatus(context: ApiContext): Promise<JsonValue> {
-  const cached = postgresStatusCacheByRuntime.get(context.runtime);
-  if (cached) {
-    // Stale-while-revalidate: a poll never waits on a scan once one answer exists; the refresh runs off the request path.
-    if (Date.now() - cached.loadedAt >= cached.ttlMs) void loadPostgresStatus(context.runtime).catch(() => undefined);
-    return cached.value;
-  }
-  return loadPostgresStatus(context.runtime);
+function hasRequestedPostgresDetail(value: unknown, options: StorageStatusOptions): boolean {
+  if (!isRecord(value) || value.schema !== "scce.postgres.status.v1" || value.connected !== true || value.detail !== options.detail) return false;
+  if (options.detail === "readiness") return value.countSemantics === "postgres_schema_readiness";
+  if (options.detail === "exact") return hasExactPostgresCounts(value);
+  return value.countSemantics === "postgres_bounded_population" && value.population === options.population && isRecord(value.tablePopulation);
 }
 
 function healthOk(value: unknown): boolean {

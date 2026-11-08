@@ -82,11 +82,7 @@ async function main(): Promise<void> {
       requestLanguage: startupRequestLanguageWarmupEnabled(),
       languageLimit: startupWarmupLanguageLimit()
     });
-    // Exact table counts are part of the readiness contract. Prime them before
-    // strict warmup marks the process ready, so the first /api/ready request
-    // never pays the full corpus COUNT(*) scan on its request path. In the
-    // default background mode this runs alongside the final warmup phase and
-    // remains single-flight with readiness polling.
+    // Startup verifies schema and active metadata; population probes are explicit inspection requests.
     await primePostgresStatus(runtime);
     const memory = process.memoryUsage();
     const warmupLine = [
