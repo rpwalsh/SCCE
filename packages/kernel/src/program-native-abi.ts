@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { canonicalStringify, createHasher } from "./primitives.js";
+import { nativeProgramType } from "./native-program-types.js";
 import type { JsonValue } from "./types.js";
 
 export type ProgramNativeLiteral = { readonly kind: "value"; readonly value: JsonValue; readonly nativeNumberKind?: "integer" | "float"; readonly nativeNegativeZero?: true }
@@ -57,6 +58,7 @@ export interface ProgramNativeCallableAbi {
   readonly packageName?: string;
   readonly owner: { readonly targetSymbolId: string; readonly sourcePath: string; readonly sourceHash: string; readonly sourceVersionId: string };
   readonly parameters: ReadonlyArray<{ readonly name: string; readonly type: ProgramNativeTypeEvidence }>;
+  readonly stateParameter?: { readonly index: number; readonly typeId: string; readonly mutable: boolean };
   readonly returnType?: ProgramNativeTypeEvidence;
   readonly signatureText: string;
   readonly signatureSpan: NativeSourceSpan;
@@ -96,10 +98,13 @@ export function ownedNativeCallableAbi(value: unknown, owner: ProgramNativeCalla
   }
   const returnType = row.returnType === undefined ? undefined : type(row.returnType);
   if (row.returnType !== undefined && !returnType) return undefined;
+  const expectedState=nativeMapStateParameter({languageId:row.languageId,parameters});
+  const state=record(row.stateParameter);
+  if(row.stateParameter!==undefined&&(!expectedState||Object.keys(state).length!==3||state.index!==expectedState.index||state.typeId!==expectedState.typeId||state.mutable!==expectedState.mutable))return undefined;
   const abi: Omit<ProgramNativeCallableAbi, "id"> = { schema: "scce.program.native_callable_abi.v1", languageId: row.languageId,
     callableName: owner.callableName, owner: { targetSymbolId: owner.targetSymbolId, sourcePath: owner.sourcePath, sourceHash: owner.sourceHash, sourceVersionId: owner.sourceVersionId },
     ...(typeof row.packageName === "string" ? { packageName: row.packageName } : {}),
-    parameters, ...(returnType ? { returnType } : {}), signatureText, signatureSpan: signature, declarationSpan: declaration };
+    parameters, ...(row.stateParameter !== undefined ? {stateParameter: expectedState!} : {}), ...(returnType ? { returnType } : {}), signatureText, signatureSpan: signature, declarationSpan: declaration };
   const id = nativeCallableAbiId(abi);
   return row.id === id ? { ...abi, id } : undefined;
 }
@@ -109,4 +114,15 @@ function readSpan(value: unknown): NativeSourceSpan | undefined {
   return Number.isSafeInteger(row.start) && Number.isSafeInteger(row.end) && Number(row.start) >= 0 && Number(row.end) > Number(row.start)
     && typeof row.textHash === "string" && /^sha256:[0-9a-f]{64}$/u.test(row.textHash)
     ? { start: Number(row.start), end: Number(row.end), textHash: row.textHash } : undefined;
+}
+
+/** A unique grammar-owned borrowed map is an external state port, never an observed literal. */
+export function nativeMapStateParameter(abi: Pick<ProgramNativeCallableAbi,"languageId"|"parameters">): ProgramNativeCallableAbi["stateParameter"] {
+  if (abi.languageId !== "rust") return undefined;
+  const candidates=abi.parameters.flatMap((parameter,index)=>{
+    const type=nativeProgramType("rust",parameter.type.text);
+    return parameter.type.nodeKind==="reference_type" && type?.kind==="reference" && type.element.kind==="mapping"
+      ? [{index,typeId:parameter.type.id,mutable:type.mutable===true}] : [];
+  });
+  return candidates.length===1?candidates[0]:undefined;
 }

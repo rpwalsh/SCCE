@@ -5,7 +5,7 @@ import {informationLabelAllowsRead,joinInformationLabels} from "./information-fl
 import {codeLanguageForPath} from "./code-request.js";
 import type {ScceStorage} from "./storage.js";
 import type {InformationAccessContext,EvidenceSpan,InformationLabel,JsonValue} from "./types.js";
-export const SOURCE_OWNED_CONTRACT_COMPILER_RECIPE="scce.source_owned_contract_snapshot_compiler.v1";
+export const SOURCE_OWNED_CONTRACT_COMPILER_RECIPE="scce.source_owned_contract_snapshot_compiler.v2";
 export const WORKSPACE_CONTRACT_PROJECTION_SCHEMA="scce.workspace.source_contract_projection.v1";
 export interface WorkspaceContractOwner {readonly path:string;readonly sourceId:string;readonly sourceVersionId:string;readonly contentHash:string;readonly namespace:string;readonly byteLength:number;readonly evidenceIds:readonly string[];readonly informationLabel:InformationLabel}
 export interface WorkspaceContractReceipt {readonly schema:typeof WORKSPACE_CONTRACT_PROJECTION_SCHEMA;readonly workspaceId:string;readonly componentRecipe:string;readonly blobHash:string;readonly contractCount:number;readonly ownerCount:number;readonly sourceRecordCount:number;readonly complete:boolean;readonly informationLabel:InformationLabel}
@@ -37,7 +37,7 @@ export async function readWorkspaceOwnedProgramContracts(input:{storage:ScceStor
  if(!ids.length)return unavailable("workspace.contracts.original_source_binding_unavailable");
  const [evidence,versions]=await Promise.all([input.storage.evidence.getEvidenceBatch(ids as never[]),input.storage.evidence.sourceVersionsForEvidence(ids as never[])]);
  const owners:WorkspaceContractOwner[]=[],admitted:EvidenceSpan[]=[];
- for(const record of records.filter(row=>codeLanguageForPath(row.path)!==undefined||row.path.endsWith(".json"))){
+ for(const record of records.filter(row=>codeLanguageForPath(row.path)!==undefined||/\.(?:json|md|txt)$/u.test(row.path))){
   if(record.ingestionStatus!=="ingested"&&record.ingestionStatus!=="skipped")continue;
   const matches=versions.filter(version=>String(version.contentHash)===record.contentHash&&version.role!=="evidence-derivative"&&(!record.sourceVersionId||record.sourceVersionId===version.sourceVersionId)
    &&object(object(version.metadata).workspace).id===workspace.id&&object(object(version.metadata).workspaceFile).path===record.path);
@@ -65,8 +65,8 @@ export async function readWorkspaceOwnedProgramContracts(input:{storage:ScceStor
  const current=new Map(owners.map(owner=>[owner.sourceVersionId,owner]));
  for(const raw of value.contracts){
   const contract=object(raw),owner=current.get(String(contract.sourceVersionId));
-  if(contract.schema!=="scce.source_owned_test_contract.v1"||!owner||contract.sourceHash!==owner.contentHash||contract.sourcePath!==owner.path||!Array.isArray(contract.cases))return unavailable("workspace.contracts.contract_owner_mismatch");
-  for(const rawCase of contract.cases){const row=object(rawCase),test=current.get(String(row.testSourceVersionId));
+  if(!["scce.source_owned_test_contract.v1","scce.source_owned_native_declaration.v1"].includes(String(contract.schema))||!owner||contract.sourceHash!==owner.contentHash||contract.sourcePath!==owner.path||contract.schema==="scce.source_owned_test_contract.v1"&&!Array.isArray(contract.cases))return unavailable("workspace.contracts.contract_owner_mismatch");
+  for(const rawCase of Array.isArray(contract.cases)?contract.cases:[]){const row=object(rawCase),test=current.get(String(row.testSourceVersionId));
    if(!test||test.path!==row.testPath||test.contentHash!==row.testHash)return unavailable("workspace.contracts.assertion_owner_mismatch");
    if(Array.isArray(row.invocations))for(const rawInvocation of row.invocations){const invocation=object(rawInvocation),source=current.get(String(invocation.sourceVersionId));
     if(!source||source.path!==invocation.sourcePath||source.contentHash!==invocation.sourceHash)return unavailable("workspace.contracts.invocation_owner_mismatch");

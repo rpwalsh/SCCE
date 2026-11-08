@@ -49,3 +49,18 @@ export async function nativeFiles({ language, names, tools, repair, defect, publ
   if (repair) files[target] = statefulSource(language, names, defect);
   return { files, target };
 }
+
+export function nativePublicDeclarations(language, names) {
+  if (language === 'rust') return `\`\`\`rust
+pub fn ${names.write}(records: &mut std::collections::HashMap<String, String>, key: &str, value: &str);
+pub fn ${names.read}(records: &std::collections::HashMap<String, String>, key: &str) -> String;
+pub fn ${names.remove}(records: &mut std::collections::HashMap<String, String>, key: &str);
+\`\`\``;
+  if (language === 'go') return `\`\`\`go
+package main
+func ${names.write}(key string, value string)
+func ${names.read}(key string) string
+func ${names.remove}(key string)
+\`\`\``;
+  return '';
+}

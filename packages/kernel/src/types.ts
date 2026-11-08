@@ -642,6 +642,7 @@ export interface ProgramTestExecutionReceipt {
 }
 
 export interface ProgramConstructIntent {
+  nativeDeclarations?: import("./program-native-abi.js").ProgramNativeCallableAbi[];
   artifactKindIds: string[];
   capabilityIds: string[];
   languageId?: string;

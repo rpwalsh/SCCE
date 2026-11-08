@@ -3,7 +3,7 @@
 export type NativeProgramType = { kind: "unit" | "any" | "bool" | "string"; text: string }
   | { kind: "integer"; text: string; signed: boolean; bits?: number }
   | { kind: "float"; text: string; bits: 32 | 64 }
-  | { kind: "optional" | "reference" | "sequence"; text: string; element: NativeProgramType }
+  | { kind: "optional" | "reference" | "sequence"; text: string; element: NativeProgramType; mutable?: true }
   | { kind: "mapping"; text: string; key: NativeProgramType; value: NativeProgramType };
 
 /** These are native grammar types, never types inferred from observed example values. */
@@ -32,7 +32,7 @@ export function nativeProgramType(language: "go" | "rust", source: string | unde
   if (text === "str" || text === "String" || text === "::std::string::String" || text === "std::string::String") return { kind: "string", text: source };
   if (/^[iu](?:8|16|32|64|128|size)$/u.test(text)) return { kind: "integer", text: source, signed: text[0] === "i", ...(text.endsWith("size") ? {} : { bits: Number(text.slice(1)) }) };
   if (text === "f32" || text === "f64") return { kind: "float", text: source, bits: text === "f32" ? 32 : 64 };
-  if (text.startsWith("&") && !text.startsWith("&mut") && !text.startsWith("&'")) { const element = nativeProgramType(language, text.slice(1)); return element ? { kind: "reference", text: source, element } : undefined; }
+  if (text.startsWith("&") && !text.startsWith("&'")) { const mutable = text.startsWith("&mut"), element = nativeProgramType(language, text.slice(mutable ? 4 : 1)); return element ? { kind: "reference", text: source, element, ...(mutable ? {mutable:true as const} : {}) } : undefined; }
   const open = text.indexOf("<");
   if (open < 1 || balancedEnd(text, open, "<", ">") !== text.length - 1) return undefined;
   const name = text.slice(0, open), args = splitTypeArguments(text.slice(open + 1, -1));

@@ -28,3 +28,14 @@ export async function numericFiles({ language, name, tools, repair, publicVector
   if (repair) files[target] = numericSource(language, name, true);
   return { files, target };
 }
+
+export function nativePublicDeclarations(language, name) {
+  if (language === 'rust') return `\`\`\`rust
+pub fn ${name}(value: i64, lower: i64, upper: i64) -> i64;
+\`\`\``;
+  if (language === 'go') return `\`\`\`go
+package main
+func ${name}(value int, lower int, upper int) int
+\`\`\``;
+  return '';
+}

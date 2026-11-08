@@ -2,8 +2,8 @@ import { createHmac } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { canonical, hash, writeJson } from '../../protocol.mjs';
-import { nativeFiles, expectedReads, NATIVE_LANGUAGES } from './native-fixtures.mjs';
-import { numericFiles, numericExpected } from './numeric-fixtures.mjs';
+import { nativeFiles, expectedReads, NATIVE_LANGUAGES, nativePublicDeclarations } from './native-fixtures.mjs';
+import { numericFiles, numericExpected, nativePublicDeclarations as numericPublicDeclarations } from './numeric-fixtures.mjs';
 import { sha256Text } from '../../../sealed-eval/harness/lib/util.mjs';
 
 export const CATEGORY_GROUPS = { chat: 'chat', creative: 'creative', corpus_facts: 'corpus_facts', learning_updates: 'learning_updates', code_repair_stateful: 'code', code_generation_stateful: 'code', code_repair_numeric: 'code', code_generation_numeric: 'code', agentic_autonomous: 'agentic', agentic_given_plan: 'agentic' };
@@ -102,7 +102,8 @@ async function codeCase(cell, index, rng, options, id) {
   const defect = ['lost_write', 'lost_delete', 'missing_value'][index % 3];
   const fixture = stateful ? await nativeFiles({ language: cell.language, names, tools: options.tools, repair, defect, publicVectors }) : await numericFiles({ language: cell.language, name: fn, tools: options.tools, repair, publicVectors });
   if (!fixture) throw new Error(`Missing native provider: ${cell.language}`);
-  const spec = stateful ? `${names.write}(key, value); ${names.read}(key); ${names.remove}(key). Keys and values are opaque UTF-8 strings without tabs/newlines. Store the latest value independently for each key; reads of absent keys return "~"; removal affects only the named key. ${cell.language === 'rust' ? 'The Rust API takes the shared HashMap reference as the first parameter.' : ''}\n${names.write}(${JSON.stringify(k)},${JSON.stringify(v)}); ${names.read}(${JSON.stringify(k)}) => ${JSON.stringify(v)}\n${names.write}(${JSON.stringify(k)},${JSON.stringify(v2)}); ${names.read}(${JSON.stringify(k)}) => ${JSON.stringify(v2)}\n${names.remove}(${JSON.stringify(k)}); ${names.read}(${JSON.stringify(k)}) => "~"` : `${fn}(value, lower, upper) returns value bounded inclusively by lower and upper. Integer inputs satisfy lower <= upper.\n${fn}(10,0,5) => 5\n${fn}(-3,0,5) => 0\n${fn}(3,0,5) => 3`;
+  const behaviorSpec = stateful ? `${names.write}(key, value); ${names.read}(key); ${names.remove}(key). Keys and values are opaque UTF-8 strings without tabs/newlines. Store the latest value independently for each key; reads of absent keys return "~"; removal affects only the named key. ${cell.language === 'rust' ? 'The Rust API takes the shared HashMap reference as the first parameter.' : ''}\n${names.write}(${JSON.stringify(k)},${JSON.stringify(v)}); ${names.read}(${JSON.stringify(k)}) => ${JSON.stringify(v)}\n${names.write}(${JSON.stringify(k)},${JSON.stringify(v2)}); ${names.read}(${JSON.stringify(k)}) => ${JSON.stringify(v2)}\n${names.remove}(${JSON.stringify(k)}); ${names.read}(${JSON.stringify(k)}) => "~"` : `${fn}(value, lower, upper) returns value bounded inclusively by lower and upper. Integer inputs satisfy lower <= upper.\n${fn}(10,0,5) => 5\n${fn}(-3,0,5) => 0\n${fn}(3,0,5) => 3`;
+  const spec = `${behaviorSpec}\n${stateful ? nativePublicDeclarations(cell.language, names) : numericPublicDeclarations(cell.language, fn)}`;
   const privateRng = randomStream(options.seed, `${id}:private-native`), vectors = [];
   for (let n = 0; n < options.hiddenVectors; n++) {
     if (stateful) {

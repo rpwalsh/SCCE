@@ -3,7 +3,7 @@
 import {createHash} from "node:crypto";
 import {codeLanguageForPath,SOURCE_OWNED_CONTRACT_COMPILER_RECIPE,type JsonValue} from "@scce/kernel";
 import {buildTypeScriptSemanticProgramIndex,type TypeScriptSemanticProgramIndex} from "./typescript-semantic-program-index.js";
-import {grammarSourceOwnedTestCases} from "./grammar-source-owned-test-contracts.js";
+import {grammarSourceOwnedTestCases,grammarSourceOwnedNativeDeclarations} from "./grammar-source-owned-test-contracts.js";
 import {sourceOwnedTestCases,sourceOwnedTestContractProjections} from "./source-owned-test-contracts.js";
 
 export {SOURCE_OWNED_CONTRACT_COMPILER_RECIPE};
@@ -26,5 +26,15 @@ export async function compileSourceOwnedContracts(input:{readonly root:string;re
   const versions=new Map(ecma.flatMap(file=>file.sourceVersionId?[[file.path,{sourceVersionId:file.sourceVersionId,sourceHash:file.sourceHash}] as const]:[]));
   cases.push(...sourceOwnedTestCases({program,sourceVersions:versions,testVersions:versions,sourceTexts:new Map(files.map(file=>[file.path,file.text]))}));
  }
- return sourceOwnedTestContractProjections(cases,input.sourceUriBase);
+ const projections=sourceOwnedTestContractProjections(cases,input.sourceUriBase);
+ for(const file of files.filter(file=>file.sourceVersionId && /\.(?:txt|md)$/u.test(file.path))){
+  const declarations=await grammarSourceOwnedNativeDeclarations({...file,sourceVersionId:file.sourceVersionId!});
+  if(!declarations.length)continue;
+  const rows=projections.get(file.path)??[];
+  for(const abi of declarations)rows.push({schema:"scce.source_owned_native_declaration.v1",repositoryFamily:input.sourceUriBase,
+   sourcePath:file.path,sourceHash:file.sourceHash,sourceVersionId:file.sourceVersionId!,formalLanguage:abi.languageId,
+   targetName:abi.callableName,targetSymbolId:abi.owner.targetSymbolId,nativeAbi:abi} as unknown as JsonValue);
+  projections.set(file.path,rows);
+ }
+ return projections;
 }

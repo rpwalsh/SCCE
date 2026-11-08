@@ -9,6 +9,7 @@ import { nativeLiteralJson, type ProgramNativeLiteral } from "./program-native-a
 
 export function nativeRustStatefulProgram(plan: ProgramPlan, paths:{sourcePath:string;testPath:string}): { source: string; test: string } {
   const abis = nativeOwnerAbis(plan, "rust"), byName = new Map(abis.map(abi => [abi.name, abi]));
+  if(abis.some(abi=>abi.stateParameter))return externalRustStatefulProgram(plan,paths,abis);
   const selected = plan.ownerBehaviorImplementationPhase === "selected";
   const candidate = plan.ownerStatefulBehaviorTransformationCandidates.find(row => plan.selectedOwnerStatefulBehaviorTransformationIds.includes(row.id));
   if (selected && !candidate) throw issue("transformation", "Native Rust state needs its selected transition IR");
@@ -186,3 +187,55 @@ fn _native_unsigned(value:_NativeValue)->u128 {
 }
 fn _native_float(value:_NativeValue)->f64 { let number=match value { _NativeValue::Float(value)=>value,_NativeValue::Signed(value)=>value as f64,_NativeValue::Unsigned(value)=>value as f64,_=>panic!("native float type mismatch") };assert!(number.is_finite(),"nonfinite native value");number }
 `;
+
+function externalRustStatefulProgram(plan:ProgramPlan,paths:{sourcePath:string;testPath:string},abis:NativeOwnerAbi[]):{source:string;test:string}{
+  const byName=new Map(abis.map(abi=>[abi.name,abi])), selected=plan.ownerBehaviorImplementationPhase==="selected";
+  const candidate=plan.ownerStatefulBehaviorTransformationCandidates.find(row=>plan.selectedOwnerStatefulBehaviorTransformationIds.includes(row.id));
+  if(selected&&!candidate)throw issue("transformation","External native state requires its selected transition IR");
+  const maps=abis.map(abi=>{
+    const port=abi.stateParameter,type=port&&abi.parameters[port.index];
+    if(!port||type?.kind!=="reference"||type.element.kind!=="mapping"||hasReference(abi.result))throw issue("state_port","Every external operation needs a single owned map port and owned result");
+    return type.element;
+  });
+  const map=maps[0]!;
+  if(maps.some(type=>type.text.replace(/\s/gu,"")!==map.text.replace(/\s/gu,"")))throw issue("state_port","Operations must share the exact declared map type");
+  const logical=(abi:NativeOwnerAbi)=>abi.parameters.flatMap((type,index)=>index===abi.stateParameter!.index?[]:[{type,index}]);
+  const owned=(value:string,type:NativeProgramType):string=>type.kind==="reference"?type.element.kind==="string"?`(${value}).to_string()`:`(*(${value})).clone()`:`(${value}).clone()`;
+  const methods=abis.map(abi=>{
+    const state=`_arg${abi.stateParameter!.index}`, args=logical(abi),instruction=candidate?.transitionIr.find(row=>row.operationId===abi.name);
+    let body=rustZero(abi.result);
+    if(selected){
+      if(!instruction)throw issue("operation","External operation is absent from selected IR");
+      if(instruction.kind!=="noop"){
+        const key=args[instruction.keyArgumentIndex];
+        if(!key)throw issue("arity","State key is outside logical declared parameters");
+        const keyValue=owned(`_arg${key.index}`,key.type);
+        if(instruction.kind==="associate"){
+          const value=args[instruction.valueArgumentIndex];
+          if(!abi.stateParameter!.mutable||!value||abi.result.kind!=="unit")throw issue("state_port","Association requires mutable map, value and unit result");
+          body=`{ ${state}.insert(${keyValue}, ${owned(`_arg${value.index}`,value.type)}); }`;
+        }else if(instruction.kind==="dissociate"){
+          if(!abi.stateParameter!.mutable||abi.result.kind!=="unit")throw issue("state_port","Removal requires mutable map and unit result");
+          body=`{ ${state}.remove(&${keyValue}); }`;
+        }else{
+          if(abi.result.kind==="unit")throw issue("state_result","Lookup needs a declared result");
+          const absent=candidate!.absentValue;
+          if(absent===undefined)throw issue("state_result","A missing key needs an observed absent value");
+          body=`{ match ${state}.get(&${keyValue}) { Some(value)=>value.clone(),None=>${rustLiteral(absent as JsonValue,abi.result)} } }`;
+        }
+      }
+    }
+    return `pub fn ${rustName(abi.name)}(${rustParameters(abi)}) -> ${abi.result.text} { ${body} }`;
+  });
+  const tests=plan.ownerStatefulBehaviorRequirements.map((requirement,index)=>{
+    const calls=requirement.invocations.map((invocation,i)=>{
+      const abi=byName.get(invocation.callableId)!;let argument=0;
+      const observed=requirement.sourceContract?.invocations[i]?.nativeArguments;
+      const args=abi.parameters.map((type,j)=>{if(j===abi.stateParameter!.index)return `${abi.stateParameter!.mutable?"&mut":"&"} state`;const index=argument++;return rustLiteral(invocation.arguments[index]!,type,observed?.[index]);});
+      const call=`program::${rustName(abi.name)}(${args.join(", ")})`;
+      return i<requirement.invocations.length-1?`${call};`:`assert_eq!(${call},${rustLiteral(requirement.expectedResult,abi.result,requirement.sourceContract?.nativeExpected)},${rustString(requirement.id)});`;
+    });
+    return `#[test] fn owner_requirement_${index}(){ let mut state:${map.text}=Default::default(); ${calls.join("\n")} }`;
+  });
+  return {source:methods.join("\n"),test:`#[path=${JSON.stringify(relativeNativeSourcePath(paths.testPath,paths.sourcePath))}] mod program;\n${tests.join("\n")}`};
+}

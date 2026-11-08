@@ -53,6 +53,7 @@ export function codeLanguageForPath(value: string): string | undefined {
 }
 
 export interface CodeRequestSignal {
+  nativeDeclarations?: import("./program-native-abi.js").ProgramNativeCallableAbi[];
   /** Opaque callable binders declared by the request, distinct from concrete calls. */
   declaredCallableIds?: readonly string[];
   /** The formal language the request names or implies, when one is identifiable. */

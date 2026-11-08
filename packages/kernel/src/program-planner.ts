@@ -120,6 +120,7 @@ export interface SourceEmissionPlan {
 }
 
 export interface ProgramPlan {
+  nativeDeclarations?: import("./program-native-abi.js").ProgramNativeCallableAbi[];
   id: string;
   intent: ProgramIntent;
   codeGraph: CodeKnowledgeGraph;
@@ -291,6 +292,7 @@ export function createProgramPlanner(options: { idFactory: IdFactory; hasher: Ha
         artifactConstruction,
         files,
         sourceEmission,
+        ...(input.programIntent?.nativeDeclarations?.length?{nativeDeclarations:input.programIntent.nativeDeclarations}:{}),
         ownerBehaviorRequirements,
         ownerStatefulBehaviorRequirements,
         ownerBehaviorImplementationPhase,

@@ -33,6 +33,7 @@ export function programIntentForTurn(input: {
     ...(input.codeSignal.paths.length ? { entrypointPath: input.codeSignal.paths[0] } : {}),
     constraints: engineering.length ? ["program.constraint.source_backed"] : [],
     provenanceEvidenceIds: engineering.map(span => String(span.id)),
+    ...(input.codeSignal.nativeDeclarations?.length?{nativeDeclarations:input.codeSignal.nativeDeclarations}:{}),
     behaviorRequirements: input.codeSignal.behaviorRequirements,
     statefulBehaviorRequirements: input.codeSignal.statefulBehaviorRequirements,
     ...(input.codeSignal.behaviorRequirements.length || input.codeSignal.statefulBehaviorRequirements.length ? { behaviorImplementationPhase: "probe" as const } : {}),

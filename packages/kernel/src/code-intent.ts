@@ -3,7 +3,7 @@
 import { codeIdentifierTokens, codeSurfaceTokens } from "./code-surface.js";
 import { codeLanguageForPath, type CodeRequestSignal } from "./code-request.js";
 import { canonicalStringify, createHasher, toJsonValue } from "./primitives.js";
-import { ownedNativeArguments, ownedNativeCallableAbi, ownedNativeLiteral } from "./program-native-abi.js";
+import { ownedNativeArguments, ownedNativeCallableAbi, ownedNativeLiteral, type ProgramNativeCallableAbi } from "./program-native-abi.js";
 import type { EvidenceSpan, JsonValue, ProgramBehaviorRequirement, ProgramStatefulBehaviorRequirement } from "./types.js";
 
 /**
@@ -135,8 +135,17 @@ export function sourceOwnedProgramBehaviorFromDocumentation(input: {
   readonly patterns: readonly { readonly patternJson: JsonValue }[];
   /** Formal caller-declared callable IDs from the already parsed request signal. */
   readonly ownerCallableIds?: readonly string[];
-}): { behaviorRequirements: ProgramBehaviorRequirement[]; statefulBehaviorRequirements: ProgramStatefulBehaviorRequirement[] } {
-  const empty = { behaviorRequirements: [], statefulBehaviorRequirements: [] };
+}): { behaviorRequirements: ProgramBehaviorRequirement[]; statefulBehaviorRequirements: ProgramStatefulBehaviorRequirement[]; nativeDeclarations?: ProgramNativeCallableAbi[] } {
+  const nativeDeclarations:ProgramNativeCallableAbi[]=[];
+  for(const pattern of input.patterns){
+    const row=objectRecord(pattern.patternJson);
+    if(row.schema!=="scce.source_owned_native_declaration.v1"||row.formalLanguage!==input.intent.languageId
+      ||!input.intent.references.some(reference=>reference.sourceFamily===row.repositoryFamily&&reference.relativePath===row.sourcePath&&reference.sourceHash===row.sourceHash)
+      ||typeof row.targetName!=="string"||typeof row.targetSymbolId!=="string"||typeof row.sourcePath!=="string"||typeof row.sourceHash!=="string"||typeof row.sourceVersionId!=="string")continue;
+    const abi=ownedNativeCallableAbi(row.nativeAbi,{callableName:row.targetName,targetSymbolId:row.targetSymbolId,sourcePath:row.sourcePath,sourceHash:row.sourceHash,sourceVersionId:row.sourceVersionId,languageId:String(row.formalLanguage)});
+    if(abi)nativeDeclarations.push(abi);
+  }
+  const empty = { behaviorRequirements: [], statefulBehaviorRequirements: [], ...(nativeDeclarations.length?{nativeDeclarations}:{}) };
   const references = new Set(input.intent.references.filter(row => row.sourceFamily && row.sourceHash)
     .map(row => `${row.sourceFamily}\u0000${row.relativePath}\u0000${row.sourceHash}`));
   const grouped = new Map<string, Array<Record<string, JsonValue>>>();
@@ -212,8 +221,8 @@ export function sourceOwnedProgramBehaviorFromDocumentation(input: {
       assertionSpan: row.assertionSpan as unknown as NonNullable<ProgramBehaviorRequirement["sourceContract"]>["assertionSpan"]
     }
   }));
-  return sourceOwnedStatefulRequirements({ ordered, behaviorRequirements, references, family, sourcePath, sourceVersionId, targetSymbolId, sourceTargetName, ownerCallableIds,
-    languageId: input.intent.languageId ?? "" });
+  return {...sourceOwnedStatefulRequirements({ ordered, behaviorRequirements, references, family, sourcePath, sourceVersionId, targetSymbolId, sourceTargetName, ownerCallableIds,
+    languageId: input.intent.languageId ?? "" }),...(nativeDeclarations.length?{nativeDeclarations}:{})};
 }
 
 function sourceOwnedStatefulRequirements(input: {
@@ -284,6 +293,7 @@ export function projectSourceOwnedProgramBehavior(input: {
 }): CodeRequestSignal {
   const language = input.codeSignal.language ?? input.intent.languageId;
   return { ...input.codeSignal, ...(language ? { language } : {}),
+    ...(input.sourceBehavior.nativeDeclarations?.length?{nativeDeclarations:input.sourceBehavior.nativeDeclarations}:{}),
     behaviorRequirements: [...input.codeSignal.behaviorRequirements, ...input.sourceBehavior.behaviorRequirements],
     statefulBehaviorRequirements: [...input.codeSignal.statefulBehaviorRequirements, ...input.sourceBehavior.statefulBehaviorRequirements] };
 }

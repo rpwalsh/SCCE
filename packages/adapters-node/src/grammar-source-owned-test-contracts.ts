@@ -5,7 +5,7 @@ import path from "node:path";
 import type Parser from "web-tree-sitter";
 import { withRepositorySyntaxTree } from "./tree-sitter-syntax.js";
 import type { SourceOwnedInvocation, SourceOwnedTestCase } from "./source-owned-test-contracts.js";
-import { nativeCallableAbiId, nativeTypeEvidenceId, type ProgramNativeCallableAbi, type ProgramNativeTypeEvidence, type ProgramNativeLiteral, type JsonValue } from "@scce/kernel";
+import { nativeCallableAbiId, nativeMapStateParameter, nativeTypeEvidenceId, type ProgramNativeCallableAbi, type ProgramNativeTypeEvidence, type ProgramNativeLiteral, type JsonValue } from "@scce/kernel";
 
 type Node = Parser.SyntaxNode;
 type Language = "python" | "go" | "rust";
@@ -101,13 +101,15 @@ function nativeAbiFor(file: GrammarContractFile, declaration: Declaration, targe
   const content: Omit<ProgramNativeCallableAbi, "id"> = { schema: "scce.program.native_callable_abi.v1", languageId: file.languageId,
     callableName: declaration.name, owner: { targetSymbolId, sourcePath: file.path, sourceHash: file.sourceHash, sourceVersionId: file.sourceVersionId },
     ...declaration.nativeSignature };
-  return { ...content, id: nativeCallableAbiId(content) };
+  const stateParameter=nativeMapStateParameter(content);
+  const owned={...content,...(stateParameter?{stateParameter}:{})};
+  return { ...owned, id: nativeCallableAbiId(owned) };
 }
 
 function nativeSignature(file: GrammarContractFile, node: Node, packageName?: string): Declaration["nativeSignature"] {
   if (file.languageId !== "go" && file.languageId !== "rust" || node.childForFieldName("type_parameters")) return undefined;
   const body = node.childForFieldName("body"), params = node.childForFieldName("parameters");
-  if (!body || !params) return undefined;
+  if (!params) return undefined;
   const evidence = (type: Node): ProgramNativeTypeEvidence => ({ id: nativeTypeEvidenceId(file.languageId, type.type, type.text),
     nodeKind: type.type, text: type.text, span: span(file.text, type.startIndex, type.endIndex) });
   const parameters: Array<ProgramNativeCallableAbi["parameters"][number]> = [];
@@ -120,7 +122,7 @@ function nativeSignature(file: GrammarContractFile, node: Node, packageName?: st
   const result = node.childForFieldName(file.languageId === "go" ? "result" : "return_type");
   return { parameters, ...(result ? { returnType: evidence(result) } : {}),
     ...(file.languageId === "go" && packageName ? { packageName } : {}),
-    signatureText: file.text.slice(node.startIndex, body.startIndex), signatureSpan: span(file.text, node.startIndex, body.startIndex),
+    signatureText: file.text.slice(node.startIndex, (body?.startIndex ?? node.endIndex)), signatureSpan: span(file.text, node.startIndex, body?.startIndex ?? node.endIndex),
     declarationSpan: span(file.text, node.startIndex, node.endIndex) };
 }
 
@@ -372,3 +374,40 @@ function literal(node: Node | null | undefined): { ok: true; value: unknown; nat
 }
 function descendants(root: Node): Node[] { const out: Node[] = []; const visit = (node: Node) => { out.push(node); for (const child of node.namedChildren) visit(child); }; visit(root); return out; }
 function isComment(node: Node): boolean { return ["comment", "line_comment", "block_comment"].includes(node.type); }
+
+/** Declaration-only document fences retain their original UTF-16 source coordinates. */
+export async function grammarSourceOwnedNativeDeclarations(file: Omit<GrammarContractFile,"languageId">): Promise<ProgramNativeCallableAbi[]> {
+  if(hash(file.text).replace(/^sha256:/u,"")!==file.sourceHash.replace(/^sha256[:_]/u,""))return [];
+  const out:ProgramNativeCallableAbi[]=[];
+  for(const languageId of ["go","rust"] as const){
+    const matches=[...file.text.matchAll(/^```(go|rust)[ \t]*\r?\n([\s\S]*?)^```[ \t]*(?:\r?\n|$)/gmu)].filter(match=>match[1]===languageId);
+    if(!matches.length)continue;
+    const chars=file.text.split("").map(char=>char==="\n"||char==="\r"?char:" ");
+    for(const match of matches){const start=match.index!+match[0].indexOf("\n")+1;for(let i=0;i<match[2]!.length;i++)chars[start+i]=match[2]![i]!;}
+    const masked=chars.join("");
+    const declarations=await withRepositorySyntaxTree({fileId:file.path,languageId,text:masked},root=>{
+      if(root.hasError)return [];
+      const allowed=languageId==="rust"?["function_signature_item"]:["package_clause","function_declaration"];
+      if(root.namedChildren.some(node=>!isComment(node)&&!allowed.includes(node.type)))return [];
+      const packageName=languageId==="go"?root.namedChildren.find(node=>node.type==="package_clause")?.namedChildren[0]?.text:undefined;
+      const nodes=root.namedChildren.filter(node=>node.type==="function_signature_item"||node.type==="function_declaration");
+      const names=nodes.map(node=>node.childForFieldName("name")?.text);
+      if(new Set(names).size!==names.length)return [];
+      let invalid=false;
+      const owned=nodes.flatMap(node=>{
+        if(node.childForFieldName("body")){invalid=true;return [];}
+        const name=node.childForFieldName("name")?.text;
+        const typedFile={...file,languageId},nativeSignature_=nativeSignature(typedFile,node,packageName);
+        if(!name||!nativeSignature_){invalid=true;return [];}
+        const types=[...nativeSignature_.parameters.map(p=>p.type),...(nativeSignature_.returnType?[nativeSignature_.returnType]:[])];
+        // Bare standard map aliases need an import witness; document declarations use fully qualified maps.
+        if(languageId==="rust"&&types.some(type=>/(?:^|[^:\p{L}\p{N}_])(?:HashMap|BTreeMap)\s*</u.test(type.text))){invalid=true;return [];}
+        const declaration={name,start:node.startIndex,end:node.endIndex,nativeSignature:nativeSignature_};
+        const abi=nativeAbiFor(typedFile,declaration,symbolId(typedFile,declaration));return abi?[abi]:[];
+      });
+      return invalid?[]:owned;
+    });
+    out.push(...declarations);
+  }
+  return out;
+}

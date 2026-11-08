@@ -9,7 +9,7 @@ export async function publishWorkspaceOwnedContracts(input:{storage:ScceStorage;
  bindings:ReadonlyMap<string,WorkspaceContractBinding>;complete:boolean;maxFileBytes:number}):Promise<WorkspaceContractCompilation>{
  const unavailable=(reason:string):WorkspaceContractCompilation=>({status:"unavailable",contracts:0,sourceVersions:0,reasonIds:[reason]});
  if(!input.storage.blobs?.get||!input.storage.blobs.put||!input.storage.workspace?.putWorkspace)return unavailable("workspace.contracts.canonical_store_unavailable");
- const candidates=input.records.filter(row=>codeLanguageForPath(row.path)!==undefined||row.path.endsWith(".json")).flatMap(record=>{
+ const candidates=input.records.filter(row=>codeLanguageForPath(row.path)!==undefined||/\.(?:json|md|txt)$/u.test(row.path)).flatMap(record=>{
   const binding=input.bindings.get(record.path),version=binding?.sourceVersion;
   if(!binding||!version||version.role==="evidence-derivative"||String(version.contentHash)!==record.contentHash||!version.informationLabel
    || (record.ingestionStatus!=="ingested"&&record.ingestionStatus!=="skipped"))return [];
