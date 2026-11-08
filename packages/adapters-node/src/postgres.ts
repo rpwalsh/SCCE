@@ -8,6 +8,9 @@ import {
   assertCanonicalHyperedge,
   createAlphaLayer,
   canonicalStringify,
+  createHasher,
+  validateSourceLanguageCompilationHeader,
+  validateSourceCompilationModelInventory,
   featureSet,
   informationLabelAllowsRead,
   joinInformationLabels,
@@ -3587,6 +3590,62 @@ function* serializedNgramObservationBatches(observations: readonly NgramObservat
   if (rows.length) yield `[${rows.join(",")}]`;
 }
 
+interface CurrentCompilationHeaderRow {
+  id: string; stream_id: string;
+  profile_id: string; source_system: string; source_id: string; source_version_id: string; content_hash: string; model_metadata: JsonValue; compilation_receipt: JsonValue;
+}
+
+async function currentLanguagePatternCompilations(storage: PostgresStorageAdapter, query: Parameters<LanguageMemoryStore["listLanguagePatterns"]>[0]) {
+  const params: unknown[] = [];
+  const where: string[] = ['metadata."sourceCompilation" IS NOT NULL'];
+  const profileIds = query?.profileIds ?? (query?.profileId ? [query.profileId] : undefined);
+  if (profileIds) { params.push([...profileIds]); where.push(`model.profile_id=ANY($${params.length}::text[])`); }
+  if (query?.sourceSystem) { params.push(query.sourceSystem); where.push(`model.source_system=$${params.length}`); }
+  if (query?.languageId) { params.push(query.languageId); where.push(`(profile.language_id=$${params.length} OR profile.language_id IS NULL)`); }
+  for (const alias of ["model", "profile", "version"]) appendInformationAccess(storage, alias, params, where);
+  const receiptAccess = storage.informationAccessPredicate("receipt", params.length + 1);
+  params.push(...receiptAccess.params);
+  const rows = await storage.query<CurrentCompilationHeaderRow>(
+    `SELECT model.id,model.stream_id,model.profile_id,model.source_system,version.source_id,version.id AS source_version_id,version.content_hash,
+       jsonb_build_object('profileId',metadata."profileId",'sourceVersionId',metadata."sourceVersionId",'sourceSystem',metadata."sourceSystem",'sourceCompilation',metadata."sourceCompilation") AS model_metadata,
+       receipt.pattern_json->'compilation' AS compilation_receipt
+     FROM ${storage.table("ngram_models")} model
+     JOIN ${storage.table("language_profiles")} profile ON profile.id=model.profile_id
+     JOIN ${storage.table("source_versions")} version ON version.id=profile.source_version_id
+     CROSS JOIN LATERAL jsonb_to_record(model.model_json) AS metadata("sourceCompilation" jsonb,"profileId" text,"sourceVersionId" text,"sourceSystem" text)
+     LEFT JOIN ${storage.table("language_patterns")} receipt ON receipt.id='source.language.compilation.' || (metadata."sourceCompilation"->>'compilationId')
+       AND receipt.profile_id=model.profile_id AND receipt.source_system=model.source_system AND receipt.pattern_kind='source_compilation'
+       AND receipt.pattern_json->>'schema'='scce.source_language_compilation_receipt.v1'
+       AND ${receiptAccess.sql}
+     WHERE ${where.join(" AND ")}`, params);
+  const hasher = createHasher();
+  const groups = new Map<string, { row: CurrentCompilationHeaderRow; rows: CurrentCompilationHeaderRow[]; compilationId: string; valid: boolean }>();
+  for (const row of rows) {
+    const key = canonicalStringify([row.profile_id, row.source_system]);
+    const previous = groups.get(key);
+    let compilationId = "";
+    try {
+      compilationId = validateSourceLanguageCompilationHeader({ owner: { sourceId: row.source_id as SourceId, sourceVersionId: row.source_version_id as SourceVersionId,
+        contentHash: row.content_hash as ContentHash }, profileId: row.profile_id, sourceSystem: row.source_system, modelJson: row.model_metadata,
+        compilationReceipt: row.compilation_receipt, hasher });
+    } catch { /* Invalid compiler ownership never authorizes owned artifacts. */ }
+    const modelRows = previous?.rows ?? [];
+    modelRows.push(row);
+    groups.set(key, { row, rows: modelRows, compilationId, valid: Boolean(compilationId) && (!previous || previous.valid && previous.compilationId === compilationId) });
+  }
+  return [...groups.values()].filter(group => {
+    if (!group.valid) return false;
+    try {
+      validateSourceCompilationModelInventory(group.row.compilation_receipt, group.rows.map(row => {
+        const compilation = (row.model_metadata as { sourceCompilation: { chunk: JsonValue; modelDigest: string } }).sourceCompilation;
+        return { id: row.id, streamId: row.stream_id, chunk: compilation.chunk, modelDigest: compilation.modelDigest };
+      }), hasher);
+      return true;
+    } catch { return false; }
+  }).map(({ row, compilationId }) => ({ profileId: row.profile_id,
+    sourceSystem: row.source_system, sourceVersionId: row.source_version_id, compilationId }));
+}
+
 function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMemoryStore {
   return {
     async putNgramObservation(observation) {
@@ -4099,6 +4158,15 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
         // none and this filter silently dropped its patterns -- the same admission the in-memory language scope makes.
         params.push(query.languageId);
         where.push(`EXISTS (SELECT 1 FROM ${storage.table("language_profiles")} lp WHERE lp.id=pattern.profile_id AND (lp.language_id=$${params.length} OR lp.language_id IS NULL))`);
+      }
+      if (query.patternKind !== "source_compilation") {
+        params.push(canonicalStringify(await currentLanguagePatternCompilations(storage, query)));
+        where.push(`(NOT (pattern.pattern_json ? 'sourceCompilationId') OR EXISTS (
+          SELECT 1 FROM jsonb_to_recordset($${params.length}::jsonb) AS current_compilation("profileId" text,"sourceSystem" text,"sourceVersionId" text,"compilationId" text)
+          WHERE current_compilation."profileId"=pattern.profile_id AND current_compilation."sourceSystem"=pattern.source_system
+            AND current_compilation."compilationId"=pattern.pattern_json->>'sourceCompilationId'
+            AND (NOT (pattern.pattern_json ? 'sourceVersionId') OR current_compilation."sourceVersionId"=pattern.pattern_json->>'sourceVersionId')
+        ))`);
       }
       const inducedSyntaxSchemaParam = params.length + 1;
       params.push(INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA);

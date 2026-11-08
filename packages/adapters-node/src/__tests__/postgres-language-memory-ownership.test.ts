@@ -1,7 +1,8 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { afterEach, describe, expect, it } from "vitest";
-import { INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID, INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA, LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID, LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, SOURCE_CODE_FUNCTION_PATTERN_SCHEMA, SOURCE_CODE_FUNCTION_PROJECTION_RECIPE_ID, POSTGRES_REQUIRED_TABLES, type SourceVersionId } from "@scce/kernel";
+import { createHasher, stampSourceLanguageCompilation, INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID, INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA, LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID, LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, SOURCE_CODE_FUNCTION_PATTERN_SCHEMA, SOURCE_CODE_FUNCTION_PROJECTION_RECIPE_ID, POSTGRES_REQUIRED_TABLES, type JsonValue, type SourceVersionId } from "@scce/kernel";
+import { sourceLanguageTrainingStreamId } from "../../../kernel/src/source-language-training-identity.js";
 import { clearResidentNgramModelJson, createPostgresStorageAdapter, schemaStatements, type PostgresStorageAdapter } from "../postgres.js";
 
 const adapters: PostgresStorageAdapter[] = [];
@@ -11,11 +12,66 @@ afterEach(async () => {
 });
 
 describe("Postgres language-memory ownership queries", () => {
+  it("admits only the validated current source generation before any pattern row or byte budget", async () => {
+    const { adapter, calls } = fixture();
+    const header = compilationHeaderFixture();
+    const current = (header.model_metadata as { sourceCompilation: { compilationId: string } }).sourceCompilation.compilationId;
+    const patterns = [
+      { id: "stale.semantic", support: 100, sourceCompilationId: "old-compilation", schema: "scce.induced_language_model.semantic_memory.v1" },
+      { id: "stale.creative", support: 90, sourceCompilationId: "old-compilation", schema: "scce.creative_event_construction_pattern.v3" },
+      { id: "current.semantic", support: 3, sourceCompilationId: current, schema: "scce.induced_language_model.semantic_memory.v1" },
+      { id: "current.creative", support: 2, sourceCompilationId: current, schema: "scce.creative_event_construction_pattern.v3" },
+      { id: "imported.standalone", support: 1, schema: "scce.induced_language_model.semantic_memory.v1" }
+    ].map(row => ({ ...row, profileId: "profile.owned", sourceSystem: "gutenberg", sourceVersionId: "version.owned" }));
+    patterns.splice(2, 0, { ...patterns[2]!, id: "wrong.version", sourceVersionId: "other.version" },
+      { ...patterns[2]!, id: "wrong.profile", profileId: "other.profile" }, { ...patterns[2]!, id: "wrong.system", sourceSystem: "other.system" });
+    let headers = [header];
+    adapter.query = async <T>(sql: string, params: unknown[] = []): Promise<T[]> => {
+      calls.push({ sql, params });
+      if (sql.includes("AS model_metadata")) return structuredClone(headers) as T[];
+      const ownerParam = params.find(value => typeof value === "string" && value.startsWith("[{\"compilationId\""));
+      const owners = typeof ownerParam === "string" ? JSON.parse(ownerParam) as Array<{ compilationId: string; profileId: string; sourceSystem: string; sourceVersionId: string }> : [];
+      const rows = patterns.filter(row => !row.sourceCompilationId || !sql.includes("current_compilation") || owners.some(owner => owner.compilationId === row.sourceCompilationId
+        && owner.profileId === row.profileId && owner.sourceSystem === row.sourceSystem && owner.sourceVersionId === row.sourceVersionId));
+      return rows.slice(0, 2).map(row => ({ id: row.id, profile_id: "profile.owned", pattern_kind: "semantic_role", support: String(row.support), entropy: "0",
+        pattern_json: row, evidence_ids: [], updated_at: new Date(1), information_label: { tenantId: "tenant.fixture", principals: ["principal.fixture"], compartments: [], exportClass: "restricted", mergePolicy: "isolated" } })) as T[];
+    };
+    const read = () => adapter.languageMemory.listLanguagePatterns({ profileId: "profile.owned", sourceSystem: "gutenberg", limit: 2, maxTotalJsonBytes: 1000 });
+    expect((await read()).map(row => row.id)).toEqual(["current.semantic", "current.creative"]);
+    const headerQuery = calls.find(call => call.sql.includes("AS model_metadata"))!;
+    expect(headerQuery.sql).not.toContain("SELECT model.model_json");
+    for (const alias of ["model", "profile", "version", "receipt"]) expect(headerQuery.sql).toContain(`${alias}.information_label`);
+    expect(headerQuery.sql).toContain("version.id=profile.source_version_id");
+    expect(headerQuery.sql).toContain("receipt.id='source.language.compilation.'");
+    const patternQuery = calls.at(-1)!;
+    expect(patternQuery.sql.indexOf('current_compilation."compilationId"=pattern.pattern_json')).toBeLessThan(patternQuery.sql.indexOf("ranked_pool AS"));
+    expect(patternQuery.sql.indexOf('current_compilation."compilationId"=pattern.pattern_json')).toBeLessThan(patternQuery.sql.indexOf("running_stored_bytes"));
+    expect(patternQuery.sql).toContain('current_compilation."sourceSystem"=pattern.source_system');
+    expect(patternQuery.sql).toContain('current_compilation."sourceVersionId"=pattern.pattern_json');
+    for (const changed of [
+      { ...header, source_id: "other.source" }, { ...header, source_version_id: "other.version" }, { ...header, content_hash: "other.hash" },
+      { ...header, profile_id: "other.profile" }, { ...header, source_system: "other.system" }, { ...header, compilation_receipt: null },
+      { ...header, id: "other.model" }, { ...header, stream_id: "other.stream" },
+      { ...header, compilation_receipt: { ...(header.compilation_receipt as object), modelInventory: [] } },
+      { ...header, model_metadata: { ...(header.model_metadata as object), sourceCompilation: { ...(header.model_metadata as { sourceCompilation: object }).sourceCompilation, compilationId: "tampered" } } },
+      { ...header, compilation_receipt: { ...(header.compilation_receipt as object), sourceId: "other.source" } }
+    ]) {
+      headers = [changed];
+      expect((await read()).map(row => row.id)).toEqual(["imported.standalone"]);
+    }
+    headers = [header, { ...header, source_id: "other.source" }];
+    expect((await read()).map(row => row.id)).toEqual(["imported.standalone"]);
+    headers = [header, header];
+    expect((await read()).map(row => row.id)).toEqual(["imported.standalone"]);
+    headers = [];
+    expect((await read()).map(row => row.id)).toEqual(["imported.standalone"]);
+    expect(patterns).toHaveLength(8);
+  });
   it("filters exact compiler-owned receipt IDs before ranking or limiting historical rows", async () => {
     const { adapter, calls } = fixture();
     await adapter.languageMemory.listLanguagePatterns({ patternIds: ["receipt.current"], profileIds: ["profile.owned"],
       sourceSystem: "gutenberg", patternKind: "source_compilation", patternSchemas: ["scce.source_language_compilation_receipt.v1"], limit: 1 });
-    const query = calls[0]!;
+    const query = calls.at(-1)!;
     expect(query.sql).toContain("pattern.id=ANY($1::text[])");
     expect(query.params[0]).toEqual(["receipt.current"]);
     expect(query.sql.indexOf("pattern.id=ANY")).toBeLessThan(query.sql.indexOf("ranked_pool AS"));
@@ -27,12 +83,12 @@ describe("Postgres language-memory ownership queries", () => {
   it("projects only generative join programs out of an explicitly requested interpretation read", async () => {
     const { adapter, calls } = fixture();
     await adapter.languageMemory.listLanguagePatterns({ view: "request_seed", profileIds: ["profile.owned"], sourceSystem: "wikipedia", limit: 8 });
-    expect(calls[0]!.sql).toContain("THEN pattern.pattern_json - 'joinProgram' ELSE pattern.pattern_json END AS pattern_json");
-    expect(calls[0]!.sql).toContain("pattern.information_label");
-    expect(calls[0]!.sql).toContain("active_projection.value_json->'patternIds' ? pattern.id");
-    expect(calls[0]!.params).toContainEqual(["profile.owned"]);
+    expect(calls.at(-1)!.sql).toContain("THEN pattern.pattern_json - 'joinProgram' ELSE pattern.pattern_json END AS pattern_json");
+    expect(calls.at(-1)!.sql).toContain("pattern.information_label");
+    expect(calls.at(-1)!.sql).toContain("active_projection.value_json->'patternIds' ? pattern.id");
+    expect(calls.at(-1)!.params).toContainEqual(["profile.owned"]);
     await adapter.languageMemory.listLanguagePatterns({ profileIds: ["profile.owned"], sourceSystem: "wikipedia", limit: 8 });
-    expect(calls[1]!.sql).not.toContain("pattern.pattern_json - 'joinProgram'");
+    expect(calls.at(-1)!.sql).not.toContain("pattern.pattern_json - 'joinProgram'");
   });
   it("reads exact accessible projection receipts and validates their owned compilation inventory including empty results", async () => {
     const { adapter, calls } = fixture();
@@ -91,7 +147,7 @@ describe("Postgres language-memory ownership queries", () => {
     expect(calls.some(call => /DELETE FROM/u.test(call.sql))).toBe(false);
     calls.length = 0;
     await adapter.languageMemory.listLanguagePatterns({ sourceSystem: "oss_code", patternKind: "source_code_function", formalLanguage: "python", limit: 1 });
-    const query = calls[0]!;
+    const query = calls.at(-1)!;
     expect(query.params).toContain(SOURCE_CODE_FUNCTION_PATTERN_SCHEMA);
     expect(query.params).toContain(SOURCE_CODE_FUNCTION_PROJECTION_RECIPE_ID);
     expect(query.sql.indexOf("active_projection.value_json->'patternIds' ? pattern.id")).toBeLessThan(query.sql.indexOf("ranked_pool AS"));
@@ -99,7 +155,7 @@ describe("Postgres language-memory ownership queries", () => {
   it("requires active publication for source-owned test contracts before spending retrieval budgets", async () => {
     const { adapter, calls } = fixture();
     await adapter.languageMemory.listLanguagePatterns({ sourceSystem: "oss_code", patternKind: "source_code_assertion_contract", limit: 1 });
-    const query = calls[0]!;
+    const query = calls.at(-1)!;
     expect(query.params).toContain("scce.source_owned_test_contract.v1");
     expect(query.params).toContain("scce.source_owned_test_contract_projection.v1");
     expect(query.sql.indexOf("active_projection.value_json->'patternIds' ? pattern.id")).toBeLessThan(query.sql.indexOf("ranked_pool AS"));
@@ -144,7 +200,7 @@ describe("Postgres language-memory ownership queries", () => {
   it("filters compact source functions by declared language and arity before spending any row or byte budget", async () => {
     const { adapter, calls } = fixture();
     await adapter.languageMemory.listLanguagePatterns({ sourceSystem: "oss_code", patternKind: "source_code_function", formalLanguage: "typescript", parameterCount: 0, limit: 500, maxTotalJsonBytes: 1_000_000 });
-    const call = calls[0]!;
+    const call = calls.at(-1)!;
     expect(call.params).toContain("source_code_function");
     expect(call.params).toContain("typescript");
     expect(call.params).toContain("0");
@@ -165,7 +221,7 @@ describe("Postgres language-memory ownership queries", () => {
       patternSchemas: ["scce.request_requirement_pattern.v1", "scce.creative_event_compatibility_model.v1"],
       limit: 2048
     });
-    const call = calls[0]!;
+    const call = calls.at(-1)!;
     const filter = call.sql.indexOf("pattern.pattern_json->>'schema'=ANY(");
     expect(filter).toBeGreaterThanOrEqual(0);
     expect(filter).toBeLessThan(call.sql.indexOf("ranked_pool AS"));
@@ -176,7 +232,7 @@ describe("Postgres language-memory ownership queries", () => {
   it("filters historical construction bundles through the active source projection before row limits", async () => {
     const { adapter, calls } = fixture();
     await adapter.languageMemory.listLanguagePatterns({ profileId: "profile.owned", sourceSystem: "wikipedia", limit: 32 });
-    const call = calls[0]!;
+    const call = calls.at(-1)!;
     const activeFilter = call.sql.indexOf("active_projection.value_json->'patternIds' ? pattern.id");
     expect(activeFilter).toBeGreaterThanOrEqual(0);
     expect(activeFilter).toBeLessThan(call.sql.indexOf("ranked_pool AS"));
@@ -191,7 +247,7 @@ describe("Postgres language-memory ownership queries", () => {
   it("supersedes legacy induced syntax rows only for a rebuilt source scope before row and byte limits", async () => {
     const { adapter, calls } = fixture();
     await adapter.languageMemory.listLanguagePatterns({ profileId: "profile.owned", maxTotalJsonBytes: 64_000_000, limit: 2048 });
-    const call = calls[0]!;
+    const call = calls.at(-1)!;
     const activeSyntaxFilter = call.sql.indexOf("active_syntax.pattern_json->>'sourceVersionId'=pattern.pattern_json->>'sourceVersionId'");
     expect(activeSyntaxFilter).toBeGreaterThanOrEqual(0);
     expect(activeSyntaxFilter).toBeLessThan(call.sql.indexOf("ranked_pool AS"));
@@ -260,8 +316,8 @@ describe("Postgres language-memory ownership queries", () => {
     expect(calls[0]?.sql).toContain("profile_id=ANY($1::text[])");
     expect(calls[0]?.sql.indexOf("profile_id=ANY")).toBeLessThan(calls[0]!.sql.indexOf("LIMIT"));
     expect(calls[0]?.params[0]).toEqual(["profile.a", "profile.b"]);
-    expect(calls[1]?.sql).toContain("profile_id=ANY($1::text[])");
-    expect(calls[1]?.sql.indexOf("profile_id=ANY")).toBeLessThan(calls[1]!.sql.indexOf("LIMIT"));
+    expect(calls.at(-1)?.sql).toContain("profile_id=ANY($1::text[])");
+    expect(calls.at(-1)?.sql.indexOf("profile_id=ANY")).toBeLessThan(calls.at(-1)!.sql.indexOf("LIMIT"));
   });
 
   it("supersedes stale request-requirement rows in one source scope before storing fresh target/range patterns", async () => {
@@ -544,6 +600,19 @@ function modelFixture(models: ReadonlyArray<{ id: string; storedBytes: number; j
     return [];
   };
   return { adapter, calls };
+}
+
+function compilationHeaderFixture(): { id: string; stream_id: string; profile_id: string; source_system: string; source_id: string; source_version_id: string; content_hash: string; model_metadata: JsonValue; compilation_receipt: JsonValue } {
+  const hasher = createHasher();
+  const owner = { sourceId: "source.owned" as never, sourceVersionId: "version.owned" as SourceVersionId, contentHash: "sha256.owned" as never };
+  const streamId = sourceLanguageTrainingStreamId({ ...owner, sourceSystem: "gutenberg", hasher });
+  const compiled = stampSourceLanguageCompilation({ owner, profileId: "profile.owned", sourceSystem: "gutenberg", streamId, text: "abc", chunks: ["abc"], hasher,
+    models: [{ id: "model.owned", streamId, languageHint: "und", maxOrder: 2, discount: 0.75, updatedAt: 1,
+      modelJson: { profileId: "profile.owned", sourceVersionId: owner.sourceVersionId, sourceSystem: "gutenberg", model: { totalUnigramCount: 3 } } }],
+    options: { maxOrder: 2, maxCountersPerOrder: 64, vocabularyLimit: 64, languageOnly: false, retainNgramObservations: false },
+    artifacts: { units: [], patterns: [], semanticFrames: [] } });
+  return { id: compiled.models[0]!.id, stream_id: streamId, profile_id: "profile.owned", source_system: "gutenberg", source_id: owner.sourceId, source_version_id: owner.sourceVersionId, content_hash: owner.contentHash,
+    model_metadata: compiled.models[0]!.modelJson, compilation_receipt: (compiled.patterns[0]!.patternJson as { compilation: JsonValue }).compilation };
 }
 
 function fixture(): {

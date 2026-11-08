@@ -24,7 +24,13 @@ export function sourceLanguageCompilationReceiptIdForModels(input: {
 }): string | undefined {
   const record = input.models[0];
   if (!record) return undefined;
-  const model = jsonRecord(record.modelJson);
+  return sourceLanguageCompilationReceiptId(validateSourceLanguageCompilationHeader({ ...input, modelJson: record.modelJson }));
+}
+
+export function validateSourceLanguageCompilationHeader(input: {
+  owner: SourceCompilationOwner; profileId: string; sourceSystem: string; modelJson: JsonValue; hasher: Hasher; compilationReceipt?: JsonValue;
+}): string {
+  const model = jsonRecord(input.modelJson);
   const { compilationId, chunk: _chunk, modelDigest: _modelDigest, ...header } = jsonRecord(model.sourceCompilation);
   if (header.schema !== "scce.source_language_compilation.v1" || header.compilerRecipe !== LANGUAGE_TRAINING_BATCH_RECIPE_ID
     || header.sourceId !== input.owner.sourceId || header.sourceVersionId !== input.owner.sourceVersionId || header.contentHash !== input.owner.contentHash
@@ -32,7 +38,13 @@ export function sourceLanguageCompilationReceiptIdForModels(input: {
     || model.profileId !== input.profileId || model.sourceVersionId !== input.owner.sourceVersionId
     || header.parentStreamId !== sourceLanguageTrainingStreamId({ ...input.owner, sourceSystem: input.sourceSystem, hasher: input.hasher })
     || compilationId !== canonicalDigestHex(header, input.hasher)) throw new Error("canonical source compilation header is incomplete or changed");
-  return sourceLanguageCompilationReceiptId(String(compilationId));
+  if (input.compilationReceipt !== undefined) {
+    const { compilationId: receiptId, modelInventory, ...receiptHeader } = jsonRecord(input.compilationReceipt);
+    if (receiptId !== compilationId || !Array.isArray(modelInventory) || canonicalDigestHex(receiptHeader, input.hasher) !== compilationId) {
+      throw new Error("canonical source compilation receipt changed");
+    }
+  }
+  return String(compilationId);
 }
 
 function modelMaterial(record: NgramModelRecord): JsonValue {
@@ -141,12 +153,17 @@ export async function validateSourceCompilationArtifactInventory(input: {
 }
 
 export function validateSourceCompilationReceipt(receiptValue: JsonValue, models: readonly NgramModelRecord[], hasher: Hasher): void {
+  validateSourceCompilationModelInventory(receiptValue, models.map(record => ({ id: record.id, streamId: record.streamId,
+    chunk: jsonRecord(jsonRecord(record.modelJson).sourceCompilation).chunk!, modelDigest: canonicalDigestHex(modelMaterial(record), hasher) })), hasher);
+}
+
+export function validateSourceCompilationModelInventory(receiptValue: JsonValue,
+  models: readonly { id: string; streamId: string; chunk: JsonValue; modelDigest: string }[], hasher: Hasher): void {
   const receipt = jsonRecord(receiptValue);
   const { compilationId, modelInventory, ...common } = receipt;
   if (compilationId !== canonicalDigestHex(common, hasher) || !Array.isArray(modelInventory)) throw new Error("canonical source compilation receipt changed");
   if (modelInventory.length !== models.length) throw new Error("canonical source compilation model inventory is incomplete or changed");
-  const actual = models.map(record => ({ id: record.id, streamId: record.streamId, chunk: jsonRecord(jsonRecord(record.modelJson).sourceCompilation).chunk,
-    modelDigest: canonicalDigestHex(modelMaterial(record), hasher) })).sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
+  const actual = [...models].sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
   const expected = [...modelInventory].sort((left, right) => String(jsonRecord(left).id) < String(jsonRecord(right).id) ? -1 : String(jsonRecord(left).id) > String(jsonRecord(right).id) ? 1 : 0);
   if (canonicalDigestHex(actual, hasher) !== canonicalDigestHex(expected, hasher)) throw new Error("canonical source compilation model inventory is incomplete or changed");
 }
