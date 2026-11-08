@@ -561,7 +561,7 @@ describe("learned rows carry the shard's provenance once", () => {
     ].join("\n"));
     await trainOssCorpus({ storage: fixture.storage, rootPath: root, sourceUriBase: "scce://assertion-fixture", maxFiles: 20,
       maxFilesPerRun: 20, ngramMaxOrder: 2, ngramMaxCountersPerOrder: 64 });
-    expect(contractProjectionWrites.findLast(write => write.projection.sourceId === ownedProjection!.projection.sourceId)?.projection.patternIds).toEqual([]);
+    expect([...contractProjectionWrites].reverse().find(write => write.projection.sourceId === ownedProjection!.projection.sourceId)?.projection.patternIds).toEqual([]);
     expect(fixture.state.patterns.filter(pattern => pattern.patternKind === "source_code_assertion_contract")).toEqual([]);
   });
 
@@ -2248,7 +2248,7 @@ describe("dialogue corpus training", () => {
         && recordOf(pattern.patternJson).schema === input.schema
         && recordOf(pattern.patternJson).sourceSystem === input.sourceSystem
         && String(recordOf(pattern.patternJson).sourceVersionId) === String(input.sourceVersionId)));
-      await replaceFixtureLanguagePatternProjection.call(fixture.storage.languageMemory, input);
+      await fixture.storage.languageMemory.putLanguagePatterns!(input.patterns);
     };
     fixture.storage.evidence.searchEvidence = async query => fixture.state.evidence
       .filter(span => String(span.sourceVersionId) === String(query.sourceVersionId) && span.status === "promoted")
