@@ -156,6 +156,7 @@ import {
 import { canonicalStringify, clamp01, featureSet, mean, toJsonValue, weightedJaccard } from "./primitives.js";
 import { evaluateConstructionCycleConsistency, type ConstructionCycleConsistencyOutcome } from "./construction-cycle-consistency.js";
 import { sourceRelationConstructionBindingId } from "./graph-surface-alignment.js";
+import { sourceBoundFactSurfaceWitness } from "./mouth-source-realization-witness.js";
 import { realizeCounterexampleSurfaces, type LearnedCounterexampleSurface } from "./mouth-counterexample.js";
 import { containsUnresolvedSurfaceKey } from "./localization.js";
 import { isNonAssertiveRuntimeMotionConstruct, isTerminalNonAssertiveRuntimeMotionCandidate } from "./runtime-motion.js";
@@ -8260,7 +8261,13 @@ function learnedPriorFactsSurviveSurface(
     certified: false,
     externallyFactual: false
   }, mouthClosedClass(input)));
-  return contracts.every(contract => sentences.some(sentence => candidateSurvivesRealizationContract(sentence, contract).survives));
+  const profileIds = new Set([String(input.languageProfile.id), ...input.languageMemory.scope.profileIds]);
+  const survives = contracts.map(contract => sentences.map(sentence =>
+    candidateSurvivesRealizationContract(sentence, contract).survives
+      || Boolean(sourceBoundFactSurfaceWitness({ text: sentence, fact: contract.sourceFact,
+        bundles: input.languageMemory.importedConstructionBundles, profileIds }))));
+  return survives.every(rows => rows.some(Boolean))
+    && sentences.every((_, index) => survives.some(rows => rows[index]));
 }
 
 function learnedPriorRequiredFacts(state: SemanticAnswerConstructState): SemanticAnswerFact[] {

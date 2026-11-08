@@ -34,6 +34,7 @@ import {
 } from "../question-routing-ids.js";
 import type { CandidateSurface } from "../candidate.js";
 import { genericChatMouthFixture as fixture } from "./fixtures/generic-chat-mouth-fixture.js";
+import { sourceOwnedSemanticSurfacePatterns } from "./fixtures/source-owned-semantic-surface.js";
 import { sourceOwnedMouthTeaching } from "./fixtures/source-owned-mouth-teaching.js";
 import { clearCorpusIdentitySignals, primeCorpusIdentitySignals } from "../corpus-identity.js";
 import { answerCoversRequest, localEvidenceAnswerClaimSurface, localEvidenceAnswerSurface } from "../local-evidence-runtime.js";
@@ -1615,8 +1616,8 @@ describe("Mouth runtime surface planning", () => {
   });
 
   it("answers an ordinary hydrated question from a semantic answer construct without import telemetry", async () => {
-    const source = sourceVersion();
-    const evidence = directEvidence(source);
+    const source = sourceVersion(semanticSourceText);
+    const evidence = directEvidence(source, semanticSourceText);
     const field = emptyField();
     const claim = "who was ada lovelace and what was her contribution to computer science?";
     const entailment = createSemanticEntailmentEngine({ idFactory: ids, hasher }).check({
@@ -1626,7 +1627,7 @@ describe("Mouth runtime surface planning", () => {
       field,
       createdAt: clock.now()
     });
-    const ordinaryPriorMemory = importedMemory(source, evidence, "ordinary-prior-answer");
+    const ordinaryPriorMemory = importedMemory(source, evidence, "ordinary-prior-answer", false, true);
     // This corpus unit supplies real learned wording; the selected graph
     // facts remain the authority for what the sentence may say.
     const learnedAnswerSurface = "Ada Lovelace is a mathematician. Ada Lovelace wrote notes about the Analytical Engine. The Analytical Engine is a mechanical computer.";
@@ -1723,9 +1724,9 @@ describe("Mouth runtime surface planning", () => {
   });
 
   it.each(["missing", "foreign", "current", "learned"])("keeps source-bound facts out of the learned-prior route when their owners are %s", async ownership => {
-    const source = sourceVersion();
+    const source = sourceVersion(semanticSourceText);
     const text = "Ada Lovelace is a mathematician. Ada Lovelace wrote notes about the Analytical Engine. The Analytical Engine is a mechanical computer.";
-    const owner = { ...directEvidence(source), text, textPreview: text, features: featureSet(text, 128) };
+    const owner = directEvidence(source, text);
     const field = emptyField();
     const evidence = ownership === "missing" || ownership === "learned" ? [] : ownership === "current" ? [owner]
       : [{ ...owner, id: "evidence:foreign:owner" as EvidenceSpan["id"] }];
@@ -1739,7 +1740,7 @@ describe("Mouth runtime surface planning", () => {
         certificationBoundary: { directEvidenceCount: 1, evidenceSpanIds: [String(owner.id)], sourceVersionIds: [String(owner.sourceVersionId)], externalFactCertification: false }
       });
     }
-    const memory = importedMemory(source, owner, `source-fact-owner:${ownership}`);
+    const memory = importedMemory(source, owner, `source-fact-owner:${ownership}`, false, true);
     memory.importedUnits.push({ id: "unit:source-fact-owner:wording", profileId: "profile:wiki-fixture",
       sourceVersionId: source.sourceVersionId, script: "fixture-script", unitKind: "phrase", text,
       features: featureSet(text, 64), competenceVector: [1], alpha: 0.94, evidenceIds: [],
@@ -1758,7 +1759,7 @@ describe("Mouth runtime surface planning", () => {
   });
 
   it("realizes graph answer slots from a source-owned language surface instead of emitting an empty semantic answer", async () => {
-    const source = sourceVersion();
+    const source = sourceVersion(semanticSourceText);
     const field = emptyField();
     const question = "Who was Ada Lovelace?";
     const entailment = createSemanticEntailmentEngine({ idFactory: ids, hasher }).check({
@@ -1792,8 +1793,9 @@ describe("Mouth runtime surface planning", () => {
           evidenceIds: [],
           metadata: { sourceSystem: "scce2", provenanceClass: "learned_language_prior" }
         }],
-        patterns: [joinProgramPattern()],
-        semanticFrames: []
+        patterns: [joinProgramPattern(), ...semanticSourcePatterns(directEvidence(source, semanticSourceText))],
+        semanticFrames: [],
+        constructionEvidence: [directEvidence(source, semanticSourceText)]
       }),
       targetLanguage: "fixture-language",
       brainMarker: {
@@ -2504,15 +2506,25 @@ describe("Mouth runtime surface planning", () => {
     };
   }
 
-  function importedMemory(source: SourceVersion, evidence: EvidenceSpan, importRunId: string, sourceTeaching = false) {
+  const semanticSourceText = "Ada Lovelace is a mathematician. Ada Lovelace wrote notes about the Analytical Engine. The Analytical Engine is a mechanical computer.";
+
+  function semanticSourcePatterns(evidence: EvidenceSpan) {
+    return sourceOwnedSemanticSurfacePatterns({ evidence, profileId: "fixture-language", hasher, facts: [
+      { subject: "Ada Lovelace", predicate: "is", object: "mathematician", relationId: "edge:ada:mathematician", surface: "Ada Lovelace is a mathematician." },
+      { subject: "Ada Lovelace", predicate: "wrote notes about", object: "Analytical Engine", relationId: "edge:ada:analytical-engine-notes", surface: "Ada Lovelace wrote notes about the Analytical Engine." },
+      { subject: "Analytical Engine", predicate: "is", object: "mechanical computer", relationId: "edge:analytical-engine:mechanical-computer", surface: "The Analytical Engine is a mechanical computer." }
+    ] });
+  }
+
+  function importedMemory(source: SourceVersion, evidence: EvidenceSpan, importRunId: string, sourceTeaching = false, semanticTeaching = false) {
     return languageRuntime.hydrateFromImportedBrain({
       importRunId,
       models: [ngramModel()],
       observations: [ngramObservation(source)],
       units: [languageUnit(source)],
-      patterns: [languagePattern(), joinProgramPattern(), ...(sourceTeaching ? [teaching(evidence).pattern] : [])],
+      patterns: [languagePattern(), joinProgramPattern(), ...(sourceTeaching ? [teaching(evidence).pattern] : []), ...(semanticTeaching ? semanticSourcePatterns(evidence) : [])],
       semanticFrames: [semanticFrame(evidence)],
-      constructionEvidence: sourceTeaching ? teaching(evidence).lessons : []
+      constructionEvidence: [...(sourceTeaching ? teaching(evidence).lessons : []), ...(semanticTeaching ? [evidence] : [])]
     });
   }
 
