@@ -695,6 +695,7 @@ async function dispatch(
           request,
           attempts: codeResult.attempts,
           provedBy: codeResult.reason,
+          ...(codeResult.proposalAudits ? { proposalAudits: toJsonValue(codeResult.proposalAudits) } : {}),
           ...(codePorts.projectVerification() ? { projectVerification: toJsonValue(codePorts.projectVerification()) } : {}),
           operations: codeResult.appliedOperations.map(operation => ({ kind: operation.kind, path: operation.path, reason: operation.reason })),
           remainingDiagnostics: codeResult.finalDiagnostics.length

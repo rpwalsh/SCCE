@@ -149,7 +149,7 @@ export async function parseDiagnostics(input: {
  * Read as a location plus whatever the checker last said, because the loop needs where and how many, and the
  * prose is for a person.
  */
-const QUOTED_PATH_DIAGNOSTIC = new RegExp(String.raw`^\s*File\s+"[^"]+",\s*line\s+(\d+)`, "u");
+const QUOTED_PATH_DIAGNOSTIC = new RegExp(String.raw`^\s*File\s+"([^"]+)",\s*line\s+(\d+)`, "u");
 
 const LOCATED_DIAGNOSTIC = new RegExp(
   String.raw`^(.*?)[:(](\d+)(?:[:,](\d+))?[:)]?\s*(.*)$`,
@@ -179,12 +179,13 @@ export function checkerDiagnostics(
     const quoted = QUOTED_PATH_DIAGNOSTIC.exec(trimmed);
     if (quoted) {
       const complaint = text.split(/\r?\n/u).map(row => row.trim()).filter(Boolean).pop() ?? trimmed;
+      const diagnosticPath = workspaceRoot ? path.resolve(workspaceRoot, quoted[1]!) : targetPath;
       out.push({
-        id: `${languageId}:${quoted[1]}:${complaint.slice(0, 48)}`,
+        id: `${languageId}:${diagnosticPath}:${quoted[2]}:${complaint.slice(0, 48)}`,
         class: "syntax",
         patternId: `${languageId}.checker`,
-        path: targetPath,
-        line: Number(quoted[1]),
+        path: diagnosticPath,
+        line: Number(quoted[2]),
         message: complaint,
         raw: trimmed,
         confidence: 0.9,

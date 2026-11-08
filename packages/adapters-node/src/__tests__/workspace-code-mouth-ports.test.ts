@@ -27,12 +27,14 @@ async function fixture(files: Record<string, string>) {
 
 describe("shared workspace code ports", () => {
   it("keeps the file's language at the CLI and HTTP boundary and refuses a missing language capability", async () => {
-    const root = await fixture({ "main.go": "package main\nfunc main() {}\n", "unknown.klingon": "opaque source" });
+    const root = await fixture({ "main.go": "package main\nfunc main() {}\n", "unknown.klingon": "opaque source", "unknown.cob": "opaque source", "unknown.lisp": "opaque source" });
     const go = createWorkspaceCodeMouthPorts({ workspaceRoot: root, targetPath: "main.go" });
     expect((await go.retrieve("main.go")).language).toBe("go");
-    const unknown = createWorkspaceCodeMouthPorts({ workspaceRoot: root, targetPath: "unknown.klingon" });
-    expect((await unknown.retrieve("unknown.klingon")).language).toBe("unknown");
-    expect(await unknown.verify("unknown.klingon")).toMatchObject({ buildSucceeded: false, testsRun: false, diagnostics: [expect.objectContaining({ message: expect.stringContaining("no grammar") })] });
+    for (const target of ["unknown.klingon", "unknown.cob", "unknown.lisp"]) {
+      const unknown = createWorkspaceCodeMouthPorts({ workspaceRoot: root, targetPath: target });
+      expect((await unknown.retrieve(target)).language).toBe("unknown");
+      expect(await unknown.verify(target)).toMatchObject({ buildSucceeded: false, testsRun: false, diagnostics: [expect.objectContaining({ message: expect.stringContaining("no grammar") })] });
+    }
   });
 
   it("applies every same-revision range in a multi-file repair and restores exact original bytes", async () => {
@@ -143,5 +145,7 @@ describe("compiler-located shared grammar holes", () => {
     expect(javaTest).toMatchObject([{ path: path.join(root, "LedgerTest.java"), line: 1 }]);
     const rustTest = checkerDiagnostics({ code: 1, stdout: "thread 'grouped_entries' (35116) panicked at tests\\ledger.rs:2:93:\n", stderr: "" }, "src/ledger.rs", "rust", root);
     expect(rustTest).toMatchObject([{ path: path.join(root, "tests/ledger.rs"), line: 2, column: 93 }]);
+    const pythonTest = checkerDiagnostics({ code: 1, stdout: "", stderr: '  File "ledger_test.py", line 3, in test_grouping\n    assert False\nAssertionError\n' }, "ledger.py", "python", root);
+    expect(pythonTest).toMatchObject([{ path: path.join(root, "ledger_test.py"), line: 3 }]);
   });
 });

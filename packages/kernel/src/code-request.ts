@@ -36,7 +36,7 @@ const CODE_EXTENSION_LANGUAGES: ReadonlyMap<string, string> = new Map([
   ["ts", "typescript"], ["tsx", "typescript"], ["mts", "typescript"], ["cts", "typescript"],
   ["js", "javascript"], ["jsx", "javascript"], ["mjs", "javascript"], ["cjs", "javascript"],
   ["py", "python"], ["rs", "rust"], ["go", "go"], ["java", "java"], ["kt", "kotlin"],
-  ["swift", "swift"], ["c", "c"], ["h", "c"], ["cc", "cpp"], ["cpp", "cpp"], ["hpp", "cpp"],
+  ["swift", "swift"], ["c", "c"], ["h", "c"], ["cc", "cpp"], ["cpp", "cpp"], ["cxx", "cpp"], ["hpp", "cpp"],
   ["cs", "csharp"], ["rb", "ruby"], ["php", "php"], ["sh", "shell"], ["sql", "sql"]
 ]);
 

@@ -11,6 +11,7 @@ import {
   codeSurfaceTokens,
   codeIdentifierTokens,
   createHasher,
+  toJsonValue,
   generateLearnedCodeRepairs,
   generateLearnedBehaviorCodeRepairs,
   learnedCodeRepairOperation,
@@ -224,7 +225,9 @@ export function createLearnedCodeProposer(options: LearnedCodeProposerOptions): 
       return {
         operations: [learnedCodeRepairOperation(candidate, context.targetPath)],
         surface: candidate.surface,
-        source: "learned_construction"
+        source: "learned_construction",
+        audit: toJsonValue({ ...jsonRecord(candidate.audit), targetHash: hasher.digestHex(context.targetText),
+          sourceModelKeys: jsonRecord(candidate.audit).sourceModelKeys ?? models.map(model => model.sourceKey ?? null) })
       };
     }
   };

@@ -13,6 +13,7 @@ import {
   type BoundedDebugSession,
   type DebugLoopDecision,
   type ProgramDiagnostic,
+  type JsonValue,
   type RepairOperation,
   type WorkspaceTransformationFamilySelection
 } from "@scce/kernel";
@@ -41,6 +42,7 @@ export interface CodeMouthProposal {
   surface: string;
   source?: CodeMouthProposalSource;
   selection?: WorkspaceTransformationFamilySelection;
+  audit?: JsonValue;
 }
 
 export interface CodeMouthVerification {
@@ -81,6 +83,7 @@ export interface CodeMouthResult {
   proposalSources?: CodeMouthProposalSource[];
   /** Planning evidence per permitted attempt; execution outcomes remain separate from selection. */
   planningSelections?: Array<{ attempt: number; selection: WorkspaceTransformationFamilySelection }>;
+  proposalAudits?: Array<{ attempt: number; source?: CodeMouthProposalSource; audit: JsonValue }>;
 }
 
 export async function runCodeMouth(input: {
@@ -125,6 +128,7 @@ export async function runCodeMouth(input: {
   let decision: DebugLoopDecision | undefined;
   const proposalSources: CodeMouthProposalSource[] = [];
   const planningSelections: NonNullable<CodeMouthResult["planningSelections"]> = [];
+  const proposalAudits: NonNullable<CodeMouthResult["proposalAudits"]> = [];
   // The loop's own count. A session is replaced whenever the state advances, so its length is how many
   // hypotheses have been tried against the current state and not how many turns the loop has taken.
   let iterations = 0;
@@ -137,6 +141,7 @@ export async function runCodeMouth(input: {
     decision,
     proposalSources,
     ...(planningSelections.length ? { planningSelections } : {}),
+    ...(proposalAudits.length ? { proposalAudits } : {}),
     reason: applied.length && outcome !== "resolved"
       ? `${reason}; kept ${applied.length} repair(s) taking this file from ${startingDiagnostics.length} to ${diagnostics.length} diagnostics`
       : reason
@@ -163,6 +168,7 @@ export async function runCodeMouth(input: {
     if (proposal.source) proposalSources.push(proposal.source);
     const check = planDebugAttempt(session, diagnostics, proposal.operations, hasher);
     if (!check.permitted) return finish("budget_exhausted", check.reason);
+    if (proposal.audit) proposalAudits.push({ attempt, source: proposal.source, audit: proposal.audit });
     if (proposal.selection) planningSelections.push({ attempt, selection: proposal.selection });
     iterations = attempt;
     log(`attempt ${attempt}: ${proposal.operations.map(operation => `${operation.kind} ${path.basename(operation.path)}`).join(", ")}`);
