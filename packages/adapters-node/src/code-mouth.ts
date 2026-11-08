@@ -229,7 +229,9 @@ export async function runCodeMouth(input: {
     session = recorded.session;
     decision = recorded.decision;
     const mutatedPaths = proposal.operations.map(operation => operation.path);
-    if (patchResolvedTarget({ before: diagnostics, after: verification.diagnostics, targetPath: input.targetPath, mutatedPaths }) && verification.testsSucceeded) {
+    // A failed verifier with no diagnostic supplies no evidence that an edit made progress.
+    const unreportedFailure = verification.diagnostics.length === 0 && (!verification.buildSucceeded || !verification.testsSucceeded);
+    if (!unreportedFailure && patchResolvedTarget({ before: diagnostics, after: verification.diagnostics, targetPath: input.targetPath, mutatedPaths }) && verification.testsSucceeded) {
       applied = [...applied, ...proposal.operations];
       diagnostics = verification.diagnostics;
       const reason = verification.testsRun === false
@@ -242,7 +244,7 @@ export async function runCodeMouth(input: {
     // Not finished, but strictly better: keep it and carry on from there. This is the only way a file with more
     // than one defect is repairable at all, because every step of a convergent sequence looks like a failure to
     // a gate that recognises only the last one.
-    if (patchReducedDiagnostics({ before: diagnostics, after: verification.diagnostics, targetPath: input.targetPath, mutatedPaths })) {
+    if (!unreportedFailure && patchReducedDiagnostics({ before: diagnostics, after: verification.diagnostics, targetPath: input.targetPath, mutatedPaths })) {
       applied = [...applied, ...proposal.operations];
       log(`attempt ${attempt} kept: ${diagnostics.length} -> ${verification.diagnostics.length} diagnostics`);
       diagnostics = verification.diagnostics;
