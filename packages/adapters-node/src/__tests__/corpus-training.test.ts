@@ -2299,7 +2299,7 @@ describe("dialogue corpus training", () => {
     const root = await tempDir("dialogue-reference-properties-"), hasher = createHasher();
     const declaration = creativeReferenceTestAnnotation("dolly-human-creative-pair.json", humanCreativePair.text, hasher);
     await writeFile(path.join(root, "dialogue.json"), JSON.stringify({ ...humanCreativePair,
-      sourceMetadata: { ...recordOf(recordOf(humanCreativePair).sourceMetadata), sourceReferenceBindings: declaration } }), "utf8");
+      sourceMetadata: { ...recordOf(recordOf(toJsonValue(humanCreativePair)).sourceMetadata), sourceReferenceBindings: declaration } }), "utf8");
     const fixture = memoryStorage();
     const result = await trainDialogueCorpus({ storage: fixture.storage, rootPath: root, authorship: "human_authored", informationLabel: ownerLabel,
       ngramMaxOrder: 3, ngramMaxCountersPerOrder: 64, maxFilesPerRun: 1 });
