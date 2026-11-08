@@ -1,4 +1,6 @@
 import test, { after } from 'node:test';
+import {createHash} from 'node:crypto';
+import {nativeValidationPermission} from '../providers/default/native-validation-permission.mjs';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -360,3 +362,25 @@ test('cold grading counts an explicit product refusal as a native loss even when
   assert.equal(calls[1].body.requestedAuthority,'program');
   assert.equal(Object.hasOwn(calls[1].body,'workspaceCoding'),false);
  });
+
+test('verified program approval checks the frozen native scope and retries the exact turn body',async()=>{
+ const input=makeInput('code_generation',{programMode:'verified_artifacts',approvals:['process.build_test']}),tools={node:{path:process.execPath,version:process.version}};
+ const contract=JSON.parse(input.outputContract);
+ const permission=nativeValidationPermission({language:'javascript',target:'module.cjs',tools,protectedPaths:['public-check.cjs','native-tools.json'],maxFiles:8,maxBytes:input.budgets.artifactBytes});
+ contract.nativeValidationPermission=permission;input.outputContract=canonical(contract);
+ input.steps[0].files['native-tools.json']=canonical({language:'javascript',target:'module.cjs',tools});
+ const cwd=await workspace(input.steps[0].files),calls=[];
+ const payload={schema:'scce.program.native_validation_approval.v1',program:'program.current',provider:permission.provider,workingDirectory:permission.workingDirectory,build:permission.build,test:permission.test,ownerRequirementIds:['owned.requirement'],files:[{path:'module.cjs',hash:`sha256_${'a'.repeat(64)}`,byteLength:30},{path:'test/program.test.mjs',hash:`sha256_${'b'.repeat(64)}`,byteLength:50}]};
+ const pending={planId:'plan.current',capabilityId:'process.build_test',input:payload,fingerprint:createHash('sha256').update(`process.build_test\u001f${canonical(payload)}`).digest('hex')};
+ let turns=0;
+ const result=await runScceNative(input,{cwd},{request:async(route,body)=>{
+  calls.push({route,body});
+  if(route==='/api/session/approve'){assert.deepEqual(body,{planId:pending.planId});return {status:200,body:{approved:pending}};}
+  assert.equal(route,'/api/turn?full=1');return turns++?{status:422,body:{}}:{status:202,body:{pendingApproval:pending}};
+ }});
+ assert.equal(result.identity.reason,'turn_http_422');
+ assert.deepEqual(calls.map(row=>row.route),['/api/turn?full=1','/api/session/approve','/api/turn?full=1']);
+ assert.deepEqual(calls[0].body,calls[2].body);
+ assert.equal(result.identity.trace.filter(row=>row.route==='/api/session/approve').length,1);
+ assert.equal(result.identity.trace.some(row=>row.approvalRetry===true),true);
+});

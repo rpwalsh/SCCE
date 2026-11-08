@@ -4,6 +4,7 @@ import path from 'node:path';
 import { canonical, hash } from '../protocol.mjs';
 import { sha256Text, sha256Bytes } from '../../sealed-eval/harness/lib/util.mjs';
 import { execute } from '../runner.mjs';
+import { nativeProgramApprovalAllowed } from './native-program-approval.mjs';
 import { nativeContract, currentPrompt, failure, containedFile, validateArtifacts, publicFilesGuard, runPublicChecks, typedFactualAbstention, publicContextReceipt } from './native-contract.mjs';
 
 export async function runScceNative(input, config, dependencies = {}) {
@@ -35,14 +36,26 @@ async function scceNativeOperation(input, config, dependencies) {
   async function call(route, body, capability) {
     let result = await request(route, body);
     trace.push({ route, requestHash: hash(body), status: result.status, responseHash: hash(result.body), rawResponseHash: result.rawResponseHash ?? hash(result.body) });
-    if (result.status === 202 && result.body?.pendingApproval) {
+    const seenApprovals=new Set();
+    while (result.status === 202 && result.body?.pendingApproval) {
       const pending = result.body.pendingApproval;
       if (!capability || pending.capabilityId !== capability || !contract.approvals.includes(capability) || typeof pending.planId !== 'string') return result;
+      const nativeProgram=contract.operation==='code_generation'&&capability==='process.build_test';
+      if(nativeProgram&&(!nativeProgramApprovalAllowed({input,contract,pending})||seenApprovals.has(pending.fingerprint)||seenApprovals.size>=input.budgets.maxSteps)) {
+        trace.push({route:'approval:refused',planId:pending.planId,reason:'public_native_validation_scope_mismatch'});return result;
+      }
+      if(nativeProgram)seenApprovals.add(pending.fingerprint);
+      const approvalStarted=performance.now();
       const approved = await request('/api/session/approve', { planId: pending.planId });
-      trace.push({ route: '/api/session/approve', capability, planId: pending.planId, status: approved.status, responseHash: hash(approved.body) });
+      trace.push({ route: '/api/session/approve', capability, planId: pending.planId, fingerprint:pending.fingerprint??null, durationMs:performance.now()-approvalStarted,status: approved.status, responseHash: hash(approved.body) });
       if (approved.status !== 200) return approved;
+      if(nativeProgram&&(approved.body?.approved?.planId!==pending.planId||approved.body.approved.fingerprint!==pending.fingerprint||canonical(approved.body.approved.input)!==canonical(pending.input))) {
+        trace.push({route:'approval:refused',planId:pending.planId,reason:'approval_record_changed'});return {status:422,body:{reason:'approval_record_changed'}};
+      }
+      const retryStarted=performance.now();
       result = await request(route, body);
-      trace.push({ route, requestHash: hash(body), status: result.status, responseHash: hash(result.body), rawResponseHash: result.rawResponseHash ?? hash(result.body) });
+      trace.push({ route, requestHash: hash(body), status: result.status,durationMs:performance.now()-retryStarted,approvalRetry:true, responseHash: hash(result.body), rawResponseHash: result.rawResponseHash ?? hash(result.body) });
+      if(!nativeProgram)break;
     }
     return result;
   }
@@ -113,7 +126,7 @@ async function scceNativeOperation(input, config, dependencies) {
     if (workspaceProgramContext) body.metadata = { ...body.metadata, workspaceProgramContext };
   }
   else if (contract.operation === 'tool_use') body.requestedAuthority = 'action';
-  const result = await call('/api/turn?full=1', body);
+  const result = await call('/api/turn?full=1', body,contract.operation==='code_generation'&&contract.programMode==='verified_artifacts'?'process.build_test':undefined);
   if (contract.answerMode === 'answer_or_abstain' && typedFactualAbstention(result)) {
     const outcome = { status: 'abstained', answer: null };
     const completed = await complete(canonical(outcome), {}, { rawResponseHash: result.rawResponseHash ?? hash(result.body), machineOutcome: outcome, machineOutcomeHash: hash(outcome) });

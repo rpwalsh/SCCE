@@ -4,6 +4,7 @@ import path from 'node:path';
 import { canonical, hash, writeJson } from '../../protocol.mjs';
 import { nativeFiles, expectedReads, NATIVE_LANGUAGES, nativePublicDeclarations } from './native-fixtures.mjs';
 import { numericFiles, numericExpected, nativePublicDeclarations as numericPublicDeclarations } from './numeric-fixtures.mjs';
+import { nativeValidationPermission } from './native-validation-permission.mjs';
 import { sha256Text } from '../../../sealed-eval/harness/lib/util.mjs';
 
 export const CATEGORY_GROUPS = { chat: 'chat', creative: 'creative', corpus_facts: 'corpus_facts', learning_updates: 'learning_updates', code_repair_stateful: 'code', code_generation_stateful: 'code', code_repair_numeric: 'code', code_generation_numeric: 'code', agentic_autonomous: 'agentic', agentic_given_plan: 'agentic' };
@@ -119,7 +120,7 @@ async function codeCase(cell, index, rng, options, id) {
   }
   const checks = [{ argv: ['{node}', 'public-check.mjs'] }];
   const policy = { schemaVersion: 'scce.patch-validation-policy.v1', id: 'blind-public-native.v1', commands: [{ executable: options.tools.node.path, argv: ['public-check.mjs'], checkIds: ['compiler', 'typecheck', 'tests'] }], timeoutMs: options.budgets.timeMs, maxOutputBytes: options.budgets.outputBytes, maxWorkspaceFiles: Object.keys(fixture.files).length + 32, maxWorkspaceBytes: options.budgets.artifactBytes, environment: {} };
-  const contract = baseContract(repair ? 'code_repair' : 'code_generation', options, { writablePaths: [fixture.target], targetPaths: [fixture.target], publicChecks: checks, ...(repair ? { validationPolicy: policy } : { programMode: 'verified_artifacts', allowNewFiles: true }), prepareWorkspace: true });
+  const contract = baseContract(repair ? 'code_repair' : 'code_generation', options, { writablePaths: [fixture.target], targetPaths: [fixture.target], publicChecks: checks, ...(repair ? { validationPolicy: policy } : { programMode: 'verified_artifacts', allowNewFiles: true, approvals: ['process.build_test'], nativeValidationPermission: nativeValidationPermission({language:cell.language,target:fixture.target,tools:options.tools,protectedPaths:[...Object.keys(fixture.files),'specification.txt'],maxFiles:policy.maxWorkspaceFiles,maxBytes:options.budgets.artifactBytes}) }), prepareWorkspace: true });
   const requestLocale = index % 2 ? 'ru' : 'en';
   return { public: { outputContract: canonical(contract), steps: [{ prompt: `${repair ? locales[requestLocale].repair(cell.language, fixture.target) : locales[requestLocale].generation(cell.language, fixture.target)}\n${spec}`, sources: [], files: { ...fixture.files, 'specification.txt': spec } }] }, private: { ...await privateNative(options.privateRoot, id, vectors), family: stateful ? `stateful_${repair ? defect : 'generation'}` : 'numeric_piecewise', requestLocale, hiddenKeyCount: stateful ? vectors.length * 2 : 0 } };
 }
