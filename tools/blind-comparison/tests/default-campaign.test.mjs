@@ -13,6 +13,8 @@ import { execute } from '../runner.mjs';
 import { runReferenceNative } from '../adapters/reference-native-lib.mjs';
 import { runScceNative } from '../adapters/scce-native-lib.mjs';
 import { sha256Text } from '../../sealed-eval/harness/lib/util.mjs';
+import { admitReference } from '../campaign-reference-admission.mjs';
+import { admissionExecutor } from './reference-admission-fixture.mjs';
 
 const roots = [];
 after(async () => { for (const root of roots) await rm(root, { recursive: true, force: true }); });
@@ -148,7 +150,11 @@ test('bootstrap freezes before custodian seed, keeps private custody outside pub
   const base = await root(), frozenFile = path.join(base, 'frozen-code.mjs'); await writeFile(frozenFile, 'export const frozen=true;\n');
   const out = path.join(base, 'campaign');
   const fakeDiscovery = { config: { server: 'http://127.0.0.1:9999', schema: 'fixture', configFile: '/operator/config.json', allowedRoots: [base], token: 'PRIVATE_TEST_BEARER_NEVER_PIN' }, model: { name: 'qwen2.5:3b', digest: 'a'.repeat(64) }, tools: tools(), publicSnapshot: { candidate: { readinessHash: 'fixture-readiness' }, hardwarePolicy: { threads: 1, requestedDevice: 'cpu' }, limitations: 'Offline selftest mock; not a live measurement.' } };
-  const { prepared } = await prepareCampaign({ out, diagnostic: true }, { discover: async () => fakeDiscovery, files: async () => [frozenFile] });
+  const { prepared } = await prepareCampaign({ out, diagnostic: true }, { discover: async () => fakeDiscovery, files: async () => [frozenFile], admission: config => admitReference(config, { executeCommand: admissionExecutor(), randomBytes: n => Buffer.alloc(n, 65) }) });
+  const admission = await readJson(path.join(out, 'preparation/reference-admission.json'));
+  assert.equal(admission.admitted, true);
+  const frozen = await readJson(path.join(out, 'freeze.json'));
+  assert.equal(frozen.plan.artifacts.some(a => a.id === 'reference-admission'), true);
   assert.equal((await readFile(path.join(out, 'plan.json'), 'utf8')).includes('PRIVATE_TEST_BEARER_NEVER_PIN'), false);
   const privateRoot = path.join(base, 'custodian');
   const custody = await custodianCampaign({ preparedFile: path.join(out, 'prepared.json'), freezeDigest: prepared.freezeDigest, privateRoot });

@@ -10,6 +10,16 @@ This is a **real SCCE versus local reference campaign**, not the deterministic f
 
 The reference is explicitly configured for a 32768-token context and up to 4096 output tokens. Typed public task contracts select the model's native structured-output schema per request; raw chat/creative text is unconstrained. These settings leave the legacy runner defaults unchanged. The existing declared runner sends no-truncation/no-shift controls and fails visibly on exhausted output. Verify the installed runtime actually supports those controls and residency/context accounting before collecting; the runtime version is recorded, and unsupported/older implementations are not silently certified.
 
+Preparation now verifies those conditions automatically **through the existing declared runner** before freeze. A 48000-byte synthetic ASCII input at 1024-token context must be rejected with HTTP400 and typed `exceed_context_size_error` evidence reporting the actual prompt/context counts. No English error-message guessing is accepted. A subsequent short native-schema probe at the real campaign settings must satisfy a schema-only random nonce absent from its contradictory plain-text prompt, record normal completion, and restore exact model/digest/runtime/context/device residency. Ignored schema/truncation controls, changed identities, missing machine accounting or exhausted output stop setup. The frozen `preparation/reference-admission.json` contains only hashes and allowlisted metadata, no raw prompt/error or grading material.
+
+Resource choices can be preregistered explicitly, for example:
+
+```powershell
+node tools/blind-comparison/campaign.mjs run --diagnostic --out .tmp/local-diagnostic --threads 4 --device cpu --context-tokens 32768 --output-tokens 4096 --max-reference-model-bytes 4000000000
+```
+
+The optional model-byte ceiling applies to the daemon's **reported model allocation at admission**, not total server/product RAM, process RSS, or an operating-system memory quota. If omitted, the observed allocation is recorded as the admitted observational bound. Per-answer residency remains in the existing reference receipts; this preflight does not invent runtime memory enforcement. Process RSS and total product RAM remain unmeasured/null. Threads/device are requested settings, not a fabricated hard OS CPU/GPU isolation claim.
+
 For the first diagnostic iteration, use:
 
 ```powershell

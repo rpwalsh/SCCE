@@ -9,6 +9,7 @@ import { canonical, hash, readJson, writeJson, signed, verified, freeze, seal, c
 import { collect, checkpoint, execute, readReceipt } from './runner.mjs';
 import { blind, grade } from './grading.mjs';
 import { discoverCampaign, discoverConfig, implementationFiles, REPOSITORY_ROOT } from './campaign-discovery.mjs';
+import { admitReference } from './campaign-reference-admission.mjs';
 import { defaultInventory, coverageGaps, createDefaultPool, CATEGORY_GROUPS } from './providers/default/cases.mjs';
 
 const here = fileURLToPath(new URL('./', import.meta.url));
@@ -18,6 +19,7 @@ export function campaignOptions(overrides = {}) {
   const options = { diagnostic, count: diagnostic ? 2 : 12, attempts: 2, hiddenVectors: 12, toolCalls: 8, device: 'auto', contextTokens: 32768, outputTokens: 4096, seed: 0, budgets: { timeMs: 180000, outputBytes: 2 * 1024 * 1024, caseBytes: 4 * 1024 * 1024, artifactBytes: 2 * 1024 * 1024, maxSteps: 4 }, ...overrides };
   if (!Number.isSafeInteger(options.count) || options.count < 2 || options.count % 2) throw new Error('Preregister an even per-cell count >=2 for balanced factual controls');
   for (const key of ['attempts', 'hiddenVectors', 'toolCalls', 'contextTokens', 'outputTokens']) if (!Number.isSafeInteger(options[key]) || options[key] < 1) throw new Error(`Invalid campaign setting: ${key}`);
+  for (const key of ['threads', 'maxReferenceModelBytes']) if (options[key] !== undefined && (!Number.isSafeInteger(options[key]) || options[key] < 1)) throw new Error(`Invalid campaign resource setting: ${key}`);
   return options;
 }
 function inside(root, candidate) { const relative = path.relative(path.resolve(root), path.resolve(candidate)); return !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`); }
@@ -47,6 +49,10 @@ export async function prepareCampaign(raw, dependencies = {}) {
   await writeJson(path.join(publicPins, 'settings.json'), settings);
   await writeJson(path.join(publicPins, 'coverage.json'), { gaps, sourceCoverage: inventory.admittedSourceCoverage, taskCapability: 'Unproven until this campaign is privately validated and human work independently judged.' });
   await writeJson(path.join(publicPins, 'empty-reference-corpus.json'), { documents: [] });
+  const referenceAdmission = await (dependencies.admission ?? admitReference)({ emptyCorpusFile: path.join(publicPins, 'empty-reference-corpus.json'), modelDigest: discovery.model.digest, runtimeVersion: discovery.publicSnapshot.referenceRuntime?.version, contextTokens: options.contextTokens, outputTokens: options.outputTokens, threads: discovery.publicSnapshot.hardwarePolicy.threads, device: options.device, seed: options.seed, maxReferenceModelBytes: options.maxReferenceModelBytes, budgets: options.budgets });
+  verified(referenceAdmission);
+  if (referenceAdmission.admitted !== true || referenceAdmission.modelDigest !== discovery.model.digest) throw new Error('Reference admission did not bind the discovered model');
+  await writeJson(path.join(publicPins, 'reference-admission.json'), referenceAdmission);
   const admittedSnapshots = [];
   for (let i = 0; i < admitted.length; i++) { const file = path.join(publicPins, `admitted-public-${i}.json`); await writeJson(file, admitted[i]); admittedSnapshots.push(file); }
   const custodyStatement = { mode: options.seedFile ? 'operator-supplied-external-seed' : 'automated-custodian-on-trusted-operator-host', independence: 'No independent-custodian attestation is invented. Use a separate custodian and independently record commitments for true independent custody.', factoryHash: await fileHash(path.join(providerDir, 'cases.mjs')), seedTiming: 'Generate/read seed only after freeze succeeds and all pinned artifacts verify.' };
@@ -59,6 +65,9 @@ export async function prepareCampaign(raw, dependencies = {}) {
   const add = (id, role, file) => { artifacts.push({ id, role, path: path.resolve(file) }); };
   add('candidate-adapter', 'adapter', path.join(here, 'adapters/scce-native.mjs'));
   add('reference-adapter', 'adapter', path.join(here, 'adapters/reference-native.mjs'));
+  add('declared-reference-runner', 'implementation', path.join(REPOSITORY_ROOT, 'tools/sealed-eval/harness/adapters/reference-ollama.mjs'));
+  add('reference-admission-code', 'implementation', path.join(here, 'campaign-reference-admission.mjs'));
+  add('reference-admission', 'preparation', path.join(publicPins, 'reference-admission.json'));
   add('scorer', 'scorer', path.join(here, 'grading.mjs'));
   add('public-authored-source-declaration', 'corpus', path.join(providerDir, 'PRIVATE-CUSTODY.md'));
   add('capabilities', 'coverage', path.join(providerDir, 'capabilities.json'));
@@ -84,11 +93,12 @@ export async function prepareCampaign(raw, dependencies = {}) {
   const candidateArgv = [process.execPath, path.join(here, 'adapters/scce-native.mjs'), '--server', discovery.config.server, '--run-id', nonce, '--cli', path.join(REPOSITORY_ROOT, 'packages/cli/dist/index.js'), '--config', discovery.config.configFile, '--schema', discovery.config.schema];
   const plan = { schema: 'scce.blind-plan.v1', purpose: options.diagnostic ? 'rehearsal' : 'heldout', cells: inventory.cells.map(c => ({ ...c, count: options.count })), categoryGroups: CATEGORY_GROUPS, budgets: options.budgets, coverageInventoryArtifact: 'inventory', isolation: { mode: 'trusted-host', provider: 'Shared bounded public workspace/check broker plus existing native SCCE routes; operating-system containment requires independent provider attestation.', attestationArtifact: 'isolation', limitations: discovery.publicSnapshot.limitations }, artifacts, systems: [
     { id: 'scce', adapterArtifact: 'candidate-adapter', argv: candidateArgv, environmentKeys: ['SCCE_API_BEARER_TOKEN'], identity: { implementationFileListHash: hash(sourceFiles), initialReadiness: discovery.publicSnapshot.candidate.readinessHash }, preparation: { publicCorpusArtifacts: corpusIds, receiptArtifact: 'candidate-preparation' }, resourceIdentity: discovery.publicSnapshot.hardwarePolicy, capabilities: categories },
-    { id: 'local-reference', adapterArtifact: 'reference-adapter', argv: [process.execPath, path.join(here, 'adapters/reference-native.mjs'), '--runner', referenceRunner, '--runner-args', canonical(runnerArgs), '--model-digest', discovery.model.digest], environmentKeys: [], identity: { model: 'qwen2.5:3b', digest: discovery.model.digest }, expectedModelDigest: discovery.model.digest, preparation: { publicCorpusArtifacts: corpusIds, receiptArtifact: 'reference-preparation' }, resourceIdentity: discovery.publicSnapshot.hardwarePolicy, capabilities: categories }
+    { id: 'local-reference', adapterArtifact: 'reference-adapter', argv: [process.execPath, path.join(here, 'adapters/reference-native.mjs'), '--runner', referenceRunner, '--runner-args', canonical(runnerArgs), '--model-digest', discovery.model.digest], environmentKeys: [], identity: { model: 'qwen2.5:3b', digest: discovery.model.digest, admissionDigest: referenceAdmission.digest }, expectedModelDigest: discovery.model.digest, preparation: { publicCorpusArtifacts: corpusIds, receiptArtifact: 'reference-preparation' }, resourceIdentity: { ...discovery.publicSnapshot.hardwarePolicy, reportedModelAllocationAtAdmission: referenceAdmission.reportedResidency }, capabilities: categories }
   ], judges: options.judges ?? ['independent-judge'], acceptance: { minimumPairsPerCell: options.diagnostic ? 1 : options.count, maxLossesPerCell: 0, requireStrictWinPerCell: true, maximumOneSidedPPerCell: 0.05 } };
   const planFile = path.join(out, 'plan.json'), freezeFile = path.join(out, 'freeze.json');
   await writeJson(planFile, plan);
   const frozen = await freeze(planFile, freezeFile);
+  if (frozen.plan.artifacts.find(a => a.id === 'declared-reference-runner')?.sha256 !== referenceAdmission.runner.sha256) throw new Error('Reference runner changed after admission and before freeze');
   const prepared = signed({ schema: 'scce.blind-default-prepared.v1', out, freezeFile, freezeDigest: frozen.digest, settingsFile: path.join(publicPins, 'settings.json'), nonce, custody: custodyStatement, gaps });
   await writeJson(path.join(out, 'prepared.json'), prepared);
   return { prepared, token: discovery.config.token };
@@ -183,7 +193,8 @@ async function main() {
   else if (command === 'finish') result = await finishCampaign({ preparedFile: need('prepared'), custodyFile: need('custody'), checkpointFile: need('checkpoint'), checkpointDigest: need('checkpoint-digest'), ratingsFile: args.get('ratings'), ratingsDigest: args.get('ratings-digest') });
   else if (command === 'resume') result = await resumeCampaign({ out: need('out'), shardCount: Number(args.get('shard-count') ?? 1), shardIndex: Number(args.get('shard-index') ?? 0) });
   else {
-    const options = campaignOptions({ out: need('out'), diagnostic: args.has('diagnostic'), configFile: args.get('config'), admittedManifests: args.has('admitted-public-manifest') ? [args.get('admitted-public-manifest')] : [], seedFile: args.get('seed-file'), privateRoot: args.get('private-root'), ...(args.has('count') ? { count: Number(args.get('count')) } : {}), ...(args.has('device') ? { device: args.get('device') } : {}), ...(args.has('shard-count') ? { shardCount: Number(args.get('shard-count')), shardIndex: Number(args.get('shard-index') ?? 0) } : {}) });
+    const resourceOptions = Object.fromEntries([['threads', 'threads'], ['max-reference-model-bytes', 'maxReferenceModelBytes'], ['context-tokens', 'contextTokens'], ['output-tokens', 'outputTokens']].filter(([flag]) => args.has(flag)).map(([flag, name]) => [name, Number(args.get(flag))]));
+    const options = campaignOptions({ out: need('out'), diagnostic: args.has('diagnostic'), configFile: args.get('config'), admittedManifests: args.has('admitted-public-manifest') ? [args.get('admitted-public-manifest')] : [], seedFile: args.get('seed-file'), privateRoot: args.get('private-root'), ...(args.has('count') ? { count: Number(args.get('count')) } : {}), ...(args.has('device') ? { device: args.get('device') } : {}), ...resourceOptions, ...(args.has('shard-count') ? { shardCount: Number(args.get('shard-count')), shardIndex: Number(args.get('shard-index') ?? 0) } : {}) });
     result = command === 'run' ? await runCampaign(options) : (await prepareCampaign(options)).prepared;
   }
   process.stdout.write(`${canonical(result)}\n`);
