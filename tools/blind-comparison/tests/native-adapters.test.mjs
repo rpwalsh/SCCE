@@ -13,6 +13,7 @@ import { nativeContract } from '../adapters/native-contract.mjs';
 import { runScceNative } from '../adapters/scce-native-lib.mjs';
 import { runReferenceNative } from '../adapters/reference-native-lib.mjs';
 import { validateReferenceRunner } from '../adapters/reference-runner-config.mjs';
+import { nativeResponseSchema } from '../adapters/native-response-schema.mjs';
 
 const roots = [];
 after(async () => { for (const root of roots) await rm(root, { recursive: true, force: true }); });
@@ -118,8 +119,9 @@ test('typed factual insufficient-support abstention is correct only when the pri
 test('the reference uses the same explicit answer-or-abstain schema without English refusal matching', async () => {
   const input = makeInput('turn', { answerMode: 'answer_or_abstain', requestedAuthority: 'factual', writablePaths: [] }), cwd = await workspace(input.steps[0].files);
   const raw = canonical({ status: 'abstained', answer: null });
-  const abstained = await runReferenceNative(input, { cwd }, { ask: async prompt => {
+  const abstained = await runReferenceNative(input, { cwd }, { ask: async (prompt, options) => {
     assert.ok(prompt.includes('answer_or_abstain'));
+    assert.equal(options.format.oneOf[1].properties.answer.type, 'null');
     return { status: 'ok', answer: raw, modelDigest: digest };
   } });
   assert.equal(abstained.identity.productOutcome, 'abstained');
@@ -134,7 +136,7 @@ test('chat and creative replies retain actual text for independent anonymous jud
   input.category = 'creative';
   const text = '🪶 A paper boat turns beneath the bridge.';
   const scce = await runScceNative(input, { cwd }, { request: async () => ({ status: 200, body: { answer: text } }) });
-  const reference = await runReferenceNative(input, { cwd }, { ask: async () => ({ status: 'ok', answer: text, modelDigest: digest }) });
+  const reference = await runReferenceNative(input, { cwd }, { ask: async (_, options) => { assert.equal(Object.hasOwn(options, 'format'), false); return { status: 'ok', answer: text, modelDigest: digest }; } });
   assert.equal(scce.answer, text);
   assert.equal(reference.answer, text);
   assert.equal(Object.hasOwn(scce.identity, 'machineOutcome'), false);
@@ -183,6 +185,23 @@ test('forged program artifact hashes fail instead of manufacturing a ready resul
   assert.equal(result.identity.reason, 'invalid_program_artifact_identity');
   assert.equal(await readFile(path.join(cwd, 'module.cjs'), 'utf8'), bad);
 });
+test('generation permits native emitted new tests and unchanged public files while protecting existing check bytes', async () => {
+  const input = makeInput('code_generation', { programMode: 'verified_artifacts', allowNewFiles: true }), cwd = await workspace(input.steps[0].files);
+  const newTest = 'require("node:assert/strict").equal(require("./module.cjs")(2,3),5);';
+  const emitted = Object.entries({ 'module.cjs': good, 'generated.test.cjs': newTest, 'public-check.cjs': check }).map(([path, content], i) => ({ artifactId: `id.${i}`, path, content, contentHash: `sha256_${sha256Text(content)}` }));
+  const result = await runScceNative(input, { cwd }, { request: async () => ({ status: 200, body: { programReadiness: { status: 'ready', reasonId: 'program.readiness.verified', artifactCount: emitted.length, artifactIds: emitted.map(a => a.artifactId) }, programArtifacts: emitted } }) });
+  assert.equal(result.identity.productOutcome, 'completed');
+  assert.equal(result.artifacts['generated.test.cjs'], newTest);
+  assert.equal(await readFile(path.join(cwd, 'public-check.cjs'), 'utf8'), check);
+  const reference = await runReferenceNative(input, { cwd }, { ask: async (_, options) => {
+    assert.deepEqual(options.format.properties.artifacts.additionalProperties, { type: 'string' });
+    return { status: 'ok', modelDigest: digest, answer: canonical({ answer: '', artifacts: { 'module.cjs': good, 'another.test.cjs': newTest } }) };
+  } });
+  assert.equal(reference.identity.productOutcome, 'completed');
+  const attemptedCheckRewrite = await runReferenceNative(input, { cwd }, { ask: async () => ({ status: 'ok', modelDigest: digest, answer: canonical({ answer: '', artifacts: { 'public-check.cjs': '' } }) }) });
+  assert.equal(attemptedCheckRewrite.identity.productOutcome, 'failed');
+  assert.equal(await readFile(path.join(cwd, 'public-check.cjs'), 'utf8'), check);
+});
 test('generated plans pass through the exact native approval and rollback-preserving patch transaction', async () => {
   const input = makeInput('code_generation', { approvals: ['workspace.patch.apply'] }), cwd = await workspace(input.steps[0].files), calls = [];
   const plan = { schemaVersion: 'scce.patch-transaction-plan.v1', planHash: 'sha256:actual-plan', operations: [{ kind: 'replace', path: 'module.cjs', content: good }] };
@@ -220,14 +239,29 @@ test('ordinary action-turn success requires actual native CapabilitySucceeded ev
 test('reference sees the identical public sources/files/contract, returns strict machine artifacts and runs native checks', async () => {
   const input = makeInput('code_repair'), cwd = await workspace(input.steps[0].files);
   input.steps[0].sources.push({ id: 'public-doc', text: 'Same public documentation.' });
-  const result = await runReferenceNative(input, { cwd, expectedModelDigest: digest }, { ask: async prompt => {
+  const result = await runReferenceNative(input, { cwd, expectedModelDigest: digest }, { ask: async (prompt, options) => {
     assert.ok(prompt.includes('Same public documentation.'));
     assert.ok(prompt.includes('public-check.cjs'));
     assert.ok(prompt.includes('scce.blind-native-task.v1'));
+    assert.deepEqual(Object.keys(options.format.properties.artifacts.properties), ['module.cjs']);
+    assert.equal(options.format.additionalProperties, false);
     return { status: 'ok', answer: canonical({ answer: 'Changed addition.', artifacts: { 'module.cjs': good } }), modelDigest: digest };
   } });
   assert.equal(result.identity.productOutcome, 'completed');
   assert.equal(result.artifacts['module.cjs'], good);
+});
+test('native response schemas depend only on public task structure and constrain autonomous tools to the remaining public budget', () => {
+  const input = makeInput('tool_use', { toolPolicy: { tools: ['workspace.read', 'workspace.write', 'public.check'], maxCalls: 8 }, publicChecks: [{ argv: ['{node}', 'public-check.cjs'] }] });
+  input.privateGoldNeverToBeUsed = 'PRIVATE_CANARY_819204';
+  const schema = nativeResponseSchema(input, nativeContract(input), 3);
+  assert.equal(schema.properties.toolCalls.maxItems, 3);
+  const choices = schema.properties.toolCalls.items.oneOf;
+  assert.deepEqual(choices.map(c => c.properties.tool.const), ['workspace.read', 'workspace.write', 'public.check']);
+  assert.equal(canonical(schema).includes('PRIVATE_CANARY_819204'), false);
+  assert.equal(canonical(schema).includes('../'), false);
+  const goal = { schema: 'scce.local_executive_goal.v1', tasks: [{ public: 'declared' }] };
+  const given = makeInput('tool_use', { executiveGoal: goal });
+  assert.deepEqual(nativeResponseSchema(given, nativeContract(given)).properties.executiveGoal.const, goal);
 });
 test('reference code fences are not guessed or stripped and never become accepted generated code', async () => {
   const input = makeInput('code_generation'), cwd = await workspace(input.steps[0].files);

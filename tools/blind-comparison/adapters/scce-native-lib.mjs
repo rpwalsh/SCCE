@@ -139,7 +139,8 @@ async function scceNativeOperation(input, config, dependencies) {
     if (!succeeded.length || failed.length || contract.requiredCapabilityIds?.some(id => !succeeded.some(e => e.payload?.capabilityId === id))) return failure('no_successful_native_tool_receipt', trace);
     if (contract.toolPolicy && succeeded.length + failed.length + contract.publicChecks.length > contract.toolPolicy.maxCalls) return failure('product_tool_call_budget_exceeded', trace);
     trace.push({ capabilityEvents: succeeded });
-    const emitted = turn.buildTest?.artifacts ?? [];
+    const executionArtifacts = turn.buildTest?.artifacts ?? [];
+    const emitted = executionArtifacts.filter(a => contract.writablePaths.includes(a.path));
     const artifacts = Object.fromEntries(emitted.map(a => [a.path, a.content]));
     if (emitted.some(a => typeof a.content !== 'string' || a.contentHash !== `sha256_${sha256Text(a.content)}`)) return failure('invalid_tool_artifact_identity', trace);
     if (emitted.length) {
@@ -147,6 +148,11 @@ async function scceNativeOperation(input, config, dependencies) {
       try { await applyArtifacts(cwd, artifacts, contract, input.budgets.artifactBytes); }
       catch { return failure('tool_artifact_outside_public_scope', trace); }
     }
+    for (const name of contract.writablePaths) {
+      try { artifacts[name] = await readFile(await containedFile(cwd, name), 'utf8'); }
+      catch (e) { if (e.code !== 'ENOENT') throw e; }
+    }
+    trace.push({ executionArtifactIds: executionArtifacts.map(a => a.artifactId), persistedPublicPaths: Object.keys(artifacts) });
     return complete(canonical({ disposition: 'succeeded' }), artifacts, { rawAnswer: turn.answer ?? '', rawResponseHash: result.rawResponseHash ?? hash(turn) });
   }
   if (contract.answerMode === 'answer_or_abstain') {

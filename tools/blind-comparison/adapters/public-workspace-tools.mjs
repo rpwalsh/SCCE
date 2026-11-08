@@ -8,7 +8,7 @@ export function workspaceToolSession(input, contract, dependencies) {
   const artifacts = Object.create(null), receipts = [];
   const readable = new Set([...input.steps.flatMap(s => Object.keys(s.files)), ...contract.writablePaths]);
   return {
-    artifacts, receipts,
+    artifacts, receipts, used: () => used,
     async execute(calls) {
       if (!Array.isArray(calls) || !calls.length) throw new Error('Autonomous planning requires selected public tool calls');
       let lastCheckPassed = false;

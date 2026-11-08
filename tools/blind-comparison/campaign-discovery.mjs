@@ -64,7 +64,7 @@ export async function discoverCampaign(options, dependencies = {}) {
   });
   const ready = await request();
   const tools = await (dependencies.tools ?? discoverNativeTools)(options.budgets);
-  return { config, model, tools, publicSnapshot: { schema: 'scce.blind-local-discovery.v1', model, host: { node: host.node, os: host.os }, candidate: { server: config.server, schema: config.schema, publicConfigHash: config.publicConfigHash, readinessHash: hash(ready) }, hardwarePolicy: { requestedDevice: options.device, threads: options.threads ?? os.availableParallelism() }, limitations: 'Trusted-host process collection; no automatic OS, network, CPU/RAM/GPU isolation or source-admission equivalence certification.' } };
+  return { config, model, tools, publicSnapshot: { schema: 'scce.blind-local-discovery.v1', model, referenceRuntime: { version: host.ollama?.version ?? null }, host: { node: host.node, os: host.os }, candidate: { server: config.server, schema: config.schema, publicConfigHash: config.publicConfigHash, readinessHash: hash(ready) }, hardwarePolicy: { requestedDevice: options.device, threads: options.threads ?? os.availableParallelism() }, limitations: 'Trusted-host process collection; no automatic OS, network, CPU/RAM/GPU isolation or source-admission equivalence certification.' } };
 }
 export async function implementationFiles(root = REPOSITORY_ROOT) {
   const { stdout } = await exec('git', ['ls-files', '-z'], { cwd: root, maxBuffer: 16 * 1024 * 1024, windowsHide: true });

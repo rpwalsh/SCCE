@@ -12,11 +12,17 @@ import { numericSource } from '../providers/default/numeric-fixtures.mjs';
 import { execute } from '../runner.mjs';
 import { runReferenceNative } from '../adapters/reference-native-lib.mjs';
 import { runScceNative } from '../adapters/scce-native-lib.mjs';
+import { sha256Text } from '../../sealed-eval/harness/lib/util.mjs';
 
 const roots = [];
 after(async () => { for (const root of roots) await rm(root, { recursive: true, force: true }); });
 async function root() { const dir = await mkdtemp(path.join(tmpdir(), 'scce-campaign-test-')); roots.push(dir); return dir; }
 const capabilities = { formalLanguages: ['typescript', 'javascript', 'python', 'rust', 'go'], naturalLanguages: ['en', 'ru', 'es', 'ca'] };
+test('default credible reference has explicit full context/output caps without changing legacy runner defaults', () => {
+  const options = campaignOptions();
+  assert.equal(options.contextTokens, 32768);
+  assert.equal(options.outputTokens, 4096);
+});
 function tools() {
   return Object.fromEntries(['node', ...capabilities.formalLanguages].map(language => [language, { available: true, path: process.execPath, compilerPath: process.execPath, budget: { timeMs: 10000, outputBytes: 131072 } }]));
 }
@@ -127,6 +133,16 @@ test('autonomous reference selects and executes bounded public read/write/check 
   assert.deepEqual(JSON.parse(result.artifacts['report.json']), report);
   const noPlan = await runReferenceNative(input, { cwd }, { ask: async () => ({ status: 'ok', modelDigest: 'a'.repeat(64), answer: canonical({ answer: 'Done.', artifacts: {}, complete: true, toolCalls: [{ tool: 'workspace.read', path: '../private/key.json' }] }) }) });
   assert.equal(noPlan.identity.productOutcome, 'failed');
+  await rm(path.join(cwd, 'report.json'));
+  const native = await runScceNative(input, { cwd }, { request: async route => {
+    if (route === '/api/workspace/ingest') return { status: 200, body: { failed: 0 } };
+    await writeFile(path.join(cwd, 'report.json'), canonical(report));
+    const temporaryHelper = 'console.log("real executor helper");';
+    return { status: 200, body: { answer: 'Actual native execution.', events: [{ typeId: 'CapabilitySucceeded', payload: { capabilityId: 'process.build_test' } }], buildTest: { artifacts: [{ artifactId: 'temporary.helper', path: 'main.mjs', content: temporaryHelper, contentHash: `sha256_${sha256Text(temporaryHelper)}` }] } } };
+  } });
+  assert.equal(native.identity.productOutcome, 'completed');
+  assert.equal(Object.hasOwn(native.artifacts, 'main.mjs'), false);
+  assert.deepEqual(JSON.parse(native.artifacts['report.json']), report);
 });
 test('bootstrap freezes before custodian seed, keeps private custody outside public roots, and refuses changed code', async () => {
   const base = await root(), frozenFile = path.join(base, 'frozen-code.mjs'); await writeFile(frozenFile, 'export const frozen=true;\n');

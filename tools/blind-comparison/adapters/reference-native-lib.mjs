@@ -5,6 +5,7 @@ import { execute } from '../runner.mjs';
 import { renderInput } from './text-input.mjs';
 import { nativeContract, failure, applyArtifacts, publicFilesGuard, runPublicChecks, parseReferenceArtifacts, parseAnswerOrAbstain, publicContextReceipt } from './native-contract.mjs';
 import { workspaceToolSession } from './public-workspace-tools.mjs';
+import { nativeResponseSchema } from './native-response-schema.mjs';
 
 export async function executePublicGoal(goal, input, dependencies) {
   const { cwd, remainingMs, executeCommand = execute } = dependencies;
@@ -48,8 +49,11 @@ async function referenceNativeOperation(input, config, dependencies) {
   const session = autonomous ? workspaceToolSession(input, contract, { cwd, remainingMs, executeCommand: dependencies.executeCommand }) : null;
   let modelDigest;
   for (let attempt = 0; attempt < contract.maxPublicAttempts; attempt++) {
+    const remainingToolCalls = session ? contract.toolPolicy.maxCalls - session.used() : undefined;
+    if (session && remainingToolCalls <= 0) return failure('public_tool_call_budget_exhausted', trace, { modelDigest });
     const prompt = `${renderInput(input)}\nPublic native response protocol:\n${canonical({ requiredResponse: autonomous ? { answer: 'string', artifacts: {}, toolCalls: 'ordered calls from toolPolicy; workspace.read {tool,path}, workspace.write {tool,path,content}, public.check {tool,index}', complete: 'boolean; true only after a successful final public.check' } : contract.answerMode === 'answer_or_abstain' ? { oneOf: [{ status: 'answered', answer: 'actual answer text' }, { status: 'abstained', answer: null }] } : ['code_repair', 'code_generation', 'tool_use'].includes(contract.operation) ? { answer: 'string', artifacts: 'map of complete text files within writablePaths', ...(contract.executiveGoal ? { executiveGoal: 'the exact supplied public executiveGoal to execute' } : {}) } : 'Return the task answer exactly as requested.', publicFeedback: feedback })}`;
-    const result = await dependencies.ask(prompt, { remainingMs: remainingMs() });
+    const format = nativeResponseSchema(input, contract, remainingToolCalls);
+    const result = await dependencies.ask(prompt, { remainingMs: remainingMs(), ...(format ? { format } : {}) });
     modelDigest ??= result.modelDigest;
     if (!result.modelDigest || result.modelDigest !== modelDigest || config.expectedModelDigest && modelDigest !== config.expectedModelDigest) throw new Error('Reference model identity changed');
     trace.push({ attempt, modelDigest, inference: result.inference ?? null, publicPromptHash: hash(prompt), rawResponse: result.answer });

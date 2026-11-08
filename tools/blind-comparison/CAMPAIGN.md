@@ -8,6 +8,8 @@ node tools/blind-comparison/campaign.mjs run --out .tmp/independent-campaign
 
 This is a **real SCCE versus local reference campaign**, not the deterministic fixture rehearsal. It discovers the repository's ordinary local config without printing/copying credentials, checks readiness, obtains the actual installed reference digest using the existing declared host probe, inventories native toolchains, freezes code/build/provider/scorer/tool identities, then starts an automated custodian subprocess. Only after freeze verification does that subprocess draw a cryptographic selection seed and generate fresh synthetic sources and private checks. Collection uses the production native bridges. Anonymous human ballots and an explicitly incomplete report are emitted afterward. No cloud account, deployment or operator-authored test cases are needed.
 
+The reference is explicitly configured for a 32768-token context and up to 4096 output tokens. Typed public task contracts select the model's native structured-output schema per request; raw chat/creative text is unconstrained. These settings leave the legacy runner defaults unchanged. The existing declared runner sends no-truncation/no-shift controls and fails visibly on exhausted output. Verify the installed runtime actually supports those controls and residency/context accounting before collecting; the runtime version is recorded, and unsupported/older implementations are not silently certified.
+
 For the first diagnostic iteration, use:
 
 ```powershell

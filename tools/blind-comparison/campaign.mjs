@@ -15,7 +15,7 @@ const here = fileURLToPath(new URL('./', import.meta.url));
 const providerDir = path.join(here, 'providers', 'default');
 export function campaignOptions(overrides = {}) {
   const diagnostic = overrides.diagnostic === true;
-  const options = { diagnostic, count: diagnostic ? 2 : 12, attempts: 2, hiddenVectors: 12, toolCalls: 8, device: 'auto', contextTokens: 16384, outputTokens: 2048, seed: 0, budgets: { timeMs: 180000, outputBytes: 2 * 1024 * 1024, caseBytes: 4 * 1024 * 1024, artifactBytes: 2 * 1024 * 1024, maxSteps: 4 }, ...overrides };
+  const options = { diagnostic, count: diagnostic ? 2 : 12, attempts: 2, hiddenVectors: 12, toolCalls: 8, device: 'auto', contextTokens: 32768, outputTokens: 4096, seed: 0, budgets: { timeMs: 180000, outputBytes: 2 * 1024 * 1024, caseBytes: 4 * 1024 * 1024, artifactBytes: 2 * 1024 * 1024, maxSteps: 4 }, ...overrides };
   if (!Number.isSafeInteger(options.count) || options.count < 2 || options.count % 2) throw new Error('Preregister an even per-cell count >=2 for balanced factual controls');
   for (const key of ['attempts', 'hiddenVectors', 'toolCalls', 'contextTokens', 'outputTokens']) if (!Number.isSafeInteger(options[key]) || options[key] < 1) throw new Error(`Invalid campaign setting: ${key}`);
   return options;

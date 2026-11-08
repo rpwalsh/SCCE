@@ -9,6 +9,7 @@ export async function validateReferenceRunner(runner, argv) {
   if (!Array.isArray(argv) || argv.some(a => typeof a !== 'string')) throw new Error('Reference options must be an argument vector');
   const args = argsMap(argv);
   if (args.has('mode') || args.has('answer-style')) throw new Error('Reference mode is fixed to public-packet context without side retrieval');
+  if (args.has('format') || args.has('format-schema')) throw new Error('Mixed campaign format is selected per request from the public task contract, not a global format option');
   for (const key of ['corpus-manifest', 'model', 'num-ctx', 'num-predict', 'threads', 'device', 'seed', 'request-timeout-ms']) if (!args.has(key)) throw new Error(`Pin explicit reference option: ${key}`);
   if (args.get('model') !== 'qwen2.5:3b') throw new Error('Reference must be the requested local model');
   const corpus = await readJson(args.get('corpus-manifest'));
