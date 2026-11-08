@@ -31,7 +31,7 @@ export async function publishCompiledLanguagePatterns(input: {
   }
   const patterns = input.patterns.map(pattern => {
     const metadata = jsonRecord(pattern.patternJson);
-    if (pattern.profileId !== input.profileId
+    if ((schemas.has(String(metadata.schema)) && pattern.profileId !== input.profileId)
       || (pattern.informationLabel && canonicalStringify(pattern.informationLabel) !== canonicalStringify(input.informationLabel))
       || (schemas.has(String(metadata.schema)) && typeof metadata.sourceSystem === "string" && corpusSourceAlias(metadata.sourceSystem) !== sourceSystem)) {
       throw new Error("compiled language-pattern publication has conflicting source scope");

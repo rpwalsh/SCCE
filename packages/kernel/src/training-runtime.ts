@@ -230,11 +230,13 @@ export function createTrainingRuntime(options: {
         if (receipt) validateSourceCompilationReceipt(receipt, current, hasher);
         const reused = validateSourceLanguageCompilation({ owner: { sourceId: source.sourceId, sourceVersionId, contentHash: source.contentHash },
           profileId: existingProfile.id, sourceSystem, models: current, hasher });
-        const activeConstructionProjection = reused && deps.storage.languageMemory.getLanguagePatternProjection
+        const requiresConstructionProjection = reused && jsonRecord(reused.options).languageOnly !== true
+          && corpusRoleIdForSourceSystem(sourceSystem) !== CORPUS_ROLE_IDS.softwareSymbolic;
+        const activeConstructionProjection = reused && requiresConstructionProjection && deps.storage.languageMemory.getLanguagePatternProjection
           ? await deps.storage.languageMemory.getLanguagePatternProjection({ ...LANGUAGE_CONSTRUCTION_PUBLICATION,
             profileId: existingProfile.id, sourceId: source.sourceId, sourceVersionId, sourceSystem, informationLabel,
             sourceCompilationId: reused.compilationId }) : undefined;
-        if (reused && activeConstructionProjection) {
+        if (reused && (!requiresConstructionProjection || activeConstructionProjection)) {
           if (jsonRecord(receipt).compilationId !== reused.compilationId) throw new Error("canonical source compilation receipt does not own its models");
           const listArtifacts = deps.storage.languageMemory.listSourceCompilationArtifactIds;
           if (!listArtifacts) throw new Error("canonical language replay requires its durable artifact inventory");
