@@ -5,7 +5,7 @@ import { DEFAULT_USER_STYLE_PROFILE, DIALOGUE_ACT_IDS, type DialogueActId, type 
 import { canonicalStringify, clamp01, createHasher, toJsonValue } from "./primitives.js";
 import { requestFeatures } from "./request-requirement-learning.js";
 import type { LanguagePatternRecord } from "./storage.js";
-import type { JsonValue } from "./types.js";
+import type { EvidenceId, JsonValue } from "./types.js";
 
 export const REQUEST_COMMUNICATIVE_ACT_PATTERN_SCHEMA = "scce.request_communicative_act_pattern.v1";
 export const REQUEST_COMMUNICATIVE_ACT_SOURCE_SYSTEM = "request_communicative_act";
@@ -102,7 +102,7 @@ export function requestCommunicativeActPatterns(
       featureCounts: selected.map(({ key, row }) => ({ key, ...row })).sort((left, right) => left.key.localeCompare(right.key)) };
     const modelDigest = createHasher().digestHex(canonicalStringify(material));
     return [{ id: input.makeId(toJsonValue({ ...material, modelDigest })), profileId: input.profileId, patternKind: "discourse",
-      support: total, entropy: normalizedEntropy(Object.values(model.classCounts)), evidenceIds: [...input.sourceOwner.evidenceIds],
+      support: total, entropy: normalizedEntropy(Object.values(model.classCounts)), evidenceIds: input.sourceOwner.evidenceIds.map(id => id as EvidenceId),
       updatedAt: input.updatedAt, patternJson: toJsonValue({ ...material, modelDigest }) }];
   }
   return selected.map(({ key, row, support }) => ({
