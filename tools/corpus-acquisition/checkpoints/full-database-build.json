@@ -234,10 +234,39 @@
   },
   "currentBuild": {
     "edition": "enwiki",
-    "state": "running",
+    "state": "blocked_by_compiler_heap_failure",
     "fullTrainingComplete": false,
     "childHeapMiB": 4096,
-    "minimumFreeDiskBytes": 8589934592
+    "minimumFreeDiskBytes": 8589934592,
+    "exitCode": 1,
+    "lastReportedPages": 29,
+    "sourceCountsAfterFailure": [
+      {
+        "source_system": "dialogue",
+        "source_versions": 374,
+        "source_and_derivative_bytes": "9483834"
+      },
+      {
+        "source_system": "gutenberg",
+        "source_versions": 2,
+        "source_and_derivative_bytes": "325405"
+      },
+      {
+        "source_system": "oss_docs",
+        "source_versions": 4,
+        "source_and_derivative_bytes": "1150"
+      },
+      {
+        "source_system": "wikipedia",
+        "source_versions": 72,
+        "source_and_derivative_bytes": "4603882"
+      }
+    ],
+    "startedAt": "2026-11-08T21:45:55.994Z",
+    "finishedAt": "2026-11-08T21:59:56.675Z",
+    "fatal": [
+      "FATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - JavaScript heap out of memory"
+    ]
   },
   "otherCorpora": {
     "dolly": {
@@ -266,5 +295,25 @@
     "Restart and recovery verification",
     "Required runtime quality and calibration checks",
     "Complete database export and restore verification"
-  ]
+  ],
+  "compilerDiagnostic": {
+    "state": "running",
+    "startedAt": "2026-11-08T22:01:45.212Z",
+    "liveCpuProfilerConnected": true,
+    "fullDatabaseOwner": "single diagnostic supervisor",
+    "previousCommittedLanguageRows": [
+      {
+        "family": "language_patterns",
+        "rows": 249338
+      },
+      {
+        "family": "language_profiles",
+        "rows": 378
+      },
+      {
+        "family": "ngram_models",
+        "rows": 378
+      }
+    ]
+  }
 }
