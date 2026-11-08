@@ -350,3 +350,5 @@ export * from "./program-native-abi.js";
 export * from "./workspace-code-contracts.js";
 
 export * from "./program-validation-approval.js";
+
+export * from "./source-owned-computation.js";
