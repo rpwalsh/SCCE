@@ -18,13 +18,14 @@ import { otsuThreshold } from "./language-identity.js";
 
 export const REQUEST_REQUIREMENT_CORPUS_SCHEMA = "scce.request_requirement_corpus.v1";
 export const REQUEST_REQUIREMENT_PATTERN_SCHEMA = "scce.request_requirement_pattern.v1";
+export const REQUEST_UNIT_RESPONSE_COPY_RECIPE_ID = "scce.request_unit_response_copy.v1" as const;
 /**
  * Bump when compilation changes how bounded targets or their admissible
  * ranges are derived. Durable replacement uses this alongside source scope
  * so a recompile cannot leave an earlier semantic shape active.
  */
 export const REQUEST_REQUIREMENT_PATTERN_COMPILER_FINGERPRINT =
-  "scce.request_requirement_pattern.source_background.v4";
+  "scce.request_requirement_pattern.source_background.v5";
 
 export interface RequestRequirementCorpusExample {
   text: string;
@@ -87,6 +88,8 @@ interface FeatureCounts {
   pairedExamples: Record<RequestedAuthority, number>;
   responseMatches: Record<RequestedAuthority, number>;
   responseMixed: Record<RequestedAuthority, number>;
+  rawResponseCopies: Partial<Record<RequestedAuthority, Record<string, number>>>;
+  rawResponsePairs: Partial<Record<RequestedAuthority, number>>;
   requirementTargetTotals: Partial<Record<TurnRequirementDimension, number>>;
   requirementTargetCounts: Partial<Record<TurnRequirementDimension, number>>;
   requirementTargetBounds: Partial<Record<TurnRequirementDimension, { lower: number; upper: number }>>;
@@ -182,6 +185,8 @@ export function compileRequestRequirementCorpus(
   for (const example of input.corpus.examples) {
     classTotals[example.authority] += 1;
     const responseTokens = example.responseText ? new Set(unicodeTokens(example.responseText)) : undefined;
+    const rawResponseTokens = example.responseText ? new Set(unicodeLexicalSegments(example.responseText)
+      .map(segment => segment.normalized.trim()).filter(Boolean)) : undefined;
     for (const observation of uniqueFeatures(requestFeatures(example.text))) {
       const counts = featureCounts.get(observation.key) ?? {
         observation,
@@ -190,6 +195,8 @@ export function compileRequestRequirementCorpus(
         pairedExamples: authorityRecord(0),
         responseMatches: authorityRecord(0),
         responseMixed: authorityRecord(0),
+        rawResponseCopies: {},
+        rawResponsePairs: {},
         requirementTargetTotals: {},
         requirementTargetCounts: {},
         requirementTargetBounds: {},
@@ -201,6 +208,11 @@ export function compileRequestRequirementCorpus(
       counts.byAuthority[example.authority] += 1;
       if (responseTokens) {
         counts.pairedExamples[example.authority]++;
+        const rawCopies = counts.rawResponseCopies[example.authority] ??= Object.create(null) as Record<string, number>;
+        if (rawResponseTokens!.size) counts.rawResponsePairs[example.authority] = (counts.rawResponsePairs[example.authority] ?? 0) + 1;
+        for (const unit of new Set(unicodeTokens(observation.surface))) {
+          if (rawResponseTokens!.has(unit)) rawCopies[unit] = (rawCopies[unit] ?? 0) + 1;
+        }
         const requestTokenFrequencyCut = requestTokenFrequencyCuts.get(example.authority);
         const requestDocuments = requestTokenDocuments.get(example.authority);
         if (requestTokenFrequencyCut !== undefined) {
@@ -285,6 +297,13 @@ export function compileRequestRequirementCorpus(
         responseMatchCut,
         pairedExamples
       } : {}),
+      ...((counts.rawResponsePairs[winner.authority] ?? 0) > 0 && counts.rawResponsePairs[winner.authority] === counts.byAuthority[winner.authority] ? {
+        requestUnitResponseCopyRecipe: REQUEST_UNIT_RESPONSE_COPY_RECIPE_ID,
+        requestUnitResponseCopyAuthority: winner.authority,
+        requestUnitResponseCopy: [...new Set(unicodeTokens(counts.observation.surface))].map(unit => ({
+          unit, supportedPairs: pairedExamples, copiedPairs: counts.rawResponseCopies[winner.authority]?.[unit] ?? 0
+        }))
+      } : {}),
       learnedFrameOrPatternId: counts.observation.key,
       requirementCoefficients,
       requirementTargets,
@@ -356,6 +375,7 @@ export function compileRequestRequirementCorpus(
       sourceSystem: input.sourceSystem,
       patternSchema: REQUEST_REQUIREMENT_PATTERN_SCHEMA,
       compilerFingerprint: REQUEST_REQUIREMENT_PATTERN_COMPILER_FINGERPRINT,
+      requestUnitResponseCopyRecipe: REQUEST_UNIT_RESPONSE_COPY_RECIPE_ID,
       transparentSparsePatterns: true,
       hiddenWeights: false
     })
