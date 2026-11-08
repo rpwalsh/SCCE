@@ -33,6 +33,47 @@ silently inferred from generic process state: a non-empty, explicit
 `SCCE_DATABASE_URL` is the sole database URL override and is applied before config
 validation so credentials need not be committed.
 
+## Corpus Size And Active Memory
+
+The scale target is a corpus that can grow to thousands of terabytes while a local
+runtime operates within its configured memory budget. This requires partitioned
+durable storage and bounded active work; it is not established by a small resident
+graph, a fast repeated request, or an in-memory graph database. Capacity still
+requires corresponding storage and, for distributed deployments, additional nodes.
+Petabyte-scale operation has not been validated.
+
+| Layer | Responsibility | Current boundary |
+| --- | --- | --- |
+| Durable state | PostgreSQL transactions, ownership, versions, receipts and source identities | Canonical today; corpus-wide inventories and operational counts still need bounded serving contracts. |
+| Compiled artifacts | Bounded, immutable source, graph, language and index segments with exact offsets | Archive range reads and compressed artifact pages exist; a production disk-backed graph/semantic segment pager is unfinished. |
+| Candidate discovery | Disk-backed, partitioned lexical and learned semantic postings that select relevant owners and segments | BM25 and task-local PowerWalk/PPMI are wired; a durable corpus-wide learned semantic index is unfinished. |
+| Active cognition | Load a budgeted neighborhood and perform graph operations in memory | Bounded graph retrieval, adjacency maps and CSR activation exist; startup and language-model discovery still contain corpus-dependent work. |
+| Program synthesis | Form a source-owned typed grammar and specification, solve for IR, then use the shared compiler/test/patch transaction | The Z3 development tool verifies supported scalar candidates; Rosette/SyGuS candidate generation and shared admission are unfinished. |
+
+Storage, semantic vectors and graph traversal serve different purposes. Adding a
+vector index does not replace durable ownership or graph execution. SPLADE uses a
+pretrained neural language model and is not the model-free sparse representation
+described by SCCE's current contract. Sparse semantic features must be learned from
+the ingested corpus and evaluated separately from lexical matching.
+
+The serving contract must bound fetched bytes, resident artifacts, active nodes and
+edges, and simultaneous ingestion buffers. Startup and exact artifact reads must
+not enumerate the corpus, parse every model, expand all projection memberships or
+count every durable table. Global discovery, index construction and compaction
+belong to resumable maintenance with persisted cursors. A future change stream
+must carry versioned, idempotent updates and replay watermarks; moving records to
+another engine alone does not establish those properties.
+
+Rosette's `synthesize` searches an explicitly encoded program space and
+specification. It is distinct from verifying an existing candidate. Unsupported
+semantics, resource exhaustion and an unsatisfiable bounded specification remain
+distinct outcomes. Solver-generated IR must enter the same candidate admission,
+source emission and native verification transaction rather than a second code lane.
+
+References: [Rosette synthesis](https://docs.racket-lang.org/rosette-guide/ch_syntactic-forms_rosette.html),
+[SPLADE's model definition](https://github.com/naver/splade#splade), and
+[PostgreSQL logical decoding](https://www.postgresql.org/docs/current/logicaldecoding-explanation.html).
+
 ## Math Placement And Current Contract
 
 - `packages/kernel/src/alpha.ts`: relation-strength normalization and alpha trace.
