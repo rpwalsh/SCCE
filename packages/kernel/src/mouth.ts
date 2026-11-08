@@ -987,7 +987,7 @@ export function createMouth(options: { languageMemory: LanguageMemoryRuntime; co
             ...forbiddenSurfaceHits(bounded, plan),
             ...semanticAnswerDriftHits(bounded, input, priorPieces),
             ...(candidate.producerAuthority?.kind === "verified_computation" ? [] : questionEchoHits(bounded, mouthEchoQuestionText(input))),
-            ...languagePriorLeakageHits(bounded, input, priorPieces),
+            ...languagePriorLeakageHits(bounded, input, priorPieces, candidate),
             ...unanchoredImportedPriorHits(candidate, input),
             // Factual producer validation owns request and selected-plan coverage.
             ...(candidate.producerAuthority?.schema === "scce.mouth.factual_producer_authority.v1"
@@ -7546,16 +7546,18 @@ function questionEchoHits(text: string, question: string): string[] {
   return uniqueStrings(hits);
 }
 
-function languagePriorLeakageHits(text: string, input: SpeakInput, priorPieces: readonly ImportedSurfacePiece[]): string[] {
+function languagePriorLeakageHits(text: string, input: SpeakInput, priorPieces: readonly ImportedSurfacePiece[], candidate?:SurfaceCandidate): string[] {
   if (semanticAnswerConstructState(input.construct) || input.construct.program) return [];
   if (generatedConstructSurface(input.construct)) return [];
   const hits: string[] = [];
-  const supportText = input.evidence.map(span => `${span.textPreview} ${span.text}`).join(" ");
+  const computationOwner=candidate?.producerAuthority?.kind === "verified_computation" ? factualProducerAuthority(candidate,input) : undefined;
+  const ownedComputation=computationOwner?.kind === "verified_computation" ? computationOwner.answer : undefined;
+  const supportText = [...input.evidence.map(span => `${span.textPreview} ${span.text}`), ...(ownedComputation?[ownedComputation]:[])].join(" ");
   const supportFeatures = featureSet([supportText, input.entailment.claim.text].join(" "), 512);
   const textFeatures = featureSet(text, 512);
   const coverage = supportFeatures.length ? weightedJaccard(textFeatures, supportFeatures) : 0;
   const priorMass = priorPieces.filter(piece => containsSurface(text, piece.text) || overlapsClaim(piece.text, text)).length;
-  const unanchored = input.evidence.length === 0 && input.entailment.evidenceIds.length === 0 && !generatedConstructSurface(input.construct) && !isWorkspaceKernelSpeakInput(input);
+  const unanchored = !ownedComputation && input.evidence.length === 0 && input.entailment.evidenceIds.length === 0 && !generatedConstructSurface(input.construct) && !isWorkspaceKernelSpeakInput(input);
   if (priorMass > 0 && unanchored) hits.push("surface.reject.language_prior_unanchored");
   else if (priorMass > 0 && coverage < 0.08 && input.evidence.length === 0) hits.push("surface.reject.language_prior_unanchored");
   if (looksLikeOrphanLanguageFragment(text)) hits.push("surface.reject.orphan_language_fragment");

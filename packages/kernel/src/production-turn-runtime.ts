@@ -1607,12 +1607,12 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           construct, field, entailment, evidence: [], requestedAuthority, languageMemory: authorityLanguage.state,
           languageProfile: selectedSurfaceProfile ?? runtimeLanguageProfile(clock.now()) }) : undefined;
         if (sourceComputation) kernelTrace({stage:"turn.source_computation",label:"kernel.turn",counts:{sourcePatterns:sourceComputation.patternIds.length},support:{patternIds:sourceComputation.patternIds,realizationAvailability:computationSpoken?.realizationAvailability,surfaceValid:computationSpoken?.surfaceValid,selected:computationSpoken?.realizationTrace.selected,surfaceContract:computationSpoken?.realizationTrace.surfaceContract}});
-        if (!sourceComputation || computationSpoken?.surfaceValid && computationSpoken.realizationAvailability.status === "realized" && computationSpoken.text === arithmetic.answer) {
-        const answer = computationSpoken?.text ?? arithmetic.answer;
+        const computationSurfaceAccepted = !sourceComputation || Boolean(computationSpoken?.surfaceValid && computationSpoken.realizationAvailability.status === "realized" && computationSpoken.text === arithmetic.answer);
+        const answer = computationSurfaceAccepted ? computationSpoken?.text ?? arithmetic.answer : "";
         const pcaReport = pca.certify({ answer, evidence: [], force: entailment.force });
         const validation = validationBuilder.build({ construct, entailment, pca: pcaReport as unknown as JsonValue });
         const rawEmission = emissionEngine.emit({ construct, validation, entailment, answer, pca: pcaReport as unknown as JsonValue });
-        const emission = { ...rawEmission, assistantForce: "reasoned_answer" as const };
+        const emission = { ...rawEmission, answer:computationSurfaceAccepted?rawEmission.answer:"", assistantForce: computationSurfaceAccepted ? "reasoned_answer" as const : "insufficient_support" as const };
         timingParts.candidateMs = 0;
         timingParts.planningMs = 0;
         timingParts.mouthMs = 0;
@@ -1624,7 +1624,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         runtimeState.lastEpisodeId = episodeId;
         runtimeState.lastOutput = emission.answer;
         events.push(await append(eventFactory.create({ episodeId, typeId: "ComputationEvaluated", payload: sourceComputation
-          ? toJsonValue({ ...jsonRecord(arithmetic.audit), sourcePatternIds: sourceComputation.patternIds, roleBindings: sourceComputation.roleBindings }) : arithmetic.audit })));
+          ? toJsonValue({ ...jsonRecord(arithmetic.audit), sourcePatternIds: sourceComputation.patternIds, roleBindings: sourceComputation.roleBindings, surfaceEmitted:computationSurfaceAccepted }) : arithmetic.audit })));
         if (computationSpoken) events.push(await append(eventFactory.create({ episodeId, typeId: "MouthSpoken", payload: { text: computationSpoken.text, evidenceRefs: computationSpoken.evidenceRefs, trace: toJsonValue(computationSpoken.realizationTrace) } })));
         events.push(await append(eventFactory.create({ episodeId, typeId: "SemanticEntailmentChecked", payload: { proofId: entailment.proof.id, force: entailment.force, assistantForce: emission.assistantForce, support: entailment.support, contradiction: entailment.contradiction, deterministicArithmetic: true } })));
         events.push(await append(eventFactory.create({ episodeId, typeId: "EmissionGraphBuilt", payload: emission })));
@@ -1655,6 +1655,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           proofCarryingAnswer: pcaReport.audit,
           languageAcquisition: toJsonValue({ skipped: true, reason: "kernel.turn.deterministic_arithmetic" }),
           mouth: computationSpoken ? toJsonValue(computationSpoken.realizationTrace) : toJsonValue({ skipped: true, reason: "kernel.turn.deterministic_arithmetic" }),
+          ...(computationSpoken?{realizationAvailability:toJsonValue(!computationSurfaceAccepted&&computationSpoken.realizationAvailability.status==="realized"?{status:"realization_unavailable",reasonId:"computation_surface_contract_mismatch",eligibleCandidateCount:0}:computationSpoken.realizationAvailability)}:{}),
           corrections: correctionMemory.summarize(detectedCorrections),
           userModelStore: userModelStoreToJson(userModelStore),
           userModelProvenance: userModelStoreProvenanceSummary(userModelStore),
@@ -1669,9 +1670,9 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
             entailment,
             evidence: [],
             assistantForce: emission.assistantForce,
-            unsupportedContentBlocked: false,
+            unsupportedContentBlocked: !computationSurfaceAccepted,
             // The spoken quantity and the computed quantity are the same number: an algebraic invariant, not an estimate.
-            ...(exactComputationVerified
+            ...(exactComputationVerified && computationSurfaceAccepted
               ? {
                 scoreTraces: [invariantScore({
                   value: exactComputationVerified.matches ? 1 : 0,
@@ -1686,7 +1687,6 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
           }),
           events
         };
-        }
       }
       const routedDiscourseObject = discourseObjectStateFromMetadata(input.metadata);
       // The server builds the object before this turn measures what the request names, so it read the previous request's identities.
