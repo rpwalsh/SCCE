@@ -48,6 +48,44 @@ export function canonicalDigestHex(value: unknown, hasher: Hasher, leafTokenCach
   return hasher.digestChunks(canonicalJsonByteChunks(value, leafTokenCache));
 }
 
+/** Exact canonical UTF-8 size up to the allowance, without constructing a serialized object or array. */
+export function canonicalJsonByteLength(value: unknown, allowance = Number.MAX_SAFE_INTEGER): number {
+  if (!Number.isFinite(allowance) || allowance < 0) throw new Error("canonical JSON size allowance must be finite and nonnegative");
+  const active = new WeakSet<object>();
+  let bytes = 0;
+  const count = (input: unknown): void => {
+    if (bytes > allowance) return;
+    if (input === null || input === undefined) { bytes += 4; return; }
+    if (typeof input === "string") { bytes += Buffer.byteLength(JSON.stringify(input.replace(/\u0000/g, " ")), "utf8"); return; }
+    if (typeof input === "number") { bytes += Number.isFinite(input) ? String(input).length : 4; return; }
+    if (typeof input === "boolean") { bytes += input ? 4 : 5; return; }
+    if (typeof input !== "object") { bytes += Buffer.byteLength(JSON.stringify(String(input)), "utf8"); return; }
+    if (input instanceof Date) { count(input.toISOString()); return; }
+    if (active.has(input)) throw new Error("canonical JSON cannot encode cycles");
+    active.add(input);
+    bytes += 2;
+    if (Array.isArray(input) || input instanceof Uint8Array) {
+      for (let index = 0; index < input.length && bytes <= allowance; index++) {
+        if (index) bytes++;
+        count(input[index]);
+      }
+    } else {
+      let fields = 0;
+      for (const key of Object.keys(input)) {
+        if (bytes > allowance) break;
+        if (key === "__proto__") continue;
+        if (fields++) bytes++;
+        bytes += Buffer.byteLength(JSON.stringify(key), "utf8");
+        bytes++;
+        count((input as Record<string, unknown>)[key]);
+      }
+    }
+    active.delete(input);
+  };
+  count(value);
+  return bytes;
+}
+
 /**
  * Plain artifact records and arrays are normalized a record at a time, so a
  * retained batch never needs a second full normalized tree beside its data.

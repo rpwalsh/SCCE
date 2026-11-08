@@ -2,7 +2,7 @@
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { estimateRetainedProgramBytes } from "./retained-program-size.js";
 import { traceEvent } from "./debug/trace.js";
-import { canonicalDigestHex } from "./canonical-json-digest.js";
+import { canonicalDigestHex, canonicalJsonByteLength } from "./canonical-json-digest.js";
 import { deriveClosedClassWords } from "./closed-class-words.js";
 import { CORPUS_SOURCE_SYSTEM_IDS, createCorpusRegistry, languageMemoryHydrationPlan, requestLanguageHydrationPlan, type CorpusRoleId } from "./corpus-registry.js";
 import { CREATIVE_EVENT_COMPATIBILITY_MODEL_SCHEMA, isCreativeEventCompatibilityPattern } from "./creative-event-compatibility.js";
@@ -97,46 +97,6 @@ function boundedCacheSet<K, V>(map: Map<K, V>, key: K, value: V, maxEntries: num
 const SURFACE_LANGUAGE_MEMORY_CACHE_MAX_ESTIMATED_BYTES = 5 * 1024 * 1024 * 1024;
 
 /**
- * Measured PER RECORD, never over the whole array, and failing toward
- * "huge" rather than "free". A single hydration's models array is
- * hundreds of MB; JSON.stringify over the whole thing throws RangeError
- * ("Invalid string length") above V8's ~512MB string cap -- the first
- * version of this function caught that and returned 0, so every entry
- * measured as weightless, the aggregate budget never tripped, nothing
- * was ever evicted, and the server OOM'd exactly as before (verified
- * live, twice). Any record that cannot be measured is therefore counted
- * as UNMEASURED_RECORD_BYTES, which pushes toward eviction instead of
- * silently disabling the bound. Only a bounded prefix is measured and
- * then extrapolated, so measuring never itself allocates much.
- */
-const UNMEASURED_RECORD_BYTES = 16 * 1024 * 1024;
-const MEASURED_RECORD_SAMPLE = 4;
-
-/**
- * What an entry weighs is its content, not the process heap's delta while it loaded.
- *
- * That delta was allowed to override this estimate, and it is measured across a hydration that takes a minute while
- * the process serves other turns, so it charged one entry for every allocation anything made in that window:
- * measured, four resident entries reported 4,669 MB against a 5 GB bound whose real content was about 70 MB of
- * records each. Nothing could be cached alongside anything else, the prose and code clusters evicted each other on
- * every turn, and "warm" never happened -- which is the whole reason a second identical question was slower and
- * less able than it should be.
- */
-function approximateRecordBytes(records: readonly unknown[]): number {
-  if (!records.length) return 0;
-  const sampleSize = Math.min(MEASURED_RECORD_SAMPLE, records.length);
-  let sampledBytes = 0;
-  for (let index = 0; index < sampleSize; index++) {
-    try {
-      sampledBytes += JSON.stringify(records[index])?.length ?? UNMEASURED_RECORD_BYTES;
-    } catch {
-      sampledBytes += UNMEASURED_RECORD_BYTES;
-    }
-  }
-  return Math.round((sampledBytes / sampleSize) * records.length);
-}
-
-/**
  * Every large array a hydration holds, not just the two that carry an
  * explicit byte budget: an entry whose weight sits in observations or
  * construction evidence would otherwise measure as weightless and be
@@ -153,14 +113,16 @@ function approximateHydrationEstimatedBytes(value: {
   state?: Partial<LanguageMemoryRuntimeState>;
   retainedProgramState?: LanguageMemoryRuntimeState;
 }, allowance: number): number {
-  const jsonBytes = approximateRecordBytes(value.models ?? [])
-    + approximateRecordBytes(value.units ?? [])
-    + approximateRecordBytes(value.observations ?? [])
-    + approximateRecordBytes(value.patterns ?? [])
-    + approximateRecordBytes(value.semanticFrames ?? [])
-    + approximateRecordBytes(value.constructionEvidence ?? [])
-    + approximateRecordBytes(value.state?.continuationPopulation ? [value.state.continuationPopulation.continuationCounts] : []);
-  if (jsonBytes > allowance) return jsonBytes;
+  let jsonBytes = 0;
+  for (const records of [value.models ?? [], value.units ?? [], value.observations ?? [], value.patterns ?? [],
+    value.semanticFrames ?? [], value.constructionEvidence ?? [],
+    value.state?.continuationPopulation ? [value.state.continuationPopulation.continuationCounts] : []]) {
+    for (const record of records) {
+      try { jsonBytes += canonicalJsonByteLength(record, allowance - jsonBytes); }
+      catch { return allowance + 1; }
+      if (jsonBytes > allowance) return jsonBytes;
+    }
+  }
   // rescopeForSurface captures the unscoped state as well as returning a scoped state. Both remain live.
   // Visit their program roots together so aliases between scopes and between compiled programs cost once.
   const programRoots = [value.state, value.retainedProgramState].flatMap(state => state ? [

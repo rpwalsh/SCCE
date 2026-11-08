@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   canonicalDigestHex,
   canonicalJsonByteChunks,
+  canonicalJsonByteLength,
   createCanonicalLeafTokenCache
 } from "../canonical-json-digest.js";
 import { canonicalStringify, createHasher } from "../primitives.js";
@@ -18,6 +19,7 @@ describe("incremental canonical JSON digests", () => {
       undefined, null, -0, NaN, Infinity, 12345678901234567890n,
       new Uint8Array([0, 127, 255]), new Date("2026-01-01T00:00:00.000Z"),
       sparse, specialKeys,
+      { "null\u0000key": Symbol("null\u0000symbol") },
       { "10": { value: -0 }, "2": [NaN, new Uint8Array([3, 2, 1])], "01": { value: "\u0000" }, nested: specialKeys },
       { fn: function value() { return 1; }, symbol: Symbol("value"), nested: { missing: undefined } },
       { z: undefined, a: [shared, shared], text: "\u{1f600}".repeat(40_000) }
@@ -27,6 +29,25 @@ describe("incremental canonical JSON digests", () => {
       const canonical = canonicalStringify(value);
       expect(Buffer.concat([...canonicalJsonByteChunks(value)]).toString("utf8")).toBe(canonical);
       expect(canonicalDigestHex(value, hasher)).toBe(hasher.digestHex(canonical));
+      expect(canonicalJsonByteLength(value)).toBe(Buffer.byteLength(canonical));
+    }
+  });
+
+  it("bounds size traversal without materializing a serialized record or visiting an oversized tail", () => {
+    let tailReads = 0;
+    const value = { leading: Array.from({ length: 128 }, (_, id) => ({ id, text: "data".repeat(64) })),
+      tail: { get payload() { tailReads++; return "unvisited"; } } };
+    const stringify = JSON.stringify;
+    const guarded = vi.spyOn(JSON, "stringify").mockImplementation((input, ...args) => {
+      if (input !== null && typeof input === "object") throw new Error("serialized a complete record");
+      return stringify(input, ...args);
+    });
+    try {
+      expect(canonicalJsonByteLength(value, 512)).toBeGreaterThan(512);
+      expect(tailReads).toBe(0);
+      expect(canonicalJsonByteLength({ text: "plain" })).toBe(16);
+    } finally {
+      guarded.mockRestore();
     }
   });
 

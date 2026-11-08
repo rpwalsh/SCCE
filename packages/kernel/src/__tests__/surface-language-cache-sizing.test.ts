@@ -16,6 +16,16 @@ const NOT_WARM = /hydrated runtime unavailable: resident .* was not warmed/u;
 const CACHE_BUDGET_BYTES = 512 * 1024;
 
 describe("surface language cache entry sizing", () => {
+  it("retains heterogeneous records that fit the allowance instead of extrapolating their largest prefix", async () => {
+    const fixture = await runtimeFixture({ modelSymbolCount: 8,
+      patternPayloadSizes: [...Array.from({ length: 4 }, () => 32 * 1024), ...Array.from({ length: 96 }, () => 32)] });
+    expect(fixture.persistedJsonBytes).toBeLessThan(CACHE_BUDGET_BYTES);
+    const value = await fixture.hydrate("language.alpha");
+    expect(value.patterns).toHaveLength(100);
+    expect(fixture.runtime.cacheOccupancy().languageMemoryEstimatedBytes).toBeLessThan(CACHE_BUDGET_BYTES);
+    expect(await fixture.resident("language.alpha")).toBe(value);
+    expect(fixture.hydrations).toBe(1);
+  });
   it("keeps request-seed setup lazy and reweighs the cache when canonical programs are first used", async () => {
     const fixture = await runtimeFixture({ modelSymbolCount: 8, compactGrammar: true, cacheBudgetBytes: 8 * 1024 * 1024 });
     const seed = await fixture.runtime.hydrateSurfaceLanguageMemoryCached(12, undefined, "request-seed", undefined, "", { languageId: "language.alpha", purpose: "request_seed" });
@@ -237,6 +247,7 @@ async function runtimeFixture(options: {
   gatePopulation?: boolean;
   failPopulationOnce?: boolean;
   languageId?: string;
+  patternPayloadSizes?: readonly number[];
 }) {
   const retained: string[] = [];
   let hydrations = 0;
@@ -270,6 +281,10 @@ async function runtimeFixture(options: {
     evidence: [], createdAt: 1, maxOrder: 3, retainObservations: false });
   const evidence: EvidenceSpan[] = [];
   const patterns = [] as import("../storage.js").LanguagePatternRecord[];
+  for (const [index, bytes] of (options.patternPayloadSizes ?? []).entries()) patterns.push({
+    id: `pattern.fixture.${index}`, profileId: profile.id, patternKind: "syntax", support: options.patternPayloadSizes!.length - index,
+    entropy: 0, patternJson: { schema: "fixture.auxiliary.v1", payload: "p".repeat(bytes) }, evidenceIds: [], updatedAt: 1
+  });
   if (options.compactGrammar) {
     const surfaces = Array.from({ length: 24 }, (_, index) => `subject${index} carries object${index}.`);
     const text = surfaces.join("\n");
