@@ -1,6 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { afterEach, describe, expect, it } from "vitest";
+import { SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA, SOURCE_COMPUTATION_CONSTRUCTION_RECIPE } from "@scce/kernel";
 import { createHasher, stampSourceLanguageCompilation, validateSourceLanguageCompilationHeader, INDUCED_LANGUAGE_MEMORY_COMPONENT_RECIPE_ID, INDUCED_LANGUAGE_SYNTAX_MEMORY_PATTERN_SCHEMA, LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID, LANGUAGE_CONSTRUCTION_PATTERN_SCHEMA, SOURCE_CODE_FUNCTION_PATTERN_SCHEMA, SOURCE_CODE_FUNCTION_PROJECTION_RECIPE_ID, POSTGRES_REQUIRED_TABLES, type JsonValue, type SourceVersionId } from "@scce/kernel";
 import { canonicalDigestHex } from "../../../kernel/src/canonical-json-digest.js";
 import { LANGUAGE_TRAINING_BATCH_RECIPE_ID } from "../../../kernel/src/language-training-recipe.js";
@@ -353,9 +354,18 @@ describe("Postgres language-memory ownership queries", () => {
     const { adapter, calls } = fixture();
     await adapter.languageMemory.listLanguagePatterns({ profileId: "profile.large-transcript", limit: 2048, maxTotalJsonBytes: 64_000_000 });
     const sql = calls.at(-1)!.sql;
-    expect(sql.match(/active_projection_ids_\d+ AS MATERIALIZED/gu)).toHaveLength(5);
-    expect(sql.match(/active_projection_ids_\d+_headers AS MATERIALIZED/gu)).toHaveLength(5);
-    expect(sql.match(/END\) member\(pattern_id\)/gu)).toHaveLength(5);
+    expect(sql.match(/active_projection_ids_\d+ AS MATERIALIZED/gu)).toHaveLength(6);
+    expect(sql.match(/active_projection_ids_\d+_headers AS MATERIALIZED/gu)).toHaveLength(6);
+    expect(sql.match(/END\) member\(pattern_id\)/gu)).toHaveLength(6);
+    expect(calls.at(-1)!.params).toContain(SOURCE_COMPUTATION_CONSTRUCTION_SCHEMA);
+    const computationRecipeParameter = calls.at(-1)!.params.indexOf(SOURCE_COMPUTATION_CONSTRUCTION_RECIPE) + 1;
+    expect(computationRecipeParameter).toBeGreaterThan(0);
+    const computationHeader = sql.slice(sql.indexOf("active_projection_ids_5_headers AS MATERIALIZED"), sql.indexOf("active_projection_ids_5 AS MATERIALIZED"));
+    expect(computationHeader).toContain(`active_projection.value_json->>'componentRecipe'=$${computationRecipeParameter}`);
+    expect(computationHeader).toContain("auxiliary_owner.source_id=active_projection.value_json->>'sourceId'");
+    expect(computationHeader).toContain("dependency_evidence.status='promoted'");
+    expect(computationHeader).toContain("AS source_version_id");
+    expect(sql).toContain("computation_member.evidence_ids <@ header.dependency_evidence_ids");
     expect(sql).toContain("SELECT header.profile_id,header.source_system,header.pattern_schema,header.projection_recipe,member.pattern_id");
     expect(sql).not.toContain("active_projection.value_json->'patternIds' ? pattern.id");
     expect(sql).toContain("pattern.profile_id,pattern.source_system,pattern.pattern_schema,pattern.id");
