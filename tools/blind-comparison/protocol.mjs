@@ -122,6 +122,7 @@ export function validateCase(row, plan) {
     || row.private.expected.some(value => typeof value !== 'string' || !/^-?(?:0|[1-9][0-9]*)$/u.test(value)))) throw new Error('Invalid private exact-integer gold');
   if (row.grading === 'human' && (!Array.isArray(row.private.dimensions) || !row.private.dimensions.length || !row.private.rubric)) throw new Error('Private human rubric required');
   if (row.grading === 'native' && (!Array.isArray(row.private.argv) || !row.private.argv.length || !Array.isArray(row.private.files) || !row.private.files.length)) throw new Error('Pinned native checks required');
+  if(row.private.protocol!==undefined&&(row.grading!=='native'||row.private.protocol!=='scce.native.supervised_vectors.v1'||!safeRelative(row.private.vectorTarget)||row.private.files.filter(file=>file.target===row.private.vectorTarget).length!==1))throw new Error('Invalid supervised native-vector protocol');
 }
 export function safeRelative(name) {
   return typeof name === 'string' && name.length > 0 && !path.isAbsolute(name) && !/[:\\\0]/u.test(name) && name.split('/').every(v => v !== '..' && v !== '.' && v.length && !/[. ]$/u.test(v));

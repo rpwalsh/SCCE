@@ -1,7 +1,9 @@
 import { mkdir, mkdtemp, writeFile, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { canonical, hash, fileHash, signed, verified, readJson, writeJson, checkBundle, packetFor, cellKey, safeRelative } from './protocol.mjs';
-import { readReceipt, verifyRun, checkCheckpoint, execute, materializeFiles } from './runner.mjs';
+import {nativeContract,validateArtifacts} from './adapters/native-contract.mjs';
+import {checkNativeVectors} from './providers/default/native-runner.mjs';
+import { readReceipt, verifyRun, checkCheckpoint, execute, materializeFiles,scrubEnvironment } from './runner.mjs';
 
 async function loadCustody(options) {
   const bundle = await checkBundle(options.bundleFile, options.bundleDigest);
@@ -39,7 +41,18 @@ export async function blind(options) {
   await writeJson(path.join(options.ballotsDir, 'index.json'), { schema: 'scce.blind-ballots.v1', bundleDigest: bundle.digest, ballots });
   return { ballots: ballots.length };
 }
-async function nativeCheck(row, packet, receipt, options, budgets) {
+export async function nativeCheck(row, packet, receipt, options, budgets) {
+  let contract;
+  let declared;try{declared=JSON.parse(packet.outputContract);}catch{}
+  if(declared?.schema==='scce.blind-native-task.v1'){try{contract=nativeContract({...packet,budgets});}catch{return {pass:false,reason:'invalid-public-native-contract'};}}
+  if(contract){
+    const originals=materializeFiles(packet.steps,[]),publicNames=new Map(Object.keys(originals).map(name=>[name.toLowerCase(),name])),writable=new Set(contract.writablePaths.map(name=>name.toLowerCase()));
+    for(const output of receipt.outputs)for(const [name,text]of Object.entries(output.response.artifacts??{})){
+      const original=publicNames.get(name.toLowerCase());
+      if(original&&(name!==original||!writable.has(name.toLowerCase())&&text!==originals[original]))return {pass:false,reason:'immutable-public-file-modified'};
+    }
+    try{for(const output of receipt.outputs)await validateArtifacts(output.response.artifacts??{},contract,budgets.artifactBytes);}catch{return {pass:false,reason:'public-artifact-scope-violation'};}
+  }
   const root = path.resolve(options.out, 'private-checks');
   await mkdir(root, { recursive: true });
   const dir = await mkdtemp(path.join(root, `${hash([row.id, receipt.systemId, receipt.digest])}-`));
@@ -50,6 +63,15 @@ async function nativeCheck(row, packet, receipt, options, budgets) {
     await mkdir(path.dirname(path.join(dir, name)), { recursive: true });
     await writeFile(path.join(dir, name), text);
   }
+  if(row.private.protocol==='scce.native.supervised_vectors.v1'){
+    const vectors=row.private.files.filter(file=>file.target===row.private.vectorTarget);
+    if(!contract||vectors.length!==1)return {pass:false,reason:'invalid-native-vector-protocol'};
+    try{
+      const result=await checkNativeVectors({vectors:JSON.parse(await readFile(vectors[0].path,'utf8')),cwd:dir,environment:scrubEnvironment(),timeMs:budgets.timeMs,outputBytes:budgets.outputBytes});
+      return {pass:true,reason:null,exitCode:0,transcriptHash:result.transcriptHash,elapsedMs:result.elapsedMs,outputBytes:result.outputBytes,verifierProtocol:row.private.protocol};
+    }catch(error){return {pass:false,reason:'native-check-failed',exitCode:1,transcriptHash:error.nativeVerification?.transcriptHash??hash([]),...(error.nativeVerification?{elapsedMs:error.nativeVerification.elapsedMs,outputBytes:error.nativeVerification.outputBytes}:{}),verifierProtocol:row.private.protocol};}
+  }
+  if(row.private.protocol!==undefined)return {pass:false,reason:'unsupported-native-verifier-protocol'};
   for (const f of row.private.files) {
     await mkdir(path.dirname(path.join(dir, f.target)), { recursive: true });
     await writeFile(path.join(dir, f.target), await readFile(f.path));
