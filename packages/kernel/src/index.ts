@@ -56,6 +56,7 @@ export * from "./language-identity-runtime.js";
 export * from "./structural-residue.js";
 export * from "./apparatus-lines.js";
 export * from "./join-program.js";
+export * from "./join-program-storage.js";
 export * from "./surface-lattice.js";
 export * from "./segmentation-aggregate.js";
 export * from "./language-induction-persistence.js";
