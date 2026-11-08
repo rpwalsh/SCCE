@@ -161,6 +161,13 @@ export interface PlanInventionsInput {
   temperature?: number;
   samplingDisabled?: boolean;
   maxCandidates?: number;
+  onDecision?: (decision: InventionPlanningDecision) => void;
+}
+
+export interface InventionPlanningDecision {
+  status: "available" | "unavailable" | "bypassed_not_applicable";
+  reasonId: "realization_content_available" | "no_realization_content" | "operator_inactive";
+  constructIds: string[];
 }
 
 export type InventionClaimBasis = {
@@ -398,7 +405,10 @@ function productionStructuralCreativeBundles(
  */
 export function planInventions(input: PlanInventionsInput): InventionConstruct[] {
   const planningActivation = inventionPlanningActivation(input);
-  if (!planningActivation.admissible) return [];
+  if (!planningActivation.admissible) {
+    input.onDecision?.({ status: "bypassed_not_applicable", reasonId: "operator_inactive", constructIds: [] });
+    return [];
+  }
   const structuralBundles = productionStructuralCreativeBundles(input);
   const maxCandidates = boundedInteger(input.maxCandidates ?? 4, 1, 8);
   const constraints = extractConstraints(input).slice(0, 16);
@@ -414,7 +424,8 @@ export function planInventions(input: PlanInventionsInput): InventionConstruct[]
   const uniqueDrafts = Array.from({ length: structuralCandidateLimit + 2 }, (_, index) =>
     buildDraft(input, constraints, ingredients, graphIngredients, index, structuralBundles, learnedProposalReuse)
   )
-    .filter(draft => Boolean(draft.proposalSurface) && !containsInternalSurfaceIdentifier(draft.proposalSurface))
+    .filter(draft => (Boolean(draft.proposalSurface) || draft.proposalRealization.path === "mouth_non_event_realization_deferred")
+      && !containsInternalSurfaceIdentifier(draft.proposalSurface))
     .filter((draft, index, all) => all.findIndex(candidate => draftCompositionIdentity(candidate) === draftCompositionIdentity(draft)) === index);
   const admittedStructuralBundleIds = new Set(structuralBundles.map(bundle => bundle.id));
   const structuralDrafts = uniqueDrafts.filter(draft => (
@@ -433,13 +444,16 @@ export function planInventions(input: PlanInventionsInput): InventionConstruct[]
       ? structuralDrafts
       : mouthRealizationHandoffActive ? mouthHandoffDrafts.slice(0, 1) : learnedDrafts
   ).slice(0, structuralCandidateLimit);
-  if (productionStructuralAuthority && drafts.length === 0) return [];
+  if (productionStructuralAuthority && drafts.length === 0) {
+    input.onDecision?.({ status: "unavailable", reasonId: "no_realization_content", constructIds: [] });
+    return [];
+  }
   const memorySurfaces = existingMemorySurfaces(input);
   const preliminary = drafts.map((draft, index) => scoreDraft(input, draft, constraints, memorySurfaces, drafts, index));
   const neutralProbability = preliminary.length ? 1 / preliminary.length : 0;
   const withProbabilities = preliminary.map(candidate => ({ ...candidate, probability: neutralProbability }));
   const ranked = diversityRank(withProbabilities);
-  return ranked.map((candidate, index) => {
+  const planned = ranked.map((candidate, index) => {
     const basisEvidenceIds = uniqueStrings(candidate.claimBasis
       .filter(record => record.kind === "factual_premise")
       .flatMap(record => record.evidenceIds));
@@ -489,6 +503,8 @@ export function planInventions(input: PlanInventionsInput): InventionConstruct[]
         selectedGraphEdgeIds: candidate.selectedEdges.map(edge => String(edge.id)),
         selectedLanguagePriorIds: candidate.selectedLanguagePriorIds,
         proposalRealization: candidate.proposalRealization,
+        realizationAvailability: { status: candidate.proposalSurface ? "available" : "unavailable",
+          reasonId: candidate.proposalSurface ? "realization_content_available" : "no_realization_content" },
         structuralSemanticPlan: candidate.proposalRealization.path === "mouth_realization_deferred"
           ? {
             schema: "scce.structural_semantic_plan.v2",
@@ -527,6 +543,10 @@ export function planInventions(input: PlanInventionsInput): InventionConstruct[]
       })
     });
   });
+  const available = planned.filter(construct => Boolean(construct.proposalSurface));
+  input.onDecision?.({ status: available.length ? "available" : "unavailable",
+    reasonId: available.length ? "realization_content_available" : "no_realization_content", constructIds: available.map(construct => construct.id) });
+  return planned;
 }
 
 function draftCompositionIdentity(draft: DraftComposition): string {
@@ -1301,7 +1321,7 @@ function buildDraft(
   const structuralBundleIds = uniqueStrings(structuralEventPlan.map(event => event.bundleId));
   const proposalSurface = deferSurfaceRealization
     ? title
-    : evidenceSafeProposal(learnedProposal?.surface ?? requestBoundSurface, input.evidence, requestTerms);
+    : learnedProposal ? evidenceSafeProposal(learnedProposal.surface, input.evidence, requestTerms) : "";
   const proposalRealization: ProposalRealizationTrace = deferSurfaceRealization
     ? {
       path: "mouth_realization_deferred",

@@ -1156,7 +1156,7 @@ function inventionDrafts(
   evidenceById: Map<string, EvidenceSpan>
 ): ProposalDraft[] {
   if (!operatorActive(operators, COGNITIVE_OPERATOR_IDS.invention)) return [];
-  return (input.inventions ?? []).slice(0, 8).map((invention, index) => {
+  return (input.inventions ?? []).filter(invention => Boolean(invention.proposalSurface.trim())).slice(0, 8).map((invention, index) => {
     const trace = jsonRecord(invention.trace);
     const traceClaims = Array.isArray(trace.claimBasis) ? trace.claimBasis.map(jsonRecord) : [];
     const claims = traceClaims.flatMap((record, claimIndex): PlannedClaim[] => {

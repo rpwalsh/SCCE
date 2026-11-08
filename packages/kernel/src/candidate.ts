@@ -1180,12 +1180,13 @@ function proposalSurface(proposal: CognitiveProposal): string {
   const claims = proposal.claims
     .map(claim => cleanIncomingSurface(claim.text))
     .filter(Boolean);
-  const steps = proposal.steps
+  const steps = [...proposal.steps]
     .sort((left, right) => left.order - right.order)
     .map(step => cleanIncomingSurface(step.text))
     .filter(Boolean);
-  const surfaces = claims.length ? claims : steps;
-  return [...new Set(surfaces)].slice(0, 8).join(" ").trim();
+  const distinctClaims = [...new Set(claims)];
+  const surfaces = steps.length ? [...steps, ...distinctClaims.filter(claim => !steps.includes(claim))] : distinctClaims.slice(0, 8);
+  return surfaces.join(" ").trim();
 }
 
 function candidateKindFromProposal(proposal: CognitiveProposal): CandidateSurface["kind"] {

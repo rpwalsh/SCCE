@@ -29,6 +29,20 @@ import type {
 import type { ChernoffResult, DavisKahanEnvelope, MinimumCoverResult, SubspaceDriftEntropy } from "../causal-math.js";
 
 describe("general-cognition candidate and judge contracts", () => {
+  it("retains every selected procedure step in order alongside a distinct conclusion without mutating the plan", () => {
+    const steps = Array.from({ length: 9 }, (_, order) => ({ id: `step.${order}`, order, text: `owned operation ${order}`,
+      basis: "learned_prior" as const, dependsOnIds: order ? [`step.${order - 1}`] : [], evidenceIds: [], trace: { sourceExampleId: `source.${order}` } }));
+    steps[7]!.text = steps[2]!.text;
+    const proposal = cognitiveProposal({ id: "proposal.complete-procedure",
+      claims: [claim("claim.summary", "owned conclusion", "reasoned_inference", { externallyFactual: false })],
+      steps: [...steps].reverse() });
+    const original = structuredClone(proposal.steps);
+    const field = createCandidateEngine().generate({ ...engineFixture([]),
+      requirementField: requirements({ inferentialDepth: 0.9 }), cognitiveProposals: [proposal] });
+    expect(proposalCandidate(field, proposal.id).answer).toBe([...steps.map(step => step.text), "owned conclusion"].join(" "));
+    expect(proposal.steps).toEqual(original);
+  });
+
   it("hands a planned invention to learned creative authority when another operator crossed its independent threshold", () => {
     const invention = createInventionConstruct({ id: "invention.authority-handoff", title: "River stones",
       proposalSurface: "River stones remember the sound of dawn." });

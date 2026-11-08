@@ -3797,6 +3797,7 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         })
       }));
       const inventionPlanStarted = Date.now();
+      let inventionPlanDecision: import("./invention-planner.js").InventionPlanningDecision | undefined;
       const plannedInventionCandidates = planInventions({
         requestText: input.text,
         requestedAuthority,
@@ -3810,13 +3811,16 @@ function runtimeMotionAddedEvidence(motion: RuntimeReplanMotion | undefined): bo
         requirementField,
         operatorActivations,
         creativeRequestFrame,
+        onDecision: decision => { inventionPlanDecision = decision; },
         samplingDisabled: deps.deterministicReplay === true
       });
       kernelTrace({
         stage: "candidate.invention.plan",
         label: "kernel.turn",
         durationMs: Date.now() - inventionPlanStarted,
-        counts: { candidates: plannedInventionCandidates.length }
+        counts: { candidates: plannedInventionCandidates.filter(construct => Boolean(construct.proposalSurface)).length,
+          requestContexts: plannedInventionCandidates.length },
+        support: { decision: toJsonValue(inventionPlanDecision ?? null) }
       });
       const runtimeTerminalPriorContext = inheritedRuntimeMotion
         && inheritedRuntimeMotion.status !== "hydrated"

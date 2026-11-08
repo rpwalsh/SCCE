@@ -29,6 +29,15 @@ import {
 import { compileRealizationContract, type SemanticAnswerConstructFact } from "../semantic-answer-construct.js";
 
 describe("cognitive meaning planner", () => {
+  it("does not turn an unavailable request context into invented meaning through its title", () => {
+    const context = createInventionConstruct({ title: "Quatre veïns comparteixen un espai", proposalSurface: "",
+      trace: { realizationAvailability: { status: "unavailable", reasonId: "no_realization_content" } } });
+    const planned = planCognitiveProposals(plannerInput({ inventions: [context],
+      requirements: requirements({ noveltyDemand: 0.9 }, [requirement("req.novel", "noveltyDemand")]),
+      operators: [operator("invention", COGNITIVE_OPERATOR_IDS.invention, ["noveltyDemand"])] }));
+    expect(planned.flatMap(proposal => proposal.claims).filter(claim => claim.basis === "invented")).toEqual([]);
+  });
+
   it("builds a multi-source synthesis and a non-verbatim conclusion", () => {
     const first = evidence("evidence.one", "source.one", "Battery heat increases under sustained load.");
     const second = evidence("evidence.two", "source.two", "Thermal throttling begins after the enclosure warms.");

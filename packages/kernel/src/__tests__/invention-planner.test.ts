@@ -169,7 +169,7 @@ describe("invention planner", () => {
     }
   });
 
-  it("hands no-model creative realization to Mouth without phrase salad or repeated generation", () => {
+  it("reports unavailable content instead of handing a repeated request to Mouth when no plan was acquired", () => {
     const requestText = "Invent a new indexing algorithm for this graph.";
     const fixture = plannerFixtureWithLanguageCorpus(
       requestText,
@@ -193,36 +193,28 @@ describe("invention planner", () => {
       sourceActivationIds: ["activation.request.no-model-handoff"]
     };
 
+    const onDecision = vi.fn();
     const planned = planInventions({
       ...fixture,
       requestedAuthority: "creative",
       creativeRequestFrame,
+      onDecision,
       maxCandidates: 4,
       samplingDisabled: true
     });
 
     expect(generate.mock.calls.length).toBeLessThanOrEqual(1);
     expect(planned).toHaveLength(1);
-    expect(planned[0]!.proposalSurface).toBe("Invent a new indexing algorithm for this graph");
-    expect(planned[0]!.proposalSurface).not.toContain(";");
+    expect(planned[0]!.proposalSurface).toBe("");
+    expect(onDecision).toHaveBeenCalledExactlyOnceWith({ status: "unavailable", reasonId: "no_realization_content", constructIds: [] });
     const realization = traceRecord(planned[0]!).proposalRealization as Record<string, JsonValue>;
-    expect(realization.path)
-      .toBe("mouth_non_event_realization_deferred");
+    expect(realization.path).toBe("mouth_non_event_realization_deferred");
     expect(realization.requestRoleBindings).toEqual([
-      expect.objectContaining({
-        id: "request.focus.algorithm",
-        roleId: "request.role.focus",
-        text: "algorithm",
-        source: "creative_request_frame"
-      }),
-      expect.objectContaining({
-        id: "request.argument.graph",
-        roleId: "request.role.argument",
-        text: "this graph",
-        source: "creative_request_frame"
-      })
+      expect.objectContaining({ id: "request.focus.algorithm", roleId: "request.role.focus", text: "algorithm", source: "creative_request_frame" }),
+      expect.objectContaining({ id: "request.argument.graph", roleId: "request.role.argument", text: "this graph", source: "creative_request_frame" })
     ]);
     expect(realization.contextSymbols).toEqual(expect.arrayContaining(["algorithm", "this graph"]));
+    expect(traceRecord(planned[0]!).realizationAvailability).toEqual({ status: "unavailable", reasonId: "no_realization_content" });
     expect(fixture.languageMemoryState.creativeEventCompatibilityModels).toEqual([]);
   });
 
