@@ -236,14 +236,15 @@ function computeTidySurfaceText(text: string): string {
     collapsed.push(char);
   }
   const base = collapsed.join("").trim();
-  let out = "";
+  const out: string[] = [];
+  let previous = "";
   for (const char of base) {
-    const previous = out[out.length - 1] ?? "";
     if (isSentenceBoundarySymbol(char) && previous === char) continue;
     if ((char === ":" || char === ";" || char === "," || char === "،" || char === "、") && previous === char) continue;
-    out += char;
+    out.push(char);
+    previous = char[char.length - 1] ?? "";
   }
-  return out;
+  return out.join("");
 }
 
 /**

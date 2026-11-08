@@ -74,12 +74,15 @@ export function requestClosedClassWords(input: {
   limit?: number;
 }): Set<string> {
   const scaffolding = deriveClosedClassWords({ constructions: requestScaffoldingConstructions(input.patterns ?? [], input.authority, input.requestText) });
-  const corpus = deriveClosedClassWords({
+  const limit = closedClassLimit(input.limit);
+  const modelRank = input.models?.length && !(input.continuationPopulation && closedClassFromPopulation(input.continuationPopulation, limit))
+    ? rankModelClosedClass(input.models, limit, true) : undefined;
+  const corpus = deriveClosedClassWordsPrepared({
     models: input.models ?? [],
     continuationPopulation: input.continuationPopulation,
     identityClosedClassWords: input.identityClosedClassWords,
     limit: input.limit
-  });
+  }, modelRank);
   const out = new Set(scaffolding);
   for (const unit of requestContentAnchorUnits(input.requestText)) if (corpus.has(unit)) out.add(unit);
   // The request corpus teaches its frames with real subjects in them ("Who was Ada Lovelace?"), so the subjects'
@@ -95,7 +98,7 @@ export function requestClosedClassWords(input: {
   // Use the best corpus statistic available. A full continuation population wins when present; otherwise the
   // hydrated models carry the same learned continuation counts. Omitting models here erased every model-only
   // function word inside a maximal named run, even when the request-scoped corpus set had correctly ranked it.
-  const ranked = namedRunClosedClassWords(input);
+  const ranked = namedRunClosedClassWords(input, modelRank);
   for (const anchor of namedSubjectAnchors(input.requestText)) {
     for (const unit of anchor.toLocaleLowerCase().split(/\s+/u)) if (!ranked.has(unit)) out.delete(unit);
   }
@@ -107,44 +110,34 @@ function namedRunClosedClassWords(input: {
   continuationPopulation?: LanguageContinuationPopulation;
   identityClosedClassWords?: ReadonlySet<string>;
   limit?: number;
-}): Set<string> {
+}, prepared?: ModelClosedClassRank): Set<string> {
   const limit = closedClassLimit(input.limit);
   if (input.continuationPopulation) {
     const measuredPopulation = closedClassFromPopulation(input.continuationPopulation, limit);
     if (measuredPopulation) return new Set(measuredPopulation);
   }
   if (input.models?.length) {
-    const continuationSymbols = new Set<string>();
-    const unigramSymbols = new Set<string>();
-    let hasContinuations = false;
-    for (const model of input.models) {
-      for (const [symbol, count] of Object.entries(model.continuationCounts ?? {})) {
-        if (!isWordSymbol(symbol) || !Number.isFinite(count) || count <= 0) continue;
-        hasContinuations = true;
-        continuationSymbols.add(symbol);
-      }
-      for (const [symbol, count] of Object.entries(model.unigramCounts ?? {})) {
-        if (isWordSymbol(symbol) && Number.isFinite(count) && count > 0) unigramSymbols.add(symbol);
-      }
-    }
-    const observedTypes = hasContinuations ? continuationSymbols : unigramSymbols;
-    // A sparse turn model may rank every content word simply because it has fewer types than the class window.
-    // Keep named-run protection unmeasured until the available corpus can fill that learned rank window.
-    if (observedTypes.size < limit) return new Set();
-    return deriveClosedClassWords({ models: input.models, limit });
+    const ranked = prepared ?? rankModelClosedClass(input.models, limit, true);
+    return ranked.namedRunEligible ? new Set(ranked.words) : new Set();
   }
   if (input.continuationPopulation) return new Set();
   return deriveClosedClassWords({ identityClosedClassWords: input.identityClosedClassWords, limit });
 }
 
-export function deriveClosedClassWords(input: {
+type ClosedClassInput = {
   models?: readonly KneserNeyModel[];
   continuationPopulation?: LanguageContinuationPopulation;
   /** Learned by the selected language identity; never substitutes for present runtime statistics. */
   identityClosedClassWords?: ReadonlySet<string>;
   constructions?: readonly { parts?: readonly { kind: string; surface?: string; [key: string]: unknown }[] }[];
   limit?: number;
-}): Set<string> {
+};
+
+export function deriveClosedClassWords(input: ClosedClassInput): Set<string> {
+  return deriveClosedClassWordsPrepared(input);
+}
+
+function deriveClosedClassWordsPrepared(input: ClosedClassInput, prepared?: ModelClosedClassRank): Set<string> {
   const limit = closedClassLimit(input.limit);
   const hasRuntimeStatistics = Boolean(input.continuationPopulation) || (input.models?.length ?? 0) > 0;
   if (!hasRuntimeStatistics && input.identityClosedClassWords?.size) {
@@ -175,27 +168,38 @@ export function deriveClosedClassWords(input: {
   // a single-character Hani content word continues almost none. The number is learned, per corpus, in any
   // script, and was on the hydrated model the whole time. Unigram counts remain the fallback for a model too
   // small to carry continuations at all.
+  const out = new Set((prepared ?? rankModelClosedClass(input.models ?? [], limit, false)).words);
+  addConstructionWords(out, input.constructions ?? []);
+  return out;
+}
+
+interface ModelClosedClassRank { words: ReadonlySet<string>; namedRunEligible: boolean }
+
+function rankModelClosedClass(models: readonly KneserNeyModel[], limit: number, measureNamedRun: boolean): ModelClosedClassRank {
   const totals = new Map<string, number>();
+  const positiveContinuations = new Set<string>();
+  const positiveUnigrams = new Set<string>();
   let continuations = 0;
-  for (const model of input.models ?? []) {
+  for (const model of models) {
     for (const [symbol, contexts] of Object.entries(model.continuationCounts ?? {})) {
       if (!isWordSymbol(symbol)) continue;
       totals.set(symbol, (totals.get(symbol) ?? 0) + contexts);
       continuations++;
+      if (measureNamedRun && positiveContinuations.size < limit && Number.isFinite(contexts) && contexts > 0) positiveContinuations.add(symbol);
     }
   }
-  if (!continuations) {
-    for (const model of input.models ?? []) {
+  if (!continuations || (measureNamedRun && positiveContinuations.size === 0)) {
+    for (const model of models) {
       for (const [symbol, count] of Object.entries(model.unigramCounts ?? {})) {
         if (!isWordSymbol(symbol)) continue;
-        totals.set(symbol, (totals.get(symbol) ?? 0) + count);
+        if (!continuations) totals.set(symbol, (totals.get(symbol) ?? 0) + count);
+        if (measureNamedRun && positiveUnigrams.size < limit && Number.isFinite(count) && count > 0) positiveUnigrams.add(symbol);
       }
     }
   }
   const ranked = [...totals.entries()].sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]));
-  const out = new Set(ranked.slice(0, limit).map(([symbol]) => symbol.toLocaleLowerCase()));
-  addConstructionWords(out, input.constructions ?? []);
-  return out;
+  return { words: new Set(ranked.slice(0, limit).map(([symbol]) => symbol.toLocaleLowerCase())),
+    namedRunEligible: (positiveContinuations.size > 0 ? positiveContinuations.size : positiveUnigrams.size) >= limit };
 }
 
 function closedClassFromPopulation(population: LanguageContinuationPopulation, limit: number): ReadonlySet<string> | undefined {
