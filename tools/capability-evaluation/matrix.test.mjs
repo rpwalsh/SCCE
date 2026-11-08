@@ -61,14 +61,14 @@ test("known creative declines remain required-completion failures, never abstent
   }
 });
 
-test("chat follow-ups are AI/test-authored development prompts over source-seen material, not independent holdouts", () => {
+test("chat follow-ups are test-authored development prompts over source-seen material, not independent holdouts", () => {
   const chat = questions.filter(row => row.category === "chat");
   assert.equal(chat.length, 2);
   for (const row of chat) {
-    assert.equal(row.protectedMetadata.split, "development_ai_test_authored_prompt_source_seen");
-    assert.match(row.protectedMetadata.promptAuthorship, /AI\/test-authored development follow-up prompt/u);
+    assert.equal(row.protectedMetadata.split, "development_test_authored_prompt_source_seen");
+    assert.match(row.protectedMetadata.promptAuthorship, /test-authored development follow-up prompt/u);
     assert.match(row.protectedMetadata.promptAuthorship, /not an independent holdout/u);
-    assert.match(row.protectedMetadata.grading, /AI\/test-authored development prompt/u);
+    assert.match(row.protectedMetadata.grading, /test-authored development prompt/u);
     assert.doesNotMatch(row.protectedMetadata.split, /heldout/iu);
   }
   assert.match(prereg.categories.find(row => row.id === "chat").grading, /not independent holdout cases/u);

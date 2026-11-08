@@ -6,7 +6,7 @@
     {
       "id": "chat",
       "count": 2,
-      "grading": "Existing BlindJudgment schema; AI/test-authored development follow-up prompts over source-seen English Dolly and Russian OASST material; not independent holdout cases."
+      "grading": "Existing BlindJudgment schema; test-authored development follow-up prompts over source-seen English Dolly and Russian OASST material; not independent holdout cases."
     },
     {
       "id": "creative",
@@ -68,7 +68,7 @@
     "corpusParity": "SCCE's isolated evaluation brain and Qwen RAG must use exactly the same frozen document bytes and source versions from one corpus manifest. No closed-book Qwen condition is scored in this matrix."
   },
   "stoppingRules": [
-    "Freeze corpus manifests, questions, preregistration, source tree, and repair cases before tuning; these two AI/test-authored chat follow-ups are development prompts, not independent held-out prompts.",
+    "Freeze corpus manifests, questions, preregistration, source tree, and repair cases before tuning; these two test-authored chat follow-ups are development prompts, not independent held-out prompts.",
     "Stop and mark the factual comparison invalid if any expected article is absent from the manifest, any unsupported attribute is present, source hashes differ, or the SCCE brain contains undeclared documents.",
     "Keep the known failure regressions in the report even if later runs decline them; declines remain failed task completions."
   ],
@@ -85,18 +85,18 @@
     "questionCount": 12,
     "repairCount": 2,
     "caseCount": 14,
-    "questionFileSha256": "2d5684017a376e6c1d1fb52a1b2153d6fe0d3506f7bae654d831d3066430af9c",
+    "questionFileSha256": "9aad74e3cfd9e24adef408a3e2ec853de7eeb990b7bdf4bbce990fd37dfa39d1",
     "questions": [
       {
         "id": "chat.en.dolly-story-followup.v1",
-        "sha256": "46ce77a3324aec50406f605e97d59d4d6e64d31c641b488cfb933782871277b0",
-        "split": "development_ai_test_authored_prompt_source_seen",
+        "sha256": "8022ce9a11a7fc8bfcb11e671566eda4dd9526987e7d3fa835a3e2c02d9aef17",
+        "split": "development_test_authored_prompt_source_seen",
         "lane": "chat"
       },
       {
         "id": "chat.ru.oasst-comic-followup.v1",
-        "sha256": "523576b840019e746580c5b1db8d3b3e34da6df704ec025e152bfbe0ad004697",
-        "split": "development_ai_test_authored_prompt_source_seen",
+        "sha256": "75837da68a7ae783a0bc7c2bc61489d564b2a4bba15d018d6696b83d31592372",
+        "split": "development_test_authored_prompt_source_seen",
         "lane": "chat"
       },
       {
