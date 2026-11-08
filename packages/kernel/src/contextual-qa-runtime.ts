@@ -43,5 +43,6 @@ export async function contextualQaForRequest(input: {
   if (bundles.length !== patterns.length) return undefined;
   const resolver = sourceConstructionRequestValueResolver({ bundles, graph: { nodes: [], hyperedges: [] } });
   const binding = resolver.resolve(input.requestText, direct);
-  return binding && typeof binding !== "string" ? { binding: { ...binding, resolverId: resolver.id }, bundles } : undefined;
+  return binding && typeof binding !== "string" && typeof binding.subject === "string"
+    ? { binding: { ...binding, subject: binding.subject, resolverId: resolver.id }, bundles } : undefined;
 }

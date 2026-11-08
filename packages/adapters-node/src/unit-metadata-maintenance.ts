@@ -96,6 +96,9 @@ export async function compactUnitSourceMetadata(storage: ScceStorage, options: U
           }
         }
         for (const owner of [...planned.values()].sort((a, b) => String(a.sourceVersionId).localeCompare(String(b.sourceVersionId)))) {
+          const existing = initial.get(String(owner.sourceVersionId));
+          if (existing && canonicalStringify(toJsonValue(metadata(existing).sourceMetadataBinding))
+            === canonicalStringify(toJsonValue(metadata(owner).sourceMetadataBinding))) continue;
           await storage.evidence.putSourceVersion(owner);
           delta.sourceWrites++;
         }

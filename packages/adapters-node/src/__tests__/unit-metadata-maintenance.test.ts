@@ -1,8 +1,9 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { expect, it, vi } from "vitest";
-import type { LanguageUnitRecord, ScceStorage, SourceVersion } from "@scce/kernel";
+import { createHasher, type LanguageUnitRecord, type ScceStorage, type SourceVersion } from "@scce/kernel";
 import { compactUnitSourceMetadata, UnitMetadataMaintenanceError } from "../unit-metadata-maintenance.js";
+import { sourceMetadataBoundOwner } from "../unit-source-metadata.js";
 
 const label = { tenantId: "fixture", principals: ["owner"], compartments: ["unit"], exportClass: "restricted", mergePolicy: "isolated" } as const;
 function records(id: string, repeats = 1200) {
@@ -91,6 +92,21 @@ it("reports oversized units and resumes deferred rows without losing the cursor"
   const second = await compactUnitSourceMetadata(f.storage, { batchSize: 3, maxBatches: 1, maxBatchBytes: budget, afterId: first.lastCommittedAfterId });
   expect(second).toMatchObject({ scanned: 1, compacted: 1, oversized: 0, lastCommittedAfterId: "c", complete: true });
   expect(f.state.units.get("a")!.metadata).toHaveProperty("sourceMetadata");
+});
+
+it("verifies an already bound canonical owner without rewriting it for each unit page", async () => {
+  const first = records("a");
+  const second = { source: first.source, unit: { ...structuredClone(first.unit), id: "b" } };
+  const f = fixture([first, second]);
+  const result = await compactUnitSourceMetadata(f.storage, { batchSize: 1, maxBatches: 3 });
+  expect(result).toMatchObject({ compacted: 2, sourceWrites: 1, ownerReads: 4, complete: true });
+  expect(f.sourceWrites).toHaveBeenCalledTimes(1);
+  const already = records("c");
+  already.source = sourceMetadataBoundOwner(already.source, createHasher());
+  const bound = fixture([already]);
+  expect(await compactUnitSourceMetadata(bound.storage)).toMatchObject({ compacted: 1, sourceWrites: 0, ownerReads: 2, complete: true });
+  expect(bound.sourceWrites).not.toHaveBeenCalled();
+  expect(bound.unitWrites).toHaveBeenCalledTimes(1);
 });
 
 it("does not write references after a canonical owner changes or becomes inaccessible", async () => {
