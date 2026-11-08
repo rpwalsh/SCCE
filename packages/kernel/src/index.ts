@@ -340,3 +340,4 @@ export { sourceLanguageTrainingStreamId } from "./source-language-training-ident
 
 export { stampSourceLanguageCompilation, validateSourceLanguageCompilationHeader, validateSourceCompilationModelInventory } from "./source-language-compilation.js";
 export * from "./language-pattern-publication.js";
+export * from "./source-reference-bindings.js";
