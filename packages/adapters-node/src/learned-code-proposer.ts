@@ -159,11 +159,11 @@ export function createLearnedCodeProposer(options: LearnedCodeProposerOptions): 
   // falls back to continuing sequences.
   const constructionsByWorkspace = new Map<string, CodeConstruction[]>();
 
-  const modelsFor = (languageId: string): Promise<KneserNeyModel[]> => {
+  const modelsFor = (languageId: string, context?: CodeMouthContext): Promise<KneserNeyModel[]> => {
     const cached = byLanguage.get(languageId);
     if (cached) return cached;
     availabilityByLanguage.set(languageId, { languageId, modelLimit, countSemantics: "admitted_run_models", status: "loading", modelsAvailable: null });
-    const loading = loadCodeModels(options.storage, languageId, modelLimit).then(models => {
+    const loading = loadCodeModels(options.storage, languageId, modelLimit, context).then(models => {
       availabilityByLanguage.set(languageId, { languageId, modelLimit, countSemantics: "admitted_run_models", status: "loaded", modelsAvailable: models.length });
       return models;
     }, error => {
@@ -187,7 +187,7 @@ export function createLearnedCodeProposer(options: LearnedCodeProposerOptions): 
       lastCandidates = [];
       const languageId = context.language || codeLanguageForPath(context.targetPath);
       if (!languageId) return undefined;
-      const models = await modelsFor(languageId);
+      const models = await modelsFor(languageId, context);
       if (!models.length) {
         log(`no usable ${languageId} models in the requested corpus slice; the learned lane has nothing to compose from`);
         return undefined;
@@ -375,21 +375,25 @@ async function repairSpans(
   }
 }
 
-/**
- * The code corpus for one formal language.
- *
- * The corpus lane files each source file's model under a stream named for that file, so the language a model
- * speaks is the language of the path in its stream id. That is also what keeps a Python model out of a
- * TypeScript repair without a second index to maintain.
- */
-async function loadCodeModels(storage: ScceStorage, languageId: string, limit: number): Promise<KneserNeyModel[]> {
-  // Storage indexes language-memory rows by the corpus *label*, not by the opaque source-system identity, so
-  // the query has to name it the same way the trainer stamped it.
-  const records = await storage.languageMemory.listNgramModels({
+/** Retrieved source profiles take admission priority over the bounded formal-language prior. */
+async function loadCodeModels(storage: ScceStorage, languageId: string, limit: number, context?: CodeMouthContext): Promise<KneserNeyModel[]> {
+  const profileIds = context && storage.evidence && storage.model
+    ? await sourceProfilesForCode(storage, languageId, limit, context) : [];
+  const selected = profileIds.length ? await storage.languageMemory.listNgramModels({
     sourceSystem: corpusSourceAlias(CORPUS_SOURCE_SYSTEM_IDS.ossCode),
     formalLanguage: languageId,
+    profileIds,
     limit
-  });
+  }) : [];
+  const remaining = Math.max(0, limit - selected.length);
+  // Storage indexes language-memory rows by the corpus *label*, not by the opaque source-system identity, so
+  // the query has to name it the same way the trainer stamped it.
+  const prior = remaining ? await storage.languageMemory.listNgramModels({
+    sourceSystem: corpusSourceAlias(CORPUS_SOURCE_SYSTEM_IDS.ossCode),
+    formalLanguage: languageId,
+    limit: remaining
+  }) : [];
+  const records = [...new Map([...selected, ...prior].map(record => [record.id, record])).values()].slice(0, limit);
   const models: KneserNeyModel[] = [];
   for (const record of records) {
     if (modelLanguage(record) !== languageId) continue;
@@ -400,6 +404,24 @@ async function loadCodeModels(storage: ScceStorage, languageId: string, limit: n
     }
   }
   return models;
+}
+
+/** Source evidence owns the profile filter before the storage model budgets apply. */
+async function sourceProfilesForCode(storage: ScceStorage, languageId: string, limit: number, context?: CodeMouthContext): Promise<string[]> {
+  if (!context || !storage.evidence || !storage.model) return [];
+  const features = anchorFeatureSet(codeSurfaceTokens(context.targetText).join(" "));
+  if (!features.length) return [];
+  const found = await storage.evidence.searchEvidence({ features, status: "promoted", openingBlockPrior: false, limit });
+  const sourceVersionIds = [...new Set(found.filter(({ span }) => {
+    const provenance = jsonRecord(span.provenance);
+    return span.status === "promoted"
+      && provenance.sourceSystem === corpusSourceAlias(CORPUS_SOURCE_SYSTEM_IDS.ossCode)
+      && provenance.formalLanguage === languageId;
+  }).map(({ span }) => span.sourceVersionId))];
+  if (!sourceVersionIds.length) return [];
+  const profiles = await storage.model.listLanguageProfiles({ sourceVersionIds, referencedByLanguageMemory: true, limit });
+  const admittedSources = new Set(sourceVersionIds);
+  return [...new Set(profiles.filter(profile => admittedSources.has(profile.sourceVersionId)).map(profile => profile.id))];
 }
 
 function modelLanguage(record: NgramModelRecord): string | undefined {
