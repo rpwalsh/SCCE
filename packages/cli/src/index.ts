@@ -5,6 +5,8 @@ import { spawn } from "node:child_process";
 import { runModelCommand, runSensorCommand, runSettingsCommand } from "./settings-commands.js";
 import { runCodeCommand } from "./code-command.js";
 import { negotiateLearning, runLearnCommand } from "./learning-commands.js";
+import { parseUnitMetadataMaintenanceOptions } from "./db-maintenance-options.js";
+import { compactUnitSourceMetadata, UnitMetadataMaintenanceError } from "@scce/adapters-node";
 import { parseLocalExecutiveGoal } from "@scce/adapters-node";
 import { wikiChildArgs, wikiContinueAfterConfiguredPageCap, wikiRunPaths, withWikiIngestCancellation } from "./wiki-process.js";
 import { resolveWikipediaCorpusTarget } from "@scce/adapters-node";
@@ -1384,6 +1386,16 @@ async function readJson<T>(filePath: string): Promise<T | null> {
 
 async function db(runtime: ReturnType<typeof createNodeRuntime>, args: string[], config: Awaited<ReturnType<typeof readScceRuntimeConfig>>): Promise<void> {
   const sub = args[0];
+  if (sub === "compact-unit-metadata") {
+    try {
+      return printJson(await compactUnitSourceMetadata(runtime.storage, parseUnitMetadataMaintenanceOptions(args.slice(1))));
+    } catch (error) {
+      if (!(error instanceof UnitMetadataMaintenanceError)) throw error;
+      printJson({ ...error.report, status: "failed", error: error.cause instanceof Error ? error.cause.message : String(error.cause) });
+      process.exitCode = 1;
+      return;
+    }
+  }
   if (sub === "init" || sub === "migrate") {
     await runtime.storage.migrate();
     printJson(runtime.storage.status ? await runtime.storage.status() : { ok: true });
@@ -1465,7 +1477,7 @@ async function db(runtime: ReturnType<typeof createNodeRuntime>, args: string[],
     if (!report.passed) process.exitCode = 1;
     return;
   }
-  return usage("scce db <status|init|migrate|verify|stats|audit|reset --confirm-local-dev-only>");
+  return usage("scce db <status|init|migrate|verify|stats|audit|compact-unit-metadata|reset --confirm-local-dev-only>");
 }
 
 // Default thresholds a shadow model must clear to be considered
@@ -1902,6 +1914,7 @@ function usage(error?: string): void {
     "  pnpm scce db verify",
     "  pnpm scce db contract [--sql]",
     "  pnpm scce db stats",
+    "  pnpm scce db compact-unit-metadata [--batch-size=128] [--max-batches=100] [--max-batch-bytes=8388608] [--after-id=<lastCommittedAfterId>]",
     "  pnpm scce hydrate plan <scce2-fixture-path>",
     "  pnpm scce hydrate import <scce2-fixture-path> --plan=<planId>",
     "  pnpm scce hydrate status [--status=<path>]",

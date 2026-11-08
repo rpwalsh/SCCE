@@ -1082,7 +1082,7 @@ function createEvidenceStore(storage: PostgresStorageAdapter): EvidenceStore {
           [{ id: source.sourceVersionId, informationLabel: source.informationLabel }]
         );
         const informationLabel = labels.get(source.sourceVersionId)!;
-        await storage.query(`INSERT INTO ${storage.table("sources")}(id, namespace, canonical_uri, first_seen_at, last_seen_at) VALUES($1,$2,$3,TO_TIMESTAMP($4/1000.0),TO_TIMESTAMP($4/1000.0)) ON CONFLICT(id) DO UPDATE SET last_seen_at=EXCLUDED.last_seen_at`, [source.sourceId, source.namespace, source.canonicalUri, source.observedAt]);
+        await storage.query(`INSERT INTO ${storage.table("sources")}(id, namespace, canonical_uri, first_seen_at, last_seen_at) VALUES($1,$2,$3,TO_TIMESTAMP($4/1000.0),TO_TIMESTAMP($4/1000.0)) ON CONFLICT(id) DO UPDATE SET last_seen_at=GREATEST(sources.last_seen_at,EXCLUDED.last_seen_at)`, [source.sourceId, source.namespace, source.canonicalUri, source.observedAt]);
         await storage.query(`INSERT INTO ${storage.table("source_versions")} AS stored(id, source_id, content_hash, media_type, observed_at, byte_length, trust_vector, metadata_json, information_label) VALUES($1,$2,$3,$4,TO_TIMESTAMP($5/1000.0),$6,$7::jsonb,$8::jsonb,$9::jsonb) ON CONFLICT(id) DO UPDATE SET information_label=EXCLUDED.information_label,
           metadata_json=CASE WHEN stored.source_id=EXCLUDED.source_id AND stored.content_hash=EXCLUDED.content_hash
             AND EXCLUDED.metadata_json->>'identityRecipe'='scce.gutenberg.source_identity.v2'
@@ -4439,6 +4439,42 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
          LIMIT $${params.length}`,
         params
       )).map(rowToNgramObservation);
+    },
+    async listUnitSourceMetadataPage(query) {
+      if (!Number.isSafeInteger(query.limit) || query.limit <= 0 || !Number.isSafeInteger(query.maxTotalJsonBytes) || query.maxTotalJsonBytes <= 0) {
+        throw new Error("unit metadata maintenance requires positive safe integer row and byte bounds");
+      }
+      const access = storage.informationAccessPredicate("unit", 4, "bounded_by_order_and_limit");
+      const rows = await storage.query<{ id: string; decoded_bytes: string | number; running_decoded_bytes: string | number; unit_json: LanguageUnitRow | null }>(
+        `WITH candidates AS MATERIALIZED (
+           SELECT unit.id
+           FROM ${storage.table("language_units")} unit
+           WHERE unit.id>$1 AND unit.metadata_json ? 'sourceMetadata' AND ${access.sql}
+           ORDER BY unit.id LIMIT $2 FOR UPDATE
+         ), sized AS MATERIALIZED (
+           SELECT unit.id, octet_length(to_jsonb(unit)::text)::bigint AS decoded_bytes
+           FROM candidates JOIN ${storage.table("language_units")} unit ON unit.id=candidates.id
+         ), ranked AS (
+           SELECT sized.*, SUM(CASE WHEN decoded_bytes<=$3 THEN decoded_bytes ELSE 0 END)
+             OVER (ORDER BY id ROWS UNBOUNDED PRECEDING) AS running_decoded_bytes
+           FROM sized
+         )
+         SELECT ranked.id, ranked.decoded_bytes, ranked.running_decoded_bytes,
+           CASE WHEN ranked.decoded_bytes<=$3 AND ranked.running_decoded_bytes<=$3 THEN to_jsonb(unit) ELSE NULL END AS unit_json
+         FROM ranked JOIN ${storage.table("language_units")} unit ON unit.id=ranked.id ORDER BY ranked.id`,
+        [query.afterId ?? "", query.limit, query.maxTotalJsonBytes, ...access.params]);
+      const units: LanguageUnitRecord[] = [], oversized: Array<{ id: string; byteLength: number }> = [];
+      let nextAfterId = query.afterId, processed = 0, decodedBytes = 0;
+      for (const row of rows) {
+        const byteLength = Number(row.decoded_bytes);
+        if (byteLength <= query.maxTotalJsonBytes && Number(row.running_decoded_bytes) > query.maxTotalJsonBytes) break;
+        nextAfterId = row.id;
+        processed++;
+        if (byteLength > query.maxTotalJsonBytes) oversized.push({ id: row.id, byteLength });
+        else if (row.unit_json) { units.push(rowToLanguageUnit(row.unit_json)); decodedBytes += byteLength; }
+        else throw new Error("bounded unit metadata page omitted an admissible payload");
+      }
+      return { units, decodedBytes, oversized, nextAfterId, hasMore: processed < rows.length || rows.length === query.limit };
     },
     async listLanguageUnits(query = {}) {
       const params: unknown[] = [];

@@ -310,3 +310,25 @@ logs, and interaction outcomes. Every candidate retains source/version/evidence
 identity, qualifiers, an opaque relation seed, and typed participant ports. It remains
 in a candidate channel until promotion; corpus structure proposes semantics but does
 not certify or insert it into the ordinary graph.
+
+### Compact existing unit source metadata
+
+`pnpm scce db compact-unit-metadata --batch-size=128 --max-batches=100 --max-batch-bytes=8388608`
+normalizes accessible existing units through the normal canonical source and unit writers.
+It removes inline `sourceMetadata` only after verifying an identical canonical value,
+source version, information label and compilation binding. Unit identities, text,
+features, evidence and other metadata remain unchanged; canonical source metadata stays complete.
+
+Each locked keyset page commits atomically. The row bound applies before PostgreSQL
+measures decoded full-row JSON bytes; only the prefix within the byte budget is
+hydrated. Canonical owner reads are batched separately. These are batch limits,
+not a bound on total process memory. Oversized units remain intact and are counted
+explicitly; deferred rows retain their position for the next page. Increase the
+byte bound and restart from the beginning to revisit oversized units.
+
+The JSON receipt reports committed counts, metadata bytes before/after, skipped
+owners, oversized rows and `lastCommittedAfterId`. Resume an incomplete run with
+`--after-id=<lastCommittedAfterId>`. A failed batch rolls back and exits nonzero
+with the last committed receipt, so its cursor is safe to retry. Concurrent writes
+can require a transaction retry; no locked rows are silently skipped. A completed
+rerun performs no writes for already normalized units.

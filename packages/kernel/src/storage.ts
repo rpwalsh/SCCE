@@ -145,6 +145,14 @@ export interface LanguageUnitRecord {
   informationLabel?: InformationLabel;
 }
 
+export interface UnitSourceMetadataPage {
+  units: LanguageUnitRecord[];
+  decodedBytes: number;
+  nextAfterId?: string;
+  hasMore: boolean;
+  oversized: Array<{ id: string; byteLength: number }>;
+}
+
 export interface LanguagePatternRecord {
   id: string;
   profileId: string;
@@ -948,6 +956,8 @@ export interface LanguageMemoryStore {
   continuationPopulation?(query: { languageId: string }): Promise<LanguageContinuationPopulation | undefined>;
   listNgramObservations(query?: { streamId?: string; languageHint?: string; profileIds?: readonly string[]; sourceSystem?: string; limit?: number }): Promise<NgramObservation[]>;
   listLanguageUnits(query?: { profileId?: string; profileIds?: readonly string[]; script?: string; sourceSystem?: string; limit?: number; maxTotalJsonBytes?: number }): Promise<LanguageUnitRecord[]>;
+  /** Maintenance only: locked keyset prefix, decoded full-row byte bound, and explicit oversized-row progress. */
+  listUnitSourceMetadataPage?(query: { afterId?: string; limit: number; maxTotalJsonBytes: number }): Promise<UnitSourceMetadataPage>;
   /** Request-seed views retain interpretation fields and omit generative syntax join programs. */
   listLanguagePatterns(query?: { view?: "request_seed"; patternIds?: readonly string[]; profileId?: string; profileIds?: readonly string[]; sourceSystem?: string; patternSchemas?: readonly string[]; languageId?: string; patternKind?: LanguagePatternRecord["patternKind"]; formalLanguage?: string; parameterCount?: number; sourceComputationBindingId?: string; contextualQaRequestFeatures?: readonly string[]; limit?: number; maxTotalJsonBytes?: number }): Promise<LanguagePatternRecord[]>;
   listSemanticFrames(query?: { view?: "request_seed"; profileIds?: readonly string[]; sourceSystem?: string; surface?: string; requestSurface?: string; limit?: number }): Promise<SemanticFrameRecord[]>;
