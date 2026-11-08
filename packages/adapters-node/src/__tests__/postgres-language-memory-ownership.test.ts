@@ -598,13 +598,15 @@ describe("Postgres language-memory ownership queries", () => {
 
     const sql = calls[0]!.sql;
     expect(sql).toContain("frame_json->>'surface'=$1");
-    expect(sql).toContain("ORDER BY alpha DESC, created_at DESC, id ASC LIMIT $6");
+    expect(sql).toContain("frame.normalized_surface_hash=$2");
+    expect(sql).toContain("ORDER BY alpha DESC, created_at DESC, id ASC LIMIT $7");
     expect(sql.indexOf("frame_json->>'surface'=$1")).toBeLessThan(sql.indexOf("ORDER BY"));
     expect(calls[0]?.params[0]).toBe("surface.fixture");
+    expect(calls[0]?.params[1]).toBe(createHasher().digestHex("surface.fixture"));
     expect(calls[0]?.params.at(-1)).toBe(11);
   });
 
-  it("migrates an idempotent expression index matching exact surface ranking", async () => {
+  it("migrates an idempotent fixed-size surface hash index while retaining source-profile backfills", async () => {
     const { adapter } = fixture();
     const statements: string[] = [];
     const client = {
@@ -615,7 +617,7 @@ describe("Postgres language-memory ownership queries", () => {
         }
         if (sql.includes("information_schema.columns")) {
           const identifiers = [...new Set(statements
-            .filter(statement => statement.startsWith("CREATE TABLE"))
+            .filter(statement => statement.startsWith("CREATE TABLE") || statement.startsWith("ALTER TABLE"))
             .flatMap(statement => statement.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []))];
           return {
             rows: POSTGRES_REQUIRED_TABLES.flatMap(table_name => identifiers.map(column_name => ({ table_name, column_name })))
@@ -630,8 +632,9 @@ describe("Postgres language-memory ownership queries", () => {
     await adapter.migrate();
 
     expect(statements.filter(statement => statement.includes("semantic_frames_surface_rank"))).toEqual([
-      `CREATE INDEX IF NOT EXISTS idx_fixture_semantic_frames_surface_rank ON "fixture".semantic_frames((frame_json->>'surface'),alpha DESC,created_at DESC,id ASC)`
+      `DROP INDEX IF EXISTS "fixture".idx_fixture_semantic_frames_surface_rank`
     ]);
+    expect(statements).toContain(`CREATE INDEX IF NOT EXISTS idx_fixture_semantic_frames_normalized_surface_hash_rank ON "fixture".semantic_frames(normalized_surface_hash,alpha DESC,created_at DESC,id ASC)`);
     expect(statements.some(statement =>
       statement.includes("UPDATE \"fixture\".language_profiles profile")
       && statement.includes("jsonb_array_elements(profile.profile_json->'charNgrams')")

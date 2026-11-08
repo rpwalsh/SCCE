@@ -1,7 +1,7 @@
 // SCCE. Copyright (c) 2026 Ryan P. Walsh. All rights reserved.
 // Proprietary: made available for inspection only. No license granted except by separate written agreement. See LICENSE.
 import { afterEach, expect, it } from "vitest";
-import { requestSeedLanguagePattern, requestSeedSemanticFrame, type LanguagePatternRecord, type SemanticFrameRecord } from "@scce/kernel";
+import { createHasher, requestSeedLanguagePattern, requestSeedSemanticFrame, type LanguagePatternRecord, type SemanticFrameRecord } from "@scce/kernel";
 import { normalizePriorKey } from "../../../kernel/src/kernel-answer-primitives.js";
 import { PostgresStorageAdapter } from "../postgres.js";
 
@@ -24,12 +24,12 @@ function fixture(patterns: LanguagePatternRecord[] = [], frames: SemanticFrameRe
     if (sql.includes("AS model_metadata") || sql.startsWith("SELECT DISTINCT pattern.profile_id")) return [];
     if (sql.includes("FROM \"seed_projection\".\"semantic_frames\"")) {
       let rows = frames;
-      const surfaceParameter = /btrim\(regexp_replace\(lower\(\$(\d+)::text\)/u.exec(sql)?.[1];
+      const surfaceParameter = /frame\.normalized_surface_hash=\$(\d+)/u.exec(sql)?.[1];
       if (surfaceParameter) {
-        const surface = params[Number(surfaceParameter) - 1];
-        if (typeof surface === "string") rows = rows.filter(row => {
+        const hash = params[Number(surfaceParameter) - 1];
+        if (typeof hash === "string") rows = rows.filter(row => {
           const own = (row.frameJson as Record<string, unknown>).surface;
-          return typeof own === "string" && normalizePriorKey(own) === normalizePriorKey(surface);
+          return typeof own === "string" && createHasher().digestHex(normalizePriorKey(own)) === hash;
         });
       }
       if (sql.includes("'[]'::text AS embedding")) rows = rows.flatMap(row => requestSeedSemanticFrame(row) ?? []);
@@ -170,9 +170,9 @@ it.each(["αλφα βήτα", "  ΑΛΦΑ\tβήτα\r\n", "КВАРТУН БОБ
   expect(await adapter.languageMemory.listSemanticFrames({ requestSurface, limit: 8 })).toEqual(rows.filter(row =>
     normalizePriorKey(String((row.frameJson as Record<string, unknown>).surface)) === normalizePriorKey(requestSurface)));
   const sql = calls.at(-1)!.sql;
-  expect(sql).toContain("btrim(regexp_replace(lower(frame.frame_json->>'surface'),E'[ \\t\\n\\r]+',' ','g'),' ')");
-  expect(sql).toContain("btrim(regexp_replace(lower($1::text)");
+  expect(sql).toContain("frame.normalized_surface_hash=$1");
+  expect(sql).not.toContain("lower(");
   expect(sql).not.toContain("[[:space:]]");
   expect(sql).not.toContain("normalize(");
-  expect(calls.at(-1)!.params[0]).toBe(requestSurface);
+  expect(calls.at(-1)!.params[0]).toBe(createHasher().digestHex(normalizePriorKey(requestSurface)));
 });

@@ -22,6 +22,7 @@ import {
   joinInformationLabels,
   corpusIdentityMatchSurface,
   normalizeSourceLanguageAlias,
+  normalizePriorKey,
   normalizeInformationLabel,
   toJsonValue,
   LANGUAGE_CONSTRUCTION_ACTIVE_PROJECTION_RECIPE_ID,
@@ -365,6 +366,7 @@ export class PostgresStorageAdapter implements ScceStorage {
         await client.query(statement);
       }
       if (freshSchema) for (const statement of freshSchemaIndexStatements(this.q)) await client.query(statement);
+      await backfillSemanticFrameSurfaceHashes(this, client);
       const schemaErrors = await requiredSchemaErrors(client, this.schema);
       if (schemaErrors.length) throw new Error(`schema migration incomplete: ${schemaErrors.slice(0, 12).join("; ")}`);
       await client.query(
@@ -3795,8 +3797,42 @@ function requestSeedPatternJsonSql(value: string, schema: string): string {
       ELSE '{}'::jsonb END END)`;
 }
 
-function requestSurfaceSql(value: string): string {
-  return `btrim(regexp_replace(lower(${value}),E'[ \\t\\n\\r]+',' ','g'),' ')`;
+const semanticFrameSurfaceHasher = createHasher();
+const SEMANTIC_FRAME_SURFACE_BACKFILL_PAGE_ROWS = 256;
+
+function semanticFrameSurfaceHash(surface: string): string {
+  return semanticFrameSurfaceHasher.digestHex(normalizePriorKey(surface));
+}
+
+function semanticFrameSurface(frameJson: JsonValue): string | undefined {
+  return frameJson && typeof frameJson === "object" && !Array.isArray(frameJson) && typeof frameJson.surface === "string"
+    ? frameJson.surface : undefined;
+}
+
+async function backfillSemanticFrameSurfaceHashes(storage: PostgresStorageAdapter, client: PoolClient): Promise<void> {
+  let afterId: string | null = null;
+  for (;;) {
+    const { rows } = await client.query<{ id: string; surface: string }>(
+      `SELECT id,frame_json->>'surface' AS surface FROM ${storage.table("semantic_frames")}
+       WHERE normalized_surface_hash IS NULL AND jsonb_typeof(frame_json->'surface')='string'
+         AND ($1::text IS NULL OR id>$1) ORDER BY id ASC LIMIT $2`, [afterId, SEMANTIC_FRAME_SURFACE_BACKFILL_PAGE_ROWS]);
+    if (!rows.length) break;
+    if (rows.some(row => typeof row.id !== "string" || typeof row.surface !== "string" || row.id === afterId)
+      || new Set(rows.map(row => row.id)).size !== rows.length) {
+      throw new Error("semantic-frame surface backfill received an invalid primary-key page");
+    }
+    const payload = rows.map(row => ({ id: row.id, surface: row.surface, hash: semanticFrameSurfaceHash(row.surface) }));
+    for (const chunk of serializedJsonRowBatches(payload, batchRowId)) await client.query(
+      `UPDATE ${storage.table("semantic_frames")} frame SET normalized_surface_hash=observed.hash
+       FROM jsonb_to_recordset($1::jsonb) AS observed(id text,surface text,hash text)
+       WHERE frame.id=observed.id AND frame.normalized_surface_hash IS NULL
+         AND jsonb_typeof(frame.frame_json->'surface')='string' AND frame.frame_json->>'surface'=observed.surface`, [chunk]);
+    afterId = rows.at(-1)!.id;
+  }
+  const pending = await client.query<{ pending: boolean }>(
+    `SELECT EXISTS (SELECT 1 FROM ${storage.table("semantic_frames")}
+     WHERE normalized_surface_hash IS NULL AND jsonb_typeof(frame_json->'surface')='string') AS pending`);
+  if (pending.rows[0]?.pending) throw new Error("semantic-frame surface backfill changed during migration; retry migration");
 }
 
 function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMemoryStore {
@@ -4611,16 +4647,21 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
     async listSemanticFrames(query = {}) {
       const params: unknown[] = [];
       const where: string[] = [];
+      const normalizedRequestSurface = query.requestSurface === undefined ? undefined : normalizePriorKey(query.requestSurface);
       if (query.sourceSystem) { params.push(query.sourceSystem); where.push(`frame.frame_json->>'sourceSystem'=$${params.length}`); }
-      if (query.surface) { params.push(query.surface); where.push(`frame.frame_json->>'surface'=$${params.length}`); }
+      if (query.surface) {
+        params.push(query.surface); where.push(`frame.frame_json->>'surface'=$${params.length}`);
+        params.push(semanticFrameSurfaceHash(query.surface));
+        where.push(`(frame.normalized_surface_hash=$${params.length} OR (frame.normalized_surface_hash IS NULL AND jsonb_typeof(frame.frame_json->'surface') IS DISTINCT FROM 'string'))`);
+      }
       if (query.requestSurface !== undefined) {
-        params.push(query.requestSurface);
+        params.push(semanticFrameSurfaceHasher.digestHex(normalizedRequestSurface!));
         where.push("jsonb_typeof(frame.frame_json->'surface')='string'",
-          `${requestSurfaceSql("frame.frame_json->>'surface'")}=${requestSurfaceSql(`$${params.length}::text`)}`);
+          `frame.normalized_surface_hash=$${params.length}`);
       }
       if (query.view === "request_seed") {
         where.push("jsonb_typeof(frame.frame_json->'surface')='string'",
-          `${requestSurfaceSql("frame.frame_json->>'surface'")}<>''`,
+          "btrim(frame.frame_json->>'surface',E' \\t\\n\\r')<>''",
           "jsonb_typeof(frame.frame_json->'requirementCoefficients')='object'");
       }
       if (query.profileIds) {
@@ -4631,7 +4672,11 @@ function createLanguageMemoryStore(storage: PostgresStorageAdapter): LanguageMem
       appendInformationAccess(storage, "frame", params, where, "bounded_by_order_and_limit");
       params.push(query.limit ?? 500);
       const frames = (await storage.query<SemanticFrameRow>(`SELECT id, ${query.view === "request_seed" ? `${jsonbFieldsSql("frame.frame_json", REQUEST_SEED_FRAME_JSON_FIELDS)} AS frame_json, '[]'::text AS embedding` : "frame_json, embedding::text AS embedding"}, evidence_ids, alpha, created_at, information_label FROM ${storage.table("semantic_frames")} frame WHERE ${where.join(" AND ")} ORDER BY alpha DESC, created_at DESC, id ASC LIMIT $${params.length}`, params)).map(rowToSemanticFrame);
-      return query.view === "request_seed" ? frames.flatMap(frame => requestSeedSemanticFrame(frame) ?? []) : frames;
+      const matched = query.requestSurface === undefined ? frames : frames.filter(frame => {
+        const surface = semanticFrameSurface(frame.frameJson);
+        return surface !== undefined && normalizePriorKey(surface) === normalizedRequestSurface;
+      });
+      return query.view === "request_seed" ? matched.flatMap(frame => requestSeedSemanticFrame(frame) ?? []) : matched;
     },
     async listTranslationAlignments(query = {}) {
       const params: unknown[] = [];
@@ -4792,21 +4837,20 @@ async function putSemanticFramesBatch(storage: PostgresStorageAdapter, frames: r
   if (!frames.length) return;
   await storage.transaction(async () => {
     const labels = await joinDurableRecordLabels(storage, "semantic_frames", frames.map(frame => ({ id: frame.id, informationLabel: frame.informationLabel })));
-    const payload = frames.map(frame => ({
-    id: frame.id,
-    frame_json: frame.frameJson,
-    embedding: vectorLiteral(frame.embedding, 64),
-    evidence_ids_json: frame.evidenceIds,
-    alpha: frame.alpha,
-      created_at_ms: frame.createdAt,
-      information_label: labels.get(frame.id)!
-    }));
+    const payload = frames.map(frame => {
+      const surface = semanticFrameSurface(frame.frameJson);
+      return { id: frame.id, frame_json: frame.frameJson,
+        normalized_surface_hash: surface === undefined ? null : semanticFrameSurfaceHash(surface),
+        embedding: vectorLiteral(frame.embedding, 64), evidence_ids_json: frame.evidenceIds, alpha: frame.alpha,
+        created_at_ms: frame.createdAt, information_label: labels.get(frame.id)! };
+    });
     for (const payloadChunk of serializedJsonRowBatches(payload, batchRowId)) {
       await storage.mutateLanguageMemory(
-        `INSERT INTO ${storage.table("semantic_frames")} AS sf(id,frame_json,embedding,evidence_ids,alpha,created_at,information_label)
+        `INSERT INTO ${storage.table("semantic_frames")} AS sf(id,frame_json,normalized_surface_hash,embedding,evidence_ids,alpha,created_at,information_label)
      SELECT
        r.id,
        r.frame_json,
+       r.normalized_surface_hash,
        r.embedding::vector,
        (SELECT COALESCE(array_agg(v.value), ARRAY[]::text[]) FROM jsonb_array_elements_text(r.evidence_ids_json) AS v(value)),
        r.alpha,
@@ -4815,14 +4859,16 @@ async function putSemanticFramesBatch(storage: PostgresStorageAdapter, frames: r
      FROM jsonb_to_recordset($1::jsonb) AS r(
        id text,
        frame_json jsonb,
+       normalized_surface_hash text,
        embedding text,
        evidence_ids_json jsonb,
        alpha double precision,
        created_at_ms double precision,
        information_label jsonb
      )
-     ON CONFLICT(id) DO UPDATE SET alpha=GREATEST(sf.alpha,EXCLUDED.alpha), frame_json=EXCLUDED.frame_json, evidence_ids=(SELECT ARRAY(SELECT DISTINCT unnest(sf.evidence_ids || EXCLUDED.evidence_ids))), information_label=EXCLUDED.information_label
+     ON CONFLICT(id) DO UPDATE SET alpha=GREATEST(sf.alpha,EXCLUDED.alpha), frame_json=EXCLUDED.frame_json, normalized_surface_hash=EXCLUDED.normalized_surface_hash, evidence_ids=(SELECT ARRAY(SELECT DISTINCT unnest(sf.evidence_ids || EXCLUDED.evidence_ids))), information_label=EXCLUDED.information_label
      WHERE sf.alpha IS DISTINCT FROM GREATEST(sf.alpha,EXCLUDED.alpha) OR sf.frame_json IS DISTINCT FROM EXCLUDED.frame_json
+       OR sf.normalized_surface_hash IS DISTINCT FROM EXCLUDED.normalized_surface_hash
        OR NOT (sf.evidence_ids @> EXCLUDED.evidence_ids) OR sf.information_label IS DISTINCT FROM EXCLUDED.information_label`,
         [payloadChunk]
       );

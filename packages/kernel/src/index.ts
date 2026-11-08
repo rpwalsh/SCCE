@@ -243,7 +243,7 @@ export * from "./runtime-deadline.js";
 export * from "./runtime-cost-estimate.js";
 export * from "./discourse-state.js";
 export { clearCorpusIdentitySignals, corpusIdentityMatchSurface, corpusIdentitySignals, primeCorpusIdentitySignals, type CorpusIdentitySignals } from "./corpus-identity.js";
-export { declaredEntitySurfacesFromMetadata, learnedEntitySurfacesFromLanguageMemory, observedEntitySurfacesFromInducedLanguageModel, surfaceEntityRuns } from "./kernel-answer-primitives.js";
+export { declaredEntitySurfacesFromMetadata, learnedEntitySurfacesFromLanguageMemory, observedEntitySurfacesFromInducedLanguageModel, surfaceEntityRuns, normalizePriorKey } from "./kernel-answer-primitives.js";
 export { evidenceSourceIdentity, resolveEvidenceSourceIdentity } from "./evidence-source-identity.js";
 export * from "./source-artifact-role.js";
 export * from "./source-declared-license.js";

@@ -78,15 +78,27 @@ const fixtures: Array<{ q: string; access?: InformationAccessContext; statementC
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
 describe("Postgres schema contract extraction", () => {
-  it.each(fixtures)("preserves exact ordered DDL for $q with access $access", fixture => {
+  it.each(fixtures)("preserves exact ordered prior DDL apart from the explicit surface-key upgrade for $q with access $access", fixture => {
     const statements = schema.schemaStatements(fixture.q, fixture.access);
-    expect(statements).toHaveLength(fixture.statementCount);
-    expect(digest(statements)).toBe(fixture.sha256);
+    const key = fixture.q.replaceAll('"', "");
+    const addedColumn = `ALTER TABLE ${fixture.q}.semantic_frames ADD COLUMN IF NOT EXISTS normalized_surface_hash TEXT`;
+    const retiredIndex = `DROP INDEX IF EXISTS ${fixture.q}.idx_${key}_semantic_frames_surface_rank`;
+    const hashIndex = `CREATE INDEX IF NOT EXISTS idx_${key}_semantic_frames_normalized_surface_hash_rank ON ${fixture.q}.semantic_frames(normalized_surface_hash,alpha DESC,created_at DESC,id ASC)`;
+    const oldIndex = `CREATE INDEX IF NOT EXISTS idx_${key}_semantic_frames_surface_rank ON ${fixture.q}.semantic_frames((frame_json->>'surface'),alpha DESC,created_at DESC,id ASC)`;
+    expect(statements).toContain(addedColumn);
+    expect(statements).toContain(retiredIndex);
+    expect(statements).toContain(hashIndex);
+    expect(statements).not.toContain(oldIndex);
+    expect(statements).toHaveLength(fixture.statementCount + 2);
+    const prior = statements.filter(sql => sql !== addedColumn && sql !== retiredIndex).map(sql => sql === hashIndex ? oldIndex : sql);
+    expect(digest(prior)).toBe(fixture.sha256);
     expect(postgres.schemaStatements(fixture.q, fixture.access)).toEqual(statements);
   });
 
   it("preserves the fresh-schema indexes and required hydration column contract", () => {
-    expect(digest(schema.requiredHydrationColumns())).toBe("6cb43753bb07de0a5bdb96e1b27459d8861bf292b5f9ba6f9b31b50770df0f22");
+    const columns = schema.requiredHydrationColumns();
+    expect(columns.semantic_frames).toContain("normalized_surface_hash");
+    expect(digest({ ...columns, semantic_frames: columns.semantic_frames.filter(column => column !== "normalized_surface_hash") })).toBe("6cb43753bb07de0a5bdb96e1b27459d8861bf292b5f9ba6f9b31b50770df0f22");
     expect(digest(schema.freshSchemaIndexStatements("fixture"))).toBe("b9869ea350648b3a938f9f7e210ce2f01c038626a72cdf7f663dd276fb4f4ffd");
     expect(digest(schema.freshSchemaIndexStatements("\"fixture\""))).toBe("99d5d211dbddc3ac3eb50d88e2d08a178e1115a04b7068a75cf9c78ca2f5b8f5");
   });
