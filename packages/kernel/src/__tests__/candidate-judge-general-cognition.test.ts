@@ -29,6 +29,18 @@ import type {
 import type { ChernoffResult, DavisKahanEnvelope, MinimumCoverResult, SubspaceDriftEntropy } from "../causal-math.js";
 
 describe("general-cognition candidate and judge contracts", () => {
+  it("hands a planned invention to learned creative authority when another operator crossed its independent threshold", () => {
+    const invention = createInventionConstruct({ id: "invention.authority-handoff", title: "River stones",
+      proposalSurface: "River stones remember the sound of dawn." });
+    const operator = activeOperator(COGNITIVE_OPERATOR_IDS.relationComposition);
+    const generate = (requestedAuthority: "creative" | "factual") => createCandidateEngine().generate({
+      ...engineFixture([]), requestedAuthority, requirementField: requirements({ noveltyDemand: 0.524, inferentialDepth: 0.858 }),
+      operatorActivations: [operator], inventionCandidates: [invention] });
+    const creative = generate("creative").candidates.find(row => row.kind === "creative-candidate");
+    expect(creative?.force).toBe("invented");
+    expect(creative?.answer).toBe(invention.proposalSurface);
+    expect(generate("factual").candidates.some(row => row.kind === "creative-candidate")).toBe(false);
+  });
   it("turns a cognitive proposal into a clean answer surface without exposing telemetry", () => {
     const proposal = cognitiveProposal({
       id: "proposal.clean-surface",

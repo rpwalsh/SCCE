@@ -11,6 +11,7 @@ import {
   createLanguageMemoryRuntime,
   createMouth,
   createSemanticEntailmentEngine,
+  deriveTurnRequirementField,
   creativeRequestFrameContentTerms,
   creativeSurfaceSentenceUnits,
   INTERACTION_FEATURE_IDS,
@@ -27,6 +28,7 @@ import {
   type FieldState,
   type JsonValue,
   type LanguageProfile,
+  type LanguageGenerationInput,
   type SourceVersion,
   type SurfaceEnergyComponent,
   type SurfaceEnergyContext,
@@ -34,6 +36,38 @@ import {
 } from "../index.js";
 
 describe("creative Mouth production boundary", () => {
+  it("preserves creative subject control when the current owner request is also session evidence", async () => {
+    const clock = createClock({ fixedTime: 86000, stepMs: 1 });
+    const hasher = createHasher();
+    const ids = createIdFactory({ clock, hasher, deterministicReplay: true });
+    const languageRuntime = createLanguageMemoryRuntime({ idFactory: ids, hasher });
+    const generated: LanguageGenerationInput[] = [];
+    const generate = languageRuntime.generate.bind(languageRuntime);
+    languageRuntime.generate = input => { generated.push(input); return generate(input); };
+    const requestText = "Write a short scene about a sailor who befriends a clockmaker.";
+    const source = sourceVersion(ids, clock.now());
+    const owner = { ...evidenceSpan(ids, source, requestText, 0, clock.now()), mediaType: "application/scce-session-turn+json",
+      provenance: { sourceSystem: "conversation-session", roleId: "session.role.owner" },
+      trustVector: { forceClass: "session_owner_turn_evidence" } };
+    const field = emptyField(requestText, 0.68);
+    const entailment = createSemanticEntailmentEngine({ idFactory: ids, hasher }).check({ text: requestText,
+      evidence: [owner], nodes: [], field, createdAt: clock.now() });
+    const construct = creativeConstruct(owner.id, ids);
+    const requirementField = { ...deriveTurnRequirementField({ requestText }), trace: { activations: [
+      { id: "source.control", kind: "pattern", requestSpanRole: "control", span: { charStart: 0, charEnd: [..."Write a short scene about"].length } }
+    ] } };
+    const mouth = createMouth({ languageMemory: languageRuntime, correctionMemory: createCorrectionMemory({ idFactory: ids, hasher }),
+      hashText: text => hasher.digestHex(text) });
+    await mouth.speak({ requestText, requirementField, construct, field, languageProfile: languageProfile(source, clock.now()), evidence: [owner],
+      entailment, languageMemory: languageRuntime.hydrate({ models: [], units: [], patterns: [] }),
+      selectedCandidate: creativeCandidate(construct, owner.id, owner.id), requestedAuthority: "creative" });
+    const section = generated.find(input => input.frames?.some(frame => frame.id === "frame:creative-section"));
+    expect(section).toBeDefined();
+    expect(section?.choiceSeed).toContain("a sailor who befriends a clockmaker.");
+    expect(section?.choiceSeed).not.toContain("Write a short scene about");
+    expect(section?.contextSymbols).not.toContain(requestText);
+    expect(section?.contextSymbols).not.toContain("befriends");
+  });
   it("carries typed request role spans into creative realization constraints", () => {
     const requestText = "Compose a fable about river stones";
     const span = (text: string, charStart: number) => ({

@@ -124,7 +124,7 @@ export function createCandidateEngine() {
           COGNITIVE_OPERATOR_IDS.analogy
         ]) ? [graphInferenceCandidate(input)] : []),
         ...((!hasCompatibleCognitiveProposal || input.requestedAuthority === "creative")
-          && operatorSupported(input, [COGNITIVE_OPERATOR_IDS.invention])
+          && (input.requestedAuthority === "creative" || operatorSupported(input, [COGNITIVE_OPERATOR_IDS.invention]))
           && (input.requirementField === undefined
             || input.requestedAuthority === "creative"
             || operatorExplicitlyActive(input, [COGNITIVE_OPERATOR_IDS.invention]))

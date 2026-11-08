@@ -4472,7 +4472,7 @@ function directCreativeSectionCandidate(
     sectionGoal: input.requirementField
       ? creativeRequestContentSurface(mouthEchoQuestionText(input), input.requirementField)
       : input.entailment.claim.text,
-    priorSurfaceTexts: input.evidence.slice(0, 2).map(span => span.text).filter(Boolean),
+    priorSurfaceTexts: input.evidence.filter(span => !currentOwnerRequestEvidence(span, input)).slice(0, 2).map(span => span.text).filter(Boolean),
     narrativeConditioning: input.narrativeConditioning,
     topicVocabulary: requestTerms.map(term => term.text),
     requiredContentTerms: requestTerms.map(term => term.text),
@@ -7527,11 +7527,16 @@ function mouthRelationRequired(input: SpeakInput): boolean {
 
 /** An owner assertion bound as session evidence is confirmed by restating it; it is not a question to cover or an echo to reject. Pure. */
 function sessionAssertionTurn(input: SpeakInput): boolean {
-  return input.evidence.some(span => span.mediaType === "application/scce-session-turn+json"
+  if (input.requestedAuthority === "creative") return false;
+  return input.evidence.some(span => currentOwnerRequestEvidence(span, input));
+}
+
+function currentOwnerRequestEvidence(span: EvidenceSpan, input: SpeakInput): boolean {
+  return span.mediaType === "application/scce-session-turn+json"
     && jsonRecord(span.provenance).sourceSystem === "conversation-session"
     && jsonRecord(span.provenance).roleId === "session.role.owner"
     && jsonRecord(span.trustVector).forceClass === "session_owner_turn_evidence"
-    && normalizeEvidenceSentence(span.text) === normalizeEvidenceSentence(input.requestText ?? ""));
+    && normalizeEvidenceSentence(span.text) === normalizeEvidenceSentence(input.requestText ?? "");
 }
 
 /** Source ownership for a deterministic surface: whitespace/case normalization may differ, but the words must remain
