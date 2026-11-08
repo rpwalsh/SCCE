@@ -384,3 +384,17 @@ test('verified program approval checks the frozen native scope and retries the e
  assert.equal(result.identity.trace.filter(row=>row.route==='/api/session/approve').length,1);
  assert.equal(result.identity.trace.some(row=>row.approvalRetry===true),true);
 });
+
+test('plain reference task prompt preserves public context and exact current request without transport metadata or response placeholders',async()=>{
+ const input=makeInput('turn',{requestedAuthority:'creative',writablePaths:[],publicChecks:[]});input.category='creative';input.language='ca';
+ input.caseId='TRANSPORT_CASE_ID_NOT_TASK';input.isolation={mode:'trusted-host',provider:'TRANSPORT_PROVIDER_NOT_TASK'};
+ input.steps=[{prompt:'Earlier visible request.',sources:[{id:'field.notes',text:'Original visible source.'}],files:{'notes.txt':'Original file bytes.'}},{prompt:'Continue the same fictional scene.',sources:[{id:'field.notes',text:'Updated visible source.'}],files:{'notes.txt':'Updated file bytes.'}}];
+ input.history=[{status:'ok',answer:'Prior visible answer.',artifacts:{'notes.txt':'Prior visible edit.'}}];
+ const cwd=await workspace(input.steps.at(-1).files);let captured;
+ const reply="I don't know.";
+ const result=await runReferenceNative(input,{cwd},{ask:async(prompt,options)=>{captured=prompt;assert.equal(options.format,undefined);return {status:'ok',answer:reply,modelDigest:digest};}});
+ for(const text of ['Earlier visible request.','Original visible source.','Updated visible source.','Original file bytes.','Updated file bytes.','Prior visible answer.','Prior visible edit.','scce.blind-native-task.v1'])assert.ok(captured.includes(text),text);
+ assert.ok(captured.endsWith('Continue the same fictional scene.'));
+ for(const text of ['TRANSPORT_CASE_ID_NOT_TASK','TRANSPORT_PROVIDER_NOT_TASK','requiredResponse','Return the task answer exactly as requested.','caseBytes','maxSteps'])assert.equal(captured.includes(text),false,text);
+ assert.equal(result.answer,reply);assert.equal(result.identity.publicContextHash,hash({steps:input.steps,outputContract:input.outputContract}));
+});

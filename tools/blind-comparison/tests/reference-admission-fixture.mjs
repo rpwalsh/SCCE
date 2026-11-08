@@ -8,7 +8,8 @@ export function admissionExecutor(variant = 'accepted') {
     calls.push({ argv, question });
     const context = Number(args.get('num-ctx'));
     const apiOptions = Object.fromEntries([['num-ctx', context], ['num-predict', Number(args.get('num-predict'))], ['num-thread', Number(args.get('threads'))], ['seed', Number(args.get('seed'))]].map(([key, value]) => [key.replaceAll('-', '_'), value]));
-    const metadata = { model: 'qwen2.5:3b', digest: variant === 'model-changed' ? 'b'.repeat(64) : 'a'.repeat(64), ollamaVersion: variant === 'runtime-changed' && context !== 1024 ? 'different-runtime' : '0.32.5', requestedDevice: args.get('device'), options: apiOptions, contextPolicy: { truncate: false, shift: false }, outputFormat: question.format ? 'json_schema' : 'text', ...(question.format ? { outputSchemaSha256: hash(question.format) } : {}) };
+    const metadata = { answerStyle:args.get('answer-style'),model: 'qwen2.5:3b', digest: variant === 'model-changed' ? 'b'.repeat(64) : 'a'.repeat(64), ollamaVersion: variant === 'runtime-changed' && context !== 1024 ? 'different-runtime' : '0.32.5', requestedDevice: args.get('device'), options: apiOptions, contextPolicy: { truncate: false, shift: false }, outputFormat: question.format ? 'json_schema' : 'text', ...(question.format ? { outputSchemaSha256: hash(question.format) } : {}) };
+    if(variant==='wrong-interface')metadata.answerStyle='natural';
     let response;
     if (context === 1024) {
       const machine = { error: { code: 400, type: 'exceed_context_size_error', n_prompt_tokens: 42341, n_ctx: 1024, message: 'RAW_ERROR_PRIVATE_CANARY_NO_PUBLIC_RECEIPT' } };

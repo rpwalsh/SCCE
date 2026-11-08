@@ -210,3 +210,20 @@ test("natural closed-book questions allow existing knowledge without pretending 
   assert.doesNotMatch(request.prompt, /using only the supplied material/);
   assert.deepEqual(answer.citations, []);
 });
+
+test("public task style preserves raw declination text and does not inject factual-only refusal instructions",async()=>{
+ const reply=" I don't know. \n",prompt="Write a fictional scene between two neighbours.";
+ const {answer,request}=await runBaseline("cpu",0,{answerStyle:"task",mode:"closed_book",reply,prompt});
+ assert.equal(answer.status,"ok");assert.equal(answer.answer,reply);assert.equal(answer.metadata.rawReply,reply);
+ assert.equal(answer.metadata.answerStyle,"task");assert.ok(request.prompt.includes(prompt));
+ assert.doesNotMatch(request.prompt,/using your existing knowledge|reply with exactly: I don't know|Question:/u);
+ assert.equal(request.options.num_gpu,0);assert.equal(request.options.num_ctx,4096);
+});
+
+test("public task style retains typed response schemas and unchanged model/context controls",async()=>{
+ const schema={type:"object",properties:{status:{const:"abstained"},answer:{type:"null"}},required:["status","answer"],additionalProperties:false};
+ const reply='{"status":"abstained","answer":null}';
+ const {answer,request}=await runBaseline("cpu",0,{answerStyle:"task",mode:"closed_book",reply,question:{format:schema},prompt:"Use the supplied source and follow the response contract."});
+ assert.deepEqual(request.format,schema);assert.equal(request.truncate,false);assert.equal(request.shift,false);
+ assert.equal(answer.answer,reply);assert.equal(answer.metadata.outputFormat,"json_schema");assert.equal(answer.metadata.requestedDevice,"cpu");assert.equal(answer.metadata.options.num_predict,96);
+});

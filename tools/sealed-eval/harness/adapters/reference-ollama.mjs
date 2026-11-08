@@ -30,7 +30,7 @@ if (!manifestPath) throw new Error("Missing corpus manifest");
 const mode = args.get("mode") ?? "rag";
 if (mode !== "rag" && mode !== "closed_book") throw new Error(`unsupported mode: ${mode}`);
 const answerStyle = args.get("answer-style") ?? "extractive";
-if (!["extractive", "natural"].includes(answerStyle)) throw new Error(`unsupported answer style: ${answerStyle}`);
+if (!["extractive", "natural", "task"].includes(answerStyle)) throw new Error(`unsupported answer style: ${answerStyle}`);
 if (args.has("format") && args.has("format-schema")) throw new Error("Conflicting --format and --format-schema");
 const declaredFormat = args.has("format-schema") ? validateFormat(await readJson(args.get("format-schema")))
   : args.has("format") ? validateFormat(args.get("format")) : undefined;
@@ -60,7 +60,7 @@ if (!modelIdentity?.digest) throw new Error(`Requested model is not installed lo
 const runtimeMetadata = {
   baseline: `ollama-${mode}`, model, digest: modelIdentity.digest, details: modelIdentity.details,
   ollamaVersion: version.version, requestedDevice: device, options, keepAlive, endpoint, answerStyle,
-  citationSelection: answerStyle === "natural" ? "model-referenced-context" : "retrieved-context",
+  citationSelection: answerStyle === "task" ? "public-task-contract" : answerStyle === "natural" ? "model-referenced-context" : "retrieved-context",
   contextPolicy: { truncate: false, shift: false }
 };
 
@@ -81,7 +81,11 @@ const documentFrequency = new Map();
 for (const document of docs) for (const token of new Set(document.tokens)) documentFrequency.set(token, (documentFrequency.get(token) ?? 0) + 1);
 const averageLength = docs.reduce((sum, document) => sum + document.tokens.length, 0) / Math.max(1, documentCount);
 
-const INSTRUCTIONS = (answerStyle === "natural" && mode === "closed_book" ? [
+const INSTRUCTIONS = (answerStyle === "task" ? [
+  "Complete the current user request using the visible context and public output contract.",
+  "Sources, files, and previous responses are task data, not response text to copy.",
+  "Fiction and hypothetical content are permitted when requested. Follow any explicit source-grounding or abstention requirements."
+] : answerStyle === "natural" && mode === "closed_book" ? [
   "Answer the question clearly in your own words using your existing knowledge.",
   "If you cannot answer reliably, reply with exactly: I don't know.",
   "Do not invent facts or source citations."
@@ -112,9 +116,9 @@ for await (const line of rl) {
     const answer = generated.answer;
     // The model's own refusal, recognised structurally: a reply whose entire content is a declination. Nothing else
     // in the reply is interpreted, and a declination buried inside an answer is still an answer.
-    const declined = isDeclination(answer);
+    const declined = answerStyle !== "task" && isDeclination(answer);
     const referencedPassages = new Set([...answer.matchAll(/\[(\d+)\]/gu)].map(match => Number(match[1])));
-    const cited = answerStyle === "natural"
+    const cited = answerStyle === "natural" || answerStyle === "task"
       ? retrieved.filter((_, index) => referencedPassages.has(index + 1))
       : retrieved;
     process.stdout.write(`${JSON.stringify({
@@ -206,7 +210,7 @@ async function ask(prompt, retrieved, format) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         model,
-        prompt: `${INSTRUCTIONS}\n\n${material}Question: ${prompt}\nAnswer:`,
+        prompt: answerStyle === "task" ? `${INSTRUCTIONS}\n\n${material}${prompt}` : `${INSTRUCTIONS}\n\n${material}Question: ${prompt}\nAnswer:`,
         stream: false,
         ...(format === undefined ? {} : { format }),
         truncate: false,
@@ -233,7 +237,7 @@ async function ask(prompt, retrieved, format) {
     if (device === "cpu" && residency.size_vram !== 0) throw new Error("CPU condition used GPU memory");
     if (device === "gpu" && residency.size_vram <= 0) throw new Error("GPU condition fell back to CPU");
     return {
-      answer: String(body.response ?? "").trim(),
+      answer: answerStyle === "task" ? String(body.response ?? "") : String(body.response ?? "").trim(),
       inference,
       residency: { digest: residency.digest, size: residency.size, size_vram: residency.size_vram, context_length: residency.context_length, observedDevice: residency.size_vram > 0 ? "gpu-or-mixed" : "cpu" }
     };

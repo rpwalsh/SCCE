@@ -22,6 +22,7 @@ function checkMetadata(metadata, expected, contextTokens, outputTokens) {
   requireValue(typeof metadata.ollamaVersion === 'string' && metadata.ollamaVersion.length > 0 && (!expected.runtimeVersion || metadata.ollamaVersion === expected.runtimeVersion), 'runtime identity changed or is absent');
   requireValue(metadata.contextPolicy?.truncate === false && metadata.contextPolicy?.shift === false, 'no-truncation/no-shift controls were not requested');
   requireValue(metadata.requestedDevice === expected.device, 'device request changed');
+  requireValue(metadata.answerStyle === 'task', 'public task interface changed');
   const options = new Map(Object.entries(metadata.options ?? {}).map(([name, value]) => [`--${name.replaceAll('_', '-')}`, value]));
   for (const [flag, value] of [['--num-ctx', contextTokens], ['--num-predict', outputTokens], ['--num-thread', expected.threads], ['--seed', expected.seed]]) requireValue(options.get(flag) === value, `requested resource option changed: ${flag}`);
   return metadata.ollamaVersion;
@@ -34,7 +35,7 @@ export async function admitReference(options, dependencies = {}) {
   async function probe(question, contextTokens, outputTokens) {
     const args = ['--corpus-manifest', options.emptyCorpusFile, '--model', 'qwen2.5:3b', '--num-ctx', String(contextTokens), '--num-predict', String(outputTokens), '--threads', String(options.threads), '--device', options.device, '--seed', String(options.seed), '--request-timeout-ms', String(options.budgets.timeMs)];
     await validateReferenceRunner(runnerPath, args);
-    const result = await executeCommand([process.execPath, runnerPath, ...args, '--mode', 'closed_book', '--answer-style', 'natural'], { cwd: path.dirname(options.emptyCorpusFile), input: `${canonical(question)}\n`, timeMs: options.budgets.timeMs, outputBytes: options.budgets.outputBytes });
+    const result = await executeCommand([process.execPath, runnerPath, ...args, '--mode', 'closed_book', '--answer-style', 'task'], { cwd: path.dirname(options.emptyCorpusFile), input: `${canonical(question)}\n`, timeMs: options.budgets.timeMs, outputBytes: options.budgets.outputBytes });
     requireValue(result.code === 0 && !result.failure, 'declared runner did not complete');
     const lines = result.stdout.trim().split(/\r?\n/u);
     requireValue(lines.length === 1, 'declared runner returned an invalid receipt');

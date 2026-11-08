@@ -33,7 +33,7 @@ test('automatic admission uses only the declared runner, rejects overflow first 
   assert.equal(canonical(receipt).includes('UNSTRUCTURED'), false);
   assert.equal(Object.hasOwn(receipt.overflow, 'prompt'), false);
 });
-for (const variant of ['ignored-overflow', 'ignored-schema', 'untyped-error', 'wrong-context', 'small-token-count', 'missing-error-hash', 'model-changed', 'runtime-changed', 'schema-digest-mismatch', 'residency-context-mismatch', 'missing-residency', 'missing-controls', 'length-exhausted', 'runner-exit']) {
+for (const variant of ['ignored-overflow', 'ignored-schema', 'untyped-error', 'wrong-context', 'small-token-count', 'missing-error-hash', 'model-changed', 'runtime-changed', 'schema-digest-mismatch', 'residency-context-mismatch', 'missing-residency', 'missing-controls', 'length-exhausted', 'runner-exit', 'wrong-interface']) {
   test(`setup fails closed for ${variant}`, async () => {
     const config = await options();
     await assert.rejects(() => admitReference(config, { executeCommand: admissionExecutor(variant), randomBytes: n => Buffer.alloc(n, 65) }), /Reference admission failed/);
