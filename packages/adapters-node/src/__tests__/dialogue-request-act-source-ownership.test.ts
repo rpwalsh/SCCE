@@ -97,13 +97,27 @@ it("attributes a single pooled measurement once per source and preserves it on a
   const actual = kernel.requestCommunicativeActModelFromPatterns(f.active())!;
   expect(actual.classCounts).toEqual(pooled.classCounts);
   expect(actual.features).toEqual(pooled.features);
-  const before = structuredClone(f.active()), writes = f.writes(), compile = vi.spyOn(kernel, "compileRequestCommunicativeActModel");
+  const before = structuredClone(f.active()), beforeBytes = JSON.stringify(f.active()), writes = f.writes(), compile = vi.spyOn(kernel, "compileRequestCommunicativeActModel");
+  const previousCheckpoints = new Set(f.checkpoints.keys());
+  const noModelCompile = vi.spyOn(trainer, "trainLanguageCorpusText").mockRejectedValue(new Error("a smaller auxiliary replay must not compile source models"));
   await f.train({ startFileIndex: 0, maxFilesPerRun: 1 });
-  expect(compile).not.toHaveBeenCalled(); expect(f.writes()).toBe(writes + 1);
+  expect(compile).not.toHaveBeenCalled(); expect(noModelCompile).not.toHaveBeenCalled(); expect(f.writes()).toBe(writes + 2);
+  const newCheckpointMetadata = [...f.checkpoints.values()].filter(row => !previousCheckpoints.has(row.id))
+    .map(row => row.metadata as Record<string, kernel.JsonValue>);
+  expect(newCheckpointMetadata.map(metadata => metadata.schema).sort()).toEqual([
+    "scce.dialogue_computation_compilation.v1", "scce.dialogue_conversational_compilation.v1"
+  ]);
+  expect(newCheckpointMetadata.find(metadata => metadata.schema === "scce.dialogue_computation_compilation.v1")).toMatchObject({
+    compilerFingerprint: kernel.SOURCE_COMPUTATION_CONSTRUCTION_RECIPE, projections: []
+  });
+  expect(kernel.SOURCE_COMPUTATION_CONSTRUCTION_RECIPE).toBe("kernel.dialogue_computation_construction.v2");
   expect(f.active()).toEqual(before);
+  expect(JSON.stringify(f.active())).toBe(beforeBytes);
+  const replayed = kernel.requestCommunicativeActModelFromPatterns(f.active())!;
+  expect(replayed.classCounts).toEqual(pooled.classCounts); expect(replayed.features).toEqual(pooled.features);
   const subsetWrites = f.writes();
   await f.train({ startFileIndex: 0, maxFilesPerRun: 1 });
-  expect(f.writes()).toBe(subsetWrites); expect(compile).not.toHaveBeenCalled();
+  expect(f.writes()).toBe(subsetWrites); expect(compile).not.toHaveBeenCalled(); expect(noModelCompile).not.toHaveBeenCalled();
 });
 
 it("records a fully processed empty component once instead of retrying model preparation forever", async () => {
